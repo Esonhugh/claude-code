@@ -12,6 +12,7 @@ import { expandTilde, getDirectoryForPath } from '../../utils/path.js'
 import { allWorkingDirectories } from '../../utils/permissions/filesystem.js'
 import {
   requiresExplicitUserApproval,
+  type PermissionAskDecision,
   type PermissionResult,
 } from '../../utils/permissions/PermissionResult.js'
 import { createReadRuleSuggestion } from '../../utils/permissions/PermissionUpdate.js'
@@ -62,6 +63,10 @@ export type PathCommand =
   | 'sha256sum'
   | 'sha1sum'
   | 'md5sum'
+  | 'tac'
+  | 'egrep'
+  | 'fgrep'
+  | 'tee'
 
 /**
  * SECURITY: Extract positional (non-flag) arguments, correctly handling the
@@ -253,6 +258,27 @@ export const PATH_EXTRACTORS: Record<
   sha1sum: filterOutFlags,
   md5sum: filterOutFlags,
 
+  // tac: -s/--separator takes a value
+  tac: args => {
+    const paths: string[] = []
+    for (let i = 0; i < args.length; i++) {
+      const arg = args[i]!
+      if (arg === '--') {
+        paths.push(...args.slice(i + 1))
+        break
+      }
+      if (arg === '-s' || arg === '--separator') i++
+      else if (!arg.startsWith('-')) paths.push(arg)
+    }
+    return paths
+  },
+
+  // tee: every operand is a write target; the terminal pseudo-files are not
+  tee: args =>
+    filterOutFlags(args).filter(
+      arg => !['/dev/null', '/dev/stdout', '/dev/stderr', '/dev/tty'].includes(arg),
+    ),
+
   // tr: special case - skip character sets
   tr: args => {
     const hasDelete = args.some(
@@ -295,6 +321,9 @@ export const PATH_EXTRACTORS: Record<
     }
     return paths
   },
+
+  egrep: args => PATH_EXTRACTORS.grep(args),
+  fgrep: args => PATH_EXTRACTORS.grep(args),
 
   // rg: pattern then paths, defaults to current dir
   rg: args => {
@@ -503,6 +532,10 @@ const ACTION_VERBS: Record<PathCommand, string> = {
   sha256sum: 'compute SHA-256 checksums for files in',
   sha1sum: 'compute SHA-1 checksums for files in',
   md5sum: 'compute MD5 checksums for files in',
+  tac: 'read files (reversed) from',
+  egrep: 'search for patterns in files from',
+  fgrep: 'search for patterns in files from',
+  tee: 'write to files in',
 }
 
 export const COMMAND_OPERATION_TYPE: Record<PathCommand, FileOperationType> = {
@@ -542,6 +575,10 @@ export const COMMAND_OPERATION_TYPE: Record<PathCommand, FileOperationType> = {
   sha256sum: 'read',
   sha1sum: 'read',
   md5sum: 'read',
+  tac: 'read',
+  egrep: 'read',
+  fgrep: 'read',
+  tee: 'write',
 }
 
 /**
@@ -554,6 +591,14 @@ const COMMAND_VALIDATOR: Partial<
 > = {
   mv: (args: string[]) => !args.some(arg => arg?.startsWith('-')),
   cp: (args: string[]) => !args.some(arg => arg?.startsWith('-')),
+}
+
+function insideWorkingDirsMessage(subject: string, dirListStr: string): string {
+  return `${subject} needs approval. The path is inside the working directories for this session (${dirListStr}), and Claude Code asks before a shell command creates, changes or removes files there.`
+}
+
+function outsideWorkingDirsMessage(subject: string, dirListStr: string): string {
+  return `${subject} needs approval. The path is outside the working directories for this session (${dirListStr}). Allowing runs the command as written.`
 }
 
 function validateCommandPaths(
@@ -611,27 +656,31 @@ function validateCommandPaths(
   }
 
   let removalAsk: PermissionResult | undefined
+  let overridableAsk: PermissionResult | undefined
   for (const path of paths) {
-    const { allowed, resolvedPath, decisionReason } = validatePath(
-      path,
-      cwd,
-      toolPermissionContext,
-      operationType,
-    )
+    const { allowed, resolvedPath, decisionReason, isInWorkingDir } =
+      validatePath(path, cwd, toolPermissionContext, operationType)
 
     if (!allowed) {
       const workingDirs = Array.from(
         allWorkingDirectories(toolPermissionContext),
       )
       const dirListStr = formatDirectoryList(workingDirs)
+      // A write inside the working directories that nothing else flagged:
+      // a Bash allow rule for the command may override this ask.
+      const bashAllowRuleOverridable =
+        isInWorkingDir === true && decisionReason === undefined
 
       // Use security check's custom reason if available (type: 'other' or 'safetyCheck')
-      // Otherwise use the standard "was blocked" message
       const message =
         decisionReason?.type === 'other' ||
         decisionReason?.type === 'safetyCheck'
           ? decisionReason.reason
-          : `${command} in '${resolvedPath}' was blocked. For security, Claude Code may only ${ACTION_VERBS[command]} the allowed working directories for this session: ${dirListStr}.`
+          : bashAllowRuleOverridable
+            ? insideWorkingDirsMessage(`${command} in '${resolvedPath}'`, dirListStr)
+            : operationType !== 'read' && decisionReason?.type !== 'rule'
+              ? outsideWorkingDirsMessage(`${command} in '${resolvedPath}'`, dirListStr)
+              : `${command} in '${resolvedPath}' was blocked. For security, Claude Code may only ${ACTION_VERBS[command]} the allowed working directories for this session: ${dirListStr}.`
 
       if (decisionReason?.type === 'rule') {
         return {
@@ -646,12 +695,18 @@ function validateCommandPaths(
         message,
         blockedPath: resolvedPath,
         decisionReason,
+        bashAllowRuleOverridable,
+      }
+      if (bashAllowRuleOverridable) {
+        overridableAsk ??= ask
+        continue
       }
       if (command !== 'rm' && command !== 'rmdir') return ask
       removalAsk ??= ask
     }
   }
   if (removalAsk) return removalAsk
+  if (overridableAsk) return overridableAsk
 
   // All paths are valid - return passthrough
   return {
@@ -766,6 +821,36 @@ function parseCommandArguments(cmd: string): string[] {
 }
 
 /**
+ * Read deny rules also cover files named as option values
+ * (`git blame --ignore-revs-file=.env`). Only an explicit deny rule refuses
+ * the command; other values are not treated as paths.
+ */
+function checkOptionValueReadDeny(
+  args: string[],
+  cwd: string,
+  toolPermissionContext: ToolPermissionContext,
+): PermissionResult | undefined {
+  for (const arg of args) {
+    const value = /^--?[A-Za-z][\w-]*=(.+)$/.exec(arg)?.[1]
+    if (!value) continue
+    const { resolvedPath, decisionReason } = validatePath(
+      value,
+      cwd,
+      toolPermissionContext,
+      'read',
+    )
+    if (decisionReason?.type === 'rule') {
+      return {
+        behavior: 'deny',
+        message: `Option value '${resolvedPath}' was blocked by a deny rule.`,
+        decisionReason,
+      }
+    }
+  }
+  return undefined
+}
+
+/**
  * Validates a single command for path constraints and shell safety.
  *
  * This function:
@@ -804,6 +889,12 @@ function validateSinglePathCommand(
 
   // Check if this is a path command we need to validate
   const [baseCmd, ...args] = extractedArgs
+  const optionValueDeny = checkOptionValueReadDeny(
+    args,
+    cwd,
+    toolPermissionContext,
+  )
+  if (optionValueDeny) return optionValueDeny
   if (!baseCmd || !SUPPORTED_PATH_COMMANDS.includes(baseCmd as PathCommand)) {
     return {
       behavior: 'passthrough',
@@ -848,6 +939,12 @@ function validateSinglePathCommandArgv(
     }
   }
   const [baseCmd, ...args] = argv
+  const optionValueDeny = checkOptionValueReadDeny(
+    args,
+    cwd,
+    toolPermissionContext,
+  )
+  if (optionValueDeny) return optionValueDeny
   if (!baseCmd || !SUPPORTED_PATH_COMMANDS.includes(baseCmd as PathCommand)) {
     return {
       behavior: 'passthrough',
@@ -897,12 +994,13 @@ function validateOutputRedirections(
     if (target === '/dev/null') {
       continue
     }
-    const { allowed, resolvedPath, decisionReason } = validatePath(
-      target,
-      cwd,
-      toolPermissionContext,
-      'create', // Treat > and >> as create operations
-    )
+    const { allowed, resolvedPath, decisionReason, isInWorkingDir } =
+      validatePath(
+        target,
+        cwd,
+        toolPermissionContext,
+        'create', // Treat > and >> as create operations
+      )
 
     if (!allowed) {
       const workingDirs = Array.from(
@@ -918,7 +1016,9 @@ function validateOutputRedirections(
           ? decisionReason.reason
           : decisionReason?.type === 'rule'
             ? `Output redirection to '${resolvedPath}' was blocked by a deny rule.`
-            : `Output redirection to '${resolvedPath}' was blocked. For security, Claude Code may only write to files in the allowed working directories for this session: ${dirListStr}.`
+            : isInWorkingDir === true && decisionReason === undefined
+              ? insideWorkingDirsMessage(`Output redirection to '${resolvedPath}'`, dirListStr)
+              : outsideWorkingDirsMessage(`Output redirection to '${resolvedPath}'`, dirListStr)
 
       // If denied by a deny rule, return 'deny' behavior
       if (decisionReason?.type === 'rule') {
@@ -949,6 +1049,69 @@ function validateOutputRedirections(
     behavior: 'passthrough',
     message: 'No unsafe redirections found',
   }
+}
+
+function extractInputRedirectionTargets(command: string): string[] {
+  const parsed = tryParseShellCommand(command, env => `$${env}`)
+  if (!parsed.success) return []
+  const targets: string[] = []
+  parsed.tokens.forEach((token, i) => {
+    const next = parsed.tokens[i + 1]
+    if (
+      typeof token === 'object' &&
+      'op' in token &&
+      token.op === '<' &&
+      typeof next === 'string'
+    )
+      targets.push(next)
+  })
+  return targets
+}
+
+// Read deny rules apply to `< file` input redirections. Other input targets
+// are left to the existing redirection safety checks.
+function validateInputRedirections(
+  targets: string[],
+  cwd: string,
+  toolPermissionContext: ToolPermissionContext,
+): PermissionResult | undefined {
+  for (const target of targets) {
+    const { resolvedPath, decisionReason } = validatePath(
+      target,
+      cwd,
+      toolPermissionContext,
+      'read',
+    )
+    if (decisionReason?.type === 'rule') {
+      return {
+        behavior: 'deny',
+        message: `Input redirection from '${resolvedPath}' was blocked by a deny rule.`,
+        decisionReason,
+      }
+    }
+  }
+  return undefined
+}
+
+/**
+ * Keeps the first path ask, except that an ask a Bash allow rule may override
+ * gives way to one it may not, and any ask gives way to one that requires
+ * explicit user approval.
+ */
+function shouldReplaceApproval(
+  current: PermissionResult | undefined,
+  next: PermissionResult,
+): next is PermissionAskDecision {
+  if (next.behavior !== 'ask') return false
+  if (!current) return true
+  if (
+    current.behavior === 'ask' &&
+    current.bashAllowRuleOverridable &&
+    !next.bashAllowRuleOverridable
+  ) {
+    return true
+  }
+  return requiresExplicitUserApproval(next.decisionReason)
 }
 
 /**
@@ -1015,6 +1178,14 @@ export function checkPathConstraints(
     compoundCommandHasCd,
   )
   if (redirectionResult.behavior === 'deny') return redirectionResult
+  const inputRedirectionResult = validateInputRedirections(
+    astRedirects
+      ? astRedirects.filter(r => r.op === '<').map(r => r.target)
+      : extractInputRedirectionTargets(input.command),
+    cwd,
+    toolPermissionContext,
+  )
+  if (inputRedirectionResult) return inputRedirectionResult
   let approvalResult = redirectionResult.behavior === 'ask' ? redirectionResult : undefined
 
   // SECURITY: When AST-derived commands are available, iterate them with
@@ -1031,12 +1202,7 @@ export function checkPathConstraints(
         compoundCommandHasCd,
       )
       if (result.behavior === 'deny') return result
-      if (
-        result.behavior === 'ask' &&
-        (!approvalResult || requiresExplicitUserApproval(result.decisionReason))
-      ) {
-        approvalResult = result
-      }
+      if (shouldReplaceApproval(approvalResult, result)) approvalResult = result
     }
   } else {
     const commands = splitCommand_DEPRECATED(input.command)
@@ -1048,12 +1214,7 @@ export function checkPathConstraints(
         compoundCommandHasCd,
       )
       if (result.behavior === 'deny') return result
-      if (
-        result.behavior === 'ask' &&
-        (!approvalResult || requiresExplicitUserApproval(result.decisionReason))
-      ) {
-        approvalResult = result
-      }
+      if (shouldReplaceApproval(approvalResult, result)) approvalResult = result
     }
   }
 
@@ -1258,4 +1419,153 @@ export function stripWrappersFromArgv(argv: string[]): string[] {
       return a
     }
   }
+}
+
+// Exec wrappers that run their operands as a command, with the options that
+// take a separate value. Only used to widen deny/ask rule matching; never to
+// grant an allow rule.
+const EXEC_WRAPPER_VALUE_FLAGS: Record<string, ReadonlySet<string>> = {
+  env: new Set(['-u', '-C', '--unset', '--chdir']),
+  sudo: new Set(['-u', '-g', '-U', '-C', '-D', '-h', '-p', '-r', '-R', '-t', '-T', '--user', '--group', '--other-user', '--close-from', '--chdir', '--host', '--prompt', '--role', '--chroot', '--type', '--command-timeout', '-a', '--auth-type']),
+  doas: new Set(['-a', '-u', '-C']),
+  pkexec: new Set(['--user']),
+  watch: new Set(['-n', '--interval', '--equexit']),
+  ionice: new Set(['-c', '-n', '-p', '-P', '-u', '--class', '--classdata', '--pid', '--pgid', '--uid']),
+  setsid: new Set([]),
+  taskset: new Set(['-c', '--cpu-list']),
+  chrt: new Set(['-p', '--pid', '-T', '-P', '-D', '--sched-runtime', '--sched-period', '--sched-deadline']),
+  strace: new Set(['-e', '-o', '-p', '-s', '-E', '-P', '-S', '-a', '-b', '-I', '-u', '-X', '-O', '-U', '--output', '--trace', '--expr', '--attach', '--string-limit', '--env', '--trace-path', '--columns', '--user', '--interruptible', '--detach-on', '--const-print-style', '--summary-sort-by', '--summary-syscall-overhead', '--summary-columns']),
+  ltrace: new Set(['-a', '-A', '-e', '-l', '-n', '-o', '-p', '-s', '-u', '-x', '-D', '-F', '--align', '--config', '--debug', '--indent', '--library', '--output', '--string-max', '-w', '--where']),
+  flock: new Set(['-w', '-E', '--timeout', '--wait', '--conflict-exit-code']),
+  script: new Set(['-E', '-T', '-m', '-o', '-O', '-B', '-I', '--echo', '--log-timing', '--logging-format', '--output-limit', '--log-out', '--log-io', '--log-in']),
+  unshare: new Set(['-R', '-w', '-S', '-G', '--setuid', '--setgid', '--root', '--wd', '--propagation', '--setgroups', '--monotonic', '--boottime']),
+  nsenter: new Set(['-t', '-S', '-G', '--target', '--setuid', '--setgid']),
+  exec: new Set(['-a']),
+  command: new Set([]),
+  builtin: new Set([]),
+  noglob: new Set([]),
+  nocorrect: new Set([]),
+}
+// Options whose value is itself a command string (`env -S`, `flock -c`).
+const EXEC_WRAPPER_COMMAND_FLAGS: Record<string, ReadonlySet<string>> = {
+  env: new Set(['-S', '--split-string']),
+  flock: new Set(['-c', '--command']),
+  script: new Set(['-c', '--command']),
+}
+// Wrappers that take one positional operand before the command.
+const EXEC_WRAPPER_POSITIONAL: Record<string, (arg: string) => boolean> = {
+  chrt: arg => /^\d+$/.test(arg),
+  taskset: arg => /^(0x[\da-f]+|\d+)$/i.test(arg),
+  flock: () => true,
+  script: () => true,
+}
+const ASSIGNMENT_WORD_RE = /^[A-Za-z_][A-Za-z0-9_]*\+?=/
+
+/**
+ * Strips exec wrappers (sudo, doas, env, setsid, watch, ionice, chrt, taskset,
+ * flock, command, exec, ...) and leading assignments from argv so deny/ask
+ * rules can match the command that actually runs.
+ */
+export function stripExecWrappersFromArgv(argv: readonly string[]): string[] {
+  let a = argv.slice()
+  for (;;) {
+    while (a[0] !== undefined && ASSIGNMENT_WORD_RE.test(a[0])) a = a.slice(1)
+    a = stripWrappersFromArgv(a)
+    const name = a[0]
+    if (name === undefined || !Object.hasOwn(EXEC_WRAPPER_VALUE_FLAGS, name))
+      return a
+    const valueFlags = EXEC_WRAPPER_VALUE_FLAGS[name]!
+    const commandFlags = Object.hasOwn(EXEC_WRAPPER_COMMAND_FLAGS, name)
+      ? EXEC_WRAPPER_COMMAND_FLAGS[name]
+      : undefined
+    const positional = Object.hasOwn(EXEC_WRAPPER_POSITIONAL, name)
+      ? EXEC_WRAPPER_POSITIONAL[name]
+      : undefined
+    let i = 1
+    let script: string | undefined
+    let positionalSeen = false
+    while (i < a.length) {
+      const arg = a[i]!
+      if (arg === '--') {
+        i++
+        if (!positionalSeen && positional && i + 1 < a.length && positional(a[i]!)) {
+          positionalSeen = true
+          i++
+          continue
+        }
+        break
+      }
+      if (commandFlags) {
+        const eq = arg.indexOf('=')
+        const inline =
+          commandFlags.has(arg) && a[i + 1] !== undefined
+            ? a[i + 1]
+            : eq > 0 && commandFlags.has(arg.slice(0, eq))
+              ? arg.slice(eq + 1)
+              : arg.length > 2 && arg[1] !== '-' && commandFlags.has(arg.slice(0, 2))
+                ? arg.slice(2)
+                : undefined
+        if (inline !== undefined) {
+          if (inline.trim() !== '') {
+            script = inline.trim()
+            break
+          }
+          i += commandFlags.has(arg) ? 2 : 1
+          continue
+        }
+      }
+      if (arg.startsWith('-') && (arg !== '-' || positional === undefined)) {
+        if (name === 'command' && /^-[pvV]+$/.test(arg) && /[vV]/.test(arg))
+          return a
+        i += valueFlags.has(arg) && i + 1 < a.length ? 2 : 1
+        continue
+      }
+      if (name === 'env' && ASSIGNMENT_WORD_RE.test(arg)) {
+        i++
+        continue
+      }
+      if (!positionalSeen && positional?.(arg) && i + 1 < a.length) {
+        positionalSeen = true
+        i++
+        continue
+      }
+      break
+    }
+    if (script !== undefined) {
+      a = script.split(/\s+/)
+      continue
+    }
+    if (i >= a.length) return a
+    a = a.slice(i)
+  }
+}
+
+const REDIRECT_OPS = new Set(['<', '>', '>>', '<<', '<<<', '>&', '<&', '<>', '>|'])
+
+/**
+ * Tokenizes a command and returns, for each simple-command segment that
+ * starts with an exec wrapper or assignment, the unwrapped command text.
+ * Used for deny/ask rule matching only.
+ */
+export function unwrapExecWrappersForRuleMatching(command: string): string[] {
+  const parsed = tryParseShellCommand(command, env => `$${env}`)
+  if (!parsed.success) return []
+  const segments: string[][] = [[]]
+  for (let i = 0; i < parsed.tokens.length; i++) {
+    const token = parsed.tokens[i]!
+    if (typeof token === 'string') segments.at(-1)!.push(token)
+    else if ('op' in token && token.op === 'glob')
+      segments.at(-1)!.push(String(token.pattern))
+    else {
+      if ('op' in token && REDIRECT_OPS.has(token.op)) i++
+      else segments.push([])
+    }
+  }
+  const results: string[] = []
+  for (const segment of segments) {
+    const unwrapped = stripExecWrappersFromArgv(segment).join(' ')
+    if (unwrapped !== '' && unwrapped !== segment.join(' '))
+      results.push(unwrapped)
+  }
+  return results
 }

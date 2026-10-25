@@ -1,4 +1,6 @@
+import { feature } from 'bun:bundle'
 import type { AppState } from '../../state/AppState.js'
+import type { ToolPermissionContext } from '../../Tool.js'
 import { logForDebugging } from '../debug.js'
 import { updateHooksConfigSnapshot } from '../hooks/hooksConfigSnapshot.js'
 import {
@@ -7,13 +9,19 @@ import {
   isBypassPermissionsModeDisabled,
   removeDangerousPermissions,
   transitionPlanAutoMode,
+  verifyAutoModeGateAccess,
 } from '../permissions/permissionSetup.js'
 import { syncPermissionRulesFromDisk } from '../permissions/permissions.js'
-import { loadAllPermissionRulesFromDisk } from '../permissions/permissionsLoader.js'
-import type { SettingSource } from './constants.js'
+import {
+  loadAllPermissionRulesFromDisk,
+  shouldAllowManagedPermissionRulesOnly,
+} from '../permissions/permissionsLoader.js'
+import type { ToolPermissionRulesBySource } from '../../Tool.js'
+import { SETTING_SOURCES, type SettingSource } from './constants.js'
 import { getInitialSettings } from './settings.js'
 import { isAnt } from 'src/utils/userType.js'
 
+const DISK_RULE_SOURCES: readonly string[] = [...SETTING_SOURCES, 'sshOverlay']
 
 /**
  * Apply a settings change to app state. Re-reads settings from disk,
@@ -43,6 +51,7 @@ export function applySettingsChange(
   const updatedRules = loadAllPermissionRulesFromDisk()
   updateHooksConfigSnapshot()
 
+  let syncedState: Pick<AppState, 'toolPermissionContext' | 'fastMode'> | undefined
   setAppState(prev => {
     let newContext = syncPermissionRulesFromDisk(
       prev.toolPermissionContext,
@@ -67,6 +76,23 @@ export function applySettingsChange(
       newContext = createDisabledBypassPermissionsContext(newContext)
     }
 
+    // Disk-sourced stash entries were just reloaded from disk; drop them so
+    // the re-strip below rebuilds them from what is on disk now and a rule
+    // deleted from settings is not restored when auto mode ends.
+    if (newContext.strippedDangerousRules) {
+      const managedOnly = shouldAllowManagedPermissionRulesOnly()
+      const stash: ToolPermissionRulesBySource = {}
+      for (const [source, rules] of Object.entries(
+        newContext.strippedDangerousRules,
+      )) {
+        if (DISK_RULE_SOURCES.includes(source)) continue
+        // Managed-only clears cliArg and session rules; command rules stay.
+        if (managedOnly && source !== 'command') continue
+        if (rules) stash[source as keyof ToolPermissionRulesBySource] = [...rules]
+      }
+      newContext = { ...newContext, strippedDangerousRules: stash }
+    }
+
     newContext = transitionPlanAutoMode(newContext)
 
     // Sync effortLevel from settings to top-level AppState when it changes
@@ -77,6 +103,7 @@ export function applySettingsChange(
     const newEffort = newSettings.effortLevel
     const effortChanged = prevEffort !== newEffort
 
+    syncedState = { toolPermissionContext: newContext, fastMode: prev.fastMode }
     return {
       ...prev,
       settings: newSettings,
@@ -89,6 +116,52 @@ export function applySettingsChange(
       ...(effortChanged && newEffort !== undefined
         ? { effortValue: newEffort }
         : {}),
+    }
+  })
+
+  // Like official 2.1.251 and 2.1.295, re-check auto mode against the new
+  // settings: disableAutoMode added mid-session leaves auto, and removing it
+  // offers auto again without a restart.
+  if (feature('TRANSCRIPT_CLASSIFIER') && syncedState) {
+    void recheckAutoModeGate(
+      syncedState.toolPermissionContext,
+      syncedState.fastMode,
+      setAppState,
+    )
+  }
+}
+
+/** Applies a fresh auto mode gate check to the current state. */
+export async function recheckAutoModeGate(
+  context: ToolPermissionContext,
+  fastMode: boolean | undefined,
+  setAppState: (f: (prev: AppState) => AppState) => void,
+): Promise<void> {
+  const { updateContext, notification } = await verifyAutoModeGateAccess(
+    context,
+    fastMode,
+  )
+  setAppState(prev => {
+    const nextContext = updateContext(prev.toolPermissionContext)
+    const next =
+      nextContext === prev.toolPermissionContext
+        ? prev
+        : { ...prev, toolPermissionContext: nextContext }
+    if (!notification) return next
+    return {
+      ...next,
+      notifications: {
+        ...next.notifications,
+        queue: [
+          ...next.notifications.queue,
+          {
+            key: 'auto-mode-gate-notification',
+            text: notification,
+            color: 'warning' as const,
+            priority: 'high' as const,
+          },
+        ],
+      },
     }
   })
 }

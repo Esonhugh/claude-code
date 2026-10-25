@@ -3,7 +3,7 @@ import { mkdtemp, realpath, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import ts from 'typescript'
-import officialDeclaration from '../../../assets/mods-2.1.292.d.ts.txt' with {type:'text'}
+import officialDeclaration from '../../../assets/mods-2.1.303.d.ts.txt' with {type:'text'}
 import { OFFICIAL_CORE_CALLS } from './coreCalls.js'
 import { loadModDeclaration } from './loader.js'
 import { createModsRuntime } from './runtime.js'

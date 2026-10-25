@@ -8,7 +8,12 @@ import { getOriginalCwd } from '../../bootstrap/state.js'
 import { useExitOnCtrlCDWithKeybindings } from '../../hooks/useExitOnCtrlCDWithKeybindings.js'
 import { Box, Text } from '../../ink.js'
 import { useKeybinding } from '../../keybindings/useKeybinding.js'
-import { getAutoMemPath, isAutoMemoryEnabled } from '../../memdir/paths.js'
+import { getMemoryIndexStatus } from '../../memdir/memoryIndex.js'
+import {
+  getAutoMemPath,
+  isAutoMemoryEnabled,
+  isSqliteMemoryEnabled,
+} from '../../memdir/paths.js'
 import { logEvent } from '../../services/analytics/index.js'
 import { isAutoDreamEnabled } from '../../services/autoDream/config.js'
 import { readLastConsolidatedAt } from '../../services/autoDream/consolidationLock.js'
@@ -18,7 +23,7 @@ import { openPath } from '../../utils/browser.js'
 import { getMemoryFiles, type MemoryFileInfo } from '../../utils/claudemd.js'
 import { getClaudeConfigHomeDir } from '../../utils/envUtils.js'
 import { getDisplayPath } from '../../utils/file.js'
-import { formatRelativeTimeAgo } from '../../utils/format.js'
+import { formatFileSize, formatRelativeTimeAgo } from '../../utils/format.js'
 import { projectIsInGitRepo } from '../../utils/memory/versions.js'
 import { updateSettingsForSource } from '../../utils/settings/settings.js'
 import { Select } from '../CustomSelect/index.js'
@@ -39,6 +44,7 @@ interface ExtendedMemoryFileInfo extends MemoryFileInfo {
 let lastSelectedPath: string | undefined
 
 const OPEN_FOLDER_PREFIX = '__open_folder__'
+export const BUILD_MEMORY_INDEX_VALUE = '__build_memory_index__'
 
 type Props = {
   onSelect: (path: string) => void
@@ -194,6 +200,17 @@ export function MemoryFileSelector({
   }
 
   memoryOptions.push(...folderOptions)
+
+  const [index] = useState(() => (isSqliteMemoryEnabled() ? getMemoryIndexStatus() : null))
+  if (index) {
+    memoryOptions.push({
+      label: index.built ? 'Rebuild memory index' : 'Build memory index',
+      value: BUILD_MEMORY_INDEX_VALUE,
+      description: index.built
+        ? `${index.files} files · ${formatFileSize(index.bytes)}${index.builtAt ? ` · built ${formatRelativeTimeAgo(new Date(index.builtAt))}` : ''}`
+        : 'not built yet',
+    })
+  }
 
   // Initialize with last selected path if it's still in the options, otherwise use first option
   const initialPath =

@@ -6,6 +6,7 @@ import type {
   WorkingDirectorySource,
 } from '../../types/permissions.js'
 import { logForDebugging } from '../debug.js'
+import type { PermissionMode } from './PermissionMode.js'
 import { isPlanModeAvailable, PLAN_MODE_DISABLED_MESSAGE } from '../planModeV2.js'
 import {
   applySSHPermissionOverlayUpdate,
@@ -73,6 +74,27 @@ export type InternalPermissionUpdate =
       directories: string[]
     }
 
+export type PermissionModeChangeSource =
+  | 'shift-tab'
+  | 'command'
+  | 'sdk'
+  | 'hook'
+  | 'teammate'
+  | 'parent'
+
+/** One debug line per mode switch, naming where it came from. */
+export function logPermissionModeChange(
+  source: PermissionModeChangeSource,
+  from: PermissionMode,
+  to: PermissionMode,
+  detail?: string,
+): void {
+  if (from === to) return
+  logForDebugging(
+    `[permission-mode] ${from} -> ${to} (source: ${source}${detail ? `, ${detail}` : ''})`,
+  )
+}
+
 export function applyPermissionUpdate(
   context: ToolPermissionContext,
   update: InternalPermissionUpdate,
@@ -85,6 +107,15 @@ export function applyPermissionUpdate(
         !isPlanModeAvailable()
       ) {
         throw new Error(PLAN_MODE_DISABLED_MESSAGE)
+      }
+      if (
+        update.mode === 'bypassPermissions' &&
+        !context.isBypassPermissionsModeAvailable
+      ) {
+        logForDebugging(
+          "Ignoring permission update: setMode 'bypassPermissions' rejected — mode is not available (disableBypassPermissionsMode set, or session not launched in bypassPermissions mode)",
+        )
+        return context
       }
       logForDebugging(
         `Applying permission update: Setting mode to '${update.mode}'`,

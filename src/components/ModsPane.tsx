@@ -62,14 +62,26 @@ const boxProps = new Set([
 ])
 const textProps = new Set([
   'color', 'backgroundColor', 'dimColor', 'bold', 'italic', 'underline',
-  'strikethrough', 'inverse', 'wrap',
+  'strikethrough', 'inverse', 'wrap', 'size', 'weight', 'mono', 'tabular', 'dir',
 ])
+const textSizes = new Set(['caption', 'footnote', 'body', 'heading', 'title'])
+const textWeights = new Set(['regular', 'medium', 'semibold', 'bold'])
+// Terminal cells per spacing step, across and down (Space in the declarations).
+const spaceSteps: Readonly<Record<string, readonly [number, number]>> = {
+  xs: [1, 0], sm: [1, 0], md: [2, 1], lg: [3, 1], xl: [4, 2],
+}
+const acrossSpacing = new Set([
+  'columnGap', 'marginX', 'marginLeft', 'marginRight', 'paddingX', 'paddingLeft', 'paddingRight',
+])
+const bothSpacing: Readonly<Record<string, readonly [string, string]>> = {
+  gap: ['columnGap', 'rowGap'], margin: ['marginX', 'marginY'], padding: ['paddingX', 'paddingY'],
+}
 const buttonProps = new Set([
   'key', 'label', 'hotkey', 'action', 'plain', 'dimColor', 'autoFocus', 'variant', 'role',
 ])
 const selectProps = new Set(['key', 'label', 'options', 'value', 'autoFocus'])
 const inputProps = new Set([
-  'key', 'label', 'placeholder', 'value', 'submitLabel', 'autoFocus',
+  'key', 'label', 'placeholder', 'value', 'submitLabel', 'autoFocus', 'rows',
 ])
 const linkProps = new Set(['href', 'label'])
 const codeProps = new Set([
@@ -534,8 +546,9 @@ function validateBoxProps(props: Record<string, unknown>): void {
       throw new TypeError(`Box ${key} must be an integer`)
   }
   for (const key of spacingProps) {
-    if (props[key] !== undefined && (!Number.isInteger(props[key]) || (props[key] as number) < 0))
-      throw new TypeError(`Box ${key} must be a non-negative integer`)
+    if (props[key] !== undefined && !Object.hasOwn(spaceSteps, props[key] as string) &&
+        (!Number.isInteger(props[key]) || (props[key] as number) < 0))
+      throw new TypeError(`Box ${key} must be a non-negative integer or a spacing step (xs, sm, md, lg, xl)`)
   }
   for (const key of ['flexGrow', 'flexShrink']) {
     if (props[key] !== undefined && (typeof props[key] !== 'number' || !Number.isFinite(props[key]) || (props[key] as number) < 0))
@@ -577,6 +590,14 @@ function validateTextProps(props: Record<string, unknown>): void {
     if (props[key] !== undefined) stringProp(props, key, { singleLine: true })
   if (props.wrap !== undefined && !wrapValues.has(props.wrap as string))
     throw new TypeError('Unsupported Text wrap')
+  booleanProp(props, 'mono')
+  booleanProp(props, 'tabular')
+  if (props.size !== undefined && !textSizes.has(props.size as string))
+    throw new TypeError('Unsupported Text size')
+  if (props.weight !== undefined && !textWeights.has(props.weight as string))
+    throw new TypeError('Unsupported Text weight')
+  if (props.dir !== undefined && props.dir !== 'ltr' && props.dir !== 'rtl')
+    throw new TypeError('Unsupported Text dir')
 }
 
 function validateClientProps(props: Record<string, unknown>): void {
@@ -845,8 +866,11 @@ export function validateModRenderTree(value: unknown, surface: ModRenderSurface 
     } else if (type === 'Input') {
       assertKeys(props, inputProps, 'Input')
       const key = stringProp(props, 'key', { required: true, singleLine: true })!
-      for (const name of ['label', 'placeholder', 'value', 'submitLabel'])
+      if (props.rows !== undefined && (!Number.isInteger(props.rows) || (props.rows as number) < 1))
+        throw new TypeError('Input rows must be a whole number of at least 1')
+      for (const name of ['label', 'placeholder', 'submitLabel'])
         stringProp(props, name, { singleLine: true })
+      stringProp(props, 'value', { singleLine: (props.rows ?? 1) === 1 })
       trueProp(props, 'autoFocus')
       hasAutoFocus ||= props.autoFocus === true
       validatePress(node.press, type)
@@ -1836,14 +1860,28 @@ function groupOf(node: RenderElement): HoverGroup | undefined {
 
 function terminalStyles(value: Record<string, unknown>): Record<string, unknown> {
   const style = { ...value }
+  for (const key of spacingProps) {
+    const step = Object.hasOwn(spaceSteps, style[key] as string) ? spaceSteps[style[key] as string] : undefined
+    if (!step) continue
+    delete style[key]
+    const both = bothSpacing[key]
+    if (!both) style[key] = acrossSpacing.has(key) ? step[0] : step[1]
+    else {
+      if (!Object.hasOwn(value, both[0])) style[both[0]] = step[0]
+      if (!Object.hasOwn(value, both[1])) style[both[1]] = step[1]
+    }
+  }
+  // The terminal has one size and face and lays digits and direction out itself.
+  const { size: _size, mono: _mono, tabular: _tabular, dir: _dir, weight, ...rest } = style
+  if (weight !== undefined) rest.bold = weight === 'semibold' || weight === 'bold'
   for (const key of ['color', 'backgroundColor', 'borderColor']) {
-    const color = style[key]
+    const color = rest[key]
     // Own keys only: a name such as 'valueOf' would otherwise resolve to a
     // function through the prototype chain and break rendering.
     if (typeof color === 'string' && Object.hasOwn(ansiColors, color))
-      style[key] = ansiColors[color]
+      rest[key] = ansiColors[color]
   }
-  return style
+  return rest
 }
 
 function rawTextStyles(value: Record<string, unknown>, theme: Theme): Record<string, unknown> {
@@ -2803,6 +2841,11 @@ function ModSelect({
   const press = node.press!
   const owner = pane.owner
   const elementRef = useElementRegistration(keyElements, node.group?.plugin ?? press.plugin, key, focusElements)
+  const boxRef = React.useRef<DOMElement | null>(null)
+  const boxCallback = React.useCallback((element: DOMElement | null) => {
+    boxRef.current = element
+    elementRef(element)
+  }, [elementRef])
   const select = () => {
     if (!openRef.current) { changeOpen(true); return }
     if (!inputAllowed || pane.drawing === undefined) return
@@ -2862,9 +2905,17 @@ function ModSelect({
   const first = Math.max(0, index - 7)
   const shown = open ? options.slice(first, first + 8) : []
   const hidden = open ? options.length - first - shown.length : 0
+  // A Select inside a fixed-height row (the diff panel's one-row header) has no rows
+  // for the open list, which would draw every option onto the header line; list
+  // them across the header line instead.
+  let room = Infinity
+  for (let parent = boxRef.current?.parentNode; parent; parent = parent.parentNode) {
+    if (typeof parent.style.height === 'number') { room = parent.style.height; break }
+  }
+  const cramped = open && room < 1 + shown.length + (hidden > 0 ? 1 : 0)
   return (
     <Box
-      ref={elementRef}
+      ref={boxCallback}
       flexDirection="column"
       flexShrink={0}
       tabIndex={pane.focused ? 0 : -1}
@@ -2881,11 +2932,14 @@ function ModSelect({
     >
       <Text wrap="truncate-end">
         <Text bold={focused}>{props.label === undefined ? '' : `${String(props.label)}: `}</Text>
-        {option === undefined ? <Text dimColor>none</Text> : <Text inverse={focused && !open}>{option.label ?? option.value}</Text>}
+        {cramped
+          ? shown.map((option, offset) => <Text key={option.value} inverse={first + offset === index}>{offset === 0 ? '' : '  '}{option.label ?? option.value}</Text>)
+          : option === undefined ? <Text dimColor>none</Text> : <Text inverse={focused && !open}>{option.label ?? option.value}</Text>}
+        {cramped && hidden > 0 && <Text dimColor>  … {hidden} more</Text>}
         <Text dimColor>{open ? ' ▴' : ' ▾'}</Text>
       </Text>
-      {shown.map((option, offset) => <Text key={option.value} inverse={first + offset === index} wrap="truncate-end">  {option.label ?? option.value}</Text>)}
-      {hidden > 0 && <Text dimColor>  … {hidden} more</Text>}
+      {!cramped && shown.map((option, offset) => <Text key={option.value} inverse={first + offset === index} wrap="truncate-end">  {option.label ?? option.value}</Text>)}
+      {!cramped && hidden > 0 && <Text dimColor>  … {hidden} more</Text>}
     </Box>
   )
 }
@@ -3031,7 +3085,24 @@ function ModInput({
     if (event.key === 'return') {
       event.preventDefault()
       event.stopPropagation()
-      send('submit', valueRef.current)
+      const cursor = cursorRef.current
+      // Several rows: Shift+Enter, or a backslash before Enter, starts a new line.
+      if (rows > 1 && event.shift)
+        replace(valueRef.current.slice(0, cursor) + '\n' + valueRef.current.slice(cursor), cursor + 1)
+      else if (rows > 1 && valueRef.current[cursor - 1] === '\\')
+        replace(valueRef.current.slice(0, cursor - 1) + '\n' + valueRef.current.slice(cursor), cursor)
+      else send('submit', valueRef.current)
+      return
+    }
+    if (rows > 1 && !event.ctrl && !event.meta && !event.superKey && (event.key === 'up' || event.key === 'down')) {
+      const current = Cursor.fromText(valueRef.current, columns, cursorRef.current)
+      const moved = event.key === 'up' ? current.up() : current.down()
+      // On the first or last row, the key moves to the element before or after.
+      if (moved.offset === current.offset) return
+      event.preventDefault()
+      event.stopPropagation()
+      cursorRef.current = moved.offset
+      setCursor(cursorRef.current)
       return
     }
     if (!event.ctrl && !event.meta && !event.superKey &&
@@ -3058,6 +3129,7 @@ function ModInput({
       replace(valueRef.current.slice(0, cursor) + valueRef.current.slice(nextBoundary(cursor)), cursor)
     }
   }
+  const rows = (props.rows as number | undefined) ?? 1
   const label = props.label === undefined ? '' : `${String(props.label)}: `
   const hint = ` ⏎ ${String(props.submitLabel ?? 'submit')}`
   const columns = Math.max(12, pane.bodyColumns - stringWidth(label) - stringWidth(hint))
@@ -3067,7 +3139,7 @@ function ModInput({
   })
   const drawnCursor = Cursor.fromText(value, columns, cursor)
   const text = focused
-    ? showPlaceholder ? renderedPlaceholder ?? '' : drawnCursor.render(' ', '', terminalFocused ? chalk.inverse : text => text)
+    ? showPlaceholder ? renderedPlaceholder ?? '' : drawnCursor.render(' ', '', terminalFocused ? chalk.inverse : text => text, undefined, rows > 1 ? rows : undefined)
     : value || String(props.placeholder ?? '')
   return (
     <Box
@@ -3082,9 +3154,10 @@ function ModInput({
       }}
       onBlur={() => setFocused(false)}
       onKeyDown={handle}
+      {...(rows > 1 ? { height: rows, overflow: 'hidden' as const } : {})}
     >
       {label !== '' && <Text bold={focused}>{label}</Text>}
-      {focused ? <Ansi>{text}</Ansi> : <Text dimColor={!value} wrap="truncate-end">{text}</Text>}
+      {focused ? <Ansi>{text}</Ansi> : <Text dimColor={!value} wrap={rows > 1 ? 'wrap' : 'truncate-end'}>{text}</Text>}
       {focused && <Text dimColor>{hint}</Text>}
     </Box>
   )

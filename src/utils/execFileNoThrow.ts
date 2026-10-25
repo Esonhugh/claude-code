@@ -51,6 +51,8 @@ type ExecFileWithCwdOptions = {
   maxBuffer?: number
   cwd?: string
   env?: NodeJS.ProcessEnv
+  // false: the child gets only `env`, not process.env merged under it.
+  extendEnv?: boolean
   shell?: boolean | string | undefined
   stdin?: 'ignore' | 'inherit' | 'pipe'
   input?: string
@@ -96,6 +98,7 @@ export function execFileNoThrowWithCwd(
     preserveOutputOnError: finalPreserveOutput = true,
     cwd: finalCwd,
     env: finalEnv,
+    extendEnv,
     maxBuffer,
     shell,
     stdin: finalStdin,
@@ -114,6 +117,7 @@ export function execFileNoThrowWithCwd(
       timeout: finalTimeout,
       cwd: finalCwd,
       env: finalEnv,
+      extendEnv,
       shell,
       stdin: finalStdin,
       input: finalInput,

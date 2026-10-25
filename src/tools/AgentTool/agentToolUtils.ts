@@ -1,6 +1,9 @@
 import { feature } from 'bun:bundle'
 import { z } from 'zod/v4'
-import { clearInvokedSkillsForAgent } from '../../bootstrap/state.js'
+import {
+  clearInvokedSkillsForAgent,
+  getIsNonInteractiveSession,
+} from '../../bootstrap/state.js'
 import {
   ALL_AGENT_DISALLOWED_TOOLS,
   ASYNC_AGENT_ALLOWED_TOOLS,
@@ -13,6 +16,11 @@ import {
   logEvent,
 } from '../../services/analytics/index.js'
 import { clearDumpState } from '../../services/api/dumpPrompts.js'
+import {
+  getMcpServerRuleNames,
+  getToolNameForPermissionCheck,
+  mcpInfoFromString,
+} from '../../services/mcp/mcpStringUtils.js'
 import type { AppState } from '../../state/AppState.js'
 import type {
   Tool,
@@ -37,6 +45,7 @@ import {
   updateProgressFromMessage,
 } from '../../tasks/LocalAgentTask/LocalAgentTask.js'
 import { asAgentId } from '../../types/ids.js'
+import type { ClaudeAILimits } from '../../services/claudeAiLimits.js'
 import type { Message as MessageType } from '../../types/message.js'
 import { isAgentSwarmsEnabled } from '../../utils/agentSwarmsEnabled.js'
 import { logForDebugging } from '../../utils/debug.js'
@@ -50,6 +59,8 @@ import {
 } from '../../utils/messages.js'
 import type { PermissionMode } from '../../utils/permissions/PermissionMode.js'
 import { permissionRuleValueFromString } from '../../utils/permissions/permissionRuleParser.js'
+import { normalizeSubagentMessage } from '../../utils/queryHelpers.js'
+import { enqueueSdkEvent } from '../../utils/sdkEventQueue.js'
 import {
   buildTranscriptForClassifier,
   classifyYoloAction,
@@ -59,7 +70,15 @@ import { isInProcessTeammate } from '../../utils/teammateContext.js'
 import { getTokenCountFromUsage } from '../../utils/tokens.js'
 import { EXIT_PLAN_MODE_V2_TOOL_NAME } from '../ExitPlanModeTool/constants.js'
 import { SYNTHETIC_OUTPUT_TOOL_NAME } from '../SyntheticOutputTool/SyntheticOutputTool.js'
-import { AGENT_TOOL_NAME, LEGACY_AGENT_TOOL_NAME } from './constants.js'
+import {
+  subagentResultText,
+  takeSubagentHandbackResult,
+} from '../../utils/subagentHandback.js'
+import {
+  AGENT_TOOL_NAME,
+  LEGACY_AGENT_TOOL_NAME,
+  ONE_SHOT_BUILTIN_AGENT_TYPES,
+} from './constants.js'
 import type { AgentDefinition } from './loadAgentsDir.js'
 import { parkAgentForChildren } from './backgroundOwner.js'
 import { MAX_SUBAGENT_DEPTH } from './subagentDepth.js'
@@ -190,9 +209,41 @@ export function resolveAgentTools(
     }) ?? [],
   )
 
+  // MCP server-level specs (mcp__server, mcp__server__*, mcp__*) remove every
+  // tool of that server, or every MCP tool. Like deny rules, they match both the
+  // first "__" segment of the tool name and the tool's whole server name.
+  let disallowsAllMcp = false
+  const disallowedMcpServers = new Set<string>()
+  for (const toolName of disallowedToolSet) {
+    const info = mcpInfoFromString(toolName)
+    if (info && (info.toolName === undefined || info.toolName === '*')) {
+      if (info.serverName === '*') disallowsAllMcp = true
+      else disallowedMcpServers.add(info.serverName)
+    }
+  }
+  const isDisallowed = (tool: Tool): boolean => {
+    const permissionName = getToolNameForPermissionCheck(tool)
+    if (
+      disallowedToolSet.has(tool.name) ||
+      disallowedToolSet.has(permissionName)
+    ) {
+      return true
+    }
+    const serverName = mcpInfoFromString(permissionName)?.serverName
+    if (
+      serverName !== undefined &&
+      (disallowsAllMcp || disallowedMcpServers.has(serverName))
+    ) {
+      return true
+    }
+    return getMcpServerRuleNames(tool).some(
+      name => disallowedToolSet.has(name) || disallowedToolSet.has(`${name}__*`),
+    )
+  }
+
   // Filter available tools based on disallowed list
   const allowedAvailableTools = filteredAvailableTools.filter(
-    tool => !disallowedToolSet.has(tool.name),
+    tool => !isDisallowed(tool),
   )
 
   // If tools is undefined or ['*'], allow all tools (after filtering disallowed)
@@ -297,6 +348,13 @@ export const agentToolResultSchema = lazySchema(() =>
         .nullable(),
     }),
     structured_output: z.unknown().optional(),
+    // How a SubagentHandback run's report reached this result: 'send' and
+    // 'flagged' hold the delivered report (a flagged one under its review
+    // warning, the first harness note); 'withheld' delivered nothing.
+    handback: z.enum(['send', 'flagged', 'withheld']).optional(),
+    harnessNoteCount: z.number().optional(),
+    harnessTailCount: z.number().optional(),
+    harnessSectionHash: z.string().optional(),
   }),
 )
 
@@ -311,13 +369,26 @@ function structuredOutputFromMessages(messages: MessageType[]): unknown {
     : undefined
 }
 
+// Like official 2.1.303, a usage-limit 429 keeps its quota state so a workflow can wait for the reset.
+export class AgentApiError extends Error {
+  constructor(
+    message: string,
+    readonly quotaLimits: ClaudeAILimits | undefined,
+  ) {
+    super(message)
+  }
+}
+
 export function getAgentTerminalError(messages: MessageType[]): Error | undefined {
   const lastAssistantMessage = getLastAssistantMessage(messages)
   if (!lastAssistantMessage?.isApiErrorMessage && !lastAssistantMessage?.error) {
     return undefined
   }
   const message = extractTextContent(lastAssistantMessage.message.content, '\n').trim()
-  return new Error(message || errorMessage(lastAssistantMessage.error) || 'Agent API request failed')
+  return new AgentApiError(
+    message || errorMessage(lastAssistantMessage.error) || 'Agent API request failed',
+    lastAssistantMessage.error === 'rate_limit' ? lastAssistantMessage.quotaLimits : undefined,
+  )
 }
 
 export function countToolUses(messages: MessageType[]): number {
@@ -339,7 +410,7 @@ type PendingToolUse = {
   name?: string
 }
 
-function findUnresolvedToolUses(messages: MessageType[]): PendingToolUse[] {
+export function findUnresolvedToolUses(messages: MessageType[]): PendingToolUse[] {
   const pendingToolUses = new Map<string, PendingToolUse>()
   const unmatchableToolUses: PendingToolUse[] = []
 
@@ -460,11 +531,17 @@ export function finalizeAgentTool(
   }
 
   const structuredOutput = structuredOutputFromMessages(agentMessages)
+  // A hand-back run's result is the report it delivered, never its last text.
+  const handback = takeSubagentHandbackResult(
+    agentId,
+    !ONE_SHOT_BUILTIN_AGENT_TYPES.has(agentType),
+  )
   return {
     agentId,
     agentType,
     // @ts-ignore - recovered code
     content,
+    ...handback,
     totalDurationMs: Date.now() - startTime,
     totalTokens,
     totalToolUseCount,
@@ -715,6 +792,12 @@ export async function runAsyncAgentLifecycle({
         rootSetAppState,
       )
       reportObservedAgentProgress(toolUseContext, message)
+      // SDK consumers see a background agent's messages live, like official.
+      if (getIsNonInteractiveSession() && toolUseContext.toolUseId) {
+        for (const sdkMessage of normalizeSubagentMessage(message, toolUseContext.toolUseId)) {
+          enqueueSdkEvent(sdkMessage)
+        }
+      }
       const lastToolName = getLastToolUseName(message)
       if (lastToolName) {
         emitTaskProgress(
@@ -749,9 +832,9 @@ export async function runAsyncAgentLifecycle({
     completeAsyncAgent(agentResult, rootSetAppState)
     if (parkAgentForChildren({ taskId, toolUseContext, resume, getWorktreeResult })) return
 
-    let finalMessage = extractTextContent(agentResult.content, '\n')
+    let finalMessage = subagentResultText(agentResult)
 
-    if (feature('TRANSCRIPT_CLASSIFIER')) {
+    if (feature('TRANSCRIPT_CLASSIFIER') && agentResult.handback === undefined) {
       try {
         const handoffWarning = await classifyHandoffIfNeeded({
           agentMessages,

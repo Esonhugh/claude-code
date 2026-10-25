@@ -82,6 +82,12 @@ export function getEnabledFeatures(value = process.env.CLAUDE_CODE_RECOVER_FEATU
     'UDS_INBOX',
     'KAIROS_CHANNELS',
     'TRANSCRIPT_CLASSIFIER',
+    'MONITOR_TOOL',
+    'EXTRACT_MEMORIES',
+    'AWAY_SUMMARY',
+    'DIRECT_CONNECT',
+    'BG_SESSIONS',
+    'DAEMON',
     ...(value ?? '')
       .split(',')
       .map(feature => feature.trim())
@@ -192,6 +198,13 @@ const recoveryResolver = embedSharpNative => ({
 
     pluginBuild.onResolve({ filter: /^bun:bundle$/ }, () => ({
       path: path.join(projectDir, 'scripts/shims/bun-bundle.js'),
+    }));
+
+    // Left for `bun build --compile` to resolve natively; the Node build
+    // never loads it (SearchMemory is disabled outside Bun).
+    pluginBuild.onResolve({ filter: /^bun:sqlite$/ }, args => ({
+      path: args.path,
+      external: true,
     }));
 
     pluginBuild.onResolve({ filter: /^bun:ffi$/ }, () => ({

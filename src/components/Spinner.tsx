@@ -48,6 +48,10 @@ import { TeammateSpinnerTree } from './Spinner/TeammateSpinnerTree.js'
 import { useAnimationFrame } from '../ink.js'
 import { getGlobalConfig } from '../utils/config.js'
 import { isAnt } from 'src/utils/userType.js'
+import { useInterval } from 'usehooks-ts'
+import { formatAPIError } from '../services/api/errorUtils.js'
+import type { SystemAPIErrorMessage } from '../types/message.js'
+import { truncateToWidth } from '../utils/truncate.js'
 
 export type { SpinnerMode } from './Spinner/index.js'
 
@@ -88,6 +92,8 @@ type Props = {
   hasActiveTools?: boolean
   /** Leader's turn has completed (no active query). Used to suppress stall-red spinner when only teammates are running. */
   leaderIsIdle?: boolean
+  /** Latest retry of the in-flight API request; replaces the spinner row while waiting. */
+  apiRetry?: SystemAPIErrorMessage | null
 }
 
 // Thin wrapper: branches on isBriefOnly so the two variants have independent
@@ -142,6 +148,7 @@ function SpinnerWithVerbInner({
   verbose,
   hasActiveTools = false,
   leaderIsIdle = false,
+  apiRetry,
 }: Props): React.ReactNode {
   const settings = useSettings()
   const reducedMotion = settings.prefersReducedMotion ?? false
@@ -304,6 +311,10 @@ function SpinnerWithVerbInner({
     ttftText = computeTtftText(apiMetricsRef.current)
   }
 
+  if (apiRetry && !leaderIsIdle && !foregroundedTeammate) {
+    return <ApiRetryRow key={apiRetry.uuid} retry={apiRetry} columns={columns} />
+  }
+
   // When leader is idle but teammates are running (and we're viewing the leader),
   // show a static dim idle display instead of the animated spinner — otherwise
   // useStalledAnimation detects no new tokens after 3s and turns the spinner red.
@@ -324,6 +335,11 @@ function SpinnerWithVerbInner({
             leaderTokenCount={leaderTokenCount}
             leaderIdleText="Idle"
           />
+        )}
+        {!showSpinnerTree && showExpandedTodos && tasksV2 && tasksV2.length > 0 && (
+          <MessageResponse>
+            <TaskListV2 tasks={tasksV2} />
+          </MessageResponse>
         )}
       </Box>
     )
@@ -348,6 +364,11 @@ function SpinnerWithVerbInner({
             leaderIdleText={leaderIsIdle ? 'Idle' : undefined}
             leaderTokenCount={leaderTokenCount}
           />
+        )}
+        {!showSpinnerTree && showExpandedTodos && tasksV2 && tasksV2.length > 0 && (
+          <MessageResponse>
+            <TaskListV2 tasks={tasksV2} />
+          </MessageResponse>
         )}
       </Box>
     )
@@ -674,5 +695,33 @@ function findNextPendingTask(tasks: Task[] | undefined): Task | undefined {
   return (
     pendingTasks.find(t => !t.blockedBy.some(id => unresolvedIds.has(id))) ??
     pendingTasks[0]
+  )
+}
+
+export function ApiRetryRow({
+  retry,
+  columns,
+}: {
+  retry: SystemAPIErrorMessage
+  columns: number
+}): React.ReactNode {
+  const [elapsedMs, setElapsedMs] = useState(0)
+  const remainingMs = Math.max(0, retry.retryInMs - elapsedMs)
+  useInterval(() => setElapsedMs(ms => ms + 1000), remainingMs > 0 ? 1000 : null)
+
+  const detail = ` \u00B7 Retrying in ${Math.ceil(remainingMs / 1000)}s \u00B7 attempt ${retry.retryAttempt}/${retry.maxRetries}`
+  const showError = retry.retryAttempt >= Math.min(3, retry.maxRetries)
+  const label = showError ? formatAPIError(retry.error as any) : 'API error'
+  const labelWidth = Math.max(10, columns - 2 - stringWidth(detail) - 2)
+  return (
+    <Box flexDirection="row" marginTop={1} width="100%">
+      <Box width={2} flexShrink={0}>
+        <Text color="error">{TEARDROP_ASTERISK}</Text>
+      </Box>
+      <Box flexShrink={1}>
+        <Text color="error">{truncateToWidth(label.replace(/\s+/g, ' '), labelWidth)}</Text>
+        <Text dimColor>{detail}</Text>
+      </Box>
+    </Box>
   )
 }

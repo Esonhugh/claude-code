@@ -30,11 +30,11 @@ async function until(check:()=>boolean){const deadline=Date.now()+1500;while(!ch
 function contents(node:DOMNode):string{return node.nodeName==='#text'?node.nodeValue:node.childNodes.map(contents).join('')}
 function texts(node:DOMNode):DOMElement[]{return node.nodeName==='#text'?[]:[...(['ink-text','ink-virtual-text'].includes(node.nodeName)?[node]:[]),...node.childNodes.flatMap(texts)]}
 const options=Array.from({length:12},(_,i)=>({value:'v'+i,label:i===0?'Zero':i===1?'Beta':i===2?'Beta 2':'Item '+i}))
-async function mount(initial:Record<string,unknown>={},respond:(value?:string)=>Promise<unknown>=async value=>({element:'pick',value}),isWorking=false){
+async function mount(initial:Record<string,unknown>={},respond:(value?:string)=>Promise<unknown>=async value=>({element:'pick',value}),isWorking=false,oneRow=false){
  const stdin=new Input(),stdout=new Output(),owner={};let completed=0,reorder:()=>void=()=>{};let props={value:'v0',options,...initial};const events:{kind:string;value?:string}[]=[]
  let pane:ModUiPane={id:'select',plugin:'fixture',owner,title:'Select',visible:true,shown:true,placement:'dock',focused:true,focusedElement:'pick',closeOnEscape:true,holdToasts:false,scrollOffset:0,bodyRows:34,bodyColumns:71,revision:0,contentRows:1,drawing:1}
  function Observer(){const {internal_eventEmitter}=useStdin();useLayoutEffect(()=>{const observe=()=>queueMicrotask(()=>{completed++});reorder=()=>{internal_eventEmitter.removeListener('input',observe);internal_eventEmitter.prependListener('input',observe)};reorder();return()=>{internal_eventEmitter.removeListener('input',observe)}},[internal_eventEmitter]);return null}
- const draw=()=> <><Observer/><ModsPane isWorking={isWorking} pane={{...pane,tree:{type:'Box',props:{flexDirection:'column'},children:[{type:'Select',props:{key:'pick',label:'Rich',...props},press:{plugin:'fixture',handle:1}},{type:'Button',props:{key:'tail',label:'Tail',hotkey:'b'},press:{plugin:'fixture',handle:2}}]}}}
+ const draw=()=> <><Observer/><ModsPane isWorking={isWorking} pane={{...pane,tree:{type:'Box',props:{flexDirection:'column'},children:[oneRow?{type:'Box',props:{flexDirection:'row',height:1},children:[{type:'Select',props:{key:'pick',label:'Rich',...props},press:{plugin:'fixture',handle:1}}]}:{type:'Select',props:{key:'pick',label:'Rich',...props},press:{plugin:'fixture',handle:1}},{type:'Button',props:{key:'tail',label:'Tail',hotkey:'b'},press:{plugin:'fixture',handle:2}}]}}}
   onFocus={async(_pane,element)=>({focused:element!==undefined,element,revision:pane.revision})} onClose={async()=>({})} onScroll={async()=>({})}
   onInteract={async(_pane,_drawing,_callback,kind,_element,value)=>{events.push({kind,value});return respond(value)}}/></>
  const instance=await render(draw(),{stdin:stdin as never,stdout:stdout as never,exitOnCtrlC:false,patchConsole:false})
@@ -47,6 +47,11 @@ async function mount(initial:Record<string,unknown>={},respond:(value?:string)=>
 test('Select opens on focus with official label, eight rows and remaining count',async()=>{
  const h=await mount()
  try{await until(()=>h.find('Rich: ')?.textStyles?.bold===true);expect(h.find(' ▴')).toBeDefined();expect(h.find('  Zero')?.textStyles?.inverse).toBe(true);expect(h.find('Zero')?.textStyles?.inverse).not.toBe(true);expect(h.find('  Item 7')).toBeDefined();expect(h.find('  Item 8')).toBeUndefined();expect(String(h.find('  … 4 more')?.textStyles?.color)).toBe(getTheme('dark').inactive)}finally{h.dispose()}
+})
+function top(node:DOMElement|undefined):number{let y=0;for(let n:DOMElement|undefined=node;n;n=n.parentNode as DOMElement|undefined)y+=n.yogaNode?.getComputedTop()??0;return y}
+test('Select opened inside a one-row header lists its options across the header line',async()=>{
+ const h=await mount({},undefined,false,true)
+ try{await until(()=>h.find(' ▴')!==undefined);const header=top(h.find(' ▴'));expect(top(h.find('Zero'))).toBe(header);expect(h.find('Zero')?.textStyles?.inverse).toBe(true);expect(h.find('  Zero')).toBeUndefined();expect(top(h.find('  Beta'))).toBe(header);expect(h.find('  … 4 more')).toBeDefined();await h.raw('\u001b[B');await until(()=>h.find('  Beta')?.textStyles?.inverse===true)}finally{h.dispose()}
 })
 test('Select arrows move highlight without changing the picked header; Enter picks and closes',async()=>{
  const h=await mount()

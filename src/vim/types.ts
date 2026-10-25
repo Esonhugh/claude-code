@@ -49,6 +49,12 @@ export type TextObjScope = 'inner' | 'around'
 export type VimState =
   | { mode: 'INSERT'; insertedText: string }
   | { mode: 'NORMAL'; command: CommandState }
+  | {
+      mode: 'VISUAL'
+      linewise: boolean
+      anchor: number
+      command: VisualCommandState
+    }
 
 /**
  * Command state machine for NORMAL mode.
@@ -73,6 +79,18 @@ export type CommandState =
   | { type: 'operatorG'; op: Operator; count: number }
   | { type: 'replace'; count: number }
   | { type: 'indent'; dir: '>' | '<'; count: number }
+
+/**
+ * Pending command in VISUAL mode. Operators act on the selection right away,
+ * so only motion prefixes and literal-char commands need state.
+ */
+export type VisualCommandState =
+  | { type: 'idle' }
+  | { type: 'count'; digits: string }
+  | { type: 'find'; find: FindType; count: number }
+  | { type: 'g'; count: number }
+  | { type: 'replace' }
+  | { type: 'textObj'; scope: TextObjScope }
 
 /**
  * Persistent state that survives across commands.
@@ -146,6 +164,7 @@ export const SIMPLE_MOTIONS = new Set([
   '0',
   '^',
   '$', // Line positions
+  '%', // Matching bracket
 ])
 
 export const FIND_KEYS = new Set(['f', 'F', 't', 'T'])

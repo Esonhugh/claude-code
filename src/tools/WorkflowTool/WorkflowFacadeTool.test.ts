@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { afterAll } from 'bun:test'
 import { readFileSync } from 'node:fs'
-import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
+import { access, mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -15,6 +15,12 @@ import {
   setSessionSettingsCache,
 } from '../../utils/settings/settingsCache.js'
 import { WorkflowFacadeTool, normalizeWorkflowFacadeInput } from './WorkflowFacadeTool.js'
+import { workflowSessionDir } from './workflowRunSessions.js'
+import { WORKFLOW_SUBAGENT_TEXT_SYSTEM_PROMPT } from './workflowScriptRuntime.js'
+
+// The provenance frame is covered by workflowPromptProvenance.test.ts and its own runtime scenario;
+// the fake agents here match on raw prompts.
+process.env.CLAUDE_CODE_WORKFLOW_PROMPT_PROVENANCE = '0'
 
 const originalSettings = getSessionSettingsCache()
 afterAll(() => {
@@ -28,12 +34,10 @@ const workflowFacadeSource = readFileSync(
 )
 assert.match(workflowFacadeSource, /ONLY call this tool when the user has explicitly opted into multi-agent orchestration/)
 assert.match(workflowFacadeSource, /a task that would merely benefit from a workflow does not count/)
-assert.match(workflowFacadeSource, /do not call this tool/)
-assert.match(workflowFacadeSource, /avoid workflow/)
-assert.match(workflowFacadeSource, /must start with an uncommented/)
-assert.match(workflowFacadeSource, /export const meta =/)
-assert.match(workflowFacadeSource, /Phase entries must be objects with a string/)
-assert.match(workflowFacadeSource, /Do not comment out the meta export/)
+assert.match(workflowFacadeSource, /do NOT call this tool/)
+assert.match(workflowFacadeSource, /export const meta = \{\.\.\.\}/)
+assert.match(workflowFacadeSource, /PURE LITERAL/)
+assert.match(workflowFacadeSource, /one \\`\{ title, detail\? \}\\` per phase\(\) call, titles matched exactly/)
 assert.match(workflowFacadeSource, /Pass the script inline via/)
 assert.match(workflowFacadeSource, /selects a saved workflow/)
 assert.doesNotMatch(workflowFacadeSource, /top-level.*name.*required separately from.*meta\.name/)
@@ -142,7 +146,13 @@ setSessionSettingsCache({ settings: { disableWorkflows: true }, errors: [] })
 assert.equal(WorkflowFacadeTool.isEnabled(), false)
 setSessionSettingsCache({ settings: { enableWorkflows: true }, errors: [] })
 assert.equal(WorkflowFacadeTool.isEnabled(), true)
-assert.match(await WorkflowFacadeTool.prompt(), /default workflow size guideline: medium — keep workflows under 10 agents/)
+// Official 2.1.303 prompt: the short tool description, the pointer to the authoring skill, then the size guideline.
+const facadePrompt = await WorkflowFacadeTool.prompt()
+assert.ok(facadePrompt.startsWith('Execute a workflow script that orchestrates multiple subagents deterministically. Workflows run in the background — this tool returns immediately with a task ID, and a <task-notification> arrives when the workflow completes. Use /workflows to watch live progress.\n\n'))
+assert.match(facadePrompt, /Use the Agent tool \(if available\) for individual subagents/)
+assert.match(facadePrompt, /\n\nBefore writing a script, load the `workflow-authoring` skill — the workflow authoring reference: script API and gotchas, resume, the \*\*Ultracode\*\* section, quality patterns, worked examples\.\n\n/)
+assert.match(facadePrompt, /default workflow size guideline: medium — keep workflows under 10 agents/)
+assert.doesNotMatch(facadePrompt, /# Workflow authoring reference|legacy workflow DSL|avoid workflow orchestration/)
 setSessionSettingsCache({ settings: { enableWorkflows: true, planModeAvailable: true }, errors: [] })
 assert.equal(WorkflowFacadeTool.shouldDefer, true)
 assert.doesNotThrow(() => WorkflowFacadeTool.inputSchema.parse({
@@ -163,6 +173,9 @@ assert.deepEqual(
 )
 
 const tempRoot = await mkdtemp(join(tmpdir(), 'workflow-facade-test-'))
+process.env.CLAUDE_CONFIG_DIR = join(tempRoot, 'config')
+// Like official 2.1.303, run records live under the session directory, not the working directory.
+const persistedRunsDir = join(workflowSessionDir(tempRoot), 'workflows')
 await mkdir(join(tempRoot, '.claude', 'workflows'), { recursive: true })
 const permissionScriptPath = join(tempRoot, 'permission-preview.js')
 await writeFile(
@@ -244,7 +257,7 @@ assert.match(savedPermissionPreview.updatedInput?.script as string, /export cons
 assert.deepEqual(savedPermissionPreview.updatedInput?.plan, {
   name: 'saved-preview',
   description: 'Saved workflow preview.',
-  phases: [{ title: 'Scope', detail: 'Scope saved args', prompt: "'saved preview ' + args", displayName: 'scope' }],
+  phases: [{ title: 'Scope', detail: 'Scope saved args', prompts: ['saved preview'], agents: 1 }],
   runScriptSnapshot: `export const meta = {
     name: 'saved-preview',
     description: 'Saved workflow preview.',
@@ -268,7 +281,7 @@ const setState = (updater: (prev: AppState) => AppState): void => {
   state = updater(state)
 }
 const launchedPrompts: string[] = []
-const launchedAgents: Array<{ description: string; prompt: string; mode?: string; disableNestedAgentTools?: boolean }> = []
+const launchedAgents: Array<{ description: string; prompt: string; mode?: string; disableNestedAgentTools?: boolean; workflowAgentSystemPrompt?: ToolUseContext['workflowAgentSystemPrompt'] }> = []
 let hangNextAgent = false
 const context = {
   getCwd: () => tempRoot,
@@ -287,6 +300,7 @@ const context = {
             prompt: input.prompt,
             mode: input.mode,
             disableNestedAgentTools: agentContext.options.disableNestedAgentTools,
+            workflowAgentSystemPrompt: agentContext.workflowAgentSystemPrompt,
           })
           if (hangNextAgent) {
             hangNextAgent = false
@@ -383,19 +397,21 @@ const inlineRun = await WorkflowFacadeTool.call(
 
 assert.match(String(inlineRun.data), /Workflow launched in background\. Task ID: w/)
 assert.match(String(inlineRun.data), /Run ID: wf_/)
-assert.match(String(inlineRun.data), /Workflow\({scriptPath: ".*workflow\.js", resumeFromRunId: "wf_[^"]+"}\)/)
+assert.match(String(inlineRun.data), /Workflow\({scriptPath: ".*\/workflows\/scripts\/workflow-wf_[^"]+\.js", resumeFromRunId: "wf_[^"]+"}\)/)
 assert.deepEqual(launchedPrompts, ['inline topic=facade'])
 const taskId = String(inlineRun.data).match(/Task ID: (\S+)/)?.[1]
 const workflowRunId = String(inlineRun.data).match(/Run ID: (\S+)/)?.[1]
 assert.ok(taskId)
 assert.ok(workflowRunId)
 const session = JSON.parse(
-  await readFile(join(tempRoot, '.claude', 'workflow-runs', workflowRunId, 'session.json'), 'utf8'),
+  await readFile(join(persistedRunsDir, `${workflowRunId}.json`), 'utf8'),
 )
 assert.equal(session.taskId, taskId)
 assert.equal(session.workflowRunId, workflowRunId)
-assert.match(session.scriptPath, /workflow\.js$/)
+assert.match(session.scriptPath, /\/workflow-wf_[^/]+\.js$/)
+assert.equal(session.runId, workflowRunId)
 assert.deepEqual(session.runArgs, { topic: 'facade' })
+await assert.rejects(access(join(tempRoot, '.claude', 'workflow-runs')), { code: 'ENOENT' })
 
 launchedPrompts.length = 0
 const officialRun = await WorkflowFacadeTool.call(
@@ -419,7 +435,7 @@ assert.equal(launchedAgents.at(-1)?.disableNestedAgentTools, true)
 const officialWorkflowRunId = String(officialRun.data).match(/Run ID: (\S+)/)?.[1]
 assert.ok(officialWorkflowRunId)
 const officialSession = JSON.parse(
-  await readFile(join(tempRoot, '.claude', 'workflow-runs', officialWorkflowRunId, 'session.json'), 'utf8'),
+  await readFile(join(persistedRunsDir, `${officialWorkflowRunId}.json`), 'utf8'),
 )
 assert.deepEqual(officialSession.meta, {
   name: 'official-inline',
@@ -432,6 +448,9 @@ const officialInlineTask = Object.values(state.tasks).find(
 )!
 assert.deepEqual(officialInlineTask.phases[0]?.agentIds, ['scan'])
 assert.deepEqual(launchedPrompts, ['scan meta'])
+// Script-runtime agents get the official workflow-subagent system prompt; the legacy DSL path above does not.
+assert.deepEqual(launchedAgents.at(-1)?.workflowAgentSystemPrompt, { replace: WORKFLOW_SUBAGENT_TEXT_SYSTEM_PROMPT })
+assert.equal(launchedAgents[0]?.workflowAgentSystemPrompt, undefined)
 
 launchedPrompts.length = 0
 launchedAgents.length = 0
@@ -486,7 +505,7 @@ assert.deepEqual(launchedPrompts, ['child runtime child', 'parent runtime child'
 const childWorkflowRunId = String(childWorkflowRun.data).match(/Run ID: (\S+)/)?.[1]
 assert.ok(childWorkflowRunId)
 const childWorkflowSession = JSON.parse(
-  await readFile(join(tempRoot, '.claude', 'workflow-runs', childWorkflowRunId, 'session.json'), 'utf8'),
+  await readFile(join(persistedRunsDir, `${childWorkflowRunId}.json`), 'utf8'),
 )
 assert.equal(childWorkflowSession.resumeCacheEntries.length, 2)
 const childParentTask = Object.values(state.tasks).find(
@@ -582,7 +601,7 @@ assert.deepEqual(launchedPrompts, [])
 const cachedWorkflowRunId = String(cachedRerun.data).match(/Run ID: (\S+)/)?.[1]
 assert.ok(cachedWorkflowRunId)
 const cachedSession = JSON.parse(
-  await readFile(join(tempRoot, '.claude', 'workflow-runs', cachedWorkflowRunId, 'session.json'), 'utf8'),
+  await readFile(join(persistedRunsDir, `${cachedWorkflowRunId}.json`), 'utf8'),
 )
 assert.equal(cachedSession.resumeFromRunId, officialWorkflowRunId)
 assert.equal(cachedSession.events.some((event: { type: string; cacheHit?: boolean }) => event.type === 'workflow_agent' && event.cacheHit), true)
@@ -611,7 +630,7 @@ assert.match(String(savedCacheRun.data), /Workflow launched in background\. Task
 assert.deepEqual(launchedPrompts, ['saved cache meta'])
 const savedCacheWorkflowRunId = String(savedCacheRun.data).match(/Run ID: (\S+)/)?.[1]
 assert.ok(savedCacheWorkflowRunId)
-const savedCacheSessionPath = join(tempRoot, '.claude', 'workflow-runs', savedCacheWorkflowRunId, 'session.json')
+const savedCacheSessionPath = join(persistedRunsDir, `${savedCacheWorkflowRunId}.json`)
 const savedCacheSession = JSON.parse(await readFile(savedCacheSessionPath, 'utf8'))
 assert.ok(savedCacheSession.transcriptDir)
 await writeFile(
@@ -634,7 +653,7 @@ assert.deepEqual(launchedPrompts, [])
 const savedCachedWorkflowRunId = String(savedCachedRerun.data).match(/Run ID: (\S+)/)?.[1]
 assert.ok(savedCachedWorkflowRunId)
 const savedCachedSession = JSON.parse(
-  await readFile(join(tempRoot, '.claude', 'workflow-runs', savedCachedWorkflowRunId, 'session.json'), 'utf8'),
+  await readFile(join(persistedRunsDir, `${savedCachedWorkflowRunId}.json`), 'utf8'),
 )
 assert.equal(savedCachedSession.resumeFromRunId, savedCacheWorkflowRunId)
 assert.equal(savedCachedSession.events.some((event: { type: string; cacheHit?: boolean }) => event.type === 'workflow_agent' && event.cacheHit), true)
@@ -670,7 +689,7 @@ assert.deepEqual(launchedPrompts, ['prep meta', 'scan meta'])
 const insertedWorkflowRunId = String(insertedStepRerun.data).match(/Run ID: (\S+)/)?.[1]
 assert.ok(insertedWorkflowRunId)
 const insertedSession = JSON.parse(
-  await readFile(join(tempRoot, '.claude', 'workflow-runs', insertedWorkflowRunId, 'session.json'), 'utf8'),
+  await readFile(join(persistedRunsDir, `${insertedWorkflowRunId}.json`), 'utf8'),
 )
 assert.equal(insertedSession.events.filter((event: { type: string; cacheHit?: boolean }) => event.type === 'workflow_agent' && event.cacheHit).length, 0)
 
@@ -687,12 +706,12 @@ const rerun = await WorkflowFacadeTool.call(
 )
 
 assert.match(String(rerun.data), /Workflow launched in background\. Task ID: w/)
-assert.match(String(rerun.data), /Workflow\({scriptPath: ".*workflow\.js", resumeFromRunId: "wf_[^"]+"}\)/)
+assert.match(String(rerun.data), /Workflow\({scriptPath: ".*\/workflow-wf_[^"]+\.js", resumeFromRunId: "wf_[^"]+"}\)/)
 assert.deepEqual(launchedPrompts, ['inline topic=rerun'])
 const rerunWorkflowRunId = String(rerun.data).match(/Run ID: (\S+)/)?.[1]
 assert.ok(rerunWorkflowRunId)
 const rerunSession = JSON.parse(
-  await readFile(join(tempRoot, '.claude', 'workflow-runs', rerunWorkflowRunId, 'session.json'), 'utf8'),
+  await readFile(join(persistedRunsDir, `${rerunWorkflowRunId}.json`), 'utf8'),
 )
 assert.equal(rerunSession.resumeFromRunId, workflowRunId)
 assert.equal(rerunSession.scriptPath, session.scriptPath)
@@ -765,7 +784,7 @@ assert.deepEqual(launchedAgents.map(agent => agent.description), [
 assert.match(launchedAgents[2]!.prompt, /Upstream phase outputs/)
 assert.match(launchedAgents[5]!.prompt, /Vote on claims after review\/refute/)
 const complexSession = JSON.parse(
-  await readFile(join(tempRoot, '.claude', 'workflow-runs', complexWorkflowRunId, 'session.json'), 'utf8'),
+  await readFile(join(persistedRunsDir, `${complexWorkflowRunId}.json`), 'utf8'),
 )
 assert.deepEqual(
   [...new Set(complexSession.events.map((event: { type: string }) => event.type))],
@@ -773,6 +792,131 @@ assert.deepEqual(
 )
 assert.deepEqual(complexSession.runArgs.reviewers, ['cross-check', 'refute'])
 assert.equal(complexSession.results.length, 6)
-assert.match(complexSession.scriptPath, /workflow\.js$/)
+assert.match(complexSession.scriptPath, /\/workflow-wf_[^/]+\.js$/)
+
+// Scenarios that used to run through the fork-only WorkflowTool action tool: saved workflows
+// by name now go through Workflow({ name, args }) like official 2.1.303.
+launchedPrompts.length = 0
+launchedAgents.length = 0
+const deepResearchRun = await WorkflowFacadeTool.call(
+  { name: 'deep-research', args: '分析 claude 的 dynamic workflow 设计原理' },
+  context,
+  async () => ({ behavior: 'allow' }),
+  { message: { id: 'msg_facade_deep_research' } } as never,
+)
+assert.match(String(deepResearchRun.data), /Workflow launched in background\. Task ID: w/)
+const deepResearchTask = Object.values(state.tasks).find(
+  (task): task is LocalWorkflowTaskState => task.type === 'local_workflow' && task.workflowName === 'deep-research',
+)!
+assert.equal(deepResearchTask.status, 'completed')
+assert.equal(deepResearchTask.defaultModel, 'claude-sonnet-4-5')
+assert.equal(deepResearchTask.execution, 'agent')
+assert.ok(launchedPrompts.length > 1)
+assert.match(launchedPrompts[0]!, /Decompose this research question/)
+assert.match(launchedPrompts[0]!, /User input:\n分析 claude 的 dynamic workflow 设计原理/)
+
+await assert.rejects(
+  () => WorkflowFacadeTool.call(
+    { name: 'deep-research', args: '' },
+    context,
+    async () => ({ behavior: 'allow' }),
+    { message: { id: 'msg_facade_empty_deep_research' } } as never,
+  ),
+  /Workflow deep-research requires workflow input/,
+)
+
+const legacyScriptPath = join(tempRoot, '.claude', 'workflows', 'js-run.js')
+await writeFile(
+  legacyScriptPath,
+  `export default workflow({
+    name: 'JS Run Workflow',
+    description: 'Run a JavaScript workflow with args.',
+    defaults: { maxConcurrency: 1, maxAgents: 1, permissionMode: 'plan' },
+    phases: [agent({
+      id: 'run',
+      description: 'Run with user input.',
+      prompt: ({ args }) => 'Use JS args: ' + args,
+    })],
+  })`,
+)
+launchedPrompts.length = 0
+launchedAgents.length = 0
+const legacyRun = await WorkflowFacadeTool.call(
+  { name: 'JS Run Workflow', args: 'topic: DSL', resumeFromRunId: 'wf_prior_js' },
+  context,
+  async () => ({ behavior: 'allow' }),
+  { message: { id: 'msg_facade_legacy_run' } } as never,
+)
+assert.match(String(legacyRun.data), /Workflow launched in background\. Task ID: w/)
+assert.match(String(legacyRun.data), /Run ID: wf_/)
+assert.match(String(legacyRun.data), /To resume after editing the script: Workflow\({scriptPath: ".*js-run\.js", resumeFromRunId: "wf_[^"]+"}\) — completed agents return cached results\./)
+assert.match(String(legacyRun.data), /Use \/workflows to watch live progress\./)
+assert.deepEqual(launchedPrompts, ['Use JS args: topic: DSL'])
+assert.equal(launchedAgents[0]?.mode, 'plan')
+// The legacy DSL runner does not frame its agents; only script-runtime agents do.
+assert.equal(launchedAgents[0]?.workflowAgentSystemPrompt, undefined)
+const legacyTask = Object.values(state.tasks).find(
+  (task): task is LocalWorkflowTaskState => task.type === 'local_workflow' && task.workflowName === 'JS Run Workflow',
+)!
+assert.deepEqual(legacyTask.runtime, { kind: 'javascript-worker', sourcePath: legacyScriptPath, isolated: true })
+assert.equal(legacyTask.sourcePath, legacyScriptPath)
+assert.match(legacyTask.runScriptSnapshot ?? '', /export default workflow/)
+const legacySession = JSON.parse(
+  await readFile(join(persistedRunsDir, `${legacyTask.workflowRunId}.json`), 'utf8'),
+)
+assert.equal(legacySession.taskId, String(legacyRun.data).match(/Task ID: (\S+)/)?.[1])
+assert.equal(legacySession.workflowName, 'JS Run Workflow')
+assert.equal(legacySession.status, 'completed')
+assert.equal(legacySession.runArgs, 'topic: DSL')
+assert.equal(legacySession.resumeFromRunId, 'wf_prior_js')
+assert.equal(legacySession.scriptPath, legacyScriptPath)
+assert.deepEqual(legacySession.runtime, { kind: 'javascript-worker', sourcePath: legacyScriptPath, isolated: true })
+assert.equal(legacySession.sourcePath, legacyScriptPath)
+assert.deepEqual(
+  [...new Set(legacySession.events.map((event: { type: string }) => event.type))],
+  ['workflow_progress', 'workflow_log', 'workflow_phase', 'workflow_agent'],
+)
+assert.equal(legacySession.results.length, 1)
+
+await writeFile(
+  join(tempRoot, '.claude', 'workflows', 'official-parallel.js'),
+  `export const meta = {
+    name: 'official-parallel',
+    description: 'Group official parallel agents under the active phase.',
+    phases: [
+      { title: 'Fanout', detail: 'Run three agents together' },
+      { title: 'After', detail: 'Run a follow-up agent' },
+    ],
+  }
+  phase('Fanout')
+  await parallel([
+    () => agent('parallel a', { label: 'fanout-a' }),
+    () => agent('parallel b', { label: 'fanout-b' }),
+    () => agent('parallel c', { label: 'fanout-c' }),
+  ])
+  phase('After')
+  await agent('parallel after', { label: 'after-agent' })`,
+)
+launchedPrompts.length = 0
+launchedAgents.length = 0
+const officialParallelRun = await WorkflowFacadeTool.call(
+  { name: 'official-parallel' },
+  context,
+  async () => ({ behavior: 'allow' }),
+  { message: { id: 'msg_facade_official_parallel' } } as never,
+)
+assert.match(String(officialParallelRun.data), /Workflow launched in background\. Task ID: w/)
+const officialParallelTask = Object.values(state.tasks).find(
+  (task): task is LocalWorkflowTaskState => task.type === 'local_workflow' && task.workflowName === 'official-parallel',
+)!
+assert.equal(officialParallelTask.agentCount, 4)
+assert.deepEqual(
+  officialParallelTask.phases.map(phase => [phase.id, phase.agentIds]),
+  [
+    ['Fanout', ['fanout-a', 'fanout-b', 'fanout-c']],
+    ['After', ['after-agent']],
+  ],
+)
+assert.equal(launchedPrompts.length, 4)
 
 console.log('WorkflowFacadeTool.test.ts passed')

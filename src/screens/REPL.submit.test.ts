@@ -972,6 +972,7 @@ test('successful same-ID resume resets diff without waiting for identity change'
     restoreAgentFromSession: () => ({}), initialMainThreadAgentDefinition: undefined,
     agentDefinitions: {}, setMainThreadAgentDefinition: noop,
     setAppState: (fn: any) => { state = fn(state) }, computeStandaloneAgentContext: noop,
+    restorePermissionModeForResume: () => ({ mode: 'default' }), savePermissionMode: noop,
     updateSessionName: noop, restoreReadFileState: noop, getOriginalCwd: () => '/repo',
     getCwd: () => '/repo', getUserContext: Object.assign(async () => ({}), { cache: { clear: noop } }),
     resetLoadingState: noop, setAbortController: noop,
@@ -1100,6 +1101,8 @@ function harness({ active = true, gap = 'mods', input = 'submitted', mode = 'pro
     setToolJSX: noop, getToolUseContext: () => ({}), messagesRef: { current: [] },
     mainLoopModel: 'test', ideSelection: { text: 'selection-at-submit' }, setAbortController: noop,
     abortController: undefined, onQuery: async () => {}, setAppState: noop, getQuerySourceForREPL: () => 'repl_main',
+    // REPL mirrors the abortController state into this ref on every render.
+    abortControllerRef: { get current() { return scope.abortController } },
     onBeforeQuery: undefined, canUseTool: undefined, addNotification: noop, setMessages: noop,
     streamModeRef: { current: undefined }, hasInterruptibleToolInProgressRef: { current: false },
     isFullscreenEnvEnabled: () => true,
@@ -1170,6 +1173,9 @@ for (const active of [true, false]) {
         wait,
         ...(active ? { turnId: 'turn-active' } : {}),
       })
+      // Like official, typed input is queued with a human message origin (direct dispatch
+      // stamps the same origin onto the produced messages inside executeUserInput).
+      if (active) expect(received.origin).toEqual({ kind: 'human' })
     })
   }
 }
@@ -1503,6 +1509,40 @@ test('admission failure never overwrites the running abort controller or a newer
   expect(controller.signal.aborted).toBe(false)
   expect(replacements).toBe(0)
   expect(h.guard.isActive).toBe(true)
+})
+
+test('send-now interrupts the running turn and queues the prompt to run next', async () => {
+  const h = harness()
+  const controller = new AbortController()
+  h.scope.abortController = controller
+  const pending = h.submit('right now', h.helpers, undefined, { sendNow: true })
+  h.release()
+  await pending
+  expect(controller.signal.aborted).toBe(true)
+  expect(controller.signal.reason).toBe('interrupt')
+  expect(h.queued.map((command: any) => command.value)).toEqual(['right now'])
+})
+
+test('plain submit while a turn runs queues without interrupting it', async () => {
+  const h = harness()
+  const controller = new AbortController()
+  h.scope.abortController = controller
+  const pending = h.submit('later', h.helpers)
+  h.release()
+  await pending
+  expect(controller.signal.aborted).toBe(false)
+  expect(h.queued.map((command: any) => command.value)).toEqual(['later'])
+})
+
+test('send-now with an empty prompt interrupts only when a prompt is queued', async () => {
+  for (const [queue, aborted] of [[[], false], [[{ mode: 'prompt', value: 'waiting' }], true]] as const) {
+    const h = harness({ input: '' })
+    const controller = new AbortController()
+    h.scope.abortController = controller
+    h.scope.getCommandQueue = () => queue
+    await h.submit('', h.helpers, undefined, { sendNow: true })
+    expect(controller.signal.aborted).toBe(aborted)
+  }
 })
 
 for (const order of ['dismissal-first', 'abort-first'] as const) {
@@ -2730,6 +2770,7 @@ test.each([false, true])('same-ID resume clears raw context after cwd/transcript
     restoreAgentFromSession: () => ({}), initialMainThreadAgentDefinition: undefined,
     agentDefinitions: {}, setMainThreadAgentDefinition: noop,
     setAppState: (fn: any) => { state = fn(state) }, computeStandaloneAgentContext: noop,
+    restorePermissionModeForResume: () => ({ mode: 'default' }), savePermissionMode: noop,
     updateSessionName: noop, restoreReadFileState: noop, getOriginalCwd: () => '/repo',
     getCwd: () => cwd, getUserContext, resetLoadingState: noop, setAbortController: noop,
     setConversationId: noop, saveCurrentSessionCosts: noop,
@@ -2837,6 +2878,9 @@ test('query refresh reloads raw REPL context with live overlays and instruction 
       yield { type: 'assistant', message: { content: [] } }
     },
     canUseTool: noop,
+    getTypedSkillAttribution: () => undefined,
+    getSessionFallbackModels: () => [],
+    hasMessageDisplayHook: () => false,
     getQuerySourceForREPL: () => 'repl_main_thread',
     getUserContentText: (content: string) => content,
     onQueryEvent: noop,

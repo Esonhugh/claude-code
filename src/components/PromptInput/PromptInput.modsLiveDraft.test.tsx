@@ -18,7 +18,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { getGlobalConfig, saveGlobalConfig } from '../../utils/config.js'
 import type { ThemeName } from '../../utils/theme.js'
-import type { TextInputEdit, PromptInputMode, PromptInputHandle } from '../../types/textInputTypes.js'
+import type { TextInputEdit, PromptInputMode, PromptInputHandle, VimMode } from '../../types/textInputTypes.js'
 import PromptInput from './PromptInput.js'
 
 
@@ -69,7 +69,7 @@ class Output extends Writable {
   _write(_chunk: Buffer, _encoding: BufferEncoding, done: () => void) { done() }
 }
 
-async function mount(initial = 'old', vim = false, initialVim: 'INSERT'|'NORMAL' = 'INSERT', relay?: (edit: TextInputEdit) => void) {
+async function mount(initial = 'old', vim = false, initialVim: VimMode = 'INSERT', relay?: (edit: TextInputEdit) => void) {
   const previousEditorMode = getGlobalConfig().editorMode
   saveGlobalConfig(config => ({...config,editorMode:vim?'vim':'normal'}))
   const theme: ThemeName = 'dark', carry = false, searching = false, footer = false
@@ -79,7 +79,7 @@ async function mount(initial = 'old', vim = false, initialVim: 'INSERT'|'NORMAL'
   let frame: FrameEvent | undefined
   let value = initial
   let currentMode: PromptInputMode = 'prompt', currentVim = initialVim
-  let committed: {text:string;cursor:number;mode:PromptInputMode;vim:'INSERT'|'NORMAL'} = {text:initial,cursor:initial.length,mode:currentMode,vim:currentVim}
+  let committed: {text:string;cursor:number;mode:PromptInputMode;vim:VimMode} = {text:initial,cursor:initial.length,mode:currentMode,vim:currentVim}
   let beforeKey: (() => void) | undefined
   const boundaries: {committed:typeof committed,live:{text:string,cursor:number}}[] = []
   let editor: React.ComponentProps<typeof PromptInput>['insertTextRef']
@@ -87,7 +87,7 @@ async function mount(initial = 'old', vim = false, initialVim: 'INSERT'|'NORMAL'
     const [input,setInput] = useState(initial)
     const [mode,setMode] = useState<PromptInputMode>('prompt')
     const [pastedContents,setPastedContents] = useState<Record<number,PastedContent>>({})
-    const [vimMode,setVimMode] = useState<'INSERT'|'NORMAL'>(initialVim)
+    const [vimMode,setVimMode] = useState<VimMode>(initialVim)
     const [helpOpen,setHelpOpen] = useState(false)
     editor = useRef(null)
     value = input

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
 import { mkdtempSync, realpathSync, rmSync } from 'node:fs'
 import { resetSettingsCache } from '../../utils/settings/settingsCache.js'
+import { OPENAI_CODEX_CLIENT_VERSION } from '../openai-oauth/client.js'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -443,6 +444,7 @@ try {
     appHeader?: string | null
     claudeSessionId?: string | null
     contentType?: string | null
+    version?: string | null
     body: any
   }> = []
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -457,6 +459,7 @@ try {
       appHeader: headers.get('x-app'),
       claudeSessionId: headers.get('x-claude-code-session-id'),
       contentType: headers.get('content-type'),
+      version: headers.get('version'),
       body: init?.body ? JSON.parse(String(init.body)) : null,
     })
     return new Response(
@@ -596,6 +599,7 @@ try {
     requests[0]!.url,
     'https://chatgpt.com/backend-api/codex/responses',
   )
+  assert.equal(requests[0]!.version, OPENAI_CODEX_CLIENT_VERSION)
   assert.deepEqual(requests[0]!.body.input, [
     {
       type: 'message',

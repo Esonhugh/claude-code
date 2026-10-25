@@ -20,6 +20,10 @@ export type {
   PermissionResult,
 }
 
+/** decisionReason.reason of an auto mode ask that fell back to a person because the classifier failed open. */
+export const AUTO_MODE_CLASSIFIER_UNAVAILABLE_REASON =
+  'Auto mode classifier unavailable — falling back to manual approval'
+
 export function requiresExplicitUserApproval(
   reason: PermissionDecisionReason | undefined,
 ): boolean {
@@ -27,6 +31,19 @@ export function requiresExplicitUserApproval(
   if (reason?.type === 'subcommandResults') {
     return Array.from(reason.reasons.values()).some(result =>
       requiresExplicitUserApproval(result.decisionReason),
+    )
+  }
+  return false
+}
+
+/** A safety check that still asks in bypassPermissions mode. */
+export function isBypassImmune(
+  reason: PermissionDecisionReason | undefined,
+): boolean {
+  if (reason?.type === 'safetyCheck') return reason.bypassImmune === true
+  if (reason?.type === 'subcommandResults') {
+    return Array.from(reason.reasons.values()).some(result =>
+      isBypassImmune(result.decisionReason),
     )
   }
   return false

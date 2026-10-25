@@ -1,4 +1,5 @@
 import { getInlinePlugins, getInlinePluginsNoMcp } from '../bootstrap/state.js'
+import { setModToolCheckPermissionHost } from '../services/tools/toolHooks.js'
 import { getInitializePluginsApplied } from '../entrypoints/sdk/launchInitialize.js'
 import { createSdkStreamState } from './streamState.js'
 import { createModCommandQueue } from '../services/mods/commandRunQueue.js'
@@ -23,6 +24,7 @@ import {
   type Command,
   formatDescriptionWithSource,
   getCommandName,
+  getSkillToolCommands,
 } from 'src/commands.js'
 import { createStreamlinedTransformer } from 'src/utils/streamlinedTransform.js'
 import { installStreamJsonStdoutGuard } from 'src/utils/streamJsonStdoutGuard.js'
@@ -166,7 +168,18 @@ import { buildBridgeConnectUrl } from 'src/bridge/bridgeStatusUtil.js'
 import { extractInboundMessageFields } from 'src/bridge/inboundMessages.js'
 import { resolveAndPrepend } from 'src/bridge/inboundAttachments.js'
 import type { CanUseToolFn } from 'src/hooks/useCanUseTool.js'
-import { hasPermissionsToUseTool } from 'src/utils/permissions/permissions.js'
+import {
+  hasPermissionsToUseTool,
+  runPermissionRequestHooksForHeadlessAgent,
+} from 'src/utils/permissions/permissions.js'
+import {
+  type PermissionDecision,
+  requiresExplicitUserApproval,
+} from 'src/utils/permissions/PermissionResult.js'
+import {
+  normalizePermissionModeAlias,
+  PERMISSION_MODES,
+} from 'src/utils/permissions/PermissionMode.js'
 import { safeParseJSON } from 'src/utils/json.js'
 import {
   outputSchema as permissionToolOutputSchema,
@@ -184,16 +197,25 @@ import {
 } from 'src/utils/sessionStart.js'
 import {
   DEFAULT_OUTPUT_STYLE_NAME,
+  clearAllOutputStylesCache,
   getAllOutputStyles,
 } from 'src/constants/outputStyles.js'
+import { clearOutputStyleCaches } from 'src/outputStyles/loadOutputStylesDir.js'
+import { FileReadTool } from 'src/tools/FileReadTool/FileReadTool.js'
+import { checkReadPermissionForTool } from 'src/utils/permissions/filesystem.js'
+import { isSettingSourceEnabled } from 'src/utils/settings/constants.js'
 import { TEAMMATE_MESSAGE_TAG, TICK_TAG } from 'src/constants/xml.js'
 import {
   getSettings_DEPRECATED,
   getSettingsForSource,
   getSettingsWithSources,
+  updateSettingsForSource,
 } from 'src/utils/settings/settings.js'
 import { settingsChangeDetector } from 'src/utils/settings/changeDetector.js'
-import { applySettingsChange } from 'src/utils/settings/applySettingsChange.js'
+import {
+  applySettingsChange,
+  recheckAutoModeGate,
+} from 'src/utils/settings/applySettingsChange.js'
 import {
   isFastModeAvailable,
   isFastModeEnabled,
@@ -205,8 +227,10 @@ import {
   getAutoModeUnavailableNotification,
   getAutoModeUnavailableReason,
   isBypassPermissionsModeDisabled,
+  restorePermissionModeForResume,
   transitionPermissionMode,
 } from 'src/utils/permissions/permissionSetup.js'
+import { logPermissionModeChange } from 'src/utils/permissions/PermissionUpdate.js'
 import {
   tryGenerateSuggestion,
   logSuggestionOutcome,
@@ -230,6 +254,7 @@ import {
 import { createSyntheticOutputTool } from 'src/tools/SyntheticOutputTool/SyntheticOutputTool.js'
 import { parseSessionIdentifier } from 'src/utils/sessionUrl.js'
 import {
+  addSessionMirror,
   hydrateRemoteSession,
   hydrateFromCCRv2InternalEvents,
   resetSessionFilePointer,
@@ -238,11 +263,19 @@ import {
   recordAttributionSnapshot,
   saveAgentSetting,
   saveMode,
+  savePermissionMode,
   saveAiGeneratedTitle,
+  saveCustomTitle,
+  getTranscriptPath,
   restoreSessionMetadata,
   recordTranscript,
 } from 'src/utils/sessionStorage.js'
 import { incrementPromptCount } from 'src/utils/commitAttribution.js'
+import feedbackCommand from '../commands/feedback/index.js'
+import {
+  backgroundAll,
+  backgroundTaskForToolUse,
+} from '../tasks/LocalShellTask/LocalShellTask.js'
 import {
   setupSdkMcpClients,
   connectToServer,
@@ -287,7 +320,15 @@ import {
   toInternalMessages,
   toSDKRateLimitInfo,
 } from 'src/utils/messages/mappers.js'
-import { createModelSwitchBreadcrumbs } from 'src/utils/messages.js'
+import {
+  createModelSwitchBreadcrumbs,
+  createUserMessage,
+} from 'src/utils/messages.js'
+import {
+  checkModelSwitch,
+  getModelSwitchHookInfo,
+  getPostModelSwitchContext,
+} from 'src/utils/model/modelSwitchHooks.js'
 import { collectContextData } from 'src/commands/context/context-noninteractive.js'
 import { LOCAL_COMMAND_STDOUT_TAG } from 'src/constants/xml.js'
 import {
@@ -305,7 +346,9 @@ import { getModHttpServices } from '../services/mods/hostOperations.js'
 import {
   getSupportedEffortLevelsForModel,
   modelSupportsEffort,
+  parseEffortValue,
   resolveAppliedEffort,
+  toPersistableEffort,
 } from 'src/utils/effort.js'
 import { modelSupportsAdaptiveThinking } from 'src/utils/thinking.js'
 import { modelSupportsAutoMode } from 'src/utils/betas.js'
@@ -387,13 +430,19 @@ import {
 import { handleTeammateShutdownApproved } from '../utils/swarm/teammateShutdown.js'
 import { getRunningTasks } from '../utils/task/framework.js'
 import { isBackgroundTask } from '../tasks/types.js'
-import { stopTask } from '../tasks/stopTask.js'
-import { drainSdkEvents } from '../utils/sdkEventQueue.js'
+import { StopTaskError, stopTask } from '../tasks/stopTask.js'
+import { isTerminalTaskStatus } from '../taskStatus.js'
+import { drainSdkOutput, getTaskRunId } from '../utils/sdkEventQueue.js'
 import { initializeGrowthBook } from '../services/analytics/growthbook.js'
 import { errorMessage, toError } from '../utils/errors.js'
 import { sleep } from '../utils/sleep.js'
 import { isExtractModeActive } from '../memdir/paths.js'
 import { isAnt } from 'src/utils/userType.js'
+import { SYSTEM_PROMPT_DYNAMIC_BOUNDARY } from '../constants/prompts.js'
+import {
+  checkResumeDropsTurn,
+  RESUME_DROPS_TURN_PREFIX,
+} from '../utils/resumeDropsTurn.js'
 
 
 // Dead code elimination: conditional imports
@@ -466,6 +515,17 @@ function toBlocks(v: PromptValue): ContentBlockParam[] {
   return typeof v === 'string' ? [{ type: 'text', text: v }] : v
 }
 
+// Agent SDK >= 0.3 sends initialize.systemPrompt as string[] ([""] when the
+// host sets none, meaning the minimal SDK prompt). customSystemPrompt is a
+// single string downstream, so join the parts and drop the cache boundary.
+function normalizeSdkSystemPrompt(value: unknown): string | undefined {
+  if (typeof value === 'string') return value
+  if (!Array.isArray(value)) return undefined
+  return value
+    .filter((part): part is string => typeof part === 'string' && part !== SYSTEM_PROMPT_DYNAMIC_BOUNDARY)
+    .join('\n\n')
+}
+
 /**
  * Join prompt values from multiple queued commands into one. Strings are
  * newline-joined; if any value is a block array, all values are normalized
@@ -517,10 +577,13 @@ export async function runHeadless(
     continue: boolean | undefined
     resume: string | boolean | undefined
     resumeSessionAt: string | undefined
+    resumeDropsTurn?: string
+    sessionMirror?: boolean
     verbose: boolean | undefined
     outputFormat: string | undefined
     jsonSchema: Record<string, unknown> | undefined
     permissionPromptToolName: string | undefined
+    permissionPrompts?: 'host' | 'none'
     allowedTools: string[] | undefined
     thinkingConfig: ThinkingConfig | undefined
     maxTurns: number | undefined
@@ -706,6 +769,12 @@ export async function runHeadless(
     }
   }
 
+  if (options.outputFormat === 'stream-json' && options.sessionMirror) {
+    addSessionMirror((filePath, entries) => {
+      void structuredIO.write({ type: 'transcript_mirror', filePath, entries })
+    })
+  }
+
   if (options.outputFormat === 'stream-json' && options.verbose) {
     registerHookEventHandler(event => {
       const message: StdoutMessage = (() => {
@@ -769,6 +838,7 @@ export async function runHeadless(
     teleport: options.teleport,
     resume: options.resume,
     resumeSessionAt: options.resumeSessionAt,
+    resumeDropsTurn: options.resumeDropsTurn,
     forkSession: options.forkSession,
     outputFormat: options.outputFormat,
     sessionStartHooksPromise: options.sessionStartHooksPromise,
@@ -882,10 +952,31 @@ export async function runHeadless(
   )
   let filteredTools = [...tools, ...allowedMcpTools]
 
+  // --permission-prompts none (official 2.1.259): nobody answers prompts, so
+  // anything that would prompt is denied locally (PermissionRequest hooks
+  // still run) instead of reaching the SDK host or --permission-prompt-tool.
+  const permissionPromptsNone = options.permissionPrompts === 'none'
+  if (permissionPromptsNone) {
+    if (options.sdkUrl || options.permissionPromptToolName) {
+      logForDebugging(
+        `--permission-prompts none: permission prompts are answered with a local deny; the ${options.sdkUrl ? 'SDK host' : '--permission-prompt-tool'} is not consulted`,
+      )
+    }
+    setAppState(prev => ({
+      ...prev,
+      toolPermissionContext: {
+        ...prev.toolPermissionContext,
+        shouldAvoidPermissionPrompts: true,
+      },
+    }))
+  }
+
   // When using SDK URL, always use stdio permission prompting to delegate to the SDK
-  const effectivePermissionPromptToolName = options.sdkUrl
-    ? 'stdio'
-    : options.permissionPromptToolName
+  const effectivePermissionPromptToolName = permissionPromptsNone
+    ? undefined
+    : options.sdkUrl
+      ? 'stdio'
+      : options.permissionPromptToolName
 
   // Callback for when a permission prompt is shown
   const onPermissionPrompt = (details: RequiresActionDetails) => {
@@ -907,6 +998,8 @@ export async function runHeadless(
     () => getAppState().mcp.tools,
     onPermissionPrompt,
   )
+  // tool.check names the host as the decider of core's ask when its program answers asks.
+  setModToolCheckPermissionHost(effectivePermissionPromptToolName !== undefined)
   if (options.permissionPromptToolName) {
     // Remove the permission prompt tool from the list of available tools.
     filteredTools = filteredTools.filter(
@@ -988,6 +1081,8 @@ export async function runHeadless(
           message.subtype === 'ui_focus' ||
           message.subtype === 'task_notification' ||
           message.subtype === 'task_started' ||
+          message.subtype === 'task_updated' ||
+          message.subtype === 'background_tasks_changed' ||
           message.subtype === 'task_progress' ||
           // @ts-ignore - recovered code
           message.subtype === 'post_turn_summary')
@@ -996,6 +1091,7 @@ export async function runHeadless(
       message.type !== 'autocompact_state' &&
       message.type !== 'stream_event' &&
       message.type !== 'keep_alive' &&
+      message.type !== 'transcript_mirror' &&
       // @ts-ignore - recovered code
       message.type !== 'streamlined_text' &&
       // @ts-ignore - recovered code
@@ -1090,6 +1186,7 @@ function runHeadlessStreaming(
     verbose: boolean | undefined
     jsonSchema: Record<string, unknown> | undefined
     permissionPromptToolName: string | undefined
+    permissionPrompts?: 'host' | 'none'
     allowedTools: string[] | undefined
     thinkingConfig: ThinkingConfig | undefined
     maxTurns: number | undefined
@@ -1325,6 +1422,7 @@ function runHeadlessStreaming(
     const hasAutoMode = modelSupportsAutoMode(resolvedModel)
     return {
       value: modelId,
+      resolvedModel,
       displayName: option.label,
       description: option.description,
       ...(hasEffort && {
@@ -1339,6 +1437,8 @@ function runHeadlessStreaming(
     }
   })
   let activeUserSpecifiedModel = options.userSpecifiedModel
+  // set_prompt_suggestions_paused: a host whose composer is hidden pauses them.
+  let promptSuggestionsPaused = false
   let pendingModelSwitches = Promise.resolve()
 
   const streamState = createSdkStreamState({
@@ -1346,7 +1446,6 @@ function runHeadlessStreaming(
     readInputs: () => ({
       goal: getAppState().goalStatus,
       model: activeUserSpecifiedModel ? parseUserSpecifiedModel(activeUserSpecifiedModel) : getMainLoopModel(),
-      autoCompactWindow: getAppState().autoCompactWindow,
     }),
     enqueue: message => output.enqueue(message),
     configurationReady: isEnvTruthy(process.env.CLAUDE_CODE_REMOTE) ? initializeGrowthBook() : Promise.resolve(),
@@ -1526,7 +1625,17 @@ function runHeadlessStreaming(
     }
   }
 
-  async function updateSdkMcp() {
+  // Coalesce concurrent callers (run(), mcp_status, mcp_set_servers) onto one
+  // in-flight setup so the SDK servers are not handshaken twice.
+  let sdkMcpUpdateInFlight: Promise<void> | null = null
+  function updateSdkMcp(): Promise<void> {
+    sdkMcpUpdateInFlight ??= applySdkMcpUpdate().finally(() => {
+      sdkMcpUpdateInFlight = null
+    })
+    return sdkMcpUpdateInFlight
+  }
+
+  async function applySdkMcpUpdate() {
     // Check if SDK MCP servers need to be updated (new servers added or removed)
     const currentServerNames = new Set(Object.keys(sdkMcpConfigs))
     const connectedServerNames = new Set(sdkClients.map(c => c.name))
@@ -2047,6 +2156,7 @@ function runHeadlessStreaming(
     running = true
     runPhase = undefined
     notifySessionStateChanged('running')
+    udsMessagingModule?.setPeerSessionIdle(false)
     idleTimeout.stop()
 
     headlessProfilerCheckpoint('run_entry')
@@ -2108,6 +2218,30 @@ function runHeadlessStreaming(
       // Drains the queue, batching consecutive prompt-mode commands into one
       // ask() call so messages that queued up during a long turn coalesce
       // into a single follow-up turn instead of N separate turns.
+      const flushHeldBackResult = () => {
+        if (!heldBackResult) return
+        output.enqueue(heldBackResult)
+        heldBackResult = null
+        if (suggestionState.pendingSuggestion) {
+          output.enqueue(suggestionState.pendingSuggestion)
+          // Now that the suggestion is actually delivered, record it for acceptance tracking
+          if (suggestionState.pendingLastEmittedEntry) {
+            suggestionState.lastEmitted = {
+              ...suggestionState.pendingLastEmittedEntry,
+              emittedAt: Date.now(),
+            }
+            suggestionState.pendingLastEmittedEntry = null
+          }
+          suggestionState.pendingSuggestion = null
+        }
+      }
+      const hasRunningBackgroundAgents = () =>
+        getRunningTasks(getAppState()).some(
+          t =>
+            (t.type === 'local_agent' || t.type === 'local_workflow') &&
+            isBackgroundTask(t),
+        )
+
       const drainCommandQueue = async () => {
         while ((command = dequeue(isMainThread))) {
           // Keep stdin controls responsive while queued turns wait for model validation.
@@ -2252,6 +2386,7 @@ function runHeadlessStreaming(
                 type: 'system',
                 subtype: 'task_notification',
                 task_id: taskIdMatch?.[1] ?? '',
+                run_id: getTaskRunId(taskIdMatch?.[1] ?? ''),
                 tool_use_id: toolUseIdMatch?.[1],
                 status,
                 output_file: outputFileMatch?.[1] ?? '',
@@ -2270,6 +2405,9 @@ function runHeadlessStreaming(
                 uuid: randomUUID(),
               })
             }
+            // Like official, the turn held back for this agent gets its result
+            // before the notification's own turn starts.
+            if (!hasRunningBackgroundAgents()) flushHeldBackResult()
             // No continue -- fall through to ask() so the model processes the result
           }
 
@@ -2416,29 +2554,22 @@ function runHeadlessStreaming(
 
               if (message.type === 'result') {
                 // Flush pending SDK events so they appear before result on the stream.
-                for (const event of drainSdkEvents()) {
+                for (const event of drainSdkOutput()) {
                   output.enqueue(event)
                 }
 
                 // Hold-back: don't emit result while background agents are running
-                const currentState = getAppState()
-                if (
-                  getRunningTasks(currentState).some(
-                    t =>
-                      (t.type === 'local_agent' ||
-                        t.type === 'local_workflow') &&
-                      isBackgroundTask(t),
-                  )
-                ) {
+                if (hasRunningBackgroundAgents()) {
+                  flushHeldBackResult()
                   heldBackResult = message
                 } else {
-                  heldBackResult = null
+                  flushHeldBackResult()
                   output.enqueue(message)
                 }
               } else {
                 // Flush SDK events (task_started, task_progress) so background
                 // agent progress is streamed in real-time, not batched until result.
-                for (const event of drainSdkEvents()) {
+                for (const event of drainSdkOutput()) {
                   output.enqueue(event)
                 }
                 output.enqueue(message)
@@ -2483,6 +2614,7 @@ function runHeadlessStreaming(
           // Generate and emit prompt suggestion for SDK consumers
           if (
             options.promptSuggestions &&
+            !promptSuggestionsPaused &&
             !isEnvDefinedFalsy(process.env.CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION)
           ) {
             // TS narrows suggestionState to never in the while loop body;
@@ -2580,7 +2712,7 @@ function runHeadlessStreaming(
       do {
         // Drain SDK events (task_started, task_progress) before command queue
         // so progress events precede task_notification on the stream.
-        for (const event of drainSdkEvents()) {
+        for (const event of drainSdkOutput()) {
           output.enqueue(event)
         }
 
@@ -2614,22 +2746,7 @@ function runHeadlessStreaming(
         }
       } while (waitingForAgents)
 
-      if (heldBackResult) {
-        output.enqueue(heldBackResult)
-        heldBackResult = null
-        if (suggestionState.pendingSuggestion) {
-          output.enqueue(suggestionState.pendingSuggestion)
-          // Now that the suggestion is actually delivered, record it for acceptance tracking
-          if (suggestionState.pendingLastEmittedEntry) {
-            suggestionState.lastEmitted = {
-              ...suggestionState.pendingLastEmittedEntry,
-              emittedAt: Date.now(),
-            }
-            suggestionState.pendingLastEmittedEntry = null
-          }
-          suggestionState.pendingSuggestion = null
-        }
-      }
+      flushHeldBackResult()
     } catch (error) {
       // Emit error result message before shutting down
       // Write directly to structuredIO to ensure immediate delivery
@@ -2666,13 +2783,14 @@ function runHeadlessStreaming(
       runPhase = 'finally_post_flush'
       if (!isShuttingDown()) {
         notifySessionStateChanged('idle')
+        udsMessagingModule?.setPeerSessionIdle(true)
         // Drain so the idle session_state_changed SDK event (plus any
         // terminal task_notification bookends emitted during bg-agent
         // teardown) reach the output stream before we block on the next
         // command. The do-while drain above only runs while
         // waitingForAgents; once we're here the next drain would be the
         // top of the next run(), which won't come if input is idle.
-        for (const event of drainSdkEvents()) {
+        for (const event of drainSdkOutput()) {
           output.enqueue(event)
         }
       }
@@ -2955,6 +3073,11 @@ function runHeadlessStreaming(
         type: 'system', subtype: 'ui_log', plugin, text,
         uuid: randomUUID(), session_id: getSessionId(),
       })
+    },
+    // No terminal draws here: the person's Notification hooks alone run.
+    uiNotify: async notification => {
+      await executeNotificationHooks(notification)
+      return 'no_surface'
     },
     tools: () => getModToolContext().options.tools,
     toolCatalog: () => createToolCatalogForContext(getModToolContext()),
@@ -3473,6 +3596,7 @@ function runHeadlessStreaming(
           // handleSetPermissionMode sends the control_response; the
           // notifySessionMetadataChanged that used to follow here is
           // now fired by onChangeAppState (with externalized mode name).
+          structuredIO.recheckPendingPermissions()
         } else if (message.request.subtype === 'set_model') {
           const requestedModel = message.request.model ?? 'default'
           if (typeof requestedModel !== 'string') {
@@ -3494,12 +3618,35 @@ function runHeadlessStreaming(
                 return
               }
             }
+            const switchInfo = getModelSwitchHookInfo(
+              requestedModel === 'default' ? null : requestedModel,
+              mutableMessages,
+            )
+            const verdict = await checkModelSwitch(switchInfo, 'sdk')
+            if (verdict.decision !== 'proceed') {
+              // Headless set_model has no prompt to confirm an "ask" on.
+              sendControlResponseError(
+                message,
+                verdict.decision === 'ask'
+                  ? `PreModelSwitch hook asked for confirmation, which set_model cannot show${verdict.reason ? `: ${verdict.reason}` : ''}`
+                  : `Model switch blocked by PreModelSwitch hook: ${verdict.reason ?? 'no reason given'}`,
+              )
+              return
+            }
             const model = requestedModel === 'default' ? getDefaultMainLoopModel() : requestedModel
             activeUserSpecifiedModel = model
             setMainLoopModelOverride(model)
             streamState.refresh()
             notifySessionMetadataChanged({ model })
             injectModelSwitchBreadcrumbs(requestedModel, model)
+            if (feature('TRANSCRIPT_CLASSIFIER')) {
+              // Like official 2.1.299, a model without auto mode support leaves auto.
+              const { toolPermissionContext, fastMode } = getAppState()
+              await recheckAutoModeGate(toolPermissionContext, fastMode, setAppState)
+            }
+            for (const content of (await getPostModelSwitchContext(switchInfo, 'sdk')) ?? []) {
+              mutableMessages.push(createUserMessage({ content, isMeta: true }))
+            }
             sendControlResponseSuccess(message)
           }).catch(error => {
             logError(error)
@@ -3519,9 +3666,17 @@ function runHeadlessStreaming(
           }
           sendControlResponseSuccess(message)
         } else if (message.request.subtype === 'mcp_status') {
-          sendControlResponseSuccess(message, {
-            mcpServers: buildMcpServerStatuses(),
-          })
+          // Not awaited inline: the SDK server handshake is answered over this
+          // same input loop, so blocking here would deadlock.
+          void updateSdkMcp()
+            .catch(error =>
+              logForDebugging(`mcp_status SDK MCP update failed: ${errorMessage(error)}`),
+            )
+            .then(() =>
+              sendControlResponseSuccess(message, {
+                mcpServers: buildMcpServerStatuses(),
+              }),
+            )
         } else if (message.request.subtype === 'get_context_usage') {
           try {
             const appState = getAppState()
@@ -3708,6 +3863,126 @@ function runHeadlessStreaming(
             } satisfies SDKControlReloadPluginsResponse)
           } catch (error) {
             sendControlResponseError(message, errorMessage(error))
+          }
+        } else if (message.request.subtype === 'reload_skills') {
+          try {
+            clearCommandsCache()
+            currentCommands = await getCommands(cwd())
+            const skills = await getSkillToolCommands(cwd())
+            sendControlResponseSuccess(message, {
+              skills: skills.map(cmd => ({
+                name: getCommandName(cmd),
+                description: formatDescriptionWithSource(cmd),
+                argumentHint: cmd.argumentHint || '',
+              })),
+            })
+          } catch (error) {
+            sendControlResponseError(message, errorMessage(error))
+          }
+        } else if (message.request.subtype === 'reload_output_styles') {
+          try {
+            clearOutputStyleCaches()
+            clearAllOutputStylesCache()
+            const styles = await getAllOutputStyles(cwd())
+            sendControlResponseSuccess(message, {
+              available_output_styles: Object.keys(styles),
+            })
+          } catch (error) {
+            sendControlResponseError(message, errorMessage(error))
+          }
+        } else if (message.request.subtype === 'read_file') {
+          const request = message.request as {
+            path?: unknown
+            max_bytes?: unknown
+            encoding?: unknown
+          }
+          if (typeof request.path !== 'string' || request.path === '') {
+            sendControlResponseError(message, 'read_file: path is required')
+            continue
+          }
+          const absPath = expandPath(request.path)
+          // Same gate as the Read tool: anything short of allow is refused.
+          const decision = checkReadPermissionForTool(
+            FileReadTool,
+            { file_path: absPath },
+            getAppState().toolPermissionContext,
+          )
+          if (decision.behavior !== 'allow') {
+            sendControlResponseError(message, `read_file: permission denied for ${absPath}`)
+            continue
+          }
+          const maxBytes =
+            typeof request.max_bytes === 'number' && request.max_bytes > 0
+              ? Math.floor(request.max_bytes)
+              : 1024 * 1024
+          try {
+            const bytes = await readFile(absPath)
+            const truncated = bytes.length > maxBytes
+            const slice = truncated ? bytes.subarray(0, maxBytes) : bytes
+            sendControlResponseSuccess(message, {
+              contents: request.encoding === 'base64' ? slice.toString('base64') : slice.toString('utf-8'),
+              absPath,
+              ...(truncated ? { truncated: true } : {}),
+              ...(request.encoding === 'base64' ? { encoding: 'base64' } : {}),
+            })
+          } catch (error) {
+            sendControlResponseError(message, `read_file: ${errorMessage(error)}`)
+          }
+        } else if (message.request.subtype === 'update_settings') {
+          const request = message.request as { source?: unknown; settings?: unknown }
+          // Same allowlist as the official writer: /config's outputStyle for the
+          // project local file, /effort's effortLevel for the user file.
+          const allowedKey =
+            request.source === 'localSettings' ? 'outputStyle'
+              : request.source === 'userSettings' ? 'effortLevel'
+                : undefined
+          const settings =
+            request.settings && typeof request.settings === 'object' && !Array.isArray(request.settings)
+              ? (request.settings as Record<string, unknown>)
+              : {}
+          const keys = Object.keys(settings)
+          const value = allowedKey ? settings[allowedKey] : undefined
+          if (!allowedKey) {
+            sendControlResponseError(message, 'update_settings: source must be localSettings or userSettings')
+          } else if (isEnvTruthy(process.env.CLAUDE_CODE_REMOTE) || getIsRemoteMode()) {
+            sendControlResponseError(message, 'update_settings: not available over a remote transport')
+          } else if (!isSettingSourceEnabled(request.source as 'localSettings' | 'userSettings')) {
+            sendControlResponseError(message, `update_settings: the ${request.source} source is not enabled for this session (--setting-sources)`)
+          } else if (keys.length !== 1 || keys[0] !== allowedKey || typeof value !== 'string') {
+            sendControlResponseError(message, `update_settings: ${request.source} accepts only a string ${allowedKey}`)
+          } else {
+            const effort = allowedKey === 'effortLevel' ? toPersistableEffort(parseEffortValue(value)) : undefined
+            if (allowedKey === 'effortLevel' && (effort === undefined || effort === 'max')) {
+              sendControlResponseError(message, `update_settings: effortLevel ${value} cannot be saved`)
+              continue
+            }
+            const source = request.source as 'localSettings' | 'userSettings'
+            const result = updateSettingsForSource(source, { [allowedKey]: effort ?? value })
+            if (result.error) {
+              sendControlResponseError(message, `update_settings: ${result.error.message}`)
+            } else {
+              settingsChangeDetector.notifyChange(source)
+              sendControlResponseSuccess(message)
+            }
+          }
+        } else if (message.request.subtype === 'mcp_read_resource') {
+          const { serverName, uri } = message.request as { serverName?: unknown; uri?: unknown }
+          // Only MCP Apps UI resources from servers this process dialed itself.
+          if (typeof uri !== 'string' || !uri.startsWith('ui://')) {
+            sendControlResponseError(message, 'mcp_read_resource: uri must use the ui:// scheme')
+            continue
+          }
+          const connection = [...getAppState().mcp.clients, ...dynamicMcpState.clients]
+            .find(c => c.name === serverName)
+          if (!connection || connection.type !== 'connected' || connection.config.type === 'sdk') {
+            sendControlResponseError(message, `mcp_read_resource: no connected server named ${String(serverName)}`)
+            continue
+          }
+          try {
+            const result = await connection.client.readResource({ uri })
+            sendControlResponseSuccess(message, { contents: result.contents })
+          } catch (error) {
+            sendControlResponseError(message, `mcp_read_resource: ${errorMessage(error)}`)
           }
         } else if (message.request.subtype === 'mcp_reconnect') {
           const serverName = message.request.serverName as string
@@ -4379,6 +4654,148 @@ function runHeadlessStreaming(
           }
 
           sendControlResponseSuccess(message)
+        } else if (
+          message.request.subtype === 'get_status' ||
+          message.request.subtype === 'get_usage' ||
+          message.request.subtype === 'get_session_cost' ||
+          message.request.subtype === 'get_binary_version' ||
+          message.request.subtype === 'file_suggestions' ||
+          message.request.subtype === 'get_plan' ||
+          message.request.subtype === 'export_conversation' ||
+          message.request.subtype === 'get_memory_dialog' ||
+          message.request.subtype === 'get_skills_dialog' ||
+          message.request.subtype === 'get_hooks_listing' ||
+          message.request.subtype === 'list_permission_rules' ||
+          message.request.subtype === 'get_workspace_diff' ||
+          message.request.subtype === 'get_task_output'
+        ) {
+          // Answered off the input loop: /usage and /status fetch from the
+          // network, git and the file index may be slow.
+          const request = message.request as {
+            subtype: string
+            query?: unknown
+            task_id?: unknown
+          }
+          void import('./hostControlRequests.js')
+            .then((host): Promise<object> | object => {
+              switch (request.subtype) {
+                case 'get_status':
+                  return host.buildStatusResponse(getAppState())
+                case 'get_usage':
+                  return host.buildUsageResponse()
+                case 'get_session_cost':
+                  return host.buildSessionCostResponse()
+                case 'get_binary_version':
+                  return host.buildBinaryVersionResponse()
+                case 'file_suggestions':
+                  if (typeof request.query !== 'string') {
+                    throw new Error('file_suggestions: query must be a string')
+                  }
+                  return host.buildFileSuggestionsResponse(request.query)
+                case 'get_plan':
+                  return host.buildPlanResponse()
+                case 'get_memory_dialog':
+                  return host.buildMemoryDialogResponse(getAppState())
+                case 'get_skills_dialog':
+                  return host.buildSkillsDialogResponse(currentCommands)
+                case 'get_hooks_listing':
+                  return host.buildHooksListingResponse(
+                    getAppState(),
+                    buildAllTools(getAppState()).map(tool => tool.name),
+                  )
+                case 'list_permission_rules':
+                  return host.buildPermissionRulesResponse(getAppState())
+                case 'get_workspace_diff':
+                  return host.buildWorkspaceDiffResponse()
+                case 'get_task_output':
+                  if (typeof request.task_id !== 'string') {
+                    throw new Error('get_task_output: task_id must be a string')
+                  }
+                  return host.buildTaskOutputResponse(getAppState(), request.task_id)
+                default:
+                  return host.buildExportConversationResponse(
+                    mutableMessages,
+                    buildAllTools(getAppState()),
+                  )
+              }
+            })
+            .then(
+              response =>
+                sendControlResponseSuccess(message, response as Record<string, unknown>),
+              error => sendControlResponseError(message, errorMessage(error)),
+            )
+        } else if (message.request.subtype === 'background_tasks') {
+          const toolUseId = (message.request as { tool_use_id?: unknown }).tool_use_id
+          if (typeof toolUseId === 'string') {
+            sendControlResponseSuccess(message, {
+              backgrounded: backgroundTaskForToolUse(toolUseId, getAppState, setAppState),
+            })
+          } else {
+            backgroundAll(getAppState, setAppState)
+            sendControlResponseSuccess(message, {})
+          }
+        } else if (message.request.subtype === 'message_rated') {
+          const request = message.request as {
+            messageUuid?: unknown
+            sentiment?: unknown
+            surface?: unknown
+            cleared?: unknown
+          }
+          if (
+            typeof request.messageUuid !== 'string' ||
+            (request.sentiment !== 'positive' && request.sentiment !== 'negative') ||
+            (request.surface !== undefined &&
+              request.surface !== 'tool_use' &&
+              request.surface !== 'assistant_text')
+          ) {
+            sendControlResponseError(
+              message,
+              'message_rated: messageUuid must be a string, sentiment "positive" or "negative", surface "tool_use" or "assistant_text"',
+            )
+          } else {
+            logEvent('tengu_message_rated', {
+              sentiment: request.sentiment as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+              surface: (request.surface ?? 'tool_use') as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+              cleared: request.cleared === true,
+            })
+            sendControlResponseSuccess(message, {})
+          }
+        } else if (message.request.subtype === 'submit_feedback') {
+          // A host-side /feedback upload is not built here; say why instead
+          // of Unsupported so the host can show it.
+          sendControlResponseSuccess(message, {
+            feedback_id: null,
+            unavailable_reason: feedbackCommand.isEnabled?.() === false
+              ? '/feedback is disabled in this session'
+              : '/feedback from a host app is not supported by this build; run /feedback in the terminal',
+          })
+        } else if (message.request.subtype === 'list_models') {
+          sendControlResponseSuccess(message, { models: modelInfos })
+        } else if (message.request.subtype === 'set_prompt_suggestions_paused') {
+          promptSuggestionsPaused =
+            (message.request as { paused?: unknown }).paused === true
+          sendControlResponseSuccess(message)
+        } else if (message.request.subtype === 'rename_session') {
+          const request = message.request as { title?: unknown; session_id?: unknown }
+          const title = typeof request.title === 'string' ? request.title.trim() : ''
+          if (!title) {
+            sendControlResponseError(message, 'rename_session: title must be a non-empty string')
+          } else if (
+            typeof request.session_id === 'string' &&
+            request.session_id !== getSessionId()
+          ) {
+            sendControlResponseError(
+              message,
+              'rename_session: this process has moved to another session',
+            )
+          } else {
+            try {
+              await saveCustomTitle(getSessionId() as UUID, title, getTranscriptPath())
+              sendControlResponseSuccess(message)
+            } catch (error) {
+              sendControlResponseError(message, errorMessage(error))
+            }
+          }
         } else if (message.request.subtype === 'get_settings') {
           const currentAppState = getAppState()
           const model = getMainLoopModel()
@@ -4393,16 +4810,30 @@ function runHeadlessStreaming(
           })
         } else if (message.request.subtype === 'stop_task') {
           const { task_id: taskId } = message.request
-          try {
-            // @ts-ignore - recovered code
-            await stopTask(taskId, {
-              source: 'user',
-              getAppState,
-              setAppState,
-            })
-            sendControlResponseSuccess(message, {})
-          } catch (error) {
-            sendControlResponseError(message, errorMessage(error))
+          if (typeof taskId !== 'string') {
+            sendControlResponseError(message, 'stop_task: task_id must be a string')
+          } else {
+            try {
+              await stopTask(taskId, {
+                source: 'user',
+                getAppState,
+                setAppState,
+              })
+              sendControlResponseSuccess(message, {})
+            } catch (error) {
+              // Like official: a task that is gone or already finished counts as stopped.
+              if (
+                error instanceof StopTaskError &&
+                (error.code === 'not_found' ||
+                  (error.code === 'not_running' &&
+                    error.taskStatus !== undefined &&
+                    isTerminalTaskStatus(error.taskStatus)))
+              ) {
+                sendControlResponseSuccess(message, {})
+              } else {
+                sendControlResponseError(message, errorMessage(error))
+              }
+            }
           }
         } else if (message.request.subtype === 'generate_session_title') {
           // Fire-and-forget so the Haiku call does not block the stdin loop
@@ -4848,6 +5279,15 @@ export function createCanUseToolWithPermissionPrompt(
       return mainPermissionResult
     }
 
+    const hookDecision = await runPrintPermissionRequestHooks(
+      tool,
+      input,
+      toolUseContext,
+      toolUseId,
+      mainPermissionResult,
+    )
+    if (hookDecision) return hookDecision
+
     // Race the permission prompt tool against the abort signal.
     //
     // Why we need this: The permission prompt tool may block indefinitely waiting
@@ -4935,6 +5375,32 @@ export function createCanUseToolWithPermissionPrompt(
   return canUseTool
 }
 
+// PermissionRequest hooks answer a --print prompt before it is rejected or
+// handed to --permission-prompt-tool (official 2.1.268). A prompt that needs
+// a real user skips them, as in the SDK host path.
+function runPrintPermissionRequestHooks(
+  tool: Tool,
+  input: Record<string, unknown>,
+  toolUseContext: ToolUseContext,
+  toolUseId: string,
+  decision: PermissionDecision,
+): Promise<PermissionDecision | null> {
+  if (
+    decision.behavior !== 'ask' ||
+    requiresExplicitUserApproval(decision.decisionReason)
+  ) {
+    return Promise.resolve(null)
+  }
+  return runPermissionRequestHooksForHeadlessAgent(
+    tool,
+    input,
+    toolUseId,
+    toolUseContext,
+    toolUseContext.getAppState().toolPermissionContext.mode,
+    decision.suggestions,
+  )
+}
+
 // Exported for testing — regression: this used to crash at construction when
 // getMcpTools() was empty (before per-server connects populated appState).
 export function getCanUseToolFn(
@@ -4954,15 +5420,27 @@ export function getCanUseToolFn(
       assistantMessage,
       toolUseId,
       forceDecision,
-    ) =>
-      forceDecision ??
-      (await hasPermissionsToUseTool(
-        tool,
-        input,
-        toolUseContext,
-        assistantMessage,
-        toolUseId,
-      ))
+    ) => {
+      const decision =
+        forceDecision ??
+        (await hasPermissionsToUseTool(
+          tool,
+          input,
+          toolUseContext,
+          assistantMessage,
+          toolUseId,
+        ))
+      if (decision.behavior !== 'ask') return decision
+      return (
+        (await runPrintPermissionRequestHooks(
+          tool,
+          input,
+          toolUseContext,
+          toolUseId,
+          decision,
+        )) ?? decision
+      )
+    }
   }
   // Lazy lookup: MCP connects are per-server incremental in print mode, so
   // the tool may not be in appState yet at init time. Resolve on first call
@@ -5029,8 +5507,7 @@ async function handleInitializeRequest(
   if (!initialized) {
     // Apply systemPrompt/appendSystemPrompt from stdin to avoid ARG_MAX limits
     if (request.systemPrompt !== undefined) {
-      // @ts-ignore - recovered code
-      options.systemPrompt = request.systemPrompt
+      options.systemPrompt = normalizeSdkSystemPrompt(request.systemPrompt)
     }
     if (request.appendSystemPrompt !== undefined) {
       // @ts-ignore - recovered code
@@ -5245,6 +5722,22 @@ function handleSetPermissionMode(
   toolPermissionContext: ToolPermissionContext,
   output: Stream<StdoutMessage>,
 ): ToolPermissionContext {
+  request = {
+    ...request,
+    mode: normalizePermissionModeAlias(request.mode) as InternalPermissionMode,
+  }
+  if (!(PERMISSION_MODES as readonly string[]).includes(request.mode)) {
+    output.enqueue({
+      type: 'control_response',
+      response: {
+        subtype: 'error',
+        request_id: requestId,
+        error: `Cannot set permission mode: must be one of ${[...PERMISSION_MODES].sort().join(', ')}`,
+        error_code: 'invalid_mode',
+      },
+    })
+    return toolPermissionContext
+  }
   // Check if trying to switch to bypassPermissions mode
   if (request.mode === 'bypassPermissions') {
     if (isBypassPermissionsModeDisabled()) {
@@ -5255,6 +5748,7 @@ function handleSetPermissionMode(
           request_id: requestId,
           error:
             'Cannot set permission mode to bypassPermissions because it is disabled by settings or configuration',
+          error_code: 'bypass_disabled',
         },
       })
       return toolPermissionContext
@@ -5267,6 +5761,7 @@ function handleSetPermissionMode(
           request_id: requestId,
           error:
             'Cannot set permission mode to bypassPermissions because the session was not launched with --dangerously-skip-permissions',
+          error_code: 'bypass_not_launched',
         },
       })
       return toolPermissionContext
@@ -5288,6 +5783,14 @@ function handleSetPermissionMode(
         error: reason
           ? `Cannot set permission mode to auto: ${getAutoModeUnavailableNotification(reason)}`
           : 'Cannot set permission mode to auto',
+        error_code:
+          reason === 'settings'
+            ? 'auto_mode_settings'
+            : reason === 'circuit-breaker'
+              ? 'auto_mode_circuit_breaker'
+              : reason === 'model'
+                ? 'auto_mode_model'
+                : 'auto_mode_unavailable',
       },
     })
     return toolPermissionContext
@@ -5323,6 +5826,7 @@ function handleSetPermissionMode(
     },
   })
 
+  logPermissionModeChange('sdk', toolPermissionContext.mode, request.mode, 'set_permission_mode')
   return { ...next, mode: request.mode }
 }
 
@@ -5594,6 +6098,7 @@ async function loadInitialMessages(
     teleport: string | true | null | undefined
     resume: string | boolean | undefined
     resumeSessionAt: string | undefined
+    resumeDropsTurn?: string
     forkSession: boolean | undefined
     outputFormat: string | undefined
     sessionStartHooksPromise?: ReturnType<typeof processSessionStartHooks>
@@ -5660,6 +6165,14 @@ async function loadInitialMessages(
             : result,
         )
         restoreSessionCosts(result, { forkSession: options.forkSession })
+        setAppState(prev => {
+          const toolPermissionContext = restorePermissionModeForResume(
+            prev.toolPermissionContext,
+            result.permissionMode,
+          )
+          savePermissionMode(toolPermissionContext.mode)
+          return { ...prev, toolPermissionContext }
+        })
         restoreGoalSessionFromLog(result.messages, setAppState)
 
         // Write mode entry for the resumed session
@@ -5815,6 +6328,21 @@ async function loadInitialMessages(
           return { messages: [] }
         }
 
+        if (options.resumeDropsTurn) {
+          const reason = checkResumeDropsTurn(
+            result.messages.slice(index + 1),
+            options.resumeDropsTurn,
+          )
+          if (reason) {
+            emitLoadError(
+              `${RESUME_DROPS_TURN_PREFIX} ${reason}`,
+              options.outputFormat,
+            )
+            gracefulShutdownSync(1)
+            return { messages: [] }
+          }
+        }
+
         result.messages = index >= 0 ? result.messages.slice(0, index + 1) : []
       }
 
@@ -5862,6 +6390,14 @@ async function loadInitialMessages(
           : result,
       )
       restoreSessionCosts(result, { forkSession: options.forkSession })
+      setAppState(prev => {
+        const toolPermissionContext = restorePermissionModeForResume(
+          prev.toolPermissionContext,
+          result.permissionMode,
+        )
+        savePermissionMode(toolPermissionContext.mode)
+        return { ...prev, toolPermissionContext }
+      })
       restoreGoalSessionFromLog(result.messages, setAppState)
 
       // Write mode entry for the resumed session

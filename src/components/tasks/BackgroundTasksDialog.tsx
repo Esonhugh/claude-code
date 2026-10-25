@@ -44,6 +44,7 @@ import {
 } from 'src/tasks/types.js'
 import type { DeepImmutable } from 'src/types/utils.js'
 import { intersperse } from 'src/utils/array.js'
+import { isFullscreenActive } from 'src/utils/fullscreen.js'
 import { TEAM_LEAD_NAME } from 'src/utils/swarm/constants.js'
 import { stopUltraplan } from '../../commands/ultraplan.js'
 import type { CommandResultDisplay } from '../../commands.js'
@@ -53,6 +54,7 @@ import { renderAnsiPreviewLine, renderAnsiPreviewLines } from './ansiPreviewRend
 import {
   terminalPreviewHeight,
   terminalPreviewLines,
+  terminalPreviewVisibleRows,
 } from './terminalPreview.js'
 import type { KeyboardEvent } from '../../ink/events/keyboard-event.js'
 import { Box, Text } from '../../ink.js'
@@ -92,6 +94,12 @@ function TerminalDetailDialog({
   task: DeepImmutable<TerminalTaskState>
   onBack: () => void
 }): React.ReactNode {
+  const { rows } = useTerminalSize()
+  const visibleRows = terminalPreviewVisibleRows(
+    task.rows,
+    rows,
+    isFullscreenActive(),
+  )
   return (
     <Dialog
       title="Terminal details"
@@ -104,32 +112,41 @@ function TerminalDetailDialog({
       )}
     >
       <Box flexDirection="column">
-        <Text>
-          <Text bold>Session:</Text> {task.sessionId}
-        </Text>
-        <Text>
-          <Text bold>Status:</Text> {task.closed ? 'closed' : task.status}
-        </Text>
-        <Text>
-          <Text bold>Command:</Text> {task.command}
-        </Text>
-        <Text>
-          <Text bold>Args:</Text> {JSON.stringify(task.args)}
-        </Text>
-        <Text>
-          <Text bold>CWD:</Text> {task.cwd}
-        </Text>
-        <Text bold>Preview:</Text>
+        <Box flexDirection="column" flexShrink={0}>
+          <Text>
+            <Text bold>Session:</Text> {task.sessionId}
+          </Text>
+          <Text>
+            <Text bold>Status:</Text> {task.closed ? 'closed' : task.status}
+          </Text>
+          <Text>
+            <Text bold>Command:</Text> {task.command}
+          </Text>
+          <Text>
+            <Text bold>Args:</Text> {JSON.stringify(task.args)}
+          </Text>
+          <Text>
+            <Text bold>CWD:</Text> {task.cwd}
+          </Text>
+          <Text bold>Preview:</Text>
+        </Box>
+        {/* Shrinks when the dialog area is shorter than the PTY; flex-end keeps
+            the newest lines visible and clips the oldest. */}
         <Box
           borderStyle="round"
           paddingX={1}
           flexDirection="column"
-          height={terminalPreviewHeight(task.rows)}
+          width="100%"
+          height={terminalPreviewHeight(visibleRows)}
+          overflow="hidden"
+          justifyContent="flex-end"
         >
-          {renderAnsiPreviewLines(
-            terminalPreviewLines(task.preview, task.rows, task.rows).join('\n'),
-            task.cols,
-          ).map(renderAnsiPreviewLine)}
+          <Box flexDirection="column" flexShrink={0}>
+            {renderAnsiPreviewLines(
+              terminalPreviewLines(task.preview, task.rows, visibleRows).join('\n'),
+              task.cols,
+            ).map(renderAnsiPreviewLine)}
+          </Box>
         </Box>
       </Box>
     </Dialog>
@@ -620,6 +637,7 @@ export function BackgroundTasksDialog({
                 : undefined
             }
             onBack={goBackToList}
+            onSaved={message => onDone(message, { display: 'system' })}
             key={`workflow-${task.id}`}
           />
         )

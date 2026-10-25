@@ -10,6 +10,7 @@ import {
   getClaudeConfigHomeDir,
   isEnvDefinedFalsy,
   isEnvTruthy,
+  isSafeMode,
 } from '../utils/envUtils.js'
 import { findCanonicalGitRoot } from '../utils/git.js'
 import { sanitizePath } from '../utils/path.js'
@@ -28,6 +29,10 @@ import {
  *   5. Default: enabled
  */
 export function isAutoMemoryEnabled(): boolean {
+  // Safe mode wins over every opt-in, like official.
+  if (isSafeMode()) {
+    return false
+  }
   const envVal = process.env.CLAUDE_CODE_DISABLE_AUTO_MEMORY
   if (isEnvTruthy(envVal)) {
     return false
@@ -55,6 +60,27 @@ export function isAutoMemoryEnabled(): boolean {
 }
 
 /**
+ * Whether memory recall goes through the SearchMemory tool's SQLite index
+ * (memory.sqlite.enabled) instead of the MEMORY.md index in context.
+ * Needs the Bun runtime for bun:sqlite; elsewhere MEMORY.md stays loaded.
+ * Fixed for the session so the tool list and memory prompt never disagree.
+ */
+export const isSqliteMemoryEnabled = memoize(
+  (): boolean =>
+    typeof Bun !== 'undefined' &&
+    isAutoMemoryEnabled() &&
+    getInitialSettings().memory?.sqlite?.enabled === true,
+)
+
+/** Scopes SearchMemory may search (memory.sqlite.scopes, default all). */
+export const getSqliteMemoryScopes = memoize(
+  (): readonly SqliteMemoryScope[] =>
+    getInitialSettings().memory?.sqlite?.scopes ?? ['user', 'project', 'session'],
+)
+
+export type SqliteMemoryScope = 'user' | 'project' | 'session'
+
+/**
  * Whether the extract-memories background agent will run this session.
  *
  * The main agent's prompt always has full save instructions regardless of
@@ -62,12 +88,17 @@ export function isAutoMemoryEnabled(): boolean {
  * skips that range (hasMemoryWritesSince in extractMemories.ts); when it
  * doesn't, the background agent catches anything missed.
  *
+ * Local builds follow isAutoMemoryEnabled() instead of the remote
+ * tengu_passport_quail gate, so CLAUDE_CODE_DISABLE_AUTO_MEMORY and the
+ * autoMemoryEnabled setting turn extraction off. Non-interactive sessions
+ * still need tengu_slate_thimble to avoid draining an extraction before exit.
+ *
  * Callers must also gate on feature('EXTRACT_MEMORIES') — that check cannot
  * live inside this helper because feature() only tree-shakes when used
  * directly in an `if` condition.
  */
 export function isExtractModeActive(): boolean {
-  if (!getFeatureValue_CACHED_MAY_BE_STALE('tengu_passport_quail', false)) {
+  if (!isAutoMemoryEnabled()) {
     return false
   }
   return (

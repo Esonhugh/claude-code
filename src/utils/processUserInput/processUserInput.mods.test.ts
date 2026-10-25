@@ -5,6 +5,7 @@ import ts from 'typescript'
 import { dispatchModEvent } from '../../services/mods/dispatch.js'
 import { runModPromptSubmit } from '../../services/mods/promptAdapter.js'
 import { formatPluginPrompt } from '../../services/mods/pluginPrompt.js'
+import { formatPeerPrompt } from '../peerProtocol.js'
 import type { ModDispatchHook } from '../../services/mods/types.js'
 
 // Execute the production functions, including processUserInputBase and
@@ -127,7 +128,9 @@ function fixture(
             .map((block: any) => block.text)
             .join('\n'),
     formatPluginPrompt,
+    formatPeerPrompt,
     queryCheckpoint: () => {},
+    logForDebugging: () => {},
     logEvent: () => {},
     feature: () => false,
     executeUserPromptSubmitHooks: async function* (text: string) {
@@ -600,6 +603,25 @@ describe('processUserInput Diff Ask admission', () => {
   })
 })
 
+describe('processUserInput peer prompt framing', () => {
+  test('an idle peer prompt reaches the model framed as peer input, not as the user', async () => {
+    const raw = '<cross-session-message from="uds:/tmp/cc-socks/1.sock" from-name="alpha">\nhello\n</cross-session-message>'
+    const f = fixture()
+    const result = await f.run({
+      input: raw,
+      isMeta: true,
+      skipSlashCommands: true,
+      skipAttachments: true,
+      skipHooks: true,
+      promptSubmitMetadata: { origin: { kind: 'peer' }, wait: false },
+    })
+    expect(result.shouldQuery).toBe(true)
+    expect(userTexts(result)).toEqual([formatPeerPrompt(raw)])
+    expect(userTexts(result)[0]).toStartWith('Another Claude session sent a message:\n<cross-session-message')
+    expect(userTexts(result)[0]).toContain('permission laundering')
+  })
+})
+
 describe('processUserInput prompt.submit', () => {
   test('dequeued host history excludes full plugins and exact frames without entering the public prompt metadata', async () => {
     const called: number[] = []
@@ -634,6 +656,19 @@ describe('processUserInput prompt.submit', () => {
     ).toBe(true)
     expect(f.calls.captures).toBe(1)
     expect(f.calls.releases).toBe(1)
+  })
+
+  test('a meta prompt carries isMeta pinned and keeps its text when a hook rewrites it', async () => {
+    const seen: unknown[] = []
+    const f = fixture([
+      async (event, next) => { seen.push(event.isMeta); return next({ ...event, text: 'rewritten' }) },
+    ])
+    const meta = await f.run({ isMeta: true })
+    expect(seen).toEqual([true])
+    expect(userTexts(meta)).toEqual(['original'])
+    const typed = await f.run()
+    expect(seen).toEqual([true, undefined])
+    expect(userTexts(typed)).toEqual(['rewritten'])
   })
 
   test('rewrites actual model content and passes full downward context separately from classic truncation', async () => {
@@ -959,6 +994,7 @@ describe('processUserInput prompt.submit', () => {
       text: 'original',
       origin: { kind: 'unclassified' },
       wait: false,
+      isMeta: true,
     })
   })
 
@@ -1310,5 +1346,37 @@ describe('processUserInput prompt.submit', () => {
     const result = await f.run({ input: [image] })
     expect(userTexts(result)).toEqual([[image]])
     expect(f.events[0]?.text).toBe('')
+  })
+})
+
+describe('UserPromptSubmit runs before a skill or custom command expands (official 2.1.299)', () => {
+  const promptCommand = { findCommand: () => ({ type: 'prompt', name: 'skill' }) }
+
+  test.each(['block', 'stop'] as const)('a %s hook stops the command before it expands', async kind => {
+    const f = fixture([], true, promptCommand)
+    f.classicResults.push(kind === 'block' ? { blockingError: 'denied' } : { preventContinuation: true })
+    const result = await f.run({ input: '/skill run' })
+    expect(f.calls.slash).toBe(0)
+    expect(f.classicInputs).toEqual(['/skill run'])
+    expect(result.shouldQuery).toBe(false)
+  })
+
+  test('an accepting hook runs once and its context follows the expansion', async () => {
+    const f = fixture([], true, promptCommand)
+    f.classicResults.push({ additionalContexts: ['screened'] })
+    const result = await f.run({ input: '/skill run' })
+    expect(f.calls.slash).toBe(1)
+    expect(f.classicInputs).toEqual(['/skill run'])
+    expect(result.shouldQuery).toBe(true)
+    expect(userTexts(result)).toEqual(['/skill run'])
+    expect(additionalContexts(result)).toEqual(['screened'])
+  })
+
+  test('non-prompt commands keep running hooks after the command', async () => {
+    const f = fixture([], true, { findCommand: () => ({ type: 'local', name: 'status' }) })
+    f.classicResults.push({ blockingError: 'denied' })
+    await f.run({ input: '/status' })
+    expect(f.calls.slash).toBe(1)
+    expect(f.classicInputs).toEqual(['/status'])
   })
 })

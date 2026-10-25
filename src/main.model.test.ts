@@ -3,7 +3,7 @@ import { describe, expect, test } from 'bun:test'
 const source = await Bun.file(new URL('./main.tsx', import.meta.url)).text()
 const cliSelection = source.slice(
   source.indexOf('      const userSpecifiedModel ='),
-  source.indexOf('      const userSpecifiedFallbackModel ='),
+  source.indexOf('      const fallbackModels = resolveFallbackModels('),
 )
 const initialization = source.slice(
   source.indexOf('      // Set the CLI choice before considering an agent-definition fallback.'),

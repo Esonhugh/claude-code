@@ -4,6 +4,10 @@ import { isEffortLevel } from '../../utils/effort.js'
 import { isAbsolute } from 'node:path'
 import { readTeamFileAsync } from '../../utils/swarm/teamHelpers.js'
 import type { ModInput } from './types.js'
+import type { ToolUseContext } from '../../Tool.js'
+import type { ModSnapshot } from './runtime.js'
+import { providerForAgent } from './agentOffer.js'
+import { logForDebugging } from '../../utils/debug.js'
 import type { AppState } from '../../state/AppState.js'
 import { isTerminalTaskStatus } from '../../taskStatus.js'
 
@@ -58,15 +62,25 @@ export async function listModAgents(tasks: AppState['tasks'], names: AppState['a
   return [...result.values()]
 }
 
-export function restoreModAgentSpawnInput(value: ModInput, received: ModInput): ModInput {
-  const missing = ['isTeammate', 'parentAgentId', 'provider'].filter(key => !Object.hasOwn(value, key) && Object.hasOwn(received, key))
+// A workflow agent takes a rewrite of its prompt and model only; a resumed run takes none.
+const workflowFixedKeys = ['description', 'subagentType', 'background', 'cwd']
+const resumeFixedKeys = ['prompt', 'description', 'subagentType', 'model', 'background', 'cwd']
+
+export function restoreModAgentSpawnInput(value: ModInput, received: ModInput, onIgnored?: (key: string) => void): ModInput {
+  const fixed = received.resume !== undefined ? resumeFixedKeys : received.workflow !== undefined ? workflowFixedKeys : []
+  if (fixed.length) {
+    const changed = fixed.filter(key => !isDeepStrictEqual(value[key], received[key]))
+    for (const key of changed) onIgnored?.(key)
+    if (changed.length) value = { ...value, ...Object.fromEntries(changed.map(key => [key, received[key]])) }
+  }
+  const missing = ['isTeammate', 'parentAgentId', 'provider', 'workflow', 'resume'].filter(key => !Object.hasOwn(value, key) && Object.hasOwn(received, key))
   const restored = missing.length ? {...value, ...Object.fromEntries(missing.map(key => [key, received[key]]))} : value
   return received.isTeammate === true && ['background', 'cwd'].some(key => restored[key] !== received[key])
     ? {...restored, background:received.background, cwd:received.cwd} : restored
 }
 
 export function validateModAgentSpawnInput(value: ModInput, received: ModInput): void {
-  for (const key of ['tool_use_id', 'name', 'fork', 'isTeammate', 'parentModel', 'permissionMode', 'parentAgentId', 'provider'])
+  for (const key of ['tool_use_id', 'name', 'fork', 'isTeammate', 'workflow', 'resume', 'parentModel', 'permissionMode', 'parentAgentId', 'provider'])
     if (!isDeepStrictEqual(value[key], received[key])) throw new Error(`agent.spawn cannot rewrite ${key}`)
   const checks: [string, boolean][] = [
     ['prompt', typeof value.prompt === 'string' && value.prompt.trim() !== ''],
@@ -153,4 +167,100 @@ export function createModAgents(pluginOf: (owner: object) => { name: string; sto
       if (changed) publish()
     },
   }
+}
+
+function spawnProvider(context: ToolUseContext, snapshot: ModSnapshot, subagentType: string): ModInput {
+  const agent = context.options.agentDefinitions.activeAgents.find(candidate => candidate.agentType === subagentType)
+  return agent ? providerForAgent(agent, snapshot) : { plugin: 'engine', tier: 'core' }
+}
+
+/**
+ * Raises `agent.spawn` for a spawn whose content `workflow` or `resume` fixes:
+ * a hook's rewrite of a fixed key is left out and said once; a deny throws.
+ * Returns the input the bottom saw, or undefined when nothing listens.
+ */
+async function raiseFixedModAgentSpawn(context: ToolUseContext, build: (snapshot: ModSnapshot) => ModInput, agentId: string): Promise<ModInput | undefined> {
+  const snapshot = context.mods?.capture({})
+  try {
+    if (!snapshot?.hasHooks('agent.spawn')) return undefined
+    const input: ModInput = {
+      tool_use_id: context.toolUseId ?? '',
+      parentModel: context.options.mainLoopModel,
+      permissionMode: context.getAppState().toolPermissionContext.mode,
+      ...build(snapshot),
+      ...(context.agentId === undefined ? {} : { parentAgentId: context.agentId }),
+    }
+    const ignored = new Set<string>()
+    let started: ModInput | undefined
+    const result = await snapshot.dispatch('agent.spawn', input, async value => {
+      validateModAgentSpawnInput(value, input)
+      started ??= value
+      return { model: (started.model as string | undefined) ?? context.options.mainLoopModel, agentId }
+    }, {
+      signal: context.abortController.signal,
+      validateInput: value => validateModAgentSpawnInput(value, input),
+      restoreInput: (value, received) => restoreModAgentSpawnInput(value, received, key => {
+        if (ignored.has(key)) return
+        ignored.add(key)
+        logForDebugging(`agent.spawn: ${received.resume !== undefined ? 'a resumed run' : "a workflow agent's"} ${key} is fixed; the rewrite is left out`)
+      }),
+    }) as { deny?: string }
+    if (typeof result.deny === 'string') throw new Error(result.deny)
+    if (!started) throw new Error('agent.spawn: a hook answered without passing the spawn on')
+    return started
+  } finally {
+    snapshot?.release()
+  }
+}
+
+/**
+ * Raises `agent.spawn` for a workflow script's `agent()` call. A hook may
+ * rewrite its prompt and model; a deny is the error `agent()` throws.
+ */
+export async function raiseModWorkflowAgentSpawn(context: ToolUseContext, spawn: {
+  prompt: string
+  model?: string
+  agentId: string
+  runId: string
+  agentIndex: number
+  description: string
+  subagentType: string
+}): Promise<{ prompt: string; model?: string }> {
+  const started = await raiseFixedModAgentSpawn(context, snapshot => ({
+    prompt: spawn.prompt,
+    description: spawn.description,
+    subagentType: spawn.subagentType,
+    provider: spawnProvider(context, snapshot, spawn.subagentType),
+    background: false,
+    fork: false,
+    workflow: { runId: spawn.runId, agentIndex: spawn.agentIndex },
+    ...(spawn.model === undefined ? {} : { model: spawn.model }),
+  }), spawn.agentId)
+  return started ? { prompt: started.prompt as string, model: started.model as string | undefined } : { prompt: spawn.prompt, model: spawn.model }
+}
+
+/**
+ * Raises `agent.spawn` with `resume` before a saved subagent run continues.
+ * A hook can only refuse it; the deny is the resume's error and starts nothing.
+ */
+export async function raiseModAgentResume(context: ToolUseContext, resume: {
+  agentId: string
+  prompt: string
+  description: string
+  subagentType: string
+  model?: string
+  permissionMode: string
+  fork: boolean
+}): Promise<void> {
+  await raiseFixedModAgentSpawn(context, snapshot => ({
+    prompt: resume.prompt,
+    description: resume.description,
+    subagentType: resume.subagentType,
+    provider: spawnProvider(context, snapshot, resume.subagentType),
+    permissionMode: resume.permissionMode,
+    background: true,
+    fork: resume.fork,
+    resume: { agentId: resume.agentId },
+    ...(resume.model === undefined ? {} : { model: resume.model }),
+  }), resume.agentId)
 }

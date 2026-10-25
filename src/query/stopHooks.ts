@@ -45,6 +45,10 @@ import {
   createUserInterruptionMessage,
   createUserMessage,
 } from '../utils/messages.js'
+import {
+  SUBAGENT_HANDBACK_ENFORCE_MESSAGE,
+  takeSubagentHandbackBounce,
+} from '../utils/subagentHandback.js'
 import type { SystemPrompt } from '../utils/systemPromptType.js'
 import { isTerminalTaskStatus } from '../taskStatus.js'
 import { isBackgroundTask } from '../tasks/types.js'
@@ -198,6 +202,21 @@ export async function* handleStopHooks(
     } catch {
       // Failures are silent — this is dogfooding cleanup, not critical path
     }
+  }
+
+  // A subagent that owes its caller a hand-back is told to deliver it before
+  // its turn may end (at most three times; after that nothing is delivered).
+  // Side queries that share the agent's id (summaries, forks) never bounce.
+  if (
+    querySource.startsWith('agent:') &&
+    takeSubagentHandbackBounce(toolUseContext.agentId)
+  ) {
+    const reminder = createUserMessage({
+      content: SUBAGENT_HANDBACK_ENFORCE_MESSAGE,
+      isMeta: true,
+    })
+    yield reminder
+    return { blockingErrors: [reminder], preventContinuation: false }
   }
 
   const sessionId = getSessionId()
@@ -389,6 +408,21 @@ export async function* handleStopHooks(
         } else {
           hookErrors.push(result.blockingError.blockingError)
         }
+      }
+      // additionalContext is non-error feedback: the turn continues with it,
+      // without labeling it a hook error.
+      if (result.additionalContexts && result.additionalContexts.length > 0) {
+        const hookEvent = toolUseContext.agentId ? 'SubagentStop' : 'Stop'
+        const contextMessage = createAttachmentMessage({
+          type: 'hook_additional_context',
+          content: result.additionalContexts,
+          hookName: hookEvent,
+          toolUseID: stopHookToolUseID,
+          hookEvent,
+        })
+        blockingErrors.push(contextMessage)
+        yield contextMessage
+        hasOutput = true
       }
       // Check if hook wants to prevent continuation
       if (result.preventContinuation) {

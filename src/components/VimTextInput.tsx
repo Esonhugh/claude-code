@@ -4,7 +4,9 @@ import { useClipboardImageHint } from '../hooks/useClipboardImageHint.js'
 import { useVimInput } from '../hooks/useVimInput.js'
 import { Box, color, useTerminalFocus, useTheme } from '../ink.js'
 import type { VimTextInputProps } from '../types/textInputTypes.js'
+import { firstGrapheme } from '../utils/intl.js'
 import type { TextHighlight } from '../utils/textHighlighting.js'
+import { getVisualRange } from '../vim/visual.js'
 import { BaseTextInput } from './BaseTextInput.js'
 
 export type Props = VimTextInputProps & {
@@ -50,7 +52,7 @@ export default function VimTextInput(props: Props): React.ReactNode {
     onUndo: props.onUndo,
   })
 
-  const { mode, setMode } = vimInputState
+  const { mode, setMode, visualAnchor } = vimInputState
 
   React.useEffect(() => {
     if (props.initialMode && props.initialMode !== mode) {
@@ -58,13 +60,35 @@ export default function VimTextInput(props: Props): React.ReactNode {
     }
   }, [props.initialMode, mode, setMode])
 
+  // BaseTextInput drops highlights that cover the cursor, so the selection is
+  // split around the cursor cell, which is already drawn inverted.
+  const highlights = React.useMemo((): TextHighlight[] | undefined => {
+    if (visualAnchor === null) return props.highlights
+    const { from, to } = getVisualRange(
+      props.value,
+      visualAnchor,
+      props.cursorOffset,
+      mode === 'VISUAL LINE',
+    )
+    const cursorEnd =
+      props.cursorOffset +
+      (firstGrapheme(props.value.slice(props.cursorOffset)).length || 1)
+    const selection: TextHighlight[] = [
+      { start: from, end: Math.min(props.cursorOffset, to) },
+      { start: Math.max(cursorEnd, from), end: to },
+    ]
+      .filter(range => range.end > range.start)
+      .map(range => ({ ...range, color: undefined, inverse: true, priority: 30 }))
+    return [...(props.highlights ?? []), ...selection]
+  }, [visualAnchor, mode, props.value, props.cursorOffset, props.highlights])
+
   return (
     <Box flexDirection="column">
       <BaseTextInput
         inputState={vimInputState}
         terminalFocus={isTerminalFocused}
-        highlights={props.highlights}
         {...props}
+        highlights={highlights}
       />
     </Box>
   )

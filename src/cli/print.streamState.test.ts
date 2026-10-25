@@ -44,6 +44,10 @@ if (process.env[childFlag] !== '1') {
   const toolPool = await import('../tools.js')
   const { SDKMessageSchema } = await import('../entrypoints/sdk/coreSchemas.js')
   const { SandboxManager } = await import('../utils/sandbox/sandbox-adapter.js')
+  const { updateSettingsForSource } = await import('../utils/settings/settings.js')
+  // What /autocompact saves for the model under test.
+  const setModelWindow = (autoCompactWindow: number | undefined) =>
+    updateSettingsForSource('userSettings', { modelSettings: { 'claude-sonnet-4-6': { autoCompactWindow } } })
 
   for (const mode of ['remote-eof', 'local-eof', 'remote-live', 'remote-disabled-settings', 'remote-percent'] as const) {
     test(`${mode}: snapshots, live changes, reset and disposal`, async () => {
@@ -57,7 +61,7 @@ if (process.env[childFlag] !== '1') {
       if (mode === 'remote-disabled-settings') {
         delete process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW
         process.env.DISABLE_AUTO_COMPACT = '1'
-        store.setState(s => ({ ...s, autoCompactWindow: 150_000 }))
+        setModelWindow(150_000)
       }
       if (mode === 'remote-percent') process.env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE = '50'
       if (mode.startsWith('remote')) process.env.CLAUDE_CODE_REMOTE = '1'
@@ -95,8 +99,9 @@ if (process.env[childFlag] !== '1') {
         store.setState(s => ({ ...s, goalStatus: { ...s.goalStatus } }))
         store.setState(s => ({ ...s, goalStatus: { active: true, id: 'goal', prompt: 'ship it', iterations: 1, setAt: 123, tokensAtStart: 11, lastReason: 'still working' } }))
         store.setState(s => ({ ...s, goalStatus: { active: false } }))
+        setModelWindow(150_000)
         delete process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW
-        store.setState(s => ({ ...s, autoCompactWindow: 150_000 }))
+        store.setState(s => ({ ...s, settings: { ...s.settings } }))
         store.setState(s => ({ ...s, settings: { ...s.settings } }))
         bootstrap.switchSession(asSessionId(randomUUID()))
         yield control('barrier', 'mcp_status')
@@ -141,6 +146,7 @@ if (process.env[childFlag] !== '1') {
         delete process.env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE
         delete process.env.CLAUDE_CODE_REMOTE
         delete process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW
+        setModelWindow(undefined)
         for (const mock of mocks) mock.mockRestore()
       }
     })

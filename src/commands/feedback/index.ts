@@ -1,4 +1,5 @@
 import type { Command } from '../../commands.js'
+import { isAnalyticsDisabled } from '../../services/analytics/config.js'
 import { isPolicyAllowed } from '../../services/policyLimits/index.js'
 import { isEnvTruthy } from '../../utils/envUtils.js'
 import { isEssentialTrafficOnly } from '../../utils/privacyLevel.js'
@@ -11,8 +12,11 @@ const feedback = {
   name: 'feedback',
   description: `Submit feedback about Claude Code`,
   argumentHint: '[report]',
+  immediate: true,
+  // Uploads the transcript to Anthropic, so it follows the analytics opt-in.
   isEnabled: () =>
     !(
+      isAnalyticsDisabled() ||
       isEnvTruthy(process.env.CLAUDE_CODE_USE_BEDROCK) ||
       isEnvTruthy(process.env.CLAUDE_CODE_USE_VERTEX) ||
       isEnvTruthy(process.env.CLAUDE_CODE_USE_FOUNDRY) ||

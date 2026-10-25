@@ -56,6 +56,7 @@ export function CoordinatorTaskPanel({
   const selectedIndex = tasksSelected ? coordinatorTaskIndex : undefined;
   const setAppState = useSetAppState();
   const verbose = useAppState((s) => s.verbose);
+  const ultracodeActive = useAppState((s) => s.effortValue === "ultracode");
   const { columns } = useTerminalSize();
   const setCoordinatorSelection = React.useCallback(
     (index: number, targetId?: string) => {
@@ -120,6 +121,7 @@ export function CoordinatorTaskPanel({
     tasks,
     selectedIndex,
     viewingAgentTaskId,
+    ultracodeActive,
   });
   const selectedRow = rows.find((row) => row.selected);
   const selectedTask = selectedRow?.taskId
@@ -297,6 +299,11 @@ function SessionRow({
               <Text dimColor>
                 {showDetails || row.kind === "workflow" ? row.statusText : ""}
               </Text>
+            </Box>
+          )}
+          {row.warning !== undefined && (
+            <Box marginLeft={2} flexShrink={0}>
+              <Text color="warning">{row.warning}</Text>
             </Box>
           )}
           {showTools && (

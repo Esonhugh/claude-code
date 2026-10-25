@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises'
-import { dirname, isAbsolute, join, posix } from 'node:path'
+import { dirname, isAbsolute, join, posix, sep } from 'node:path'
 import { unzipSync } from 'fflate'
 import { z } from 'zod'
 import type { BuiltinPluginDefinition } from '../types/plugin.js'
@@ -12,6 +12,8 @@ import { isAnthropicTelemetryEnabled } from '../services/analytics/config.js'
 import { clearPluginCache } from '../utils/plugins/pluginLoader.js'
 import { lock } from '../utils/lockfile.js'
 import { registerBuiltinPlugin } from './builtinPlugins.js'
+import { loadModDeclaration } from '../services/mods/loader.js'
+import type { ModDeclaration } from '../services/mods/types.js'
 
 const verifiedDefinitions = new WeakMap<BuiltinPluginDefinition, string>()
 function definitionCoordinates(definition: BuiltinPluginDefinition): string {
@@ -116,14 +118,21 @@ export function unzipArchive(bytes: Uint8Array): Record<string, Uint8Array> {
 }
 
 async function treeDigest(root: string, relative = ''): Promise<string> {
-  const hash = createHash('sha256')
-  for (const name of (await readdir(join(root, relative), { withFileTypes: true }))
+  const entries = (await readdir(join(root, relative), { withFileTypes: true }))
     .filter(entry => relative !== '' || entry.name !== '.complete')
-    .sort((left, right) => left.name.localeCompare(right.name))) {
+    .sort((left, right) => left.name.localeCompare(right.name))
+  // Read in parallel (the tree is ~850 files and is checked on every launch),
+  // hash in sorted order so the digest matches existing .complete files.
+  const contents = await Promise.all(entries.map(name => {
+    const path = relative ? `${relative}/${name.name}` : name.name
+    return name.isDirectory() ? treeDigest(root, path) : readFile(join(root, path))
+  }))
+  const hash = createHash('sha256')
+  entries.forEach((name, index) => {
     const path = relative ? `${relative}/${name.name}` : name.name
     hash.update(name.isDirectory() ? `d\0${path}\0` : `f\0${path}\0`)
-    hash.update(name.isDirectory() ? await treeDigest(root, path) : await readFile(join(root, path)))
-  }
+    hash.update(contents[index]!)
+  })
   return hash.digest('hex')
 }
 
@@ -194,6 +203,42 @@ export async function readOfficialBuiltinModDefinitions(
   return { definitions, files }
 }
 
+const verifiedRoots = new Set<string>()
+
+/**
+ * Scan a Mod's modules. The official built-in tree is immutable and
+ * digest-checked at every launch, so its scan result (~190 ms for agents-md)
+ * is cached beside the tree; any other input is scanned every time.
+ */
+export async function loadModDeclarationCached(
+  input: Parameters<typeof loadModDeclaration>[0],
+): Promise<ModDeclaration> {
+  const root = [...verifiedRoots].find(candidate => input.pluginRoot.startsWith(candidate + sep))
+  if (!root) return loadModDeclaration(input)
+  const key = createHash('sha256').update(JSON.stringify({
+    version: typeof MACRO !== 'undefined' ? MACRO.VERSION : '0.0.0-dev',
+    name: input.name, storageId: input.storageId, pluginRoot: input.pluginRoot, entrypoints: input.entrypoints,
+    options: input.options ?? null, fingerprintOptions: input.fingerprintOptions ?? null, tier: input.tier ?? null,
+  })).digest('hex')
+  const file = join(`${root}.declarations`, `${key}.json`)
+  try {
+    const cached = JSON.parse(await readFile(file, 'utf8'))
+    if (cached.key === key) return cached.declaration as ModDeclaration
+  } catch {
+    // Missing or unreadable entry: scan and rewrite it below.
+  }
+  const declaration = await loadModDeclaration(input)
+  try {
+    await mkdir(dirname(file), { recursive: true })
+    const temporary = `${file}.tmp.${process.pid}.${randomUUID()}`
+    await writeFile(temporary, JSON.stringify({ key, declaration }))
+    await rename(temporary, file)
+  } catch {
+    // The cache is an optimization; a failed write only costs the next launch a scan.
+  }
+  return declaration
+}
+
 export async function initializeOfficialBuiltinMods(
   archivePath: string,
   cacheRoot: string,
@@ -207,6 +252,7 @@ export async function initializeOfficialBuiltinMods(
     bytes,
     validate: validateOfficialBuiltinModsProvenance,
   })
+  verifiedRoots.add(root)
   for (const definition of await loadBuiltinModDefinitions(root)) {
     if(options.excludeDiff && definition.name === 'diff')continue
     verifiedDefinitions.set(definition, definitionCoordinates(definition))

@@ -32,6 +32,7 @@ import type {
   SessionCostStateEntry,
 } from '../types/logs.js'
 import type { Message } from '../types/message.js'
+import type { PermissionMode } from '../types/permissions.js'
 import { renameRecordingForSession } from './asciicast.js'
 import { clearMemoryFileCaches } from './claudemd.js'
 import {
@@ -48,6 +49,7 @@ import { fileHistoryRestoreStateFromLog } from './fileHistory.js'
 import { createAttachmentMessage } from './attachments.js'
 import { createSystemMessage } from './messages.js'
 import { parseUserSpecifiedModel } from './model/model.js'
+import { restorePermissionModeForResume } from './permissions/permissionSetup.js'
 import { getPlansDirectory } from './plans.js'
 import { setCwd } from './Shell.js'
 import {
@@ -57,6 +59,7 @@ import {
   resetSessionFilePointer,
   restoreSessionMetadata,
   saveMode,
+  savePermissionMode,
   saveWorktreeState,
 } from './sessionStorage.js'
 import { isTodoV2Enabled } from './tasks.js'
@@ -336,6 +339,7 @@ type ResumeLoadResult = {
   customTitle?: string
   tag?: string
   mode?: 'coordinator' | 'normal'
+  permissionMode?: PermissionMode
   worktreeSession?: PersistedWorktreeSession | null
   devModsFolder?: string
   prNumber?: number
@@ -563,8 +567,15 @@ export async function processResumedConversation(
     context.agentDefinitions,
   )
 
+  const toolPermissionContext = restorePermissionModeForResume(
+    context.initialState.toolPermissionContext,
+    result.permissionMode,
+  )
+  savePermissionMode(toolPermissionContext.mode)
+
   let initialState: AppState = {
     ...context.initialState,
+    toolPermissionContext,
     ...(resumedAgentType && { agent: resumedAgentType }),
     ...(restoredAttribution && { attribution: restoredAttribution }),
     ...(standaloneAgentContext && { standaloneAgentContext }),

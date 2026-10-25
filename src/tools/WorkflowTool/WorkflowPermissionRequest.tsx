@@ -154,18 +154,25 @@ export function WorkflowPermissionRequest({
           following phases:
         </Text>
         {preview.phases.length > 0 ? (
-          <Box flexDirection="column" marginTop={1}>
+          <Box flexDirection="column" paddingLeft={2}>
             {preview.phases.map((phase, index) => (
               <Box key={`${phase.title}-${index}`} flexDirection="column">
                 <Text>
                   {index + 1}. {phase.title}
                   {phase.detail ? ` — ${phase.detail}` : ''}
                 </Text>
-                {phase.prompts.map(prompt => (
-                  <Text key={prompt} dimColor>
-                    · &quot;{prompt}&quot;
-                  </Text>
-                ))}
+                {phase.agents > 0 && (
+                  <Box paddingLeft={3}>
+                    <Text dimColor>
+                      {[
+                        ...phase.prompts.slice(0, 2).map(prompt => `· "${prompt}"`),
+                        ...(phase.agents > Math.min(phase.prompts.length, 2)
+                          ? [`+${phase.agents - Math.min(phase.prompts.length, 2)} more`]
+                          : []),
+                      ].join('  ')}
+                    </Text>
+                  </Box>
+                )}
               </Box>
             ))}
           </Box>

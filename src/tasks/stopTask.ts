@@ -2,7 +2,7 @@
 // Used by TaskStopTool (LLM-invoked) and SDK stop_task control request.
 
 import type { AppState } from '../state/AppState.js'
-import type { TaskStateBase } from '../Task.js'
+import type { TaskStateBase, TaskStatus } from '../Task.js'
 import { getTaskByType } from '../tasks.js'
 import { isLocalShellTask } from './LocalShellTask/guards.js'
 import { isLiveLocalAgentTask, isLocalAgentTask, killAsyncAgent } from './LocalAgentTask/LocalAgentTask.js'
@@ -13,6 +13,7 @@ export class StopTaskError extends Error {
   constructor(
     message: string,
     public readonly code: 'not_found' | 'not_running' | 'unsupported_type',
+    public readonly taskStatus?: TaskStatus,
   ) {
     super(message)
     this.name = 'StopTaskError'
@@ -54,6 +55,7 @@ export async function stopTask(
     throw new StopTaskError(
       `Task ${taskId} is not running (status: ${task.status})`,
       'not_running',
+      task.status,
     )
   }
 

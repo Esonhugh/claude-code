@@ -46,7 +46,12 @@ import {
   getOriginalCwd,
 } from '../bootstrap/state.js'
 import { truncateEntrypointContent } from '../memdir/memdir.js'
-import { getAutoMemEntrypoint, isAutoMemoryEnabled } from '../memdir/paths.js'
+import { neutralizeMemoryContent } from '../memdir/neutralizeMemoryContent.js'
+import {
+  getAutoMemEntrypoint,
+  isAutoMemoryEnabled,
+  isSqliteMemoryEnabled,
+} from '../memdir/paths.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../services/analytics/growthbook.js'
 import {
   getCurrentProjectConfig,
@@ -378,13 +383,16 @@ function parseMemoryFileContent(
       ? extractIncludePathsFromTokens(tokens, includeBasePath)
       : []
 
-  // Truncate MEMORY.md entrypoints to the line AND byte caps
+  // Truncate MEMORY.md entrypoints to the line AND byte caps, then neutralize
+  // forged harness markup and invisible characters
   let finalContent = strippedContent
   if (type === 'AutoMem' || type === 'TeamMem') {
-    finalContent = truncateEntrypointContent(strippedContent).content
+    finalContent = neutralizeMemoryContent(
+      truncateEntrypointContent(strippedContent).content,
+    )
   }
 
-  // Covers frontmatter strip, HTML comment strip, and MEMORY.md truncation
+  // Covers frontmatter strip, HTML comment strip, and MEMORY.md truncation/neutralization
   const contentDiffersFromDisk = finalContent !== rawContent
   return {
     info: {
@@ -1151,10 +1159,9 @@ export function getLargeMemoryFiles(files: MemoryFileInfo[]): MemoryFileInfo[] {
 export function filterInjectedMemoryFiles(
   files: MemoryFileInfo[],
 ): MemoryFileInfo[] {
-  const skipMemoryIndex = getFeatureValue_CACHED_MAY_BE_STALE(
-    'tengu_moth_copse',
-    false,
-  )
+  const skipMemoryIndex =
+    isSqliteMemoryEnabled() ||
+    getFeatureValue_CACHED_MAY_BE_STALE('tengu_moth_copse', false)
   if (!skipMemoryIndex) return files
   return files.filter(f => f.type !== 'AutoMem' && f.type !== 'TeamMem')
 }

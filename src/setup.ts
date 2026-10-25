@@ -339,6 +339,16 @@ export async function setup(
     // touch projectRoot — that's a throwaway worktree, project stays stable.)
     setProjectRoot(getCwd())
     saveWorktreeState(worktreeSession)
+    if (feature('BG_SESSIONS') && process.env.CLAUDE_JOB_DIR) {
+      const { recordJobWorktree } = await import('./daemon/protocol.js')
+      recordJobWorktree({
+        worktreePath: worktreeSession.worktreePath,
+        worktreeBranch: worktreeSession.worktreeBranch,
+        originalCwd: worktreeSession.originalCwd,
+        originalHeadCommit: worktreeSession.originalHeadCommit,
+        hookBased: worktreeSession.hookBased,
+      })
+    }
     // Clear memory files cache since originalCwd has changed
     clearMemoryFileCaches()
     // Settings cache was populated in init() (via applySafeConfigEnvironmentVariables)

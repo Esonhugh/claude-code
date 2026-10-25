@@ -12,14 +12,19 @@ import { getProcessPidDomain, getProcessStart } from './genericProcessUtils.js'
 import { dequeueAll, getCommandQueue } from './messageQueueManager.js'
 import { formatPeerAddress, formatPeerMessage, peerKeyFilename } from './peerProtocol.js'
 import { resetSettingsCache } from './settings/settingsCache.js'
-import { listAllLiveSessions, receivePeerMessageStatus, resolvePeerSession, sendToUdsSocket } from './udsClient.js'
+import { listAllLiveSessions, receivePeerMessageStatus, resolvePeerSession, sendToUdsSocket, subscribePeerIdle } from './udsClient.js'
 import {
   getDefaultUdsSocketPath,
   getHeldPeerMessageCount,
   getUdsMessagingSocketPath,
   refreshPeerInboundPolicy,
+  resolveHeldPeerMessage,
   setOnEnqueue,
+  setOnPeerHeld,
+  setOnPeerHeldReleased,
+  setOnPeerNotice,
   setPeerPermissionContext,
+  setPeerSessionIdle,
   startUdsMessaging,
   stopUdsMessaging,
 } from './udsMessaging.js'
@@ -66,9 +71,31 @@ beforeEach(async () => {
   dequeueAll()
 })
 
+/** A peer inbox in the receiver's socket namespace that records every frame it gets. */
+async function peerInbox(name: string): Promise<{ path: string; frames: any[] }> {
+  const path = join(root, 'cc-socks', name)
+  const frames: any[] = []
+  server = createServer(socket => {
+    let data = ''
+    socket.setEncoding('utf8')
+    socket.on('data', chunk => { data += chunk })
+    socket.on('end', () => { for (const line of data.trim().split('\n')) if (line) frames.push(JSON.parse(line)) })
+  })
+  await new Promise<void>(resolve => server!.listen(path, resolve))
+  await chmod(path, 0o600)
+  return { path, frames }
+}
+
+async function until(check: () => boolean): Promise<void> {
+  for (let attempt = 0; attempt < 200 && !check(); attempt++) await Bun.sleep(10)
+}
+
 afterEach(async () => {
   await stopUdsMessaging()
   setOnEnqueue(null)
+  setOnPeerHeld(null)
+  setOnPeerHeldReleased(null)
+  setOnPeerNotice(null)
   if (server) await new Promise<void>(resolve => server!.close(() => resolve()))
   server = undefined
   dequeueAll()
@@ -224,7 +251,7 @@ describe('peer IPC runtime', () => {
       const pidFile = join(root, 'config/sessions', `${process.pid}.json`)
       expect(JSON.parse(await readFile(pidFile, 'utf8'))).toMatchObject({
         pid: process.pid, sessionId: getSessionId(), peerProtocol: 1,
-        peerFeatures: [], pidDomain: await getProcessPidDomain(), procStart: await getProcessStart(process.pid), messagingSocketPath: socketPath,
+        peerFeatures: ['notify_idle'], pidDomain: await getProcessPidDomain(), procStart: await getProcessStart(process.pid), messagingSocketPath: socketPath,
         version: '2.1.219-test', name: getRegisteredSessionName(),
       })
       await Promise.all([updateSessionName('worker'), updateSessionBridgeId('bridge-test')])
@@ -414,5 +441,75 @@ describe('peer IPC runtime', () => {
     expect(receivePeerMessageStatus(result.msg_id, formatPeerAddress(peer), 'held')).toBe(true)
     expect(receivePeerMessageStatus(result.msg_id, formatPeerAddress(peer), 'delivered')).toBe(true)
     expect(receivePeerMessageStatus(result.msg_id, formatPeerAddress(peer), 'delivered')).toBe(false)
+  })
+
+  test('a mode-mismatch hold reports a sanitized preview and applies deny or approve once', async () => {
+    await writeFile(join(root, 'config/settings.json'), '{}')
+    resetSettingsCache()
+    await startUdsMessaging(socketPath, { permissionMode: 'bypassPermissions' })
+    const peer = await peerInbox('prompting.sock')
+    const from = formatPeerAddress(peer.path)
+    const held: { uuid: string; preview: string; cause: string; claimedName?: string }[] = []
+    const released: [number, string][] = []
+    setOnPeerHeld(message => held.push(message))
+    setOnPeerHeldReleased((count, reason) => released.push([count, reason]))
+    const send = (id: string, body: string) => sendRaw(socketPath, [JSON.stringify({
+      msgV: 1, msg_id: id, type: 'user', from,
+      message: { role: 'user', content: formatPeerMessage(body, { from, fromName: 'beta', fromMode: 'prompting' }) },
+    }) + '\n'])
+    const denied = randomUUID()
+    await send(denied, '\u001b[31mred\u001b[0m\r\nnext\u0007')
+    expect(held).toEqual([expect.objectContaining({ from, claimedName: 'beta', cause: 'mode-mismatch', preview: 'red\nnext' })])
+    expect(resolveHeldPeerMessage(held[0]!.uuid, 'deny')).toBe('denied')
+    expect(resolveHeldPeerMessage(held[0]!.uuid, 'deny')).toBe('gone')
+    expect(getCommandQueue()).toHaveLength(0)
+    const approved = randomUUID()
+    await send(approved, 'deliver me')
+    expect(resolveHeldPeerMessage(held[1]!.uuid, 'approve')).toBe('delivered')
+    expect(getHeldPeerMessageCount()).toBe(0)
+    expect(getCommandQueue()).toHaveLength(1)
+    expect(released).toEqual([[1, 'approved']])
+    await until(() => peer.frames.length >= 4)
+    expect(peer.frames.map(f => [f.orig_msg_id, f.status])).toEqual([[denied, 'held'], [denied, 'denied'], [approved, 'held'], [approved, 'delivered']])
+  })
+
+  test('delivery receipts become one debounced notice for the sender and its model', async () => {
+    await startUdsMessaging(socketPath, { isExplicit: true })
+    const peer = await peerInbox('target.sock')
+    const token = createHash('sha256').update(randomUUID()).digest('hex').slice(0, 32)
+    await writeFile(join(root, 'config/sessions', peerKeyFilename(process.pid, peer.path)), JSON.stringify({ peerToken: token, pidDomain: await getProcessPidDomain(), procStart: await getProcessStart(process.pid) }), { mode: 0o600 })
+    const notices: string[] = []
+    setOnPeerNotice(text => notices.push(text))
+    const { msg_id } = await sendToUdsSocket(peer.path, 'hello', { toName: 'beta' })
+    await sendRaw(socketPath, [JSON.stringify({ type: 'control', action: 'peer_message_status', status: 'held', orig_msg_id: msg_id, from: formatPeerAddress(peer.path) }) + '\n'])
+    await until(() => notices.length > 0)
+    expect(notices).toEqual([expect.stringMatching(/^Cross-session message held by the receiving session \(recipient: @beta\)\./)])
+    const queued = getCommandQueue()
+    expect(queued).toHaveLength(1)
+    expect(queued[0]).toMatchObject({ isMeta: true, priority: 'later' })
+    expect(String(queued[0]!.value)).toContain(`[Cross-session delivery notice] Your message to another session was held by that session (recipient: ${formatPeerAddress(peer.path)}; msg_id: ${msg_id}). NOT delivered`)
+  })
+
+  test('notify_when_idle subscribes with official frames and both sides deliver the idle notice', async () => {
+    await startUdsMessaging(socketPath, { isExplicit: true })
+    const peer = await peerInbox('worker.sock')
+    const token = createHash('sha256').update(randomUUID()).digest('hex').slice(0, 32)
+    await writeFile(join(root, 'config/sessions', peerKeyFilename(process.pid, peer.path)), JSON.stringify({ peerToken: token, pidDomain: await getProcessPidDomain(), procStart: await getProcessStart(process.pid) }), { mode: 0o600 })
+    expect(await subscribePeerIdle(socketPath, 'self')).toEqual({ ok: false, reason: 'self-target' })
+    expect(await subscribePeerIdle(peer.path, 'worker [abc123]', 'prompting')).toEqual({ ok: true, peerKnownCapable: false })
+    await until(() => peer.frames.length >= 2)
+    const subscription = peer.frames[1]
+    expect(subscription).toMatchObject({ msgV: 1, type: 'control', action: 'notify_when_idle', from: formatPeerAddress(socketPath), from_mode: 'prompting' })
+    await sendRaw(socketPath, [JSON.stringify({ type: 'control', action: 'peer_idle_notice', orig_msg_id: subscription.msg_id, state: 'idle', from: formatPeerAddress(peer.path) }) + '\n'])
+    expect(String(getCommandQueue()[0]?.value)).toStartWith('[Cross-session idle notice] "worker [abc123]", which you asked to be notified about, is idle now')
+    dequeueAll()
+
+    // Receiver side: one notice when this session goes idle with nothing queued.
+    const subscriptionId = randomUUID()
+    await sendRaw(socketPath, [JSON.stringify({ msgV: 1, msg_id: subscriptionId, type: 'control', action: 'notify_when_idle', from: formatPeerAddress(peer.path), from_mode: 'prompting' }) + '\n'])
+    setPeerSessionIdle(true)
+    await until(() => peer.frames.some(f => f.action === 'peer_idle_notice'))
+    expect(peer.frames.find(f => f.action === 'peer_idle_notice')).toMatchObject({ orig_msg_id: subscriptionId, state: 'idle', from: formatPeerAddress(socketPath) })
+    setPeerSessionIdle(false)
   })
 })

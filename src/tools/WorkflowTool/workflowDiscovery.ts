@@ -1,6 +1,8 @@
 import { readdir, readFile, stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { basename, dirname, extname, join, parse, resolve } from 'node:path'
+import { getProjectConfigRoot } from '../../bootstrap/state.js'
+import { isSafeMode } from '../../utils/envUtils.js'
 import { isENOENT } from '../../utils/errors.js'
 
 import type { WorkflowArgs, WorkflowDryRunPlan, WorkflowSpec } from './workflowSpec.js'
@@ -104,13 +106,33 @@ async function workflowSearchDirs(
   cwd: string,
   options: WorkflowDiscoveryOptions,
 ): Promise<string[]> {
+  // Safe mode keeps bundled workflows only.
+  if (isSafeMode()) return []
   const dirs = [resolve(options.home ?? homedir(), '.claude', 'workflows')]
-  for (const root of await findWorkflowRoots(cwd)) {
+  for (const root of await findWorkflowRoots(getProjectConfigRoot() ?? cwd)) {
     for (const relativeDir of PROJECT_WORKFLOW_DIRS) {
       dirs.push(resolve(root, relativeDir))
     }
   }
   return dirs
+}
+
+export type WorkflowSaveScope = 'project' | 'user'
+
+// Where a saved dynamic workflow goes, both already searched above: the user dir, or the
+// nearest project root's .claude/workflows, preferring one that exists.
+export async function workflowSaveDir(
+  scope: WorkflowSaveScope,
+  cwd: string,
+  options: WorkflowDiscoveryOptions = {},
+): Promise<string> {
+  if (scope === 'user') return resolve(options.home ?? homedir(), '.claude', 'workflows')
+  const roots = await findWorkflowRoots(cwd)
+  for (const root of roots) {
+    const dir = resolve(root, '.claude', 'workflows')
+    if (await pathExists(dir)) return dir
+  }
+  return resolve(roots[0]!, '.claude', 'workflows')
 }
 
 export async function discoverWorkflowSpecs(

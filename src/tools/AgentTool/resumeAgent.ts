@@ -11,6 +11,7 @@ import { readForkedSkillScope, readForkedSkillWitness } from '../../utils/forked
 import { createGetAppStateWithAllowedTools } from '../../utils/forkedAgent.js'
 import { getSkillAttributionName } from '../../utils/forkedSkill.js'
 import { parseToolListFromCLI } from '../../utils/permissions/permissionSetup.js'
+import { getCommandAllowedTools } from '../../utils/permissions/permissionsLoader.js'
 import { getSystemPrompt } from '../../constants/prompts.js'
 import { isCoordinatorMode } from '../../coordinator/coordinatorMode.js'
 import type { CanUseToolFn } from '../../hooks/useCanUseTool.js'
@@ -55,10 +56,11 @@ import type { AgentDefinition } from './loadAgentsDir.js'
 import { isBuiltInAgent } from './loadAgentsDir.js'
 import { runAgent } from './runAgent.js'
 import {
-  applyRequestedAgentPermissionMode,
+  capAgentPermissionMode,
   resolveDeclaredAgentPermissionMode,
   shouldBubbleAgentPermissionPrompts,
 } from './permissionMode.js'
+import { raiseModAgentResume } from '../../services/mods/agents.js'
 
 export type ResumeAgentResult = {
   agentId: string
@@ -137,7 +139,7 @@ export async function resumeAgentBackground({
     // Resolve today's skill grants; retain launch-time denies and all current denies.
     if (command?.type === 'prompt') {
       workerContext = { ...toolUseContext, getAppState: createGetAppStateWithAllowedTools(
-        toolUseContext.getAppState, parseToolListFromCLI(command.allowedTools ?? []),
+        toolUseContext.getAppState, parseToolListFromCLI(getCommandAllowedTools(command)),
         parseToolListFromCLI(command.disallowedTools ?? []),
         { replaceCommandRules: true, frozenCommandDenies: scope.frozenCommandDenies ?? appState.toolPermissionContext.alwaysDenyRules.command ?? [] },
       ) }
@@ -234,20 +236,31 @@ export async function resumeAgentBackground({
   const recordedPermissionMode = meta?.permissionMode
   // Like spawn, a recorded mode never outranks the parent's current mode. Plan
   // is the lowest rank, so it bypasses the clamp and keeps the gate below. A
-  // recorded bubble or a missing record resolves like a declared spawn mode.
-  const permissionMode = appState.toolPermissionContext.mode === 'bypassPermissions'
-    ? 'bypassPermissions'
-    : recordedPermissionMode === undefined || recordedPermissionMode === 'bubble'
-      ? resolveDeclaredAgentPermissionMode(
-          appState.toolPermissionContext.mode,
-          recordedPermissionMode ?? selectedAgent.permissionMode,
-        )
-      : recordedPermissionMode === 'plan'
-        ? 'plan'
-        : applyRequestedAgentPermissionMode(
-            appState.toolPermissionContext,
-            recordedPermissionMode,
-          ).mode
+  // bypass parent, a recorded bubble, the definition's own mode or a missing
+  // record resolve like a declared spawn mode; any other recorded mode is an
+  // explicit spawn mode and caps the parent's current mode. Either way runAgent
+  // keeps following the parent's current mode.
+  const followsParentMode =
+    appState.toolPermissionContext.mode === 'bypassPermissions' ||
+    recordedPermissionMode === undefined ||
+    recordedPermissionMode === 'bubble' ||
+    recordedPermissionMode === selectedAgent.permissionMode
+  const declaredPermissionMode =
+    appState.toolPermissionContext.mode === 'bypassPermissions'
+      ? undefined
+      : recordedPermissionMode ?? selectedAgent.permissionMode
+  const cappedPermissionMode = followsParentMode
+    ? undefined
+    : recordedPermissionMode
+  const permissionMode = cappedPermissionMode
+    ? capAgentPermissionMode(
+        appState.toolPermissionContext.mode,
+        cappedPermissionMode,
+      )
+    : resolveDeclaredAgentPermissionMode(
+        appState.toolPermissionContext.mode,
+        declaredPermissionMode,
+      )
   // Preserve recorded/inherited Plan restrictions, but gate a new definition entry.
   if (
     permissionMode === 'plan' &&
@@ -275,6 +288,17 @@ export async function resumeAgentBackground({
     permissionMode,
   )
 
+  // A hook can refuse the resume; a deny starts no run and leaves the agent parked.
+  await raiseModAgentResume(toolUseContext, {
+    agentId,
+    prompt,
+    description: uiDescription,
+    subagentType: selectedAgent.agentType,
+    model: meta?.model,
+    permissionMode,
+    fork: isResumedFork,
+  })
+
   const workerTools = isResumedFork
     ? toolUseContext.options.tools
     : assembleToolPool(workerPermissionContext, appState.mcp.tools)
@@ -290,7 +314,9 @@ export async function resumeAgentBackground({
     : resolvedAgentTools?.validTools
 
   const runAgentParams: Parameters<typeof runAgent>[0] = {
-    agentDefinition: selectedAgent,
+    agentDefinition: followsParentMode
+      ? { ...selectedAgent, permissionMode: declaredPermissionMode }
+      : selectedAgent,
     promptMessages: [
       ...resumedMessages,
       createUserMessage({ content: prompt, isMeta: promptIsMeta || undefined }),
@@ -318,13 +344,14 @@ export async function resumeAgentBackground({
       ? { systemPrompt: forkParentSystemPrompt }
       : undefined,
     availableTools: workerTools,
-    permissionMode,
+    permissionMode: cappedPermissionMode,
     allowedTools,
     allowedAgentTypes: resolvedAgentTools?.allowedAgentTypes,
     // Transcript already contains the parent context slice from the
     // original fork. Re-supplying it would cause duplicate tool_use IDs.
     forkContextMessages: undefined,
     ...(isResumedFork && { useExactTools: true }),
+    handback: true,
     // Re-persist so metadata survives runAgent's writeAgentMetadata overwrite
     worktreePath: resumedWorktreePath,
     description: meta?.description,
@@ -445,7 +472,11 @@ export async function resumeAgentBackground({
       }
       logForDebugging(`[AgentResume] handed back agent=${agentId} delivery=inline status=${task.status}`)
       return { agentId, description: uiDescription, outputFile: getTaskOutputPath(agentId), inlineHandback: {
-        content: task.result.content, harnessNoteCount: 0, harnessTailCount: 0,
+        // A hand-back's review warning stays a note above the frame; a withheld
+        // notice is all note, with no report under a frame.
+        content: task.result.content,
+        harnessNoteCount: task.result.handback === 'withheld' ? task.result.content.length : task.result.harnessNoteCount ?? 0,
+        harnessTailCount: 0,
         harnessSectionHash: hashSubagentHandbackSections(task.result.content),
       } }
     } finally {

@@ -18,6 +18,9 @@ import {
   resolveWorkflowScriptPath,
 } from './workflowScriptPersistence.js'
 import { shouldEnableWorkflows, workflowSizeGuidelinePrompt } from './workflowFeatureFlags.js'
+import { WORKFLOW_TOOL_NAME } from './constants.js'
+import { AGENT_TOOL_NAME } from '../AgentTool/constants.js'
+import { WORKFLOW_AUTHORING_SKILL_NAME } from '../../skills/bundled/workflowAuthoring.js'
 
 export type WorkflowFacadeInput =
   | string
@@ -173,7 +176,7 @@ export function normalizeWorkflowFacadeInput(
 }
 
 export const WorkflowFacadeTool = buildTool({
-  name: 'Workflow',
+  name: WORKFLOW_TOOL_NAME,
   searchHint: 'run workflow scripts',
   maxResultSizeChars: 100_000,
   shouldDefer: true,
@@ -181,36 +184,39 @@ export const WorkflowFacadeTool = buildTool({
     return 'Run an official-compatible workflow script or saved workflow'
   },
   async prompt() {
-    return `Use this tool to run dynamic workflows. It accepts a saved workflow name, { script }, { scriptPath }, or { plan }. Workflow scripts orchestrate agents and must not directly perform shell or filesystem work.
-
-Pass the script inline via \`script\`; do not write it to a file first. The script's \`meta.name\` is the workflow's runtime name. Top-level \`name\` selects a saved workflow, and \`scriptPath\` takes precedence over both \`name\` and \`script\`.
-
-Inline official-style scripts must start with an uncommented \`export const meta = { name, description, phases }\` as the first statement. Phase entries must be objects with a string \`title\`, for example:
-
-\`\`\`js
-export const meta = {
-  name: 'parallel-review',
-  description: 'Review two areas concurrently.',
-  phases: [{ title: 'Review' }],
-}
-phase('Review')
-const reports = await parallel([
-  () => agent('Review area A'),
-  () => agent('Review area B'),
-])
-return reports
-\`\`\`
-
-Do not comment out the meta export. Without it, the script is treated as the legacy workflow DSL, where official-style globals and top-level await/return semantics do not apply.
+    return `Execute a workflow script that orchestrates multiple subagents deterministically. Workflows run in the background — this tool returns immediately with a task ID, and a <task-notification> arrives when the workflow completes. Use /workflows to watch live progress.
 
 ONLY call this tool when the user has explicitly opted into multi-agent orchestration. Workflows can spawn dozens of agents and consume a large amount of tokens; the user must request that scale, not have it inferred. Explicit opt-in means one of:
 - The user included the keyword "ultracode" in their prompt (you'll see a system-reminder confirming it).
-- Ultracode is on for the session (a system-reminder confirms it).
+- Ultracode is on for the session (a system-reminder confirms it) — see **Ultracode** in the workflow authoring reference.
 - The user directly asked you to run a workflow or use multi-agent orchestration in their own words ("use a workflow", "run a workflow", "fan out agents", "orchestrate this with subagents"). The ask must be in the user's words — a task that would merely benefit from a workflow does not count.
 - The user invoked a skill or slash command whose instructions tell you to call Workflow.
 - The user asked you to run a specific named or saved workflow.
 
-For any other task — even one that would clearly benefit from parallelism — do NOT call this tool. Use the Agent tool (if available) for individual subagents, or briefly describe what a multi-agent workflow could do and how much it would roughly cost, and ask the user whether to run it. Mention they can ask for one with "use a workflow" in a future message to skip the ask. If the user asks to avoid workflow orchestration, do not call this tool.${workflowSizeGuidelinePrompt(getInitialSettings(), getGlobalConfig().workflowSizeGuideline)}`
+For any other task — even one that would clearly benefit from parallelism — do NOT call this tool. Use the ${AGENT_TOOL_NAME} tool (if available) for individual subagents, or briefly describe what a multi-agent workflow could do and how much it would roughly cost, and ask the user whether to run it. Mention they can ask for one with "use a workflow" in a future message to skip the ask.
+
+Every script must begin with \`export const meta = {...}\`: a PURE LITERAL (no variables, calls or interpolation) giving the workflow's \`name\`, a one-line \`description\` (shown in the permission dialog) and optionally \`phases\` — one \`{ title, detail? }\` per phase() call, titles matched exactly. Pass the script inline via \`script\` — do not Write it to a file first, and do not also set the tool's \`name\` input (that selects a saved workflow); it is plain JavaScript, not TypeScript.
+
+The canonical multi-stage pattern — pipeline by default, each dimension verifies as soon as its review completes:
+  export const meta = {
+    name: 'review-changes',
+    description: 'Review changed files across dimensions, verify each finding',
+    phases: [{ title: 'Review' }, { title: 'Verify' }],
+  }
+  const DIMENSIONS = [{key: 'bugs', prompt: '...'}, {key: 'perf', prompt: '...'}]
+  const results = await pipeline(
+    DIMENSIONS,
+    d => agent(d.prompt, {label: \`review:\${d.key}\`, phase: 'Review', schema: FINDINGS_SCHEMA}),
+    review => parallel(review.findings.map(f => () =>
+      agent(\`Adversarially verify: \${f.title}\`, {label: \`verify:\${f.file}\`, phase: 'Verify', schema: VERDICT_SCHEMA})
+        .then(v => ({...f, verdict: v}))
+    ))
+  )
+  const confirmed = results.flat().filter(Boolean).filter(f => f.verdict?.isReal)
+  return { confirmed }
+  // Dimension 'bugs' findings verify while dimension 'perf' is still reviewing. No wasted wall-clock.
+
+Before writing a script, load the \`${WORKFLOW_AUTHORING_SKILL_NAME}\` skill — the workflow authoring reference: script API and gotchas, resume, the **Ultracode** section, quality patterns, worked examples.${workflowSizeGuidelinePrompt(getInitialSettings(), getGlobalConfig().workflowSizeGuideline)}`
   },
   get inputSchema(): InputSchema {
     return inputSchema()

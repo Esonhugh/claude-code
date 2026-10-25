@@ -272,10 +272,18 @@ function scheduleReload(changedPath: string): void {
       return
     }
     clearSkillCaches()
-    clearCommandsCache()
-    resetSentSkillNames()
-    skillsChanged.emit()
+    notifySkillsChanged()
   }, testOverrides?.reloadDebounce ?? RELOAD_DEBOUNCE_MS)
+}
+
+/**
+ * Reload the command list now, for a skill or workflow file this process just wrote
+ * (the watcher only covers directories that existed at startup).
+ */
+export function notifySkillsChanged(): void {
+  clearCommandsCache()
+  resetSentSkillNames()
+  skillsChanged.emit()
 }
 
 /**

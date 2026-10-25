@@ -625,6 +625,7 @@ export const PowerShellTool = buildTool({
         isMainThread,
         toolUseId: toolUseContext.toolUseId,
         agentId: toolUseContext.agentId,
+        userShellCommand: toolUseContext.userShellCommand,
       })
 
       let generatorResult
@@ -869,6 +870,7 @@ async function* runPowerShellCommand({
   isMainThread,
   toolUseId,
   agentId,
+  userShellCommand,
 }: {
   input: PowerShellToolInput
   abortController: AbortController
@@ -878,6 +880,7 @@ async function* runPowerShellCommand({
   isMainThread?: boolean
   toolUseId?: string
   agentId?: AgentId
+  userShellCommand?: boolean
 }): AsyncGenerator<
   {
     type: 'progress'
@@ -956,7 +959,7 @@ async function* runPowerShellCommand({
       // returns false via isSandboxingEnabled() → isSupportedPlatform() → false.
       // The explicit platform check is redundant-but-obvious.
       shouldUseSandbox:
-        getPlatform() === 'windows'
+        getPlatform() === 'windows' || userShellCommand
           ? false
           : shouldUseSandbox({ command, dangerouslyDisableSandbox }),
       shouldAutoBackground,

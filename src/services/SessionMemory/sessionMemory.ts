@@ -68,19 +68,18 @@ import {
 // on GrowthBook initialization. Values may be stale but are updated in background.
 
 import { errorMessage, getErrnoCode } from '../../utils/errors.js'
-import {
-  getDynamicConfig_CACHED_MAY_BE_STALE,
-  getFeatureValue_CACHED_MAY_BE_STALE,
-} from '../analytics/growthbook.js'
+import { isAutoMemoryEnabled } from '../../memdir/paths.js'
+import { getDynamicConfig_CACHED_MAY_BE_STALE } from '../analytics/growthbook.js'
 import { isAnt } from 'src/utils/userType.js'
 
 
 /**
  * Check if session memory feature is enabled.
- * Uses cached gate value - returns immediately without blocking.
+ * Local builds follow the auto-memory switches instead of the remote
+ * tengu_session_memory gate.
  */
 function isSessionMemoryGateEnabled(): boolean {
-  return getFeatureValue_CACHED_MAY_BE_STALE('tengu_session_memory', false)
+  return isAutoMemoryEnabled()
 }
 
 /**

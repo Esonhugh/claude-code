@@ -216,6 +216,11 @@ export type PermissionAskDecision<
    */
   isBashSecurityCheckForMisparsing?: boolean
   /**
+   * Set on a Bash path ask for a write inside the working directories that no
+   * rule or mode allowed. A Bash allow rule for the command may override it.
+   */
+  bashAllowRuleOverridable?: boolean
+  /**
    * If set, an allow classifier check should be run asynchronously.
    * The classifier may auto-approve the permission before the user responds.
    */
@@ -306,6 +311,10 @@ export type PermissionDecisionReason =
       type: 'classifier'
       classifier: string
       reason: string
+      // Denied without a safety verdict (e.g. the transcript overflowed).
+      noVerdict?: boolean
+      // Snake-case name of the matched built-in block rule, for telemetry.
+      category?: string
     }
   | {
       type: 'workingDir'
@@ -319,6 +328,10 @@ export type PermissionDecisionReason =
       // shell configs) — the classifier can see context and decide. False
       // for Windows path bypass attempts and cross-machine bridge messages.
       classifierApprovable: boolean
+      // When true, bypassPermissions mode still asks (official 2.1.303
+      // bypassImmune: catastrophic removals). Other safety checks, such as
+      // writes to .git/, .claude/ or shell configs, are allowed in bypass.
+      bypassImmune?: boolean
     }
   | {
       type: 'other'

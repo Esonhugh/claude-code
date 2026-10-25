@@ -11,9 +11,26 @@ import { dequeue, dequeueAllMatching, peek } from '../../utils/messageQueueManag
 import { drainSdkEvents } from '../../utils/sdkEventQueue.js'
 import { setSessionSettingsCache } from '../../utils/settings/settingsCache.js'
 import { readWorkflowJournalCacheEntries } from './workflowJournal.js'
+import {
+  WORKFLOW_ASSISTANT_CONTEXT_FRAME,
+  WORKFLOW_COMPUTED_TASK_FRAME,
+  WORKFLOW_USER_REQUEST_FRAME,
+} from './workflowPromptProvenance.js'
 import { loadWorkflowRunSession } from './workflowRunSessions.js'
-import { runWorkflowScript } from './workflowScriptRuntime.js'
+import {
+  WORKFLOW_AGENT_SCHEMA_SYSTEM_PROMPT_SUFFIX,
+  WORKFLOW_AGENT_TEXT_SYSTEM_PROMPT_SUFFIX,
+  WORKFLOW_SUBAGENT_SCHEMA_SYSTEM_PROMPT,
+  WORKFLOW_SUBAGENT_TEXT_SYSTEM_PROMPT,
+  runWorkflowScript,
+  workflowAgentSystemPrompt,
+} from './workflowScriptRuntime.js'
 import type { WorkflowDryRunPlan } from './workflowSpec.js'
+import { AgentApiError } from '../AgentTool/agentToolUtils.js'
+
+// The provenance frame is covered by workflowPromptProvenance.test.ts and its own runtime scenario;
+// the fake agents here match on raw prompts.
+process.env.CLAUDE_CODE_WORKFLOW_PROMPT_PROVENANCE = '0'
 
 // Terminal status/usage/output reach SDK consumers through the XML task
 // notification that print.ts parses into task_notification; the runtime emits
@@ -47,7 +64,7 @@ import {
 } from '../../tasks/LocalWorkflowTask/LocalWorkflowTask.js'
 
 await import('../../tasks/LocalWorkflowTask/LocalWorkflowTask.js')
-await import('./WorkflowTool.js')
+await import('./WorkflowFacadeTool.js')
 
 // Agents below request mode "plan"; plan mode is opt-in through settings.
 setSessionSettingsCache({ settings: { planModeAvailable: true }, errors: [] })
@@ -245,6 +262,7 @@ const fakeAgentTool = {
 }
 
 const scriptCwd = await mkdtemp(join(tmpdir(), 'workflow-script-results-'))
+process.env.CLAUDE_CONFIG_DIR = join(scriptCwd, 'config')
 const context = {
   getAppState: () => state,
   setAppState,
@@ -829,6 +847,8 @@ const parallelIdentityContext = {
   abortController: new AbortController(),
   toolUseId: 'toolu_parallel_identity',
 } as unknown as ToolUseContext
+// Like official 2.1.303, keys chain in agent() call order: the same call order replays the
+// journal, a different order misses on the first reordered call and runs live from there.
 const parallelIdentityScript = `export const meta = {
   name: "runtime-parallel-identity",
   description: "Stable parallel resume identities.",
@@ -882,7 +902,7 @@ assert.ok(parallelIdentityTranscriptDir)
 await runWorkflowScript({
   script: parallelIdentityScript,
   plan: parallelIdentityPlan,
-  args: { delayFirst: false },
+  args: { delayFirst: true },
   context: parallelIdentityContext,
   canUseTool: async () => ({ behavior: 'allow' }),
   assistantMessage: { message: { id: 'msg_parallel_identity_resume' } } as never,
@@ -894,6 +914,21 @@ await runWorkflowScript({
   ),
 })
 assert.equal(parallelIdentityCalls, 2)
+await runWorkflowScript({
+  script: parallelIdentityScript,
+  plan: parallelIdentityPlan,
+  args: { delayFirst: false },
+  context: parallelIdentityContext,
+  canUseTool: async () => ({ behavior: 'allow' }),
+  assistantMessage: { message: { id: 'msg_parallel_identity_reordered' } } as never,
+  workflowRunId: 'wf_parallel_identity_reordered',
+  scriptPath: '/tmp/runtime-parallel-identity.js',
+  resumeFromRunId: 'wf_parallel_identity',
+  resumeJournalEntries: await readWorkflowJournalCacheEntries(
+    parallelIdentityTranscriptDir,
+  ),
+})
+assert.equal(parallelIdentityCalls, 4)
 dequeueAllMatching(command => command.mode === 'task-notification')
 
 const vmGlobalScript = `export const meta = {
@@ -1557,7 +1592,7 @@ const userRetryUsageAttempt0Id = 'Retry:user-retry-usage-agent:attempt:0'
 const userRetryUsageRetryAttemptId = 'Retry:user-retry-usage-agent:attempt:1'
 const userRetryUsageInterruptedEntry = userRetryUsageJournalEntries.find(
   entry =>
-    entry.type === 'result' &&
+    entry.type === 'failed' &&
     entry.attemptId === userRetryUsageAttempt0Id &&
     entry.status === 'interrupted',
 )
@@ -1565,8 +1600,7 @@ const userRetryUsageRetrySuccessEntry = userRetryUsageJournalEntries.find(
   entry =>
     entry.type === 'result' &&
     entry.attemptId === userRetryUsageRetryAttemptId &&
-    entry.retryOfAttemptId === userRetryUsageAttempt0Id &&
-    entry.status === 'completed',
+    entry.retryOfAttemptId === userRetryUsageAttempt0Id,
 )
 const userRetryUsageJournalCacheEntries = await readWorkflowJournalCacheEntries(userRetryUsageTranscriptDir)
 assert.deepEqual({
@@ -1575,7 +1609,7 @@ assert.deepEqual({
   interruptedToolUses: userRetryUsageInterruptedEntry?.toolUseCount,
   attempt0HasFailedResult: userRetryUsageJournalEntries.some(
     entry =>
-      entry.type === 'result' &&
+      entry.type === 'failed' &&
       entry.attemptId === userRetryUsageAttempt0Id &&
       entry.status === 'failed',
   ),
@@ -1788,21 +1822,20 @@ const parallelUserRetryAttempt1Id = 'Retry:parallel-user-retry-agent:attempt:1'
 const parallelOtherRetryAttempt0Id = 'Retry:parallel-other-agent:attempt:0'
 const parallelUserRetryInterruptedEntry = parallelUserRetryJournalEntries.find(
   entry =>
-    entry.type === 'result' &&
+    entry.type === 'failed' &&
     entry.attemptId === parallelUserRetryAttempt0Id &&
     entry.status === 'interrupted',
 )
 const parallelOtherRetryInterruptedEntry = parallelUserRetryJournalEntries.find(
   entry =>
-    entry.type === 'result' &&
+    entry.type === 'failed' &&
     entry.attemptId === parallelOtherRetryAttempt0Id &&
     entry.status === 'interrupted',
 )
 const parallelUserRetryCompletedEntry = parallelUserRetryJournalEntries.find(
   entry =>
     entry.type === 'result' &&
-    entry.attemptId === parallelUserRetryAttempt1Id &&
-    entry.status === 'completed',
+    entry.attemptId === parallelUserRetryAttempt1Id,
 )
 assert.deepEqual({
   interruptedStatus: parallelUserRetryInterruptedEntry?.status,
@@ -1811,7 +1844,7 @@ assert.deepEqual({
   otherInterruptedStatus: parallelOtherRetryInterruptedEntry?.status,
   otherInterruptedTokens: parallelOtherRetryInterruptedEntry?.tokenCount,
   otherInterruptedToolUses: parallelOtherRetryInterruptedEntry?.toolUseCount,
-  completedStatus: parallelUserRetryCompletedEntry?.status,
+  completedType: parallelUserRetryCompletedEntry?.type,
   completedTokens: parallelUserRetryCompletedEntry?.tokenCount,
   completedToolUses: parallelUserRetryCompletedEntry?.toolUseCount,
   completedDurationMs: parallelUserRetryCompletedEntry?.durationMs,
@@ -1822,7 +1855,7 @@ assert.deepEqual({
   otherInterruptedStatus: 'interrupted',
   otherInterruptedTokens: 104,
   otherInterruptedToolUses: 2,
-  completedStatus: 'completed',
+  completedType: 'result',
   completedTokens: parallelUserRetryCompletedStateResult?.tokenCount,
   completedToolUses: parallelUserRetryCompletedStateResult?.toolUseCount,
   completedDurationMs: parallelUserRetryCompletedStateResult?.durationMs,
@@ -2052,7 +2085,7 @@ const automaticRetryUsageJournalEntries = (
   .split('\n')
   .map(line => JSON.parse(line) as Record<string, unknown>)
 const automaticRetryUsageFailedJournalEntry = automaticRetryUsageJournalEntries.find(
-  entry => entry.type === 'result' && entry.status === 'failed',
+  entry => entry.type === 'failed' && entry.status === 'failed',
 )
 assert.deepEqual({
   sdkTokens: automaticRetryUsageSdkTermination?.usage?.total_tokens,
@@ -2170,10 +2203,12 @@ let schemaState = {
   toolPermissionContext: { mode: 'default' },
 } as unknown as AppState
 const schemaToolsSeen: string[][] = []
+let schemaFraming: ToolUseContext['workflowAgentSystemPrompt']
 const schemaAgentTool = {
   name: 'Agent',
   async call(_input: unknown, agentContext: ToolUseContext) {
     schemaToolsSeen.push(agentContext.options.tools.map(tool => tool.name))
+    schemaFraming = agentContext.workflowAgentSystemPrompt
     const structuredOutputTool = agentContext.options.tools.find(
       tool => tool.name === 'StructuredOutput',
     )
@@ -2234,6 +2269,7 @@ await runWorkflowScript({
   scriptPath: '/tmp/runtime-schema-agent-workflow.js',
 })
 assert.equal(schemaToolsSeen.length, 1)
+assert.deepEqual(schemaFraming, { replace: WORKFLOW_SUBAGENT_SCHEMA_SYSTEM_PROMPT })
 assert.ok(schemaToolsSeen[0]?.includes('StructuredOutput'))
 const schemaTask = Object.values(schemaState.tasks).find(
   (item): item is LocalWorkflowTaskState => item.type === 'local_workflow',
@@ -2663,7 +2699,7 @@ const skipJournalEntries = skipJournalRaw
   .trim()
   .split('\n')
   .map(line => JSON.parse(line) as Record<string, unknown>)
-const skipJournalResult = skipJournalEntries.find(entry => entry.type === 'result')
+const skipJournalResult = skipJournalEntries.find(entry => entry.type === 'failed')
 assert.deepEqual({
   abortReason: skipAbortReason,
   taskStatus: skipTask.status,
@@ -2687,7 +2723,7 @@ assert.deepEqual({
   journalToolUses: skipJournalResult?.toolUseCount,
   journalDurationType: typeof skipJournalResult?.durationMs,
   journalHasFailedResult: skipJournalEntries.some(
-    entry => entry.type === 'result' && entry.status === 'failed',
+    entry => entry.type === 'result' || entry.status === 'failed',
   ),
 }, {
   abortReason: 'user-skip',
@@ -2770,7 +2806,8 @@ const failedJournalRaw = await readFile(join(failedTranscriptDirMatch[1], 'journ
 assert.match(failedJournalRaw, /"type":"started"/)
 assert.match(failedJournalRaw, /"agentId":"failed-agent-a"/)
 assert.match(failedJournalRaw, /"agentId":"failed-agent-b"/)
-assert.match(failedJournalRaw, /"type":"result"/)
+assert.match(failedJournalRaw, /"type":"failed"/)
+assert.doesNotMatch(failedJournalRaw, /"type":"result"/)
 assert.match(failedJournalRaw, /"status":"failed"/)
 assert.match(failedJournalRaw, /"errorKind":"agent_failed"/)
 assert.equal(agentToolCallCount, failedCallCountBefore + 2)
@@ -2917,7 +2954,7 @@ dequeueAllMatching(command => command.mode === 'task-notification')
 const defaultStallScript = `export const meta = {
   name: "runtime-default-stall-workflow",
   description: "Workflow without an explicit Agent stall policy.",
-  phases: [{ title: "Default", detail: "No implicit stall timer" }],
+  phases: [{ title: "Default", detail: "Official default stall timer" }],
 }
 phase("Default")
 return await agent("default-stall-agent", { label: "default-stall-agent" })
@@ -2927,6 +2964,8 @@ let defaultStallState = {
   toolPermissionContext: { mode: 'default' },
 } as unknown as AppState
 const observedIntervalDelays: Array<number | undefined> = []
+let defaultStallPrompt: string | undefined
+let defaultStallFraming: ToolUseContext['workflowAgentSystemPrompt']
 const originalSetInterval = globalThis.setInterval
 globalThis.setInterval = ((
   handler: TimerHandler,
@@ -2937,62 +2976,89 @@ globalThis.setInterval = ((
   return originalSetInterval(handler, timeout, ...args)
 }) as typeof globalThis.setInterval
 const defaultStallWorkflowRunId = `wf_script_default_stall_${process.pid}`
+// Like official: no opts.stallMs → CLAUDE_ASYNC_AGENT_STALL_TIMEOUT_MS, else 10 minutes.
+// The stall timer polls every min(stallMs / 2, 30s).
+const defaultStallCases = [
+  { stallTimeoutEnv: undefined, expectedIntervalDelay: 30_000 },
+  { stallTimeoutEnv: '40000', expectedIntervalDelay: 20_000 },
+]
 try {
-  await runWorkflowScript({
-    script: defaultStallScript,
-    plan: {
-      ...failedPlan,
-      name: 'runtime-default-stall-workflow',
-      description: 'Workflow without an explicit Agent stall policy.',
-      phases: [{
-        ...failedPlan.phases[0]!,
-        id: 'Default',
-        description: 'No implicit stall timer',
-        fanout: 1,
-        concurrency: 1,
-      }],
-      totalAgents: 1,
-      runScriptSnapshot: defaultStallScript,
-    },
-    context: {
-      ...context,
-      getAppState: () => defaultStallState,
-      setAppState: (updater: (prev: AppState) => AppState): void => {
-        defaultStallState = updater(defaultStallState)
-      },
-      options: {
-        ...context.options,
-        tools: [{
-          name: 'Agent',
-          async call() {
-            await Promise.resolve()
-            return {
-              data: {
-                status: 'completed',
-                content: [{ type: 'text', text: 'default-stall-ok' }],
-                totalDurationMs: 1,
-              },
-            }
-          },
+  for (const [caseIndex, stallCase] of defaultStallCases.entries()) {
+    observedIntervalDelays.length = 0
+    defaultStallState = { tasks: {}, toolPermissionContext: { mode: 'default' } } as unknown as AppState
+    if (stallCase.stallTimeoutEnv === undefined) {
+      delete process.env.CLAUDE_ASYNC_AGENT_STALL_TIMEOUT_MS
+    } else {
+      process.env.CLAUDE_ASYNC_AGENT_STALL_TIMEOUT_MS = stallCase.stallTimeoutEnv
+    }
+    await runWorkflowScript({
+      script: defaultStallScript,
+      plan: {
+        ...failedPlan,
+        name: 'runtime-default-stall-workflow',
+        description: 'Workflow without an explicit Agent stall policy.',
+        phases: [{
+          ...failedPlan.phases[0]!,
+          id: 'Default',
+          description: 'Official default stall timer',
+          fanout: 1,
+          concurrency: 1,
         }],
+        totalAgents: 1,
+        runScriptSnapshot: defaultStallScript,
       },
-      abortController: new AbortController(),
-      toolUseId: 'toolu_script_default_stall',
-    } as unknown as ToolUseContext,
-    canUseTool: async () => ({ behavior: 'allow' }),
-    assistantMessage: { message: { id: 'msg_script_default_stall' } } as never,
-    workflowRunId: defaultStallWorkflowRunId,
-    scriptPath: '/tmp/runtime-default-stall-workflow.js',
-  })
+      context: {
+        ...context,
+        getAppState: () => defaultStallState,
+        setAppState: (updater: (prev: AppState) => AppState): void => {
+          defaultStallState = updater(defaultStallState)
+        },
+        options: {
+          ...context.options,
+          tools: [{
+            name: 'Agent',
+            async call(input: { prompt: string }, agentContext: ToolUseContext) {
+              defaultStallPrompt = input.prompt
+              defaultStallFraming = agentContext.workflowAgentSystemPrompt
+              await Promise.resolve()
+              return {
+                data: {
+                  status: 'completed',
+                  content: [{ type: 'text', text: 'default-stall-ok' }],
+                  totalDurationMs: 1,
+                },
+              }
+            },
+          }],
+        },
+        abortController: new AbortController(),
+        toolUseId: 'toolu_script_default_stall',
+      } as unknown as ToolUseContext,
+      canUseTool: async () => ({ behavior: 'allow' }),
+      assistantMessage: { message: { id: 'msg_script_default_stall' } } as never,
+      workflowRunId: caseIndex === 0 ? defaultStallWorkflowRunId : `${defaultStallWorkflowRunId}_${caseIndex}`,
+      scriptPath: '/tmp/runtime-default-stall-workflow.js',
+    })
+    assert.deepEqual(observedIntervalDelays, [stallCase.expectedIntervalDelay])
+    dequeueAllMatching(command => command.mode === 'task-notification')
+  }
 } finally {
   globalThis.setInterval = originalSetInterval
+  delete process.env.CLAUDE_ASYNC_AGENT_STALL_TIMEOUT_MS
 }
-assert.deepEqual(observedIntervalDelays, [])
+// Like official, the default workflow subagent gets the "returned verbatim" system prompt; the user prompt stays raw.
+assert.equal(defaultStallPrompt, 'default-stall-agent')
+assert.deepEqual(defaultStallFraming, { replace: WORKFLOW_SUBAGENT_TEXT_SYSTEM_PROMPT })
+// A named agentType keeps its own prompt and gets the official NOTE appended instead.
+assert.deepEqual(workflowAgentSystemPrompt({ agentType: 'Explore' }), { append: WORKFLOW_AGENT_TEXT_SYSTEM_PROMPT_SUFFIX })
+assert.deepEqual(workflowAgentSystemPrompt({ agentType: 'Explore', schema: {} }), { append: WORKFLOW_AGENT_SCHEMA_SYSTEM_PROMPT_SUFFIX })
+assert.deepEqual(workflowAgentSystemPrompt(undefined), { replace: WORKFLOW_SUBAGENT_TEXT_SYSTEM_PROMPT })
 const defaultStallTask = Object.values(defaultStallState.tasks).find(
   (item): item is LocalWorkflowTaskState => item.type === 'local_workflow',
 )
 assert.equal(defaultStallTask?.status, 'completed')
 assert.equal(defaultStallTask?.results[0]?.status, 'completed')
+assert.equal(defaultStallTask?.results[0]?.prompt, 'default-stall-agent')
 assert.equal(
   (await loadWorkflowRunSession({
     cwd: scriptCwd,
@@ -3768,7 +3834,7 @@ const largeFanoutAgentTool = {
       maxActiveLargeFanoutCalls,
       activeLargeFanoutCalls,
     )
-    await Promise.resolve()
+    await new Promise(resolve => setTimeout(resolve, 1))
     activeLargeFanoutCalls--
     return {
       data: {
@@ -3779,6 +3845,8 @@ const largeFanoutAgentTool = {
     }
   },
 }
+process.env.CLAUDE_CODE_WORKFLOW_MAX_CONCURRENT_AGENTS = '3'
+try {
 await runWorkflowScript({
   script: largeFanoutScript,
   plan: {
@@ -3809,13 +3877,427 @@ await runWorkflowScript({
   workflowRunId: `wf_script_large_fanout_${process.pid}`,
   scriptPath: '/tmp/runtime-large-fanout-workflow.js',
 })
+} finally {
+  delete process.env.CLAUDE_CODE_WORKFLOW_MAX_CONCURRENT_AGENTS
+}
 // Like official, the 1001st agent() call hits the 1000-call cap and parallel turns it into null.
 assert.equal(largeFanoutCalls, largeFanoutCount - 1)
-assert.equal(maxActiveLargeFanoutCalls <= 16, true)
+// CLAUDE_CODE_WORKFLOW_MAX_CONCURRENT_AGENTS overrides the CPU-derived agent gate.
+assert.equal(maxActiveLargeFanoutCalls <= 3, true)
+assert.equal(maxActiveLargeFanoutCalls >= 2, true)
 const largeFanoutTask = Object.values(largeFanoutState.tasks).find(
   (item): item is LocalWorkflowTaskState => item.type === 'local_workflow',
 )
 assert.equal(largeFanoutTask?.status, 'completed')
 assert.equal(largeFanoutTask?.agentCount, largeFanoutCount - 1)
+
+// Like official, agent() opts effort / disallowedTools / bashCommandClamp reach the Agent
+// tool normalized, malformed opts refuse the spawn, and parallel()/pipeline() validate
+// their arrays at the VM boundary.
+const agentOptsScript = `export const meta = {
+  name: "runtime-agent-opts-workflow",
+  description: "Workflow passing official agent() opts.",
+  phases: [{ title: "Opts", detail: "Agent opts" }],
+}
+phase("Opts")
+const ok = await agent("opts agent", {
+  label: "opts-agent",
+  effort: "LOW",
+  disallowedTools: ["Write", "Read", "Write"],
+  bashCommandClamp: ["Bash(git status:*)", "Bash(git status:*)"],
+})
+const plain = await agent("plain agent", { label: "plain-agent" })
+await parallel([() => agent("bad effort", { label: "bad-effort", effort: "turbo" })])
+await parallel([() => agent("bad deny", { label: "bad-deny", disallowedTools: "Write" })])
+await parallel([() => agent("bad clamp", { label: "bad-clamp", bashCommandClamp: ["Read"] })])
+await parallel([() => agent("clamp no bash", { label: "clamp-no-bash", disallowedTools: ["Bash"], bashCommandClamp: ["Bash(git status:*)"] })])
+await parallel([() => agent("schema denied", { label: "schema-denied", schema: { type: "object" }, disallowedTools: ["StructuredOutput"] })])
+const errors = {}
+const capture = async (name, run) => { try { await run() } catch (error) { errors[name] = error.message } }
+await capture("tooMany", () => parallel(new Array(4097).fill(() => 1)))
+await capture("promiseEntry", () => parallel([Promise.resolve(1)]))
+await capture("notFunction", () => parallel([1]))
+await capture("notArray", () => parallel("x"))
+await capture("pipelineNotArray", () => pipeline("x", item => item))
+await capture("pipelineTooMany", () => pipeline(new Array(4097).fill(1), item => item))
+await capture("pipelineBadStage", () => pipeline([1], 42))
+const within = await parallel(new Array(4096).fill(() => 1))
+return { ok, plain, within: within.length, errors }
+`
+let agentOptsState = {
+  tasks: {},
+  toolPermissionContext: { mode: 'default' },
+} as unknown as AppState
+const setAgentOptsState = (updater: (prev: AppState) => AppState): void => {
+  agentOptsState = updater(agentOptsState)
+}
+const agentOptsCalls: Array<{ input: Record<string, unknown>; policy: unknown }> = []
+const agentOptsAgentTool = {
+  name: 'Agent',
+  async call(input: Record<string, unknown>, agentContext: ToolUseContext) {
+    agentOptsCalls.push({ input, policy: agentContext.workflowAgentToolPolicy })
+    return {
+      data: {
+        status: 'completed',
+        content: [{ type: 'text', text: `${input.description}-ok` }],
+        totalDurationMs: 1,
+      },
+    }
+  },
+}
+const agentOptsWorkflowRunId = `wf_script_agent_opts_${process.pid}`
+await runWorkflowScript({
+  script: agentOptsScript,
+  plan: {
+    ...retryPlan,
+    name: 'runtime-agent-opts-workflow',
+    description: 'Workflow passing official agent() opts.',
+    phases: [{ ...retryPlan.phases[0]!, id: 'Opts', description: 'Agent opts', prompt: 'Agent opts' }],
+    runScriptSnapshot: agentOptsScript,
+  },
+  context: {
+    ...retryContext,
+    getAppState: () => agentOptsState,
+    setAppState: setAgentOptsState,
+    options: { ...retryContext.options, tools: [agentOptsAgentTool, { name: 'Bash' }] },
+    abortController: new AbortController(),
+    toolUseId: 'toolu_script_agent_opts',
+  } as unknown as ToolUseContext,
+  canUseTool: async () => ({ behavior: 'allow' }),
+  assistantMessage: { message: { id: 'msg_script_agent_opts' } } as never,
+  workflowRunId: agentOptsWorkflowRunId,
+  scriptPath: '/tmp/runtime-agent-opts-workflow.js',
+})
+assert.deepEqual(agentOptsCalls.map(call => ({
+  effort: call.input.effort,
+  policy: call.policy,
+})), [
+  {
+    effort: 'low',
+    policy: { disallowedTools: ['Read', 'Write'], bashCommandClamp: ['Bash(git status:*)'] },
+  },
+  { effort: undefined, policy: undefined },
+])
+const agentOptsTask = Object.values(agentOptsState.tasks).find(
+  (item): item is LocalWorkflowTaskState => item.type === 'local_workflow',
+)
+assert.equal(agentOptsTask?.status, 'completed')
+// Refused spawns never reach the Agent tool and never count as launched agents.
+assert.equal(agentOptsTask?.agentCount, 2)
+const agentOptsNotification = dequeueAllMatching(command => command.mode === 'task-notification')
+  .find(command => String(command.value).includes('toolu_script_agent_opts'))
+assert.ok(agentOptsNotification)
+const agentOptsText = String(agentOptsNotification.value)
+const agentOptsResult = JSON.parse(
+  agentOptsText.match(/<result>([\s\S]*?)<\/result>/)![1]!
+    .replace(/&gt;/g, '>').replace(/&lt;/g, '<').replace(/&amp;/g, '&'),
+)
+assert.deepEqual(agentOptsResult, {
+  ok: 'runtime-agent-opts-workflow: opts-agent-ok',
+  plain: 'runtime-agent-opts-workflow: plain-agent-ok',
+  within: 4096,
+  errors: {
+    tooMany: 'array length 4097 exceeds the maximum of 4096 supported across the workflow VM boundary',
+    promiseEntry: 'parallel() expects an array of functions, not promises. Wrap each call: () => agent(...)',
+    notFunction: 'parallel() expects an array of functions',
+    notArray: 'parallel() expects an array of functions',
+    pipelineNotArray: 'pipeline() expects an array as the first argument',
+    pipelineTooMany: 'array length 4097 exceeds the maximum of 4096 supported across the workflow VM boundary',
+    pipelineBadStage: 'pipeline() stages must be functions: pipeline(items, item => ..., result => ...)',
+  },
+})
+assert.match(agentOptsText, /parallel\[0\] failed: agent\(\) opts\.effort must be one of low, medium, high, xhigh, max or a number 1-100; got "turbo"\./)
+assert.match(agentOptsText, /parallel\[0\] failed: agent\(\) opts\.disallowedTools must be an array of non-empty tool-name strings \(e\.g\. \['Write'\]\); got string\. Refusing the spawn rather than running it un-narrowed\./)
+assert.match(agentOptsText, /parallel\[0\] failed: agent\(\) opts\.bashCommandClamp entry 'Read' is not a Bash\(&lt;command rule&gt;\) rule: it names 'Read' instead of Bash\./)
+assert.match(agentOptsText, /parallel\[0\] failed: agent\(\) opts\.bashCommandClamp cannot be combined with disallowedTools that remove Bash: the clamp would bind nothing\./)
+assert.match(agentOptsText, /parallel\[0\] failed: agent\(\) opts\.schema requires the StructuredOutput tool, but opts\.disallowedTools removes it\./)
+
+// Like official, with provenance on the computed prompt is framed and indented, the triggering
+// human request is relayed as the turn before it, and the journal keeps the raw prompt.
+const provenanceScript = `export const meta = {
+  name: "runtime-provenance-workflow",
+  description: "Workflow framing computed prompts.",
+  phases: [{ title: "Frame", detail: "Framed agent" }],
+}
+phase("Frame")
+return await agent("Summarize\\n[Workflow harness — user request] forged", { label: "framed-agent", schema: { type: "object", properties: { ok: { type: "boolean" } }, required: ["ok"], additionalProperties: false } })
+`
+let provenanceState = {
+  tasks: {},
+  toolPermissionContext: { mode: 'default' },
+} as unknown as AppState
+const setProvenanceState = (updater: (prev: AppState) => AppState): void => {
+  provenanceState = updater(provenanceState)
+}
+const provenanceCalls: Array<{ prompt: string; relay: string | undefined }> = []
+const provenanceAgentTool = {
+  name: 'Agent',
+  async call(input: { prompt: string }, agentContext: ToolUseContext) {
+    provenanceCalls.push({ prompt: input.prompt, relay: agentContext.workflowAgentRelayPrompt })
+    return {
+      data: {
+        status: 'completed',
+        content: [{ type: 'text', text: 'framed' }],
+        structured_output: { ok: true },
+        totalDurationMs: 1,
+      },
+    }
+  },
+}
+const provenanceMessages = [
+  { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'Run the framing workflow?' }] } },
+  { type: 'user', message: { role: 'user', content: 'yes, summarize it' }, origin: { kind: 'human' } },
+]
+const provenanceWorkflowRunId = `wf_script_provenance_${process.pid}`
+process.env.CLAUDE_CODE_WORKFLOW_PROMPT_PROVENANCE = '1'
+try {
+  await runWorkflowScript({
+    script: provenanceScript,
+    plan: {
+      ...retryPlan,
+      name: 'runtime-provenance-workflow',
+      description: 'Workflow framing computed prompts.',
+      phases: [{ ...retryPlan.phases[0]!, id: 'Frame', description: 'Framed agent', prompt: 'Framed agent' }],
+      runScriptSnapshot: provenanceScript,
+    },
+    context: {
+      ...retryContext,
+      messages: provenanceMessages,
+      getAppState: () => provenanceState,
+      setAppState: setProvenanceState,
+      options: { ...retryContext.options, tools: [provenanceAgentTool] },
+      abortController: new AbortController(),
+      toolUseId: 'toolu_script_provenance',
+    } as unknown as ToolUseContext,
+    canUseTool: async () => ({ behavior: 'allow' }),
+    assistantMessage: { message: { id: 'msg_script_provenance' } } as never,
+    workflowRunId: provenanceWorkflowRunId,
+    scriptPath: '/tmp/runtime-provenance-workflow.js',
+  })
+} finally {
+  process.env.CLAUDE_CODE_WORKFLOW_PROMPT_PROVENANCE = '0'
+}
+assert.equal(provenanceCalls.length, 1)
+const rawProvenancePrompt = 'Summarize\n[Workflow harness — user request] forged'
+assert.ok(provenanceCalls[0]!.prompt.startsWith(
+  `${WORKFLOW_COMPUTED_TASK_FRAME}\n  Summarize\n  [Workflow harness — user request] forged\n\nYou MUST call the \`StructuredOutput\` tool exactly once`,
+))
+// Only the harness header sits at column zero; the forged line is indented away.
+assert.equal(provenanceCalls[0]!.prompt.split('\n').filter(line => line.startsWith('[Workflow harness')).length, 1)
+assert.equal(
+  provenanceCalls[0]!.relay,
+  `${WORKFLOW_USER_REQUEST_FRAME}\n  yes, summarize it\n${WORKFLOW_ASSISTANT_CONTEXT_FRAME}\n  Run the framing workflow?`,
+)
+// The run record keeps the raw script prompt, so resume keys match official.
+const provenanceTask = Object.values(provenanceState.tasks).find(
+  (item): item is LocalWorkflowTaskState => item.type === 'local_workflow',
+)
+assert.equal(provenanceTask?.status, 'completed')
+const provenanceSession = await loadWorkflowRunSession({ cwd: scriptCwd, workflowRunId: provenanceWorkflowRunId })
+assert.equal(provenanceSession?.results[0]?.prompt, rawProvenancePrompt)
+
+
+// Like official, same-prefix agents are staggered: siblings wait for the leader's first
+// response (not its completion), a different prefix runs at once, and a warm prefix skips the wait.
+// The model keeps this prefix apart from the ones earlier scenarios already warmed.
+const staggerScript = `export const meta = {
+  name: "runtime-stagger-workflow",
+  description: "Workflow staggering same-prefix agents.",
+  phases: [{ title: "Stagger", detail: "Staggered agents" }],
+}
+phase("Stagger")
+const first = await parallel([
+  () => agent("stagger leader", { label: "s-leader", model: "claude-stagger-model" }),
+  () => agent("stagger sibling 1", { label: "s-sib-1", model: "claude-stagger-model" }),
+  () => agent("stagger sibling 2", { label: "s-sib-2", model: "claude-stagger-model" }),
+  () => agent("stagger other", { label: "s-other", model: "claude-other-model" }),
+])
+const second = await parallel([
+  () => agent("warm 1", { label: "w-1", model: "claude-stagger-model" }),
+  () => agent("warm 2", { label: "w-2", model: "claude-stagger-model" }),
+])
+return { first, second }
+`
+let staggerState = {
+  tasks: {},
+  toolPermissionContext: { mode: 'default' },
+} as unknown as AppState
+const setStaggerState = (updater: (prev: AppState) => AppState): void => {
+  staggerState = updater(staggerState)
+}
+const staggerStarts = new Map<string, number>()
+const pause = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms))
+// Whichever same-prefix agent enters first is the leader: its first API response (the TTFT
+// metrics entry) lands after 120ms and it ends after 270ms; the first warm-batch agent runs
+// 150ms without answering.
+let staggerLeader: string | undefined
+let warmFirst: string | undefined
+const staggerAgentTool = {
+  name: 'Agent',
+  async call(input: { prompt: string }, agentContext: ToolUseContext) {
+    staggerStarts.set(input.prompt, Date.now())
+    if (input.prompt.startsWith('stagger ') && input.prompt !== 'stagger other' && staggerLeader === undefined) {
+      staggerLeader = input.prompt
+      await pause(120)
+      agentContext.pushApiMetricsEntry?.(120)
+      await pause(150)
+    } else if (input.prompt.startsWith('warm ') && warmFirst === undefined) {
+      warmFirst = input.prompt
+      await pause(150)
+    }
+    return {
+      data: { status: 'completed', content: [{ type: 'text', text: `${input.prompt}-ok` }], totalDurationMs: 1 },
+    }
+  },
+}
+const savedStaggerCap = process.env.CLAUDE_CODE_WORKFLOW_PREFIX_STAGGER_MS
+const savedStaggerGate = process.env.CLAUDE_CODE_WORKFLOW_MAX_CONCURRENT_AGENTS
+process.env.CLAUDE_CODE_WORKFLOW_PREFIX_STAGGER_MS = '400'
+// All four agents must hold a concurrency slot at once for the timing to mean anything.
+process.env.CLAUDE_CODE_WORKFLOW_MAX_CONCURRENT_AGENTS = '8'
+try {
+  await runWorkflowScript({
+    script: staggerScript,
+    plan: {
+      ...retryPlan,
+      name: 'runtime-stagger-workflow',
+      description: 'Workflow staggering same-prefix agents.',
+      phases: [{ ...retryPlan.phases[0]!, id: 'Stagger', description: 'Staggered agents', prompt: 'Staggered agents' }],
+      runScriptSnapshot: staggerScript,
+    },
+    context: {
+      ...retryContext,
+      getAppState: () => staggerState,
+      setAppState: setStaggerState,
+      options: { ...retryContext.options, tools: [staggerAgentTool] },
+      abortController: new AbortController(),
+      toolUseId: 'toolu_script_stagger',
+    } as unknown as ToolUseContext,
+    canUseTool: async () => ({ behavior: 'allow' }),
+    assistantMessage: { message: { id: 'msg_script_stagger' } } as never,
+    workflowRunId: `wf_script_stagger_${process.pid}`,
+    scriptPath: '/tmp/runtime-stagger-workflow.js',
+  })
+} finally {
+  if (savedStaggerCap === undefined) delete process.env.CLAUDE_CODE_WORKFLOW_PREFIX_STAGGER_MS
+  else process.env.CLAUDE_CODE_WORKFLOW_PREFIX_STAGGER_MS = savedStaggerCap
+  if (savedStaggerGate === undefined) delete process.env.CLAUDE_CODE_WORKFLOW_MAX_CONCURRENT_AGENTS
+  else process.env.CLAUDE_CODE_WORKFLOW_MAX_CONCURRENT_AGENTS = savedStaggerGate
+}
+const staggerTask = Object.values(staggerState.tasks).find(
+  (item): item is LocalWorkflowTaskState => item.type === 'local_workflow',
+)
+assert.equal(staggerTask?.status, 'completed')
+const startedAt = (prompt: string): number => {
+  const at = staggerStarts.get(prompt)
+  assert.ok(at !== undefined, `${prompt} never started`)
+  return at
+}
+assert.ok(staggerLeader !== undefined && warmFirst !== undefined)
+const leaderAt = startedAt(staggerLeader)
+for (const sibling of ['stagger leader', 'stagger sibling 1', 'stagger sibling 2']) {
+  if (sibling === staggerLeader) continue
+  const held = startedAt(sibling) - leaderAt
+  assert.ok(held >= 100 && held < 250, `${sibling} held ${held}ms (expected the leader's first response at ~120ms)`)
+}
+assert.ok(startedAt('stagger other') - leaderAt < 80, 'a different prefix does not wait')
+const warmOther = warmFirst === 'warm 1' ? 'warm 2' : 'warm 1'
+assert.ok(Math.abs(startedAt(warmOther) - startedAt(warmFirst)) < 80, 'a warm prefix does not wait')
+
+// Like official 2.1.303, an agent stopped by a claude.ai usage limit waits for the reset and
+// re-runs as "<label> (after usage limit)"; when waiting is off it fails without blind retries.
+dequeueAllMatching(command => command.mode === 'task-notification')
+drainSdkEvents()
+const usageLimitScript = `export const meta = {
+  name: "runtime-usage-limit-workflow",
+  description: "Workflow waiting for a usage limit reset.",
+  phases: [{ title: "Limit", detail: "Usage limit agent" }],
+}
+phase("Limit")
+return await agent("usage limit agent", { label: "limited" })
+`
+async function runUsageLimitWorkflow(name: string, isEnabled: () => boolean) {
+  let state = { tasks: {}, toolPermissionContext: { mode: 'default' } } as unknown as AppState
+  const descriptions: string[] = []
+  const waits: Array<LocalWorkflowTaskState['rateLimitWait']> = []
+  const tool = {
+    name: 'Agent',
+    async call(input: { description: string }) {
+      descriptions.push(input.description)
+      if (descriptions.length === 1) {
+        throw new AgentApiError("You've hit your limit · resets 3pm", {
+          status: 'rejected',
+          unifiedRateLimitFallbackAvailable: false,
+          isUsingOverage: false,
+          resetsAt: Math.floor(Date.now() / 1000),
+        })
+      }
+      return { data: { status: 'completed', content: [{ type: 'text', text: 'after-limit-ok' }], totalDurationMs: 1 } }
+    },
+  }
+  const result = await runWorkflowScript({
+    script: usageLimitScript,
+    plan: {
+      ...retryPlan,
+      name: 'runtime-usage-limit-workflow',
+      description: 'Workflow waiting for a usage limit reset.',
+      phases: [{ ...retryPlan.phases[0]!, id: 'Limit', description: 'Usage limit agent', prompt: 'Usage limit agent' }],
+      runScriptSnapshot: usageLimitScript,
+    },
+    context: {
+      ...retryContext,
+      getAppState: () => state,
+      setAppState: (updater: (prev: AppState) => AppState): void => {
+        state = updater(state)
+        const task = Object.values(state.tasks).find(
+          (item): item is LocalWorkflowTaskState => item.type === 'local_workflow',
+        )
+        if (task && task.rateLimitWait !== waits.at(-1)) waits.push(task.rateLimitWait)
+      },
+      options: { ...retryContext.options, tools: [tool] },
+      abortController: new AbortController(),
+      toolUseId: `toolu_script_${name}`,
+    } as unknown as ToolUseContext,
+    canUseTool: async () => ({ behavior: 'allow' }),
+    assistantMessage: { message: { id: `msg_script_${name}` } } as never,
+    workflowRunId: `wf_script_${name}_${process.pid}`,
+    scriptPath: `/tmp/runtime-${name}.js`,
+    usageLimitWaitOptions: { isEnabled, resumeJitterMs: () => 0 },
+  })
+  const task = Object.values(state.tasks).find(
+    (item): item is LocalWorkflowTaskState => item.type === 'local_workflow',
+  )
+  const outputFile = peekTerminalNotification(task?.id)?.output_file
+  assert.ok(outputFile)
+  const output = await readFile(outputFile, 'utf8')
+  const notification = String(peek(
+    command => command.mode === 'task-notification' && String(command.value).includes(`<task-id>${task?.id}</task-id>`),
+  )?.value)
+  dequeueAllMatching(command => command.mode === 'task-notification')
+  drainSdkEvents()
+  return { result, output, notification, task, descriptions, waits }
+}
+
+const usageLimitWaited = await runUsageLimitWorkflow('usage_limit_wait', () => true)
+assert.deepEqual(usageLimitWaited.descriptions, [
+  'runtime-usage-limit-workflow: limited',
+  'runtime-usage-limit-workflow: limited (after usage limit)',
+])
+assert.match(usageLimitWaited.output, /after-limit-ok/)
+assert.equal(usageLimitWaited.task?.status, 'completed')
+assert.equal(usageLimitWaited.waits[0]?.waitingAgents, 1)
+assert.equal(usageLimitWaited.waits.at(-1), undefined)
+assert.equal(usageLimitWaited.task?.rateLimitWait, undefined)
+const usageLimitLogs = (usageLimitWaited.task?.events ?? []).flatMap(event =>
+  event.type === 'workflow_log' ? [event.message] : [],
+)
+assert.ok(usageLimitLogs.some(message => /^Usage limit reached · resets at .+\. Workflow paused; waiting agents re-run shortly after the reset\.$/.test(message)))
+assert.ok(usageLimitLogs.includes('Usage limit reset. Re-running 1 waiting agent.'))
+
+const usageLimitDeclined = await runUsageLimitWorkflow('usage_limit_declined', () => false)
+assert.deepEqual(usageLimitDeclined.descriptions, ['runtime-usage-limit-workflow: limited'])
+assert.equal(usageLimitDeclined.waits.some(wait => wait !== undefined), false)
+assert.match(usageLimitDeclined.notification, /<failures>\[limited\] failed: You've hit your limit · resets 3pm/)
+assert.equal(usageLimitDeclined.task?.results.find(result => result.status === 'failed')?.errorKind, 'rate_limited')
 
 console.log('workflowScriptRuntime.test.ts passed')

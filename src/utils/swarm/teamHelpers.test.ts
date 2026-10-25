@@ -76,3 +76,19 @@ test('mutations on a missing team return false', async () => {
   expect(await removeMemberByAgentId('no-such-team', 'x@no-such-team')).toBe(false)
   expect(await setMemberMode('no-such-team', 'x', 'plan')).toBe(false)
 })
+
+test('a lead mode switch is reported as not reaching teammates on another mode', async () => {
+  const { teammatesKeepOtherMode } = await import('./teamHelpers.js')
+  const inProcess = { name: 'a', tmuxPaneId: 'in-process' }
+  // The lead's own entry (empty pane id) is not a pane teammate.
+  const lead = { name: 'team-lead', tmuxPaneId: '' }
+  expect(teammatesKeepOtherMode('default', [], undefined)).toBe(false)
+  expect(teammatesKeepOtherMode('default', ['default'], { lead, a: inProcess })).toBe(false)
+  expect(teammatesKeepOtherMode('default', ['default'], { a: inProcess })).toBe(false)
+  expect(teammatesKeepOtherMode('default', ['acceptEdits'], { a: inProcess })).toBe(true)
+  expect(teammatesKeepOtherMode('plan', ['default'], { a: inProcess })).toBe(true)
+  // In-process teammates follow a lead in bypass, acceptEdits or auto.
+  expect(teammatesKeepOtherMode('auto', ['default'], { a: inProcess })).toBe(false)
+  expect(teammatesKeepOtherMode('bypassPermissions', ['plan'], { a: inProcess })).toBe(false)
+  expect(teammatesKeepOtherMode('auto', [], { lead, b: { name: 'b', tmuxPaneId: '%3' } })).toBe(true)
+})

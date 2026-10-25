@@ -31,8 +31,10 @@ import {
   withMemoryCorrectionHint,
 } from '../../utils/messages.js'
 import type { PermissionDecision } from '../../utils/permissions/PermissionResult.js'
+import { recheckPermissionRequestHookInput } from '../../utils/permissions/permissions.js'
+import { applyPermissionUpdatesWithModeTransition } from '../../utils/permissions/permissionSetup.js'
 import {
-  applyPermissionUpdates,
+  logPermissionModeChange,
   persistPermissionUpdates,
   supportsPersistence,
 } from '../../utils/permissions/PermissionUpdate.js'
@@ -141,7 +143,10 @@ function createPermissionContext(
       persistPermissionUpdates(updates)
       const appState = toolUseContext.getAppState()
       setToolPermissionContext(
-        applyPermissionUpdates(appState.toolPermissionContext, updates),
+        applyPermissionUpdatesWithModeTransition(
+          appState.toolPermissionContext,
+          updates,
+        ),
       )
       return updates.some(update => supportsPersistence(update.destination))
     },
@@ -232,6 +237,20 @@ function createPermissionContext(
           const decision = hookResult.permissionRequestResult
           if (decision.behavior === 'allow') {
             const finalInput = decision.updatedInput ?? updatedInput ?? input
+            if (decision.updatedInput) {
+              const denied = await recheckPermissionRequestHookInput(
+                tool,
+                finalInput,
+                toolUseContext,
+              )
+              if (denied) {
+                this.logDecision(
+                  { decision: 'reject', source: { type: 'hook' } },
+                  { input: finalInput, permissionPromptStartTimeMs },
+                )
+                return denied
+              }
+            }
             return await this.handleHookAllow(
               finalInput,
               decision.updatedPermissions ?? [],
@@ -321,8 +340,15 @@ function createPermissionContext(
       permissionUpdates: PermissionUpdate[],
       permissionPromptStartTimeMs?: number,
     ): Promise<PermissionAllowDecision> {
+      const modeBefore = toolUseContext.getAppState().toolPermissionContext.mode
       const acceptedPermanentUpdates =
         await this.persistPermissions(permissionUpdates)
+      logPermissionModeChange(
+        'hook',
+        modeBefore,
+        toolUseContext.getAppState().toolPermissionContext.mode,
+        'PermissionRequest hook',
+      )
       this.logDecision(
         {
           decision: 'accept',

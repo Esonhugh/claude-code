@@ -35,7 +35,11 @@ import {
   type PermissionDecisionReason,
   requiresExplicitUserApproval,
 } from 'src/utils/permissions/PermissionResult.js'
-import { hasPermissionsToUseTool } from 'src/utils/permissions/permissions.js'
+import {
+  hasPermissionsToUseTool,
+  isRecheckAllowReason,
+  recheckPermissionRequestHookInput,
+} from 'src/utils/permissions/permissions.js'
 import { writeToStdout } from 'src/utils/process.js'
 import { jsonStringify } from 'src/utils/slowOperations.js'
 import { z } from 'zod/v4'
@@ -157,6 +161,7 @@ export class StructuredIO {
   private prependedLines: string[] = []
   private onControlRequestSent?: (request: SDKControlRequest) => void
   private onControlRequestResolved?: (requestId: string) => void
+  private readonly pendingPermissionRechecks = new Set<() => void>()
 
   // sendRequest() and print.ts both enqueue here; the drain loop is the
   // only writer. Prevents control_request from overtaking queued stream_events.
@@ -540,6 +545,15 @@ export class StructuredIO {
     }
   }
 
+  /**
+   * Decide every pending can_use_tool again (after set_permission_mode); one
+   * that a rule or the new mode now allows is approved and the host's prompt
+   * is cancelled.
+   */
+  recheckPendingPermissions(): void {
+    for (const recheck of this.pendingPermissionRechecks) recheck()
+  }
+
   createCanUseTool(
     onPermissionPrompt?: (details: RequiresActionDetails) => void,
   ): CanUseToolFn {
@@ -578,6 +592,7 @@ export class StructuredIO {
       // AbortController used to cancel the SDK request if a hook decides first
       const hookAbortController = new AbortController()
       const parentSignal = toolUseContext.abortController.signal
+      let recheck: (() => void) | undefined
       // Forward parent abort to our local controller
       const onParentAbort = () => hookAbortController.abort()
       parentSignal.addEventListener('abort', onParentAbort, { once: true })
@@ -590,7 +605,7 @@ export class StructuredIO {
         )
           ? undefined
           : executePermissionRequestHooksForSDK(
-              tool.name,
+              tool,
               toolUseID,
               input,
               toolUseContext,
@@ -620,12 +635,46 @@ export class StructuredIO {
           requestId,
         ).then(result => ({ source: 'sdk' as const, result }))
 
-        // Race: hook completion vs SDK prompt response.
+        // A mode change (set_permission_mode) can answer the prompt: a rule
+        // or the new mode that now allows the call approves it.
+        let approveOnRecheck: (decision: PermissionDecision) => void = () => {}
+        const recheckPromise = new Promise<{
+          source: 'recheck'
+          decision: PermissionDecision
+        }>(resolve => {
+          approveOnRecheck = decision => resolve({ source: 'recheck', decision })
+        })
+        recheck = () => {
+          void hasPermissionsToUseTool(
+            tool,
+            input,
+            toolUseContext,
+            assistantMessage,
+            toolUseID,
+          ).then(
+            fresh => {
+              if (
+                fresh.behavior === 'allow' &&
+                isRecheckAllowReason(fresh.decisionReason)
+              ) {
+                approveOnRecheck(fresh)
+              }
+            },
+            () => {},
+          )
+        }
+        if (
+          !requiresExplicitUserApproval(mainPermissionResult.decisionReason)
+        ) {
+          this.pendingPermissionRechecks.add(recheck)
+        }
+
+        // Race: hook completion vs SDK prompt response vs recheck.
         // The hook promise always resolves (never rejects), returning
         // undefined if no hook made a decision.
-        const winner = hookPromise
-          ? await Promise.race([hookPromise, sdkPromise])
-          : await sdkPromise
+        let winner = hookPromise
+          ? await Promise.race([hookPromise, sdkPromise, recheckPromise])
+          : await Promise.race([sdkPromise, recheckPromise])
 
         if (winner.source === 'hook') {
           if (winner.decision) {
@@ -636,13 +685,13 @@ export class StructuredIO {
             return winner.decision
           }
           // Hook passed through (no decision) — wait for the SDK prompt
-          const sdkResult = await sdkPromise
-          return permissionPromptToolResultToPermissionDecision(
-            sdkResult.result,
-            tool,
-            input,
-            toolUseContext,
-          )
+          winner = await Promise.race([sdkPromise, recheckPromise])
+        }
+
+        if (winner.source === 'recheck') {
+          sdkPromise.catch(() => {})
+          hookAbortController.abort()
+          return winner.decision
         }
 
         // SDK prompt responded first — use its result (hook still running
@@ -657,7 +706,10 @@ export class StructuredIO {
         return permissionPromptToolResultToPermissionDecision(
           {
             behavior: 'deny',
-            message: `Tool permission request failed: ${error}`,
+            message:
+              error instanceof z.ZodError
+                ? "The canUseTool callback returned an invalid permission result. Expected {behavior: 'allow', updatedInput?: object} or {behavior: 'deny', message: string}."
+                : `Tool permission request failed: ${error}`,
             toolUseID,
           },
           tool,
@@ -665,6 +717,7 @@ export class StructuredIO {
           toolUseContext,
         )
       } finally {
+        if (recheck) this.pendingPermissionRechecks.delete(recheck)
         // Only transition back to 'running' if no other permission prompts
         // are pending (concurrent tool execution can have multiple in-flight).
         if (this.getPendingPermissionRequests().length === 0) {
@@ -802,7 +855,7 @@ function exitWithMessage(message: string): never {
  * Returns undefined if no hook made a decision.
  */
 async function executePermissionRequestHooksForSDK(
-  toolName: string,
+  tool: Tool,
   toolUseID: string,
   input: Record<string, unknown>,
   toolUseContext: ToolUseContext,
@@ -813,7 +866,7 @@ async function executePermissionRequestHooksForSDK(
 
   // Iterate directly over the generator instead of using `all`
   const hookGenerator = executePermissionRequestHooks(
-    toolName,
+    tool.name,
     toolUseID,
     input,
     toolUseContext,
@@ -831,6 +884,14 @@ async function executePermissionRequestHooksForSDK(
       const decision = hookResult.permissionRequestResult
       if (decision.behavior === 'allow') {
         const finalInput = decision.updatedInput || input
+        if (decision.updatedInput) {
+          const denied = await recheckPermissionRequestHookInput(
+            tool,
+            finalInput,
+            toolUseContext,
+          )
+          if (denied) return denied
+        }
 
         // Apply permission updates if provided by hook ("always allow")
         const permissionUpdates = decision.updatedPermissions ?? []

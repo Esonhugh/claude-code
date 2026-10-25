@@ -6,7 +6,8 @@ import { join } from 'node:path'
 
 import type { AppState } from '../../state/AppState.js'
 import type { ToolUseContext } from '../../Tool.js'
-import { WorkflowTool } from '../../tools/WorkflowTool/WorkflowTool.js'
+import { call as callWorkflows } from '../../commands/workflows/workflows.js'
+import { WorkflowFacadeTool } from '../../tools/WorkflowTool/WorkflowFacadeTool.js'
 import type { AgentId } from '../../types/ids.js'
 import {
   getSessionSettingsCache,
@@ -215,8 +216,8 @@ const context = {
     updateAttributionState: () => {},
   } as unknown as ToolUseContext
 
-  const result = await WorkflowTool.call(
-    { action: 'run', plan: workflowPlan, runArgs: 'target: runtime' },
+  const result = await WorkflowFacadeTool.call(
+    { plan: workflowPlan, args: 'target: runtime' },
     context,
     async () => ({ behavior: 'allow' }),
     { message: { id: 'msg_test' } } as never,
@@ -253,23 +254,19 @@ const context = {
   assert.equal(typeof task.progressVersion, 'number')
   assert.ok((task.progressVersion ?? 0) > 0)
 
-  const statusResult = await WorkflowTool.call(
-    { action: 'status', selector: task.id },
-    context,
-    async () => ({ behavior: 'allow' }),
-    { message: { id: 'msg_status' } } as never,
-  )
-  assert.match(String(statusResult.data), /Workflow: Runtime Test Workflow/)
-  assert.match(String(statusResult.data), /Status: completed/)
-  assert.match(String(statusResult.data), /User input: target: runtime/)
-  assert.match(String(statusResult.data), /Execution: agent/)
-  assert.match(String(statusResult.data), /Progress version: \d+/)
-  assert.match(String(statusResult.data), /Default model: claude-sonnet-4-5/)
-  assert.match(String(statusResult.data), /Progress: \[██████████\] 3\/3 \(100%\)/)
-  assert.match(String(statusResult.data), /Tokens: 3/)
-  assert.match(String(statusResult.data), /Tool uses: 0/)
-  assert.match(String(statusResult.data), /- research: completed 2\/2 \[██████████\] skipped 0\/2/)
-  assert.match(String(statusResult.data), /- synthesis: completed 1\/1 \[██████████\] skipped 0\/1/)
+  const statusResult = await callWorkflows(`status ${task.id}`, context)
+  assert.equal(statusResult.type, 'text')
+  assert.match(statusResult.value, /Workflow: Runtime Test Workflow/)
+  assert.match(statusResult.value, /Status: completed/)
+  assert.match(statusResult.value, /User input: target: runtime/)
+  assert.match(statusResult.value, /Execution: agent/)
+  assert.match(statusResult.value, /Progress version: \d+/)
+  assert.match(statusResult.value, /Default model: claude-sonnet-4-5/)
+  assert.match(statusResult.value, /Progress: \[██████████\] 3\/3 \(100%\)/)
+  assert.match(statusResult.value, /Tokens: 3/)
+  assert.match(statusResult.value, /Tool uses: 0/)
+  assert.match(statusResult.value, /- research: completed 2\/2 \[██████████\] skipped 0\/2/)
+  assert.match(statusResult.value, /- synthesis: completed 1\/1 \[██████████\] skipped 0\/1/)
 
   killWorkflowTask(task.id, setAppState)
   assert.equal((state.tasks[task.id] as LocalWorkflowTaskState).status, 'completed')
@@ -1261,8 +1258,8 @@ const retryPlan = {
   ],
   totalAgents: 1,
 }
-const retryResult = await WorkflowTool.call(
-  { action: 'run', plan: retryPlan },
+const retryResult = await WorkflowFacadeTool.call(
+  { plan: retryPlan },
   retryContext,
   async () => ({ behavior: 'allow' }),
   { message: { id: 'msg_retry' } } as never,
@@ -1326,9 +1323,8 @@ const manualRetryContext = {
     tools: [manualRetryAgentTool],
   },
 } as unknown as ToolUseContext
-const manualRetryResult = await WorkflowTool.call(
+const manualRetryResult = await WorkflowFacadeTool.call(
   {
-    action: 'run',
     plan: {
       ...workflowPlan,
       name: 'Manual Retry Workflow',
@@ -1425,9 +1421,8 @@ const teamContext = {
     tools: [teamAgentTool],
   },
 } as unknown as ToolUseContext
-const teamResult = await WorkflowTool.call(
+const teamResult = await WorkflowFacadeTool.call(
   {
-    action: 'run',
     plan: {
       ...workflowPlan,
       name: 'Team Workflow',
@@ -1459,15 +1454,11 @@ assert.deepEqual(teamAgents.map(agent => agent.name), [
 ])
 const teamTaskId = String(teamResult.data).match(/Task ID: (\S+)/)?.[1]
 assert.ok(teamTaskId)
-const teamStatusResult = await WorkflowTool.call(
-  { action: 'status', selector: teamTaskId },
-  teamContext,
-  async () => ({ behavior: 'allow' }),
-  { message: { id: 'msg_team_status' } } as never,
-)
-assert.match(String(teamStatusResult.data), /Execution: team/)
-assert.match(String(teamStatusResult.data), /Team: workflow-team/)
-assert.match(String(teamStatusResult.data), /tmux-backed agents: named team workers/)
-assert.match(String(teamStatusResult.data), /Progress: \[██████████\] 2\/2 \(100%\)/)
+const teamStatusResult = await callWorkflows(`status ${teamTaskId}`, teamContext)
+assert.equal(teamStatusResult.type, 'text')
+assert.match(teamStatusResult.value, /Execution: team/)
+assert.match(teamStatusResult.value, /Team: workflow-team/)
+assert.match(teamStatusResult.value, /tmux-backed agents: named team workers/)
+assert.match(teamStatusResult.value, /Progress: \[██████████\] 2\/2 \(100%\)/)
 
 console.log('LocalWorkflowTask.test.ts passed')

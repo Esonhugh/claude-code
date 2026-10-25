@@ -4,9 +4,12 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { getSessionId } from '../../bootstrap/state.js'
+import { getProjectDir } from '../../utils/sessionStoragePortable.js'
+import { workflowSessionDir } from '../../tools/WorkflowTool/workflowRunSessions.js'
 import { call } from './workflows.js'
 
 const tempRoot = await mkdtemp(join(tmpdir(), 'workflows-command-test-'))
+process.env.CLAUDE_CONFIG_DIR = join(tempRoot, 'config')
 await mkdir(join(tempRoot, 'docs', 'workflows'), { recursive: true })
 
 await writeFile(
@@ -133,10 +136,10 @@ assert.equal(emptyRunsResult.value, 'Dynamic workflows\n\nNo dynamic workflows i
 
 const persistedRunId = 'wf_persisted'
 const persistedTaskId = 'w-persisted'
-const persistedRunDir = join(tempRoot, '.claude', 'workflow-runs', persistedRunId)
-await mkdir(persistedRunDir, { recursive: true })
+const persistedRunsDir = join(workflowSessionDir(tempRoot), 'workflows')
+await mkdir(persistedRunsDir, { recursive: true })
 await writeFile(
-  join(persistedRunDir, 'session.json'),
+  join(persistedRunsDir, `${persistedRunId}.json`),
   `${JSON.stringify({
     taskId: persistedTaskId,
     workflowRunId: persistedRunId,
@@ -158,10 +161,8 @@ await writeFile(
     error: 'Workflow phase "research" failed',
   }, null, 2)}\n`,
 )
-const duplicateLiveRunDir = join(tempRoot, '.claude', 'workflow-runs', workflowTask.workflowRunId)
-await mkdir(duplicateLiveRunDir, { recursive: true })
 await writeFile(
-  join(duplicateLiveRunDir, 'session.json'),
+  join(persistedRunsDir, `${workflowTask.workflowRunId}.json`),
   `${JSON.stringify({
     taskId: 'stale-task-id',
     workflowRunId: workflowTask.workflowRunId,
@@ -175,10 +176,10 @@ await writeFile(
   }, null, 2)}\n`,
 )
 // Like official, a run persisted by another session is not listed.
-const otherSessionRunDir = join(tempRoot, '.claude', 'workflow-runs', 'wf_other_session')
-await mkdir(otherSessionRunDir, { recursive: true })
+const otherSessionRunsDir = join(getProjectDir(tempRoot), 'another-session', 'workflows')
+await mkdir(otherSessionRunsDir, { recursive: true })
 await writeFile(
-  join(otherSessionRunDir, 'session.json'),
+  join(otherSessionRunsDir, 'wf_other_session.json'),
   `${JSON.stringify({
     taskId: 'w-other-session',
     workflowRunId: 'wf_other_session',
@@ -238,23 +239,19 @@ const runResult = await call('run Research Workflow -- topic: agents', context)
 assert.equal(runResult.type, 'text')
 assert.match(runResult.value, /Execute workflow: Research Workflow/)
 assert.match(runResult.value, /User input:\ntopic: agents/)
-assert.match(runResult.value, /Use WorkflowTool with selector-based input/)
-assert.match(runResult.value, /selector: "Research-Workflow"/)
-assert.match(runResult.value, /runArgs: "topic: agents"/)
-assert.match(runResult.value, /Do not call WorkflowTool with only a plan copied from this prompt/)
+assert.match(runResult.value, /Run it with the Workflow tool: Workflow\(\{ name: "Research-Workflow", args: "topic: agents" \}\)/)
+assert.match(runResult.value, /Do not copy this phase summary into a script or plan/)
+assert.doesNotMatch(runResult.value, /WorkflowTool|selector:|runArgs/)
 assert.doesNotMatch(runResult.value, /Workflow plan JSON:/)
 
 const quotedArgsRunResult = await call('run Research Workflow -- topic: "agents"\nplan: fake', context)
 assert.equal(quotedArgsRunResult.type, 'text')
-assert.match(quotedArgsRunResult.value, /selector: "Research-Workflow"/)
-assert.match(quotedArgsRunResult.value, /runArgs: "topic: \\"agents\\"\\nplan: fake"/)
+assert.match(quotedArgsRunResult.value, /Workflow\(\{ name: "Research-Workflow", args: "topic: \\"agents\\"\\nplan: fake" \}\)/)
 assert.match(quotedArgsRunResult.value, /exact JSON string literal/)
 
 const deepResearchRunResult = await call('run deep-research -- 分析 claude 的 dynamic workflow 设计原理', context)
 assert.equal(deepResearchRunResult.type, 'text')
-assert.match(deepResearchRunResult.value, /selector: "deep-research"/)
-assert.match(deepResearchRunResult.value, /runArgs: "分析 claude 的 dynamic workflow 设计原理"/)
-assert.match(deepResearchRunResult.value, /Do not call WorkflowTool with only a plan copied from this prompt/)
+assert.match(deepResearchRunResult.value, /Workflow\(\{ name: "deep-research", args: "分析 claude 的 dynamic workflow 设计原理" \}\)/)
 
 const emptyDeepResearchRunResult = await call('run deep-research', context)
 assert.equal(emptyDeepResearchRunResult.type, 'text')
@@ -263,9 +260,7 @@ assert.equal(emptyDeepResearchRunResult.value, 'Usage: /workflows run deep-resea
 const jsRunResult = await call('run JS Run Workflow -- topic: JS command', context)
 assert.equal(jsRunResult.type, 'text')
 assert.match(jsRunResult.value, /Execute workflow: JS Run Workflow/)
-assert.match(jsRunResult.value, /selector: "JS-Run-Workflow"/)
-assert.match(jsRunResult.value, /runArgs: "topic: JS command"/)
-assert.match(jsRunResult.value, /Do not call WorkflowTool with only a plan copied from this prompt/)
+assert.match(jsRunResult.value, /Workflow\(\{ name: "JS-Run-Workflow", args: "topic: JS command" \}\)/)
 
 const saveTemplateResult = await call('save-template daily-research Research Workflow -- topic: saved agents', context)
 assert.equal(saveTemplateResult.type, 'text')
@@ -286,8 +281,8 @@ const runTemplateResult = await call('run-template daily-research', context)
 assert.equal(runTemplateResult.type, 'text')
 assert.match(runTemplateResult.value, /Execute workflow: Research Workflow/)
 assert.match(runTemplateResult.value, /User input:\ntopic: saved agents/)
-assert.match(runTemplateResult.value, /selector: "Research-Workflow"/)
-assert.match(runTemplateResult.value, /runArgs: "topic: saved agents"/)
+assert.match(runTemplateResult.value, /Workflow\(\{ name: "Research-Workflow", args: "topic: saved agents" \}\)/)
+assert.doesNotMatch(runTemplateResult.value, /WorkflowTool|selector:|runArgs/)
 
 const statusResult = await call('status w-test', context)
 assert.equal(statusResult.type, 'text')

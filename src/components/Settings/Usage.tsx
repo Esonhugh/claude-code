@@ -1,7 +1,8 @@
 import * as React from 'react'
 import { useEffect, useState } from 'react'
 import { extraUsage as extraUsageCommand } from 'src/commands/extra-usage/index.js'
-import { formatCost } from 'src/cost-tracker.js'
+import stripAnsi from 'strip-ansi'
+import { formatCost, formatTotalCost } from 'src/cost-tracker.js'
 import { getSubscriptionType } from 'src/utils/auth.js'
 import { useTerminalSize } from '../../hooks/useTerminalSize.js'
 import { useModalOrTerminalSize } from '../../context/modalContext.js'
@@ -111,6 +112,15 @@ function LimitBar({
         <Text bold color="permission">{usedText}</Text>
       </Box>
       {subtext && <Text dimColor>{subtext}</Text>}
+    </Box>
+  )
+}
+
+function SessionCost(): React.ReactNode {
+  return (
+    <Box flexDirection="column">
+      <Text bold color="permission">Session</Text>
+      <Text dimColor>{stripAnsi(formatTotalCost())}</Text>
     </Box>
   )
 }
@@ -353,6 +363,7 @@ export function Usage({
   if (!utilization) {
     return (
       <Box flexDirection="column" gap={1}>
+        <SessionCost />
         <Text dimColor>
           {isLoading
             ? 'Loading usage data…'
@@ -407,12 +418,16 @@ export function Usage({
       ]
   const accountLine = formatOpenAIAccountLine(utilization.openai_account)
 
+  const hasPlanUsage = limits.some(({ limit }) => typeof limit?.utilization === 'number')
+  // API-key and gateway users get no plan limits; show only the session cost.
+  const showPlanUsage = utilization.source === 'chatgpt' || hasPlanUsage || !!utilization.extra_usage
+
   const usageDetails = (
     <Box flexDirection="column" gap={1} width="100%">
       <Text bold color="permission">Usage details</Text>
       {accountLine && <Text dimColor>{accountLine}</Text>}
 
-      {limits.some(({ limit }) => typeof limit?.utilization === 'number') || (
+      {hasPlanUsage || (
         <Text dimColor>/usage is only available for subscription plans.</Text>
       )}
 
@@ -443,84 +458,89 @@ export function Usage({
   )
 
   const content = (
-    <Box flexDirection={splitColumns ? 'row' : 'column'} gap={2} width="100%" alignItems="flex-start">
-      <Box flexDirection="column" width={splitColumns ? '50%' : '100%'} flexShrink={1} paddingRight={splitColumns ? 1 : 0}>
-        {usageDetails}
-      </Box>
-      {utilization.source === 'chatgpt' && (
-        <Box
-          flexDirection="column"
-          width={splitColumns ? '50%' : '100%'}
-          flexShrink={1}
-          gap={1}
-          borderStyle="single"
-          borderColor="promptBorder"
-          borderTop={!splitColumns}
-          borderBottom={false}
-          borderLeft={splitColumns}
-          borderRight={false}
-          paddingLeft={splitColumns ? 2 : 0}
-          paddingTop={splitColumns ? 0 : 1}
-        >
-          <Box justifyContent="space-between">
-            <Text bold color="permission">Reset credits</Text>
-            <Text bold>{resetCount} available</Text>
+    <Box flexDirection="column" gap={1} width="100%">
+      <SessionCost />
+      {showPlanUsage && (
+        <Box flexDirection={splitColumns ? 'row' : 'column'} gap={2} width="100%" alignItems="flex-start">
+          <Box flexDirection="column" width={splitColumns ? '50%' : '100%'} flexShrink={1} paddingRight={splitColumns ? 1 : 0}>
+            {usageDetails}
           </Box>
-          {resetMessage && <Text color="success">{resetMessage}</Text>}
-          {isLoading && <Text dimColor>Loading reset details…</Text>}
-          {resetDetailsError && (
-            <Box flexDirection="column">
-              <Text color="warning">{resetDetailsError}</Text>
-              <Text dimColor>
-                <ConfigurableShortcutHint action="settings:retry" context="Settings" fallback="r" description="retry" />
-              </Text>
-            </Box>
-          )}
-          {resetDetails && availableCredits.length === 0 && (
-            <Text dimColor>No available reset credits returned.</Text>
-          )}
-          {availableCredits.map((credit, index) => {
-            const isSelected = credit.id === selectedCreditId
-            return (
-              <Box
-                key={credit.id}
-                ref={isSelected ? selectedCreditRef : undefined}
-                flexDirection="column"
-                borderStyle="round"
-                borderColor={isSelected ? 'permission' : 'promptBorder'}
-                paddingX={1}
-              >
-                <Text bold color={isSelected ? 'permission' : undefined}>
-                  {isSelected ? '› ' : ''}{index + 1}. {credit.title || 'Usage limit reset'}
-                </Text>
-                <Text dimColor>Granted: {formatCreditTime(credit.granted_at)}</Text>
-                <Text dimColor>
-                  Expires: {credit.expires_at === null ? 'Does not expire' : formatCreditTime(credit.expires_at)}
-                </Text>
-                {isSelected && !isConfirmingReset && !isResetting && (
-                  <Text color="permission">
-                    <ConfigurableShortcutHint action="settings:close" context="Settings" fallback="Enter" description="use this reset" />
-                  </Text>
-                )}
-                {isSelected && isConfirmingReset && (
-                  <Box flexDirection="column" marginTop={1}>
-                    <Text bold color="warning">Use this reset?</Text>
-                    <Text>Card: {credit.title || 'Usage limit reset'}</Text>
-                    <Text dimColor>ID: {credit.id}</Text>
-                    <Text color="warning">This consumes one credit.</Text>
-                    <Text>
-                      <ConfigurableShortcutHint action="confirm:yes" context="Confirmation" fallback="Enter" description="confirm" />
-                      {' · '}
-                      <ConfigurableShortcutHint action="confirm:no" context="Confirmation" fallback="Esc" description="back" />
-                    </Text>
-                  </Box>
-                )}
-                {isSelected && isResetting && <Text color="warning">Resetting usage…</Text>}
+          {utilization.source === 'chatgpt' && (
+            <Box
+              flexDirection="column"
+              width={splitColumns ? '50%' : '100%'}
+              flexShrink={1}
+              gap={1}
+              borderStyle="single"
+              borderColor="promptBorder"
+              borderTop={!splitColumns}
+              borderBottom={false}
+              borderLeft={splitColumns}
+              borderRight={false}
+              paddingLeft={splitColumns ? 2 : 0}
+              paddingTop={splitColumns ? 0 : 1}
+            >
+              <Box justifyContent="space-between">
+                <Text bold color="permission">Reset credits</Text>
+                <Text bold>{resetCount} available</Text>
               </Box>
-            )
-          })}
-          {resetDetails && resetCount > availableCredits.length && (
-            <Text dimColor>Showing {availableCredits.length} of {resetCount} available credits.</Text>
+              {resetMessage && <Text color="success">{resetMessage}</Text>}
+              {isLoading && <Text dimColor>Loading reset details…</Text>}
+              {resetDetailsError && (
+                <Box flexDirection="column">
+                  <Text color="warning">{resetDetailsError}</Text>
+                  <Text dimColor>
+                    <ConfigurableShortcutHint action="settings:retry" context="Settings" fallback="r" description="retry" />
+                  </Text>
+                </Box>
+              )}
+              {resetDetails && availableCredits.length === 0 && (
+                <Text dimColor>No available reset credits returned.</Text>
+              )}
+              {availableCredits.map((credit, index) => {
+                const isSelected = credit.id === selectedCreditId
+                return (
+                  <Box
+                    key={credit.id}
+                    ref={isSelected ? selectedCreditRef : undefined}
+                    flexDirection="column"
+                    borderStyle="round"
+                    borderColor={isSelected ? 'permission' : 'promptBorder'}
+                    paddingX={1}
+                  >
+                    <Text bold color={isSelected ? 'permission' : undefined}>
+                      {isSelected ? '› ' : ''}{index + 1}. {credit.title || 'Usage limit reset'}
+                    </Text>
+                    <Text dimColor>Granted: {formatCreditTime(credit.granted_at)}</Text>
+                    <Text dimColor>
+                      Expires: {credit.expires_at === null ? 'Does not expire' : formatCreditTime(credit.expires_at)}
+                    </Text>
+                    {isSelected && !isConfirmingReset && !isResetting && (
+                      <Text color="permission">
+                        <ConfigurableShortcutHint action="settings:close" context="Settings" fallback="Enter" description="use this reset" />
+                      </Text>
+                    )}
+                    {isSelected && isConfirmingReset && (
+                      <Box flexDirection="column" marginTop={1}>
+                        <Text bold color="warning">Use this reset?</Text>
+                        <Text>Card: {credit.title || 'Usage limit reset'}</Text>
+                        <Text dimColor>ID: {credit.id}</Text>
+                        <Text color="warning">This consumes one credit.</Text>
+                        <Text>
+                          <ConfigurableShortcutHint action="confirm:yes" context="Confirmation" fallback="Enter" description="confirm" />
+                          {' · '}
+                          <ConfigurableShortcutHint action="confirm:no" context="Confirmation" fallback="Esc" description="back" />
+                        </Text>
+                      </Box>
+                    )}
+                    {isSelected && isResetting && <Text color="warning">Resetting usage…</Text>}
+                  </Box>
+                )
+              })}
+              {resetDetails && resetCount > availableCredits.length && (
+                <Text dimColor>Showing {availableCredits.length} of {resetCount} available credits.</Text>
+              )}
+            </Box>
           )}
         </Box>
       )}

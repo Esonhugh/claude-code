@@ -46,12 +46,6 @@ export async function dispatchFastPath(
     return true
   }
 
-  if (feature('DAEMON') && args[0] === '--daemon-worker') {
-    const { runDaemonWorker } = await import('../daemon/workerRegistry.js')
-    await runDaemonWorker(args[1])
-    return true
-  }
-
   if (
     feature('BRIDGE_MODE') &&
     (args[0] === 'remote-control' ||
@@ -98,6 +92,12 @@ export async function dispatchFastPath(
     return true
   }
 
+  if (feature('BG_SESSIONS') && args[0] === '--bg-pty-host') {
+    const { runPtyHost } = await import('../daemon/ptyHost.js')
+    await runPtyHost(args.slice(1))
+    return true
+  }
+
   if (feature('DAEMON') && args[0] === 'daemon') {
     profileCheckpoint('cli_daemon_path')
     const { enableConfigs } = await import('../utils/config.js')
@@ -106,38 +106,6 @@ export async function dispatchFastPath(
     initSinks()
     const { daemonMain } = await import('../daemon/main.js')
     await daemonMain(args.slice(1))
-    return true
-  }
-
-  if (
-    feature('BG_SESSIONS') &&
-    (args[0] === 'ps' ||
-      args[0] === 'logs' ||
-      args[0] === 'attach' ||
-      args[0] === 'kill' ||
-      args.includes('--bg') ||
-      args.includes('--background'))
-  ) {
-    profileCheckpoint('cli_bg_path')
-    const { enableConfigs } = await import('../utils/config.js')
-    enableConfigs()
-    const bg = await import('../cli/bg.js')
-    switch (args[0]) {
-      case 'ps':
-        await bg.psHandler(args.slice(1))
-        break
-      case 'logs':
-        await bg.logsHandler(args[1])
-        break
-      case 'attach':
-        await bg.attachHandler(args[1])
-        break
-      case 'kill':
-        await bg.killHandler(args[1])
-        break
-      default:
-        await bg.handleBgFlag(args)
-    }
     return true
   }
 

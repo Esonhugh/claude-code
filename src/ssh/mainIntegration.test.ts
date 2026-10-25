@@ -724,8 +724,8 @@ test('does not expose bypass in the local Shift+Tab cycle without opt-in', () =>
   )
 })
 
-test('keeps explicit /yolo available independently of the Shift+Tab opt-in', () => {
-  assert.match(
+test('leaves bypass availability to the /yolo opt-in instead of the REPL mode change', () => {
+  assert.doesNotMatch(
     replSource,
     /mode === 'bypassPermissions'[\s\S]{0,160}isBypassPermissionsModeAvailable: true/,
   )
@@ -813,14 +813,14 @@ test('routes SSH bash input to the remote shell executor instead of the model', 
   )
   assert.match(
     processUserInputSource,
-    /if \(!result\.shouldQuery \|\| isRemoteShellInput \|\| skipHooks\)/,
+    /if \(!result\.shouldQuery \|\| isRemoteShellInput \|\| skipHooks \|\| screened\)/,
   )
 })
 
-test('escapes shell input and preserves partial output on interruption', () => {
+test('keeps shell input verbatim and preserves partial output on interruption', () => {
   assert.match(
     processBashSource,
-    /inputString: `<bash-input>\$\{escapeXml\(inputString\)\}<\/bash-input>`/,
+    /inputString: `<bash-input>\$\{inputString\}<\/bash-input>`/,
   )
   assert.match(
     processBashSource,

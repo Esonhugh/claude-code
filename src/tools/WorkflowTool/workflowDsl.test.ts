@@ -266,4 +266,18 @@ await assert.rejects(
   /Workflow script has a syntax error and was not launched:/,
 )
 
+// Like official, a meta script that reads the clock or RNG is refused before launch.
+const nonDeterministicPath = join(tempRoot, 'docs', 'workflows', 'non-deterministic.js')
+await writeFile(nonDeterministicPath, `export const meta = {
+  name: 'non-deterministic',
+  description: 'Reads the clock',
+}
+const started = Date.now()
+return await agent('report ' + started + Math.random())
+`)
+await assert.rejects(
+  loadWorkflowScriptSpec(nonDeterministicPath, 'args'),
+  /Workflow script uses Date\.now\(\), Math\.random\(\) and was not launched: Date\.now\(\), Math\.random\(\) and argless new Date\(\) are unavailable in workflow scripts \(they would break resume\)\. Pass timestamps in via args, stamp results after the workflow returns, and for randomness vary the agent prompt\/label by index\./,
+)
+
 console.log('workflowDsl.test.ts passed')

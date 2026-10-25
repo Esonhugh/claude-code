@@ -8,8 +8,14 @@ import {
   workflowTerminalAgentCount,
   type LocalWorkflowTaskState,
 } from '../tasks/LocalWorkflowTask/LocalWorkflowTask.js'
+import {
+  WORKFLOW_SIZE_WARNING_TEXT,
+  workflowTaskSizeWarning,
+} from '../tasks/LocalWorkflowTask/workflowSizeWarning.js'
 import { formatDuration, formatNumber } from '../utils/format.js'
 import { getAgentColor } from '../tools/AgentTool/agentColorManager.js'
+import { usageLimitStatusText } from '../tools/WorkflowTool/workflowUsageLimitWait.js'
+import { PAUSE_ICON } from '../constants/figures.js'
 import type { Theme } from '../utils/theme.js'
 
 export type CoordinatorPanelTask = LocalAgentTaskState | LocalWorkflowTaskState
@@ -29,6 +35,8 @@ export type CoordinatorSessionRow = {
   elapsed: string
   statusText: string
   activity: string
+  /** Official "Large workflow" size warning, shown while the run is over the agent/token cap. */
+  warning?: string
   color?: keyof Theme
   depth: number
   branch: CoordinatorPanelBranch
@@ -39,6 +47,7 @@ type CoordinatorSessionRowsInput = {
   selectedIndex?: number
   viewingAgentTaskId?: string
   now?: number
+  ultracodeActive?: boolean
 }
 
 type CoordinatorPanelEntry = {
@@ -358,6 +367,7 @@ export function getCoordinatorSessionRows({
   selectedIndex,
   viewingAgentTaskId,
   now = Date.now(),
+  ultracodeActive = false,
 }: CoordinatorSessionRowsInput): CoordinatorSessionRow[] {
   const layout = deriveCoordinatorPanelLayout(tasks, viewingAgentTaskId)
   const taskRows = layout.entries.map((entry, index): CoordinatorSessionRow => {
@@ -389,20 +399,25 @@ export function getCoordinatorSessionRows({
         branch: entry.branch,
       }
     }
+    const rateLimitWait = task.status === 'running' ? task.rateLimitWait : undefined
     return {
       id: task.id,
       taskId: task.id,
       kind: 'workflow',
       selected,
       viewed: false,
-      icon: '◯',
+      icon: rateLimitWait ? PAUSE_ICON : '◯',
       primaryText: workflowPrimaryText(task),
       secondaryText: workflowSecondaryText(task),
       tokens: `${formatNumber(task.tokenCount ?? task.results.reduce((sum, result) => sum + (result.tokenCount ?? 0), 0))} tokens`,
       tools: `${workflowTerminalAgentCount(task)}/${task.agentCount ?? task.phases.reduce((sum, phase) => sum + phase.agentIds.length, 0)} agents`,
       elapsed: taskElapsed(task, now),
-      statusText: task.status === 'completed' ? 'done' : task.status === 'killed' ? 'stopped' : task.status === 'pending' ? 'paused' : task.status,
+      statusText: rateLimitWait
+        ? `paused · ${usageLimitStatusText(rateLimitWait.resetsAt)}`
+        : task.status === 'completed' ? 'done' : task.status === 'killed' ? 'stopped' : task.status === 'pending' ? 'paused' : task.status,
       activity: '',
+      ...(rateLimitWait ? { color: 'warning' as const } : {}),
+      warning: workflowTaskSizeWarning(task, ultracodeActive) ? WORKFLOW_SIZE_WARNING_TEXT : undefined,
       depth: 0,
       branch: 'none',
     }

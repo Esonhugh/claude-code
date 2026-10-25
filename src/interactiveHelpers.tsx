@@ -30,7 +30,10 @@ import {
   resetGrowthBook,
 } from './services/analytics/growthbook.js'
 import { isQualifiedForGrove } from './services/api/grove.js'
-import { handleMcpjsonServerApprovals } from './services/mcpServerApproval.js'
+import {
+  handleMcpjsonServerApprovals,
+  settingsErrorsBlockMcpApproval,
+} from './services/mcpServerApproval.js'
 import { AppStateProvider } from './state/AppState.js'
 import { onChangeAppState } from './state/onChangeAppState.js'
 import { normalizeApiKeyForConfig } from './utils/authPortable.js'
@@ -217,7 +220,7 @@ export async function showSetupScreens(
 
     // If settings are valid, check for any mcp.json servers that need approval
     const { errors: allErrors } = getSettingsWithAllErrors()
-    if (allErrors.length === 0) {
+    if (!settingsErrorsBlockMcpApproval(allErrors)) {
       await handleMcpjsonServerApprovals(root)
     }
 

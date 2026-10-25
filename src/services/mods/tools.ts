@@ -11,6 +11,8 @@ export type ModToolSpec = {
   name: string
   description: string
   inputSchema?: Record<string, unknown>
+  /** false lists the schema in the prompt from the start; true or absent waits behind ToolSearch. */
+  isDeferred?: boolean
 }
 
 export type ModToolOwner = object
@@ -36,6 +38,7 @@ type PreparedSpec = Readonly<{
   description: string
   inputSchema: ToolInputJSONSchema
   validateInput: ValidateFunction
+  isDeferred?: boolean
 }>
 
 export function createModTools({
@@ -91,6 +94,8 @@ export function createModTools({
       throw new TypeError('Mod tool inputSchema must be a JSON schema object')
     if (inputSchema.type !== 'object')
       throw new TypeError('Mod tool inputSchema must describe an object')
+    if (spec.isDeferred !== undefined && typeof spec.isDeferred !== 'boolean')
+      throw new TypeError('Mod tool isDeferred must be a boolean')
     try {
       const copiedSchema = structuredClone(inputSchema) as ToolInputJSONSchema
       const ajv = new Ajv({ allErrors: true })
@@ -106,6 +111,7 @@ export function createModTools({
         ),
         inputSchema: copiedSchema,
         validateInput: ajv.compile(copiedSchema),
+        ...(spec.isDeferred === undefined ? {} : { isDeferred: spec.isDeferred }),
       })
     } catch (error) {
       if (error instanceof TypeError) throw error
@@ -142,6 +148,7 @@ export function createModTools({
     return buildTool({
       name,
       isMcp: true,
+      ...(spec.isDeferred === false ? { alwaysLoad: true } : {}),
       maxResultSizeChars: 100_000,
       async description() {
         return spec.description

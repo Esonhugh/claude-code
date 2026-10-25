@@ -8,6 +8,8 @@ import { fileURLToPath } from 'node:url'
 
 import { getSessionId } from '../../bootstrap/state.js'
 import type { WorkflowAgentResult } from '../../tasks/LocalWorkflowTask/LocalWorkflowTask.js'
+import { getProjectDir } from '../../utils/sessionStoragePortable.js'
+import { readWorkflowJournalCacheEntries } from './workflowJournal.js'
 import { createWorkflowScriptAgentChainIdentity } from './workflowResumeCache.js'
 import { createWorkflowRunId } from './workflowScriptPersistence.js'
 import {
@@ -16,25 +18,26 @@ import {
   failWorkflowRunSession,
   listWorkflowRunSessions,
   loadWorkflowRunSession,
-  officialProjectDirName,
   startWorkflowRunSession,
   tryStartWorkflowRunSession,
   updateWorkflowRunSessionProgress,
   updateWorkflowRunSessionStatus,
+  workflowSessionDir,
 } from './workflowRunSessions.js'
 
 const generatedRunId = createWorkflowRunId()
 assert.match(generatedRunId, /^wf_[a-z0-9-]{6,}$/)
 assert.equal(generatedRunId.slice(3).includes('_'), false)
 
-const projectsRoot = await mkdtemp(join(tmpdir(), 'official-workflow-projects-'))
-const localRoot = await mkdtemp(join(tmpdir(), 'local-workflow-runs-'))
+// Runs are recorded where official 2.1.303 keeps them, under the project's session directory.
+const configRoot = await mkdtemp(join(tmpdir(), 'workflow-run-sessions-config-'))
+process.env.CLAUDE_CONFIG_DIR = configRoot
 const cwd = '/tmp/example-project'
 const officialRunId = 'wf_f73c6180-2aa'
-const officialRunDir = join(projectsRoot, officialProjectDirName(cwd), 'official-session', 'workflows')
-await mkdir(officialRunDir, { recursive: true })
+const officialSessionDir = join(getProjectDir(cwd), 'official-session')
+await mkdir(join(officialSessionDir, 'workflows'), { recursive: true })
 await writeFile(
-  join(officialRunDir, `${officialRunId}.json`),
+  join(officialSessionDir, 'workflows', `${officialRunId}.json`),
   `${JSON.stringify({
     runId: officialRunId,
     taskId: 'wofficial1',
@@ -76,9 +79,22 @@ await writeFile(
     totalToolCalls: 0,
   })}\n`,
 )
+const officialJournalDir = join(officialSessionDir, 'subagents', 'workflows', officialRunId)
+await mkdir(officialJournalDir, { recursive: true })
+const officialKey = createWorkflowScriptAgentChainIdentity({
+  previousKey: '',
+  prompt: 'Reply exactly: workflow-ok',
+  opts: { label: 'portable-agent' },
+})
+await writeFile(join(officialJournalDir, 'journal.jsonl'), [
+  JSON.stringify({ type: 'launched' }),
+  JSON.stringify({ type: 'started', key: officialKey, agentId: 'a655c8ceb6b5a59d1', label: 'portable-agent', phase: 'Run' }),
+  JSON.stringify({ type: 'result', key: officialKey, agentId: 'a655c8ceb6b5a59d1', result: 'workflow-ok' }),
+  '',
+].join('\n'))
 
 await writeFile(
-  join(officialRunDir, 'wf_paused.json'),
+  join(officialSessionDir, 'workflows', 'wf_paused.json'),
   `${JSON.stringify({
     runId: 'wf_paused',
     workflowName: 'paused-workflow',
@@ -88,49 +104,57 @@ await writeFile(
   })}\n`,
 )
 await writeFile(
-  join(officialRunDir, 'wf_killed.json'),
+  join(officialSessionDir, 'workflows', 'wf_killed.json'),
   `${JSON.stringify({
     runId: 'wf_killed',
     workflowName: 'killed-workflow',
     summary: 'Killed workflow',
     status: 'killed',
     startTime: 1783399711654,
+    error: 'Error: Workflow aborted',
   })}\n`,
 )
-const pausedSession = await loadWorkflowRunSession({ cwd, workflowRunId: 'wf_paused', projectsRoot })
-const killedSession = await loadWorkflowRunSession({ cwd, workflowRunId: 'wf_killed', projectsRoot })
+const pausedSession = await loadWorkflowRunSession({ cwd, workflowRunId: 'wf_paused' })
+const killedSession = await loadWorkflowRunSession({ cwd, workflowRunId: 'wf_killed' })
 assert.equal(pausedSession?.status, 'paused')
 assert.equal(killedSession?.status, 'killed')
+assert.equal(killedSession?.error, 'Error: Workflow aborted')
 
-const officialSession = await loadWorkflowRunSession({ cwd, workflowRunId: officialRunId, projectsRoot })
+// An official run resumes from its journal: the record only locates it.
+const officialSession = await loadWorkflowRunSession({ cwd, workflowRunId: officialRunId })
 assert.ok(officialSession)
 assert.equal(officialSession.workflowRunId, officialRunId)
+assert.equal(officialSession.sessionId, 'official-session')
 assert.equal(officialSession.workflowName, 'portable-workflow-ok')
 assert.equal(officialSession.status, 'completed')
 assert.equal(officialSession.scriptPath, '/tmp/portable-workflow-ok.js')
+assert.equal(officialSession.transcriptDir, officialJournalDir)
 assert.equal(officialSession.agentCount, 1)
 assert.equal(officialSession.tokenCount, 0)
 assert.equal(officialSession.toolUseCount, 0)
-assert.equal(officialSession.resumeCacheEntries.length, 1)
-assert.deepEqual(officialSession.resumeCacheEntries[0], {
-  index: 0,
-  identity: createWorkflowScriptAgentChainIdentity({
-    previousKey: '',
-    prompt: 'Reply exactly: workflow-ok',
-  }),
-  phase: 'Run',
-  label: 'portable-agent',
+assert.deepEqual(officialSession.resumeCacheEntries, [])
+assert.deepEqual(await readWorkflowJournalCacheEntries(officialSession.transcriptDir), [{
+  index: 2,
+  identity: officialKey,
+  phase: undefined,
+  label: undefined,
   result: 'workflow-ok',
-  completedAt: 1783399711654,
-})
+  completedAt: 0,
+}])
+assert.equal(
+  (await listWorkflowRunSessions(cwd)).map(session => session.workflowRunId).sort().join(','),
+  [officialRunId, 'wf_killed', 'wf_paused'].sort().join(','),
+)
 
-const localRunsRoot = join(localRoot, '.claude', 'workflow-runs')
-await mkdir(join(localRunsRoot, 'wf_newer'), { recursive: true })
+const localRoot = await mkdtemp(join(tmpdir(), 'local-workflow-runs-'))
+const localRunsDir = join(workflowSessionDir(localRoot), 'workflows')
+await mkdir(localRunsDir, { recursive: true })
 const persistedSession = {
   taskId: 'w-local',
   workflowRunId: 'wf_newer',
   workflowName: 'newer',
   status: 'completed',
+  transcriptDir: join(workflowSessionDir(localRoot), 'subagents', 'workflows', 'wf_newer'),
   resumeCacheEntries: [],
   startedAt: 20,
   updatedAt: 30,
@@ -138,20 +162,22 @@ const persistedSession = {
   events: [],
 }
 await writeFile(
-  join(localRunsRoot, 'wf_newer', 'session.json'),
+  join(localRunsDir, 'wf_newer.json'),
   `${JSON.stringify(persistedSession)}\n`,
 )
+// The same run recorded by another session of the project: the newest copy wins.
+const otherSessionRunsDir = join(getProjectDir(localRoot), 'other-session', 'workflows')
+await mkdir(otherSessionRunsDir, { recursive: true })
 await writeFile(
-  join(localRunsRoot, 'w-local.json'),
+  join(otherSessionRunsDir, 'wf_newer.json'),
   `${JSON.stringify({ ...persistedSession, updatedAt: 25 })}\n`,
 )
 await writeFile(
-  join(localRunsRoot, 'invalid.json'),
+  join(localRunsDir, 'invalid.json'),
   '{invalid json',
 )
-await mkdir(join(localRunsRoot, 'wf_older'), { recursive: true })
 await writeFile(
-  join(localRunsRoot, 'wf_older', 'session.json'),
+  join(localRunsDir, 'wf_older.json'),
   `${JSON.stringify({
     ...persistedSession,
     taskId: 'w-older',
@@ -169,14 +195,12 @@ assert.deepEqual(listedSessions.map(session => session.workflowRunId), [
 assert.equal(listedSessions[0]?.updatedAt, 30)
 assert.deepEqual(await listWorkflowRunSessions(join(localRoot, 'missing')), [])
 
-await mkdir(join(localRunsRoot, 'wf_corrupt'), { recursive: true })
-const corruptSessionPath = join(localRunsRoot, 'wf_corrupt', 'session.json')
+const corruptSessionPath = join(localRunsDir, 'wf_corrupt.json')
 await writeFile(corruptSessionPath, '{invalid json')
 await assert.rejects(
   loadWorkflowRunSession({
     cwd: localRoot,
     workflowRunId: 'wf_corrupt',
-    projectsRoot,
   }),
   SyntaxError,
 )

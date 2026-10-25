@@ -18,6 +18,18 @@ import commitPushPr from './commands/commit-push-pr.js'
 import compact from './commands/compact/index.js'
 import config from './commands/config/index.js'
 import { context, contextNonInteractive } from './commands/context/index.js'
+import focus from './commands/focus/index.js'
+import background from './commands/background/index.js'
+import stop from './commands/stop/index.js'
+import daemon from './commands/daemon/index.js'
+import {
+  skillDoctor,
+  skillDoctorNonInteractive,
+} from './commands/skill-doctor/index.js'
+import {
+  autocompact,
+  autocompactNonInteractive,
+} from './commands/autocompact/index.js'
 import cost from './commands/cost/index.js'
 import daybreak from './commands/daybreak/index.js'
 import diff from './commands/diff/index.js'
@@ -39,6 +51,7 @@ import mcp, { mcpNonInteractive } from './commands/mcp/index.js'
 import mobile from './commands/mobile/index.js'
 import onboarding from './commands/onboarding/index.js'
 import pr_comments from './commands/pr_comments/index.js'
+import recap from './commands/recap/index.js'
 import releaseNotes from './commands/release-notes/index.js'
 import rename from './commands/rename/index.js'
 import resume from './commands/resume/index.js'
@@ -134,6 +147,7 @@ import passes from './commands/passes/index.js'
 import privacySettings from './commands/privacy-settings/index.js'
 import hooks from './commands/hooks/index.js'
 import files from './commands/files/index.js'
+import setupMemoryDb from './commands/setup-memory-db/index.js'
 import branch from './commands/branch/index.js'
 import agents from './commands/agents/index.js'
 import plugin from './commands/plugin/index.js'
@@ -287,6 +301,13 @@ const COMMANDS = memoize((): Command[] => [
   desktop,
   context,
   contextNonInteractive,
+  autocompact,
+  autocompactNonInteractive,
+  skillDoctor,
+  skillDoctorNonInteractive,
+  focus,
+  ...(feature('BG_SESSIONS') ? [background, stop] : []),
+  ...(feature('DAEMON') ? [daemon] : []),
   cost,
   daybreak,
   diff,
@@ -308,12 +329,14 @@ const COMMANDS = memoize((): Command[] => [
   mcp,
   mcpNonInteractive,
   memory,
+  setupMemoryDb,
   mobile,
   model,
   outputStyle,
   remoteEnv,
   plugin,
   pr_comments,
+  recap,
   releaseNotes,
   reloadPlugins,
   reloadSkills,

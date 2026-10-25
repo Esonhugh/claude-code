@@ -194,6 +194,12 @@ export type ToolUseContext = {
   hookAskFloor?: true
   /** Resolves a Mods host spawn at AgentTool's internal launch boundary. */
   modAgentStarted?: (result: { model: string; agentId: string; teammateId?: string }) => void
+  /** Workflow script runtime: official framing for the spawned subagent's system prompt. */
+  workflowAgentSystemPrompt?: { replace: string } | { append: string }
+  /** Workflow script runtime: per-spawn tool policy (agent() opts.disallowedTools / bashCommandClamp). */
+  workflowAgentToolPolicy?: { disallowedTools?: string[]; bashCommandClamp?: string[] }
+  /** Workflow script runtime: relayed user request sent as the turn before the computed task. */
+  workflowAgentRelayPrompt?: string
   /** OpenAI Responses state shared only within one outer query turn. */
   openAITurnScope?: import('./services/api/openai-turn-scope.js').OpenAITurnScope
   options: {
@@ -208,6 +214,8 @@ export type ToolUseContext = {
     isNonInteractiveSession: boolean
     agentDefinitions: AgentDefinitionsResult
     maxBudgetUsd?: number
+    /** Agent definition autoCompactWindow: caps the auto-compact window. */
+    autoCompactWindow?: number
     /** Custom system prompt that replaces the default system prompt */
     customSystemPrompt?: string
     /** Additional system prompt appended after the main system prompt */
@@ -220,6 +228,8 @@ export type ToolUseContext = {
     spawnDepth?: number
     /** Attribution retained for fork skill recursion checks across turns. */
     spawnedBySkill?: string
+    /** Inline skill running in this turn; its responses are attributed to it. */
+    activeSkill?: string
     spawnedByForkedSkill?: boolean
     /** Optional callback to get the latest tools (e.g., after MCP servers connect mid-query) */
     refreshTools?: () => Tools
@@ -344,6 +354,9 @@ export type ToolUseContext = {
   /** When true, preserve toolUseResult on messages even for subagents.
    * Used by in-process teammates whose transcripts are viewable by the user. */
   preserveToolUseResults?: boolean
+  /** Set for commands typed at the `!` prompt: like the user's own terminal,
+   *  they run outside the sandbox even in strict sandbox mode. */
+  userShellCommand?: boolean
   /** Local denial tracking state for async subagents whose setAppState is a
    *  no-op. Without this, the denial counter never accumulates and the
    *  fallback-to-prompting threshold is never reached. Mutable — the

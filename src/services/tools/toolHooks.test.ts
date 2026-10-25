@@ -30,6 +30,7 @@ import type { ModDispatchHook } from '../mods/types.js'
 import {
   checkModToolPermission,
   modToolCheckResult,
+  setModToolCheckPermissionHost,
   resolveHookPermissionDecision,
   runPreToolUseHooks,
   runPostToolUseHooks,
@@ -206,6 +207,61 @@ function contexts(results: Awaited<ReturnType<typeof Array.fromAsync>>) {
       : []
   })
 }
+
+describe('settings hook updatedInput through the Mods classic boundary (official 2.1.300)', () => {
+  function settingsRewrite(updatedInput: Record<string, unknown>) {
+    registerHookCallbacks({
+      PreToolUse: [
+        {
+          hooks: [
+            {
+              type: 'callback',
+              callback: async () => ({
+                hookSpecificOutput: {
+                  hookEventName: 'PreToolUse',
+                  permissionDecision: 'allow',
+                  updatedInput,
+                },
+              }),
+            },
+          ],
+        },
+      ],
+    })
+    const f = fixture(async (e, next) => next(e))
+    Object.assign(f.tool, { inputSchema: z.strictObject({ value: z.string() }) })
+    return f
+  }
+  function decisions(results: Awaited<ReturnType<typeof Array.fromAsync>>) {
+    return results.flatMap(r =>
+      (r as { type: string }).type === 'hookPermissionResult'
+        ? [(r as { hookPermissionResult: Record<string, unknown> }).hookPermissionResult]
+        : [],
+    )
+  }
+
+  test('a wrong-typed rewrite denies with the schema message instead of failing the hook run', async () => {
+    const results = await Array.fromAsync(pre(settingsRewrite({ value: 42 })))
+    const last = decisions(results).at(-1)
+    expect(last).toMatchObject({ behavior: 'deny' })
+    expect(String(last?.message)).toContain(
+      'returned updatedInput that failed schema validation',
+    )
+    expect(String(last?.message)).toContain(
+      "The tool input from the model was valid; the hook's rewrite of it was not.",
+    )
+  })
+
+  test('unknown keys are dropped and the allow stands', async () => {
+    const results = await Array.fromAsync(
+      pre(settingsRewrite({ value: 'rewritten', bogus: 1 })),
+    )
+    expect(decisions(results).at(-1)).toMatchObject({
+      behavior: 'allow',
+      updatedInput: { value: 'rewritten' },
+    })
+  })
+})
 
 describe('classic events at existing tool hook boundaries', () => {
   test('module short circuit skips the non-managed callback, with one capture/release', async () => {
@@ -1301,6 +1357,17 @@ describe('C17 native permission provenance', () => {
     expect(modToolCheckResult(decision)).toEqual({decision:'ask',reason:'Ask'})
     expect(modToolCheckResult(decision, 'PreToolUse')).toEqual({decision:'ask',reason:'Ask',hook:'PreToolUse'})
   })
+  test('core ask names the host as decider only where a host answers asks', () => {
+    const ask = {behavior:'ask',message:'Ask'} as const
+    expect(modToolCheckResult(ask, undefined, {mode:'default'})).toEqual({decision:'ask',reason:'Ask'})
+    setModToolCheckPermissionHost(true)
+    try {
+      expect(modToolCheckResult(ask, undefined, {mode:'default'})).toEqual({decision:'ask',reason:'Ask',decider:'host'})
+      expect(modToolCheckResult(ask, undefined, {mode:'dontAsk'})).toEqual({decision:'ask',reason:'Ask'})
+      expect(modToolCheckResult(ask, undefined, {mode:'default',shouldAvoidPermissionPrompts:true})).toEqual({decision:'ask',reason:'Ask'})
+      expect(modToolCheckResult({behavior:'allow',updatedInput:{}}, undefined, {mode:'default'})).toEqual({decision:'allow'})
+    } finally { setModToolCheckPermissionHost(false) }
+  })
 })
 
 
@@ -1511,4 +1578,88 @@ describe('tool.check loop identity', () => {
     expect(failures).toHaveLength(1)
     expect(String(failures[0])).toBe('HooksError: observer: next() passed an argument with a changed agentId (the tool, its input and the call are the question and are pinned; a hook answers { decision }, it does not ask about another call)')
   })
+})
+
+// A tool.check registration must not strip permission-mode handling from the asks it does not settle.
+describe('tool.check keeps permission-mode semantics', () => {
+  function withMode(f: ReturnType<typeof fixture>, mode: 'default' | 'dontAsk' | 'bypassPermissions', extra: object = {}) {
+    f.context.getAppState = () => ({
+      toolPermissionContext: {...getEmptyToolPermissionContext(), mode, ...extra},
+      sessionHooks: new Map(),
+    }) as unknown as ReturnType<ToolUseContext['getAppState']>
+  }
+  function checks(f: ReturnType<typeof fixture>, invoke: ModDispatchHook['invoke']) {
+    f.context.modsSnapshot = {
+      release: () => {}, hasHooks: event => event === 'tool.check',
+      dispatch: (event, input, core, options) => dispatchModEvent({event, input, core, ...options,
+        hooks: [{plugin: 'observer', tier: 'user', registration: {id: 1, event: 'tool.check', hasCatch: false}, invoke}]}),
+    }
+  }
+  async function resolve(f: ReturnType<typeof fixture>, initial?: import('../../types/permissions.js').PermissionResult) {
+    const forced: unknown[] = []
+    const result = await resolveHookPermissionDecision(initial, f.tool, {value: 'raw'}, f.context,
+      async (_tool, _input, _context, _assistant, _id, force) => { forced.push(force); return force ?? {behavior: 'allow'} },
+      createAssistantMessage({content: []}), 'mode-tool-id')
+    return {decision: result.decision, forced}
+  }
+  test('a passed-through core ask is denied under dontAsk instead of forcing a dialog', async () => {
+    const f = fixture(); f.tool.checkPermissions = async () => ({behavior: 'passthrough', message: 'needs approval'})
+    withMode(f, 'dontAsk')
+    checks(f, async (e, next) => next(e))
+    const {decision, forced} = await resolve(f)
+    expect(decision).toMatchObject({behavior: 'deny', decisionReason: {type: 'mode', mode: 'dontAsk'}})
+    expect(forced).toEqual([])
+  })
+  test('a plugin ask is denied under dontAsk', async () => {
+    const f = fixture(); f.tool.checkPermissions = async () => ({behavior: 'allow'})
+    withMode(f, 'dontAsk')
+    checks(f, async () => ({decision: 'ask', reason: 'Owned approval'}))
+    const {decision, forced} = await resolve(f)
+    expect(decision).toMatchObject({behavior: 'deny', decisionReason: {type: 'mode', mode: 'dontAsk'}})
+    expect(forced).toEqual([])
+  })
+  test('a core ask is denied where prompts are unavailable', async () => {
+    const f = fixture(); f.tool.checkPermissions = async () => ({behavior: 'passthrough', message: 'needs approval'})
+    withMode(f, 'default', {shouldAvoidPermissionPrompts: true})
+    checks(f, async (e, next) => next(e))
+    const {decision, forced} = await resolve(f)
+    expect(decision).toMatchObject({behavior: 'deny', decisionReason: {type: 'asyncAgent'}})
+    expect(forced).toEqual([])
+  })
+  test('a plugin ask still prompts under bypassPermissions', async () => {
+    const f = fixture(); f.tool.checkPermissions = async () => ({behavior: 'allow'})
+    withMode(f, 'bypassPermissions')
+    checks(f, async () => ({decision: 'ask', reason: 'Owned approval'}))
+    const {decision, forced} = await resolve(f)
+    expect(decision.behavior).toBe('ask')
+    expect(forced).toHaveLength(1)
+  })
+  test('a PreToolUse ask still forces its dialog under dontAsk', async () => {
+    const f = fixture(); f.tool.checkPermissions = async () => ({behavior: 'allow'})
+    withMode(f, 'dontAsk')
+    checks(f, async (e, next) => next(e))
+    const ask = {behavior: 'ask', message: 'hook asks', decisionReason: {type: 'hook', hookName: 'PreToolUse:ClassicFixture'}} as const
+    const {decision, forced} = await resolve(f, ask)
+    expect(decision.behavior).toBe('ask')
+    expect(forced).toHaveLength(1)
+  })
+})
+
+test('tool.check hasHooks honours the registration tool filter', async () => {
+  const entry = join(home, 'register.ts')
+  writeFileSync(entry, `export function register(on) { on('tool.check', { tool: 'Bash' }, async ($, e, next) => next(e)) }`)
+  const runtime = createModsRuntime()
+  try {
+    await runtime.reconcile([{name: 'filter-fixture', storageId: 'filter-fixture@inline', pluginRoot: home, entrypoints: [entry]}])
+    const snapshot = runtime.capture()
+    try {
+      expect(snapshot.hasHooks('tool.check')).toBe(true)
+      expect(snapshot.hasHooks('tool.check', {tool: 'Bash', agentId: undefined})).toBe(true)
+      expect(snapshot.hasHooks('tool.check', {tool: 'Write', agentId: undefined})).toBe(false)
+    } finally {
+      snapshot.release()
+    }
+  } finally {
+    await runtime.dispose()
+  }
 })

@@ -2,6 +2,8 @@ import { resolve } from 'node:path'
 import { modTelemetryArgs, modTelemetryCoreResult, modTelemetryResult, validateModTelemetryResult } from './telemetry.js'
 import type { ModCommandRequest } from './commandRunQueue.js'
 import { createModUiAskRequest } from './uiAsk.js'
+import { validatePromptMentionResult } from './promptMention.js'
+import { modSessionAppendArgs, modSessionAppendNote, restoreSessionAppendInput, validateSessionAppendInput, validateSessionAppendResult, type SessionAppendMessage } from './sessionAppend.js'
 import { modSessionSendArgs, resolveModSessionSendAddress, sessionSendToolResult, validateSessionSendResult } from './sessionSend.js'
 import { unlistedModMcpServer, type ModMcpConnectResult } from './mcpConnect.js'
 import type { LoadedPlugin } from '../../types/plugin.js'
@@ -48,13 +50,13 @@ import { createModMutableResultBridge, createModClockBridge, createModStreamBrid
 import type { ModWorkerFault } from './protocol.js'
 import { createModClients, copyModClientData, findModClient } from './client.js'
 import { createModUi, type ModRenderComponent, type ModRenderSurface, type ModUiOwner, type ModUiOpenArgs, type ModUiOrigin, type ModUiPresentation } from './ui.js'
-import { loadModDeclaration } from './loader.js'
 import { buildModClientBundle } from './clientBundle.js'
 import { getNativeModDeclaration } from './native.js'
 import { getShippedBuiltinModDeclaration, isCanonicalDiffMod } from '../../plugins/builtinPlugins.js'
+import { loadModDeclarationCached } from '../../plugins/builtinMods.js'
 import {getOfficialShippedPaneRequests,updateOfficialShippedPaneRequest} from '../../plugins/builtinShippedMods.js'
 import builtinDiff from '../../commands/diff/index.js'
-import { matchesModEventPattern, matchesModMatcher } from './matcher.js'
+import { matchesModEventPattern, matchesModMatcher, matchesModMatcherKeys } from './matcher.js'
 import { createModHostOperations, ModProcessTimeoutError, ModProcessTerminationError, validateModProcessSpawnRequest, type ModHttpServices } from './hostOperations.js'
 import { createModCommands, type ModCommandSpec } from './commands.js'
 import { createModTools, type ModToolSpec } from './tools.js'
@@ -71,6 +73,8 @@ import { projectModApiMessages, projectModSessionMessages, validateModSessionMes
 import { validateModCompactInput, validateModCompactResult } from './compactAdapter.js'
 import { validateSessionReceiveResult } from './receiveAdapter.js'
 import { logForDebugging } from '../../utils/debug.js'
+import { isEnvTruthy } from '../../utils/envUtils.js'
+import type { ModSessionIdentity } from './sessionIdentity.js'
 import { getMaxConcurrentSubagents } from '../../utils/subagentConcurrency.js'
 import { createModConfig, type ModConfigRowProvider, type ModConfigValue } from './config.js'
 import { createModState } from './state.js'
@@ -165,10 +169,16 @@ export type ModHostServices = ModRequestServices & ModHttpServices & {
   uiSelection?(): ModUiSelection | undefined
   uiCopy?(input: ModUiCopyArgs & {surface: ModRenderSurface}, plugin: string, signal: AbortSignal): Promise<ModUiCopyResult>
   uiLog?(plugin: string, text: string, to: 'transcript' | 'debug'): void
+  /** Keeps a plugin's own row (door `note`) in the main conversation. */
+  appendMessage?(row: { message: SessionAppendMessage; uuid: string }): void | Promise<void>
   /** Runs queued input while the host is idle; QueryEngine calls it for input it queued after its turn ended. */
   wake?(): void | Promise<void>
   uiStatus?(plugin: string, text: string | undefined): void
   uiToast?(plugin: string, text: string, timeoutMs: number): void
+  /** Sends a native notification through the person's channel; resolves the channel's method word. */
+  uiNotify?(notification: { message: string; title: string; notificationType: 'plugin_notification' }): Promise<string>
+  /** Answers $.session.identity() for a mod managed settings enable and load in place; undefined for any other. */
+  sessionIdentity?(storageId: string): ModSessionIdentity | undefined
   prompt?(): ModPromptHost | undefined
 }
 export type ModDiagnostic = { plugin: string; stage: string; message: string; workerFault?: ModWorkerFault }
@@ -201,7 +211,8 @@ export type ModSnapshot = {
   commandRunHooks?(command: string, origin?: ModOrigin): readonly ModOrigin[]
   dispatch(event: string, input: ModInput, core: (input: ModInput, signal?: AbortSignal) => Promise<unknown>, options?: ModDispatchOptions): Promise<unknown>
   stream?(event: 'turn.step' | 'process.spawn', input: ModInput, core: (input: ModInput, signal?: AbortSignal) => AsyncGenerator<unknown, unknown>, options?: ModDispatchOptions): ModHookStream
-  hasHooks(event: string): boolean
+  /** `known` prefilters on matcher keys the caller already knows (tool.check passes tool and agentId). */
+  hasHooks(event: string, known?: Record<string, unknown>): boolean
   release(): void
 }
 type Nouns = Record<string, Record<string, (...args: unknown[]) => unknown>>
@@ -283,7 +294,7 @@ const coreHost: Nouns = {
   env: { get: hostIdentity, set: hostIdentity },
   store: { get: hostIdentity, set: hostIdentity, delete: hostIdentity, keys: hostIdentity },
   state: { get: hostIdentity, set: hostIdentity },
-  session: { compact: hostIdentity, send: hostIdentity, cwd: hostIdentity, root: hostIdentity, model: hostIdentity, turns: hostIdentity, id: hostIdentity, repo: hostIdentity, surface: hostIdentity, surfaces: hostIdentity, messages: hostIdentity, usage: hostIdentity, version: hostIdentity, authorize: hostIdentity },
+  session: { compact: hostIdentity, send: hostIdentity, append: hostIdentity, identity: hostIdentity, cwd: hostIdentity, root: hostIdentity, model: hostIdentity, turns: hostIdentity, id: hostIdentity, repo: hostIdentity, surface: hostIdentity, surfaces: hostIdentity, messages: hostIdentity, usage: hostIdentity, version: hostIdentity, authorize: hostIdentity },
   http: { fetch: hostIdentity },
   agent: { spawn: hostIdentity, register: hostIdentity, list: hostIdentity },
   command: { run: hostIdentity, register: hostIdentity, list: hostIdentity },
@@ -293,7 +304,7 @@ const coreHost: Nouns = {
   mcp: { connect: hostIdentity, call: hostIdentity },
   turn: { step: hostIdentity, abort: hostIdentity },
   tool: { list: hostIdentity, check: hostIdentity, call: hostIdentity, register: hostIdentity },
-  ui: { ask: hostIdentity, notice: hostIdentity, open: hostIdentity, close: hostIdentity, panes: hostIdentity, blit: hostIdentity, scroll: hostIdentity, focus: hostIdentity, invalidate: hostIdentity, log: hostIdentity, status: hostIdentity, toast: hostIdentity, selection: hostIdentity, copy: hostIdentity, resolve: hostIdentity },
+  ui: { ask: hostIdentity, notice: hostIdentity, open: hostIdentity, close: hostIdentity, panes: hostIdentity, blit: hostIdentity, scroll: hostIdentity, focus: hostIdentity, invalidate: hostIdentity, log: hostIdentity, status: hostIdentity, toast: hostIdentity, notify: hostIdentity, selection: hostIdentity, copy: hostIdentity, resolve: hostIdentity },
 }
 
 async function runCleanups(cleanups: (() => unknown)[]): Promise<void> {
@@ -1072,7 +1083,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
           throw new TypeError('agent.register takes a short name of letters, digits, _ or - (up to 64)')
         const input = value as ModInput
         return Object.fromEntries(['name', 'description', 'prompt', 'tools', 'disallowedTools', 'model', 'effort',
-          'permissionMode', 'mcpServers', 'hooks', 'maxTurns', 'skills', 'initialPrompt', 'memory', 'background', 'omitClaudeMd', 'isolation']
+          'permissionMode', 'mcpServers', 'hooks', 'maxTurns', 'autoCompactWindow', 'skills', 'initialPrompt', 'memory', 'background', 'omitClaudeMd', 'isolation']
           .filter(key => input[key] !== undefined).map(key => [key, Array.isArray(input[key]) ? [...input[key]] : input[key]]))
       }
       case 'tool.register': {
@@ -1140,6 +1151,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
         return entry?.instructions === undefined ? {} : {instructions:entry.instructions}
       }
       case 'session.send': return modSessionSendArgs(args[0], plugin)
+      case 'session.append': return modSessionAppendArgs(args[0], plugin)
       case 'session.usage': {
         const input = args[0] === undefined ? {} : args[0]
         if (args.length > 1) throw new TypeError('session.usage takes one optional object')
@@ -1243,6 +1255,14 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
         if (to !== 'transcript' && to !== 'debug') throw new TypeError('ui.log to must be transcript or debug')
         return { text: args[0], to }
       }
+      case 'ui.notify': {
+        const options = args[1] as ModInput | undefined
+        if (typeof args[0] !== 'string')
+          throw Object.assign(new Error(`${plugin}: $.ui.notify takes a string text`), {name:'HooksError'})
+        if (options !== undefined && (!options || typeof options !== 'object' || options.title !== undefined && typeof options.title !== 'string'))
+          throw Object.assign(new Error(`${plugin}: $.ui.notify title is a string, when given`), {name:'HooksError'})
+        return { text: args[0], title: (options?.title as string | undefined) || plugin }
+      }
       case 'ui.toast': {
         const options = args[1] as ModInput | undefined
         return { text: args[0], ...(typeof options?.timeoutMs === 'number' ? { timeoutMs: options.timeoutMs } : {}) }
@@ -1268,6 +1288,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
         return {...input}
       }
       case 'session.version': return {}
+      case 'session.identity': return {}
       case 'agent.list': case 'tool.list': case 'command.list': case 'store.keys': case 'session.cwd': case 'session.root': case 'session.model': case 'session.turns': case 'session.id': case 'session.repo': case 'session.surface': case 'session.surfaces': case 'prompt.read': {
         if (args.length) throw new TypeError(`${op} takes no arguments`)
         return {}
@@ -1338,7 +1359,9 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
         const presentation = binding?.surface === 'terminal' && binding.isInteractive && services.uiPresentation
           ? services.uiPresentation()
           : {columns: 1, rows: 1, isFullscreen: false, composerEmpty: true, hasDialog: false, keyboardOwned: false, headless: true as const}
-        return ui.open(owner, input as ModUiOpenArgs, origin, presentation)
+        const opened = await ui.open(owner, input as ModUiOpenArgs, origin, presentation) as { isPlaced: boolean; reason?: string }
+        if (!opened.isPlaced || attachedSurfaces().length > 0) return opened
+        return {isPlaced: false, reason: 'no-surface: no surface is attached ($.session.surfaces() is empty)'}
       }
       case 'ui.close': {
         if (owner.state !== 'active') throw new Error('Mod UI activation is retired')
@@ -1488,6 +1511,26 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
         } finally { combined.cleanup() }
       }
       case 'ui.selection': return services.uiSelection?.()
+      case 'session.identity': {
+        const plugin = owner.declaration.name
+        const identity = services.sessionIdentity?.(owner.declaration.storageId)
+        if (identity) return identity
+        logForDebugging(`[Mods] $.session.identity (${plugin}): refused; not a plugin managed settings enable and name the source of`)
+        return { deny: `$.session.identity answers only a mod that managed settings enable and that is loaded in place from a source they name; ${plugin} is not one` }
+      }
+      case 'ui.notify': {
+        const plugin = owner.declaration.name
+        const text = input.text as string
+        const channel = binding && !stopped && !ending && services.uiNotify
+          ? await services.uiNotify({ message: text, title: (input.title as string | undefined) || plugin, notificationType: 'plugin_notification' })
+          : 'no_surface'
+        if (channel === 'error') throw Object.assign(new Error(`${plugin}: $.ui.notify: the channel's write failed`), {name:'HooksError'})
+        const result = ['iterm2', 'iterm2_with_bell', 'kitty', 'ghostty', 'terminal_bell'].includes(channel)
+          ? { isSent: true, channel }
+          : { isSent: false, reason: channel === 'disabled' ? 'disabled' : channel === 'no_surface' ? 'no-surface' : 'no-channel' }
+        logForDebugging(`[Mods] $.ui.notify (${plugin}): ${text.length} chars: ${result.isSent ? `sent by ${channel}` : result.reason}`)
+        return result
+      }
       case 'ui.panes': return ui.panes(owner)
       case 'agent.list': {
         if (!services.tasks) throw new Error('Agent session state is unavailable on this host')
@@ -1823,9 +1866,9 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
                   ...(caller ? { caller } : {}),
                 })
               },
-              hasHooks: event => [...hostHooks].some(hook => matchesModEventPattern(hook.registration.event, event)) || snapshot.some(item =>
+              hasHooks: (event, known) => [...hostHooks].some(hook => matchesModEventPattern(hook.registration.event, event) && matchesModMatcherKeys(hook.registration.matcher, known)) || snapshot.some(item =>
                 item.environment.registrations.some(registration =>
-                  matchesModEventPattern(registration.event, event) &&
+                  matchesModEventPattern(registration.event, event) && matchesModMatcherKeys(registration.matcher, known) &&
                   (item !== owner || callbackOwner !== owner.declaration.name && registration.id !== caller?.registrationId),
                 )),
               release() {},
@@ -1992,6 +2035,33 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
               },
             ))
           }
+          if (fn === hostIdentity && op === 'session.append') {
+            const plugin = owner.declaration.name
+            const args = input as ReturnType<typeof modSessionAppendArgs>
+            const append = services.appendMessage
+            if (args.agentId !== undefined)
+              throw Object.assign(new Error(`${plugin}: $.session.append: no running loop is ${args.agentId}`), {name:'HooksError'})
+            if (!append)
+              throw Object.assign(new Error(`${plugin}: $.session.append: this session keeps no conversation to append to`), {name:'HooksError'})
+            const row = modSessionAppendNote(args)
+            if ('reason' in row)
+              throw Object.assign(new Error(`${plugin}: $.session.append: ${row.reason}`), {name:'HooksError'})
+            const eventInput = { message: row.message, door: 'note', origin: { kind: 'plugin', name: plugin }, uuid: randomUUID() }
+            return withReference(owner, () => dispatch(op, eventInput, async rewritten => {
+              const kept = modSessionAppendNote({ message: rewritten.message as ReturnType<typeof modSessionAppendArgs>['message'] })
+              if ('reason' in kept) return { deny: kept.reason }
+              const stored = { message: kept.message, uuid: eventInput.uuid }
+              await append(stored)
+              logForDebugging(`[ModsAppend] plugin=${plugin} kept ${kept.message.type} row uuid=${stored.uuid}`)
+              return stored
+            }, snapshot, table, {
+              signal,
+              origin: { plugin, tier: owner.declaration.tier },
+              ...(caller ? { caller } : {}),
+              restoreInput: restoreSessionAppendInput,
+              validateInput: validateSessionAppendInput,
+            }))
+          }
           if (fn === hostIdentity && op === 'agent.spawn') {
             const request = requestServices.getStore()
             const spawn = request?.agentSpawn ?? services.agentSpawn ?? request?.toolHost?.()?.spawn ?? services.toolHost?.()?.spawn
@@ -2008,9 +2078,9 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
                   ...(caller ? { caller } : {}),
                 })
               },
-              hasHooks: event => [...hostHooks].some(hook => matchesModEventPattern(hook.registration.event, event)) || snapshot.some(item =>
+              hasHooks: (event, known) => [...hostHooks].some(hook => matchesModEventPattern(hook.registration.event, event) && matchesModMatcherKeys(hook.registration.matcher, known)) || snapshot.some(item =>
                 item.environment.registrations.some(registration =>
-                  matchesModEventPattern(registration.event, event) &&
+                  matchesModEventPattern(registration.event, event) && matchesModMatcherKeys(registration.matcher, known) &&
                   (item !== owner || callbackOwner !== owner.declaration.name && registration.id !== caller?.registrationId),
                 )),
               pluginOrigin: storageId => {
@@ -2085,9 +2155,9 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
                   ...(caller ? {caller} : {}),
                 })
               },
-              hasHooks: event => [...hostHooks].some(hook => matchesModEventPattern(hook.registration.event, event)) || snapshot.some(item =>
+              hasHooks: (event, known) => [...hostHooks].some(hook => matchesModEventPattern(hook.registration.event, event) && matchesModMatcherKeys(hook.registration.matcher, known)) || snapshot.some(item =>
                 item.environment.registrations.some(registration =>
-                  matchesModEventPattern(registration.event, event) &&
+                  matchesModEventPattern(registration.event, event) && matchesModMatcherKeys(registration.matcher, known) &&
                   (item !== owner || callbackOwner !== owner.declaration.name && registration.id !== caller?.registrationId),
                 )),
               pluginOrigin: storageId => {
@@ -2203,8 +2273,13 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
             return modTelemetryResult(op, result, owner.declaration.name)
           }
           if (fn === hostIdentity && op === 'session.compact') {
+            const refuse = (reason: string) => Object.assign(new Error(`${owner.declaration.name}: $.session.compact: ${reason}`), {name:'HooksError'})
+            if (isEnvTruthy(process.env.DISABLE_COMPACT))
+              throw refuse('compaction is switched off in this session (DISABLE_COMPACT), for /compact and plugins alike')
+            if (publicTurn)
+              throw refuse(`a turn is running (${publicTurn.turnId}); the conversation compacts between turns, so call it from turn.complete or later`)
             if (binding && !binding.isInteractive)
-              throw Object.assign(new Error(`${owner.declaration.name}: $.session.compact: not available in a headless (-p / SDK) session yet: compaction here runs inside a turn (a /compact prompt); catch it and carry on`), {name:'HooksError'})
+              throw refuse('not available in a headless (-p / SDK) session yet: compaction here runs inside a turn (a /compact prompt); catch it and carry on')
             throw new Error('$.session.compact is not available in this build')
           }
           const catalog = fn === hostIdentity && op === 'tool.list'
@@ -2590,6 +2665,23 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
 
   function validateResult(event: string, result: unknown, input?: ModInput) {
     if (event === 'telemetry.log' || event === 'telemetry.mark') return validateModTelemetryResult(event, result)
+    if (event === 'session.identity') {
+      const value = (result as { value?: { kind?: unknown; isVerified?: unknown; deny?: unknown } } | undefined)?.value
+      if (!value || typeof value !== 'object' || (typeof value.deny !== 'string' &&
+          (typeof value.kind !== 'string' || typeof value.isVerified !== 'boolean')))
+        throw new TypeError('session.identity must return { kind, isVerified, ... } or { deny } in value')
+      return
+    }
+    if (event === 'ui.notify') {
+      if (!result || typeof result !== 'object' || Array.isArray(result)) throw new TypeError('ui.notify must return value or deny')
+      if ('deny' in result && typeof result.deny === 'string') return
+      const value = (result as { value?: { isSent?: unknown; channel?: unknown; reason?: unknown } }).value
+      if (!value || typeof value !== 'object' || (value.isSent === true
+        ? !['iterm2', 'iterm2_with_bell', 'kitty', 'ghostty', 'terminal_bell'].includes(value.channel as string)
+        : value.isSent !== false || !['disabled', 'no-channel', 'no-surface', 'refused'].includes(value.reason as string)))
+        throw new TypeError('ui.notify must return { isSent: true, channel } or { isSent: false, reason } in value, or deny')
+      return
+    }
     if (event === 'prompt.edit') return validatePromptEditResult(result)
     if (event === 'prompt.autocomplete') return validatePromptAutocompleteResult(result)
     if (event === 'prompt.compose') {
@@ -2628,6 +2720,8 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
     }
     if (event === 'session.receive') return validateSessionReceiveResult(result)
     if (event === 'session.send') return validateSessionSendResult(result)
+    if (event === 'session.append') return validateSessionAppendResult(result)
+    if (event === 'prompt.mention') return validatePromptMentionResult(result)
     if (event === 'session.attach' || event === 'session.detach') {
       if (!result || typeof result !== 'object' || Array.isArray(result) || typeof (result as ModInput).clientId !== 'string')
         throw new TypeError(`${event} must return clientId`)
@@ -2640,8 +2734,9 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
     if (event === 'tool.check') {
       if (!result || typeof result !== 'object' || Array.isArray(result) ||
           !['allow', 'ask', 'deny'].includes((result as ModInput).decision as string) ||
-          ['reason', 'rule', 'hook'].some(key => (result as ModInput)[key] !== undefined && typeof (result as ModInput)[key] !== 'string'))
-        throw new TypeError('tool.check must return { decision, reason?, rule?, hook? }')
+          ['reason', 'rule', 'hook', 'setting'].some(key => (result as ModInput)[key] !== undefined && typeof (result as ModInput)[key] !== 'string') ||
+          ((result as ModInput).decider !== undefined && (result as ModInput).decider !== 'host'))
+        throw new TypeError('tool.check must return { decision, reason?, rule?, hook?, setting?, decider? }')
       return
     }
     if (event === 'config.describe') {
@@ -2687,9 +2782,11 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
     if (event === 'env.get' || event === 'env.set') {
       if (!result || typeof result !== 'object' || Array.isArray(result)) throw new Error(`${event} must return value or deny`)
       if ('deny' in result && typeof result.deny === 'string') return
+      const written = (result as { value?: { deny?: unknown } }).value
       if (!('value' in result) || (event === 'env.get'
         ? result.value !== undefined && typeof result.value !== 'string'
-        : result.value !== undefined)) throw new Error(`${event} must return ${event === 'env.get' ? 'a string or undefined' : 'undefined'} in value or deny`)
+        : !written || typeof written !== 'object' || Array.isArray(written) || (written.deny !== undefined && typeof written.deny !== 'string')))
+        throw new Error(`${event} must return ${event === 'env.get' ? 'a string or undefined' : '{} or { deny }'} in value or deny`)
       return
     }
     if (event.startsWith('clock.')) {
@@ -2942,7 +3039,9 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
         core = async () => { throw new Error(`Unhandled plugin test event: ${event}`) }
       const runDispatch = () => requestServices.run(dispatchServices, () => dispatchModEvent({
         event, input, hooks: hooksFor(snapshot, table, options.only, options.drawing, options.skipOwner, callerChain)
-          .filter(hook => !['ui.fault', 'ui.message'].includes(event) || !options.only || hook.plugin === options.only.declaration.name), core,
+          .filter(hook => !['ui.fault', 'ui.message'].includes(event) || !options.only || hook.plugin === options.only.declaration.name)
+          // Only managed and built-in tiers hook the session's identity.
+          .filter(hook => event !== 'session.identity' || hook.tier !== 'user'), core,
         signal: combined.signal, origin, callerChain,
         ...(event === 'prompt.edit' ? {budgetMs: promptEditBudgetMs} : {}),
         reportDirectCoreFailure: options.reportDirectCoreFailure,
@@ -2956,6 +3055,8 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
         validateInput: (value, received) => {
           if (event === 'prompt.autocomplete') validatePromptAutocompleteInput(value, received)
           if (event === 'ui.copy') validateModUiCopyArgs(value)
+          if (event === 'ui.notify' && (typeof value.text !== 'string' || value.title !== undefined && typeof value.title !== 'string'))
+            throw new TypeError('ui.notify takes { text, title? } as strings')
           if (event === 'prompt.edit') validatePromptEditInput(value, received)
           if (event === 'agent.spawn') validateModAgentSpawnInput(value, received)
           if (event === 'tool.check' && !isDeepStrictEqual(value, input)) throw new Error('tool.check cannot rewrite tool, input or tool_use_id')
@@ -3018,7 +3119,8 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
                   ? (result: unknown) => {
                       if (!result || typeof result !== 'object' || Array.isArray(result)) return result
                       const value = result as ModInput
-                      return { decision: value.decision, ...Object.fromEntries(['reason', 'rule', 'hook'].filter(key => value[key] !== undefined).map(key => [key, value[key]])) }
+                      // A hook's own ceiling is dropped: the ceiling is the engine's, and none is set in this build.
+                      return { decision: value.decision, ...Object.fromEntries(['reason', 'rule', 'hook', 'setting', 'decider'].filter(key => value[key] !== undefined).map(key => [key, value[key]])) }
                     }
                   : options.restoreResult,
         onFailure: (plugin, error) => { diagnostic(plugin, event, error); options.onFailure?.(error) },
@@ -3389,7 +3491,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
       try {
         const declaration = recoveringOwners
           ? knownArgs.get(input.storageId)
-          : getNativeModDeclaration(input) ?? getShippedBuiltinModDeclaration(input) ?? await loadModDeclaration(input)
+          : getNativeModDeclaration(input) ?? getShippedBuiltinModDeclaration(input) ?? await loadModDeclarationCached(input)
         if (!declaration) continue
         scanned.set(input, declaration)
         if (!recoveringOwners) {
@@ -3445,7 +3547,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
       }
       let suggestionSuspended = false
       try {
-        const declaration = scanned.get(input) ?? getNativeModDeclaration(input) ?? getShippedBuiltinModDeclaration(input) ?? await loadModDeclaration(input)
+        const declaration = scanned.get(input) ?? getNativeModDeclaration(input) ?? getShippedBuiltinModDeclaration(input) ?? await loadModDeclarationCached(input)
         const refreshDeclarations = async () => {
           if (declaration.isNative || declaration.tier === 'builtin') return
           try {
@@ -3658,7 +3760,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
         if (released) throw new Error('Mods snapshot released')
         return requestServices.run(hostServices, () => stream(event, input, core, snapshot, table, options))
       },
-      hasHooks: event => [...hostHooks].some(hook => matchesModEventPattern(hook.registration.event, event)) || snapshot.some(owner => owner.environment.registrations.some(registration => matchesModEventPattern(registration.event, event))),
+      hasHooks: (event, known) => [...hostHooks].some(hook => matchesModEventPattern(hook.registration.event, event) && matchesModMatcherKeys(hook.registration.matcher, known)) || snapshot.some(owner => owner.environment.registrations.some(registration => matchesModEventPattern(registration.event, event) && matchesModMatcherKeys(registration.matcher, known))),
       release() {
         if (released) return
         released = true
@@ -3950,8 +4052,8 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
     /** Resolves once turns ended early by a turn.complete hook's queued input have finished their completion. */
     settleTurns: async (): Promise<void> => { await Promise.all([...settlingTurns]) },
     beginAgentTurn(agentId: string): ModRegisteredTurn | undefined {
-      if (stopped || ending || ![...hostHooks].some(hook => ['turn.step', 'turn.complete'].some(event => matchesModEventPattern(hook.registration.event, event))) &&
-          !active.some(owner => owner.environment.registrations.some(registration => ['turn.step', 'turn.complete'].some(event => matchesModEventPattern(registration.event, event))))) return undefined
+      if (stopped || ending || ![...hostHooks].some(hook => ['turn.start', 'turn.step', 'turn.complete'].some(event => matchesModEventPattern(hook.registration.event, event))) &&
+          !active.some(owner => owner.environment.registrations.some(registration => ['turn.start', 'turn.step', 'turn.complete'].some(event => matchesModEventPattern(registration.event, event))))) return undefined
       return beginRegisteredTurn(randomUUID(), agentId)
     },
     beginPublicTurn(turnId: string, abort?: () => void): () => void {
@@ -3990,7 +4092,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
     }),
     stream: (event: 'turn.step' | 'process.spawn', input: ModInput, core: (input: ModInput, signal?: AbortSignal) => AsyncGenerator<unknown, unknown>, options?: ModDispatchOptions) => stream(event, input, core, active, nouns, options),
     dispatch: (event: string, input: ModInput, core: (input: ModInput, signal?: AbortSignal) => Promise<unknown>, options?: ModDispatchOptions) => dispatch(event, input, core, active, nouns, options),
-    hasHooks: (event: string) => [...hostHooks].some(hook => matchesModEventPattern(hook.registration.event, event)) || active.some(owner => owner.environment.registrations.some(registration => matchesModEventPattern(registration.event, event))),
+    hasHooks: (event: string, known?: Record<string, unknown>) => [...hostHooks].some(hook => matchesModEventPattern(hook.registration.event, event) && matchesModMatcherKeys(hook.registration.matcher, known)) || active.some(owner => owner.environment.registrations.some(registration => matchesModEventPattern(registration.event, event) && matchesModMatcherKeys(registration.matcher, known))),
     dispose(): Promise<void> {
       if (disposal) return disposal
       stopped = true

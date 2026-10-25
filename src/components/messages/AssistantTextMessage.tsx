@@ -21,6 +21,7 @@ import {
   isEmptyMessageText,
   NO_RESPONSE_REQUESTED,
 } from '../../utils/messages.js'
+import { getMessageDisplayOverride } from '../../utils/hooks/messageDisplay.js'
 import { getUpgradeMessage } from '../../utils/model/contextWindowUpgradeCheck.js'
 import {
   getDefaultSonnetModel,
@@ -66,7 +67,8 @@ function InvalidApiKeyMessage(): React.ReactNode {
 }
 
 export function AssistantTextMessage(props: Props): React.ReactNode {
-  const { messageId, param: { text }, shouldShowDot } = props
+  const { messageId, shouldShowDot } = props
+  const text = getMessageDisplayOverride(messageId) ?? props.param.text
   const input = React.useMemo(() => ({
     surface: 'terminal' as const,
     component: 'AssistantMessage' as const,
@@ -77,7 +79,7 @@ export function AssistantTextMessage(props: Props): React.ReactNode {
     <ModsRender input={input}>
       {next => <NativeAssistantTextMessage
         {...props}
-        param={next.text === input.props.text ? props.param : { ...props.param, text: next.text as string }}
+        param={next.text === input.props.text && text === props.param.text ? props.param : { ...props.param, text: next.text as string }}
         shouldShowDot={next.isFirstOfReply as boolean}
       />}
     </ModsRender>

@@ -108,8 +108,6 @@ export type RemoteTaskProjection = {
 
 export type AppState = DeepImmutable<{
   settings: SettingsJson
-  /** Active compaction window; live settings changes do not overwrite this session choice. */
-  autoCompactWindow?: number
   verbose: boolean
   mainLoopModel: ModelSetting
   mainLoopModelForSession: ModelSetting
@@ -118,6 +116,7 @@ export type AppState = DeepImmutable<{
   expandedView: 'none' | 'tasks' | 'teammates'
   diffSidebarVisible: boolean
   isBriefOnly: boolean
+  briefTranscript: boolean
   // Optional - only present when ENABLE_AGENT_SWARMS is true (for dead code elimination)
   showTeammateMessagePreview?: boolean
   selectedIPAgentIndex: number
@@ -501,7 +500,6 @@ export function getDefaultAppState(): AppState {
   const initialSettings = getInitialSettings()
   return {
     settings: initialSettings,
-    autoCompactWindow: initialSettings.autoCompactWindow,
     tasks: {},
     runningSubagents: 0,
     agentNameRegistry: new Map(),
@@ -516,6 +514,7 @@ export function getDefaultAppState(): AppState {
     expandedView: 'none',
     diffSidebarVisible: false,
     isBriefOnly: false,
+    briefTranscript: false,
     showTeammateMessagePreview: false,
     selectedIPAgentIndex: -1,
     coordinatorTaskIndex: -1,

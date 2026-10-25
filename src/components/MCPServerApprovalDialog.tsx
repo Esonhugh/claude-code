@@ -67,7 +67,7 @@ export function MCPServerApprovalDialog({
 
   return (
     <Dialog
-      title={`New MCP server found in .mcp.json: ${serverName}`}
+      title={`New MCP server found in this project: ${serverName}`}
       color="warning"
       onCancel={() => onChange('no')}
     >
@@ -75,13 +75,15 @@ export function MCPServerApprovalDialog({
 
       <Select
         options={[
+          { label: `Use this MCP server`, value: 'yes' },
           {
             label: `Use this and all future MCP servers in this project`,
             value: 'yes_all',
           },
-          { label: `Use this MCP server`, value: 'yes' },
           { label: `Continue without using this MCP server`, value: 'no' },
         ]}
+        hideIndexes
+        defaultFocusValue="no"
         onChange={value => onChange(value as 'yes_all' | 'yes' | 'no')}
         onCancel={() => onChange('no')}
       />

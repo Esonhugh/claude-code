@@ -30,7 +30,7 @@ import { hasAccessToIDEExtensionDiffFeature, isSupportedTerminal } from '../../u
 import { modelDisplayString } from '../../utils/model/model.js'
 import { getModelOptions } from '../../utils/model/modelOptions.js'
 import { getAPIProvider } from '../../utils/model/providers.js'
-import { EXTERNAL_PERMISSION_MODES, PERMISSION_MODES, type PermissionMode } from '../../utils/permissions/PermissionMode.js'
+import { EXTERNAL_PERMISSION_MODES, PERMISSION_MODES, type PermissionMode, permissionModeFromString } from '../../utils/permissions/PermissionMode.js'
 import { transitionPlanAutoMode } from '../../utils/permissions/permissionSetup.js'
 import { isPlanModeAvailable } from '../../utils/planModeV2.js'
 import {
@@ -152,7 +152,7 @@ export function getConfigRows(context: Context): ModConfigRowProvider[] {
     globalBoolean('showTurnDuration', 'Show turn duration', global.showTurnDuration),
     {
       key: 'defaultPermissionMode', label: 'Default permission mode', kind: 'choice',
-      value: settings.permissions?.defaultMode || 'default',
+      value: permissionModeFromString(settings.permissions?.defaultMode || 'default'),
       options: permissionOptions.filter(mode => mode !== 'plan' || isPlanModeAvailable()),
       set(value) {
         writeSettings('userSettings', { permissions: { defaultMode: value as (typeof PERMISSION_MODES)[number] } })

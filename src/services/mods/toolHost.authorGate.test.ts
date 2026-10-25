@@ -59,7 +59,6 @@ const reasons = [
   ['Task', 'runs the Agent tool: that is $.agent.spawn'],
   ['AskUserQuestion', 'runs the AskUserQuestion tool: that is $.ui.ask'],
   ['Workflow', 'runs the Workflow tool, whose agents run outside the at-once bound on spawns: $.agent.spawn is the door'],
-  ['WorkflowTool', 'runs the Workflow tool, whose agents run outside the at-once bound on spawns: $.agent.spawn is the door'],
 ] as const
 
 for (const scenario of [

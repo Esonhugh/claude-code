@@ -29,13 +29,13 @@ import type {
   SystemThinkingMessage,
   SystemMemorySavedMessage,
 } from '../../types/message.js'
-import { SystemAPIErrorMessage } from './SystemAPIErrorMessage.js'
 import {
   formatDuration,
   formatNumber,
   formatSecondsShort,
 } from '../../utils/format.js'
 import { getGlobalConfig } from '../../utils/config.js'
+import { focusHiddenSuffix } from '../../utils/focusView.js'
 import Link from '../../ink/components/Link.js'
 import ThemedText from '../design-system/ThemedText.js'
 import { CtrlOToExpand } from '../CtrlOToExpand.js'
@@ -68,6 +68,14 @@ export function SystemTextMessage({
 
   if (message.subtype === 'memory_saved') {
     return <MemorySavedMessage message={message} addMargin={addMargin} />
+  }
+
+  if (message.subtype === 'focus_summary') {
+    return (
+      <Box marginTop={addMargin ? 1 : 0} paddingLeft={2} backgroundColor={bg} width="100%">
+        <Text dimColor>{message.content}</Text>
+      </Box>
+    )
   }
 
   if (message.subtype === 'away_summary') {
@@ -143,8 +151,9 @@ export function SystemTextMessage({
     return null
   }
 
+  // Retries are shown on the spinner row while the request is in flight.
   if (message.subtype === 'api_error') {
-    return <SystemAPIErrorMessage message={message} verbose={verbose} />
+    return null
   }
 
   if (message.subtype === 'stop_hook_summary') {
@@ -409,6 +418,7 @@ function NativeTurnDurationMessage({ message, addMargin, verb }: {
         {budgetSuffix}
         {backgroundTaskSummary &&
           ` \u00B7 ${backgroundTaskSummary} still running`}
+        {focusHiddenSuffix(message.focusHiddenCount)}
       </Text>
     </Box>
   )

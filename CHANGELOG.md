@@ -12,6 +12,297 @@
 - `## 2.1.88 base` 是唯一基线条目，固定放在文件末尾，不作为 release note。
 - `bun run check:changelog` 是格式规范的可执行门禁；发布时还会校验 tag 版本与最新发布条目一致。
 
+## 2026-10-25 - v2.1.293 - 权限、自动模式、Hooks 与沙箱对齐官方 2.1.303，背景会话、SQLite 记忆、跨会话通信与 Agent SDK / VS Code 兼容
+
+### 版本状态
+
+- 发布候选：`dev` 合并到 `master` 后打 tag `v2.1.293`。本条目汇总 `v2.1.292` tag 之后至 `dev` 合并提交 `57091b9`（PR #177）的全部变更；`Makefile VERSION` 与 README 发布版本同步为 `2.1.293`，`package.json` 保持 `0.0.0-dev`。版本号 `2.1.293` 与官方版本号无对应关系（本轮对照基线为官方 2.1.303）。
+- 范围一（2026-10-20 至 2026-10-23）：PR #83 并入的 PR #37、#39、#41、#43、#45、#48、#50、#52、#54、#56、#58、#61、#63、#64、#66、#68（经集成分支 #70）、`dev` 直接合并的 7 个功能分支、2026-10-20 的 4 个直接提交，以及 PR #84、#86、#89、#90。归版前的 23 条原始条目与逐项测试见[v2.1.293 详细记录](docs/archive/implementation-records/changelogs/2026-10-23-v2.1.293-details.md)。
+- 范围二（2026-10-23 至 2026-10-25）：PR #91 至 #177 中合并到 `dev` 的 PR，归纳在下方「2026-10-23 之后」各分组；下方 2026-10-23、2026-10-24 的 9 个未归版本条目保持原样，也属于本版本。
+
+### 关联提交
+
+- `ec9a0c1` PR #83 合并提交，内含 `a728a27` #70（`9dce6a8` #37、`7441714` #39、`93ad15c` #43、`5e0e2e7` #54、`76b6f26` #58）、`720a578` #61、`0001a8b` #63、`9bbbdaa` #64、`4d7f128` #48、`227facf` #41、`d1a9da4` #45、`cc0e3b0` #50、`bc37b93` #52、`2d346f1` #56、`d5fe4d1` #66、`4854cef` #68，以及集成修复 `a9de890`、`d172dc1`。
+- 功能分支合并：`224a402` hooks-parity、`1321688` monitor-tool、`5e18f3b` memory-local-enable、`1187910` autocompact-agent-fields、`da2e3ba` keybindings-growthbook-defaults、`510d1bc` mods-2.1.303-parity、`46766d7` permissions-automode-parity，集成修复 `30dce66`。
+- 直接提交：`9e7173c`、`529c3e7`、`97c6d72`、`4fbf315`（stream watchdog、无人值守重试、默认模型与回退模型链）。
+- 2026-10-23 至 2026-10-25 的 PR 合并提交（`git log --merges ed2347e..57091b9`）：#91 Direct Connect；#93、#94、#95、#96 启动与 SDK 0.3；#99、#100、#102、#107、#112、#115、#117、#120、#122、#124、#126、#166 Workflow；#105、#106、#129、#132 斜杠命令；#114、#119、#134 跨会话通信；#133、#136、#138、#150 背景会话；#143、#147 提示词与 SQLite 记忆；#156、#162、#164、#170、#172 Bash 沙箱；#153、#159、#165、#175、#177 Agent SDK 与 VS Code 插件；#169 Codex 客户端版本；#171、#174 界面修复；#148、#149、#151、#154、#157、#160、#173、#176 文档与技能。
+- 2026-10-23 后续：PR #84（Bash 允许规则覆盖工作目录内写入询问、官方路径询问文案，Closes #77）、`df7cc70` PR #90（Agent Teams 改回需要环境变量）、`d6819a6` PR #89（`autocompact_state` 按模型解析窗口）、`ed2347e` PR #86（README 与 dev 同步）。
+
+### 变更内容
+
+#### 需要用户处理的行为变化
+
+- Agent Teams（TeamCreate、teammate、SendMessage 等）与官方 2.1.303 一致：外部用户只有设置 `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` 或传 `--agent-teams` 才启用，GrowthBook 停用开关照旧生效（2026-10-21 曾改为默认启用，2026-10-23 按用户决定改回）。
+- 自动模式分类器规则（`autoMode.*`）不再读取项目 `.claude/settings.json` 与 `.claude/settings.local.json`，只认用户、`--settings` 与托管设置（对齐官方 2.1.207）；项目与本地设置中的 `permissions.defaultMode: "bypassPermissions"` 与 `"auto"` 一样被忽略。
+- 项目与本地设置的 `env` 不再能设置 `CLAUDE_CONFIG_DIR`、`TMPDIR`/`TMP`/`TEMP`/`CLAUDE_CODE_TMPDIR`、`HOME`、`CLAUDE_CODE_DISABLE_ATTACHMENTS`，以及开启或改写遥测导出的变量（`CLAUDE_CODE_ENABLE_TELEMETRY`、`OTEL_EXPORTER_OTLP_*`、`OTEL_*_EXPORTER`、`OTEL_LOG_*` 等）；仍可把 exporter 设为 `none` 或关闭 `OTEL_LOG_*` 开关，被忽略的键记录一次警告。
+- 被 git 跟踪的 `.claude/settings.local.json` 视为仓库内容：工作区未显式信任时其 `permissions.allow` 规则不生效（deny/ask 仍生效），项目设置也不能自行批准 `.mcp.json` 服务器（对齐官方 2.1.196）。
+- MCP allow 规则只放行它点名的 server：`mcp__a` 不再放行名为 `a__b` 或 `a_` 的 server，server 名含 `__` 时写 `mcp__<server>__*`（对齐官方 2.1.299）；单段 `dir/**` allow 规则（如 `Edit(src/**)`）只匹配 `<cwd>/dir`（对齐官方 2.1.214）。
+- plan 模式下 allow 规则、PreToolUse hook 与 Mods `tool.check` 的 allow 都不再让写入类工具直接执行，改为提示 `Cannot call <tool> while in plan mode.`（对齐官方 2.1.136、2.1.299）。
+- hook matcher 中含连字号的名称改为精确匹配，逗号分隔的 matcher 现在会生效，匹配整个 MCP server 请写 `mcp__brave-search__.*`（对齐官方 2.1.191/2.1.195）；插件 hook 的 shell 形式命令引用 `${user_config.*}` 会报错拒绝执行，请改读 `$CLAUDE_PLUGIN_OPTION_<KEY>`。
+- Stream idle watchdog 默认开启（Anthropic 与 OpenAI provider），响应流 5 分钟无事件即中止重试，`CLAUDE_ENABLE_STREAM_WATCHDOG=0` 关闭；`CLAUDE_CODE_MAX_RETRIES` 上限改为 15，仅在 `CLAUDE_CODE_RETRY_WATCHDOG` 下解除。
+- 后台记忆提取、Session Memory 与终端失焦 5 分钟后的会话回顾默认开启；`CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`、`autoMemoryEnabled: false`、`CLAUDE_CODE_ENABLE_AWAY_SUMMARY=0` 或 `awaySummaryEnabled: false` 关闭，`-p` 仍不提取。
+- 启用 `Monitor` 工具后，Bash/PowerShell 拒绝以 `sleep N`（N ≥ 2）开头的前景命令；`/loop` 只给提示、不给间隔时改为动态自排程，不再默认每 10 分钟的 cron。
+- `--dangerously-skip-permissions` 下写入 `.git/`、`.claude/`、shell 配置等受保护路径不再弹出确认（对齐官方），`rm -rf /` 这类灾难性删除仍要求确认。
+- 项目 `.mcp.json` 与插件的 MCP `headersHelper` 不再继承凭证类环境变量（`ANTHROPIC_API_KEY`、`*_TOKEN`、`*_SECRET`、`*_PASSWORD`、云厂商密钥）；项目 helper 在 `claude -p` 下须先信任目录才执行（对齐官方 2.1.237）。
+- Mods 作者声明改用官方 2.1.303 完整声明体，声明中本构建未实现的调用会以点名该调用的错误拒绝；`strictPluginOnlyCustomization` 只锁定非插件来源的 hooks，插件 Mods 照常加载。
+- `/feedback` 与反馈、记忆、压缩后问卷改为跟随 `CLAUDE_CODE_ENABLE_ANTHROPIC_TELEMETRY` opt-in，在 `DISABLE_TELEMETRY`、非必要流量开关或网关 base URL 下保持关闭（#69）；BigQuery 指标导出同样受这些开关停用（#47）。
+
+#### Bash、文件、MCP 与 WebFetch 权限规则
+
+- Bash deny/ask 规则匹配 `sudo`、`doas`、`env`、`nohup`、`exec` 等执行包装命令后面的命令与带展开值的环境变量前缀，bypass 下同样拒绝（对齐官方 2.1.113、2.1.214）；bypass 下 `sh -c` 脚本里删除 `/` 或主目录的 `rm` 要求明确确认（对齐官方 2.1.246）。
+- `Bash(find:*)` 等 allow 规则不再放行 `find -exec`/`-execdir`/`-ok`/`-delete`；`tee` 目标按写入路径检查；`Read()` deny 覆盖 `tac`、`egrep`、`fgrep`、`< file` 与选项值里的路径；`sandbox.excludedCommands` 须复合命令每段都命中；超过 10,000 字符或带悬空 `&&`/`||`/`|` 的命令一律确认。
+- 权限规则支持 `Tool(param:value)` 语法（deny/ask 按工具输入参数匹配，值支持 `*`，例如 `Agent(model:opus)`）与工具名位置的 `*` 通配（`"*"`、`"Web*"`），allow 仍只接受 MCP 通配（对齐官方 2.1.166、2.1.178）。
+- MCP allow 规则支持工具名通配（`mcp__srv__get_*`），deny/ask 规则 `mcp__a__b` 能拦到名为 `a__b` 的 server，`mcp__*` 放行全部 MCP 工具；子代理 `disallowedTools` 支持 `mcp__srv`、`mcp__srv__*` 与 `mcp__*`（对齐官方 2.1.178）。
+- 文件路径规则：符号链接目录上的 deny/ask 同时作用于真实路径，allow 须覆盖路径的每种写法才放行，重复 `/` 合并；Windows 盘符、`//c/...`、`~\` 与 `\` 开头的规则按官方解析。
+- 受保护文件清单补齐官方 2.1.303 的 37 项（`.npmrc`、`.yarnrc*`、`bunfig.toml`、`.bazelrc`、`.pre-commit-config.yaml`、lefthook、gradle/maven wrapper、`.devcontainer.json`、`pyrightconfig.json`、`.envrc`、`.zshenv` 等）与 `.husky`、`.cargo`、`.devcontainer`、`.yarn`、`.mvn`、`.config/git/` 目录，acceptEdits 等模式写入前询问。
+- `WebFetch(domain:...)` 的 deny/ask/allow 规则优先于内置预批准域名，并支持 `*.example.com`、`api-*.example.com`、`domain:*` 通配。
+- 默认权限模式下，`Bash(touch:*)` 这类 Bash 允许规则（精确或前缀）可以放行工作目录内的写入命令（如 `touch tl-x`），不再被路径检查改成询问（`-p` 下不再拒绝，对齐官方 2.1.303）；只有「路径在工作目录内、没有其他原因」的询问可被覆盖，安全检查、Edit deny 规则、工作目录外路径、含 `cd` 的复合写入、`cp`/`mv` 带 flag 等仍询问或拒绝。Bash 路径询问改用官方文案：工作目录内为 `<cmd> in '<path>' needs approval. The path is inside the working directories for this session (...)…`，工作目录外为 `… The path is outside the working directories for this session (...). Allowing runs the command as written.`，输出重导向同步（#77）；PowerShell 未改。
+- 启用 `allowManagedPermissionRulesOnly` 时，设置重新加载保留 `--disallowedTools` 与会话内 deny 规则（对齐官方 2.1.257）；仓库、用户、`--add-dir`、MCP 与第三方插件 skill/命令的 `allowed-tools` 不再预先批准工具。
+- 读取 UNC 路径（`//host/share`、`\\host\share`）与含可疑 Windows 路径写法的读取强制人工确认，分类器、hook 与 allow 规则都不能放行。
+
+#### 权限模式、自动模式与分类器
+
+- 新增 `--safe-mode` 与 `CLAUDE_CODE_SAFE_MODE`（对齐官方 2.1.169）：停用 CLAUDE.md、自定义 skills/commands、插件（含 hooks、MCP、Mods）、非托管 hooks、全部 MCP 服务器、自定义 agents、output styles、workflows、keybindings、LSP 与自动记忆。
+- 权限模式 `default` 对外更名为 Manual：`--permission-mode manual`、`"defaultMode": "manual"` 与 SDK 均接受并等同 `default`（对齐官方 2.1.200）；新增 `--permission-prompts host|none`，`--print` 下 `none` 时需要提示的操作本地直接拒绝（对齐官方 2.1.259）。
+- 自动模式设置新增 `autoMode.hard_deny` 与 `autoMode.classifyAllShell`（对齐官方 2.1.288）；对话超出分类器上下文时拒绝本次调用并在下一次请求前强制压缩；新增 `claude auto-mode reset [-y]`；`CLAUDE_CODE_AUTO_MODE_MODEL` 对所有用户生效，设为分类器不能用的模型时改用默认模型并记录一次。
+- 进入 auto 时剥除来自 settings、`--settings`、托管策略与 skill/命令 allowed-tools 的危险 allow 规则，auto 期间修改 settings 后重新剥除，离开 auto 时还原且不产生重复或丢失（对齐官方）；`Monitor` 与 `Terminal` 的 allow 规则在 auto 下同样搁置。
+- PermissionRequest hook、SDK `updatedPermissions` 与权限对话框建议中的 `setMode` 改走与 Shift+Tab、SDK `set_permission_mode` 相同的切换闸门（bypass 策略与可用性、auto 闸门、plan 可用性）；分类器检查进行中切换模式时丢弃结果并按新模式重判；SDK `set_permission_mode` 之后重判等待中的 `can_use_tool` 请求。
+- 自动模式分类器以 Sonnet 5 或 Opus 4.8 运行时改用官方 2.1.303 的 `<severity>` 两阶段输出格式与阈值，其他模型仍用 `<block>`；请求失败每个模型只重试 4 次，不可用时约 15 秒内拒绝；拒绝消息前缀与权限规则提示对齐官方；内置 soft_deny 规则同步官方 2.1.303。
+- `disableAutoMode` 不再写入 circuit breaker，移除后无需重启；会话中途新增该设置立即退出自动模式；SDK `set_model` 切到不支持自动模式的模型时退出自动模式；OTel `tool_decision` 事件新增 `permission_mode` 与 `classifier_verdict`。
+- 权限模式变化时写入 transcript `permission-mode` 记录，`--resume`、`--continue`、`/resume` 与 `-p --resume` 还原该模式（仍经切换闸门，命令行显式模式优先）。
+- `/permissions` 新增 Auto mode 分页（列出分类器规则，可新增与删除用户规则，首条规则自动以 `"$defaults"` 保留内置规则）；新增 `/auto-mode-setup`（内置 skill，按官方提案规则生成 `autoMode` 提案，经用户同意后只写入用户设置）。
+- `/yolo` 与 SDK `set_permission_mode` 一致：bypass 被策略停用时直接回报不切换，未同意过 bypass 时先显示警告对话框；未经同意或启动旗标时 Shift+Tab 轮替不出现 bypass；Shift+Tab 切换失败时显示错误并重置意图。
+- acceptEdits、auto、bypass 下仍弹出的权限对话框多一行说明原因（安全检查、hook、Mod `tool.check`、ask 规则或分类器不可用）；每次模式切换写入 debug 日志 `[permission-mode] from -> to (source: ...)`。
+
+#### Terminal、SDK 与 headless
+
+- `Terminal` 工具接入权限检查：`new-session` 与 `send-keys` 按 Bash 规则判定（default 询问、dontAsk 拒绝、auto 经分类器），`send-keys` 按会话累积整行命令再判定，分段送出也会命中规则；只读动作直接放行。
+- PermissionRequest hook 在纯 `-p`/`--print` 下也会触发（对齐官方 2.1.268），其 `updatedInput` 重新经过 deny/ask 规则与安全检查，`setMode: bypassPermissions` 在 bypass 不可用时被忽略（对齐官方 2.1.110）。
+- SDK `set_permission_mode` 收到未知模式时返回错误并带 `error_code`（`invalid_mode`、`bypass_disabled`、`bypass_not_launched`、`auto_mode_settings` 等）；canUseTool 回调返回 allow 时可省略 `updatedInput`；格式错误的结果以说明预期格式的消息拒绝；`updatedInput` 不符合工具 schema 时工具不执行并说明是权限处理方配置问题。
+- 交互式会话中后台子代理需要确认的操作改为在主会话弹出权限对话框并标示来源（如 `Bash command · from the general-purpose agent`）；`-p` 与 SDK 会话仍拒绝并说明原因。
+
+#### Hooks
+
+- PreToolUse 与 PermissionRequest hook 的 `updatedInput` 按工具输入 schema 校验：未知字段丢弃，类型错误或被 `validateInput` 拒绝时拒绝该次调用（对齐官方 2.1.300，Mods classic 路径同样适用）。
+- `UserPromptSubmit` hook 在 skill 或自定义斜杠命令展开之前运行，拦截时命令正文的 `!` shell 命令不再执行；匹配值为空的事件只触发未设置 matcher 的 hook（对齐官方 2.1.275、2.1.299）。
+- hook 输出中的 `<system-reminder>` 标签被转义（对齐官方 2.1.292）；settings 中未知事件、坏 matcher 或坏条目单独丢弃并警告，PreToolUse/PermissionRequest 的坏条目仍使整个文件不生效；形如 `{...}` 但不是合法 JSON 的 stdout 报告为 hook 错误。
+- command 与 HTTP hook 新增 `onFailure`（`continue`/`block`）；同一事件的 prompt/agent hook 最多 12 个并发；PreCompact hook 可阻止压缩；Stop 与 SubagentStop 可返回 `additionalContext`。
+- 新增 `PreModelSwitch`、`PostModelSwitch`、`DirectoryAdded`、`MessageDisplay` 事件（`MessageDisplay` 每个文本块只触发一次，与官方逐行刷新不同）；SessionStart 可返回 `sessionTitle` 与 `reloadSkills: true`；command hook 获得 `$CLAUDE_EFFORT` 与输入 `effort.level`；`--debug` 记录每个 command hook 的结果与耗时。
+
+#### 子代理、Agent Teams 与 SubagentHandback
+
+- Auto mode 下 Agent 工具启动的子代理通过新的 `SubagentHandback` 工具交回最终报告，只有该次调用的内容作为结果送达（对齐官方 2.1.303）；`SubagentHandback` 只能由分类器放行，block 时报告仍送达但附 `SECURITY WARNING`，报告以 `[Subagent hand-back]` 框架呈现并中和伪造标签；`CLAUDE_CODE_SENDMESSAGE_HANDBACK=0` 停用。
+- 已在运行的子代理跟随主会话当前的权限模式（对齐官方）：Agent 调用显式 `mode` 与 workflow 阶段的 `permissionMode` 作为上限；子代理声明 `permissionMode: auto` 而自动模式不可用时沿用父会话模式。
+- 安装了注册 `tool.check` 的 Mod 后，auto、dontAsk 与无法弹出提示的后台场景照常工作：Mod 只对其 filter 命中的工具生效，剩余的 ask 走当前模式处理；Mods `tool.check` 路径下 bypass 对受保护路径同样不再询问。
+- 进程内 teammate 在 leader 处于 bypass、acceptEdits 或 auto 时改用 leader 的模式（含回合进行中），leader 在 default 或 plan 时 teammate 保留自己的模式；teams 面板发给 teammate 的模式切换请求经与 SDK 相同的闸门；一次性提示「Teammates keep their own permission mode」只在确实有 teammate 停在其他模式时显示。
+
+#### 请求韧性与模型
+
+- 新增无人值守重试模式 `CLAUDE_CODE_RETRY_WATCHDOG`（429/529 持续退避、其他瞬时错误默认重试 300 次、spend cap 类 429 立即失败），以及 `CLAUDE_CODE_RETRY_WATCHDOG_MAX_WAIT_MS`、`CLAUDE_CODE_RETRY_WATCHDOG_MAX_USAGE_LIMIT_WAIT_MS`、`CLAUDE_CODE_OVERLOADED_RETRY_BASE_DELAY_MS`、`CLAUDE_CODE_OVERLOADED_RETRY_MAX_DELAY_MS`。
+- OpenAI provider 的 408/409/429/5xx 请求错误改走统一重试策略；`usage_limit_reached`、`insufficient_quota` 与认证错误仍立即失败。
+- 新增 settings `fallbackModel`（数组，最多 3 个）与 `--fallback-model` 逗号列表：主模型连续 529 时按链依次切换，下一轮用户输入回到主模型；新增 `ANTHROPIC_DEFAULT_MODEL`（优先级低于 `--model`、`ANTHROPIC_MODEL`、settings `model` 与组织默认模型）。
+- 自定义 `ANTHROPIC_BASE_URL` 且无可用 Anthropic OAuth 时，fast mode 组织状态从缓存读取，不再把网关密钥送往 api.anthropic.com（#46）。
+
+#### Monitor、/loop、记忆与压缩
+
+- 新增 `Monitor` 工具（默认建置启用 `MONITOR_TOOL`）：后台运行监看命令，stdout 每行作为 `Monitor event` 通知唤醒模型，200ms 内合并、超长截断、速率抑制与持续洪泛自动停止；`timeout_ms` 默认 300000，交互模式最长 30 分钟、`-p` 最长 10 分钟；权限沿用 Bash 规则，`CLAUDE_CODE_DISABLE_BACKGROUND_TASKS` 下不提供。
+- 新增 `ScheduleWakeup` 工具：`/loop` 动态模式下由模型选择下次唤醒秒数（60–3600）、原因与重新送入的输入，`stop: true` 取消待触发的动态唤醒；`/loop 5m …` 仍走 `CronCreate`；两个工具在 OpenAI provider 下同样可用。
+- 新增 `/recap`：立即生成一到两句会话回顾（支持 `-p`）；回顾复用主对话 fork；载入记忆文件时删除不可见字符并转义伪造的 harness 标签。
+- 新增 `/autocompact [auto|<tokens>]` 与设置 `modelSettings.<model>.autoCompactWindow`（按模型保存自动压缩窗口）；自定义 Agent、插件 agents、`--agents` JSON 与 Mods `agent.register` 支持 `autoCompactWindow`（子代理窗口上限）与 `omitClaudeMd`；切换到更小上下文窗口的模型后由上一个模型先生成摘要。
+- 远程 stream-json / SDK 会话的 `autocompact_state` 改为按当前模型即时解析窗口：`/autocompact` 写入的 `modelSettings.<model>.autoCompactWindow` 与会话中途的设置变更都会反映到 `effective_window`、`threshold` 和 `source`，与实际触发自动压缩的窗口一致；此前只读取启动时的顶层 `autoCompactWindow`（PR #89）。
+- 新增设置 `worktree.baseRef`（`fresh`|`head`）；`EnterWorktree` 新增 `path` 参数进入已有 linked worktree，以 `path` 进入的 worktree 不会被清理删除。
+
+#### 快捷键、Vim 与 GrowthBook 默认值
+
+- GrowthBook 关闭时按官方 2.1.303 取已 GA 的默认值：`~/.claude/keybindings.json` 自定义快捷键、ToolSearch 延迟工具增量宣告、`/model` `/effort` `/fast` 中途立即生效、ECONNRESET/EPIPE 重试前关闭 keep-alive、精简系统提示词开场句等；`/keybindings`、`/doctor` 快捷键诊断与热重载对所有用户启用。
+- 新增 `chat:sendNow`（`Ctrl+Enter`，或 `Ctrl+X` 后 `Ctrl+S`）中断当前回合并立即送出；`Ctrl+J` 默认绑定 `chat:newline`。
+- Vim 模式新增 `%` 配对括号跳转，以及 VISUAL（`v`）与 VISUAL LINE（`V`）选区操作；footer 与 statusLine `vim.mode` 显示 `VISUAL` / `VISUAL LINE`。
+
+#### Mods API
+
+- 新增 `$.session.append` 与 `session.append` hook、`prompt.mention` hook、`$.ui.notify`、`$.session.identity()`、`$.tool.register` 的 `isDeferred`；`agent.spawn` 覆盖 workflow 脚本的 agent 与 Agent resume；`tool.check` 回执新增 `setting` 与 `decider: 'host'`；subagent 与 teammate 回合也触发 `turn.start`；`skill.prompt` 事件新增 `frontmatter`、`source`、`pluginName`、`path`。
+- `$.http.fetch` 响应正文上限 4 MiB 并按官方处理重定向；`$.env.set` 改为返回 `{}` 或 `{ deny }`；`$.session.compact` 先报告 `DISABLE_COMPACT` 与正在运行的 turn；headless 无 surface 时 `$.ui.open` 回执 `isPlaced: false`。
+- Mods `Text` 支持 `size`、`weight`、`mono`、`tabular`、`dir`，`Box` 间距接受 `xs`..`xl`，`Input` 支持 `rows` 多行输入。
+
+#### 2026-10-23 之后：背景会话与 daemon
+
+- 新增背景会话（默认构建启用 `BG_SESSIONS`、`DAEMON`）：`claude --bg <提示>` 或 `/background` 把会话交给按需启动的 daemon，`claude agents` 一屏查看等待、运行与完成的会话，`claude attach`、`claude logs`、`claude stop`/`/stop`、`claude rm`（同时清理 worktree）与 `claude daemon status|logs|stop [--any] [--keep-workers]`、`/daemon` 管理（#131、#135）。
+- 背景 worker 运行在独立 PTY host 下；daemon 在最后一个 worker 结束后自动退出（此前 `claude stop` 后 daemon 一直把 worker 计为运行中）；socket 与信号处理兼容 macOS、Windows 命名管道与 Termux（#137）；agents 视图标题显示配置的 `uiName`。
+
+#### 2026-10-23 之后：跨会话通信
+
+- 空闲会话收到的跨会话消息以 peer 输入框架呈现（#109）；权限模式不一致被暂扣的消息弹出官方「Held message from another session」Deny/Deliver 对话框，发送方收到 `[Cross-session delivery notice]`（#110）。
+- `SendMessage` 支持 `notify_when_idle` 与 `msg_id`，结果文本与官方一致；`ListAgents` 改为官方文本列表，列出本会话、子代理、teammate 与 peer（#111）。
+
+#### 2026-10-23 之后：Dynamic Workflow
+
+- Workflow 脚本 agent 与官方 2.1.303 对齐：经子代理系统提示与 provenance 框架下发、文本结果 NOTE、默认停滞超时与并发覆盖，`agent()` 的 `effort`、`disallowedTools`、`bashCommandClamp` 生效，同前缀 agent 错开启动，运行行显示官方「Large workflow」提示；运行记录按官方目录与 v2 journal key 保存。
+- `/workflows` 与详情对话框可把动态 workflow 保存为命名 workflow；移除 `WorkflowTool` 动作工具，已保存的 workflow 通过 `Workflow({ name, args })` 运行；新增内置 `workflow-authoring` skill 与官方精简版 Workflow 工具提示。
+
+#### 2026-10-23 之后：斜杠命令与界面
+
+- 新增 `/skill-doctor`（列出加载了但从未使用、占用上下文的 skill，含 7 天 token 列）与 `/focus`（每轮只显示提示、一行摘要与回复），对齐官方 2.1.303。
+- 回合进行中 `/permissions`、`/skills`、`/tasks`、`/stats`、`/help`、`/theme`、`/config`、`/add-dir` 等立即打开；`/usage` 对 API key 与网关用户开放，`/cost` 并入 `/usage`，`-p "/usage"`（及 `/cost`、`/stats`）输出文本；`/diff` 仅在全屏下立即打开。
+- `/skills` 可在 on / 仅名称 / 仅用户调用 / off 间切换并写入 `skillOverrides`；重试从第一次起在 spinner 行倒计时；排队消息显示 send-now 提示；MCP 批准对话框文案与默认焦点对齐官方；`!` 输入原样保留在 transcript。
+- 修复：全屏下 Terminal/Monitor 详情对话框重叠、Monitor 事件行显示第一行输出、`/keybindings` 模板的 `Scroll` 上下文报错、effort 变化时 footer 提示不更新、非全屏退出时 resume 提示与最后一帧重叠、`.mcp.json` 中被跳过的条目导致有效 server 不再询问批准。
+
+#### 2026-10-23 之后：记忆与提示词
+
+- 新增 `memory.sqlite.enabled`（及 `memory.sqlite.scopes`）：不再每次请求注入 MEMORY.md，改用 SQLite FTS5 索引与新 `SearchMemory` 工具检索记忆文件与过往 transcript，每条用户提示自动附上最相关的 5 个记忆文件；新增 `/setup-memory-db` 与 `/memory` 中的索引重建（#145）。
+- 新增 `memory.extraction`（`sessionEnd` 默认 / `everyTurns` / `off`）：后台记忆抽取默认改为会话结束（退出、`/clear`、`/resume` 或 `-p` 结束）时执行一次（#146）。
+- auto memory 段落与 Read/Edit/Write/WebFetch/WebSearch 等工具描述改为官方 2.1.303 精简版；自定义 `ANTHROPIC_BASE_URL` 且未设置 `ENABLE_TOOL_SEARCH` 时保留 tool search（不送 beta header，以文本宣告已发现工具），不再把全部延迟工具描述内联（#139、#140、#142）。
+
+#### 2026-10-23 之后：Bash 沙箱
+
+- `@anthropic-ai/sandbox-runtime` 升级到官方 2.1.303 同版本 0.0.80，新增 `sandbox.credentials`、`network.deniedDomains`、`strictAllowlist`、`tlsTerminate`、`filesystem.disabled` 等设置；仓库设置不能放宽沙箱，相关键只从用户、托管或 `--settings` 读取（#167）。
+- `dangerouslyDisableSandbox` 的命令离开沙箱前询问，只有显式 allow 规则可免询问；`!` 命令在 strict 模式下也在沙箱外运行；沙箱内 `TMPDIR` 为每用户 `/tmp/claude-{uid}`；`Monitor` 命令不套用沙箱自动放行；linked worktree 只开放主仓库 `.git` 写入且 hooks/config 只读；托管设置忽略的条目在 `/status` 与 `/doctor` 中提示（#155、#161、#163、#167）。
+
+#### 2026-10-23 之后：Agent SDK 与 VS Code 插件
+
+- 回应官方 VS Code 插件 2.1.303 自绘界面所需的 26 个控制请求（`get_status`、`get_usage`、`get_memory_dialog`、`get_hooks_listing`、`background_tasks` 等），插件对话框不再报 `Unsupported control request subtype`（#158）。
+- 新增 `--session-mirror`、`--resume-drops-turn`、`--managed-settings`、`--project-config-root`；`--tools` 拒绝列表外的全部基础工具；背景子代理消息带 `parent_tool_use_id` 串流，`task_*` 事件带 `run_id`、`spawn_depth`，背景 agent 运行时先保留 result、在 `task_notification` 之后送出；`stop_task` 对未知或已结束的任务回报成功（#88）。
+
+#### 已知缺口
+
+- Bash deny 规则命中时的拒绝消息仍沿用旧的「was blocked … allowed working directories」文案（官方为 `Permission to use Bash with command … has been denied.`）；PowerShell 的路径询问文案未改。
+- teammate inbox 中的 `mode_set_request`/`team_permission_update` 仍会套用（官方直接丢弃）；官方 tmux pane teammate 对照未做。
+- `/auto-mode-setup` 为 prompt skill，没有官方的非互动参数与 recon 流程；Auto mode 分页没有内置规则停用开关与 environment 文件编辑；Windows/UNC 路径规则只有单元测试。
+- `MessageDisplay` hook 不做官方的逐行刷新；启动与插件安全的若干官方对齐项由用户决定暂缓。
+
+### 测试覆盖
+
+- 每个 PR 在其 worktree 上重建 `make build` 产物，以 `-p` 与 tmux 配合脚本化假 Messages API 跑案例，并与官方 2.1.303 binary 同条件对照；验收报告在 `research/acceptance/accept-*.md`，证据在 `research/probe/`（项目共享目录）。
+- 权限规则：`src/tools/BashTool/bashPermissionHardening.test.ts`、`shouldUseSandbox.test.ts`、`src/utils/permissions/permissions.test.ts`、`permissions.mcpRules.test.ts`、`permissions.planMode.test.ts`、`filesystem.parity.test.ts`、`filesystem.pathRules.test.ts`、`filesystem.protectedFiles.test.ts`、`permissions.managedOnly.test.ts`、`permissionsLoader.localTracked.test.ts`、`src/tools/WebFetchTool/WebFetchTool.permissions.test.ts`、`src/services/mcp/headersHelper.test.ts`、`projectApproval.trust.test.ts`。
+- 权限模式与自动模式：`permissions.autoModeSafety.test.ts`、`yoloClassifier.officialPrompt.test.ts`（含 `fixtures/autoModeDefaults303.json`）、`yoloClassifier.severity.test.ts`、`autoModeStash.test.ts`、`permissions.staleClassifier.test.ts`、`permissions.approveForMe.test.ts`、`approveForMe.test.ts`、`permissions.bypassSafety.test.ts`、`permissionSetup.test.ts`、`permissionSetup.resume.test.ts`、`permissionControl.test.ts`、`src/utils/settings/applySettingsChange.autoMode.test.ts`、`src/hooks/toolPermission/permissionModeUpdates.test.ts`、`permissionLogging.test.ts`、`handlers/recheck.test.ts`、`src/cli/structuredIO.recheck.test.ts`、`src/utils/conversationRecovery.permissionMode.test.ts`、`src/components/permissions/rules/AutoModeTab.test.ts`、`src/skills/bundled/autoModeSetup.test.ts`、`src/commands/yolo/yolo.test.ts`、`src/tools/TerminalTool/TerminalTool.test.ts`、`src/utils/safeMode.test.ts`、`src/cli/print.permissionPrompts.test.ts`、`print.permissionRequestHooks.test.ts`。
+- Hooks：`src/services/tools/hookUpdatedInput.test.ts`、`toolHooks.test.ts`、`toolExecution.test.ts`、`src/utils/hooks.matcher.test.ts`、`hooks.sourceScope.test.ts`、`hooks.schemas.test.ts`、`hooks/hooksConfigManager.test.ts`、`messages.hookReminderEscape.test.ts`、`settings/hooksResilience.test.ts`、`processUserInput/processUserInput.mods.test.ts`、`src/services/compact/compactApiError.test.ts`、`src/utils/sessionStart.test.ts`。
+- 子代理与 Teams：`src/tools/SubagentHandbackTool`、`src/tools/AgentTool/runAgent.handback.test.ts`、`permissions.subagentHandback.test.ts`、`src/utils/subagentHandback.test.ts`、`AgentTool/permissionMode.autoMode.test.ts`、`runAgent.subagentStop.test.ts`、`resumeAgent.permissionMode.test.ts`、`agentToolUtils.mcpDisallowed.test.ts`、`src/tools/WorkflowTool/runWorkflow.test.ts`、`src/utils/agentSwarmsEnabled.test.ts`、`src/utils/swarm/inProcessRunner.permissionMode.test.ts`、`teamHelpers.test.ts`。
+- 设置与遥测：`src/utils/managedEnv.test.ts`、`managedEnv.launchEnv.test.ts`、`src/tools/SkillTool/managedRulesOnly.test.ts`、`src/commands/feedback/index.test.ts`、`src/services/api/metricsOptOut.test.ts`、`src/utils/fastMode.gateway.test.ts`。
+- 请求韧性与模型：`src/services/api/withRetry.test.ts`、`claude-stream-watchdog.test.ts`、`claude-model-contract.test.ts`、`src/utils/model/model.test.ts`。
+- Monitor、记忆、压缩与界面：`src/tools/MonitorTool`、`src/tools/ScheduleWakeupTool`、`src/skills/bundled/loop.test.ts`、`src/memdir/neutralizeMemoryContent.test.ts`、`extractMode.test.ts`、`src/services/awaySummary.test.ts`、`src/commands/autocompact/autocompact.test.ts`、`src/services/compact/autoCompact.contextWindow.test.ts`、`sessionCompact.mods.test.ts`、`src/tools/AgentTool/loadAgentsDir.agentFields.test.ts`、`src/utils/worktree.baseRef.test.ts`、`src/tools/EnterWorktreeTool/EnterWorktreeTool.test.ts`、`src/services/analytics/growthbook.cached.test.ts`、`src/keybindings`、`src/components/PromptInput/PromptInput.sendNow.test.tsx`、`PromptInput.cycleModeError.test.tsx`、`src/screens/REPL.submit.test.ts`、`src/hooks/useVimInput.test.tsx`。
+- 2026-10-23 后续：`src/tools/BashTool/bashPermissionHardening.test.ts`（两种解析模式：`Bash(touch:*)`、`Bash(touch tl-x)` 与管道形式放行 `touch tl-x`；无规则时询问且为工作目录内文案；工作目录外与混合路径仍询问；安全检查、`cd` 复合、`cp -f`、Edit deny 不被覆盖；输出重导向文案，修复前失败）；`src/utils/agentSwarmsEnabled.test.ts`（未设置时关闭、`1`/`true` 启用、`0` 关闭、`--agent-teams` 强制启用）；`src/services/compact/autoCompact.contextWindow.test.ts` 与 `src/cli/print.streamState.test.ts`（按模型窗口后 `autocompact_state` 的窗口、阈值与 `source: "settings"` 与引擎一致，修复前失败）。
+- Mods：`bun test src/services/mods`（`sessionAppend`、`promptMention`、`toolCheckReceipt303`、`uiNotify`、`sessionIdentity`、`declarationsOfficial303` 等）、`src/components/ModsPane.test.tsx`、`make check-mods-control-types`。
+- 2026-10-23 之后的测试覆盖见各 PR 与 `docs/features/` 中的终端验收截图；发版前在 `dev` 修复了 `tsc` 与 `lint` 的 7 个错误（`hostControlRequests.ts` hooks 元数据类型、`SearchMemoryTool` 渲染与测试、`usageNonInteractive.test.ts` 命令类型收窄），并以重建的 binary 跑过 SIGINT SessionEnd、`CI=true` 无凭证 `-p` 与 team shutdown 三项回归。
+- 各分支均通过 `tsc`、`make build` 与 `bun run check:changelog`；`bun scripts/build.test.mjs` 覆盖默认 feature 集合包含 `MONITOR_TOOL`、`EXTRACT_MEMORIES` 与 `AWAY_SUMMARY`。逐条目的测试清单见详细记录。
+
+## 2026-10-24 - ChatGPT 登录：Codex 客户端版本跟进最新 Codex CLI
+
+### 变更内容
+
+- ChatGPT 登录下请求 `chatgpt.com/backend-api/codex` 时，`client_version` 改为 Codex CLI 版本 `0.164.0`，不再误送 Claude Code 自身版本号；`/responses`、`/models` 与 `claude ssh` 代理同时带上 `version: 0.164.0` header，与 Codex CLI 0.164.0 一致（#168）。
+- Codex 版本集中为 `src/services/openai-oauth/client.ts` 的 `OPENAI_CODEX_CLIENT_VERSION`，之后跟进 Codex 版本只需改这一处。
+
+### 测试覆盖
+
+- `src/services/api/openai-compat.test.ts`、`src/utils/model/openaiModelOptions.test.ts`、`src/services/api/bootstrap-openai.test.ts`：断言 ChatGPT 请求的 `version` header 与 `client_version` 参数。
+
+## 2026-10-24 - Dynamic Workflow：撞到 claude.ai 用量上限时暂停等待重置
+
+### 变更内容
+
+- 与官方 2.1.303 一致：claude.ai 订阅用户的 workflow Agent 因用量上限（带配额头的 429）停止时，工作流暂停到重置时间后 30–90 秒，再以 `<label> (after usage limit)` 重跑等待中的 Agent；同一时间只有一个等待，期间新 Agent 不会启动；重置超过 24 小时或本次运行已等过 2 次时直接失败并写明原因（#127）。
+- 新增设置 `autoContinueAtUsageLimit`（默认开启）；关闭后撞到用量上限的 Agent 直接失败，等待中关闭则这些 Agent 不再重跑。带配额信息的用量上限错误不再做无意义的立即自动重试。
+- 等待期间后台任务列表显示 `Paused · usage limit resets at <time>`，输入框下方的工作流行显示为 paused 并带重置时间。
+
+### 测试覆盖
+
+- `src/tools/WorkflowTool/workflowUsageLimitWait.test.ts`：官方常数、日志文字、多个 Agent 加入同一等待、过期重置上限、过远重置、设置关闭撤销与中止。
+- `src/tools/WorkflowTool/workflowScriptRuntime.test.ts`：等待后以 `(after usage limit)` 重跑并完成；不能等待时只调用一次并在 `<failures>` 报告。
+- `src/services/api/errors-quota-limits.test.ts`、`src/components/CoordinatorAgentStatus.test.ts`、`src/utils/settings/compactSettings.test.ts`、`src/tools/WorkflowTool/workerBackgroundLifecycle.test.ts`（背景子 Agent 失败时保留配额信息）。
+
+## 2026-10-24 - VS Code 插件：支持 /memory、/skills、/hooks、/permissions、/diff 与背景任务控制请求
+
+### 变更内容
+
+- 新增控制请求 `get_memory_dialog`、`get_skills_dialog`、`get_hooks_listing`、`list_permission_rules`、`get_workspace_diff`、`get_task_output`、`background_tasks`（含 `tool_use_id` 单个任务）、`message_rated`、`submit_feedback`，VS Code 插件的对应对话框不再报 `Unsupported control request subtype`（#158）。
+- `get_task_output` 在任务结束、已从会话状态移除后，仍可按 shell 任务 id 读取输出末尾 8 KiB。
+- `submit_feedback` 回报 `unavailable_reason`，不从宿主上传反馈。
+
+### 测试覆盖
+
+- `src/cli/print.sdkControlRequests.test.ts` 新增：上述请求的成功与拒绝路径（未知任务、已结束任务、错误的评分参数）。
+
+## 2026-10-24 - VS Code 插件：支持 /status、/usage 等宿主控制请求
+
+### 变更内容
+
+- 新增 VS Code 插件（2.1.303）自绘界面所需的控制请求：`get_status`、`get_usage`、`get_session_cost`、`list_models`、`get_binary_version`、`file_suggestions`、`get_plan`、`export_conversation`、`rename_session`、`set_prompt_suggestions_paused`。此前插件的 /status 等界面报 `Unsupported control request subtype`（#158）。
+- `get_usage` 在 ChatGPT 登录的 OpenAI 模式下按窗口长度回报 5 小时与 7 天额度，并把各额度行列在 `model_scoped`；API key 与第三方 provider 回报 `rate_limits_available: false`。
+- `initialize` 与 `list_models` 的模型项新增 `resolvedModel`。
+
+### 测试覆盖
+
+- `src/cli/print.sdkControlRequests.test.ts` 新增：上述请求均返回成功且格式与官方一致（status 行均为纯文本、cost 去除 ANSI、`rename_session` 拒绝已切换的 session_id）；ChatGPT 额度窗口映射。
+
+## 2026-10-24 - VS Code 插件 / Agent SDK：支持 --thinking-display，mcp_status 列出 SDK MCP 服务器
+
+### 变更内容
+
+- 新增隐藏参数 `--thinking-display <summarized|omitted|highlights>`，与官方 2.1.303 一致写入 API 的 `thinking.display`。此前 SDK 设置 `thinking.display` 时 CLI 报 `unknown option` 并以 code 1 退出，VS Code 插件面板无法启动会话（#152）。
+- `mcp_status` 在回应前先完成 SDK MCP 服务器连接，`initialize` 之后、首轮开始前或握手进行中查询时不再返回空列表；并发的 SDK MCP 更新合并为同一次连接，避免重复握手（#152）。
+
+### 测试覆盖
+
+- `src/services/api/claude-model-contract.test.ts` 新增：显式 thinking display 出现在实际请求的 `thinking` 字段，未设置时不出现。
+- `src/cli/print.mcpControl.test.ts` 新增：`initialize` 后立即连续两次 `mcp_status` 都返回已连接的 SDK 服务器，且只建立一次连接。
+
+## 2026-10-23 - 内建 Mods 扫描结果缓存：第一轮不再重新扫描 agents-md
+
+### 变更内容
+
+- 官方内建 Mods 位于每次启动都经过 digest 校验的只读缓存树，其 `loadModDeclaration` 扫描结果（agents-md 50 个模块，约 170–190 ms，且阻塞第一个 API 请求）现缓存到 `<cache>/<digest>.declarations/<key>.json`，key 含 CLI 版本、插件路径、入口、options 与 tier；缓存树之外的 Mod 仍每次扫描。
+- SDK 单轮 `-p` 启动从约 0.6 s 降到约 0.37–0.42 s（首次启动写缓存约 0.55 s；官方 2.1.303 约 0.5 s）。AGENTS.md 仍在第一轮请求中生效（缓存命中与未命中均已验证）。
+
+### 测试覆盖
+
+- `src/plugins/builtinMods.test.ts` 新增：官方内建树的扫描写入缓存并在源文件移除后仍返回相同声明、不同 options 走独立 key；缓存树之外的 Mod 每次重新扫描且不写缓存。
+
+## 2026-10-23 - 无头启动：跳过默认关闭的沙箱依赖探测并并行校验内建 Mods 缓存
+
+### 变更内容
+
+- `isSandboxingEnabled()` 先读取 `sandbox.enabled`，默认关闭时不再执行会 spawn 子进程的依赖探测（`-p` / SDK 每轮启动约 95 ms）。开启沙箱时的判定顺序与结果不变。
+- 内建 Mods 缓存树的完整性校验 `treeDigest` 改为并行读取、按序哈希，digest 值不变，现有 `.complete` 继续有效；约 850 个文件的校验从约 70 ms 降到约 11 ms。
+- 合计 SDK 单轮 `-p` 启动从约 0.77 s 降到约 0.6 s（官方 2.1.303 约 0.5 s，剩余差距见 issue #92）。
+
+### 测试覆盖
+
+- `src/plugins/builtinMods.test.ts` 既有用例覆盖缓存复用、损坏树恢复与被修改树的重建，digest 兼容性由 `.complete` 比对用例保证。
+- `src/cli/print.sdkSystemPrompt.test.ts`、`src/cli/print.sdkControlRequests.test.ts` 覆盖无头启动路径。
+
+## 2026-10-23 - Agent SDK 0.3 兼容与二进制启动加速
+
+### 变更内容
+
+- 兼容 TypeScript Agent SDK 0.3.x 在 `initialize` 中以 `string[]` 发送的 `systemPrompt`：未设置时（SDK 发送 `[""]`）恢复为 SDK 的最小系统提示，不再发送完整的 Claude Code 提示；自定义 `systemPrompt`（字符串或数组，数组各段以空行拼接并去掉 `SYSTEM_PROMPT_DYNAMIC_BOUNDARY`）与 `agent` 主线程提示重新生效；`getContextUsage()` 不再报 `e.match is not a function`。
+- 新增 SDK 控制请求 `reload_skills`、`reload_output_styles`、`read_file`（与 Read 工具相同的读取权限判定，默认上限 1 MB，支持 base64）、`update_settings`（与官方相同的白名单：`localSettings` 只接受 `outputStyle`，`userSettings` 只接受 `effortLevel` 且不写入 `max`，未启用的 setting source 与远程传输会拒绝）、`mcp_read_resource`（只读取本进程连接的 MCP 服务器的 `ui://` 资源）。
+- 二进制打包改用 `bun build --compile --bytecode`，启动时不再解析约 35 MB 的 JS：`--version` 约 550 ms 降到约 65 ms，SDK 单轮 `-p` 约 1.6 s 降到约 0.75 s。
+
+### 测试覆盖
+
+- 新增 `src/cli/print.sdkSystemPrompt.test.ts`，覆盖 `[""]` 保持最小提示且 `get_context_usage` 正常回应、数组拼接并去掉缓存边界、字符串照旧生效。
+- 新增 `src/cli/print.sdkControlRequests.test.ts`，覆盖 `reload_skills`、`reload_output_styles` 的回应，`read_file` 的权限拒绝、截断与 base64，`update_settings` 的白名单与写入内容，`mcp_read_resource` 的 scheme 与服务器检查。
+
+## 2026-10-23 - Direct Connect：server 实现、cc:// 解析修复与默认构建启用
+
+### 变更内容
+
+- 默认构建启用 Direct Connect：`claude server --port <port> --auth-token <token>` 启动 session server，`claude cc://<host>:<port>/<token>` 连接（交互式 TUI 或 `-p` headless），无需再设置 `CLAUDE_CODE_RECOVER_FEATURES=DIRECT_CONNECT`。
+- `claude server` 原先只是不监听端口的空壳，现在用 Bun.serve 提供 `POST /sessions`、`GET /sessions/:id/ws` 与 `DELETE /sessions/:id`：每个请求校验 Bearer token，每个 session 在请求的 `cwd`（不存在时退回 `--workspace`）启动 `claude -p` stream-json child，工具权限请求转给 client 处理；`--idle-timeout`、`--max-sessions` 生效，banner 打印可直接使用的 `cc://` URL，运行期间写 `~/.claude/server.lock`。
+- `claude server` 默认绑定地址由 `0.0.0.0` 改为 `127.0.0.1`；需要远程访问时显式传 `--host`，banner 会提示明文 HTTP 风险。
+- `cc://host:port/<token>` 按官方格式解析为 `http://host:port` 与路径 token（此前未带 `?serverUrl=` 时请求原样发往 `cc://` 地址，必然失败）；`?serverUrl=` 可改写 HTTP 基址，`cc+unix://` 与格式错误的 URL 直接报错且不回显 token。
+- 创建 session 的请求体改为官方字段 `cwd`、`permission_mode`、`session_key`（`--dangerously-skip-permissions` 映射为 `bypassPermissions`），失败时错误信息附带 server 返回的 response body。
+- `claude server` 在终端里按 Ctrl+C 原先停不下来：启动期的 early-input 捕获把 stdin 置为 raw mode（ISIG 关闭），Ctrl+C 变成无人读取的字节而非 SIGINT；server 命令现在先停止捕获并恢复 cooked mode，Ctrl+C 走 `gracefulShutdown`（结束 child、删 lock，退出码 0）。
+- client 校验 server 消息的 `StdoutMessageSchema` 原先不接受 CLI 实际发出的 `apiKeySource` 值（如 `ANTHROPIC_API_KEY`、`none`），导致 `system` init 消息被整条丢弃；`ApiKeySourceSchema` 现接受 `utils/auth.ts` 的 `ApiKeySource` 值。
+- `claude cc://… -p` 原先什么都不做，现在发送 prompt、按 `--output-format` 输出 text/json/stream-json、收到 `result` 后按 `is_error` 设定退出码；未加 `--dangerously-skip-permissions` 时拒绝所有工具权限请求。
+
+### 测试覆盖
+
+- `bun test src/server/parseConnectUrl.test.ts`：官方格式、IPv6、percent-encoding、`?serverUrl=` 覆写、`?token=` 兜底、`cc+unix://` 与错误输入（不回显 token）。
+- `bun test src/server/directConnect.e2e.test.ts`：用 Bun.serve 假 server 验证 `POST /sessions` 载荷与 Bearer token、错误附 response body、WebSocket 上 assistant/`can_use_tool`/result 收发与 client 回送 user、`control_response`、interrupt，以及 headless 的 text/stream-json 输出、权限允许/拒绝与断线退出码。
+- `bun test src/server/server.test.ts`：真实 `startServer` + `SessionManager`（脚本化 child）验证 token 校验、请求体校验、`can_use_tool` 往返、`permission_mode` 透传、`session_key` 复用、`--workspace` 回退、`--max-sessions`、单 client attach、DELETE 与 idle timeout，并确认日志不含 token。
+- `make build && CLAUDE_DIRECT_CONNECT_BINARY=$PWD/built-claude bun test src/server/directConnect.binary.test.ts`：编译后的 binary 运行 `claude server` 对接脚本化 Messages API，`claude cc://… -p` 验证权限拒绝/允许、stream-json、错误 token、lockfile、SIGTERM 退出，以及通过 `script` 分配 pty 后 Ctrl+C 能停掉 server 并删 lock；未设置该变量时跳过。
+- `bun scripts/build.test.mjs` 断言默认 feature 集包含 `DIRECT_CONNECT`；`bun test src/server/directConnectManager.test.ts` 新增 CLI 实际发出的 `system` init 消息必须转发到 `onMessage`，其余用例保持通过。
+
 ## 2026-10-20 - v2.1.292 - 自动模式、Workflow、MCP 与插件生命周期对齐及 Linux 发布门禁
 
 ### 版本状态

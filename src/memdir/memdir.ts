@@ -1,7 +1,12 @@
 import { feature } from 'bun:bundle'
 import { join } from 'path'
 import { getFsImplementation } from '../utils/fsOperations.js'
-import { getAutoMemPath, isAutoMemoryEnabled } from './paths.js'
+import { neutralizeMemoryContent } from './neutralizeMemoryContent.js'
+import {
+  getAutoMemPath,
+  isAutoMemoryEnabled,
+  isSqliteMemoryEnabled,
+} from './paths.js'
 
 /* eslint-disable @typescript-eslint/no-require-imports */
 const teamMemPaths = feature('TEAMMEM')
@@ -25,10 +30,13 @@ import { getProjectDir } from '../utils/sessionStorage.js'
 import { getInitialSettings } from '../utils/settings/settings.js'
 import {
   MEMORY_FRONTMATTER_EXAMPLE,
-  TRUSTING_RECALL_SECTION,
-  TYPES_SECTION_INDIVIDUAL,
+  MEMORY_INDEX_RULE,
+  MEMORY_RECALL_RULE,
+  MEMORY_SAVE_RULES,
+  MEMORY_TYPES_SUMMARY,
+  SEARCH_MEMORY_GUIDELINE,
+  USER_CLAUDE_MD_RULE,
   WHAT_NOT_TO_SAVE_SECTION,
-  WHEN_TO_ACCESS_SECTION,
 } from './memoryTypes.js'
 
 export const ENTRYPOINT_NAME = 'MEMORY.md'
@@ -202,61 +210,25 @@ export function buildMemoryLines(
   extraGuidelines?: string[],
   skipIndex = false,
 ): string[] {
-  const howToSave = skipIndex
-    ? [
-        '## How to save memories',
-        '',
-        'Write each memory to its own file (e.g., `user_role.md`, `feedback_testing.md`) using this frontmatter format:',
-        '',
-        ...MEMORY_FRONTMATTER_EXAMPLE,
-        '',
-        '- Keep the name, description, and type fields in memory files up-to-date with the content',
-        '- Organize memory semantically by topic, not chronologically',
-        '- Update or remove memories that turn out to be wrong or outdated',
-        '- Do not write duplicate memories. First check if there is an existing memory you can update before writing a new one.',
-      ]
-    : [
-        '## How to save memories',
-        '',
-        'Saving a memory is a two-step process:',
-        '',
-        '**Step 1** — write the memory to its own file (e.g., `user_role.md`, `feedback_testing.md`) using this frontmatter format:',
-        '',
-        ...MEMORY_FRONTMATTER_EXAMPLE,
-        '',
-        `**Step 2** — add a pointer to that file in \`${ENTRYPOINT_NAME}\`. \`${ENTRYPOINT_NAME}\` is an index, not a memory — each entry should be one line, under ~150 characters: \`- [Title](file.md) — one-line hook\`. It has no frontmatter. Never write memory content directly into \`${ENTRYPOINT_NAME}\`.`,
-        '',
-        `- \`${ENTRYPOINT_NAME}\` is always loaded into your conversation context — lines after ${MAX_ENTRYPOINT_LINES} will be truncated, so keep the index concise`,
-        '- Keep the name, description, and type fields in memory files up-to-date with the content',
-        '- Organize memory semantically by topic, not chronologically',
-        '- Update or remove memories that turn out to be wrong or outdated',
-        '- Do not write duplicate memories. First check if there is an existing memory you can update before writing a new one.',
-      ]
-
   const lines: string[] = [
     `# ${displayName}`,
     '',
-    memoryDir
+    (memoryDir
       ? `You have a persistent, file-based memory system at \`${memoryDir}\`. ${DIR_EXISTS_GUIDANCE}`
-      : `You have a persistent, file-based memory system. The directory path is provided in your session context. ${DIR_EXISTS_GUIDANCE}`,
+      : `You have a persistent, file-based memory system. The directory path is provided in your session context. ${DIR_EXISTS_GUIDANCE}`) +
+      ' Each memory is one file holding one fact, with this frontmatter:',
     '',
-    "You should build up this memory system over time so that future conversations can have a complete picture of who the user is, how they'd like to collaborate with you, what behaviors to avoid or repeat, and the context behind the work the user gives you.",
+    ...MEMORY_FRONTMATTER_EXAMPLE,
     '',
-    'If the user explicitly asks you to remember something, save it immediately as whichever type fits best. If they ask you to forget something, find and remove the relevant entry.',
+    MEMORY_TYPES_SUMMARY,
     '',
-    ...TYPES_SECTION_INDIVIDUAL,
-    ...WHAT_NOT_TO_SAVE_SECTION,
-    '',
-    ...howToSave,
-    '',
-    ...WHEN_TO_ACCESS_SECTION,
-    '',
-    ...TRUSTING_RECALL_SECTION,
-    '',
-    '## Memory and other forms of persistence',
-    'Memory is one of several persistence mechanisms available to you as you assist the user in a given conversation. The distinction is often that memory can be recalled in future conversations and should not be used for persisting information that is only useful within the scope of the current conversation.',
-    '- When to use or update a plan instead of memory: If you are about to start a non-trivial implementation task and would like to reach alignment with the user on your approach you should use a Plan rather than saving this information to memory. Similarly, if you already have a plan within the conversation and you have changed your approach persist that change by updating the plan rather than saving a memory.',
-    '- When to use or update tasks instead of memory: When you need to break your work in current conversation into discrete steps or keep track of your progress use tasks instead of saving to memory. Tasks are great for persisting information about the work that needs to be done in the current conversation, but memory should be reserved for information that will be useful in future conversations.',
+    ...(skipIndex
+      ? []
+      : [
+          `After writing the file, add a one-line pointer in \`${ENTRYPOINT_NAME}\`. ${MEMORY_INDEX_RULE}`,
+          '',
+        ]),
+    `${MEMORY_SAVE_RULES} ${MEMORY_RECALL_RULE}`,
     '',
     ...(extraGuidelines ?? []),
     '',
@@ -305,7 +277,7 @@ export function buildMemoryPrompt(params: {
       memory_type:
         memoryType as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
     })
-    lines.push(`## ${ENTRYPOINT_NAME}`, '', t.content)
+    lines.push(`## ${ENTRYPOINT_NAME}`, '', neutralizeMemoryContent(t.content))
   } else {
     lines.push(
       `## ${ENTRYPOINT_NAME}`,
@@ -428,6 +400,9 @@ export function loadStaticMemoryPrompt(): string | null {
 export async function loadMemoryPrompt(): Promise<string | null> {
   const autoEnabled = isAutoMemoryEnabled()
 
+  // SQLite memory mode still maintains MEMORY.md (only its injection is skipped), so
+  // turning the setting off later loses nothing written meanwhile.
+  const sqliteMemory = isSqliteMemoryEnabled()
   const skipIndex = getFeatureValue_CACHED_MAY_BE_STALE(
     'tengu_moth_copse',
     false,
@@ -449,10 +424,12 @@ export async function loadMemoryPrompt(): Promise<string | null> {
   // Cowork injects memory-policy text via env var; thread into all builders.
   const coworkExtraGuidelines =
     process.env.CLAUDE_COWORK_MEMORY_EXTRA_GUIDELINES
-  const extraGuidelines =
-    coworkExtraGuidelines && coworkExtraGuidelines.trim().length > 0
+  const extraGuidelines = [
+    ...(coworkExtraGuidelines && coworkExtraGuidelines.trim().length > 0
       ? [coworkExtraGuidelines]
-      : undefined
+      : []),
+    ...(sqliteMemory ? [SEARCH_MEMORY_GUIDELINE, USER_CLAUDE_MD_RULE] : []),
+  ]
 
   if (feature('TEAMMEM')) {
     if (teamMemPaths!.isTeamMemoryEnabled()) {

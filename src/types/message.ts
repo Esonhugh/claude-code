@@ -1,4 +1,5 @@
 import type { UUID } from 'crypto'
+import type { ClaudeAILimits } from '../services/claudeAiLimits.js'
 import type { Attachment } from '../utils/attachments.js'
 
 // ---------------------------------------------------------------------------
@@ -164,6 +165,8 @@ export interface AssistantMessage {
     [key: string]: any
   }
   requestId?: string
+  /** Skill this response's tokens count toward in /skill-doctor's 7d column. */
+  attributionSkill?: string
   isMeta?: boolean
   isVirtual?: boolean
   isApiErrorMessage?: boolean
@@ -175,7 +178,11 @@ export interface AssistantMessage {
   }
   error?: unknown
   errorDetails?: string
+  /** Quota state from a usage-limit 429's headers. */
+  quotaLimits?: ClaudeAILimits
   advisorModel?: string
+  /** Model the request named; responses may report a different id. */
+  requestedModel?: string
 }
 
 // ---------------------------------------------------------------------------
@@ -280,6 +287,10 @@ export interface SystemTurnDurationMessage extends SystemBase {
   [key: string]: any
 }
 
+export interface SystemFocusSummaryMessage extends SystemBase {
+  subtype: 'focus_summary'
+}
+
 export interface SystemAgentsKilledMessage extends SystemBase {
   subtype: 'agents_killed'
   [key: string]: any
@@ -300,6 +311,7 @@ export type SystemMessage =
   | SystemStopHookSummaryMessage
   | SystemThinkingMessage
   | SystemTurnDurationMessage
+  | SystemFocusSummaryMessage
   | SystemAgentsKilledMessage
 
 // ---------------------------------------------------------------------------

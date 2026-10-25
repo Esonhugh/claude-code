@@ -1,3 +1,4 @@
+import { feature } from 'bun:bundle'
 import chalk from 'chalk'
 import { writeSync } from 'fs'
 import memoize from 'lodash-es/memoize.js'
@@ -87,14 +88,16 @@ function cleanupTerminalModes(): void {
     //      here first makes onRender() scribble a REPL frame onto main.
     // Calling unmount() now does the final render on the alt buffer,
     // unsubscribes from signal-exit, and writes 1049l exactly once.
+    // On the main screen, unmount() also moves the cursor below the last
+    // frame, so the resume hint does not overwrite the prompt box.
     const inst = instances.get(process.stdout)
-    if (inst?.isAltScreenActive) {
+    if (inst) {
       try {
         inst.unmount()
       } catch {
         // Reconciler/render threw — fall back to manual alt-screen exit
         // so printResumeHint still hits the main buffer.
-        writeSync(1, EXIT_ALT_SCREEN)
+        if (inst.isAltScreenActive) writeSync(1, EXIT_ALT_SCREEN)
       }
     }
     // Catches events that arrived during the unmount tree-walk.
@@ -200,6 +203,10 @@ export function getSSHResumeCommand(): string | null {
 function printResumeHint(): void {
   // Only print once (failsafe timer may call this again after normal shutdown)
   if (resumeHintPrinted) {
+    return
+  }
+  // A background session is reopened with `claude attach`, not --resume.
+  if (process.env.CLAUDE_CODE_SESSION_KIND === 'bg') {
     return
   }
   // The SSH transcript is persisted remotely, independently of local session
@@ -490,6 +497,8 @@ export async function gracefulShutdown(
     setAppState?: (f: (prev: AppState) => AppState) => void
     /** Printed to stderr after alt-screen exit, before forceExit. */
     finalMessage?: string
+    /** The session keeps running elsewhere (/background): no resume hint. */
+    skipResumeHint?: boolean
     /** Replaces the current process after cleanup instead of exiting. */
     restartArgs?: string[]
   },
@@ -506,7 +515,16 @@ export async function gracefulShutdown(
     './hooks.js'
   )
   const sessionEndTimeoutMs = getSessionEndHookTimeoutMs()
+  if (options?.skipResumeHint) resumeHintPrinted = true
   const modsShutdownBudgetMs = modsHostDisposers.size > 0 ? sessionEndTimeoutMs + 2000 : 0
+  // memory.extraction (sessionEnd, or everyTurns with N > 1): the held-back conversation is
+  // extracted now, so the failsafe has to allow for that model call.
+  const extractMemories = feature('EXTRACT_MEMORIES')
+    ? await import('../services/extractMemories/extractMemories.js')
+    : null
+  const extractionBudgetMs = extractMemories?.hasDeferredExtraction()
+    ? extractMemories.SESSION_END_EXTRACTION_TIMEOUT_MS
+    : 0
 
   // Failsafe: guarantee process exits even if cleanup hangs (e.g., MCP connections).
   // Runs cleanupTerminalModes first so a hung cleanup doesn't leave the terminal dirty.
@@ -517,7 +535,9 @@ export async function gracefulShutdown(
       printResumeHint()
       forceExit(code)
     },
-    Math.max(5000, sessionEndTimeoutMs + 3500) + modsShutdownBudgetMs,
+    Math.max(5000, sessionEndTimeoutMs + 3500) +
+      modsShutdownBudgetMs +
+      extractionBudgetMs,
     exitCode,
   )
   failsafeTimer.unref()
@@ -532,6 +552,11 @@ export async function gracefulShutdown(
   // flush — which can take several seconds.
   cleanupTerminalModes()
   printResumeHint()
+
+  if (extractionBudgetMs > 0) {
+    writeSync(1, 'Saving memories…\n')
+    await extractMemories!.flushDeferredExtraction()
+  }
 
   // Classic SessionEnd runs first; its adapter then runs Mods with a fresh
   // budget while their host services are still available.

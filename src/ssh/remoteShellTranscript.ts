@@ -15,7 +15,7 @@ export function createRemoteShellTranscript(
   const messages: Message[] = [
     createSyntheticUserCaveatMessage(),
     createUserMessage({
-      content: `<bash-input>${escapeXml(command)}</bash-input>`,
+      content: `<bash-input>${command}</bash-input>`,
     }),
   ]
 

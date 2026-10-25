@@ -8,6 +8,7 @@ import { zipSync, strToU8 } from 'fflate'
 import {
   initializeOfficialBuiltinMods,
   loadBuiltinModDefinitions,
+  loadModDeclarationCached,
   materializeBuiltinModsArchive,
   validateOfficialBuiltinModsProvenance,
 } from './builtinMods.js'
@@ -365,6 +366,46 @@ describe('built-in Mods archive', () => {
 
     expect(materialized).toBe(root)
     expect(await readFile(join(root, 'agents-md/hooks/register.ts'), 'utf8')).toBe('official source')
+  })
+
+  test('caches the scan of an official built-in Mod beside its verified tree', async () => {
+    const here = dirname(fileURLToPath(import.meta.url))
+    const officialArchive = join(here, '..', '..', 'assets', 'builtin-mods-2.1.277.zip')
+    const root = await mkdtemp(join(tmpdir(), 'builtin-mods-declaration-cache-'))
+    roots.push(root)
+    await initializeOfficialBuiltinMods(officialArchive, join(root, 'cache'))
+    const tree = getBuiltinPluginDefinition('agents-md')!.path
+    const input = {
+      name: 'agents-md', storageId: 'agents-md@builtin', pluginRoot: tree,
+      entrypoints: [join(tree, 'hooks', 'register.ts')], tier: 'builtin' as const,
+    }
+
+    const first = await loadModDeclarationCached(input)
+    const cacheDir = `${dirname(tree)}.declarations`
+    expect((await readdir(cacheDir)).filter(name => name.endsWith('.json'))).toHaveLength(1)
+    await rm(join(tree, 'hooks', 'register.ts'))
+    const second = await loadModDeclarationCached(input)
+
+    expect(second).toEqual(first)
+    expect(first.modules.length).toBeGreaterThan(1)
+    await expect(loadModDeclarationCached({ ...input, options: { instructionFiles: 'claude-md' } })).rejects.toThrow()
+  })
+
+  test('scans a Mod outside the verified tree every time', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'builtin-mods-unverified-'))
+    roots.push(root)
+    const plugin = join(root, 'plugin')
+    await mkdir(join(plugin, 'hooks'), { recursive: true })
+    await writeFile(join(plugin, 'hooks', 'register.ts'), 'export function register(on) { on("session.start", () => {}) }\n')
+    const input = { name: 'local', storageId: 'local@user', pluginRoot: plugin, entrypoints: [join(plugin, 'hooks', 'register.ts')] }
+
+    const first = await loadModDeclarationCached(input)
+    await writeFile(join(plugin, 'hooks', 'register.ts'), 'export function register(on) { on("session.end", () => {}) }\n')
+    const second = await loadModDeclarationCached(input)
+
+    expect(first.events).toEqual(['session.start'])
+    expect(second.events).toEqual(['session.end'])
+    expect(await readdir(root)).toEqual(['plugin'])
   })
 
   test.each([

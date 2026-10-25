@@ -24,7 +24,7 @@ import {
   runWorkflowPlan,
   snapshotWorkflowAgentContext,
 } from './runWorkflow.js'
-import { loadWorkflowRunSession } from './workflowRunSessions.js'
+import { loadWorkflowRunSession, workflowSessionDir } from './workflowRunSessions.js'
 import type { WorkflowDryRunPlan } from './workflowSpec.js'
 
 // Terminal status/usage reach SDK consumers through the XML task notification
@@ -52,6 +52,7 @@ const setAppState = (updater: (prev: AppState) => AppState): void => {
   state = updater(state)
 }
 const workflowCwd = await mkdtemp(join(tmpdir(), 'workflow-run-results-'))
+process.env.CLAUDE_CONFIG_DIR = join(workflowCwd, 'config')
 
 setIsInteractive(false)
 drainSdkEvents()
@@ -635,6 +636,32 @@ const explicitInheritedAcceptEditsSnapshot = snapshotWorkflowAgentContext(
 assert.equal(explicitInheritedAcceptEditsSnapshot.inputMode, 'acceptEdits')
 assert.equal(explicitInheritedAcceptEditsSnapshot.identityMode, 'acceptEdits')
 
+// Workflow agents follow the parent's current mode after launch; a phase
+// permissionMode caps it, like an explicit Agent mode.
+function liveSnapshotMode(
+  mode: Parameters<typeof snapshotWorkflowAgentContext>[0],
+  launchMode: string,
+) {
+  let parentMode = launchMode
+  const snapshot = snapshotWorkflowAgentContext(mode, {
+    getAppState: () => ({ toolPermissionContext: { mode: parentMode } }),
+  } as unknown as ToolUseContext)
+  return (nextMode: string) => {
+    parentMode = nextMode
+    return snapshot.context.getAppState().toolPermissionContext.mode
+  }
+}
+const omittedLive = liveSnapshotMode(undefined, 'default')
+assert.equal(omittedLive('bypassPermissions'), 'bypassPermissions')
+assert.equal(omittedLive('plan'), 'plan')
+const explicitDefaultLive = liveSnapshotMode('default', 'bypassPermissions')
+assert.equal(explicitDefaultLive('plan'), 'plan')
+assert.equal(explicitDefaultLive('bypassPermissions'), 'default')
+const blockedAcceptEditsLive = liveSnapshotMode('acceptEdits', 'default')
+assert.equal(blockedAcceptEditsLive('default'), 'default')
+assert.equal(blockedAcceptEditsLive('bypassPermissions'), 'acceptEdits')
+assert.equal(blockedAcceptEditsLive('auto'), 'auto')
+
 let queuedDefaultModeState = {
   tasks: {},
   toolPermissionContext: { mode: 'plan' },
@@ -825,6 +852,7 @@ assert.equal(
 )
 
 const nonCompletedCacheCwd = await mkdtemp(join(tmpdir(), 'workflow-non-completed-cache-'))
+const nonCompletedCacheSessionPath = join(workflowSessionDir(nonCompletedCacheCwd), 'workflows', 'wf_non_completed_cache_source.json')
 let nonCompletedCacheState = {
   tasks: {},
   toolPermissionContext: { mode: 'default' },
@@ -870,13 +898,7 @@ const completedCacheEntry = nonCompletedCacheSession.resumeCacheEntries[0]
 for (const status of ['running', 'failed'] as const) {
   const sourceEntry = completedCacheEntry
   await writeFile(
-    join(
-      nonCompletedCacheCwd,
-      '.claude',
-      'workflow-runs',
-      'wf_non_completed_cache_source',
-      'session.json',
-    ),
+    nonCompletedCacheSessionPath,
     `${JSON.stringify({
       ...nonCompletedCacheSession,
       resumeCacheEntries: [{
@@ -932,13 +954,7 @@ for (const status of ['running', 'failed'] as const) {
 }
 
 await writeFile(
-  join(
-    nonCompletedCacheCwd,
-    '.claude',
-    'workflow-runs',
-    'wf_non_completed_cache_source',
-    'session.json',
-  ),
+  nonCompletedCacheSessionPath,
   `${JSON.stringify({
     ...nonCompletedCacheSession,
     resumeCacheEntries: [

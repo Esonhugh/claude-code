@@ -19,8 +19,13 @@ import {
   type EffortValue,
   parseEffortValue,
 } from '../../utils/effort.js'
-import { isEnvTruthy } from '../../utils/envUtils.js'
-import { parsePositiveIntFromFrontmatter } from '../../utils/frontmatterParser.js'
+import { isEnvTruthy, isSafeMode } from '../../utils/envUtils.js'
+import {
+  AUTO_COMPACT_WINDOW_MAX,
+  AUTO_COMPACT_WINDOW_MIN,
+  parseAutoCompactWindowFromFrontmatter,
+  parsePositiveIntFromFrontmatter,
+} from '../../utils/frontmatterParser.js'
 import { lazySchema } from '../../utils/lazySchema.js'
 import { logError } from '../../utils/log.js'
 import {
@@ -89,6 +94,12 @@ const AgentJsonSchema = lazySchema(() =>
     mcpServers: z.array(AgentMcpServerSpecSchema()).optional(),
     hooks: HooksSchema().optional(),
     maxTurns: z.number().int().positive().optional(),
+    autoCompactWindow: z
+      .number()
+      .int()
+      .min(AUTO_COMPACT_WINDOW_MIN)
+      .max(AUTO_COMPACT_WINDOW_MAX)
+      .optional(),
     skills: z.array(z.string()).optional(),
     initialPrompt: z.string().optional(),
     memory: z.enum(['user', 'project', 'local']).optional(),
@@ -119,6 +130,7 @@ export type BaseAgentDefinition = {
   effort?: EffortValue
   permissionMode?: PermissionMode
   maxTurns?: number // Maximum number of agentic turns before stopping
+  autoCompactWindow?: number // Caps the auto-compact window inherited from the parent
   filename?: string // Original filename without .md extension (for user/project/managed agents)
   baseDir?: string
   criticalSystemReminder_EXPERIMENTAL?: string // Short message re-injected at every user turn
@@ -298,8 +310,8 @@ async function initializeAgentMemorySnapshots(
 
 export const getAgentDefinitionsWithOverrides = memoize(
   async (cwd: string): Promise<AgentDefinitionsResult> => {
-    // Simple mode: skip custom agents, only return built-ins
-    if (isEnvTruthy(process.env.CLAUDE_CODE_SIMPLE)) {
+    // Simple and safe mode: skip custom agents, only return built-ins
+    if (isEnvTruthy(process.env.CLAUDE_CODE_SIMPLE) || isSafeMode()) {
       const builtInAgents = getBuiltInAgents()
       return {
         activeAgents: builtInAgents,
@@ -502,6 +514,9 @@ export function parseAgentFromJson(
         : {}),
       ...(parsed.hooks ? { hooks: parsed.hooks } : {}),
       ...(parsed.maxTurns !== undefined ? { maxTurns: parsed.maxTurns } : {}),
+      ...(parsed.autoCompactWindow !== undefined
+        ? { autoCompactWindow: parsed.autoCompactWindow }
+        : {}),
       ...(parsed.skills && parsed.skills.length > 0
         ? { skills: parsed.skills }
         : {}),
@@ -596,6 +611,10 @@ export function parseAgentFromMarkdown(
     const background =
       backgroundRaw === 'true' || backgroundRaw === true ? true : undefined
 
+    const omitClaudeMdRaw = frontmatter['omitClaudeMd']
+    const omitClaudeMd =
+      omitClaudeMdRaw === 'true' || omitClaudeMdRaw === true ? true : undefined
+
     // Parse memory scope
     const VALID_MEMORY_SCOPES: AgentMemoryScope[] = ['user', 'project', 'local']
     const memoryRaw = frontmatter['memory'] as string | undefined
@@ -656,6 +675,16 @@ export function parseAgentFromMarkdown(
     if (maxTurnsRaw !== undefined && maxTurns === undefined) {
       logForDebugging(
         `Agent file ${filePath} has invalid maxTurns '${maxTurnsRaw}'. Must be a positive integer.`,
+      )
+    }
+
+    const autoCompactWindowRaw = frontmatter['autoCompactWindow']
+    const autoCompactWindow =
+      parseAutoCompactWindowFromFrontmatter(autoCompactWindowRaw)
+    if (autoCompactWindowRaw !== undefined && autoCompactWindow === undefined) {
+      logForDebugging(
+        `Agent file ${filePath} has invalid autoCompactWindow '${autoCompactWindowRaw}'. Must be an integer from ${AUTO_COMPACT_WINDOW_MIN} to ${AUTO_COMPACT_WINDOW_MAX}.`,
+        { level: 'warn' },
       )
     }
 
@@ -747,7 +776,9 @@ export function parseAgentFromMarkdown(
         ? { permissionMode: permissionModeRaw as PermissionMode }
         : {}),
       ...(maxTurns !== undefined ? { maxTurns } : {}),
+      ...(autoCompactWindow !== undefined ? { autoCompactWindow } : {}),
       ...(background ? { background } : {}),
+      ...(omitClaudeMd ? { omitClaudeMd } : {}),
       ...(memory ? { memory } : {}),
       ...(isolation ? { isolation } : {}),
     }

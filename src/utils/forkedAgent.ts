@@ -12,7 +12,7 @@ import type { UUID } from 'crypto'
 import { getSessionId } from '../bootstrap/state.js'
 import { randomUUID } from 'crypto'
 import type { CommandBase, PromptCommand } from '../commands.js'
-import { captureModSkillPromptSnapshot, renderModSkillPrompt } from '../services/mods/skillPrompt.js'
+import { captureModSkillPromptSnapshot, modSkillPromptOrigin, renderModSkillPrompt } from '../services/mods/skillPrompt.js'
 import type { QuerySource } from '../constants/querySource.js'
 import type { CanUseToolFn } from '../hooks/useCanUseTool.js'
 import { query } from '../query.js'
@@ -37,6 +37,7 @@ import {
 } from './messages.js'
 import { createDenialTrackingState } from './permissions/denialTracking.js'
 import { parseToolListFromCLI } from './permissions/permissionSetup.js'
+import { getCommandAllowedTools } from './permissions/permissionsLoader.js'
 import { recordSidechainTranscript } from './sessionStorage.js'
 import type { SystemPrompt } from './systemPromptType.js'
 import {
@@ -222,7 +223,7 @@ export async function prepareForkedCommandContext(
     : undefined
   const readFileState = context.readFileState ? cloneFileStateCache(context.readFileState) : undefined
   // Parse and prepare allowed tools
-  const allowedTools = parseToolListFromCLI(command.allowedTools ?? [])
+  const allowedTools = parseToolListFromCLI(getCommandAllowedTools(command))
 
   // Create modified context with allowed tools
   const modifiedGetAppState = createGetAppStateWithAllowedTools(
@@ -249,6 +250,7 @@ export async function prepareForkedCommandContext(
           snapshot,
           skill: command.name,
           text: coreSkillContent,
+          origin: modSkillPromptOrigin(command),
           signal: context.abortController.signal,
         })
       : coreSkillContent

@@ -8,10 +8,16 @@ import {
   getFlagSettingsInline,
   getFlagSettingsPath,
   getOriginalCwd,
+  getParentManagedSettings,
+  getProjectConfigRoot,
   getUseCoworkPlugins,
 } from '../../bootstrap/state.js'
 import { getRemoteManagedSettingsSyncFromCache, isRemoteManagedSettingsVerified } from '../../services/remoteManagedSettings/syncCacheState.js'
 import { uniq } from '../array.js'
+import {
+  type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+  logEvent,
+} from '../../services/analytics/index.js'
 import { logForDebugging } from '../debug.js'
 import { logForDiagnosticsNoPII } from '../diagLogs.js'
 import { getClaudeConfigHomeDir, isEnvTruthy } from '../envUtils.js'
@@ -51,6 +57,7 @@ import {
 } from './settingsCache.js'
 import { type SettingsJson, SettingsSchema } from './types.js'
 import {
+  filterInvalidHooks,
   filterInvalidPermissionRules,
   formatZodError,
   type SettingsWithErrors,
@@ -246,7 +253,10 @@ export function readSettingsFile(
 
     // Filter invalid permission rules before schema validation so one bad
     // rule doesn't cause the entire settings file to be rejected.
-    const ruleWarnings = filterInvalidPermissionRules(data, path)
+    const ruleWarnings = [
+      ...filterInvalidPermissionRules(data, path),
+      ...filterInvalidHooks(data, path),
+    ]
 
     const result = SettingsSchema().safeParse(data)
 
@@ -274,9 +284,10 @@ export function getSettingsRootPathForSource(source: SettingSource): string {
     case 'userSettings':
       return resolve(getClaudeConfigHomeDir())
     case 'policySettings':
+      return resolve(getOriginalCwd())
     case 'projectSettings':
     case 'localSettings': {
-      return resolve(getOriginalCwd())
+      return resolve(getProjectConfigRoot() ?? getOriginalCwd())
     }
     case 'flagSettings': {
       const path = getFlagSettingsPath()
@@ -371,6 +382,41 @@ function getValidatedRemotePolicySettings(): {
   return { settings: result.data, errors: [] }
 }
 
+// Allowlists from --managed-settings apply only where the admin tier sets none.
+const PARENT_ONLY_LISTED_KEYS = ['allowedMcpServers', 'availableModels', 'strictKnownMarketplaces'] as const
+
+/**
+ * --managed-settings (the SDK's managedSettings option) filtered to what may only
+ * restrict: deny/ask rules, denylists, only-listed allowlists and the restrictive
+ * value of each RESTRICTIVE_SETTING_PATHS key. Everything else is dropped.
+ */
+function loadParentPolicySettings(): SettingsJson | null {
+  const raw = getParentManagedSettings()
+  if (!raw) return null
+  const parsed = SettingsSchema().safeParse(raw)
+  if (!parsed.success) return null
+  const parent = parsed.data
+  const filtered: SettingsJson = {}
+  for (const { path, restrictive } of RESTRICTIVE_SETTING_PATHS) {
+    const value = get(parent, path)
+    if ((Array.isArray(restrictive) ? restrictive : [restrictive]).includes(value as never)) set(filtered, path, value)
+  }
+  for (const path of [
+    ['permissions', 'deny'],
+    ['permissions', 'ask'],
+    ['deniedMcpServers'],
+    ['blockedMarketplaces'],
+    ['sandbox', 'network', 'deniedDomains'],
+    ['sandbox', 'filesystem', 'denyRead'],
+    ['sandbox', 'filesystem', 'denyWrite'],
+    ...PARENT_ONLY_LISTED_KEYS.map(key => [key]),
+  ]) {
+    const value = get(parent, path)
+    if (value !== undefined) set(filtered, path, value)
+  }
+  return hasSettings(filtered) ? filtered : null
+}
+
 function loadPolicySettings(
   remoteSettings = getValidatedRemotePolicySettings().settings,
   includeUserWritable = true,
@@ -378,7 +424,24 @@ function loadPolicySettings(
   const mdmSettings = getMdmSettings().settings
   const fileSettings = loadManagedFileSettings().settings
   const hkcuSettings = includeUserWritable ? getHkcuSettings().settings : null
-  const sources = [remoteSettings, mdmSettings, fileSettings, hkcuSettings]
+  const parentSettings = loadParentPolicySettings()
+  const admin = [remoteSettings, mdmSettings, fileSettings].find(hasSettings)
+  if (admin && parentSettings && admin.parentSettingsBehavior === 'merge') {
+    const policy = loadPolicySettingsFromTiers([remoteSettings, mdmSettings, fileSettings, hkcuSettings])!
+    const parent = structuredClone(parentSettings)
+    for (const key of PARENT_ONLY_LISTED_KEYS) if (policy[key] !== undefined) delete parent[key]
+    const merged = mergeWith(parent, policy, settingsMergeCustomizer) as SettingsJson
+    applyRestrictiveSettings(merged, [policy, parent])
+    return merged
+  }
+  return loadPolicySettingsFromTiers(
+    admin
+      ? [remoteSettings, mdmSettings, fileSettings, hkcuSettings]
+      : [parentSettings, hkcuSettings],
+  )
+}
+
+function loadPolicySettingsFromTiers(sources: (SettingsJson | null)[]): SettingsJson | null {
   const behavior = sources.find(
     settings => settings !== null &&
       (settings.managedSourcesBehavior !== undefined || hasSettings(settings)),
@@ -415,6 +478,7 @@ const RESTRICTIVE_SETTING_PATHS: {
   { path: ['disableDeepLinkRegistration'], restrictive: 'disable' },
   { path: ['permissions', 'disableBypassPermissionsMode'], restrictive: 'disable' },
   { path: ['permissions', 'disableAutoMode'], restrictive: 'disable' },
+  { path: ['autoMode', 'classifyAllShell'], restrictive: true },
   { path: ['enableWorkflows'], restrictive: false },
   { path: ['useAutoModeDuringPlan'], restrictive: false },
   { path: ['skipDangerousModePermissionPrompt'], restrictive: false },
@@ -423,6 +487,7 @@ const RESTRICTIVE_SETTING_PATHS: {
   { path: ['channelsEnabled'], restrictive: false },
   { path: ['skipWebFetchPreflight'], restrictive: false },
   { path: ['skipWorkflowUsageWarning'], restrictive: false },
+  { path: ['autoContinueAtUsageLimit'], restrictive: false },
   { path: ['crossSessionInbound'], restrictive: ['refuse', 'hold'] },
   { path: ['sandbox', 'enabled'], restrictive: true },
   { path: ['sandbox', 'failIfUnavailable'], restrictive: true },
@@ -1007,30 +1072,65 @@ export function getUseAutoModeDuringPlan(): boolean {
   return true
 }
 
+let autoModeUntrustedSourceWarned = false
+
 /**
  * Returns the merged autoMode config from trusted settings sources.
  * Only available when TRANSCRIPT_CLASSIFIER is active; returns undefined otherwise.
- * projectSettings is intentionally excluded — a malicious project could
- * otherwise inject classifier allow/deny rules (RCE risk).
+ * Like official, projectSettings and localSettings are excluded — a repo could
+ * otherwise inject classifier allow/environment rules (RCE risk).
  */
 export function getAutoModeConfig():
-  | { allow?: string[]; soft_deny?: string[]; environment?: string[] }
+  | {
+      allow?: string[]
+      soft_deny?: string[]
+      hard_deny?: string[]
+      environment?: string[]
+    }
   | undefined {
   if (feature('TRANSCRIPT_CLASSIFIER')) {
     const schema = z.object({
       allow: z.array(z.string()).optional(),
       soft_deny: z.array(z.string()).optional(),
+      hard_deny: z.array(z.string()).optional(),
       deny: z.array(z.string()).optional(),
       environment: z.array(z.string()).optional(),
     })
 
+    if (!autoModeUntrustedSourceWarned) {
+      for (const source of ['projectSettings', 'localSettings'] as const) {
+        // In the home directory the project settings file is the user's own.
+        if (
+          source === 'projectSettings' &&
+          getSettingsFilePathForSource('projectSettings') ===
+            getSettingsFilePathForSource('userSettings')
+        ) {
+          continue
+        }
+        const autoMode = (
+          getSettingsForSource(source) as Record<string, unknown> | null
+        )?.autoMode
+        if (autoMode && schema.safeParse(autoMode).success) {
+          autoModeUntrustedSourceWarned = true
+          logForDebugging(
+            `settings autoMode in ${source} ignored \u2014 only user/flag/managed settings may set classifier rules (projectSettings and localSettings are repo-controllable)`,
+            { level: 'warn' },
+          )
+          logEvent('tengu_settings_auto_mode_rules_untrusted_source_ignored', {
+            source:
+              source as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+          })
+        }
+      }
+    }
+
     const allow: string[] = []
     const soft_deny: string[] = []
+    const hard_deny: string[] = []
     const environment: string[] = []
 
     for (const source of [
       'userSettings',
-      'localSettings',
       'flagSettings',
       'policySettings',
     ] as const) {
@@ -1042,6 +1142,7 @@ export function getAutoModeConfig():
       if (result.success) {
         if (result.data.allow) allow.push(...result.data.allow)
         if (result.data.soft_deny) soft_deny.push(...result.data.soft_deny)
+        if (result.data.hard_deny) hard_deny.push(...result.data.hard_deny)
         if (isAnt()) {
           if (result.data.deny) soft_deny.push(...result.data.deny)
         }
@@ -1050,15 +1151,32 @@ export function getAutoModeConfig():
       }
     }
 
-    if (allow.length > 0 || soft_deny.length > 0 || environment.length > 0) {
+    if (
+      allow.length > 0 ||
+      soft_deny.length > 0 ||
+      hard_deny.length > 0 ||
+      environment.length > 0
+    ) {
       return {
         ...(allow.length > 0 && { allow }),
         ...(soft_deny.length > 0 && { soft_deny }),
+        ...(hard_deny.length > 0 && { hard_deny }),
         ...(environment.length > 0 && { environment }),
       }
     }
   }
   return undefined
+}
+
+/**
+ * autoMode.classifyAllShell: while auto mode is active, every Bash/PowerShell
+ * allow rule is suspended so all shell commands reach the classifier. Like
+ * official, only user, flag and policy settings can turn it on.
+ */
+export function isAutoModeClassifyAllShellEnabled(): boolean {
+  return (['userSettings', 'flagSettings', 'policySettings'] as const).some(
+    source => getSettingsForSource(source)?.autoMode?.classifyAllShell === true,
+  )
 }
 
 export function rawSettingsContainsKey(key: string): boolean {

@@ -3,8 +3,8 @@ import type { Command } from '../../commands.js'
 export default {
   type: 'local-jsx',
   name: 'usage',
-  description: 'Show plan usage limits',
-  availability: ['chatgpt', 'claude-ai'],
+  aliases: ['cost'],
+  description: 'Show session cost and plan usage',
   immediate: true,
   load: () => import('./usage.js'),
 } satisfies Command

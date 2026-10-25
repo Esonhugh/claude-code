@@ -137,6 +137,20 @@ test('mixed workflow panel retains progress and status without exposing default 
   expect(lines.every(line => stringWidth(line) <= 100)).toBe(true)
 })
 
+test('running workflow over the size cap shows the official Large workflow warning', async () => {
+  const workflow = {
+    id: 'workflow', type: 'local_workflow', status: 'running',
+    workflowName: 'fanout', description: 'Fan out', startTime: Date.now() - 5_000,
+    tokenCount: 50_000, agentCount: 30, startedAgentAttempts: 2, phases: [], results: [],
+  }
+  const warned = await panelLines(140, false, { tasks: { workflow } as unknown as AppState['tasks'] })
+  expect(warned.find(line => line.includes('fanout'))).toContain('Large workflow · /workflows to stop')
+  const done = await panelLines(140, false, { tasks: { workflow: { ...workflow, status: 'completed' } } as unknown as AppState['tasks'] })
+  expect(done.find(line => line.includes('fanout'))).not.toContain('Large workflow')
+  const small = await panelLines(140, false, { tasks: { workflow: { ...workflow, agentCount: 3 } } as unknown as AppState['tasks'] })
+  expect(small.find(line => line.includes('fanout'))).not.toContain('Large workflow')
+})
+
 test.each([20, 50, 64])('narrow Agent panel stays within %s columns', async columns => {
   const lines = await panelLines(columns)
   expect(lines.some(line => line.includes('Explore'))).toBe(true)

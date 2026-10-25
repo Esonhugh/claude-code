@@ -58,11 +58,13 @@ export const PermissionsSchema = lazySchema(() =>
           'List of permission rules that should always prompt for confirmation',
         ),
       defaultMode: z
-        .enum(
-          feature('TRANSCRIPT_CLASSIFIER')
+        .enum([
+          ...(feature('TRANSCRIPT_CLASSIFIER')
             ? PERMISSION_MODES
-            : EXTERNAL_PERMISSION_MODES,
-        )
+            : EXTERNAL_PERMISSION_MODES),
+          // Public name of `default` since official 2.1.200.
+          'manual',
+        ])
         .optional()
         .describe('Default permission mode when Claude Code needs access'),
       disableBypassPermissionsMode: z
@@ -271,10 +273,35 @@ export const SettingsSchema = lazySchema(() =>
         .max(1_000_000)
         .optional()
         .describe('Context token window at which automatic compaction begins'),
+      modelSettings: z
+        .record(
+          z.string(),
+          z
+            .object({
+              autoCompactWindow: z
+                .union([
+                  z.literal('auto'),
+                  z.number().int().min(100_000).max(1_000_000),
+                ])
+                .optional()
+                .describe(
+                  'Auto-compact window for this model, in tokens (100000 to 1000000), or "auto" for the window tuned for the model. Within one settings file it replaces the top-level autoCompactWindow for the model. /autocompact saves here. The canonical model name as key also matches its dated, [1m], Bedrock and Vertex spellings.',
+                ),
+            })
+            .passthrough(),
+        )
+        .optional()
+        .describe('Per-model settings keyed by canonical model name.'),
       managedSourcesBehavior: z
         .enum(['first-wins', 'merge'])
         .optional()
         .describe('Controls whether lower-priority managed settings sources are merged.'),
+      parentSettingsBehavior: z
+        .enum(['first-wins', 'merge'])
+        .optional()
+        .describe(
+          'Controls whether the SDK parent tier (--managed-settings) layers under this admin tier. "first-wins" (default): it is dropped. "merge": its restrictive-only settings union under the admin tier.',
+        ),
       apiKeyHelper: z
         .string()
         .optional()
@@ -392,6 +419,12 @@ export const SettingsSchema = lazySchema(() =>
         .string()
         .optional()
         .describe('Override the default model used by Claude Code'),
+      fallbackModel: z
+        .array(z.string())
+        .optional()
+        .describe(
+          'Fallback model(s) tried in order when the primary model is overloaded or unavailable. Each element accepts a model name or alias; "default" expands to the default model. CLI --fallback-model takes precedence.',
+        ),
       compact: z
         .object({
           mode: z
@@ -501,6 +534,12 @@ export const SettingsSchema = lazySchema(() =>
             .describe(
               'Directories to include when creating worktrees, via git sparse-checkout (cone mode). ' +
                 'Dramatically faster in large monorepos — only the listed paths are written to disk.',
+            ),
+          baseRef: z
+            .enum(['fresh', 'head'])
+            .optional()
+            .describe(
+              "Which ref new worktrees branch from. 'fresh' (default) branches from origin/<default-branch> for a clean tree. 'head' branches from your current local HEAD so unpushed commits and feature-branch state are present. Applies to --worktree, EnterWorktree, and agent isolation.",
             ),
         })
         .optional()
@@ -720,6 +759,11 @@ export const SettingsSchema = lazySchema(() =>
         .string()
         .optional()
         .describe('Controls the output style for assistant responses'),
+      viewMode: z
+        .enum(['default', 'verbose', 'focus'])
+        .optional()
+        .catch(undefined)
+        .describe('Default transcript view mode on startup'),
       language: z
         .string()
         .optional()
@@ -811,6 +855,12 @@ export const SettingsSchema = lazySchema(() =>
         .boolean()
         .optional()
         .describe('Skip the usage warning shown before a dynamic workflow runs. Default: false.'),
+      autoContinueAtUsageLimit: z
+        .boolean()
+        .optional()
+        .describe(
+          'When a claude.ai usage limit stops a dynamic workflow agent, pause the workflow until the limit resets and re-run the waiting agents. Default: true.',
+        ),
       enableWorkflows: z
         .boolean()
         .optional()
@@ -853,6 +903,23 @@ export const SettingsSchema = lazySchema(() =>
         .describe(
           'When false, prompt suggestions are disabled. When absent or true, ' +
             'prompt suggestions are enabled.',
+        ),
+      skillOverrides: z
+        .record(
+          z.string(),
+          z.enum(['on', 'name-only', 'user-invocable-only', 'off']),
+        )
+        .optional()
+        .describe(
+          'Per-skill listing overrides keyed by skill name. "name-only" lists the skill without its description; ' +
+            '"user-invocable-only" hides it from the model but keeps /name; "off" disables it. Plugin skills are not affected.',
+        ),
+      awaySummaryEnabled: z
+        .boolean()
+        .optional()
+        .describe(
+          'When false, the automatic session recap shown after returning to an ' +
+            'unfocused terminal is disabled. /recap still works on demand.',
         ),
       showClearContextOnPlanAccept: z
         .boolean()
@@ -1067,6 +1134,33 @@ export const SettingsSchema = lazySchema(() =>
         .describe(
           'Enable auto-memory for this project. When false, Claude will not read from or write to the auto-memory directory.',
         ),
+      memory: z
+        .object({
+          sqlite: z
+            .object({
+              enabled: z
+                .boolean()
+                .optional()
+                .describe(
+                  'Search memory with the SearchMemory tool (local SQLite FTS5 index) instead of loading MEMORY.md into every request. Memory files and MEMORY.md are still kept, so turning this off loses nothing. Requires auto-memory.',
+                ),
+              scopes: z
+                .array(z.enum(['user', 'project', 'session']))
+                .optional()
+                .describe(
+                  'What SearchMemory can search: user (memories saved in other projects, read-only), project (this project\'s memory directory), session (this project\'s past session transcripts). Defaults to all three.',
+                ),
+            })
+            .optional(),
+          extraction: z
+            .enum(['everyTurns', 'sessionEnd', 'off'])
+            .optional()
+            .describe(
+              'When background memory extraction runs: sessionEnd (default, once when the conversation ends: exit, /clear, /resume), everyTurns (after each turn), or off. Each run is a model call, so less often costs fewer tokens.',
+            ),
+        })
+        .optional()
+        .describe('Memory system options'),
       autoMemoryDirectory: z
         .string()
         .optional()
@@ -1115,6 +1209,12 @@ export const SettingsSchema = lazySchema(() =>
                   .array(z.string())
                   .optional()
                   .describe('Rules for the auto mode classifier deny section'),
+                hard_deny: z
+                  .array(z.string())
+                  .optional()
+                  .describe(
+                    'Rules for the auto mode classifier HARD BLOCK section \u2014 security boundaries that user intent does NOT clear. Include the literal string "$defaults" to inherit the built-in rules at that position.',
+                  ),
                 ...(isAnt()
                   ? {
                       // Back-compat alias for ant users; external users use soft_deny
@@ -1126,6 +1226,12 @@ export const SettingsSchema = lazySchema(() =>
                   .optional()
                   .describe(
                     'Entries for the auto mode classifier environment section',
+                  ),
+                classifyAllShell: z
+                  .boolean()
+                  .optional()
+                  .describe(
+                    'When true, every Bash/PowerShell allow rule is suspended while auto mode is active so all shell commands are routed through the classifier (higher safety, more classifier calls). Default: false.',
                   ),
               })
               .optional()

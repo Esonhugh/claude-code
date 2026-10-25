@@ -46,7 +46,7 @@ export async function processBashCommand(
 
   const userMessage = createUserMessage({
     content: prepareUserContent({
-      inputString: `<bash-input>${escapeXml(inputString)}</bash-input>`,
+      inputString: `<bash-input>${inputString}</bash-input>`,
       precedingInputBlocks,
     }),
   })
@@ -69,6 +69,7 @@ export async function processBashCommand(
   try {
     const bashModeContext: ProcessUserInputContext = {
       ...context,
+      userShellCommand: true,
       // TODO: Clean up this hack
       setToolJSX: _ => {
         jsx = _?.jsx

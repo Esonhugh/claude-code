@@ -4,7 +4,9 @@ import type { PermissionUpdate } from '../../types/permissions.js'
 import { formatFileSize } from '../../utils/format.js'
 import { lazySchema } from '../../utils/lazySchema.js'
 import type { PermissionDecision } from '../../utils/permissions/PermissionResult.js'
+import type { PermissionRule } from '../../utils/permissions/PermissionRule.js'
 import { getRuleByContentsForTool } from '../../utils/permissions/permissions.js'
+import { escapeRegExp } from '../../utils/stringUtils.js'
 import { isPreapprovedHost } from './preapproved.js'
 import { DESCRIPTION, WEB_FETCH_TOOL_NAME } from './prompt.js'
 import {
@@ -63,6 +65,64 @@ function webFetchToolInputToPermissionRuleContent(input: {
   }
 }
 
+// Lowercase and drop trailing dots so `domain:Example.COM.` matches example.com.
+function normalizeDomain(domain: string): string {
+  return domain.toLowerCase().replace(/(?<=[^*.])\.+(?=(:\d+)?$)/, '')
+}
+
+// Compares label by label; `*` matches within a single label only.
+function domainLabelsMatch(pattern: string, host: string): boolean {
+  const patternParts = pattern.split(/([.:])/)
+  const hostParts = host.split(/([.:])/)
+  return (
+    patternParts.length === hostParts.length &&
+    patternParts.every((part, i) =>
+      new RegExp(`^${part.split('*').map(escapeRegExp).join('.*')}$`).test(
+        hostParts[i]!,
+      ),
+    )
+  )
+}
+
+// `*.example.com` matches any subdomain depth but not example.com itself.
+function wildcardDomainMatches(pattern: string, host: string): boolean {
+  if (pattern === '*') return true
+  if (!pattern.startsWith('*.')) return domainLabelsMatch(pattern, host)
+  const suffix = pattern.slice(2)
+  const hostParts = host.split(/([.:])/)
+  const prefixLength = hostParts.length - suffix.split(/([.:])/).length
+  const prefix = hostParts.slice(0, Math.max(prefixLength, 0)).join('')
+  return (
+    prefix.length > 1 &&
+    prefix.endsWith('.') &&
+    !prefix.startsWith('.') &&
+    !prefix.includes('..') &&
+    !prefix.includes(':') &&
+    domainLabelsMatch(suffix, hostParts.slice(prefixLength).join(''))
+  )
+}
+
+// An exact (normalized) domain rule wins over the first matching wildcard rule.
+function findDomainRule(
+  rules: Map<string, PermissionRule>,
+  ruleContent: string,
+): PermissionRule | undefined {
+  const exact = rules.get(ruleContent)
+  if (exact || !ruleContent.startsWith('domain:')) return exact
+  const host = normalizeDomain(ruleContent.slice('domain:'.length))
+  let wildcardRule: PermissionRule | undefined
+  for (const [content, rule] of rules) {
+    if (!content.startsWith('domain:')) continue
+    const pattern = normalizeDomain(content.slice('domain:'.length))
+    if (!pattern.includes('*')) {
+      if (pattern === host) return rule
+    } else if (!wildcardRule && wildcardDomainMatches(pattern, host)) {
+      wildcardRule = rule
+    }
+  }
+  return wildcardRule
+}
+
 export const WebFetchTool = buildTool({
   name: WEB_FETCH_TOOL_NAME,
   searchHint: 'fetch and extract content from a URL',
@@ -105,29 +165,14 @@ export const WebFetchTool = buildTool({
     const appState = context.getAppState()
     const permissionContext = appState.toolPermissionContext
 
-    // Check if the hostname is in the preapproved list
-    try {
-      const { url } = input as { url: string }
-      const parsedUrl = new URL(url)
-      if (isPreapprovedHost(parsedUrl.hostname, parsedUrl.pathname)) {
-        return {
-          behavior: 'allow',
-          updatedInput: input,
-          decisionReason: { type: 'other', reason: 'Preapproved host' },
-        }
-      }
-    } catch {
-      // If URL parsing fails, continue with normal permission checks
-    }
-
-    // Check for a rule specific to the tool input (matching hostname)
+    // Explicit domain rules take precedence over the preapproved host list:
+    // deny, then ask, then allow, then the preapproved auto-allow.
     const ruleContent = webFetchToolInputToPermissionRuleContent(input)
 
-    const denyRule = getRuleByContentsForTool(
-      permissionContext,
-      WebFetchTool,
-      'deny',
-    ).get(ruleContent)
+    const denyRule = findDomainRule(
+      getRuleByContentsForTool(permissionContext, WebFetchTool, 'deny'),
+      ruleContent,
+    )
     if (denyRule) {
       return {
         behavior: 'deny',
@@ -139,11 +184,10 @@ export const WebFetchTool = buildTool({
       }
     }
 
-    const askRule = getRuleByContentsForTool(
-      permissionContext,
-      WebFetchTool,
-      'ask',
-    ).get(ruleContent)
+    const askRule = findDomainRule(
+      getRuleByContentsForTool(permissionContext, WebFetchTool, 'ask'),
+      ruleContent,
+    )
     if (askRule) {
       return {
         behavior: 'ask',
@@ -156,11 +200,10 @@ export const WebFetchTool = buildTool({
       }
     }
 
-    const allowRule = getRuleByContentsForTool(
-      permissionContext,
-      WebFetchTool,
-      'allow',
-    ).get(ruleContent)
+    const allowRule = findDomainRule(
+      getRuleByContentsForTool(permissionContext, WebFetchTool, 'allow'),
+      ruleContent,
+    )
     if (allowRule) {
       return {
         behavior: 'allow',
@@ -170,6 +213,20 @@ export const WebFetchTool = buildTool({
           rule: allowRule,
         },
       }
+    }
+
+    try {
+      const { url } = input as { url: string }
+      const parsedUrl = new URL(url)
+      if (isPreapprovedHost(parsedUrl.hostname, parsedUrl.pathname)) {
+        return {
+          behavior: 'allow',
+          updatedInput: input,
+          decisionReason: { type: 'other', reason: 'Preapproved host' },
+        }
+      }
+    } catch {
+      // If URL parsing fails, fall through to asking
     }
 
     return {
@@ -185,8 +242,7 @@ export const WebFetchTool = buildTool({
     // between SDK query() calls (when ToolSearch enablement varies due to
     // MCP tool count thresholds), invalidating the Anthropic API prompt
     // cache on each toggle — two consecutive cache misses per flicker event.
-    return `IMPORTANT: WebFetch WILL FAIL for authenticated or private URLs. Before using this tool, check if the URL points to an authenticated service (e.g. Google Docs, Confluence, Jira, GitHub). If so, look for a specialized MCP tool that provides authenticated access.
-${DESCRIPTION}`
+    return DESCRIPTION
   },
   async validateInput(input) {
     const { url } = input

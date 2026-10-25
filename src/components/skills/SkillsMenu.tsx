@@ -1,6 +1,7 @@
 import capitalize from 'lodash-es/capitalize.js'
+import figures from 'figures'
 import * as React from 'react'
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import {
   type Command,
   type CommandBase,
@@ -8,7 +9,7 @@ import {
   getCommandName,
   type PromptCommand,
 } from '../../commands.js'
-import { Box, Text } from '../../ink.js'
+import { Box, Text, useInput } from '../../ink.js'
 import {
   estimateSkillFrontmatterTokens,
   getSkillsPath,
@@ -19,6 +20,13 @@ import {
   getSettingSourceName,
   type SettingSource,
 } from '../../utils/settings/constants.js'
+import { updateSettingsForSource } from '../../utils/settings/settings.js'
+import {
+  getSkillOverride,
+  isSkillOverridable,
+  nextSkillOverride,
+  type SkillOverride,
+} from '../../utils/skillOverrides.js'
 import { plural } from '../../utils/stringUtils.js'
 import { ConfigurableShortcutHint } from '../ConfigurableShortcutHint.js'
 import { Dialog } from '../design-system/Dialog.js'
@@ -77,6 +85,15 @@ function getSourceSubtitle(
     : skillsPath
 }
 
+const SOURCE_ORDER: SkillSource[] = [
+  'projectSettings',
+  'userSettings',
+  'policySettings',
+  'plugin',
+  'mcp',
+  'codex_app',
+]
+
 export function SkillsMenu({ onExit, commands }: Props): React.ReactNode {
   // Filter commands for skills and cast to SkillCommand
   const skills = useMemo(() => {
@@ -124,6 +141,35 @@ export function SkillsMenu({ onExit, commands }: Props): React.ReactNode {
     onExit('Skills dialog dismissed', { display: 'system' })
   }
 
+  const orderedSkills = useMemo(
+    () => SOURCE_ORDER.flatMap(source => skillsBySource[source]),
+    [skillsBySource],
+  )
+  const [selectedIndex, setSelectedIndex] = useState(0)
+  const [overrides, setOverrides] = useState<Record<string, SkillOverride>>(
+    () =>
+      Object.fromEntries(
+        orderedSkills.map(skill => [skill.name, getSkillOverride(skill)]),
+      ),
+  )
+
+  useInput((input, key) => {
+    if (key.upArrow) {
+      setSelectedIndex(i => Math.max(0, i - 1))
+    } else if (key.downArrow) {
+      setSelectedIndex(i => Math.min(orderedSkills.length - 1, i + 1))
+    } else if (key.return || input === ' ') {
+      const skill = orderedSkills[selectedIndex]
+      if (!skill || !isSkillOverridable(skill)) return
+      const next = nextSkillOverride(overrides[skill.name] ?? 'on')
+      // "on" is the default, so it removes the entry instead of storing it.
+      updateSettingsForSource('localSettings', {
+        skillOverrides: { [skill.name]: next === 'on' ? undefined : next },
+      })
+      setOverrides(prev => ({ ...prev, [skill.name]: next }))
+    }
+  })
+
   if (skills.length === 0) {
     return (
       <Dialog
@@ -148,6 +194,8 @@ export function SkillsMenu({ onExit, commands }: Props): React.ReactNode {
   }
 
   const renderSkill = (skill: SkillCommand) => {
+    const selected = orderedSkills[selectedIndex] === skill
+    const override = overrides[skill.name] ?? 'on'
     const estimatedTokens = estimateSkillFrontmatterTokens(skill)
     const tokenDisplay = `~${formatTokens(estimatedTokens)}`
     const pluginName =
@@ -157,8 +205,15 @@ export function SkillsMenu({ onExit, commands }: Props): React.ReactNode {
 
     return (
       <Box key={`${skill.name}-${skill.source}`}>
-        <Text>{getCommandName(skill)}</Text>
+        <Text color={selected ? 'suggestion' : undefined}>
+          {selected ? figures.pointer : ' '}{' '}
+          {override === 'off' ? figures.circle : figures.tick}{' '}
+          {getCommandName(skill)}
+        </Text>
         <Text dimColor>
+          {override === 'name-only' || override === 'user-invocable-only'
+            ? ` · ${override === 'name-only' ? 'name-only' : 'user-only'}`
+            : ''}
           {pluginName ? ` · ${pluginName}` : ''} · {tokenDisplay} description
           tokens
         </Text>
@@ -189,17 +244,12 @@ export function SkillsMenu({ onExit, commands }: Props): React.ReactNode {
   return (
     <Dialog
       title="Skills"
-      subtitle={`${skills.length} ${plural(skills.length, 'skill')}`}
+      subtitle={`${skills.length} ${plural(skills.length, 'skill')} · enter/space to cycle`}
       onCancel={handleCancel}
       hideInputGuide
     >
       <Box flexDirection="column" gap={1}>
-        {renderSkillGroup('projectSettings')}
-        {renderSkillGroup('userSettings')}
-        {renderSkillGroup('policySettings')}
-        {renderSkillGroup('plugin')}
-        {renderSkillGroup('mcp')}
-        {renderSkillGroup('codex_app')}
+        {SOURCE_ORDER.map(renderSkillGroup)}
       </Box>
       <Text dimColor italic>
         <ConfigurableShortcutHint

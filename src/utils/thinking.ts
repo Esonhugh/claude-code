@@ -9,9 +9,12 @@ import { getSettingsWithErrors } from './settings/settings.js'
 import { isAnt } from 'src/utils/userType.js'
 
 
+export const THINKING_DISPLAYS = ['summarized', 'omitted', 'highlights'] as const
+export type ThinkingDisplay = (typeof THINKING_DISPLAYS)[number]
+
 export type ThinkingConfig =
-  | { type: 'adaptive' }
-  | { type: 'enabled'; budgetTokens: number }
+  | { type: 'adaptive'; display?: ThinkingDisplay }
+  | { type: 'enabled'; budgetTokens: number; display?: ThinkingDisplay }
   | { type: 'disabled' }
 
 /**

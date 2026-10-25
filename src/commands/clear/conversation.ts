@@ -71,6 +71,14 @@ export async function clearConversation({
   setAppState?: (f: (prev: AppState) => AppState) => void
   setConversationId?: (id: UUID) => void
 }): Promise<void> {
+  // memory.extraction (sessionEnd, or everyTurns with N > 1): extract before the conversation is cleared.
+  if (feature('EXTRACT_MEMORIES')) {
+    const { flushDeferredExtraction } = await import(
+      '../../services/extractMemories/extractMemories.js'
+    )
+    await flushDeferredExtraction()
+  }
+
   // Execute SessionEnd hooks before clearing (bounded by
   // CLAUDE_CODE_SESSIONEND_HOOKS_TIMEOUT_MS, default 1.5s)
   const sessionEndTimeoutMs = getSessionEndHookTimeoutMs()

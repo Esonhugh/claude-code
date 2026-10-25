@@ -54,7 +54,7 @@ if (process.env[childFlag] !== '1') {
     await rm(configDir, { recursive: true, force: true })
   })
   process.env.CLAUDE_CONFIG_DIR = configDir
-  delete process.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS
+  process.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS = '0'
   ;(globalThis as typeof globalThis & { MACRO: MacroGlobals }).MACRO = {
     VERSION: 'test',
   }
@@ -86,13 +86,15 @@ if (process.env[childFlag] !== '1') {
     async (
       _socketPath: string,
       _message: string,
-      _options?: { fromMode?: 'bypass' | 'prompting'; fromName?: string },
+      _options?: { fromMode?: 'bypass' | 'prompting'; fromName?: string; toName?: string },
     ) => ({ msg_id: 'test-message-id' }),
   )
+  const subscribePeerIdle = mock(async (_socketPath: string, _label: string, _fromMode?: string) => ({ ok: true as const, peerKnownCapable: true }))
   mock.module('../../utils/udsClient.js', () => ({
     listAllLiveSessions: async () => [peer],
     resolvePeerSession,
     sendToUdsSocket,
+    subscribePeerIdle,
   }))
 
   const { SendMessageTool } = await import('./SendMessageTool.js')
@@ -160,10 +162,31 @@ if (process.env[childFlag] !== '1') {
       expect(sendToUdsSocket).toHaveBeenLastCalledWith(
         peer.messagingSocketPath,
         input.message,
-        { fromMode: 'prompting' },
+        { fromMode: 'prompting', toName: peer.name },
       )
+      expect(result.data).toMatchObject({ msg_id: 'test-message-id' })
+      expect(result.data.message).toContain('a [Cross-session delivery notice] follows if that session holds it')
       expect(existsSync(getInboxPath(to))).toBe(false)
     }
+  })
+
+  test('notify_when_idle subscribes to local sessions only, with or without a message', async () => {
+    const pure = { to: peer.name, notify_when_idle: true }
+    expect(SendMessageTool.inputSchema.parse(pure)).toMatchObject({ message: '' })
+    expect(await SendMessageTool.validateInput!({ to: peer.name, message: '' }, context)).toMatchObject({ result: false })
+    expect(await SendMessageTool.validateInput!({ ...pure, message: '' }, context)).toEqual({ result: true })
+    expect(await SendMessageTool.validateInput!({ ...pure, to: '*', message: 'x' }, context)).toMatchObject({ result: false, message: expect.stringContaining('only supported for Claude sessions on this machine') })
+    expect(await SendMessageTool.validateInput!({ ...pure, message: '' }, { ...context, agentId: 'a1' } as ToolUseContext)).toMatchObject({ result: false, message: expect.stringContaining('main conversation') })
+    const result = await SendMessageTool.call({ ...pure, message: '' }, context, async () => ({ behavior: 'allow' }), undefined)
+    expect(sendToUdsSocket).not.toHaveBeenCalled()
+    expect(subscribePeerIdle).toHaveBeenLastCalledWith(peer.messagingSocketPath, `${peer.name} [${peer.ref}]`, 'prompting')
+    expect(result.data.success).toBe(true)
+    expect(result.data.message).toStartWith('Subscribed — ')
+    expect(result.data.message).toContain(`"${peer.name} [${peer.ref}]"`)
+    expect(result.data).not.toHaveProperty('msg_id')
+    const both = await SendMessageTool.call({ ...pure, message: 'hi' }, context, async () => ({ behavior: 'allow' }), undefined)
+    expect(both.data.message.split('\n')).toHaveLength(2)
+    expect(both.data).toMatchObject({ success: true, msg_id: 'test-message-id' })
   })
 
   test('in-process agents take precedence over peers with the same name', async () => {
@@ -339,7 +362,7 @@ if (process.env[childFlag] !== '1') {
       expect(broadcast.data.success).toBe(false)
       expect(broadcast.data.message).toContain('nothing was queued for them: blocked-member')
     } finally {
-      delete process.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS
+      process.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS = '0'
     }
   })
 
@@ -411,7 +434,7 @@ if (process.env[childFlag] !== '1') {
       expect((await SendMessageTool.call(
         { ...input, to }, context, async () => ({ behavior: 'allow' }), undefined,
       )).data.success).toBe(true)
-      expect(sendToUdsSocket.mock.calls.at(-1)?.[2]).toEqual({ fromMode: 'bypass' })
+      expect(sendToUdsSocket.mock.calls.at(-1)?.[2]).toMatchObject({ fromMode: 'bypass' })
     }
     const sendsBeforeUnavailable = sendToUdsSocket.mock.calls.length
     endpoint = null
@@ -467,7 +490,7 @@ if (process.env[childFlag] !== '1') {
       }).success).toBe(true)
       expect(await SendMessageTool.prompt({} as never)).toContain('plan_approval_response')
     } finally {
-      delete process.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS
+      process.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS = '0'
     }
   })
 
@@ -487,7 +510,7 @@ if (process.env[childFlag] !== '1') {
     try {
       expect(SendMessageTool.isEnabled()).toBe(true)
     } finally {
-      delete process.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS
+      process.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS = '0'
     }
   })
 

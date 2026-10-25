@@ -1,5 +1,5 @@
 import { logForDebugging } from '../../utils/debug.js'
-import { isBareMode } from '../../utils/envUtils.js'
+import { isBareMode, isSafeMode } from '../../utils/envUtils.js'
 import { errorMessage } from '../../utils/errors.js'
 import { logError } from '../../utils/log.js'
 import {
@@ -145,7 +145,7 @@ export async function waitForInitialization(): Promise<void> {
 export function initializeLspServerManager(): void {
   // --bare / SIMPLE: no LSP. LSP is for editor integration (diagnostics,
   // hover, go-to-def in the REPL). Scripted -p calls have no use for it.
-  if (isBareMode()) {
+  if (isBareMode() || isSafeMode()) {
     return
   }
   logForDebugging('[LSP MANAGER] initializeLspServerManager() called')

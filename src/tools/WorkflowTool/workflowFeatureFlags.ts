@@ -3,7 +3,7 @@ import { isEnvDefinedFalsy, isEnvTruthy } from '../../utils/envUtils.js'
 
 export const WORKFLOW_SIZE_GUIDELINES = ['unrestricted', 'small', 'medium', 'large'] as const
 export type WorkflowSizeGuideline = (typeof WORKFLOW_SIZE_GUIDELINES)[number]
-const WORKFLOW_SIZE_AGENT_LIMITS = { small: 5, medium: 10, large: 50 }
+export const WORKFLOW_SIZE_AGENT_LIMITS = { small: 5, medium: 10, large: 50 }
 
 type WorkflowSettings = {
   enableWorkflows?: boolean

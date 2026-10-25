@@ -30,6 +30,7 @@ import { collapseReadSearchGroups } from '../utils/collapseReadSearch.js'
 import { collapseTeammateShutdowns } from '../utils/collapseTeammateShutdowns.js'
 import { getGlobalConfig } from '../utils/config.js'
 import { isEnvTruthy } from '../utils/envUtils.js'
+import { applyFocusView } from '../utils/focusView.js'
 import { isFullscreenEnvEnabled } from '../utils/fullscreen.js'
 import { applyGrouping } from '../utils/groupToolUses.js'
 import {
@@ -276,6 +277,8 @@ type Props = {
   streamingText?: string | null
   /** When true, only show Brief tool output (hide everything else) */
   isBriefOnly?: boolean
+  /** Focus view (/focus): prompt, one summary line and the response per turn */
+  focusView?: boolean
   /** Fullscreen-mode "─── N new ───" divider. Renders before the first
    *  renderableMessage derived from firstUnseenUuid (matched by the 24-char
    *  prefix that deriveUUID preserves). */
@@ -413,6 +416,7 @@ const MessagesImpl = ({
   streamingThinking,
   streamingText,
   isBriefOnly = false,
+  focusView = false,
   unseenDivider,
   scrollRef,
   trackStickyPrompt,
@@ -565,6 +569,7 @@ const MessagesImpl = ({
   // useMemo included renderRange → every scroll rebuilt 6 Maps over 27k
   // messages + 4 filter/map passes = ~50ms alloc per scroll → GC pressure →
   // 100-173ms stop-the-world pauses on the 1GB heap.
+  const focusLoading = focusView && isLoading
   const { collapsed, lookups, hasTruncatedMessages, hiddenMessageCount } =
     useMemo(() => {
       // In fullscreen mode the alt buffer has no native scrollback, so the
@@ -636,7 +641,7 @@ const MessagesImpl = ({
         verbose,
       )
 
-      const collapsed = collapseBackgroundBashNotifications(
+      const collapsedRows = collapseBackgroundBashNotifications(
         collapseHookSummaries(
           collapseTeammateShutdowns(
             collapseReadSearchGroups(groupedMessages, tools),
@@ -644,6 +649,10 @@ const MessagesImpl = ({
         ),
         verbose,
       )
+      const collapsed =
+        focusView && !isTranscriptMode && !verbose
+          ? applyFocusView(collapsedRows, focusLoading)
+          : collapsedRows
 
       const lookups = buildMessageLookups(normalizedMessages, messagesToShow)
 
@@ -665,6 +674,8 @@ const MessagesImpl = ({
       shouldTruncate,
       tools,
       isBriefOnly,
+      focusView,
+      focusLoading,
     ])
 
   // Cheap slice — only runs when scroll range or slice config changes.

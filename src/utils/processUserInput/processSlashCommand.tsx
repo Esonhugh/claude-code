@@ -40,6 +40,7 @@ import {
 import { getDumpPromptsPath } from '../../services/api/dumpPrompts.js'
 import {
   captureModSkillPromptSnapshot,
+  modSkillPromptOrigin,
   renderModSkillPrompt,
 } from '../../services/mods/skillPrompt.js'
 import { buildPostCompactMessages } from '../../services/compact/compact.js'
@@ -81,6 +82,7 @@ import {
 } from '../messages.js'
 import type { ModelAlias } from '../model/aliases.js'
 import { parseToolListFromCLI } from '../permissions/permissionSetup.js'
+import { getCommandAllowedTools } from '../permissions/permissionsLoader.js'
 import { hasPermissionsToUseTool } from '../permissions/permissions.js'
 import {
   isOfficialMarketplaceName,
@@ -101,6 +103,7 @@ import type {
   ProcessUserInputBaseResult,
   ProcessUserInputContext,
 } from './processUserInput.js'
+import { getSkillOverride } from '../skillOverrides.js'
 import { isAnt } from 'src/utils/userType.js'
 import {
   runModCommand,
@@ -716,6 +719,25 @@ async function getMessagesForSlashCommand(
     }
   }
 
+  if (getSkillOverride(command) === 'off') {
+    return {
+      messages: [
+        createUserMessage({
+          content: prepareUserContent({
+            inputString: `/${commandName}`,
+            precedingInputBlocks,
+          }),
+        }),
+        createSystemMessage(
+          `Skill "${commandName}" is disabled via skillOverrides. Re-enable it in /skills or remove the override from your settings to run it.`,
+          'suggestion',
+        ),
+      ],
+      shouldQuery: false,
+      command,
+    }
+  }
+
   try {
     switch (command.type) {
       case 'local-jsx': {
@@ -1173,7 +1195,7 @@ async function getMessagesForPromptSlashCommand(
     if (command.whenToUse) {
       parts.push(`When to use: ${command.whenToUse}`)
     }
-    const skillAllowedTools = command.allowedTools ?? []
+    const skillAllowedTools = getCommandAllowedTools(command)
     if (skillAllowedTools.length > 0) {
       parts.push(
         `This skill grants workers additional tool permissions: ${skillAllowedTools.join(', ')}`,
@@ -1209,6 +1231,7 @@ async function getMessagesForPromptSlashCommand(
           snapshot,
           skill: command.name,
           text: coreSkillContent,
+          origin: modSkillPromptOrigin(command),
           signal: context.abortController.signal,
         })
       : coreSkillContent
@@ -1272,7 +1295,7 @@ async function getMessagesForPromptSlashCommand(
   const metadata = formatCommandLoadingMetadata(command, args)
 
   const additionalAllowedTools = parseToolListFromCLI(
-    command.allowedTools ?? [],
+    getCommandAllowedTools(command),
   )
 
   // Create content for the main message, including any pasted images

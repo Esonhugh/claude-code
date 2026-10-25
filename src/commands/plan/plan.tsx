@@ -4,6 +4,7 @@ import { Box, Text } from '../../ink.js'
 import type { LocalJSXCommandOnDone } from '../../types/command.js'
 import { getExternalEditor } from '../../utils/editor.js'
 import { toIDEDisplayName } from '../../utils/ide.js'
+import { logPermissionModeChange } from '../../utils/permissions/PermissionUpdate.js'
 import { transitionPermissionMode } from '../../utils/permissions/permissionSetup.js'
 import { getPlan, getPlanFilePath } from '../../utils/plans.js'
 import { isPlanModeAvailable, PLAN_MODE_DISABLED_MESSAGE } from '../../utils/planModeV2.js'
@@ -73,6 +74,7 @@ export async function call(
         },
       }))
     }
+    logPermissionModeChange('command', currentMode, 'plan', '/plan')
     const description = args.trim()
     if (description && description !== 'open') {
       onDone('Enabled plan mode', { shouldQuery: true })

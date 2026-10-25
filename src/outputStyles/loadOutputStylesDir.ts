@@ -2,6 +2,7 @@ import memoize from 'lodash-es/memoize.js'
 import { basename } from 'path'
 import type { OutputStyleConfig } from '../constants/outputStyles.js'
 import { logForDebugging } from '../utils/debug.js'
+import { isSafeMode } from '../utils/envUtils.js'
 import { coerceDescriptionToString } from '../utils/frontmatterParser.js'
 import { logError } from '../utils/log.js'
 import {
@@ -25,6 +26,7 @@ import { clearPluginOutputStyleCache } from '../utils/plugins/loadPluginOutputSt
  */
 export const getOutputStyleDirStyles = memoize(
   async (cwd: string): Promise<OutputStyleConfig[]> => {
+    if (isSafeMode()) return []
     try {
       const markdownFiles = await loadMarkdownFilesForSubdir(
         'output-styles',

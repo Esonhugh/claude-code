@@ -2,7 +2,7 @@
 // Official 2.1.292 Workflow semantics that the facade must keep: launch parses meta and
 // compiles only, agent failures leave the run completed, and resume is guarded.
 import assert from 'node:assert/strict'
-import { mkdtemp, readdir, readFile, realpath } from 'node:fs/promises'
+import { access, mkdtemp, readdir, readFile, realpath } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -18,13 +18,18 @@ import {
 } from '../../tasks/LocalWorkflowTask/LocalWorkflowTask.js'
 
 const { WorkflowFacadeTool } = await import('./WorkflowFacadeTool.js')
+const { workflowSessionDir } = await import('./workflowRunSessions.js')
 
 setSessionSettingsCache({ settings: { enableWorkflows: true }, errors: [] })
+// The provenance frame is covered by workflowPromptProvenance.test.ts and its own runtime scenario;
+// the fake agent here matches on raw prompts.
+process.env.CLAUDE_CODE_WORKFLOW_PROMPT_PROVENANCE = '0'
 setIsInteractive(false)
 drainSdkEvents()
 dequeueAllMatching(command => command.mode === 'task-notification')
 
-const cwd = await mkdtemp(join(tmpdir(), 'workflow-official-parity-'))
+const cwd = await realpath(await mkdtemp(join(tmpdir(), 'workflow-official-parity-')))
+process.env.CLAUDE_CONFIG_DIR = join(cwd, 'config')
 let state = {
   tasks: {},
   toolPermissionContext: { mode: 'default' },
@@ -40,6 +45,8 @@ const agentTool = {
   aliases: ['Task'],
   async call(input: { prompt: string }, agentContext: ToolUseContext) {
     prompts.push(input.prompt)
+    // First API response: releases same-prefix siblings held by the prefix stagger, as a real agent would.
+    agentContext.pushApiMetricsEntry?.(1)
     if (input.prompt.startsWith('hold')) {
       await new Promise<void>((resolve, reject) => {
         held.push(resolve)
@@ -120,10 +127,12 @@ function script(name: string, body: string, phases = ''): string {
   return `export const meta = { name: '${name}', description: '${name} probe', phases: [${phases}] }\n${body}\n`
 }
 
-// An inline script whose body does not compile is reported and leaves no run directory
-// behind; a valid inline script is still persisted under .claude/workflow-runs.
+// An inline script whose body does not compile is reported and leaves no script file
+// behind; a valid inline script is persisted like official under the session's
+// workflows/scripts directory, never under the working directory (#97).
+const scriptsDir = join(workflowSessionDir(cwd), 'workflows', 'scripts')
 const runDirs = async (): Promise<string[]> =>
-  (await readdir(join(cwd, '.claude', 'workflow-runs')).catch(() => [])).filter(entry => entry.startsWith('wf_'))
+  (await readdir(scriptsDir).catch(() => [])).filter(entry => entry.endsWith('.js'))
 const runDirsBefore = await runDirs()
 const tasksBefore = Object.keys(state.tasks).length
 prompts.length = 0
@@ -145,9 +154,10 @@ assert.deepEqual(prompts, [])
 
 const persistedSource = script('persisted', `return agent('persist me')`)
 const persisted = await run({ script: persistedSource })
-assert.equal(scriptPathOf(persisted), join(await realpath(cwd), '.claude', 'workflow-runs', runIdOf(persisted), 'persisted.js'))
+assert.equal(scriptPathOf(persisted), join(scriptsDir, `persisted-${runIdOf(persisted)}.js`))
 assert.equal(await readFile(scriptPathOf(persisted), 'utf8'), persistedSource)
-assert.deepEqual((await runDirs()).sort(), [...runDirsBefore, runIdOf(persisted)].sort())
+assert.deepEqual((await runDirs()).sort(), [...runDirsBefore, `persisted-${runIdOf(persisted)}.js`].sort())
+await assert.rejects(access(join(cwd, '.claude', 'workflow-runs')), { code: 'ENOENT' })
 assert.equal(taskOf(persisted).status, 'completed')
 dequeueAllMatching(command => command.mode === 'task-notification')
 

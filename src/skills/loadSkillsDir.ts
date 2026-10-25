@@ -33,6 +33,7 @@ import {
   getClaudeConfigHomeDir,
   isBareMode,
   isEnvTruthy,
+  isSafeMode,
 } from '../utils/envUtils.js'
 import { isENOENT, isFsInaccessible } from '../utils/errors.js'
 import {
@@ -59,6 +60,7 @@ import { parseUserSpecifiedModel } from '../utils/model/model.js'
 import { executeShellCommandsInPrompt } from '../utils/promptShellExecution.js'
 import type { SettingSource } from '../utils/settings/constants.js'
 import { isSettingSourceEnabled } from '../utils/settings/constants.js'
+import { getCommandAllowedTools } from '../utils/permissions/permissionsLoader.js'
 import { getManagedFilePath } from '../utils/settings/managedPath.js'
 import { isRestrictedToPluginOnly } from '../utils/settings/pluginOnlyPolicy.js'
 import { HooksSchema, type HooksSettings } from '../utils/settings/types.js'
@@ -314,6 +316,7 @@ export function createSkillCommand({
   paths,
   effort,
   shell,
+  skillFile,
 }: {
   skillName: string
   displayName: string | undefined
@@ -340,6 +343,7 @@ export function createSkillCommand({
   paths: string[] | undefined
   effort: EffortValue | undefined
   shell: FrontmatterShell | undefined
+  skillFile?: PromptCommand['skillFile']
 }): Command {
   return {
     type: 'prompt',
@@ -370,6 +374,7 @@ export function createSkillCommand({
     loadedFrom,
     hooks,
     skillRoot: baseDir,
+    ...(skillFile ? { skillFile } : {}),
     async getPromptForCommand(args, toolUseContext) {
       let finalContent = baseDir
         ? `Base directory for this skill: ${baseDir}\n\n${markdownContent}`
@@ -415,7 +420,11 @@ export function createSkillCommand({
                   ...appState.toolPermissionContext,
                   alwaysAllowRules: {
                     ...appState.toolPermissionContext.alwaysAllowRules,
-                    command: allowedTools,
+                    command: getCommandAllowedTools({
+                      name: skillName,
+                      source,
+                      allowedTools,
+                    }),
                   },
                 },
               }
@@ -497,6 +506,7 @@ async function loadSkillsFromSkillsDir(
             baseDir: skillDirPath,
             loadedFrom: 'skills',
             paths,
+            skillFile: { path: skillFilePath, frontmatter },
           }),
           filePath: skillFilePath,
         }
@@ -638,6 +648,7 @@ async function loadSkillsFromCommandsDir(
             baseDir: skillDirectory,
             loadedFrom: 'commands_DEPRECATED',
             paths: undefined,
+            skillFile: { path: filePath, frontmatter },
           }),
           filePath,
         })
@@ -681,6 +692,13 @@ export const getSkillDirCommands = memoize(
     const skillsLocked = isRestrictedToPluginOnly('skills')
     const projectSettingsEnabled =
       isSettingSourceEnabled('projectSettings') && !skillsLocked
+
+    // Safe mode: no custom skills or commands at all; bundled skills
+    // register separately.
+    if (isSafeMode()) {
+      logForDebugging('[safe-mode] Skipping skill and command dir discovery')
+      return []
+    }
 
     // --bare: skip auto-discovery (managed/user/project dir walks + legacy
     // commands-dir). Load ONLY explicit --add-dir paths. Bundled skills

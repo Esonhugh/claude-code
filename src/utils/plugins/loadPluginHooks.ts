@@ -43,6 +43,8 @@ function convertPluginHooksToMatchers(
     SubagentStop: [],
     PreCompact: [],
     PostCompact: [],
+    PreModelSwitch: [],
+    PostModelSwitch: [],
     PermissionRequest: [],
     Setup: [],
     TeammateIdle: [],
@@ -56,6 +58,8 @@ function convertPluginHooksToMatchers(
     InstructionsLoaded: [],
     CwdChanged: [],
     FileChanged: [],
+    DirectoryAdded: [],
+    MessageDisplay: [],
   }
 
   if (!plugin.hooksConfig) {
@@ -105,6 +109,8 @@ export const loadPluginHooks = memoize(async (): Promise<void> => {
     SubagentStop: [],
     PreCompact: [],
     PostCompact: [],
+    PreModelSwitch: [],
+    PostModelSwitch: [],
     PermissionRequest: [],
     Setup: [],
     TeammateIdle: [],
@@ -118,6 +124,8 @@ export const loadPluginHooks = memoize(async (): Promise<void> => {
     InstructionsLoaded: [],
     CwdChanged: [],
     FileChanged: [],
+    DirectoryAdded: [],
+    MessageDisplay: [],
   }
 
   // Process each enabled plugin

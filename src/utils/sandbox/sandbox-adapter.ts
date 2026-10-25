@@ -20,20 +20,27 @@ import {
   SandboxRuntimeConfigSchema,
   SandboxViolationStore,
 } from '@anthropic-ai/sandbox-runtime'
-import { rmSync, statSync } from 'fs'
+import { checkLinuxDependencies } from '@anthropic-ai/sandbox-runtime/dist/sandbox/linux-sandbox-utils.js'
+import { existsSync, rmSync, statSync } from 'fs'
 import { readFile } from 'fs/promises'
 import { memoize } from 'lodash-es'
-import { join, resolve, sep } from 'path'
+import { join, posix, resolve, sep } from 'path'
 import {
   getAdditionalDirectoriesForClaudeMd,
   getCwdState,
+  getInlinePlugins,
+  getInlinePluginsNoMcp,
   getOriginalCwd,
 } from '../../bootstrap/state.js'
 import { logForDebugging } from '../debug.js'
 import { expandPath } from '../path.js'
 import { getPlatform, type Platform } from '../platform.js'
 import { settingsChangeDetector } from '../settings/changeDetector.js'
-import { SETTING_SOURCES, type SettingSource } from '../settings/constants.js'
+import {
+  isSettingSourceEnabled,
+  SETTING_SOURCES,
+  type SettingSource,
+} from '../settings/constants.js'
 import { getManagedSettingsDropInDir } from '../settings/managedPath.js'
 import {
   getInitialSettings,
@@ -54,7 +61,10 @@ import { FILE_EDIT_TOOL_NAME } from 'src/tools/FileEditTool/constants.js'
 import { FILE_READ_TOOL_NAME } from 'src/tools/FileReadTool/prompt.js'
 import { WEB_FETCH_TOOL_NAME } from 'src/tools/WebFetchTool/prompt.js'
 import { errorMessage } from '../errors.js'
-import { getClaudeTempDir } from '../permissions/filesystem.js'
+import {
+  getClaudeTempDir,
+  getClaudeTempDirName,
+} from '../permissions/filesystem.js'
 import type { PermissionRuleValue } from '../permissions/PermissionRule.js'
 import { ripgrepCommand } from '../ripgrep.js'
 
@@ -156,6 +166,36 @@ export function shouldAllowManagedSandboxDomainsOnly(): boolean {
   )
 }
 
+// Sources the repo cannot write: settings that loosen the sandbox or hand it
+// credentials are only honored from these. Highest priority first.
+const TRUSTED_SANDBOX_SOURCES = [
+  'policySettings',
+  'flagSettings',
+  'userSettings',
+] as const
+
+function isTrustedSandboxSource(source: SettingSource): boolean {
+  return (TRUSTED_SANDBOX_SOURCES as readonly string[]).includes(source)
+}
+
+function trustedSandboxValue<T>(
+  pick: (sandbox: NonNullable<SettingsJson['sandbox']>) => T | undefined,
+): T | undefined {
+  for (const source of TRUSTED_SANDBOX_SOURCES.filter(isSettingSourceEnabled)) {
+    const sandbox = getSettingsForSource(source)?.sandbox
+    const value = sandbox ? pick(sandbox) : undefined
+    if (value !== undefined) return value
+  }
+  return undefined
+}
+
+function isUnsandboxedFallbackLocked(): boolean {
+  return (['policySettings', 'flagSettings'] as const).some(
+    source =>
+      getSettingsForSource(source)?.sandbox?.allowUnsandboxedCommands === false,
+  )
+}
+
 function shouldAllowManagedReadPathsOnly(): boolean {
   return (
     getSettingsForSource('policySettings')?.sandbox?.filesystem
@@ -195,8 +235,15 @@ export function convertToSandboxRuntimeConfig(
       }
     }
   } else {
-    for (const domain of settings.sandbox?.network?.allowedDomains || []) {
-      allowedDomains.push(domain)
+    // Under a strict allowlist the repo's own settings cannot extend it.
+    const strict = trustedSandboxValue(sb => sb.network?.strictAllowlist)
+    for (const source of SETTING_SOURCES.filter(isSettingSourceEnabled)) {
+      if (strict && (source === 'projectSettings' || source === 'localSettings')) {
+        continue
+      }
+      allowedDomains.push(
+        ...(getSettingsForSource(source)?.sandbox?.network?.allowedDomains ?? []),
+      )
     }
     for (const ruleString of permissions.allow || []) {
       const rule = permissionRuleValueFromString(ruleString)
@@ -218,6 +265,7 @@ export function convertToSandboxRuntimeConfig(
       deniedDomains.push(rule.ruleContent.substring('domain:'.length))
     }
   }
+  deniedDomains.push(...(settings.sandbox?.network?.deniedDomains ?? []))
 
   // Extract filesystem paths from Edit and Read rules
   // Always include current directory and Claude temp directory as writable
@@ -254,6 +302,11 @@ export function convertToSandboxRuntimeConfig(
     denyWrite.push(resolve(cwd, '.claude', 'skills'))
   }
 
+  // --plugin-dir code is reloaded and run outside the sandbox.
+  for (const dir of [...getInlinePlugins(), ...getInlinePluginsNoMcp()]) {
+    denyWrite.push(resolve(originalCwd, dir))
+  }
+
   // SECURITY: Git's is_git_directory() treats cwd as a bare repo if it has
   // HEAD + objects/ + refs/. An attacker planting these (plus a config with
   // core.fsmonitor) escapes the sandbox when Claude's unsandboxed git runs.
@@ -264,27 +317,48 @@ export function convertToSandboxRuntimeConfig(
   // So: if a file exists, denyWrite (ro-bind in place, no stub). If not, scrub
   // it post-command in scrubBareGitRepoFiles() — planted files are gone before
   // unsandboxed git runs; inside the command, git is itself sandboxed.
-  bareGitRepoScrubPaths.length = 0
+  // Outside an existing bare-repo layout, project folders named `hooks/` or
+  // `config/` stay writable and a planted bare repo is broken by scrubbing
+  // only the HEAD/objects/refs it added.
+  bareGitRepoScrubDirs.length = 0
   const bareGitRepoFiles = ['HEAD', 'objects', 'refs', 'hooks', 'config']
   for (const dir of cwd === originalCwd ? [originalCwd] : [originalCwd, cwd]) {
+    // eslint-disable-next-line custom-rules/no-sync-fs -- refreshConfig() must be sync
+    const isBareRepo = BARE_GIT_REPO_MARKERS.every(f => existsSync(resolve(dir, f)))
+    const planted: string[] = []
     for (const gitFile of bareGitRepoFiles) {
       const p = resolve(dir, gitFile)
+      let stat
       try {
         // eslint-disable-next-line custom-rules/no-sync-fs -- refreshConfig() must be sync
-        statSync(p)
-        denyWrite.push(p)
+        stat = statSync(p)
       } catch {
-        bareGitRepoScrubPaths.push(p)
+        if (isBareRepo || BARE_GIT_REPO_MARKERS.includes(gitFile)) {
+          planted.push(p)
+        }
+        continue
+      }
+      if (
+        isBareRepo ||
+        BARE_GIT_REPO_MARKERS.includes(gitFile) ||
+        (gitFile === 'config' && !stat.isDirectory())
+      ) {
+        denyWrite.push(p)
       }
     }
+    bareGitRepoScrubDirs.push({ dir, planted })
   }
 
   // If we detected a git worktree during initialize(), the main repo path is
   // cached in worktreeMainRepoPath. Git operations in a worktree need write
   // access to the main repo's .git directory for index.lock etc.
   // This is resolved once at init time (worktree status doesn't change mid-session).
+  // Only the shared .git is opened, and its hooks and config stay read-only
+  // because unsandboxed git runs them.
   if (worktreeMainRepoPath && worktreeMainRepoPath !== cwd) {
-    allowWrite.push(worktreeMainRepoPath)
+    const gitDir = join(worktreeMainRepoPath, '.git')
+    allowWrite.push(gitDir)
+    denyWrite.push(join(gitDir, 'hooks'), join(gitDir, 'config'))
   }
 
   // Include directories added via --add-dir CLI flag or /add-dir command.
@@ -298,10 +372,13 @@ export function convertToSandboxRuntimeConfig(
   ])
   allowWrite.push(...additionalDirs)
 
+  const trustedDenyRead: string[] = []
+  const repoAllowRead: string[] = []
+
   // Iterate through each settings source to resolve paths correctly
   // Path patterns like `/foo` are relative to the settings file directory,
   // so we need to know which source each rule came from
-  for (const source of SETTING_SOURCES) {
+  for (const source of SETTING_SOURCES.filter(isSettingSourceEnabled)) {
     const sourceSettings = getSettingsForSource(source)
 
     // Extract filesystem paths from permission rules
@@ -339,22 +416,78 @@ export function convertToSandboxRuntimeConfig(
       }
       for (const p of fs.denyRead || []) {
         denyRead.push(resolveSandboxFilesystemPath(p, source))
+        if (isTrustedSandboxSource(source)) {
+          trustedDenyRead.push(resolveSandboxFilesystemPath(p, source))
+        }
       }
       if (!shouldAllowManagedReadPathsOnly() || source === 'policySettings') {
         for (const p of fs.allowRead || []) {
-          allowRead.push(resolveSandboxFilesystemPath(p, source))
+          const path = resolveSandboxFilesystemPath(p, source)
+          if (isTrustedSandboxSource(source)) allowRead.push(path)
+          else repoAllowRead.push(path)
         }
       }
     }
   }
+  // Under a locked sandbox, the repo's allowRead cannot re-open a path that
+  // trusted settings deny, nor use globs or network paths to do so; carving
+  // out of the repo's own denyRead still works.
+  const overlaps = (a: string, b: string) =>
+    a === b || a.startsWith(b + sep) || b.startsWith(a + sep)
+  allowRead.push(
+    ...(isUnsandboxedFallbackLocked()
+      ? repoAllowRead.filter(
+          p =>
+            !/[*?[\]{}]/.test(p) &&
+            !p.startsWith('//') &&
+            !trustedDenyRead.some(d => overlaps(p, d)),
+        )
+      : repoAllowRead),
+  )
   // Ripgrep config for sandbox. User settings take priority; otherwise pass our rg.
   // In embedded mode (argv0='rg' dispatch), sandbox-runtime spawns with argv0 set.
+  // Project settings cannot swap the binary the sandbox runs.
   const { rgPath, rgArgs, argv0 } = ripgrepCommand()
-  const ripgrepConfig = settings.sandbox?.ripgrep ?? {
+  const ripgrepConfig = trustedSandboxValue(sb => sb.ripgrep) ?? {
     command: rgPath,
     args: rgArgs,
     argv0,
   }
+
+  // An admin who deployed filesystem restrictions must not have them switched
+  // off by a user-writable file.
+  const policySandbox = getSettingsForSource('policySettings')?.sandbox
+  const filesystemDisabled =
+    policySandbox?.filesystem !== undefined ||
+    policySandbox?.credentials?.files?.some(f => f.mode === 'deny')
+      ? policySandbox?.filesystem?.disabled
+      : trustedSandboxValue(sb => sb.filesystem?.disabled)
+
+  const credentialFiles: NonNullable<
+    NonNullable<SandboxRuntimeConfig['credentials']>['files']
+  > = []
+  const credentialEnvVars: NonNullable<
+    NonNullable<SandboxRuntimeConfig['credentials']>['envVars']
+  > = []
+  // The repo may add deny entries; mask entries (real values injected at the
+  // proxy) only come from trusted sources.
+  for (const source of SETTING_SOURCES.filter(isSettingSourceEnabled)) {
+    const trusted = isTrustedSandboxSource(source)
+    const credentials = getSettingsForSource(source)?.sandbox?.credentials
+    for (const file of credentials?.files ?? []) {
+      if (trusted || file.mode === 'deny') {
+        credentialFiles.push({
+          ...file,
+          path: resolveSandboxFilesystemPath(file.path, source),
+        })
+      }
+    }
+    credentialEnvVars.push(
+      ...(credentials?.envVars ?? []).filter(v => trusted || v.mode === 'deny'),
+    )
+  }
+  const hasCredentials =
+    credentialFiles.length > 0 || credentialEnvVars.length > 0
 
   return {
     network: {
@@ -363,20 +496,49 @@ export function convertToSandboxRuntimeConfig(
       allowUnixSockets: settings.sandbox?.network?.allowUnixSockets,
       allowAllUnixSockets: settings.sandbox?.network?.allowAllUnixSockets,
       allowLocalBinding: settings.sandbox?.network?.allowLocalBinding,
-      httpProxyPort: settings.sandbox?.network?.httpProxyPort,
-      socksProxyPort: settings.sandbox?.network?.socksProxyPort,
+      // The repo cannot route traffic around a managed deny list or a locked sandbox.
+      ...(policySandbox?.network?.deniedDomains?.length ||
+      isUnsandboxedFallbackLocked()
+        ? {
+            httpProxyPort: trustedSandboxValue(sb => sb.network?.httpProxyPort),
+            socksProxyPort: trustedSandboxValue(
+              sb => sb.network?.socksProxyPort,
+            ),
+          }
+        : {
+            httpProxyPort: settings.sandbox?.network?.httpProxyPort,
+            socksProxyPort: settings.sandbox?.network?.socksProxyPort,
+          }),
+      allowMachLookup: settings.sandbox?.network?.allowMachLookup,
+      strictAllowlist: trustedSandboxValue(sb => sb.network?.strictAllowlist),
+      tlsTerminate: trustedSandboxValue(sb => sb.network?.tlsTerminate),
     },
     filesystem: {
       denyRead,
       allowRead,
       allowWrite,
       denyWrite,
+      disabled: filesystemDisabled,
     },
+    ...(hasCredentials && {
+      credentials: {
+        files: credentialFiles,
+        envVars: credentialEnvVars,
+        allowPlaintextInject: trustedSandboxValue(
+          sb => sb.credentials?.allowPlaintextInject,
+        ),
+        awsPairs: trustedSandboxValue(sb => sb.credentials?.awsPairs),
+        sigv4: trustedSandboxValue(sb => sb.credentials?.sigv4),
+      },
+    }),
     ignoreViolations: settings.sandbox?.ignoreViolations,
     enableWeakerNestedSandbox: settings.sandbox?.enableWeakerNestedSandbox,
     enableWeakerNetworkIsolation:
       settings.sandbox?.enableWeakerNetworkIsolation,
+    allowAppleEvents: settings.sandbox?.allowAppleEvents,
     ripgrep: ripgrepConfig,
+    bwrapPath: policySandbox?.bwrapPath,
+    socatPath: policySandbox?.socatPath,
   }
 }
 
@@ -392,9 +554,14 @@ let settingsSubscriptionCleanup: (() => void) | undefined
 // undefined = not yet resolved; null = not a worktree or detection failed.
 let worktreeMainRepoPath: string | null | undefined
 
+// Git treats a folder holding all of these as a bare repo.
+const BARE_GIT_REPO_MARKERS = ['HEAD', 'objects', 'refs']
+
 // Bare-repo files at cwd that didn't exist at config time and should be
-// scrubbed if they appear after a sandboxed command. See anthropics/claude-code#29316.
-const bareGitRepoScrubPaths: string[] = []
+// scrubbed if they complete a bare-repo layout after a sandboxed command:
+// the missing markers, or hooks/config when the layout already existed.
+// See anthropics/claude-code#29316.
+const bareGitRepoScrubDirs: Array<{ dir: string; planted: string[] }> = []
 
 /**
  * Delete bare-repo files planted at cwd during a sandboxed command, before
@@ -402,13 +569,19 @@ const bareGitRepoScrubPaths: string[] = []
  * bareGitRepoFiles. anthropics/claude-code#29316.
  */
 function scrubBareGitRepoFiles(): void {
-  for (const p of bareGitRepoScrubPaths) {
-    try {
-      // eslint-disable-next-line custom-rules/no-sync-fs -- cleanupAfterCommand must be sync (Shell.ts:367)
-      rmSync(p, { recursive: true })
-      logForDebugging(`[Sandbox] scrubbed planted bare-repo file: ${p}`)
-    } catch {
-      // ENOENT is the expected common case — nothing was planted
+  for (const { dir, planted } of bareGitRepoScrubDirs) {
+    // eslint-disable-next-line custom-rules/no-sync-fs -- cleanupAfterCommand must be sync (Shell.ts:367)
+    if (!BARE_GIT_REPO_MARKERS.every(f => existsSync(resolve(dir, f)))) {
+      continue
+    }
+    for (const p of planted) {
+      try {
+        // eslint-disable-next-line custom-rules/no-sync-fs -- cleanupAfterCommand must be sync (Shell.ts:367)
+        rmSync(p, { recursive: true })
+        logForDebugging(`[Sandbox] scrubbed planted bare-repo file: ${p}`)
+      } catch {
+        // ENOENT: this one was not planted
+      }
     }
   }
 }
@@ -450,10 +623,26 @@ async function detectWorktreeMainRepoPath(cwd: string): Promise<string | null> {
  */
 const checkDependencies = memoize((): SandboxDependencyCheck => {
   const { rgPath, rgArgs } = ripgrepCommand()
-  return BaseSandboxManager.checkDependencies({
+  const result = BaseSandboxManager.checkDependencies({
     command: rgPath,
     args: rgArgs,
   })
+  const { bwrapPath, socatPath } =
+    getSettingsForSource('policySettings')?.sandbox ?? {}
+  const platform = getPlatform()
+  if ((!bwrapPath && !socatPath) || (platform !== 'linux' && platform !== 'wsl')) {
+    return result
+  }
+  // The runtime only reads binary overrides from an initialized config, so
+  // swap its PATH-based bwrap/socat findings for ones against the overrides.
+  const onPath = checkLinuxDependencies({})
+  return {
+    errors: [
+      ...result.errors.filter(e => !onPath.errors.includes(e)),
+      ...checkLinuxDependencies({ bwrapPath, socatPath }).errors,
+    ],
+    warnings: result.warnings,
+  }
 })
 
 function getSandboxEnabledSetting(): boolean {
@@ -530,6 +719,12 @@ function isPlatformInEnabledList(): boolean {
  * This checks the user's enabled setting, platform support, and enabledPlatforms restriction
  */
 function isSandboxingEnabled(): boolean {
+  // Settings first: the dependency probe spawns processes, so skip it for
+  // the default (sandbox off) case.
+  if (!getSandboxEnabledSetting()) {
+    return false
+  }
+
   if (!isSupportedPlatform()) {
     return false
   }
@@ -543,7 +738,7 @@ function isSandboxingEnabled(): boolean {
     return false
   }
 
-  return getSandboxEnabledSetting()
+  return true
 }
 
 /**
@@ -695,7 +890,21 @@ async function setSandboxSettings(options: {
  */
 function getExcludedCommands(): string[] {
   const settings = getSettings_DEPRECATED()
-  return settings?.sandbox?.excludedCommands ?? []
+  const excluded = settings?.sandbox?.excludedCommands ?? []
+  // Under an admin-locked sandbox the repo's own settings cannot exempt commands.
+  const locked =
+    shouldAllowManagedSandboxDomainsOnly() || isUnsandboxedFallbackLocked()
+  if (!locked) {
+    return excluded
+  }
+  const trusted = new Set(
+    (['userSettings', 'flagSettings', 'policySettings'] as const)
+      .filter(isSettingSourceEnabled)
+      .flatMap(
+        source => getSettingsForSource(source)?.sandbox?.excludedCommands ?? [],
+      ),
+  )
+  return excluded.filter(command => trusted.has(command))
 }
 
 /**
@@ -716,6 +925,12 @@ async function wrapWithSandbox(
     }
   }
 
+  // sandbox-runtime sets TMPDIR inside the sandbox from CLAUDE_TMPDIR (default
+  // /tmp/claude); point it at the per-user dir Shell.ts creates and allows.
+  process.env.CLAUDE_TMPDIR = posix.join(
+    process.env.CLAUDE_CODE_TMPDIR || '/tmp',
+    getClaudeTempDirName(),
+  )
   return BaseSandboxManager.wrapWithSandbox(
     command,
     binShell,
@@ -810,7 +1025,7 @@ async function reset(): Promise<void> {
   settingsSubscriptionCleanup?.()
   settingsSubscriptionCleanup = undefined
   worktreeMainRepoPath = undefined
-  bareGitRepoScrubPaths.length = 0
+  bareGitRepoScrubDirs.length = 0
 
   // Clear memoized caches
   checkDependencies.cache.clear?.()

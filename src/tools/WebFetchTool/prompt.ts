@@ -1,23 +1,11 @@
 export const WEB_FETCH_TOOL_NAME = 'WebFetch'
 
-export const DESCRIPTION = `
-- Fetches content from a specified URL and processes it using an AI model
-- Takes a URL and a prompt as input
-- Fetches the URL content, converts HTML to markdown
-- Processes the content with the prompt using a small, fast model
-- Returns the model's response about the content
-- Use this tool when you need to retrieve and analyze web content
+export const DESCRIPTION = `Fetches a URL, converts the page to markdown, and answers \`prompt\` against it using a small fast model.
 
-Usage notes:
-  - IMPORTANT: If an MCP-provided web fetch tool is available, prefer using that tool instead of this one, as it may have fewer restrictions.
-  - The URL must be a fully-formed valid URL
-  - HTTP URLs will be automatically upgraded to HTTPS
-  - The prompt should describe what information you want to extract from the page
-  - This tool is read-only and does not modify any files
-  - Results may be summarized if the content is very large
-  - Includes a self-cleaning 15-minute cache for faster responses when repeatedly accessing the same URL
-  - When a URL redirects to a different host, the tool will inform you and provide the redirect URL in a special format. You should then make a new WebFetch request with the redirect URL to fetch the content.
-  - For GitHub URLs, prefer using the gh CLI via Bash instead (e.g., gh pr view, gh issue view, gh api).
+- Fails on authenticated/private URLs (Google Docs, Confluence, Jira, GitHub) — use an authenticated MCP tool, or \`gh\` via Bash for GitHub, instead.
+- Fails on localhost and other hostnames without a dot; for a local server, use curl via Bash.
+- HTTP is upgraded to HTTPS. Cross-host redirects are returned to you rather than followed; call again with the redirect URL.
+- Responses are cached for 15 minutes per URL.
 `
 
 export function makeSecondaryModelPrompt(

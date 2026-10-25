@@ -3,12 +3,13 @@ import { existsSync, readFileSync, rmSync } from 'node:fs'
 import test, { beforeEach } from 'node:test'
 import type { UUID } from 'node:crypto'
 
-import type { ToolUseContext } from '../../Tool.js'
+import { getEmptyToolPermissionContext, type ToolUseContext } from '../../Tool.js'
 import type { CanUseToolFn } from '../../hooks/useCanUseTool.js'
 import type { AppState } from '../../state/AppStateStore.js'
 import type { AssistantMessage } from '../../types/message.js'
 import { runCleanupFunctions } from '../../utils/cleanupRegistry.js'
 import { FileStateCache } from '../../utils/fileStateCache.js'
+import { hasPermissionsToUseTool } from '../../utils/permissions/permissions.js'
 import { FakePtyDriver } from '../../utils/pty/__fixtures__/FakePtyDriver.js'
 import { PtySessionManager } from '../../utils/pty/PtySessionManager.js'
 import { resolveTerminalCommand } from '../../utils/shell/resolveDefaultShell.js'
@@ -19,6 +20,7 @@ import {
 import { isDeferredTool, formatDeferredToolLines } from '../ToolSearchTool/prompt.js'
 import { capturePaneActionSchema } from './actionSchemas.js'
 import {
+  applyTerminalKeystrokes,
   getTerminalManager,
   refreshTerminalTaskPreview,
   TerminalTool,
@@ -614,7 +616,7 @@ test('records the resolved default shell in task state for new-session', async (
   )
 })
 
-test('prompts for permission on new-session but not on display-message or list-panes for an approved pane', async () => {
+test('call does not ask again after the pipeline approved the action', async () => {
   const permissionCalls: string[] = []
   const canUseTool: CanUseToolFn = async (_tool, input) => {
     permissionCalls.push(String(input.action ?? 'new-session'))
@@ -641,20 +643,177 @@ test('prompts for permission on new-session but not on display-message or list-p
     TEST_ASSISTANT_MESSAGE,
   )
   await TerminalTool.call(
-    { action: 'list-panes' },
-    createContext(),
-    canUseTool,
-    TEST_ASSISTANT_MESSAGE,
-  )
-
-  await TerminalTool.call(
     { action: 'kill-pane', target },
     createContext(),
     allowPermission,
     TEST_ASSISTANT_MESSAGE,
   )
 
-  assert.deepEqual(permissionCalls, ['new-session'])
+  assert.deepEqual(permissionCalls, [])
+})
+
+function createPermissionContext(
+  permission: Partial<AppState['toolPermissionContext']>,
+): ToolUseContext {
+  const appState = {
+    toolPermissionContext: {
+      ...getEmptyToolPermissionContext(),
+      ...permission,
+    },
+    tasks: {},
+  }
+  return createContext({ getAppState: () => appState as AppState })
+}
+
+async function checkTerminal(
+  input: Record<string, unknown>,
+  permission: Partial<AppState['toolPermissionContext']>,
+) {
+  return hasPermissionsToUseTool(
+    TerminalTool,
+    input,
+    createPermissionContext(permission),
+    TEST_ASSISTANT_MESSAGE,
+    'terminal-permission-test',
+  )
+}
+
+const TOUCH_KEYS = {
+  action: 'send-keys' as const,
+  target: 'sess-1',
+  text: 'touch x',
+  enter: true,
+}
+
+test('default mode asks before new-session and before send-keys runs a command', async () => {
+  assert.equal(
+    (await checkTerminal({ action: 'new-session' }, { mode: 'default' })).behavior,
+    'ask',
+  )
+  assert.equal(
+    (await checkTerminal({ action: 'new-session', command: 'touch', args: ['x'] }, { mode: 'default' })).behavior,
+    'ask',
+  )
+  assert.equal((await checkTerminal(TOUCH_KEYS, { mode: 'default' })).behavior, 'ask')
+})
+
+test('Bash deny rules apply to commands sent through Terminal', async () => {
+  const prefixDeny = { alwaysDenyRules: { session: ['Bash(touch:*)'] } }
+  assert.equal((await checkTerminal(TOUCH_KEYS, prefixDeny)).behavior, 'deny')
+  assert.equal(
+    (await checkTerminal({ action: 'new-session', command: 'touch', args: ['x'] }, prefixDeny)).behavior,
+    'deny',
+  )
+  assert.equal(
+    (await checkTerminal(TOUCH_KEYS, { mode: 'bypassPermissions', ...prefixDeny })).behavior,
+    'deny',
+  )
+  assert.equal(
+    (await checkTerminal({ ...TOUCH_KEYS, text: 'ls' }, { alwaysDenyRules: { session: ['Bash'] } })).behavior,
+    'deny',
+  )
+  assert.equal(
+    (await checkTerminal({ action: 'list-panes' }, { alwaysDenyRules: { session: ['Terminal'] } })).behavior,
+    'deny',
+  )
+})
+
+test('dontAsk denies Terminal commands instead of running them', async () => {
+  assert.equal((await checkTerminal(TOUCH_KEYS, { mode: 'dontAsk' })).behavior, 'deny')
+})
+
+test('bypassPermissions allows Terminal commands', async () => {
+  const result = await checkTerminal(TOUCH_KEYS, { mode: 'bypassPermissions' })
+  assert.equal(result.behavior, 'allow')
+  assert.deepEqual(result.behavior === 'allow' && result.updatedInput, TOUCH_KEYS)
+})
+
+test('read-only and session-control Terminal actions do not ask', async () => {
+  for (const input of [
+    { action: 'list-panes' },
+    { action: 'capture-pane', target: 'sess-1' },
+    { action: 'display-message', target: 'sess-1' },
+    { action: 'resize-pane', target: 'sess-1', cols: 80, rows: 24 },
+    { action: 'send-signal', target: 'sess-1', signal: 'SIGINT' },
+    { action: 'kill-pane', target: 'sess-1' },
+    { action: 'send-keys', target: 'sess-1', key: 'ENTER' },
+  ]) {
+    assert.equal((await checkTerminal(input, { mode: 'default' })).behavior, 'allow', input.action)
+  }
+})
+
+test('send-keys auto classifier input is the submitted command line', () => {
+  assert.equal(
+    TerminalTool.toAutoClassifierInput(TOUCH_KEYS),
+    'send-keys sess-1 command="touch x"',
+  )
+})
+
+test('applyTerminalKeystrokes replays line editing keys', () => {
+  assert.deepEqual(applyTerminalKeystrokes('tou', 'ch x\r'), { line: '', submitted: ['touch x'] })
+  assert.deepEqual(applyTerminalKeystrokes('rm -rf /', '\x15ls'), { line: 'ls', submitted: [] })
+  assert.deepEqual(applyTerminalKeystrokes('rm', '\x03'), { line: '', submitted: [] })
+  assert.deepEqual(applyTerminalKeystrokes('lsx', '\x7f\x1b[A\r'), { line: '', submitted: ['ls'] })
+  assert.deepEqual(applyTerminalKeystrokes('', 'a\nb'), { line: 'b', submitted: ['a'] })
+})
+
+async function openPermissionSession(permission: Partial<AppState['toolPermissionContext']>) {
+  const context = createPermissionContext(permission)
+  const opened = await TerminalTool.call(
+    { action: 'new-session', cols: 80, rows: 24 },
+    context,
+    allowPermission,
+    TEST_ASSISTANT_MESSAGE,
+  )
+  const target = String((opened.data as { target: string }).target)
+  // Runs send-keys only when the permission pipeline allows it, like tool execution.
+  const send = async (keys: Record<string, unknown>) => {
+    const input = { action: 'send-keys' as const, target, ...keys }
+    const decision = await hasPermissionsToUseTool(
+      TerminalTool, input, context, TEST_ASSISTANT_MESSAGE, 'terminal-send-keys-test',
+    )
+    if (decision.behavior === 'allow') {
+      await TerminalTool.call(input, context, allowPermission, TEST_ASSISTANT_MESSAGE)
+    }
+    return decision.behavior
+  }
+  return { target, send }
+}
+
+test('send-keys checks the accumulated line, so a split command still hits deny rules', async () => {
+  const deny = { alwaysDenyRules: { session: ['Bash(touch:*)'] } }
+  const typedLater = await openPermissionSession(deny)
+  assert.equal(await typedLater.send({ text: 'tou' }), 'allow')
+  assert.equal(await typedLater.send({ text: 'ch x' }), 'deny')
+  assert.equal(await typedLater.send({ text: 'ch x', enter: true }), 'deny')
+
+  const bypass = await openPermissionSession({ mode: 'bypassPermissions', ...deny })
+  assert.equal(await bypass.send({ text: 'tou' }), 'allow')
+  assert.equal(await bypass.send({ text: 'ch x', enter: true }), 'deny')
+})
+
+test('typing a line is not a command until Enter submits it', async () => {
+  const session = await openPermissionSession({ mode: 'default' })
+  assert.equal(await session.send({ text: 'tou' }), 'allow')
+  assert.equal(await session.send({ text: 'ch x' }), 'allow')
+  assert.equal(
+    TerminalTool.toAutoClassifierInput({ action: 'send-keys', target: session.target, enter: true }),
+    `send-keys ${session.target} command="touch x"`,
+  )
+  assert.equal(await session.send({ key: 'ENTER' }), 'ask')
+  assert.equal(await session.send({ text: 'touch x', enter: true }), 'ask')
+})
+
+test('control keys do not trigger a check and Ctrl-C clears the pending line', async () => {
+  const session = await openPermissionSession({ mode: 'default' })
+  assert.equal(await session.send({ text: 'touch x' }), 'allow')
+  assert.equal(await session.send({ key: 'CTRL_C' }), 'allow')
+  assert.equal(await session.send({ text: 'ls', enter: true }), 'allow')
+
+  const denied = await openPermissionSession({ alwaysDenyRules: { session: ['Bash'] } })
+  for (const key of ['UP', 'ESC', 'TAB', 'CTRL_C', 'CTRL_L', 'ENTER']) {
+    assert.equal(await denied.send({ key }), 'allow', key)
+  }
 })
 
 test('refreshes task preview on display-message for large terminal redraw output', async () => {

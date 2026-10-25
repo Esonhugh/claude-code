@@ -16,6 +16,7 @@ import {
   type OperatorContext,
 } from '../vim/operators.js'
 import { type TransitionContext, transition } from '../vim/transitions.js'
+import { transitionVisual, type VisualContext } from '../vim/visual.js'
 import {
   createInitialPersistentState,
   createInitialVimState,
@@ -34,6 +35,7 @@ type UseVimInputProps = Omit<UseTextInputProps, 'inputFilter'> & {
 export function useVimInput(props: UseVimInputProps): VimInputState {
   const vimStateRef = React.useRef<VimState>(createInitialVimState())
   const [mode, setMode] = useState<VimMode>('INSERT')
+  const [visualAnchor, setVisualAnchor] = useState<number | null>(null)
 
   const persistentRef = React.useRef<PersistentState>(
     createInitialPersistentState(),
@@ -86,10 +88,34 @@ export function useVimInput(props: UseVimInputProps): VimInputState {
       }
       vimStateRef.current = { mode: 'INSERT', insertedText: '' }
       setMode('INSERT')
+      setVisualAnchor(null)
       onModeChange?.('INSERT')
     },
     [textInput, onModeChange],
   )
+
+  const setVisualMode = useCallback(
+    (anchor: number, linewise: boolean): void => {
+      vimStateRef.current = {
+        mode: 'VISUAL',
+        linewise,
+        anchor,
+        command: { type: 'idle' },
+      }
+      const visualMode = linewise ? 'VISUAL LINE' : 'VISUAL'
+      setMode(visualMode)
+      setVisualAnchor(anchor)
+      onModeChange?.(visualMode)
+    },
+    [onModeChange],
+  )
+
+  const exitVisualMode = useCallback((): void => {
+    vimStateRef.current = { mode: 'NORMAL', command: { type: 'idle' } }
+    setMode('NORMAL')
+    setVisualAnchor(null)
+    onModeChange?.('NORMAL')
+  }, [onModeChange])
 
   const switchToNormalMode = useCallback((): void => {
     const current = vimStateRef.current
@@ -215,6 +241,8 @@ export function useVimInput(props: UseVimInputProps): VimInputState {
       ...createOperatorContext(cursor, false),
       onUndo: props.onUndo,
       onDotRepeat: replayLastChange,
+      enterVisual: linewise =>
+        setVisualMode(liveDraftRef.current.cursor, linewise),
     }
     const result = transition(state.command, input, ctx)
     result.execute?.()
@@ -223,6 +251,27 @@ export function useVimInput(props: UseVimInputProps): VimInputState {
         vimStateRef.current = { mode: 'NORMAL', command: result.next }
       } else if (result.execute) {
         vimStateRef.current = { mode: 'NORMAL', command: { type: 'idle' } }
+      }
+    }
+  }
+
+  function executeVisualInput(input: string, cursor: Cursor): void {
+    const state = vimStateRef.current
+    if (state.mode !== 'VISUAL') return
+    const ctx: VisualContext = {
+      ...createOperatorContext(cursor, false),
+      anchor: state.anchor,
+      linewise: state.linewise,
+      exitVisual: exitVisualMode,
+      setVisual: setVisualMode,
+    }
+    const result = transitionVisual(state.command, input, ctx)
+    result.execute?.()
+    const current = vimStateRef.current
+    if (current.mode === 'VISUAL' && (result.next || result.execute)) {
+      vimStateRef.current = {
+        ...current,
+        command: result.next ?? { type: 'idle' },
       }
     }
   }
@@ -259,6 +308,11 @@ export function useVimInput(props: UseVimInputProps): VimInputState {
     const cursor = readCursor()
 
     if (key.ctrl || (key.meta && !key.escape)) {
+      // Like Vim, a control key ends the selection instead of editing it.
+      if (state.mode === 'VISUAL') {
+        exitVisualMode()
+        return
+      }
       textInput.onInput(input, key)
       return
     }
@@ -274,6 +328,29 @@ export function useVimInput(props: UseVimInputProps): VimInputState {
     // Escape in NORMAL mode cancels any pending command (replace, operator, etc.)
     if (key.escape && state.mode === 'NORMAL') {
       vimStateRef.current = { mode: 'NORMAL', command: { type: 'idle' } }
+      return
+    }
+
+    if (state.mode === 'VISUAL') {
+      if (key.escape) {
+        if (state.command.type === 'idle') exitVisualMode()
+        else vimStateRef.current = { ...state, command: { type: 'idle' } }
+        return
+      }
+      const expectsMotion =
+        state.command.type === 'idle' || state.command.type === 'count'
+      let visualInput = input
+      if (key.leftArrow) visualInput = expectsMotion ? 'h' : ''
+      else if (key.rightArrow) visualInput = expectsMotion ? 'l' : ''
+      else if (key.upArrow) visualInput = expectsMotion ? 'k' : ''
+      else if (key.downArrow) visualInput = expectsMotion ? 'j' : ''
+      else if (key.return) visualInput = expectsMotion ? 'j' : '\n'
+      else if (key.backspace) visualInput = expectsMotion ? 'h' : ''
+      else if (key.delete) {
+        visualInput = expectsMotion && state.command.type !== 'count' ? 'x' : ''
+      }
+      if ([...visualInput].length > 1) return
+      executeVisualInput(visualInput, cursor)
       return
     }
 
@@ -354,13 +431,17 @@ export function useVimInput(props: UseVimInputProps): VimInputState {
   }
 
   const setModeExternal = useCallback(
-    (newMode: VimMode) => {
+    (requestedMode: VimMode) => {
+      // A selection cannot be restored from the mode name alone (it has no
+      // anchor), so an external VISUAL request lands in NORMAL.
+      const newMode = requestedMode === 'INSERT' ? 'INSERT' : 'NORMAL'
       if (newMode === 'INSERT') {
         vimStateRef.current = { mode: 'INSERT', insertedText: '' }
       } else {
         vimStateRef.current = { mode: 'NORMAL', command: { type: 'idle' } }
       }
       setMode(newMode)
+      setVisualAnchor(null)
       onModeChange?.(newMode)
     },
     [onModeChange],
@@ -371,5 +452,6 @@ export function useVimInput(props: UseVimInputProps): VimInputState {
     onInput: handleVimInput,
     mode,
     setMode: setModeExternal,
+    visualAnchor,
   }
 }

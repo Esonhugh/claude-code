@@ -32,6 +32,8 @@ const cronTools = feature('AGENT_TRIGGERS')
       require('./tools/ScheduleCronTool/CronCreateTool.js').CronCreateTool,
       require('./tools/ScheduleCronTool/CronDeleteTool.js').CronDeleteTool,
       require('./tools/ScheduleCronTool/CronListTool.js').CronListTool,
+      require('./tools/ScheduleWakeupTool/ScheduleWakeupTool.js')
+        .ScheduleWakeupTool,
     ]
   : []
 const RemoteTriggerTool = feature('AGENT_TRIGGERS_REMOTE')
@@ -89,6 +91,7 @@ import { TaskUpdateTool } from './tools/TaskUpdateTool/TaskUpdateTool.js'
 import { TaskListTool } from './tools/TaskListTool/TaskListTool.js'
 import { SetGoalTool } from './tools/SetGoalTool/SetGoalTool.js'
 import { ClearGoalTool } from './tools/ClearGoalTool/ClearGoalTool.js'
+import { SearchMemoryTool } from './tools/SearchMemoryTool/SearchMemoryTool.js'
 import uniqBy from 'lodash-es/uniqBy.js'
 import { isToolSearchEnabledOptimistic } from './utils/toolSearch.js'
 import { isTodoV2Enabled } from './utils/tasks.js'
@@ -134,10 +137,7 @@ const ListAgentsTool = feature('UDS_INBOX')
   : null
 function getWorkflowTools(): Tool[] {
   require('./tools/WorkflowTool/bundled/index.js').initBundledWorkflows()
-  return [
-    require('./tools/WorkflowTool/WorkflowTool.js').WorkflowTool,
-    require('./tools/WorkflowTool/WorkflowFacadeTool.js').WorkflowFacadeTool,
-  ]
+  return [require('./tools/WorkflowTool/WorkflowFacadeTool.js').WorkflowFacadeTool]
 }
 /* eslint-enable custom-rules/no-process-env-top-level, @typescript-eslint/no-require-imports */
 import type { ToolPermissionContext } from './Tool.js'
@@ -224,6 +224,7 @@ export function getAllBaseTools(
     WebSearchTool,
     SetGoalTool,
     ClearGoalTool,
+    SearchMemoryTool,
     TaskStopTool,
     AskUserQuestionTool,
     SkillTool,

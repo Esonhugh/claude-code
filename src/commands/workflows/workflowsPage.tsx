@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Byline } from '../../components/design-system/Byline.js'
 import { Dialog } from '../../components/design-system/Dialog.js'
 import { KeyboardShortcutHint } from '../../components/design-system/KeyboardShortcutHint.js'
+import { SaveDynamicWorkflowDialog } from '../../components/tasks/SaveDynamicWorkflowDialog.js'
 import { WorkflowDetailDialog } from '../../components/tasks/WorkflowDetailDialog.js'
 import { useRegisterOverlay } from '../../context/overlayContext.js'
 import { Box, Text } from '../../ink.js'
@@ -15,6 +16,7 @@ import {
   skipWorkflowAgent,
 } from '../../tasks/LocalWorkflowTask/LocalWorkflowTask.js'
 import type { TaskState } from '../../tasks/types.js'
+import { defaultDynamicWorkflowName } from '../../tools/WorkflowTool/saveDynamicWorkflow.js'
 import {
   listWorkflowRunSessions,
   type WorkflowRunSession,
@@ -43,7 +45,7 @@ type Props = {
   onComplete: LocalJSXCommandOnDone
 }
 
-type ViewState = { mode: 'list' } | { mode: 'detail'; taskId: string }
+type ViewState = { mode: 'list' } | { mode: 'detail' | 'save'; taskId: string }
 
 export async function call(
   onDone: LocalJSXCommandOnDone,
@@ -138,7 +140,7 @@ export function WorkflowsPage({ onComplete }: Props): React.ReactNode {
       setSelectedIndex(workflowItems.length - 1)
     }
     if (
-      viewState.mode === 'detail' &&
+      viewState.mode !== 'list' &&
       persistedLoaded &&
       !workflowItems.some(item => item.id === viewState.taskId)
     ) {
@@ -153,8 +155,15 @@ export function WorkflowsPage({ onComplete }: Props): React.ReactNode {
     if (e.key === 'x' && selected?.source === 'live' && selected.status === 'running') {
       e.preventDefault()
       killWorkflowTask(selected.id, setAppState)
+    } else if (e.key === 's' && selected?.task.runScriptSnapshot) {
+      e.preventDefault()
+      setViewState({ mode: 'save', taskId: selected.id })
     }
   }, [viewState.mode, workflowItems, selectedIndex, setAppState])
+
+  const onSaved = useCallback((message: string) => {
+    onComplete(message, { display: 'system' })
+  }, [onComplete])
 
   useKeybindings(
     {
@@ -172,10 +181,23 @@ export function WorkflowsPage({ onComplete }: Props): React.ReactNode {
     { context: 'Confirmation', isActive: viewState.mode === 'list' },
   )
 
+  if (viewState.mode === 'save') {
+    const task = workflowItems.find(candidate => candidate.id === viewState.taskId)?.task
+    if (task?.runScriptSnapshot) {
+      return (
+        <SaveDynamicWorkflowDialog
+          script={task.runScriptSnapshot}
+          defaultName={defaultDynamicWorkflowName(task)}
+          onDone={message => (message ? onSaved(message) : setViewState({ mode: 'list' }))}
+        />
+      )
+    }
+  }
+
   if (viewState.mode === 'detail') {
     const item = workflowItems.find(candidate => candidate.id === viewState.taskId)
     if (item?.source === 'persisted') {
-      return <WorkflowDetailDialog workflow={item.task} onBack={goBackToList} />
+      return <WorkflowDetailDialog workflow={item.task} onBack={goBackToList} onSaved={onSaved} />
     }
     const task = item?.task
     if (task) {
@@ -203,6 +225,7 @@ export function WorkflowsPage({ onComplete }: Props): React.ReactNode {
               : undefined
           }
           onBack={goBackToList}
+          onSaved={onSaved}
         />
       )
     }
@@ -232,6 +255,9 @@ export function WorkflowsPage({ onComplete }: Props): React.ReactNode {
             {workflowItems[selectedIndex]?.source === 'live' &&
               workflowItems[selectedIndex]?.status === 'running' && (
               <KeyboardShortcutHint shortcut="x" action="stop" />
+            )}
+            {workflowItems[selectedIndex]?.task.runScriptSnapshot && (
+              <KeyboardShortcutHint shortcut="s" action="save" />
             )}
             <KeyboardShortcutHint shortcut="escape" action="close" />
           </Byline>

@@ -2,6 +2,7 @@ import type { TextBlockParam } from '@anthropic-ai/sdk/resources/index.mjs'
 import * as React from 'react'
 import { BLACK_CIRCLE } from '../../constants/figures.js'
 import { Box, Text, type TextProps } from '../../ink.js'
+import { MONITOR_EVENT_TAG } from '../../tools/MonitorTool/monitorEvents.js'
 import { extractTag } from '../../utils/messages.js'
 
 type Props = {
@@ -31,11 +32,20 @@ export function UserAgentNotificationMessage({
 
   const status = extractTag(text, 'status')
   const color = getStatusColor(status)
+  // Monitor events lead with the first output line, like official 2.1.303.
+  const monitorDescription = summary.match(/^Monitor event: "(.*)"$/s)?.[1]
+  const firstEventLine = extractTag(text, MONITOR_EVENT_TAG)
+    ?.split('\n')
+    .find(line => line.trim())
+  const label =
+    monitorDescription !== undefined && firstEventLine
+      ? `Monitor event: ${firstEventLine} · ${monitorDescription}`
+      : summary
 
   return (
     <Box marginTop={addMargin ? 1 : 0}>
       <Text>
-        <Text color={color}>{BLACK_CIRCLE}</Text> {summary}
+        <Text color={color}>{BLACK_CIRCLE}</Text> {label}
       </Text>
     </Box>
   )

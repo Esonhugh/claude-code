@@ -2,6 +2,8 @@ import * as React from 'react'
 import { useLayoutEffect, useRef, useState } from 'react'
 import { Box, Text } from '../../ink.js'
 import { Dialog } from '../../components/design-system/Dialog.js'
+import { defaultDynamicWorkflowName } from '../../tools/WorkflowTool/saveDynamicWorkflow.js'
+import { SaveDynamicWorkflowDialog } from './SaveDynamicWorkflowDialog.js'
 import { useRegisterOverlay } from '../../context/overlayContext.js'
 import { useTerminalSize } from '../../hooks/useTerminalSize.js'
 import instances from '../../ink/instances.js'
@@ -32,6 +34,8 @@ type Props = {
   onSkipAgent?: (agentId: string) => void
   onRetryAgent?: (agentId: string) => void
   onPause?: () => void
+  /** Closes the dialog with the "Dynamic workflow saved" message; enables the s key. */
+  onSaved?: (message: string) => void
 }
 
 type Level = 'phases' | 'agents' | 'agent'
@@ -138,6 +142,7 @@ export function WorkflowDetailDialog({
   onSkipAgent,
   onRetryAgent,
   onPause,
+  onSaved,
 }: Props): React.JSX.Element {
   useRegisterOverlay('workflow-detail-dialog')
   const close = onBack ?? (() => undefined)
@@ -151,6 +156,7 @@ export function WorkflowDetailDialog({
   }
 
   const [level, setLevel] = useState<Level>('phases')
+  const [saving, setSaving] = useState(false)
   const [selectedPhase, setSelectedPhase] = useState(0)
   const [selectedAgent, setSelectedAgent] = useState(0)
   const [detailScroll, setDetailScroll] = useState(0)
@@ -205,6 +211,7 @@ export function WorkflowDetailDialog({
     else if (level === 'agent' && agentPane === 'left') { setAgentPane('right') }
   }
 
+  const canSave = Boolean(workflow.runScriptSnapshot && onSaved)
   const handleKeyDown = (e: { key: string; ctrl?: boolean; meta?: boolean; preventDefault: () => void }) => {
     if (e.ctrl || e.meta) return
     const k = e.key
@@ -240,6 +247,7 @@ export function WorkflowDetailDialog({
     else if (k === 'x' && isRunning && level === 'phases' && onKill) { e.preventDefault(); onKill() }
     else if (k === 'r' && canControlCurrentAgent && currentAgentId && level !== 'phases' && onRetryAgent) { e.preventDefault(); onRetryAgent(currentAgentId) }
     else if (k === 'p' && isRunning && onPause) { e.preventDefault(); onPause() }
+    else if (k === 's' && canSave) { e.preventDefault(); setSaving(true) }
     else if (k === ' ') { e.preventDefault(); close() }
   }
 
@@ -401,6 +409,17 @@ export function WorkflowDetailDialog({
   }
   if (canControlCurrentAgent && currentAgentId && level !== 'phases') hints.push('x stop')
   if (isRunning && level === 'phases' && onKill) hints.push('x stop workflow')
+  if (canSave) hints.push('s save')
+
+  if (saving && workflow.runScriptSnapshot && onSaved) {
+    return (
+      <SaveDynamicWorkflowDialog
+        script={workflow.runScriptSnapshot}
+        defaultName={defaultDynamicWorkflowName(workflow)}
+        onDone={message => (message ? onSaved(message) : setSaving(false))}
+      />
+    )
+  }
 
   return (
     <Box flexDirection="column" tabIndex={0} autoFocus onKeyDown={handleKeyDown}>

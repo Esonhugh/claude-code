@@ -33,7 +33,15 @@ import {
 import { getPlatform } from './platform.js'
 import { getRipgrepStatus } from './ripgrep.js'
 import { SandboxManager } from './sandbox/sandbox-adapter.js'
+import {
+  getEnabledSettingSources,
+  getSettingSourceDisplayNameLowercase,
+} from './settings/constants.js'
 import { getManagedFilePath } from './settings/managedPath.js'
+import {
+  getSettingsFilePathForSource,
+  getSettingsForSource,
+} from './settings/settings.js'
 import { CUSTOMIZATION_SURFACES } from './settings/types.js'
 import {
   findClaudeAlias,
@@ -515,6 +523,48 @@ export function detectLinuxGlobPatternWarnings(): Array<{
   return warnings
 }
 
+export function detectManagedSandboxIgnoredWarnings(): Array<{
+  issue: string
+  fix: string
+}> {
+  const policy = getSettingsForSource('policySettings')?.sandbox
+  const checks = [
+    {
+      key: 'sandbox.filesystem.allowRead',
+      enabled: policy?.filesystem?.allowManagedReadPathsOnly === true,
+      reason:
+        'managed settings set allowManagedReadPathsOnly, so only allowRead paths from managed settings are honored',
+      get: (s: ReturnType<typeof getSettingsForSource>) =>
+        s?.sandbox?.filesystem?.allowRead,
+    },
+    {
+      key: 'sandbox.network.allowedDomains',
+      enabled: policy?.network?.allowManagedDomainsOnly === true,
+      reason:
+        'managed settings set allowManagedDomainsOnly, so only allowed domains (and WebFetch domain rules) from managed settings are honored',
+      get: (s: ReturnType<typeof getSettingsForSource>) =>
+        s?.sandbox?.network?.allowedDomains,
+    },
+  ]
+
+  const warnings: Array<{ issue: string; fix: string }> = []
+  for (const check of checks) {
+    if (!check.enabled) continue
+    for (const source of getEnabledSettingSources()) {
+      if (source === 'policySettings') continue
+      if (!check.get(getSettingsForSource(source))?.length) continue
+      const location =
+        getSettingsFilePathForSource(source) ??
+        getSettingSourceDisplayNameLowercase(source)
+      warnings.push({
+        issue: `${check.key} is ignored — ${check.reason}. The entry in ${location} will NOT apply (see https://code.claude.com/docs/en/settings#sandbox-settings).`,
+        fix: `Move the ${check.key} entry into managed settings, or remove it from ${location}.`,
+      })
+    }
+  }
+  return warnings
+}
+
 export async function getDoctorDiagnostic(): Promise<DiagnosticInfo> {
   const installationType = await getCurrentInstallationType()
   const version =
@@ -526,6 +576,7 @@ export async function getDoctorDiagnostic(): Promise<DiagnosticInfo> {
 
   // Add glob pattern warnings for Linux sandboxing
   warnings.push(...detectLinuxGlobPatternWarnings())
+  warnings.push(...detectManagedSandboxIgnoredWarnings())
 
   // Add warnings for leftover npm installations when running native
   if (installationType === 'native') {

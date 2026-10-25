@@ -6,12 +6,13 @@ import {
   mkdir,
   readdir,
   readFile,
+  realpath,
   stat,
   symlink,
   utimes,
 } from 'fs/promises'
 import ignore from 'ignore'
-import { basename, dirname, join } from 'path'
+import { basename, dirname, join, resolve, sep } from 'path'
 import { saveCurrentProjectConfig } from './config.js'
 import { getCwd } from './cwd.js'
 import { logForDebugging } from './debug.js'
@@ -153,6 +154,8 @@ export type WorktreeSession = {
   creationDurationMs?: number
   /** True if git sparse-checkout was applied via settings.worktree.sparsePaths. */
   usedSparsePaths?: boolean
+  /** Entered via EnterWorktree({path}); the session does not own it. */
+  enteredExisting?: boolean
 }
 
 let currentWorktreeSession: WorktreeSession | null = null
@@ -237,7 +240,7 @@ function worktreePathFor(repoRoot: string, slug: string): string {
 async function getOrCreateWorktree(
   repoRoot: string,
   slug: string,
-  options?: { prNumber?: number },
+  options?: { prNumber?: number; fromCwd?: string },
 ): Promise<WorktreeCreateResult> {
   const worktreePath = worktreePathFor(repoRoot, slug)
   const worktreeBranch = worktreeBranchName(slug)
@@ -263,7 +266,23 @@ async function getOrCreateWorktree(
 
   let baseBranch: string
   let baseSha: string | null = null
-  if (options?.prNumber) {
+  const fromHead =
+    !options?.prNumber && getInitialSettings().worktree?.baseRef === 'head'
+  if (fromHead) {
+    // Resolve HEAD where the session is, so a linked worktree's HEAD is used
+    // rather than the main checkout's.
+    const headCwd = options?.fromCwd ?? repoRoot
+    const { stdout, code } = await execFileNoThrowWithCwd(
+      gitExe(),
+      ['rev-parse', '--verify', 'HEAD^{commit}'],
+      { cwd: headCwd },
+    )
+    if (code !== 0 || !stdout.trim()) {
+      throw new Error(`Failed to resolve HEAD in ${headCwd}`)
+    }
+    baseBranch = 'HEAD'
+    baseSha = stdout.trim()
+  } else if (options?.prNumber) {
     const { code: prFetchCode, stderr: prFetchStderr } =
       await execFileNoThrowWithCwd(
         gitExe(),
@@ -327,7 +346,12 @@ async function getOrCreateWorktree(
   }
   // -B (not -b): reset any orphan branch left behind by a removed worktree dir.
   // Saves a `git branch -D` subprocess (~15ms spawn overhead) on every create.
-  addArgs.push('-B', worktreeBranch, worktreePath, baseBranch)
+  addArgs.push(
+    '-B',
+    worktreeBranch,
+    worktreePath,
+    fromHead ? baseSha : baseBranch,
+  )
 
   const { code: createCode, stderr: createStderr } =
     await execFileNoThrowWithCwd(gitExe(), addArgs, { cwd: repoRoot })
@@ -706,7 +730,7 @@ export async function createWorktreeForSession(
   sessionId: string,
   slug: string,
   tmuxSessionName?: string,
-  options?: { prNumber?: number },
+  options?: { prNumber?: number; fromCwd?: string },
 ): Promise<WorktreeSession> {
   // Must run before the hook branch below — hooks receive the raw slug as an
   // argument, and the git branch builds a path from it via path.join.
@@ -743,7 +767,10 @@ export async function createWorktreeForSession(
 
     const createStart = Date.now()
     const { worktreePath, worktreeBranch, headCommit, existed } =
-      await getOrCreateWorktree(gitRoot, slug, options)
+      await getOrCreateWorktree(gitRoot, slug, {
+        ...options,
+        fromCwd: options?.fromCwd ?? originalCwd,
+      })
 
     let creationDurationMs: number | undefined
     if (existed) {
@@ -777,6 +804,107 @@ export async function createWorktreeForSession(
     activeWorktreeSession: currentWorktreeSession ?? undefined,
   }))
 
+  return currentWorktreeSession
+}
+
+/**
+ * Resolves `path` for EnterWorktree({path}) without changing session state:
+ * the real path, whether it sits under the repository's .claude/worktrees/,
+ * and its branch. It must be a linked worktree listed by `git worktree list`.
+ */
+export async function resolveExistingWorktree(path: string): Promise<{
+  worktreePath: string
+  worktreeBranch?: string
+  managed: boolean
+}> {
+  const cwd = getCwd()
+  const repoRoot = findCanonicalGitRoot(cwd)
+  if (!repoRoot) {
+    throw new Error(
+      'Cannot enter an existing worktree: the current directory is not in a git repository.',
+    )
+  }
+  let target: string
+  let repoReal: string
+  let cwdReal: string
+  try {
+    ;[target, repoReal, cwdReal] = await Promise.all([
+      realpath(resolve(cwd, path)),
+      realpath(repoRoot),
+      realpath(cwd),
+    ])
+  } catch (error) {
+    throw new Error(`Cannot enter worktree: ${path}: ${errorMessage(error)}`)
+  }
+  if (target === repoReal) {
+    throw new Error(
+      `Cannot enter worktree: ${path} is the main working tree, not a linked worktree.`,
+    )
+  }
+  if (target === cwdReal) {
+    throw new Error(
+      `Cannot enter worktree: ${path} is the current working directory.`,
+    )
+  }
+
+  const { stdout, code } = await execFileNoThrowWithCwd(
+    gitExe(),
+    ['worktree', 'list', '--porcelain'],
+    { cwd: repoRoot },
+  )
+  if (code !== 0) {
+    throw new Error('Cannot enter worktree: `git worktree list` failed.')
+  }
+  for (const entry of stdout.split(/\r?\n\r?\n/)) {
+    const lines = entry.split(/\r?\n/)
+    const listedPath = lines
+      .find(line => line.startsWith('worktree '))
+      ?.slice('worktree '.length)
+    if (!listedPath) continue
+    if ((await realpath(listedPath).catch(() => null)) !== target) continue
+    const branchRef = lines
+      .find(line => line.startsWith('branch '))
+      ?.slice('branch '.length)
+    return {
+      worktreePath: target,
+      worktreeBranch: branchRef?.replace(/^refs\/heads\//, ''),
+      managed: target.startsWith(worktreesDir(repoReal) + sep),
+    }
+  }
+  throw new Error(
+    `Cannot enter worktree: ${path} is not a worktree of the repository at ${repoRoot} (see \`git worktree list\`).`,
+  )
+}
+
+/**
+ * Switches the session into an existing worktree. A session already in a
+ * worktree may only switch to one managed under .claude/worktrees/; the
+ * original directory is kept so ExitWorktree returns there.
+ */
+export async function enterExistingWorktree(
+  sessionId: string,
+  path: string,
+): Promise<WorktreeSession> {
+  const { worktreePath, worktreeBranch, managed } =
+    await resolveExistingWorktree(path)
+  const previous = currentWorktreeSession
+  if (previous && !managed) {
+    throw new Error(
+      `Cannot enter worktree: ${path} is not under .claude/worktrees/ of this repository; from a worktree session only worktrees managed by Claude Code can be entered.`,
+    )
+  }
+  currentWorktreeSession = {
+    originalCwd: previous?.originalCwd ?? getCwd(),
+    worktreePath,
+    worktreeName: basename(worktreePath),
+    worktreeBranch,
+    sessionId,
+    enteredExisting: true,
+  }
+  saveCurrentProjectConfig(current => ({
+    ...current,
+    activeWorktreeSession: currentWorktreeSession ?? undefined,
+  }))
   return currentWorktreeSession
 }
 
@@ -824,6 +952,17 @@ export async function cleanupWorktree(): Promise<void> {
 
     // Change back to original directory first
     process.chdir(originalCwd)
+
+    if (currentWorktreeSession.enteredExisting) {
+      // Not owned by this session: leave the worktree and its branch alone.
+      currentWorktreeSession = null
+      saveCurrentProjectConfig(current => ({
+        ...current,
+        activeWorktreeSession: undefined,
+      }))
+      logForDebugging(`Left entered worktree in place at: ${worktreePath}`)
+      return
+    }
 
     if (hookBased) {
       // Hook-based worktree: delegate cleanup to WorktreeRemove hook
@@ -935,7 +1074,7 @@ export async function createAgentWorktree(slug: string): Promise<{
   }
 
   const { worktreePath, worktreeBranch, headCommit, existed } =
-    await getOrCreateWorktree(gitRoot, slug)
+    await getOrCreateWorktree(gitRoot, slug, { fromCwd: getCwd() })
 
   if (!existed) {
     logForDebugging(
@@ -1024,7 +1163,7 @@ export async function removeAgentWorktree(
 
 /**
  * Slug patterns for throwaway worktrees created by AgentTool (`agent-a<7hex>`,
- * from earlyAgentId.slice(0,8)), WorkflowTool (`wf_<runId>-<idx>` where runId
+ * from earlyAgentId.slice(0,8)), the Workflow tool (`wf_<runId>-<idx>` where runId
  * is randomUUID().slice(0,12) = 8 hex + `-` + 3 hex), and bridgeMain
  * (`bridge-<safeFilenameId>`). These leak when the parent process is killed
  * (Ctrl+C, ESC, crash) before their in-process cleanup runs. Exact-shape

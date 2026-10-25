@@ -16,7 +16,6 @@ import type { ModInput } from './types.js'
 const authorCallRefusals = new Map([
   [AGENT_TOOL_NAME, 'runs the Agent tool: that is $.agent.spawn'],
   [ASK_USER_QUESTION_TOOL_NAME, 'runs the AskUserQuestion tool: that is $.ui.ask'],
-  ['Workflow', 'runs the Workflow tool, whose agents run outside the at-once bound on spawns: $.agent.spawn is the door'],
   [WORKFLOW_TOOL_NAME, 'runs the Workflow tool, whose agents run outside the at-once bound on spawns: $.agent.spawn is the door'],
 ])
 
@@ -183,7 +182,7 @@ export function createModToolHost(context: ToolUseContext, canUseTool: CanUseToo
       try {
         const result = await checkModToolPermission(tool, args, { ...context, options: { ...context.options, tools }, agentId: undefined, abortController })
         abortController.signal.throwIfAborted()
-        return modToolCheckResult(result)
+        return modToolCheckResult(result, undefined, context.getAppState().toolPermissionContext)
       } finally {
         for (const parent of parents) parent.removeEventListener('abort', abort)
       }

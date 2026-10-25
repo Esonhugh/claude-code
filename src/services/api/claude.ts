@@ -76,7 +76,7 @@ import {
   modelSupportsEffort,
   resolveAppliedEffort,
 } from '../../utils/effort.js'
-import { isEnvTruthy } from '../../utils/envUtils.js'
+import { isEnvDefinedFalsy, isEnvTruthy } from '../../utils/envUtils.js'
 import { errorMessage } from '../../utils/errors.js'
 import { computeFingerprintFromMessages } from '../../utils/fingerprint.js'
 import { captureAPIRequest, logError } from '../../utils/log.js'
@@ -195,6 +195,7 @@ import {
 } from 'src/utils/thinking.js'
 import {
   extractDiscoveredToolNames,
+  isToolReferenceTextFallback,
   getDeferredToolsDelta,
   isDeferredToolsDeltaEnabled,
   isToolSearchEnabled,
@@ -497,6 +498,24 @@ function should1hCacheTTL(querySource?: QuerySource): boolean {
  * Configure effort parameters for API request.
  *
  */
+const MIN_STREAM_IDLE_TIMEOUT_MS = 300_000
+
+// On for every provider unless CLAUDE_ENABLE_STREAM_WATCHDOG is explicitly
+// falsy. CLAUDE_STREAM_IDLE_TIMEOUT_MS can only lengthen the 5-minute window.
+export function getStreamIdleWatchdogConfig(): {
+  enabled: boolean
+  idleTimeoutMs: number
+} {
+  const configured = parseInt(process.env.CLAUDE_STREAM_IDLE_TIMEOUT_MS || '', 10)
+  return {
+    enabled: !isEnvDefinedFalsy(process.env.CLAUDE_ENABLE_STREAM_WATCHDOG),
+    idleTimeoutMs: Math.max(
+      configured > 0 ? configured : 0,
+      MIN_STREAM_IDLE_TIMEOUT_MS,
+    ),
+  }
+}
+
 export function configureEffortParams(
   effortValue: EffortValue | undefined,
   outputConfig: BetaOutputConfig,
@@ -1259,6 +1278,10 @@ async function* queryModel(
     useToolSearch = false
   }
 
+  // Gateways without the tool_reference beta: no beta header or
+  // defer_loading, and tool_reference blocks are sent as text.
+  const toolReferenceAsText = useToolSearch && isToolReferenceTextFallback()
+
   // Filter out ToolSearchTool if tool search is not enabled for this model
   // ToolSearchTool returns tool_reference blocks which unsupported models can't handle
   let filteredTools: Tools
@@ -1286,7 +1309,8 @@ async function* queryModel(
   // Add tool search beta header if enabled - required for defer_loading to be accepted
   // Header differs by provider: 1P/Foundry use advanced-tool-use, Vertex/Bedrock use tool-search-tool
   // For Bedrock, this header must go in extraBodyParams, not the betas array
-  const toolSearchHeader = useToolSearch ? getToolSearchBetaHeader() : null
+  const toolSearchHeader =
+    useToolSearch && !toolReferenceAsText ? getToolSearchBetaHeader() : null
   if (toolSearchHeader && getAPIProvider() !== 'bedrock') {
     if (!betas.includes(toolSearchHeader)) {
       betas.push(toolSearchHeader)
@@ -1323,6 +1347,7 @@ async function* queryModel(
   const useGlobalCacheFeature = shouldUseGlobalCacheScope()
   const willDefer = (t: Tool) =>
     useToolSearch &&
+    !toolReferenceAsText &&
     (modDescriptions?.get(t)?.isDeferred ??
       (deferredToolNames.has(t.name) || shouldDeferLspTool(t)))
   // Pass the full tool set as prompt context, but admit only the tools surviving
@@ -1337,7 +1362,7 @@ async function* queryModel(
     signal,
     deferLoadingForTool: willDefer,
     modDescriptions,
-    allowDeferLoading: useToolSearch,
+    allowDeferLoading: useToolSearch && !toolReferenceAsText,
   })
   filteredTools = catalog.tools
   const toolSchemas = catalog.schemas
@@ -1474,12 +1499,15 @@ async function* queryModel(
   // Note: For assistant messages, normalizeMessagesForAPI already normalized the
   // tool inputs, so stripCallerFieldFromAssistantMessage only needs to remove the
   // 'caller' field (not re-normalize inputs).
-  if (!useToolSearch) {
+  if (!useToolSearch || toolReferenceAsText) {
     messagesForAPI = messagesForAPI.map(msg => {
       switch (msg.type) {
         case 'user':
           // Strip tool_reference blocks from tool_result content
-          return stripToolReferenceBlocksFromUserMessage(msg)
+          return stripToolReferenceBlocksFromUserMessage(
+            msg,
+            toolReferenceAsText,
+          )
         case 'assistant':
           // Strip 'caller' field from tool_use blocks
           return stripCallerFieldFromAssistantMessage(msg)
@@ -1851,6 +1879,13 @@ async function* queryModel(
           type: 'enabled',
         } satisfies BetaMessageStreamParams['thinking']
       }
+      if (thinkingConfig.type !== 'disabled' && thinkingConfig.display) {
+        // 'highlights' is newer than the SDK's display union.
+        thinking = {
+          ...thinking,
+          display: thinkingConfig.display,
+        } as BetaMessageStreamParams['thinking']
+      }
     }
 
     // Get API context management strategies if enabled
@@ -2106,11 +2141,10 @@ async function* queryModel(
     // kill hung streams. Without this, a silently dropped connection can hang
     // the session indefinitely since the SDK's request timeout only covers the
     // initial fetch(), not the streaming body.
-    const streamWatchdogEnabled = isEnvTruthy(
-      process.env.CLAUDE_ENABLE_STREAM_WATCHDOG,
-    )
-    const STREAM_IDLE_TIMEOUT_MS =
-      parseInt(process.env.CLAUDE_STREAM_IDLE_TIMEOUT_MS || '', 10) || 90_000
+    const {
+      enabled: streamWatchdogEnabled,
+      idleTimeoutMs: STREAM_IDLE_TIMEOUT_MS,
+    } = getStreamIdleWatchdogConfig()
     const STREAM_IDLE_WARNING_MS = STREAM_IDLE_TIMEOUT_MS / 2
     let streamIdleAborted = false
     // performance.now() snapshot when watchdog fires, for measuring abort propagation delay
@@ -2438,6 +2472,7 @@ async function* queryModel(
               type: 'assistant',
               uuid: randomUUID(),
               timestamp: new Date().toISOString(),
+              requestedModel: options.model,
               ...(isAnt() &&
                 research !== undefined && { research }),
               ...(advisorModel && { advisorModel }),
@@ -2827,6 +2862,7 @@ async function* queryModel(
         type: 'assistant',
         uuid: randomUUID(),
         timestamp: new Date().toISOString(),
+        requestedModel: options.model,
         ...(isAnt() &&
           research !== undefined && {
             research,
@@ -2929,6 +2965,7 @@ async function* queryModel(
           type: 'assistant',
           uuid: randomUUID(),
           timestamp: new Date().toISOString(),
+          requestedModel: options.model,
           ...(isAnt() &&
             research !== undefined && { research }),
           ...(advisorModel && { advisorModel }),

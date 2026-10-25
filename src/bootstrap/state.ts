@@ -71,6 +71,7 @@ type State = {
   modelUsage: { [modelName: string]: ModelUsage }
   mainLoopModelOverride: ModelSetting | undefined
   initialMainLoopModel: ModelSetting
+  sessionFallbackModels: string[]
   modelStrings: ModelStrings | null
   isInteractive: boolean
   kairosActive: boolean
@@ -86,6 +87,8 @@ type State = {
   questionPreviewFormat: 'markdown' | 'html' | undefined
   flagSettingsPath: string | undefined
   flagSettingsInline: Record<string, unknown> | null
+  parentManagedSettings: Record<string, unknown> | null
+  projectConfigRoot: string | null
   allowedSettingSources: SettingSource[]
   sessionIngressToken: string | null | undefined
   oauthTokenFromFd: string | null | undefined
@@ -138,6 +141,7 @@ type State = {
   useCoworkPlugins: boolean
   // Session-only bypass permissions mode flag (not persisted)
   sessionBypassPermissionsMode: boolean
+  permissionModeSetByCli: boolean
   // Session-only flag gating the .claude/scheduled_tasks.json watcher
   // (useScheduledTasks). Set by cronScheduler.start() when the JSON has
   // entries, or by CronCreateTool. Not persisted.
@@ -305,6 +309,7 @@ function getInitialState(): State {
     modelUsage: {},
     mainLoopModelOverride: undefined,
     initialMainLoopModel: null,
+    sessionFallbackModels: [],
     modelStrings: null,
     isInteractive: false,
     kairosActive: false,
@@ -319,6 +324,8 @@ function getInitialState(): State {
     apiKeyFromFd: undefined,
     flagSettingsPath: undefined,
     flagSettingsInline: null,
+    parentManagedSettings: null,
+    projectConfigRoot: null,
     allowedSettingSources: [
       'userSettings',
       'projectSettings',
@@ -366,6 +373,7 @@ function getInitialState(): State {
     useCoworkPlugins: false,
     // Session-only bypass permissions mode flag (not persisted)
     sessionBypassPermissionsMode: false,
+    permissionModeSetByCli: false,
     // Scheduled tasks disabled until flag or dialog enables them
     scheduledTasksEnabled: false,
     sessionCronTasks: [],
@@ -890,6 +898,15 @@ export function setInitialMainLoopModel(model: ModelSetting): void {
   STATE.initialMainLoopModel = model
 }
 
+/** Ordered fallback chain from --fallback-model or the fallbackModel setting. */
+export function getSessionFallbackModels(): readonly string[] {
+  return STATE.sessionFallbackModels
+}
+
+export function setSessionFallbackModels(models: string[]): void {
+  STATE.sessionFallbackModels = models
+}
+
 export function getSdkBetas(): string[] | undefined {
   return STATE.sdkBetas
 }
@@ -1190,6 +1207,26 @@ export function setFlagSettingsInline(
   STATE.flagSettingsInline = settings
 }
 
+/** Policy-tier settings from --managed-settings (the SDK's managedSettings option). */
+export function getParentManagedSettings(): Record<string, unknown> | null {
+  return STATE.parentManagedSettings
+}
+
+export function setParentManagedSettings(
+  settings: Record<string, unknown> | null,
+): void {
+  STATE.parentManagedSettings = settings
+}
+
+/** --project-config-root: where project config is read from instead of the cwd. */
+export function getProjectConfigRoot(): string | null {
+  return STATE.projectConfigRoot
+}
+
+export function setProjectConfigRoot(root: string | null): void {
+  STATE.projectConfigRoot = root
+}
+
 export function getSessionIngressToken(): string | null | undefined {
   return STATE.sessionIngressToken
 }
@@ -1328,6 +1365,15 @@ export function getSessionBypassPermissionsMode(): boolean {
   return STATE.sessionBypassPermissionsMode
 }
 
+/** --permission-mode or --dangerously-skip-permissions picked this launch's mode. */
+export function setPermissionModeSetByCli(value: boolean): void {
+  STATE.permissionModeSetByCli = value
+}
+
+export function getPermissionModeSetByCli(): boolean {
+  return STATE.permissionModeSetByCli
+}
+
 export function setScheduledTasksEnabled(enabled: boolean): void {
   STATE.scheduledTasksEnabled = enabled
 }
@@ -1348,6 +1394,10 @@ export type SessionCronTask = {
    * instead of the main REPL command queue. Session-only — never written to disk.
    */
   agentId?: string
+  /** 'loop' marks a ScheduleWakeup (dynamic /loop) wakeup. */
+  kind?: 'loop'
+  /** Exact epoch ms to fire at; overrides the cron-derived (jittered) time. */
+  scheduledFor?: number
 }
 
 export function getSessionCronTasks(): SessionCronTask[] {

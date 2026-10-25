@@ -66,7 +66,9 @@ import { TerminalFocusProvider } from './TerminalFocusContext.js'
 import { TerminalSizeContext } from './TerminalSizeContext.js'
 
 // Platforms that support Unix-style process suspension (SIGSTOP/SIGCONT)
-const SUPPORTS_SUSPEND = process.platform !== 'win32'
+// A background session has no shell to resume it from (ctrl+z detaches instead).
+const SUPPORTS_SUSPEND =
+  process.platform !== 'win32' && process.env.CLAUDE_CODE_SESSION_KIND !== 'bg'
 
 // After this many milliseconds of stdin silence, the next chunk triggers
 // a terminal mode re-assert (mouse tracking). Catches tmux detach→attach,

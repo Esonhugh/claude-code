@@ -12,7 +12,11 @@ import type { TaskStatus, TaskType } from '../../Task.js'
 import { isTerminalTaskStatus } from '../../taskStatus.js'
 import type { TaskState } from '../../tasks/types.js'
 import { enqueuePendingNotification } from '../messageQueueManager.js'
-import { enqueueSdkEvent } from '../sdkEventQueue.js'
+import {
+  enqueueSdkEvent,
+  type SdkEvent,
+  startTaskRun,
+} from '../sdkEventQueue.js'
 import { getTaskOutputDelta, getTaskOutputPath } from './diskOutput.js'
 import { canEvictTerminalTask } from './retention.js'
 import { createSignal } from '../signal.js'
@@ -53,6 +57,7 @@ export function updateTaskState<T extends TaskState>(
   updater: (task: T) => T,
 ): void {
   let changed = false
+  let patch: ReturnType<typeof taskPatch> = null
   setAppState(prev => {
     const task = prev.tasks?.[taskId] as T | undefined
     if (!task) {
@@ -65,6 +70,7 @@ export function updateTaskState<T extends TaskState>(
       return prev
     }
     changed = true
+    patch = taskPatch(task, updated)
     return {
       ...prev,
       tasks: {
@@ -74,7 +80,27 @@ export function updateTaskState<T extends TaskState>(
     }
   })
   if (changed) taskChanged.emit(taskId)
+  if (patch) {
+    enqueueSdkEvent({ type: 'system', subtype: 'task_updated', task_id: taskId, patch })
+  }
 }
+
+// The task_updated patch: the fields SDK consumers track that this update changed.
+function taskPatch(before: TaskState, after: TaskState) {
+  const patch: Extract<SdkEvent, { subtype: 'task_updated' }>['patch'] = {}
+  if (after.status !== before.status) patch.status = after.status
+  if (after.description !== before.description) patch.description = after.description
+  if (after.endTime !== before.endTime && after.endTime !== undefined) patch.end_time = after.endTime
+  if (after.totalPausedMs !== before.totalPausedMs && after.totalPausedMs !== undefined)
+    patch.total_paused_ms = after.totalPausedMs
+  const error = 'error' in after ? after.error : undefined
+  if (error !== ('error' in before ? before.error : undefined) && typeof error === 'string') patch.error = error
+  const backgrounded = 'isBackgrounded' in after ? after.isBackgrounded : undefined
+  if (backgrounded !== ('isBackgrounded' in before ? before.isBackgrounded : undefined) && backgrounded !== undefined)
+    patch.is_backgrounded = backgrounded
+  return Object.keys(patch).length > 0 ? patch : null
+}
+
 
 /**
  * Register a new task in AppState.
@@ -83,6 +109,8 @@ export function registerTask(task: TaskState, setAppState: SetAppState): void {
   let isReplacement = false
   setAppState(prev => {
     const existing = prev.tasks[task.id]
+    // A new task, or a finished one being resumed, opens a new run.
+    if (!existing || isTerminalTaskStatus(existing.status)) startTaskRun(task.id)
     if (existing?.type === 'local_agent' && task.type === 'local_agent') existing.unregisterCleanup?.()
     isReplacement = existing !== undefined
     // Carry forward UI-held state on re-register (resumeAgentBackground
@@ -122,6 +150,13 @@ export function registerTask(task: TaskState, setAppState: SetAppState): void {
     task_id: task.id,
     tool_use_id: task.toolUseId,
     description: task.description,
+    ...(task.type === 'local_agent'
+      ? {
+          subagent_type: task.agentType,
+          is_backgrounded: task.isBackgrounded,
+          spawn_depth: task.spawnDepth,
+        }
+      : {}),
     task_type: task.type,
     workflow_name:
       'workflowName' in task

@@ -27,18 +27,16 @@ try {
     planType: 'pro',
   })
 
-  assert.deepEqual(
-    new Set(usageCommand.availability),
-    new Set(['chatgpt', 'claude-ai']),
-  )
   assert.equal(meetsAvailabilityRequirement(usageCommand), true)
   assert.equal(usageCommand.immediate, true)
+  assert.deepEqual(usageCommand.aliases, ['cost'])
 
+  // Official 2.1.303 opens /usage for API-key and gateway users too.
   authModule.getOpenAIAuthInfo.cache.set(undefined, {
     accessToken: 'test-api-key',
     isChatGPT: false,
   })
-  assert.equal(meetsAvailabilityRequirement(usageCommand), false)
+  assert.equal(meetsAvailabilityRequirement(usageCommand), true)
 
   const { call: statsCall } = await import('../stats/stats.js')
   const { Settings } = await import('../../components/Settings/Settings.js')

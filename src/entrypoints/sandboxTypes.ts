@@ -35,8 +35,101 @@ export const SandboxNetworkConfigSchema = lazySchema(() =>
           'If true, allow all Unix sockets (disables blocking on both platforms).',
         ),
       allowLocalBinding: z.boolean().optional(),
+      allowMachLookup: z
+        .array(z.string())
+        .optional()
+        .describe(
+          'macOS only: Additional XPC/Mach service names to allow looking up. Supports trailing-wildcard prefix matching (e.g., "com.apple.coresimulator.*").',
+        ),
+      deniedDomains: z
+        .array(z.string())
+        .optional()
+        .describe(
+          'Domains that are always blocked, even if matched by allowedDomains. Supports the same wildcard syntax as allowedDomains. Merged from all settings sources regardless of allowManagedDomainsOnly.',
+        ),
+      strictAllowlist: z
+        .boolean()
+        .optional()
+        .describe(
+          'When true, the sandbox runtime deterministically denies hosts not in allowedDomains instead of prompting. Only honored from user, managed, or --settings settings.',
+        ),
+      tlsTerminate: z
+        .object({
+          caCertPath: z.string().optional(),
+          caKeyPath: z.string().optional(),
+          excludeDomains: z.array(z.string()).optional(),
+          extraCaCertPaths: z.array(z.string()).optional(),
+          maxTunnels: z.number().optional(),
+          handshakeTimeoutMs: z.number().optional(),
+        })
+        .optional()
+        .describe(
+          '[EXPERIMENTAL] In-process TLS termination so the per-request filter can see HTTPS request bodies; required by credential masking. Omit both CA paths for an ephemeral CA. Only honored from user, managed, or --settings settings.',
+        ),
       httpProxyPort: z.number().optional(),
       socksProxyPort: z.number().optional(),
+    })
+    .optional(),
+)
+
+const CredentialMaskOptions = {
+  mode: z.enum(['deny', 'mask']),
+  extract: z.string().optional(),
+  onExtractNoMatch: z.enum(['error', 'warn', 'deny']).optional(),
+  decode: z.literal('jwt').optional(),
+  maskClaims: z.array(z.string()).optional(),
+  injectHosts: z.array(z.string()).optional(),
+}
+
+/**
+ * Credential protection schema for sandbox. Only honored from user, managed,
+ * or --settings settings.
+ */
+export const SandboxCredentialsConfigSchema = lazySchema(() =>
+  z
+    .object({
+      files: z
+        .array(
+          z.object({
+            path: z.string(),
+            ...CredentialMaskOptions,
+            maskDuplicates: z.boolean().optional(),
+          }),
+        )
+        .optional()
+        .describe(
+          'Credential files or directories to protect. `deny` blocks reads inside the sandbox; `mask` substitutes a sentinel inside the sandbox and injects the real value at the proxy. On macOS `mask` degrades to `deny`.',
+        ),
+      envVars: z
+        .array(
+          z.object({
+            name: z
+              .string()
+              .regex(/^[A-Za-z_][A-Za-z0-9_]*$/),
+            ...CredentialMaskOptions,
+          }),
+        )
+        .optional()
+        .describe(
+          'Environment variables to protect. `deny` unsets the variable for sandboxed commands; `mask` substitutes a sentinel inside the sandbox and injects the real value at the proxy.',
+        ),
+      allowPlaintextInject: z.boolean().optional(),
+      awsPairs: z
+        .array(
+          z.object({
+            accessKeyIdVar: z.string(),
+            secretAccessKeyVar: z.string(),
+            sessionTokenVar: z.string().optional(),
+          }),
+        )
+        .optional(),
+      sigv4: z
+        .object({
+          streaming: z.enum(['passthrough', 'deny']).optional(),
+          presigned: z.enum(['passthrough', 'deny']).optional(),
+          sigv4a: z.enum(['passthrough', 'deny']).optional(),
+        })
+        .optional(),
     })
     .optional(),
 )
@@ -81,6 +174,13 @@ export const SandboxFilesystemConfigSchema = lazySchema(() =>
         .describe(
           'When true (set in managed settings), only allowRead paths from policySettings are used.',
         ),
+      disabled: z
+        .boolean()
+        .optional()
+        .describe(
+          'macOS and Linux/WSL only: skip filesystem isolation entirely while keeping network and seccomp isolation. ' +
+            'Project and local settings are ignored; if managed settings configure sandbox.filesystem or a credentials.files deny entry, only managed settings can set this.',
+        ),
     })
     .optional(),
 )
@@ -120,6 +220,19 @@ export const SandboxSettingsSchema = lazySchema(() =>
         ),
       network: SandboxNetworkConfigSchema(),
       filesystem: SandboxFilesystemConfigSchema(),
+      credentials: SandboxCredentialsConfigSchema(),
+      allowAppleEvents: z
+        .boolean()
+        .optional()
+        .describe('macOS only: let sandboxed commands send Apple Events.'),
+      bwrapPath: z
+        .string()
+        .optional()
+        .describe('Linux/WSL, managed settings only: path to the bubblewrap binary.'),
+      socatPath: z
+        .string()
+        .optional()
+        .describe('Linux/WSL, managed settings only: path to the socat binary.'),
       ignoreViolations: z.record(z.string(), z.array(z.string())).optional(),
       enableWeakerNestedSandbox: z.boolean().optional(),
       enableWeakerNetworkIsolation: z

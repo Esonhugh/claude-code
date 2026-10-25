@@ -21,6 +21,7 @@ export const KEYBINDING_CONTEXTS = [
   'ThemePicker',
   'Settings',
   'Tabs',
+  'Scroll',
   // New contexts for keybindings migration
   'Attachments',
   'Footer',
@@ -51,6 +52,7 @@ export const KEYBINDING_CONTEXT_DESCRIPTIONS: Record<
   ThemePicker: 'When the theme picker is open',
   Settings: 'When the settings menu is open',
   Tabs: 'When tab navigation is active',
+  Scroll: 'When the fullscreen transcript is scrollable',
   Attachments: 'When navigating image attachments in a select dialog',
   Footer: 'When footer indicators are focused',
   MessageSelector: 'When the message selector (rewind) is open',
@@ -96,6 +98,7 @@ export const KEYBINDING_ACTIONS = [
   'chat:thinkingToggle',
   'chat:submit',
   'chat:queueSubmit',
+  'chat:sendNow',
   'chat:newline',
   'chat:undo',
   'chat:externalEditor',

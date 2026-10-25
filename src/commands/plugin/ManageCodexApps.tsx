@@ -11,6 +11,7 @@ import { ConfigurableShortcutHint } from '../../components/ConfigurableShortcutH
 import { Byline } from '../../components/design-system/Byline.js'
 import { SearchBox } from '../../components/SearchBox.js'
 import { useSearchInput } from '../../hooks/useSearchInput.js'
+import { useIsInsideModal, useModalOrTerminalSize } from '../../context/modalContext.js'
 import { useTerminalSize } from '../../hooks/useTerminalSize.js'
 import { Box, Text, useInput, useTerminalFocus } from '../../ink.js'
 import {
@@ -91,7 +92,8 @@ export function ManageCodexApps({
     onExit: () => setIsSearchMode(false),
   })
   const isTerminalFocused = useTerminalFocus()
-  const { columns: terminalWidth } = useTerminalSize()
+  const insideModal = useIsInsideModal()
+  const { columns: terminalWidth } = useModalOrTerminalSize(useTerminalSize())
 
   const items: UnifiedInstalledItem[] = apps
     .map((app) => {
@@ -477,7 +479,7 @@ export function ManageCodexApps({
           query={searchQuery}
           isFocused={isSearchMode}
           isTerminalFocused={isTerminalFocused}
-          width={terminalWidth - 4}
+          width={terminalWidth - (insideModal ? 2 : 4)}
           cursorOffset={cursorOffset}
         />
       </Box>

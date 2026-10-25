@@ -16,6 +16,8 @@ import {
 } from '../../utils/sessionStorage.js'
 import { FileReadTool } from '../FileReadTool/FileReadTool.js'
 import { GENERAL_PURPOSE_AGENT } from './built-in/generalPurposeAgent.js'
+import { capAgentPermissionMode, resolveDeclaredAgentPermissionMode } from './permissionMode.js'
+import type { PermissionMode } from '../../types/permissions.js'
 import {
   getSessionSettingsCache,
   resetSettingsCache,
@@ -23,17 +25,28 @@ import {
 } from '../../utils/settings/settingsCache.js'
 
 let controlledPermissionMode: string | undefined
+let controlledFollowsParent: boolean | undefined
+let controlledLiveMode: ((parentMode: string) => string) | undefined
 let controlledAllowedTools: string[] | undefined
 let controlledEffort: EffortValue | undefined
 let invalidatedAgentId: string | undefined
 
 mock.module('./runAgent.js', () => ({
   async *runAgent(params: {
-    permissionMode?: string
+    permissionMode?: PermissionMode
     allowedTools?: string[]
-    agentDefinition: { effort?: EffortValue }
+    agentDefinition: { effort?: EffortValue; permissionMode?: PermissionMode }
+    toolUseContext: { getAppState(): { toolPermissionContext: { mode: PermissionMode } } }
   }) {
-    controlledPermissionMode = params.permissionMode
+    // runAgent's contract: an explicit mode caps the parent's current mode,
+    // else the definition's mode is resolved against it, on every read.
+    const resolve = (parentMode: PermissionMode) =>
+      params.permissionMode
+        ? capAgentPermissionMode(parentMode, params.permissionMode)
+        : resolveDeclaredAgentPermissionMode(parentMode, params.agentDefinition.permissionMode)
+    controlledPermissionMode = resolve(params.toolUseContext.getAppState().toolPermissionContext.mode)
+    controlledFollowsParent = params.permissionMode === undefined
+    controlledLiveMode = parentMode => resolve(parentMode as PermissionMode)
     controlledAllowedTools = params.allowedTools
     controlledEffort = params.agentDefinition.effort
     yield {
@@ -155,6 +168,8 @@ async function runCase({
     }
   }
   controlledPermissionMode = undefined
+  controlledFollowsParent = undefined
+  controlledLiveMode = undefined
   controlledAllowedTools = undefined
   controlledEffort = undefined
   invalidatedAgentId = undefined
@@ -178,6 +193,7 @@ async function runCase({
       toolUseId: `toolu_${agentId}`,
       contentReplacementState: undefined,
       mods: {
+        capture: () => undefined,
         invalidatePromptContext(id?: string) {
           invalidatedAgentId = id
         },
@@ -193,6 +209,8 @@ async function runCase({
 
   return {
     permissionMode: controlledPermissionMode,
+    followsParent: controlledFollowsParent,
+    liveMode: controlledLiveMode,
     allowedTools: controlledAllowedTools,
     invalidatedAgentId,
     effort: controlledEffort,
@@ -307,6 +325,20 @@ try {
       )
     }
   }
+  // A resumed agent keeps following the parent after resume, in both
+  // directions; a recorded explicit mode caps it.
+  const legacy = await runCase({ agentId: 'resume-follows-parent', parentMode: 'default' })
+  assert.equal(legacy.followsParent, true)
+  assert.equal(legacy.liveMode?.('bypassPermissions'), 'bypassPermissions')
+  assert.equal(legacy.liveMode?.('default'), 'default')
+  const fromBypass = await runCase({ agentId: 'resume-follows-bypass', parentMode: 'bypassPermissions', metadataMode: 'default' })
+  assert.equal(fromBypass.followsParent, true)
+  assert.equal(fromBypass.liveMode?.('default'), 'default')
+  const clamped = await runCase({ agentId: 'resume-fixed-clamp', parentMode: 'default', metadataMode: 'acceptEdits' })
+  assert.equal(clamped.followsParent, false)
+  assert.equal(clamped.permissionMode, 'default')
+  assert.equal(clamped.liveMode?.('bypassPermissions'), 'acceptEdits')
+  assert.equal(clamped.liveMode?.('plan'), 'plan')
   assert.equal(
     (
       await runCase({

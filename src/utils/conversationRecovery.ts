@@ -18,7 +18,7 @@ import type {
   NormalizedMessage,
   NormalizedUserMessage,
 } from '../types/message.js'
-import { PERMISSION_MODES } from '../types/permissions.js'
+import { PERMISSION_MODES, type PermissionMode } from '../types/permissions.js'
 import { suppressNextSkillListing } from './attachments.js'
 import {
   copyFileHistoryForResume,
@@ -442,8 +442,9 @@ export async function loadMessagesFromJsonlPath(path: string): Promise<{
   sessionId: UUID | undefined
   startedAt?: number
   costState?: SessionCostStateEntry
+  permissionMode?: PermissionMode
 }> {
-  const { messages: byUuid, leafUuids, sessionStartedAts, costStates } = await loadTranscriptFile(path)
+  const { messages: byUuid, leafUuids, sessionStartedAts, costStates, permissionModes } = await loadTranscriptFile(path)
   let tip: (typeof byUuid extends Map<UUID, infer T> ? T : never) | null = null
   let tipTs = 0
   for (const m of byUuid.values()) {
@@ -464,6 +465,7 @@ export async function loadMessagesFromJsonlPath(path: string): Promise<{
     sessionId: tip.sessionId as UUID | undefined,
     startedAt: sessionStartedAts.get(tip.sessionId as UUID),
     costState: costStates.get(tip.sessionId as UUID),
+    permissionMode: permissionModes.get(tip.sessionId as UUID),
   }
 }
 
@@ -502,6 +504,7 @@ export async function loadConversationForResume(
   customTitle?: string
   tag?: string
   mode?: 'coordinator' | 'normal'
+  permissionMode?: PermissionMode
   worktreeSession?: PersistedWorktreeSession | null
   devModsFolder?: string
   prNumber?: number
@@ -516,6 +519,7 @@ export async function loadConversationForResume(
     let sessionId: UUID | undefined
     let startedAt: number | undefined
     let costState: SessionCostStateEntry | undefined
+    let permissionMode: PermissionMode | undefined
 
     if (source === undefined) {
       // --continue: most recent session, skipping live --bg/daemon sessions
@@ -552,6 +556,7 @@ export async function loadConversationForResume(
       sessionId = loaded.sessionId
       startedAt = loaded.startedAt
       costState = loaded.costState
+      permissionMode = loaded.permissionMode
     } else if (typeof source === 'string') {
       // Load specific session by ID
       log = await getLastSessionLog(source as UUID)
@@ -620,6 +625,7 @@ export async function loadConversationForResume(
       customTitle: log?.customTitle,
       tag: log?.tag,
       mode: log?.mode,
+      permissionMode: log?.permissionMode ?? permissionMode,
       worktreeSession: log?.worktreeSession,
       devModsFolder: log?.devModsFolder,
       prNumber: log?.prNumber,

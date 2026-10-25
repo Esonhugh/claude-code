@@ -16,8 +16,10 @@ import {
 } from '../../services/mods/promptAdapter.js'
 import { getContentText } from 'src/utils/messages.js'
 import { formatPluginPrompt } from '../../services/mods/pluginPrompt.js'
+import { formatPeerPrompt } from '../peerProtocol.js'
 import { createToolCatalogForContext } from '../../services/mods/toolCatalog.js'
 import { createModToolHost } from '../../services/mods/toolHost.js'
+import { logForDebugging } from '../debug.js'
 import { hasPermissionsToUseTool } from '../permissions/permissions.js'
 import {
   findCommand,
@@ -190,6 +192,20 @@ export async function processUserInput({
   const appState = context.getAppState()
   const isRemoteShellInput = Boolean(context.runRemoteShellCommand)
 
+  // UserPromptSubmit screens a skill or custom command before it expands, so a
+  // blocking hook also stops the shell commands embedded in it (2.1.299).
+  let screened: ProcessUserInputBaseResult | undefined
+  if (!skipHooks && !isRemoteShellInput && !deferCommands && expandsPromptCommand()) {
+    screened = await runClassicHooks(
+      { messages: [], shouldQuery: true },
+      getContentText(input) || '',
+    )
+    if (!screened.shouldQuery) {
+      onPromptAdmission?.(screened)
+      return screened
+    }
+  }
+
   const { isRegularPrompt, ...result } = await processUserInputBase(
     input,
     mode,
@@ -212,7 +228,8 @@ export async function processUserInput({
   )
   queryCheckpoint('query_process_user_input_base_end')
 
-  if (!result.shouldQuery || isRemoteShellInput || skipHooks) {
+  if (!result.shouldQuery || isRemoteShellInput || skipHooks || screened) {
+    if (screened && result.shouldQuery) result.messages.push(...screened.messages)
     applyPluginPromptOrigin(result)
     if (!result.deferred) onPromptAdmission?.(result)
     return result
@@ -288,6 +305,7 @@ export async function processUserInput({
         ...(attachments.length || !promptSubmitMetadata?.attachments
           ? {}
           : { attachments: promptSubmitMetadata.attachments }),
+        ...(promptMessage!.isMeta ? { isMeta: true as const } : {}),
       },
       core: async entered => {
         const submitted = {
@@ -302,7 +320,10 @@ export async function processUserInput({
         }
         const promptIndex = result.messages.indexOf(promptMessage!)
         let rewrittenContent = content
-        if (entered.text !== text) {
+        // A meta prompt that starts a turn takes no text rewrite (2.1.303).
+        if (entered.text !== text && promptMessage!.isMeta)
+          logForDebugging('prompt.submit: a meta prompt starting a turn takes no rewrite; its text is kept')
+        else if (entered.text !== text) {
           if (typeof content === 'string') rewrittenContent = entered.text
           else {
             // Rewrite text once, retaining every non-text block and its order.
@@ -367,6 +388,24 @@ export async function processUserInput({
     snapshot?.release()
   }
 
+  function expandsPromptCommand(): boolean {
+    const text =
+      typeof input === 'string'
+        ? input
+        : input.at(-1)?.type === 'text'
+          ? (input.at(-1) as { text: string }).text
+          : null
+    if (mode !== 'prompt' || !text?.startsWith('/')) return false
+    const parsed = parseSlashCommand(text)
+    const command = parsed
+      ? findCommand(parsed.commandName, context.options.commands)
+      : undefined
+    return (
+      command?.type === 'prompt' &&
+      (!skipSlashCommands || (!!bridgeOrigin && isBridgeSafeCommand(command)))
+    )
+  }
+
   function admitPrompt(settled: ProcessUserInputBaseResult): void {
     if (isRegularPrompt && !context.agentId)
       context.abortController.signal.throwIfAborted()
@@ -379,16 +418,19 @@ export async function processUserInput({
 
   function applyPluginPromptOrigin(settled: ProcessUserInputBaseResult): void {
     const origin = settled.admission?.origin ?? promptSubmitMetadata?.origin
-    if (!isRegularPrompt || !settled.shouldQuery || origin?.kind !== 'plugin') return
+    if (!isRegularPrompt || !settled.shouldQuery || (origin?.kind !== 'plugin' && origin?.kind !== 'peer')) return
     const index = settled.messages.findIndex(message => message.type === 'user')
     const message = settled.messages[index]
     if (message?.type !== 'user') return
     let content = message.message.content
-    if (!origin.asUser) {
+    const plugin = origin.kind === 'plugin' ? origin : undefined
+    if (!plugin?.asUser) {
       const text = typeof content === 'string' ? content : content.flatMap(block =>
         block.type === 'text' && typeof block.text === 'string' ? [block.text] : [],
       ).join('\n')
-      const framed = formatPluginPrompt(text, origin)
+      // An idle peer delivery becomes its own turn; frame it like the mid-turn
+      // attachment so the model never reads it as the user's words.
+      const framed = plugin ? formatPluginPrompt(text, plugin) : formatPeerPrompt(text)
       if (typeof content === 'string') content = framed
       else {
         let written = false
@@ -402,7 +444,7 @@ export async function processUserInput({
       }
     }
     settled.messages = [...settled.messages]
-    settled.messages[index] = { ...message, origin, message: { ...message.message, content } }
+    settled.messages[index] = { ...message, ...(plugin && { origin: plugin }), message: { ...message.message, content } }
   }
 
   async function admitClassicPrompt(): Promise<ProcessUserInputBaseResult> {

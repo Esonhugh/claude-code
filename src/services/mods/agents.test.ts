@@ -3,6 +3,7 @@ import { mkdtemp, writeFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createModsRuntime, type ModsRuntime } from './runtime.js'
+import { raiseModAgentResume, raiseModWorkflowAgentSpawn } from './agents.js'
 
 const roots: string[] = []
 const runtimes: ModsRuntime[] = []
@@ -272,4 +273,55 @@ test('production Worker agent.list reads live session tasks rather than definiti
     tasks = {}
     expect(await list()).toEqual([])
   } finally { snapshot.release() }
+})
+
+function spawnContext(runtime: ModsRuntime) {
+  return {
+    mods: runtime,
+    toolUseId: 'toolu_wf',
+    options: { mainLoopModel: 'parent-model', agentDefinitions: { activeAgents: [], allAgents: [] } },
+    getAppState: () => ({ toolPermissionContext: { mode: 'default' } }),
+    abortController: new AbortController(),
+  } as unknown as Parameters<typeof raiseModWorkflowAgentSpawn>[0]
+}
+
+test('agent.spawn raises a workflow agent: prompt and model rewrite, other content is fixed, workflow is pinned', async () => {
+  const seen: unknown[] = []
+  const mod = await plugin('policy', `export function register(on) {
+    on('agent.spawn', ($,e,next) => {
+      return next({...e, prompt:e.prompt+' (reviewed)', model:'haiku', description:'changed', background:true})
+    });
+  }`)
+  const runtime = createModsRuntime({onDiagnostic: event => seen.push(event)})
+  runtimes.push(runtime)
+  await runtime.bind(binding)
+  await runtime.reconcile([mod])
+  const started = await raiseModWorkflowAgentSpawn(spawnContext(runtime), {
+    prompt: 'scan', agentId: 'wf-agent-1', runId: 'wf_1', agentIndex: 1, description: 'wf-agent-1', subagentType: 'general-purpose',
+  })
+  expect(started).toEqual({ prompt: 'scan (reviewed)', model: 'haiku' })
+  expect(seen).toEqual([])
+})
+
+test('agent.spawn refuses a workflow agent with deny', async () => {
+  const deny = await plugin('deny', `export function register(on) { on('agent.spawn', ($,e,next) => e.workflow ? {deny:'no workflow agents'} : next(e)); }`)
+  const runtime = createModsRuntime({onDiagnostic: () => {}})
+  runtimes.push(runtime)
+  await runtime.bind(binding)
+  await runtime.reconcile([deny])
+  const spawn = { prompt: 'scan', agentId: 'a', runId: 'wf_1', agentIndex: 2, description: 'a', subagentType: 'general-purpose' }
+  expect(await raiseModWorkflowAgentSpawn(spawnContext(runtime), spawn).catch((error: Error) => error.message)).toBe('no workflow agents')
+})
+
+test('agent.spawn raises a resume that a hook can only refuse', async () => {
+  const mod = await plugin('resume', `export function register(on) {
+    on('agent.spawn', ($,e,next) => e.resume?.agentId === 'parked' ? {deny:'stay parked'} : next({...e, prompt:'rewritten'}));
+  }`)
+  const runtime = createModsRuntime({onDiagnostic: () => {}})
+  runtimes.push(runtime)
+  await runtime.bind(binding)
+  await runtime.reconcile([mod])
+  const resume = { prompt: 'continue', description: 'resumed', subagentType: 'general-purpose', permissionMode: 'default', fork: false }
+  expect(await raiseModAgentResume(spawnContext(runtime), { ...resume, agentId: 'parked' }).catch((error: Error) => error.message)).toBe('stay parked')
+  expect(await raiseModAgentResume(spawnContext(runtime), { ...resume, agentId: 'live' })).toBeUndefined()
 })

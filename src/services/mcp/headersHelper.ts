@@ -1,10 +1,10 @@
-import { getIsNonInteractiveSession } from '../../bootstrap/state.js'
 import { checkHasTrustDialogAccepted } from '../../utils/config.js'
 import { logAntError } from '../../utils/debug.js'
 import { errorMessage } from '../../utils/errors.js'
 import { execFileNoThrowWithCwd } from '../../utils/execFileNoThrow.js'
 import { logError, logMCPDebug, logMCPError } from '../../utils/log.js'
 import { jsonParse } from '../../utils/slowOperations.js'
+import { withoutCredentialEnv } from '../../utils/subprocessEnv.js'
 import { logEvent } from '../analytics/index.js'
 import type {
   McpHTTPServerConfig,
@@ -37,12 +37,11 @@ export async function getMcpHeadersFromHelper(
     return null
   }
 
-  // Security check for project/local settings
-  // Skip trust check in non-interactive mode (e.g., CI/CD, automation)
+  // Security check for project/local settings, also under -p: the folder's
+  // trust dialog must have been accepted before its helper runs.
   if (
     'scope' in config &&
-    isMcpServerFromProjectOrLocalSettings(config as ScopedMcpServerConfig) &&
-    !getIsNonInteractiveSession()
+    isMcpServerFromProjectOrLocalSettings(config as ScopedMcpServerConfig)
   ) {
     // Check if trust has been established for this project
     const hasTrust = checkHasTrustDialogAccepted()
@@ -52,9 +51,19 @@ export async function getMcpHeadersFromHelper(
       )
       logAntError('MCP headersHelper invoked before trust check', error)
       logEvent('tengu_mcp_headersHelper_missing_trust', {})
+      logMCPError(
+        serverName,
+        'headersHelper skipped: this folder is not trusted. Run Claude Code here interactively once and accept the trust dialog.',
+      )
       return null
     }
   }
+
+  // A helper the repository or a plugin supplies does not get the user's
+  // credentials from the environment.
+  const scoped = config as Partial<ScopedMcpServerConfig>
+  const suppliedByRepoOrPlugin =
+    scoped.scope === 'project' || scoped.pluginSource !== undefined
 
   try {
     logMCPDebug(serverName, 'Executing headersHelper to get dynamic headers')
@@ -64,10 +73,13 @@ export async function getMcpHeadersFromHelper(
       // Pass server context so one helper script can serve multiple MCP servers
       // (git credential-helper style). See deshaw/anthropic-issues#28.
       env: {
-        ...process.env,
+        ...(suppliedByRepoOrPlugin
+          ? withoutCredentialEnv(process.env)
+          : process.env),
         CLAUDE_CODE_MCP_SERVER_NAME: serverName,
         CLAUDE_CODE_MCP_SERVER_URL: config.url,
       },
+      extendEnv: false,
     })
     if (execResult.code !== 0 || !execResult.stdout) {
       throw new Error(

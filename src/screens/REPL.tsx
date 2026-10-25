@@ -9,13 +9,15 @@ import { copyModCallerChain } from '../services/mods/callerChain.js'
 import { feature } from 'bun:bundle'
 import { restoreSendMessagePins } from '../utils/sendMessagePins.js'
 import { callMCPToolForMod, findMCPConnectionForMod } from '../services/mcp/client.js'
-import { spawnSync } from 'child_process'
+import { detachAttachedClients } from '../daemon/protocol.js'
+import { getTypedSkillAttribution } from '../utils/forkedSkill.js'
 import {
   snapshotOutputTokensForTurn,
   getCurrentTurnTokenBudget,
   getTurnOutputTokens,
   getBudgetContinuationCount,
   getTotalInputTokens,
+  getSessionFallbackModels,
 } from '../bootstrap/state.js'
 import { parseTokenBudget } from '../utils/tokenBudget.js'
 import { count } from '../utils/array.js'
@@ -45,6 +47,9 @@ import type { TabStatusKind } from '../ink/hooks/use-tab-status.js'
 import { selectProgramStatus, programTurnEnd, programStatusAskText, programStatusBlockedText, programStatusProgress, selectChildProgramStatuses, type ProgramTurnEnd, type ProgramBlockedOn } from './programStatus.js'
 import { ASK_USER_QUESTION_TOOL_NAME } from '../tools/AskUserQuestionTool/prompt.js'
 import { CostThresholdDialog } from '../components/CostThresholdDialog.js'
+import { PeerInboundDialog } from '../components/PeerInboundDialog.js'
+import type { HeldPeerMessageInfo } from '../utils/udsMessaging.js'
+import { peerHoldReason } from '../utils/peerProtocol.js'
 import { IdleReturnDialog } from '../components/IdleReturnDialog.js'
 import * as React from 'react'
 import {
@@ -313,6 +318,7 @@ import {
 } from '../utils/permissions/PermissionUpdate.js'
 import { buildPermissionUpdates } from '../components/permissions/ExitPlanModePermissionRequest/ExitPlanModePermissionRequest.js'
 import {
+  restorePermissionModeForResume,
   shouldShowAutoModeEntryWarning,
   stripDangerousPermissionsForAutoMode,
   transitionPermissionMode,
@@ -379,6 +385,7 @@ import type {
   ProgressMessage,
   HookResultMessage,
   PartialCompactDirection,
+  SystemAPIErrorMessage,
 } from '../types/message.js'
 import { query } from '../query.js'
 import { mergeClients, useMergedClients } from '../hooks/useMergedClients.js'
@@ -400,7 +407,9 @@ import { processSessionStartHooks } from '../utils/sessionStart.js'
 import {
   executeSessionEndHooks,
   getSessionEndHookTimeoutMs,
+  hasMessageDisplayHook,
 } from '../utils/hooks.js'
+import { applyMessageDisplayHooks } from '../utils/hooks/messageDisplay.js'
 import { type IDESelection, useIdeSelection } from '../hooks/useIdeSelection.js'
 import { getTools, assembleToolPool } from '../tools.js'
 import type { AgentDefinition } from '../tools/AgentTool/loadAgentsDir.js'
@@ -426,6 +435,7 @@ import { countModSessionTurns } from '../services/mods/sessionTurns.js'
 import { captureModSessionUsage } from '../services/mods/sessionUsage.js'
 import { getConfigRows } from '../components/Settings/configRows.js'
 import { createToolCatalogForContext } from '../services/mods/toolCatalog.js'
+import { sessionAppendEngineMessage } from '../services/mods/sessionAppend.js'
 import { createModToolHost } from '../services/mods/toolHost.js'
 import { fillPromptBox } from '../services/mods/promptAdapter.js'
 import { createModPromptEditQueue, runModPromptEdit } from '../services/mods/promptEdit.js'
@@ -448,6 +458,7 @@ import {
   adoptResumedSessionFile,
   removeTranscriptMessage,
   restoreSessionMetadata,
+  savePermissionMode,
   getCurrentSessionTitle,
   isEphemeralToolProgress,
   isLoggableMessage,
@@ -626,6 +637,7 @@ import { AwsAuthStatusBox } from '../components/AwsAuthStatusBox.js'
 import { useRateLimitWarningNotification } from 'src/hooks/notifs/useRateLimitWarningNotification.js'
 import { useDeprecationWarningNotification } from 'src/hooks/notifs/useDeprecationWarningNotification.js'
 import { useNpmDeprecationNotification } from 'src/hooks/notifs/useNpmDeprecationNotification.js'
+import { useMemoryIndexNotification } from 'src/hooks/notifs/useMemoryIndexNotification.js'
 import { useIDEStatusIndicator } from 'src/hooks/notifs/useIDEStatusIndicator.js'
 import { useModelMigrationNotifications } from 'src/hooks/notifs/useModelMigrationNotifications.js'
 import { useCanSwitchToExistingSubscription } from 'src/hooks/notifs/useCanSwitchToExistingSubscription.js'
@@ -1187,6 +1199,7 @@ export function REPL({
   // /brief mid-session leaves the stale tool list (no SendUserMessage) and
   // the model emits plain text the brief filter hides.
   const isBriefOnly = useAppState(s => s.isBriefOnly)
+  const focusView = useAppState(s => s.briefTranscript)
 
   const localTools = useMemo(
     () => (isRemoteExecutionSession ? [] : getTools(toolPermissionContext)),
@@ -1274,6 +1287,7 @@ export function REPL({
   useFastModeNotification()
   useDeprecationWarningNotification(mainLoopModel)
   useNpmDeprecationNotification()
+  useMemoryIndexNotification()
   useAntOrgWarningNotification()
   useInstallMessages()
   useChromeExtensionNotification()
@@ -1772,10 +1786,15 @@ export function REPL({
   // Push status to the PID file for `claude ps`. Fire-and-forget; ps falls
   // back to transcript-tail derivation when this is missing/stale.
   useEffect(() => {
-    if (feature('BG_SESSIONS')) {
-      void updateSessionActivity({ status: sessionStatus, waitingFor })
-    }
+    void updateSessionActivity({ status: sessionStatus, waitingFor })
   }, [sessionStatus, waitingFor])
+
+  useEffect(() => {
+    if (!feature('UDS_INBOX')) return
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { setPeerSessionIdle } = require('../utils/udsMessaging.js') as typeof import('../utils/udsMessaging.js')
+    setPeerSessionIdle(sessionStatus === 'idle')
+  }, [sessionStatus])
 
   // 3P default: off — OSC 21337 is ant-only while the spec stabilizes.
   // Gated so we can roll back if the sidebar indicator conflicts with
@@ -1882,6 +1901,30 @@ export function REPL({
     },
     [recordProgramTurnEnd],
   )
+
+  // Held cross-session messages: transcript warnings, and an approval dialog
+  // when the hold comes from a permission-mode mismatch.
+  const [heldPeerMessages, setHeldPeerMessages] = useState<HeldPeerMessageInfo[]>([])
+  useEffect(() => {
+    if (!feature('UDS_INBOX')) return
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const uds = require('../utils/udsMessaging.js') as typeof import('../utils/udsMessaging.js')
+    const warn = (text: string) => setMessages(previous => [...previous, createSystemMessage(text, 'warning')])
+    uds.setOnPeerNotice(warn)
+    uds.setOnPeerHeld((message, count) => {
+      const preview = message.preview.replace(/\s+/g, ' ').trim()
+      warn(`Held peer message — from ${message.from}${message.claimedName ? ` (peer claims name: ${message.claimedName})` : ''}${preview ? `; preview: «${preview.length > 200 ? `${preview.slice(0, 200)}…` : preview}»` : ''} — not delivered to Claude (${count} held). ${peerHoldReason(message.cause)}`)
+      if (message.cause === 'mode-mismatch' || message.cause === 'no-mode-asserted') setHeldPeerMessages(previous => [...previous, message])
+    })
+    uds.setOnPeerHeldGone(uuid => setHeldPeerMessages(previous => previous.filter(message => message.uuid !== uuid)))
+    uds.setOnPeerHeldReleased((count, reason) => warn(`Released ${count} held cross-session ${count === 1 ? 'message' : 'messages'} to Claude's queue (${{ 'mode-changed': 'permissions are prompting again', 'policy-accepts': 'crossSessionInbound now accepts', approved: 'you approved it' }[reason]}).`))
+    return () => {
+      uds.setOnPeerNotice(null)
+      uds.setOnPeerHeld(null)
+      uds.setOnPeerHeldGone(null)
+      uds.setOnPeerHeldReleased(null)
+    }
+  }, [setMessages])
   // Capture the baseline message count alongside the placeholder text so
   // the render can hide it once displayedMessages grows past the baseline.
   const setUserInputOnProcessing = useCallback((input: string | undefined) => {
@@ -2193,9 +2236,11 @@ export function REPL({
       logForDebugging(`[Mods:${plugin}] ${text}`)
       if (to === 'transcript') setMessages(previous => [...previous, createSystemMessage(`${plugin}: ${text}`, 'notice')])
     },
+    appendMessage: row => setMessages(previous => [...previous, sessionAppendEngineMessage(row)]),
     uiToast: (plugin, text, timeoutMs) => addNotification({
       key: `mods-toast:${plugin}`, text, timeoutMs, priority: 'medium',
     }),
+    uiNotify: notification => sendNotification(notification, terminal),
     uiStatus: (plugin, text) => {
       const key = `plugin-status-${plugin}`
       removeNotification(key)
@@ -2203,7 +2248,7 @@ export function REPL({
         key, text: `${plugin}: ${text}`, priority: 'low', pinned: true,
       })
     },
-  }), [modsSession, setAppState, setMessages, addNotification, removeNotification, modSelectionTracker, modMcpConnections])
+  }), [modsSession, setAppState, setMessages, addNotification, removeNotification, modSelectionTracker, modMcpConnections, terminal])
 
   useEffect(() => {
     if (!modsSession) return
@@ -2929,6 +2974,14 @@ export function REPL({
           }
         }
 
+        // memory.extraction (sessionEnd, or everyTurns with N > 1): extract before switching away.
+        if (feature('EXTRACT_MEMORIES')) {
+          const { flushDeferredExtraction } = await import(
+            '../services/extractMemories/extractMemories.js'
+          )
+          await flushDeferredExtraction()
+        }
+
         // Fire SessionEnd hooks for the current session before starting the
         // resumed one, mirroring the /clear flow in conversation.ts.
         const sessionEndTimeoutMs = getSessionEndHookTimeoutMs()
@@ -3022,6 +3075,15 @@ export function REPL({
         clearSessionMetadata()
         restoreSessionMetadata(log)
         restoreSessionCosts(log)
+        const resumedPermissionContext = restorePermissionModeForResume(
+          store.getState().toolPermissionContext,
+          log.permissionMode,
+        )
+        setAppState(prev => ({
+          ...prev,
+          toolPermissionContext: resumedPermissionContext,
+        }))
+        savePermissionMode(resumedPermissionContext.mode)
         modsSession?.restoreAuthoringConsent?.(log.devModsFolder)
         // Resumed sessions shouldn't re-title from mid-conversation context
         // (same reasoning as the useRef seed), and the previous session's
@@ -3211,6 +3273,7 @@ export function REPL({
     | 'prompt'
     | 'worker-sandbox-permission'
     | 'elicitation'
+    | 'peer-inbound'
     | 'cost'
     | 'idle-return'
     | 'init-onboarding'
@@ -3247,6 +3310,7 @@ export function REPL({
     if (allowDialogsWithAnimation && workerSandboxPermissions.queue[0])
       return 'worker-sandbox-permission'
     if (allowDialogsWithAnimation && elicitation.queue[0]) return 'elicitation'
+    if (allowDialogsWithAnimation && heldPeerMessages[0]) return 'peer-inbound'
     if (allowDialogsWithAnimation && showingCostDialog) return 'cost'
     if (allowDialogsWithAnimation && idleReturnPending) return 'idle-return'
 
@@ -3441,6 +3505,7 @@ export function REPL({
       promptQueue[0] ||
       workerSandboxPermissions.queue[0] ||
       elicitation.queue[0] ||
+      heldPeerMessages[0] ||
       showingCostDialog)
 
   // Keep ref in sync so timer callbacks can read the current value
@@ -3826,14 +3891,7 @@ export function REPL({
       })
       confirmedRemotePermissionModeRef.current = mode
       setSessionBypassPermissionsMode(mode === 'bypassPermissions')
-      setToolPermissionContext(
-        mode === 'bypassPermissions'
-          ? {
-              ...nextContext,
-              isBypassPermissionsModeAvailable: true,
-            }
-          : nextContext,
-      )
+      setToolPermissionContext(nextContext)
     },
     [setToolPermissionContext, store],
   )
@@ -4560,6 +4618,8 @@ export function REPL({
       // and now. Turn 1 via processInitialMessage is the main beneficiary.
       const { tools: freshTools, mcpClients: freshMcpClients } =
         toolUseContext.options
+      const typedSkill = getTypedSkillAttribution(newMessages, toolUseContext.options.commands)
+      if (typedSkill) toolUseContext.options.activeSkill = typedSkill
 
       // Scope the skill's effort override to this turn's context only —
       // wrapping getAppState keeps the override out of the global store so
@@ -4648,6 +4708,7 @@ export function REPL({
         systemContext,
         canUseTool,
         toolUseContext,
+        fallbackModel: getSessionFallbackModels()[0],
         querySource: getQuerySourceForREPL(),
         publicTurn: publicTurn ?? {
           text: newMessages
@@ -4660,6 +4721,13 @@ export function REPL({
             .join('\n'),
         },
       })) {
+        // MessageDisplay hooks transform assistant text before it is shown.
+        if (
+          event.type === 'assistant' &&
+          hasMessageDisplayHook(toolUseContext.getAppState())
+        ) {
+          await applyMessageDisplayHooks(event, toolUseContext)
+        }
         onQueryEvent(event)
       }
 
@@ -5175,6 +5243,8 @@ export function REPL({
       options?: {
         fromKeybinding?: boolean
         wait?: boolean
+        // Interrupt the running turn so this prompt (or the queue) goes now.
+        sendNow?: boolean
         // The idle-return dialog has already consumed this submission.
         submission?: {
           mode: PromptInputMode
@@ -5227,7 +5297,16 @@ export function REPL({
         proactiveModule?.resumeProactive()
       }
 
-      if (!input.trim()) return
+      if (!input.trim()) {
+        if (
+          options?.sendNow &&
+          queryGuard.isActive &&
+          getCommandQueue().some(command => command.mode === 'prompt')
+        ) {
+          abortControllerRef.current?.abort('interrupt')
+        }
+        return
+      }
 
       // Consume this draft once, before either initialization barrier. Dispatch
       // may switch between queue/direct while waiting; it never owns the editor.
@@ -5685,7 +5764,9 @@ export function REPL({
         ideSelection: submittedIDESelection,
         setUserInputOnProcessing,
         setAbortController,
-        abortController,
+        // Read via ref: onSubmit is memoized without abortController, and an
+        // interrupt (send-now, interruptible tools) must hit the running turn.
+        abortController: abortControllerRef.current,
         onQuery,
         setAppState,
         querySource: getQuerySourceForREPL(),
@@ -5697,6 +5778,7 @@ export function REPL({
         // handlePromptSubmit only uses it for debug log + telemetry event.
         streamMode: streamModeRef.current,
         hasInterruptibleToolInProgress:
+          options?.sendNow === true ||
           hasInterruptibleToolInProgressRef.current,
         skipLocalContext: isRemoteExecutionSession,
       }).catch(restoreOnError)
@@ -5881,7 +5963,7 @@ export function REPL({
     // active. Without this guard, the worktree branch below short-circuits into
     // ExitFlow (which calls gracefulShutdown) before exit.tsx is ever loaded.
     if (feature('BG_SESSIONS') && isBgSession()) {
-      spawnSync('tmux', ['detach-client'], { stdio: 'ignore' })
+      detachAttachedClients()
       setIsExiting(false)
       return
     }
@@ -7208,6 +7290,7 @@ export function REPL({
                   isLoading && !viewedAgentTask ? visibleStreamingText : null
                 }
                 isBriefOnly={viewedAgentTask ? false : isBriefOnly}
+                focusView={!viewedAgentTask && focusView && isFullscreenEnvEnabled()}
                 unseenDivider={viewedAgentTask ? undefined : unseenDivider}
                 scrollRef={isFullscreenEnvEnabled() ? scrollRef : undefined}
                 trackStickyPrompt={isFullscreenEnvEnabled() ? true : undefined}
@@ -7264,6 +7347,12 @@ export function REPL({
                   overrideShimmerColor={spinnerShimmerColor}
                   hasActiveTools={inProgressToolUseIDs.size > 0}
                   leaderIsIdle={!isLoading}
+                  apiRetry={(() => {
+                    const last = messages.at(-1)
+                    return isLoading && last?.type === 'system' && last.subtype === 'api_error'
+                      ? (last as SystemAPIErrorMessage)
+                      : null
+                  })()}
                 />
               )}
               {!showSpinner &&
@@ -7543,6 +7632,21 @@ export function REPL({
                         },
                       }))
                       currentRequest?.onWaitingDismiss?.(action)
+                    }}
+                  />
+                )}
+                {focusedInputDialog === 'peer-inbound' && heldPeerMessages[0] && (
+                  <PeerInboundDialog
+                    key={heldPeerMessages[0].uuid}
+                    message={heldPeerMessages[0]}
+                    onDone={decision => {
+                      const message = heldPeerMessages[0]!
+                      setHeldPeerMessages(previous => previous.filter(item => item.uuid !== message.uuid))
+                      // eslint-disable-next-line @typescript-eslint/no-require-imports
+                      const { resolveHeldPeerMessage } = require('../utils/udsMessaging.js') as typeof import('../utils/udsMessaging.js')
+                      const result = resolveHeldPeerMessage(message.uuid, decision)
+                      if (result === 'dropped') setMessages(previous => [...previous, createSystemMessage('That held message was NOT delivered: cross-session messaging was turned off (or set to refuse) while the prompt was open, so your approval could not apply — it was dropped.', 'warning')])
+                      if (result === 'gone') setMessages(previous => [...previous, createSystemMessage(`That held message was already resolved before your ${decision === 'approve' ? 'approval' : 'denial'} (released or dropped by a mode/setting change) — no action taken.`, 'warning')])
                     }}
                   />
                 )}

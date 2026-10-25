@@ -666,6 +666,32 @@ export const initializeGrowthBook = memoize(
 )
 
 /**
+ * Values for flags that official 2.1.303 ships unconditionally (the flag is
+ * gone or its default flipped). Used only when GrowthBook is disabled, which
+ * is always the case for non-Anthropic-telemetry builds, so these features
+ * match official instead of falling back to the stale call-site default.
+ */
+const LOCAL_GA_DEFAULTS: Readonly<Record<string, unknown>> = {
+  tengu_keybinding_customization_release: true,
+  tengu_glacier_2xr: true,
+  tengu_immediate_model_command: true,
+  tengu_lodestone_enabled: true,
+  tengu_ochre_wren: true,
+  tengu_disable_keepalive_on_econnreset: true,
+  tengu_quartz_lantern: true,
+  tengu_cobalt_lantern: true,
+  tengu_willow_mode: 'hint_v2',
+  tengu_quiet_fern: true,
+  tengu_vscode_cc_auth: true,
+}
+
+function getDisabledGrowthBookValue<T>(feature: string, defaultValue: T): T {
+  return Object.hasOwn(LOCAL_GA_DEFAULTS, feature)
+    ? (LOCAL_GA_DEFAULTS[feature] as T)
+    : defaultValue
+}
+
+/**
  * Get a feature value with a default fallback - blocks until initialized.
  * @internal Used by both deprecated and cached functions.
  */
@@ -685,7 +711,7 @@ async function getFeatureValueInternal<T>(
   }
 
   if (!isGrowthBookEnabled()) {
-    return defaultValue
+    return getDisabledGrowthBookValue(feature, defaultValue)
   }
 
   const growthBookClient = await initializeGrowthBook()
@@ -748,7 +774,7 @@ export function getFeatureValue_CACHED_MAY_BE_STALE<T>(
   }
 
   if (!isGrowthBookEnabled()) {
-    return defaultValue
+    return getDisabledGrowthBookValue(feature, defaultValue)
   }
 
   // Log experiment exposure if data is available, otherwise defer until after init

@@ -46,7 +46,10 @@ import {
   type SessionId,
 } from '../types/ids.js'
 import type { AttributionSnapshotMessage } from '../types/logs.js'
-import type { PermissionMode } from '../types/permissions.js'
+import {
+  PERMISSION_MODES,
+  type PermissionMode,
+} from '../types/permissions.js'
 import {
   type ContentReplacementEntry,
   type ContextCollapseCommitEntry,
@@ -575,6 +578,16 @@ type InternalEventWriter = (
   options?: { isCompaction?: boolean; agentId?: string },
 ) => Promise<void>
 
+type SessionMirror = (filePath: string, entries: Entry[]) => void
+
+/**
+ * Register a callback that receives every batch of entries after it is appended
+ * to a local transcript file (--session-mirror's transcript_mirror frames).
+ */
+export function addSessionMirror(mirror: SessionMirror): void {
+  getProject().addMirror(mirror)
+}
+
 /**
  * Register a CCR v2 internal event writer for transcript persistence.
  * When set, transcript messages are written as internal worker events
@@ -620,6 +633,7 @@ class Project {
   currentSessionLastPrompt: string | undefined
   currentSessionAgentSetting: string | undefined
   currentSessionMode: 'coordinator' | 'normal' | undefined
+  currentSessionPermissionMode: PermissionMode | undefined
   // Tri-state: undefined = never touched (don't write), null = exited worktree,
   // object = currently in worktree. reAppendSessionMetadata writes null so
   // --resume knows the session exited (vs. crashed while inside).
@@ -646,6 +660,7 @@ class Project {
   >()
   private flushTimer: ReturnType<typeof setTimeout> | null = null
   private activeDrain: Promise<void> | null = null
+  private mirrors: SessionMirror[] = []
   private FLUSH_INTERVAL_MS = 100
   private readonly MAX_CHUNK_BYTES = 100 * 1024 * 1024
 
@@ -713,6 +728,21 @@ class Project {
     }, this.FLUSH_INTERVAL_MS)
   }
 
+  addMirror(mirror: SessionMirror): void {
+    this.mirrors.push(mirror)
+  }
+
+  private fireMirrors(filePath: string, entries: Entry[]): void {
+    if (entries.length === 0) return
+    for (const mirror of this.mirrors) {
+      try {
+        mirror(filePath, entries)
+      } catch (error) {
+        logForDebugging(`[SessionMirror] mirror failed for ${filePath}: ${error}`)
+      }
+    }
+  }
+
   private async appendToFile(filePath: string, data: string): Promise<void> {
     try {
       await fsAppendFile(filePath, data, { mode: 0o600 })
@@ -733,6 +763,7 @@ class Project {
 
       let content = ''
       const resolvers: Array<() => void> = []
+      const mirrored: Entry[] = []
 
       for (const { entry, resolve } of batch) {
         const line = jsonStringify(entry) + '\n'
@@ -740,6 +771,7 @@ class Project {
         if (content.length + line.length >= this.MAX_CHUNK_BYTES) {
           // Flush chunk and resolve its entries before starting a new one
           await this.appendToFile(filePath, content)
+          this.fireMirrors(filePath, mirrored.splice(0))
           for (const r of resolvers) {
             r()
           }
@@ -749,10 +781,12 @@ class Project {
 
         content += line
         resolvers.push(resolve)
+        if (this.mirrors.length > 0) mirrored.push(entry)
       }
 
       if (content.length > 0) {
         await this.appendToFile(filePath, content)
+        this.fireMirrors(filePath, mirrored)
         for (const r of resolvers) {
           r()
         }
@@ -905,6 +939,13 @@ class Project {
       appendEntryToFile(this.sessionFile, {
         type: 'mode',
         mode: this.currentSessionMode,
+        sessionId,
+      })
+    }
+    if (this.currentSessionPermissionMode) {
+      appendEntryToFile(this.sessionFile, {
+        type: 'permission-mode',
+        permissionMode: this.currentSessionPermissionMode,
         sessionId,
       })
     }
@@ -1295,7 +1336,7 @@ class Project {
     } else if (entry.type === 'speculation-accept') {
       // Speculation accept entries can always be appended
       void this.enqueueWrite(sessionFile, entry)
-    } else if (entry.type === 'mode') {
+    } else if (entry.type === 'mode' || entry.type === 'permission-mode') {
       // Mode entries can always be appended
       void this.enqueueWrite(sessionFile, entry)
     } else if (entry.type === 'worktree-state') {
@@ -2897,6 +2938,7 @@ export function restoreSessionMetadata(meta: {
   agentColor?: string
   agentSetting?: string
   mode?: 'coordinator' | 'normal'
+  permissionMode?: PermissionMode
   worktreeSession?: PersistedWorktreeSession | null
   prNumber?: number
   prUrl?: string
@@ -2915,6 +2957,8 @@ export function restoreSessionMetadata(meta: {
   if (meta.agentColor) project.currentSessionAgentColor = meta.agentColor
   if (meta.agentSetting) project.currentSessionAgentSetting = meta.agentSetting
   if (meta.mode) project.currentSessionMode = meta.mode
+  if (meta.permissionMode)
+    project.currentSessionPermissionMode = meta.permissionMode
   if (meta.worktreeSession !== undefined)
     project.currentSessionWorktree = meta.worktreeSession
   if (meta.prNumber !== undefined)
@@ -2937,6 +2981,7 @@ export function clearSessionMetadata(): void {
   project.currentSessionLastPrompt = undefined
   project.currentSessionAgentSetting = undefined
   project.currentSessionMode = undefined
+  project.currentSessionPermissionMode = undefined
   project.currentSessionWorktree = undefined
   project.currentSessionPrNumber = undefined
   project.currentSessionPrUrl = undefined
@@ -3030,6 +3075,25 @@ export function saveMode(mode: 'coordinator' | 'normal'): void {
 }
 
 /**
+ * Record the main session's permission mode so --resume/--continue can put it
+ * back, like official's permission-mode entry. Cached for
+ * materializeSessionFile/reAppendSessionMetadata, and written right away when
+ * the transcript already exists so a mid-session switch survives a crash.
+ */
+export function savePermissionMode(mode: PermissionMode): void {
+  const project = getProject()
+  if (project.currentSessionPermissionMode === mode) return
+  project.currentSessionPermissionMode = mode
+  if (project.sessionFile) {
+    void project.appendEntry({
+      type: 'permission-mode',
+      permissionMode: mode,
+      sessionId: getSessionId() as UUID,
+    })
+  }
+}
+
+/**
  * Record the session's worktree state for --resume. Written to disk by
  * materializeSessionFile on the first user message and re-stamped by
  * reAppendSessionMetadata on exit. Pass null when exiting a worktree
@@ -3052,6 +3116,7 @@ export function saveWorktreeState(
         sessionId: worktreeSession.sessionId,
         tmuxSessionName: worktreeSession.tmuxSessionName,
         hookBased: worktreeSession.hookBased,
+        ...(worktreeSession.enteredExisting && { enteredExisting: true }),
       }
     : null
   const project = getProject()
@@ -3120,6 +3185,7 @@ export async function loadFullLog(log: LogOption): Promise<LogOption> {
       prUrls,
       prRepositories,
       modes,
+      permissionModes,
       worktreeStates,
       devModsFolders,
       sessionStartedAts,
@@ -3166,6 +3232,9 @@ export async function loadFullLog(log: LogOption): Promise<LogOption> {
       agentColor: sessionId ? agentColors.get(sessionId) : log.agentColor,
       agentSetting: sessionId ? agentSettings.get(sessionId) : log.agentSetting,
       mode: sessionId ? (modes.get(sessionId) as LogOption['mode']) : log.mode,
+      permissionMode: sessionId
+        ? permissionModes.get(sessionId)
+        : log.permissionMode,
       worktreeSession:
         sessionId && worktreeStates.has(sessionId)
           ? worktreeStates.get(sessionId)
@@ -3275,6 +3344,7 @@ const METADATA_TYPE_MARKERS = [
   '"type":"agent-color"',
   '"type":"agent-setting"',
   '"type":"mode"',
+  '"type":"permission-mode"',
   '"type":"worktree-state"',
   '"type":"dev-mods"',
   '"type":"session-started-at"',
@@ -3644,6 +3714,7 @@ export async function loadTranscriptFile(
   prUrls: Map<UUID, string>
   prRepositories: Map<UUID, string>
   modes: Map<UUID, string>
+  permissionModes: Map<UUID, PermissionMode>
   worktreeStates: Map<UUID, PersistedWorktreeSession | null>
   devModsFolders: Map<UUID, string>
   sessionStartedAts: Map<UUID, number>
@@ -3667,6 +3738,13 @@ export async function loadTranscriptFile(
   const prUrls = new Map<UUID, string>()
   const prRepositories = new Map<UUID, string>()
   const modes = new Map<UUID, string>()
+  const permissionModes = new Map<UUID, PermissionMode>()
+  const keepPermissionMode = (sessionId: UUID, mode: unknown) => {
+    // Unvalidated JSON from disk; may name a mode from another build.
+    if ((PERMISSION_MODES as readonly unknown[]).includes(mode)) {
+      permissionModes.set(sessionId, mode as PermissionMode)
+    }
+  }
   const worktreeStates = new Map<UUID, PersistedWorktreeSession | null>()
   const devModsFolders = new Map<UUID, string>()
   const sessionStartedAts = new Map<UUID, number>()
@@ -3778,6 +3856,8 @@ export async function loadTranscriptFile(
           agentSettings.set(entry.sessionId, entry.agentSetting)
         } else if (entry.type === 'mode' && entry.sessionId) {
           modes.set(entry.sessionId, entry.mode)
+        } else if (entry.type === 'permission-mode' && entry.sessionId) {
+          keepPermissionMode(entry.sessionId, entry.permissionMode)
         } else if (entry.type === 'worktree-state' && entry.sessionId) {
           worktreeStates.set(entry.sessionId, entry.worktreeSession)
         } else if (entry.type === 'session-started-at' && entry.sessionId) {
@@ -3852,6 +3932,8 @@ export async function loadTranscriptFile(
         agentSettings.set(entry.sessionId, entry.agentSetting)
       } else if (entry.type === 'mode' && entry.sessionId) {
         modes.set(entry.sessionId, entry.mode)
+      } else if (entry.type === 'permission-mode' && entry.sessionId) {
+        keepPermissionMode(entry.sessionId, entry.permissionMode)
       } else if (entry.type === 'worktree-state' && entry.sessionId) {
         worktreeStates.set(entry.sessionId, entry.worktreeSession)
       } else if (entry.type === 'session-started-at' && entry.sessionId) {
@@ -3990,6 +4072,7 @@ export async function loadTranscriptFile(
     prUrls,
     prRepositories,
     modes,
+    permissionModes,
     worktreeStates,
     devModsFolders,
     sessionStartedAts: new Map([...Array.from(costStates, ([id, state]) => [id, state.startTime] as const), ...sessionStartedAts]),
@@ -4014,6 +4097,7 @@ async function loadSessionFile(sessionId: UUID): Promise<{
   tags: Map<UUID, string>
   agentNames: Map<UUID, string>
   agentSettings: Map<UUID, string>
+  permissionModes: Map<UUID, PermissionMode>
   worktreeStates: Map<UUID, PersistedWorktreeSession | null>
   devModsFolders: Map<UUID, string>
   sessionStartedAts: Map<UUID, number>
@@ -4073,6 +4157,7 @@ export async function getLastSessionLog(
     tags,
     agentNames,
     agentSettings,
+    permissionModes,
     worktreeStates,
     devModsFolders,
     sessionStartedAts,
@@ -4121,6 +4206,7 @@ export async function getLastSessionLog(
       contentReplacements.get(sessionId) ?? [],
     ),
     agentName: agentNames.get(sessionId) ?? transcript[0]?.agentName,
+    permissionMode: permissionModes.get(sessionId),
     worktreeSession: worktreeStates.get(sessionId),
     devModsFolder: devModsFolders.get(sessionId),
     startedAt: sessionStartedAts.get(sessionId),
@@ -4822,6 +4908,7 @@ export async function loadAllLogsFromSessionFile(
     prUrls,
     prRepositories,
     modes,
+    permissionModes,
     fileHistorySnapshots,
     attributionSnapshots,
     contentReplacements,
@@ -4888,6 +4975,7 @@ export async function loadAllLogsFromSessionFile(
       agentColor: agentColors.get(sessionId),
       agentSetting: agentSettings.get(sessionId),
       mode: modes.get(sessionId) as LogOption['mode'],
+      permissionMode: permissionModes.get(sessionId),
       prNumber: prNumbers.get(sessionId),
       prUrl: prUrls.get(sessionId),
       prRepository: prRepositories.get(sessionId),

@@ -53,13 +53,21 @@ describe('/diff', () => {
     expect(preferences).toBe(0)
     expect(completions).toEqual([[undefined,{display:'skip'}]])
   })
-  test('wide diff panels bypass the active turn queue in either renderer', () => {
-    const fullscreen = createContext({ columns: 144, isFullscreen: true }).context
-    const defaultRenderer = createContext({ columns: 144, isFullscreen: false }).context
+  test('bypasses the active turn queue only in the fullscreen renderer', () => {
+    const previous = process.env.CLAUDE_CODE_NO_FLICKER
+    const wide = createContext({ columns: 144, isFullscreen: true }).context
     const narrow = createContext({ columns: 109, isFullscreen: false }).context
-    expect(isCommandImmediate(diffCommand, '', fullscreen)).toBe(true)
-    expect(isCommandImmediate(diffCommand, '', defaultRenderer)).toBe(true)
-    expect(isCommandImmediate(diffCommand, '', narrow)).toBe(false)
+    try {
+      process.env.CLAUDE_CODE_NO_FLICKER = '1'
+      expect(isCommandImmediate(diffCommand, '', wide)).toBe(true)
+      expect(isCommandImmediate(diffCommand, '', narrow)).toBe(true)
+      process.env.CLAUDE_CODE_NO_FLICKER = '0'
+      expect(isCommandImmediate(diffCommand, '', wide)).toBe(false)
+      expect(isCommandImmediate(diffCommand, '', narrow)).toBe(false)
+    } finally {
+      if (previous === undefined) delete process.env.CLAUDE_CODE_NO_FLICKER
+      else process.env.CLAUDE_CODE_NO_FLICKER = previous
+    }
   })
 
   test('opens the native sidebar before the shared controller refresh completes', async () => {

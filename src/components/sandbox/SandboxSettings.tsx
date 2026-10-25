@@ -49,15 +49,15 @@ export function SandboxSettings({
     {
       label:
         currentMode === 'auto-allow'
-          ? `Sandbox BashTool, with auto-allow ${currentIndicator}`
-          : 'Sandbox BashTool, with auto-allow',
+          ? `Sandbox commands, with auto-allow ${currentIndicator}`
+          : 'Sandbox commands, with auto-allow',
       value: 'auto-allow',
     },
     {
       label:
         currentMode === 'regular'
-          ? `Sandbox BashTool, with regular permissions ${currentIndicator}`
-          : 'Sandbox BashTool, with regular permissions',
+          ? `Sandbox commands, with regular permissions ${currentIndicator}`
+          : 'Sandbox commands, with regular permissions',
       value: 'regular',
     },
     {

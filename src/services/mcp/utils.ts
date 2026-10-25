@@ -1,17 +1,32 @@
+import { spawnSync } from 'child_process'
 import { createHash } from 'crypto'
+import memoize from 'lodash-es/memoize.js'
 import { join } from 'path'
-import { getIsNonInteractiveSession } from '../../bootstrap/state.js'
+import {
+  getIsNonInteractiveSession,
+  getOriginalCwd,
+  getProjectConfigRoot,
+} from '../../bootstrap/state.js'
 import type { Command } from '../../commands.js'
 import type { AgentMcpServerInfo } from '../../components/mcp/types.js'
 import type { Tool } from '../../Tool.js'
 import type { AgentDefinition } from '../../tools/AgentTool/loadAgentsDir.js'
+import { checkHasTrustDialogAccepted } from '../../utils/config.js'
 import { getCwd } from '../../utils/cwd.js'
 import { getGlobalClaudeFile } from '../../utils/env.js'
-import { isSettingSourceEnabled } from '../../utils/settings/constants.js'
+import { gitExe } from '../../utils/git.js'
 import {
+  getEnabledSettingSources,
+  isSettingSourceEnabled,
+} from '../../utils/settings/constants.js'
+import {
+  getRelativeSettingsFilePathForSource,
   getSettings_DEPRECATED,
+  getSettingsFilePathForSource,
+  getSettingsForSource,
   hasSkipDangerousModePermissionPrompt,
 } from '../../utils/settings/settings.js'
+import type { SettingsJson } from '../../utils/settings/types.js'
 import { jsonStringify } from '../../utils/slowOperations.js'
 import { getEnterpriseMcpFilePath, getMcpConfigByName } from './config.js'
 import { mcpInfoFromString } from './mcpStringUtils.js'
@@ -274,7 +289,7 @@ export function describeMcpConfigFilePath(scope: ConfigScope): string {
     case 'user':
       return getGlobalClaudeFile()
     case 'project':
-      return join(getCwd(), '.mcp.json')
+      return join(getProjectConfigRoot() ?? getCwd(), '.mcp.json')
     case 'local':
       return `${getGlobalClaudeFile()} [project: ${getCwd()}]`
     case 'dynamic':
@@ -362,6 +377,21 @@ export function parseHeaders(headerArray: string[]): Record<string, string> {
   return headers
 }
 
+// A failed or timed-out git check counts as tracked, so it fails closed.
+const isLocalSettingsGitTracked = memoize((projectDir: string): boolean => {
+  const result = spawnSync(
+    gitExe(),
+    [
+      'ls-files',
+      '--error-unmatch',
+      '--',
+      getRelativeSettingsFilePathForSource('localSettings'),
+    ],
+    { cwd: projectDir, stdio: 'ignore', timeout: 5000 },
+  )
+  return result.error !== undefined || result.status === 0
+})
+
 export function getProjectMcpServerStatus(
   serverName: string,
 ): 'approved' | 'rejected' | 'pending' {
@@ -378,12 +408,35 @@ export function getProjectMcpServerStatus(
     return 'rejected'
   }
 
-  if (
-    settings?.enabledMcpjsonServers?.some(
+  const approves = (source: SettingsJson | null | undefined) =>
+    source?.enableAllProjectMcpServers === true ||
+    (source?.enabledMcpjsonServers?.some(
       name => normalizeNameForMCP(name) === normalizedName,
-    ) ||
-    settings?.enableAllProjectMcpServers
-  ) {
+    ) ??
+      false)
+  // Before the workspace is trusted, a repo must not approve its own
+  // .mcp.json servers: skip .claude/settings.json (unless it is the user
+  // settings file) and a git-tracked .claude/settings.local.json, which is
+  // repo content too (official 2.1.196).
+  const approved = checkHasTrustDialogAccepted()
+    ? approves(settings)
+    : getEnabledSettingSources().some(source => {
+        if (
+          source === 'projectSettings' &&
+          getSettingsFilePathForSource('projectSettings') !==
+            getSettingsFilePathForSource('userSettings')
+        ) {
+          return false
+        }
+        if (
+          source === 'localSettings' &&
+          isLocalSettingsGitTracked(getOriginalCwd())
+        ) {
+          return false
+        }
+        return approves(getSettingsForSource(source))
+      })
+  if (approved) {
     return 'approved'
   }
 

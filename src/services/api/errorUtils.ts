@@ -252,6 +252,13 @@ export function formatAPIError(error: APIError): string {
     )
   }
 
+  // The SDK falls back to `${status} ${JSON body}` when the body has no top-level
+  // message; show the API's own message instead, as official does ("529 Overloaded").
+  if (error.status !== undefined && error.message.startsWith(`${error.status} {`)) {
+    const nested = extractNestedErrorMessage(error)
+    if (nested) return `${error.status} ${nested}`
+  }
+
   const sanitizedMessage = sanitizeAPIError(error)
   // Use sanitized message if it's different from the original (i.e., HTML was sanitized)
   return sanitizedMessage !== error.message && sanitizedMessage.length > 0

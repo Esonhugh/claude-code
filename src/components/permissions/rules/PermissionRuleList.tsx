@@ -1,3 +1,4 @@
+import { feature } from 'bun:bundle'
 import chalk from 'chalk'
 import figures from 'figures'
 import * as React from 'react'
@@ -53,13 +54,23 @@ import { isManagedSSHRemoteRuntime } from '../../../ssh/managedSSHPermissions.js
 import type { Option } from '../../ui/option.js'
 import { AddPermissionRules } from './AddPermissionRules.js'
 import { AddWorkspaceDirectory } from './AddWorkspaceDirectory.js'
+import {
+  ADD_AUTO_MODE_RULE_VALUE,
+  AddAutoModeRule,
+  type AutoModeRuleEntry,
+  AutoModeRuleDetails,
+  addAutoModeRule,
+  getAutoModeRuleEntries,
+  getAutoModeRuleOptions,
+  removeAutoModeRule,
+} from './AutoModeTab.js'
 import { PermissionRuleDescription } from './PermissionRuleDescription.js'
 import { PermissionRuleInput } from './PermissionRuleInput.js'
 import { RecentDenialsTab } from './RecentDenialsTab.js'
 import { RemoveWorkspaceDirectory } from './RemoveWorkspaceDirectory.js'
 import { WorkspaceTab } from './WorkspaceTab.js'
 
-type TabType = 'recent' | 'allow' | 'ask' | 'deny' | 'workspace'
+type TabType = 'recent' | 'allow' | 'ask' | 'deny' | 'automode' | 'workspace'
 
 type RuleSourceTextProps = {
   rule: PermissionRule
@@ -311,7 +322,11 @@ export function PermissionRuleList({
   managedSSHRemotePermissions,
 }: Props): React.ReactNode {
   const hasDenials = getAutoModeDenials().length > 0
-  const defaultTab: TabType = initialTab ?? (hasDenials ? 'recent' : 'allow')
+  // The tabs unmount while an auto mode rule view is open; come back to them.
+  const [returnToAutoModeTab, setReturnToAutoModeTab] = useState(false)
+  const defaultTab: TabType = returnToAutoModeTab
+    ? 'automode'
+    : (initialTab ?? (hasDenials ? 'recent' : 'allow'))
   const [changes, setChanges] = useState<string[]>([])
   const localToolPermissionContext = useAppState(s => s.toolPermissionContext)
   const setAppState = useSetAppState()
@@ -392,6 +407,14 @@ export function PermissionRuleList({
   const [removingDirectory, setRemovingDirectory] = useState<string | null>(
     null,
   )
+  const [autoModeVersion, setAutoModeVersion] = useState(0)
+  const [selectedAutoModeEntry, setSelectedAutoModeEntry] = useState<
+    AutoModeRuleEntry | undefined
+  >()
+  const [isAddingAutoModeRule, setIsAddingAutoModeRule] = useState(false)
+  // Re-read after each add/delete; rules live in settings files, not AppState.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const autoModeEntries = useMemo(getAutoModeRuleEntries, [autoModeVersion])
   const [isSearchMode, setIsSearchMode] = useState(false)
   const [headerFocused, setHeaderFocused] = useState(true)
   const handleHeaderFocusChange = useCallback((focused: boolean) => {
@@ -434,6 +457,7 @@ export function PermissionRuleList({
             return askRulesByKey
           case 'workspace':
           case 'recent':
+          case 'automode':
             return new Map<string, PermissionRule>()
         }
       })()
@@ -441,7 +465,12 @@ export function PermissionRuleList({
       const options: Option[] = []
 
       // Only show "Add a new rule" for allow and deny tabs (and not when searching)
-      if (tab !== 'workspace' && tab !== 'recent' && !query) {
+      if (
+        tab !== 'workspace' &&
+        tab !== 'recent' &&
+        tab !== 'automode' &&
+        !query
+      ) {
         options.push({
           label: `Add a new rule${figures.ellipsis}`,
           value: 'add-new-rule',
@@ -493,7 +522,9 @@ export function PermissionRuleList({
     !addingRuleToTab &&
     !validatedRule &&
     !isAddingWorkspaceDirectory &&
-    !removingDirectory
+    !removingDirectory &&
+    !selectedAutoModeEntry &&
+    !isAddingAutoModeRule
 
   const {
     query: searchQuery,
@@ -742,6 +773,48 @@ export function PermissionRuleList({
     return <Text dimColor>Loading remote SSH permissions...</Text>
   }
 
+  if (selectedAutoModeEntry) {
+    return (
+      <AutoModeRuleDetails
+        entry={selectedAutoModeEntry}
+        onDelete={() => {
+          const { error } = removeAutoModeRule(
+            selectedAutoModeEntry.section,
+            selectedAutoModeEntry.rule,
+          )
+          setChanges(prev => [
+            ...prev,
+            error
+              ? chalk.red(`Could not delete auto mode rule: ${error.message}`)
+              : `Deleted auto mode rule ${chalk.bold(selectedAutoModeEntry.rule.split('\n')[0])}`,
+          ])
+          setSelectedAutoModeEntry(undefined)
+          setAutoModeVersion(v => v + 1)
+        }}
+        onCancel={() => setSelectedAutoModeEntry(undefined)}
+      />
+    )
+  }
+
+  if (isAddingAutoModeRule) {
+    return (
+      <AddAutoModeRule
+        onSubmit={(section, rule) => {
+          const { error } = addAutoModeRule(section, rule)
+          setChanges(prev => [
+            ...prev,
+            error
+              ? chalk.red(`Could not save auto mode rule: ${error.message}`)
+              : `Added auto mode rule ${chalk.bold(rule)} to user settings`,
+          ])
+          setIsAddingAutoModeRule(false)
+          setAutoModeVersion(v => v + 1)
+        }}
+        onCancel={() => setIsAddingAutoModeRule(false)}
+      />
+    )
+  }
+
   if (selectedRule) {
     return (
       <RuleDetails
@@ -755,7 +828,8 @@ export function PermissionRuleList({
   if (
     addingRuleToTab &&
     addingRuleToTab !== 'workspace' &&
-    addingRuleToTab !== 'recent'
+    addingRuleToTab !== 'recent' &&
+    addingRuleToTab !== 'automode'
   ) {
     return (
       <PermissionRuleInput
@@ -895,12 +969,19 @@ export function PermissionRuleList({
     onHeaderFocusChange: handleHeaderFocusChange,
   }
 
+  // Like official, the tab shows unless auto mode is known to be unavailable.
+  const showAutoModeTab =
+    feature('TRANSCRIPT_CLASSIFIER') &&
+    toolPermissionContext.isAutoModeAvailable !== false
+
   const isHidden =
     !!selectedRule ||
     !!addingRuleToTab ||
     !!validatedRule ||
     isAddingWorkspaceDirectory ||
-    !!removingDirectory
+    !!removingDirectory ||
+    !!selectedAutoModeEntry ||
+    isAddingAutoModeRule
 
   return (
     <Box flexDirection="column" onKeyDown={handleKeyDown}>
@@ -913,36 +994,68 @@ export function PermissionRuleList({
           initialHeaderFocused={!hasDenials}
           navFromContent={!isSearchMode}
         >
-          <Tab id="recent" title="Recently denied">
-            <RecentDenialsTab
-              onHeaderFocusChange={handleHeaderFocusChange}
-              onStateChange={handleDenialStateChange}
-            />
-          </Tab>
-          <Tab id="allow" title="Allow">
-            <PermissionRulesTab tab="allow" {...sharedRulesProps} />
-          </Tab>
-          <Tab id="ask" title="Ask">
-            <PermissionRulesTab tab="ask" {...sharedRulesProps} />
-          </Tab>
-          <Tab id="deny" title="Deny">
-            <PermissionRulesTab tab="deny" {...sharedRulesProps} />
-          </Tab>
-          <Tab id="workspace" title="Workspace">
-            <Box flexDirection="column">
-              <Text>
-                Claude Code can read files in the workspace, and make edits when
-                auto-accept edits is on.
-              </Text>
-              <WorkspaceTab
-                onExit={onExit}
-                toolPermissionContext={toolPermissionContext}
-                onRequestAddDirectory={handleRequestAddDirectory}
-                onRequestRemoveDirectory={handleRequestRemoveDirectory}
+          {[
+            <Tab key="recent" id="recent" title="Recently denied">
+              <RecentDenialsTab
                 onHeaderFocusChange={handleHeaderFocusChange}
+                onStateChange={handleDenialStateChange}
               />
-            </Box>
-          </Tab>
+            </Tab>,
+            <Tab key="allow" id="allow" title="Allow">
+              <PermissionRulesTab tab="allow" {...sharedRulesProps} />
+            </Tab>,
+            <Tab key="ask" id="ask" title="Ask">
+              <PermissionRulesTab tab="ask" {...sharedRulesProps} />
+            </Tab>,
+            <Tab key="deny" id="deny" title="Deny">
+              <PermissionRulesTab tab="deny" {...sharedRulesProps} />
+            </Tab>,
+            ...(showAutoModeTab
+              ? [
+                  <Tab key="automode" id="automode" title="Auto mode">
+                    <Box flexDirection="column">
+                      <Text>
+                        Extra rules for the auto mode classifier. Rules are
+                        plain sentences; new rules are saved to your user
+                        settings.
+                      </Text>
+                      <RulesTabContent
+                        options={getAutoModeRuleOptions(
+                          autoModeEntries,
+                          searchQuery,
+                        )}
+                        onSelect={value => {
+                          setReturnToAutoModeTab(true)
+                          if (value === ADD_AUTO_MODE_RULE_VALUE) {
+                            setIsAddingAutoModeRule(true)
+                          } else {
+                            setSelectedAutoModeEntry(
+                              autoModeEntries[Number(value)],
+                            )
+                          }
+                        }}
+                        {...sharedRulesProps}
+                      />
+                    </Box>
+                  </Tab>,
+                ]
+              : []),
+            <Tab key="workspace" id="workspace" title="Workspace">
+              <Box flexDirection="column">
+                <Text>
+                  Claude Code can read files in the workspace, and make edits
+                  when auto-accept edits is on.
+                </Text>
+                <WorkspaceTab
+                  onExit={onExit}
+                  toolPermissionContext={toolPermissionContext}
+                  onRequestAddDirectory={handleRequestAddDirectory}
+                  onRequestRemoveDirectory={handleRequestRemoveDirectory}
+                  onHeaderFocusChange={handleHeaderFocusChange}
+                />
+              </Box>
+            </Tab>,
+          ]}
         </Tabs>
         <Box marginTop={1} paddingLeft={1}>
           <Text dimColor>

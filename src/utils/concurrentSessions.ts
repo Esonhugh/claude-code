@@ -12,7 +12,7 @@ import { logForDebugging } from './debug.js'
 import { getClaudeConfigHomeDir } from './envUtils.js'
 import { errorMessage, isFsInaccessible } from './errors.js'
 import { getProcessPidDomain, getProcessStart, isProcessRunning } from './genericProcessUtils.js'
-import { cleanPeerName } from './peerProtocol.js'
+import { cleanPeerName, PEER_FEATURE_NOTIFY_IDLE } from './peerProtocol.js'
 import { getPlatform } from './platform.js'
 import { jsonParse, jsonStringify } from './slowOperations.js'
 import { getAgentId } from './teammate.js'
@@ -107,7 +107,7 @@ export async function registerSession(): Promise<boolean> {
         kind,
         name: registeredName,
         entrypoint: process.env.CLAUDE_CODE_ENTRYPOINT,
-        ...(messagingSocketPath ? { messagingSocketPath, peerProtocol: 1, peerFeatures: [] } : {}),
+        ...(messagingSocketPath ? { messagingSocketPath, peerProtocol: 1, peerFeatures: [PEER_FEATURE_NOTIFY_IDLE] } : {}),
         ...(feature('BG_SESSIONS')
           ? {
               logPath: process.env.CLAUDE_CODE_SESSION_LOG,

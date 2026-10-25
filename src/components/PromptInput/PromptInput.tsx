@@ -164,6 +164,7 @@ import {
   modelDisplayString,
 } from '../../utils/model/model.js'
 import { getNextPermissionMode } from '../../utils/permissions/getNextPermissionMode.js'
+import { logPermissionModeChange } from '../../utils/permissions/PermissionUpdate.js'
 import { transitionPermissionMode } from '../../utils/permissions/permissionSetup.js'
 import { getPlatform } from '../../utils/platform.js'
 import type { ProcessUserInputContext } from '../../utils/processUserInput/processUserInput.js'
@@ -177,9 +178,12 @@ import {
   subscribeKnownChannels,
 } from '../../utils/suggestions/slackChannelSuggestions.js'
 import { isInProcessEnabled } from '../../utils/swarm/backends/registry.js'
-import { syncTeammateMode } from '../../utils/swarm/teamHelpers.js'
+import {
+  syncTeammateMode,
+  teammatesKeepOtherMode,
+} from '../../utils/swarm/teamHelpers.js'
 import type { TeamSummary } from '../../utils/teamDiscovery.js'
-import { getTeammateColor } from '../../utils/teammate.js'
+import { getTeammateColor, isTeammate } from '../../utils/teammate.js'
 import { isInProcessTeammate } from '../../utils/teammateContext.js'
 import { writeToMailbox } from '../../utils/teammateMailbox.js'
 import { mergePromptDecorations, type TextHighlight } from '../../utils/textHighlighting.js'
@@ -210,7 +214,7 @@ import {
   resolveCoordinatorSelection,
   useCoordinatorTaskCount,
 } from '../CoordinatorAgentStatus.js'
-import { getEffortNotificationText } from '../EffortIndicator.js'
+import { effortNotification, getEffortNotificationText } from '../EffortIndicator.js'
 import { getFastIconString } from '../FastIcon.js'
 import { GlobalSearchDialog } from '../GlobalSearchDialog.js'
 import { HistorySearchDialog } from '../HistorySearchDialog.js'
@@ -311,7 +315,7 @@ type Props = {
       speculationSessionTimeSavedMs: number
       setAppState: (f: (prev: AppState) => AppState) => void
     },
-    options?: { fromKeybinding?: boolean; wait?: boolean },
+    options?: { fromKeybinding?: boolean; wait?: boolean; sendNow?: boolean },
   ) => Promise<void>
   onAgentSubmit?: (
     input: string,
@@ -719,6 +723,7 @@ function PromptInput({
   const [showFastModePicker, setShowFastModePicker] = useState(false)
   const [showThinkingToggle, setShowThinkingToggle] = useState(false)
   const permissionModeIntentRef = useRef(toolPermissionContext.mode)
+  const teammateModeHintShownRef = useRef(false)
   const permissionModeIntentGenerationRef = useRef(0)
 
   useEffect(() => {
@@ -1537,7 +1542,11 @@ function PromptInput({
   )
 
   const onSubmit = useCallback(
-    async (inputParam: string, isSubmittingSlashCommand = false) => {
+    async (
+      inputParam: string,
+      isSubmittingSlashCommand = false,
+      submitOptions?: { sendNow?: boolean },
+    ) => {
       inputParam = inputParam.trimEnd()
 
       // Don't submit if a footer indicator is being opened. Read fresh from
@@ -1697,12 +1706,17 @@ function PromptInput({
       }
 
       // Normal leader submission
-      await onSubmitProp(inputParam, {
-        setCursorOffset,
-        getCursorOffset,
-        clearBuffer,
-        resetHistory,
-      })
+      await onSubmitProp(
+        inputParam,
+        {
+          setCursorOffset,
+          getCursorOffset,
+          clearBuffer,
+          resetHistory,
+        },
+        undefined,
+        submitOptions,
+      )
     },
     [
       promptSuggestionState,
@@ -2098,6 +2112,12 @@ function PromptInput({
       })
 
       const teammateTaskId = viewingAgentTaskId
+      logPermissionModeChange(
+        'teammate',
+        viewedTeammate.permissionMode,
+        nextMode,
+        `shift-tab on ${viewedTeammate.identity.agentName}`,
+      )
       setAppState(prev => {
         const task = prev.tasks[teammateTaskId]
         if (!task || task.type !== 'in_process_teammate') {
@@ -2137,22 +2157,30 @@ function PromptInput({
     const intentGeneration = ++permissionModeIntentGenerationRef.current
     permissionModeIntentRef.current = nextMode
 
+    const rejectModeChange = (error: string) => {
+      addNotification({
+        key: 'permission-mode-rejected',
+        text: error,
+        color: 'error',
+        priority: 'high',
+      })
+      if (intentGeneration === permissionModeIntentGenerationRef.current) {
+        permissionModeIntentGenerationRef.current = 0
+        permissionModeIntentRef.current = toolPermissionContext.mode
+      }
+    }
+
     const applyModeChange = async () => {
       if (requestPermissionModeChange) {
-        const result = await requestPermissionModeChange(nextMode)
+        // transitionPermissionMode throws when a gate closed after the press.
+        const result = await requestPermissionModeChange(nextMode).catch(
+          (error: unknown) => ({
+            success: false as const,
+            error: errorMessage(error),
+          }),
+        )
         if (result.success === false) {
-          addNotification({
-            key: 'permission-mode-rejected',
-            text: result.error,
-            color: 'error',
-            priority: 'high',
-          })
-          if (
-            intentGeneration === permissionModeIntentGenerationRef.current
-          ) {
-            permissionModeIntentGenerationRef.current = 0
-            permissionModeIntentRef.current = toolPermissionContext.mode
-          }
+          rejectModeChange(result.error)
           return
         }
         if (intentGeneration === permissionModeIntentGenerationRef.current) {
@@ -2160,11 +2188,17 @@ function PromptInput({
           permissionModeIntentRef.current = nextMode
         }
       } else {
-        const preparedContext = transitionPermissionMode(
-          toolPermissionContext.mode,
-          nextMode,
-          toolPermissionContext,
-        )
+        let preparedContext: ToolPermissionContext
+        try {
+          preparedContext = transitionPermissionMode(
+            toolPermissionContext.mode,
+            nextMode,
+            toolPermissionContext,
+          )
+        } catch (error) {
+          rejectModeChange(errorMessage(error))
+          return
+        }
         setToolPermissionContext({
           ...preparedContext,
           mode: nextMode,
@@ -2176,6 +2210,26 @@ function PromptInput({
       logEvent('tengu_mode_cycle', {
         to: nextMode as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
       })
+      logPermissionModeChange('shift-tab', toolPermissionContext.mode, nextMode)
+      // Teammates keep their own mode; say so once rather than let the footer
+      // suggest the whole team switched.
+      if (
+        !teammateModeHintShownRef.current &&
+        isAgentSwarmsEnabled() &&
+        !isTeammate() &&
+        teammatesKeepOtherMode(
+          nextMode,
+          inProcessTeammates.map(teammate => teammate.permissionMode),
+          teamContext?.teammates,
+        )
+      ) {
+        teammateModeHintShownRef.current = true
+        addNotification({
+          key: 'teammate-mode-not-synced',
+          text: 'Teammates keep their own permission mode. View a teammate and press Shift+Tab, or use the teams dialog, to change theirs.',
+          priority: 'medium',
+        })
+      }
       if (nextMode === 'plan') {
         saveGlobalConfig(current => ({
           ...current,
@@ -2193,6 +2247,7 @@ function PromptInput({
     addNotification,
     toolPermissionContext,
     teamContext,
+    inProcessTeammates,
     viewingAgentTaskId,
     viewedTeammate,
     setAppState,
@@ -2258,6 +2313,28 @@ function PromptInput({
       unregisterQueueSubmit()
     }
   }, [keybindingContext, isModalOverlayActive, onSubmit, onSubmitProp, input, setCursorOffset, getCursorOffset, clearBuffer, resetHistory])
+
+  // Send now: submit without waiting behind the running turn. An empty prompt
+  // still reaches the REPL so it can deliver what is already queued. Capture
+  // so ctrl+enter is handled before the text input treats it as plain Enter.
+  const handleSendNow = useCallback(() => {
+    const hasImages = Object.values(pastedContents).some(c => c.type === 'image')
+    if (input.trim() === '' && !hasImages) {
+      void onSubmitProp(
+        '',
+        { setCursorOffset, getCursorOffset, clearBuffer, resetHistory },
+        undefined,
+        { sendNow: true },
+      )
+      return
+    }
+    void onSubmit(input, false, { sendNow: true })
+  }, [pastedContents, input, onSubmit, onSubmitProp, setCursorOffset, getCursorOffset, clearBuffer, resetHistory])
+  useKeybinding('chat:sendNow', handleSendNow, {
+    context: 'Chat',
+    isActive: !isModalOverlayActive,
+    capture: true,
+  })
 
   // Chat context keybindings for editing shortcuts
   // Note: history:previous/history:next are NOT handled here. They are passed as
@@ -2716,12 +2793,7 @@ function PromptInput({
       removeNotification('effort-level')
       return
     }
-    addNotification({
-      key: 'effort-level',
-      text: effortNotificationText,
-      priority: 'high',
-      timeoutMs: 12_000,
-    })
+    addNotification(effortNotification(effortNotificationText))
   }, [effortNotificationText, addNotification, removeNotification])
 
   useBuddyNotification()

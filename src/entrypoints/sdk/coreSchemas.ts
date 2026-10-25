@@ -59,8 +59,20 @@ export const OutputFormatSchema = lazySchema(() =>
 // Config Types
 // ============================================================================
 
+// The CLI's `system` init message carries the `ApiKeySource` values from
+// utils/auth.ts, so the schema must accept those too.
 export const ApiKeySourceSchema = lazySchema(() =>
-  z.enum(['user', 'project', 'org', 'temporary', 'oauth']),
+  z.enum([
+    'user',
+    'project',
+    'org',
+    'temporary',
+    'oauth',
+    'ANTHROPIC_API_KEY',
+    'apiKeyHelper',
+    '/login managed key',
+    'none',
+  ]),
 )
 
 export const ConfigScopeSchema = lazySchema(() =>
@@ -376,6 +388,8 @@ export const HOOK_EVENTS = [
   'SubagentStop',
   'PreCompact',
   'PostCompact',
+  'PreModelSwitch',
+  'PostModelSwitch',
   'PermissionRequest',
   'PermissionDenied',
   'Setup',
@@ -390,6 +404,8 @@ export const HOOK_EVENTS = [
   'InstructionsLoaded',
   'CwdChanged',
   'FileChanged',
+  'DirectoryAdded',
+  'MessageDisplay',
 ] as const
 
 export const HookEventSchema = lazySchema(() => z.enum(HOOK_EVENTS))
@@ -416,6 +432,12 @@ export const BaseHookInputSchema = lazySchema(() =>
         'Agent type name (e.g., "general-purpose", "code-reviewer"). Present when the ' +
           'hook fires from within a subagent (alongside agent_id), or on the main thread ' +
           'of a session started with --agent (without agent_id).',
+      ),
+    effort: z
+      .object({ level: z.string() })
+      .optional()
+      .describe(
+        'Active effort level, when the session model supports effort. Command hooks also get it as $CLAUDE_EFFORT.',
       ),
   }),
 )
@@ -754,6 +776,103 @@ export const FileChangedHookInputSchema = lazySchema(() =>
   ),
 )
 
+const ModelSwitchFieldsSchema = lazySchema(() =>
+  z.object({
+    from_model: z
+      .string()
+      .describe('Resolved model id the session was running before the switch'),
+    to_model: z
+      .string()
+      .describe('Resolved model id the session runs after the switch'),
+    requested_model: z
+      .string()
+      .nullable()
+      .describe(
+        'What was asked for (alias such as "opus", a full id, or null for "default")',
+      ),
+    context_tokens: z
+      .number()
+      .describe(
+        "Prompt tokens the next request re-sends: the last main-thread response's input + cache_read + cache_creation + output tokens (0 before the first response)",
+      ),
+  }),
+)
+
+export const PreModelSwitchHookInputSchema = lazySchema(() =>
+  BaseHookInputSchema()
+    .and(z.object({ hook_event_name: z.literal('PreModelSwitch') }))
+    .and(
+      ModelSwitchFieldsSchema().extend({
+        source: z
+          .enum(['command', 'picker', 'sdk'])
+          .describe(
+            'command: /model <name>; picker: an interactive model picker; sdk: headless set_model',
+          ),
+      }),
+    ),
+)
+
+export const PostModelSwitchHookInputSchema = lazySchema(() =>
+  BaseHookInputSchema()
+    .and(z.object({ hook_event_name: z.literal('PostModelSwitch') }))
+    .and(
+      ModelSwitchFieldsSchema().extend({
+        source: z
+          .enum(['command', 'picker', 'sdk', 'auto', 'resume'])
+          .describe(
+            'command: /model <name>; picker: an interactive model picker; sdk: headless set_model; auto: automatic fallback or other programmatic change; resume: model restored while resuming a session',
+          ),
+      }),
+    ),
+)
+
+export const DirectoryAddedHookInputSchema = lazySchema(() =>
+  BaseHookInputSchema().and(
+    z.object({
+      hook_event_name: z.literal('DirectoryAdded'),
+      directory: z
+        .string()
+        .describe('Absolute path of the directory that was added.'),
+      source: z
+        .enum(['slash_command', 'register_repo_root'])
+        .describe(
+          'How the directory was added: "slash_command" for /add-dir, "register_repo_root" for the SDK control_request.',
+        ),
+    }),
+  ),
+)
+
+export const MessageDisplayHookInputSchema = lazySchema(() =>
+  BaseHookInputSchema()
+    .and(
+      z.object({
+        hook_event_name: z.literal('MessageDisplay'),
+        turn_id: z.string().describe('UUID of the current turn.'),
+        message_id: z
+          .string()
+          .describe(
+            'UUID of the assistant message being displayed. Stable across every flush of the same message. Not the API msg_... id.',
+          ),
+        index: z
+          .number()
+          .describe(
+            'Zero-based index of this delta within the message. Increments by one per flush.',
+          ),
+        final: z
+          .boolean()
+          .describe(
+            "True on the message's last flush. Exactly one flush per message has it.",
+          ),
+        delta: z
+          .string()
+          .describe('The newly completed lines since the prior flush.'),
+      }),
+    )
+    .describe(
+      'Hook input for the MessageDisplay event. Display-only: the stored message and what the model sees are untouched.',
+    ),
+)
+
 export const EXIT_REASONS = [
   'clear',
   'resume',
@@ -790,6 +909,8 @@ export const HookInputSchema = lazySchema(() =>
     SubagentStopHookInputSchema(),
     PreCompactHookInputSchema(),
     PostCompactHookInputSchema(),
+    PreModelSwitchHookInputSchema(),
+    PostModelSwitchHookInputSchema(),
     PermissionRequestHookInputSchema(),
     SetupHookInputSchema(),
     TeammateIdleHookInputSchema(),
@@ -803,6 +924,8 @@ export const HookInputSchema = lazySchema(() =>
     WorktreeRemoveHookInputSchema(),
     CwdChangedHookInputSchema(),
     FileChangedHookInputSchema(),
+    DirectoryAddedHookInputSchema(),
+    MessageDisplayHookInputSchema(),
   ]),
 )
 
@@ -835,7 +958,14 @@ export const SessionStartHookSpecificOutputSchema = lazySchema(() =>
     hookEventName: z.literal('SessionStart'),
     additionalContext: z.string().optional(),
     initialUserMessage: z.string().optional(),
+    sessionTitle: z.string().describe('Set the session title').optional(),
     watchPaths: z.array(z.string()).optional(),
+    reloadSkills: z
+      .boolean()
+      .describe(
+        'Re-scan skill and command directories after SessionStart hooks complete, so skills installed by the hook are available in the same session',
+      )
+      .optional(),
   }),
 )
 
@@ -867,6 +997,28 @@ export const PostToolUseFailureHookSpecificOutputSchema = lazySchema(() =>
     hookEventName: z.literal('PostToolUseFailure'),
     additionalContext: z.string().optional(),
   }),
+)
+
+export const StopHookSpecificOutputSchema = lazySchema(() =>
+  z
+    .object({
+      hookEventName: z.literal('Stop'),
+      additionalContext: z.string().optional(),
+    })
+    .describe(
+      'Hook-specific output for the Stop event. additionalContext is non-error feedback delivered to the model; the conversation continues so the model can act on it.',
+    ),
+)
+
+export const SubagentStopHookSpecificOutputSchema = lazySchema(() =>
+  z
+    .object({
+      hookEventName: z.literal('SubagentStop'),
+      additionalContext: z.string().optional(),
+    })
+    .describe(
+      'Hook-specific output for the SubagentStop event. additionalContext is non-error feedback delivered to the subagent; the subagent continues so it can act on it.',
+    ),
 )
 
 export const PermissionDeniedHookSpecificOutputSchema = lazySchema(() =>
@@ -901,6 +1053,31 @@ export const PermissionRequestHookSpecificOutputSchema = lazySchema(() =>
   }),
 )
 
+export const PreModelSwitchHookSpecificOutputSchema = lazySchema(() =>
+  z.object({
+    hookEventName: z.literal('PreModelSwitch'),
+    permissionDecision: z.enum(['allow', 'deny', 'ask']).optional(),
+    permissionDecisionReason: z.string().optional(),
+  }),
+)
+
+export const PostModelSwitchHookSpecificOutputSchema = lazySchema(() =>
+  z.object({
+    hookEventName: z.literal('PostModelSwitch'),
+    additionalContext: z.string().optional(),
+  }),
+)
+
+export const MessageDisplayHookSpecificOutputSchema = lazySchema(() =>
+  z.object({
+    hookEventName: z.literal('MessageDisplay'),
+    displayContent: z
+      .string()
+      .describe('Replaces the delta on screen; the stored message is untouched')
+      .optional(),
+  }),
+)
+
 export const CwdChangedHookSpecificOutputSchema = lazySchema(() =>
   z.object({
     hookEventName: z.literal('CwdChanged'),
@@ -932,9 +1109,14 @@ export const SyncHookJSONOutputSchema = lazySchema(() =>
         SubagentStartHookSpecificOutputSchema(),
         PostToolUseHookSpecificOutputSchema(),
         PostToolUseFailureHookSpecificOutputSchema(),
+        StopHookSpecificOutputSchema(),
+        SubagentStopHookSpecificOutputSchema(),
         PermissionDeniedHookSpecificOutputSchema(),
         NotificationHookSpecificOutputSchema(),
         PermissionRequestHookSpecificOutputSchema(),
+        PreModelSwitchHookSpecificOutputSchema(),
+        PostModelSwitchHookSpecificOutputSchema(),
+        MessageDisplayHookSpecificOutputSchema(),
         ElicitationHookSpecificOutputSchema(),
         ElicitationResultHookSpecificOutputSchema(),
         CwdChangedHookSpecificOutputSchema(),
@@ -1059,6 +1241,10 @@ export const ModelInfoSchema = lazySchema(() =>
   z
     .object({
       value: z.string().describe('Model identifier to use in API calls'),
+      resolvedModel: z
+        .string()
+        .optional()
+        .describe('The model ID this option currently resolves to'),
       displayName: z.string().describe('Human-readable display name'),
       description: z
         .string()
@@ -1743,6 +1929,7 @@ export const SDKTaskNotificationMessageSchema = lazySchema(() =>
     type: z.literal('system'),
     subtype: z.literal('task_notification'),
     task_id: z.string(),
+    run_id: z.string().optional().describe('Id of one run of the task; a resumed task keeps its task_id and gets a new run_id.'),
     tool_use_id: z.string().optional(),
     status: z.enum(['completed', 'failed', 'stopped']),
     output_file: z.string(),
@@ -1764,8 +1951,12 @@ export const SDKTaskStartedMessageSchema = lazySchema(() =>
     type: z.literal('system'),
     subtype: z.literal('task_started'),
     task_id: z.string(),
+    run_id: z.string().optional().describe('Id of one run of the task; a resumed task keeps its task_id and gets a new run_id.'),
     tool_use_id: z.string().optional(),
     description: z.string(),
+    subagent_type: z.string().optional(),
+    is_backgrounded: z.boolean().optional(),
+    spawn_depth: z.number().int().optional(),
     task_type: z.string().optional(),
     workflow_name: z
       .string()
@@ -1774,6 +1965,43 @@ export const SDKTaskStartedMessageSchema = lazySchema(() =>
         "meta.name from the workflow script (e.g. 'spec'). Only set when task_type is 'local_workflow'.",
       ),
     prompt: z.string().optional(),
+    uuid: UUIDPlaceholder(),
+    session_id: z.string(),
+  }),
+)
+
+export const SDKTaskUpdatedMessageSchema = lazySchema(() =>
+  z.object({
+    type: z.literal('system'),
+    subtype: z.literal('task_updated'),
+    task_id: z.string(),
+    run_id: z.string().optional().describe('Id of one run of the task; a resumed task keeps its task_id and gets a new run_id.'),
+    patch: z.object({
+      status: z.string().optional(),
+      description: z.string().optional(),
+      end_time: z.number().optional(),
+      total_paused_ms: z.number().optional(),
+      error: z.string().optional(),
+      is_backgrounded: z.boolean().optional(),
+    }),
+    uuid: UUIDPlaceholder(),
+    session_id: z.string(),
+  }),
+)
+
+export const SDKBackgroundTasksChangedMessageSchema = lazySchema(() =>
+  z.object({
+    type: z.literal('system'),
+    subtype: z.literal('background_tasks_changed'),
+    tasks: z.array(
+      z.object({
+        task_id: z.string(),
+        run_id: z.string().optional(),
+        task_type: z.string(),
+        subagent_type: z.string().optional(),
+        description: z.string(),
+      }),
+    ),
     uuid: UUIDPlaceholder(),
     session_id: z.string(),
   }),
@@ -1853,6 +2081,7 @@ export const SDKTaskProgressMessageSchema = lazySchema(() =>
     type: z.literal('system'),
     subtype: z.literal('task_progress'),
     task_id: z.string(),
+    run_id: z.string().optional().describe('Id of one run of the task; a resumed task keeps its task_id and gets a new run_id.'),
     tool_use_id: z.string().optional(),
     description: z.string(),
     usage: z.object({
@@ -1988,6 +2217,8 @@ export const SDKMessageSchema = lazySchema(() =>
     SDKAuthStatusMessageSchema(),
     SDKTaskNotificationMessageSchema(),
     SDKTaskStartedMessageSchema(),
+    SDKTaskUpdatedMessageSchema(),
+    SDKBackgroundTasksChangedMessageSchema(),
     SDKTaskProgressMessageSchema(),
     SDKSessionStateChangedMessageSchema(),
     SDKGoalStateChangedMessageSchema(),

@@ -34,6 +34,12 @@ describe('settings schema', () => {
     ).toMatchObject({ workflowKeywordTriggerEnabled: false, skipWorkflowUsageWarning: true })
   })
 
+  test('accepts only a boolean autoContinueAtUsageLimit', () => {
+    expect(SettingsSchema().safeParse({ autoContinueAtUsageLimit: 'yes' }).success).toBe(false)
+    expect(SettingsSchema().parse({ autoContinueAtUsageLimit: false }).autoContinueAtUsageLimit).toBe(false)
+    expect(SettingsSchema().parse({}).autoContinueAtUsageLimit).toBeUndefined()
+  })
+
   test('describes exclusions for instruction files rather than two basenames', () => {
     const description = SettingsSchema().shape.claudeMdExcludes.description
 
@@ -66,6 +72,21 @@ describe('settings schema', () => {
     expect(SettingsSchema().safeParse({ autoCompactWindow: 99_999 }).success).toBe(false)
     expect(SettingsSchema().safeParse({ autoCompactWindow: 1_000_001 }).success).toBe(false)
     expect(SettingsSchema().safeParse({ autoCompactWindow: 150_000.5 }).success).toBe(false)
+  })
+
+  test('validates per-model auto compact windows and the worktree base ref', () => {
+    const parsed = SettingsSchema().parse({
+      modelSettings: {
+        'claude-opus-4-8': { autoCompactWindow: 400_000 },
+        'gpt-5.5': { autoCompactWindow: 'auto' },
+      },
+      worktree: { baseRef: 'head' },
+    })
+    expect(parsed.modelSettings?.['claude-opus-4-8']?.autoCompactWindow).toBe(400_000)
+    expect(parsed.modelSettings?.['gpt-5.5']?.autoCompactWindow).toBe('auto')
+    expect(parsed.worktree?.baseRef).toBe('head')
+    expect(SettingsSchema().safeParse({ modelSettings: { m: { autoCompactWindow: 50_000 } } }).success).toBe(false)
+    expect(SettingsSchema().safeParse({ worktree: { baseRef: 'main' } }).success).toBe(false)
   })
 
   test('accepts codex compact mode with options', () => {

@@ -2,6 +2,7 @@ import { feature } from 'bun:bundle'
 import { relative } from 'path'
 import {
   getOriginalCwd,
+  getPermissionModeSetByCli,
   handleAutoModeTransition,
   handlePlanModeTransition,
   setHasExitedPlanMode,
@@ -23,6 +24,7 @@ import {
   getSettingsFilePathForSource,
   getSettingsForSource,
   getUseAutoModeDuringPlan,
+  isAutoModeClassifyAllShellEnabled,
 } from '../settings/settings.js'
 import { getGlobalConfig } from '../config.js'
 import {
@@ -30,7 +32,10 @@ import {
   permissionModeFromString,
 } from './PermissionMode.js'
 import { applyPermissionRulesToPermissionContext } from './permissions.js'
-import { loadAllPermissionRulesFromDisk } from './permissionsLoader.js'
+import {
+  loadAllPermissionRulesFromDisk,
+  shouldAllowManagedPermissionRulesOnly,
+} from './permissionsLoader.js'
 
 /* eslint-disable @typescript-eslint/no-require-imports */
 const autoModeStateModule = feature('TRANSCRIPT_CLASSIFIER')
@@ -56,7 +61,15 @@ import { AGENT_TOOL_NAME } from '../../tools/AgentTool/constants.js'
 import { BASH_TOOL_NAME } from '../../tools/BashTool/toolName.js'
 /* eslint-enable @typescript-eslint/no-require-imports */
 import { POWERSHELL_TOOL_NAME } from '../../tools/PowerShellTool/toolName.js'
-import { getToolsForDefaultPreset, parseToolPreset } from '../../tools.js'
+import { TERMINAL_TOOL_NAME } from '../../tools/TerminalTool/prompt.js'
+import { FILE_EDIT_TOOL_NAME } from '../../tools/FileEditTool/constants.js'
+import { FILE_WRITE_TOOL_NAME } from '../../tools/FileWriteTool/prompt.js'
+import { NOTEBOOK_EDIT_TOOL_NAME } from '../../tools/NotebookEditTool/constants.js'
+import {
+  getAllBaseTools,
+  getToolsForDefaultPreset,
+  parseToolPreset,
+} from '../../tools.js'
 import {
   isManagedSSHRemoteRuntime,
   loadSSHPermissionOverlay,
@@ -82,8 +95,12 @@ import type {
 import {
   type AdditionalWorkingDirectory,
   applyPermissionUpdate,
+  applyPermissionUpdates,
 } from './PermissionUpdate.js'
-import type { PermissionUpdateDestination } from './PermissionUpdateSchema.js'
+import type {
+  PermissionUpdate,
+  PermissionUpdateDestination,
+} from './PermissionUpdateSchema.js'
 import {
   normalizeLegacyToolName,
   permissionRuleValueFromString,
@@ -288,6 +305,19 @@ function isDangerousClassifierPermission(
     // Tmux send-keys executes arbitrary shell, bypassing the classifier same as Bash(*)
     if (toolName === 'Tmux') return true
   }
+  // Like official 2.1.236, Monitor allow rules are set aside so Monitor
+  // commands are reviewed the same way Bash commands are.
+  if (toolName === 'Monitor') return true
+  // Terminal types arbitrary input into a PTY shell, so like Tmux an allow
+  // rule would skip the classifier for any command.
+  if (toolName === TERMINAL_TOOL_NAME) return true
+  // autoMode.classifyAllShell suspends every shell allow rule in auto mode.
+  if (
+    (toolName === BASH_TOOL_NAME || toolName === POWERSHELL_TOOL_NAME) &&
+    isAutoModeClassifyAllShellEnabled()
+  ) {
+    return true
+  }
   return (
     isDangerousBashPermission(toolName, ruleContent) ||
     isDangerousPowerShellPermission(toolName, ruleContent) ||
@@ -296,12 +326,44 @@ function isDangerousClassifierPermission(
 }
 
 /**
+ * Like official, the tool an auto mode denial suggests an allow rule for:
+ * none when that rule would be set aside in auto mode, for MCP tools, or when
+ * the settings hint is hidden. Write and NotebookEdit are covered by Edit rules.
+ */
+export function getAutoModeDenialRuleToolName(tool: {
+  name: string
+  isMcp?: boolean
+}): string | undefined {
+  if (
+    isEnvTruthy(process.env.CLAUDE_CODE_HIDE_SETTINGS_HINT) ||
+    shouldAllowManagedPermissionRulesOnly()
+  ) {
+    return undefined
+  }
+  if (tool.name === BASH_TOOL_NAME || tool.name === POWERSHELL_TOOL_NAME) {
+    return isAutoModeClassifyAllShellEnabled() ? undefined : tool.name
+  }
+  if (
+    tool.name.startsWith('mcp__') ||
+    tool.isMcp === true ||
+    isDangerousClassifierPermission(tool.name, undefined)
+  ) {
+    return undefined
+  }
+  return tool.name === FILE_WRITE_TOOL_NAME ||
+    tool.name === NOTEBOOK_EDIT_TOOL_NAME
+    ? FILE_EDIT_TOOL_NAME
+    : tool.name
+}
+
+/**
  * Finds all dangerous permissions from rules loaded from disk and CLI arguments.
  * Returns structured info about each dangerous permission found.
  *
  * Checks Bash permissions (wildcard/interpreter patterns), PowerShell permissions
- * (wildcard/iex/Start-Process patterns), and Agent permissions (any allow rule
- * bypasses the classifier's sub-agent evaluation).
+ * (wildcard/iex/Start-Process patterns), Agent permissions (any allow rule
+ * bypasses the classifier's sub-agent evaluation), and any Monitor or Terminal
+ * allow rule.
  */
 export function findDangerousClassifierPermissions(
   rules: PermissionRule[],
@@ -479,34 +541,34 @@ function isPermissionUpdateDestination(
 /**
  * Removes dangerous permissions from the in-memory context, and optionally
  * persists the removal to settings files on disk.
+ *
+ * Sources that can't be written back (flagSettings, policySettings, command)
+ * are skipped unless includeAllSources is set; auto mode sets it because those
+ * rules would bypass the classifier just the same.
  */
 export function removeDangerousPermissions(
   context: ToolPermissionContext,
   dangerousPermissions: DangerousPermissionInfo[],
+  includeAllSources = false,
 ): ToolPermissionContext {
-  // Group dangerous rules by their source (destination for updates)
-  const rulesBySource = new Map<
-    PermissionUpdateDestination,
-    PermissionRuleValue[]
-  >()
+  const rulesBySource = new Map<PermissionRuleSource, PermissionRuleValue[]>()
   for (const perm of dangerousPermissions) {
-    // Skip sources that can't be persisted (flagSettings, policySettings, command)
-    if (!isPermissionUpdateDestination(perm.source)) {
+    if (!includeAllSources && !isPermissionUpdateDestination(perm.source)) {
       continue
     }
-    const destination = perm.source
-    const existing = rulesBySource.get(destination) || []
+    const existing = rulesBySource.get(perm.source) || []
     existing.push(perm.ruleValue)
-    rulesBySource.set(destination, existing)
+    rulesBySource.set(perm.source, existing)
   }
 
   let updatedContext = context
-  for (const [destination, rules] of rulesBySource) {
+  for (const [source, rules] of rulesBySource) {
     updatedContext = applyPermissionUpdate(updatedContext, {
       type: 'removeRules' as const,
       rules,
       behavior: 'allow' as const,
-      destination,
+      // In-memory only: removeRules filters context.alwaysAllowRules[source].
+      destination: source as PermissionUpdateDestination,
     })
   }
 
@@ -549,16 +611,21 @@ export function stripDangerousPermissionsForAutoMode(
       `Ignoring dangerous permission ${permission.ruleDisplay} from ${permission.sourceDisplay} (bypasses classifier)`,
     )
   }
-  // Mirror removeDangerousPermissions' source filter so stash == what was actually removed.
+  // Merge into an earlier stash (re-strip after a settings change, plan entry
+  // from auto) so rules stripped before are still restored on exit.
   const stripped: ToolPermissionRulesBySource = {}
+  for (const [source, ruleStrings] of Object.entries(
+    context.strippedDangerousRules ?? {},
+  )) {
+    if (ruleStrings) stripped[source as PermissionRuleSource] = [...ruleStrings]
+  }
   for (const perm of dangerousPermissions) {
-    if (!isPermissionUpdateDestination(perm.source)) continue
-    ;(stripped[perm.source] ??= []).push(
-      permissionRuleValueToString(perm.ruleValue),
-    )
+    const ruleString = permissionRuleValueToString(perm.ruleValue)
+    const stash = (stripped[perm.source] ??= [])
+    if (!stash.includes(ruleString)) stash.push(ruleString)
   }
   return {
-    ...removeDangerousPermissions(context, dangerousPermissions),
+    ...removeDangerousPermissions(context, dangerousPermissions, true),
     strippedDangerousRules: stripped,
   }
 }
@@ -578,11 +645,17 @@ export function restoreDangerousPermissions(
   }
   let result = context
   for (const [source, ruleStrings] of Object.entries(stash)) {
-    if (!ruleStrings || ruleStrings.length === 0) continue
+    const present =
+      result.alwaysAllowRules[source as PermissionRuleSource] ?? []
+    const missing = (ruleStrings ?? []).filter(
+      rule => !present.includes(rule),
+    )
+    if (missing.length === 0) continue
     result = applyPermissionUpdate(result, {
       type: 'addRules',
-      rules: ruleStrings.map(permissionRuleValueFromString),
+      rules: missing.map(permissionRuleValueFromString),
       behavior: 'allow',
+      // In-memory only: addRules appends to context.alwaysAllowRules[source].
       destination: source as PermissionUpdateDestination,
     })
   }
@@ -657,6 +730,92 @@ export function transitionPermissionMode(
   }
 
   return context
+}
+
+/**
+ * transitionPermissionMode behind the same gates as SDK set_permission_mode,
+ * for a mode asked from outside this session's own UI (a team lead's
+ * mode_set_request). Throws with the reason when the mode is not available.
+ */
+export function transitionPermissionModeWithGates(
+  context: ToolPermissionContext,
+  toMode: PermissionMode,
+): ToolPermissionContext {
+  if (toMode === 'bypassPermissions') {
+    if (isBypassPermissionsModeDisabled()) {
+      throw new Error('bypassPermissions is disabled by settings or configuration')
+    }
+    if (!context.isBypassPermissionsModeAvailable) {
+      throw new Error('bypassPermissions is not available: the session was not launched with --dangerously-skip-permissions')
+    }
+  }
+  if (toMode === 'auto' && !isAutoModeGateEnabled()) {
+    const reason = getAutoModeUnavailableReason()
+    throw new Error(reason ? `auto mode is unavailable: ${getAutoModeUnavailableNotification(reason)}` : 'auto mode is unavailable')
+  }
+  return { ...transitionPermissionMode(context.mode, toMode, context), mode: toMode }
+}
+
+/**
+ * The context a resumed or continued session starts with: the permission mode
+ * its transcript last recorded, entered through the same gates as any other
+ * mode switch (bypass must be available, auto must be enabled, plan must be
+ * available). Like official, an explicit --permission-mode or
+ * --dangerously-skip-permissions wins, and a mode this launch cannot enter
+ * keeps the startup mode.
+ */
+export function restorePermissionModeForResume(
+  context: ToolPermissionContext,
+  savedMode: PermissionMode | undefined,
+): ToolPermissionContext {
+  if (!savedMode || savedMode === context.mode) return context
+  if (getPermissionModeSetByCli()) {
+    logForDebugging(
+      `Resume: keeping the command-line permission mode '${context.mode}' over the session's '${savedMode}'`,
+    )
+    return context
+  }
+  try {
+    const next = transitionPermissionModeWithGates(context, savedMode)
+    logForDebugging(`Resume: restored permission mode '${savedMode}'`)
+    return next
+  } catch (error) {
+    logForDebugging(
+      `Resume: permission mode '${savedMode}' not restored (${error instanceof Error ? error.message : String(error)}); staying in '${context.mode}'`,
+      { level: 'warn' },
+    )
+    return context
+  }
+}
+
+/**
+ * applyPermissionUpdates for updates handed back by a PermissionRequest hook,
+ * an SDK host or a permission dialog. Rule and directory updates apply as
+ * usual; a setMode goes through transitionPermissionModeWithGates like any
+ * other mode switch, and a mode that is not available falls back to default
+ * (as the official CLI does for setMode from a bridge).
+ */
+export function applyPermissionUpdatesWithModeTransition(
+  context: ToolPermissionContext,
+  updates: PermissionUpdate[],
+): ToolPermissionContext {
+  let next = applyPermissionUpdates(
+    context,
+    updates.filter(update => update.type !== 'setMode'),
+  )
+  for (const update of updates) {
+    if (update.type !== 'setMode') continue
+    try {
+      next = transitionPermissionModeWithGates(next, update.mode)
+    } catch (error) {
+      logForDebugging(
+        `setMode '${update.mode}' rejected (${error instanceof Error ? error.message : String(error)}); falling back to 'default'`,
+        { level: 'warn' },
+      )
+      next = transitionPermissionModeWithGates(next, 'default')
+    }
+  }
+  return next
 }
 
 /**
@@ -761,7 +920,9 @@ export function initialPermissionModeFromCLI({
     }
   }
   if (settings.permissions?.defaultMode) {
-    const settingsMode = settings.permissions.defaultMode as PermissionMode
+    const settingsMode = permissionModeFromString(
+      settings.permissions.defaultMode,
+    )
     // CCR only supports acceptEdits and plan — ignore other defaultModes from
     // settings (e.g. bypassPermissions would otherwise silently grant full
     // access in a remote environment).
@@ -776,6 +937,21 @@ export function initialPermissionModeFromCLI({
       logEvent('tengu_ccr_unsupported_default_mode_ignored', {
         mode: settingsMode as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
       })
+    }
+    // Like official 2.1.257, bypass from repo-controllable settings is ignored.
+    else if (
+      settingsMode === 'bypassPermissions' &&
+      !(['policySettings', 'userSettings', 'flagSettings'] as const).some(
+        source =>
+          getSettingsForSource(source)?.permissions?.defaultMode ===
+          'bypassPermissions',
+      )
+    ) {
+      logForDebugging(
+        'settings defaultMode "bypassPermissions" ignored — only policy/user/flag settings may grant bypass mode (projectSettings and localSettings are repo-controllable)',
+        { level: 'warn' },
+      )
+      logEvent('tengu_settings_bypass_mode_untrusted_source_ignored', {})
     }
     // auto from settings requires the same gate check as from CLI
     else if (feature('TRANSCRIPT_CLASSIFIER') && settingsMode === 'auto') {
@@ -943,7 +1119,9 @@ export async function initializeToolPermissionContext({
     // Normalize legacy tool names (e.g., 'Task' → 'Agent') so user-provided
     // base tool lists using old names still match canonical names.
     const baseToolsSet = new Set(baseToolsResult.map(normalizeLegacyToolName))
-    const allToolNames = getToolsForDefaultPreset()
+    // All base tools, not just the enabled ones: ListAgents/SendMessage turn on
+    // once the UDS socket starts, which happens after this runs.
+    const allToolNames = getAllBaseTools().map(tool => tool.name)
     const toolsToDisallow = allToolNames.filter(tool => !baseToolsSet.has(tool))
     parsedDisallowedToolsCli = [...parsedDisallowedToolsCli, ...toolsToDisallow]
   }
@@ -1142,11 +1320,10 @@ export async function verifyAutoModeGateAccess(
   }>('tengu_auto_mode_config', {})
   const enabledState = parseAutoModeEnabledState(autoModeConfig?.enabled)
   const disabledBySettings = isAutoModeDisabledBySettings()
-  // Treat settings-disable the same as GrowthBook 'disabled' for circuit-breaker
-  // semantics — blocks SDK/explicit re-entry via isAutoModeGateEnabled().
-  autoModeStateModule?.setAutoModeCircuitBroken(
-    enabledState === 'disabled' || disabledBySettings,
-  )
+  // Only GrowthBook trips the circuit breaker. disableAutoMode is read live by
+  // isAutoModeGateEnabled(), so like official 2.1.295 removing it lets SDK and
+  // explicit entry back into auto without a restart.
+  autoModeStateModule?.setAutoModeCircuitBroken(enabledState === 'disabled')
 
   // Carousel availability: not circuit-broken, not disabled-by-settings,
   // model supports it, and disableFastMode breaker not firing
@@ -1535,16 +1712,18 @@ export function prepareContextForPlanMode(
 }
 
 /**
- * Reconciles auto-mode state during plan mode after a settings change.
- * Compares desired state (shouldPlanUseAutoMode) against actual state
- * (isAutoModeActive) and activates/deactivates auto accordingly. No-op when
- * not in plan mode. Called from applySettingsChange so that toggling
- * useAutoModeDuringPlan mid-plan takes effect immediately.
+ * Reconciles auto-mode state after a settings change. In auto mode it
+ * re-strips the dangerous rules syncPermissionRulesFromDisk just reloaded.
+ * In plan mode it compares desired state (shouldPlanUseAutoMode) against
+ * actual state (isAutoModeActive) and activates/deactivates auto accordingly.
+ * Called from applySettingsChange so that toggling useAutoModeDuringPlan
+ * mid-plan takes effect immediately.
  */
 export function transitionPlanAutoMode(
   context: ToolPermissionContext,
 ): ToolPermissionContext {
   if (!feature('TRANSCRIPT_CLASSIFIER')) return context
+  if (context.mode === 'auto') return stripDangerousPermissionsForAutoMode(context)
   if (context.mode !== 'plan') return context
   // Mirror prepareContextForPlanMode's entry-time exclusion — never activate
   // auto mid-plan when the user entered from a dangerous mode.

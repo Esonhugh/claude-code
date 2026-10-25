@@ -151,6 +151,7 @@ export type { SkillToolProgress as Progress } from '../../types/tools.js'
 
 import type { SkillToolProgress as Progress } from '../../types/tools.js'
 import { isAnt } from 'src/utils/userType.js'
+import { isSkillHiddenFromModel } from 'src/utils/skillOverrides.js'
 
 
 // Conditional require for remote skill modules — static imports here would
@@ -477,6 +478,14 @@ export const SkillTool: Tool<InputSchema, Output, Progress> = buildTool({
           }
     }
 
+    if (isSkillHiddenFromModel(resolved.command)) {
+      return {
+        result: false,
+        message: `Skill ${normalizedCommandName} is disabled for model invocation in skillOverrides settings`,
+        errorCode: 7,
+      }
+    }
+
     if (resolved.command.disableModelInvocation) {
       return {
         result: false,
@@ -733,6 +742,7 @@ export const SkillTool: Tool<InputSchema, Output, Progress> = buildTool({
     if (!processedCommand.shouldQuery) {
       throw new Error('Command processing failed')
     }
+    if (command.type === 'prompt') context.options.activeSkill = getSkillAttributionName(command)
 
     // Extract metadata from the command
     const allowedTools = processedCommand.allowedTools || []
@@ -1207,6 +1217,7 @@ async function executeRemoteSkill(
         snapshot,
         skill: commandName,
         text: finalContent,
+        origin: { frontmatter: {}, source: 'syncedSkills', path: skillPath },
         signal: context.abortController.signal,
       })
     }

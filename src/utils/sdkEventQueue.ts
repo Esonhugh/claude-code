@@ -1,23 +1,58 @@
 import type { UUID } from 'crypto'
-import { randomUUID } from 'crypto'
+import { randomBytes, randomUUID } from 'crypto'
 import { getIsNonInteractiveSession, getSessionId } from '../bootstrap/state.js'
+import type { SDKAssistantMessage, SDKUserMessage } from '../entrypoints/agentSdkTypes.js'
 import type { SdkWorkflowProgress } from '../types/tools.js'
 
 type TaskStartedEvent = {
   type: 'system'
   subtype: 'task_started'
   task_id: string
+  run_id?: string
   tool_use_id?: string
   description: string
+  subagent_type?: string
+  is_backgrounded?: boolean
+  spawn_depth?: number
   task_type?: string
   workflow_name?: string
   prompt?: string
+}
+
+// Changed fields of a task (status, description, end time, ...), as official sends them.
+type TaskUpdatedEvent = {
+  type: 'system'
+  subtype: 'task_updated'
+  task_id: string
+  run_id?: string
+  patch: {
+    status?: string
+    description?: string
+    end_time?: number
+    total_paused_ms?: number
+    error?: string
+    is_backgrounded?: boolean
+  }
+}
+
+// The full list of background tasks, sent whenever it changes.
+type BackgroundTasksChangedEvent = {
+  type: 'system'
+  subtype: 'background_tasks_changed'
+  tasks: {
+    task_id: string
+    run_id?: string
+    task_type: string
+    subagent_type?: string
+    description: string
+  }[]
 }
 
 type TaskProgressEvent = {
   type: 'system'
   subtype: 'task_progress'
   task_id: string
+  run_id?: string
   tool_use_id?: string
   description: string
   usage: {
@@ -34,7 +69,7 @@ type TaskProgressEvent = {
 }
 
 // Emitted when a foreground agent completes without being backgrounded.
-// Drained by drainSdkEvents() directly into the output stream — does NOT
+// Drained by drainSdkOutput() directly into the output stream — does NOT
 // go through the print.ts XML task_notification parser and does NOT trigger
 // the LLM loop. Consumers (e.g. VS Code session.ts) use this to remove the
 // task from the subagent panel.
@@ -42,6 +77,7 @@ type TaskNotificationSdkEvent = {
   type: 'system'
   subtype: 'task_notification'
   task_id: string
+  run_id?: string
   tool_use_id?: string
   status: 'completed' | 'failed' | 'stopped'
   output_file: string
@@ -67,14 +103,36 @@ type SessionStateChangedEvent = {
 
 export type SdkEvent =
   | TaskStartedEvent
+  | TaskUpdatedEvent
+  | BackgroundTasksChangedEvent
   | TaskProgressEvent
   | TaskNotificationSdkEvent
   | SessionStateChangedEvent
 
-const MAX_QUEUE_SIZE = 1000
-const queue: SdkEvent[] = []
+// A background agent's own messages, tagged with parent_tool_use_id. They share
+// the queue so they stay in order with that agent's task events.
+type SubagentSdkMessage = SDKAssistantMessage | SDKUserMessage
 
-export function enqueueSdkEvent(event: SdkEvent): void {
+// Id of one run of a task, as official sends it on every task_* event: a resumed
+// task keeps its task_id and gets a new run id. Run ids of one task sort in the
+// order the runs opened.
+const runIds = new Map<string, string>()
+
+export function startTaskRun(taskId: string): void {
+  const previous = runIds.get(taskId)
+  const previousTime = previous ? parseInt(previous.split('-')[0]!, 36) : -1
+  const time = Math.max(Date.now(), previousTime + 1).toString(36).padStart(9, '0')
+  runIds.set(taskId, `${time}-${randomBytes(4).toString('hex')}`)
+}
+
+export function getTaskRunId(taskId: string): string | undefined {
+  return runIds.get(taskId)
+}
+
+const MAX_QUEUE_SIZE = 1000
+const queue: (SdkEvent | SubagentSdkMessage)[] = []
+
+export function enqueueSdkEvent(event: SdkEvent | SubagentSdkMessage): void {
   // SDK events are only consumed (drained) in headless/streaming mode.
   // In TUI mode they would accumulate up to the cap and never be read.
   if (!getIsNonInteractiveSession()) {
@@ -83,21 +141,34 @@ export function enqueueSdkEvent(event: SdkEvent): void {
   if (queue.length >= MAX_QUEUE_SIZE) {
     queue.shift()
   }
+  if (event.type === 'system' && 'task_id' in event && runIds.has(event.task_id)) {
+    event = { ...event, run_id: runIds.get(event.task_id) }
+  }
   queue.push(event)
 }
 
-export function drainSdkEvents(): Array<
-  SdkEvent & { uuid: UUID; session_id: string }
+/** Everything queued for the SDK output stream, in order. */
+export function drainSdkOutput(): Array<
+  (SdkEvent & { uuid: UUID; session_id: string }) | SubagentSdkMessage
 > {
   if (queue.length === 0) {
     return []
   }
-  const events = queue.splice(0)
-  return events.map(e => ({
-    ...e,
-    uuid: randomUUID(),
-    session_id: getSessionId(),
-  }))
+  return queue.splice(0).map(e =>
+    e.type === 'system'
+      ? { ...e, uuid: randomUUID(), session_id: getSessionId() }
+      : e,
+  )
+}
+
+/** The queued system events; subagent messages are dropped. */
+export function drainSdkEvents(): Array<
+  SdkEvent & { uuid: UUID; session_id: string }
+> {
+  return drainSdkOutput().filter(
+    (e): e is SdkEvent & { uuid: UUID; session_id: string } =>
+      e.type === 'system',
+  )
 }
 
 /**

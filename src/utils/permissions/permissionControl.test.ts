@@ -117,6 +117,82 @@ if (process.env[childFlag] !== '1') {
     }
   })
 
+  test('SDK set_permission_mode rejects unknown modes and reports gate error codes', async () => {
+    const { runHeadless } = await import('../../cli/print.js')
+    const { StructuredIO } = await import('../../cli/structuredIO.js')
+    const grove = await import('../../services/api/grove.js')
+    const growthbook = await import('../../services/analytics/growthbook.js')
+    const env = await import('../envUtils.js')
+    const shutdown = await import('../gracefulShutdown.js')
+    const processUtils = await import('../process.js')
+    const stdoutGuard = await import('../streamJsonStdoutGuard.js')
+    const modelStrings = await import('../model/modelStrings.js')
+    const toolPool = await import('../../tools.js')
+    const { SandboxManager } = await import('../sandbox/sandbox-adapter.js')
+    const engine = await import('../../QueryEngine.js')
+    const responses: Array<{ request_id: string; subtype: string; error?: string; error_code?: string; response?: unknown }> = []
+    const mocks = [
+      spyOn(engine, 'ask').mockImplementation(() => {
+        throw new Error('control requests must not start a model turn')
+      }),
+      spyOn(grove, 'isQualifiedForGrove').mockResolvedValue(false),
+      spyOn(growthbook, 'initializeGrowthBook').mockResolvedValue(undefined),
+      spyOn(env, 'isBareMode').mockReturnValue(true),
+      spyOn(shutdown, 'gracefulShutdownSync').mockImplementation(() => {}),
+      spyOn(processUtils, 'registerProcessOutputErrorHandlers').mockImplementation(() => {}),
+      spyOn(stdoutGuard, 'installStreamJsonStdoutGuard').mockImplementation(() => () => {}),
+      spyOn(modelStrings, 'ensureModelStringsInitialized').mockResolvedValue(undefined),
+      spyOn(toolPool, 'assembleToolPool').mockReturnValue([]),
+      spyOn(SandboxManager, 'getSandboxUnavailableReason').mockReturnValue(undefined),
+      spyOn(SandboxManager, 'isSandboxingEnabled').mockReturnValue(false),
+      spyOn(StructuredIO.prototype, 'write').mockImplementation(async message => {
+        if (message.type === 'control_response') responses.push(message.response)
+      }),
+    ]
+    let state = getDefaultAppState()
+    const modes: string[] = []
+    async function* input() {
+      for (const [id, mode, settings] of [
+        ['bogus', 'bogus', {}],
+        ['not-launched', 'bypassPermissions', {}],
+        ['disabled', 'bypassPermissions', { permissions: { disableBypassPermissionsMode: 'disable' } }],
+        ['manual', 'manual', {}],
+      ] as const) {
+        setSessionSettingsCache({ settings, errors: [] })
+        yield JSON.stringify({
+          type: 'control_request', request_id: id,
+          request: { subtype: 'set_permission_mode', mode },
+        }) + '\n'
+        modes.push(state.toolPermissionContext.mode)
+      }
+    }
+    try {
+      await runHeadless(input(), () => state, updater => { state = updater(state) }, [], [], {}, [], {
+        outputFormat: 'stream-json', verbose: true,
+        sessionStartHooksPromise: Promise.resolve([]),
+      } as Parameters<typeof runHeadless>[7])
+      expect(responses).toEqual([
+        {
+          subtype: 'error', request_id: 'bogus', error_code: 'invalid_mode',
+          error: 'Cannot set permission mode: must be one of acceptEdits, auto, bypassPermissions, default, dontAsk, plan',
+        },
+        {
+          subtype: 'error', request_id: 'not-launched', error_code: 'bypass_not_launched',
+          error: 'Cannot set permission mode to bypassPermissions because the session was not launched with --dangerously-skip-permissions',
+        },
+        {
+          subtype: 'error', request_id: 'disabled', error_code: 'bypass_disabled',
+          error: 'Cannot set permission mode to bypassPermissions because it is disabled by settings or configuration',
+        },
+        { subtype: 'success', request_id: 'manual', response: { mode: 'default' } },
+      ])
+      expect(modes).toEqual(['default', 'default', 'default', 'default'])
+    } finally {
+      for (const mock of mocks) mock.mockRestore()
+      resetSettingsCache()
+    }
+  })
+
   test('REPL bridge returns a policy verdict and preserves active Plan exit', async () => {
     const init = await import('../../bridge/initReplBridge.js')
     const { useReplBridge } = await import('../../hooks/useReplBridge.js')

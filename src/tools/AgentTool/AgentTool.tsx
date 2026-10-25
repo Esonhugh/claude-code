@@ -67,10 +67,10 @@ import type { CacheSafeParams } from '../../utils/forkedAgent.js'
 import { lazySchema } from '../../utils/lazySchema.js'
 import {
   createUserMessage,
-  extractTextContent,
   isSyntheticMessage,
   normalizeMessages,
 } from '../../utils/messages.js'
+import { subagentResultText } from '../../utils/subagentHandback.js'
 import { getAgentModel } from '../../utils/model/agent.js'
 import { getRuntimeMainLoopModel } from '../../utils/model/model.js'
 import { doesMostRecentAssistantMessageExceed200k } from '../../utils/tokens.js'
@@ -103,6 +103,11 @@ import { BackgroundHint } from '../BashTool/UI.js'
 import { FILE_READ_TOOL_NAME } from '../FileReadTool/prompt.js'
 import { spawnTeammate } from '../shared/spawnMultiAgent.js'
 import { SYNTHETIC_OUTPUT_TOOL_NAME } from '../SyntheticOutputTool/SyntheticOutputTool.js'
+import {
+  applyWorkflowBashCommandClamp,
+  WORKFLOW_BASH_CLAMP_NO_BASH_MESSAGE,
+  workflowPolicyDisallowedTools,
+} from '../WorkflowTool/workflowAgentToolPolicy.js'
 import { setAgentColor } from './agentColorManager.js'
 import {
   agentToolResultSchema,
@@ -771,6 +776,27 @@ export const AgentTool = buildTool({
     const resolvedEffort = effort ?? selectedAgent.effort ?? appState.effortValue ??
       getDefaultEffortForModel(toolUseContext.options.mainLoopModel)
     if (resolvedEffort !== undefined) selectedAgent = { ...selectedAgent, effort: resolvedEffort }
+    const workflowFraming = toolUseContext.workflowAgentSystemPrompt
+    if (workflowFraming) {
+      const baseGetSystemPrompt = selectedAgent.getSystemPrompt
+      selectedAgent = {
+        ...selectedAgent,
+        getSystemPrompt: (params?: Parameters<typeof baseGetSystemPrompt>[0]) =>
+          'replace' in workflowFraming
+            ? workflowFraming.replace
+            : baseGetSystemPrompt(params ?? { toolUseContext }) + workflowFraming.append,
+      }
+    }
+    const workflowToolPolicy = toolUseContext.workflowAgentToolPolicy
+    if (workflowToolPolicy) {
+      selectedAgent = {
+        ...selectedAgent,
+        disallowedTools: [
+          ...(selectedAgent.disallowedTools ?? []),
+          ...workflowPolicyDisallowedTools(workflowToolPolicy),
+        ],
+      }
+    }
     const workerPermissionContext = explicitPermissionMode
       ? requestedPermissionContext
       : permissionMode === appState.toolPermissionContext.mode
@@ -1088,7 +1114,12 @@ export const AgentTool = buildTool({
           `Failed to get system prompt for agent ${selectedAgent.agentType}: ${errorMessage(error)}`,
         )
       }
-      promptMessages = [createUserMessage({ content: prompt })]
+      promptMessages = [
+        ...(toolUseContext.workflowAgentRelayPrompt !== undefined
+          ? [createUserMessage({ content: toolUseContext.workflowAgentRelayPrompt })]
+          : []),
+        createUserMessage({ content: prompt }),
+      ]
     }
 
     const shouldRunAsync = shouldRunInBackground()
@@ -1108,9 +1139,9 @@ export const AgentTool = buildTool({
     // restrictions. This is computed here so that runAgent doesn't need to
     // import from tools.ts (which would create a circular dependency).
     const workerTools = [
-      ...assembleToolPool(
-        workerPermissionContext,
-        appState.mcp.tools,
+      ...applyWorkflowBashCommandClamp(
+        assembleToolPool(workerPermissionContext, appState.mcp.tools),
+        workflowToolPolicy,
       ).filter(tool => !toolMatchesName(tool, SYNTHETIC_OUTPUT_TOOL_NAME)),
       ...toolUseContext.options.tools.filter(
         tool => toolMatchesName(tool, SYNTHETIC_OUTPUT_TOOL_NAME),
@@ -1130,6 +1161,13 @@ export const AgentTool = buildTool({
           workerTools,
           shouldRunAsync,
         )
+    if (
+      workflowToolPolicy?.bashCommandClamp?.length &&
+      resolvedAgentTools !== undefined &&
+      !resolvedAgentTools.resolvedTools.some(tool => toolMatchesName(tool, BASH_TOOL_NAME))
+    ) {
+      throw new Error(WORKFLOW_BASH_CLAMP_NO_BASH_MESSAGE)
+    }
     const allowedTools = resolvedAgentTools?.hasWildcard
       ? undefined
       : resolvedAgentTools?.validTools
@@ -1205,6 +1243,9 @@ export const AgentTool = buildTool({
       promptMessages,
       toolUseContext: {
         ...toolUseContext,
+        workflowAgentSystemPrompt: undefined,
+        workflowAgentToolPolicy: undefined,
+        workflowAgentRelayPrompt: undefined,
         options: {
           ...toolUseContext.options,
           mainLoopModel: resolvedAgentModel,
@@ -1244,13 +1285,16 @@ export const AgentTool = buildTool({
           ? { systemPrompt: asSystemPrompt(enhancedSystemPrompt) }
           : undefined,
       availableTools: isForkPath ? toolUseContext.options.tools : workerTools,
-      permissionMode,
+      // Only an explicit spawn mode is fixed; runAgent resolves the
+      // definition's mode against the parent's current mode on every read.
+      permissionMode: explicitPermissionMode,
       allowedTools,
       allowedAgentTypes: resolvedAgentTools?.allowedAgentTypes,
       // Pass parent conversation when the fork-subagent path needs full
       // context. useExactTools inherits thinkingConfig (runAgent.ts:624).
       forkContextMessages: isForkPath ? toolUseContext.messages : undefined,
       ...(isForkPath && { useExactTools: true }),
+      handback: true,
       worktreePath: worktreeInfo?.worktreePath,
       worktreeBranch: worktreeInfo?.worktreeBranch,
       cwd: cwdOverridePath,
@@ -1789,12 +1833,12 @@ export const AgentTool = buildTool({
                       )
 
                       // Extract text from agent result content for the notification
-                      let finalMessage = extractTextContent(
-                        agentResult.content,
-                        '\n',
-                      )
+                      let finalMessage = subagentResultText(agentResult)
 
-                      if (feature('TRANSCRIPT_CLASSIFIER')) {
+                      if (
+                        feature('TRANSCRIPT_CLASSIFIER') &&
+                        agentResult.handback === undefined
+                      ) {
                         try {
                           const backgroundedAppState =
                             toolUseContext.getAppState()
@@ -2182,7 +2226,7 @@ export const AgentTool = buildTool({
             if (foregroundTaskId) {
               unregisterAgentForeground(foregroundTaskId, rootSetAppState)
               // Notify SDK consumers (e.g. VS Code subagent panel) that this
-              // foreground agent is done. Goes through drainSdkEvents() — does
+              // foreground agent is done. Goes through drainSdkOutput() — does
               // NOT trigger the print.ts XML task_notification parser or the LLM loop.
               if (!wasBackgrounded) {
                 const progress = getProgressUpdate(syncTracker)
@@ -2273,7 +2317,10 @@ export const AgentTool = buildTool({
             metadata,
           )
 
-          if (feature('TRANSCRIPT_CLASSIFIER')) {
+          if (
+            feature('TRANSCRIPT_CLASSIFIER') &&
+            agentResult.handback === undefined
+          ) {
             const currentAppState = toolUseContext.getAppState()
             const handoffWarning = await classifyHandoffIfNeeded({
               agentMessages,
@@ -2467,7 +2514,9 @@ The agent is now running and will receive instructions via mailbox.`,
       // Some models read that as "nothing to act on" and end their turn
       // immediately. Say so explicitly so the parent has something to react to.
       const contentOrMarker =
-        data.content.length > 0
+        data.handback === 'send' || data.handback === 'flagged'
+          ? [{ type: 'text' as const, text: subagentResultText(data) }]
+          : data.content.length > 0
           ? data.content
           : [
               {
