@@ -33,7 +33,7 @@ bun install
 ./scripts/make-fonts.sh       # 文案有新字符时
 bunx remotion studio          # 预览
 bunx remotion render PromoVideo out/promo.mp4 --crf=26 --audio-bitrate=160k
-ffmpeg -y -i out/promo.mp4 -c:v libx264 -preset slow -crf 28 -pix_fmt yuv420p -movflags +faststart -c:a copy promo.mp4
+ffmpeg -y -i out/promo.mp4 -c:v libx264 -preset slower -crf 30 -pix_fmt yuv420p -movflags +faststart -c:a aac -b:a 128k promo.mp4
 ffmpeg -y -ss 8.5 -i promo.mp4 -frames:v 1 -vf scale=1280:-1 poster.png
 ```
 
