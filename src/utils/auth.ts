@@ -2189,6 +2189,22 @@ export const getOpenAIAuthInfo = memoize((): OpenAIAuthInfo | null => {
   return getChatGPTOAuthInfo()
 })
 
+/**
+ * Account shown to SDK hosts under a ChatGPT login. The VS Code extension
+ * hides account, plan and usage windows for any apiProvider other than
+ * firstParty, so callers report this without an apiProvider.
+ */
+export function getChatGPTAccountInformation() {
+  if (getAPIProvider() !== 'openai') return undefined
+  const auth = getOpenAIAuthInfo()
+  if (!auth?.isChatGPT) return undefined
+  return {
+    email: auth.email,
+    organization: auth.accountName,
+    subscription: auth.planDisplayName,
+  }
+}
+
 export const getOpenAIApiKey = memoize((): string | null => {
   return getOpenAIAuthInfo()?.accessToken ?? null
 })
