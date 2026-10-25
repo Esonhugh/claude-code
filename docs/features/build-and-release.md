@@ -24,7 +24,7 @@ make build
 
 ```text
 $ ./built-claude --version
-2.1.293 (Claude Code)
+2.1.294 (Claude Code)
 ```
 
 产物是编译成 bytecode 的单文件，启动很快（`--version` 约 65 ms）；ripgrep 打包在里面，运行时自动解出。
