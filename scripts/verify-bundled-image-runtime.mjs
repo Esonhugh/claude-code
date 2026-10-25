@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -12,7 +12,8 @@ const fixture = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAACDQAAAABCAIAAACkbvvnAAAAHUlEQVR4nO3BMQEAAADCoPVPbQsvoAAAAAAAAI4GGJ0AATXO+8IAAAAASUVORK5CYII=',
   'base64',
 );
-const root = mkdtempSync(path.join(tmpdir(), 'claude-image-runtime-'));
+// Windows runners use an 8.3 TEMP (RUNNER~1); Read refuses short-name paths, so expand it.
+const root = realpathSync.native(mkdtempSync(path.join(tmpdir(), 'claude-image-runtime-')));
 const home = path.join(root, 'home');
 const config = path.join(root, 'config');
 const fixturePath = path.join(root, 'fixture.png');
