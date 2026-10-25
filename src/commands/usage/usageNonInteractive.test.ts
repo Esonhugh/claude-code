@@ -14,7 +14,7 @@ test.each(['usage', 'cost', 'stats'])('-p "/%s" resolves to the text command', a
   setIsInteractive(false)
   const command = findCommand(name, await getCommands(process.cwd()))
   expect(command?.type).toBe('local')
-  expect(command?.supportsNonInteractive).toBe(true)
+  expect(command?.type === 'local' && command.supportsNonInteractive).toBe(true)
 })
 
 test.each(['usage', 'cost'])('interactive /%s opens the usage dialog', async name => {

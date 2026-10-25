@@ -29,7 +29,7 @@
 - JavaScript 构建产物：`dist/cli.js`
 - 本地 binary：`built-claude`
 
-当前发布版本为 `2.1.292`；发布历史、具体变更和验收边界统一记录在 [`CHANGELOG.md`](CHANGELOG.md)。
+当前发布版本为 `2.1.293`；发布历史、具体变更和验收边界统一记录在 [`CHANGELOG.md`](CHANGELOG.md)。
 
 ## 安装与运行
 

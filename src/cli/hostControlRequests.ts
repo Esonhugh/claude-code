@@ -50,7 +50,12 @@ import { renderMessagesToPlainText } from '../utils/exportRenderer.js'
 import { tailFile } from '../utils/fsOperations.js'
 import { formatRelativeTimeAgo } from '../utils/format.js'
 import { fetchGitDiff, fetchGitDiffHunks } from '../utils/gitDiff.js'
-import { getHookEventMetadata, groupHooksByEventAndMatcher, getSortedMatchersForEvent } from '../utils/hooks/hooksConfigManager.js'
+import {
+  getHookEventMetadata,
+  getSortedMatchersForEvent,
+  groupHooksByEventAndMatcher,
+  type HookEventMetadata,
+} from '../utils/hooks/hooksConfigManager.js'
 import { getHookDisplayText, hookSourceDescriptionDisplayString } from '../utils/hooks/hooksSettings.js'
 import { projectIsInGitRepo } from '../utils/memory/versions.js'
 import { shouldAllowManagedPermissionRulesOnly } from '../utils/permissions/permissionsLoader.js'
@@ -374,7 +379,7 @@ const HOOK_CONTENT_LABELS: Record<string, string> = {
 }
 
 export function buildHooksListingResponse(appState: AppState, toolNames: string[]) {
-  const metadata = getHookEventMetadata(toolNames)
+  const metadata: Record<string, HookEventMetadata> = getHookEventMetadata(toolNames)
   const grouped = groupHooksByEventAndMatcher(appState, toolNames)
   const eventCatalog = Object.entries(metadata).map(([name, m]) => ({
     name,

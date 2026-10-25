@@ -2878,6 +2878,9 @@ test('query refresh reloads raw REPL context with live overlays and instruction 
       yield { type: 'assistant', message: { content: [] } }
     },
     canUseTool: noop,
+    getTypedSkillAttribution: () => undefined,
+    getSessionFallbackModels: () => [],
+    hasMessageDisplayHook: () => false,
     getQuerySourceForREPL: () => 'repl_main_thread',
     getUserContentText: (content: string) => content,
     onQueryEvent: noop,

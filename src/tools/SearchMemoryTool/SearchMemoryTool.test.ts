@@ -24,8 +24,8 @@ test('marks results as data and escapes forged harness tags', () => {
 
 test('renders the result under the tool line like other tools', async () => {
   const drawn = await renderToString(
-    SearchMemoryTool.renderToolResultMessage!({ hits: [] }, [], { verbose: false } as never) as never,
+    SearchMemoryTool.renderToolResultMessage!({ hits: [] }) as never,
     40,
   )
-  expect(drawn.trimEnd()).toMatch(/^  ⎿\s+Found 0 matches$/)
+  expect(drawn.trimEnd()).toMatch(/^ {2}⎿\s+Found 0 matches$/)
 })

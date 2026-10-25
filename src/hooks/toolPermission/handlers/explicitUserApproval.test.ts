@@ -76,6 +76,7 @@ if (process.env[childFlag] !== '1') {
     commandHasAnyCd: () => false,
     isNormalizedGitCommand: () => false,
     isNormalizedCdCommand: () => false,
+    requireApprovalOutsideSandbox: (_input: unknown, result: unknown) => result,
   }))
 
   let registeredWorkerCallback:

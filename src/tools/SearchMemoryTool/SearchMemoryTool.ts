@@ -1,4 +1,4 @@
-import { createElement } from 'react'
+import { type ComponentProps, createElement } from 'react'
 import { z } from 'zod/v4'
 
 import { MessageResponse } from '../../components/MessageResponse.js'
@@ -70,7 +70,7 @@ Use it before relying on memory: when the user refers to earlier work, asks you 
   renderToolResultMessage({ hits }) {
     return createElement(
       MessageResponse,
-      { height: 1 },
+      { height: 1 } as ComponentProps<typeof MessageResponse>,
       createElement(Text, null, `Found ${hits.length} ${hits.length === 1 ? 'match' : 'matches'}`),
     )
   },

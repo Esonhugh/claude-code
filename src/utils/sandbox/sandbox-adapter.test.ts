@@ -276,6 +276,8 @@ if (process.env[childFlag] !== '1') {
       const base = await import('@anthropic-ai/sandbox-runtime')
       const init = spyOn(base.SandboxManager, 'initialize').mockResolvedValue()
       const enabled = spyOn(SandboxManager, 'isSandboxingEnabled').mockReturnValue(true)
+      // initialize() checks the internal isSandboxingEnabled(), which needs bwrap/socat on Linux.
+      const deps = spyOn(base.SandboxManager, 'checkDependencies').mockReturnValue({ errors: [], warnings: [] })
       try {
         await SandboxManager.initialize()
         const { allowWrite, denyWrite } = init.mock.calls[0]![0].filesystem
@@ -286,6 +288,7 @@ if (process.env[childFlag] !== '1') {
       } finally {
         init.mockRestore()
         enabled.mockRestore()
+        deps.mockRestore()
         await SandboxManager.reset()
       }
     } finally {
