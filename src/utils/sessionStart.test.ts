@@ -5,7 +5,9 @@ let hookResults: AggregatedHookResult[] = []
 const titles: Array<{ title: string; source: string }> = []
 let reloads = 0
 
+const actualHooks = await import('./hooks.js')
 mock.module('./hooks.js', () => ({
+  ...actualHooks,
   executeSessionStartHooks: async function* () {
     yield* hookResults
   },

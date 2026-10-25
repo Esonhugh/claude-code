@@ -43,6 +43,10 @@ test('Sonnet 5.5 selects the official lean body and advertises its lean trait', 
   expect(getSystemPromptSections(prompt)?.[0]).toMatchObject({ name: 'lean_body', scope: 'shared' })
 })
 
+// The fixture predates official 2.1.303, which ships tengu_ochre_wren on (LOCAL_GA_DEFAULTS).
+const LEAN_INTRO_292 = 'You are an interactive agent that helps users with software engineering tasks.'
+const LEAN_INTRO_303 = 'You are an agent working with the user toward their goals, using your own judgment along the way.'
+
 // Official 2.1.292 actual API runs: core strings/scopes captured with each model/override.
 test.each(fixture.cases)('matches official lean selection and core sections for $name', async sample => {
   Object.assign(process.env, sample.env ?? {})
@@ -55,7 +59,7 @@ test.each(fixture.cases)('matches official lean selection and core sections for 
   expect(getSystemPromptFacts(prompt)?.traits.includes('lean')).toBe(sample.lean)
   const sections = getSystemPromptSections(prompt)!
   if (sample.lean) {
-    expect(sections.filter(s => 'scope' in s && s.scope === 'shared' && 'text' in s && s.text)).toEqual([{ name: 'lean_body', scope: 'shared', text: sample.core.find(s => s.id === 'lean_body')!.text.replace(fixture.securityInstruction, '') }])
+    expect(sections.filter(s => 'scope' in s && s.scope === 'shared' && 'text' in s && s.text)).toEqual([{ name: 'lean_body', scope: 'shared', text: sample.core.find(s => s.id === 'lean_body')!.text.replace(fixture.securityInstruction, '').replace(LEAN_INTRO_292, LEAN_INTRO_303) }])
     for (const section of sample.core.filter(s => s.id !== 'lean_body')) {
       expect(sections.find(s => 'name' in s && s.name === section.id)).toEqual({ name: section.id, scope: 'session', text: section.text })
     }
