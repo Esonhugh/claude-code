@@ -12,6 +12,17 @@
 - `## 2.1.88 base` 是唯一基线条目，固定放在文件末尾，不作为 release note。
 - `bun run check:changelog` 是格式规范的可执行门禁；发布时还会校验 tag 版本与最新发布条目一致。
 
+## 2026-10-25 - VS Code 插件：ChatGPT 登录时显示账号、方案与用量
+
+### 变更内容
+
+- ChatGPT 登录（`CLAUDE_CODE_USE_OPENAI=1` 且使用 `~/.codex/auth.json` 的 ChatGPT 凭据）时，`initialize` 的 `account` 和 `claude auth status --json` 会回报 ChatGPT 邮箱、账号名和方案，且不再带 `apiProvider`。VS Code 插件会把任何非 `firstParty` 的 `apiProvider` 视为第三方，进而隐藏账号、方案以及 5 小时和 7 天用量条（#183）。
+- `claude auth status --json` 在 ChatGPT 登录下回报的 `authMethod` 为 `chatgpt`。OpenAI API key 模式不变，仍回报 `apiProvider: "openai"`。
+
+### 测试覆盖
+
+- `src/utils/openai-auth-env.test.ts` 新增：`getChatGPTAccountInformation` 在 ChatGPT 登录、非 OpenAI 模式和 API key 优先三种情况下的结果。
+
 ## 2026-10-25 - v2.1.293 - 权限、自动模式、Hooks 与沙箱对齐官方 2.1.303，背景会话、SQLite 记忆、跨会话通信与 Agent SDK / VS Code 兼容
 
 ### 版本状态
