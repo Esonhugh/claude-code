@@ -25,6 +25,7 @@ try {
   const {
     decodeOpenAIIdTokenClaims,
     formatOpenAIPlanName,
+    getChatGPTAccountInformation,
     getChatGPTOAuthInfo,
     getOpenAIAuthInfo,
     getOpenAIApiKey,
@@ -140,9 +141,15 @@ try {
   )
   delete process.env.CLAUDE_CODE_USE_OPENAI
   assert.equal(getLogoDisplayData().billingType, 'API Usage Billing')
+  assert.equal(getChatGPTAccountInformation(), undefined)
 
   process.env.CLAUDE_CODE_USE_OPENAI = '1'
   assert.equal(getLogoDisplayData().billingType, 'ChatGPT Plus')
+  assert.deepEqual(getChatGPTAccountInformation(), {
+    email: 'alice@example.com',
+    organization: 'Alice',
+    subscription: 'Plus',
+  })
 
   setAuthoritativeChatGPTPlanTypeForTest('pro')
   assert.equal(getLogoDisplayData().billingType, 'ChatGPT Pro')
@@ -150,6 +157,7 @@ try {
   process.env.OPENAI_API_KEY = 'sk-openai-api-env-token'
   getOpenAIAuthInfo.cache.clear?.()
   assert.equal(getLogoDisplayData().billingType, 'API Usage Billing')
+  assert.equal(getChatGPTAccountInformation(), undefined)
   setAuthoritativeChatGPTPlanTypeForTest(null)
 } finally {
   const { getChatGPTOAuthInfo, getOpenAIAuthInfo, getOpenAIApiKey } =

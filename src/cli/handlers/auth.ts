@@ -24,6 +24,7 @@ import {
   clearOAuthTokenCache,
   getAnthropicApiKeyWithSource,
   getAuthTokenSource,
+  getChatGPTAccountInformation,
   getOauthAccountInfo,
   getSubscriptionType,
   isUsing3PServices,
@@ -242,6 +243,7 @@ export async function authStatus(opts: {
   const oauthAccount = getOauthAccountInfo()
   const subscriptionType = getSubscriptionType()
   const using3P = isUsing3PServices()
+  const chatGPTAccount = getChatGPTAccountInformation()
   const loggedIn =
     hasToken || apiKeySource !== 'none' || hasApiKeyEnvVar || using3P
 
@@ -292,6 +294,17 @@ export async function authStatus(opts: {
         'Not logged in. Run claude auth login to authenticate.\n',
       )
     }
+  } else if (chatGPTAccount) {
+    // No apiProvider: SDK hosts treat any non-firstParty value as a 3P
+    // provider and hide the account and plan.
+    const output = {
+      loggedIn,
+      authMethod: 'chatgpt',
+      email: chatGPTAccount.email ?? null,
+      orgName: chatGPTAccount.organization ?? null,
+      subscriptionType: chatGPTAccount.subscription ?? null,
+    }
+    process.stdout.write(jsonStringify(output, null, 2) + '\n')
   } else {
     const apiProvider = getAPIProvider()
     const resolvedApiKeySource =

@@ -238,7 +238,10 @@ import {
   type PromptVariant,
 } from 'src/services/PromptSuggestion/promptSuggestion.js'
 import { getLastCacheSafeParams } from 'src/utils/forkedAgent.js'
-import { getAccountInformation } from 'src/utils/auth.js'
+import {
+  getAccountInformation,
+  getChatGPTAccountInformation,
+} from 'src/utils/auth.js'
 import { OAuthService } from 'src/services/oauth/index.js'
 import { installOAuthTokens } from 'src/cli/handlers/auth.js'
 import { getAPIProvider } from 'src/utils/model/providers.js'
@@ -5574,6 +5577,7 @@ async function handleInitializeRequest(
 
   // Get account information
   const accountInfo = getAccountInformation()
+  const chatGPTAccount = getChatGPTAccountInformation()
   if (!initialized && request.hooks) {
     const hooks: Partial<Record<HookEvent, HookCallbackMatcher[]>> = {}
     for (const [event, matchers] of Object.entries(request.hooks)) {
@@ -5617,17 +5621,23 @@ async function handleInitializeRequest(
     output_style: outputStyle,
     available_output_styles: Object.keys(availableOutputStyles),
     models: modelInfos,
-    account: {
-      email: accountInfo?.email,
-      organization: accountInfo?.organization,
-      subscriptionType: accountInfo?.subscription,
-      tokenSource: accountInfo?.tokenSource,
-      apiKeySource: accountInfo?.apiKeySource,
-      // getAccountInformation() returns undefined under 3P providers, so the
-      // other fields are all absent. apiProvider disambiguates "not logged
-      // in" (firstParty + tokenSource:none) from "3P, login not applicable".
-      apiProvider: getAPIProvider(),
-    },
+    account: chatGPTAccount
+      ? {
+          email: chatGPTAccount.email,
+          organization: chatGPTAccount.organization,
+          subscriptionType: chatGPTAccount.subscription,
+        }
+      : {
+          email: accountInfo?.email,
+          organization: accountInfo?.organization,
+          subscriptionType: accountInfo?.subscription,
+          tokenSource: accountInfo?.tokenSource,
+          apiKeySource: accountInfo?.apiKeySource,
+          // getAccountInformation() returns undefined under 3P providers, so the
+          // other fields are all absent. apiProvider disambiguates "not logged
+          // in" (firstParty + tokenSource:none) from "3P, login not applicable".
+          apiProvider: getAPIProvider(),
+        },
     pid: process.pid,
   }
 
