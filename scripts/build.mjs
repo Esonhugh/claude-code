@@ -1,3 +1,6 @@
+import { transformAsync } from '@babel/core';
+import syntaxTypescript from '@babel/plugin-syntax-typescript';
+import reactCompiler from 'babel-plugin-react-compiler';
 import { build } from 'esbuild';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -161,6 +164,35 @@ const recoveryResolver = embedSharpNative => ({
             : ext === '.jsx'
               ? 'jsx'
               : 'js';
+
+      if (
+        (ext === '.tsx' || ext === '.ts') &&
+        args.path.startsWith(path.join(projectDir, 'src'))
+      ) {
+        // The official build memoizes components with React Compiler; without
+        // it every REPL state change re-renders the whole Ink tree.
+        const result = await transformAsync(contents, {
+          filename: args.path,
+          babelrc: false,
+          configFile: false,
+          // Inline so esbuild chains the map back to the original source.
+          sourceMaps: 'inline',
+          plugins: [
+            [syntaxTypescript, { isTSX: ext === '.tsx' }],
+            [
+              reactCompiler,
+              {
+                target: '19',
+                panicThreshold: 'none',
+                // Keep hand-written useMemo/useCallback deps: some list
+                // extra deps on purpose (e.g. a store snapshot) to recompute.
+                environment: { enablePreserveExistingManualUseMemo: true },
+              },
+            ],
+          ],
+        });
+        return { contents: result.code, loader };
+      }
 
       return { contents, loader };
     });
