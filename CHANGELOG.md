@@ -164,6 +164,7 @@
 - 回应官方 VS Code 插件 2.1.303 自绘界面所需的 26 个控制请求（`get_status`、`get_usage`、`get_memory_dialog`、`get_hooks_listing`、`background_tasks` 等），插件对话框不再报 `Unsupported control request subtype`（#158）。
 - 新增 `--session-mirror`、`--resume-drops-turn`、`--managed-settings`、`--project-config-root`；`--tools` 拒绝列表外的全部基础工具；背景子代理消息带 `parent_tool_use_id` 串流，`task_*` 事件带 `run_id`、`spawn_depth`，背景 agent 运行时先保留 result、在 `task_notification` 之后送出；`stop_task` 对未知或已结束的任务回报成功（#88）。
 - ChatGPT 登录（`CLAUDE_CODE_USE_OPENAI=1` 且使用 `~/.codex/auth.json` 的 ChatGPT 凭据）时，`initialize` 的 `account` 和 `claude auth status --json` 回报 ChatGPT 邮箱、账号名和方案（`authMethod` 为 `chatgpt`），且不带 `apiProvider`；VS Code 插件把任何非 `firstParty` 的 `apiProvider` 视为第三方，会隐藏账号、方案以及 5 小时和 7 天用量条。OpenAI API key 模式仍回报 `apiProvider: "openai"`（#183）。
+- `claudeCode.claudeProcessWrapper` 直接指向本 binary 时，插件会把自带的 `native-binary/claude` 路径作为第一个参数传入；启动时略过这个参数，插件的插件面板与 `auth status --json` 不再报 `unknown option '--json'`（#189）。`get_usage` 抓取用量失败时写入 warn 级 debug 日志。
 
 #### 已知缺口
 
@@ -184,6 +185,7 @@
 - Monitor、记忆、压缩与界面：`src/tools/MonitorTool`、`src/tools/ScheduleWakeupTool`、`src/skills/bundled/loop.test.ts`、`src/memdir/neutralizeMemoryContent.test.ts`、`extractMode.test.ts`、`src/services/awaySummary.test.ts`、`src/commands/autocompact/autocompact.test.ts`、`src/services/compact/autoCompact.contextWindow.test.ts`、`sessionCompact.mods.test.ts`、`src/tools/AgentTool/loadAgentsDir.agentFields.test.ts`、`src/utils/worktree.baseRef.test.ts`、`src/tools/EnterWorktreeTool/EnterWorktreeTool.test.ts`、`src/services/analytics/growthbook.cached.test.ts`、`src/keybindings`、`src/components/PromptInput/PromptInput.sendNow.test.tsx`、`PromptInput.cycleModeError.test.tsx`、`src/screens/REPL.submit.test.ts`、`src/hooks/useVimInput.test.tsx`。
 - 2026-10-23 后续：`src/tools/BashTool/bashPermissionHardening.test.ts`（两种解析模式：`Bash(touch:*)`、`Bash(touch tl-x)` 与管道形式放行 `touch tl-x`；无规则时询问且为工作目录内文案；工作目录外与混合路径仍询问；安全检查、`cd` 复合、`cp -f`、Edit deny 不被覆盖；输出重导向文案，修复前失败）；`src/utils/agentSwarmsEnabled.test.ts`（未设置时关闭、`1`/`true` 启用、`0` 关闭、`--agent-teams` 强制启用）；`src/services/compact/autoCompact.contextWindow.test.ts` 与 `src/cli/print.streamState.test.ts`（按模型窗口后 `autocompact_state` 的窗口、阈值与 `source: "settings"` 与引擎一致，修复前失败）。
 - Mods：`bun test src/services/mods`（`sessionAppend`、`promptMention`、`toolCheckReceipt303`、`uiNotify`、`sessionIdentity`、`declarationsOfficial303` 等）、`src/components/ModsPane.test.tsx`、`make check-mods-control-types`。
+- 插件 wrapper 参数：`src/entrypoints/processWrapperArgs.test.ts` 覆盖 macOS 与 Windows 自带 binary 路径会被略过，一般参数与 prompt 中的相同字样不受影响。
 - ChatGPT 账号：`src/utils/openai-auth-env.test.ts` 覆盖 `getChatGPTAccountInformation` 在 ChatGPT 登录、非 OpenAI 模式和 API key 优先三种情况下的结果（修复前失败）。
 - 2026-10-23 之后的测试覆盖见各 PR 与 `docs/features/` 中的终端验收截图；发版前在 `dev` 修复了 `tsc` 与 `lint` 的 7 个错误（`hostControlRequests.ts` hooks 元数据类型、`SearchMemoryTool` 渲染与测试、`usageNonInteractive.test.ts` 命令类型收窄），并以重建的 binary 跑过 SIGINT SessionEnd、`CI=true` 无凭证 `-p` 与 team shutdown 三项回归。
 - 各分支均通过 `tsc`、`make build` 与 `bun run check:changelog`；`bun scripts/build.test.mjs` 覆盖默认 feature 集合包含 `MONITOR_TOOL`、`EXTRACT_MEMORIES` 与 `AWAY_SUMMARY`。逐条目的测试清单见详细记录。
