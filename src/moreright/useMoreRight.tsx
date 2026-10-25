@@ -18,9 +18,14 @@ export function useMoreRight(_args: {
   onTurnComplete: (all: M[], aborted: boolean) => Promise<void>
   render: () => null
 } {
-  return {
-    onBeforeQuery: async () => true,
-    onTurnComplete: async () => {},
-    render: () => null,
-  }
+  return STUB
+}
+
+// Module-level so the callbacks keep their identity across renders: REPL puts
+// them in onQuery's deps, and a fresh object each render re-creates onQuery,
+// onSubmit and re-renders the memoized PromptInput on every streamed delta.
+const STUB = {
+  onBeforeQuery: async () => true,
+  onTurnComplete: async () => {},
+  render: () => null,
 }
