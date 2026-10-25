@@ -6,7 +6,7 @@
 
 [![宣传视频：核心功能与官方差异（点击播放 mp4）](docs/promo-video/poster.png)](docs/promo-video/promo.mp4)
 
-约 32 秒的介绍视频：核心功能和与官方 Claude Code 的差异，点击图片播放。视频源码见 [`docs/promo-video/`](docs/promo-video/README.md)。
+约 55 秒的介绍视频（带音效）：核心功能实测画面、功能 Wiki 和与官方 Claude Code 的差异，点击图片播放。视频源码见 [`docs/promo-video/`](docs/promo-video/README.md)。
 
 ## 作者与维护者
 

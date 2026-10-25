@@ -16,13 +16,18 @@ for (const f of fonts) {
 }
 
 export const theme = {
-  bg: "#141413",
-  panel: "#1f1e1c",
-  border: "#3a3833",
+  bg: "#0c0b0a",
+  panel: "rgba(31, 30, 28, 0.82)",
+  border: "rgba(217, 119, 87, 0.35)",
   text: "#f5f4ee",
   muted: "#a8a59b",
   accent: "#d97757",
-  green: "#7fbf7f",
+  accent2: "#f2b38f",
+  cyan: "#6fd3e6",
+  green: "#8fd694",
   sans: '"Noto Sans SC", "Noto Sans Symbols 2", sans-serif',
   mono: '"JetBrains Mono", "Noto Sans SC", "Noto Sans Symbols 2", monospace',
+  symbols: '"Noto Sans Symbols 2"',
 };
+
+export const clamp = { extrapolateLeft: "clamp", extrapolateRight: "clamp" } as const;

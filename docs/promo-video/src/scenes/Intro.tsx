@@ -1,45 +1,37 @@
-import {
-  AbsoluteFill,
-  Easing,
-  Interactive,
-  interpolate,
-  useCurrentFrame,
-  useVideoConfig,
-} from "remotion";
-import { theme } from "../theme";
+import { AbsoluteFill, Easing, Interactive, interpolate, useCurrentFrame, useVideoConfig } from "remotion";
+import { Sfx } from "../Sfx";
+import { clamp, theme } from "../theme";
 
 export const Intro: React.FC = () => {
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
+  const slam = 2 * fps;
+  const shake = frame >= slam && frame < slam + 10 ? Math.sin(frame * 3) * (slam + 10 - frame) * 2 : 0;
+  const split = interpolate(frame, [slam, slam + 0.6 * fps], [18, 0], clamp);
 
   return (
     <AbsoluteFill
       name="Intro"
-      style={{
-        backgroundColor: theme.bg,
-        justifyContent: "center",
-        alignItems: "center",
-        fontFamily: theme.sans,
-        color: theme.text,
-      }}
+      style={{ justifyContent: "center", alignItems: "center", fontFamily: theme.sans, color: theme.text, translate: `${shake}px 0px` }}
     >
+      <Sfx name="riser" />
+      <Sfx name="impact" at={slam} />
+      <AbsoluteFill
+        style={{
+          backgroundColor: "white",
+          opacity: interpolate(frame, [slam - 1, slam, slam + 6], [0, 0.8, 0], clamp),
+        }}
+      />
       <Interactive.Div
         name="Mark"
         style={{
-          fontSize: 160,
-          color: theme.accent,
+          fontFamily: theme.symbols,
+          fontSize: 180,
           lineHeight: 1,
-          scale: interpolate(frame, [0, 0.8 * fps], [0.4, 1], {
-            extrapolateLeft: "clamp",
-            extrapolateRight: "clamp",
-            easing: Easing.spring({ damping: 12 }),
-            output: "perceptual-scale",
-          }),
-          rotate: interpolate(frame, [0, 5 * fps], ["-90deg", "60deg"], {
-            extrapolateLeft: "clamp",
-            extrapolateRight: "clamp",
-            easing: Easing.bezier(0.16, 1, 0.3, 1),
-          }),
+          color: theme.accent,
+          textShadow: `0 0 ${interpolate(frame, [0, slam, slam + 20], [10, 80, 30], clamp)}px ${theme.accent}`,
+          scale: interpolate(frame, [0, slam], [0.2, 1], { ...clamp, easing: Easing.bezier(0.7, 0, 0.84, 0), output: "perceptual-scale" }),
+          rotate: `${interpolate(frame, [0, slam], [0, 540], { ...clamp, easing: Easing.bezier(0.7, 0, 0.84, 0) }) + frame * 0.6}deg`,
         }}
       >
         ✻
@@ -47,54 +39,47 @@ export const Intro: React.FC = () => {
       <Interactive.Div
         name="Title"
         style={{
-          marginTop: 40,
-          fontSize: 120,
+          marginTop: 30,
+          fontSize: 150,
           fontWeight: 900,
-          letterSpacing: -2,
-          opacity: interpolate(frame, [0.3 * fps, 1.1 * fps], [0, 1], {
-            extrapolateLeft: "clamp",
-            extrapolateRight: "clamp",
-          }),
-          translate: interpolate(frame, [0.3 * fps, 1.1 * fps], ["0px 40px", "0px 0px"], {
-            extrapolateLeft: "clamp",
-            extrapolateRight: "clamp",
-            easing: Easing.bezier(0.16, 1, 0.3, 1),
-          }),
+          letterSpacing: -3,
+          opacity: frame >= slam ? 1 : 0,
+          scale: interpolate(frame, [slam, slam + 0.4 * fps], [2.6, 1], { ...clamp, easing: Easing.bezier(0.16, 1, 0.3, 1), output: "perceptual-scale" }),
+          textShadow: `${split}px 0 0 rgba(111,211,230,0.8), ${-split}px 0 0 rgba(217,119,87,0.9), 0 0 40px rgba(217,119,87,0.4)`,
         }}
       >
-        Unofficial Claude Code
+        Claude Code
       </Interactive.Div>
+      <Interactive.Div
+        name="Stamp"
+        style={{
+          marginTop: -10,
+          padding: "6px 28px",
+          fontFamily: theme.mono,
+          fontWeight: 700,
+          fontSize: 54,
+          letterSpacing: 14,
+          color: theme.bg,
+          backgroundColor: theme.accent,
+          opacity: frame >= slam + 12 ? 1 : 0,
+          rotate: "-4deg",
+          scale: interpolate(frame, [slam + 12, slam + 20], [1.8, 1], { ...clamp, output: "perceptual-scale" }),
+        }}
+      >
+        UNOFFICIAL
+      </Interactive.Div>
+      <Sfx name="tick" at={slam + 12} />
       <Interactive.Div
         name="Subtitle"
         style={{
-          marginTop: 28,
-          fontSize: 52,
+          marginTop: 48,
+          fontSize: 50,
           color: theme.muted,
-          opacity: interpolate(frame, [1 * fps, 1.8 * fps], [0, 1], {
-            extrapolateLeft: "clamp",
-            extrapolateRight: "clamp",
-          }),
+          opacity: interpolate(frame, [3 * fps, 3.6 * fps], [0, 1], clamp),
+          translate: interpolate(frame, [3 * fps, 3.6 * fps], ["0px 30px", "0px 0px"], { ...clamp, easing: Easing.bezier(0.16, 1, 0.3, 1) }),
         }}
       >
-        可读源码 · 可自行构建 · 可二次开发的 Claude Code CLI
-      </Interactive.Div>
-      <Interactive.Div
-        name="Version"
-        style={{
-          marginTop: 56,
-          fontFamily: theme.mono,
-          fontSize: 44,
-          padding: "12px 32px",
-          borderRadius: 999,
-          border: `2px solid ${theme.accent}`,
-          color: theme.accent,
-          opacity: interpolate(frame, [1.6 * fps, 2.3 * fps], [0, 1], {
-            extrapolateLeft: "clamp",
-            extrapolateRight: "clamp",
-          }),
-        }}
-      >
-        v2.1.294 · @esonhugh/claude-code
+        可读源码 · 自行构建 · 自由二次开发
       </Interactive.Div>
     </AbsoluteFill>
   );
