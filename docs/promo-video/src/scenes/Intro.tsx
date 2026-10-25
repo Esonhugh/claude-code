@@ -1,4 +1,5 @@
 import { AbsoluteFill, Easing, Interactive, interpolate, useCurrentFrame, useVideoConfig } from "remotion";
+import { Clawd, clawdFrame, JUMP_WAVE, LOOK_AROUND } from "../Clawd";
 import { Sfx } from "../Sfx";
 import { clamp, theme } from "../theme";
 
@@ -8,6 +9,13 @@ export const Intro: React.FC = () => {
   const slam = 15;
   const shake = frame >= slam && frame < slam + 10 ? Math.sin(frame * 3) * (slam + 10 - frame) * 2 : 0;
   const split = interpolate(frame, [slam, slam + 0.6 * fps], [18, 0], clamp);
+  // Falls in with arms up, lands into the original jump-wave, then glances around.
+  const pose =
+    frame < slam
+      ? { pose: "arms-up" as const, offset: 0 }
+      : frame < slam + 50
+        ? clawdFrame(frame, fps, slam, JUMP_WAVE)
+        : clawdFrame(frame, fps, slam + 55, LOOK_AROUND);
 
   return (
     <AbsoluteFill
@@ -22,18 +30,12 @@ export const Intro: React.FC = () => {
         }}
       />
       <Interactive.Div
-        name="Mark"
+        name="Clawd"
         style={{
-          fontFamily: theme.symbols,
-          fontSize: 180,
-          lineHeight: 1,
-          color: theme.accent,
-          textShadow: `0 0 ${interpolate(frame, [0, slam, slam + 20], [10, 80, 30], clamp)}px ${theme.accent}`,
-          scale: interpolate(frame, [0, slam], [0.2, 1], { ...clamp, easing: Easing.bezier(0.7, 0, 0.84, 0), output: "perceptual-scale" }),
-          rotate: `${interpolate(frame, [0, slam], [0, 540], { ...clamp, easing: Easing.bezier(0.7, 0, 0.84, 0) }) + frame * 0.6}deg`,
+          translate: interpolate(frame, [0, slam], ["0px -700px", "0px 0px"], { ...clamp, easing: Easing.bezier(0.7, 0, 0.84, 0) }),
         }}
       >
-        ✻
+        <Clawd cell={30} pose={pose.pose} offset={pose.offset} />
       </Interactive.Div>
       <Interactive.Div
         name="Title"
@@ -47,7 +49,7 @@ export const Intro: React.FC = () => {
           textShadow: `${split}px 0 0 rgba(111,211,230,0.8), ${-split}px 0 0 rgba(217,119,87,0.9), 0 0 40px rgba(217,119,87,0.4)`,
         }}
       >
-        Claude Code
+        EsonClaw
       </Interactive.Div>
       <Interactive.Div
         name="Stamp"
@@ -56,8 +58,8 @@ export const Intro: React.FC = () => {
           padding: "6px 28px",
           fontFamily: theme.mono,
           fontWeight: 700,
-          fontSize: 54,
-          letterSpacing: 14,
+          fontSize: 44,
+          letterSpacing: 8,
           color: theme.bg,
           backgroundColor: theme.accent,
           opacity: frame >= slam + 12 ? 1 : 0,
@@ -65,13 +67,25 @@ export const Intro: React.FC = () => {
           scale: interpolate(frame, [slam + 12, slam + 20], [1.8, 1], { ...clamp, output: "perceptual-scale" }),
         }}
       >
-        UNOFFICIAL
+        UNOFFICIAL CLAUDE CODE
       </Interactive.Div>
       <Sfx name="tick" at={slam + 12} />
       <Interactive.Div
+        name="Repo"
+        style={{
+          marginTop: 36,
+          fontFamily: theme.mono,
+          fontSize: 44,
+          color: theme.cyan,
+          opacity: interpolate(frame, [slam + 22, slam + 30], [0, 1], clamp),
+        }}
+      >
+        Esonhugh/claude-code
+      </Interactive.Div>
+      <Interactive.Div
         name="Subtitle"
         style={{
-          marginTop: 48,
+          marginTop: 20,
           fontSize: 50,
           color: theme.muted,
           opacity: interpolate(frame, [slam + 30, slam + 48], [0, 1], clamp),

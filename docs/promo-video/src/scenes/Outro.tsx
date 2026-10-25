@@ -1,4 +1,5 @@
 import { AbsoluteFill, Easing, Interactive, interpolate, useCurrentFrame, useVideoConfig } from "remotion";
+import { Clawd, clawdFrame, JUMP_WAVE, LOOK_AROUND } from "../Clawd";
 import { Sfx } from "../Sfx";
 import { clamp, theme } from "../theme";
 
@@ -15,8 +16,11 @@ export const Outro: React.FC = () => {
 
   return (
     <AbsoluteFill name="Outro" style={{ fontFamily: theme.sans, color: theme.text, justifyContent: "center", alignItems: "center" }}>
-      <div style={{ fontSize: 96, fontWeight: 900 }}>
-        立即上手<span style={{ color: theme.accent }}>.</span>
+      <div style={{ display: "flex", alignItems: "center", gap: 48 }}>
+        <Clawd cell={14} {...(frame >= repoAt ? clawdFrame(frame, fps, repoAt, JUMP_WAVE) : clawdFrame(frame, fps, 30, LOOK_AROUND))} />
+        <div style={{ fontSize: 96, fontWeight: 900 }}>
+          立即上手<span style={{ color: theme.accent }}>.</span>
+        </div>
       </div>
       <div
         style={{

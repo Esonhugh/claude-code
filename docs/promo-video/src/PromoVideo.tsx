@@ -5,6 +5,7 @@ import { Chapter, chapterFrames, ChapterProps } from "./scenes/Chapter";
 import { Diff, DIFF_FRAMES } from "./scenes/Diff";
 import { Hook, HOOK_FRAMES } from "./scenes/Hook";
 import { Intro } from "./scenes/Intro";
+import { More, MORE_FRAMES } from "./scenes/More";
 import { Outro } from "./scenes/Outro";
 import { WikiWall } from "./scenes/WikiWall";
 
@@ -74,14 +75,22 @@ const chapters: Omit<ChapterProps, "index">[] = [
       { kind: "image", file: "diff-view-session.png", width: 1380, height: 792, focus: { x: 762, y: 170, w: 600, h: 225 }, label: "/diff 面板，改动一目了然", wiki: "Diff-View" },
     ],
   },
+  {
+    question: "想换成自己的样子？",
+    answer: "名字、Logo、状态栏，全都能换。",
+    shots: [
+      { kind: "image", file: "branding-default.png", after: "branding-custom.png", width: 959, height: 210, focus: { x: 15, y: 8, w: 340, h: 70 }, label: "名字和 Logo，一行配置就换", wiki: "Branding" },
+      { kind: "image", file: "branding-custom.png", width: 959, height: 210, focus: { x: 30, y: 176, w: 240, h: 26 }, label: "状态栏跑你自己的脚本", wiki: "Branding" },
+    ],
+  },
 ];
 
-const INTRO_FRAMES = 105;
+const INTRO_FRAMES = 120;
 const WIKI_FRAMES = 120;
 const OUTRO_FRAMES = 180;
 
 export const PROMO_DURATION =
-  HOOK_FRAMES + INTRO_FRAMES + chapters.reduce((n, c) => n + chapterFrames(c.shots), 0) + DIFF_FRAMES + WIKI_FRAMES + OUTRO_FRAMES;
+  HOOK_FRAMES + INTRO_FRAMES + chapters.reduce((n, c) => n + chapterFrames(c.shots), 0) + MORE_FRAMES + DIFF_FRAMES + WIKI_FRAMES + OUTRO_FRAMES;
 
 const Music: React.FC = () => {
   const { durationInFrames } = useVideoConfig();
@@ -109,6 +118,9 @@ export const PromoVideo: React.FC = () => (
           <Chapter index={i + 1} {...c} />
         </Series.Sequence>
       ))}
+      <Series.Sequence name="More" durationInFrames={MORE_FRAMES}>
+        <More />
+      </Series.Sequence>
       <Series.Sequence name="Diff" durationInFrames={DIFF_FRAMES}>
         <Diff />
       </Series.Sequence>

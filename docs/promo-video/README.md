@@ -1,6 +1,6 @@
 # README 宣传视频
 
-[`promo.mp4`](promo.mp4)（1920×1080，30fps，约 54 秒，带音乐和音效）由本目录的 Remotion 项目生成，嵌入在仓库根目录 README 中。`poster.png` 是视频封面。
+[`promo.mp4`](promo.mp4)（1920×1080，30fps，约 68 秒，带音乐和音效）由本目录的 Remotion 项目生成，嵌入在仓库根目录 README 中。`poster.png` 是视频封面。
 
 ## 结构
 
@@ -9,12 +9,14 @@
 | 段落 | 文件 | 内容 |
 | --- | --- | --- |
 | 痛点 | `src/scenes/Hook.tsx` | 三个问题逐个砸出并被划掉，接「那就换一个。」 |
-| 标题 | `src/scenes/Intro.tsx` | 标题重击与 UNOFFICIAL 印章 |
-| 四个章节 | `src/scenes/Chapter.tsx` | 问题 + 答案卡，之后是截图镜头（从全貌推近 `focus` 区域，高亮框、压暗、大字标注）或终端交互动画；章节内容和每张截图的 `focus` 坐标（原图像素）在 `src/PromoVideo.tsx` |
+| 标题 | `src/scenes/Intro.tsx` | Clawd 从天而降，EsonClaw 标题重击、UNOFFICIAL CLAUDE CODE 印章、仓库名 |
+| Clawd | `src/Clawd.tsx` | 从 `src/components/LogoV2/Clawd.tsx` 移植的吉祥物姿势，以及 `AnimatedClawd.tsx` 的跳跃、张望动画（每帧 60 ms）；方块字符按 2×2 象限画成像素 |
+| 五个章节 | `src/scenes/Chapter.tsx` | 问题 + 答案卡，之后是截图镜头（从全貌推近 `focus` 区域，高亮框、压暗、大字标注）或终端交互动画；设了 `after` 的截图会在镜头锁定后被扫光替换成另一张（Branding 前后对比）；章节内容和每张截图的 `focus` 坐标（原图像素）在 `src/PromoVideo.tsx` |
 | 终端动画 | `src/TerminalSim.tsx` | 按脚本重放一段 Claude Code 交互；配色取自 `src/utils/theme.ts` 暗色主题，spinner 字符取自 `src/components/Spinner/utils.ts`，完成动词直接 import `src/constants/turnCompletionVerbs.ts` |
+| 还有更多 | `src/scenes/More.tsx` | 14 个其他功能，一拍一个快闪 |
 | 对照 | `src/scenes/Diff.tsx` | 6 项差异逐条快闪，文案取自 `docs/features` |
 | Wiki | `src/scenes/WikiWall.tsx` | 截图墙 + Wiki 地址 |
-| 结尾 | `src/scenes/Outro.tsx` | 安装命令、仓库地址、非官方声明 |
+| 结尾 | `src/scenes/Outro.tsx` | Clawd、安装命令、仓库地址、非官方声明 |
 
 `public/shots` 是指向 `docs/features/images` 的符号链接。换截图时同时更新它的 `width`/`height`/`focus`。
 
@@ -32,7 +34,7 @@ bun install
 bunx remotion studio          # 预览
 bunx remotion render PromoVideo out/promo.mp4 --crf=26 --audio-bitrate=160k
 ffmpeg -y -i out/promo.mp4 -c:v libx264 -preset slow -crf 28 -pix_fmt yuv420p -movflags +faststart -c:a copy promo.mp4
-ffmpeg -y -ss 8 -i promo.mp4 -frames:v 1 -vf scale=1280:-1 poster.png
+ffmpeg -y -ss 8.5 -i promo.mp4 -frames:v 1 -vf scale=1280:-1 poster.png
 ```
 
 本机没有 Remotion 自带的 Chrome Headless Shell 时，加 `--browser-executable=<chrome-headless-shell 路径>`。

@@ -4,7 +4,8 @@ import { SimStep, TerminalSim, TuiColor } from "../TerminalSim";
 import { clamp, theme } from "../theme";
 
 export type Focus = { x: number; y: number; w: number; h: number };
-type ImageShot = { kind: "image"; file: string; width: number; height: number; focus: Focus; label: string; wiki: string };
+// `after` is a same-size screenshot revealed by a sweep once the camera has locked on (before/after).
+type ImageShot = { kind: "image"; file: string; after?: string; width: number; height: number; focus: Focus; label: string; wiki: string };
 type SimShot = { kind: "sim"; steps: SimStep[]; footer: { text: string; color: TuiColor }; labelAt: number; label: string; wiki: string };
 export type ChapterShot = ImageShot | SimShot;
 export type ChapterProps = { index: number; question: string; answer: string; shots: ChapterShot[] };
@@ -60,7 +61,7 @@ const Question: React.FC<{ index: number; question: string; answer: string }> = 
 };
 
 // The camera starts on the whole screenshot, pushes in on the part that matters and spotlights it.
-const Shot: React.FC<ImageShot> = ({ file, width, height, focus, label, wiki }) => {
+const Shot: React.FC<ImageShot> = ({ file, after, width, height, focus, label, wiki }) => {
   const frame = useCurrentFrame();
   const push = interpolate(frame, [10, 26], [0, 1], { ...clamp, easing: Easing.bezier(0.65, 0, 0.35, 1) });
   const k0 = Math.min(1760 / width, 900 / height);
@@ -75,24 +76,45 @@ const Shot: React.FC<ImageShot> = ({ file, width, height, focus, label, wiki }) 
   const lock = interpolate(frame, [24, 30], [0, 1], clamp);
   const pad = 14;
   const exit = interpolate(frame, [SHOT_FRAMES - 6, SHOT_FRAMES], [0, 1], clamp);
+  const sweep = interpolate(frame, [32, 42], [0, 100], { ...clamp, easing: Easing.bezier(0.65, 0, 0.35, 1) });
 
   return (
     <AbsoluteFill style={{ overflow: "hidden", fontFamily: theme.sans, color: theme.text, filter: `blur(${interpolate(frame, [0, 6], [14, 0], clamp) + exit * 16}px)`, opacity: 1 - exit * 0.6 }}>
       <Sfx name="whoosh" volume={0.5} />
       <Sfx name="impact" at={24} volume={0.45} />
-      <Img
-        src={staticFile(`shots/${file}`)}
-        style={{
-          position: "absolute",
-          left,
-          top,
-          width: width * k,
-          height: height * k,
-          borderRadius: 12,
-          boxShadow: "0 40px 140px rgba(0,0,0,0.8)",
-          imageRendering: k > 2 ? "pixelated" : "auto",
-        }}
-      />
+      {[file, after].map((f, i) =>
+        f ? (
+          <Img
+            key={f}
+            src={staticFile(`shots/${f}`)}
+            style={{
+              position: "absolute",
+              left,
+              top,
+              width: width * k,
+              height: height * k,
+              borderRadius: 12,
+              boxShadow: "0 40px 140px rgba(0,0,0,0.8)",
+              imageRendering: k > 2 ? "pixelated" : "auto",
+              clipPath: i === 1 ? `inset(0 ${100 - sweep}% 0 0)` : undefined,
+            }}
+          />
+        ) : null,
+      )}
+      {after && sweep > 0 && sweep < 100 ? (
+        <div
+          style={{
+            position: "absolute",
+            left: left + (width * k * sweep) / 100 - 4,
+            top: top - 40,
+            width: 8,
+            height: height * k + 80,
+            backgroundColor: "white",
+            boxShadow: `0 0 40px 10px ${theme.accent}`,
+          }}
+        />
+      ) : null}
+      {after ? <Sfx name="whoosh" at={32} /> : null}
       <div
         style={{
           position: "absolute",
