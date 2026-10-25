@@ -1,5 +1,5 @@
 import type { UUID } from 'crypto'
-import { randomUUID } from 'crypto'
+import { randomBytes, randomUUID } from 'crypto'
 import { getIsNonInteractiveSession, getSessionId } from '../bootstrap/state.js'
 import type { SDKAssistantMessage, SDKUserMessage } from '../entrypoints/agentSdkTypes.js'
 import type { SdkWorkflowProgress } from '../types/tools.js'
@@ -8,10 +8,12 @@ type TaskStartedEvent = {
   type: 'system'
   subtype: 'task_started'
   task_id: string
+  run_id?: string
   tool_use_id?: string
   description: string
   subagent_type?: string
   is_backgrounded?: boolean
+  spawn_depth?: number
   task_type?: string
   workflow_name?: string
   prompt?: string
@@ -22,6 +24,7 @@ type TaskUpdatedEvent = {
   type: 'system'
   subtype: 'task_updated'
   task_id: string
+  run_id?: string
   patch: {
     status?: string
     description?: string
@@ -38,6 +41,7 @@ type BackgroundTasksChangedEvent = {
   subtype: 'background_tasks_changed'
   tasks: {
     task_id: string
+    run_id?: string
     task_type: string
     subagent_type?: string
     description: string
@@ -48,6 +52,7 @@ type TaskProgressEvent = {
   type: 'system'
   subtype: 'task_progress'
   task_id: string
+  run_id?: string
   tool_use_id?: string
   description: string
   usage: {
@@ -72,6 +77,7 @@ type TaskNotificationSdkEvent = {
   type: 'system'
   subtype: 'task_notification'
   task_id: string
+  run_id?: string
   tool_use_id?: string
   status: 'completed' | 'failed' | 'stopped'
   output_file: string
@@ -107,6 +113,22 @@ export type SdkEvent =
 // the queue so they stay in order with that agent's task events.
 type SubagentSdkMessage = SDKAssistantMessage | SDKUserMessage
 
+// Id of one run of a task, as official sends it on every task_* event: a resumed
+// task keeps its task_id and gets a new run id. Run ids of one task sort in the
+// order the runs opened.
+const runIds = new Map<string, string>()
+
+export function startTaskRun(taskId: string): void {
+  const previous = runIds.get(taskId)
+  const previousTime = previous ? parseInt(previous.split('-')[0]!, 36) : -1
+  const time = Math.max(Date.now(), previousTime + 1).toString(36).padStart(9, '0')
+  runIds.set(taskId, `${time}-${randomBytes(4).toString('hex')}`)
+}
+
+export function getTaskRunId(taskId: string): string | undefined {
+  return runIds.get(taskId)
+}
+
 const MAX_QUEUE_SIZE = 1000
 const queue: (SdkEvent | SubagentSdkMessage)[] = []
 
@@ -118,6 +140,9 @@ export function enqueueSdkEvent(event: SdkEvent | SubagentSdkMessage): void {
   }
   if (queue.length >= MAX_QUEUE_SIZE) {
     queue.shift()
+  }
+  if (event.type === 'system' && 'task_id' in event && runIds.has(event.task_id)) {
+    event = { ...event, run_id: runIds.get(event.task_id) }
   }
   queue.push(event)
 }

@@ -430,8 +430,9 @@ import {
 import { handleTeammateShutdownApproved } from '../utils/swarm/teammateShutdown.js'
 import { getRunningTasks } from '../utils/task/framework.js'
 import { isBackgroundTask } from '../tasks/types.js'
-import { stopTask } from '../tasks/stopTask.js'
-import { drainSdkOutput } from '../utils/sdkEventQueue.js'
+import { StopTaskError, stopTask } from '../tasks/stopTask.js'
+import { isTerminalTaskStatus } from '../taskStatus.js'
+import { drainSdkOutput, getTaskRunId } from '../utils/sdkEventQueue.js'
 import { initializeGrowthBook } from '../services/analytics/growthbook.js'
 import { errorMessage, toError } from '../utils/errors.js'
 import { sleep } from '../utils/sleep.js'
@@ -2217,6 +2218,30 @@ function runHeadlessStreaming(
       // Drains the queue, batching consecutive prompt-mode commands into one
       // ask() call so messages that queued up during a long turn coalesce
       // into a single follow-up turn instead of N separate turns.
+      const flushHeldBackResult = () => {
+        if (!heldBackResult) return
+        output.enqueue(heldBackResult)
+        heldBackResult = null
+        if (suggestionState.pendingSuggestion) {
+          output.enqueue(suggestionState.pendingSuggestion)
+          // Now that the suggestion is actually delivered, record it for acceptance tracking
+          if (suggestionState.pendingLastEmittedEntry) {
+            suggestionState.lastEmitted = {
+              ...suggestionState.pendingLastEmittedEntry,
+              emittedAt: Date.now(),
+            }
+            suggestionState.pendingLastEmittedEntry = null
+          }
+          suggestionState.pendingSuggestion = null
+        }
+      }
+      const hasRunningBackgroundAgents = () =>
+        getRunningTasks(getAppState()).some(
+          t =>
+            (t.type === 'local_agent' || t.type === 'local_workflow') &&
+            isBackgroundTask(t),
+        )
+
       const drainCommandQueue = async () => {
         while ((command = dequeue(isMainThread))) {
           // Keep stdin controls responsive while queued turns wait for model validation.
@@ -2361,6 +2386,7 @@ function runHeadlessStreaming(
                 type: 'system',
                 subtype: 'task_notification',
                 task_id: taskIdMatch?.[1] ?? '',
+                run_id: getTaskRunId(taskIdMatch?.[1] ?? ''),
                 tool_use_id: toolUseIdMatch?.[1],
                 status,
                 output_file: outputFileMatch?.[1] ?? '',
@@ -2379,6 +2405,9 @@ function runHeadlessStreaming(
                 uuid: randomUUID(),
               })
             }
+            // Like official, the turn held back for this agent gets its result
+            // before the notification's own turn starts.
+            if (!hasRunningBackgroundAgents()) flushHeldBackResult()
             // No continue -- fall through to ask() so the model processes the result
           }
 
@@ -2530,18 +2559,11 @@ function runHeadlessStreaming(
                 }
 
                 // Hold-back: don't emit result while background agents are running
-                const currentState = getAppState()
-                if (
-                  getRunningTasks(currentState).some(
-                    t =>
-                      (t.type === 'local_agent' ||
-                        t.type === 'local_workflow') &&
-                      isBackgroundTask(t),
-                  )
-                ) {
+                if (hasRunningBackgroundAgents()) {
+                  flushHeldBackResult()
                   heldBackResult = message
                 } else {
-                  heldBackResult = null
+                  flushHeldBackResult()
                   output.enqueue(message)
                 }
               } else {
@@ -2724,22 +2746,7 @@ function runHeadlessStreaming(
         }
       } while (waitingForAgents)
 
-      if (heldBackResult) {
-        output.enqueue(heldBackResult)
-        heldBackResult = null
-        if (suggestionState.pendingSuggestion) {
-          output.enqueue(suggestionState.pendingSuggestion)
-          // Now that the suggestion is actually delivered, record it for acceptance tracking
-          if (suggestionState.pendingLastEmittedEntry) {
-            suggestionState.lastEmitted = {
-              ...suggestionState.pendingLastEmittedEntry,
-              emittedAt: Date.now(),
-            }
-            suggestionState.pendingLastEmittedEntry = null
-          }
-          suggestionState.pendingSuggestion = null
-        }
-      }
+      flushHeldBackResult()
     } catch (error) {
       // Emit error result message before shutting down
       // Write directly to structuredIO to ensure immediate delivery
@@ -4803,16 +4810,30 @@ function runHeadlessStreaming(
           })
         } else if (message.request.subtype === 'stop_task') {
           const { task_id: taskId } = message.request
-          try {
-            // @ts-ignore - recovered code
-            await stopTask(taskId, {
-              source: 'user',
-              getAppState,
-              setAppState,
-            })
-            sendControlResponseSuccess(message, {})
-          } catch (error) {
-            sendControlResponseError(message, errorMessage(error))
+          if (typeof taskId !== 'string') {
+            sendControlResponseError(message, 'stop_task: task_id must be a string')
+          } else {
+            try {
+              await stopTask(taskId, {
+                source: 'user',
+                getAppState,
+                setAppState,
+              })
+              sendControlResponseSuccess(message, {})
+            } catch (error) {
+              // Like official: a task that is gone or already finished counts as stopped.
+              if (
+                error instanceof StopTaskError &&
+                (error.code === 'not_found' ||
+                  (error.code === 'not_running' &&
+                    error.taskStatus !== undefined &&
+                    isTerminalTaskStatus(error.taskStatus)))
+              ) {
+                sendControlResponseSuccess(message, {})
+              } else {
+                sendControlResponseError(message, errorMessage(error))
+              }
+            }
           }
         } else if (message.request.subtype === 'generate_session_title') {
           // Fire-and-forget so the Haiku call does not block the stdin loop

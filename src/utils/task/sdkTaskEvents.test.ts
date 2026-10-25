@@ -22,6 +22,7 @@ const agentTask = {
   agentType: 'probe-agent',
   toolUseId: 'toolu_1',
   isBackgrounded: true,
+  spawnDepth: 1,
   startTime: 1,
   outputFile: '',
   outputOffset: 0,
@@ -43,20 +44,25 @@ const events = () =>
 
 test('a background agent reports task_started, task_updated and background_tasks_changed', () => {
   registerTask(agentTask, setAppState)
-  expect(events()).toEqual([
+  const started = events()
+  const runId = (started[1] as { run_id?: string }).run_id
+  expect(runId).toMatch(/^[0-9a-z]{9}-[0-9a-f]{8}$/)
+  expect(started).toEqual([
     {
       type: 'system',
       subtype: 'background_tasks_changed',
-      tasks: [{ task_id: 'a1', task_type: 'local_agent', subagent_type: 'probe-agent', description: 'probe' }],
+      tasks: [{ task_id: 'a1', run_id: runId, task_type: 'local_agent', subagent_type: 'probe-agent', description: 'probe' }],
     },
     {
       type: 'system',
       subtype: 'task_started',
       task_id: 'a1',
+      run_id: runId,
       tool_use_id: 'toolu_1',
       description: 'probe',
       subagent_type: 'probe-agent',
       is_backgrounded: true,
+      spawn_depth: 1,
       task_type: 'local_agent',
       workflow_name: undefined,
       prompt: undefined,
@@ -65,10 +71,15 @@ test('a background agent reports task_started, task_updated and background_tasks
 
   updateTaskState<TaskState>('a1', setAppState, task => ({ ...task, status: 'completed', endTime: 5 }) as TaskState)
   expect(events()).toEqual([
-    { type: 'system', subtype: 'task_updated', task_id: 'a1', patch: { status: 'completed', end_time: 5 } },
+    { type: 'system', subtype: 'task_updated', task_id: 'a1', run_id: runId, patch: { status: 'completed', end_time: 5 } },
   ])
 
   // Like official, the task leaves the background list once its notification is out.
   updateTaskState<TaskState>('a1', setAppState, task => ({ ...task, notified: true }) as TaskState)
   expect(events()).toEqual([{ type: 'system', subtype: 'background_tasks_changed', tasks: [] }])
+
+  // Resuming the finished task opens a new run that sorts after the first.
+  registerTask(agentTask, setAppState)
+  const resumed = events().find(event => event.subtype === 'background_tasks_changed') as { tasks: { run_id: string }[] }
+  expect(resumed.tasks[0]!.run_id > runId!).toBe(true)
 })

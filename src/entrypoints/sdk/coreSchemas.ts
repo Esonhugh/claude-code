@@ -1929,6 +1929,7 @@ export const SDKTaskNotificationMessageSchema = lazySchema(() =>
     type: z.literal('system'),
     subtype: z.literal('task_notification'),
     task_id: z.string(),
+    run_id: z.string().optional().describe('Id of one run of the task; a resumed task keeps its task_id and gets a new run_id.'),
     tool_use_id: z.string().optional(),
     status: z.enum(['completed', 'failed', 'stopped']),
     output_file: z.string(),
@@ -1950,10 +1951,12 @@ export const SDKTaskStartedMessageSchema = lazySchema(() =>
     type: z.literal('system'),
     subtype: z.literal('task_started'),
     task_id: z.string(),
+    run_id: z.string().optional().describe('Id of one run of the task; a resumed task keeps its task_id and gets a new run_id.'),
     tool_use_id: z.string().optional(),
     description: z.string(),
     subagent_type: z.string().optional(),
     is_backgrounded: z.boolean().optional(),
+    spawn_depth: z.number().int().optional(),
     task_type: z.string().optional(),
     workflow_name: z
       .string()
@@ -1972,6 +1975,7 @@ export const SDKTaskUpdatedMessageSchema = lazySchema(() =>
     type: z.literal('system'),
     subtype: z.literal('task_updated'),
     task_id: z.string(),
+    run_id: z.string().optional().describe('Id of one run of the task; a resumed task keeps its task_id and gets a new run_id.'),
     patch: z.object({
       status: z.string().optional(),
       description: z.string().optional(),
@@ -1992,6 +1996,7 @@ export const SDKBackgroundTasksChangedMessageSchema = lazySchema(() =>
     tasks: z.array(
       z.object({
         task_id: z.string(),
+        run_id: z.string().optional(),
         task_type: z.string(),
         subagent_type: z.string().optional(),
         description: z.string(),
@@ -2076,6 +2081,7 @@ export const SDKTaskProgressMessageSchema = lazySchema(() =>
     type: z.literal('system'),
     subtype: z.literal('task_progress'),
     task_id: z.string(),
+    run_id: z.string().optional().describe('Id of one run of the task; a resumed task keeps its task_id and gets a new run_id.'),
     tool_use_id: z.string().optional(),
     description: z.string(),
     usage: z.object({
