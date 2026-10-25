@@ -247,6 +247,7 @@ export function createCodexStyleCompactionResultFromSummary(input: {
   originalMessages: Message[]
   boundaryMarker: SystemMessage
   summaryMessages: UserMessage[]
+  attachments: AttachmentMessage[]
   hookResults: HookResultMessage[]
   options: CodexCompactOptions
   preCompactTokenCount?: number
@@ -267,7 +268,9 @@ export function createCodexStyleCompactionResultFromSummary(input: {
     retainedMessageCount: retained.messages.length,
     retainedApproxTokens: retained.approxTokens,
     truncatedToolResultCount,
-    droppedAttachmentCount: 0,
+    droppedAttachmentCount: input.options.keepPostCompactAttachments
+      ? 0
+      : input.attachments.length,
     retainedUserMessageTokens: input.options.retainedUserMessageTokens,
   })
 
@@ -275,7 +278,9 @@ export function createCodexStyleCompactionResultFromSummary(input: {
     boundaryMarker: input.boundaryMarker,
     summaryMessages: input.summaryMessages,
     retainedMessages: retained.messages,
-    minimalAttachments: [],
+    minimalAttachments: input.options.keepPostCompactAttachments
+      ? input.attachments
+      : [],
     hookResults: input.hookResults,
     preCompactTokenCount: input.preCompactTokenCount,
     postCompactTokenCount: input.postCompactTokenCount,
@@ -404,6 +409,7 @@ export async function compactConversationCodexStyle(
     originalMessages: messages,
     boundaryMarker,
     summaryMessages: claudeResult.summaryMessages,
+    attachments: claudeResult.attachments,
     hookResults: claudeResult.hookResults,
     options,
     preCompactTokenCount: claudeResult.preCompactTokenCount,
