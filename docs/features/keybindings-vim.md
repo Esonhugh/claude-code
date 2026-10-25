@@ -39,7 +39,7 @@ Claude 正在回答时你也可以继续打字：
 
 ## Vim 模式
 
-**1. 打开。** `/config` 里把 Editor mode 设为 `vim`。输入框默认在 INSERT 模式，按 `Esc` 进入 NORMAL。
+**1. 打开。** `/config` 里把 Editor mode 设为 `vim`，或者直接输入 `/vim`（再输入一次切回普通模式，会显示 `Editor mode set to vim.` / `Editor mode set to normal.`）。输入框默认在 INSERT 模式，按 `Esc` 进入 NORMAL。
 
 **2. 选择一段文字。** NORMAL 下光标放在 `(` 上，按 `v` 进入 VISUAL，再按 `%` 跳到配对的 `)`，整段括号内容被选中（反色），底部显示 `-- VISUAL --`：
 

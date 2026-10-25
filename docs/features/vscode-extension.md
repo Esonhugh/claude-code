@@ -32,6 +32,7 @@ r6 get_sandbox_dialog  error    Unsupported control request subtype: get_sandbox
 | 面板功能 | 控制请求 |
 | --- | --- |
 | `/status`、版本号 | `get_status`、`get_binary_version` |
+| 账号信息 | `initialize` 和 `claude auth status --json`：用 ChatGPT 登录的 OpenAI 模式回报 ChatGPT 邮箱、账号名和套餐，不回报 `apiProvider`，插件因此照常显示账号、套餐和用量条（否则插件会当成第三方 provider 把它们隐藏） |
 | `/usage`、本次花费 | `get_usage`、`get_session_cost`（ChatGPT 登录的 OpenAI 模式回报 5 小时 / 7 天额度；API key 回报无额度信息） |
 | 模型列表 | `list_models`（含 `resolvedModel`） |
 | `@` 文件补全 | `file_suggestions` |

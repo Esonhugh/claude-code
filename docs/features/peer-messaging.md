@@ -53,6 +53,21 @@ claude --name builder      # 窗口 B
 { "crossSessionInbound": "accept" }
 ```
 
+## 被暂存的消息由你决定
+
+消息被暂存（`hold`）时，终端会话会弹出对话框 `Held message from another session`，显示发送者、暂存原因和消息原文：
+
+| 选项 | 效果 |
+| --- | --- |
+| `Deny — drop it and tell the sender it was declined` | 丢弃，发送方收到「已拒绝」的通知（默认选中，按 `Esc` 也是拒绝） |
+| `Deliver this message to Claude` | 交给 Claude 处理 |
+
+桌面版和非交互会话不能弹框，暂存的消息会在一段时间后过期，不会送达。发送方在每次状态变化（暂存、放行、拒绝、过期）时都会收到 `[Cross-session delivery notice]`，用 `SendMessage` 返回的 `msg_id` 对应是哪条消息。
+
+## 等对方忙完再通知我：`notify_when_idle`
+
+想等另一个会话做完手上的事，不用反复问「好了没」：让 Claude 调用 `SendMessage` 时带 `notify_when_idle: true`。对方下次空闲或退出时，你这边会收到一条 `[Cross-session idle notice]`，只通知一次。不带 `message` 就只订阅不发消息；带上就同时发消息并订阅。只能在主对话里用，子代理不行；对方长时间没有空闲信号时订阅会过期，同样会收到通知。
+
 ## 设置
 
 | 配置项 | 写法 | 说明 |
