@@ -80,7 +80,7 @@ CLAUDE_CODE_USE_OPENAI=1 OPENAI_BASE_URL=https://gateway.example/api OPENAI_API_
 | 命令 / 工具 | 行为 |
 | --- | --- |
 | `/fast` | 开启优先处理，发送 `service_tier: "priority"`；网关不支持时直接显示服务端错误，再执行一次关闭 |
-| `/compact` | 走 OpenAI 远端压缩，并保留之前的压缩历史，多次压缩不丢上下文 |
+| `/compact` | 默认和 Claude 一样由模型写摘要；设置 `compact.mode` 为 `codex` 后改走 OpenAI 服务端压缩，并保留之前的压缩历史，多次压缩不丢上下文，见 [Codex 式压缩](compaction.md#换一种压缩方式codex-式压缩) |
 | `WebSearch` | 使用 OpenAI 服务端搜索，结果和引用转换成和 Claude 一致的格式 |
 
 ## 网络安全访问档位（Daybreak）
