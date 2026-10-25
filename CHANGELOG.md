@@ -12,24 +12,14 @@
 - `## 2.1.88 base` 是唯一基线条目，固定放在文件末尾，不作为 release note。
 - `bun run check:changelog` 是格式规范的可执行门禁；发布时还会校验 tag 版本与最新发布条目一致。
 
-## 2026-10-25 - VS Code 插件：ChatGPT 登录时显示账号、方案与用量
-
-### 变更内容
-
-- ChatGPT 登录（`CLAUDE_CODE_USE_OPENAI=1` 且使用 `~/.codex/auth.json` 的 ChatGPT 凭据）时，`initialize` 的 `account` 和 `claude auth status --json` 会回报 ChatGPT 邮箱、账号名和方案，且不再带 `apiProvider`。VS Code 插件会把任何非 `firstParty` 的 `apiProvider` 视为第三方，进而隐藏账号、方案以及 5 小时和 7 天用量条（#183）。
-- `claude auth status --json` 在 ChatGPT 登录下回报的 `authMethod` 为 `chatgpt`。OpenAI API key 模式不变，仍回报 `apiProvider: "openai"`。
-
-### 测试覆盖
-
-- `src/utils/openai-auth-env.test.ts` 新增：`getChatGPTAccountInformation` 在 ChatGPT 登录、非 OpenAI 模式和 API key 优先三种情况下的结果。
-
-## 2026-10-25 - v2.1.293 - 权限、自动模式、Hooks 与沙箱对齐官方 2.1.303，背景会话、SQLite 记忆、跨会话通信与 Agent SDK / VS Code 兼容
+## 2026-10-25 - v2.1.294 - 权限、自动模式、Hooks 与沙箱对齐官方 2.1.303，背景会话、SQLite 记忆、跨会话通信与 Agent SDK / VS Code 兼容
 
 ### 版本状态
 
-- 发布候选：`dev` 合并到 `master` 后打 tag `v2.1.293`。本条目汇总 `v2.1.292` tag 之后至 `dev` 合并提交 `57091b9`（PR #177）的全部变更；`Makefile VERSION` 与 README 发布版本同步为 `2.1.293`，`package.json` 保持 `0.0.0-dev`。版本号 `2.1.293` 与官方版本号无对应关系（本轮对照基线为官方 2.1.303）。
+- 发布候选：`dev` 合并到 `master` 后打 tag `v2.1.294`。本条目汇总 `v2.1.292` tag 之后至 PR #185 的全部变更；`Makefile VERSION` 与 README 发布版本同步为 `2.1.294`，`package.json` 保持 `0.0.0-dev`。版本号 `2.1.294` 与官方版本号无对应关系（本轮对照基线为官方 2.1.303）。
 - 范围一（2026-10-20 至 2026-10-23）：PR #83 并入的 PR #37、#39、#41、#43、#45、#48、#50、#52、#54、#56、#58、#61、#63、#64、#66、#68（经集成分支 #70）、`dev` 直接合并的 7 个功能分支、2026-10-20 的 4 个直接提交，以及 PR #84、#86、#89、#90。归版前的 23 条原始条目与逐项测试见[v2.1.293 详细记录](docs/archive/implementation-records/changelogs/2026-10-23-v2.1.293-details.md)。
 - 首次推送 tag 的 release workflow 仅 Windows 在 `verify-bundled-image-runtime` 失败（runner 的 TEMP 为 8.3 短路径 `RUNNER~1`，本版本起 Read 对短路径强制询问，`dontAsk` 下被拒），npm 未发布；验证脚本改为先展开临时目录的长路径（#180），之后将 tag 移到修复后的提交。
+- `v2.1.293` 曾发布到 GitHub Release 与 npm，之后撤回；其全部内容并入本版本，并追加 VS Code 插件在 ChatGPT 登录下的账号与用量显示修复（#183）。npm 不允许重用已撤回的版本号，因此改发 `2.1.294`。
 - 范围二（2026-10-23 至 2026-10-25）：PR #91 至 #177 中合并到 `dev` 的 PR，归纳在下方「2026-10-23 之后」各分组；下方 2026-10-23、2026-10-24 的 9 个未归版本条目保持原样，也属于本版本。
 
 ### 关联提交
@@ -37,7 +27,7 @@
 - `ec9a0c1` PR #83 合并提交，内含 `a728a27` #70（`9dce6a8` #37、`7441714` #39、`93ad15c` #43、`5e0e2e7` #54、`76b6f26` #58）、`720a578` #61、`0001a8b` #63、`9bbbdaa` #64、`4d7f128` #48、`227facf` #41、`d1a9da4` #45、`cc0e3b0` #50、`bc37b93` #52、`2d346f1` #56、`d5fe4d1` #66、`4854cef` #68，以及集成修复 `a9de890`、`d172dc1`。
 - 功能分支合并：`224a402` hooks-parity、`1321688` monitor-tool、`5e18f3b` memory-local-enable、`1187910` autocompact-agent-fields、`da2e3ba` keybindings-growthbook-defaults、`510d1bc` mods-2.1.303-parity、`46766d7` permissions-automode-parity，集成修复 `30dce66`。
 - 直接提交：`9e7173c`、`529c3e7`、`97c6d72`、`4fbf315`（stream watchdog、无人值守重试、默认模型与回退模型链）。
-- 2026-10-23 至 2026-10-25 的 PR 合并提交（`git log --merges ed2347e..57091b9`）：#91 Direct Connect；#93、#94、#95、#96 启动与 SDK 0.3；#99、#100、#102、#107、#112、#115、#117、#120、#122、#124、#126、#166 Workflow；#105、#106、#129、#132 斜杠命令；#114、#119、#134 跨会话通信；#133、#136、#138、#150 背景会话；#143、#147 提示词与 SQLite 记忆；#156、#162、#164、#170、#172 Bash 沙箱；#153、#159、#165、#175、#177 Agent SDK 与 VS Code 插件；#169 Codex 客户端版本；#171、#174 界面修复；#148、#149、#151、#154、#157、#160、#173、#176 文档与技能。
+- 2026-10-23 至 2026-10-25 的 PR 合并提交（`git log --merges ed2347e..57091b9`）：#91 Direct Connect；#93、#94、#95、#96 启动与 SDK 0.3；#99、#100、#102、#107、#112、#115、#117、#120、#122、#124、#126、#166 Workflow；#105、#106、#129、#132 斜杠命令；#114、#119、#134 跨会话通信；#133、#136、#138、#150 背景会话；#143、#147 提示词与 SQLite 记忆；#156、#162、#164、#170、#172 Bash 沙箱；#153、#159、#165、#175、#177、#185 Agent SDK 与 VS Code 插件；#169 Codex 客户端版本；#171、#174 界面修复；#148、#149、#151、#154、#157、#160、#173、#176 文档与技能。
 - 2026-10-23 后续：PR #84（Bash 允许规则覆盖工作目录内写入询问、官方路径询问文案，Closes #77）、`df7cc70` PR #90（Agent Teams 改回需要环境变量）、`d6819a6` PR #89（`autocompact_state` 按模型解析窗口）、`ed2347e` PR #86（README 与 dev 同步）。
 
 ### 变更内容
@@ -173,6 +163,7 @@
 
 - 回应官方 VS Code 插件 2.1.303 自绘界面所需的 26 个控制请求（`get_status`、`get_usage`、`get_memory_dialog`、`get_hooks_listing`、`background_tasks` 等），插件对话框不再报 `Unsupported control request subtype`（#158）。
 - 新增 `--session-mirror`、`--resume-drops-turn`、`--managed-settings`、`--project-config-root`；`--tools` 拒绝列表外的全部基础工具；背景子代理消息带 `parent_tool_use_id` 串流，`task_*` 事件带 `run_id`、`spawn_depth`，背景 agent 运行时先保留 result、在 `task_notification` 之后送出；`stop_task` 对未知或已结束的任务回报成功（#88）。
+- ChatGPT 登录（`CLAUDE_CODE_USE_OPENAI=1` 且使用 `~/.codex/auth.json` 的 ChatGPT 凭据）时，`initialize` 的 `account` 和 `claude auth status --json` 回报 ChatGPT 邮箱、账号名和方案（`authMethod` 为 `chatgpt`），且不带 `apiProvider`；VS Code 插件把任何非 `firstParty` 的 `apiProvider` 视为第三方，会隐藏账号、方案以及 5 小时和 7 天用量条。OpenAI API key 模式仍回报 `apiProvider: "openai"`（#183）。
 
 #### 已知缺口
 
@@ -193,6 +184,7 @@
 - Monitor、记忆、压缩与界面：`src/tools/MonitorTool`、`src/tools/ScheduleWakeupTool`、`src/skills/bundled/loop.test.ts`、`src/memdir/neutralizeMemoryContent.test.ts`、`extractMode.test.ts`、`src/services/awaySummary.test.ts`、`src/commands/autocompact/autocompact.test.ts`、`src/services/compact/autoCompact.contextWindow.test.ts`、`sessionCompact.mods.test.ts`、`src/tools/AgentTool/loadAgentsDir.agentFields.test.ts`、`src/utils/worktree.baseRef.test.ts`、`src/tools/EnterWorktreeTool/EnterWorktreeTool.test.ts`、`src/services/analytics/growthbook.cached.test.ts`、`src/keybindings`、`src/components/PromptInput/PromptInput.sendNow.test.tsx`、`PromptInput.cycleModeError.test.tsx`、`src/screens/REPL.submit.test.ts`、`src/hooks/useVimInput.test.tsx`。
 - 2026-10-23 后续：`src/tools/BashTool/bashPermissionHardening.test.ts`（两种解析模式：`Bash(touch:*)`、`Bash(touch tl-x)` 与管道形式放行 `touch tl-x`；无规则时询问且为工作目录内文案；工作目录外与混合路径仍询问；安全检查、`cd` 复合、`cp -f`、Edit deny 不被覆盖；输出重导向文案，修复前失败）；`src/utils/agentSwarmsEnabled.test.ts`（未设置时关闭、`1`/`true` 启用、`0` 关闭、`--agent-teams` 强制启用）；`src/services/compact/autoCompact.contextWindow.test.ts` 与 `src/cli/print.streamState.test.ts`（按模型窗口后 `autocompact_state` 的窗口、阈值与 `source: "settings"` 与引擎一致，修复前失败）。
 - Mods：`bun test src/services/mods`（`sessionAppend`、`promptMention`、`toolCheckReceipt303`、`uiNotify`、`sessionIdentity`、`declarationsOfficial303` 等）、`src/components/ModsPane.test.tsx`、`make check-mods-control-types`。
+- ChatGPT 账号：`src/utils/openai-auth-env.test.ts` 覆盖 `getChatGPTAccountInformation` 在 ChatGPT 登录、非 OpenAI 模式和 API key 优先三种情况下的结果（修复前失败）。
 - 2026-10-23 之后的测试覆盖见各 PR 与 `docs/features/` 中的终端验收截图；发版前在 `dev` 修复了 `tsc` 与 `lint` 的 7 个错误（`hostControlRequests.ts` hooks 元数据类型、`SearchMemoryTool` 渲染与测试、`usageNonInteractive.test.ts` 命令类型收窄），并以重建的 binary 跑过 SIGINT SessionEnd、`CI=true` 无凭证 `-p` 与 team shutdown 三项回归。
 - 各分支均通过 `tsc`、`make build` 与 `bun run check:changelog`；`bun scripts/build.test.mjs` 覆盖默认 feature 集合包含 `MONITOR_TOOL`、`EXTRACT_MEMORIES` 与 `AWAY_SUMMARY`。逐条目的测试清单见详细记录。
 
