@@ -19,11 +19,13 @@ ascii=$(python3 -c 'print("".join(chr(i) for i in range(32,127)), end="")')
 python3 - "$root/src" "$tmp" "$ascii" <<'PY'
 import pathlib, sys
 src, tmp, ascii = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2]), sys.argv[3]
-text = "".join(p.read_text() for p in src.rglob("*.tsx"))
+text = "".join(p.read_text() for p in src.rglob("*.tsx")) + "✢✳✶✻✽·"
 wide = "".join(sorted({c for c in text if ord(c) > 127}))
+# Terminal glyphs (spinner, bullets, box drawing) live outside the CJK ranges.
+glyphs = "".join(c for c in wide if not ("\u3000" <= c <= "\u9fff" or "\uff00" <= c <= "\uffef"))
 (tmp / "sans.txt").write_text(ascii + wide)
-(tmp / "mono.txt").write_text(ascii + "▋")
-(tmp / "symbols.txt").write_text("✻✓")
+(tmp / "mono.txt").write_text(ascii + glyphs)
+(tmp / "symbols.txt").write_text(glyphs)
 PY
 for w in 400 700 900; do fetch "Noto+Sans+SC:wght@$w" "$tmp/sans.txt" "$out/NotoSansSC-$w.woff2"; done
 for w in 400 700; do fetch "JetBrains+Mono:wght@$w" "$tmp/mono.txt" "$out/JetBrainsMono-$w.woff2"; done

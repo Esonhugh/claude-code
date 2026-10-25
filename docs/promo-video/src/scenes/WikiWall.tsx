@@ -62,7 +62,7 @@ export const WikiWall: React.FC = () => {
           <div style={{ fontSize: 92, fontWeight: 900 }}>
             每个功能一页 <span style={{ color: theme.accent }}>Wiki</span>
           </div>
-          <div style={{ marginTop: 20, fontSize: 46, color: theme.muted }}>白话说明 · 分步截图 · 配置与按键</div>
+          <div style={{ marginTop: 20, fontSize: 46, color: theme.muted }}>40 个功能页 · 119 张实测截图 · 白话分步说明</div>
           <div style={{ marginTop: 32, fontFamily: theme.mono, fontSize: 44, color: theme.cyan }}>github.com/Esonhugh/claude-code/wiki</div>
         </Interactive.Div>
       </AbsoluteFill>

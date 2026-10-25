@@ -11,8 +11,8 @@ root="if(eq($K,0),55,if(eq($K,1),43.65,if(eq($K,2),65.41,49)))"
 p1="if(eq($K,0),220,if(eq($K,1),174.61,if(eq($K,2),261.63,196)))"
 p2="if(eq($K,0),261.63,if(eq($K,1),220,if(eq($K,2),329.63,246.94)))"
 p3="if(eq($K,0),329.63,if(eq($K,1),261.63,if(eq($K,2),392,293.66)))"
-DROP=2
-LEN=58
+DROP=6
+LEN=56
 
 ff -f lavfi -i "aevalsrc='gte(t,$DROP)*0.9*sin(2*PI*(45*mod(t,0.5)+4.8*(1-exp(-25*mod(t,0.5)))))*exp(-6*mod(t,0.5))':s=44100:d=$LEN" "$out/_kick.wav"
 ff -f lavfi -i "aevalsrc='gte(t,$DROP)*0.35*sin(2*PI*$root*2*t)*exp(-7*mod(t,0.25))':s=44100:d=$LEN" "$out/_bass.wav"

@@ -1,36 +1,87 @@
 import { Audio } from "@remotion/media";
-import { linearTiming, springTiming, TransitionSeries } from "@remotion/transitions";
-import { fade } from "@remotion/transitions/fade";
-import { slide } from "@remotion/transitions/slide";
-import { wipe } from "@remotion/transitions/wipe";
-import { Fragment } from "react";
-import { AbsoluteFill, interpolate, staticFile, useVideoConfig } from "remotion";
+import { AbsoluteFill, interpolate, Series, staticFile, useVideoConfig } from "remotion";
 import { Background } from "./Background";
-import { Diff } from "./scenes/Diff";
+import { Chapter, chapterFrames, ChapterProps } from "./scenes/Chapter";
+import { Diff, DIFF_FRAMES } from "./scenes/Diff";
+import { Hook, HOOK_FRAMES } from "./scenes/Hook";
 import { Intro } from "./scenes/Intro";
 import { Outro } from "./scenes/Outro";
-import { SectionTitle } from "./scenes/SectionTitle";
-import { Showcase, ShowcaseItem } from "./scenes/Showcase";
-import { Stats } from "./scenes/Stats";
 import { WikiWall } from "./scenes/WikiWall";
 
-const showcase: Omit<ShowcaseItem, "index">[] = [
-  { title: "OpenAI / Codex", desc: "ChatGPT 账号或 API key 登录，工具、界面、命令照常使用", shot: "openai-provider-model.png", wiki: "Openai-Provider" },
-  { title: "Agent Teams", desc: "一个负责人带几个队友并行干活，互发消息、共享任务清单", shot: "agent-teams-lead.png", wiki: "Agent-Teams" },
-  { title: "Dynamic Workflow", desc: "一段脚本编排多个子 Agent 分阶段并行，/workflows 看进度", shot: "workflows-panel.png", wiki: "Workflows" },
-  { title: "背景会话", desc: "任务丢到后台跑，claude agents 一屏看谁在等你", shot: "background-sessions-view.png", wiki: "Background-Sessions" },
-  { title: "Auto mode", desc: "分类器逐个判断操作：安全的直接做，危险的拦下", shot: "auto-mode-run.png", wiki: "Auto-Mode" },
-  { title: "Bash 沙箱", desc: "命令只能写项目目录、只能连你允许的域名", shot: "sandbox-run.png", wiki: "Sandbox" },
-  { title: "/diff 视图", desc: "全屏右侧 diff 面板，按轮次回看每一处改动", shot: "diff-view-session.png", wiki: "Diff-View" },
-  { title: "记忆检索", desc: "跨会话记住约定，SQLite FTS5 全文检索按需召回", shot: "memory-search.png", wiki: "Memory" },
-  { title: "Mods", desc: "一个 JS/TS 文件改造 Claude：命令、钩子、侧边面板", shot: "mods-hold-pane.png", wiki: "Mods" },
+// Every section length is a multiple of 15 frames so hard cuts land on the 120 BPM beat.
+const chapters: Omit<ChapterProps, "index">[] = [
+  {
+    question: "只能用 Claude 模型？",
+    answer: "GPT、Codex、自建网关，都行。",
+    shots: [
+      { kind: "image", file: "openai-provider-model.png", width: 959, height: 374, focus: { x: 118, y: 30, w: 280, h: 26 }, label: "GPT 模型直接驱动", wiki: "Openai-Provider" },
+      { kind: "image", file: "model-discovery-picker.png", width: 959, height: 465, focus: { x: 30, y: 340, w: 370, h: 40 }, label: "网关模型自动出现", wiki: "Model-Discovery" },
+    ],
+  },
+  {
+    question: "一个 Claude 不够用？",
+    answer: "组队、编排、丢到后台。",
+    shots: [
+      {
+        kind: "sim",
+        footer: { text: "team-lead · @writer · @reviewer   shift + ↑/↓ to select", color: "suggestion" },
+        steps: [
+          { at: 4, type: "prompt", text: "组个 docs 团队：writer 写引言，reviewer 审稿" },
+          { at: 20, type: "spinner", verb: "Orchestrating", until: 36 },
+          { at: 36, type: "tool", name: "TeamCreate", args: "docs", color: "success" },
+          { at: 46, type: "tool", name: "Agent", args: "writer · draft intro", color: "success" },
+          { at: 54, type: "tool", name: "Agent", args: "reviewer · review intro", color: "success" },
+          { at: 72, type: "line", text: "@writer❯ intro drafted", color: "suggestion" },
+          { at: 84, type: "line", text: "@reviewer❯ looks good, 2 nits", color: "suggestion" },
+          { at: 96, type: "done", verb: "Worked", seconds: 23 },
+        ],
+        labelAt: 60,
+        label: "一句话组队，并行干活",
+        wiki: "Agent-Teams",
+      },
+      { kind: "image", file: "workflows-panel.png", width: 1026, height: 319, focus: { x: 25, y: 195, w: 980, h: 80 }, label: "分阶段调度多个 Agent", wiki: "Workflows" },
+      { kind: "image", file: "background-sessions-view.png", width: 959, height: 374, focus: { x: 10, y: 105, w: 930, h: 165 }, label: "谁在等你，一眼看到", wiki: "Background-Sessions" },
+    ],
+  },
+  {
+    question: "放手让它跑，安全吗？",
+    answer: "分类器把关，沙箱兜底。",
+    shots: [
+      {
+        kind: "sim",
+        footer: { text: "⏵⏵ auto mode on (shift+tab to cycle)", color: "warning" },
+        steps: [
+          { at: 4, type: "prompt", text: "把这个分支直接推到 main" },
+          { at: 20, type: "spinner", verb: "Considering", until: 34 },
+          { at: 34, type: "tool", name: "Bash", args: "git log --oneline -1", color: "success" },
+          { at: 40, type: "result", text: "74a2f53 init" },
+          { at: 52, type: "tool", name: "Bash", args: "git push origin HEAD:main --force", color: "error" },
+          { at: 62, type: "result", text: "Denied by auto mode classifier • /feedback if incorrect", color: "error", highlight: true },
+          { at: 90, type: "done", verb: "Crunched", seconds: 4 },
+        ],
+        labelAt: 64,
+        label: "危险操作，当场拦下",
+        wiki: "Auto-Mode",
+      },
+      { kind: "image", file: "sandbox-run.png", width: 959, height: 574, focus: { x: 15, y: 180, w: 610, h: 55 }, label: "沙箱外写入直接失败", wiki: "Sandbox" },
+    ],
+  },
+  {
+    question: "想按自己的方式改？",
+    answer: "一个文件，改造整个界面。",
+    shots: [
+      { kind: "image", file: "mods-hold-pane.png", width: 1380, height: 356, focus: { x: 762, y: 30, w: 600, h: 135 }, label: "Mod 接管危险命令确认", wiki: "Mods" },
+      { kind: "image", file: "diff-view-session.png", width: 1380, height: 792, focus: { x: 762, y: 170, w: 600, h: 225 }, label: "/diff 面板，改动一目了然", wiki: "Diff-View" },
+    ],
+  },
 ];
 
-export const SHOWCASE_FRAMES = 84;
-const T = 12;
-const directions = ["from-right", "from-bottom", "from-left", "from-top"] as const;
+const INTRO_FRAMES = 105;
+const WIKI_FRAMES = 120;
+const OUTRO_FRAMES = 180;
 
-export const PROMO_DURATION = 180 + 110 + 60 + showcase.length * SHOWCASE_FRAMES + 150 + 60 + 300 + 210 - (6 + showcase.length) * T;
+export const PROMO_DURATION =
+  HOOK_FRAMES + INTRO_FRAMES + chapters.reduce((n, c) => n + chapterFrames(c.shots), 0) + DIFF_FRAMES + WIKI_FRAMES + OUTRO_FRAMES;
 
 const Music: React.FC = () => {
   const { durationInFrames } = useVideoConfig();
@@ -46,45 +97,27 @@ export const PromoVideo: React.FC = () => (
   <AbsoluteFill>
     <Background />
     <Music />
-    <TransitionSeries>
-      <TransitionSeries.Sequence name="Intro" durationInFrames={180}>
+    <Series>
+      <Series.Sequence name="Hook" durationInFrames={HOOK_FRAMES}>
+        <Hook />
+      </Series.Sequence>
+      <Series.Sequence name="Intro" durationInFrames={INTRO_FRAMES}>
         <Intro />
-      </TransitionSeries.Sequence>
-      <TransitionSeries.Transition presentation={fade()} timing={linearTiming({ durationInFrames: T })} />
-      <TransitionSeries.Sequence name="Stats" durationInFrames={110}>
-        <Stats />
-      </TransitionSeries.Sequence>
-      <TransitionSeries.Transition presentation={wipe({ direction: "from-left" })} timing={linearTiming({ durationInFrames: T })} />
-      <TransitionSeries.Sequence name="Showcase title" durationInFrames={60}>
-        <SectionTitle title="核心功能" subtitle="画面均来自 tmux 实测（docs/features）" />
-      </TransitionSeries.Sequence>
-      {showcase.map((item, i) => (
-        <Fragment key={item.title}>
-          <TransitionSeries.Transition
-            presentation={slide({ direction: directions[i % directions.length] })}
-            timing={springTiming({ config: { damping: 200 }, durationInFrames: T })}
-          />
-          <TransitionSeries.Sequence name={`Showcase ${item.title}`} durationInFrames={SHOWCASE_FRAMES}>
-            <Showcase index={i + 1} {...item} />
-          </TransitionSeries.Sequence>
-        </Fragment>
+      </Series.Sequence>
+      {chapters.map((c, i) => (
+        <Series.Sequence key={c.question} name={`Chapter ${i + 1}`} durationInFrames={chapterFrames(c.shots)}>
+          <Chapter index={i + 1} {...c} />
+        </Series.Sequence>
       ))}
-      <TransitionSeries.Transition presentation={fade()} timing={linearTiming({ durationInFrames: T })} />
-      <TransitionSeries.Sequence name="Wiki" durationInFrames={150}>
-        <WikiWall />
-      </TransitionSeries.Sequence>
-      <TransitionSeries.Transition presentation={wipe({ direction: "from-right" })} timing={linearTiming({ durationInFrames: T })} />
-      <TransitionSeries.Sequence name="Diff title" durationInFrames={60}>
-        <SectionTitle title="与官方的差异" subtitle="同一套体验，多一些选择" />
-      </TransitionSeries.Sequence>
-      <TransitionSeries.Transition presentation={fade()} timing={linearTiming({ durationInFrames: T })} />
-      <TransitionSeries.Sequence name="Diff" durationInFrames={300}>
+      <Series.Sequence name="Diff" durationInFrames={DIFF_FRAMES}>
         <Diff />
-      </TransitionSeries.Sequence>
-      <TransitionSeries.Transition presentation={slide({ direction: "from-bottom" })} timing={springTiming({ config: { damping: 200 }, durationInFrames: T })} />
-      <TransitionSeries.Sequence name="Outro" durationInFrames={210}>
+      </Series.Sequence>
+      <Series.Sequence name="Wiki" durationInFrames={WIKI_FRAMES}>
+        <WikiWall />
+      </Series.Sequence>
+      <Series.Sequence name="Outro" durationInFrames={OUTRO_FRAMES}>
         <Outro />
-      </TransitionSeries.Sequence>
-    </TransitionSeries>
+      </Series.Sequence>
+    </Series>
   </AbsoluteFill>
 );

@@ -5,7 +5,7 @@ import { clamp, theme } from "../theme";
 export const Intro: React.FC = () => {
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
-  const slam = 2 * fps;
+  const slam = 15;
   const shake = frame >= slam && frame < slam + 10 ? Math.sin(frame * 3) * (slam + 10 - frame) * 2 : 0;
   const split = interpolate(frame, [slam, slam + 0.6 * fps], [18, 0], clamp);
 
@@ -14,7 +14,6 @@ export const Intro: React.FC = () => {
       name="Intro"
       style={{ justifyContent: "center", alignItems: "center", fontFamily: theme.sans, color: theme.text, translate: `${shake}px 0px` }}
     >
-      <Sfx name="riser" />
       <Sfx name="impact" at={slam} />
       <AbsoluteFill
         style={{
@@ -75,8 +74,8 @@ export const Intro: React.FC = () => {
           marginTop: 48,
           fontSize: 50,
           color: theme.muted,
-          opacity: interpolate(frame, [3 * fps, 3.6 * fps], [0, 1], clamp),
-          translate: interpolate(frame, [3 * fps, 3.6 * fps], ["0px 30px", "0px 0px"], { ...clamp, easing: Easing.bezier(0.16, 1, 0.3, 1) }),
+          opacity: interpolate(frame, [slam + 30, slam + 48], [0, 1], clamp),
+          translate: interpolate(frame, [slam + 30, slam + 48], ["0px 30px", "0px 0px"], { ...clamp, easing: Easing.bezier(0.16, 1, 0.3, 1) }),
         }}
       >
         可读源码 · 自行构建 · 自由二次开发
