@@ -1,5 +1,5 @@
 
-VERSION := 2.1.293
+VERSION := 2.1.294
 BUILD_OS := $(shell uname -s | tr '[:upper:]' '[:lower:]')
 BUILD_ARCH := $(shell uname -m | sed -e 's/^aarch64$$/arm64/' -e 's/^x86_64$$/x64/')
 FILE := ./dist/release/claude-code-v$(VERSION)-$(BUILD_OS)-$(BUILD_ARCH)
