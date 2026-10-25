@@ -12,7 +12,11 @@ import type { TaskStatus, TaskType } from '../../Task.js'
 import { isTerminalTaskStatus } from '../../taskStatus.js'
 import type { TaskState } from '../../tasks/types.js'
 import { enqueuePendingNotification } from '../messageQueueManager.js'
-import { enqueueSdkEvent, type SdkEvent } from '../sdkEventQueue.js'
+import {
+  enqueueSdkEvent,
+  type SdkEvent,
+  startTaskRun,
+} from '../sdkEventQueue.js'
 import { getTaskOutputDelta, getTaskOutputPath } from './diskOutput.js'
 import { canEvictTerminalTask } from './retention.js'
 import { createSignal } from '../signal.js'
@@ -105,6 +109,8 @@ export function registerTask(task: TaskState, setAppState: SetAppState): void {
   let isReplacement = false
   setAppState(prev => {
     const existing = prev.tasks[task.id]
+    // A new task, or a finished one being resumed, opens a new run.
+    if (!existing || isTerminalTaskStatus(existing.status)) startTaskRun(task.id)
     if (existing?.type === 'local_agent' && task.type === 'local_agent') existing.unregisterCleanup?.()
     isReplacement = existing !== undefined
     // Carry forward UI-held state on re-register (resumeAgentBackground
@@ -145,7 +151,11 @@ export function registerTask(task: TaskState, setAppState: SetAppState): void {
     tool_use_id: task.toolUseId,
     description: task.description,
     ...(task.type === 'local_agent'
-      ? { subagent_type: task.agentType, is_backgrounded: task.isBackgrounded }
+      ? {
+          subagent_type: task.agentType,
+          is_backgrounded: task.isBackgrounded,
+          spawn_depth: task.spawnDepth,
+        }
       : {}),
     task_type: task.type,
     workflow_name:

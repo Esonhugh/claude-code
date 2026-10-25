@@ -74,7 +74,10 @@ result success FAKE_DONE
   - `--project-config-root <绝对路径>`（SDK 的 `projectConfigRoot`）：项目设置、`.mcp.json`、`.claude` 下的 commands / agents / skills / workflows / output-styles 和 hooks 的 `CLAUDE_PROJECT_DIR` 都从这个目录读，而不是工作目录；此时不能改 project 范围的 MCP 配置。
 - `tools: ['Read', 'Glob']` 这类限定工具清单会被严格遵守，不再多出 `ListAgents`、`SendMessage`。
 - 后台子代理（Agent 工具）的消息会实时流给 SDK，带 `parent_tool_use_id`；同时输出 `task_updated`（任务状态、结束时间等变化）和 `background_tasks_changed`（后台任务清单变化），`task_started` 也带 `subagent_type`、`is_backgrounded`。
-- 尚未实现：`set_mcp_permission_mode_override`；`task_started` 里的 `run_id`、`spawn_depth`；后台子代理跑完后，官方先为原回合输出一个 `result`，再为处理通知的回合输出第二个；本 fork 只输出后一个。
+- `task_started` / `task_updated` / `task_progress` / `task_notification` 和 `background_tasks_changed` 的每项都带 `run_id`（同一任务 id 重新运行会换新值），`task_started` 也带 `spawn_depth`。
+- 后台子代理还在跑时，原回合的 `result` 先暂存，等子代理的 `task_notification` 发出后再输出；之后处理通知的回合再输出第二个 `result`，和官方一致。
+- `stop_task` 对不存在或已结束的任务回成功（和官方一致），`task_id` 不是字符串时回错误。
+- 尚未实现：`set_mcp_permission_mode_override`。另外后台子代理结束时，本 fork 的 `background_tasks_changed`（空清单）比 `task_notification` 早一条，官方是之后；两者内容相同，只是先后不同。
 
 想把 [Mods](mods.md) 的界面画到自己的前端，见 [mods-sdk-client.md](mods-sdk-client.md)。
 

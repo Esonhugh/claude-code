@@ -118,6 +118,16 @@ if (process.env[childFlag] !== '1') {
     expect(saved).toEqual({ effortLevel: 'low' })
   })
 
+  // Official 2.1.303 treats stopping a task that is gone or already finished as done.
+  test('stop_task answers success for an unknown task id', async () => {
+    const [unknown, invalid] = await run([
+      { subtype: 'stop_task', task_id: 'nosuch' },
+      { subtype: 'stop_task', task_id: 7 },
+    ])
+    expect(unknown).toMatchObject({ subtype: 'success' })
+    expect(invalid).toMatchObject({ subtype: 'error', error: 'stop_task: task_id must be a string' })
+  })
+
   test('mcp_read_resource only reads ui:// resources from known servers', async () => {
     const [scheme, unknown] = await run([
       { subtype: 'mcp_read_resource', serverName: 'nosuch', uri: 'file:///etc/passwd' },

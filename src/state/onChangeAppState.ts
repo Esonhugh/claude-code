@@ -27,7 +27,7 @@ import type { AppState } from './AppStateStore.js'
 import { isAnt } from 'src/utils/userType.js'
 import { isTerminalTaskStatus } from '../taskStatus.js'
 import { isBackgroundTask } from '../tasks/types.js'
-import { enqueueSdkEvent } from '../utils/sdkEventQueue.js'
+import { enqueueSdkEvent, getTaskRunId } from '../utils/sdkEventQueue.js'
 
 
 // Inverse of the push below — restore on worker restart.
@@ -62,6 +62,7 @@ function listSdkBackgroundTasks(state: AppState) {
     )
     .map(task => ({
       task_id: task.id,
+      ...(getTaskRunId(task.id) ? { run_id: getTaskRunId(task.id) } : {}),
       task_type: task.type,
       ...(task.type === 'local_agent' ? { subagent_type: task.agentType } : {}),
       description: task.description,

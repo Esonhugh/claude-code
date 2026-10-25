@@ -446,6 +446,7 @@ export type SDKTaskNotificationMessage = {
   type: 'system'
   subtype: 'task_notification'
   task_id: string
+  run_id?: string
   tool_use_id?: string
   status: 'completed' | 'failed' | 'stopped'
   output_file: string
@@ -458,10 +459,12 @@ export type SDKTaskStartedMessage = {
   type: 'system'
   subtype: 'task_started'
   task_id: string
+  run_id?: string
   tool_use_id?: string
   description: string
   subagent_type?: string
   is_backgrounded?: boolean
+  spawn_depth?: number
   task_type?: string
   workflow_name?: string
   prompt?: string
@@ -472,6 +475,7 @@ export type SDKTaskUpdatedMessage = {
   type: 'system'
   subtype: 'task_updated'
   task_id: string
+  run_id?: string
   patch: {
     status?: string
     description?: string
@@ -488,6 +492,7 @@ export type SDKBackgroundTasksChangedMessage = {
   subtype: 'background_tasks_changed'
   tasks: {
     task_id: string
+    run_id?: string
     task_type: string
     subagent_type?: string
     description: string
@@ -499,6 +504,7 @@ export type SDKTaskProgressMessage = {
   type: 'system'
   subtype: 'task_progress'
   task_id: string
+  run_id?: string
   tool_use_id?: string
   description: string
   usage: { total_tokens: number; tool_uses: number; duration_ms: number }
