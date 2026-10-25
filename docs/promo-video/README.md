@@ -1,6 +1,6 @@
 # README 宣传视频
 
-[`promo.mp4`](promo.mp4)（1920×1080，30fps，约 68 秒，带音乐和音效）由本目录的 Remotion 项目生成，嵌入在仓库根目录 README 中。`poster.png` 是视频封面。
+[宣传视频](https://github.com/user-attachments/assets/7299b965-da57-45c4-899a-0a1685ae4bdf)（1920×1080，30fps，约 68 秒，带音乐和音效）由本目录的 Remotion 项目生成，作为 GitHub 附件上传后嵌入仓库根目录 README。视频不入库；附件上限 10 MB，压缩参数见下方。
 
 ## 结构
 
@@ -33,8 +33,7 @@ bun install
 ./scripts/make-fonts.sh       # 文案有新字符时
 bunx remotion studio          # 预览
 bunx remotion render PromoVideo out/promo.mp4 --crf=26 --audio-bitrate=160k
-ffmpeg -y -i out/promo.mp4 -c:v libx264 -preset slower -crf 30 -pix_fmt yuv420p -movflags +faststart -c:a aac -b:a 128k promo.mp4
-ffmpeg -y -ss 8.5 -i promo.mp4 -frames:v 1 -vf scale=1280:-1 poster.png
+ffmpeg -y -i out/promo.mp4 -c:v libx264 -preset slower -crf 30 -pix_fmt yuv420p -movflags +faststart -c:a aac -b:a 128k out/promo-small.mp4
 ```
 
 本机没有 Remotion 自带的 Chrome Headless Shell 时，加 `--browser-executable=<chrome-headless-shell 路径>`。
