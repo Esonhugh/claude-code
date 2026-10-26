@@ -194,6 +194,7 @@ import {
   type ThinkingConfig,
 } from 'src/utils/thinking.js'
 import {
+  DEFERRED_TOOL_PLACEHOLDER,
   extractDiscoveredToolNames,
   isToolReferenceTextFallback,
   getDeferredToolsDelta,
@@ -1609,7 +1610,13 @@ async function* queryModel(
       model: advisorModel,
     } as unknown as BetaToolUnion)
   }
-  const allTools = [...toolSchemas, ...extraToolSchemas]
+  const allTools = [
+    ...toolSchemas,
+    ...(useToolSearch && !toolReferenceAsText
+      ? [DEFERRED_TOOL_PLACEHOLDER as BetaToolUnion]
+      : []),
+    ...extraToolSchemas,
+  ]
   // Consume once because request params are assembled repeatedly for logging and retries.
   const consumedCacheEdits = cachedMCEnabled ? consumePendingCacheEdits() : null
   const consumedPinnedEdits = cachedMCEnabled ? getPinnedCacheEdits() : []

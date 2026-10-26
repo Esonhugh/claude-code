@@ -589,8 +589,9 @@ test('deferred tools loaded through ToolSearch never carry cache_control', async
     const request = requests.at(-1)!
     const tools = request.tools ?? []
     expect(tools.map(tool => ('name' in tool ? tool.name : undefined))).toEqual(
-      ['ToolSearch', pinned.name, discovered.name],
+      ['ToolSearch', pinned.name, discovered.name, 'DeferredToolPlaceholder'],
     )
+    expect(tools.at(-2)).toMatchObject({ defer_loading: true })
     expect(tools.at(-1)).toMatchObject({ defer_loading: true })
     expect(tools.every(tool => !('cache_control' in tool))).toBe(true)
     expect(request.system).toContainEqual(
@@ -908,8 +909,8 @@ test.each([false, true])(
       const initial = await run()
       expect(
         initial.tools?.map(tool => ('name' in tool ? tool.name : undefined)),
-      ).toEqual(['mcp__corp__lookup', 'ToolSearch'])
-      expect(initial.tools?.every(tool => !('defer_loading' in tool))).toBe(
+      ).toEqual(['mcp__corp__lookup', 'ToolSearch', 'DeferredToolPlaceholder'])
+      expect(initial.tools?.slice(0, -1).every(tool => !('defer_loading' in tool))).toBe(
         true,
       )
       expect(JSON.stringify(initial.messages)).toContain(
@@ -980,7 +981,7 @@ test.each([false, true])(
       const loaded = await run()
       expect(
         loaded.tools?.map(tool => ('name' in tool ? tool.name : undefined)),
-      ).toEqual(['LocalLookup', 'mcp__corp__lookup', 'ToolSearch'])
+      ).toEqual(['LocalLookup', 'mcp__corp__lookup', 'ToolSearch', 'DeferredToolPlaceholder'])
       expect(loaded.tools?.[0]).toMatchObject({
         description: 'quartz LocalLookup',
         defer_loading: true,
@@ -1007,8 +1008,8 @@ test.each([false, true])(
       const flipped = await run()
       expect(
         flipped.tools?.map(tool => ('name' in tool ? tool.name : undefined)),
-      ).toEqual(['LocalLookup', 'ToolSearch'])
-      expect(flipped.tools?.every(tool => !('defer_loading' in tool))).toBe(
+      ).toEqual(['LocalLookup', 'ToolSearch', 'DeferredToolPlaceholder'])
+      expect(flipped.tools?.slice(0, -1).every(tool => !('defer_loading' in tool))).toBe(
         true,
       )
       const refreshed = await ToolSearchTool.call(
