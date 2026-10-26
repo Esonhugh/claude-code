@@ -109,7 +109,7 @@ test('Mods MCP host calls the real connected SDK client and preserves server err
   const connection = {
     name: 'claude.ai Gmail', type: 'connected', config: {type:'sdk'}, capabilities: {},
     cleanup: async () => {},
-    client: {callTool: async (request: unknown, _schema: unknown, options: unknown) => {
+    client: {callTool: async (request: unknown, options: unknown) => {
       calls.push({request,options})
       return {content:[{type:'text',text:'server rejected'}],isError:true,structuredContent:{code:'denied'}}
     }},

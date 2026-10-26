@@ -9,12 +9,12 @@
 import {
   exchangeAuthorization,
   startAuthorization,
-} from '@modelcontextprotocol/sdk/client/auth.js'
-import {
   type OAuthClientInformation,
   type OpenIdProviderDiscoveryMetadata,
+} from '@modelcontextprotocol/client'
+import {
   OpenIdProviderDiscoveryMetadataSchema,
-} from '@modelcontextprotocol/sdk/shared/auth.js'
+} from '@modelcontextprotocol/core'
 import { randomBytes } from 'crypto'
 import { createServer, type Server } from 'http'
 import { parse } from 'url'

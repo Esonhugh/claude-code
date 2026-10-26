@@ -50,7 +50,7 @@ if (process.env[childFlag] !== '1') {
     } finally { await clearServerCache(name,config);rmSync(root,{recursive:true,force:true}) }
   })
   test('ordinary errors keep text that happens to resemble an MCP wrapper', async () => {
-    const { Client } = await import('@modelcontextprotocol/sdk/client/index.js')
+    const { Client } = await import('@modelcontextprotocol/client')
     const message = 'MCP error -32000: application-owned text'
     const connect = spyOn(Client.prototype,'connect').mockRejectedValue(new Error(message))
     const config: import('./types.js').ScopedMcpServerConfig = {type:'stdio',command:process.execPath,args:[],scope:'dynamic'}
@@ -61,7 +61,7 @@ if (process.env[childFlag] !== '1') {
   })
 
   test.each(['/no/such/owned-mcp-command', process.execPath])('missing stdio args are rejected before connecting %s', async command => {
-    const { Client } = await import('@modelcontextprotocol/sdk/client/index.js')
+    const { Client } = await import('@modelcontextprotocol/client')
     const connect = spyOn(Client.prototype,'connect').mockRejectedValue(new Error('transport must not start'))
     // The SDK control schema accepts omitted args; official 2.1.292 fails before spawning.
     const config = {type:'stdio',command,scope:'dynamic'} as import('./types.js').ScopedMcpServerConfig

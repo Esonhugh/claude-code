@@ -36,8 +36,7 @@
  * - Message IDs are preserved through the entire flow for proper correlation
  */
 
-import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
-import type { JSONRPCMessage } from '@modelcontextprotocol/sdk/types.js'
+import type { Transport, JSONRPCMessage } from '@modelcontextprotocol/client'
 
 /**
  * Callback function to send an MCP message and get the response

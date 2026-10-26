@@ -3,7 +3,7 @@ import type {
   MultiSelectEnumSchema,
   PrimitiveSchemaDefinition,
   StringSchema,
-} from '@modelcontextprotocol/sdk/types.js'
+} from '@modelcontextprotocol/client'
 import { z } from 'zod/v4'
 import { jsonStringify } from '../slowOperations.js'
 import { plural } from '../stringUtils.js'

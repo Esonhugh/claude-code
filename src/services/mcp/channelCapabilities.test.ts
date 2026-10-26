@@ -1,7 +1,9 @@
 import { expect, test } from 'bun:test'
-import { Client } from '@modelcontextprotocol/sdk/client/index.js'
-import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
-import type { JSONRPCMessage } from '@modelcontextprotocol/sdk/types.js'
+import {
+  Client,
+  type Transport,
+  type JSONRPCMessage,
+} from '@modelcontextprotocol/client'
 import { prepareChannelTransport } from './channelCapabilities.js'
 
 test('MCP handshake permits channel permission false without granting relay', async () => {

@@ -2,7 +2,10 @@ import { expect, test } from 'bun:test'
 import { mkdtempSync, realpathSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import type { Implementation, JSONRPCMessage } from '@modelcontextprotocol/sdk/types.js'
+import type {
+  Implementation,
+  JSONRPCMessage,
+} from '@modelcontextprotocol/client'
 
 const childFlag = 'CLAUDE_CODE_SDK_SERVER_INFO_TEST_CHILD'
 if (process.env[childFlag] !== '1') {

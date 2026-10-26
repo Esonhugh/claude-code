@@ -2633,7 +2633,7 @@ test('REPL binds Mods MCP calls to the current connection and forwards cancellat
   const connection = {
     name: 'fixture-server', type: 'connected', config: { type: 'sdk' }, capabilities: {},
     cleanup: async () => {},
-    client: { callTool: async (request: unknown, _schema: unknown, options: any) => {
+    client: { callTool: async (request: unknown, options: any) => {
       calls.push({ request, signal: options.signal })
       return { content: [{ type: 'text', text: 'pong' }] }
     } },
