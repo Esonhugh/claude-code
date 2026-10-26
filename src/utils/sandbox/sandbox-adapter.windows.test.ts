@@ -1,6 +1,6 @@
 import { afterAll, expect, mock, test } from 'bun:test'
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 const childFlag = 'CLAUDE_CODE_SANDBOX_ADAPTER_WINDOWS_CHILD'
@@ -87,6 +87,12 @@ if (process.env[childFlag] !== '1') {
     expect(convertToSandboxRuntimeConfig({}).windows).toEqual({
       srtWin: { path },
     })
+  })
+
+  test('write denies outside every write grant are left out', () => {
+    const { denyWrite } = convertToSandboxRuntimeConfig({}).filesystem
+    expect(denyWrite).toContain(join(temp, '.claude', 'settings.json'))
+    expect(denyWrite.some(p => p.startsWith(homedir()))).toBe(false)
   })
 
   test('an uninstalled sandbox is reported, not enabled', () => {

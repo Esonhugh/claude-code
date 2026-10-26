@@ -25,10 +25,10 @@ import {
 } from '@anthropic-ai/sandbox-runtime'
 import { checkLinuxDependencies } from '@anthropic-ai/sandbox-runtime/dist/sandbox/linux-sandbox-utils.js'
 import { execFileSync } from 'child_process'
-import { existsSync, rmSync, statSync } from 'fs'
+import { existsSync, realpathSync, rmSync, statSync } from 'fs'
 import { readFile } from 'fs/promises'
 import { memoize } from 'lodash-es'
-import { join, posix, resolve, sep } from 'path'
+import { basename, dirname, join, posix, resolve, sep } from 'path'
 import {
   getAdditionalDirectoriesForClaudeMd,
   getCwdState,
@@ -70,6 +70,7 @@ import { errorMessage } from '../errors.js'
 import {
   getClaudeTempDir,
   getClaudeTempDirName,
+  pathInWorkingPath,
 } from '../permissions/filesystem.js'
 import type { PermissionRuleValue } from '../permissions/PermissionRule.js'
 import { ripgrepCommand } from '../ripgrep.js'
@@ -523,7 +524,10 @@ export function convertToSandboxRuntimeConfig(
       denyRead,
       allowRead,
       allowWrite,
-      denyWrite,
+      denyWrite:
+        getPlatform() === 'windows'
+          ? denyWrite.filter(p => isInsideWindowsWriteGrant(p, allowWrite))
+          : denyWrite,
       disabled: filesystemDisabled,
     },
     ...(hasCredentials && {
@@ -548,6 +552,33 @@ export function convertToSandboxRuntimeConfig(
     ...(getPlatform() === 'windows' &&
       getSrtWinPath() && { windows: { srtWin: { path: getSrtWinPath()! } } }),
   }
+}
+
+/**
+ * The Windows sandbox user can write only where it is granted, so a write
+ * deny outside every grant changes nothing. srt-win still stamps each one,
+ * and stamping under the user's profile or Program Files is slow or fails.
+ */
+function isInsideWindowsWriteGrant(
+  path: string,
+  allowWrite: string[],
+): boolean {
+  // Compare long names: a grant and a deny may spell one folder in 8.3 form.
+  const longPath = (p: string): string => {
+    const rest: string[] = []
+    for (let dir = resolve(getCwdState(), p); ; ) {
+      try {
+        return join(realpathSync.native(dir), ...rest)
+      } catch {
+        const parent = dirname(dir)
+        if (parent === dir) return resolve(getCwdState(), p)
+        rest.unshift(basename(dir))
+        dir = parent
+      }
+    }
+  }
+  const target = longPath(path)
+  return allowWrite.some(root => pathInWorkingPath(target, longPath(root)))
 }
 
 /**
