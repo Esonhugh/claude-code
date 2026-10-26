@@ -51,7 +51,8 @@ Terminal 工具给 Claude 一个**一直开着的终端**（PTY）：它可以�
 - `new-session` 把 `command + args` 当成一条 Bash 命令检查，`send-keys` 在回车提交时把这一整行当成命令检查，所以分几次输入也会命中你的 `Bash(...)` allow / ask / deny 规则；还没按回车的部分只检查 deny 规则。
 - `capture-pane`、`display-message`、`list-panes` 是只读的，直接放行；`resize-pane`、`send-signal`、`kill-pane` 不走 Bash 规则。
 - 选「don't ask again for Terminal commands」会在项目 `.claude/settings.local.json` 里写入 `"Terminal"` allow 规则。
-- 终端**不在 sandbox 里运行**，sandbox 的自动放行对它无效；[自动模式](auto-mode.md) 下 `Terminal` 的 allow 规则会被暂时搁置，交给分类器判断。
+- 开了 [Bash 沙箱](sandbox.md)（`sandbox.enabled`）时，`new-session` 的命令在沙箱里启动，限制和 Bash 一样；命中 `excludedCommands` 或带 `dangerouslyDisableSandbox`（且设置允许）时在沙箱外启动。Linux 上沙箱里的命令仍有自己的 PTY，`Ctrl+C` 和 `resize-pane` 照常可用；终端关闭时清理沙箱。
+- 不管是否在沙箱里，sandbox 的自动放行对 Terminal 都无效，仍按上面的规则确认；[自动模式](auto-mode.md) 下 `Terminal` 的 allow 规则会被暂时搁置，交给分类器判断。
 
 ## 操作按键
 

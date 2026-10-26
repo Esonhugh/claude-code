@@ -47,7 +47,6 @@ r6 get_sandbox_dialog  error    Unsupported control request subtype: get_sandbox
 ## 已知差异
 
 - 尚未支持：`get_sandbox_dialog`、`get_chrome_*`、`mcp_call`、`register_repo_root`、`set_mcp_permission_mode_override`。
-- 插件会传的 `--managed-settings`、`--project-config-root`、`--resume-drops-turn`、`--session-mirror` 参数本 fork 还不认识。
 - 本容器无法下载 VS Code 插件，以上用官方 Agent SDK 0.3.303 和原始 stream-json 按插件的启动方式模拟验证；ChatGPT 额度窗口只有单元测试覆盖。
 
 ## 说明
