@@ -97,7 +97,7 @@ describe('built-in Mods archive', () => {
 
     const definitions = await loadBuiltinModDefinitions(root)
 
-    expect(definitions.map(definition => definition.name)).toEqual(['agents-md', 'diff', 'telemetry'])
+    expect(definitions.map(definition => definition.name)).toEqual(['agents-md', 'diff'])
     expect(definitions[0]).toEqual(expect.objectContaining({
       path: join(root, 'agents-md'),
       manifest: expect.objectContaining({ name: 'agents-md', description: 'Agents' }),
@@ -122,11 +122,11 @@ describe('built-in Mods archive', () => {
       else process.env.CLAUDE_CODE_ENABLE_ANTHROPIC_TELEMETRY = previous
     }
 
-    expect([...getBuiltinPlugins().enabled, ...getBuiltinPlugins().disabled].map(plugin => plugin.name).sort()).toEqual(['agents-md', 'diff', 'telemetry'])
-    expect(['agents-md', 'diff', 'telemetry'].map(name => getBuiltinPluginDefinition(name)?.defaultEnabled)).toEqual([true, true, false])
+    expect([...getBuiltinPlugins().enabled, ...getBuiltinPlugins().disabled].map(plugin => plugin.name).sort()).toEqual(['agents-md', 'diff'])
+    expect(getBuiltinPlugins().enabled.map(plugin => plugin.name).sort()).toEqual(['agents-md', 'diff'])
   })
 
-  test('enables the official telemetry Mod only when Anthropic telemetry is opted in', async () => {
+  test('never registers the official telemetry Mod, even when Anthropic telemetry is opted in', async () => {
     const here = dirname(fileURLToPath(import.meta.url))
     const officialArchive = join(here, '..', '..', 'assets', 'builtin-mods-2.1.277.zip')
     const root = await mkdtemp(join(tmpdir(), 'builtin-mods-official-cache-'))
@@ -140,7 +140,7 @@ describe('built-in Mods archive', () => {
       else process.env.CLAUDE_CODE_ENABLE_ANTHROPIC_TELEMETRY = previous
     }
 
-    expect(getBuiltinPluginDefinition('telemetry')?.defaultEnabled).toBe(true)
+    expect(getBuiltinPluginDefinition('telemetry')).toBeUndefined()
   })
 
   test('invalidates plugin loads memoized before the built-in Mods were registered', async () => {

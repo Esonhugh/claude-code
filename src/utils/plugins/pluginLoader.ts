@@ -546,7 +546,13 @@ export async function installFromNpm(
 
   if (needsInstall) {
     logForDebugging(`Installing npm package ${packageSpec} to cache`)
-    const args = ['install', packageSpec, '--prefix', npmCachePath]
+    const args = [
+      'install',
+      packageSpec,
+      '--prefix',
+      npmCachePath,
+      '--ignore-scripts',
+    ]
     if (options.registry) {
       args.push('--registry', options.registry)
     }
