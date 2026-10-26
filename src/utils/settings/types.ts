@@ -644,6 +644,15 @@ export const SettingsSchema = lazySchema(() =>
         })
         .optional()
         .describe('Custom status line display configuration'),
+      subagentStatusLine: z
+        .object({
+          type: z.literal('command'),
+          command: z.string(),
+        })
+        .optional()
+        .describe(
+          'Custom per-subagent status line shown in the agent panel; receives row context as JSON on stdin',
+        ),
       // Enabled plugins using marketplace-first format
       enabledPlugins: z
         .record(
@@ -914,6 +923,13 @@ export const SettingsSchema = lazySchema(() =>
           'Per-skill listing overrides keyed by skill name. "name-only" lists the skill without its description; ' +
             '"user-invocable-only" hides it from the model but keeps /name; "off" disables it. Plugin skills are not affected.',
         ),
+      idleCompaction: z
+        .boolean()
+        .optional()
+        .describe(
+          'When false, a long conversation left idle is not compacted before ' +
+            'its one-hour prompt cache expires. Default true.',
+        ),
       awaySummaryEnabled: z
         .boolean()
         .optional()
@@ -1122,6 +1138,53 @@ export const SettingsSchema = lazySchema(() =>
               ),
           }
         : {}),
+      spellcheck: z
+        .object({
+          enabled: z
+            .boolean()
+            .optional()
+            .catch(undefined)
+            .describe('Turn on spell checking of the prompt input (default: false)'),
+          checker: z
+            .string()
+            .optional()
+            .catch(undefined)
+            .describe(
+              'Which spell checker to run: "aspell", "hunspell", "ispell", or "auto" (default) for the first of those found on PATH',
+            ),
+          language: z
+            .string()
+            .optional()
+            .catch(undefined)
+            .describe(
+              'Dictionary to use, passed to the checker as-is (aspell --lang, hunspell -d, ispell -d), e.g. "en_GB"; names are checker-specific (letters, digits and _ - . , only). Default: the checker\'s own default',
+            ),
+          color: z
+            .string()
+            .optional()
+            .catch(undefined)
+            .describe(
+              'Color of misspelled words (they are also underlined): a terminal color name such as "red" or "magenta", "#rrggbb", "rgb(r,g,b)", "ansi256(n)" or "ansi:<name>". Default: the theme\'s error color',
+            ),
+        })
+        .passthrough()
+        .optional()
+        .catch(undefined)
+        .describe(
+          'Underline misspelled words in the prompt input as you type, using an installed aspell, hunspell or ispell (off unless "enabled" is true; does nothing if none is installed). Read from user, flag and managed settings only (the whole block from the highest-precedence of those applies); ignored in project .claude/settings.json and .claude/settings.local.json.',
+        ),
+      timeFormat: z
+        .string()
+        .optional()
+        .describe(
+          'Clock format for times shown in the UI: "auto" (default, follows the locale), "12-hour", "24-hour", "24-hour-utc" ("18:05Z"), or a strftime pattern such as "%H:%M" (any value containing "%"; other values read as "auto"). A pattern replaces the time everywhere; message timestamps show only the pattern, so include %Y-%m-%d for the date. /config offers the presets; a pattern is set here.',
+        ),
+      timeZone: z
+        .string()
+        .optional()
+        .describe(
+          'IANA time zone for times shown in the UI, e.g. "UTC" or "Europe/Dublin". Default: the system time zone. An unknown name falls back to the system time zone.',
+        ),
       prefersReducedMotion: z
         .boolean()
         .optional()

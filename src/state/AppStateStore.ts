@@ -186,6 +186,8 @@ export type AppState = DeepImmutable<{
 }> & {
   // Unified task state - excluded from DeepImmutable because TaskState contains function types
   tasks: { [taskId: string]: TaskState }
+  /** subagentStatusLine output per agent panel row, keyed by task id. */
+  taskDecorations: Record<string, { content: string }>
   runningSubagents: number
   // Name → AgentId registry populated by Agent tool when `name` is provided.
   // Latest-wins on collision. Used by SendMessage to route by name.
@@ -501,6 +503,7 @@ export function getDefaultAppState(): AppState {
   return {
     settings: initialSettings,
     tasks: {},
+    taskDecorations: {},
     runningSubagents: 0,
     agentNameRegistry: new Map(),
     sendMessagePins: {},

@@ -841,7 +841,7 @@ export const AgentTool = buildTool({
       )
 
       const launch = {
-        model: result.data.model ?? getAgentModel(selectedAgent.model, toolUseContext.options.mainLoopModel, model, permissionMode),
+        model: result.data.model ?? getAgentModel(selectedAgent.model, toolUseContext.options.mainLoopModel, model, permissionMode, { inWorkflowRun: toolUseContext.workflowAgentSystemPrompt !== undefined }),
         agentId: result.loopAgentId ?? result.data.teammate_id,
         teammateId: result.data.teammate_id,
       }
@@ -941,7 +941,7 @@ export const AgentTool = buildTool({
           mainLoopModel: toolUseContext.options.mainLoopModel,
           exceeds200kTokens: appState.toolPermissionContext.mode === 'plan' && doesMostRecentAssistantMessageExceed200k(toolUseContext.messages),
         })
-      : getAgentModel(selectedAgent.model, toolUseContext.options.mainLoopModel, model, permissionMode)
+      : getAgentModel(selectedAgent.model, toolUseContext.options.mainLoopModel, model, permissionMode, { inWorkflowRun: toolUseContext.workflowAgentSystemPrompt !== undefined })
 
     const childSubagentDepth = getNextSubagentDepth(toolUseContext.options)
     const parentAgentId =

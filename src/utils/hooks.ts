@@ -5266,6 +5266,80 @@ export async function executeStatusLineCommand(
   }
 }
 
+export type SubagentStatusLineDecorations = Record<string, { content: string }>
+
+function isSubagentStatusLineRow(
+  value: unknown,
+): value is { id: string; content: string } {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    typeof (value as { id?: unknown }).id === 'string' &&
+    typeof (value as { content?: unknown }).content === 'string'
+  )
+}
+
+/**
+ * Official 2.1.303 `subagentStatusLine`: runs the command with the agent
+ * panel rows as JSON on stdin; each stdout line `{"id","content"}` replaces
+ * that row's text.
+ */
+export async function executeSubagentStatusLineCommand(
+  input: Record<string, unknown>,
+  timeoutMs: number = 5000,
+): Promise<SubagentStatusLineDecorations> {
+  if (shouldDisableAllHooksIncludingManaged()) return {}
+  if (shouldSkipHookDueToTrust()) {
+    logForDebugging(
+      'Skipping subagentStatusLine execution - workspace trust not accepted',
+    )
+    return {}
+  }
+  const subagentStatusLine = shouldAllowManagedHooksOnly()
+    ? getSettingsForSource('policySettings')?.subagentStatusLine
+    : getSettings_DEPRECATED()?.subagentStatusLine
+  if (subagentStatusLine?.type !== 'command') return {}
+
+  const result = await execCommandHook(
+    subagentStatusLine,
+    'StatusLine',
+    'subagentStatusLine',
+    jsonStringify({ ...createBaseHookInput(), ...input }),
+    AbortSignal.timeout(timeoutMs),
+    randomUUID(),
+  )
+  if (result.aborted) return {}
+  if (result.status !== 0) {
+    logForDebugging(
+      `subagentStatusLine exited ${result.status}: ${result.stderr}`,
+      { level: 'error' },
+    )
+    return {}
+  }
+  const decorations: SubagentStatusLineDecorations = {}
+  for (const line of result.stdout.split('\n')) {
+    if (!line.trim()) continue
+    let parsed: unknown
+    try {
+      parsed = jsonParse(line)
+    } catch {
+      logForDebugging(`subagentStatusLine emitted non-JSON line: ${line}`, {
+        level: 'error',
+      })
+      continue
+    }
+    if (!isSubagentStatusLineRow(parsed)) {
+      logForDebugging(
+        `subagentStatusLine emitted invalid schema: ${line} (expected string "id" and "content")`,
+        { level: 'error' },
+      )
+      continue
+    }
+    decorations[parsed.id] = { content: parsed.content }
+  }
+  return decorations
+}
+
 /**
  * Execute file suggestion command if configured
  * @param fileSuggestionInput The structured input that will be converted to JSON

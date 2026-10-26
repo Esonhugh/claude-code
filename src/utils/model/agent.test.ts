@@ -29,6 +29,7 @@ const { getAgentModel } = await import('./agent.js')
 const { setMainLoopModelOverride } = await import('../../bootstrap/state.js')
 const envKeys = [
   'CLAUDE_CODE_SUBAGENT_MODEL',
+  'CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL',
   'CLAUDE_CODE_USE_OPENAI',
   'CLAUDE_CODE_USE_BEDROCK',
   'CLAUDE_CODE_USE_VERTEX',
@@ -154,5 +155,25 @@ describe('ordinary agent model selection', () => {
   test('env inherit stops fallback to tool and definition models', () => {
     process.env.CLAUDE_CODE_SUBAGENT_MODEL = 'inherit'
     expect(getAgentModel('definition-model', 'parent-model', 'tool-model')).toBe('parent-model')
+  })
+})
+
+describe('CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL', () => {
+  test('runs every workflow agent on one model over tool, definition and subagent env', () => {
+    process.env.CLAUDE_CODE_SUBAGENT_MODEL = 'env-model'
+    process.env.CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL = 'workflow-model'
+    expect(getAgentModel('def-model', 'parent-model', 'tool-model', 'default', { inWorkflowRun: true })).toBe('workflow-model')
+  })
+
+  test('leaves other subagents on their own model', () => {
+    process.env.CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL = 'workflow-model'
+    expect(getAgentModel('def-model', 'parent-model', 'tool-model')).toBe('tool-model')
+  })
+
+  test('inherit or unset does not override workflow agents', () => {
+    process.env.CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL = 'Inherit'
+    expect(getAgentModel('def-model', 'parent-model', 'tool-model', 'default', { inWorkflowRun: true })).toBe('tool-model')
+    delete process.env.CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL
+    expect(getAgentModel('def-model', 'parent-model', undefined, 'default', { inWorkflowRun: true })).toBe('def-model')
   })
 })

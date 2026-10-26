@@ -4245,6 +4245,7 @@ async function run(): Promise<CommanderCommand> {
       const initialState: AppState = {
         settings: getInitialSettings(),
         tasks: {},
+        taskDecorations: {},
         runningSubagents: 0,
         agentNameRegistry: new Map(),
         sendMessagePins: {},
