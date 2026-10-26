@@ -44,7 +44,7 @@ import { runCleanupFunctions } from './cleanupRegistry.js'
 import { logForDebugging } from './debug.js'
 import { logForDiagnosticsNoPII } from './diagLogs.js'
 import { isEnvTruthy } from './envUtils.js'
-import { getCurrentSessionTitle, sessionIdExists } from './sessionStorage.js'
+import { sessionIdExists } from './sessionStorage.js'
 import { sleep } from './sleep.js'
 import { profileReport } from './startupProfiler.js'
 import { validateUuid } from './uuid.js'
@@ -231,22 +231,10 @@ function printResumeHint(): void {
       if (!sessionIdExists(sessionId)) {
         return
       }
-      const customTitle = getCurrentSessionTitle(sessionId)
-
-      // Use custom title if available, otherwise fall back to session ID
-      let resumeArg: string
-      if (customTitle) {
-        // Wrap in double quotes, escape backslashes first then quotes
-        const escaped = customTitle.replace(/\\/g, '\\\\').replace(/"/g, '\\"')
-        resumeArg = `"${escaped}"`
-      } else {
-        resumeArg = sessionId
-      }
-
       writeSync(
         1,
         chalk.dim(
-          `\nResume this session with:\nclaude --resume ${resumeArg}\n`,
+          `\nResume this session with:\nclaude --resume ${sessionId}\n`,
         ),
       )
       resumeHintPrinted = true
