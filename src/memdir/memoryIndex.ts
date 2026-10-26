@@ -207,8 +207,16 @@ async function refresh(index: Database, files: SourceFile[]): Promise<void> {
       lines = (append ? prev.lines : 0) + (complete.match(/\n/g)?.length ?? 0)
       chunks = transcriptChunks(complete, (append ? prev.lines : 0) + 1)
     }
+    // IMMEDIATE takes the write lock before the read below, so a busy DB waits
+    // on busy_timeout instead of failing with SQLITE_BUSY on lock upgrade.
     index.transaction(() => {
-      if (!append) index.run('DELETE FROM chunks WHERE path = ?', [file.path])
+      if (append) {
+        // Another session, or a concurrent search in this one, may have appended these lines since `known` was read.
+        const current = index.query('SELECT size, lines FROM files WHERE path = ?').get(file.path) as FileRow | null
+        if (current?.size !== prev.size || current.lines !== prev.lines) return
+      } else {
+        index.run('DELETE FROM chunks WHERE path = ?', [file.path])
+      }
       for (const chunk of chunks) insert.run(chunk.body, file.path, file.kind, file.project, chunk.line)
       index.run('INSERT OR REPLACE INTO files (path, mtime, size, lines) VALUES (?, ?, ?, ?)', [
         file.path,
@@ -216,7 +224,7 @@ async function refresh(index: Database, files: SourceFile[]): Promise<void> {
         size,
         lines,
       ])
-    })()
+    }).immediate()
   }
 }
 
