@@ -94,7 +94,7 @@ import { ClearGoalTool } from './tools/ClearGoalTool/ClearGoalTool.js'
 import { SearchMemoryTool } from './tools/SearchMemoryTool/SearchMemoryTool.js'
 import uniqBy from 'lodash-es/uniqBy.js'
 import { isToolSearchEnabledOptimistic } from './utils/toolSearch.js'
-import { isTodoV2Enabled } from './utils/tasks.js'
+import { isTaskToolsEnabled } from './utils/tasks.js'
 // Dead code elimination: conditional import for CLAUDE_CODE_VERIFY_PLAN
 /* eslint-disable custom-rules/no-process-env-top-level, @typescript-eslint/no-require-imports */
 const VerifyPlanExecutionTool =
@@ -233,7 +233,7 @@ export function getAllBaseTools(
     ...(isAnt() ? [TungstenTool] : []),
     ...(SuggestBackgroundPRTool ? [SuggestBackgroundPRTool] : []),
     ...(WebBrowserTool ? [WebBrowserTool] : []),
-    ...(isTodoV2Enabled()
+    ...(isTaskToolsEnabled()
       ? [TaskCreateTool, TaskGetTool, TaskUpdateTool, TaskListTool]
       : []),
     ...(OverflowTestTool ? [OverflowTestTool] : []),

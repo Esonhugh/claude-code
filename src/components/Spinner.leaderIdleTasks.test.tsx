@@ -5,6 +5,7 @@ import { PassThrough } from 'node:stream'
 import stripAnsi from 'strip-ansi'
 
 process.env.CLAUDE_CODE_ENABLE_TASKS = '1'
+process.env.CLAUDE_CODE_ENABLE_TODO_TOOLS = '1'
 process.env.CLAUDE_CODE_TASK_LIST_ID = `spinner-idle-${process.pid}-${Date.now()}`
 
 const { render } = await import('../ink.js')

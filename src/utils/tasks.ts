@@ -1,12 +1,18 @@
 import { mkdir, readdir, readFile, unlink, writeFile } from 'fs/promises'
 import { join } from 'path'
 import { z } from 'zod/v4'
-import { getIsNonInteractiveSession, getSessionId } from '../bootstrap/state.js'
+import { getSessionId, getTodoToolsOptIn } from '../bootstrap/state.js'
 import { uniq } from './array.js'
 import { logForDebugging } from './debug.js'
-import { getClaudeConfigHomeDir, getTeamsDir, isEnvTruthy } from './envUtils.js'
+import {
+  getClaudeConfigHomeDir,
+  getTeamsDir,
+  isEnvDefinedFalsy,
+  isEnvTruthy,
+} from './envUtils.js'
 import { errorMessage, getErrnoCode } from './errors.js'
 import { lazySchema } from './lazySchema.js'
+import { getCanonicalName, getMainLoopModel } from './model/model.js'
 import * as lockfile from './lockfile.js'
 import { logError } from './log.js'
 import { createSignal } from './signal.js'
@@ -133,11 +139,48 @@ async function writeHighWaterMark(
 }
 
 export function isTodoV2Enabled(): boolean {
-  // Force-enable tasks in non-interactive mode (e.g. SDK users who want Task tools over TodoWrite)
-  if (isEnvTruthy(process.env.CLAUDE_CODE_ENABLE_TASKS)) {
+  return !isEnvDefinedFalsy(process.env.CLAUDE_CODE_ENABLE_TASKS)
+}
+
+// Models that still get the todo/task tools by default (official 2.1.303).
+const TODO_TOOLS_DEFAULT_MODELS = new Set([
+  'claude-3-opus',
+  'claude-3-sonnet',
+  'claude-3-haiku',
+  'claude-3-5-sonnet',
+  'claude-3-5-haiku',
+  'claude-3-7-sonnet',
+  'claude-opus-4',
+  'claude-opus-4-1',
+  'claude-opus-4-5',
+  'claude-opus-4-6',
+  'claude-opus-4-7',
+  'claude-sonnet-4',
+  'claude-sonnet-4-5',
+  'claude-sonnet-4-6',
+  'claude-haiku-4-5',
+])
+
+/**
+ * Whether TodoWrite / Task* are offered at all. Newer models plan without
+ * them, so like official 2.1.303 they are off unless the session is a
+ * background job, the launch tool list names one, the main model is an older
+ * one, or CLAUDE_CODE_ENABLE_TODO_TOOLS is set.
+ */
+export function isTodoToolsEnabled(): boolean {
+  if (process.env.CLAUDE_JOB_DIR || getTodoToolsOptIn()) return true
+  const model = getMainLoopModel()
+  if (
+    model.includes('application-inference-profile') ||
+    TODO_TOOLS_DEFAULT_MODELS.has(getCanonicalName(model))
+  ) {
     return true
   }
-  return !getIsNonInteractiveSession()
+  return isEnvTruthy(process.env.CLAUDE_CODE_ENABLE_TODO_TOOLS)
+}
+
+export function isTaskToolsEnabled(): boolean {
+  return isTodoV2Enabled() && isTodoToolsEnabled()
 }
 
 /**

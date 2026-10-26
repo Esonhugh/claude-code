@@ -13,6 +13,7 @@ import {
   getUndercoverInstructions,
   isUndercover,
 } from '../../utils/undercover.js'
+import { isMonitorToolEnabled } from '../MonitorTool/prompt.js'
 import { BASH_TOOL_NAME } from './toolName.js'
 import { isAnt } from 'src/utils/userType.js'
 
@@ -168,7 +169,7 @@ export function getSimplePrompt(): string {
 
   const sleepSubitems = [
     'Do not sleep between commands that can run immediately — just run them.',
-    ...(feature('MONITOR_TOOL')
+    ...(feature('MONITOR_TOOL') && isMonitorToolEnabled()
       ? [
           'Use the Monitor tool to stream events from a background process (each stdout line is a notification). For one-shot "wait until done," use Bash with run_in_background instead.',
         ]

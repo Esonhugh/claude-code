@@ -2,7 +2,6 @@ import { z } from 'zod/v4'
 import { buildTool, type ToolDef } from '../../Tool.js'
 import { spawnShellTask } from '../../tasks/LocalShellTask/LocalShellTask.js'
 import { killTask } from '../../tasks/LocalShellTask/killShellTasks.js'
-import { isEnvTruthy } from '../../utils/envUtils.js'
 import { formatDuration } from '../../utils/format.js'
 import { lazySchema } from '../../utils/lazySchema.js'
 import {
@@ -20,6 +19,7 @@ import {
   DEFAULT_MONITOR_TIMEOUT_MS,
   getMonitorPrompt,
   getMonitorTimeoutCapMs,
+  isMonitorToolEnabled,
   MAX_MONITOR_TIMEOUT_MS,
   MONITOR_COMMAND_DESCRIPTION,
   MONITOR_DESCRIPTION_FIELD,
@@ -71,8 +71,7 @@ export const MonitorTool = buildTool({
   },
   userFacingName: () => 'Monitor',
   isEnabled() {
-    // Monitors run as background shell tasks.
-    return !isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS)
+    return isMonitorToolEnabled()
   },
   isConcurrencySafe() {
     return true

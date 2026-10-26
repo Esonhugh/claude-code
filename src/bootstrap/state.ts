@@ -82,6 +82,8 @@ type State = {
   strictToolResultPairing: boolean
   sdkAgentProgressSummariesEnabled: boolean
   userMsgOptIn: boolean
+  todoToolsOptIn: boolean
+  permissionPromptToolName: string | undefined
   clientType: string
   sessionSource: string | undefined
   questionPreviewFormat: 'markdown' | 'html' | undefined
@@ -316,6 +318,8 @@ function getInitialState(): State {
     strictToolResultPairing: false,
     sdkAgentProgressSummariesEnabled: false,
     userMsgOptIn: false,
+    todoToolsOptIn: false,
+    permissionPromptToolName: undefined,
     clientType: 'cli',
     sessionSource: undefined,
     questionPreviewFormat: undefined,
@@ -1167,6 +1171,25 @@ export function getUserMsgOptIn(): boolean {
 
 export function setUserMsgOptIn(value: boolean): void {
   STATE.userMsgOptIn = value
+}
+
+// Set when --tools or --allowedTools names a todo/task tool.
+export function getTodoToolsOptIn(): boolean {
+  return STATE.todoToolsOptIn
+}
+
+export function setTodoToolsOptIn(value: boolean): void {
+  STATE.todoToolsOptIn = value
+}
+
+// Who answers permission prompts in a non-interactive session ('stdio' for
+// SDK hosts, an MCP tool name, or undefined when nobody does).
+export function getPermissionPromptToolName(): string | undefined {
+  return STATE.permissionPromptToolName
+}
+
+export function setPermissionPromptToolName(value: string | undefined): void {
+  STATE.permissionPromptToolName = value
 }
 
 export function getSessionSource(): string | undefined {

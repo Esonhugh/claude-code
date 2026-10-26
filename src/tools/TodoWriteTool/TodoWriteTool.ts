@@ -4,7 +4,7 @@ import { getSessionId } from '../../bootstrap/state.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../services/analytics/growthbook.js'
 import { buildTool, type ToolDef } from '../../Tool.js'
 import { lazySchema } from '../../utils/lazySchema.js'
-import { isTodoV2Enabled } from '../../utils/tasks.js'
+import { isTodoToolsEnabled, isTodoV2Enabled } from '../../utils/tasks.js'
 import { TodoListSchema } from '../../utils/todo/types.js'
 import { VERIFICATION_AGENT_TYPE } from '../AgentTool/constants.js'
 import { TODO_WRITE_TOOL_NAME } from './constants.js'
@@ -50,7 +50,7 @@ export const TodoWriteTool = buildTool({
   },
   shouldDefer: true,
   isEnabled() {
-    return !isTodoV2Enabled()
+    return !isTodoV2Enabled() && isTodoToolsEnabled()
   },
   toAutoClassifierInput(input) {
     return `${input.todos.length} items`

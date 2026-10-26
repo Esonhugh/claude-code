@@ -26,6 +26,7 @@ if (!process.env[scenarioKey]) {
             HOME: home,
             CLAUDE_CONFIG_DIR: join(home, 'config'),
             CLAUDE_CODE_ENABLE_TASKS: '1',
+            CLAUDE_CODE_ENABLE_TODO_TOOLS: '1',
             CLAUDE_CODE_SIMPLE: '1',
             CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
             DISABLE_AUTOUPDATER: '1',

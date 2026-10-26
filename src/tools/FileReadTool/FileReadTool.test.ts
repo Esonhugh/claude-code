@@ -125,3 +125,28 @@ test('rejects a non-empty invalid PDF page range', async () => {
   assert.equal(result.result, false)
   assert.match(result.message ?? '', /Invalid pages parameter: "0"/)
 })
+
+test('text results carry the file lines without an appended reminder', async () => {
+  const tempDir = mkdtempSync(join(tmpdir(), 'file-read-tool-text-test-'))
+  const filePath = join(tempDir, 'notes.txt')
+  try {
+    writeFileSync(filePath, 'alpha\nbeta\n')
+    const result = await FileReadTool.call(
+      { file_path: filePath },
+      {
+        ...toolUseContext,
+        abortController: new AbortController(),
+        readFileState: new FileStateCache(100, 1_000_000),
+      } as never,
+    )
+    const block = FileReadTool.mapToolResultToToolResultBlockParam(
+      result.data,
+      'toolu_read_text',
+    )
+    assert.equal(typeof block.content, 'string')
+    assert.match(block.content as string, /alpha/)
+    assert.doesNotMatch(block.content as string, /system-reminder/)
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true })
+  }
+})
