@@ -1,9 +1,19 @@
+import { getMainLoopModel } from '../../utils/model/model.js'
+import { shouldUseLeanPrompt } from '../../utils/model/leanPrompt.js'
 import { AGENT_TOOL_NAME } from '../AgentTool/constants.js'
 import { BASH_TOOL_NAME } from '../BashTool/toolName.js'
 
 export const GREP_TOOL_NAME = 'Grep'
 
 export function getDescription(): string {
+  if (shouldUseLeanPrompt(getMainLoopModel())) {
+    return `Content search built on ripgrep. Prefer this over \`grep\`/\`rg\` via ${BASH_TOOL_NAME}, because its results integrate with the permission UI and file links in Claude Code.
+
+- Full regex syntax (e.g. "log.*Error", "function\\s+\\w+"). Ripgrep, not grep, so escape literal braces (\`interface\\{\\}\`).
+- Filter with \`glob\` (e.g. "**/*.tsx") or \`type\` (e.g. "js", "py", "rust").
+- \`output_mode\`: "content" (matching lines), "files_with_matches" (paths only, default), or "count".
+- \`multiline: true\` for patterns that span lines.`
+  }
   return `A powerful search tool built on ripgrep
 
   Usage:
