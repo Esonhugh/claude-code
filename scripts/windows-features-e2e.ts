@@ -5,7 +5,7 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { clean, inheritedEnv, report, runSteps, startFakeApi, type Step } from './windows-e2e-api.ts'
+import { clean, inheritedEnv, printResult, report, runCli, runSteps, startFakeApi, type Step } from './windows-e2e-api.ts'
 
 const bin = path.resolve(process.argv[2] ?? '')
 if (!fs.existsSync(bin)) throw new Error(`usage: windows-features-e2e.ts <claude.exe>`)
@@ -106,14 +106,7 @@ console.log(`${hooked ? 'PASS' : 'FAIL'} PreToolUse command hook\n  ${hooked || 
 if (!hooked) failed++
 
 // Background session through the daemon (Windows named pipes).
-// Async: the fake API runs in this process and must keep answering.
-const run = async (...args: string[]) => {
-  const child = Bun.spawn([bin, ...args], { cwd: project, env, stdout: 'pipe', stderr: 'pipe' })
-  const timer = setTimeout(() => child.kill(), 60_000)
-  const [out, err] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text()])
-  clearTimeout(timer)
-  return `${out}${err}`.trim()
-}
+const run = (...args: string[]) => runCli(bin, args, { cwd: project, env })
 const bg = await run('--bg', '-n', 'smoke', '--dangerously-skip-permissions', `STEPS:${JSON.stringify([{ name: 'Bash', input: { command: 'echo bg-ok', description: 'e2e' } }])}`)
 console.log(`--bg: ${bg}`)
 let logs = ''
@@ -129,13 +122,15 @@ const session = listed.find(s => s.name === 'smoke')
 const bgChecks: [string, boolean, string][] = [
   ['background session starts', /backgrounded/.test(bg), bg],
   ['logs shows its output', logs.includes('bg-ok'), logs],
-  ['agents --json lists it running', session?.state === 'running', JSON.stringify(session ?? listed)],
+  // Official reports a busy session as "working".
+  ['agents --json lists it running', /^(running|working)$/.test(session?.state ?? ''), JSON.stringify(session ?? listed)],
 ]
-const stop = await run('stop', 'smoke')
+// Official `stop` takes the id, not the name.
+const stop = await run('stop', bg.match(/backgrounded · (\w+)/)?.[1] ?? 'smoke')
 bgChecks.push(['stop', /stopped/.test(stop), stop])
 for (const [name, ok, out] of bgChecks) {
   if (!ok) failed++
-  console.log(`${ok ? 'PASS' : 'FAIL'} ${name}\n  ${out.replace(/\n/g, '\n  ')}`)
+  printResult(ok, name, out)
 }
 
 api.stop()

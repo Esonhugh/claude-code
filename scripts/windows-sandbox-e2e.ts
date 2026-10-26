@@ -49,6 +49,8 @@ const env = {
   ANTHROPIC_API_KEY: 'sk-fake',
   CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
   CLAUDE_CODE_USE_POWERSHELL_TOOL: '1',
+  // Official 2.1.303 gates its Windows sandbox behind this; the fork ignores it.
+  CLAUDE_CODE_NANKEEN_KESTREL: '1',
 }
 
 const install = spawnSync(bin, ['sandbox', 'install'], { env, encoding: 'utf8' })
@@ -101,9 +103,8 @@ api.stop()
 const failed = report(checks, results)
 if (failed && fs.existsSync(debugLog)) {
   console.log('--- sandbox lines from the debug log')
-  for (const line of fs.readFileSync(debugLog, 'utf8').split('\n')) {
-    if (/sandbox|srt-win/i.test(line)) console.log(line.slice(0, 2000))
-  }
+  const lines = fs.readFileSync(debugLog, 'utf8').split('\n').filter(line => /sandbox|srt-win/i.test(line))
+  for (const line of lines.slice(-80)) console.log(line.slice(0, 1000))
 }
 fs.rmSync(root, { recursive: true, force: true })
 if (failed) {
