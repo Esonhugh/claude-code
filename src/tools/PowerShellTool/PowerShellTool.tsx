@@ -248,24 +248,23 @@ export function detectBlockedSleepPattern(command: string): string | null {
 }
 
 /**
- * On Windows native, sandbox is unavailable (bwrap/sandbox-exec are
- * POSIX-only). If enterprise policy has sandbox.enabled AND forbids
- * unsandboxed commands, PowerShell cannot comply — refuse execution
- * rather than silently bypass the policy. On Linux/macOS/WSL2, pwsh
- * runs as a native binary under the sandbox same as bash, so this
- * gate does not apply.
+ * If enterprise policy has sandbox.enabled AND forbids unsandboxed
+ * commands but the Windows sandbox is not available (not installed, or
+ * srt-win is missing), PowerShell cannot comply — refuse execution
+ * rather than silently bypass the policy.
  *
  * Checked in BOTH validateInput (clean tool-runner error) and call()
  * (covers direct callers like promptShellExecution.ts that skip
  * validateInput). The call() guard is the load-bearing one.
  */
 const WINDOWS_SANDBOX_POLICY_REFUSAL =
-  'Enterprise policy requires sandboxing, but sandboxing is not available on native Windows. Shell command execution is blocked on this platform by policy.'
+  'Enterprise policy requires sandboxing, but the Windows sandbox is not available. Shell command execution is blocked on this platform by policy.'
 function isWindowsSandboxPolicyViolation(): boolean {
   return (
     getPlatform() === 'windows' &&
     SandboxManager.isSandboxEnabledInSettings() &&
-    !SandboxManager.areUnsandboxedCommandsAllowed()
+    !SandboxManager.areUnsandboxedCommandsAllowed() &&
+    !SandboxManager.isSandboxingEnabled()
   )
 }
 
@@ -952,16 +951,11 @@ async function* runPowerShellCommand({
         lastTotalBytes = isIncomplete ? totalBytes : 0
       },
       preventCwdChanges,
-      // Sandbox works on Linux/macOS/WSL2 — pwsh there is a native binary and
-      // SandboxManager.wrapWithSandbox wraps it same as bash (Shell.ts uses
-      // /bin/sh for the outer spawn to parse the POSIX-quoted bwrap/sandbox-exec
-      // string). On Windows native, sandbox is unsupported; shouldUseSandbox()
-      // returns false via isSandboxingEnabled() → isSupportedPlatform() → false.
-      // The explicit platform check is redundant-but-obvious.
-      shouldUseSandbox:
-        getPlatform() === 'windows' || userShellCommand
-          ? false
-          : shouldUseSandbox({ command, dangerouslyDisableSandbox }),
+      // Shell.ts runs sandboxed pwsh through /bin/sh (bwrap/sandbox-exec) or,
+      // on Windows, through Git Bash under srt-win.
+      shouldUseSandbox: userShellCommand
+        ? false
+        : shouldUseSandbox({ command, dangerouslyDisableSandbox }),
       shouldAutoBackground,
     })
   } catch (e) {

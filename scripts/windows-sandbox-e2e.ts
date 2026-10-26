@@ -106,6 +106,7 @@ const env = {
   ANTHROPIC_BASE_URL: `http://127.0.0.1:${server.port}`,
   ANTHROPIC_API_KEY: 'sk-fake',
   CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
+  CLAUDE_CODE_USE_POWERSHELL_TOOL: '1',
 }
 
 const install = spawnSync(bin, ['sandbox', 'install'], { env, encoding: 'utf8' })
@@ -115,22 +116,34 @@ console.log(`sandbox status: ${status.stdout}${status.stderr}`)
 
 const posix = (p: string) => p.replace(/\\/g, '/')
 const bash = (command: string) => ({ name: 'Bash', input: { command, description: 'e2e' } })
+const pwsh = (command: string) => ({ name: 'PowerShell', input: { command, description: 'e2e' } })
+// A command that should succeed must not report a non-zero exit.
+const clean = (out: string) => !/^Exit code/m.test(out)
 const checks: { step: Step; expect: (out: string) => boolean }[] = [
-  { step: bash('whoami'), expect: out => out.includes('srt-sandbox') },
-  { step: bash('echo ok > inside.txt && cat inside.txt'), expect: out => out.includes('ok') },
+  { step: bash('whoami'), expect: out => clean(out) && out.includes('srt-sandbox') },
+  { step: bash('echo ok > inside.txt && cat inside.txt'), expect: out => clean(out) && out.includes('ok') },
   { step: bash('echo x > /c/Windows/cc-e2e.txt'), expect: out => /Permission denied/.test(out) },
   { step: bash(`cat '${posix(secret)}'`), expect: out => /Permission denied/.test(out) },
   {
     step: bash('curl -sS -o /dev/null -w "%{http_code}" https://example.com'),
-    expect: out => out.includes('200'),
+    expect: out => clean(out) && out.includes('200'),
   },
   {
     step: bash('curl -sS -o /dev/null -w "%{http_code}" https://github.com'),
     expect: out => out.includes('403'),
   },
-  { step: bash('echo "$GIT_EDITOR $CLAUDECODE"'), expect: out => out.includes('true 1') },
-  { step: bash('cd sub'), expect: out => !/Sandbox|error/i.test(out) },
-  { step: bash('pwd'), expect: out => /\/sub\s*$/.test(out.trim()) },
+  { step: bash('echo "$GIT_EDITOR $CLAUDECODE"'), expect: out => clean(out) && out.includes('true 1') },
+  { step: bash('cd sub'), expect: out => clean(out) && !/Sandbox|error/i.test(out) },
+  { step: bash('pwd'), expect: out => clean(out) && /\/sub\s*$/.test(out.trim()) },
+  { step: pwsh('whoami'), expect: out => clean(out) && out.includes('srt-sandbox') },
+  {
+    step: pwsh('Set-Content -Path ps.txt -Value ok; Get-Content ps.txt'),
+    expect: out => clean(out) && out.includes('ok'),
+  },
+  {
+    step: pwsh('Set-Content -Path C:\\Windows\\cc-e2e-ps.txt -Value x'),
+    expect: out => /Access to the path .* is denied/i.test(out),
+  },
   {
     step: { name: 'Terminal', input: { action: 'new-session', command: 'cmd.exe' } },
     expect: out => out.includes('cannot run inside the Windows sandbox'),

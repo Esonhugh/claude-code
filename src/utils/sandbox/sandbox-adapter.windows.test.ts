@@ -1,5 +1,11 @@
 import { afterAll, expect, mock, test } from 'bun:test'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -35,6 +41,7 @@ if (process.env[childFlag] !== '1') {
   process.env.CLAUDE_CODE_EMBEDDED_SRT_WIN_PATH = embedded
   process.env.CLAUDE_CODE_EMBEDDED_SRT_WIN_VERSION = '0.0.80'
   process.env.XDG_CACHE_HOME = join(temp, 'cache')
+  process.env.CLAUDE_CODE_TMPDIR = join(temp, 'tmp')
 
   const platform = await import('../platform.js')
   mock.module('../platform.js', () => ({
@@ -93,6 +100,13 @@ if (process.env[childFlag] !== '1') {
     const { denyWrite } = convertToSandboxRuntimeConfig({}).filesystem
     expect(denyWrite).toContain(join(temp, '.claude', 'settings.json'))
     expect(denyWrite.some(p => p.startsWith(homedir()))).toBe(false)
+  })
+
+  test('the Claude temp dir exists before it is granted', () => {
+    const { allowWrite } = convertToSandboxRuntimeConfig({}).filesystem
+    const claudeTemp = allowWrite.find(p => p.startsWith(join(temp, 'tmp')))!
+    expect(claudeTemp).toBeDefined()
+    expect(existsSync(claudeTemp)).toBe(true)
   })
 
   test('an uninstalled sandbox is reported, not enabled', () => {

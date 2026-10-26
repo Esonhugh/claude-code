@@ -25,7 +25,7 @@ import {
 } from '@anthropic-ai/sandbox-runtime'
 import { checkLinuxDependencies } from '@anthropic-ai/sandbox-runtime/dist/sandbox/linux-sandbox-utils.js'
 import { execFileSync } from 'child_process'
-import { existsSync, realpathSync, rmSync, statSync } from 'fs'
+import { existsSync, mkdirSync, realpathSync, rmSync, statSync } from 'fs'
 import { readFile } from 'fs/promises'
 import { memoize } from 'lodash-es'
 import { basename, dirname, join, posix, resolve, sep } from 'path'
@@ -278,6 +278,14 @@ export function convertToSandboxRuntimeConfig(
   // Always include current directory and Claude temp directory as writable
   // The temp directory is needed for Shell.ts cwd tracking files
   const allowWrite: string[] = ['.', getClaudeTempDir()]
+  // srt-win drops a write grant on a path that does not exist yet.
+  if (getPlatform() === 'windows') {
+    try {
+      mkdirSync(getClaudeTempDir(), { recursive: true })
+    } catch (error) {
+      logForDebugging(`Failed to create ${getClaudeTempDir()}: ${error}`)
+    }
+  }
   const denyWrite: string[] = []
   const denyRead: string[] = []
   const allowRead: string[] = []
