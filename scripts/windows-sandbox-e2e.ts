@@ -129,7 +129,7 @@ const checks: { step: Step; expect: (out: string) => boolean }[] = [
     expect: out => out.includes('403'),
   },
   { step: bash('echo "$GIT_EDITOR $CLAUDECODE"'), expect: out => out.includes('true 1') },
-  { step: bash('cd sub'), expect: () => true },
+  { step: bash('cd sub'), expect: out => !/Sandbox|error/i.test(out) },
   { step: bash('pwd'), expect: out => /\/sub\s*$/.test(out.trim()) },
   {
     step: { name: 'Terminal', input: { action: 'new-session', command: 'cmd.exe' } },
@@ -137,6 +137,7 @@ const checks: { step: Step; expect: (out: string) => boolean }[] = [
   },
 ]
 
+const debugLog = path.join(root, 'debug.log')
 const output = await new Promise<string>((resolve, reject) => {
   const child = spawn(
     bin,
@@ -147,6 +148,8 @@ const output = await new Promise<string>((resolve, reject) => {
       'stream-json',
       '--verbose',
       '--dangerously-skip-permissions',
+      '--debug-file',
+      debugLog,
     ],
     { cwd: project, env, stdio: ['ignore', 'pipe', 'pipe'] },
   )
@@ -184,6 +187,12 @@ checks.forEach((check, i) => {
   const shown = (out ?? '<no result>').trim().replace(/\n/g, '\n  ')
   console.log(`${ok ? 'PASS' : 'FAIL'} ${JSON.stringify(check.step.input)}\n  ${shown}`)
 })
+if (failed && fs.existsSync(debugLog)) {
+  console.log('--- sandbox lines from the debug log')
+  for (const line of fs.readFileSync(debugLog, 'utf8').split('\n')) {
+    if (/sandbox|srt-win/i.test(line)) console.log(line.slice(0, 2000))
+  }
+}
 fs.rmSync(root, { recursive: true, force: true })
 if (failed) {
   console.log(`${failed} check(s) failed`)
