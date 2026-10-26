@@ -2,7 +2,6 @@
 // Usage: bun scripts/windows-features-e2e.ts <claude.exe>
 // Scripted tool calls go through `claude -p` against a fake API; background
 // sessions go through the `--bg` / `agents` / `logs` / `stop` commands.
-import { spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -107,20 +106,24 @@ console.log(`${hooked ? 'PASS' : 'FAIL'} PreToolUse command hook\n  ${hooked || 
 if (!hooked) failed++
 
 // Background session through the daemon (Windows named pipes).
-const run = (...args: string[]) => {
-  const r = spawnSync(bin, args, { cwd: project, env, encoding: 'utf8', timeout: 60_000 })
-  return `${r.stdout}${r.stderr}`.trim()
+// Async: the fake API runs in this process and must keep answering.
+const run = async (...args: string[]) => {
+  const child = Bun.spawn([bin, ...args], { cwd: project, env, stdout: 'pipe', stderr: 'pipe' })
+  const timer = setTimeout(() => child.kill(), 60_000)
+  const [out, err] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text()])
+  clearTimeout(timer)
+  return `${out}${err}`.trim()
 }
-const bg = run('--bg', '-n', 'smoke', '--dangerously-skip-permissions', `STEPS:${JSON.stringify([{ name: 'Bash', input: { command: 'echo bg-ok', description: 'e2e' } }])}`)
+const bg = await run('--bg', '-n', 'smoke', '--dangerously-skip-permissions', `STEPS:${JSON.stringify([{ name: 'Bash', input: { command: 'echo bg-ok', description: 'e2e' } }])}`)
 console.log(`--bg: ${bg}`)
 let logs = ''
 for (let i = 0; i < 45 && !logs.includes('bg-ok'); i++) {
   await Bun.sleep(1000)
-  logs = run('logs', 'smoke')
+  logs = await run('logs', 'smoke')
 }
 let listed: { name?: string; status?: string; state?: string }[] = []
 try {
-  listed = JSON.parse(run('agents', '--json', '--all'))
+  listed = JSON.parse(await run('agents', '--json', '--all'))
 } catch {}
 const session = listed.find(s => s.name === 'smoke')
 const bgChecks: [string, boolean, string][] = [
@@ -128,7 +131,7 @@ const bgChecks: [string, boolean, string][] = [
   ['logs shows its output', logs.includes('bg-ok'), logs],
   ['agents --json lists it running', session?.state === 'running', JSON.stringify(session ?? listed)],
 ]
-const stop = run('stop', 'smoke')
+const stop = await run('stop', 'smoke')
 bgChecks.push(['stop', /stopped/.test(stop), stop])
 for (const [name, ok, out] of bgChecks) {
   if (!ok) failed++
@@ -137,7 +140,11 @@ for (const [name, ok, out] of bgChecks) {
 
 api.stop()
 // The daemon keeps the folder open until it idles out.
-fs.rmSync(root, { recursive: true, force: true, maxRetries: 15, retryDelay: 1000 })
+try {
+  fs.rmSync(root, { recursive: true, force: true, maxRetries: 15, retryDelay: 1000 })
+} catch (error) {
+  console.log(`cleanup: ${error}`)
+}
 if (failed) {
   console.log(`${failed} check(s) failed`)
   process.exit(1)
