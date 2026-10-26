@@ -74,6 +74,13 @@ try {
   })
   delete process.env.CLAUDE_CODE_USE_VERTEX
 
+  // Without a GrowthBook payload the official default allowlist applies.
+  setPromptCache1hAllowlist(null)
+  for (const querySource of ['repl_main_thread', 'sdk', 'auto_mode', 'memdir_relevance'] as const) {
+    assert.deepEqual(getCacheControl({ querySource }), { type: 'ephemeral', ttl: '1h' })
+  }
+  assert.deepEqual(getCacheControl({ querySource: 'compact' }), { type: 'ephemeral' })
+
   setPromptCache1hAllowlist(null)
   setPromptCache1hEligible(null)
 } finally {

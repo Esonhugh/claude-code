@@ -451,6 +451,14 @@ export function hasExtendedCacheTtlMarker({
   )
 }
 
+// Official 2.1.303 default when GrowthBook has no payload.
+const DEFAULT_PROMPT_CACHE_1H_ALLOWLIST = [
+  'repl_main_thread*',
+  'sdk',
+  'auto_mode',
+  'memdir_relevance',
+]
+
 function should1hCacheTTL(querySource?: QuerySource): boolean {
   // Opt-in env vars (official: any provider, or Bedrock only) — the user manages
   // their own billing, so no GrowthBook gating is needed.
@@ -480,7 +488,9 @@ function should1hCacheTTL(querySource?: QuerySource): boolean {
   if (allowlist === null) {
     const config = getFeatureValue_CACHED_MAY_BE_STALE<{
       allowlist?: string[]
-    }>('tengu_prompt_cache_1h_config', {})
+    }>('tengu_prompt_cache_1h_config', {
+      allowlist: DEFAULT_PROMPT_CACHE_1H_ALLOWLIST,
+    })
     allowlist = config.allowlist ?? []
     setPromptCache1hAllowlist(allowlist)
   }
