@@ -1203,3 +1203,11 @@ test('returns SESSION_ALREADY_CLOSED when writing to a closed pane', async () =>
     'SESSION_ALREADY_CLOSED',
   )
 })
+
+test('Terminal schema tells the model that command is one executable and args is its argv', () => {
+  const schema = TerminalTool.inputSchema.toJSONSchema() as {
+    properties: Record<string, { description?: string }>
+  }
+  assert.match(schema.properties.command?.description ?? '', /args/)
+  assert.match(schema.properties.args?.description ?? '', /argument/i)
+})

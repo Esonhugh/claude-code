@@ -163,3 +163,14 @@ test('resolveTerminalCommand recognizes PowerShell Unix and Windows absolute bas
     rmSync(dir, { recursive: true, force: true })
   }
 })
+
+test('resolveTerminalCommand points a full command line at args', () => {
+  assert.throws(
+    () =>
+      resolveTerminalCommand({
+        command: 'ssh -o ConnectTimeout=15 host',
+        env: { PATH: '' },
+      }),
+    /pass arguments in args/,
+  )
+})
