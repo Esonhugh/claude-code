@@ -122,9 +122,11 @@ const session = listed.find(s => s.name === 'smoke')
 const bgChecks: [string, boolean, string][] = [
   ['background session starts', /backgrounded/.test(bg), bg],
   ['logs shows its output', logs.includes('bg-ok'), logs],
-  ['agents --json lists it running', session?.state === 'running', JSON.stringify(session ?? listed)],
+  // Official reports a busy session as "working".
+  ['agents --json lists it running', /^(running|working)$/.test(session?.state ?? ''), JSON.stringify(session ?? listed)],
 ]
-const stop = await run('stop', 'smoke')
+// Official `stop` takes the id, not the name.
+const stop = await run('stop', bg.match(/backgrounded · (\w+)/)?.[1] ?? 'smoke')
 bgChecks.push(['stop', /stopped/.test(stop), stop])
 for (const [name, ok, out] of bgChecks) {
   if (!ok) failed++

@@ -45,10 +45,34 @@ jobs:
         shell: bash
         run: bun scripts/windows-sessions-e2e.ts dist/release/claude-code-v*-win32-x64.exe
 
-      # The official binary runs the same scripts for comparison only; its
-      # failures (fork-only tools, Direct Connect) do not fail the job.
-      - name: Download official
+      - name: Upload binary
         if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: fork-win32-x64
+          path: dist/release/claude-code-v*-win32-x64.exe
+          retention-days: 1
+
+  # The official binary runs the same scripts on a clean runner (its sandbox
+  # install would conflict with the fork's), for comparison only: its failures
+  # (fork-only tools, Direct Connect) do not fail the job. The fork's sandbox
+  # e2e then runs on top of the official install.
+  official:
+    needs: windows-e2e
+    if: ${{ !cancelled() }}
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      OFFICIAL_CLAUDE_VERSION: 2.1.303
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+
+      - name: Download official
         shell: bash
         run: |
           mkdir -p official
@@ -59,7 +83,6 @@ jobs:
           ./claude.exe --version
 
       - name: Official sandbox e2e
-        if: ${{ !cancelled() }}
         continue-on-error: true
         shell: bash
         run: bun scripts/windows-sandbox-e2e.ts official/claude.exe
@@ -75,3 +98,16 @@ jobs:
         continue-on-error: true
         shell: bash
         run: bun scripts/windows-sessions-e2e.ts official/claude.exe
+
+      - name: Download fork binary
+        if: ${{ !cancelled() }}
+        uses: actions/download-artifact@v4
+        with:
+          name: fork-win32-x64
+          path: fork
+
+      - name: Fork sandbox e2e after the official install
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        shell: bash
+        run: bun scripts/windows-sandbox-e2e.ts fork/claude-code-v*-win32-x64.exe
