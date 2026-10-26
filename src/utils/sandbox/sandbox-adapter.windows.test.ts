@@ -107,12 +107,17 @@ if (process.env[childFlag] !== '1') {
   test('write denies outside every write grant are left out', () => {
     const { denyWrite } = convertToSandboxRuntimeConfig({}).filesystem
     expect(denyWrite).toContain(join(temp, '.claude', 'settings.json'))
-    expect(denyWrite.some(p => p.startsWith(homedir()))).toBe(false)
+    expect(
+      denyWrite.some(p => typeof p === 'string' && p.startsWith(homedir())),
+    ).toBe(false)
   })
 
   test('the Claude temp dir exists before it is granted', () => {
     const { allowWrite } = convertToSandboxRuntimeConfig({}).filesystem
-    const claudeTemp = allowWrite.find(p => p.startsWith(join(temp, 'tmp')))!
+    const claudeTemp = allowWrite.find(
+      (p): p is string =>
+        typeof p === 'string' && p.startsWith(join(temp, 'tmp')),
+    )!
     expect(claudeTemp).toBeDefined()
     expect(existsSync(claudeTemp)).toBe(true)
   })
