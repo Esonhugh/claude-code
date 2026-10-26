@@ -2,14 +2,14 @@ import { expect, test } from 'bun:test'
 
 import type { Tool } from '../../Tool.js'
 import { AgentTool } from './AgentTool.js'
-import { SET_GOAL_TOOL_NAME } from '../SetGoalTool/constants.js'
+import { GOAL_TOOL_NAME } from '../GoalTool/constants.js'
 import { resolveAgentTools } from './agentToolUtils.js'
 import { AGENT_TOOL_NAME } from './constants.js'
 import { MAX_SUBAGENT_DEPTH } from './subagentDepth.js'
 
 const agentTool = AgentTool
 const readTool = { name: 'Read' } as Tool
-const goalTool = { name: SET_GOAL_TOOL_NAME } as Tool
+const goalTool = { name: GOAL_TOOL_NAME } as Tool
 const specification = 'Agent(worker, researcher)'
 
 for (const source of ['built-in', 'projectSettings', 'plugin'] as const) {
@@ -99,11 +99,11 @@ for (const tools of [undefined, ['*']]) {
 
 test('nested Agent availability does not bypass adjacent main-thread tool restrictions', () => {
   const result = resolveAgentTools(
-    { tools: [specification, SET_GOAL_TOOL_NAME], source: 'built-in' },
+    { tools: [specification, GOAL_TOOL_NAME], source: 'built-in' },
     [agentTool, goalTool],
   )
   expect(result).toEqual({
-    hasWildcard: false, validTools: [specification], invalidTools: [SET_GOAL_TOOL_NAME],
+    hasWildcard: false, validTools: [specification], invalidTools: [GOAL_TOOL_NAME],
     resolvedTools: [agentTool], allowedAgentTypes: ['worker', 'researcher'],
   })
 })

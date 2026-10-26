@@ -1,13 +1,12 @@
 import { findToolByName, type Tool, type Tools } from '../Tool.js'
 import { AgentTool } from '../tools/AgentTool/AgentTool.js'
 import { BashTool } from '../tools/BashTool/BashTool.js'
-import { ClearGoalTool } from '../tools/ClearGoalTool/ClearGoalTool.js'
 import { FileEditTool } from '../tools/FileEditTool/FileEditTool.js'
 import { FileReadTool } from '../tools/FileReadTool/FileReadTool.js'
 import { FileWriteTool } from '../tools/FileWriteTool/FileWriteTool.js'
+import { GoalTool } from '../tools/GoalTool/GoalTool.js'
 import { MCPTool } from '../tools/MCPTool/MCPTool.js'
 import { SendMessageTool } from '../tools/SendMessageTool/SendMessageTool.js'
-import { SetGoalTool } from '../tools/SetGoalTool/SetGoalTool.js'
 import { TaskCreateTool } from '../tools/TaskCreateTool/TaskCreateTool.js'
 import { TaskGetTool } from '../tools/TaskGetTool/TaskGetTool.js'
 import { TaskListTool } from '../tools/TaskListTool/TaskListTool.js'
@@ -24,12 +23,11 @@ function getKnownRemoteDisplayTools(): Tools {
   return [
     AgentTool,
     BashTool,
-    ClearGoalTool,
     FileEditTool,
     FileReadTool,
     FileWriteTool,
+    GoalTool,
     SendMessageTool,
-    SetGoalTool,
     TaskCreateTool,
     TaskGetTool,
     TaskListTool,

@@ -8,11 +8,10 @@ describe('remote display tools', () => {
   test.each([
     ['Agent', { description: 'inspect', prompt: 'inspect' }],
     ['Bash', { command: 'pwd' }],
-    ['ClearGoal', {}],
     ['Edit', { file_path: '/tmp/a', old_string: 'a', new_string: 'b' }],
     ['Read', { file_path: '/tmp/a' }],
     ['SendMessage', { to: 'reviewer', message: 'done', summary: 'Report done' }],
-    ['SetGoal', { goal: 'finish validation' }],
+    ['Goal', { action: 'set', goal: 'finish validation' }],
     ['TaskCreate', { subject: 'Test', description: 'Test task' }],
     ['TaskGet', { taskId: '1' }],
     ['TaskList', {}],

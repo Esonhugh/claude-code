@@ -9,8 +9,8 @@ import { getSessionHooks } from '../../utils/hooks/sessionHooks.js'
 import { setCachedSettingsForSource } from '../../utils/settings/settingsCache.js'
 import { GOAL_HOOKS_RESTRICTED_MESSAGE } from '../../commands/goal/hooks.js'
 import type { GoalStatus } from '../../commands/goal/types.js'
-import { SET_GOAL_TOOL_NAME } from './constants.js'
-import { SetGoalTool } from './SetGoalTool.js'
+import { GOAL_TOOL_NAME } from './constants.js'
+import { GoalTool } from './GoalTool.js'
 
 setIsInteractive(false)
 
@@ -35,13 +35,13 @@ function createContext(initial: GoalStatus, agentId?: string) {
   return { context, getState: () => state }
 }
 
-assert.equal(SetGoalTool.name, SET_GOAL_TOOL_NAME)
-assert.equal(SetGoalTool.userFacingName(), SET_GOAL_TOOL_NAME)
+assert.equal(GoalTool.name, GOAL_TOOL_NAME)
+assert.equal(GoalTool.userFacingName(), GOAL_TOOL_NAME)
 
 const shortGoal = 'finish the feature'
 assert.equal(
-  SetGoalTool.renderToolUseMessage(
-    { goal: shortGoal },
+  GoalTool.renderToolUseMessage(
+    { action: 'set', goal: shortGoal },
     { theme: 'dark', verbose: false },
   ),
   shortGoal,
@@ -49,23 +49,23 @@ assert.equal(
 
 const multilineGoal = `first line\n${'x'.repeat(200)}`
 assert.equal(
-  SetGoalTool.renderToolUseMessage(
-    { goal: multilineGoal },
+  GoalTool.renderToolUseMessage(
+    { action: 'set', goal: multilineGoal },
     { theme: 'dark', verbose: false },
   ),
   'first line…',
 )
 assert.equal(
-  SetGoalTool.renderToolUseMessage(
-    { goal: multilineGoal },
+  GoalTool.renderToolUseMessage(
+    { action: 'set', goal: multilineGoal },
     { theme: 'dark', verbose: true },
   ),
   multilineGoal,
 )
 
 const longGoal = 'x'.repeat(200)
-const summarizedGoal = SetGoalTool.renderToolUseMessage(
-  { goal: longGoal },
+const summarizedGoal = GoalTool.renderToolUseMessage(
+  { action: 'set', goal: longGoal },
   { theme: 'dark', verbose: false },
 )
 assert.equal(typeof summarizedGoal, 'string')
@@ -73,8 +73,8 @@ assert.equal(stringWidth(summarizedGoal as string), 160)
 assert.match(summarizedGoal as string, /…$/)
 
 const wideGoal = '目'.repeat(100)
-const summarizedWideGoal = SetGoalTool.renderToolUseMessage(
-  { goal: wideGoal },
+const summarizedWideGoal = GoalTool.renderToolUseMessage(
+  { action: 'set', goal: wideGoal },
   { theme: 'dark', verbose: false },
 )
 assert.equal(typeof summarizedWideGoal, 'string')
@@ -83,7 +83,7 @@ assert.match(summarizedWideGoal as string, /…$/)
 
 const emptyContext = createContext({ active: false })
 assert.deepEqual(
-  await SetGoalTool.validateInput?.({ goal: '   ' }, emptyContext.context),
+  await GoalTool.validateInput?.({ action: 'set', goal: '   ' }, emptyContext.context),
   {
     result: false,
     message: 'Goal must not be empty',
@@ -93,7 +93,7 @@ assert.deepEqual(
 
 const tooLong = 'x'.repeat(4001)
 assert.deepEqual(
-  await SetGoalTool.validateInput?.({ goal: tooLong }, emptyContext.context),
+  await GoalTool.validateInput?.({ action: 'set', goal: tooLong }, emptyContext.context),
   {
     result: false,
     message: 'Goal condition is limited to 4000 characters (got 4001)',
@@ -104,8 +104,8 @@ assert.deepEqual(
 setCachedSettingsForSource('policySettings', { allowManagedHooksOnly: true })
 const restrictedContext = createContext({ active: false })
 assert.deepEqual(
-  await SetGoalTool.validateInput?.(
-    { goal: 'restricted goal' },
+  await GoalTool.validateInput?.(
+    { action: 'set', goal: 'restricted goal' },
     restrictedContext.context,
   ),
   {
@@ -115,7 +115,7 @@ assert.deepEqual(
   },
 )
 await assert.rejects(
-  SetGoalTool.call({ goal: 'restricted goal' }, restrictedContext.context),
+  GoalTool.call({ action: 'set', goal: 'restricted goal' }, restrictedContext.context),
   error => {
     assert.equal((error as Error).message, GOAL_HOOKS_RESTRICTED_MESSAGE)
     return true
@@ -125,8 +125,8 @@ assert.deepEqual(restrictedContext.getState().goalStatus, { active: false })
 setCachedSettingsForSource('policySettings', null)
 
 const setContext = createContext({ active: false })
-const setResult = await SetGoalTool.call(
-  { goal: '  finish the feature  ' },
+const setResult = await GoalTool.call(
+  { action: 'set', goal: '  finish the feature  ' },
   setContext.context,
 )
 const active = setContext.getState().goalStatus
@@ -150,9 +150,9 @@ assert.deepEqual((setResult.newMessages?.[0] as AttachmentMessage).attachment, {
 })
 assert.ok(
   getSessionHooks(setContext.getState() as never, getSessionId()).get('Stop'),
-  'SetGoal must register the existing goal Stop hook',
+  'Goal set must register the existing goal Stop hook',
 )
-const toolResult = SetGoalTool.mapToolResultToToolResultBlockParam(
+const toolResult = GoalTool.mapToolResultToToolResultBlockParam(
   setResult.data,
   'tool-use-1',
 )
@@ -162,8 +162,8 @@ assert.match(toolResult.content as string, /^Goal set: finish the feature/)
 assert.match(toolResult.content as string, /Work autonomously toward this goal/)
 
 const firstGoalId = active.active ? active.id : ''
-await SetGoalTool.call(
-  { goal: 'replacement goal' },
+await GoalTool.call(
+  { action: 'set', goal: 'replacement goal' },
   setContext.context,
 )
 const replaced = setContext.getState().goalStatus
@@ -183,17 +183,17 @@ assert.equal(
 
 const agentContext = createContext({ active: false }, 'agent-1')
 assert.deepEqual(
-  await SetGoalTool.validateInput?.({ goal: 'agent goal' }, agentContext.context),
+  await GoalTool.validateInput?.({ action: 'set', goal: 'agent goal' }, agentContext.context),
   {
     result: false,
-    message: 'SetGoal cannot be used in agent contexts',
+    message: 'Goal cannot be used in agent contexts',
     errorCode: 3,
   },
 )
 await assert.rejects(
-  SetGoalTool.call({ goal: 'agent goal' }, agentContext.context),
-  /SetGoal cannot be used in agent contexts/,
+  GoalTool.call({ action: 'set', goal: 'agent goal' }, agentContext.context),
+  /Goal cannot be used in agent contexts/,
 )
 assert.deepEqual(agentContext.getState().goalStatus, { active: false })
 
-console.log('SetGoalTool.test.ts passed')
+console.log('GoalTool.set.test.ts passed')

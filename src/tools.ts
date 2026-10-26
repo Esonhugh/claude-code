@@ -88,8 +88,7 @@ import { TaskCreateTool } from './tools/TaskCreateTool/TaskCreateTool.js'
 import { TaskGetTool } from './tools/TaskGetTool/TaskGetTool.js'
 import { TaskUpdateTool } from './tools/TaskUpdateTool/TaskUpdateTool.js'
 import { TaskListTool } from './tools/TaskListTool/TaskListTool.js'
-import { SetGoalTool } from './tools/SetGoalTool/SetGoalTool.js'
-import { ClearGoalTool } from './tools/ClearGoalTool/ClearGoalTool.js'
+import { GoalTool } from './tools/GoalTool/GoalTool.js'
 import { SearchMemoryTool } from './tools/SearchMemoryTool/SearchMemoryTool.js'
 import uniqBy from 'lodash-es/uniqBy.js'
 import { isToolSearchEnabledOptimistic } from './utils/toolSearch.js'
@@ -220,8 +219,7 @@ export function getAllBaseTools(
     WebFetchTool,
     TodoWriteTool,
     WebSearchTool,
-    SetGoalTool,
-    ClearGoalTool,
+    GoalTool,
     SearchMemoryTool,
     TaskStopTool,
     AskUserQuestionTool,
