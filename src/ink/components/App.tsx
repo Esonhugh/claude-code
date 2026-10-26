@@ -30,6 +30,7 @@ import {
   getProgramStatusSupport,
   settleProgramStatusSupport,
   setXtversionName,
+  setExtendedKeysDetected,
   supportsExtendedKeys,
 } from '../terminal.js'
 import {
@@ -37,7 +38,7 @@ import {
   getTerminalFocusGainedAt,
   setTerminalFocused,
 } from '../terminal-focus-state.js'
-import { TerminalQuerier, xtversion, programStatusQuery } from '../terminal-querier.js'
+import { TerminalQuerier, xtversion, programStatusQuery, kittyKeyboard } from '../terminal-querier.js'
 import {
   DISABLE_KITTY_KEYBOARD,
   DISABLE_MODIFY_OTHER_KEYS,
@@ -337,11 +338,21 @@ export default class App extends PureComponent<Props, State> {
         // tracking enable writes that may happen in the same render cycle.
         setImmediate(() => {
           const askProgramStatus = getProgramStatusSupport() === 'pending'
+          // Terminals outside the allowlist that answer the Kitty keyboard
+          // query get extended keys too (ctrl+enter to send now).
+          const askKitty = !supportsExtendedKeys()
           void Promise.all([
             this.querier.send(xtversion()),
             askProgramStatus ? this.querier.send(programStatusQuery()) : Promise.resolve(undefined),
+            askKitty ? this.querier.send(kittyKeyboard()) : Promise.resolve(undefined),
             this.querier.flush(),
-          ]).then(([r, psp]) => {
+          ]).then(([r, psp, kitty]) => {
+            if (kitty && this.rawModeEnabledCount > 0) {
+              setExtendedKeysDetected()
+              this.props.stdout.write(ENABLE_KITTY_KEYBOARD)
+              this.props.stdout.write(ENABLE_MODIFY_OTHER_KEYS)
+              logForDebugging(`probe: Kitty keyboard reply (flags=${kitty.flags}); extended keys on`)
+            }
             if (r) {
               setXtversionName(r.name)
               logForDebugging(`XTVERSION: terminal identified as "${r.name}"`)

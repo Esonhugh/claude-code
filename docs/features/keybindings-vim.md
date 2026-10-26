@@ -35,7 +35,7 @@ Claude 正在回答时你也可以继续打字：
 
 ![排队中的消息](images/keybindings-vim-queued.png)
 
-`Ctrl+Enter` 需要终端支持 Kitty 键盘协议；不支持时用 `Ctrl+X Ctrl+S`，排队提示也会按终端能力显示能按出来的那一个（和官方一样）。另外 `Ctrl+J` 和 `Shift+Enter`、`Option+Enter` 一样是换行。
+`Ctrl+Enter` 需要终端支持 Kitty 键盘协议。iTerm2、kitty、WezTerm、Ghostty、tmux、Windows Terminal、Warp 直接开启；其他终端启动时会发 `CSI ? u` 询问，终端回应了就同样开启（比官方多这一步），排队提示随之显示 `ctrl+enter`。终端不回应时用 `Ctrl+X Ctrl+S`，提示也显示这一个。另外 `Ctrl+J` 和 `Shift+Enter`、`Option+Enter` 一样是换行。
 
 ## Vim 模式
 

@@ -57,6 +57,7 @@ import {
 } from '../../hooks/useArrowKeyHistory.js'
 import { useDoublePress } from '../../hooks/useDoublePress.js'
 import { useHistorySearch } from '../../hooks/useHistorySearch.js'
+import { useSpellcheckHighlights } from '../../hooks/useSpellcheckHighlights.js'
 import type { IDESelection } from '../../hooks/useIdeSelection.js'
 import { useInputBuffer } from '../../hooks/useInputBuffer.js'
 import { useMainLoopModel } from '../../hooks/useMainLoopModel.js'
@@ -1009,6 +1010,21 @@ function PromptInput({
     [displayedValue],
   )
 
+  const pasteRefPositions = useMemo(
+    () =>
+      parseReferences(displayedValue).map(r => ({
+        start: r.index,
+        end: r.index + r.match.length,
+      })),
+    [displayedValue],
+  )
+  const spellcheckHighlights = useSpellcheckHighlights({
+    text: displayedValue,
+    cursorOffset,
+    active: !isSearchingHistory && displayedValue === input,
+    skip: pasteRefPositions,
+  })
+
   // chip.start is the "selected" state: the inverted chip IS the cursor.
   // chip.end stays a normal position so you can park the cursor right after
   // `]` like any other character.
@@ -1184,6 +1200,12 @@ function PromptInput({
       }
     }
 
+    for (const misspelled of spellcheckHighlights) {
+      if (!highlights.some(h => misspelled.start < h.end && misspelled.end > h.start)) {
+        highlights.push(misspelled)
+      }
+    }
+
     return mergePromptDecorations(highlights,
       !isSearchingHistory && displayedValue === input && promptPaint?.text === displayedValue ? promptPaint.decorations : [],
       getTheme(themeName), !footerItemSelected && !isSearchingHistory && !cursorAtImageChip
@@ -1212,6 +1234,7 @@ function PromptInput({
     ultrareviewTriggers,
     ultracodeTriggers,
     buddyTriggers,
+    spellcheckHighlights,
   ])
 
   const { addNotification, removeNotification } = useNotifications()

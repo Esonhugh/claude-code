@@ -183,12 +183,21 @@ const EXTENDED_KEYS_TERMINALS = [
   'ghostty',
   'tmux',
   'windows-terminal',
+  'WarpTerminal',
 ]
+
+let extendedKeysDetected = false
+
+/** Called when the terminal answers the Kitty keyboard query (CSI ? u),
+ *  so terminals outside the allowlist still get ctrl+enter and friends. */
+export function setExtendedKeysDetected(): void {
+  extendedKeysDetected = true
+}
 
 /** True if this terminal correctly handles extended key reporting
  *  (Kitty keyboard protocol + xterm modifyOtherKeys). */
 export function supportsExtendedKeys(): boolean {
-  return EXTENDED_KEYS_TERMINALS.includes(env.terminal ?? '')
+  return extendedKeysDetected || EXTENDED_KEYS_TERMINALS.includes(env.terminal ?? '')
 }
 
 /** True if the terminal scrolls the viewport when it receives cursor-up
