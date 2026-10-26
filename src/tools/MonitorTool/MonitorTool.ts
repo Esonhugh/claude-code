@@ -5,6 +5,12 @@ import { killTask } from '../../tasks/LocalShellTask/killShellTasks.js'
 import { isEnvTruthy } from '../../utils/envUtils.js'
 import { formatDuration } from '../../utils/format.js'
 import { lazySchema } from '../../utils/lazySchema.js'
+import {
+  allowedDomainsInputField,
+  commandNetworkLists,
+  takeCommandNetworkLists,
+  validateAllowedDomains,
+} from '../../utils/sandbox/commandNetworkLists.js'
 import { exec } from '../../utils/Shell.js'
 import { bashToolHasPermission } from '../BashTool/bashPermissions.js'
 import { shouldUseSandbox } from '../BashTool/shouldUseSandbox.js'
@@ -37,6 +43,7 @@ const inputSchema = lazySchema(() =>
         `Kill the monitor after this deadline. Default ${DEFAULT_MONITOR_TIMEOUT_MS}ms. Deadlines above ${getMonitorTimeoutCapMs()}ms are capped to ${getMonitorTimeoutCapMs()}ms. You are notified at expiry and can re-arm.`,
       ),
     command: z.string().describe(MONITOR_COMMAND_DESCRIPTION),
+    ...allowedDomainsInputField(),
   }),
 )
 type InputSchema = ReturnType<typeof inputSchema>
@@ -71,7 +78,17 @@ export const MonitorTool = buildTool({
     return true
   },
   toAutoClassifierInput(input) {
-    return input.command
+    const lists = commandNetworkLists(input)
+    return lists
+      ? { command: input.command, allowed_domains: lists.allowedDomains }
+      : input.command
+  },
+  async validateInput(input) {
+    return (
+      validateAllowedDomains(input, shouldUseSandbox({ command: input.command })) ?? {
+        result: true,
+      }
+    )
   },
   getActivityDescription(input) {
     return input?.description ? `Monitoring: ${input.description}` : 'Monitoring'
@@ -123,6 +140,7 @@ export const MonitorTool = buildTool({
       onStdout: events.onData,
       preventCwdChanges: true,
       shouldUseSandbox: shouldUseSandbox({ command }),
+      networkLists: takeCommandNetworkLists(toolUseId, command),
     })
     if (shellCommand.status === 'killed') {
       events.close()

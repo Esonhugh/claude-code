@@ -3829,7 +3829,10 @@ export function REPL({
 
   if (SandboxManager.isSandboxingEnabled()) {
     // If sandboxing is enabled (setting.sandbox is defined, initialise the manager)
-    SandboxManager.initialize(sandboxAskCallback).catch(err => {
+    SandboxManager.initialize(
+      sandboxAskCallback,
+      () => store.getState().toolPermissionContext,
+    ).catch(err => {
       // Initialization/validation failed - display error and exit
       process.stderr.write(`\n❌ Sandbox Error: ${errorMessage(err)}\n`)
       gracefulShutdownSync(1, 'other')

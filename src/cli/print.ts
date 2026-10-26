@@ -760,7 +760,10 @@ export async function runHeadless(
     // requests to the SDK host via the can_use_tool control_request protocol.
     // This must happen after structuredIO is created so we can send requests.
     try {
-      await SandboxManager.initialize(structuredIO.createSandboxAskCallback())
+      await SandboxManager.initialize(
+        structuredIO.createSandboxAskCallback(),
+        () => getAppState().toolPermissionContext,
+      )
     } catch (err) {
       process.stderr.write(`\n❌ Sandbox Error: ${errorMessage(err)}\n`)
       gracefulShutdownSync(1, 'other')

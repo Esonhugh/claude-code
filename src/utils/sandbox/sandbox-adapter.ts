@@ -14,6 +14,7 @@ import type {
   SandboxDependencyCheck,
   SandboxRuntimeConfig,
   SandboxViolationEvent,
+  WrapWithSandboxOptions,
 } from '@anthropic-ai/sandbox-runtime'
 import {
   SandboxManager as BaseSandboxManager,
@@ -67,6 +68,7 @@ import {
   updateSettingsForSource,
 } from '../settings/settings.js'
 import type { SettingsJson } from '../settings/types.js'
+import type { ToolPermissionContext } from '../../Tool.js'
 
 // ============================================================================
 // Settings Converter
@@ -242,6 +244,19 @@ function webFetchDomains(rules: string[] | undefined): string[] {
       ? [rule.ruleContent.substring('domain:'.length)]
       : []
   })
+}
+
+/**
+ * The configured allowlist is the whole allowlist: allowManagedDomainsOnly
+ * or a strict allowlist from a source the repo cannot write.
+ */
+function isAllowlistClosed(): boolean {
+  return (
+    shouldAllowManagedSandboxDomainsOnly() ||
+    trustedSandboxSettings().some(
+      s => s.sandbox?.network?.strictAllowlist === true,
+    )
+  )
 }
 
 // A trusted deny list or strict allowlist: the repo may not replace the
@@ -1197,6 +1212,7 @@ async function wrapWithSandbox(
   binShell?: string,
   customConfig?: Partial<SandboxRuntimeConfig>,
   abortSignal?: AbortSignal,
+  options?: WrapWithSandboxOptions,
 ): Promise<string> {
   // If sandboxing is enabled, ensure initialization is complete
   if (isSandboxingEnabled()) {
@@ -1218,6 +1234,7 @@ async function wrapWithSandbox(
     binShell,
     customConfig,
     abortSignal,
+    options,
   )
 }
 
@@ -1230,6 +1247,7 @@ async function wrapWithSandboxArgv(
   binShell: string,
   cwd: string,
   abortSignal?: AbortSignal,
+  options?: WrapWithSandboxOptions,
 ): Promise<{ argv: string[]; env: NodeJS.ProcessEnv }> {
   if (isSandboxingEnabled()) {
     if (initializationPromise) {
@@ -1244,7 +1262,57 @@ async function wrapWithSandboxArgv(
     undefined,
     abortSignal,
     cwd,
+    options,
   )
+}
+
+const NOT_IN_ALLOWED_DOMAINS = {
+  allow: false as const,
+  reason:
+    "not in this command's allowed_domains — re-run the command with this host listed if it needs it",
+}
+
+/**
+ * Whether Bash, PowerShell and Monitor offer `allowed_domains`: a host list
+ * registered with the runtime for one command.
+ */
+function areCommandNetworkListsOffered(): boolean {
+  return (
+    isSandboxingEnabled() &&
+    typeof BaseSandboxManager.registerCommandNetworkLists === 'function'
+  )
+}
+
+/**
+ * Answers a network ask the way the permission mode answers a tool ask:
+ * bypass allows, dontAsk denies, auto mode points the model at
+ * `allowed_domains`; the other modes ask. allowManagedDomainsOnly denies.
+ */
+export function wrapSandboxAskCallback(
+  sandboxAskCallback: SandboxAskCallback,
+  getPermissionContext?: () => Pick<ToolPermissionContext, 'mode'>,
+): SandboxAskCallback {
+  return async (hostPattern: NetworkHostPattern) => {
+    if (shouldAllowManagedSandboxDomainsOnly()) {
+      logForDebugging(
+        `[sandbox] Blocked network request to ${hostPattern.host} (allowManagedDomainsOnly)`,
+      )
+      return false
+    }
+    switch (getPermissionContext?.().mode) {
+      case 'bypassPermissions':
+        return true
+      case 'dontAsk':
+        return false
+      case 'auto':
+        if (areCommandNetworkListsOffered()) {
+          return BaseSandboxManager.askCallbackDenyReason
+            ? NOT_IN_ALLOWED_DOMAINS
+            : false
+        }
+    }
+    return sandboxAskCallback(hostPattern)
+  }
 }
 
 /**
@@ -1252,6 +1320,7 @@ async function wrapWithSandboxArgv(
  */
 async function initialize(
   sandboxAskCallback?: SandboxAskCallback,
+  getPermissionContext?: () => Pick<ToolPermissionContext, 'mode'>,
 ): Promise<void> {
   // If already initializing or initialized, return the promise
   if (initializationPromise) {
@@ -1263,18 +1332,8 @@ async function initialize(
     return
   }
 
-  // Wrap the callback to enforce allowManagedDomainsOnly policy.
-  // This ensures all code paths (REPL, print/SDK) are covered.
-  const wrappedCallback: SandboxAskCallback | undefined = sandboxAskCallback
-    ? async (hostPattern: NetworkHostPattern) => {
-        if (shouldAllowManagedSandboxDomainsOnly()) {
-          logForDebugging(
-            `[sandbox] Blocked network request to ${hostPattern.host} (allowManagedDomainsOnly)`,
-          )
-          return false
-        }
-        return sandboxAskCallback(hostPattern)
-      }
+  const wrappedCallback = sandboxAskCallback
+    ? wrapSandboxAskCallback(sandboxAskCallback, getPermissionContext)
     : undefined
 
   // Create the initialization promise synchronously (before any await) to prevent
@@ -1401,7 +1460,12 @@ export function addToExcludedCommands(
 // ============================================================================
 
 export interface ISandboxManager {
-  initialize(sandboxAskCallback?: SandboxAskCallback): Promise<void>
+  initialize(
+    sandboxAskCallback?: SandboxAskCallback,
+    getPermissionContext?: () => Pick<ToolPermissionContext, 'mode'>,
+  ): Promise<void>
+  areCommandNetworkListsOffered(): boolean
+  isAllowlistClosed(): boolean
   isSupportedPlatform(): boolean
   isPlatformInEnabledList(): boolean
   getSandboxUnavailableReason(): string | undefined
@@ -1435,13 +1499,20 @@ export interface ISandboxManager {
     binShell?: string,
     customConfig?: Partial<SandboxRuntimeConfig>,
     abortSignal?: AbortSignal,
+    options?: WrapWithSandboxOptions,
   ): Promise<string>
   wrapWithSandboxArgv(
     command: string,
     binShell: string,
     cwd: string,
     abortSignal?: AbortSignal,
+    options?: WrapWithSandboxOptions,
   ): Promise<{ argv: string[]; env: NodeJS.ProcessEnv }>
+  registerCommandNetworkLists(
+    commandId: string,
+    lists: { allowedDomains?: string[] },
+  ): void
+  unregisterCommandNetworkLists(commandId: string): void
   cleanupAfterCommand(): void
   getSandboxViolationStore(): SandboxViolationStore
   annotateStderrWithSandboxFailures(command: string, stderr: string): string
@@ -1456,6 +1527,8 @@ export interface ISandboxManager {
 export const SandboxManager: ISandboxManager = {
   // Custom implementations
   initialize,
+  areCommandNetworkListsOffered,
+  isAllowlistClosed,
   isSandboxingEnabled,
   isSandboxEnabledInSettings: getSandboxEnabledSetting,
   isPlatformInEnabledList,
@@ -1488,6 +1561,10 @@ export const SandboxManager: ISandboxManager = {
   getLinuxSocksSocketPath: BaseSandboxManager.getLinuxSocksSocketPath,
   waitForNetworkInitialization: BaseSandboxManager.waitForNetworkInitialization,
   getSandboxViolationStore: BaseSandboxManager.getSandboxViolationStore,
+  registerCommandNetworkLists: (commandId, lists) =>
+    BaseSandboxManager.registerCommandNetworkLists(commandId, lists),
+  unregisterCommandNetworkLists: commandId =>
+    BaseSandboxManager.unregisterCommandNetworkLists(commandId),
   annotateStderrWithSandboxFailures:
     BaseSandboxManager.annotateStderrWithSandboxFailures,
   cleanupAfterCommand: (): void => {

@@ -60,6 +60,12 @@ import type { PermissionResult } from '../../utils/permissions/PermissionResult.
 import { maybeRecordPluginHint } from '../../utils/plugins/hintRecommendation.js'
 import { exec } from '../../utils/Shell.js'
 import type { ExecResult } from '../../utils/ShellCommand.js'
+import {
+  allowedDomainsInputField,
+  commandNetworkLists,
+  takeCommandNetworkLists,
+  validateAllowedDomains,
+} from '../../utils/sandbox/commandNetworkLists.js'
 import { SandboxManager } from '../../utils/sandbox/sandbox-adapter.js'
 import { semanticBoolean } from '../../utils/semanticBoolean.js'
 import { semanticNumber } from '../../utils/semanticNumber.js'
@@ -353,6 +359,7 @@ const fullInputSchema = lazySchema(() =>
     dangerouslyDisableSandbox: semanticBoolean(z.boolean().optional()).describe(
       'Set this to true to dangerously override sandbox mode and run commands without sandboxing.',
     ),
+    ...allowedDomainsInputField(),
     _simulatedSedEdit: z
       .object({
         filePath: z.string(),
@@ -651,7 +658,10 @@ export const BashTool = buildTool({
     return result.behavior === 'allow'
   },
   toAutoClassifierInput(input) {
-    return input.command
+    const lists = commandNetworkLists(input)
+    return lists
+      ? { command: input.command, allowed_domains: lists.allowedDomains }
+      : input.command
   },
   async preparePermissionMatcher({ command }) {
     // Hook `if` filtering is "no match → skip hook" (deny-like semantics), so
@@ -743,7 +753,9 @@ export const BashTool = buildTool({
         }
       }
     }
-    return { result: true }
+    return (
+      validateAllowedDomains(input, shouldUseSandbox(input)) ?? { result: true }
+    )
   },
   async checkPermissions(input, context): Promise<PermissionResult> {
     return requireApprovalOutsideSandbox(
@@ -1174,6 +1186,7 @@ async function* runShellCommand({
     preventCwdChanges,
     shouldUseSandbox: !userShellCommand && shouldUseSandbox(input),
     shouldAutoBackground,
+    networkLists: takeCommandNetworkLists(toolUseId, command),
   })
 
   // Start the command execution

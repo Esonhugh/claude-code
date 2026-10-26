@@ -5,7 +5,7 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { clean, inheritedEnv, printResult, report, runCli, runSteps, startFakeApi, type Step } from './windows-e2e-api.ts'
+import { clean, inheritedEnv, printResult, report, runCli, runSteps, startFakeApi, type Step } from './windows-e2e-api.js'
 
 const bin = path.resolve(process.argv[2] ?? '')
 if (!fs.existsSync(bin)) throw new Error(`usage: windows-features-e2e.ts <claude.exe>`)

@@ -6,7 +6,7 @@ import { spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { clean, inheritedEnv, report, runSteps, startFakeApi, type Step } from './windows-e2e-api.ts'
+import { clean, inheritedEnv, report, runSteps, startFakeApi, type Step } from './windows-e2e-api.js'
 
 const bin = path.resolve(process.argv[2] ?? '')
 if (!fs.existsSync(bin)) throw new Error(`usage: windows-sandbox-e2e.ts <claude.exe>`)
@@ -27,7 +27,9 @@ fs.writeFileSync(
     sandbox: {
       enabled: true,
       autoAllowBashIfSandboxed: true,
-      network: { allowedDomains: ['example.com'] },
+      // Strict: a host outside the allowlist is refused without a network
+      // ask, which --dangerously-skip-permissions would allow.
+      network: { allowedDomains: ['example.com'], strictAllowlist: true },
     },
   }),
 )
