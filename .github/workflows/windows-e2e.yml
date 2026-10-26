@@ -1,22 +1,12 @@
-name: Windows sandbox
+name: Windows e2e
 
+# Every PR: fork features are rarely run on Windows otherwise.
 on:
   workflow_dispatch:
   pull_request:
-    paths:
-      - '.github/workflows/windows-sandbox.yml'
-      - 'scripts/windows-sandbox-e2e.ts'
-      - 'scripts/package-binary.mjs'
-      - 'scripts/shims/embedded-ripgrep.js'
-      - 'src/utils/Shell.ts'
-      - 'src/utils/shell/**'
-      - 'src/utils/sandbox/**'
-      - 'src/tools/TerminalTool/sandbox.ts'
-      - 'src/cli/handlers/sandbox.ts'
-      - 'src/tools/PowerShellTool/PowerShellTool.tsx'
 
 jobs:
-  windows-sandbox:
+  windows-e2e:
     runs-on: windows-latest
     timeout-minutes: 40
     env:
@@ -42,3 +32,8 @@ jobs:
       - name: Sandbox e2e
         shell: bash
         run: bun scripts/windows-sandbox-e2e.ts dist/release/claude-code-v*-win32-x64.exe
+
+      - name: Features e2e
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: bun scripts/windows-features-e2e.ts dist/release/claude-code-v*-win32-x64.exe
