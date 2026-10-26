@@ -36,6 +36,13 @@ export async function wrapNewSessionForSandbox(
   ) {
     return undefined
   }
+  // srt-win gives the sandboxed command pipes, not the session's console, so
+  // it would have no terminal and get no input.
+  if (getPlatform() === 'windows') {
+    throw new Error(
+      'Terminal sessions cannot run inside the Windows sandbox. Set dangerouslyDisableSandbox to run this session unsandboxed.',
+    )
+  }
   // bwrap starts the command in a new session without a controlling
   // terminal, so the shell would get no job control and Ctrl-C would not
   // reach it. script gives it a PTY of its own inside the sandbox.

@@ -178,6 +178,30 @@ if (!fs.existsSync(ripgrepBinaryPath)) {
   );
 }
 
+// The Windows sandbox spawns srt-win.exe; the runtime has no copy of its own
+// inside the compiled binary.
+const sandboxRuntimeDir = path.join(
+  nodeModulesDir,
+  '@anthropic-ai',
+  'sandbox-runtime',
+);
+const srtWinBinaryPath = path.join(
+  sandboxRuntimeDir,
+  'vendor',
+  'srt-win',
+  arch,
+  'srt-win.exe',
+);
+if (platform === 'win32' && !fs.existsSync(srtWinBinaryPath)) {
+  throw new Error(`Could not find ${srtWinBinaryPath}.`);
+}
+const sandboxRuntimeVersion = JSON.parse(
+  await fs.promises.readFile(
+    path.join(sandboxRuntimeDir, 'package.json'),
+    'utf8',
+  ),
+).version;
+
 const {
   platformArch: sharpPlatform,
   addonPath: sharpAddonPath,
@@ -207,6 +231,19 @@ const generatedEntrypointContents = embeddedEntrypointContents
   .replace(
     '__CLAUDE_CODE_BUILTIN_DIFF_ARCHIVE__',
     JSON.stringify(builtinDiffArchivePath),
+  )
+  .replace(
+    '__CLAUDE_CODE_SRT_WIN_IMPORT__',
+    platform === 'win32'
+      ? `import embeddedSrtWinPath from ${JSON.stringify(srtWinBinaryPath)} with { type: 'file' };`
+      : '',
+  )
+  .replace(
+    '__CLAUDE_CODE_SRT_WIN_ENV__',
+    platform === 'win32'
+      ? 'process.env.CLAUDE_CODE_EMBEDDED_SRT_WIN_PATH = embeddedSrtWinPath;\n' +
+          `process.env.CLAUDE_CODE_EMBEDDED_SRT_WIN_VERSION = ${JSON.stringify(sandboxRuntimeVersion)};`
+      : '',
   )
   .replace(
     '__CLAUDE_CODE_EMBEDDED_SHARP__',

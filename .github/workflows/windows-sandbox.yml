@@ -5,12 +5,19 @@ on:
   pull_request:
     paths:
       - '.github/workflows/windows-sandbox.yml'
-      - 'scripts/windows-sandbox-*'
+      - 'scripts/windows-sandbox-e2e.ts'
+      - 'scripts/package-binary.mjs'
+      - 'scripts/shims/embedded-ripgrep.js'
+      - 'src/utils/Shell.ts'
+      - 'src/utils/shell/**'
+      - 'src/utils/sandbox/**'
+      - 'src/tools/TerminalTool/sandbox.ts'
+      - 'src/cli/handlers/sandbox.ts'
 
 jobs:
   windows-sandbox:
     runs-on: windows-latest
-    timeout-minutes: 30
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
 
@@ -22,5 +29,12 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
-      - name: Probe
-        run: bun scripts/windows-sandbox-probe.ts
+      - name: Build binary
+        shell: bash
+        run: |
+          bun run build
+          bun run package:binary
+
+      - name: Sandbox e2e
+        shell: bash
+        run: bun scripts/windows-sandbox-e2e.ts dist/release/claude-code-v*-win32-x64.exe

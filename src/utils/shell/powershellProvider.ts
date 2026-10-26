@@ -45,8 +45,7 @@ export function createPowerShellProvider(shellPath: string): ShellProvider {
 
       // When sandboxed, tmpdir() is not writable — the sandbox only allows
       // writes to sandboxTmpDir. Put the cwd tracking file there so the
-      // inner pwsh can actually write it. Only applies on Linux/macOS/WSL2;
-      // on Windows native, sandbox is never enabled so this branch is dead.
+      // inner pwsh can actually write it.
       const cwdFilePath =
         opts.useSandbox && opts.sandboxTmpDir
           ? posixJoin(opts.sandboxTmpDir, `claude-pwd-ps-${opts.id}`)

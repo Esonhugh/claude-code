@@ -9,11 +9,24 @@ export function getEmbeddedRipgrepPath(): string | undefined {
   const version = process.env.CLAUDE_CODE_EMBEDDED_RIPGREP_VERSION
   if (!sourcePath || !version) return undefined
 
-  const targetPath = path.join(
-    CACHE_PATHS.ripgrep(),
-    `${version}-${process.arch}-${process.platform}`,
-    BINARY_NAME,
+  return extractEmbeddedBinary(
+    sourcePath,
+    path.join(
+      CACHE_PATHS.ripgrep(),
+      `${version}-${process.arch}-${process.platform}`,
+      BINARY_NAME,
+    ),
   )
+}
+
+/**
+ * Copies a binary embedded in the compiled executable to `targetPath`, which
+ * can be spawned. Reuses an existing copy of the same size.
+ */
+export function extractEmbeddedBinary(
+  sourcePath: string,
+  targetPath: string,
+): string {
   const source = fs.readFileSync(sourcePath)
   try {
     if (fs.statSync(targetPath).size === source.byteLength) return targetPath

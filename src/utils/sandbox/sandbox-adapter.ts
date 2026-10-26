@@ -19,8 +19,12 @@ import {
   SandboxManager as BaseSandboxManager,
   SandboxRuntimeConfigSchema,
   SandboxViolationStore,
+  VENDORED_SRT_WIN_EXE,
+  getWindowsSandboxUserStatus,
+  resolveSrtWin,
 } from '@anthropic-ai/sandbox-runtime'
 import { checkLinuxDependencies } from '@anthropic-ai/sandbox-runtime/dist/sandbox/linux-sandbox-utils.js'
+import { execFileSync } from 'child_process'
 import { existsSync, rmSync, statSync } from 'fs'
 import { readFile } from 'fs/promises'
 import { memoize } from 'lodash-es'
@@ -32,7 +36,9 @@ import {
   getInlinePluginsNoMcp,
   getOriginalCwd,
 } from '../../bootstrap/state.js'
+import { CACHE_PATHS } from '../cachePaths.js'
 import { logForDebugging } from '../debug.js'
+import { extractEmbeddedBinary } from '../embeddedRipgrep.js'
 import { expandPath } from '../path.js'
 import { getPlatform, type Platform } from '../platform.js'
 import { settingsChangeDetector } from '../settings/changeDetector.js'
@@ -539,8 +545,26 @@ export function convertToSandboxRuntimeConfig(
     ripgrep: ripgrepConfig,
     bwrapPath: policySandbox?.bwrapPath,
     socatPath: policySandbox?.socatPath,
+    ...(getPlatform() === 'windows' &&
+      getSrtWinPath() && { windows: { srtWin: { path: getSrtWinPath()! } } }),
   }
 }
+
+/**
+ * srt-win.exe, which the Windows sandbox spawns. The compiled binary embeds
+ * it; a source checkout uses the runtime's vendored copy.
+ */
+export const getSrtWinPath = memoize((): string | undefined => {
+  const sourcePath = process.env.CLAUDE_CODE_EMBEDDED_SRT_WIN_PATH
+  const version = process.env.CLAUDE_CODE_EMBEDDED_SRT_WIN_VERSION
+  if (sourcePath && version) {
+    return extractEmbeddedBinary(
+      sourcePath,
+      join(CACHE_PATHS.srtWin(), `${version}-${process.arch}`, 'srt-win.exe'),
+    )
+  }
+  return existsSync(VENDORED_SRT_WIN_EXE) ? VENDORED_SRT_WIN_EXE : undefined
+})
 
 // ============================================================================
 // Claude CLI-specific state
@@ -622,6 +646,7 @@ async function detectWorktreeMainRepoPath(cwd: string): Promise<string | null> {
  * Returns { errors, warnings } - errors mean sandbox cannot run
  */
 const checkDependencies = memoize((): SandboxDependencyCheck => {
+  if (getPlatform() === 'windows') return checkWindowsDependencies()
   const { rgPath, rgArgs } = ripgrepCommand()
   const result = BaseSandboxManager.checkDependencies({
     command: rgPath,
@@ -644,6 +669,51 @@ const checkDependencies = memoize((): SandboxDependencyCheck => {
     warnings: result.warnings,
   }
 })
+
+/**
+ * The runtime only finds srt-win through an initialized config, so probe the
+ * install here. srt-win starts the command as the `srt-sandbox` user, which
+ * needs read and execute on srt-win.exe itself; the extracted copy lives in
+ * the user's profile, which that user cannot read.
+ */
+function checkWindowsDependencies(): SandboxDependencyCheck {
+  const path = getSrtWinPath()
+  if (!path) {
+    return { errors: ['srt-win.exe not found'], warnings: [] }
+  }
+  let sid: string | undefined
+  try {
+    const user = getWindowsSandboxUserStatus({
+      srtWin: resolveSrtWin({ path }),
+    })
+    if (user.provisioned && user.credPresent) sid = user.sid
+  } catch (error) {
+    return {
+      errors: [`srt-win user status failed: ${errorMessage(error)}`],
+      warnings: [],
+    }
+  }
+  if (!sid) {
+    return {
+      errors: [
+        'the Windows sandbox is not installed (run `claude sandbox install`, one UAC prompt)',
+      ],
+      warnings: [],
+    }
+  }
+  try {
+    execFileSync('icacls', [path, '/grant', `*${sid}:RX`], {
+      stdio: 'ignore',
+      windowsHide: true,
+    })
+  } catch (error) {
+    return {
+      errors: [`could not let the sandbox user run ${path}: ${errorMessage(error)}`],
+      warnings: [],
+    }
+  }
+  return { errors: [], warnings: [] }
+}
 
 function getSandboxEnabledSetting(): boolean {
   try {
@@ -766,7 +836,7 @@ function getSandboxUnavailableReason(): string | undefined {
     if (platform === 'wsl') {
       return 'sandbox.enabled is set but WSL1 is not supported (requires WSL2)'
     }
-    return `sandbox.enabled is set but ${platform} is not supported (requires macOS, Linux, or WSL2)`
+    return `sandbox.enabled is set but ${platform} is not supported (requires macOS, Linux, WSL2, or Windows)`
   }
 
   if (!isPlatformInEnabledList()) {
@@ -777,7 +847,7 @@ function getSandboxUnavailableReason(): string | undefined {
   if (deps.errors.length > 0) {
     const platform = getPlatform()
     const hint =
-      platform === 'macos'
+      platform === 'macos' || platform === 'windows'
         ? 'run /sandbox or /doctor for details'
         : 'install missing tools (e.g. apt install bubblewrap socat) or run /sandbox for details'
     return `sandbox.enabled is set but dependencies are missing: ${deps.errors.join(', ')} · ${hint}`
@@ -936,6 +1006,32 @@ async function wrapWithSandbox(
     binShell,
     customConfig,
     abortSignal,
+  )
+}
+
+/**
+ * Wrap command with sandbox as an argv to spawn with `shell: false`. This is
+ * the only form the runtime supports on Windows.
+ */
+async function wrapWithSandboxArgv(
+  command: string,
+  binShell: string,
+  cwd: string,
+  abortSignal?: AbortSignal,
+): Promise<{ argv: string[]; env: NodeJS.ProcessEnv }> {
+  if (isSandboxingEnabled()) {
+    if (initializationPromise) {
+      await initializationPromise
+    } else {
+      throw new Error('Sandbox failed to initialize. ')
+    }
+  }
+  return BaseSandboxManager.wrapWithSandboxArgv(
+    command,
+    binShell,
+    undefined,
+    abortSignal,
+    cwd,
   )
 }
 
@@ -1128,6 +1224,12 @@ export interface ISandboxManager {
     customConfig?: Partial<SandboxRuntimeConfig>,
     abortSignal?: AbortSignal,
   ): Promise<string>
+  wrapWithSandboxArgv(
+    command: string,
+    binShell: string,
+    cwd: string,
+    abortSignal?: AbortSignal,
+  ): Promise<{ argv: string[]; env: NodeJS.ProcessEnv }>
   cleanupAfterCommand(): void
   getSandboxViolationStore(): SandboxViolationStore
   annotateStderrWithSandboxFailures(command: string, stderr: string): string
@@ -1153,6 +1255,7 @@ export const SandboxManager: ISandboxManager = {
   setSandboxSettings,
   getExcludedCommands,
   wrapWithSandbox,
+  wrapWithSandboxArgv,
   refreshConfig,
   reset,
   checkDependencies,

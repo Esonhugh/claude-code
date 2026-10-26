@@ -6524,6 +6524,24 @@ async function run(): Promise<CommanderCommand> {
       await doctorHandler(root)
     })
 
+  const sandboxCommand = program.command('sandbox', { hidden: true })
+  sandboxCommand
+    .command('install')
+    .description(
+      'Install the Windows sandbox user and network filters. Self-elevates (one UAC prompt). Prints a JSON {status, message} result and exits 0 only when status is "ok".',
+    )
+    .action(async () => {
+      const { sandboxInstallHandler } = await import('./cli/handlers/sandbox.js')
+      await sandboxInstallHandler()
+    })
+  sandboxCommand
+    .command('status')
+    .description('Print the Windows sandbox install and enablement state as JSON.')
+    .action(async () => {
+      const { sandboxStatusHandler } = await import('./cli/handlers/sandbox.js')
+      sandboxStatusHandler()
+    })
+
   // claude update
   //
   // For SemVer-compliant versioning with build metadata (X.X.X+SHA):

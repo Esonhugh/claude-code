@@ -116,11 +116,20 @@ export async function createBashShellProvider(
       // cwdFilePath: native OS path used by Node.js for readFileSync/unlinkSync
       // On non-Windows these are identical; on Windows, Git Bash needs POSIX paths
       // but Node.js needs native Windows paths for file operations.
+      // On Windows the sandbox tmp dir is a native path, like tmpdir.
       const shellCwdFilePath = opts.useSandbox
-        ? posixJoin(opts.sandboxTmpDir!, `cwd-${opts.id}`)
+        ? posixJoin(
+            isWindows
+              ? windowsPathToPosixPath(opts.sandboxTmpDir!)
+              : opts.sandboxTmpDir!,
+            `cwd-${opts.id}`,
+          )
         : posixJoin(shellTmpdir, `claude-${opts.id}-cwd`)
       const cwdFilePath = opts.useSandbox
-        ? posixJoin(opts.sandboxTmpDir!, `cwd-${opts.id}`)
+        ? (isWindows ? nativeJoin : posixJoin)(
+            opts.sandboxTmpDir!,
+            `cwd-${opts.id}`,
+          )
         : nativeJoin(tmpdir, `claude-${opts.id}-cwd`)
 
       // Defensive rewrite: the model sometimes emits Windows CMD-style `2>nul`
