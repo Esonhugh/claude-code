@@ -2,7 +2,14 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { SandboxManager, VENDORED_SRT_WIN_EXE } from '@anthropic-ai/sandbox-runtime'
+import {
+  SandboxManager,
+  VENDORED_SRT_WIN_EXE,
+  installWindowsSandboxAsync,
+  resolveSrtWin,
+} from '@anthropic-ai/sandbox-runtime'
+
+await installWindowsSandboxAsync({ srtWin: resolveSrtWin({ path: VENDORED_SRT_WIN_EXE }) })
 
 const work = fs.mkdtempSync(path.join(os.tmpdir(), 'stamp-probe-'))
 const existing = path.join(work, 'existing.json')
