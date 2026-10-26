@@ -35,7 +35,8 @@ fs.writeFileSync(
   path.join(config, '.claude.json'),
   JSON.stringify({
     hasCompletedOnboarding: true,
-    projects: { [project]: { hasTrustDialogAccepted: true } },
+    // Config keys use forward slashes (normalizePathForConfigKey).
+    projects: { [project.replace(/\\/g, '/')]: { hasTrustDialogAccepted: true } },
   }),
 )
 const secret = path.join(root, 'secret.txt')

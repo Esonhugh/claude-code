@@ -35,7 +35,8 @@ fs.writeFileSync(
     hasCompletedOnboarding: true,
     // Background sessions are interactive and would ask about the key.
     customApiKeyResponses: { approved: ['sk-fake'], rejected: [] },
-    projects: { [project]: { hasTrustDialogAccepted: true } },
+    // Config keys use forward slashes (normalizePathForConfigKey).
+    projects: { [project.replace(/\\/g, '/')]: { hasTrustDialogAccepted: true } },
   }),
 )
 
@@ -135,7 +136,8 @@ for (const [name, ok, out] of bgChecks) {
 }
 
 api.stop()
-fs.rmSync(root, { recursive: true, force: true })
+// The daemon keeps the folder open until it idles out.
+fs.rmSync(root, { recursive: true, force: true, maxRetries: 15, retryDelay: 1000 })
 if (failed) {
   console.log(`${failed} check(s) failed`)
   process.exit(1)
