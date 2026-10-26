@@ -12,7 +12,9 @@ if (process.env[childFlag] !== '1') {
       const child = Bun.spawn([process.execPath, 'test', '--timeout', '30000', import.meta.path], {
         cwd: root,
         env: { ...env, [childFlag]: '1', HOME: root, CLAUDE_CONFIG_DIR: root, TMPDIR: root,
-          AGENT_MCP_SHARED_ROOT: root, DISABLE_TELEMETRY: '1', CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1' },
+          AGENT_MCP_SHARED_ROOT: root, DISABLE_TELEMETRY: '1', CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
+          // Spawn counts below assume no server/discover probe sibling process.
+          MCP_PROTOCOL_NEGOTIATION: 'legacy' },
         stdout: 'pipe', stderr: 'pipe',
       })
       const [code, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()])

@@ -10,8 +10,8 @@ if (process.env[serveFlag] === '1') {
   const { startMCPServer } = await import('./mcp.js')
   await startMCPServer(process.cwd(), false, false)
 } else {
-  const { Client } = await import('@modelcontextprotocol/sdk/client/index.js')
-  const { StdioClientTransport } = await import('@modelcontextprotocol/sdk/client/stdio.js')
+  const { Client } = await import('@modelcontextprotocol/client')
+  const { StdioClientTransport } = await import('@modelcontextprotocol/client/stdio')
   const alive = (pid: number) => { try { process.kill(pid,0); return true } catch { return false } }
 
   async function withServe(run: (client: InstanceType<typeof Client>, work: string) => Promise<void>) {
@@ -60,7 +60,6 @@ if (process.env[serveFlag] === '1') {
       const controller = new AbortController()
       const call = client.callTool(
         { name: 'Bash', arguments: { command: `echo $$ > ${pidFile}; sleep 30`, description: 'owned sleep' } },
-        undefined,
         { signal: controller.signal, timeout: 60_000 },
       ).catch(error => error)
       let pid = 0

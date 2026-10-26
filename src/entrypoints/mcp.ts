@@ -1,12 +1,10 @@
-import { Server } from '@modelcontextprotocol/sdk/server/index.js'
-import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import {
-  CallToolRequestSchema,
+  Server,
   type CallToolResult,
-  ListToolsRequestSchema,
   type ListToolsResult,
   type Tool,
-} from '@modelcontextprotocol/sdk/types.js'
+} from '@modelcontextprotocol/server'
+import { StdioServerTransport } from '@modelcontextprotocol/server/stdio'
 import { getDefaultAppState } from 'src/state/AppStateStore.js'
 import review from '../commands/review.js'
 import type { Command } from '../commands.js'
@@ -56,7 +54,7 @@ export async function startMCPServer(
   )
 
   server.setRequestHandler(
-    ListToolsRequestSchema,
+    'tools/list',
     async (): Promise<ListToolsResult> => {
       // TODO: Also re-expose any MCP tools
       const toolPermissionContext = getEmptyToolPermissionContext()
@@ -83,10 +81,10 @@ export async function startMCPServer(
   )
 
   server.setRequestHandler(
-    CallToolRequestSchema,
+    'tools/call',
     async (
       { params: { name, arguments: args } },
-      { signal },
+      { mcpReq: { signal } },
     ): Promise<CallToolResult> => {
       const toolPermissionContext = getEmptyToolPermissionContext()
       // TODO: Also re-expose any MCP tools

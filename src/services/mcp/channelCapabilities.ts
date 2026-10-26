@@ -1,4 +1,4 @@
-import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
+import type { Transport } from '@modelcontextprotocol/client'
 
 /** The current MCP SDK requires object-valued experimental capabilities.
  *  Channels defines false as an explicit permission-relay opt-out. */

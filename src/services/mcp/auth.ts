@@ -5,25 +5,20 @@ import {
   type OAuthDiscoveryState,
   auth as sdkAuth,
   refreshAuthorization as sdkRefreshAuthorization,
-} from '@modelcontextprotocol/sdk/client/auth.js'
-import {
-  InvalidGrantError,
   OAuthError,
-  ServerError,
-  TemporarilyUnavailableError,
-  TooManyRequestsError,
-} from '@modelcontextprotocol/sdk/server/auth/errors.js'
-import {
+  OAuthErrorCode,
   type AuthorizationServerMetadata,
   type OAuthClientInformation,
   type OAuthClientInformationFull,
   type OAuthClientMetadata,
+  type OAuthTokens,
+  type FetchLike,
+} from '@modelcontextprotocol/client'
+import {
   OAuthErrorResponseSchema,
   OAuthMetadataSchema,
-  type OAuthTokens,
   OAuthTokensSchema,
-} from '@modelcontextprotocol/sdk/shared/auth.js'
-import type { FetchLike } from '@modelcontextprotocol/sdk/shared/transport.js'
+} from '@modelcontextprotocol/core'
 import axios from 'axios'
 import { createHash, randomBytes, randomUUID } from 'crypto'
 import { mkdir } from 'fs/promises'
@@ -141,7 +136,7 @@ function redactSensitiveUrlParams(url: string): string {
  * Slack uses non-standard error codes (invalid_refresh_token observed live
  * at oauth.v2.user.access; expired_refresh_token/token_expired per Slack's
  * token rotation docs) where RFC 6749 specifies invalid_grant. We normalize
- * those so OAUTH_ERRORS['invalid_grant'] → InvalidGrantError matches and
+ * those so the SDK's OAuthError carries OAuthErrorCode.InvalidGrant and
  * token invalidation fires correctly.
  */
 const NONSTANDARD_INVALID_GRANT_ALIASES = new Set([
@@ -1314,12 +1309,12 @@ export async function performMCPOAuthFlow(
       }
     }
 
-    // sdkAuth uses native fetch and throws OAuthError subclasses (InvalidGrantError,
-    // ServerError, InvalidClientError, etc.) via parseErrorResponse. Extract the
+    // sdkAuth uses native fetch and throws OAuthError (code invalid_grant,
+    // server_error, invalid_client, etc.) via parseErrorResponse. Extract the
     // OAuth error code directly from the SDK error instance.
     if (error instanceof OAuthError) {
-      oauthErrorCode = error.errorCode
-      // SDK does not attach HTTP status as a property, but the fallback ServerError
+      oauthErrorCode = error.code
+      // SDK does not attach HTTP status as a property, but the server_error fallback
       // embeds it in the message as "HTTP {status}:" when the response body was
       // unparseable. Best-effort extraction.
       const statusMatch = error.message.match(/^HTTP (\d{3}):/)
@@ -1328,7 +1323,7 @@ export async function performMCPOAuthFlow(
       }
       // If client not found, clear the stored client ID and suggest retry
       if (
-        error.errorCode === 'invalid_client' &&
+        error.code === OAuthErrorCode.InvalidClient &&
         error.message.includes('Client not found')
       ) {
         const storage = getSecureStorage()
@@ -1522,6 +1517,8 @@ export class ClaudeAuthProvider implements OAuthClientProvider {
       return {
         client_id: storedInfo.clientId,
         client_secret: storedInfo.clientSecret,
+        // Round-trip the SDK's authorization-server stamp (SEP-2352).
+        issuer: storedInfo.issuer,
       }
     }
 
@@ -1562,6 +1559,10 @@ export class ClaudeAuthProvider implements OAuthClientProvider {
           serverUrl: this.serverConfig.url,
           clientId: clientInformation.client_id,
           clientSecret: clientInformation.client_secret,
+          issuer:
+            clientInformation.issuer ??
+            // @ts-ignore - recovered code
+            existingData.mcpOAuth?.[serverKey]?.issuer,
           // Provide default values for required fields if not present
           // @ts-ignore - recovered code
           accessToken: existingData.mcpOAuth?.[serverKey]?.accessToken || '',
@@ -2366,7 +2367,10 @@ export class ClaudeAuthProvider implements OAuthClientProvider {
       } catch (error) {
         // Invalid grant means the refresh token itself is invalid/revoked/expired.
         // But another process may have already refreshed successfully — check first.
-        if (error instanceof InvalidGrantError) {
+        if (
+          error instanceof OAuthError &&
+          error.code === OAuthErrorCode.InvalidGrant
+        ) {
           logMCPDebug(
             this.serverName,
             `Token refresh failed with invalid_grant: ${error.message}`,
@@ -2411,9 +2415,10 @@ export class ClaudeAuthProvider implements OAuthClientProvider {
           error instanceof Error &&
           /timeout|timed out|etimedout|econnreset/i.test(error.message)
         const isTransientServerError =
-          error instanceof ServerError ||
-          error instanceof TemporarilyUnavailableError ||
-          error instanceof TooManyRequestsError
+          error instanceof OAuthError &&
+          (error.code === OAuthErrorCode.ServerError ||
+            error.code === OAuthErrorCode.TemporarilyUnavailable ||
+            error.code === OAuthErrorCode.TooManyRequests)
         const isRetryable = isTimeoutError || isTransientServerError
 
         if (!isRetryable || attempt >= MAX_ATTEMPTS) {

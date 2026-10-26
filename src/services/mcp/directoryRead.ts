@@ -1,8 +1,8 @@
 import {
-  ErrorCode,
-  McpError,
+  ProtocolErrorCode,
+  ProtocolError,
   type ServerCapabilities,
-} from '@modelcontextprotocol/sdk/types.js'
+} from '@modelcontextprotocol/client'
 import { z } from 'zod/v4'
 import { lazySchema } from '../../utils/lazySchema.js'
 import { logMCPDebug } from '../../utils/log.js'
@@ -75,8 +75,8 @@ export async function readMcpDirectory(
     } catch (error) {
       if (
         page === 0 ||
-        !(error instanceof McpError) ||
-        error.code !== ErrorCode.InvalidParams
+        !(error instanceof ProtocolError) ||
+        error.code !== ProtocolErrorCode.InvalidParams
       ) {
         throw error
       }

@@ -19,7 +19,7 @@ describe('@codex-app mentions', () => {
 
 function connectedClient(
   name: string,
-  extensions: Record<string, object>,
+  extensions: ConnectedMCPServer['capabilities']['extensions'],
   onRead: () => void,
 ): ConnectedMCPServer {
   return {

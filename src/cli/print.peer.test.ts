@@ -149,7 +149,7 @@ if (process.env[childFlag] !== '1') {
         await import('../services/mcp/channelNotification.js')
       const priorChannels = bootstrap.getAllowedChannels()
       let channelNotification:
-        | ((notification: { params: { content: string } }) => Promise<void>)
+        | ((params: { content: string }) => Promise<void>)
         | undefined
       const settingsChanges =
         await import('../utils/settings/changeDetector.js')
@@ -262,7 +262,8 @@ if (process.env[childFlag] !== '1') {
             config: { type: 'stdio', command: 'fixture', args: [], scope: 'user' },
             client: {
               setNotificationHandler: (
-                _schema: unknown,
+                _method: string,
+                _schemas: unknown,
                 handler: typeof channelNotification,
               ) => { channelNotification = handler },
             },
@@ -307,9 +308,7 @@ if (process.env[childFlag] !== '1') {
         permissionClasses.push(peers.getPeerPermissionClass())
         if (arrival === 'channel') {
           expect(channelNotification).toBeDefined()
-          await channelNotification!({
-            params: { content: command.value as string },
-          })
+          await channelNotification!({ content: command.value as string })
         } else if (arrival === 'incoming') {
           enqueue(command)
           peers.notifyEnqueued()

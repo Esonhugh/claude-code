@@ -213,11 +213,16 @@ if (process.env[childFlag] !== '1') {
   // non-JSON-RPC 4xx (not 401/403/429) is retried over legacy HTTP+SSE.
   async function withLegacySseServer(post: {status:number, body:string, type:string}, run: (config: Config, name: string, requests: string[]) => Promise<void>) {
     const { createServer } = await import('node:http')
-    const { Server } = await import('@modelcontextprotocol/sdk/server/index.js')
-    const { SSEServerTransport } = await import('@modelcontextprotocol/sdk/server/sse.js')
-    const { ListToolsRequestSchema } = await import('@modelcontextprotocol/sdk/types.js')
     const requests: string[] = []
-    const transports = new Map<string, InstanceType<typeof SSEServerTransport>>()
+    // Minimal legacy HTTP+SSE server (2024-11-05 transport): the GET stream
+    // announces the POST endpoint and carries every JSON-RPC response.
+    const streams = new Map<string, import('node:http').ServerResponse>()
+    const answer = (msg: {id?: number, method: string, params?: {protocolVersion?: string}}) => {
+      if (msg.id === undefined) return undefined
+      if (msg.method === 'initialize') return {protocolVersion: msg.params?.protocolVersion, capabilities: {tools: {}}, serverInfo: {name: 'legacy', version: '1'}}
+      if (msg.method === 'tools/list') return {tools: [{name: 'legacy_tool', inputSchema: {type: 'object'}}]}
+      return {}
+    }
     const http = createServer(async (req, res) => {
       const url = new URL(req.url ?? '/', 'http://127.0.0.1')
       requests.push(`${req.method} ${url.pathname}`)
@@ -225,13 +230,18 @@ if (process.env[childFlag] !== '1') {
         res.writeHead(post.status, {'content-type':post.type})
         res.end(post.body)
       } else if (url.pathname === '/mcp' && req.method === 'GET') {
-        const transport = new SSEServerTransport('/messages', res)
-        transports.set(transport.sessionId, transport)
-        const server = new Server({name:'legacy', version:'1'}, {capabilities:{tools:{}}})
-        server.setRequestHandler(ListToolsRequestSchema, async () => ({tools:[{name:'legacy_tool', inputSchema:{type:'object' as const}}]}))
-        await server.connect(transport)
+        const sessionId = String(streams.size + 1)
+        streams.set(sessionId, res)
+        res.writeHead(200, {'content-type':'text/event-stream', 'cache-control':'no-cache'})
+        res.write(`event: endpoint\ndata: /messages?sessionId=${sessionId}\n\n`)
       } else if (url.pathname === '/messages' && req.method === 'POST') {
-        await transports.get(url.searchParams.get('sessionId') ?? '')?.handlePostMessage(req, res)
+        const stream = streams.get(url.searchParams.get('sessionId') ?? '')
+        let body = ''
+        for await (const chunk of req) body += chunk
+        const msg = JSON.parse(body)
+        res.writeHead(202).end('Accepted')
+        const result = answer(msg)
+        if (result) stream?.write(`event: message\ndata: ${JSON.stringify({jsonrpc:'2.0', id: msg.id, result})}\n\n`)
       } else {
         res.writeHead(404).end()
       }
@@ -244,7 +254,7 @@ if (process.env[childFlag] !== '1') {
       await run(config, name, requests)
     } finally {
       await clearServerCache(name, config)
-      for (const transport of transports.values()) await transport.close().catch(() => {})
+      for (const stream of streams.values()) stream.end()
       http.closeAllConnections?.()
       await new Promise(resolve => http.close(resolve))
     }
@@ -269,4 +279,108 @@ if (process.env[childFlag] !== '1') {
       expect(requests).not.toContain('GET /mcp')
     })
   },15_000)
+
+  // Official 2.1.303: stdio, http and claude.ai proxy connections negotiate MCP
+  // 2026-07-28 (server/discover, falling back to initialize);
+  // MCP_PROTOCOL_NEGOTIATION=legacy opts out, =auto forces it.
+  test('MCP_PROTOCOL_NEGOTIATION selects the version negotiation per transport', () => {
+    const { getMcpVersionNegotiation } = client
+    const saved = {mode:process.env.MCP_PROTOCOL_NEGOTIATION, timeout:process.env.MCP_TIMEOUT}
+    try {
+      delete process.env.MCP_PROTOCOL_NEGOTIATION
+      delete process.env.MCP_TIMEOUT
+      expect(getMcpVersionNegotiation('stdio')).toEqual({mode:'auto', probe:{timeoutMs:3000}})
+      expect(getMcpVersionNegotiation('http')).toEqual({mode:'auto', probe:{timeoutMs:5000}})
+      expect(getMcpVersionNegotiation('claudeai-proxy')).toEqual({mode:'auto', probe:{timeoutMs:5000}})
+      expect(getMcpVersionNegotiation('legacy-only')).toEqual({mode:'legacy'})
+      expect(getMcpVersionNegotiation('in-process')).toEqual({mode:'legacy'})
+      process.env.MCP_TIMEOUT = '6000'
+      expect(getMcpVersionNegotiation('http')).toEqual({mode:'auto', probe:{timeoutMs:2000}})
+      process.env.MCP_PROTOCOL_NEGOTIATION = 'legacy'
+      expect(getMcpVersionNegotiation('stdio')).toEqual({mode:'legacy'})
+      process.env.MCP_PROTOCOL_NEGOTIATION = 'auto'
+      expect(getMcpVersionNegotiation('legacy-only')).toEqual({mode:'legacy'})
+      process.env.MCP_PROTOCOL_NEGOTIATION = 'bogus'
+      expect(getMcpVersionNegotiation('stdio')).toEqual({mode:'auto', probe:{timeoutMs:2000}})
+    } finally {
+      for (const [key, value] of [['MCP_PROTOCOL_NEGOTIATION', saved.mode], ['MCP_TIMEOUT', saved.timeout]] as const) {
+        if (value === undefined) delete process.env[key]
+        else process.env[key] = value
+      }
+    }
+  })
+
+  const serverEntry = Bun.resolveSync('@modelcontextprotocol/server', import.meta.dir)
+  const serverStdioEntry = Bun.resolveSync('@modelcontextprotocol/server/stdio', import.meta.dir)
+
+  async function connectedProtocol(name: string, config: Config, mode?: 'legacy') {
+    if (mode) process.env.MCP_PROTOCOL_NEGOTIATION = mode
+    try {
+      const connection = await connectToServer(name, config)
+      if (connection.type !== 'connected') throw new Error(`not connected: ${JSON.stringify(connection)}`)
+      const result = await connection.client.callTool({name:'echo', arguments:{}})
+      expect(result.content).toEqual([{type:'text', text:'ok'}])
+      return connection.client.getNegotiatedProtocolVersion()
+    } finally {
+      delete process.env.MCP_PROTOCOL_NEGOTIATION
+      await clearServerCache(name, config)
+    }
+  }
+
+  test('stdio servers negotiate 2026-07-28 when they serve it and fall back otherwise', async () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(),'cc-mcp-negotiation-stdio-')))
+    const server = (era: 'modern' | 'legacy') => {
+      const file = join(root, `${era}.mjs`)
+      writeFileSync(file, `
+        import { McpServer } from ${JSON.stringify(serverEntry)}
+        import { serveStdio, StdioServerTransport } from ${JSON.stringify(serverStdioEntry)}
+        const create = () => {
+          const server = new McpServer({name:'${era}', version:'1'}, {capabilities:{tools:{}}})
+          server.registerTool('echo', {description:'echo'}, async () => ({content:[{type:'text', text:'ok'}]}))
+          return server
+        }
+        if (${JSON.stringify(era)} === 'modern') serveStdio(create)
+        else await create().connect(new StdioServerTransport())
+      `)
+      return {type:'stdio', command:process.execPath, args:[file], scope:'dynamic'} as Config
+    }
+    try {
+      expect(await connectedProtocol('negotiation-modern-stdio', server('modern'))).toBe('2026-07-28')
+      expect(await connectedProtocol('negotiation-legacy-stdio', server('legacy'))).toBe('2025-11-25')
+      expect(await connectedProtocol('negotiation-optout-stdio', server('modern'), 'legacy')).toBe('2025-11-25')
+    } finally {
+      rmSync(root,{recursive:true,force:true})
+    }
+  },30_000)
+
+  test('http servers negotiate 2026-07-28 when they serve it and fall back otherwise', async () => {
+    const { McpServer, createMcpHandler, WebStandardStreamableHTTPServerTransport } = await import('@modelcontextprotocol/server')
+    const create = () => {
+      const server = new McpServer({name:'http', version:'1'}, {capabilities:{tools:{}}})
+      server.registerTool('echo', {description:'echo'}, async () => ({content:[{type:'text' as const, text:'ok'}]}))
+      return server
+    }
+    const modern = createMcpHandler(create)
+    const sessions = new Map<string, InstanceType<typeof WebStandardStreamableHTTPServerTransport>>()
+    const http = Bun.serve({port:0, hostname:'127.0.0.1', async fetch(req) {
+      if (new URL(req.url).pathname === '/modern') return modern.fetch(req)
+      const existing = sessions.get(req.headers.get('mcp-session-id') ?? '')
+      if (existing) return existing.handleRequest(req)
+      const transport: InstanceType<typeof WebStandardStreamableHTTPServerTransport> = new WebStandardStreamableHTTPServerTransport({
+        sessionIdGenerator: () => crypto.randomUUID(),
+        onsessioninitialized: id => { sessions.set(id, transport) },
+      })
+      await create().connect(transport)
+      return transport.handleRequest(req)
+    }})
+    const config = (path: string) => ({type:'http', url:`http://127.0.0.1:${http.port}/${path}`, scope:'dynamic'}) as Config
+    try {
+      expect(await connectedProtocol('negotiation-modern-http', config('modern'))).toBe('2026-07-28')
+      expect(await connectedProtocol('negotiation-legacy-http', config('legacy'))).toBe('2025-11-25')
+      expect(await connectedProtocol('negotiation-optout-http', config('modern'), 'legacy')).toBe('2025-11-25')
+    } finally {
+      await modern.close()
+      http.stop(true)
+    }
+  },30_000)
 }

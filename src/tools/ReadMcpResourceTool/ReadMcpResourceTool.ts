@@ -1,7 +1,3 @@
-import {
-  type ReadResourceResult,
-  ReadResourceResultSchema,
-} from '@modelcontextprotocol/sdk/types.js'
 import { Buffer } from 'node:buffer'
 import { z } from 'zod/v4'
 import { getHostOwnedCodexAppsKind } from '../../services/apps/trust.js'
@@ -199,13 +195,10 @@ export const ReadMcpResourceTool = buildTool({
     }
 
     const connectedClient = await ensureConnectedClient(client)
-    const result = (await connectedClient.client.request(
-      {
-        method: 'resources/read',
-        params: { uri },
-      },
-      ReadResourceResultSchema,
-    )) as ReadResourceResult
+    const result = await connectedClient.client.request({
+      method: 'resources/read',
+      params: { uri },
+    })
 
     const verifiedBlobBytes = new Map<number, Buffer>()
     if (manifest.scoped) {

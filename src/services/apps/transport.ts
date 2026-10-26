@@ -1,8 +1,8 @@
 import {
   StreamableHTTPClientTransport,
   type StreamableHTTPClientTransportOptions,
-} from '@modelcontextprotocol/sdk/client/streamableHttp.js'
-import type { FetchLike } from '@modelcontextprotocol/sdk/shared/transport.js'
+  type FetchLike,
+} from '@modelcontextprotocol/client'
 import { getMCPUserAgent } from '../../utils/http.js'
 import { getProxyFetchOptions } from '../../utils/proxy.js'
 import { OPENAI_OAUTH_ORIGINATOR } from '../openai-oauth/client.js'
