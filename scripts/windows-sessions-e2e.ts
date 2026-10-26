@@ -4,7 +4,7 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { clean, inheritedEnv, report, runCli, runSteps, startFakeApi, type Step } from './windows-e2e-api.ts'
+import { clean, inheritedEnv, printResult, report, runCli, runSteps, startFakeApi, type Step } from './windows-e2e-api.ts'
 
 const bin = path.resolve(process.argv[2] ?? '')
 if (!fs.existsSync(bin)) throw new Error(`usage: windows-sessions-e2e.ts <claude.exe>`)
@@ -40,7 +40,7 @@ const run = (...args: string[]) => runCli(bin, args, { cwd: project, env })
 let failed = 0
 const check = (name: string, ok: boolean, out: string) => {
   if (!ok) failed++
-  console.log(`${ok ? 'PASS' : 'FAIL'} ${name}\n  ${out.trim().replace(/\n/g, '\n  ')}`)
+  printResult(ok, name, out)
 }
 
 // Peer messaging: a background session receives from a `-p` session.

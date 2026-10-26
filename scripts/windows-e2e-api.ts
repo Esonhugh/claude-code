@@ -123,6 +123,16 @@ export async function runSteps(
   return results
 }
 
+/**
+ * One PASS/FAIL line. A pass shows the first line of its output, a failure
+ * the output without ANSI codes (a background session's screen is long).
+ */
+export function printResult(ok: boolean, name: string, out: string): void {
+  const plain = out.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '').replace(/[ \t]+$/gm, '').replace(/\n{3,}/g, '\n\n').trim()
+  const shown = ok ? (plain.split('\n')[0] ?? '').slice(0, 200) : plain.slice(-4000)
+  console.log(`${ok ? 'PASS' : 'FAIL'} ${name}${shown ? `\n  ${shown.replace(/\n/g, '\n  ')}` : ''}`)
+}
+
 /** Prints PASS/FAIL per check; a missing result is a failure. */
 export function report(
   checks: { step: Step; expect: (out: string) => boolean }[],
@@ -133,8 +143,7 @@ export function report(
     const out = results[i]
     const ok = out !== undefined && check.expect(out)
     if (!ok) failed++
-    const shown = (out ?? '<no result>').trim().replace(/\n/g, '\n  ')
-    console.log(`${ok ? 'PASS' : 'FAIL'} ${check.step.name} ${JSON.stringify(check.step.input)}\n  ${shown}`)
+    printResult(ok, `${check.step.name} ${JSON.stringify(check.step.input)}`, out ?? '<no result>')
   })
   return failed
 }
