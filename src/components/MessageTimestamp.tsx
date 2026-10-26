@@ -2,6 +2,7 @@ import React from 'react'
 import { stringWidth } from '../ink/stringWidth.js'
 import { Box, Text } from '../ink.js'
 import type { NormalizedMessage } from '../types/message.js'
+import { formatClockTime } from '../utils/timeFormat.js'
 
 type Props = {
   message: NormalizedMessage
@@ -22,14 +23,11 @@ export function MessageTimestamp({
     return null
   }
 
-  const formattedTimestamp = new Date(message.timestamp).toLocaleTimeString(
-    'en-US',
-    {
-      hour: '2-digit',
-      minute: '2-digit',
-      hour12: true,
-    },
-  )
+  const date = new Date(message.timestamp)
+  if (Number.isNaN(date.getTime())) {
+    return null
+  }
+  const formattedTimestamp = formatClockTime(date)
 
   return (
     <Box minWidth={stringWidth(formattedTimestamp)}>

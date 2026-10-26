@@ -111,6 +111,7 @@
 | `disableWorkflows` | settings.json | `true` | 同上 |
 | `CLAUDE_CODE_DISABLE_WORKFLOWS` | 环境变量 | `1` | 同上 |
 | `CLAUDE_CODE_WORKFLOWS` | 环境变量 | `0` 关闭 / `1` 开启 | `1` 让 Pro 计划也默认开启；显式关闭的设置仍然优先 |
+| `CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL` | 环境变量 | 模型别名或完整模型 ID；`inherit` 或不设表示不覆盖 | 所有 workflow agent 统一用这个模型，脚本里 `agent(..., { model })`、agent 定义的 `model` 和 `CLAUDE_CODE_SUBAGENT_MODEL` 都被忽略；其他子代理不受影响（对齐官方 2.1.296） |
 | `workflowSizeGuideline` | settings.json 或 `/config` 的 “Dynamic workflow size” | `small` / `medium`（默认，Pro 为 `small`）/ `large` / `unrestricted` | 告诉 Claude 每次大概派多少 Agent（`medium` 约 10 个以内）。只是建议；硬上限是每次运行最多 1000 次 `agent()` |
 | `ultracodeKeywordTrigger` | settings.json | `true`（默认）/ `false` | 提示里出现 `ultracode` 时是否触发 |
 | `workflowKeywordTriggerEnabled` | settings.json | `true` / `false` | 同上，优先级更高 |

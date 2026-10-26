@@ -8,21 +8,20 @@
 
 开启模型发现后，Claude Code 启动时会去问网关「你有哪些模型」（请求 `/v1/models`），把结果加进 `/model` 列表，标注 `From gateway`。
 
-- **Anthropic 网关**：默认关闭，用环境变量开启；
+- **Anthropic 网关**：设置了非官方 `ANTHROPIC_BASE_URL` 就默认开启，`CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=0` 关闭；
 - **OpenAI provider**：自动发现，见 [openai-provider.md](openai-provider.md)。
 
 ## 快速上手：Anthropic 网关
 
-**1. 带上开关启动：**
+**1. 指向网关启动：**
 
 ```bash
-CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1 \
 ANTHROPIC_BASE_URL=https://gateway.example \
 ANTHROPIC_AUTH_TOKEN=<bearer-token> \
 claude
 ```
 
-三个缺一不可：开关、网关地址、认证（`ANTHROPIC_AUTH_TOKEN` 走 `Authorization: Bearer`，或 `ANTHROPIC_API_KEY` 走 `x-api-key`，两者都有时用前者）。
+两个缺一不可：网关地址、认证（`ANTHROPIC_AUTH_TOKEN` 走 `Authorization: Bearer`，或 `ANTHROPIC_API_KEY` 走 `x-api-key`，两者都有时用前者）。
 
 **2. 打开 `/model`。** 网关的模型排在内置模型后面，标 `From gateway`；网关标记为 hidden 的模型会显示 `(Hidden)`：
 
@@ -58,7 +57,7 @@ OpenRouter 等服务按普通 OpenAI 兼容地址使用即可，没有专门的�
 
 | 配置项 | 写法 | 说明 |
 | --- | --- | --- |
-| `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY` | `1` | 开启 Anthropic 网关模型发现（默认关闭） |
+| `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY` | `0` | 关闭 Anthropic 网关模型发现（默认开启） |
 | `ANTHROPIC_BASE_URL` | URL | 网关地址，请求 `${ANTHROPIC_BASE_URL}/v1/models` |
 | `ANTHROPIC_AUTH_TOKEN` / `ANTHROPIC_API_KEY` | 字符串 | 认证；两者都有时优先前者 |
 | `ANTHROPIC_CUSTOM_HEADERS` | header 列表 | 额外 header，大小写不敏感地覆盖默认值 |

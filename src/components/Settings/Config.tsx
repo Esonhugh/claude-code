@@ -127,6 +127,7 @@ import { getAPIProvider } from '../../utils/model/providers.js'
 import { isAnt } from 'src/utils/userType.js'
 import type { ModConfigRow, ModConfigValue } from '../../services/mods/config.js'
 import TextInput from '../TextInput.js'
+import { sanitizeTimeFormat, TIME_FORMAT_PRESETS } from '../../utils/timeFormat.js'
 
 
 type Props = {
@@ -441,6 +442,21 @@ export function Config({
       },
     },
     {
+      id: 'idleCompaction',
+      label: 'Idle compaction',
+      value: settingsData?.idleCompaction ?? true,
+      type: 'boolean' as const,
+      onChange(idleCompaction: boolean) {
+        updateSettingsForSource('userSettings', {
+          idleCompaction: idleCompaction ? undefined : false,
+        })
+        setSettingsData(prev => ({ ...prev, idleCompaction }))
+        logEvent('tengu_idle_compaction_setting_changed', {
+          enabled: idleCompaction,
+        })
+      },
+    },
+    {
       id: 'spinnerTipsEnabled',
       label: 'Show tips',
       value: settingsData?.spinnerTipsEnabled ?? true,
@@ -675,6 +691,23 @@ export function Config({
         setGlobalConfig({ ...getGlobalConfig(), showTurnDuration })
         logEvent('tengu_show_turn_duration_setting_changed', {
           enabled: showTurnDuration,
+        })
+      },
+    },
+    {
+      id: 'timeFormat',
+      label: 'Time format',
+      value: sanitizeTimeFormat(settingsData?.timeFormat ?? 'auto'),
+      options: [...TIME_FORMAT_PRESETS],
+      type: 'enum' as const,
+      onChange(value: string) {
+        const timeFormat = TIME_FORMAT_PRESETS.find(preset => preset === value)
+        if (!timeFormat) return
+        updateSettingsForSource('userSettings', { timeFormat })
+        setSettingsData(prev => ({ ...prev, timeFormat }))
+        logEvent('tengu_time_format_setting_changed', {
+          value:
+            timeFormat as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
         })
       },
     },

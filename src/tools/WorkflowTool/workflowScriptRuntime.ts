@@ -57,6 +57,7 @@ import {
   updateWorkflowRunSessionStatus,
 } from './workflowRunSessions.js'
 import { logForDebugging } from '../../utils/debug.js'
+import { getWorkflowSubagentModel } from '../../utils/model/agent.js'
 import { createWorkflowRunId, resolveWorkflowScriptPath } from './workflowScriptPersistence.js'
 import { hasWorkflowScriptMeta, parseWorkflowScript, workflowErrorMessage } from './workflowScriptParser.js'
 import { getCwd } from '../../utils/cwd.js'
@@ -797,6 +798,10 @@ export async function runWorkflowScript({
     checkBudget()
     if (agentCount >= MAX_AGENT_CALLS) throw new Error(AGENT_CAP_MESSAGE)
     let opts = normalizeAgentOpts(rawOpts)
+    if (opts?.model !== undefined && getWorkflowSubagentModel() !== undefined) {
+      logForDebugging(`Workflow agent model "${opts.model}" ignored: CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL is set`)
+      opts = { ...opts, model: undefined }
+    }
 
     const requestedAgentId = opts?.label || `agent-${agentCount + 1}`
     let labelOccurrence = agentLabelOccurrences.get(requestedAgentId) ?? 0

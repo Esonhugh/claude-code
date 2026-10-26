@@ -452,11 +452,12 @@ export function hasExtendedCacheTtlMarker({
 }
 
 function should1hCacheTTL(querySource?: QuerySource): boolean {
-  // 3P Bedrock users get 1h TTL when opted in via env var — they manage their own billing
-  // No GrowthBook gating needed since 3P users don't have GrowthBook configured
+  // Opt-in env vars (official: any provider, or Bedrock only) — the user manages
+  // their own billing, so no GrowthBook gating is needed.
   if (
-    getAPIProvider() === 'bedrock' &&
-    isEnvTruthy(process.env.ENABLE_PROMPT_CACHING_1H_BEDROCK)
+    isEnvTruthy(process.env.ENABLE_PROMPT_CACHING_1H) ||
+    (getAPIProvider() === 'bedrock' &&
+      isEnvTruthy(process.env.ENABLE_PROMPT_CACHING_1H_BEDROCK))
   ) {
     return true
   }

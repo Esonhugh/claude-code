@@ -8,7 +8,9 @@
 
 import figures from "figures";
 import * as React from "react";
+import { useSubagentStatusLine } from "../hooks/useSubagentStatusLine.js";
 import { useTerminalSize } from "../hooks/useTerminalSize.js";
+import { Ansi } from "../ink/Ansi.js";
 import { Box, Text } from "../ink.js";
 import { stringWidth } from "../ink/stringWidth.js";
 import { useAppState, useSetAppState } from "../state/AppState.js";
@@ -58,6 +60,8 @@ export function CoordinatorTaskPanel({
   const verbose = useAppState((s) => s.verbose);
   const ultracodeActive = useAppState((s) => s.effortValue === "ultracode");
   const { columns } = useTerminalSize();
+  const taskDecorations = useAppState((s) => s.taskDecorations);
+  useSubagentStatusLine(Math.max(0, columns - 8));
   const setCoordinatorSelection = React.useCallback(
     (index: number, targetId?: string) => {
       setAppState((prev) => {
@@ -172,6 +176,11 @@ export function CoordinatorTaskPanel({
           showDetails={showDetails}
           showTools={showTools}
           showStatus={showStatus}
+          decoration={
+            row.kind === "agent" && row.taskId
+              ? taskDecorations[row.taskId]?.content || undefined
+              : undefined
+          }
           onClick={() => {
             if (row.kind === "main") {
               setCoordinatorSelection(0, undefined);
@@ -242,6 +251,7 @@ function SessionRow({
   showDetails,
   showTools,
   showStatus,
+  decoration,
   onClick,
 }: {
   row: CoordinatorSessionRow;
@@ -257,6 +267,7 @@ function SessionRow({
   showDetails: boolean;
   showTools: boolean;
   showStatus: boolean;
+  decoration?: string;
   onClick: () => void;
 }): React.ReactNode {
   const [hover, setHover] = React.useState(false);
@@ -287,6 +298,51 @@ function SessionRow({
           {row.primaryText}
         </Text>
       </Box>
+      {decoration !== undefined ? (
+        <Box flexGrow={1} flexShrink={1} minWidth={0} marginLeft={2}>
+          <Text bold={row.viewed} wrap="truncate">
+            <Ansi>{decoration}</Ansi>
+          </Text>
+        </Box>
+      ) : (
+        <SessionRowDetails
+          row={row}
+          description={description}
+          metricWidths={metricWidths}
+          showMetrics={showMetrics}
+          showDetails={showDetails}
+          showTools={showTools}
+          showStatus={showStatus}
+        />
+      )}
+    </Box>
+  );
+}
+
+function SessionRowDetails({
+  row,
+  description,
+  metricWidths,
+  showMetrics,
+  showDetails,
+  showTools,
+  showStatus,
+}: {
+  row: CoordinatorSessionRow;
+  description: string;
+  metricWidths: {
+    elapsed: number;
+    tokens: number;
+    tools: number;
+    status: number;
+  };
+  showMetrics: boolean;
+  showDetails: boolean;
+  showTools: boolean;
+  showStatus: boolean;
+}): React.ReactNode {
+  return (
+    <>
       <Box flexGrow={1} flexShrink={1} minWidth={0} marginLeft={2}>
         <Text dimColor wrap="truncate">
           {showDetails ? description : truncateToWidth(description, 60)}
@@ -338,6 +394,6 @@ function SessionRow({
           </Box>
         </>
       )}
-    </Box>
+    </>
   );
 }

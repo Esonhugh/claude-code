@@ -8,7 +8,6 @@ import {
   PluginHooksSchema,
   PluginManifestSchema,
 } from '../utils/plugins/schemas.js'
-import { isAnthropicTelemetryEnabled } from '../services/analytics/config.js'
 import { clearPluginCache } from '../utils/plugins/pluginLoader.js'
 import { lock } from '../utils/lockfile.js'
 import { registerBuiltinPlugin } from './builtinPlugins.js'
@@ -38,7 +37,8 @@ function validateEntry(name: string): string {
   return name
 }
 
-const OFFICIAL_MODS = ['agents-md', 'diff', 'telemetry'] as const
+// The archive's `telemetry` Mod posts first-party analytics rows; this fork never loads it.
+const OFFICIAL_MODS = ['agents-md', 'diff'] as const
 const OFFICIAL_ARCHIVE_SHA256 = '7529d618a2048f43b92070be542bfa6171d78932cdd24aed73b3392a33c6f161'
 const OfficialProvenanceSchema = z.strictObject({
   version: z.literal('2.1.277'),
@@ -169,8 +169,6 @@ export async function loadBuiltinModDefinitions(
       path,
       hooks: hooks.hooks,
       hookModules: [{ configPath, paths: hooks.modules }],
-      // Plugin analytics posts first-party rows; follow this fork's opt-in.
-      defaultEnabled: name !== 'telemetry' || isAnthropicTelemetryEnabled(),
     }
     return definition
   }))
@@ -197,7 +195,6 @@ export async function readOfficialBuiltinModDefinitions(
       description: manifest.description ?? name,
       manifest,
       path: `${archivePath}/${name}`,
-      defaultEnabled: name !== 'telemetry' || isAnthropicTelemetryEnabled(),
     }
   })
   return { definitions, files }
