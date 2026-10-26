@@ -178,10 +178,11 @@ for (const line of output.split('\n')) {
 
 let failed = 0
 checks.forEach((check, i) => {
-  const out = results[i] ?? '<no result>'
-  const ok = check.expect(out)
+  const out = results[i]
+  const ok = out !== undefined && check.expect(out)
   if (!ok) failed++
-  console.log(`${ok ? 'PASS' : 'FAIL'} ${JSON.stringify(check.step.input)}\n  ${out.trim().replace(/\n/g, '\n  ')}`)
+  const shown = (out ?? '<no result>').trim().replace(/\n/g, '\n  ')
+  console.log(`${ok ? 'PASS' : 'FAIL'} ${JSON.stringify(check.step.input)}\n  ${shown}`)
 })
 fs.rmSync(root, { recursive: true, force: true })
 if (failed) {

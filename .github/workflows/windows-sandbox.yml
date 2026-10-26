@@ -18,6 +18,9 @@ jobs:
   windows-sandbox:
     runs-on: windows-latest
     timeout-minutes: 40
+    env:
+      # A 0.0.0-dev build is refused by the minimum-version check.
+      CLAUDE_CODE_VERSION: 2.1.294
     steps:
       - uses: actions/checkout@v4
 
