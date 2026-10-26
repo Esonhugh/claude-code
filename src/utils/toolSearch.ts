@@ -315,6 +315,19 @@ export function isToolSearchEnabledOptimistic(): boolean {
  * messages. Setting ENABLE_TOOL_SEARCH to any non-empty value asserts the
  * proxy forwards tool_reference, so the beta path is used as-is.
  */
+/**
+ * Deferred tool sent on every tool-search request, like 2.1.303. With at least
+ * one defer_loading tool from the first request on, tools discovered later
+ * (also defer_loading) leave the cached prompt prefix intact.
+ */
+export const DEFERRED_TOOL_PLACEHOLDER = {
+  name: 'DeferredToolPlaceholder',
+  description:
+    'Reserved placeholder that keeps deferred tool loading active; never call this tool.',
+  input_schema: { type: 'object' as const, properties: {} },
+  defer_loading: true,
+}
+
 export function isToolReferenceTextFallback(): boolean {
   return (
     !process.env.ENABLE_TOOL_SEARCH &&
