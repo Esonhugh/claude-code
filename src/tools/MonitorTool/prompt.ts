@@ -1,4 +1,6 @@
 import { getIsNonInteractiveSession } from '../../bootstrap/state.js'
+import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../services/analytics/growthbook.js'
+import { isEnvTruthy } from '../../utils/envUtils.js'
 import { formatDuration } from '../../utils/format.js'
 import { plural } from '../../utils/stringUtils.js'
 
@@ -8,6 +10,14 @@ export const DEFAULT_MONITOR_TIMEOUT_MS = 300_000
 export const MAX_MONITOR_TIMEOUT_MS = 3_600_000
 const INTERACTIVE_MONITOR_CAP_MS = 1_800_000
 const NON_INTERACTIVE_MONITOR_CAP_MS = 600_000
+
+/** Like official 2.1.303, Monitor is offered only behind tengu_amber_sentinel. */
+export function isMonitorToolEnabled(): boolean {
+  return (
+    getFeatureValue_CACHED_MAY_BE_STALE('tengu_amber_sentinel', false) &&
+    !isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS)
+  )
+}
 
 /** Effective deadline cap: 30 minutes interactively, 10 minutes under -p. */
 export function getMonitorTimeoutCapMs(): number {

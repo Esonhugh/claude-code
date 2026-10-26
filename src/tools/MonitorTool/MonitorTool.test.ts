@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { afterEach, spyOn, test } from 'bun:test'
 
+import * as growthbook from '../../services/analytics/growthbook.js'
 import { getDefaultAppState, type AppState } from '../../state/AppState.js'
 import { getEmptyToolPermissionContext } from '../../Tool.js'
 import type { AgentId } from '../../types/ids.js'
@@ -42,14 +43,23 @@ async function waitFor(predicate: () => boolean, timeoutMs = 5000) {
   }
 }
 
-test('Monitor is enabled unless background tasks are disabled', () => {
+test('Monitor is offered only behind tengu_amber_sentinel', () => {
   assert.equal(MonitorTool.name, MONITOR_TOOL_NAME)
-  assert.equal(MonitorTool.isEnabled(), true)
-  process.env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS = '1'
+  assert.equal(MonitorTool.isEnabled(), false)
+  const gate = growthbook.getFeatureValue_CACHED_MAY_BE_STALE
+  const spy = spyOn(
+    growthbook,
+    'getFeatureValue_CACHED_MAY_BE_STALE',
+  ).mockImplementation((key, fallback) =>
+    key === 'tengu_amber_sentinel' ? (true as never) : gate(key, fallback),
+  )
   try {
+    assert.equal(MonitorTool.isEnabled(), true)
+    process.env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS = '1'
     assert.equal(MonitorTool.isEnabled(), false)
   } finally {
     delete process.env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS
+    spy.mockRestore()
   }
 })
 
