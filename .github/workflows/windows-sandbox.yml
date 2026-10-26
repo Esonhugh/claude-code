@@ -5,7 +5,7 @@ on:
   pull_request:
     paths:
       - '.github/workflows/windows-sandbox.yml'
-      - 'scripts/windows-sandbox-e2e.ts'
+      - 'scripts/windows-sandbox-*'
       - 'scripts/package-binary.mjs'
       - 'scripts/shims/embedded-ripgrep.js'
       - 'src/utils/Shell.ts'
@@ -31,6 +31,11 @@ jobs:
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
+
+      - name: Stamp probe
+        continue-on-error: true
+        run: |
+          bun scripts/windows-sandbox-stamp-probe.ts
 
       - name: Build binary
         shell: bash
