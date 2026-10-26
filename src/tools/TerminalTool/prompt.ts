@@ -7,4 +7,5 @@ export const PROMPT = `Use this tool to manage persistent terminal sessions.
 Actions: new-session, list-panes, send-keys, capture-pane, resize-pane, send-signal, display-message, kill-pane.
 Use action=new-session to create a new session; command is a single executable and its arguments go in args (command=ssh args=["-o","ConnectTimeout=15","host"]), and omitting command starts the default shell. Use action=list-panes to enumerate unreaped panes, then use the returned target for later calls.
 Use action=send-keys with text and/or key; text is sent literally without parsing control characters.
-Use action=capture-pane to capture the current visible terminal screen snapshot; cursor is accepted for compatibility but does not change the snapshot.`
+Use action=capture-pane to capture the current visible terminal screen snapshot; cursor is accepted for compatibility but does not change the snapshot.
+When the Bash sandbox is enabled, new-session starts its command inside the sandbox; set dangerouslyDisableSandbox=true only when the session must run outside it.`

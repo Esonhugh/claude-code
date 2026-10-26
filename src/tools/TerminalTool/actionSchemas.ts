@@ -9,6 +9,7 @@ export const newSessionActionSchema = z.object({
   env: z.record(z.string(), z.string()).optional(),
   cols: z.number().int().positive().optional(),
   rows: z.number().int().positive().optional(),
+  dangerouslyDisableSandbox: z.boolean().optional(),
 })
 
 export const capturePaneActionSchema = z.object({
@@ -99,4 +100,5 @@ export const actionSchema = z.object({
   key: z.enum(SPECIAL_KEYS).optional(),
   signal: z.enum(['SIGINT', 'SIGTERM']).optional(),
   force: z.boolean().optional(),
+  dangerouslyDisableSandbox: z.boolean().optional(),
 }).passthrough()

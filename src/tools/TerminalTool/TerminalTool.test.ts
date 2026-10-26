@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { existsSync, readFileSync, rmSync } from 'node:fs'
-import test, { beforeEach } from 'node:test'
+import test, { beforeEach, mock } from 'node:test'
 import type { UUID } from 'node:crypto'
 
 import { getEmptyToolPermissionContext, type ToolUseContext } from '../../Tool.js'
@@ -11,6 +11,8 @@ import { runCleanupFunctions } from '../../utils/cleanupRegistry.js'
 import { FileStateCache } from '../../utils/fileStateCache.js'
 import { hasPermissionsToUseTool } from '../../utils/permissions/permissions.js'
 import { FakePtyDriver } from '../../utils/pty/__fixtures__/FakePtyDriver.js'
+import type { PtyDriverOpenOptions } from '../../utils/pty/types.js'
+import { SandboxManager } from '../../utils/sandbox/sandbox-adapter.js'
 import { PtySessionManager } from '../../utils/pty/PtySessionManager.js'
 import { resolveTerminalCommand } from '../../utils/shell/resolveDefaultShell.js'
 import {
@@ -1210,4 +1212,60 @@ test('Terminal schema tells the model that command is one executable and args is
   }
   assert.match(schema.properties.command?.description ?? '', /args/)
   assert.match(schema.properties.args?.description ?? '', /argument/i)
+})
+
+test('new-session runs inside the sandbox when sandboxing is enabled', async () => {
+  const opens: PtyDriverOpenOptions[] = []
+  const driver = new FakePtyDriver()
+  const open = driver.open.bind(driver)
+  driver.open = options => {
+    opens.push(options)
+    return open(options)
+  }
+  resetTerminalManagerForTesting(new PtySessionManager({ driver }))
+  const wraps: string[] = []
+  mock.method(SandboxManager, 'isSandboxingEnabled', () => true)
+  mock.method(SandboxManager, 'areUnsandboxedCommandsAllowed', () => true)
+  mock.method(SandboxManager, 'wrapWithSandbox', async (command: string) => {
+    wraps.push(command)
+    return `SANDBOXED ${command}`
+  })
+  const cleanup = mock.method(SandboxManager, 'cleanupAfterCommand', () => {})
+  try {
+    const shell = resolveTerminalCommand({ command: 'sh' }).command
+    const result = await TerminalTool.call(
+      { action: 'new-session', command: 'sh', args: ['-i'], cwd: process.cwd() },
+      createContext(),
+      allowPermission,
+      TEST_ASSISTANT_MESSAGE,
+    )
+    const data = result.data as { target: string; command: string; args: string[]; sandboxed?: boolean }
+    assert.equal(data.sandboxed, true)
+    assert.equal(data.command, shell)
+    assert.deepEqual(data.args, ['-i'])
+    assert.equal(wraps.length, 1)
+    assert.match(wraps[0]!, new RegExp(`${shell} -i`))
+    assert.equal(opens[0]?.command, '/bin/sh')
+    assert.deepEqual(opens[0]?.args, ['-c', `SANDBOXED ${wraps[0]}`])
+
+    await TerminalTool.call(
+      { action: 'kill-pane', target: data.target },
+      createContext(),
+      allowPermission,
+      TEST_ASSISTANT_MESSAGE,
+    )
+    assert.equal(cleanup.mock.callCount(), 1)
+
+    const outside = await TerminalTool.call(
+      { action: 'new-session', command: 'sh', cwd: process.cwd(), dangerouslyDisableSandbox: true },
+      createContext(),
+      allowPermission,
+      TEST_ASSISTANT_MESSAGE,
+    )
+    assert.equal((outside.data as { sandboxed?: boolean }).sandboxed, undefined)
+    assert.equal(wraps.length, 1)
+    assert.equal(opens[1]?.command, shell)
+  } finally {
+    mock.restoreAll()
+  }
 })
