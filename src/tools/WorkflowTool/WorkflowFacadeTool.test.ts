@@ -811,19 +811,22 @@ const deepResearchTask = Object.values(state.tasks).find(
 assert.equal(deepResearchTask.status, 'completed')
 assert.equal(deepResearchTask.defaultModel, 'claude-sonnet-4-5')
 assert.equal(deepResearchTask.execution, 'agent')
-assert.ok(launchedPrompts.length > 1)
-assert.match(launchedPrompts[0]!, /Decompose this research question/)
-assert.match(launchedPrompts[0]!, /User input:\n分析 claude 的 dynamic workflow 设计原理/)
+// The bundled deep-research is the official script: the question reaches the scope agent
+// through `args`, and the fake agent's plain-text reply ends the run at the scope schema.
+assert.equal(launchedPrompts.length, 1)
+assert.match(launchedPrompts[0]!, /Decompose this research question into complementary search angles/)
+assert.match(launchedPrompts[0]!, /## Question\n分析 claude 的 dynamic workflow 设计原理/)
 
-await assert.rejects(
-  () => WorkflowFacadeTool.call(
-    { name: 'deep-research', args: '' },
-    context,
-    async () => ({ behavior: 'allow' }),
-    { message: { id: 'msg_facade_empty_deep_research' } } as never,
-  ),
-  /Workflow deep-research requires workflow input/,
+// Official runs the script without a question; the script itself returns its error.
+launchedPrompts.length = 0
+const emptyDeepResearchRun = await WorkflowFacadeTool.call(
+  { name: 'deep-research', args: '' },
+  context,
+  async () => ({ behavior: 'allow' }),
+  { message: { id: 'msg_facade_empty_deep_research' } } as never,
 )
+assert.match(String(emptyDeepResearchRun.data), /Workflow launched in background\. Task ID: w/)
+assert.equal(launchedPrompts.length, 0)
 
 const legacyScriptPath = join(tempRoot, '.claude', 'workflows', 'js-run.js')
 await writeFile(
