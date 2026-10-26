@@ -471,13 +471,18 @@ import {
   extractBashToolsFromMessages,
 } from '../utils/queryHelpers.js'
 import { resetMicrocompactState } from '../services/compact/microCompact.js'
+import { IDLE_COMPACTION_NOTICE } from '../services/compact/idleCompaction.js'
+import { useIdleCompaction } from '../hooks/useIdleCompaction.js'
 import { runPostCompactCleanup } from '../services/compact/postCompactCleanup.js'
 import {
   provisionContentReplacementState,
   reconstructContentReplacementState,
   type ContentReplacementRecord,
 } from '../utils/toolResultStorage.js'
-import { partialCompactConversation } from '../services/compact/compact.js'
+import {
+  buildPostCompactMessages,
+  partialCompactConversation,
+} from '../services/compact/compact.js'
 import type { LogOption } from '../types/logs.js'
 import type { AgentColorName } from '../tools/AgentTool/agentColorManager.js'
 import {
@@ -4342,6 +4347,36 @@ export function REPL({
     setAbortController,
     onBackgroundQuery: handleBackgroundQuery,
   })
+
+  // Idle compaction holds the query guard like a typed /compact, so input sent
+  // meanwhile queues and Esc cancels it.
+  const runIdleCompaction = useCallback(async () => {
+    if (queryGuard.isActive) return
+    const generation = queryGuard.tryStart()
+    if (generation === null) return
+    const controller = createAbortController()
+    setAbortController(controller)
+    try {
+      const { call } = await import('../commands/compact/compact.js')
+      const context = getToolUseContext(messagesRef.current, [], controller, mainLoopModel)
+      const result = await call('', context)
+      if (result.type !== 'compact' || controller.signal.aborted) return
+      resetMicrocompactState()
+      setMessages(() => [
+        ...buildPostCompactMessages(result.compactionResult),
+        createSystemMessage(IDLE_COMPACTION_NOTICE, 'info'),
+      ])
+      setConversationId(randomUUID())
+    } catch (error) {
+      if (!controller.signal.aborted) logError(error)
+    } finally {
+      if (queryGuard.end(generation)) {
+        setAbortController(null)
+        resetLoadingState()
+      }
+    }
+  }, [queryGuard, getToolUseContext, mainLoopModel, setMessages, resetLoadingState])
+  useIdleCompaction(messages, isLoading, getQuerySourceForREPL(), runIdleCompaction)
 
   const onQueryEvent = useCallback(
     (event: Parameters<typeof handleMessageFromStream>[0]) => {

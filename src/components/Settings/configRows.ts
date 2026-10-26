@@ -45,6 +45,7 @@ import type { EditableSettingSource } from '../../utils/settings/constants.js'
 import type { SettingsJson } from '../../utils/settings/types.js'
 import { clearCliTeammateModeOverride, getCliTeammateModeOverride } from '../../utils/swarm/backends/teammateModeSnapshot.js'
 import { THEME_NAMES, type ThemeSetting } from '../../utils/theme.js'
+import { sanitizeTimeFormat, TIME_FORMAT_PRESETS } from '../../utils/timeFormat.js'
 import { isAnt } from '../../utils/userType.js'
 
 type Context = {
@@ -96,6 +97,11 @@ export function getConfigRows(context: Context): ModConfigRowProvider[] {
   }
   const rows: Row[] = [
     { ...globalBoolean('autoCompactEnabled', 'Auto-compact', global.autoCompactEnabled), key: 'autoCompact' },
+    {
+      key: 'idleCompaction', label: 'Idle compaction', kind: 'boolean',
+      value: settings.idleCompaction ?? true,
+      set(value) { writeSettings('userSettings', { idleCompaction: value ? undefined : false }) },
+    },
     {
       key: 'tips', label: 'Show tips', kind: 'boolean',
       value: settings.spinnerTipsEnabled ?? true,
@@ -150,6 +156,11 @@ export function getConfigRows(context: Context): ModConfigRowProvider[] {
     ...(getFeatureValue_CACHED_MAY_BE_STALE('tengu_terminal_sidebar', false)
       ? [globalBoolean('showStatusInTerminalTab', 'Show status in terminal tab', global.showStatusInTerminalTab ?? false)] : []),
     globalBoolean('showTurnDuration', 'Show turn duration', global.showTurnDuration),
+    {
+      key: 'timeFormat', label: 'Time format', kind: 'choice',
+      value: sanitizeTimeFormat(settings.timeFormat ?? 'auto'), options: [...TIME_FORMAT_PRESETS],
+      set(value) { writeSettings('userSettings', { timeFormat: value as string }) },
+    },
     {
       key: 'defaultPermissionMode', label: 'Default permission mode', kind: 'choice',
       value: permissionModeFromString(settings.permissions?.defaultMode || 'default'),

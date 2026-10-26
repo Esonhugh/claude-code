@@ -58,9 +58,9 @@ test('exposes real built-in config rows in menu order, including dialog-only row
     setAppState: update => { state = update(state) },
   })
   const keys = [
-    'autoCompact', 'tips', 'prefersReducedMotion',
+    'autoCompact', 'idleCompaction', 'tips', 'prefersReducedMotion',
     'thinkingEnabled', 'fileCheckpointingEnabled', 'verbose',
-    'terminalProgressBarEnabled', 'showTurnDuration', 'defaultPermissionMode',
+    'terminalProgressBarEnabled', 'showTurnDuration', 'timeFormat', 'defaultPermissionMode',
     'workflows', 'workflowSizeGuideline', 'respectGitignore', 'copyFullResponse', 'autoUpdatesChannel', 'theme',
     'notifChannel', 'outputStyle', 'language', 'editorMode', 'prStatusFooterEnabled',
     'model', 'claudeInChromeDefaultEnabled',
@@ -291,6 +291,28 @@ test('Dynamic workflows rows write the same settings as the Config dialog', asyn
   await row('workflows')!.set!(true)
   expect(settings.getSettingsForSource('userSettings')?.enableWorkflows).toBeUndefined()
   expect(row('workflows')?.value).toBe(true)
+})
+
+test('Idle compaction and Time format rows write user settings like official', async () => {
+  const { getConfigRows } = await import('./configRows.js')
+  const settings = await import('../../utils/settings/settings.js')
+  let state = { settings: {}, verbose: false, thinkingEnabled: true, mainLoopModel: null } as AppState
+  const context = {
+    getAppState: () => state,
+    setAppState: (update: (state: AppState) => AppState) => { state = update(state) },
+  }
+  const row = (key: string) => getConfigRows(context).find(row => row.key === key)
+  expect(row('idleCompaction')).toMatchObject({ label: 'Idle compaction', kind: 'boolean', value: true })
+  await row('idleCompaction')!.set!(false)
+  expect(settings.getSettingsForSource('userSettings')?.idleCompaction).toBe(false)
+  await row('idleCompaction')!.set!(true)
+  expect(settings.getSettingsForSource('userSettings')?.idleCompaction).toBeUndefined()
+  expect(row('timeFormat')).toMatchObject({
+    label: 'Time format', kind: 'choice', value: 'auto', options: ['auto', '12-hour', '24-hour', '24-hour-utc'],
+  })
+  await row('timeFormat')!.set!('24-hour-utc')
+  expect(settings.getSettingsForSource('userSettings')?.timeFormat).toBe('24-hour-utc')
+  expect(row('timeFormat')?.value).toBe('24-hour-utc')
 })
 
 test('a policy enableWorkflows under CLAUDE_CODE_DISABLE_WORKFLOWS locks the row off, not on', async () => {

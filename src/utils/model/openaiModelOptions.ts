@@ -15,7 +15,7 @@ import {
 import { CACHE_PATHS } from '../cachePaths.js'
 import { checkHasTrustDialogAccepted } from '../config.js'
 import { logForDebugging } from '../debug.js'
-import { isEnvTruthy } from '../envUtils.js'
+import { isEnvDefinedFalsy } from '../envUtils.js'
 import { getClaudeCodeUserAgent } from '../userAgent.js'
 import type { ModelOption } from './modelOptions.js'
 import { getAPIProvider, isFirstPartyAnthropicBaseUrl } from './providers.js'
@@ -117,7 +117,8 @@ export function isModelDiscoveryEnabled(): boolean {
   if (getAPIProvider() === 'openai') return true
   return (
     getAPIProvider() === 'firstParty' &&
-    isEnvTruthy(process.env.CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY) &&
+    // On by default; CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=0 turns it off.
+    !isEnvDefinedFalsy(process.env.CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY) &&
     // A first-party base URL is served by the bootstrap endpoint, so discovery
     // only applies to an actual gateway.
     !isFirstPartyAnthropicBaseUrl() &&

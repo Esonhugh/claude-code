@@ -58,6 +58,18 @@
 
 实际触发点会比窗口略低，因为要给摘要输出和缓冲留空间。
 
+## 空闲压缩（idle compaction）
+
+和官方 2.1.299 一样：主对话用的是 1 小时 prompt cache 时，一轮结束后闲置 54 分钟（cache 过期前），且对话不少于 200k tokens，就先压缩，回来后下一条消息不必按全价重新处理整段对话。压缩后显示 `Compacted while idle, before the prompt cache expired`。
+
+| 设置 | 作用 |
+| --- | --- |
+| `"idleCompaction": false` 或 `/config` 里的 Idle compaction | 关闭 |
+| `CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS` | 最低 tokens，默认 200000，最低 100000 |
+| `ENABLE_PROMPT_CACHING_1H=1` | 主对话使用 1 小时 cache；本 fork 关闭了 GrowthBook，不设这个变量（或 Bedrock 的 `ENABLE_PROMPT_CACHING_1H_BEDROCK`）就是 5 分钟 cache，空闲压缩不会触发 |
+
+自动压缩关闭（`DISABLE_AUTO_COMPACT` 等）、后台会话、电脑休眠导致计时器晚了超过 60 秒时都不压缩。
+
 ## 换一种压缩方式：Codex 式压缩
 
 默认的压缩方式是让模型把整段对话写成一段摘要，压缩后只剩摘要。本 fork 另外提供一种仿 Codex CLI 的压缩方式，在设置里打开：
