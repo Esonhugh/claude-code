@@ -1206,6 +1206,14 @@ test('returns SESSION_ALREADY_CLOSED when writing to a closed pane', async () =>
   )
 })
 
+test('Terminal schema tells the model that command is one executable and args is its argv', () => {
+  const schema = TerminalTool.inputSchema.toJSONSchema() as {
+    properties: Record<string, { description?: string }>
+  }
+  assert.match(schema.properties.command?.description ?? '', /args/)
+  assert.match(schema.properties.args?.description ?? '', /argument/i)
+})
+
 test('new-session runs inside the sandbox when sandboxing is enabled', async () => {
   const opens: PtyDriverOpenOptions[] = []
   const driver = new FakePtyDriver()
