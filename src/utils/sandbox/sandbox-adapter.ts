@@ -213,6 +213,157 @@ function isUnsandboxedFallbackLocked(): boolean {
   )
 }
 
+// An admin mandates the sandbox: the repo may not loosen its network.
+function isSandboxMandated(): boolean {
+  return isUnsandboxedFallbackLocked() || shouldAllowManagedSandboxDomainsOnly()
+}
+
+function trustedSandboxSettings(): SettingsJson[] {
+  return TRUSTED_SANDBOX_SOURCES.filter(isSettingSourceEnabled).flatMap(
+    source => getSettingsForSource(source) ?? [],
+  )
+}
+
+function trustedSandboxList<T>(
+  pick: (sandbox: NonNullable<SettingsJson['sandbox']>) => T[] | undefined,
+): T[] {
+  return [
+    ...new Set(
+      trustedSandboxSettings().flatMap(s => (s.sandbox && pick(s.sandbox)) ?? []),
+    ),
+  ]
+}
+
+function webFetchDomains(rules: string[] | undefined): string[] {
+  return (rules ?? []).flatMap(ruleString => {
+    const rule = permissionRuleValueFromString(ruleString)
+    return rule.toolName === WEB_FETCH_TOOL_NAME &&
+      rule.ruleContent?.startsWith('domain:')
+      ? [rule.ruleContent.substring('domain:'.length)]
+      : []
+  })
+}
+
+// A trusted deny list or strict allowlist: the repo may not replace the
+// filtering proxy.
+function hasTrustedNetworkFilter(): boolean {
+  if (isSandboxMandated() || trustedSandboxValue(sb => sb.network?.strictAllowlist)) {
+    return true
+  }
+  return (['policySettings', 'flagSettings'] as const).some(source => {
+    const settings = getSettingsForSource(source)
+    return (
+      (settings?.sandbox?.network?.deniedDomains?.length ?? 0) > 0 ||
+      webFetchDomains(settings?.permissions?.deny).length > 0
+    )
+  })
+}
+
+let loggedDroppedRepoNetwork = false
+
+function repoNetworkKeysSet(keys: readonly string[]): string[] {
+  return keys.filter(key =>
+    (['projectSettings', 'localSettings'] as const).some(source => {
+      if (!isSettingSourceEnabled(source)) return false
+      const value = (
+        getSettingsForSource(source)?.sandbox?.network as
+          | Record<string, unknown>
+          | undefined
+      )?.[key]
+      return value !== undefined && value !== false
+    }),
+  )
+}
+
+/**
+ * Socket, binding and proxy-port allowances. A mandated sandbox takes them
+ * only from trusted sources; a trusted network filter only pins the proxy
+ * ports.
+ */
+function networkAllowances(
+  network: NonNullable<SettingsJson['sandbox']>['network'],
+): Pick<
+  SandboxRuntimeConfig['network'],
+  | 'allowUnixSockets'
+  | 'allowAllUnixSockets'
+  | 'allowLocalBinding'
+  | 'allowMachLookup'
+  | 'httpProxyPort'
+  | 'socksProxyPort'
+> {
+  const mandated = isSandboxMandated()
+  if (!mandated && !hasTrustedNetworkFilter()) {
+    return {
+      allowUnixSockets: network?.allowUnixSockets,
+      allowAllUnixSockets: network?.allowAllUnixSockets,
+      allowLocalBinding: network?.allowLocalBinding,
+      allowMachLookup: network?.allowMachLookup,
+      httpProxyPort: network?.httpProxyPort,
+      socksProxyPort: network?.socksProxyPort,
+    }
+  }
+  if (!loggedDroppedRepoNetwork) {
+    loggedDroppedRepoNetwork = true
+    const dropped = repoNetworkKeysSet(
+      mandated
+        ? [
+            'allowUnixSockets',
+            'allowAllUnixSockets',
+            'allowLocalBinding',
+            'allowMachLookup',
+            'httpProxyPort',
+            'socksProxyPort',
+          ]
+        : ['httpProxyPort', 'socksProxyPort'],
+    )
+    if (dropped.length > 0) {
+      logForDebugging(
+        `[sandbox] ${mandated ? 'admin sandbox mandate' : 'trusted network deny list or strict allowlist'}: ignoring sandbox.network.${dropped.join(', ')} from project/local settings`,
+      )
+    }
+  }
+  // Under allowManagedDomainsOnly only managed settings may replace the proxy.
+  const policyNetwork = getSettingsForSource('policySettings')?.sandbox?.network
+  const ports = shouldAllowManagedSandboxDomainsOnly()
+    ? {
+        httpProxyPort: policyNetwork?.httpProxyPort,
+        socksProxyPort: policyNetwork?.socksProxyPort,
+      }
+    : {
+        httpProxyPort: trustedSandboxValue(sb => sb.network?.httpProxyPort),
+        socksProxyPort: trustedSandboxValue(sb => sb.network?.socksProxyPort),
+      }
+  if (!mandated) {
+    return {
+      allowUnixSockets: network?.allowUnixSockets,
+      allowAllUnixSockets: network?.allowAllUnixSockets,
+      allowLocalBinding: network?.allowLocalBinding,
+      allowMachLookup: network?.allowMachLookup,
+      ...ports,
+    }
+  }
+  // A merged `false` still wins: it can only tighten.
+  const trustedFlag = (
+    merged: boolean | undefined,
+    pick: (sb: NonNullable<SettingsJson['sandbox']>) => boolean | undefined,
+  ) => (merged === false ? false : trustedSandboxValue(pick))
+  const sockets = trustedSandboxList(sb => sb.network?.allowUnixSockets)
+  const mach = trustedSandboxList(sb => sb.network?.allowMachLookup)
+  return {
+    allowUnixSockets: sockets.length > 0 ? sockets : undefined,
+    allowAllUnixSockets: trustedFlag(
+      network?.allowAllUnixSockets,
+      sb => sb.network?.allowAllUnixSockets,
+    ),
+    allowLocalBinding: trustedFlag(
+      network?.allowLocalBinding,
+      sb => sb.network?.allowLocalBinding,
+    ),
+    allowMachLookup: mach.length > 0 ? mach : undefined,
+    ...ports,
+  }
+}
+
 function shouldAllowManagedReadPathsOnly(): boolean {
   return (
     getSettingsForSource('policySettings')?.sandbox?.filesystem
@@ -238,50 +389,34 @@ export function convertToSandboxRuntimeConfig(
   // When allowManagedSandboxDomainsOnly is enabled, only use domains from policy settings
   if (shouldAllowManagedSandboxDomainsOnly()) {
     const policySettings = getSettingsForSource('policySettings')
-    for (const domain of policySettings?.sandbox?.network?.allowedDomains ||
-      []) {
-      allowedDomains.push(domain)
-    }
-    for (const ruleString of policySettings?.permissions?.allow || []) {
-      const rule = permissionRuleValueFromString(ruleString)
-      if (
-        rule.toolName === WEB_FETCH_TOOL_NAME &&
-        rule.ruleContent?.startsWith('domain:')
-      ) {
-        allowedDomains.push(rule.ruleContent.substring('domain:'.length))
-      }
-    }
+    allowedDomains.push(
+      ...(policySettings?.sandbox?.network?.allowedDomains ?? []),
+      ...webFetchDomains(policySettings?.permissions?.allow),
+    )
+  } else if (
+    isSandboxMandated() ||
+    trustedSandboxValue(sb => sb.network?.strictAllowlist)
+  ) {
+    // The repo's own settings cannot extend a mandated sandbox or a strict
+    // allowlist.
+    allowedDomains.push(
+      ...trustedSandboxList(sb => sb.network?.allowedDomains),
+      ...new Set(
+        trustedSandboxSettings().flatMap(s =>
+          webFetchDomains(s.permissions?.allow),
+        ),
+      ),
+    )
   } else {
-    // Under a strict allowlist the repo's own settings cannot extend it.
-    const strict = trustedSandboxValue(sb => sb.network?.strictAllowlist)
     for (const source of SETTING_SOURCES.filter(isSettingSourceEnabled)) {
-      if (strict && (source === 'projectSettings' || source === 'localSettings')) {
-        continue
-      }
       allowedDomains.push(
         ...(getSettingsForSource(source)?.sandbox?.network?.allowedDomains ?? []),
       )
     }
-    for (const ruleString of permissions.allow || []) {
-      const rule = permissionRuleValueFromString(ruleString)
-      if (
-        rule.toolName === WEB_FETCH_TOOL_NAME &&
-        rule.ruleContent?.startsWith('domain:')
-      ) {
-        allowedDomains.push(rule.ruleContent.substring('domain:'.length))
-      }
-    }
+    allowedDomains.push(...webFetchDomains(permissions.allow))
   }
 
-  for (const ruleString of permissions.deny || []) {
-    const rule = permissionRuleValueFromString(ruleString)
-    if (
-      rule.toolName === WEB_FETCH_TOOL_NAME &&
-      rule.ruleContent?.startsWith('domain:')
-    ) {
-      deniedDomains.push(rule.ruleContent.substring('domain:'.length))
-    }
-  }
+  deniedDomains.push(...webFetchDomains(permissions.deny))
   deniedDomains.push(...(settings.sandbox?.network?.deniedDomains ?? []))
 
   // Extract filesystem paths from Edit and Read rules
@@ -518,23 +653,7 @@ export function convertToSandboxRuntimeConfig(
     network: {
       allowedDomains,
       deniedDomains,
-      allowUnixSockets: settings.sandbox?.network?.allowUnixSockets,
-      allowAllUnixSockets: settings.sandbox?.network?.allowAllUnixSockets,
-      allowLocalBinding: settings.sandbox?.network?.allowLocalBinding,
-      // The repo cannot route traffic around a managed deny list or a locked sandbox.
-      ...(policySandbox?.network?.deniedDomains?.length ||
-      isUnsandboxedFallbackLocked()
-        ? {
-            httpProxyPort: trustedSandboxValue(sb => sb.network?.httpProxyPort),
-            socksProxyPort: trustedSandboxValue(
-              sb => sb.network?.socksProxyPort,
-            ),
-          }
-        : {
-            httpProxyPort: settings.sandbox?.network?.httpProxyPort,
-            socksProxyPort: settings.sandbox?.network?.socksProxyPort,
-          }),
-      allowMachLookup: settings.sandbox?.network?.allowMachLookup,
+      ...networkAllowances(settings.sandbox?.network),
       strictAllowlist: trustedSandboxValue(sb => sb.network?.strictAllowlist),
       tlsTerminate: trustedSandboxValue(sb => sb.network?.tlsTerminate),
     },
@@ -568,7 +687,12 @@ export function convertToSandboxRuntimeConfig(
     bwrapPath: policySandbox?.bwrapPath,
     socatPath: policySandbox?.socatPath,
     ...(getPlatform() === 'windows' &&
-      getSrtWinPath() && { windows: { srtWin: { path: getSrtWinPath()! } } }),
+      getSrtWinPath() && {
+        windows: {
+          sandboxUser: WINDOWS_SANDBOX_USER,
+          srtWin: { path: getSrtWinPath()! },
+        },
+      }),
   }
 }
 
@@ -719,9 +843,13 @@ const checkDependencies = memoize((): SandboxDependencyCheck => {
   }
 })
 
+// Official's account name: both builds then share one install (srt-win refuses
+// a second install under another name).
+export const WINDOWS_SANDBOX_USER = 'ClaudeCodeSandbox'
+
 /**
  * The runtime only finds srt-win through an initialized config, so probe the
- * install here. srt-win starts the command as the `srt-sandbox` user, which
+ * install here. srt-win starts the command as the sandbox user, which
  * needs read and execute on srt-win.exe itself; the extracted copy lives in
  * the user's profile, which that user cannot read.
  */

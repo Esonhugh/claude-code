@@ -62,7 +62,7 @@ const posix = (p: string) => p.replace(/\\/g, '/')
 const bash = (command: string) => ({ name: 'Bash', input: { command, description: 'e2e' } })
 const pwsh = (command: string) => ({ name: 'PowerShell', input: { command, description: 'e2e' } })
 const checks: { step: Step; expect: (out: string) => boolean }[] = [
-  { step: bash('whoami'), expect: out => clean(out) && out.includes('srt-sandbox') },
+  { step: bash('whoami'), expect: out => clean(out) && out.includes('ClaudeCodeSandbox') },
   { step: bash('echo ok > inside.txt && cat inside.txt'), expect: out => clean(out) && out.includes('ok') },
   { step: bash('echo x > /c/Windows/cc-e2e.txt'), expect: out => /Permission denied/.test(out) },
   { step: bash(`cat '${posix(secret)}'`), expect: out => /Permission denied/.test(out) },
@@ -77,7 +77,7 @@ const checks: { step: Step; expect: (out: string) => boolean }[] = [
   { step: bash('echo "$GIT_EDITOR $CLAUDECODE"'), expect: out => clean(out) && out.includes('true 1') },
   { step: bash('cd sub'), expect: out => clean(out) && !/Sandbox|error/i.test(out) },
   { step: bash('pwd'), expect: out => clean(out) && /\/sub\s*$/.test(out.trim()) },
-  { step: pwsh('whoami'), expect: out => clean(out) && out.includes('srt-sandbox') },
+  { step: pwsh('whoami'), expect: out => clean(out) && out.includes('ClaudeCodeSandbox') },
   {
     step: pwsh('Set-Content -Path ps.txt -Value ok; Get-Content ps.txt'),
     expect: out => clean(out) && out.includes('ok'),
