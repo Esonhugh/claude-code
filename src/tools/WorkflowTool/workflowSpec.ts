@@ -104,6 +104,7 @@ export type WorkflowSpec = {
   runScriptSnapshot?: string
   meta?: WorkflowScriptMeta
   scriptResult?: unknown
+  disableModelInvocation?: boolean
 }
 
 export type WorkflowDryRunPhase = {

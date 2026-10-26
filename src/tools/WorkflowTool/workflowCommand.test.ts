@@ -80,7 +80,7 @@ const projectCommands = commands.filter(command =>
   ['research-workflow', 'js-command-workflow'].includes(command.name),
 )
 assert.equal(projectCommands.length, 2)
-assert.ok(commands.some(command => command.name === 'code-review'))
+assert.equal(commands.some(command => command.name === 'code-review'), false)
 assert.ok(commands.some(command => command.name === 'deep-research'))
 assert.equal(commands.some(command => command.name === 'investigate'), false)
 assert.equal(commands.some(command => command.name === 'bugfix'), false)
@@ -123,13 +123,27 @@ assert.equal(
 const quotedMetaText = (await metaCommand.getPromptForCommand('"a b" c', {} as never)).map(block => (block.type === 'text' ? block.text : '')).join('\n')
 assert.match(quotedMetaText, /Invoke: Workflow\(\{ name: "meta-command", args: "\\"a b\\" c" \}\)/)
 
+// Official 2.1.310 slash prompt for the bundled deep-research workflow: whenToUse follows the
+// description, and an empty /deep-research still hands the model the Workflow call.
 const deepResearchCommand = commands.find(command => command.name === 'deep-research')!
 assert.equal(deepResearchCommand.type, 'prompt')
-assert.equal(deepResearchCommand.hasUserSpecifiedDescription, false)
+assert.equal(deepResearchCommand.disableModelInvocation, true)
 const emptyDeepResearchPrompt = await deepResearchCommand.getPromptForCommand('', {} as never)
 const emptyDeepResearchText = emptyDeepResearchPrompt.map(block => (block.type === 'text' ? block.text : '')).join('\n')
-assert.equal(emptyDeepResearchText, 'Usage: /deep-research <workflow input>')
-assert.doesNotMatch(emptyDeepResearchText, /Workflow\(/)
+assert.equal(
+  emptyDeepResearchText,
+  'Run the "deep-research" workflow.\n\n' +
+    'Deep research harness — fan-out web searches, fetch sources, adversarially verify claims, synthesize a cited report.\n\n' +
+    'When the user wants a deep, multi-source, fact-checked research report on any topic. BEFORE invoking, check if the question is specific enough to research directly — if underspecified (e.g., "what car to buy" without budget/use-case/region), ask 2-3 clarifying questions to narrow scope. Then pass the refined question as args, weaving the answers in.\n\n' +
+    'Phases:\n' +
+    '- Scope: Decompose question (from args) into 5 search angles\n' +
+    '- Search: 5 parallel WebSearch agents, one per angle\n' +
+    '- Fetch: URL-dedup, fetch top 15 sources, extract falsifiable claims\n' +
+    '- Verify: 3-vote adversarial verification per claim (need 2/3 refutes to kill)\n' +
+    '- Synthesize: Merge semantic dupes, rank by confidence, cite sources\n\n' +
+    'Invoke: Workflow({ name: "deep-research" })\n\n' +
+    'If the user asks you to modify this workflow or write a new script, load the `workflow-authoring` skill first.',
+)
 
 const jsCommand = commands.find(command => command.name === 'js-command-workflow')!
 assert.equal(jsCommand.type, 'prompt')

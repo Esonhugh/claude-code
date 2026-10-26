@@ -92,13 +92,14 @@ function tailChars(text: string, limit: number): string {
   return first >= 0xdc00 && first <= 0xdfff ? tail.slice(1) : tail
 }
 
-// Like official: relay the last human user message (not a tool result or compact summary)
+// Like official: relay the last human user message (not a tool result, compact summary or meta message)
 // unless the Workflow tool runs inside a subagent or the request is too long to relay.
 export function workflowPromptRelay(messages: readonly Message[] | undefined, agentId: string | undefined): WorkflowPromptRelay {
   if (agentId !== undefined || messages === undefined) return { kind: 'none' }
   for (let index = messages.length - 1; index >= 0; index--) {
     const message = messages[index]!
-    if (message.type !== 'user' || isToolResultOrSummary(message)) continue
+    // isMeta covers a slash command's expanded prompt; the typed command message precedes it.
+    if (message.type !== 'user' || isToolResultOrSummary(message) || (message as { isMeta?: boolean }).isMeta === true) continue
     const origin = (message as { origin?: { kind?: string } }).origin
     const text = messageText(message)
     if (origin?.kind !== 'human' || text === null) return { kind: 'none' }

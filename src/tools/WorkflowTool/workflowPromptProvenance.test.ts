@@ -73,6 +73,13 @@ assert.deepEqual(
   { kind: 'relay', userText: 'yes, run it', referentTail: 'Shall I run the workflow?' },
 )
 // Only human-origin requests are relayed; a relayed or synthetic message yields no frame.
+// A slash command's expanded prompt is an isMeta message; like official 2.1.310 the relay is
+// the user's visible command message, not the expanded text.
+const slashTyped = '<command-message>deep-research</command-message>\n<command-name>/deep-research</command-name>\n<command-args>WAL readers?</command-args>'
+assert.deepEqual(
+  workflowPromptRelay([user(slashTyped), user('Run the "deep-research" workflow.', { isMeta: true })], undefined),
+  { kind: 'relay', userText: slashTyped },
+)
 assert.deepEqual(workflowPromptRelay([user('bot text', { origin: { kind: 'plugin', name: 'x' } })], undefined), { kind: 'none' })
 assert.deepEqual(workflowPromptRelay([user('no origin', { origin: undefined })], undefined), { kind: 'none' })
 assert.deepEqual(workflowPromptRelay([user('   ')], undefined), { kind: 'none' })

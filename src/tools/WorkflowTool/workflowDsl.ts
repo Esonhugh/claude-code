@@ -104,7 +104,7 @@ export function preflightWorkflowScript(source: string, filePath: string): Retur
   return parsed
 }
 
-function loadOfficialWorkflowScriptSpec(filePath: string, source: string): WorkflowSpec {
+export function loadOfficialWorkflowScriptSpec(filePath: string, source: string): WorkflowSpec {
   const parsed = preflightWorkflowScript(source, filePath)
   return {
     name: parsed.meta.name,

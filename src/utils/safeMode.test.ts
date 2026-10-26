@@ -81,7 +81,7 @@ test('safe mode skips custom agents, skills, output styles, workflows and MCP se
   expect(agents.allAgents.some(agent => agent.agentType === 'custom-agent')).toBe(false)
   expect(agents.allAgents.length).toBeGreaterThan(0)
   const workflows = await discoverWorkflowSpecs(project, undefined, { home: project })
-  expect(workflows.valid.map(workflow => workflow.commandName).sort()).toEqual(['code-review', 'deep-research'])
+  expect(workflows.valid.map(workflow => workflow.commandName).sort()).toEqual(['deep-research'])
   expect((await getClaudeCodeMcpConfigs()).servers).toEqual({})
 })
 
