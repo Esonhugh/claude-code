@@ -80,17 +80,18 @@ export function startFakeApi(): { url: string; stop: () => void } {
 export async function runSteps(
   bin: string,
   steps: Step[],
-  opts: { cwd: string; env: NodeJS.ProcessEnv; args?: string[] },
+  opts: { cwd: string; env: NodeJS.ProcessEnv; args?: string[]; prefixArgs?: string[]; verbose?: boolean },
 ): Promise<string[]> {
   const output = await new Promise<string>((resolve, reject) => {
     const child = spawn(
       bin,
       [
+        ...(opts.prefixArgs ?? []),
         '-p',
         `STEPS:${JSON.stringify(steps)}`,
         '--output-format',
         'stream-json',
-        '--verbose',
+        ...(opts.verbose === false ? [] : ['--verbose']),
         '--dangerously-skip-permissions',
         ...(opts.args ?? []),
       ],
@@ -140,12 +141,28 @@ export function report(
 
 /**
  * The runner's env without inherited Claude/Anthropic variables (a remote
- * session's, a CI token), which would change what the binary under test does.
+ * session's, a CI token, CCR auth), which would change what the binary under test does.
  */
 export function inheritedEnv(): NodeJS.ProcessEnv {
   return Object.fromEntries(
-    Object.entries(process.env).filter(([k]) => !/^(CLAUDE|ANTHROPIC)_/.test(k)),
+    Object.entries(process.env).filter(([k]) => !/^(CLAUDE|ANTHROPIC|CCR)_/.test(k)),
   )
+}
+
+/**
+ * Runs one CLI command and returns stdout+stderr. Async on purpose: the fake
+ * API runs in this process and must keep answering meanwhile.
+ */
+export async function runCli(
+  bin: string,
+  args: string[],
+  opts: { cwd: string; env: NodeJS.ProcessEnv; timeoutMs?: number },
+): Promise<string> {
+  const child = Bun.spawn([bin, ...args], { cwd: opts.cwd, env: opts.env, stdout: 'pipe', stderr: 'pipe' })
+  const timer = setTimeout(() => child.kill(), opts.timeoutMs ?? 60_000)
+  const [out, err] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text()])
+  clearTimeout(timer)
+  return `${out}${err}`.trim()
 }
 
 /** A command that should succeed must not report a non-zero exit. */

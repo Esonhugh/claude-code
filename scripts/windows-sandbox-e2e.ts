@@ -49,6 +49,8 @@ const env = {
   ANTHROPIC_API_KEY: 'sk-fake',
   CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
   CLAUDE_CODE_USE_POWERSHELL_TOOL: '1',
+  // Official 2.1.303 gates its Windows sandbox behind this; the fork ignores it.
+  CLAUDE_CODE_NANKEEN_KESTREL: '1',
 }
 
 const install = spawnSync(bin, ['sandbox', 'install'], { env, encoding: 'utf8' })

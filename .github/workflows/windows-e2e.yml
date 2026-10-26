@@ -12,6 +12,8 @@ jobs:
     env:
       # A 0.0.0-dev build is refused by the minimum-version check.
       CLAUDE_CODE_VERSION: 2.1.294
+      # The official build the fork is compared with.
+      OFFICIAL_CLAUDE_VERSION: 2.1.303
     steps:
       - uses: actions/checkout@v4
 
@@ -37,3 +39,39 @@ jobs:
         if: ${{ !cancelled() }}
         shell: bash
         run: bun scripts/windows-features-e2e.ts dist/release/claude-code-v*-win32-x64.exe
+
+      - name: Sessions e2e
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: bun scripts/windows-sessions-e2e.ts dist/release/claude-code-v*-win32-x64.exe
+
+      # The official binary runs the same scripts for comparison only; its
+      # failures (fork-only tools, Direct Connect) do not fail the job.
+      - name: Download official
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          mkdir -p official
+          cd official
+          tgz=$(bunx npm pack "@anthropic-ai/claude-code-win32-x64@$OFFICIAL_CLAUDE_VERSION" | tail -n 1)
+          tar -xzf "$tgz"
+          cp "$(find package -name claude.exe | head -n 1)" claude.exe
+          ./claude.exe --version
+
+      - name: Official sandbox e2e
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        shell: bash
+        run: bun scripts/windows-sandbox-e2e.ts official/claude.exe
+
+      - name: Official features e2e
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        shell: bash
+        run: bun scripts/windows-features-e2e.ts official/claude.exe
+
+      - name: Official sessions e2e
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        shell: bash
+        run: bun scripts/windows-sessions-e2e.ts official/claude.exe
