@@ -12,8 +12,8 @@ import {
   addSessionHook,
   getSessionHooks,
 } from '../../utils/hooks/sessionHooks.js'
-import { ClearGoalTool } from './ClearGoalTool.js'
-import { CLEAR_GOAL_TOOL_NAME } from './constants.js'
+import { GOAL_TOOL_NAME } from './constants.js'
+import { GoalTool } from './GoalTool.js'
 
 type GoalState = {
   goalStatus: GoalStatus
@@ -36,9 +36,9 @@ function createContext(initial: GoalStatus, agentId?: string) {
   return { context, getState: () => state }
 }
 
-assert.equal(ClearGoalTool.name, CLEAR_GOAL_TOOL_NAME)
-assert.equal(ClearGoalTool.userFacingName(), CLEAR_GOAL_TOOL_NAME)
-assert.equal(ClearGoalTool.renderToolUseMessage(), 'Clear active goal')
+assert.equal(GoalTool.name, GOAL_TOOL_NAME)
+assert.equal(GoalTool.userFacingName(), GOAL_TOOL_NAME)
+assert.equal(GoalTool.renderToolUseMessage({ action: 'clear' }, { theme: 'dark', verbose: false }), 'Clear active goal')
 
 const clearContext = createContext({
   active: true,
@@ -57,14 +57,15 @@ addSessionHook(
   GOAL_HOOK_ID,
 )
 
-const clearResult = await ClearGoalTool.call({}, clearContext.context)
+const clearResult = await GoalTool.call({ action: 'clear' }, clearContext.context)
 assert.deepEqual(clearContext.getState().goalStatus, { active: false })
 assert.equal(
   getSessionHooks(clearContext.getState() as never, getSessionId()).get('Stop'),
   undefined,
-  'ClearGoal must unregister the goal Stop hook',
+  'Goal clear must unregister the goal Stop hook',
 )
 assert.deepEqual(clearResult.data, {
+  action: 'clear',
   cleared: true,
   goal: 'finish the feature',
 })
@@ -83,7 +84,7 @@ assert.deepEqual(
   },
 )
 assert.deepEqual(
-  ClearGoalTool.mapToolResultToToolResultBlockParam(
+  GoalTool.mapToolResultToToolResultBlockParam(
     clearResult.data,
     'tool-use-clear',
   ),
@@ -93,7 +94,7 @@ assert.deepEqual(
     content: 'Goal cleared: finish the feature',
   },
 )
-const clearedMessage = ClearGoalTool.renderToolResultMessage?.(clearResult.data)
+const clearedMessage = GoalTool.renderToolResultMessage?.(clearResult.data)
 assert.ok(isValidElement<{ children: string }>(clearedMessage))
 assert.equal(clearedMessage.type, Text)
 assert.equal(clearedMessage.props.children, 'Goal cleared: finish the feature')
@@ -108,26 +109,26 @@ addSessionHook(
   undefined,
   GOAL_HOOK_ID,
 )
-const noGoalResult = await ClearGoalTool.call({}, noGoalContext.context)
+const noGoalResult = await GoalTool.call({ action: 'clear' }, noGoalContext.context)
 assert.deepEqual(noGoalContext.getState().goalStatus, { active: false })
 assert.equal(
   getSessionHooks(noGoalContext.getState() as never, getSessionId()).get(
     'Stop',
   ),
   undefined,
-  'ClearGoal must remove a stale goal Stop hook even when no goal is active',
+  'Goal clear must remove a stale goal Stop hook even when no goal is active',
 )
 assert.deepEqual(noGoalResult, {
-  data: { cleared: false },
+  data: { action: 'clear', cleared: false },
 })
 assert.equal(
-  ClearGoalTool.mapToolResultToToolResultBlockParam(
+  GoalTool.mapToolResultToToolResultBlockParam(
     noGoalResult.data,
     'tool-use-no-goal',
   ).content,
   'No goal set',
 )
-const noGoalMessage = ClearGoalTool.renderToolResultMessage?.(noGoalResult.data)
+const noGoalMessage = GoalTool.renderToolResultMessage?.(noGoalResult.data)
 assert.ok(isValidElement<{ children: string }>(noGoalMessage))
 assert.equal(noGoalMessage.type, Text)
 assert.equal(noGoalMessage.props.children, 'No goal set')
@@ -143,17 +144,17 @@ const agentContext = createContext(
   'agent-1',
 )
 assert.deepEqual(
-  await ClearGoalTool.validateInput?.({}, agentContext.context),
+  await GoalTool.validateInput?.({ action: 'clear' }, agentContext.context),
   {
     result: false,
-    message: 'ClearGoal cannot be used in agent contexts',
-    errorCode: 1,
+    message: 'Goal cannot be used in agent contexts',
+    errorCode: 3,
   },
 )
 await assert.rejects(
-  ClearGoalTool.call({}, agentContext.context),
-  /ClearGoal cannot be used in agent contexts/,
+  GoalTool.call({ action: 'clear' }, agentContext.context),
+  /Goal cannot be used in agent contexts/,
 )
 assert.equal(agentContext.getState().goalStatus.active, true)
 
-console.log('ClearGoalTool.test.ts passed')
+console.log('GoalTool.clear.test.ts passed')

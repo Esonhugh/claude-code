@@ -54,7 +54,6 @@ const SubscribePRTool = feature('KAIROS_GITHUB_WEBHOOKS')
   ? require('./tools/SubscribePRTool/SubscribePRTool.js').SubscribePRTool
   : null
 /* eslint-enable custom-rules/no-process-env-top-level, @typescript-eslint/no-require-imports */
-import { TaskOutputTool } from './tools/TaskOutputTool/TaskOutputTool.js'
 import { WebSearchTool } from './tools/WebSearchTool/WebSearchTool.js'
 import { TodoWriteTool } from './tools/TodoWriteTool/TodoWriteTool.js'
 import { ExitPlanModeV2Tool } from './tools/ExitPlanModeTool/ExitPlanModeV2Tool.js'
@@ -89,8 +88,7 @@ import { TaskCreateTool } from './tools/TaskCreateTool/TaskCreateTool.js'
 import { TaskGetTool } from './tools/TaskGetTool/TaskGetTool.js'
 import { TaskUpdateTool } from './tools/TaskUpdateTool/TaskUpdateTool.js'
 import { TaskListTool } from './tools/TaskListTool/TaskListTool.js'
-import { SetGoalTool } from './tools/SetGoalTool/SetGoalTool.js'
-import { ClearGoalTool } from './tools/ClearGoalTool/ClearGoalTool.js'
+import { GoalTool } from './tools/GoalTool/GoalTool.js'
 import { SearchMemoryTool } from './tools/SearchMemoryTool/SearchMemoryTool.js'
 import uniqBy from 'lodash-es/uniqBy.js'
 import { isToolSearchEnabledOptimistic } from './utils/toolSearch.js'
@@ -205,7 +203,6 @@ export function getAllBaseTools(
 ): Tools {
   return [
     AgentTool,
-    TaskOutputTool,
     BashTool,
     TerminalTool,
     // Ant-native builds have bfs/ugrep embedded in the bun binary (same ARGV0
@@ -222,8 +219,7 @@ export function getAllBaseTools(
     WebFetchTool,
     TodoWriteTool,
     WebSearchTool,
-    SetGoalTool,
-    ClearGoalTool,
+    GoalTool,
     SearchMemoryTool,
     TaskStopTool,
     AskUserQuestionTool,

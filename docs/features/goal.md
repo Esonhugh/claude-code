@@ -54,7 +54,7 @@ Claude 开始工作。每轮结束时如果判断还没达成，会显示 `Goal 
 ## 其他
 
 - **恢复会话后目标还在**：目标和检查状态写在会话记录里，`--resume` / `--continue` 后恢复。
-- **Claude 也能自己设目标**：通过 `SetGoal` 工具，效果相同。
+- **Claude 也能自己设目标**：通过 `Goal` 工具（`action: "set"` / `"clear"`），效果相同。
 - **底部状态**：目标进行中，状态栏右侧显示 `Goal is set`；自定义状态栏脚本可以读 `goal.active`（见 [branding.md](branding.md)）。
 
 ## 命令速查

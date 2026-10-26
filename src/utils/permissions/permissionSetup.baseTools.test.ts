@@ -24,3 +24,11 @@ test('--tools denies tools that only become enabled later in startup', async () 
   expect(denied).not.toContain('Read')
   expect(denied).not.toContain('Glob')
 })
+
+test('base tools leave out TaskOutput and offer one Goal tool', () => {
+  const names = getAllBaseTools().map(tool => tool.name)
+  expect(names).not.toContain('TaskOutput')
+  expect(names).not.toContain('SetGoal')
+  expect(names).not.toContain('ClearGoal')
+  expect(names).toContain('Goal')
+})
