@@ -12,6 +12,7 @@ import { getPlatform } from '../../utils/platform.js'
 import {
   getSrtWinPath,
   SandboxManager,
+  WINDOWS_SANDBOX_USER,
 } from '../../utils/sandbox/sandbox-adapter.js'
 import { jsonStringify } from '../../utils/slowOperations.js'
 
@@ -27,7 +28,7 @@ function unavailableReason(): string | undefined {
 }
 
 /**
- * Provisions the `srt-sandbox` user and its network filters (one UAC
+ * Provisions the sandbox user and its network filters (one UAC
  * prompt). Prints `{status, message}` and exits 0 only when status is "ok".
  */
 export async function sandboxInstallHandler(): Promise<void> {
@@ -44,6 +45,7 @@ export async function sandboxInstallHandler(): Promise<void> {
   } else {
     try {
       const installed = await installWindowsSandboxAsync({
+        sandboxUser: WINDOWS_SANDBOX_USER,
         srtWin: resolveSrtWin({ path: getSrtWinPath()! }),
       })
       // A non-elevated caller cannot read the filters back ("cannot-read").

@@ -6,7 +6,7 @@ import { spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { clean, inheritedEnv, report, runSteps, startFakeApi, type Step } from './windows-e2e-api.ts'
+import { clean, inheritedEnv, report, runSteps, startFakeApi, type Step } from './windows-e2e-api.js'
 
 const bin = path.resolve(process.argv[2] ?? '')
 if (!fs.existsSync(bin)) throw new Error(`usage: windows-sandbox-e2e.ts <claude.exe>`)
@@ -27,7 +27,9 @@ fs.writeFileSync(
     sandbox: {
       enabled: true,
       autoAllowBashIfSandboxed: true,
-      network: { allowedDomains: ['example.com'] },
+      // Strict: a host outside the allowlist is refused without a network
+      // ask, which --dangerously-skip-permissions would allow.
+      network: { allowedDomains: ['example.com'], strictAllowlist: true },
     },
   }),
 )
@@ -62,7 +64,7 @@ const posix = (p: string) => p.replace(/\\/g, '/')
 const bash = (command: string) => ({ name: 'Bash', input: { command, description: 'e2e' } })
 const pwsh = (command: string) => ({ name: 'PowerShell', input: { command, description: 'e2e' } })
 const checks: { step: Step; expect: (out: string) => boolean }[] = [
-  { step: bash('whoami'), expect: out => clean(out) && out.includes('srt-sandbox') },
+  { step: bash('whoami'), expect: out => clean(out) && out.includes('ClaudeCodeSandbox') },
   { step: bash('echo ok > inside.txt && cat inside.txt'), expect: out => clean(out) && out.includes('ok') },
   { step: bash('echo x > /c/Windows/cc-e2e.txt'), expect: out => /Permission denied/.test(out) },
   { step: bash(`cat '${posix(secret)}'`), expect: out => /Permission denied/.test(out) },
@@ -77,7 +79,7 @@ const checks: { step: Step; expect: (out: string) => boolean }[] = [
   { step: bash('echo "$GIT_EDITOR $CLAUDECODE"'), expect: out => clean(out) && out.includes('true 1') },
   { step: bash('cd sub'), expect: out => clean(out) && !/Sandbox|error/i.test(out) },
   { step: bash('pwd'), expect: out => clean(out) && /\/sub\s*$/.test(out.trim()) },
-  { step: pwsh('whoami'), expect: out => clean(out) && out.includes('srt-sandbox') },
+  { step: pwsh('whoami'), expect: out => clean(out) && out.includes('ClaudeCodeSandbox') },
   {
     step: pwsh('Set-Content -Path ps.txt -Value ok; Get-Content ps.txt'),
     expect: out => clean(out) && out.includes('ok'),

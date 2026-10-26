@@ -100,6 +100,7 @@ if (process.env[childFlag] !== '1') {
     expect(path.startsWith(join(temp, 'cache'))).toBe(true)
     expect(readFileSync(path, 'utf8')).toBe('srt-win')
     expect(convertToSandboxRuntimeConfig({}).windows).toEqual({
+      sandboxUser: 'ClaudeCodeSandbox',
       srtWin: { path },
     })
   })

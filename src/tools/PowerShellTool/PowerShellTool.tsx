@@ -61,6 +61,12 @@ import {
   getToolResultPath,
   PREVIEW_SIZE_BYTES,
 } from '../../utils/toolResultStorage.js'
+import {
+  allowedDomainsInputField,
+  commandNetworkLists,
+  takeCommandNetworkLists,
+  validateAllowedDomains,
+} from '../../utils/sandbox/commandNetworkLists.js'
 import { shouldUseSandbox } from '../BashTool/shouldUseSandbox.js'
 import { BackgroundHint } from '../BashTool/UI.js'
 import {
@@ -291,6 +297,7 @@ const fullInputSchema = lazySchema(() =>
     dangerouslyDisableSandbox: semanticBoolean(z.boolean().optional()).describe(
       'Set this to true to dangerously override sandbox mode and run commands without sandboxing.',
     ),
+    ...allowedDomainsInputField(),
   }),
 )
 
@@ -444,7 +451,10 @@ export const PowerShellTool = buildTool({
     return isReadOnlyCommand(input.command)
   },
   toAutoClassifierInput(input) {
-    return input.command
+    const lists = commandNetworkLists(input)
+    return lists
+      ? { command: input.command, allowed_domains: lists.allowedDomains }
+      : input.command
   },
 
   get inputSchema(): InputSchema {
@@ -510,7 +520,9 @@ export const PowerShellTool = buildTool({
         }
       }
     }
-    return { result: true }
+    return (
+      validateAllowedDomains(input, shouldUseSandbox(input)) ?? { result: true }
+    )
   },
 
   async checkPermissions(
@@ -957,6 +969,7 @@ async function* runPowerShellCommand({
         ? false
         : shouldUseSandbox({ command, dangerouslyDisableSandbox }),
       shouldAutoBackground,
+      networkLists: takeCommandNetworkLists(toolUseId, command),
     })
   } catch (e) {
     logError(e)

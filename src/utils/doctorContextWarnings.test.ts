@@ -56,6 +56,7 @@ if (!process.env[childFlag]) {
     SandboxManager: {
       isSandboxingEnabled: () => false,
       isAutoAllowBashIfSandboxedEnabled: () => false,
+      areCommandNetworkListsOffered: () => false,
     },
   }))
 

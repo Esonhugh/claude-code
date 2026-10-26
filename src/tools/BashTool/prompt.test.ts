@@ -14,6 +14,7 @@ mock.module('../../utils/sandbox/sandbox-adapter.js', () => ({
     areUnsandboxedCommandsAllowed: () => false,
     getExcludedCommands: () => [],
     isAutoAllowBashIfSandboxedEnabled: () => false,
+    areCommandNetworkListsOffered: () => false,
   },
 }))
 

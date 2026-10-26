@@ -264,6 +264,114 @@ if (process.env[childFlag] !== '1') {
     }
   })
 
+  test('a locked or strict sandbox takes network allowances only from trusted sources', () => {
+    const user: SettingsJson = {
+      sandbox: {
+        network: { allowedDomains: ['user.example'], allowUnixSockets: ['/u.sock'] },
+      },
+      permissions: { allow: ['WebFetch(domain:user-fetch.example)'] },
+    }
+    const repo: SettingsJson = {
+      sandbox: {
+        network: {
+          allowedDomains: ['repo.example'],
+          allowUnixSockets: ['/repo.sock'],
+          allowAllUnixSockets: true,
+          allowLocalBinding: true,
+          allowMachLookup: ['com.repo'],
+          httpProxyPort: 9999,
+        },
+      },
+      permissions: { allow: ['WebFetch(domain:repo-fetch.example)'] },
+    }
+    const merged: SettingsJson = {
+      sandbox: {
+        network: {
+          ...repo.sandbox!.network,
+          allowedDomains: ['user.example', 'repo.example'],
+          allowUnixSockets: ['/u.sock', '/repo.sock'],
+        },
+      },
+      permissions: {
+        allow: [...user.permissions!.allow!, ...repo.permissions!.allow!],
+      },
+    }
+    const sources = ['userSettings', 'projectSettings', 'flagSettings'] as const
+    try {
+      setCachedSettingsForSource('userSettings', user)
+      setCachedSettingsForSource('projectSettings', repo)
+      setCachedSettingsForSource('flagSettings', {
+        sandbox: { allowUnsandboxedCommands: false },
+      })
+      const locked = convertToSandboxRuntimeConfig(merged).network
+      expect(locked.allowedDomains).toEqual(['user.example', 'user-fetch.example'])
+      expect(locked.allowUnixSockets).toEqual(['/u.sock'])
+      expect(locked.allowAllUnixSockets).toBeUndefined()
+      expect(locked.allowLocalBinding).toBeUndefined()
+      expect(locked.allowMachLookup).toBeUndefined()
+      expect(locked.httpProxyPort).toBeUndefined()
+
+      setCachedSettingsForSource('flagSettings', {
+        sandbox: { network: { strictAllowlist: true } },
+      })
+      const strict = convertToSandboxRuntimeConfig(merged).network
+      expect(strict.allowedDomains).toEqual(['user.example', 'user-fetch.example'])
+      expect(strict.allowUnixSockets).toEqual(['/u.sock', '/repo.sock'])
+      expect(strict.allowAllUnixSockets).toBe(true)
+      expect(strict.httpProxyPort).toBeUndefined()
+
+      setCachedSettingsForSource('flagSettings', null)
+      const open = convertToSandboxRuntimeConfig(merged).network
+      expect(open.allowedDomains).toEqual([
+        'user.example',
+        'repo.example',
+        'user-fetch.example',
+        'repo-fetch.example',
+      ])
+      expect(open.allowLocalBinding).toBe(true)
+      expect(open.httpProxyPort).toBe(9999)
+    } finally {
+      for (const source of sources) setCachedSettingsForSource(source, null)
+    }
+  })
+
+  test('a network ask is answered by the permission mode', async () => {
+    const { wrapSandboxAskCallback } = await import('./sandbox-adapter.js')
+    const host = { host: 'unlisted.example', port: 443 }
+    let asked = 0
+    const ask = async () => {
+      asked++
+      return true
+    }
+    const answer = (mode: string) =>
+      wrapSandboxAskCallback(ask, () => ({ mode }) as never)(host)
+    setSessionSettingsCache({
+      settings: { sandbox: { enabled: true } },
+      errors: [],
+    })
+    setCachedSettingsForSource('userSettings', { sandbox: { enabled: true } })
+    try {
+      expect(await answer('bypassPermissions')).toBe(true)
+      expect(await answer('dontAsk')).toBe(false)
+      expect(await answer('auto')).toEqual({
+        allow: false,
+        reason: expect.stringContaining('allowed_domains'),
+      })
+      expect(asked).toBe(0)
+      expect(await answer('default')).toBe(true)
+      expect(asked).toBe(1)
+
+      setCachedSettingsForSource('policySettings', {
+        sandbox: { network: { allowManagedDomainsOnly: true } },
+      })
+      expect(await answer('bypassPermissions')).toBe(false)
+    } finally {
+      setCachedSettingsForSource('policySettings', null)
+      setCachedSettingsForSource('userSettings', null)
+      setSessionSettingsCache({ settings: {}, errors: [] })
+    }
+  })
+
   test('a linked worktree may write only the main repo .git, minus hooks and config', async () => {
     const main = mkdtempSync(join(tmpdir(), 'cc-sandbox-main-'))
     const wt = mkdtempSync(join(tmpdir(), 'cc-sandbox-wt-'))

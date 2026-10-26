@@ -69,6 +69,8 @@ import {
 } from './plans.js'
 import { getPlatform } from './platform.js'
 import { countFilesRoundedRg } from './ripgrep.js'
+import { COMMAND_NETWORK_LIST_TOOLS } from './sandbox/commandNetworkLists.js'
+import { SandboxManager } from './sandbox/sandbox-adapter.js'
 import { jsonStringify } from './slowOperations.js'
 import type { SystemPrompt } from './systemPromptType.js'
 import { getToolSchemaCache } from './toolSchemaCache.js'
@@ -194,6 +196,14 @@ export async function toolToAPISchema(
     // This ensures external non-EAP users don't see swarm features in the schema
     if (!isAgentSwarmsEnabled()) {
       input_schema = filterSwarmFieldsFromSchema(tool.name, input_schema)
+    }
+    if (
+      COMMAND_NETWORK_LIST_TOOLS.has(tool.name) &&
+      !SandboxManager.areCommandNetworkListsOffered()
+    ) {
+      const { allowed_domains: _, ...properties } = (input_schema.properties ??
+        {}) as Record<string, unknown>
+      input_schema = { ...input_schema, properties }
     }
 
     base = {
@@ -733,6 +743,9 @@ export function normalizeToolInput<T extends Tool>(
           parsed.dangerouslyDisableSandbox !== undefined && {
             dangerouslyDisableSandbox: parsed.dangerouslyDisableSandbox,
           }),
+        ...(parsed.allowed_domains !== undefined && {
+          allowed_domains: parsed.allowed_domains,
+        }),
       } as z.infer<T['inputSchema']>
     }
     case FileEditTool.name: {
