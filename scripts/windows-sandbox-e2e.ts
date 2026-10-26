@@ -76,12 +76,14 @@ const server = Bun.serve({
 
 // Long names: the runner's TEMP is 8.3 (RUNNER~1), `pwd -P` is not.
 const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'cc-win-sandbox-')))
-const home = path.join(root, 'home')
+// The real profile stays HOME: the sandbox user is granted its way from the
+// profile down to a project inside it, as on a user's machine.
+const config = path.join(root, 'config')
 const project = path.join(root, 'project')
-fs.mkdirSync(path.join(home, '.claude'), { recursive: true })
+fs.mkdirSync(config, { recursive: true })
 fs.mkdirSync(path.join(project, 'sub'), { recursive: true })
 fs.writeFileSync(
-  path.join(home, '.claude', 'settings.json'),
+  path.join(config, 'settings.json'),
   JSON.stringify({
     sandbox: {
       enabled: true,
@@ -91,19 +93,18 @@ fs.writeFileSync(
   }),
 )
 fs.writeFileSync(
-  path.join(home, '.claude.json'),
+  path.join(config, '.claude.json'),
   JSON.stringify({
     hasCompletedOnboarding: true,
     projects: { [project]: { hasTrustDialogAccepted: true } },
   }),
 )
-const secret = path.join(home, 'secret.txt')
+const secret = path.join(root, 'secret.txt')
 fs.writeFileSync(secret, 'host-secret')
 
 const env = {
   ...process.env,
-  HOME: home,
-  USERPROFILE: home,
+  CLAUDE_CONFIG_DIR: config,
   ANTHROPIC_BASE_URL: `http://127.0.0.1:${server.port}`,
   ANTHROPIC_API_KEY: 'sk-fake',
   CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
