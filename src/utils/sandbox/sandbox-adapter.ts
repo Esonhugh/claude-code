@@ -28,7 +28,17 @@ import { execFileSync } from 'child_process'
 import { existsSync, mkdirSync, realpathSync, rmSync, statSync } from 'fs'
 import { readFile } from 'fs/promises'
 import { memoize } from 'lodash-es'
-import { basename, dirname, join, posix, resolve, sep } from 'path'
+import { userInfo } from 'os'
+import {
+  basename,
+  dirname,
+  isAbsolute,
+  join,
+  posix,
+  relative,
+  resolve,
+  sep,
+} from 'path'
 import {
   getAdditionalDirectoriesForClaudeMd,
   getCwdState,
@@ -721,11 +731,15 @@ function checkWindowsDependencies(): SandboxDependencyCheck {
     return { errors: ['srt-win.exe not found'], warnings: [] }
   }
   let sid: string | undefined
+  let groupSid: string | undefined
   try {
     const user = getWindowsSandboxUserStatus({
       srtWin: resolveSrtWin({ path }),
     })
-    if (user.provisioned && user.credPresent) sid = user.sid
+    if (user.provisioned && user.credPresent) {
+      sid = user.sid
+      groupSid = user.groupSid
+    }
   } catch (error) {
     return {
       errors: [`srt-win user status failed: ${errorMessage(error)}`],
@@ -751,7 +765,38 @@ function checkWindowsDependencies(): SandboxDependencyCheck {
       warnings: [],
     }
   }
+  grantWindowsParentFolders(groupSid ?? sid)
   return { errors: [], warnings: [] }
+}
+
+/**
+ * The sandbox user cannot read the attributes of the folders in the user's
+ * profile, so a sandboxed process cannot take a project there as its working
+ * directory: PowerShell starts in the drive root. Grant that right on each
+ * folder between the profile and the project, and only synchronize on the
+ * profile itself.
+ */
+function grantWindowsParentFolders(sid: string): void {
+  try {
+    const home = realpathSync.native(userInfo().homedir)
+    const project = realpathSync.native(getOriginalCwd())
+    const rel = relative(home, project)
+    if (!rel || rel.startsWith('..') || isAbsolute(rel)) return
+    const parts = rel.split(sep)
+    for (let i = 0; i < parts.length; i++) {
+      const folder = join(home, ...parts.slice(0, i))
+      execFileSync(
+        'icacls',
+        [folder, '/grant', `*${sid}:${i === 0 ? '(S)' : '(RA,S)'}`],
+        { stdio: 'ignore', windowsHide: true },
+      )
+    }
+  } catch (error) {
+    logForDebugging(
+      `[sandbox] could not let the sandbox user reach the project folder: ${errorMessage(error)}`,
+      { level: 'warn' },
+    )
+  }
 }
 
 function getSandboxEnabledSetting(): boolean {

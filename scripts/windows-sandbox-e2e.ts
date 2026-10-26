@@ -74,7 +74,8 @@ const server = Bun.serve({
   },
 })
 
-const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-win-sandbox-'))
+// Long names: the runner's TEMP is 8.3 (RUNNER~1), `pwd -P` is not.
+const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'cc-win-sandbox-')))
 const home = path.join(root, 'home')
 const project = path.join(root, 'project')
 fs.mkdirSync(path.join(home, '.claude'), { recursive: true })

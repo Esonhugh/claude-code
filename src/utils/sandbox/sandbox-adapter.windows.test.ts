@@ -3,11 +3,12 @@ import {
   existsSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
   writeFileSync,
 } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 
 const childFlag = 'CLAUDE_CODE_SANDBOX_ADAPTER_WINDOWS_CHILD'
 
@@ -53,10 +54,17 @@ if (process.env[childFlag] !== '1') {
     provisioned: false,
     credPresent: false,
     sid: undefined as string | undefined,
+    groupSid: undefined as string | undefined,
   }
   mock.module('@anthropic-ai/sandbox-runtime', () => ({
     ...runtime,
     getWindowsSandboxUserStatus: () => user,
+  }))
+  const os = await import('os')
+  const realUser = os.userInfo()
+  mock.module('os', () => ({
+    ...os,
+    userInfo: () => ({ ...realUser, homedir: dirname(temp) }),
   }))
   const childProcess = await import('child_process')
   const icacls: string[][] = []
@@ -117,12 +125,18 @@ if (process.env[childFlag] !== '1') {
     expect(icacls).toEqual([])
   })
 
-  test('an installed sandbox lets its user run srt-win', async () => {
-    user = { provisioned: true, credPresent: true, sid: 'S-1-5-21-1-2-3-1004' }
+  test('an installed sandbox lets its user run srt-win and reach the project', async () => {
+    user = {
+      provisioned: true,
+      credPresent: true,
+      sid: 'S-1-5-21-1-2-3-1004',
+      groupSid: 'S-1-5-21-1-2-3-1005',
+    }
     await SandboxManager.reset()
     expect(SandboxManager.checkDependencies().errors).toEqual([])
     expect(icacls).toEqual([
       ['icacls', getSrtWinPath()!, '/grant', '*S-1-5-21-1-2-3-1004:RX'],
+      ['icacls', realpathSync(dirname(temp)), '/grant', '*S-1-5-21-1-2-3-1005:(S)'],
     ])
   })
 }
