@@ -19,12 +19,26 @@ import {
   SandboxManager as BaseSandboxManager,
   SandboxRuntimeConfigSchema,
   SandboxViolationStore,
+  VENDORED_SRT_WIN_EXE,
+  getWindowsSandboxUserStatus,
+  resolveSrtWin,
 } from '@anthropic-ai/sandbox-runtime'
 import { checkLinuxDependencies } from '@anthropic-ai/sandbox-runtime/dist/sandbox/linux-sandbox-utils.js'
-import { existsSync, rmSync, statSync } from 'fs'
+import { execFileSync } from 'child_process'
+import { existsSync, mkdirSync, realpathSync, rmSync, statSync } from 'fs'
 import { readFile } from 'fs/promises'
 import { memoize } from 'lodash-es'
-import { join, posix, resolve, sep } from 'path'
+import { userInfo } from 'os'
+import {
+  basename,
+  dirname,
+  isAbsolute,
+  join,
+  posix,
+  relative,
+  resolve,
+  sep,
+} from 'path'
 import {
   getAdditionalDirectoriesForClaudeMd,
   getCwdState,
@@ -32,7 +46,9 @@ import {
   getInlinePluginsNoMcp,
   getOriginalCwd,
 } from '../../bootstrap/state.js'
+import { CACHE_PATHS } from '../cachePaths.js'
 import { logForDebugging } from '../debug.js'
+import { extractEmbeddedBinary } from '../embeddedRipgrep.js'
 import { expandPath } from '../path.js'
 import { getPlatform, type Platform } from '../platform.js'
 import { settingsChangeDetector } from '../settings/changeDetector.js'
@@ -64,6 +80,7 @@ import { errorMessage } from '../errors.js'
 import {
   getClaudeTempDir,
   getClaudeTempDirName,
+  pathInWorkingPath,
 } from '../permissions/filesystem.js'
 import type { PermissionRuleValue } from '../permissions/PermissionRule.js'
 import { ripgrepCommand } from '../ripgrep.js'
@@ -271,6 +288,14 @@ export function convertToSandboxRuntimeConfig(
   // Always include current directory and Claude temp directory as writable
   // The temp directory is needed for Shell.ts cwd tracking files
   const allowWrite: string[] = ['.', getClaudeTempDir()]
+  // srt-win drops a write grant on a path that does not exist yet.
+  if (getPlatform() === 'windows') {
+    try {
+      mkdirSync(getClaudeTempDir(), { recursive: true })
+    } catch (error) {
+      logForDebugging(`Failed to create ${getClaudeTempDir()}: ${error}`)
+    }
+  }
   const denyWrite: string[] = []
   const denyRead: string[] = []
   const allowRead: string[] = []
@@ -517,7 +542,10 @@ export function convertToSandboxRuntimeConfig(
       denyRead,
       allowRead,
       allowWrite,
-      denyWrite,
+      denyWrite:
+        getPlatform() === 'windows'
+          ? denyWrite.filter(p => isInsideWindowsWriteGrant(p, allowWrite))
+          : denyWrite,
       disabled: filesystemDisabled,
     },
     ...(hasCredentials && {
@@ -539,8 +567,53 @@ export function convertToSandboxRuntimeConfig(
     ripgrep: ripgrepConfig,
     bwrapPath: policySandbox?.bwrapPath,
     socatPath: policySandbox?.socatPath,
+    ...(getPlatform() === 'windows' &&
+      getSrtWinPath() && { windows: { srtWin: { path: getSrtWinPath()! } } }),
   }
 }
+
+/**
+ * The Windows sandbox user can write only where it is granted, so a write
+ * deny outside every grant changes nothing. srt-win still stamps each one,
+ * and stamping under the user's profile or Program Files is slow or fails.
+ */
+function isInsideWindowsWriteGrant(
+  path: string,
+  allowWrite: string[],
+): boolean {
+  // Compare long names: a grant and a deny may spell one folder in 8.3 form.
+  const longPath = (p: string): string => {
+    const rest: string[] = []
+    for (let dir = resolve(getCwdState(), p); ; ) {
+      try {
+        return join(realpathSync.native(dir), ...rest)
+      } catch {
+        const parent = dirname(dir)
+        if (parent === dir) return resolve(getCwdState(), p)
+        rest.unshift(basename(dir))
+        dir = parent
+      }
+    }
+  }
+  const target = longPath(path)
+  return allowWrite.some(root => pathInWorkingPath(target, longPath(root)))
+}
+
+/**
+ * srt-win.exe, which the Windows sandbox spawns. The compiled binary embeds
+ * it; a source checkout uses the runtime's vendored copy.
+ */
+export const getSrtWinPath = memoize((): string | undefined => {
+  const sourcePath = process.env.CLAUDE_CODE_EMBEDDED_SRT_WIN_PATH
+  const version = process.env.CLAUDE_CODE_EMBEDDED_SRT_WIN_VERSION
+  if (sourcePath && version) {
+    return extractEmbeddedBinary(
+      sourcePath,
+      join(CACHE_PATHS.srtWin(), `${version}-${process.arch}`, 'srt-win.exe'),
+    )
+  }
+  return existsSync(VENDORED_SRT_WIN_EXE) ? VENDORED_SRT_WIN_EXE : undefined
+})
 
 // ============================================================================
 // Claude CLI-specific state
@@ -622,6 +695,7 @@ async function detectWorktreeMainRepoPath(cwd: string): Promise<string | null> {
  * Returns { errors, warnings } - errors mean sandbox cannot run
  */
 const checkDependencies = memoize((): SandboxDependencyCheck => {
+  if (getPlatform() === 'windows') return checkWindowsDependencies()
   const { rgPath, rgArgs } = ripgrepCommand()
   const result = BaseSandboxManager.checkDependencies({
     command: rgPath,
@@ -644,6 +718,86 @@ const checkDependencies = memoize((): SandboxDependencyCheck => {
     warnings: result.warnings,
   }
 })
+
+/**
+ * The runtime only finds srt-win through an initialized config, so probe the
+ * install here. srt-win starts the command as the `srt-sandbox` user, which
+ * needs read and execute on srt-win.exe itself; the extracted copy lives in
+ * the user's profile, which that user cannot read.
+ */
+function checkWindowsDependencies(): SandboxDependencyCheck {
+  const path = getSrtWinPath()
+  if (!path) {
+    return { errors: ['srt-win.exe not found'], warnings: [] }
+  }
+  let sid: string | undefined
+  let groupSid: string | undefined
+  try {
+    const user = getWindowsSandboxUserStatus({
+      srtWin: resolveSrtWin({ path }),
+    })
+    if (user.provisioned && user.credPresent) {
+      sid = user.sid
+      groupSid = user.groupSid
+    }
+  } catch (error) {
+    return {
+      errors: [`srt-win user status failed: ${errorMessage(error)}`],
+      warnings: [],
+    }
+  }
+  if (!sid) {
+    return {
+      errors: [
+        'the Windows sandbox is not installed (run `claude sandbox install`, one UAC prompt)',
+      ],
+      warnings: [],
+    }
+  }
+  try {
+    execFileSync('icacls', [path, '/grant', `*${sid}:RX`], {
+      stdio: 'ignore',
+      windowsHide: true,
+    })
+  } catch (error) {
+    return {
+      errors: [`could not let the sandbox user run ${path}: ${errorMessage(error)}`],
+      warnings: [],
+    }
+  }
+  grantWindowsParentFolders(groupSid ?? sid)
+  return { errors: [], warnings: [] }
+}
+
+/**
+ * The sandbox user cannot read the attributes of the folders in the user's
+ * profile, so a sandboxed process cannot take a project there as its working
+ * directory: PowerShell starts in the drive root. Grant that right on each
+ * folder between the profile and the project, and only synchronize on the
+ * profile itself.
+ */
+function grantWindowsParentFolders(sid: string): void {
+  try {
+    const home = realpathSync.native(userInfo().homedir)
+    const project = realpathSync.native(getOriginalCwd())
+    const rel = relative(home, project)
+    if (!rel || rel.startsWith('..') || isAbsolute(rel)) return
+    const parts = rel.split(sep)
+    for (let i = 0; i < parts.length; i++) {
+      const folder = join(home, ...parts.slice(0, i))
+      execFileSync(
+        'icacls',
+        [folder, '/grant', `*${sid}:${i === 0 ? '(S)' : '(RA,S)'}`],
+        { stdio: 'ignore', windowsHide: true },
+      )
+    }
+  } catch (error) {
+    logForDebugging(
+      `[sandbox] could not let the sandbox user reach the project folder: ${errorMessage(error)}`,
+      { level: 'warn' },
+    )
+  }
+}
 
 function getSandboxEnabledSetting(): boolean {
   try {
@@ -766,7 +920,7 @@ function getSandboxUnavailableReason(): string | undefined {
     if (platform === 'wsl') {
       return 'sandbox.enabled is set but WSL1 is not supported (requires WSL2)'
     }
-    return `sandbox.enabled is set but ${platform} is not supported (requires macOS, Linux, or WSL2)`
+    return `sandbox.enabled is set but ${platform} is not supported (requires macOS, Linux, WSL2, or Windows)`
   }
 
   if (!isPlatformInEnabledList()) {
@@ -777,7 +931,7 @@ function getSandboxUnavailableReason(): string | undefined {
   if (deps.errors.length > 0) {
     const platform = getPlatform()
     const hint =
-      platform === 'macos'
+      platform === 'macos' || platform === 'windows'
         ? 'run /sandbox or /doctor for details'
         : 'install missing tools (e.g. apt install bubblewrap socat) or run /sandbox for details'
     return `sandbox.enabled is set but dependencies are missing: ${deps.errors.join(', ')} · ${hint}`
@@ -936,6 +1090,32 @@ async function wrapWithSandbox(
     binShell,
     customConfig,
     abortSignal,
+  )
+}
+
+/**
+ * Wrap command with sandbox as an argv to spawn with `shell: false`. This is
+ * the only form the runtime supports on Windows.
+ */
+async function wrapWithSandboxArgv(
+  command: string,
+  binShell: string,
+  cwd: string,
+  abortSignal?: AbortSignal,
+): Promise<{ argv: string[]; env: NodeJS.ProcessEnv }> {
+  if (isSandboxingEnabled()) {
+    if (initializationPromise) {
+      await initializationPromise
+    } else {
+      throw new Error('Sandbox failed to initialize. ')
+    }
+  }
+  return BaseSandboxManager.wrapWithSandboxArgv(
+    command,
+    binShell,
+    undefined,
+    abortSignal,
+    cwd,
   )
 }
 
@@ -1128,6 +1308,12 @@ export interface ISandboxManager {
     customConfig?: Partial<SandboxRuntimeConfig>,
     abortSignal?: AbortSignal,
   ): Promise<string>
+  wrapWithSandboxArgv(
+    command: string,
+    binShell: string,
+    cwd: string,
+    abortSignal?: AbortSignal,
+  ): Promise<{ argv: string[]; env: NodeJS.ProcessEnv }>
   cleanupAfterCommand(): void
   getSandboxViolationStore(): SandboxViolationStore
   annotateStderrWithSandboxFailures(command: string, stderr: string): string
@@ -1153,6 +1339,7 @@ export const SandboxManager: ISandboxManager = {
   setSandboxSettings,
   getExcludedCommands,
   wrapWithSandbox,
+  wrapWithSandboxArgv,
   refreshConfig,
   reset,
   checkDependencies,

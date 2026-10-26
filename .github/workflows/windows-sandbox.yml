@@ -1,0 +1,44 @@
+name: Windows sandbox
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/windows-sandbox.yml'
+      - 'scripts/windows-sandbox-e2e.ts'
+      - 'scripts/package-binary.mjs'
+      - 'scripts/shims/embedded-ripgrep.js'
+      - 'src/utils/Shell.ts'
+      - 'src/utils/shell/**'
+      - 'src/utils/sandbox/**'
+      - 'src/tools/TerminalTool/sandbox.ts'
+      - 'src/cli/handlers/sandbox.ts'
+      - 'src/tools/PowerShellTool/PowerShellTool.tsx'
+
+jobs:
+  windows-sandbox:
+    runs-on: windows-latest
+    timeout-minutes: 40
+    env:
+      # A 0.0.0-dev build is refused by the minimum-version check.
+      CLAUDE_CODE_VERSION: 2.1.294
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Build binary
+        shell: bash
+        run: |
+          bun run build
+          bun run package:binary
+
+      - name: Sandbox e2e
+        shell: bash
+        run: bun scripts/windows-sandbox-e2e.ts dist/release/claude-code-v*-win32-x64.exe
