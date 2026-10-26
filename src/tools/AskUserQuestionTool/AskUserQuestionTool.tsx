@@ -2,6 +2,8 @@ import { feature } from 'bun:bundle'
 import * as React from 'react'
 import {
   getAllowedChannels,
+  getIsNonInteractiveSession,
+  getPermissionPromptToolName,
   getQuestionPreviewFormat,
 } from 'src/bootstrap/state.js'
 import { MessageResponse } from 'src/components/MessageResponse.js'
@@ -239,6 +241,11 @@ export const AskUserQuestionTool: Tool<InputSchema, Output> = buildTool({
       (feature('KAIROS') || feature('KAIROS_CHANNELS')) &&
       getAllowedChannels().length > 0
     ) {
+      return false
+    }
+    // Headless with nobody answering prompts (official 2.1.303): the question
+    // could never be answered.
+    if (getIsNonInteractiveSession() && !getPermissionPromptToolName()) {
       return false
     }
     return true

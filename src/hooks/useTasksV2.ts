@@ -7,7 +7,7 @@ import type { Task } from '../utils/tasks.js'
 import {
   getTaskListId,
   getTasksDir,
-  isTodoV2Enabled,
+  isTaskToolsEnabled,
   listTasks,
   onTasksUpdated,
   resetTaskList,
@@ -240,7 +240,7 @@ const NOOP_SNAPSHOT = (): undefined => undefined
 export function useTasksV2(): Task[] | undefined {
   const teamContext = useAppState(s => s.teamContext)
 
-  const enabled = isTodoV2Enabled() && (!teamContext || isTeamLead(teamContext))
+  const enabled = isTaskToolsEnabled() && (!teamContext || isTeamLead(teamContext))
 
   const store = enabled ? getStore() : null
 

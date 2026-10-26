@@ -280,6 +280,12 @@ import {
   stripDangerousPermissionsForAutoMode,
   verifyAutoModeGateAccess,
 } from './utils/permissions/permissionSetup.js'
+import { permissionRuleValueFromString } from './utils/permissions/permissionRuleParser.js'
+import { TASK_CREATE_TOOL_NAME } from './tools/TaskCreateTool/constants.js'
+import { TASK_GET_TOOL_NAME } from './tools/TaskGetTool/constants.js'
+import { TASK_LIST_TOOL_NAME } from './tools/TaskListTool/constants.js'
+import { TASK_UPDATE_TOOL_NAME } from './tools/TaskUpdateTool/constants.js'
+import { TODO_WRITE_TOOL_NAME } from './tools/TodoWriteTool/constants.js'
 import { cleanupOrphanedPluginVersionsInBackground } from './utils/plugins/cacheUtils.js'
 import { initializeVersionedPlugins } from './utils/plugins/installedPluginsManager.js'
 import { getManagedPluginNames } from './utils/plugins/managedPlugins.js'
@@ -416,6 +422,8 @@ import {
   setSessionPersistenceDisabled,
   setSessionSource,
   setUserMsgOptIn,
+  setTodoToolsOptIn,
+  setPermissionPromptToolName,
   switchSession,
   getSessionStartedAt,
 } from './bootstrap/state.js'
@@ -2729,6 +2737,30 @@ async function run(): Promise<CommanderCommand> {
             dev_plugins: joinPluginIds(devChannels ?? []),
           })
         }
+      }
+
+      // Like official 2.1.303: naming a todo/task tool in --tools or
+      // --allowedTools turns those tools back on for newer models, and
+      // AskUserQuestion is only offered headless when someone answers prompts.
+      const launchToolNames = [
+        ...parseToolListFromCLI(baseTools),
+        ...parseToolListFromCLI(allowedTools).map(
+          rule => permissionRuleValueFromString(rule).toolName,
+        ),
+      ]
+      setTodoToolsOptIn(
+        [
+          TODO_WRITE_TOOL_NAME,
+          TASK_CREATE_TOOL_NAME,
+          TASK_GET_TOOL_NAME,
+          TASK_UPDATE_TOOL_NAME,
+          TASK_LIST_TOOL_NAME,
+        ].some(name => launchToolNames.includes(name)),
+      )
+      if (options.permissionPrompts !== 'none') {
+        setPermissionPromptToolName(
+          sdkUrl ? 'stdio' : options.permissionPromptTool,
+        )
       }
 
       // SDK opt-in for SendUserMessage via --tools. All sessions require
