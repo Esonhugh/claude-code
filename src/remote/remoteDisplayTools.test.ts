@@ -16,7 +16,6 @@ describe('remote display tools', () => {
     ['TaskCreate', { subject: 'Test', description: 'Test task' }],
     ['TaskGet', { taskId: '1' }],
     ['TaskList', {}],
-    ['TaskOutput', { task_id: 'task-1' }],
     ['TaskStop', { task_id: 'task-1' }],
     ['TaskUpdate', { taskId: '1', status: 'in_progress' }],
     ['TeamCreate', { team_name: 'reviewers' }],

@@ -11,7 +11,6 @@ import { SetGoalTool } from '../tools/SetGoalTool/SetGoalTool.js'
 import { TaskCreateTool } from '../tools/TaskCreateTool/TaskCreateTool.js'
 import { TaskGetTool } from '../tools/TaskGetTool/TaskGetTool.js'
 import { TaskListTool } from '../tools/TaskListTool/TaskListTool.js'
-import { TaskOutputTool } from '../tools/TaskOutputTool/TaskOutputTool.js'
 import { TaskStopTool } from '../tools/TaskStopTool/TaskStopTool.js'
 import { TaskUpdateTool } from '../tools/TaskUpdateTool/TaskUpdateTool.js'
 import { TeamCreateTool } from '../tools/TeamCreateTool/TeamCreateTool.js'
@@ -34,7 +33,6 @@ function getKnownRemoteDisplayTools(): Tools {
     TaskCreateTool,
     TaskGetTool,
     TaskListTool,
-    TaskOutputTool,
     TaskStopTool,
     TaskUpdateTool,
     TeamCreateTool,

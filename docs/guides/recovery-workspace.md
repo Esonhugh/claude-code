@@ -367,7 +367,6 @@ CLAUDE_RECOVERY_SKIP_GLOBAL_ENV=1 npm run cli:run
 | `src/tools/TaskCreateTool` | 创建任务。 |
 | `src/tools/TaskGetTool` | 查询任务。 |
 | `src/tools/TaskListTool` | 列出任务。 |
-| `src/tools/TaskOutputTool` | 输出任务结果。 |
 | `src/tools/TaskStopTool` | 停止任务。 |
 | `src/tools/TaskUpdateTool` | 更新任务。 |
 | `src/tools/TeamCreateTool` | 创建团队/协作单元。 |

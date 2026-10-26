@@ -13,7 +13,6 @@ import { SLEEP_TOOL_NAME } from '../../tools/SleepTool/prompt.js'
 import { TASK_CREATE_TOOL_NAME } from '../../tools/TaskCreateTool/constants.js'
 import { TASK_GET_TOOL_NAME } from '../../tools/TaskGetTool/constants.js'
 import { TASK_LIST_TOOL_NAME } from '../../tools/TaskListTool/constants.js'
-import { TASK_OUTPUT_TOOL_NAME } from '../../tools/TaskOutputTool/constants.js'
 import { TASK_STOP_TOOL_NAME } from '../../tools/TaskStopTool/prompt.js'
 import { TASK_UPDATE_TOOL_NAME } from '../../tools/TaskUpdateTool/constants.js'
 import { TEAM_CREATE_TOOL_NAME } from '../../tools/TeamCreateTool/constants.js'
@@ -70,7 +69,6 @@ const SAFE_YOLO_ALLOWLISTED_TOOLS = new Set([
   TASK_UPDATE_TOOL_NAME,
   TASK_LIST_TOOL_NAME,
   TASK_STOP_TOOL_NAME,
-  TASK_OUTPUT_TOOL_NAME,
   // Plan mode / UI
   ASK_USER_QUESTION_TOOL_NAME,
   ENTER_PLAN_MODE_TOOL_NAME,

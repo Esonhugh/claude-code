@@ -143,7 +143,6 @@ import {
 } from '../tools/FileReadTool/FileReadTool.js'
 import { SEND_MESSAGE_TOOL_NAME } from '../tools/SendMessageTool/constants.js'
 import { TASK_CREATE_TOOL_NAME } from '../tools/TaskCreateTool/constants.js'
-import { TASK_OUTPUT_TOOL_NAME } from '../tools/TaskOutputTool/constants.js'
 import { TASK_UPDATE_TOOL_NAME } from '../tools/TaskUpdateTool/constants.js'
 import type { PermissionMode } from '../types/permissions.js'
 import { normalizeToolInput, normalizeToolInputForAPI } from './api.js'
@@ -4265,7 +4264,7 @@ You have exited auto mode. The user may now want to interact more directly. You 
           )
         } else {
           parts.push(
-            `Do NOT spawn a duplicate. You will be notified when it completes. You can check its progress with the ${TASK_OUTPUT_TOOL_NAME} tool or send it a message with ${SEND_MESSAGE_TOOL_NAME}.`,
+            `Do NOT spawn a duplicate. You will be notified when it completes. Send it a message with ${SEND_MESSAGE_TOOL_NAME} if you need a progress report before then.`,
           )
         }
         return [
@@ -4294,7 +4293,7 @@ You have exited auto mode. The user may now want to interact more directly. You 
         )
       } else {
         messageParts.push(
-          `You can check its output using the ${TASK_OUTPUT_TOOL_NAME} tool.`,
+          `Send it a message with ${SEND_MESSAGE_TOOL_NAME} to retrieve its result.`,
         )
       }
 
