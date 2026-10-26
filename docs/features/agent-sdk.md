@@ -42,6 +42,67 @@ result success $0.0003 FAKE_DONE
 
 消息依次是：会话初始化（`system/init`）→ Claude 决定调用工具（`assistant` 里的 `tool_use`）→ 工具结果（`user` 里的 `tool_result`）→ Claude 的回复 → 最终 `result`（含费用）。
 
+## 为什么没有单独的 fork SDK
+
+本 fork 不发布自己的 SDK 包，直接用官方的 `@anthropic-ai/claude-agent-sdk`（TS）和 `claude-agent-sdk`（Python）。原因：
+
+- 官方 SDK 只是启动 CLI 并收发 stream-json。把 `pathToClaudeCodeExecutable`（Python 是 `cli_path`）指向本 fork 的 binary，消息、工具、权限回调、会话管理就都能用。
+- fork 独有的功能要么靠设置或环境变量打开，要么是会话里模型自己调用的工具。官方 SDK 已有的 `env`、`settings`、`plugins`、`extraArgs` 选项足以把它们传进去，不需要新的 API。
+- 官方 SDK 的许可是 Anthropic 的商业条款（`© Anthropic PBC. All rights reserved`），fork 它的代码再发布有风险，还要一直跟进官方版本。
+
+只有一种情况值得另做一个包：你要在自己的前端渲染 Mods 界面，需要 `ui_*` 控制请求的客户端。协议见 [mods-sdk-client.md](mods-sdk-client.md)。
+
+## 用官方 SDK 打开 fork 功能
+
+| fork 功能 | SDK 选项（TS / Python） | 写法 |
+| --- | --- | --- |
+| OpenAI / ChatGPT provider | `env` / `env` | `CLAUDE_CODE_USE_OPENAI: '1'`，再加 `OPENAI_API_KEY` 或 `OPENAI_AUTH_TOKEN`，可选 `OPENAI_BASE_URL`。也可以不传凭据，复用 `~/.codex/auth.json`（先在终端 `CLAUDE_CODE_USE_OPENAI=1 claude` 里 `/login` 一次，ChatGPT 账号也行） |
+| Daybreak 网络安全档位 | `settings` / `settings`（JSON 字符串） | `{ daybreak: 'blue' }`，可选 `blue` / `red` / `off` |
+| SQLite FTS5 记忆检索 | `settings` | `{ memory: { sqlite: { enabled: true } } }`，会话多出 `SearchMemory` 工具 |
+| Dynamic Workflow | `settings` | `{ enableWorkflows: true, workflowSizeGuideline: 'small' }`，关闭用 `enableWorkflows: false` |
+| Mods | `plugins` / `plugins` | `[{ type: 'local', path: '/abs/path/to/mod' }]` |
+| 独立会话通信 | `extraArgs` / `extra_args` | `{ name: 'sdk-worker' }`，其他会话可以用这个名字找到它 |
+
+注意：TS SDK 的 `env` 会**整个替换**子进程环境，要写成 `{ ...process.env, CLAUDE_CODE_USE_OPENAI: '1' }`；Python SDK 的 `env` 是合并到当前环境上。
+
+可运行的示例在 [`examples/agent-sdk/`](../../examples/agent-sdk/)，都通过环境变量 `CLAUDE_FORK_BIN` 找到 binary：
+
+```sh
+cd examples/agent-sdk
+bun add @anthropic-ai/claude-agent-sdk
+CLAUDE_FORK_BIN=/path/to/built-claude bun openai-provider.mjs
+```
+
+| 文件 | 演示 |
+| --- | --- |
+| `basic.mjs` | 最小用法 |
+| `openai-provider.mjs` / `openai_provider.py` | OpenAI provider + Daybreak blue |
+| `fork-settings.mjs` | 用 `settings` 打开 SQLite 记忆和 Workflow，从 `system/init` 的工具列表确认 |
+| `mods-plugin.mjs` + `hello-mod/` | 用 `plugins` 加载一个 Mod，它拒绝 Claude 读取 `.env` |
+
+实际运行输出（官方 TS SDK 0.3.310 / Python SDK 0.2.165，本 fork 重新构建的 binary，测试用假 API）：
+
+```text
+$ bun openai-provider.mjs          # OPENAI_BASE_URL 指向假 Responses API
+init model=gpt-5.6-sol
+result success FAKE_OPENAI_DONE
+# 假 API 收到的请求：{"model":"gpt-5.6-sol","access_programs":{"cyber":"daybreak_blue"}}
+
+$ python3 openai_provider.py       # 同上，Python SDK
+init model=gpt-5.6-sol
+result success FAKE_OPENAI_DONE
+
+$ bun fork-settings.mjs
+tools SearchMemory,Workflow        # 去掉 settings 时只有 Workflow
+
+$ bun mods-plugin.mjs
+plugins hello-mod,agents-md
+tool_result "<tool_use_error>hello-mod: .env files are off limits</tool_use_error>"
+result success FAKE_DONE           # 不加载 Mod 时，Read 会返回 .env 的内容
+```
+
+用 `extraArgs: { name: 'sdk-worker' }` 启动后，`~/.claude/sessions/<pid>.json` 里有 `"name":"sdk-worker"`、`"entrypoint":"sdk-ts"`，同机其他会话可以按这个名字给它发消息。
+
 ## 不用 SDK，直接用 stream-json
 
 任何语言都可以自己启动 CLI 并读写 JSON 行：
