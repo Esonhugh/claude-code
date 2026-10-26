@@ -37,6 +37,7 @@ import { handleResize } from './handlers/resize.js'
 import { handleSignal } from './handlers/signal.js'
 import { handleStatus } from './handlers/status.js'
 import { handleWrite, sendKeysSequence } from './handlers/write.js'
+import { forwardResizeIntoSandbox, wrapNewSessionForSandbox } from './sandbox.js'
 import {
   DESCRIPTION,
   PROMPT,
@@ -59,6 +60,7 @@ import {
 import type { PermissionResult } from '../../utils/permissions/PermissionResult.js'
 import { bashToolHasPermission } from '../BashTool/bashPermissions.js'
 import { BASH_TOOL_NAME } from '../BashTool/toolName.js'
+import { SandboxManager } from '../../utils/sandbox/sandbox-adapter.js'
 
 const inputSchema = lazySchema(() => actionSchema)
 type InputSchema = ReturnType<typeof inputSchema>
@@ -162,7 +164,7 @@ async function checkShellCommand(
       decisionReason: { type: 'rule', rule: bashDenyRule },
     }
   }
-  // The PTY never runs inside the sandbox, so sandbox auto-allow must not apply.
+  // Sandbox auto-allow does not apply to Terminal, sandboxed or not.
   const result = await bashToolHasPermission(
     { command, dangerouslyDisableSandbox: true },
     context,
@@ -211,11 +213,14 @@ export function resetTerminalManagerForTesting(manager?: PtySessionManager): voi
   terminalTaskRegistry.clear()
   terminalInputLines.clear()
   terminalTerminationReasons.clear()
+  sandboxedTerminalSessions.clear()
 }
 
 export const terminalTaskRegistry = new Map<string, string>()
 const terminalTaskPollers = new Map<string, ReturnType<typeof setInterval>>()
 const terminalTerminationReasons = new Map<string, TerminalTerminationReason>()
+// Sessions started inside the Bash sandbox.
+const sandboxedTerminalSessions = new Set<string>()
 const TERMINAL_TASK_POLL_INTERVAL_MS = 1000
 
 function stopTerminalTaskPolling(sessionId: string): void {
@@ -241,6 +246,9 @@ async function finalizeTerminalTask(
   terminalInputLines.delete(sessionId)
   terminalTerminationReasons.delete(sessionId)
   stopTerminalTaskPolling(sessionId)
+  if (sandboxedTerminalSessions.delete(sessionId)) {
+    SandboxManager.cleanupAfterCommand()
+  }
 
   let finalTask: TerminalTaskState | undefined
   updateTaskState<TerminalTaskState>(taskId, setAppState, task => {
@@ -434,6 +442,9 @@ export const TerminalTool: Tool<InputSchema, Output> = buildTool({
       if (input.args) {
         parts.push(`args=${JSON.stringify(input.args)}`)
       }
+      if (input.dangerouslyDisableSandbox) {
+        parts.push('dangerouslyDisableSandbox=true')
+      }
     }
     if (input.action === 'send-keys') {
       const command = getTerminalCommand(input)
@@ -487,8 +498,22 @@ export const TerminalTool: Tool<InputSchema, Output> = buildTool({
               }),
             }
           }
-          const opened = await handleOpen(getTerminalManager(), parsed.data)
+          const sandboxed = await wrapNewSessionForSandbox(parsed.data)
+          const handled = await handleOpen(
+            getTerminalManager(),
+            sandboxed?.open ?? parsed.data,
+          )
+          // Report the command that runs, not the sandbox wrapper.
+          const opened = sandboxed
+            ? {
+                ...handled,
+                command: sandboxed.command,
+                args: sandboxed.args,
+                sandboxed: true,
+              }
+            : handled
           const target = String(opened.sessionId)
+          if (sandboxed) sandboxedTerminalSessions.add(target)
           const taskId = generateTaskId('interactive_terminal')
           terminalTaskRegistry.set(target, taskId)
           registerTask(
@@ -565,6 +590,10 @@ export const TerminalTool: Tool<InputSchema, Output> = buildTool({
           }
           const manager = getTerminalManager()
           const resized = handleResize(manager, parsed.data)
+          const pid = manager.status(parsed.data.target).pid
+          if (sandboxedTerminalSessions.has(parsed.data.target) && pid) {
+            forwardResizeIntoSandbox(pid)
+          }
           await refreshTerminalTaskPreview(parsed.data.target, setTaskAppState, manager)
           return { data: resized }
         }
