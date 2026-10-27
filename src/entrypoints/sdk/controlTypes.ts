@@ -192,7 +192,8 @@ export type SDKControlSetModelRequest = {
 
 export type SDKControlSetMaxThinkingTokensRequest = {
   subtype: 'set_max_thinking_tokens'
-  max_thinking_tokens: number
+  max_thinking_tokens?: number | null
+  thinking_display?: 'summarized' | 'omitted' | 'highlights' | null
 }
 
 export type SDKControlMcpStatusRequest = {

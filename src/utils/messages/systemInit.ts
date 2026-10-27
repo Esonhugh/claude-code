@@ -1,7 +1,12 @@
 import { feature } from 'bun:bundle'
 import { randomUUID } from 'crypto'
-import { getSdkBetas, getSessionId } from 'src/bootstrap/state.js'
+import {
+  getOriginalCwd,
+  getSdkBetas,
+  getSessionId,
+} from 'src/bootstrap/state.js'
 import { DEFAULT_OUTPUT_STYLE_NAME } from 'src/constants/outputStyles.js'
+import { getAutoMemPath, isAutoMemoryEnabled } from 'src/memdir/paths.js'
 import type {
   ApiKeySource,
   PermissionMode,
@@ -84,6 +89,10 @@ export function buildSystemInitMessage(inputs: SystemInitInputs): SDKMessage {
     })),
     uuid: randomUUID(),
   }
+  if (isAutoMemoryEnabled()) {
+    initMessage.memory_paths = { auto: getAutoMemPath() }
+  }
+  initMessage.original_cwd = getOriginalCwd()
   // Hidden from public SDK types — ant-only UDS messaging socket path
   if (feature('UDS_INBOX')) {
     /* eslint-disable @typescript-eslint/no-require-imports */

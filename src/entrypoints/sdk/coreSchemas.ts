@@ -1710,6 +1710,14 @@ export const SDKSystemMessageSchema = lazySchema(() =>
       }),
     ),
     fast_mode_state: FastModeStateSchema().optional(),
+    memory_paths: z
+      .object({ auto: z.string().optional() })
+      .optional()
+      .describe('@internal Absolute directory path of the auto-memory store.'),
+    original_cwd: z
+      .string()
+      .optional()
+      .describe('@internal Working directory the session started in.'),
     uuid: UUIDPlaceholder(),
     session_id: z.string(),
   }),

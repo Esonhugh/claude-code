@@ -87,6 +87,17 @@ if (process.env[childFlag] !== '1') {
     expect(styles.response.available_output_styles).toContain('default')
   })
 
+  test('set_max_thinking_tokens accepts display-only requests and rejects bad values', async () => {
+    const responses = await run([
+      { subtype: 'set_max_thinking_tokens', thinking_display: 'summarized' },
+      { subtype: 'set_max_thinking_tokens', max_thinking_tokens: null, thinking_display: null },
+      { subtype: 'set_max_thinking_tokens', max_thinking_tokens: 1.5 },
+      { subtype: 'set_max_thinking_tokens', thinking_display: 'verbose' },
+    ])
+    expect(responses.map(r => r.subtype)).toEqual(['success', 'success', 'error', 'error'])
+    expect(responses[3].error).toContain('thinking_display must be one of summarized, omitted, highlights')
+  })
+
   test('read_file uses the Read permission gate, max_bytes and base64', async () => {
     const [text, cut, b64, outside, missing] = await run([
       { subtype: 'read_file', path: 'package.json' },
