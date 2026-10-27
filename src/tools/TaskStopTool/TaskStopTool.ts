@@ -60,7 +60,7 @@ export const TaskStopTool = buildTool({
   toAutoClassifierInput(input) {
     return input.task_id ?? input.shell_id ?? ''
   },
-  async validateInput({ task_id, shell_id }, { getAppState }) {
+  async validateInput({ task_id, shell_id }, { getAppState, agentId }) {
     // Support both task_id and shell_id (deprecated KillShell compat)
     const id = task_id ?? shell_id
     if (!id) {
@@ -87,6 +87,16 @@ export const TaskStopTool = buildTool({
         result: false,
         message: `Task ${id} is not running (status: ${task.status})`,
         errorCode: 3,
+      }
+    }
+
+    // A subagent may stop only the tasks it started (shells, monitors) or itself.
+    const owner = 'agentId' in task ? (task.agentId as string | undefined) : undefined
+    if (agentId !== undefined && owner !== agentId) {
+      return {
+        result: false,
+        message: `Task ${id} is owned by ${owner ?? 'main session'}; agent ${agentId} cannot stop it.`,
+        errorCode: 4,
       }
     }
 

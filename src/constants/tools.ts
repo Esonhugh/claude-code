@@ -5,6 +5,7 @@ import { ENTER_PLAN_MODE_TOOL_NAME } from '../tools/EnterPlanModeTool/constants.
 import { AGENT_TOOL_NAME } from '../tools/AgentTool/constants.js'
 import { ASK_USER_QUESTION_TOOL_NAME } from '../tools/AskUserQuestionTool/prompt.js'
 import { TASK_STOP_TOOL_NAME } from '../tools/TaskStopTool/prompt.js'
+import { MONITOR_TOOL_NAME } from '../tools/MonitorTool/prompt.js'
 import { FILE_READ_TOOL_NAME } from '../tools/FileReadTool/prompt.js'
 import { WEB_SEARCH_TOOL_NAME } from '../tools/WebSearchTool/prompt.js'
 import { TODO_WRITE_TOOL_NAME } from '../tools/TodoWriteTool/constants.js'
@@ -41,7 +42,6 @@ export const ALL_AGENT_DISALLOWED_TOOLS = new Set([
   EXIT_PLAN_MODE_V2_TOOL_NAME,
   ENTER_PLAN_MODE_TOOL_NAME,
   ASK_USER_QUESTION_TOOL_NAME,
-  TASK_STOP_TOOL_NAME,
   // Prevent recursive workflow execution inside subagents.
   WORKFLOW_TOOL_NAME,
 ])
@@ -70,6 +70,9 @@ export const ASYNC_AGENT_ALLOWED_TOOLS = new Set([
   TOOL_SEARCH_TOOL_NAME,
   ENTER_WORKTREE_TOOL_NAME,
   EXIT_WORKTREE_TOOL_NAME,
+  MONITOR_TOOL_NAME,
+  SEND_MESSAGE_TOOL_NAME,
+  TASK_STOP_TOOL_NAME,
 ])
 /**
  * Tools allowed only for in-process teammates (not general async agents).
@@ -92,7 +95,6 @@ export const IN_PROCESS_TEAMMATE_ALLOWED_TOOLS = new Set([
 /*
  * BLOCKED FOR ASYNC AGENTS:
  * - ExitPlanModeTool: Plan mode is a main thread abstraction.
- * - TaskStopTool: Requires access to main thread task state.
  * - TungstenTool: Uses singleton virtual terminal abstraction that conflicts between agents.
  *
  * ENABLE LATER (NEED WORK):
