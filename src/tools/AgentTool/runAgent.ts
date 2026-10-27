@@ -77,7 +77,7 @@ import {
   executeSubagentStartHooks,
   getStopHookMessage,
 } from '../../utils/hooks.js'
-import { createUserMessage } from '../../utils/messages.js'
+import { createUserMessage, wrapInSystemReminder } from '../../utils/messages.js'
 import { getAgentModel } from '../../utils/model/agent.js'
 import { getCanonicalName } from '../../utils/model/model.js'
 import {
@@ -111,7 +111,8 @@ import {
   subagentHandbackCountermand,
   subagentHandbackReminder,
 } from '../../utils/subagentHandback.js'
-import { SEND_MESSAGE_TOOL_NAME } from '../SendMessageTool/constants.js'
+import { MAIN_RECIPIENT, OTHER_AGENTS_ACTIVE, SEND_MESSAGE_TOOL_NAME } from '../SendMessageTool/constants.js'
+import { escapeXml } from '../../utils/xml.js'
 import { SUBAGENT_HANDBACK_TOOL_NAME } from '../SubagentHandbackTool/constants.js'
 import { SubagentHandbackTool } from '../SubagentHandbackTool/SubagentHandbackTool.js'
 import {
@@ -1016,6 +1017,25 @@ export async function* runAgent({
     agentMcpTools.length > 0
       ? uniqBy([...resolvedTools, ...agentMcpTools], 'name')
       : resolvedTools
+
+  // Like official 2.1.311, a new agent that can SendMessage learns which other
+  // named agents in this session it can reach.
+  if (
+    contentReplacementState === undefined &&
+    mergedTools.some(tool => tool.name === SEND_MESSAGE_TOOL_NAME) &&
+    !initialMessages.some(message => message.type === 'user' && message.isMeta && typeof message.message.content === 'string' && message.message.content.includes(OTHER_AGENTS_ACTIVE))
+  ) {
+    const names = [...toolUseContext.getAppState().agentNameRegistry]
+      .filter(([, id]) => id !== agentId)
+      .map(([name]) => name)
+      .sort()
+    if (names.length > 0) {
+      initialMessages.push(createUserMessage({
+        content: wrapInSystemReminder(`${OTHER_AGENTS_ACTIVE}({to: name, message}): ${escapeXml([MAIN_RECIPIENT, ...names].join(', '))}.`),
+        isMeta: true,
+      }))
+    }
+  }
 
   // In auto mode an Agent tool subagent reports through SubagentHandback,
   // which the classifier reviews, instead of through its last message.
