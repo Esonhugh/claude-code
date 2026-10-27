@@ -81,9 +81,6 @@ function harness(overrides: Record<string, unknown> = {}) {
   const selectionIndexes: number[] = []
   const scope = {
     tasksSelected: true,
-    isTeammateMode: false,
-    teammateFooterIndex: 0,
-    inProcessTeammates: [],
     selectedCoordinatorTask: undefined,
     viewSelectionMode: 'none',
     viewingAgentTaskId: undefined,
@@ -161,11 +158,7 @@ for (const isIdle of [false, true]) {
   test(`x kills only the selected ${isIdle ? 'idle' : 'busy'} running teammate`, () => {
     const sibling = teammate(false, 'running', 'teammate-sibling')
     const target = teammate(isIdle)
-    const h = harness({
-      isTeammateMode: true,
-      teammateFooterIndex: 2,
-      inProcessTeammates: [sibling, target],
-    })
+    const h = harness({ selectedCoordinatorTask: target, tasks: { target, sibling } })
 
     h.handler()
 
@@ -177,11 +170,7 @@ for (const isIdle of [false, true]) {
 
 test('x dismisses a selected terminal teammate', () => {
   const target = teammate(false, 'completed')
-  const h = harness({
-    isTeammateMode: true,
-    teammateFooterIndex: 1,
-    inProcessTeammates: [target],
-  })
+  const h = harness({ selectedCoordinatorTask: target })
 
   h.handler()
 
@@ -192,9 +181,7 @@ test('x dismisses a selected terminal teammate', () => {
 test('x on a viewed teammate remains literal input', () => {
   const target = teammate(false)
   const h = harness({
-    isTeammateMode: true,
-    teammateFooterIndex: 1,
-    inProcessTeammates: [target],
+    selectedCoordinatorTask: target,
     viewSelectionMode: 'viewing-agent',
     viewingAgentTaskId: target.id,
   })
@@ -203,4 +190,14 @@ test('x on a viewed teammate remains literal input', () => {
 
   expect(h.inputChanges).toEqual(['axb'])
   expect(h.killedTeammates).toEqual([])
+})
+
+test('x on the idle teammate summary row falls through to type-to-exit', () => {
+  const h = harness({
+    selectedCoordinatorTask: { type: 'idle_summary', id: 'idle-teammate-summary', taskIds: ['idle-teammate'] },
+  })
+
+  expect(h.handler()).toBe(false)
+  expect(h.killedTeammates).toEqual([])
+  expect(h.dismissed).toEqual([])
 })

@@ -212,6 +212,7 @@ import { ConfigurableShortcutHint } from '../ConfigurableShortcutHint.js'
 import {
   getCoordinatorTaskAtIndex,
   getCoordinatorTaskIndex,
+  getVisibleAgentTasks,
   resolveCoordinatorSelection,
   useCoordinatorTaskCount,
 } from '../CoordinatorAgentStatus.js'
@@ -225,7 +226,6 @@ import { PinnedNotifications } from './PinnedNotifications.js'
 import TextInput from '../TextInput.js'
 import { ThinkingToggle } from '../ThinkingToggle.js'
 import { BackgroundTasksDialog } from '../tasks/BackgroundTasksDialog.js'
-import { shouldHideTasksFooter } from '../tasks/taskStatusUtils.js'
 import { TeamsDialog } from '../teams/TeamsDialog.js'
 import VimTextInput from '../VimTextInput.js'
 import { getModeFromInput, getValueFromInput } from './inputModes.js'
@@ -510,7 +510,7 @@ function PromptInput({
   const viewingAgentTaskId = useAppState(s => s.viewingAgentTaskId)
   const viewSelectionMode = useAppState(s => s.viewSelectionMode)
   const coordinatorTaskTargetId = useAppState(s => s.coordinatorTaskTargetId)
-  const showSpinnerTree = useAppState(s => s.expandedView) === 'teammates'
+  const idleTeammatesExpanded = useAppState(s => s.idleTeammatesExpanded ?? false)
   const { companion: _companion, companionMuted } = feature('BUDDY')
     ? getGlobalConfig()
     : { companion: undefined, companionMuted: undefined }
@@ -562,10 +562,6 @@ function PromptInput({
     [tasks],
   )
 
-  // Team mode: all background tasks are in-process teammates
-  const isTeammateMode =
-    inProcessTeammates.length > 0 || viewedTeammate !== undefined
-
   // When viewing a teammate, show their permission mode in the footer instead of the leader's
   const effectiveToolPermissionContext = useMemo((): ToolPermissionContext => {
     if (viewedTeammate) {
@@ -609,7 +605,6 @@ function PromptInput({
 
   const [showTeamsDialog, setShowTeamsDialog] = useState(false)
   const [showBridgeDialog, setShowBridgeDialog] = useState(false)
-  const [teammateFooterIndex, setTeammateFooterIndex] = useState(0)
   // -1 sentinel: tasks pill is selected but no specific agent row is selected yet.
   // First ↓ selects the pill, second ↓ moves to row 0. Prevents double-select
   // of pill + row when both bg tasks (pill) and forked agents (rows) are visible.
@@ -651,9 +646,14 @@ function PromptInput({
       currentViewingAgentTaskId: string | undefined = viewingAgentTaskId,
     ): string | undefined => {
       if (index <= 0) return undefined
-      return getCoordinatorTaskAtIndex(tasks, index, currentViewingAgentTaskId)?.id
+      return getCoordinatorTaskAtIndex(
+        tasks,
+        index,
+        currentViewingAgentTaskId,
+        idleTeammatesExpanded,
+      )?.id
     },
-    [tasks, viewingAgentTaskId],
+    [tasks, viewingAgentTaskId, idleTeammatesExpanded],
   )
   // The pill (BackgroundTaskStatus) only renders when non-local_agent,
   // non-workflow bg tasks exist. Workflow tasks are represented by the
@@ -664,6 +664,7 @@ function PromptInput({
       Object.values(tasks).some(
         t =>
           isBackgroundTask(t) &&
+          t.type !== 'in_process_teammate' &&
           t.type !== 'local_workflow' &&
           !(isAnt() && isPanelAgentTask(t)),
       ),
@@ -674,6 +675,7 @@ function PromptInput({
     tasks,
     coordinatorTaskIndex,
     viewingAgentTaskId,
+    idleTeammatesExpanded,
   )
   // Keep coordinator selection pinned to a stable task identity when the row
   // layout changes while viewing/closing agent transcripts.
@@ -683,6 +685,7 @@ function PromptInput({
         tasks,
         coordinatorTaskTargetId,
         viewingAgentTaskId,
+        idleTeammatesExpanded,
       )
       if (
         nextSelection.index !== coordinatorTaskIndex ||
@@ -709,6 +712,7 @@ function PromptInput({
     coordinatorTaskCount,
     coordinatorTaskIndex,
     coordinatorTaskTargetId,
+    idleTeammatesExpanded,
     minCoordinatorIndex,
     resolveCoordinatorTarget,
     setCoordinatorTaskIndex,
@@ -789,8 +793,7 @@ function PromptInput({
   // pill must stay navigable whenever the panel has rows — not just when
   // something is running.
   const tasksFooterVisible =
-    (runningTaskCount > 0 || coordinatorTaskCount > 0 || inProcessTeammates.length > 0) &&
-    !shouldHideTasksFooter(tasks, showSpinnerTree)
+    runningTaskCount > 0 || coordinatorTaskCount > 0
   const teamsFooterVisible = cachedTeams.length > 0
 
   const footerItems = useMemo(
@@ -843,7 +846,6 @@ function PromptInput({
       prev.footerSelection === item ? prev : { ...prev, footerSelection: item },
     )
     if (item === 'tasks') {
-      setTeammateFooterIndex(0)
       setCoordinatorTaskIndex(minCoordinatorIndex, {
         targetId: undefined,
         reason: 'footer-select',
@@ -1582,13 +1584,6 @@ function PromptInput({
         state.footerSelection &&
         footerItems.includes(state.footerSelection)
       ) {
-        return
-      }
-
-      // Enter in selection modes confirms selection (useBackgroundTaskNavigation).
-      // BaseTextInput's useInput registers before that hook (child effects fire first),
-      // so without this guard Enter would double-fire and auto-submit the suggestion.
-      if (state.viewSelectionMode === 'selecting-agent') {
         return
       }
 
@@ -2503,7 +2498,7 @@ function PromptInput({
           }
           return
         }
-        if (tasksSelected && !isTeammateMode) {
+        if (tasksSelected) {
           setShowBashesDialog(true)
           selectFooterItem(null)
           return
@@ -2511,26 +2506,12 @@ function PromptInput({
         navigateFooter(1)
       },
       'footer:next': () => {
-        // Teammate mode: ←/→ cycles within the team member list
-        if (tasksSelected && isTeammateMode) {
-          const totalAgents = 1 + inProcessTeammates.length
-          setTeammateFooterIndex(prev => (prev + 1) % totalAgents)
-          return
-        }
         navigateFooter(1)
       },
       'footer:previous': () => {
-        if (tasksSelected && isTeammateMode) {
-          const totalAgents = 1 + inProcessTeammates.length
-          setTeammateFooterIndex(prev => (prev - 1 + totalAgents) % totalAgents)
-          return
-        }
         navigateFooter(-1)
       },
       'footer:openSelected': () => {
-        if (viewSelectionMode === 'selecting-agent') {
-          return
-        }
         switch (footerItemSelected) {
           case 'companion':
             if (feature('BUDDY')) {
@@ -2539,18 +2520,15 @@ function PromptInput({
             }
             break
           case 'tasks':
-            if (isTeammateMode) {
-              // Enter switches to the selected agent's view
-              if (teammateFooterIndex === 0) {
-                exitTeammateView(setAppState)
-                selectFooterItem(null)
-              } else {
-                const teammate = inProcessTeammates[teammateFooterIndex - 1]
-                if (teammate) {
-                  enterTeammateView(teammate.id, setAppState)
-                  selectFooterItem(null)
-                }
-              }
+            if (selectedCoordinatorTask?.type === 'idle_summary') {
+              // Official 2.1.311: Enter expands the folded idle teammates in
+              // place, keeping the cursor on the first one it revealed.
+              const firstRevealed = selectedCoordinatorTask.taskIds[0]
+              setAppState(prev => ({
+                ...prev,
+                idleTeammatesExpanded: true,
+                coordinatorTaskTargetId: firstRevealed,
+              }))
             } else if (
               coordinatorTaskIndex === 0 &&
               coordinatorTaskCount > 0 &&
@@ -2560,12 +2538,16 @@ function PromptInput({
               exitTeammateView(setAppState)
             } else {
               const selectedTask = selectedCoordinatorTask
-              if (selectedTask?.type === 'local_agent') {
+              if (
+                selectedTask?.type === 'local_agent' ||
+                selectedTask?.type === 'in_process_teammate'
+              ) {
                 exitTeammateView(setAppState)
                 const nextIndex = getCoordinatorTaskIndex(
                   tasks,
                   selectedTask.id,
                   selectedTask.id,
+                  idleTeammatesExpanded,
                 )
                 if (nextIndex !== undefined) {
                   setCoordinatorTaskIndex(nextIndex, {
@@ -2609,16 +2591,22 @@ function PromptInput({
         }
       },
       'footer:clearSelection': () => {
+        // Official 2.1.311: Esc folds expanded idle teammates before leaving the panel.
+        if (
+          tasksSelected &&
+          idleTeammatesExpanded &&
+          getVisibleAgentTasks(tasks, viewingAgentTaskId).some(
+            task => task.type === 'idle_summary',
+          )
+        ) {
+          setAppState(prev => ({ ...prev, idleTeammatesExpanded: false }))
+          return
+        }
         selectFooterItem(null)
       },
       'footer:close': () => {
-        const task =
-          tasksSelected && isTeammateMode
-            ? teammateFooterIndex > 0
-              ? inProcessTeammates[teammateFooterIndex - 1]
-              : undefined
-            : selectedCoordinatorTask
-        if (!tasksSelected || !task) {
+        const task = selectedCoordinatorTask
+        if (!tasksSelected || !task || task.type === 'idle_summary') {
           // Not handled — let 'x' fall through to type-to-exit
           return false
         }
@@ -2711,7 +2699,6 @@ function PromptInput({
     // onChange clears footerSelection, so no explicit deselect.
     if (
       footerItemSelected &&
-      viewSelectionMode !== 'selecting-agent' &&
       char &&
       !key.ctrl &&
       !key.meta &&
@@ -2747,10 +2734,7 @@ function PromptInput({
     if (key.escape) {
       // Teammate navigation owns this Escape, including the one returning to main.
       // Use the render snapshot: navigation may already have updated the store.
-      if (
-        viewSelectionMode === 'viewing-agent' ||
-        viewSelectionMode === 'selecting-agent'
-      ) {
+      if (viewSelectionMode === 'viewing-agent') {
         return
       }
 
@@ -3158,15 +3142,13 @@ function PromptInput({
     disableCursorMovementForUpDownKeys:
       suggestions.length > 0 || !!footerItemSelected,
     disableEscapeDoublePress:
-      suggestions.length > 0 || viewSelectionMode === 'viewing-agent' ||
-      viewSelectionMode === 'selecting-agent',
+      suggestions.length > 0 || viewSelectionMode === 'viewing-agent',
     cursorOffset,
     onChangeCursorOffset: setCursorOffset,
     onPaste: onTextPaste,
     onIsPastingChange: setIsPasting,
     focus:
-      !isSearchingHistory && !isModalOverlayActive && !footerItemSelected &&
-      viewSelectionMode !== 'selecting-agent',
+      !isSearchingHistory && !isModalOverlayActive && !footerItemSelected,
     showCursor:
       !footerItemSelected && !isSearchingHistory && !cursorAtImageChip,
     argumentHint: commandArgumentHint,
@@ -3335,7 +3317,6 @@ function PromptInput({
         teamsSelected={teamsSelected}
         bridgeSelected={bridgeSelected}
         tmuxSelected={tmuxSelected}
-        teammateFooterIndex={teammateFooterIndex}
         ideSelection={ideSelection}
         mcpClients={mcpClients}
         isPasting={isPasting}

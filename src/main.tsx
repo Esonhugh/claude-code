@@ -4292,13 +4292,7 @@ async function run(): Promise<CommanderCommand> {
         mainLoopModelForSession: null,
         isBriefOnly: initialIsBriefOnly,
         briefTranscript: isFocusViewConfigured(),
-        expandedView: getGlobalConfig().showSpinnerTree
-          ? 'teammates'
-          : getGlobalConfig().showExpandedTodos
-            ? 'tasks'
-            : 'none',
-        showTeammateMessagePreview: isAgentSwarmsEnabled() ? false : undefined,
-        selectedIPAgentIndex: -1,
+        expandedView: getGlobalConfig().showExpandedTodos ? 'tasks' : 'none',
         coordinatorTaskIndex: -1,
         coordinatorTaskTargetId: undefined,
         viewSelectionMode: 'none',

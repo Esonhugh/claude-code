@@ -63,6 +63,9 @@ export function CoordinatorTaskPanel({
   const setAppState = useSetAppState();
   const verbose = useAppState((s) => s.verbose);
   const ultracodeActive = useAppState((s) => s.effortValue === "ultracode");
+  const idleTeammatesExpanded = useAppState(
+    (s) => s.idleTeammatesExpanded ?? false,
+  );
   const { columns } = useTerminalSize();
   const taskDecorations = useAppState((s) => s.taskDecorations);
   useSubagentStatusLine(Math.max(0, columns - 8));
@@ -76,7 +79,7 @@ export function CoordinatorTaskPanel({
           return prev;
         }
         logForDebugging(
-          `[coordinator_selection_changed] before_index=${prev.coordinatorTaskIndex} after_index=${index} before_target=${prev.coordinatorTaskTargetId ?? (prev.coordinatorTaskIndex === -1 ? "background" : "main")} after_target=${targetId ?? (index === -1 ? "background" : "main")} reason=click visible_targets=${getCoordinatorTaskCount(prev.tasks, prev.viewingAgentTaskId)}`,
+          `[coordinator_selection_changed] before_index=${prev.coordinatorTaskIndex} after_index=${index} before_target=${prev.coordinatorTaskTargetId ?? (prev.coordinatorTaskIndex === -1 ? "background" : "main")} after_target=${targetId ?? (index === -1 ? "background" : "main")} reason=click visible_targets=${getCoordinatorTaskCount(prev.tasks, prev.viewingAgentTaskId, prev.idleTeammatesExpanded)}`,
         );
         return {
           ...prev,
@@ -88,9 +91,14 @@ export function CoordinatorTaskPanel({
     [setAppState],
   );
 
-  const visibleTasks = getVisibleAgentTasks(tasks, viewingAgentTaskId);
+  const visibleTasks = getVisibleAgentTasks(
+    tasks,
+    viewingAgentTaskId,
+    idleTeammatesExpanded,
+  );
   const hasAgentTasks = visibleTasks.some(
-    (task) => task.type === "local_agent",
+    (task) =>
+      task.type === "local_agent" || task.type === "in_process_teammate",
   );
   const hasWorkflowTasks = visibleTasks.some(
     (task) => task.type === "local_workflow",
@@ -130,6 +138,7 @@ export function CoordinatorTaskPanel({
     selectedIndex,
     viewingAgentTaskId,
     ultracodeActive,
+    idleTeammatesExpanded,
   });
   const mainRow = rows[0]?.kind === "main" ? rows[0] : undefined;
   const taskRows = mainRow ? rows.slice(1) : rows;
@@ -170,7 +179,12 @@ export function CoordinatorTaskPanel({
   const showTools = showDetails || hasWorkflowTasks;
   const showStatus = showDetails || hasWorkflowTasks;
   const metricWidths = {
-    elapsed: Math.max(...rows.map((row) => stringWidth(row.elapsed))),
+    // Token-less rows (idle teammates) right-align their state across the
+    // elapsed and token columns, so they do not widen the elapsed column.
+    elapsed: Math.max(
+      0,
+      ...rows.map((row) => (row.tokens ? stringWidth(row.elapsed) : 0)),
+    ),
     tokens: Math.max(...rows.map((row) => stringWidth(row.tokens))),
     tools: showTools
       ? Math.max(...rows.map((row) => stringWidth(row.tools)))
@@ -189,9 +203,10 @@ export function CoordinatorTaskPanel({
   const primaryColumnWidth = Math.min(
     Math.max(0, contentWidth - 4 - metricsWidth - 2),
     Math.max(
-      ...rows.map(
-        (row) =>
-          stringWidth(treePrefixText(row)) + stringWidth(row.primaryText),
+      ...rows.map((row) =>
+        row.kind === "idle_summary"
+          ? 0
+          : stringWidth(treePrefixText(row)) + stringWidth(row.primaryText),
       ),
     ),
   );
@@ -223,11 +238,15 @@ export function CoordinatorTaskPanel({
             if (row.kind === "main") {
               setCoordinatorSelection(0, undefined);
               exitTeammateView(setAppState);
-            } else if (row.kind === "agent" && row.taskId) {
+            } else if (
+              (row.kind === "agent" || row.kind === "teammate") &&
+              row.taskId
+            ) {
               const nextIndex = getCoordinatorTaskIndex(
                 tasks,
                 row.taskId,
                 row.taskId,
+                idleTeammatesExpanded,
               );
               if (nextIndex !== undefined) {
                 setCoordinatorSelection(nextIndex, row.taskId);
@@ -236,6 +255,20 @@ export function CoordinatorTaskPanel({
               enterTeammateView(row.taskId, setAppState);
             } else if (row.kind === "workflow" && row.taskId) {
               onOpenTasksDialog?.(row.taskId);
+            } else if (row.kind === "idle_summary") {
+              const summaryIndex = rows.indexOf(row);
+              const firstRevealed = getCoordinatorTaskAtIndex(
+                tasks,
+                summaryIndex,
+                viewingAgentTaskId,
+              );
+              setCoordinatorSelection(
+                summaryIndex,
+                firstRevealed?.type === "idle_summary"
+                  ? firstRevealed.taskIds[0]
+                  : undefined,
+              );
+              setAppState((prev) => ({ ...prev, idleTeammatesExpanded: true }));
             }
           }}
         />
@@ -247,8 +280,11 @@ export function CoordinatorTaskPanel({
       )}
       {selectedRow && (
         <Text dimColor wrap="truncate">
-          <KeyboardShortcutHint shortcut="Enter" action="view" />
-          {selectedRow.kind === "agent" &&
+          <KeyboardShortcutHint
+            shortcut="Enter"
+            action={selectedRow.kind === "idle_summary" ? "expand" : "view"}
+          />
+          {(selectedRow.kind === "agent" || selectedRow.kind === "teammate") &&
             !selectedRow.viewed &&
             selectedTask && (
               <>
@@ -260,7 +296,17 @@ export function CoordinatorTaskPanel({
               </>
             )}
           {" · "}
-          <KeyboardShortcutHint shortcut="Esc" action="cancel" />
+          <KeyboardShortcutHint
+            shortcut="Esc"
+            action={
+              idleTeammatesExpanded &&
+              getVisibleAgentTasks(tasks, viewingAgentTaskId).some(
+                (task) => task.type === "idle_summary",
+              )
+                ? "collapse"
+                : "cancel"
+            }
+          />
         </Text>
       )}
     </Box>
@@ -274,9 +320,13 @@ export function CoordinatorTaskPanel({
 export function useCoordinatorTaskCount(): number {
   const tasks = useAppState((s) => s.tasks);
   const viewingAgentTaskId = useAppState((s) => s.viewingAgentTaskId);
+  const idleTeammatesExpanded = useAppState(
+    (s) => s.idleTeammatesExpanded ?? false,
+  );
   return React.useMemo(
-    () => getCoordinatorTaskCount(tasks, viewingAgentTaskId),
-    [tasks, viewingAgentTaskId],
+    () =>
+      getCoordinatorTaskCount(tasks, viewingAgentTaskId, idleTeammatesExpanded),
+    [tasks, viewingAgentTaskId, idleTeammatesExpanded],
   );
 }
 
@@ -330,7 +380,10 @@ function SessionRow({
           {active ? figures.pointer : " "} {row.icon}{" "}
         </Text>
       </Box>
-      <Box width={primaryColumnWidth} flexShrink={0}>
+      <Box
+        width={row.kind === "idle_summary" ? undefined : primaryColumnWidth}
+        flexShrink={0}
+      >
         <Text
           color={row.color}
           bold={active || row.viewed}
@@ -391,7 +444,7 @@ function SessionRowDetails({
           {showDetails ? description : truncateToWidth(description, 60)}
         </Text>
       </Box>
-      {showMetrics && row.kind !== "main" && (
+      {showMetrics && row.kind !== "main" && row.kind !== "idle_summary" && (
         <>
           {showStatus && (
             <Box width={metricWidths.status} marginLeft={2} flexShrink={0}>
@@ -417,24 +470,37 @@ function SessionRowDetails({
               </Text>
             </Box>
           )}
-          <Box
-            width={metricWidths.elapsed}
-            marginLeft={2}
-            flexShrink={0}
-            justifyContent="flex-end"
-          >
-            <Text dimColor>{row.elapsed}</Text>
-          </Box>
-          <Box width={5} flexShrink={0}>
-            <Text dimColor> · ↓ </Text>
-          </Box>
-          <Box
-            width={metricWidths.tokens}
-            flexShrink={0}
-            justifyContent="flex-end"
-          >
-            <Text dimColor>{row.tokens}</Text>
-          </Box>
+          {row.tokens ? (
+            <>
+              <Box
+                width={metricWidths.elapsed}
+                marginLeft={2}
+                flexShrink={0}
+                justifyContent="flex-end"
+              >
+                <Text dimColor>{row.elapsed}</Text>
+              </Box>
+              <Box width={5} flexShrink={0}>
+                <Text dimColor> · ↓ </Text>
+              </Box>
+              <Box
+                width={metricWidths.tokens}
+                flexShrink={0}
+                justifyContent="flex-end"
+              >
+                <Text dimColor>{row.tokens}</Text>
+              </Box>
+            </>
+          ) : (
+            <Box
+              minWidth={metricWidths.elapsed + 5 + metricWidths.tokens}
+              marginLeft={2}
+              flexShrink={0}
+              justifyContent="flex-end"
+            >
+              <Text dimColor>{row.elapsed}</Text>
+            </Box>
+          )}
         </>
       )}
     </>

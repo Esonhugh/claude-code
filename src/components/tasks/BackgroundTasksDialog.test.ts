@@ -383,46 +383,28 @@ try {
   assert.equal(liveState.tasks.worker?.description, 'retained worker')
   assert.equal((liveState.tasks.worker as typeof retainedTeammate).messages, retainedMessages)
   assert.deepEqual(Object.keys(liveState.tasks), ['worker'])
-  interactionIn.push('\u001b[27u')
-  await flush()
-  interactionIn.push('\u001b[1;2B')
-  await flush()
-  assert.equal(liveState.selectedIPAgentIndex, -1)
-  interactionIn.push('\u001b[1;2B')
-  await flush()
-  assert.equal(liveState.selectedIPAgentIndex, 0)
-  interactionIn.push('f')
-  await flush()
-  assert.equal(liveState.viewingAgentTaskId, 'worker')
 } finally {
   interaction.unmount()
   interaction.cleanup()
 }
 
-const { default: chalk } = await import('chalk')
-const previousColorLevel = chalk.level
-chalk.level = 1
+// Official 2.1.311: teammates are agent panel rows, never footer @pills.
 const { BackgroundTaskStatus } = await import('./BackgroundTaskStatus.js')
-for (const viewedId of ['worker', 'z', 'missing', undefined]) {
+{
   const pillOut = new TestStdout()
   const pills = await render(React.createElement(AppStateProvider,
-    { initialState: { ...getDefaultAppState(), viewingAgentTaskId: viewedId, tasks: {
+    { initialState: { ...getDefaultAppState(), viewingAgentTaskId: 'worker', tasks: {
       worker: retainedTeammate, z: { ...zTeammate, status: 'running', isIdle: false },
     } } } as unknown as React.ComponentProps<typeof AppStateProvider>,
-    React.createElement(BackgroundTaskStatus, { tasksSelected: false, isViewingTeammate: viewedId !== undefined })), {
+    React.createElement(BackgroundTaskStatus, { tasksSelected: false })), {
     stdout: pillOut as unknown as NodeJS.WriteStream, stdin: new TestStdin() as unknown as NodeJS.ReadStream,
     patchConsole: false, exitOnCtrlC: false,
   })
   await flush()
   pills.unmount()
   pills.cleanup()
-  assert.match(stripAnsi(pillOut.output), /@main\s+@z\s+@worker/)
-  const expectedName = viewedId === undefined ? 'main' : viewedId
-  for (const name of ['main', 'z', 'worker']) {
-    assert.equal(pillOut.output.includes(`\u001b[1m@${name}`), name === expectedName, `viewed=${viewedId}, pill=${name}, output=${JSON.stringify(pillOut.output)}`)
-  }
+  assert.doesNotMatch(stripAnsi(pillOut.output), /@main|@z|@worker/)
 }
-chalk.level = previousColorLevel
 const { default: PromptInput } = await import('../PromptInput/PromptInput.js')
 const onShowMessageSelector = mock(() => {})
 let promptInputValue = ''
@@ -454,7 +436,8 @@ function PromptHarness() {
     isLocalJSXCommandActive,
   })
 }
-test('PromptInput footer keeps completed teammate pills through Escape and grace-period reopening', async () => {
+const panelRow = /[◯⏺] worker/
+test('PromptInput agent panel keeps completed teammate rows through Escape and grace-period reopening', async () => {
   const promptOut = new TestStdout()
   const promptIn = new TestStdin()
   const promptInstance = await render(React.createElement(AppStateProvider,
@@ -475,10 +458,10 @@ test('PromptInput footer keeps completed teammate pills through Escape and grace
   }
   try {
     await flush()
-    assert.match(stripAnsi(promptOut.output), /@main\s+@worker/)
+    assert.match(stripAnsi(promptOut.output), panelRow)
     await pressPromptKey('\x1b[B')
     assert.equal(liveState.footerSelection, 'tasks', stripAnsi(promptOut.output))
-    await pressPromptKey('\x1b[C')
+    await pressPromptKey('\x1b[B')
     await pressPromptKey('\r')
     assert.equal(liveState.viewingAgentTaskId, 'worker')
     assert.equal((liveState.tasks.worker as typeof retainedTeammate).isIdle, true)
@@ -502,14 +485,18 @@ test('PromptInput footer keeps completed teammate pills through Escape and grace
     assert.equal(liveState.viewSelectionMode, 'none')
     assert.equal((liveState.tasks.worker as typeof retainedTeammate).retain, false)
     assert.ok((liveState.tasks.worker as import('../../tasks/InProcessTeammateTask/types.js').InProcessTeammateTaskState).evictAfter)
-    assert.match(stripAnsi(promptOut.output), /@main\s+@worker/, 'real PromptInput footer keeps pills after exiting the completed teammate')
+    assert.match(stripAnsi(promptOut.output), panelRow, 'real PromptInput panel keeps the row after exiting the completed teammate')
     await pressPromptKey('\x1b[B')
-    await pressPromptKey('\x1b[C')
+    await pressPromptKey('\x1b[B')
     await pressPromptKey('\r')
     assert.equal(liveState.viewingAgentTaskId, 'worker')
     assert.equal((liveState.tasks.worker as typeof retainedTeammate).retain, true)
     assert.equal((liveState.tasks.worker as import('../../tasks/InProcessTeammateTask/types.js').InProcessTeammateTaskState).evictAfter, undefined)
     assert.equal((liveState.tasks.worker as typeof retainedTeammate).messages, retainedMessages)
+    // Like a local agent row, Enter keeps the panel focused: Escape leaves it first.
+    await pressPromptKey('\x1b')
+    assert.equal(liveState.footerSelection, null)
+    assert.equal(liveState.viewingAgentTaskId, 'worker')
     await pressPromptKey('\x1b')
     assert.ok(performance.now() - firstEscapeAt < 800, 'both Escape dispatches must fit the double-press window')
     assert.equal(onShowMessageSelector.mock.calls.length, 0, 'teammate navigation must not open Rewind')
@@ -519,8 +506,9 @@ test('PromptInput footer keeps completed teammate pills through Escape and grace
     await pressPromptKey('\x1b[B')
     await pressPromptKey('\r')
     assert.equal(liveState.viewingAgentTaskId, undefined)
-    assert.equal(liveState.footerSelection, null, 'selecting main clears footer selection')
+    assert.equal(liveState.footerSelection, 'tasks', 'selecting main keeps the panel focused')
     await pressPromptKey('\x1b')
+    assert.equal(liveState.footerSelection, null, 'Escape leaves the panel')
     assert.equal(onShowMessageSelector.mock.calls.length, 0, 'teammate Escape must not arm the first main Escape')
     await new Promise(resolve => setTimeout(resolve, 850))
     promptIn.push('\x1b\x1b')
@@ -541,35 +529,16 @@ test('PromptInput footer keeps completed teammate pills through Escape and grace
     await pressPromptKey('\x1b')
     assert.equal(onShowMessageSelector.mock.calls.length, 1, 'second composer-owned Escape opens Rewind once')
 
-    await pressPromptKey('\x1b[1;2B')
-    await pressPromptKey('\x1b[1;2B')
-    assert.equal(liveState.viewSelectionMode, 'selecting-agent')
-    await pressPromptKey('f')
+    await pressPromptKey('\x1b[B')
+    await pressPromptKey('\x1b[B')
+    await pressPromptKey('\r')
     assert.equal(liveState.viewingAgentTaskId, 'worker')
-    assert.equal(promptInputValue, '', 'navigation f must not leak into the prompt')
+    assert.equal(promptInputValue, '', 'panel Enter must not leak into the prompt')
+    await pressPromptKey('\x1b')
     await pressPromptKey('\x1b')
     assert.equal(liveState.viewingAgentTaskId, undefined)
     assert.equal(promptInputValue, '')
     assert.equal(onShowMessageSelector.mock.calls.length, 1)
-    await pressPromptKey('draft')
-    assert.equal(promptInputValue, 'draft')
-    await pressPromptKey('\x1b[1;2B')
-    await pressPromptKey('\x1b[1;2A')
-    assert.equal(liveState.viewSelectionMode, 'selecting-agent')
-    await pressPromptKey('k')
-    assert.equal(promptInputValue, 'draft', 'navigation k preserves the draft')
-    await pressPromptKey('\x1b')
-    assert.equal(liveState.viewSelectionMode, 'none')
-    assert.equal(liveState.viewingAgentTaskId, undefined)
-    assert.equal(promptInputValue, 'draft', 'selection Escape preserves the draft')
-    assert.equal(onShowMessageSelector.mock.calls.length, 1)
-    await pressPromptKey('\x1b[1;2B')
-    await pressPromptKey('f')
-    assert.equal(liveState.viewingAgentTaskId, 'worker')
-    assert.equal(promptInputValue, 'draft', 'navigation f preserves the draft')
-    await pressPromptKey('\x1b')
-    assert.equal(liveState.viewingAgentTaskId, undefined)
-    assert.equal(promptInputValue, 'draft')
     await pressPromptKey('\x15')
     updateState!(s => ({ ...s, expandedView: 'none' }))
     await flush()
@@ -594,14 +563,14 @@ test('PromptInput footer keeps completed teammate pills through Escape and grace
       clock.mockRestore()
     }
     assert.equal(liveState.tasks.worker, undefined)
-    assert.doesNotMatch(stripAnsi(promptOut.output), /@main|@worker/)
+    assert.doesNotMatch(stripAnsi(promptOut.output), panelRow)
     assert.match(stripAnsi(promptOut.output), /\? for shortcuts/)
 
     for (const status of ['completed', 'failed', 'killed'] as const) {
       promptOut.output = ''
       updateState!(s => ({ ...s, tasks: { worker: { ...retainedTeammate, status, retain: undefined } } }))
       await flush()
-      assert.doesNotMatch(stripAnsi(promptOut.output), /@main|@worker/, `unretained ${status} teammate has no pills`)
+      assert.doesNotMatch(stripAnsi(promptOut.output), panelRow, `unretained ${status} teammate has no panel row`)
       assert.equal(isBackgroundTask(liveState.tasks.worker!), false)
       assert.deepEqual(getRunningTasks(liveState), [])
     }

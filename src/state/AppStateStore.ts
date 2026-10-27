@@ -113,13 +113,10 @@ export type AppState = DeepImmutable<{
   mainLoopModelForSession: ModelSetting
   statusLineText: string | undefined
   goalStatus: GoalStatus
-  expandedView: 'none' | 'tasks' | 'teammates'
+  expandedView: 'none' | 'tasks'
   diffSidebarVisible: boolean
   isBriefOnly: boolean
   briefTranscript: boolean
-  // Optional - only present when ENABLE_AGENT_SWARMS is true (for dead code elimination)
-  showTeammateMessagePreview?: boolean
-  selectedIPAgentIndex: number
   // CoordinatorTaskPanel selection: -1 = pill, 0 = main, 1..N = agent rows.
   // AppState (not local) so the panel can read it directly without prop-drilling
   // through PromptInput → PromptInputFooter.
@@ -128,7 +125,9 @@ export type AppState = DeepImmutable<{
   // index when the visible coordinator layout changes while keeping focus on
   // the same task row.
   coordinatorTaskTargetId?: string
-  viewSelectionMode: 'none' | 'selecting-agent' | 'viewing-agent'
+  // Idle teammates past the first three fold into one panel row until expanded.
+  idleTeammatesExpanded?: boolean
+  viewSelectionMode: 'none' | 'viewing-agent'
   // Which footer pill is focused (arrow-key navigation below the prompt).
   // Lives in AppState so pill components rendered outside PromptInput
   // (CompanionSprite in REPL.tsx) can read their own focused state.
@@ -518,8 +517,6 @@ export function getDefaultAppState(): AppState {
     diffSidebarVisible: false,
     isBriefOnly: false,
     briefTranscript: false,
-    showTeammateMessagePreview: false,
-    selectedIPAgentIndex: -1,
     coordinatorTaskIndex: -1,
     coordinatorTaskTargetId: undefined,
     viewSelectionMode: 'none',

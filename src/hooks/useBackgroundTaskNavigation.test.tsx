@@ -193,6 +193,6 @@ test('inactive navigation yields input ownership to the active surface', async (
   try {
     await h.shiftDown()
     expect(h.store.getState().expandedView).toBe('none')
-    expect(h.store.getState().selectedIPAgentIndex).toBe(-1)
+    expect(h.store.getState().viewSelectionMode).toBe('viewing-agent')
   } finally { h.close() }
 })
