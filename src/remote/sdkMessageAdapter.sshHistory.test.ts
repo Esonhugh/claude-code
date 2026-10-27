@@ -3,6 +3,7 @@ import type { SDKMessage } from '../entrypoints/agentSdkTypes.js'
 import {
   BoundedMessageUuidSet,
   convertSDKHistory,
+  convertSDKMessage,
 } from './sdkMessageAdapter.js'
 
 const sessionId = '11111111-1111-4111-8111-111111111111'
@@ -204,5 +205,76 @@ describe('BoundedMessageUuidSet', () => {
     expect(seen.remember('second')).toBe(true)
     expect(seen.remember('third')).toBe(true)
     expect(seen.remember('first')).toBe(true)
+  })
+})
+
+describe('convertSDKMessage result errors', () => {
+  const errorResult = (errors: string[]) =>
+    ({
+      type: 'result',
+      subtype: 'error_during_execution',
+      is_error: true,
+      errors,
+      uuid: '99999999-9999-4999-8999-999999999999',
+      session_id: sessionId,
+    }) as unknown as SDKMessage
+
+  test('hides the internal ede_diagnostic line of an interrupted turn', () => {
+    expect(
+      convertSDKMessage(
+        errorResult([
+          '[ede_diagnostic] result_type=user last_content_type=n/a stop_reason=null',
+        ]),
+      ),
+    ).toEqual({ type: 'ignored' })
+  })
+
+  test('shows the real errors without the diagnostic prefix', () => {
+    const converted = convertSDKMessage(
+      errorResult([
+        '[ede_diagnostic] result_type=user last_content_type=n/a stop_reason=null',
+        'Request failed',
+      ]),
+    )
+    expect(converted.type).toBe('message')
+    expect(
+      converted.type === 'message' && converted.message.type === 'system'
+        ? converted.message.content
+        : undefined,
+    ).toBe('Request failed')
+  })
+})
+
+describe('convertSDKMessage interrupt marker', () => {
+  test('renders the remote interrupt marker in a live stream', () => {
+    const converted = convertSDKMessage(
+      {
+        type: 'user',
+        message: {
+          role: 'user',
+          content: [{ type: 'text', text: '[Request interrupted by user]' }],
+        },
+        parent_tool_use_id: null,
+        uuid: '88888888-8888-4888-8888-888888888888',
+        session_id: sessionId,
+      } as unknown as SDKMessage,
+      { convertToolResults: true },
+    )
+    expect(converted.type).toBe('message')
+  })
+
+  test('still ignores echoed prompts in a live stream', () => {
+    expect(
+      convertSDKMessage(
+        {
+          type: 'user',
+          message: { role: 'user', content: 'hello' },
+          parent_tool_use_id: null,
+          uuid: '77777777-7777-4777-8777-777777777777',
+          session_id: sessionId,
+        } as unknown as SDKMessage,
+        { convertToolResults: true },
+      ),
+    ).toEqual({ type: 'ignored' })
   })
 })

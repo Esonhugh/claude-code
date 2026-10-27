@@ -17,7 +17,11 @@ import type {
 } from '../types/message.js'
 import { logForDebugging } from '../utils/debug.js'
 import { fromSDKCompactMetadata } from '../utils/messages/mappers.js'
-import { createUserMessage } from '../utils/messages.js'
+import {
+  createUserMessage,
+  INTERRUPT_MESSAGE,
+  INTERRUPT_MESSAGE_FOR_TOOL_USE,
+} from '../utils/messages.js'
 
 /**
  * Converts SDKMessage from CCR to REPL Message types.
@@ -72,10 +76,16 @@ function convertStreamEvent(msg: SDKPartialAssistantMessage): StreamEvent {
 /**
  * Convert an SDKResultMessage to a SystemMessage
  */
-function convertResultMessage(msg: SDKResultMessage): SystemMessage {
+function convertResultMessage(msg: SDKResultMessage): SystemMessage | null {
   const isError = msg.subtype !== 'success'
+  // QueryEngine prefixes errors[] with an internal [ede_diagnostic] line; an
+  // interrupted turn has nothing else, so there is nothing to show.
+  const errors = isError
+    ? (msg.errors ?? []).filter(error => !error.startsWith('[ede_diagnostic]'))
+    : []
+  if (isError && msg.errors && errors.length === 0) return null
   const content = isError
-    ? msg.errors?.join(', ') || 'Unknown error'
+    ? errors.join(', ') || 'Unknown error'
     : 'Session completed successfully'
 
   return {
@@ -262,10 +272,21 @@ export function convertSDKMessage(
             : message,
         }
       }
+      // The remote interrupt marker is the only live feedback for Esc; the
+      // REPL does not add one locally in remote mode.
+      const isInterruptMarker =
+        content === INTERRUPT_MESSAGE ||
+        (Array.isArray(content) &&
+          content.some(
+            b =>
+              b.type === 'text' &&
+              (b.text === INTERRUPT_MESSAGE ||
+                b.text === INTERRUPT_MESSAGE_FOR_TOOL_USE),
+          ))
       // When converting historical events, user-typed messages need to be
       // rendered (they weren't added locally by the REPL). Skip tool_results
       // here — already handled above.
-      if (opts?.convertUserTextMessages && !isToolResult) {
+      if ((opts?.convertUserTextMessages || isInterruptMarker) && !isToolResult) {
         if (typeof content === 'string' || Array.isArray(content)) {
           return {
             type: 'message',
@@ -291,7 +312,8 @@ export function convertSDKMessage(
       // Only show result messages for errors. Success results are noise
       // in multi-turn sessions (isLoading=false is sufficient signal).
       if (msg.subtype !== 'success') {
-        return { type: 'message', message: convertResultMessage(msg) }
+        const message = convertResultMessage(msg)
+        if (message) return { type: 'message', message }
       }
       return { type: 'ignored' }
 
