@@ -33,6 +33,10 @@ import {
   resolveCoordinatorSelection,
 } from "./CoordinatorAgentStatusRows.js";
 
+// Official 2.1.311 shows at most five task rows under main and scrolls the
+// window with the selection, so many agents cannot push the prompt off screen.
+const MAX_VISIBLE_TASK_ROWS = 5;
+
 export {
   getCoordinatorSessionRows,
   getCoordinatorTaskAtIndex,
@@ -127,6 +131,35 @@ export function CoordinatorTaskPanel({
     viewingAgentTaskId,
     ultracodeActive,
   });
+  const mainRow = rows[0]?.kind === "main" ? rows[0] : undefined;
+  const taskRows = mainRow ? rows.slice(1) : rows;
+  const selectedTaskIndex = taskRows.findIndex((row) => row.selected);
+  const anchorIndex = Math.max(
+    0,
+    selectedTaskIndex >= 0
+      ? selectedTaskIndex
+      : taskRows.findIndex((row) => row.viewed),
+  );
+  const windowStart = Math.min(
+    Math.max(0, anchorIndex - MAX_VISIBLE_TASK_ROWS + 1),
+    Math.max(0, taskRows.length - MAX_VISIBLE_TASK_ROWS),
+  );
+  const windowEnd = Math.min(
+    windowStart + MAX_VISIBLE_TASK_ROWS,
+    taskRows.length,
+  );
+  const moreAbove = windowStart;
+  const moreBelow = taskRows.length - windowEnd;
+  const visibleRows = [
+    ...(mainRow
+      ? [
+          moreAbove > 0
+            ? { ...mainRow, secondaryText: `↑ ${moreAbove} more` }
+            : mainRow,
+        ]
+      : []),
+    ...taskRows.slice(windowStart, windowEnd),
+  ];
   const selectedRow = rows.find((row) => row.selected);
   const selectedTask = selectedRow?.taskId
     ? tasks[selectedRow.taskId]
@@ -165,7 +198,12 @@ export function CoordinatorTaskPanel({
 
   return (
     <Box flexDirection="column" marginTop={0} paddingX={2}>
-      {rows.map((row) => (
+      {!mainRow && moreAbove > 0 && (
+        <Text dimColor>
+          {`  ↑ ${moreAbove} more`}
+        </Text>
+      )}
+      {visibleRows.map((row) => (
         <SessionRow
           key={row.id}
           row={row}
@@ -202,6 +240,11 @@ export function CoordinatorTaskPanel({
           }}
         />
       ))}
+      {taskRows.length > MAX_VISIBLE_TASK_ROWS && (
+        <Text dimColor>
+          {moreBelow > 0 ? `  ↓ ${moreBelow} more` : " "}
+        </Text>
+      )}
       {selectedRow && (
         <Text dimColor wrap="truncate">
           <KeyboardShortcutHint shortcut="Enter" action="view" />

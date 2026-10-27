@@ -165,3 +165,45 @@ test('narrow Agent panel retains names without wrapping metrics into another row
   expect(lines).toHaveLength(3)
   expect(lines.every(line => stringWidth(line) <= 50)).toBe(true)
 })
+
+function manyAgents(count: number): AppState['tasks'] {
+  return Object.fromEntries(Array.from({ length: count }, (_, i) => {
+    const id = `worker-${String(i + 1).padStart(2, '0')}`
+    return [id, {
+      id, type: 'local_agent', status: 'running', agentId: id,
+      agentType: id, description: 'Wait', startTime: Date.now() - 5_000 + i,
+      progress: { tokenCount: 10, toolUseCount: 0 },
+    }]
+  })) as unknown as AppState['tasks']
+}
+
+test('many Agents are capped to five rows like the official panel so the prompt stays on screen', async () => {
+  const lines = await panelLines(100, false, { tasks: manyAgents(10) })
+  expect(lines).toHaveLength(7)
+  expect(lines[0]).toContain('main')
+  expect(lines[0]).not.toContain('more')
+  expect(lines.slice(1, 6).map(line => line.match(/worker-\d+/)?.[0])).toEqual(
+    ['worker-01', 'worker-02', 'worker-03', 'worker-04', 'worker-05'],
+  )
+  expect(lines[6]).toContain('↓ 5 more')
+})
+
+test('capped Agent rows scroll with the selection and count hidden rows on both sides', async () => {
+  const lines = await panelLines(100, false, {
+    tasks: manyAgents(10), footerSelection: 'tasks', coordinatorTaskIndex: 8,
+  })
+  expect(lines[0]).toContain('main')
+  expect(lines[0]).toContain('↑ 3 more')
+  expect(lines.slice(1, 6).map(line => line.match(/worker-\d+/)?.[0])).toEqual(
+    ['worker-04', 'worker-05', 'worker-06', 'worker-07', 'worker-08'],
+  )
+  expect(lines[5]).toContain('⏺')
+  expect(lines[6]).toContain('↓ 2 more')
+  expect(lines[7]).toContain('Enter to view')
+})
+
+test('five or fewer Agents render without a more line', async () => {
+  const lines = await panelLines(100, false, { tasks: manyAgents(5) })
+  expect(lines).toHaveLength(6)
+  expect(lines.some(line => line.includes('more'))).toBe(false)
+})
