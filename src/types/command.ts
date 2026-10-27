@@ -55,6 +55,18 @@ export type PromptCommand = {
   // Only applicable when context is 'fork'
   agent?: string
   effort?: EffortValue
+  // Per-invocation overrides, resolved like official:
+  // getEffort ?? getDefaultEffort.value ?? effort, getContext ?? context.
+  getEffort?: (args: string, context: ToolUseContext) => EffortValue | undefined
+  getDefaultEffort?: (
+    args: string,
+    context: ToolUseContext,
+  ) => { value: EffortValue; notice: string } | undefined
+  // Called when the user types the command in an interactive session
+  onUserTypedArgs?: (args: string, context: ToolUseContext) => void
+  getContext?: (args: string, context: ToolUseContext) => 'inline' | 'fork'
+  // Rewrites a foreground forked command's result text before display
+  formatForegroundForkResult?: (resultText: string) => string
   // Glob patterns for file paths this skill applies to
   // When set, the skill is only visible after the model touches matching files
   paths?: string[]
@@ -198,6 +210,9 @@ export type CommandBase = {
   isHidden?: boolean
   name: string
   aliases?: string[]
+  // First-argument tokens that dispatch to another command when it is enabled,
+  // e.g. `/code-review ultra` -> `/ultrareview`
+  subcommands?: Record<string, string>
   isMcp?: boolean
   mcpServerName?: string
   argumentHint?: string // Hint text for command arguments (displayed in gray after command)
@@ -241,4 +256,41 @@ export function isCommandImmediate(
 /** Resolves whether the command is enabled, defaulting to true. */
 export function isCommandEnabled(cmd: CommandBase): boolean {
   return cmd.isEnabled?.() ?? true
+}
+
+export function getPromptCommandContext(
+  cmd: PromptCommand,
+  args: string,
+  context: ToolUseContext,
+): 'inline' | 'fork' {
+  return cmd.getContext?.(args, context) ?? cmd.context ?? 'inline'
+}
+
+export function getPromptCommandEffort(
+  cmd: PromptCommand,
+  args: string,
+  context: ToolUseContext,
+): EffortValue | undefined {
+  return (
+    cmd.getEffort?.(args, context) ??
+    cmd.getDefaultEffort?.(args, context)?.value ??
+    cmd.effort
+  )
+}
+
+export function resolveSubcommand(
+  cmd: CommandBase,
+  args: string,
+): { targetName: string; consumedToken: string; remainingArgs: string } | undefined {
+  if (!cmd.subcommands) return undefined
+  const trimmed = args.trimStart()
+  const space = trimmed.search(/\s/)
+  const token = space === -1 ? trimmed : trimmed.slice(0, space)
+  const targetName = token ? cmd.subcommands[token.toLowerCase()] : undefined
+  if (targetName === undefined) return undefined
+  return {
+    targetName,
+    consumedToken: token,
+    remainingArgs: space === -1 ? '' : trimmed.slice(space + 1).trim(),
+  }
 }

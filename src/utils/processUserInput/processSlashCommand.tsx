@@ -27,6 +27,7 @@ import type {
   Message,
   NormalizedUserMessage,
   ProgressMessage,
+  SystemMessage,
   UserMessage,
 } from 'src/types/message.js'
 import { addInvokedSkill, getSessionId } from '../../bootstrap/state.js'
@@ -48,7 +49,14 @@ import { resetMicrocompactState } from '../../services/compact/microCompact.js'
 import type { Progress as AgentProgress } from '../../tools/AgentTool/AgentTool.js'
 import { runAgent } from '../../tools/AgentTool/runAgent.js'
 import { renderToolUseProgressMessage } from '../../tools/AgentTool/UI.js'
-import { isCommandImmediate, type CommandResultDisplay } from '../../types/command.js'
+import {
+  getPromptCommandContext,
+  getPromptCommandEffort,
+  isCommandEnabled,
+  isCommandImmediate,
+  resolveSubcommand,
+  type CommandResultDisplay,
+} from '../../types/command.js'
 import { getAgentContext } from '../agentContext.js'
 import {
   createAttachmentMessage,
@@ -152,17 +160,16 @@ async function executeForkedSlashCommand(
   const { skillContent, modifiedGetAppState, baseAgent, promptMessages } = prepared
 
   // Merge skill's effort into the agent definition so runAgent applies it
+  const effort = getPromptCommandEffort(command, args, context)
   const agentDefinition =
-    command.effort !== undefined
-      ? { ...baseAgent, effort: command.effort }
-      : baseAgent
+    effort !== undefined ? { ...baseAgent, effort } : baseAgent
 
   logForDebugging(
     `Executing forked slash command /${command.name} with agent ${agentDefinition.agentType} (agent ${agentId})`,
   )
 
   if (background) {
-    const launched = await launchBackgroundForkedSkill({ command, prepared, agentDefinition, agentId, context, canUseTool })
+    const launched = await launchBackgroundForkedSkill({ command, args, prepared, agentDefinition, agentId, context, canUseTool })
     if (launched) return {
       command, shouldQuery: false,
       messages: [
@@ -268,6 +275,11 @@ async function executeForkedSlashCommand(
   }
 
   let resultText = extractResultText(agentMessages, 'Command completed')
+  try {
+    resultText = command.formatForegroundForkResult?.(resultText) ?? resultText
+  } catch (e) {
+    logError(e)
+  }
 
   logForDebugging(
     `Forked slash command /${command.name} completed with agent ${agentId}`,
@@ -344,7 +356,8 @@ export async function processSlashCommand(
     }
   }
 
-  const { commandName, args: parsedArgs, isMcp } = parsed
+  const { isMcp } = parsed
+  let { commandName, args: parsedArgs } = parsed
 
   const sanitizedCommandName = isMcp
     ? 'mcp'
@@ -424,7 +437,16 @@ export async function processSlashCommand(
     }
   }
 
-  const command = userInvocableCommand ?? commandExists!
+  let command = userInvocableCommand ?? commandExists!
+  const subcommand = resolveSubcommand(command, parsedArgs)
+  const subcommandTarget = subcommand
+    ? findCommand(subcommand.targetName, context.options.commands)
+    : undefined
+  if (subcommand && subcommandTarget && isCommandEnabled(subcommandTarget)) {
+    command = subcommandTarget
+    commandName = subcommand.targetName
+    parsedArgs = subcommand.remainingArgs
+  }
   let commandSnapshot = context.modsSnapshot
   const core = (args: string) =>
     getMessagesForSlashCommand(
@@ -976,9 +998,16 @@ async function getMessagesForSlashCommand(
       }
       case 'prompt': {
         try {
-          // Check if command should run as forked sub-agent
-          if (command.context === 'fork') {
-            return await executeForkedSlashCommand(
+          let effortNotice: SystemMessage | undefined
+          if (!context.options.isNonInteractiveSession) {
+            command.onUserTypedArgs?.(args, context)
+            if (command.getEffort?.(args, context) === undefined) {
+              const notice = command.getDefaultEffort?.(args, context)?.notice
+              if (notice) effortNotice = createSystemMessage(notice, 'notice')
+            }
+          }
+          const result = getPromptCommandContext(command, args, context) === 'fork'
+            ? await executeForkedSlashCommand(
               command,
               args,
               context,
@@ -986,16 +1015,16 @@ async function getMessagesForSlashCommand(
               setToolJSX,
               canUseTool ?? hasPermissionsToUseTool,
             )
-          }
-
-          return await getMessagesForPromptSlashCommand(
-            command,
-            args,
-            context,
-            precedingInputBlocks,
-            imageContentBlocks,
-            uuid,
-          )
+            : await getMessagesForPromptSlashCommand(
+              command,
+              args,
+              context,
+              precedingInputBlocks,
+              imageContentBlocks,
+              uuid,
+            )
+          if (effortNotice) result.messages.splice(1, 0, effortNotice)
+          return result
         } catch (e) {
           const { ModAuthoringPromptDismissedError } =
             await import('../../services/mods/session.js')
@@ -1214,7 +1243,7 @@ async function getMessagesForPromptSlashCommand(
       ],
       shouldQuery: true,
       model: command.model,
-      effort: command.effort,
+      effort: getPromptCommandEffort(command, args, context),
       command,
     }
   }
@@ -1367,7 +1396,7 @@ async function getMessagesForPromptSlashCommand(
     shouldQuery,
     allowedTools: additionalAllowedTools,
     model: command.model,
-    effort: command.effort,
+    effort: getPromptCommandEffort(command, args, context),
     command,
     resultText: shouldQuery ? undefined : skillContent,
   }

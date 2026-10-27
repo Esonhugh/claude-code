@@ -3,7 +3,7 @@ import { constants as fsConstants } from 'fs'
 import { mkdir, open } from 'fs/promises'
 import { dirname, isAbsolute, join, normalize, sep as pathSep } from 'path'
 import type { ToolUseContext } from '../Tool.js'
-import type { Command } from '../types/command.js'
+import type { Command, PromptCommand } from '../types/command.js'
 import { logForDebugging } from '../utils/debug.js'
 import { getBundledSkillsRoot } from '../utils/permissions/filesystem.js'
 import type { HooksSettings } from '../utils/settings/types.js'
@@ -14,10 +14,12 @@ import type { HooksSettings } from '../utils/settings/types.js'
  */
 export type BundledSkillDefinition = {
   name: string
-  description: string
+  // Function-valued text is re-read on every access (it can depend on gates)
+  description: string | (() => string)
   aliases?: string[]
-  whenToUse?: string
-  argumentHint?: string
+  subcommands?: Record<string, string>
+  whenToUse?: string | (() => string)
+  argumentHint?: string | (() => string)
   allowedTools?: string[]
   disallowedTools?: string[]
   background?: boolean
@@ -28,6 +30,11 @@ export type BundledSkillDefinition = {
   hooks?: HooksSettings
   context?: 'inline' | 'fork'
   agent?: string
+  getEffort?: PromptCommand['getEffort']
+  getDefaultEffort?: PromptCommand['getDefaultEffort']
+  onUserTypedArgs?: PromptCommand['onUserTypedArgs']
+  getContext?: PromptCommand['getContext']
+  formatForegroundForkResult?: PromptCommand['formatForegroundForkResult']
   /**
    * Additional reference files to extract to disk on first invocation.
    * Keys are relative paths (forward slashes, no `..`), values are content.
@@ -77,14 +84,13 @@ export function registerBundledSkill(definition: BundledSkillDefinition): void {
   const command: Command = {
     type: 'prompt',
     name: definition.name,
-    description: definition.description,
+    description: '',
     aliases: definition.aliases,
+    subcommands: definition.subcommands,
     hasUserSpecifiedDescription: true,
     allowedTools: definition.allowedTools ?? [],
     disallowedTools: definition.disallowedTools,
     background: definition.background,
-    argumentHint: definition.argumentHint,
-    whenToUse: definition.whenToUse,
     model: definition.model,
     disableModelInvocation: definition.disableModelInvocation ?? false,
     userInvocable: definition.userInvocable ?? true,
@@ -95,12 +101,33 @@ export function registerBundledSkill(definition: BundledSkillDefinition): void {
     skillRoot,
     context: definition.context,
     agent: definition.agent,
+    getEffort: definition.getEffort,
+    getDefaultEffort: definition.getDefaultEffort,
+    onUserTypedArgs: definition.onUserTypedArgs,
+    getContext: definition.getContext,
+    formatForegroundForkResult: definition.formatForegroundForkResult,
     isEnabled: definition.isEnabled,
     isHidden: !(definition.userInvocable ?? true),
     progressMessage: 'running',
     getPromptForCommand,
   }
+  defineBundledSkillText(command, definition)
   bundledSkills.push(command)
+}
+
+// Function-valued text becomes a getter so it follows its gates at read time.
+export function defineBundledSkillText(
+  command: Command,
+  definition: Pick<BundledSkillDefinition, 'description' | 'whenToUse' | 'argumentHint'>,
+): void {
+  for (const key of ['description', 'whenToUse', 'argumentHint'] as const) {
+    const value = definition[key]
+    if (typeof value === 'function') {
+      Object.defineProperty(command, key, { get: value, enumerable: true, configurable: true })
+    } else {
+      command[key] = value as string
+    }
+  }
 }
 
 /**

@@ -14,7 +14,10 @@
  */
 
 import type { Command } from '../commands.js'
-import type { BundledSkillDefinition } from '../skills/bundledSkills.js'
+import {
+  type BundledSkillDefinition,
+  defineBundledSkillText,
+} from '../skills/bundledSkills.js'
 import type { BuiltinPluginDefinition, LoadedPlugin } from '../types/plugin.js'
 import { getSettings_DEPRECATED } from '../utils/settings/settings.js'
 import type { ModPluginInput } from '../services/mods/runtime.js'
@@ -227,14 +230,12 @@ export function clearBuiltinPlugins(): void {
 // --
 
 function skillDefinitionToCommand(definition: BundledSkillDefinition): Command {
-  return {
+  const command: Command = {
     type: 'prompt',
     name: definition.name,
-    description: definition.description,
+    description: '',
     hasUserSpecifiedDescription: true,
     allowedTools: definition.allowedTools ?? [],
-    argumentHint: definition.argumentHint,
-    whenToUse: definition.whenToUse,
     model: definition.model,
     disableModelInvocation: definition.disableModelInvocation ?? false,
     userInvocable: definition.userInvocable ?? true,
@@ -253,4 +254,6 @@ function skillDefinitionToCommand(definition: BundledSkillDefinition): Command {
     progressMessage: 'running',
     getPromptForCommand: definition.getPromptForCommand,
   }
+  defineBundledSkillText(command, definition)
+  return command
 }

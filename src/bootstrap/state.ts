@@ -74,6 +74,8 @@ type State = {
   sessionFallbackModels: string[]
   modelStrings: ModelStrings | null
   isInteractive: boolean
+  // --output-format of a print session ('text' when not given); unset when interactive
+  printOutputFormat: string | undefined
   kairosActive: boolean
   // When true, ensureToolResultPairing throws on mismatch instead of
   // repairing with synthetic placeholders. HFI opts in at startup so
@@ -314,6 +316,7 @@ function getInitialState(): State {
     sessionFallbackModels: [],
     modelStrings: null,
     isInteractive: false,
+    printOutputFormat: undefined,
     kairosActive: false,
     strictToolResultPairing: false,
     sdkAgentProgressSummariesEnabled: false,
@@ -1128,6 +1131,14 @@ export function getIsInteractive(): boolean {
 
 export function setIsInteractive(value: boolean): void {
   STATE.isInteractive = value
+}
+
+export function getPrintOutputFormat(): string | undefined {
+  return STATE.printOutputFormat
+}
+
+export function setPrintOutputFormat(value: string | undefined): void {
+  STATE.printOutputFormat = value
 }
 
 export function getClientType(): string {

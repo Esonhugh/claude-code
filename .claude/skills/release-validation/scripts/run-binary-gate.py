@@ -120,10 +120,7 @@ LIFECYCLE_MOCK_KINDS = {
         'workflow-probe-a-completed', 'workflow-probe-b-read',
         'workflow-probe-b-completed', 'workflow-parent-completed',
     ),
-    'code-review': (
-        'code-review-launch', 'code-review-scope-output',
-        'code-review-scope-completed', 'code-review-parent-completed',
-    ),
+    'code-review': ('code-review-findings', 'code-review-notified'),
 }
 DUMMY_OPENAI_API_KEY = 'release-validation-dummy-key'
 DUMMY_ANTHROPIC_API_KEY = 'release-validation-dummy-anthropic-key'
@@ -180,7 +177,10 @@ TARGET_PATH_RULES = (
         'src/tools/WorkflowTool/bundled/',
     )),
     ('code-review', (
-        'src/tools/WorkflowTool/bundled/',
+        'src/skills/bundled/codeReview',
+        'src/skills/bundledSkills',
+        'src/utils/processUserInput/processSlashCommand',
+        'src/tools/SkillTool/',
     )),
     ('effort-openai-responses-wire', (
         'src/commands/effort/',
@@ -386,236 +386,20 @@ def merge_no_proxy(value, *hosts):
 
 
 def code_review_prompt(release_base):
-    diff_range = f'{release_base}..HEAD'
-    paths = (
-        'src/tools/WorkflowTool/bundled/index.ts '
-        'src/tools/WorkflowTool/bundled/index.test.ts'
-    )
-    return (
-        f'/code-review high Read-only validation using exactly: git diff {diff_range} -- {paths}. '
-        'Do not widen the diff range or path scope, run repository-wide searches, inspect '
-        'unrelated commits, modify files, commit, push, release, or create worktrees.'
-    )
+    return f'/code-review high {release_base}...HEAD'
 
 
-def code_review_scope_identity(*, run_args, task_id, run_id, artifact, parents, children, log, wire=None):
-    """Bind the bounded empty-Scope fixture to its actual native child, including Fork."""
-    from datetime import datetime
-    from xml.etree import ElementTree
-    checks = []
-
-    def require(value, reason):
-        if not value:
-            raise ValueError(reason)
-        checks.append(reason)
-
-    def milliseconds(value):
-        return round(datetime.fromisoformat(value.replace('Z', '+00:00')).timestamp() * 1000)
-
-    def blocks(entry, kind):
-        content = entry.get('message', {}).get('content')
-        return [block for block in content if isinstance(block, dict) and block.get('type') == kind] if isinstance(content, list) else []
-
-    try:
-        require(bool(task_id) and bool(run_id), 'owned Workflow IDs')
-        require(all(artifact.get(key) == value for key, value in {
-            'taskId': task_id, 'workflowRunId': run_id, 'workflowName': 'code-review',
-            'scriptPath': 'bundled:code-review', 'status': 'completed', 'runArgs': run_args,
-        }.items()), 'same completed bundled Workflow artifact')
-        start, finish = artifact['startedAt'], artifact['updatedAt']
-        require(isinstance(start, int) and isinstance(finish, int) and start <= finish, 'artifact execution interval')
-        workers, cached = artifact['results'], artifact['resumeCacheEntries']
-        require(len(workers) == len(cached) == 1, 'one Scope worker and one cached result')
-        worker, cache = workers[0], cached[0]
-        require(all(worker.get(key) == value for key, value in {
-            'phaseId': 'Scope', 'agentId': 'scope', 'index': 0, 'status': 'completed',
-        }.items()), 'Scope worker completed without retry')
-        output = json.loads(worker['output'])
-        diff = re.search(r'using exactly: (git diff [^\n]+?)\. Do not widen', run_args)
-        require(diff and output.get('diffCommand') == diff.group(1) and output.get('files') == []
-                and isinstance(output.get('summary'), str) and bool(output['summary']), 'exact bounded empty-scope output')
-        require(all(cache.get(key) == value for key, value in {
-            'phase': 'Scope', 'label': 'scope', 'index': 0, 'result': output,
-        }.items()) and start <= cache['completedAt'] <= finish, 'cache matches actual worker output')
-        launches = [(parent, entry, block) for parent in parents for entry in parent['entries']
-                    if entry.get('type') == 'assistant' for block in blocks(entry, 'tool_use')
-                    if block.get('name') == 'WorkflowTool' and block.get('input') == {
-                        'action': 'run', 'selector': 'code-review', 'runArgs': run_args}]
-        require(len(launches) == 1, 'one exact parent WorkflowTool launch')
-        parent, launch, call = launches[0]
-        cli_session, tool_id = parent['session_id'], call['id']
-        parent_messages = [entry for entry in parent['entries'] if entry.get('type') in ('assistant', 'user')]
-        parent_uuids = [entry.get('uuid') for entry in parent_messages]
-        require(all(isinstance(value, str) and bool(value) for value in parent_uuids)
-                and len(parent_uuids) == len(set(parent_uuids))
-                and all(entry.get('isSidechain') is False for entry in parent_messages), 'unique native parent UUIDs')
-        require(bool(cli_session) and bool(tool_id) and bool(launch.get('uuid')) and all(
-            entry.get('sessionId') == cli_session for entry in parent['entries']
-            if entry.get('type') in ('assistant', 'user')), 'one parent CLI session')
-        replies = [(entry, block) for entry in parent['entries'] for block in blocks(entry, 'tool_result')
-                   if entry.get('type') == 'user' and block.get('tool_use_id') == tool_id]
-        require(len(replies) == 1, 'one native Workflow launch receipt')
-        reply_entry, reply = replies[0]
-        require(reply.get('is_error') is not True and reply_entry.get('parentUuid') == launch['uuid']
-                and reply_entry.get('sourceToolAssistantUUID') == launch['uuid']
-                and isinstance(reply.get('content'), str)
-                and f'Workflow launched in background. Task ID: {task_id}\n' in reply['content']
-                and re.search(rf'(?m)^Run ID: {re.escape(run_id)}$', reply['content']), 'launch receipt links task/run and parent tool')
-        notes = [entry for entry in parent['entries'] if entry.get('type') == 'user'
-                 and entry.get('origin', {}).get('kind') == 'task-notification']
-        require(len(notes) == 1 and isinstance(notes[0]['message']['content'], str), 'one native completion notification')
-        notification_text = notes[0]['message']['content']
-        require(notification_text.startswith('<task-notification>')
-                and notification_text.endswith('</task-notification>')
-                and '<!DOCTYPE' not in notification_text and '<!ENTITY' not in notification_text, 'bounded notification document')
-        notification = ElementTree.fromstring(notification_text)
-        require(notification.tag == 'task-notification' and not notification.attrib
-                and len(list(notification.iter('task-notification'))) == 1, 'one notification root')
-        for tag, expected in (('task-id', task_id), ('tool-use-id', tool_id), ('status', 'completed')):
-            nodes = notification.findall(tag)
-            require(len(nodes) == 1 and not list(nodes[0]) and not nodes[0].attrib
-                    and nodes[0].text == expected, 'exact direct notification ' + tag)
-        result_nodes, usage_nodes = notification.findall('result'), notification.findall('usage')
-        require(len(result_nodes) == len(usage_nodes) == 1 and not list(result_nodes[0]), 'one final result and usage')
-        require(json.loads(result_nodes[0].text) == {
-            'level': 'high', 'target': run_args.removeprefix('high '),
-            'summary': 'No changes found to review.', 'findings': [],
-            'stats': {'finders': 0, 'candidates': 0, 'verified': 0},
-        }, 'bounded empty-scope final report')
-        for tag, expected in (('total_tokens', artifact['tokenCount']), ('tool_uses', artifact['toolUseCount'])):
-            nodes = usage_nodes[0].findall(tag)
-            require(len(nodes) == 1 and not list(nodes[0]) and isinstance(expected, int)
-                    and expected >= 0 and nodes[0].text == str(expected), 'notification matches artifact ' + tag)
-        duration = usage_nodes[0].findall('duration_ms')
-        require(len(duration) == 1 and not list(duration[0]) and re.fullmatch(r'[0-9]+', duration[0].text or ''), 'native notification duration')
-        require(milliseconds(launch['timestamp']) <= start <= milliseconds(reply_entry['timestamp'])
-                and finish <= milliseconds(notes[0]['timestamp'])
-                and milliseconds(reply_entry['timestamp']) <= milliseconds(notes[0]['timestamp']),
-                'parent launch and completion notification bind this execution')
-        scope = f'task={task_id} run={run_id} '
-        lines = log.splitlines()
-        starts = [index for index, line in enumerate(lines) if 'workflow_worker_start ' + scope in line]
-        ends = [index for index, line in enumerate(lines) if 'workflow_worker_terminal ' + scope in line]
-        require(len(starts) == len(ends) == 1 and starts[0] < ends[0], 'one same-run worker interval')
-        exact = 'phase=Scope logical=scope agent=scope attempt=0 worker=0'
-        require(lines[starts[0]].endswith(exact) and lines[ends[0]].endswith(exact + ' status=completed'), 'exact Scope attempt terminal')
-        begin_ms, end_ms = (milliseconds(lines[index].split(' ', 1)[0]) for index in (starts[0], ends[0]))
-        require(start <= begin_ms <= end_ms <= finish, 'worker belongs to artifact interval')
-        window = lines[starts[0] + 1:ends[0]]
-        require(not any('workflow_worker_start ' in line for line in window), 'no competing worker in identity interval')
-        actual = [match for line in window if (match := re.search(
-            r'\[runAgent\] agentId=([^, ]+), agentType=general-purpose, model=([^, ]+),', line))]
-        params = [json.loads(line.split('AgentTool launch params ', 1)[1])
-                  for line in window if 'AgentTool launch params ' in line]
-        require(len(actual) == len(params) == 1, 'one actual native child execution')
-        agent_id, model = actual[0].groups()
-        require(all(params[0].get(key) == value for key, value in {
-            # Like official 2.1.292, workflow workers follow the parent session's mode.
-            'selectedAgentType': 'general-purpose', 'permissionMode': 'bypassPermissions', 'toolUseId': tool_id,
-            'spawnDepth': 1, 'model': model,
-        }.items()) and isinstance(params[0].get('isAsync'), bool), 'Agent launch metadata links parent tool')
-        candidates = [child for child in children if child.get('session_id') == cli_session
-                      and child.get('agent_id') == agent_id]
-        require(len(candidates) == 1, 'one child transcript in same CLI session')
-        child = candidates[0]
-        require(all(child['meta'].get(key) == value for key, value in {
-            'agentType': 'general-purpose', 'description': 'code-review: scope', 'toolUseId': tool_id,
-            'permissionMode': 'bypassPermissions', 'spawnDepth': 1, 'model': model,
-        }.items()), 'native child meta links Scope and parent')
-        entries = [entry for entry in child['entries'] if entry.get('type') in ('user', 'assistant')]
-        child_uuids = [entry.get('uuid') for entry in entries]
-        require(all(isinstance(value, str) and bool(value) for value in child_uuids)
-                and len(child_uuids) == len(set(child_uuids)) and not set(child_uuids).intersection(parent_uuids)
-                and all(entry.get('isSidechain') is True for entry in entries), 'unique native sidechain UUIDs')
-        require(len(entries) == 3 and all(entry.get('agentId') == agent_id
-                and entry.get('sessionId') == cli_session
-                and begin_ms <= milliseconds(entry['timestamp']) <= end_ms for entry in entries), 'child messages belong to this native execution')
-        schema = {'type': 'object', 'required': ['diffCommand', 'files', 'summary'],
-                  'properties': {'diffCommand': {'type': 'string'}, 'files': {'type': 'array', 'items': {'type': 'string'}},
-                                 'summary': {'type': 'string'}, 'conventions': {'type': 'string'}}}
-        suffix = ('\n\nYou MUST call the `StructuredOutput` tool exactly once to return your answer.\n'
-                  'The tool input must match this JSON Schema:\n```json\n' + json.dumps(schema, indent=2) + '\n```\n'
-                  'Do NOT put your answer in a text response. The script reads ONLY the tool call.\n'
-                  'If schema validation fails, read the error and call the tool again with corrected input.')
-        require(entries[0].get('type') == 'user' and isinstance(worker.get('prompt'), str) and bool(worker['prompt'])
-                and entries[0]['message']['content'] == worker['prompt'] + suffix, 'exact actual worker prompt and schema')
-        structured = blocks(entries[1], 'tool_use')
-        require(entries[1].get('type') == 'assistant' and len(structured) == 1
-                and structured[0].get('name') == 'StructuredOutput' and structured[0].get('input') == output
-                and entries[1].get('parentUuid') == entries[0].get('uuid'), 'actual StructuredOutput matches artifact/cache')
-        receipts = blocks(entries[2], 'tool_result')
-        require(entries[2].get('type') == 'user' and len(receipts) == 1
-                and receipts[0].get('tool_use_id') == structured[0].get('id') and bool(structured[0].get('id'))
-                and receipts[0].get('is_error') is not True
-                and receipts[0].get('content') == 'Structured output provided successfully'
-                and entries[2].get('sourceToolAssistantUUID') == entries[1]['uuid']
-                and entries[2].get('parentUuid') == entries[1].get('uuid'), 'native successful StructuredOutput receipt')
-        parent_wire = []
-        for kind in ('code-review-launch', 'code-review-parent-completed', 'code-review-notification-completed'):
-            matches = [request for request in wire if request.get('response_kind') == kind]
-            require(len(matches) == 1, 'one transported parent ' + kind)
-            request = matches[0]
-            require(request.get('method') == 'POST' and request.get('path') == '/v1/responses'
-                    and request.get('authorization', {}).get('matches_dummy') is True
-                    and all(request.get('headers', {}).get(key) == cli_session for key in (
-                        'session-id', 'x-claude-code-session-id', 'thread-id')), 'transported native parent CLI identity')
-            if kind != 'code-review-launch':
-                items = request['body']['input']
-                calls = [item for item in items if item.get('type') == 'function_call' and item.get('name') == 'WorkflowTool']
-                returns = [item for item in items if item.get('type') == 'function_call_output' and item.get('call_id') == tool_id]
-                require(len(calls) == len(returns) == 1 and calls[0].get('id') == calls[0].get('call_id') == tool_id
-                        and json.loads(calls[0]['arguments']) == call['input']
-                        and returns[0].get('output') == reply['content'], 'transported parent call and exact task/run receipt')
-            if kind == 'code-review-notification-completed':
-                messages = [block.get('text') for item in request['body']['input'] if item.get('role') == 'user'
-                            for block in item.get('content', []) if isinstance(block, dict) and block.get('type') == 'input_text']
-                require(messages.count(notification_text) == 1, 'transported exact native completion notification')
-            parent_wire.append(request)
-        wire_sides = []
-        for kind in ('code-review-scope-output', 'code-review-scope-completed'):
-            matches = [request for request in wire if request.get('response_kind') == kind]
-            require(len(matches) == 1, 'one transported ' + kind)
-            request = matches[0]
-            require(request.get('method') == 'POST' and request.get('path') == '/v1/responses'
-                    and request.get('authorization', {}).get('matches_dummy') is True
-                    and all(request.get('headers', {}).get(key) == value for key, value in {
-                        'session-id': cli_session, 'x-claude-code-session-id': cli_session,
-                        'thread-id': agent_id,
-                    }.items()), 'transport belongs to same native CLI/child with dummy auth')
-            body = request['body']
-            require(body['input'][1].get('role') == 'user'
-                    and body['input'][1]['content'][1] == {'type': 'input_text', 'text': worker['prompt'] + suffix},
-                    'transported actual worker prompt')
-            tools = [tool for tool in body['tools'] if tool.get('name') == 'StructuredOutput']
-            require(len(tools) == 1 and tools[0].get('type') == 'function'
-                    and tools[0].get('parameters') == schema, 'transported exact StructuredOutput schema')
-            wire_sides.append(request)
-        require(isinstance(wire_sides[0]['sequence'], int) and wire_sides[0]['sequence'] < wire_sides[1]['sequence'],
-                'native child transport order')
-        require(parent_wire[0]['sequence'] < parent_wire[1]['sequence'] < parent_wire[2]['sequence']
-                and parent_wire[0]['sequence'] < wire_sides[0]['sequence']
-                < wire_sides[1]['sequence'] < parent_wire[2]['sequence'],
-                'each native parent/child stream precedes the completion notification')
-        wire_items = wire_sides[1]['body']['input']
-        calls = [item for item in wire_items if item.get('type') == 'function_call']
-        returns = [item for item in wire_items if item.get('type') == 'function_call_output']
-        require(len(calls) == len(returns) == 1 and calls[0].get('name') == 'StructuredOutput'
-                and calls[0].get('call_id') == calls[0].get('id') == structured[0]['id']
-                and json.loads(calls[0]['arguments']) == output
-                and returns[0].get('call_id') == structured[0]['id'], 'transported call/result IDs and exact arguments')
-        # The native side transcript above remains the authoritative unwrapped
-        # receipt. Wire may append complete system-reminder blocks, never arbitrary
-        # text or a second result. Reminder contents are data, not identity evidence.
-        transported = returns[0].get('output')
-        require(isinstance(transported, str) and re.fullmatch(
-            re.escape(receipts[0]['content']) + r'(?:\n\n<system-reminder>\n(?:(?!</?system-reminder>)[\s\S])+\n</system-reminder>)*',
-            transported), 'transported successful receipt with bounded reminder wrappers')
-        return {'complete': True, 'agent_ids': [agent_id], 'cli_session': cli_session,
-                'task_id': task_id, 'run_id': run_id, 'parent_tool_use_id': tool_id,
-                'structured_tool_use_id': structured[0]['id'], 'checks': checks,
-                'scope': 'bounded empty Scope; same CLI/task/run identity; actual pane/TTY and later review phases require separate evidence'}
-    except (ValueError, KeyError, TypeError, IndexError, AttributeError, ElementTree.ParseError) as error:
-        return {'complete': False, 'agent_ids': [], 'checks': checks, 'reason': str(error)}
+# The forked review agent's reply: official /code-review returns a JSON array.
+# Interactive sessions run the fork in the background, so the raw array reaches
+# the main thread in a task notification (formatting is foreground-only).
+CODE_REVIEW_FINDINGS = [{
+    'file': 'src/skills/bundled/codeReview.ts',
+    'line': 1,
+    'summary': 'RELEASE_CODE_REVIEW_FINDING',
+    'failure_scenario': 'release validation fixture',
+}]
+# Official 2.1.311 picks the o48-high-v1 cell for `high` on a non-Claude model.
+CODE_REVIEW_CELL_TAG = '`high effort \u2192 8 inline angles \u2192 dedup (no verify) \u2192 \u226410 findings`'
 
 
 def submitted_input_pending(pane):
@@ -1130,7 +914,7 @@ def assertion_is_valid(assertion, source_runs, registered_runs=None):
     expected_hashes = assertion.get('evidence_sha256')
     terminal_target = next((target for target, (required_id, _) in TERMINAL_ACCEPTANCE.items()
                             if assertion_id == required_id), None)
-    if expected_hashes is not None or assertion_id in ('code-review-native-scope-identity', 'builtin-mods-compiled-acceptance', 'mods-process-spawn-real-author') or terminal_target:
+    if expected_hashes is not None or assertion_id in ('builtin-mods-compiled-acceptance', 'mods-process-spawn-real-author') or terminal_target:
         if (not isinstance(expected_hashes, dict) or not expected_hashes
                 or any(not isinstance(path, str) or not Path(path).is_absolute()
                        or not isinstance(digest, str) or not re.fullmatch(r'[0-9a-f]{64}', digest)
@@ -1149,22 +933,6 @@ def assertion_is_valid(assertion, source_runs, registered_runs=None):
                 if hashlib.sha256(data).hexdigest() != expected_hashes[key]:
                     return False
                 verified_bytes[key] = data
-            if assertion_id == 'code-review-native-scope-identity':
-                proof_path = str((source_root / 'workflow-agent-identity-proof.json').resolve())
-                if proof_path not in verified_bytes:
-                    return False
-                proof = json.loads(verified_bytes[proof_path])
-                if not isinstance(proof, dict):
-                    return False
-                snapshots = proof.get('source_hashes')
-                if (proof.get('complete') is not True or not isinstance(snapshots, dict) or not snapshots
-                        or any(not isinstance(path, str) or not Path(path).is_absolute()
-                               or not is_relative_to(Path(path).resolve(), source_root / 'workflow-identity-inputs')
-                               or not isinstance(digest, str) or not re.fullmatch(r'[0-9a-f]{64}', digest)
-                               for path, digest in snapshots.items())
-                        or set(expected_hashes) != {*snapshots, proof_path}
-                        or any(expected_hashes.get(path) != digest for path, digest in snapshots.items())):
-                    return False
             if assertion_id == 'builtin-mods-compiled-acceptance':
                 registered = json.loads((registered_runs or {}).get(str(source_root), '{}'))
                 acceptance_path = Path(registered.get('acceptance_report', ''))
@@ -1498,8 +1266,7 @@ def validate_required_target_results(required_targets, runs, registered_runs=Non
             and all(assertion_is_valid(assertion, own_sources, registered_runs) for assertion in assertions)
         )
         if valid and target == 'code-review':
-            for assertion_id in ('code-review-native-scope-identity', 'code-review-mock-wire',
-                                 'code-review-workflow-lifecycle'):
+            for assertion_id in ('code-review-forked-result', 'code-review-mock-wire'):
                 matching = [item for item in assertions if item.get('assertion_id') == assertion_id]
                 if len(matching) != 1 or matching[0].get('source_run') != Path(run['evidence_dir']).name:
                     valid = False
@@ -2881,53 +2648,19 @@ def normalize_source_url(url):
     return f'{parsed.scheme}://{parsed.netloc.casefold()}{parsed.path}{query}'
 
 
-def assistant_structured_output(entries):
-    text_blocks = [
-        block['text']
+def structured_output_input(entries):
+    inputs = [
+        block.get('input')
         for entry in entries
         if entry.get('type') == 'assistant'
         and isinstance(entry.get('message'), dict)
         and isinstance(entry['message'].get('content'), list)
         for block in entry['message']['content']
         if isinstance(block, dict)
-        and block.get('type') == 'text'
-        and isinstance(block.get('text'), str)
+        and block.get('type') == 'tool_use'
+        and block.get('name') == 'StructuredOutput'
     ]
-    if len(text_blocks) != 1:
-        return None
-    try:
-        output = json.loads(text_blocks[0])
-    except json.JSONDecodeError:
-        return None
-    return output if isinstance(output, dict) else None
-
-
-def assistant_selected_source(entries):
-    output = assistant_structured_output(entries)
-    if output is None:
-        return None
-    selected = output.get('selectedSource')
-    if not isinstance(selected, dict):
-        return None
-    return {
-        'rank': selected.get('oneBasedRank'),
-        'url': normalize_source_url(selected.get('url')),
-    }
-
-
-def assistant_selected_sources(entries):
-    output = assistant_structured_output(entries)
-    if output is None or not isinstance(output.get('sources'), list):
-        return None
-    return [
-        {
-            'rank': source.get('oneBasedRank'),
-            'url': normalize_source_url(source.get('url')),
-        }
-        if isinstance(source, dict)
-        else {'rank': None, 'url': None}
-        for source in output['sources']
-    ]
+    return inputs[-1] if inputs and isinstance(inputs[-1], dict) else None
 
 
 def tool_occurrence_count(evidence):
@@ -3286,32 +3019,10 @@ class MockOpenAIServer:
                             kind, response = f'workflow-probe-{name}-read', sse_function_call(
                                 call_id, 'Read', {'file_path': str(Path(__file__).resolve().parents[4] / path)})
         elif self.label == 'code-review':
-            scope = any(text.startswith('Establish the scope of a code review.\n') for text in users)
-            if scope:
-                if 'fc_code_review_scope' in outputs:
-                    kind, response = 'code-review-scope-completed', sse_completed('')
-                else:
-                    diff = next((match.group(1) for text in users
-                                 if (match := re.search(r'using exactly: (git diff [^\n]+?)\. Do not widen', text))), None)
-                    if diff:
-                        kind, response = 'code-review-scope-output', sse_function_call(
-                            'fc_code_review_scope', 'StructuredOutput', {
-                                'diffCommand': diff, 'files': [],
-                                'summary': 'Deterministic empty-scope release fixture.',
-                            })
-            else:
-                prompt = next((text for text in users if text.startswith('Workflow: code-review\n')
-                               and 'selector-based input' in text and 'selector: "code-review"' in text), None)
-                if prompt:
-                    match = re.search(r'\nUser input:\n(.*?)\n\nExecute this validated workflow', prompt, re.DOTALL)
-                    if match:
-                        if 'fc_code_review_launch' in outputs:
-                            kind, response = 'code-review-parent-completed', sse_completed('RELEASE_CODE_REVIEW_PARENT_DONE')
-                        else:
-                            kind, response = 'code-review-launch', sse_function_call(
-                                'fc_code_review_launch', 'WorkflowTool', {
-                                    'action': 'run', 'selector': 'code-review', 'runArgs': match.group(1),
-                                })
+            if any(CODE_REVIEW_CELL_TAG in text and 'Review target: `' in text for text in users):
+                kind, response = 'code-review-findings', sse_completed(json.dumps(CODE_REVIEW_FINDINGS))
+            elif any('<task-notification>' in text and 'RELEASE_CODE_REVIEW_FINDING' in text for text in users):
+                kind, response = 'code-review-notified', sse_completed('RELEASE_CODE_REVIEW_NOTIFIED')
         # Task notifications are a distinct root turn, not a second workflow launch.
         if (kind == self.label + '-parent-completed'
                 and kind in self.lifecycle_responses) and any(
@@ -6742,469 +6453,248 @@ else:
             evidence['unexpected_tool_names'] = sorted(unexpected_tool_names)
         return evidence
 
-    def deep_research_web_tools_complete(self, web_tools, phase_evidence):
-        selected_sources = phase_evidence['select-sources'].get('selected_sources')
-        if selected_sources is None:
-            return False
-        expected_fetches = len(selected_sources)
-        return (
-            tool_occurrence_count(web_tools['WebSearch']) == 5
-            and len(web_tools['WebSearch']['successful_result_ids']) == 5
-            and not web_tools['WebSearch']['failed_result_ids']
-            and not web_tools['WebSearch']['invalid_result_ids']
-            and tool_occurrence_count(web_tools['WebFetch']) == expected_fetches
-            and not web_tools['WebFetch']['invalid_result_ids']
-            and (
-                len(web_tools['WebFetch']['successful_result_ids'])
-                + len(web_tools['WebFetch']['failed_result_ids'])
-                == expected_fetches
-            )
-        )
-
     def deep_research_phase_evidence(self, run_dir):
-        attempts = {'search': {}, 'fetch': {}}
-        passive_workers = {
-            'select-sources': {},
-            'verify': {},
-            'synthesize': {},
+        # Official 2.1.311 deep-research: scope -> search:<angle> -> fetch:<host>
+        # -> v0/v1/v2:"claim" -> synthesize; every agent answers via StructuredOutput.
+        phase_tools = {
+            'scope': set(),
+            'search': {'WebSearch'},
+            'fetch': {'WebFetch'},
+            'verify': {'WebSearch', 'WebFetch'},
+            'synthesize': set(),
         }
-        for meta_path in (run_dir / 'config').glob(
+        agents = {phase: [] for phase in phase_tools}
+        for meta_path in sorted((run_dir / 'config').glob(
             'projects/**/subagents/*.meta.json'
-        ):
+        )):
             try:
                 metadata = json.loads(meta_path.read_text())
             except json.JSONDecodeError:
                 continue
-            description = metadata.get('description', '')
+            match = re.fullmatch(
+                r'deep-research: (.+?)(?: \[\d+\])?',
+                metadata.get('description', ''),
+                re.DOTALL,
+            )
+            if not match:
+                continue
+            label = match.group(1)
+            if label in {'scope', 'synthesize'}:
+                phase = label
+            elif label.startswith('search:'):
+                phase = 'search'
+            elif label.startswith('fetch:'):
+                phase = 'fetch'
+            elif re.match(r'v[0-2]:', label):
+                phase = 'verify'
+            else:
+                continue
             transcript_path = meta_path.with_name(
                 meta_path.name.removesuffix('.meta.json') + '.jsonl'
             )
-            entries = (
-                list(self.path_entries(transcript_path))
-                if transcript_path.is_file()
-                else []
-            )
-            match = re.fullmatch(
-                r'deep-research: (search|fetch) (\d+)/(\d+)(?: retry \d+(?:/\d+)?)?',
-                description,
-            )
-            if not match:
-                passive_match = re.fullmatch(
-                    r'(?:deep-research: (select-sources)'
-                    r'|deep-research: (verify)(?: (\d+)/(\d+))?'
-                    r'|deep-research: (synthesize))'
-                    r'(?: retry \d+(?:/\d+)?)?',
-                    description,
-                )
-                if not passive_match:
-                    continue
-                phase = (
-                    passive_match.group(1)
-                    or passive_match.group(2)
-                    or passive_match.group(5)
-                )
-                index = passive_match.group(3) or '1'
-                all_tools = self.tool_evidence(
-                    run_dir,
-                    set(),
-                    [transcript_path] if transcript_path.is_file() else [],
-                    allowed_names=set(),
-                )
-                passive_workers[phase].setdefault(index, []).append({
-                    'agent_id': metadata.get('agentId') or meta_path.name[6:-10],
-                    'expected_total': int(passive_match.group(4) or 1),
-                    'retry': ' retry ' in description,
-                    'transcript': str(transcript_path),
-                    'tool_names': all_tools['unexpected_tool_names'],
-                    'structured_output': assistant_structured_output(entries),
-                    'selected_sources': assistant_selected_sources(entries),
-                })
-                continue
-            phase, index, total = match.groups()
-            tool = 'WebSearch' if phase == 'search' else 'WebFetch'
-            tool_evidence = self.tool_evidence(
+            paths = [transcript_path] if transcript_path.is_file() else []
+            entries = [entry for path in paths for entry in self.path_entries(path)]
+            tools = self.tool_evidence(
                 run_dir,
-                {tool, 'ToolSearch'},
-                [transcript_path] if transcript_path.is_file() else [],
-                allowed_names=set(),
+                phase_tools[phase],
+                paths,
+                allowed_names={'StructuredOutput', 'ToolSearch'},
             )
-            discovery = tool_evidence['ToolSearch']
-            discovery_valid = (
-                tool_occurrence_count(discovery) <= 1
-                and not discovery['failed_result_ids']
-                and not discovery['invalid_result_ids']
-                and all(
-                    tool_input in (
-                        {'query': f'select:{tool}'},
-                        {'query': f'select:{tool}', 'max_results': 1},
-                    )
-                    for tool_inputs in discovery['tool_inputs'].values()
-                    for tool_input in tool_inputs
-                )
-            )
-            tool_result = tool_evidence[tool]
-            prompt = next(
-                (
-                    entry.get('message', {}).get('content')
-                    for entry in entries
-                    if entry.get('type') == 'user'
-                    and isinstance(entry.get('message'), dict)
-                    and isinstance(entry['message'].get('content'), str)
-                ),
-                '',
-            )
-            attempts[phase].setdefault(index, []).append({
+            agents[phase].append({
                 'agent_id': metadata.get('agentId') or meta_path.name[6:-10],
-                'expected_total': int(total),
-                'retry': ' retry ' in description,
-                'prompt': prompt,
-                'selected_source': (
-                    assistant_selected_source(entries)
-                    if phase == 'fetch'
-                    else None
-                ),
-                'structured_output': (
-                    assistant_structured_output(entries)
-                    if phase == 'fetch'
-                    else None
-                ),
+                'label': label,
                 'transcript': str(transcript_path),
-                'tool': tool,
-                'discovery_tool_occurrences': tool_occurrence_count(discovery),
-                'unexpected_tool_names': (
-                    tool_evidence['unexpected_tool_names']
-                    if discovery_valid
-                    else [
-                        *tool_evidence['unexpected_tool_names'],
-                        'ToolSearch',
-                    ]
-                ),
-                **tool_result,
+                'output': structured_output_input(entries),
+                'unexpected_tool_names': tools.pop('unexpected_tool_names'),
+                'tools': tools,
             })
 
-        required = {'search': 5, 'fetch': 15}
-        result = {}
-        for phase, count in required.items():
-            expected_indexes = {str(index) for index in range(1, count + 1)}
-            attempt_counts = {
-                index: len(phase_attempts)
-                for index, phase_attempts in attempts[phase].items()
-            }
-            tool_counts = {
-                index: {
-                    'tool_uses': sum(
-                        len(attempt['tool_use_ids']) for attempt in phase_attempts
-                    ),
-                    'tool_use_occurrences': sum(
-                        sum(attempt['tool_use_counts'].values())
-                        for attempt in phase_attempts
-                    ),
-                    'successful_results': sum(
-                        len(attempt['successful_result_ids'])
-                        for attempt in phase_attempts
-                    ),
-                    'failed_results': sum(
-                        len(attempt['failed_result_ids'])
-                        for attempt in phase_attempts
-                    ),
-                    'invalid_results': sum(
-                        len(attempt['invalid_result_ids'])
-                        for attempt in phase_attempts
-                    ),
-                }
-                for index, phase_attempts in attempts[phase].items()
-            }
-            failed_messages = {
-                index: [
-                    message
-                    for attempt in phase_attempts
-                    for messages in attempt['failed_result_messages'].values()
-                    for message in messages
-                ]
-                for index, phase_attempts in attempts[phase].items()
-            }
-            failed_output_mismatch_indexes = sorted(
-                index
-                for index, phase_attempts in attempts[phase].items()
-                if phase == 'fetch'
-                and failed_messages[index]
-                and any(
-                    attempt['structured_output'] is None
-                    or attempt['structured_output'].get('claims') != []
-                    or attempt['structured_output'].get('sourceQuality') != 'unreliable'
-                    for attempt in phase_attempts
-                )
-            )
-            failed_output_mismatches = set(failed_output_mismatch_indexes)
-            retry_indexes = sorted(
-                index
-                for index, phase_attempts in attempts[phase].items()
-                if len(phase_attempts) != 1
-                or any(attempt['retry'] for attempt in phase_attempts)
-            )
-            unexpected_tool_indexes = sorted(
-                index
-                for index, phase_attempts in attempts[phase].items()
-                if any(
-                    attempt['unexpected_tool_names']
-                    for attempt in phase_attempts
-                )
-            )
-            source_mismatch_indexes = sorted(
-                index
-                for index, phase_attempts in attempts[phase].items()
-                if phase == 'fetch'
-                and len(phase_attempts) == 1
-                and (
-                    phase_attempts[0]['selected_source'] is None
-                    or phase_attempts[0]['selected_source']['rank'] != int(index)
-                    or any(
-                        normalize_source_url(tool_input.get('url'))
-                        != phase_attempts[0]['selected_source']['url']
-                        for tool_inputs in phase_attempts[0]['tool_inputs'].values()
-                        for tool_input in tool_inputs
-                        if isinstance(tool_input, dict)
-                    )
-                )
-            )
-            source_mismatches = set(source_mismatch_indexes)
-            duplicate_source_indexes = []
-            if phase == 'fetch':
-                indexes_by_source = {}
-                for index, phase_attempts in attempts[phase].items():
-                    if len(phase_attempts) != 1:
-                        continue
-                    selected_source = phase_attempts[0]['selected_source']
-                    if selected_source is None or selected_source['url'] is None:
-                        continue
-                    indexes_by_source.setdefault(
-                        selected_source['url'], []
-                    ).append(index)
-                duplicate_source_indexes = sorted(
-                    index
-                    for indexes in indexes_by_source.values()
-                    if len(indexes) > 1
-                    for index in indexes
-                )
-            duplicate_sources = set(duplicate_source_indexes)
-            external_failure_indexes = sorted(
-                index
-                for index, counts in tool_counts.items()
-                if phase == 'fetch'
-                and counts['tool_use_occurrences'] == 1
-                and counts['successful_results'] == 0
-                and counts['failed_results'] == 1
-                and counts['invalid_results'] == 0
-                and index not in source_mismatches
-                and index not in duplicate_sources
-                and index not in failed_output_mismatches
-                and failed_messages[index]
-                and all(
-                    is_external_source_failure(message)
-                    for message in failed_messages[index]
-                )
-            )
-            external_failures = set(external_failure_indexes)
-            non_external_failure_indexes = sorted(
-                index
-                for index, counts in tool_counts.items()
-                if counts['failed_results'] > 0
-                and index not in external_failures
-            )
-            successful_indexes = sorted(
-                index
-                for index, counts in tool_counts.items()
-                if counts['tool_use_occurrences'] == 1
-                and counts['successful_results'] == 1
-                and counts['failed_results'] == 0
-                and counts['invalid_results'] == 0
-                and index not in source_mismatches
-                and index not in duplicate_sources
-            )
-            successes = set(successful_indexes)
-            retries = set(retry_indexes)
-            unexpected_tools = set(unexpected_tool_indexes)
-            exact_once_indexes = sorted(
-                index
-                for index, counts in tool_counts.items()
-                if attempt_counts[index] == 1
-                and index not in retries
-                and index not in unexpected_tools
-                and counts['tool_uses'] == 1
-                and counts['tool_use_occurrences'] == 1
-                and counts['invalid_results'] == 0
-                and (
-                    index in successes
-                    if phase == 'search'
-                    else index in successes or index in external_failures
-                )
-            )
-            result[phase] = {
-                'expected_logical_workers': count,
-                'observed_logical_indexes': sorted(attempts[phase]),
-                'exact_once_logical_indexes': exact_once_indexes,
-                'successful_logical_indexes': successful_indexes,
-                'external_failure_logical_indexes': external_failure_indexes,
-                'non_external_failure_logical_indexes': non_external_failure_indexes,
-                'logical_worker_attempt_counts': attempt_counts,
-                'logical_worker_tool_counts': tool_counts,
-                'retry_logical_indexes': retry_indexes,
-                'unexpected_tool_logical_indexes': unexpected_tool_indexes,
-                'source_mismatch_logical_indexes': source_mismatch_indexes,
-                'duplicate_source_logical_indexes': duplicate_source_indexes,
-                'failed_output_mismatch_logical_indexes': failed_output_mismatch_indexes,
-                'complete': (
-                    set(attempts[phase]) == expected_indexes
-                    and (
-                        phase == 'fetch'
-                        or set(exact_once_indexes) == expected_indexes
-                    )
-                    and all(
-                        attempt['expected_total'] == count
-                        for phase_attempts in attempts[phase].values()
-                        for attempt in phase_attempts
-                    )
-                ),
-                'attempts': attempts[phase],
-            }
-        passive_required = {'select-sources': 1, 'verify': 3, 'synthesize': 1}
-        for phase, count in passive_required.items():
-            expected_indexes = {str(index) for index in range(1, count + 1)}
-            worker_attempts = passive_workers[phase]
-            violating_indexes = sorted(
-                index
-                for index, phase_attempts in worker_attempts.items()
-                if len(phase_attempts) != 1
-                or any(
-                    attempt['retry']
-                    or attempt['expected_total'] != count
-                    or attempt['tool_names']
-                    or (
-                        phase == 'select-sources'
-                        and (
-                            attempt['structured_output'] is None
-                            or attempt['selected_sources'] is None
-                        )
-                    )
-                    for attempt in phase_attempts
-                )
-            )
-            phase_result = {
-                'expected_logical_workers': count,
-                'observed_logical_indexes': sorted(worker_attempts),
-                'violating_logical_indexes': violating_indexes,
-                'complete': (
-                    set(worker_attempts) == expected_indexes
-                    and not violating_indexes
-                ),
-                'attempts': worker_attempts,
-            }
-            if phase == 'select-sources':
-                selected_attempt = (
-                    worker_attempts.get('1', [{}])[0]
-                    if len(worker_attempts.get('1', [])) == 1
-                    else {}
-                )
-                selected_sources = selected_attempt.get('selected_sources')
-                selected_output = selected_attempt.get('structured_output')
-                selected_count = (
-                    len(selected_sources) if selected_sources is not None else 0
-                )
-                selected_urls = (
-                    [source['url'] for source in selected_sources]
-                    if selected_sources is not None
-                    else []
-                )
-                shortfall = (
-                    selected_output.get('shortfall')
-                    if isinstance(selected_output, dict)
-                    else None
-                )
-                shortfall_complete = (
-                    shortfall is None
-                    if selected_count == 15
-                    else (
-                        isinstance(shortfall, dict)
-                        and shortfall.get('missingCount') == 15 - selected_count
-                    )
-                )
-                sources_complete = (
-                    selected_sources is not None
-                    and selected_count <= 15
-                    and [source['rank'] for source in selected_sources]
-                    == list(range(1, selected_count + 1))
-                    and all(selected_urls)
-                    and len(set(selected_urls)) == selected_count
-                    and shortfall_complete
-                )
-                phase_result.update({
-                    'selected_sources': selected_sources,
-                    'shortfall': shortfall,
-                    'sources_complete': sources_complete,
-                    'complete': phase_result['complete'] and sources_complete,
-                })
-            result[phase] = phase_result
-        selected_sources = result['select-sources'].get('selected_sources')
-        selected_count = len(selected_sources) if selected_sources is not None else 0
-        selected_source_by_index = {
-            str(source['rank']): source['url']
-            for source in selected_sources or []
-        }
-        selected_indexes = {
-            str(index) for index in range(1, selected_count + 1)
-        }
-        expected_shortfall_indexes = {
-            str(index) for index in range(selected_count + 1, 16)
-        }
-        shortfall_indexes = sorted(
-            index
-            for index, phase_attempts in attempts['fetch'].items()
-            if len(phase_attempts) == 1
-            and not phase_attempts[0]['retry']
-            and phase_attempts[0]['expected_total'] == 15
-            and not phase_attempts[0]['unexpected_tool_names']
-            and phase_attempts[0]['discovery_tool_occurrences'] == 0
-            and phase_attempts[0]['selected_source'] == {
-                'rank': int(index),
-                'url': None,
-            }
-            and phase_attempts[0]['structured_output'] is not None
-            and phase_attempts[0]['structured_output'].get('sourceQuality')
-            == 'unreliable'
-            and phase_attempts[0]['structured_output'].get('claims') == []
-            and phase_attempts[0]['structured_output'].get('missingReason')
-            == 'source list shortfall'
-            and result['fetch']['logical_worker_tool_counts'][index] == {
-                'tool_uses': 0,
-                'tool_use_occurrences': 0,
-                'successful_results': 0,
-                'failed_results': 0,
-                'invalid_results': 0,
-            }
+        def outputs(phase):
+            return [agent['output'] for agent in agents[phase]]
+
+        scope_output = outputs('scope')[0] if len(agents['scope']) == 1 else None
+        angles = (
+            scope_output.get('angles')
+            if isinstance(scope_output, dict)
+            and isinstance(scope_output.get('angles'), list)
+            else []
         )
-        fetch_sources_match = (
-            result['select-sources']['complete']
-            and set(attempts['fetch'])
-            == selected_indexes | expected_shortfall_indexes
+        angle_labels = sorted(
+            f"search:{angle.get('label')}" for angle in angles if isinstance(angle, dict)
+        )
+        scope_complete = (
+            len(agents['scope']) == 1
+            and 3 <= len(angles) <= 6
             and all(
-                len(attempts['fetch'][index]) == 1
-                and attempts['fetch'][index][0]['selected_source'] is not None
-                and attempts['fetch'][index][0]['selected_source']['url']
-                == selected_source_by_index[index]
-                for index in selected_indexes
+                isinstance(angle, dict)
+                and isinstance(angle.get('label'), str)
+                and isinstance(angle.get('query'), str)
+                for angle in angles
             )
+            and not agents['scope'][0]['unexpected_tool_names']
         )
-        result['fetch']['selected_sources_match'] = fetch_sources_match
-        result['fetch']['shortfall_logical_indexes'] = shortfall_indexes
-        result['fetch']['invalid_shortfall_logical_indexes'] = sorted(
-            expected_shortfall_indexes - set(shortfall_indexes)
+
+        def used_successfully(agent, tool):
+            evidence = agent['tools'][tool]
+            return (
+                tool_occurrence_count(evidence) >= 1
+                and bool(evidence['successful_result_ids'])
+                and not evidence['invalid_result_ids']
+            )
+
+        search_urls = set()
+        for output in outputs('search'):
+            if isinstance(output, dict) and isinstance(output.get('results'), list):
+                search_urls.update(
+                    normalize_source_url(result.get('url'))
+                    for result in output['results']
+                    if isinstance(result, dict)
+                )
+        search_violations = sorted(
+            agent['label']
+            for agent in agents['search']
+            if agent['unexpected_tool_names']
+            or not used_successfully(agent, 'WebSearch')
+            or not isinstance(agent['output'], dict)
+            or not isinstance(agent['output'].get('results'), list)
         )
-        result['fetch']['complete'] = (
-            result['fetch']['complete']
-            and fetch_sources_match
-            and set(result['fetch']['exact_once_logical_indexes'])
-            == selected_indexes
-            and set(shortfall_indexes) == expected_shortfall_indexes
+        search_complete = (
+            scope_complete
+            and sorted(agent['label'] for agent in agents['search']) == angle_labels
+            and not search_violations
+        )
+
+        def fetch_violation(agent):
+            evidence = agent['tools']['WebFetch']
+            output = agent['output']
+            if (
+                agent['unexpected_tool_names']
+                or tool_occurrence_count(evidence) < 1
+                or evidence['invalid_result_ids']
+                or not isinstance(output, dict)
+                or not isinstance(output.get('claims'), list)
+                or output.get('sourceQuality') not in {
+                    'primary', 'secondary', 'blog', 'forum', 'unreliable',
+                }
+            ):
+                return 'invalid'
+            urls = {
+                normalize_source_url(tool_input.get('url'))
+                for tool_inputs in evidence['tool_inputs'].values()
+                for tool_input in tool_inputs
+                if isinstance(tool_input, dict)
+            }
+            if not urls or not urls <= search_urls:
+                return 'url-not-from-search'
+            if evidence['successful_result_ids']:
+                return None
+            messages = [
+                message
+                for messages in evidence['failed_result_messages'].values()
+                for message in messages
+            ]
+            if (
+                messages
+                and all(is_external_source_failure(message) for message in messages)
+                and output['claims'] == []
+                and output['sourceQuality'] == 'unreliable'
+            ):
+                return None
+            return 'non-external-failure'
+
+        fetch_violations = {
+            agent['label']: reason
+            for agent in agents['fetch']
+            if (reason := fetch_violation(agent))
+        }
+        # The workflow dedupes URLs before fetching, so no URL is fetched twice.
+        fetched_by = {}
+        for agent in agents['fetch']:
+            for tool_inputs in agent['tools']['WebFetch']['tool_inputs'].values():
+                for tool_input in tool_inputs:
+                    if isinstance(tool_input, dict):
+                        fetched_by.setdefault(
+                            normalize_source_url(tool_input.get('url')), set()
+                        ).add(agent['agent_id'])
+        for agent in agents['fetch']:
+            if any(
+                agent['agent_id'] in owners and len(owners) > 1
+                for owners in fetched_by.values()
+            ):
+                fetch_violations.setdefault(agent['label'], 'duplicate-url')
+        fetch_complete = (
+            search_complete
+            and 1 <= len(agents['fetch']) <= 15
+            and not fetch_violations
+        )
+
+        claim_count = sum(
+            len(output['claims'])
+            for output in outputs('fetch')
+            if isinstance(output, dict) and isinstance(output.get('claims'), list)
+        )
+        expected_votes = min(25, claim_count)
+        vote_counts = {
+            voter: sum(agent['label'].startswith(f'v{voter}:') for agent in agents['verify'])
+            for voter in range(3)
+        }
+        verify_violations = sorted(
+            agent['label']
+            for agent in agents['verify']
+            if agent['unexpected_tool_names']
+            or not isinstance(agent['output'], dict)
+            or not isinstance(agent['output'].get('refuted'), bool)
+        )
+        verify_complete = (
+            fetch_complete
+            and all(count == expected_votes for count in vote_counts.values())
+            and not verify_violations
+        )
+
+        synthesize_output = (
+            outputs('synthesize')[0] if len(agents['synthesize']) == 1 else None
+        )
+        synthesize_complete = len(agents['synthesize']) == 0 or (
+            len(agents['synthesize']) == 1
+            and not agents['synthesize'][0]['unexpected_tool_names']
+            and isinstance(synthesize_output, dict)
+            and isinstance(synthesize_output.get('summary'), str)
+            and isinstance(synthesize_output.get('findings'), list)
+            and isinstance(synthesize_output.get('caveats'), str)
+        )
+        result = {
+            'scope': {
+                'angle_labels': angle_labels,
+                'complete': scope_complete,
+                'agents': agents['scope'],
+            },
+            'search': {
+                'observed_labels': sorted(agent['label'] for agent in agents['search']),
+                'violating_labels': search_violations,
+                'complete': search_complete,
+                'agents': agents['search'],
+            },
+            'fetch': {
+                'observed_labels': sorted(agent['label'] for agent in agents['fetch']),
+                'violations': fetch_violations,
+                'complete': fetch_complete,
+                'agents': agents['fetch'],
+            },
+            'verify': {
+                'extracted_claims': claim_count,
+                'expected_votes_per_voter': expected_votes,
+                'vote_counts': vote_counts,
+                'violating_labels': verify_violations,
+                'complete': verify_complete,
+                'agents': agents['verify'],
+            },
+            'synthesize': {
+                'complete': synthesize_complete,
+                'agents': agents['synthesize'],
+            },
+        }
+        result['complete'] = all(
+            result[phase]['complete'] for phase in phase_tools
         )
         return result
 
@@ -7862,116 +7352,120 @@ else:
         })
         self.record(result)
 
-    def code_review_scope_identity_proof(self, run_dir, task_id, run_id, expected_prompt):
-        proof_path = run_dir / 'workflow-agent-identity-proof.json'
-        evidence = [proof_path]
-        hashes = {}
-        snapshots = {}
-        snapshot_root = run_dir / 'workflow-identity-inputs'
-
-        def read_owned(path, root):
-            if path.is_symlink() or not path.is_file() or not is_relative_to(path.resolve(), root.resolve()):
-                raise ValueError(f'not a regular file in the registered run: {path}')
-            key = str(path.resolve())
-            if key in snapshots:
-                return snapshots[key]['bytes']
-            data = path.read_bytes()
-            relative = path.relative_to(root)
-            copy = snapshot_root / ('workflow-runs' if root == self.workflow_runs else 'case') / relative
-            copy.parent.mkdir(parents=True, exist_ok=True)
-            with copy.open('xb') as stream:
-                stream.write(data)
-            copy.chmod(0o600)
-            digest = hashlib.sha256(data).hexdigest()
-            hashes[str(copy.resolve())] = digest
-            snapshots[key] = {'bytes': data, 'snapshot': str(copy.resolve()), 'sha256': digest}
-            evidence.append(copy)
-            return data
-
-        def json_file(path):
-            return json.loads(read_owned(path, run_dir))
-
+    def code_review_forked_result(self, run_dir, prompt, terminal):
+        """Official 2.1.311 /code-review runs as a forked skill agent, not a Workflow."""
+        server = self.code_review_mock_servers.get(run_dir.name)
+        requests = server.snapshot() if server else []
+        reviews = [request for request in requests if request.get('response_kind') == 'code-review-findings']
+        review = reviews[0] if len(reviews) == 1 else {}
+        headers = review.get('headers', {})
+        texts = []
+        for item in review.get('body', {}).get('input', []):
+            if not isinstance(item, dict) or item.get('role') != 'user':
+                continue
+            content = item.get('content', '')
+            if isinstance(content, str):
+                texts.append(content)
+            elif isinstance(content, list):
+                texts.extend(block.get('text', '') for block in content if isinstance(block, dict))
+        target = prompt.removeprefix('/code-review high ')
+        notifications = []
+        for path in self.transcript_paths(run_dir):
+            for entry in self.path_entries(path):
+                message = entry.get('message') if isinstance(entry, dict) else None
+                content = message.get('content') if isinstance(message, dict) else None
+                blocks = [content] if isinstance(content, str) else [
+                    block.get('text', '') for block in content or []
+                    if isinstance(block, dict) and isinstance(block.get('text'), str)
+                ] if isinstance(content, list) else []
+                notifications.extend(
+                    text for text in blocks
+                    if entry.get('type') == 'user' and '<task-notification>' in text)
+        config_path = run_dir / 'config' / '.claude.json'
         try:
-            snapshot_root.mkdir()
-            if (task_id not in self.workflow_task_ids or run_id not in self.workflow_run_ids
-                    or not re.fullmatch(r'[A-Za-z0-9_-]+', task_id)
-                    or not re.fullmatch(r'wf_[A-Za-z0-9_-]+', run_id)):
-                raise ValueError('Workflow IDs were not registered by this target')
-            metadata_bytes = read_owned(run_dir / 'run-metadata.json', run_dir)
-            if metadata_bytes.decode() != self.registered_runs.get(str(run_dir.resolve())):
-                raise ValueError('native metadata differs from the immutable start registration')
-            metadata = json.loads(metadata_bytes)
-            if any(metadata.get(key) != value for key, value in {
-                'driver_run': f'{self.stamp}-{self.pid}', 'source_run': run_dir.name,
-                'label': 'code-review', 'binary_sha256': self.manifest['binary_sha256'],
-            }.items()):
-                raise ValueError('native metadata belongs to a different driver/run/binary')
-            server = self.code_review_mock_servers.get(run_dir.name)
-            if (not isinstance(server, MockOpenAIServer) or server.run_dir.resolve() != run_dir.resolve()
-                    or server.label != 'code-review' or not server.stop_result
-                    or server.stop_result.get('stopped') is not True
-                    or server.stop_result.get('active_handlers') != []):
-                raise ValueError('this target has no stopped, registered native provider')
-            live_wire = server.snapshot()
-            wire = json_file(run_dir / 'mock-openai-requests.json')
-            if wire != live_wire or not live_wire or any(request.get('response_kind') is None for request in live_wire):
-                raise ValueError('archived requests differ from this case live provider snapshot')
-            target = read_owned(run_dir / 'pane-target.txt', run_dir).decode().rstrip('\n')
-            if target != metadata.get('target'):
-                raise ValueError('pane target differs from registered case')
-            pasted = read_owned(run_dir / 'input-code-review.txt', run_dir)
-            if pasted != b'\x1b[200~' + expected_prompt.encode() + b'\x1b[201~':
-                raise ValueError('native pasted input differs from caller expectation')
-            artifact_path = self.workflow_runs / run_id / 'session.json'
-            task_path = self.workflow_runs / f'{task_id}.json'
-            artifact_bytes = read_owned(artifact_path, self.workflow_runs)
-            if artifact_bytes != read_owned(task_path, self.workflow_runs):
-                raise ValueError('Workflow task and run mirrors differ')
-            parents, children = [], []
-            for path in sorted((run_dir / 'config/projects').glob('**/*.jsonl')):
-                if 'subagents' in path.parts:
-                    continue
-                parents.append({'session_id': path.stem,
-                                'entries': [json.loads(line) for line in read_owned(path, run_dir).decode().splitlines()]})
-            for meta in sorted((run_dir / 'config/projects').glob('**/subagents/agent-*.meta.json')):
-                child_path = meta.with_name(meta.name.replace('.meta.json', '.jsonl'))
-                children.append({'session_id': meta.parent.parent.name,
-                                 'agent_id': meta.name.removeprefix('agent-').removesuffix('.meta.json'),
-                                 'meta': json_file(meta),
-                                 'entries': [json.loads(line) for line in read_owned(child_path, run_dir).decode().splitlines()]})
-            proof = code_review_scope_identity(
-                run_args=expected_prompt.removeprefix('/code-review '), task_id=task_id, run_id=run_id,
-                artifact=json.loads(artifact_bytes), parents=parents, children=children,
-                log=read_owned(run_dir / 'debug.log', run_dir).decode(),
-                wire=live_wire)
-            proof['native_window_target'] = target
-        except (ValueError, KeyError, TypeError, OSError) as error:
-            proof = {'complete': False, 'agent_ids': [], 'reason': str(error)}
-        proof.update(source_run=run_dir.name, source_hashes=hashes,
-                     immutable_inputs={source: {key: value for key, value in snapshot.items() if key != 'bytes'}
-                                       for source, snapshot in snapshots.items()},
-                     pane_tty_scope='session:window.pane target only; actual %pane_id/TTY requires separate collection')
-        proof_bytes = (json.dumps(proof, indent=2) + '\n').encode()
-        proof_path.write_bytes(proof_bytes)
-        proof['evidence_paths'] = list(dict.fromkeys(evidence))
-        proof['evidence_sha256'] = {**hashes, str(proof_path.resolve()): hashlib.sha256(proof_bytes).hexdigest()}
-        return proof
+            config = json.loads(config_path.read_text())
+        except (OSError, json.JSONDecodeError):
+            config = {}
+        plain = strip_ansi(terminal)
+        checks = {
+            'one-forked-review-request': len(reviews) == 1,
+            'official-cell-prompt': any(
+                CODE_REVIEW_CELL_TAG in text and f'Review target: `{target}`' in text for text in texts),
+            'forked-agent-thread': bool(headers.get('session-id'))
+            and headers.get('thread-id') not in (None, headers.get('session-id')),
+            'typed-effort-on-wire': review.get('body', {}).get('reasoning', {}).get('effort') == 'high',
+            'no-workflow-launch': 'Workflow launched in background' not in self.transcript(run_dir),
+            'background-notification': any(
+                f'<summary>Agent "{prompt}"' in text
+                and f'<result>{json.dumps(CODE_REVIEW_FINDINGS)}</result>' in text
+                for text in notifications),
+            'pane-result': 'Running in the background as @code-review' in plain
+            and 'RELEASE_CODE_REVIEW_NOTIFIED' in plain,
+            'typed-level-persisted': config.get('codeReviewLastEffort') == 'high',
+        }
+        path = run_dir / 'code-review-forked-result.json'
+        path.write_text(json.dumps({'checks': checks, 'target': target}, indent=2) + '\n')
+        return checks, path
+
+    def slash_code_review(self):
+        kind = 'code-review'
+        run_dir, session, target, ready = self.start(kind)
+        result = {'label': kind, 'evidence_dir': str(run_dir)}
+        prompt = code_review_prompt(
+            self.manifest['required_target_inputs']['release_base']['merge_base']
+        )
+        terminal = ''
+        if ready:
+            self.send(target, run_dir, prompt, f'input-{kind}.txt')
+            self.wait_until(
+                lambda: 'RELEASE_CODE_REVIEW_NOTIFIED' in strip_ansi(
+                    self.capture(target, run_dir / '04-live-pane.txt')), 300, 0.5)
+            terminal = self.capture(target, run_dir / '05-terminal-pane.txt')
+        checks, checks_path = self.code_review_forked_result(run_dir, prompt, terminal)
+        cleanup = self.close(run_dir, session, target)
+        wire_assertion = self.workflow_mock_wire(run_dir, kind)
+        forked = ready and all(checks.values())
+        passed = (
+            forked
+            and '❯' in strip_ansi(terminal)
+            and wire_assertion['validation_verdict'] == 'passed'
+            and self.cleanup_passed(cleanup)
+        )
+        failed = sorted(name for name, value in checks.items() if not value)
+        result.update({
+            'validation_verdict': 'passed' if passed else 'failed',
+            'reason': None if passed else (
+                'readiness failed' if not ready
+                else 'forked review checks failed: ' + ', '.join(failed) if failed
+                else 'terminal, mock wire, or cleanup evidence was incomplete'
+            ),
+            'forked_review_checks': checks,
+            'parent_prompt_restored': '❯' in strip_ansi(terminal),
+            'assertions': [
+                wire_assertion,
+                self.required_assertion(
+                    run_dir, 'code-review-forked-result', 'code-review forked skill',
+                    'The typed /code-review runs the official prompt in one background forked agent at the typed '
+                    'effort, returns its JSON findings to the main thread in a task notification, persists the '
+                    'typed level, and launches no Workflow.',
+                    [checks_path, run_dir / '05-terminal-pane.txt', run_dir / 'mock-openai-requests.json'],
+                    passed=forked,
+                    reason='forked /code-review evidence was incomplete',
+                ),
+            ],
+            'cleanup': cleanup,
+        })
+        self.record(result)
 
     def slash_workflow(self, kind):
         run_dir, session, target, ready = self.start(kind)
         result = {'label': kind, 'evidence_dir': str(run_dir)}
-        if kind == 'deep-research':
-            prompt = (
-                '/deep-research Research current public web evidence about Dynamic Workflows in Claude Code. '
-                'Use WebSearch and WebFetch as required by the bundled workflow. Keep it read-only, do not access '
-                'private sources, and stop after the normal bounded phases.'
-            )
-            timeout = 1800
-        else:
-            prompt = code_review_prompt(
-                self.manifest['required_target_inputs']['release_base']['merge_base']
-            )
-            timeout = 1200
+        prompt = (
+            '/deep-research Research current public web evidence about Dynamic Workflows in Claude Code. '
+            'Use WebSearch and WebFetch as required by the bundled workflow. Keep it read-only, do not access '
+            'private sources, and stop after the normal bounded phases.'
+        )
+        timeout = 1800
         approvals = 0
         launched = False
         timed_out = False
@@ -7993,14 +7487,7 @@ else:
             ):
                 pane = self.capture(target, run_dir / '04-live-pane.txt')
                 plain = strip_ansi(pane)
-                approve = (
-                    kind == 'deep-research'
-                    and 'Do you want to allow Claude to fetch this content?' in plain
-                ) or (
-                    kind == 'code-review'
-                    and 'Do you want to proceed?' in plain
-                    and 'Bash command' in plain
-                )
+                approve = 'Do you want to allow Claude to fetch this content?' in plain
                 if approve:
                     approvals += 1
                     self.capture(target, run_dir / f'permission-{approvals:03d}-pane.txt')
@@ -8025,9 +7512,6 @@ else:
                 and status not in {'completed', 'failed', 'stopped'}
                 and not completion_proof['complete']
             )
-            if kind == 'code-review' and completion_proof['complete']:
-                self.wait_until(
-                    lambda: 'RELEASE_CODE_REVIEW_PARENT_DONE' in self.assistant_text(run_dir), 30, 0.1)
             terminal = self.capture(target, run_dir / '05-terminal-pane.txt')
         else:
             task_id = run_id = status = None
@@ -8036,43 +7520,17 @@ else:
         markers = self.write_markers(run_dir, log)
         ids = self.agent_ids(log)
         notifications = self.notification_count(run_dir)
-        web_tools = (
-            self.tool_evidence(run_dir, {'WebSearch', 'WebFetch'})
-            if kind == 'deep-research'
-            else None
-        )
-        phase_evidence = (
-            self.deep_research_phase_evidence(run_dir)
-            if kind == 'deep-research'
-            else None
-        )
+        phase_evidence = self.deep_research_phase_evidence(run_dir)
         workflow_complete = self.workflow_completion_proof(
             run_dir,
             task_id,
             run_id,
         )
-        fetch_ok = (
-            kind != 'deep-research'
-            or (
-                workflow_complete['complete']
-                and phase_evidence['search']['complete']
-                and phase_evidence['select-sources']['complete']
-                and phase_evidence['fetch']['complete']
-                and phase_evidence['verify']['complete']
-                and phase_evidence['synthesize']['complete']
-                and self.deep_research_web_tools_complete(
-                    web_tools, phase_evidence
-                )
-            )
-        )
+        fetch_ok = workflow_complete['complete'] and phase_evidence['complete']
         (run_dir / 'workflow-completion-proof.json').write_text(
             json.dumps(workflow_complete, indent=2) + '\n'
         )
         cleanup = self.close(run_dir, session, target)
-        identity_proof = self.code_review_scope_identity_proof(run_dir, task_id, run_id, prompt) if kind == 'code-review' else None
-        if identity_proof is not None:
-            ids = identity_proof['agent_ids']
-        wire_assertion = self.workflow_mock_wire(run_dir, kind) if kind == 'code-review' else None
         passed = (
             ready
             and launched
@@ -8082,11 +7540,6 @@ else:
             and notifications == 1
             and '❯' in strip_ansi(terminal)
             and fetch_ok
-            and (identity_proof is None or identity_proof['complete'])
-            and (wire_assertion is None or (
-                wire_assertion['validation_verdict'] == 'passed'
-                and 'RELEASE_CODE_REVIEW_PARENT_DONE' in self.assistant_text(run_dir)
-            ))
             and self.cleanup_passed(cleanup)
         )
         if passed:
@@ -8113,22 +7566,12 @@ else:
             'task_id': task_id,
             'run_id': run_id,
             'agent_ids': ids,
-            'workflow_agent_identity': {key: value for key, value in identity_proof.items() if key != 'evidence_paths'} if identity_proof is not None else None,
             'notification_count': notifications,
             'permission_approvals': approvals,
             'parent_prompt_restored': '❯' in strip_ansi(terminal),
-            'web_tool_evidence': web_tools,
             'deep_research_phase_evidence': phase_evidence,
             'marker_counts': markers,
             'assertions': [
-                *([self.required_assertion(
-                    run_dir, 'code-review-native-scope-identity', 'code-review native Scope identity',
-                    'The same task/run, parent tool, CLI session, exact prompt/schema and StructuredOutput receipt resolve one actual native child.',
-                    identity_proof['evidence_paths'], passed=identity_proof['complete'],
-                    evidence_sha256=identity_proof['evidence_sha256'],
-                    reason=identity_proof.get('reason') or 'Native Scope identity was incomplete',
-                )] if identity_proof is not None else []),
-                *([wire_assertion] if wire_assertion else []),
                 self.required_assertion(
                     run_dir,
                     f'{kind}-workflow-lifecycle',
@@ -11775,7 +11218,7 @@ else:
             'nested-agent': self.nested_agent,
             'workflow': self.workflow,
             'deep-research': lambda: self.slash_workflow('deep-research'),
-            'code-review': lambda: self.slash_workflow('code-review'),
+            'code-review': self.slash_code_review,
             'effort-openai-responses-wire': self.effort_openai_responses_wire,
             'plugins-reload': self.plugins_reload,
             'deferred-tool-discovery': self.deferred_tool_discovery,

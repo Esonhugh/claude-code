@@ -99,18 +99,18 @@ if(scenario==='loader'){
  if(scenario.endsWith('writefailure')){const {getAgentTranscriptPath}=await import(m.storage);const dir=dirname(getAgentTranscriptPath('unallocated'));await mkdir(dirname(dir),{recursive:true});await writeFile(dir,'not a directory')}
  let result
  if(scenario.startsWith('slash')){
-  const {processSlashCommand}=await import(m.slash);result=await processSlashCommand('/fork-probe',[],[],[],context,()=>{},undefined,undefined,permit)
+  const {processSlashCommand}=await import(m.slash);result=await processSlashCommand('/fork-probe high',[],[],[],context,()=>{},undefined,undefined,permit)
  }else{
   const {SkillTool}=await import(m.skill)
   if(scenario==='skill-recursion'){context.options.spawnedBySkill='fork-probe';context.options.spawnedByForkedSkill=true;const result=await SkillTool.validateInput({skill:'fork-probe'},context);assert.equal(result.result,false);assert.equal(result.errorCode,9);assert.equal(executions.length,0);process.exit(0)}
-  result=await SkillTool.call({skill:'fork-probe'},context,permit,createAssistantMessage({content:'CALL'}))
+  result=await SkillTool.call({skill:'fork-probe',args:'x'},context,permit,createAssistantMessage({content:'CALL'}))
  }
  await new Promise(r=>setTimeout(r,25));assert.equal(executions.length,1);const p=executions[0]
  const background=scenario==='slash-default'||scenario==='skill-default'
  assert.equal(p.isAsync,background);assert.equal(state.runningSubagents,1)
  if(background){
   assert.equal(p.spawnedBySkill,'fork-probe');assert.equal(p.spawnedByForkedSkill,true);assert.equal(p.spawnDepth,1);assert.ok(p.override.readFileState!==context.readFileState)
-  assert.equal(state.tasks[p.override.agentId].forkedSkillName,'fork-probe');assert.equal(state.agentNameRegistry.get('fork-probe'),p.override.agentId)
+  assert.equal(state.tasks[p.override.agentId].forkedSkillName,'fork-probe');assert.equal(state.tasks[p.override.agentId].description,scenario==='skill-default'?'/fork-probe x':'/fork-probe high');assert.equal(state.agentNameRegistry.get('fork-probe'),p.override.agentId)
   assert.deepEqual(p.toolUseContext.getAppState().toolPermissionContext.alwaysAllowRules.command,['Read'])
   assert.deepEqual(p.toolUseContext.getAppState().toolPermissionContext.alwaysDenyRules.command,['Edit','Bash'])
   const {getAgentTranscriptPath}=await import(m.storage);const scope=JSON.parse(await Bun.file(getAgentTranscriptPath(p.override.agentId).replace(/\.jsonl$/,'.forked-skill.json')).text());assert.equal(scope.skillName,'fork-probe');assert.deepEqual(scope.frozenCommandDenies,['Edit']);assert.equal(scope.effort,'high')

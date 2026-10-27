@@ -1246,28 +1246,23 @@ def write_transcript(path, entries):
     path.write_text(''.join(json.dumps(entry) + '\n' for entry in entries))
 
 
-def deep_research_entries(phase, index, *, error=None, tool_id=None,
-                          fetch_url=None, selected_url=None,
-                          source_quality=None, claims=None):
-    tool = 'WebSearch' if phase == 'search' else 'WebFetch'
-    tool_id = tool_id or f'{phase}-{index}-tool'
-    entries = []
-    tool_input = {}
-    if phase == 'fetch':
-        fetch_url = fetch_url or f'https://example.test/source-{index}'
-        selected_url = selected_url or fetch_url
-        entries.append({
-            'type': 'user',
-            'message': {
-                'role': 'user',
-                'content': (
-                    f'Fetch exactly one source: source {index} in that '
-                    f'one-based order. Upstream source: {selected_url}'
-                ),
-            },
-        })
-        tool_input = {'url': fetch_url, 'prompt': 'extract claims'}
-    entries.extend([{
+def structured_output_entry(output):
+    return {
+        'type': 'assistant',
+        'message': {
+            'role': 'assistant',
+            'content': [{
+                'type': 'tool_use',
+                'id': 'structured-output',
+                'name': 'StructuredOutput',
+                'input': output,
+            }],
+        },
+    }
+
+
+def tool_call_entries(tool, tool_id, tool_input, *, error=None):
+    return [{
         'type': 'assistant',
         'message': {
             'role': 'assistant',
@@ -1289,98 +1284,90 @@ def deep_research_entries(phase, index, *, error=None, tool_id=None,
                    if error is not None else {'content': 'ok'}),
             }],
         },
-    }])
-    if phase == 'fetch':
-        entries.append({
-            'type': 'assistant',
-            'message': {
-                'role': 'assistant',
-                'content': [{
-                    'type': 'text',
-                    'text': json.dumps({
-                        'selectedSource': {
-                            'oneBasedRank': index,
-                            'url': selected_url,
-                        },
-                        'sourceQuality': source_quality or (
-                            'unreliable' if error is not None else 'primary'
-                        ),
-                        'claims': [] if claims is None else claims,
-                    }),
-                }],
-            },
-        })
-    return entries
-
-
-def deep_research_select_sources_entries(count=15):
-    output = {
-        'sources': [
-            {
-                'oneBasedRank': index,
-                'url': f'https://example.test/source-{index}',
-                'title': f'Source {index}',
-                'originatingSearchWorker': 1,
-            }
-            for index in range(1, count + 1)
-        ],
-    }
-    if count < 15:
-        output['shortfall'] = {'missingCount': 15 - count}
-    return [{
-        'type': 'assistant',
-        'message': {
-            'role': 'assistant',
-            'content': [{
-                'type': 'text',
-                'text': json.dumps(output),
-            }],
-        },
     }]
 
 
-def deep_research_shortfall_entries(index):
-    return [{
-        'type': 'user',
-        'message': {
-            'role': 'user',
-            'content': (
-                f'Select only source {index}. The upstream source list has no '
-                'source at that rank.'
-            ),
-        },
-    }, {
-        'type': 'assistant',
-        'message': {
-            'role': 'assistant',
-            'content': [{
-                'type': 'text',
-                'text': json.dumps({
-                    'selectedSource': {
-                        'oneBasedRank': index,
-                        'url': None,
-                    },
-                    'sourceQuality': 'unreliable',
-                    'claims': [],
-                    'missingReason': 'source list shortfall',
-                }),
-            }],
-        },
-    }]
-
-
-def write_select_sources_worker(subagents, entries=None, description=None):
-    stem = 'agent-select-sources'
-    (subagents / f'{stem}.meta.json').parent.mkdir(parents=True, exist_ok=True)
-    (subagents / f'{stem}.meta.json').write_text(json.dumps({
+def write_deep_research_agent(subagents, stem, label, entries):
+    subagents.mkdir(parents=True, exist_ok=True)
+    (subagents / f'agent-{stem}.meta.json').write_text(json.dumps({
         'agentId': stem,
-        'description': description or 'deep-research: select-sources',
+        'description': f'deep-research: {label}',
     }))
-    write_transcript(
-        subagents / f'{stem}.jsonl',
-        deep_research_select_sources_entries() if entries is None else entries,
-    )
+    write_transcript(subagents / f'agent-{stem}.jsonl', entries)
 
+
+def write_deep_research_run(subagents, *, angles=('docs', 'news', 'skeptic'),
+                            results_per_angle=1, claims_per_source=1,
+                            fetch=None, votes=None, synthesize=True):
+    """Writes official 2.1.311 deep-research subagents. `fetch` maps a source
+    URL to overrides for its fetch agent: error, url, output."""
+    fetch = fetch or {}
+    write_deep_research_agent(subagents, 'scope', 'scope', [
+        structured_output_entry({'angles': [
+            {'label': angle, 'query': f'{angle} query'} for angle in angles
+        ]}),
+    ])
+    sources = []
+    for angle in angles:
+        urls = [
+            f'https://{angle}-{index}.example/doc'
+            for index in range(1, results_per_angle + 1)
+        ]
+        sources.extend(urls)
+        write_deep_research_agent(subagents, f'search-{angle}', f'search:{angle}', [
+            *tool_call_entries('WebSearch', f'search-{angle}', {'query': angle}),
+            structured_output_entry({'results': [
+                {'url': url, 'title': url, 'relevance': 'high'} for url in urls
+            ]}),
+        ])
+    claims = 0
+    for index, url in enumerate(sources):
+        override = fetch.get(url, {})
+        error = override.get('error')
+        output = override.get('output') or (
+            {'sourceQuality': 'unreliable', 'claims': []}
+            if error is not None
+            else {'sourceQuality': 'primary', 'claims': [
+                {'claim': f'claim {index}.{n}', 'quote': 'q', 'importance': 'central'}
+                for n in range(claims_per_source)
+            ]}
+        )
+        claims += len(output.get('claims', []))
+        host = url.split('/')[2]
+        write_deep_research_agent(subagents, f'fetch-{index}', f'fetch:{host}', [
+            *tool_call_entries(
+                'WebFetch', f'fetch-{index}',
+                {'url': override.get('url', url), 'prompt': 'extract'},
+                error=error,
+            ),
+            structured_output_entry(output),
+        ])
+    for voter in range(3):
+        for claim in range(min(25, claims) if votes is None else votes):
+            write_deep_research_agent(
+                subagents, f'verify-{voter}-{claim}', f'v{voter}:"claim {claim}"',
+                [structured_output_entry({
+                    'refuted': False, 'evidence': 'e', 'confidence': 'high',
+                })],
+            )
+    if synthesize:
+        write_deep_research_agent(subagents, 'synthesize', 'synthesize', [
+            structured_output_entry({
+                'summary': 's', 'findings': [], 'caveats': 'c',
+            }),
+        ])
+    return sources
+
+
+def deep_research_evidence(module, edit=None, **options):
+    with tempfile.TemporaryDirectory(prefix='release-driver-test-') as root_string:
+        run_dir = Path(root_string)
+        subagents = run_dir / 'config/projects/project/subagents'
+        write_deep_research_run(subagents, **options)
+        if edit is not None:
+            edit(subagents)
+        gate = object.__new__(module.BinaryGate)
+        return module.BinaryGate.deep_research_phase_evidence(gate, run_dir)
 
 
 def make_required_assertion(source_dir, *, assertion_id='assertion-1',
@@ -1675,658 +1662,141 @@ def assert_driver_behavior(module, baseline_module):
             timer.join()
         assert module.BinaryGate.notification_count(gate, run_dir) == 1
 
-    with tempfile.TemporaryDirectory(prefix='release-driver-test-') as root_string:
-        run_dir = Path(root_string)
-        subagents = run_dir / 'config/projects/project/subagents'
-        gate = object.__new__(module.BinaryGate)
-        for phase, count, tool in (
-            ('search', 5, 'WebSearch'),
-            ('fetch', 15, 'WebFetch'),
-        ):
-            for index in range(1, count + 1):
-                stem = f'agent-{phase}-{index}'
-                (subagents / f'{stem}.meta.json').parent.mkdir(
-                    parents=True, exist_ok=True
-                )
-                (subagents / f'{stem}.meta.json').write_text(json.dumps({
-                    'agentId': stem,
-                    'description': f'deep-research: {phase} {index}/{count}',
-                }))
-                write_transcript(
-                    subagents / f'{stem}.jsonl',
-                    deep_research_entries(phase, index),
-                )
-        write_select_sources_worker(subagents)
-        for phase, count in (('verify', 3), ('synthesize', 1)):
-            for index in range(1, count + 1):
-                stem = f'agent-{phase}-{index}'
-                description = (
-                    f'deep-research: verify {index}/3'
-                    if phase == 'verify'
-                    else 'deep-research: synthesize'
-                )
-                (subagents / f'{stem}.meta.json').write_text(json.dumps({
-                    'agentId': stem,
-                    'description': description,
-                }))
-                write_transcript(subagents / f'{stem}.jsonl', [{
-                    'type': 'assistant',
-                    'message': {
-                        'role': 'assistant',
-                        'content': [{'type': 'text', 'text': '{}'}],
-                    },
-                }])
-        evidence = module.BinaryGate.deep_research_phase_evidence(gate, run_dir)
-        assert evidence['search']['complete'] is True
-        assert evidence['select-sources']['complete'] is True
-        assert evidence['fetch']['complete'] is True
-        assert evidence['verify']['complete'] is True
-        assert evidence['synthesize']['complete'] is True
-        web_tools = module.BinaryGate.tool_evidence(
-            gate, run_dir, {'WebSearch', 'WebFetch'}
-        )
-        assert module.BinaryGate.deep_research_web_tools_complete(
-            gate, web_tools, evidence
-        ) is True
+    evidence = deep_research_evidence(module)
+    assert evidence['complete'] is True
+    assert evidence['scope']['angle_labels'] == [
+        'search:docs', 'search:news', 'search:skeptic',
+    ]
+    assert evidence['fetch']['observed_labels'] == [
+        'fetch:docs-1.example', 'fetch:news-1.example', 'fetch:skeptic-1.example',
+    ]
+    assert evidence['verify']['vote_counts'] == {0: 3, 1: 3, 2: 3}
 
-        passive_path = subagents / 'agent-verify-1.jsonl'
-        with passive_path.open('a') as stream:
-            stream.write(json.dumps({
-                'type': 'assistant',
-                'message': {
-                    'role': 'assistant',
-                    'content': [{
-                        'type': 'tool_use',
-                        'id': 'verify-agent',
-                        'name': 'Agent',
-                        'input': {'prompt': 'delegate'},
-                    }],
-                },
-            }) + '\n')
-        evidence = module.BinaryGate.deep_research_phase_evidence(gate, run_dir)
-        assert evidence['verify']['complete'] is False
-        assert evidence['verify']['violating_logical_indexes'] == ['1']
+    # Verify votes are capped at the top 25 claims.
+    evidence = deep_research_evidence(
+        module, results_per_angle=2, claims_per_source=5,
+    )
+    assert evidence['complete'] is True
+    assert evidence['verify']['extracted_claims'] == 30
+    assert evidence['verify']['expected_votes_per_voter'] == 25
+    assert deep_research_evidence(
+        module, results_per_angle=2, claims_per_source=5, votes=30,
+    )['verify']['complete'] is False
 
-        write_transcript(passive_path, [{
-            'type': 'assistant',
-            'message': {
-                'role': 'assistant',
-                'content': [{'type': 'text', 'text': '{}'}],
-            },
-        }])
-        extra_path = subagents / 'agent-synthesize-1.jsonl'
-        with extra_path.open('a') as stream:
-            stream.write(json.dumps({
-                'type': 'assistant',
-                'message': {
-                    'role': 'assistant',
-                    'content': [{
-                        'type': 'tool_use',
-                        'id': 'extra-search',
-                        'name': 'WebSearch',
-                        'input': {'query': 'extra'},
-                    }],
-                },
-            }) + '\n')
-            stream.write(json.dumps({
-                'type': 'user',
-                'message': {
-                    'role': 'user',
-                    'content': [{
-                        'type': 'tool_result',
-                        'tool_use_id': 'extra-search',
-                        'content': 'ok',
-                    }],
-                },
-            }) + '\n')
-        web_tools = module.BinaryGate.tool_evidence(
-            gate, run_dir, {'WebSearch', 'WebFetch'}
-        )
-        assert module.BinaryGate.deep_research_web_tools_complete(
-            gate, web_tools, evidence
-        ) is False
-        write_transcript(extra_path, [{
-            'type': 'assistant',
-            'message': {
-                'role': 'assistant',
-                'content': [{'type': 'text', 'text': '{}'}],
-            },
-        }])
+    def rename(stem, description):
+        def edit(subagents):
+            (subagents / f'agent-{stem}.meta.json').write_text(json.dumps({
+                'agentId': stem, 'description': description,
+            }))
+        return edit
 
-        select_sources_path = subagents / 'agent-select-sources.jsonl'
-        write_select_sources_worker(
-            subagents,
-            deep_research_select_sources_entries(14),
-        )
-        write_transcript(
-            subagents / 'agent-fetch-15.jsonl',
-            deep_research_shortfall_entries(15),
-        )
-        evidence = module.BinaryGate.deep_research_phase_evidence(gate, run_dir)
-        assert evidence['select-sources']['complete'] is True
-        assert evidence['select-sources']['sources_complete'] is True
-        assert evidence['fetch']['complete'] is True
-        assert evidence['fetch']['shortfall_logical_indexes'] == ['15']
-        assert set(evidence['fetch']['exact_once_logical_indexes']) == {
-            str(index) for index in range(1, 15)
+    # Duplicate labels carry a " [n]" occurrence suffix.
+    evidence = deep_research_evidence(
+        module, edit=rename('verify-2-1', 'deep-research: v2:"claim 0" [2]'),
+    )
+    assert evidence['complete'] is True
+
+    evidence = deep_research_evidence(module, angles=('docs', 'news'))
+    assert evidence['scope']['complete'] is False
+    assert evidence['complete'] is False
+
+    def remove(stem):
+        def edit(subagents):
+            (subagents / f'agent-{stem}.meta.json').unlink()
+        return edit
+
+    evidence = deep_research_evidence(module, edit=remove('search-news'))
+    assert evidence['search']['complete'] is False
+    evidence = deep_research_evidence(module, edit=remove('verify-2-0'))
+    assert evidence['verify']['vote_counts'] == {0: 3, 1: 3, 2: 2}
+    assert evidence['verify']['complete'] is False
+    evidence = deep_research_evidence(module, synthesize=False)
+    assert evidence['synthesize']['complete'] is True
+    assert evidence['complete'] is True
+
+    def rewrite(stem, entries):
+        def edit(subagents):
+            write_transcript(subagents / f'agent-{stem}.jsonl', entries)
+        return edit
+
+    evidence = deep_research_evidence(module, edit=rewrite('search-docs', [
+        *tool_call_entries('WebSearch', 'search-docs', {'query': 'docs'},
+                           error='search failed'),
+        structured_output_entry({'results': [
+            {'url': 'https://docs-1.example/doc', 'title': 't', 'relevance': 'high'},
+        ]}),
+    ]))
+    assert evidence['search']['violating_labels'] == ['search:docs']
+    assert evidence['complete'] is False
+
+    # Text JSON from the old fork script is not a structured result.
+    evidence = deep_research_evidence(module, edit=rewrite('verify-0-0', [{
+        'type': 'assistant',
+        'message': {
+            'role': 'assistant',
+            'content': [{'type': 'text', 'text': '{"refuted": false}'}],
+        },
+    }]))
+    assert evidence['verify']['violating_labels'] == ['v0:"claim 0"']
+
+    evidence = deep_research_evidence(module, edit=rewrite('synthesize', [
+        *tool_call_entries('Bash', 'synthesize-bash', {'command': 'pwd'}),
+        structured_output_entry({'summary': 's', 'findings': [], 'caveats': 'c'}),
+    ]))
+    assert evidence['synthesize']['complete'] is False
+
+    docs = 'https://docs-1.example/doc'
+    news = 'https://news-1.example/doc'
+    evidence = deep_research_evidence(module, fetch={
+        docs: {'url': 'https://elsewhere.example/doc'},
+    })
+    assert evidence['fetch']['violations'] == {
+        'fetch:docs-1.example': 'url-not-from-search',
+    }
+    evidence = deep_research_evidence(module, fetch={docs: {'url': news}})
+    assert evidence['fetch']['violations'] == {
+        'fetch:docs-1.example': 'duplicate-url',
+        'fetch:news-1.example': 'duplicate-url',
+    }
+
+    # An external fetch failure is fine when the source reports no claims.
+    for error in (
+        'Request failed with status code 403',
+        'timeout of 60000ms exceeded',
+    ):
+        evidence = deep_research_evidence(module, fetch={docs: {'error': error}})
+        assert evidence['fetch']['violations'] == {}
+        assert evidence['verify']['expected_votes_per_voter'] == 2
+        assert evidence['complete'] is True
+    for error in (
+        'Permission denied by policy; HTTP status 403',
+        'WebFetch crashed unexpectedly',
+        'HTTP status 500 internal server error',
+        'network error while contacting the model gateway',
+    ):
+        evidence = deep_research_evidence(module, fetch={docs: {'error': error}})
+        assert evidence['fetch']['violations'] == {
+            'fetch:docs-1.example': 'non-external-failure',
         }
-        web_tools = module.BinaryGate.tool_evidence(
-            gate, run_dir, {'WebSearch', 'WebFetch'}
-        )
-        assert module.BinaryGate.deep_research_web_tools_complete(
-            gate, web_tools, evidence
-        ) is True
+    evidence = deep_research_evidence(module, fetch={docs: {
+        'error': 'Request failed with status code 403',
+        'output': {'sourceQuality': 'primary', 'claims': [
+            {'claim': 'unsupported', 'quote': 'q', 'importance': 'central'},
+        ]},
+    }})
+    assert evidence['fetch']['violations'] == {
+        'fetch:docs-1.example': 'non-external-failure',
+    }
 
-        write_transcript(
-            subagents / 'agent-fetch-15.jsonl',
-            deep_research_entries('fetch', 15),
-        )
-        evidence = module.BinaryGate.deep_research_phase_evidence(gate, run_dir)
-        assert evidence['select-sources']['complete'] is True
-        assert evidence['fetch']['complete'] is False
-        assert evidence['fetch']['invalid_shortfall_logical_indexes'] == ['15']
-        web_tools = module.BinaryGate.tool_evidence(
-            gate, run_dir, {'WebSearch', 'WebFetch'}
-        )
-        assert module.BinaryGate.deep_research_web_tools_complete(
-            gate, web_tools, evidence
-        ) is False
-
-        invalid_shortfall_entries = deep_research_select_sources_entries(14)
-        invalid_shortfall_output = json.loads(
-            invalid_shortfall_entries[0]['message']['content'][0]['text']
-        )
-        invalid_shortfall_output['shortfall']['missingCount'] = 2
-        invalid_shortfall_entries[0]['message']['content'][0]['text'] = json.dumps(
-            invalid_shortfall_output
-        )
-        write_select_sources_worker(subagents, invalid_shortfall_entries)
-        write_transcript(
-            subagents / 'agent-fetch-15.jsonl',
-            deep_research_shortfall_entries(15),
-        )
-        evidence = module.BinaryGate.deep_research_phase_evidence(gate, run_dir)
-        assert evidence['select-sources']['complete'] is False
-
-        entries = deep_research_select_sources_entries()
-        output = json.loads(entries[0]['message']['content'][0]['text'])
-        output['sources'][1]['url'] = output['sources'][0]['url']
-        entries[0]['message']['content'][0]['text'] = json.dumps(output)
-        write_select_sources_worker(subagents, entries)
-        evidence = module.BinaryGate.deep_research_phase_evidence(gate, run_dir)
-        assert evidence['select-sources']['complete'] is False
-
-        entries = deep_research_select_sources_entries()
-        entries[0]['message']['content'][0]['text'] = '```json\n{}\n```'
-        write_select_sources_worker(subagents, entries)
-        evidence = module.BinaryGate.deep_research_phase_evidence(gate, run_dir)
-        assert evidence['select-sources']['complete'] is False
-
-        entries = deep_research_select_sources_entries()
-        entries.append(entries[0].copy())
-        write_select_sources_worker(subagents, entries)
-        evidence = module.BinaryGate.deep_research_phase_evidence(gate, run_dir)
-        assert evidence['select-sources']['complete'] is False
-
-        entries = deep_research_select_sources_entries()
-        output = json.loads(entries[0]['message']['content'][0]['text'])
-        output['sources'][1]['oneBasedRank'] = 3
-        entries[0]['message']['content'][0]['text'] = json.dumps(output)
-        write_select_sources_worker(subagents, entries)
-        evidence = module.BinaryGate.deep_research_phase_evidence(gate, run_dir)
-        assert evidence['select-sources']['complete'] is False
-
-        entries = deep_research_select_sources_entries()
-        entries[0]['message']['content'].append({
-            'type': 'tool_use',
-            'id': 'select-sources-bash',
-            'name': 'Bash',
-            'input': {'command': 'pwd'},
-        })
-        write_select_sources_worker(subagents, entries)
-        evidence = module.BinaryGate.deep_research_phase_evidence(gate, run_dir)
-        assert evidence['select-sources']['complete'] is False
-        assert evidence['select-sources']['violating_logical_indexes'] == ['1']
-
-        write_select_sources_worker(
-            subagents,
-            description='deep-research: select-sources retry 1/1',
-        )
-        evidence = module.BinaryGate.deep_research_phase_evidence(gate, run_dir)
-        assert evidence['select-sources']['complete'] is False
-
-        write_select_sources_worker(subagents)
-        write_transcript(
-            subagents / 'agent-fetch-15.jsonl',
-            deep_research_entries('fetch', 15),
-        )
-        write_transcript(
-            subagents / 'agent-fetch-2.jsonl',
-            deep_research_entries(
-                'fetch', 2,
-                fetch_url='https://example.test/source-1',
-                selected_url='https://example.test/source-1',
-            ),
-        )
-        evidence = module.BinaryGate.deep_research_phase_evidence(gate, run_dir)
-        assert evidence['fetch']['complete'] is False
-        assert evidence['fetch']['selected_sources_match'] is False
-
-        write_transcript(
-            subagents / 'agent-fetch-2.jsonl',
-            deep_research_entries('fetch', 2),
-        )
-        evidence = module.BinaryGate.deep_research_phase_evidence(gate, run_dir)
-        assert evidence['select-sources']['complete'] is True
-        assert evidence['fetch']['selected_sources_match'] is True
-
-        duplicate_path = subagents / 'agent-search-1.jsonl'
-        with duplicate_path.open('a') as stream:
-            stream.write(json.dumps({
-                'type': 'assistant',
-                'message': {
-                    'role': 'assistant',
-                    'content': [{
-                        'type': 'tool_use',
-                        'id': 'search-1-duplicate',
-                        'name': 'WebSearch',
-                        'input': {},
-                    }],
-                },
-            }) + '\n')
-            stream.write(json.dumps({
-                'type': 'user',
-                'message': {
-                    'role': 'user',
-                    'content': [{
-                        'type': 'tool_result',
-                        'tool_use_id': 'search-1-duplicate',
-                        'is_error': True,
-                        'content': 'failed',
-                    }],
-                },
-            }) + '\n')
-        evidence = module.BinaryGate.deep_research_phase_evidence(gate, run_dir)
-        assert evidence['search']['complete'] is False
-        assert evidence['search']['logical_worker_tool_counts']['1'] == {
-            'tool_uses': 2,
-            'tool_use_occurrences': 2,
-            'successful_results': 1,
-            'failed_results': 1,
-            'invalid_results': 0,
-        }
-
-        fetch_failure_path = subagents / 'agent-fetch-1.jsonl'
-        fetch_failure_path.write_text('')
-        write_transcript(
-            fetch_failure_path,
-            deep_research_entries(
-                'fetch', 1,
-                error='Request failed with status code 403',
-                tool_id='fetch-1-failed',
-            ),
-        )
-        evidence = module.BinaryGate.deep_research_phase_evidence(gate, run_dir)
-        assert evidence['fetch']['complete'] is True
-        assert evidence['fetch']['external_failure_logical_indexes'] == ['1']
-        assert evidence['fetch']['non_external_failure_logical_indexes'] == []
-        assert '1' not in evidence['fetch']['successful_logical_indexes']
-        assert evidence['fetch']['attempts']['1'][0]['failed_result_messages'] == {
-            'fetch-1-failed': ['Request failed with status code 403'],
-        }
-
-        write_transcript(
-            fetch_failure_path,
-            deep_research_entries(
-                'fetch', 1,
-                error='Request failed with status code 403',
-                tool_id='fetch-1-invalid-output',
-                source_quality='primary',
-                claims=[{'claim': 'unsupported'}],
-            ),
-        )
-        evidence = module.BinaryGate.deep_research_phase_evidence(gate, run_dir)
-        assert evidence['fetch']['complete'] is False
-        assert evidence['fetch']['external_failure_logical_indexes'] == []
-        assert evidence['fetch']['failed_output_mismatch_logical_indexes'] == ['1']
-
-        write_transcript(
-            fetch_failure_path,
-            deep_research_entries(
-                'fetch', 1,
-                error='Permission denied by policy',
-                tool_id='fetch-1-denied',
-            ),
-        )
-        evidence = module.BinaryGate.deep_research_phase_evidence(gate, run_dir)
-        assert evidence['fetch']['complete'] is False
-        assert evidence['fetch']['external_failure_logical_indexes'] == []
-        assert evidence['fetch']['non_external_failure_logical_indexes'] == ['1']
-
-        write_transcript(
-            fetch_failure_path,
-            deep_research_entries(
-                'fetch', 1,
-                error='WebFetch crashed unexpectedly',
-                tool_id='fetch-1-denied',
-            ),
-        )
-        evidence = module.BinaryGate.deep_research_phase_evidence(gate, run_dir)
-        assert evidence['fetch']['complete'] is False
-        assert evidence['fetch']['external_failure_logical_indexes'] == []
-        assert evidence['fetch']['non_external_failure_logical_indexes'] == ['1']
-
-        write_transcript(
-            fetch_failure_path,
-            deep_research_entries(
-                'fetch', 1,
-                error='Request failed with status code 403',
-                tool_id='fetch-1-failed',
-            ),
-        )
-        retry_stem = 'agent-fetch-2-retry'
-        (subagents / f'{retry_stem}.meta.json').write_text(json.dumps({
-            'agentId': retry_stem,
-            'description': 'deep-research: fetch 2/15 retry 1/1',
-        }))
-        write_transcript(subagents / f'{retry_stem}.jsonl', [])
-        evidence = module.BinaryGate.deep_research_phase_evidence(gate, run_dir)
-        assert evidence['fetch']['complete'] is False
-        assert evidence['fetch']['logical_worker_attempt_counts']['2'] == 2
-        assert evidence['fetch']['retry_logical_indexes'] == ['2']
-        assert '2' not in evidence['fetch']['exact_once_logical_indexes']
-
-    with tempfile.TemporaryDirectory(prefix='release-driver-test-') as root_string:
-        run_dir = Path(root_string)
-        subagents = run_dir / 'config/projects/project/subagents'
-        gate = object.__new__(module.BinaryGate)
-
-        def write_complete_workers():
-            for phase, count in (('search', 5), ('fetch', 15)):
-                for index in range(1, count + 1):
-                    stem = f'agent-{phase}-{index}'
-                    (subagents / f'{stem}.meta.json').parent.mkdir(
-                        parents=True, exist_ok=True
-                    )
-                    (subagents / f'{stem}.meta.json').write_text(json.dumps({
-                        'agentId': stem,
-                        'description': f'deep-research: {phase} {index}/{count}',
-                    }))
-                    write_transcript(
-                        subagents / f'{stem}.jsonl',
-                        deep_research_entries(phase, index),
-                    )
-
-        write_complete_workers()
-        write_select_sources_worker(subagents)
-        retry_meta = subagents / 'agent-fetch-1.meta.json'
-        retry_meta.write_text(json.dumps({
-            'agentId': 'agent-fetch-1',
-            'description': 'deep-research: fetch 1/15 retry 1/1',
-        }))
-        evidence = module.BinaryGate.deep_research_phase_evidence(gate, run_dir)
-        assert evidence['fetch']['complete'] is False
-        assert evidence['fetch']['retry_logical_indexes'] == ['1']
-
-        write_complete_workers()
-        write_select_sources_worker(subagents)
-        duplicate_use_path = subagents / 'agent-fetch-1.jsonl'
-        entries = deep_research_entries('fetch', 1)
-        entries[1]['message']['content'].append(
-            entries[1]['message']['content'][0].copy()
-        )
-        write_transcript(duplicate_use_path, entries)
-        evidence = module.BinaryGate.deep_research_phase_evidence(gate, run_dir)
-        assert evidence['fetch']['complete'] is False
-        assert evidence['fetch']['logical_worker_tool_counts']['1'][
-            'tool_use_occurrences'
-        ] == 2
-
-        write_complete_workers()
-        write_select_sources_worker(subagents)
-        duplicate_result_path = subagents / 'agent-fetch-1.jsonl'
-        entries = deep_research_entries('fetch', 1)
-        entries[2]['message']['content'].append({
-            'type': 'tool_result',
-            'tool_use_id': 'fetch-1-tool',
-            'is_error': True,
-            'content': 'Request failed with status code 403',
-        })
-        write_transcript(duplicate_result_path, entries)
-        evidence = module.BinaryGate.deep_research_phase_evidence(gate, run_dir)
-        assert evidence['fetch']['complete'] is False
-        assert evidence['fetch']['logical_worker_tool_counts']['1'][
-            'invalid_results'
-        ] == 1
-
-        write_complete_workers()
-        write_select_sources_worker(subagents)
-        write_transcript(
-            subagents / 'agent-fetch-1.jsonl',
-            deep_research_entries(
-                'fetch', 1,
-                error='HTTP status 500 internal server error',
-            ),
-        )
-        evidence = module.BinaryGate.deep_research_phase_evidence(gate, run_dir)
-        assert evidence['fetch']['complete'] is False
-        assert evidence['fetch']['external_failure_logical_indexes'] == []
-        assert evidence['fetch']['non_external_failure_logical_indexes'] == ['1']
-
-        write_complete_workers()
-        write_select_sources_worker(subagents)
-        write_transcript(
-            subagents / 'agent-fetch-1.jsonl',
-            deep_research_entries(
-                'fetch', 1,
-                error='Permission denied by policy; HTTP status 403',
-            ),
-        )
-        evidence = module.BinaryGate.deep_research_phase_evidence(gate, run_dir)
-        assert evidence['fetch']['complete'] is False
-        assert evidence['fetch']['external_failure_logical_indexes'] == []
-        assert evidence['fetch']['non_external_failure_logical_indexes'] == ['1']
-
-        write_complete_workers()
-        write_select_sources_worker(subagents)
-        write_transcript(
-            subagents / 'agent-fetch-1.jsonl',
-            deep_research_entries(
-                'fetch', 1,
-                fetch_url='https://example.test/source-2',
-                selected_url='https://example.test/source-1',
-            ),
-        )
-        evidence = module.BinaryGate.deep_research_phase_evidence(gate, run_dir)
-        assert evidence['fetch']['complete'] is False
-        assert evidence['fetch']['source_mismatch_logical_indexes'] == ['1']
-
-        write_complete_workers()
-        write_select_sources_worker(subagents)
-        write_transcript(
-            subagents / 'agent-fetch-1.jsonl',
-            deep_research_entries(
-                'fetch', 1,
-                fetch_url='https://example.test/source?id=2',
-                selected_url='https://example.test/source?id=1',
-            ),
-        )
-        evidence = module.BinaryGate.deep_research_phase_evidence(gate, run_dir)
-        assert evidence['fetch']['complete'] is False
-        assert evidence['fetch']['source_mismatch_logical_indexes'] == ['1']
-
-        write_complete_workers()
-        write_select_sources_worker(subagents)
-        write_transcript(
-            subagents / 'agent-fetch-1.jsonl',
-            deep_research_entries(
-                'fetch', 1,
-                fetch_url='http://example.test/source-1',
-                selected_url='https://example.test/source-1',
-            ),
-        )
-        evidence = module.BinaryGate.deep_research_phase_evidence(gate, run_dir)
-        assert evidence['fetch']['complete'] is False
-        assert evidence['fetch']['source_mismatch_logical_indexes'] == ['1']
-
-        write_complete_workers()
-        write_select_sources_worker(subagents)
-        write_transcript(
-            subagents / 'agent-fetch-1.jsonl',
-            deep_research_entries(
-                'fetch', 1,
-                fetch_url='https://example.test/source-1/',
-                selected_url='https://example.test/source-1',
-            ),
-        )
-        evidence = module.BinaryGate.deep_research_phase_evidence(gate, run_dir)
-        assert evidence['fetch']['complete'] is False
-        assert evidence['fetch']['source_mismatch_logical_indexes'] == ['1']
-
-        write_complete_workers()
-        write_select_sources_worker(subagents)
-        write_transcript(
-            subagents / 'agent-fetch-2.jsonl',
-            deep_research_entries(
-                'fetch', 2,
-                fetch_url='https://example.test/source-1',
-                selected_url='https://example.test/source-1',
-            ),
-        )
-        evidence = module.BinaryGate.deep_research_phase_evidence(gate, run_dir)
-        assert evidence['fetch']['complete'] is False
-        assert evidence['fetch']['duplicate_source_logical_indexes'] == ['1', '2']
-
-        write_complete_workers()
-        write_select_sources_worker(subagents)
-        entries = deep_research_entries('fetch', 1)
-        output = json.loads(entries[-1]['message']['content'][0]['text'])
-        output['fetchedSource'] = output.pop('selectedSource')
-        entries[-1]['message']['content'][0]['text'] = json.dumps(output)
-        write_transcript(subagents / 'agent-fetch-1.jsonl', entries)
-        evidence = module.BinaryGate.deep_research_phase_evidence(gate, run_dir)
-        assert evidence['fetch']['complete'] is False
-        assert evidence['fetch']['source_mismatch_logical_indexes'] == ['1']
-
-        write_complete_workers()
-        write_select_sources_worker(subagents)
-        entries = deep_research_entries('fetch', 1)
-        output = json.loads(entries[-1]['message']['content'][0]['text'])
-        output['selectedSource']['rank'] = output['selectedSource'].pop('oneBasedRank')
-        entries[-1]['message']['content'][0]['text'] = json.dumps(output)
-        write_transcript(subagents / 'agent-fetch-1.jsonl', entries)
-        evidence = module.BinaryGate.deep_research_phase_evidence(gate, run_dir)
-        assert evidence['fetch']['complete'] is False
-        assert evidence['fetch']['source_mismatch_logical_indexes'] == ['1']
-
-        write_complete_workers()
-        write_select_sources_worker(subagents)
-        entries = deep_research_entries('fetch', 1)
-        entries.append(entries[-1].copy())
-        write_transcript(subagents / 'agent-fetch-1.jsonl', entries)
-        evidence = module.BinaryGate.deep_research_phase_evidence(gate, run_dir)
-        assert evidence['fetch']['complete'] is False
-        assert evidence['fetch']['source_mismatch_logical_indexes'] == ['1']
-
-        write_complete_workers()
-        write_select_sources_worker(subagents)
-        entries = deep_research_entries('fetch', 1)
-        entries[1]['message']['content'].append({
-            'type': 'tool_use',
-            'id': 'fetch-1-bash',
-            'name': 'Bash',
-            'input': {'command': 'pwd'},
-        })
-        write_transcript(subagents / 'agent-fetch-1.jsonl', entries)
-        evidence = module.BinaryGate.deep_research_phase_evidence(gate, run_dir)
-        assert evidence['fetch']['complete'] is False
-        assert evidence['fetch']['unexpected_tool_logical_indexes'] == ['1']
-
-        write_complete_workers()
-        write_select_sources_worker(subagents)
-        entries = deep_research_entries('fetch', 1)
-        entries[1]['message']['content'].append({
-            'type': 'tool_use',
-            'id': 'fetch-1-discovery',
-            'name': 'ToolSearch',
-            'input': {'query': 'select:WebFetch', 'max_results': 1},
-        })
-        entries[2]['message']['content'].append({
-            'type': 'tool_result',
-            'tool_use_id': 'fetch-1-discovery',
-            'content': 'loaded',
-        })
-        write_transcript(subagents / 'agent-fetch-1.jsonl', entries)
-        evidence = module.BinaryGate.deep_research_phase_evidence(gate, run_dir)
-        assert evidence['fetch']['complete'] is True
-        assert evidence['fetch']['unexpected_tool_logical_indexes'] == []
-
-        write_complete_workers()
-        write_select_sources_worker(subagents)
-        entries = deep_research_entries('fetch', 1)
-        entries[1]['message']['content'].append({
-            'type': 'tool_use',
-            'id': 'fetch-1-discovery',
-            'name': 'ToolSearch',
-            'input': {'query': 'WebFetch'},
-        })
-        entries[2]['message']['content'].append({
-            'type': 'tool_result',
-            'tool_use_id': 'fetch-1-discovery',
-            'content': 'loaded',
-        })
-        write_transcript(subagents / 'agent-fetch-1.jsonl', entries)
-        evidence = module.BinaryGate.deep_research_phase_evidence(gate, run_dir)
-        assert evidence['fetch']['complete'] is False
-        assert evidence['fetch']['unexpected_tool_logical_indexes'] == ['1']
-
-        write_complete_workers()
-        write_select_sources_worker(subagents)
-        entries = deep_research_entries('fetch', 1)
-        for suffix in ('a', 'b'):
-            entries[1]['message']['content'].append({
-                'type': 'tool_use',
-                'id': f'fetch-1-discovery-{suffix}',
-                'name': 'ToolSearch',
-                'input': {'query': 'select:WebFetch', 'max_results': 1},
-            })
-            entries[2]['message']['content'].append({
-                'type': 'tool_result',
-                'tool_use_id': f'fetch-1-discovery-{suffix}',
-                'content': 'loaded',
-            })
-        write_transcript(subagents / 'agent-fetch-1.jsonl', entries)
-        evidence = module.BinaryGate.deep_research_phase_evidence(gate, run_dir)
-        assert evidence['fetch']['complete'] is False
-        assert evidence['fetch']['unexpected_tool_logical_indexes'] == ['1']
-
-        write_complete_workers()
-        write_select_sources_worker(subagents)
-        write_transcript(
-            subagents / 'agent-fetch-1.jsonl',
-            deep_research_entries(
-                'fetch', 1,
-                error='timeout of 60000ms exceeded',
-            ),
-        )
-        evidence = module.BinaryGate.deep_research_phase_evidence(gate, run_dir)
-        assert evidence['fetch']['complete'] is True
-        assert evidence['fetch']['external_failure_logical_indexes'] == ['1']
-        assert evidence['fetch']['non_external_failure_logical_indexes'] == []
-
-        write_complete_workers()
-        write_select_sources_worker(subagents)
-        write_transcript(
-            subagents / 'agent-fetch-1.jsonl',
-            deep_research_entries(
-                'fetch', 1,
-                error='network error while contacting the model gateway',
-            ),
-        )
-        evidence = module.BinaryGate.deep_research_phase_evidence(gate, run_dir)
-        assert evidence['fetch']['complete'] is False
-        assert evidence['fetch']['external_failure_logical_indexes'] == []
-        assert evidence['fetch']['non_external_failure_logical_indexes'] == ['1']
+    evidence = deep_research_evidence(module, edit=rewrite('fetch-0', [
+        *tool_call_entries('ToolSearch', 'fetch-0-discovery',
+                           {'query': 'select:WebFetch', 'max_results': 1}),
+        *tool_call_entries('WebFetch', 'fetch-0', {'url': docs, 'prompt': 'x'}),
+        structured_output_entry({'sourceQuality': 'primary', 'claims': [
+            {'claim': 'c', 'quote': 'q', 'importance': 'central'},
+        ]}),
+    ]))
+    assert evidence['complete'] is True
 
     with tempfile.TemporaryDirectory(prefix='release-driver-test-') as root_string:
         root = Path(root_string)
@@ -2394,8 +1864,10 @@ def assert_driver_behavior(module, baseline_module):
         'agent-fg-bg',
         'nested-agent',
         'workflow',
-        'code-review',
     }
+    assert 'code-review' in module.required_targets_for_paths([
+        'src/skills/bundled/codeReview.ts',
+    ])
     assert module.required_targets_for_paths([
         'src/tools/AgentTool/runAgent.ts',
     ]) == {
@@ -2411,7 +1883,7 @@ def assert_driver_behavior(module, baseline_module):
     ]) == set()
     assert module.required_targets_for_paths([
         'src/tools/WorkflowTool/bundled/index.ts',
-    ]) == {'workflow', 'code-review'}
+    ]) == {'workflow'}
     assert module.required_targets_for_paths([
         'src/tools/WorkflowTool/workflowOrchestrator.ts',
     ]) == {
@@ -3697,7 +3169,7 @@ def assert_driver_behavior(module, baseline_module):
             explicit['release_base']['merge_base']
         )
         assert (
-            f"{explicit['release_base']['merge_base']}..HEAD"
+            f"{explicit['release_base']['merge_base']}...HEAD"
             in module.code_review_prompt(explicit['release_base']['merge_base'])
         )
         try:
@@ -3872,17 +3344,9 @@ def assert_driver_behavior(module, baseline_module):
         else:
             raise AssertionError(f'expected parse_target_list({raw!r}) to fail')
 
-    code_review_prompt = module.code_review_prompt('release-base-sha')
-    assert (
-        'git diff release-base-sha..HEAD -- '
-        'src/tools/WorkflowTool/bundled/index.ts '
-        'src/tools/WorkflowTool/bundled/index.test.ts'
-    ) in code_review_prompt
-    assert 'Do not widen the diff range or path scope' in code_review_prompt
-    assert 'current changes' not in code_review_prompt
-    assert 'src/tools/AgentTool' not in code_review_prompt
-    assert 'src/tasks/LocalWorkflowTask' not in code_review_prompt
-    assert 'src/utils/sessionStorage.ts' not in code_review_prompt
+    assert module.code_review_prompt('release-base-sha') == (
+        '/code-review high release-base-sha...HEAD'
+    )
 
     planned = module.plan_targets(['team-concurrency'], {'workflow-failure-detail'})
     assert planned == ['workflow-failure-detail', 'team-concurrency']
@@ -6539,24 +6003,23 @@ def assert_deterministic_lifecycle_protocol(module):
                                 assert Path(read['args']['file_path']).name == path
                                 worker.append(output(read, 'fixture version'))
                                 post(worker, f'workflow-probe-{name}-completed')
+                            parent.append(output(launch, 'Workflow launched in background. Task ID: wfixture'))
+                            post(parent, label + '-parent-completed')
+                            parent.append(user('<task-notification><task-id>wfixture</task-id><status>completed</status></task-notification>', blocks))
+                            post(parent, label + '-notification-completed')
                         else:
-                            args = module.code_review_prompt('a' * 40).removeprefix('/code-review ')
-                            parent = [user('Workflow: code-review\nSource: bundled:code-review\n\nUser input:\n' + args +
-                                           '\n\nExecute this validated workflow through WorkflowTool.run with selector-based input. Use selector: "code-review" and pass the user input as runArgs.', blocks)]
-                            launch = post(parent, 'code-review-launch', 'WorkflowTool')
-                            assert launch['args'] == {'action': 'run', 'selector': 'code-review', 'runArgs': args}
-                            assert 'script' not in launch['args'] and 'plan' not in launch['args']
-                            scope = [user('Establish the scope of a code review.\n\nReview target / instructions (passed by the user, verbatim): "' + args + '".', blocks)]
-                            structured = post(scope, 'code-review-scope-output', 'StructuredOutput')
-                            assert structured['args']['files'] == []
-                            assert structured['args']['diffCommand'].startswith('git diff ')
-                            assert structured['args']['summary']
-                            scope.append(output(structured, 'Structured output provided successfully'))
-                            post(scope, 'code-review-scope-completed')
-                        parent.append(output(launch, 'Workflow launched in background. Task ID: wfixture'))
-                        post(parent, label + '-parent-completed')
-                        parent.append(user('<task-notification><task-id>wfixture</task-id><status>completed</status></task-notification>', blocks))
-                        post(parent, label + '-notification-completed')
+                            # The forked /code-review agent gets the official cell prompt
+                            # behind the review target and answers with JSON findings.
+                            parent = [user('Review target: `' + 'a' * 40 + '...HEAD`\n\n'
+                                           + module.CODE_REVIEW_CELL_TAG, blocks)]
+                            assert 'RELEASE_CODE_REVIEW_FINDING' in post(parent, 'code-review-findings')
+                            assert 'RELEASE_CODE_REVIEW_NOTIFIED' in post([user(
+                                '<task-notification><status>completed</status><result>'
+                                + json.dumps(module.CODE_REVIEW_FINDINGS) + '</result></task-notification>',
+                                blocks)], 'code-review-notified')
+                            assert post([user(module.CODE_REVIEW_CELL_TAG, blocks)], 'code-review-unrecognized')
+                            with server.lock:
+                                server.requests = server.requests[:-1]
                     assert label in module.MOCK_OPENAI_TARGETS
                     assert gate.workflow_mock_wire(root, label)['validation_verdict'] == 'passed'
                     # Wire evidence must fail independently for missing, duplicate, unknown and non-dummy requests.
@@ -6936,306 +6399,130 @@ def main():
 
 
 
-def _code_review_scope_fixture(module):
-    import copy
-    args = module.code_review_prompt('a' * 40).removeprefix('/code-review ')
-    diff = 'git diff ' + 'a' * 40 + '..HEAD -- src/tools/WorkflowTool/bundled/index.ts src/tools/WorkflowTool/bundled/index.test.ts'
-    output = {'diffCommand': diff, 'files': [], 'summary': 'Deterministic empty-scope release fixture.'}
-    schema = {'type': 'object', 'required': ['diffCommand', 'files', 'summary'],
-              'properties': {'diffCommand': {'type': 'string'}, 'files': {'type': 'array', 'items': {'type': 'string'}},
-                             'summary': {'type': 'string'}, 'conventions': {'type': 'string'}}}
-    prompt = 'Establish the scope of a code review.\nExact bounded instructions.'
-    child_prompt = prompt + ('\n\nYou MUST call the `StructuredOutput` tool exactly once to return your answer.\n'
-        'The tool input must match this JSON Schema:\n```json\n' + json.dumps(schema, indent=2) + '\n```\n'
-        'Do NOT put your answer in a text response. The script reads ONLY the tool call.\n'
-        'If schema validation fails, read the error and call the tool again with corrected input.')
-    def entry(kind, stamp, content, **extra):
-        return {'type': kind, 'sessionId': 'session-one', 'timestamp': '2026-10-07T20:41:01.' + stamp + 'Z',
-                'uuid': kind + '-' + stamp, 'isSidechain': False,
-                'message': {'role': kind, 'content': content}, **extra}
-    report = {'level': 'high', 'target': args.removeprefix('high '),
-              'summary': 'No changes found to review.', 'findings': [],
-              'stats': {'finders': 0, 'candidates': 0, 'verified': 0}}
-    notification = ('<task-notification>\n<task-id>task-one</task-id>\n'
-        '<tool-use-id>launch-one</tool-use-id>\n<status>completed</status>\n'
-        '<result>' + json.dumps(report) + '</result>\n'
-        '<usage><total_tokens>2</total_tokens><tool_uses>1</tool_uses>'
-        '<duration_ms>236</duration_ms></usage>\n</task-notification>')
-    parents = [{'session_id': 'session-one', 'entries': [
-        entry('assistant', '230', [{'type': 'tool_use', 'id': 'launch-one', 'name': 'WorkflowTool',
-            'input': {'action': 'run', 'selector': 'code-review', 'runArgs': args}}]),
-        entry('user', '259', [{'type': 'tool_result', 'tool_use_id': 'launch-one',
-            'content': 'Workflow launched in background. Task ID: task-one\nRun ID: wf_one\n'}],
-            parentUuid='assistant-230', sourceToolAssistantUUID='assistant-230'),
-        entry('user', '513', notification, origin={'kind': 'task-notification'}),
-    ]}]
-    artifact = {'taskId': 'task-one', 'workflowRunId': 'wf_one', 'workflowName': 'code-review',
-        'status': 'completed', 'scriptPath': 'bundled:code-review', 'runArgs': args,
-        'startedAt': 1791405661256, 'updatedAt': 1791405661492, 'tokenCount': 2, 'toolUseCount': 1,
-        'results': [{'phaseId': 'Scope', 'agentId': 'scope', 'index': 0, 'status': 'completed',
-                     'prompt': prompt, 'output': json.dumps(output)}],
-        'resumeCacheEntries': [{'phase': 'Scope', 'label': 'scope', 'index': 0,
-                              'result': output, 'completedAt': 1791405661484}]}
-    children = [{'session_id': 'session-one', 'agent_id': 'agent-one',
-        'meta': {'agentType': 'general-purpose', 'description': 'code-review: scope',
-                 'toolUseId': 'launch-one', 'permissionMode': 'bypassPermissions', 'spawnDepth': 1, 'model': 'test-model'},
-        'entries': [entry('user', '435', child_prompt, agentId='agent-one', isSidechain=True),
-            entry('assistant', '463', [{'type': 'tool_use', 'id': 'scope-output', 'name': 'StructuredOutput', 'input': output}], agentId='agent-one', parentUuid='user-435', isSidechain=True),
-            entry('user', '464', [{'type': 'tool_result', 'tool_use_id': 'scope-output', 'content': 'Structured output provided successfully'}], agentId='agent-one', parentUuid='assistant-463', sourceToolAssistantUUID='assistant-463', isSidechain=True)]}]
-    params = {'selectedAgentType': 'general-purpose', 'permissionMode': 'bypassPermissions', 'toolUseId': 'launch-one', 'spawnDepth': 1, 'isAsync': True, 'model': 'test-model'}
-    log = ('2026-10-07T20:41:01.415Z [DEBUG] workflow_worker_start task=task-one run=wf_one phase=Scope logical=scope agent=scope attempt=0 worker=0\n'
-        '2026-10-07T20:41:01.436Z [DEBUG] AgentTool launch params ' + json.dumps(params) + '\n'
-        '2026-10-07T20:41:01.439Z [DEBUG] [runAgent] agentId=agent-one, agentType=general-purpose, model=test-model, tools=StructuredOutput\n'
-        '2026-10-07T20:41:01.483Z [DEBUG] workflow_worker_terminal task=task-one run=wf_one phase=Scope logical=scope agent=scope attempt=0 worker=0 status=completed\n')
-    wire_input = [
-        {'type': 'message', 'role': 'user', 'content': [{'type': 'input_text', 'text': 'deferred tool names'}]},
-        {'type': 'message', 'role': 'user', 'content': [{'type': 'input_text', 'text': 'bounded context'}, {'type': 'input_text', 'text': child_prompt}]},
-    ]
-    wire = [{'sequence': index + 3, 'method': 'POST', 'path': '/v1/responses',
-        'authorization': {'present': True, 'matches_dummy': True},
-        'headers': {'session-id': 'session-one', 'x-claude-code-session-id': 'session-one', 'thread-id': 'agent-one'},
-        'response_kind': kind,
-        'body': {'input': copy.deepcopy(wire_input), 'tools': [{'type': 'function', 'name': 'StructuredOutput', 'parameters': schema, 'strict': False}]}}
-        for index, kind in enumerate(('code-review-scope-output', 'code-review-scope-completed'))]
-    wire[1]['body']['input'].extend([
-        {'type': 'function_call', 'name': 'StructuredOutput', 'id': 'scope-output', 'call_id': 'scope-output', 'arguments': json.dumps(output)},
-        {'type': 'function_call_output', 'call_id': 'scope-output', 'output': 'Structured output provided successfully'},
-    ])
-    parent_input = [
-        {'type': 'function_call', 'name': 'WorkflowTool', 'id': 'launch-one',
-         'call_id': 'launch-one', 'arguments': json.dumps({'action': 'run', 'selector': 'code-review', 'runArgs': args})},
-        {'type': 'function_call_output', 'call_id': 'launch-one',
-         'output': parents[0]['entries'][1]['message']['content'][0]['content']},
-    ]
-    for sequence, kind, items in ((1, 'code-review-launch', []),
-                                  (2, 'code-review-parent-completed', parent_input),
-                                  (5, 'code-review-notification-completed', [*parent_input,
-                                      {'type': 'message', 'role': 'user', 'content': [{'type': 'input_text', 'text': notification}]}])):
-        wire.append({'sequence': sequence, 'method': 'POST', 'path': '/v1/responses',
-            'authorization': {'present': True, 'matches_dummy': True},
-            'headers': {'session-id': 'session-one', 'x-claude-code-session-id': 'session-one', 'thread-id': 'session-one'},
-            'response_kind': kind, 'body': {'input': copy.deepcopy(items)}})
-    inputs = {'run_args': args, 'task_id': 'task-one', 'run_id': 'wf_one', 'artifact': artifact,
-              'parents': parents, 'children': children, 'log': log, 'wire': wire}
-    return inputs
-
-
-def test_retained_code_review_scope_uses_same_run_native_identity():
-    import copy
-    module = load_driver()
-    inputs = _code_review_scope_fixture(module)
-    log = inputs['log']
-    child_prompt = inputs['children'][0]['entries'][0]['message']['content']
-    gate = object.__new__(module.BinaryGate)
-    assert gate.agent_ids(log) == []
-    proof = module.code_review_scope_identity(**inputs)
-    assert proof['complete'] and proof['agent_ids'] == ['agent-one'], proof
-    mutations = [
-        lambda x: x['wire'][1]['headers'].update({'session-id': 'foreign-session'}),
-        lambda x: x['wire'][1]['headers'].update({'thread-id': 'foreign-agent'}),
-        lambda x: x['wire'][1]['authorization'].update(matches_dummy=False),
-        lambda x: x['wire'][1]['body']['input'][1]['content'][1].update(text='foreign prompt'),
-        lambda x: x['wire'][1]['body']['tools'][0].update(parameters={}),
-        lambda x: x['wire'][1]['body']['input'][2].update(arguments='{"files":[]}'),
-        lambda x: x['wire'][1]['body']['input'][3].update(call_id='foreign-output'),
-        lambda x: x['wire'][1]['body']['input'][3].update(output='Structured output failed'),
-        lambda x: x['wire'].append(copy.deepcopy(x['wire'][1])),
-        lambda x: x.update(task_id='foreign-task'),
-        lambda x: x.update(run_id='wf_foreign'),
-        lambda x: x['parents'][0].update(session_id='foreign-session'),
-        lambda x: x['parents'][0]['entries'][1]['message']['content'][0].update(is_error=True),
-        lambda x: x['children'][0].update(session_id='foreign-session'),
-        lambda x: x['children'][0]['meta'].update(toolUseId='foreign-launch'),
-        lambda x: x['children'][0]['meta'].update(description='unrelated worker'),
-        lambda x: x['children'][0]['entries'][0]['message'].update(content=child_prompt + 'unrequested instructions'),
-        lambda x: x['children'][0]['entries'][1].update(agentId='foreign-agent'),
-        lambda x: x['children'][0]['entries'][2]['message']['content'][0].update(is_error=True),
-        lambda x: x['children'][0]['entries'].pop(),
-        lambda x: x['children'][0]['entries'][1].update(timestamp='2026-10-07T20:41:02.463Z'),
-        lambda x: x['artifact']['resumeCacheEntries'][0].update(result={'files': []}),
-        lambda x: x['artifact']['results'][0].update(status='failed'),
-        lambda x: x['artifact']['results'].append(copy.deepcopy(x['artifact']['results'][0])),
-        lambda x: x['children'].append(copy.deepcopy(x['children'][0])),
-        lambda x: x.update(log=log.replace('attempt=0', 'attempt=1')),
-        lambda x: x.update(log=log.replace('status=completed', 'status=failed')),
-        lambda x: x.update(log=log.replace('agentId=agent-one', 'agentId=unrelated-agent')),
-        lambda x: x['parents'][0]['entries'].append(copy.deepcopy(x['parents'][0]['entries'][2])),
-    ]
-    for index, mutate in enumerate(mutations):
-        changed = copy.deepcopy(inputs)
-        mutate(changed)
-        rejected = module.code_review_scope_identity(**changed)
-        assert not rejected['complete'], (index, rejected)
-    foreign_foreground = {**inputs, 'log': log + '[AgentLifecycle] foreground_registered agent_id=foreign-agent task_id=foreign-task\n'}
-    assert module.code_review_scope_identity(**foreign_foreground)['agent_ids'] == ['agent-one']
-
-
-def _materialize_code_review_scope(module, inputs, root):
-    run, runtime = root / 'code-review-case', root / 'workflow-runs'
+def _code_review_fork_fixture(module, root):
+    run = root / 'code-review-case'
     run.mkdir()
-    (runtime / 'wf_one').mkdir(parents=True)
-    artifact = json.dumps(inputs['artifact']).encode()
-    (runtime / 'wf_one/session.json').write_bytes(artifact)
-    (runtime / 'task-one.json').write_bytes(artifact)
-    (run / 'run-metadata.json').write_text(json.dumps({'driver_run': 'unit-1', 'source_run': run.name, 'label': 'code-review', 'binary_sha256': 'a' * 64, 'target': 'owned-session:0.0', 'evidence_dir': str(run.resolve())}))
-    (run / 'pane-target.txt').write_text('owned-session:0.0\n')
-    prompt = '/code-review ' + inputs['run_args']
-    (run / 'input-code-review.txt').write_bytes(b'\x1b[200~' + prompt.encode() + b'\x1b[201~')
-    (run / 'debug.log').write_text(inputs['log'])
-    (run / 'mock-openai-requests.json').write_text(json.dumps(inputs['wire']))
-    project = run / 'config/projects/owned-project'
-    child_dir = project / 'session-one/subagents'
-    child_dir.mkdir(parents=True)
-    (project / 'session-one.jsonl').write_text(''.join(json.dumps(entry) + '\n' for entry in inputs['parents'][0]['entries']))
-    meta = child_dir / 'agent-agent-one.meta.json'
-    meta.write_text(json.dumps(inputs['children'][0]['meta']))
-    transcript = child_dir / 'agent-agent-one.jsonl'
-    transcript.write_text(''.join(json.dumps(entry) + '\n' for entry in inputs['children'][0]['entries']))
+    (run / 'run-metadata.json').write_text(json.dumps({
+        'driver_run': 'unit-1', 'source_run': run.name, 'label': 'code-review',
+        'binary_sha256': 'a' * 64, 'target': 'owned-session:0.0',
+        'evidence_dir': str(run.resolve())}))
+    prompt = module.code_review_prompt('a' * 40)
+    target = prompt.removeprefix('/code-review high ')
+    review = {
+        'sequence': 1, 'method': 'POST', 'path': '/v1/responses',
+        'headers': {'session-id': 'parent-session', 'thread-id': 'fork-thread'},
+        'authorization': {'present': True, 'matches_dummy': True},
+        'body': {
+            'reasoning': {'effort': 'high'},
+            'input': [{'role': 'user', 'content': [{
+                'type': 'input_text',
+                'text': f'Review target: `{target}`\n\n' + module.CODE_REVIEW_CELL_TAG,
+            }]}],
+        },
+        'response_kind': 'code-review-findings',
+    }
+    notification = (
+        '<task-notification>\n<task-id>a1</task-id>\n<status>completed</status>\n'
+        f'<summary>Agent "{prompt}" completed</summary>\n'
+        f'<result>{json.dumps(module.CODE_REVIEW_FINDINGS)}</result>\n</task-notification>')
+    notified = {
+        **review, 'sequence': 2, 'headers': {'session-id': 'parent-session'},
+        'body': {'input': [{'role': 'user', 'content': [{'type': 'input_text', 'text': notification}]}]},
+        'response_kind': 'code-review-notified',
+    }
+    (run / 'mock-openai-requests.json').write_text(json.dumps([review, notified]))
+    write_transcript(run / 'config/projects/owned-project/session-one.jsonl', [{
+        'type': 'user',
+        'message': {'role': 'user', 'content': [{'type': 'text', 'text': notification}]},
+    }])
+    (run / 'config/.claude.json').write_text(json.dumps({'codeReviewLastEffort': 'high'}))
+    terminal = (f'❯ {prompt}\n  ⎿  Running in the background as @code-review\n'
+                '● RELEASE_CODE_REVIEW_NOTIFIED\n❯ \n')
+    (run / '05-terminal-pane.txt').write_text(terminal)
     gate = object.__new__(module.BinaryGate)
     gate.stamp, gate.pid, gate.manifest = 'unit', 1, {'binary_sha256': 'a' * 64}
-    gate.workflow_runs, gate.workflow_task_ids, gate.workflow_run_ids = runtime, {'task-one'}, {'wf_one'}
     gate.registered_runs = {str(run.resolve()): (run / 'run-metadata.json').read_text()}
+    gate.mock_servers = {}
     server = module.MockOpenAIServer(run, 'code-review')
-    server.requests = json.loads(json.dumps(inputs['wire']))
-    server.stop()
+    server.requests = [review, notified]
     gate.code_review_mock_servers = {run.name: server}
-    return gate, run, runtime, prompt, meta, transcript
+    return gate, run, prompt, terminal
 
 
-def test_retained_code_review_scope_evidence_is_owned_and_registered():
+def test_retained_code_review_runs_as_forked_skill():
     module = load_driver()
-    inputs = _code_review_scope_fixture(module)
-    with tempfile.TemporaryDirectory(prefix='owned-workflow-proof-') as directory:
-        gate, run, runtime, prompt, meta, transcript = _materialize_code_review_scope(module, inputs, Path(directory))
-        proof = gate.code_review_scope_identity_proof(run, 'task-one', 'wf_one', prompt)
-        assert proof['complete'] and proof['agent_ids'] == ['agent-one'], proof
-        assert all(module.is_relative_to(path.resolve(), run.resolve()) for path in proof['evidence_paths'])
-        assert proof['evidence_sha256'] == {
-            str(path.resolve()): module.hashlib.sha256(path.read_bytes()).hexdigest()
-            for path in proof['evidence_paths']}
-        assertion = gate.required_assertion(run, 'code-review-native-scope-identity', 'Scope', 'strict native identity',
-            proof['evidence_paths'], passed=proof['complete'], evidence_sha256=proof['evidence_sha256'])
-        assert module.assertion_is_valid(assertion, {run.name: run.resolve()})
-    for scenario in ('foreign-binary', 'foreign-pane', 'foreign-input', 'unregistered', 'different-mirror', 'symlink-meta', 'malformed-child', 'missing-child',
-                     'changed-metadata', 'whole-old-wire-replay', 'different-live-parent-receipt', 'unregistered-live-server',
-                     'provider-stop-incomplete', 'provider-handler-active'):
-        with tempfile.TemporaryDirectory(prefix='invalid-workflow-proof-') as directory:
-            gate, run, runtime, prompt, meta, transcript = _materialize_code_review_scope(module, inputs, Path(directory))
-            if scenario == 'foreign-binary':
-                data = json.loads((run / 'run-metadata.json').read_text()); data['binary_sha256'] = 'b' * 64
-                (run / 'run-metadata.json').write_text(json.dumps(data))
-            elif scenario == 'foreign-pane':
-                (run / 'pane-target.txt').write_text('foreign-session:0.0\n')
-            elif scenario == 'foreign-input':
-                (run / 'input-code-review.txt').write_bytes(b'\x1b[200~unrequested input\x1b[201~')
-            elif scenario == 'unregistered':
-                gate.workflow_run_ids.clear()
-            elif scenario == 'different-mirror':
-                (runtime / 'task-one.json').write_text('{}')
-            elif scenario == 'symlink-meta':
-                outside = Path(directory) / 'foreign-meta.json'; outside.write_bytes(meta.read_bytes())
-                meta.unlink(); meta.symlink_to(outside)
-            elif scenario == 'malformed-child':
-                transcript.write_text('{not-json}\n')
-            elif scenario == 'missing-child':
-                transcript.unlink()
-            elif scenario == 'changed-metadata':
-                data = json.loads((run / 'run-metadata.json').read_text()); data['config'] = 'foreign-config'
-                (run / 'run-metadata.json').write_text(json.dumps(data))
-            elif scenario == 'whole-old-wire-replay':
-                for request in gate.code_review_mock_servers[run.name].requests:
-                    request['headers']['session-id'] = request['headers']['x-claude-code-session-id'] = 'current-live-session'
-            elif scenario == 'different-live-parent-receipt':
-                request = next(x for x in gate.code_review_mock_servers[run.name].requests if x['response_kind'] == 'code-review-parent-completed')
-                request['body']['input'][1]['output'] = 'Workflow launched in background. Task ID: new-live-task\nRun ID: wf_new\n'
-                (run / 'mock-openai-requests.json').write_text(json.dumps(gate.code_review_mock_servers[run.name].snapshot()))
-            elif scenario == 'unregistered-live-server':
-                gate.code_review_mock_servers.clear()
-            elif scenario == 'provider-stop-incomplete':
-                gate.code_review_mock_servers[run.name].stop_result['stopped'] = False
-            elif scenario == 'provider-handler-active':
-                gate.code_review_mock_servers[run.name].stop_result['active_handlers'] = ['owned-handler']
-            proof = gate.code_review_scope_identity_proof(run, 'task-one', 'wf_one', prompt)
-            assert proof['complete'] is False and proof['agent_ids'] == [], (scenario, proof)
-            assert (run / 'workflow-agent-identity-proof.json').is_file()
+    assert module.code_review_prompt('base') == '/code-review high base...HEAD'
+
+    def mutate_request(change):
+        def apply(gate, run):
+            change(gate.code_review_mock_servers[run.name].requests[0])
+        return apply
+
+    def write_file(name, text):
+        def apply(gate, run):
+            (run / name).write_text(text)
+        return apply
+
+    for scenario, mutate, failed in (
+        ('valid', None, set()),
+        ('no request', lambda gate, run: gate.code_review_mock_servers[run.name].requests.clear(),
+         {'one-forked-review-request', 'official-cell-prompt', 'forked-agent-thread',
+          'typed-effort-on-wire'}),
+        ('other cell', mutate_request(lambda request: request['body']['input'][0]['content'][0].update(
+            text='Review target: `x`\n\nmedium cell')), {'official-cell-prompt'}),
+        ('main thread', mutate_request(lambda request: request['headers'].update(
+            {'thread-id': 'parent-session'})), {'forked-agent-thread'}),
+        ('session effort', mutate_request(lambda request: request['body'].update(
+            reasoning={'effort': 'xhigh'})), {'typed-effort-on-wire'}),
+        ('workflow', write_file('config/projects/owned-project/session-two.jsonl',
+                                json.dumps({'type': 'user', 'message': {
+                                    'role': 'user', 'content': 'Workflow launched in background. Task ID: w1'}}) + '\n'),
+         {'no-workflow-launch'}),
+        ('no notification', write_file('config/projects/owned-project/session-one.jsonl', ''),
+         {'background-notification'}),
+        ('not persisted', write_file('config/.claude.json', '{}'), {'typed-level-persisted'}),
+    ):
+        with tempfile.TemporaryDirectory(prefix='code-review-fork-') as directory:
+            gate, run, prompt, terminal = _code_review_fork_fixture(module, Path(directory))
+            if mutate is not None:
+                mutate(gate, run)
+            checks, path = gate.code_review_forked_result(run, prompt, terminal)
+            assert {name for name, value in checks.items() if not value} == failed, (scenario, checks)
+            assert json.loads(path.read_text())['checks'] == checks
+            if scenario == 'valid':
+                assert gate.code_review_forked_result(run, prompt, '❯ \n')[0]['pane-result'] is False
 
 
-def test_retained_code_review_scope_rejects_missing_uuid_and_forged_notification():
-    import copy
+def test_retained_code_review_final_coverage_requires_both_assertions():
     module = load_driver()
-    inputs = _code_review_scope_fixture(module)
-    def missing_chain(value):
-        for entry in value['children'][0]['entries']:
-            entry.pop('uuid', None); entry.pop('parentUuid', None)
-    def note(value, change):
-        entry = value['parents'][0]['entries'][2]
-        entry['message']['content'] = change(entry['message']['content'])
-        request = next(x for x in value['wire'] if x['response_kind'] == 'code-review-notification-completed')
-        request['body']['input'][-1]['content'][0]['text'] = entry['message']['content']
-    mutations = [
-        ('missing child UUID chain', missing_chain),
-        ('missing parent UUID', lambda x: x['parents'][0]['entries'][1].pop('uuid')),
-        ('child is not sidechain', lambda x: x['children'][0]['entries'][1].update(isSidechain=False)),
-        ('foreign source assistant UUID', lambda x: x['children'][0]['entries'][2].update(sourceToolAssistantUUID='foreign-assistant')),
-        ('duplicate core tag', lambda x: note(x, lambda s: s.replace('<status>completed</status>', '<status>failed</status><status>completed</status>'))),
-        ('correct task hidden in result', lambda x: note(x, lambda s: s.replace('<task-id>task-one</task-id>', '<task-id>foreign-task</task-id>').replace('<result>', '<result><task-id>task-one</task-id>'))),
-        ('unclosed notification', lambda x: note(x, lambda s: s.removesuffix('</task-notification>'))),
-        ('wrong final result', lambda x: note(x, lambda s: s.replace('No changes found to review.', 'Different run final output'))),
-        ('wrong usage', lambda x: note(x, lambda s: s.replace('<total_tokens>2</total_tokens>', '<total_tokens>200</total_tokens>'))),
-        ('missing usage', lambda x: note(x, lambda s: s.replace('<usage><total_tokens>2</total_tokens><tool_uses>1</tool_uses><duration_ms>236</duration_ms></usage>', ''))),
-        ('live parent receipt belongs to another task', lambda x: next(q for q in x['wire'] if q['response_kind'] == 'code-review-parent-completed')['body']['input'][1].update(output='Workflow launched in background. Task ID: foreign-task\nRun ID: wf_other\n')),
-    ]
-    accepted = []
-    for name, mutate in mutations:
-        value = copy.deepcopy(inputs); mutate(value)
-        proof = module.code_review_scope_identity(**value)
-        if proof['complete']:
-            accepted.append(name)
-    assert not accepted, accepted
-
-
-def test_retained_code_review_scope_snapshot_hashes_survive_source_append():
-    import hashlib
-    module = load_driver()
-    inputs = _code_review_scope_fixture(module)
-    with tempfile.TemporaryDirectory(prefix='workflow-immutable-proof-') as directory:
-        gate, run, runtime, prompt, meta, transcript = _materialize_code_review_scope(module, inputs, Path(directory))
-        proof = gate.code_review_scope_identity_proof(run, 'task-one', 'wf_one', prompt)
-        assert proof['complete'], proof
-        with (run / 'debug.log').open('a') as stream:
-            stream.write('Final native process cleanup\n')
-        parent = run / 'config/projects/owned-project/session-one.jsonl'
-        with parent.open('a') as stream:
-            stream.write(json.dumps({'type': 'system', 'subtype': 'turn_duration'}) + '\n')
-        mismatched = [path for path, digest in proof['source_hashes'].items()
-                      if hashlib.sha256(Path(path).read_bytes()).hexdigest() != digest]
-        assert not mismatched, mismatched
-        assert all(module.is_relative_to(Path(path).resolve(), (run / 'workflow-identity-inputs').resolve())
-                   for path in proof['source_hashes'])
-
-
-def test_retained_code_review_scope_wire_survives_provider_shutdown():
-    module = load_driver()
-    inputs = _code_review_scope_fixture(module)
-    with tempfile.TemporaryDirectory(prefix='workflow-closed-wire-') as directory:
-        gate, run, runtime, prompt, meta, transcript = _materialize_code_review_scope(module, inputs, Path(directory))
-        gate.mock_servers = {}
-        assertion = gate.workflow_mock_wire(run, 'code-review')
-        assert assertion['validation_verdict'] == 'passed', json.loads((run / 'workflow-mock-wire.json').read_text())
-        gate.code_review_mock_servers.clear()
-        assert gate.workflow_mock_wire(run, 'code-review')['validation_verdict'] == 'failed'
-
-
-def test_retained_code_review_scope_accepts_fast_child_before_parent_receipt():
-    module = load_driver()
-    inputs = _code_review_scope_fixture(module)
-    inputs['parents'][0]['entries'][1]['timestamp'] = '2026-10-07T20:41:01.495Z'
-    for request in inputs['wire']:
-        request['sequence'] = {'code-review-launch': 1, 'code-review-scope-output': 2,
-            'code-review-scope-completed': 3, 'code-review-parent-completed': 4,
-            'code-review-notification-completed': 5}[request['response_kind']]
-    proof = module.code_review_scope_identity(**inputs)
-    assert proof['complete'], proof
+    failures = []
+    for scenario in ('valid', 'missing-forked', 'renamed-forked', 'duplicate-forked',
+                     'missing-wire', 'failed-forked'):
+        with tempfile.TemporaryDirectory(prefix='code-review-coverage-') as directory:
+            gate, run, prompt, terminal = _code_review_fork_fixture(module, Path(directory))
+            checks, path = gate.code_review_forked_result(run, prompt, terminal)
+            forked = gate.required_assertion(
+                run, 'code-review-forked-result', 'code-review forked skill', 'forked review',
+                [path, run / '05-terminal-pane.txt', run / 'mock-openai-requests.json'],
+                passed=scenario != 'failed-forked' and all(checks.values()))
+            wire = gate.workflow_mock_wire(run, 'code-review')
+            assert wire['validation_verdict'] == 'passed'
+            row = {'label': 'code-review', 'evidence_dir': str(run),
+                   'driver_run': f'{gate.stamp}-{gate.pid}', 'validation_verdict': 'passed',
+                   'assertions': [forked, wire]}
+            if scenario == 'missing-forked':
+                row['assertions'].remove(forked)
+            elif scenario == 'renamed-forked':
+                forked['assertion_id'] = 'unrequested-proof'
+            elif scenario == 'duplicate-forked':
+                row['assertions'].append(dict(forked))
+            elif scenario == 'missing-wire':
+                row['assertions'].remove(wire)
+            coverage = module.validate_required_target_results(
+                {'code-review'}, [row], gate.registered_runs)
+            if coverage['passed'] != (scenario == 'valid'):
+                failures.append({'scenario': scenario, 'coverage': coverage})
+    assert not failures, failures
 
 
 def test_retained_mock_provider_stop_waits_for_owned_request_handler():
@@ -7288,92 +6575,6 @@ def test_retained_mock_provider_stop_waits_for_owned_request_handler():
         assert not caller.is_alive() and not stopper.is_alive(), observed
         assert 'request_error' not in observed and 'OWNED_REQUEST_COMPLETE' in observed['body'], observed
         assert observed['cleanup']['stopped'] is True and observed['cleanup']['active_handlers'] == [], observed
-
-def test_retained_scope_snapshot_hashes_rechecked_at_final_coverage():
-    module = load_driver()
-    failures = []
-    for scenario in ('valid', 'snapshot-append', 'snapshot-replace', 'proof-change',
-                     'missing-hashes', 'incomplete-hashes', 'wrong-hash', 'snapshot-symlink',
-                     'coupled-snapshot-omission', 'missing-proof', 'foreign-path-read',
-                     'missing-scope-assertion', 'renamed-scope-assertion', 'duplicate-scope-assertion',
-                     'missing-wire-assertion', 'missing-lifecycle-assertion'):
-        with tempfile.TemporaryDirectory(prefix='scope-final-seal-') as directory:
-            gate, run, _, prompt, _, _ = _materialize_code_review_scope(
-                module, _code_review_scope_fixture(module), Path(directory))
-            proof = gate.code_review_scope_identity_proof(run, 'task-one', 'wf_one', prompt)
-            assert proof['complete'], proof
-            paths = proof['evidence_paths']
-            assertion = gate.required_assertion(run, 'code-review-native-scope-identity',
-                'Scope', 'native identity remains sealed at final coverage', paths, passed=True)
-            # Declare original bytes explicitly so the RED exercises final aggregation,
-            # rather than merely failing because an old helper lacks a new field.
-            assertion['evidence_sha256'] = {
-                str(path.resolve()): module.hashlib.sha256(path.read_bytes()).hexdigest()
-                for path in paths}
-            gate.mock_servers = {}
-            wire_assertion = gate.workflow_mock_wire(run, 'code-review')
-            assert wire_assertion['validation_verdict'] == 'passed'
-            lifecycle_assertion = gate.required_assertion(run, 'code-review-workflow-lifecycle',
-                'Scope fixture lifecycle', 'unit fixture retains the independent lifecycle assertion',
-                [run / 'debug.log'], passed=True)
-            row = {'label': 'code-review', 'evidence_dir': str(run),
-                   'driver_run': f'{gate.stamp}-{gate.pid}', 'validation_verdict': 'passed',
-                   'assertions': [assertion, wire_assertion, lifecycle_assertion]}
-            snapshot = next(Path(path) for path in proof['source_hashes'])
-            if scenario == 'snapshot-append':
-                with snapshot.open('ab') as stream:
-                    stream.write(b'\nchanged after proof\n')
-            elif scenario == 'snapshot-replace':
-                snapshot.write_bytes(b'nonempty replacement')
-            elif scenario == 'proof-change':
-                paths[0].write_text('{"complete":true,"foreign":true}\n')
-            elif scenario == 'missing-hashes':
-                assertion.pop('evidence_sha256')
-            elif scenario == 'incomplete-hashes':
-                assertion['evidence_sha256'].pop(str(snapshot.resolve()))
-            elif scenario == 'wrong-hash':
-                assertion['evidence_sha256'][str(snapshot.resolve())] = '0' * 64
-            elif scenario == 'snapshot-symlink':
-                replacement = run / 'replacement.json'
-                replacement.write_bytes(snapshot.read_bytes())
-                snapshot.unlink(); snapshot.symlink_to(replacement)
-            elif scenario in ('coupled-snapshot-omission', 'missing-proof'):
-                omitted = snapshot if scenario == 'coupled-snapshot-omission' else paths[0]
-                assertion['required_evidence'].remove(str(omitted))
-                assertion['observed_evidence_paths'].remove(str(omitted.resolve()))
-                assertion['evidence_sha256'].pop(str(omitted.resolve()))
-                if scenario == 'coupled-snapshot-omission':
-                    snapshot.write_bytes(b'changed and omitted from the caller assertion')
-            elif scenario == 'foreign-path-read':
-                outside = Path(directory) / 'sibling.json'
-                outside.write_bytes(b'owned test sibling outside this registered case')
-                assertion['required_evidence'].append(str(outside))
-                assertion['observed_evidence_paths'].append(str(outside.resolve()))
-                assertion['evidence_sha256'][str(outside.resolve())] = module.hashlib.sha256(outside.read_bytes()).hexdigest()
-            elif scenario == 'missing-scope-assertion':
-                row['assertions'].remove(assertion)
-            elif scenario == 'renamed-scope-assertion':
-                assertion['assertion_id'] = 'unrequested-proof'
-            elif scenario == 'duplicate-scope-assertion':
-                row['assertions'].append(dict(assertion))
-            elif scenario == 'missing-wire-assertion':
-                row['assertions'].remove(wire_assertion)
-            elif scenario == 'missing-lifecycle-assertion':
-                row['assertions'].remove(lifecycle_assertion)
-            reads = []
-            original_read = module.Path.read_bytes
-            def checked_read(path):
-                if scenario == 'foreign-path-read' and path.resolve() == outside.resolve():
-                    reads.append(str(path))
-                return original_read(path)
-            with patch.object(module.Path, 'read_bytes', checked_read):
-                coverage = module.validate_required_target_results(
-                    {'code-review'}, [row], gate.registered_runs)
-            if coverage['passed'] != (scenario == 'valid'):
-                failures.append({'scenario': scenario, 'coverage': coverage})
-            if reads:
-                failures.append({'scenario': scenario, 'read_before_ownership_check': reads})
-    assert not failures, failures
 
 def test_retained_terminal_cleanup_requires_owned_socket_release():
     module = load_driver()

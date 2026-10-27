@@ -485,6 +485,9 @@ export type GlobalConfig = {
 
   // Skill usage tracking for autocomplete ranking
   skillUsage?: Record<string, { usageCount: number; lastUsedAt: number }>
+  // /code-review: the effort level and --max-findings the user typed last
+  codeReviewLastEffort?: string
+  codeReviewLastMaxFindings?: number | 'all'
   // Esonhugh-Marketplace auto-install tracking (this fork's startup check)
   esonhughMarketplaceAutoInstallAttempted?: boolean
   esonhughMarketplaceAutoInstalled?: boolean
