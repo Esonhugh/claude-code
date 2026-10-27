@@ -568,6 +568,7 @@ async function executeUserInput(params: ExecuteUserInputParams): Promise<void> {
                     cmd.origin?.kind === 'channel' ? { kind: 'channel', server: cmd.origin.server } :
                     cmd.origin?.kind === 'plugin' ? cmd.origin :
                     cmd.origin?.kind === 'human' ? { kind: 'composer' } :
+                    cmd.origin?.kind === 'peer' && cmd.origin.senderTaskId ? { kind: 'peer', teammate: cmd.origin.from } :
                     cmd.origin ? { kind: cmd.origin.kind } :
                     cmd.mode === 'task-notification' ? { kind: 'task-notification' } :
                     { kind: 'unclassified' },
