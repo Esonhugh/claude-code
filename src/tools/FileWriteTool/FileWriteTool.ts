@@ -35,6 +35,7 @@ import { lazySchema } from '../../utils/lazySchema.js'
 import { logError } from '../../utils/log.js'
 import { expandPath } from '../../utils/path.js'
 import {
+  canWriteWithoutRead,
   checkWritePermissionForTool,
   matchingRuleForInput,
 } from '../../utils/permissions/filesystem.js'
@@ -197,6 +198,13 @@ export const FileWriteTool = buildTool({
 
     const readTimestamp = toolUseContext.readFileState.get(fullFilePath)
     if (!readTimestamp || readTimestamp.isPartialView) {
+      if (
+        !readTimestamp &&
+        !fullFilePath.endsWith('.ipynb') &&
+        canWriteWithoutRead(FileWriteTool, { file_path, content }, toolUseContext)
+      ) {
+        return { result: true }
+      }
       return {
         result: false,
         message:
@@ -222,10 +230,12 @@ export const FileWriteTool = buildTool({
   },
   async call(
     { file_path, content },
-    { readFileState, updateFileHistoryState, dynamicSkillDirTriggers },
+    context,
     _,
     parentMessage,
   ) {
+    const { readFileState, updateFileHistoryState, dynamicSkillDirTriggers } =
+      context
     const fullFilePath = expandPath(file_path)
     const dir = dirname(fullFilePath)
 
@@ -279,7 +289,14 @@ export const FileWriteTool = buildTool({
     if (meta !== null) {
       const lastWriteTime = getFileModificationTime(fullFilePath)
       const lastRead = readFileState.get(fullFilePath)
-      if (!lastRead || lastWriteTime > lastRead.timestamp) {
+      const unreadButAllowed =
+        !lastRead &&
+        !fullFilePath.endsWith('.ipynb') &&
+        canWriteWithoutRead(FileWriteTool, { file_path, content }, context)
+      if (
+        !unreadButAllowed &&
+        (!lastRead || lastWriteTime > lastRead.timestamp)
+      ) {
         // Timestamp indicates modification, but on Windows timestamps can change
         // without content changes (cloud sync, antivirus, etc.). For full reads,
         // compare content as a fallback to avoid false positives.

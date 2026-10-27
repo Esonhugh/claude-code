@@ -1005,7 +1005,7 @@ test.each([false, true])(
       )
       expect(JSON.stringify(initial.messages)).toContain(
         deltaEnabled
-          ? 'The following deferred tools are now available via ToolSearch:\\nLocalLookup'
+          ? 'to load tool schemas before calling them:\\nLocalLookup'
           : '<available-deferred-tools>\\nLocalLookup\\n</available-deferred-tools>',
       )
       expect(JSON.stringify(initial.messages)).not.toContain(pinned.name)
