@@ -22,6 +22,19 @@ describe('SSH resume hint context', () => {
     )
   })
 
+  test('keeps --local for local SSH test sessions', () => {
+    registerSSHResumeHintContext({
+      target: 'localhost',
+      remoteCwd: '/work',
+      remoteSessionId: '11111111-1111-4111-8111-111111111111',
+      local: true,
+    })
+
+    expect(getSSHResumeCommand()).toBe(
+      'claude ssh --local localhost /work --resume 11111111-1111-4111-8111-111111111111',
+    )
+  })
+
   test('an older cleanup cannot clear a newer SSH context', () => {
     const clearFirst = registerSSHResumeHintContext({
       target: 'first',
