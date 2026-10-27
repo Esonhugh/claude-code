@@ -1,3 +1,4 @@
+import figures from 'figures'
 import * as React from 'react'
 import { memo, type ReactNode } from 'react'
 import { useTerminalSize } from '../../hooks/useTerminalSize.js'
@@ -26,6 +27,9 @@ export type SuggestionType =
   | 'none'
 
 export const OVERLAY_MAX_ITEMS = 5
+
+// Every row reserves a two-column gutter so the selected row can carry a pointer.
+const POINTER_WIDTH = 2
 
 /**
  * Get the icon for a suggestion based on its type
@@ -62,6 +66,7 @@ const SuggestionItemRow = memo(function SuggestionItemRow({
 }): ReactNode {
   const columns = useTerminalSize().columns
   const isUnified = isUnifiedSuggestion(item.id)
+  const pointer = isSelected ? `${figures.pointer} ` : '  '
 
   // For unified suggestions (file, mcp-resource, agent), use single-line layout with icon
   if (isUnified) {
@@ -90,7 +95,12 @@ const SuggestionItemRow = memo(function SuggestionItemRow({
         ? Math.min(20, stringWidth(item.description))
         : 0
       const maxPathLength =
-        columns - iconWidth - paddingWidth - separatorWidth - descReserve
+        columns -
+        POINTER_WIDTH -
+        iconWidth -
+        paddingWidth -
+        separatorWidth -
+        descReserve
       displayText = truncatePathMiddle(item.displayText, maxPathLength)
     } else if (isMcpResource) {
       const maxDisplayTextLength = 30
@@ -101,6 +111,7 @@ const SuggestionItemRow = memo(function SuggestionItemRow({
 
     const availableWidth =
       columns -
+      POINTER_WIDTH -
       iconWidth -
       stringWidth(displayText) -
       separatorWidth -
@@ -114,9 +125,9 @@ const SuggestionItemRow = memo(function SuggestionItemRow({
         item.description.replace(/\s+/g, ' '),
         maxDescLength,
       )
-      lineContent = `${icon} ${displayText} – ${truncatedDesc}`
+      lineContent = `${pointer}${icon} ${displayText} – ${truncatedDesc}`
     } else {
-      lineContent = `${icon} ${displayText}`
+      lineContent = `${pointer}${icon} ${displayText}`
     }
 
     return (
@@ -150,7 +161,7 @@ const SuggestionItemRow = memo(function SuggestionItemRow({
   const tagWidth = stringWidth(tagText)
   const descriptionWidth = Math.max(
     0,
-    columns - displayTextWidth - tagWidth - 4,
+    columns - POINTER_WIDTH - displayTextWidth - tagWidth - 4,
   )
   // Skill descriptions can contain newlines (e.g. /claude-api's "TRIGGER
   // when:" block). A multi-line row grows the overlay past minHeight; when
@@ -163,6 +174,7 @@ const SuggestionItemRow = memo(function SuggestionItemRow({
   return (
     <Text wrap="truncate">
       <Text color={textColor} dimColor={shouldDim}>
+        {pointer}
         {paddedDisplayText}
       </Text>
       {tagText ? <Text dimColor>{tagText}</Text> : null}
@@ -195,12 +207,13 @@ export function PromptInputFooterSuggestions({
   overlay,
 }: Props): ReactNode {
   const { rows } = useTerminalSize()
-  // Maximum number of suggestions to show at once (leaving space for prompt).
-  // Overlay mode (fullscreen) uses a fixed 5 — the floating box sits over
-  // the ScrollBox, so terminal height isn't the constraint.
+  // Maximum number of suggestions to show at once. Inline (under the prompt)
+  // uses half the terminal, at least 6 rows, leaving 3 rows for the prompt,
+  // like official 2.1.311. Overlay mode (fullscreen) uses a fixed 5 — the
+  // floating box sits over the ScrollBox, so terminal height isn't the constraint.
   const maxVisibleItems = overlay
     ? OVERLAY_MAX_ITEMS
-    : Math.min(6, Math.max(1, rows - 3))
+    : Math.max(1, Math.min(Math.max(6, Math.floor(rows / 2)), rows - 3))
 
   // No suggestions to display
   if (suggestions.length === 0) {

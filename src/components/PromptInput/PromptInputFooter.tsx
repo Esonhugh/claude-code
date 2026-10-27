@@ -170,7 +170,9 @@ function PromptInputFooter({
         paddingX={2}
         gap={isNarrow ? 0 : 1}
       >
-        <Box flexDirection="column" flexShrink={isNarrow ? 0 : 1}>
+        {/* The mode line keeps its width; a long notification on the right
+            truncates instead of squeezing it. */}
+        <Box flexDirection="column" flexShrink={0}>
           {mode === 'prompt' &&
             !isShort &&
             !exitMessage.show &&

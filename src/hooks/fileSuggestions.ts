@@ -171,7 +171,7 @@ async function mergeUntrackedIntoNormalizedCache(
   normalizedUntracked: string[],
 ): Promise<void> {
   if (normalizedUntracked.length === 0) return
-  if (!fileIndex || cachedTrackedFiles.length === 0) return
+  if (!fileIndex) return
 
   const untrackedDirs = await getDirectoryNamesAsync(normalizedUntracked)
   const allPaths = [

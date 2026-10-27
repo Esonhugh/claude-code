@@ -50,7 +50,7 @@ export function PromptInputFooterRightSide({
   const goalActive = useAppState(s => s.goalStatus.active)
   return (
     <Box
-      flexShrink={0}
+      flexShrink={1}
       flexDirection="column"
       alignItems={isNarrow ? 'flex-start' : 'flex-end'}
     >

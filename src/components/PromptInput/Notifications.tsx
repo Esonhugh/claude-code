@@ -216,7 +216,7 @@ export function Notifications({
       <Box
         flexDirection="column"
         alignItems={isNarrow ? 'flex-start' : 'flex-end'}
-        flexShrink={0}
+        flexShrink={1}
         overflowX="hidden"
       >
         <NotificationContent
