@@ -127,7 +127,7 @@ import { normalizeNameForMCP } from '../mcp/normalization.js'
 import type { MCPServerConnection } from '../mcp/types.js'
 import {
   getLoggingSafeMcpBaseUrl,
-  getMcpServerScopeFromToolName,
+  getMcpServerScopeFromTool,
   isMcpTool,
 } from '../mcp/utils.js'
 import {
@@ -1794,7 +1794,7 @@ async function checkPermissionsAndCallTool(
 
     // Log tool result event for OTLP with tool parameters and decision context
     const mcpServerScope = isMcpTool(tool)
-      ? getMcpServerScopeFromToolName(tool.name)
+      ? getMcpServerScopeFromTool(tool)
       : null
 
     void logOTelEvent('tool_result', {
@@ -2112,7 +2112,7 @@ async function checkPermissionsAndCallTool(
       })
       // Log tool result error event for OTLP with tool parameters and decision context
       const mcpServerScope = isMcpTool(tool)
-        ? getMcpServerScopeFromToolName(tool.name)
+        ? getMcpServerScopeFromTool(tool)
         : null
 
       void logOTelEvent('tool_result', {

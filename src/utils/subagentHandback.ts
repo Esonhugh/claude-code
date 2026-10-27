@@ -58,7 +58,7 @@ type HandbackState = { contract: boolean; bounces: number; delivered?: { report:
 
 const MAX_HANDBACK_BOUNCES = 3
 const states = new Map<string, HandbackState>()
-const reviews = new Map<string, SubagentHandbackReview>()
+const reviews = new Map<string, { agentId: string; review: SubagentHandbackReview }>()
 
 export const SUBAGENT_HANDBACK_ENFORCE_MESSAGE = `[handback-send-enforce] Your report has not been delivered. Call ${SUBAGENT_HANDBACK_TOOL_NAME}({message: <your full report>}) now; the call ends your run.`
 const REMINDER_LEAD = `Your final report is delivered through ${SUBAGENT_HANDBACK_TOOL_NAME}`
@@ -112,15 +112,23 @@ export function takeSubagentHandbackBounce(agentId: string | undefined): boolean
   return true
 }
 
-export function recordSubagentHandbackReview(toolUseID: string, review: SubagentHandbackReview): void {
-  reviews.set(toolUseID, review)
+export function recordSubagentHandbackReview(agentId: string, toolUseID: string, review: SubagentHandbackReview): void {
+  reviews.set(toolUseID, { agentId, review })
 }
 
 export function takeSubagentHandbackReview(toolUseID: string | undefined): SubagentHandbackReview | undefined {
   if (toolUseID === undefined) return undefined
-  const review = reviews.get(toolUseID)
+  const entry = reviews.get(toolUseID)
   reviews.delete(toolUseID)
-  return review
+  return entry?.review
+}
+
+/** Drops an agent's hand-back run and any review its calls never consumed. */
+export function endSubagentHandback(agentId: string): void {
+  states.delete(agentId)
+  for (const [toolUseID, entry] of reviews) {
+    if (entry.agentId === agentId) reviews.delete(toolUseID)
+  }
 }
 
 export function subagentHandbackWarning(review: SubagentHandbackReview): string {
@@ -146,7 +154,7 @@ export function deliverSubagentHandback(agentId: string, report: string, warning
  */
 export function takeSubagentHandbackResult(agentId: string, canContinue: boolean): (SubagentHandback & { handback: SubagentHandbackOutcome }) | undefined {
   const state = states.get(agentId)
-  states.delete(agentId)
+  endSubagentHandback(agentId)
   if (!state?.contract) return undefined
   if (!state.delivered) {
     return {

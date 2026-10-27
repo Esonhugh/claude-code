@@ -248,20 +248,6 @@ export function excludeStalePluginClients(
 }
 
 /**
- * Checks if a tool name belongs to a specific MCP server
- * @param toolName The tool name to check
- * @param serverName The server name to match against
- * @returns True if the tool belongs to the specified server
- */
-export function isToolFromMcpServer(
-  toolName: string,
-  serverName: string,
-): boolean {
-  const info = mcpInfoFromString(toolName)
-  return info?.serverName === serverName
-}
-
-/**
  * Checks if a tool belongs to any MCP server
  * @param tool The tool to check
  * @returns True if the tool is from an MCP server
@@ -473,19 +459,20 @@ export function getProjectMcpServerStatus(
 }
 
 /**
- * Get the scope/settings source for an MCP server from a tool name
- * @param toolName MCP tool name (format: mcp__serverName__toolName)
+ * Get the scope/settings source of an MCP tool's server
+ * @param tool The tool; its mcpInfo names the server, also one whose name contains "__"
  * @returns ConfigScope or null if not an MCP tool or server not found
  */
-export function getMcpServerScopeFromToolName(
-  toolName: string,
-): ConfigScope | null {
-  if (!isMcpTool({ name: toolName } as Tool)) {
+export function getMcpServerScopeFromTool(tool: Tool): ConfigScope | null {
+  if (!isMcpTool(tool)) {
     return null
   }
+  if (tool.mcpInfo?.scope) {
+    return tool.mcpInfo.scope
+  }
 
-  // Extract server name from tool name (format: mcp__serverName__toolName)
-  const mcpInfo = mcpInfoFromString(toolName)
+  // Without mcpInfo, read the server from the name (format: mcp__serverName__toolName)
+  const mcpInfo = mcpInfoFromString(tool.name)
   if (!mcpInfo) {
     return null
   }

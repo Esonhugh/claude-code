@@ -20,8 +20,22 @@ import type {
 function isMcpServerFromProjectOrLocalSettings(
   config: ScopedMcpServerConfig,
 ): boolean {
-  return config.scope === 'project' || config.scope === 'local'
+  return (
+    config.scope === 'project' ||
+    config.scope === 'local' ||
+    config.agentSource === 'projectSettings' ||
+    config.agentSource === 'localSettings'
+  )
 }
+
+// Agent sources the user or an admin controls; any other agent file came with
+// a repository or a plugin.
+const OPERATOR_AGENT_SOURCES = new Set([
+  'userSettings',
+  'flagSettings',
+  'policySettings',
+  'built-in',
+])
 
 /**
  * Get dynamic headers for an MCP server using the headersHelper script
@@ -63,7 +77,10 @@ export async function getMcpHeadersFromHelper(
   // credentials from the environment.
   const scoped = config as Partial<ScopedMcpServerConfig>
   const suppliedByRepoOrPlugin =
-    scoped.scope === 'project' || scoped.pluginSource !== undefined
+    scoped.scope === 'project' ||
+    scoped.pluginSource !== undefined ||
+    (scoped.agentSource !== undefined &&
+      !OPERATOR_AGENT_SOURCES.has(scoped.agentSource))
 
   try {
     logMCPDebug(serverName, 'Executing headersHelper to get dynamic headers')

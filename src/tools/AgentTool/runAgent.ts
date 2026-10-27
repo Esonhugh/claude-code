@@ -105,6 +105,7 @@ import type { ContentReplacementState } from '../../utils/toolResultStorage.js'
 import { createAgentId } from '../../utils/uuid.js'
 import {
   beginSubagentHandback,
+  endSubagentHandback,
   isSubagentHandbackDelivered,
   isSubagentHandbackEnabled,
   lastSubagentHandbackInstruction,
@@ -118,6 +119,7 @@ import { SubagentHandbackTool } from '../SubagentHandbackTool/SubagentHandbackTo
 import {
   filterToolsForExactAgent,
   findUnresolvedToolUses,
+  isToolDisallowedForAgent,
   resolveAgentTools,
 } from './agentToolUtils.js'
 import { type AgentDefinition, isBuiltInAgent } from './loadAgentsDir.js'
@@ -279,6 +281,7 @@ async function initializeAgentMcpServers(
       config = {
         ...serverConfig,
         scope: 'agent' as const,
+        agentSource: agentDefinition.source,
       } as ScopedMcpServerConfig
       isNewlyCreated = true
     }
@@ -351,10 +354,12 @@ async function initializeAgentMcpServers(
     }
   }
 
-  // Return merged clients (parent + agent-specific) and agent tools
+  // Return merged clients (parent + agent-specific) and agent tools; the
+  // agent's disallowedTools apply to its own servers too.
+  const isDisallowed = isToolDisallowedForAgent(agentDefinition.disallowedTools)
   return {
     clients: [...parentClients, ...agentClients],
-    tools: agentTools,
+    tools: agentTools.filter(tool => !isDisallowed(tool)),
     cleanup,
   }
 }
@@ -1369,6 +1374,9 @@ export async function* runAgent({
     finishModConversation?.()
     // Clean up agent-specific MCP servers (runs on normal completion, abort, or error)
     await mcpCleanup()
+    // A run that did not finish is never finalized, so its hand-back state
+    // would otherwise stay behind.
+    if (!runExitedNormally) endSubagentHandback(agentId)
     // Clean up agent's session hooks
     if (agentDefinition.hooks) {
       clearSessionHooks(rootSetAppState, agentId)

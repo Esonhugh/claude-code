@@ -675,10 +675,10 @@ async function reviewSubagentHandback(
     classifierResult.transcriptTooLong ||
     classifierResult.unparseable
   ) {
-    recordSubagentHandbackReview(toolUseID, { kind: 'unavailable', model: classifierResult.model })
+    if (context.agentId !== undefined) recordSubagentHandbackReview(context.agentId, toolUseID, { kind: 'unavailable', model: classifierResult.model })
     reason = 'Delivered with a note: the classifier could not review it'
   } else if (classifierResult.shouldBlock) {
-    recordSubagentHandbackReview(toolUseID, { kind: 'blocked', reason: classifierResult.reason })
+    if (context.agentId !== undefined) recordSubagentHandbackReview(context.agentId, toolUseID, { kind: 'blocked', reason: classifierResult.reason })
     reason = `Flagged by the classifier, delivered with its warning: ${classifierResult.reason}`
   }
   logForDebugging(`Auto mode classifier reviewed ${tool.name}: ${reason}`)
