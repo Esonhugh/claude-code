@@ -29,11 +29,12 @@ CLAUDE_CODE_ENABLE_ANTHROPIC_TELEMETRY=1 claude
 | 情况 | 原因 |
 | --- | --- |
 | 设置了 `DISABLE_TELEMETRY=1` | 你明确要求关闭 |
+| 设置了 `DO_NOT_TRACK=1` | 通用的「不追踪」约定，效果同上 |
 | 设置了 `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` | 只允许必要流量 |
 | 使用 Bedrock / Vertex / Foundry | 数据不该绕到 Anthropic |
 | `ANTHROPIC_BASE_URL` 指向非官方网关 | 同上 |
 
-反馈、记忆和压缩后的满意度问卷也跟随同一个开关（其中 Bedrock / Vertex / Foundry 不影响问卷）。
+反馈、记忆和压缩后的满意度问卷也跟随同一个开关（其中 Bedrock / Vertex / Foundry 不影响问卷）；`CLAUDE_FORCE_DISPLAY_SURVEY` 不能绕过它，问卷未启用时也不会上传对话记录。
 
 内置 Mods 归档里的 `telemetry` Mod（向 Anthropic 发送插件分析数据）始终不加载，设了这个变量也一样。
 

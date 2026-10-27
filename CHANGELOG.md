@@ -12,17 +12,17 @@
 - `## 2.1.88 base` 是唯一基线条目，固定放在文件末尾，不作为 release note。
 - `bun run check:changelog` 是格式规范的可执行门禁；发布时还会校验 tag 版本与最新发布条目一致。
 
-## 2026-10-27 - v2.1.295 - MCP v2 SDK、Windows 原生沙箱、沙箱网络与工具提示词对齐官方 2.1.311、/code-review 技能、agent 面板
+## 2026-10-27 - v2.1.295 - MCP v2 SDK、Windows 原生沙箱、沙箱网络与工具提示词对齐官方 2.1.311、/code-review 技能、agent 面板、DO_NOT_TRACK
 
 ### 版本状态
 
-- 发布候选：`dev` 合并到 `master` 后打 tag `v2.1.295`。本条目汇总 `v2.1.294` tag 之后至 PR #249 的全部变更；`Makefile VERSION` 与 README 发布版本同步为 `2.1.295`，`package.json` 保持 `0.0.0-dev`。版本号与官方版本号无对应关系（本轮对照基线为官方 2.1.303 至 2.1.311）。
+- 发布候选：`dev` 合并到 `master` 后打 tag `v2.1.295`。本条目汇总 `v2.1.294` tag 之后至 PR #258 的全部变更（第一次 dev→master PR #251 合并后未打 tag，PR #252 至 #258 一并归入本版本）；`Makefile VERSION` 与 README 发布版本同步为 `2.1.295`，`package.json` 保持 `0.0.0-dev`。版本号与官方版本号无对应关系（本轮对照基线为官方 2.1.303 至 2.1.311）。
 - PR #189 至 #208 的变更记在下方 2026-10-26 未归版本条目中，保持原样，也属于本版本。
 
 ### 关联提交
 
-- PR 合并提交（`git log --first-parent 576998d..dev`）：#209 文档同步；#210 MCP v2 SDK；#212、#214、#216 Windows 沙箱与 Windows e2e；#218 沙箱网络；#220、#222、#224、#228、#234、#236、#240 工具与提示词对齐；#226、#230 workflow 与 `/code-review`；#232、#243、#248、#249 界面；#238 子代理工具；#241 Linux 沙箱测试 CI。
-- 对应 issue：#201、#211、#213、#215、#217、#219、#221、#223、#225、#227、#229、#231、#233、#235、#237、#239、#242、#244、#245、#246、#247。
+- PR 合并提交（`git log --first-parent 576998d..dev`）：#209 文档同步；#210 MCP v2 SDK；#212、#214、#216 Windows 沙箱与 Windows e2e；#218 沙箱网络；#220、#222、#224、#228、#234、#236、#240 工具与提示词对齐；#226、#230 workflow 与 `/code-review`；#232、#243、#248、#249 界面；#238 子代理工具；#241 Linux 沙箱测试 CI；#252 master 合回 dev；#253 macOS 沙箱 e2e CI；#254 遥测开关；#255 `claude ssh`；#256、#258 VS Code 插件与 Agent SDK；#257 MCP 与子代理。
+- 对应 issue：#201、#211、#213、#215、#217、#219、#221、#223、#225、#227、#229、#231、#233、#235、#237、#239、#242、#244、#245、#246、#247；#80、#81、#82、#88、#152、#158。
 
 ### 变更内容
 
@@ -51,6 +51,20 @@
 - Write/Edit 在写入无需询问时可跳过“先读后写”检查（旧模型保持严格检查）（#239）。
 - 新增官方 `/code-review` 技能（effort 级别、`--fix`、`--comment`、`--max-findings`、沿用上次级别、`ultra`）；`/simplify` 对齐官方；prompt 命令支持官方的按次 effort 与上下文 hooks（#229）。
 
+#### 隐私与遥测
+
+- 设置 `DO_NOT_TRACK=1` 等同于关闭遥测：即使已 opt-in，也不发送 1P 事件、GrowthBook、BigQuery 指标与问卷；`CLAUDE_FORCE_DISPLAY_SURVEY` 不再绕过 opt-in 与停用设置；未启用反馈问卷时拒绝上传 transcript（#81）。
+
+#### VS Code 插件、Agent SDK 与 MCP
+
+- 回应 `get_sandbox_dialog`，新增 `claude edit-sandbox-settings --json`，VS Code 插件的 `/sandbox` 对话框可读写沙箱设置，检查与官方 2.1.311 一致（#158）。
+- `set_max_thinking_tokens` 支持 `thinking_display`（只改显示时保留预算，`null` 恢复启动设置）；`claude -p` 文本输出（或无 `--verbose` 的 json）默认发送 `thinking.display: "omitted"`；`thinking.display` 只发给支持它的模型与平台；`system/init` 带 `original_cwd` 与 `memory_paths`（#152、#88）。
+- agent 的 `tools:` 支持 `mcp__srv` / `mcp__srv__*` 授予整个 MCP 服务器，`disallowedTools` 也作用于 agent 的内联 MCP 服务器；项目、本地与插件 agent 的内联服务器 `headersHelper` 不带凭证环境变量，项目 agent 需等待目录信任；未完成的运行会清掉 hand-back 状态（#82）。
+
+#### `claude ssh`
+
+- Esc 中断后不再显示内部的 `[ede_diagnostic]` 文字，改为显示 `[Request interrupted by user]`；`claude ssh --local` 退出时的恢复提示保留 `--local`（#80）。
+
 #### 界面
 
 - notice 消息带状态点并用非活动颜色，完成的后台 agent 通知写作 `finished`（#231）。
@@ -68,7 +82,8 @@
 - 每个 PR 在其 worktree 上重建 binary，以 `-p` 与 tmux 配合脚本化假 Messages API 跑案例，并与官方 2.1.303/2.1.310/2.1.311 binary 对照；验收记录在 `research/acceptance/`（项目共享目录）。
 - Windows：`.github/workflows/windows-e2e.yml` 在每个 PR 上跑沙箱、fork 功能、跨会话通信与 Direct Connect e2e，并与官方 2.1.303 对照（#213、#215）。
 - Linux 沙箱：`.github/workflows/linux-sandbox-tests.yml` 安装 bubblewrap、socat 与 ripgrep 后跑 `src/utils/permissions/permissions.networkLists.test.ts` 与 `src/utils/sandbox/sandbox-adapter.test.ts`（#241）。
-- 发版前在 `dev` 上：`make release-check`、`make build` 通过；876 个测试文件逐个单独运行，失败的只有已知的环境相关用例；以重建的 binary 跑过 SIGINT SessionEnd、`CI=true` 无凭证 `-p` 与 team shutdown 三项回归。
+- macOS 沙箱：`.github/workflows/macos-e2e.yml` 在每个 PR 上以 Seatbelt 沙箱跑 fork 与官方 binary 的 e2e（#253）。
+- 发版前在 `dev` 上：`make release-check`、`make build` 通过；877 个测试文件逐个单独运行，失败的只有已知的环境相关用例与偶发的 `ModsPane.focusRing295` 绘制计时用例（单独重跑通过）；以重建的 binary 跑过 SIGINT SessionEnd、`CI=true` 无凭证 `-p` 与 team shutdown 三项回归。
 
 ## 2026-10-26 - Terminal 进沙箱、resume 提示与 npm 插件安全修复、补齐官方界面设置
 
