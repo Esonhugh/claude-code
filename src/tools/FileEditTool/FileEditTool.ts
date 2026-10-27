@@ -43,6 +43,7 @@ import {
 import { logError } from '../../utils/log.js'
 import { expandPath } from '../../utils/path.js'
 import {
+  canWriteWithoutRead,
   checkWritePermissionForTool,
   matchingRuleForInput,
 } from '../../utils/permissions/filesystem.js'
@@ -273,7 +274,13 @@ export const FileEditTool = buildTool({
     }
 
     const readTimestamp = toolUseContext.readFileState.get(fullFilePath)
-    if (!readTimestamp || readTimestamp.isPartialView) {
+    // Like 2.1.311: an unread or stale file is fine when the edit runs
+    // without a prompt anyway and old_string still matches what is on disk.
+    const writeWithoutRead = () =>
+      fileContent !== null &&
+      findActualString(fileContent, old_string) !== null &&
+      canWriteWithoutRead(FileEditTool, input, toolUseContext)
+    if ((!readTimestamp || readTimestamp.isPartialView) && !writeWithoutRead()) {
       return {
         result: false,
         behavior: 'ask',
@@ -287,7 +294,7 @@ export const FileEditTool = buildTool({
     }
 
     // Check if file exists and get its last modified time
-    if (readTimestamp) {
+    if (readTimestamp && !readTimestamp.isPartialView) {
       const lastWriteTime = getFileModificationTime(fullFilePath)
       if (lastWriteTime > readTimestamp.timestamp) {
         // Timestamp indicates modification, but on Windows timestamps can change
@@ -298,7 +305,7 @@ export const FileEditTool = buildTool({
           readTimestamp.limit === undefined
         if (isFullRead && fileContent === readTimestamp.content) {
           // Content unchanged, safe to proceed
-        } else {
+        } else if (!writeWithoutRead()) {
           return {
             result: false,
             behavior: 'ask',
@@ -386,15 +393,16 @@ export const FileEditTool = buildTool({
   },
   async call(
     input: FileEditInput,
-    {
+    context,
+    _,
+    parentMessage,
+  ) {
+    const {
       readFileState,
       userModified,
       updateFileHistoryState,
       dynamicSkillDirTriggers,
-    },
-    _,
-    parentMessage,
-  ) {
+    } = context
     const { file_path, old_string, new_string, replace_all = false } = input
 
     // 1. Get current state
@@ -461,7 +469,13 @@ export const FileEditTool = buildTool({
           lastRead.limit === undefined
         const contentUnchanged =
           isFullRead && originalFileContents === lastRead.content
-        if (!contentUnchanged) {
+        if (
+          !contentUnchanged &&
+          !(
+            canWriteWithoutRead(FileEditTool, input, context) &&
+            findActualString(originalFileContents, old_string) !== null
+          )
+        ) {
           throw new Error(FILE_UNEXPECTEDLY_MODIFIED_ERROR)
         }
       }
