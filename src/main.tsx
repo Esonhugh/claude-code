@@ -6569,6 +6569,17 @@ async function run(): Promise<CommanderCommand> {
       const { sandboxStatusHandler } = await import('./cli/handlers/sandbox.js')
       sandboxStatusHandler()
     })
+  program
+    .command('edit-sandbox-settings', { hidden: true })
+    .allowExcessArguments(false)
+    .description(
+      'Apply one sandbox settings edit read as JSON from stdin (used by the VS Code extension)',
+    )
+    .requiredOption('--json', 'Read the edit as JSON from stdin')
+    .action(async () => {
+      const { sandboxSettingsEditHandler } = await import('./cli/handlers/sandbox.js')
+      await sandboxSettingsEditHandler()
+    })
 
   // claude update
   //
