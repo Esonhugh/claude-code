@@ -29,7 +29,12 @@ import {
 import { createStreamlinedTransformer } from 'src/utils/streamlinedTransform.js'
 import { installStreamJsonStdoutGuard } from 'src/utils/streamJsonStdoutGuard.js'
 import type { ToolPermissionContext } from 'src/Tool.js'
-import type { ThinkingConfig } from 'src/utils/thinking.js'
+import {
+  applyThinkingRequest,
+  THINKING_DISPLAYS,
+  type ThinkingConfig,
+  type ThinkingDisplay,
+} from 'src/utils/thinking.js'
 import { assembleToolPool, filterToolsByDenyRules } from 'src/tools.js'
 import uniqBy from 'lodash-es/uniqBy.js'
 import { uniq } from 'src/utils/array.js'
@@ -1439,6 +1444,13 @@ function runHeadlessStreaming(
     }
   })
   let activeUserSpecifiedModel = options.userSpecifiedModel
+  // set_max_thinking_tokens: null resets to the spawn-time config; the
+  // session display mode starts from --thinking-display (or its default).
+  const spawnThinkingConfig = options.thinkingConfig
+  let sessionThinkingDisplay =
+    spawnThinkingConfig?.type === 'disabled'
+      ? undefined
+      : spawnThinkingConfig?.display
   // set_prompt_suggestions_paused: a host whose composer is hidden pauses them.
   let promptSuggestionsPaused = false
   let pendingModelSwitches = Promise.resolve()
@@ -3655,18 +3667,29 @@ function runHeadlessStreaming(
             sendControlResponseError(message, 'set_model failed')
           })
         } else if (message.request.subtype === 'set_max_thinking_tokens') {
-          if (message.request.max_thinking_tokens === null) {
-            options.thinkingConfig = undefined
-          } else if (message.request.max_thinking_tokens === 0) {
-            options.thinkingConfig = { type: 'disabled' }
-          } else {
-            options.thinkingConfig = {
-              type: 'enabled',
-              // @ts-ignore - recovered code
-              budgetTokens: message.request.max_thinking_tokens,
+          const { max_thinking_tokens: maxTokens, thinking_display: display } =
+            message.request as {
+              max_thinking_tokens?: number | null
+              thinking_display?: ThinkingDisplay | null
             }
+          if (
+            (maxTokens != null && !Number.isInteger(maxTokens)) ||
+            (display != null && !THINKING_DISPLAYS.includes(display))
+          ) {
+            sendControlResponseError(
+              message,
+              `set_max_thinking_tokens: max_thinking_tokens must be an integer or null and thinking_display must be one of ${THINKING_DISPLAYS.join(', ')} or null`,
+            )
+          } else {
+            if (display !== undefined) sessionThinkingDisplay = display ?? undefined
+            options.thinkingConfig = applyThinkingRequest(
+              options.thinkingConfig,
+              spawnThinkingConfig,
+              maxTokens,
+              sessionThinkingDisplay,
+            )
+            sendControlResponseSuccess(message)
           }
-          sendControlResponseSuccess(message)
         } else if (message.request.subtype === 'mcp_status') {
           // Not awaited inline: the SDK server handshake is answered over this
           // same input loop, so blocking here would deadlock.
@@ -5007,16 +5030,12 @@ function runHeadlessStreaming(
                     streamState.refresh()
                   },
                   onSetMaxThinkingTokens(maxTokens) {
-                    if (maxTokens === null) {
-                      options.thinkingConfig = undefined
-                    } else if (maxTokens === 0) {
-                      options.thinkingConfig = { type: 'disabled' }
-                    } else {
-                      options.thinkingConfig = {
-                        type: 'enabled',
-                        budgetTokens: maxTokens,
-                      }
-                    }
+                    options.thinkingConfig = applyThinkingRequest(
+                      options.thinkingConfig,
+                      spawnThinkingConfig,
+                      maxTokens,
+                      sessionThinkingDisplay,
+                    )
                   },
                   onStateChange(state, detail) {
                     if (state === 'failed') {

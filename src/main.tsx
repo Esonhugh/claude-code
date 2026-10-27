@@ -482,6 +482,7 @@ import {
 } from './utils/teleport.js'
 import {
   shouldEnableThinkingByDefault,
+  shouldOmitThinkingByDefault,
   THINKING_DISPLAYS,
   type ThinkingConfig,
 } from './utils/thinking.js'
@@ -3725,6 +3726,12 @@ async function run(): Promise<CommanderCommand> {
       }
       if (options.thinkingDisplay && thinkingConfig.type !== 'disabled') {
         thinkingConfig = { ...thinkingConfig, display: options.thinkingDisplay }
+      } else if (
+        thinkingConfig.type !== 'disabled' &&
+        isNonInteractiveSession &&
+        shouldOmitThinkingByDefault(outputFormat, verbose)
+      ) {
+        thinkingConfig = { ...thinkingConfig, display: 'omitted' }
       }
 
       if (isNonInteractiveSession) setPrintOutputFormat(outputFormat ?? 'text')
