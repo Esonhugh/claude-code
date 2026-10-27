@@ -133,7 +133,7 @@
     "scheduler": "^0.27.0",
     "semver": "^7.7.4",
     "sharp": "^0.34.5",
-    "shell-quote": "^1.8.3",
+    "shell-quote": "1.9.0",
     "signal-exit": "^4.1.0",
     "stack-utils": "^2.0.6",
     "strip-ansi": "^7.2.0",
