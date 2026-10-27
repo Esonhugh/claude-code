@@ -6,6 +6,7 @@
  * loaded upfront.
  */
 
+import { APIError } from '@anthropic-ai/sdk'
 import memoize from 'lodash-es/memoize.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../services/analytics/growthbook.js'
 import {
@@ -31,10 +32,11 @@ import {
   TOOL_TOKEN_COUNT_OVERHEAD,
 } from './analyzeContext.js'
 import { count } from './array.js'
-import { getMergedBetas } from './betas.js'
+import { getMergedBetas, getToolSearchBetaHeader } from './betas.js'
 import { getContextWindowForModel } from './context.js'
 import { logForDebugging } from './debug.js'
 import { isEnvDefinedFalsy, isEnvTruthy } from './envUtils.js'
+import { getAPIProvider, isFirstPartyAnthropicBaseUrl } from './model/providers.js'
 import { jsonStringify } from './slowOperations.js'
 import { zodToJsonSchema } from './zodToJsonSchema.js'
 import { userType, isAnt } from 'src/utils/userType.js'
@@ -311,6 +313,47 @@ export const DEFERRED_TOOL_PLACEHOLDER = {
   defer_loading: true,
 }
 
+let toolSearchRefused = false
+
+/** Latches tool search off for the rest of the process once an endpoint refused it. */
+export function markToolSearchRefused(): void {
+  if (toolSearchRefused) return
+  toolSearchRefused = true
+  logForDebugging(
+    '[ToolSearch] the endpoint answered the request sent without tool search, so this process goes on without it',
+  )
+}
+
+export function resetToolSearchRefusedForTesting(): void {
+  toolSearchRefused = false
+}
+
+/**
+ * How a 400/422 on a request that declared deferred tools relates to tool
+ * search, like 2.1.311: 'beta' when the error names the tool search beta;
+ * 'unattributed' for a defer_loading complaint or, off the direct Anthropic
+ * API, any other 400 that only a retry without tool search can attribute.
+ */
+export type ToolSearchRefusal = 'beta' | 'unattributed'
+
+export function getToolSearchRefusal(error: unknown): ToolSearchRefusal | null {
+  if (!(error instanceof APIError)) return null
+  if (error.status !== 400 && error.status !== 422) return null
+  const body = error.error as { error?: { type?: string } } | undefined
+  if (body?.error?.type === 'billing_error') return null
+  const message = error.message
+  if (message.includes(getToolSearchBetaHeader())) return 'beta'
+  if (/\bdefer_loading\b/.test(message)) return 'unattributed'
+  const directApi =
+    getAPIProvider() === 'firstParty' &&
+    isFirstPartyAnthropicBaseUrl() &&
+    !process.env.ANTHROPIC_UNIX_SOCKET
+  if (directApi || message.toLowerCase().includes('prompt is too long')) {
+    return null
+  }
+  return 'unattributed'
+}
+
 /**
  * Check if ToolSearchTool is available in the provided tools list.
  * If ToolSearchTool is not available (e.g., disallowed via disallowedTools),
@@ -431,6 +474,14 @@ export async function isToolSearchEnabled(
   }
 
   const mode = getToolSearchMode()
+
+  if (toolSearchRefused) {
+    logForDebugging(
+      'Tool search is off: the endpoint refused it earlier in this process.',
+    )
+    logModeDecision(false, mode, 'refused')
+    return false
+  }
 
   switch (mode) {
     case 'tst':

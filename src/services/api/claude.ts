@@ -89,6 +89,7 @@ import {
   stripAdvisorBlocks,
   stripCallerFieldFromAssistantMessage,
   stripToolReferenceBlocksFromUserMessage,
+  wrapInSystemReminder,
 } from '../../utils/messages.js'
 import {
   getDefaultOpusModel,
@@ -197,8 +198,11 @@ import {
   DEFERRED_TOOL_PLACEHOLDER,
   extractDiscoveredToolNames,
   getDeferredToolsDelta,
+  getToolSearchRefusal,
   isDeferredToolsDeltaEnabled,
   isToolSearchEnabled,
+  markToolSearchRefused,
+  type ToolSearchRefusal,
 } from 'src/utils/toolSearch.js'
 import { API_MAX_MEDIA_PER_REQUEST } from '../../constants/apiLimits.js'
 import { ADVISOR_BETA_HEADER } from '../../constants/betas.js'
@@ -825,6 +829,8 @@ export type Options = {
   // so the model can pace itself. `remaining` is computed by the caller
   // (query.ts decrements across the agentic loop).
   taskBudget?: { total: number; remaining?: number }
+  /** Internal: this request retries one whose tool search the endpoint refused. */
+  toolSearchRefused?: true
 }
 
 export async function queryModelWithoutStreaming({
@@ -1144,7 +1150,72 @@ export function stripExcessMediaItems(
   }) as (UserMessage | AssistantMessage)[]
 }
 
+class ToolSearchRefusedError extends Error {
+  constructor(
+    readonly refusal: APIError,
+    readonly kind: ToolSearchRefusal,
+  ) {
+    super('tool search refused', { cause: refusal })
+  }
+}
+
+/**
+ * Like 2.1.311: when the endpoint refuses a tool-search request, send it again
+ * once without deferred tools, and latch tool search off when the error named
+ * the beta or the retry is answered.
+ */
 async function* queryModel(
+  messages: Message[],
+  systemPrompt: SystemPrompt,
+  thinkingConfig: ThinkingConfig,
+  tools: Tools,
+  signal: AbortSignal,
+  options: Options,
+): AsyncGenerator<
+  StreamEvent | AssistantMessage | SystemAPIErrorMessage,
+  void
+> {
+  let refused: ToolSearchRefusedError
+  try {
+    return yield* queryModelRequest(
+      messages,
+      systemPrompt,
+      thinkingConfig,
+      tools,
+      signal,
+      options,
+    )
+  } catch (error) {
+    if (!(error instanceof ToolSearchRefusedError)) throw error
+    refused = error
+  }
+  logForDebugging(
+    `[ToolSearch] HTTP ${refused.refusal.status} ${refused.kind === 'beta' ? 'refusing the tool search beta' : 'on a request that declared deferred tools'}; sending the request again without deferred tools. ENABLE_TOOL_SEARCH=false avoids the refused request`,
+    { level: 'warn' },
+  )
+  if (refused.kind === 'beta') markToolSearchRefused()
+  const reminder = createUserMessage({
+    content: wrapInSystemReminder(
+      `${TOOL_SEARCH_TOOL_NAME} is no longer available. Tools listed earlier as deferred that are still available are declared in full: call them directly.`,
+    ),
+    isMeta: true,
+  })
+  for await (const message of queryModelRequest(
+    [...messages, reminder],
+    systemPrompt,
+    thinkingConfig,
+    tools,
+    signal,
+    { ...options, toolSearchRefused: true },
+  )) {
+    if (message.type === 'assistant' && !message.isApiErrorMessage) {
+      markToolSearchRefused()
+    }
+    yield message
+  }
+}
+
+async function* queryModelRequest(
   messages: Message[],
   systemPrompt: SystemPrompt,
   thinkingConfig: ThinkingConfig,
@@ -1257,7 +1328,7 @@ async function* queryModel(
 
   // Check if tool search is enabled (checks mode, model support, and threshold for auto mode)
   // This is async because it may need to calculate MCP tool description sizes for TstAuto mode
-  let useToolSearch = await isToolSearchEnabled(
+  let useToolSearch = !options.toolSearchRefused && await isToolSearchEnabled(
     options.model,
     tools,
     options.getToolPermissionContext,
@@ -3052,6 +3123,14 @@ async function* queryModel(
       if (errorFromRetry instanceof CannotRetryError) {
         error = errorFromRetry.originalError
         errorModel = errorFromRetry.retryContext.model
+      }
+
+      const toolSearchRefusal =
+        useToolSearch && !options.toolSearchRefused
+          ? getToolSearchRefusal(error)
+          : null
+      if (toolSearchRefusal) {
+        throw new ToolSearchRefusedError(error as APIError, toolSearchRefusal)
       }
 
       // Extract quota status from error headers if it's a rate limit error
