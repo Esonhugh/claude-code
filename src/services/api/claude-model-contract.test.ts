@@ -618,7 +618,8 @@ test('gateways use the tool_reference beta with the deferred placeholder', async
   const { clearToolSchemaCache } =
     await import('../../utils/toolSchemaCache.js')
   const { createAssistantMessage } = await import('../../utils/messages.js')
-  const { TOOL_SEARCH_BETA_HEADER_1P } = await import('../../constants/betas.js')
+  const { PROMPT_CACHING_SCOPE_BETA_HEADER, TOOL_SEARCH_BETA_HEADER_1P } =
+    await import('../../constants/betas.js')
   const previous = process.env.ENABLE_TOOL_SEARCH
   delete process.env.ENABLE_TOOL_SEARCH
   clearToolSchemaCache()
@@ -684,6 +685,8 @@ test('gateways use the tool_reference beta with the deferred placeholder', async
       expect.objectContaining({ defer_loading: true }),
     ])
     expect(requestBetaHeaders.at(-1)).toContain(TOOL_SEARCH_BETA_HEADER_1P)
+    expect(requestBetaHeaders.at(-1)).not.toContain(PROMPT_CACHING_SCOPE_BETA_HEADER)
+    expect(JSON.stringify(request.system)).not.toContain('"global"')
     const body = JSON.stringify(request.messages)
     expect(body).toContain('tool_reference')
     expect(body).not.toContain(`Tool available: ${discovered.name}`)
