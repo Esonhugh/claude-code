@@ -12,6 +12,64 @@
 - `## 2.1.88 base` 是唯一基线条目，固定放在文件末尾，不作为 release note。
 - `bun run check:changelog` 是格式规范的可执行门禁；发布时还会校验 tag 版本与最新发布条目一致。
 
+## 2026-10-27 - v2.1.295 - MCP v2 SDK、Windows 原生沙箱、沙箱网络与工具提示词对齐官方 2.1.311、/code-review 技能、agent 面板
+
+### 版本状态
+
+- 发布候选：`dev` 合并到 `master` 后打 tag `v2.1.295`。本条目汇总 `v2.1.294` tag 之后至 PR #249 的全部变更；`Makefile VERSION` 与 README 发布版本同步为 `2.1.295`，`package.json` 保持 `0.0.0-dev`。版本号与官方版本号无对应关系（本轮对照基线为官方 2.1.303 至 2.1.311）。
+- PR #189 至 #208 的变更记在下方 2026-10-26 未归版本条目中，保持原样，也属于本版本。
+
+### 关联提交
+
+- PR 合并提交（`git log --first-parent 576998d..dev`）：#209 文档同步；#210 MCP v2 SDK；#212、#214、#216 Windows 沙箱与 Windows e2e；#218 沙箱网络；#220、#222、#224、#228、#234、#236、#240 工具与提示词对齐；#226、#230 workflow 与 `/code-review`；#232、#243、#248、#249 界面；#238 子代理工具；#241 Linux 沙箱测试 CI。
+- 对应 issue：#201、#211、#213、#215、#217、#219、#221、#223、#225、#227、#229、#231、#233、#235、#237、#239、#242、#244、#245、#246、#247。
+
+### 变更内容
+
+#### 需要用户处理的行为变化
+
+- MCP 改用 v2 SDK（`@modelcontextprotocol/client`、`core`、`server` 2.4.0），连接 stdio、http 与 claude.ai 代理服务器时先用 `server/discover` 协商协议 2026-07-28，失败再回退 `initialize`；`MCP_PROTOCOL_NEGOTIATION=legacy` 关闭协商（#210）。
+- 自定义 `ANTHROPIC_BASE_URL` 也使用原生 tool search（beta header、`defer_loading` 与 `DeferredToolPlaceholder`），不再退回文本形式；网关拒绝这些字段时自动去掉延迟工具重试一次，之后本进程内不再启用 tool search；也可设 `ENABLE_TOOL_SEARCH=false`（#227、#235）。
+- 自定义 base URL 不再发送 `prompt-caching-scope` 与 `scope: global`（#233）。
+- 旧的 `/review` 命令移除，改为 `/code-review` 技能的别名；`/ultrareview` 保留（#229）。
+- 内置 workflow 只保留官方 2.1.310 的 `deep-research` 脚本，fork 自有的 code-review workflow 移除（#225）。
+- `TaskOutput` 工具移除，后台任务提示改为 `SendMessage`；`SetGoal`/`ClearGoal` 合并为延迟加载的 `Goal` 工具；TodoWrite/Task 工具只在旧模型、后台任务、`--tools` 指定或 `CLAUDE_CODE_ENABLE_TODO_TOOLS` 时提供；headless 会话不提供 AskUserQuestion（#219、#221）。
+- in-process teammate 改为 agent 面板中的行，`@` pill 行、`ctrl+t` teammate 视图、`shift+↑/↓` 选择与 `ctrl+shift+o` 预览移除（#244）。
+
+#### 沙箱
+
+- Windows 原生沙箱：Windows binary 内置 `srt-win.exe`，Bash 与 PowerShell 在沙箱内运行；隐藏命令 `claude sandbox install|status` 安装与检查，沙箱账号与官方共用 `ClaudeCodeSandbox`；Windows 上 Terminal 不开沙箱会话（#211、#217）。
+- 托管或 `--settings` 强制沙箱、`allowManagedDomainsOnly` 与 strict allowlist 下，网络放行只取可信来源；网络询问按权限模式回答：bypass 放行、dontAsk 拒绝、auto 拒绝并提示用 `allowed_domains`（#217）。
+- Bash、PowerShell 与 Monitor 新增 `allowed_domains` 参数：auto 模式下经分类器审核后只对该条命令放行所列域名（#217）。
+
+#### 对齐官方 2.1.303 至 2.1.311 的工具与提示词
+
+- 订阅用户默认对主对话、SDK、auto mode 与记忆检索请求使用 1 小时 prompt cache（#221）。
+- tool search 从第一个请求起带 `DeferredToolPlaceholder`，第一次 ToolSearch 不再重写整段对话 cache；延迟工具公告改用官方文案（#223、#239）。
+- Read 结果不再附加恶意软件提醒，每次 Read 约省 80 tokens；精简提示词模型使用官方精简版 Grep 描述（#219、#221）。
+- Monitor 默认提供；子代理可使用 Monitor、SendMessage 与 TaskStop（只能停自己的任务），可向 `main` 发消息，新建 agent 会被告知可联系的其他命名 agent（#237）。
+- Write/Edit 在写入无需询问时可跳过“先读后写”检查（旧模型保持严格检查）（#239）。
+- 新增官方 `/code-review` 技能（effort 级别、`--fix`、`--comment`、`--max-findings`、沿用上次级别、`ultra`）；`/simplify` 对齐官方；prompt 命令支持官方的按次 effort 与上下文 hooks（#229）。
+
+#### 界面
+
+- notice 消息带状态点并用非活动颜色，完成的后台 agent 通知写作 `finished`（#231）。
+- agent 面板最多显示 5 行，随选择滚动并标示 `↑/↓ N more`；超过 3 个闲置 teammate 折叠为一行（#242、#244）。
+- 输入框下的 `/` 与 `@` 菜单高度为终端一半（至少 6 行），选中行带 `❯`；长通知改为截断，不再挤压模式行；安装检查结果写入 debug 日志（#245、#246）。
+- 尚无已跟踪文件的 git 仓库中，`@` 建议也列出未跟踪文件（#247）。
+
+#### 已知缺口
+
+- `src/services/compact/idleCompaction.test.ts` 的 1 小时 cache 用例依赖本机凭证，只在设置了 `ANTHROPIC_API_KEY` 的环境中通过；`src/hooks/fileSuggestions.untracked.test.ts` 在 `~/.claude` 下有技能文件时可能等不到未跟踪文件合并而超时。两者都是测试环境问题，不影响运行时行为。
+- Bedrock 无 AWS 凭证时 `claude -p` 仍重试约 3 分钟才失败（#16）。
+
+### 测试覆盖
+
+- 每个 PR 在其 worktree 上重建 binary，以 `-p` 与 tmux 配合脚本化假 Messages API 跑案例，并与官方 2.1.303/2.1.310/2.1.311 binary 对照；验收记录在 `research/acceptance/`（项目共享目录）。
+- Windows：`.github/workflows/windows-e2e.yml` 在每个 PR 上跑沙箱、fork 功能、跨会话通信与 Direct Connect e2e，并与官方 2.1.303 对照（#213、#215）。
+- Linux 沙箱：`.github/workflows/linux-sandbox-tests.yml` 安装 bubblewrap、socat 与 ripgrep 后跑 `src/utils/permissions/permissions.networkLists.test.ts` 与 `src/utils/sandbox/sandbox-adapter.test.ts`（#241）。
+- 发版前在 `dev` 上：`make release-check`、`make build` 通过；876 个测试文件逐个单独运行，失败的只有已知的环境相关用例；以重建的 binary 跑过 SIGINT SessionEnd、`CI=true` 无凭证 `-p` 与 team shutdown 三项回归。
+
 ## 2026-10-26 - Terminal 进沙箱、resume 提示与 npm 插件安全修复、补齐官方界面设置
 
 ### 变更内容
