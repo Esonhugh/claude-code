@@ -408,7 +408,7 @@ export function enqueueAgentNotification({
 
   const summary = escapeXml(
     status === 'completed'
-      ? `Agent "${description}" completed`
+      ? `Agent "${description}" finished`
       : status === 'failed'
         ? `Agent "${description}" failed: ${error || 'Unknown error'}`
         : `Agent "${description}" was stopped`,

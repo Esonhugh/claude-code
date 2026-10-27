@@ -87,6 +87,7 @@ for (const [label, terminate] of [
     assert.equal(mainThreadNotifications().length, 1)
     assert.equal(rerouted?.taskId, child)
     assert.match(String(rerouted?.value), /child done/)
+    assert.match(String(rerouted?.value), /<summary>Agent "child-\w+" finished<\/summary>/)
     assert.equal(
       messageQueue.getCommandQueue().filter(c => c.agentId === owner).length,
       0,

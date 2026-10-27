@@ -17,9 +17,9 @@ test('monitor events show the first event line before the description', async ()
 })
 
 test('other task notifications show their summary', async () => {
-  const text = '<task-notification>\n<task-id>a1</task-id>\n<status>completed</status>\n<summary>Agent "scan" completed</summary>\n</task-notification>'
+  const text = '<task-notification>\n<task-id>a1</task-id>\n<status>completed</status>\n<summary>Agent "scan" finished</summary>\n</task-notification>'
   const drawn = await renderToString(
     <UserAgentNotificationMessage addMargin={false} param={{ type: 'text', text }} />,
   )
-  expect(drawn.trim()).toBe('● Agent "scan" completed')
+  expect(drawn.trim()).toBe('● Agent "scan" finished')
 })
