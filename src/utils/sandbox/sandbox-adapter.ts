@@ -14,17 +14,32 @@ import type {
   SandboxDependencyCheck,
   SandboxRuntimeConfig,
   SandboxViolationEvent,
+  WrapWithSandboxOptions,
 } from '@anthropic-ai/sandbox-runtime'
 import {
   SandboxManager as BaseSandboxManager,
   SandboxRuntimeConfigSchema,
   SandboxViolationStore,
+  VENDORED_SRT_WIN_EXE,
+  getWindowsSandboxUserStatus,
+  resolveSrtWin,
 } from '@anthropic-ai/sandbox-runtime'
 import { checkLinuxDependencies } from '@anthropic-ai/sandbox-runtime/dist/sandbox/linux-sandbox-utils.js'
-import { existsSync, rmSync, statSync } from 'fs'
+import { execFileSync } from 'child_process'
+import { existsSync, mkdirSync, realpathSync, rmSync, statSync } from 'fs'
 import { readFile } from 'fs/promises'
 import { memoize } from 'lodash-es'
-import { join, posix, resolve, sep } from 'path'
+import { userInfo } from 'os'
+import {
+  basename,
+  dirname,
+  isAbsolute,
+  join,
+  posix,
+  relative,
+  resolve,
+  sep,
+} from 'path'
 import {
   getAdditionalDirectoriesForClaudeMd,
   getCwdState,
@@ -32,7 +47,9 @@ import {
   getInlinePluginsNoMcp,
   getOriginalCwd,
 } from '../../bootstrap/state.js'
+import { CACHE_PATHS } from '../cachePaths.js'
 import { logForDebugging } from '../debug.js'
+import { extractEmbeddedBinary } from '../embeddedRipgrep.js'
 import { expandPath } from '../path.js'
 import { getPlatform, type Platform } from '../platform.js'
 import { settingsChangeDetector } from '../settings/changeDetector.js'
@@ -51,6 +68,7 @@ import {
   updateSettingsForSource,
 } from '../settings/settings.js'
 import type { SettingsJson } from '../settings/types.js'
+import type { ToolPermissionContext } from '../../Tool.js'
 
 // ============================================================================
 // Settings Converter
@@ -64,6 +82,7 @@ import { errorMessage } from '../errors.js'
 import {
   getClaudeTempDir,
   getClaudeTempDirName,
+  pathInWorkingPath,
 } from '../permissions/filesystem.js'
 import type { PermissionRuleValue } from '../permissions/PermissionRule.js'
 import { ripgrepCommand } from '../ripgrep.js'
@@ -196,6 +215,170 @@ function isUnsandboxedFallbackLocked(): boolean {
   )
 }
 
+// An admin mandates the sandbox: the repo may not loosen its network.
+function isSandboxMandated(): boolean {
+  return isUnsandboxedFallbackLocked() || shouldAllowManagedSandboxDomainsOnly()
+}
+
+function trustedSandboxSettings(): SettingsJson[] {
+  return TRUSTED_SANDBOX_SOURCES.filter(isSettingSourceEnabled).flatMap(
+    source => getSettingsForSource(source) ?? [],
+  )
+}
+
+function trustedSandboxList<T>(
+  pick: (sandbox: NonNullable<SettingsJson['sandbox']>) => T[] | undefined,
+): T[] {
+  return [
+    ...new Set(
+      trustedSandboxSettings().flatMap(s => (s.sandbox && pick(s.sandbox)) ?? []),
+    ),
+  ]
+}
+
+function webFetchDomains(rules: string[] | undefined): string[] {
+  return (rules ?? []).flatMap(ruleString => {
+    const rule = permissionRuleValueFromString(ruleString)
+    return rule.toolName === WEB_FETCH_TOOL_NAME &&
+      rule.ruleContent?.startsWith('domain:')
+      ? [rule.ruleContent.substring('domain:'.length)]
+      : []
+  })
+}
+
+/**
+ * The configured allowlist is the whole allowlist: allowManagedDomainsOnly
+ * or a strict allowlist from a source the repo cannot write.
+ */
+function isAllowlistClosed(): boolean {
+  return (
+    shouldAllowManagedSandboxDomainsOnly() ||
+    trustedSandboxSettings().some(
+      s => s.sandbox?.network?.strictAllowlist === true,
+    )
+  )
+}
+
+// A trusted deny list or strict allowlist: the repo may not replace the
+// filtering proxy.
+function hasTrustedNetworkFilter(): boolean {
+  if (isSandboxMandated() || trustedSandboxValue(sb => sb.network?.strictAllowlist)) {
+    return true
+  }
+  return (['policySettings', 'flagSettings'] as const).some(source => {
+    const settings = getSettingsForSource(source)
+    return (
+      (settings?.sandbox?.network?.deniedDomains?.length ?? 0) > 0 ||
+      webFetchDomains(settings?.permissions?.deny).length > 0
+    )
+  })
+}
+
+let loggedDroppedRepoNetwork = false
+
+function repoNetworkKeysSet(keys: readonly string[]): string[] {
+  return keys.filter(key =>
+    (['projectSettings', 'localSettings'] as const).some(source => {
+      if (!isSettingSourceEnabled(source)) return false
+      const value = (
+        getSettingsForSource(source)?.sandbox?.network as
+          | Record<string, unknown>
+          | undefined
+      )?.[key]
+      return value !== undefined && value !== false
+    }),
+  )
+}
+
+/**
+ * Socket, binding and proxy-port allowances. A mandated sandbox takes them
+ * only from trusted sources; a trusted network filter only pins the proxy
+ * ports.
+ */
+function networkAllowances(
+  network: NonNullable<SettingsJson['sandbox']>['network'],
+): Pick<
+  SandboxRuntimeConfig['network'],
+  | 'allowUnixSockets'
+  | 'allowAllUnixSockets'
+  | 'allowLocalBinding'
+  | 'allowMachLookup'
+  | 'httpProxyPort'
+  | 'socksProxyPort'
+> {
+  const mandated = isSandboxMandated()
+  if (!mandated && !hasTrustedNetworkFilter()) {
+    return {
+      allowUnixSockets: network?.allowUnixSockets,
+      allowAllUnixSockets: network?.allowAllUnixSockets,
+      allowLocalBinding: network?.allowLocalBinding,
+      allowMachLookup: network?.allowMachLookup,
+      httpProxyPort: network?.httpProxyPort,
+      socksProxyPort: network?.socksProxyPort,
+    }
+  }
+  if (!loggedDroppedRepoNetwork) {
+    loggedDroppedRepoNetwork = true
+    const dropped = repoNetworkKeysSet(
+      mandated
+        ? [
+            'allowUnixSockets',
+            'allowAllUnixSockets',
+            'allowLocalBinding',
+            'allowMachLookup',
+            'httpProxyPort',
+            'socksProxyPort',
+          ]
+        : ['httpProxyPort', 'socksProxyPort'],
+    )
+    if (dropped.length > 0) {
+      logForDebugging(
+        `[sandbox] ${mandated ? 'admin sandbox mandate' : 'trusted network deny list or strict allowlist'}: ignoring sandbox.network.${dropped.join(', ')} from project/local settings`,
+      )
+    }
+  }
+  // Under allowManagedDomainsOnly only managed settings may replace the proxy.
+  const policyNetwork = getSettingsForSource('policySettings')?.sandbox?.network
+  const ports = shouldAllowManagedSandboxDomainsOnly()
+    ? {
+        httpProxyPort: policyNetwork?.httpProxyPort,
+        socksProxyPort: policyNetwork?.socksProxyPort,
+      }
+    : {
+        httpProxyPort: trustedSandboxValue(sb => sb.network?.httpProxyPort),
+        socksProxyPort: trustedSandboxValue(sb => sb.network?.socksProxyPort),
+      }
+  if (!mandated) {
+    return {
+      allowUnixSockets: network?.allowUnixSockets,
+      allowAllUnixSockets: network?.allowAllUnixSockets,
+      allowLocalBinding: network?.allowLocalBinding,
+      allowMachLookup: network?.allowMachLookup,
+      ...ports,
+    }
+  }
+  // A merged `false` still wins: it can only tighten.
+  const trustedFlag = (
+    merged: boolean | undefined,
+    pick: (sb: NonNullable<SettingsJson['sandbox']>) => boolean | undefined,
+  ) => (merged === false ? false : trustedSandboxValue(pick))
+  const sockets = trustedSandboxList(sb => sb.network?.allowUnixSockets)
+  const mach = trustedSandboxList(sb => sb.network?.allowMachLookup)
+  return {
+    allowUnixSockets: sockets.length > 0 ? sockets : undefined,
+    allowAllUnixSockets: trustedFlag(
+      network?.allowAllUnixSockets,
+      sb => sb.network?.allowAllUnixSockets,
+    ),
+    allowLocalBinding: trustedFlag(
+      network?.allowLocalBinding,
+      sb => sb.network?.allowLocalBinding,
+    ),
+    allowMachLookup: mach.length > 0 ? mach : undefined,
+    ...ports,
+  }
+}
+
 function shouldAllowManagedReadPathsOnly(): boolean {
   return (
     getSettingsForSource('policySettings')?.sandbox?.filesystem
@@ -221,56 +404,48 @@ export function convertToSandboxRuntimeConfig(
   // When allowManagedSandboxDomainsOnly is enabled, only use domains from policy settings
   if (shouldAllowManagedSandboxDomainsOnly()) {
     const policySettings = getSettingsForSource('policySettings')
-    for (const domain of policySettings?.sandbox?.network?.allowedDomains ||
-      []) {
-      allowedDomains.push(domain)
-    }
-    for (const ruleString of policySettings?.permissions?.allow || []) {
-      const rule = permissionRuleValueFromString(ruleString)
-      if (
-        rule.toolName === WEB_FETCH_TOOL_NAME &&
-        rule.ruleContent?.startsWith('domain:')
-      ) {
-        allowedDomains.push(rule.ruleContent.substring('domain:'.length))
-      }
-    }
+    allowedDomains.push(
+      ...(policySettings?.sandbox?.network?.allowedDomains ?? []),
+      ...webFetchDomains(policySettings?.permissions?.allow),
+    )
+  } else if (
+    isSandboxMandated() ||
+    trustedSandboxValue(sb => sb.network?.strictAllowlist)
+  ) {
+    // The repo's own settings cannot extend a mandated sandbox or a strict
+    // allowlist.
+    allowedDomains.push(
+      ...trustedSandboxList(sb => sb.network?.allowedDomains),
+      ...new Set(
+        trustedSandboxSettings().flatMap(s =>
+          webFetchDomains(s.permissions?.allow),
+        ),
+      ),
+    )
   } else {
-    // Under a strict allowlist the repo's own settings cannot extend it.
-    const strict = trustedSandboxValue(sb => sb.network?.strictAllowlist)
     for (const source of SETTING_SOURCES.filter(isSettingSourceEnabled)) {
-      if (strict && (source === 'projectSettings' || source === 'localSettings')) {
-        continue
-      }
       allowedDomains.push(
         ...(getSettingsForSource(source)?.sandbox?.network?.allowedDomains ?? []),
       )
     }
-    for (const ruleString of permissions.allow || []) {
-      const rule = permissionRuleValueFromString(ruleString)
-      if (
-        rule.toolName === WEB_FETCH_TOOL_NAME &&
-        rule.ruleContent?.startsWith('domain:')
-      ) {
-        allowedDomains.push(rule.ruleContent.substring('domain:'.length))
-      }
-    }
+    allowedDomains.push(...webFetchDomains(permissions.allow))
   }
 
-  for (const ruleString of permissions.deny || []) {
-    const rule = permissionRuleValueFromString(ruleString)
-    if (
-      rule.toolName === WEB_FETCH_TOOL_NAME &&
-      rule.ruleContent?.startsWith('domain:')
-    ) {
-      deniedDomains.push(rule.ruleContent.substring('domain:'.length))
-    }
-  }
+  deniedDomains.push(...webFetchDomains(permissions.deny))
   deniedDomains.push(...(settings.sandbox?.network?.deniedDomains ?? []))
 
   // Extract filesystem paths from Edit and Read rules
   // Always include current directory and Claude temp directory as writable
   // The temp directory is needed for Shell.ts cwd tracking files
   const allowWrite: string[] = ['.', getClaudeTempDir()]
+  // srt-win drops a write grant on a path that does not exist yet.
+  if (getPlatform() === 'windows') {
+    try {
+      mkdirSync(getClaudeTempDir(), { recursive: true })
+    } catch (error) {
+      logForDebugging(`Failed to create ${getClaudeTempDir()}: ${error}`)
+    }
+  }
   const denyWrite: string[] = []
   const denyRead: string[] = []
   const allowRead: string[] = []
@@ -493,23 +668,7 @@ export function convertToSandboxRuntimeConfig(
     network: {
       allowedDomains,
       deniedDomains,
-      allowUnixSockets: settings.sandbox?.network?.allowUnixSockets,
-      allowAllUnixSockets: settings.sandbox?.network?.allowAllUnixSockets,
-      allowLocalBinding: settings.sandbox?.network?.allowLocalBinding,
-      // The repo cannot route traffic around a managed deny list or a locked sandbox.
-      ...(policySandbox?.network?.deniedDomains?.length ||
-      isUnsandboxedFallbackLocked()
-        ? {
-            httpProxyPort: trustedSandboxValue(sb => sb.network?.httpProxyPort),
-            socksProxyPort: trustedSandboxValue(
-              sb => sb.network?.socksProxyPort,
-            ),
-          }
-        : {
-            httpProxyPort: settings.sandbox?.network?.httpProxyPort,
-            socksProxyPort: settings.sandbox?.network?.socksProxyPort,
-          }),
-      allowMachLookup: settings.sandbox?.network?.allowMachLookup,
+      ...networkAllowances(settings.sandbox?.network),
       strictAllowlist: trustedSandboxValue(sb => sb.network?.strictAllowlist),
       tlsTerminate: trustedSandboxValue(sb => sb.network?.tlsTerminate),
     },
@@ -517,7 +676,10 @@ export function convertToSandboxRuntimeConfig(
       denyRead,
       allowRead,
       allowWrite,
-      denyWrite,
+      denyWrite:
+        getPlatform() === 'windows'
+          ? denyWrite.filter(p => isInsideWindowsWriteGrant(p, allowWrite))
+          : denyWrite,
       disabled: filesystemDisabled,
     },
     ...(hasCredentials && {
@@ -539,8 +701,58 @@ export function convertToSandboxRuntimeConfig(
     ripgrep: ripgrepConfig,
     bwrapPath: policySandbox?.bwrapPath,
     socatPath: policySandbox?.socatPath,
+    ...(getPlatform() === 'windows' &&
+      getSrtWinPath() && {
+        windows: {
+          sandboxUser: WINDOWS_SANDBOX_USER,
+          srtWin: { path: getSrtWinPath()! },
+        },
+      }),
   }
 }
+
+/**
+ * The Windows sandbox user can write only where it is granted, so a write
+ * deny outside every grant changes nothing. srt-win still stamps each one,
+ * and stamping under the user's profile or Program Files is slow or fails.
+ */
+function isInsideWindowsWriteGrant(
+  path: string,
+  allowWrite: string[],
+): boolean {
+  // Compare long names: a grant and a deny may spell one folder in 8.3 form.
+  const longPath = (p: string): string => {
+    const rest: string[] = []
+    for (let dir = resolve(getCwdState(), p); ; ) {
+      try {
+        return join(realpathSync.native(dir), ...rest)
+      } catch {
+        const parent = dirname(dir)
+        if (parent === dir) return resolve(getCwdState(), p)
+        rest.unshift(basename(dir))
+        dir = parent
+      }
+    }
+  }
+  const target = longPath(path)
+  return allowWrite.some(root => pathInWorkingPath(target, longPath(root)))
+}
+
+/**
+ * srt-win.exe, which the Windows sandbox spawns. The compiled binary embeds
+ * it; a source checkout uses the runtime's vendored copy.
+ */
+export const getSrtWinPath = memoize((): string | undefined => {
+  const sourcePath = process.env.CLAUDE_CODE_EMBEDDED_SRT_WIN_PATH
+  const version = process.env.CLAUDE_CODE_EMBEDDED_SRT_WIN_VERSION
+  if (sourcePath && version) {
+    return extractEmbeddedBinary(
+      sourcePath,
+      join(CACHE_PATHS.srtWin(), `${version}-${process.arch}`, 'srt-win.exe'),
+    )
+  }
+  return existsSync(VENDORED_SRT_WIN_EXE) ? VENDORED_SRT_WIN_EXE : undefined
+})
 
 // ============================================================================
 // Claude CLI-specific state
@@ -622,6 +834,7 @@ async function detectWorktreeMainRepoPath(cwd: string): Promise<string | null> {
  * Returns { errors, warnings } - errors mean sandbox cannot run
  */
 const checkDependencies = memoize((): SandboxDependencyCheck => {
+  if (getPlatform() === 'windows') return checkWindowsDependencies()
   const { rgPath, rgArgs } = ripgrepCommand()
   const result = BaseSandboxManager.checkDependencies({
     command: rgPath,
@@ -644,6 +857,90 @@ const checkDependencies = memoize((): SandboxDependencyCheck => {
     warnings: result.warnings,
   }
 })
+
+// Official's account name: both builds then share one install (srt-win refuses
+// a second install under another name).
+export const WINDOWS_SANDBOX_USER = 'ClaudeCodeSandbox'
+
+/**
+ * The runtime only finds srt-win through an initialized config, so probe the
+ * install here. srt-win starts the command as the sandbox user, which
+ * needs read and execute on srt-win.exe itself; the extracted copy lives in
+ * the user's profile, which that user cannot read.
+ */
+function checkWindowsDependencies(): SandboxDependencyCheck {
+  const path = getSrtWinPath()
+  if (!path) {
+    return { errors: ['srt-win.exe not found'], warnings: [] }
+  }
+  let sid: string | undefined
+  let groupSid: string | undefined
+  try {
+    const user = getWindowsSandboxUserStatus({
+      srtWin: resolveSrtWin({ path }),
+    })
+    if (user.provisioned && user.credPresent) {
+      sid = user.sid
+      groupSid = user.groupSid
+    }
+  } catch (error) {
+    return {
+      errors: [`srt-win user status failed: ${errorMessage(error)}`],
+      warnings: [],
+    }
+  }
+  if (!sid) {
+    return {
+      errors: [
+        'the Windows sandbox is not installed (run `claude sandbox install`, one UAC prompt)',
+      ],
+      warnings: [],
+    }
+  }
+  try {
+    execFileSync('icacls', [path, '/grant', `*${sid}:RX`], {
+      stdio: 'ignore',
+      windowsHide: true,
+    })
+  } catch (error) {
+    return {
+      errors: [`could not let the sandbox user run ${path}: ${errorMessage(error)}`],
+      warnings: [],
+    }
+  }
+  grantWindowsParentFolders(groupSid ?? sid)
+  return { errors: [], warnings: [] }
+}
+
+/**
+ * The sandbox user cannot read the attributes of the folders in the user's
+ * profile, so a sandboxed process cannot take a project there as its working
+ * directory: PowerShell starts in the drive root. Grant that right on each
+ * folder between the profile and the project, and only synchronize on the
+ * profile itself.
+ */
+function grantWindowsParentFolders(sid: string): void {
+  try {
+    const home = realpathSync.native(userInfo().homedir)
+    const project = realpathSync.native(getOriginalCwd())
+    const rel = relative(home, project)
+    if (!rel || rel.startsWith('..') || isAbsolute(rel)) return
+    const parts = rel.split(sep)
+    for (let i = 0; i < parts.length; i++) {
+      const folder = join(home, ...parts.slice(0, i))
+      execFileSync(
+        'icacls',
+        [folder, '/grant', `*${sid}:${i === 0 ? '(S)' : '(RA,S)'}`],
+        { stdio: 'ignore', windowsHide: true },
+      )
+    }
+  } catch (error) {
+    logForDebugging(
+      `[sandbox] could not let the sandbox user reach the project folder: ${errorMessage(error)}`,
+      { level: 'warn' },
+    )
+  }
+}
 
 function getSandboxEnabledSetting(): boolean {
   try {
@@ -766,7 +1063,7 @@ function getSandboxUnavailableReason(): string | undefined {
     if (platform === 'wsl') {
       return 'sandbox.enabled is set but WSL1 is not supported (requires WSL2)'
     }
-    return `sandbox.enabled is set but ${platform} is not supported (requires macOS, Linux, or WSL2)`
+    return `sandbox.enabled is set but ${platform} is not supported (requires macOS, Linux, WSL2, or Windows)`
   }
 
   if (!isPlatformInEnabledList()) {
@@ -777,7 +1074,7 @@ function getSandboxUnavailableReason(): string | undefined {
   if (deps.errors.length > 0) {
     const platform = getPlatform()
     const hint =
-      platform === 'macos'
+      platform === 'macos' || platform === 'windows'
         ? 'run /sandbox or /doctor for details'
         : 'install missing tools (e.g. apt install bubblewrap socat) or run /sandbox for details'
     return `sandbox.enabled is set but dependencies are missing: ${deps.errors.join(', ')} · ${hint}`
@@ -915,6 +1212,7 @@ async function wrapWithSandbox(
   binShell?: string,
   customConfig?: Partial<SandboxRuntimeConfig>,
   abortSignal?: AbortSignal,
+  options?: WrapWithSandboxOptions,
 ): Promise<string> {
   // If sandboxing is enabled, ensure initialization is complete
   if (isSandboxingEnabled()) {
@@ -936,7 +1234,85 @@ async function wrapWithSandbox(
     binShell,
     customConfig,
     abortSignal,
+    options,
   )
+}
+
+/**
+ * Wrap command with sandbox as an argv to spawn with `shell: false`. This is
+ * the only form the runtime supports on Windows.
+ */
+async function wrapWithSandboxArgv(
+  command: string,
+  binShell: string,
+  cwd: string,
+  abortSignal?: AbortSignal,
+  options?: WrapWithSandboxOptions,
+): Promise<{ argv: string[]; env: NodeJS.ProcessEnv }> {
+  if (isSandboxingEnabled()) {
+    if (initializationPromise) {
+      await initializationPromise
+    } else {
+      throw new Error('Sandbox failed to initialize. ')
+    }
+  }
+  return BaseSandboxManager.wrapWithSandboxArgv(
+    command,
+    binShell,
+    undefined,
+    abortSignal,
+    cwd,
+    options,
+  )
+}
+
+const NOT_IN_ALLOWED_DOMAINS = {
+  allow: false as const,
+  reason:
+    "not in this command's allowed_domains — re-run the command with this host listed if it needs it",
+}
+
+/**
+ * Whether Bash, PowerShell and Monitor offer `allowed_domains`: a host list
+ * registered with the runtime for one command.
+ */
+function areCommandNetworkListsOffered(): boolean {
+  return (
+    isSandboxingEnabled() &&
+    typeof BaseSandboxManager.registerCommandNetworkLists === 'function'
+  )
+}
+
+/**
+ * Answers a network ask the way the permission mode answers a tool ask:
+ * bypass allows, dontAsk denies, auto mode points the model at
+ * `allowed_domains`; the other modes ask. allowManagedDomainsOnly denies.
+ */
+export function wrapSandboxAskCallback(
+  sandboxAskCallback: SandboxAskCallback,
+  getPermissionContext?: () => Pick<ToolPermissionContext, 'mode'>,
+): SandboxAskCallback {
+  return async (hostPattern: NetworkHostPattern) => {
+    if (shouldAllowManagedSandboxDomainsOnly()) {
+      logForDebugging(
+        `[sandbox] Blocked network request to ${hostPattern.host} (allowManagedDomainsOnly)`,
+      )
+      return false
+    }
+    switch (getPermissionContext?.().mode) {
+      case 'bypassPermissions':
+        return true
+      case 'dontAsk':
+        return false
+      case 'auto':
+        if (areCommandNetworkListsOffered()) {
+          return BaseSandboxManager.askCallbackDenyReason
+            ? NOT_IN_ALLOWED_DOMAINS
+            : false
+        }
+    }
+    return sandboxAskCallback(hostPattern)
+  }
 }
 
 /**
@@ -944,6 +1320,7 @@ async function wrapWithSandbox(
  */
 async function initialize(
   sandboxAskCallback?: SandboxAskCallback,
+  getPermissionContext?: () => Pick<ToolPermissionContext, 'mode'>,
 ): Promise<void> {
   // If already initializing or initialized, return the promise
   if (initializationPromise) {
@@ -955,18 +1332,8 @@ async function initialize(
     return
   }
 
-  // Wrap the callback to enforce allowManagedDomainsOnly policy.
-  // This ensures all code paths (REPL, print/SDK) are covered.
-  const wrappedCallback: SandboxAskCallback | undefined = sandboxAskCallback
-    ? async (hostPattern: NetworkHostPattern) => {
-        if (shouldAllowManagedSandboxDomainsOnly()) {
-          logForDebugging(
-            `[sandbox] Blocked network request to ${hostPattern.host} (allowManagedDomainsOnly)`,
-          )
-          return false
-        }
-        return sandboxAskCallback(hostPattern)
-      }
+  const wrappedCallback = sandboxAskCallback
+    ? wrapSandboxAskCallback(sandboxAskCallback, getPermissionContext)
     : undefined
 
   // Create the initialization promise synchronously (before any await) to prevent
@@ -1093,7 +1460,12 @@ export function addToExcludedCommands(
 // ============================================================================
 
 export interface ISandboxManager {
-  initialize(sandboxAskCallback?: SandboxAskCallback): Promise<void>
+  initialize(
+    sandboxAskCallback?: SandboxAskCallback,
+    getPermissionContext?: () => Pick<ToolPermissionContext, 'mode'>,
+  ): Promise<void>
+  areCommandNetworkListsOffered(): boolean
+  isAllowlistClosed(): boolean
   isSupportedPlatform(): boolean
   isPlatformInEnabledList(): boolean
   getSandboxUnavailableReason(): string | undefined
@@ -1127,7 +1499,20 @@ export interface ISandboxManager {
     binShell?: string,
     customConfig?: Partial<SandboxRuntimeConfig>,
     abortSignal?: AbortSignal,
+    options?: WrapWithSandboxOptions,
   ): Promise<string>
+  wrapWithSandboxArgv(
+    command: string,
+    binShell: string,
+    cwd: string,
+    abortSignal?: AbortSignal,
+    options?: WrapWithSandboxOptions,
+  ): Promise<{ argv: string[]; env: NodeJS.ProcessEnv }>
+  registerCommandNetworkLists(
+    commandId: string,
+    lists: { allowedDomains?: string[] },
+  ): void
+  unregisterCommandNetworkLists(commandId: string): void
   cleanupAfterCommand(): void
   getSandboxViolationStore(): SandboxViolationStore
   annotateStderrWithSandboxFailures(command: string, stderr: string): string
@@ -1142,6 +1527,8 @@ export interface ISandboxManager {
 export const SandboxManager: ISandboxManager = {
   // Custom implementations
   initialize,
+  areCommandNetworkListsOffered,
+  isAllowlistClosed,
   isSandboxingEnabled,
   isSandboxEnabledInSettings: getSandboxEnabledSetting,
   isPlatformInEnabledList,
@@ -1153,6 +1540,7 @@ export const SandboxManager: ISandboxManager = {
   setSandboxSettings,
   getExcludedCommands,
   wrapWithSandbox,
+  wrapWithSandboxArgv,
   refreshConfig,
   reset,
   checkDependencies,
@@ -1173,6 +1561,10 @@ export const SandboxManager: ISandboxManager = {
   getLinuxSocksSocketPath: BaseSandboxManager.getLinuxSocksSocketPath,
   waitForNetworkInitialization: BaseSandboxManager.waitForNetworkInitialization,
   getSandboxViolationStore: BaseSandboxManager.getSandboxViolationStore,
+  registerCommandNetworkLists: (commandId, lists) =>
+    BaseSandboxManager.registerCommandNetworkLists(commandId, lists),
+  unregisterCommandNetworkLists: commandId =>
+    BaseSandboxManager.unregisterCommandNetworkLists(commandId),
   annotateStderrWithSandboxFailures:
     BaseSandboxManager.annotateStderrWithSandboxFailures,
   cleanupAfterCommand: (): void => {

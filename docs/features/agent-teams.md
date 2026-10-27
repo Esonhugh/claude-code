@@ -42,34 +42,40 @@
 
 你不需要自己调用工具，直接告诉 Claude 要组团队、分工是什么。下面用测试用的假 API 演示负责人做了两件事：建团队 `docs`，再拉起一个叫 `writer` 的队友去写引言。
 
-**1. 建好团队后，提示框下方出现成员条。** `@main` 是你自己（负责人），`@writer` 是队友：
+**1. 拉起队友后，提示框下方出现 agent 面板。** `main` 是你自己（负责人），下面每行是一个队友（和后台 Agent 一起按启动时间排序）：工作中的显示耗时和 token，空闲的显示 `idle`，等待审批的显示 `awaiting approval`，有排队消息时追加 `N queued`。面板最多显示 5 行，超出的部分用 `↑ N more` / `↓ N more` 表示：
 
 ```text
-❯ 
-──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-  @main @writer · shift + ↓ to expand
-  ctrl+t to show tasks
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ↓ to manage
+    ● main   ↑ 3 more
+    ◯ mate4  mate 4                                                     idle
+    ◯ mate5  mate 5                                        41s · ↓ 11 tokens
+    ◯ mate6  mate 6                                                     idle
+    ◯ mate7  mate 7                                        41s · ↓ 11 tokens
+  ❯ ◯ 1 idle agent
+
+  Enter to expand · Esc to cancel
 ```
 
-**2. 队友做完后会发消息回来。** 消息以 `@writer❯` 开头显示在负责人的对话里，负责人会接着处理。按 `Shift+↓` 展开成员列表，能看到每个人的状态：
+空闲的队友超过 3 个时，多出来的会折叠成 `N idle agents` 一行；选中它按 Enter 展开，展开后按 `Esc` 再折叠。和官方 2.1.311 一致。
 
-![负责人视角](images/agent-teams-lead.png)
+**2. 队友做完后会发消息回来。** 消息以 `@writer❯` 开头显示在负责人的对话里，负责人会接着处理。
 
-**3. 切过去看队友。** 在成员列表里用 `Shift+↑/↓` 选中 `@writer`，按 Enter。顶部显示 `Viewing @writer`，下面是它收到的任务和它的对话；这时输入框变成 `Message @writer…`，打字发送就是直接对它说话：
+**3. 切过去看队友。** 按 `↓` 进入面板，用 `↑/↓` 选中队友，按 Enter。顶部显示 `Viewing @writer`，下面是它收到的任务和它的对话；这时输入框变成 `Message @writer…`，打字发送就是直接对它说话：
 
 ![查看队友](images/agent-teams-teammate.png)
 
-**4. 回到负责人。** 用 `Shift+↑` 选中 `team-lead` 再按 Enter。查看一个空闲的队友时按 `Esc` 不会返回（`Esc` 只打断队友正在做的那一轮），官方 2.1.303 也是这样。
+**4. 回到负责人。** 在面板里选中 `main` 再按 Enter。查看一个正在工作的队友时按 `Esc` 只打断它这一轮；查看空闲或已结束的队友时按 `Esc` 返回负责人。
 
 ## 操作速查
 
 | 按键 | 作用 |
 | --- | --- |
-| `Shift+↓` | 展开成员列表 / 选下一个成员 |
-| `Shift+↑` | 选上一个成员 |
-| `Enter`（选中成员时） | 切到该成员的视图；选 `team-lead` 回到自己 |
-| `Ctrl+T` | 在「隐藏 → 任务清单 → 成员列表」之间循环 |
-| `Ctrl+Shift+O` | 预览队友 |
+| `↓`（输入框为空时） | 进入 agent 面板 |
+| `↑/↓`（面板中） | 选择上一个 / 下一个 |
+| `Enter`（面板中） | 切到该队友的视图；选 `main` 回到自己；选 `N idle agents` 展开 |
+| `x`（面板中） | 停止选中的队友；已结束的则清除 |
+| `Esc`（面板中） | 折叠已展开的空闲队友，否则退出面板 |
+| `Ctrl+T` | 显示 / 隐藏任务清单 |
 | `Ctrl+C`（查看队友时） | 停止所有正在运行的 Agent 并回到负责人 |
 
 ## 共享任务清单

@@ -61,6 +61,12 @@ import {
   getToolResultPath,
   PREVIEW_SIZE_BYTES,
 } from '../../utils/toolResultStorage.js'
+import {
+  allowedDomainsInputField,
+  commandNetworkLists,
+  takeCommandNetworkLists,
+  validateAllowedDomains,
+} from '../../utils/sandbox/commandNetworkLists.js'
 import { shouldUseSandbox } from '../BashTool/shouldUseSandbox.js'
 import { BackgroundHint } from '../BashTool/UI.js'
 import {
@@ -248,24 +254,23 @@ export function detectBlockedSleepPattern(command: string): string | null {
 }
 
 /**
- * On Windows native, sandbox is unavailable (bwrap/sandbox-exec are
- * POSIX-only). If enterprise policy has sandbox.enabled AND forbids
- * unsandboxed commands, PowerShell cannot comply — refuse execution
- * rather than silently bypass the policy. On Linux/macOS/WSL2, pwsh
- * runs as a native binary under the sandbox same as bash, so this
- * gate does not apply.
+ * If enterprise policy has sandbox.enabled AND forbids unsandboxed
+ * commands but the Windows sandbox is not available (not installed, or
+ * srt-win is missing), PowerShell cannot comply — refuse execution
+ * rather than silently bypass the policy.
  *
  * Checked in BOTH validateInput (clean tool-runner error) and call()
  * (covers direct callers like promptShellExecution.ts that skip
  * validateInput). The call() guard is the load-bearing one.
  */
 const WINDOWS_SANDBOX_POLICY_REFUSAL =
-  'Enterprise policy requires sandboxing, but sandboxing is not available on native Windows. Shell command execution is blocked on this platform by policy.'
+  'Enterprise policy requires sandboxing, but the Windows sandbox is not available. Shell command execution is blocked on this platform by policy.'
 function isWindowsSandboxPolicyViolation(): boolean {
   return (
     getPlatform() === 'windows' &&
     SandboxManager.isSandboxEnabledInSettings() &&
-    !SandboxManager.areUnsandboxedCommandsAllowed()
+    !SandboxManager.areUnsandboxedCommandsAllowed() &&
+    !SandboxManager.isSandboxingEnabled()
   )
 }
 
@@ -292,6 +297,7 @@ const fullInputSchema = lazySchema(() =>
     dangerouslyDisableSandbox: semanticBoolean(z.boolean().optional()).describe(
       'Set this to true to dangerously override sandbox mode and run commands without sandboxing.',
     ),
+    ...allowedDomainsInputField(),
   }),
 )
 
@@ -445,7 +451,10 @@ export const PowerShellTool = buildTool({
     return isReadOnlyCommand(input.command)
   },
   toAutoClassifierInput(input) {
-    return input.command
+    const lists = commandNetworkLists(input)
+    return lists
+      ? { command: input.command, allowed_domains: lists.allowedDomains }
+      : input.command
   },
 
   get inputSchema(): InputSchema {
@@ -511,7 +520,9 @@ export const PowerShellTool = buildTool({
         }
       }
     }
-    return { result: true }
+    return (
+      validateAllowedDomains(input, shouldUseSandbox(input)) ?? { result: true }
+    )
   },
 
   async checkPermissions(
@@ -952,17 +963,13 @@ async function* runPowerShellCommand({
         lastTotalBytes = isIncomplete ? totalBytes : 0
       },
       preventCwdChanges,
-      // Sandbox works on Linux/macOS/WSL2 — pwsh there is a native binary and
-      // SandboxManager.wrapWithSandbox wraps it same as bash (Shell.ts uses
-      // /bin/sh for the outer spawn to parse the POSIX-quoted bwrap/sandbox-exec
-      // string). On Windows native, sandbox is unsupported; shouldUseSandbox()
-      // returns false via isSandboxingEnabled() → isSupportedPlatform() → false.
-      // The explicit platform check is redundant-but-obvious.
-      shouldUseSandbox:
-        getPlatform() === 'windows' || userShellCommand
-          ? false
-          : shouldUseSandbox({ command, dangerouslyDisableSandbox }),
+      // Shell.ts runs sandboxed pwsh through /bin/sh (bwrap/sandbox-exec) or,
+      // on Windows, through Git Bash under srt-win.
+      shouldUseSandbox: userShellCommand
+        ? false
+        : shouldUseSandbox({ command, dangerouslyDisableSandbox }),
       shouldAutoBackground,
+      networkLists: takeCommandNetworkLists(toolUseId, command),
     })
   } catch (e) {
     logError(e)

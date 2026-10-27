@@ -1,11 +1,11 @@
 // biome-ignore-all assist/source/organizeImports: ANT-ONLY import markers must not be reordered
 import { feature } from 'bun:bundle'
-import { TASK_OUTPUT_TOOL_NAME } from '../tools/TaskOutputTool/constants.js'
 import { EXIT_PLAN_MODE_V2_TOOL_NAME } from '../tools/ExitPlanModeTool/constants.js'
 import { ENTER_PLAN_MODE_TOOL_NAME } from '../tools/EnterPlanModeTool/constants.js'
 import { AGENT_TOOL_NAME } from '../tools/AgentTool/constants.js'
 import { ASK_USER_QUESTION_TOOL_NAME } from '../tools/AskUserQuestionTool/prompt.js'
 import { TASK_STOP_TOOL_NAME } from '../tools/TaskStopTool/prompt.js'
+import { MONITOR_TOOL_NAME } from '../tools/MonitorTool/prompt.js'
 import { FILE_READ_TOOL_NAME } from '../tools/FileReadTool/prompt.js'
 import { WEB_SEARCH_TOOL_NAME } from '../tools/WebSearchTool/prompt.js'
 import { TODO_WRITE_TOOL_NAME } from '../tools/TodoWriteTool/constants.js'
@@ -27,25 +27,21 @@ import { SYNTHETIC_OUTPUT_TOOL_NAME } from '../tools/SyntheticOutputTool/Synthet
 import { ENTER_WORKTREE_TOOL_NAME } from '../tools/EnterWorktreeTool/constants.js'
 import { EXIT_WORKTREE_TOOL_NAME } from '../tools/ExitWorktreeTool/constants.js'
 import { WORKFLOW_TOOL_NAME } from '../tools/WorkflowTool/constants.js'
-import { SET_GOAL_TOOL_NAME } from '../tools/SetGoalTool/constants.js'
-import { CLEAR_GOAL_TOOL_NAME } from '../tools/ClearGoalTool/constants.js'
+import { GOAL_TOOL_NAME } from '../tools/GoalTool/constants.js'
 import {
   CRON_CREATE_TOOL_NAME,
   CRON_DELETE_TOOL_NAME,
   CRON_LIST_TOOL_NAME,
 } from '../tools/ScheduleCronTool/prompt.js'
 export const MAIN_THREAD_ONLY_TOOLS = new Set([
-  SET_GOAL_TOOL_NAME,
-  CLEAR_GOAL_TOOL_NAME,
+  GOAL_TOOL_NAME,
 ])
 
 export const ALL_AGENT_DISALLOWED_TOOLS = new Set([
   ...MAIN_THREAD_ONLY_TOOLS,
-  TASK_OUTPUT_TOOL_NAME,
   EXIT_PLAN_MODE_V2_TOOL_NAME,
   ENTER_PLAN_MODE_TOOL_NAME,
   ASK_USER_QUESTION_TOOL_NAME,
-  TASK_STOP_TOOL_NAME,
   // Prevent recursive workflow execution inside subagents.
   WORKFLOW_TOOL_NAME,
 ])
@@ -74,6 +70,9 @@ export const ASYNC_AGENT_ALLOWED_TOOLS = new Set([
   TOOL_SEARCH_TOOL_NAME,
   ENTER_WORKTREE_TOOL_NAME,
   EXIT_WORKTREE_TOOL_NAME,
+  MONITOR_TOOL_NAME,
+  SEND_MESSAGE_TOOL_NAME,
+  TASK_STOP_TOOL_NAME,
 ])
 /**
  * Tools allowed only for in-process teammates (not general async agents).
@@ -95,9 +94,7 @@ export const IN_PROCESS_TEAMMATE_ALLOWED_TOOLS = new Set([
 
 /*
  * BLOCKED FOR ASYNC AGENTS:
- * - TaskOutputTool: Blocked to prevent recursion
  * - ExitPlanModeTool: Plan mode is a main thread abstraction.
- * - TaskStopTool: Requires access to main thread task state.
  * - TungstenTool: Uses singleton virtual terminal abstraction that conflicts between agents.
  *
  * ENABLE LATER (NEED WORK):
@@ -111,7 +108,7 @@ export const IN_PROCESS_TEAMMATE_ALLOWED_TOOLS = new Set([
  */
 export const COORDINATOR_MODE_ALLOWED_TOOLS = new Set([
   AGENT_TOOL_NAME,
-  SET_GOAL_TOOL_NAME,
+  GOAL_TOOL_NAME,
   TASK_STOP_TOOL_NAME,
   SEND_MESSAGE_TOOL_NAME,
   SYNTHETIC_OUTPUT_TOOL_NAME,

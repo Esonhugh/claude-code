@@ -14,10 +14,16 @@ import {
 import type { z } from 'zod/v4'
 import { getOriginalCwd, getSessionId } from '../../bootstrap/state.js'
 import { checkStatsigFeatureGate_CACHED_MAY_BE_STALE } from '../../services/analytics/growthbook.js'
-import type { AnyObject, Tool, ToolPermissionContext } from '../../Tool.js'
+import type {
+  AnyObject,
+  Tool,
+  ToolPermissionContext,
+  ToolUseContext,
+} from '../../Tool.js'
 import { FILE_READ_TOOL_NAME } from '../../tools/FileReadTool/prompt.js'
 import { getCwd } from '../cwd.js'
 import { getClaudeConfigHomeDir } from '../envUtils.js'
+import { getCanonicalName } from '../model/model.js'
 import {
   getFsImplementation,
   getPathsForPermissionCheck,
@@ -1594,6 +1600,47 @@ export function checkWritePermissionForTool<Input extends AnyObject>(
         }
       : undefined,
   }
+}
+
+// Models that keep the strict read-before-write guard in 2.1.311.
+const READ_GUARD_MODELS = new Set([
+  'claude-opus-4-6',
+  'claude-haiku-4-5',
+  'claude-opus-4-5',
+  'claude-opus-4-1',
+  'claude-opus-4-0',
+  'claude-sonnet-4-5',
+  'claude-sonnet-4-0',
+  'claude-3-7-sonnet',
+  'claude-3-5-sonnet',
+  'claude-3-5-haiku',
+])
+
+/**
+ * Like 2.1.311: Write/Edit may change a file the model has not Read (or read
+ * stale) when the write runs without a prompt anyway — allowed by mode or
+ * rule, or an in-directory write in bypassPermissions — the session can Read,
+ * and the model is not one that keeps the guard.
+ */
+export function canWriteWithoutRead<Input extends AnyObject>(
+  tool: Tool<Input>,
+  input: z.infer<Input>,
+  context: ToolUseContext,
+): boolean {
+  if (READ_GUARD_MODELS.has(getCanonicalName(context.options.mainLoopModel))) {
+    return false
+  }
+  if (!context.options.tools.some(t => t.name === FILE_READ_TOOL_NAME)) {
+    return false
+  }
+  const permissionContext = context.getAppState().toolPermissionContext
+  const decision = checkWritePermissionForTool(tool, input, permissionContext)
+  if (decision.behavior === 'allow') return true
+  return (
+    decision.behavior === 'ask' &&
+    decision.decisionReason === undefined &&
+    permissionContext.mode === 'bypassPermissions'
+  )
 }
 
 export function generateSuggestions(

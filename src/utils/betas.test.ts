@@ -13,6 +13,7 @@ const originalUseOpenAI = process.env.CLAUDE_CODE_USE_OPENAI
 const originalUseBedrock = process.env.CLAUDE_CODE_USE_BEDROCK
 const originalUseVertex = process.env.CLAUDE_CODE_USE_VERTEX
 const originalUseFoundry = process.env.CLAUDE_CODE_USE_FOUNDRY
+const originalBaseUrl = process.env.ANTHROPIC_BASE_URL
 
 try {
   process.env.NODE_ENV = 'test'
@@ -23,6 +24,7 @@ try {
   delete process.env.CLAUDE_CODE_USE_BEDROCK
   delete process.env.CLAUDE_CODE_USE_VERTEX
   delete process.env.CLAUDE_CODE_USE_FOUNDRY
+  delete process.env.ANTHROPIC_BASE_URL
 
   const {
     setIsInteractive,
@@ -74,8 +76,32 @@ try {
   })
   delete process.env.CLAUDE_CODE_USE_VERTEX
 
+  // Without a GrowthBook payload the official default allowlist applies.
+  setPromptCache1hAllowlist(null)
+  for (const querySource of ['repl_main_thread', 'sdk', 'auto_mode', 'memdir_relevance'] as const) {
+    assert.deepEqual(getCacheControl({ querySource }), { type: 'ephemeral', ttl: '1h' })
+  }
+  assert.deepEqual(getCacheControl({ querySource: 'compact' }), { type: 'ephemeral' })
+
   setPromptCache1hAllowlist(null)
   setPromptCache1hEligible(null)
+
+  // Global cache scope (header + scope field) is first-party base URL only.
+  const { clearBetasCaches, shouldUseGlobalCacheScope } = await import('./betas.js')
+  const { PROMPT_CACHING_SCOPE_BETA_HEADER } = await import('../constants/betas.js')
+  clearBetasCaches()
+  assert.equal(shouldUseGlobalCacheScope(), true)
+  assert.equal(getAllModelBetas('claude-sonnet-4-6').includes(PROMPT_CACHING_SCOPE_BETA_HEADER), true)
+  process.env.ANTHROPIC_BASE_URL = 'http://127.0.0.1:9556'
+  clearBetasCaches()
+  assert.equal(shouldUseGlobalCacheScope(), false)
+  assert.equal(getAllModelBetas('claude-sonnet-4-6').includes(PROMPT_CACHING_SCOPE_BETA_HEADER), false)
+  process.env._CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL = '1'
+  clearBetasCaches()
+  assert.equal(shouldUseGlobalCacheScope(), true)
+  delete process.env._CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL
+  delete process.env.ANTHROPIC_BASE_URL
+  clearBetasCaches()
 } finally {
   if (originalNodeEnv === undefined) delete process.env.NODE_ENV
   else process.env.NODE_ENV = originalNodeEnv
@@ -102,6 +128,9 @@ try {
 
   if (originalUseFoundry === undefined) delete process.env.CLAUDE_CODE_USE_FOUNDRY
   else process.env.CLAUDE_CODE_USE_FOUNDRY = originalUseFoundry
+
+  if (originalBaseUrl === undefined) delete process.env.ANTHROPIC_BASE_URL
+  else process.env.ANTHROPIC_BASE_URL = originalBaseUrl
 }
 
 console.log('betas.test.ts passed')

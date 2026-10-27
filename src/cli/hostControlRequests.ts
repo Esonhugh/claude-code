@@ -45,7 +45,9 @@ import type { Message } from '../types/message.js'
 import { getSubscriptionType } from '../utils/auth.js'
 import { clearMemoryFileCaches, getMemoryFiles } from '../utils/claudemd.js'
 import { getCwd } from '../utils/cwd.js'
+import { logForDebugging } from '../utils/debug.js'
 import { getClaudeConfigHomeDir } from '../utils/envUtils.js'
+import { errorMessage } from '../utils/errors.js'
 import { renderMessagesToPlainText } from '../utils/exportRenderer.js'
 import { tailFile } from '../utils/fsOperations.js'
 import { formatRelativeTimeAgo } from '../utils/format.js'
@@ -162,7 +164,10 @@ export async function buildUsageResponse() {
   let utilization: Utilization | null = null
   try {
     utilization = await fetchUtilization()
-  } catch {
+  } catch (error) {
+    logForDebugging(`get_usage: rate limits unavailable: ${errorMessage(error)}`, {
+      level: 'warn',
+    })
     utilization = null
   }
   const isChatGPT = utilization?.source === 'chatgpt'

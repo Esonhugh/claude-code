@@ -89,6 +89,7 @@ import {
   stripAdvisorBlocks,
   stripCallerFieldFromAssistantMessage,
   stripToolReferenceBlocksFromUserMessage,
+  wrapInSystemReminder,
 } from '../../utils/messages.js'
 import {
   getDefaultOpusModel,
@@ -194,11 +195,14 @@ import {
   type ThinkingConfig,
 } from 'src/utils/thinking.js'
 import {
+  DEFERRED_TOOL_PLACEHOLDER,
   extractDiscoveredToolNames,
-  isToolReferenceTextFallback,
   getDeferredToolsDelta,
+  getToolSearchRefusal,
   isDeferredToolsDeltaEnabled,
   isToolSearchEnabled,
+  markToolSearchRefused,
+  type ToolSearchRefusal,
 } from 'src/utils/toolSearch.js'
 import { API_MAX_MEDIA_PER_REQUEST } from '../../constants/apiLimits.js'
 import { ADVISOR_BETA_HEADER } from '../../constants/betas.js'
@@ -451,12 +455,21 @@ export function hasExtendedCacheTtlMarker({
   )
 }
 
+// Official 2.1.303 default when GrowthBook has no payload.
+const DEFAULT_PROMPT_CACHE_1H_ALLOWLIST = [
+  'repl_main_thread*',
+  'sdk',
+  'auto_mode',
+  'memdir_relevance',
+]
+
 function should1hCacheTTL(querySource?: QuerySource): boolean {
-  // 3P Bedrock users get 1h TTL when opted in via env var — they manage their own billing
-  // No GrowthBook gating needed since 3P users don't have GrowthBook configured
+  // Opt-in env vars (official: any provider, or Bedrock only) — the user manages
+  // their own billing, so no GrowthBook gating is needed.
   if (
-    getAPIProvider() === 'bedrock' &&
-    isEnvTruthy(process.env.ENABLE_PROMPT_CACHING_1H_BEDROCK)
+    isEnvTruthy(process.env.ENABLE_PROMPT_CACHING_1H) ||
+    (getAPIProvider() === 'bedrock' &&
+      isEnvTruthy(process.env.ENABLE_PROMPT_CACHING_1H_BEDROCK))
   ) {
     return true
   }
@@ -479,7 +492,9 @@ function should1hCacheTTL(querySource?: QuerySource): boolean {
   if (allowlist === null) {
     const config = getFeatureValue_CACHED_MAY_BE_STALE<{
       allowlist?: string[]
-    }>('tengu_prompt_cache_1h_config', {})
+    }>('tengu_prompt_cache_1h_config', {
+      allowlist: DEFAULT_PROMPT_CACHE_1H_ALLOWLIST,
+    })
     allowlist = config.allowlist ?? []
     setPromptCache1hAllowlist(allowlist)
   }
@@ -814,6 +829,8 @@ export type Options = {
   // so the model can pace itself. `remaining` is computed by the caller
   // (query.ts decrements across the agentic loop).
   taskBudget?: { total: number; remaining?: number }
+  /** Internal: this request retries one whose tool search the endpoint refused. */
+  toolSearchRefused?: true
 }
 
 export async function queryModelWithoutStreaming({
@@ -1133,7 +1150,72 @@ export function stripExcessMediaItems(
   }) as (UserMessage | AssistantMessage)[]
 }
 
+class ToolSearchRefusedError extends Error {
+  constructor(
+    readonly refusal: APIError,
+    readonly kind: ToolSearchRefusal,
+  ) {
+    super('tool search refused', { cause: refusal })
+  }
+}
+
+/**
+ * Like 2.1.311: when the endpoint refuses a tool-search request, send it again
+ * once without deferred tools, and latch tool search off when the error named
+ * the beta or the retry is answered.
+ */
 async function* queryModel(
+  messages: Message[],
+  systemPrompt: SystemPrompt,
+  thinkingConfig: ThinkingConfig,
+  tools: Tools,
+  signal: AbortSignal,
+  options: Options,
+): AsyncGenerator<
+  StreamEvent | AssistantMessage | SystemAPIErrorMessage,
+  void
+> {
+  let refused: ToolSearchRefusedError
+  try {
+    return yield* queryModelRequest(
+      messages,
+      systemPrompt,
+      thinkingConfig,
+      tools,
+      signal,
+      options,
+    )
+  } catch (error) {
+    if (!(error instanceof ToolSearchRefusedError)) throw error
+    refused = error
+  }
+  logForDebugging(
+    `[ToolSearch] HTTP ${refused.refusal.status} ${refused.kind === 'beta' ? 'refusing the tool search beta' : 'on a request that declared deferred tools'}; sending the request again without deferred tools. ENABLE_TOOL_SEARCH=false avoids the refused request`,
+    { level: 'warn' },
+  )
+  if (refused.kind === 'beta') markToolSearchRefused()
+  const reminder = createUserMessage({
+    content: wrapInSystemReminder(
+      `${TOOL_SEARCH_TOOL_NAME} is no longer available. Tools listed earlier as deferred that are still available are declared in full: call them directly.`,
+    ),
+    isMeta: true,
+  })
+  for await (const message of queryModelRequest(
+    [...messages, reminder],
+    systemPrompt,
+    thinkingConfig,
+    tools,
+    signal,
+    { ...options, toolSearchRefused: true },
+  )) {
+    if (message.type === 'assistant' && !message.isApiErrorMessage) {
+      markToolSearchRefused()
+    }
+    yield message
+  }
+}
+
+async function* queryModelRequest(
   messages: Message[],
   systemPrompt: SystemPrompt,
   thinkingConfig: ThinkingConfig,
@@ -1246,7 +1328,7 @@ async function* queryModel(
 
   // Check if tool search is enabled (checks mode, model support, and threshold for auto mode)
   // This is async because it may need to calculate MCP tool description sizes for TstAuto mode
-  let useToolSearch = await isToolSearchEnabled(
+  let useToolSearch = !options.toolSearchRefused && await isToolSearchEnabled(
     options.model,
     tools,
     options.getToolPermissionContext,
@@ -1278,10 +1360,6 @@ async function* queryModel(
     useToolSearch = false
   }
 
-  // Gateways without the tool_reference beta: no beta header or
-  // defer_loading, and tool_reference blocks are sent as text.
-  const toolReferenceAsText = useToolSearch && isToolReferenceTextFallback()
-
   // Filter out ToolSearchTool if tool search is not enabled for this model
   // ToolSearchTool returns tool_reference blocks which unsupported models can't handle
   let filteredTools: Tools
@@ -1309,8 +1387,7 @@ async function* queryModel(
   // Add tool search beta header if enabled - required for defer_loading to be accepted
   // Header differs by provider: 1P/Foundry use advanced-tool-use, Vertex/Bedrock use tool-search-tool
   // For Bedrock, this header must go in extraBodyParams, not the betas array
-  const toolSearchHeader =
-    useToolSearch && !toolReferenceAsText ? getToolSearchBetaHeader() : null
+  const toolSearchHeader = useToolSearch ? getToolSearchBetaHeader() : null
   if (toolSearchHeader && getAPIProvider() !== 'bedrock') {
     if (!betas.includes(toolSearchHeader)) {
       betas.push(toolSearchHeader)
@@ -1347,7 +1424,6 @@ async function* queryModel(
   const useGlobalCacheFeature = shouldUseGlobalCacheScope()
   const willDefer = (t: Tool) =>
     useToolSearch &&
-    !toolReferenceAsText &&
     (modDescriptions?.get(t)?.isDeferred ??
       (deferredToolNames.has(t.name) || shouldDeferLspTool(t)))
   // Pass the full tool set as prompt context, but admit only the tools surviving
@@ -1362,7 +1438,7 @@ async function* queryModel(
     signal,
     deferLoadingForTool: willDefer,
     modDescriptions,
-    allowDeferLoading: useToolSearch && !toolReferenceAsText,
+    allowDeferLoading: useToolSearch,
   })
   filteredTools = catalog.tools
   const toolSchemas = catalog.schemas
@@ -1499,15 +1575,12 @@ async function* queryModel(
   // Note: For assistant messages, normalizeMessagesForAPI already normalized the
   // tool inputs, so stripCallerFieldFromAssistantMessage only needs to remove the
   // 'caller' field (not re-normalize inputs).
-  if (!useToolSearch || toolReferenceAsText) {
+  if (!useToolSearch) {
     messagesForAPI = messagesForAPI.map(msg => {
       switch (msg.type) {
         case 'user':
           // Strip tool_reference blocks from tool_result content
-          return stripToolReferenceBlocksFromUserMessage(
-            msg,
-            toolReferenceAsText,
-          )
+          return stripToolReferenceBlocksFromUserMessage(msg)
         case 'assistant':
           // Strip 'caller' field from tool_use blocks
           return stripCallerFieldFromAssistantMessage(msg)
@@ -1598,7 +1671,11 @@ async function* queryModel(
       model: advisorModel,
     } as unknown as BetaToolUnion)
   }
-  const allTools = [...toolSchemas, ...extraToolSchemas]
+  const allTools = [
+    ...toolSchemas,
+    ...(useToolSearch ? [DEFERRED_TOOL_PLACEHOLDER as BetaToolUnion] : []),
+    ...extraToolSchemas,
+  ]
   // Consume once because request params are assembled repeatedly for logging and retries.
   const consumedCacheEdits = cachedMCEnabled ? consumePendingCacheEdits() : null
   const consumedPinnedEdits = cachedMCEnabled ? getPinnedCacheEdits() : []
@@ -3046,6 +3123,14 @@ async function* queryModel(
       if (errorFromRetry instanceof CannotRetryError) {
         error = errorFromRetry.originalError
         errorModel = errorFromRetry.retryContext.model
+      }
+
+      const toolSearchRefusal =
+        useToolSearch && !options.toolSearchRefused
+          ? getToolSearchRefusal(error)
+          : null
+      if (toolSearchRefusal) {
+        throw new ToolSearchRefusedError(error as APIError, toolSearchRefusal)
       }
 
       // Extract quota status from error headers if it's a rate limit error

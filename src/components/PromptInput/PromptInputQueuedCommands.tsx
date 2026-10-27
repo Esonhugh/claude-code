@@ -136,18 +136,19 @@ function PromptInputQueuedCommandsImpl(): React.ReactNode {
   }, [queuedCommands])
 
   const keybindings = useOptionalKeybindingContext()
+  const extendedKeys = supportsExtendedKeys()
   const sendNowShortcut = useMemo(() => {
     const bindings = (keybindings?.bindings ?? []).filter(
       binding => binding.action === 'chat:sendNow' && binding.context === 'Chat',
     )
     // As official: without extended key reporting the terminal cannot send super or
     // ctrl/shift+enter, so name the last binding that can actually be typed.
-    const typeable = supportsExtendedKeys()
+    const typeable = extendedKeys
       ? undefined
       : bindings.findLast(binding => !binding.chord.some(key => key.super || (key.key === 'enter' && (key.ctrl || key.shift))))
     const binding = typeable ?? bindings.at(-1)
     return binding ? chordToString(binding.chord) : 'ctrl+x ctrl+s'
-  }, [keybindings?.bindings])
+  }, [keybindings?.bindings, extendedKeys])
   const showSendNowHint = queuedCommands.some(isQueuedCommandEditable)
 
   // Don't show leader's queued commands when viewing any agent's transcript

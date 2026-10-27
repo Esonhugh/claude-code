@@ -3,14 +3,10 @@
  */
 
 import figures from 'figures'
-import { isViewableTeammate } from '../../tasks/InProcessTeammateTask/InProcessTeammateTask.js'
 import type { TaskStatus } from 'src/Task.js'
 import type { InProcessTeammateTaskState } from 'src/tasks/InProcessTeammateTask/types.js'
-import { isPanelAgentTask } from 'src/tasks/LocalAgentTask/LocalAgentTask.js'
-import { isBackgroundTask, type TaskState } from 'src/tasks/types.js'
 import type { DeepImmutable } from 'src/types/utils.js'
 import { summarizeRecentActivities } from 'src/utils/collapseReadSearch.js'
-import { isAnt } from 'src/utils/userType.js'
 
 
 /**
@@ -84,33 +80,4 @@ export function describeTeammateActivity(
     t.progress?.lastActivity?.activityDescription ??
     'working'
   )
-}
-
-/**
- * Returns true when BackgroundTaskStatus would render nothing because the
- * spinner tree is active and every visible background task is an in-process
- * teammate (teammates are shown in the spinner tree instead).
- *
- * Uses the same task filtering as BackgroundTaskStatus: `isBackgroundTask()`
- * plus exclusion of panel-managed agent tasks for ants (those are shown
- * by CoordinatorTaskPanel).
- */
-export function shouldHideTasksFooter(
-  tasks: { [taskId: string]: TaskState },
-  showSpinnerTree: boolean,
-): boolean {
-  if (!showSpinnerTree) return false
-  let hasVisibleTask = false
-  for (const t of Object.values(tasks) as TaskState[]) {
-    if (
-      (!isBackgroundTask(t) && !isViewableTeammate(t)) ||
-      t.type === 'local_workflow' ||
-      (isAnt() && isPanelAgentTask(t))
-    ) {
-      continue
-    }
-    hasVisibleTask = true
-    if (t.type !== 'in_process_teammate') return false
-  }
-  return hasVisibleTask
 }

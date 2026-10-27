@@ -42,7 +42,6 @@ import type { AgentDefinition } from '../tools/AgentTool/loadAgentsDir.js'
 import { ASK_USER_QUESTION_TOOL_NAME } from '../tools/AskUserQuestionTool/prompt.js'
 import { EXIT_PLAN_MODE_V2_TOOL_NAME } from '../tools/ExitPlanModeTool/constants.js'
 import { TASK_CREATE_TOOL_NAME } from '../tools/TaskCreateTool/constants.js'
-import { TASK_OUTPUT_TOOL_NAME } from '../tools/TaskOutputTool/constants.js'
 import type { Message } from '../types/message.js'
 import { isAgentSwarmsEnabled } from './agentSwarmsEnabled.js'
 import { isPlanModeAvailable } from './planModeV2.js'
@@ -69,6 +68,8 @@ import {
 } from './plans.js'
 import { getPlatform } from './platform.js'
 import { countFilesRoundedRg } from './ripgrep.js'
+import { COMMAND_NETWORK_LIST_TOOLS } from './sandbox/commandNetworkLists.js'
+import { SandboxManager } from './sandbox/sandbox-adapter.js'
 import { jsonStringify } from './slowOperations.js'
 import type { SystemPrompt } from './systemPromptType.js'
 import { getToolSchemaCache } from './toolSchemaCache.js'
@@ -194,6 +195,14 @@ export async function toolToAPISchema(
     // This ensures external non-EAP users don't see swarm features in the schema
     if (!isAgentSwarmsEnabled()) {
       input_schema = filterSwarmFieldsFromSchema(tool.name, input_schema)
+    }
+    if (
+      COMMAND_NETWORK_LIST_TOOLS.has(tool.name) &&
+      !SandboxManager.areCommandNetworkListsOffered()
+    ) {
+      const { allowed_domains: _, ...properties } = (input_schema.properties ??
+        {}) as Record<string, unknown>
+      input_schema = { ...input_schema, properties }
     }
 
     base = {
@@ -733,6 +742,9 @@ export function normalizeToolInput<T extends Tool>(
           parsed.dangerouslyDisableSandbox !== undefined && {
             dangerouslyDisableSandbox: parsed.dangerouslyDisableSandbox,
           }),
+        ...(parsed.allowed_domains !== undefined && {
+          allowed_domains: parsed.allowed_domains,
+        }),
       } as z.infer<T['inputSchema']>
     }
     case FileEditTool.name: {
@@ -772,23 +784,6 @@ export function normalizeToolInput<T extends Tool>(
         content: isMarkdown
           ? parsedInput.content
           : stripTrailingWhitespace(parsedInput.content),
-      } as z.infer<T['inputSchema']>
-    }
-    case TASK_OUTPUT_TOOL_NAME: {
-      // Normalize legacy parameter names from AgentOutputTool/BashOutputTool
-      const legacyInput = input as Record<string, unknown>
-      const taskId =
-        legacyInput.task_id ?? legacyInput.agentId ?? legacyInput.bash_id
-      const timeout =
-        legacyInput.timeout ??
-        (typeof legacyInput.wait_up_to === 'number'
-          ? legacyInput.wait_up_to * 1000
-          : undefined)
-      // SAFETY: See comment in BashTool case above
-      return {
-        task_id: taskId ?? '',
-        block: legacyInput.block ?? true,
-        timeout: timeout ?? 30000,
       } as z.infer<T['inputSchema']>
     }
     default:

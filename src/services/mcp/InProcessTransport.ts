@@ -1,5 +1,4 @@
-import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
-import type { JSONRPCMessage } from '@modelcontextprotocol/sdk/types.js'
+import type { Transport, JSONRPCMessage } from '@modelcontextprotocol/client'
 
 /**
  * In-process linked transport pair for running an MCP server and client

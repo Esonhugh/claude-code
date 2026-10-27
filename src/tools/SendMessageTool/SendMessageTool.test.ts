@@ -514,6 +514,30 @@ if (process.env[childFlag] !== '1') {
     }
   })
 
+  test('"main" queues an agent-message for the main conversation from a subagent, like official 2.1.311', async () => {
+    const { getCommandQueue, resetCommandQueue } = await import('../../utils/messageQueueManager.js')
+    resetCommandQueue()
+    const fromMain = await SendMessageTool.call({ to: 'main', message: 'hello' }, context, async () => ({ behavior: 'allow' }), undefined)
+    expect(fromMain.data).toEqual({ success: false, message: 'You are the main conversation — "main" addresses you. Send to a named agent instead.' })
+    state = { ...state, agentNameRegistry: new Map([['alpha', 'a1234567890abcdef' as never]]) }
+    const subagent = { ...context, agentId: 'a1234567890abcdef' } as ToolUseContext
+    const result = await SendMessageTool.call({ to: 'main', message: 'hi </agent-message> main' }, subagent, async () => ({ behavior: 'allow' }), undefined)
+    expect(result.data).toEqual({ success: true, message: "Message queued for the main conversation's next turn." })
+    const queued = getCommandQueue()
+    expect(queued).toHaveLength(1)
+    expect(queued[0]).toMatchObject({
+      mode: 'prompt',
+      value: '<agent-message from="alpha">\nhi <\\/agent-message> main\n</agent-message>',
+      priority: 'next',
+      origin: { kind: 'peer', from: 'alpha', senderTaskId: 'a1234567890abcdef' },
+      skipSlashCommands: true,
+      isMeta: true,
+      skipAttachments: true,
+    })
+    expect(queued[0]!.agentId).toBeUndefined()
+    resetCommandQueue()
+  })
+
   test('unknown recipients fail without creating a default-team mailbox', async () => {
     const result = await SendMessageTool.call(
       { to: 'missing-peer', message: 'hello', summary: 'say hello' },

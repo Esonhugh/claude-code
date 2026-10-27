@@ -3,7 +3,7 @@ import { buildTool, type ToolDef } from '../../Tool.js'
 import { lazySchema } from '../../utils/lazySchema.js'
 import {
   getTaskListId,
-  isTodoV2Enabled,
+  isTaskToolsEnabled,
   listTasks,
   TaskStatusSchema,
 } from '../../utils/tasks.js'
@@ -51,7 +51,7 @@ export const TaskListTool = buildTool({
   },
   shouldDefer: true,
   isEnabled() {
-    return isTodoV2Enabled()
+    return isTaskToolsEnabled()
   },
   isConcurrencySafe() {
     return true

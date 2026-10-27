@@ -33,7 +33,7 @@ import { SpinnerAnimationRow } from './Spinner/SpinnerAnimationRow.js'
 import { useSettings } from '../hooks/useSettings.js'
 import { isInProcessTeammateTask } from '../tasks/InProcessTeammateTask/types.js'
 import { isBackgroundTask } from '../tasks/types.js'
-import { getAllInProcessTeammateTasks, getViewableTeammatesSorted } from '../tasks/InProcessTeammateTask/InProcessTeammateTask.js'
+import { getAllInProcessTeammateTasks } from '../tasks/InProcessTeammateTask/InProcessTeammateTask.js'
 import { getEffortSuffix } from '../utils/effort.js'
 import { getMainLoopModel } from '../utils/model/model.js'
 import { getViewedAgentTask, getViewedTeammateTask } from '../state/selectors.js'
@@ -44,7 +44,6 @@ import {
   getTurnOutputTokens,
 } from '../bootstrap/state.js'
 
-import { TeammateSpinnerTree } from './Spinner/TeammateSpinnerTree.js'
 import { useAnimationFrame } from '../ink.js'
 import { getGlobalConfig } from '../utils/config.js'
 import { isAnt } from 'src/utils/userType.js'
@@ -163,9 +162,6 @@ function SpinnerWithVerbInner({
   const viewingAgentTaskId = useAppState(s => s.viewingAgentTaskId)
   const expandedView = useAppState(s => s.expandedView)
   const showExpandedTodos = expandedView === 'tasks'
-  const showSpinnerTree = expandedView === 'teammates'
-  const selectedIPAgentIndex = useAppState(s => s.selectedIPAgentIndex)
-  const viewSelectionMode = useAppState(s => s.viewSelectionMode)
   const viewedAgent = viewingAgentTaskId
     ? getViewedAgentTask({ viewingAgentTaskId, tasks })
     : undefined
@@ -260,19 +256,15 @@ function SpinnerWithVerbInner({
   const runningTeammates = getAllInProcessTeammateTasks(tasks).filter(
     t => t.status === 'running',
   )
-  const hasViewableTeammates = getViewableTeammatesSorted(tasks).length > 0
   const hasRunningTeammates = runningTeammates.length > 0
   const allIdle = hasRunningTeammates && runningTeammates.every(t => t.isIdle)
 
   // Gather aggregate token stats from all running swarm teammates
-  // In spinner-tree mode, skip aggregation (teammates have their own lines in the tree)
   let teammateTokens = 0
-  if (!showSpinnerTree) {
-    for (const task of Object.values(tasks)) {
-      if (isInProcessTeammateTask(task) && task.status === 'running') {
-        if (task.progress?.tokenCount) {
-          teammateTokens += task.progress.tokenCount
-        }
+  for (const task of Object.values(tasks)) {
+    if (isInProcessTeammateTask(task) && task.status === 'running') {
+      if (task.progress?.tokenCount) {
+        teammateTokens += task.progress.tokenCount
       }
     }
   }
@@ -286,11 +278,6 @@ function SpinnerWithVerbInner({
         loadingStartTimeRef.current -
         totalPausedMsRef.current
       : Date.now() - loadingStartTimeRef.current - totalPausedMsRef.current
-
-  // Leader token count for TeammateSpinnerTree — read raw (non-animated) from
-  // the ref. The tree is only shown when teammates are running; teammate
-  // progress updates to s.tasks trigger re-renders that keep this fresh.
-  const leaderTokenCount = Math.round(responseLengthRef.current / 4)
 
   const defaultColor: keyof Theme = 'claude'
   const defaultShimmerColor = 'claudeShimmer'
@@ -327,16 +314,7 @@ function SpinnerWithVerbInner({
             {!allIdle && ' · teammates running'}
           </Text>
         </Box>
-        {showSpinnerTree && (
-          <TeammateSpinnerTree
-            selectedIndex={selectedIPAgentIndex}
-            isInSelectionMode={viewSelectionMode === 'selecting-agent'}
-            allIdle={allIdle}
-            leaderTokenCount={leaderTokenCount}
-            leaderIdleText="Idle"
-          />
-        )}
-        {!showSpinnerTree && showExpandedTodos && tasksV2 && tasksV2.length > 0 && (
+        {showExpandedTodos && tasksV2 && tasksV2.length > 0 && (
           <MessageResponse>
             <TaskListV2 tasks={tasksV2} />
           </MessageResponse>
@@ -355,17 +333,7 @@ function SpinnerWithVerbInner({
         <Box flexDirection="row" flexWrap="wrap" marginTop={1} width="100%">
           <Text dimColor>{idleText}</Text>
         </Box>
-        {showSpinnerTree && hasViewableTeammates && (
-          <TeammateSpinnerTree
-            selectedIndex={selectedIPAgentIndex}
-            isInSelectionMode={viewSelectionMode === 'selecting-agent'}
-            allIdle={allIdle}
-            leaderVerb={leaderIsIdle ? undefined : leaderVerb}
-            leaderIdleText={leaderIsIdle ? 'Idle' : undefined}
-            leaderTokenCount={leaderTokenCount}
-          />
-        )}
-        {!showSpinnerTree && showExpandedTodos && tasksV2 && tasksV2.length > 0 && (
+        {showExpandedTodos && tasksV2 && tasksV2.length > 0 && (
           <MessageResponse>
             <TaskListV2 tasks={tasksV2} />
           </MessageResponse>
@@ -439,16 +407,7 @@ function SpinnerWithVerbInner({
         thinkingStatus={thinkingStatus}
         effortSuffix={effortSuffix}
       />
-      {showSpinnerTree && hasViewableTeammates ? (
-        <TeammateSpinnerTree
-          selectedIndex={selectedIPAgentIndex}
-          isInSelectionMode={viewSelectionMode === 'selecting-agent'}
-          allIdle={allIdle}
-          leaderVerb={leaderIsIdle ? undefined : leaderVerb}
-          leaderIdleText={leaderIsIdle ? 'Idle' : undefined}
-          leaderTokenCount={leaderTokenCount}
-        />
-      ) : showExpandedTodos && tasksV2 && tasksV2.length > 0 ? (
+      {showExpandedTodos && tasksV2 && tasksV2.length > 0 ? (
         <Box width="100%" flexDirection="column">
           <MessageResponse>
             <TaskListV2 tasks={tasksV2} />

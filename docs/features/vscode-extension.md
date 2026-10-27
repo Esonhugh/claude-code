@@ -32,6 +32,7 @@ r6 get_sandbox_dialog  error    Unsupported control request subtype: get_sandbox
 | 面板功能 | 控制请求 |
 | --- | --- |
 | `/status`、版本号 | `get_status`、`get_binary_version` |
+| 账号信息 | `initialize` 和 `claude auth status --json`：用 ChatGPT 登录的 OpenAI 模式回报 ChatGPT 邮箱、账号名和套餐，不回报 `apiProvider`，插件因此照常显示账号、套餐和用量条（否则插件会当成第三方 provider 把它们隐藏） |
 | `/usage`、本次花费 | `get_usage`、`get_session_cost`（ChatGPT 登录的 OpenAI 模式回报 5 小时 / 7 天额度；API key 回报无额度信息） |
 | 模型列表 | `list_models`（含 `resolvedModel`） |
 | `@` 文件补全 | `file_suggestions` |
@@ -46,7 +47,6 @@ r6 get_sandbox_dialog  error    Unsupported control request subtype: get_sandbox
 ## 已知差异
 
 - 尚未支持：`get_sandbox_dialog`、`get_chrome_*`、`mcp_call`、`register_repo_root`、`set_mcp_permission_mode_override`。
-- 插件会传的 `--managed-settings`、`--project-config-root`、`--resume-drops-turn`、`--session-mirror` 参数本 fork 还不认识。
 - 本容器无法下载 VS Code 插件，以上用官方 Agent SDK 0.3.303 和原始 stream-json 按插件的启动方式模拟验证；ChatGPT 额度窗口只有单元测试覆盖。
 
 ## 说明

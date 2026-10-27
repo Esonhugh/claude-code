@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { describe, it } from 'node:test'
-import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js'
+import { ProtocolErrorCode, ProtocolError } from '@modelcontextprotocol/client'
 import { CODEX_APPS_PLUGIN_RUNTIME_MCP_URL } from '../../services/apps/types.js'
 import { markHostOwnedCodexAppsConfig } from '../../services/apps/trust.js'
 import { createMcpSkillResourceRules } from '../../skills/mcpSkillResourceGrant.js'
@@ -181,7 +181,7 @@ describe('MCP directory read helper', () => {
   })
 
   it('throws first-page InvalidParams for the tool to convert into a not-directory error', async () => {
-    const invalidParams = new McpError(ErrorCode.InvalidParams, 'not a directory')
+    const invalidParams = new ProtocolError(ProtocolErrorCode.InvalidParams, 'not a directory')
     const server = connectedServer({
       request: async () => {
         throw invalidParams
@@ -198,7 +198,7 @@ describe('MCP directory read helper', () => {
     const server = connectedServer({
       request: async request => {
         if (request.params?.cursor) {
-          throw new McpError(ErrorCode.InvalidParams, 'stale cursor')
+          throw new ProtocolError(ProtocolErrorCode.InvalidParams, 'stale cursor')
         }
         return {
           resources: [{ uri: 'skill://demo/a', name: 'a.txt' }],
@@ -213,7 +213,7 @@ describe('MCP directory read helper', () => {
   })
 
   it('throws non-InvalidParams errors', async () => {
-    const internalError = new McpError(ErrorCode.InternalError, 'server failed')
+    const internalError = new ProtocolError(ProtocolErrorCode.InternalError, 'server failed')
     const server = connectedServer({
       request: async () => {
         throw internalError
@@ -569,7 +569,7 @@ describe('ReadMcpResourceDirTool', () => {
   it('converts first-page InvalidParams into a not-directory data error', async () => {
     const server = connectedServer({
       request: async () => {
-        throw new McpError(ErrorCode.InvalidParams, 'not a directory')
+        throw new ProtocolError(ProtocolErrorCode.InvalidParams, 'not a directory')
       },
     })
 

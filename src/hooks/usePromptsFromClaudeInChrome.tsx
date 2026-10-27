@@ -62,12 +62,12 @@ export function usePromptsFromClaudeInChrome(
 
     if (mcpClient) {
       mcpClient.client.setNotificationHandler(
-        ClaudeInChromePromptNotificationSchema(),
-        notification => {
+        'notifications/message',
+        { params: ClaudeInChromePromptNotificationSchema().shape.params },
+        ({ tabId, prompt, image }) => {
           if (mcpClientRef.current !== mcpClient) {
             return
           }
-          const { tabId, prompt, image } = notification.params
 
           // Process notifications from tabs we're tracking since notifications are broadcasted
           if (

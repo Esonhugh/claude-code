@@ -20,6 +20,11 @@ import { requestClassifierOverflowCompaction } from '../../services/compact/clas
 import { logForDebugging } from '../debug.js'
 import { AbortError, toError } from '../errors.js'
 import { logError } from '../log.js'
+import {
+  approveCommandNetworkLists,
+  COMMAND_NETWORK_LIST_TOOLS,
+  commandNetworkLists,
+} from '../sandbox/commandNetworkLists.js'
 import { SandboxManager } from '../sandbox/sandbox-adapter.js'
 import {
   getSettingSourceDisplayNameLowercase,
@@ -758,6 +763,12 @@ export async function applyPermissionModeToResult(
   assistantMessage: AssistantMessage,
   toolUseID: string,
 ): Promise<PermissionDecision> {
+  const networkLists = COMMAND_NETWORK_LIST_TOOLS.has(tool.name)
+    ? commandNetworkLists(input)
+    : undefined
+  if (networkLists && result.behavior === 'allow') {
+    result = reviewNetworkListsInAutoMode(tool, result, context)
+  }
 
   // Reset consecutive denials on any allowed tool use in auto mode.
   // This ensures that a successful tool use (even one auto-allowed by rules)
@@ -867,7 +878,8 @@ export async function applyPermissionModeToResult(
       if (
         result.behavior === 'ask' &&
         tool.name !== AGENT_TOOL_NAME &&
-        tool.name !== REPL_TOOL_NAME
+        tool.name !== REPL_TOOL_NAME &&
+        !networkLists
       ) {
         try {
           const parsedInput = tool.inputSchema.parse(input)
@@ -924,7 +936,10 @@ export async function applyPermissionModeToResult(
 
       // Allowlisted tools are safe and don't need YOLO classification.
       // This uses the safe-tool allowlist to skip unnecessary classifier API calls.
-      if (classifierDecisionModule!.isAutoModeAllowlistedTool(tool.name)) {
+      if (
+        !networkLists &&
+        classifierDecisionModule!.isAutoModeAllowlistedTool(tool.name)
+      ) {
         const newDenialState = recordSuccess(denialState)
         persistDenialState(context, newDenialState)
         logForDebugging(
@@ -1251,6 +1266,7 @@ export async function applyPermissionModeToResult(
       const newDenialState = recordSuccess(denialState)
       persistDenialState(context, newDenialState)
 
+      if (networkLists) approveCommandNetworkLists(toolUseID, input)
       return {
         behavior: 'allow',
         updatedInput: input,
@@ -1294,6 +1310,41 @@ export async function applyPermissionModeToResult(
   }
 
   return result
+}
+
+/**
+ * In auto mode the classifier reviews `allowed_domains` with the command, so
+ * an allow from a rule or hook (which approves the command, not the hosts)
+ * becomes an ask the classifier may approve. Elsewhere the list is ignored.
+ */
+function reviewNetworkListsInAutoMode(
+  tool: Tool,
+  result: PermissionDecision,
+  context: ToolUseContext,
+): PermissionDecision {
+  const mode = context.getAppState().toolPermissionContext.mode
+  if (
+    !feature('TRANSCRIPT_CLASSIFIER') ||
+    !(
+      mode === 'auto' ||
+      (mode === 'plan' && (autoModeStateModule?.isAutoModeActive() ?? false))
+    ) ||
+    !SandboxManager.areCommandNetworkListsOffered() ||
+    result.decisionReason?.type === 'classifier'
+  ) {
+    return result
+  }
+  return {
+    behavior: 'ask',
+    message: `${tool.name} carries allowed_domains, which the auto-mode classifier reviews together with the command.`,
+    ...(result.behavior === 'allow' &&
+      result.updatedInput !== undefined && { updatedInput: result.updatedInput }),
+    decisionReason: {
+      type: 'safetyCheck',
+      reason: `A ${tool.name} call that carries allowed_domains is reviewed by the auto-mode classifier; allow rules and hook allows approve the command, not the hosts.`,
+      classifierApprovable: true,
+    },
+  }
 }
 
 /**

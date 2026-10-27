@@ -96,6 +96,7 @@ let overloadedModel: string | undefined
 let overloadedModels: string[] = []
 let modsReplyUsage: {input_tokens:number;output_tokens:number;cache_read_input_tokens:number;cache_creation_input_tokens:number} | undefined
 let modsRefuseStatus: number | undefined
+let toolSearchRefusal: 'beta' | 'unnamed' | 'always' | undefined
 const client = new Anthropic({
   apiKey: 'test-only',
   maxRetries: 0,
@@ -109,6 +110,16 @@ const client = new Anthropic({
       return Response.json({input_tokens:123})
     }
     requests.push(request)
+    if (toolSearchRefusal) {
+      const deferred = (request.tools ?? []).some(t => 'defer_loading' in t)
+      const message =
+        toolSearchRefusal === 'beta' && headers.get('anthropic-beta')?.includes('advanced-tool-use-2025-11-20')
+          ? 'Unexpected value(s) `advanced-tool-use-2025-11-20` for the `anthropic-beta` header.'
+          : (toolSearchRefusal === 'unnamed' && deferred) || toolSearchRefusal === 'always'
+            ? 'gateway rejected the request'
+            : undefined
+      if (message) return Response.json({type:'error',error:{type:'invalid_request_error',message}},{status:400})
+    }
     if (modsRefuseStatus) return Response.json({type:'error',error:{type:'invalid_request_error',message:'FAKE_PRIVATE_BODY'}},{status:modsRefuseStatus})
     if (request.model === overloadedModel || overloadedModels.includes(request.model)) {
       return Response.json({
@@ -364,6 +375,7 @@ afterEach(() => {
   overloadedModels = []
   modsReplyUsage = undefined
   modsRefuseStatus = undefined
+  toolSearchRefusal = undefined
 })
 
 test.each(['without a turn.step hook','with a turn.step hook','refused provider request'] as const)(
@@ -589,8 +601,9 @@ test('deferred tools loaded through ToolSearch never carry cache_control', async
     const request = requests.at(-1)!
     const tools = request.tools ?? []
     expect(tools.map(tool => ('name' in tool ? tool.name : undefined))).toEqual(
-      ['ToolSearch', pinned.name, discovered.name],
+      ['ToolSearch', pinned.name, discovered.name, 'DeferredToolPlaceholder'],
     )
+    expect(tools.at(-2)).toMatchObject({ defer_loading: true })
     expect(tools.at(-1)).toMatchObject({ defer_loading: true })
     expect(tools.every(tool => !('cache_control' in tool))).toBe(true)
     expect(request.system).toContainEqual(
@@ -610,14 +623,15 @@ test('deferred tools loaded through ToolSearch never carry cache_control', async
   }
 })
 
-test('gateways keep ToolSearch without the tool_reference beta', async () => {
+test('gateways use the tool_reference beta with the deferred placeholder', async () => {
   const { z } = await import('zod/v4')
   const { ToolSearchTool } =
     await import('../../tools/ToolSearchTool/ToolSearchTool.js')
   const { clearToolSchemaCache } =
     await import('../../utils/toolSchemaCache.js')
   const { createAssistantMessage } = await import('../../utils/messages.js')
-  const { TOOL_SEARCH_BETA_HEADER_1P } = await import('../../constants/betas.js')
+  const { PROMPT_CACHING_SCOPE_BETA_HEADER, TOOL_SEARCH_BETA_HEADER_1P } =
+    await import('../../constants/betas.js')
   const previous = process.env.ENABLE_TOOL_SEARCH
   delete process.env.ENABLE_TOOL_SEARCH
   clearToolSchemaCache()
@@ -676,18 +690,95 @@ test('gateways keep ToolSearch without the tool_reference beta', async () => {
     expect(tools.map(t => ('name' in t ? t.name : undefined))).toEqual([
       'ToolSearch',
       discovered.name,
+      'DeferredToolPlaceholder',
     ])
-    expect(tools.every(t => !('defer_loading' in t))).toBe(true)
-    expect(requestBetaHeaders.at(-1)).not.toContain(TOOL_SEARCH_BETA_HEADER_1P)
+    expect(tools.slice(1)).toEqual([
+      expect.objectContaining({ defer_loading: true }),
+      expect.objectContaining({ defer_loading: true }),
+    ])
+    expect(requestBetaHeaders.at(-1)).toContain(TOOL_SEARCH_BETA_HEADER_1P)
+    expect(requestBetaHeaders.at(-1)).not.toContain(PROMPT_CACHING_SCOPE_BETA_HEADER)
+    expect(JSON.stringify(request.system)).not.toContain('"global"')
     const body = JSON.stringify(request.messages)
-    expect(body).not.toContain('tool_reference')
-    expect(body).toContain(`Tool available: ${discovered.name}`)
+    expect(body).toContain('tool_reference')
+    expect(body).not.toContain(`Tool available: ${discovered.name}`)
   } finally {
     clearToolSchemaCache()
     if (previous === undefined) delete process.env.ENABLE_TOOL_SEARCH
     else process.env.ENABLE_TOOL_SEARCH = previous
   }
 })
+
+test.each(['beta', 'unnamed', 'always'] as const)(
+  'gateway tool search refusal (%s) retries once without deferred tools',
+  async refusal => {
+    const { z } = await import('zod/v4')
+    const { ToolSearchTool } =
+      await import('../../tools/ToolSearchTool/ToolSearchTool.js')
+    const { clearToolSchemaCache } =
+      await import('../../utils/toolSchemaCache.js')
+    const { resetToolSearchRefusedForTesting } =
+      await import('../../utils/toolSearch.js')
+    const previous = process.env.ENABLE_TOOL_SEARCH
+    delete process.env.ENABLE_TOOL_SEARCH
+    clearToolSchemaCache()
+    resetToolSearchRefusedForTesting()
+    const deferred = {
+      name: 'mcp__corp__lookup',
+      isMcp: true,
+      inputSchema: z.object({ query: z.string() }),
+      async prompt() {
+        return 'lookup'
+      },
+    } as unknown as import('../../Tool.js').Tool
+    const ask = () =>
+      queryModelWithoutStreaming({
+        messages: [createUserMessage({ content: 'test' })],
+        systemPrompt: asSystemPrompt([]),
+        thinkingConfig: { type: 'disabled' },
+        tools: [ToolSearchTool, deferred],
+        signal: new AbortController().signal,
+        options: {
+          model: 'claude-sonnet-5',
+          querySource: 'repl_main_thread',
+          agents: [],
+          mcpTools: [deferred],
+          hasAppendSystemPrompt: false,
+          isNonInteractiveSession: true,
+          getToolPermissionContext: async () => getEmptyToolPermissionContext(),
+        },
+      })
+    const names = (i: number) =>
+      (requests[i]?.tools ?? []).map(t => ('name' in t ? t.name : undefined))
+    try {
+      toolSearchRefusal = refusal
+      const first = await ask()
+      expect(requests).toHaveLength(2)
+      expect(names(0)).toEqual(['ToolSearch', 'DeferredToolPlaceholder'])
+      expect(names(1)).toEqual([deferred.name])
+      expect(requests[1]?.tools?.some(t => 'defer_loading' in t)).toBe(false)
+      expect(requestBetaHeaders[1]).not.toContain('advanced-tool-use-2025-11-20')
+      expect(JSON.stringify(requests[1]?.messages)).toContain(
+        'ToolSearch is no longer available',
+      )
+      expect(first.isApiErrorMessage === true).toBe(refusal === 'always')
+
+      toolSearchRefusal = undefined
+      await ask()
+      // Latched off unless the retry failed too and the error never named the beta.
+      expect(names(2)).toEqual(
+        refusal === 'always'
+          ? ['ToolSearch', 'DeferredToolPlaceholder']
+          : [deferred.name],
+      )
+    } finally {
+      resetToolSearchRefusedForTesting()
+      clearToolSchemaCache()
+      if (previous === undefined) delete process.env.ENABLE_TOOL_SEARCH
+      else process.env.ENABLE_TOOL_SEARCH = previous
+    }
+  },
+)
 
 test.each(['low','medium','high','xhigh','max'] as const)('Mods completion sends per-call effort %s at the actual SDK boundary', async effort => {
   const {createModModelComplete}=await import('../mods/modelAdapter.js')
@@ -908,13 +999,13 @@ test.each([false, true])(
       const initial = await run()
       expect(
         initial.tools?.map(tool => ('name' in tool ? tool.name : undefined)),
-      ).toEqual(['mcp__corp__lookup', 'ToolSearch'])
-      expect(initial.tools?.every(tool => !('defer_loading' in tool))).toBe(
+      ).toEqual(['mcp__corp__lookup', 'ToolSearch', 'DeferredToolPlaceholder'])
+      expect(initial.tools?.slice(0, -1).every(tool => !('defer_loading' in tool))).toBe(
         true,
       )
       expect(JSON.stringify(initial.messages)).toContain(
         deltaEnabled
-          ? 'The following deferred tools are now available via ToolSearch:\\nLocalLookup'
+          ? 'to load tool schemas before calling them:\\nLocalLookup'
           : '<available-deferred-tools>\\nLocalLookup\\n</available-deferred-tools>',
       )
       expect(JSON.stringify(initial.messages)).not.toContain(pinned.name)
@@ -980,7 +1071,7 @@ test.each([false, true])(
       const loaded = await run()
       expect(
         loaded.tools?.map(tool => ('name' in tool ? tool.name : undefined)),
-      ).toEqual(['LocalLookup', 'mcp__corp__lookup', 'ToolSearch'])
+      ).toEqual(['LocalLookup', 'mcp__corp__lookup', 'ToolSearch', 'DeferredToolPlaceholder'])
       expect(loaded.tools?.[0]).toMatchObject({
         description: 'quartz LocalLookup',
         defer_loading: true,
@@ -1007,8 +1098,8 @@ test.each([false, true])(
       const flipped = await run()
       expect(
         flipped.tools?.map(tool => ('name' in tool ? tool.name : undefined)),
-      ).toEqual(['LocalLookup', 'ToolSearch'])
-      expect(flipped.tools?.every(tool => !('defer_loading' in tool))).toBe(
+      ).toEqual(['LocalLookup', 'ToolSearch', 'DeferredToolPlaceholder'])
+      expect(flipped.tools?.slice(0, -1).every(tool => !('defer_loading' in tool))).toBe(
         true,
       )
       const refreshed = await ToolSearchTool.call(

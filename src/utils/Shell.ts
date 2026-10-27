@@ -1,9 +1,12 @@
 import { execFileSync, spawn } from 'child_process'
+import { randomBytes } from 'crypto'
 import { constants as fsConstants, readFileSync, unlinkSync } from 'fs'
 import { type FileHandle, mkdir, open, realpath } from 'fs/promises'
 import memoize from 'lodash-es/memoize.js'
-import { isAbsolute, resolve } from 'path'
+import { tmpdir } from 'os'
+import { isAbsolute, join, resolve } from 'path'
 import { join as posixJoin } from 'path/posix'
+import { quote } from './bash/shellQuote.js'
 import { logEvent } from 'src/services/analytics/index.js'
 import {
   getOriginalCwd,
@@ -38,7 +41,7 @@ import { getCachedPowerShellPath } from './shell/powershellDetection.js'
 import { createPowerShellProvider } from './shell/powershellProvider.js'
 import type { ShellProvider, ShellType } from './shell/shellProvider.js'
 import { subprocessEnv } from './subprocessEnv.js'
-import { posixPathToWindowsPath } from './windowsPaths.js'
+import { findGitBashPath, posixPathToWindowsPath } from './windowsPaths.js'
 import { isAnt } from 'src/utils/userType.js'
 
 
@@ -173,6 +176,8 @@ export type ExecOptions = {
   shouldAutoBackground?: boolean
   /** When provided, stdout is piped (not sent to file) and this callback fires on each data chunk. */
   onStdout?: (data: string) => void
+  /** Hosts this sandboxed command alone may reach (an approved `allowed_domains`). */
+  networkLists?: { allowedDomains: string[] }
 }
 
 /**
@@ -192,6 +197,7 @@ export async function exec(
     shouldUseSandbox,
     shouldAutoBackground,
     onStdout,
+    networkLists,
   } = options ?? {}
   const commandTimeout = timeout || DEFAULT_TIMEOUT
 
@@ -201,11 +207,12 @@ export async function exec(
     .toString(16)
     .padStart(4, '0')
 
+  const isWindowsSandbox = shouldUseSandbox && getPlatform() === 'windows'
+
   // Sandbox temp directory - use per-user directory name to prevent multi-user permission conflicts
-  const sandboxTmpDir = posixJoin(
-    process.env.CLAUDE_CODE_TMPDIR || '/tmp',
-    getClaudeTempDirName(),
-  )
+  const sandboxTmpDir = isWindowsSandbox
+    ? join(process.env.CLAUDE_CODE_TMPDIR || tmpdir(), getClaudeTempDirName())
+    : posixJoin(process.env.CLAUDE_CODE_TMPDIR || '/tmp', getClaudeTempDirName())
 
   const { commandString: builtCommand, cwdFilePath } =
     await provider.buildExecCommand(command, {
@@ -257,12 +264,47 @@ export async function exec(
   const isSandboxedPowerShell = shouldUseSandbox && shellType === 'powershell'
   const sandboxBinShell = isSandboxedPowerShell ? '/bin/sh' : binShell
 
-  if (shouldUseSandbox) {
+  // The proxy matches a list by this id, which the sandboxed client presents,
+  // so it must be unguessable.
+  const networkListsId =
+    shouldUseSandbox && networkLists
+      ? randomBytes(16).toString('base64url')
+      : undefined
+  const wrapOptions = networkListsId ? { commandId: networkListsId } : undefined
+
+  let sandboxArgv: { argv: string[]; env: NodeJS.ProcessEnv } | undefined
+  if (isWindowsSandbox) {
+    // srt-win starts the command as the sandbox user with a fresh profile
+    // environment, so the variables Claude sets go into the command itself.
+    // Git Bash runs it for both shells: the sandboxed PowerShell command is a
+    // POSIX-quoted pwsh invocation (see powershellProvider).
+    const childEnv: Record<string, string> = {
+      GIT_EDITOR: 'true',
+      CLAUDECODE: '1',
+      ...(await provider.getEnvironmentOverrides(command)),
+    }
+    const exports = Object.entries(childEnv)
+      .filter(([name]) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(name))
+      .map(([name, value]) => `export ${name}=${quote([value])}`)
+    sandboxArgv = await SandboxManager.wrapWithSandboxArgv(
+      [...exports, commandString].join('; '),
+      shellType === 'bash' ? binShell : findGitBashPath(),
+      cwd,
+      abortSignal,
+      wrapOptions,
+    )
+    try {
+      await getFsImplementation().mkdir(sandboxTmpDir, { mode: 0o700 })
+    } catch (error) {
+      logForDebugging(`Failed to create ${sandboxTmpDir} directory: ${error}`)
+    }
+  } else if (shouldUseSandbox) {
     commandString = await SandboxManager.wrapWithSandbox(
       commandString,
       sandboxBinShell,
       undefined,
       abortSignal,
+      wrapOptions,
     )
     // Create sandbox temp directory for sandboxed processes with secure permissions
     try {
@@ -273,10 +315,16 @@ export async function exec(
     }
   }
 
-  const spawnBinary = isSandboxedPowerShell ? '/bin/sh' : binShell
-  const shellArgs = isSandboxedPowerShell
-    ? ['-c', commandString]
-    : provider.getSpawnArgs(commandString)
+  const spawnBinary = sandboxArgv
+    ? sandboxArgv.argv[0]!
+    : isSandboxedPowerShell
+      ? '/bin/sh'
+      : binShell
+  const shellArgs = sandboxArgv
+    ? sandboxArgv.argv.slice(1)
+    : isSandboxedPowerShell
+      ? ['-c', commandString]
+      : provider.getSpawnArgs(commandString)
   const envOverrides = await provider.getEnvironmentOverrides(command)
 
   // When onStdout is provided, use pipe mode: stdout flows through
@@ -314,8 +362,11 @@ export async function exec(
   }
 
   try {
+    if (networkListsId && networkLists) {
+      SandboxManager.registerCommandNetworkLists(networkListsId, networkLists)
+    }
     const childProcess = spawn(spawnBinary, shellArgs, {
-      env: {
+      env: sandboxArgv?.env ?? {
         ...subprocessEnv(),
         SHELL: shellType === 'bash' ? binShell : undefined,
         GIT_EDITOR: 'true',
@@ -336,6 +387,13 @@ export async function exec(
       // Prevent visible console window on Windows (no-op on other platforms)
       windowsHide: true,
     })
+
+    if (networkListsId) {
+      const unregister = () =>
+        SandboxManager.unregisterCommandNetworkLists(networkListsId)
+      childProcess.once('exit', unregister)
+      childProcess.once('error', unregister)
+    }
 
     const shellCommand = wrapSpawn(
       childProcess,
@@ -424,6 +482,9 @@ export async function exec(
 
     return shellCommand
   } catch (error) {
+    if (networkListsId) {
+      SandboxManager.unregisterCommandNetworkLists(networkListsId)
+    }
     // Close the fd if spawn failed (child never got its dup)
     if (outputHandle !== undefined) {
       try {

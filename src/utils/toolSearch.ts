@@ -6,6 +6,7 @@
  * loaded upfront.
  */
 
+import { APIError } from '@anthropic-ai/sdk'
 import memoize from 'lodash-es/memoize.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../services/analytics/growthbook.js'
 import {
@@ -31,14 +32,11 @@ import {
   TOOL_TOKEN_COUNT_OVERHEAD,
 } from './analyzeContext.js'
 import { count } from './array.js'
-import { getMergedBetas } from './betas.js'
+import { getMergedBetas, getToolSearchBetaHeader } from './betas.js'
 import { getContextWindowForModel } from './context.js'
 import { logForDebugging } from './debug.js'
 import { isEnvDefinedFalsy, isEnvTruthy } from './envUtils.js'
-import {
-  getAPIProvider,
-  isFirstPartyAnthropicBaseUrl,
-} from './model/providers.js'
+import { getAPIProvider, isFirstPartyAnthropicBaseUrl } from './model/providers.js'
 import { jsonStringify } from './slowOperations.js'
 import { zodToJsonSchema } from './zodToJsonSchema.js'
 import { userType, isAnt } from 'src/utils/userType.js'
@@ -303,24 +301,57 @@ export function isToolSearchEnabledOptimistic(): boolean {
 }
 
 /**
- * Whether tool search must run without the tool_reference beta.
- *
- * tool_reference is a beta content type that third-party API gateways
- * (ANTHROPIC_BASE_URL proxies) typically don't support: when the provider is
- * 'firstParty' but the base URL points elsewhere, the proxy rejects
- * tool_reference blocks with a 400 (anthropics/claude-code#30912). Instead of
- * disabling tool search there, the request omits the beta header and
- * rewrites tool_reference blocks as text; discovered tools still reach the
- * tools array via extractDiscoveredToolNames, which reads the internal
- * messages. Setting ENABLE_TOOL_SEARCH to any non-empty value asserts the
- * proxy forwards tool_reference, so the beta path is used as-is.
+ * Deferred tool sent on every tool-search request, like 2.1.303. With at least
+ * one defer_loading tool from the first request on, tools discovered later
+ * (also defer_loading) leave the cached prompt prefix intact.
  */
-export function isToolReferenceTextFallback(): boolean {
-  return (
-    !process.env.ENABLE_TOOL_SEARCH &&
-    getAPIProvider() === 'firstParty' &&
-    !isFirstPartyAnthropicBaseUrl()
+export const DEFERRED_TOOL_PLACEHOLDER = {
+  name: 'DeferredToolPlaceholder',
+  description:
+    'Reserved placeholder that keeps deferred tool loading active; never call this tool.',
+  input_schema: { type: 'object' as const, properties: {} },
+  defer_loading: true,
+}
+
+let toolSearchRefused = false
+
+/** Latches tool search off for the rest of the process once an endpoint refused it. */
+export function markToolSearchRefused(): void {
+  if (toolSearchRefused) return
+  toolSearchRefused = true
+  logForDebugging(
+    '[ToolSearch] the endpoint answered the request sent without tool search, so this process goes on without it',
   )
+}
+
+export function resetToolSearchRefusedForTesting(): void {
+  toolSearchRefused = false
+}
+
+/**
+ * How a 400/422 on a request that declared deferred tools relates to tool
+ * search, like 2.1.311: 'beta' when the error names the tool search beta;
+ * 'unattributed' for a defer_loading complaint or, off the direct Anthropic
+ * API, any other 400 that only a retry without tool search can attribute.
+ */
+export type ToolSearchRefusal = 'beta' | 'unattributed'
+
+export function getToolSearchRefusal(error: unknown): ToolSearchRefusal | null {
+  if (!(error instanceof APIError)) return null
+  if (error.status !== 400 && error.status !== 422) return null
+  const body = error.error as { error?: { type?: string } } | undefined
+  if (body?.error?.type === 'billing_error') return null
+  const message = error.message
+  if (message.includes(getToolSearchBetaHeader())) return 'beta'
+  if (/\bdefer_loading\b/.test(message)) return 'unattributed'
+  const directApi =
+    getAPIProvider() === 'firstParty' &&
+    isFirstPartyAnthropicBaseUrl() &&
+    !process.env.ANTHROPIC_UNIX_SOCKET
+  if (directApi || message.toLowerCase().includes('prompt is too long')) {
+    return null
+  }
+  return 'unattributed'
 }
 
 /**
@@ -443,6 +474,14 @@ export async function isToolSearchEnabled(
   }
 
   const mode = getToolSearchMode()
+
+  if (toolSearchRefused) {
+    logForDebugging(
+      'Tool search is off: the endpoint refused it earlier in this process.',
+    )
+    logModeDecision(false, mode, 'refused')
+    return false
+  }
 
   switch (mode) {
     case 'tst':

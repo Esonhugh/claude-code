@@ -9,6 +9,7 @@ export const newSessionActionSchema = z.object({
   env: z.record(z.string(), z.string()).optional(),
   cols: z.number().int().positive().optional(),
   rows: z.number().int().positive().optional(),
+  dangerouslyDisableSandbox: z.boolean().optional(),
 })
 
 export const capturePaneActionSchema = z.object({
@@ -71,8 +72,18 @@ export const actionSchema = z.object({
     'display-message',
     'kill-pane',
   ]),
-  command: z.string().optional(),
-  args: z.array(z.string()).optional(),
+  command: z
+    .string()
+    .optional()
+    .describe(
+      'new-session: one executable name or path, not a command line (e.g. "ssh"); put its arguments in args. Omit for the default shell.',
+    ),
+  args: z
+    .array(z.string())
+    .optional()
+    .describe(
+      'new-session: argument list passed to command, one argument per item (e.g. ["-o", "ConnectTimeout=15", "host"]).',
+    ),
   cwd: z.string().optional(),
   env: z.record(z.string(), z.string()).optional(),
   cols: z.number().int().positive().optional(),
@@ -89,4 +100,5 @@ export const actionSchema = z.object({
   key: z.enum(SPECIAL_KEYS).optional(),
   signal: z.enum(['SIGINT', 'SIGTERM']).optional(),
   force: z.boolean().optional(),
+  dangerouslyDisableSandbox: z.boolean().optional(),
 }).passthrough()

@@ -80,8 +80,63 @@ CLAUDE_CODE_USE_OPENAI=1 OPENAI_BASE_URL=https://gateway.example/api OPENAI_API_
 | 命令 / 工具 | 行为 |
 | --- | --- |
 | `/fast` | 开启优先处理，发送 `service_tier: "priority"`；网关不支持时直接显示服务端错误，再执行一次关闭 |
-| `/compact` | 走 OpenAI 远端压缩，并保留之前的压缩历史，多次压缩不丢上下文 |
+| `/compact` | 默认和 Claude 一样由模型写摘要；设置 `compact.mode` 为 `codex` 后改走 OpenAI 服务端压缩，并保留之前的压缩历史，多次压缩不丢上下文，见 [Codex 式压缩](compaction.md#换一种压缩方式codex-式压缩) |
 | `WebSearch` | 使用 OpenAI 服务端搜索，结果和引用转换成和 Claude 一致的格式 |
+
+## 网络安全访问档位（Daybreak）
+
+OpenAI 给网络安全类工作提供了单独的访问档位（Daybreak）。本 fork 在 OpenAI provider 下多了一个 `/daybreak` 命令来切换档位，每次请求 Responses API 时在请求体里带上 `access_programs.cyber`。
+
+**什么时候用：** 账号已经由 OpenAI 开通 Daybreak，要在 Claude Code 里做安全测试、漏洞分析等工作时。没开通就保持默认（`off`）。
+
+**怎么切：**
+
+| 输入 | 效果 | 请求里发送的 `access_programs` |
+| --- | --- | --- |
+| `/daybreak` | 显示当前档位 | — |
+| `/daybreak blue` | 切到 blue 档 | `{"cyber": "daybreak_blue"}` |
+| `/daybreak red` | 切到 red 档 | `{"cyber": "daybreak_red"}` |
+| `/daybreak off` | 关闭，回到标准档 | `{"cyber": "standard"}` |
+
+参数不区分大小写。切换后从下一次请求开始生效，不用重启。选择写进用户设置 `~/.claude/settings.json` 的 `daybreak` 字段，下次启动沿用。也可以直接写设置：
+
+```json
+{
+  "daybreak": "blue"
+}
+```
+
+只接受 `blue`、`red`、`off` 三个值，写错时设置文件校验不通过。没有设置时等同于 `off`。
+
+**实际效果**（tmux 里对着测试用假服务运行）：
+
+```text
+❯ /daybreak
+  ⎿  Daybreak is off; standard access program selected. Usage: /daybreak [blue|red|off]
+❯ /daybreak blue
+  ⎿  Daybreak set to blue
+❯ /daybreak red
+  ⎿  Daybreak set to red
+❯ /daybreak
+  ⎿  Current Daybreak program: red. Usage: /daybreak [blue|red|off]
+❯ /daybreak purple
+  ⎿  Invalid argument: purple. Usage: /daybreak [blue|red|off]
+```
+
+假服务记录到的请求（每轮对话有一个 `gpt-5.6-luna` 的辅助请求和一个主请求）：
+
+```text
+{"model":"gpt-5.6-sol","access_programs":{"cyber":"standard"}}        # 默认
+{"model":"gpt-5.6-sol","access_programs":{"cyber":"daybreak_blue"}}   # /daybreak blue 之后
+{"model":"gpt-5.6-sol","access_programs":{"cyber":"daybreak_red"}}    # /daybreak red 之后
+```
+
+**注意：**
+
+- 只在 OpenAI provider（`CLAUDE_CODE_USE_OPENAI=1`）下可用，用 Claude 模型时 `/daybreak` 不出现。
+- 账号没有开通对应档位时，服务端会拒绝请求（例如 `OpenAI API 403: ...`），界面直接显示这个错误；执行 `/daybreak off` 即可恢复。
+- `/compact` 的远端压缩请求不带 `access_programs`。
+- 走兼容网关时同样会发送这个字段；网关不认识它时如何处理取决于网关。
 
 ## 设置
 
@@ -91,6 +146,7 @@ CLAUDE_CODE_USE_OPENAI=1 OPENAI_BASE_URL=https://gateway.example/api OPENAI_API_
 | `OPENAI_AUTH_TOKEN` / `OPENAI_API_KEY` | 字符串 | 凭据 |
 | `OPENAI_BASE_URL` | URL | 兼容网关地址 |
 | `ANTHROPIC_DEFAULT_OPUS_MODEL` / `_SONNET_MODEL` / `_HAIKU_MODEL` | 模型名 | 别名映射 |
+| `daybreak`（settings.json） | `blue` / `red` / `off` | 网络安全访问档位，见上文；`/daybreak` 会写入用户设置 |
 
 ## 说明
 

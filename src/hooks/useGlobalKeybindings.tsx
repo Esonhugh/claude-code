@@ -15,7 +15,6 @@ import {
   logEvent,
 } from '../services/analytics/index.js'
 import { useAppState, useSetAppState } from '../state/AppState.js'
-import { count } from '../utils/array.js'
 import { getTerminalPanel } from '../utils/terminalPanel.js'
 
 type Props = {
@@ -51,41 +50,16 @@ export function GlobalKeybindingHandlers({
   const expandedView = useAppState(s => s.expandedView)
   const setAppState = useSetAppState()
 
-  // Toggle todo list (ctrl+t) - cycles through views
+  // Toggle todo list (ctrl+t)
   const handleToggleTodos = useCallback(() => {
     logEvent('tengu_toggle_todos', {
       is_expanded: expandedView === 'tasks',
     })
-    setAppState(prev => {
-      const { getAllInProcessTeammateTasks } =
-        // eslint-disable-next-line @typescript-eslint/no-require-imports
-        require('../tasks/InProcessTeammateTask/InProcessTeammateTask.js') as typeof import('../tasks/InProcessTeammateTask/InProcessTeammateTask.js')
-      const hasTeammates =
-        count(
-          getAllInProcessTeammateTasks(prev.tasks),
-          t => t.status === 'running',
-        ) > 0
-
-      if (hasTeammates) {
-        // Both exist: none → tasks → teammates → none
-        switch (prev.expandedView) {
-          case 'none':
-            return { ...prev, expandedView: 'tasks' as const }
-          case 'tasks':
-            return { ...prev, expandedView: 'teammates' as const }
-          case 'teammates':
-            return { ...prev, expandedView: 'none' as const }
-        }
-      }
-      // Only tasks: none ↔ tasks
-      return {
-        ...prev,
-        expandedView:
-          prev.expandedView === 'tasks'
-            ? ('none' as const)
-            : ('tasks' as const),
-      }
-    })
+    setAppState(prev => ({
+      ...prev,
+      expandedView:
+        prev.expandedView === 'tasks' ? ('none' as const) : ('tasks' as const),
+    }))
   }, [expandedView, setAppState])
 
   // Toggle transcript mode (ctrl+o). Two-way prompt ↔ transcript.
@@ -207,20 +181,6 @@ export function GlobalKeybindingHandlers({
       context: 'Global',
     })
   }
-
-  // Register teammate keybinding
-  useKeybinding(
-    'app:toggleTeammatePreview',
-    () => {
-      setAppState(prev => ({
-        ...prev,
-        showTeammateMessagePreview: !prev.showTeammateMessagePreview,
-      }))
-    },
-    {
-      context: 'Global',
-    },
-  )
 
   // Toggle built-in terminal panel (meta+j).
   // toggle() blocks in spawnSync until the user detaches from tmux.

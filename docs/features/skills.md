@@ -67,7 +67,7 @@ description: Write release notes from the git log since the last tag. Use when t
 | `~/.claude/skills/<名字>/SKILL.md` | 你自己的所有项目 |
 | `.claude/skills/<名字>/SKILL.md` | 当前项目（可提交进仓库给团队用） |
 | 插件的 `skills/<名字>/SKILL.md` | 装了该插件的地方，名字带插件前缀，如 `/my-plugin:review` |
-| 内置 | 随程序提供，如 `/batch`、`/update-config` |
+| 内置 | 随程序提供，如 `/batch`、`/update-config`、`/dataviz`（图表和仪表盘设计规范，取自官方 2.1.303） |
 
 旧的 `.claude/commands/<名字>.md` 也按同样规则读取。
 

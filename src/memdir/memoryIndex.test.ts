@@ -145,6 +145,15 @@ describe('searchMemory', () => {
     expect((await search('walrus')).map(h => h.line).sort()).toEqual([1, 2, 3])
   })
 
+  test('concurrent searches index appended lines once', async () => {
+    const file = join(projectDir, 'session-c.jsonl')
+    writeFileSync(file, line('user', 'first narwhal'))
+    await search('narwhal')
+    appendFileSync(file, line('assistant', 'second narwhal'))
+    await Promise.all([search('narwhal'), search('narwhal'), search('narwhal')])
+    expect((await search('narwhal')).map(h => h.line).sort()).toEqual([1, 2])
+  })
+
   test('indexes memory in subdirectories such as team memory', async () => {
     mkdirSync(join(memDir, 'team'), { recursive: true })
     writeFileSync(join(memDir, 'team', 'review.md'), 'Reviews need two approvals from the octopus team.')

@@ -35,11 +35,11 @@ Claude 正在回答时你也可以继续打字：
 
 ![排队中的消息](images/keybindings-vim-queued.png)
 
-`Ctrl+Enter` 需要终端支持 Kitty 键盘协议；不支持时用 `Ctrl+X Ctrl+S`，排队提示也会按终端能力显示能按出来的那一个（和官方一样）。另外 `Ctrl+J` 和 `Shift+Enter`、`Option+Enter` 一样是换行。
+`Ctrl+Enter` 需要终端支持 Kitty 键盘协议。iTerm2、kitty、WezTerm、Ghostty、tmux、Windows Terminal、Warp 直接开启；其他终端启动时会发 `CSI ? u` 询问，终端回应了就同样开启（比官方多这一步），排队提示随之显示 `ctrl+enter`。终端不回应时用 `Ctrl+X Ctrl+S`，提示也显示这一个。另外 `Ctrl+J` 和 `Shift+Enter`、`Option+Enter` 一样是换行。
 
 ## Vim 模式
 
-**1. 打开。** `/config` 里把 Editor mode 设为 `vim`。输入框默认在 INSERT 模式，按 `Esc` 进入 NORMAL。
+**1. 打开。** `/config` 里把 Editor mode 设为 `vim`，或者直接输入 `/vim`（再输入一次切回普通模式，会显示 `Editor mode set to vim.` / `Editor mode set to normal.`）。输入框默认在 INSERT 模式，按 `Esc` 进入 NORMAL。
 
 **2. 选择一段文字。** NORMAL 下光标放在 `(` 上，按 `v` 进入 VISUAL，再按 `%` 跳到配对的 `)`，整段括号内容被选中（反色），底部显示 `-- VISUAL --`：
 

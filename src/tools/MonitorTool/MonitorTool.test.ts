@@ -42,12 +42,12 @@ async function waitFor(predicate: () => boolean, timeoutMs = 5000) {
   }
 }
 
-test('Monitor is enabled unless background tasks are disabled', () => {
+test('Monitor is offered by default, even with background tasks disabled, like 2.1.311', () => {
   assert.equal(MonitorTool.name, MONITOR_TOOL_NAME)
   assert.equal(MonitorTool.isEnabled(), true)
   process.env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS = '1'
   try {
-    assert.equal(MonitorTool.isEnabled(), false)
+    assert.equal(MonitorTool.isEnabled(), true)
   } finally {
     delete process.env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS
   }

@@ -255,7 +255,9 @@ assert.match(deepResearchRunResult.value, /Workflow\(\{ name: "deep-research", a
 
 const emptyDeepResearchRunResult = await call('run deep-research', context)
 assert.equal(emptyDeepResearchRunResult.type, 'text')
-assert.equal(emptyDeepResearchRunResult.value, 'Usage: /workflows run deep-research -- <workflow input>')
+// The official deep-research script handles a missing question itself, so no usage gate.
+assert.match(emptyDeepResearchRunResult.value, /Execute workflow: deep-research/)
+assert.match(emptyDeepResearchRunResult.value, /Workflow\(\{ name: "deep-research", args: "" \}\)/)
 
 const jsRunResult = await call('run JS Run Workflow -- topic: JS command', context)
 assert.equal(jsRunResult.type, 'text')

@@ -33,6 +33,7 @@ import {
   type Task,
   listTasks,
   getTaskListId,
+  isTodoToolsEnabled,
   isTodoV2Enabled,
 } from './tasks.js'
 import { getPlanFilePath, getPlan } from './plans.js'
@@ -79,7 +80,7 @@ import {
   getDefaultHaikuModel,
   getDefaultOpusModel,
 } from './model/model.js'
-import type { ReadResourceResult } from '@modelcontextprotocol/sdk/types.js'
+import type { ReadResourceResult } from '@modelcontextprotocol/client'
 import { getSkillToolCommands, getMcpSkillCommands } from '../commands.js'
 import type { Command } from '../types/command.js'
 import type { GoalStatusAttachment } from '../commands/goal/types.js'
@@ -946,9 +947,11 @@ export async function getAttachments(
       Promise.resolve(getUltraEffortAttachments(messages, toolUseContext)),
     ),
     maybe('todo_reminders', () =>
-      isTodoV2Enabled()
-        ? getTaskReminderAttachments(messages, toolUseContext)
-        : getTodoReminderAttachments(messages, toolUseContext),
+      !isTodoToolsEnabled()
+        ? Promise.resolve([])
+        : isTodoV2Enabled()
+          ? getTaskReminderAttachments(messages, toolUseContext)
+          : getTodoReminderAttachments(messages, toolUseContext),
     ),
     ...(isAgentSwarmsEnabled()
       ? [

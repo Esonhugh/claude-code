@@ -175,7 +175,6 @@ import {
   BriefIdleStatus,
   type SpinnerMode,
 } from '../components/Spinner.js'
-import { TeammateSpinnerTree } from '../components/Spinner/TeammateSpinnerTree.js'
 import { getSystemPrompt } from '../constants/prompts.js'
 import { buildEffectiveSystemPrompt } from '../utils/systemPrompt.js'
 import {
@@ -471,13 +470,18 @@ import {
   extractBashToolsFromMessages,
 } from '../utils/queryHelpers.js'
 import { resetMicrocompactState } from '../services/compact/microCompact.js'
+import { IDLE_COMPACTION_NOTICE } from '../services/compact/idleCompaction.js'
+import { useIdleCompaction } from '../hooks/useIdleCompaction.js'
 import { runPostCompactCleanup } from '../services/compact/postCompactCleanup.js'
 import {
   provisionContentReplacementState,
   reconstructContentReplacementState,
   type ContentReplacementRecord,
 } from '../utils/toolResultStorage.js'
-import { partialCompactConversation } from '../services/compact/compact.js'
+import {
+  buildPostCompactMessages,
+  partialCompactConversation,
+} from '../services/compact/compact.js'
 import type { LogOption } from '../types/logs.js'
 import type { AgentColorName } from '../tools/AgentTool/agentColorManager.js'
 import {
@@ -1117,9 +1121,6 @@ export function REPL({
   // These fields contain excluded strings that must not appear in external builds.
   const spinnerTip = useAppState(s => s.spinnerTip)
   const showExpandedTodos = useAppState(s => s.expandedView) === 'tasks'
-  const showTeammateTree = useAppState(s => s.expandedView) === 'teammates'
-  const selectedIPAgentIndex = useAppState(s => s.selectedIPAgentIndex)
-  const viewSelectionMode = useAppState(s => s.viewSelectionMode)
   const pendingWorkerRequest = useAppState(s => s.pendingWorkerRequest)
   const pendingSandboxRequest = useAppState(s => s.pendingSandboxRequest)
   const teamContext = useAppState(s => s.teamContext)
@@ -3399,9 +3400,9 @@ export function REPL({
     composerEmpty: inputValue.length === 0 && Object.keys(pastedContents).length === 0,
     composerValue: inputValue,
     hasDialog: Boolean(focusedInputDialog || toolJSX?.jsx || showBashesDialog || exitFlow || showResponsiveDiffDialog),
-    keyboardOwned: isSearchingHistory || isHelpOpen || cursor !== null || viewSelectionMode === 'selecting-agent',
+    keyboardOwned: isSearchingHistory || isHelpOpen || cursor !== null,
     agentId: viewedAgentTask?.id,
-  }), [modTerminalSize.columns, modTerminalSize.rows, inputValue, pastedContents, focusedInputDialog, toolJSX, showBashesDialog, exitFlow, showResponsiveDiffDialog, isSearchingHistory, isHelpOpen, cursor, viewSelectionMode, viewedAgentTask?.id])
+  }), [modTerminalSize.columns, modTerminalSize.rows, inputValue, pastedContents, focusedInputDialog, toolJSX, showBashesDialog, exitFlow, showResponsiveDiffDialog, isSearchingHistory, isHelpOpen, cursor, viewedAgentTask?.id])
   modUiPresentationRef.current = modUiPresentation
   modPromptBlockedRef.current =
     modUiPresentation.hasDialog || modUiPresentation.keyboardOwned
@@ -3824,7 +3825,10 @@ export function REPL({
 
   if (SandboxManager.isSandboxingEnabled()) {
     // If sandboxing is enabled (setting.sandbox is defined, initialise the manager)
-    SandboxManager.initialize(sandboxAskCallback).catch(err => {
+    SandboxManager.initialize(
+      sandboxAskCallback,
+      () => store.getState().toolPermissionContext,
+    ).catch(err => {
       // Initialization/validation failed - display error and exit
       process.stderr.write(`\n❌ Sandbox Error: ${errorMessage(err)}\n`)
       gracefulShutdownSync(1, 'other')
@@ -4342,6 +4346,36 @@ export function REPL({
     setAbortController,
     onBackgroundQuery: handleBackgroundQuery,
   })
+
+  // Idle compaction holds the query guard like a typed /compact, so input sent
+  // meanwhile queues and Esc cancels it.
+  const runIdleCompaction = useCallback(async () => {
+    if (queryGuard.isActive) return
+    const generation = queryGuard.tryStart()
+    if (generation === null) return
+    const controller = createAbortController()
+    setAbortController(controller)
+    try {
+      const { call } = await import('../commands/compact/compact.js')
+      const context = getToolUseContext(messagesRef.current, [], controller, mainLoopModel)
+      const result = await call('', context)
+      if (result.type !== 'compact' || controller.signal.aborted) return
+      resetMicrocompactState()
+      setMessages(() => [
+        ...buildPostCompactMessages(result.compactionResult),
+        createSystemMessage(IDLE_COMPACTION_NOTICE, 'info'),
+      ])
+      setConversationId(randomUUID())
+    } catch (error) {
+      if (!controller.signal.aborted) logError(error)
+    } finally {
+      if (queryGuard.end(generation)) {
+        setAbortController(null)
+        resetLoadingState()
+      }
+    }
+  }, [queryGuard, getToolUseContext, mainLoopModel, setMessages, resetLoadingState])
+  useIdleCompaction(messages, isLoading, getQuerySourceForREPL(), runIdleCompaction)
 
   const onQueryEvent = useCallback(
     (event: Parameters<typeof handleMessageFromStream>[0]) => {
@@ -7355,21 +7389,6 @@ export function REPL({
                   })()}
                 />
               )}
-              {!showSpinner &&
-                !(viewedAgentTask && isLocalAgentTask(viewedAgentTask)) &&
-                showTeammateTree &&
-                (!toolJSX || toolJSX.showSpinner === true) &&
-                toolUseConfirmQueue.length === 0 &&
-                promptQueue.length === 0 &&
-                !pendingWorkerRequest &&
-                !onlySleepToolActive &&
-                (!visibleStreamingText || isBriefOnly) && (
-                  <TeammateSpinnerTree
-                    selectedIndex={selectedIPAgentIndex}
-                    isInSelectionMode={viewSelectionMode === 'selecting-agent'}
-                    leaderIdleText="Idle"
-                  />
-                )}
               {!showSpinner &&
                 !isLoading &&
                 !userInputOnProcessing &&

@@ -16,7 +16,6 @@ import { ListMcpResourcesTool } from 'src/tools/ListMcpResourcesTool/ListMcpReso
 import { NotebookEditTool } from 'src/tools/NotebookEditTool/NotebookEditTool.js'
 import { ReadMcpResourceDirTool } from 'src/tools/ReadMcpResourceDirTool/ReadMcpResourceDirTool.js'
 import { ReadMcpResourceTool } from 'src/tools/ReadMcpResourceTool/ReadMcpResourceTool.js'
-import { TaskOutputTool } from 'src/tools/TaskOutputTool/TaskOutputTool.js'
 import { TaskStopTool } from 'src/tools/TaskStopTool/TaskStopTool.js'
 import { TodoWriteTool } from 'src/tools/TodoWriteTool/TodoWriteTool.js'
 import { TungstenTool } from 'src/tools/TungstenTool/TungstenTool.js'
@@ -65,7 +64,6 @@ function getToolBuckets(): ToolBuckets {
         TodoWriteTool.name,
         WebSearchTool.name,
         TaskStopTool.name,
-        TaskOutputTool.name,
         ListMcpResourcesTool.name,
         ReadMcpResourceTool.name,
         ReadMcpResourceDirTool.name,

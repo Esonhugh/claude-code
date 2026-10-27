@@ -1,4 +1,4 @@
-import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js'
+import { ProtocolErrorCode, ProtocolError } from '@modelcontextprotocol/client'
 import { z } from 'zod/v4'
 import { getHostOwnedCodexAppsKind } from '../../services/apps/trust.js'
 import { ensureConnectedClient } from '../../services/mcp/client.js'
@@ -322,7 +322,7 @@ export const ReadMcpResourceDirTool = buildTool({
         },
       }
     } catch (error) {
-      if (error instanceof McpError && error.code === ErrorCode.InvalidParams) {
+      if (error instanceof ProtocolError && error.code === ProtocolErrorCode.InvalidParams) {
         logMCPError(
           connectedClient.name,
           `resources/directory/read returned ${error.code} — not a directory`,

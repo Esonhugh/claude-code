@@ -105,6 +105,8 @@ claude --plugin-url https://example.com/my-plugin.zip   # 下载 zip，只对本
 | `defaultEnabled`（插件或 marketplace 清单） | `true` / `false` | 安装时默认是否启用 |
 | `disableSideloadFlags`（托管设置） | `true` | 禁止 `--plugin-dir` / `--plugin-url` |
 
+来源为 npm 包的插件安装时带 `--ignore-scripts`，不会运行包里的 `preinstall` / `postinstall` 等生命周期脚本。
+
 ## 已知问题
 
 - `--plugin-url` 只接受 `http` / `https`；写成 `ftp://…` 等其他协议时这个插件不会加载，启动时也没有提示；官方 2.1.303 同样不提示。

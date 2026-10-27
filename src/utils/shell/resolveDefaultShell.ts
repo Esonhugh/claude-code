@@ -139,7 +139,12 @@ export function resolveTerminalCommand(input: {
   if (requestedCommand !== undefined && requestedCommand.trim() !== '') {
     const resolved = tryResolveExecutable(requestedCommand, { cwd, env })
     if (!resolved) {
-      throw new Error(`Unable to resolve terminal command: ${requestedCommand}`)
+      const hint = /\s/.test(requestedCommand.trim())
+        ? ' (command must be a single executable; pass arguments in args)'
+        : ''
+      throw new Error(
+        `Unable to resolve terminal command: ${requestedCommand}${hint}`,
+      )
     }
     return { command: resolved, args: defaultShellArgs(resolved) }
   }

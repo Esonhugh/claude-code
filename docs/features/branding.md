@@ -80,6 +80,18 @@ printf '%s · %s · %s' "$model" "${dir##*/}" "$goal"
 | `uiName` | 字符串 | `EsonClaw` |
 | `${CLAUDE_CONFIG_DIR:-~/.claude}/clawd.txt` | 任意 ASCII 图 | 内置图案 |
 | `statusLine` | `{"type":"command","command":"...","padding":1}` | 无 |
+| `subagentStatusLine` | `{"type":"command","command":"..."}` | 无 |
+| `timeFormat` | `"auto"`、`"12-hour"`、`"24-hour"`、`"24-hour-utc"`（`18:05Z`），或含 `%` 的 strftime 格式如 `"%H:%M"` | `auto` |
+| `timeZone` | IANA 时区名，如 `"Asia/Shanghai"`；无效时用系统时区 | 系统时区 |
+| `spellcheck` | `{"enabled":true,"checker":"auto","language":"en_US","color":"red"}` | 关闭 |
+
+## 其他界面设置（与官方 2.1.303 一致）
+
+**时间格式。** `timeFormat` 决定界面里时钟时间的写法（目前是 transcript 里的消息时间戳）；`/config` 的 Time format 只提供四个预设，strftime 格式写在 settings 里。格式最长 100 字符。
+
+**子代理状态行。** `subagentStatusLine` 的命令在 agent 面板有子代理时每 5 秒运行一次，stdin 收到 JSON：会话信息加 `columns` 和 `tasks`（每项有 `id`、`name`、`agentType`、`status`、`description`、`label`、`startTime`、`model`、`contextWindowSize`、`tokenCount`、`tokenSamples`、`cwd`）。每输出一行 `{"id":"<task id>","content":"<文字，可带 ANSI 颜色>"}`，对应那一行就换成这段文字。和 `statusLine` 一样需要已信任工作区。与官方的差别：`content` 为空字符串时官方会隐藏这一行，本 fork 保持原样显示。
+
+**拼写检查。** `spellcheck.enabled` 为 `true` 时，用 PATH 里找到的 aspell、hunspell 或 ispell 检查输入框里的英文单词，拼错的加下划线并着色（默认主题的 error 色）。代码片段、路径、`--flag`、驼峰词、中日韩文字不检查，光标正在输入的词也不检查。只读用户、`--settings` 和托管设置（取其中优先级最高的整块），项目里的 `.claude/settings.json` 不生效。没装检查器时什么也不做。
 
 ## 说明
 

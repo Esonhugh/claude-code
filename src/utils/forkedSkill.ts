@@ -15,7 +15,11 @@ import {
 } from '../tools/AgentTool/subagentDepth.js'
 import type { Command } from '../commands.js'
 import { COMMAND_NAME_TAG } from '../constants/xml.js'
-import type { PromptCommand, CommandBase } from '../types/command.js'
+import {
+  getCommandName,
+  type CommandBase,
+  type PromptCommand,
+} from '../types/command.js'
 import type { Message } from '../types/message.js'
 import type { AgentId } from '../types/ids.js'
 import { runWithAgentContext } from './agentContext.js'
@@ -65,6 +69,7 @@ export function getTypedSkillAttribution(
 /** Return null to use the existing synchronous path when a safe launch is unavailable. */
 export async function launchBackgroundForkedSkill({
   command,
+  args,
   prepared,
   agentDefinition,
   agentId,
@@ -72,6 +77,7 @@ export async function launchBackgroundForkedSkill({
   canUseTool,
 }: {
   command: CommandBase & PromptCommand
+  args: string
   prepared: PreparedForkedContext
   agentDefinition: AgentDefinition
   agentId: AgentId
@@ -120,7 +126,9 @@ export async function launchBackgroundForkedSkill({
   // Persistence yields: re-check duplicate launches and cancellation before registration.
   checkAbort()
   if (duplicate()) return null
-  const description = `/${command.name}`.slice(0, 50)
+  const invocation = `/${getCommandName(command)} ${args}`.trim()
+  const description =
+    invocation.length > 50 ? `${invocation.slice(0, 49)}…` : invocation
   const task = registerAsyncAgent({
     agentId,
     description,

@@ -34,11 +34,18 @@ export function getDefaultSubagentModel(): string {
  * This ensures subagents use the same region as the parent, which is necessary when
  * IAM permissions are scoped to specific cross-region inference profiles.
  */
+/** Official 2.1.296: one model for every workflow agent; unset or "inherit" changes nothing. */
+export function getWorkflowSubagentModel(): string | undefined {
+  const model = process.env.CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL
+  return model && model.toLowerCase() !== 'inherit' ? model : undefined
+}
+
 export function getAgentModel(
   agentModel: string | undefined,
   parentModel: string,
   toolSpecifiedModel?: string,
   permissionMode?: PermissionMode,
+  options?: { inWorkflowRun?: boolean },
 ): string {
   // Extract Bedrock region prefix from parent model to inherit for subagents.
   // This ensures subagents use the same cross-region inference profile (e.g., "eu.", "us.")
@@ -63,8 +70,9 @@ export function getAgentModel(
   }
 
   const agentModelWithExp =
-    process.env.CLAUDE_CODE_SUBAGENT_MODEL ||
-    (toolSpecifiedModel ?? agentModel ?? getDefaultSubagentModel())
+    (options?.inWorkflowRun ? getWorkflowSubagentModel() : undefined) ??
+    (process.env.CLAUDE_CODE_SUBAGENT_MODEL ||
+      (toolSpecifiedModel ?? agentModel ?? getDefaultSubagentModel()))
 
   if (agentModelWithExp === 'inherit') {
     // Apply runtime model resolution for inherit to get the effective model

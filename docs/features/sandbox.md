@@ -102,7 +102,7 @@ sudo apt install bubblewrap socat
 
 ## 和其他功能的关系
 
-- [Terminal 工具](terminal-tool.md) 的终端**不进沙箱**，按平时的权限规则确认。
+- [Terminal 工具](terminal-tool.md) 新开的终端也在沙箱里跑（规则同 Bash，包括 `excludedCommands` 与 `dangerouslyDisableSandbox`），但不享受 auto-allow，按平时的权限规则确认。
 - [Monitor 工具](monitor-tool.md) 的命令在沙箱里跑，但不享受 auto-allow，按平时的 Bash 权限规则确认。
 - [自动模式](auto-mode.md) 下，auto-allow 的命令仍然先经过 deny / ask 规则。
 - 完整权限规则见 [permissions.md](permissions.md)。

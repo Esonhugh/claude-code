@@ -4,18 +4,16 @@ import {
   ALL_AGENT_DISALLOWED_TOOLS,
   MAIN_THREAD_ONLY_TOOLS,
 } from '../../constants/tools.js'
-import { ClearGoalTool } from '../ClearGoalTool/ClearGoalTool.js'
-import { CLEAR_GOAL_TOOL_NAME } from '../ClearGoalTool/constants.js'
-import { SetGoalTool } from '../SetGoalTool/SetGoalTool.js'
-import { SET_GOAL_TOOL_NAME } from '../SetGoalTool/constants.js'
+import { GOAL_TOOL_NAME } from '../GoalTool/constants.js'
+import { GoalTool } from '../GoalTool/GoalTool.js'
 import {
   filterToolsForAgent,
   filterToolsForExactAgent,
   resolveAgentTools,
 } from './agentToolUtils.js'
 
-const goalTools = [SetGoalTool, ClearGoalTool]
-const goalToolNames = [SET_GOAL_TOOL_NAME, CLEAR_GOAL_TOOL_NAME]
+const goalTools = [GoalTool]
+const goalToolNames = [GOAL_TOOL_NAME]
 
 for (const toolName of goalToolNames) {
   assert.equal(MAIN_THREAD_ONLY_TOOLS.has(toolName), true)
@@ -67,8 +65,8 @@ assert.deepEqual(
 
 
 // Keeping schema bytes for cache sharing must not grant goal mutation to a fork.
-const childContext = { agentId: 'fork-child' } as Parameters<typeof SetGoalTool.call>[1]
-await assert.rejects(SetGoalTool.call({ goal: 'forbidden' }, childContext), /SetGoal cannot be used in agent contexts/)
-await assert.rejects(ClearGoalTool.call({}, childContext), /ClearGoal cannot be used in agent contexts/)
+const childContext = { agentId: 'fork-child' } as Parameters<typeof GoalTool.call>[1]
+await assert.rejects(GoalTool.call({ action: 'set', goal: 'forbidden' }, childContext), /Goal cannot be used in agent contexts/)
+await assert.rejects(GoalTool.call({ action: 'clear' }, childContext), /Goal cannot be used in agent contexts/)
 
 console.log('agentToolUtils.setGoal.test.ts passed')

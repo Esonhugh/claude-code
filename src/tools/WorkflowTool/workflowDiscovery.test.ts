@@ -9,7 +9,7 @@ const tempRoot = await mkdtemp(join(tmpdir(), 'workflow-discovery-test-'))
 const missingDiscovery = await discoverWorkflowSpecs(tempRoot)
 assert.deepEqual(
   missingDiscovery.valid.map(workflow => workflow.commandName).sort(),
-  ['code-review', 'deep-research'],
+  ['deep-research'],
 )
 assert.equal(missingDiscovery.invalid.length, 0)
 
@@ -37,7 +37,7 @@ assert.equal(
 
 await writeFile(join(tempRoot, 'docs'), 'not a directory')
 const invalidDiscovery = await discoverWorkflowSpecs(tempRoot)
-assert.equal(invalidDiscovery.valid.length, 2)
+assert.equal(invalidDiscovery.valid.length, 1)
 assert.equal(invalidDiscovery.invalid.length, 1)
 assert.match(invalidDiscovery.invalid[0]!.path, /docs\/workflows$/)
 

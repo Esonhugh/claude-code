@@ -1,4 +1,5 @@
 import { feature } from 'bun:bundle'
+import { dropProcessWrapperBinaryArg } from './processWrapperArgs.js'
 
 // Bugfix for corepack auto-pinning, which adds yarnpkg to peoples' package.jsons
 // eslint-disable-next-line custom-rules/no-top-level-side-effects
@@ -41,6 +42,7 @@ if (feature('ABLATION_BASELINE') && process.env.CLAUDE_CODE_ABLATION_BASELINE) {
  * Fast-path for --version has zero imports beyond this file.
  */
 async function main(): Promise<void> {
+  process.argv = dropProcessWrapperBinaryArg(process.argv)
   const args = process.argv.slice(2)
 
   // Fast-path for --version/-v: zero module loading needed

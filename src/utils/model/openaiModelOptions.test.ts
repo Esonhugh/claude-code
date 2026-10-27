@@ -368,8 +368,11 @@ try {
     true,
   )
 
-  requests.length = 0
+  // Gateway discovery is on by default; only an explicit 0 turns it off.
   delete process.env.CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY
+  assert.equal(openAIModelOptions.isModelDiscoveryEnabled(), true)
+  requests.length = 0
+  process.env.CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY = '0'
   assert.equal(openAIModelOptions.isModelDiscoveryEnabled(), false)
   assert.equal(await openAIModelOptions.fetchModelOptions(), null)
   assert.equal(requests.length, 0)

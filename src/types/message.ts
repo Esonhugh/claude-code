@@ -15,6 +15,8 @@ export type MessageOrigin =
   | {
       kind: 'peer'
       from: string
+      /** Set when the sender is an agent inside this session (SendMessage to "main"). */
+      senderTaskId?: string
       msg_id?: string
       name?: string
       fromMode?: 'bypass' | 'prompting'

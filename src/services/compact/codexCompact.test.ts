@@ -300,6 +300,7 @@ describe('createCodexStyleCompactionResultFromSummary', () => {
       originalMessages: messages,
       boundaryMarker: boundary as never,
       summaryMessages: summaryMessages as never,
+      attachments: [],
       hookResults: [],
       options: {
         retainedUserMessageTokens: 20000,
@@ -354,6 +355,7 @@ describe('codex compact attachment metadata', () => {
           message: { role: 'user', content: 'summary' },
         } as never,
       ],
+      attachments: [],
       hookResults: [],
       options: {
         retainedUserMessageTokens: 20000,
@@ -368,5 +370,49 @@ describe('codex compact attachment metadata', () => {
         compactMetadata: { droppedAttachmentCount: number }
       }).compactMetadata.droppedAttachmentCount,
     ).toBe(0)
+  })
+})
+
+describe('codex compact post-compact attachments', () => {
+  const attachment = {
+    type: 'attachment',
+    uuid: '00000000-0000-4000-8000-0000000000c1',
+    timestamp: '2026-06-23T00:00:00.000Z',
+    attachment: { type: 'plan_mode', planFilePath: '/tmp/plan.md' },
+  } as never
+  const run = (keepPostCompactAttachments: boolean) =>
+    createCodexStyleCompactionResultFromSummary({
+      originalMessages: [
+        userTextMessage('00000000-0000-4000-8000-0000000000a2', 'current task'),
+      ],
+      boundaryMarker: {
+        type: 'system',
+        uuid: '00000000-0000-4000-8000-0000000000b4',
+        timestamp: '2026-06-23T00:00:00.000Z',
+        subtype: 'compact_boundary',
+        isMeta: true,
+        compactMetadata: {},
+        content: 'compact boundary',
+      } as never,
+      summaryMessages: [],
+      attachments: [attachment],
+      hookResults: [],
+      options: { retainedUserMessageTokens: 20000, keepPostCompactAttachments },
+    })
+  const dropped = (result: ReturnType<typeof run>) =>
+    (result.boundaryMarker as unknown as {
+      compactMetadata: { droppedAttachmentCount: number }
+    }).compactMetadata.droppedAttachmentCount
+
+  test('keeps the rehydrated attachments when keepPostCompactAttachments is true', () => {
+    const result = run(true)
+    expect(result.attachments).toEqual([attachment])
+    expect(dropped(result)).toBe(0)
+  })
+
+  test('drops and counts them by default', () => {
+    const result = run(false)
+    expect(result.attachments).toEqual([])
+    expect(dropped(result)).toBe(1)
   })
 })

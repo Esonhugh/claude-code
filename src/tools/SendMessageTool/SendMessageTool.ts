@@ -24,6 +24,7 @@ import { errorMessage } from '../../utils/errors.js'
 import { truncate } from '../../utils/format.js'
 import { gracefulShutdown } from '../../utils/gracefulShutdown.js'
 import { lazySchema } from '../../utils/lazySchema.js'
+import { enqueue } from '../../utils/messageQueueManager.js'
 import { parseAddress } from '../../utils/peerAddress.js'
 import { semanticBoolean } from '../../utils/semanticBoolean.js'
 import { jsonStringify } from '../../utils/slowOperations.js'
@@ -50,7 +51,8 @@ import { frameSubagentHandback, displaySubagentHandback, RESUMED_AGENT_MESSAGE, 
 import { isEnvTruthy } from '../../utils/envUtils.js'
 import { AgentStoppedByUserError, cancelledAgentMessage } from '../../utils/agentCancellation.js'
 import { bindSubagentRecipient, resolveSubagentRecipient, type SendMessagePin } from '../../utils/sendMessagePins.js'
-import { SEND_MESSAGE_TOOL_NAME } from './constants.js'
+import { escapeClosingTag, escapeXmlAttr } from '../../utils/xml.js'
+import { MAIN_RECIPIENT, SEND_MESSAGE_TOOL_NAME } from './constants.js'
 import { DESCRIPTION, getPrompt } from './prompt.js'
 import { renderToolResultMessage, renderToolUseMessage } from './UI.js'
 
@@ -842,6 +844,23 @@ export const SendMessageTool: Tool<InputSchema, SendMessageToolOutput> =
         } catch (e) {
           return { data: { success: false, message: `Failed to send to ${input.to}: ${errorMessage(e)}` } }
         }
+      }
+      // "main" addresses the main conversation of this session.
+      if (input.to === MAIN_RECIPIENT && typeof input.message === 'string' && !notify) {
+        if (!context.agentId) {
+          return { data: { success: false, message: `You are the main conversation — "${MAIN_RECIPIENT}" addresses you. Send to a named agent instead.` } }
+        }
+        const from = [...context.getAppState().agentNameRegistry].find(([, id]) => id === context.agentId)?.[0] || getAgentName() || context.agentId
+        enqueue({
+          mode: 'prompt',
+          value: `<agent-message from="${escapeXmlAttr(from)}">\n${escapeClosingTag(input.message, 'agent-message')}\n</agent-message>`,
+          priority: 'next',
+          origin: { kind: 'peer', from, senderTaskId: context.agentId },
+          skipSlashCommands: true,
+          isMeta: true,
+          skipAttachments: true,
+        })
+        return { data: { success: true, message: "Message queued for the main conversation's next turn." } }
       }
       if (feature('UDS_INBOX') && typeof input.message === 'string') {
         const addr = parseAddress(input.to)

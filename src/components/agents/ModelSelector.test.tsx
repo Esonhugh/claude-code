@@ -28,6 +28,7 @@ mock.module('../../utils/model/agent.js', () => ({
   AGENT_MODEL_OPTIONS: ['sonnet', 'opus', 'haiku', 'inherit'],
   getAgentModel: () => 'inherit',
   getDefaultSubagentModel: () => 'inherit',
+  getWorkflowSubagentModel: () => undefined,
   getAgentModelDisplay: (model: string) => model,
   getAgentModelOptions: () => ['sonnet', 'opus', 'haiku', 'inherit'].map(value => ({ value, label: value, description: value })),
 }))

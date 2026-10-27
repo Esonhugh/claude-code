@@ -11,7 +11,6 @@ import {
 } from '../../tools/ScheduleCronTool/prompt.js'
 import { SCHEDULE_WAKEUP_TOOL_NAME } from '../../tools/ScheduleWakeupTool/prompt.js'
 import { TASK_STOP_TOOL_NAME } from '../../tools/TaskStopTool/prompt.js'
-import { isEnvTruthy } from '../../utils/envUtils.js'
 import { registerBundledSkill } from '../bundledSkills.js'
 
 const USAGE_MESSAGE = `Usage: /loop [interval] <prompt>
@@ -29,9 +28,7 @@ Examples:
   /loop check the deploy every 20m`
 
 function buildDynamicModeSection(): string {
-  const monitorAvailable = feature('MONITOR_TOOL')
-    ? !isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS)
-    : false
+  const monitorAvailable = feature('MONITOR_TOOL') ? true : false
   const monitorStep = monitorAvailable
     ? `2. **If the next run is gated on an event** (CI finishing, a log line matching, a file changing, a PR comment) and no ${MONITOR_TOOL_NAME} is already running for it: arm one now with \`timeout_ms: ${getMonitorTimeoutCapMs()}\`. Its events arrive as \`<task-notification>\` messages and wake this loop immediately — you do not wait for the ${SCHEDULE_WAKEUP_TOOL_NAME} deadline. A monitor expires after at most ${Math.round(getMonitorTimeoutCapMs() / 60_000)} minutes and tells you; on later iterations re-arm only if no monitor for it is still running.
 `

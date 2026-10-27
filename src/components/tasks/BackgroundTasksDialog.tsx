@@ -248,7 +248,6 @@ export function BackgroundTasksDialog({
 }: Props): React.ReactNode {
   const tasks = useAppState(s => s.tasks)
   const foregroundedTaskId = useAppState(s => s.foregroundedTaskId)
-  const showSpinnerTree = useAppState(s => s.expandedView) === 'teammates'
   const setAppState = useSetAppState()
   const killAgentsShortcut = useShortcutDisplay(
     'chat:killAgents',
@@ -318,10 +317,7 @@ export function BackgroundTasksDialog({
     )
     const monitorMcp = sorted.filter(item => item.type === 'monitor_mcp')
     const dreamTasks = sorted.filter(item => item.type === 'dream')
-    // In spinner-tree mode, exclude teammates from the dialog (they appear in the tree)
-    const teammates = showSpinnerTree
-      ? []
-      : sorted.filter(item => item.type === 'in_process_teammate')
+    const teammates = sorted.filter(item => item.type === 'in_process_teammate')
     // Add leader entry when there are teammates, so users can foreground back to leader
     const leaderItem: ListItem[] =
       teammates.length > 0
@@ -356,7 +352,7 @@ export function BackgroundTasksDialog({
         ...dreamTasks,
       ],
     }
-  }, [typedTasks, foregroundedTaskId, scope, showSpinnerTree])
+  }, [typedTasks, foregroundedTaskId, scope])
 
   const currentSelection = allSelectableItems[selectedIndex] ?? null
 

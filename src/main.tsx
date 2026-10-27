@@ -280,6 +280,12 @@ import {
   stripDangerousPermissionsForAutoMode,
   verifyAutoModeGateAccess,
 } from './utils/permissions/permissionSetup.js'
+import { permissionRuleValueFromString } from './utils/permissions/permissionRuleParser.js'
+import { TASK_CREATE_TOOL_NAME } from './tools/TaskCreateTool/constants.js'
+import { TASK_GET_TOOL_NAME } from './tools/TaskGetTool/constants.js'
+import { TASK_LIST_TOOL_NAME } from './tools/TaskListTool/constants.js'
+import { TASK_UPDATE_TOOL_NAME } from './tools/TaskUpdateTool/constants.js'
+import { TODO_WRITE_TOOL_NAME } from './tools/TodoWriteTool/constants.js'
 import { cleanupOrphanedPluginVersionsInBackground } from './utils/plugins/cacheUtils.js'
 import { initializeVersionedPlugins } from './utils/plugins/installedPluginsManager.js'
 import { getManagedPluginNames } from './utils/plugins/managedPlugins.js'
@@ -407,6 +413,7 @@ import {
   setInlinePluginsNoMcp,
   setInlinePluginUrls,
   setIsInteractive,
+  setPrintOutputFormat,
   setKairosActive,
   setOriginalCwd,
   setQuestionPreviewFormat,
@@ -416,6 +423,8 @@ import {
   setSessionPersistenceDisabled,
   setSessionSource,
   setUserMsgOptIn,
+  setTodoToolsOptIn,
+  setPermissionPromptToolName,
   switchSession,
   getSessionStartedAt,
 } from './bootstrap/state.js'
@@ -2731,6 +2740,30 @@ async function run(): Promise<CommanderCommand> {
         }
       }
 
+      // Like official 2.1.303: naming a todo/task tool in --tools or
+      // --allowedTools turns those tools back on for newer models, and
+      // AskUserQuestion is only offered headless when someone answers prompts.
+      const launchToolNames = [
+        ...parseToolListFromCLI(baseTools),
+        ...parseToolListFromCLI(allowedTools).map(
+          rule => permissionRuleValueFromString(rule).toolName,
+        ),
+      ]
+      setTodoToolsOptIn(
+        [
+          TODO_WRITE_TOOL_NAME,
+          TASK_CREATE_TOOL_NAME,
+          TASK_GET_TOOL_NAME,
+          TASK_UPDATE_TOOL_NAME,
+          TASK_LIST_TOOL_NAME,
+        ].some(name => launchToolNames.includes(name)),
+      )
+      if (options.permissionPrompts !== 'none') {
+        setPermissionPromptToolName(
+          sdkUrl ? 'stdio' : options.permissionPromptTool,
+        )
+      }
+
       // SDK opt-in for SendUserMessage via --tools. All sessions require
       // explicit opt-in; listing it in --tools signals intent. Runs BEFORE
       // initializeToolPermissionContext so getToolsForDefaultPreset() sees
@@ -3694,6 +3727,7 @@ async function run(): Promise<CommanderCommand> {
         thinkingConfig = { ...thinkingConfig, display: options.thinkingDisplay }
       }
 
+      if (isNonInteractiveSession) setPrintOutputFormat(outputFormat ?? 'text')
       logForDiagnosticsNoPII('info', 'started', {
         version: MACRO.VERSION,
         is_native_binary: isInBundledMode(),
@@ -4245,6 +4279,7 @@ async function run(): Promise<CommanderCommand> {
       const initialState: AppState = {
         settings: getInitialSettings(),
         tasks: {},
+        taskDecorations: {},
         runningSubagents: 0,
         agentNameRegistry: new Map(),
         sendMessagePins: {},
@@ -4257,13 +4292,7 @@ async function run(): Promise<CommanderCommand> {
         mainLoopModelForSession: null,
         isBriefOnly: initialIsBriefOnly,
         briefTranscript: isFocusViewConfigured(),
-        expandedView: getGlobalConfig().showSpinnerTree
-          ? 'teammates'
-          : getGlobalConfig().showExpandedTodos
-            ? 'tasks'
-            : 'none',
-        showTeammateMessagePreview: isAgentSwarmsEnabled() ? false : undefined,
-        selectedIPAgentIndex: -1,
+        expandedView: getGlobalConfig().showExpandedTodos ? 'tasks' : 'none',
         coordinatorTaskIndex: -1,
         coordinatorTaskTargetId: undefined,
         viewSelectionMode: 'none',
@@ -6521,6 +6550,24 @@ async function run(): Promise<CommanderCommand> {
       ])
       const root = await createRoot(getBaseRenderOptions(false))
       await doctorHandler(root)
+    })
+
+  const sandboxCommand = program.command('sandbox', { hidden: true })
+  sandboxCommand
+    .command('install')
+    .description(
+      'Install the Windows sandbox user and network filters. Self-elevates (one UAC prompt). Prints a JSON {status, message} result and exits 0 only when status is "ok".',
+    )
+    .action(async () => {
+      const { sandboxInstallHandler } = await import('./cli/handlers/sandbox.js')
+      await sandboxInstallHandler()
+    })
+  sandboxCommand
+    .command('status')
+    .description('Print the Windows sandbox install and enablement state as JSON.')
+    .action(async () => {
+      const { sandboxStatusHandler } = await import('./cli/handlers/sandbox.js')
+      sandboxStatusHandler()
     })
 
   // claude update

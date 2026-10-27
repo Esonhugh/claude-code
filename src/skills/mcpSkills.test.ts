@@ -60,7 +60,7 @@ function connectedClient(
   client: TestMcpClient,
   trusted = true,
   serverName = CODEX_APPS_SERVER_NAME,
-  extensions: Record<string, object> = {},
+  extensions: ConnectedMCPServer['capabilities']['extensions'] = {},
 ): ConnectedMCPServer {
   const pluginRuntime = serverName === CODEX_APPS_PLUGIN_RUNTIME_SERVER_NAME
   const config = trusted

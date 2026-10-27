@@ -45,7 +45,6 @@ async function fetchChannels(
           channel_types: 'public_channel,private_channel',
         },
       },
-      undefined,
       { timeout: 5000 },
     )
 

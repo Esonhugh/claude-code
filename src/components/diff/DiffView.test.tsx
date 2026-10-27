@@ -1,4 +1,4 @@
-import { expect, test } from 'bun:test'
+import { afterEach, expect, test } from 'bun:test'
 import { execFileSync } from 'node:child_process'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -79,6 +79,10 @@ if (!process.env[childKey]) {
     }
   }, 90000)
 } else {
+  afterEach(() => {
+    delete process.env.CLAUDE_CODE_ENABLE_TASKS
+    delete process.env.CLAUDE_CODE_ENABLE_TODO_TOOLS
+  })
   const { default: stripAnsi } = await import('strip-ansi')
   const React = await import('react')
   const { Readable, Writable } = await import('node:stream')
@@ -1162,6 +1166,7 @@ if (!process.env[childKey]) {
   })
 
   test('base/source, latest TodoWrite input, replacement turns and shared controller survive presentation changes', async () => {
+    process.env.CLAUDE_CODE_ENABLE_TASKS = 'false'
     const tool = (id: string, name: string, statuses: string[] = []) =>
       createAssistantMessage({
         content: [
@@ -1270,6 +1275,7 @@ if (!process.env[childKey]) {
     const { TaskUpdateTool } = await import('../../tools/TaskUpdateTool/TaskUpdateTool.js')
     const { getTaskListId, resetTaskList, isTodoV2Enabled } = await import('../../utils/tasks.js')
     setIsInteractive(true)
+    process.env.CLAUDE_CODE_ENABLE_TODO_TOOLS = '1'
     expect(isTodoV2Enabled()).toBe(true)
     const controller = new FixtureController(dataFor())
     const ui = await mount(controller, false, [createAssistantMessage({

@@ -11,7 +11,7 @@ function formatWorkflowArgs(args: WorkflowArgs | undefined): string {
   return JSON.stringify(args, null, 2)
 }
 
-// The official 2.1.303 saved-workflow slash command prompt: name, description, the meta phases,
+// The official 2.1.303 saved-workflow slash command prompt: name, description, whenToUse, the meta phases,
 // the Workflow({ name, args }) call to make, and the pointer to the authoring skill.
 function buildWorkflowPrompt(
   workflow: DiscoveredWorkflowSpec,
@@ -26,12 +26,14 @@ function buildWorkflowPrompt(
     workflow.plan.phases.map(phase => ({ title: phase.id, detail: phase.description }))
   const phaseLines = phases.map(phase => `- ${phase.title}${phase.detail ? `: ${phase.detail}` : ''}`)
   const invokeArgs = formattedArgs ? `, args: ${JSON.stringify(formattedArgs)}` : ''
+  const whenToUse = workflow.spec.meta?.whenToUse
   return [
     {
       type: 'text',
       text:
         `Run the "${workflow.commandName}" workflow.\n\n` +
         `${workflow.plan.description}\n\n` +
+        (whenToUse ? `${whenToUse}\n\n` : '') +
         (phaseLines.length > 0 ? `Phases:\n${phaseLines.join('\n')}\n\n` : '') +
         `Invoke: Workflow({ name: "${workflow.commandName}"${invokeArgs} })\n\n` +
         `If the user asks you to modify this workflow or write a new script, load the \`${WORKFLOW_AUTHORING_SKILL_NAME}\` skill first.`,
@@ -39,16 +41,9 @@ function buildWorkflowPrompt(
   ]
 }
 
-const BUNDLED_SLASH_WORKFLOW_COMMANDS = new Set(['code-review', 'deep-research'])
-
-function shouldRegisterWorkflowSlashCommand(workflow: DiscoveredWorkflowSpec): boolean {
-  if (!workflow.path.startsWith('bundled:')) return true
-  return BUNDLED_SLASH_WORKFLOW_COMMANDS.has(workflow.commandName)
-}
-
 export async function getWorkflowCommands(cwd: string): Promise<Command[]> {
   const discovery = await discoverWorkflowSpecs(cwd)
-  return discovery.valid.filter(shouldRegisterWorkflowSlashCommand).map(workflow => {
+  return discovery.valid.map(workflow => {
     const commandName = workflow.commandName
     const prompt = buildWorkflowPrompt(workflow, undefined)
     return {
@@ -62,6 +57,7 @@ export async function getWorkflowCommands(cwd: string): Promise<Command[]> {
       contentLength: prompt.reduce((length, block) => length + (block.type === 'text' ? block.text.length : 0), 0),
       source: 'projectSettings',
       kind: 'workflow',
+      disableModelInvocation: workflow.spec.disableModelInvocation,
       async getPromptForCommand(args): Promise<ContentBlockParam[]> {
         return buildWorkflowPrompt(await loadWorkflowSpecByNameOrPath(cwd, commandName, args), args)
       },
