@@ -12,19 +12,37 @@ import {
   WORKFLOW_SIZE_WARNING_TEXT,
   workflowTaskSizeWarning,
 } from '../tasks/LocalWorkflowTask/workflowSizeWarning.js'
+import { isViewableTeammate } from '../tasks/InProcessTeammateTask/InProcessTeammateTask.js'
+import type { InProcessTeammateTaskState } from '../tasks/InProcessTeammateTask/types.js'
 import { formatDuration, formatNumber } from '../utils/format.js'
-import { getAgentColor } from '../tools/AgentTool/agentColorManager.js'
+import {
+  AGENT_COLOR_TO_THEME_COLOR,
+  AGENT_COLORS,
+  type AgentColorName,
+  getAgentColor,
+} from '../tools/AgentTool/agentColorManager.js'
 import { usageLimitStatusText } from '../tools/WorkflowTool/workflowUsageLimitWait.js'
 import { PAUSE_ICON } from '../constants/figures.js'
 import type { Theme } from '../utils/theme.js'
 
-export type CoordinatorPanelTask = LocalAgentTaskState | LocalWorkflowTaskState
+/** Official 2.1.311 folds idle teammates past the first three into one row. */
+const IDLE_TEAMMATES_SHOWN = 3
+export type CoordinatorIdleSummary = {
+  type: 'idle_summary'
+  id: 'idle-teammate-summary'
+  taskIds: string[]
+}
+export type CoordinatorPanelTask =
+  | LocalAgentTaskState
+  | LocalWorkflowTaskState
+  | InProcessTeammateTaskState
+  | CoordinatorIdleSummary
 export type CoordinatorPanelBranch = 'none' | 'middle' | 'last'
 
 export type CoordinatorSessionRow = {
   id: string
   taskId?: string
-  kind: 'main' | 'agent' | 'workflow'
+  kind: 'main' | 'agent' | 'teammate' | 'workflow' | 'idle_summary'
   selected: boolean
   viewed: boolean
   icon: string
@@ -48,6 +66,7 @@ type CoordinatorSessionRowsInput = {
   viewingAgentTaskId?: string
   now?: number
   ultracodeActive?: boolean
+  idleTeammatesExpanded?: boolean
 }
 
 type CoordinatorPanelEntry = {
@@ -116,13 +135,14 @@ function coordinatorAgents(tasks: AppState['tasks']): LocalAgentTaskState[] {
   })
 }
 
-function sortByStartTime<T extends CoordinatorPanelTask>(tasks: T[]): T[] {
+function sortByStartTime<T extends { startTime: number }>(tasks: T[]): T[] {
   return tasks.sort((a, b) => a.startTime - b.startTime)
 }
 
 function deriveCoordinatorPanelLayout(
   tasks: AppState['tasks'],
   viewingAgentTaskId?: string,
+  idleTeammatesExpanded = false,
 ): CoordinatorPanelLayout {
   const agents = coordinatorAgents(tasks)
   const agentById = new Map(agents.map(task => [task.id, task]))
@@ -139,10 +159,10 @@ function deriveCoordinatorPanelLayout(
 
   const roots = agents.filter(isPanelAgentTask)
   const workflows = Object.values(tasks).filter(isPanelWorkflowTask)
-  const rootTasks = sortByStartTime<CoordinatorPanelTask>([
-    ...roots,
-    ...workflows,
-  ])
+  const teammates = Object.values(tasks).filter(isViewableTeammate)
+  const rootTasks = sortByStartTime<
+    LocalAgentTaskState | LocalWorkflowTaskState | InProcessTeammateTaskState
+  >([...roots, ...workflows, ...teammates])
   const visibleAgents = new Map<string, Omit<CoordinatorPanelEntry, 'collapsedDescendantCount'>>()
 
   const viewedAgent = viewingAgentTaskId
@@ -205,7 +225,7 @@ function deriveCoordinatorPanelLayout(
   if (fallbackViewedAgent) orderedEntries.push(fallbackViewedAgent)
 
   for (const task of rootTasks) {
-    if (task.type === 'local_workflow') {
+    if (task.type !== 'local_agent') {
       orderedEntries.push({ task, depth: 0, branch: 'none' })
       continue
     }
@@ -234,7 +254,32 @@ function deriveCoordinatorPanelLayout(
     }, 0)
   }
 
-  const entries = orderedEntries.map(entry => ({
+  const collapsedIdleIds = idleTeammatesExpanded
+    ? []
+    : orderedEntries
+        .map(entry => entry.task)
+        .filter(
+          task =>
+            task.type === 'in_process_teammate' &&
+            task.isIdle &&
+            task.status === 'running' &&
+            task.id !== viewingAgentTaskId,
+        )
+        .map(task => task.id)
+        .slice(IDLE_TEAMMATES_SHOWN)
+  const collapsedIdle = new Set(collapsedIdleIds)
+  const foldedEntries = orderedEntries.flatMap(entry => {
+    if (!collapsedIdle.has(entry.task.id)) return [entry]
+    if (entry.task.id !== collapsedIdleIds[0]) return []
+    const summary: CoordinatorIdleSummary = {
+      type: 'idle_summary',
+      id: 'idle-teammate-summary',
+      taskIds: collapsedIdleIds,
+    }
+    return [{ task: summary, depth: 0, branch: 'none' as const }]
+  })
+
+  const entries = foldedEntries.map(entry => ({
     ...entry,
     collapsedDescendantCount:
       entry.task.type === 'local_agent'
@@ -254,17 +299,25 @@ function deriveCoordinatorPanelLayout(
 export function getVisibleAgentTasks(
   tasks: AppState['tasks'],
   viewingAgentTaskId?: string,
+  idleTeammatesExpanded = false,
 ): CoordinatorPanelTask[] {
-  return deriveCoordinatorPanelLayout(tasks, viewingAgentTaskId).entries.map(
-    entry => entry.task,
-  )
+  return deriveCoordinatorPanelLayout(
+    tasks,
+    viewingAgentTaskId,
+    idleTeammatesExpanded,
+  ).entries.map(entry => entry.task)
 }
 
 export function getCoordinatorTaskCount(
   tasks: AppState['tasks'],
   viewingAgentTaskId?: string,
+  idleTeammatesExpanded = false,
 ): number {
-  const layout = deriveCoordinatorPanelLayout(tasks, viewingAgentTaskId)
+  const layout = deriveCoordinatorPanelLayout(
+    tasks,
+    viewingAgentTaskId,
+    idleTeammatesExpanded,
+  )
   if (layout.entries.length === 0) return 0
   return layout.entries.length + (layout.omitMainRow ? 0 : 1)
 }
@@ -273,8 +326,13 @@ export function getCoordinatorTaskAtIndex(
   tasks: AppState['tasks'],
   selectedIndex: number,
   viewingAgentTaskId?: string,
+  idleTeammatesExpanded = false,
 ): CoordinatorPanelTask | undefined {
-  const layout = deriveCoordinatorPanelLayout(tasks, viewingAgentTaskId)
+  const layout = deriveCoordinatorPanelLayout(
+    tasks,
+    viewingAgentTaskId,
+    idleTeammatesExpanded,
+  )
   return layout.entries[selectedIndex - (layout.omitMainRow ? 0 : 1)]?.task
 }
 
@@ -282,9 +340,18 @@ export function getCoordinatorTaskIndex(
   tasks: AppState['tasks'],
   taskId: string,
   viewingAgentTaskId?: string,
+  idleTeammatesExpanded = false,
 ): number | undefined {
-  const layout = deriveCoordinatorPanelLayout(tasks, viewingAgentTaskId)
-  const taskIndex = layout.entries.findIndex(entry => entry.task.id === taskId)
+  const layout = deriveCoordinatorPanelLayout(
+    tasks,
+    viewingAgentTaskId,
+    idleTeammatesExpanded,
+  )
+  const taskIndex = layout.entries.findIndex(
+    ({ task }) =>
+      task.id === taskId ||
+      (task.type === 'idle_summary' && task.taskIds.includes(taskId)),
+  )
   if (taskIndex < 0) return undefined
   return taskIndex + (layout.omitMainRow ? 0 : 1)
 }
@@ -293,11 +360,13 @@ export function resolveCoordinatorSelection(
   tasks: AppState['tasks'],
   targetId: string,
   viewingAgentTaskId?: string,
+  idleTeammatesExpanded = false,
 ): { index: number; targetId?: string } {
   const targetIndex = getCoordinatorTaskIndex(
     tasks,
     targetId,
     viewingAgentTaskId,
+    idleTeammatesExpanded,
   )
   if (targetIndex !== undefined) return { index: targetIndex, targetId }
 
@@ -309,13 +378,19 @@ export function resolveCoordinatorSelection(
       tasks,
       current.id,
       viewingAgentTaskId,
+      idleTeammatesExpanded,
     )
     if (index !== undefined) return { index, targetId: current.id }
     current = current.parentAgentId ? tasks[current.parentAgentId] : undefined
   }
 
   const viewedIndex = viewingAgentTaskId
-    ? getCoordinatorTaskIndex(tasks, viewingAgentTaskId, viewingAgentTaskId)
+    ? getCoordinatorTaskIndex(
+        tasks,
+        viewingAgentTaskId,
+        viewingAgentTaskId,
+        idleTeammatesExpanded,
+      )
     : undefined
   if (viewedIndex !== undefined) {
     return { index: viewedIndex, targetId: viewingAgentTaskId }
@@ -323,7 +398,10 @@ export function resolveCoordinatorSelection(
   return { index: 0 }
 }
 
-function taskElapsed(task: CoordinatorPanelTask, now: number): string {
+function taskElapsed(
+  task: Exclude<CoordinatorPanelTask, CoordinatorIdleSummary>,
+  now: number,
+): string {
   const pausedMs = task.totalPausedMs ?? 0
   const elapsedMs = Math.max(
     0,
@@ -352,6 +430,25 @@ function agentPrimaryText(
   return `${task.agentType}${descendants}`
 }
 
+function teammateThemeColor(color: string | undefined): keyof Theme | undefined {
+  return color && AGENT_COLORS.includes(color as AgentColorName)
+    ? AGENT_COLOR_TO_THEME_COLOR[color as AgentColorName]
+    : undefined
+}
+
+// Official 2.1.311: idle and plan-approval states replace the clock, and
+// queued messages are appended to it.
+function teammateElapsed(task: InProcessTeammateTaskState, now: number): string {
+  const queued = task.pendingUserMessages.length
+  const state =
+    task.status === 'running' && task.awaitingPlanApproval
+      ? 'awaiting approval'
+      : task.status === 'running' && task.isIdle
+        ? 'idle'
+        : taskElapsed(task, now)
+  return queued > 0 ? `${state} · ${queued} queued` : state
+}
+
 function workflowPrimaryText(task: LocalWorkflowTaskState): string {
   return task.workflowName ?? task.description.replace(/^Workflow:\s*/i, '')
 }
@@ -368,11 +465,60 @@ export function getCoordinatorSessionRows({
   viewingAgentTaskId,
   now = Date.now(),
   ultracodeActive = false,
+  idleTeammatesExpanded = false,
 }: CoordinatorSessionRowsInput): CoordinatorSessionRow[] {
-  const layout = deriveCoordinatorPanelLayout(tasks, viewingAgentTaskId)
+  const layout = deriveCoordinatorPanelLayout(
+    tasks,
+    viewingAgentTaskId,
+    idleTeammatesExpanded,
+  )
   const taskRows = layout.entries.map((entry, index): CoordinatorSessionRow => {
     const task = entry.task
     const selected = selectedIndex === index + (layout.omitMainRow ? 0 : 1)
+    if (task.type === 'idle_summary') {
+      const count = task.taskIds.length
+      return {
+        id: task.id,
+        kind: 'idle_summary',
+        selected,
+        viewed: false,
+        icon: '◯',
+        primaryText: `${count} idle ${count === 1 ? 'agent' : 'agents'}`,
+        secondaryText: '',
+        tokens: '',
+        tools: '',
+        elapsed: '',
+        statusText: '',
+        activity: '',
+        depth: 0,
+        branch: 'none',
+      }
+    }
+    if (task.type === 'in_process_teammate') {
+      const showTokens =
+        !task.isIdle && !task.awaitingPlanApproval && (task.progress?.tokenCount ?? 0) > 0
+      return {
+        id: task.id,
+        taskId: task.id,
+        kind: 'teammate',
+        selected,
+        viewed: viewingAgentTaskId === task.id,
+        icon:
+          selected || (selectedIndex === undefined && viewingAgentTaskId === task.id)
+            ? '⏺'
+            : '◯',
+        primaryText: task.identity.agentName,
+        secondaryText: task.description,
+        tokens: showTokens ? `${formatNumber(task.progress!.tokenCount)} tokens` : '',
+        tools: `${task.progress?.toolUseCount ?? 0} ${task.progress?.toolUseCount === 1 ? 'tool' : 'tools'}`,
+        elapsed: teammateElapsed(task, now),
+        statusText: task.status === 'killed' ? 'stopped' : task.status,
+        activity: task.status === 'running' ? activityText(task.progress?.lastActivity) ?? '' : '',
+        color: teammateThemeColor(task.identity.color),
+        depth: 0,
+        branch: 'none',
+      }
+    }
     if (task.type === 'local_agent') {
       return {
         id: task.id,

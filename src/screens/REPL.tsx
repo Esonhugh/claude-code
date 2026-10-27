@@ -175,7 +175,6 @@ import {
   BriefIdleStatus,
   type SpinnerMode,
 } from '../components/Spinner.js'
-import { TeammateSpinnerTree } from '../components/Spinner/TeammateSpinnerTree.js'
 import { getSystemPrompt } from '../constants/prompts.js'
 import { buildEffectiveSystemPrompt } from '../utils/systemPrompt.js'
 import {
@@ -1122,9 +1121,6 @@ export function REPL({
   // These fields contain excluded strings that must not appear in external builds.
   const spinnerTip = useAppState(s => s.spinnerTip)
   const showExpandedTodos = useAppState(s => s.expandedView) === 'tasks'
-  const showTeammateTree = useAppState(s => s.expandedView) === 'teammates'
-  const selectedIPAgentIndex = useAppState(s => s.selectedIPAgentIndex)
-  const viewSelectionMode = useAppState(s => s.viewSelectionMode)
   const pendingWorkerRequest = useAppState(s => s.pendingWorkerRequest)
   const pendingSandboxRequest = useAppState(s => s.pendingSandboxRequest)
   const teamContext = useAppState(s => s.teamContext)
@@ -3404,9 +3400,9 @@ export function REPL({
     composerEmpty: inputValue.length === 0 && Object.keys(pastedContents).length === 0,
     composerValue: inputValue,
     hasDialog: Boolean(focusedInputDialog || toolJSX?.jsx || showBashesDialog || exitFlow || showResponsiveDiffDialog),
-    keyboardOwned: isSearchingHistory || isHelpOpen || cursor !== null || viewSelectionMode === 'selecting-agent',
+    keyboardOwned: isSearchingHistory || isHelpOpen || cursor !== null,
     agentId: viewedAgentTask?.id,
-  }), [modTerminalSize.columns, modTerminalSize.rows, inputValue, pastedContents, focusedInputDialog, toolJSX, showBashesDialog, exitFlow, showResponsiveDiffDialog, isSearchingHistory, isHelpOpen, cursor, viewSelectionMode, viewedAgentTask?.id])
+  }), [modTerminalSize.columns, modTerminalSize.rows, inputValue, pastedContents, focusedInputDialog, toolJSX, showBashesDialog, exitFlow, showResponsiveDiffDialog, isSearchingHistory, isHelpOpen, cursor, viewedAgentTask?.id])
   modUiPresentationRef.current = modUiPresentation
   modPromptBlockedRef.current =
     modUiPresentation.hasDialog || modUiPresentation.keyboardOwned
@@ -7393,21 +7389,6 @@ export function REPL({
                   })()}
                 />
               )}
-              {!showSpinner &&
-                !(viewedAgentTask && isLocalAgentTask(viewedAgentTask)) &&
-                showTeammateTree &&
-                (!toolJSX || toolJSX.showSpinner === true) &&
-                toolUseConfirmQueue.length === 0 &&
-                promptQueue.length === 0 &&
-                !pendingWorkerRequest &&
-                !onlySleepToolActive &&
-                (!visibleStreamingText || isBriefOnly) && (
-                  <TeammateSpinnerTree
-                    selectedIndex={selectedIPAgentIndex}
-                    isInSelectionMode={viewSelectionMode === 'selecting-agent'}
-                    leaderIdleText="Idle"
-                  />
-                )}
               {!showSpinner &&
                 !isLoading &&
                 !userInputOnProcessing &&

@@ -47,7 +47,6 @@ export const DEFAULT_BINDINGS: KeybindingBlock[] = [
       ...(feature('KAIROS') || feature('KAIROS_BRIEF')
         ? { 'ctrl+shift+b': 'app:toggleBrief' as const }
         : {}),
-      'ctrl+shift+o': 'app:toggleTeammatePreview',
       'ctrl+r': 'history:search',
       'ctrl+up': 'app:diffFileListUp',
       'ctrl+down': 'app:diffFileListDown',

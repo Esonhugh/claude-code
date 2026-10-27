@@ -207,3 +207,18 @@ test('five or fewer Agents render without a more line', async () => {
   expect(lines).toHaveLength(6)
   expect(lines.some(line => line.includes('more'))).toBe(false)
 })
+
+test('idle teammate summary row advertises expand, and expanded rows advertise collapse', async () => {
+  const mate = (name: string, i: number) => ({
+    id: name, type: 'in_process_teammate', status: 'running', startTime: Date.now() - 5_000 + i,
+    description: `${name} work`, isIdle: true, awaitingPlanApproval: false, pendingUserMessages: [],
+    identity: { agentId: `${name}@t`, agentName: name, teamName: 't', planModeRequired: false, parentSessionId: 's' },
+  })
+  const tasks = Object.fromEntries(['m1', 'm2', 'm3', 'm4', 'm5'].map((n, i) => [n, mate(n, i)])) as unknown as AppState['tasks']
+  const folded = await panelLines(100, false, { tasks, footerSelection: 'tasks', coordinatorTaskIndex: 4 })
+  expect(folded.some(line => line.includes('2 idle agents'))).toBe(true)
+  expect(folded.some(line => line.includes('Enter to expand') && line.includes('Esc to cancel'))).toBe(true)
+  const expanded = await panelLines(100, false, { tasks, footerSelection: 'tasks', coordinatorTaskIndex: 4, idleTeammatesExpanded: true })
+  expect(expanded.some(line => line.includes('m5'))).toBe(true)
+  expect(expanded.some(line => line.includes('Enter to view') && line.includes('Esc to collapse'))).toBe(true)
+})
