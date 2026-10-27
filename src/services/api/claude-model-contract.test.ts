@@ -96,6 +96,7 @@ let overloadedModel: string | undefined
 let overloadedModels: string[] = []
 let modsReplyUsage: {input_tokens:number;output_tokens:number;cache_read_input_tokens:number;cache_creation_input_tokens:number} | undefined
 let modsRefuseStatus: number | undefined
+let toolSearchRefusal: 'beta' | 'unnamed' | 'always' | undefined
 const client = new Anthropic({
   apiKey: 'test-only',
   maxRetries: 0,
@@ -109,6 +110,16 @@ const client = new Anthropic({
       return Response.json({input_tokens:123})
     }
     requests.push(request)
+    if (toolSearchRefusal) {
+      const deferred = (request.tools ?? []).some(t => 'defer_loading' in t)
+      const message =
+        toolSearchRefusal === 'beta' && headers.get('anthropic-beta')?.includes('advanced-tool-use-2025-11-20')
+          ? 'Unexpected value(s) `advanced-tool-use-2025-11-20` for the `anthropic-beta` header.'
+          : (toolSearchRefusal === 'unnamed' && deferred) || toolSearchRefusal === 'always'
+            ? 'gateway rejected the request'
+            : undefined
+      if (message) return Response.json({type:'error',error:{type:'invalid_request_error',message}},{status:400})
+    }
     if (modsRefuseStatus) return Response.json({type:'error',error:{type:'invalid_request_error',message:'FAKE_PRIVATE_BODY'}},{status:modsRefuseStatus})
     if (request.model === overloadedModel || overloadedModels.includes(request.model)) {
       return Response.json({
@@ -364,6 +375,7 @@ afterEach(() => {
   overloadedModels = []
   modsReplyUsage = undefined
   modsRefuseStatus = undefined
+  toolSearchRefusal = undefined
 })
 
 test.each(['without a turn.step hook','with a turn.step hook','refused provider request'] as const)(
@@ -696,6 +708,77 @@ test('gateways use the tool_reference beta with the deferred placeholder', async
     else process.env.ENABLE_TOOL_SEARCH = previous
   }
 })
+
+test.each(['beta', 'unnamed', 'always'] as const)(
+  'gateway tool search refusal (%s) retries once without deferred tools',
+  async refusal => {
+    const { z } = await import('zod/v4')
+    const { ToolSearchTool } =
+      await import('../../tools/ToolSearchTool/ToolSearchTool.js')
+    const { clearToolSchemaCache } =
+      await import('../../utils/toolSchemaCache.js')
+    const { resetToolSearchRefusedForTesting } =
+      await import('../../utils/toolSearch.js')
+    const previous = process.env.ENABLE_TOOL_SEARCH
+    delete process.env.ENABLE_TOOL_SEARCH
+    clearToolSchemaCache()
+    resetToolSearchRefusedForTesting()
+    const deferred = {
+      name: 'mcp__corp__lookup',
+      isMcp: true,
+      inputSchema: z.object({ query: z.string() }),
+      async prompt() {
+        return 'lookup'
+      },
+    } as unknown as import('../../Tool.js').Tool
+    const ask = () =>
+      queryModelWithoutStreaming({
+        messages: [createUserMessage({ content: 'test' })],
+        systemPrompt: asSystemPrompt([]),
+        thinkingConfig: { type: 'disabled' },
+        tools: [ToolSearchTool, deferred],
+        signal: new AbortController().signal,
+        options: {
+          model: 'claude-sonnet-5',
+          querySource: 'repl_main_thread',
+          agents: [],
+          mcpTools: [deferred],
+          hasAppendSystemPrompt: false,
+          isNonInteractiveSession: true,
+          getToolPermissionContext: async () => getEmptyToolPermissionContext(),
+        },
+      })
+    const names = (i: number) =>
+      (requests[i]?.tools ?? []).map(t => ('name' in t ? t.name : undefined))
+    try {
+      toolSearchRefusal = refusal
+      const first = await ask()
+      expect(requests).toHaveLength(2)
+      expect(names(0)).toEqual(['ToolSearch', 'DeferredToolPlaceholder'])
+      expect(names(1)).toEqual([deferred.name])
+      expect(requests[1]?.tools?.some(t => 'defer_loading' in t)).toBe(false)
+      expect(requestBetaHeaders[1]).not.toContain('advanced-tool-use-2025-11-20')
+      expect(JSON.stringify(requests[1]?.messages)).toContain(
+        'ToolSearch is no longer available',
+      )
+      expect(first.isApiErrorMessage === true).toBe(refusal === 'always')
+
+      toolSearchRefusal = undefined
+      await ask()
+      // Latched off unless the retry failed too and the error never named the beta.
+      expect(names(2)).toEqual(
+        refusal === 'always'
+          ? ['ToolSearch', 'DeferredToolPlaceholder']
+          : [deferred.name],
+      )
+    } finally {
+      resetToolSearchRefusedForTesting()
+      clearToolSchemaCache()
+      if (previous === undefined) delete process.env.ENABLE_TOOL_SEARCH
+      else process.env.ENABLE_TOOL_SEARCH = previous
+    }
+  },
+)
 
 test.each(['low','medium','high','xhigh','max'] as const)('Mods completion sends per-call effort %s at the actual SDK boundary', async effort => {
   const {createModModelComplete}=await import('../mods/modelAdapter.js')

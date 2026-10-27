@@ -1,8 +1,13 @@
 import { describe, expect, spyOn, test } from 'bun:test'
+import { APIError } from '@anthropic-ai/sdk'
 import * as auth from './auth.js'
 import type { Tool } from '../Tool.js'
 import type { Message } from '../types/message.js'
-import { getDeferredToolsDelta, isToolSearchEnabled } from './toolSearch.js'
+import {
+  getDeferredToolsDelta,
+  getToolSearchRefusal,
+  isToolSearchEnabled,
+} from './toolSearch.js'
 import { getEmptyToolPermissionContext } from '../Tool.js'
 
 const names = [
@@ -67,4 +72,27 @@ describe('getDeferredToolsDelta', () => {
     ] as Message[]
     expect(getDeferredToolsDelta(tools, messages)).toBeNull()
   })
+})
+
+test('tool search refusal classification follows 2.1.311', () => {
+  const error = (status: number, message: string, type = 'invalid_request_error') =>
+    APIError.generate(status, { type: 'error', error: { type, message } }, message, new Headers())
+  const previous = process.env.ANTHROPIC_BASE_URL
+  try {
+    delete process.env.ANTHROPIC_BASE_URL
+    expect(getToolSearchRefusal(error(400, 'Unexpected value(s) `advanced-tool-use-2025-11-20` for the `anthropic-beta` header'))).toBe('beta')
+    expect(getToolSearchRefusal(error(400, 'tools.2.defer_loading: Extra inputs are not permitted'))).toBe('unattributed')
+    expect(getToolSearchRefusal(error(422, 'tools.2.defer_loading: unknown field'))).toBe('unattributed')
+    // The direct API only blames tool search when the error says so.
+    expect(getToolSearchRefusal(error(400, 'messages.0: bad content'))).toBeNull()
+    expect(getToolSearchRefusal(error(500, 'defer_loading'))).toBeNull()
+    expect(getToolSearchRefusal(error(400, 'defer_loading', 'billing_error'))).toBeNull()
+
+    process.env.ANTHROPIC_BASE_URL = 'https://gateway.example'
+    expect(getToolSearchRefusal(error(400, 'messages.0: bad content'))).toBe('unattributed')
+    expect(getToolSearchRefusal(error(400, 'prompt is too long: 210000 tokens > 200000 maximum'))).toBeNull()
+  } finally {
+    if (previous === undefined) delete process.env.ANTHROPIC_BASE_URL
+    else process.env.ANTHROPIC_BASE_URL = previous
+  }
 })
