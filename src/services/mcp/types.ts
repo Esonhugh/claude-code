@@ -194,6 +194,9 @@ export type ScopedMcpServerConfig = McpServerConfig & {
   // (e.g. 'slack@anthropic'). Stashed at config-build time so the channel
   // gate doesn't have to race AppState.plugins.enabled hydration.
   pluginSource?: string
+  // For servers an agent file defines inline (scope 'agent'): the agent's
+  // source, which decides whether the server counts as repo- or plugin-supplied.
+  agentSource?: string
 }
 
 /** Definition origin for SDK status; names are untrusted configuration keys. */

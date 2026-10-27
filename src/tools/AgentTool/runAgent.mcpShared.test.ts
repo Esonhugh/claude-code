@@ -120,4 +120,26 @@ if (process.env[childFlag] !== '1') {
       for (const pid of spawned()) if (alive(pid)) process.kill(pid, 'SIGKILL')
     }
   })
+
+  test('disallowedTools also remove the tools of the agent inline servers', async () => {
+    const { server, pids } = writeServer('disallowed')
+    const spawned = () => readFileSync(pids, 'utf8').split('\n').filter(Boolean).map(Number)
+    try {
+      for (const disallowedTools of [['mcp__dis-inline__echo'], ['mcp__dis-inline'], ['mcp__*']]) {
+        const agent = {
+          agentType: 'mcp-disallowed',
+          whenToUse: 'probe',
+          source: 'userSettings',
+          getSystemPrompt: () => '',
+          disallowedTools,
+          mcpServers: [{ 'dis-inline': { type: 'stdio', command: process.execPath, args: [server] } }],
+        } as never
+        const result = await initializeAgentMcpServersForTesting(agent, [])
+        expect(result.tools).toEqual([])
+        await result.cleanup()
+      }
+    } finally {
+      for (const pid of spawned()) if (alive(pid)) process.kill(pid, 'SIGKILL')
+    }
+  })
 }
