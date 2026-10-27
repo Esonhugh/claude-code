@@ -1,0 +1,51 @@
+name: macOS e2e
+
+# Every PR: the Seatbelt sandbox is not exercised on Linux or Windows CI.
+on:
+  workflow_dispatch:
+  pull_request:
+
+jobs:
+  macos-e2e:
+    runs-on: macos-latest
+    timeout-minutes: 30
+    env:
+      # A 0.0.0-dev build is refused by the minimum-version check.
+      CLAUDE_CODE_VERSION: 2.1.295
+      # The official build the fork is compared with.
+      OFFICIAL_CLAUDE_VERSION: 2.1.311
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Build binary
+        run: |
+          bun run build
+          bun run package:binary
+
+      - name: Sandbox e2e
+        run: bun scripts/macos-sandbox-e2e.ts dist/release/claude-code-v*-darwin-arm64
+
+      # For comparison only: its failures do not fail the job.
+      - name: Download official
+        if: ${{ !cancelled() }}
+        run: |
+          mkdir -p official
+          cd official
+          tgz=$(bunx npm pack "@anthropic-ai/claude-code-darwin-arm64@$OFFICIAL_CLAUDE_VERSION" | tail -n 1)
+          tar -xzf "$tgz"
+          cp "$(find package -name claude -type f | head -n 1)" claude
+          chmod +x claude
+          ./claude --version
+
+      - name: Official sandbox e2e
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        run: bun scripts/macos-sandbox-e2e.ts official/claude --official
