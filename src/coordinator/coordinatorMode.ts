@@ -179,7 +179,7 @@ User:
   <task-notification>
   <task-id>agent-a1b</task-id>
   <status>completed</status>
-  <summary>Agent "Investigate auth bug" completed</summary>
+  <summary>Agent "Investigate auth bug" finished</summary>
   <result>Found null pointer in src/auth/validate.ts:42...</result>
   </task-notification>
 
@@ -350,7 +350,7 @@ User:
   <task-notification>
   <task-id>agent-a1b</task-id>
   <status>completed</status>
-  <summary>Agent "Investigate auth bug" completed</summary>
+  <summary>Agent "Investigate auth bug" finished</summary>
   <result>Found null pointer in src/auth/validate.ts:42. The user field on Session is undefined when the session expires but ...</result>
   </task-notification>
 

@@ -5,7 +5,7 @@ import {render} from '../../ink.js'
 import {SystemTextMessage} from './SystemTextMessage.js'
 import {createSystemMessage} from '../../utils/messages.js'
 
-test('plugin notice stays visible and dim without a status dot while ordinary info stays hidden', async () => {
+test('plugin notice stays visible with a status dot in the inactive colour while ordinary info stays hidden', async () => {
   const stdin = new PassThrough()
   const chunks: string[]=[]
   const stdout = new Writable({write(chunk,_encoding,done){chunks.push(chunk.toString());done()}})
@@ -29,7 +29,7 @@ test('plugin notice stays visible and dim without a status dot while ordinary in
     expect(frame).not.toContain('HIDDEN-INFO')
     expect(frame).toContain('VISIBLE-WARNING')
     const inner=(notice!.props as {children:React.ReactElement}).children
-    expect(inner.props).toMatchObject({dot:false,dimColor:true})
+    expect(inner.props).toMatchObject({dot:true,dimColor:false,color:'inactive'})
     expect((warning!.props as {children:React.ReactElement}).children.props).toMatchObject({dot:true,dimColor:false,color:'warning'})
   } finally {instance.unmount();instance.cleanup();stdin.destroy();stdout.destroy()}
 })
