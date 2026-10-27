@@ -196,7 +196,6 @@ import {
 import {
   DEFERRED_TOOL_PLACEHOLDER,
   extractDiscoveredToolNames,
-  isToolReferenceTextFallback,
   getDeferredToolsDelta,
   isDeferredToolsDeltaEnabled,
   isToolSearchEnabled,
@@ -1290,10 +1289,6 @@ async function* queryModel(
     useToolSearch = false
   }
 
-  // Gateways without the tool_reference beta: no beta header or
-  // defer_loading, and tool_reference blocks are sent as text.
-  const toolReferenceAsText = useToolSearch && isToolReferenceTextFallback()
-
   // Filter out ToolSearchTool if tool search is not enabled for this model
   // ToolSearchTool returns tool_reference blocks which unsupported models can't handle
   let filteredTools: Tools
@@ -1321,8 +1316,7 @@ async function* queryModel(
   // Add tool search beta header if enabled - required for defer_loading to be accepted
   // Header differs by provider: 1P/Foundry use advanced-tool-use, Vertex/Bedrock use tool-search-tool
   // For Bedrock, this header must go in extraBodyParams, not the betas array
-  const toolSearchHeader =
-    useToolSearch && !toolReferenceAsText ? getToolSearchBetaHeader() : null
+  const toolSearchHeader = useToolSearch ? getToolSearchBetaHeader() : null
   if (toolSearchHeader && getAPIProvider() !== 'bedrock') {
     if (!betas.includes(toolSearchHeader)) {
       betas.push(toolSearchHeader)
@@ -1359,7 +1353,6 @@ async function* queryModel(
   const useGlobalCacheFeature = shouldUseGlobalCacheScope()
   const willDefer = (t: Tool) =>
     useToolSearch &&
-    !toolReferenceAsText &&
     (modDescriptions?.get(t)?.isDeferred ??
       (deferredToolNames.has(t.name) || shouldDeferLspTool(t)))
   // Pass the full tool set as prompt context, but admit only the tools surviving
@@ -1374,7 +1367,7 @@ async function* queryModel(
     signal,
     deferLoadingForTool: willDefer,
     modDescriptions,
-    allowDeferLoading: useToolSearch && !toolReferenceAsText,
+    allowDeferLoading: useToolSearch,
   })
   filteredTools = catalog.tools
   const toolSchemas = catalog.schemas
@@ -1511,15 +1504,12 @@ async function* queryModel(
   // Note: For assistant messages, normalizeMessagesForAPI already normalized the
   // tool inputs, so stripCallerFieldFromAssistantMessage only needs to remove the
   // 'caller' field (not re-normalize inputs).
-  if (!useToolSearch || toolReferenceAsText) {
+  if (!useToolSearch) {
     messagesForAPI = messagesForAPI.map(msg => {
       switch (msg.type) {
         case 'user':
           // Strip tool_reference blocks from tool_result content
-          return stripToolReferenceBlocksFromUserMessage(
-            msg,
-            toolReferenceAsText,
-          )
+          return stripToolReferenceBlocksFromUserMessage(msg)
         case 'assistant':
           // Strip 'caller' field from tool_use blocks
           return stripCallerFieldFromAssistantMessage(msg)
@@ -1612,9 +1602,7 @@ async function* queryModel(
   }
   const allTools = [
     ...toolSchemas,
-    ...(useToolSearch && !toolReferenceAsText
-      ? [DEFERRED_TOOL_PLACEHOLDER as BetaToolUnion]
-      : []),
+    ...(useToolSearch ? [DEFERRED_TOOL_PLACEHOLDER as BetaToolUnion] : []),
     ...extraToolSchemas,
   ]
   // Consume once because request params are assembled repeatedly for logging and retries.

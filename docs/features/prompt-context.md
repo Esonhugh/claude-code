@@ -23,15 +23,15 @@
 
 ## 用自建网关时
 
-`ANTHROPIC_BASE_URL` 指向非 Anthropic 地址（例如公司网关）、又没有设置 `ENABLE_TOOL_SEARCH` 时，tool search 照样开启，但换一种兼容写法：不发送 beta header 和 `defer_loading` 字段，加载工具时用纯文本 `Tool available: <名字>` 告诉模型。这样不支持这些新字段的网关也不会报错。
+`ANTHROPIC_BASE_URL` 指向非 Anthropic 地址（例如公司网关）时，tool search 和直连一样开启：发送 beta header 和 `defer_loading`，并且从第一个请求起附带一个隐藏的 `DeferredToolPlaceholder` 工具，加载新工具时不会让提示词缓存失效。
 
-想让网关也走原来的 beta 方式，设置 `ENABLE_TOOL_SEARCH`（任意值）即可。
+网关不支持这些字段（返回 400）时，设置 `ENABLE_TOOL_SEARCH=false` 关闭 tool search，所有工具直接内联发送。
 
 ## 设置
 
 | 配置项 | 写法 | 说明 |
 | --- | --- | --- |
-| `ENABLE_TOOL_SEARCH` | 任意值 | 自建网关下也使用 beta header 和 `defer_loading` |
+| `ENABLE_TOOL_SEARCH` | `false` | 关闭 tool search，所有工具内联发送（网关不支持 `defer_loading` 时使用） |
 
 ## 说明
 

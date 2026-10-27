@@ -35,10 +35,6 @@ import { getMergedBetas } from './betas.js'
 import { getContextWindowForModel } from './context.js'
 import { logForDebugging } from './debug.js'
 import { isEnvDefinedFalsy, isEnvTruthy } from './envUtils.js'
-import {
-  getAPIProvider,
-  isFirstPartyAnthropicBaseUrl,
-} from './model/providers.js'
 import { jsonStringify } from './slowOperations.js'
 import { zodToJsonSchema } from './zodToJsonSchema.js'
 import { userType, isAnt } from 'src/utils/userType.js'
@@ -303,19 +299,6 @@ export function isToolSearchEnabledOptimistic(): boolean {
 }
 
 /**
- * Whether tool search must run without the tool_reference beta.
- *
- * tool_reference is a beta content type that third-party API gateways
- * (ANTHROPIC_BASE_URL proxies) typically don't support: when the provider is
- * 'firstParty' but the base URL points elsewhere, the proxy rejects
- * tool_reference blocks with a 400 (anthropics/claude-code#30912). Instead of
- * disabling tool search there, the request omits the beta header and
- * rewrites tool_reference blocks as text; discovered tools still reach the
- * tools array via extractDiscoveredToolNames, which reads the internal
- * messages. Setting ENABLE_TOOL_SEARCH to any non-empty value asserts the
- * proxy forwards tool_reference, so the beta path is used as-is.
- */
-/**
  * Deferred tool sent on every tool-search request, like 2.1.303. With at least
  * one defer_loading tool from the first request on, tools discovered later
  * (also defer_loading) leave the cached prompt prefix intact.
@@ -326,14 +309,6 @@ export const DEFERRED_TOOL_PLACEHOLDER = {
     'Reserved placeholder that keeps deferred tool loading active; never call this tool.',
   input_schema: { type: 'object' as const, properties: {} },
   defer_loading: true,
-}
-
-export function isToolReferenceTextFallback(): boolean {
-  return (
-    !process.env.ENABLE_TOOL_SEARCH &&
-    getAPIProvider() === 'firstParty' &&
-    !isFirstPartyAnthropicBaseUrl()
-  )
 }
 
 /**

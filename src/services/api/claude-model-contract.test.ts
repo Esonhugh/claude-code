@@ -611,7 +611,7 @@ test('deferred tools loaded through ToolSearch never carry cache_control', async
   }
 })
 
-test('gateways keep ToolSearch without the tool_reference beta', async () => {
+test('gateways use the tool_reference beta with the deferred placeholder', async () => {
   const { z } = await import('zod/v4')
   const { ToolSearchTool } =
     await import('../../tools/ToolSearchTool/ToolSearchTool.js')
@@ -677,12 +677,16 @@ test('gateways keep ToolSearch without the tool_reference beta', async () => {
     expect(tools.map(t => ('name' in t ? t.name : undefined))).toEqual([
       'ToolSearch',
       discovered.name,
+      'DeferredToolPlaceholder',
     ])
-    expect(tools.every(t => !('defer_loading' in t))).toBe(true)
-    expect(requestBetaHeaders.at(-1)).not.toContain(TOOL_SEARCH_BETA_HEADER_1P)
+    expect(tools.slice(1)).toEqual([
+      expect.objectContaining({ defer_loading: true }),
+      expect.objectContaining({ defer_loading: true }),
+    ])
+    expect(requestBetaHeaders.at(-1)).toContain(TOOL_SEARCH_BETA_HEADER_1P)
     const body = JSON.stringify(request.messages)
-    expect(body).not.toContain('tool_reference')
-    expect(body).toContain(`Tool available: ${discovered.name}`)
+    expect(body).toContain('tool_reference')
+    expect(body).not.toContain(`Tool available: ${discovered.name}`)
   } finally {
     clearToolSchemaCache()
     if (previous === undefined) delete process.env.ENABLE_TOOL_SEARCH
