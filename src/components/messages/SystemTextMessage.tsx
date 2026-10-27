@@ -178,9 +178,15 @@ export function SystemTextMessage({
       <SystemTextMessageInner
         content={content}
         addMargin={addMargin}
-        dot={message.level !== 'info' && message.level !== 'notice'}
-        color={message.level === 'warning' ? 'warning' : undefined}
-        dimColor={message.level === 'info' || message.level === 'notice'}
+        dot={message.level !== 'info'}
+        color={
+          message.level === 'warning'
+            ? 'warning'
+            : message.level === 'notice'
+              ? 'inactive'
+              : undefined
+        }
+        dimColor={message.level === 'info'}
       />
     </Box>
   )
