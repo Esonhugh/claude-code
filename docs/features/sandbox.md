@@ -4,7 +4,7 @@
 
 ## 这是什么
 
-Claude 跑的每条 shell 命令，默认和你本人一样有完整权限：能改任何你能改的文件、能连任何网站、能读到你的环境变量。沙箱给这些命令套一层「隔离罩」（Linux 用 bubblewrap，macOS 用系统自带的 sandbox）：
+Claude 跑的每条 shell 命令，默认和你本人一样有完整权限：能改任何你能改的文件、能连任何网站、能读到你的环境变量。沙箱给这些命令套一层「隔离罩」（Linux 用 bubblewrap，macOS 用系统自带的 sandbox，Windows 用 binary 内置的 srt-win，第一次使用前运行 `claude sandbox install`）：
 
 - **文件**：只能写当前项目目录和临时目录，写别处会得到 `Read-only file system`；
 - **网络**：只能连你列出的域名，其他域名先弹窗问你；
