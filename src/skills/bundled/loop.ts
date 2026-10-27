@@ -1,7 +1,6 @@
 import { feature } from 'bun:bundle'
 import {
   getMonitorTimeoutCapMs,
-  isMonitorToolEnabled,
   MONITOR_TOOL_NAME,
 } from '../../tools/MonitorTool/prompt.js'
 import {
@@ -29,9 +28,7 @@ Examples:
   /loop check the deploy every 20m`
 
 function buildDynamicModeSection(): string {
-  const monitorAvailable = feature('MONITOR_TOOL')
-    ? isMonitorToolEnabled()
-    : false
+  const monitorAvailable = feature('MONITOR_TOOL') ? true : false
   const monitorStep = monitorAvailable
     ? `2. **If the next run is gated on an event** (CI finishing, a log line matching, a file changing, a PR comment) and no ${MONITOR_TOOL_NAME} is already running for it: arm one now with \`timeout_ms: ${getMonitorTimeoutCapMs()}\`. Its events arrive as \`<task-notification>\` messages and wake this loop immediately — you do not wait for the ${SCHEDULE_WAKEUP_TOOL_NAME} deadline. A monitor expires after at most ${Math.round(getMonitorTimeoutCapMs() / 60_000)} minutes and tells you; on later iterations re-arm only if no monitor for it is still running.
 `

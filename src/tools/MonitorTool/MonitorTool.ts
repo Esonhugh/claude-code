@@ -19,7 +19,6 @@ import {
   DEFAULT_MONITOR_TIMEOUT_MS,
   getMonitorPrompt,
   getMonitorTimeoutCapMs,
-  isMonitorToolEnabled,
   MAX_MONITOR_TIMEOUT_MS,
   MONITOR_COMMAND_DESCRIPTION,
   MONITOR_DESCRIPTION_FIELD,
@@ -70,9 +69,6 @@ export const MonitorTool = buildTool({
     return outputSchema()
   },
   userFacingName: () => 'Monitor',
-  isEnabled() {
-    return isMonitorToolEnabled()
-  },
   isConcurrencySafe() {
     return true
   },
