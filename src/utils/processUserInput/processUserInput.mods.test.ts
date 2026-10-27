@@ -620,6 +620,21 @@ describe('processUserInput peer prompt framing', () => {
     expect(userTexts(result)[0]).toStartWith('Another Claude session sent a message:\n<cross-session-message')
     expect(userTexts(result)[0]).toContain('permission laundering')
   })
+
+  test('an idle message from an agent in this session gets the descendant framing', async () => {
+    const raw = '<agent-message from="alpha">\nhello\n</agent-message>'
+    const f = fixture()
+    const result = await f.run({
+      input: raw,
+      isMeta: true,
+      skipSlashCommands: true,
+      skipAttachments: true,
+      skipHooks: true,
+      promptSubmitMetadata: { origin: { kind: 'peer', teammate: 'alpha' }, wait: false },
+    })
+    expect(userTexts(result)).toEqual([formatPeerPrompt(raw, false, true)])
+    expect(userTexts(result)[0]).toContain('is an agent working inside this same session')
+  })
 })
 
 describe('processUserInput prompt.submit', () => {

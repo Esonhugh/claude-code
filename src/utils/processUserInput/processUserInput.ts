@@ -430,7 +430,9 @@ export async function processUserInput({
       ).join('\n')
       // An idle peer delivery becomes its own turn; frame it like the mid-turn
       // attachment so the model never reads it as the user's words.
-      const framed = plugin ? formatPluginPrompt(text, plugin) : formatPeerPrompt(text)
+      // An agent inside this session (SendMessage to "main") is a named teammate peer.
+      const isAgentMessage = origin.kind === 'peer' && 'teammate' in origin && origin.teammate !== undefined
+      const framed = plugin ? formatPluginPrompt(text, plugin) : formatPeerPrompt(text, false, isAgentMessage)
       if (typeof content === 'string') content = framed
       else {
         let written = false
