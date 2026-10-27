@@ -215,8 +215,9 @@ function isUnsandboxedFallbackLocked(): boolean {
   )
 }
 
-// An admin mandates the sandbox: the repo may not loosen its network.
-function isSandboxMandated(): boolean {
+// An admin mandates the sandbox: the repo may not loosen its network or
+// exempt commands.
+export function isSandboxMandated(): boolean {
   return isUnsandboxedFallbackLocked() || shouldAllowManagedSandboxDomainsOnly()
 }
 
@@ -386,6 +387,77 @@ function shouldAllowManagedReadPathsOnly(): boolean {
   )
 }
 
+type FilesystemGrant = { pattern: string; path: string }
+
+/**
+ * sandbox.filesystem allowRead/allowWrite as the sandbox enforces them,
+ * without the built-in grants (cwd, temp dir, --add-dir, Edit rules). Each
+ * grant keeps its settings pattern next to the resolved path.
+ */
+export function getConfiguredFilesystemGrants(): {
+  allowRead: FilesystemGrant[]
+  allowWrite: FilesystemGrant[]
+} {
+  const allowWrite: FilesystemGrant[] = []
+  const allowRead: FilesystemGrant[] = []
+  const repoAllowRead: FilesystemGrant[] = []
+  const trustedDenyRead: string[] = []
+  for (const source of SETTING_SOURCES.filter(isSettingSourceEnabled)) {
+    const fs = getSettingsForSource(source)?.sandbox?.filesystem
+    if (!fs) continue
+    const grant = (pattern: string) => ({
+      pattern,
+      path: resolveSandboxFilesystemPath(pattern, source),
+    })
+    allowWrite.push(...(fs.allowWrite || []).map(grant))
+    if (isTrustedSandboxSource(source)) {
+      for (const p of fs.denyRead || []) {
+        trustedDenyRead.push(resolveSandboxFilesystemPath(p, source))
+      }
+    }
+    if (!shouldAllowManagedReadPathsOnly() || source === 'policySettings') {
+      const grants = (fs.allowRead || []).map(grant)
+      if (isTrustedSandboxSource(source)) allowRead.push(...grants)
+      else repoAllowRead.push(...grants)
+    }
+  }
+  // Under a locked sandbox, the repo's allowRead cannot re-open a path that
+  // trusted settings deny, nor use globs or network paths to do so; carving
+  // out of the repo's own denyRead still works.
+  const overlaps = (a: string, b: string) =>
+    a === b || a.startsWith(b + sep) || b.startsWith(a + sep)
+  allowRead.push(
+    ...(isUnsandboxedFallbackLocked()
+      ? repoAllowRead.filter(
+          ({ path }) =>
+            !/[*?[\]{}]/.test(path) &&
+            !path.startsWith('//') &&
+            !trustedDenyRead.some(d => overlaps(path, d)),
+        )
+      : repoAllowRead),
+  )
+  return { allowRead, allowWrite }
+}
+
+/** Socket and binding allowances from the merged settings, as enforced. */
+export function getConfiguredNetworkAllowances(): ReturnType<
+  typeof networkAllowances
+> {
+  return networkAllowances(getSettings_DEPRECATED()?.sandbox?.network)
+}
+
+/**
+ * The unsandboxed fallback is held closed (allowUnsandboxedCommands: false)
+ * by policy, a --settings file or user settings, so the project cannot
+ * reopen it.
+ */
+export function isUnsandboxedFallbackClosedByTrustedSource(): boolean {
+  return TRUSTED_SANDBOX_SOURCES.filter(isSettingSourceEnabled).some(
+    source =>
+      getSettingsForSource(source)?.sandbox?.allowUnsandboxedCommands === false,
+  )
+}
+
 /**
  * Convert Claude Code settings format to SandboxRuntimeConfig format
  * (Function exported for testing)
@@ -547,9 +619,6 @@ export function convertToSandboxRuntimeConfig(
   ])
   allowWrite.push(...additionalDirs)
 
-  const trustedDenyRead: string[] = []
-  const repoAllowRead: string[] = []
-
   // Iterate through each settings source to resolve paths correctly
   // Path patterns like `/foo` are relative to the settings file directory,
   // so we need to know which source each rule came from
@@ -583,42 +652,17 @@ export function convertToSandboxRuntimeConfig(
     // NOT the permission-rule convention (/path = settings-relative). #30067
     const fs = sourceSettings?.sandbox?.filesystem
     if (fs) {
-      for (const p of fs.allowWrite || []) {
-        allowWrite.push(resolveSandboxFilesystemPath(p, source))
-      }
       for (const p of fs.denyWrite || []) {
         denyWrite.push(resolveSandboxFilesystemPath(p, source))
       }
       for (const p of fs.denyRead || []) {
         denyRead.push(resolveSandboxFilesystemPath(p, source))
-        if (isTrustedSandboxSource(source)) {
-          trustedDenyRead.push(resolveSandboxFilesystemPath(p, source))
-        }
-      }
-      if (!shouldAllowManagedReadPathsOnly() || source === 'policySettings') {
-        for (const p of fs.allowRead || []) {
-          const path = resolveSandboxFilesystemPath(p, source)
-          if (isTrustedSandboxSource(source)) allowRead.push(path)
-          else repoAllowRead.push(path)
-        }
       }
     }
   }
-  // Under a locked sandbox, the repo's allowRead cannot re-open a path that
-  // trusted settings deny, nor use globs or network paths to do so; carving
-  // out of the repo's own denyRead still works.
-  const overlaps = (a: string, b: string) =>
-    a === b || a.startsWith(b + sep) || b.startsWith(a + sep)
-  allowRead.push(
-    ...(isUnsandboxedFallbackLocked()
-      ? repoAllowRead.filter(
-          p =>
-            !/[*?[\]{}]/.test(p) &&
-            !p.startsWith('//') &&
-            !trustedDenyRead.some(d => overlaps(p, d)),
-        )
-      : repoAllowRead),
-  )
+  const grants = getConfiguredFilesystemGrants()
+  allowWrite.push(...grants.allowWrite.map(g => g.path))
+  allowRead.push(...grants.allowRead.map(g => g.path))
   // Ripgrep config for sandbox. User settings take priority; otherwise pass our rg.
   // In embedded mode (argv0='rg' dispatch), sandbox-runtime spawns with argv0 set.
   // Project settings cannot swap the binary the sandbox runs.
@@ -1189,9 +1233,7 @@ function getExcludedCommands(): string[] {
   const settings = getSettings_DEPRECATED()
   const excluded = settings?.sandbox?.excludedCommands ?? []
   // Under an admin-locked sandbox the repo's own settings cannot exempt commands.
-  const locked =
-    shouldAllowManagedSandboxDomainsOnly() || isUnsandboxedFallbackLocked()
-  if (!locked) {
+  if (!isSandboxMandated()) {
     return excluded
   }
   const trusted = new Set(

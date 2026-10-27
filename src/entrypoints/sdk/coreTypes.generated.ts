@@ -310,6 +310,8 @@ export type SDKSystemMessage = {
   skills: string[]
   plugins: Array<{ name: string; path: string; source?: string }>
   fast_mode_state?: FastModeState
+  memory_paths?: { auto?: string }
+  original_cwd?: string
   uuid: string
   session_id: string
 }

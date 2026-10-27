@@ -150,6 +150,7 @@ export type SSHResumeHintContext = {
   target: string
   remoteCwd: string
   remoteSessionId: string
+  local?: boolean
 }
 
 let sshResumeHintContext:
@@ -189,6 +190,7 @@ export function getSSHResumeCommand(): string | null {
   return quote([
     'claude',
     'ssh',
+    ...(sshResumeHintContext.local ? ['--local'] : []),
     sshResumeHintContext.target,
     sshResumeHintContext.remoteCwd,
     '--resume',

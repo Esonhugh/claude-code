@@ -115,6 +115,32 @@ export function modelSupportsISP(model: string): boolean {
   )
 }
 
+// thinking.display is only sent where the API takes it, like official: 1P and
+// Foundry, or 3P models from Claude Opus 4.7 on.
+export function modelSupportsThinkingDisplay(model: string): boolean {
+  if (isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS)) {
+    return false
+  }
+  const supported3P = get3PModelCapabilityOverride(
+    model,
+    'interleaved_thinking',
+  )
+  if (supported3P === false) return false
+  const canonical = getCanonicalName(model)
+  const provider = getAPIProvider()
+  if (provider === 'foundry') return true
+  if (provider === 'firstParty') {
+    return (
+      supported3P === true ||
+      (canonical !== 'claude-haiku-4-5' && !canonical.includes('claude-3-'))
+    )
+  }
+  return (
+    supported3P === true ||
+    !isModelOlderThan(canonical, 'claude-opus-4-7')
+  )
+}
+
 function vertexModelSupportsWebSearch(model: string): boolean {
   const canonical = getCanonicalName(model)
   // Web search only supported on Claude 4.0+ models on Vertex

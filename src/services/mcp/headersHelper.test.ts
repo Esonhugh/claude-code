@@ -76,3 +76,23 @@ test('a user headersHelper keeps the inherited environment', async () => {
   const headers = await getMcpHeadersFromHelper('mine', http(echoEnv, { scope: 'user' }))
   expect(headers).toMatchObject({ apiKey: 'sk-test-secret', token: 'service-token', server: 'mine' })
 })
+
+test('an inline agent server from a project or plugin agent scrubs credentials; a user agent keeps them', async () => {
+  setSessionTrustAccepted(true)
+  for (const agentSource of ['projectSettings', 'localSettings', 'plugin']) {
+    const headers = await getMcpHeadersFromHelper('inline', http(echoEnv, { scope: 'agent', agentSource }))
+    expect(headers).toMatchObject({ apiKey: '', token: '', password: '', aws: '', server: 'inline' })
+  }
+  const headers = await getMcpHeadersFromHelper('inline', http(echoEnv, { scope: 'agent', agentSource: 'userSettings' }))
+  expect(headers).toMatchObject({ apiKey: 'sk-test-secret', token: 'service-token', server: 'inline' })
+})
+
+test('an inline server from a project agent waits for folder trust', async () => {
+  const marker = join(dir, 'ran')
+  const headers = await getMcpHeadersFromHelper(
+    'inline',
+    http(`touch '${marker}'; printf '{}'`, { scope: 'agent', agentSource: 'projectSettings' }),
+  )
+  expect(headers).toBeNull()
+  expect(existsSync(marker)).toBe(false)
+})

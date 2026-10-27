@@ -319,6 +319,14 @@ export function useFeedbackSurvey(
       return false
     }
 
+    if (isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY)) {
+      return false
+    }
+
+    if (isFeedbackSurveyDisabled()) {
+      return false
+    }
+
     // Force display for testing
     if (
       process.env.CLAUDE_FORCE_DISPLAY_SURVEY &&
@@ -328,14 +336,6 @@ export function useFeedbackSurvey(
     }
 
     if (!isModelAllowed) {
-      return false
-    }
-
-    if (isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY)) {
-      return false
-    }
-
-    if (isFeedbackSurveyDisabled()) {
       return false
     }
 

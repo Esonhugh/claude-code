@@ -21,12 +21,17 @@ if (process.env[childFlag] !== '1') {
 } else {
   type Seen = { tools: string[]; messages: Message[] }
   const seen: Seen[] = []
-  let script: 'handback' | 'plain' = 'handback'
+  let script: 'handback' | 'plain' | 'abort' = 'handback'
 
   mock.module('../../query.js', () => ({
     query: async function* (params: import('../../query.js').QueryParams) {
       const ctx = params.toolUseContext
       seen.push({ tools: ctx.options.tools.map(tool => tool.name), messages: [...params.messages] })
+      if (script === 'abort') {
+        recordSubagentHandbackReview(ctx.agentId!, 'toolu_aborted', { kind: 'unavailable' })
+        yield assistant('a1', [{ type: 'text', text: 'WORKING' }])
+        throw new Error('interrupted')
+      }
       if (script === 'plain') {
         yield assistant('a1', [{ type: 'text', text: 'PLAIN FINAL TEXT' }])
         return { reason: 'completed' }
@@ -57,7 +62,8 @@ if (process.env[childFlag] !== '1') {
   const { createUserMessage } = await import('../../utils/messages.js')
   const { asSystemPrompt } = await import('../../utils/systemPromptType.js')
   const { createAgentId } = await import('../../utils/uuid.js')
-  const { subagentHandbackReminder, subagentResultText } = await import('../../utils/subagentHandback.js')
+  const { hasSubagentHandbackContract, recordSubagentHandbackReview, subagentHandbackReminder, subagentResultText, takeSubagentHandbackReview } =
+    await import('../../utils/subagentHandback.js')
   const { GENERAL_PURPOSE_AGENT } = await import('./built-in/generalPurposeAgent.js')
   const { finalizeAgentTool } = await import('./agentToolUtils.js')
   const { AgentTool } = await import('./AgentTool.js')
@@ -158,5 +164,27 @@ if (process.env[childFlag] !== '1') {
     await run('default', { promptMessages: [earlier, createUserMessage({ content: 'continue' })] })
     const last = seen.at(-1)!.messages.at(-1)!
     expect(last.type === 'user' && String(last.message.content)).toContain('SubagentHandback is not available in this run')
+  })
+
+  test('a run that ends without finishing drops its hand-back state and pending reviews', async () => {
+    script = 'abort'
+    const agentId = createAgentId('handback-test')
+    const iterate = async () => {
+      for await (const _ of runAgent({
+        agentDefinition: GENERAL_PURPOSE_AGENT,
+        promptMessages: [createUserMessage({ content: 'do the task' })],
+        toolUseContext: context('auto') as never,
+        canUseTool: async () => ({ behavior: 'allow', updatedInput: {} }),
+        isAsync: false,
+        querySource: 'agent:test' as never,
+        availableTools: [],
+        permissionMode: 'auto' as never,
+        handback: true,
+        override: { agentId, userContext: {}, systemContext: {}, systemPrompt: asSystemPrompt([]) },
+      })) { /* drain */ }
+    }
+    await expect(iterate()).rejects.toThrow('interrupted')
+    expect(hasSubagentHandbackContract(agentId)).toBe(false)
+    expect(takeSubagentHandbackReview('toolu_aborted')).toBeUndefined()
   })
 }

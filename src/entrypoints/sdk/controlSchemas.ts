@@ -245,7 +245,11 @@ export const SDKControlSetMaxThinkingTokensRequestSchema = lazySchema(() =>
   z
     .object({
       subtype: z.literal('set_max_thinking_tokens'),
-      max_thinking_tokens: z.number().nullable(),
+      max_thinking_tokens: z.number().int().nullable().optional(),
+      thinking_display: z
+        .enum(['summarized', 'omitted', 'highlights'])
+        .nullable()
+        .optional(),
     })
     .describe(
       'Sets the maximum number of thinking tokens for extended thinking.',

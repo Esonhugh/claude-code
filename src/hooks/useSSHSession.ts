@@ -231,6 +231,7 @@ export function useSSHSession({
               target,
               remoteCwd: session.remoteCwd,
               remoteSessionId: bootstrap.sessionId,
+              local: session.local,
             })
           } catch (error) {
             logForDebugging(

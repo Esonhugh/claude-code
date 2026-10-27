@@ -88,7 +88,7 @@ bun ./dist/cli.js --help
 | 权限与安全 | [权限规则、权限模式与 Safe mode](docs/features/permissions.md) | Claude 什么时候要先问你：用规则提前放行或禁止，用模式整体调松或调紧；受保护路径在任何模式下都会问 |
 |  | [自动模式（Auto mode）](docs/features/auto-mode.md) | 不用一条条点确认：由分类器判断每个操作是否安全，安全的直接做，危险的拦下；可以用一句话加自己的规则 |
 |  | [Hooks 事件、匹配与输出校验](docs/features/hooks.md) | 在 Claude 做某件事之前或之后自动跑你的脚本：拦住危险命令、改完自动格式化、开局注入上下文 |
-|  | [Bash 沙箱](docs/features/sandbox.md) | 让 Claude 跑的命令只能写项目目录、只能连你允许的域名、读不到你指定的密钥；开了以后命令可以不再逐条确认 |
+|  | [Bash 沙箱](docs/features/sandbox.md) | 让 Claude 跑的命令只能写项目目录、只能连你允许的域名、读不到你指定的密钥；开了以后命令可以不再逐条确认；Linux、macOS、Windows 都支持 |
 | 工具 | [Terminal 工具](docs/features/terminal-tool.md) | 给 Claude 一个能持续交互的终端：开 REPL、操作 TUI、按 Ctrl+C，跑完自动通知；开了 Bash 沙箱时终端也在沙箱里跑 |
 |  | [Monitor 工具](docs/features/monitor-tool.md) | 让 Claude 在后台盯着日志或命令输出，有新内容就自动叫醒它，不用反复 sleep 轮询 |
 |  | [定时任务：Cron、/loop 与 ScheduleWakeup](docs/features/scheduled-tasks.md) | 让 Claude 按时间自动做事：「每 5 分钟看一下构建」「工作日早上 9 点汇总 PR」；`/loop` 一句话设定 |
@@ -103,7 +103,7 @@ bun ./dist/cli.js --help
 |  | [自定义 UI / Branding 与 Status line](docs/features/branding.md) | 改界面上显示的产品名、换掉 Logo 的 ASCII 图，用自己的脚本定制底部状态栏 |
 |  | [/diff 视图](docs/features/diff-view.md) | 全屏右侧 diff 面板：会话 / 未提交 / 分支三种基准、按轮次回看、把单个文件 diff 附到下一条提示 |
 |  | [调试日志](docs/features/debugging.md) | 遇到问题时打开详细日志，看清楚 Claude Code 在后台做了什么、请求发到了哪 |
-|  | [遥测与反馈](docs/features/telemetry.md) | 默认不向 Anthropic 发送使用数据，`/feedback` 也随之隐藏；需要时一个环境变量打开 |
+|  | [遥测与反馈](docs/features/telemetry.md) | 默认不向 Anthropic 发送使用数据，`/feedback` 也随之隐藏；需要时一个环境变量打开；设了 `DO_NOT_TRACK=1` 则一律不发 |
 | 远程执行 | [Direct Connect](docs/features/direct-connect.md) | 在一台机器上 `claude server`，在另一处用 `claude cc://...` 连过去：工具在 server 上执行，界面和权限确认在你这边 |
 |  | [SSH Remote](docs/features/ssh-remote.md) | `claude ssh 主机` 让 Claude 在远程 Linux 机器上读写文件、跑命令，界面和权限确认留在本机；API 凭据不离开本机 |
 | 插件与扩展 | [插件与 Marketplace](docs/features/plugins-marketplace.md) | 从插件市场一键安装命令、skill、agent、hook 和 MCP；团队可以自建 marketplace，装完 `/reload-plugins` 立即生效 |
@@ -113,7 +113,7 @@ bun ./dist/cli.js --help
 |  | [Mods / Function Hooks](docs/features/mods.md) | 用一个 JS/TS 文件改造 Claude 本身：加命令、拦截或改写工具调用、在界面上加状态条和侧边面板（基线官方 2.1.303） |
 |  | [Mods 远程客户端（stream-json）](docs/features/mods-sdk-client.md) | 给桌面 / IDE 等外部界面用的协议：通过 stream-json 让 Mod 把界面画到你自己的前端上，并把点击、输入传回来 |
 |  | [Agent SDK 与 stream-json 控制协议](docs/features/agent-sdk.md) | 在自己的程序里调用 Claude：官方 Agent SDK（TS / Python）可以直接驱动本 fork 的 CLI，用 `env` / `settings` / `plugins` 打开 fork 功能（附示例）；补齐了 SDK 0.3 会用到的控制请求 |
-|  | [VS Code 插件](docs/features/vscode-extension.md) | 让官方 VS Code 插件改用本 fork 运行：面板里的 `/status`、`/usage`、`/memory` 等对话框都能正常打开 |
+|  | [VS Code 插件](docs/features/vscode-extension.md) | 让官方 VS Code 插件改用本 fork 运行：面板里的 `/status`、`/usage`、`/memory`、`/sandbox` 等对话框都能正常打开 |
 | 开发与发布 | [构建、发布与终端验收工具](docs/features/build-and-release.md) | 给贡献者：怎么从源码构建出可运行的 binary、怎么和官方版本对照、发布流程做了什么 |
 
 ## 开发约定

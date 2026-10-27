@@ -87,6 +87,17 @@ if (process.env[childFlag] !== '1') {
     expect(styles.response.available_output_styles).toContain('default')
   })
 
+  test('set_max_thinking_tokens accepts display-only requests and rejects bad values', async () => {
+    const responses = await run([
+      { subtype: 'set_max_thinking_tokens', thinking_display: 'summarized' },
+      { subtype: 'set_max_thinking_tokens', max_thinking_tokens: null, thinking_display: null },
+      { subtype: 'set_max_thinking_tokens', max_thinking_tokens: 1.5 },
+      { subtype: 'set_max_thinking_tokens', thinking_display: 'verbose' },
+    ])
+    expect(responses.map(r => r.subtype)).toEqual(['success', 'success', 'error', 'error'])
+    expect(responses[3].error).toContain('thinking_display must be one of summarized, omitted, highlights')
+  })
+
   test('read_file uses the Read permission gate, max_bytes and base64', async () => {
     const [text, cut, b64, outside, missing] = await run([
       { subtype: 'read_file', path: 'package.json' },
@@ -210,10 +221,11 @@ if (process.env[childFlag] !== '1') {
     }
   })
 
-  test('host dialog requests (memory, skills, hooks, permissions, diff, tasks, feedback) answer', async () => {
-    const [memory, skills, hooks, rules, diff, taskOut, endedTask, bgAll, bgOne, rated, badRating, feedback] = await run([
+  test('host dialog requests (memory, skills, sandbox, hooks, permissions, diff, tasks, feedback) answer', async () => {
+    const [memory, skills, sandbox, hooks, rules, diff, taskOut, endedTask, bgAll, bgOne, rated, badRating, feedback] = await run([
       { subtype: 'get_memory_dialog' },
       { subtype: 'get_skills_dialog' },
+      { subtype: 'get_sandbox_dialog' },
       { subtype: 'get_hooks_listing' },
       { subtype: 'list_permission_rules' },
       { subtype: 'get_workspace_diff' },
@@ -231,6 +243,17 @@ if (process.env[childFlag] !== '1') {
     expect(memory.response.auto_memory).toMatchObject({ enabled: expect.any(Boolean), status: expect.stringMatching(/^(on|off)$/) })
     expect(skills.subtype).toBe('success')
     expect(Array.isArray(skills.response.skills)).toBe(true)
+    expect(sandbox.subtype).toBe('success')
+    expect(sandbox.response).toMatchObject({
+      locked: false,
+      enabled: false,
+      enabled_in_settings: false,
+      mode: 'disabled',
+      unsandboxed_fallback: true,
+      excluded_commands: [],
+      dependencies: { errors: expect.any(Array), warnings: expect.any(Array) },
+      restrictions: { fs_allow_read: [], fs_allow_write: [], network_managed: false, unix_sockets: [] },
+    })
     expect(hooks.response).toMatchObject({ events: [], hooks: [], policy: { disabledByPolicy: false }, safeMode: null })
     expect(hooks.response.eventCatalog[0]).toEqual({ name: 'PreToolUse', summary: 'Before tool execution', supportsMatcher: true })
     expect(rules.response.state).toMatchObject({ workspaceDirectories: [], originalCwd: expect.any(String), managedOnly: false })

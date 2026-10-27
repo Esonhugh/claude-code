@@ -482,6 +482,7 @@ import {
 } from './utils/teleport.js'
 import {
   shouldEnableThinkingByDefault,
+  shouldOmitThinkingByDefault,
   THINKING_DISPLAYS,
   type ThinkingConfig,
 } from './utils/thinking.js'
@@ -3725,6 +3726,12 @@ async function run(): Promise<CommanderCommand> {
       }
       if (options.thinkingDisplay && thinkingConfig.type !== 'disabled') {
         thinkingConfig = { ...thinkingConfig, display: options.thinkingDisplay }
+      } else if (
+        thinkingConfig.type !== 'disabled' &&
+        isNonInteractiveSession &&
+        shouldOmitThinkingByDefault(outputFormat, verbose)
+      ) {
+        thinkingConfig = { ...thinkingConfig, display: 'omitted' }
       }
 
       if (isNonInteractiveSession) setPrintOutputFormat(outputFormat ?? 'text')
@@ -6568,6 +6575,17 @@ async function run(): Promise<CommanderCommand> {
     .action(async () => {
       const { sandboxStatusHandler } = await import('./cli/handlers/sandbox.js')
       sandboxStatusHandler()
+    })
+  program
+    .command('edit-sandbox-settings', { hidden: true })
+    .allowExcessArguments(false)
+    .description(
+      'Apply one sandbox settings edit read as JSON from stdin (used by the VS Code extension)',
+    )
+    .requiredOption('--json', 'Read the edit as JSON from stdin')
+    .action(async () => {
+      const { sandboxSettingsEditHandler } = await import('./cli/handlers/sandbox.js')
+      await sandboxSettingsEditHandler()
     })
 
   // claude update

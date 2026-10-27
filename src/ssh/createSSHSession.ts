@@ -61,6 +61,7 @@ export type SSHSession = {
   proxy: SSHAuthProxy
   target: string
   remoteCwd: string
+  local?: boolean
   sshRemoteToken?: string
   createManager: (callbacks: SSHSessionCallbacks) => SSHSessionManager
   getStderrTail: () => string
@@ -478,13 +479,16 @@ export async function createLocalSSHSession(
       env,
       stdio: ['pipe', 'pipe', 'pipe'],
     })
-    return createSession(
-      proc,
-      proxy,
-      options.target ?? 'localhost',
-      cwd,
-      sshRemoteToken,
-    )
+    return {
+      ...createSession(
+        proc,
+        proxy,
+        options.target ?? 'localhost',
+        cwd,
+        sshRemoteToken,
+      ),
+      local: true,
+    }
   } catch (error) {
     proxy.stop()
     throw new SSHSessionError('Failed to start local SSH test session', {

@@ -1,4 +1,5 @@
 import { afterAll, expect, test } from 'bun:test'
+import type { SDKSystemMessage } from 'src/entrypoints/sdk/coreTypes.generated.js'
 
 ;(globalThis as typeof globalThis & { MACRO: MacroGlobals }).MACRO = {
   VERSION: 'test',
@@ -41,4 +42,14 @@ test('omits hidden and non-invocable commands from system init discovery', () =>
     subtype: 'init',
     slash_commands: ['default-visible', 'visible'],
   })
+})
+
+test('reports original_cwd and the auto-memory path like official', () => {
+  const previous = process.env.CLAUDE_CODE_DISABLE_AUTO_MEMORY
+  process.env.CLAUDE_CODE_DISABLE_AUTO_MEMORY = '0'
+  const message = buildSystemInitMessage({ ...baseInputs, commands: [] }) as SDKSystemMessage
+  if (previous === undefined) delete process.env.CLAUDE_CODE_DISABLE_AUTO_MEMORY
+  else process.env.CLAUDE_CODE_DISABLE_AUTO_MEMORY = previous
+  expect(message.original_cwd).toBe(process.cwd())
+  expect(message.memory_paths?.auto).toEndWith('/memory/')
 })

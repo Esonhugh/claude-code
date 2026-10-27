@@ -18,6 +18,41 @@ export type ThinkingConfig =
   | { type: 'disabled' }
 
 /**
+ * Applies a set_max_thinking_tokens request. `display` is the session display
+ * mode after the request (an explicit null has already cleared it). An omitted
+ * max_thinking_tokens keeps the current budget; null goes back to the
+ * spawn-time config.
+ */
+export function applyThinkingRequest(
+  current: ThinkingConfig | undefined,
+  spawn: ThinkingConfig | undefined,
+  maxTokens: number | null | undefined,
+  display: ThinkingDisplay | undefined,
+): ThinkingConfig | undefined {
+  if (maxTokens === 0) return { type: 'disabled' }
+  if (typeof maxTokens === 'number') {
+    return { type: 'enabled', budgetTokens: maxTokens, display }
+  }
+  const base = maxTokens === undefined ? current : spawn
+  if (base) return base.type === 'disabled' ? base : { ...base, display }
+  return display !== undefined && shouldEnableThinkingByDefault()
+    ? { type: 'adaptive', display }
+    : undefined
+}
+
+/**
+ * -p text output and non-verbose json show no thinking, so ask the API to
+ * omit it unless --thinking-display chose a mode.
+ */
+export function shouldOmitThinkingByDefault(
+  outputFormat: string | undefined,
+  verbose: boolean | undefined,
+): boolean {
+  const format = outputFormat ?? 'text'
+  return format === 'text' || (format === 'json' && !verbose)
+}
+
+/**
  * Build-time gate (feature) + runtime gate (GrowthBook). The build flag
  * controls code inclusion in external builds; the GB flag controls rollout.
  */

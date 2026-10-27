@@ -17,6 +17,7 @@ import {
 } from '../../services/analytics/index.js'
 import { clearDumpState } from '../../services/api/dumpPrompts.js'
 import {
+  getMcpPrefix,
   getMcpServerRuleNames,
   getToolNameForPermissionCheck,
   mcpInfoFromString,
@@ -169,6 +170,54 @@ export function filterToolsForAgent({
 }
 
 /**
+ * Whether an agent's disallowedTools remove a tool: full names, and MCP
+ * server-level specs (mcp__server, mcp__server__*, mcp__*).
+ */
+export function isToolDisallowedForAgent(
+  disallowedTools: string[] | undefined,
+): (tool: Tool) => boolean {
+  // Create a set of disallowed tool names for quick lookup
+  const disallowedToolSet = new Set(
+    disallowedTools?.map(toolSpec => {
+      const { toolName } = permissionRuleValueFromString(toolSpec)
+      return toolName
+    }) ?? [],
+  )
+
+  // MCP server-level specs (mcp__server, mcp__server__*, mcp__*) remove every
+  // tool of that server, or every MCP tool. Like deny rules, they match both the
+  // first "__" segment of the tool name and the tool's whole server name.
+  let disallowsAllMcp = false
+  const disallowedMcpServers = new Set<string>()
+  for (const toolName of disallowedToolSet) {
+    const info = mcpInfoFromString(toolName)
+    if (info && (info.toolName === undefined || info.toolName === '*')) {
+      if (info.serverName === '*') disallowsAllMcp = true
+      else disallowedMcpServers.add(info.serverName)
+    }
+  }
+  return (tool: Tool): boolean => {
+    const permissionName = getToolNameForPermissionCheck(tool)
+    if (
+      disallowedToolSet.has(tool.name) ||
+      disallowedToolSet.has(permissionName)
+    ) {
+      return true
+    }
+    const serverName = mcpInfoFromString(permissionName)?.serverName
+    if (
+      serverName !== undefined &&
+      (disallowsAllMcp || disallowedMcpServers.has(serverName))
+    ) {
+      return true
+    }
+    return getMcpServerRuleNames(tool).some(
+      name => disallowedToolSet.has(name) || disallowedToolSet.has(`${name}__*`),
+    )
+  }
+}
+
+/**
  * Resolves and validates agent tools against available tools
  * Handles wildcard expansion and validation in one place
  */
@@ -201,45 +250,7 @@ export function resolveAgentTools(
         agentDepth,
       })
 
-  // Create a set of disallowed tool names for quick lookup
-  const disallowedToolSet = new Set(
-    disallowedTools?.map(toolSpec => {
-      const { toolName } = permissionRuleValueFromString(toolSpec)
-      return toolName
-    }) ?? [],
-  )
-
-  // MCP server-level specs (mcp__server, mcp__server__*, mcp__*) remove every
-  // tool of that server, or every MCP tool. Like deny rules, they match both the
-  // first "__" segment of the tool name and the tool's whole server name.
-  let disallowsAllMcp = false
-  const disallowedMcpServers = new Set<string>()
-  for (const toolName of disallowedToolSet) {
-    const info = mcpInfoFromString(toolName)
-    if (info && (info.toolName === undefined || info.toolName === '*')) {
-      if (info.serverName === '*') disallowsAllMcp = true
-      else disallowedMcpServers.add(info.serverName)
-    }
-  }
-  const isDisallowed = (tool: Tool): boolean => {
-    const permissionName = getToolNameForPermissionCheck(tool)
-    if (
-      disallowedToolSet.has(tool.name) ||
-      disallowedToolSet.has(permissionName)
-    ) {
-      return true
-    }
-    const serverName = mcpInfoFromString(permissionName)?.serverName
-    if (
-      serverName !== undefined &&
-      (disallowsAllMcp || disallowedMcpServers.has(serverName))
-    ) {
-      return true
-    }
-    return getMcpServerRuleNames(tool).some(
-      name => disallowedToolSet.has(name) || disallowedToolSet.has(`${name}__*`),
-    )
-  }
+  const isDisallowed = isToolDisallowedForAgent(disallowedTools)
 
   // Filter available tools based on disallowed list
   const allowedAvailableTools = filteredAvailableTools.filter(
@@ -292,6 +303,41 @@ export function resolveAgentTools(
       // An available Agent must resolve normally so nested calls can execute.
       if (!isMainThread && !availableToolMap.has(AGENT_TOOL_NAME)) {
         validTools.push(toolSpec)
+        continue
+      }
+    }
+
+    // Like official 2.1.311: mcp__server and mcp__server__* grant every tool of
+    // that server. A server whose name contains "__" is reached only through
+    // its full name with "__*".
+    const mcpSpec = mcpInfoFromString(toolName)
+    const serverLevel =
+      mcpSpec !== null &&
+      mcpSpec.serverName !== '*' &&
+      (mcpSpec.toolName === undefined || mcpSpec.toolName === '*')
+    const serverRule = serverLevel
+      ? `mcp__${mcpSpec.serverName}`
+      : mcpSpec !== null && toolName.endsWith('__*')
+        ? toolName.slice(0, -3)
+        : undefined
+    if (serverRule !== undefined) {
+      const serverTools = allowedAvailableTools.filter(
+        t => t.mcpInfo && getMcpPrefix(t.mcpInfo.serverName) === `${serverRule}__`,
+      )
+      if (serverLevel || serverTools.length > 0) {
+        validTools.push(toolSpec)
+        if (serverTools.length === 0) {
+          logForDebugging(
+            `Agent tools entry "${toolSpec}" takes no tool: no connected MCP server of that name has one.`,
+            { level: 'warn' },
+          )
+        }
+        for (const serverTool of serverTools) {
+          if (!resolvedToolsSet.has(serverTool)) {
+            resolved.push(serverTool)
+            resolvedToolsSet.add(serverTool)
+          }
+        }
         continue
       }
     }

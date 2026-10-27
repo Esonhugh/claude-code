@@ -64,6 +64,7 @@ import {
   getBedrockExtraBodyParamsBetas,
   getMergedBetas,
   getModelBetas,
+  modelSupportsThinkingDisplay,
 } from '../../utils/betas.js'
 import { getOrCreateUserID } from '../../utils/config.js'
 import {
@@ -1956,7 +1957,11 @@ async function* queryModelRequest(
           type: 'enabled',
         } satisfies BetaMessageStreamParams['thinking']
       }
-      if (thinkingConfig.type !== 'disabled' && thinkingConfig.display) {
+      if (
+        thinkingConfig.type !== 'disabled' &&
+        thinkingConfig.display &&
+        modelSupportsThinkingDisplay(options.model)
+      ) {
         // 'highlights' is newer than the SDK's display union.
         thinking = {
           ...thinking,
