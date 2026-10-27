@@ -1,6 +1,6 @@
 // Read-only control requests a host app (the VS Code extension, Desktop)
 // sends to draw its own /status, /usage, /memory, /skills, /hooks,
-// /permissions, /diff, /export and @-mention widgets.
+// /permissions, /sandbox, /diff, /export and @-mention widgets.
 import { feature } from 'bun:bundle'
 import { existsSync } from 'fs'
 import { join } from 'path'
@@ -62,8 +62,19 @@ import { getHookDisplayText, hookSourceDescriptionDisplayString } from '../utils
 import { projectIsInGitRepo } from '../utils/memory/versions.js'
 import { shouldAllowManagedPermissionRulesOnly } from '../utils/permissions/permissionsLoader.js'
 import { getPlan, getPlanFilePath } from '../utils/plans.js'
+import { getPlatform } from '../utils/platform.js'
+import {
+  getConfiguredFilesystemGrants,
+  getConfiguredNetworkAllowances,
+  isUnsandboxedFallbackClosedByTrustedSource,
+  SandboxManager,
+  shouldAllowManagedSandboxDomainsOnly,
+} from '../utils/sandbox/sandbox-adapter.js'
 import { getSettingSourceName } from '../utils/settings/constants.js'
-import { getSettingsForSource } from '../utils/settings/settings.js'
+import {
+  getSettings_DEPRECATED,
+  getSettingsForSource,
+} from '../utils/settings/settings.js'
 import { renderToString } from '../utils/staticRender.js'
 import type { Diagnostic, Property } from '../utils/status.js'
 import { getTaskOutputPath } from '../utils/task/diskOutput.js'
@@ -381,6 +392,61 @@ const HOOK_CONTENT_LABELS: Record<string, string> = {
   prompt: 'Prompt',
   agent: 'Prompt',
   http: 'URL',
+}
+
+export function buildSandboxDialogResponse() {
+  const platformSupported = SandboxManager.isSupportedPlatform()
+  const supported = platformSupported && SandboxManager.isPlatformInEnabledList()
+  const unsupportedReason = supported
+    ? undefined
+    : !platformSupported
+      ? getPlatform() === 'wsl'
+        ? 'wsl1'
+        : 'platform'
+      : 'excluded_platform'
+  const dependencies = supported
+    ? SandboxManager.checkDependencies()
+    : { errors: [], warnings: [] }
+  const enabledInSettings = SandboxManager.isSandboxEnabledInSettings()
+  const enabled = SandboxManager.isSandboxingEnabled()
+  const unavailableReason = SandboxManager.getSandboxUnavailableReason()
+  const locked = SandboxManager.areSandboxSettingsLockedByPolicy()
+  const sandbox = getSettings_DEPRECATED()?.sandbox
+  const grants = getConfiguredFilesystemGrants()
+  const network = getConfiguredNetworkAllowances()
+  return {
+    supported,
+    ...(unsupportedReason !== undefined && { unsupported_reason: unsupportedReason }),
+    locked,
+    overrides_locked: locked || isUnsandboxedFallbackClosedByTrustedSource(),
+    enabled,
+    enabled_in_settings: enabledInSettings,
+    ...(unavailableReason !== undefined && { unavailable_reason: unavailableReason }),
+    mode: !enabledInSettings
+      ? 'disabled'
+      : SandboxManager.isAutoAllowBashIfSandboxedEnabled()
+        ? 'auto-allow'
+        : 'regular',
+    // Auto-allow works on every platform the sandbox runs on, and no
+    // setting forces the sandbox on.
+    auto_allow_available: true,
+    no_sandbox_allowed: true,
+    unsandboxed_fallback: SandboxManager.areUnsandboxedCommandsAllowed(),
+    dependencies: { errors: dependencies.errors, warnings: dependencies.warnings },
+    excluded_commands: SandboxManager.getExcludedCommands(),
+    restrictions: {
+      fs_deny_read: sandbox?.filesystem?.denyRead ?? [],
+      fs_allow_read: grants.allowRead.map(g => g.pattern),
+      fs_allow_write: grants.allowWrite.map(g => g.pattern),
+      fs_deny_write: sandbox?.filesystem?.denyWrite ?? [],
+      network_allowed_domains: sandbox?.network?.allowedDomains ?? [],
+      network_denied_domains: sandbox?.network?.deniedDomains ?? [],
+      network_managed: shouldAllowManagedSandboxDomainsOnly(),
+      unix_sockets: network.allowUnixSockets ?? [],
+      allow_all_unix_sockets: network.allowAllUnixSockets === true,
+      ignored_glob_patterns: enabled ? SandboxManager.getLinuxGlobPatternWarnings() : [],
+    },
+  }
 }
 
 export function buildHooksListingResponse(appState: AppState, toolNames: string[]) {

@@ -4666,6 +4666,7 @@ function runHeadlessStreaming(
           message.request.subtype === 'export_conversation' ||
           message.request.subtype === 'get_memory_dialog' ||
           message.request.subtype === 'get_skills_dialog' ||
+          message.request.subtype === 'get_sandbox_dialog' ||
           message.request.subtype === 'get_hooks_listing' ||
           message.request.subtype === 'list_permission_rules' ||
           message.request.subtype === 'get_workspace_diff' ||
@@ -4700,6 +4701,8 @@ function runHeadlessStreaming(
                   return host.buildMemoryDialogResponse(getAppState())
                 case 'get_skills_dialog':
                   return host.buildSkillsDialogResponse(currentCommands)
+                case 'get_sandbox_dialog':
+                  return host.buildSandboxDialogResponse()
                 case 'get_hooks_listing':
                   return host.buildHooksListingResponse(
                     getAppState(),
