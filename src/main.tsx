@@ -413,6 +413,7 @@ import {
   setInlinePluginsNoMcp,
   setInlinePluginUrls,
   setIsInteractive,
+  setPrintOutputFormat,
   setKairosActive,
   setOriginalCwd,
   setQuestionPreviewFormat,
@@ -3726,6 +3727,7 @@ async function run(): Promise<CommanderCommand> {
         thinkingConfig = { ...thinkingConfig, display: options.thinkingDisplay }
       }
 
+      if (isNonInteractiveSession) setPrintOutputFormat(outputFormat ?? 'text')
       logForDiagnosticsNoPII('info', 'started', {
         version: MACRO.VERSION,
         is_native_binary: isInBundledMode(),

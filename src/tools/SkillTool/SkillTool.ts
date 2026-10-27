@@ -17,7 +17,11 @@ import type {
   ValidationResult,
 } from 'src/Tool.js'
 import { buildTool, type ToolDef } from 'src/Tool.js'
-import type { Command } from 'src/types/command.js'
+import {
+  type Command,
+  getPromptCommandContext,
+  getPromptCommandEffort,
+} from 'src/types/command.js'
 import type {
   AssistantMessage,
   AttachmentMessage,
@@ -263,13 +267,12 @@ async function executeForkedSkill(
   const { modifiedGetAppState, baseAgent, promptMessages, skillContent } = prepared
 
   // Merge skill's effort into the agent definition so runAgent applies it
+  const effort = getPromptCommandEffort(command, args || '', context)
   const agentDefinition =
-    command.effort !== undefined
-      ? { ...baseAgent, effort: command.effort }
-      : baseAgent
+    effort !== undefined ? { ...baseAgent, effort } : baseAgent
 
   if (background) {
-    const launched = await launchBackgroundForkedSkill({ command, prepared, agentDefinition, agentId, context, canUseTool })
+    const launched = await launchBackgroundForkedSkill({ command, args: args || '', prepared, agentDefinition, agentId, context, canUseTool })
     if (launched) return { data: {
       success: true, commandName, status: 'forked', background: true,
       agentId: launched.agentId, result: `Running in the background as @${launched.name}`,
@@ -420,7 +423,7 @@ export const SkillTool: Tool<InputSchema, Output, Progress> = buildTool({
   // name alone is sufficient — it just records that the skill fired.
   toAutoClassifierInput: ({ skill }) => skill ?? '',
 
-  async validateInput({ skill }, context): Promise<ValidationResult> {
+  async validateInput({ skill, args }, context): Promise<ValidationResult> {
     // Skills are just skill names, no arguments
     const trimmed = skill.trim()
     if (!trimmed) {
@@ -502,7 +505,7 @@ export const SkillTool: Tool<InputSchema, Output, Progress> = buildTool({
       }
     }
 
-    if (resolved.command.context === 'fork' &&
+    if (getPromptCommandContext(resolved.command, args ?? '', context) === 'fork' &&
         context.options.spawnedBySkill === getSkillAttributionName(resolved.command)) {
       return { result: false, errorCode: 9, message: forkRecursionMessage(normalizedCommandName) }
     }
@@ -708,12 +711,14 @@ export const SkillTool: Tool<InputSchema, Output, Progress> = buildTool({
     // Track skill usage for ranking
     recordSkillUsage(resolvedCommandName)
 
-    if (command?.type === 'prompt' && command.context === 'fork' &&
+    const runsForked = command?.type === 'prompt' &&
+      getPromptCommandContext(command, args || '', context) === 'fork'
+    if (runsForked &&
         context.options.spawnedBySkill === getSkillAttributionName(command)) {
       throw new Error(forkRecursionMessage(commandName))
     }
     // Check if skill should run as a forked sub-agent
-    if (command?.type === 'prompt' && command.context === 'fork') {
+    if (runsForked) {
       return executeForkedSkill(
         command,
         resolvedCommandName,
@@ -747,7 +752,9 @@ export const SkillTool: Tool<InputSchema, Output, Progress> = buildTool({
     // Extract metadata from the command
     const allowedTools = processedCommand.allowedTools || []
     const model = processedCommand.model
-    const effort = command?.type === 'prompt' ? command.effort : undefined
+    const effort = command?.type === 'prompt'
+      ? getPromptCommandEffort(command, args || '', context)
+      : undefined
 
     const isBuiltIn = builtInCommandNames().has(resolvedCommandName)
     const isBundled = command?.type === 'prompt' && command.source === 'bundled'
