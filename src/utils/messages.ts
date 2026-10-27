@@ -1772,13 +1772,9 @@ function appendMessageTagToUserMessage(message: UserMessage): UserMessage {
  * Strips tool_reference blocks from tool_result content in a user message.
  * tool_reference blocks are only valid when the tool search beta is enabled.
  * When tool search is disabled, we need to remove these blocks to avoid API errors.
- * With `asText`, each block becomes a `Tool available: <name>` text block
- * instead, for tool search without the beta (the discovered tool's schema is
- * sent in the tools array).
  */
 export function stripToolReferenceBlocksFromUserMessage(
   message: UserMessage,
-  asText = false,
 ): UserMessage {
   const content = message.message.content
   if (!Array.isArray(content)) {
@@ -1803,20 +1799,6 @@ export function stripToolReferenceBlocksFromUserMessage(
       content: content.map(block => {
         if (block.type !== 'tool_result' || !Array.isArray(block.content)) {
           return block
-        }
-
-        if (asText) {
-          return {
-            ...block,
-            content: block.content.map(c =>
-              isToolReferenceBlock(c)
-                ? {
-                    type: 'text' as const,
-                    text: `Tool available: ${(c as { tool_name?: string }).tool_name}`,
-                  }
-                : c,
-            ),
-          }
         }
 
         // Filter out tool_reference blocks from tool_result content
