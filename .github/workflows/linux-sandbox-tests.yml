@@ -1,0 +1,38 @@
+name: Linux sandbox tests
+
+# Unit tests that need a working bwrap sandbox: without bubblewrap and socat
+# isSandboxingEnabled() is false and the auto-mode network cases fail.
+on:
+  workflow_dispatch:
+  pull_request:
+
+jobs:
+  linux-sandbox-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install bubblewrap and socat
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap socat
+          # Ubuntu 24.04 blocks unprivileged user namespaces, which bwrap needs.
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+          bwrap --ro-bind / / true
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Sandbox network tests
+        run: |
+          status=0
+          for f in src/utils/permissions/permissions.networkLists.test.ts src/utils/sandbox/sandbox-adapter.test.ts; do
+            bun test "$f" || status=1
+          done
+          exit $status
