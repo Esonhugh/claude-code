@@ -1,6 +1,7 @@
 import axios from 'axios'
 import { readFile, stat } from 'fs/promises'
 import type { Message } from '../../types/message.js'
+import { isFeedbackSurveyDisabled } from '../../services/analytics/config.js'
 import { checkAndRefreshOAuthTokenIfNeeded } from '../../utils/auth.js'
 import { logForDebugging } from '../../utils/debug.js'
 import { errorMessage } from '../../utils/errors.js'
@@ -31,6 +32,9 @@ export async function submitTranscriptShare(
   trigger: TranscriptShareTrigger,
   appearanceId: string,
 ): Promise<TranscriptShareResult> {
+  if (isFeedbackSurveyDisabled()) {
+    return { success: false }
+  }
   try {
     logForDebugging('Collecting transcript for sharing', { level: 'info' })
 
