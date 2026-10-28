@@ -544,7 +544,11 @@ export async function gracefulShutdown(
   printResumeHint()
 
   if (extractionBudgetMs > 0) {
-    writeSync(1, 'Saving memories…\n')
+    try {
+      writeSync(1, 'Saving memories…\n')
+    } catch {
+      // Terminal may be gone (SIGHUP). Still flush, then run cleanup.
+    }
     await extractMemories!.flushDeferredExtraction()
   }
 
