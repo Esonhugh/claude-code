@@ -2879,6 +2879,7 @@ function runHeadlessStreaming(
             await markMessagesAsRead(
               agentName,
               refreshedState.teamContext?.teamName,
+              unread,
             )
 
             // Process shutdown_approved messages - remove teammates from team file

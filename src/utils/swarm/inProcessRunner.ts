@@ -1112,8 +1112,11 @@ export async function runInProcessTeammate(
 
       // Create a per-turn abort controller for this iteration.
       // This allows Escape to stop current work without killing the whole teammate.
-      // The lifecycle abortController still kills the whole teammate if needed.
+      // The lifecycle abortController still kills the whole teammate if needed,
+      // and aborts this turn too so a running tool stops with it.
       const currentWorkAbortController = createAbortController()
+      const abortWork = () => currentWorkAbortController.abort(abortController.signal.reason)
+      abortController.signal.addEventListener('abort', abortWork, { once: true })
 
       // Store the work controller in task state so UI can abort it
       updateTaskState(
@@ -1367,6 +1370,7 @@ export async function runInProcessTeammate(
       })
 
       // Clear the work controller from state (it's no longer valid)
+      abortController.signal.removeEventListener('abort', abortWork)
       updateTaskState(
         taskId,
         task => ({ ...task, currentWorkAbortController: undefined }),

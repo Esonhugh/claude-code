@@ -29,18 +29,27 @@ const message = (text: string) => ({
 test('markMessagesAsRead drops already-read messages when rewriting the inbox', async () => {
   expect(await writeToMailbox('lead', message('a'), TEAM)).toBe(true)
   expect(await writeToMailbox('lead', message('b'), TEAM)).toBe(true)
-  await markMessagesAsRead('lead', TEAM)
+  await markMessagesAsRead('lead', TEAM, await readUnreadMessages('lead', TEAM))
   expect((await readMailbox('lead', TEAM)).map(m => [m.text, m.read])).toEqual([
     ['a', true],
     ['b', true],
   ])
 
   expect(await writeToMailbox('lead', message('c'), TEAM)).toBe(true)
-  expect((await readUnreadMessages('lead', TEAM)).map(m => m.text)).toEqual(['c'])
-  await markMessagesAsRead('lead', TEAM)
+  const unread = await readUnreadMessages('lead', TEAM)
+  expect(unread.map(m => m.text)).toEqual(['c'])
+  await markMessagesAsRead('lead', TEAM, unread)
   expect((await readMailbox('lead', TEAM)).map(m => [m.text, m.read])).toEqual([
     ['c', true],
   ])
+})
+
+test('markMessagesAsRead keeps a message that arrived after the poll read the inbox', async () => {
+  expect(await writeToMailbox('racer', message('a'), TEAM)).toBe(true)
+  const polled = await readUnreadMessages('racer', TEAM)
+  expect(await writeToMailbox('racer', message('late'), TEAM)).toBe(true)
+  await markMessagesAsRead('racer', TEAM, polled)
+  expect((await readUnreadMessages('racer', TEAM)).map(m => m.text)).toEqual(['late'])
 })
 
 test('clearMailbox waits for the inbox lock instead of racing writers', async () => {

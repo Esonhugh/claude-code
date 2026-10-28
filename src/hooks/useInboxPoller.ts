@@ -192,7 +192,7 @@ export function useInboxPoller({
     // Helper to mark messages as read in the inbox file.
     // Called after messages are successfully delivered or reliably queued.
     const markRead = () => {
-      void markMessagesAsRead(agentName, currentAppState.teamContext?.teamName)
+      void markMessagesAsRead(agentName, currentAppState.teamContext?.teamName, unread)
     }
 
     // Separate permission messages from regular teammate messages
