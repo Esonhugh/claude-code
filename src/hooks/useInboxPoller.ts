@@ -47,7 +47,7 @@ import {
   isTeamLead,
   isTeammate,
 } from '../utils/teammate.js'
-import { isInProcessTeammate } from '../utils/teammateContext.js'
+import { runOutsideTeammateContext } from '../utils/teammateContext.js'
 import {
   isModeSetRequest,
   isPermissionRequest,
@@ -73,35 +73,29 @@ import {
 
 /**
  * Get the agent name to poll for messages.
- * - In-process teammates return undefined (they use waitForNextPromptOrShutdown instead)
  * - Process-based teammates use their CLAUDE_CODE_AGENT_NAME
  * - Team leads use their name from teamContext.teammates
  * - Standalone sessions return undefined
+ *
+ * The poller belongs to this process's REPL, never to an in-process teammate
+ * (those poll via waitForNextPromptOrShutdown in inProcessRunner.ts). A
+ * teammate's setAppState can re-render the REPL synchronously, leaking that
+ * teammate's AsyncLocalStorage context into this hook, so it is ignored here.
  */
-function getAgentNameToPoll(appState: AppState): string | undefined {
-  // In-process teammates should NOT use useInboxPoller - they have their own
-  // polling mechanism via waitForNextPromptOrShutdown() in inProcessRunner.ts.
-  // Using useInboxPoller would cause message routing issues since in-process
-  // teammates share the same React context and AppState with the leader.
-  //
-  // Note: This can be called when the leader's REPL re-renders while an
-  // in-process teammate's AsyncLocalStorage context is active (due to shared
-  // setAppState). We return undefined to gracefully skip polling rather than
-  // throwing, since this is a normal occurrence during concurrent execution.
-  if (isInProcessTeammate()) {
+export function getAgentNameToPoll(appState: AppState): string | undefined {
+  return runOutsideTeammateContext(() => {
+    if (isTeammate()) {
+      return getAgentName()
+    }
+    // Team lead polls using their agent name (not ID)
+    if (isTeamLead(appState.teamContext)) {
+      const leadAgentId = appState.teamContext!.leadAgentId
+      // Look up the lead's name from teammates map
+      const leadName = appState.teamContext!.teammates[leadAgentId]?.name
+      return leadName || 'team-lead'
+    }
     return undefined
-  }
-  if (isTeammate()) {
-    return getAgentName()
-  }
-  // Team lead polls using their agent name (not ID)
-  if (isTeamLead(appState.teamContext)) {
-    const leadAgentId = appState.teamContext!.leadAgentId
-    // Look up the lead's name from teammates map
-    const leadName = appState.teamContext!.teammates[leadAgentId]?.name
-    return leadName || 'team-lead'
-  }
-  return undefined
+  })
 }
 
 const INBOX_POLL_INTERVAL_MS = 1000
@@ -912,7 +906,10 @@ export function useInboxPoller({
 
   // Poll if running as a teammate or as a team lead
   const shouldPoll = enabled && !!getAgentNameToPoll(store.getState())
-  useInterval(() => void poll(), shouldPoll ? INBOX_POLL_INTERVAL_MS : null)
+  useInterval(
+    () => runOutsideTeammateContext(() => void poll()),
+    shouldPoll ? INBOX_POLL_INTERVAL_MS : null,
+  )
 
   // Initial poll on mount (only once)
   const hasDoneInitialPollRef = useRef(false)
@@ -922,7 +919,7 @@ export function useInboxPoller({
     // Use store.getState() to avoid dependency on appState object
     if (getAgentNameToPoll(store.getState())) {
       hasDoneInitialPollRef.current = true
-      void poll()
+      runOutsideTeammateContext(() => void poll())
     }
     // Note: poll uses store.getState() (not appState) so it won't re-run on appState changes
     // The ref guard is a safety measure to ensure initial poll only happens once
