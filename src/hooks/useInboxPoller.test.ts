@@ -5,6 +5,9 @@ import type { TaskState } from '../tasks/types.js'
 import { PANEL_GRACE_MS } from '../utils/task/framework.js'
 import { canEvictTerminalTask } from '../utils/task/retention.js'
 import { completeTeammateTasksOnShutdown } from '../utils/swarm/teammateShutdown.js'
+import { createTeammateContext, runWithTeammateContext } from '../utils/teammateContext.js'
+import type { AppState } from '../state/AppState.js'
+import { getAgentNameToPoll } from './useInboxPoller.js'
 
 function teammateTask(
   id: string,
@@ -51,4 +54,21 @@ test('shutdown approval leaves the teammate task notified and evictable after th
   expect(updated.t2).toBe(killed)
   expect(updated.t3).toBe(other)
   expect(tasks.t1).toBe(running)
+})
+
+test('the leader keeps polling its inbox when React renders inside an in-process teammate context', () => {
+  const appState = {
+    teamContext: {
+      teamName: 'qteam',
+      teamFilePath: '/tmp/qteam/config.json',
+      leadAgentId: 'team-lead@qteam',
+      teammates: { 'team-lead@qteam': { name: 'team-lead' } },
+    },
+  } as unknown as AppState
+  const mate = createTeammateContext({ agentId: 'mate1@qteam', agentName: 'mate1', teamName: 'qteam', planModeRequired: false, parentSessionId: 'session', abortController: new AbortController() })
+
+  expect(getAgentNameToPoll(appState)).toBe('team-lead')
+  // A teammate's setAppState can re-render the leader's REPL synchronously, so the
+  // teammate's AsyncLocalStorage context is still active while this runs.
+  expect(runWithTeammateContext(mate, () => getAgentNameToPoll(appState))).toBe('team-lead')
 })
