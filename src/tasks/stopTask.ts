@@ -5,6 +5,8 @@ import type { AppState } from '../state/AppState.js'
 import type { TaskStateBase, TaskStatus } from '../Task.js'
 import { getTaskByType } from '../tasks.js'
 import { isLocalShellTask } from './LocalShellTask/guards.js'
+import { findTeammateTaskByAgentId } from './InProcessTeammateTask/InProcessTeammateTask.js'
+import { isInProcessTeammateTask } from './InProcessTeammateTask/types.js'
 import { isLiveLocalAgentTask, isLocalAgentTask, killAsyncAgent } from './LocalAgentTask/LocalAgentTask.js'
 import { readAgentMetadata } from '../utils/sessionStorage.js'
 import { asAgentId } from '../types/ids.js'
@@ -33,6 +35,17 @@ type StopTaskResult = {
 }
 
 /**
+ * Teammate spawn results report `name@team`, not the task id; accept that or
+ * the bare name of a running teammate, like official TaskStop.
+ */
+export function resolveStopTaskId(id: string, tasks: AppState['tasks']): string {
+  if (!tasks || tasks[id]) return id
+  const teammate = findTeammateTaskByAgentId(id, tasks) ??
+    Object.values(tasks).find(t => isInProcessTeammateTask(t) && t.status === 'running' && t.identity.agentName === id)
+  return teammate?.id ?? id
+}
+
+/**
  * Look up a task by ID, validate it is running, kill it, and mark it as notified.
  *
  * Throws {@link StopTaskError} when the task cannot be stopped (not found,
@@ -45,6 +58,7 @@ export async function stopTask(
 ): Promise<StopTaskResult> {
   const { getAppState, setAppState } = context
   const appState = getAppState()
+  taskId = resolveStopTaskId(taskId, appState.tasks)
   const task = appState.tasks?.[taskId] as TaskStateBase | undefined
 
   if (!task) {

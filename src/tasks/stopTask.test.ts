@@ -99,3 +99,12 @@ test('stopTask on a bash task emits one stopped SDK event and suppresses the XML
   expect(sdk[0]).toMatchObject({ task_id: 'b2', status: 'stopped', tool_use_id: 'toolu_bash' })
   expect(state.tasks.b2).toMatchObject({ status: 'killed', notified: true })
 })
+
+test('stopTask finds a teammate by its agent id or name, like official TaskStop', async () => {
+  for (const id of ['researcher@stop-team', 'researcher']) {
+    state.tasks = { tmate1: runningTeammateTask('tmate1') }
+    const result = await stopTask(id, { getAppState, setAppState })
+    expect(result.taskId).toBe('tmate1')
+    expect(state.tasks.tmate1?.status).toBe('killed')
+  }
+})

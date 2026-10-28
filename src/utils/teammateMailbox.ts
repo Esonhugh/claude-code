@@ -277,14 +277,16 @@ export async function markMessageAsReadByIndex(
 }
 
 /**
- * Mark all messages in a teammate's inbox as read
+ * Mark the delivered messages in a teammate's inbox as read
  * Uses file locking to prevent race conditions
  * @param agentName - The agent name to mark messages as read for
  * @param teamName - Optional team name
+ * @param delivered - The unread messages the caller read and handled
  */
 export async function markMessagesAsRead(
   agentName: string,
-  teamName?: string,
+  teamName: string | undefined,
+  delivered: readonly TeammateMessage[],
 ): Promise<void> {
   const inboxPath = getInboxPath(agentName, teamName)
   logForDebugging(
@@ -322,13 +324,17 @@ export async function markMessagesAsRead(
 
     // Read messages are never read back (only resume drops them), so drop the
     // ones already read instead of rewriting an ever-growing inbox each poll.
+    // Only mark what the caller handled: a message written after its read
+    // must stay unread for the next poll.
+    const wasDelivered = (m: TeammateMessage) =>
+      delivered.some(d => d.from === m.from && d.timestamp === m.timestamp && d.text === m.text)
     const kept = messages
       .filter(m => !m.read)
-      .map(m => ({ ...m, read: true }))
+      .map(m => (wasDelivered(m) ? { ...m, read: true } : m))
 
     await writeFile(inboxPath, jsonStringify(kept, null, 2), 'utf-8')
     logForDebugging(
-      `[TeammateMailbox] markMessagesAsRead: WROTE ${unreadCount} message(s) as read to ${inboxPath} (dropped ${messages.length - kept.length} already read)`,
+      `[TeammateMailbox] markMessagesAsRead: WROTE ${count(kept, m => m.read)} message(s) as read to ${inboxPath} (dropped ${messages.length - kept.length} already read)`,
     )
   } catch (error) {
     const code = getErrnoCode(error)

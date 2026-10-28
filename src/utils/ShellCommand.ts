@@ -336,8 +336,19 @@ class ShellCommandImpl implements ShellCommand {
 
   #doKill(code?: number): void {
     this.#status = 'killed'
-    if (this.#childProcess.pid) {
-      treeKill(this.#childProcess.pid, 'SIGKILL')
+    const pid = this.#childProcess.pid
+    if (pid) {
+      // tree-kill finds children with an async `ps`; on shutdown the process
+      // exits before it signals anyone. Detached shells lead their own group,
+      // so signal it synchronously first (ESRCH when not detached).
+      if (process.platform !== 'win32') {
+        try {
+          process.kill(-pid, 'SIGKILL')
+        } catch {
+          // Not a group leader (ESRCH): tree-kill below covers it.
+        }
+      }
+      treeKill(pid, 'SIGKILL')
     }
     this.#resolveExitCode(code ?? SIGKILL)
   }

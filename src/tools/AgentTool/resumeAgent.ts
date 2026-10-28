@@ -38,6 +38,7 @@ import {
   PLAN_MODE_DISABLED_MESSAGE,
 } from '../../utils/planModeV2.js'
 import {
+  flushSessionStorage,
   getAgentTranscript,
   readAgentMetadata,
 } from '../../utils/sessionStorage.js'
@@ -103,6 +104,9 @@ export async function resumeAgentBackground({
   const rootSetAppState =
     toolUseContext.setAppStateForTasks ?? toolUseContext.setAppState
 
+  // A parked owner is woken as soon as its child reports, often while its own
+  // last turn is still queued for disk; read the transcript after that write.
+  await flushSessionStorage()
   const [transcript, meta] = await Promise.all([
     getAgentTranscript(asAgentId(agentId)),
     readAgentMetadata(asAgentId(agentId)),
@@ -321,7 +325,11 @@ export async function resumeAgentBackground({
       ...resumedMessages,
       createUserMessage({ content: prompt, isMeta: promptIsMeta || undefined }),
     ],
-    toolUseContext: workerContext,
+    // The waking context belongs to the caller; keep this agent's own depth.
+    toolUseContext: {
+      ...workerContext,
+      options: { ...workerContext.options, subagentDepth: meta?.spawnDepth ?? 1 },
+    },
     canUseTool,
     isAsync: true,
     spawnedBySkill: skillAttribution,
