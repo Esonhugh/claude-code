@@ -1,6 +1,6 @@
 import figures from 'figures'
 import { color } from '../components/design-system/color.js'
-import type { Theme, ThemeName } from './theme.js'
+import type { Theme, ResolvedTheme } from './theme.js'
 
 export type TreeNode = {
   [key: string]: TreeNode | string | undefined
@@ -10,7 +10,7 @@ export type TreeifyOptions = {
   showValues?: boolean
   hideFunctions?: boolean
   useColors?: boolean
-  themeName?: ThemeName
+  themeName?: ResolvedTheme
   treeCharColors?: {
     treeChar?: keyof Theme // Color for tree characters (├ └ │)
     key?: keyof Theme // Color for property names

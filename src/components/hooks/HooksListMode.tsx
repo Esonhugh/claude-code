@@ -19,7 +19,7 @@ import { plural } from '../../utils/stringUtils.js'
 import { Byline } from '../design-system/Byline.js'
 import { Dialog } from '../design-system/Dialog.js'
 import { KeyboardShortcutHint } from '../design-system/KeyboardShortcutHint.js'
-import { HooksList, type HooksListRow } from './HooksList.js'
+import { MenuList, type MenuListRow } from '../design-system/MenuList.js'
 import { getContentFieldValue } from './ViewHookMode.js'
 
 type Props = {
@@ -66,7 +66,7 @@ export function HooksListMode({
         : 'no hooks yet'
       : `${hooks.length} ${plural(hooks.length, 'hook')} on ${groups.length} ${plural(groups.length, 'event')}`
 
-  const rows: HooksListRow[] = groups.flatMap((group, groupIndex) => [
+  const rows: MenuListRow[] = groups.flatMap((group, groupIndex) => [
     ...(groupIndex > 0
       ? [{ kind: 'heading' as const, key: `${group.event}-gap` }]
       : []),
@@ -126,7 +126,7 @@ export function HooksListMode({
           or ask Claude.{' '}
           <Link url="https://code.claude.com/docs/en/hooks">Learn more</Link>
         </Text>
-        <HooksList
+        <MenuList
           rows={rows}
           defaultFocusIndex={defaultFocusIndex}
           onFocus={onFocusRow}

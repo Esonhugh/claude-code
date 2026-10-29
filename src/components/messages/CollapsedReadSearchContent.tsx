@@ -14,7 +14,7 @@ import { getToolUseIdsFromCollapsedGroup } from '../../utils/collapseReadSearch.
 import { getDisplayPath } from '../../utils/file.js'
 import { formatDuration, formatSecondsShort } from '../../utils/format.js'
 import type { buildMessageLookups } from '../../utils/messages.js'
-import type { ThemeName } from '../../utils/theme.js'
+import type { ResolvedTheme } from '../../utils/theme.js'
 import { CtrlOToExpand } from '../CtrlOToExpand.js'
 import { useSelectedMessageBg } from '../messageActions.js'
 import { PrBadge } from '../PrBadge.js'
@@ -73,7 +73,7 @@ function VerboseToolUse({
   lookups: ReturnType<typeof buildMessageLookups>
   inProgressToolUseIDs: Set<string>
   shouldAnimate: boolean
-  theme: ThemeName
+  theme: ResolvedTheme
 }): React.ReactNode {
   const bg = useSelectedMessageBg()
   // Same REPL-primitive fallback as getToolSearchOrReadInfo — REPL mode strips

@@ -91,7 +91,7 @@ import type { AgentId } from './types/ids.js'
 import type { DeepImmutable } from './types/utils.js'
 import type { AttributionState } from './utils/commitAttribution.js'
 import type { FileHistoryState } from './utils/fileHistory.js'
-import type { Theme, ThemeName } from './utils/theme.js'
+import type { Theme, ResolvedTheme } from './utils/theme.js'
 
 export type QueryChainTracking = {
   chainId: string
@@ -671,7 +671,7 @@ export type Tool<
     progressMessagesForMessage: ProgressMessage<P>[],
     options: {
       style?: 'condensed'
-      theme: ThemeName
+      theme: ResolvedTheme
       tools: Tools
       verbose: boolean
       isTranscriptMode?: boolean
@@ -707,7 +707,7 @@ export type Tool<
    */
   renderToolUseMessage(
     input: Partial<z.infer<Input>>,
-    options: { theme: ThemeName; verbose: boolean; commands?: Command[] },
+    options: { theme: ResolvedTheme; verbose: boolean; commands?: Command[] },
   ): React.ReactNode
   /**
    * Returns true when the non-verbose rendering of this output is truncated
@@ -747,7 +747,7 @@ export type Tool<
       columns: number
       messages: Message[]
       style?: 'condensed'
-      theme: ThemeName
+      theme: ResolvedTheme
       tools: Tools
       verbose: boolean
       progressMessagesForMessage: ProgressMessage<P>[]

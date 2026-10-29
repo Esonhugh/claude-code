@@ -3,12 +3,12 @@ import { Text } from '../../ink.js'
 import type { Tools } from '../../Tool.js'
 import { findToolByName } from '../../Tool.js'
 import type { ToolActivity } from '../../tasks/LocalAgentTask/LocalAgentTask.js'
-import type { ThemeName } from '../../utils/theme.js'
+import type { ResolvedTheme } from '../../utils/theme.js'
 
 export function renderToolActivity(
   activity: ToolActivity,
   tools: Tools,
-  theme: ThemeName,
+  theme: ResolvedTheme,
 ): React.ReactNode {
   const tool = findToolByName(tools, activity.toolName)
   if (!tool) {

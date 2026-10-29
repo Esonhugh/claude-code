@@ -42,7 +42,7 @@ import {
   getPolicySettingsOrigin,
   getSettingsForSource,
 } from './settings/settings.js'
-import type { ThemeName } from './theme.js'
+import type { ResolvedTheme } from './theme.js'
 import { isAnt } from 'src/utils/userType.js'
 
 
@@ -71,7 +71,7 @@ export function buildSandboxProperties(): Property[] {
 export function buildIDEProperties(
   mcpClients: MCPServerConnection[],
   ideInstallationStatus: IDEExtensionInstallationStatus | null = null,
-  theme: ThemeName,
+  theme: ResolvedTheme,
 ): Property[] {
   const ideClient = mcpClients?.find(client => client.name === 'ide')
 
@@ -149,7 +149,7 @@ export function buildIDEProperties(
 
 export function buildMcpProperties(
   clients: MCPServerConnection[] = [],
-  theme: ThemeName,
+  theme: ResolvedTheme,
 ): Property[] {
   const servers = clients.filter(client => client.name !== 'ide')
   if (!servers.length) {

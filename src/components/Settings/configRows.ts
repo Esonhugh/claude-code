@@ -44,6 +44,7 @@ import { getInitialSettings, getSettingsForSource, getUseAutoModeDuringPlan, upd
 import type { EditableSettingSource } from '../../utils/settings/constants.js'
 import type { SettingsJson } from '../../utils/settings/types.js'
 import { clearCliTeammateModeOverride, getCliTeammateModeOverride } from '../../utils/swarm/backends/teammateModeSnapshot.js'
+import { customThemeSetting, getCustomThemes } from '../../utils/customThemes.js'
 import { THEME_NAMES, type ThemeSetting } from '../../utils/theme.js'
 import { sanitizeTimeFormat, TIME_FORMAT_PRESETS } from '../../utils/timeFormat.js'
 import { isAnt } from '../../utils/userType.js'
@@ -203,7 +204,7 @@ export function getConfigRows(context: Context): ModConfigRowProvider[] {
     },
     {
       key: 'theme', label: 'Theme', kind: 'choice', value: global.theme,
-      options: feature('AUTO_THEME') ? ['auto', ...THEME_NAMES] : THEME_NAMES,
+      options: ['auto', ...THEME_NAMES, ...getCustomThemes().map(theme => customThemeSetting(theme.slug))],
       set(value) {
         saveGlobalConfig(current => ({ ...current, theme: value as ThemeSetting }))
         options?.setTheme?.(value as ThemeSetting)

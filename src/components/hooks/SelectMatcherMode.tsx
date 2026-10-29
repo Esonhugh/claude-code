@@ -14,7 +14,7 @@ import {
 } from '../../utils/hooks/hooksSettings.js'
 import { plural } from '../../utils/stringUtils.js'
 import { Dialog } from '../design-system/Dialog.js'
-import { HooksList } from './HooksList.js'
+import { MenuList } from '../design-system/MenuList.js'
 
 type MatcherWithSource = {
   matcher: string
@@ -80,7 +80,7 @@ export function SelectMatcherMode({
       onCancel={onCancel}
     >
       <Box flexDirection="column">
-        <HooksList
+        <MenuList
           rows={matchersWithSources.map(item => ({
             kind: 'item',
             key: item.matcher,

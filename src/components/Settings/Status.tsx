@@ -26,7 +26,7 @@ import {
   getModelDisplayLabel,
   type Property,
 } from '../../utils/status.js'
-import type { ThemeName } from '../../utils/theme.js'
+import type { ResolvedTheme } from '../../utils/theme.js'
 import { ConfigurableShortcutHint } from '../ConfigurableShortcutHint.js'
 
 type Props = {
@@ -80,7 +80,7 @@ export function buildSecondarySection({
 }: {
   mainLoopModel: AppState['mainLoopModel']
   mcp: AppState['mcp']
-  theme: ThemeName
+  theme: ResolvedTheme
   ideInstallationStatus: LocalJSXCommandContext['options']['ideInstallationStatus']
 }): Property[] {
   const modelLabel = getModelDisplayLabel(mainLoopModel)

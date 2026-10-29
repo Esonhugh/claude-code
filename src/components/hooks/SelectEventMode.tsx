@@ -14,7 +14,7 @@ import { plural } from '../../utils/stringUtils.js'
 import { Byline } from '../design-system/Byline.js'
 import { Dialog } from '../design-system/Dialog.js'
 import { KeyboardShortcutHint } from '../design-system/KeyboardShortcutHint.js'
-import { HooksList } from './HooksList.js'
+import { MenuList } from '../design-system/MenuList.js'
 
 type Props = {
   hookEventMetadata: Record<HookEvent, HookEventMetadata>
@@ -48,7 +48,7 @@ export function SelectEventMode({
         </Byline>
       )}
     >
-      <HooksList
+      <MenuList
         rows={events.map(([name, metadata]) => {
           const count = hooksByEvent[name] ?? 0
           return {
