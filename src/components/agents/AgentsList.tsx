@@ -265,7 +265,7 @@ export function AgentsList({
           {source !== 'built-in' &&
             sortedAgents.some(a => a.source === 'built-in') && (
               <>
-                <Divider />
+                <Divider padding={4} />
                 {renderBuiltInAgentsSection()}
               </>
             )}
@@ -330,7 +330,7 @@ export function AgentsList({
               .map(agent => renderAgent(agent))}
             {sortedAgents.some(a => a.source === 'built-in') && (
               <>
-                <Divider />
+                <Divider padding={4} />
                 {renderBuiltInAgentsSection()}
               </>
             )}

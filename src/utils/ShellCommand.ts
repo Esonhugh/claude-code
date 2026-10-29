@@ -111,6 +111,14 @@ class StreamWrapper {
  * by polling the file tail.
  * For hooks: pipe mode with StreamWrappers for real-time detection.
  */
+// Commands still running, so shutdown can wait for their final results to
+// reach the transcript before the process exits.
+const liveCommands = new Set<ShellCommandImpl>()
+
+export async function waitForLiveShellResults(): Promise<void> {
+  await Promise.allSettled([...liveCommands].map(command => command.result))
+}
+
 class ShellCommandImpl implements ShellCommand {
   #status: 'running' | 'backgrounded' | 'completed' | 'killed' = 'running'
   #backgroundTaskId: string | undefined
@@ -177,6 +185,7 @@ class ShellCommandImpl implements ShellCommand {
     }
 
     this.result = this.#createResultPromise()
+    liveCommands.add(this)
   }
 
   get status(): 'running' | 'backgrounded' | 'completed' | 'killed' {
@@ -289,6 +298,7 @@ class ShellCommandImpl implements ShellCommand {
   }
 
   async #handleExit(code: number): Promise<void> {
+    liveCommands.delete(this)
     this.#cleanupListeners()
     if (this.#status === 'running' || this.#status === 'backgrounded') {
       this.#status = 'completed'

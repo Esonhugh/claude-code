@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import type { Tool, ToolUseContext } from '../../Tool.js'
 import { z } from 'zod/v4'
 import { runToolUse } from './toolExecution.js'
-import { createAssistantMessage } from '../../utils/messages.js'
+import { CANCEL_MESSAGE, createAssistantMessage } from '../../utils/messages.js'
 import { getEmptyToolPermissionContext } from '../../Tool.js'
 import {
   clearRegisteredHooks,
@@ -1069,7 +1069,7 @@ describe('classic events at existing tool hook boundaries', () => {
     expect(calls).toBe(0)
     expect(f.releases()).toBe(1)
     expect(JSON.stringify(updates)).not.toContain('must not deliver')
-    expect(JSON.stringify(updates)).toContain('fixture cancelled')
+    expect(JSON.stringify(updates)).toContain(CANCEL_MESSAGE)
   })
 
   test('managed post reviews additive synthetic context and retains stop/block after short circuit', async () => {

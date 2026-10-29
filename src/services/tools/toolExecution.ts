@@ -595,6 +595,21 @@ export async function* runToolUse(
       yield update
     }
   } catch (error) {
+    // A tool.call dispatch rejects with the abort reason (e.g. 'user-cancel')
+    // when the user interrupts; report it as a cancel, not a tool failure.
+    const { signal } = toolUseContext.abortController
+    if (signal.aborted && error === signal.reason) {
+      const content = createToolResultStopMessage(toolUse.id)
+      content.content = withMemoryCorrectionHint(CANCEL_MESSAGE)
+      yield {
+        message: createUserMessage({
+          content: [content],
+          toolUseResult: CANCEL_MESSAGE,
+          sourceToolAssistantUUID: assistantMessage.uuid,
+        }),
+      }
+      return
+    }
     logError(error)
     const errorMessage = error instanceof Error ? error.message : String(error)
     const toolInfo = tool ? ` (${tool.name})` : ''
@@ -661,15 +676,29 @@ function streamedCheckPermissionsAndCallTool(
   ) => {
     const abortController = createAbortController()
     const listeners = new Map<AbortSignal, () => void>()
+    let abortedByParent = false
     for (const parent of new Set([context.abortController.signal, signal])) {
       if (!parent) continue
-      const abort = () => abortController.abort(parent.reason)
+      const abort = () => {
+        abortedByParent = true
+        abortController.abort(parent.reason)
+      }
       if (parent.aborted) abort()
       else {
         parent.addEventListener('abort', abort, { once: true })
         listeners.set(parent, abort)
       }
     }
+    // An abort raised inside the tool run (permission dialog rejection via
+    // cancelAndAbort) must end the turn, so bubble it to the caller's controller.
+    abortController.signal.addEventListener(
+      'abort',
+      () => {
+        if (!abortedByParent && !context.abortController.signal.aborted)
+          context.abortController.abort(abortController.signal.reason)
+      },
+      { once: true },
+    )
     return checkPermissionsAndCallTool(
       tool,
       toolUseID,

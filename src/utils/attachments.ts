@@ -581,6 +581,8 @@ export type Attachment =
       origin?: MessageOrigin
       /** Carried from QueuedCommand.isMeta — distinguishes human-typed from system-injected */
       isMeta?: boolean
+      /** A task notification drained in the same batch as a human prompt. */
+      inHumanTurn?: boolean
     }
   | {
       type: 'output_style'
@@ -1116,6 +1118,12 @@ export async function getQueuedCommandAttachments(
   const filtered = queuedCommands.filter(_ =>
     INLINE_NOTIFICATION_MODES.has(_.mode),
   )
+  const hasHumanPrompt = filtered.some(
+    _ =>
+      _.mode === 'prompt' &&
+      (_.origin === undefined || _.origin.kind === 'human') &&
+      _.isMeta !== true,
+  )
   return Promise.all(
     filtered.map(async _ => {
       const imageBlocks = await buildImageContentBlocks(_.pastedContents)
@@ -1136,6 +1144,8 @@ export async function getQueuedCommandAttachments(
         commandMode: _.mode,
         origin: _.origin,
         isMeta: _.isMeta,
+        ...(hasHumanPrompt &&
+          _.mode === 'task-notification' && { inHumanTurn: true }),
       }
     }),
   )

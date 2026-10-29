@@ -256,7 +256,7 @@ enqueueAgentNotification({
 const [notification] = getCommandQueue()
 assert.equal(notification?.mode, 'task-notification')
 assert.match(String(notification?.value), /<status>completed<\/status>/)
-assert.match(String(notification?.value), /<total_tokens>212<\/total_tokens>/)
+assert.match(String(notification?.value), /<subagent_tokens>212<\/subagent_tokens>/)
 assert.match(String(notification?.value), /<tool_uses>1<\/tool_uses>/)
 assert.match(
   String(notification?.value),

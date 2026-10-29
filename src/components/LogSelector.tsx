@@ -990,6 +990,12 @@ export function LogSelector({
     { isActive: true },
   )
 
+  // Empty list (e.g. no sessions in this project): Esc still closes the picker
+  useKeybinding('confirm:no', () => onCancel?.(), {
+    context: 'Confirmation',
+    isActive: logs.length === 0,
+  })
+
   const filterIndicators = []
   if (branchFilterEnabled && currentBranch) {
     filterIndicators.push(currentBranch)
@@ -1022,7 +1028,34 @@ export function LogSelector({
 
   // Early return if no logs
   if (logs.length === 0) {
-    return null
+    if (!onToggleAllProjects) return null
+    return (
+      <Box flexDirection="column">
+        <Divider color="suggestion" />
+        <Text bold color="suggestion">
+          Resume Session
+        </Text>
+        <Box paddingLeft={1} marginY={1}>
+          <Text dimColor>
+            No conversations found{showAllProjects ? '' : ' in this project'}.
+          </Text>
+        </Box>
+        <Text dimColor>
+          <Byline>
+            <KeyboardShortcutHint
+              shortcut="Ctrl+A"
+              action={`show ${showAllProjects ? 'current dir' : 'all projects'}`}
+            />
+            <ConfigurableShortcutHint
+              action="confirm:no"
+              context="Confirmation"
+              fallback="Esc"
+              description="cancel"
+            />
+          </Byline>
+        </Text>
+      </Box>
+    )
   }
 
   // Show preview mode if active

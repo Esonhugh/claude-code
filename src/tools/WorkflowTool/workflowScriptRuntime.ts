@@ -520,7 +520,7 @@ async function enqueueWorkflowNotification({
 <${STATUS_TAG}>${status}</${STATUS_TAG}>
 <${SUMMARY_TAG}>${escapeXmlText(summary)}</${SUMMARY_TAG}>
 <result>${truncatedResult}</result>${failures.length > 0 ? `\n<failures>${escapeXmlText(failures.join('\n'))}</failures>` : ''}
-<usage><total_tokens>${usage.total_tokens}</total_tokens><tool_uses>${usage.tool_uses}</tool_uses><duration_ms>${usage.duration_ms}</duration_ms></usage>
+<usage><subagent_tokens>${usage.total_tokens}</subagent_tokens><tool_uses>${usage.tool_uses}</tool_uses><duration_ms>${usage.duration_ms}</duration_ms></usage>
 </${TASK_NOTIFICATION_TAG}>`
   await enqueuePendingNotification({ value: message, mode: 'task-notification' })
   setAppState(prev => {

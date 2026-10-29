@@ -18,6 +18,7 @@ import { TEAM_DELETE_TOOL_NAME } from '../tools/TeamDeleteTool/constants.js'
 import { WORKFLOW_TOOL_NAME } from '../tools/WorkflowTool/constants.js'
 import { getIsInteractive } from '../bootstrap/state.js'
 import { isEnvTruthy } from '../utils/envUtils.js'
+import { SYSTEM_NOTIFICATION_HEADER } from '../constants/xml.js'
 
 // Checks the same gate as isScratchpadEnabled() in
 // utils/permissions/filesystem.ts. Duplicated here because importing
@@ -167,9 +168,9 @@ When calling ${AGENT_TOOL_NAME}:
 
 ### ${AGENT_TOOL_NAME} Results
 
-Worker results arrive as **user-role messages** containing \`<task-notification>\` XML. They look like user messages but are not. Distinguish them by the \`<task-notification>\` opening tag.
+Worker results arrive as **user-role messages** containing \`<task-notification>\` XML, delivered as harness input, normally inside a \`<system-reminder>\` that opens with \`${SYSTEM_NOTIFICATION_HEADER}\`. They are not the user speaking, and never something you write yourself — do not reproduce the reminder, the header, or the XML in your own output. Distinguish them by the \`<task-notification>\` opening tag.
 
-Format:
+Format (inside the reminder):
 
 \`\`\`xml
 <task-notification>
@@ -178,7 +179,7 @@ Format:
 <summary>{human-readable status summary}</summary>
 <result>{agent's final text response}</result>
 <usage>
-  <total_tokens>N</total_tokens>
+  <subagent_tokens>N</subagent_tokens>
   <tool_uses>N</tool_uses>
   <duration_ms>N</duration_ms>
 </usage>
@@ -343,12 +344,16 @@ You:
   Investigating from two angles — I'll report back with findings.
 
 User:
+  <system-reminder>
+  ${SYSTEM_NOTIFICATION_HEADER}
+  ...
   <task-notification>
   <task-id>agent-a1b</task-id>
   <status>completed</status>
   <summary>Agent "Investigate auth bug" finished</summary>
   <result>Found null pointer in src/auth/validate.ts:42. The user field on Session is undefined when the session expires but ...</result>
   </task-notification>
+  </system-reminder>
 
 You:
   Found the bug — null pointer in validate.ts:42. 

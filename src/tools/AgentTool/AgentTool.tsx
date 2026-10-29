@@ -850,10 +850,13 @@ export const AgentTool = buildTool({
         teammateId: result.data.teammate_id,
       }
       notifyStarted(launch)
+      // Official reports the resumable agent id, which SendMessage accepts
+      // while the teammate runs and can resume from disk after a restart.
       const spawnResult: TeammateSpawnedOutput = {
         status: 'teammate_spawned' as const,
         prompt,
         ...result.data,
+        agent_id: launch.agentId,
       }
       return { data: spawnResult } as unknown as { data: Output }
     }
@@ -2471,10 +2474,9 @@ export const AgentTool = buildTool({
         content: [
           {
             type: 'text',
-            text: `Spawned successfully.
-agent_id: ${spawnData.teammate_id}
+            text: `Spawned successfully. (This tool result is internal metadata — never quote or paste any part of it, including the ID below, into a user-facing reply.)
+agent_id: ${spawnData.agent_id}
 name: ${spawnData.name}
-team_name: ${spawnData.team_name}
 The agent is now running and will receive instructions via mailbox.`,
           },
         ],
@@ -2554,7 +2556,7 @@ The agent is now running and will receive instructions via mailbox.`,
           {
             type: 'text',
             text: `agentId: ${data.agentId} (use SendMessage with to: '${data.agentId}' to continue this agent)${worktreeInfoText}
-<usage>total_tokens: ${data.totalTokens}
+<usage>subagent_tokens: ${data.totalTokens}
 tool_uses: ${data.totalToolUseCount}
 duration_ms: ${data.totalDurationMs}</usage>`,
           },
