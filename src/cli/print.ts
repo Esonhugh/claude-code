@@ -236,6 +236,7 @@ import {
   transitionPermissionMode,
 } from 'src/utils/permissions/permissionSetup.js'
 import { logPermissionModeChange } from 'src/utils/permissions/PermissionUpdate.js'
+import { parseMcpPermissionModeOverride } from 'src/utils/permissions/mcpPermissionModeOverride.js'
 import {
   tryGenerateSuggestion,
   logSuggestionOutcome,
@@ -3994,6 +3995,43 @@ function runHeadlessStreaming(
               settingsChangeDetector.notifyChange(source)
               sendControlResponseSuccess(message)
             }
+          }
+        } else if (message.request.subtype === 'set_mcp_permission_mode_override') {
+          const parsed = parseMcpPermissionModeOverride(message.request as { serverName?: unknown; mode?: unknown })
+          if ('error' in parsed) {
+            sendControlResponseError(message, parsed.error)
+            continue
+          }
+          const { serverName, override } = parsed
+          if (override === 'auto' && !(feature('TRANSCRIPT_CLASSIFIER') && isAutoModeGateEnabled())) {
+            const reason = feature('TRANSCRIPT_CLASSIFIER') ? getAutoModeUnavailableReason() : null
+            sendControlResponseError(message, reason
+              ? `Cannot pin MCP server '${serverName}' to auto: ${getAutoModeUnavailableNotification(reason)}`
+              : `Cannot pin MCP server '${serverName}' to auto`)
+            continue
+          }
+          const pins = getAppState().toolPermissionContext.mcpPermissionModeOverrides ?? {}
+          const hadPin = Object.hasOwn(pins, serverName)
+          setAppState(prev => {
+            const { [serverName]: _cleared, ...rest } = prev.toolPermissionContext.mcpPermissionModeOverrides ?? {}
+            return {
+              ...prev,
+              toolPermissionContext: {
+                ...prev.toolPermissionContext,
+                mcpPermissionModeOverrides: override === undefined ? rest : { ...rest, [serverName]: override },
+              },
+            }
+          })
+          if (getControlMcpServerConfig(serverName)) {
+            sendControlResponseSuccess(message)
+          } else {
+            sendControlResponseSuccess(message, {
+              warning: override === undefined
+                ? hadPin
+                  ? `MCP server '${serverName}' is not known; its stored override was cleared.`
+                  : `MCP server '${serverName}' is not known; no override was present to clear.`
+                : `MCP server '${serverName}' is not yet known; override stored but will not apply until a server with that exact name connects.`,
+            })
           }
         } else if (message.request.subtype === 'mcp_read_resource') {
           const { serverName, uri } = message.request as { serverName?: unknown; uri?: unknown }

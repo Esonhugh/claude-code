@@ -1,4 +1,5 @@
 import { feature } from 'bun:bundle'
+import { withMcpPermissionModeOverride } from './mcpPermissionModeOverride.js'
 import { APIUserAbortError } from '@anthropic-ai/sdk'
 import type { CanUseToolFn } from '../../hooks/useCanUseTool.js'
 import {
@@ -739,6 +740,7 @@ export const hasPermissionsToUseTool: CanUseToolFn = async (
   if (tool.name === SUBAGENT_HANDBACK_TOOL_NAME) {
     return reviewSubagentHandback(tool, input, context, toolUseID)
   }
+  context = withMcpPermissionModeOverride(tool, context)
   return applyPermissionModeToResult(
     await hasPermissionsToUseToolInner(tool, input, context),
     tool,
