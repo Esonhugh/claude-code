@@ -574,6 +574,31 @@ function checkScript(
   return result.behavior === 'passthrough' ? undefined : result
 }
 
+/**
+ * The removal commands (rm, rmdir, unlink) that literal `sh -c` scripts in
+ * the command run, as plain command text, for deny-rule matching.
+ */
+export function inlineShellRemovals(root: Node, depth = 0): string[] {
+  const found: string[] = []
+  if (depth >= MAX_SCRIPT_DEPTH) return found
+  for (const { words } of commands(root)) {
+    const { argv } = unwrap(words.map(child => argument(child.text, {})))
+    if (!argv[0] || argv[0].unknown || !SHELLS.has(basename(argv[0].value)))
+      continue
+    const script = shellScript(argv)
+    const inner =
+      script && !script.unknown ? getParserModule()?.parse(script.value) : null
+    if (!inner) continue
+    for (const command of commands(inner)) {
+      const removal = unwrap(command.words.map(child => argument(child.text, {})))
+      if (removal.argv[0] && REMOVALS.has(basename(removal.argv[0].value)))
+        found.push(removal.argv.map(arg => arg.value).join(' '))
+    }
+    found.push(...inlineShellRemovals(inner, depth + 1))
+  }
+  return found
+}
+
 export function checkDangerousRemoval(
   command: string,
   cwd: string,

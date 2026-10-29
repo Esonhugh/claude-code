@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict'
 import { existsSync, readFileSync, rmSync } from 'node:fs'
+import { mkdtempSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import test, { beforeEach, mock } from 'node:test'
 import type { UUID } from 'node:crypto'
 
@@ -127,7 +130,7 @@ test('new-session auto classifier includes executable argv without env values', 
       args: ['-i'],
       env: { SECRET_TOKEN: 'do-not-display' },
     }),
-    'new-session command=python args=["-i"]',
+    'new-session command=python args=["-i"] env=["SECRET_TOKEN"]',
   )
   assert.equal(
     TerminalTool.toAutoClassifierInput({ action: 'new-session' }),
@@ -752,11 +755,26 @@ test('send-keys auto classifier input is the submitted command line', () => {
 })
 
 test('applyTerminalKeystrokes replays line editing keys', () => {
-  assert.deepEqual(applyTerminalKeystrokes('tou', 'ch x\r'), { line: '', submitted: ['touch x'] })
-  assert.deepEqual(applyTerminalKeystrokes('rm -rf /', '\x15ls'), { line: 'ls', submitted: [] })
-  assert.deepEqual(applyTerminalKeystrokes('rm', '\x03'), { line: '', submitted: [] })
-  assert.deepEqual(applyTerminalKeystrokes('lsx', '\x7f\x1b[A\r'), { line: '', submitted: ['ls'] })
-  assert.deepEqual(applyTerminalKeystrokes('', 'a\nb'), { line: 'b', submitted: ['a'] })
+  const known = { unknown: false, submittedUnknown: false }
+  assert.deepEqual(applyTerminalKeystrokes('tou', 'ch x\r'), { line: '', submitted: ['touch x'], ...known })
+  assert.deepEqual(applyTerminalKeystrokes('rm -rf /', '\x15ls'), { line: 'ls', submitted: [], ...known })
+  assert.deepEqual(applyTerminalKeystrokes('rm', '\x03'), { line: '', submitted: [], ...known })
+  assert.deepEqual(applyTerminalKeystrokes('lsx', '\x7f\r'), { line: '', submitted: ['ls'], ...known })
+  assert.deepEqual(applyTerminalKeystrokes('', 'a\nb'), { line: 'b', submitted: ['a'], ...known })
+})
+
+test('applyTerminalKeystrokes marks lines edited with Tab, history or cursor keys unknown', () => {
+  // Tab completion, Up (history) and Left (cursor) change what the shell runs.
+  for (const keys of ['\t PWNED', '\x1b[A', '\x1b[D\x7f', '\x01', '\x17']) {
+    assert.equal(applyTerminalKeystrokes('touc', keys).unknown, true, JSON.stringify(keys))
+  }
+  assert.deepEqual(applyTerminalKeystrokes('touc', '\t PWNED\r'), {
+    line: '', unknown: false, submitted: ['touc PWNED'], submittedUnknown: true,
+  })
+  // An unknown line stays unknown across calls until it is cleared.
+  assert.equal(applyTerminalKeystrokes('x', 'y', true).unknown, true)
+  assert.equal(applyTerminalKeystrokes('x', '\x15ls', true).unknown, false)
+  assert.equal(applyTerminalKeystrokes('', '\r', true).submittedUnknown, true)
 })
 
 async function openPermissionSession(permission: Partial<AppState['toolPermissionContext']>) {
@@ -813,9 +831,57 @@ test('control keys do not trigger a check and Ctrl-C clears the pending line', a
   assert.equal(await session.send({ text: 'ls', enter: true }), 'allow')
 
   const denied = await openPermissionSession({ alwaysDenyRules: { session: ['Bash'] } })
-  for (const key of ['UP', 'ESC', 'TAB', 'CTRL_C', 'CTRL_L', 'ENTER']) {
+  for (const key of ['UP', 'ESC', 'TAB', 'CTRL_L']) {
     assert.equal(await denied.send({ key }), 'allow', key)
   }
+  // Enter after Up may run a history entry, so it is a command again.
+  assert.equal(await denied.send({ key: 'ENTER' }), 'deny')
+  assert.equal(await denied.send({ key: 'CTRL_C' }), 'allow')
+  assert.equal(await denied.send({ key: 'ENTER' }), 'allow')
+})
+
+test('a line edited with Tab or cursor keys asks even in bypass mode with deny rules', async () => {
+  const deny = { alwaysDenyRules: { session: ['Bash(touch:*)'] } }
+  const tab = await openPermissionSession({ mode: 'bypassPermissions', ...deny })
+  assert.equal(await tab.send({ text: 'touc' }), 'allow')
+  assert.equal(await tab.send({ key: 'TAB' }), 'allow')
+  assert.equal(await tab.send({ text: ' PWNED', enter: true }), 'ask')
+
+  const cursor = await openPermissionSession({ mode: 'bypassPermissions', ...deny })
+  assert.equal(await cursor.send({ text: 'touc PWNED' }), 'allow')
+  for (let i = 0; i < 6; i++) assert.equal(await cursor.send({ key: 'LEFT' }), 'allow')
+  assert.equal(await cursor.send({ text: 'h', enter: true }), 'ask')
+
+  // Without Bash deny rules bypass mode still runs it.
+  const plain = await openPermissionSession({ mode: 'bypassPermissions' })
+  await plain.send({ text: 'touc' })
+  await plain.send({ key: 'TAB' })
+  assert.equal(await plain.send({ key: 'ENTER' }), 'allow')
+})
+
+test('new-session checks its command in its cwd and with its env', async () => {
+  const outside = { action: 'new-session', command: 'cat', args: ['passwd'], cwd: '/etc' }
+  assert.equal((await checkTerminal(outside, { mode: 'default', alwaysAllowRules: { session: ['Bash(cat:*)'] } })).behavior, 'ask')
+  const denyDir = mkdtempSync(join(tmpdir(), 'terminal-deny-'))
+  const denied = { action: 'new-session', command: 'cat', args: ['secret'], cwd: denyDir }
+  assert.equal(
+    (await checkTerminal(denied, { mode: 'bypassPermissions', alwaysDenyRules: { session: [`Read(/${denyDir}/**)`] } })).behavior,
+    'deny',
+  )
+  const preload = { action: 'new-session', command: 'ls', env: { LD_PRELOAD: '/tmp/x.so' } }
+  const allowLs = { mode: 'default' as const, alwaysAllowRules: { session: ['Bash(ls:*)'] } }
+  assert.equal((await checkTerminal(preload, allowLs)).behavior, 'ask')
+  assert.equal((await checkTerminal({ action: 'new-session', command: 'ls' }, allowLs)).behavior, 'allow')
+})
+
+test('the permission dialog description names the whole submitted line', async () => {
+  const session = await openPermissionSession({ mode: 'default' })
+  await session.send({ text: 'rm -rf ' })
+  const description = await TerminalTool.description(
+    { action: 'send-keys', target: session.target, text: 'build', enter: true },
+    {} as never,
+  )
+  assert.equal(description, 'Runs: rm -rf build')
 })
 
 test('refreshes task preview on display-message for large terminal redraw output', async () => {

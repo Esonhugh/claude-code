@@ -190,6 +190,45 @@ if (process.env[childFlag] !== '1') {
     }
   })
 
+  test('a deny rule on a removal inside a shell -c script asks in every mode', async () => {
+    const rules = { deny: ['Bash(rm:*)'] }
+    for (const mode of ['default', 'bypassPermissions'] as const) {
+      for (const command of [
+        "sh -c 'rm -rf build'",
+        "bash -c 'echo hi; rm -rf build'",
+        "sh -c 'sh -c \"rm -rf build\"'",
+      ]) {
+        const result = await expectBehavior(command, mode, rules, 'ask')
+        expect(requiresExplicitUserApproval(result.decisionReason)).toBe(true)
+      }
+    }
+    await expectBehavior("sh -c 'rm -rf build'", 'bypassPermissions', {}, 'allow')
+    await expectBehavior("sh -c 'echo rm'", 'bypassPermissions', rules, 'allow')
+  })
+
+  test('Read deny rules see through env and command and cover rev', async () => {
+    const rules = { deny: ['Read(./.env)'] }
+    for (const mode of ['default', 'bypassPermissions'] as const) {
+      for (const command of [
+        'env cat .env',
+        'env FOO=1 cat .env',
+        'command cat .env',
+        'rev .env',
+        'fold .env',
+        'comm .env src/x.ts',
+      ]) {
+        await expectBehavior(command, mode, rules, 'deny')
+      }
+    }
+    await expectBehavior(
+      'env sed -i s/a/b/ src/x.ts',
+      'bypassPermissions',
+      { deny: ['Edit(./src/x.ts)'] },
+      'deny',
+    )
+    await expectBehavior('rev src/x.ts', 'default', rules, 'allow')
+  })
+
   test('find prefix allow rules do not cover actions that execute or delete', async () => {
     const rules = { allow: ['Bash(find:*)'] }
     for (const command of [

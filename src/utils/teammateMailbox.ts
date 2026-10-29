@@ -1121,20 +1121,6 @@ export type ModeSetRequestMessage = z.infer<
 >
 
 /**
- * Creates a mode set request message to send to a teammate
- */
-export function createModeSetRequestMessage(params: {
-  mode: string
-  from: string
-}): ModeSetRequestMessage {
-  return {
-    type: 'mode_set_request',
-    mode: params.mode as ModeSetRequestMessage['mode'],
-    from: params.from,
-  }
-}
-
-/**
  * Checks if a message text contains a mode set request
  */
 export function isModeSetRequest(
