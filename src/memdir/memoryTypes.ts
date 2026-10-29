@@ -129,7 +129,7 @@ export const USER_CLAUDE_MD_RULE =
 
 /** Replaces the MEMORY.md index when memory.sqlite.enabled is on. */
 export const SEARCH_MEMORY_GUIDELINE =
-  '`MEMORY.md` is not loaded into context. Memories matching the user\'s message may be attached automatically; when none are and saved preferences or project facts could matter, or the user refers to earlier sessions, search with the SearchMemory tool (it covers saved memories and past session messages), then Read the matching files.'
+  "`MEMORY.md` is not loaded into context, so the SearchMemory tool is how you read memory. Memories attached automatically are only keyword matches on the user's message and miss paraphrases, other languages and needs that come up mid-task. Unless an attached memory already answers it, call SearchMemory before you answer or act whenever saved preferences, conventions or project decisions could apply (branches, releases, deploys, tests, commits, naming, config values, people), when the user refers to earlier work, and before you say you don't know or pick a default. It is local and cheap. Memories may be written in another language than the user's message, so put English keywords and the user's own words in the query. Read the matching files for full text, and search before saving a memory to find one to update."
 
 /**
  * `## What NOT to save in memory` section. Identical across both modes.
