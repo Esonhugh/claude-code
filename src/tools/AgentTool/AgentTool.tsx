@@ -84,6 +84,7 @@ import { filterDeniedAgents } from '../../utils/permissions/permissions.js'
 import { enqueueSdkEvent } from '../../utils/sdkEventQueue.js'
 import { clearAgentMetadataWorktree } from '../../utils/sessionStorage.js'
 import { sleep } from '../../utils/sleep.js'
+import { ensureSessionTeam } from '../../utils/swarm/sessionTeam.js'
 import { readTeamFileAsync } from '../../utils/swarm/teamHelpers.js'
 import { buildEffectiveSystemPrompt } from '../../utils/systemPrompt.js'
 import { asSystemPrompt } from '../../utils/systemPromptType.js'
@@ -722,10 +723,17 @@ export const AgentTool = buildTool({
     ) {
       throw new Error(PLAN_MODE_DISABLED_MESSAGE)
     }
+    const wantsTeammate = Boolean(name && !isForkPath && !isolation && !cwd)
     let teamName = appState.teamContext?.teamName
-    let shouldSpawnTeammate = Boolean(
-      teamName && name && !isForkPath && !isolation && !cwd,
-    )
+    // Official 2.1.311: with Agent Teams on, a named agent is a teammate of
+    // the implicit session team, which is created on first use.
+    if (!teamName && wantsTeammate && isAgentSwarmsEnabled()) {
+      teamName = await ensureSessionTeam(
+        toolUseContext.getAppState,
+        toolUseContext.setAppState,
+      )
+    }
+    let shouldSpawnTeammate = Boolean(teamName && wantsTeammate)
     if (teamName && shouldSpawnTeammate) {
       const teamFile = await readTeamFileAsync(teamName)
       if (!teamFile) {
