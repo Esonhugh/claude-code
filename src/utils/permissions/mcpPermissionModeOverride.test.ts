@@ -59,3 +59,16 @@ test('set_mcp_permission_mode_override accepts only default, auto or null', () =
   expect(parseMcpPermissionModeOverride({ serverName: 's', mode: 'nope' })).toMatchObject({ error: expect.stringMatching(/^Cannot set permission mode: must be one of /) })
   expect(parseMcpPermissionModeOverride({ mode: 'default' })).toEqual({ error: 'set_mcp_permission_mode_override: serverName must be a string' })
 })
+
+test('set_mcp_permission_mode_override validates askForTools like official', () => {
+  const askError = {
+    error: 'set_mcp_permission_mode_override: askForTools must be a list of at most 32 {name} entries, each name 1 to 64 letters, digits, underscores or hyphens',
+  }
+  expect(parseMcpPermissionModeOverride({ serverName: 's', mode: 'default', askForTools: [{ name: 'navigate' }] })).toEqual({ serverName: 's', override: 'default' })
+  expect(parseMcpPermissionModeOverride({ serverName: 's', mode: null, askForTools: null })).toEqual({ serverName: 's', override: undefined })
+  expect(parseMcpPermissionModeOverride({ serverName: 's', mode: 'default', askForTools: [{ name: 'a b' }] })).toEqual(askError)
+  expect(parseMcpPermissionModeOverride({ serverName: 's', mode: 'default', askForTools: ['navigate'] })).toEqual(askError)
+  expect(parseMcpPermissionModeOverride({ serverName: 's', mode: 'default', askForTools: Array.from({ length: 33 }, () => ({ name: 'x' })) })).toEqual(askError)
+  // The mode is checked first.
+  expect(parseMcpPermissionModeOverride({ serverName: 's', mode: 'plan', askForTools: 'x' })).toMatchObject({ error: expect.stringMatching(/tighten-only/) })
+})
