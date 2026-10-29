@@ -52,6 +52,8 @@ export class StreamingToolExecutor {
   private siblingAbortController: AbortController
   private discarded = false
   private modsSnapshot?: ModSnapshot
+  // The query's own snapshot; the context handed back keeps it, like runTools.
+  private readonly queryModsSnapshot?: ModSnapshot
   private admissionClosed = false
   // Signal to wake up getRemainingResults when progress is available
   private progressAvailableResolve?: () => void
@@ -62,6 +64,7 @@ export class StreamingToolExecutor {
     toolUseContext: ToolUseContext,
   ) {
     this.toolUseContext = toolUseContext
+    this.queryModsSnapshot = toolUseContext.modsSnapshot
     this.siblingAbortController = createChildAbortController(
       toolUseContext.abortController,
     )
@@ -90,7 +93,10 @@ export class StreamingToolExecutor {
     const snapshot = this.modsSnapshot
     this.modsSnapshot = undefined
     if (snapshot) {
-      this.toolUseContext = { ...this.toolUseContext, modsSnapshot: undefined }
+      this.toolUseContext = {
+        ...this.toolUseContext,
+        modsSnapshot: this.queryModsSnapshot,
+      }
       snapshot.release()
     }
   }
@@ -596,7 +602,7 @@ export class StreamingToolExecutor {
    */
   getUpdatedContext(): ToolUseContext {
     return this.modsSnapshot
-      ? { ...this.toolUseContext, modsSnapshot: undefined }
+      ? { ...this.toolUseContext, modsSnapshot: this.queryModsSnapshot }
       : this.toolUseContext
   }
 }
