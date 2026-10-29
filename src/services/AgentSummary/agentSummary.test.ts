@@ -82,6 +82,11 @@ test('C7 unchanged transcript skips the summary fork', async () => {
     try {
       await tick()
       expect(fork).toHaveBeenCalledTimes(1)
+      // One reply, and no cache entry for the fork's own tail (official 2.1.311).
+      expect(fork.mock.calls[0]![0]).toMatchObject({
+        maxTurns: 1,
+        skipCacheWrite: true,
+      })
       await tick()
       expect(fork).toHaveBeenCalledTimes(1)
 
