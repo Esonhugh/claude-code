@@ -112,6 +112,10 @@ describe('searchMemory', () => {
     expect((await search('中文')).map(h => h.path)).toEqual([join(memDir, 'lang.md')])
   })
 
+  test('matches Chinese queries written without spaces by their trigrams', async () => {
+    expect((await search('回覆要使用中文嗎')).map(h => h.path)).toEqual([join(memDir, 'lang.md')])
+  })
+
   test('user scope covers memories of other projects', async () => {
     expect(await search('staging')).toEqual([])
     const hits = await search('staging', { scopes: ['user'] })
@@ -195,6 +199,7 @@ describe('searchMemory', () => {
       join(memDir, 'build.md'),
     ])
     expect(await find('What does this project do?')).toEqual([])
+    expect((await find('我應該使用中文回覆嗎？')).map(h => h.path)).toEqual([join(memDir, 'lang.md')])
     rmSync(join(memDir, 'MEMORY.md'))
   })
 })
