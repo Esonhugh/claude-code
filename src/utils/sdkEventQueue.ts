@@ -130,20 +130,6 @@ export function getTaskRunId(taskId: string): string | undefined {
   return runIds.get(taskId)
 }
 
-// Like official 2.1.311 (task.terminal.summary), a finished subagent's SDK
-// task_notification summary is its result text, not the XML summary line.
-const terminalSummaries = new Map<string, string>()
-
-export function setTaskTerminalSummary(taskId: string, summary: string): void {
-  if (getIsNonInteractiveSession()) terminalSummaries.set(taskId, summary)
-}
-
-export function takeTaskTerminalSummary(taskId: string): string | undefined {
-  const summary = terminalSummaries.get(taskId)
-  terminalSummaries.delete(taskId)
-  return summary
-}
-
 const MAX_QUEUE_SIZE = 1000
 const queue: (SdkEvent | SubagentSdkMessage)[] = []
 

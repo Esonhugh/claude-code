@@ -114,15 +114,15 @@ test('subagent messages and task_progress name the subagent like official', asyn
   expect(events()[0]).toMatchObject({ subtype: 'task_progress', subagent_type: 'probe-agent' })
 })
 
-test('a finished subagent reports its result text as the SDK task_notification summary', async () => {
-  const { setTaskTerminalSummary, takeTaskTerminalSummary } = await import('../sdkEventQueue.js')
+test('a finished subagent sends task_notification, with its result text, before leaving background_tasks_changed', async () => {
   const { enqueueAgentNotification } = await import('../../tasks/LocalAgentTask/LocalAgentTask.js')
   registerTask(agentTask, setAppState)
-  enqueueAgentNotification({ taskId: 'a1', description: 'probe', status: 'completed', setAppState, finalMessage: 'FAKE_DONE' })
-  expect(takeTaskTerminalSummary('a1')).toBe('FAKE_DONE')
-  expect(takeTaskTerminalSummary('a1')).toBeUndefined()
-  // Interactive sessions never read it, so nothing is kept.
-  setIsInteractive(true)
-  setTaskTerminalSummary('a1', 'x')
-  expect(takeTaskTerminalSummary('a1')).toBeUndefined()
+  updateTaskState(agentTask.id, setAppState, task => ({ ...task, status: 'completed' }))
+  drainSdkEvents()
+  await enqueueAgentNotification({ taskId: 'a1', description: 'probe', status: 'completed', setAppState, finalMessage: 'FAKE_DONE', toolUseId: 'toolu_1' })
+  await new Promise(resolve => setTimeout(resolve, 0))
+  const events = drainSdkEvents().filter(e => e.subtype !== 'task_updated')
+  expect(events.map(e => e.subtype)).toEqual(['task_notification', 'background_tasks_changed'])
+  expect(events[0]).toMatchObject({ task_id: 'a1', tool_use_id: 'toolu_1', status: 'completed', summary: 'FAKE_DONE' })
+  expect(events[1]).toMatchObject({ tasks: [] })
 })
