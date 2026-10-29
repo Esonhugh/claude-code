@@ -564,6 +564,7 @@ import {
 import { useCommandQueue } from '../hooks/useCommandQueue.js'
 import { SessionBackgroundHint } from '../components/SessionBackgroundHint.js'
 import { startBackgroundSession } from '../tasks/LocalMainSessionTask.js'
+import { getBackgroundWorkOnExit } from '../tasks/backgroundWorkOnExit.js'
 import { turnDurationAfterBackgroundWait } from '../tasks/pendingBackgroundWork.js'
 import { useSessionBackgrounding } from '../hooks/useSessionBackgrounding.js'
 import { diagnosticTracker } from '../services/diagnosticTracking.js'
@@ -6014,10 +6015,12 @@ export function REPL({
       return
     }
     const showWorktree = getCurrentWorktreeSession() !== null
-    if (showWorktree) {
+    const backgroundWork = getBackgroundWorkOnExit(store.getState().tasks)
+    if (showWorktree || backgroundWork.length > 0) {
       setExitFlow(
         <ExitFlow
-          showWorktree
+          showWorktree={showWorktree}
+          backgroundWork={backgroundWork}
           onDone={() => {}}
           onCancel={() => {
             setExitFlow(null)

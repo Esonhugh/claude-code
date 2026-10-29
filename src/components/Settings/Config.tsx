@@ -2447,9 +2447,14 @@ export function Config({
                     return (
                       <React.Fragment key={setting.id}>
                         <Box>
-                          <Box width={44}>
-                            <Text color={isSelected ? 'suggestion' : undefined}>
-                              {isSelected ? figures.pointer : ' '}{' '}
+                          <Text color={isSelected ? 'suggestion' : undefined}>
+                            {isSelected ? figures.pointer : ' '}{' '}
+                          </Text>
+                          <Box width={44} paddingRight={1}>
+                            <Text
+                              color={isSelected ? 'suggestion' : undefined}
+                              wrap="truncate-end"
+                            >
                               {setting.label}{setting.isLocked ? ' (locked)' : ''}
                             </Text>
                           </Box>

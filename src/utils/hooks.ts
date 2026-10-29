@@ -251,7 +251,9 @@ function executeInBackground({
       if (result.code === 2) {
         enqueuePendingNotification({
           value: wrapInSystemReminder(
-            `Stop hook blocking error from command "${hookName}": ${stderr || stdout}`,
+            escapeSystemReminderTags(
+              `Stop hook blocking error from command "${hookName}": ${stderr || stdout}`,
+            ),
           ),
           mode: 'task-notification',
         })

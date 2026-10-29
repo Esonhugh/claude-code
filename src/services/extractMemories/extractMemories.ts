@@ -294,12 +294,12 @@ let drainer: (timeoutMs?: number) => Promise<void> = async () => {}
 let hasDeferred: () => boolean = () => false
 
 /**
- * memory.extraction: 'sessionEnd' (default) runs once when the conversation
- * ends, 'everyTurns' every N eligible turns (N from tengu_bramble_lintel,
- * default 1), 'off' never.
+ * memory.extraction: 'off' (default) never, 'sessionEnd' runs once when the
+ * conversation ends, 'everyTurns' every N eligible turns (N from
+ * tengu_bramble_lintel, default 1).
  */
 function getExtractionInterval(): number | 'sessionEnd' | 'off' {
-  const mode = getInitialSettings().memory?.extraction ?? 'sessionEnd'
+  const mode = getInitialSettings().memory?.extraction ?? 'off'
   if (mode !== 'everyTurns') return mode
   return getFeatureValue_CACHED_MAY_BE_STALE<number | null>('tengu_bramble_lintel', null) ?? 1
 }

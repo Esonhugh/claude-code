@@ -4,6 +4,7 @@ import {
 } from '../../tasks/types.js'
 
 import { isViewableTeammate } from '../../tasks/InProcessTeammateTask/InProcessTeammateTask.js'
+import { isInProcessTeammateTask } from '../../tasks/InProcessTeammateTask/types.js'
 
 export type BackgroundTasksDialogScope = 'all' | 'terminal'
 
@@ -16,9 +17,13 @@ export function getScopedBackgroundTasks(
   foregroundedTaskId: string | undefined,
   scope: BackgroundTasksDialogScope = 'all',
 ): TaskState[] {
+  // Idle teammates hidden from the panel (evictAfter: 0) are still alive and
+  // stay reachable here.
   const backgroundTasks = Object.values(tasks ?? {}).filter(
     task =>
-      (isBackgroundTask(task) || isViewableTeammate(task)) &&
+      ((isInProcessTeammateTask(task) && task.status === 'running') ||
+        isBackgroundTask(task) ||
+        isViewableTeammate(task)) &&
       task.type !== 'local_workflow' &&
       !(task.type === 'local_agent' && task.id === foregroundedTaskId),
   )

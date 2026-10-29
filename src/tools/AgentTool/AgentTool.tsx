@@ -84,6 +84,7 @@ import { filterDeniedAgents } from '../../utils/permissions/permissions.js'
 import { enqueueSdkEvent } from '../../utils/sdkEventQueue.js'
 import { clearAgentMetadataWorktree } from '../../utils/sessionStorage.js'
 import { sleep } from '../../utils/sleep.js'
+import { ensureSessionTeam } from '../../utils/swarm/sessionTeam.js'
 import { readTeamFileAsync } from '../../utils/swarm/teamHelpers.js'
 import { buildEffectiveSystemPrompt } from '../../utils/systemPrompt.js'
 import { asSystemPrompt } from '../../utils/systemPromptType.js'
@@ -722,10 +723,17 @@ export const AgentTool = buildTool({
     ) {
       throw new Error(PLAN_MODE_DISABLED_MESSAGE)
     }
+    const wantsTeammate = Boolean(name && !isForkPath && !isolation && !cwd)
     let teamName = appState.teamContext?.teamName
-    let shouldSpawnTeammate = Boolean(
-      teamName && name && !isForkPath && !isolation && !cwd,
-    )
+    // Official 2.1.311: with Agent Teams on, a named agent is a teammate of
+    // the implicit session team, which is created on first use.
+    if (!teamName && wantsTeammate && isAgentSwarmsEnabled()) {
+      teamName = await ensureSessionTeam(
+        toolUseContext.getAppState,
+        toolUseContext.setAppState,
+      )
+    }
+    let shouldSpawnTeammate = Boolean(teamName && wantsTeammate)
     if (teamName && shouldSpawnTeammate) {
       const teamFile = await readTeamFileAsync(teamName)
       if (!teamFile) {
@@ -842,10 +850,13 @@ export const AgentTool = buildTool({
         teammateId: result.data.teammate_id,
       }
       notifyStarted(launch)
+      // Official reports the resumable agent id, which SendMessage accepts
+      // while the teammate runs and can resume from disk after a restart.
       const spawnResult: TeammateSpawnedOutput = {
         status: 'teammate_spawned' as const,
         prompt,
         ...result.data,
+        agent_id: launch.agentId,
       }
       return { data: spawnResult } as unknown as { data: Output }
     }
@@ -2463,10 +2474,9 @@ export const AgentTool = buildTool({
         content: [
           {
             type: 'text',
-            text: `Spawned successfully.
-agent_id: ${spawnData.teammate_id}
+            text: `Spawned successfully. (This tool result is internal metadata — never quote or paste any part of it, including the ID below, into a user-facing reply.)
+agent_id: ${spawnData.agent_id}
 name: ${spawnData.name}
-team_name: ${spawnData.team_name}
 The agent is now running and will receive instructions via mailbox.`,
           },
         ],
