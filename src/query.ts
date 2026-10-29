@@ -124,7 +124,6 @@ import type { QuerySource } from './constants/querySource.js'
 import { createDumpPromptsFetch } from './services/api/dumpPrompts.js'
 import { StreamingToolExecutor } from './services/tools/StreamingToolExecutor.js'
 import { queryCheckpoint } from './utils/queryProfiler.js'
-import { runTools } from './services/tools/toolOrchestration.js'
 import { applyToolResultBudget } from './utils/toolResultStorage.js'
 import { recordContentReplacement } from './utils/sessionStorage.js'
 import { handleStopHooks } from './query/stopHooks.js'
@@ -1015,14 +1014,11 @@ async function* queryLoop(
     let needsFollowUp = false
 
     queryCheckpoint('query_setup_start')
-    const useStreamingToolExecution = config.gates.streamingToolExecution
-    let streamingToolExecutor = useStreamingToolExecution
-      ? new StreamingToolExecutor(
-          toolUseContext.options.tools,
-          canUseTool,
-          toolUseContext,
-        )
-      : null
+    let streamingToolExecutor = new StreamingToolExecutor(
+      toolUseContext.options.tools,
+      canUseTool,
+      toolUseContext,
+    )
 
     const appState = toolUseContext.getAppState()
     const permissionMode = appState.toolPermissionContext.mode
@@ -1249,14 +1245,12 @@ async function* queryLoop(
               // Discard pending results from the failed streaming attempt and create
               // a fresh executor. This prevents orphan tool_results (with old tool_use_ids)
               // from being yielded after the fallback response arrives.
-              if (streamingToolExecutor) {
-                streamingToolExecutor.discard()
-                streamingToolExecutor = new StreamingToolExecutor(
-                  toolUseContext.options.tools,
-                  canUseTool,
-                  toolUseContext,
-                )
-              }
+              streamingToolExecutor.discard()
+              streamingToolExecutor = new StreamingToolExecutor(
+                toolUseContext.options.tools,
+                canUseTool,
+                toolUseContext,
+              )
             }
             // Backfill tool_use inputs on a cloned message before yield so
             // SDK stream output and transcript serialization see legacy/derived
@@ -1363,10 +1357,7 @@ async function* queryLoop(
                 needsFollowUp = true
               }
 
-              if (
-                streamingToolExecutor &&
-                !toolUseContext.abortController.signal.aborted
-              ) {
+              if (!toolUseContext.abortController.signal.aborted) {
                 for (const toolBlock of msgToolUseBlocks) {
                   // @ts-ignore - recovered code
                   streamingToolExecutor.addTool(toolBlock, message)
@@ -1374,10 +1365,7 @@ async function* queryLoop(
               }
             }
 
-            if (
-              streamingToolExecutor &&
-              !toolUseContext.abortController.signal.aborted
-            ) {
+            if (!toolUseContext.abortController.signal.aborted) {
               for (const result of streamingToolExecutor.getCompletedResults()) {
                 if (result.message) {
                   yield result.message
@@ -1442,14 +1430,12 @@ async function* queryLoop(
             // Discard pending results from the failed attempt and create a
             // fresh executor. This prevents orphan tool_results (with old
             // tool_use_ids) from leaking into the retry.
-            if (streamingToolExecutor) {
-              streamingToolExecutor.discard()
-              streamingToolExecutor = new StreamingToolExecutor(
-                toolUseContext.options.tools,
-                canUseTool,
-                toolUseContext,
-              )
-            }
+            streamingToolExecutor.discard()
+            streamingToolExecutor = new StreamingToolExecutor(
+              toolUseContext.options.tools,
+              canUseTool,
+              toolUseContext,
+            )
 
             // Update tool use context with new model
             toolUseContext.options.mainLoopModel = fallbackModel
@@ -1547,24 +1533,15 @@ async function* queryLoop(
       )
     }
 
-    // We need to handle a streaming abort before anything else.
-    // When using streamingToolExecutor, we must consume getRemainingResults() so the
-    // executor can generate synthetic tool_result blocks for queued/in-progress tools.
-    // Without this, tool_use blocks would lack matching tool_result blocks.
+    // We need to handle a streaming abort before anything else: consume
+    // getRemainingResults() so the executor generates synthetic tool_result
+    // blocks for queued/in-progress tools. Without this, tool_use blocks would
+    // lack matching tool_result blocks.
     if (toolUseContext.abortController.signal.aborted) {
-      if (streamingToolExecutor) {
-        // Consume remaining results - executor generates synthetic tool_results for
-        // aborted tools since it checks the abort signal in executeTool()
-        for await (const update of streamingToolExecutor.getRemainingResults()) {
-          if (update.message) {
-            yield update.message
-          }
+      for await (const update of streamingToolExecutor.getRemainingResults()) {
+        if (update.message) {
+          yield update.message
         }
-      } else {
-        yield* yieldMissingToolResultBlocks(
-          assistantMessages,
-          'Interrupted by user',
-        )
       }
       // chicago MCP: auto-unhide + lock release on interrupt. Same cleanup
       // as the natural turn-end path in stopHooks.ts. Main thread only —
@@ -1961,23 +1938,7 @@ async function* queryLoop(
 
     queryCheckpoint('query_tool_execution_start')
 
-    if (streamingToolExecutor) {
-      logEvent('tengu_streaming_tool_execution_used', {
-        tool_count: toolUseBlocks.length,
-        queryChainId: queryChainIdForAnalytics,
-        queryDepth: queryTracking.depth,
-      })
-    } else {
-      logEvent('tengu_streaming_tool_execution_not_used', {
-        tool_count: toolUseBlocks.length,
-        queryChainId: queryChainIdForAnalytics,
-        queryDepth: queryTracking.depth,
-      })
-    }
-
-    const toolUpdates = streamingToolExecutor
-      ? streamingToolExecutor.getRemainingResults()
-      : runTools(toolUseBlocks, assistantMessages, canUseTool, toolUseContext)
+    const toolUpdates = streamingToolExecutor.getRemainingResults()
 
     for await (let update of toolUpdates) {
       if (update.message) {
