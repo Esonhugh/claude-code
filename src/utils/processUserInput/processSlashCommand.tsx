@@ -74,6 +74,7 @@ import {
 import { getFsImplementation } from '../fsOperations.js'
 import { isFullscreenEnvEnabled } from '../fullscreen.js'
 import { toArray } from '../generators.js'
+import { executeUserPromptExpansionHooks } from '../hooks.js'
 import { registerSkillHooks } from '../hooks/registerSkillHooks.js'
 import { logError } from '../log.js'
 import {
@@ -1006,7 +1007,77 @@ async function getMessagesForSlashCommand(
               if (notice) effortNotice = createSystemMessage(notice, 'notice')
             }
           }
-          const result = getPromptCommandContext(command, args, context) === 'fork'
+          const prompt = args ? `/${command.name} ${args}` : `/${command.name}`
+          const hookMessages: Message[] = []
+          let blockingError: string | undefined
+          let suppressOriginalPrompt = false
+          let stopMessage: string | undefined
+          for await (const hookResult of executeUserPromptExpansionHooks(
+            command.source === 'mcp' ? 'mcp_prompt' : 'slash_command',
+            command.name,
+            args,
+            command.source,
+            prompt,
+            context.getAppState().toolPermissionContext.mode,
+            context,
+          )) {
+            if (hookResult.blockingError) {
+              blockingError ??= hookResult.blockingError.blockingError
+            }
+            if (hookResult.suppressOriginalPrompt) suppressOriginalPrompt = true
+            if (hookResult.preventContinuation) {
+              stopMessage ??= hookResult.stopReason
+                ? `Operation stopped by hook: ${hookResult.stopReason}`
+                : 'Operation stopped by hook'
+            }
+            if (hookResult.additionalContexts?.length) {
+              hookMessages.push(
+                createAttachmentMessage({
+                  type: 'hook_additional_context',
+                  content: hookResult.additionalContexts,
+                  hookName: 'UserPromptExpansion',
+                  toolUseID: `hook-${randomUUID()}`,
+                  hookEvent: 'UserPromptExpansion',
+                }),
+              )
+            }
+            const message = hookResult.message as Message | undefined
+            if (
+              message?.type === 'attachment' &&
+              !(message.attachment.type === 'hook_success' && !message.attachment.content)
+            ) {
+              hookMessages.push(message)
+            }
+          }
+          if (blockingError !== undefined) {
+            const blockingMessage = `UserPromptExpansion operation blocked by hook:\n${blockingError}`
+            return {
+              messages: [
+                createSystemMessage(
+                  suppressOriginalPrompt
+                    ? blockingMessage
+                    : `${blockingMessage}\n\nOriginal prompt: ${prompt}`,
+                  'warning',
+                ),
+              ],
+              shouldQuery: false,
+              resultText: blockingMessage,
+              command,
+            }
+          }
+          if (stopMessage) {
+            return {
+              messages: [
+                createUserMessage({ content: stopMessage, isMeta: true }),
+                createSystemMessage(stopMessage, 'warning'),
+              ],
+              shouldQuery: false,
+              resultText: stopMessage,
+              command,
+            }
+          }
+          const isFork = getPromptCommandContext(command, args, context) === 'fork'
+          const result = isFork
             ? await executeForkedSlashCommand(
               command,
               args,
@@ -1024,6 +1095,7 @@ async function getMessagesForSlashCommand(
               uuid,
             )
           if (effortNotice) result.messages.splice(1, 0, effortNotice)
+          if (!isFork) result.messages.push(...hookMessages)
           return result
         } catch (e) {
           const { ModAuthoringPromptDismissedError } =

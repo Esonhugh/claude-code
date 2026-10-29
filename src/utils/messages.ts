@@ -4437,7 +4437,8 @@ You have exited auto mode. The user may now want to interact more directly. You 
     case 'hook_success':
       if (
         attachment.hookEvent !== 'SessionStart' &&
-        attachment.hookEvent !== 'UserPromptSubmit'
+        attachment.hookEvent !== 'UserPromptSubmit' &&
+        attachment.hookEvent !== 'UserPromptExpansion'
       ) {
         return []
       }

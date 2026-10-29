@@ -31,6 +31,8 @@ type Props = {
   defaultFocusIndex?: number
   onFocus?: (itemIndex: number) => void
   visibleItemCount?: number
+  isDisabled?: boolean
+  onUpFromFirstItem?: () => void
 }
 
 export function MenuList({
@@ -39,6 +41,8 @@ export function MenuList({
   defaultFocusIndex = 0,
   onFocus,
   visibleItemCount = 12,
+  isDisabled = false,
+  onUpFromFirstItem,
 }: Props): React.ReactNode {
   const items = rows.flatMap((row, rowIndex) =>
     row.kind === 'item' ? [{ row, rowIndex }] : [],
@@ -56,12 +60,15 @@ export function MenuList({
   useKeybindings(
     {
       'select:next': () => moveFocus(focusIndex + 1),
-      'select:previous': () => moveFocus(focusIndex - 1),
+      'select:previous': () => {
+        if (focusIndex === 0) onUpFromFirstItem?.()
+        else moveFocus(focusIndex - 1)
+      },
       'select:accept': () => {
         if (items[focusIndex]) onSelect(focusIndex)
       },
     },
-    { context: 'Select' },
+    { context: 'Select', isActive: !isDisabled },
   )
 
   // The meta column lines up after the widest label that has meta.
@@ -109,7 +116,7 @@ export function MenuList({
           )
         }
         const index = itemIndex++
-        const isFocused = index === focusIndex
+        const isFocused = !isDisabled && index === focusIndex
         const meta = (row.meta ?? []).filter(Boolean).join(' · ')
         return (
           <ListItem
