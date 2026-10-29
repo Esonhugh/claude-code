@@ -103,6 +103,8 @@ import type {
   FileChangedHookInput,
   InstructionsLoadedHookInput,
   UserPromptSubmitHookInput,
+  UserPromptExpansionHookInput,
+  PostToolBatchHookInput,
   PermissionRequestHookInput,
   ElicitationHookInput,
   ElicitationResultHookInput,
@@ -388,6 +390,7 @@ export interface HookResult {
   watchPaths?: string[]
   elicitationResultResponse?: ElicitationResponse
   retry?: boolean
+  suppressOriginalPrompt?: boolean
   displayContent?: string
   sessionTitle?: string
   reloadSkills?: boolean
@@ -414,6 +417,7 @@ export type AggregatedHookResult = {
   elicitationResponse?: ElicitationResponse
   elicitationResultResponse?: ElicitationResponse
   retry?: boolean
+  suppressOriginalPrompt?: boolean
   displayContent?: string
   sessionTitle?: string
   reloadSkills?: boolean
@@ -686,7 +690,13 @@ function processHookJSONOutput({
         result.additionalContext = json.hookSpecificOutput.additionalContext
         break
       case 'UserPromptSubmit':
+      case 'PostToolBatch':
         result.additionalContext = json.hookSpecificOutput.additionalContext
+        break
+      case 'UserPromptExpansion':
+        result.additionalContext = json.hookSpecificOutput.additionalContext
+        result.suppressOriginalPrompt =
+          json.hookSpecificOutput.suppressOriginalPrompt
         break
       case 'SessionStart':
         result.additionalContext = json.hookSpecificOutput.additionalContext
@@ -1812,6 +1822,9 @@ export async function getMatchingHooks(
         break
       case 'DirectoryAdded':
         matchQuery = hookInput.source
+        break
+      case 'UserPromptExpansion':
+        matchQuery = hookInput.command_name
         break
       default:
         break
@@ -3240,6 +3253,12 @@ async function* executeHooks({
         retry: result.retry,
       }
     }
+    if (result.suppressOriginalPrompt) {
+      yield {
+        ...hookMetadata,
+        suppressOriginalPrompt: result.suppressOriginalPrompt,
+      }
+    }
     // Yield elicitation response if provided (from Elicitation hooks)
     if (result.elicitationResponse) {
       yield {
@@ -3908,6 +3927,39 @@ export async function* executePostToolUseFailureHooks<ToolInput>(
   })
 }
 
+/**
+ * Execute PostToolBatch hooks once after every tool call in a batch has
+ * resolved, before the next model request.
+ */
+export async function* executePostToolBatchHooks(
+  toolCalls: PostToolBatchHookInput['tool_calls'],
+  toolUseID: string,
+  toolUseContext: ToolUseContext,
+  permissionMode?: string,
+  signal?: AbortSignal,
+  timeoutMs: number = TOOL_HOOK_EXECUTION_TIMEOUT_MS,
+): AsyncGenerator<AggregatedHookResult> {
+  const appState = toolUseContext.getAppState()
+  const sessionId = toolUseContext.agentId ?? getSessionId()
+  if (!hasHookForEvent('PostToolBatch', appState, sessionId)) {
+    return
+  }
+
+  const hookInput: PostToolBatchHookInput = {
+    ...createBaseHookInput(permissionMode, undefined, toolUseContext),
+    hook_event_name: 'PostToolBatch',
+    tool_calls: toolCalls,
+  }
+
+  yield* executeHooks({
+    hookInput,
+    toolUseID,
+    signal,
+    timeoutMs,
+    toolUseContext,
+  })
+}
+
 export async function* executePermissionDeniedHooks<ToolInput>(
   toolName: string,
   toolUseID: string,
@@ -4241,6 +4293,44 @@ export async function* executeUserPromptSubmitHooks(
     timeoutMs: TOOL_HOOK_EXECUTION_TIMEOUT_MS,
     toolUseContext,
     requestPrompt,
+  })
+}
+
+/**
+ * Execute UserPromptExpansion hooks when a user-typed slash command expands
+ * into a prompt. Exit code 2 or decision "block" blocks the expansion.
+ */
+export async function* executeUserPromptExpansionHooks(
+  expansionType: UserPromptExpansionHookInput['expansion_type'],
+  commandName: string,
+  commandArgs: string,
+  commandSource: string | undefined,
+  prompt: string,
+  permissionMode: string | undefined,
+  toolUseContext: ToolUseContext,
+): AsyncGenerator<AggregatedHookResult> {
+  const appState = toolUseContext.getAppState()
+  const sessionId = toolUseContext.agentId ?? getSessionId()
+  if (!hasHookForEvent('UserPromptExpansion', appState, sessionId)) {
+    return
+  }
+
+  const hookInput: UserPromptExpansionHookInput = {
+    ...createBaseHookInput(permissionMode),
+    hook_event_name: 'UserPromptExpansion',
+    expansion_type: expansionType,
+    command_name: commandName,
+    command_args: commandArgs,
+    ...(commandSource !== undefined && { command_source: commandSource }),
+    prompt,
+  }
+
+  yield* executeHooks({
+    hookInput,
+    toolUseID: randomUUID(),
+    signal: toolUseContext.abortController.signal,
+    timeoutMs: TOOL_HOOK_EXECUTION_TIMEOUT_MS,
+    toolUseContext,
   })
 }
 

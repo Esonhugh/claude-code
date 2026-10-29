@@ -378,8 +378,10 @@ export const HOOK_EVENTS = [
   'PreToolUse',
   'PostToolUse',
   'PostToolUseFailure',
+  'PostToolBatch',
   'Notification',
   'UserPromptSubmit',
+  'UserPromptExpansion',
   'SessionStart',
   'SessionEnd',
   'Stop',
@@ -490,6 +492,28 @@ export const PostToolUseFailureHookInputSchema = lazySchema(() =>
   ),
 )
 
+export const PostToolBatchToolCallSchema = lazySchema(() =>
+  z.object({
+    tool_name: z.string(),
+    tool_input: z.unknown(),
+    tool_use_id: z.string(),
+    tool_response: z.unknown().optional(),
+  }),
+)
+
+export const PostToolBatchHookInputSchema = lazySchema(() =>
+  BaseHookInputSchema()
+    .and(
+      z.object({
+        hook_event_name: z.literal('PostToolBatch'),
+        tool_calls: z.array(PostToolBatchToolCallSchema()),
+      }),
+    )
+    .describe(
+      'Hook input for the PostToolBatch event. Fired once after every tool call in a batch has resolved, before the next model request.',
+    ),
+)
+
 export const PermissionDeniedHookInputSchema = lazySchema(() =>
   BaseHookInputSchema().and(
     z.object({
@@ -517,6 +541,19 @@ export const UserPromptSubmitHookInputSchema = lazySchema(() =>
   BaseHookInputSchema().and(
     z.object({
       hook_event_name: z.literal('UserPromptSubmit'),
+      prompt: z.string(),
+    }),
+  ),
+)
+
+export const UserPromptExpansionHookInputSchema = lazySchema(() =>
+  BaseHookInputSchema().and(
+    z.object({
+      hook_event_name: z.literal('UserPromptExpansion'),
+      expansion_type: z.enum(['slash_command', 'mcp_prompt']),
+      command_name: z.string(),
+      command_args: z.string(),
+      command_source: z.string().optional(),
       prompt: z.string(),
     }),
   ),
@@ -898,9 +935,11 @@ export const HookInputSchema = lazySchema(() =>
     PreToolUseHookInputSchema(),
     PostToolUseHookInputSchema(),
     PostToolUseFailureHookInputSchema(),
+    PostToolBatchHookInputSchema(),
     PermissionDeniedHookInputSchema(),
     NotificationHookInputSchema(),
     UserPromptSubmitHookInputSchema(),
+    UserPromptExpansionHookInputSchema(),
     SessionStartHookInputSchema(),
     SessionEndHookInputSchema(),
     StopHookInputSchema(),
@@ -953,6 +992,17 @@ export const UserPromptSubmitHookSpecificOutputSchema = lazySchema(() =>
   }),
 )
 
+export const UserPromptExpansionHookSpecificOutputSchema = lazySchema(() =>
+  z.object({
+    hookEventName: z.literal('UserPromptExpansion'),
+    additionalContext: z.string().optional(),
+    suppressOriginalPrompt: z
+      .boolean()
+      .optional()
+      .describe('When decision is "block", omit the original prompt from the block message'),
+  }),
+)
+
 export const SessionStartHookSpecificOutputSchema = lazySchema(() =>
   z.object({
     hookEventName: z.literal('SessionStart'),
@@ -989,6 +1039,13 @@ export const PostToolUseHookSpecificOutputSchema = lazySchema(() =>
     additionalContext: z.string().optional(),
     updatedToolOutput: z.unknown().optional(),
     updatedMCPToolOutput: z.unknown().optional(),
+  }),
+)
+
+export const PostToolBatchHookSpecificOutputSchema = lazySchema(() =>
+  z.object({
+    hookEventName: z.literal('PostToolBatch'),
+    additionalContext: z.string().optional(),
   }),
 )
 
@@ -1104,11 +1161,13 @@ export const SyncHookJSONOutputSchema = lazySchema(() =>
       .union([
         PreToolUseHookSpecificOutputSchema(),
         UserPromptSubmitHookSpecificOutputSchema(),
+        UserPromptExpansionHookSpecificOutputSchema(),
         SessionStartHookSpecificOutputSchema(),
         SetupHookSpecificOutputSchema(),
         SubagentStartHookSpecificOutputSchema(),
         PostToolUseHookSpecificOutputSchema(),
         PostToolUseFailureHookSpecificOutputSchema(),
+        PostToolBatchHookSpecificOutputSchema(),
         StopHookSpecificOutputSchema(),
         SubagentStopHookSpecificOutputSchema(),
         PermissionDeniedHookSpecificOutputSchema(),

@@ -119,7 +119,10 @@ import { ESCALATED_MAX_TOKENS } from './utils/context.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from './services/analytics/growthbook.js'
 import { SLEEP_TOOL_NAME } from './tools/SleepTool/prompt.js'
 import { executePostSamplingHooks } from './utils/hooks/postSamplingHooks.js'
-import { executeStopFailureHooks } from './utils/hooks.js'
+import {
+  executePostToolBatchHooks,
+  executeStopFailureHooks,
+} from './utils/hooks.js'
 import type { QuerySource } from './constants/querySource.js'
 import { createDumpPromptsFetch } from './services/api/dumpPrompts.js'
 import { StreamingToolExecutor } from './services/tools/StreamingToolExecutor.js'
@@ -1934,6 +1937,7 @@ async function* queryLoop(
     }
 
     let shouldPreventContinuation = false
+    let postToolBatchStopReason: string | undefined
     let updatedToolUseContext = toolUseContext
 
     queryCheckpoint('query_tool_execution_start')
@@ -1975,6 +1979,74 @@ async function* queryLoop(
       }
     }
     queryCheckpoint('query_tool_execution_end')
+
+    // PostToolBatch: once per batch, after every tool call resolved and
+    // before the next model request.
+    if (
+      toolUseBlocks.length > 0 &&
+      !toolUseContext.abortController.signal.aborted
+    ) {
+      const toolResponses = new Map<string, unknown>()
+      for (const result of toolResults) {
+        if (result.type !== 'user' || !Array.isArray(result.message.content))
+          continue
+        for (const block of result.message.content) {
+          if (block.type === 'tool_result')
+            toolResponses.set(block.tool_use_id, block.content)
+        }
+      }
+      const batchHookID = `hook-${deps.uuid()}`
+      try {
+        for await (const result of executePostToolBatchHooks(
+          toolUseBlocks.map(block => ({
+            tool_name: block.name,
+            tool_input: block.input,
+            tool_use_id: block.id,
+            tool_response: toolResponses.get(block.id),
+          })),
+          batchHookID,
+          updatedToolUseContext,
+          updatedToolUseContext.getAppState().toolPermissionContext.mode,
+          updatedToolUseContext.abortController.signal,
+        )) {
+          const message = result.message as Message | undefined
+          if (
+            message &&
+            !(
+              message.type === 'attachment' &&
+              message.attachment.type === 'hook_blocking_error'
+            )
+          ) {
+            yield message
+          }
+          if (result.additionalContexts && result.additionalContexts.length > 0) {
+            const contextMessage = createAttachmentMessage({
+              type: 'hook_additional_context',
+              content: result.additionalContexts,
+              hookName: 'PostToolBatch',
+              toolUseID: batchHookID,
+              hookEvent: 'PostToolBatch',
+            })
+            yield contextMessage
+            toolResults.push(
+              ...normalizeMessagesForAPI(
+                [contextMessage],
+                updatedToolUseContext.options.tools,
+              ).filter(_ => _.type === 'user'),
+            )
+          }
+          if (result.blockingError || result.preventContinuation) {
+            postToolBatchStopReason ??=
+              result.blockingError?.blockingError ??
+              result.stopReason ??
+              'Execution stopped by PostToolBatch hook'
+          }
+        }
+      } catch (error) {
+        if (!updatedToolUseContext.abortController.signal.aborted) throw error
+        logForDebugging('PostToolBatch hooks cancelled')
+      }
+    }
 
     // Generate tool use summary after tool batch completes — passed to next recursive call
     let nextPendingToolUseSummary:
@@ -2082,6 +2154,17 @@ async function* queryLoop(
         })
       }
       return { reason: 'aborted_tools' }
+    }
+
+    if (postToolBatchStopReason !== undefined) {
+      yield createAttachmentMessage({
+        type: 'hook_stopped_continuation',
+        message: postToolBatchStopReason,
+        hookName: 'PostToolBatch',
+        toolUseID: `hook-${deps.uuid()}`,
+        hookEvent: 'PostToolBatch',
+      })
+      return { reason: 'hook_stopped' }
     }
 
     // If a hook indicated to prevent continuation, stop here

@@ -45,6 +45,8 @@ let appState = {
   sessionState: {
     sessionHooks: {},
   },
+  sessionHooks: new Map(),
+  toolPermissionContext: { mode: 'default' },
 }
 
 const result = await processSlashCommand(
