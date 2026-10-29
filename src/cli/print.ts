@@ -209,6 +209,7 @@ import { clearOutputStyleCaches } from 'src/outputStyles/loadOutputStylesDir.js'
 import { FileReadTool } from 'src/tools/FileReadTool/FileReadTool.js'
 import { checkReadPermissionForTool } from 'src/utils/permissions/filesystem.js'
 import { isSettingSourceEnabled } from 'src/utils/settings/constants.js'
+import { formatPeerPrompt } from 'src/utils/peerProtocol.js'
 import { TEAMMATE_MESSAGE_TAG, TICK_TAG } from 'src/constants/xml.js'
 import {
   getSettings_DEPRECATED,
@@ -2927,7 +2928,7 @@ function runHeadlessStreaming(
             // Enqueue and process
             enqueue({
               mode: 'prompt',
-              value: formatted,
+              value: formatPeerPrompt(formatted),
               uuid: randomUUID(),
             })
             void run()

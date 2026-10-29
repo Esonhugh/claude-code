@@ -34,6 +34,7 @@ import {
   addToTurnHookDuration,
   getOriginalCwd,
   getMainThreadAgentType,
+  getPromptId,
 } from '../bootstrap/state.js'
 import { checkHasTrustDialogAccepted } from './config.js'
 import {
@@ -327,6 +328,7 @@ export function createBaseHookInput(
   session_id: string
   transcript_path: string
   cwd: string
+  prompt_id?: string
   permission_mode?: string
   agent_id?: string
   agent_type?: string
@@ -340,6 +342,7 @@ export function createBaseHookInput(
     session_id: resolvedSessionId,
     transcript_path: getTranscriptPathForSession(resolvedSessionId),
     cwd: getCwd(),
+    prompt_id: getPromptId() ?? undefined,
     permission_mode: permissionMode,
     agent_id: agentInfo?.agentId,
     agent_type: resolvedAgentType,
@@ -3854,6 +3857,7 @@ export async function* executePostToolHooks<ToolInput, ToolResponse>(
   signal?: AbortSignal,
   timeoutMs: number = TOOL_HOOK_EXECUTION_TIMEOUT_MS,
   sourceScope?: HookSourceScope,
+  durationMs?: number,
 ): AsyncGenerator<AggregatedHookResult> {
   const hookInput: PostToolUseHookInput = {
     ...createBaseHookInput(permissionMode, undefined, toolUseContext),
@@ -3862,6 +3866,7 @@ export async function* executePostToolHooks<ToolInput, ToolResponse>(
     tool_input: toolInput,
     tool_response: toolResponse,
     tool_use_id: toolUseID,
+    duration_ms: durationMs,
   }
 
   yield* executeHooks({
@@ -3899,6 +3904,7 @@ export async function* executePostToolUseFailureHooks<ToolInput>(
   signal?: AbortSignal,
   timeoutMs: number = TOOL_HOOK_EXECUTION_TIMEOUT_MS,
   sourceScope?: HookSourceScope,
+  durationMs?: number,
 ): AsyncGenerator<AggregatedHookResult> {
   const appState = toolUseContext.getAppState()
   const sessionId = toolUseContext.agentId ?? getSessionId()
@@ -3914,6 +3920,7 @@ export async function* executePostToolUseFailureHooks<ToolInput>(
     tool_use_id: toolUseID,
     error,
     is_interrupt: isInterrupt,
+    duration_ms: durationMs,
   }
 
   yield* executeHooks({
@@ -4152,9 +4159,10 @@ export async function* executeTeammateIdleHooks(
   permissionMode?: string,
   signal?: AbortSignal,
   timeoutMs: number = TOOL_HOOK_EXECUTION_TIMEOUT_MS,
+  agentInfo?: { agentId?: string; agentType?: string },
 ): AsyncGenerator<AggregatedHookResult> {
   const hookInput: TeammateIdleHookInput = {
-    ...createBaseHookInput(permissionMode),
+    ...createBaseHookInput(permissionMode, undefined, agentInfo),
     hook_event_name: 'TeammateIdle',
     teammate_name: teammateName,
     team_name: teamName,

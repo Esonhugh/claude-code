@@ -86,7 +86,6 @@ export const ListAgentsTool = buildTool({
   name: 'ListAgents',
   searchHint: 'discover local Claude sessions for SendMessage',
   maxResultSizeChars: 100_000,
-  shouldDefer: true,
   get inputSchema(): InputSchema {
     return inputSchema()
   },

@@ -123,14 +123,15 @@ export type BaseHookInput = {
   session_id: string
   transcript_path: string
   cwd: string
+  prompt_id?: string
   permission_mode?: string
   agent_id?: string
   agent_type?: string
   effort?: { level: string }
 }
 export type PreToolUseHookInput = BaseHookInput & { hook_event_name: 'PreToolUse'; tool_name: string; tool_input: unknown; tool_use_id: string }
-export type PostToolUseHookInput = BaseHookInput & { hook_event_name: 'PostToolUse'; tool_name: string; tool_input: unknown; tool_response: unknown; tool_use_id: string }
-export type PostToolUseFailureHookInput = BaseHookInput & { hook_event_name: 'PostToolUseFailure'; tool_name: string; tool_input: unknown; tool_use_id: string; error: string; is_interrupt?: boolean }
+export type PostToolUseHookInput = BaseHookInput & { hook_event_name: 'PostToolUse'; tool_name: string; tool_input: unknown; tool_response: unknown; tool_use_id: string; duration_ms?: number }
+export type PostToolUseFailureHookInput = BaseHookInput & { hook_event_name: 'PostToolUseFailure'; tool_name: string; tool_input: unknown; tool_use_id: string; error: string; is_interrupt?: boolean; duration_ms?: number }
 export type PostToolBatchToolCall = { tool_name: string; tool_input: unknown; tool_use_id: string; tool_response?: unknown }
 export type PostToolBatchHookInput = BaseHookInput & { hook_event_name: 'PostToolBatch'; tool_calls: PostToolBatchToolCall[] }
 export type PermissionRequestHookInput = BaseHookInput & { hook_event_name: 'PermissionRequest'; tool_name: string; tool_input: unknown; permission_suggestions?: PermissionUpdate[] }

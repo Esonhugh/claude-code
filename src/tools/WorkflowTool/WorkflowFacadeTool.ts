@@ -177,9 +177,8 @@ export function normalizeWorkflowFacadeInput(
 
 export const WorkflowFacadeTool = buildTool({
   name: WORKFLOW_TOOL_NAME,
-  searchHint: 'run workflow scripts',
+  searchHint: 'orchestrate subagents with deterministic JavaScript workflow',
   maxResultSizeChars: 100_000,
-  shouldDefer: true,
   async description() {
     return 'Run an official-compatible workflow script or saved workflow'
   },

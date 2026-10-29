@@ -417,6 +417,13 @@ export const BaseHookInputSchema = lazySchema(() =>
     session_id: z.string(),
     transcript_path: z.string(),
     cwd: z.string(),
+    prompt_id: z
+      .string()
+      .optional()
+      .describe(
+        'UUID correlating a user prompt with all subsequent events until the next prompt. ' +
+          'Same value as the OpenTelemetry `prompt.id` attribute. Absent until the first user input.',
+      ),
     permission_mode: z.string().optional(),
     agent_id: z
       .string()
@@ -475,6 +482,10 @@ export const PostToolUseHookInputSchema = lazySchema(() =>
       tool_input: z.unknown(),
       tool_response: z.unknown(),
       tool_use_id: z.string(),
+      duration_ms: z
+        .number()
+        .optional()
+        .describe('Tool execution time in milliseconds. Excludes permission-prompt and hook time.'),
     }),
   ),
 )
@@ -488,6 +499,10 @@ export const PostToolUseFailureHookInputSchema = lazySchema(() =>
       tool_use_id: z.string(),
       error: z.string(),
       is_interrupt: z.boolean().optional(),
+      duration_ms: z
+        .number()
+        .optional()
+        .describe('Tool execution time in milliseconds. Excludes permission-prompt and hook time.'),
     }),
   ),
 )

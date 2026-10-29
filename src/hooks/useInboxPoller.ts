@@ -20,6 +20,7 @@ import {
   handlePlanApprovalResponse,
 } from '../utils/inProcessTeammateHelpers.js'
 import { createAssistantMessage } from '../utils/messages.js'
+import { formatPeerPrompt } from '../utils/peerProtocol.js'
 import { toExternalPermissionMode } from '../utils/permissions/PermissionMode.js'
 import { transitionPermissionModeWithGates } from '../utils/permissions/permissionSetup.js'
 import { jsonStringify } from '../utils/slowOperations.js'
@@ -113,6 +114,12 @@ export function getAgentNameToPoll(appState: AppState): string | undefined {
 }
 
 const INBOX_POLL_INTERVAL_MS = 1000
+
+// The lead reads teammate messages as peer input, framed like official 2.1.311
+// so a teammate's words never pass for the user's (no escalation, no laundering).
+export function frameForLead(formatted: string): string {
+  return isTeammate() ? formatted : formatPeerPrompt(formatted)
+}
 
 type Props = {
   enabled: boolean
@@ -690,6 +697,7 @@ export function useInboxPoller({
         return `<${TEAMMATE_MESSAGE_TAG} teammate_id="${m.from}"${colorAttr}${summaryAttr}>\n${messageContent}\n</${TEAMMATE_MESSAGE_TAG}>`
       })
       .join('\n\n')
+    const framed = frameForLead(formatted)
 
     // Helper to queue messages in AppState for later delivery
     const queueMessages = () => {
@@ -715,7 +723,7 @@ export function useInboxPoller({
     if (!isLoading && !focusedInputDialog) {
       // IDLE: Submit as new turn immediately
       logForDebugging(`[InboxPoller] Session idle, submitting immediately`)
-      const submitted = onSubmitTeammateMessage(formatted)
+      const submitted = onSubmitTeammateMessage(framed)
       if (!submitted) {
         // Submission rejected (query already running), queue for later
         logForDebugging(
@@ -794,9 +802,10 @@ export function useInboxPoller({
         return `<${TEAMMATE_MESSAGE_TAG} teammate_id="${m.from}"${colorAttr}${summaryAttr}>\n${m.text}\n</${TEAMMATE_MESSAGE_TAG}>`
       })
       .join('\n\n')
+    const framed = frameForLead(formatted)
 
     // Try to submit - only clear messages if successful
-    const submitted = onSubmitTeammateMessage(formatted)
+    const submitted = onSubmitTeammateMessage(framed)
     if (submitted) {
       // Clear the specific messages we just submitted by their IDs
       const submittedIds = new Set(pendingMessages.map(m => m.id))

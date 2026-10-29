@@ -170,11 +170,13 @@ describe('classic adapter executor boundary', () => {
         ...tool,
         hook_event_name: 'PostToolUse',
         tool_response: null,
+        duration_ms: 42,
       })
       await f.classic.PostToolUseFailure({
         ...tool,
         hook_event_name: 'PostToolUseFailure',
         error: 'failed',
+        duration_ms: 7,
       })
       await f.classic.PermissionDenied({
         ...tool,
@@ -219,9 +221,11 @@ describe('classic adapter executor boundary', () => {
         agent_id: 'child',
         agent_type: 'test',
       })
-      expect(f.calls.map(call => call.args.at(-1))).toEqual(
-        Array(11).fill(sourceScope),
+      expect(f.calls.map(call => call.args.filter(arg => arg === sourceScope).length)).toEqual(
+        Array(11).fill(1),
       )
+      // official 2.1.311 duration_ms reaches the PostToolUse/Failure hook input
+      expect(f.calls.slice(1, 3).map(call => call.args.at(-1))).toEqual([42, 7])
       expect(f.calls.map(call => call.name)).toEqual([
         'executePreToolHooks',
         'executePostToolHooks',
