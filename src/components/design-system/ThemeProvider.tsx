@@ -7,7 +7,10 @@ import React, {
 } from 'react'
 import useStdin from '../../ink/hooks/use-stdin.js'
 import { getGlobalConfig, saveGlobalConfig } from '../../utils/config.js'
-import { subscribeCustomThemes } from '../../utils/customThemes.js'
+import {
+  subscribeCustomThemes,
+  watchCustomThemes,
+} from '../../utils/customThemes.js'
 import {
   getSystemThemeName,
   type SystemTheme,
@@ -93,12 +96,14 @@ export function ThemeProvider({
     }
   }, [activeSetting, internal_querier])
 
-  // Re-render when a custom theme is saved or previewed in the editor.
+  // Re-render when a custom theme is saved, edited on disk or previewed in
+  // the editor.
   const [customThemesVersion, setCustomThemesVersion] = useState(0)
   useEffect(
     () => subscribeCustomThemes(() => setCustomThemesVersion(v => v + 1)),
     [],
   )
+  useEffect(() => watchCustomThemes(), [])
 
   const currentTheme: ResolvedTheme =
     activeSetting === 'auto' ? systemTheme : activeSetting

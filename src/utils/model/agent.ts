@@ -1,5 +1,4 @@
 import type { PermissionMode } from '../permissions/PermissionMode.js'
-import { capitalize } from '../stringUtils.js'
 import { MODEL_ALIASES } from './aliases.js'
 import { applyBedrockRegionPrefix, getBedrockRegionPrefix } from './bedrock.js'
 import {
@@ -11,12 +10,6 @@ import { getAPIProvider } from './providers.js'
 
 export const AGENT_MODEL_OPTIONS = [...MODEL_ALIASES, 'inherit'] as const
 export type AgentModelAlias = (typeof AGENT_MODEL_OPTIONS)[number]
-
-export type AgentModelOption = {
-  value: AgentModelAlias
-  label: string
-  description: string
-}
 
 /**
  * Get the default subagent model. Returns 'inherit' so subagents inherit
@@ -118,39 +111,4 @@ function aliasMatchesParentTier(alias: string, parentModel: string): boolean {
     default:
       return false
   }
-}
-
-export function getAgentModelDisplay(model: string | undefined): string {
-  // When model is omitted, getDefaultSubagentModel() returns 'inherit' at runtime
-  if (!model) return 'Inherit from parent (default)'
-  if (model === 'inherit') return 'Inherit from parent'
-  return capitalize(model)
-}
-
-/**
- * Get available model options for agents
- */
-export function getAgentModelOptions(): AgentModelOption[] {
-  return [
-    {
-      value: 'sonnet',
-      label: 'Sonnet',
-      description: 'Balanced performance - best for most agents',
-    },
-    {
-      value: 'opus',
-      label: 'Opus',
-      description: 'Most capable for complex reasoning tasks',
-    },
-    {
-      value: 'haiku',
-      label: 'Haiku',
-      description: 'Fast and efficient for simple tasks',
-    },
-    {
-      value: 'inherit',
-      label: 'Inherit from parent',
-      description: 'Use the same model as the main conversation',
-    },
-  ]
 }

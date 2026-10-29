@@ -1,3 +1,4 @@
+import chokidar from 'chokidar'
 import { mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'fs'
 import { basename, extname, join } from 'path'
 import { logForDebugging } from './debug.js'
@@ -62,6 +63,25 @@ export function reloadCustomThemes(): CustomTheme[] {
   palettes.clear()
   changed.emit()
   return loaded
+}
+
+/** Reloads the themes when files in the themes directory change on disk. */
+export function watchCustomThemes(): () => void {
+  const watcher = chokidar.watch(getCustomThemesDir(), {
+    persistent: true,
+    ignoreInitial: true,
+    depth: 0,
+    awaitWriteFinish: { stabilityThreshold: 300, pollInterval: 100 },
+    ignorePermissionErrors: true,
+  })
+  const reload = () => void reloadCustomThemes()
+  watcher.on('add', reload)
+  watcher.on('change', reload)
+  watcher.on('unlink', reload)
+  watcher.on('error', error =>
+    logForDebugging(`[theme] watcher error: ${error}`, { level: 'warn' }),
+  )
+  return () => void watcher.close().catch(() => {})
 }
 
 export function saveCustomTheme(theme: CustomTheme): void {
