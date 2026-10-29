@@ -1,0 +1,46 @@
+name: Linux search tools
+
+# Every PR: the embedded bfs/ugrep build is otherwise first exercised on Linux
+# arm64 by the release workflow.
+on:
+  workflow_dispatch:
+  pull_request:
+
+jobs:
+  linux-search-tools:
+    name: Build bfs and ugrep (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+
+      - name: Install musl-tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+
+      - name: Build bfs and ugrep
+        run: bun ./scripts/build-search-tools.mjs
+
+      - name: Check the built tools
+        run: |
+          dir="$(echo dist/search-tools/*-linux-$(bun -e 'process.stdout.write(process.arch)'))"
+          file "$dir/ugrep" "$dir/bfs"
+          "$dir/ugrep" --version
+          "$dir/bfs" --version
+          # Statically linked, and bfs (musl) can still look up users.
+          ! ldd "$dir/bfs" 2>/dev/null | grep -q '=>'
+          ! ldd "$dir/ugrep" 2>/dev/null | grep -q '=>'
+          test "$("$dir/bfs" scripts -maxdepth 0 -user "$(id -un)")" = scripts
+          test "$(printf 'aaa\nb\n' | "$dir/ugrep" -P -c 'a+')" = 1
