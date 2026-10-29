@@ -253,6 +253,19 @@ export type SDKRateLimitInfo = {
 export type SDKPermissionDenial = { tool_name: string; tool_use_id: string; tool_input: Record<string, unknown> }
 
 // SDK Message Types
+export type SDKToolResultMeta = {
+  id: string
+  non_execution_kind?:
+    | 'user-rejected'
+    | 'permission-rule'
+    | 'automode-blocked'
+    | 'automode-unavailable'
+    | 'automode-parsing-error'
+    | 'interrupted'
+    | 'cancelled'
+  user_feedback?: string
+  permission_decision?: { decision: 'accept' | 'reject' | 'cancelled'; source: string; reason_type?: string }
+}
 export type SDKUserMessage = {
   type: 'user'
   message: unknown
@@ -262,6 +275,7 @@ export type SDKUserMessage = {
   task_description?: string
   isSynthetic?: boolean
   tool_use_result?: unknown
+  tool_result_meta?: SDKToolResultMeta[]
   priority?: 'now' | 'next' | 'later'
   timestamp?: string
   uuid?: string
@@ -276,6 +290,7 @@ export type SDKUserMessageReplay = {
   task_description?: string
   isSynthetic?: boolean
   tool_use_result?: unknown
+  tool_result_meta?: SDKToolResultMeta[]
   priority?: 'now' | 'next' | 'later'
   timestamp?: string
   uuid: string

@@ -1509,6 +1509,35 @@ const SDKUserMessageContentSchema = lazySchema(() =>
       .describe('Description of the subagent task that produced this message.'),
     isSynthetic: z.boolean().optional(),
     tool_use_result: z.unknown().optional(),
+    tool_result_meta: z
+      .array(
+        z.object({
+          id: z.string(),
+          non_execution_kind: z
+            .enum([
+              'user-rejected',
+              'permission-rule',
+              'automode-blocked',
+              'automode-unavailable',
+              'automode-parsing-error',
+              'interrupted',
+              'cancelled',
+            ])
+            .optional(),
+          user_feedback: z.string().optional(),
+          permission_decision: z
+            .object({
+              decision: z.enum(['accept', 'reject', 'cancelled']),
+              source: z.string(),
+              reason_type: z.string().optional(),
+            })
+            .optional(),
+        }),
+      )
+      .optional()
+      .describe(
+        '@internal Metadata for this message\'s tool_result blocks, keyed by tool_use_id. non_execution_kind is why an is_error result carries no execution output; permission_decision is how the call\'s permission check ended. Subagent messages carry only permission_decision. Never sent to the model.',
+      ),
     priority: z.enum(['now', 'next', 'later']).optional(),
     timestamp: z
       .string()

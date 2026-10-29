@@ -223,6 +223,7 @@ export class StreamingToolExecutor {
           },
         ],
         toolUseResult: 'User rejected tool use',
+        toolDenialKind: 'user-rejected',
         sourceToolAssistantUUID: assistantMessage.uuid,
       })
     }
@@ -255,6 +256,7 @@ export class StreamingToolExecutor {
         },
       ],
       toolUseResult: msg,
+      toolDenialKind: 'cancelled',
       sourceToolAssistantUUID: assistantMessage.uuid,
     })
   }

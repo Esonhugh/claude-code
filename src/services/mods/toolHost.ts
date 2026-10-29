@@ -140,7 +140,11 @@ export function createModToolHost(context: ToolUseContext, canUseTool: CanUseToo
               text = typeof item.content === 'string' ? item.content :
                 Array.isArray(item.content) ? item.content.filter(part => part.type === 'text').map(part => part.text).join('\n') : ''
               isError = item.is_error === true
-              denied = message.toolDenialKind !== undefined
+              // Like official, an interrupted, cancelled or classifier-less
+              // call is an error rather than a refusal.
+              denied =
+                message.toolDenialKind !== undefined &&
+                !['automode-unavailable', 'automode-parsing-error', 'interrupted', 'cancelled'].includes(message.toolDenialKind)
             }
             if (message.toolUseResult !== undefined && result === undefined)
               result = message.toolUseResult

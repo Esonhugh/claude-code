@@ -498,6 +498,8 @@ export function createUserMessage({
   summarizeMetadata,
   toolUseResult,
   toolDenialKind,
+  userFeedback,
+  permissionDecision,
   mcpMeta,
   uuid,
   timestamp,
@@ -513,6 +515,8 @@ export function createUserMessage({
   isCompactSummary?: true
   toolUseResult?: unknown // Matches tool's `Output` type
   toolDenialKind?: UserMessage['toolDenialKind']
+  userFeedback?: string
+  permissionDecision?: UserMessage['permissionDecision']
   /** MCP protocol metadata to pass through to SDK consumers (never sent to model) */
   mcpMeta?: {
     _meta?: Record<string, unknown>
@@ -549,6 +553,8 @@ export function createUserMessage({
     timestamp: timestamp ?? new Date().toISOString(),
     toolUseResult,
     toolDenialKind,
+    userFeedback,
+    permissionDecision,
     mcpMeta,
     imagePasteIds,
     sourceToolAssistantUUID,
@@ -846,6 +852,11 @@ export function normalizeMessages(messages: Message[]): NormalizedMessage[] {
         }
         isNewChain = isNewChain || message.message.content.length > 1
         let imageIndex = 0
+        // The tool_result block keeps the message's refusal and permission
+        // metadata (SDK tool_result_meta).
+        const toolResultIndex = message.message.content.findIndex(
+          block => block.type === 'tool_result',
+        )
         return message.message.content.map((_, index) => {
           const isImage = _.type === 'image'
           // For image content blocks, extract just the ID for this image
@@ -860,6 +871,11 @@ export function normalizeMessages(messages: Message[]): NormalizedMessage[] {
               content: [_],
               toolUseResult: message.toolUseResult,
               mcpMeta: message.mcpMeta,
+              ...(index === toolResultIndex && {
+                toolDenialKind: message.toolDenialKind,
+                userFeedback: message.userFeedback,
+                permissionDecision: message.permissionDecision,
+              }),
               // @ts-ignore - recovered code
               isMeta: message.isMeta,
               // @ts-ignore - recovered code

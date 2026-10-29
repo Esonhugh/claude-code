@@ -230,6 +230,11 @@ export type PermissionAskDecision<
    * message in the tool result. Used when users paste images as feedback.
    */
   contentBlocks?: ContentBlockParam[]
+  /**
+   * The deny comment a human typed at a permission prompt (local dialog or a
+   * bridge client), reported as SDK tool_result_meta.user_feedback.
+   */
+  userFeedback?: string
 }
 
 /**
