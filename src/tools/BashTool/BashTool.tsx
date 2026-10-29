@@ -637,6 +637,15 @@ async function applySedEdit(
   }
 }
 
+// Abort reasons that count as an interruption of the command (official 2.1.311).
+const INTERRUPT_ABORT_REASONS = new Set<unknown>([
+  'user-cancel',
+  'remote-cancel',
+  'shutdown',
+  'interrupt',
+  'turn-abort',
+])
+
 export const BashTool = buildTool({
   name: BASH_TOOL_NAME,
   searchHint: 'execute shell commands',
@@ -929,6 +938,11 @@ export const BashTool = buildTool({
 
       const isInterrupt =
         result.interrupted && abortController.signal.reason === 'interrupt'
+      // Official reports an interruption only for a user or shutdown abort;
+      // a shell killed while its agent is stopped keeps a plain exit code.
+      const interruptedByUser =
+        result.interrupted &&
+        INTERRUPT_ABORT_REASONS.has(abortController.signal.reason)
 
       // stderr is interleaved in stdout (merged fd) — result.stdout has both
       stdoutAccumulator.append((result.stdout || '').trimEnd() + EOL)
@@ -981,7 +995,7 @@ export const BashTool = buildTool({
           '',
           outputWithSbFailures,
           result.code,
-          result.interrupted,
+          interruptedByUser,
         )
       }
       wasInterrupted = result.interrupted
