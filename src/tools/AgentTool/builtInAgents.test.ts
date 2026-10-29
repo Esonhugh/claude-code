@@ -82,7 +82,7 @@ describe('Coordinator built-in worker agent', () => {
       whenToUse:
         'For executing tasks autonomously — research, implementation, or verification.',
       tools: ['*'],
-      maxTurns: 200,
+      maxTurns: 500,
       permissionMode: 'bubble',
       source: 'built-in',
       baseDir: 'built-in',

@@ -84,6 +84,7 @@ import {
 import type { AgentDefinition } from './loadAgentsDir.js'
 import { parkAgentForChildren } from './backgroundOwner.js'
 import { MAX_SUBAGENT_DEPTH } from './subagentDepth.js'
+import { SEND_MESSAGE_TOOL_NAME } from '../SendMessageTool/constants.js'
 export type ResolvedAgentTools = {
   hasWildcard: boolean
   validTools: string[]
@@ -402,10 +403,21 @@ export const agentToolResultSchema = lazySchema(() =>
     harnessNoteCount: z.number().optional(),
     harnessTailCount: z.number().optional(),
     harnessSectionHash: z.string().optional(),
+    // Set when the run stopped at its maxTurns limit; content is then partial.
+    turnLimit: z.number().optional(),
   }),
 )
 
 export type AgentToolResult = z.input<ReturnType<typeof agentToolResultSchema>>
+
+function turnLimitFromMessages(messages: MessageType[]): number | undefined {
+  const attachment = messages.findLast(
+    message => message.type === 'attachment' && message.attachment.type === 'max_turns_reached',
+  )
+  return attachment?.type === 'attachment' && attachment.attachment.type === 'max_turns_reached'
+    ? attachment.attachment.maxTurns
+    : undefined
+}
 
 function structuredOutputFromMessages(messages: MessageType[]): unknown {
   const attachment = messages.findLast(
@@ -577,6 +589,14 @@ export function finalizeAgentTool(
     })
   }
 
+  const turnLimit = turnLimitFromMessages(agentMessages)
+  if (turnLimit !== undefined) {
+    // Same notice as official 2.1.311, so the parent continues the agent
+    // instead of taking the partial output as its report.
+    const note = `NOTE: this agent stopped at its ${turnLimit}-turn limit before finishing.${content.length === 0 ? ' It was still calling tools and had produced no report.' : ' The text below is PARTIAL output; treat it as incomplete.'} Send the agent a message (${SEND_MESSAGE_TOOL_NAME}) to let it continue from where it stopped.\n`
+    content = [{ type: 'text', text: note }, ...content]
+  }
+
   const structuredOutput = structuredOutputFromMessages(agentMessages)
   // A hand-back run's result is the report it delivered, never its last text.
   const handback = takeSubagentHandbackResult(
@@ -593,6 +613,7 @@ export function finalizeAgentTool(
     totalTokens,
     totalToolUseCount,
     usage: lastAssistantMessage.message.usage,
+    ...(turnLimit !== undefined && { turnLimit }),
     ...(structuredOutput === undefined
       ? {}
       : { structured_output: structuredOutput }),
@@ -895,6 +916,7 @@ export async function runAsyncAgentLifecycle({
         waiting: true,
         setAppState: rootSetAppState,
         finalMessage: subagentResultText(agentResult),
+        turnLimit: agentResult.turnLimit,
         usage: {
           totalTokens: finalProgress.tokenCount,
           toolUses: finalProgress.toolUseCount,
@@ -950,6 +972,7 @@ export async function runAsyncAgentLifecycle({
       status: 'completed',
       setAppState: rootSetAppState,
       finalMessage,
+      turnLimit: agentResult.turnLimit,
       usage: {
         totalTokens: finalProgress.tokenCount,
         toolUses: finalProgress.toolUseCount,

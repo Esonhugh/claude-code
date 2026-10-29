@@ -46,6 +46,7 @@ import {
 } from '../../utils/task/framework.js'
 import { emitTaskProgress } from '../../utils/task/sdkProgress.js'
 import type { TaskState } from '../types.js'
+import { SEND_MESSAGE_TOOL_NAME } from '../../tools/SendMessageTool/constants.js'
 
 export type ToolActivity = {
   toolName: string
@@ -363,12 +364,15 @@ export function enqueueAgentNotification({
   worktreePath,
   worktreeBranch,
   waiting,
+  turnLimit,
 }: {
   taskId: string
   description: string
   status: 'completed' | 'failed' | 'killed'
   /** Interim notice: the agent stopped with its own background work still running. */
   waiting?: boolean
+  /** The agent stopped at its maxTurns limit; its result is partial. */
+  turnLimit?: number
   error?: string
   setAppState: SetAppState
   finalMessage?: string
@@ -413,7 +417,7 @@ export function enqueueAgentNotification({
 
   const summary = escapeXml(
     status === 'completed'
-      ? `Agent "${description}" ${waiting ? 'is waiting on its own background work' : 'finished'}`
+      ? `Agent "${description}" ${waiting ? 'is waiting on its own background work' : turnLimit !== undefined ? `stopped at its ${turnLimit}-turn limit (partial result; ${SEND_MESSAGE_TOOL_NAME} to task-id to continue)` : 'finished'}`
       : status === 'failed'
         ? `Agent "${description}" failed: ${error || 'Unknown error'}`
         : `Agent "${description}" was stopped`,

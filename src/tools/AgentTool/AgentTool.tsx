@@ -1894,6 +1894,7 @@ export const AgentTool = buildTool({
                         status: 'completed',
                         setAppState: rootSetAppState,
                         finalMessage,
+                        turnLimit: agentResult.turnLimit,
                         usage: {
                           totalTokens: finalProgress.tokenCount,
                           toolUses: finalProgress.toolUseCount,
