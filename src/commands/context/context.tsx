@@ -62,7 +62,10 @@ export async function call(
   )
 
   // Render to ANSI string to preserve colors and pass to onDone like local commands do
-  const output = await renderToAnsiString(<ContextVisualization data={data} />)
+  const output = await renderToAnsiString(
+    <ContextVisualization data={data} />,
+    terminalWidth,
+  )
   onDone(output)
   return null
 }
