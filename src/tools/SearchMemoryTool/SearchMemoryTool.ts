@@ -56,7 +56,9 @@ export const SearchMemoryTool = buildTool({
   async prompt() {
     return `Search saved memories and past session transcripts with a local full-text index.
 
-Use it before relying on memory: when the user refers to earlier work, asks you to recall something, or a saved preference or project fact may apply. Results give the file path (and line for transcripts) with a matching snippet; Read a memory file for its full text. Search with distinctive words; try other words if nothing matches.`
+Call it before you answer or act whenever a saved preference, convention or project decision could apply (branches, releases, deploys, tests, commits, naming, config values, people), when the user refers to earlier work, and before you say you don't know or fall back to a common default. Memories attached to the user's message are keyword matches only; search anyway when they don't answer the question. The index is local, so a search is cheap.
+
+Matching is by words, not meaning: memories may be in another language than the user's message, so include English keywords, the user's own words and likely synonyms in one query. If nothing matches, try different words once before concluding there is no memory. Results give the file path (and line for transcripts) with a matching snippet; Read a memory file for its full text.`
   },
   get inputSchema(): InputSchema {
     return inputSchema()
