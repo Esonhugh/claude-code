@@ -46,6 +46,7 @@ import {
   updateProgressFromMessage,
 } from '../../tasks/LocalAgentTask/LocalAgentTask.js'
 import { asAgentId } from '../../types/ids.js'
+import { killShellTasksForAgent } from '../../tasks/LocalShellTask/killShellTasks.js'
 import type { ClaudeAILimits } from '../../services/claudeAiLimits.js'
 import type { Message as MessageType } from '../../types/message.js'
 import { isAgentSwarmsEnabled } from '../../utils/agentSwarmsEnabled.js'
@@ -790,6 +791,14 @@ export async function runAsyncAgentLifecycle({
   const resolveActivity = createActivityDescriptionResolver(
     toolUseContext.options.tools,
   )
+  // runAgent leaves this agent's background shells running (keepBackgroundShells)
+  // so a parked owner can wait on them; every other exit reclaims them here.
+  const killOwnShells = () =>
+    killShellTasksForAgent(
+      asAgentId(taskId),
+      toolUseContext.getAppStateForTasks ?? toolUseContext.getAppState,
+      rootSetAppState,
+    )
   try {
     const onCacheSafeParams = enableSummarization
       ? (params: CacheSafeParams) => {
@@ -877,6 +886,7 @@ export async function runAsyncAgentLifecycle({
     onRunSettled?.()
     completeAsyncAgent(agentResult, rootSetAppState)
     if (parkAgentForChildren({ taskId, toolUseContext, resume, getWorktreeResult })) return
+    killOwnShells()
 
     let finalMessage = subagentResultText(agentResult)
 
@@ -933,6 +943,7 @@ export async function runAsyncAgentLifecycle({
   } catch (error) {
     onRunSettled?.()
     stopSummarization?.()
+    killOwnShells()
     const currentTask = toolUseContext.getAppState().tasks[taskId]
     if (isLocalAgentTask(currentTask) && currentTask.status === 'completed') {
       logForDebugging(

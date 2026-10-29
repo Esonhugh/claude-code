@@ -5,6 +5,9 @@ import {
   isLocalAgentTask,
   type LocalAgentTaskState,
 } from '../../tasks/LocalAgentTask/LocalAgentTask.js'
+import { isLocalShellTask } from '../../tasks/LocalShellTask/guards.js'
+import { killShellTasksForAgent } from '../../tasks/LocalShellTask/killShellTasks.js'
+import { asAgentId } from '../../types/ids.js'
 import { registerCleanup } from '../../utils/cleanupRegistry.js'
 import { logForDebugging } from '../../utils/debug.js'
 import { errorMessage } from '../../utils/errors.js'
@@ -44,6 +47,8 @@ export function parkAgentForChildren({
   const liveReasons = (owner: LocalAgentTaskState, commands: typeof queued) => {
     const tasks = get().tasks
     return new Set([...owner.keepaliveReasons ?? []].filter(reason => {
+      // A finished shell's notification is already queued (addressed) when its status flips.
+      if (reason.startsWith('shell:')) return tasks[reason.slice(6)]?.status === 'running'
       if (!reason.startsWith('agent:')) return true
       const childId = reason.slice(6)
       const child = tasks[childId]
@@ -51,7 +56,10 @@ export function parkAgentForChildren({
         (!child.notified || commands.some(command => command.taskId === childId))
     }))
   }
-  const reasons = liveReasons(parent, queued)
+  // Background Bash/Monitor the agent left running keep it waiting for their notifications.
+  const shells = Object.values(state.tasks).flatMap(task =>
+    isLocalShellTask(task) && task.agentId === taskId && task.status === 'running' ? [`shell:${task.id}`] : [])
+  const reasons = liveReasons({ ...parent, keepaliveReasons: new Set([...parent.keepaliveReasons ?? [], ...shells]) }, queued)
   updateTaskState<LocalAgentTaskState>(taskId, set, task => ({ ...task, keepaliveReasons: reasons }))
   // SendMessage text queued after the last tool round also starts the next turn.
   if (reasons.size === 0 && queued.length === 0 && parent.pendingMessages.length === 0) return false
@@ -65,6 +73,7 @@ export function parkAgentForChildren({
     unsubscribeTasks()
     unregisterCleanup()
   }
+  const killShells = () => killShellTasksForAgent(asAgentId(taskId), get, set)
   const reroute = (commands: ReturnType<typeof getCommandQueue>) => {
     for (const command of commands) {
       void enqueuePendingNotification({ ...command, agentId: undefined })
@@ -107,6 +116,7 @@ export function parkAgentForChildren({
     if (!isLocalAgentTask(task) || task.status === 'failed' || task.status === 'killed') {
       dispose()
       reroute(dequeueAllMatching(addressed))
+      killShells()
       if (isLocalAgentTask(task)) await notifyTerminal(task, task.status as 'failed' | 'killed')
       return
     }
@@ -170,6 +180,7 @@ export function parkAgentForChildren({
         unregisterCleanup: undefined,
       }))
       reroute(commands)
+      killShells()
       await notifyTerminal(task, 'failed', message)
       logForDebugging(`[AgentLifecycle] owner_wake_failed agent_id=${taskId}: ${message}`, { level: 'warn' })
     }

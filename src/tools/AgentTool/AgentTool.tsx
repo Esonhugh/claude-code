@@ -1440,6 +1440,7 @@ export const AgentTool = buildTool({
                   abortController: agentBackgroundTask.abortController!,
                 },
                 onCacheSafeParams,
+                keepBackgroundShells: true,
               }),
             metadata,
             description,

@@ -484,6 +484,7 @@ export async function* runAgent({
   recordedUuids,
   extraMetadata,
   handback,
+  keepBackgroundShells,
 }: {
   agentDefinition: AgentDefinition
   /** Host-built named sections, before per-agent environment enhancement. */
@@ -492,6 +493,9 @@ export async function* runAgent({
   toolUseContext: ToolUseContext
   canUseTool: CanUseToolFn
   isAsync: boolean
+  /** Leave this agent's background shells running on exit: its async lifecycle
+   * parks the agent on them and reclaims them itself. */
+  keepBackgroundShells?: boolean
   /** Whether this agent can show permission prompts. Defaults to !isAsync.
    * Set to true for in-process teammates that run async but share the terminal. */
   canShowPermissionPrompts?: boolean
@@ -1405,7 +1409,7 @@ export async function* runAgent({
     // Kill any background bash tasks this agent spawned. Without this, a
     // `run_in_background` shell loop (e.g. test fixture fake-logs.sh) outlives
     // the agent as a PPID=1 zombie once the main session eventually exits.
-    killShellTasksForAgent(agentId, toolUseContext.getAppState, rootSetAppState)
+    if (!keepBackgroundShells) killShellTasksForAgent(agentId, toolUseContext.getAppState, rootSetAppState)
     /* eslint-disable @typescript-eslint/no-require-imports */
     if (feature('MONITOR_TOOL')) {
       const mcpMod =

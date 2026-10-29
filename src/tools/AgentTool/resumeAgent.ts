@@ -444,6 +444,7 @@ export async function resumeAgentBackground({
               abortController: agentBackgroundTask.abortController!,
             },
             onCacheSafeParams,
+            keepBackgroundShells: true,
           }),
         metadata,
         description: uiDescription,
