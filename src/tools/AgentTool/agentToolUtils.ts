@@ -885,7 +885,25 @@ export async function runAsyncAgentLifecycle({
     // not gate the status transition (gh-20236).
     onRunSettled?.()
     completeAsyncAgent(agentResult, rootSetAppState)
-    if (parkAgentForChildren({ taskId, toolUseContext, resume, getWorktreeResult })) return
+    if (parkAgentForChildren({ taskId, toolUseContext, resume, getWorktreeResult })) {
+      const parked = toolUseContext.getAppState().tasks[taskId]
+      const ownWork = isLocalAgentTask(parked) && [...parked.keepaliveReasons ?? []].some(reason => reason.startsWith('shell:'))
+      if (ownWork && shouldNotifyOwner?.() !== false) enqueueAgentNotification({
+        taskId,
+        description,
+        status: 'completed',
+        waiting: true,
+        setAppState: rootSetAppState,
+        finalMessage: subagentResultText(agentResult),
+        usage: {
+          totalTokens: finalProgress.tokenCount,
+          toolUses: finalProgress.toolUseCount,
+          durationMs: agentResult.totalDurationMs,
+        },
+        toolUseId: toolUseContext.toolUseId,
+      })
+      return
+    }
     killOwnShells()
 
     let finalMessage = subagentResultText(agentResult)

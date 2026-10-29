@@ -93,6 +93,11 @@ export function parkAgentForChildren({
         { level: 'warn' },
       )
     }
+    // An interim waiting notice promised another notification; a stop or failure is that one.
+    if (status !== 'completed') {
+      updateTaskState<LocalAgentTaskState>(taskId, set, current =>
+        current.waitingNotice ? { ...current, notified: false, waitingNotice: undefined } : current)
+    }
     const result = task.result
     enqueueAgentNotification({
       taskId,
