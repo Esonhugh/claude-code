@@ -62,7 +62,7 @@ import { logForDebugging } from '../../utils/debug.js'
 import { isEnvTruthy } from '../../utils/envUtils.js'
 import { EFFORT_LEVELS, getDefaultEffortForModel, type EffortValue } from '../../utils/effort.js'
 import { getAPIProvider } from '../../utils/model/providers.js'
-import { AbortError, errorMessage, toError } from '../../utils/errors.js'
+import { AbortError, errorMessage, isAbortError, toError } from '../../utils/errors.js'
 import type { CacheSafeParams } from '../../utils/forkedAgent.js'
 import { lazySchema } from '../../utils/lazySchema.js'
 import {
@@ -1934,7 +1934,7 @@ export const AgentTool = buildTool({
                         resolveActivity2,
                         toolUseContext.options.tools,
                       )
-                      if (error instanceof AbortError) {
+                      if (isAbortError(error)) {
                         // Transition status BEFORE worktree cleanup so
                         // TaskOutput unblocks even if git hangs (gh-20236).
                         killAsyncAgent(backgroundedTaskId, rootSetAppState)
