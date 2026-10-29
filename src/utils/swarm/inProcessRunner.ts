@@ -99,6 +99,7 @@ import type { TeammateContext } from '../teammateContext.js'
 import { runWithTeammateContext } from '../teammateContext.js'
 import {
   createIdleNotification,
+  getIdleResult,
   getLastPeerDmSummary,
   isPermissionResponse,
   isShutdownRequest,
@@ -627,6 +628,7 @@ async function sendIdleNotification(
     completedTaskId?: string
     completedStatus?: 'resolved' | 'blocked' | 'failed'
     failureReason?: string
+    result?: string
   },
 ): Promise<void> {
   const notification = createIdleNotification(agentName, options)
@@ -1432,6 +1434,7 @@ export async function runInProcessTeammate(
           {
             idleReason: workWasAborted ? 'interrupted' : 'available',
             summary: getLastPeerDmSummary(allMessages),
+            result: workWasAborted ? undefined : getIdleResult(allMessages),
           },
         )
       } else {

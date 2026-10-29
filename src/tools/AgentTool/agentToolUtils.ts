@@ -51,7 +51,7 @@ import type { Message as MessageType } from '../../types/message.js'
 import { isAgentSwarmsEnabled } from '../../utils/agentSwarmsEnabled.js'
 import { logForDebugging } from '../../utils/debug.js'
 import { isInProtectedNamespace } from '../../utils/envUtils.js'
-import { AbortError, errorMessage } from '../../utils/errors.js'
+import { errorMessage, isAbortError } from '../../utils/errors.js'
 import type { CacheSafeParams } from '../../utils/forkedAgent.js'
 import { lazySchema } from '../../utils/lazySchema.js'
 import {
@@ -950,7 +950,7 @@ export async function runAsyncAgentLifecycle({
       })
       return
     }
-    if (error instanceof AbortError) {
+    if (isAbortError(error)) {
       // killAsyncAgent is a no-op if TaskStop already set status='killed' —
       // but only this catch handler has agentMessages, so the notification
       // must fire unconditionally. Transition status BEFORE worktree cleanup
