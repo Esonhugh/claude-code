@@ -40,23 +40,14 @@
 
 ![/subtask](images/agents-subtask.png)
 
-## 定义自己的子代理：`/agents`
+## 定义自己的子代理
 
-**1.** 输入 `/agents`。下方列出内置子代理和它们用的模型；选 `Create new agent`：
+与官方 2.1.311 一致，`/agents` 交互向导已移除，输入 `/agents` 只会提示改用以下两种方式：
 
-![/agents 列表](images/agents-builtin.png)
+- 直接让 Claude 创建或修改，例如「create a code-reviewer subagent that ...」。
+- 手写文件：项目级放 `.claude/agents/`，个人级放 `~/.claude/agents/`。
 
-**2.** 依次选择：保存位置（项目 `.claude/agents/` 或个人 `~/.claude/agents/`）→ 创建方式（让 Claude 生成，或 `Manual configuration` 手写）→ 名字 → 系统提示 → 什么时候用（description，Claude 靠这句话决定何时调用它）。
-
-**3.** 选工具。下图只保留只读工具，这个子代理就不能改文件：
-
-![选择工具](images/agents-create-tools.png)
-
-**4.** 再选模型、颜色、记忆范围，最后确认保存：
-
-![确认保存](images/agents-create-confirm.png)
-
-保存的文件就是一个普通 Markdown，可以直接手写或提交进仓库：
+子代理文件就是一个普通 Markdown，可以提交进仓库：
 
 ```markdown
 ---

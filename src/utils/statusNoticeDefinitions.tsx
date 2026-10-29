@@ -203,10 +203,13 @@ const largeAgentDescriptionsNotice: StatusNoticeDefinition = {
       <Box flexDirection="row">
         <Text color="warning">{figures.warning}</Text>
         <Text color="warning">
-          Large cumulative agent descriptions will impact performance (~
-          {formatNumber(totalTokens)} tokens &gt;{' '}
-          {formatNumber(AGENT_DESCRIPTIONS_THRESHOLD)})
-          <Text dimColor> · /agents to manage</Text>
+          Agent descriptions are over the{' '}
+          {formatNumber(AGENT_DESCRIPTIONS_THRESHOLD)}-token limit (~
+          {formatNumber(totalTokens)} tokens)
+          <Text dimColor>
+            {' '}
+            · ask Claude to trim agent descriptions in .claude/agents/
+          </Text>
         </Text>
       </Box>
     )

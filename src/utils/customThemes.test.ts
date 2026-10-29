@@ -3,11 +3,13 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import {
+  getCustomThemes,
   getCustomThemesDir,
   reloadCustomThemes,
   saveCustomTheme,
   setCustomThemePreview,
   uniqueCustomThemeSlug,
+  watchCustomThemes,
 } from './customThemes.js'
 import { resolveThemeSetting } from './systemTheme.js'
 import { getBuiltinTheme, getTheme, isThemeColorValue } from './theme.js'
@@ -84,4 +86,25 @@ test('slugs are file-name safe and unique', () => {
   expect(uniqueCustomThemeSlug('My Theme!', themes)).toBe('my-theme')
   expect(uniqueCustomThemeSlug('Ocean', themes)).toBe('ocean-2')
   expect(uniqueCustomThemeSlug('***', themes)).toBe('theme')
+})
+
+test('files added, changed or removed by hand reload the themes', async () => {
+  reloadCustomThemes()
+  const stop = watchCustomThemes()
+  const file = join(getCustomThemesDir(), 'by-hand.json')
+  const waitFor = async (check: () => boolean) => {
+    for (let i = 0; i < 50 && !check(); i++) await Bun.sleep(100)
+    expect(check()).toBe(true)
+  }
+  try {
+    await Bun.sleep(200)
+    writeFileSync(file, JSON.stringify({ name: 'By hand', base: 'light', overrides: {} }))
+    await waitFor(() => getCustomThemes().some(theme => theme.name === 'By hand'))
+    writeFileSync(file, JSON.stringify({ name: 'Edited', base: 'light', overrides: {} }))
+    await waitFor(() => getCustomThemes().some(theme => theme.name === 'Edited'))
+    rmSync(file)
+    await waitFor(() => !getCustomThemes().some(theme => theme.slug === 'by-hand'))
+  } finally {
+    stop()
+  }
 })
