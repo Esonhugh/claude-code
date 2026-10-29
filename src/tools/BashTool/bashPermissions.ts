@@ -78,7 +78,7 @@ import {
   bashCommandIsSafeAsync_DEPRECATED,
   stripSafeHeredocSubstitutions,
 } from './bashSecurity.js'
-import { checkDangerousRemoval } from './dangerousRemoval.js'
+import { checkDangerousRemoval, inlineShellRemovals } from './dangerousRemoval.js'
 import { checkPermissionMode } from './modeValidation.js'
 import { checkPathConstraints } from './pathValidation.js'
 import * as bashPathValidation from './pathValidation.js'
@@ -1802,7 +1802,7 @@ function checkRemovalPermission(
         }
       }
     }
-    if (removal.behavior !== 'ask') return null
+    if (removal.behavior !== 'ask') return checkInlineShellRemovalDeny(input, toolPermissionContext, root)
     if (getDenyRules(toolPermissionContext).length === 0) return removal
 
     const commands = [input.command]
@@ -1860,6 +1860,33 @@ function checkRemovalPermission(
       decisionReason: { type: 'other', reason: 'Removal safety check failed' },
     }
   }
+}
+
+// Like official, a deny rule that matches a removal inside a `sh -c` script
+// makes the whole script ask (in every mode) instead of running it.
+function checkInlineShellRemovalDeny(
+  input: z.infer<typeof BashTool.inputSchema>,
+  toolPermissionContext: ToolPermissionContext,
+  root: Node | null | typeof PARSE_ABORTED,
+): PermissionResult | null {
+  if (!root || typeof root === 'symbol') return null
+  const denyRules = getRuleByContentsForTool(toolPermissionContext, BashTool, 'deny')
+  if (denyRules.size === 0) return null
+  for (const command of inlineShellRemovals(root)) {
+    const rule = filterRulesByContentsMatchingInput(
+      { ...input, command }, denyRules, 'prefix',
+      { stripAllEnvVars: true, skipCompoundCheck: true },
+    )[0]
+    if (!rule) continue
+    const reason = 'A permission rule denies a command in this shell -c script'
+    return {
+      behavior: 'ask',
+      message: 'A permission rule denies a command inside this shell -c script, so Claude Code could not check it for dangerous removals. Approving runs the whole script, including that command.',
+      decisionReason: { type: 'safetyCheck', reason, classifierApprovable: false, bypassImmune: true },
+      suggestions: [],
+    }
+  }
+  return null
 }
 
 function isAllowedByRule(result: PermissionResult): boolean {
