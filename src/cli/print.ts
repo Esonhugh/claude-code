@@ -430,6 +430,7 @@ import {
   readUnreadMessages,
   markMessagesAsRead,
   isShutdownApproved,
+  capIdleResultsInDrain,
 } from '../utils/teammateMailbox.js'
 import { handleTeammateShutdownApproved } from '../utils/swarm/teammateShutdown.js'
 import { getRunningTasks } from '../utils/task/framework.js'
@@ -2915,7 +2916,7 @@ function runHeadlessStreaming(
             }
 
             // Format messages same as useInboxPoller
-            const formatted = unread
+            const formatted = capIdleResultsInDrain(unread)
               .map(
                 (m: { from: string; text: string; color?: string }) =>
                   `<${TEAMMATE_MESSAGE_TAG} teammate_id="${m.from}"${m.color ? ` color="${m.color}"` : ''}>\n${m.text}\n</${TEAMMATE_MESSAGE_TAG}>`,

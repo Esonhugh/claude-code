@@ -49,6 +49,7 @@ import {
 } from '../utils/teammate.js'
 import { runOutsideTeammateContext } from '../utils/teammateContext.js'
 import {
+  capIdleResultsInDrain,
   isModeSetRequest,
   isPermissionRequest,
   isPermissionResponse,
@@ -764,7 +765,7 @@ export function useInboxPoller({
 
     // Format messages with XML wrapper for Claude (include color if available)
     // Transform plan approval requests to include instructions for Claude
-    const formatted = regularMessages
+    const formatted = capIdleResultsInDrain(regularMessages)
       .map(m => {
         const colorAttr = m.color ? ` color="${m.color}"` : ''
         const summaryAttr = m.summary ? ` summary="${m.summary}"` : ''
@@ -870,7 +871,7 @@ export function useInboxPoller({
     )
 
     // Format messages with XML wrapper for Claude (include color if available)
-    const formatted = pendingMessages
+    const formatted = capIdleResultsInDrain(pendingMessages)
       .map(m => {
         const colorAttr = m.color ? ` color="${m.color}"` : ''
         const summaryAttr = m.summary ? ` summary="${m.summary}"` : ''
