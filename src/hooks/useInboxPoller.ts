@@ -11,9 +11,9 @@ import {
   useAppStateStore,
   useSetAppState,
 } from '../state/AppState.js'
-import { findToolByName } from '../Tool.js'
+import { findToolByName, type ToolPermissionContext } from '../Tool.js'
 import { getAllBaseTools } from '../tools.js'
-import type { PermissionUpdate } from '../types/permissions.js'
+import type { PermissionMode, PermissionUpdate } from '../types/permissions.js'
 import { logForDebugging } from '../utils/debug.js'
 import {
   findInProcessTeammateTaskId,
@@ -71,6 +71,26 @@ import {
   processMailboxPermissionResponse,
   processSandboxPermissionResponse,
 } from './useSwarmPermissionPoller.js'
+
+/**
+ * The teammate's context once the lead approves its plan: the lead's mode (or
+ * default), entered through the same gates as any other mode switch. A mode
+ * this session cannot enter falls back to default.
+ */
+export function planApprovedContext(
+  current: ToolPermissionContext,
+  leaderMode: PermissionMode | undefined,
+): ToolPermissionContext {
+  const targetMode = toExternalPermissionMode(leaderMode ?? 'default')
+  try {
+    return transitionPermissionModeWithGates(current, targetMode)
+  } catch (error) {
+    logForDebugging(
+      `[InboxPoller] Plan approval asked for ${targetMode}: ${error instanceof Error ? error.message : String(error)}; using default`,
+    )
+    return transitionPermissionModeWithGates(current, 'default')
+  }
+}
 
 /**
  * Get the agent name to poll for messages.
@@ -159,23 +179,13 @@ export function useInboxPoller({
             `[InboxPoller] Received plan approval response from team-lead: approved=${approvalResponse.approved}`,
           )
           if (approvalResponse.approved) {
-            // Use leader's permission mode if provided, otherwise default
-            const targetMode = approvalResponse.permissionMode ?? 'default'
-
-            // Transition out of plan mode
-            setAppState(prev => ({
-              ...prev,
-              toolPermissionContext: applyPermissionUpdate(
-                prev.toolPermissionContext,
-                {
-                  type: 'setMode',
-                  mode: toExternalPermissionMode(targetMode),
-                  destination: 'session',
-                },
-              ),
-            }))
+            const next = planApprovedContext(
+              store.getState().toolPermissionContext,
+              approvalResponse.permissionMode,
+            )
+            setAppState(prev => ({ ...prev, toolPermissionContext: next }))
             logForDebugging(
-              `[InboxPoller] Plan approved by team lead, exited plan mode to ${targetMode}`,
+              `[InboxPoller] Plan approved by team lead, exited plan mode to ${next.mode}`,
             )
           } else {
             logForDebugging(
