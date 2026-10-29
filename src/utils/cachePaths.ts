@@ -26,6 +26,7 @@ export const CACHE_PATHS = {
   baseLogs: () => join(paths.cache, getProjectDir(getFsImplementation().cwd())),
   ripgrep: () => join(paths.cache, 'ripgrep'),
   srtWin: () => join(paths.cache, 'srt-win'),
+  searchTools: () => join(paths.cache, 'search-tools'),
   builtinMods: () => join(paths.cache, 'builtin-mods'),
   gatewayModels: () => join(paths.cache, 'gateway-models.json'),
   errors: () =>

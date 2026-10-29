@@ -9,6 +9,7 @@ import { tmpdir } from "node:os";
 import { unzipSync } from "fflate";
 import { packageOfficialDiff } from "./package-official-diff.mjs";
 import { copyRuntimeAssets } from "./build.mjs";
+import { SEARCH_TOOLS_VERSION, searchToolsDir } from "./search-tools.mjs";
 const archiveName = "builtin-diff-2.1.295.zip";
 test("actual runtime asset producer copies latest diff beside the preserved legacy archive", async () => {
   const root = await fs.mkdtemp(path.join(tmpdir(), "diff-assets-292-"));
@@ -113,6 +114,8 @@ test("actual binary packaging control embeds the latest archive as a file asset"
       },
       console: { log() {} },
       prepareBuildDirectory: (value) => value,
+      SEARCH_TOOLS_VERSION,
+      searchToolsDir,
       buildCli: async () => {},
       fs: {
         existsSync: () => true,
