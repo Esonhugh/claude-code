@@ -1200,10 +1200,9 @@ async function getMessagesForPromptSlashCommand(
   uuid?: string,
   snapshot = context.modsSnapshot,
 ): Promise<SlashCommandResult> {
-  // In coordinator mode (main thread only), skip loading the full skill content
-  // and permissions. The coordinator only has Agent + TaskStop tools, so the
-  // skill content and allowedTools are useless. Instead, send a brief summary
-  // telling the coordinator how to delegate this skill to a worker.
+  // In coordinator mode (main thread only), a user-typed /skill gets a brief
+  // summary telling the coordinator how to delegate it to a worker. The
+  // coordinator's own Skill tool sets isSkillPreload and loads read-only below.
   //
   // Workers run in-process and inherit CLAUDE_CODE_COORDINATOR_MODE from the
   // parent env, so we also check !context.agentId: agentId is only set for
@@ -1213,7 +1212,8 @@ async function getMessagesForPromptSlashCommand(
     feature('COORDINATOR_MODE') &&
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     (require('../../coordinator/coordinatorMode.js') as typeof import('../../coordinator/coordinatorMode.js')).isCoordinatorMode() &&
-    !context.agentId
+    !context.agentId &&
+    !context.options.isSkillPreload
   ) {
     const metadata = formatCommandLoadingMetadata(command, args)
     const parts: string[] = [
@@ -1273,8 +1273,10 @@ async function getMessagesForPromptSlashCommand(
   // Register skill hooks if defined. Under ["hooks"]-only (skills not locked),
   // user skills still load and reach this point — block hook REGISTRATION here
   // where source is known. Mirrors the agent frontmatter gate in runAgent.ts.
+  const readOnlyLoad = context.options.readOnlySkillLoad === true
   const hooksAllowedForThisSkill =
-    !isRestrictedToPluginOnly('hooks') || isSourceAdminTrusted(command.source)
+    !readOnlyLoad &&
+    (!isRestrictedToPluginOnly('hooks') || isSourceAdminTrusted(command.source))
   const isBuiltinGoal = command.name === 'goal' && command.source === 'builtin'
   if (
     hooksAllowedForThisSkill &&
@@ -1324,9 +1326,9 @@ async function getMessagesForPromptSlashCommand(
 
   const metadata = formatCommandLoadingMetadata(command, args)
 
-  const additionalAllowedTools = parseToolListFromCLI(
-    getCommandAllowedTools(command),
-  )
+  const additionalAllowedTools = readOnlyLoad
+    ? []
+    : parseToolListFromCLI(getCommandAllowedTools(command))
 
   // Create content for the main message, including any pasted images
   const mainMessageContent: ContentBlockParam[] =

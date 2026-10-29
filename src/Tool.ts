@@ -231,6 +231,9 @@ export type ToolUseContext = {
     /** Inline skill running in this turn; its responses are attributed to it. */
     activeSkill?: string
     spawnedByForkedSkill?: boolean
+    /** Coordinator Skill tool load: instructions only, no shell, hooks, grants or fork. */
+    isSkillPreload?: boolean
+    readOnlySkillLoad?: boolean
     /** Optional callback to get the latest tools (e.g., after MCP servers connect mid-query) */
     refreshTools?: () => Tools
     /** Prevent workflow worker agents from recursively spawning agents/workflows. */

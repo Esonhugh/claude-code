@@ -81,7 +81,7 @@ export function buildEffectiveSystemPrompt({
       // eslint-disable-next-line @typescript-eslint/no-require-imports
       require('../coordinator/coordinatorMode.js') as typeof import('../coordinator/coordinatorMode.js')
     if (isCoordinatorMode()) return concatSystemPrompts(
-      [getCoordinatorSystemPrompt()],
+      [getCoordinatorSystemPrompt(toolUseContext.options.tools?.map(t => t.name))],
       appendSystemPrompt ? [appendSystemPrompt] : [],
     )
   }

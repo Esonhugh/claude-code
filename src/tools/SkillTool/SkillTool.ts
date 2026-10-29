@@ -711,7 +711,14 @@ export const SkillTool: Tool<InputSchema, Output, Progress> = buildTool({
     // Track skill usage for ranking
     recordSkillUsage(resolvedCommandName)
 
-    const runsForked = command?.type === 'prompt' &&
+    // Like official 2.1.311: the coordinator's own Skill call only reads the
+    // instructions; workers run them.
+    const readOnlyLoad = feature('COORDINATOR_MODE')
+      ? !context.agentId &&
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        (require('../../coordinator/coordinatorMode.js') as typeof import('../../coordinator/coordinatorMode.js')).isCoordinatorMode()
+      : false
+    const runsForked = !readOnlyLoad && command?.type === 'prompt' &&
       getPromptCommandContext(command, args || '', context) === 'fork'
     if (runsForked &&
         context.options.spawnedBySkill === getSkillAttributionName(command)) {
@@ -739,7 +746,16 @@ export const SkillTool: Tool<InputSchema, Output, Progress> = buildTool({
       resolvedCommandName,
       args || '', // Pass args if provided
       [command],
-      context,
+      readOnlyLoad
+        ? {
+            ...context,
+            options: {
+              ...context.options,
+              isSkillPreload: true,
+              readOnlySkillLoad: true,
+            },
+          }
+        : context,
       [],
       canUseTool,
     )
