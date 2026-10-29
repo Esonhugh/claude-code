@@ -96,7 +96,9 @@ export async function resumeAgentBackground({
     }
   }
   refuseUserStop()
-  const startTime = Date.now()
+  // Like official 2.1.311, a resumed agent reports time since it first started.
+  const previous = toolUseContext.getAppState().tasks[agentId]
+  const startTime = isLocalAgentTask(previous) ? previous.startTime : Date.now()
   const inline = delivery === 'reply' && isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS)
   const appState = toolUseContext.getAppState()
   // In-process teammates get a no-op setAppState; setAppStateForTasks
