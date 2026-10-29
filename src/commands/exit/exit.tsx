@@ -3,7 +3,11 @@ import sample from 'lodash-es/sample.js'
 import * as React from 'react'
 import { ExitFlow } from '../../components/ExitFlow.js'
 import { detachAttachedClients } from '../../daemon/protocol.js'
-import type { LocalJSXCommandOnDone } from '../../types/command.js'
+import { getBackgroundWorkOnExit } from '../../tasks/backgroundWorkOnExit.js'
+import type {
+  LocalJSXCommandContext,
+  LocalJSXCommandOnDone,
+} from '../../types/command.js'
 import { isBgSession } from '../../utils/concurrentSessions.js'
 import { gracefulShutdown } from '../../utils/gracefulShutdown.js'
 import { getCurrentWorktreeSession } from '../../utils/worktree.js'
@@ -16,6 +20,7 @@ function getRandomGoodbyeMessage(): string {
 
 export async function call(
   onDone: LocalJSXCommandOnDone,
+  context?: LocalJSXCommandContext,
 ): Promise<React.ReactNode> {
   // Inside a background session: detach instead of kill. The REPL keeps
   // running; `claude attach` can reconnect. Covers /exit, /quit, ctrl+c,
@@ -27,11 +32,15 @@ export async function call(
   }
 
   const showWorktree = getCurrentWorktreeSession() !== null
+  const backgroundWork = context
+    ? getBackgroundWorkOnExit(context.getAppState().tasks)
+    : []
 
-  if (showWorktree) {
+  if (showWorktree || backgroundWork.length > 0) {
     return (
       <ExitFlow
         showWorktree={showWorktree}
+        backgroundWork={backgroundWork}
         onDone={onDone}
         onCancel={() => onDone()}
       />

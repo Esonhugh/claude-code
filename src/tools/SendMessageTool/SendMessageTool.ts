@@ -813,6 +813,11 @@ export const SendMessageTool: Tool<InputSchema, SendMessageToolOutput> =
 
     async call(input, context, canUseTool, assistantMessage) {
       const send = async (input: z.infer<InputSchema>): Promise<{data:SendMessageToolOutput}> => {
+      // Spawn reports a teammate as name@team; official accepts that id too.
+      const teammateById = context.getAppState().teamContext?.teammates?.[input.to]
+      if (teammateById && teammateById.name !== input.to) {
+        return send({ ...input, to: teammateById.name })
+      }
       const notify = feature('UDS_INBOX') ? 'notify_when_idle' in input && input.notify_when_idle === true : false
       const sendPeer = async (target: string, message: string, label: string, toName?: string): Promise<{data:SendMessageToolOutput}> => {
         const { sendToUdsSocket, subscribePeerIdle } = await import('../../utils/udsClient.js')
