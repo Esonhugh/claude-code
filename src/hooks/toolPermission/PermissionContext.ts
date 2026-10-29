@@ -141,7 +141,11 @@ function createPermissionContext(
     async persistPermissions(updates: PermissionUpdate[]) {
       if (updates.length === 0) return false
       persistPermissionUpdates(updates)
-      const appState = toolUseContext.getAppState()
+      // A subagent's own view carries its mode and scoped rules; apply the
+      // updates to the session's context instead of writing that view back.
+      const appState = (
+        toolUseContext.getAppStateForTasks ?? toolUseContext.getAppState
+      )()
       setToolPermissionContext(
         applyPermissionUpdatesWithModeTransition(
           appState.toolPermissionContext,

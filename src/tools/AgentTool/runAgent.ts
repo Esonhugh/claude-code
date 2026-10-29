@@ -127,6 +127,7 @@ import {
   capAgentPermissionMode,
   resolveDeclaredAgentPermissionMode,
   shouldBubbleAgentPermissionPrompts,
+  withAgentPermissionMode,
 } from './permissionMode.js'
 import { getCurrentSubagentDepth } from './subagentDepth.js'
 import { getCommandAllowedTools } from '../../utils/permissions/permissionsLoader.js'
@@ -711,10 +712,10 @@ export async function* runAgent({
   const agentGetAppState = () => {
     const state = toolUseContext.getAppState()
     const mode = resolvePermissionMode(state.toolPermissionContext.mode)
-    let toolPermissionContext =
-      state.toolPermissionContext.mode === mode
-        ? state.toolPermissionContext
-        : { ...state.toolPermissionContext, mode }
+    let toolPermissionContext = withAgentPermissionMode(
+      state.toolPermissionContext,
+      mode,
+    )
 
     // Set flag to auto-deny prompts for agents that can't show UI
     // Use explicit canShowPermissionPrompts if provided, otherwise:
