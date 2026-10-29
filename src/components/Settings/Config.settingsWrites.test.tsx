@@ -104,3 +104,17 @@ test('toggling Show tips syncs AppState.settings so the spinner reacts immediate
   expect(settingsModule.getSettingsForSource('localSettings')?.spinnerTipsEnabled).toBe(false)
   expect(state.settings.spinnerTipsEnabled).toBe(false)
 })
+
+test('a search highlights the first match and sizes the label column to the matches', async () => {
+  query = 'copy'
+  let output = ''
+  const stdout = Object.assign(new Writable({ write(chunk, _encoding, done) { output += chunk.toString(); done() } }), { columns: 140, rows: 40 })
+  const stdin = Object.assign(new Readable({ read() {} }), { isTTY: true, setRawMode() {}, ref() {}, unref() {} })
+  const instance = await render(<React.Suspense fallback={null}><Config
+    context={{ options: { mcpClients: [] }, messages: [] } as any} onClose={() => {}} setTabsHidden={() => {}}
+  /></React.Suspense>, { stdout: stdout as NodeJS.WriteStream, stdin: stdin as unknown as NodeJS.ReadStream, patchConsole: false, exitOnCtrlC: false })
+  try {
+    for (let i = 0; i < 50 && !stripAnsi(output).includes('Skip the /copy picker'); i++) await settle()
+    expect(stripAnsi(output)).toMatch(/[❯>] Skip the \/copy picker {2}false/)
+  } finally { instance.unmount() }
+})

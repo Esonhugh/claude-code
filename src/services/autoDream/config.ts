@@ -13,9 +13,18 @@ import { getFeatureValue_CACHED_MAY_BE_STALE } from '../analytics/growthbook.js'
 export function isAutoDreamEnabled(): boolean {
   const setting = getInitialSettings().autoDreamEnabled
   if (setting !== undefined) return setting
-  const gb = getFeatureValue_CACHED_MAY_BE_STALE<{ enabled?: unknown } | null>(
-    'tengu_onyx_plover',
-    null,
-  )
-  return gb?.enabled === true
+  return getAutoDreamFlag()?.enabled === true
+}
+
+/** Whether /memory offers the Auto-dream toggle (official shows it only when rolled out). */
+export function isAutoDreamAvailable(): boolean {
+  const gb = getAutoDreamFlag()
+  return gb?.enabled === true || gb?.available === true
+}
+
+function getAutoDreamFlag(): { enabled?: unknown; available?: unknown } | null {
+  return getFeatureValue_CACHED_MAY_BE_STALE<{
+    enabled?: unknown
+    available?: unknown
+  } | null>('tengu_onyx_plover', null)
 }

@@ -139,6 +139,7 @@ export function Settings({
   return (
     <Pane color="permission">
       <Tabs
+        title="Settings"
         color="permission"
         selectedTab={selectedTab}
         onTabChange={setSelectedTab}

@@ -8,6 +8,7 @@ import {
   useTerminalFocus,
 } from '../../ink.js'
 import type { KeyboardEvent } from '../../ink/events/keyboard-event.js'
+import { stringWidth } from '../../ink/stringWidth.js'
 import * as React from 'react'
 import { useState, useCallback } from 'react'
 import {
@@ -872,7 +873,7 @@ export function Config({
     },
     {
       id: 'copyFullResponse',
-      label: 'Always copy full response (skip /copy picker)',
+      label: 'Skip the /copy picker',
       value: globalConfig.copyFullResponse,
       type: 'boolean' as const,
       onChange(copyFullResponse: boolean) {
@@ -983,7 +984,7 @@ export function Config({
           },
           {
             id: 'inputNeededNotifEnabled',
-            label: 'Push when input needed',
+            label: 'Push when actions required',
             value: globalConfig.inputNeededNotifEnabled ?? false,
             type: 'boolean' as const,
             onChange(inputNeededNotifEnabled: boolean) {
@@ -1026,7 +1027,7 @@ export function Config({
       ? [
           {
             id: 'defaultView',
-            label: 'What you see by default',
+            label: 'Default view',
             // 'default' means the setting is unset — currently resolves to
             // transcript (main.tsx falls through when defaultView !== 'chat').
             // String() narrows the conditional-schema-spread union to string.
@@ -1438,6 +1439,17 @@ export function Config({
       return searchableText.toLowerCase().includes(lowerQuery)
     })
   }, [displayedSettings, searchQuery])
+  // Values line up two columns after the widest matching label (capped).
+  const labelColumnWidth =
+    Math.min(
+      44,
+      Math.max(
+        0,
+        ...filteredSettingsItems.map(setting =>
+          stringWidth(setting.label + (setting.isLocked ? ' (locked)' : '')),
+        ),
+      ),
+    ) + 2
 
   // Adjust selected index when filtered list shrinks, and keep the selected
   // item visible when maxVisible changes (e.g., terminal resize).
@@ -2453,10 +2465,10 @@ export function Config({
                   .slice(scrollOffset, scrollOffset + maxVisible)
                   .map((setting, i) => {
                     const actualIndex = scrollOffset + i
+                    // Enter/↓ from search selects the first match.
                     const isSelected =
-                      actualIndex === selectedIndex &&
                       !headerFocused &&
-                      !isSearchMode
+                      actualIndex === (isSearchMode ? 0 : selectedIndex)
 
                     return (
                       <React.Fragment key={setting.id}>
@@ -2464,7 +2476,7 @@ export function Config({
                           <Text color={isSelected ? 'suggestion' : undefined}>
                             {isSelected ? figures.pointer : ' '}{' '}
                           </Text>
-                          <Box width={44} paddingRight={1}>
+                          <Box width={labelColumnWidth}>
                             <Text
                               color={isSelected ? 'suggestion' : undefined}
                               wrap="truncate-end"
