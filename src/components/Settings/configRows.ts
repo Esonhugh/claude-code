@@ -196,7 +196,7 @@ export function getConfigRows(context: Context): ModConfigRowProvider[] {
       set(value: ModConfigValue) { saveGlobalConfig(current => ({ ...current, workflowSizeGuideline: value as WorkflowSizeGuideline })) },
     }] : []),
     globalBoolean('respectGitignore', 'Respect .gitignore in file picker', global.respectGitignore),
-    globalBoolean('copyFullResponse', 'Always copy full response (skip /copy picker)', global.copyFullResponse),
+    globalBoolean('copyFullResponse', 'Skip the /copy picker', global.copyFullResponse),
     ...(isFullscreenEnvEnabled() ? [globalBoolean('copyOnSelect', 'Copy on select', global.copyOnSelect ?? true)] : []),
     {
       key: 'autoUpdatesChannel', label: 'Auto-update channel', kind: 'text',
@@ -218,12 +218,12 @@ export function getConfigRows(context: Context): ModConfigRowProvider[] {
     },
     ...(feature('KAIROS') || feature('KAIROS_PUSH_NOTIFICATION') ? [
       globalBoolean('taskCompleteNotifEnabled', 'Push when idle', global.taskCompleteNotifEnabled ?? false),
-      globalBoolean('inputNeededNotifEnabled', 'Push when input needed', global.inputNeededNotifEnabled ?? false),
+      globalBoolean('inputNeededNotifEnabled', 'Push when actions required', global.inputNeededNotifEnabled ?? false),
       globalBoolean('agentPushNotifEnabled', 'Push when Claude decides', global.agentPushNotifEnabled ?? false),
     ] : []),
     { key: 'outputStyle', label: 'Output style', kind: 'text', value: settings.outputStyle || DEFAULT_OUTPUT_STYLE_NAME },
     ...(showDefaultView ? [{
-      key: 'defaultView', label: 'What you see by default', kind: 'choice' as const,
+      key: 'defaultView', label: 'Default view', kind: 'choice' as const,
       value: settings.defaultView === undefined ? 'default' : String(settings.defaultView),
       options: ['transcript', 'chat', 'default'],
       set(value: ModConfigValue) {
