@@ -90,6 +90,7 @@ import {
   getAttachmentMessages,
   startRelevantMemoryPrefetch,
 } from './utils/attachments.js'
+import { isSqliteMemoryEnabled } from './memdir/paths.js'
 /* eslint-disable @typescript-eslint/no-require-imports */
 const skillPrefetch = feature('EXPERIMENTAL_SKILL_SEARCH')
   ? (require('./services/skillSearch/prefetch.js') as typeof import('./services/skillSearch/prefetch.js'))
@@ -766,6 +767,25 @@ async function* queryLoop(
     }
 
     let messagesForQuery = [...getMessagesAfterCompactBoundary(messages)]
+
+    // SQLite recall is a local index lookup, so wait for it before the first
+    // request: a reply without tool calls never reaches the consume point below.
+    if (
+      turnCount === 1 &&
+      isSqliteMemoryEnabled() &&
+      pendingMemoryPrefetch &&
+      pendingMemoryPrefetch.consumedOnIteration === -1
+    ) {
+      for (const memAttachment of filterDuplicateMemoryAttachments(
+        await pendingMemoryPrefetch.promise,
+        toolUseContext.readFileState,
+      )) {
+        const msg = createAttachmentMessage(memAttachment)
+        yield msg
+        messagesForQuery.push(msg)
+      }
+      pendingMemoryPrefetch.consumedOnIteration = 0
+    }
 
     let tracking = autoCompactTracking
 

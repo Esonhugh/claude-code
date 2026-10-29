@@ -243,7 +243,7 @@ import {
 } from '../services/apps/pluginProjection.js'
 import { memoryAge, memoryFreshnessText } from '../memdir/memoryAge.js'
 import { neutralizeMemoryContent } from '../memdir/neutralizeMemoryContent.js'
-import { findMemoryFilesForPrompt } from '../memdir/memoryIndex.js'
+import { findMemoryFilesForPrompt, hasCjk } from '../memdir/memoryIndex.js'
 import {
   getAutoMemPath,
   getSqliteMemoryScopes,
@@ -2635,8 +2635,9 @@ export function startRelevantMemoryPrefetch(
   }
 
   const input = getUserMessageText(lastUserMessage)
-  // Single-word prompts lack enough context for meaningful term extraction
-  if (!input || !/\s/.test(input.trim())) {
+  // Single-word prompts lack enough context for meaningful term extraction.
+  // CJK prompts have no spaces; the SQLite index splits them into trigrams.
+  if (!input || (!/\s/.test(input.trim()) && !(isSqliteMemoryEnabled() && hasCjk(input)))) {
     return undefined
   }
 

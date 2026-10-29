@@ -245,8 +245,31 @@ function prune(index: Database, { files, dirs }: Listing): void {
   }
 }
 
+const CJK_OR_OTHER = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]+|[^\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]+/gu
+const CJK_CHAR = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]/u
+
+/**
+ * Chinese and Japanese write words without spaces, so a whole sentence would
+ * be one phrase that never matches. Split such runs into overlapping
+ * trigrams; any of them may match, and bm25 ranks chunks sharing more first.
+ */
+function splitCjk(word: string): string[] {
+  return (word.match(CJK_OR_OTHER) ?? []).flatMap(part => {
+    const chars = [...part]
+    if (!CJK_CHAR.test(part) || chars.length <= MIN_TRIGRAM_CHARS) return [part]
+    return Array.from({ length: chars.length - MIN_TRIGRAM_CHARS + 1 }, (_, i) =>
+      chars.slice(i, i + MIN_TRIGRAM_CHARS).join(''),
+    )
+  })
+}
+
+/** True when a prompt has CJK text, which carries several words without spaces. */
+export function hasCjk(text: string): boolean {
+  return CJK_CHAR.test(text)
+}
+
 function terms(query: string): string[] {
-  return query.split(/\s+/).map(t => t.trim()).filter(Boolean)
+  return [...new Set(query.split(/\s+/).filter(Boolean).flatMap(splitCjk))]
 }
 
 export async function searchMemory(params: {
@@ -314,6 +337,7 @@ export async function findMemoryFilesForPrompt(params: {
       params.prompt
         .toLowerCase()
         .split(/[^\p{L}\p{N}_-]+/u)
+        .flatMap(splitCjk)
         .filter(w => [...w].length >= MIN_TRIGRAM_CHARS && !RECALL_STOPWORDS.has(w)),
     ),
   ]
