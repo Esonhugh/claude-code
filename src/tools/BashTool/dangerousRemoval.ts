@@ -152,6 +152,18 @@ const WRAPPERS: Record<string, { value: string[]; flag: RegExp }> = {
     flag: /^(-i|--ignore-environment|-0|--null)$/,
   },
   command: { value: [], flag: /^-p$/ },
+  exec: { value: ['-a'], flag: /^-[cl]+$/ },
+  setsid: { value: [], flag: /^(-[cfw]+|--ctty|--fork|--wait)$/ },
+  ionice: {
+    value: ['-c', '--class', '-n', '--classdata'],
+    flag: /^(-t|--ignore)$/,
+  },
+  busybox: { value: [], flag: /^$/ },
+  doas: { value: ['-u', '-C'], flag: /^-[ns]+$/ },
+  pkexec: {
+    value: ['--user'],
+    flag: /^(--disable-internal-agent|--keep-cwd)$/,
+  },
   sudo: {
     value: ['-u', '--user', '-g', '--group', '-h', '--host', '-p', '--prompt'],
     flag: /^-[nEHSkAb]+$/,
@@ -594,6 +606,8 @@ function checkRoot(
     if (['cd', 'pushd', 'popd'].includes(name)) scope.changed = true
     const script = SHELLS.has(name) ? shellScript(argv) : undefined
     if (script) {
+      if (script.unknown && /\b(?:rm|rmdir|unlink)\b/.test(root.text))
+        return mandatory(`Unresolved shell -c script expansion: ${script.value}`)
       const result = checkScript(script, cwd, scope.changed, vars, depth)
       if (result) return result
     }
