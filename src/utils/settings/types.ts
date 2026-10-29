@@ -930,6 +930,16 @@ export const SettingsSchema = lazySchema(() =>
           'When false, a long conversation left idle is not compacted before ' +
             'its one-hour prompt cache expires. Default true.',
         ),
+      agentSummary: z
+        .enum(['full', 'short', 'off'])
+        .optional()
+        .catch(undefined)
+        .describe(
+          'Progress label for running background agents (' +
+            'subagentStatusLine, SDK task_progress). "full" (default) forks ' +
+            "the agent's transcript every 30s; \"short\" sends compact notes " +
+            'of recent steps instead; "off" disables it.',
+        ),
       awaySummaryEnabled: z
         .boolean()
         .optional()

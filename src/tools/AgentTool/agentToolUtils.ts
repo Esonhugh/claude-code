@@ -10,7 +10,10 @@ import {
   CUSTOM_AGENT_DISALLOWED_TOOLS,
   IN_PROCESS_TEAMMATE_ALLOWED_TOOLS,
 } from '../../constants/tools.js'
-import { startAgentSummarization } from '../../services/AgentSummary/agentSummary.js'
+import {
+  type AgentOwnRequests,
+  startAgentSummarization,
+} from '../../services/AgentSummary/agentSummary.js'
 import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
   logEvent,
@@ -790,7 +793,7 @@ export async function runAsyncAgentLifecycle({
   taskId: string
   abortController: AbortController
   makeStream: (
-    onCacheSafeParams: ((p: CacheSafeParams) => void) | undefined,
+    onCacheSafeParams: ((p: CacheSafeParams, ownRequests: AgentOwnRequests) => void) | undefined,
   ) => AsyncGenerator<MessageType, void>
   metadata: Parameters<typeof finalizeAgentTool>[2]
   description: string
@@ -824,13 +827,14 @@ export async function runAsyncAgentLifecycle({
     )
   try {
     const onCacheSafeParams = enableSummarization
-      ? (params: CacheSafeParams) => {
+      ? (params: CacheSafeParams, ownRequests: AgentOwnRequests) => {
           stopSummarization?.()
           const { stop } = startAgentSummarization(
             taskId,
             asAgentId(taskId),
             params,
             rootSetAppState,
+            ownRequests,
           )
           stopSummarization = stop
         }
