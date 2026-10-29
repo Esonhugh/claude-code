@@ -20,14 +20,7 @@ import {
   handlePlanApprovalResponse,
 } from '../utils/inProcessTeammateHelpers.js'
 import { createAssistantMessage } from '../utils/messages.js'
-import {
-  permissionModeFromString,
-  toExternalPermissionMode,
-} from '../utils/permissions/PermissionMode.js'
-import {
-  applyPermissionUpdate,
-  logPermissionModeChange,
-} from '../utils/permissions/PermissionUpdate.js'
+import { toExternalPermissionMode } from '../utils/permissions/PermissionMode.js'
 import { transitionPermissionModeWithGates } from '../utils/permissions/permissionSetup.js'
 import { jsonStringify } from '../utils/slowOperations.js'
 import { isInsideTmux } from '../utils/swarm/backends/detection.js'
@@ -499,104 +492,17 @@ export function useInboxPoller({
       }
     }
 
-    // Handle team permission updates (teammate side) - apply permission to context
-    if (teamPermissionUpdates.length > 0 && isTeammate()) {
+    // Like official 2.1.311, the inbox never changes permissions: anything
+    // that can write the mailbox file could forge these as team-lead.
+    for (const _ of teamPermissionUpdates) {
       logForDebugging(
-        `[InboxPoller] Found ${teamPermissionUpdates.length} team permission update(s)`,
+        '[InboxPoller] Dropping team_permission_update message: permission rules are never accepted from the inbox',
       )
-
-      for (const m of teamPermissionUpdates) {
-        const parsed = isTeamPermissionUpdate(m.text)
-        if (!parsed) {
-          logForDebugging(
-            `[InboxPoller] Failed to parse team permission update: ${m.text.substring(0, 100)}`,
-          )
-          continue
-        }
-
-        // Validate required nested fields to prevent crashes from malformed messages
-        if (
-          !parsed.permissionUpdate?.rules ||
-          !parsed.permissionUpdate?.behavior
-        ) {
-          logForDebugging(
-            `[InboxPoller] Invalid team permission update: missing permissionUpdate.rules or permissionUpdate.behavior`,
-          )
-          continue
-        }
-
-        // Apply the permission update to the teammate's context
-        logForDebugging(
-          `[InboxPoller] Applying team permission update: ${parsed.toolName} allowed in ${parsed.directoryPath}`,
-        )
-        logForDebugging(
-          `[InboxPoller] Permission update rules: ${jsonStringify(parsed.permissionUpdate.rules)}`,
-        )
-
-        setAppState(prev => {
-          const updated = applyPermissionUpdate(prev.toolPermissionContext, {
-            type: 'addRules',
-            rules: parsed.permissionUpdate.rules,
-            behavior: parsed.permissionUpdate.behavior,
-            destination: 'session',
-          })
-          logForDebugging(
-            `[InboxPoller] Updated session allow rules: ${jsonStringify(updated.alwaysAllowRules.session)}`,
-          )
-          return {
-            ...prev,
-            toolPermissionContext: updated,
-          }
-        })
-      }
     }
-
-    // Handle mode set requests (teammate side) - team lead changing teammate's mode
-    if (modeSetRequests.length > 0 && isTeammate()) {
+    for (const _ of modeSetRequests) {
       logForDebugging(
-        `[InboxPoller] Found ${modeSetRequests.length} mode set request(s)`,
+        '[InboxPoller] Dropping mode_set_request message: permission mode changes are never accepted from the inbox',
       )
-
-      for (const m of modeSetRequests) {
-        // Only accept mode changes from team-lead
-        if (m.from !== 'team-lead') {
-          logForDebugging(
-            `[InboxPoller] Ignoring mode set request from non-team-lead: ${m.from}`,
-          )
-          continue
-        }
-
-        const parsed = isModeSetRequest(m.text)
-        if (!parsed) {
-          logForDebugging(
-            `[InboxPoller] Failed to parse mode set request: ${m.text.substring(0, 100)}`,
-          )
-          continue
-        }
-
-        const targetMode = permissionModeFromString(parsed.mode)
-        // Same gates and transition as any other mode switch (bypass/auto/plan
-        // availability, auto's dangerous-rule stripping).
-        const current = store.getState().toolPermissionContext
-        let next: typeof current
-        try {
-          next = transitionPermissionModeWithGates(current, targetMode)
-        } catch (error) {
-          logForDebugging(
-            `[InboxPoller] Refusing mode change from team-lead to ${targetMode}: ${error instanceof Error ? error.message : String(error)}`,
-          )
-          next = current
-        }
-        logPermissionModeChange('teammate', current.mode, next.mode, 'mode_set_request from team-lead')
-        setAppState(prev => ({ ...prev, toolPermissionContext: next }))
-
-        // Update config.json so team lead sees the mode actually in effect
-        const teamName = currentAppState.teamContext?.teamName
-        const agentName = getAgentName()
-        if (teamName && agentName) {
-          await setMemberMode(teamName, agentName, next.mode)
-        }
-      }
     }
 
     // Handle plan approval requests (leader side) - auto-approve and write response to teammate inbox
