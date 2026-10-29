@@ -91,6 +91,7 @@ export function getEnabledFeatures(value = process.env.CLAUDE_CODE_RECOVER_FEATU
     'DIRECT_CONNECT',
     'BG_SESSIONS',
     'DAEMON',
+    'COORDINATOR_MODE',
     ...(value ?? '')
       .split(',')
       .map(feature => feature.trim())

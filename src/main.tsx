@@ -2964,7 +2964,7 @@ async function run(): Promise<CommanderCommand> {
       // (mirrors useMergedTools.ts filtering for REPL/interactive path)
       if (
         feature('COORDINATOR_MODE') &&
-        isEnvTruthy(process.env.CLAUDE_CODE_COORDINATOR_MODE)
+        coordinatorModeModule?.isCoordinatorMode()
       ) {
         const { applyCoordinatorToolFilter } = await import(
           './utils/toolPool.js'
