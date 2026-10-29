@@ -138,8 +138,12 @@ export function startAgentSummarization(
         canUseTool,
         querySource: 'agent_summary',
         forkLabel: 'agent_summary',
+        maxTurns: 1,
         overrides: { abortController: summaryAbortController },
         skipTranscript: true,
+        // No later request resumes from this fork's tail; keep the marker on
+        // the shared prefix the sub-agent's next request reads.
+        skipCacheWrite: true,
       })
 
       if (stopped) return
