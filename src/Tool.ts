@@ -141,6 +141,8 @@ export type ToolPermissionContext = DeepImmutable<{
   awaitAutomatedChecksBeforeDialog?: boolean
   /** Stores the permission mode before model-initiated plan mode entry, so it can be restored on exit */
   prePlanMode?: PermissionMode
+  /** MCP servers pinned over the SDK control channel (set_mcp_permission_mode_override) */
+  mcpPermissionModeOverrides?: Record<string, 'default' | 'auto'>
 }>
 
 export const getEmptyToolPermissionContext: () => ToolPermissionContext =

@@ -45,6 +45,7 @@ import {
   updateTaskState,
 } from '../../utils/task/framework.js'
 import { emitTaskProgress } from '../../utils/task/sdkProgress.js'
+import { setTaskTerminalSummary } from '../../utils/sdkEventQueue.js'
 import type { TaskState } from '../types.js'
 import { SEND_MESSAGE_TOOL_NAME } from '../../tools/SendMessageTool/constants.js'
 
@@ -409,6 +410,9 @@ export function enqueueAgentNotification({
   })
 
   if (!shouldEnqueue) return
+  if (status === 'completed' && !waiting && finalMessage) {
+    setTaskTerminalSummary(taskId, finalMessage)
+  }
 
   // Abort any active speculation — background task state changed, so speculated
   // results may reference stale task output. The prompt suggestion text is

@@ -1803,6 +1803,7 @@ export const AgentTool = buildTool({
                             description,
                             startTime,
                             lastToolName,
+                            selectedAgent.agentType,
                           )
                         }
                       }
@@ -2108,6 +2109,7 @@ export const AgentTool = buildTool({
                     description,
                     agentStartTime,
                     lastToolName,
+                    selectedAgent.agentType,
                   )
                 }
               }

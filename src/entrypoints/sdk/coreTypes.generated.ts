@@ -257,6 +257,9 @@ export type SDKUserMessage = {
   type: 'user'
   message: unknown
   parent_tool_use_id: string | null
+  agent_id?: string
+  subagent_type?: string
+  task_description?: string
   isSynthetic?: boolean
   tool_use_result?: unknown
   priority?: 'now' | 'next' | 'later'
@@ -268,6 +271,9 @@ export type SDKUserMessageReplay = {
   type: 'user'
   message: unknown
   parent_tool_use_id: string | null
+  agent_id?: string
+  subagent_type?: string
+  task_description?: string
   isSynthetic?: boolean
   tool_use_result?: unknown
   priority?: 'now' | 'next' | 'later'
@@ -280,6 +286,10 @@ export type SDKAssistantMessage = {
   type: 'assistant'
   message: unknown
   parent_tool_use_id: string | null
+  agent_id?: string
+  subagent_type?: string
+  task_description?: string
+  timestamp?: string
   error?: SDKAssistantMessageError
   uuid: string
   session_id: string
@@ -509,6 +519,7 @@ export type SDKTaskProgressMessage = {
   run_id?: string
   tool_use_id?: string
   description: string
+  subagent_type?: string
   usage: { total_tokens: number; tool_uses: number; duration_ms: number }
   last_tool_name?: string
   summary?: string

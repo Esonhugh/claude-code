@@ -83,3 +83,46 @@ test('a background agent reports task_started, task_updated and background_tasks
   const resumed = events().find(event => event.subtype === 'background_tasks_changed') as { tasks: { run_id: string }[] }
   expect(resumed.tasks[0]!.run_id > runId!).toBe(true)
 })
+
+test('subagent messages and task_progress name the subagent like official', async () => {
+  const { normalizeMessage, normalizeSubagentMessage } = await import('../queryHelpers.js')
+  const { createAssistantMessage, createUserMessage } = await import('../messages.js')
+  const { emitTaskProgress } = await import('./sdkProgress.js')
+  const agent = { agentId: 'a1', agentType: 'probe-agent', description: 'probe' }
+  const named = { agent_id: 'a1', subagent_type: 'probe-agent', task_description: 'probe' }
+
+  const assistant = createAssistantMessage({ content: 'hi' })
+  expect([...normalizeSubagentMessage(assistant, 'toolu_1', agent)][0]).toMatchObject({
+    type: 'assistant', parent_tool_use_id: 'toolu_1', ...named, timestamp: assistant.timestamp,
+  })
+  const user = createUserMessage({ content: 'result' })
+  expect([...normalizeSubagentMessage(user, 'toolu_1', agent)][0]).toMatchObject({
+    type: 'user', parent_tool_use_id: 'toolu_1', ...named,
+  })
+  // A foreground agent's messages arrive as agent_progress.
+  const progress = {
+    type: 'progress',
+    toolUseID: 'agent_x',
+    parentToolUseID: 'toolu_1',
+    data: { type: 'agent_progress', message: assistant, prompt: '', agentId: 'a1', agentType: 'probe-agent', description: 'probe' },
+    uuid: 'u1',
+    timestamp: assistant.timestamp,
+  }
+  expect([...normalizeMessage(progress as never)][0]).toMatchObject(named)
+
+  emitTaskProgress({ taskId: 'a1', toolUseId: 'toolu_1', description: 'Reading x', startTime: Date.now(), totalTokens: 1, toolUses: 1, subagentType: 'probe-agent' })
+  expect(events()[0]).toMatchObject({ subtype: 'task_progress', subagent_type: 'probe-agent' })
+})
+
+test('a finished subagent reports its result text as the SDK task_notification summary', async () => {
+  const { setTaskTerminalSummary, takeTaskTerminalSummary } = await import('../sdkEventQueue.js')
+  const { enqueueAgentNotification } = await import('../../tasks/LocalAgentTask/LocalAgentTask.js')
+  registerTask(agentTask, setAppState)
+  enqueueAgentNotification({ taskId: 'a1', description: 'probe', status: 'completed', setAppState, finalMessage: 'FAKE_DONE' })
+  expect(takeTaskTerminalSummary('a1')).toBe('FAKE_DONE')
+  expect(takeTaskTerminalSummary('a1')).toBeUndefined()
+  // Interactive sessions never read it, so nothing is kept.
+  setIsInteractive(true)
+  setTaskTerminalSummary('a1', 'x')
+  expect(takeTaskTerminalSummary('a1')).toBeUndefined()
+})
