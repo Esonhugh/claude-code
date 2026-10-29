@@ -342,6 +342,26 @@ if (process.env[childFlag] !== '1') {
     expect(existsSync(getInboxPath('missing-member', teamName))).toBe(false)
   })
 
+  test('the name@team id that spawn reports addresses the teammate by name', async () => {
+    const teamName = 'id-team'
+    await writeTeamFileAsync(teamName, { name: teamName, createdAt: 1, leadAgentId: 'lead', members: [] })
+    state.teamContext = {
+      teamName, leadAgentId: 'lead', teamFilePath: '',
+      teammates: {
+        [`${peer.name}@${teamName}`]: { name: peer.name, agentType: 'general-purpose', color: 'blue', tmuxSessionName: 'in-process', tmuxPaneId: '', cwd: '/tmp', spawnedAt: 1 },
+      },
+    }
+    const result = await SendMessageTool.call(
+      { to: `${peer.name}@${teamName}`, message: 'by id' },
+      context,
+      async () => ({ behavior: 'allow' }),
+      undefined,
+    )
+    expect(result.data.success).toBe(true)
+    expect(result.data.message).toBe(`Message sent to ${peer.name}'s inbox`)
+    expect((await readMailbox(peer.name, teamName))[0]?.text).toBe('by id')
+  })
+
   test('protocol messages report failure when the inbox write fails', async () => {
     const teamName = 'blocked-protocol-team'
     await writeTeamFileAsync(teamName, {
