@@ -460,6 +460,8 @@ export function enqueueAgentNotification({
   const pending = enqueuePendingNotification({
     value: message,
     mode: 'task-notification',
+    // Like official 2.1.311: a running turn picks it up between tool rounds.
+    priority: 'next',
     agentId: routedAgentId,
     taskId,
   })

@@ -990,7 +990,7 @@ ${resolved.candidates.map(candidate => `  ${candidate.name} [${candidate.ref}]`)
               return {
                 data: {
                   success: true,
-                  message: `Message queued for delivery to ${recipientName} at its next tool round.`,
+                  message: `Message queued for delivery to ${recipientName} at its next tool round. If it finishes first, it is resumed with the message and notifies again, so wait for that notification before resending.`,
                   ...pinReceipt,
                 },
               }
@@ -1014,7 +1014,7 @@ ${resolved.candidates.map(candidate => `  ${candidate.name} [${candidate.ref}]`)
                   success: true,
                   ...pinReceipt,
                   ...(result.inlineHandback && { inlineHandback: { displayName: toAgentId(input.to) ? input.to.slice(0, 7) : input.to, ...result.inlineHandback } }),
-                  message: result.inlineHandback ? RESUMED_AGENT_MESSAGE : `Agent "${input.to}" was stopped (${task.status}); resumed it in the background with your message. You'll be notified when it finishes. Output: ${result.outputFile}`,
+                  message: result.inlineHandback ? RESUMED_AGENT_MESSAGE : `Resuming agent ${toAgentId(input.to) ? input.to.slice(0, 7) : input.to}`,
                 },
               }
             } catch (e) {
@@ -1044,7 +1044,7 @@ ${resolved.candidates.map(candidate => `  ${candidate.name} [${candidate.ref}]`)
                   success: true,
                   ...pinReceipt,
                   ...(result.inlineHandback && { inlineHandback: { displayName: toAgentId(input.to) ? input.to.slice(0, 7) : input.to, ...result.inlineHandback } }),
-                  message: result.inlineHandback ? RESUMED_AGENT_MESSAGE : `Agent "${input.to}" had no active task; resumed from transcript in the background with your message. You'll be notified when it finishes. Output: ${result.outputFile}`,
+                  message: result.inlineHandback ? RESUMED_AGENT_MESSAGE : `Resuming agent ${toAgentId(input.to) ? input.to.slice(0, 7) : input.to}`,
                 },
               }
             } catch (e) {
