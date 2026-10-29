@@ -1211,7 +1211,8 @@ async function getMessagesForPromptSlashCommand(
   // the real skill content when they invoke the Skill tool.
   if (
     feature('COORDINATOR_MODE') &&
-    isEnvTruthy(process.env.CLAUDE_CODE_COORDINATOR_MODE) &&
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    (require('../../coordinator/coordinatorMode.js') as typeof import('../../coordinator/coordinatorMode.js')).isCoordinatorMode() &&
     !context.agentId
   ) {
     const metadata = formatCommandLoadingMetadata(command, args)

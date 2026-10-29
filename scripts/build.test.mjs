@@ -33,6 +33,7 @@ assert.equal(getEnabledFeatures('').has('AWAY_SUMMARY'), true);
 assert.equal(getEnabledFeatures('').has('DIRECT_CONNECT'), true);
 assert.equal(getEnabledFeatures('').has('BG_SESSIONS'), true);
 assert.equal(getEnabledFeatures('').has('DAEMON'), true);
+assert.equal(getEnabledFeatures('').has('COORDINATOR_MODE'), true);
 assert.equal(feature('DIRECT_CONNECT'), true);
 assert.equal(getEnabledFeatures(undefined).has('AGENT_TRIGGERS'), true);
 assert.equal(getEnabledFeatures(undefined).has('MCP_SKILLS'), true);

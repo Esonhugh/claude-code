@@ -537,11 +537,7 @@ export const AgentTool = buildTool({
       AGENT_TOOL_NAME,
     )
 
-    // Use inline env check instead of coordinatorModule to avoid circular
-    // dependency issues during test module loading.
-    const isCoordinator = feature('COORDINATOR_MODE')
-      ? isEnvTruthy(process.env.CLAUDE_CODE_COORDINATOR_MODE)
-      : false
+    const isCoordinator = isCoordinatorMode()
     return await getPrompt(filteredAgents, isCoordinator, allowedAgentTypes, {
       snapshot: modsSnapshot,
       signal,
