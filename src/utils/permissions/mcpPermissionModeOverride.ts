@@ -4,6 +4,9 @@ import { normalizePermissionModeAlias } from './PermissionMode.js'
 
 export type McpPermissionModeOverride = 'default' | 'auto'
 
+const MAX_ASK_FOR_TOOLS = 32
+const ASK_FOR_TOOL_NAME = /^[A-Za-z0-9_-]{1,64}$/
+
 /**
  * Validates a set_mcp_permission_mode_override request like official 2.1.311:
  * the control channel may only pin a server to 'default' or 'auto', or clear
@@ -12,26 +15,51 @@ export type McpPermissionModeOverride = 'default' | 'auto'
 export function parseMcpPermissionModeOverride(request: {
   serverName?: unknown
   mode?: unknown
+  askForTools?: unknown
 }):
   | { serverName: string; override: McpPermissionModeOverride | undefined }
   | { error: string } {
   if (typeof request.serverName !== 'string') {
     return { error: 'set_mcp_permission_mode_override: serverName must be a string' }
   }
-  if (request.mode === null) return { serverName: request.serverName, override: undefined }
-  const mode =
-    typeof request.mode === 'string'
-      ? PERMISSION_MODES.find(m => m === normalizePermissionModeAlias(request.mode as string))
-      : undefined
-  if (mode === undefined) {
-    return { error: `Cannot set permission mode: must be one of ${[...PERMISSION_MODES].sort().join(', ')}` }
+  let override: McpPermissionModeOverride | undefined
+  if (request.mode !== null) {
+    const mode =
+      typeof request.mode === 'string'
+        ? PERMISSION_MODES.find(m => m === normalizePermissionModeAlias(request.mode as string))
+        : undefined
+    if (mode === undefined) {
+      return { error: `Cannot set permission mode: must be one of ${[...PERMISSION_MODES].sort().join(', ')}` }
+    }
+    if (mode !== 'default' && mode !== 'auto') {
+      return {
+        error: `Permission mode override over the control channel is tighten-only ('default', 'auto', or null); rejected '${mode}'`,
+      }
+    }
+    override = mode
   }
-  if (mode !== 'default' && mode !== 'auto') {
+  // Official only reads askForTools for its Claude in Chrome host tools, which
+  // this build doesn't have; malformed lists are still rejected like official.
+  const { askForTools } = request
+  if (
+    askForTools !== undefined &&
+    askForTools !== null &&
+    (!Array.isArray(askForTools) ||
+      askForTools.length > MAX_ASK_FOR_TOOLS ||
+      !askForTools.every(
+        entry =>
+          typeof entry === 'object' &&
+          entry !== null &&
+          !Array.isArray(entry) &&
+          typeof entry.name === 'string' &&
+          ASK_FOR_TOOL_NAME.test(entry.name),
+      ))
+  ) {
     return {
-      error: `Permission mode override over the control channel is tighten-only ('default', 'auto', or null); rejected '${mode}'`,
+      error: `set_mcp_permission_mode_override: askForTools must be a list of at most ${MAX_ASK_FOR_TOOLS} {name} entries, each name 1 to 64 letters, digits, underscores or hyphens`,
     }
   }
-  return { serverName: request.serverName, override: mode }
+  return { serverName: request.serverName, override }
 }
 
 /**

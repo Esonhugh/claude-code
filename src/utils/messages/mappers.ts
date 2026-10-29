@@ -10,6 +10,7 @@ import type {
   SDKCompactBoundaryMessage,
   SDKMessage,
   SDKRateLimitInfo,
+  SDKToolResultMeta,
 } from 'src/entrypoints/agentSdkTypes.js'
 import type { ClaudeAILimits } from 'src/services/claudeAiLimits.js'
 import { EXIT_PLAN_MODE_V2_TOOL_NAME } from 'src/tools/ExitPlanModeTool/constants.js'
@@ -17,11 +18,49 @@ import type {
   AssistantMessage,
   CompactMetadata,
   Message,
+  UserMessage,
 } from 'src/types/message.js'
 import type { DeepImmutable } from 'src/types/utils.js'
 import stripAnsi from 'strip-ansi'
 import { createAssistantMessage } from '../messages.js'
 import { getPlan } from '../plans.js'
+
+/**
+ * Like official 2.1.311, SDK tool_result_meta for a user message holding one
+ * tool_result. Subagent messages carry only permission_decision.
+ */
+export function toolResultMeta(
+  message: UserMessage,
+  subagent = false,
+): SDKToolResultMeta[] {
+  const kind = subagent ? undefined : message.toolDenialKind
+  const decision = message.permissionDecision
+  if (kind === undefined && decision === undefined) return []
+  const content = message.message.content
+  if (!Array.isArray(content)) return []
+  const results = content.filter(block => block.type === 'tool_result')
+  if (results.length !== 1) return []
+  return [
+    {
+      id: results[0]!.tool_use_id,
+      ...(kind !== undefined && {
+        non_execution_kind: kind,
+        ...(message.userFeedback !== undefined && {
+          user_feedback: message.userFeedback,
+        }),
+      }),
+      ...(decision !== undefined && {
+        permission_decision: {
+          decision: decision.decision,
+          source: decision.source,
+          ...(decision.reasonType !== undefined && {
+            reason_type: decision.reasonType,
+          }),
+        },
+      }),
+    },
+  ]
+}
 
 export function toInternalMessages(
   messages: readonly DeepImmutable<SDKMessage>[],
@@ -133,7 +172,8 @@ export function toSDKMessages(messages: Message[]): SDKMessage[] {
             error: message.error,
           },
         ]
-      case 'user':
+      case 'user': {
+        const meta = toolResultMeta(message)
         return [
           {
             type: 'user',
@@ -150,8 +190,10 @@ export function toSDKMessages(messages: Message[]): SDKMessage[] {
             ...(message.toolUseResult !== undefined
               ? { tool_use_result: message.toolUseResult }
               : {}),
+            ...(meta.length > 0 && { tool_result_meta: meta }),
           },
         ]
+      }
       case 'system':
         if (message.subtype === 'compact_boundary' && message.compactMetadata) {
           return [

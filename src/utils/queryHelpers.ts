@@ -7,6 +7,7 @@ import {
 import type {
   SDKAssistantMessage,
   SDKMessage,
+  SDKToolResultMeta,
   SDKUserMessage,
 } from 'src/entrypoints/agentSdkTypes.js'
 import type { CanUseToolFn } from '../hooks/useCanUseTool.js'
@@ -21,7 +22,7 @@ import {
 } from '../tools/FileReadTool/prompt.js'
 import { FILE_WRITE_TOOL_NAME } from '../tools/FileWriteTool/prompt.js'
 import { isGoalStatusAttachment } from '../commands/goal/types.js'
-import type { Message } from '../types/message.js'
+import type { Message, UserMessage } from '../types/message.js'
 import type { OrphanedPermission } from '../types/textInputTypes.js'
 import { logForDebugging } from './debug.js'
 import { isEnvTruthy } from './envUtils.js'
@@ -33,6 +34,7 @@ import {
   type FileStateCache,
 } from './fileStateCache.js'
 import { isNotEmptyMessage, normalizeMessages } from './messages.js'
+import { toolResultMeta } from './messages/mappers.js'
 import { expandPath } from './path.js'
 import type {
   inputSchema as permissionToolInputSchema,
@@ -104,6 +106,14 @@ const MAX_TOOL_PROGRESS_TRACKING_ENTRIES = 100
 const TOOL_PROGRESS_THROTTLE_MS = 30000
 const toolProgressLastSentTime = new Map<string, number>()
 
+function withToolResultMeta(
+  message: UserMessage,
+  subagent = false,
+): { tool_result_meta?: SDKToolResultMeta[] } {
+  const meta = toolResultMeta(message, subagent)
+  return meta.length > 0 ? { tool_result_meta: meta } : {}
+}
+
 /**
  * SDK messages for one message of a subagent, tagged with the Agent tool_use
  * that spawned it (parent_tool_use_id).
@@ -163,6 +173,7 @@ export function* normalizeSubagentMessage(
             ? { content: _.toolUseResult, ..._.mcpMeta }
             // @ts-ignore - recovered code
             : _.toolUseResult,
+          ...withToolResultMeta(_ as UserMessage, true),
         }
         break
     }
@@ -274,6 +285,7 @@ export function* normalizeMessage(message: Message): Generator<SDKMessage> {
           tool_use_result: _.mcpMeta
             ? { content: _.toolUseResult, ..._.mcpMeta }
             : _.toolUseResult,
+          ...withToolResultMeta(_),
         }
       }
       return

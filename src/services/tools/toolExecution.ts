@@ -59,6 +59,8 @@ import type {
   Message,
   ProgressMessage,
   StopHookInfo,
+  ToolDenialKind,
+  ToolPermissionDecisionMeta,
 } from '../../types/message.js'
 import { count } from '../../utils/array.js'
 import { createAbortController } from '../../utils/abortController.js'
@@ -82,6 +84,7 @@ import {
   withMemoryCorrectionHint,
 } from '../../utils/messages.js'
 import type {
+  PermissionDecision,
   PermissionDecisionReason,
   PermissionResult,
 } from '../../utils/permissions/PermissionResult.js'
@@ -263,6 +266,46 @@ function decisionReasonToOTelSource(
       const _exhaustive: never = reason
       return 'config'
     }
+  }
+}
+
+// Like official 2.1.311, the SDK's tool_result_meta.non_execution_kind for a
+// call the permission check refused.
+function toolDenialKindFor(decision: PermissionDecision): ToolDenialKind {
+  if (decision.behavior === 'ask') return 'user-rejected'
+  const reason = decision.decisionReason
+  if (reason?.type === 'classifier' && reason.classifier === 'auto-mode') {
+    if (reason.reason === 'Classifier unavailable') return 'automode-unavailable'
+    if (reason.noVerdict) return 'automode-parsing-error'
+    return 'automode-blocked'
+  }
+  return 'permission-rule'
+}
+
+// Like official 2.1.311, the SDK's tool_result_meta.permission_decision.
+// reasonType is only set when the check decided by itself, not when a person
+// or the SDK host answered or the outcome was still a question.
+function toolPermissionDecisionMeta(
+  decision: PermissionDecision,
+  recordedSource: string | undefined,
+  aborted: boolean,
+): ToolPermissionDecisionMeta {
+  const reason = decision.decisionReason
+  const source =
+    recordedSource ??
+    (decision.behavior === 'ask'
+      ? aborted
+        ? 'user_abort'
+        : 'config'
+      : decisionReasonToOTelSource(reason, decision.behavior))
+  const answeredByPerson =
+    decision.behavior === 'ask' ||
+    source.startsWith('user_') ||
+    reason?.type === 'permissionPromptTool'
+  return {
+    decision: decision.behavior === 'allow' ? 'accept' : 'reject',
+    source,
+    ...(reason && !answeredByPerson && { reasonType: reason.type }),
   }
 }
 
@@ -1311,6 +1354,11 @@ async function checkPermissionsAndCallTool(
   )
   const permissionDecision = resolved.decision
   processedInput = resolved.input
+  const permissionDecisionMeta = toolPermissionDecisionMeta(
+    permissionDecision,
+    toolUseContext.toolDecisions?.get(toolUseID)?.source,
+    toolUseContext.abortController.signal.aborted,
+  )
   const permissionDurationMs = Date.now() - permissionStart
   // In auto mode, canUseTool awaits the classifier (side_query) — if that's
   // slow the collapsed view shows "Running…" with no (Ns) tick since
@@ -1454,7 +1502,12 @@ async function checkPermissionsAndCallTool(
         content: messageContent,
         imagePasteIds: rejectImageIds,
         toolUseResult: `Error: ${errorMessage}`,
-        toolDenialKind: permissionDecision.behavior === 'ask' ? 'user-rejected' : 'permission-rule',
+        toolDenialKind: toolDenialKindFor(permissionDecision),
+        userFeedback:
+          permissionDecision.behavior === 'ask'
+            ? permissionDecision.userFeedback
+            : undefined,
+        permissionDecision: permissionDecisionMeta,
         sourceToolAssistantUUID: assistantMessage.uuid,
       }),
     })
@@ -1553,6 +1606,7 @@ async function checkPermissionsAndCallTool(
             },
           ],
           toolUseResult: `InputValidationError: permission handler updatedInput failed schema for ${tool.name}`,
+          permissionDecision: permissionDecisionMeta,
           sourceToolAssistantUUID: assistantMessage.uuid,
         }),
       })
@@ -1916,6 +1970,7 @@ async function checkPermissionsAndCallTool(
               ? undefined
               : toolUseResult,
           mcpMeta: toolUseContext.agentId ? undefined : mcpMeta,
+          permissionDecision: permissionDecisionMeta,
           sourceToolAssistantUUID: assistantMessage.uuid,
         }),
         contextModifier: toolContextModifier
@@ -2203,6 +2258,8 @@ async function checkPermissionsAndCallTool(
                 McpToolCallError_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS
               ? error.mcpMeta
               : undefined,
+          toolDenialKind: isInterrupt ? 'interrupted' : undefined,
+          permissionDecision: permissionDecisionMeta,
           sourceToolAssistantUUID: assistantMessage.uuid,
         }),
       },

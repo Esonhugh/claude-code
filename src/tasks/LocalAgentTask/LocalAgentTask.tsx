@@ -45,7 +45,7 @@ import {
   updateTaskState,
 } from '../../utils/task/framework.js'
 import { emitTaskProgress } from '../../utils/task/sdkProgress.js'
-import { setTaskTerminalSummary } from '../../utils/sdkEventQueue.js'
+import { emitTaskTerminatedSdk } from '../../utils/sdkEventQueue.js'
 import type { TaskState } from '../types.js'
 import { SEND_MESSAGE_TOOL_NAME } from '../../tools/SendMessageTool/constants.js'
 
@@ -410,22 +410,19 @@ export function enqueueAgentNotification({
   })
 
   if (!shouldEnqueue) return
-  if (status === 'completed' && !waiting && finalMessage) {
-    setTaskTerminalSummary(taskId, finalMessage)
-  }
 
   // Abort any active speculation — background task state changed, so speculated
   // results may reference stale task output. The prompt suggestion text is
   // preserved; only the pre-computed response is discarded.
   abortSpeculation(setAppState)
 
-  const summary = escapeXml(
+  const summaryText =
     status === 'completed'
       ? `Agent "${description}" ${waiting ? 'is waiting on its own background work' : turnLimit !== undefined ? `stopped at its ${turnLimit}-turn limit (partial result; ${SEND_MESSAGE_TOOL_NAME} to task-id to continue)` : 'finished'}`
       : status === 'failed'
         ? `Agent "${description}" failed: ${error || 'Unknown error'}`
-        : `Agent "${description}" was stopped`,
-  )
+        : `Agent "${description}" was stopped`
+  const summary = escapeXml(summaryText)
 
   const outputPath = getTaskOutputPath(taskId)
   const toolUseIdLine = toolUseId
@@ -453,6 +450,22 @@ export function enqueueAgentNotification({
 <${SUMMARY_TAG}>${summary}</${SUMMARY_TAG}>${noteSection}${resultSection}${usageSection}${worktreeSection}
 </${TASK_NOTIFICATION_TAG}>`
 
+  // Like official 2.1.311, SDK consumers get task_notification as the agent
+  // stops, before it leaves background_tasks_changed; a finished agent's
+  // summary is its result text.
+  emitTaskTerminatedSdk(taskId, status === 'killed' ? 'stopped' : status, {
+    toolUseId,
+    summary:
+      status === 'completed' && !waiting && finalMessage
+        ? finalMessage
+        : summaryText,
+    outputFile: outputPath,
+    usage: usage && {
+      total_tokens: usage.totalTokens,
+      tool_uses: usage.toolUses,
+      duration_ms: usage.durationMs,
+    },
+  })
   const markNotified = () =>
     updateTaskState<LocalAgentTaskState>(taskId, setAppState, task =>
       // A wake can re-register the agent before the interim notice settles; that new run notifies on its own.
@@ -468,6 +481,7 @@ export function enqueueAgentNotification({
     priority: 'next',
     agentId: routedAgentId,
     taskId,
+    sdkTaskNotificationSent: true,
   })
   if (!pending) {
     markNotified()

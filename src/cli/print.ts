@@ -438,7 +438,7 @@ import { getRunningTasks } from '../utils/task/framework.js'
 import { isBackgroundTask } from '../tasks/types.js'
 import { StopTaskError, stopTask } from '../tasks/stopTask.js'
 import { isTerminalTaskStatus } from '../taskStatus.js'
-import { drainSdkOutput, getTaskRunId, takeTaskTerminalSummary } from '../utils/sdkEventQueue.js'
+import { drainSdkOutput, getTaskRunId } from '../utils/sdkEventQueue.js'
 import { initializeGrowthBook } from '../services/analytics/growthbook.js'
 import { errorMessage, toError } from '../utils/errors.js'
 import { sleep } from '../utils/sleep.js'
@@ -2397,7 +2397,7 @@ function runHeadlessStreaming(
             // default to 'completed' and falsely close the task for SDK
             // consumers. Terminal bookends are now emitted directly via
             // emitTaskTerminatedSdk, so skipping statusless events is safe.
-            if (statusMatch) {
+            if (statusMatch && !command.sdkTaskNotificationSent) {
               output.enqueue({
                 type: 'system',
                 subtype: 'task_notification',
@@ -2406,10 +2406,7 @@ function runHeadlessStreaming(
                 tool_use_id: toolUseIdMatch?.[1],
                 status,
                 output_file: outputFileMatch?.[1] ?? '',
-                summary:
-                  takeTaskTerminalSummary(taskIdMatch?.[1] ?? '') ??
-                  summaryMatch?.[1] ??
-                  '',
+                summary: summaryMatch?.[1] ?? '',
                 usage:
                   totalTokensMatch && toolUsesMatch
                     ? {
@@ -3997,7 +3994,7 @@ function runHeadlessStreaming(
             }
           }
         } else if (message.request.subtype === 'set_mcp_permission_mode_override') {
-          const parsed = parseMcpPermissionModeOverride(message.request as { serverName?: unknown; mode?: unknown })
+          const parsed = parseMcpPermissionModeOverride(message.request as { serverName?: unknown; mode?: unknown; askForTools?: unknown })
           if ('error' in parsed) {
             sendControlResponseError(message, parsed.error)
             continue

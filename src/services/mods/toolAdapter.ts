@@ -380,6 +380,8 @@ export async function runModToolCall({
     imagePasteIds: oldMessage?.imagePasteIds,
     mcpMeta: oldMessage?.mcpMeta,
     toolDenialKind: finalResult.deny !== undefined ? 'permission-rule' : oldMessage?.toolDenialKind,
+    userFeedback: finalResult.deny !== undefined ? undefined : oldMessage?.userFeedback,
+    permissionDecision: finalResult.deny !== undefined ? undefined : oldMessage?.permissionDecision,
     toolUseResult:
       toolUseContext.agentId && !toolUseContext.preserveToolUseResults
         ? undefined
