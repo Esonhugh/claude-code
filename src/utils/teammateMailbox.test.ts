@@ -106,3 +106,33 @@ test('createIdleNotification caps the result like official', () => {
   expect(createIdleNotification('mate', { result: '  short  ' }).result).toBe('short')
   expect(createIdleNotification('mate', { result: '   ' }).result).toBeUndefined()
 })
+
+const { capIdleResultsInDrain } = await import('./teammateMailbox.js')
+const idleFrom = (from: string, timestamp: string, result: string, idleReason: 'available' | 'failed' = 'available') => ({
+  from,
+  text: JSON.stringify({ type: 'idle_notification', from, timestamp, idleReason, result }),
+})
+
+test('capIdleResultsInDrain keeps the newest results whole within 16000 characters', () => {
+  const big = 'r'.repeat(3800)
+  const drain = [
+    idleFrom('m1', '2026-10-29T00:00:01.000Z', big),
+    idleFrom('m2', '2026-10-29T00:00:02.000Z', big),
+    { from: 'm3', text: 'plain text stays as is' },
+    idleFrom('m4', '2026-10-29T00:00:03.000Z', big),
+    idleFrom('m5', '2026-10-29T00:00:04.000Z', big),
+    idleFrom('m6', '2026-10-29T00:00:05.000Z', big, 'failed'),
+  ]
+  const capped = capIdleResultsInDrain(drain)
+  const results = capped.map(m => (m.text.startsWith('{') ? JSON.parse(m.text).result : m.text))
+  // m6, m5, m4, m2 fit (4 × ~4000); the oldest one is replaced by a note
+  expect(results.slice(1)).toEqual([big, 'plain text stays as is', big, big, big])
+  expect(results[0]).toBe("[result truncated — this drain's results exceeded 16000 characters; ask the agent for it via SendMessage]")
+  expect(JSON.parse(capped[0]!.text)).toMatchObject({ type: 'idle_notification', from: 'm1', idleReason: 'available' })
+  expect(capped[2]).toBe(drain[2])
+})
+
+test('capIdleResultsInDrain leaves small drains untouched', () => {
+  const drain = [idleFrom('m1', '2026-10-29T00:00:01.000Z', 'done'), { from: 'm2', text: 'hi' }]
+  expect(capIdleResultsInDrain(drain)).toEqual(drain)
+})

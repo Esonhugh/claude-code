@@ -405,7 +405,7 @@ export function formatTeammateMessages(
     summary?: string
   }>,
 ): string {
-  return messages
+  return capIdleResultsInDrain(messages)
     .map(m => {
       const colorAttr = m.color ? ` color="${m.color}"` : ''
       const summaryAttr = m.summary ? ` summary="${m.summary}"` : ''
@@ -433,6 +433,7 @@ export type IdleNotificationMessage = {
 }
 
 const IDLE_RESULT_MAX_CHARS = 4000
+const IDLE_RESULTS_DRAIN_MAX_CHARS = 16000
 
 /**
  * Creates an idle notification message to send to the team leader
@@ -467,6 +468,57 @@ export function createIdleNotification(
           }`
         : result || undefined,
   }
+}
+
+/**
+ * Caps the idle-notification results delivered to the leader in one batch at
+ * IDLE_RESULTS_DRAIN_MAX_CHARS, keeping the newest results whole and replacing
+ * older ones with a truncation note (official 2.1.312 behaviour).
+ */
+export function capIdleResultsInDrain<T extends { text: string }>(
+  messages: T[],
+): T[] {
+  const now = Date.now()
+  const withResult = messages
+    .map((message, index) => ({ index, idle: isIdleNotification(message.text) }))
+    .filter(
+      (entry): entry is { index: number; idle: IdleNotificationMessage } =>
+        !!entry.idle?.result,
+    )
+    .map(entry => {
+      const time = Date.parse(entry.idle.timestamp)
+      return { ...entry, recency: Number.isNaN(time) ? -Infinity : Math.min(time, now) }
+    })
+    .sort((a, b) => b.recency - a.recency || b.index - a.index)
+
+  const capped = messages.slice()
+  let budget = IDLE_RESULTS_DRAIN_MAX_CHARS
+  for (const { index, idle } of withResult) {
+    const message = capped[index]!
+    if (message.text.length <= budget) {
+      budget -= message.text.length
+      continue
+    }
+    const { result: _result, ...rest } = idle
+    const askHint =
+      idle.idleReason === 'failed'
+        ? ''
+        : `; ask the agent for it via ${SEND_MESSAGE_TOOL_NAME}`
+    let text = jsonStringify({
+      ...rest,
+      result: `[result truncated — this drain's results exceeded ${IDLE_RESULTS_DRAIN_MAX_CHARS} characters${askHint}]`,
+    })
+    if (text.length > budget) {
+      text = jsonStringify({ ...rest, result: '[result truncated]' })
+    }
+    if (text.length >= message.text.length) {
+      budget = Math.max(0, budget - message.text.length)
+      continue
+    }
+    budget = Math.max(0, budget - text.length)
+    capped[index] = { ...message, text }
+  }
+  return capped
 }
 
 /**
