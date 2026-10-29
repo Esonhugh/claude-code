@@ -428,7 +428,11 @@ export type IdleNotificationMessage = {
   completedTaskId?: string
   completedStatus?: 'resolved' | 'blocked' | 'failed'
   failureReason?: string
+  /** The teammate's final reply this turn, capped at IDLE_RESULT_MAX_CHARS */
+  result?: string
 }
+
+const IDLE_RESULT_MAX_CHARS = 4000
 
 /**
  * Creates an idle notification message to send to the team leader
@@ -441,8 +445,10 @@ export function createIdleNotification(
     completedTaskId?: string
     completedStatus?: 'resolved' | 'blocked' | 'failed'
     failureReason?: string
+    result?: string
   },
 ): IdleNotificationMessage {
+  const result = options?.result?.trim()
   return {
     type: 'idle_notification',
     from: agentId,
@@ -452,6 +458,14 @@ export function createIdleNotification(
     completedTaskId: options?.completedTaskId,
     completedStatus: options?.completedStatus,
     failureReason: options?.failureReason,
+    result:
+      result && result.length > IDLE_RESULT_MAX_CHARS
+        ? `${result.slice(0, IDLE_RESULT_MAX_CHARS)}\n${
+            options?.idleReason === 'failed'
+              ? '[result truncated]'
+              : `[result truncated — ask the agent for the rest via ${SEND_MESSAGE_TOOL_NAME}]`
+          }`
+        : result || undefined,
   }
 }
 
@@ -1234,6 +1248,63 @@ export function getLastPeerDmSummary(messages: Message[]): string | undefined {
         return `[to ${to}] ${summary}`
       }
     }
+  }
+  return undefined
+}
+
+function isWakeBoundary(msg: Message): boolean {
+  return (
+    msg.type === 'user' &&
+    msg.isMeta !== true &&
+    (typeof msg.message.content === 'string' ||
+      !msg.message.content.some(block => block.type === 'tool_result'))
+  )
+}
+
+/**
+ * The teammate's final text reply since it last woke up, sent to the leader
+ * with its idle notification. Undefined when the teammate already reported to
+ * the leader with a successful SendMessage after that reply.
+ */
+export function getIdleResult(messages: Message[]): string | undefined {
+  let start = 0
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i] && isWakeBoundary(messages[i]!)) {
+      start = i + 1
+      break
+    }
+  }
+  const turn = messages.slice(start)
+
+  const okResults = new Map<string, boolean>()
+  for (const msg of turn) {
+    if (msg.type !== 'user' || typeof msg.message.content === 'string') continue
+    for (const block of msg.message.content) {
+      if (block.type === 'tool_result') {
+        okResults.set(block.tool_use_id, block.is_error !== true)
+      }
+    }
+  }
+
+  for (let i = turn.length - 1; i >= 0; i--) {
+    const msg = turn[i]
+    if (msg?.type !== 'assistant' || msg.isApiErrorMessage) continue
+    const reportedToLead = msg.message.content.some(
+      block =>
+        block.type === 'tool_use' &&
+        block.name === SEND_MESSAGE_TOOL_NAME &&
+        typeof block.input === 'object' &&
+        block.input !== null &&
+        'to' in block.input &&
+        typeof block.input.to === 'string' &&
+        block.input.to.toLowerCase() === TEAM_LEAD_NAME.toLowerCase() &&
+        okResults.get(block.id) === true,
+    )
+    if (reportedToLead) return undefined
+    const text = msg.message.content
+      .flatMap(block => (block.type === 'text' ? [block.text] : []))
+      .join('\n')
+    if (text.trim()) return text
   }
   return undefined
 }

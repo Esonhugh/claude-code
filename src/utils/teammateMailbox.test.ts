@@ -67,3 +67,42 @@ test('clearMailbox waits for the inbox lock instead of racing writers', async ()
   await clearing
   expect(await readMailbox('locked', TEAM)).toEqual([])
 })
+
+const { createIdleNotification, getIdleResult } = await import('./teammateMailbox.js')
+type Msg = Parameters<typeof getIdleResult>[0][number]
+const user = (content: unknown): Msg => ({ type: 'user', message: { role: 'user', content } }) as unknown as Msg
+const assistant = (...content: unknown[]): Msg => ({ type: 'assistant', message: { role: 'assistant', content } }) as unknown as Msg
+const text = (t: string) => ({ type: 'text', text: t })
+const sendTo = (id: string, to: string) => ({ type: 'tool_use', id, name: 'SendMessage', input: { to, message: 'hi' } })
+const result = (id: string, is_error = false) => user([{ type: 'tool_result', tool_use_id: id, content: 'ok', is_error }])
+
+test('getIdleResult returns the last text reply of the current turn only', () => {
+  expect(getIdleResult([
+    user('first task'),
+    assistant(text('old answer')),
+    user('<teammate-message>second task</teammate-message>'),
+    assistant(text('working'), { type: 'tool_use', id: 't1', name: 'Bash', input: {} }),
+    result('t1'),
+    assistant(text('part one'), text('part two')),
+  ])).toBe('part one\npart two')
+  expect(getIdleResult([user('task'), assistant(text('done')), user('next'), assistant({ type: 'tool_use', id: 't', name: 'Bash', input: {} })])).toBeUndefined()
+})
+
+test('getIdleResult is empty when the teammate already reported to the lead after its reply', () => {
+  expect(getIdleResult([user('task'), assistant(text('summary')), assistant(sendTo('s1', 'team-lead')), result('s1')])).toBeUndefined()
+  // a failed DM, or one to a peer, does not count as reporting to the lead
+  expect(getIdleResult([user('task'), assistant(text('summary')), assistant(sendTo('s1', 'team-lead')), result('s1', true)])).toBe('summary')
+  expect(getIdleResult([user('task'), assistant(text('summary')), assistant(sendTo('s1', 'peer')), result('s1')])).toBe('summary')
+  // a DM before the final reply does not suppress the reply
+  expect(getIdleResult([user('task'), assistant(sendTo('s1', 'team-lead')), result('s1'), assistant(text('final'))])).toBe('final')
+})
+
+test('createIdleNotification caps the result like official', () => {
+  const long = 'x'.repeat(4001)
+  expect(createIdleNotification('mate', { idleReason: 'available', result: long }).result).toBe(
+    `${'x'.repeat(4000)}\n[result truncated — ask the agent for the rest via SendMessage]`,
+  )
+  expect(createIdleNotification('mate', { idleReason: 'failed', result: long }).result).toBe(`${'x'.repeat(4000)}\n[result truncated]`)
+  expect(createIdleNotification('mate', { result: '  short  ' }).result).toBe('short')
+  expect(createIdleNotification('mate', { result: '   ' }).result).toBeUndefined()
+})
