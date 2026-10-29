@@ -21,6 +21,7 @@ import {
 import { isPanelAgentTask } from "../tasks/LocalAgentTask/LocalAgentTask.js";
 import { logForDebugging } from "../utils/debug.js";
 import { evictTerminalTask } from "../utils/task/framework.js";
+import { hideIdleTeammates } from "../state/teammateViewHelpers.js";
 import { truncateToWidth } from "../utils/truncate.js";
 import { KeyboardShortcutHint } from "./design-system/KeyboardShortcutHint.js";
 import {
@@ -119,6 +120,7 @@ export function CoordinatorTaskPanel({
             evictTerminalTask(t.id, setAppState);
           }
         }
+        hideIdleTeammates(setAppState, now);
         setTick((prev: number) => prev + 1);
       },
       1000,

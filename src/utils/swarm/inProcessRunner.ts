@@ -67,7 +67,10 @@ import {
   createUserMessage,
 } from '../../utils/messages.js'
 import { evictTaskOutput } from '../../utils/task/diskOutput.js'
-import { evictTerminalTask } from '../../utils/task/framework.js'
+import {
+  evictTerminalTask,
+  PANEL_GRACE_MS,
+} from '../../utils/task/framework.js'
 import { tokenCountWithEstimation } from '../../utils/tokens.js'
 import { createAbortController } from '../abortController.js'
 import { type AgentContext, runWithAgentContext } from '../agentContext.js'
@@ -1236,7 +1239,12 @@ export async function runInProcessTeammate(
           // Mark task as running (not idle)
           updateTaskState(
             taskId,
-            task => ({ ...task, status: 'running', isIdle: false }),
+            task => ({
+              ...task,
+              status: 'running',
+              isIdle: false,
+              evictAfter: undefined,
+            }),
             setAppState,
           )
 
@@ -1416,7 +1424,14 @@ export async function runInProcessTeammate(
         task => {
           // Call any registered idle callbacks
           task.onIdleCallbacks?.forEach(cb => cb())
-          return { ...task, isIdle: true, onIdleCallbacks: [] }
+          // Official 2.1.311: an idle teammate leaves the panel after the
+          // grace period (see hideIdleTeammates) but stays alive.
+          return {
+            ...task,
+            isIdle: true,
+            evictAfter: Date.now() + PANEL_GRACE_MS,
+            onIdleCallbacks: [],
+          }
         },
         setAppState,
       )
