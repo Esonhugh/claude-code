@@ -116,6 +116,7 @@ function fixture() {
     getProjectConfigRoot: () => null,
     getOriginalCwd: () => home,
     getMainThreadAgentType: () => undefined,
+    getPromptId: () => null,
     getIsNonInteractiveSession: () => !controls.interactive,
     getRegisteredHooks: () => registered,
     getStatsStore: () => undefined,
