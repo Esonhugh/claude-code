@@ -16,6 +16,7 @@ export function emitTaskProgress(params: {
   toolUses: number
   lastToolName?: string
   summary?: string
+  subagentType?: string
   workflowProgress?: SdkWorkflowProgress[]
 }): void {
   enqueueSdkEvent({
@@ -24,6 +25,7 @@ export function emitTaskProgress(params: {
     task_id: params.taskId,
     tool_use_id: params.toolUseId,
     description: params.description,
+    subagent_type: params.subagentType,
     usage: {
       total_tokens: params.totalTokens,
       tool_uses: params.toolUses,

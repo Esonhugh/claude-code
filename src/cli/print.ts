@@ -437,7 +437,7 @@ import { getRunningTasks } from '../utils/task/framework.js'
 import { isBackgroundTask } from '../tasks/types.js'
 import { StopTaskError, stopTask } from '../tasks/stopTask.js'
 import { isTerminalTaskStatus } from '../taskStatus.js'
-import { drainSdkOutput, getTaskRunId } from '../utils/sdkEventQueue.js'
+import { drainSdkOutput, getTaskRunId, takeTaskTerminalSummary } from '../utils/sdkEventQueue.js'
 import { initializeGrowthBook } from '../services/analytics/growthbook.js'
 import { errorMessage, toError } from '../utils/errors.js'
 import { sleep } from '../utils/sleep.js'
@@ -2405,7 +2405,10 @@ function runHeadlessStreaming(
                 tool_use_id: toolUseIdMatch?.[1],
                 status,
                 output_file: outputFileMatch?.[1] ?? '',
-                summary: summaryMatch?.[1] ?? '',
+                summary:
+                  takeTaskTerminalSummary(taskIdMatch?.[1] ?? '') ??
+                  summaryMatch?.[1] ??
+                  '',
                 usage:
                   totalTokensMatch && toolUsesMatch
                     ? {

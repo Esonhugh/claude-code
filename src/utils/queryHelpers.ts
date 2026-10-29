@@ -111,7 +111,14 @@ const toolProgressLastSentTime = new Map<string, number>()
 export function* normalizeSubagentMessage(
   message: Message,
   parentToolUseID: string,
+  agent: { agentId?: string; agentType?: string; description?: string } = {},
 ): Generator<SDKAssistantMessage | SDKUserMessage> {
+  // Like official 2.1.311, name the subagent each message came from.
+  const agentFields = {
+    ...(agent.agentId !== undefined && { agent_id: agent.agentId }),
+    ...(agent.agentType !== undefined && { subagent_type: agent.agentType }),
+    ...(agent.description && { task_description: agent.description }),
+  }
   // @ts-ignore - recovered code
   for (const _ of normalizeMessages([message])) {
     // @ts-ignore - recovered code
@@ -126,9 +133,12 @@ export function* normalizeSubagentMessage(
           // @ts-ignore - recovered code
           message: _.message,
           parent_tool_use_id: parentToolUseID,
+          ...agentFields,
           session_id: getSessionId(),
           // @ts-ignore - recovered code
           uuid: _.uuid,
+          // @ts-ignore - recovered code
+          timestamp: _.timestamp,
           // @ts-ignore - recovered code
           error: _.error,
         }
@@ -139,6 +149,7 @@ export function* normalizeSubagentMessage(
           // @ts-ignore - recovered code
           message: _.message,
           parent_tool_use_id: parentToolUseID,
+          ...agentFields,
           session_id: getSessionId(),
           // @ts-ignore - recovered code
           uuid: _.uuid,
@@ -183,7 +194,14 @@ export function* normalizeMessage(message: Message): Generator<SDKMessage> {
         message.data.type === 'skill_progress'
       ) {
         // @ts-ignore - recovered code
-        yield* normalizeSubagentMessage(message.data.message, message.parentToolUseID)
+        yield* normalizeSubagentMessage(message.data.message, message.parentToolUseID, {
+          // @ts-ignore - recovered code
+          agentId: message.data.agentId,
+          // @ts-ignore - recovered code
+          agentType: message.data.agentType,
+          // @ts-ignore - recovered code
+          description: message.data.description,
+        })
       } else if (
         message.data.type === 'bash_progress' ||
         message.data.type === 'powershell_progress'

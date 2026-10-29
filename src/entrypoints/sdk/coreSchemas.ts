@@ -1496,6 +1496,17 @@ const SDKUserMessageContentSchema = lazySchema(() =>
     type: z.literal('user'),
     message: APIUserMessagePlaceholder(),
     parent_tool_use_id: z.string().nullable(),
+    agent_id: z
+      .string()
+      .optional()
+      .describe(
+        'ID of the subagent that produced this message: the `task_id` of its task events, unchanged when the subagent is resumed. Absent on main-thread messages.',
+      ),
+    subagent_type: z.string().optional(),
+    task_description: z
+      .string()
+      .optional()
+      .describe('Description of the subagent task that produced this message.'),
     isSynthetic: z.boolean().optional(),
     tool_use_result: z.unknown().optional(),
     priority: z.enum(['now', 'next', 'later']).optional(),
@@ -1571,6 +1582,18 @@ export const SDKAssistantMessageSchema = lazySchema(() =>
     type: z.literal('assistant'),
     message: APIAssistantMessagePlaceholder(),
     parent_tool_use_id: z.string().nullable(),
+    agent_id: z
+      .string()
+      .optional()
+      .describe(
+        'ID of the subagent that produced this message: the `task_id` of its task events, unchanged when the subagent is resumed. Absent on main-thread messages.',
+      ),
+    subagent_type: z.string().optional(),
+    task_description: z
+      .string()
+      .optional()
+      .describe('Description of the subagent task that produced this message.'),
+    timestamp: z.string().optional(),
     error: SDKAssistantMessageErrorSchema().optional(),
     uuid: UUIDPlaceholder(),
     session_id: z.string(),
@@ -2092,6 +2115,7 @@ export const SDKTaskProgressMessageSchema = lazySchema(() =>
     run_id: z.string().optional().describe('Id of one run of the task; a resumed task keeps its task_id and gets a new run_id.'),
     tool_use_id: z.string().optional(),
     description: z.string(),
+    subagent_type: z.string().optional(),
     usage: z.object({
       total_tokens: z.number(),
       tool_uses: z.number(),

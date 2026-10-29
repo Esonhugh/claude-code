@@ -638,6 +638,7 @@ export function emitTaskProgress(
   description: string,
   startTime: number,
   lastToolName: string,
+  subagentType?: string,
 ): void {
   const progress = getProgressUpdate(tracker)
   emitTaskProgressEvent({
@@ -648,6 +649,7 @@ export function emitTaskProgress(
     totalTokens: progress.tokenCount,
     toolUses: progress.toolUseCount,
     lastToolName,
+    subagentType,
   })
 }
 
@@ -870,7 +872,11 @@ export async function runAsyncAgentLifecycle({
       reportObservedAgentProgress(toolUseContext, message)
       // SDK consumers see a background agent's messages live, like official.
       if (getIsNonInteractiveSession() && toolUseContext.toolUseId) {
-        for (const sdkMessage of normalizeSubagentMessage(message, toolUseContext.toolUseId)) {
+        for (const sdkMessage of normalizeSubagentMessage(message, toolUseContext.toolUseId, {
+          agentId: taskId,
+          agentType: metadata.agentType,
+          description,
+        })) {
           enqueueSdkEvent(sdkMessage)
         }
       }
@@ -883,6 +889,7 @@ export async function runAsyncAgentLifecycle({
           description,
           metadata.startTime,
           lastToolName,
+          metadata.agentType,
         )
       }
     }
