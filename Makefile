@@ -14,6 +14,7 @@ CLAUDE_KEEP_PACK ?= 0
 .PHONY: build linux-baseline test release-check check-mods-control-types download-claude clean-download-claude
 
 build:
+	-bun ./scripts/build-search-tools.mjs
 ifneq ($(strip $(CLAUDE_CODE_BUILD_DIR)),)
 	CLAUDE_CODE_VERSION=$(VERSION) CLAUDE_CODE_BUILD_DIR="$(CLAUDE_CODE_BUILD_DIR)" bun package:binary
 else
