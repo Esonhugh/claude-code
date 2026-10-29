@@ -1995,6 +1995,7 @@ async function checkPermissionsAndCallTool(
       mcpServerType,
       mcpServerBaseUrl,
       managedPass ? 'non-managed' : 'all',
+      durationMs,
     )) {
       if ('updatedToolOutput' in hookResult) {
         toolOutput = hookResult.updatedToolOutput
@@ -2236,6 +2237,8 @@ async function checkPermissionsAndCallTool(
       requestId,
       mcpServerType,
       mcpServerBaseUrl,
+      'all',
+      durationMs,
     )) {
       hookMessages.push(hookResult)
     }

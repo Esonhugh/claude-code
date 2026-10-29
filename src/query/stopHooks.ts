@@ -567,6 +567,8 @@ export async function* handleStopHooks(
         teamName,
         permissionMode,
         toolUseContext.abortController.signal,
+        undefined,
+        toolUseContext,
       )
 
       for await (const result of teammateIdleGenerator) {

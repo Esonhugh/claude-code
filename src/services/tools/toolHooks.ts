@@ -472,6 +472,7 @@ export async function* runPostToolUseHooks<Input extends AnyObject, Output>(
   mcpServerType: McpServerType,
   mcpServerBaseUrl: string | undefined,
   sourceScope: HookSourceScope = 'all',
+  durationMs?: number,
 ): AsyncGenerator<PostToolUseHooksResult<Output>> {
   const postToolStartTime = Date.now()
   try {
@@ -490,6 +491,7 @@ export async function* runPostToolUseHooks<Input extends AnyObject, Output>(
         tool_use_id: toolUseID,
         tool_input: toolInput,
         tool_response: toolOutput,
+        duration_ms: durationMs,
       },
       scope =>
         executePostToolHooks(
@@ -502,6 +504,7 @@ export async function* runPostToolUseHooks<Input extends AnyObject, Output>(
           toolUseContext.abortController.signal,
           undefined,
           scope,
+          durationMs,
         ),
       sourceScope,
     )) {
@@ -653,6 +656,7 @@ export async function* runPostToolUseFailureHooks<Input extends AnyObject>(
   mcpServerType: McpServerType,
   mcpServerBaseUrl: string | undefined,
   sourceScope: HookSourceScope = 'all',
+  durationMs?: number,
 ): AsyncGenerator<
   MessageUpdateLazy<AttachmentMessage | ProgressMessage<HookProgress>>
 > {
@@ -673,6 +677,7 @@ export async function* runPostToolUseFailureHooks<Input extends AnyObject>(
         tool_input: processedInput,
         error,
         is_interrupt: isInterrupt,
+        duration_ms: durationMs,
       },
       scope =>
         executePostToolUseFailureHooks(
@@ -686,6 +691,7 @@ export async function* runPostToolUseFailureHooks<Input extends AnyObject>(
           toolUseContext.abortController.signal,
           undefined,
           scope,
+          durationMs,
         ),
       sourceScope,
     )) {
