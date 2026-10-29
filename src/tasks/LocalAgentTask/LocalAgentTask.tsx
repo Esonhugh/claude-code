@@ -235,6 +235,8 @@ export type LocalAgentTaskState = TaskStateBase & {
   isIdle?: boolean
   finalizing?: boolean
   keepaliveReasons?: Set<string>
+  /** The owner was told this run stopped with its own background work still running. */
+  waitingNotice?: boolean
   spawnDepth: number
   model?: string
   abortController?: AbortController
@@ -360,10 +362,13 @@ export function enqueueAgentNotification({
   toolUseId,
   worktreePath,
   worktreeBranch,
+  waiting,
 }: {
   taskId: string
   description: string
   status: 'completed' | 'failed' | 'killed'
+  /** Interim notice: the agent stopped with its own background work still running. */
+  waiting?: boolean
   error?: string
   setAppState: SetAppState
   finalMessage?: string
@@ -408,7 +413,7 @@ export function enqueueAgentNotification({
 
   const summary = escapeXml(
     status === 'completed'
-      ? `Agent "${description}" finished`
+      ? `Agent "${description}" ${waiting ? 'is waiting on its own background work' : 'finished'}`
       : status === 'failed'
         ? `Agent "${description}" failed: ${error || 'Unknown error'}`
         : `Agent "${description}" was stopped`,
@@ -422,6 +427,9 @@ export function enqueueAgentNotification({
   const truncatedResult = escapedResult.length > NOTIFICATION_RESULT_MAX_CHARS
     ? `${escapedResult.slice(0, NOTIFICATION_RESULT_MAX_CHARS)}\n... (truncated ${escapedResult.length - NOTIFICATION_RESULT_MAX_CHARS} chars, full result in ${escapeXml(outputPath)})`
     : escapedResult
+  const noteSection = waiting
+    ? '\n<note>This agent stopped with background work of its own still running. It may resume on its own when that work completes or reports, and the same task-id notifies again if it does; the result below may be interim.</note>'
+    : ''
   const resultSection = finalMessage ? `\n<result>${truncatedResult}</result>` : ''
   const usageSection = usage
     ? `\n<usage><total_tokens>${usage.totalTokens}</total_tokens><tool_uses>${usage.toolUses}</tool_uses><duration_ms>${usage.durationMs}</duration_ms></usage>`
@@ -434,14 +442,17 @@ export function enqueueAgentNotification({
 <${TASK_ID_TAG}>${escapeXml(taskId)}</${TASK_ID_TAG}>${toolUseIdLine}
 <${OUTPUT_FILE_TAG}>${escapeXml(outputPath)}</${OUTPUT_FILE_TAG}>
 <${STATUS_TAG}>${status}</${STATUS_TAG}>
-<${SUMMARY_TAG}>${summary}</${SUMMARY_TAG}>${resultSection}${usageSection}${worktreeSection}
+<${SUMMARY_TAG}>${summary}</${SUMMARY_TAG}>${noteSection}${resultSection}${usageSection}${worktreeSection}
 </${TASK_NOTIFICATION_TAG}>`
 
   const markNotified = () =>
-    updateTaskState<LocalAgentTaskState>(taskId, setAppState, task => ({
-      ...task,
-      notified: true,
-    }))
+    updateTaskState<LocalAgentTaskState>(taskId, setAppState, task =>
+      // A wake can re-register the agent before the interim notice settles; that new run notifies on its own.
+      waiting && task.status === 'running' ? task : {
+        ...task,
+        notified: true,
+        waitingNotice: waiting,
+      })
   const pending = enqueuePendingNotification({
     value: message,
     mode: 'task-notification',
@@ -559,12 +570,13 @@ export function markAgentsNotified(
   setAppState: SetAppState,
 ): void {
   updateTaskState<LocalAgentTaskState>(taskId, setAppState, task => {
-    if (task.notified) {
+    if (task.notified && !task.waitingNotice) {
       return task
     }
     return {
       ...task,
       notified: true,
+      waitingNotice: undefined,
     }
   })
 }
