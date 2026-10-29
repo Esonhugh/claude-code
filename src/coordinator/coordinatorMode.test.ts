@@ -29,3 +29,23 @@ test('coordinator mode runs only in headless or remote sessions, like official',
   const [code, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()])
   expect(code, stdout + stderr).toBe(0)
 })
+
+test('coordinator keeps Skill, ListAgents and Workflow like official', async () => {
+  const { applyCoordinatorToolFilter } = await import('../utils/toolPool.js')
+  const tools = ['Agent', 'Bash', 'Goal', 'ListAgents', 'Read', 'SendMessage', 'Skill', 'TaskStop', 'Workflow'].map(name => ({ name }))
+  expect(applyCoordinatorToolFilter(tools as never).map(t => t.name)).toEqual(['Agent', 'Goal', 'ListAgents', 'SendMessage', 'Skill', 'TaskStop', 'Workflow'])
+})
+
+test('coordinator prompt lists Workflow, Skill and peers only when those tools are present', async () => {
+  const { getCoordinatorSystemPrompt } = await import('./coordinatorMode.js')
+  const bare = getCoordinatorSystemPrompt(['Agent', 'SendMessage', 'TaskStop'])
+  expect(bare).not.toContain('- **Skill**')
+  expect(bare).not.toContain('- **Workflow**')
+  expect(bare).not.toContain('- **ListAgents / SendMessage**')
+
+  const full = getCoordinatorSystemPrompt(['Agent', 'ListAgents', 'SendMessage', 'Skill', 'TaskStop', 'Workflow'])
+  expect(full).toContain('- **TaskStop** - Stop a running worker\n- **Workflow** (if available) - Run a multi-step subagent pipeline')
+  expect(full).toContain("calls when a matching workflow exists\n- **Skill** - Load a skill's full instructions inline (read-only")
+  expect(full).toContain('do not delegate subscription management to workers.\n- **ListAgents / SendMessage** (cross-session, if ListAgents is available)')
+  expect(full).toContain('a peer requested.\n\nWhen calling Agent:')
+})

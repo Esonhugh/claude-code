@@ -55,6 +55,9 @@ const BLOCK_PATTERN = /```!\s*\n?([\s\S]*?)\n?```/g
 // eslint-disable-next-line custom-rules/no-lookbehind-regex -- gated by text.includes('!`') below (PR#22986)
 const INLINE_PATTERN = /(?<=^|\s)!`([^`]+)`/gm
 
+const READ_ONLY_SKILL_LOAD_PLACEHOLDER =
+  '[shell command not executed: read-only skill load on the coordinator \u2014 delegate to a worker to run it]'
+
 /**
  * Parses prompt text and executes any embedded shell commands.
  * Supports two syntaxes:
@@ -72,6 +75,12 @@ export async function executeShellCommandsInPrompt(
   slashCommandName: string,
   shell?: FrontmatterShell,
 ): Promise<string> {
+  if (context.options.readOnlySkillLoad) {
+    const withoutBlocks = text.replace(BLOCK_PATTERN, READ_ONLY_SKILL_LOAD_PLACEHOLDER)
+    return withoutBlocks.includes('!`')
+      ? withoutBlocks.replace(INLINE_PATTERN, READ_ONLY_SKILL_LOAD_PLACEHOLDER)
+      : withoutBlocks
+  }
   let result = text
 
   // Resolve the tool once. `shell === undefined` and `shell === 'bash'` both
