@@ -33,6 +33,8 @@ writeFileSync(join(outside, 'target.txt'), 'x')
 symlinkSync(outside, join(root, 'linked'))
 // <project>/safe/escape.txt -> <root>/outside/target.txt
 symlinkSync(join(outside, 'target.txt'), join(project, 'safe', 'escape.txt'))
+// <project>/plink -> <root>/outside
+symlinkSync(outside, join(project, 'plink'))
 
 const savedCwd = getCwdState()
 const savedOriginalCwd = getOriginalCwd()
@@ -83,6 +85,15 @@ test('deny and ask rules written on a symlinked directory apply to its real loca
     expect(matchingRuleForInput(join(outside, 'target.txt'), ctx, 'edit', behavior)).not.toBeNull()
     expect(matchingRuleForInput(join(root, 'linked', 'target.txt'), ctx, 'edit', behavior)).not.toBeNull()
   }
+})
+
+test('a relative deny rule on a symlinked directory also applies to its real location', () => {
+  for (const pattern of ['./plink/**', 'plink/**']) {
+    const ctx = permissionContext({ deny: [`Edit(${pattern})`] })
+    expect(matchingRuleForInput(join(outside, 'target.txt'), ctx, 'edit', 'deny')).not.toBeNull()
+  }
+  const unanchored = permissionContext({ deny: ['Edit(plink)'] })
+  expect(matchingRuleForInput(join(outside, 'target.txt'), unanchored, 'edit', 'deny')).toBeNull()
 })
 
 test('an allow rule does not reach through a symlink to a target it does not cover', () => {

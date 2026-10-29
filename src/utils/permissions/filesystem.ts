@@ -1028,8 +1028,15 @@ function getPatternsByRoot(
     // A deny or ask rule written on a symlinked directory also guards the
     // directory's real location (official 2.1.268). Allow rules do not get a
     // twin: a swapped symlink must not widen what they grant.
-    if (behavior !== 'allow' && root !== null) {
-      const twin = physicalTwinPattern(root, relativePattern)
+    // A relative pattern with an inner slash is anchored at the cwd.
+    const anchored =
+      root !== null
+        ? { root, pattern: relativePattern }
+        : relativePattern.slice(0, -1).includes(DIR_SEP)
+          ? { root: getCwd(), pattern: `${DIR_SEP}${relativePattern}` }
+          : null
+    if (behavior !== 'allow' && anchored !== null) {
+      const twin = physicalTwinPattern(anchored.root, anchored.pattern)
       if (twin !== null && !patternsForRoot(DIR_SEP).has(twin)) {
         patternsForRoot(DIR_SEP).set(twin, rule)
       }

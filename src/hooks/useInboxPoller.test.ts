@@ -7,7 +7,8 @@ import { canEvictTerminalTask } from '../utils/task/retention.js'
 import { completeTeammateTasksOnShutdown } from '../utils/swarm/teammateShutdown.js'
 import { createTeammateContext, runWithTeammateContext } from '../utils/teammateContext.js'
 import type { AppState } from '../state/AppState.js'
-import { getAgentNameToPoll } from './useInboxPoller.js'
+import type { ToolPermissionContext } from '../Tool.js'
+import { getAgentNameToPoll, planApprovedContext } from './useInboxPoller.js'
 
 function teammateTask(
   id: string,
@@ -71,4 +72,18 @@ test('the leader keeps polling its inbox when React renders inside an in-process
   // A teammate's setAppState can re-render the leader's REPL synchronously, so the
   // teammate's AsyncLocalStorage context is still active while this runs.
   expect(runWithTeammateContext(mate, () => getAgentNameToPoll(appState))).toBe('team-lead')
+})
+
+test('an approved plan leaves plan mode through the mode gates', async () => {
+  const { getDefaultAppState } = await import('../state/AppStateStore.js')
+  const plan = {
+    ...getDefaultAppState().toolPermissionContext,
+    mode: 'plan',
+    isBypassPermissionsModeAvailable: false,
+  } as ToolPermissionContext
+
+  expect(planApprovedContext(plan, 'acceptEdits').mode).toBe('acceptEdits')
+  expect(planApprovedContext(plan, undefined).mode).toBe('default')
+  // A lead in bypass cannot hand bypass to a teammate that was not launched with it.
+  expect(planApprovedContext(plan, 'bypassPermissions').mode).toBe('default')
 })
