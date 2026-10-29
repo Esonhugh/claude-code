@@ -286,6 +286,8 @@ import { TASK_GET_TOOL_NAME } from './tools/TaskGetTool/constants.js'
 import { TASK_LIST_TOOL_NAME } from './tools/TaskListTool/constants.js'
 import { TASK_UPDATE_TOOL_NAME } from './tools/TaskUpdateTool/constants.js'
 import { TODO_WRITE_TOOL_NAME } from './tools/TodoWriteTool/constants.js'
+import { GLOB_TOOL_NAME } from './tools/GlobTool/prompt.js'
+import { GREP_TOOL_NAME } from './tools/GrepTool/prompt.js'
 import { cleanupOrphanedPluginVersionsInBackground } from './utils/plugins/cacheUtils.js'
 import { initializeVersionedPlugins } from './utils/plugins/installedPluginsManager.js'
 import { getManagedPluginNames } from './utils/plugins/managedPlugins.js'
@@ -424,6 +426,7 @@ import {
   setSessionSource,
   setUserMsgOptIn,
   setTodoToolsOptIn,
+  setSearchToolsOptIn,
   setPermissionPromptToolName,
   switchSession,
   getSessionStartedAt,
@@ -2758,6 +2761,13 @@ async function run(): Promise<CommanderCommand> {
           TASK_UPDATE_TOOL_NAME,
           TASK_LIST_TOOL_NAME,
         ].some(name => launchToolNames.includes(name)),
+      )
+      // Like official 2.1.311, naming Glob or Grep keeps them when the
+      // embedded bfs/ugrep would otherwise replace them.
+      setSearchToolsOptIn(
+        [GLOB_TOOL_NAME, GREP_TOOL_NAME].some(name =>
+          launchToolNames.includes(name),
+        ),
       )
       if (options.permissionPrompts !== 'none') {
         setPermissionPromptToolName(

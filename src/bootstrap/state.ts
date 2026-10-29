@@ -85,6 +85,7 @@ type State = {
   sdkAgentProgressSummariesEnabled: boolean
   userMsgOptIn: boolean
   todoToolsOptIn: boolean
+  searchToolsOptIn: boolean
   permissionPromptToolName: string | undefined
   clientType: string
   sessionSource: string | undefined
@@ -322,6 +323,7 @@ function getInitialState(): State {
     sdkAgentProgressSummariesEnabled: false,
     userMsgOptIn: false,
     todoToolsOptIn: false,
+    searchToolsOptIn: false,
     permissionPromptToolName: undefined,
     clientType: 'cli',
     sessionSource: undefined,
@@ -1191,6 +1193,15 @@ export function getTodoToolsOptIn(): boolean {
 
 export function setTodoToolsOptIn(value: boolean): void {
   STATE.todoToolsOptIn = value
+}
+
+// Set when --tools or --allowedTools names Glob or Grep.
+export function getSearchToolsOptIn(): boolean {
+  return STATE.searchToolsOptIn
+}
+
+export function setSearchToolsOptIn(value: boolean): void {
+  STATE.searchToolsOptIn = value
 }
 
 // Who answers permission prompts in a non-interactive session ('stdio' for
