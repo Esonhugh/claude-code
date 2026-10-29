@@ -46,6 +46,25 @@ test('coordinator prompt lists Workflow, Skill and peers only when those tools a
   const full = getCoordinatorSystemPrompt(['Agent', 'ListAgents', 'SendMessage', 'Skill', 'TaskStop', 'Workflow'])
   expect(full).toContain('- **TaskStop** - Stop a running worker\n- **Workflow** (if available) - Run a multi-step subagent pipeline')
   expect(full).toContain("calls when a matching workflow exists\n- **Skill** - Load a skill's full instructions inline (read-only")
-  expect(full).toContain('do not delegate subscription management to workers.\n- **ListAgents / SendMessage** (cross-session, if ListAgents is available)')
+  expect(full).toContain('call the `mcp__claude-code-remote__` one.\n- **ListAgents / SendMessage** (cross-session, if ListAgents is available)')
   expect(full).toContain('a peer requested.\n\nWhen calling Agent:')
+})
+
+test('coordinator adds brief tools under CLAUDE_CODE_BRIEF and named extras from CLAUDE_CODE_COORDINATOR_EXTRA_TOOLS', async () => {
+  const { applyCoordinatorToolFilter } = await import('../utils/toolPool.js')
+  const tools = [{ name: 'Agent' }, { name: 'Bash' }, { name: 'Read', aliases: ['ReadFile'] }, { name: 'SendUserFile' }, { name: 'SendUserMessage' }, { name: 'mcp__srv__ping' }]
+  const saved = { brief: process.env.CLAUDE_CODE_BRIEF, extra: process.env.CLAUDE_CODE_COORDINATOR_EXTRA_TOOLS }
+  try {
+    delete process.env.CLAUDE_CODE_BRIEF
+    delete process.env.CLAUDE_CODE_COORDINATOR_EXTRA_TOOLS
+    expect(applyCoordinatorToolFilter(tools as never).map(t => t.name)).toEqual(['Agent'])
+    process.env.CLAUDE_CODE_BRIEF = '1'
+    process.env.CLAUDE_CODE_COORDINATOR_EXTRA_TOOLS = ' ReadFile , mcp__srv__ping,'
+    expect(applyCoordinatorToolFilter(tools as never).map(t => t.name)).toEqual(['Agent', 'Read', 'SendUserFile', 'SendUserMessage', 'mcp__srv__ping'])
+  } finally {
+    for (const [key, value] of [['CLAUDE_CODE_BRIEF', saved.brief], ['CLAUDE_CODE_COORDINATOR_EXTRA_TOOLS', saved.extra]] as const) {
+      if (value === undefined) delete process.env[key]
+      else process.env[key] = value
+    }
+  }
 })

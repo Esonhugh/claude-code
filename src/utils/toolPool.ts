@@ -3,9 +3,12 @@ import partition from 'lodash-es/partition.js'
 import uniqBy from 'lodash-es/uniqBy.js'
 import { COORDINATOR_MODE_ALLOWED_TOOLS } from '../constants/tools.js'
 import { isMcpTool } from '../services/mcp/utils.js'
-import type { Tool, ToolPermissionContext, Tools } from '../Tool.js'
+import { toolMatchesName, type Tool, type ToolPermissionContext, type Tools } from '../Tool.js'
+import { BRIEF_TOOL_NAME } from '../tools/BriefTool/prompt.js'
 import { ENTER_PLAN_MODE_TOOL_NAME } from '../tools/EnterPlanModeTool/constants.js'
 import { EXIT_PLAN_MODE_V2_TOOL_NAME } from '../tools/ExitPlanModeTool/constants.js'
+import { SEND_USER_FILE_TOOL_NAME } from '../tools/SendUserFileTool/prompt.js'
+import { isEnvTruthy } from './envUtils.js'
 import { isPlanModeAvailable } from './planModeV2.js'
 
 // MCP tool name suffixes for PR activity subscription. These are lightweight
@@ -33,13 +36,23 @@ const coordinatorModeModule = feature('COORDINATOR_MODE')
  * path (main.tsx) so both stay in sync.
  *
  * PR activity subscription tools are always allowed since subscription
- * management is orchestration.
+ * management is orchestration. Like official 2.1.311, CLAUDE_CODE_BRIEF adds
+ * the user-messaging tools and CLAUDE_CODE_COORDINATOR_EXTRA_TOOLS (comma
+ * separated names) adds any other tool.
  */
 export function applyCoordinatorToolFilter(tools: Tools): Tools {
+  const briefTools = isEnvTruthy(process.env.CLAUDE_CODE_BRIEF)
+  const extraTools = (process.env.CLAUDE_CODE_COORDINATOR_EXTRA_TOOLS ?? '')
+    .split(',')
+    .map(name => name.trim())
+    .filter(Boolean)
   return tools.filter(
     t =>
       COORDINATOR_MODE_ALLOWED_TOOLS.has(t.name) ||
-      isPrActivitySubscriptionTool(t.name),
+      isPrActivitySubscriptionTool(t.name) ||
+      (briefTools &&
+        (t.name === BRIEF_TOOL_NAME || t.name === SEND_USER_FILE_TOOL_NAME)) ||
+      extraTools.some(name => toolMatchesName(t, name)),
   )
 }
 
