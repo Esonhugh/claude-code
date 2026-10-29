@@ -134,6 +134,7 @@ export const KEYBINDING_ACTIONS = [
   'task:background',
   // Theme picker actions
   'theme:toggleSyntaxHighlighting',
+  'theme:editCustom',
   // Help menu actions
   'help:dismiss',
   // Attachment navigation (select dialog image attachments)

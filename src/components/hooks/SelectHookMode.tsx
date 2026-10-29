@@ -15,7 +15,7 @@ import {
   type IndividualHookConfig,
 } from '../../utils/hooks/hooksSettings.js'
 import { Dialog } from '../design-system/Dialog.js'
-import { HooksList } from './HooksList.js'
+import { MenuList } from '../design-system/MenuList.js'
 
 type Props = {
   selectedEvent: HookEvent
@@ -64,7 +64,7 @@ export function SelectHookMode({
       onCancel={onCancel}
     >
       <Box flexDirection="column">
-        <HooksList
+        <MenuList
           rows={hooksForSelectedMatcher.map((hook, index) => ({
             kind: 'item',
             key: String(index),

@@ -128,7 +128,7 @@ test('writers persist settings in the correct source, preserve siblings and upda
   expect(JSON.parse(readFileSync(join(home, '.claude/settings.local.json'), 'utf8')).prefersReducedMotion).toBe(true)
 })
 
-test('all six concrete themes persist and notify the UI, while invalid choices cannot write', async () => {
+test('auto and all six concrete themes persist and notify the UI, while invalid choices cannot write', async () => {
   const { getConfigRows } = await import('./configRows.js')
   const config = await import('../../utils/config.js')
   const { getGlobalClaudeFile } = await import('../../utils/env.js')
@@ -142,7 +142,7 @@ test('all six concrete themes persist and notify the UI, while invalid choices c
     options: { setTheme: (theme: string) => { selected = theme } },
   }
   const theme = getConfigRows(context).find(row => row.key === 'theme')!
-  expect(theme.options).toEqual(['dark', 'light', 'light-daltonized', 'dark-daltonized', 'light-ansi', 'dark-ansi'])
+  expect(theme.options).toEqual(['auto', 'dark', 'light', 'light-daltonized', 'dark-daltonized', 'light-ansi', 'dark-ansi'])
   for (const value of theme.options!) {
     await theme.set!(value)
     expect<string>(config.getGlobalConfig().theme).toBe(value)

@@ -1,7 +1,7 @@
 /**
- * HooksList is the keyboard-navigable list used by the /hooks top level and
- * the "Hook events" view: selectable rows with an aligned meta column and an
- * optional description line, plus non-selectable section headings.
+ * MenuList is a keyboard-navigable list (Select context: up/down/enter) with
+ * an optional icon per row, an aligned meta column, an optional description
+ * line, and non-selectable section headings. It does not wrap around.
  */
 import figures from 'figures'
 import * as React from 'react'
@@ -9,28 +9,31 @@ import { useState } from 'react'
 import { Box, Text } from '../../ink.js'
 import { stringWidth } from '../../ink/stringWidth.js'
 import { useKeybindings } from '../../keybindings/useKeybinding.js'
-import { ListItem } from '../design-system/ListItem.js'
+import type { Theme } from '../../utils/theme.js'
+import { ListItem } from './ListItem.js'
 
-export type HooksListRow =
+export type MenuListRow =
   | { kind: 'heading'; key: string; content?: React.ReactNode }
   | {
       kind: 'item'
       key: string
       icon?: string
+      /** Colors the icon; without it the icon is dim. */
+      iconColor?: keyof Theme
       label: string
       meta?: string[]
       description?: string
     }
 
 type Props = {
-  rows: HooksListRow[]
+  rows: MenuListRow[]
   onSelect: (itemIndex: number) => void
   defaultFocusIndex?: number
   onFocus?: (itemIndex: number) => void
   visibleItemCount?: number
 }
 
-export function HooksList({
+export function MenuList({
   rows,
   onSelect,
   defaultFocusIndex = 0,
@@ -121,7 +124,14 @@ export function HooksList({
                   color={isFocused ? 'suggestion' : undefined}
                   wrap="truncate-end"
                 >
-                  {row.icon && <Text dimColor>{row.icon} </Text>}
+                  {row.icon && (
+                    <Text
+                      color={row.iconColor}
+                      dimColor={row.iconColor === undefined}
+                    >
+                      {row.icon}{' '}
+                    </Text>
+                  )}
                   {row.label}
                 </Text>
               </Box>

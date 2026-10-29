@@ -9,7 +9,7 @@ import type { EffortValue } from '../utils/effort.js'
 import type { IDEExtensionInstallationStatus, IdeType } from '../utils/ide.js'
 import type { SettingSource } from '../utils/settings/constants.js'
 import type { HooksSettings } from '../utils/settings/types.js'
-import type { ThemeName } from '../utils/theme.js'
+import type { ResolvedTheme } from '../utils/theme.js'
 import type { LogOption } from './logs.js'
 import type { AttachmentMessage, Message } from './message.js'
 import type { PluginManifest } from './plugin.js'
@@ -106,7 +106,7 @@ export type LocalJSXCommandContext = ToolUseContext & {
   options: {
     dynamicMcpConfig?: Record<string, ScopedMcpServerConfig>
     ideInstallationStatus: IDEExtensionInstallationStatus | null
-    theme: ThemeName
+    theme: ResolvedTheme
   }
   onChangeAPIKey: () => void
   onChangeDynamicMcpConfig?: (
