@@ -1937,11 +1937,6 @@ export function REPL({
     }
     setUserInputOnProcessingRaw(input)
   }, [])
-  const viewedAgentTask = getViewedAgentTask({ viewingAgentTaskId, tasks })
-  // The transcript on screen: the viewed agent's, or the main session's.
-  const unseenTranscript = viewedAgentTask
-    ? (viewedAgentTask.messages ?? [])
-    : messages
   // Fullscreen: track the unseen-divider position. dividerIndex changes
   // only ~twice/scroll-session (first scroll-away + repin). pillVisible
   // and stickyPrompt now live in FullscreenLayout — they subscribe to
@@ -1953,7 +1948,7 @@ export function REPL({
     onRepin,
     jumpToNew,
     shiftDivider,
-  } = useUnseenDivider(unseenTranscript.length)
+  } = useUnseenDivider(messages.length)
   if (feature('AWAY_SUMMARY')) {
     // biome-ignore lint/correctness/useHookAtTopLevel: feature() is a compile-time constant
     useAwaySummary(messages, setMessages, isLoading)
@@ -1962,9 +1957,9 @@ export function REPL({
   const cursorNavRef = useRef<MessageActionsNav | null>(null)
   // Memoized so Messages' React.memo holds.
   const unseenDivider = useMemo(
-    () => computeUnseenDivider(unseenTranscript, dividerIndex),
+    () => computeUnseenDivider(messages, dividerIndex),
     // eslint-disable-next-line react-hooks/exhaustive-deps -- length change covers appends; useUnseenDivider's count-drop guard clears dividerIndex on replace/rewind
-    [dividerIndex, unseenTranscript.length, viewedAgentTask?.id],
+    [dividerIndex, messages.length],
   )
   // Re-pin scroll to bottom and clear the unseen-messages baseline. Called
   // on any user-driven return-to-live action (submit, type-into-empty,
@@ -1974,11 +1969,6 @@ export function REPL({
     onRepin()
     setCursor(null)
   }, [onRepin, setCursor])
-  // Switching between the main session and an agent swaps the transcript,
-  // so the old divider baseline no longer points into it.
-  useEffect(() => {
-    onRepin()
-  }, [viewedAgentTask?.id, onRepin])
   // Backstop for the submit-handler repin at onSubmit. If a buffered stdin
   // event (wheel/drag) races between handler-fire and state-commit, the
   // handler's scrollToBottom can be undone. This effect fires on the render
@@ -2403,6 +2393,7 @@ export function REPL({
     streamingToolUsesLength: number
   } | null>(null)
 
+  const viewedAgentTask = getViewedAgentTask({ viewingAgentTaskId, tasks })
   const viewedAgentToolUseIDs = useMemo(
     () => viewedAgentTask ? getAgentInProgressToolUseIDs(viewedAgentTask) : inProgressToolUseIDs,
     [viewedAgentTask, inProgressToolUseIDs],
@@ -5880,7 +5871,6 @@ export function REPL({
       helpers.resetHistory()
       setInputMode('prompt')
       setPastedContents({})
-      repinScroll()
       const consumedGeneration = draftGenerationRef.current
       if (modsSession) await awaitMods()
       const currentTask = store.getState().tasks[task.id]
@@ -5950,7 +5940,6 @@ export function REPL({
       modsSession,
       awaitMods,
       store,
-      repinScroll,
     ],
   )
 
@@ -7254,7 +7243,7 @@ export function REPL({
         }
         isKeyboardActive={!modPaneFocused && !modAbovePromptFocused && !diffDialogActive}
         onScroll={
-          centeredModal || toolPermissionOverlay
+          centeredModal || toolPermissionOverlay || viewedAgentTask
             ? undefined
             : composedOnScroll
         }
@@ -7305,6 +7294,7 @@ export function REPL({
           ) : undefined}
           modalScrollRef={modalScrollRef}
           dividerYRef={dividerYRef}
+          hidePill={!!viewedAgentTask}
           hideSticky={!!viewedTeammateTask}
           newMessageCount={unseenDivider?.count ?? 0}
           onPillClick={() => {
@@ -7335,7 +7325,7 @@ export function REPL({
                 }
                 isBriefOnly={viewedAgentTask ? false : isBriefOnly}
                 focusView={!viewedAgentTask && focusView && isFullscreenEnvEnabled()}
-                unseenDivider={unseenDivider}
+                unseenDivider={viewedAgentTask ? undefined : unseenDivider}
                 scrollRef={isFullscreenEnvEnabled() ? scrollRef : undefined}
                 trackStickyPrompt={isFullscreenEnvEnabled() ? true : undefined}
                 cursor={cursor}

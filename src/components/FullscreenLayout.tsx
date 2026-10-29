@@ -21,7 +21,6 @@ import {
   usePromptOverlayGap,
 } from '../context/promptOverlayContext.js'
 import { useTerminalSize } from '../hooks/useTerminalSize.js'
-import { useShortcutDisplay } from '../keybindings/useShortcutDisplay.js'
 import ScrollBox, { type ScrollBoxHandle } from '../ink/components/ScrollBox.js'
 import { TerminalSizeContext } from '../ink/components/TerminalSizeContext.js'
 import instances from '../ink/instances.js'
@@ -31,7 +30,6 @@ import { ModsBandBudgetContext, ModsPaneHostRowsContext } from '../context/modsP
 import type { Message } from '../types/message.js'
 import { openBrowser, openPath } from '../utils/browser.js'
 import { isFullscreenEnvEnabled } from '../utils/fullscreen.js'
-import { getPlatform, type Platform } from '../utils/platform.js'
 import { plural } from '../utils/stringUtils.js'
 import { isNullRenderingAttachment } from './messages/nullRenderingAttachments.js'
 import PromptInputFooterSuggestions from './PromptInput/PromptInputFooterSuggestions.js'
@@ -91,6 +89,8 @@ type Props = {
    *  shows while viewport bottom hasn't reached this. Ref so REPL doesn't
    *  re-render on the one-shot snapshot write. */
   dividerYRef?: RefObject<number | null>
+  /** Force-hide the pill (e.g. viewing a sub-agent task). */
+  hidePill?: boolean
   /** Force-hide the sticky prompt header (e.g. viewing a teammate task). */
   hideSticky?: boolean
   /** Count for the pill text. 0 → "Jump to bottom", >0 → "N new messages". */
@@ -334,6 +334,7 @@ export function FullscreenLayout({
   modalScrollRef,
   scrollRef,
   dividerYRef,
+  hidePill = false,
   hideSticky = false,
   newMessageCount = 0,
   onPillClick,
@@ -530,7 +531,7 @@ export function FullscreenLayout({
                     </ScrollChromeContext>
                     {overlay}
                   </ScrollBox>
-                  {pillVisible && overlay == null && (
+                  {!hidePill && pillVisible && overlay == null && (
                     <NewMessagesPill count={newMessageCount} onClick={onPillClick} />
                   )}
                   {bottomFloat != null && (
@@ -659,22 +660,6 @@ function DockTail({ width, isLit }: { width: number; isLit: boolean }): React.Re
 // (absoluteRectsPrev third-pass in render-node-to-output.ts, #23939). Shows
 // "Jump to bottom" when count is 0 (scrolled away but no new messages yet —
 // the dead zone where users previously thought chat stalled).
-export function newMessagesPillLabel(
-  count: number,
-  bottomShortcut: string,
-  pageDownShortcut: string,
-  platform: Platform,
-): string {
-  const text = count > 0 ? `${count} new ${plural(count, 'message')}` : 'Jump to bottom'
-  // Mac keyboards have no End key, so the default ctrl+End is useless there.
-  if (platform === 'macos' && bottomShortcut === 'ctrl+End') {
-    const pageDown =
-      pageDownShortcut === 'PageDown' ? `fn+${figures.arrowDown}` : pageDownShortcut
-    return `${text}: ${pageDown} to scroll`
-  }
-  return `${text} (${bottomShortcut}) ${figures.arrowDown}`
-}
-
 function NewMessagesPill({
   count,
   onClick,
@@ -683,8 +668,6 @@ function NewMessagesPill({
   onClick?: () => void
 }): React.ReactNode {
   const [hover, setHover] = useState(false)
-  const bottomShortcut = useShortcutDisplay('scroll:bottom', 'Scroll', 'ctrl+End')
-  const pageDownShortcut = useShortcutDisplay('scroll:pageDown', 'Scroll', 'PageDown')
   return (
     <Box
       position="absolute"
@@ -705,7 +688,10 @@ function NewMessagesPill({
           dimColor
         >
           {' '}
-          {newMessagesPillLabel(count, bottomShortcut, pageDownShortcut, getPlatform())}{' '}
+          {count > 0
+            ? `${count} new ${plural(count, 'message')}`
+            : 'Jump to bottom'}{' '}
+          {figures.arrowDown}{' '}
         </Text>
       </Box>
     </Box>
