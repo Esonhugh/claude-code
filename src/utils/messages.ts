@@ -4703,11 +4703,14 @@ export function createTurnDurationMessage(
   durationMs: number,
   budget?: { tokens: number; limit: number; nudges: number },
   messageCount?: number,
+  pending?: { pendingBackgroundAgentCount?: number; pendingWorkflowCount?: number },
 ): SystemTurnDurationMessage {
   return {
     type: 'system',
     subtype: 'turn_duration',
     durationMs,
+    pendingBackgroundAgentCount: pending?.pendingBackgroundAgentCount,
+    pendingWorkflowCount: pending?.pendingWorkflowCount,
     budgetTokens: budget?.tokens,
     budgetLimit: budget?.limit,
     budgetNudges: budget?.nudges,

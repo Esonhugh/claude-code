@@ -527,8 +527,8 @@ function isAutobackgroundingAllowed(command: string): boolean {
 }
 
 /**
- * Detect standalone or leading `sleep N` patterns that should use Monitor
- * instead. Catches `sleep 5`, `sleep 5 && check`, `sleep 5; check` — but
+ * Detect standalone or leading long `sleep N` patterns that should use Monitor
+ * instead. Catches `sleep 30`, `sleep 30 && check`, `sleep 30; check` — but
  * not sleep inside pipelines, subshells, or scripts (those are fine).
  */
 export function detectBlockedSleepPattern(command: string): string | null {
@@ -537,11 +537,11 @@ export function detectBlockedSleepPattern(command: string): string | null {
 
   const first = parts[0]?.trim() ?? ''
   // Bare `sleep N` or `sleep N.N` as the first subcommand.
-  // Float durations (sleep 0.5) are allowed — those are legit pacing, not polls.
-  const m = /^sleep\s+(\d+)\s*$/.exec(first)
+  const m = /^sleep\s+(\d+(?:\.\d*)?)\s*$/.exec(first)
   if (!m) return null
-  const secs = parseInt(m[1]!, 10)
-  if (secs < 2) return null // sub-2s sleeps are fine (rate limiting, pacing)
+  const secs = parseFloat(m[1]!)
+  // Like official 2.1.311, only sleeps of 25s and up are refused.
+  if (secs < 25) return null
 
   // `sleep N` alone → "what are you waiting for?"
   // `sleep N && check` → "use Monitor { command: check }"
@@ -748,7 +748,7 @@ export const BashTool = buildTool({
       if (sleepPattern !== null) {
         return {
           result: false,
-          message: `Blocked: ${sleepPattern}. Run blocking commands in the background with run_in_background: true — you'll get a completion notification when done. For streaming events (watching logs, polling APIs), use the Monitor tool. If you genuinely need a delay (rate limiting, deliberate pacing), keep it under 2 seconds.`,
+          message: `Blocked: ${sleepPattern}. To wait for a condition, use Monitor with an until-loop (e.g. \`until <check>; do sleep 2; done\`). To wait for a command you started, use run_in_background: true. Do not chain shorter sleeps to work around this block.`,
           errorCode: 10,
         }
       }

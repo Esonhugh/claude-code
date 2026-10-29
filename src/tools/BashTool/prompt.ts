@@ -178,11 +178,11 @@ export function getSimplePrompt(): string {
     'If waiting for a background task you started with `run_in_background`, you will be notified when it completes — do not poll.',
     ...(feature('MONITOR_TOOL')
       ? [
-          '`sleep N` as the first command with N ≥ 2 is blocked. If you need a delay (rate limiting, deliberate pacing), keep it under 2 seconds.',
+          'Long leading `sleep` commands are blocked. To poll until a condition is met, use Monitor with an until-loop (e.g. `until <check>; do sleep 2; done`) — you get a notification when the loop exits. Do not chain shorter sleeps to work around the block.',
         ]
       : [
           'If you must poll an external process, use a check command (e.g. `gh run view`) rather than sleeping first.',
-          'If you must sleep, keep the duration short (1-5 seconds) to avoid blocking the user.',
+          'If you must sleep, keep the duration short to avoid blocking the user.',
         ]),
   ]
   const backgroundNote = getBackgroundUsageNote()
