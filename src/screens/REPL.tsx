@@ -564,6 +564,7 @@ import {
 import { useCommandQueue } from '../hooks/useCommandQueue.js'
 import { SessionBackgroundHint } from '../components/SessionBackgroundHint.js'
 import { startBackgroundSession } from '../tasks/LocalMainSessionTask.js'
+import { turnDurationAfterBackgroundWait } from '../tasks/pendingBackgroundWork.js'
 import { useSessionBackgrounding } from '../hooks/useSessionBackgrounding.js'
 import { diagnosticTracker } from '../services/diagnosticTracking.js'
 import {
@@ -1549,6 +1550,7 @@ export function REPL({
   // Start time of the first turn that had swarm teammates running
   // Used to compute total elapsed time (including teammate execution) for the deferred message
   const swarmStartTimeRef = React.useRef<number | null>(null)
+  const backgroundWaitStartTimeRef = React.useRef<number | null>(null)
   const swarmBudgetInfoRef = React.useRef<
     { tokens: number; limit: number; nudges: number } | undefined
   >(undefined)
@@ -5045,12 +5047,22 @@ export function REPL({
                 swarmBudgetInfoRef.current = budgetInfo
               }
             } else {
+              const turn = turnDurationAfterBackgroundWait({
+                tasks: store.getState().tasks,
+                queuedCommands: getCommandQueue(),
+                turnDurationMs,
+                turnStartTime: loadingStartTimeRef.current,
+                now: Date.now(),
+                backgroundWaitStartTime: backgroundWaitStartTimeRef.current,
+              })
+              backgroundWaitStartTimeRef.current = turn.backgroundWaitStartTime
               setMessages(prev => [
                 ...prev,
                 createTurnDurationMessage(
-                  turnDurationMs,
+                  turn.durationMs,
                   budgetInfo,
                   count(prev, isLoggableMessage),
+                  turn,
                 ),
               ])
             }

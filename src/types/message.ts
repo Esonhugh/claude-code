@@ -286,6 +286,9 @@ export interface SystemTurnDurationMessage extends SystemBase {
   subtype: 'turn_duration'
   durationMs?: number
   budgetTokens?: number
+  /** Background agents/workflows still owed when the turn ended (official 2.1.311). */
+  pendingBackgroundAgentCount?: number
+  pendingWorkflowCount?: number
   [key: string]: any
 }
 
