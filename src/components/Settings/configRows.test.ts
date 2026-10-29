@@ -307,6 +307,14 @@ test('Idle compaction and Time format rows write user settings like official', a
   expect(settings.getSettingsForSource('userSettings')?.idleCompaction).toBe(false)
   await row('idleCompaction')!.set!(true)
   expect(settings.getSettingsForSource('userSettings')?.idleCompaction).toBeUndefined()
+  expect(row('agentSummary')).toMatchObject({
+    label: 'Background agent summaries', kind: 'choice', value: 'full', options: ['full', 'short', 'off'],
+  })
+  await row('agentSummary')!.set!('off')
+  expect(settings.getSettingsForSource('userSettings')?.agentSummary).toBe('off')
+  expect(row('agentSummary')?.value).toBe('off')
+  await row('agentSummary')!.set!('full')
+  expect(settings.getSettingsForSource('userSettings')?.agentSummary).toBeUndefined()
   expect(row('timeFormat')).toMatchObject({
     label: 'Time format', kind: 'choice', value: 'auto', options: ['auto', '12-hour', '24-hour', '24-hour-utc'],
   })

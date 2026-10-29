@@ -457,6 +457,20 @@ export function Config({
       },
     },
     {
+      id: 'agentSummary',
+      label: 'Background agent summaries',
+      value: settingsData?.agentSummary ?? 'full',
+      options: ['full', 'short', 'off'],
+      type: 'enum' as const,
+      onChange(value: string) {
+        if (value !== 'full' && value !== 'short' && value !== 'off') return
+        updateSettingsForSource('userSettings', {
+          agentSummary: value === 'full' ? undefined : value,
+        })
+        setSettingsData(prev => ({ ...prev, agentSummary: value }))
+      },
+    },
+    {
       id: 'spinnerTipsEnabled',
       label: 'Show tips',
       value: settingsData?.spinnerTipsEnabled ?? true,

@@ -689,4 +689,18 @@ try {
   getAgentColorMap().delete(coloredAgentType)
 }
 
+// Like official, the agent row shows the background summary label when present.
+const summarizedRows = getCoordinatorSessionRows({
+  tasks: {
+    [agentTask.id]: {
+      ...agentTask,
+      progress: { ...agentTask.progress!, summary: 'Reading auth.ts' },
+    },
+  } as unknown as AppState['tasks'],
+  selectedIndex: undefined,
+  viewingAgentTaskId: undefined,
+  now: 5_000,
+})
+assert.equal(summarizedRows[1]?.secondaryText, 'Reading auth.ts')
+
 console.log('CoordinatorAgentStatus.test.ts passed')
