@@ -13,8 +13,8 @@ import {
   type IndividualHookConfig,
 } from '../../utils/hooks/hooksSettings.js'
 import { plural } from '../../utils/stringUtils.js'
-import { Select } from '../CustomSelect/select.js'
 import { Dialog } from '../design-system/Dialog.js'
+import { HooksList } from './HooksList.js'
 
 type MatcherWithSource = {
   matcher: string
@@ -80,22 +80,18 @@ export function SelectMatcherMode({
       onCancel={onCancel}
     >
       <Box flexDirection="column">
-        <Select
-          options={matchersWithSources.map(item => {
-            const sourceText = item.sources
-              .map(hookSourceInlineDisplayString)
-              .join(', ')
-            const matcherLabel = item.matcher || '(all)'
-            return {
-              label: `[${sourceText}] ${matcherLabel}`,
-              value: item.matcher,
-              description: `${item.hookCount} ${plural(item.hookCount, 'hook')}`,
-            }
-          })}
-          onChange={value => {
-            onSelect(value)
+        <HooksList
+          rows={matchersWithSources.map(item => ({
+            kind: 'item',
+            key: item.matcher,
+            icon: `[${item.sources.map(hookSourceInlineDisplayString).join(', ')}]`,
+            label: item.matcher || '(all)',
+            meta: [`${item.hookCount} ${plural(item.hookCount, 'hook')}`],
+          }))}
+          onSelect={index => {
+            const item = matchersWithSources[index]
+            if (item) onSelect(item.matcher)
           }}
-          onCancel={onCancel}
         />
       </Box>
     </Dialog>

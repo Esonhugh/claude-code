@@ -14,8 +14,8 @@ import {
   hookSourceHeaderDisplayString,
   type IndividualHookConfig,
 } from '../../utils/hooks/hooksSettings.js'
-import { Select } from '../CustomSelect/select.js'
 import { Dialog } from '../design-system/Dialog.js'
+import { HooksList } from './HooksList.js'
 
 type Props = {
   selectedEvent: HookEvent
@@ -64,23 +64,21 @@ export function SelectHookMode({
       onCancel={onCancel}
     >
       <Box flexDirection="column">
-        <Select
-          options={hooksForSelectedMatcher.map((hook, index) => ({
-            label: `[${hook.config.type}] ${getHookDisplayText(hook.config)}`,
-            value: index.toString(),
+        <HooksList
+          rows={hooksForSelectedMatcher.map((hook, index) => ({
+            kind: 'item',
+            key: String(index),
+            label: getHookDisplayText(hook.config),
+            meta: [hook.config.type],
             description:
               hook.source === 'pluginHook' && hook.pluginName
                 ? `${hookSourceHeaderDisplayString(hook.source)} (${hook.pluginName})`
                 : hookSourceHeaderDisplayString(hook.source),
           }))}
-          onChange={value => {
-            const index = parseInt(value, 10)
+          onSelect={index => {
             const hook = hooksForSelectedMatcher[index]
-            if (hook) {
-              onSelect(hook)
-            }
+            if (hook) onSelect(hook)
           }}
-          onCancel={onCancel}
         />
       </Box>
     </Dialog>
