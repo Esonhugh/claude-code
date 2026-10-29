@@ -278,6 +278,7 @@ export function createModClassicAdapter(options: ModClassicAdapterOptions) {
             signal,
             undefined,
             options.sourceScope,
+            input.duration_ms,
           ),
           signal,
         )
@@ -403,6 +404,7 @@ export function createModClassicAdapter(options: ModClassicAdapterOptions) {
             signal,
             undefined,
             options.sourceScope,
+            input.duration_ms,
           ),
           signal,
         )
