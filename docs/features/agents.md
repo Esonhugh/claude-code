@@ -120,6 +120,7 @@ You review the staged diff and report concrete bugs with file:line. Do not edit 
 | `CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS` | 正整数，默认 `20` | 同时运行上限 |
 | `CLAUDE_CODE_SENDMESSAGE_HANDBACK` | `0` | 关闭自动模式下的 `SubagentHandback` |
 | `CLAUDE_CODE_HANDBACK_PROVENANCE` | `0` | 续跑报告改用原始 JSON 格式 |
+| `agentSummary`（settings） | `full`（默认）/ `short` / `off` | 后台子代理每 30 秒生成的 3-5 字进度标签（`subagentStatusLine` 的 `label`、compact 后的任务状态、SDK `task_progress` 的 `summary`）。`full` fork 子代理整份对话（共享 prompt cache；子代理自己的请求还没回且 cache 可能已冷时先等，最多 5 分钟）；`short` 只发最近步骤的精简笔记（约 2000 token、不走 cache）；`off` 不发请求 |
 | `worktree.baseRef`（settings） | `fresh`（默认）/ `head` | `isolation: "worktree"`、`--worktree`、`EnterWorktree` 新分支的起点：`fresh` 基于 `origin/<默认分支>`，`head` 基于本地 HEAD（保留未推送提交） |
 
 模型调用 Agent 工具时可用的参数：

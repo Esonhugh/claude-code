@@ -3,6 +3,7 @@ import type { UUID } from 'crypto'
 import { randomUUID } from 'crypto'
 import uniqBy from 'lodash-es/uniqBy.js'
 import { logForDebugging } from 'src/utils/debug.js'
+import type { AgentOwnRequests } from '../../services/AgentSummary/agentSummary.js'
 import { addInvokedSkill, getIsNonInteractiveSession, getProjectRoot, getSessionId } from '../../bootstrap/state.js'
 import {
   getCommand,
@@ -535,7 +536,7 @@ export async function* runAgent({
   /** Optional callback invoked with CacheSafeParams after constructing the agent's
    * system prompt, context, and tools. Used by background summarization to fork
    * the agent's conversation for periodic progress summaries. */
-  onCacheSafeParams?: (params: CacheSafeParams) => void
+  onCacheSafeParams?: (params: CacheSafeParams, ownRequests: AgentOwnRequests) => void
   /** Replacement state reconstructed from a resumed sidechain transcript so
    * the same tool results are re-replaced (prompt cache stability). When
    * omitted, createSubagentContext clones the parent's state. */
@@ -1190,6 +1191,12 @@ export async function* runAgent({
   let queryIterator: ReturnType<typeof query> | undefined
   let queryIteratorDone = false
   const subagentMessages = [...initialMessages]
+  const ownRequests: AgentOwnRequests = {
+    requestsBegun: 0,
+    responsesBegun: 0,
+    isAwaitingResponse: false,
+    lastResponseAt: undefined,
+  }
   const finishModConversation = toolUseContext.mods?.trackConversation({
     agentId, sessionId: getSessionId(), messages: () => subagentMessages,
     toolUseId, workflow: transcriptSubdir !== undefined, parentAgentId: toolUseContext.agentId,
@@ -1206,7 +1213,8 @@ export async function* runAgent({
       canUseTool,
       toolUseContext: agentToolUseContext,
       querySource,
-      onCacheSafeParams,
+      onCacheSafeParams: onCacheSafeParams &&
+        (params => onCacheSafeParams(params, ownRequests)),
       maxTurns: maxTurns ?? agentDefinition.maxTurns,
     })
     while (true) {
@@ -1218,6 +1226,20 @@ export async function* runAgent({
       }
       const message = next.value
       if (message.type === 'assistant' || message.type === 'stream_event') registeredTurn?.observe(message)
+      if (message.type === 'stream_request_start') {
+        ownRequests.requestsBegun++
+        ownRequests.isAwaitingResponse = true
+      } else if (
+        ownRequests.isAwaitingResponse &&
+        ((message.type === 'stream_event' &&
+          // @ts-ignore - recovered code
+          message.event.type === 'message_start') ||
+          (message.type === 'assistant' && !message.isApiErrorMessage))
+      ) {
+        ownRequests.responsesBegun++
+        ownRequests.isAwaitingResponse = false
+        ownRequests.lastResponseAt = Date.now()
+      }
       if (
         process.env.CLAUDE_CODE_RUN_AGENT_FAULT_INJECTION_FOR_TESTING ===
           'after_query_start' &&
