@@ -1266,6 +1266,7 @@ export async function* runAgent({
 }
 )`,
           )
+          yield message
           break
         }
         yield message
