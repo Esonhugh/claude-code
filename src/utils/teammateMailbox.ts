@@ -954,6 +954,29 @@ export async function sendShutdownRequestToMailbox(
   return { requestId, target: targetName }
 }
 
+const SHUTDOWN_REQUEST_ID_PATTERN = /^shutdown-[0-9]{1,20}@[\w.-]{1,64}$/
+
+/**
+ * Appends official 2.1.311's reply instructions to a team lead's shutdown_request
+ * before a teammate reads it, so the model answers with a real shutdown_response
+ * instead of a plain-text acknowledgment.
+ */
+export function withShutdownReplyInstructions(text: string, from: string): string {
+  if (from !== TEAM_LEAD_NAME || !text.includes('"shutdown_request"')) return text
+  const request = isShutdownRequest(text)
+  if (!request) return text
+  const exact = SHUTDOWN_REQUEST_ID_PATTERN.test(request.requestId)
+  const input = jsonStringify({
+    to: TEAM_LEAD_NAME,
+    message: {
+      type: 'shutdown_response',
+      request_id: exact ? request.requestId : '<requestId of the shutdown request>',
+      approve: true,
+    },
+  })
+  return `${text}\n\nThis is a shutdown request. To approve it, call ${SEND_MESSAGE_TOOL_NAME} with exactly this input, where "message" is a JSON object rather than a string${exact ? '' : " and request_id is the request's requestId value, copied verbatim"}: ${input}. Approving ends your process; a plain-text acknowledgment does not shut you down. To decline, for example because you're mid-task, send the same input with "approve": false and a "reason".`
+}
+
 /**
  * Checks if a message text contains a shutdown request
  */

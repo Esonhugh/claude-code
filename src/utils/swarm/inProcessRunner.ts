@@ -108,6 +108,7 @@ import {
   isShutdownRequest,
   markMessageAsReadByIndex,
   readMailbox,
+  withShutdownReplyInstructions,
   writeToMailbox,
 } from '../teammateMailbox.js'
 import { unregisterAgent as unregisterPerfettoAgent } from '../telemetry/perfettoTracing.js'
@@ -1482,7 +1483,10 @@ export async function runInProcessTeammate(
           )
           currentPrompt = formatAsTeammateMessage(
             waitResult.request?.from || 'team-lead',
-            waitResult.originalMessage,
+            withShutdownReplyInstructions(
+              waitResult.originalMessage,
+              waitResult.request?.from || 'team-lead',
+            ),
           )
           // Add shutdown request to task.messages for transcript display
           appendTeammateMessage(
