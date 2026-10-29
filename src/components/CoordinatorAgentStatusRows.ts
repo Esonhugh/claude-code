@@ -534,7 +534,7 @@ export function getCoordinatorSessionRows({
           task,
           entry.collapsedDescendantCount,
         ),
-        secondaryText: task.description ?? task.id,
+        secondaryText: task.progress?.summary || task.description || task.id,
         tokens: `${formatNumber(task.progress?.tokenCount ?? 0)} tokens`,
         tools: `${task.progress?.toolUseCount ?? 0} ${task.progress?.toolUseCount === 1 ? 'tool' : 'tools'}`,
         elapsed: taskElapsed(task, now),

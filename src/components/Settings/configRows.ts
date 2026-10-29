@@ -103,6 +103,11 @@ export function getConfigRows(context: Context): ModConfigRowProvider[] {
       set(value) { writeSettings('userSettings', { idleCompaction: value ? undefined : false }) },
     },
     {
+      key: 'agentSummary', label: 'Background agent summaries', kind: 'choice',
+      value: settings.agentSummary ?? 'full', options: ['full', 'short', 'off'],
+      set(value) { writeSettings('userSettings', { agentSummary: value === 'full' ? undefined : value as 'short' | 'off' }) },
+    },
+    {
       key: 'tips', label: 'Show tips', kind: 'boolean',
       value: settings.spinnerTipsEnabled ?? true,
       set(value) { writeSettings('localSettings', { spinnerTipsEnabled: value as boolean }) },
