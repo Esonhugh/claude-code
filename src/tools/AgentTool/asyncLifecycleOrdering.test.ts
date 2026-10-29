@@ -293,8 +293,8 @@ await runAsyncAgentLifecycle({
   taskId: 'agent-summary-replacement-test',
   abortController: new AbortController(),
   async *makeStream(onCacheSafeParams) {
-    onCacheSafeParams?.({} as never)
-    onCacheSafeParams?.({} as never)
+    onCacheSafeParams?.({} as never, {} as never)
+    onCacheSafeParams?.({} as never, {} as never)
     yield makeAssistantMessage() as never
   },
   metadata: {
