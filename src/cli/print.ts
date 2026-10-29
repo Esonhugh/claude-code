@@ -2380,7 +2380,7 @@ function runHeadlessStreaming(
             )
             const usageContent = usageMatch?.[1] ?? ''
             const totalTokensMatch = usageContent.match(
-              /<total_tokens>(\d+)<\/total_tokens>/,
+              /<(subagent_tokens|total_tokens)>(\d+)<\/\1>/,
             )
             const toolUsesMatch = usageContent.match(
               /<tool_uses>(\d+)<\/tool_uses>/,
@@ -2409,7 +2409,7 @@ function runHeadlessStreaming(
                 usage:
                   totalTokensMatch && toolUsesMatch
                     ? {
-                        total_tokens: parseInt(totalTokensMatch[1]!, 10),
+                        total_tokens: parseInt(totalTokensMatch[2]!, 10),
                         tool_uses: parseInt(toolUsesMatch[1]!, 10),
                         duration_ms: durationMsMatch
                           ? parseInt(durationMsMatch[1]!, 10)

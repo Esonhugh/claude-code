@@ -2546,7 +2546,7 @@ The agent is now running and will receive instructions via mailbox.`,
           {
             type: 'text',
             text: `agentId: ${data.agentId} (use SendMessage with to: '${data.agentId}' to continue this agent)${worktreeInfoText}
-<usage>total_tokens: ${data.totalTokens}
+<usage>subagent_tokens: ${data.totalTokens}
 tool_uses: ${data.totalToolUseCount}
 duration_ms: ${data.totalDurationMs}</usage>`,
           },

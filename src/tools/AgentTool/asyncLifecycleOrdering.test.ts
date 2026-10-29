@@ -231,7 +231,7 @@ const failedNotification = getCommandQueue().find(command =>
 )
 assert.ok(failedNotification)
 assert.match(String(failedNotification.value), /<status>failed<\/status>/)
-assert.match(String(failedNotification.value), /<total_tokens>12<\/total_tokens>/)
+assert.match(String(failedNotification.value), /<subagent_tokens>12<\/subagent_tokens>/)
 
 registerAsyncAgent({
   agentId: 'agent-api-error-test',
