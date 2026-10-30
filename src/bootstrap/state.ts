@@ -270,6 +270,8 @@ type State = {
   // logAPISuccess to tag the first post-compaction API call so we can
   // distinguish compaction-induced cache misses from TTL expiry.
   pendingPostCompaction: boolean
+  // Same signal for the /usage prompt-cache line (consumed separately).
+  pendingCacheRebuild: boolean
 }
 
 // ALSO HERE - THINK THRICE BEFORE MODIFYING
@@ -448,6 +450,7 @@ function getInitialState(): State {
     lastMainRequestId: undefined,
     lastApiCompletionTimestamp: null,
     pendingPostCompaction: false,
+    pendingCacheRebuild: false,
   }
 
   return state
@@ -824,6 +827,17 @@ export function setLastApiCompletionTimestamp(timestamp: number): void {
  *  include isPostCompaction=true, then the flag auto-resets. */
 export function markPostCompaction(): void {
   STATE.pendingPostCompaction = true
+  STATE.pendingCacheRebuild = true
+}
+
+export function isCacheRebuildPending(): boolean {
+  return STATE.pendingCacheRebuild
+}
+
+export function consumeCacheRebuild(): boolean {
+  const was = STATE.pendingCacheRebuild
+  STATE.pendingCacheRebuild = false
+  return was
 }
 
 /** Consume the post-compaction flag. Returns true once after compaction,
