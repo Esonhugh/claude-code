@@ -1,14 +1,14 @@
 import { homedir } from 'os'
-import { basename, join, sep } from 'path'
+import { join, sep } from 'path'
 import React, { type ReactNode } from 'react'
 import { getOriginalCwd } from '../../../bootstrap/state.js'
 import { Text } from '../../../ink.js'
 import { getShortcutDisplay } from '../../../keybindings/shortcutFormat.js'
 import type { ToolPermissionContext } from '../../../Tool.js'
-import { expandPath, getDirectoryForPath } from '../../../utils/path.js'
+import { expandPath } from '../../../utils/path.js'
 import {
+  generateSuggestions,
   normalizeCaseForComparison,
-  pathInAllowedWorkingPath,
 } from '../../../utils/permissions/filesystem.js'
 import type { OptionWithDescription } from '../../CustomSelect/select.js'
 /**
@@ -110,11 +110,6 @@ export function getFilePermissionOptions({
     })
   }
 
-  const inAllowedPath = pathInAllowedWorkingPath(
-    filePath,
-    toolPermissionContext,
-  )
-
   // Check if this is a .claude/ folder path (project or global)
   const inClaudeFolder = isInClaudeFolder(filePath)
   const inGlobalClaudeFolder = isInGlobalClaudeFolder(filePath)
@@ -125,7 +120,9 @@ export function getFilePermissionOptions({
   // persisted permission rules.
   if ((inClaudeFolder || inGlobalClaudeFolder) && operationType !== 'read') {
     options.push({
-      label: 'Yes, and allow Claude to edit its own settings for this session',
+      label: inGlobalClaudeFolder
+        ? 'Yes, and allow Claude to edit files in its ~/.claude folder for this session'
+        : "Yes, and allow Claude to edit files in this project's .claude folder for this session",
       value: 'yes-claude-folder',
       option: {
         type: 'accept-session',
@@ -133,48 +130,92 @@ export function getFilePermissionOptions({
       },
     })
   } else {
-    // Option 2: Allow all changes/reads during session
-    let sessionLabel: ReactNode
-
-    if (inAllowedPath) {
-      // Inside working directory
-      if (operationType === 'read') {
-        sessionLabel = 'Yes, during this session'
-      } else {
-        sessionLabel = (
-          <Text>
-            Yes, allow all edits during this session{' '}
-            <Text bold>({modeCycleShortcut})</Text>
-          </Text>
-        )
-      }
-    } else {
-      // Outside working directory - include directory name
-      const dirPath = getDirectoryForPath(filePath)
-      const dirName = basename(dirPath) || 'this directory'
-
-      if (operationType === 'read') {
-        sessionLabel = (
-          <Text>
-            Yes, allow reading from <Text bold>{dirName}/</Text> during this
-            session
-          </Text>
-        )
-      } else {
-        sessionLabel = (
-          <Text>
-            Yes, allow all edits in <Text bold>{dirName}/</Text> during this
-            session <Text bold>({modeCycleShortcut})</Text>
-          </Text>
-        )
-      }
+    // Option 2 names exactly the updates "yes-session" applies, like
+    // official: the accept-edits switch, added directories, read rules.
+    const suggestions = generateSuggestions(
+      filePath,
+      operationType,
+      toolPermissionContext,
+    )
+    const rows: ReactNode[] = []
+    if (
+      suggestions.some(s => s.type === 'setMode' && s.mode === 'acceptEdits')
+    ) {
+      rows.push(
+        <Text>
+          Yes, and switch to{' '}
+          <Text bold>
+            accept edits (auto-approve file edits and common file commands)
+          </Text>{' '}
+          for this session
+        </Text>,
+      )
+    }
+    const directories = [
+      ...new Set(
+        suggestions.flatMap(s =>
+          s.type === 'addDirectories' ? s.directories : [],
+        ),
+      ),
+    ]
+    if (directories.length > 0) {
+      rows.push(
+        <Text>
+          Yes, and always allow access to{' '}
+          <Text bold>{directories.join(', ')}</Text> for this session
+        </Text>,
+      )
+    }
+    const readPaths = [
+      ...new Set(
+        suggestions.flatMap(s =>
+          s.type === 'addRules'
+            ? s.rules.map(r =>
+                (r.ruleContent ?? '')
+                  .replace(/\/\*\*$/, '')
+                  .replace(/^\.\//, '')
+                  .replace(/^\/\//, '/'),
+              )
+            : [],
+        ),
+      ),
+    ].filter(Boolean)
+    if (readPaths.length > 0) {
+      const last = readPaths.at(-1)!
+      rows.push(
+        <Text>
+          Yes, allow reading from{' '}
+          {readPaths.slice(0, -1).map((path, i) => (
+            <Text key={i}>
+              <Text bold>{path}</Text>
+              {readPaths.length > 2 ? ', ' : ' '}
+            </Text>
+          ))}
+          {readPaths.length > 1 && 'and '}
+          <Text bold>{last}</Text> during this session
+        </Text>,
+      )
     }
 
-    options.push({
-      label: sessionLabel,
-      value: 'yes-session',
-      option: { type: 'accept-session' },
-    })
+    if (rows.length > 0) {
+      options.push({
+        label: (
+          <Text>
+            {rows.map((row, i) => (
+              <Text key={i}>
+                {i > 0 && '; '}
+                {row}
+              </Text>
+            ))}
+            {operationType !== 'read' && (
+              <Text bold> ({modeCycleShortcut})</Text>
+            )}
+          </Text>
+        ),
+        value: 'yes-session',
+        option: { type: 'accept-session' },
+      })
+    }
   }
 
   // When in input mode, show input field for reject
