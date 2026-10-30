@@ -360,3 +360,13 @@ assert.equal(
   unknownHeadless.messages.at(-1)?.message?.content,
   '<local-command-stdout>Unknown command: /nosuchcmd</local-command-stdout>',
 )
+
+// Official 2.1.311 shows a malformed command (failed !`cmd` pattern) as is.
+const { MalformedCommandError } = await import('../errors.js')
+const malformed = await runThrowingPrompt(
+  new MalformedCommandError("Shell command failed for pattern \"!`git log`\": 'git <command>'"),
+)
+assert.match(
+  JSON.stringify(malformed.messages),
+  /<local-command-stderr>Shell command failed for pattern/,
+)

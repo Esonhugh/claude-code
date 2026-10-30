@@ -1190,7 +1190,8 @@ async function getMessagesForSlashCommand(
                 }),
               }),
               createUserMessage({
-                content: `<local-command-stderr>${String(e)}</local-command-stderr>`,
+                // 2.1.311 shows a malformed command's message as is, without "Error: ".
+                content: `<local-command-stderr>${e instanceof MalformedCommandError ? e.message : String(e)}</local-command-stderr>`,
               }),
             ],
             shouldQuery: false,
