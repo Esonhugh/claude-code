@@ -318,8 +318,8 @@ export const LESSONS: Lesson[] = [
           ]}
         />
         <Text>
-          Once connected, tools appear automatically — ask Claude to "check my
-          calendar" or "search our Notion" and it just works.
+          Once connected, tools appear automatically — ask Claude to &quot;check my
+          calendar&quot; or &quot;search our Notion&quot; and it just works.
         </Text>
         <Text dimColor>
           From your shell:{' '}
@@ -366,8 +366,8 @@ export const LESSONS: Lesson[] = [
     body: (
       <Box flexDirection="column" gap={1}>
         <Text>
-          Claude can spawn copies of itself to work in parallel. Ask it to "use
-          subagents to search these 5 directories" and watch the fan-out.
+          Claude can spawn copies of itself to work in parallel. Ask it to &quot;use
+          subagents to search these 5 directories&quot; and watch the fan-out.
         </Text>
         <Demo
           frames={[
