@@ -1691,8 +1691,10 @@ function PromptInput({
         suggestionsState.suggestions.length > 0 &&
         suggestionsState.suggestions.every(s => s.description === 'directory')
 
+      // With nothing selected (a fuzzy-only match), Enter submits what was typed.
       if (
         suggestionsState.suggestions.length > 0 &&
+        suggestionsState.selectedSuggestion >= 0 &&
         !isSubmittingSlashCommand &&
         !hasDirectorySuggestions
       ) {
