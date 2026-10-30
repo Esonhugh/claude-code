@@ -123,7 +123,23 @@ async function countTokens(
   return localEstimate()
 }
 
+export type ContextCategoryId =
+  | 'system_prompt'
+  | 'system_tools'
+  | 'mcp_tools'
+  | 'mcp_tools_deferred'
+  | 'system_tools_deferred'
+  | 'custom_agents'
+  | 'memory_files'
+  | 'skills'
+  | 'messages'
+  | 'autocompact_buffer'
+  | 'compact_buffer'
+  | 'free_space'
+
 export interface ContextCategory {
+  /** Stable row id, like official 2.1.311 get_context_usage. */
+  id?: ContextCategoryId
   name: string
   tokens: number
   color: keyof Theme
@@ -1152,6 +1168,7 @@ export function buildContextUsageData({
 }: BuildContextUsageDataInput): ContextData {
   const cats: ContextCategory[] = []
   const addCategory = (
+    id: ContextCategoryId,
     name: string,
     tokens: number,
     color: keyof Theme,
@@ -1159,6 +1176,7 @@ export function buildContextUsageData({
   ) => {
     if (tokens > 0 || kind === 'free') {
       cats.push({
+        id,
         name,
         tokens,
         color,
@@ -1168,28 +1186,31 @@ export function buildContextUsageData({
     }
   }
 
-  addCategory('System prompt', systemPromptTokens, 'promptBorder')
+  addCategory('system_prompt', 'System prompt', systemPromptTokens, 'promptBorder')
   addCategory(
+    'system_tools',
     isAnt() ? '[ANT-ONLY] System tools' : 'System tools',
     builtInToolTokens - skillFrontmatterTokens,
     'inactive',
   )
-  addCategory('MCP tools', mcpToolTokens, 'cyan_FOR_SUBAGENTS_ONLY')
+  addCategory('mcp_tools', 'MCP tools', mcpToolTokens, 'cyan_FOR_SUBAGENTS_ONLY')
   addCategory(
+    'mcp_tools_deferred',
     'MCP tools (deferred)',
     deferredToolTokens,
     'inactive',
     'deferred',
   )
   addCategory(
+    'system_tools_deferred',
     'System tools (deferred)',
     deferredBuiltinTokens,
     'inactive',
     'deferred',
   )
-  addCategory('Custom agents', agentTokens, 'permission')
-  addCategory('Memory files', claudeMdTokens, 'claude')
-  addCategory('Skills', skillFrontmatterTokens, 'warning')
+  addCategory('custom_agents', 'Custom agents', agentTokens, 'permission')
+  addCategory('memory_files', 'Memory files', claudeMdTokens, 'claude')
+  addCategory('skills', 'Skills', skillFrontmatterTokens, 'warning')
 
   let reservedTokens = 0
   let reservedName: typeof RESERVED_CATEGORY_NAME | typeof MANUAL_COMPACT_BUFFER_NAME | undefined
@@ -1233,6 +1254,7 @@ export function buildContextUsageData({
         )
 
   addCategory(
+    'messages',
     'Messages',
     reconciledMessageTokens,
     'purple_FOR_SUBAGENTS_ONLY',
@@ -1243,9 +1265,15 @@ export function buildContextUsageData({
     0,
   )
   if (reservedName) {
-    addCategory(reservedName, reservedTokens, 'inactive', 'buffer')
+    addCategory(
+      reservedName === RESERVED_CATEGORY_NAME
+        ? 'autocompact_buffer'
+        : 'compact_buffer',
+      reservedName,
+      reservedTokens, 'inactive', 'buffer')
   }
   addCategory(
+    'free_space',
     'Free space',
     Math.max(0, contextWindow - usedTokens - reservedTokens),
     'promptBorder',

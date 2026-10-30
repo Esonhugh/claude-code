@@ -582,6 +582,10 @@ export const SessionStartHookInputSchema = lazySchema(() =>
       source: z.enum(['startup', 'resume', 'clear', 'compact']),
       agent_type: z.string().optional(),
       model: z.string().optional(),
+      seconds_since_last_response: z.number().optional(),
+      context_tokens: z.number().optional(),
+      prompt_cache_likely_expired: z.boolean().optional(),
+      estimated_cache_write_usd: z.number().optional(),
     }),
   ),
 )
@@ -1893,6 +1897,7 @@ export const SDKSystemMessageSchema = lazySchema(() =>
       z.object({
         name: z.string(),
         status: z.string(),
+        source: z.string().optional(),
       }),
     ),
     model: z.string(),
@@ -1921,6 +1926,11 @@ export const SDKSystemMessageSchema = lazySchema(() =>
       .string()
       .optional()
       .describe('@internal Working directory the session started in.'),
+    additional_directories: z.array(z.string()).optional(),
+    per_turn_effort_active: z.boolean().optional(),
+    view_mode: z.enum(['focus', 'default']).optional(),
+    analytics_disabled: z.boolean().optional(),
+    product_feedback_disabled: z.boolean().optional(),
     uuid: UUIDPlaceholder(),
     session_id: z.string(),
   }),

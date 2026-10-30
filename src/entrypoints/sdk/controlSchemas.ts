@@ -103,6 +103,13 @@ export const SDKControlInitializeResponseSchema = lazySchema(() =>
         .optional()
         .describe('@internal CLI process PID for tmux socket isolation'),
       fast_mode_state: FastModeStateSchema().optional(),
+      claude_code_version: z.string().optional(),
+      current_permission_mode: z.string().optional(),
+      user_output_styles_dir: z.string().optional(),
+      analytics_disabled: z.boolean().optional(),
+      feedback_mode: z
+        .object({ kind: z.enum(['post', 'bundle', 'share', 'disabled']) })
+        .optional(),
     })
     .describe(
       'Response from session initialization with available commands, models, and account info.',
@@ -286,6 +293,7 @@ export const SDKControlGetContextUsageRequestSchema = lazySchema(() =>
 
 const ContextCategorySchema = lazySchema(() =>
   z.object({
+    id: z.string().optional(),
     name: z.string(),
     tokens: z.number(),
     color: z.string(),
