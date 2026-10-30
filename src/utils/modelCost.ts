@@ -3,6 +3,7 @@ import type { AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS } from 
 import { logEvent } from 'src/services/analytics/index.js'
 import { setHasUnknownModelCost } from '../bootstrap/state.js'
 import { isFastModeEnabled } from './fastMode.js'
+import { formatTokens } from './format.js'
 import {
   CLAUDE_3_5_HAIKU_CONFIG,
   CLAUDE_3_5_V2_SONNET_CONFIG,
@@ -40,6 +41,8 @@ export type ModelCosts = {
   promptCacheWriteTokens: number
   promptCacheReadTokens: number
   webSearchRequests: number
+  /** Rates that apply once a request's prompt exceeds abovePromptTokens. */
+  longPrompt?: Omit<ModelCosts, 'longPrompt'> & { abovePromptTokens: number }
 }
 
 // Standard pricing tier for Sonnet models: $3 input / $15 output per Mtok
@@ -131,6 +134,14 @@ export const COST_HAIKU_55 = {
   promptCacheWriteTokens: 0.125,
   promptCacheReadTokens: 0.01,
   webSearchRequests: 0.01,
+  longPrompt: {
+    abovePromptTokens: 100_000,
+    inputTokens: 0.5,
+    outputTokens: 2.5,
+    promptCacheWriteTokens: 0.625,
+    promptCacheReadTokens: 0.05,
+    webSearchRequests: 0.01,
+  },
 } as const satisfies ModelCosts
 
 const DEFAULT_UNKNOWN_MODEL_COST = COST_TIER_5_25
@@ -235,7 +246,15 @@ export const MODEL_COSTS: Record<ModelShortName, ModelCosts> = {
 /**
  * Calculates the USD cost based on token usage and model cost configuration
  */
-function tokensToUSDCost(modelCosts: ModelCosts, usage: Usage): number {
+function tokensToUSDCost(costs: ModelCosts, usage: Usage): number {
+  const promptTokens =
+    usage.input_tokens +
+    (usage.cache_read_input_tokens ?? 0) +
+    (usage.cache_creation_input_tokens ?? 0)
+  const modelCosts =
+    costs.longPrompt && promptTokens > costs.longPrompt.abovePromptTokens
+      ? costs.longPrompt
+      : costs
   return (
     (usage.input_tokens / 1_000_000) * modelCosts.inputTokens +
     (usage.output_tokens / 1_000_000) * modelCosts.outputTokens +
@@ -331,7 +350,11 @@ function formatPrice(price: number): string {
  * e.g., "$3/$15 per Mtok"
  */
 export function formatModelPricing(costs: ModelCosts): string {
-  return `${formatPrice(costs.inputTokens)}/${formatPrice(costs.outputTokens)} per Mtok`
+  const base = `${formatPrice(costs.inputTokens)}/${formatPrice(costs.outputTokens)} per Mtok`
+  const long = costs.longPrompt
+  return long
+    ? `${base} (${formatPrice(long.inputTokens)}/${formatPrice(long.outputTokens)} for prompts over ${formatTokens(long.abovePromptTokens)})`
+    : base
 }
 
 /**

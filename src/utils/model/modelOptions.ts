@@ -241,17 +241,19 @@ function getFirstPartyOption(
         : getDefaultSonnetModel()
   const name = getMarketingNameForModel(model) ?? model
   const pricing = isClaudeAISubscriber() ? undefined : getModelPricingString(model)
+  // 2.1.311 wording; the picker labels by family, the description names the model.
   const description =
     family === 'fable'
-      ? 'For the hardest and longest-running tasks'
+      ? 'Most capable for your hardest and longest-running tasks'
       : family === 'opus'
-        ? 'For complex coding and agent tasks'
-        : 'Balanced performance for everyday tasks'
+        ? 'Best for everyday, complex tasks'
+        : 'Efficient for routine tasks'
+  const label = family === 'fable' ? 'Fable' : family === 'opus' ? 'Opus' : 'Sonnet'
   return {
     value: context1m ? `${family}[1m]` : family,
-    label: `${name}${context1m ? ' (1M context)' : ''}`,
+    label: `${label}${context1m ? ' (1M context)' : ''}`,
     description: `${name} · ${description}${context1m ? ' · 1M context' : ''}${pricing ? ` · ${pricing}` : ''}`,
-    descriptionForModel: `${name} - ${description.toLowerCase()}`,
+    descriptionForModel: `${name} - ${description.toLowerCase()}${family === 'sonnet' ? '. Generally recommended for most coding tasks' : ''}`,
   }
 }
 
@@ -452,8 +454,8 @@ function getProviderModelOptions(fastMode: boolean): ModelOption[] {
 
     const options = [
       getDefaultOptionForUser(fastMode),
-      getFirstPartyOption('fable'),
       getFirstPartyOption('opus'),
+      getFirstPartyOption('fable'),
       getFirstPartyOption('sonnet'),
       getCustomHaikuOption() ?? getHaiku55Option(),
     ]
