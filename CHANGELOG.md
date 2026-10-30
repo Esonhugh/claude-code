@@ -16,11 +16,11 @@
 
 ### 版本状态
 
-- 发布候选：`dev` 合并到 `master` 后打 tag `v2.1.296`。本条目汇总 `v2.1.295` tag（master `e3fca04`）之后至 PR #357 的全部变更；`Makefile VERSION` 与 README 发布版本同步为 `2.1.296`，`package.json` 保持 `0.0.0-dev`。版本号与官方版本号无对应关系（本轮对照基线为官方 2.1.311）。
+- 发布候选：`dev` 合并到 `master` 后打 tag `v2.1.296`。本条目汇总 `v2.1.295` tag（master `e3fca04`）之后至 PR #359 的全部变更；`Makefile VERSION` 与 README 发布版本同步为 `2.1.296`，`package.json` 保持 `0.0.0-dev`。版本号与官方版本号无对应关系（本轮对照基线为官方 2.1.311）。
 
 ### 关联提交
 
-- PR 合并提交（`git log --first-parent e3fca04..dev`）：#263、#272、#280 Teams 通知；#264、#269 agent 视图 pill（加入后又按用户要求撤回）；#268、#274、#276、#283、#284、#288、#303、#306 agent 生命周期；#290、#296、#302 coordinator 模式；#278、#289 SQLite 记忆检索；#293 Bash 折叠；#304、#316 权限与 Bedrock；#309、#311 REPL 对话框；#313 任务通知格式；#315、#319、#321 agent summary；#317、#331 Agent SDK；#323、#325、#329、#334、#346、#349 `/hooks`、`/theme`、`/agents`、`/memory`、`/config`；#327 内嵌搜索工具；#332 流式工具执行；#339 新 hook 事件；#342、#344、#347、#350 多轮对照修复；#354 权限模式转换与 Stop hook；#357 session memory。
+- PR 合并提交（`git log --first-parent e3fca04..dev`）：#263、#272、#280 Teams 通知；#264、#269 agent 视图 pill（加入后又按用户要求撤回）；#268、#274、#276、#283、#284、#288、#303、#306 agent 生命周期；#290、#296、#302 coordinator 模式；#278、#289 SQLite 记忆检索；#293 Bash 折叠；#304、#316 权限与 Bedrock；#309、#311 REPL 对话框；#313 任务通知格式；#315、#319、#321 agent summary；#317、#331 Agent SDK；#323、#325、#329、#334、#346、#349 `/hooks`、`/theme`、`/agents`、`/memory`、`/config`；#327 内嵌搜索工具；#332 流式工具执行；#339 新 hook 事件；#342、#344、#347、#350 多轮对照修复；#354 权限模式转换与 Stop hook；#357 session memory；#359 权限提示与 footer 对齐官方。
 - 对应 issue：#16、#71、#72、#73、#74、#75、#76、#88、#141、#158、#261、#262、#265、#266、#267、#270、#271、#273、#275、#277、#279、#281、#282、#285、#286、#287、#291、#292、#294、#295、#297、#298、#299、#300、#301、#305、#307、#308、#310、#314、#318、#320、#326、#328、#330、#333、#335、#336、#337、#338、#340、#341、#343、#345、#348、#351、#352、#353、#355、#356。
 
 ### 变更内容
@@ -52,6 +52,7 @@
 
 - plan 模式（auto 可用时）下 cwd 内的写文件不再被直接放行；Bash/PowerShell 提示的 “Yes, and always allow access to …” 只添加规则与目录，不再把会话切到 acceptEdits（#351、#352）。
 - `sh -c` 中命中 deny 规则时询问；`env`/`command` 等包装的读取命令按读取处理；危险删除的包装命令增加 `exec`、`setsid`、`ionice`、`busybox`、`doas`、`pkexec`；相对路径 deny 规则同时匹配符号链接；plan 审批经过模式转换检查；Terminal 中用控制键编辑过的行需要询问（#71、#72、#73、#74、#75、#76）。
+- 权限提示文案对齐官方：Write 第 2 项写明将要应用的更新（如 “Yes, and switch to accept edits … for this session (shift+tab)”），ExitPlanMode 第 1 项为 “Yes, and switch to default (ask each time) for this session”，bypass 警告框不显示编号；Bash 提示在 default/acceptEdits 模式且 auto 可用时增加 “Yes, and switch to auto mode” 选项与 Tip，命令显示在虚线之间（#355）。
 - Bedrock/Vertex 凭证错误最多刷新 2 次，无凭证的 `claude -p` 约 4 秒失败（原约 3 分钟）（#16）。
 
 #### Hooks
@@ -69,6 +70,7 @@
 - `/tasks` 在 “Completed” 下列出已完成的后台 agent，面板立即隐藏它们；Workflow 调用显示描述与 “Completed in …” 结果行；`/context` 列表折叠到 `/context all`（#343）。
 - 非全屏模式下连续 2 条及以上的 Bash 命令折叠为一组（#292）。
 - 权限提示上按 Esc 会中止当前回合；修复多个对话框的缩进、换行与空状态；`/sandbox` 仅依赖视图显示按键提示；Write 结果写作 “Wrote 1 line”（#307、#308、#310、#355）。
+- default 模式的 footer 显示 “⏸ manual mode on”；回合等待行不再把 workflow 自己的 agent 计为后台 agent；auth 冲突提示使用官方文案（#355）。
 
 #### Agent SDK
 
@@ -77,7 +79,7 @@
 #### 已知缺口
 
 - `src/services/compact/autoCompact.contextWindow.test.ts` 与 `idleCompaction.test.ts` 的部分用例依赖本机环境变量与凭证，在云容器中失败，改动前后一致，不影响运行时行为。
-- #355 中记录的其余界面文案差异（auto 模式选项、footer “manual mode on”、ExitPlanMode 选项文案等）与 #79（工作区 MCP 审批存储、插件仓库分级）留到后续版本。
+- 后台 Workflow 的结果行在完成后显示 “Completed …”，官方保持 “/workflows to view dynamic workflow runs”；两者渲染逻辑相同，差异来自 task 保留时长。Bash 提示的 `ctrl+e to explain` 为 fork 自有功能，官方没有，保留。#79（工作区 MCP 审批存储、插件仓库分级）留到后续版本。
 
 ### 测试覆盖
 
