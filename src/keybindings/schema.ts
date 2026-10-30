@@ -178,6 +178,7 @@ export const KEYBINDING_ACTIONS = [
   // Plugin dialog actions
   'plugin:toggle',
   'plugin:install',
+  'plugin:cycleMarketplace',
   // Permission dialog actions
   'permission:toggleDebug',
   // Settings config panel actions
