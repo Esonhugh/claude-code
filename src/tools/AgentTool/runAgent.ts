@@ -1033,9 +1033,11 @@ export async function* runAgent({
       : resolvedTools
 
   // Like official 2.1.311, a new agent that can SendMessage learns which other
-  // named agents in this session it can reach.
+  // named agents in this session it can reach. A transcript with recorded
+  // messages (a teammate's later turns) does not get it again.
   if (
     contentReplacementState === undefined &&
+    !recordedUuids?.size &&
     mergedTools.some(tool => tool.name === SEND_MESSAGE_TOOL_NAME) &&
     !initialMessages.some(message => message.type === 'user' && message.isMeta && typeof message.message.content === 'string' && message.message.content.includes(OTHER_AGENTS_ACTIVE))
   ) {
@@ -1044,10 +1046,14 @@ export async function* runAgent({
       .map(([name]) => name)
       .sort()
     if (names.length > 0) {
-      initialMessages.push(createUserMessage({
+      const reminder = createUserMessage({
         content: wrapInSystemReminder(`${OTHER_AGENTS_ACTIVE}({to: name, message}): ${escapeXml([MAIN_RECIPIENT, ...names].join(', '))}.`),
         isMeta: true,
-      }))
+      })
+      initialMessages.push(reminder)
+      // Official yields it like its other start-of-run attachments, so a
+      // teammate keeps it in its history instead of getting it every turn.
+      yield reminder
     }
   }
 
