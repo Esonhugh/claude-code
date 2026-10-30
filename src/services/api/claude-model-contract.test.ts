@@ -2320,7 +2320,7 @@ test('non-streaming fallback retains adaptive parameters and model identity', as
   expect(request.model).toBe('claude-sonnet-5')
   expect(request.thinking).toEqual({ type: 'adaptive' })
   expect(request.temperature).toBeUndefined()
-  expect(request.max_tokens).toBe(32_000)
+  expect(request.max_tokens).toBe(64_000)
   expect(getUsageForModel('claude-sonnet-5')?.thinkingTokens).toBe(priorThinking + 1)
 })
 
