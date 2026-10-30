@@ -99,7 +99,8 @@ export function modelSupportsMaxEffort(model: string): boolean {
     m.includes('opus-4-7') ||
     m.includes('opus-4-6') ||
     m.includes('sonnet-5') ||
-    m.includes('sonnet-4-6')
+    m.includes('sonnet-4-6') ||
+    m.includes('haiku-5-5')
   ) {
     return true
   }
@@ -118,7 +119,8 @@ export function modelSupportsXHighEffort(model: string): boolean {
     m.includes('mythos-5') ||
     m.includes('opus-4-8') ||
     m.includes('opus-4-7') ||
-    m.includes('sonnet-5')
+    m.includes('sonnet-5') ||
+    m.includes('haiku-5-5')
   )
 }
 
@@ -407,12 +409,18 @@ export function getDefaultEffortForModel(
   // that can greatly affect model quality and bashing.
 
   const normalizedModel = model.toLowerCase()
-  if (normalizedModel.includes('opus-5-5')) return 'medium'
+  // Official 2.1.311 model catalog: default_effort medium for the 5.5 models.
+  if (
+    normalizedModel.includes('opus-5-5') ||
+    normalizedModel.includes('sonnet-5-5') ||
+    normalizedModel.includes('haiku-5-5')
+  ) {
+    return 'medium'
+  }
   if (
     normalizedModel.includes('fable-5') ||
     normalizedModel.includes('mythos-5') ||
-    normalizedModel.includes('mythos-preview') ||
-    normalizedModel.includes('sonnet-5-5')
+    normalizedModel.includes('mythos-preview')
   ) {
     return 'high'
   }

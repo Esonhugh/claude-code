@@ -18,7 +18,9 @@ mock.module('../../bootstrap/state.js', () => ({
 mock.module('../settings/settings.js', () => ({
   getSettings_DEPRECATED: () => settings,
 }))
+let apiKey: { key: string | null; source: string } = { key: null, source: 'none' }
 mock.module('../auth.js', () => ({
+  getAnthropicApiKeyWithSource: () => apiKey,
   getSubscriptionType: () => null,
   isClaudeAISubscriber: () => false,
   isMaxSubscriber: () => false,
@@ -69,7 +71,7 @@ const {
 const envKeys = [
   'ANTHROPIC_MODEL', 'ANTHROPIC_DEFAULT_MODEL', 'ANTHROPIC_DEFAULT_OPUS_MODEL',
   'ANTHROPIC_DEFAULT_SONNET_MODEL', 'ANTHROPIC_DEFAULT_FABLE_MODEL', 'ANTHROPIC_DEFAULT_HAIKU_MODEL',
-  'ANTHROPIC_SMALL_FAST_MODEL', 'CLAUDE_CODE_USE_OPENAI',
+  'ANTHROPIC_SMALL_FAST_MODEL', 'ANTHROPIC_BASE_URL', 'ANTHROPIC_AUTH_TOKEN', 'CLAUDE_CODE_USE_OPENAI',
   'CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX', 'CLAUDE_CODE_USE_FOUNDRY',
 ] as const
 const originalEnv = Object.fromEntries(envKeys.map(key => [key, process.env[key]]))
@@ -79,6 +81,7 @@ beforeEach(() => {
   settings = {}
   modelOverrides = {}
   servedDefault = undefined
+  apiKey = { key: null, source: 'none' }
   for (const key of envKeys) delete process.env[key]
 })
 afterEach(() => {
@@ -96,7 +99,8 @@ describe('provider defaults and explicit model selection', () => {
     expect(getDefaultFableModel()).toBe('claude-fable-5-1')
     expect(parseUserSpecifiedModel('fable')).toBe('claude-fable-5-1')
     expect(parseUserSpecifiedModel('best')).toBe('claude-fable-5-1')
-    expect(getDefaultHaikuModel()).toBe('claude-haiku-4-5-20251001')
+    expect(getDefaultHaikuModel()).toBe('claude-haiku-5-5')
+    expect(parseUserSpecifiedModel('haiku')).toBe('claude-haiku-5-5')
     for (const model of ['claude-opus-4-20250514', 'claude-opus-4-1', 'Gateway/Custom-ID']) {
       expect(parseUserSpecifiedModel(model)).toBe(model)
     }
@@ -148,7 +152,7 @@ describe('provider defaults and explicit model selection', () => {
     servedDefault = undefined
 
     settings = { model: 'haiku' }
-    expect(getMainLoopModel()).toBe('claude-haiku-4-5-20251001')
+    expect(getMainLoopModel()).toBe('claude-haiku-5-5')
     process.env.ANTHROPIC_MODEL = 'opus'
     expect(getMainLoopModel()).toBe('claude-opus-5-5')
     modelOverride = 'fable'
@@ -179,13 +183,36 @@ describe('provider defaults and explicit model selection', () => {
       'claude-sonnet-5-5', 'claude-opus-5-5', 'custom-id',
     ])
     expect(resolveFallbackModels(' haiku, ,sonnet ', ['opus'])).toEqual([
-      'claude-haiku-4-5-20251001', 'claude-sonnet-5-5',
+      'claude-haiku-5-5', 'claude-sonnet-5-5',
     ])
     settings = { availableModels: ['sonnet'] }
     expect(resolveFallbackModels('haiku,sonnet', undefined)).toEqual(['claude-sonnet-5-5'])
     settings = {}
     process.env.CLAUDE_CODE_USE_OPENAI = '1'
     expect(resolveFallbackModels('gpt-5.4-mini', undefined)).toEqual(['gpt-5.4-mini'])
+  })
+
+  test('helper model: Haiku on the Anthropic API, main loop model on a custom base URL (official 2.1.311)', () => {
+    expect(getSmallFastModel()).toBe('claude-haiku-5-5')
+    process.env.ANTHROPIC_BASE_URL = 'https://gateway.example.com'
+    expect(getSmallFastModel()).toBe('claude-opus-5-5')
+    settings = { model: 'sonnet' }
+    expect(getSmallFastModel()).toBe('claude-sonnet-5-5')
+    settings = {}
+    apiKey = { key: 'sk-ant-api03-x', source: 'ANTHROPIC_API_KEY' }
+    expect(getSmallFastModel()).toBe('claude-haiku-5-5')
+    process.env.ANTHROPIC_AUTH_TOKEN = 'gw-token'
+    expect(getSmallFastModel()).toBe('claude-opus-5-5')
+    delete process.env.ANTHROPIC_AUTH_TOKEN
+    apiKey = { key: 'gw-key', source: 'ANTHROPIC_API_KEY' }
+    process.env.ANTHROPIC_DEFAULT_HAIKU_MODEL = 'Gateway/Haiku'
+    expect(getSmallFastModel()).toBe('Gateway/Haiku')
+    delete process.env.ANTHROPIC_DEFAULT_HAIKU_MODEL
+    process.env.ANTHROPIC_SMALL_FAST_MODEL = 'Gateway/Small'
+    expect(getSmallFastModel()).toBe('Gateway/Small')
+    delete process.env.ANTHROPIC_SMALL_FAST_MODEL
+    process.env.CLAUDE_CODE_USE_BEDROCK = '1'
+    expect(getSmallFastModel()).toBe('us.anthropic.claude-haiku-4-5-20251001-v1:0')
   })
 
   test('OpenAI defaults and role aliases resolve before transport', () => {

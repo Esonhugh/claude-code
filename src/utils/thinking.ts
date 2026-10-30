@@ -151,6 +151,7 @@ export function modelSupportsThinking(model: string): boolean {
     canonical.startsWith('claude-fable-5') ||
     canonical.startsWith('claude-opus-5') ||
     canonical.startsWith('claude-sonnet-5') ||
+    canonical === 'claude-haiku-5-5' ||
     canonical.includes('sonnet-4') ||
     canonical.includes('opus-4')
   )
@@ -163,7 +164,8 @@ export function requiresAdaptiveThinkingContract(model: string): boolean {
     canonical.startsWith('claude-fable-5') ||
     canonical.startsWith('claude-mythos-5') ||
     canonical.startsWith('claude-opus-5') ||
-    canonical.startsWith('claude-sonnet-5')
+    canonical.startsWith('claude-sonnet-5') ||
+    canonical === 'claude-haiku-5-5'
   )
 }
 
@@ -182,7 +184,8 @@ export function supportsManualThinkingBudget(model: string): boolean {
 }
 
 export function usesBetweenToolsWhenThinkingDisabled(model: string): boolean {
-  return getCanonicalName(model) === 'claude-sonnet-5-5'
+  const canonical = getCanonicalName(model)
+  return canonical === 'claude-sonnet-5-5' || canonical === 'claude-haiku-5-5'
 }
 
 // @[MODEL LAUNCH]: Add the new model to the allowlist if it supports adaptive thinking.
@@ -196,6 +199,7 @@ export function modelSupportsAdaptiveThinking(model: string): boolean {
   if (
     canonical.startsWith('claude-opus-5') ||
     canonical.startsWith('claude-sonnet-5') ||
+    canonical === 'claude-haiku-5-5' ||
     canonical.startsWith('claude-fable-5') ||
     canonical.startsWith('claude-mythos-5') ||
     canonical === 'claude-mythos-preview' ||
