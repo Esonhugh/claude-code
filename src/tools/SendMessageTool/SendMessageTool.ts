@@ -29,7 +29,7 @@ import { parseAddress } from '../../utils/peerAddress.js'
 import { semanticBoolean } from '../../utils/semanticBoolean.js'
 import { jsonStringify } from '../../utils/slowOperations.js'
 import type { BackendType } from '../../utils/swarm/backends/types.js'
-import { TEAM_LEAD_NAME } from '../../utils/swarm/constants.js'
+import { TEAM_LEAD_NAME, TEAMMATE_SHUTDOWN_APPROVED } from '../../utils/swarm/constants.js'
 import { readTeamFileAsync } from '../../utils/swarm/teamHelpers.js'
 import {
   getAgentId,
@@ -392,7 +392,7 @@ async function handleShutdownApproval(
       const appState = context.getAppState()
       const task = findTeammateTaskByAgentId(agentId, appState.tasks)
       if (task?.abortController) {
-        task.abortController.abort()
+        task.abortController.abort(TEAMMATE_SHUTDOWN_APPROVED)
         logForDebugging(
           `[SendMessageTool] Aborted controller for in-process teammate ${agentName}`,
         )
@@ -410,7 +410,7 @@ async function handleShutdownApproval(
         logForDebugging(
           `[SendMessageTool] Fallback: Found in-process task for ${agentName} via AppState, aborting`,
         )
-        task.abortController.abort()
+        task.abortController.abort(TEAMMATE_SHUTDOWN_APPROVED)
 
         return {
           data: {

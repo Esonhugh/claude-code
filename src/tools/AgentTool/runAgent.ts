@@ -455,6 +455,7 @@ export async function* runAgent({
   toolUseContext,
   canUseTool,
   isAsync,
+  filterToolsAsAsync = isAsync,
   canShowPermissionPrompts,
   forkContextMessages,
   querySource,
@@ -495,6 +496,8 @@ export async function* runAgent({
   toolUseContext: ToolUseContext
   canUseTool: CanUseToolFn
   isAsync: boolean
+  /** Apply the async-agent tool allow-list. Defaults to isAsync. */
+  filterToolsAsAsync?: boolean
   /** Leave this agent's background shells running on exit: its async lifecycle
    * parks the agent on them and reclaims them itself. */
   keepBackgroundShells?: boolean
@@ -812,7 +815,7 @@ export async function* runAgent({
     : resolveAgentTools(
         { ...agentDefinition, permissionMode },
         availableTools,
-        isAsync,
+        filterToolsAsAsync,
         false,
         // Same depth the Agent tool's call-time limit check reads.
         getCurrentSubagentDepth({

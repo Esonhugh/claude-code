@@ -1163,12 +1163,15 @@ export const AgentTool = buildTool({
         tool.name !== 'Workflow'
     })
 
+    // Official resolves a workflow agent's tools as sync even though it runs in
+    // the background, so it keeps tools outside the async allow-list (ListAgents).
+    const filterToolsAsAsync = shouldRunAsync && !workflowFraming
     const resolvedAgentTools = isForkPath
       ? undefined
       : resolveAgentTools(
           { ...selectedAgent, permissionMode },
           workerTools,
-          shouldRunAsync,
+          filterToolsAsAsync,
         )
     if (
       workflowToolPolicy?.bashCommandClamp?.length &&
@@ -1264,6 +1267,7 @@ export const AgentTool = buildTool({
       },
       canUseTool,
       isAsync: shouldRunAsync,
+      filterToolsAsAsync,
       canShowPermissionPrompts: shouldBubbleAgentPermissionPrompts(
         explicitPermissionMode ?? selectedAgent.permissionMode,
       )
