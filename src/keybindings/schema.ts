@@ -171,6 +171,10 @@ export const KEYBINDING_ACTIONS = [
   'select:next',
   'select:previous',
   'select:accept',
+  'select:first',
+  'select:last',
+  'select:pageUp',
+  'select:pageDown',
   'select:cancel',
   // Plugin dialog actions
   'plugin:toggle',

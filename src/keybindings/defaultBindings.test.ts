@@ -278,3 +278,9 @@ test('Settings Enter changes the selected row like official 2.1.311', () => {
   expect(settings?.space).toBe('select:accept')
   expect(KEYBINDING_ACTIONS).not.toContain('settings:close')
 })
+
+test('Settings list jumps with Home, End, PageUp and PageDown like official 2.1.311', () => {
+  const settings = DEFAULT_BINDINGS.find(block => block.context === 'Settings')?.bindings
+  expect(settings).toMatchObject({ home: 'select:first', end: 'select:last', pageup: 'select:pageUp', pagedown: 'select:pageDown' })
+  for (const action of ['select:first', 'select:last', 'select:pageUp', 'select:pageDown'] as const) expect(KEYBINDING_ACTIONS).toContain(action)
+})

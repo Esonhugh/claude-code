@@ -131,6 +131,10 @@ export const DEFAULT_BINDINGS: KeybindingBlock[] = [
       j: 'select:next',
       'ctrl+p': 'select:previous',
       'ctrl+n': 'select:next',
+      home: 'select:first',
+      end: 'select:last',
+      pageup: 'select:pageUp',
+      pagedown: 'select:pageDown',
       // Toggle/activate the selected setting
       space: 'select:accept',
       enter: 'select:accept',

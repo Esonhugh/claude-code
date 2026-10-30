@@ -507,3 +507,55 @@ test('settings write errors propagate without changing AppState', async () => {
     expect(state).toBe(initial)
   } finally { failure.mockRestore() }
 })
+
+const officialRowsTest = 'official 2.1.311 rows for recap, usage-limit resume, keyword trigger and peer messages'
+test(officialRowsTest, async () => {
+  // Session recap and peer messages are compiled behind AWAY_SUMMARY and UDS_INBOX; assert in a child with both on.
+  if (process.env.CLAUDE_CODE_CONFIG_ROWS_FEATURES_CHILD !== '1') {
+    const child = Bun.spawn([process.execPath, 'test', '--feature=AWAY_SUMMARY', '--feature=UDS_INBOX', import.meta.path, '-t', officialRowsTest], {
+      cwd: join(import.meta.dir, '../../..'),
+      env: { ...originalEnv, CLAUDE_CODE_CONFIG_ROWS_FEATURES_CHILD: '1' },
+      stdout: 'pipe', stderr: 'pipe',
+    })
+    const [code, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()])
+    if (code !== 0) throw new Error(`${stdout}\n${stderr}`)
+    return
+  }
+  const { getConfigRows } = await import('./configRows.js')
+  let state = { settings: {}, verbose: false, thinkingEnabled: true, mainLoopModel: null } as AppState
+  const context = { getAppState: () => state, setAppState: (update: (state: AppState) => AppState) => { state = update(state) } }
+  const keys = getConfigRows(context).map(row => row.key)
+  const order = ['autoCompact', 'idleCompaction', 'autoContinueAtUsageLimit', 'thinkingEnabled', 'recap', 'fileCheckpointingEnabled', 'workflows', 'workflowKeywordTriggerEnabled', 'claudeInChromeDefaultEnabled', 'crossSessionInbound']
+  expect(keys.filter(key => order.includes(key))).toEqual(order)
+  const row = (key: string) => getConfigRows(context).find(item => item.key === key)!
+  expect(row('recap')).toMatchObject({ label: 'Session recap', value: true })
+  expect(row('autoContinueAtUsageLimit')).toMatchObject({ label: 'Continue automatically at usage limit', value: true })
+  expect(row('workflowKeywordTriggerEnabled')).toMatchObject({ label: 'Ultracode keyword trigger', value: true })
+  expect(row('crossSessionInbound')).toMatchObject({ label: 'Messages from your other sessions', kind: 'choice', value: 'default', options: ['default', 'accept', 'hold', 'refuse'] })
+
+  await row('recap').set!(false)
+  await row('autoContinueAtUsageLimit').set!(false)
+  await row('workflowKeywordTriggerEnabled').set!(false)
+  await row('crossSessionInbound').set!('hold')
+  const saved = () => JSON.parse(readFileSync(join(home, 'settings.json'), 'utf8'))
+  expect(saved()).toMatchObject({ awaySummaryEnabled: false, autoContinueAtUsageLimit: false, workflowKeywordTriggerEnabled: false, crossSessionInbound: 'hold' })
+  expect(row('recap').value).toBe(false)
+  expect(row('crossSessionInbound').value).toBe('hold')
+
+  await row('recap').set!(true)
+  await row('workflowKeywordTriggerEnabled').set!(true)
+  await row('crossSessionInbound').set!('default')
+  expect(saved().awaySummaryEnabled).toBeUndefined()
+  expect(saved().workflowKeywordTriggerEnabled).toBeUndefined()
+  expect(saved().crossSessionInbound).toBeUndefined()
+}, 120_000)
+
+test('switching editor mode hands the prompt a new settings object so it re-renders into vim', async () => {
+  const { getConfigRows } = await import('./configRows.js')
+  const initial = {}
+  let state = { settings: initial, verbose: false, thinkingEnabled: true, mainLoopModel: null } as AppState
+  const context = { getAppState: () => state, setAppState: (update: (state: AppState) => AppState) => { state = update(state) } }
+  await getConfigRows(context).find(row => row.key === 'editorMode')!.set!('vim')
+  expect(state.settings).not.toBe(initial)
+  await getConfigRows(context).find(row => row.key === 'editorMode')!.set!('normal')
+})
