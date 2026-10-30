@@ -379,7 +379,7 @@ const interaction = await render(React.createElement(AppStateProvider,
 const flush = async () => { await new Promise(resolve => setTimeout(resolve, 50)) }
 try {
   await flush()
-  assert.match(stripAnsi(interactionOut.output), /Background tasks/)
+  assert.match(stripAnsi(interactionOut.output), /Background/)
   assert.match(stripAnsi(interactionOut.output), /@team-lead/)
   assert.match(stripAnsi(interactionOut.output), /@worker/)
   interactionIn.push('\x1b[B')
@@ -399,7 +399,7 @@ try {
   assert.ok((liveState.tasks.worker as import('../../tasks/InProcessTeammateTask/types.js').InProcessTeammateTaskState)?.evictAfter)
   showDialog!(true)
   await flush()
-  assert.match(stripAnsi(interactionOut.output), /Background tasks/)
+  assert.match(stripAnsi(interactionOut.output), /Background/)
   interactionIn.push('\x1b[B')
   await flush()
   interactionIn.push('\r')

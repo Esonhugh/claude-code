@@ -765,7 +765,7 @@ export function BackgroundTasksDialog({
           />,
         ]
       : []),
-    <KeyboardShortcutHint key="esc" shortcut="←/Esc" action="close" />,
+    <KeyboardShortcutHint key="esc" shortcut="Esc" action="close" />,
   ]
 
   const handleCancel = () =>
@@ -786,7 +786,7 @@ export function BackgroundTasksDialog({
       onKeyDown={handleKeyDown}
     >
       <Dialog
-        title="Background tasks"
+        title="Background"
         subtitle={<>{subtitle}</>}
         onCancel={handleCancel}
         color="background"
