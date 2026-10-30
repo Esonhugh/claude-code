@@ -422,6 +422,9 @@ export function resolveFastModeStatusFromCache(): void {
 }
 
 export async function prefetchFastModeStatus(): Promise<void> {
+  // 2.1.311 settles a pending status from the cache before any early return,
+  // so fast mode never reads as available without a server answer.
+  resolveFastModeStatusFromCache()
   // Skip network requests if nonessential traffic is disabled
   if (isEssentialTrafficOnly()) {
     return
