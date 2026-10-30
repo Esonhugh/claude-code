@@ -109,6 +109,7 @@ function fixture() {
       'localSettings',
     ] as SettingSource[],
     resets: 0,
+    sessionTitle: undefined as string | undefined,
   }
   const noop = () => {}
   const bootstrap = {
@@ -306,6 +307,7 @@ function fixture() {
     './sessionStorage.js': {
       getTranscriptPathForSession: () => join(home, 'transcript'),
       getAgentTranscriptPath: () => join(home, 'agent-transcript'),
+      getCurrentSessionTitle: () => controls.sessionTitle,
     },
     './settings/settings.js': settingsModule,
     'src/services/analytics/index.js': { logEvent: noop },
@@ -1870,6 +1872,29 @@ describe('effort and debug logging', () => {
     await collect(pre(f))
     expect(f.envs.get('effort')?.CLAUDE_EFFORT).toBe('xhigh')
     expect(f.calls[0]?.input.effort).toEqual({ level: 'xhigh' })
+  })
+
+  test('UserPromptSubmit carries no effort, like 2.1.311', async () => {
+    const f = fixture()
+    ;(f.state as { effortValue?: string }).effortValue = 'xhigh'
+    f.add('userSettings', 'UserPromptSubmit', 'effort')
+    f.commands.set('effort', {})
+    await collect(
+      f.hooks.executeUserPromptSubmitHooks('hello', 'default', f.context),
+    )
+    expect(f.envs.get('effort')?.CLAUDE_EFFORT).toBeUndefined()
+    expect(f.calls[0]?.input.effort).toBeUndefined()
+  })
+
+  test('UserPromptSubmit carries the /rename title as session_title', async () => {
+    const f = fixture()
+    f.controls.sessionTitle = 'Release prep'
+    f.add('userSettings', 'UserPromptSubmit', 'title')
+    f.commands.set('title', {})
+    await collect(
+      f.hooks.executeUserPromptSubmitHooks('hello', 'default', f.context),
+    )
+    expect(f.calls[0]?.input.session_title).toBe('Release prep')
   })
 
   test('without an effort value the variable and field are absent', async () => {
