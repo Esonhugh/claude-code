@@ -30,6 +30,7 @@ function toApiView(messages: Message[]): Message[] {
 export async function call(
   onDone: LocalJSXCommandOnDone,
   context: LocalJSXCommandContext,
+  args?: string,
 ): Promise<React.ReactNode> {
   const {
     messages,
@@ -63,7 +64,7 @@ export async function call(
 
   // Render to ANSI string to preserve colors and pass to onDone like local commands do
   const output = await renderToAnsiString(
-    <ContextVisualization data={data} />,
+    <ContextVisualization data={data} collapsed={args?.trim() !== 'all'} />,
     terminalWidth,
   )
   onDone(output)
