@@ -1,4 +1,5 @@
 import { feature } from 'bun:bundle'
+import { spawnSync } from 'child_process'
 import chalk from 'chalk'
 import * as path from 'path'
 import * as React from 'react'
@@ -11,6 +12,9 @@ import {
   useSyncExternalStore,
 } from 'react'
 import { useNotifications } from 'src/context/notifications.js'
+import { detachAttachedClients, getSelfCommand } from 'src/daemon/protocol.js'
+import instances from 'src/ink/instances.js'
+import { isBgSession } from 'src/utils/concurrentSessions.js'
 import { useCommandQueue } from 'src/hooks/useCommandQueue.js'
 import {
   type IDEAtMentioned,
@@ -339,6 +343,7 @@ type Props = {
 // Bottom slot has maxHeight="50%"; reserve lines for footer, border, status.
 const PROMPT_FOOTER_LINES = 5
 const MIN_INPUT_VIEWPORT_LINES = 3
+const LEFT_ARROW_CONFIRM_MS = 3000
 
 function PromptInput({
   debug,
@@ -1940,6 +1945,55 @@ function PromptInput({
     () => onShowMessageSelector(),
   )
 
+  // Like 2.1.311: ← twice within 3s at an empty idle prompt opens the agents
+  // view (a bg session detaches back to it instead).
+  const leftArrowArmedAtRef = useRef(0)
+  const pressLeftForAgents = useCallback(() => {
+    const now = Date.now()
+    if (now - leftArrowArmedAtRef.current > LEFT_ARROW_CONFIRM_MS) {
+      leftArrowArmedAtRef.current = now
+      addNotification({
+        key: 'left-arrow-agents',
+        text: isBgSession()
+          ? 'Press ← again to go back to agents'
+          : 'Press ← again to open agents',
+        priority: 'immediate',
+        timeoutMs: LEFT_ARROW_CONFIRM_MS,
+      })
+      return
+    }
+    leftArrowArmedAtRef.current = 0
+    removeNotification('left-arrow-agents')
+    if (isBgSession()) {
+      detachAttachedClients()
+      return
+    }
+    const ink = instances.get(process.stdout)
+    if (!ink) return
+    const [command, ...args] = getSelfCommand()
+    const run = () =>
+      spawnSync(command!, [...args, 'agents'], { stdio: 'inherit' })
+    if (isFullscreenEnvEnabled()) {
+      ink.enterAlternateScreen()
+      try {
+        run()
+      } finally {
+        ink.exitAlternateScreen()
+      }
+      return
+    }
+    // The agents view saves and restores the main screen itself, so the
+    // prompt frame and cursor come back exactly where Ink left them.
+    ink.pause()
+    ink.suspendStdin()
+    try {
+      run()
+    } finally {
+      ink.resumeStdin()
+      ink.resume()
+    }
+  }, [addNotification, removeNotification])
+
   // Function to get the queued command for editing. Returns true if commands were popped.
   const popAllCommandsFromQueue = useCallback((): boolean => {
     const result = popAllEditable(input, cursorOffset)
@@ -2775,6 +2829,17 @@ function PromptInput({
       if (messages.length > 0 && !input && !isLoading) {
         doublePressEscFromEmpty()
       }
+    }
+
+    if (
+      feature('BG_SESSIONS') &&
+      key.leftArrow &&
+      !input &&
+      !isLoading &&
+      viewSelectionMode !== 'viewing-agent' &&
+      getGlobalConfig().leftArrowOpensAgents !== false
+    ) {
+      pressLeftForAgents()
     }
 
     if (key.return && helpOpen) {
