@@ -1745,6 +1745,8 @@ export function REPL({
   // on resume (initialMessages present) so we don't re-title a resumed
   // session from mid-conversation context.
   const haikuTitleAttemptedRef = useRef((initialMessages?.length ?? 0) > 0)
+  // /clear starts a new session; its first prompt gets a title of its own.
+  const haikuTitleSessionRef = useRef(getSessionId())
   const agentTitle = mainThreadAgentDefinition?.agentType
   const terminalTitle =
     sessionTitle ?? agentTitle ?? haikuTitle ?? 'Claude Code'
@@ -3127,6 +3129,7 @@ export function REPL({
         // (same reasoning as the useRef seed), and the previous session's
         // Haiku title shouldn't carry over.
         haikuTitleAttemptedRef.current = true
+        haikuTitleSessionRef.current = getSessionId()
         setHaikuTitle(undefined)
 
         // Exit any worktree a prior /resume entered, then cd into the one
@@ -4589,6 +4592,11 @@ export function REPL({
       // useDeferredHookMessages) and attachment messages (appended by
       // processTextPrompt) — both pushed length past 1 on turn one, so the
       // title silently fell through to the "Claude Code" default.
+      if (haikuTitleSessionRef.current !== getSessionId()) {
+        haikuTitleSessionRef.current = getSessionId()
+        haikuTitleAttemptedRef.current = false
+        setHaikuTitle(undefined)
+      }
       if (
         !titleDisabled &&
         !sessionTitle &&
