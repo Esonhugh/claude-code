@@ -14,7 +14,11 @@ import { render } from '../../ink.js'
 import { getDefaultAppState } from '../../state/AppState.js'
 import { AppStateProvider } from '../../state/AppState.js'
 import type { AppState } from '../../state/AppStateStore.js'
-import { getBackgroundTasksDialogInitialState } from './backgroundTasksDialogState.js'
+import type { LocalAgentTaskState } from '../../tasks/LocalAgentTask/LocalAgentTask.js'
+import {
+  getBackgroundTasksDialogInitialState,
+  getScopedBackgroundTasks,
+} from './backgroundTasksDialogState.js'
 
 function createTaskBase(id: string, description: string, startTime: number): TaskStateBase {
   return {
@@ -90,6 +94,31 @@ const noInteractive = getBackgroundTasksDialogInitialState({
   scope: 'terminal',
 })
 assert.deepEqual(noInteractive, {
+  viewState: { mode: 'list' },
+  skippedListOnMount: false,
+  initialSelectedIndex: 0,
+})
+
+// Official 2.1.311 lists a finished background agent under "Completed" in
+// /tasks until it is evicted, and opens the list rather than its detail view.
+const completedAgent = {
+  ...createTaskBase('done-agent', 'bg quick 1', 4),
+  type: 'local_agent',
+  status: 'completed',
+  agentId: 'done-agent',
+  agentType: 'general-purpose',
+  isBackgrounded: true,
+  evictAfter: 30_004,
+} as unknown as LocalAgentTaskState
+assert.deepEqual(
+  getScopedBackgroundTasks({ done: completedAgent }, undefined).map(t => t.id),
+  ['done-agent'],
+)
+assert.deepEqual(
+  getScopedBackgroundTasks({ done: { ...completedAgent, evictAfter: 0 } }, undefined),
+  [],
+)
+assert.deepEqual(getBackgroundTasksDialogInitialState({ tasks: { done: completedAgent } }), {
   viewState: { mode: 'list' },
   skippedListOnMount: false,
   initialSelectedIndex: 0,

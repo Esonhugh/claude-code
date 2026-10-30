@@ -1,4 +1,5 @@
 import { parkAgentForChildren } from './backgroundOwner.js'
+import { WORKFLOW_SUBAGENT_TYPE } from '../WorkflowTool/constants.js'
 import { feature } from 'bun:bundle'
 import * as React from 'react'
 import { buildTool, type ToolDef, toolMatchesName } from 'src/Tool.js'
@@ -785,6 +786,7 @@ export const AgentTool = buildTool({
       const baseGetSystemPrompt = selectedAgent.getSystemPrompt
       selectedAgent = {
         ...selectedAgent,
+        ...('replace' in workflowFraming ? { agentType: WORKFLOW_SUBAGENT_TYPE } : {}),
         getSystemPrompt: (params?: Parameters<typeof baseGetSystemPrompt>[0]) =>
           'replace' in workflowFraming
             ? workflowFraming.replace

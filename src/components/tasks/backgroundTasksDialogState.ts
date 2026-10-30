@@ -4,6 +4,7 @@ import {
 } from '../../tasks/types.js'
 
 import { isViewableTeammate } from '../../tasks/InProcessTeammateTask/InProcessTeammateTask.js'
+import { isCompletedBackgroundAgent } from '../../tasks/LocalAgentTask/LocalAgentTask.js'
 import { isInProcessTeammateTask } from '../../tasks/InProcessTeammateTask/types.js'
 
 export type BackgroundTasksDialogScope = 'all' | 'terminal'
@@ -21,7 +22,8 @@ export function getScopedBackgroundTasks(
   // stay reachable here.
   const backgroundTasks = Object.values(tasks ?? {}).filter(
     task =>
-      ((isInProcessTeammateTask(task) && task.status === 'running') ||
+      ((isCompletedBackgroundAgent(task) && task.evictAfter !== 0) ||
+        (isInProcessTeammateTask(task) && task.status === 'running') ||
         isBackgroundTask(task) ||
         isViewableTeammate(task)) &&
       task.type !== 'local_workflow' &&
@@ -60,7 +62,11 @@ export function getBackgroundTasksDialogInitialState({
 
   const scopedTasks = getScopedBackgroundTasks(tasks, foregroundedTaskId, scope)
 
-  if (scopedTasks.length === 1 && scopedTasks[0]!.type !== 'in_process_teammate') {
+  if (
+    scopedTasks.length === 1 &&
+    scopedTasks[0]!.type !== 'in_process_teammate' &&
+    !isCompletedBackgroundAgent(scopedTasks[0])
+  ) {
     return {
       viewState: { mode: 'detail', itemId: scopedTasks[0]!.id },
       skippedListOnMount: true,

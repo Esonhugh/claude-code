@@ -114,9 +114,30 @@ function groupBySource<
 
 interface Props {
   data: ContextData
+  /** Official 2.1.311 folds each list to one count line unless `/context all`. */
+  collapsed?: boolean
 }
 
-export function ContextVisualization({ data }: Props): React.ReactNode {
+function CollapsedSummary({
+  count,
+  noun,
+  tokens,
+}: {
+  count: number
+  noun: string
+  tokens: number
+}): React.ReactNode {
+  return (
+    <Text dimColor>
+      └ {count} {plural(count, noun)} · {formatTokens(tokens)} tokens
+    </Text>
+  )
+}
+
+export function ContextVisualization({
+  data,
+  collapsed = false,
+}: Props): React.ReactNode {
   const {
     categories,
     totalTokens,
@@ -260,8 +281,17 @@ export function ContextVisualization({ data }: Props): React.ReactNode {
                 · /mcp{hasDeferredMcpTools ? ' (loaded on-demand)' : ''}
               </Text>
             </Box>
+            {collapsed && (
+              <CollapsedSummary
+                count={mcpTools.length}
+                noun="tool"
+                tokens={mcpTools
+                  .filter(t => !hasDeferredMcpTools || t.isLoaded)
+                  .reduce((sum, t) => sum + t.tokens, 0)}
+              />
+            )}
             {/* Show loaded tools first */}
-            {mcpTools.some(t => t.isLoaded) && (
+            {!collapsed && mcpTools.some(t => t.isLoaded) && (
               <Box flexDirection="column" marginTop={1}>
                 <Text dimColor>Loaded</Text>
                 {mcpTools
@@ -275,7 +305,7 @@ export function ContextVisualization({ data }: Props): React.ReactNode {
               </Box>
             )}
             {/* Show available (deferred) tools */}
-            {hasDeferredMcpTools && mcpTools.some(t => !t.isLoaded) && (
+            {!collapsed && hasDeferredMcpTools && mcpTools.some(t => !t.isLoaded) && (
               <Box flexDirection="column" marginTop={1}>
                 <Text dimColor>Available</Text>
                 {mcpTools
@@ -288,7 +318,7 @@ export function ContextVisualization({ data }: Props): React.ReactNode {
               </Box>
             )}
             {/* Show all tools normally when not deferred */}
-            {!hasDeferredMcpTools &&
+            {!collapsed && !hasDeferredMcpTools &&
               mcpTools.map((tool, i) => (
                 <Box key={i}>
                   <Text>└ {tool.name}: </Text>
@@ -363,7 +393,13 @@ export function ContextVisualization({ data }: Props): React.ReactNode {
               <Text bold>Custom agents</Text>
               <Text dimColor> · .claude/agents/</Text>
             </Box>
-            {Array.from(groupBySource(agents).entries()).map(
+            {collapsed ? (
+              <CollapsedSummary
+                count={agents.length}
+                noun="agent"
+                tokens={agents.reduce((sum, a) => sum + a.tokens, 0)}
+              />
+            ) : Array.from(groupBySource(agents).entries()).map(
               ([sourceDisplay, sourceAgents]) => (
                 <Box key={sourceDisplay} flexDirection="column" marginTop={1}>
                   <Text dimColor>{sourceDisplay}</Text>
@@ -385,7 +421,13 @@ export function ContextVisualization({ data }: Props): React.ReactNode {
               <Text bold>Memory files</Text>
               <Text dimColor> · /memory</Text>
             </Box>
-            {memoryFiles.map((file, i) => (
+            {collapsed ? (
+              <CollapsedSummary
+                count={memoryFiles.length}
+                noun="file"
+                tokens={memoryFiles.reduce((sum, f) => sum + f.tokens, 0)}
+              />
+            ) : memoryFiles.map((file, i) => (
               <Box key={i}>
                 <Text>└ {getDisplayPath(file.path)}: </Text>
                 <Text dimColor>{formatTokens(file.tokens)} tokens</Text>
@@ -400,7 +442,13 @@ export function ContextVisualization({ data }: Props): React.ReactNode {
               <Text bold>Skills</Text>
               <Text dimColor> · /skills</Text>
             </Box>
-            {Array.from(groupBySource(skills.skillFrontmatter).entries()).map(
+            {collapsed ? (
+              <CollapsedSummary
+                count={skills.skillFrontmatter.length}
+                noun="skill"
+                tokens={skills.tokens}
+              />
+            ) : Array.from(groupBySource(skills.skillFrontmatter).entries()).map(
               ([sourceDisplay, sourceSkills]) => (
                 <Box key={sourceDisplay} flexDirection="column" marginTop={1}>
                   <Text dimColor>{sourceDisplay}</Text>
@@ -415,6 +463,16 @@ export function ContextVisualization({ data }: Props): React.ReactNode {
             )}
           </Box>
         )}
+
+        {collapsed &&
+          (mcpTools.length > 0 ||
+            agents.length > 0 ||
+            memoryFiles.length > 0 ||
+            (skills?.tokens ?? 0) > 0) && (
+            <Box marginTop={1}>
+              <Text dimColor>/context all to expand</Text>
+            </Box>
+          )}
 
         {messageBreakdown && isAnt() && (
           <Box flexDirection="column" marginTop={1}>

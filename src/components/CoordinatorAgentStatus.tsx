@@ -97,10 +97,15 @@ export function CoordinatorTaskPanel({
     viewingAgentTaskId,
     idleTeammatesExpanded,
   );
-  const hasAgentTasks = visibleTasks.some(
-    (task) =>
-      task.type === "local_agent" || task.type === "in_process_teammate",
-  );
+  // Finished background agents leave the panel but still need evicting.
+  const hasAgentTasks =
+    visibleTasks.some(
+      (task) =>
+        task.type === "local_agent" || task.type === "in_process_teammate",
+    ) ||
+    Object.values(tasks).some(
+      (task) => isPanelAgentTask(task) && (task.evictAfter ?? 0) > 0,
+    );
   const hasWorkflowTasks = visibleTasks.some(
     (task) => task.type === "local_workflow",
   );
