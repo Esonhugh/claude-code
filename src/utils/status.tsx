@@ -3,7 +3,11 @@ import figures from 'figures'
 import * as React from 'react'
 import { color, Text } from '../ink.js'
 import type { MCPServerConnection } from '../services/mcp/types.js'
-import { getAccountInformation, isClaudeAISubscriber } from './auth.js'
+import {
+  getAccountInformation,
+  isAnthropicAuthEnabled,
+  isClaudeAISubscriber,
+} from './auth.js'
 import {
   getLargeMemoryFiles,
   getMemoryFiles,
@@ -27,7 +31,10 @@ import {
   getClaudeAiUserDefaultModelDescription,
   modelDisplayString,
 } from './model/model.js'
-import { getAPIProvider } from './model/providers.js'
+import {
+  getAPIProvider,
+  isFirstPartyAnthropicBaseUrl,
+} from './model/providers.js'
 import { getMTLSConfig } from './mtls.js'
 import { checkInstall } from './nativeInstaller/index.js'
 import { getProxyUrl } from './proxy.js'
@@ -247,12 +254,47 @@ export function buildSettingSourcesProperties(): Property[] {
       label: 'Setting sources',
       value: sourceNames,
     },
+    ...buildRemotePolicyProperties(),
   ]
 }
 
+// Remote managed settings and policy limits are only fetched from the
+// Anthropic API; 2.1.311 says why they were skipped.
+function buildRemotePolicyProperties(): Property[] {
+  if (getAPIProvider() !== 'firstParty') {
+    return [
+      {
+        label: 'Managed settings (remote)',
+        value: 'not fetched — not available on Bedrock/Vertex/third-party providers',
+      },
+      {
+        label: 'Organization policy',
+        value:
+          "not fetched: this session doesn't connect to the Anthropic API directly (Bedrock, Vertex, Foundry, or a gateway)",
+      },
+    ]
+  }
+  if (!isFirstPartyAnthropicBaseUrl()) {
+    return [
+      {
+        label: 'Managed settings (remote)',
+        value: 'not fetched — not available with a custom ANTHROPIC_BASE_URL',
+      },
+      {
+        label: 'Organization policy',
+        value: 'not fetched with a custom ANTHROPIC_BASE_URL',
+      },
+    ]
+  }
+  return []
+}
+
 export async function buildInstallationDiagnostics(): Promise<Diagnostic[]> {
+  // Errors are reported once, through the doctor diagnostic's warnings.
   const installWarnings = await checkInstall()
-  return installWarnings.map(warning => warning.message)
+  return installWarnings
+    .filter(warning => warning.type !== 'error')
+    .map(warning => warning.message)
 }
 
 export async function buildInstallationHealthDiagnostics(): Promise<
@@ -279,11 +321,18 @@ export async function buildInstallationHealthDiagnostics(): Promise<
   })
 
   if (diagnostic.hasUpdatePermissions === false) {
-    items.push('No write permissions for auto-updates (requires sudo)')
+    items.push('No write permissions for auto-updates')
   }
 
   return items
 }
+
+const OAUTH_TOKEN_SOURCES = new Set([
+  'CLAUDE_CODE_OAUTH_TOKEN',
+  'CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR',
+  'CCR_OAUTH_TOKEN_FILE',
+  'claude.ai',
+])
 
 export function buildAccountProperties(): Property[] {
   const accountInfo = getAccountInformation()
@@ -296,21 +345,32 @@ export function buildAccountProperties(): Property[] {
   if (accountInfo.subscription) {
     properties.push({
       label: 'Login method',
-      value: `${accountInfo.subscription} Account`,
+      value: `${accountInfo.subscription} account`,
     })
   }
 
+  // OAuth tokens and API keys exclude each other: requests carry only one.
+  const notInUse = ' · not in use'
+  const isOAuthToken = OAUTH_TOKEN_SOURCES.has(accountInfo.tokenSource ?? '')
+  const oauthInUse =
+    accountInfo.subscription !== undefined ||
+    (isOAuthToken && isAnthropicAuthEnabled())
   if (accountInfo.tokenSource) {
     properties.push({
       label: 'Auth token',
-      value: accountInfo.tokenSource,
+      value:
+        isOAuthToken && !oauthInUse
+          ? `${accountInfo.tokenSource}${notInUse}`
+          : accountInfo.tokenSource,
     })
   }
 
   if (accountInfo.apiKeySource) {
     properties.push({
       label: 'API key',
-      value: accountInfo.apiKeySource,
+      value: oauthInUse
+        ? `${accountInfo.apiKeySource}${notInUse}`
+        : accountInfo.apiKeySource,
     })
   }
 
