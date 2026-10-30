@@ -1695,7 +1695,7 @@ export function formatAutoUpdaterDisabledReason(
     case 'development':
       return 'development build'
     case 'env':
-      return `${reason.envVar} set`
+      return `set by env: ${reason.envVar}`
     case 'config':
       return 'config'
   }

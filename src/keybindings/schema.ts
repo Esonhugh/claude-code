@@ -180,7 +180,6 @@ export const KEYBINDING_ACTIONS = [
   // Settings config panel actions
   'settings:search',
   'settings:retry',
-  'settings:close',
   // Voice actions
   'voice:pushToTalk',
 ] as const

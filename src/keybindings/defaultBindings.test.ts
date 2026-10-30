@@ -271,3 +271,10 @@ test('send-now and ctrl+j newline match official 2.1.303 Chat defaults', () => {
   const next = inputEvent('\x13')
   expect(resolveKeyWithChordState(next.input, next.key, ['Chat', 'Global'], bindings, first.pending)).toEqual({ type: 'match', action: 'chat:sendNow' })
 })
+
+test('Settings Enter changes the selected row like official 2.1.311', () => {
+  const settings = DEFAULT_BINDINGS.find(block => block.context === 'Settings')?.bindings
+  expect(settings?.enter).toBe('select:accept')
+  expect(settings?.space).toBe('select:accept')
+  expect(KEYBINDING_ACTIONS).not.toContain('settings:close')
+})

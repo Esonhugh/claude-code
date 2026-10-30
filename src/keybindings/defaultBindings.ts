@@ -131,10 +131,9 @@ export const DEFAULT_BINDINGS: KeybindingBlock[] = [
       j: 'select:next',
       'ctrl+p': 'select:previous',
       'ctrl+n': 'select:next',
-      // Toggle/activate the selected setting (space only — enter saves & closes)
+      // Toggle/activate the selected setting
       space: 'select:accept',
-      // Save and close the config panel
-      enter: 'settings:close',
+      enter: 'select:accept',
       // Enter search mode
       '/': 'settings:search',
       // Retry loading usage data (only active on error)

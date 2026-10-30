@@ -152,6 +152,17 @@ export function getConfigRows(context: Context): ModConfigRowProvider[] {
     ...(!isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_FILE_CHECKPOINTING)
       ? [globalBoolean('fileCheckpointingEnabled', 'Rewind code (checkpoints)', global.fileCheckpointingEnabled)] : []),
     {
+      key: 'workflows', label: 'Dynamic workflows', kind: 'boolean', value: shouldEnableWorkflows(settings),
+      set(value) {
+        writeSettings('userSettings', { enableWorkflows: value === workflowsDefaultOn() ? undefined : value as boolean, disableWorkflows: undefined })
+      },
+    },
+    ...(shouldEnableWorkflows(settings) && settings.workflowSizeGuideline === undefined ? [{
+      key: 'workflowSizeGuideline', label: 'Dynamic workflow size', kind: 'choice' as const,
+      value: global.workflowSizeGuideline ?? defaultWorkflowSizeGuideline(), options: [...WORKFLOW_SIZE_GUIDELINES],
+      set(value: ModConfigValue) { saveGlobalConfig(current => ({ ...current, workflowSizeGuideline: value as WorkflowSizeGuideline })) },
+    }] : []),
+    {
       key: 'verbose', label: 'Verbose output', kind: 'boolean', value: state.verbose,
       set(value) {
         saveGlobalConfig(current => ({ ...current, verbose: value as boolean }))
@@ -183,17 +194,6 @@ export function getConfigRows(context: Context): ModConfigRowProvider[] {
         writeSettings('userSettings', { useAutoModeDuringPlan: value as boolean })
         context.setAppState(current => ({ ...current, toolPermissionContext: transitionPlanAutoMode(current.toolPermissionContext) }))
       },
-    }] : []),
-    {
-      key: 'workflows', label: 'Dynamic workflows', kind: 'boolean', value: shouldEnableWorkflows(settings),
-      set(value) {
-        writeSettings('userSettings', { enableWorkflows: value === workflowsDefaultOn() ? undefined : value as boolean, disableWorkflows: undefined })
-      },
-    },
-    ...(shouldEnableWorkflows(settings) && settings.workflowSizeGuideline === undefined ? [{
-      key: 'workflowSizeGuideline', label: 'Dynamic workflow size', kind: 'choice' as const,
-      value: global.workflowSizeGuideline ?? defaultWorkflowSizeGuideline(), options: [...WORKFLOW_SIZE_GUIDELINES],
-      set(value: ModConfigValue) { saveGlobalConfig(current => ({ ...current, workflowSizeGuideline: value as WorkflowSizeGuideline })) },
     }] : []),
     globalBoolean('respectGitignore', 'Respect .gitignore in file picker', global.respectGitignore),
     globalBoolean('copyFullResponse', 'Skip the /copy picker', global.copyFullResponse),
@@ -300,7 +300,7 @@ export function getConfigRows(context: Context): ModConfigRowProvider[] {
       value: String(!!getCurrentProjectConfig().hasClaudeMdExternalIncludesApproved),
     }] : []),
     ...(customApiKeySuffix ? [{
-      key: 'apiKey', label: 'Use custom API key', kind: 'boolean' as const,
+      key: 'apiKey', label: `Use custom API key: ${customApiKeySuffix}`, kind: 'boolean' as const,
       value: global.customApiKeyResponses?.approved?.includes(customApiKeySuffix) ?? false,
       set(value: ModConfigValue) {
         const suffix = customApiKeySuffix

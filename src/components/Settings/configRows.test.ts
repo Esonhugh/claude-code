@@ -50,7 +50,7 @@ afterAll(() => {
   rmSync(home, { recursive: true, force: true })
 })
 
-test('exposes real built-in config rows in menu order, including dialog-only rows', async () => {
+test('exposes real built-in config rows in official 2.1.311 menu order, including dialog-only rows', async () => {
   const { getConfigRows } = await import('./configRows.js')
   let state = { settings: {}, verbose: false, thinkingEnabled: true, mainLoopModel: null } as AppState
   const rows = getConfigRows({
@@ -59,9 +59,9 @@ test('exposes real built-in config rows in menu order, including dialog-only row
   })
   const keys = [
     'autoCompact', 'idleCompaction', 'tips', 'prefersReducedMotion',
-    'thinkingEnabled', 'fileCheckpointingEnabled', 'verbose',
+    'thinkingEnabled', 'fileCheckpointingEnabled', 'workflows', 'workflowSizeGuideline', 'verbose',
     'terminalProgressBarEnabled', 'showTurnDuration', 'timeFormat', 'defaultPermissionMode',
-    'workflows', 'workflowSizeGuideline', 'respectGitignore', 'copyFullResponse', 'autoUpdatesChannel', 'theme',
+    'respectGitignore', 'copyFullResponse', 'autoUpdatesChannel', 'theme',
     'notifChannel', 'outputStyle', 'language', 'editorMode', 'prStatusFooterEnabled',
     'model', 'claudeInChromeDefaultEnabled',
   ]
@@ -227,7 +227,7 @@ test('production rows include the custom-key setting without host-specific optio
   }
   try {
     const row = getConfigRows(context).find(row => row.key === 'apiKey')
-    expect(row).toMatchObject({ label: 'Use custom API key', kind: 'boolean', value: false })
+    expect(row).toMatchObject({ label: 'Use custom API key: redential-config-key', kind: 'boolean', value: false })
     await row!.set!(true)
     expect(getConfigRows(context).find(row => row.key === 'apiKey')?.value).toBe(true)
     expect(config.getGlobalConfig().customApiKeyResponses.approved).toContain('redential-config-key')
