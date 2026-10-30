@@ -221,6 +221,7 @@ const usageReport: Command = {
   contentLength: 0,
   progressMessage: 'analyzing your sessions',
   source: 'builtin',
+  disableModelInvocation: true,
   async getPromptForCommand(args, context) {
     const real = (await import('./commands/insights.js')).default
     if (real.type !== 'prompt') throw new Error('unreachable')
@@ -623,11 +624,11 @@ export const getSkillToolCommands = memoize(
       cmd =>
         cmd.type === 'prompt' &&
         !cmd.disableModelInvocation &&
-        cmd.source !== 'builtin' &&
-        // Always include skills from /skills/ dirs, bundled skills, and legacy /commands/ entries
+        // Always include builtin prompt commands, skills from /skills/ dirs, bundled skills, and legacy /commands/ entries
         // (they all get an auto-derived description from the first line if frontmatter is missing).
         // Plugin/MCP commands still require an explicit description to appear in the listing.
-        (cmd.loadedFrom === 'bundled' ||
+        (cmd.source === 'builtin' ||
+          cmd.loadedFrom === 'bundled' ||
           cmd.loadedFrom === 'skills' ||
           cmd.loadedFrom === 'commands_DEPRECATED' ||
           cmd.hasUserSpecifiedDescription ||
