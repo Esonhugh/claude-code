@@ -27,7 +27,10 @@ import {
 import { InProcessTeammateTask, isViewableTeammate } from 'src/tasks/InProcessTeammateTask/InProcessTeammateTask.js'
 import type { InProcessTeammateTaskState } from 'src/tasks/InProcessTeammateTask/types.js'
 import type { LocalAgentTaskState } from 'src/tasks/LocalAgentTask/LocalAgentTask.js'
-import { LocalAgentTask } from 'src/tasks/LocalAgentTask/LocalAgentTask.js'
+import {
+  isCompletedBackgroundAgent,
+  LocalAgentTask,
+} from 'src/tasks/LocalAgentTask/LocalAgentTask.js'
 import type { LocalShellTaskState } from 'src/tasks/LocalShellTask/guards.js'
 import { LocalShellTask } from 'src/tasks/LocalShellTask/LocalShellTask.js'
 // Type import is erased at build time — safe even though module is ant-gated.
@@ -283,6 +286,7 @@ export function BackgroundTasksDialog({
     terminalTasks,
     remoteSessions,
     agentTasks,
+    completedAgentTasks,
     teammateTasks,
     mcpMonitors,
     dreamTasks,
@@ -312,8 +316,14 @@ export function BackgroundTasksDialog({
     )
     const remote = sorted.filter(item => item.type === 'remote_agent')
     // Exclude foregrounded task - it's being viewed in the main UI, not a background task
-    const agent = sorted.filter(
+    const localAgents = sorted.filter(
       item => item.type === 'local_agent' && item.id !== foregroundedTaskId,
+    )
+    const agent = localAgents.filter(
+      item => !('task' in item) || !isCompletedBackgroundAgent(item.task),
+    )
+    const completedAgents = localAgents.filter(
+      item => 'task' in item && isCompletedBackgroundAgent(item.task),
     )
     const monitorMcp = sorted.filter(item => item.type === 'monitor_mcp')
     const dreamTasks = sorted.filter(item => item.type === 'dream')
@@ -335,6 +345,7 @@ export function BackgroundTasksDialog({
       terminalTasks: terminals,
       remoteSessions: remote,
       agentTasks: agent,
+      completedAgentTasks: completedAgents,
       mcpMonitors: monitorMcp,
       dreamTasks,
       teammateTasks: [...leaderItem, ...teammates],
@@ -349,6 +360,7 @@ export function BackgroundTasksDialog({
         ...monitorMcp,
         ...remote,
         ...agent,
+        ...completedAgents,
         ...dreamTasks,
       ],
     }
@@ -792,7 +804,8 @@ export function BackgroundTasksDialog({
               <Box flexDirection="column">
                 {(bashTasks.length > 0 ||
                   remoteSessions.length > 0 ||
-                  agentTasks.length > 0) && (
+                  agentTasks.length > 0 ||
+                  completedAgentTasks.length > 0) && (
                   <Text dimColor>
                     <Text bold>{'  '}Agents</Text> (
                     {count(teammateTasks, i => i.type !== 'leader')})
@@ -814,7 +827,8 @@ export function BackgroundTasksDialog({
               >
                 {(teammateTasks.length > 0 ||
                   remoteSessions.length > 0 ||
-                  agentTasks.length > 0) && (
+                  agentTasks.length > 0 ||
+                  completedAgentTasks.length > 0) && (
                   <Text dimColor>
                     <Text bold>{'  '}Shells</Text> ({bashTasks.length})
                   </Text>
@@ -929,7 +943,7 @@ export function BackgroundTasksDialog({
               </Box>
             )}
 
-            {dreamTasks.length > 0 && (
+            {completedAgentTasks.length > 0 && (
               <Box
                 flexDirection="column"
                 marginTop={
@@ -938,6 +952,35 @@ export function BackgroundTasksDialog({
                   mcpMonitors.length > 0 ||
                   remoteSessions.length > 0 ||
                   agentTasks.length > 0
+                    ? 1
+                    : 0
+                }
+              >
+                <Text dimColor>
+                  <Text bold>{'  '}Completed</Text> ({completedAgentTasks.length})
+                </Text>
+                <Box flexDirection="column">
+                  {completedAgentTasks.map(item => (
+                    <Item
+                      key={item.id}
+                      item={item}
+                      isSelected={item.id === currentSelection?.id}
+                    />
+                  ))}
+                </Box>
+              </Box>
+            )}
+
+            {dreamTasks.length > 0 && (
+              <Box
+                flexDirection="column"
+                marginTop={
+                  teammateTasks.length > 0 ||
+                  bashTasks.length > 0 ||
+                  mcpMonitors.length > 0 ||
+                  remoteSessions.length > 0 ||
+                  agentTasks.length > 0 ||
+                  completedAgentTasks.length > 0
                     ? 1
                     : 0
                 }

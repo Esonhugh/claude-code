@@ -30,6 +30,7 @@ import { BackgroundTaskStatus } from '../tasks/BackgroundTaskStatus.js'
 import { isBackgroundTask } from '../../tasks/types.js'
 import { isPanelAgentTask } from '../../tasks/LocalAgentTask/LocalAgentTask.js'
 import { getCoordinatorTaskCount } from '../CoordinatorAgentStatus.js'
+import { hasCompletedAgentsOffPanel } from '../CoordinatorAgentStatusRows.js'
 import { count } from '../../utils/array.js'
 import { isAgentSwarmsEnabled } from '../../utils/agentSwarmsEnabled.js'
 import { TeamStatus } from '../teams/TeamStatus.js'
@@ -531,6 +532,14 @@ function ModeIndicator({
     parts.push(
       <Text dimColor key="voice-hint">
         hold {voiceKeyShortcut} to speak
+      </Text>,
+    )
+  }
+
+  if (showHint && hasCompletedAgentsOffPanel(tasks, viewingAgentTaskId)) {
+    parts.push(
+      <Text dimColor key="tasks-subagents">
+        /tasks to see subagents
       </Text>,
     )
   }

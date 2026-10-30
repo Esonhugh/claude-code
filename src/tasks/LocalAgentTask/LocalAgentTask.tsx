@@ -301,6 +301,16 @@ export function isPanelAgentTask(t: unknown): t is LocalAgentTaskState {
   return isLocalAgentTask(t) && t.agentType !== 'main-session' && t.parentAgentId === undefined
 }
 
+/**
+ * A background subagent that finished cleanly. Official 2.1.311 drops it from
+ * the agent panel right away and lists it under /tasks "Completed" until it is
+ * evicted.
+ */
+export function isCompletedBackgroundAgent(t: unknown): t is LocalAgentTaskState {
+  return isLocalAgentTask(t) && t.status === 'completed' && t.agentType !== 'main-session' &&
+    t.isBackgrounded && (t.keepaliveReasons?.size ?? 0) === 0
+}
+
 export function queuePendingMessage(
   taskId: string,
   msg: string,
