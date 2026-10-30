@@ -131,8 +131,8 @@ def main():
     time.sleep(2)
     try:
         ok, dt = launch(); record('start', ok, dt)
-        for i in range(2):
-            n, s, e, dt = turn('HELLO'); record(f'hello{i}', e, dt)
+        for i, c in enumerate(os.environ.get('PRE', 'HELLO,HELLO').split(',')):
+            n, s, e, dt = turn(c, 90); record(f'pre{i}-{c}', e, dt)
         if not os.environ.get('NOCOMPACT'):
             keys('C-u'); lit('/compact'); keys('Enter')
             r = wait(lambda: re.search(r'Compacted|compacted', pane()), 60); cap('compact'); record('compact', r, 0)
