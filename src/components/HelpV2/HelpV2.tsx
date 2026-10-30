@@ -65,30 +65,30 @@ export function HelpV2({ onClose, commands: initialCommands, mods }: Props): Rea
   )
 
   const tabs = [
-    <Tab key="general" title="general">
+    <Tab key="general" title="General">
       <General />
     </Tab>,
   ]
 
   tabs.push(
-    <Tab key="commands" title="commands">
+    <Tab key="commands" title="Commands">
       <Commands
         commands={builtinCommands}
         maxHeight={maxHeight}
         columns={columns}
-        title="Browse default commands:"
+        title="Browse default commands"
         onCancel={close}
       />
     </Tab>,
   )
 
   tabs.push(
-    <Tab key="custom" title="custom-commands">
+    <Tab key="custom" title="Custom commands">
       <Commands
         commands={customCommands}
         maxHeight={maxHeight}
         columns={columns}
-        title="Browse custom commands:"
+        title="Browse custom commands"
         emptyMessage="No custom commands found"
         onCancel={close}
       />
@@ -113,11 +113,7 @@ export function HelpV2({ onClose, commands: initialCommands, mods }: Props): Rea
     <Box flexDirection="column" height={insideModal ? undefined : maxHeight}>
       <Pane color="professionalBlue">
         <Tabs
-          title={
-            isAnt()
-              ? '/help'
-              : `Claude Code v${MACRO.VERSION}`
-          }
+          title={isAnt() ? '/help' : 'Help'}
           color="professionalBlue"
           defaultTab="general"
         >

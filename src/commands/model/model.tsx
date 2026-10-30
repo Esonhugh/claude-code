@@ -170,10 +170,24 @@ function ModelPickerWrapper({
     )
   }
 
+  function handleSelectForSession(
+    model: string | null,
+    effort: EffortLevel | undefined,
+  ): void {
+    const info = getModelSwitchHookInfo(model, context.messages)
+    const apply = () => void applySelect(model, effort, info, true)
+    void preModelSwitch(info, 'picker', context, onDone, setPending, apply).then(
+      proceed => {
+        if (proceed) apply()
+      },
+    )
+  }
+
   async function applySelect(
     model: string | null,
     effort: EffortLevel | undefined,
     info: ModelSwitchHookInfo,
+    forSession = false,
   ): Promise<void> {
     logEvent('tengu_model_command_menu', {
       action:
@@ -183,13 +197,15 @@ function ModelPickerWrapper({
       to_model:
         model as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
     })
-    setAppState(prev => ({
-      ...prev,
-      mainLoopModel: model,
-      mainLoopModelForSession: null,
-    }))
+    // A session-only pick rides mainLoopModelForSession so the saved default
+    // (mainLoopModel → userSettings) stays as it was.
+    setAppState(prev =>
+      forSession
+        ? { ...prev, mainLoopModelForSession: model ?? getDefaultMainLoopModelSetting() }
+        : { ...prev, mainLoopModel: model, mainLoopModelForSession: null },
+    )
 
-    let message = `Set model to ${chalk.bold(renderModelLabel(model))} and saved as your default for new sessions`
+    let message = `Set model to ${chalk.bold(renderModelLabel(model))}${forSession ? ' for this session only' : ' and saved as your default for new sessions'}`
     if (effort !== undefined) {
       message += ` with ${chalk.bold(effort)} effort`
     }
@@ -244,6 +260,7 @@ function ModelPickerWrapper({
       initial={mainLoopModel}
       sessionModel={mainLoopModelForSession}
       onSelect={handleSelect}
+      onSelectForSession={handleSelectForSession}
       onCancel={handleCancel}
       isStandaloneCommand
       showFastModeNotice={

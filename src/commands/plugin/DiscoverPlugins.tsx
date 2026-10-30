@@ -851,7 +851,7 @@ function DiscoverPluginsKeyHint({
               bold
             />
           )}
-          <Text>type to search</Text>
+          <Text>Type to search</Text>
           {canToggle && (
             <ConfigurableShortcutHint
               action="plugin:toggle"
@@ -864,13 +864,13 @@ function DiscoverPluginsKeyHint({
             action="select:accept"
             context="Select"
             fallback="Enter"
-            description="details"
+            description="view"
           />
           <ConfigurableShortcutHint
             action="confirm:no"
             context="Confirmation"
             fallback="Esc"
-            description="back"
+            description="go back"
           />
         </Byline>
       </Text>

@@ -5,6 +5,7 @@ import { getSessionId } from '../../bootstrap/state.js'
 import type { LocalJSXCommandContext } from '../../commands.js'
 import { useIsInsideModal } from '../../context/modalContext.js'
 import { Box, Text, useTheme } from '../../ink.js'
+import { stringWidth } from '../../ink/stringWidth.js'
 import { type AppState, useAppState } from '../../state/AppState.js'
 import { fetchUtilization, type Utilization } from '../../services/api/usage.js'
 import { getSessionKind } from '../../utils/concurrentSessions.js'
@@ -95,6 +96,8 @@ export function buildSecondarySection({
     ...buildMcpProperties(mcp.clients, theme),
     ...buildSandboxProperties(),
     ...buildSettingSourcesProperties(),
+    // The fork has no server-side auto mode classifier.
+    { label: 'Auto mode server', value: 'Disabled' },
   ]
 }
 
@@ -185,6 +188,14 @@ export function Status({
   // footer sits mid-modal with 2-3 trailing blank rows below. Outside a
   // Modal (non-fullscreen), leave layout alone — no ScrollBox to fill.
   const grow = useIsInsideModal() ? 1 : undefined
+  // One label column across both sections, like 2.1.311's table.
+  const labelWidth =
+    Math.max(
+      0,
+      ...sections.flat().map(({ label }) =>
+        label === undefined ? 0 : stringWidth(label) + 1,
+      ),
+    ) + 2
 
   return (
     <Box flexDirection="column" flexGrow={grow}>
@@ -194,8 +205,12 @@ export function Status({
             properties.length > 0 && (
               <Box key={i} flexDirection="column">
                 {properties.map(({ label, value }, j) => (
-                  <Box key={j} flexDirection="row" gap={1} flexShrink={0}>
-                    {label !== undefined && <Text bold>{label}:</Text>}
+                  <Box key={j} flexDirection="row" flexShrink={0}>
+                    {label !== undefined && (
+                      <Box width={labelWidth} flexShrink={0}>
+                        <Text bold>{label}:</Text>
+                      </Box>
+                    )}
                     <PropertyValue value={value} />
                   </Box>
                 ))}
@@ -219,7 +234,7 @@ export function Status({
   )
 }
 
-function Diagnostics({
+export function Diagnostics({
   promise,
 }: {
   promise: Promise<Diagnostic[]>
@@ -228,12 +243,14 @@ function Diagnostics({
   if (diagnostics.length === 0) return null
   return (
     <Box flexDirection="column" paddingBottom={1}>
-      <Text bold>System Diagnostics</Text>
+      <Text bold>System diagnostics</Text>
       {diagnostics.map((diagnostic, i) => (
         <Box key={i} flexDirection="row" gap={1} paddingX={1}>
-          <Text color="error">{figures.warning}</Text>
+          <Box flexShrink={0}>
+            <Text color="error">{figures.warning}</Text>
+          </Box>
           {typeof diagnostic === 'string' ? (
-            <Text wrap="wrap">{diagnostic}</Text>
+            <Text wrap="wrap-trim">{diagnostic}</Text>
           ) : (
             diagnostic
           )}

@@ -321,6 +321,12 @@ test('Idle compaction and Time format rows write user settings like official', a
   await row('timeFormat')!.set!('24-hour-utc')
   expect(settings.getSettingsForSource('userSettings')?.timeFormat).toBe('24-hour-utc')
   expect(row('timeFormat')?.value).toBe('24-hour-utc')
+  expect(row('worktreeBaseRef')).toMatchObject({
+    label: 'Worktree base ref', kind: 'choice', value: 'fresh', options: ['fresh', 'head'],
+  })
+  await row('worktreeBaseRef')!.set!('head')
+  expect(settings.getSettingsForSource('userSettings')?.worktree?.baseRef).toBe('head')
+  expect(row('worktreeBaseRef')?.value).toBe('head')
 })
 
 test('a policy enableWorkflows under CLAUDE_CODE_DISABLE_WORKFLOWS locks the row off, not on', async () => {

@@ -11,7 +11,7 @@ import {
   isFastModeCooldown,
   isFastModeEnabled,
 } from 'src/utils/fastMode.js'
-import { Box, Text } from '../ink.js'
+import { Box, Text, useInput } from '../ink.js'
 import { useKeybindings } from '../keybindings/useKeybinding.js'
 import { useAppState, useSetAppState } from '../state/AppState.js'
 import {
@@ -51,6 +51,11 @@ export type Props = {
   initial: string | null
   sessionModel?: ModelSetting
   onSelect: (model: string | null, effort: EffortLevel | undefined) => void
+  /** "s" picks the focused model for this session only (2.1.311). */
+  onSelectForSession?: (
+    model: string | null,
+    effort: EffortLevel | undefined,
+  ) => void
   onCancel?: () => void
   isStandaloneCommand?: boolean
   showFastModeNotice?: boolean
@@ -71,6 +76,7 @@ export function ModelPicker({
   initial,
   sessionModel,
   onSelect,
+  onSelectForSession,
   onCancel,
   isStandaloneCommand,
   showFastModeNotice,
@@ -200,12 +206,25 @@ export function ModelPicker({
     { context: 'ModelPicker' },
   )
 
-  function handleSelect(value: string): void {
+  const canSelectForSession =
+    isStandaloneCommand &&
+    onSelectForSession !== undefined &&
+    focusedValue !== undefined &&
+    !focusedOption?.disabled
+  useInput((input, key) => {
+    if (input === 's' && !key.ctrl && !key.meta && canSelectForSession) {
+      handleSelect(focusedValue!, true)
+    }
+  })
+
+  function handleSelect(value: string, forSession = false): void {
     logEvent('tengu_model_command_menu_effort', {
       effort:
         effort as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
     })
-    if (!skipSettingsWrite) {
+    if (forSession) {
+      setAppState(prev => ({ ...prev, effortValue: effort ?? prev.effortValue }))
+    } else if (!skipSettingsWrite) {
       // Prior comes from userSettings on disk — NOT merged settings (which
       // includes project/policy layers that must not leak into the user's
       // global ~/.claude/settings.json), and NOT AppState.effortValue (which
@@ -237,11 +256,12 @@ export function ModelPicker({
       hasToggledEffort && selectedModel && selectedSupportsEffort
         ? effort
         : undefined
+    const select = forSession ? onSelectForSession! : onSelect
     if (value === NO_PREFERENCE) {
-      onSelect(null, selectedEffort)
+      select(null, selectedEffort)
       return
     }
-    onSelect(
+    select(
       resolveServedModelAliasForPersistence(value as ModelSetting),
       selectedEffort,
     )
@@ -257,13 +277,14 @@ export function ModelPicker({
           <Text dimColor>
             {headerText ??
               (getAPIProvider() === 'openai'
-                ? 'Switch between OpenAI models. Applies to this session and future Claude Code sessions. For other model names, specify with --model.'
-                : 'Switch between Claude models. Applies to this session and future Claude Code sessions. For other/previous model names, specify with --model.')}
+                ? 'Switch between OpenAI models. Your pick becomes the default for new sessions. For other model names, specify with --model.'
+                : 'Switch between Claude models. Your pick becomes the default for new sessions. For other/previous model names, specify with --model.')}
           </Text>
           {sessionModel && (
             <Text dimColor>
               Currently using {modelDisplayString(sessionModel)} for this
-              session (set by plan mode). Selecting a model will undo this.
+              session only (base model: {modelDisplayString(initial)}).
+              Selecting a model here replaces both.
             </Text>
           )}
         </Box>
@@ -295,7 +316,7 @@ export function ModelPicker({
               <EffortLevelIndicator effort={displayEffort} />{' '}
               {formatEffortLevel(displayEffort)} effort
               {displayEffort === focusedDefaultEffort ? ` (default)` : ``}{' '}
-              <Text color="subtle">← → to adjust</Text>
+              <Text color="subtle">←/→ to adjust</Text>
             </Text>
             ) : (
               <Text color="subtle">
@@ -350,12 +371,21 @@ export function ModelPicker({
               />
             ) : (
               <Byline>
-                <KeyboardShortcutHint shortcut="Enter" action="confirm" />
+                <KeyboardShortcutHint
+                  shortcut="Enter"
+                  action={onSelectForSession ? 'set as default' : 'confirm'}
+                />
+                {onSelectForSession && (
+                  <KeyboardShortcutHint
+                    shortcut="s"
+                    action="use this session only"
+                  />
+                )}
                 <ConfigurableShortcutHint
                   action="select:cancel"
                   context="Select"
                   fallback="Esc"
-                  description="exit"
+                  description="cancel"
                 />
               </Byline>
             )

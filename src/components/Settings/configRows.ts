@@ -202,6 +202,11 @@ export function getConfigRows(context: Context): ModConfigRowProvider[] {
         writeSettings('userSettings', { permissions: { defaultMode: value as (typeof PERMISSION_MODES)[number] } })
       },
     },
+    {
+      key: 'worktreeBaseRef', label: 'Worktree base ref', kind: 'choice',
+      value: settings.worktree?.baseRef ?? 'fresh', options: ['fresh', 'head'],
+      set(value) { writeSettings('userSettings', { worktree: { baseRef: value as 'fresh' | 'head' } }) },
+    },
     ...(feature('TRANSCRIPT_CLASSIFIER') ? [{
       key: 'useAutoModeDuringPlan', label: 'Use auto mode during plan', kind: 'boolean' as const,
       // The runtime value: project settings are ignored and any trusted source set to false wins.

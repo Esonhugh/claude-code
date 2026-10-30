@@ -64,9 +64,13 @@ import {
 } from '../../state/AppState.js'
 import { ModelPicker } from '../ModelPicker.js'
 import {
+  getDefaultMainLoopModelSetting,
   modelDisplayString,
   isOpus1mMergeEnabled,
+  parseUserSpecifiedModel,
+  renderModelName,
 } from '../../utils/model/model.js'
+import { requiresAlwaysOnAdaptiveThinking } from '../../utils/thinking.js'
 import { isBilledAsExtraUsage } from '../../utils/extraUsage.js'
 import { ClaudeMdExternalIncludesDialog } from '../ClaudeMdExternalIncludesDialog.js'
 import {
@@ -173,7 +177,13 @@ type Setting = (
       type: 'managedEnum'
     })
 
-) & { description?: string; isLocked?: boolean; configRow?: ModConfigRow }
+) & {
+  description?: string
+  isLocked?: boolean
+  /** Read-only row with this reason shown under it (2.1.311 lock). */
+  lockReason?: string
+  configRow?: ModConfigRow
+}
 
 const AUTO_TEAMMATE_MODEL = Symbol('auto-teammate-model')
 
@@ -299,6 +309,16 @@ export function Config({
   const mainLoopModel = useAppState(s => s.mainLoopModel)
   const verbose = useAppState(s => s.verbose)
   const thinkingEnabled = useAppState(s => s.thinkingEnabled)
+  const sessionModel = useAppState(
+    s => s.mainLoopModelForSession ?? s.mainLoopModel,
+  )
+  const resolvedModel = parseUserSpecifiedModel(
+    sessionModel ?? getDefaultMainLoopModelSetting(),
+  )
+  // Requests to these models always carry adaptive thinking.
+  const thinkingLockReason = requiresAlwaysOnAdaptiveThinking(resolvedModel)
+    ? `Thinking can't be turned off for ${renderModelName(resolvedModel)}`
+    : undefined
   const isFastMode = useAppState(s =>
     isFastModeEnabled() ? s.fastMode : false,
   )
@@ -522,7 +542,8 @@ export function Config({
     {
       id: 'thinkingEnabled',
       label: 'Thinking mode',
-      value: thinkingEnabled ?? true,
+      value: thinkingLockReason !== undefined || (thinkingEnabled ?? true),
+      lockReason: thinkingLockReason,
       type: 'boolean' as const,
       onChange(enabled: boolean) {
         setAppState(prev => ({ ...prev, thinkingEnabled: enabled }))
@@ -785,6 +806,27 @@ export function Config({
           value:
             mode as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
         })
+      },
+    },
+    {
+      id: 'worktreeBaseRef',
+      label: 'Worktree base ref',
+      value: settingsData?.worktree?.baseRef ?? 'fresh',
+      options: ['fresh', 'head'],
+      type: 'enum' as const,
+      onChange(value: string) {
+        const baseRef = value as 'fresh' | 'head'
+        const result = updateSettingsForSource('userSettings', {
+          worktree: { baseRef },
+        })
+        if (result.error) {
+          logError(result.error)
+          return
+        }
+        setSettingsData(prev => ({
+          ...prev,
+          worktree: { ...prev?.worktree, baseRef },
+        }))
       },
     },
     ...(feature('TRANSCRIPT_CLASSIFIER')
@@ -1424,6 +1466,7 @@ export function Config({
   const displayedSettings: Setting[] = modsConfig ? configRows.map(row => {
     const label = row.provider.plugin === 'engine' ? row.label : `${row.label} · ${row.provider.plugin.split('@')[0]}`
     const base = {id:row.key,label,description:row.description,isLocked:row.isLocked,configRow:row}
+    if (row.key === 'thinkingEnabled' && thinkingLockReason) return {...base,type:'boolean',value:true,lockReason:thinkingLockReason,onChange:() => {}}
     if (row.kind === 'boolean') return {...base,type:'boolean',value:row.value as boolean,onChange:() => {}}
     if (row.kind === 'choice') return {...base,type:'enum',value:row.value as string,options:[...(row.options ?? [])],onChange:() => {}}
     return {...base,type:'managedEnum',value:String(row.value),onChange:() => {}}
@@ -1682,6 +1725,11 @@ export function Config({
       return
     }
 
+    // Locked rows (policy or an always-on model) are read-only.
+    if (setting.lockReason || (!setting.configRow && setting.isLocked)) {
+      return
+    }
+
     if (setting.configRow && !DIALOG_CONFIG_ROWS.includes(setting.id)) {
       const row = setting.configRow
       if (row.kind === 'boolean') void changeConfig(row.key, !row.value)
@@ -1698,11 +1746,6 @@ export function Config({
         setConfigCursorOffset(text.length)
         setTabsHidden(true)
       }
-      return
-    }
-
-    // Built-in rows locked by a non-user source are read-only.
-    if (!setting.configRow && setting.isLocked) {
       return
     }
 
@@ -2459,6 +2502,11 @@ export function Config({
                             )}
                           </Box>
                         </Box>
+                        {setting.lockReason && (
+                          <Box paddingLeft={2}>
+                            <Text dimColor>{setting.lockReason}</Text>
+                          </Box>
+                        )}
                       </React.Fragment>
                     )
                   })}

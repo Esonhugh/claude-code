@@ -110,6 +110,7 @@ import {
   extractQuotaStatusFromHeaders,
 } from '../claudeAiLimits.js'
 import { getAPIContextManagement } from '../compact/apiMicrocompact.js'
+import { recordMainThreadCacheUsage } from './promptCacheStats.js'
 
 /* eslint-disable @typescript-eslint/no-require-imports */
 const autoModeStateModule = feature('TRANSCRIPT_CLASSIFIER')
@@ -2739,6 +2740,17 @@ async function* queryModelRequest(
           request_id: (streamRequestId ??
             'unknown') as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
         })
+      }
+
+      if (
+        !options.agentId &&
+        (options.querySource.startsWith('repl_main_thread') ||
+          options.querySource === 'sdk')
+      ) {
+        recordMainThreadCacheUsage(
+          usage,
+          should1hCacheTTL(options.querySource) ? '1h' : '5m',
+        )
       }
 
       // Check if the cache actually broke based on response tokens

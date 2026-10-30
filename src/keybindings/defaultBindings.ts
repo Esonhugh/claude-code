@@ -92,7 +92,9 @@ export const DEFAULT_BINDINGS: KeybindingBlock[] = [
       // - ctrl+_ for legacy terminals (send \x1f control char)
       // - ctrl+shift+- for Kitty protocol (sends physical key with modifiers)
       'ctrl+_': 'chat:undo',
+      'ctrl+-': 'chat:undo',
       'ctrl+shift+-': 'chat:undo',
+      'ctrl+shift+_': 'chat:undo',
       // ctrl+x ctrl+e is the readline-native edit-and-execute-command binding.
       'ctrl+x ctrl+e': 'chat:externalEditor',
       'ctrl+g': 'chat:externalEditor',

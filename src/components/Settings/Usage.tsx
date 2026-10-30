@@ -381,6 +381,24 @@ export function Usage({
     )
   }
 
+  // No plan limits for this account (API key, 3P): 2.1.311 shows only the
+  // session section and "Esc to cancel".
+  if (Object.keys(utilization).length === 0) {
+    return (
+      <Box flexDirection="column" gap={1}>
+        <SessionCost />
+        <Text dimColor>
+          <ConfigurableShortcutHint
+            action="confirm:no"
+            context="Settings"
+            fallback="Esc"
+            description="cancel"
+          />
+        </Text>
+      </Box>
+    )
+  }
+
   // Only Max and Team plans have a Sonnet limit that differs from the weekly
   // limit (see rateLimitMessages.ts). For other plans the bar is redundant.
   // Show for null (unknown plan) to stay consistent with rateLimitMessages.ts,

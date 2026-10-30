@@ -52,6 +52,7 @@ import { calculateUSDCost, MODEL_COSTS } from './utils/modelCost.js'
 import type { LogOption } from './types/logs.js'
 import { captureSessionCostState, parseSessionCostState } from './utils/sessionCostState.js'
 import { recordSessionCostState } from './utils/sessionStorage.js'
+import { formatPromptCacheLine } from './services/api/promptCacheStats.js'
 export {
   getTotalCostUSD as getTotalCost,
   getTotalDuration,
@@ -275,13 +276,14 @@ export function formatTotalCost(): string {
       : '')
 
   const modelUsageDisplay = formatModelUsage()
+  const promptCacheLine = formatPromptCacheLine()
 
   return chalk.dim(
     `Total cost:            ${costDisplay}\n` +
       `Total duration (API):  ${formatDuration(getTotalAPIDuration())}
 Total duration (wall): ${formatDuration(getTotalDuration())}
 Total code changes:    ${getTotalLinesAdded()} ${getTotalLinesAdded() === 1 ? 'line' : 'lines'} added, ${getTotalLinesRemoved()} ${getTotalLinesRemoved() === 1 ? 'line' : 'lines'} removed
-${modelUsageDisplay}`,
+${modelUsageDisplay}${promptCacheLine ? `\n${promptCacheLine}` : ''}`,
   )
 }
 

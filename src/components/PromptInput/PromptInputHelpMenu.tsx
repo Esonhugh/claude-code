@@ -3,6 +3,7 @@ import * as React from 'react'
 import { Box, Text } from 'src/ink.js'
 import { getPlatform } from 'src/utils/platform.js'
 import { isKeybindingCustomizationEnabled } from '../../keybindings/loadUserBindings.js'
+import { chordToDisplayString, parseChord } from '../../keybindings/parser.js'
 import { useShortcutDisplay } from '../../keybindings/useShortcutDisplay.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../services/analytics/growthbook.js'
 import { isFastModeAvailable, isFastModeEnabled } from '../../utils/fastMode.js'
@@ -10,9 +11,15 @@ import { getNewlineInstructions } from './utils.js'
 import { isAnt } from 'src/utils/userType.js'
 
 
-/** Format a shortcut for display in the help menu (e.g., "ctrl+o" → "ctrl + o") */
+/**
+ * Format a shortcut for display in the help menu (e.g., "ctrl+o" → "ctrl + o",
+ * "meta+p" → "alt + p", or "opt + p" on macOS).
+ */
 function formatShortcut(shortcut: string): string {
-  return shortcut.replace(/\+/g, ' + ')
+  return chordToDisplayString(parseChord(shortcut), getPlatform()).replace(
+    /\+/g,
+    ' + ',
+  )
 }
 
 type Props = {
@@ -77,9 +84,6 @@ export function PromptInputHelpMenu(props: Props): React.ReactNode {
         </Box>
         <Box>
           <Text dimColor={dimColor}>@ for file paths</Text>
-        </Box>
-        <Box>
-          <Text dimColor={dimColor}>& for background</Text>
         </Box>
         <Box>
           <Text dimColor={dimColor}>/btw for side question</Text>

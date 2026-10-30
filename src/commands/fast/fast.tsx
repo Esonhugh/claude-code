@@ -134,7 +134,7 @@ export function FastModePicker({
 
   const title = (
     <Text>
-      <FastIcon cooldown={isCooldown} /> Fast mode (research preview)
+      <FastIcon cooldown={isCooldown} /> Fast mode
     </Text>
   )
 
@@ -144,7 +144,7 @@ export function FastModePicker({
       subtitle={
         isOpenAI
           ? 'Requests priority processing from OpenAI. Unsupported configurations fail without automatic fallback.'
-          : `High-speed mode for ${FAST_MODE_MODEL_DISPLAY}. Billed as extra usage at a premium rate. Separate rate limits apply.`
+          : `High-speed mode for ${FAST_MODE_MODEL_DISPLAY}. Draws from usage credits at a higher rate. Separate rate limits apply.`
       }
       onCancel={handleCancel}
       color="fastMode"
@@ -154,7 +154,7 @@ export function FastModePicker({
         ) : isUnavailable ? (
           <Text>Esc to cancel</Text>
         ) : (
-          <Text>Tab to toggle · Enter to confirm · Esc to cancel</Text>
+          <Text>Space to toggle · Enter to confirm · Esc to cancel</Text>
         )
       }
     >

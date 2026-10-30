@@ -1,6 +1,7 @@
 import chalk from 'chalk'
 import figures from 'figures'
 import Fuse from 'fuse.js'
+import { basename } from 'path'
 import React from 'react'
 import { getOriginalCwd, getSessionId } from '../bootstrap/state.js'
 import { useExitOnCtrlCDWithKeybindings } from '../hooks/useExitOnCtrlCDWithKeybindings.js'
@@ -997,6 +998,10 @@ export function LogSelector({
   })
 
   const filterIndicators = []
+  // 2.1.311 names the project being listed under the search box.
+  if (!showAllProjects) {
+    filterIndicators.push(basename(currentCwd))
+  }
   if (branchFilterEnabled && currentBranch) {
     filterIndicators.push(currentBranch)
   }
@@ -1035,25 +1040,52 @@ export function LogSelector({
         <Text bold color="suggestion">
           Resume session
         </Text>
-        <Box paddingLeft={1} marginY={1}>
+        <SearchBox
+          query={searchQuery}
+          isFocused={false}
+          isTerminalFocused={isTerminalFocused}
+          cursorOffset={searchCursorOffset}
+        />
+        {filterIndicators.length > 0 && (
+          <Box paddingLeft={2}>
+            <Text dimColor>
+              <Byline>{filterIndicators}</Byline>
+            </Text>
+          </Box>
+        )}
+        <Box paddingLeft={1} marginTop={1} flexDirection="column">
           <Text dimColor>
             No conversations found{showAllProjects ? '' : ' in this project'}.
           </Text>
+          {!showAllProjects && (
+            <Text dimColor>
+              <KeyboardShortcutHint shortcut="Ctrl+A" action="show all projects" />
+            </Text>
+          )}
         </Box>
-        <Text dimColor>
-          <Byline>
-            <KeyboardShortcutHint
-              shortcut="Ctrl+A"
-              action={`show ${showAllProjects ? 'current dir' : 'all projects'}`}
-            />
-            <ConfigurableShortcutHint
-              action="confirm:no"
-              context="Confirmation"
-              fallback="Esc"
-              description="cancel"
-            />
-          </Byline>
-        </Text>
+        <Box paddingLeft={2}>
+          <Text dimColor>
+            <Byline>
+              <KeyboardShortcutHint
+                shortcut="Ctrl+A"
+                action={showAllProjects ? 'only show current repo' : 'show all projects'}
+              />
+              {currentBranch && (
+                <KeyboardShortcutHint
+                  shortcut="Ctrl+B"
+                  action={branchFilterEnabled ? 'show all branches' : 'only show current branch'}
+                />
+              )}
+              <Text>Type to search</Text>
+              <ConfigurableShortcutHint
+                action="confirm:no"
+                context="Confirmation"
+                fallback="Esc"
+                description="cancel"
+              />
+            </Byline>
+          </Text>
+        </Box>
       </Box>
     )
   }
@@ -1335,19 +1367,19 @@ export function LogSelector({
               {onToggleAllProjects && (
                 <KeyboardShortcutHint
                   shortcut="Ctrl+A"
-                  action={`show ${showAllProjects ? 'current dir' : 'all projects'}`}
+                  action={showAllProjects ? 'only show current repo' : 'show all projects'}
                 />
               )}
               {currentBranch && (
                 <KeyboardShortcutHint
                   shortcut="Ctrl+B"
-                  action="toggle branch"
+                  action={branchFilterEnabled ? 'show all branches' : 'only show current branch'}
                 />
               )}
               {hasMultipleWorktrees && (
                 <KeyboardShortcutHint
                   shortcut="Ctrl+W"
-                  action={`show ${showAllWorktrees ? 'current worktree' : 'all worktrees'}`}
+                  action={showAllWorktrees ? 'only show current worktree' : 'show all worktrees'}
                 />
               )}
               <KeyboardShortcutHint shortcut="Ctrl+V" action="preview" />

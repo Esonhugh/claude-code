@@ -5,6 +5,7 @@ import type { ContextData } from '../utils/analyzeContext.js'
 import { generateContextSuggestions } from '../utils/contextSuggestions.js'
 import { getDisplayPath } from '../utils/file.js'
 import { formatTokens } from '../utils/format.js'
+import { getPublicModelDisplayName } from '../utils/model/model.js'
 import {
   getSourceDisplayName,
   type SettingSource,
@@ -142,6 +143,7 @@ export function ContextVisualization({
     categories,
     totalTokens,
     rawMaxTokens,
+    autocompactSource,
     percentage,
     gridRows,
     model,
@@ -169,6 +171,7 @@ export function ContextVisualization({
   )
   // Check if builtin tools are deferred
   const hasDeferredBuiltinTools = deferredBuiltinTools.length > 0
+  const modelDisplayName = getPublicModelDisplayName(model)
   const autocompactCategory = categories.find(
     cat => cat.name === RESERVED_CATEGORY_NAME,
   )
@@ -208,9 +211,11 @@ export function ContextVisualization({
 
         {/* Legend to the right */}
         <Box flexDirection="column" gap={0} flexShrink={0}>
+          {modelDisplayName && <Text>{modelDisplayName}</Text>}
+          <Text dimColor>{model}</Text>
           <Text dimColor>
-            {model} · {formatTokens(totalTokens)}/{formatTokens(rawMaxTokens)}{' '}
-            tokens ({percentage}%)
+            {formatTokens(totalTokens)}/{formatTokens(rawMaxTokens)} tokens (
+            {percentage}%)
           </Text>
           <CollapseStatus />
           <Text> </Text>
@@ -270,6 +275,20 @@ export function ContextVisualization({
           )}
         </Box>
       </Box>
+
+      {autocompactSource !== 'auto' && (
+        <Box marginTop={1} marginLeft={-1}>
+          <Text bold>Auto-compact window: </Text>
+          <Text dimColor>
+            {autocompactSource === 'experiment' ||
+            autocompactSource === 'clientdata'
+              ? `auto (${formatTokens(rawMaxTokens)} tokens)`
+              : autocompactSource === 'unknown-model'
+                ? `${formatTokens(rawMaxTokens)} tokens (default for an unrecognized model)`
+                : `${formatTokens(rawMaxTokens)} tokens`}
+          </Text>
+        </Box>
+      )}
 
       <Box flexDirection="column" marginLeft={-1}>
         {mcpTools.length > 0 && (
