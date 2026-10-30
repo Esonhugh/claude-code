@@ -26,6 +26,7 @@ import {
   getModeColor,
 } from '../../utils/permissions/PermissionMode.js'
 import { getPermissionModeFooterLabel } from '../../utils/permissions/approveForMe.js'
+import { PAUSE_ICON } from '../../constants/figures.js'
 import { BackgroundTaskStatus } from '../tasks/BackgroundTaskStatus.js'
 import { isBackgroundTask } from '../../tasks/types.js'
 import { isPanelAgentTask } from '../../tasks/LocalAgentTask/LocalAgentTask.js'
@@ -365,8 +366,14 @@ function ModeIndicator({
   // the local permission mode shown here doesn't reflect the agent's state.
   // Rendered before the tasks pill so a long pill label (e.g. ultraplan URL)
   // doesn't push the mode indicator off-screen.
+  // Manual (default) mode shows its indicator too, without the cycle hint,
+  // like official 2.1.311.
   const modePart =
-    currentMode && hasActiveMode && !getIsRemoteMode() ? (
+    !currentMode || getIsRemoteMode() ? null : !hasActiveMode ? (
+      <Text color="inactive" key="mode">
+        {PAUSE_ICON} manual mode on
+      </Text>
+    ) : (
       <Text color={getModeColor(currentMode)} key="mode">
         {permissionModeSymbol(currentMode)}{' '}
         {getPermissionModeFooterLabel(currentMode)} on
@@ -381,7 +388,7 @@ function ModeIndicator({
           </Text>
         )}
       </Text>
-    ) : null
+    )
 
   const TungstenPill = (_props: { selected: boolean }): React.ReactNode => null
 
@@ -470,7 +477,7 @@ function ModeIndicator({
     />
   ) : null
 
-  if (parts.length === 0 && !tasksPart && !modePart && showHint) {
+  if (parts.length === 0 && !tasksPart && !hasActiveMode && showHint) {
     parts.push(
       <Text dimColor key="shortcuts-hint">
         ? for shortcuts
