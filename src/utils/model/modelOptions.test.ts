@@ -72,7 +72,7 @@ mock.module('./model.js', () => ({
   renderDefaultModelSetting: (model: string) => names[model] ?? model,
 }))
 mock.module('../modelCost.js', () => ({
-  COST_TIER_3_15: 'old-price', COST_HAIKU_35: 'haiku35', COST_HAIKU_45: 'haiku45',
+  COST_TIER_3_15: 'old-price', COST_HAIKU_35: 'haiku35', COST_HAIKU_45: 'haiku45', COST_HAIKU_55: 'haiku55',
   formatModelPricing: (cost: string) => cost,
   getModelPricingString: (model: string) => names[model] ? `pricing:${model}` : undefined,
 }))

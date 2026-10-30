@@ -5,7 +5,7 @@ import { getFirstPartyModelCacheKey } from './firstPartyModelCacheKey.js'
 import { getCanonicalName } from './model.js'
 import { getAPIProvider } from './providers.js'
 
-const leanModels = new Set(['claude-sonnet-5-5', 'claude-opus-4-8', 'claude-opus-5', 'claude-opus-5-5', 'claude-fable-5', 'claude-fable-5-1', 'claude-mythos-5'])
+const leanModels = new Set(['claude-haiku-5-5', 'claude-sonnet-5-5', 'claude-opus-4-8', 'claude-opus-5', 'claude-opus-5-5', 'claude-fable-5', 'claude-fable-5-1', 'claude-mythos-5'])
 const canonical = (model: string) => getCanonicalName(model).replace(/\[1m\]/gi, '').toLowerCase()
 const legacy = (model: string) => /claude-3-|haiku|sonnet/.test(model) || /^claude-opus-4-(0|1|5|6|7)$/.test(model)
 

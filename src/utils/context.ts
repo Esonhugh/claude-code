@@ -28,6 +28,7 @@ function isNative1MModel(canonical: string): boolean {
     canonical === 'claude-mythos-preview' ||
     canonical.startsWith('claude-opus-5') ||
     canonical.startsWith('claude-sonnet-5') ||
+    canonical === 'claude-haiku-5-5' ||
     canonical === 'claude-opus-4-7' || canonical === 'claude-opus-4-8'
 }
 
@@ -438,6 +439,7 @@ export function getModelMaxOutputTokens(model: string): {
     m === 'claude-mythos-preview' ||
     m.startsWith('claude-opus-5') ||
     m.startsWith('claude-sonnet-5') ||
+    m === 'claude-haiku-5-5' ||
     m === 'claude-opus-4-7' ||
     m === 'claude-opus-4-8' ||
     isOpenAI1MModel(model)

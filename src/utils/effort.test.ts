@@ -32,6 +32,7 @@ assert.equal(getDefaultEffortForModel('claude-fable-5'), 'high')
 assert.equal(getDefaultEffortForModel('claude-mythos-5-1'), 'high')
 assert.equal(getDefaultEffortForModel('claude-mythos-5'), 'high')
 assert.equal(getDefaultEffortForModel('claude-mythos-preview'), 'high')
-assert.equal(getDefaultEffortForModel('claude-sonnet-5-5'), 'high')
+assert.equal(getDefaultEffortForModel('claude-sonnet-5-5'), 'medium')
+assert.equal(getDefaultEffortForModel('claude-haiku-5-5'), 'medium')
 
 console.log('effort.test.ts passed')

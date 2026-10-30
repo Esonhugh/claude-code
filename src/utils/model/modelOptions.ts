@@ -6,6 +6,7 @@ import {
   COST_TIER_3_15,
   COST_HAIKU_35,
   COST_HAIKU_45,
+  COST_HAIKU_55,
   formatModelPricing,
   getModelPricingString,
 } from '../modelCost.js'
@@ -196,6 +197,16 @@ function getHaiku45Option(): ModelOption {
     description: `Haiku 4.5 · Fastest for quick answers${is3P || isClaudeAISubscriber() ? '' : ` · ${formatModelPricing(COST_HAIKU_45)}`}`,
     descriptionForModel:
       'Haiku 4.5 - fastest for quick answers. Lower cost but less capable than Sonnet.',
+  }
+}
+
+function getHaiku55Option(): ModelOption {
+  return {
+    value: 'haiku',
+    label: 'Haiku',
+    description: `Haiku 5.5 · Fastest for quick answers${isClaudeAISubscriber() ? '' : ` · ${formatModelPricing(COST_HAIKU_55)}`}`,
+    descriptionForModel:
+      'Haiku 5.5 - fastest for quick answers. Lower cost but less capable than Sonnet.',
   }
 }
 
@@ -444,7 +455,7 @@ function getProviderModelOptions(fastMode: boolean): ModelOption[] {
       getFirstPartyOption('fable'),
       getFirstPartyOption('opus'),
       getFirstPartyOption('sonnet'),
-      getCustomHaikuOption() ?? getHaiku45Option(),
+      getCustomHaikuOption() ?? getHaiku55Option(),
     ]
     for (const option of discoveredModelOptions ?? []) {
       if (!options.some(existing => existing.value === option.value)) {

@@ -463,6 +463,7 @@ import {
   isLoggableMessage,
   saveWorktreeState,
   getAgentTranscript,
+  saveAiGeneratedTitle,
 } from '../utils/sessionStorage.js'
 import { deserializeMessages } from '../utils/conversationRecovery.js'
 import {
@@ -4580,10 +4581,18 @@ export function REPL({
           !text.startsWith(`<${BASH_INPUT_TAG}>`)
         ) {
           haikuTitleAttemptedRef.current = true
+          const titleSessionId = getSessionId() as UUID
           void generateSessionTitle(text, new AbortController().signal).then(
             title => {
-              if (title) setHaikuTitle(title)
-              else haikuTitleAttemptedRef.current = false
+              if (!title) {
+                haikuTitleAttemptedRef.current = false
+                return
+              }
+              // Official 2.1.311 also persists the title so /resume and
+              // session lists show it.
+              if (getSessionId() !== titleSessionId) return
+              setHaikuTitle(title)
+              saveAiGeneratedTitle(titleSessionId, title)
             },
             () => {
               haikuTitleAttemptedRef.current = false
