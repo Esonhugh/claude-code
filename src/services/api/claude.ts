@@ -1913,12 +1913,16 @@ async function* queryModelRequest(
       isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_THINKING) ||
       (adaptiveOnly && adaptiveDisabled)
     const effortRequiresAdaptive = effort === 'xhigh' || effort === 'max'
+    const mechanical =
+      thinkingConfig.type === 'disabled' && thinkingConfig.mechanical === true
     const hasThinking =
-      alwaysOnAdaptive ||
-      !thinkingDisabled ||
-      (betweenToolsWhenDisabled && effortRequiresAdaptive)
-    let thinking: BetaMessageStreamParams['thinking'] | undefined =
-      alwaysOnAdaptive ||
+      !mechanical &&
+      (alwaysOnAdaptive ||
+        !thinkingDisabled ||
+        (betweenToolsWhenDisabled && effortRequiresAdaptive))
+    let thinking: BetaMessageStreamParams['thinking'] | undefined = mechanical
+      ? undefined
+      : alwaysOnAdaptive ||
       (betweenToolsWhenDisabled && thinkingDisabled && effortRequiresAdaptive)
         ? { type: 'adaptive' }
         : betweenToolsWhenDisabled && thinkingDisabled
@@ -3672,12 +3676,7 @@ export async function queryHaiku({
       const result = await queryModelWithoutStreaming({
         messages,
         systemPrompt,
-        thinkingConfig: {
-          type:
-            requiresAdaptiveThinkingContract(model) && shouldEnableThinkingByDefault()
-              ? 'adaptive'
-              : 'disabled',
-        },
+        thinkingConfig: { type: 'disabled', mechanical: true },
         tools: [],
         signal,
         options: {
