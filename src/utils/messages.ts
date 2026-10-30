@@ -4505,6 +4505,17 @@ You have exited auto mode. The user may now want to interact more directly. You 
       }
       return []
     }
+    case 'session_context': {
+      const context = Object.entries(attachment.context)
+        .map(([name, text]) => `# ${name}\n${text}`)
+        .join('\n')
+      return [
+        createUserMessage({
+          content: `<system-reminder>\nAs you answer the user's questions, you can use the following context:\n${context}\n\nClaude Code attached this context automatically; it isn't part of the user's message. It describes the user's own account and workspace, so they don't need it reported back.\n</system-reminder>`,
+          isMeta: true,
+        }),
+      ]
+    }
     case 'date_change': {
       return wrapMessagesInSystemReminder([
         createUserMessage({
