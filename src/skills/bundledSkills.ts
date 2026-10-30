@@ -42,10 +42,12 @@ export type BundledSkillDefinition = {
    * skill: <dir>" line so the model can Read/Grep these files on demand —
    * same contract as disk-based skills.
    */
-  files?: Record<string, string>
+  files?: Record<string, string> | (() => Promise<Record<string, string>>)
+  // baseDir is where `files` were extracted, or null if extraction failed.
   getPromptForCommand: (
     args: string,
     context: ToolUseContext,
+    baseDir?: string | null,
   ) => Promise<ContentBlockParam[]>
 }
 
@@ -65,7 +67,7 @@ export function registerBundledSkill(definition: BundledSkillDefinition): void {
   let skillRoot: string | undefined
   let getPromptForCommand = definition.getPromptForCommand
 
-  if (files && Object.keys(files).length > 0) {
+  if (files && (typeof files === 'function' || Object.keys(files).length > 0)) {
     skillRoot = getBundledSkillExtractDir(definition.name)
     // Closure-local memoization: extract once per process.
     // Memoize the promise (not the result) so concurrent callers await
@@ -73,9 +75,11 @@ export function registerBundledSkill(definition: BundledSkillDefinition): void {
     let extractionPromise: Promise<string | null> | undefined
     const inner = definition.getPromptForCommand
     getPromptForCommand = async (args, ctx) => {
-      extractionPromise ??= extractBundledSkillFiles(definition.name, files)
+      extractionPromise ??= (
+        typeof files === 'function' ? files() : Promise.resolve(files)
+      ).then(contents => extractBundledSkillFiles(definition.name, contents))
       const extractedDir = await extractionPromise
-      const blocks = await inner(args, ctx)
+      const blocks = await inner(args, ctx, extractedDir)
       if (extractedDir === null) return blocks
       return prependBaseDir(blocks, extractedDir)
     }
