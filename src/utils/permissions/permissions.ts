@@ -819,12 +819,11 @@ export async function applyPermissionModeToResult(
     }
 
     // Apply auto mode: use AI classifier instead of prompting user
-    // Check this BEFORE shouldAvoidPermissionPrompts so classifiers work in headless mode
+    // Check this BEFORE shouldAvoidPermissionPrompts so classifiers work in headless mode.
+    // Like 2.1.311, plan mode asks a person even with auto active during plan.
     if (
       feature('TRANSCRIPT_CLASSIFIER') &&
-      (appState.toolPermissionContext.mode === 'auto' ||
-        (appState.toolPermissionContext.mode === 'plan' &&
-          (autoModeStateModule?.isAutoModeActive() ?? false)))
+      appState.toolPermissionContext.mode === 'auto'
     ) {
       if (tool.requiresUserInteraction?.() && result.behavior === 'ask') {
         return result
@@ -877,11 +876,8 @@ export async function applyPermissionModeToResult(
       // acceptEdits mode, which would silently bypass the classifier. REPL
       // code can contain VM escapes between inner tool calls; the classifier
       // must see the glue JavaScript, not just the inner tool calls.
-      // Skip in plan mode too: acceptEdits would allow cwd writes, which plan
-      // mode must not let through without the classifier or the user.
       if (
         result.behavior === 'ask' &&
-        appState.toolPermissionContext.mode !== 'plan' &&
         tool.name !== AGENT_TOOL_NAME &&
         tool.name !== REPL_TOOL_NAME &&
         !networkLists
@@ -991,10 +987,7 @@ export async function applyPermissionModeToResult(
       // The mode can change while the classifier runs (Shift+Tab, SDK). Its
       // verdict only holds for auto, so decide again under the current mode.
       const modeNow = context.getAppState().toolPermissionContext.mode
-      if (
-        modeNow !== 'auto' &&
-        !(modeNow === 'plan' && (autoModeStateModule?.isAutoModeActive() ?? false))
-      ) {
+      if (modeNow !== 'auto') {
         logForDebugging(
           `Discarding auto mode classifier result for ${tool.name}: mode changed to '${modeNow}' while it ran`,
         )

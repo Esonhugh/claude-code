@@ -26,6 +26,20 @@ import { asSystemPrompt } from './systemPromptType.js'
 const MAX_CONVERSATION_TEXT = 1000
 
 /**
+ * The prompt a new session is titled from (2.1.311 `Xfe`): a human prompt,
+ * not a task notification, tool result or compact summary.
+ */
+export function isTitleSourceMessage(msg: Message): boolean {
+  return (
+    msg.type === 'user' &&
+    !msg.isMeta &&
+    msg.toolUseResult === undefined &&
+    !msg.isCompactSummary &&
+    (msg.origin === undefined || msg.origin.kind === 'human')
+  )
+}
+
+/**
  * Flatten a message array into a single text string for Haiku title input.
  * Skips meta/non-human messages. Tail-slices to the last 1000 chars so
  * recent context wins when the conversation is long.

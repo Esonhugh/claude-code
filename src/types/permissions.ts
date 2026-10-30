@@ -421,19 +421,6 @@ export type YoloClassifierResult = {
 }
 
 // ============================================================================
-// Permission Explainer Types
-// ============================================================================
-
-export type RiskLevel = 'LOW' | 'MEDIUM' | 'HIGH'
-
-export type PermissionExplanation = {
-  riskLevel: RiskLevel
-  explanation: string
-  reasoning: string
-  risk: string
-}
-
-// ============================================================================
 // Tool Permission Context
 // ============================================================================
 

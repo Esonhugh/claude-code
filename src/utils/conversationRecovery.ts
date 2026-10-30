@@ -402,6 +402,12 @@ function isTerminalToolResult(
  */
 export function restoreSkillStateFromMessages(messages: Message[]): void {
   for (const message of messages) {
+    // Compaction keeps the listing as sent (see compactConversation), so a
+    // resumed post-compact chain must not re-announce it either.
+    if (message.type === 'user' && message.isCompactSummary) {
+      suppressNextSkillListing()
+      continue
+    }
     if (message.type !== 'attachment') {
       continue
     }

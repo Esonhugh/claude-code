@@ -358,7 +358,10 @@ import {
   createCommandInputMessage,
   formatCommandInputTags,
 } from '../utils/messages.js'
-import { generateSessionTitle } from '../utils/sessionTitle.js'
+import {
+  generateSessionTitle,
+  isTitleSourceMessage,
+} from '../utils/sessionTitle.js'
 import {
   BASH_INPUT_TAG,
   COMMAND_MESSAGE_TAG,
@@ -626,7 +629,10 @@ import { SandboxViolationExpandedView } from 'src/components/SandboxViolationExp
 import { useSettingsErrors } from 'src/hooks/notifs/useSettingsErrors.js'
 import { useMcpConnectivityStatus } from 'src/hooks/notifs/useMcpConnectivityStatus.js'
 import { useAutoModeUnavailableNotification } from 'src/hooks/notifs/useAutoModeUnavailableNotification.js'
-import { AUTO_MODE_DESCRIPTION } from 'src/constants/messages.js'
+import {
+  AUTO_MODE_DESCRIPTION,
+  PLAN_MODE_BYPASS_NOTICE,
+} from 'src/constants/messages.js'
 import { useLspInitializationNotification } from 'src/hooks/notifs/useLspInitializationNotification.js'
 import { useLspPluginRecommendation } from 'src/hooks/useLspPluginRecommendation.js'
 import { LspRecommendationMenu } from 'src/components/LspRecommendation/LspRecommendationMenu.js'
@@ -2782,6 +2788,32 @@ export function REPL({
     }
   }, [toolPermissionContext.mode, setMessages])
 
+  // 2.1.311 plan-mode-bypass-notice: once per session, plan mode in a
+  // session started with bypass permissions explains that plan won't ask.
+  const planBypassNoticeShownRef = useRef(false)
+  useEffect(() => {
+    if (
+      planBypassNoticeShownRef.current ||
+      toolPermissionContext.mode !== 'plan' ||
+      !toolPermissionContext.isBypassPermissionsModeAvailable
+    ) {
+      return
+    }
+    const timer = setTimeout(() => {
+      planBypassNoticeShownRef.current = true
+      logEvent('mode_plan_bypass_notice', {})
+      setMessages(prev => [
+        ...prev,
+        createSystemMessage(PLAN_MODE_BYPASS_NOTICE, 'notice'),
+      ])
+    }, 800)
+    return () => clearTimeout(timer)
+  }, [
+    toolPermissionContext.mode,
+    toolPermissionContext.isBypassPermissionsModeAvailable,
+    setMessages,
+  ])
+
   // If worktree creation was slow and sparse-checkout isn't configured,
   // nudge the user toward settings.worktree.sparsePaths.
   const worktreeTipShownRef = useRef(false)
@@ -4563,9 +4595,7 @@ export function REPL({
         !agentTitle &&
         !haikuTitleAttemptedRef.current
       ) {
-        const firstUserMessage = newMessages.find(
-          m => m.type === 'user' && !m.isMeta,
-        )
+        const firstUserMessage = newMessages.find(isTitleSourceMessage)
         const text =
           firstUserMessage?.type === 'user'
             ? getUserContentText(firstUserMessage.message.content)

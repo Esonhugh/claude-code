@@ -16,10 +16,6 @@ import { Select } from '../../CustomSelect/select.js'
 import { type UnaryEvent, usePermissionRequestLogging } from '../hooks.js'
 import { PermissionDecisionDebugInfo } from '../PermissionDecisionDebugInfo.js'
 import { PermissionDialog } from '../PermissionDialog.js'
-import {
-  PermissionExplainerContent,
-  usePermissionExplainerUI,
-} from '../PermissionExplanation.js'
 import type { PermissionRequestProps } from '../PermissionRequest.js'
 import { PermissionRuleExplanation } from '../PermissionRuleExplanation.js'
 import { shellSuggestionUpdates } from '../shellPermissionHelpers.js'
@@ -38,12 +34,6 @@ export function PowerShellPermissionRequest(
   )
 
   const [theme] = useTheme()
-  const explainerState = usePermissionExplainerUI({
-    toolName: toolUseConfirm.tool.name,
-    toolInput: toolUseConfirm.input,
-    toolDescription: toolUseConfirm.description,
-    messages: toolUseContext.messages,
-  })
   const {
     yesInputMode,
     noInputMode,
@@ -61,7 +51,6 @@ export function PowerShellPermissionRequest(
     toolUseConfirm,
     onDone,
     onReject,
-    explainerVisible: explainerState.visible,
   })
   const destructiveWarning = getFeatureValue_CACHED_MAY_BE_STALE(
     'tengu_destructive_command_warning',
@@ -160,7 +149,6 @@ export function PowerShellPermissionRequest(
     }
     logEvent('tengu_permission_request_option_selected', {
       option_index: optionIndex[value],
-      explainer_visible: explainerState.visible,
     })
 
     const toolNameForAnalytics = sanitizeToolNameForAnalytics(
@@ -247,19 +235,13 @@ export function PowerShellPermissionRequest(
   return (
     <PermissionDialog workerBadge={workerBadge} title="PowerShell command">
       <Box flexDirection="column" paddingX={2} paddingY={1}>
-        <Text dimColor={explainerState.visible}>
+        <Text>
           {PowerShellTool.renderToolUseMessage(
             { command, description },
             { theme, verbose: true }, // always show the full command
           )}
         </Text>
-        {!explainerState.visible && (
-          <Text dimColor>{toolUseConfirm.description}</Text>
-        )}
-        <PermissionExplainerContent
-          visible={explainerState.visible}
-          promise={explainerState.promise}
-        />
+        <Text dimColor>{toolUseConfirm.description}</Text>
       </Box>
       {showPermissionDebug ? (
         <>
@@ -301,8 +283,6 @@ export function PowerShellPermissionRequest(
               {((focusedOption === 'yes' && !yesInputMode) ||
                 (focusedOption === 'no' && !noInputMode)) &&
                 ' · Tab to amend'}
-              {explainerState.enabled &&
-                ` · ctrl+e to ${explainerState.visible ? 'hide' : 'explain'}`}
             </Text>
             {toolUseContext.options.debug && (
               <Text dimColor>Ctrl+d to show debug info</Text>

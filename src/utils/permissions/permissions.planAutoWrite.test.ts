@@ -4,14 +4,14 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { ToolPermissionContext, ToolUseContext } from '../../Tool.js'
 
-// Plan mode with auto semantics must not take the "would be allowed in
-// acceptEdits" shortcut: that shortcut lets a Write in the cwd through while
-// planning. Official 2.1.311 skips it in plan mode (`mr=Oe==="plan"`).
+// Plan mode must not take the "would be allowed in acceptEdits" shortcut
+// (official 2.1.311 `mr=Oe==="plan"`), and its classifier hook for plan is
+// constant false (`_o`), so a plan-mode Write asks a person.
 // The classifier path needs TRANSCRIPT_CLASSIFIER, so this runs in a child.
 const childFlag = 'CLAUDE_CODE_PLAN_AUTO_WRITE_TEST_CHILD'
 
 if (process.env[childFlag] === undefined) {
-  test('plan mode with auto active sends cwd writes to the classifier (TRANSCRIPT_CLASSIFIER child)', async () => {
+  test('plan mode with auto active asks a person for cwd writes (TRANSCRIPT_CLASSIFIER child)', async () => {
     const home = mkdtempSync(join(tmpdir(), 'cc-plan-auto-write-'))
     const env = Object.fromEntries(Object.entries(process.env).filter(
       ([key]) => !/^(?:ANTHROPIC_|OPENAI_|CLAUDE_CODE_OAUTH_|CLAUDE_CODE_USE_)/.test(key),
@@ -81,10 +81,8 @@ if (process.env[childFlag] === undefined) {
     return { behavior: result.behavior, classifierCalls }
   }
 
-  test('a cwd Write in plan mode is not allowed by the acceptEdits shortcut', async () => {
-    const plan = await check('plan')
-    expect(plan.behavior).not.toBe('allow')
-    expect(plan.classifierCalls).toBeGreaterThan(0)
+  test('a cwd Write in plan mode asks a person, even with auto active during plan (2.1.311)', async () => {
+    expect(await check('plan')).toEqual({ behavior: 'ask', classifierCalls: 0 })
   })
 
   test('auto mode still takes the acceptEdits shortcut for a cwd Write', async () => {

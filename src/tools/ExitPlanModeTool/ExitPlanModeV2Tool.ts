@@ -39,7 +39,6 @@ import {
 } from '../../utils/teammate.js'
 import { writeToMailbox } from '../../utils/teammateMailbox.js'
 import { AGENT_TOOL_NAME } from '../AgentTool/constants.js'
-import { TEAM_CREATE_TOOL_NAME } from '../TeamCreateTool/constants.js'
 import { EXIT_PLAN_MODE_V2_TOOL_NAME } from './constants.js'
 import { EXIT_PLAN_MODE_V2_TOOL_PROMPT } from './prompt.js'
 import {
@@ -421,7 +420,6 @@ export const ExitPlanModeV2Tool: Tool<InputSchema, Output> = buildTool({
       isAgent,
       plan,
       filePath,
-      hasTaskTool,
       planWasEdited,
       awaitingLeaderApproval,
       requestId,
@@ -467,10 +465,6 @@ Request ID: ${requestId}`,
       }
     }
 
-    const teamHint = hasTaskTool
-      ? `\n\nIf this plan can be broken down into multiple independent tasks, consider using the ${TEAM_CREATE_TOOL_NAME} tool to create a team and parallelize the work.`
-      : ''
-
     // Always include the plan — extractApprovedPlan() in the Ultraplan CCR
     // flow parses the tool_result to retrieve the plan text for the local CLI.
     // Label edited plans so the model knows the user changed something.
@@ -483,7 +477,7 @@ Request ID: ${requestId}`,
       content: `User has approved your plan. You can now start coding. Start with updating your todo list if applicable
 
 Your plan has been saved to: ${filePath}
-You can refer back to it if needed during implementation.${teamHint}
+You can refer back to it if needed during implementation.
 
 ## ${planLabel}:
 ${plan}`,
