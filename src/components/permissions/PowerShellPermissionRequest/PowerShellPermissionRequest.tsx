@@ -22,6 +22,7 @@ import {
 } from '../PermissionExplanation.js'
 import type { PermissionRequestProps } from '../PermissionRequest.js'
 import { PermissionRuleExplanation } from '../PermissionRuleExplanation.js'
+import { shellSuggestionUpdates } from '../shellPermissionHelpers.js'
 import { useShellPermissionFeedback } from '../useShellPermissionFeedback.js'
 import { logUnaryPermissionEvent } from '../utils.js'
 import { powershellToolUseOptions } from './powershellToolUseOptions.js'
@@ -216,7 +217,9 @@ export function PowerShellPermissionRequest(
         // Extract suggestions if present (works for both 'ask' and 'passthrough' behaviors)
         const permissionUpdates =
           'suggestions' in toolUseConfirm.permissionResult
-            ? toolUseConfirm.permissionResult.suggestions || []
+            ? shellSuggestionUpdates(
+                toolUseConfirm.permissionResult.suggestions || [],
+              )
             : []
         toolUseConfirm.onAllow(toolUseConfirm.input, permissionUpdates)
         onDone()
