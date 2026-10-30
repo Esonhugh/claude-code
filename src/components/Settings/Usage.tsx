@@ -276,7 +276,7 @@ export function Usage({
   )
 
   useKeybinding(
-    'settings:close',
+    'select:accept',
     () => {
       if (!canReset || !selectedCredit || isConfirmingReset) return false
       setIsConfirmingReset(true)
@@ -517,7 +517,7 @@ export function Usage({
                     </Text>
                     {isSelected && !isConfirmingReset && !isResetting && (
                       <Text color="permission">
-                        <ConfigurableShortcutHint action="settings:close" context="Settings" fallback="Enter" description="use this reset" />
+                        <ConfigurableShortcutHint action="select:accept" context="Settings" fallback="Enter" description="use this reset" />
                       </Text>
                     )}
                     {isSelected && isConfirmingReset && (

@@ -85,8 +85,8 @@ export function Settings({
   }
 
   // Disable when submenu is open so the submenu's Dialog can handle ESC,
-  // and when Config's search mode is active so its useInput handler
-  // (clear query → exit search) processes Escape first.
+  // and on tabs that handle Escape themselves (Config closes with its change
+  // summary or clears its search).
   useKeybinding('confirm:no', handleEscape, {
     context: 'Settings',
     isActive:
@@ -110,7 +110,7 @@ export function Settings({
           context={context}
           onClose={onClose}
           setTabsHidden={setTabsHidden}
-          onIsSearchModeChange={setConfigOwnsEsc}
+          onOwnsEscChange={setConfigOwnsEsc}
           contentHeight={contentHeight}
         />
       </Suspense>
