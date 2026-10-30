@@ -88,6 +88,7 @@ import uniqBy from 'lodash-es/uniqBy.js'
 import { getProjectRoot } from '../bootstrap/state.js'
 import { formatCommandsWithinBudget } from '../tools/SkillTool/prompt.js'
 import { getContextWindowForModel } from './context.js'
+import { getSessionGitStatus } from '../context.js'
 import type { DiscoverySignal } from '../services/skillSearch/signals.js'
 // Conditional require for DCE. All skill-search string literals that would
 // otherwise leak into external builds live inside these modules. The only
@@ -727,6 +728,10 @@ export type Attachment =
       newDate: string
     }
   | {
+      type: 'session_context'
+      context: { [k: string]: string }
+    }
+  | {
       type: 'ultrathink_effort'
       level: 'high'
     }
@@ -884,6 +889,9 @@ export async function getAttachments(
     maybe('queued_commands', () => getQueuedCommandAttachments(queuedCommands)),
     maybe('date_change', () =>
       Promise.resolve(getDateChangeAttachments(messages)),
+    ),
+    maybe('session_context', () =>
+      getSessionContextAttachments(toolUseContext, messages),
     ),
     maybe('ultrathink_effort', () =>
       Promise.resolve(getUltrathinkEffortAttachment(input)),
@@ -1639,6 +1647,25 @@ export function getDateChangeAttachments(
   }
 
   return [{ type: 'date_change', newDate: currentDate }]
+}
+
+// Git status is announced once per conversation (again after compaction) and
+// persisted, so resume rebuilds the same prefix. Explore/Plan run git status
+// themselves when needed.
+export async function getSessionContextAttachments(
+  toolUseContext: ToolUseContext,
+  messages: Message[] | undefined,
+): Promise<Attachment[]> {
+  if (
+    messages === undefined ||
+    toolUseContext.agentType === 'Explore' ||
+    toolUseContext.agentType === 'Plan' ||
+    messages.some(m => m.type === 'attachment' && m.attachment.type === 'session_context')
+  ) {
+    return []
+  }
+  const gitStatus = await getSessionGitStatus()
+  return gitStatus ? [{ type: 'session_context', context: { gitStatus } }] : []
 }
 
 function getUltrathinkEffortAttachment(input: string | null): Attachment[] {

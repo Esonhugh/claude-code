@@ -699,18 +699,6 @@ export async function* runAgent({
   }
   const resolvedUserContext = resolveUserContext(baseUserContext)
 
-  // Explore/Plan are read-only search agents — the parent-session-start
-  // gitStatus (up to 40KB, explicitly labeled stale) is dead weight. If they
-  // need git info they run `git status` themselves and get fresh data.
-  // Saves ~1-3 Gtok/week fleet-wide.
-  const { gitStatus: _omittedGitStatus, ...systemContextNoGit } =
-    baseSystemContext
-  const resolvedSystemContext =
-    agentDefinition.agentType === 'Explore' ||
-    agentDefinition.agentType === 'Plan'
-      ? systemContextNoGit
-      : baseSystemContext
-
   // Read fresh parent rules and mode; a fixed spawn mode stays fixed.
   let preloadedSkillAllowedTools: string[] = []
   const agentGetAppState = () => {
@@ -1218,7 +1206,7 @@ export async function* runAgent({
       userContext: resolvedUserContext,
       refreshUserContext: async () =>
         resolveUserContext(override?.userContext ?? await getUserContext()),
-      systemContext: resolvedSystemContext,
+      systemContext: baseSystemContext,
       canUseTool,
       toolUseContext: agentToolUseContext,
       querySource,

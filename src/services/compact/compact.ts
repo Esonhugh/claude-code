@@ -39,7 +39,9 @@ import {
   getAgentListingDeltaAttachment,
   getDeferredToolsDeltaAttachment,
   getMcpInstructionsDeltaAttachment,
+  getSessionContextAttachments,
 } from '../../utils/attachments.js'
+import { getGitStatus } from '../../context.js'
 import { isMemoryFilePath } from '../../utils/claudemd.js'
 import { getMemoryPath } from '../../utils/config.js'
 import { COMPACT_MAX_OUTPUT_TOKENS } from '../../utils/context.js'
@@ -633,7 +635,11 @@ export async function compactConversation(
     // Compaction ate prior delta attachments. Re-announce from the current
     // state so the model has tool/instruction context on the first
     // post-compact turn. Empty message history → diff against nothing →
-    // announces the full set.
+    // announces the full set. Git status is re-read like 2.1.311.
+    getGitStatus.cache.clear?.()
+    for (const att of await getSessionContextAttachments(context, [])) {
+      postCompactFileAttachments.push(createAttachmentMessage(att))
+    }
     for (const att of getDeferredToolsDeltaAttachment(
       context.options.tools,
       context.options.mainLoopModel,
@@ -1059,6 +1065,9 @@ export async function partialCompactConversation(
 
     // Re-announce only what was in the summarized portion — messagesToKeep
     // is scanned, so anything already announced there is skipped.
+    for (const att of await getSessionContextAttachments(context, messagesToKeep)) {
+      postCompactFileAttachments.push(createAttachmentMessage(att))
+    }
     for (const att of getDeferredToolsDeltaAttachment(
       context.options.tools,
       context.options.mainLoopModel,
