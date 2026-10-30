@@ -321,3 +321,56 @@ try {
 }
 
 console.log('processSlashCommand.test.ts passed')
+
+async function runUnknown(input: string, isNonInteractiveSession: boolean) {
+  return processSlashCommand(
+    input,
+    [],
+    [],
+    [],
+    {
+      options: {
+        commands: [promptCommand, { ...promptCommand, name: 'help' }],
+        tools: [],
+        isNonInteractiveSession,
+        mcpResources: {},
+      },
+      messages: [],
+      getAppState: () => appState as never,
+      setAppState: () => {},
+    } as never,
+    () => {},
+  )
+}
+
+// Official 2.1.311: unknown commands get a warning, plus the closest command.
+const unknownInteractive = await runUnknown('/hepl', false)
+assert.equal(unknownInteractive.shouldQuery, false)
+assert.equal(unknownInteractive.messages.length, 1)
+assert.equal(unknownInteractive.messages[0]?.type, 'system')
+assert.equal(
+  (unknownInteractive.messages[0] as { content?: unknown }).content,
+  'Unknown command: /hepl. Did you mean /help?',
+)
+const unknownFar = await runUnknown('/nosuchcmd', false)
+assert.equal(
+  (unknownFar.messages[0] as { content?: unknown }).content,
+  'Unknown command: /nosuchcmd',
+)
+const unknownHeadless = await runUnknown('/nosuchcmd', true)
+assert.equal(unknownHeadless.resultText, 'Unknown command: /nosuchcmd')
+assert.equal(
+  (unknownHeadless.messages.at(-1) as { message?: { content?: unknown } })
+    .message?.content,
+  '<local-command-stdout>Unknown command: /nosuchcmd</local-command-stdout>',
+)
+
+// Official 2.1.311 shows a malformed command (failed !`cmd` pattern) as is.
+const { MalformedCommandError } = await import('../errors.js')
+const malformed = await runThrowingPrompt(
+  new MalformedCommandError("Shell command failed for pattern \"!`git log`\": 'git <command>'"),
+)
+assert.match(
+  JSON.stringify(malformed.messages),
+  /<local-command-stderr>Shell command failed for pattern/,
+)

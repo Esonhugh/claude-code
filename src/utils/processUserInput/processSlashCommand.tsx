@@ -325,6 +325,40 @@ export function looksLikeCommand(commandName: string): boolean {
   return !/[^a-zA-Z0-9:\-_]/.test(commandName)
 }
 
+function findClosestCommandName(
+  name: string,
+  commands: Command[],
+): string | undefined {
+  const target = name.toLowerCase()
+  let best: { name: string; distance: number } | undefined
+  for (const cmd of commands) {
+    if (cmd.isHidden || cmd.userInvocable === false) continue
+    for (const candidate of [getCommandName(cmd), ...(cmd.aliases ?? [])]) {
+      const distance = editDistance(target, candidate.toLowerCase())
+      if (distance <= 2 && (!best || distance < best.distance)) {
+        best = { name: getCommandName(cmd), distance }
+      }
+    }
+  }
+  return best?.name
+}
+
+function editDistance(a: string, b: string): number {
+  let previous = Array.from({ length: b.length + 1 }, (_, i) => i)
+  for (let i = 1; i <= a.length; i++) {
+    const current = [i]
+    for (let j = 1; j <= b.length; j++) {
+      current[j] = Math.min(
+        previous[j]! + 1,
+        current[j - 1]! + 1,
+        previous[j - 1]! + (a[i - 1] === b[j - 1] ? 0 : 1),
+      )
+    }
+    previous = current
+  }
+  return previous[b.length]!
+}
+
 export async function processSlashCommand(
   inputString: string,
   precedingInputBlocks: ContentBlockParam[],
@@ -390,17 +424,37 @@ export async function processSlashCommand(
           commandName as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
       })
 
-      const unknownMessage = `Unknown skill: ${commandName}`
+      // Official 2.1.311: a warning naming the command, with the closest
+      // visible command (edit distance <= 2) as a suggestion.
+      const suggestion = findClosestCommandName(
+        commandName,
+        context.options.commands,
+      )
+      const unknownMessage = suggestion
+        ? `Unknown command: /${commandName}. Did you mean /${suggestion}?`
+        : `Unknown command: /${commandName}`
+      if (context.options.isNonInteractiveSession) {
+        return {
+          messages: [
+            ...attachmentMessages,
+            createUserMessage({
+              content: prepareUserContent({
+                inputString: `/${commandName}${parsedArgs ? ` ${parsedArgs}` : ''}`,
+                precedingInputBlocks,
+              }),
+            }),
+            createUserMessage({
+              content: `<local-command-stdout>${unknownMessage}</local-command-stdout>`,
+            }),
+          ],
+          shouldQuery: false,
+          resultText: unknownMessage,
+        }
+      }
       return {
         messages: [
-          createSyntheticUserCaveatMessage(),
           ...attachmentMessages,
-          createUserMessage({
-            content: prepareUserContent({
-              inputString: unknownMessage,
-              precedingInputBlocks,
-            }),
-          }),
+          createSystemMessage(unknownMessage, 'warning'),
           // gh-32591: preserve args so the user can copy/resubmit without
           // retyping. System warning is UI-only (filtered before API).
           ...(parsedArgs
@@ -1136,7 +1190,8 @@ async function getMessagesForSlashCommand(
                 }),
               }),
               createUserMessage({
-                content: `<local-command-stderr>${String(e)}</local-command-stderr>`,
+                // 2.1.311 shows a malformed command's message as is, without "Error: ".
+                content: `<local-command-stderr>${e instanceof MalformedCommandError ? e.message : String(e)}</local-command-stderr>`,
               }),
             ],
             shouldQuery: false,

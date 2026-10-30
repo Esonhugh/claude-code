@@ -433,17 +433,26 @@ export function getModelMaxOutputTokens(model: string): {
 
   const m = getCanonicalName(model)
 
+  // Defaults from the official 2.1.311 model catalog.
   if (
+    m === 'claude-opus-5-5' ||
+    m === 'claude-sonnet-5-5' ||
+    m === 'claude-haiku-5-5'
+  ) {
+    defaultTokens = 128_000
+    upperLimit = 128_000
+  } else if (
     m.startsWith('claude-fable-5') ||
     m.startsWith('claude-mythos-5') ||
     m === 'claude-mythos-preview' ||
     m.startsWith('claude-opus-5') ||
     m.startsWith('claude-sonnet-5') ||
-    m === 'claude-haiku-5-5' ||
     m === 'claude-opus-4-7' ||
-    m === 'claude-opus-4-8' ||
-    isOpenAI1MModel(model)
+    m === 'claude-opus-4-8'
   ) {
+    defaultTokens = 64_000
+    upperLimit = 128_000
+  } else if (isOpenAI1MModel(model)) {
     defaultTokens = MAX_OUTPUT_TOKENS_DEFAULT
     upperLimit = 128_000
   } else if (m.includes('opus-4-6')) {

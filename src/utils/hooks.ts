@@ -48,6 +48,7 @@ import {
 import {
   getTranscriptPathForSession,
   getAgentTranscriptPath,
+  getCurrentSessionTitle,
 } from './sessionStorage.js'
 import type { AgentId } from '../types/ids.js'
 import {
@@ -351,15 +352,31 @@ export function createBaseHookInput(
   }
 }
 
+// Official 2.1.311 builds these inputs with the tool-use context, the only
+// ones that carry `effort`; prompt, session-lifecycle and task hooks don't.
+const EFFORT_HOOK_EVENTS: ReadonlySet<string> = new Set([
+  'PreToolUse',
+  'PostToolUse',
+  'PostToolUseFailure',
+  'PostToolBatch',
+  'PermissionRequest',
+  'PermissionDenied',
+  'Stop',
+  'SubagentStop',
+  'StopFailure',
+  'InstructionsLoaded',
+])
+
 /**
  * The effort level hooks see as `effort.level` and `$CLAUDE_EFFORT`: what the
  * next request would send for the session model, if that model takes effort.
  */
 function getHookEffortLevel(
+  hookEvent: string,
   appState: AppState | undefined,
   model: string | undefined,
 ): string | undefined {
-  if (!appState) return undefined
+  if (!appState || !EFFORT_HOOK_EVENTS.has(hookEvent)) return undefined
   const resolvedModel = model ?? getMainLoopModel()
   if (!modelSupportsEffort(resolvedModel)) return undefined
   const effort = resolveAppliedEffort(resolvedModel, appState.effortValue)
@@ -2385,6 +2402,7 @@ async function* executeHooks({
   const batchStartTime = Date.now()
 
   const effortLevel = getHookEffortLevel(
+    hookEvent,
     appState,
     toolUseContext?.options?.mainLoopModel,
   )
@@ -3437,7 +3455,7 @@ async function executeHooksOutsideREPL({
     })
   }
 
-  const effortLevel = getHookEffortLevel(appState, undefined)
+  const effortLevel = getHookEffortLevel(hookEvent, appState, undefined)
 
   // Validate and stringify the hook input
   let jsonInput: string
@@ -4340,6 +4358,7 @@ export async function* executeUserPromptSubmitHooks(
     ...createBaseHookInput(permissionMode),
     hook_event_name: 'UserPromptSubmit',
     prompt,
+    session_title: getCurrentSessionTitle(getSessionId()),
   }
 
   yield* executeHooks({

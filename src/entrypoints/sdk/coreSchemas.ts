@@ -557,6 +557,7 @@ export const UserPromptSubmitHookInputSchema = lazySchema(() =>
     z.object({
       hook_event_name: z.literal('UserPromptSubmit'),
       prompt: z.string(),
+      session_title: z.string().optional(),
     }),
   ),
 )

@@ -228,7 +228,8 @@ export async function processUserInput({
   )
   queryCheckpoint('query_process_user_input_base_end')
 
-  if (!result.shouldQuery || isRemoteShellInput || skipHooks || screened) {
+  // A `!` command Claude responds to still skips UserPromptSubmit, like 2.1.311.
+  if (!result.shouldQuery || isRemoteShellInput || skipHooks || screened || mode === 'bash') {
     if (screened && result.shouldQuery) result.messages.push(...screened.messages)
     applyPluginPromptOrigin(result)
     if (!result.deferred) onPromptAdmission?.(result)

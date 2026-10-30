@@ -195,6 +195,28 @@ export function getBestCommandMatch(
 }
 
 /**
+ * Whether the top command suggestion starts out selected, so Enter runs it.
+ * Like 2.1.311, only when the typed text starts one of the command's
+ * name/alias words; a fuzzy match stays unselected and Enter submits the input.
+ */
+export function shouldPreselectCommandSuggestion(
+  input: string,
+  suggestions: SuggestionItem[],
+): boolean {
+  const top = suggestions[0]
+  if (!top) return false
+  if (!isCommandMetadata(top.metadata)) return true
+  const separators = /[:_-]/g
+  const query = input.slice(1).toLowerCase().trim().split(separators).join('')
+  if (query === '') return true
+  const cmd = top.metadata
+  return [cmd.name, getCommandName(cmd), ...(cmd.aliases ?? [])].some(name => {
+    const words = name.toLowerCase().split(separators).filter(Boolean)
+    return words.some((_, i) => words.slice(i).join('').startsWith(query))
+  })
+}
+
+/**
  * Checks if input is a command (starts with slash)
  */
 export function isCommandInput(input: string): boolean {
