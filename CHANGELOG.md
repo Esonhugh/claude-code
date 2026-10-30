@@ -16,12 +16,12 @@
 
 ### 版本状态
 
-- 发布候选：`dev` 合并到 `master` 后打 tag `v2.1.296`。本条目汇总 `v2.1.295` tag（master `e3fca04`）之后至 PR #363 的全部变更；`Makefile VERSION` 与 README 发布版本同步为 `2.1.296`，`package.json` 保持 `0.0.0-dev`。版本号与官方版本号无对应关系（本轮对照基线为官方 2.1.311）。
+- 发布候选：`dev` 合并到 `master` 后打 tag `v2.1.296`。本条目汇总 `v2.1.295` tag（master `e3fca04`）之后至 PR #368 的全部变更；`Makefile VERSION` 与 README 发布版本同步为 `2.1.296`，`package.json` 保持 `0.0.0-dev`。版本号与官方版本号无对应关系（本轮对照基线为官方 2.1.311）。
 
 ### 关联提交
 
-- PR 合并提交（`git log --first-parent e3fca04..dev`）：#263、#272、#280 Teams 通知；#264、#269 agent 视图 pill（加入后又按用户要求撤回）；#268、#274、#276、#283、#284、#288、#303、#306 agent 生命周期；#290、#296、#302 coordinator 模式；#278、#289 SQLite 记忆检索；#293 Bash 折叠；#304、#316 权限与 Bedrock；#309、#311 REPL 对话框；#313 任务通知格式；#315、#319、#321 agent summary；#317、#331 Agent SDK；#323、#325、#329、#334、#346、#349 `/hooks`、`/theme`、`/agents`、`/memory`、`/config`；#327 内嵌搜索工具；#332 流式工具执行；#339 新 hook 事件；#342、#344、#347、#350 多轮对照修复；#354 权限模式转换与 Stop hook；#357 session memory；#359 权限提示与 footer 对齐官方；#363 模型默认值、会话标题与 `/ide`。
-- 对应 issue：#16、#71、#72、#73、#74、#75、#76、#88、#141、#158、#261、#262、#265、#266、#267、#270、#271、#273、#275、#277、#279、#281、#282、#285、#286、#287、#291、#292、#294、#295、#297、#298、#299、#300、#301、#305、#307、#308、#310、#314、#318、#320、#326、#328、#330、#333、#335、#336、#337、#338、#340、#341、#343、#345、#348、#351、#352、#353、#355、#356、#361、#362、#365。
+- PR 合并提交（`git log --first-parent e3fca04..dev`）：#263、#272、#280 Teams 通知；#264、#269 agent 视图 pill（加入后又按用户要求撤回）；#268、#274、#276、#283、#284、#288、#303、#306 agent 生命周期；#290、#296、#302 coordinator 模式；#278、#289 SQLite 记忆检索；#293 Bash 折叠；#304、#316 权限与 Bedrock；#309、#311 REPL 对话框；#313 任务通知格式；#315、#319、#321 agent summary；#317、#331 Agent SDK；#323、#325、#329、#334、#346、#349 `/hooks`、`/theme`、`/agents`、`/memory`、`/config`；#327 内嵌搜索工具；#332 流式工具执行；#339 新 hook 事件；#342、#344、#347、#350 多轮对照修复；#354 权限模式转换与 Stop hook；#357 session memory；#359 权限提示与 footer 对齐官方；#363 模型默认值、会话标题与 `/ide`；#368 斜杠命令、`!` 命令回复与输出上限。
+- 对应 issue：#16、#71、#72、#73、#74、#75、#76、#88、#141、#158、#261、#262、#265、#266、#267、#270、#271、#273、#275、#277、#279、#281、#282、#285、#286、#287、#291、#292、#294、#295、#297、#298、#299、#300、#301、#305、#307、#308、#310、#314、#318、#320、#326、#328、#330、#333、#335、#336、#337、#338、#340、#341、#343、#345、#348、#351、#352、#353、#355、#356、#361、#362、#365、#366。
 
 ### 变更内容
 
@@ -36,6 +36,7 @@
 - Teams 不再处理收件箱中的 `mode_set_request` 与 `team_permission_update`，与官方一致（#74）。
 - 子代理嵌套深度保持 5 层（官方为 3 层，按用户决定不改）。
 - 模型默认值对齐官方：first party 下 `haiku` 别名指向 `claude-haiku-5-5`（第三方提供商仍为 4.5），Haiku 5.5 使用 adaptive thinking、effort 与 1M 上下文和对应定价；Sonnet 5.5 默认 effort 为 medium；自定义 `ANTHROPIC_BASE_URL` 且无 Console key 时，辅助请求使用主循环模型（#361）。
+- 移除 `/vim` 与 `/pr-comments`，与官方一致（vim 模式仍在 `/config` 中切换）；`!` 命令执行后 Claude 默认会回复，可设 `respondToBashCommands: false` 关闭；Opus 5.5 与 Sonnet 5.5 默认最大输出 token 改为 128k，其余模型按官方目录取值（#366）。
 
 #### Agent 与 Teams
 
@@ -59,6 +60,7 @@
 #### Hooks
 
 - 新增 `PostToolBatch` 与 `UserPromptExpansion` 事件（#338）。
+- `effort` 只出现在带工具上下文的 hook 事件中，UserPromptSubmit 输入带 `session_title`（#366）。
 - hook 输入补齐 `prompt_id`、PostToolUse `duration_ms`、TeammateIdle `agent_id`/`agent_type`、SendMessage `recipient_kind`；Stop 与 SubagentStop 输入带 `background_tasks` 与 `session_crons`（#335、#341、#353）。
 
 #### 记忆
@@ -73,6 +75,7 @@
 - 权限提示上按 Esc 会中止当前回合；修复多个对话框的缩进、换行与空状态；`/sandbox` 仅依赖视图显示按键提示；Write 结果写作 “Wrote 1 line”（#307、#308、#310、#355）。
 - default 模式的 footer 显示 “⏸ manual mode on”；回合等待行不再把 workflow 自己的 agent 计为后台 agent；auth 冲突提示使用官方文案（#355）。
 - 会话标题使用官方的命名提示，交互会话生成的标题写入 transcript，`/resume` 与会话列表可见；`/ide` 等待扩展安装完成并报告失败（#362、#365）。
+- 斜杠命令不再预选模糊匹配项，没有选中建议时 Enter 提交输入的命令，未知命令使用官方警告；命令 stderr 以纯文本显示、不带 `Error:` 前缀；`/copy` 写入每用户的 Claude 临时目录；`/terminal-setup` 与 `/mcp` 空状态文案对齐官方（#366）。
 
 #### Agent SDK
 
