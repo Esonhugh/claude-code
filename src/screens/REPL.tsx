@@ -358,7 +358,10 @@ import {
   createCommandInputMessage,
   formatCommandInputTags,
 } from '../utils/messages.js'
-import { generateSessionTitle } from '../utils/sessionTitle.js'
+import {
+  generateSessionTitle,
+  isTitleSourceMessage,
+} from '../utils/sessionTitle.js'
 import {
   BASH_INPUT_TAG,
   COMMAND_MESSAGE_TAG,
@@ -4563,9 +4566,7 @@ export function REPL({
         !agentTitle &&
         !haikuTitleAttemptedRef.current
       ) {
-        const firstUserMessage = newMessages.find(
-          m => m.type === 'user' && !m.isMeta,
-        )
+        const firstUserMessage = newMessages.find(isTitleSourceMessage)
         const text =
           firstUserMessage?.type === 'user'
             ? getUserContentText(firstUserMessage.message.content)
