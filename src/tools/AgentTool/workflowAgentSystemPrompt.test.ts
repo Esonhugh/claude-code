@@ -59,13 +59,14 @@ function setup(workflowAgentSystemPrompt: ToolUseContext['workflowAgentSystemPro
   } as unknown as ToolUseContext
 }
 
-async function run(workflowAgentSystemPrompt: ToolUseContext['workflowAgentSystemPrompt']) {
+async function run(workflowAgentSystemPrompt: ToolUseContext['workflowAgentSystemPrompt'], run_in_background = false) {
   const context = setup(workflowAgentSystemPrompt)
-  await AgentTool.call({ prompt: 'finish', description: 'framing probe', subagent_type: 'general-purpose', run_in_background: false }, context, async () => ({ behavior: 'allow' as const }), parent)
+  await AgentTool.call({ prompt: 'finish', description: 'framing probe', subagent_type: 'general-purpose', run_in_background }, context, async () => ({ behavior: 'allow' as const }), parent)
+  while (observedParams.length === 0) await new Promise(resolve => setTimeout(resolve, 5))
   const params = observedParams.pop()!
   const definition = params.agentDefinition as { agentType: string; getSystemPrompt: (p: { toolUseContext: ToolUseContext }) => string }
   const childContext = params.toolUseContext as ToolUseContext
-  return { systemPrompt: definition.getSystemPrompt({ toolUseContext: context }), agentType: definition.agentType, childContext, context }
+  return { systemPrompt: definition.getSystemPrompt({ toolUseContext: context }), agentType: definition.agentType, childContext, context, params }
 }
 
 const basePrompt = GENERAL_PURPOSE_AGENT.getSystemPrompt({ toolUseContext: setup(undefined) })
@@ -89,5 +90,15 @@ test('replace framing swaps the agent prompt and runs as workflow-subagent', asy
   expect(systemPrompt).toBe('WORKFLOW-SUBAGENT')
   expect(agentType).toBe('workflow-subagent')
   expect(childContext.workflowAgentSystemPrompt).toBeUndefined()
+})
+
+// Official 2.1.311 resolves a workflow agent's tools as a sync agent even though it runs in
+// the background, so tools outside the async allow-list (ListAgents) stay available to it.
+test('a background workflow agent filters its tools as sync; a plain background agent does not', async () => {
+  const workflow = await run({ replace: 'WORKFLOW-SUBAGENT' }, true)
+  expect(workflow.params.isAsync).toBe(true)
+  expect(workflow.params.filterToolsAsAsync).toBe(false)
+  const plain = await run(undefined, true)
+  expect(plain.params.filterToolsAsAsync).toBe(true)
 })
 }
