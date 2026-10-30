@@ -51,6 +51,7 @@ import mcp, { mcpNonInteractive } from './commands/mcp/index.js'
 import mobile from './commands/mobile/index.js'
 import onboarding from './commands/onboarding/index.js'
 import recap from './commands/recap/index.js'
+import powerup from './commands/powerup/index.js'
 import releaseNotes from './commands/release-notes/index.js'
 import rename from './commands/rename/index.js'
 import resume from './commands/resume/index.js'
@@ -334,6 +335,7 @@ const COMMANDS = memoize((): Command[] => [
   remoteEnv,
   plugin,
   recap,
+  powerup,
   releaseNotes,
   reloadPlugins,
   reloadSkills,
