@@ -219,7 +219,10 @@ export function getConfigRows(context: Context): ModConfigRowProvider[] {
     globalBoolean('respectGitignore', 'Respect .gitignore in file picker', global.respectGitignore),
     globalBoolean('copyFullResponse', 'Skip the /copy picker', global.copyFullResponse),
     ...(isFullscreenEnvEnabled() ? [globalBoolean('copyOnSelect', 'Copy on select', global.copyOnSelect ?? true)] : []),
-    ...(feature('BG_SESSIONS') ? [globalBoolean('leftArrowOpensAgents', '← opens agents', global.leftArrowOpensAgents ?? true)] : []),
+    ...(feature('BG_SESSIONS') ? [
+      globalBoolean('defaultToAgentsView', 'Open agents view by default', global.defaultToAgentsView ?? false),
+      globalBoolean('leftArrowOpensAgents', '← opens agents', global.leftArrowOpensAgents ?? true),
+    ] : []),
     {
       key: 'autoUpdatesChannel', label: 'Auto-update channel', kind: 'text',
       value: getAutoUpdaterDisabledReason() ? 'disabled' : settings.autoUpdatesChannel ?? 'latest',

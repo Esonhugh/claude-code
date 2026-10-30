@@ -470,6 +470,8 @@ export type GlobalConfig = {
   // Fullscreen in-app text selection behavior
   copyOnSelect?: boolean // Auto-copy to clipboard on mouse-up (undefined → true; lets cmd+c "work" via no-op)
   powerupsUnlocked?: string[] // /powerup lesson ids marked done
+  powerupsUnlocked?: string[] // /powerup lesson ids marked done
+  defaultToAgentsView?: boolean // a bare `claude` opens `claude agents`
   leftArrowOpensAgents?: boolean // ← twice at an empty idle prompt opens `claude agents` (undefined → true)
 
   // GitHub repo path mapping for teleport directory switching

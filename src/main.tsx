@@ -1837,6 +1837,19 @@ async function run(): Promise<CommanderCommand> {
         await handleBgFlag(prompt, process.argv.slice(2), (options as { name?: string }).name)
         process.exit(0)
       }
+      // Like 2.1.311: a bare `claude` opens the agents view when
+      // defaultToAgentsView is set.
+      if (
+        feature('BG_SESSIONS') &&
+        process.argv.length <= 2 &&
+        process.stdin.isTTY &&
+        process.stdout.isTTY &&
+        getGlobalConfig().defaultToAgentsView === true
+      ) {
+        const { runAgentView } = await import('./cli/agentView.js')
+        await runAgentView()
+        process.exit(0)
+      }
       // --safe-mode / CLAUDE_CODE_SAFE_MODE: CLAUDE.md loading is gated on
       // CLAUDE_CODE_DISABLE_CLAUDE_MDS; the other loaders check isSafeMode().
       if (isSafeMode()) {
