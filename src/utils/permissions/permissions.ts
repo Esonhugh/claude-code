@@ -877,8 +877,11 @@ export async function applyPermissionModeToResult(
       // acceptEdits mode, which would silently bypass the classifier. REPL
       // code can contain VM escapes between inner tool calls; the classifier
       // must see the glue JavaScript, not just the inner tool calls.
+      // Skip in plan mode too: acceptEdits would allow cwd writes, which plan
+      // mode must not let through without the classifier or the user.
       if (
         result.behavior === 'ask' &&
+        appState.toolPermissionContext.mode !== 'plan' &&
         tool.name !== AGENT_TOOL_NAME &&
         tool.name !== REPL_TOOL_NAME &&
         !networkLists
