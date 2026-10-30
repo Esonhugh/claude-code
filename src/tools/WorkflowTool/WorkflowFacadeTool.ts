@@ -120,7 +120,9 @@ function workflowScriptLabel(script: string): string {
   if (hasWorkflowScriptMeta(script)) {
     try {
       return parseWorkflowScript(script).meta.description
-    } catch {}
+    } catch {
+      // Unparsable meta: label the call with its first line below.
+    }
   }
   const firstLine = script.split('\n').find(line => line.trim())?.trim() ?? ''
   return firstLine.length > 60 ? `${firstLine.slice(0, 59)}…` : firstLine

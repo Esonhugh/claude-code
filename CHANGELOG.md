@@ -12,6 +12,79 @@
 - `## 2.1.88 base` 是唯一基线条目，固定放在文件末尾，不作为 release note。
 - `bun run check:changelog` 是格式规范的可执行门禁；发布时还会校验 tag 版本与最新发布条目一致。
 
+## 2026-10-30 - v2.1.296 - Agent 生命周期与 Teams 修复、内嵌 bfs/ugrep 搜索、coordinator 模式、/hooks /theme /config 对齐官方 2.1.311、权限模式转换修复
+
+### 版本状态
+
+- 发布候选：`dev` 合并到 `master` 后打 tag `v2.1.296`。本条目汇总 `v2.1.295` tag（master `e3fca04`）之后至 PR #357 的全部变更；`Makefile VERSION` 与 README 发布版本同步为 `2.1.296`，`package.json` 保持 `0.0.0-dev`。版本号与官方版本号无对应关系（本轮对照基线为官方 2.1.311）。
+
+### 关联提交
+
+- PR 合并提交（`git log --first-parent e3fca04..dev`）：#263、#272、#280 Teams 通知；#264、#269 agent 视图 pill（加入后又按用户要求撤回）；#268、#274、#276、#283、#284、#288、#303、#306 agent 生命周期；#290、#296、#302 coordinator 模式；#278、#289 SQLite 记忆检索；#293 Bash 折叠；#304、#316 权限与 Bedrock；#309、#311 REPL 对话框；#313 任务通知格式；#315、#319、#321 agent summary；#317、#331 Agent SDK；#323、#325、#329、#334、#346、#349 `/hooks`、`/theme`、`/agents`、`/memory`、`/config`；#327 内嵌搜索工具；#332 流式工具执行；#339 新 hook 事件；#342、#344、#347、#350 多轮对照修复；#354 权限模式转换与 Stop hook；#357 session memory。
+- 对应 issue：#16、#71、#72、#73、#74、#75、#76、#88、#141、#158、#261、#262、#265、#266、#267、#270、#271、#273、#275、#277、#279、#281、#282、#285、#286、#287、#291、#292、#294、#295、#297、#298、#299、#300、#301、#305、#307、#308、#310、#314、#318、#320、#326、#328、#330、#333、#335、#336、#337、#338、#340、#341、#343、#345、#348、#351、#352、#353、#355、#356。
+
+### 变更内容
+
+#### 需要用户处理的行为变化
+
+- `memory.extraction` 默认改为 `off`，退出时不再等待“Saving memories…”；需要时设为 `sessionEnd` 或 `everyTurns`（#305）。
+- session memory（为当前会话维护 `session-memory/summary.md`）默认关闭，与官方一致，开启 auto memory 也不会运行；13 轮真实对话中省去 23 至 29 次额外的 `Edit` 调用（#356）。auto memory（`autoMemoryEnabled`，默认开）现在只负责加载与检索长期记忆，后台补记由 `memory.extraction` 单独控制，默认 `off`。
+- Linux 与 macOS binary 内嵌 bfs 4.1.1 与 ugrep 7.8.4，Glob/Grep 工具改由 Bash 中的 `find`/`grep` 完成，与官方一致；`--tools` 或 `--allowedTools` 点名 Glob 或 Grep 时保留这两个工具；Windows 不变（#326、#141）。
+- `/agents` 交互向导移除，输入 `/agents` 显示官方的提示，改为手写 `.claude/agents/*.md`（#328）。
+- coordinator 模式进入默认构建，只在 `CLAUDE_CODE_COORDINATOR_MODE` 加上 `-p`/SDK 或 `CLAUDE_CODE_REMOTE` 时开启，本地交互会话不会进入（#285）。
+- 主循环始终使用流式工具执行（#330）。
+- Teams 不再处理收件箱中的 `mode_set_request` 与 `team_permission_update`，与官方一致（#74）。
+- 子代理嵌套深度保持 5 层（官方为 3 层，按用户决定不改）。
+
+#### Agent 与 Teams
+
+- leader 重新收到 teammate 的 idle 通知；idle 通知带上回复结果（最多 4000 字符），每批最多 16000 字符；被 TaskStop 的 agent 报告 killed 而不是 failed（#262、#270、#271、#279）。
+- 退出时同步结束后台 agent 的 shell 进程组，终端关闭时也会执行清理与 SessionEnd hook；恢复的 agent 保留最后一轮历史并使用自己的嵌套深度；TaskStop 可按名字或 `name@team` 停止 teammate（#265、#266、#267）。
+- 后台子代理自己的后台 Bash/Monitor 在其回合结束后继续运行，等待期间发送“is waiting on its own background work”提示（#273、#275）。
+- 通知行显示用时，回合行显示 `done <时间>` 与 `Waiting for N background agents`；Bash/PowerShell 只拒绝 25 秒及以上的开头 `sleep`；agent 通知在回合中途送达，SendMessage 恢复时返回 `Resuming agent <名字>`（#282、#287）。
+- 达到回合上限的 worker 报告“stopped at its N-turn limit”并带部分结果，worker 回合上限改为 500（#281）。
+- 有名字的 Agent 加入隐式的 `session-<id>` team；`/exit` 有后台工作时弹出确认；闲置 teammate 30 秒后从面板隐藏；SendMessage 接受 `name@team`；`--continue` 后可按 id 恢复 teammate；被结束的 agent 的工具调用补上结果（#294、#295、#298、#299、#300、#301、#305）。
+- coordinator 保留 Skill（只读加载）、ListAgents 与 Workflow，`CLAUDE_CODE_BRIEF` 与 `CLAUDE_CODE_COORDINATOR_EXTRA_TOOLS` 生效（#291、#297）。
+- 新设置 `agentSummary`（`full`/`short`/`off`，`/config` 中为 “Background agent summaries”）；summary 请求改为 `maxTurns: 1` 且不写 cache；agent 面板行显示 summary（#314、#318、#320）。
+- 任务通知使用官方格式（system-reminder 与 SYSTEM NOTIFICATION 标题，带 `subagent_tokens`）；teammate 发给 leader 的消息使用 peer 包装；workflow agent 以 `workflow-subagent` 运行并保留 ListAgents 与 Cron 工具；teammate 的其他 agent 提醒只注入一次（#336、#337、#341）。
+
+#### 权限
+
+- plan 模式（auto 可用时）下 cwd 内的写文件不再被直接放行；Bash/PowerShell 提示的 “Yes, and always allow access to …” 只添加规则与目录，不再把会话切到 acceptEdits（#351、#352）。
+- `sh -c` 中命中 deny 规则时询问；`env`/`command` 等包装的读取命令按读取处理；危险删除的包装命令增加 `exec`、`setsid`、`ionice`、`busybox`、`doas`、`pkexec`；相对路径 deny 规则同时匹配符号链接；plan 审批经过模式转换检查；Terminal 中用控制键编辑过的行需要询问（#71、#72、#73、#74、#75、#76）。
+- Bedrock/Vertex 凭证错误最多刷新 2 次，无凭证的 `claude -p` 约 4 秒失败（原约 3 分钟）（#16）。
+
+#### Hooks
+
+- 新增 `PostToolBatch` 与 `UserPromptExpansion` 事件（#338）。
+- hook 输入补齐 `prompt_id`、PostToolUse `duration_ms`、TeammateIdle `agent_id`/`agent_type`、SendMessage `recipient_kind`；Stop 与 SubagentStop 输入带 `background_tasks` 与 `session_crons`（#335、#341、#353）。
+
+#### 记忆
+
+- SQLite 记忆模式下 SearchMemory 成为默认检索方式；中文提示也能召回，首个请求前即带上召回结果（#277、#286）。
+
+#### 界面
+
+- `/hooks` 改为按事件分组的平铺列表；`/theme` 支持 Auto（跟随终端）与自定义主题（`~/.claude/themes/<slug>.json`），主题目录变化自动重载；`/memory` 与 `/config` 的布局、按键与行项目对齐官方 2.1.311（#328、#333、#345、#348）。
+- `/tasks` 在 “Completed” 下列出已完成的后台 agent，面板立即隐藏它们；Workflow 调用显示描述与 “Completed in …” 结果行；`/context` 列表折叠到 `/context all`（#343）。
+- 非全屏模式下连续 2 条及以上的 Bash 命令折叠为一组（#292）。
+- 权限提示上按 Esc 会中止当前回合；修复多个对话框的缩进、换行与空状态；`/sandbox` 仅依赖视图显示按键提示；Write 结果写作 “Wrote 1 line”（#307、#308、#310、#355）。
+
+#### Agent SDK
+
+- 子代理消息带官方字段与结果摘要，支持 `set_mcp_permission_mode_override`、`tool_result_meta`、`askForTools` 校验，`task_notification` 顺序与官方一致（#88、#158）。
+
+#### 已知缺口
+
+- `src/services/compact/autoCompact.contextWindow.test.ts` 与 `idleCompaction.test.ts` 的部分用例依赖本机环境变量与凭证，在云容器中失败，改动前后一致，不影响运行时行为。
+- #355 中记录的其余界面文案差异（auto 模式选项、footer “manual mode on”、ExitPlanMode 选项文案等）与 #79（工作区 MCP 审批存储、插件仓库分级）留到后续版本。
+
+### 测试覆盖
+
+- 每个 PR 在重建的 binary 上以 tmux 与脚本化假 Messages API 对照官方 2.1.311；多轮对照（项目共享目录 `research/multiturn-2026-10-29/` 与 `research/multiturn-2026-10-30-evidence/`）：假 API 37 步 dev 37/37 ×5、官方 35/35 ×5；权限模式转换 36 步修复后 36/36，与官方一致；真实模型 13 轮工具命中 dev 39/39、官方 36/39；Agent SDK probe 两侧均 32/33。
+- PR CI：Windows e2e、macOS Seatbelt e2e、Linux 沙箱测试、官方对照与 Linux x64/arm64 搜索工具构建（#331）。
+- 发版前在 `dev` 上运行 `make release-check` 与 `make build`，并以重建的 binary 跑过 SIGINT SessionEnd、`CI=true` 无凭证 `-p` 与 team shutdown 三项回归。
+
 ## 2026-10-27 - v2.1.295 - MCP v2 SDK、Windows 原生沙箱、沙箱网络与工具提示词对齐官方 2.1.311、/code-review 技能、agent 面板、DO_NOT_TRACK
 
 ### 版本状态
