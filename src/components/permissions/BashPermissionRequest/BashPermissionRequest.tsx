@@ -36,10 +36,6 @@ import { useShimmerAnimation } from '../../Spinner/useShimmerAnimation.js'
 import { type UnaryEvent, usePermissionRequestLogging } from '../hooks.js'
 import { PermissionDecisionDebugInfo } from '../PermissionDecisionDebugInfo.js'
 import { PermissionDialog } from '../PermissionDialog.js'
-import {
-  PermissionExplainerContent,
-  usePermissionExplainerUI,
-} from '../PermissionExplanation.js'
 import type { PermissionRequestProps } from '../PermissionRequest.js'
 import { PermissionRuleExplanation } from '../PermissionRuleExplanation.js'
 import { SedEditPermissionRequest } from '../SedEditPermissionRequest/SedEditPermissionRequest.js'
@@ -145,12 +141,6 @@ function BashPermissionRequestInner({
 }): React.ReactNode {
   const [theme] = useTheme()
   const toolPermissionContext = useAppState(s => s.toolPermissionContext)
-  const explainerState = usePermissionExplainerUI({
-    toolName: toolUseConfirm.tool.name,
-    toolInput: toolUseConfirm.input,
-    toolDescription: toolUseConfirm.description,
-    messages: toolUseContext.messages,
-  })
   const {
     yesInputMode,
     noInputMode,
@@ -168,7 +158,6 @@ function BashPermissionRequestInner({
     toolUseConfirm,
     onDone,
     onReject,
-    explainerVisible: explainerState.visible,
   })
   const [showPermissionDebug, setShowPermissionDebug] = useState(false)
   const [classifierDescription, setClassifierDescription] = useState(
@@ -400,7 +389,6 @@ function BashPermissionRequestInner({
     }
     logEvent('tengu_permission_request_option_selected', {
       option_index: optionIndex[value],
-      explainer_visible: explainerState.visible,
     })
 
     const toolNameForAnalytics = sanitizeToolNameForAnalytics(
@@ -556,11 +544,9 @@ function BashPermissionRequestInner({
       innerPaddingX={0}
     >
       {/* Official 2.1.311: the description, then the command between dashed rules. */}
-      {!explainerState.visible && (
-        <Box paddingX={1}>
-          <Text dimColor>{toolUseConfirm.description}</Text>
-        </Box>
-      )}
+      <Box paddingX={1}>
+        <Text dimColor>{toolUseConfirm.description}</Text>
+      </Box>
       <Box
         borderColor="subtle"
         borderStyle="dashed"
@@ -569,18 +555,12 @@ function BashPermissionRequestInner({
         borderRight={false}
         paddingX={1}
       >
-        <Text dimColor={explainerState.visible}>
+        <Text>
           {BashTool.renderToolUseMessage(
             { command, description },
             { theme, verbose: true }, // always show the full command
           )}
         </Text>
-      </Box>
-      <Box flexDirection="column" paddingX={1}>
-        <PermissionExplainerContent
-          visible={explainerState.visible}
-          promise={explainerState.promise}
-        />
       </Box>
       <Box flexDirection="column" paddingX={1}>
         {showPermissionDebug ? (
@@ -651,8 +631,6 @@ function BashPermissionRequestInner({
                 {((focusedOption === 'yes' && !yesInputMode) ||
                   (focusedOption === 'no' && !noInputMode)) &&
                   ' · Tab to amend'}
-                {explainerState.enabled &&
-                  ` · ctrl+e to ${explainerState.visible ? 'hide' : 'explain'}`}
               </Text>
               {toolUseContext.options.debug && (
                 <Text dimColor>Ctrl+d to show debug info</Text>

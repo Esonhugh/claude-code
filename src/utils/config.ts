@@ -540,9 +540,6 @@ export type GlobalConfig = {
     disabled?: boolean
   }
 
-  // Permission explainer configuration
-  permissionExplainerEnabled?: boolean // Enable Haiku-generated explanations for permission requests (default: true)
-
   // Teammate spawn mode: 'auto' | 'tmux' | 'in-process'
   teammateMode?: 'auto' | 'tmux' | 'in-process' // How to spawn teammates (default: 'auto')
   // Model for new teammates when the tool call doesn't pass one.
