@@ -14,6 +14,7 @@ export type BashToolUseOption =
   | 'yes-apply-suggestions'
   | 'yes-prefix-edited'
   | 'yes-classifier-reviewed'
+  | 'yes-enable-auto-mode'
   | 'no'
 
 /**
@@ -53,6 +54,7 @@ export function bashToolUseOptions({
   noInputMode = false,
   editablePrefix,
   onEditablePrefixChange,
+  showEnableAutoModeOption = false,
 }: {
   suggestions?: PermissionUpdate[]
   decisionReason?: PermissionDecisionReason
@@ -69,6 +71,8 @@ export function bashToolUseOptions({
   editablePrefix?: string
   /** Callback when the user edits the prefix value. */
   onEditablePrefixChange?: (value: string) => void
+  /** Offer switching to auto mode, like official 2.1.311. */
+  showEnableAutoModeOption?: boolean
 }): OptionWithDescription<BashToolUseOption>[] {
   const options: OptionWithDescription<BashToolUseOption>[] = []
 
@@ -167,6 +171,14 @@ export function bashToolUseOptions({
         resetCursorOnUpdate: true,
       })
     }
+  }
+
+  if (showEnableAutoModeOption) {
+    options.push({
+      label: 'Yes, and switch to auto mode',
+      description: '\u00b7 auto mode handles these prompts for you',
+      value: 'yes-enable-auto-mode',
+    })
   }
 
   if (noInputMode) {

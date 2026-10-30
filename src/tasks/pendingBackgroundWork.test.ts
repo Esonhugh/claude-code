@@ -22,6 +22,15 @@ test('counts running, unreported and queued background agents and workflows', ()
   expect(countPendingBackgroundWork({ tasks, queuedCommands })).toEqual({ pendingAgents: 3, pendingWorkflows: 1 })
 })
 
+test("a workflow's own agents count only as the workflow, like official", () => {
+  const tasks = {
+    flow: { id: 'flow', type: 'local_workflow', status: 'running', notified: false } as unknown as TaskState,
+    step1: agent('step1', 'running', { notified: true, awaitedByCaller: true }),
+    step2: agent('step2', 'running', { notified: true, awaitedByCaller: true }),
+  }
+  expect(countPendingBackgroundWork({ tasks })).toEqual({ pendingAgents: 0, pendingWorkflows: 1 })
+})
+
 test('a turn after a background wait reports the time since the waiting turn started', () => {
   const waiting = turnDurationAfterBackgroundWait({
     tasks: { a: agent('a', 'running') },

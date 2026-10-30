@@ -15,7 +15,7 @@ export function countPendingBackgroundWork({
   const agents = new Set<string>()
   const workflows = new Set<string>()
   const add = (task: TaskState) => {
-    if (isLocalAgentTask(task) && task.isBackgrounded) agents.add(task.id)
+    if (isLocalAgentTask(task) && task.isBackgrounded && !task.awaitedByCaller) agents.add(task.id)
     else if (task.type === 'local_workflow') workflows.add(task.id)
   }
   for (const task of Object.values(tasks)) {

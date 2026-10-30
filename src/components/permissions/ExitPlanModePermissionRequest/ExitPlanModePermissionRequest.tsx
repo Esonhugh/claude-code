@@ -817,7 +817,16 @@ export function ExitPlanModePermissionRequest({
           <Box marginTop={1}>
             <Select
               options={[
-                { label: 'Yes', value: 'yes' as const },
+                {
+                  label: (
+                    <Text>
+                      Yes, and switch to{' '}
+                      <Text bold>default (ask each time)</Text> for this
+                      session
+                    </Text>
+                  ),
+                  value: 'yes' as const,
+                },
                 { label: 'No', value: 'no' as const },
               ]}
               onChange={handleEmptyPlanResponse}
