@@ -35,7 +35,9 @@ import {
   getOriginalCwd,
   getMainThreadAgentType,
   getPromptId,
+  getSessionCronTasks,
 } from '../bootstrap/state.js'
+import { isBackgroundTask } from '../tasks/types.js'
 import { checkHasTrustDialogAccepted } from './config.js'
 import {
   getHooksConfigFromSnapshot,
@@ -4113,6 +4115,7 @@ export async function* executeStopHooks(
       undefined
     : undefined
 
+  const pendingWork = getStopHookPendingWork(appState)
   const hookInput: StopHookInput | SubagentStopHookInput = subagentId
     ? {
         ...createBaseHookInput(permissionMode),
@@ -4122,12 +4125,14 @@ export async function* executeStopHooks(
         agent_transcript_path: getAgentTranscriptPath(subagentId),
         agent_type: agentType ?? '',
         last_assistant_message: lastAssistantText,
+        ...pendingWork,
       }
     : {
         ...createBaseHookInput(permissionMode),
         hook_event_name: 'Stop',
         stop_hook_active: stopHookActive,
         last_assistant_message: lastAssistantText,
+        ...pendingWork,
       }
 
   // Trust check is now centralized in executeHooks()
@@ -4141,6 +4146,50 @@ export async function* executeStopHooks(
     messages,
     requestPrompt,
   })
+}
+
+const STOP_HOOK_TASK_TYPE_LABELS: Record<string, string> = {
+  local_agent: 'subagent',
+  local_workflow: 'workflow',
+  local_bash: 'shell',
+  monitor_mcp: 'monitor',
+  in_process_teammate: 'teammate',
+  dream: 'dream',
+  remote_agent: 'cloud session',
+}
+const STOP_HOOK_FIELD_CAP = 1000
+
+function clipStopHookField(value: string): string {
+  if (value.length <= STOP_HOOK_FIELD_CAP) return value
+  return `${value.slice(0, STOP_HOOK_FIELD_CAP)}\u2026 [+${value.length - STOP_HOOK_FIELD_CAP} chars]`
+}
+
+/**
+ * Stop/SubagentStop fields that let hooks tell "session is done" from
+ * "session is waiting for background work or a scheduled wakeup".
+ */
+function getStopHookPendingWork(appState: AppState | undefined) {
+  const background_tasks = Object.values(appState?.tasks ?? {})
+    .filter(isBackgroundTask)
+    .map(task => ({
+      id: task.id,
+      type: STOP_HOOK_TASK_TYPE_LABELS[task.type] ?? task.type,
+      status: task.status,
+      description: clipStopHookField(task.description),
+      ...(task.type === 'local_bash' && {
+        command: clipStopHookField(task.command),
+      }),
+      ...(task.type === 'local_agent' && { agent_type: task.agentType }),
+      ...(task.type === 'local_workflow' &&
+        task.workflowName !== undefined && { name: task.workflowName }),
+    }))
+  const session_crons = getSessionCronTasks().map(task => ({
+    id: task.id,
+    schedule: task.cron,
+    recurring: task.recurring ?? false,
+    prompt: clipStopHookField(task.prompt),
+  }))
+  return { background_tasks, session_crons }
 }
 
 /**

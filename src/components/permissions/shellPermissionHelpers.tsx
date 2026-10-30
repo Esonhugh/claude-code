@@ -71,6 +71,19 @@ function formatPathList(paths: string[]): ReactNode {
 }
 
 /**
+ * The updates the "Yes, and apply suggestions" option applies: only the kinds
+ * its label describes, so a suggested mode switch (e.g. setMode acceptEdits
+ * for a write in the cwd) is not applied behind a directory/rule label.
+ */
+export function shellSuggestionUpdates(
+  suggestions: PermissionUpdate[],
+): PermissionUpdate[] {
+  return suggestions.filter(
+    s => s.type === 'addRules' || s.type === 'addDirectories',
+  )
+}
+
+/**
  * Generate the label for the "Yes, and apply suggestions" option in shell
  * permission dialogs (Bash, PowerShell). Parametrized by the shell tool name
  * and an optional command transform (e.g., Bash strips output redirections so
