@@ -281,7 +281,7 @@ import {
   recordTranscript,
 } from 'src/utils/sessionStorage.js'
 import { incrementPromptCount } from 'src/utils/commitAttribution.js'
-import feedbackCommand from '../commands/feedback/index.js'
+import feedbackCommand, { feedbackDisabledReason } from '../commands/feedback/index.js'
 import {
   backgroundAll,
   backgroundTaskForToolUse,
@@ -4834,9 +4834,9 @@ function runHeadlessStreaming(
           // of Unsupported so the host can show it.
           sendControlResponseSuccess(message, {
             feedback_id: null,
-            unavailable_reason: feedbackCommand.isEnabled?.() === false
+            unavailable_reason: feedbackDisabledReason() ?? (feedbackCommand.isEnabled?.() === false
               ? '/feedback is disabled in this session'
-              : '/feedback from a host app is not supported by this build; run /feedback in the terminal',
+              : '/feedback from a host app is not supported by this build; run /feedback in the terminal'),
           })
         } else if (message.request.subtype === 'list_models') {
           sendControlResponseSuccess(message, { models: modelInfos })
