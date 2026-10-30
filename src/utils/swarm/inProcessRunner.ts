@@ -113,7 +113,7 @@ import {
 } from '../teammateMailbox.js'
 import { unregisterAgent as unregisterPerfettoAgent } from '../telemetry/perfettoTracing.js'
 import { createContentReplacementState, type ContentReplacementState } from '../toolResultStorage.js'
-import { TEAM_LEAD_NAME } from './constants.js'
+import { TEAM_LEAD_NAME, TEAMMATE_SHUTDOWN_APPROVED } from './constants.js'
 import {
   getLeaderSetToolPermissionContext,
   getLeaderToolUseConfirmQueue,
@@ -487,6 +487,24 @@ const teammatePermissionViews = new WeakMap<
   ToolPermissionContext,
   Map<PermissionMode, ToolPermissionContext>
 >()
+
+/**
+ * A lifecycle abort (stop, kill) also aborts the running turn so its tool stops;
+ * the returned function unlinks the turn once it is over.
+ * A teammate approving its own shutdown is the exception: its SendMessage call
+ * finishes like official (PostToolUse fires) and the runner exits after it.
+ */
+export function linkTurnToLifecycle(
+  lifecycle: AbortController,
+  turn: AbortController,
+): () => void {
+  const abortTurn = () => {
+    if (lifecycle.signal.reason === TEAMMATE_SHUTDOWN_APPROVED) return
+    turn.abort(lifecycle.signal.reason)
+  }
+  lifecycle.signal.addEventListener('abort', abortTurn, { once: true })
+  return () => lifecycle.signal.removeEventListener('abort', abortTurn)
+}
 
 /**
  * The leader's AppState as an in-process teammate sees it, read on every call
@@ -1121,8 +1139,7 @@ export async function runInProcessTeammate(
       // The lifecycle abortController still kills the whole teammate if needed,
       // and aborts this turn too so a running tool stops with it.
       const currentWorkAbortController = createAbortController()
-      const abortWork = () => currentWorkAbortController.abort(abortController.signal.reason)
-      abortController.signal.addEventListener('abort', abortWork, { once: true })
+      const unlinkTurn = linkTurnToLifecycle(abortController, currentWorkAbortController)
 
       // Store the work controller in task state so UI can abort it
       updateTaskState(
@@ -1381,7 +1398,7 @@ export async function runInProcessTeammate(
       })
 
       // Clear the work controller from state (it's no longer valid)
-      abortController.signal.removeEventListener('abort', abortWork)
+      unlinkTurn()
       updateTaskState(
         taskId,
         task => ({ ...task, currentWorkAbortController: undefined }),
