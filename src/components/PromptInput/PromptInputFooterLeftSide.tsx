@@ -77,6 +77,7 @@ type Props = {
   mode: PromptInputMode
   toolPermissionContext: ToolPermissionContext
   suppressHint: boolean
+  isInputEmpty: boolean
   isLoading: boolean
   showMemoryTypeSelector?: boolean
   tasksSelected: boolean
@@ -134,6 +135,7 @@ export function PromptInputFooterLeftSide({
   mode,
   toolPermissionContext,
   suppressHint,
+  isInputEmpty,
   isLoading,
   tasksSelected,
   teamsSelected,
@@ -181,6 +183,12 @@ export function PromptInputFooterLeftSide({
         mode={mode}
         toolPermissionContext={toolPermissionContext}
         showHint={!suppressHint && !showVim}
+        showAgentsHint={
+          isInputEmpty &&
+          !isSearching &&
+          vimMode !== 'VISUAL' &&
+          vimMode !== 'VISUAL LINE'
+        }
         isLoading={isLoading}
         tasksSelected={tasksSelected}
         teamsSelected={teamsSelected}
@@ -195,6 +203,7 @@ type ModeIndicatorProps = {
   mode: PromptInputMode
   toolPermissionContext: ToolPermissionContext
   showHint: boolean
+  showAgentsHint: boolean
   isLoading: boolean
   tasksSelected: boolean
   teamsSelected: boolean
@@ -206,6 +215,7 @@ function ModeIndicator({
   mode,
   toolPermissionContext,
   showHint,
+  showAgentsHint,
   isLoading,
   tasksSelected,
   teamsSelected,
@@ -481,6 +491,23 @@ function ModeIndicator({
     parts.push(
       <Text dimColor key="shortcuts-hint">
         ? for shortcuts
+      </Text>,
+    )
+  }
+
+  if (
+    feature('BG_SESSIONS') &&
+    showAgentsHint &&
+    !isLoading &&
+    !tasksSelected &&
+    !teamsSelected &&
+    !tmuxSelected &&
+    viewSelectionMode !== 'viewing-agent' &&
+    getGlobalConfig().leftArrowOpensAgents !== false
+  ) {
+    parts.push(
+      <Text dimColor key="fg-agents">
+        ← for agents
       </Text>,
     )
   }

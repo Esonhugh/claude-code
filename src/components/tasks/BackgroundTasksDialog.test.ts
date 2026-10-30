@@ -634,7 +634,7 @@ test.each(['running', 'completed', 'failed', 'killed'] as const)(
       } } as unknown as React.ComponentProps<typeof AppStateProvider>,
       React.createElement(KeybindingSetup, null, React.createElement(PromptInputFooterLeftSide, {
         exitMessage: { show: false }, vimMode: undefined, mode: 'prompt',
-        toolPermissionContext, suppressHint: false, isLoading: false,
+        toolPermissionContext, suppressHint: false, isInputEmpty: true, isLoading: false,
         tasksSelected: false, teamsSelected: false, tmuxSelected: false,
         isSearching: false, historyQuery: '', setHistoryQuery: () => {}, historyFailedMatch: false,
       }))), {
