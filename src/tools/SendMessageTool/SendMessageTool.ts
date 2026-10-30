@@ -582,6 +582,14 @@ async function handlePlanRejection(
   }
 }
 
+// Official 2.1.311 tags the hook-visible input with how `to` was addressed.
+function recipientKind(to: string): 'session' | 'main' | 'agent' | 'name' {
+  if (parseAddress(to).scheme !== 'other' || /^local_[0-9a-f-]{8,72}$/.test(to)) return 'session'
+  if (to === 'main') return 'main'
+  if (toAgentId(to.normalize('NFKC').trim().toLowerCase().replace(/\s+/g, '-'))) return 'agent'
+  return 'name'
+}
+
 export const SendMessageTool: Tool<InputSchema, SendMessageToolOutput> =
   buildTool({
     name: SEND_MESSAGE_TOOL_NAME,
@@ -618,6 +626,7 @@ export const SendMessageTool: Tool<InputSchema, SendMessageToolOutput> =
       } else if (typeof input.message === 'string') {
         input.type = 'message'
         input.recipient = input.to
+        input.recipient_kind = recipientKind(input.to)
         input.content = input.message
       } else if (typeof input.message === 'object' && input.message !== null) {
         const msg = input.message as {
@@ -629,6 +638,7 @@ export const SendMessageTool: Tool<InputSchema, SendMessageToolOutput> =
         }
         input.type = msg.type
         input.recipient = input.to
+        input.recipient_kind = recipientKind(input.to)
         if (msg.request_id !== undefined) input.request_id = msg.request_id
         if (msg.approve !== undefined) input.approve = msg.approve
         const content = msg.reason ?? msg.feedback

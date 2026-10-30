@@ -63,9 +63,9 @@ async function run(workflowAgentSystemPrompt: ToolUseContext['workflowAgentSyste
   const context = setup(workflowAgentSystemPrompt)
   await AgentTool.call({ prompt: 'finish', description: 'framing probe', subagent_type: 'general-purpose', run_in_background: false }, context, async () => ({ behavior: 'allow' as const }), parent)
   const params = observedParams.pop()!
-  const definition = params.agentDefinition as { getSystemPrompt: (p: { toolUseContext: ToolUseContext }) => string }
+  const definition = params.agentDefinition as { agentType: string; getSystemPrompt: (p: { toolUseContext: ToolUseContext }) => string }
   const childContext = params.toolUseContext as ToolUseContext
-  return { systemPrompt: definition.getSystemPrompt({ toolUseContext: context }), childContext, context }
+  return { systemPrompt: definition.getSystemPrompt({ toolUseContext: context }), agentType: definition.agentType, childContext, context }
 }
 
 const basePrompt = GENERAL_PURPOSE_AGENT.getSystemPrompt({ toolUseContext: setup(undefined) })
@@ -76,14 +76,18 @@ test('no framing leaves the agent prompt alone', async () => {
 })
 
 test('append framing extends the selected agent prompt', async () => {
-  const { systemPrompt, childContext } = await run({ append: '\n\n---\n\nNOTE: workflow' })
+  const { systemPrompt, agentType, childContext } = await run({ append: '\n\n---\n\nNOTE: workflow' })
   expect(systemPrompt).toBe(basePrompt + '\n\n---\n\nNOTE: workflow')
+  expect(agentType).toBe('general-purpose')
   expect(childContext.workflowAgentSystemPrompt).toBeUndefined()
 })
 
-test('replace framing swaps the agent prompt', async () => {
-  const { systemPrompt, childContext } = await run({ replace: 'WORKFLOW-SUBAGENT' })
+// Official runs an agent() call without agentType as the built-in "workflow-subagent",
+// which is the agent_type its SubagentStart/SubagentStop hooks see.
+test('replace framing swaps the agent prompt and runs as workflow-subagent', async () => {
+  const { systemPrompt, agentType, childContext } = await run({ replace: 'WORKFLOW-SUBAGENT' })
   expect(systemPrompt).toBe('WORKFLOW-SUBAGENT')
+  expect(agentType).toBe('workflow-subagent')
   expect(childContext.workflowAgentSystemPrompt).toBeUndefined()
 })
 }
