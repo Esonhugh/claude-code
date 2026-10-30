@@ -93,6 +93,7 @@ function fixture() {
   const envs = new Map<string, NodeJS.ProcessEnv>()
   const logs: string[] = []
   const state = { sessionHooks: new Map() } as unknown as AppState
+  const crons: { id: string; cron: string; prompt: string; recurring?: boolean }[] = []
   const context = {
     getAppState: () => state,
     options: { tools: [] },
@@ -117,6 +118,7 @@ function fixture() {
     getOriginalCwd: () => home,
     getMainThreadAgentType: () => undefined,
     getPromptId: () => null,
+    getSessionCronTasks: () => crons,
     getIsNonInteractiveSession: () => !controls.interactive,
     getRegisteredHooks: () => registered,
     getStatsStore: () => undefined,
@@ -285,6 +287,11 @@ function fixture() {
       },
     },
     './task/TaskOutput.js': { TaskOutput: class {} },
+    '../tasks/types.js': {
+      isBackgroundTask: (task: { status: string; isBackgrounded?: boolean }) =>
+        (task.status === 'running' || task.status === 'pending') &&
+        task.isBackgrounded !== false,
+    },
     './cwd.js': { getCwd: () => home },
     './sessionEnvironment.js': {
       getHookEnvFilePath: async () => join(home, 'env'),
@@ -472,6 +479,7 @@ function fixture() {
     controls,
     context,
     state,
+    crons,
     session,
     add,
     evaluatorResponse,
@@ -1917,4 +1925,39 @@ describe('hook stdout that looks like JSON (official 2.1.248)', () => {
       ])
     else expect(errors).toEqual([])
   })
+})
+
+test('Stop and SubagentStop hooks list in-flight background work and session crons', async () => {
+  const f = fixture()
+  f.add('userSettings', 'Stop', 'stop')
+  f.add('userSettings', 'SubagentStop', 'substop')
+  f.commands.set('stop', {})
+  f.commands.set('substop', {})
+  ;(f.state as unknown as { tasks: Record<string, unknown> }).tasks = {
+    b1: { id: 'b1', type: 'local_bash', status: 'running', description: 'x'.repeat(1003), command: 'sleep 9' },
+    a1: { id: 'a1', type: 'local_agent', status: 'running', description: 'bg quick', agentType: 'general-purpose' },
+    a2: { id: 'a2', type: 'local_agent', status: 'running', description: 'fg', agentType: 'worker', isBackgrounded: false },
+    d1: { id: 'd1', type: 'local_bash', status: 'completed', description: 'done', command: 'true' },
+  }
+  f.crons.push({ id: 'c1', cron: '*/5 * * * *', prompt: 'check CI', recurring: true })
+  f.crons.push({ id: 'c2', cron: '30 9 1 1 *', prompt: 'wake up' })
+  await collect(
+    f.hooks.executeStopHooks(undefined, undefined, undefined, false, undefined, f.context, []),
+  )
+  await collect(
+    f.hooks.executeStopHooks(undefined, undefined, undefined, false, 'subagent' as ToolUseContext['agentId'], f.context, [], 'worker'),
+  )
+  const expected = {
+    background_tasks: [
+      { id: 'b1', type: 'shell', status: 'running', description: `${'x'.repeat(1000)}\u2026 [+3 chars]`, command: 'sleep 9' },
+      { id: 'a1', type: 'subagent', status: 'running', description: 'bg quick', agent_type: 'general-purpose' },
+    ],
+    session_crons: [
+      { id: 'c1', schedule: '*/5 * * * *', recurring: true, prompt: 'check CI' },
+      { id: 'c2', schedule: '30 9 1 1 *', recurring: false, prompt: 'wake up' },
+    ],
+  }
+  expect(f.calls.map(call => call.command)).toEqual(['stop', 'substop'])
+  expect(f.calls[0]?.input).toMatchObject({ hook_event_name: 'Stop', ...expected })
+  expect(f.calls[1]?.input).toMatchObject({ hook_event_name: 'SubagentStop', ...expected })
 })
