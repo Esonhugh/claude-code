@@ -1983,6 +1983,7 @@ function runHeadlessStreaming(
         config,
         scope: connection.config.scope,
         source: getMcpServerStatusSource(connection.config),
+        transport: connection.config.type ?? 'stdio',
         tools: serverTools,
         capabilities,
       }

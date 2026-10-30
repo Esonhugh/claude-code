@@ -212,6 +212,12 @@ export const McpServerStatusSchema = lazySchema(() =>
         .string()
         .optional()
         .describe('Definition origin: SDK host, plugin, or configuration scope. Use the origin rather than the configured name.'),
+      transport: z
+        .string()
+        .optional()
+        .describe(
+          "@internal The server's transport as configured (stdio, sse, http, ws, sdk, claudeai-proxy …), reported even where `config` is withheld. Absent on CLIs that predate the field.",
+        ),
       tools: z
         .array(
           z.object({

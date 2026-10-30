@@ -76,6 +76,7 @@ export type McpServerStatus = {
   config?: McpServerStatusConfig
   scope?: string
   source?: string
+  transport?: string
   tools?: Array<{
     name: string
     description?: string
