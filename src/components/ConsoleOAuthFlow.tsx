@@ -469,7 +469,7 @@ function OAuthStatusMessage({
                     <Text>
                       3rd-party platform ·{' '}
                       <Text dimColor>
-                        Amazon Bedrock, Microsoft Foundry, or Vertex AI
+                        Amazon Bedrock, Microsoft Foundry, Google Vertex AI
                       </Text>
                       {'\n'}
                     </Text>

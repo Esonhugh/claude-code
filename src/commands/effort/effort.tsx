@@ -8,6 +8,7 @@ import {
 } from '../../services/analytics/index.js'
 import { useAppState, useSetAppState } from '../../state/AppState.js'
 import type { LocalJSXCommandOnDone } from '../../types/command.js'
+import type { Theme } from '../../utils/theme.js'
 import {
   EFFORT_LEVELS,
   type EffortValue,
@@ -154,7 +155,16 @@ function ShowCurrentEffort({
   return null
 }
 
-const PICKER_COLUMN_WIDTH = 10
+// 2.1.311 slider geometry: gaps between labels, and a 14-column minimum.
+const LABEL_GAPS = [5, 5, 5, 6]
+const MIN_SLIDER_WIDTH = 14
+const LEVEL_COLORS: Partial<Record<string, keyof Theme>> = {
+  low: 'warning',
+  medium: 'success',
+  high: 'permission',
+  xhigh: 'autoAccept',
+  max: 'claude',
+}
 
 // Official 2.1.311 opens this slider for a bare /effort.
 function EffortPicker({
@@ -199,9 +209,19 @@ function EffortPicker({
     else if (key.tab && ultracodeAvailable) setUltracode(on => !on)
   })
 
-  const track = levels.map((_, i) =>
-    (i === index ? '▲' : '─').padEnd(PICKER_COLUMN_WIDTH, '─'),
+  const gaps = levels.slice(1).map((_, i) => LABEL_GAPS[i] ?? 5)
+  const labelStarts = levels.map((_, i) =>
+    levels
+      .slice(0, i)
+      .reduce((sum, level, j) => sum + level.length + gaps[j]!, 0),
   )
+  const width = Math.max(
+    labelStarts.at(-1)! + levels.at(-1)!.length,
+    MIN_SLIDER_WIDTH,
+  )
+  // The marker sits under the middle of the selected label.
+  const marker =
+    labelStarts[index]! + Math.floor((levels[index]!.length - 1) / 2)
   return (
     <Dialog
       title="Effort"
@@ -213,23 +233,36 @@ function EffortPicker({
         </Text>
       )}
     >
-      <Box flexDirection="row" gap={6}>
-        <Box flexDirection="column">
+      <Box flexDirection="row" justifyContent="center" width="100%">
+        <Box flexDirection="column" width={width}>
           <Box justifyContent="space-between">
-            <Text dimColor>Faster</Text>
-            <Text dimColor>Smarter</Text>
+            <Text>Faster</Text>
+            <Text>Smarter</Text>
           </Box>
-          <Text color="suggestion">{track.join('')}</Text>
           <Text>
-            {levels
-              .map(level => level.padEnd(PICKER_COLUMN_WIDTH))
-              .join('')}
+            <Text dimColor>{'─'.repeat(marker)}</Text>
+            <Text bold>▲</Text>
+            <Text dimColor>{'─'.repeat(width - marker - 1)}</Text>
+          </Text>
+          <Text>
+            {levels.map((level, i) => (
+              <React.Fragment key={level}>
+                {i > 0 && ' '.repeat(gaps[i - 1]!)}
+                {i === index ? (
+                  <Text bold color={LEVEL_COLORS[level]}>
+                    {level}
+                  </Text>
+                ) : (
+                  <Text dimColor>{level}</Text>
+                )}
+              </React.Fragment>
+            ))}
           </Text>
         </Box>
         {ultracodeAvailable && (
-          <Box flexDirection="column" justifyContent="flex-end">
+          <Box flexDirection="column" marginLeft={6} marginTop={1}>
             <Text>
-              Ultracode <Text bold>{ultracode ? 'on' : 'off'}</Text>
+              Ultracode{'  '}<Text bold>{ultracode ? 'on' : 'off'}</Text>
             </Text>
             <Text dimColor>Tab to toggle</Text>
           </Box>

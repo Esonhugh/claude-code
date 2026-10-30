@@ -39,3 +39,26 @@ test('like official, /context folds skills to one count line until /context all'
   expect(expanded).toContain('└ alpha: 700 tokens')
   expect(expanded).not.toContain('/context all to expand')
 })
+
+test('like official, the legend names the model on its own lines and shows a non-auto auto-compact window', async () => {
+  const out = await renderToString(
+    <ContextVisualization
+      data={{ ...data, model: 'claude-opus-5-5', autocompactSource: 'model-default' } as ContextData}
+      collapsed
+    />,
+    100,
+  )
+  const lines = out.split('\n').map(line => line.trim())
+  const name = lines.indexOf('Opus 5.5')
+  expect(name).toBeGreaterThan(-1)
+  expect(lines.slice(name + 1, name + 3)).toEqual(['claude-opus-5-5', '2k/200k tokens (1%)'])
+  expect(out).toContain('Auto-compact window: 200k tokens')
+  const indent = (prefix: string) => {
+    const line = out.split('\n').find(line => line.trimStart().startsWith(prefix))!
+    return line.length - line.trimStart().length
+  }
+  expect(indent('Auto-compact window')).toBe(indent('Skills'))
+
+  const auto = await renderToString(<ContextVisualization data={data} collapsed />, 100)
+  expect(auto).not.toContain('Auto-compact window')
+})
