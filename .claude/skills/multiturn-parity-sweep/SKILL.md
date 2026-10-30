@@ -41,8 +41,8 @@ make download-claude CLAUDE_VERSION=<官方版本>               # ./official-cl
 | `rdrive.py` | 真模型 13 步自然語言（命中率 hit = 選對工具，ok = 結果正確），含 /compact 與 --continue；使用容器自帶 OAuth，binary 自己找憑證，不要讀或印 token | `python3 rdrive.py <bin> <label> --model claude-sonnet-5-5`；`rreps.sh <bin> <tag> <from> <to>` |
 | `sdrive.py` | slash 命令逐一打開、截 pane、Esc 退出 | `CMDS=/a,/b python3 sdrive.py <bin> <label> <port>` |
 | `t4.py` / `ta.py` | 定點複查（未知命令、`!` 命令、typeahead 預選） | `T4CMDS=/x,/y python3 t4.py <bin> <label> <port>` |
-| `cdrive.py` + `cmp.py` | resume 後 cache 前綴比對：兩輪 → /compact → 一輪 → /exit → --continue → 一輪；`NOCOMPACT=1` 跳過 compact；`PRE=EDIT_GO,SKILL_GO,FGQ,HELLO` 在 compact 前改檔案、用 skill 和 agent（覆蓋 git status 變動）；`TS=true` 開 tool search | `python3 cdrive.py <bin> <label> --port N && python3 -I cmp.py out/<label>` |
-| `pcont.sh` | headless `-p` → `-p --continue` 的同樣比對 | `bash pcont.sh <bin> <label> <port> && python3 -I cmp.py out/<label>` |
+| `cdrive.py` + `cmp.py` | resume 後 cache 前綴比對：兩輪 → /compact → 一輪 → /exit → --continue → 一輪；`NOCOMPACT=1` 跳過 compact；`PRE=EDIT_GO,SKILL_GO,FGQ,HELLO` 在 compact 前改檔案、用 skill 和 agent（覆蓋 git status 變動）；`TS=true` 開 tool search；`PARTIAL=1` 改用 /rewind → Summarize from here（partial compact）；`RESUME_ARG=--resume` 走選單；`RESUME_BIN=<舊 binary>` 用另一個版本恢復；`EXTRA_TURNS=N` 恢復後多跑幾輪 | `python3 cdrive.py <bin> <label> --port N && python3 -I cmp.py out/<label>` |
+| `pcont.sh` | headless `-p` → `-p --continue` 的同樣比對；`SDK=1` 改用 stream-json `--resume <id>`（Agent SDK 的路徑） | `bash pcont.sh <bin> <label> <port> && python3 -I cmp.py out/<label>` |
 | `usage.py` | 真模型 transcript 的 token/cache 統計（按 message id 去重，含子 agent） | `python3 -I usage.py rout/<label> ...` |
 
 每個驅動最後一行會印 `pass X/Y` 和 hook 計數，詳細結果在 `out/<label>/result.json`。
