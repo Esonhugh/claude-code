@@ -1,4 +1,6 @@
 import * as React from 'react'
+import { Dialog } from '../../components/design-system/Dialog.js'
+import { Box, Text, useInput } from '../../ink.js'
 import { useMainLoopModel } from '../../hooks/useMainLoopModel.js'
 import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
@@ -13,9 +15,11 @@ import {
   resolveAppliedEffort,
   getEffortEnvOverride,
   getEffortValueDescription,
+  getSupportedEffortLevelsForModel,
   isEffortLevel,
   toPersistableEffort,
 } from '../../utils/effort.js'
+import { getAPIProvider } from '../../utils/model/providers.js'
 import { updateSettingsForSource } from '../../utils/settings/settings.js'
 
 const COMMON_HELP_ARGS = ['help', '-h', '--help']
@@ -25,8 +29,11 @@ type EffortCommandResult = {
   effortUpdate?: { value: EffortValue | undefined }
 }
 
-function setEffortValue(effortValue: EffortValue): EffortCommandResult {
-  const persistable = toPersistableEffort(effortValue)
+function setEffortValue(
+  effortValue: EffortValue,
+  sessionOnly = false,
+): EffortCommandResult {
+  const persistable = sessionOnly ? undefined : toPersistableEffort(effortValue)
   if (persistable !== undefined) {
     const result = updateSettingsForSource('userSettings', {
       effortLevel: persistable,
@@ -147,6 +154,91 @@ function ShowCurrentEffort({
   return null
 }
 
+const PICKER_COLUMN_WIDTH = 10
+
+// Official 2.1.311 opens this slider for a bare /effort.
+function EffortPicker({
+  onDone,
+}: {
+  onDone: (result: string) => void
+}): React.ReactNode {
+  const effortValue = useAppState(s => s.effortValue)
+  const model = useMainLoopModel()
+  const setAppState = useSetAppState()
+  const levels = getSupportedEffortLevelsForModel(model).filter(
+    level => level !== 'minimal' || getAPIProvider() === 'openai',
+  )
+  const [index, setIndex] = React.useState(() =>
+    Math.max(
+      0,
+      (levels as readonly string[]).indexOf(
+        getDisplayedEffortLevel(model, effortValue),
+      ),
+    ),
+  )
+  const ultracodeAvailable = levels.includes('xhigh')
+  const [ultracode, setUltracode] = React.useState(effortValue === 'ultracode')
+
+  const finish = (sessionOnly: boolean) => {
+    const result = setEffortValue(
+      ultracode ? 'ultracode' : levels[index]!,
+      sessionOnly,
+    )
+    if (result.effortUpdate) {
+      const { value } = result.effortUpdate
+      setAppState(prev => ({ ...prev, effortValue: value }))
+    }
+    onDone(result.message)
+  }
+
+  useInput((input, key) => {
+    if (key.leftArrow) setIndex(i => Math.max(0, i - 1))
+    else if (key.rightArrow) setIndex(i => Math.min(levels.length - 1, i + 1))
+    else if (key.return) finish(false)
+    else if (input === 's') finish(true)
+    else if (key.tab && ultracodeAvailable) setUltracode(on => !on)
+  })
+
+  const track = levels.map((_, i) =>
+    (i === index ? '▲' : '─').padEnd(PICKER_COLUMN_WIDTH, '─'),
+  )
+  return (
+    <Dialog
+      title="Effort"
+      onCancel={() => onDone('Cancelled')}
+      inputGuide={() => (
+        <Text dimColor>
+          ←/→ to adjust · Enter to confirm · s for this session only · Esc to
+          cancel
+        </Text>
+      )}
+    >
+      <Box flexDirection="row" gap={6}>
+        <Box flexDirection="column">
+          <Box justifyContent="space-between">
+            <Text dimColor>Faster</Text>
+            <Text dimColor>Smarter</Text>
+          </Box>
+          <Text color="suggestion">{track.join('')}</Text>
+          <Text>
+            {levels
+              .map(level => level.padEnd(PICKER_COLUMN_WIDTH))
+              .join('')}
+          </Text>
+        </Box>
+        {ultracodeAvailable && (
+          <Box flexDirection="column" justifyContent="flex-end">
+            <Text>
+              Ultracode <Text bold>{ultracode ? 'on' : 'off'}</Text>
+            </Text>
+            <Text dimColor>Tab to toggle</Text>
+          </Box>
+        )}
+      </Box>
+    </Dialog>
+  )
+}
+
 function ApplyEffortAndClose({
   result,
   onDone,
@@ -182,7 +274,11 @@ export async function call(
     return
   }
 
-  if (!args || args === 'current' || args === 'status') {
+  if (!args) {
+    return <EffortPicker onDone={onDone} />
+  }
+
+  if (args === 'current' || args === 'status') {
     return <ShowCurrentEffort onDone={onDone} />
   }
 

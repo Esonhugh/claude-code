@@ -3002,6 +3002,7 @@ export function REPL({
           sessionId,
           agentType: mainThreadAgentDefinition?.agentType,
           model: mainLoopModel,
+          resumedMessages: messages,
         })
 
         // Append hook messages to the conversation

@@ -3,6 +3,7 @@
  * Hooks are user-defined shell commands that can be executed at various points
  * in Claude Code's lifecycle.
  */
+import type { PromptCacheFacts } from './promptCacheFacts.js'
 import { isDeepStrictEqual } from 'node:util'
 import { basename } from 'path'
 import { spawn, type ChildProcessWithoutNullStreams } from 'child_process'
@@ -4429,6 +4430,7 @@ export async function* executeSessionStartHooks(
   timeoutMs: number = TOOL_HOOK_EXECUTION_TIMEOUT_MS,
   forceSyncExecution?: boolean,
   sourceScope?: HookSourceScope,
+  cacheFacts?: PromptCacheFacts,
 ): AsyncGenerator<AggregatedHookResult> {
   const hookInput: SessionStartHookInput = {
     ...createBaseHookInput(undefined, sessionId),
@@ -4436,6 +4438,12 @@ export async function* executeSessionStartHooks(
     source,
     agent_type: agentType,
     model,
+    ...(cacheFacts && {
+      seconds_since_last_response: cacheFacts.secondsSinceLastResponse,
+      context_tokens: cacheFacts.contextTokens,
+      prompt_cache_likely_expired: cacheFacts.promptCacheLikelyExpired,
+      estimated_cache_write_usd: cacheFacts.estimatedCacheWriteUsd,
+    }),
   }
 
   yield* executeHooks({

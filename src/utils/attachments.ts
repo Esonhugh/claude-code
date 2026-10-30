@@ -1,4 +1,6 @@
 // biome-ignore-all assist/source/organizeImports: ANT-ONLY import markers must not be reordered
+import { OUTPUT_STYLE_CONFIG } from '../constants/outputStyles.js'
+import { isBackgroundTask } from '../tasks/types.js'
 import {
   logEvent,
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
@@ -588,6 +590,7 @@ export type Attachment =
   | {
       type: 'output_style'
       style: string
+      turnReminder?: string
     }
   | {
       type: 'diagnostics'
@@ -1018,7 +1021,7 @@ export async function getAttachments(
           getOpenedFileFromIDE(ideSelection, toolUseContext),
         ),
         maybe('output_style', async () =>
-          Promise.resolve(getOutputStyleAttachment()),
+          Promise.resolve(getOutputStyleAttachment(toolUseContext)),
         ),
         maybe('diagnostics', async () =>
           getDiagnosticAttachments(toolUseContext),
@@ -1835,7 +1838,9 @@ function getCriticalSystemReminderAttachment(
   return [{ type: 'critical_system_reminder', content: reminder }]
 }
 
-function getOutputStyleAttachment(): Attachment[] {
+function getOutputStyleAttachment(
+  toolUseContext: ToolUseContext,
+): Attachment[] {
   const settings = getSettings_DEPRECATED()
   const outputStyle = settings?.outputStyle || 'default'
 
@@ -1844,10 +1849,24 @@ function getOutputStyleAttachment(): Attachment[] {
     return []
   }
 
+  // Like official 2.1.311: the main thread gets the style's waiting reminder
+  // while a background task it started is still running.
+  const config =
+    OUTPUT_STYLE_CONFIG[outputStyle as keyof typeof OUTPUT_STYLE_CONFIG]
+  const waiting =
+    config?.waitingTurnReminder !== undefined &&
+    toolUseContext.agentId === undefined &&
+    Object.values(toolUseContext.getAppState().tasks).some(
+      task => isBackgroundTask(task) && task.status === 'running',
+    )
+
   return [
     {
       type: 'output_style',
       style: outputStyle,
+      turnReminder: waiting
+        ? config.waitingTurnReminder
+        : config?.turnReminder,
     },
   ]
 }

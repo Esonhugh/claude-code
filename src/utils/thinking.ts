@@ -15,7 +15,9 @@ export type ThinkingDisplay = (typeof THINKING_DISPLAYS)[number]
 export type ThinkingConfig =
   | { type: 'adaptive'; display?: ThinkingDisplay }
   | { type: 'enabled'; budgetTokens: number; display?: ThinkingDisplay }
-  | { type: 'disabled' }
+  // mechanical: a tool-free helper call; like official 2.1.311 the request
+  // carries no thinking parameter at all.
+  | { type: 'disabled'; mechanical?: true }
 
 /**
  * Applies a set_max_thinking_tokens request. `display` is the session display

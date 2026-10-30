@@ -18,6 +18,8 @@ import {
 } from 'src/tools/AgentTool/constants.js'
 import { getAnthropicApiKeyWithSource } from '../auth.js'
 import { getCwd } from '../cwd.js'
+import { isAnalyticsDisabled } from '../../services/analytics/config.js'
+import { isPolicyAllowed } from '../../services/policyLimits/index.js'
 import { getFastModeState } from '../fastMode.js'
 import { getSettings_DEPRECATED } from '../settings/settings.js'
 
@@ -33,7 +35,11 @@ type CommandLike = { name: string; userInvocable?: boolean; isHidden?: boolean }
 
 export type SystemInitInputs = {
   tools: ReadonlyArray<{ name: string }>
-  mcpClients: ReadonlyArray<{ name: string; type: string }>
+  mcpClients: ReadonlyArray<{
+    name: string
+    type: string
+    config?: { type?: string; scope?: string; pluginSource?: string }
+  }>
   model: string
   permissionMode: PermissionMode
   commands: ReadonlyArray<CommandLike>
@@ -41,6 +47,18 @@ export type SystemInitInputs = {
   skills: ReadonlyArray<CommandLike>
   plugins: ReadonlyArray<{ name: string; path: string; source: string }>
   fastMode: boolean | undefined
+  additionalDirectories?: readonly string[]
+}
+
+// Official 2.1.311 McpServerStatus.source: sdk | plugin | the config scope.
+function mcpServerSource(config: {
+  type?: string
+  scope?: string
+  pluginSource?: string
+}): string | undefined {
+  if (config.type === 'sdk') return 'sdk'
+  if (config.pluginSource !== undefined) return 'plugin'
+  return config.scope
 }
 
 /**
@@ -65,10 +83,14 @@ export function buildSystemInitMessage(inputs: SystemInitInputs): SDKMessage {
     cwd: getCwd(),
     session_id: getSessionId(),
     tools: inputs.tools.map(tool => sdkCompatToolName(tool.name)),
-    mcp_servers: inputs.mcpClients.map(client => ({
-      name: client.name,
-      status: client.type,
-    })),
+    mcp_servers: inputs.mcpClients.map(client => {
+      const source = client.config && mcpServerSource(client.config)
+      return {
+        name: client.name,
+        status: client.type,
+        ...(source !== undefined && { source }),
+      }
+    }),
     model: inputs.model,
     permissionMode: inputs.permissionMode,
     slash_commands: inputs.commands
@@ -100,6 +122,17 @@ export function buildSystemInitMessage(inputs: SystemInitInputs): SDKMessage {
       require('../udsMessaging.js').getUdsMessagingSocketPath()
     /* eslint-enable @typescript-eslint/no-require-imports */
   }
+  if (inputs.additionalDirectories !== undefined) {
+    initMessage.additional_directories = [...inputs.additionalDirectories]
+  }
   initMessage.fast_mode_state = getFastModeState(inputs.model, inputs.fastMode)
+  // This build sends effort only as the top-level parameter and has no
+  // focus view.
+  initMessage.per_turn_effort_active = false
+  initMessage.view_mode = 'default'
+  initMessage.analytics_disabled = isAnalyticsDisabled()
+  initMessage.product_feedback_disabled = !isPolicyAllowed(
+    'allow_product_feedback',
+  )
   return initMessage
 }

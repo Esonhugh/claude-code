@@ -11,7 +11,7 @@ import { feature } from 'bun:bundle'
 import { restoreSendMessagePins } from '../utils/sendMessagePins.js'
 import { FAILED_PROMPT_BATCH_DROP, UNSUBMITTED_PROMPT_DROP } from '../services/mods/promptAdapter.js'
 import { readFile, stat } from 'fs/promises'
-import { dirname } from 'path'
+import { dirname, join } from 'path'
 import {
   downloadUserSettings,
   redownloadUserSettings,
@@ -281,7 +281,8 @@ import {
   recordTranscript,
 } from 'src/utils/sessionStorage.js'
 import { incrementPromptCount } from 'src/utils/commitAttribution.js'
-import feedbackCommand from '../commands/feedback/index.js'
+import feedbackCommand, { feedbackDisabledReason } from '../commands/feedback/index.js'
+import { isAnalyticsDisabled } from '../services/analytics/config.js'
 import {
   backgroundAll,
   backgroundTaskForToolUse,
@@ -418,6 +419,7 @@ import {
   isBareMode,
   isEnvTruthy,
   isEnvDefinedFalsy,
+  getClaudeConfigHomeDir,
 } from '../utils/envUtils.js'
 import { installPluginsForHeadless } from '../utils/plugins/headlessPluginInstall.js'
 import { refreshActivePlugins } from '../utils/plugins/refresh.js'
@@ -4834,9 +4836,9 @@ function runHeadlessStreaming(
           // of Unsupported so the host can show it.
           sendControlResponseSuccess(message, {
             feedback_id: null,
-            unavailable_reason: feedbackCommand.isEnabled?.() === false
+            unavailable_reason: feedbackDisabledReason() ?? (feedbackCommand.isEnabled?.() === false
               ? '/feedback is disabled in this session'
-              : '/feedback from a host app is not supported by this build; run /feedback in the terminal',
+              : '/feedback from a host app is not supported by this build; run /feedback in the terminal'),
           })
         } else if (message.request.subtype === 'list_models') {
           sendControlResponseSuccess(message, { models: modelInfos })
@@ -5701,6 +5703,12 @@ async function handleInitializeRequest(
           apiProvider: getAPIProvider(),
         },
     pid: process.pid,
+    claude_code_version: MACRO.VERSION,
+    current_permission_mode: getAppState().toolPermissionContext.mode,
+    user_output_styles_dir: join(getClaudeConfigHomeDir(), 'output-styles'),
+    analytics_disabled: isAnalyticsDisabled(),
+    // This build answers a host's submit_feedback without sending a report.
+    feedback_mode: { kind: 'disabled' },
   }
 
   if (isFastModeEnabled() && isFastModeAvailable()) {

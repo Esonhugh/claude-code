@@ -335,7 +335,7 @@ export type SDKSystemMessage = {
   claude_code_version: string
   cwd: string
   tools: string[]
-  mcp_servers: Array<{ name: string; status: string }>
+  mcp_servers: Array<{ name: string; status: string; source?: string }>
   model: string
   permissionMode: PermissionMode
   slash_commands: string[]
@@ -345,6 +345,11 @@ export type SDKSystemMessage = {
   fast_mode_state?: FastModeState
   memory_paths?: { auto?: string }
   original_cwd?: string
+  additional_directories?: string[]
+  per_turn_effort_active?: boolean
+  view_mode?: 'focus' | 'default'
+  analytics_disabled?: boolean
+  product_feedback_disabled?: boolean
   uuid: string
   session_id: string
 }

@@ -270,9 +270,11 @@ export function formatToken(
     case 'escape':
       // Markdown escape: \) → ), \\ → \, etc.
       return token.text
+    case 'html':
+      // Like 2.1.311: a tag in prose (`<style>`, `<div>`) shows as written.
+      return token.text
     case 'def':
     case 'del':
-    case 'html':
       // These token types are not rendered
       return ''
   }

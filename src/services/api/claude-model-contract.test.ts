@@ -2330,7 +2330,7 @@ test('explicit output budget overrides the new model default', async () => {
   expect(request.max_tokens).toBe(48_000)
 })
 
-test('small-fast override to Opus 5 defaults to adaptive without legacy sampling', async () => {
+test('small-fast helper calls send no thinking parameter and no legacy sampling, like 2.1.311', async () => {
   process.env.ANTHROPIC_SMALL_FAST_MODEL = 'claude-opus-5'
   await queryHaiku({
     systemPrompt: asSystemPrompt([]),
@@ -2346,7 +2346,7 @@ test('small-fast override to Opus 5 defaults to adaptive without legacy sampling
     },
   })
   expect(requests).toHaveLength(1)
-  expect(requests[0]!.thinking).toEqual({ type: 'adaptive' })
+  expect(requests[0]!.thinking).toBeUndefined()
   expect(requests[0]!.temperature).toBeUndefined()
 })
 

@@ -831,6 +831,10 @@ export class QueryEngine {
       skills,
       plugins: enabledPlugins,
       fastMode: initialAppState.fastMode,
+      additionalDirectories: Array.from(
+        // @ts-ignore - recovered code
+        initialAppState.toolPermissionContext.additionalWorkingDirectories.keys(),
+      ),
     })
 
     // Record when system message is yielded for headless latency tracking
