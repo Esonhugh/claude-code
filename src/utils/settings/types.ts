@@ -829,6 +829,12 @@ export const SettingsSchema = lazySchema(() =>
         .describe(
           'Whether /rename updates the terminal tab title (defaults to true). Set to false to keep auto-generated topic titles.',
         ),
+      respondToBashCommands: z
+        .boolean()
+        .optional()
+        .describe(
+          'Whether Claude responds after an input-box ! bash command runs. Set to false to add the command output to context without a response. Default: true.',
+        ),
       alwaysThinkingEnabled: z
         .boolean()
         .optional()
