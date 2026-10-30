@@ -212,7 +212,7 @@ export async function callWorkflowAgent(agentTool: Tool, ...args: Parameters<Too
         )
         if (!task) return prev
         owned.add(task.id)
-        return { ...prev, tasks: { ...prev.tasks, [task.id]: { ...task, notified: true } } }
+        return { ...prev, tasks: { ...prev.tasks, [task.id]: { ...task, notified: true, awaitedByCaller: true } } }
       })
       if (signal.aborted) stop()
       context.modAgentStarted?.(launch)

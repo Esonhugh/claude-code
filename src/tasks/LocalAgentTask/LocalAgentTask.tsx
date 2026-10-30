@@ -230,6 +230,8 @@ export type LocalAgentTaskState = TaskStateBase & {
   parentAgentId?: string
   /** Agent whose turn receives this task's notifications; separate from transcript lineage. */
   ownerAgentId?: string
+  /** A workflow agent() call awaits this agent and reports it with the workflow. */
+  awaitedByCaller?: boolean
   /** Saved fork skill identity corroborates permission scoping on resume. */
   forkedSkillName?: string
   resuming?: boolean
