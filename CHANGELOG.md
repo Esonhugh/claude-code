@@ -28,7 +28,7 @@
 #### 需要用户处理的行为变化
 
 - `memory.extraction` 默认改为 `off`，退出时不再等待“Saving memories…”；需要时设为 `sessionEnd` 或 `everyTurns`（#305）。
-- session memory（后台维护 `session-memory/summary.md`）默认关闭，与官方一致，不再随 auto memory 开启；13 轮真实对话中省去 23 至 29 次额外的 `Edit` 调用（#356）。
+- session memory（为当前会话维护 `session-memory/summary.md`）默认关闭，与官方一致，开启 auto memory 也不会运行；13 轮真实对话中省去 23 至 29 次额外的 `Edit` 调用（#356）。auto memory（`autoMemoryEnabled`，默认开）现在只负责加载与检索长期记忆，后台补记由 `memory.extraction` 单独控制，默认 `off`。
 - Linux 与 macOS binary 内嵌 bfs 4.1.1 与 ugrep 7.8.4，Glob/Grep 工具改由 Bash 中的 `find`/`grep` 完成，与官方一致；`--tools` 或 `--allowedTools` 点名 Glob 或 Grep 时保留这两个工具；Windows 不变（#326、#141）。
 - `/agents` 交互向导移除，输入 `/agents` 显示官方的提示，改为手写 `.claude/agents/*.md`（#328）。
 - coordinator 模式进入默认构建，只在 `CLAUDE_CODE_COORDINATOR_MODE` 加上 `-p`/SDK 或 `CLAUDE_CODE_REMOTE` 时开启，本地交互会话不会进入（#285）。
