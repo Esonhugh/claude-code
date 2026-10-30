@@ -126,7 +126,7 @@ export function MenuList({
             styled={false}
           >
             <Box flexDirection="row">
-              <Box width={meta ? labelWidth + 3 : undefined}>
+              <Box width={meta ? labelWidth : undefined}>
                 <Text
                   color={isFocused ? 'suggestion' : undefined}
                   wrap="truncate-end"
@@ -142,7 +142,12 @@ export function MenuList({
                   {row.label}
                 </Text>
               </Box>
-              {meta && <Text dimColor>{meta}</Text>}
+              {meta && (
+                // The label truncates first so the meta column never wraps.
+                <Box flexShrink={0} marginLeft={3}>
+                  <Text dimColor>{meta}</Text>
+                </Box>
+              )}
             </Box>
           </ListItem>
         )

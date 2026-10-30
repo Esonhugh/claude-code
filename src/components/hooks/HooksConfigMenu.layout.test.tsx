@@ -89,6 +89,34 @@ test('the /hooks top level lists configured hooks grouped by event', async () =>
   }
 })
 
+test('a long hook command is truncated so the type column stays on one line', async () => {
+  const long: IndividualHookConfig = {
+    event: 'Stop',
+    config: { type: 'command', command: `cat >> /tmp/${'x'.repeat(120)}/hooks.log` },
+    source: 'userSettings',
+  }
+  const view = await renderTo(
+    <HooksListMode
+      hookEventMetadata={getHookEventMetadata([])}
+      hooksByEventAndMatcher={{ Stop: { '': [long] } } as unknown as Record<HookEvent, Record<string, IndividualHookConfig[]>>}
+      restrictedByPolicy={false}
+      defaultFocusIndex={0}
+      onFocusRow={() => {}}
+      onSelectHook={() => {}}
+      onOpenEvents={() => {}}
+      onCancel={() => {}}
+    />,
+  )
+  try {
+    const lines = view.lines()
+    const row = lines.find(line => line.includes('[User] cat >>'))
+    expect(row).toMatch(/…\s{3}command\s*$/)
+    expect(lines.some(line => line.trim() === 'and' || line.trim() === 'nd')).toBe(false)
+  } finally {
+    view.unmount()
+  }
+})
+
 test('All events lists every event with its hook count', async () => {
   const view = await renderTo(
     <SelectEventMode
