@@ -269,6 +269,7 @@ export function getConfigRows(context: Context): ModConfigRowProvider[] {
         context.setAppState(current => ({ ...current, settings: { ...current.settings } }))
       },
     },
+    globalBoolean('externalEditorContext', 'Show last response in external editor', global.externalEditorContext ?? false),
     globalBoolean('prStatusFooterEnabled', 'Show PR status footer', global.prStatusFooterEnabled ?? true),
     { key: 'model', label: 'Model', kind: 'text', value: state.mainLoopModel ?? 'Default (recommended)' },
     ...(hasAccessToIDEExtensionDiffFeature(options?.mcpClients ?? []) ? [{

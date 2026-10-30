@@ -470,7 +470,7 @@ export type GlobalConfig = {
   // Fullscreen in-app text selection behavior
   copyOnSelect?: boolean // Auto-copy to clipboard on mouse-up (undefined → true; lets cmd+c "work" via no-op)
   powerupsUnlocked?: string[] // /powerup lesson ids marked done
-  powerupsUnlocked?: string[] // /powerup lesson ids marked done
+  externalEditorContext?: boolean // prepend Claude's last response when the prompt opens in $EDITOR
   defaultToAgentsView?: boolean // a bare `claude` opens `claude agents`
   leftArrowOpensAgents?: boolean // ← twice at an empty idle prompt opens `claude agents` (undefined → true)
 
