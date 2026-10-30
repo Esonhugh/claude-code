@@ -195,8 +195,6 @@ No configuration needed. Just use Shift+Enter to add newlines.`
     let platformTerminals = ''
     if (currentPlatform === 'macos') {
       platformTerminals = '   • macOS: Apple Terminal\n'
-    } else if (currentPlatform === 'windows') {
-      platformTerminals = '   • Windows: Windows Terminal\n'
     }
     // For Linux and other platforms, we don't show native terminal options
     // since they're not currently supported
@@ -209,11 +207,11 @@ ${chalk.dim('Note: You can already use backslash (\\\\) + return to add newlines
 To set up the shortcut (optional):
 1. Exit tmux/screen temporarily
 2. Run /terminal-setup directly in one of these terminals:
-${platformTerminals}   • IDE: VSCode, Cursor, Windsurf, Zed
+${platformTerminals}   • IDE: VSCode, Cursor, Devin Desktop, Zed
    • Other: Alacritty
 3. Return to tmux/screen - settings will persist
 
-${chalk.dim('Note: iTerm2, WezTerm, Ghostty, Kitty, and Warp support Shift+Enter natively.')}`
+${chalk.dim('Note: iTerm2, WezTerm, Ghostty, Kitty, Warp, and Windows Terminal support Shift+Enter natively.')}`
     onDone(message)
     return null
   }
