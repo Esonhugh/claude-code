@@ -41,7 +41,6 @@ export const DEFAULT_BINDINGS: KeybindingBlock[] = [
       // will show an error if users try to override these keys.
       'ctrl+c': 'app:interrupt',
       'ctrl+d': 'app:exit',
-      'ctrl+l': 'app:redraw',
       'ctrl+t': 'app:toggleTodos',
       'ctrl+o': 'app:toggleTranscript',
       ...(feature('KAIROS') || feature('KAIROS_BRIEF')
@@ -70,6 +69,8 @@ export const DEFAULT_BINDINGS: KeybindingBlock[] = [
     context: 'Chat',
     bindings: {
       escape: 'chat:cancel',
+      'ctrl+l': 'chat:clearInput',
+      'cmd+k': 'chat:clearScreen',
       // ctrl+x chord prefix avoids shadowing readline editing keys (ctrl+a/b/e/f/...).
       'ctrl+x ctrl+k': 'chat:killAgents',
       'ctrl+x ctrl+a': 'abovePrompt:toggle',
@@ -149,8 +150,6 @@ export const DEFAULT_BINDINGS: KeybindingBlock[] = [
   {
     context: 'Confirmation',
     bindings: {
-      y: 'confirm:yes',
-      n: 'confirm:no',
       enter: 'confirm:yes',
       escape: 'confirm:no',
       // Navigation for dialogs with lists
@@ -199,7 +198,9 @@ export const DEFAULT_BINDINGS: KeybindingBlock[] = [
     context: 'Task',
     bindings: {
       // Background running foreground tasks (bash commands, agents)
-      // In tmux, users must press ctrl+b twice (tmux prefix escape)
+      // In tmux, users must press ctrl+b twice (tmux prefix escape);
+      // ctrl+x ctrl+b is the portable fallback.
+      'ctrl+x ctrl+b': 'task:background',
       'ctrl+b': 'task:background',
     },
   },
@@ -321,6 +322,8 @@ export const DEFAULT_BINDINGS: KeybindingBlock[] = [
       right: 'diff:nextSource',
       up: 'diff:previousFile',
       down: 'diff:nextFile',
+      j: 'diff:nextFile',
+      k: 'diff:previousFile',
       enter: 'diff:viewDetails',
       // Note: diff:back is handled by left arrow in detail mode
     },

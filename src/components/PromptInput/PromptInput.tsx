@@ -3389,6 +3389,7 @@ function PromptInput({
         toolPermissionContext={effectiveToolPermissionContext}
         helpOpen={helpOpen}
         suppressHint={input.length > 0}
+        isInputEmpty={input.length === 0}
         isLoading={isLoading}
         tasksSelected={tasksSelected}
         teamsSelected={teamsSelected}

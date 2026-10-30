@@ -76,6 +76,7 @@ export type McpServerStatus = {
   config?: McpServerStatusConfig
   scope?: string
   source?: string
+  transport?: string
   tools?: Array<{
     name: string
     description?: string
@@ -240,7 +241,7 @@ export type SettingSource = 'user' | 'project' | 'local'
 export type SdkPluginConfig = { type: 'local'; path: string }
 
 // Rewind
-export type RewindFilesResult = { canRewind: boolean; error?: string; filesChanged?: string[]; insertions?: number; deletions?: number }
+export type RewindFilesResult = { canRewind: boolean; error?: string; filesChanged?: string[]; insertions?: number; deletions?: number; skippedLinks?: number }
 
 // SDK Error type
 export type SDKAssistantMessageError = 'authentication_failed' | 'billing_error' | 'rate_limit' | 'invalid_request' | 'server_error' | 'unknown' | 'max_output_tokens'

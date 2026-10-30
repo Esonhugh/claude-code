@@ -1983,6 +1983,7 @@ function runHeadlessStreaming(
         config,
         scope: connection.config.scope,
         source: getMcpServerStatusSource(connection.config),
+        transport: connection.config.type ?? 'stdio',
         tools: serverTools,
         capabilities,
       }
@@ -5777,8 +5778,9 @@ async function handleRewindFiles(
     }
   }
 
+  let rewound
   try {
-    await fileHistoryRewind(
+    rewound = await fileHistoryRewind(
       updater =>
         setAppState(prev => ({
           ...prev,
@@ -5793,7 +5795,7 @@ async function handleRewindFiles(
     }
   }
 
-  return { canRewind: true }
+  return { canRewind: true, skippedLinks: rewound?.skippedLinks }
 }
 
 function handleSetPermissionMode(
