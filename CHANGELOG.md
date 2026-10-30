@@ -16,12 +16,12 @@
 
 ### 版本状态
 
-- 发布候选：`dev` 合并到 `master` 后打 tag `v2.1.296`。本条目汇总 `v2.1.295` tag（master `e3fca04`）之后至 PR #386 的全部变更；`Makefile VERSION` 与 README 发布版本同步为 `2.1.296`，`package.json` 保持 `0.0.0-dev`。版本号与官方版本号无对应关系（本轮对照基线为官方 2.1.311）。
+- 发布候选：`dev` 合并到 `master` 后打 tag `v2.1.296`。本条目汇总 `v2.1.295` tag（master `e3fca04`）之后至 PR #389 的全部变更；`Makefile VERSION` 与 README 发布版本同步为 `2.1.296`，`package.json` 保持 `0.0.0-dev`。版本号与官方版本号无对应关系（本轮对照基线为官方 2.1.311）。
 
 ### 关联提交
 
-- PR 合并提交（`git log --first-parent e3fca04..dev`）：#263、#272、#280 Teams 通知；#264、#269 agent 视图 pill（加入后又按用户要求撤回）；#268、#274、#276、#283、#284、#288、#303、#306 agent 生命周期；#290、#296、#302 coordinator 模式；#278、#289 SQLite 记忆检索；#293 Bash 折叠；#304、#316 权限与 Bedrock；#309、#311 REPL 对话框；#313 任务通知格式；#315、#319、#321 agent summary；#317、#331 Agent SDK；#323、#325、#329、#334、#346、#349 `/hooks`、`/theme`、`/agents`、`/memory`、`/config`；#327 内嵌搜索工具；#332 流式工具执行；#339 新 hook 事件；#342、#344、#347、#350 多轮对照修复；#354 权限模式转换与 Stop hook；#357 session memory；#359 权限提示与 footer 对齐官方；#363 模型默认值、会话标题与 `/ide`；#368 斜杠命令、`!` 命令回复与输出上限；#371、#374、#379 `--continue`/`--resume` 保留 prompt cache 与历史；#376 `/feedback`、`/output-style`、`/effort`、`/model` 与 SDK 字段；#383 `/hooks`、`/clear`、`/fast`、`/ide` 与对话框文案；#386 `/btw`、`/skills`、`/usage`、`/model`、`/status` 等命令对齐。
-- 对应 issue：#16、#71、#72、#73、#74、#75、#76、#88、#141、#158、#261、#262、#265、#266、#267、#270、#271、#273、#275、#277、#279、#281、#282、#285、#286、#287、#291、#292、#294、#295、#297、#298、#299、#300、#301、#305、#307、#308、#310、#314、#318、#320、#326、#328、#330、#333、#335、#336、#337、#338、#340、#341、#343、#345、#348、#351、#352、#353、#355、#356、#361、#362、#365、#366、#370、#373、#375、#378、#382、#384。
+- PR 合并提交（`git log --first-parent e3fca04..dev`）：#263、#272、#280 Teams 通知；#264、#269 agent 视图 pill（加入后又按用户要求撤回）；#268、#274、#276、#283、#284、#288、#303、#306 agent 生命周期；#290、#296、#302 coordinator 模式；#278、#289 SQLite 记忆检索；#293 Bash 折叠；#304、#316 权限与 Bedrock；#309、#311 REPL 对话框；#313 任务通知格式；#315、#319、#321 agent summary；#317、#331 Agent SDK；#323、#325、#329、#334、#346、#349 `/hooks`、`/theme`、`/agents`、`/memory`、`/config`；#327 内嵌搜索工具；#332 流式工具执行；#339 新 hook 事件；#342、#344、#347、#350 多轮对照修复；#354 权限模式转换与 Stop hook；#357 session memory；#359 权限提示与 footer 对齐官方；#363 模型默认值、会话标题与 `/ide`；#368 斜杠命令、`!` 命令回复与输出上限；#371、#374、#379 `--continue`/`--resume` 保留 prompt cache 与历史；#376 `/feedback`、`/output-style`、`/effort`、`/model` 与 SDK 字段；#383 `/hooks`、`/clear`、`/fast`、`/ide` 与对话框文案；#386 `/btw`、`/skills`、`/usage`、`/model`、`/status` 等命令对齐；#389 plan 模式权限、工具列表、会话标题与 agent 视图入口。
+- 对应 issue：#16、#71、#72、#73、#74、#75、#76、#88、#141、#158、#261、#262、#265、#266、#267、#270、#271、#273、#275、#277、#279、#281、#282、#285、#286、#287、#291、#292、#294、#295、#297、#298、#299、#300、#301、#305、#307、#308、#310、#314、#318、#320、#326、#328、#330、#333、#335、#336、#337、#338、#340、#341、#343、#345、#348、#351、#352、#353、#355、#356、#361、#362、#365、#366、#370、#373、#375、#378、#382、#384、#388。
 
 ### 变更内容
 
@@ -35,6 +35,7 @@
 - 主循环始终使用流式工具执行（#330）。
 - transcript 保存 attachment，与官方一致；`--continue`/`--resume` 后不再重复公布列表，system 与消息的 prompt cache 不再失效（#370）。git status 从 system prompt 移到 `session_context` attachment，每个会话只公布一次（压缩后再公布），改过文件的会话恢复后不再整段重写 cache（#373）。rewind 选 Summarize from here（partial compact）后恢复会话不再丢失保留段的历史（#378）。
 - `/output-style` 恢复为可用命令：列出 default、Proactive、Concise、Explanatory 与 Learning，`/output-style <name>` 写入本地设置；Proactive 与 Concise 使用官方提示词与每轮提醒（#366）。
+- 移除 `TeamCreate` 与 `TeamDelete` 工具，新增 `ReportFindings` 工具，与官方 2.1.311 一致；Bash 提示的 `ctrl+e` 解释功能移除（#388）。
 - Teams 不再处理收件箱中的 `mode_set_request` 与 `team_permission_update`，与官方一致（#74）。
 - 子代理嵌套深度保持 5 层（官方为 3 层，按用户决定不改）。
 - 模型默认值对齐官方：first party 下 `haiku` 别名指向 `claude-haiku-5-5`（第三方提供商仍为 4.5），Haiku 5.5 使用 adaptive thinking、effort 与 1M 上下文和对应定价；Sonnet 5.5 默认 effort 为 medium；自定义 `ANTHROPIC_BASE_URL` 且无 Console key 时，辅助请求使用主循环模型（#361）。
@@ -57,6 +58,7 @@
 - plan 模式（auto 可用时）下 cwd 内的写文件不再被直接放行；Bash/PowerShell 提示的 “Yes, and always allow access to …” 只添加规则与目录，不再把会话切到 acceptEdits（#351、#352）。
 - `sh -c` 中命中 deny 规则时询问；`env`/`command` 等包装的读取命令按读取处理；危险删除的包装命令增加 `exec`、`setsid`、`ionice`、`busybox`、`doas`、`pkexec`；相对路径 deny 规则同时匹配符号链接；plan 审批经过模式转换检查；Terminal 中用控制键编辑过的行需要询问（#71、#72、#73、#74、#75、#76）。
 - 权限提示文案对齐官方：Write 第 2 项写明将要应用的更新（如 “Yes, and switch to accept edits … for this session (shift+tab)”），ExitPlanMode 第 1 项为 “Yes, and switch to default (ask each time) for this session”，bypass 警告框不显示编号；Bash 提示在 default/acceptEdits 模式且 auto 可用时增加 “Yes, and switch to auto mode” 选项与 Tip，命令显示在虚线之间（#355）。
+- plan 模式即使在 auto 可用时也询问用户，不再交给分类器；以 bypass 启动的会话进入 plan 模式时提示其不会询问；Bash 提示的标签显示完整路径（#388）。
 - Bedrock/Vertex 凭证错误最多刷新 2 次，无凭证的 `claude -p` 约 4 秒失败（原约 3 分钟）（#16）。
 
 #### Hooks
@@ -81,6 +83,7 @@
 - 斜杠命令不再预选模糊匹配项，没有选中建议时 Enter 提交输入的命令，未知命令使用官方警告；命令 stderr 以纯文本显示、不带 `Error:` 前缀；`/copy` 写入每用户的 Claude 临时目录；`/terminal-setup` 与 `/mcp` 空状态文案对齐官方（#366）。
 - `/hooks` 的命令列不再换行；`/clear` 不再显示 `⎿ (no content)`；`/fast` 去掉可用性限制，网关下也打开对话框；`/ide` 安装失败使用官方格式；权限、沙箱、resume、后台任务、export、workflows 与 shell 模式的对话框标题与 footer 对齐官方（#382）。
 - `/btw` 支持 `c` 复制与 `f` 把旁答 fork 为后台 agent；`/skills` 菜单、`/model` 仅本会话选择与选择器文案、`/status` 的认证/策略行与安装诊断、`/clear <name>` 为旧会话命名、`/config` 的 thinking 锁定说明与 Worktree base ref 行，以及 effort、context、help、resume、rewind、插件界面的文案与布局对齐官方；`/usage` 与 `/cost` 报告主线程的 prompt cache 统计（#384）。
+- 连按两次 `←` 打开 agent 视图，`/config` 增加对应行；会话标题只根据用户输入生成；压缩后恢复的会话不再重复公布技能列表（#388）。
 
 #### Agent SDK
 
@@ -90,7 +93,7 @@
 #### 已知缺口
 
 - `src/services/compact/autoCompact.contextWindow.test.ts` 与 `idleCompaction.test.ts` 的部分用例依赖本机环境变量与凭证，在云容器中失败，改动前后一致，不影响运行时行为。
-- 后台 Workflow 的结果行在完成后显示 “Completed …”，官方保持 “/workflows to view dynamic workflow runs”；两者渲染逻辑相同，差异来自 task 保留时长。Bash 提示的 `ctrl+e to explain` 为 fork 自有功能，官方没有，保留。#79（工作区 MCP 审批存储、插件仓库分级）与 #366 的 `display: "updates"`/`clear_thinking`、`/stats` `/sandbox` 界面移植留到后续版本。
+- 后台 Workflow 的结果行在完成后显示 “Completed …”，官方保持 “/workflows to view dynamic workflow runs”；两者渲染逻辑相同，差异来自 task 保留时长。#79（工作区 MCP 审批存储、插件仓库分级）与 #366 的 `display: "updates"`/`clear_thinking`、`/stats` `/sandbox` 界面移植留到后续版本。
 
 ### 测试覆盖
 
