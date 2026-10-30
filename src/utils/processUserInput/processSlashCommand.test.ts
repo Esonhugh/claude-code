@@ -321,3 +321,42 @@ try {
 }
 
 console.log('processSlashCommand.test.ts passed')
+
+async function runUnknown(input: string, isNonInteractiveSession: boolean) {
+  return processSlashCommand(
+    input,
+    [],
+    [],
+    [],
+    {
+      options: {
+        commands: [promptCommand, { ...promptCommand, name: 'help' }],
+        tools: [],
+        isNonInteractiveSession,
+        mcpResources: {},
+      },
+      messages: [],
+      getAppState: () => appState as never,
+      setAppState: () => {},
+    } as never,
+    () => {},
+  )
+}
+
+// Official 2.1.311: unknown commands get a warning, plus the closest command.
+const unknownInteractive = await runUnknown('/hepl', false)
+assert.equal(unknownInteractive.shouldQuery, false)
+assert.equal(unknownInteractive.messages.length, 1)
+assert.equal(unknownInteractive.messages[0]?.type, 'system')
+assert.equal(
+  unknownInteractive.messages[0]?.content,
+  'Unknown command: /hepl. Did you mean /help?',
+)
+const unknownFar = await runUnknown('/nosuchcmd', false)
+assert.equal(unknownFar.messages[0]?.content, 'Unknown command: /nosuchcmd')
+const unknownHeadless = await runUnknown('/nosuchcmd', true)
+assert.equal(unknownHeadless.resultText, 'Unknown command: /nosuchcmd')
+assert.equal(
+  unknownHeadless.messages.at(-1)?.message?.content,
+  '<local-command-stdout>Unknown command: /nosuchcmd</local-command-stdout>',
+)
