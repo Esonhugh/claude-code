@@ -1,6 +1,6 @@
 import type { UUID } from 'crypto'
 import { getMainThreadAgentType, getSessionId } from '../bootstrap/state.js'
-import type { HookResultMessage } from '../types/message.js'
+import type { HookResultMessage, Message } from '../types/message.js'
 import { createAttachmentMessage } from './attachments.js'
 import { logForDebugging } from './debug.js'
 import { withDiagnosticsTiming } from './diagLogs.js'
@@ -10,6 +10,7 @@ import { shouldAllowManagedHooksOnly } from './hooks/hooksConfigSnapshot.js'
 import { executeSessionStartHooks, executeSetupHooks } from './hooks.js'
 import { logError } from './log.js'
 import { loadPluginHooks } from './plugins/loadPluginHooks.js'
+import { getPromptCacheFacts } from './promptCacheFacts.js'
 import { saveCustomTitle } from './sessionStorage.js'
 
 type SessionStartHooksOptions = {
@@ -17,6 +18,8 @@ type SessionStartHooksOptions = {
   agentType?: string
   model?: string
   forceSyncExecution?: boolean
+  /** The resumed transcript, for the resume-only cache fields. */
+  resumedMessages?: readonly Message[]
 }
 
 // Set by processSessionStartHooks when a hook emits initialUserMessage;
@@ -41,6 +44,7 @@ export async function processSessionStartHooks(
     agentType,
     model,
     forceSyncExecution,
+    resumedMessages,
   }: SessionStartHooksOptions = {},
 ): Promise<HookResultMessage[]> {
   // --bare skips all hooks. The local SSH UI also delegates lifecycle hooks
@@ -140,6 +144,10 @@ export async function processSessionStartHooks(
     undefined,
     undefined,
     forceSyncExecution,
+    undefined,
+    source === 'resume' && resumedMessages
+      ? getPromptCacheFacts(resumedMessages, model)
+      : undefined,
   )) {
     if (hookResult.message) {
       hookMessages.push(hookResult.message)
