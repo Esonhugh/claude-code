@@ -181,14 +181,14 @@ const AUTO_TEAMMATE_MODEL = Symbol('auto-teammate-model')
 const DIALOG_CONFIG_ROWS = ['theme','model','teammateDefaultModel','outputStyle','language','showExternalIncludesDialog','autoUpdatesChannel']
 
 // Like official 2.1.311, core choices cycle in place; plugin choices, time
-// format and free-form values open a picker, marked with › in the list.
+// format, peer messages and free-form values open a picker, marked with ›.
 function opensPicker(setting: Setting): boolean {
   const row = setting.configRow
   if (!row) return setting.type === 'managedEnum'
   if (DIALOG_CONFIG_ROWS.includes(row.key)) return true
   if (row.kind === 'boolean') return false
   if (row.kind !== 'choice' || !row.options?.length) return true
-  return row.provider.plugin !== 'engine' || row.key === 'timeFormat'
+  return row.provider.plugin !== 'engine' || row.key === 'timeFormat' || row.key === 'crossSessionInbound'
 }
 
 function cyclesInPlace(setting: Setting): boolean {
@@ -1440,6 +1440,11 @@ export function Config({
       return searchableText.toLowerCase().includes(lowerQuery)
     })
   }, [displayedSettings, searchQuery])
+  // Official marks a workflow size the user never picked with "(default)".
+  const valueText = (setting: Setting): string =>
+    setting.id === 'workflowSizeGuideline' && globalConfig.workflowSizeGuideline === undefined
+      ? `${setting.value} (default)`
+      : setting.value.toString()
   // Values line up two columns after the widest matching label (capped).
   const labelColumnWidth =
     Math.min(
@@ -1804,7 +1809,7 @@ export function Config({
     setTabsHidden,
   ])
 
-  const moveSelection = (delta: -1 | 1): void => {
+  const moveSelection = (delta: number): void => {
     setShowThinkingWarning(false)
     const newIndex = Math.max(
       0,
@@ -1829,6 +1834,10 @@ export function Config({
         }
       },
       'select:next': () => moveSelection(1),
+      'select:first': () => moveSelection(-selectedIndex),
+      'select:last': () => moveSelection(filteredSettingsItems.length),
+      'select:pageUp': () => moveSelection(-maxVisible),
+      'select:pageDown': () => moveSelection(maxVisible),
       // Wheel. ScrollKeybindingHandler's scroll:line* returns false (not
       // consumed) when the ScrollBox content fits — which it always does
       // here because the list is paginated (slice). The event falls through
@@ -1913,7 +1922,7 @@ export function Config({
       onKeyDown={handleKeyDown}
     >
       {editingConfig ? (
-        <Dialog title={editingConfig.label} onCancel={() => {setEditingConfig(null);setTabsHidden(false)}}>
+        <Dialog title={editingConfig.label} onCancel={() => {setEditingConfig(null);setTabsHidden(false)}} hideBorder>
           {editingConfig.kind === 'choice' ? <Select
             options={(editingConfig.options ?? []).map(value => ({ label: value, value }))}
             defaultValue={editingConfig.value as string}
@@ -2437,8 +2446,8 @@ export function Config({
                                 color={isSelected ? 'suggestion' : undefined}
                               >
                                 {isSelected && cyclesInPlace(setting)
-                                  ? `‹ ${setting.value.toString()} ›`
-                                  : setting.value.toString()}
+                                  ? `‹ ${valueText(setting)} ›`
+                                  : valueText(setting)}
                               </Text>
                             )}
                             {opensPicker(setting) && (

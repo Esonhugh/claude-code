@@ -247,3 +247,12 @@ test('a selected in-place choice shows ‹ › and Esc reports mods row changes'
     expect(editor.text()).toMatch(/[❯>] Editor mode {2,}‹ (normal|vim) ›/)
   } finally { editor.unmount() }
 })
+
+test('an unpicked workflow size reads "(default)" like official 2.1.311', async () => {
+  query = 'workflow size'
+  const list = await renderList()
+  try {
+    for (let i = 0; i < 50 && !/Dynamic workflow size {2,}\S/.test(list.text()); i++) await settle()
+    expect(list.text()).toMatch(/Dynamic workflow size {2,}(‹ )?\w+ \(default\)/)
+  } finally { list.unmount() }
+})

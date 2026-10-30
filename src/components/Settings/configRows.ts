@@ -35,6 +35,7 @@ import { transitionPlanAutoMode } from '../../utils/permissions/permissionSetup.
 import { isPlanModeAvailable } from '../../utils/planModeV2.js'
 import {
   defaultWorkflowSizeGuideline,
+  isWorkflowKeywordTriggerEnabled,
   shouldEnableWorkflows,
   WORKFLOW_SIZE_GUIDELINES,
   workflowsDefaultOn,
@@ -104,6 +105,11 @@ export function getConfigRows(context: Context): ModConfigRowProvider[] {
       set(value) { writeSettings('userSettings', { idleCompaction: value ? undefined : false }) },
     },
     {
+      key: 'autoContinueAtUsageLimit', label: 'Continue automatically at usage limit', kind: 'boolean',
+      value: settings.autoContinueAtUsageLimit ?? true,
+      set(value) { writeSettings('userSettings', { autoContinueAtUsageLimit: value as boolean }) },
+    },
+    {
       key: 'agentSummary', label: 'Background agent summaries', kind: 'choice',
       value: settings.agentSummary ?? 'full', options: ['full', 'short', 'off'],
       set(value) { writeSettings('userSettings', { agentSummary: value === 'full' ? undefined : value as 'short' | 'off' }) },
@@ -148,6 +154,11 @@ export function getConfigRows(context: Context): ModConfigRowProvider[] {
         context.setAppState(current => ({ ...current, promptSuggestionEnabled: value as boolean }))
       },
     }] : []),
+    ...(feature('AWAY_SUMMARY') ? [{
+      key: 'recap', label: 'Session recap', kind: 'boolean' as const,
+      value: settings.awaySummaryEnabled !== false,
+      set(value: ModConfigValue) { writeSettings('userSettings', { awaySummaryEnabled: value ? undefined : false }) },
+    }] : []),
     ...(isAnt() ? [globalBoolean('speculationEnabled', 'Speculative execution', global.speculationEnabled ?? true)] : []),
     ...(!isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_FILE_CHECKPOINTING)
       ? [globalBoolean('fileCheckpointingEnabled', 'Rewind code (checkpoints)', global.fileCheckpointingEnabled)] : []),
@@ -156,6 +167,11 @@ export function getConfigRows(context: Context): ModConfigRowProvider[] {
       set(value) {
         writeSettings('userSettings', { enableWorkflows: value === workflowsDefaultOn() ? undefined : value as boolean, disableWorkflows: undefined })
       },
+    },
+    {
+      key: 'workflowKeywordTriggerEnabled', label: 'Ultracode keyword trigger', kind: 'boolean',
+      value: isWorkflowKeywordTriggerEnabled(settings),
+      set(value) { writeSettings('userSettings', { workflowKeywordTriggerEnabled: value ? undefined : false }) },
     },
     ...(shouldEnableWorkflows(settings) && settings.workflowSizeGuideline === undefined ? [{
       key: 'workflowSizeGuideline', label: 'Dynamic workflow size', kind: 'choice' as const,
@@ -237,7 +253,12 @@ export function getConfigRows(context: Context): ModConfigRowProvider[] {
       key: 'editorMode', label: 'Editor mode', kind: 'choice',
       value: global.editorMode === 'emacs' ? 'normal' : global.editorMode || 'normal',
       options: ['normal', 'vim'],
-      set(value) { saveGlobalConfig(current => ({ ...current, editorMode: value as GlobalConfig['editorMode'] })) },
+      set(value) {
+        saveGlobalConfig(current => ({ ...current, editorMode: value as GlobalConfig['editorMode'] }))
+        // The prompt reads editorMode from global config on render; a new settings
+        // object re-renders it so vim mode applies right away.
+        context.setAppState(current => ({ ...current, settings: { ...current.settings } }))
+      },
     },
     globalBoolean('prStatusFooterEnabled', 'Show PR status footer', global.prStatusFooterEnabled ?? true),
     { key: 'model', label: 'Model', kind: 'text', value: state.mainLoopModel ?? 'Default (recommended)' },
@@ -295,6 +316,15 @@ export function getConfigRows(context: Context): ModConfigRowProvider[] {
         context.setAppState(current => ({ ...current, replBridgeEnabled: getRemoteControlAtStartup(), replBridgeOutboundOnly: false }))
       },
     }] : []),
+    // Managed policy owns this setting outright, so official hides the row instead of locking it.
+    ...(feature('UDS_INBOX') && getSettingsForSource('policySettings')?.crossSessionInbound === undefined ? [{
+      key: 'crossSessionInbound', label: 'Messages from your other sessions', kind: 'choice' as const,
+      value: settings.crossSessionInbound ?? 'default', options: ['default', 'accept', 'hold', 'refuse'],
+      set(value: ModConfigValue) {
+        writeSettings('userSettings', { crossSessionInbound: value === 'default' ? undefined : value as 'accept' | 'hold' | 'refuse' })
+        ;(require('../../utils/udsMessaging.js') as typeof import('../../utils/udsMessaging.js')).refreshPeerInboundPolicy()
+      },
+    }] : []),
     ...(options?.hasExternalIncludes ? [{
       key: 'showExternalIncludesDialog', label: 'External CLAUDE.md includes', kind: 'text' as const,
       value: String(!!getCurrentProjectConfig().hasClaudeMdExternalIncludesApproved),
@@ -320,6 +350,7 @@ export function getConfigRows(context: Context): ModConfigRowProvider[] {
     const policy = getSettingsForSource('policySettings')
     if (key === 'autoCompact') return policy?.autoCompactEnabled
     if (key === 'tips') return policy?.spinnerTipsEnabled
+    if (key === 'recap') return policy?.awaySummaryEnabled
     if (key === 'defaultPermissionMode') return policy?.permissions?.defaultMode
     if (key === 'thinkingEnabled') return policy?.alwaysThinkingEnabled
     if (key === 'notifChannel') return policy?.preferredNotifChannel
