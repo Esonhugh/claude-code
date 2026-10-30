@@ -173,7 +173,10 @@ import { logPermissionModeChange } from '../../utils/permissions/PermissionUpdat
 import { transitionPermissionMode } from '../../utils/permissions/permissionSetup.js'
 import { getPlatform } from '../../utils/platform.js'
 import type { ProcessUserInputContext } from '../../utils/processUserInput/processUserInput.js'
-import { editPromptInEditor } from '../../utils/promptEditor.js'
+import {
+  editPromptInEditor,
+  getLastResponseText,
+} from '../../utils/promptEditor.js'
 import { findBtwTriggerPositions } from '../../utils/sideQuestion.js'
 import { findSlashCommandPositions } from '../../utils/suggestions/commandSuggestions.js'
 import {
@@ -2076,7 +2079,13 @@ function PromptInput({
 
     try {
       // Pass pastedContents to expand collapsed text references
-      const result = await editPromptInEditor(input, pastedContents)
+      const result = await editPromptInEditor(
+        input,
+        pastedContents,
+        getGlobalConfig().externalEditorContext
+          ? getLastResponseText(messages)
+          : undefined,
+      )
 
       if (result.error) {
         addNotification({
@@ -2111,6 +2120,7 @@ function PromptInput({
     input,
     cursorOffset,
     pastedContents,
+    messages,
     pushToBuffer,
     trackAndSetInput,
     addNotification,

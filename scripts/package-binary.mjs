@@ -196,6 +196,17 @@ const srtWinBinaryPath = path.join(
 if (platform === 'win32' && !fs.existsSync(srtWinBinaryPath)) {
   throw new Error(`Could not find ${srtWinBinaryPath}.`);
 }
+// The Linux sandbox spawns apply-seccomp to block unix sockets; the runtime
+// looks for it beside its own files, which the compiled binary has none of.
+const applySeccompBinaryPath = path.join(
+  sandboxRuntimeDir,
+  'vendor',
+  'seccomp',
+  arch,
+  'apply-seccomp',
+);
+const embedApplySeccomp =
+  platform === 'linux' && fs.existsSync(applySeccompBinaryPath);
 const sandboxRuntimeVersion = JSON.parse(
   await fs.promises.readFile(
     path.join(sandboxRuntimeDir, 'package.json'),
@@ -264,6 +275,19 @@ const generatedEntrypointContents = embeddedEntrypointContents
     platform === 'win32'
       ? 'process.env.CLAUDE_CODE_EMBEDDED_SRT_WIN_PATH = embeddedSrtWinPath;\n' +
           `process.env.CLAUDE_CODE_EMBEDDED_SRT_WIN_VERSION = ${JSON.stringify(sandboxRuntimeVersion)};`
+      : '',
+  )
+  .replace(
+    '__CLAUDE_CODE_APPLY_SECCOMP_IMPORT__',
+    embedApplySeccomp
+      ? `import embeddedApplySeccompPath from ${JSON.stringify(applySeccompBinaryPath)} with { type: 'file' };`
+      : '',
+  )
+  .replace(
+    '__CLAUDE_CODE_APPLY_SECCOMP_ENV__',
+    embedApplySeccomp
+      ? 'process.env.CLAUDE_CODE_EMBEDDED_APPLY_SECCOMP_PATH = embeddedApplySeccompPath;\n' +
+          `process.env.CLAUDE_CODE_EMBEDDED_APPLY_SECCOMP_VERSION = ${JSON.stringify(sandboxRuntimeVersion)};`
       : '',
   )
   .replace(

@@ -62,7 +62,7 @@ test('exposes real built-in config rows in official 2.1.311 menu order, includin
     'thinkingEnabled', 'fileCheckpointingEnabled', 'workflows', 'workflowSizeGuideline', 'verbose',
     'terminalProgressBarEnabled', 'showTurnDuration', 'timeFormat', 'defaultPermissionMode',
     'respectGitignore', 'copyFullResponse', 'autoUpdatesChannel', 'theme',
-    'notifChannel', 'outputStyle', 'language', 'editorMode', 'prStatusFooterEnabled',
+    'notifChannel', 'outputStyle', 'language', 'editorMode', 'externalEditorContext', 'prStatusFooterEnabled',
     'model', 'claudeInChromeDefaultEnabled',
   ]
   expect(rows.filter(row => keys.includes(row.key)).map(row => row.key)).toEqual(keys)
@@ -254,7 +254,7 @@ test('global boolean and choice writers preserve unrelated config on disk', asyn
   }
   config.saveGlobalConfig(current => ({ ...current, editorMode: 'emacs', theme: 'light-ansi' }))
   expect(getConfigRows(context).find(row => row.key === 'editorMode')?.value).toBe('normal')
-  for (const key of ['autoCompact', 'fileCheckpointingEnabled', 'terminalProgressBarEnabled', 'showTurnDuration', 'respectGitignore', 'copyFullResponse', 'prStatusFooterEnabled', 'claudeInChromeDefaultEnabled']) {
+  for (const key of ['autoCompact', 'fileCheckpointingEnabled', 'terminalProgressBarEnabled', 'showTurnDuration', 'respectGitignore', 'copyFullResponse', 'externalEditorContext', 'prStatusFooterEnabled', 'claudeInChromeDefaultEnabled']) {
     const row = getConfigRows(context).find(row => row.key === key)!
     const value = !row.value
     await row.set!(value)

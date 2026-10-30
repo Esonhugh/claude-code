@@ -115,17 +115,46 @@ export function DiscoverPlugins({
   const insideModal = useIsInsideModal()
   const { columns: terminalWidth } = useModalOrTerminalSize(useTerminalSize())
 
-  // Filter plugins based on search query
+  // Like 2.1.311: with two or more marketplaces, ctrl+s cycles a filter
+  // row of "All" plus each marketplace, largest first.
+  const [marketplaceFilter, setMarketplaceFilter] = useState<string | null>(
+    null,
+  )
+  const marketplaceTabs = useMemo(() => {
+    const counts = new Map<string, number>()
+    for (const plugin of availablePlugins) {
+      counts.set(
+        plugin.marketplaceName,
+        (counts.get(plugin.marketplaceName) ?? 0) + 1,
+      )
+    }
+    const tabs = [...counts]
+      .map(([marketplace, count]) => ({ marketplace, label: marketplace, count }))
+      .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label))
+    return [
+      { marketplace: null, label: 'All', count: availablePlugins.length },
+      ...tabs,
+    ]
+  }, [availablePlugins])
+  const showMarketplaceTabs = marketplaceTabs.length > 2
+
+  // Filter plugins based on marketplace and search query
   const filteredPlugins = useMemo(() => {
-    if (!searchQuery) return availablePlugins
+    const inMarketplace =
+      marketplaceFilter === null
+        ? availablePlugins
+        : availablePlugins.filter(
+            plugin => plugin.marketplaceName === marketplaceFilter,
+          )
+    if (!searchQuery) return inMarketplace
     const lowerQuery = searchQuery.toLowerCase()
-    return availablePlugins.filter(
+    return inMarketplace.filter(
       plugin =>
         plugin.entry.name.toLowerCase().includes(lowerQuery) ||
         plugin.entry.description?.toLowerCase().includes(lowerQuery) ||
         plugin.marketplaceName.toLowerCase().includes(lowerQuery),
     )
-  }, [availablePlugins, searchQuery])
+  }, [availablePlugins, marketplaceFilter, searchQuery])
 
   // Selection state
   const [selectedIndex, setSelectedIndex] = useState(0)
@@ -512,6 +541,25 @@ export function DiscoverPlugins({
     },
   )
 
+  useKeybindings(
+    {
+      'plugin:cycleMarketplace': () => {
+        const index = marketplaceTabs.findIndex(
+          tab => tab.marketplace === marketplaceFilter,
+        )
+        setMarketplaceFilter(
+          marketplaceTabs[(index + 1) % marketplaceTabs.length]?.marketplace ??
+            null,
+        )
+        setSelectedIndex(0)
+      },
+    },
+    {
+      context: 'Plugin',
+      isActive: viewState === 'plugin-list' && !loading && showMarketplaceTabs,
+    },
+  )
+
   // Plugin-details navigation
   const detailsMenuOptions = React.useMemo(() => {
     if (!selectedPlugin) return []
@@ -717,7 +765,7 @@ export function DiscoverPlugins({
       </Box>
 
       {/* Search box */}
-      <Box marginBottom={1}>
+      <Box marginBottom={showMarketplaceTabs ? 0 : 1}>
         <SearchBox
           query={searchQuery}
           isFocused={isSearchMode}
@@ -726,6 +774,46 @@ export function DiscoverPlugins({
           cursorOffset={searchCursorOffset}
         />
       </Box>
+
+      {showMarketplaceTabs && (
+        <Box marginBottom={1} marginLeft={1}>
+          <Text>
+            {visibleMarketplaceTabs(marketplaceTabs, marketplaceFilter).map(
+              (tab, i) => {
+                const active = tab.marketplace === marketplaceFilter
+                return (
+                  <Text key={tab.marketplace ?? ''}>
+                    {i > 0 && <Text dimColor> · </Text>}
+                    <Text
+                      bold={active}
+                      color={active ? 'suggestion' : undefined}
+                      dimColor={!active}
+                    >
+                      {tab.label} {tab.count}
+                    </Text>
+                  </Text>
+                )
+              },
+            )}
+            {marketplaceTabs.length > MAX_MARKETPLACE_TABS && (
+              <Text dimColor>
+                {' '}
+                · +{marketplaceTabs.length - MAX_MARKETPLACE_TABS} more
+              </Text>
+            )}
+            <Text dimColor>
+              {'  '}
+              <ConfigurableShortcutHint
+                action="plugin:cycleMarketplace"
+                context="Plugin"
+                fallback="ctrl+s"
+                description="filter by marketplace"
+                parens
+              />
+            </Text>
+          </Text>
+        </Box>
+      )}
 
       {/* Warning banner */}
       {warning && (
@@ -941,4 +1029,18 @@ function EmptyStateMessage({
         </>
       )
   }
+}
+
+const MAX_MARKETPLACE_TABS = 4
+
+// The first four tabs, with the active one swapped into the last slot when it
+// would be hidden.
+export function visibleMarketplaceTabs<T extends { marketplace: string | null }>(
+  tabs: T[],
+  active: string | null,
+): T[] {
+  const shown = tabs.slice(0, MAX_MARKETPLACE_TABS)
+  const current = tabs.find(tab => tab.marketplace === active)
+  if (current && !shown.includes(current)) shown[shown.length - 1] = current
+  return shown
 }
