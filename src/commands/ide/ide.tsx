@@ -427,7 +427,7 @@ export async function call(
         )
       } else {
         onDone(
-          `Couldn't install the Claude Code extension in ${chalk.bold(name)}: ${status?.error ?? 'unknown error'} To install it yourself, see ${VS_CODE_EXTENSION_INSTALL_DOCS}`,
+          `Couldn't install the Claude Code extension in ${chalk.bold(name)}:\n${status?.error ?? 'unknown error'}\nTo install it yourself, see ${VS_CODE_EXTENSION_INSTALL_DOCS}`,
         )
       }
     }
