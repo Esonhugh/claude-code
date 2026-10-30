@@ -80,13 +80,13 @@ def setup():
               open(f'{HOME}/.claude/settings.json', 'w'))
     open(f'{HOME}/.claude/skills/mt-hello/SKILL.md', 'w').write('---\nname: mt-hello\ndescription: multi-turn probe skill\n---\n\nSKILLBODY: say hello.\n')
 
-def launch(extra=''):
+def launch(extra='', bin_path=None):
     sh('tmux', 'kill-session', '-t', S); time.sleep(0.5)
     plugin = f'--plugin-dir {ROOT}/hello-mod' if MOD else ''
     env = (f'env -i HOME={HOME} PATH=/usr/local/bin:/usr/bin:/bin TERM=xterm-256color LANG=C.UTF-8 IS_SANDBOX=1 '
            f'CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1 CLAUDE_CODE_WORKFLOWS=1 ANTHROPIC_BASE_URL=http://127.0.0.1:{PORT} '
            f'ANTHROPIC_API_KEY=sk-ant-fake ENABLE_TOOL_SEARCH={os.environ.get("TS", "false")} CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 DISABLE_AUTOUPDATER=1')
-    cmd = f'{env} {BIN} --dangerously-skip-permissions {plugin} --debug-file {OUT}/debug-{int(time.time())}.log {extra}; echo EXITED $?; sleep 600'
+    cmd = f'{env} {bin_path or BIN} --dangerously-skip-permissions {plugin} --debug-file {OUT}/debug-{int(time.time())}.log {extra}; echo EXITED $?; sleep 600'
     sh('tmux', 'new-session', '-d', '-s', S, '-x', '140', '-y', '45', '-c', WORK, cmd)
     t0 = time.time()
     ok = wait(lambda: re.search(r'bypass permissions on|for shortcuts', pane()), 40)
@@ -133,16 +133,32 @@ def main():
         ok, dt = launch(); record('start', ok, dt)
         for i, c in enumerate(os.environ.get('PRE', 'HELLO,HELLO').split(',')):
             n, s, e, dt = turn(c, 90); record(f'pre{i}-{c}', e, dt)
-        if not os.environ.get('NOCOMPACT'):
+        if os.environ.get('PARTIAL'):
+            # Summarize from the 2nd-newest prompt via the rewind selector (partial compact)
+            keys('C-u'); lit('/rewind'); keys('Enter'); time.sleep(2); cap('rw1')
+            keys('Up'); time.sleep(0.5); keys('Enter'); time.sleep(1.5); cap('rw2')
+            for _ in range(6):
+                if re.search(r'❯\s*\d*\.?\s*Summarize from here', pane()): break
+                keys('Down'); time.sleep(0.4)
+            lit('keep it short'); keys('Enter')
+            r = wait(lambda: re.search(r'Summarized|summarized|Compacted|compacted', pane()), 60); cap('partial'); record('partial-compact', r, 0)
+            time.sleep(2)
+        elif not os.environ.get('NOCOMPACT'):
             keys('C-u'); lit('/compact'); keys('Enter')
             r = wait(lambda: re.search(r'Compacted|compacted', pane()), 60); cap('compact'); record('compact', r, 0)
             time.sleep(2)
         n, s, e, dt = turn('HELLO'); record('post-compact', e, dt)
         open(f'{OUT}/mark-before-exit', 'w').write(str(last_n()))
         keys('C-u'); lit('/exit'); time.sleep(0.8); keys('Enter'); wait(lambda: 'EXITED' in pane(), 20)
-        ok, dt = launch(os.environ.get('RESUME_ARG', '--continue')); record('continue', ok, dt)
+        # RESUME_BIN: resume with another build (e.g. a transcript written before a change)
+        ok, dt = launch(os.environ.get('RESUME_ARG', '--continue'), os.environ.get('RESUME_BIN'))
+        if not ok and re.search(r'Resume Session|Search|\d+ (messages|minutes|seconds)', pane()):
+            cap('resume-picker'); keys('Enter'); ok = wait(lambda: re.search(r'bypass permissions on|for shortcuts', pane()), 20); time.sleep(1.5)
+        record('continue', ok, dt)
         open(f'{OUT}/mark-after-continue', 'w').write(str(last_n()))
         n, s, e, dt = turn('HELLO'); record('post-continue', e, dt)
+        for i in range(int(os.environ.get('EXTRA_TURNS', '0'))):
+            n, s, e, dt = turn('HELLO'); record(f'extra{i}', e, dt)
         cap('final')
         keys('C-u'); lit('/exit'); time.sleep(0.8); keys('Enter'); wait(lambda: 'EXITED' in pane(), 20)
     finally:

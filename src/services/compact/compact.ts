@@ -79,6 +79,7 @@ import {
 } from '../../utils/sessionActivity.js'
 import { processSessionStartHooks } from '../../utils/sessionStart.js'
 import {
+  cleanMessagesForLogging,
   getTranscriptPath,
   reAppendSessionMetadata,
 } from '../../utils/sessionStorage.js'
@@ -395,7 +396,8 @@ export function annotateBoundaryWithPreservedSegment(
   anchorUuid: UUID,
   messagesToKeep: readonly Message[] | undefined,
 ): SystemCompactBoundaryMessage {
-  const keep = messagesToKeep ?? []
+  // Only messages that reach the transcript can anchor the relink on resume.
+  const keep = cleanMessagesForLogging([...(messagesToKeep ?? [])])
   if (keep.length === 0) return boundary
   return {
     ...boundary,
