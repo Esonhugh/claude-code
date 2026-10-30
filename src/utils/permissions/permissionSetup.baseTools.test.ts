@@ -32,3 +32,27 @@ test('base tools leave out TaskOutput and offer one Goal tool', () => {
   expect(names).not.toContain('ClearGoal')
   expect(names).toContain('Goal')
 })
+
+test('base tools leave out TeamCreate and TeamDelete even with agent teams on', () => {
+  const prev = process.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS
+  process.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS = '1'
+  try {
+    const names = getAllBaseTools().map(tool => tool.name)
+    expect(names).not.toContain('TeamCreate')
+    expect(names).not.toContain('TeamDelete')
+  } finally {
+    if (prev === undefined) delete process.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS
+    else process.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS = prev
+  }
+})
+
+test('base tools offer ReportFindings like 2.1.311', async () => {
+  const tool = getAllBaseTools().find(t => t.name === 'ReportFindings')
+  expect(tool).toBeDefined()
+  expect(tool!.isReadOnly({} as never)).toBe(true)
+  const block = tool!.mapToolResultToToolResultBlockParam(
+    { count: 2, findings: [] } as never,
+    'tu1',
+  )
+  expect(block.content).toBe('2 findings reported.')
+})

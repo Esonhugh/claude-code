@@ -35,8 +35,6 @@ import type { AppState } from '../../../state/AppStateStore.js'
 import { AGENT_TOOL_NAME } from '../../../tools/AgentTool/constants.js'
 import { EXIT_PLAN_MODE_V2_TOOL_NAME } from '../../../tools/ExitPlanModeTool/constants.js'
 import type { AllowedPrompt } from '../../../tools/ExitPlanModeTool/ExitPlanModeV2Tool.js'
-import { TEAM_CREATE_TOOL_NAME } from '../../../tools/TeamCreateTool/constants.js'
-import { isAgentSwarmsEnabled } from '../../../utils/agentSwarmsEnabled.js'
 import {
   calculateContextPercentages,
   getContextWindowForModel,
@@ -507,10 +505,6 @@ export function ExitPlanModePermissionRequest({
       const transcriptPath = getTranscriptPath()
       const transcriptHint = `\n\nIf you need specific details from before exiting plan mode (like exact code snippets, error messages, or content you generated), read the full transcript at: ${transcriptPath}`
 
-      const teamHint = isAgentSwarmsEnabled()
-        ? `\n\nIf this plan can be broken down into multiple independent tasks, consider using the ${TEAM_CREATE_TOOL_NAME} tool to create a team and parallelize the work.`
-        : ''
-
       const feedbackSuffix = acceptFeedback
         ? `\n\nUser feedback on this plan: ${acceptFeedback}`
         : ''
@@ -520,7 +514,7 @@ export function ExitPlanModePermissionRequest({
         initialMessage: {
           message: {
             ...createUserMessage({
-              content: `Implement the following plan:\n\n${currentPlan}${verificationInstruction}${transcriptHint}${teamHint}${feedbackSuffix}`,
+              content: `Implement the following plan:\n\n${currentPlan}${verificationInstruction}${transcriptHint}${feedbackSuffix}`,
             }),
             planContent: currentPlan,
           },
