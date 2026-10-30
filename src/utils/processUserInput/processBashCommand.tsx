@@ -176,7 +176,7 @@ export async function processBashCommand(
     const respond =
       (getInitialSettings().respondToBashCommands ?? true) &&
       !data.interrupted &&
-      !data.backgroundTaskId &&
+      !('backgroundTaskId' in data && data.backgroundTaskId) &&
       !context.abortController.signal.aborted
     return {
       messages: [
