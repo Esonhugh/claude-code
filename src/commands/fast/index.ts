@@ -14,7 +14,6 @@ const fast = {
       ? 'Toggle fast mode'
       : `Toggle fast mode (${FAST_MODE_MODEL_DISPLAY} only)`
   },
-  availability: ['claude-ai', 'console', 'chatgpt'],
   isEnabled: () => isFastModeEnabled(),
   get isHidden() {
     return !isFastModeEnabled()

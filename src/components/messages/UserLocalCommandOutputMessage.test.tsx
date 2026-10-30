@@ -17,3 +17,13 @@ test('stderr is plain text, so <placeholders> and backticks survive (2.1.311)', 
   expect(out).toContain('!`git log`')
   expect(out).toContain("'git <command> [<revision>...] -- [<file>...]'")
 })
+
+test('a command with no output renders nothing, not "(no content)" (2.1.311 /clear)', async () => {
+  for (const content of [
+    '<local-command-stdout></local-command-stdout>',
+    '<local-command-stdout>(no content)</local-command-stdout>',
+  ]) {
+    const out = await renderToString(<UserLocalCommandOutputMessage content={content} />)
+    expect(out.trim()).toBe('')
+  }
+})

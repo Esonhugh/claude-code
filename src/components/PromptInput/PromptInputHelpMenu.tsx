@@ -70,7 +70,7 @@ export function PromptInputHelpMenu(props: Props): React.ReactNode {
     <Box paddingX={paddingX} flexDirection="row" gap={gap}>
       <Box flexDirection="column" width={fixedWidth ? 24 : undefined}>
         <Box>
-          <Text dimColor={dimColor}>! for bash mode</Text>
+          <Text dimColor={dimColor}>! for shell mode</Text>
         </Box>
         <Box>
           <Text dimColor={dimColor}>/ for commands</Text>

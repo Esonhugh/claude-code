@@ -4,7 +4,6 @@ import { NO_CONTENT_MESSAGE } from '../../constants/messages.js'
 import { Box, Text } from '../../ink.js'
 import { extractTag } from '../../utils/messages.js'
 import { Markdown } from '../Markdown.js'
-import { MessageResponse } from '../MessageResponse.js'
 
 type Props = {
   content: string
@@ -15,16 +14,8 @@ export function UserLocalCommandOutputMessage({
 }: Props): React.ReactNode {
   const stdout = extractTag(content, 'local-command-stdout')
   const stderr = extractTag(content, 'local-command-stderr')
-  if (!stdout && !stderr) {
-    return (
-      <MessageResponse>
-        <Text dimColor>{NO_CONTENT_MESSAGE}</Text>
-      </MessageResponse>
-    )
-  }
-
   const lines: React.ReactNode[] = []
-  if (stdout?.trim()) {
+  if (stdout?.trim() && stdout.trim() !== NO_CONTENT_MESSAGE) {
     lines.push(<IndentedContent key="stdout">{stdout.trim()}</IndentedContent>)
   }
   if (stderr?.trim()) {
@@ -34,7 +25,8 @@ export function UserLocalCommandOutputMessage({
       </IndentedContent>,
     )
   }
-  return lines
+  // Commands like /clear print nothing; 2.1.311 renders no "(no content)" row.
+  return lines.length > 0 ? lines : null
 }
 
 function IndentedContent({

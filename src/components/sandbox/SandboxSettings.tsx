@@ -154,7 +154,7 @@ export function SandboxSettings({
 
   return (
     <Pane color="permission">
-      <Tabs title="Sandbox:" color="permission" defaultTab="Mode">
+      <Tabs title="Sandbox" color="permission" defaultTab="Mode">
         {tabs}
       </Tabs>
       {hasErrors && (

@@ -1033,7 +1033,7 @@ export function LogSelector({
       <Box flexDirection="column">
         <Divider color="suggestion" />
         <Text bold color="suggestion">
-          Resume Session
+          Resume session
         </Text>
         <Box paddingLeft={1} marginY={1}>
           <Text dimColor>
@@ -1091,7 +1091,7 @@ export function LogSelector({
       ) : (
         <Box flexShrink={0}>
           <Text bold color="suggestion">
-            Resume Session
+            Resume session
             {viewMode === 'list' && displayedLogs.length > visibleCount && (
               <Text dimColor>
                 {' '}

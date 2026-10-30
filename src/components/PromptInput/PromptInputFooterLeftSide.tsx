@@ -328,7 +328,7 @@ function ModeIndicator({
     count(Object.values(teamContext.teammates), t => t.name !== 'team-lead') > 0
 
   if (mode === 'bash') {
-    return <Text color="bashBorder">! for bash mode</Text>
+    return <Text color="bashBorder">! for shell mode</Text>
   }
 
   const currentMode = toolPermissionContext?.mode
