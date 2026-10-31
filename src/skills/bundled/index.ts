@@ -6,6 +6,7 @@ import { registerClaudeInChromeSkill } from './claudeInChrome.js'
 import { registerCodeReviewSkill } from './codeReview.js'
 import { registerDatavizSkill } from './dataviz.js'
 import { registerDebugSkill } from './debug.js'
+import { registerDoctorSkill } from './doctor.js'
 import { registerFewerPermissionPromptsSkill } from './fewerPermissionPrompts.js'
 import { registerKeybindingsSkill } from './keybindings.js'
 import { registerTerminalSkill } from './terminal.js'
@@ -40,6 +41,7 @@ export function initBundledSkills(): void {
   registerPluginAuthoringSkill()
   registerRememberSkill()
   registerSimplifySkill()
+  registerDoctorSkill()
   registerFewerPermissionPromptsSkill()
   registerCodeReviewSkill()
   registerBatchSkill()
