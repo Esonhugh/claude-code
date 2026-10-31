@@ -1,6 +1,7 @@
 import { feature } from 'bun:bundle'
 import { formatDuration } from '../../utils/format.js'
 import { FILE_READ_TOOL_NAME } from '../FileReadTool/prompt.js'
+import isPlainObject from 'lodash-es/isPlainObject.js'
 import type { ToolResultBlockParam } from '@anthropic-ai/sdk/resources/index.mjs'
 import {
   copyFile,
@@ -708,6 +709,34 @@ export const BashTool = buildTool({
   },
   get inputSchema(): InputSchema {
     return inputSchema()
+  },
+  // Like 2.1.311: `timeout_ms` and `command_description` are common aliases.
+  coerceInput(input) {
+    if (!isPlainObject(input)) return null
+    const next = { ...(input as Record<string, unknown>) }
+    let changed = false
+    if ('timeout_ms' in next && !('timeout' in next)) {
+      const value = next.timeout_ms
+      if (
+        typeof value === 'number' ||
+        (typeof value === 'string' && /^\d+$/.test(value))
+      ) {
+        next.timeout = value
+        delete next.timeout_ms
+        changed = true
+      }
+    }
+    if ('command_description' in next) {
+      if (
+        !('description' in next) &&
+        typeof next.command_description === 'string'
+      ) {
+        next.description = next.command_description
+      }
+      delete next.command_description
+      changed = true
+    }
+    return changed ? next : null
   },
   get outputSchema(): OutputSchema {
     return outputSchema()

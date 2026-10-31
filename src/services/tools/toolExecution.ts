@@ -1068,7 +1068,9 @@ async function checkPermissionsAndCallTool(
   managedPass?: ManagedPreToolUsePass,
 ): Promise<MessageUpdateLazy[]> {
   // Validate input types with zod (surprisingly, the model is not great at generating valid input)
-  const parsedInput = tool.inputSchema.safeParse(input)
+  const parsedInput = tool.inputSchema.safeParse(
+    tool.coerceInput?.(input) ?? input,
+  )
   if (!parsedInput.success) {
     let errorContent = formatZodValidationError(tool.name, parsedInput.error)
 

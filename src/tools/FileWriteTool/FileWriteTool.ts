@@ -1,4 +1,5 @@
 import { dirname, sep } from 'path'
+import isPlainObject from 'lodash-es/isPlainObject.js'
 import { logEvent } from 'src/services/analytics/index.js'
 import { z } from 'zod/v4'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../services/analytics/growthbook.js'
@@ -122,6 +123,40 @@ export const FileWriteTool = buildTool({
   isResultTruncated,
   get inputSchema(): InputSchema {
     return inputSchema()
+  },
+  // Like 2.1.311: accept the names models carry over from other editors.
+  coerceInput(input) {
+    if (!isPlainObject(input)) return null
+    const next = { ...(input as Record<string, unknown>) }
+    let changed = false
+    if (!Object.hasOwn(next, 'file_path') && typeof next.path === 'string') {
+      next.file_path = next.path
+      delete next.path
+      changed = true
+    }
+    const contentAliases = ['file_text', 'file_content'].filter(key =>
+      Object.hasOwn(next, key),
+    )
+    const [alias] = contentAliases
+    if (
+      alias !== undefined &&
+      contentAliases.length === 1 &&
+      !Object.hasOwn(next, 'content') &&
+      typeof next[alias] === 'string'
+    ) {
+      next.content = next[alias]
+      delete next[alias]
+      changed = true
+    }
+    if (Object.hasOwn(next, 'description')) {
+      delete next.description
+      changed = true
+    }
+    if (next.command === 'create') {
+      delete next.command
+      changed = true
+    }
+    return changed ? next : null
   },
   get outputSchema(): OutputSchema {
     return outputSchema()

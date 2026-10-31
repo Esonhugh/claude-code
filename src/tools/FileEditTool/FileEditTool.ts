@@ -1,4 +1,5 @@
 import { dirname, isAbsolute, sep } from 'path'
+import isPlainObject from 'lodash-es/isPlainObject.js'
 import { logEvent } from 'src/services/analytics/index.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../services/analytics/growthbook.js'
 import { diagnosticTracker } from '../../services/diagnosticTracking.js'
@@ -116,6 +117,32 @@ export const FileEditTool = buildTool({
   },
   getPath(input): string {
     return input.file_path
+  },
+  // Like 2.1.311: accept the str_replace_editor names models carry over.
+  coerceInput(input) {
+    if (!isPlainObject(input)) return null
+    const next = { ...(input as Record<string, unknown>) }
+    let changed = false
+    if ('replace_name' in next) {
+      if (!('replace_all' in next)) {
+        next.replace_all =
+          next.replace_name === true || next.replace_name === 'true'
+      }
+      delete next.replace_name
+      changed = true
+    }
+    for (const [alias, key] of [
+      ['path', 'file_path'],
+      ['old_str', 'old_string'],
+      ['new_str', 'new_string'],
+    ] as const) {
+      if (alias in next && !(key in next) && typeof next[alias] === 'string') {
+        next[key] = next[alias]
+        delete next[alias]
+        changed = true
+      }
+    }
+    return changed ? next : null
   },
   backfillObservableInput(input) {
     // hooks.mdx documents file_path as absolute; expand so hook allowlists

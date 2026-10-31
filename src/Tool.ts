@@ -585,6 +585,13 @@ export type Tool<
   backfillObservableInput?(input: Record<string, unknown>): void
 
   /**
+   * Repairs a common wrong input shape (an alias key, a value that means
+   * "unset") before schema validation, so the call runs instead of failing.
+   * Returns null when there is nothing to repair.
+   */
+  coerceInput?(input: unknown): Record<string, unknown> | null
+
+  /**
    * Determines if this tool is allowed to run with this input in the current context.
    * It informs the model of why the tool use failed, and does not directly display any UI.
    * @param input
