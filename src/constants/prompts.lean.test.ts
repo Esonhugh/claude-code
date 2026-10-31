@@ -7,6 +7,7 @@ import { resetSettingsCache } from '../utils/settings/settingsCache.js'
 import { getSystemPromptFacts, getSystemPromptSections } from '../utils/systemPromptType.js'
 import fixture from './fixtures/leanPrompt292.json'
 import { getAutoMemPath } from '../memdir/paths.js'
+import { clearSystemPromptSections } from './systemPromptSections.js'
 
 ;(globalThis as typeof globalThis & { MACRO: MacroGlobals }).MACRO = { VERSION: 'test', ISSUES_EXPLAINER: 'report an issue' }
 const { getSystemPrompt } = await import('./prompts.js')
@@ -64,4 +65,30 @@ test.each(fixture.cases)('matches official lean selection and core sections for 
       expect(sections.find(s => 'name' in s && s.name === section.id)).toEqual({ name: section.id, scope: 'session', text: section.text })
     }
   } else expect(sections[0]).not.toMatchObject({ name: 'lean_body' })
+})
+
+// Official 2.1.311 Qnr/Snn: lean drops Agent/Explore/AskUserQuestion bullets; every prompt ends with
+// context_management + act_dont_rederive and no summarize_tool_results section.
+test('session guidance and tail sections match official 2.1.311', async () => {
+  const tools = [{ name: 'Agent' }, { name: 'AskUserQuestion' }, { name: 'Skill' }] as unknown as Parameters<typeof getSystemPrompt>[0]
+  const text = (prompt: string[]) => getSystemPromptSections(prompt)!.map(s => 'text' in s ? s.text ?? '' : '').join('\n\n')
+  const lean = text(await getSystemPrompt(tools, 'claude-opus-5-5'))
+  expect(lean).not.toContain('Use the Agent tool with specialized agents')
+  expect(lean).not.toContain('subagent_type=Explore')
+  expect(lean).not.toContain('use the AskUserQuestion to ask them')
+  expect(getSystemPromptSections(await getSystemPrompt(tools, 'claude-opus-5-5'))!.find(s => 'name' in s && s.name === 'session_guidance'))
+    .toMatchObject({ text: "# Session-specific guidance\n - When the user types `/<skill-name>`, invoke it via Skill. Only use skills listed in the user-invocable skills section — don't guess." })
+  expect(lean).not.toContain('write down any important information')
+  expect(lean).toContain('# Context management\nWhen the conversation grows long, some or all of the current context is summarized;')
+  expect(lean).toContain('When you have enough information to act, act. Do not re-derive facts already established in the conversation, re-litigate a decision the user has already made, or narrate options you will not pursue. If you are weighing a choice, give a recommendation, not an exhaustive survey')
+  const full = text(await getSystemPrompt(tools, 'claude-sonnet-4-6'))
+  expect(full).toContain('Use the Agent tool with specialized agents')
+  expect(full).toContain("For broad codebase exploration or research that'll take more than 3 queries, spawn Agent with subagent_type=Explore. Otherwise use ")
+  expect(full).not.toContain('For simple, directed codebase searches')
+  expect(full).toContain('# Context management')
+  process.env.CLAUDE_CODE_ACT_DONT_REDERIVE = '0'
+  clearSystemPromptSections()
+  try {
+    expect(text(await getSystemPrompt(tools, 'claude-opus-5-5'))).not.toContain('When you have enough information to act, act.')
+  } finally { delete process.env.CLAUDE_CODE_ACT_DONT_REDERIVE }
 })
