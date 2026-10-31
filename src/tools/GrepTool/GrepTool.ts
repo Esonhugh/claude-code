@@ -1,3 +1,4 @@
+import isPlainObject from 'lodash-es/isPlainObject.js'
 import { z } from 'zod/v4'
 import type { ValidationResult } from '../../Tool.js'
 import { buildTool, type ToolDef } from '../../Tool.js'
@@ -191,6 +192,37 @@ export const GrepTool = buildTool({
   },
   isSearchOrReadCommand() {
     return { isSearch: true, isRead: false }
+  },
+  // Like 2.1.311: `file_path` and the rg flags -l, -c and -r are common
+  // wrong shapes; read them as path and output_mode.
+  coerceInput(input) {
+    if (!isPlainObject(input)) return null
+    const next = { ...(input as Record<string, unknown>) }
+    let changed = false
+    const isTrue = (value: unknown) => value === true || value === 'true'
+    if (typeof next.file_path === 'string' && next.file_path !== '') {
+      if (!Object.hasOwn(next, 'path') || next.path === next.file_path) {
+        next.path = next.file_path
+        delete next.file_path
+        changed = true
+      }
+    }
+    for (const [flag, mode] of [
+      ['-l', 'files_with_matches'],
+      ['-c', 'count'],
+    ] as const) {
+      if (!isTrue(next[flag])) continue
+      if (!Object.hasOwn(next, 'output_mode') || next.output_mode === mode) {
+        delete next[flag]
+        next.output_mode = mode
+        changed = true
+      }
+    }
+    if (isTrue(next['-r'])) {
+      delete next['-r']
+      changed = true
+    }
+    return changed ? next : null
   },
   getPath({ path }): string {
     return path || getCwd()

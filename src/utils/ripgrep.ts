@@ -86,6 +86,18 @@ function isEagainError(stderr: string): boolean {
  * Custom error class for ripgrep timeouts.
  * This allows callers to distinguish between "no matches" and "timed out".
  */
+const RIPGREP_USAGE_ERROR =
+  /^rg: (?:regex parse error|error parsing glob|unrecognized file type|error parsing flag|compiled regex exceeds size limit)/m
+
+export class RipgrepUsageError extends Error {
+  constructor(stderr: string) {
+    super(
+      `Search failed — ripgrep rejected the pattern, glob, or file type without searching:\n${stderr.trim().slice(0, 2000)}`,
+    )
+    this.name = 'RipgrepUsageError'
+  }
+}
+
 export class RipgrepTimeoutError extends Error {
   constructor(
     message: string,
@@ -370,6 +382,13 @@ export async function ripGrep(
       // Exit code 1 is normal "no matches"
       if (error.code === 1) {
         resolve([])
+        return
+      }
+
+      // A pattern, glob or type ripgrep rejects is the model's to fix, not
+      // "no matches" (2.1.311).
+      if (error.code === 2 && RIPGREP_USAGE_ERROR.test(stderr)) {
+        reject(new RipgrepUsageError(stderr))
         return
       }
 
