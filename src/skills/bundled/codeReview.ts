@@ -732,6 +732,7 @@ export function formatCodeReviewResult(resultText: string): string {
 export function registerCodeReviewSkill(): void {
   registerBundledSkill({
     name: 'code-review',
+    menuDescription: 'Review the current diff or a PR for bugs and cleanups',
     aliases: ['review'],
     subcommands: { ultra: 'ultrareview' },
     description: getDescription,

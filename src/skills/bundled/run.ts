@@ -28,6 +28,7 @@ function skillPrompt(skillMd: string, args: string): string {
 export function registerRunSkill(): void {
   registerBundledSkill({
     name: 'run',
+    menuDescription: 'Launch this project’s app to see your change working',
     description:
       "Launch and drive this project's app to see a change working. Use when asked to run, start, or screenshot the app, or to confirm a change works in the real app (not just tests). First looks for a project skill that already covers launching the app; otherwise falls back to built-in patterns per project type (CLI, server, TUI, Electron, browser-driven, library).",
     userInvocable: true,
@@ -41,6 +42,7 @@ export function registerRunSkill(): void {
 export function registerRunSkillGeneratorSkill(): void {
   registerBundledSkill({
     name: 'run-skill-generator',
+    menuDescription: 'Create a skill that knows how to run this project’s app',
     description:
       "Author or improve the run-<unit> skill - a per-project skill that tells agents how to build, launch, and drive this project's app. Use when the user asks to set up the project, get it running, write run instructions, or verify build/run steps work from a clean environment.",
     userInvocable: true,
