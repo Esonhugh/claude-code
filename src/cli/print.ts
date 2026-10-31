@@ -116,7 +116,6 @@ import {
   isChannelsEnabled,
 } from 'src/services/mcp/channelAllowlist.js'
 import { parsePluginIdentifier } from 'src/utils/plugins/pluginIdentifier.js'
-import { validateUuid } from 'src/utils/uuid.js'
 import { fromArray } from 'src/utils/generators.js'
 import { ask } from 'src/QueryEngine.js'
 import type { ModsSession } from '../services/mods/session.js'
@@ -280,6 +279,8 @@ import {
   getTranscriptPath,
   restoreSessionMetadata,
   recordTranscript,
+  searchSessionsByCustomTitle,
+  getSessionIdFromLog,
 } from 'src/utils/sessionStorage.js'
 import { incrementPromptCount } from 'src/utils/commitAttribution.js'
 import feedbackCommand, { feedbackDisabledReason } from '../commands/feedback/index.js'
@@ -577,6 +578,28 @@ export function canBatchWith(
     next.skipSlashCommands === head.skipSlashCommands &&
     next.skipAttachments === head.skipAttachments
   )
+}
+
+/**
+ * Official 2.1.311: an empty -p prompt is an error, including with --resume or
+ * --continue (official resumes a deferred tool there; this build has none).
+ */
+export function getMissingPromptError(
+  inputPrompt: string | AsyncIterable<string>,
+  options: { resume?: string | boolean; continue?: boolean; sdkUrl?: string },
+): string | null {
+  if (typeof inputPrompt !== 'string' || inputPrompt.trim() !== '' || options.sdkUrl) {
+    return null
+  }
+  if (inputPrompt !== '') {
+    return 'Error: Input contained only whitespace. Provide a prompt with text through stdin or as a prompt argument when using --print\n'
+  }
+  const resuming =
+    (typeof options.resume === 'string' && options.resume.trim().length > 0) ||
+    options.continue
+  return resuming
+    ? 'Error: No deferred tool marker found in the resumed session. Either the session was not deferred, the marker is stale (tool already ran), or it exceeds the tail-scan window. Provide a prompt to continue the conversation.\n'
+    : 'Error: Input must be provided either through stdin or as a prompt argument when using --print\n'
 }
 
 export async function runHeadless(
@@ -941,16 +964,9 @@ export async function runHeadless(
     return
   }
 
-  // Check if we need input prompt - skip if we're resuming with a valid session ID/JSONL file or using SDK URL
-  const hasValidResumeSessionId =
-    typeof options.resume === 'string' &&
-    (Boolean(validateUuid(options.resume)) || options.resume.endsWith('.jsonl'))
-  const isUsingSdkUrl = Boolean(options.sdkUrl)
-
-  if (!inputPrompt && !hasValidResumeSessionId && !isUsingSdkUrl) {
-    process.stderr.write(
-      `Error: Input must be provided either through stdin or as a prompt argument when using --print\n`,
-    )
+  const missingPromptError = getMissingPromptError(inputPrompt, options)
+  if (missingPromptError) {
+    process.stderr.write(missingPromptError)
     gracefulShutdownSync(1)
     return
   }
@@ -6329,15 +6345,33 @@ async function loadInitialMessages(
     try {
       logEvent('tengu_resume_print', {})
 
-      // In print mode - we require a valid session ID, JSONL file or URL
-      const parsedSessionId = parseSessionIdentifier(
-        typeof options.resume === 'string' ? options.resume : '',
-      )
+      // In print mode - we require a session ID, JSONL file, URL or an exact session title
+      const resumeArg =
+        typeof options.resume === 'string' ? options.resume.trim() : ''
+      let parsedSessionId = parseSessionIdentifier(resumeArg)
+      if (!parsedSessionId && resumeArg) {
+        const matches = await searchSessionsByCustomTitle(resumeArg, {
+          exact: true,
+        })
+        if (matches.length > 1) {
+          const choices = matches
+            .map(log => `  ${getSessionIdFromLog(log) ?? '(unknown)'}  (modified ${log.modified.toISOString()})`)
+            .join('\n')
+          emitLoadError(
+            `Error: --resume "${resumeArg}" matches ${matches.length} sessions. Pass one of these session IDs to disambiguate:\n${choices}`,
+            options.outputFormat,
+          )
+          gracefulShutdownSync(1)
+          return { messages: [] }
+        }
+        const matchedId = matches[0] && getSessionIdFromLog(matches[0])
+        if (matchedId) parsedSessionId = parseSessionIdentifier(matchedId)
+      }
       if (!parsedSessionId) {
         let errorMessage =
-          'Error: --resume requires a valid session ID when used with --print. Usage: claude -p --resume <session-id>'
-        if (typeof options.resume === 'string') {
-          errorMessage += `. Session IDs must be in UUID format (e.g., 550e8400-e29b-41d4-a716-446655440000). Provided value "${options.resume}" is not a valid UUID`
+          'Error: --resume requires a valid session ID or session title when used with --print. Usage: claude -p --resume <session-id|title>'
+        if (resumeArg) {
+          errorMessage += `. Provided value "${resumeArg}" is not a UUID and does not match any session title.`
         }
         emitLoadError(errorMessage, options.outputFormat)
         gracefulShutdownSync(1)
