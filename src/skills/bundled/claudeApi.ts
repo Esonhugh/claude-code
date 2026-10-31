@@ -283,7 +283,8 @@ function buildPrompt(
       (!/^[ -~]*$/.test(args) || /[#`~<]|:\/\//.test(args)))
   if (args) {
     const request = quoteRequest
-      ? `> ${args.split(/\r\n|[\0-\x08\n-\x1f\x7f-\x9f\u2028\u2029]/).join('\n> ')}`
+      ? // eslint-disable-next-line no-control-regex
+        `> ${args.split(/\r\n|[\0-\x08\n-\x1f\x7f-\x9f\u2028\u2029]/).join('\n> ')}`
       : args
     parts.push(`## User Request\n\n${request}`)
   }
