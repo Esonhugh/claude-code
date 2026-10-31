@@ -6571,7 +6571,7 @@ async function run(): Promise<CommanderCommand> {
   program
     .command('doctor')
     .description(
-      'Check the health of your Claude Code auto-updater. Note: The workspace trust dialog is skipped and stdio servers from .mcp.json are spawned for health checks. Only use this command in directories you trust.',
+      'Check the health of your Claude Code installation. The workspace trust dialog is skipped and stdio servers from .mcp.json are spawned for health checks, so only run it in directories you trust. For a full checkup that can also fix issues, run /doctor in a session.',
     )
     .action(async () => {
       const [{ doctorHandler }, { createRoot }] = await Promise.all([

@@ -151,7 +151,8 @@ async function runChild(): Promise<void> {
   test('policy-denied servers are not found', async () => {
     const denied = await get('denied')
     expect(denied.exitCodes).toEqual([1])
-    expect(denied.errors).toContain('No MCP server found with name: denied')
+    expect(denied.errors).toContain('No MCP server named "denied". Configured servers: ')
+    expect(denied.errors).not.toContain('denied,')
     expect(connected).toEqual([])
   })
 

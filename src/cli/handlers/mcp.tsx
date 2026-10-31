@@ -265,6 +265,18 @@ export async function mcpListHandler(): Promise<void> {
   await gracefulShutdown(0)
 }
 
+function noServerNamed(name: string, configured: string[]): string {
+  if (configured.length === 0) {
+    return `No MCP server named "${name}". Run \`claude mcp add\` to add one.`
+  }
+  const names = [...configured].sort()
+  const more =
+    names.length > 8
+      ? ` (and ${names.length - 8} more — run \`claude mcp list\` to see all)`
+      : ''
+  return `No MCP server named "${name}". Configured servers: ${names.slice(0, 8).join(', ')}${more}`
+}
+
 // mcp get (lines 4694–4786)
 export async function mcpGetHandler(name: string): Promise<void> {
   logEvent('tengu_mcp_get', {
@@ -274,7 +286,9 @@ export async function mcpGetHandler(name: string): Promise<void> {
     includeUnapprovedProjectServers: true,
   })
   if (!server) {
-    return cliError(`No MCP server found with name: ${name}`)
+    return cliError(
+      noServerNamed(name, Object.keys((await getAllMcpConfigs()).servers)),
+    )
   }
 
   // biome-ignore lint/suspicious/noConsole:: intentional console output
@@ -388,7 +402,9 @@ async function getServerForAuth(
     getMcpConfigByName(name, { includeUnapprovedProjectServers: true }) ??
     (await getAllMcpConfigs()).servers[name]
   if (!server) {
-    return cliError(`No MCP server found with name: ${name}`)
+    return cliError(
+      noServerNamed(name, Object.keys((await getAllMcpConfigs()).servers)),
+    )
   }
   const projectStatus =
     server.scope === 'project' ? getProjectMcpServerStatus(name) : 'approved'
