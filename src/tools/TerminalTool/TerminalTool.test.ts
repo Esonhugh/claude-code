@@ -1238,6 +1238,46 @@ test('TerminalTask.kill stops runtime session and clears registry', async () => 
   )
 })
 
+test('kill-pane and TaskStop do not wake the model with a task notification', async () => {
+  const context = createContext()
+  const open = async () => {
+    const opened = await TerminalTool.call(
+      { action: 'new-session', cwd: process.cwd(), cols: 80, rows: 24 },
+      context,
+      allowPermission,
+      TEST_ASSISTANT_MESSAGE,
+    )
+    const target = String((opened.data as { target: string }).target)
+    const task = Object.values(context.getAppState().tasks).find(
+      (value): value is TerminalTask =>
+        value.type === 'interactive_terminal' && value.sessionId === target,
+    )
+    return { target, taskId: task!.id }
+  }
+  const before = getCommandQueue().filter(command => command.mode === 'task-notification').length
+
+  const viaKillPane = await open()
+  await TerminalTool.call(
+    { action: 'kill-pane', target: viaKillPane.target },
+    context,
+    allowPermission,
+    TEST_ASSISTANT_MESSAGE,
+  )
+  const viaTaskStop = await open()
+  const { TerminalTask: RuntimeTerminalTask } = await import('../../tasks/TerminalTask.js')
+  await RuntimeTerminalTask.kill(viaTaskStop.taskId, context.setAppState)
+
+  for (const { taskId } of [viaKillPane, viaTaskStop]) {
+    const task = context.getAppState().tasks[taskId] as TerminalTask
+    assert.equal(task.status, 'killed')
+    assert.equal(task.notified, true)
+  }
+  assert.equal(
+    getCommandQueue().filter(command => command.mode === 'task-notification').length,
+    before,
+  )
+})
+
 test('returns SESSION_ALREADY_CLOSED when writing to a closed pane', async () => {
   const opened = await TerminalTool.call(
     {
@@ -1278,6 +1318,13 @@ test('Terminal schema tells the model that command is one executable and args is
   }
   assert.match(schema.properties.command?.description ?? '', /args/)
   assert.match(schema.properties.args?.description ?? '', /argument/i)
+})
+
+test('Terminal prompt documents target, every capture-pane mode and kill-pane', async () => {
+  const { PROMPT } = await import('./prompt.js')
+  for (const rule of ['`target`', '"compact"', '"full"', '"save_file"', '`filePath`', 'display-message', 'kill-pane', 'SIGINT', 'dangerouslyDisableSandbox'])
+    assert.ok(PROMPT.includes(rule), rule)
+  assert.ok(PROMPT.length < 1_300)
 })
 
 test('new-session runs inside the sandbox when sandboxing is enabled', async () => {

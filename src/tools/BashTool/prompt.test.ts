@@ -18,6 +18,13 @@ mock.module('../../utils/sandbox/sandbox-adapter.js', () => ({
   },
 }))
 
+let attribution = { commit: '', pr: '' }
+const realAttribution = await import('../../utils/attribution.js')
+mock.module('../../utils/attribution.js', () => ({
+  ...realAttribution,
+  getAttributionTexts: () => attribution,
+}))
+
 const { zodToJsonSchema } = await import('../../utils/zodToJsonSchema.js')
 const { BashTool } = await import('./BashTool.js')
 const { getSimplePrompt } = await import('./prompt.js')
@@ -33,6 +40,29 @@ afterEach(() => {
 })
 
 describe('BashTool prompt', () => {
+  test('has a short Git section with attribution lines when configured', () => {
+    attribution = { commit: '', pr: '' }
+    const prompt = getSimplePrompt()
+    expect(prompt).toContain('# Git')
+    expect(prompt).toContain('Commit or push only when the user asks. If on the default branch, branch first.')
+    expect(prompt).toContain('`gh` CLI')
+    expect(prompt).toContain('`@reviewer`')
+    expect(prompt).not.toContain('End git commit messages')
+
+    attribution = { commit: 'Co-Authored-By: Claude <noreply@anthropic.com>', pr: 'Generated with Claude Code' }
+    const withAttribution = getSimplePrompt()
+    expect(withAttribution).toContain('End git commit messages with:\nCo-Authored-By: Claude <noreply@anthropic.com>')
+    expect(withAttribution).toContain('End PR bodies with:\nGenerated with Claude Code')
+    attribution = { commit: '', pr: '' }
+
+    process.env.CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS = '1'
+    try {
+      expect(getSimplePrompt()).not.toContain('# Git')
+    } finally {
+      delete process.env.CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS
+    }
+  })
+
   test('keeps Bash guidance short and limited to what the tool enforces', () => {
     const prompt = getSimplePrompt()
 
