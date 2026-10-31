@@ -375,6 +375,9 @@ if (process.env[childFlag] !== '1') {
     }
     await expectBehavior('echo "$x"', 'default', { allow: ['Bash(echo "$x")'] }, 'allow')
     await expectBehavior('builtin echo hi', 'default', { allow }, 'allow')
+    for (const command of ['cat "$HOME/x"', 'wc -l "$HOME/x"', 'ls "$HOME/"']) {
+      await expectBehavior(command, 'default', { allow }, 'ask')
+    }
     await expectBehavior('builtin eval "echo hi"', 'default', { allow }, 'ask')
   })
 

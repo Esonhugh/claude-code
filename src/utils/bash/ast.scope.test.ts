@@ -95,3 +95,11 @@ test('command and builtin are checked as the command they run', async () => {
     expect({ command, ok: checkSemantics(result.commands).ok }).toEqual({ command, ok })
   }
 })
+
+test('"$HOME" resolves to the home directory so paths under it are checked', async () => {
+  const home = process.env.HOME!
+  expect(await argvOf('echo "$HOME"')).toEqual([['echo', home]])
+  expect(await argvOf('cat "$HOME/.ssh/id_rsa"')).toEqual([['cat', `${home}/.ssh/id_rsa`]])
+  expect(await argvOf('cat "$HOME"/x')).toEqual([['cat', `${home}/x`]])
+  expect(await argvOf('echo "hi $USER"')).toEqual([['echo', 'hi __TRACKED_VAR__']])
+})

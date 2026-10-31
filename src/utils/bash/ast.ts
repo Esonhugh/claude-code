@@ -18,6 +18,7 @@
  * argv[0] against permission rules and flag allowlists. If no, ask the user.
  */
 
+import { homedir } from 'os'
 import { SHELL_KEYWORDS } from './bashParser.js'
 import type { Node } from './parser.js'
 import { PARSE_ABORTED, parseCommandRaw } from './parser.js'
@@ -2110,6 +2111,9 @@ function resolveSimpleExpansion(
   // (shell-controlled). Only safe when embedded in a string, NOT as a
   // bare argument to a path-sensitive command.
   if (insideString) {
+    // `"$HOME/.ssh/id_rsa"` must reach path validation as the real path, not
+    // as a placeholder that resolves inside the working directory.
+    if (varName === 'HOME' && !isSpecial) return process.env.HOME ?? homedir()
     if (SAFE_ENV_VARS.has(varName)) return VAR_PLACEHOLDER
     if (
       isSpecial &&
