@@ -1,7 +1,10 @@
 import path from 'node:path'
 import { getSearchToolsOptIn } from '../bootstrap/state.js'
 import { CACHE_PATHS } from './cachePaths.js'
-import { extractEmbeddedBinary } from './embeddedRipgrep.js'
+import {
+  extractEmbeddedBinary,
+  readableEmbeddedSource,
+} from './embeddedRipgrep.js'
 import { isEnvDefinedFalsy } from './envUtils.js'
 
 /**
@@ -20,8 +23,8 @@ import { isEnvDefinedFalsy } from './envUtils.js'
 export function hasEmbeddedSearchTools(): boolean {
   if (isEnvDefinedFalsy(process.env.EMBEDDED_SEARCH_TOOLS)) return false
   if (
-    !process.env.CLAUDE_CODE_EMBEDDED_BFS_PATH ||
-    !process.env.CLAUDE_CODE_EMBEDDED_UGREP_PATH ||
+    !readableEmbeddedSource('CLAUDE_CODE_EMBEDDED_BFS_PATH') ||
+    !readableEmbeddedSource('CLAUDE_CODE_EMBEDDED_UGREP_PATH') ||
     !process.env.CLAUDE_CODE_EMBEDDED_SEARCH_TOOLS_VERSION
   ) {
     return false

@@ -1,4 +1,5 @@
 import { dirname, sep } from 'path'
+import isPlainObject from 'lodash-es/isPlainObject.js'
 import { logEvent } from 'src/services/analytics/index.js'
 import { z } from 'zod/v4'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../services/analytics/growthbook.js'
@@ -25,7 +26,10 @@ import {
   fileHistoryTrackEdit,
 } from '../../utils/fileHistory.js'
 import { logFileOperation } from '../../utils/fileOperationAnalytics.js'
-import { readFileSyncWithMetadata } from '../../utils/fileRead.js'
+import {
+  notTextMessage,
+  readFileSyncWithMetadata,
+} from '../../utils/fileRead.js'
 import { getFsImplementation } from '../../utils/fsOperations.js'
 import {
   fetchSingleFileGitDiff,
@@ -120,6 +124,40 @@ export const FileWriteTool = buildTool({
   get inputSchema(): InputSchema {
     return inputSchema()
   },
+  // Like 2.1.311: accept the names models carry over from other editors.
+  coerceInput(input) {
+    if (!isPlainObject(input)) return null
+    const next = { ...(input as Record<string, unknown>) }
+    let changed = false
+    if (!Object.hasOwn(next, 'file_path') && typeof next.path === 'string') {
+      next.file_path = next.path
+      delete next.path
+      changed = true
+    }
+    const contentAliases = ['file_text', 'file_content'].filter(key =>
+      Object.hasOwn(next, key),
+    )
+    const [alias] = contentAliases
+    if (
+      alias !== undefined &&
+      contentAliases.length === 1 &&
+      !Object.hasOwn(next, 'content') &&
+      typeof next[alias] === 'string'
+    ) {
+      next.content = next[alias]
+      delete next[alias]
+      changed = true
+    }
+    if (Object.hasOwn(next, 'description')) {
+      delete next.description
+      changed = true
+    }
+    if (next.command === 'create') {
+      delete next.command
+      changed = true
+    }
+    return changed ? next : null
+  },
   get outputSchema(): OutputSchema {
     return outputSchema()
   },
@@ -195,6 +233,20 @@ export const FileWriteTool = buildTool({
     try {
       const fileStat = await fs.stat(fullFilePath)
       fileMtimeMs = fileStat.mtimeMs
+      if (fileStat.isDirectory()) {
+        return {
+          result: false,
+          message: `${file_path} is a directory, not a file. To create a file inside it, include the file name in file_path.`,
+          errorCode: 17,
+        }
+      }
+      if (!fileStat.isFile()) {
+        return {
+          result: false,
+          message: `${file_path} exists but is not a regular file (a device, FIFO or socket). Write only creates or overwrites regular files.`,
+          errorCode: 18,
+        }
+      }
     } catch (e) {
       if (isENOENT(e)) {
         return { result: true }
@@ -292,6 +344,7 @@ export const FileWriteTool = buildTool({
       }
     }
 
+    if (meta?.notText) throw new Error(notTextMessage(meta.notText))
     if (meta !== null) {
       const lastWriteTime = getFileModificationTime(fullFilePath)
       const lastRead = readFileState.get(fullFilePath)

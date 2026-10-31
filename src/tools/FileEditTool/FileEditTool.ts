@@ -1,4 +1,5 @@
 import { dirname, isAbsolute, sep } from 'path'
+import isPlainObject from 'lodash-es/isPlainObject.js'
 import { logEvent } from 'src/services/analytics/index.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../services/analytics/growthbook.js'
 import { diagnosticTracker } from '../../services/diagnosticTracking.js'
@@ -31,7 +32,10 @@ import {
 } from '../../utils/fileHistory.js'
 import { logFileOperation } from '../../utils/fileOperationAnalytics.js'
 import {
+  detectNotText,
   type LineEndingType,
+  type NotTextKind,
+  notTextMessage,
   readFileSyncWithMetadata,
 } from '../../utils/fileRead.js'
 import { formatFileSize } from '../../utils/format.js'
@@ -113,6 +117,32 @@ export const FileEditTool = buildTool({
   },
   getPath(input): string {
     return input.file_path
+  },
+  // Like 2.1.311: accept the str_replace_editor names models carry over.
+  coerceInput(input) {
+    if (!isPlainObject(input)) return null
+    const next = { ...(input as Record<string, unknown>) }
+    let changed = false
+    if ('replace_name' in next) {
+      if (!('replace_all' in next)) {
+        next.replace_all =
+          next.replace_name === true || next.replace_name === 'true'
+      }
+      delete next.replace_name
+      changed = true
+    }
+    for (const [alias, key] of [
+      ['path', 'file_path'],
+      ['old_str', 'old_string'],
+      ['new_str', 'new_string'],
+    ] as const) {
+      if (alias in next && !(key in next) && typeof next[alias] === 'string') {
+        next[key] = next[alias]
+        delete next[alias]
+        changed = true
+      }
+    }
+    return changed ? next : null
   },
   backfillObservableInput(input) {
     // hooks.mdx documents file_path as absolute; expand so hook allowlists
@@ -207,6 +237,15 @@ export const FileEditTool = buildTool({
     let fileContent: string | null
     try {
       const fileBuffer = await fs.readFileBytes(fullFilePath)
+      const notText = detectNotText(fileBuffer)
+      if (notText) {
+        return {
+          result: false,
+          behavior: 'ask',
+          message: notTextMessage(notText),
+          errorCode: 11,
+        }
+      }
       const encoding: BufferEncoding =
         fileBuffer.length >= 2 &&
         fileBuffer[0] === 0xff &&
@@ -281,7 +320,15 @@ export const FileEditTool = buildTool({
       fileContent !== null &&
       findActualString(fileContent, old_string) !== null &&
       canWriteWithoutRead(FileEditTool, input, toolUseContext)
-    if ((!readTimestamp || readTimestamp.isPartialView) && !writeWithoutRead()) {
+    // An unread file needs no match here: a missing old_string is reported
+    // below as such, not as "not read yet" (2.1.311).
+    const unreadWriteAllowed =
+      !readTimestamp && canWriteWithoutRead(FileEditTool, input, toolUseContext)
+    if (
+      (!readTimestamp || readTimestamp.isPartialView) &&
+      !unreadWriteAllowed &&
+      !writeWithoutRead()
+    ) {
       return {
         result: false,
         behavior: 'ask',
@@ -455,7 +502,9 @@ export const FileEditTool = buildTool({
       fileExists,
       encoding,
       lineEndings: endings,
+      notText,
     } = readFileForEdit(absoluteFilePath)
+    if (notText) throw new Error(notTextMessage(notText))
 
     if (fileExists) {
       const lastWriteTime = getFileModificationTime(absoluteFilePath)
@@ -617,6 +666,7 @@ function readFileForEdit(absoluteFilePath: string): {
   fileExists: boolean
   encoding: BufferEncoding
   lineEndings: LineEndingType
+  notText?: NotTextKind
 } {
   try {
     // eslint-disable-next-line custom-rules/no-sync-fs
@@ -626,6 +676,7 @@ function readFileForEdit(absoluteFilePath: string): {
       fileExists: true,
       encoding: meta.encoding,
       lineEndings: meta.lineEndings,
+      notText: meta.notText,
     }
   } catch (e) {
     if (isENOENT(e)) {

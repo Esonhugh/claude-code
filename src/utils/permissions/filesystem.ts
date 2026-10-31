@@ -20,7 +20,9 @@ import type {
   ToolPermissionContext,
   ToolUseContext,
 } from '../../Tool.js'
+import { BASH_TOOL_NAME } from '../../tools/BashTool/toolName.js'
 import { FILE_READ_TOOL_NAME } from '../../tools/FileReadTool/prompt.js'
+import { POWERSHELL_TOOL_NAME } from '../../tools/PowerShellTool/toolName.js'
 import { getCwd } from '../cwd.js'
 import { getClaudeConfigHomeDir } from '../envUtils.js'
 import { getCanonicalName } from '../model/model.js'
@@ -1626,7 +1628,8 @@ const READ_GUARD_MODELS = new Set([
 /**
  * Like 2.1.311: Write/Edit may change a file the model has not Read (or read
  * stale) when the write runs without a prompt anyway — allowed by mode or
- * rule, or an in-directory write in bypassPermissions — the session can Read,
+ * rule, or an in-directory write in bypassPermissions — the session can read
+ * the file (Read, Bash or PowerShell),
  * and the model is not one that keeps the guard.
  */
 export function canWriteWithoutRead<Input extends AnyObject>(
@@ -1637,7 +1640,14 @@ export function canWriteWithoutRead<Input extends AnyObject>(
   if (READ_GUARD_MODELS.has(getCanonicalName(context.options.mainLoopModel))) {
     return false
   }
-  if (!context.options.tools.some(t => t.name === FILE_READ_TOOL_NAME)) {
+  // The model can read the file anyway: with Read, or with a shell (cat).
+  const canRead = context.options.tools.some(
+    t =>
+      t.name === FILE_READ_TOOL_NAME ||
+      t.name === BASH_TOOL_NAME ||
+      t.name === POWERSHELL_TOOL_NAME,
+  )
+  if (!canRead) {
     return false
   }
   const permissionContext = context.getAppState().toolPermissionContext

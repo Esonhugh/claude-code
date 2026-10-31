@@ -162,7 +162,9 @@ export class StreamingToolExecutor {
     const serialized = this.modsSnapshot?.hasHooks('tool.call')
     const parsedInput = serialized
       ? undefined
-      : toolDefinition.inputSchema.safeParse(block.input)
+      : toolDefinition.inputSchema.safeParse(
+          toolDefinition.coerceInput?.(block.input) ?? block.input,
+        )
     const isConcurrencySafe = parsedInput?.success
       ? (() => {
           try {

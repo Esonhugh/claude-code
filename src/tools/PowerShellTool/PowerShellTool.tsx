@@ -1,4 +1,5 @@
 import { feature } from 'bun:bundle'
+import { FILE_READ_TOOL_NAME } from '../FileReadTool/prompt.js'
 import type { ToolResultBlockParam } from '@anthropic-ai/sdk/resources/index.mjs'
 import {
   copyFile,
@@ -589,7 +590,7 @@ export const PowerShellTool = buildTool({
       } else if (backgroundedByUser) {
         backgroundInfo = `Command was manually backgrounded by user with ID: ${backgroundTaskId}. Output is being written to: ${outputPath}`
       } else {
-        backgroundInfo = `Command running in background with ID: ${backgroundTaskId}. Output is being written to: ${outputPath}`
+        backgroundInfo = `Command running in background with ID: ${backgroundTaskId}. Output is being written to: ${outputPath}. You will be notified when it completes. To check interim output, use ${FILE_READ_TOOL_NAME} on that file path.`
       }
     }
 
