@@ -6,6 +6,8 @@ import { join } from 'node:path'
 import {
   clearInvokedSkills,
   getInvokedSkillsForAgent,
+  getPromptId,
+  setPromptId,
 } from '../../bootstrap/state.js'
 import { createModsRuntime } from '../../services/mods/runtime.js'
 import { ModAuthoringPromptDismissedError } from '../../services/mods/session.js'
@@ -49,6 +51,7 @@ let appState = {
   toolPermissionContext: { mode: 'default' },
 }
 
+setPromptId(null)
 const result = await processSlashCommand(
   '/test-goal-clear clear',
   [],
@@ -71,6 +74,8 @@ const result = await processSlashCommand(
 )
 
 assert.equal(result.shouldQuery, false)
+// Official 2.1.311: a slash command turn has a prompt_id for its hooks (PreCompact, SessionEnd, ...).
+assert.ok(getPromptId())
 assert.equal(result.messages.length, 3)
 assert.equal(
   result.messages.some(
