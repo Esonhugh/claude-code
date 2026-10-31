@@ -24,6 +24,10 @@ import {
   copyFileHistoryForResume,
   type FileHistorySnapshot,
 } from './fileHistory.js'
+import {
+  LOCAL_COMMAND_STDERR_TAG,
+  LOCAL_COMMAND_STDOUT_TAG,
+} from '../constants/xml.js'
 import { logError } from './log.js'
 import {
   createAssistantMessage,
@@ -31,6 +35,7 @@ import {
   filterOrphanedThinkingOnlyMessages,
   filterUnresolvedToolUses,
   filterWhitespaceOnlyAssistantMessages,
+  getUserMessageText,
   isToolUseResultMessage,
   NO_RESPONSE_REQUESTED,
   normalizeMessages,
@@ -254,7 +259,8 @@ export function deserializeMessagesWithInterruptDetection(
     )
     if (
       lastRelevantIdx !== -1 &&
-      filteredMessages[lastRelevantIdx]!.type === 'user'
+      filteredMessages[lastRelevantIdx]!.type === 'user' &&
+      !isLocalCommandOutput(filteredMessages[lastRelevantIdx]!)
     ) {
       filteredMessages.splice(
         lastRelevantIdx + 1,
@@ -270,6 +276,14 @@ export function deserializeMessagesWithInterruptDetection(
     logError(error as Error)
     throw error
   }
+}
+
+function isLocalCommandOutput(message: NormalizedMessage): boolean {
+  const text = getUserMessageText(message)?.trimStart() ?? ''
+  return (
+    text.startsWith(`<${LOCAL_COMMAND_STDOUT_TAG}>`) ||
+    text.startsWith(`<${LOCAL_COMMAND_STDERR_TAG}>`)
+  )
 }
 
 /**
@@ -339,6 +353,10 @@ function detectTurnInterruption(
         return { kind: 'none' }
       }
       return { kind: 'interrupted_turn' }
+    }
+    // A slash command's output ends a completed local turn, not a prompt.
+    if (isLocalCommandOutput(lastMessage)) {
+      return { kind: 'none' }
     }
     // Plain text user prompt — CC hadn't started responding
     return { kind: 'interrupted_prompt', message: lastMessage }
