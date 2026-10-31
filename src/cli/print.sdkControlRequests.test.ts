@@ -255,7 +255,8 @@ if (process.env[childFlag] !== '1') {
       dependencies: { errors: expect.any(Array), warnings: expect.any(Array) },
       restrictions: { fs_allow_read: [], fs_allow_write: [], network_managed: false, unix_sockets: [] },
     })
-    expect(hooks.response).toMatchObject({ events: [], hooks: [], policy: { disabledByPolicy: false }, safeMode: null })
+    expect(hooks.response).toMatchObject({ events: [], hooks: [], policy: { disabledByPolicy: false } })
+    expect(hooks.response).not.toHaveProperty('safeMode')
     expect(hooks.response.eventCatalog[0]).toEqual({ name: 'PreToolUse', summary: 'Before tool execution', supportsMatcher: true })
     expect(rules.response.state).toMatchObject({ workspaceDirectories: [], originalCwd: expect.any(String), managedOnly: false })
     expect(Array.isArray(rules.response.state.rules)).toBe(true)
