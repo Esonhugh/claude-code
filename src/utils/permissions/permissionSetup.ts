@@ -33,6 +33,7 @@ import {
 } from './PermissionMode.js'
 import { applyPermissionRulesToPermissionContext } from './permissions.js'
 import {
+  getAdditionalDirectoriesFromSettings,
   loadAllPermissionRulesFromDisk,
   shouldAllowManagedPermissionRulesOnly,
 } from './permissionsLoader.js'
@@ -1213,7 +1214,9 @@ export async function initializeToolPermissionContext({
     ? overlayDirectories(loadSSHPermissionOverlay()).map(directory => directory.path)
     : []
   const allAdditionalDirectories = [
-    ...(settings.permissions?.additionalDirectories || []),
+    ...(isManagedSSHRemoteRuntime()
+      ? (settings.permissions?.additionalDirectories ?? [])
+      : getAdditionalDirectoriesFromSettings()),
     ...sshOverlayAdditionalDirectories,
     ...addDirs,
   ]

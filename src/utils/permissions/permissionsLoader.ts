@@ -1,6 +1,13 @@
 import { spawnSync } from 'child_process'
-import { getOriginalCwd } from '../../bootstrap/state.js'
-import { getGlobalConfig, getProjectPathForConfig } from '../config.js'
+import {
+  getIsNonInteractiveSession,
+  getOriginalCwd,
+} from '../../bootstrap/state.js'
+import {
+  checkHasTrustDialogAccepted,
+  getProjectPathForConfig,
+} from '../config.js'
+import { getGlobalClaudeFile } from '../env.js'
 import { logForDebugging } from '../debug.js'
 import { readFileSync } from '../fileRead.js'
 import { getFsImplementation, safeResolvePath } from '../fsOperations.js'
@@ -192,25 +199,94 @@ export function loadAllPermissionRulesFromDisk(): PermissionRule[] {
     rules.push(...getPermissionRulesForSource(source))
   }
 
-  // Like official 2.1.303, a git-tracked .claude/settings.local.json is repo
-  // content: its allow rules apply only once this workspace is explicitly
-  // trusted. Its deny and ask rules still apply.
-  const localAllow = rules.filter(
-    rule => rule.source === 'localSettings' && rule.ruleBehavior === 'allow',
+  return dropUntrustedProjectEntries(
+    'permissions.allow',
+    rules.filter(rule => rule.ruleBehavior === 'allow'),
+    rule => rule.source,
+    rules,
   )
+}
+
+/**
+ * permissions.additionalDirectories from every enabled settings source, with
+ * project-scoped entries held back until the workspace is trusted.
+ */
+export function getAdditionalDirectoriesFromSettings(): string[] {
+  const entries = getEnabledSettingSources().flatMap(source =>
+    (getSettingsForSource(source)?.permissions?.additionalDirectories ?? []).map(
+      directory => ({ source, directory }),
+    ),
+  )
+  return dropUntrustedProjectEntries(
+    'permissions.additionalDirectories',
+    entries,
+    entry => entry.source,
+    entries,
+  ).map(entry => entry.directory)
+}
+
+// Like official 2.1.311: until this workspace is trusted, .claude/settings.json
+// (unless it is the user settings file, i.e. cwd is home) and a git-tracked
+// .claude/settings.local.json are repo content, so the entries that widen
+// access are dropped. Deny and ask rules still apply. An interactive session
+// builds its permission context before the trust dialog, which then lists
+// these entries and ends the session unless they are accepted.
+function dropUntrustedProjectEntries<T>(
+  key: string,
+  gated: T[],
+  sourceOf: (entry: T) => PermissionRule['source'],
+  all: T[],
+): T[] {
   if (
-    localAllow.length > 0 &&
-    getGlobalConfig().projects?.[getProjectPathForConfig()]
-      ?.hasTrustDialogAccepted !== true &&
-    isLocalSettingsGitTracked(getOriginalCwd())
+    gated.length === 0 ||
+    !getIsNonInteractiveSession() ||
+    checkHasTrustDialogAccepted()
   ) {
-    logForDebugging(
-      `Ignoring ${localAllow.length} permissions.allow rule(s) from .claude/settings.local.json: the file is tracked by git and this workspace is not explicitly trusted.`,
-      { level: 'warn' },
-    )
-    return rules.filter(rule => !localAllow.includes(rule))
+    return all
   }
-  return rules
+  const files = new Set<string>()
+  const dropped = new Set<T>()
+  for (const entry of gated) {
+    const source = sourceOf(entry)
+    if (source === 'projectSettings' && !projectSettingsIsUserSettings()) {
+      files.add('.claude/settings.json')
+      dropped.add(entry)
+    } else if (
+      source === 'localSettings' &&
+      isLocalSettingsGitTracked(getOriginalCwd())
+    ) {
+      files.add('.claude/settings.local.json')
+      dropped.add(entry)
+    }
+  }
+  if (dropped.size === 0) return all
+  warnUntrustedDrop(key, dropped.size, [...files])
+  return all.filter(entry => !dropped.has(entry))
+}
+
+function projectSettingsIsUserSettings(): boolean {
+  const project = getSettingsFilePathForSource('projectSettings')
+  const user = getSettingsFilePathForSource('userSettings')
+  if (!project || !user) return false
+  const fs = getFsImplementation()
+  return (
+    safeResolvePath(fs, project).resolvedPath ===
+    safeResolvePath(fs, user).resolvedPath
+  )
+}
+
+const warnedUntrustedKeys = new Set<string>()
+
+function warnUntrustedDrop(key: string, count: number, files: string[]): void {
+  logForDebugging(
+    `Dropped ${count} project-scoped ${key} entr${count === 1 ? 'y' : 'ies'} — workspace not yet trusted`,
+    { level: 'warn' },
+  )
+  if (warnedUntrustedKeys.has(key)) return
+  warnedUntrustedKeys.add(key)
+  process.stderr.write(
+    `Ignoring ${count} ${key} ${count === 1 ? 'entry' : 'entries'} from ${files.join(' and ')}: this workspace has not been trusted. Run Claude Code interactively here once and accept the trust dialog, or set projects[${JSON.stringify(getProjectPathForConfig())}].hasTrustDialogAccepted: true in ${getGlobalClaudeFile()}.\n`,
+  )
 }
 
 const localSettingsGitTracked = new Map<string, boolean>()
