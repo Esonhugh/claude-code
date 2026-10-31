@@ -351,6 +351,12 @@ export async function getURLMarkdownContent(
   abortController: AbortController,
 ): Promise<FetchedContent | RedirectInfo> {
   if (!validateURL(url)) {
+    const hostname = URL.parse(url)?.hostname
+    if (hostname && !hostname.includes('.')) {
+      throw new Error(
+        'WebFetch cannot fetch localhost or other hostnames without a dot. To reach a local server, use Bash with curl instead.',
+      )
+    }
     throw new Error('Invalid URL')
   }
 
