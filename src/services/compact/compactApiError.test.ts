@@ -368,7 +368,7 @@ describe('compactConversation remote compaction lifecycle', () => {
       assistantTextMessage(
         '00000000-0000-4000-8000-000000000012',
         'msg_local_summary',
-        'local fallback summary',
+        '<summary>local fallback summary</summary>',
       ),
     ]
     const messages = [
@@ -580,7 +580,7 @@ describe('compactConversation direct streaming fallback API errors', () => {
       assistantTextMessage(
         '00000000-0000-4000-8000-0000000000e2',
         'msg_summary',
-        'compact summary after retry',
+        '<summary>compact summary after retry</summary>',
       ),
     ]
     const messages = [
@@ -605,5 +605,31 @@ describe('compactConversation direct streaming fallback API errors', () => {
     expect(JSON.stringify(result.summaryMessages)).toContain(
       'compact summary after retry',
     )
+  })
+
+  // Official 2.1.311: no <summary> block → one more request with the nudge appended.
+  test('asks once more when the summary reply has no <summary> block', async () => {
+    streamAssistantMessages = [
+      assistantTextMessage('00000000-0000-4000-8000-0000000000f1', 'msg_plain', 'plain reply'),
+      assistantTextMessage('00000000-0000-4000-8000-0000000000f2', 'msg_tagged', '<summary>tagged summary</summary>'),
+    ]
+    const messages = [userTextMessage('00000000-0000-4000-8000-0000000000f3', 'old context')]
+    const context = createCompactTestContext()
+    const result = await compactConversation(messages, context, createCacheSafeParams(context, messages), false)
+    expect(streamCallCount).toBe(2)
+    expect(JSON.stringify(result.summaryMessages)).toContain('tagged summary')
+    expect(JSON.stringify(result.summaryMessages)).not.toContain('plain reply')
+  })
+
+  test('keeps the first reply when the retry has no <summary> block either', async () => {
+    streamAssistantMessages = [
+      assistantTextMessage('00000000-0000-4000-8000-0000000000f4', 'msg_plain1', 'first plain'),
+      assistantTextMessage('00000000-0000-4000-8000-0000000000f5', 'msg_plain2', 'second plain'),
+    ]
+    const messages = [userTextMessage('00000000-0000-4000-8000-0000000000f6', 'old context')]
+    const context = createCompactTestContext()
+    const result = await compactConversation(messages, context, createCacheSafeParams(context, messages), false)
+    expect(streamCallCount).toBe(2)
+    expect(JSON.stringify(result.summaryMessages)).toContain('first plain')
   })
 })
