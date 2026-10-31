@@ -1650,6 +1650,26 @@ export function canWriteWithoutRead<Input extends AnyObject>(
   )
 }
 
+/**
+ * Only suggest setMode:acceptEdits when it would be an upgrade. In auto
+ * mode the classifier already auto-approves edits; in bypassPermissions
+ * everything is allowed; in acceptEdits it's a no-op. Suggesting it
+ * anyway and having the SDK host apply it on "Always allow" silently
+ * downgrades auto → acceptEdits, which then prompts for MCP/Bash. Plan
+ * mode counts as the mode it was entered from.
+ */
+export function canSuggestAcceptEdits(
+  toolPermissionContext: ToolPermissionContext,
+): boolean {
+  if (toolPermissionContext.mode === 'default') return true
+  return (
+    toolPermissionContext.mode === 'plan' &&
+    !['acceptEdits', 'auto', 'bypassPermissions', 'dontAsk'].includes(
+      toolPermissionContext.prePlanMode ?? 'default',
+    )
+  )
+}
+
 export function generateSuggestions(
   filePath: string,
   operationType: 'read' | 'write' | 'create',
@@ -1675,14 +1695,7 @@ export function generateSuggestions(
     return suggestions
   }
 
-  // Only suggest setMode:acceptEdits when it would be an upgrade. In auto
-  // mode the classifier already auto-approves edits; in bypassPermissions
-  // everything is allowed; in acceptEdits it's a no-op. Suggesting it
-  // anyway and having the SDK host apply it on "Always allow" silently
-  // downgrades auto → acceptEdits, which then prompts for MCP/Bash.
-  const shouldSuggestAcceptEdits =
-    toolPermissionContext.mode === 'default' ||
-    toolPermissionContext.mode === 'plan'
+  const shouldSuggestAcceptEdits = canSuggestAcceptEdits(toolPermissionContext)
 
   if (operationType === 'write' || operationType === 'create') {
     const updates: PermissionUpdate[] = shouldSuggestAcceptEdits
