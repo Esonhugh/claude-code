@@ -6,6 +6,7 @@ import {
   getRuntimeMainLoopModel,
   parseUserSpecifiedModel,
 } from './model.js'
+import { isEnvTruthy } from '../envUtils.js'
 import { getAPIProvider } from './providers.js'
 
 export const AGENT_MODEL_OPTIONS = [...MODEL_ALIASES, 'inherit'] as const
@@ -27,6 +28,27 @@ export function getDefaultSubagentModel(): string {
  * This ensures subagents use the same region as the parent, which is necessary when
  * IAM permissions are scoped to specific cross-region inference profiles.
  */
+/**
+ * The built-in Explore agent inherits the parent's model, capped at Opus:
+ * under a model family ranked above Opus (Fable, Mythos) it runs on Opus.
+ */
+export function getAgentDefinitionModel(
+  agent: { agentType: string; source: string; model?: string },
+  parentModel: string,
+): string | undefined {
+  if (agent.agentType !== 'Explore' || agent.source !== 'built-in') {
+    return agent.model
+  }
+  if (isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_EXPLORE_INHERIT_CAP)) {
+    return 'inherit'
+  }
+  const canonical = getCanonicalName(parentModel)
+  return canonical.startsWith('claude-fable') ||
+    canonical.startsWith('claude-mythos')
+    ? 'opus'
+    : 'inherit'
+}
+
 /** Official 2.1.296: one model for every workflow agent; unset or "inherit" changes nothing. */
 export function getWorkflowSubagentModel(): string | undefined {
   const model = process.env.CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL
