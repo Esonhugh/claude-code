@@ -46,7 +46,13 @@ export function getMonitorPrompt(): string {
 Pick by how many notifications you need:
 - One ("tell me when the build finishes"): use Bash with \`run_in_background\` and a command that exits when the condition holds, e.g. \`until grep -q "Ready in" dev.log; do sleep 0.5; done\`. Do not use Monitor with \`tail -f\`, \`inotifywait -m\` or \`while true\` for this: they never exit, and \`tail -f log | grep -m 1\` can hang after the match.
 - One per occurrence ("every ERROR line"): Monitor with an unbounded command, e.g. \`tail -f app.log | grep --line-buffered ERROR\`, re-armed on expiry.
-- One per occurrence until a known end ("each CI check, stop when the run completes"): Monitor with a poll loop that prints new lines and exits when done.
+- One per occurrence until a known end ("each CI check, stop when the run completes"): Monitor with a poll loop that prints only new lines and exits when done, e.g.
+  prev=""; while true; do
+    cur=$(gh pr checks 123 --json name,bucket --jq '.[] | select(.bucket!="pending") | "\\(.name): \\(.bucket)"' | sort)
+    comm -13 <(echo "$prev") <(echo "$cur"); prev=$cur
+    gh pr checks 123 --json bucket --jq 'all(.bucket!="pending")' | grep -q true && break
+    sleep 30
+  done
 
 Rules:
 - Every pipe stage must flush per line: \`grep --line-buffered\`, \`awk\` with \`fflush()\`. \`| head -N\` delivers nothing until N lines arrive.
