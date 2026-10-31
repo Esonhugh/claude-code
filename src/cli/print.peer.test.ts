@@ -619,7 +619,8 @@ if (process.env[childFlag] !== '1') {
       for await (const message of engine.submitMessage('describe commands')) outputs.push(message)
       expect(ingress[0]![0]).toMatchObject({description:'Worker 1',argumentHint:'[arg 1]',isHidden:false})
       expect(queried[0]![0]).toMatchObject({description:'Worker 2',argumentHint:'[arg 2]',isHidden:true})
-      expect(outputs.find(message => message.type === 'system' && message.subtype === 'init')).toMatchObject({slash_commands:[]})
+      // 2.1.311 lists hidden commands in init; only userInvocable:false is dropped.
+      expect(outputs.find(message => message.type === 'system' && message.subtype === 'init')).toMatchObject({slash_commands:['sample']})
       const local = []
       for await (const message of engine.submitMessage('/sample')) local.push(message)
       expect(ingress[1]![0]).toMatchObject({description:'Worker 2',isHidden:true})

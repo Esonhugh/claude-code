@@ -73,9 +73,20 @@ function getDisabledReasonMessage(
   }
 }
 
-export function getFastModeUnavailableReason(): string | null {
+// Why fast mode can't serve right now, as the SDK reports it in
+// fast_mode_disabled_reason. Null when nothing blocks it.
+export type SdkFastModeDisabledReason =
+  | FastModeDisabledReason
+  | 'not_first_party'
+  | 'disabled_by_env'
+  | 'sdk_opt_in_required'
+
+function getFastModeBlock(): {
+  code: SdkFastModeDisabledReason
+  message: string
+} | null {
   if (!isFastModeEnabled()) {
-    return 'Fast mode is not available'
+    return { code: 'disabled_by_env', message: 'Fast mode is not available' }
   }
 
   const provider = getAPIProvider()
@@ -90,7 +101,7 @@ export function getFastModeUnavailableReason(): string | null {
   // Statsig reason has priority over other reasons.
   if (statigReason !== null) {
     logForDebugging(`Fast mode unavailable: ${statigReason}`)
-    return statigReason
+    return { code: 'unknown', message: statigReason }
   }
 
   // Previously, fast mode required the native binary (bun build). This is no
@@ -99,7 +110,11 @@ export function getFastModeUnavailableReason(): string | null {
     !isInBundledMode() &&
     getFeatureValue_CACHED_MAY_BE_STALE('tengu_marble_sandcastle', false)
   ) {
-    return 'Fast mode requires the native binary · Install from: https://claude.com/product/claude-code'
+    return {
+      code: 'unknown',
+      message:
+        'Fast mode requires the native binary · Install from: https://claude.com/product/claude-code',
+    }
   }
 
   // Not available in the SDK unless explicitly opted in via --settings.
@@ -114,7 +129,7 @@ export function getFastModeUnavailableReason(): string | null {
     if (!flagFastMode) {
       const reason = 'Fast mode is not available in the Agent SDK'
       logForDebugging(`Fast mode unavailable: ${reason}`)
-      return reason
+      return { code: 'sdk_opt_in_required', message: reason }
     }
   }
 
@@ -122,7 +137,7 @@ export function getFastModeUnavailableReason(): string | null {
   if (provider !== 'firstParty') {
     const reason = 'Fast mode is not available on Bedrock, Vertex, or Foundry'
     logForDebugging(`Fast mode unavailable: ${reason}`)
-    return reason
+    return { code: 'not_first_party', message: reason }
   }
 
   if (orgStatus.status === 'disabled') {
@@ -142,10 +157,18 @@ export function getFastModeUnavailableReason(): string | null {
       getClaudeAIOAuthTokens() !== null ? 'oauth' : 'api-key'
     const reason = getDisabledReasonMessage(orgStatus.reason, authType)
     logForDebugging(`Fast mode unavailable: ${reason}`)
-    return reason
+    return { code: orgStatus.reason, message: reason }
   }
 
   return null
+}
+
+export function getFastModeUnavailableReason(): string | null {
+  return getFastModeBlock()?.message ?? null
+}
+
+export function getFastModeDisabledReason(): SdkFastModeDisabledReason | null {
+  return getFastModeBlock()?.code ?? null
 }
 
 // @[MODEL LAUNCH]: Update supported Fast Mode models.

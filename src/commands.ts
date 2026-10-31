@@ -807,6 +807,16 @@ export function getCommand(commandName: string, commands: Command[]): Command {
   return command
 }
 
+/** The menu text of a built-in skill, else its description. */
+export function getMenuDescription(cmd: Command): string {
+  return (
+    (cmd.type === 'prompt' &&
+      (cmd.source === 'builtin' || cmd.source === 'bundled') &&
+      cmd.menuDescription) ||
+    cmd.description
+  )
+}
+
 /**
  * Formats a command's description with its source annotation for user-facing UI.
  * Use this in typeahead, help screens, and other places where users need to see
@@ -814,36 +824,70 @@ export function getCommand(commandName: string, commands: Command[]): Command {
  *
  * For model-facing prompts (like SkillTool), use cmd.description directly.
  */
-export function formatDescriptionWithSource(cmd: Command): string {
+export function formatDescriptionWithSource(
+  cmd: Command,
+  description = cmd.description,
+): string {
   if (cmd.type !== 'prompt') {
-    return cmd.description
+    return description
   }
 
   if (cmd.kind === 'workflow') {
-    return `${cmd.description} (workflow)`
+    return `${description} (dynamic workflow)`
   }
 
   if (cmd.source === 'plugin') {
     const pluginName = cmd.pluginInfo?.pluginManifest.name
     if (pluginName) {
-      return `(${pluginName}) ${cmd.description}`
+      return `(${pluginName}) ${description}`
     }
-    return `${cmd.description} (plugin)`
-  }
-
-  if (cmd.source === 'builtin') {
-    return cmd.description
+    return `${description} (plugin)`
   }
 
   if (cmd.source === 'mcp') {
     return cmd.loadedFrom === 'codex_app'
-      ? `${cmd.description} (Codex)`
-      : cmd.description
+      ? `${description} (Codex)`
+      : description
   }
 
-  if (cmd.source === 'bundled') {
-    return `${cmd.description} (bundled)`
+  if (cmd.source === 'builtin' || cmd.source === 'bundled') {
+    return description
   }
 
-  return `${cmd.description} (${getSettingSourceName(cmd.source)})`
+  return `${description} (${getSettingSourceName(cmd.source)})`
+}
+
+function isBuiltinCommand(cmd: Command): boolean {
+  if (cmd.type === 'prompt') {
+    return cmd.source === 'builtin' || cmd.source === 'bundled'
+  }
+  return cmd.loadedFrom !== 'mcp' && cmd.loadedFrom !== 'plugin'
+}
+
+/** The SDK `commands` rows (initialize, supportedCommands, reload_plugins). */
+export function toSdkSlashCommands(commands: readonly Command[]): Array<{
+  name: string
+  description: string
+  argumentHint: string
+  aliases?: string[]
+  builtin?: boolean
+}> {
+  const seen = new Set<string>()
+  return commands
+    .filter(cmd => {
+      if (cmd.userInvocable === false || seen.has(cmd.name)) return false
+      seen.add(cmd.name)
+      return true
+    })
+    .map(cmd => {
+      const name = getCommandName(cmd)
+      const aliases = cmd.aliases?.filter(alias => alias !== name)
+      return {
+        name,
+        description: formatDescriptionWithSource(cmd),
+        argumentHint: cmd.argumentHint || '',
+        ...(aliases?.length ? { aliases } : {}),
+        ...(isBuiltinCommand(cmd) && { builtin: true }),
+      }
+    })
 }
