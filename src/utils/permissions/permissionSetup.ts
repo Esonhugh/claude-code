@@ -1754,3 +1754,36 @@ export function transitionPlanAutoMode(
   setNeedsAutoModeExitAttachment(true)
   return restoreDangerousPermissions(context)
 }
+
+/**
+ * Like official 2.1.311: a deny or ask rule whose tool name matches no tool
+ * can never apply, which is almost always a typo. Session rules are skipped;
+ * names with an underscore (MCP tools) cannot be checked before connecting.
+ */
+export function unknownToolRuleWarnings(
+  context: Pick<ToolPermissionContext, 'alwaysDenyRules' | 'alwaysAskRules'>,
+  knownToolNames: ReadonlySet<string>,
+): string[] {
+  const warnings: string[] = []
+  for (const [behavior, bySource] of [
+    ['deny', context.alwaysDenyRules],
+    ['ask', context.alwaysAskRules],
+  ] as const) {
+    for (const [source, rules] of Object.entries(bySource)) {
+      if (source === 'session') continue
+      for (const rule of rules ?? []) {
+        const value = permissionRuleValueFromString(rule)
+        if (
+          value.toolName.includes('_') ||
+          knownToolNames.has(value.toolName)
+        ) {
+          continue
+        }
+        warnings.push(
+          `Permission ${behavior} rule "${permissionRuleValueToString(value)}" matches no known tool — check for typos.`,
+        )
+      }
+    }
+  }
+  return warnings
+}

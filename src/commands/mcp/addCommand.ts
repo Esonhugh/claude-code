@@ -41,7 +41,7 @@ export function registerMcpAddCommand(mcp: Command): void {
         '  # Add HTTP server with headers:\n' +
         '  claude mcp add --transport http corridor https://app.corridor.dev/api/mcp --header "Authorization: Bearer ..."\n\n' +
         '  # Add stdio server with environment variables:\n' +
-        '  claude mcp add -e API_KEY=xxx my-server -- npx my-mcp-server\n\n' +
+        '  claude mcp add my-server -e API_KEY=xxx -- npx my-mcp-server\n\n' +
         '  # Add stdio server with subprocess flags:\n' +
         '  claude mcp add my-server -- my-command --some-flag arg1',
     )
@@ -60,7 +60,7 @@ export function registerMcpAddCommand(mcp: Command): void {
     )
     .option(
       '-H, --header <header...>',
-      'Set WebSocket headers (e.g. -H "X-Api-Key: abc123" -H "X-Custom: value")',
+      'Set headers for HTTP/SSE servers (e.g. -H "X-Api-Key: abc123" -H "X-Custom: value")',
     )
     .option('--client-id <clientId>', 'OAuth client ID for HTTP/SSE servers')
     .option(
