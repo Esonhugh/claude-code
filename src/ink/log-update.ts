@@ -128,7 +128,15 @@ export class LogUpdate {
     decstbmSafe = true,
   ): Diff {
     if (!this.options.isTTY) {
-      return this.renderFullFrame(next)
+      // Output piped to a file or another program is append-only, so an
+      // unchanged frame must not be written a second time.
+      const diff = this.renderFullFrame(next)
+      const output = diff
+        .map(patch => (patch.type === 'stdout' ? patch.content : ''))
+        .join('')
+      if (output === this.state.previousOutput) return []
+      this.state.previousOutput = output
+      return diff
     }
 
     const startTime = performance.now()

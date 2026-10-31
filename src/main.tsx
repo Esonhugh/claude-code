@@ -85,7 +85,7 @@ import {
   createSyntheticOutputTool,
   isSyntheticOutputToolEnabled,
 } from './tools/SyntheticOutputTool/SyntheticOutputTool.js'
-import { getTools } from './tools.js'
+import { getAllBaseTools, getTools } from './tools.js'
 import {
   canUserConfigureAdvisor,
   getInitialAdvisorSetting,
@@ -278,6 +278,7 @@ import {
   parseToolListFromCLI,
   removeDangerousPermissions,
   stripDangerousPermissionsForAutoMode,
+  unknownToolRuleWarnings,
   verifyAutoModeGateAccess,
 } from './utils/permissions/permissionSetup.js'
 import { permissionRuleValueFromString } from './utils/permissions/permissionRuleParser.js'
@@ -2857,6 +2858,13 @@ async function run(): Promise<CommanderCommand> {
         )
       }
 
+      const knownToolNames = new Set(
+        getAllBaseTools().flatMap(tool => [tool.name, ...(tool.aliases ?? [])]),
+      )
+      warnings.push(
+        ...unknownToolRuleWarnings(toolPermissionContext, knownToolNames),
+      )
+
       // Print any warnings from initialization
       warnings.forEach(warning => {
         // biome-ignore lint/suspicious/noConsole:: intentional console output
@@ -3270,6 +3278,23 @@ async function run(): Promise<CommanderCommand> {
         mainThreadAgentDefinition = agentDefinitions.activeAgents.find(
           agent => agent.agentType === agentSetting,
         )
+        if (
+          !mainThreadAgentDefinition &&
+          agentCli &&
+          outputFormat !== 'stream-json' &&
+          !options.resume &&
+          !options.continue
+        ) {
+          // Like 2.1.311, an explicit --agent that does not exist is an error
+          // rather than a silent fallback to the default agent.
+          const available = agentDefinitions.activeAgents
+            .map(agent => agent.agentType)
+            .join(', ')
+          process.stderr.write(
+            `--agent '${agentCli}' not found. Available agents: ${available || '(none)'}\n`,
+          )
+          process.exit(1)
+        }
         if (!mainThreadAgentDefinition) {
           logForDebugging(
             `Warning: agent "${agentSetting}" not found. ` +
@@ -5798,7 +5823,7 @@ async function run(): Promise<CommanderCommand> {
 
   mcp
     .command('login <name>')
-    .description('Authenticate with an MCP server (HTTP or SSE)')
+    .description('Authenticate with an MCP server (HTTP, SSE, or claude.ai connector)')
     .option(
       '--no-browser',
       'Print the authorization URL instead of opening a browser (for SSH/headless sessions — paste the redirect URL back when prompted)',
@@ -5818,7 +5843,7 @@ async function run(): Promise<CommanderCommand> {
 
   mcp
     .command('add-json <name> <json>')
-    .description('Add an MCP server (stdio or SSE) with a JSON string')
+    .description('Add an MCP server (stdio, SSE, HTTP, or WebSocket) with a JSON string')
     .option(
       '-s, --scope <scope>',
       'Configuration scope (local, user, or project)',
@@ -6645,7 +6670,7 @@ async function run(): Promise<CommanderCommand> {
   program
     .command('update')
     .alias('upgrade')
-    .description('Check for updates and install if available')
+    .description('Check for updates and install if available; package-manager installs update through the package manager')
     .action(async () => {
       const { update } = await import('src/cli/update.js')
       await update()

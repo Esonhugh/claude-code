@@ -3,6 +3,11 @@
  * These are dynamically imported only when the corresponding `claude mcp *` command runs.
  */
 
+import figures from 'figures'
+import {
+  getSettingsForSource,
+  updateSettingsForSource,
+} from '../../utils/settings/settings.js'
 import { stat } from 'fs/promises'
 import pMap from 'p-map'
 import { cwd } from 'process'
@@ -66,22 +71,34 @@ import { getPlatform } from '../../utils/platform.js'
 import { renderToString } from '../../utils/staticRender.js'
 import { cliError, cliOk } from '../exit.js'
 
+type HealthStatus = { status: string; issue?: string }
+
 async function checkMcpServerHealth(
   name: string,
   server: ScopedMcpServerConfig,
-): Promise<string> {
+): Promise<HealthStatus> {
   try {
     const result = await connectToServer(name, server)
     if (result.type === 'connected') {
-      return '✓ Connected'
+      return { status: `${figures.tick} Connected` }
     } else if (result.type === 'needs-auth') {
-      return '! Needs authentication'
+      return { status: '! Needs authentication' }
+    } else if (result.type === 'failed' && result.error) {
+      return { status: `${figures.cross} Failed to connect`, issue: result.error }
     } else {
-      return '✗ Failed to connect'
+      return { status: `${figures.cross} Failed to connect` }
     }
   } catch (_error) {
-    return '✗ Connection error'
+    return { status: `${figures.cross} Connection error` }
   }
+}
+
+// Like official 2.1.311: only names that are safe to paste unquoted get a
+// ready-to-run command.
+function removeCommandFor(name: string, scope: string): string | null {
+  return /^\w[\w.@-]*$/.test(name)
+    ? `claude mcp remove ${name} -s ${scope}`
+    : null
 }
 
 // mcp serve (lines 4512–4532)
@@ -163,7 +180,9 @@ export async function mcpRemoveHandler(
     if (globalConfig.mcpServers?.[name]) scopes.push('user')
 
     if (scopes.length === 0) {
-      cliError(`No MCP server found with name: "${name}"`)
+      cliError(
+        noServerNamed(name, Object.keys((await getAllMcpConfigs()).servers)),
+      )
     } else if (scopes.length === 1) {
       // Server exists in only one scope, remove it
       const scope = scopes[0]!
@@ -187,10 +206,17 @@ export async function mcpRemoveHandler(
           `  - ${getScopeLabel(scope)} (${describeMcpConfigFilePath(scope)})\n`,
         )
       })
-      process.stderr.write('\nTo remove from a specific scope, use:\n')
-      scopes.forEach(scope => {
-        process.stderr.write(`  claude mcp remove "${name}" -s ${scope}\n`)
-      })
+      const commands = scopes.flatMap(
+        scope => removeCommandFor(name, scope) ?? [],
+      )
+      if (commands.length > 0) {
+        process.stderr.write('\nTo remove from a specific scope, use:\n')
+        commands.forEach(command => process.stderr.write(`  ${command}\n`))
+      } else {
+        process.stderr.write(
+          '\nSpecify a scope with -s to remove from a specific one.\n',
+        )
+      }
       cliError()
     }
   } catch (error) {
@@ -199,7 +225,7 @@ export async function mcpRemoveHandler(
 }
 
 const PENDING_APPROVAL_STATUS = '⏸ Pending approval (run `claude` to approve)'
-const REJECTED_STATUS = '✗ Rejected (see disabledMcpjsonServers in settings)'
+const REJECTED_STATUS = `${figures.cross} Rejected (see disabledMcpjsonServers in settings)`
 const DISABLED_STATUS = '⊘ Disabled for this project (re-enable via /mcp)'
 
 // mcp list (lines 4641–4688)
@@ -215,23 +241,28 @@ export async function mcpListHandler(): Promise<void> {
     )
   } else {
     // biome-ignore lint/suspicious/noConsole:: intentional console output
-    console.log('Checking MCP server health...\n')
+    console.log('Checking MCP server health…\n')
 
     // Check servers concurrently; only connect to servers the session would
     const entries = Object.entries(configs)
     const results = await pMap(
       entries,
-      async ([name, server]) => ({
-        name,
-        server,
-        status:
+      async ([name, server]) => {
+        const health: HealthStatus =
           server.scope === 'project' &&
           getProjectMcpServerStatus(name) === 'pending'
-            ? PENDING_APPROVAL_STATUS
+            ? { status: PENDING_APPROVAL_STATUS }
             : isMcpServerDisabled(name)
-              ? DISABLED_STATUS
-              : await checkMcpServerHealth(name, server),
-      }),
+              ? { status: DISABLED_STATUS }
+              : await checkMcpServerHealth(name, server)
+        return {
+          name,
+          server,
+          status: health.issue
+            ? `${health.status} — ${health.issue}`
+            : health.status,
+        }
+      },
       { concurrency: getMcpServerConnectionBatchSize() },
     )
 
@@ -299,16 +330,20 @@ export async function mcpGetHandler(name: string): Promise<void> {
   // Only health-check (connect to) servers the session would connect to
   const projectStatus =
     server.scope === 'project' ? getProjectMcpServerStatus(name) : 'approved'
-  const status =
+  const health: HealthStatus =
     projectStatus === 'pending'
-      ? PENDING_APPROVAL_STATUS
+      ? { status: PENDING_APPROVAL_STATUS }
       : projectStatus === 'rejected'
-        ? REJECTED_STATUS
+        ? { status: REJECTED_STATUS }
         : isMcpServerDisabled(name)
-          ? DISABLED_STATUS
+          ? { status: DISABLED_STATUS }
           : await checkMcpServerHealth(name, server)
   // biome-ignore lint/suspicious/noConsole:: intentional console output
-  console.log(`  Status: ${status}`)
+  console.log(`  Status: ${health.status}`)
+  if (health.issue) {
+    // biome-ignore lint/suspicious/noConsole:: intentional console output
+    console.log(`  Issue: ${health.issue}`)
+  }
 
   // Intentionally excluding sse-ide servers here since they're internal
   if (server.type === 'sse') {
@@ -384,10 +419,22 @@ export async function mcpGetHandler(name: string): Promise<void> {
       `  Timeout: ${server.timeout}ms${server.timeout < 1000 ? ' (ignored: below 1000ms minimum)' : ''}`,
     )
   }
-  // biome-ignore lint/suspicious/noConsole:: intentional console output
-  console.log(
-    `\nTo remove this server, run: claude mcp remove "${name}" -s ${server.scope}`,
-  )
+  const editable =
+    server.scope === 'local' ||
+    server.scope === 'project' ||
+    server.scope === 'user'
+  const command = editable ? removeCommandFor(name, server.scope) : null
+  const removeHint = command
+    ? `To remove this server, run: ${command}`
+    : editable || server.scope === 'enterprise'
+      ? `To remove this server, edit ${describeMcpConfigFilePath(server.scope)}`
+      : server.scope === 'managed'
+        ? "This server is provided by your organization's managed settings and cannot be removed locally."
+        : null
+  if (removeHint) {
+    // biome-ignore lint/suspicious/noConsole:: intentional console output
+    console.log(`\n${removeHint}`)
+  }
   // Use gracefulShutdown to properly clean up MCP server connections
   // (process.exit bypasses cleanup handlers, leaving child processes orphaned)
   await gracefulShutdown(0)
@@ -679,8 +726,25 @@ export async function mcpResetChoicesHandler(): Promise<void> {
     disabledMcpjsonServers: [],
     enableAllProjectMcpServers: false,
   }))
+  // Approvals given in the session are stored in .claude/settings.local.json.
+  const local = getSettingsForSource('localSettings')
+  if (
+    local?.enabledMcpjsonServers !== undefined ||
+    local?.disabledMcpjsonServers !== undefined ||
+    local?.enableAllProjectMcpServers !== undefined
+  ) {
+    const { error } = updateSettingsForSource('localSettings', {
+      enabledMcpjsonServers: undefined,
+      disabledMcpjsonServers: undefined,
+      enableAllProjectMcpServers: undefined,
+    })
+    if (error) {
+      cliError(
+        `Error: Failed to reset project choices: ${error.message} (legacy approvals in ~/.claude.json were cleared; local settings were not)`,
+      )
+    }
+  }
   cliOk(
-    'All project-scoped (.mcp.json) server approvals and rejections have been reset.\n' +
-      'You will be prompted for approval next time you start Claude Code.',
+    'Project-scoped (.mcp.json) server approvals and rejections stored for this project have been reset.',
   )
 }

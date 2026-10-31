@@ -232,7 +232,9 @@ export function writeDiffToTerminal(
   // BSU/ESU wrapping is opt-out to keep main-screen behavior unchanged.
   // Callers pass skipSyncMarkers=true when the terminal doesn't support
   // DEC 2026 (e.g. tmux) AND the cost matters (high-frequency alt-screen).
-  const useSync = !skipSyncMarkers
+  // A pipe or file is not a terminal and must not receive the markers.
+  const useSync =
+    !skipSyncMarkers && (terminal.stdout as NodeJS.WriteStream).isTTY === true
 
   // Buffer all writes into a single string to avoid multiple write calls
   let buffer = useSync ? BSU : ''

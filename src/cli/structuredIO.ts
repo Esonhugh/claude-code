@@ -458,16 +458,20 @@ export class StructuredIO {
         return message
       }
       // @ts-ignore - recovered code
-      if (message.message.role !== 'user') {
+      if (message.message?.role !== 'user') {
         exitWithMessage(
           // @ts-ignore - recovered code
-          `Error: Expected message role 'user', got '${message.message.role}'`,
+          `Error: Expected message role 'user', got '${String(message.message?.role)}'`,
         )
       }
       return message
     } catch (error) {
       // biome-ignore lint/suspicious/noConsole:: intentional console output
-      console.error(`Error parsing streaming input line: ${line}: ${error}`)
+      // Like 2.1.311, name the line by type and size rather than echo it.
+      const type = /"type"\s*:\s*"([\w-]{1,40})"/.exec(line)?.[1] ?? 'unknown'
+      console.error(
+        `Error parsing streaming input line (type=${type}, ${line.length} chars): ${error instanceof Error ? error.name : typeof error}`,
+      )
       // eslint-disable-next-line custom-rules/no-process-exit
       process.exit(1)
     }
