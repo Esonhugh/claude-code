@@ -1,6 +1,8 @@
 import { readdir } from 'fs/promises'
 import { getCwd } from '../../utils/cwd.js'
 import { isEnvTruthy } from '../../utils/envUtils.js'
+import { shouldSkipHookDueToTrust } from '../../utils/hooks.js'
+import { isRestrictedToPluginOnly } from '../../utils/settings/pluginOnlyPolicy.js'
 import { registerBundledSkill } from '../bundledSkills.js'
 
 // claudeApiContent.js bundles ~1MB of .md strings. Lazy-load it so it only
@@ -30,8 +32,8 @@ const SUBCOMMANDS = [
   'managed-agents-secure',
 ]
 
-// Official gates managed-agents-secure on a hook guard for its `ant`
-// commands; this build has no such guard, so the subcommand is unavailable.
+// managed-agents-secure runs `ant` commands only behind a PreToolUse guard
+// (claudeApiSecureGuard.ts); without hooks the subcommand is unavailable.
 const SECURE_GUIDE = 'shared/managed-agents-secure.md'
 const QUICKSTART_DIR = 'shared/managed-agents-quickstarts/'
 const QUICKSTART_GUIDE = 'shared/managed-agents-onboarding-from-quickstart.md'
@@ -81,10 +83,18 @@ function processContent(md: string, vars: Record<string, string>): string {
   )
 }
 
-function skillFiles(content: SkillContent): Record<string, string> {
+function secureGuardCanRun(): boolean {
+  return (
+    !isRestrictedToPluginOnly('hooks') &&
+    !shouldSkipHookDueToTrust() &&
+    !isEnvTruthy(process.env.CLAUDE_CODE_REMOTE_TOOLS_FORWARD)
+  )
+}
+
+function skillFiles(content: SkillContent, secureGuard: boolean): Record<string, string> {
   const files: Record<string, string> = {}
   for (const [path, text] of Object.entries(content.SKILL_FILES)) {
-    if (path === SECURE_GUIDE) continue
+    if (path === SECURE_GUIDE && !secureGuard) continue
     files[path] = path.endsWith('.md')
       ? processContent(text, content.SKILL_MODEL_VARS)
       : text
@@ -227,6 +237,7 @@ function buildPrompt(
   args: string,
   content: SkillContent,
   docsOnDisk: boolean,
+  secureGuard: boolean,
 ): string {
   const vars = content.SKILL_MODEL_VARS
   const sub = subcommand(args)
@@ -240,7 +251,7 @@ function buildPrompt(
       parts.push('## Security Comparison Unavailable\n\nThe `managed-agents-secure` command follows a guide from the reference files, which are not on disk this session. If the request is for it, say that it is unavailable and stop: do not run `ant` commands or check the deployment by hand.')
     }
     parts.push("## Onboarding From a URL Unavailable\n\nSetting up an agent from a page (`managed-agents-onboard <url>`, or a request in plain words to copy a setup from a cookbook, post or docs page) follows `shared/managed-agents-onboarding-from-url.md`, which isn't available this session. If the request is for that, tell the user it isn't possible right now because the skill's files couldn't be saved and that running `/claude-api` again will retry saving them, then stop without fetching the page or writing any files.")
-  } else {
+  } else if (!secureGuard) {
     parts.push('## Security Comparison Unavailable\n\nClaude Code cannot check the `ant` commands of `managed-agents-secure` in this session. If the request is for it, say that it is unavailable in this session and stop: do not run its `ant` commands or check the deployment by hand.')
   }
 
@@ -258,7 +269,7 @@ function buildPrompt(
   } else if (sub !== 'prompt-audit' && sub !== 'managed-agents-secure' && match.kind !== 'match') {
     parts.push(
       docsOnDisk
-        ? `No project language was auto-detected. ${askForLanguage(args, 'see Security Comparison Unavailable above')}, then Read the matching \`{lang}/claude-api/README.md\` (or \`curl/examples.md\` for cURL/raw HTTP or an unsupported language) from the base directory before anything else.`
+        ? `No project language was auto-detected. ${askForLanguage(args, secureGuard ? 'follow the `managed-agents-secure` row in the Managed Agents section above' : 'see Security Comparison Unavailable above')}, then Read the matching \`{lang}/claude-api/README.md\` (or \`curl/examples.md\` for cURL/raw HTTP or an unsupported language) from the base directory before anything else.`
         : `No project language was auto-detected. ${askForLanguage(args, 'see Security Comparison Unavailable above')} before writing code.`,
     )
   }
@@ -304,9 +315,10 @@ export function registerClaudeApiSkill(): void {
     allowedTools: ['WebFetch(domain:platform.claude.com)'],
     userInvocable: true,
     isEnabled: () => !disabled,
-    files: async () => skillFiles(await loadContent()),
+    files: async () => skillFiles(await loadContent(), secureGuardCanRun()),
     async getPromptForCommand(args, _context, baseDir) {
-      if (subcommand(args) === 'managed-agents-secure') {
+      const secureGuard = secureGuardCanRun()
+      if (!secureGuard && subcommand(args) === 'managed-agents-secure') {
         return [
           {
             type: 'text',
@@ -314,8 +326,12 @@ export function registerClaudeApiSkill(): void {
           },
         ]
       }
-      const [lang, content] = await Promise.all([detectLanguage(), loadContent()])
-      const text = buildPrompt(lang, args, content, typeof baseDir === 'string')
+      const [lang, content] = await Promise.all([
+        detectLanguage(),
+        loadContent(),
+        import('./claudeApiSecureGuard.js').then(m => m.registerManagedAgentsSecureGuard()),
+      ])
+      const text = buildPrompt(lang, args, content, typeof baseDir === 'string', secureGuard)
       return [{ type: 'text', text }]
     },
   })

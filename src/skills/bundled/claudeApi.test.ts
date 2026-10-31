@@ -2,7 +2,7 @@ import { afterEach, expect, test } from 'bun:test'
 import { existsSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { setCwdState } from '../../bootstrap/state.js'
+import { getRegisteredHooks, setCwdState } from '../../bootstrap/state.js'
 import { clearBundledSkills, getBundledSkills } from '../bundledSkills.js'
 import { registerClaudeApiSkill } from './claudeApi.js'
 
@@ -42,7 +42,10 @@ test('/claude-api uses the official 2.1.311 content and model ids', async () => 
   for (const file of ['shared/models.md', 'shared/managed-agents-quickstarts/bug-hunter.md', 'shared/evals/report/runner-scaffold.mjs', 'python/claude-api/README.md']) {
     expect(existsSync(join(baseDir!, file))).toBe(true)
   }
-  expect(existsSync(join(baseDir!, 'shared/managed-agents-secure.md'))).toBe(false)
+  // The ant-command guard can run here, so managed-agents-secure ships like official.
+  expect(existsSync(join(baseDir!, 'shared/managed-agents-secure.md'))).toBe(true)
+  expect(text).not.toContain('## Security Comparison Unavailable')
+  expect(getRegisteredHooks()?.PreToolUse?.[0]?.matcher).toBe('Bash|PowerShell|Monitor')
 })
 
 test('/claude-api can be turned off like official', () => {
