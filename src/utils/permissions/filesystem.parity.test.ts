@@ -8,7 +8,7 @@ import type { Tool, ToolPermissionContext } from '../../Tool.js'
 
 const { getCwdState, getOriginalCwd, setCwdState, setOriginalCwd } = await import('../../bootstrap/state.js')
 const { getDefaultAppState } = await import('../../state/AppStateStore.js')
-const { checkWritePermissionForTool, matchingRuleForInput } = await import('./filesystem.js')
+const { checkWritePermissionForTool, generateSuggestions, matchingRuleForInput } = await import('./filesystem.js')
 
 const project = realpathSync(mkdtempSync(join(tmpdir(), 'fs-permission-parity-')))
 const savedCwd = getCwdState()
@@ -75,4 +75,16 @@ test.each([
 test('acceptEdits still writes ordinary project files', () => {
   const result = checkWritePermissionForTool(writeTool, { file_path: join(project, 'src/x.ts') }, permissionContext('acceptEdits'))
   expect(result.behavior).toBe('allow')
+})
+
+test('plan mode offers the accept-edits switch only when plan was entered from default', () => {
+  const offers = (ctx: ToolPermissionContext) =>
+    generateSuggestions(join(project, 'x.ts'), 'write', ctx).some(s => s.type === 'setMode')
+  expect(offers(permissionContext('default'))).toBe(true)
+  expect(offers({ ...permissionContext('plan'), prePlanMode: 'default' })).toBe(true)
+  expect(offers(permissionContext('plan'))).toBe(true)
+  for (const prePlanMode of ['acceptEdits', 'auto', 'bypassPermissions', 'dontAsk'] as const) {
+    expect({ prePlanMode, offers: offers({ ...permissionContext('plan'), prePlanMode }) }).toEqual({ prePlanMode, offers: false })
+  }
+  expect(offers(permissionContext('acceptEdits'))).toBe(false)
 })

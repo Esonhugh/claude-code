@@ -42,7 +42,7 @@ test('an empty project list keeps the picker open with Ctrl+A and Esc', async ()
     expect(stripAnsi(output)).toContain('show all projects')
     expect(stripAnsi(output)).toContain('Search…')
     // Like 2.1.311, the project being listed is named under the search box.
-    expect(stripAnsi(output)).toMatch(new RegExp(`(^|\\n) {2}${basename(getOriginalCwd())}\\s*\\n`))
+    expect(stripAnsi(output)).toMatch(new RegExp(`(^|\\n) {4}${basename(getOriginalCwd())}\\s*\\n`))
     expect(stripAnsi(output)).toMatch(/Ctrl\+A to show all projects · Type to search · Esc to cancel/)
     stdin.write('\x01')
     await wait()

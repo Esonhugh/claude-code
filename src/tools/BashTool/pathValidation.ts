@@ -9,7 +9,10 @@ import {
 } from '../../utils/bash/commands.js'
 import { tryParseShellCommand } from '../../utils/bash/shellQuote.js'
 import { expandTilde, getDirectoryForPath } from '../../utils/path.js'
-import { allWorkingDirectories } from '../../utils/permissions/filesystem.js'
+import {
+  allWorkingDirectories,
+  canSuggestAcceptEdits,
+} from '../../utils/permissions/filesystem.js'
 import {
   requiresExplicitUserApproval,
   type PermissionAskDecision,
@@ -827,7 +830,10 @@ export function createPathChecker(
       }
 
       // For write operations, also suggest enabling accept-edits mode
-      if (operationType === 'write' || operationType === 'create') {
+      if (
+        (operationType === 'write' || operationType === 'create') &&
+        canSuggestAcceptEdits(context)
+      ) {
         suggestions.push({
           type: 'setMode',
           mode: 'acceptEdits',
