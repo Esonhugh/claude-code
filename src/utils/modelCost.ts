@@ -109,6 +109,15 @@ export const COST_TIER_FAST_10_50 = {
   webSearchRequests: 0.01,
 } as const satisfies ModelCosts
 
+// Fast mode for Opus 4.6/4.7: $30 input / $150 output per Mtok
+export const COST_TIER_FAST_30_150 = {
+  inputTokens: 30,
+  outputTokens: 150,
+  promptCacheWriteTokens: 37.5,
+  promptCacheReadTokens: 3,
+  webSearchRequests: 0.01,
+} as const satisfies ModelCosts
+
 // Pricing for Haiku 3.5: $0.80 input / $4 output per Mtok
 export const COST_HAIKU_35 = {
   inputTokens: 0.8,
@@ -174,7 +183,7 @@ export const MODEL_COSTS: Record<ModelShortName, ModelCosts> = {
     inputTokens: 2,
     outputTokens: 10,
     promptCacheWriteTokens: 2.5,
-    promptCacheReadTokens: 0.2,
+    promptCacheReadTokens: 0.1,
     webSearchRequests: 0.01,
   },
   'claude-sonnet-5': {
@@ -255,13 +264,24 @@ function tokensToUSDCost(costs: ModelCosts, usage: Usage): number {
     costs.longPrompt && promptTokens > costs.longPrompt.abovePromptTokens
       ? costs.longPrompt
       : costs
-  return (
+  // 1h cache writes are billed at 2x the base input rate (official 2.1.311).
+  const cacheWriteTokens = usage.cache_creation_input_tokens ?? 0
+  const cacheWrite1hTokens = Math.min(
+    Math.max(usage.cache_creation?.ephemeral_1h_input_tokens ?? 0, 0),
+    cacheWriteTokens,
+  )
+  const tokenCost =
     (usage.input_tokens / 1_000_000) * modelCosts.inputTokens +
     (usage.output_tokens / 1_000_000) * modelCosts.outputTokens +
     ((usage.cache_read_input_tokens ?? 0) / 1_000_000) *
       modelCosts.promptCacheReadTokens +
-    ((usage.cache_creation_input_tokens ?? 0) / 1_000_000) *
+    ((cacheWriteTokens - cacheWrite1hTokens) / 1_000_000) *
       modelCosts.promptCacheWriteTokens +
+    (cacheWrite1hTokens / 1_000_000) * modelCosts.inputTokens * 2
+  // US-only inference is billed at 1.1x token prices.
+  const geoMultiplier = usage.inference_geo === 'us' ? 1.1 : 1
+  return (
+    tokenCost * geoMultiplier +
     (usage.server_tool_use?.web_search_requests ?? 0) *
       modelCosts.webSearchRequests
   )
@@ -278,6 +298,12 @@ export function getModelCosts(model: string, usage: Usage): ModelCosts {
     }
     if (shortName === 'claude-opus-5' || shortName === 'claude-opus-4-8') {
       return COST_TIER_FAST_10_50
+    }
+    if (
+      shortName === firstPartyNameToCanonical(CLAUDE_OPUS_4_6_CONFIG.firstParty) ||
+      shortName === firstPartyNameToCanonical(CLAUDE_OPUS_4_7_CONFIG.firstParty)
+    ) {
+      return COST_TIER_FAST_30_150
     }
   }
 
