@@ -245,7 +245,7 @@ describe('Plan mode opt-in', () => {
       await AskUserQuestionTool.prompt(options),
       await TaskCreateTool.prompt(),
       await AgentTool.prompt(options),
-      ...agents.map(formatAgentLine),
+      ...agents.map(agent => formatAgentLine(agent)),
       JSON.stringify(AgentTool.inputSchema),
       ...normalizeAttachmentForAPI({ type: 'auto_mode', reminderType: 'full' })
         .map(message => JSON.stringify(message.message.content)),

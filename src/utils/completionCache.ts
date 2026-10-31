@@ -9,7 +9,7 @@ import { logForDebugging } from './debug.js'
 import { isENOENT } from './errors.js'
 import { execFileNoThrow } from './execFileNoThrow.js'
 import { logError } from './log.js'
-import type { ThemeName } from './theme.js'
+import type { ResolvedTheme } from './theme.js'
 
 const EOL = '\n'
 
@@ -72,7 +72,7 @@ function formatPathLink(filePath: string): string {
  * Generate and cache the completion script, then add a source line to the
  * shell's rc file. Returns a user-facing status message.
  */
-export async function setupShellCompletion(theme: ThemeName): Promise<string> {
+export async function setupShellCompletion(theme: ResolvedTheme): Promise<string> {
   const shell = detectShell()
   if (!shell) {
     return ''

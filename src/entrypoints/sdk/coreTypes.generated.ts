@@ -12,6 +12,8 @@ export type ModelUsage = {
   thinkingTokens?: number
   cacheReadInputTokens: number
   cacheCreationInputTokens: number
+  cacheCreationEphemeral5mInputTokens?: number
+  cacheCreationEphemeral1hInputTokens?: number
   webSearchRequests: number
   costUSD: number
   contextWindow: number
@@ -33,6 +35,8 @@ export type ApiKeySource = 'user' | 'project' | 'org' | 'temporary' | 'oauth'
 export type ConfigScope = 'local' | 'user' | 'project'
 export type SdkBeta = 'context-1m-2025-08-07'
 export type FastModeState = 'off' | 'cooldown' | 'on'
+export type TerminalReason = 'blocking_limit' | 'rapid_refill_breaker' | 'prompt_too_long' | 'image_error' | 'model_error' | 'api_error' | 'malformed_tool_use_exhausted' | 'aborted_streaming' | 'aborted_tools' | 'stop_hook_prevented' | 'hook_stopped' | 'tool_deferred' | 'max_turns' | 'background_requested' | 'completed' | 'budget_exhausted' | 'structured_output_retry_exhausted' | 'tool_deferred_unavailable' | 'turn_setup_failed'
+export type FastModeDisabledReason = 'free' | 'preference' | 'extra_usage_disabled' | 'network_error' | 'unknown' | 'not_first_party' | 'disabled_by_env' | 'model_not_allowed' | 'sdk_opt_in_required' | 'pending'
 
 // Thinking Config
 export type ThinkingAdaptive = { type: 'adaptive' }
@@ -76,6 +80,7 @@ export type McpServerStatus = {
   config?: McpServerStatusConfig
   scope?: string
   source?: string
+  transport?: string
   tools?: Array<{
     name: string
     description?: string
@@ -116,31 +121,37 @@ export type PermissionResult =
 export type PermissionMode = 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan' | 'dontAsk' | 'auto'
 
 // Hook Types
-export type HookEvent = 'PreToolUse' | 'PostToolUse' | 'PostToolUseFailure' | 'Notification' | 'UserPromptSubmit' | 'SessionStart' | 'SessionEnd' | 'Stop' | 'StopFailure' | 'SubagentStart' | 'SubagentStop' | 'PreCompact' | 'PostCompact' | 'PreModelSwitch' | 'PostModelSwitch' | 'PermissionRequest' | 'PermissionDenied' | 'Setup' | 'TeammateIdle' | 'TaskCreated' | 'TaskCompleted' | 'Elicitation' | 'ElicitationResult' | 'ConfigChange' | 'WorktreeCreate' | 'WorktreeRemove' | 'InstructionsLoaded' | 'CwdChanged' | 'FileChanged' | 'DirectoryAdded' | 'MessageDisplay'
+export type HookEvent = 'PreToolUse' | 'PostToolUse' | 'PostToolUseFailure' | 'PostToolBatch' | 'Notification' | 'UserPromptSubmit' | 'UserPromptExpansion' | 'SessionStart' | 'SessionEnd' | 'Stop' | 'StopFailure' | 'SubagentStart' | 'SubagentStop' | 'PreCompact' | 'PostCompact' | 'PreModelSwitch' | 'PostModelSwitch' | 'PermissionRequest' | 'PermissionDenied' | 'Setup' | 'TeammateIdle' | 'TaskCreated' | 'TaskCompleted' | 'Elicitation' | 'ElicitationResult' | 'ConfigChange' | 'WorktreeCreate' | 'WorktreeRemove' | 'InstructionsLoaded' | 'CwdChanged' | 'FileChanged' | 'DirectoryAdded' | 'MessageDisplay'
 export type ExitReason = 'clear' | 'resume' | 'logout' | 'prompt_input_exit' | 'other' | 'bypass_permissions_disabled'
 
 export type BaseHookInput = {
   session_id: string
   transcript_path: string
   cwd: string
+  prompt_id?: string
   permission_mode?: string
   agent_id?: string
   agent_type?: string
   effort?: { level: string }
 }
 export type PreToolUseHookInput = BaseHookInput & { hook_event_name: 'PreToolUse'; tool_name: string; tool_input: unknown; tool_use_id: string }
-export type PostToolUseHookInput = BaseHookInput & { hook_event_name: 'PostToolUse'; tool_name: string; tool_input: unknown; tool_response: unknown; tool_use_id: string }
-export type PostToolUseFailureHookInput = BaseHookInput & { hook_event_name: 'PostToolUseFailure'; tool_name: string; tool_input: unknown; tool_use_id: string; error: string; is_interrupt?: boolean }
+export type PostToolUseHookInput = BaseHookInput & { hook_event_name: 'PostToolUse'; tool_name: string; tool_input: unknown; tool_response: unknown; tool_use_id: string; duration_ms?: number }
+export type PostToolUseFailureHookInput = BaseHookInput & { hook_event_name: 'PostToolUseFailure'; tool_name: string; tool_input: unknown; tool_use_id: string; error: string; is_interrupt?: boolean; duration_ms?: number }
+export type PostToolBatchToolCall = { tool_name: string; tool_input: unknown; tool_use_id: string; tool_response?: unknown }
+export type PostToolBatchHookInput = BaseHookInput & { hook_event_name: 'PostToolBatch'; tool_calls: PostToolBatchToolCall[] }
 export type PermissionRequestHookInput = BaseHookInput & { hook_event_name: 'PermissionRequest'; tool_name: string; tool_input: unknown; permission_suggestions?: PermissionUpdate[] }
 export type PermissionDeniedHookInput = BaseHookInput & { hook_event_name: 'PermissionDenied'; tool_name: string; tool_input: unknown; tool_use_id: string; reason: string }
 export type NotificationHookInput = BaseHookInput & { hook_event_name: 'Notification'; message: string; title?: string; notification_type: string }
-export type UserPromptSubmitHookInput = BaseHookInput & { hook_event_name: 'UserPromptSubmit'; prompt: string }
+export type UserPromptSubmitHookInput = BaseHookInput & { hook_event_name: 'UserPromptSubmit'; prompt: string; session_title?: string }
+export type UserPromptExpansionHookInput = BaseHookInput & { hook_event_name: 'UserPromptExpansion'; expansion_type: 'slash_command' | 'mcp_prompt'; command_name: string; command_args: string; command_source?: string; prompt: string }
 export type SessionStartHookInput = BaseHookInput & { hook_event_name: 'SessionStart'; source: 'startup' | 'resume' | 'clear' | 'compact'; agent_type?: string; model?: string }
 export type SessionEndHookInput = BaseHookInput & { hook_event_name: 'SessionEnd'; reason: ExitReason }
-export type StopHookInput = BaseHookInput & { hook_event_name: 'Stop'; stop_hook_active: boolean; last_assistant_message?: string }
+export type StopHookBackgroundTask = { id: string; type: string; status: string; description: string; command?: string; agent_type?: string; name?: string }
+export type StopHookSessionCron = { id: string; schedule: string; recurring: boolean; prompt: string }
+export type StopHookInput = BaseHookInput & { hook_event_name: 'Stop'; stop_hook_active: boolean; last_assistant_message?: string; background_tasks?: StopHookBackgroundTask[]; session_crons?: StopHookSessionCron[] }
 export type StopFailureHookInput = BaseHookInput & { hook_event_name: 'StopFailure'; error: SDKAssistantMessageError; error_details?: string; last_assistant_message?: string }
 export type SubagentStartHookInput = BaseHookInput & { hook_event_name: 'SubagentStart'; agent_id: string; agent_type: string }
-export type SubagentStopHookInput = BaseHookInput & { hook_event_name: 'SubagentStop'; stop_hook_active: boolean; agent_id: string; agent_transcript_path: string; agent_type: string; last_assistant_message?: string }
+export type SubagentStopHookInput = BaseHookInput & { hook_event_name: 'SubagentStop'; stop_hook_active: boolean; agent_id: string; agent_transcript_path: string; agent_type: string; last_assistant_message?: string; background_tasks?: StopHookBackgroundTask[]; session_crons?: StopHookSessionCron[] }
 export type PreCompactHookInput = BaseHookInput & { hook_event_name: 'PreCompact'; trigger: 'manual' | 'auto'; custom_instructions: string | null }
 export type PostCompactHookInput = BaseHookInput & { hook_event_name: 'PostCompact'; trigger: 'manual' | 'auto'; compact_summary: string }
 export type SetupHookInput = BaseHookInput & { hook_event_name: 'Setup'; trigger: 'init' | 'maintenance' }
@@ -161,17 +172,19 @@ export type PostModelSwitchHookInput = BaseHookInput & { hook_event_name: 'PostM
 export type DirectoryAddedHookInput = BaseHookInput & { hook_event_name: 'DirectoryAdded'; directory: string; source: 'slash_command' | 'register_repo_root' }
 export type MessageDisplayHookInput = BaseHookInput & { hook_event_name: 'MessageDisplay'; turn_id: string; message_id: string; index: number; final: boolean; delta: string }
 
-export type HookInput = PreToolUseHookInput | PostToolUseHookInput | PostToolUseFailureHookInput | PermissionRequestHookInput | PermissionDeniedHookInput | NotificationHookInput | UserPromptSubmitHookInput | SessionStartHookInput | SessionEndHookInput | StopHookInput | StopFailureHookInput | SubagentStartHookInput | SubagentStopHookInput | PreCompactHookInput | PostCompactHookInput | SetupHookInput | TeammateIdleHookInput | TaskCreatedHookInput | TaskCompletedHookInput | ElicitationHookInput | ElicitationResultHookInput | ConfigChangeHookInput | InstructionsLoadedHookInput | WorktreeCreateHookInput | WorktreeRemoveHookInput | CwdChangedHookInput | FileChangedHookInput | PreModelSwitchHookInput | PostModelSwitchHookInput | DirectoryAddedHookInput | MessageDisplayHookInput
+export type HookInput = PreToolUseHookInput | PostToolUseHookInput | PostToolUseFailureHookInput | PostToolBatchHookInput | PermissionRequestHookInput | PermissionDeniedHookInput | NotificationHookInput | UserPromptSubmitHookInput | UserPromptExpansionHookInput | SessionStartHookInput | SessionEndHookInput | StopHookInput | StopFailureHookInput | SubagentStartHookInput | SubagentStopHookInput | PreCompactHookInput | PostCompactHookInput | SetupHookInput | TeammateIdleHookInput | TaskCreatedHookInput | TaskCompletedHookInput | ElicitationHookInput | ElicitationResultHookInput | ConfigChangeHookInput | InstructionsLoadedHookInput | WorktreeCreateHookInput | WorktreeRemoveHookInput | CwdChangedHookInput | FileChangedHookInput | PreModelSwitchHookInput | PostModelSwitchHookInput | DirectoryAddedHookInput | MessageDisplayHookInput
 
 // Hook Output Types
 export type AsyncHookJSONOutput = { async: true; asyncTimeout?: number }
 export type PreToolUseHookSpecificOutput = { hookEventName: 'PreToolUse'; permissionDecision?: PermissionBehavior; permissionDecisionReason?: string; updatedInput?: Record<string, unknown>; additionalContext?: string }
 export type UserPromptSubmitHookSpecificOutput = { hookEventName: 'UserPromptSubmit'; additionalContext?: string }
+export type UserPromptExpansionHookSpecificOutput = { hookEventName: 'UserPromptExpansion'; additionalContext?: string; suppressOriginalPrompt?: boolean }
 export type SessionStartHookSpecificOutput = { hookEventName: 'SessionStart'; additionalContext?: string; initialUserMessage?: string; sessionTitle?: string; watchPaths?: string[]; reloadSkills?: boolean }
 export type SetupHookSpecificOutput = { hookEventName: 'Setup'; additionalContext?: string }
 export type SubagentStartHookSpecificOutput = { hookEventName: 'SubagentStart'; additionalContext?: string }
 export type PostToolUseHookSpecificOutput = { hookEventName: 'PostToolUse'; additionalContext?: string; updatedToolOutput?: unknown; updatedMCPToolOutput?: unknown }
 export type PostToolUseFailureHookSpecificOutput = { hookEventName: 'PostToolUseFailure'; additionalContext?: string }
+export type PostToolBatchHookSpecificOutput = { hookEventName: 'PostToolBatch'; additionalContext?: string }
 export type StopHookSpecificOutput = { hookEventName: 'Stop'; additionalContext?: string }
 export type SubagentStopHookSpecificOutput = { hookEventName: 'SubagentStop'; additionalContext?: string }
 export type PermissionDeniedHookSpecificOutput = { hookEventName: 'PermissionDenied'; retry?: boolean }
@@ -193,7 +206,7 @@ export type SyncHookJSONOutput = {
   decision?: 'approve' | 'block'
   systemMessage?: string
   reason?: string
-  hookSpecificOutput?: PreToolUseHookSpecificOutput | UserPromptSubmitHookSpecificOutput | SessionStartHookSpecificOutput | SetupHookSpecificOutput | SubagentStartHookSpecificOutput | PostToolUseHookSpecificOutput | PostToolUseFailureHookSpecificOutput | StopHookSpecificOutput | SubagentStopHookSpecificOutput | PermissionDeniedHookSpecificOutput | NotificationHookSpecificOutput | PermissionRequestHookSpecificOutput | PreModelSwitchHookSpecificOutput | PostModelSwitchHookSpecificOutput | MessageDisplayHookSpecificOutput | ElicitationHookSpecificOutput | ElicitationResultHookSpecificOutput | CwdChangedHookSpecificOutput | FileChangedHookSpecificOutput | WorktreeCreateHookSpecificOutput
+  hookSpecificOutput?: PreToolUseHookSpecificOutput | UserPromptSubmitHookSpecificOutput | UserPromptExpansionHookSpecificOutput | SessionStartHookSpecificOutput | SetupHookSpecificOutput | SubagentStartHookSpecificOutput | PostToolUseHookSpecificOutput | PostToolUseFailureHookSpecificOutput | PostToolBatchHookSpecificOutput | StopHookSpecificOutput | SubagentStopHookSpecificOutput | PermissionDeniedHookSpecificOutput | NotificationHookSpecificOutput | PermissionRequestHookSpecificOutput | PreModelSwitchHookSpecificOutput | PostModelSwitchHookSpecificOutput | MessageDisplayHookSpecificOutput | ElicitationHookSpecificOutput | ElicitationResultHookSpecificOutput | CwdChangedHookSpecificOutput | FileChangedHookSpecificOutput | WorktreeCreateHookSpecificOutput
 }
 export type HookJSONOutput = AsyncHookJSONOutput | SyncHookJSONOutput
 
@@ -203,9 +216,9 @@ export type PromptRequest = { prompt: string; message: string; options: PromptRe
 export type PromptResponse = { prompt_response: string; selected: string }
 
 // Skill/Command Types
-export type SlashCommand = { name: string; description: string; argumentHint: string }
+export type SlashCommand = { name: string; description: string; argumentHint: string; aliases?: string[]; builtin?: boolean }
 export type AgentInfo = { name: string; description: string; model?: string }
-export type ModelInfo = { value: string; resolvedModel?: string; displayName: string; description: string; supportsEffort?: boolean; supportedEffortLevels?: ('none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra')[]; supportsAdaptiveThinking?: boolean; supportsFastMode?: boolean; supportsAutoMode?: boolean }
+export type ModelInfo = { value: string; resolvedModel?: string; displayName: string; description: string; supportsEffort?: boolean; supportedEffortLevels?: ('none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra')[]; supportsAdaptiveThinking?: boolean; supportsFastMode?: boolean; supportsAutoMode?: boolean; supportsThinkingOff?: boolean }
 export type AccountInfo = { email?: string; organization?: string; subscriptionType?: string; tokenSource?: string; apiKeySource?: string; apiProvider?: 'firstParty' | 'bedrock' | 'vertex' | 'foundry' | 'openai' }
 
 // Agent Definition
@@ -232,11 +245,11 @@ export type SettingSource = 'user' | 'project' | 'local'
 export type SdkPluginConfig = { type: 'local'; path: string }
 
 // Rewind
-export type RewindFilesResult = { canRewind: boolean; error?: string; filesChanged?: string[]; insertions?: number; deletions?: number }
+export type RewindFilesResult = { canRewind: boolean; error?: string; filesChanged?: string[]; insertions?: number; deletions?: number; skippedLinks?: number }
 
 // SDK Error type
 export type SDKAssistantMessageError = 'authentication_failed' | 'billing_error' | 'rate_limit' | 'invalid_request' | 'server_error' | 'unknown' | 'max_output_tokens'
-export type SDKStatus = 'compacting' | null
+export type SDKStatus = 'compacting' | 'requesting' | null
 
 // Rate Limit
 export type SDKRateLimitInfo = {
@@ -253,12 +266,29 @@ export type SDKRateLimitInfo = {
 export type SDKPermissionDenial = { tool_name: string; tool_use_id: string; tool_input: Record<string, unknown> }
 
 // SDK Message Types
+export type SDKToolResultMeta = {
+  id: string
+  non_execution_kind?:
+    | 'user-rejected'
+    | 'permission-rule'
+    | 'automode-blocked'
+    | 'automode-unavailable'
+    | 'automode-parsing-error'
+    | 'interrupted'
+    | 'cancelled'
+  user_feedback?: string
+  permission_decision?: { decision: 'accept' | 'reject' | 'cancelled'; source: string; reason_type?: string }
+}
 export type SDKUserMessage = {
   type: 'user'
   message: unknown
   parent_tool_use_id: string | null
+  agent_id?: string
+  subagent_type?: string
+  task_description?: string
   isSynthetic?: boolean
   tool_use_result?: unknown
+  tool_result_meta?: SDKToolResultMeta[]
   priority?: 'now' | 'next' | 'later'
   timestamp?: string
   uuid?: string
@@ -268,8 +298,12 @@ export type SDKUserMessageReplay = {
   type: 'user'
   message: unknown
   parent_tool_use_id: string | null
+  agent_id?: string
+  subagent_type?: string
+  task_description?: string
   isSynthetic?: boolean
   tool_use_result?: unknown
+  tool_result_meta?: SDKToolResultMeta[]
   priority?: 'now' | 'next' | 'later'
   timestamp?: string
   uuid: string
@@ -280,9 +314,14 @@ export type SDKAssistantMessage = {
   type: 'assistant'
   message: unknown
   parent_tool_use_id: string | null
+  agent_id?: string
+  subagent_type?: string
+  task_description?: string
+  timestamp?: string
   error?: SDKAssistantMessageError
   uuid: string
   session_id: string
+  request_id?: string
 }
 export type SDKRateLimitEvent = {
   type: 'rate_limit_event'
@@ -291,8 +330,8 @@ export type SDKRateLimitEvent = {
   session_id: string
 }
 export type SDKResultMessage =
-  | { type: 'result'; subtype: 'success'; duration_ms: number; duration_api_ms: number; is_error: boolean; num_turns: number; result: string; stop_reason: string | null; total_cost_usd: number; usage: unknown; modelUsage: Record<string, ModelUsage>; permission_denials: SDKPermissionDenial[]; structured_output?: unknown; fast_mode_state?: FastModeState; uuid: string; session_id: string }
-  | { type: 'result'; subtype: 'error_during_execution' | 'error_max_turns' | 'error_max_budget_usd' | 'error_max_structured_output_retries'; duration_ms: number; duration_api_ms: number; is_error: boolean; num_turns: number; stop_reason: string | null; total_cost_usd: number; usage: unknown; modelUsage: Record<string, ModelUsage>; permission_denials: SDKPermissionDenial[]; errors: string[]; fast_mode_state?: FastModeState; uuid: string; session_id: string }
+  | { type: 'result'; subtype: 'success'; duration_ms: number; duration_api_ms: number; ttft_ms?: number; is_error: boolean; api_error_status?: number | null; num_turns: number; result: string; stop_reason: string | null; total_cost_usd: number; usage: unknown; modelUsage: Record<string, ModelUsage>; permission_denials: SDKPermissionDenial[]; structured_output?: unknown; fast_mode_state?: FastModeState; terminal_reason?: TerminalReason; result_index?: number; fast_mode_disabled_reason?: FastModeDisabledReason; uuid: string; session_id: string }
+  | { type: 'result'; subtype: 'error_during_execution' | 'error_max_turns' | 'error_max_budget_usd' | 'error_max_structured_output_retries'; duration_ms: number; duration_api_ms: number; ttft_ms?: number; is_error: boolean; api_error_status?: number | null; num_turns: number; stop_reason: string | null; total_cost_usd: number; usage: unknown; modelUsage: Record<string, ModelUsage>; permission_denials: SDKPermissionDenial[]; errors: string[]; fast_mode_state?: FastModeState; terminal_reason?: TerminalReason; result_index?: number; fast_mode_disabled_reason?: FastModeDisabledReason; uuid: string; session_id: string }
 export type SDKSystemMessage = {
   type: 'system'
   subtype: 'init'
@@ -302,16 +341,24 @@ export type SDKSystemMessage = {
   claude_code_version: string
   cwd: string
   tools: string[]
-  mcp_servers: Array<{ name: string; status: string }>
+  mcp_servers: Array<{ name: string; status: string; source?: string }>
   model: string
   permissionMode: PermissionMode
   slash_commands: string[]
+  terminal_slash_commands?: string[]
   output_style: string
   skills: string[]
   plugins: Array<{ name: string; path: string; source?: string }>
+  capabilities?: string[]
   fast_mode_state?: FastModeState
+  fast_mode_disabled_reason?: FastModeDisabledReason
   memory_paths?: { auto?: string }
   original_cwd?: string
+  additional_directories?: string[]
+  per_turn_effort_active?: boolean
+  view_mode?: 'focus' | 'default'
+  analytics_disabled?: boolean
+  product_feedback_disabled?: boolean
   uuid: string
   session_id: string
 }
@@ -329,6 +376,15 @@ export type SDKPartialAssistantMessage = {
   parent_tool_use_id: string | null
   uuid: string
   session_id: string
+  ttft_ms?: number
+}
+export type SDKThinkingTokensMessage = {
+  type: 'system'
+  subtype: 'thinking_tokens'
+  estimated_tokens: number
+  estimated_tokens_delta: number
+  uuid: string
+  session_id: string
 }
 export type SDKCompactBoundaryMessage = {
   type: 'system'
@@ -336,7 +392,10 @@ export type SDKCompactBoundaryMessage = {
   compact_metadata: {
     trigger: 'manual' | 'auto'
     pre_tokens: number
+    post_tokens?: number
+    duration_ms?: number
     preserved_segment?: { head_uuid: string; anchor_uuid: string; tail_uuid: string }
+    preserved_messages?: { anchor_uuid: string; uuids: string[] }
   }
   uuid: string
   session_id: string
@@ -346,6 +405,8 @@ export type SDKStatusMessage = {
   subtype: 'status'
   status: SDKStatus
   permissionMode?: PermissionMode
+  compact_result?: 'success' | 'failed'
+  compact_error?: string
   uuid: string
   session_id: string
 }
@@ -509,6 +570,7 @@ export type SDKTaskProgressMessage = {
   run_id?: string
   tool_use_id?: string
   description: string
+  subagent_type?: string
   usage: { total_tokens: number; tool_uses: number; duration_ms: number }
   last_tool_name?: string
   summary?: string
@@ -643,6 +705,7 @@ export type SDKMessage =
   | SDKSystemMessage
   | SDKUILogMessage
   | SDKPartialAssistantMessage
+  | SDKThinkingTokensMessage
   | SDKCompactBoundaryMessage
   | SDKStatusMessage
   | SDKAPIRetryMessage

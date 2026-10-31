@@ -198,3 +198,47 @@ export function formatClockTime(
   const last = parts.findLastIndex(part => part.type === 'minute' || part.type === 'second')
   return parts.map((part, i) => (i === last ? `${part.value}Z` : part.value)).join('')
 }
+
+const DONE_AT_OPTIONS = {
+  today: { hour: 'numeric', minute: '2-digit', hourCycle: 'h12' },
+  week: { weekday: 'long', hour: 'numeric', minute: '2-digit', hourCycle: 'h12' },
+  older: { weekday: 'long', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', hourCycle: 'h12' },
+} satisfies Record<string, Intl.DateTimeFormatOptions>
+const DONE_AT_DATE_OPTIONS = {
+  week: { weekday: 'long' },
+  older: { weekday: 'long', month: 'short', day: 'numeric' },
+} satisfies Record<string, Intl.DateTimeFormatOptions>
+
+function dayNumber(date: Date, timeZone: string | undefined): number {
+  if (!timeZone) return new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime()
+  const parts = Object.fromEntries(
+    new Intl.DateTimeFormat('en-US', { year: 'numeric', month: '2-digit', day: '2-digit', timeZone })
+      .formatToParts(date)
+      .map(part => [part.type, part.value]),
+  )
+  return Date.UTC(Number(parts.year), Number(parts.month) - 1, Number(parts.day))
+}
+
+/** When a turn finished, like official 2.1.311 "done 3:23 AM" / "done Monday 3:23 AM". */
+export function formatDoneAt(
+  timestamp: string,
+  now: Date = new Date(),
+  format: ResolvedTimeFormat = getTimeFormatSetting(),
+  locale: string | undefined = getTimeLocale(),
+): string {
+  const date = new Date(timestamp)
+  if (Number.isNaN(date.getTime())) return ''
+  const days = Math.round((dayNumber(now, format.timeZone) - dayNumber(date, format.timeZone)) / 86_400_000)
+  const age = days === 0 ? 'today' : days > 0 && days < 7 ? 'week' : 'older'
+  if (format.kind === 'preset') {
+    const formatter = new Intl.DateTimeFormat(locale, presetOptions(DONE_AT_OPTIONS[age], format.preset, format.timeZone))
+    if (format.preset !== '24-hour-utc') return formatter.format(date)
+    const parts = formatter.formatToParts(date)
+    const last = parts.findLastIndex(part => part.type === 'minute' || part.type === 'second')
+    return parts.map((part, i) => (i === last ? `${part.value}Z` : part.value)).join('')
+  }
+  const time = formatPattern(format, date, locale)
+  if (age === 'today') return time
+  const day = new Intl.DateTimeFormat(locale, withTimeZone(DONE_AT_DATE_OPTIONS[age], format.timeZone)).format(date)
+  return age === 'week' ? `${day} ${time}` : `${day}, ${time}`
+}

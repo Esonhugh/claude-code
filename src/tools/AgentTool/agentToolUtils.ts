@@ -10,7 +10,10 @@ import {
   CUSTOM_AGENT_DISALLOWED_TOOLS,
   IN_PROCESS_TEAMMATE_ALLOWED_TOOLS,
 } from '../../constants/tools.js'
-import { startAgentSummarization } from '../../services/AgentSummary/agentSummary.js'
+import {
+  type AgentOwnRequests,
+  startAgentSummarization,
+} from '../../services/AgentSummary/agentSummary.js'
 import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
   logEvent,
@@ -46,12 +49,13 @@ import {
   updateProgressFromMessage,
 } from '../../tasks/LocalAgentTask/LocalAgentTask.js'
 import { asAgentId } from '../../types/ids.js'
+import { killShellTasksForAgent } from '../../tasks/LocalShellTask/killShellTasks.js'
 import type { ClaudeAILimits } from '../../services/claudeAiLimits.js'
 import type { Message as MessageType } from '../../types/message.js'
 import { isAgentSwarmsEnabled } from '../../utils/agentSwarmsEnabled.js'
 import { logForDebugging } from '../../utils/debug.js'
 import { isInProtectedNamespace } from '../../utils/envUtils.js'
-import { AbortError, errorMessage } from '../../utils/errors.js'
+import { errorMessage, isAbortError } from '../../utils/errors.js'
 import type { CacheSafeParams } from '../../utils/forkedAgent.js'
 import { lazySchema } from '../../utils/lazySchema.js'
 import {
@@ -83,6 +87,7 @@ import {
 import type { AgentDefinition } from './loadAgentsDir.js'
 import { parkAgentForChildren } from './backgroundOwner.js'
 import { MAX_SUBAGENT_DEPTH } from './subagentDepth.js'
+import { SEND_MESSAGE_TOOL_NAME } from '../SendMessageTool/constants.js'
 export type ResolvedAgentTools = {
   hasWildcard: boolean
   validTools: string[]
@@ -401,10 +406,21 @@ export const agentToolResultSchema = lazySchema(() =>
     harnessNoteCount: z.number().optional(),
     harnessTailCount: z.number().optional(),
     harnessSectionHash: z.string().optional(),
+    // Set when the run stopped at its maxTurns limit; content is then partial.
+    turnLimit: z.number().optional(),
   }),
 )
 
 export type AgentToolResult = z.input<ReturnType<typeof agentToolResultSchema>>
+
+function turnLimitFromMessages(messages: MessageType[]): number | undefined {
+  const attachment = messages.findLast(
+    message => message.type === 'attachment' && message.attachment.type === 'max_turns_reached',
+  )
+  return attachment?.type === 'attachment' && attachment.attachment.type === 'max_turns_reached'
+    ? attachment.attachment.maxTurns
+    : undefined
+}
 
 function structuredOutputFromMessages(messages: MessageType[]): unknown {
   const attachment = messages.findLast(
@@ -576,6 +592,14 @@ export function finalizeAgentTool(
     })
   }
 
+  const turnLimit = turnLimitFromMessages(agentMessages)
+  if (turnLimit !== undefined) {
+    // Same notice as official 2.1.311, so the parent continues the agent
+    // instead of taking the partial output as its report.
+    const note = `NOTE: this agent stopped at its ${turnLimit}-turn limit before finishing.${content.length === 0 ? ' It was still calling tools and had produced no report.' : ' The text below is PARTIAL output; treat it as incomplete.'} Send the agent a message (${SEND_MESSAGE_TOOL_NAME}) to let it continue from where it stopped.\n`
+    content = [{ type: 'text', text: note }, ...content]
+  }
+
   const structuredOutput = structuredOutputFromMessages(agentMessages)
   // A hand-back run's result is the report it delivered, never its last text.
   const handback = takeSubagentHandbackResult(
@@ -592,6 +616,7 @@ export function finalizeAgentTool(
     totalTokens,
     totalToolUseCount,
     usage: lastAssistantMessage.message.usage,
+    ...(turnLimit !== undefined && { turnLimit }),
     ...(structuredOutput === undefined
       ? {}
       : { structured_output: structuredOutput }),
@@ -616,6 +641,7 @@ export function emitTaskProgress(
   description: string,
   startTime: number,
   lastToolName: string,
+  subagentType?: string,
 ): void {
   const progress = getProgressUpdate(tracker)
   emitTaskProgressEvent({
@@ -626,6 +652,7 @@ export function emitTaskProgress(
     totalTokens: progress.tokenCount,
     toolUses: progress.toolUseCount,
     lastToolName,
+    subagentType,
   })
 }
 
@@ -766,7 +793,7 @@ export async function runAsyncAgentLifecycle({
   taskId: string
   abortController: AbortController
   makeStream: (
-    onCacheSafeParams: ((p: CacheSafeParams) => void) | undefined,
+    onCacheSafeParams: ((p: CacheSafeParams, ownRequests: AgentOwnRequests) => void) | undefined,
   ) => AsyncGenerator<MessageType, void>
   metadata: Parameters<typeof finalizeAgentTool>[2]
   description: string
@@ -790,15 +817,24 @@ export async function runAsyncAgentLifecycle({
   const resolveActivity = createActivityDescriptionResolver(
     toolUseContext.options.tools,
   )
+  // runAgent leaves this agent's background shells running (keepBackgroundShells)
+  // so a parked owner can wait on them; every other exit reclaims them here.
+  const killOwnShells = () =>
+    killShellTasksForAgent(
+      asAgentId(taskId),
+      toolUseContext.getAppStateForTasks ?? toolUseContext.getAppState,
+      rootSetAppState,
+    )
   try {
     const onCacheSafeParams = enableSummarization
-      ? (params: CacheSafeParams) => {
+      ? (params: CacheSafeParams, ownRequests: AgentOwnRequests) => {
           stopSummarization?.()
           const { stop } = startAgentSummarization(
             taskId,
             asAgentId(taskId),
             params,
             rootSetAppState,
+            ownRequests,
           )
           stopSummarization = stop
         }
@@ -840,7 +876,11 @@ export async function runAsyncAgentLifecycle({
       reportObservedAgentProgress(toolUseContext, message)
       // SDK consumers see a background agent's messages live, like official.
       if (getIsNonInteractiveSession() && toolUseContext.toolUseId) {
-        for (const sdkMessage of normalizeSubagentMessage(message, toolUseContext.toolUseId)) {
+        for (const sdkMessage of normalizeSubagentMessage(message, toolUseContext.toolUseId, {
+          agentId: taskId,
+          agentType: metadata.agentType,
+          description,
+        })) {
           enqueueSdkEvent(sdkMessage)
         }
       }
@@ -853,6 +893,7 @@ export async function runAsyncAgentLifecycle({
           description,
           metadata.startTime,
           lastToolName,
+          metadata.agentType,
         )
       }
     }
@@ -876,7 +917,27 @@ export async function runAsyncAgentLifecycle({
     // not gate the status transition (gh-20236).
     onRunSettled?.()
     completeAsyncAgent(agentResult, rootSetAppState)
-    if (parkAgentForChildren({ taskId, toolUseContext, resume, getWorktreeResult })) return
+    if (parkAgentForChildren({ taskId, toolUseContext, resume, getWorktreeResult })) {
+      const parked = toolUseContext.getAppState().tasks[taskId]
+      const ownWork = isLocalAgentTask(parked) && [...parked.keepaliveReasons ?? []].some(reason => reason.startsWith('shell:'))
+      if (ownWork && shouldNotifyOwner?.() !== false) enqueueAgentNotification({
+        taskId,
+        description,
+        status: 'completed',
+        waiting: true,
+        setAppState: rootSetAppState,
+        finalMessage: subagentResultText(agentResult),
+        turnLimit: agentResult.turnLimit,
+        usage: {
+          totalTokens: finalProgress.tokenCount,
+          toolUses: finalProgress.toolUseCount,
+          durationMs: agentResult.totalDurationMs,
+        },
+        toolUseId: toolUseContext.toolUseId,
+      })
+      return
+    }
+    killOwnShells()
 
     let finalMessage = subagentResultText(agentResult)
 
@@ -922,6 +983,7 @@ export async function runAsyncAgentLifecycle({
       status: 'completed',
       setAppState: rootSetAppState,
       finalMessage,
+      turnLimit: agentResult.turnLimit,
       usage: {
         totalTokens: finalProgress.tokenCount,
         toolUses: finalProgress.toolUseCount,
@@ -933,6 +995,7 @@ export async function runAsyncAgentLifecycle({
   } catch (error) {
     onRunSettled?.()
     stopSummarization?.()
+    killOwnShells()
     const currentTask = toolUseContext.getAppState().tasks[taskId]
     if (isLocalAgentTask(currentTask) && currentTask.status === 'completed') {
       logForDebugging(
@@ -950,7 +1013,7 @@ export async function runAsyncAgentLifecycle({
       })
       return
     }
-    if (error instanceof AbortError) {
+    if (isAbortError(error)) {
       // killAsyncAgent is a no-op if TaskStop already set status='killed' —
       // but only this catch handler has agentMessages, so the notification
       // must fire unconditionally. Transition status BEFORE worktree cleanup

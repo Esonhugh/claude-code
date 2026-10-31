@@ -286,6 +286,8 @@ import { TASK_GET_TOOL_NAME } from './tools/TaskGetTool/constants.js'
 import { TASK_LIST_TOOL_NAME } from './tools/TaskListTool/constants.js'
 import { TASK_UPDATE_TOOL_NAME } from './tools/TaskUpdateTool/constants.js'
 import { TODO_WRITE_TOOL_NAME } from './tools/TodoWriteTool/constants.js'
+import { GLOB_TOOL_NAME } from './tools/GlobTool/prompt.js'
+import { GREP_TOOL_NAME } from './tools/GrepTool/prompt.js'
 import { cleanupOrphanedPluginVersionsInBackground } from './utils/plugins/cacheUtils.js'
 import { initializeVersionedPlugins } from './utils/plugins/installedPluginsManager.js'
 import { getManagedPluginNames } from './utils/plugins/managedPlugins.js'
@@ -424,6 +426,7 @@ import {
   setSessionSource,
   setUserMsgOptIn,
   setTodoToolsOptIn,
+  setSearchToolsOptIn,
   setPermissionPromptToolName,
   switchSession,
   getSessionStartedAt,
@@ -1834,6 +1837,19 @@ async function run(): Promise<CommanderCommand> {
         await handleBgFlag(prompt, process.argv.slice(2), (options as { name?: string }).name)
         process.exit(0)
       }
+      // Like 2.1.311: a bare `claude` opens the agents view when
+      // defaultToAgentsView is set.
+      if (
+        feature('BG_SESSIONS') &&
+        process.argv.length <= 2 &&
+        process.stdin.isTTY &&
+        process.stdout.isTTY &&
+        getGlobalConfig().defaultToAgentsView === true
+      ) {
+        const { runAgentView } = await import('./cli/agentView.js')
+        await runAgentView()
+        process.exit(0)
+      }
       // --safe-mode / CLAUDE_CODE_SAFE_MODE: CLAUDE.md loading is gated on
       // CLAUDE_CODE_DISABLE_CLAUDE_MDS; the other loaders check isSafeMode().
       if (isSafeMode()) {
@@ -2759,6 +2775,13 @@ async function run(): Promise<CommanderCommand> {
           TASK_LIST_TOOL_NAME,
         ].some(name => launchToolNames.includes(name)),
       )
+      // Like official 2.1.311, naming Glob or Grep keeps them when the
+      // embedded bfs/ugrep would otherwise replace them.
+      setSearchToolsOptIn(
+        [GLOB_TOOL_NAME, GREP_TOOL_NAME].some(name =>
+          launchToolNames.includes(name),
+        ),
+      )
       if (options.permissionPrompts !== 'none') {
         setPermissionPromptToolName(
           sdkUrl ? 'stdio' : options.permissionPromptTool,
@@ -2964,7 +2987,7 @@ async function run(): Promise<CommanderCommand> {
       // (mirrors useMergedTools.ts filtering for REPL/interactive path)
       if (
         feature('COORDINATOR_MODE') &&
-        isEnvTruthy(process.env.CLAUDE_CODE_COORDINATOR_MODE)
+        coordinatorModeModule?.isCoordinatorMode()
       ) {
         const { applyCoordinatorToolFilter } = await import(
           './utils/toolPool.js'
@@ -6548,7 +6571,7 @@ async function run(): Promise<CommanderCommand> {
   program
     .command('doctor')
     .description(
-      'Check the health of your Claude Code auto-updater. Note: The workspace trust dialog is skipped and stdio servers from .mcp.json are spawned for health checks. Only use this command in directories you trust.',
+      'Check the health of your Claude Code installation. The workspace trust dialog is skipped and stdio servers from .mcp.json are spawned for health checks, so only run it in directories you trust. For a full checkup that can also fix issues, run /doctor in a session.',
     )
     .action(async () => {
       const [{ doctorHandler }, { createRoot }] = await Promise.all([

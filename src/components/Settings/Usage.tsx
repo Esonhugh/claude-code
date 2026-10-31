@@ -276,7 +276,7 @@ export function Usage({
   )
 
   useKeybinding(
-    'settings:close',
+    'select:accept',
     () => {
       if (!canReset || !selectedCredit || isConfirmingReset) return false
       setIsConfirmingReset(true)
@@ -369,6 +369,24 @@ export function Usage({
             ? 'Loading usage data…'
             : 'Usage data is unavailable for the current OpenAI authentication.'}
         </Text>
+        <Text dimColor>
+          <ConfigurableShortcutHint
+            action="confirm:no"
+            context="Settings"
+            fallback="Esc"
+            description="cancel"
+          />
+        </Text>
+      </Box>
+    )
+  }
+
+  // No plan limits for this account (API key, 3P): 2.1.311 shows only the
+  // session section and "Esc to cancel".
+  if (Object.keys(utilization).length === 0) {
+    return (
+      <Box flexDirection="column" gap={1}>
+        <SessionCost />
         <Text dimColor>
           <ConfigurableShortcutHint
             action="confirm:no"
@@ -517,7 +535,7 @@ export function Usage({
                     </Text>
                     {isSelected && !isConfirmingReset && !isResetting && (
                       <Text color="permission">
-                        <ConfigurableShortcutHint action="settings:close" context="Settings" fallback="Enter" description="use this reset" />
+                        <ConfigurableShortcutHint action="select:accept" context="Settings" fallback="Enter" description="use this reset" />
                       </Text>
                     )}
                     {isSelected && isConfirmingReset && (

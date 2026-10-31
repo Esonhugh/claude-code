@@ -6,6 +6,7 @@ import { createAssistantMessage, createUserMessage, createTurnDurationMessage, n
 import { isLoggableMessage } from '../utils/sessionStorage.js'
 import { projectModSessionMessages } from '../services/mods/sessionMessages.js'
 import type { Message } from '../types/message.js'
+import { turnDurationAfterBackgroundWait } from '../tasks/pendingBackgroundWork.js'
 
 // Execute the production turn-end statements, without importing the REPL startup graph.
 const text = readFileSync(new URL('./REPL.tsx', import.meta.url), 'utf8')
@@ -27,22 +28,24 @@ const js = ts.transpileModule(statement.getText(file) + '\n' + guard.getText(fil
 }).outputText
 const checkpoint = new Function('scope', `with (scope) { ${js} }`)
 
-function run(options: { durationMs: number; didQuery?: boolean; aborted?: boolean; proactive?: boolean; budget?: { tokens: number; limit: number; nudges: number }; swarmRunning?: boolean; deferredStart?: number }) {
+function run(options: { durationMs: number; didQuery?: boolean; aborted?: boolean; proactive?: boolean; budget?: { tokens: number; limit: number; nudges: number }; swarmRunning?: boolean; deferredStart?: number; tasks?: Record<string, unknown>; waitStart?: number }) {
   const initial: Message[] = [createUserMessage({ content: 'request' }), createAssistantMessage({ content: 'reply' })]
   const messages = [...initial]
   const swarmStartTimeRef: { current: number | null } = { current: options.deferredStart ?? null }
   const swarmBudgetInfoRef: { current: typeof options.budget } = { current: undefined }
+  const backgroundWaitStartTimeRef: { current: number | null } = { current: options.waitStart ?? null }
   checkpoint({
     Date: { now: () => 100_000 },
     loadingStartTimeRef: { current: 100_000 - options.durationMs }, totalPausedMsRef: { current: 0 },
     abortController: { signal: { aborted: options.aborted ?? false } },
     didQuery: options.didQuery ?? true, proactiveActive: options.proactive ?? false, budgetInfo: options.budget,
     getAllInProcessTeammateTasks: () => options.swarmRunning ? [{ status: 'running' }] : [],
-    store: { getState: () => ({ tasks: {} }) }, swarmStartTimeRef, swarmBudgetInfoRef,
+    store: { getState: () => ({ tasks: options.tasks ?? {} }) }, swarmStartTimeRef, swarmBudgetInfoRef,
+    backgroundWaitStartTimeRef, turnDurationAfterBackgroundWait, getCommandQueue: () => [],
     count, isLoggableMessage, createTurnDurationMessage, logForDebugging: () => {},
     setMessages: (update: (previous: Message[]) => Message[]) => { messages.splice(0, messages.length, ...update(messages)) },
   })
-  return { initial, messages, swarmStartTimeRef, swarmBudgetInfoRef }
+  return { initial, messages, swarmStartTimeRef, swarmBudgetInfoRef, backgroundWaitStartTimeRef }
 }
 
 // Source baseline: official 2.1.292 run finally records every completed main turn.
@@ -126,6 +129,7 @@ test.each([
     abortController: { signal: { aborted: false } }, proactiveActive: false, budgetInfo: undefined,
     getAllInProcessTeammateTasks: () => [], store: { getState: () => ({ tasks: {} }) },
     swarmStartTimeRef: { current: null }, swarmBudgetInfoRef: { current: undefined },
+    backgroundWaitStartTimeRef: { current: null }, turnDurationAfterBackgroundWait, getCommandQueue: () => [],
     count, isLoggableMessage, createTurnDurationMessage, logForDebugging: (value: string) => logs.push(value),
     resetTimingRefs: () => {}, newMessages: [], responseLengthRef: { current: 0 }, feature: () => false,
     apiMetricsRef: { current: [] }, setStreamingToolUses: () => {}, setStreamingText: () => {},
@@ -137,4 +141,13 @@ test.each([
   expect(calls).toBe(proceed ? 1 : 0)
   expect(messages).toHaveLength(shouldQuery && proceed ? 3 : 2)
   expect(logs).toEqual(shouldQuery && proceed ? ['[turn-duration] completed elapsedMs=1'] : [])
+})
+
+test('a turn ending with background agents pending records them; the turn after the wait spans it', () => {
+  const pending = run({ durationMs: 300, tasks: { a: { id: 'a', type: 'local_agent', status: 'running', isBackgrounded: true, notified: false } } })
+  expect(pending.messages[2]).toMatchObject({ durationMs: 300, pendingBackgroundAgentCount: 1 })
+  expect(pending.backgroundWaitStartTimeRef.current).toBe(99_700)
+  const after = run({ durationMs: 200, waitStart: 95_000 })
+  expect(after.messages[2]).toMatchObject({ durationMs: 5_000, pendingBackgroundAgentCount: undefined })
+  expect(after.backgroundWaitStartTimeRef.current).toBeNull()
 })

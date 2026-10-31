@@ -97,6 +97,7 @@ function fixture(
   })
   const dependencies = {
     randomUUID: () => `id-${++id}`,
+    setPromptId: () => {},
     createHash,
     persistToolResult: async (content: string, toolUseID: string) => ({
       filepath: `/fixture/${toolUseID}.txt`, originalSize: content.length,
@@ -170,7 +171,7 @@ function fixture(
         calls.bash++
         return {
           messages: [createUserMessage({ content: text })],
-          shouldQuery: false,
+          shouldQuery: commandShouldQuery,
           resultText: 'bash result',
         }
       },
@@ -410,6 +411,14 @@ describe('processUserInput Diff Ask admission', () => {
     expect(result.shouldQuery).toBe(true)
     expect(additionalContexts(result)).toEqual([ask.text])
     expect(ask.finishes).toEqual([true])
+  })
+
+  test('a ! command Claude responds to skips UserPromptSubmit hooks (2.1.311)', async () => {
+    const f = fixture([], true)
+    const result = await f.run({ input: 'pwd', mode: 'bash' })
+    expect(result.shouldQuery).toBe(true)
+    expect(f.calls.bash).toBe(1)
+    expect(f.classicInputs).toEqual([])
   })
 
   test.each(['classic', 'Mod'])('%s noneligible paths leave the armed Ask untouched', async path => {

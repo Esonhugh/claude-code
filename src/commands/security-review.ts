@@ -1,10 +1,16 @@
+import { getCwd } from '../utils/cwd.js'
 import { parseFrontmatter } from '../utils/frontmatterParser.js'
+import { findGitRoot } from '../utils/git.js'
 import { parseSlashCommandToolsFromFrontmatter } from '../utils/markdownConfigLoader.js'
 import { executeShellCommandsInPrompt } from '../utils/promptShellExecution.js'
 import { createMovedToPluginCommand } from './createMovedToPluginCommand.js'
 
+const GIT_READ_TOOLS = ['git diff *', 'git status *', 'git log *', 'git show *', 'git remote show *']
+  .flatMap(command => [`Bash(${command})`, `PowerShell(${command})`])
+  .join(', ')
+
 const SECURITY_REVIEW_MARKDOWN = `---
-allowed-tools: Bash(git diff:*), Bash(git status:*), Bash(git log:*), Bash(git show:*), Bash(git remote show:*), Read, Glob, Grep, LS, Task
+allowed-tools: ${GIT_READ_TOOLS}, Read, Glob, Grep, LS, Task
 description: Complete a security review of the pending changes on the current branch
 ---
 
@@ -203,6 +209,20 @@ export default createMovedToPluginCommand({
   pluginName: 'security-review',
   pluginCommand: 'security-review',
   async getPromptWhileMarketplaceIsPrivate(_args, context) {
+    const cwd = getCwd()
+    if (findGitRoot(cwd) === null) {
+      return [
+        {
+          type: 'text',
+          text: `Tell the user: /security-review needs to run inside a git repository, but the current working directory (\`${cwd}\`) is not one.
+
+If the repository is in a subdirectory, \`cd\` into it first and then re-run /security-review.
+
+If this is a self-hosted runner session created without a \`git_repository\` source, either add one at session creation so the runner clones it and sets the working directory, or \`cd\` into the cloned repo before running the review.`,
+        },
+      ]
+    }
+
     // Parse frontmatter from the markdown
     const parsed = parseFrontmatter(SECURITY_REVIEW_MARKDOWN)
 

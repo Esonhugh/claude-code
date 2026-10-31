@@ -446,15 +446,15 @@ async function detectConfigurationIssues(
   if (!isEnvTruthy(process.env.DISABLE_INSTALLATION_CHECKS)) {
     if (type === 'npm-local' && config.installMethod !== 'local') {
       warnings.push({
-        issue: `Running from local installation but config install method is '${config.installMethod}'`,
-        fix: 'Consider using native installation: claude install',
+        issue: `Running from local installation but config install method is '${config.installMethod ?? 'not set'}'`,
+        fix: 'Consider using native installation: `claude install`',
       })
     }
 
     if (type === 'native' && config.installMethod !== 'native') {
       warnings.push({
-        issue: `Running native installation but config install method is '${config.installMethod}'`,
-        fix: 'Run claude install to update configuration',
+        issue: `Running native installation but config install method is '${config.installMethod ?? 'not set'}'`,
+        fix: 'Run `claude install` to update configuration',
       })
     }
   }
@@ -462,7 +462,7 @@ async function detectConfigurationIssues(
   if (type === 'npm-global' && (await localInstallationExists())) {
     warnings.push({
       issue: 'Local installation exists but not being used',
-      fix: 'Consider using native installation: claude install',
+      fix: 'Consider using native installation: `claude install`',
     })
   }
 
@@ -573,6 +573,16 @@ export async function getDoctorDiagnostic(): Promise<DiagnosticInfo> {
   const invokedBinary = getInvokedBinary()
   const multipleInstallations = await detectMultipleInstallations()
   const warnings = await detectConfigurationIssues(installationType)
+  // Dynamic import: the installer imports this module.
+  const { checkInstall } = await import('./nativeInstaller/installer.js')
+  for (const message of await checkInstall()) {
+    if (message.type === 'error') {
+      warnings.push({
+        issue: message.message,
+        fix: 'Run claude install to repair the installation.',
+      })
+    }
+  }
 
   // Add glob pattern warnings for Linux sandboxing
   warnings.push(...detectLinuxGlobPatternWarnings())

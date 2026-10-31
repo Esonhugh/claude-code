@@ -1,7 +1,9 @@
 import { feature } from 'bun:bundle'
 import { prependBullets } from '../../constants/prompts.js'
+import { getAttributionTexts } from '../../utils/attribution.js'
 import { hasEmbeddedSearchTools } from '../../utils/embeddedTools.js'
 import { isEnvTruthy } from '../../utils/envUtils.js'
+import { shouldIncludeGitInstructions } from '../../utils/gitSettings.js'
 import { getClaudeTempDir } from '../../utils/permissions/filesystem.js'
 import { SandboxManager } from '../../utils/sandbox/sandbox-adapter.js'
 import { jsonStringify } from '../../utils/slowOperations.js'
@@ -25,11 +27,17 @@ export function getMaxTimeoutMs(): number {
   return getMaxBashTimeoutMs()
 }
 
-function getBackgroundUsageNote(): string | null {
-  if (isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS)) {
-    return null
-  }
-  return "You can use the `run_in_background` parameter to run the command in the background. Only use this if you don't need the result immediately and are OK being notified when the command completes later. You do not need to check the output right away - you'll be notified when it finishes. You do not need to use '&' at the end of the command when using this parameter."
+function getGitSection(): string {
+  if (!shouldIncludeGitInstructions()) return ''
+  const { commit, pr } = getAttributionTexts()
+  return [
+    '# Git',
+    '- Commit or push only when the user asks. If on the default branch, branch first.',
+    '- Interactive flags (`-i`, e.g. `git rebase -i`) are not supported. Use the `gh` CLI for GitHub (PRs, issues, API).',
+    '- GitHub notifies whoever a bare `@name` in a PR, issue or comment names: write one only for a real login you mean to notify, and put roles, placeholders and code (`@reviewer`, `@types/node`) in backticks.',
+    ...(commit ? [`- End git commit messages with:\n${commit}`] : []),
+    ...(pr ? [`- End PR bodies with:\n${pr}`] : []),
+  ].join('\n')
 }
 
 function getCommitAndPRInstructions(): string {
@@ -161,61 +169,37 @@ function getSimpleSandboxSection(): string {
 export function getSimplePrompt(): string {
   // Ant-native builds alias find/grep to embedded bfs/ugrep in Claude's shell.
   const embedded = hasEmbeddedSearchTools()
+  const background = !isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS)
+  const monitor = feature('MONITOR_TOOL') ? background : false
 
-  const multipleCommandsSubitems = [
-    `If the commands depend on each other and must run sequentially, use a single ${BASH_TOOL_NAME} call with shell operators such as '&&' or ';' as appropriate. Multiline scripts are allowed when they are clearer than a long one-liner.`,
-  ]
-
-  const sleepSubitems = [
-    'Do not sleep between commands that can run immediately — just run them.',
-    ...(feature('MONITOR_TOOL')
-      ? [
-          'Use the Monitor tool to stream events from a background process (each stdout line is a notification). For one-shot "wait until done," use Bash with run_in_background instead.',
-        ]
+  const items: string[] = [
+    "The working directory persists between calls, but is reset to the project root if a command leaves it outside the allowed working directories. Shell state (env vars, functions) does not persist; the shell is initialized from the user's profile.",
+    'Quote paths that contain spaces. Before creating files in a directory you have not inspected, check it with `ls`.',
+    `\`timeout\` is in milliseconds: default ${getDefaultTimeoutMs()}, max ${getMaxTimeoutMs()}.`,
+    ...(background
+      ? ['`run_in_background` runs the command detached and notifies you when it exits. No `&` needed; do not poll it.']
       : []),
-    'If your command is long running and you would like to be notified when it finishes — use `run_in_background`. No sleep needed.',
-    'Do not retry failing commands in a sleep loop — diagnose the root cause.',
-    'If waiting for a background task you started with `run_in_background`, you will be notified when it completes — do not poll.',
-    ...(feature('MONITOR_TOOL')
-      ? [
-          '`sleep N` as the first command with N ≥ 2 is blocked. If you need a delay (rate limiting, deliberate pacing), keep it under 2 seconds.',
-        ]
-      : [
-          'If you must poll an external process, use a check command (e.g. `gh run view`) rather than sleeping first.',
-          'If you must sleep, keep the duration short (1-5 seconds) to avoid blocking the user.',
-        ]),
-  ]
-  const backgroundNote = getBackgroundUsageNote()
-
-  const instructionItems: Array<string | string[]> = [
-    'If your command will create new directories or files in a directory you have not inspected, first use this tool to run `ls` to verify the parent directory exists and is the correct location.',
-    'Always quote file paths that contain spaces with double quotes in your command (e.g., cd "path with spaces/file.txt").',
-    'Prefer absolute paths when they are clearer, but `cd` is allowed when it improves command readability or matches the user request.',
-    `You may specify an optional timeout in milliseconds (up to ${getMaxTimeoutMs()}ms / ${getMaxTimeoutMs() / 60000} minutes). By default, your command will timeout after ${getDefaultTimeoutMs()}ms (${getDefaultTimeoutMs() / 60000} minutes).`,
-    ...(backgroundNote !== null ? [backgroundNote] : []),
-    'When issuing multiple commands:',
-    multipleCommandsSubitems,
-    'Avoid unnecessary `sleep` commands:',
-    sleepSubitems,
+    `Chain dependent commands with '&&' or ';' in one ${BASH_TOOL_NAME} call; multiline scripts are fine.`,
+    monitor
+      ? 'Do not sleep between commands or retry failures in a sleep loop. Leading `sleep` commands are blocked: to wait for a condition, use Monitor with an until-loop (`until <check>; do sleep 2; done`).'
+      : 'Do not sleep between commands or retry failures in a sleep loop; poll with a check command instead.',
     ...(embedded
       ? [
           // bfs (which backs `find`) uses Oniguruma for -regex, which picks the
           // FIRST matching alternative (leftmost-first), unlike GNU find's
           // POSIX leftmost-longest. This silently drops matches when a shorter
           // alternative is a prefix of a longer one.
-          "When using `find -regex` with alternation, put the longest alternative first. Example: use `'.*\\.\\(tsx\\|ts\\)'` not `'.*\\.\\(ts\\|tsx\\)'` — the second form silently skips `.tsx` files.",
+          "With `find -regex` alternation, put the longest alternative first: `'.*\\.\\(tsx\\|ts\\)'`, not `'.*\\.\\(ts\\|tsx\\)'`, which silently skips `.tsx` files.",
         ]
       : []),
   ]
 
   return [
-    'Executes a given bash command and returns its output.',
+    'Executes a bash command and returns its output.',
     '',
-    "The working directory persists between commands, but shell state does not. The shell environment is initialized from the user's profile (bash or zsh).",
-    '',
-    '# Instructions',
-    ...prependBullets(instructionItems),
+    ...items.map(item => `- ${item}`),
     getSimpleSandboxSection(),
+    ...(getGitSection() ? ['', getGitSection()] : []),
     ...(getCommitAndPRInstructions() ? ['', getCommitAndPRInstructions()] : []),
   ].join('\n')
 }

@@ -1,6 +1,9 @@
 import { describe, expect, test } from 'bun:test'
 import type { Tool } from '../../Tool.js'
 import { formatDeferredToolLines, isDeferredTool } from './prompt.js'
+import { AskUserQuestionTool } from '../AskUserQuestionTool/AskUserQuestionTool.js'
+import { SendMessageTool } from '../SendMessageTool/SendMessageTool.js'
+import { createTeammateContext, runWithTeammateContext } from '../../utils/teammateContext.js'
 
 function tools(...names: string[]): Tool[] {
   return names.map(name => ({ name }) as Tool)
@@ -15,6 +18,13 @@ test('Mods placement overrides MCP/alwaysLoad defaults but cannot defer ToolSear
   expect(isDeferredTool(eager)).toBe(false)
   expect(isDeferredTool(eager, true)).toBe(true)
   expect(isDeferredTool({ name: 'ToolSearch' } as Tool, true)).toBe(false)
+})
+
+test('official 2.1.311 up-front tools: SendMessage for teammates, AskUserQuestion always', () => {
+  const mate = createTeammateContext({ agentId: 'mate1@t', agentName: 'mate1', teamName: 't', planModeRequired: false, parentSessionId: 's', abortController: new AbortController() })
+  expect(isDeferredTool(SendMessageTool)).toBe(true)
+  expect(runWithTeammateContext(mate, () => isDeferredTool(SendMessageTool))).toBe(false)
+  expect(isDeferredTool(AskUserQuestionTool)).toBe(false)
 })
 
 describe('formatDeferredToolLines', () => {

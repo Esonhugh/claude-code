@@ -9,6 +9,7 @@ import { notifyCompaction } from '../../services/api/promptCacheBreakDetection.j
 import {
   type CompactionResult,
   compactConversation,
+  compactOutcome,
   ERROR_MESSAGE_INCOMPLETE_RESPONSE,
   CompactionBlockedError,
   ERROR_MESSAGE_NOT_ENOUGH_MESSAGES,
@@ -54,8 +55,13 @@ export const call: LocalCommandCall = async (args, context) => {
   // model doesn't summarize content that was intentionally removed.
   messages = getMessagesAfterCompactBoundary(messages)
 
+  // Official 2.1.311: an empty conversation compacts to nothing, and one
+  // the model never answered (e.g. only /clear) has too few rounds.
   if (messages.length === 0) {
-    throw new Error('No messages to compact')
+    return { type: 'text', value: '' }
+  }
+  if (!messages.some(message => message.type === 'assistant')) {
+    throw new Error(ERROR_MESSAGE_NOT_ENOUGH_MESSAGES)
   }
 
   const customInstructions = args.trim()
@@ -175,6 +181,7 @@ async function compactViaReactive(
     hookType: 'pre_compact',
   })
   context.setSDKStatus?.('compacting')
+  let compactFailure: unknown
 
   try {
     // Hooks and cache-param build are independent — run concurrently.
@@ -247,11 +254,14 @@ async function compactViaReactive(
       },
       displayText: buildDisplayText(context, combinedMessage),
     }
+  } catch (error) {
+    compactFailure = error
+    throw error
   } finally {
     context.setStreamMode?.('requesting')
     context.setResponseLength?.(() => 0)
     context.onCompactProgress?.({ type: 'compact_end' })
-    context.setSDKStatus?.(null)
+    context.setSDKStatus?.(null, compactOutcome(compactFailure))
   }
 }
 

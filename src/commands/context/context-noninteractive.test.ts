@@ -24,7 +24,10 @@ afterAll(() => mock.restore())
 
 const context = {
   messages: [],
-  getAppState: () => ({ toolPermissionContext: { mode: 'default' } }),
+  getAppState: () => ({
+    toolPermissionContext: { mode: 'default' },
+    mcp: { clients: [] },
+  }),
   options: {
     mainLoopModel: 'runtime-model',
     tools: [],

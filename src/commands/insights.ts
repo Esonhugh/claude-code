@@ -3053,6 +3053,7 @@ const usageReport: Command = {
   contentLength: 0, // Dynamic content
   progressMessage: 'analyzing your sessions',
   source: 'builtin',
+  disableModelInvocation: true,
   async getPromptForCommand(args) {
     let collectRemote = false
     let remoteHosts: string[] = []

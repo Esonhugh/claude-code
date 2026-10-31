@@ -15,7 +15,9 @@ export type ThinkingDisplay = (typeof THINKING_DISPLAYS)[number]
 export type ThinkingConfig =
   | { type: 'adaptive'; display?: ThinkingDisplay }
   | { type: 'enabled'; budgetTokens: number; display?: ThinkingDisplay }
-  | { type: 'disabled' }
+  // mechanical: a tool-free helper call; like official 2.1.311 the request
+  // carries no thinking parameter at all.
+  | { type: 'disabled'; mechanical?: true }
 
 /**
  * Applies a set_max_thinking_tokens request. `display` is the session display
@@ -151,6 +153,7 @@ export function modelSupportsThinking(model: string): boolean {
     canonical.startsWith('claude-fable-5') ||
     canonical.startsWith('claude-opus-5') ||
     canonical.startsWith('claude-sonnet-5') ||
+    canonical === 'claude-haiku-5-5' ||
     canonical.includes('sonnet-4') ||
     canonical.includes('opus-4')
   )
@@ -163,7 +166,8 @@ export function requiresAdaptiveThinkingContract(model: string): boolean {
     canonical.startsWith('claude-fable-5') ||
     canonical.startsWith('claude-mythos-5') ||
     canonical.startsWith('claude-opus-5') ||
-    canonical.startsWith('claude-sonnet-5')
+    canonical.startsWith('claude-sonnet-5') ||
+    canonical === 'claude-haiku-5-5'
   )
 }
 
@@ -181,8 +185,11 @@ export function supportsManualThinkingBudget(model: string): boolean {
   return getCanonicalName(model) === 'claude-mythos-preview'
 }
 
-export function usesBetweenToolsWhenThinkingDisabled(model: string): boolean {
-  return getCanonicalName(model) === 'claude-sonnet-5-5'
+// The API rejects `thinking: {type: 'disabled'}` on these models; like official,
+// a disabled config is sent as adaptive thinking instead.
+export function rejectsDisabledThinking(model: string): boolean {
+  const canonical = getCanonicalName(model)
+  return canonical === 'claude-sonnet-5-5' || canonical === 'claude-haiku-5-5'
 }
 
 // @[MODEL LAUNCH]: Add the new model to the allowlist if it supports adaptive thinking.
@@ -196,6 +203,7 @@ export function modelSupportsAdaptiveThinking(model: string): boolean {
   if (
     canonical.startsWith('claude-opus-5') ||
     canonical.startsWith('claude-sonnet-5') ||
+    canonical === 'claude-haiku-5-5' ||
     canonical.startsWith('claude-fable-5') ||
     canonical.startsWith('claude-mythos-5') ||
     canonical === 'claude-mythos-preview' ||

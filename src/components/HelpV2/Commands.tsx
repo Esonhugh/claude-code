@@ -1,6 +1,10 @@
 import * as React from 'react'
 import { useMemo } from 'react'
-import { type Command, formatDescriptionWithSource } from '../../commands.js'
+import {
+  type Command,
+  formatDescriptionWithSource,
+  getMenuDescription,
+} from '../../commands.js'
 import { Box, Text } from '../../ink.js'
 import { truncate } from '../../utils/format.js'
 import { Select } from '../CustomSelect/select.js'
@@ -41,7 +45,11 @@ export function Commands({
       .map(cmd => ({
         label: `/${cmd.name}`,
         value: cmd.name,
-        description: truncate(formatDescriptionWithSource(cmd), maxWidth, true),
+        description: truncate(
+          formatDescriptionWithSource(cmd, getMenuDescription(cmd)),
+          maxWidth,
+          true,
+        ),
       }))
   }, [commands, maxWidth])
 

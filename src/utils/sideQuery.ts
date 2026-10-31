@@ -28,7 +28,7 @@ import { computeFingerprint } from './fingerprint.js'
 import { getCanonicalName, isModelOlderThan, normalizeModelStringForAPI } from './model/model.js'
 import { getAPIProvider } from './model/providers.js'
 import { isClaudeAISubscriber } from './auth.js'
-import { requiresAlwaysOnAdaptiveThinking, usesBetweenToolsWhenThinkingDisabled } from './thinking.js'
+import { requiresAlwaysOnAdaptiveThinking, rejectsDisabledThinking } from './thinking.js'
 
 type MessageParam = Anthropic.MessageParam
 type TextBlockParam = Anthropic.TextBlockParam
@@ -211,14 +211,11 @@ export async function sideQuery(opts: SideQueryOptions): Promise<BetaMessage> {
 
   let thinkingConfig: BetaThinkingConfigParam | undefined
   if (thinking === false) {
-    // Same off switch as the main loop: claude-sonnet-5-5 rejects disabled thinking
-    // (between_tools, which xhigh/max also reject), and always-on models think anyway.
-    const betweenTools = usesBetweenToolsWhenThinkingDisabled(model)
-    thinkingConfig = requiresAlwaysOnAdaptiveThinking(model) ||
-      (betweenTools && (effort === 'xhigh' || effort === 'max'))
-      ? { type: 'adaptive' }
-      : betweenTools
-        ? ({ type: 'between_tools' } as unknown as BetaThinkingConfigParam)
+    // Same as the main loop: models that reject disabled thinking, and
+    // always-on models, think adaptively.
+    thinkingConfig =
+      requiresAlwaysOnAdaptiveThinking(model) || rejectsDisabledThinking(model)
+        ? { type: 'adaptive' }
         : { type: 'disabled' }
   } else if (thinking !== undefined) {
     thinkingConfig = {

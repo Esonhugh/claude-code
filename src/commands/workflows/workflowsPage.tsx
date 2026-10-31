@@ -259,7 +259,7 @@ export function WorkflowsPage({ onComplete }: Props): React.ReactNode {
             {workflowItems[selectedIndex]?.task.runScriptSnapshot && (
               <KeyboardShortcutHint shortcut="s" action="save" />
             )}
-            <KeyboardShortcutHint shortcut="escape" action="close" />
+            <KeyboardShortcutHint shortcut="Esc" action="close" />
           </Byline>
         )}
       >

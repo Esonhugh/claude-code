@@ -9,7 +9,7 @@ import type { CliHighlight } from './cliHighlight.js'
 import { logForDebugging } from './debug.js'
 import { createHyperlink } from './hyperlink.js'
 import { stripPromptXMLTags } from './messages.js'
-import type { ThemeName } from './theme.js'
+import type { ResolvedTheme } from './theme.js'
 
 // Use \n unconditionally — os.EOL is \r\n on Windows, and the extra \r
 // breaks the character-to-segment mapping in applyStylesToWrappedText,
@@ -35,7 +35,7 @@ export function configureMarked(): void {
 
 export function applyMarkdown(
   content: string,
-  theme: ThemeName,
+  theme: ResolvedTheme,
   highlight: CliHighlight | null = null,
 ): string {
   configureMarked()
@@ -48,7 +48,7 @@ export function applyMarkdown(
 
 export function formatToken(
   token: Token,
-  theme: ThemeName,
+  theme: ResolvedTheme,
   listDepth = 0,
   orderedListNumber: number | null = null,
   parent: Token | null = null,
@@ -270,9 +270,11 @@ export function formatToken(
     case 'escape':
       // Markdown escape: \) → ), \\ → \, etc.
       return token.text
+    case 'html':
+      // Like 2.1.311: a tag in prose (`<style>`, `<div>`) shows as written.
+      return token.text
     case 'def':
     case 'del':
-    case 'html':
       // These token types are not rendered
       return ''
   }

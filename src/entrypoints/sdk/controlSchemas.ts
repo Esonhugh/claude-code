@@ -17,6 +17,7 @@ import {
   AccountInfoSchema,
   AgentDefinitionSchema,
   AgentInfoSchema,
+  FastModeDisabledReasonSchema,
   FastModeStateSchema,
   HookEventSchema,
   HookInputSchema,
@@ -103,6 +104,18 @@ export const SDKControlInitializeResponseSchema = lazySchema(() =>
         .optional()
         .describe('@internal CLI process PID for tmux socket isolation'),
       fast_mode_state: FastModeStateSchema().optional(),
+      fast_mode_disabled_reason: FastModeDisabledReasonSchema().optional(),
+      session_state: z
+        .enum(['idle', 'running', 'requires_action'])
+        .optional()
+        .describe("The session's state when this reply was sent."),
+      claude_code_version: z.string().optional(),
+      current_permission_mode: z.string().optional(),
+      user_output_styles_dir: z.string().optional(),
+      analytics_disabled: z.boolean().optional(),
+      feedback_mode: z
+        .object({ kind: z.enum(['post', 'bundle', 'share', 'disabled']) })
+        .optional(),
     })
     .describe(
       'Response from session initialization with available commands, models, and account info.',
@@ -286,6 +299,7 @@ export const SDKControlGetContextUsageRequestSchema = lazySchema(() =>
 
 const ContextCategorySchema = lazySchema(() =>
   z.object({
+    id: z.string().optional(),
     name: z.string(),
     tokens: z.number(),
     color: z.string(),
@@ -329,6 +343,12 @@ export const SDKControlGetContextUsageResponseSchema = lazySchema(() =>
           isLoaded: z.boolean().optional(),
         }),
       ),
+      mcpInstructions: z
+        .array(z.object({ serverName: z.string(), tokens: z.number() }))
+        .optional()
+        .describe(
+          "The 'mcp_instructions' row by server. Only the row's total is counted: each server's share of it is estimated from the length of its text.",
+        ),
       deferredBuiltinTools: z
         .array(
           z.object({
@@ -381,6 +401,8 @@ export const SDKControlGetContextUsageResponseSchema = lazySchema(() =>
           attachmentTokens: z.number(),
           assistantMessageTokens: z.number(),
           userMessageTokens: z.number(),
+          redirectedContextTokens: z.number(),
+          unattributedTokens: z.number(),
           toolCallsByType: z.array(
             z.object({
               name: z.string(),
@@ -425,6 +447,9 @@ export const SDKControlRewindFilesResponseSchema = lazySchema(() =>
       filesChanged: z.array(z.string()).optional(),
       insertions: z.number().optional(),
       deletions: z.number().optional(),
+      skippedLinks: z.number().optional().describe(
+        'Count of tracked files NOT restored or deleted because a symlink, hard link, or other non-regular file was detected at the tracked path, its parent directory no longer resolves to where it pointed when the checkpoint was taken, or its backup could not be safely read. Only populated by a real (non-dryRun) rewind — on a dryRun response the field is never set and the preview counts do not reflect link-safety refusals. Absent or 0 on a real rewind means no link-safety refusals occurred; other per-file failures (for example a missing backup file) are not counted here; they are reported in telemetry, and when every differing file fails to restore the rewind itself fails (canRewind: false).',
+      ),
     })
     .describe('Result of a rewindFiles operation.'),
 )

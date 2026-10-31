@@ -6,6 +6,7 @@ import { microcompactMessages } from '../../services/compact/microCompact.js'
 import type { LocalJSXCommandOnDone } from '../../types/command.js'
 import type { Message } from '../../types/message.js'
 import { analyzeContextUsage } from '../../utils/analyzeContext.js'
+import { isFullscreenActive } from '../../utils/fullscreen.js'
 import { getMessagesAfterCompactBoundary } from '../../utils/messages.js'
 import { renderToAnsiString } from '../../utils/staticRender.js'
 
@@ -30,6 +31,7 @@ function toApiView(messages: Message[]): Message[] {
 export async function call(
   onDone: LocalJSXCommandOnDone,
   context: LocalJSXCommandContext,
+  args?: string,
 ): Promise<React.ReactNode> {
   const {
     messages,
@@ -62,7 +64,13 @@ export async function call(
   )
 
   // Render to ANSI string to preserve colors and pass to onDone like local commands do
-  const output = await renderToAnsiString(<ContextVisualization data={data} />)
+  const output = await renderToAnsiString(
+    <ContextVisualization
+      data={data}
+      collapsed={isFullscreenActive() && args?.trim().toLowerCase() !== 'all'}
+    />,
+    terminalWidth,
+  )
   onDone(output)
   return null
 }

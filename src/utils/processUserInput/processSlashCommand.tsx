@@ -74,6 +74,7 @@ import {
 import { getFsImplementation } from '../fsOperations.js'
 import { isFullscreenEnvEnabled } from '../fullscreen.js'
 import { toArray } from '../generators.js'
+import { executeUserPromptExpansionHooks } from '../hooks.js'
 import { registerSkillHooks } from '../hooks/registerSkillHooks.js'
 import { logError } from '../log.js'
 import {
@@ -87,6 +88,7 @@ import {
   isSystemLocalCommandMessage,
   normalizeMessages,
   prepareUserContent,
+  wrapInSystemReminder,
 } from '../messages.js'
 import type { ModelAlias } from '../model/aliases.js'
 import { parseToolListFromCLI } from '../permissions/permissionSetup.js'
@@ -324,6 +326,93 @@ export function looksLikeCommand(commandName: string): boolean {
   return !/[^a-zA-Z0-9:\-_]/.test(commandName)
 }
 
+const UNKNOWN_COMMAND_NAME_LIMIT = 40
+
+function unknownCommandNote(
+  commandName: string,
+  suggestion: string | undefined,
+  names: string[],
+  commandCount: number,
+): string {
+  const listed = names.slice(0, UNKNOWN_COMMAND_NAME_LIMIT)
+  const more = Math.max(0, commandCount - listed.length)
+  const available =
+    listed.length === 0
+      ? more > 0
+        ? `This session has ${more} slash ${more === 1 ? 'command' : 'commands'}, but none can be named here.`
+        : 'No slash commands are available in this session.'
+      : `Slash commands available in this session: ${listed.map(name => `/${name}`).join(', ')}${more > 0 ? `, and ${more} more` : ''}.`
+  return [
+    `The user's message starts with the slash command /${commandName}, but no command with that name is available in this session, so it did not run.`,
+    suggestion
+      ? `The closest available command is /${suggestion}. Ask the user before running it.`
+      : undefined,
+    available,
+    'Treat the message as a plain request and do the task with the tools you have. If the task needs that command, tell the user it is not installed in this session. The user can add it as an organization plugin or a project skill. Do not give installation steps you are not sure of. Do not say the command ran.',
+  ]
+    .filter(line => line !== undefined)
+    .join(' ')
+}
+
+function headlessCommandReply(
+  commandName: string,
+  args: string,
+  precedingInputBlocks: ContentBlockParam[],
+  attachmentMessages: AttachmentMessage[],
+  text: string,
+): ProcessUserInputBaseResult {
+  return {
+    messages: [
+      ...attachmentMessages,
+      createUserMessage({
+        content: prepareUserContent({
+          inputString: `/${commandName}${args ? ` ${args}` : ''}`,
+          precedingInputBlocks,
+        }),
+      }),
+      createUserMessage({
+        content: `<local-command-stdout>${text}</local-command-stdout>`,
+      }),
+    ],
+    shouldQuery: false,
+    resultText: text,
+  }
+}
+
+export function findClosestCommandName(
+  name: string,
+  commands: Command[],
+): string | undefined {
+  const target = name.toLowerCase()
+  let best: { name: string; distance: number } | undefined
+  for (const cmd of commands) {
+    if (cmd.isHidden || cmd.userInvocable === false) continue
+    for (const candidate of [getCommandName(cmd), ...(cmd.aliases ?? [])]) {
+      const distance = editDistance(target, candidate.toLowerCase())
+      if (distance <= 2 && (!best || distance < best.distance)) {
+        best = { name: getCommandName(cmd), distance }
+      }
+    }
+  }
+  return best?.name
+}
+
+function editDistance(a: string, b: string): number {
+  let previous = Array.from({ length: b.length + 1 }, (_, i) => i)
+  for (let i = 1; i <= a.length; i++) {
+    const current = [i]
+    for (let j = 1; j <= b.length; j++) {
+      current[j] = Math.min(
+        previous[j]! + 1,
+        current[j - 1]! + 1,
+        previous[j - 1]! + (a[i - 1] === b[j - 1] ? 0 : 1),
+      )
+    }
+    previous = current
+  }
+  return previous[b.length]!
+}
+
 export async function processSlashCommand(
   inputString: string,
   precedingInputBlocks: ContentBlockParam[],
@@ -335,6 +424,7 @@ export async function processSlashCommand(
   isAlreadyProcessing?: boolean,
   canUseTool?: CanUseToolFn,
   modInvocation?: ModCommandInvocation,
+  screenedPromptId?: string,
 ): Promise<ProcessUserInputBaseResult> {
   const parsed = parseSlashCommand(inputString)
   if (!parsed) {
@@ -389,17 +479,61 @@ export async function processSlashCommand(
           commandName as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
       })
 
-      const unknownMessage = `Unknown skill: ${commandName}`
+      if (context.options.isNonInteractiveSession) {
+        if (builtInCommandNames().has(commandName)) {
+          return headlessCommandReply(
+            commandName,
+            parsedArgs,
+            precedingInputBlocks,
+            attachmentMessages,
+            `/${commandName} isn't available in this environment.`,
+          )
+        }
+        // Official 2.1.311: in -p an unknown command reaches the model as a
+        // plain request, with a note that it did not run.
+        const visible = context.options.commands.filter(
+          cmd => !cmd.isHidden && cmd.userInvocable !== false,
+        )
+        const modelCommands = visible.filter(
+          cmd => cmd.type === 'prompt' && !cmd.disableModelInvocation,
+        )
+        const promptId = screenedPromptId ?? randomUUID()
+        setPromptId(promptId)
+        return {
+          messages: [
+            createUserMessage({
+              content: prepareUserContent({ inputString, precedingInputBlocks }),
+              uuid,
+            }),
+            createUserMessage({
+              content: wrapInSystemReminder(
+                unknownCommandNote(
+                  commandName,
+                  findClosestCommandName(commandName, modelCommands),
+                  modelCommands.map(cmd => getCommandName(cmd)),
+                  visible.length,
+                ),
+              ),
+              isMeta: true,
+            }),
+            ...attachmentMessages,
+          ],
+          shouldQuery: true,
+        }
+      }
+      // Official 2.1.311: a warning naming the command, with the closest
+      // visible command (edit distance <= 2) as a suggestion.
+      const suggestion = findClosestCommandName(
+        commandName,
+        context.options.commands,
+      )
+      const unknownMessage = suggestion
+        ? `Unknown command: /${commandName}. Did you mean /${suggestion}?`
+        : `Unknown command: /${commandName}`
       return {
         messages: [
-          createSyntheticUserCaveatMessage(),
           ...attachmentMessages,
-          createUserMessage({
-            content: prepareUserContent({
-              inputString: unknownMessage,
-              precedingInputBlocks,
-            }),
-          }),
+          createSystemMessage(unknownMessage, 'warning'),
           // gh-32591: preserve args so the user can copy/resubmit without
           // retyping. System warning is UI-only (filtered before API).
           ...(parsedArgs
@@ -416,7 +550,7 @@ export async function processSlashCommand(
       }
     }
 
-    const promptId = randomUUID()
+    const promptId = screenedPromptId ?? randomUUID()
     setPromptId(promptId)
     logEvent('tengu_input_prompt', {})
     // Log user prompt event for OTLP
@@ -437,6 +571,7 @@ export async function processSlashCommand(
     }
   }
 
+  setPromptId(screenedPromptId ?? randomUUID())
   let command = userInvocableCommand ?? commandExists!
   const subcommand = resolveSubcommand(command, parsedArgs)
   const subcommandTarget = subcommand
@@ -966,7 +1101,6 @@ async function getMessagesForSlashCommand(
               ),
               shouldQuery: false,
               command,
-              resultText: result.displayText,
             }
           }
 
@@ -993,6 +1127,7 @@ async function getMessagesForSlashCommand(
             ],
             shouldQuery: false,
             command,
+            resultText: e instanceof Error ? e.message : String(e),
           }
         }
       }
@@ -1006,7 +1141,77 @@ async function getMessagesForSlashCommand(
               if (notice) effortNotice = createSystemMessage(notice, 'notice')
             }
           }
-          const result = getPromptCommandContext(command, args, context) === 'fork'
+          const prompt = args ? `/${command.name} ${args}` : `/${command.name}`
+          const hookMessages: Message[] = []
+          let blockingError: string | undefined
+          let suppressOriginalPrompt = false
+          let stopMessage: string | undefined
+          for await (const hookResult of executeUserPromptExpansionHooks(
+            command.source === 'mcp' ? 'mcp_prompt' : 'slash_command',
+            command.name,
+            args,
+            command.source,
+            prompt,
+            context.getAppState().toolPermissionContext.mode,
+            context,
+          )) {
+            if (hookResult.blockingError) {
+              blockingError ??= hookResult.blockingError.blockingError
+            }
+            if (hookResult.suppressOriginalPrompt) suppressOriginalPrompt = true
+            if (hookResult.preventContinuation) {
+              stopMessage ??= hookResult.stopReason
+                ? `Operation stopped by hook: ${hookResult.stopReason}`
+                : 'Operation stopped by hook'
+            }
+            if (hookResult.additionalContexts?.length) {
+              hookMessages.push(
+                createAttachmentMessage({
+                  type: 'hook_additional_context',
+                  content: hookResult.additionalContexts,
+                  hookName: 'UserPromptExpansion',
+                  toolUseID: `hook-${randomUUID()}`,
+                  hookEvent: 'UserPromptExpansion',
+                }),
+              )
+            }
+            const message = hookResult.message as Message | undefined
+            if (
+              message?.type === 'attachment' &&
+              !(message.attachment.type === 'hook_success' && !message.attachment.content)
+            ) {
+              hookMessages.push(message)
+            }
+          }
+          if (blockingError !== undefined) {
+            const blockingMessage = `UserPromptExpansion operation blocked by hook:\n${blockingError}`
+            return {
+              messages: [
+                createSystemMessage(
+                  suppressOriginalPrompt
+                    ? blockingMessage
+                    : `${blockingMessage}\n\nOriginal prompt: ${prompt}`,
+                  'warning',
+                ),
+              ],
+              shouldQuery: false,
+              resultText: blockingMessage,
+              command,
+            }
+          }
+          if (stopMessage) {
+            return {
+              messages: [
+                createUserMessage({ content: stopMessage, isMeta: true }),
+                createSystemMessage(stopMessage, 'warning'),
+              ],
+              shouldQuery: false,
+              resultText: stopMessage,
+              command,
+            }
+          }
+          const isFork = getPromptCommandContext(command, args, context) === 'fork'
+          const result = isFork
             ? await executeForkedSlashCommand(
               command,
               args,
@@ -1024,6 +1229,7 @@ async function getMessagesForSlashCommand(
               uuid,
             )
           if (effortNotice) result.messages.splice(1, 0, effortNotice)
+          if (!isFork) result.messages.push(...hookMessages)
           return result
         } catch (e) {
           const { ModAuthoringPromptDismissedError } =
@@ -1064,7 +1270,8 @@ async function getMessagesForSlashCommand(
                 }),
               }),
               createUserMessage({
-                content: `<local-command-stderr>${String(e)}</local-command-stderr>`,
+                // 2.1.311 shows a malformed command's message as is, without "Error: ".
+                content: `<local-command-stderr>${e instanceof MalformedCommandError ? e.message : String(e)}</local-command-stderr>`,
               }),
             ],
             shouldQuery: false,
@@ -1200,10 +1407,9 @@ async function getMessagesForPromptSlashCommand(
   uuid?: string,
   snapshot = context.modsSnapshot,
 ): Promise<SlashCommandResult> {
-  // In coordinator mode (main thread only), skip loading the full skill content
-  // and permissions. The coordinator only has Agent + TaskStop tools, so the
-  // skill content and allowedTools are useless. Instead, send a brief summary
-  // telling the coordinator how to delegate this skill to a worker.
+  // In coordinator mode (main thread only), a user-typed /skill gets a brief
+  // summary telling the coordinator how to delegate it to a worker. The
+  // coordinator's own Skill tool sets isSkillPreload and loads read-only below.
   //
   // Workers run in-process and inherit CLAUDE_CODE_COORDINATOR_MODE from the
   // parent env, so we also check !context.agentId: agentId is only set for
@@ -1211,8 +1417,10 @@ async function getMessagesForPromptSlashCommand(
   // the real skill content when they invoke the Skill tool.
   if (
     feature('COORDINATOR_MODE') &&
-    isEnvTruthy(process.env.CLAUDE_CODE_COORDINATOR_MODE) &&
-    !context.agentId
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    (require('../../coordinator/coordinatorMode.js') as typeof import('../../coordinator/coordinatorMode.js')).isCoordinatorMode() &&
+    !context.agentId &&
+    !context.options.isSkillPreload
   ) {
     const metadata = formatCommandLoadingMetadata(command, args)
     const parts: string[] = [
@@ -1272,8 +1480,10 @@ async function getMessagesForPromptSlashCommand(
   // Register skill hooks if defined. Under ["hooks"]-only (skills not locked),
   // user skills still load and reach this point — block hook REGISTRATION here
   // where source is known. Mirrors the agent frontmatter gate in runAgent.ts.
+  const readOnlyLoad = context.options.readOnlySkillLoad === true
   const hooksAllowedForThisSkill =
-    !isRestrictedToPluginOnly('hooks') || isSourceAdminTrusted(command.source)
+    !readOnlyLoad &&
+    (!isRestrictedToPluginOnly('hooks') || isSourceAdminTrusted(command.source))
   const isBuiltinGoal = command.name === 'goal' && command.source === 'builtin'
   if (
     hooksAllowedForThisSkill &&
@@ -1323,9 +1533,9 @@ async function getMessagesForPromptSlashCommand(
 
   const metadata = formatCommandLoadingMetadata(command, args)
 
-  const additionalAllowedTools = parseToolListFromCLI(
-    getCommandAllowedTools(command),
-  )
+  const additionalAllowedTools = readOnlyLoad
+    ? []
+    : parseToolListFromCLI(getCommandAllowedTools(command))
 
   // Create content for the main message, including any pasted images
   const mainMessageContent: ContentBlockParam[] =

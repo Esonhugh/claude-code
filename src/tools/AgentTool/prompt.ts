@@ -59,9 +59,10 @@ function getToolsDescription(agent: AgentDefinition): string {
  * Format one agent line for the agent_listing_delta attachment message:
  * `- type: whenToUse (Tools: ...)`.
  */
-export function formatAgentLine(agent: AgentDefinition): string {
+export function formatAgentLine(agent: AgentDefinition, lean = false): string {
   const toolsDescription = getToolsDescription(agent)
-  return `- ${agent.agentType}: ${agent.whenToUse} (Tools: ${toolsDescription})`
+  const whenToUse = (lean && agent.whenToUseLean) || agent.whenToUse
+  return `- ${agent.agentType}: ${whenToUse} (Tools: ${toolsDescription})`
 }
 
 /**
@@ -189,7 +190,7 @@ When NOT to use the ${AGENT_TOOL_NAME} tool:
   const concurrencyNote =
     !listViaAttachment && getSubscriptionType() !== 'pro'
       ? `
-- Launch multiple agents concurrently whenever possible, to maximize performance; to do that, use a single message with multiple tool uses`
+- When you launch multiple agents for independent work, send them in a single message with multiple tool uses so they run concurrently.`
       : ''
 
   // Non-coordinator gets the full prompt with all sections

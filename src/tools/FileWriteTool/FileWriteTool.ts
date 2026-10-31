@@ -1,4 +1,5 @@
 import { dirname, sep } from 'path'
+import isPlainObject from 'lodash-es/isPlainObject.js'
 import { logEvent } from 'src/services/analytics/index.js'
 import { z } from 'zod/v4'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../services/analytics/growthbook.js'
@@ -25,7 +26,10 @@ import {
   fileHistoryTrackEdit,
 } from '../../utils/fileHistory.js'
 import { logFileOperation } from '../../utils/fileOperationAnalytics.js'
-import { readFileSyncWithMetadata } from '../../utils/fileRead.js'
+import {
+  notTextMessage,
+  readFileSyncWithMetadata,
+} from '../../utils/fileRead.js'
 import { getFsImplementation } from '../../utils/fsOperations.js'
 import {
   fetchSingleFileGitDiff,
@@ -41,7 +45,10 @@ import {
 } from '../../utils/permissions/filesystem.js'
 import type { PermissionDecision } from '../../utils/permissions/PermissionResult.js'
 import { matchWildcardPattern } from '../../utils/permissions/shellRuleMatching.js'
-import { FILE_UNEXPECTEDLY_MODIFIED_ERROR } from '../FileEditTool/constants.js'
+import {
+  FILE_STATE_CURRENT_NOTE,
+  FILE_UNEXPECTEDLY_MODIFIED_ERROR,
+} from '../FileEditTool/constants.js'
 import { gitDiffSchema, hunkSchema } from '../FileEditTool/types.js'
 import { FILE_WRITE_TOOL_NAME, getWriteToolDescription } from './prompt.js'
 import {
@@ -85,6 +92,9 @@ const outputSchema = lazySchema(() =>
         'The original file content before the write (null for new files)',
       ),
     gitDiff: gitDiffSchema().optional(),
+    userModified: z
+      .boolean()
+      .describe('Whether the user modified the proposed content'),
   }),
 )
 type OutputSchema = ReturnType<typeof outputSchema>
@@ -113,6 +123,40 @@ export const FileWriteTool = buildTool({
   isResultTruncated,
   get inputSchema(): InputSchema {
     return inputSchema()
+  },
+  // Like 2.1.311: accept the names models carry over from other editors.
+  coerceInput(input) {
+    if (!isPlainObject(input)) return null
+    const next = { ...(input as Record<string, unknown>) }
+    let changed = false
+    if (!Object.hasOwn(next, 'file_path') && typeof next.path === 'string') {
+      next.file_path = next.path
+      delete next.path
+      changed = true
+    }
+    const contentAliases = ['file_text', 'file_content'].filter(key =>
+      Object.hasOwn(next, key),
+    )
+    const [alias] = contentAliases
+    if (
+      alias !== undefined &&
+      contentAliases.length === 1 &&
+      !Object.hasOwn(next, 'content') &&
+      typeof next[alias] === 'string'
+    ) {
+      next.content = next[alias]
+      delete next[alias]
+      changed = true
+    }
+    if (Object.hasOwn(next, 'description')) {
+      delete next.description
+      changed = true
+    }
+    if (next.command === 'create') {
+      delete next.command
+      changed = true
+    }
+    return changed ? next : null
   },
   get outputSchema(): OutputSchema {
     return outputSchema()
@@ -189,6 +233,20 @@ export const FileWriteTool = buildTool({
     try {
       const fileStat = await fs.stat(fullFilePath)
       fileMtimeMs = fileStat.mtimeMs
+      if (fileStat.isDirectory()) {
+        return {
+          result: false,
+          message: `${file_path} is a directory, not a file. To create a file inside it, include the file name in file_path.`,
+          errorCode: 17,
+        }
+      }
+      if (!fileStat.isFile()) {
+        return {
+          result: false,
+          message: `${file_path} exists but is not a regular file (a device, FIFO or socket). Write only creates or overwrites regular files.`,
+          errorCode: 18,
+        }
+      }
     } catch (e) {
       if (isENOENT(e)) {
         return { result: true }
@@ -286,6 +344,7 @@ export const FileWriteTool = buildTool({
       }
     }
 
+    if (meta?.notText) throw new Error(notTextMessage(meta.notText))
     if (meta !== null) {
       const lastWriteTime = getFileModificationTime(fullFilePath)
       const lastRead = readFileState.get(fullFilePath)
@@ -392,6 +451,7 @@ export const FileWriteTool = buildTool({
         content,
         structuredPatch: patch,
         originalFile: oldContent,
+        userModified: false,
         ...(gitDiff && { gitDiff }),
       }
       // Track lines added and removed for file updates, right before yielding result
@@ -415,6 +475,7 @@ export const FileWriteTool = buildTool({
       content,
       structuredPatch: [],
       originalFile: null,
+      userModified: false,
       ...(gitDiff && { gitDiff }),
     }
 
@@ -438,13 +499,13 @@ export const FileWriteTool = buildTool({
         return {
           tool_use_id: toolUseID,
           type: 'tool_result',
-          content: `File created successfully at: ${filePath}`,
+          content: `File created successfully at: ${filePath}${FILE_STATE_CURRENT_NOTE}`,
         }
       case 'update':
         return {
           tool_use_id: toolUseID,
           type: 'tool_result',
-          content: `The file ${filePath} has been updated successfully.`,
+          content: `The file ${filePath} has been updated successfully.${FILE_STATE_CURRENT_NOTE}`,
         }
     }
   },

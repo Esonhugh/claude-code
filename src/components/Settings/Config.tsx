@@ -8,6 +8,7 @@ import {
   useTerminalFocus,
 } from '../../ink.js'
 import type { KeyboardEvent } from '../../ink/events/keyboard-event.js'
+import { stringWidth } from '../../ink/stringWidth.js'
 import * as React from 'react'
 import { useState, useCallback } from 'react'
 import {
@@ -63,9 +64,13 @@ import {
 } from '../../state/AppState.js'
 import { ModelPicker } from '../ModelPicker.js'
 import {
+  getDefaultMainLoopModelSetting,
   modelDisplayString,
   isOpus1mMergeEnabled,
+  parseUserSpecifiedModel,
+  renderModelName,
 } from '../../utils/model/model.js'
+import { requiresAlwaysOnAdaptiveThinking } from '../../utils/thinking.js'
 import { isBilledAsExtraUsage } from '../../utils/extraUsage.js'
 import { ClaudeMdExternalIncludesDialog } from '../ClaudeMdExternalIncludesDialog.js'
 import {
@@ -98,7 +103,7 @@ import {
   getUseAutoModeDuringPlan,
   updateSettingsForSource,
 } from '../../utils/settings/settings.js'
-import { getUserMsgOptIn, setUserMsgOptIn } from '../../bootstrap/state.js'
+import { setUserMsgOptIn } from '../../bootstrap/state.js'
 import { DEFAULT_OUTPUT_STYLE_NAME } from 'src/constants/outputStyles.js'
 import { isEnvTruthy, isRunningOnHomespace } from 'src/utils/envUtils.js'
 import type {
@@ -137,7 +142,7 @@ type Props = {
   ) => void
   context: LocalJSXCommandContext
   setTabsHidden: (hidden: boolean) => void
-  onIsSearchModeChange?: (inSearchMode: boolean) => void
+  onOwnsEscChange?: (ownsEsc: boolean) => void
   contentHeight?: number
 }
 
@@ -172,9 +177,44 @@ type Setting = (
       type: 'managedEnum'
     })
 
-) & { description?: string; isLocked?: boolean; configRow?: ModConfigRow }
+) & {
+  description?: string
+  isLocked?: boolean
+  /** Read-only row with this reason shown under it (2.1.311 lock). */
+  lockReason?: string
+  configRow?: ModConfigRow
+}
 
 const AUTO_TEAMMATE_MODEL = Symbol('auto-teammate-model')
+
+// Rows that open one of Config's own dialogs instead of the generic row editor.
+const DIALOG_CONFIG_ROWS = ['theme','model','teammateDefaultModel','outputStyle','language','showExternalIncludesDialog','autoUpdatesChannel']
+
+// Like official 2.1.311, core choices cycle in place; plugin choices, time
+// format, peer messages and free-form values open a picker, marked with ›.
+function opensPicker(setting: Setting): boolean {
+  const row = setting.configRow
+  if (!row) return setting.type === 'managedEnum'
+  if (DIALOG_CONFIG_ROWS.includes(row.key)) return true
+  if (row.kind === 'boolean') return false
+  if (row.kind !== 'choice' || !row.options?.length) return true
+  return row.provider.plugin !== 'engine' || row.key === 'timeFormat' || row.key === 'crossSessionInbound'
+}
+
+function cyclesInPlace(setting: Setting): boolean {
+  return setting.configRow
+    ? setting.configRow.kind === 'choice' && !opensPicker(setting)
+    : setting.type === 'enum'
+}
+
+// Mods rows whose changes the close summary reports by name, as the legacy rows do.
+const CHANGE_LABELS: Record<string, string> = {
+  verbose: 'verbose',
+  defaultPermissionMode: 'permissionMode',
+  workflows: 'Dynamic workflows',
+  workflowSizeGuideline: 'Dynamic workflow size',
+  defaultView: 'Default view',
+}
 
 type SubMenu =
   | 'Theme'
@@ -189,7 +229,7 @@ export function Config({
   onClose,
   context,
   setTabsHidden,
-  onIsSearchModeChange,
+  onOwnsEscChange,
   contentHeight,
 }: Props): React.ReactNode {
   const { headerFocused, focusHeader } = useTabHeaderFocus()
@@ -214,6 +254,7 @@ export function Config({
   const [configText, setConfigText] = useState('')
   const [configCursorOffset, setConfigCursorOffset] = useState(0)
   const modsConfig = context.mods?.config
+  const initialConfigValues = React.useRef<Map<string, ModConfigValue>>(undefined)
   const store = useAppStateStore()
   React.useEffect(() => {
     if (!modsConfig) return
@@ -223,6 +264,7 @@ export function Config({
       const current = ++revision
       void modsConfig.list().then(rows => {
         if (active && current === revision) {
+          initialConfigValues.current ??= new Map(rows.map(row => [row.key, row.value]))
           setConfigRows(rows)
           setConfigError(error => error?.key === '' ? null : error)
         }
@@ -239,6 +281,13 @@ export function Config({
       const result = await modsConfig.set({key,value},{kind:'composer'},undefined,dialogWriter)
       setConfigError(result.deny === undefined ? null : {key,message:result.deny})
       if (result.deny === undefined) {
+        const label = CHANGE_LABELS[key]
+        if (label) {
+          setChanges(prev => {
+            const { [label]: _, ...rest } = prev
+            return result.value === initialConfigValues.current?.get(key) ? rest : { ...rest, [label]: result.value }
+          })
+        }
         setConfigRows(await modsConfig.list())
         setGlobalConfig(getGlobalConfig())
         setSettingsData(getInitialSettings())
@@ -260,6 +309,16 @@ export function Config({
   const mainLoopModel = useAppState(s => s.mainLoopModel)
   const verbose = useAppState(s => s.verbose)
   const thinkingEnabled = useAppState(s => s.thinkingEnabled)
+  const sessionModel = useAppState(
+    s => s.mainLoopModelForSession ?? s.mainLoopModel,
+  )
+  const resolvedModel = parseUserSpecifiedModel(
+    sessionModel ?? getDefaultMainLoopModelSetting(),
+  )
+  // Requests to these models always carry adaptive thinking.
+  const thinkingLockReason = requiresAlwaysOnAdaptiveThinking(resolvedModel)
+    ? `Thinking can't be turned off for ${renderModelName(resolvedModel)}`
+    : undefined
   const isFastMode = useAppState(s =>
     isFastModeEnabled() ? s.fastMode : false,
   )
@@ -279,44 +338,6 @@ export function Config({
   const setAppState = useSetAppState()
   const [changes, setChanges] = useState<{ [key: string]: unknown }>({})
   const initialThinkingEnabled = React.useRef(thinkingEnabled)
-  // Per-source settings snapshots for revert-on-escape. getInitialSettings()
-  // returns merged-across-sources which can't tell us what to delete vs
-  // restore; per-source snapshots + updateSettingsForSource's
-  // undefined-deletes-key semantics can. Lazy-init via useState (no setter) to
-  // avoid reading settings files on every render — useRef evaluates its arg
-  // eagerly even though only the first result is kept.
-  const [initialLocalSettings] = useState(() =>
-    getSettingsForSource('localSettings'),
-  )
-  const [initialUserSettings] = useState(() =>
-    getSettingsForSource('userSettings'),
-  )
-  const initialThemeSetting = React.useRef(themeSetting)
-  // AppState fields Config may modify — snapshot once at mount.
-  const [initialAppState] = useState(() => {
-    const s = store.getState()
-    return {
-      mainLoopModel: s.mainLoopModel,
-      mainLoopModelForSession: s.mainLoopModelForSession,
-      verbose: s.verbose,
-      thinkingEnabled: s.thinkingEnabled,
-      fastMode: s.fastMode,
-      promptSuggestionEnabled: s.promptSuggestionEnabled,
-      isBriefOnly: s.isBriefOnly,
-      replBridgeEnabled: s.replBridgeEnabled,
-      replBridgeOutboundOnly: s.replBridgeOutboundOnly,
-      settings: s.settings,
-    }
-  })
-  // Bootstrap state snapshot — userMsgOptIn is outside AppState, so
-  // revertChanges needs to restore it separately. Without this, cycling
-  // defaultView to 'chat' then Escape leaves the tool active while the
-  // display filter reverts — the exact ambient-activation behavior this
-  // PR's entitlement/opt-in split is meant to prevent.
-  const [initialUserMsgOptIn] = useState(() => getUserMsgOptIn())
-  // Set on first user-visible change; gates revertChanges() on Escape so
-  // opening-then-closing doesn't trigger redundant disk writes.
-  const isDirty = React.useRef(false)
   const [showThinkingWarning, setShowThinkingWarning] = useState(false)
   const [showSubmenu, setShowSubmenu] = useState<SubMenu | null>(null)
   const teammateModelOptions = React.useMemo(() => {
@@ -360,10 +381,11 @@ export function Config({
   // Tell the parent when Config's own Esc handler is active so Settings cedes
   // confirm:no. Only true when search mode owns the keyboard — not when the
   // tab header is focused (then Settings must handle Esc-to-close).
-  const ownsEsc = isSearchMode && !headerFocused
+  // Config handles Esc itself: search mode clears the query, otherwise the
+  // panel closes with a summary of the changes made.
   React.useEffect(() => {
-    onIsSearchModeChange?.(ownsEsc)
-  }, [ownsEsc, onIsSearchModeChange])
+    onOwnsEscChange?.(true)
+  }, [onOwnsEscChange])
 
   const isConnectedToIde = hasAccessToIDEExtensionDiffFeature(
     context.options.mcpClients,
@@ -457,6 +479,20 @@ export function Config({
       },
     },
     {
+      id: 'agentSummary',
+      label: 'Background agent summaries',
+      value: settingsData?.agentSummary ?? 'full',
+      options: ['full', 'short', 'off'],
+      type: 'enum' as const,
+      onChange(value: string) {
+        if (value !== 'full' && value !== 'short' && value !== 'off') return
+        updateSettingsForSource('userSettings', {
+          agentSummary: value === 'full' ? undefined : value,
+        })
+        setSettingsData(prev => ({ ...prev, agentSummary: value }))
+      },
+    },
+    {
       id: 'spinnerTipsEnabled',
       label: 'Show tips',
       value: settingsData?.spinnerTipsEnabled ?? true,
@@ -506,7 +542,8 @@ export function Config({
     {
       id: 'thinkingEnabled',
       label: 'Thinking mode',
-      value: thinkingEnabled ?? true,
+      value: thinkingLockReason !== undefined || (thinkingEnabled ?? true),
+      lockReason: thinkingLockReason,
       type: 'boolean' as const,
       onChange(enabled: boolean) {
         setAppState(prev => ({ ...prev, thinkingEnabled: enabled }))
@@ -762,13 +799,34 @@ export function Config({
           },
         }))
         // Track changes
-        setChanges(prev => ({ ...prev, defaultPermissionMode: mode }))
+        setChanges(prev => ({ ...prev, permissionMode: mode }))
         logEvent('tengu_config_changed', {
           setting:
             'defaultPermissionMode' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
           value:
             mode as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
         })
+      },
+    },
+    {
+      id: 'worktreeBaseRef',
+      label: 'Worktree base ref',
+      value: settingsData?.worktree?.baseRef ?? 'fresh',
+      options: ['fresh', 'head'],
+      type: 'enum' as const,
+      onChange(value: string) {
+        const baseRef = value as 'fresh' | 'head'
+        const result = updateSettingsForSource('userSettings', {
+          worktree: { baseRef },
+        })
+        if (result.error) {
+          logError(result.error)
+          return
+        }
+        setSettingsData(prev => ({
+          ...prev,
+          worktree: { ...prev?.worktree, baseRef },
+        }))
       },
     },
     ...(feature('TRANSCRIPT_CLASSIFIER')
@@ -858,7 +916,7 @@ export function Config({
     },
     {
       id: 'copyFullResponse',
-      label: 'Always copy full response (skip /copy picker)',
+      label: 'Skip the /copy picker',
       value: globalConfig.copyFullResponse,
       type: 'boolean' as const,
       onChange(copyFullResponse: boolean) {
@@ -969,7 +1027,7 @@ export function Config({
           },
           {
             id: 'inputNeededNotifEnabled',
-            label: 'Push when input needed',
+            label: 'Push when actions required',
             value: globalConfig.inputNeededNotifEnabled ?? false,
             type: 'boolean' as const,
             onChange(inputNeededNotifEnabled: boolean) {
@@ -1012,7 +1070,7 @@ export function Config({
       ? [
           {
             id: 'defaultView',
-            label: 'What you see by default',
+            label: 'Default view',
             // 'default' means the setting is unset — currently resolves to
             // transcript (main.tsx falls through when defaultView !== 'chat').
             // String() narrows the conditional-schema-spread union to string.
@@ -1037,7 +1095,6 @@ export function Config({
               // Keep userMsgOptIn in sync so the tool list follows the view.
               // Two-way now (same as /brief) — accepting a cache invalidation
               // is better than leaving the tool on after switching away.
-              // Reverted on Escape via initialUserMsgOptIn snapshot.
               setUserMsgOptIn(nextBrief)
               setChanges(prev => ({ ...prev, 'Default view': selected }))
               logEvent('tengu_default_view_setting_changed', {
@@ -1407,7 +1464,9 @@ export function Config({
   ]
 
   const displayedSettings: Setting[] = modsConfig ? configRows.map(row => {
-    const base = {id:row.key,label:row.label,description:row.description,isLocked:row.isLocked,configRow:row}
+    const label = row.provider.plugin === 'engine' ? row.label : `${row.label} · ${row.provider.plugin.split('@')[0]}`
+    const base = {id:row.key,label,description:row.description,isLocked:row.isLocked,configRow:row}
+    if (row.key === 'thinkingEnabled' && thinkingLockReason) return {...base,type:'boolean',value:true,lockReason:thinkingLockReason,onChange:() => {}}
     if (row.kind === 'boolean') return {...base,type:'boolean',value:row.value as boolean,onChange:() => {}}
     if (row.kind === 'choice') return {...base,type:'enum',value:row.value as string,options:[...(row.options ?? [])],onChange:() => {}}
     return {...base,type:'managedEnum',value:String(row.value),onChange:() => {}}
@@ -1424,6 +1483,22 @@ export function Config({
       return searchableText.toLowerCase().includes(lowerQuery)
     })
   }, [displayedSettings, searchQuery])
+  // Official marks a workflow size the user never picked with "(default)".
+  const valueText = (setting: Setting): string =>
+    setting.id === 'workflowSizeGuideline' && globalConfig.workflowSizeGuideline === undefined
+      ? `${setting.value} (default)`
+      : setting.value.toString()
+  // Values line up two columns after the widest matching label (capped).
+  const labelColumnWidth =
+    Math.min(
+      44,
+      Math.max(
+        0,
+        ...filteredSettingsItems.map(setting =>
+          stringWidth(setting.label + (setting.isLocked ? ' (locked)' : '')),
+        ),
+      ),
+    ) + 2
 
   // Adjust selected index when filtered list shrinks, and keep the selected
   // item visible when maxVisible changes (e.g., terminal resize).
@@ -1635,111 +1710,11 @@ export function Config({
     onClose,
   ])
 
-  // Restore all state stores to their mount-time snapshots. Changes are
-  // applied to disk/AppState immediately on toggle, so "cancel" means
-  // actively writing the old values back.
-  const revertChanges = useCallback(() => {
-    // Theme: restores ThemeProvider React state. Must run before the global
-    // config overwrite since setTheme internally calls saveGlobalConfig with
-    // a partial update — we want the full snapshot to be the last write.
-    if (themeSetting !== initialThemeSetting.current) {
-      setTheme(initialThemeSetting.current)
-    }
-    // Global config: full overwrite from snapshot. saveGlobalConfig skips if
-    // the returned ref equals current (test mode checks ref; prod writes to
-    // disk but content is identical).
-    saveGlobalConfig(() => initialConfig.current)
-    // Settings files: restore each key Config may have touched. undefined
-    // deletes the key (updateSettingsForSource customizer at settings.ts:368).
-    const il = initialLocalSettings
-    updateSettingsForSource('localSettings', {
-      spinnerTipsEnabled: il?.spinnerTipsEnabled,
-      prefersReducedMotion: il?.prefersReducedMotion,
-      defaultView: il?.defaultView,
-      outputStyle: il?.outputStyle,
-    })
-    const iu = initialUserSettings
-    updateSettingsForSource('userSettings', {
-      alwaysThinkingEnabled: iu?.alwaysThinkingEnabled,
-      fastMode: iu?.fastMode,
-      promptSuggestionEnabled: iu?.promptSuggestionEnabled,
-      autoUpdatesChannel: iu?.autoUpdatesChannel,
-      minimumVersion: iu?.minimumVersion,
-      language: iu?.language,
-      ...(feature('TRANSCRIPT_CLASSIFIER')
-        ? {
-            useAutoModeDuringPlan: (
-              iu as { useAutoModeDuringPlan?: boolean } | undefined
-            )?.useAutoModeDuringPlan,
-          }
-        : {}),
-      // ThemePicker's Ctrl+T writes this key directly — include it so the
-      // disk state reverts along with the in-memory AppState.settings restore.
-      syntaxHighlightingDisabled: iu?.syntaxHighlightingDisabled,
-      // permissions: the defaultMode onChange (above) writes only defaultMode,
-      // so restoring that one key (undefined deletes it) is enough.
-      permissions:
-        iu?.permissions === undefined
-          ? undefined
-          : { defaultMode: iu.permissions.defaultMode },
-    })
-    // AppState: batch-restore all possibly-touched fields.
-    const ia = initialAppState
-    setAppState(prev => ({
-      ...prev,
-      mainLoopModel: ia.mainLoopModel,
-      mainLoopModelForSession: ia.mainLoopModelForSession,
-      verbose: ia.verbose,
-      thinkingEnabled: ia.thinkingEnabled,
-      fastMode: ia.fastMode,
-      promptSuggestionEnabled: ia.promptSuggestionEnabled,
-      isBriefOnly: ia.isBriefOnly,
-      replBridgeEnabled: ia.replBridgeEnabled,
-      replBridgeOutboundOnly: ia.replBridgeOutboundOnly,
-      settings: ia.settings,
-      // Reconcile auto-mode state after useAutoModeDuringPlan revert above —
-      // the onChange handler may have activated/deactivated auto mid-plan.
-      toolPermissionContext: transitionPlanAutoMode(prev.toolPermissionContext),
-    }))
-    // Bootstrap state: restore userMsgOptIn. Only touched by the defaultView
-    // onChange above, so no feature() guard needed here (that path only
-    // exists when showDefaultViewPicker is true).
-    if (getUserMsgOptIn() !== initialUserMsgOptIn) {
-      setUserMsgOptIn(initialUserMsgOptIn)
-    }
-  }, [
-    themeSetting,
-    setTheme,
-    initialLocalSettings,
-    initialUserSettings,
-    initialAppState,
-    initialUserMsgOptIn,
-    setAppState,
-  ])
-
-  // Escape: revert all changes (if any) and close.
-  const handleEscape = useCallback(() => {
-    if (showSubmenu !== null) {
-      return
-    }
-    if (isDirty.current) {
-      revertChanges()
-    }
-    onClose('Config dialog dismissed', { display: 'system' })
-  }, [showSubmenu, revertChanges, onClose])
-
-  // Disable when submenu is open so the submenu's Dialog handles ESC, and in
-  // search mode so the onKeyDown handler (which clears-then-exits search)
-  // wins — otherwise Escape in search would jump straight to revert+close.
-  useKeybinding('confirm:no', handleEscape, {
+  // Disable when a submenu is open so the submenu's Dialog handles Esc, and in
+  // search mode so the onKeyDown handler (which clears-then-exits search) wins.
+  useKeybinding('confirm:no', handleSaveAndClose, {
     context: 'Settings',
-    isActive: showSubmenu === null && editingConfig === null && !isSearchMode && !headerFocused,
-  })
-  // Save-and-close fires on Enter only when not in search mode (Enter there
-  // exits search to the list — see the isSearchMode branch in handleKeyDown).
-  useKeybinding('settings:close', handleSaveAndClose, {
-    context: 'Settings',
-    isActive: showSubmenu === null && editingConfig === null && !isSearchMode && !headerFocused,
+    isActive: showSubmenu === null && editingConfig === null && (!isSearchMode || headerFocused),
   })
 
   // Settings navigation and toggle actions via configurable keybindings.
@@ -1750,11 +1725,18 @@ export function Config({
       return
     }
 
-    const dialogRows = ['model','teammateDefaultModel','outputStyle','language','showExternalIncludesDialog','autoUpdatesChannel']
-    if (setting.configRow && !dialogRows.includes(setting.id)) {
+    // Locked rows (policy or an always-on model) are read-only.
+    if (setting.lockReason || (!setting.configRow && setting.isLocked)) {
+      return
+    }
+
+    if (setting.configRow && !DIALOG_CONFIG_ROWS.includes(setting.id)) {
       const row = setting.configRow
       if (row.kind === 'boolean') void changeConfig(row.key, !row.value)
-      else if (row.kind === 'choice' && row.options?.length) {
+      else if (row.kind === 'choice' && row.options?.length && !opensPicker(setting)) {
+        const options = row.options
+        void changeConfig(row.key, options[(options.indexOf(String(row.value)) + 1) % options.length]!)
+      } else if (row.kind === 'choice' && row.options?.length) {
         setEditingConfig(row)
         setTabsHidden(true)
       } else {
@@ -1767,13 +1749,7 @@ export function Config({
       return
     }
 
-    // Built-in rows locked by a non-user source are read-only.
-    if (!setting.configRow && setting.isLocked) {
-      return
-    }
-
     if (setting.type === 'boolean') {
-      isDirty.current = true
       setting.onChange(!setting.value)
       if (setting.id === 'thinkingEnabled') {
         const newValue = !setting.value
@@ -1795,8 +1771,6 @@ export function Config({
       setting.id === 'outputStyle' ||
       setting.id === 'language'
     ) {
-      // managedEnum items open a submenu — isDirty is set by the submenu's
-      // completion callback, not here (submenu may be cancelled).
       switch (setting.id) {
         case 'theme':
           setShowSubmenu('Theme')
@@ -1847,7 +1821,6 @@ export function Config({
           })
           return
         }
-        isDirty.current = true
         updateSettingsForSource('userSettings', {
           autoUpdatesChannel: 'latest',
           minimumVersion: undefined,
@@ -1866,7 +1839,6 @@ export function Config({
     }
 
     if (setting.type === 'enum') {
-      isDirty.current = true
       const currentIndex = setting.options.indexOf(setting.value)
       const nextIndex = (currentIndex + 1) % setting.options.length
       setting.onChange(setting.options[nextIndex]!)
@@ -1880,7 +1852,7 @@ export function Config({
     setTabsHidden,
   ])
 
-  const moveSelection = (delta: -1 | 1): void => {
+  const moveSelection = (delta: number): void => {
     setShowThinkingWarning(false)
     const newIndex = Math.max(
       0,
@@ -1905,6 +1877,10 @@ export function Config({
         }
       },
       'select:next': () => moveSelection(1),
+      'select:first': () => moveSelection(-selectedIndex),
+      'select:last': () => moveSelection(filteredSettingsItems.length),
+      'select:pageUp': () => moveSelection(-maxVisible),
+      'select:pageDown': () => moveSelection(maxVisible),
       // Wheel. ScrollKeybindingHandler's scroll:line* returns false (not
       // consumed) when the ScrollBox content fits — which it always does
       // here because the list is paginated (slice). The event falls through
@@ -1989,7 +1965,7 @@ export function Config({
       onKeyDown={handleKeyDown}
     >
       {editingConfig ? (
-        <Dialog title={editingConfig.label} onCancel={() => {setEditingConfig(null);setTabsHidden(false)}}>
+        <Dialog title={editingConfig.label} onCancel={() => {setEditingConfig(null);setTabsHidden(false)}} hideBorder>
           {editingConfig.kind === 'choice' ? <Select
             options={(editingConfig.options ?? []).map(value => ({ label: value, value }))}
             defaultValue={editingConfig.value as string}
@@ -2022,8 +1998,8 @@ export function Config({
         <>
           <ThemePicker
             onThemeSelect={setting => {
-              isDirty.current = true
-              setTheme(setting)
+              if (modsConfig) void changeConfig('theme', setting)
+              else setTheme(setting)
               setShowSubmenu(null)
               setTabsHidden(false)
             }}
@@ -2055,7 +2031,6 @@ export function Config({
             onSelect={(model, _effort) => {
               if (modsConfig) void changeConfig('model',model ?? 'Default (recommended)',value => onChangeMainModelConfig(value === 'Default (recommended)' ? null : value as string))
               else {
-                isDirty.current = true
                 onChangeMainModelConfig(model)
               }
               setShowSubmenu(null)
@@ -2121,7 +2096,6 @@ export function Config({
                 })
                 return
               }
-              isDirty.current = true
               saveGlobalConfig(current => {
                 if (model === undefined) {
                   const { teammateDefaultModel: _previous, ...rest } = current
@@ -2204,7 +2178,6 @@ export function Config({
                 setTabsHidden(false)
                 return
               }
-              isDirty.current = true
               setCurrentOutputStyle(style ?? DEFAULT_OUTPUT_STYLE_NAME)
               setShowSubmenu(null)
               setTabsHidden(false)
@@ -2255,7 +2228,6 @@ export function Config({
                 setTabsHidden(false)
                 return
               }
-              isDirty.current = true
               setCurrentLanguage(language)
               setShowSubmenu(null)
               setTabsHidden(false)
@@ -2337,7 +2309,6 @@ export function Config({
                   setTabsHidden(false)
                   return
                 }
-                isDirty.current = true
                 setShowSubmenu(null)
                 setTabsHidden(false)
 
@@ -2384,7 +2355,6 @@ export function Config({
               })
               return
             }
-            isDirty.current = true
             // Switch to stable channel
             const newSettings: {
               autoUpdatesChannel: 'stable'
@@ -2432,24 +2402,29 @@ export function Config({
               <>
                 {scrollOffset > 0 && (
                   <Text dimColor>
-                    {figures.arrowUp} {scrollOffset} more above
+                    {'  '}{figures.arrowUp} {scrollOffset} more
                   </Text>
                 )}
                 {filteredSettingsItems
                   .slice(scrollOffset, scrollOffset + maxVisible)
                   .map((setting, i) => {
                     const actualIndex = scrollOffset + i
+                    // Enter/↓ from search selects the first match.
                     const isSelected =
-                      actualIndex === selectedIndex &&
                       !headerFocused &&
-                      !isSearchMode
+                      actualIndex === (isSearchMode ? 0 : selectedIndex)
 
                     return (
                       <React.Fragment key={setting.id}>
                         <Box>
-                          <Box width={44}>
-                            <Text color={isSelected ? 'suggestion' : undefined}>
-                              {isSelected ? figures.pointer : ' '}{' '}
+                          <Text color={isSelected ? 'suggestion' : undefined}>
+                            {isSelected ? figures.pointer : ' '}{' '}
+                          </Text>
+                          <Box width={labelColumnWidth}>
+                            <Text
+                              color={isSelected ? 'suggestion' : undefined}
+                              wrap="truncate-end"
+                            >
                               {setting.label}{setting.isLocked ? ' (locked)' : ''}
                             </Text>
                           </Box>
@@ -2482,57 +2457,68 @@ export function Config({
                               <Text
                                 color={isSelected ? 'suggestion' : undefined}
                               >
+                                {isSelected && cyclesInPlace(setting) && '‹ '}
                                 <NotifChannelLabel
                                   value={setting.value.toString()}
                                 />
+                                {isSelected && cyclesInPlace(setting) && ' ›'}
                               </Text>
                             ) : setting.id === 'defaultPermissionMode' ? (
                               <Text
                                 color={isSelected ? 'suggestion' : undefined}
                               >
+                                {isSelected && cyclesInPlace(setting) && '‹ '}
                                 {permissionModeTitle(
                                   setting.value as PermissionMode,
                                 )}
+                                {isSelected && cyclesInPlace(setting) && ' ›'}
                               </Text>
                             ) : setting.id === 'autoUpdatesChannel' &&
                               autoUpdaterDisabledReason ? (
-                              <Box flexDirection="column">
-                                <Text
-                                  color={isSelected ? 'suggestion' : undefined}
-                                >
-                                  disabled
-                                </Text>
-                                <Text dimColor>
-                                  (
-                                  {formatAutoUpdaterDisabledReason(
-                                    autoUpdaterDisabledReason,
-                                  )}
-                                  )
-                                </Text>
-                              </Box>
+                              <Text
+                                color={isSelected ? 'suggestion' : undefined}
+                              >
+                                disabled (
+                                {formatAutoUpdaterDisabledReason(
+                                  autoUpdaterDisabledReason,
+                                )}
+                                )
+                              </Text>
                             ) : (
                               <Text
                                 color={isSelected ? 'suggestion' : undefined}
                               >
-                                {setting.value.toString()}
+                                {isSelected && cyclesInPlace(setting)
+                                  ? `‹ ${valueText(setting)} ›`
+                                  : valueText(setting)}
+                              </Text>
+                            )}
+                            {opensPicker(setting) && (
+                              <Text
+                                color={isSelected ? 'suggestion' : undefined}
+                              >
+                                {' '}›
                               </Text>
                             )}
                           </Box>
                         </Box>
+                        {setting.lockReason && (
+                          <Box paddingLeft={2}>
+                            <Text dimColor>{setting.lockReason}</Text>
+                          </Box>
+                        )}
                       </React.Fragment>
                     )
                   })}
                 {scrollOffset + maxVisible < filteredSettingsItems.length && (
                   <Text dimColor>
-                    {figures.arrowDown}{' '}
-                    {filteredSettingsItems.length - scrollOffset - maxVisible}{' '}
-                    more below
+                    {'  '}{figures.arrowDown}{' '}
+                    {filteredSettingsItems.length - scrollOffset - maxVisible} more
                   </Text>
                 )}
               </>
             )}
           </Box>
-          {filteredSettingsItems[selectedIndex]?.description && <Text dimColor>{filteredSettingsItems[selectedIndex]!.description}</Text>}
           {configError && <Text color="error">{configError.key ? `${configError.key}: ` : ''}{configError.message}</Text>}
           {headerFocused ? (
             <Text dimColor>
@@ -2564,18 +2550,7 @@ export function Config({
           ) : (
             <Text dimColor>
               <Byline>
-                <ConfigurableShortcutHint
-                  action="select:accept"
-                  context="Settings"
-                  fallback="Space"
-                  description="change"
-                />
-                <ConfigurableShortcutHint
-                  action="settings:close"
-                  context="Settings"
-                  fallback="Enter"
-                  description="save"
-                />
+                <KeyboardShortcutHint shortcut="Enter/Space" action="change" />
                 <ConfigurableShortcutHint
                   action="settings:search"
                   context="Settings"
@@ -2586,7 +2561,7 @@ export function Config({
                   action="confirm:no"
                   context="Settings"
                   fallback="Esc"
-                  description="cancel"
+                  description="close"
                 />
               </Byline>
             </Text>

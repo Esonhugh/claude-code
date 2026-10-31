@@ -41,7 +41,7 @@ import {
   parseUserSpecifiedModel,
   renderModelName,
 } from '../../utils/model/model.js'
-import type { Theme, ThemeName } from '../../utils/theme.js'
+import type { Theme, ResolvedTheme } from '../../utils/theme.js'
 import type {
   outputSchema,
   Progress,
@@ -254,7 +254,7 @@ export function AgentPromptDisplay({
   dim: _dim = false,
 }: {
   prompt: string
-  theme?: ThemeName // deprecated, kept for compatibility - Markdown uses useTheme internally
+  theme?: ResolvedTheme // deprecated, kept for compatibility - Markdown uses useTheme internally
   dim?: boolean // deprecated, kept for compatibility - dimColor cannot be applied to Box (Markdown returns Box)
 }): React.ReactNode {
   return (
@@ -273,7 +273,7 @@ export function AgentResponseDisplay({
   content,
 }: {
   content: { type: string; text: string }[]
-  theme?: ThemeName // deprecated, kept for compatibility - Markdown uses useTheme internally
+  theme?: ResolvedTheme // deprecated, kept for compatibility - Markdown uses useTheme internally
 }): React.ReactNode {
   return (
     <Box flexDirection="column">
@@ -360,7 +360,7 @@ export function renderToolResultMessage(
   }: {
     tools: Tools
     verbose: boolean
-    theme: ThemeName
+    theme: ResolvedTheme
     isTranscriptMode?: boolean
   },
 ): React.ReactNode {
@@ -759,7 +759,7 @@ export function renderToolUseRejectedMessage(
     columns: number
     messages: Message[]
     style?: 'condensed'
-    theme: ThemeName
+    theme: ResolvedTheme
     progressMessagesForMessage: ProgressMessage<Progress>[]
     tools: Tools
     verbose: boolean

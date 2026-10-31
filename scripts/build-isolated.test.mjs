@@ -6,6 +6,7 @@ import { fileURLToPath, URL } from 'node:url';
 import { runInNewContext } from 'node:vm';
 import { execFileSync } from 'node:child_process';
 import * as buildModule from './build.mjs';
+import { SEARCH_TOOLS_VERSION, searchToolsDir } from './search-tools.mjs';
 
 const projectDir = fileURLToPath(new URL('..', import.meta.url));
 // macOS TMPDIR can live outside the build's intentionally narrow /tmp allowlist.
@@ -84,6 +85,8 @@ await runInNewContext(`(async () => { ${packageBody.replaceAll('import.meta.url'
   process: { env: { CLAUDE_CODE_BUILD_DIR: outputDir }, platform: 'darwin', arch: 'arm64' },
   console: { log() {} },
   prepareBuildDirectory(value) { assert.equal(value, outputDir); return value; },
+  SEARCH_TOOLS_VERSION,
+  searchToolsDir,
   async buildCli(options) { assert.equal(options.outputDir, outputDir); assert.equal(options.embedSharpNative, true); },
   fs: {
     existsSync: () => true,
@@ -107,6 +110,8 @@ for (const { file } of writes) assert.ok(file.startsWith(outputDir + path.sep), 
 for (const directory of directories) assert.ok(directory.startsWith(outputDir + path.sep), directory);
 const entry = writes.find(({ file }) => file.endsWith('embedded-cli.js'));
 assert.ok(entry.contents.includes(JSON.stringify(path.join(outputDir, 'dist', 'cli.js'))));
+assert.ok(entry.contents.includes(JSON.stringify(path.join(searchToolsDir(projectDir, 'darwin', 'arm64'), 'ugrep'))));
+assert.ok(entry.contents.includes(`process.env.CLAUDE_CODE_EMBEDDED_SEARCH_TOOLS_VERSION = ${JSON.stringify(SEARCH_TOOLS_VERSION)}`));
 assert.ok(entry.contents.includes(JSON.stringify(path.join(projectDir,'assets','builtin-diff-2.1.295.zip'))));
 assert.doesNotMatch(entry.contents,/__CLAUDE_CODE_BUILTIN_DIFF_ARCHIVE__/);
 const compile = subprocesses.find(({ args }) => args.includes('--compile'));

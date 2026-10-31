@@ -5,13 +5,14 @@ import { join } from 'node:path'
 import type { Tool, ToolUseContext } from '../../Tool.js'
 import { z } from 'zod/v4'
 import { runToolUse } from './toolExecution.js'
-import { createAssistantMessage } from '../../utils/messages.js'
+import { CANCEL_MESSAGE, createAssistantMessage } from '../../utils/messages.js'
 import { getEmptyToolPermissionContext } from '../../Tool.js'
 import {
   clearRegisteredHooks,
   registerHookCallbacks,
   setIsInteractive,
   getIsInteractive,
+  setPromptId,
 } from '../../bootstrap/state.js'
 import { resetHooksConfigSnapshot } from '../../utils/hooks/hooksConfigSnapshot.js'
 import {
@@ -1069,7 +1070,7 @@ describe('classic events at existing tool hook boundaries', () => {
     expect(calls).toBe(0)
     expect(f.releases()).toBe(1)
     expect(JSON.stringify(updates)).not.toContain('must not deliver')
-    expect(JSON.stringify(updates)).toContain('fixture cancelled')
+    expect(JSON.stringify(updates)).toContain(CANCEL_MESSAGE)
   })
 
   test('managed post reviews additive synthetic context and retains stop/block after short circuit', async () => {
@@ -1662,4 +1663,44 @@ test('tool.check hasHooks honours the registration tool filter', async () => {
   } finally {
     await runtime.dispose()
   }
+})
+
+describe('hook input fields (official 2.1.311 BaseHookInput)', () => {
+  test('PostToolUse and PostToolUseFailure carry prompt_id and duration_ms', async () => {
+    const seen: Record<string, unknown>[] = []
+    const capture = { hooks: [{ type: 'callback' as const, callback: async (input: unknown) => {
+      seen.push(input as Record<string, unknown>)
+      return {}
+    } }] }
+    registerHookCallbacks({ PostToolUse: [capture], PostToolUseFailure: [capture] })
+    setPromptId('prompt-1')
+    try {
+      const f = fixture()
+      await Array.fromAsync(runPostToolUseHooks(
+        f.context, f.tool, 'id', 'message', {}, { value: 'ok' },
+        undefined, undefined, undefined, 'all', 42,
+      ))
+      await Array.fromAsync(runPostToolUseFailureHooks(
+        f.context, f.tool, 'id', 'message', {}, 'boom', false,
+        undefined, undefined, undefined, 'all', 7,
+      ))
+    } finally {
+      setPromptId(null)
+    }
+    expect(seen.map(i => [i.hook_event_name, i.prompt_id, i.duration_ms])).toEqual([
+      ['PostToolUse', 'prompt-1', 42],
+      ['PostToolUseFailure', 'prompt-1', 7],
+    ])
+  })
+})
+
+test('TeammateIdle carries the teammate agent_id and agent_type', async () => {
+  const { executeTeammateIdleHooks } = await import('../../utils/hooks.js')
+  const seen: Record<string, unknown>[] = []
+  registerHookCallbacks({ TeammateIdle: [{ hooks: [{ type: 'callback', callback: async (input: unknown) => {
+    seen.push(input as Record<string, unknown>)
+    return {}
+  } }] }] })
+  await Array.fromAsync(executeTeammateIdleHooks('mate1', 'session-1', 'default', undefined, undefined, { agentId: 'amate1-1', agentType: 'mate1' }))
+  expect(seen.map(i => [i.teammate_name, i.agent_id, i.agent_type])).toEqual([['mate1', 'amate1-1', 'mate1']])
 })

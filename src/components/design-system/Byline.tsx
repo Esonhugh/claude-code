@@ -35,8 +35,8 @@ type Props = {
  *
  */
 export function Byline({ children }: Props): React.ReactNode {
-  // Children.toArray already filters out null, undefined, and booleans
-  const validChildren = Children.toArray(children)
+  // Children.toArray drops null, undefined and booleans but keeps '' (e.g. from `'' && <X />`)
+  const validChildren = Children.toArray(children).filter(child => child !== '')
 
   if (validChildren.length === 0) {
     return null

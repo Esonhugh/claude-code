@@ -16,8 +16,8 @@ import type {
   SDKCompactBoundaryMessage,
   SDKMessage,
   SDKPermissionDenial,
-  SDKStatus,
   SDKUserMessageReplay,
+  TerminalReason,
 } from 'src/entrypoints/agentSdkTypes.js'
 import { accumulateUsage, updateUsage } from 'src/services/api/claude.js'
 import type { NonNullableUsage } from 'src/services/api/logging.js'
@@ -27,6 +27,7 @@ import type { Command } from './commands.js'
 import { getProactiveSection } from './constants/prompts.js'
 import { getSlashCommandToolSkills } from './commands.js'
 import {
+  COMMAND_NAME_TAG,
   LOCAL_COMMAND_STDERR_TAG,
   LOCAL_COMMAND_STDOUT_TAG,
 } from './constants/xml.js'
@@ -67,12 +68,14 @@ import { SYNTHETIC_OUTPUT_TOOL_NAME } from './tools/SyntheticOutputTool/Syntheti
 import type { Message, MessageOrigin, UserMessage } from './types/message.js'
 import type { OrphanedPermission, QueuedCommand } from './types/textInputTypes.js'
 import { createAbortController } from './utils/abortController.js'
+import { applyCompletedMessageDisplayHooks } from './utils/hooks/messageDisplay.js'
 import { getModHttpServices } from './services/mods/hostOperations.js'
 import type { AttributionState } from './utils/commitAttribution.js'
 import { getGlobalConfig } from './utils/config.js'
 import { getCwd } from './utils/cwd.js'
 import { isBareMode, isEnvTruthy } from './utils/envUtils.js'
-import { getFastModeState } from './utils/fastMode.js'
+import { getFastModeDisabledReason, getFastModeState } from './utils/fastMode.js'
+import { nextThinkingEstimate } from './utils/thinkingTokenEstimate.js'
 import {
   type FileHistoryState,
   fileHistoryEnabled,
@@ -122,6 +125,7 @@ import {
 } from './utils/messages/mappers.js'
 import {
   buildSystemInitMessage,
+  SDK_INIT_CAPABILITIES,
   sdkCompatToolName,
 } from './utils/messages/systemInit.js'
 import {
@@ -183,7 +187,7 @@ export type QueryEngineConfig = {
   /** Handler for URL elicitations triggered by MCP tool -32042 errors. */
   handleElicitation?: ToolUseContext['handleElicitation']
   includePartialMessages?: boolean
-  setSDKStatus?: (status: SDKStatus) => void
+  setSDKStatus?: ToolUseContext['setSDKStatus']
   abortController?: AbortController
   orphanedPermission?: OrphanedPermission
   /**
@@ -328,6 +332,7 @@ export class QueryEngine {
       skipAttachments?: boolean
     },
   ): AsyncGenerator<SDKMessage, void, unknown> {
+    const displayTurnId = randomUUID()
     const {
       cwd,
       commands,
@@ -831,12 +836,39 @@ export class QueryEngine {
       skills,
       plugins: enabledPlugins,
       fastMode: initialAppState.fastMode,
+      capabilities: SDK_INIT_CAPABILITIES,
+      additionalDirectories: Array.from(
+        // @ts-ignore - recovered code
+        initialAppState.toolPermissionContext.additionalWorkingDirectories.keys(),
+      ),
     })
 
     // Record when system message is yielded for headless latency tracking
     headlessProfilerCheckpoint('system_message_yielded')
 
+    // Like official 2.1.311, every result carries the fast mode state and,
+    // when fast mode is unavailable, why.
+    const resultFastMode = () => {
+      const reason = getFastModeDisabledReason()
+      return {
+        fast_mode_state: getFastModeState(
+          mainLoopModel,
+          initialAppState.fastMode,
+        ),
+        ...(reason !== null && { fast_mode_disabled_reason: reason }),
+      }
+    }
+
     if (!shouldQuery) {
+      const localCommand = messagesFromUserInput
+        .map(msg =>
+          msg.type === 'user' && typeof msg.message.content === 'string'
+            ? new RegExp(`<${COMMAND_NAME_TAG}>/?([^<]+)</${COMMAND_NAME_TAG}>`).exec(
+                msg.message.content,
+              )?.[1]
+            : undefined,
+        )
+        .find(name => name !== undefined)
       // Return the results of local slash commands.
       // Use messagesFromUserInput (not replayableMessages) for command output
       // because selectableUserMessagesFilter excludes local-command-stdout tags.
@@ -905,7 +937,8 @@ export class QueryEngine {
         is_error: false,
         duration_ms: Date.now() - startTime,
         duration_api_ms: getTotalAPIDuration(),
-        num_turns: messages.length - 1,
+        // Local slash commands make no model turns.
+        num_turns: 0,
         result: resultText ?? '',
         stop_reason: null,
         session_id: getSessionId(),
@@ -913,10 +946,8 @@ export class QueryEngine {
         usage: this.totalUsage,
         modelUsage: getModelUsage(),
         permission_denials: this.permissionDenials,
-        fast_mode_state: getFastModeState(
-          mainLoopModel,
-          initialAppState.fastMode,
-        ),
+        ...(localCommand !== undefined && { local_command: localCommand }),
+        ...resultFastMode(),
         uuid: randomUUID(),
       }
       return
@@ -956,7 +987,21 @@ export class QueryEngine {
       ? countToolCalls(this.mutableMessages, SYNTHETIC_OUTPUT_TOOL_NAME)
       : 0
 
-    for await (const message of query({
+    // query() returns why the loop ended; results report it as terminal_reason.
+    let terminal: { reason: TerminalReason } | undefined
+    async function* trackTerminal<T>(
+      loop: AsyncGenerator<T, { reason: TerminalReason } | undefined>,
+    ): AsyncGenerator<T> {
+      terminal = yield* loop
+    }
+    // Official 2.1.311: result ttft_ms is the time to the first assistant
+    // message, api_error_status the status of a trailing API error message.
+    let firstAssistantAt: number | undefined
+    let lastApiErrorStatus: number | null = null
+    let requestStartedAt: number | undefined
+    let thinkingEstimate = 0
+
+    for await (const message of trackTerminal(query({
       messages,
       systemPrompt,
       userContext,
@@ -985,7 +1030,7 @@ export class QueryEngine {
           .filter(text => text !== '')
           .join('\n'),
       },
-    })) {
+    }))) {
       // Record assistant, user, and compact boundary messages
       if (
         message.type === 'assistant' ||
@@ -1062,6 +1107,10 @@ export class QueryEngine {
           // Tombstone messages are control signals for removing messages, skip them
           break
         case 'assistant':
+          firstAssistantAt ??= Date.now()
+          lastApiErrorStatus = message.isApiErrorMessage
+            ? (message.apiErrorStatus ?? null)
+            : null
           // Capture stop_reason if already set (synthetic messages). For
           // streamed responses, this is null at content_block_stop time;
           // the real value arrives via message_delta (handled below).
@@ -1069,7 +1118,9 @@ export class QueryEngine {
             lastStopReason = message.message.stop_reason
           }
           this.mutableMessages.push(message)
-          yield* normalizeMessage(message)
+          yield* normalizeMessage(
+            await applyCompletedMessageDisplayHooks(message, displayTurnId, this.abortController.signal),
+          )
           break
         case 'progress':
           this.mutableMessages.push(message)
@@ -1085,10 +1136,27 @@ export class QueryEngine {
           yield* normalizeMessage(message)
           break
         case 'user':
+          lastApiErrorStatus = null
           this.mutableMessages.push(message)
           yield* normalizeMessage(message)
           break
-        case 'stream_event':
+        case 'stream_event': {
+          const thinking = nextThinkingEstimate(
+            thinkingEstimate,
+            // @ts-ignore - recovered code
+            message.event,
+          )
+          thinkingEstimate = thinking.estimate
+          if (thinking.emission) {
+            yield {
+              type: 'system',
+              subtype: 'thinking_tokens' as const,
+              estimated_tokens: thinking.emission.estimatedTokens,
+              estimated_tokens_delta: thinking.emission.estimatedTokensDelta,
+              uuid: randomUUID(),
+              session_id: getSessionId(),
+            }
+          }
           // @ts-ignore - recovered code
           if (message.event.type === 'message_start') {
             // Reset current message usage for new message
@@ -1132,10 +1200,16 @@ export class QueryEngine {
               session_id: getSessionId(),
               parent_tool_use_id: null,
               uuid: randomUUID(),
+              // @ts-ignore - recovered code
+              ...(message.event.type === 'message_start' &&
+                requestStartedAt !== undefined && {
+                  ttft_ms: Date.now() - requestStartedAt,
+                }),
             }
           }
 
           break
+        }
         case 'attachment':
           this.mutableMessages.push(message)
           // Record inline (same reason as progress above).
@@ -1175,10 +1249,8 @@ export class QueryEngine {
               usage: this.totalUsage,
               modelUsage: getModelUsage(),
               permission_denials: this.permissionDenials,
-              fast_mode_state: getFastModeState(
-                mainLoopModel,
-                initialAppState.fastMode,
-              ),
+              ...resultFastMode(),
+              terminal_reason: 'max_turns' as const,
               uuid: randomUUID(),
               errors: [
                 // @ts-ignore - recovered code
@@ -1210,7 +1282,14 @@ export class QueryEngine {
           }
           break
         case 'stream_request_start':
-          // Don't yield stream request start messages
+          requestStartedAt = Date.now()
+          yield {
+            type: 'system',
+            subtype: 'status' as const,
+            status: 'requesting' as const,
+            uuid: randomUUID(),
+            session_id: getSessionId(),
+          }
           break
         case 'system': {
           // Snip boundary: replay on our store to remove zombie messages and
@@ -1315,10 +1394,8 @@ export class QueryEngine {
           usage: this.totalUsage,
           modelUsage: getModelUsage(),
           permission_denials: this.permissionDenials,
-          fast_mode_state: getFastModeState(
-            mainLoopModel,
-            initialAppState.fastMode,
-          ),
+          ...resultFastMode(),
+          terminal_reason: 'budget_exhausted' as const,
           uuid: randomUUID(),
           errors: [`Reached maximum budget ($${maxBudgetUsd})`],
         }
@@ -1358,10 +1435,8 @@ export class QueryEngine {
             usage: this.totalUsage,
             modelUsage: getModelUsage(),
             permission_denials: this.permissionDenials,
-            fast_mode_state: getFastModeState(
-              mainLoopModel,
-              initialAppState.fastMode,
-            ),
+            ...resultFastMode(),
+            terminal_reason: 'structured_output_retry_exhausted' as const,
             uuid: randomUUID(),
             errors: [
               `Failed to provide valid structured output after ${maxRetries} attempts`,
@@ -1417,10 +1492,9 @@ export class QueryEngine {
         usage: this.totalUsage,
         modelUsage: getModelUsage(),
         permission_denials: this.permissionDenials,
-        fast_mode_state: getFastModeState(
-          mainLoopModel,
-          initialAppState.fastMode,
-        ),
+        ...resultFastMode(),
+        terminal_reason: terminal?.reason,
+        api_error_status: lastApiErrorStatus,
         uuid: randomUUID(),
         // Diagnostic prefix: these are what isResultSuccessful() checks — if
         // the result type isn't assistant-with-text/thinking or user-with-
@@ -1460,8 +1534,12 @@ export class QueryEngine {
       type: 'result',
       subtype: 'success',
       is_error: isApiError,
+      api_error_status: lastApiErrorStatus,
       duration_ms: Date.now() - startTime,
       duration_api_ms: getTotalAPIDuration(),
+      ...(firstAssistantAt !== undefined && {
+        ttft_ms: Math.max(0, firstAssistantAt - startTime),
+      }),
       num_turns: turnCount,
       result: textResult,
       stop_reason: lastStopReason,
@@ -1471,10 +1549,8 @@ export class QueryEngine {
       modelUsage: getModelUsage(),
       permission_denials: this.permissionDenials,
       structured_output: structuredOutputFromTool,
-      fast_mode_state: getFastModeState(
-        mainLoopModel,
-        initialAppState.fastMode,
-      ),
+      ...resultFastMode(),
+      terminal_reason: terminal?.reason,
       uuid: randomUUID(),
     }
   }
@@ -1581,7 +1657,7 @@ export async function* ask({
   includePartialMessages?: boolean
   handleElicitation?: ToolUseContext['handleElicitation']
   agents?: AgentDefinition[]
-  setSDKStatus?: (status: SDKStatus) => void
+  setSDKStatus?: ToolUseContext['setSDKStatus']
   orphanedPermission?: OrphanedPermission
 }): AsyncGenerator<SDKMessage, void, unknown> {
   // @ts-ignore - recovered code

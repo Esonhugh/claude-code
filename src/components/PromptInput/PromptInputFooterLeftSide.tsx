@@ -26,10 +26,12 @@ import {
   getModeColor,
 } from '../../utils/permissions/PermissionMode.js'
 import { getPermissionModeFooterLabel } from '../../utils/permissions/approveForMe.js'
+import { PAUSE_ICON } from '../../constants/figures.js'
 import { BackgroundTaskStatus } from '../tasks/BackgroundTaskStatus.js'
 import { isBackgroundTask } from '../../tasks/types.js'
 import { isPanelAgentTask } from '../../tasks/LocalAgentTask/LocalAgentTask.js'
 import { getCoordinatorTaskCount } from '../CoordinatorAgentStatus.js'
+import { hasCompletedAgentsOffPanel } from '../CoordinatorAgentStatusRows.js'
 import { count } from '../../utils/array.js'
 import { isAgentSwarmsEnabled } from '../../utils/agentSwarmsEnabled.js'
 import { TeamStatus } from '../teams/TeamStatus.js'
@@ -75,6 +77,7 @@ type Props = {
   mode: PromptInputMode
   toolPermissionContext: ToolPermissionContext
   suppressHint: boolean
+  isInputEmpty: boolean
   isLoading: boolean
   showMemoryTypeSelector?: boolean
   tasksSelected: boolean
@@ -132,6 +135,7 @@ export function PromptInputFooterLeftSide({
   mode,
   toolPermissionContext,
   suppressHint,
+  isInputEmpty,
   isLoading,
   tasksSelected,
   teamsSelected,
@@ -179,6 +183,12 @@ export function PromptInputFooterLeftSide({
         mode={mode}
         toolPermissionContext={toolPermissionContext}
         showHint={!suppressHint && !showVim}
+        showAgentsHint={
+          isInputEmpty &&
+          !isSearching &&
+          vimMode !== 'VISUAL' &&
+          vimMode !== 'VISUAL LINE'
+        }
         isLoading={isLoading}
         tasksSelected={tasksSelected}
         teamsSelected={teamsSelected}
@@ -193,6 +203,7 @@ type ModeIndicatorProps = {
   mode: PromptInputMode
   toolPermissionContext: ToolPermissionContext
   showHint: boolean
+  showAgentsHint: boolean
   isLoading: boolean
   tasksSelected: boolean
   teamsSelected: boolean
@@ -204,6 +215,7 @@ function ModeIndicator({
   mode,
   toolPermissionContext,
   showHint,
+  showAgentsHint,
   isLoading,
   tasksSelected,
   teamsSelected,
@@ -223,6 +235,7 @@ function ModeIndicator({
   const store = useAppStateStore()
   const [remoteSessionUrl] = useState(() => store.getState().remoteSessionUrl)
   const viewSelectionMode = useAppState(s => s.viewSelectionMode)
+  const agentsHintExpired = useAppState(s => s.agentsHintExpired === true)
   const viewingAgentTaskId = useAppState(s => s.viewingAgentTaskId)
   const expandedView = useAppState(s => s.expandedView)
   const prStatus = usePrStatus(isLoading, isPrStatusEnabled())
@@ -326,7 +339,7 @@ function ModeIndicator({
     count(Object.values(teamContext.teammates), t => t.name !== 'team-lead') > 0
 
   if (mode === 'bash') {
-    return <Text color="bashBorder">! for bash mode</Text>
+    return <Text color="bashBorder">! for shell mode</Text>
   }
 
   const currentMode = toolPermissionContext?.mode
@@ -364,8 +377,14 @@ function ModeIndicator({
   // the local permission mode shown here doesn't reflect the agent's state.
   // Rendered before the tasks pill so a long pill label (e.g. ultraplan URL)
   // doesn't push the mode indicator off-screen.
+  // Manual (default) mode shows its indicator too, without the cycle hint,
+  // like official 2.1.311.
   const modePart =
-    currentMode && hasActiveMode && !getIsRemoteMode() ? (
+    !currentMode || getIsRemoteMode() ? null : !hasActiveMode ? (
+      <Text color="inactive" key="mode">
+        {PAUSE_ICON} manual mode on
+      </Text>
+    ) : (
       <Text color={getModeColor(currentMode)} key="mode">
         {permissionModeSymbol(currentMode)}{' '}
         {getPermissionModeFooterLabel(currentMode)} on
@@ -380,7 +399,7 @@ function ModeIndicator({
           </Text>
         )}
       </Text>
-    ) : null
+    )
 
   const TungstenPill = (_props: { selected: boolean }): React.ReactNode => null
 
@@ -469,10 +488,28 @@ function ModeIndicator({
     />
   ) : null
 
-  if (parts.length === 0 && !tasksPart && !modePart && showHint) {
+  if (parts.length === 0 && !tasksPart && !hasActiveMode && showHint) {
     parts.push(
       <Text dimColor key="shortcuts-hint">
         ? for shortcuts
+      </Text>,
+    )
+  }
+
+  if (
+    feature('BG_SESSIONS') &&
+    showAgentsHint &&
+    !agentsHintExpired &&
+    !isLoading &&
+    !tasksSelected &&
+    !teamsSelected &&
+    !tmuxSelected &&
+    viewSelectionMode !== 'viewing-agent' &&
+    getGlobalConfig().leftArrowOpensAgents !== false
+  ) {
+    parts.push(
+      <Text dimColor key="fg-agents">
+        ← for agents
       </Text>,
     )
   }
@@ -531,6 +568,14 @@ function ModeIndicator({
     parts.push(
       <Text dimColor key="voice-hint">
         hold {voiceKeyShortcut} to speak
+      </Text>,
+    )
+  }
+
+  if (showHint && hasCompletedAgentsOffPanel(tasks, viewingAgentTaskId)) {
+    parts.push(
+      <Text dimColor key="tasks-subagents">
+        /tasks to see subagents
       </Text>,
     )
   }

@@ -80,13 +80,12 @@ export function Settings({
     if (tabsHidden) {
       return
     }
-    // TODO: Update to "Settings" dialog once we define '/settings'.
-    onClose(`${defaultTab} dialog dismissed`, { display: 'system' })
+    onClose('Settings dialog dismissed', { display: 'system' })
   }
 
   // Disable when submenu is open so the submenu's Dialog can handle ESC,
-  // and when Config's search mode is active so its useInput handler
-  // (clear query → exit search) processes Escape first.
+  // and on tabs that handle Escape themselves (Config closes with its change
+  // summary or clears its search).
   useKeybinding('confirm:no', handleEscape, {
     context: 'Settings',
     isActive:
@@ -110,7 +109,7 @@ export function Settings({
           context={context}
           onClose={onClose}
           setTabsHidden={setTabsHidden}
-          onIsSearchModeChange={setConfigOwnsEsc}
+          onOwnsEscChange={setConfigOwnsEsc}
           contentHeight={contentHeight}
         />
       </Suspense>
@@ -139,6 +138,7 @@ export function Settings({
   return (
     <Pane color="permission">
       <Tabs
+        title="Settings"
         color="permission"
         selectedTab={selectedTab}
         onTabChange={setSelectedTab}

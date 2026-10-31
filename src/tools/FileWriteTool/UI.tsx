@@ -21,6 +21,7 @@ import { getDisplayPath } from '../../utils/file.js'
 import { logError } from '../../utils/log.js'
 import { getPlansDirectory } from '../../utils/plans.js'
 import { openForScan, readCapped } from '../../utils/readEditContext.js'
+import { plural } from '../../utils/stringUtils.js'
 import type { Output } from './FileWriteTool.js'
 
 const MAX_LINES_TO_RENDER = 10
@@ -55,7 +56,7 @@ function FileWriteToolCreatedMessage({
     <MessageResponse>
       <Box flexDirection="column">
         <Text>
-          Wrote <Text bold>{numLines}</Text> lines to{' '}
+          Wrote <Text bold>{numLines}</Text> {plural(numLines, 'line')} to{' '}
           <Text bold>{verbose ? filePath : relative(getCwd(), filePath)}</Text>
         </Text>
         <Box flexDirection="column">
@@ -303,7 +304,7 @@ export function renderToolResultMessage(
         const numLines = countLines(content)
         return (
           <Text>
-            Wrote <Text bold>{numLines}</Text> lines to{' '}
+            Wrote <Text bold>{numLines}</Text> {plural(numLines, 'line')} to{' '}
             <Text bold>{relative(getCwd(), filePath)}</Text>
           </Text>
         )

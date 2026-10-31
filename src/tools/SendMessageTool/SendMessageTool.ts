@@ -29,7 +29,7 @@ import { parseAddress } from '../../utils/peerAddress.js'
 import { semanticBoolean } from '../../utils/semanticBoolean.js'
 import { jsonStringify } from '../../utils/slowOperations.js'
 import type { BackendType } from '../../utils/swarm/backends/types.js'
-import { TEAM_LEAD_NAME } from '../../utils/swarm/constants.js'
+import { TEAM_LEAD_NAME, TEAMMATE_SHUTDOWN_APPROVED } from '../../utils/swarm/constants.js'
 import { readTeamFileAsync } from '../../utils/swarm/teamHelpers.js'
 import {
   getAgentId,
@@ -392,7 +392,7 @@ async function handleShutdownApproval(
       const appState = context.getAppState()
       const task = findTeammateTaskByAgentId(agentId, appState.tasks)
       if (task?.abortController) {
-        task.abortController.abort()
+        task.abortController.abort(TEAMMATE_SHUTDOWN_APPROVED)
         logForDebugging(
           `[SendMessageTool] Aborted controller for in-process teammate ${agentName}`,
         )
@@ -410,7 +410,7 @@ async function handleShutdownApproval(
         logForDebugging(
           `[SendMessageTool] Fallback: Found in-process task for ${agentName} via AppState, aborting`,
         )
-        task.abortController.abort()
+        task.abortController.abort(TEAMMATE_SHUTDOWN_APPROVED)
 
         return {
           data: {
@@ -582,6 +582,14 @@ async function handlePlanRejection(
   }
 }
 
+// Official 2.1.311 tags the hook-visible input with how `to` was addressed.
+function recipientKind(to: string): 'session' | 'main' | 'agent' | 'name' {
+  if (parseAddress(to).scheme !== 'other' || /^local_[0-9a-f-]{8,72}$/.test(to)) return 'session'
+  if (to === 'main') return 'main'
+  if (toAgentId(to.normalize('NFKC').trim().toLowerCase().replace(/\s+/g, '-'))) return 'agent'
+  return 'name'
+}
+
 export const SendMessageTool: Tool<InputSchema, SendMessageToolOutput> =
   buildTool({
     name: SEND_MESSAGE_TOOL_NAME,
@@ -618,6 +626,7 @@ export const SendMessageTool: Tool<InputSchema, SendMessageToolOutput> =
       } else if (typeof input.message === 'string') {
         input.type = 'message'
         input.recipient = input.to
+        input.recipient_kind = recipientKind(input.to)
         input.content = input.message
       } else if (typeof input.message === 'object' && input.message !== null) {
         const msg = input.message as {
@@ -629,6 +638,7 @@ export const SendMessageTool: Tool<InputSchema, SendMessageToolOutput> =
         }
         input.type = msg.type
         input.recipient = input.to
+        input.recipient_kind = recipientKind(input.to)
         if (msg.request_id !== undefined) input.request_id = msg.request_id
         if (msg.approve !== undefined) input.approve = msg.approve
         const content = msg.reason ?? msg.feedback
@@ -813,6 +823,11 @@ export const SendMessageTool: Tool<InputSchema, SendMessageToolOutput> =
 
     async call(input, context, canUseTool, assistantMessage) {
       const send = async (input: z.infer<InputSchema>): Promise<{data:SendMessageToolOutput}> => {
+      // Spawn reports a teammate as name@team; official accepts that id too.
+      const teammateById = context.getAppState().teamContext?.teammates?.[input.to]
+      if (teammateById && teammateById.name !== input.to) {
+        return send({ ...input, to: teammateById.name })
+      }
       const notify = feature('UDS_INBOX') ? 'notify_when_idle' in input && input.notify_when_idle === true : false
       const sendPeer = async (target: string, message: string, label: string, toName?: string): Promise<{data:SendMessageToolOutput}> => {
         const { sendToUdsSocket, subscribePeerIdle } = await import('../../utils/udsClient.js')
@@ -990,7 +1005,7 @@ ${resolved.candidates.map(candidate => `  ${candidate.name} [${candidate.ref}]`)
               return {
                 data: {
                   success: true,
-                  message: `Message queued for delivery to ${recipientName} at its next tool round.`,
+                  message: `Message queued for delivery to ${recipientName} at its next tool round. If it finishes first, it is resumed with the message and notifies again, so wait for that notification before resending.`,
                   ...pinReceipt,
                 },
               }
@@ -1014,7 +1029,7 @@ ${resolved.candidates.map(candidate => `  ${candidate.name} [${candidate.ref}]`)
                   success: true,
                   ...pinReceipt,
                   ...(result.inlineHandback && { inlineHandback: { displayName: toAgentId(input.to) ? input.to.slice(0, 7) : input.to, ...result.inlineHandback } }),
-                  message: result.inlineHandback ? RESUMED_AGENT_MESSAGE : `Agent "${input.to}" was stopped (${task.status}); resumed it in the background with your message. You'll be notified when it finishes. Output: ${result.outputFile}`,
+                  message: result.inlineHandback ? RESUMED_AGENT_MESSAGE : `Resuming agent ${toAgentId(input.to) ? input.to.slice(0, 7) : input.to}`,
                 },
               }
             } catch (e) {
@@ -1044,7 +1059,7 @@ ${resolved.candidates.map(candidate => `  ${candidate.name} [${candidate.ref}]`)
                   success: true,
                   ...pinReceipt,
                   ...(result.inlineHandback && { inlineHandback: { displayName: toAgentId(input.to) ? input.to.slice(0, 7) : input.to, ...result.inlineHandback } }),
-                  message: result.inlineHandback ? RESUMED_AGENT_MESSAGE : `Agent "${input.to}" had no active task; resumed from transcript in the background with your message. You'll be notified when it finishes. Output: ${result.outputFile}`,
+                  message: result.inlineHandback ? RESUMED_AGENT_MESSAGE : `Resuming agent ${toAgentId(input.to) ? input.to.slice(0, 7) : input.to}`,
                 },
               }
             } catch (e) {

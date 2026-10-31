@@ -8,6 +8,7 @@ import { microcompactMessages } from 'src/services/compact/microCompact.js'
 import { getCommandName } from '../commands.js'
 import { getSystemContext } from '../context.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../services/analytics/growthbook.js'
+import type { MCPServerConnection } from '../services/mcp/types.js'
 import {
   AUTOCOMPACT_BUFFER_TOKENS,
   getEffectiveContextWindowSize,
@@ -17,6 +18,7 @@ import {
 } from '../services/compact/autoCompact.js'
 import {
   countMessagesTokensWithAPI,
+  bytesPerTokenForModel,
   roughTokenCountEstimation,
   roughTokenCountEstimationForMessages,
 } from '../services/tokenEstimation.js'
@@ -99,6 +101,7 @@ async function countTokens(
           messages.length > 0 ? messages : [{ role: 'user', content: 'foo' }],
         tools,
       }),
+      bytesPerTokenForModel(model),
     ) + (tools.length > 0 ? TOOL_TOKEN_COUNT_OVERHEAD : 0)
 
   if (detail === 'summary') {
@@ -123,7 +126,24 @@ async function countTokens(
   return localEstimate()
 }
 
+export type ContextCategoryId =
+  | 'system_prompt'
+  | 'system_tools'
+  | 'mcp_tools'
+  | 'mcp_instructions'
+  | 'mcp_tools_deferred'
+  | 'system_tools_deferred'
+  | 'custom_agents'
+  | 'memory_files'
+  | 'skills'
+  | 'messages'
+  | 'autocompact_buffer'
+  | 'compact_buffer'
+  | 'free_space'
+
 export interface ContextCategory {
+  /** Stable row id, like official 2.1.311 get_context_usage. */
+  id?: ContextCategoryId
   name: string
   tokens: number
   color: keyof Theme
@@ -184,7 +204,7 @@ interface SlashCommandInfo {
 /** Individual skill detail for context display */
 interface SkillFrontmatter {
   name: string
-  source: SettingSource | 'plugin'
+  source: SettingSource | 'plugin' | 'built-in'
   tokens: number
 }
 
@@ -213,6 +233,8 @@ export interface ContextData {
   readonly model: string
   readonly memoryFiles: MemoryFile[]
   readonly mcpTools: McpTool[]
+  /** The mcp_instructions row by server; each share is estimated from its text length. */
+  readonly mcpInstructions?: McpInstructionsDetail[]
   /** Ant-only: per-tool breakdown of deferred built-in tools */
   readonly deferredBuiltinTools?: DeferredBuiltinTool[]
   /** Ant-only: per-tool breakdown of always-loaded built-in tools */
@@ -231,6 +253,8 @@ export interface ContextData {
     attachmentTokens: number
     assistantMessageTokens: number
     userMessageTokens: number
+    redirectedContextTokens: number
+    unattributedTokens: number
     toolCallsByType: Array<{
       name: string
       callTokens: number
@@ -723,10 +747,13 @@ async function countSkillTokens(
     // (name, description, whenToUse) since full content is only loaded on invocation
     const skillFrontmatter: SkillFrontmatter[] = skills.map(skill => ({
       name: getCommandName(skill),
-      source: (skill.type === 'prompt' ? skill.source : 'plugin') as
-        | SettingSource
-        | 'plugin',
-      tokens: estimateSkillFrontmatterTokens(skill),
+      source:
+        skill.type !== 'prompt'
+          ? 'plugin'
+          : skill.source === 'bundled' || skill.source === 'builtin'
+            ? 'built-in'
+            : (skill.source as SettingSource | 'plugin'),
+      tokens: estimateSkillFrontmatterTokens(skill, bytesPerTokenForModel(model)),
     }))
 
     return {
@@ -831,6 +858,44 @@ export async function countMcpToolTokens(
     // Track deferred tokens separately for display
     deferredToolTokens: deferredTokens,
     loadedMcpToolNames,
+  }
+}
+
+export type McpInstructionsDetail = { serverName: string; tokens: number }
+
+export async function countMcpInstructionsTokens(
+  mcpClients: readonly MCPServerConnection[],
+  model: string,
+  detail: ContextBreakdownDetail,
+  signal?: AbortSignal,
+): Promise<{
+  mcpInstructionsTokens: number
+  mcpInstructionsDetails: McpInstructionsDetail[]
+}> {
+  const blocks = mcpClients
+    .flatMap(client =>
+      client.type === 'connected' && client.instructions
+        ? [[client.name, `## ${client.name}\n${client.instructions}`] as const]
+        : [],
+    )
+    .sort(([a], [b]) => a.localeCompare(b))
+  if (blocks.length === 0) {
+    return { mcpInstructionsTokens: 0, mcpInstructionsDetails: [] }
+  }
+  const tokens = await countTokens(
+    [{ role: 'user', content: blocks.map(([, block]) => block).join('\n\n') }],
+    [],
+    model,
+    detail,
+    signal,
+  )
+  const totalLength = blocks.reduce((sum, [, block]) => sum + block.length, 0)
+  return {
+    mcpInstructionsTokens: tokens,
+    mcpInstructionsDetails: blocks.map(([serverName, block]) => ({
+      serverName,
+      tokens: Math.round((tokens * block.length) / totalLength),
+    })),
   }
 }
 
@@ -1033,6 +1098,7 @@ async function approximateMessageTokens(
           microcompactResult.messages as Parameters<
             typeof roughTokenCountEstimationForMessages
           >[0],
+          bytesPerTokenForModel(model),
         )
       : await countTokens(
           normalizedMessages as Anthropic.Beta.Messages.BetaMessageParam[],
@@ -1057,7 +1123,10 @@ function getAssistantMessageId(message: Message): string | undefined {
   return undefined
 }
 
-function estimateTokensAfterLastApiUsage(messages: Message[]): number {
+export function estimateTokensAfterLastApiUsage(
+  messages: Message[],
+  bytesPerToken = 4,
+): number {
   let anchorIndex = -1
   for (let index = messages.length - 1; index >= 0; index--) {
     const message = messages[index]
@@ -1079,11 +1148,8 @@ function estimateTokensAfterLastApiUsage(messages: Message[]): number {
   }
 
   return roughTokenCountEstimationForMessages(
-    messages
-      .slice(anchorIndex + 1)
-      .filter(message => message.type !== 'attachment') as Parameters<
-      typeof roughTokenCountEstimationForMessages
-    >[0],
+    normalizeMessagesForAPI(messages.slice(anchorIndex + 1)),
+    bytesPerToken,
   )
 }
 
@@ -1097,6 +1163,8 @@ export interface BuildContextUsageDataInput {
   claudeMdTokens: number
   builtInToolTokens: number
   mcpToolTokens: number
+  mcpInstructionsTokens?: number
+  mcpInstructionsDetails?: McpInstructionsDetail[]
   deferredToolTokens: number
   deferredBuiltinTokens: number
   agentTokens: number
@@ -1131,6 +1199,8 @@ export function buildContextUsageData({
   claudeMdTokens,
   builtInToolTokens,
   mcpToolTokens,
+  mcpInstructionsTokens = 0,
+  mcpInstructionsDetails,
   deferredToolTokens,
   deferredBuiltinTokens,
   agentTokens,
@@ -1152,6 +1222,7 @@ export function buildContextUsageData({
 }: BuildContextUsageDataInput): ContextData {
   const cats: ContextCategory[] = []
   const addCategory = (
+    id: ContextCategoryId,
     name: string,
     tokens: number,
     color: keyof Theme,
@@ -1159,6 +1230,7 @@ export function buildContextUsageData({
   ) => {
     if (tokens > 0 || kind === 'free') {
       cats.push({
+        id,
         name,
         tokens,
         color,
@@ -1168,28 +1240,37 @@ export function buildContextUsageData({
     }
   }
 
-  addCategory('System prompt', systemPromptTokens, 'promptBorder')
+  addCategory('system_prompt', 'System prompt', systemPromptTokens, 'promptBorder')
   addCategory(
+    'system_tools',
     isAnt() ? '[ANT-ONLY] System tools' : 'System tools',
     builtInToolTokens - skillFrontmatterTokens,
     'inactive',
   )
-  addCategory('MCP tools', mcpToolTokens, 'cyan_FOR_SUBAGENTS_ONLY')
+  addCategory('mcp_tools', 'MCP tools', mcpToolTokens, 'cyan_FOR_SUBAGENTS_ONLY')
   addCategory(
+    'mcp_instructions',
+    'MCP server instructions',
+    mcpInstructionsTokens,
+    'green_FOR_SUBAGENTS_ONLY',
+  )
+  addCategory(
+    'mcp_tools_deferred',
     'MCP tools (deferred)',
     deferredToolTokens,
     'inactive',
     'deferred',
   )
   addCategory(
+    'system_tools_deferred',
     'System tools (deferred)',
     deferredBuiltinTokens,
     'inactive',
     'deferred',
   )
-  addCategory('Custom agents', agentTokens, 'permission')
-  addCategory('Memory files', claudeMdTokens, 'claude')
-  addCategory('Skills', skillFrontmatterTokens, 'warning')
+  addCategory('custom_agents', 'Custom agents', agentTokens, 'permission')
+  addCategory('memory_files', 'Memory files', claudeMdTokens, 'claude')
+  addCategory('skills', 'Skills', skillFrontmatterTokens, 'warning')
 
   let reservedTokens = 0
   let reservedName: typeof RESERVED_CATEGORY_NAME | typeof MANUAL_COMPACT_BUFFER_NAME | undefined
@@ -1220,19 +1301,18 @@ export function buildContextUsageData({
     0,
   )
   const messageCapacity = Math.max(0, contextWindow - fixedTokens - reservedTokens)
-  const reconciledMessageTokens =
+  const apiMessageTokens =
     apiInputTokens === null
+      ? null
+      : Math.max(0, apiInputTokens - fixedTokens) +
+        estimatedTokensAfterLastApiUsage
+  const reconciledMessageTokens =
+    apiMessageTokens === null
       ? messageBreakdown.totalTokens
-      : Math.max(
-          0,
-          Math.min(
-            Math.max(0, apiInputTokens - fixedTokens) +
-              estimatedTokensAfterLastApiUsage,
-            messageCapacity,
-          ),
-        )
+      : Math.max(0, Math.min(apiMessageTokens, messageCapacity))
 
   addCategory(
+    'messages',
     'Messages',
     reconciledMessageTokens,
     'purple_FOR_SUBAGENTS_ONLY',
@@ -1243,16 +1323,23 @@ export function buildContextUsageData({
     0,
   )
   if (reservedName) {
-    addCategory(reservedName, reservedTokens, 'inactive', 'buffer')
+    addCategory(
+      reservedName === RESERVED_CATEGORY_NAME
+        ? 'autocompact_buffer'
+        : 'compact_buffer',
+      reservedName,
+      reservedTokens, 'inactive', 'buffer')
   }
   addCategory(
+    'free_space',
     'Free space',
     Math.max(0, contextWindow - usedTokens - reservedTokens),
     'promptBorder',
     'free',
   )
 
-  const totalTokens = apiInputTokens ?? usedTokens
+  const totalTokens =
+    apiMessageTokens === null ? usedTokens : fixedTokens + apiMessageTokens
   const isNarrowScreen = terminalWidth !== undefined && terminalWidth < 80
   const gridWidth =
     contextWindow >= 1_000_000
@@ -1345,6 +1432,7 @@ export function buildContextUsageData({
       ...tool,
       isLoaded: tool.isLoaded === true,
     })),
+    ...(mcpInstructionsDetails && { mcpInstructions: mcpInstructionsDetails }),
     deferredBuiltinTools: isAnt() ? deferredBuiltinDetails : undefined,
     systemTools: isAnt() ? systemToolDetails : undefined,
     systemPromptSections: isAnt() ? systemPromptSections : undefined,
@@ -1368,6 +1456,16 @@ export function buildContextUsageData({
       attachmentTokens: messageBreakdown.attachmentTokens,
       assistantMessageTokens: messageBreakdown.assistantMessageTokens,
       userMessageTokens: messageBreakdown.userMessageTokens,
+      redirectedContextTokens: 0,
+      unattributedTokens: Math.max(
+        0,
+        reconciledMessageTokens -
+          messageBreakdown.toolCallTokens -
+          messageBreakdown.toolResultTokens -
+          messageBreakdown.attachmentTokens -
+          messageBreakdown.assistantMessageTokens -
+          messageBreakdown.userMessageTokens,
+      ),
       toolCallsByType: Array.from(toolsMap, ([name, tokens]) => ({
         name,
         ...tokens,
@@ -1427,6 +1525,7 @@ export async function analyzeContextUsage(
       systemToolDetails,
     },
     { mcpToolTokens, mcpToolDetails, deferredToolTokens },
+    { mcpInstructionsTokens, mcpInstructionsDetails },
     { agentTokens, agentDetails },
     { slashCommandTokens, commandInfo },
     messageBreakdown,
@@ -1448,6 +1547,12 @@ export async function analyzeContextUsage(
       agentDefinitions,
       runtimeModel,
       messages,
+      detail,
+      signal,
+    ),
+    countMcpInstructionsTokens(
+      toolUseContext?.options.mcpClients ?? [],
+      runtimeModel,
       detail,
       signal,
     ),
@@ -1514,6 +1619,8 @@ export async function analyzeContextUsage(
     claudeMdTokens,
     builtInToolTokens,
     mcpToolTokens,
+    mcpInstructionsTokens,
+    mcpInstructionsDetails,
     deferredToolTokens,
     deferredBuiltinTokens,
     agentTokens,
@@ -1531,6 +1638,7 @@ export async function analyzeContextUsage(
     apiUsage,
     estimatedTokensAfterLastApiUsage: estimateTokensAfterLastApiUsage(
       usageMessages,
+      bytesPerTokenForModel(runtimeModel),
     ),
     skipReservedBuffer,
     autoCompactThreshold: isAutoCompact

@@ -4,6 +4,7 @@ import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 import { buildCli, prepareBuildDirectory } from './build.mjs';
+import { SEARCH_TOOLS_VERSION, searchToolsDir } from './search-tools.mjs';
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const projectDir = path.resolve(scriptDir, '..');
@@ -195,12 +196,43 @@ const srtWinBinaryPath = path.join(
 if (platform === 'win32' && !fs.existsSync(srtWinBinaryPath)) {
   throw new Error(`Could not find ${srtWinBinaryPath}.`);
 }
+// The Linux sandbox spawns apply-seccomp to block unix sockets; the runtime
+// looks for it beside its own files, which the compiled binary has none of.
+const applySeccompBinaryPath = path.join(
+  sandboxRuntimeDir,
+  'vendor',
+  'seccomp',
+  arch,
+  'apply-seccomp',
+);
+const embedApplySeccomp =
+  platform === 'linux' && fs.existsSync(applySeccompBinaryPath);
 const sandboxRuntimeVersion = JSON.parse(
   await fs.promises.readFile(
     path.join(sandboxRuntimeDir, 'package.json'),
     'utf8',
   ),
 ).version;
+
+// Linux and macOS binaries embed bfs/ugrep from scripts/build-search-tools.mjs
+// so find/grep replace the Glob/Grep tools like official.
+const searchToolsPath = searchToolsDir(projectDir, platform, arch);
+const bfsBinaryPath = path.join(searchToolsPath, 'bfs');
+const ugrepBinaryPath = path.join(searchToolsPath, 'ugrep');
+const embedSearchTools =
+  platform !== 'win32' &&
+  fs.existsSync(bfsBinaryPath) &&
+  fs.existsSync(ugrepBinaryPath);
+if (!embedSearchTools && platform !== 'win32') {
+  if (process.env.CLAUDE_CODE_REQUIRE_SEARCH_TOOLS === '1') {
+    throw new Error(
+      `Missing bfs/ugrep in ${searchToolsPath}. Run bun ./scripts/build-search-tools.mjs first.`,
+    );
+  }
+  console.log(
+    `[search-tools] not embedded (missing ${searchToolsPath}); the binary keeps Glob/Grep.`,
+  );
+}
 
 const {
   platformArch: sharpPlatform,
@@ -243,6 +275,34 @@ const generatedEntrypointContents = embeddedEntrypointContents
     platform === 'win32'
       ? 'process.env.CLAUDE_CODE_EMBEDDED_SRT_WIN_PATH = embeddedSrtWinPath;\n' +
           `process.env.CLAUDE_CODE_EMBEDDED_SRT_WIN_VERSION = ${JSON.stringify(sandboxRuntimeVersion)};`
+      : '',
+  )
+  .replace(
+    '__CLAUDE_CODE_APPLY_SECCOMP_IMPORT__',
+    embedApplySeccomp
+      ? `import embeddedApplySeccompPath from ${JSON.stringify(applySeccompBinaryPath)} with { type: 'file' };`
+      : '',
+  )
+  .replace(
+    '__CLAUDE_CODE_APPLY_SECCOMP_ENV__',
+    embedApplySeccomp
+      ? 'process.env.CLAUDE_CODE_EMBEDDED_APPLY_SECCOMP_PATH = embeddedApplySeccompPath;\n' +
+          `process.env.CLAUDE_CODE_EMBEDDED_APPLY_SECCOMP_VERSION = ${JSON.stringify(sandboxRuntimeVersion)};`
+      : '',
+  )
+  .replace(
+    '__CLAUDE_CODE_SEARCH_TOOLS_IMPORT__',
+    embedSearchTools
+      ? `import embeddedBfsPath from ${JSON.stringify(bfsBinaryPath)} with { type: 'file' };\n` +
+          `import embeddedUgrepPath from ${JSON.stringify(ugrepBinaryPath)} with { type: 'file' };`
+      : '',
+  )
+  .replace(
+    '__CLAUDE_CODE_SEARCH_TOOLS_ENV__',
+    embedSearchTools
+      ? 'process.env.CLAUDE_CODE_EMBEDDED_BFS_PATH = embeddedBfsPath;\n' +
+          'process.env.CLAUDE_CODE_EMBEDDED_UGREP_PATH = embeddedUgrepPath;\n' +
+          `process.env.CLAUDE_CODE_EMBEDDED_SEARCH_TOOLS_VERSION = ${JSON.stringify(SEARCH_TOOLS_VERSION)};`
       : '',
   )
   .replace(

@@ -152,33 +152,31 @@ const bothAuthMethodsNotice: StatusNoticeDefinition = {
       skipRetrievingKeyFromApiKeyHelper: true,
     })
     const authTokenInfo = getAuthTokenSource()
+    const tokenSource = authTokenInfo.source
     return (
       <Box flexDirection="column" marginTop={1}>
-        <Box flexDirection="row">
-          <Text color="warning">{figures.warning}</Text>
-          <Text color="warning">
-            Auth conflict: Both a token ({authTokenInfo.source}) and an API key
-            ({apiKeySource}) are set. This may lead to unexpected behavior.
-          </Text>
-        </Box>
-        <Box flexDirection="column" marginLeft={3}>
-          <Text color="warning">
-            · Trying to use{' '}
-            {authTokenInfo.source === 'claude.ai'
-              ? 'claude.ai'
-              : authTokenInfo.source}
-            ?{' '}
+        <Text>
+          <Text color="warning">{figures.warning}</Text> Both {tokenSource}{' '}
+          and {apiKeySource} set · auth may not work as expected
+        </Text>
+        <Box flexDirection="column" paddingLeft={2}>
+          <Text dimColor>
+            · to use {tokenSource}:{' '}
             {apiKeySource === 'ANTHROPIC_API_KEY'
               ? 'Unset the ANTHROPIC_API_KEY environment variable, or claude /logout then say "No" to the API key approval before login.'
               : apiKeySource === 'apiKeyHelper'
                 ? 'Unset the apiKeyHelper setting.'
                 : 'claude /logout'}
           </Text>
-          <Text color="warning">
-            · Trying to use {apiKeySource}?{' '}
-            {authTokenInfo.source === 'claude.ai'
+          <Text dimColor>
+            · to use {apiKeySource}:{' '}
+            {tokenSource === 'claude.ai'
               ? 'claude /logout to sign out of claude.ai.'
-              : `Unset the ${authTokenInfo.source} environment variable.`}
+              : tokenSource === 'apiKeyHelper'
+                ? 'Unset the apiKeyHelper setting.'
+                : tokenSource === 'CCR_OAUTH_TOKEN_FILE'
+                  ? 'This token is injected by the CCR host; check the host session.'
+                  : `Unset the ${tokenSource} environment variable.`}
           </Text>
         </Box>
       </Box>
@@ -203,10 +201,13 @@ const largeAgentDescriptionsNotice: StatusNoticeDefinition = {
       <Box flexDirection="row">
         <Text color="warning">{figures.warning}</Text>
         <Text color="warning">
-          Large cumulative agent descriptions will impact performance (~
-          {formatNumber(totalTokens)} tokens &gt;{' '}
-          {formatNumber(AGENT_DESCRIPTIONS_THRESHOLD)})
-          <Text dimColor> · /agents to manage</Text>
+          Agent descriptions are over the{' '}
+          {formatNumber(AGENT_DESCRIPTIONS_THRESHOLD)}-token limit (~
+          {formatNumber(totalTokens)} tokens)
+          <Text dimColor>
+            {' '}
+            · ask Claude to trim agent descriptions in .claude/agents/
+          </Text>
         </Text>
       </Box>
     )

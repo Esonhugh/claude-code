@@ -23,6 +23,21 @@ test('chat queue submission is a public action bound to ctrl+x enter', () => {
   ).toBe('chat:queueSubmit')
 })
 
+test('defaults match official 2.1.311 for clear, confirmation, task and diff keys', () => {
+  const block = (context: string) =>
+    DEFAULT_BINDINGS.find(b => b.context === context)?.bindings ?? {}
+  expect(KEYBINDING_ACTIONS).toContain('chat:clearInput')
+  expect(KEYBINDING_ACTIONS).toContain('chat:clearScreen')
+  expect(block('Chat')['ctrl+l']).toBe('chat:clearInput')
+  expect(block('Chat')['cmd+k']).toBe('chat:clearScreen')
+  expect(block('Global')['ctrl+l']).toBeUndefined()
+  expect(block('Confirmation').y).toBeUndefined()
+  expect(block('Confirmation').n).toBeUndefined()
+  expect(block('Task')['ctrl+x ctrl+b']).toBe('task:background')
+  expect(block('DiffDialog').j).toBe('diff:nextFile')
+  expect(block('DiffDialog').k).toBe('diff:previousFile')
+})
+
 test('diff list shortcuts are public global actions for Ctrl and Option arrows', () => {
   const bindings = parseBindings(DEFAULT_BINDINGS)
   for (const [sequence, action] of [
@@ -270,4 +285,17 @@ test('send-now and ctrl+j newline match official 2.1.303 Chat defaults', () => {
   if (first.type !== 'chord_started') throw new Error('Expected chord prefix')
   const next = inputEvent('\x13')
   expect(resolveKeyWithChordState(next.input, next.key, ['Chat', 'Global'], bindings, first.pending)).toEqual({ type: 'match', action: 'chat:sendNow' })
+})
+
+test('Settings Enter changes the selected row like official 2.1.311', () => {
+  const settings = DEFAULT_BINDINGS.find(block => block.context === 'Settings')?.bindings
+  expect(settings?.enter).toBe('select:accept')
+  expect(settings?.space).toBe('select:accept')
+  expect(KEYBINDING_ACTIONS).not.toContain('settings:close')
+})
+
+test('Settings list jumps with Home, End, PageUp and PageDown like official 2.1.311', () => {
+  const settings = DEFAULT_BINDINGS.find(block => block.context === 'Settings')?.bindings
+  expect(settings).toMatchObject({ home: 'select:first', end: 'select:last', pageup: 'select:pageUp', pagedown: 'select:pageDown' })
+  for (const action of ['select:first', 'select:last', 'select:pageUp', 'select:pageDown'] as const) expect(KEYBINDING_ACTIONS).toContain(action)
 })

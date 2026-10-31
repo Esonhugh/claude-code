@@ -7,6 +7,7 @@ import {
 import type {
   SDKAssistantMessage,
   SDKMessage,
+  SDKToolResultMeta,
   SDKUserMessage,
 } from 'src/entrypoints/agentSdkTypes.js'
 import type { CanUseToolFn } from '../hooks/useCanUseTool.js'
@@ -21,7 +22,7 @@ import {
 } from '../tools/FileReadTool/prompt.js'
 import { FILE_WRITE_TOOL_NAME } from '../tools/FileWriteTool/prompt.js'
 import { isGoalStatusAttachment } from '../commands/goal/types.js'
-import type { Message } from '../types/message.js'
+import type { Message, UserMessage } from '../types/message.js'
 import type { OrphanedPermission } from '../types/textInputTypes.js'
 import { logForDebugging } from './debug.js'
 import { isEnvTruthy } from './envUtils.js'
@@ -33,6 +34,7 @@ import {
   type FileStateCache,
 } from './fileStateCache.js'
 import { isNotEmptyMessage, normalizeMessages } from './messages.js'
+import { toolResultMeta } from './messages/mappers.js'
 import { expandPath } from './path.js'
 import type {
   inputSchema as permissionToolInputSchema,
@@ -104,6 +106,14 @@ const MAX_TOOL_PROGRESS_TRACKING_ENTRIES = 100
 const TOOL_PROGRESS_THROTTLE_MS = 30000
 const toolProgressLastSentTime = new Map<string, number>()
 
+function withToolResultMeta(
+  message: UserMessage,
+  subagent = false,
+): { tool_result_meta?: SDKToolResultMeta[] } {
+  const meta = toolResultMeta(message, subagent)
+  return meta.length > 0 ? { tool_result_meta: meta } : {}
+}
+
 /**
  * SDK messages for one message of a subagent, tagged with the Agent tool_use
  * that spawned it (parent_tool_use_id).
@@ -111,7 +121,14 @@ const toolProgressLastSentTime = new Map<string, number>()
 export function* normalizeSubagentMessage(
   message: Message,
   parentToolUseID: string,
+  agent: { agentId?: string; agentType?: string; description?: string } = {},
 ): Generator<SDKAssistantMessage | SDKUserMessage> {
+  // Like official 2.1.311, name the subagent each message came from.
+  const agentFields = {
+    ...(agent.agentId !== undefined && { agent_id: agent.agentId }),
+    ...(agent.agentType !== undefined && { subagent_type: agent.agentType }),
+    ...(agent.description && { task_description: agent.description }),
+  }
   // @ts-ignore - recovered code
   for (const _ of normalizeMessages([message])) {
     // @ts-ignore - recovered code
@@ -126,9 +143,12 @@ export function* normalizeSubagentMessage(
           // @ts-ignore - recovered code
           message: _.message,
           parent_tool_use_id: parentToolUseID,
+          ...agentFields,
           session_id: getSessionId(),
           // @ts-ignore - recovered code
           uuid: _.uuid,
+          // @ts-ignore - recovered code
+          timestamp: _.timestamp,
           // @ts-ignore - recovered code
           error: _.error,
         }
@@ -139,6 +159,7 @@ export function* normalizeSubagentMessage(
           // @ts-ignore - recovered code
           message: _.message,
           parent_tool_use_id: parentToolUseID,
+          ...agentFields,
           session_id: getSessionId(),
           // @ts-ignore - recovered code
           uuid: _.uuid,
@@ -152,6 +173,7 @@ export function* normalizeSubagentMessage(
             ? { content: _.toolUseResult, ..._.mcpMeta }
             // @ts-ignore - recovered code
             : _.toolUseResult,
+          ...withToolResultMeta(_ as UserMessage, true),
         }
         break
     }
@@ -174,6 +196,8 @@ export function* normalizeMessage(message: Message): Generator<SDKMessage> {
           uuid: _.uuid,
           // @ts-ignore - recovered code
           error: _.error,
+          timestamp: _.timestamp,
+          ...(_.requestId !== undefined && { request_id: _.requestId }),
         }
       }
       return
@@ -183,7 +207,14 @@ export function* normalizeMessage(message: Message): Generator<SDKMessage> {
         message.data.type === 'skill_progress'
       ) {
         // @ts-ignore - recovered code
-        yield* normalizeSubagentMessage(message.data.message, message.parentToolUseID)
+        yield* normalizeSubagentMessage(message.data.message, message.parentToolUseID, {
+          // @ts-ignore - recovered code
+          agentId: message.data.agentId,
+          // @ts-ignore - recovered code
+          agentType: message.data.agentType,
+          // @ts-ignore - recovered code
+          description: message.data.description,
+        })
       } else if (
         message.data.type === 'bash_progress' ||
         message.data.type === 'powershell_progress'
@@ -256,6 +287,7 @@ export function* normalizeMessage(message: Message): Generator<SDKMessage> {
           tool_use_result: _.mcpMeta
             ? { content: _.toolUseResult, ..._.mcpMeta }
             : _.toolUseResult,
+          ...withToolResultMeta(_),
         }
       }
       return

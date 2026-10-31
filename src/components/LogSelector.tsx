@@ -1,6 +1,7 @@
 import chalk from 'chalk'
 import figures from 'figures'
 import Fuse from 'fuse.js'
+import { basename } from 'path'
 import React from 'react'
 import { getOriginalCwd, getSessionId } from '../bootstrap/state.js'
 import { useExitOnCtrlCDWithKeybindings } from '../hooks/useExitOnCtrlCDWithKeybindings.js'
@@ -26,8 +27,8 @@ import { getTheme } from '../utils/theme.js'
 import { ConfigurableShortcutHint } from './ConfigurableShortcutHint.js'
 import { Select } from './CustomSelect/select.js'
 import { Byline } from './design-system/Byline.js'
-import { Divider } from './design-system/Divider.js'
 import { KeyboardShortcutHint } from './design-system/KeyboardShortcutHint.js'
+import { Pane } from './design-system/Pane.js'
 import { SearchBox } from './SearchBox.js'
 import { SessionPreview } from './SessionPreview.js'
 import { Spinner } from './Spinner.js'
@@ -968,7 +969,10 @@ export function LogSelector({
           setViewMode('rename')
           setRenameValue('')
           logEvent('tengu_session_rename_started', {})
-        } else if (lowerInput === 'v' && key.ctrl && focusedLog) {
+        } else if (
+          ((input === ' ' && keyIsNotCtrlOrMeta) || (lowerInput === 'v' && key.ctrl)) &&
+          focusedLog
+        ) {
           setPreviewLog(focusedLog)
           setViewMode('preview')
           logEvent('tengu_session_preview_opened', {
@@ -990,7 +994,17 @@ export function LogSelector({
     { isActive: true },
   )
 
+  // Empty list (e.g. no sessions in this project): Esc still closes the picker
+  useKeybinding('confirm:no', () => onCancel?.(), {
+    context: 'Confirmation',
+    isActive: logs.length === 0,
+  })
+
   const filterIndicators = []
+  // 2.1.311 names the project being listed under the search box.
+  if (!showAllProjects) {
+    filterIndicators.push(basename(currentCwd))
+  }
   if (branchFilterEnabled && currentBranch) {
     filterIndicators.push(currentBranch)
   }
@@ -1022,7 +1036,60 @@ export function LogSelector({
 
   // Early return if no logs
   if (logs.length === 0) {
-    return null
+    if (!onToggleAllProjects) return null
+    return (
+      <Pane color="suggestion">
+        <Text bold color="suggestion">
+          Resume session
+        </Text>
+        <SearchBox
+          query={searchQuery}
+          isFocused={false}
+          isTerminalFocused={isTerminalFocused}
+          cursorOffset={searchCursorOffset}
+        />
+        {filterIndicators.length > 0 && (
+          <Box paddingLeft={2}>
+            <Text dimColor>
+              <Byline>{filterIndicators}</Byline>
+            </Text>
+          </Box>
+        )}
+        <Box paddingLeft={1} marginTop={1} flexDirection="column">
+          <Text dimColor>
+            No conversations found{showAllProjects ? '' : ' in this project'}.
+          </Text>
+          {!showAllProjects && (
+            <Text dimColor>
+              <KeyboardShortcutHint shortcut="Ctrl+A" action="show all projects" />
+            </Text>
+          )}
+        </Box>
+        <Box paddingLeft={2}>
+          <Text dimColor>
+            <Byline>
+              <KeyboardShortcutHint
+                shortcut="Ctrl+A"
+                action={showAllProjects ? 'only show current repo' : 'show all projects'}
+              />
+              {currentBranch && (
+                <KeyboardShortcutHint
+                  shortcut="Ctrl+B"
+                  action={branchFilterEnabled ? 'show all branches' : 'only show current branch'}
+                />
+              )}
+              <Text>Type to search</Text>
+              <ConfigurableShortcutHint
+                action="confirm:no"
+                context="Confirmation"
+                fallback="Esc"
+                description="cancel"
+              />
+            </Byline>
+          </Text>
+        </Box>
+      </Pane>
+    )
   }
 
   // Show preview mode if active
@@ -1041,12 +1108,7 @@ export function LogSelector({
 
   return (
     <Box flexDirection="column" height={maxHeight - 1}>
-      <Box flexShrink={0}>
-        <Divider color="suggestion" />
-      </Box>
-      <Box flexShrink={0}>
-        <Text> </Text>
-      </Box>
+      <Pane color="suggestion">
 
       {hasTags ? (
         <TagTabs
@@ -1058,7 +1120,7 @@ export function LogSelector({
       ) : (
         <Box flexShrink={0}>
           <Text bold color="suggestion">
-            Resume Session
+            Resume session
             {viewMode === 'list' && displayedLogs.length > visibleCount && (
               <Text dimColor>
                 {' '}
@@ -1302,22 +1364,22 @@ export function LogSelector({
               {onToggleAllProjects && (
                 <KeyboardShortcutHint
                   shortcut="Ctrl+A"
-                  action={`show ${showAllProjects ? 'current dir' : 'all projects'}`}
+                  action={showAllProjects ? 'only show current repo' : 'show all projects'}
                 />
               )}
               {currentBranch && (
                 <KeyboardShortcutHint
                   shortcut="Ctrl+B"
-                  action="toggle branch"
+                  action={branchFilterEnabled ? 'show all branches' : 'only show current branch'}
                 />
               )}
               {hasMultipleWorktrees && (
                 <KeyboardShortcutHint
                   shortcut="Ctrl+W"
-                  action={`show ${showAllWorktrees ? 'current worktree' : 'all worktrees'}`}
+                  action={showAllWorktrees ? 'only show current worktree' : 'show all worktrees'}
                 />
               )}
-              <KeyboardShortcutHint shortcut="Ctrl+V" action="preview" />
+              <KeyboardShortcutHint shortcut="Space" action="preview" />
               <KeyboardShortcutHint shortcut="Ctrl+R" action="rename" />
               <Text>Type to search</Text>
               <ConfigurableShortcutHint
@@ -1333,6 +1395,7 @@ export function LogSelector({
           </Text>
         )}
       </Box>
+      </Pane>
     </Box>
   )
 }

@@ -19,7 +19,7 @@ if(variant==='cancelled'){state.tasks[A]={...state.tasks[A],status:'killed',stop
 const send=(to,message)=>SendMessageTool.call({to,message},context,async()=>({behavior:'allow'}),undefined)
 const first=await send(name,'FIRST')
 if(variant==='live'||variant==='async-writer'){
- assert.deepEqual(first.data,{success:true,message:'Message queued for delivery to '+name+' at its next tool round.',pin:{id:A,name,ref:ref(A)}})
+ assert.deepEqual(first.data,{success:true,message:'Message queued for delivery to '+name+' at its next tool round. If it finishes first, it is resumed with the message and notifies again, so wait for that notification before resending.',pin:{id:A,name,ref:ref(A)}})
  assert.deepEqual(state.tasks[A].pendingMessages,['FIRST'])
 }else if(variant==='cancelled'){
  assert.equal(first.data.success,false);assert.deepEqual(state.sendMessagePins,{});assert.deepEqual(state.tasks[A].pendingMessages,[])
@@ -41,7 +41,7 @@ if(variant==='live'||variant==='async-writer'){
   assert.deepEqual(state.tasks[B].pendingMessages,[])
  }else{
   const answer=await send(name+' ['+ref(B)+']','CONFIRMED')
-  assert.deepEqual(answer.data,{success:true,message:'Message queued for delivery to '+name+' at its next tool round.',pin:{id:B,name,ref:ref(B)}})
+  assert.deepEqual(answer.data,{success:true,message:'Message queued for delivery to '+name+' at its next tool round. If it finishes first, it is resumed with the message and notifies again, so wait for that notification before resending.',pin:{id:B,name,ref:ref(B)}})
   assert.deepEqual(state.tasks[B].pendingMessages,['CONFIRMED'])
   const repeated=await send(name,'AGAIN');assert.equal(repeated.data.success,true);assert.deepEqual(repeated.data.pin,answer.data.pin)
  }

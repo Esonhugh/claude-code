@@ -6,6 +6,7 @@ import type {
 import { Feedback } from '../../components/Feedback.js'
 import type { LocalJSXCommandOnDone } from '../../types/command.js'
 import type { Message } from '../../types/message.js'
+import { feedbackDisabledReason } from './index.js'
 
 // Shared function to render the Feedback component
 export function renderFeedbackComponent(
@@ -40,6 +41,11 @@ export async function call(
   context: LocalJSXCommandContext,
   args?: string,
 ): Promise<React.ReactNode> {
+  const disabledReason = feedbackDisabledReason()
+  if (disabledReason) {
+    onDone(disabledReason)
+    return null
+  }
   const initialDescription = args || ''
   return renderFeedbackComponent(
     onDone,

@@ -91,7 +91,7 @@ import type { AgentId } from './types/ids.js'
 import type { DeepImmutable } from './types/utils.js'
 import type { AttributionState } from './utils/commitAttribution.js'
 import type { FileHistoryState } from './utils/fileHistory.js'
-import type { Theme, ThemeName } from './utils/theme.js'
+import type { Theme, ResolvedTheme } from './utils/theme.js'
 
 export type QueryChainTracking = {
   chainId: string
@@ -141,6 +141,8 @@ export type ToolPermissionContext = DeepImmutable<{
   awaitAutomatedChecksBeforeDialog?: boolean
   /** Stores the permission mode before model-initiated plan mode entry, so it can be restored on exit */
   prePlanMode?: PermissionMode
+  /** MCP servers pinned over the SDK control channel (set_mcp_permission_mode_override) */
+  mcpPermissionModeOverrides?: Record<string, 'default' | 'auto'>
 }>
 
 export const getEmptyToolPermissionContext: () => ToolPermissionContext =
@@ -231,6 +233,9 @@ export type ToolUseContext = {
     /** Inline skill running in this turn; its responses are attributed to it. */
     activeSkill?: string
     spawnedByForkedSkill?: boolean
+    /** Coordinator Skill tool load: instructions only, no shell, hooks, grants or fork. */
+    isSkillPreload?: boolean
+    readOnlySkillLoad?: boolean
     /** Optional callback to get the latest tools (e.g., after MCP servers connect mid-query) */
     refreshTools?: () => Tools
     /** Prevent workflow worker agents from recursively spawning agents/workflows. */
@@ -306,7 +311,10 @@ export type ToolUseContext = {
   pushApiMetricsEntry?: (ttftMs: number) => void
   setStreamMode?: (mode: SpinnerMode) => void
   onCompactProgress?: (event: CompactProgressEvent) => void
-  setSDKStatus?: (status: SDKStatus) => void
+  setSDKStatus?: (
+    status: SDKStatus,
+    compact?: { compact_result: 'success' | 'failed'; compact_error?: string },
+  ) => void
   openMessageSelector?: () => void
   updateFileHistoryState: (
     updater: (prev: FileHistoryState) => FileHistoryState,
@@ -577,6 +585,13 @@ export type Tool<
   backfillObservableInput?(input: Record<string, unknown>): void
 
   /**
+   * Repairs a common wrong input shape (an alias key, a value that means
+   * "unset") before schema validation, so the call runs instead of failing.
+   * Returns null when there is nothing to repair.
+   */
+  coerceInput?(input: unknown): Record<string, unknown> | null
+
+  /**
    * Determines if this tool is allowed to run with this input in the current context.
    * It informs the model of why the tool use failed, and does not directly display any UI.
    * @param input
@@ -666,7 +681,7 @@ export type Tool<
     progressMessagesForMessage: ProgressMessage<P>[],
     options: {
       style?: 'condensed'
-      theme: ThemeName
+      theme: ResolvedTheme
       tools: Tools
       verbose: boolean
       isTranscriptMode?: boolean
@@ -702,7 +717,7 @@ export type Tool<
    */
   renderToolUseMessage(
     input: Partial<z.infer<Input>>,
-    options: { theme: ThemeName; verbose: boolean; commands?: Command[] },
+    options: { theme: ResolvedTheme; verbose: boolean; commands?: Command[] },
   ): React.ReactNode
   /**
    * Returns true when the non-verbose rendering of this output is truncated
@@ -742,7 +757,7 @@ export type Tool<
       columns: number
       messages: Message[]
       style?: 'condensed'
-      theme: ThemeName
+      theme: ResolvedTheme
       tools: Tools
       verbose: boolean
       progressMessagesForMessage: ProgressMessage<P>[]

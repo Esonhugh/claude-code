@@ -20,7 +20,9 @@ import type {
   ToolPermissionContext,
   ToolUseContext,
 } from '../../Tool.js'
+import { BASH_TOOL_NAME } from '../../tools/BashTool/toolName.js'
 import { FILE_READ_TOOL_NAME } from '../../tools/FileReadTool/prompt.js'
+import { POWERSHELL_TOOL_NAME } from '../../tools/PowerShellTool/toolName.js'
 import { getCwd } from '../cwd.js'
 import { getClaudeConfigHomeDir } from '../envUtils.js'
 import { getCanonicalName } from '../model/model.js'
@@ -1028,8 +1030,15 @@ function getPatternsByRoot(
     // A deny or ask rule written on a symlinked directory also guards the
     // directory's real location (official 2.1.268). Allow rules do not get a
     // twin: a swapped symlink must not widen what they grant.
-    if (behavior !== 'allow' && root !== null) {
-      const twin = physicalTwinPattern(root, relativePattern)
+    // A relative pattern with an inner slash is anchored at the cwd.
+    const anchored =
+      root !== null
+        ? { root, pattern: relativePattern }
+        : relativePattern.slice(0, -1).includes(DIR_SEP)
+          ? { root: getCwd(), pattern: `${DIR_SEP}${relativePattern}` }
+          : null
+    if (behavior !== 'allow' && anchored !== null) {
+      const twin = physicalTwinPattern(anchored.root, anchored.pattern)
       if (twin !== null && !patternsForRoot(DIR_SEP).has(twin)) {
         patternsForRoot(DIR_SEP).set(twin, rule)
       }
@@ -1619,7 +1628,8 @@ const READ_GUARD_MODELS = new Set([
 /**
  * Like 2.1.311: Write/Edit may change a file the model has not Read (or read
  * stale) when the write runs without a prompt anyway — allowed by mode or
- * rule, or an in-directory write in bypassPermissions — the session can Read,
+ * rule, or an in-directory write in bypassPermissions — the session can read
+ * the file (Read, Bash or PowerShell),
  * and the model is not one that keeps the guard.
  */
 export function canWriteWithoutRead<Input extends AnyObject>(
@@ -1630,7 +1640,14 @@ export function canWriteWithoutRead<Input extends AnyObject>(
   if (READ_GUARD_MODELS.has(getCanonicalName(context.options.mainLoopModel))) {
     return false
   }
-  if (!context.options.tools.some(t => t.name === FILE_READ_TOOL_NAME)) {
+  // The model can read the file anyway: with Read, or with a shell (cat).
+  const canRead = context.options.tools.some(
+    t =>
+      t.name === FILE_READ_TOOL_NAME ||
+      t.name === BASH_TOOL_NAME ||
+      t.name === POWERSHELL_TOOL_NAME,
+  )
+  if (!canRead) {
     return false
   }
   const permissionContext = context.getAppState().toolPermissionContext
@@ -1640,6 +1657,26 @@ export function canWriteWithoutRead<Input extends AnyObject>(
     decision.behavior === 'ask' &&
     decision.decisionReason === undefined &&
     permissionContext.mode === 'bypassPermissions'
+  )
+}
+
+/**
+ * Only suggest setMode:acceptEdits when it would be an upgrade. In auto
+ * mode the classifier already auto-approves edits; in bypassPermissions
+ * everything is allowed; in acceptEdits it's a no-op. Suggesting it
+ * anyway and having the SDK host apply it on "Always allow" silently
+ * downgrades auto → acceptEdits, which then prompts for MCP/Bash. Plan
+ * mode counts as the mode it was entered from.
+ */
+export function canSuggestAcceptEdits(
+  toolPermissionContext: ToolPermissionContext,
+): boolean {
+  if (toolPermissionContext.mode === 'default') return true
+  return (
+    toolPermissionContext.mode === 'plan' &&
+    !['acceptEdits', 'auto', 'bypassPermissions', 'dontAsk'].includes(
+      toolPermissionContext.prePlanMode ?? 'default',
+    )
   )
 }
 
@@ -1668,14 +1705,7 @@ export function generateSuggestions(
     return suggestions
   }
 
-  // Only suggest setMode:acceptEdits when it would be an upgrade. In auto
-  // mode the classifier already auto-approves edits; in bypassPermissions
-  // everything is allowed; in acceptEdits it's a no-op. Suggesting it
-  // anyway and having the SDK host apply it on "Always allow" silently
-  // downgrades auto → acceptEdits, which then prompts for MCP/Bash.
-  const shouldSuggestAcceptEdits =
-    toolPermissionContext.mode === 'default' ||
-    toolPermissionContext.mode === 'plan'
+  const shouldSuggestAcceptEdits = canSuggestAcceptEdits(toolPermissionContext)
 
   if (operationType === 'write' || operationType === 'create') {
     const updates: PermissionUpdate[] = shouldSuggestAcceptEdits

@@ -1,5 +1,6 @@
 import type { AppState } from '../state/AppState.js'
 import {
+  isCompletedBackgroundAgent,
   isLocalAgentTask,
   isPanelAgentTask,
   type LocalAgentTaskState,
@@ -106,13 +107,46 @@ function isWorkflowChildAgent(
   return Boolean(task.toolUseId && workflowToolUses.has(task.toolUseId))
 }
 
-function coordinatorAgents(tasks: AppState['tasks']): LocalAgentTaskState[] {
+function viewedLineage(
+  tasks: AppState['tasks'],
+  viewingAgentTaskId?: string,
+): Set<string> {
+  const ids = new Set<string>()
+  let current = viewingAgentTaskId ? tasks[viewingAgentTaskId] : undefined
+  while (isLocalAgentTask(current) && !ids.has(current.id)) {
+    ids.add(current.id)
+    current = current.parentAgentId ? tasks[current.parentAgentId] : undefined
+  }
+  return ids
+}
+
+/** Official footer adds "/tasks to see subagents" while finished agents sit off the panel. */
+export function hasCompletedAgentsOffPanel(
+  tasks: AppState['tasks'],
+  viewingAgentTaskId?: string,
+): boolean {
+  const viewed = viewedLineage(tasks, viewingAgentTaskId)
+  return Object.values(tasks).some(
+    task =>
+      isCompletedBackgroundAgent(task) &&
+      task.evictAfter !== 0 &&
+      !task.retain &&
+      !viewed.has(task.id),
+  )
+}
+
+function coordinatorAgents(
+  tasks: AppState['tasks'],
+  viewingAgentTaskId?: string,
+): LocalAgentTaskState[] {
   const workflowToolUses = workflowToolUseIds(tasks)
+  const viewed = viewedLineage(tasks, viewingAgentTaskId)
   const candidates = Object.values(tasks).filter(
     (task): task is LocalAgentTaskState =>
       isLocalAgentTask(task) &&
       task.agentType !== 'main-session' &&
-      task.evictAfter !== 0,
+      task.evictAfter !== 0 &&
+      (!isCompletedBackgroundAgent(task) || task.retain || viewed.has(task.id)),
   )
   const workflowChildIds = new Set(
     candidates
@@ -144,7 +178,7 @@ function deriveCoordinatorPanelLayout(
   viewingAgentTaskId?: string,
   idleTeammatesExpanded = false,
 ): CoordinatorPanelLayout {
-  const agents = coordinatorAgents(tasks)
+  const agents = coordinatorAgents(tasks, viewingAgentTaskId)
   const agentById = new Map(agents.map(task => [task.id, task]))
   const childrenByParentId = new Map<string, LocalAgentTaskState[]>()
   for (const agent of agents) {
@@ -534,7 +568,7 @@ export function getCoordinatorSessionRows({
           task,
           entry.collapsedDescendantCount,
         ),
-        secondaryText: task.description ?? task.id,
+        secondaryText: task.progress?.summary || task.description || task.id,
         tokens: `${formatNumber(task.progress?.tokenCount ?? 0)} tokens`,
         tools: `${task.progress?.toolUseCount ?? 0} ${task.progress?.toolUseCount === 1 ? 'tool' : 'tools'}`,
         elapsed: taskElapsed(task, now),

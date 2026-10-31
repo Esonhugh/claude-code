@@ -231,7 +231,7 @@ const failedNotification = getCommandQueue().find(command =>
 )
 assert.ok(failedNotification)
 assert.match(String(failedNotification.value), /<status>failed<\/status>/)
-assert.match(String(failedNotification.value), /<total_tokens>12<\/total_tokens>/)
+assert.match(String(failedNotification.value), /<subagent_tokens>12<\/subagent_tokens>/)
 
 registerAsyncAgent({
   agentId: 'agent-api-error-test',
@@ -293,8 +293,8 @@ await runAsyncAgentLifecycle({
   taskId: 'agent-summary-replacement-test',
   abortController: new AbortController(),
   async *makeStream(onCacheSafeParams) {
-    onCacheSafeParams?.({} as never)
-    onCacheSafeParams?.({} as never)
+    onCacheSafeParams?.({} as never, {} as never)
+    onCacheSafeParams?.({} as never, {} as never)
     yield makeAssistantMessage() as never
   },
   metadata: {
@@ -555,5 +555,53 @@ const progressTask = state.tasks['agent-progress-test']
 assert.ok(isLocalAgentTask(progressTask))
 assert.equal(progressTask.progress?.tokenCount, 212)
 assert.equal(progressTask.progress?.toolUseCount, 1)
+
+// TaskStop aborts the agent's signal; the error that surfaces can be a DOMException
+// ("The operation was aborted.") rather than our AbortError class.
+registerAsyncAgent({
+  agentId: 'agent-dom-abort-test',
+  description: 'DOM abort test',
+  prompt: 'stopped mid tool call',
+  selectedAgent,
+  setAppState,
+  toolUseId: 'toolu_dom_abort',
+  spawnDepth: 1,
+})
+
+await runAsyncAgentLifecycle({
+  taskId: 'agent-dom-abort-test',
+  abortController: new AbortController(),
+  async *makeStream() {
+    throw new DOMException('The operation was aborted.', 'AbortError')
+    yield makeAssistantMessage() as never
+  },
+  metadata: {
+    prompt: 'stopped mid tool call',
+    resolvedAgentModel: 'claude-sonnet-4-6',
+    isBuiltInAgent: true,
+    startTime: Date.now(),
+    agentType: 'general-purpose',
+    isAsync: true,
+  },
+  description: 'DOM abort test',
+  toolUseContext: {
+    options: { tools: [] },
+    getAppState: () => state,
+    toolUseId: 'toolu_dom_abort',
+  } as never,
+  rootSetAppState: setAppState,
+  agentIdForCleanup: 'agent-dom-abort-test',
+  enableSummarization: false,
+  getWorktreeResult: async () => ({}),
+})
+
+const domAbortTask = state.tasks['agent-dom-abort-test']
+assert.ok(isLocalAgentTask(domAbortTask))
+assert.equal(domAbortTask.status, 'killed')
+const domAbortNotification = getCommandQueue().find(command =>
+  String(command.value).includes('agent-dom-abort-test'),
+)
+assert.ok(domAbortNotification)
+assert.match(String(domAbortNotification.value), /<status>killed<\/status>/)
 
 console.log('asyncLifecycleOrdering.test.ts passed')

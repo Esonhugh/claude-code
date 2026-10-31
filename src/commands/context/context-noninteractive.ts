@@ -71,9 +71,15 @@ export async function collectContextData(
     tools,
     agentDefinitions,
     options.columns, // terminalWidth
-    // analyzeContextUsage only reads options.{customSystemPrompt,appendSystemPrompt}
+    // analyzeContextUsage only reads options.{customSystemPrompt,appendSystemPrompt,mcpClients}
     // but its signature declares the full Pick<ToolUseContext, 'options'>.
-    { options: { customSystemPrompt, appendSystemPrompt } } as Pick<
+    {
+      options: {
+        customSystemPrompt,
+        appendSystemPrompt,
+        mcpClients: appState.mcp.clients,
+      },
+    } as Pick<
       ToolUseContext,
       'options'
     >,
@@ -92,6 +98,12 @@ export async function call(
     type: 'text' as const,
     value: formatContextAsMarkdownTable(data),
   }
+}
+
+// Skill sizes are frontmatter estimates, shown rounded like official 2.1.311.
+export function formatSkillTokens(tokens: number): string {
+  if (tokens < 20) return '< 20'
+  return `~${formatTokens(Math.round(tokens / 10) * 10)}`
 }
 
 function formatContextAsMarkdownTable(data: ContextData): string {
@@ -290,7 +302,7 @@ function formatContextAsMarkdownTable(data: ContextData): string {
     output += `| Skill | Source | Tokens |\n`
     output += `|-------|--------|--------|\n`
     for (const skill of skills.skillFrontmatter) {
-      output += `| ${skill.name} | ${getSourceDisplayName(skill.source)} | ${formatTokens(skill.tokens)} |\n`
+      output += `| ${skill.name} | ${getSourceDisplayName(skill.source)} | ${formatSkillTokens(skill.tokens)} |\n`
     }
     output += `\n`
   }

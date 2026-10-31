@@ -25,6 +25,8 @@ import {
   getBashPromptAllowDescriptions,
   isClassifierPermissionsEnabled,
 } from '../../../utils/permissions/bashClassifier.js'
+import { canCycleToAuto } from '../../../utils/permissions/getNextPermissionMode.js'
+import { isAskRuleDecision } from '../../../utils/permissions/PermissionResult.js'
 import { extractRules } from '../../../utils/permissions/PermissionUpdate.js'
 import type { PermissionUpdate } from '../../../utils/permissions/PermissionUpdateSchema.js'
 import { SandboxManager } from '../../../utils/sandbox/sandbox-adapter.js'
@@ -34,13 +36,10 @@ import { useShimmerAnimation } from '../../Spinner/useShimmerAnimation.js'
 import { type UnaryEvent, usePermissionRequestLogging } from '../hooks.js'
 import { PermissionDecisionDebugInfo } from '../PermissionDecisionDebugInfo.js'
 import { PermissionDialog } from '../PermissionDialog.js'
-import {
-  PermissionExplainerContent,
-  usePermissionExplainerUI,
-} from '../PermissionExplanation.js'
 import type { PermissionRequestProps } from '../PermissionRequest.js'
 import { PermissionRuleExplanation } from '../PermissionRuleExplanation.js'
 import { SedEditPermissionRequest } from '../SedEditPermissionRequest/SedEditPermissionRequest.js'
+import { shellSuggestionUpdates } from '../shellPermissionHelpers.js'
 import { useShellPermissionFeedback } from '../useShellPermissionFeedback.js'
 import { logUnaryPermissionEvent } from '../utils.js'
 import { bashToolUseOptions } from './bashToolUseOptions.js'
@@ -142,12 +141,6 @@ function BashPermissionRequestInner({
 }): React.ReactNode {
   const [theme] = useTheme()
   const toolPermissionContext = useAppState(s => s.toolPermissionContext)
-  const explainerState = usePermissionExplainerUI({
-    toolName: toolUseConfirm.tool.name,
-    toolInput: toolUseConfirm.input,
-    toolDescription: toolUseConfirm.description,
-    messages: toolUseContext.messages,
-  })
   const {
     yesInputMode,
     noInputMode,
@@ -165,7 +158,6 @@ function BashPermissionRequestInner({
     toolUseConfirm,
     onDone,
     onReject,
-    explainerVisible: explainerState.visible,
   })
   const [showPermissionDebug, setShowPermissionDebug] = useState(false)
   const [classifierDescription, setClassifierDescription] = useState(
@@ -310,6 +302,20 @@ function BashPermissionRequestInner({
     [toolPermissionContext],
   )
 
+  // Official 2.1.311 offers the switch to auto mode from manual and
+  // accept-edits prompts, unless an ask rule or a hook asked.
+  const decisionReason = toolUseConfirm.permissionResult.decisionReason
+  const showEnableAutoModeOption =
+    (toolPermissionContext.mode === 'default' ||
+      toolPermissionContext.mode === 'acceptEdits') &&
+    canCycleToAuto(toolPermissionContext) &&
+    !isAskRuleDecision(decisionReason) &&
+    !(
+      'matchedAskRule' in toolUseConfirm.permissionResult &&
+      toolUseConfirm.permissionResult.matchedAskRule?.ruleBehavior === 'ask'
+    ) &&
+    decisionReason?.type !== 'hook'
+
   const options = useMemo(
     () =>
       bashToolUseOptions({
@@ -328,6 +334,7 @@ function BashPermissionRequestInner({
         noInputMode,
         editablePrefix,
         onEditablePrefixChange,
+        showEnableAutoModeOption,
       }),
     [
       toolUseConfirm,
@@ -338,6 +345,7 @@ function BashPermissionRequestInner({
       noInputMode,
       editablePrefix,
       onEditablePrefixChange,
+      showEnableAutoModeOption,
     ],
   )
 
@@ -366,7 +374,8 @@ function BashPermissionRequestInner({
       yes: 1,
       'yes-apply-suggestions': 2,
       'yes-prefix-edited': 2,
-      no: 3,
+      'yes-enable-auto-mode': 3,
+      no: 4,
     }
     if (feature('BASH_CLASSIFIER')) {
       optionIndex = {
@@ -374,12 +383,12 @@ function BashPermissionRequestInner({
         'yes-apply-suggestions': 2,
         'yes-prefix-edited': 2,
         'yes-classifier-reviewed': 3,
-        no: 4,
+        'yes-enable-auto-mode': 4,
+        no: 5,
       }
     }
     logEvent('tengu_permission_request_option_selected', {
       option_index: optionIndex[value],
-      explainer_visible: explainerState.visible,
     })
 
     const toolNameForAnalytics = sanitizeToolNameForAnalytics(
@@ -461,9 +470,19 @@ function BashPermissionRequestInner({
         // Extract suggestions if present (works for both 'ask' and 'passthrough' behaviors)
         const permissionUpdates =
           'suggestions' in toolUseConfirm.permissionResult
-            ? toolUseConfirm.permissionResult.suggestions || []
+            ? shellSuggestionUpdates(
+                toolUseConfirm.permissionResult.suggestions || [],
+              )
             : []
         toolUseConfirm.onAllow(toolUseConfirm.input, permissionUpdates)
+        onDone()
+        break
+      }
+      case 'yes-enable-auto-mode': {
+        logUnaryPermissionEvent('tool_use_single', toolUseConfirm, 'accept')
+        toolUseConfirm.onAllow(toolUseConfirm.input, [
+          { type: 'setMode', mode: 'auto', destination: 'session' },
+        ])
         onDone()
         break
       }
@@ -513,100 +532,113 @@ function BashPermissionRequestInner({
           ? 'Bash command (unsandboxed)'
           : 'Bash command'
       }
-      subtitle={classifierSubtitle}
+      subtitle={
+        classifierSubtitle ??
+        (showEnableAutoModeOption ? (
+          <Text bold>
+            Tip: auto mode handles these prompts for you — choose &quot;switch
+            to auto mode&quot; below
+          </Text>
+        ) : undefined)
+      }
+      innerPaddingX={0}
     >
-      <Box flexDirection="column" paddingX={2} paddingY={1}>
-        <Text dimColor={explainerState.visible}>
+      {/* Official 2.1.311: the description, then the command between dashed rules. */}
+      <Box paddingX={1}>
+        <Text dimColor>{toolUseConfirm.description}</Text>
+      </Box>
+      <Box
+        borderColor="subtle"
+        borderStyle="dashed"
+        flexDirection="column"
+        borderLeft={false}
+        borderRight={false}
+        paddingX={1}
+      >
+        <Text>
           {BashTool.renderToolUseMessage(
             { command, description },
             { theme, verbose: true }, // always show the full command
           )}
         </Text>
-        {!explainerState.visible && (
-          <Text dimColor>{toolUseConfirm.description}</Text>
-        )}
-        <PermissionExplainerContent
-          visible={explainerState.visible}
-          promise={explainerState.promise}
-        />
       </Box>
-      {showPermissionDebug ? (
-        <>
-          <PermissionDecisionDebugInfo
-            permissionResult={toolUseConfirm.permissionResult}
-            toolName="Bash"
-          />
-          {toolUseContext.options.debug && (
-            <Box justifyContent="flex-end" marginTop={1}>
-              <Text dimColor>Ctrl-D to hide debug info</Text>
-            </Box>
-          )}
-        </>
-      ) : (
-        <>
-          <Box flexDirection="column">
-            <PermissionRuleExplanation
+      <Box flexDirection="column" paddingX={1}>
+        {showPermissionDebug ? (
+          <>
+            <PermissionDecisionDebugInfo
               permissionResult={toolUseConfirm.permissionResult}
-              toolType="command"
+              toolName="Bash"
             />
-            {destructiveWarning && (
-              <Box marginBottom={1}>
-                <Text
-                  color="warning"
-                  dimColor={
-                    feature('BASH_CLASSIFIER')
-                      ? toolUseConfirm.classifierAutoApproved
-                      : false
-                  }
-                >
-                  {destructiveWarning}
-                </Text>
+            {toolUseContext.options.debug && (
+              <Box justifyContent="flex-end" marginTop={1}>
+                <Text dimColor>Ctrl-D to hide debug info</Text>
               </Box>
             )}
-            <Text
-              dimColor={
-                feature('BASH_CLASSIFIER')
-                  ? toolUseConfirm.classifierAutoApproved
-                  : false
-              }
-            >
-              Do you want to proceed?
-            </Text>
-            <Select
-              options={
-                feature('BASH_CLASSIFIER')
-                  ? toolUseConfirm.classifierAutoApproved
-                    ? options.map(o => ({ ...o, disabled: true }))
+          </>
+        ) : (
+          <>
+            <Box flexDirection="column">
+              <PermissionRuleExplanation
+                permissionResult={toolUseConfirm.permissionResult}
+                toolType="command"
+              />
+              {destructiveWarning && (
+                <Box marginBottom={1}>
+                  <Text
+                    color="warning"
+                    dimColor={
+                      feature('BASH_CLASSIFIER')
+                        ? toolUseConfirm.classifierAutoApproved
+                        : false
+                    }
+                  >
+                    {destructiveWarning}
+                  </Text>
+                </Box>
+              )}
+              <Text
+                dimColor={
+                  feature('BASH_CLASSIFIER')
+                    ? toolUseConfirm.classifierAutoApproved
+                    : false
+                }
+              >
+                Do you want to proceed?
+              </Text>
+              <Select
+                options={
+                  feature('BASH_CLASSIFIER')
+                    ? toolUseConfirm.classifierAutoApproved
+                      ? options.map(o => ({ ...o, disabled: true }))
+                      : options
                     : options
-                  : options
-              }
-              isDisabled={
-                feature('BASH_CLASSIFIER')
-                  ? toolUseConfirm.classifierAutoApproved
-                  : false
-              }
-              inlineDescriptions
-              onChange={onSelect}
-              onCancel={() => handleReject()}
-              onFocus={handleFocus}
-              onInputModeToggle={handleInputModeToggle}
-            />
-          </Box>
-          <Box justifyContent="space-between" marginTop={1}>
-            <Text dimColor>
-              Esc to cancel
-              {((focusedOption === 'yes' && !yesInputMode) ||
-                (focusedOption === 'no' && !noInputMode)) &&
-                ' · Tab to amend'}
-              {explainerState.enabled &&
-                ` · ctrl+e to ${explainerState.visible ? 'hide' : 'explain'}`}
-            </Text>
-            {toolUseContext.options.debug && (
-              <Text dimColor>Ctrl+d to show debug info</Text>
-            )}
-          </Box>
-        </>
-      )}
+                }
+                isDisabled={
+                  feature('BASH_CLASSIFIER')
+                    ? toolUseConfirm.classifierAutoApproved
+                    : false
+                }
+                inlineDescriptions
+                onChange={onSelect}
+                onCancel={() => handleReject()}
+                onFocus={handleFocus}
+                onInputModeToggle={handleInputModeToggle}
+              />
+            </Box>
+            <Box justifyContent="space-between" marginTop={1}>
+              <Text dimColor>
+                Esc to cancel
+                {((focusedOption === 'yes' && !yesInputMode) ||
+                  (focusedOption === 'no' && !noInputMode)) &&
+                  ' · Tab to amend'}
+              </Text>
+              {toolUseContext.options.debug && (
+                <Text dimColor>Ctrl+d to show debug info</Text>
+              )}
+            </Box>
+          </>
+        )}
+      </Box>
     </PermissionDialog>
   )
 }

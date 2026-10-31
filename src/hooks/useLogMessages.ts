@@ -9,6 +9,16 @@ import {
   recordTranscript,
 } from '../utils/sessionStorage.js'
 
+// Official 2.1.311 stamps teamName only on a teammate's transcript. The
+// lead's own session must stay unstamped, or /resume and --continue skip it.
+export function transcriptTeamInfo(
+  teamName: string | undefined,
+  selfAgentName: string | undefined,
+): { teamName?: string; agentName?: string } {
+  if (!isAgentSwarmsEnabled() || !selfAgentName) return {}
+  return { teamName, agentName: selfAgentName }
+}
+
 /**
  * Hook that logs messages to the transcript
  * conversation ID that only changes when a new conversation is started.
@@ -68,12 +78,7 @@ export function useLogMessages(messages: Message[], ignore: boolean = false) {
     const seq = ++callSeqRef.current
     void recordTranscript(
       slice,
-      isAgentSwarmsEnabled()
-        ? {
-            teamName: teamContext?.teamName,
-            agentName: teamContext?.selfAgentName,
-          }
-        : {},
+      transcriptTeamInfo(teamContext?.teamName, teamContext?.selfAgentName),
       parentHint,
       messages,
     ).then(lastRecordedUuid => {

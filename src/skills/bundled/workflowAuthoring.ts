@@ -144,6 +144,7 @@ The tool result includes a runId. To resume after a pause, kill, or script edit,
 export function registerWorkflowAuthoringSkill(): void {
   registerBundledSkill({
     name: WORKFLOW_AUTHORING_SKILL_NAME,
+    menuDescription: 'Load the reference for writing Workflow tool scripts',
     description:
       'Reference for writing a Workflow tool script (script API and gotchas, resume, quality patterns, worked examples). Load before authoring a script for a workflow the user already opted into; it does not itself authorize running one.',
     userInvocable: true,

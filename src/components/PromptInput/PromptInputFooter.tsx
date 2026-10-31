@@ -52,6 +52,7 @@ type Props = {
   toolPermissionContext: ToolPermissionContext
   helpOpen: boolean
   suppressHint: boolean
+  isInputEmpty: boolean
   isLoading: boolean
   tasksSelected: boolean
   teamsSelected: boolean
@@ -87,6 +88,7 @@ function PromptInputFooter({
   toolPermissionContext,
   helpOpen,
   suppressHint: suppressHintFromProps,
+  isInputEmpty,
   isLoading,
   tasksSelected,
   teamsSelected,
@@ -188,6 +190,7 @@ function PromptInputFooter({
             mode={mode}
             toolPermissionContext={toolPermissionContext}
             suppressHint={suppressHint}
+            isInputEmpty={isInputEmpty}
             isLoading={isLoading}
             tasksSelected={pillSelected}
             teamsSelected={teamsSelected}

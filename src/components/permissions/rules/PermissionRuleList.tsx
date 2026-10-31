@@ -987,7 +987,7 @@ export function PermissionRuleList({
     <Box flexDirection="column" onKeyDown={handleKeyDown}>
       <Pane color="permission">
         <Tabs
-          title="Permissions:"
+          title="Permissions"
           color="permission"
           defaultTab={defaultTab}
           hidden={isHidden}
@@ -1062,7 +1062,7 @@ export function PermissionRuleList({
             {exitState.pending ? (
               <>Press {exitState.keyName} again to exit</>
             ) : headerFocused ? (
-              <>←/→ tab switch · ↓ return · Esc cancel</>
+              <>←/→ to switch · ↓ to select · Esc to cancel</>
             ) : isSearchMode ? (
               <>Type to filter · Enter/↓ select · ↑ tabs · Esc clear</>
             ) : hasDenials && defaultTab === 'recent' ? (

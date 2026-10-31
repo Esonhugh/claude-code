@@ -4,7 +4,7 @@ import { mkdtempSync, realpathSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { getDefaultAppState } from '../../state/AppStateStore.js'
-import { setMainLoopModelOverride } from '../../bootstrap/state.js'
+import { getSessionId, setMainLoopModelOverride } from '../../bootstrap/state.js'
 import { getEmptyToolPermissionContext } from '../../Tool.js'
 import type { LocalAgentTaskState } from '../../tasks/LocalAgentTask/LocalAgentTask.js'
 import { createAssistantMessage } from '../../utils/messages.js'
@@ -28,7 +28,7 @@ import { resolveDeclaredAgentPermissionMode } from './permissionMode.js'
 import { SUBAGENT_DEPTH_LIMIT_MESSAGE } from './subagentDepth.js'
 import { createSyntheticOutputTool } from '../SyntheticOutputTool/SyntheticOutputTool.js'
 import type { SpawnTeammateConfig } from '../shared/spawnMultiAgent.js'
-import { writeTeamFileAsync } from '../../utils/swarm/teamHelpers.js'
+import { readTeamFileAsync, writeTeamFileAsync } from '../../utils/swarm/teamHelpers.js'
 import {
   getSessionSettingsCache,
   resetSettingsCache,
@@ -1149,6 +1149,56 @@ const spawnDepthOnlyTask = spawnDepthOnlyContext.getAppState().tasks[
 assert.equal(spawnDepthOnlyTask?.parentAgentId, 'agent-parent')
 spawnDepthOnlyTask?.abortController?.abort()
 await spawnDepthOnlyContext.waitForTaskLifecycle(spawnDepthOnlyResult.data.agentId)
+
+// Official 2.1.311: a named agent joins the implicit session team, created on
+// first use, so `team-lead` is addressable without TeamCreate.
+{
+  const sessionTeamContext = createContext(1)
+  controlledSpawnTeammateConfig = undefined
+  await AgentTool.call(
+    {
+      description: 'session team member',
+      prompt: 'reply ok',
+      subagent_type: 'general-purpose',
+      name: 'session-worker',
+    },
+    sessionTeamContext as never,
+    async () => ({ behavior: 'allow' }),
+    { message: { id: 'msg_session_team' } } as never,
+  )
+  const sessionTeamName = `session-${getSessionId().slice(0, 8)}`
+  assert.equal(controlledSpawnTeammateConfig?.team_name, sessionTeamName)
+  assert.equal(
+    sessionTeamContext.getAppState().teamContext?.teamName,
+    sessionTeamName,
+  )
+  const sessionTeamFile = await readTeamFileAsync(sessionTeamName)
+  assert.equal(sessionTeamFile?.leadAgentId, `team-lead@${sessionTeamName}`)
+
+  delete process.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS
+  const noTeamsContext = createContext(1)
+  controlledSpawnTeammateConfig = undefined
+  const noTeamsResult = await AgentTool.call(
+    {
+      description: 'named agent without teams',
+      prompt: 'reply ok',
+      subagent_type: 'general-purpose',
+      name: 'plain-worker',
+    },
+    noTeamsContext as never,
+    async () => ({ behavior: 'allow' }),
+    { message: { id: 'msg_named_no_teams' } } as never,
+  )
+  process.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS = '1'
+  assert.equal(controlledSpawnTeammateConfig, undefined)
+  assert.equal(noTeamsContext.getAppState().teamContext, undefined)
+  assert.ok('agentId' in noTeamsResult.data)
+  const noTeamsTask = noTeamsContext.getAppState().tasks[
+    noTeamsResult.data.agentId as string
+  ] as LocalAgentTaskState | undefined
+  noTeamsTask?.abortController?.abort()
+  await noTeamsContext.waitForTaskLifecycle(noTeamsResult.data.agentId as string)
+}
 
 const originalConfigDir = process.env.CLAUDE_CONFIG_DIR
 const configDir = mkdtempSync(join(tmpdir(), 'agent-tool-stale-team-test-'))

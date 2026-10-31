@@ -1,4 +1,7 @@
 import { feature } from 'bun:bundle'
+import { formatDuration } from '../../utils/format.js'
+import { FILE_READ_TOOL_NAME } from '../FileReadTool/prompt.js'
+import isPlainObject from 'lodash-es/isPlainObject.js'
 import type { ToolResultBlockParam } from '@anthropic-ai/sdk/resources/index.mjs'
 import {
   copyFile,
@@ -461,6 +464,10 @@ const outputSchema = lazySchema(() =>
       .describe(
         'True if the user manually backgrounded the command with Ctrl+B',
       ),
+    timedOutAfterMs: z
+      .number()
+      .optional()
+      .describe('Set when the command hit its timeout and was moved to the background'),
     assistantAutoBackgrounded: z
       .boolean()
       .optional()
@@ -515,20 +522,20 @@ import type { BashProgress } from '../../types/tools.js'
  * @param command The command to check
  * @returns false for commands that should not be auto-backgrounded (like sleep)
  */
-function isAutobackgroundingAllowed(command: string): boolean {
+export function isAutobackgroundingAllowed(command: string): boolean {
   const parts = splitCommand_DEPRECATED(command)
   if (parts.length === 0) return true
 
   // Get the first part which should be the base command
-  const baseCommand = parts[0]?.trim()
+  const baseCommand = parts[0]?.trim().split(/\s+/)[0]
   if (!baseCommand) return true
 
   return !DISALLOWED_AUTO_BACKGROUND_COMMANDS.includes(baseCommand)
 }
 
 /**
- * Detect standalone or leading `sleep N` patterns that should use Monitor
- * instead. Catches `sleep 5`, `sleep 5 && check`, `sleep 5; check` — but
+ * Detect standalone or leading long `sleep N` patterns that should use Monitor
+ * instead. Catches `sleep 30`, `sleep 30 && check`, `sleep 30; check` — but
  * not sleep inside pipelines, subshells, or scripts (those are fine).
  */
 export function detectBlockedSleepPattern(command: string): string | null {
@@ -537,11 +544,11 @@ export function detectBlockedSleepPattern(command: string): string | null {
 
   const first = parts[0]?.trim() ?? ''
   // Bare `sleep N` or `sleep N.N` as the first subcommand.
-  // Float durations (sleep 0.5) are allowed — those are legit pacing, not polls.
-  const m = /^sleep\s+(\d+)\s*$/.exec(first)
+  const m = /^sleep\s+(\d+(?:\.\d*)?)\s*$/.exec(first)
   if (!m) return null
-  const secs = parseInt(m[1]!, 10)
-  if (secs < 2) return null // sub-2s sleeps are fine (rate limiting, pacing)
+  const secs = parseFloat(m[1]!)
+  // Like official 2.1.311, only sleeps of 25s and up are refused.
+  if (secs < 25) return null
 
   // `sleep N` alone → "what are you waiting for?"
   // `sleep N && check` → "use Monitor { command: check }"
@@ -637,6 +644,15 @@ async function applySedEdit(
   }
 }
 
+// Abort reasons that count as an interruption of the command (official 2.1.311).
+const INTERRUPT_ABORT_REASONS = new Set<unknown>([
+  'user-cancel',
+  'remote-cancel',
+  'shutdown',
+  'interrupt',
+  'turn-abort',
+])
+
 export const BashTool = buildTool({
   name: BASH_TOOL_NAME,
   searchHint: 'execute shell commands',
@@ -694,6 +710,34 @@ export const BashTool = buildTool({
   get inputSchema(): InputSchema {
     return inputSchema()
   },
+  // Like 2.1.311: `timeout_ms` and `command_description` are common aliases.
+  coerceInput(input) {
+    if (!isPlainObject(input)) return null
+    const next = { ...(input as Record<string, unknown>) }
+    let changed = false
+    if ('timeout_ms' in next && !('timeout' in next)) {
+      const value = next.timeout_ms
+      if (
+        typeof value === 'number' ||
+        (typeof value === 'string' && /^\d+$/.test(value))
+      ) {
+        next.timeout = value
+        delete next.timeout_ms
+        changed = true
+      }
+    }
+    if ('command_description' in next) {
+      if (
+        !('description' in next) &&
+        typeof next.command_description === 'string'
+      ) {
+        next.description = next.command_description
+      }
+      delete next.command_description
+      changed = true
+    }
+    return changed ? next : null
+  },
   get outputSchema(): OutputSchema {
     return outputSchema()
   },
@@ -748,7 +792,7 @@ export const BashTool = buildTool({
       if (sleepPattern !== null) {
         return {
           result: false,
-          message: `Blocked: ${sleepPattern}. Run blocking commands in the background with run_in_background: true — you'll get a completion notification when done. For streaming events (watching logs, polling APIs), use the Monitor tool. If you genuinely need a delay (rate limiting, deliberate pacing), keep it under 2 seconds.`,
+          message: `Blocked: ${sleepPattern}. To wait for a condition, use Monitor with an until-loop (e.g. \`until <check>; do sleep 2; done\`). To wait for a command you started, use run_in_background: true. Do not chain shorter sleeps to work around this block.`,
           errorCode: 10,
         }
       }
@@ -782,6 +826,7 @@ export const BashTool = buildTool({
       backgroundTaskId,
       backgroundedByUser,
       assistantAutoBackgrounded,
+      timedOutAfterMs,
       structuredContent,
       persistedOutputPath,
       persistedOutputSize,
@@ -837,8 +882,10 @@ export const BashTool = buildTool({
         backgroundInfo = `Command exceeded the assistant-mode blocking budget (${ASSISTANT_BLOCKING_BUDGET_MS / 1000}s) and was moved to the background with ID: ${backgroundTaskId}. It is still running — you will be notified when it completes. Output is being written to: ${outputPath}. In assistant mode, delegate long-running work to a subagent or use run_in_background to keep this conversation responsive.`
       } else if (backgroundedByUser) {
         backgroundInfo = `Command was manually backgrounded by user with ID: ${backgroundTaskId}. Output is being written to: ${outputPath}`
+      } else if (timedOutAfterMs !== undefined) {
+        backgroundInfo = `Command did not complete within its ${formatDuration(timedOutAfterMs)} timeout and was moved to the background (ID: ${backgroundTaskId}). Output is being written to: ${outputPath}. You will be notified when it completes. To check interim output, use ${FILE_READ_TOOL_NAME} on that file path.`
       } else {
-        backgroundInfo = `Command running in background with ID: ${backgroundTaskId}. Output is being written to: ${outputPath}`
+        backgroundInfo = `Command running in background with ID: ${backgroundTaskId}. Output is being written to: ${outputPath}. You will be notified when it completes. To check interim output, use ${FILE_READ_TOOL_NAME} on that file path.`
       }
     }
 
@@ -929,6 +976,11 @@ export const BashTool = buildTool({
 
       const isInterrupt =
         result.interrupted && abortController.signal.reason === 'interrupt'
+      // Official reports an interruption only for a user or shutdown abort;
+      // a shell killed while its agent is stopped keeps a plain exit code.
+      const interruptedByUser =
+        result.interrupted &&
+        INTERRUPT_ABORT_REASONS.has(abortController.signal.reason)
 
       // stderr is interleaved in stdout (merged fd) — result.stdout has both
       stdoutAccumulator.append((result.stdout || '').trimEnd() + EOL)
@@ -977,11 +1029,13 @@ export const BashTool = buildTool({
         // stderr is merged into stdout (merged fd); outputWithSbFailures
         // already has the full output. Pass '' for stdout to avoid
         // duplication in getErrorParts() and processBashCommand.
+        // result.stderr only holds ShellCommand's own notes, such as
+        // "Command timed out after 1s", which go first like 2.1.311.
         throw new ShellError(
           '',
-          outputWithSbFailures,
+          [result.stderr, outputWithSbFailures].filter(Boolean).join('\n'),
           result.code,
-          result.interrupted,
+          interruptedByUser,
         )
       }
       wasInterrupted = result.interrupted
@@ -1089,6 +1143,7 @@ export const BashTool = buildTool({
       backgroundTaskId: result.backgroundTaskId,
       backgroundedByUser: result.backgroundedByUser,
       assistantAutoBackgrounded: result.assistantAutoBackgrounded,
+      timedOutAfterMs: result.timedOutAfterMs,
       dangerouslyDisableSandbox:
         'dangerouslyDisableSandbox' in input
           ? (input.dangerouslyDisableSandbox as boolean | undefined)
@@ -1153,6 +1208,7 @@ async function* runShellCommand({
   let lastTotalBytes = 0
   let backgroundShellId: string | undefined = undefined
   let assistantAutoBackgrounded = false
+  let timedOut = false
 
   // Progress signal: resolved by onProgress callback from the shared poller,
   // waking the generator to yield a progress update.
@@ -1276,6 +1332,7 @@ async function* runShellCommand({
   // Only background commands that are allowed to be auto-backgrounded (not sleep, etc.)
   if (shellCommand.onTimeout && shouldAutoBackground) {
     shellCommand.onTimeout(backgroundFn => {
+      timedOut = true
       startBackgrounding(
         'tengu_bash_command_timeout_backgrounded',
         backgroundFn,
@@ -1354,6 +1411,7 @@ async function* runShellCommand({
         interrupted: false,
         backgroundTaskId: backgroundShellId,
         assistantAutoBackgrounded,
+        ...(timedOut ? { timedOutAfterMs: timeoutMs } : {}),
       }
     }
   }
@@ -1416,6 +1474,7 @@ async function* runShellCommand({
           interrupted: false,
           backgroundTaskId: backgroundShellId,
           assistantAutoBackgrounded,
+          ...(timedOut ? { timedOutAfterMs: timeoutMs } : {}),
         }
       }
 

@@ -19,6 +19,7 @@ import {
   getCoordinatorTaskCount,
   getCoordinatorTaskIndex,
   getVisibleAgentTasks,
+  hasCompletedAgentsOffPanel,
   resolveCoordinatorSelection,
 } from './CoordinatorAgentStatusRows.js'
 
@@ -688,5 +689,43 @@ try {
 } finally {
   getAgentColorMap().delete(coloredAgentType)
 }
+
+// Like official, the agent row shows the background summary label when present.
+const summarizedRows = getCoordinatorSessionRows({
+  tasks: {
+    [agentTask.id]: {
+      ...agentTask,
+      progress: { ...agentTask.progress!, summary: 'Reading auth.ts' },
+    },
+  } as unknown as AppState['tasks'],
+  selectedIndex: undefined,
+  viewingAgentTaskId: undefined,
+  now: 5_000,
+})
+assert.equal(summarizedRows[1]?.secondaryText, 'Reading auth.ts')
+
+// Like official 2.1.311, a finished background agent leaves the panel at once
+// (the footer points to /tasks), unless the user is viewing it.
+const finishedBackgroundAgent = {
+  ...agentTask,
+  status: 'completed',
+  isBackgrounded: true,
+  evictAfter: 31_000,
+} as unknown as LocalAgentTaskState
+const finishedTasks = {
+  [finishedBackgroundAgent.id]: finishedBackgroundAgent,
+} as unknown as AppState['tasks']
+assert.deepEqual(getVisibleAgentTasks(finishedTasks), [])
+assert.equal(hasCompletedAgentsOffPanel(finishedTasks), true)
+assert.deepEqual(
+  getVisibleAgentTasks(finishedTasks, finishedBackgroundAgent.id).map(t => t.id),
+  [finishedBackgroundAgent.id],
+)
+assert.equal(hasCompletedAgentsOffPanel(finishedTasks, finishedBackgroundAgent.id), false)
+const failedBackgroundAgent = { ...finishedBackgroundAgent, status: 'failed' }
+assert.deepEqual(
+  getVisibleAgentTasks({ [agentTask.id]: failedBackgroundAgent } as unknown as AppState['tasks']).map(t => t.id),
+  [agentTask.id],
+)
 
 console.log('CoordinatorAgentStatus.test.ts passed')

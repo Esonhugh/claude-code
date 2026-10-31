@@ -3,6 +3,7 @@ import * as React from 'react'
 import { BLACK_CIRCLE } from '../../constants/figures.js'
 import { Box, Text, type TextProps } from '../../ink.js'
 import { MONITOR_EVENT_TAG } from '../../tools/MonitorTool/monitorEvents.js'
+import { formatDuration } from '../../utils/format.js'
 import { extractTag } from '../../utils/messages.js'
 
 type Props = {
@@ -41,11 +42,15 @@ export function UserAgentNotificationMessage({
     monitorDescription !== undefined && firstEventLine
       ? `Monitor event: ${firstEventLine} · ${monitorDescription}`
       : summary
+  const durationMs = Number(extractTag(text, 'duration_ms'))
 
   return (
     <Box marginTop={addMargin ? 1 : 0}>
       <Text>
         <Text color={color}>{BLACK_CIRCLE}</Text> {label}
+        {Number.isFinite(durationMs) && durationMs > 0 && (
+          <Text dimColor> · {formatDuration(durationMs)}</Text>
+        )}
       </Text>
     </Box>
   )

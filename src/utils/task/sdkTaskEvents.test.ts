@@ -83,3 +83,46 @@ test('a background agent reports task_started, task_updated and background_tasks
   const resumed = events().find(event => event.subtype === 'background_tasks_changed') as { tasks: { run_id: string }[] }
   expect(resumed.tasks[0]!.run_id > runId!).toBe(true)
 })
+
+test('subagent messages and task_progress name the subagent like official', async () => {
+  const { normalizeMessage, normalizeSubagentMessage } = await import('../queryHelpers.js')
+  const { createAssistantMessage, createUserMessage } = await import('../messages.js')
+  const { emitTaskProgress } = await import('./sdkProgress.js')
+  const agent = { agentId: 'a1', agentType: 'probe-agent', description: 'probe' }
+  const named = { agent_id: 'a1', subagent_type: 'probe-agent', task_description: 'probe' }
+
+  const assistant = createAssistantMessage({ content: 'hi' })
+  expect([...normalizeSubagentMessage(assistant, 'toolu_1', agent)][0]).toMatchObject({
+    type: 'assistant', parent_tool_use_id: 'toolu_1', ...named, timestamp: assistant.timestamp,
+  })
+  const user = createUserMessage({ content: 'result' })
+  expect([...normalizeSubagentMessage(user, 'toolu_1', agent)][0]).toMatchObject({
+    type: 'user', parent_tool_use_id: 'toolu_1', ...named,
+  })
+  // A foreground agent's messages arrive as agent_progress.
+  const progress = {
+    type: 'progress',
+    toolUseID: 'agent_x',
+    parentToolUseID: 'toolu_1',
+    data: { type: 'agent_progress', message: assistant, prompt: '', agentId: 'a1', agentType: 'probe-agent', description: 'probe' },
+    uuid: 'u1',
+    timestamp: assistant.timestamp,
+  }
+  expect([...normalizeMessage(progress as never)][0]).toMatchObject(named)
+
+  emitTaskProgress({ taskId: 'a1', toolUseId: 'toolu_1', description: 'Reading x', startTime: Date.now(), totalTokens: 1, toolUses: 1, subagentType: 'probe-agent' })
+  expect(events()[0]).toMatchObject({ subtype: 'task_progress', subagent_type: 'probe-agent' })
+})
+
+test('a finished subagent sends task_notification, with its result text, before leaving background_tasks_changed', async () => {
+  const { enqueueAgentNotification } = await import('../../tasks/LocalAgentTask/LocalAgentTask.js')
+  registerTask(agentTask, setAppState)
+  updateTaskState(agentTask.id, setAppState, task => ({ ...task, status: 'completed' }))
+  drainSdkEvents()
+  await enqueueAgentNotification({ taskId: 'a1', description: 'probe', status: 'completed', setAppState, finalMessage: 'FAKE_DONE', toolUseId: 'toolu_1' })
+  await new Promise(resolve => setTimeout(resolve, 0))
+  const events = drainSdkEvents().filter(e => e.subtype !== 'task_updated')
+  expect(events.map(e => e.subtype)).toEqual(['task_notification', 'background_tasks_changed'])
+  expect(events[0]).toMatchObject({ task_id: 'a1', tool_use_id: 'toolu_1', status: 'completed', summary: 'FAKE_DONE' })
+  expect(events[1]).toMatchObject({ tasks: [] })
+})

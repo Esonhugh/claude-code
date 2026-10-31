@@ -36,7 +36,7 @@ Staging deploys go to the fly.io app demo-staging; production is demo-prod.
 
 ![/memory](images/memory-menu.png)
 
-**3. 退出时自动整理。** 默认在会话结束（退出、`/clear`、`/resume`）时，后台会再过一遍这次对话，把漏记的内容补进记忆。
+**3. 退出时自动整理。** 把 `memory.extraction` 设为 `sessionEnd` 后，会话结束（退出、`/clear`、`/resume`）时后台会再过一遍这次对话，把漏记的内容补进记忆；默认关闭，退出不会多花时间。
 
 ## 记忆多了以后：SQLite 检索模式
 
@@ -80,7 +80,7 @@ Staging deploys go to the fly.io app demo-staging; production is demo-prod.
 | 配置项 | 写法 | 默认 | 说明 |
 | --- | --- | --- | --- |
 | `autoMemoryEnabled` / `CLAUDE_CODE_DISABLE_AUTO_MEMORY` | `false` / `1` | 开启 | 关闭 auto memory |
-| `memory.extraction` | `sessionEnd` / `everyTurns` / `off` | `sessionEnd` | 后台补记的时机：会话结束时、每轮之后、不补记 |
+| `memory.extraction` | `off` / `sessionEnd` / `everyTurns` | `off` | 后台补记的时机：不补记、会话结束时、每轮之后 |
 | `memory.sqlite.enabled` | `true` / `false` | `false` | 检索模式；需要 Bun 运行时，否则回退到 `MEMORY.md` |
 | `memory.sqlite.scopes` | `user` `project` `session` 的子集 | 全部 | 检索范围：`project` 本项目记忆，`user` 其他项目的记忆（只读），`session` 本项目以前的对话记录 |
 | `awaySummaryEnabled` / `CLAUDE_CODE_ENABLE_AWAY_SUMMARY` | `false` / `0`、`1` | 开启 | 你离开一段时间回来时，显示期间发生了什么 |

@@ -16,10 +16,12 @@ import {
   isFoundationModel,
 } from '../utils/model/bedrock.js'
 import {
+  getCanonicalName,
   getDefaultSonnetModel,
   getMainLoopModel,
   getSmallFastModel,
   normalizeModelStringForAPI,
+  parseUserSpecifiedModel,
 } from '../utils/model/model.js'
 import { jsonStringify } from '../utils/slowOperations.js'
 import { isToolReferenceBlock } from '../utils/toolSearch.js'
@@ -216,6 +218,34 @@ export function roughTokenCountEstimation(
   return Math.round(content.length / bytesPerToken)
 }
 
+// Models on the older tokenizer average ~4 bytes per token; newer models
+// produce more tokens for the same text (official 2.1.311 uses 3 for them).
+const FOUR_BYTES_PER_TOKEN_MODELS = new Set([
+  'claude-3-opus',
+  'claude-3-sonnet',
+  'claude-3-haiku',
+  'claude-3-5-sonnet',
+  'claude-3-5-haiku',
+  'claude-3-7-sonnet',
+  'claude-opus-4-0',
+  'claude-opus-4-1',
+  'claude-opus-4-5',
+  'claude-opus-4-6',
+  'claude-sonnet-4-0',
+  'claude-sonnet-4-5',
+  'claude-sonnet-4-6',
+  'claude-haiku-4-5',
+])
+
+export function bytesPerTokenForModel(model: string | undefined): number {
+  if (!model) return 4
+  const canonical = getCanonicalName(parseUserSpecifiedModel(model)).replace(
+    /[._]/g,
+    '-',
+  )
+  return FOUR_BYTES_PER_TOKEN_MODELS.has(canonical) ? 4 : 3
+}
+
 /**
  * Returns an estimated bytes-per-token ratio for a given file extension.
  * Dense JSON has many single-character tokens (`{`, `}`, `:`, `,`, `"`)
@@ -339,19 +369,23 @@ export function roughTokenCountEstimationForMessages(
     message?: { content?: unknown }
     attachment?: Attachment
   }[],
+  bytesPerToken = 4,
 ): number {
   let totalTokens = 0
   for (const message of messages) {
-    totalTokens += roughTokenCountEstimationForMessage(message)
+    totalTokens += roughTokenCountEstimationForMessage(message, bytesPerToken)
   }
   return totalTokens
 }
 
-export function roughTokenCountEstimationForMessage(message: {
-  type: string
-  message?: { content?: unknown }
-  attachment?: Attachment
-}): number {
+export function roughTokenCountEstimationForMessage(
+  message: {
+    type: string
+    message?: { content?: unknown }
+    attachment?: Attachment
+  },
+  bytesPerToken = 4,
+): number {
   if (
     (message.type === 'assistant' || message.type === 'user') &&
     message.message?.content
@@ -362,6 +396,7 @@ export function roughTokenCountEstimationForMessage(message: {
         | Array<Anthropic.ContentBlock>
         | Array<Anthropic.ContentBlockParam>
         | undefined,
+      bytesPerToken,
     )
   }
 
@@ -369,8 +404,11 @@ export function roughTokenCountEstimationForMessage(message: {
     const userMessages = normalizeAttachmentForAPI(message.attachment)
     let total = 0
     for (const userMsg of userMessages) {
-      // @ts-ignore - recovered code
-      total += roughTokenCountEstimationForContent(userMsg.message.content)
+      total += roughTokenCountEstimationForContent(
+        // @ts-ignore - recovered code
+        userMsg.message.content,
+        bytesPerToken,
+      )
     }
     return total
   }
@@ -384,28 +422,30 @@ function roughTokenCountEstimationForContent(
     | Array<Anthropic.ContentBlock>
     | Array<Anthropic.ContentBlockParam>
     | undefined,
+  bytesPerToken = 4,
 ): number {
   if (!content) {
     return 0
   }
   if (typeof content === 'string') {
-    return roughTokenCountEstimation(content)
+    return roughTokenCountEstimation(content, bytesPerToken)
   }
   let totalTokens = 0
   for (const block of content) {
-    totalTokens += roughTokenCountEstimationForBlock(block)
+    totalTokens += roughTokenCountEstimationForBlock(block, bytesPerToken)
   }
   return totalTokens
 }
 
 function roughTokenCountEstimationForBlock(
   block: string | Anthropic.ContentBlock | Anthropic.ContentBlockParam,
+  bytesPerToken: number,
 ): number {
   if (typeof block === 'string') {
-    return roughTokenCountEstimation(block)
+    return roughTokenCountEstimation(block, bytesPerToken)
   }
   if (block.type === 'text') {
-    return roughTokenCountEstimation(block.text)
+    return roughTokenCountEstimation(block.text, bytesPerToken)
   }
   if (block.type === 'image' || block.type === 'document') {
     // https://platform.claude.com/docs/en/build-with-claude/vision#calculate-image-costs
@@ -422,7 +462,7 @@ function roughTokenCountEstimationForBlock(
   }
   if (block.type === 'tool_result') {
     // @ts-ignore - recovered code
-    return roughTokenCountEstimationForContent(block.content)
+    return roughTokenCountEstimationForContent(block.content, bytesPerToken)
   }
   if (block.type === 'tool_use') {
     // input is the JSON the model generated — arbitrarily large (bash
@@ -430,19 +470,20 @@ function roughTokenCountEstimationForBlock(
     // char count; the API re-serializes anyway so this is what it sees.
     return roughTokenCountEstimation(
       block.name + jsonStringify(block.input ?? {}),
+      bytesPerToken,
     )
   }
   if (block.type === 'thinking') {
-    return roughTokenCountEstimation(block.thinking)
+    return roughTokenCountEstimation(block.thinking, bytesPerToken)
   }
   if (block.type === 'redacted_thinking') {
-    return roughTokenCountEstimation(block.data)
+    return roughTokenCountEstimation(block.data, bytesPerToken)
   }
   // server_tool_use, web_search_tool_result, mcp_tool_use, etc. —
   // text-like payloads (tool inputs, search results, no base64).
   // Stringify-length tracks the serialized form the API sees; the
   // key/bracket overhead is single-digit percent on real blocks.
-  return roughTokenCountEstimation(jsonStringify(block))
+  return roughTokenCountEstimation(jsonStringify(block), bytesPerToken)
 }
 
 async function countTokensWithBedrock({

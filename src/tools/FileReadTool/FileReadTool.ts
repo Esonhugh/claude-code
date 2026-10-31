@@ -1,4 +1,5 @@
 import type { Base64ImageSource } from '@anthropic-ai/sdk/resources/index.mjs'
+import isPlainObject from 'lodash-es/isPlainObject.js'
 import { readdir, readFile as readFileAsync } from 'fs/promises'
 import * as path from 'path'
 import { posix, win32 } from 'path'
@@ -79,8 +80,6 @@ import {
   FILE_READ_TOOL_NAME,
   FILE_UNCHANGED_STUB,
   LINE_FORMAT_INSTRUCTION,
-  OFFSET_INSTRUCTION_DEFAULT,
-  OFFSET_INSTRUCTION_TARGETED,
   renderPromptTemplate,
 } from './prompt.js'
 import {
@@ -348,13 +347,9 @@ export const FileReadTool = buildTool({
     const maxSizeInstruction = limits.includeMaxSizeInPrompt
       ? `. Files larger than ${formatFileSize(limits.maxSizeBytes)} will return an error; use offset and limit for larger files`
       : ''
-    const offsetInstruction = limits.targetedRangeNudge
-      ? OFFSET_INSTRUCTION_TARGETED
-      : OFFSET_INSTRUCTION_DEFAULT
     return renderPromptTemplate(
       pickLineFormatInstruction(),
       maxSizeInstruction,
-      offsetInstruction,
     )
   },
   get inputSchema(): InputSchema {
@@ -390,6 +385,51 @@ export const FileReadTool = buildTool({
     if (typeof input.file_path === 'string') {
       input.file_path = expandPath(input.file_path)
     }
+  },
+  // Like 2.1.311: a one-element array, a negative offset, a limit of 0 or
+  // less, and `length` all mean the model wanted a plain read.
+  coerceInput(input) {
+    if (!isPlainObject(input)) return null
+    const next = { ...(input as Record<string, unknown>) }
+    let changed = false
+    const integer = (value: unknown): number | undefined => {
+      if (typeof value === 'number') {
+        return Number.isFinite(value) ? value : undefined
+      }
+      return typeof value === 'string' && /^[-+]?\d+$/.test(value.trim())
+        ? Number(value)
+        : undefined
+    }
+    for (const key of ['offset', 'limit']) {
+      const value = next[key]
+      if (Array.isArray(value) && value.length === 1) {
+        next[key] = value[0]
+        changed = true
+      }
+    }
+    const offset = integer(next.offset)
+    if (offset !== undefined && offset < 0) {
+      delete next.offset
+      changed = true
+    }
+    const limit = integer(next.limit)
+    if (limit !== undefined && limit <= 0) {
+      delete next.limit
+      changed = true
+    }
+    if ('length' in next) {
+      const length = integer(next.length)
+      if (!('limit' in next) && length !== undefined && length > 0) {
+        next.limit = length
+      }
+      delete next.length
+      changed = true
+    }
+    if (Object.hasOwn(next, 'description')) {
+      delete next.description
+      changed = true
+    }
+    return changed ? next : null
   },
   async preparePermissionMatcher({ file_path }) {
     return pattern => matchWildcardPattern(pattern, file_path)

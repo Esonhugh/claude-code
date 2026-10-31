@@ -147,6 +147,18 @@ export const getGitStatus = memoize(async (): Promise<string | null> => {
 })
 
 /**
+ * Git status announced once per conversation as a persisted session_context
+ * attachment (2.1.311), so resume rebuilds the same prompt prefix. Skipped in
+ * CCR or unless git instructions are turned on.
+ */
+export async function getSessionGitStatus(): Promise<string | null> {
+  if (isEnvTruthy(process.env.CLAUDE_CODE_REMOTE) || !shouldIncludeGitInstructions()) {
+    return null
+  }
+  return getGitStatus()
+}
+
+/**
  * This context is prepended to each conversation, and cached for the duration of the conversation.
  */
 export const getSystemContext = memoize(
@@ -156,12 +168,8 @@ export const getSystemContext = memoize(
     const startTime = Date.now()
     logForDiagnosticsNoPII('info', 'system_context_started')
 
-    // Skip git status in CCR (unnecessary overhead on resume) or when git instructions are disabled
-    const gitStatus =
-      isEnvTruthy(process.env.CLAUDE_CODE_REMOTE) ||
-      !shouldIncludeGitInstructions()
-        ? null
-        : await getGitStatus()
+    // Warm git status for the session_context attachment (same trust gates as before).
+    void getSessionGitStatus()
 
     // Include system prompt injection if set (for cache breaking, ant-only)
     const injection = feature('BREAK_CACHE_COMMAND')
@@ -170,12 +178,10 @@ export const getSystemContext = memoize(
 
     logForDiagnosticsNoPII('info', 'system_context_completed', {
       duration_ms: Date.now() - startTime,
-      has_git_status: gitStatus !== null,
       has_injection: injection !== null,
     })
 
     return {
-      ...(gitStatus && { gitStatus }),
       ...(feature('BREAK_CACHE_COMMAND') && injection
         ? {
             cacheBreaker: `[CACHE_BREAKER: ${injection}]`,

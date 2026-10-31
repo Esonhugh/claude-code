@@ -469,6 +469,10 @@ export type GlobalConfig = {
 
   // Fullscreen in-app text selection behavior
   copyOnSelect?: boolean // Auto-copy to clipboard on mouse-up (undefined → true; lets cmd+c "work" via no-op)
+  powerupsUnlocked?: string[] // /powerup lesson ids marked done
+  externalEditorContext?: boolean // prepend Claude's last response when the prompt opens in $EDITOR
+  defaultToAgentsView?: boolean // a bare `claude` opens `claude agents`
+  leftArrowOpensAgents?: boolean // ← twice at an empty idle prompt opens `claude agents` (undefined → true)
 
   // GitHub repo path mapping for teleport directory switching
   // Key: "owner/repo" (lowercase), Value: array of absolute paths where repo is cloned
@@ -539,9 +543,6 @@ export type GlobalConfig = {
     // User chose "don't show plugin installation hints again" from the dialog.
     disabled?: boolean
   }
-
-  // Permission explainer configuration
-  permissionExplainerEnabled?: boolean // Enable Haiku-generated explanations for permission requests (default: true)
 
   // Teammate spawn mode: 'auto' | 'tmux' | 'in-process'
   teammateMode?: 'auto' | 'tmux' | 'in-process' // How to spawn teammates (default: 'auto')
@@ -1695,7 +1696,7 @@ export function formatAutoUpdaterDisabledReason(
     case 'development':
       return 'development build'
     case 'env':
-      return `${reason.envVar} set`
+      return `set by env: ${reason.envVar}`
     case 'config':
       return 'config'
   }

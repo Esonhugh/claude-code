@@ -24,11 +24,9 @@ try {
     prefetchFastModeStatus,
   } = await import('./fastMode.js')
 
-  assert.deepEqual(fastCommand.availability, [
-    'claude-ai',
-    'console',
-    'chatgpt',
-  ])
+  // 2.1.311 has no auth gate on /fast: gateways and 3P get the dialog that
+  // explains why fast mode is unavailable instead of "Unknown command".
+  assert.equal('availability' in fastCommand, false)
   assert.equal(getFastModeUnavailableReason(), null)
   assert.equal(meetsAvailabilityRequirement(fastCommand), true)
   assert.equal(isFastModeSupportedByModel('gpt-5.5'), true)

@@ -27,17 +27,23 @@ import {
   getChatGPTAccountInformation,
   getOauthAccountInfo,
   getSubscriptionType,
+  isAnthropicAuthEnabled,
   isUsing3PServices,
   saveOAuthTokensIfNeeded,
   validateForceLoginOrg,
 } from '../../utils/auth.js'
 import { saveGlobalConfig } from '../../utils/config.js'
 import { logForDebugging } from '../../utils/debug.js'
-import { isRunningOnHomespace } from '../../utils/envUtils.js'
+import { isAnalyticsDisabled } from '../../services/analytics/config.js'
+import {
+  getClaudeConfigHomeDir,
+  isRunningOnHomespace,
+} from '../../utils/envUtils.js'
 import { errorMessage } from '../../utils/errors.js'
 import { logError } from '../../utils/log.js'
 import { getAPIProvider } from '../../utils/model/providers.js'
 import { getInitialSettings } from '../../utils/settings/settings.js'
+import { getProjectsDir } from '../../utils/sessionStoragePortable.js'
 import { jsonStringify } from '../../utils/slowOperations.js'
 import {
   buildAccountProperties,
@@ -232,14 +238,28 @@ export async function authLogin({
   }
 }
 
+const OAUTH_TOKEN_SOURCES = new Set<string>([
+  'claude.ai',
+  'CLAUDE_CODE_OAUTH_TOKEN',
+  'CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR',
+  'CCR_OAUTH_TOKEN_FILE',
+])
+
 export async function authStatus(opts: {
   json?: boolean
   text?: boolean
 }): Promise<void> {
-  const { source: authTokenSource, hasToken } = getAuthTokenSource()
+  const { source: tokenSource, hasToken } = getAuthTokenSource()
   const { source: apiKeySource } = getAnthropicApiKeyWithSource()
   const hasApiKeyEnvVar =
     !!process.env.ANTHROPIC_API_KEY && !isRunningOnHomespace()
+  // An API key wins over these OAuth sources at request time, so report it.
+  const authTokenSource =
+    OAUTH_TOKEN_SOURCES.has(tokenSource) &&
+    (apiKeySource !== 'none' || hasApiKeyEnvVar) &&
+    !isAnthropicAuthEnabled()
+      ? 'none'
+      : tokenSource
   const oauthAccount = getOauthAccountInfo()
   const subscriptionType = getSubscriptionType()
   const using3P = isUsing3PServices()
@@ -317,6 +337,9 @@ export async function authStatus(opts: {
       loggedIn,
       authMethod,
       apiProvider,
+      analyticsDisabled: isAnalyticsDisabled(),
+      projectsDirectory: getProjectsDir(),
+      configDirectory: getClaudeConfigHomeDir(),
     }
     if (resolvedApiKeySource) {
       output.apiKeySource = resolvedApiKeySource

@@ -81,7 +81,7 @@ const childSource = `
     assert.equal(queue[0].mode, 'task-notification')
     assert.ok(queue[0].value.includes('<task-id>ordinary-agent</task-id>'))
     assert.ok(queue[0].value.includes('<status>' + scenario.status + '</status>'))
-    assert.ok(queue[0].value.includes('<total_tokens>5</total_tokens>'))
+    assert.ok(queue[0].value.includes('<subagent_tokens>5</subagent_tokens>'))
     enqueueAgentNotification(notice)
     assert.equal(getCommandQueue().length, 1)
     // notified is set once the main-thread enqueue settles.
