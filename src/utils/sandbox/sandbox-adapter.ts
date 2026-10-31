@@ -49,7 +49,10 @@ import {
 } from '../../bootstrap/state.js'
 import { CACHE_PATHS } from '../cachePaths.js'
 import { logForDebugging } from '../debug.js'
-import { extractEmbeddedBinary } from '../embeddedRipgrep.js'
+import {
+  extractEmbeddedBinary,
+  readableEmbeddedSource,
+} from '../embeddedRipgrep.js'
 import { expandPath } from '../path.js'
 import { getPlatform, type Platform } from '../platform.js'
 import { settingsChangeDetector } from '../settings/changeDetector.js'
@@ -792,7 +795,9 @@ function isInsideWindowsWriteGrant(
  * vendored copy.
  */
 export const getApplySeccompPath = memoize((): string | undefined => {
-  const sourcePath = process.env.CLAUDE_CODE_EMBEDDED_APPLY_SECCOMP_PATH
+  const sourcePath = readableEmbeddedSource(
+    'CLAUDE_CODE_EMBEDDED_APPLY_SECCOMP_PATH',
+  )
   const version = process.env.CLAUDE_CODE_EMBEDDED_APPLY_SECCOMP_VERSION
   if (!sourcePath || !version) return undefined
   return extractEmbeddedBinary(
@@ -806,7 +811,9 @@ export const getApplySeccompPath = memoize((): string | undefined => {
  * it; a source checkout uses the runtime's vendored copy.
  */
 export const getSrtWinPath = memoize((): string | undefined => {
-  const sourcePath = process.env.CLAUDE_CODE_EMBEDDED_SRT_WIN_PATH
+  const sourcePath = readableEmbeddedSource(
+    'CLAUDE_CODE_EMBEDDED_SRT_WIN_PATH',
+  )
   const version = process.env.CLAUDE_CODE_EMBEDDED_SRT_WIN_VERSION
   if (sourcePath && version) {
     return extractEmbeddedBinary(

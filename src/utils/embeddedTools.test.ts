@@ -103,3 +103,11 @@ test.skipIf(process.platform === 'win32')(
     expect(shell('grep -c needle file.txt').stdout).toBe('1\n')
   },
 )
+
+test('paths inherited from a parent binary that this process cannot read do not count', () => {
+  // A compiled parent exports its /$bunfs paths to every child process.
+  process.env.CLAUDE_CODE_EMBEDDED_BFS_PATH = '/$bunfs/root/bfs-parent'
+  process.env.CLAUDE_CODE_EMBEDDED_UGREP_PATH = '/$bunfs/root/ugrep-parent'
+  expect(hasEmbeddedSearchTools()).toBe(false)
+  expect(createFindGrepShellIntegration()).toBeNull()
+})
