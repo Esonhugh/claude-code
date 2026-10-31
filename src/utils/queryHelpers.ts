@@ -196,6 +196,8 @@ export function* normalizeMessage(message: Message): Generator<SDKMessage> {
           uuid: _.uuid,
           // @ts-ignore - recovered code
           error: _.error,
+          timestamp: _.timestamp,
+          ...(_.requestId !== undefined && { request_id: _.requestId }),
         }
       }
       return

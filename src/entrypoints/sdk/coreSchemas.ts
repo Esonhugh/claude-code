@@ -22,6 +22,8 @@ export const ModelUsageSchema = lazySchema(() =>
     thinkingTokens: z.number().int().optional(),
     cacheReadInputTokens: z.number().int(),
     cacheCreationInputTokens: z.number().int(),
+    cacheCreationEphemeral5mInputTokens: z.number().int().optional(),
+    cacheCreationEphemeral1hInputTokens: z.number().int().optional(),
     webSearchRequests: z.number().int(),
     costUSD: z.number(),
     contextWindow: z.number().int(),
@@ -1806,6 +1808,7 @@ export const SDKAssistantMessageSchema = lazySchema(() =>
     error: SDKAssistantMessageErrorSchema().optional(),
     uuid: UUIDPlaceholder(),
     session_id: z.string(),
+    request_id: z.string().optional(),
   }),
 )
 
@@ -1858,13 +1861,39 @@ export const SDKPermissionDenialSchema = lazySchema(() =>
   }),
 )
 
+export const TerminalReasonSchema = lazySchema(() =>
+  z.enum([
+    'blocking_limit',
+    'rapid_refill_breaker',
+    'prompt_too_long',
+    'image_error',
+    'model_error',
+    'api_error',
+    'malformed_tool_use_exhausted',
+    'aborted_streaming',
+    'aborted_tools',
+    'stop_hook_prevented',
+    'hook_stopped',
+    'tool_deferred',
+    'max_turns',
+    'background_requested',
+    'completed',
+    'budget_exhausted',
+    'structured_output_retry_exhausted',
+    'tool_deferred_unavailable',
+    'turn_setup_failed',
+  ]),
+)
+
 export const SDKResultSuccessSchema = lazySchema(() =>
   z.object({
     type: z.literal('result'),
     subtype: z.literal('success'),
     duration_ms: z.number(),
     duration_api_ms: z.number(),
+    ttft_ms: z.number().optional(),
     is_error: z.boolean(),
+    api_error_status: z.number().nullable().optional(),
     num_turns: z.number(),
     result: z.string(),
     stop_reason: z.string().nullable(),
@@ -1874,6 +1903,9 @@ export const SDKResultSuccessSchema = lazySchema(() =>
     permission_denials: z.array(SDKPermissionDenialSchema()),
     structured_output: z.unknown().optional(),
     fast_mode_state: FastModeStateSchema().optional(),
+    terminal_reason: TerminalReasonSchema().optional(),
+    result_index: z.number().int().optional(),
+    fast_mode_disabled_reason: FastModeDisabledReasonSchema().optional(),
     uuid: UUIDPlaceholder(),
     session_id: z.string(),
   }),
@@ -1897,8 +1929,12 @@ export const SDKResultErrorSchema = lazySchema(() =>
     usage: NonNullableUsagePlaceholder(),
     modelUsage: z.record(z.string(), ModelUsageSchema()),
     permission_denials: z.array(SDKPermissionDenialSchema()),
+    api_error_status: z.number().nullable().optional(),
     errors: z.array(z.string()),
     fast_mode_state: FastModeStateSchema().optional(),
+    terminal_reason: TerminalReasonSchema().optional(),
+    result_index: z.number().int().optional(),
+    fast_mode_disabled_reason: FastModeDisabledReasonSchema().optional(),
     uuid: UUIDPlaceholder(),
     session_id: z.string(),
   }),
@@ -1992,7 +2028,23 @@ export const SDKPartialAssistantMessageSchema = lazySchema(() =>
     parent_tool_use_id: z.string().nullable(),
     uuid: UUIDPlaceholder(),
     session_id: z.string(),
+    ttft_ms: z.number().optional(),
   }),
+)
+
+export const SDKThinkingTokensMessageSchema = lazySchema(() =>
+  z
+    .object({
+      type: z.literal('system'),
+      subtype: z.literal('thinking_tokens'),
+      estimated_tokens: z.number(),
+      estimated_tokens_delta: z.number(),
+      uuid: UUIDPlaceholder(),
+      session_id: z.string(),
+    })
+    .describe(
+      'Live thinking-token estimate for the current thinking block, from thinking_delta.estimated_tokens.',
+    ),
 )
 
 export const SDKCompactBoundaryMessageSchema = lazySchema(() =>
@@ -2480,6 +2532,7 @@ export const SDKMessageSchema = lazySchema(() =>
     SDKUIScrollMessageSchema(),
     SDKUIFocusMessageSchema(),
     SDKPartialAssistantMessageSchema(),
+    SDKThinkingTokensMessageSchema(),
     SDKCompactBoundaryMessageSchema(),
     SDKStatusMessageSchema(),
     SDKAPIRetryMessageSchema(),

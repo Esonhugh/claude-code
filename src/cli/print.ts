@@ -1081,6 +1081,7 @@ export async function runHeadless(
       : null
 
   headlessProfilerCheckpoint('before_runHeadlessStreaming')
+  let resultIndex = 0
   for await (const message of runHeadlessStreaming(
     structuredIO,
     appState.mcp.clients,
@@ -1095,6 +1096,10 @@ export async function runHeadless(
     options,
     turnInterruptionState,
   )) {
+    // Like official 2.1.311: each written result is numbered in run order.
+    if (message.type === 'result') {
+      message.result_index = resultIndex++
+    }
     if (transformToStreamlined) {
       // Streamlined mode: transform messages and stream immediately
       const transformed = transformToStreamlined(message)

@@ -12,6 +12,8 @@ export type ModelUsage = {
   thinkingTokens?: number
   cacheReadInputTokens: number
   cacheCreationInputTokens: number
+  cacheCreationEphemeral5mInputTokens?: number
+  cacheCreationEphemeral1hInputTokens?: number
   webSearchRequests: number
   costUSD: number
   contextWindow: number
@@ -33,6 +35,7 @@ export type ApiKeySource = 'user' | 'project' | 'org' | 'temporary' | 'oauth'
 export type ConfigScope = 'local' | 'user' | 'project'
 export type SdkBeta = 'context-1m-2025-08-07'
 export type FastModeState = 'off' | 'cooldown' | 'on'
+export type TerminalReason = 'blocking_limit' | 'rapid_refill_breaker' | 'prompt_too_long' | 'image_error' | 'model_error' | 'api_error' | 'malformed_tool_use_exhausted' | 'aborted_streaming' | 'aborted_tools' | 'stop_hook_prevented' | 'hook_stopped' | 'tool_deferred' | 'max_turns' | 'background_requested' | 'completed' | 'budget_exhausted' | 'structured_output_retry_exhausted' | 'tool_deferred_unavailable' | 'turn_setup_failed'
 export type FastModeDisabledReason = 'free' | 'preference' | 'extra_usage_disabled' | 'network_error' | 'unknown' | 'not_first_party' | 'disabled_by_env' | 'model_not_allowed' | 'sdk_opt_in_required' | 'pending'
 
 // Thinking Config
@@ -318,6 +321,7 @@ export type SDKAssistantMessage = {
   error?: SDKAssistantMessageError
   uuid: string
   session_id: string
+  request_id?: string
 }
 export type SDKRateLimitEvent = {
   type: 'rate_limit_event'
@@ -326,8 +330,8 @@ export type SDKRateLimitEvent = {
   session_id: string
 }
 export type SDKResultMessage =
-  | { type: 'result'; subtype: 'success'; duration_ms: number; duration_api_ms: number; is_error: boolean; num_turns: number; result: string; stop_reason: string | null; total_cost_usd: number; usage: unknown; modelUsage: Record<string, ModelUsage>; permission_denials: SDKPermissionDenial[]; structured_output?: unknown; fast_mode_state?: FastModeState; uuid: string; session_id: string }
-  | { type: 'result'; subtype: 'error_during_execution' | 'error_max_turns' | 'error_max_budget_usd' | 'error_max_structured_output_retries'; duration_ms: number; duration_api_ms: number; is_error: boolean; num_turns: number; stop_reason: string | null; total_cost_usd: number; usage: unknown; modelUsage: Record<string, ModelUsage>; permission_denials: SDKPermissionDenial[]; errors: string[]; fast_mode_state?: FastModeState; uuid: string; session_id: string }
+  | { type: 'result'; subtype: 'success'; duration_ms: number; duration_api_ms: number; ttft_ms?: number; is_error: boolean; api_error_status?: number | null; num_turns: number; result: string; stop_reason: string | null; total_cost_usd: number; usage: unknown; modelUsage: Record<string, ModelUsage>; permission_denials: SDKPermissionDenial[]; structured_output?: unknown; fast_mode_state?: FastModeState; terminal_reason?: TerminalReason; result_index?: number; fast_mode_disabled_reason?: FastModeDisabledReason; uuid: string; session_id: string }
+  | { type: 'result'; subtype: 'error_during_execution' | 'error_max_turns' | 'error_max_budget_usd' | 'error_max_structured_output_retries'; duration_ms: number; duration_api_ms: number; ttft_ms?: number; is_error: boolean; api_error_status?: number | null; num_turns: number; stop_reason: string | null; total_cost_usd: number; usage: unknown; modelUsage: Record<string, ModelUsage>; permission_denials: SDKPermissionDenial[]; errors: string[]; fast_mode_state?: FastModeState; terminal_reason?: TerminalReason; result_index?: number; fast_mode_disabled_reason?: FastModeDisabledReason; uuid: string; session_id: string }
 export type SDKSystemMessage = {
   type: 'system'
   subtype: 'init'
@@ -370,6 +374,15 @@ export type SDKPartialAssistantMessage = {
   type: 'stream_event'
   event: unknown
   parent_tool_use_id: string | null
+  uuid: string
+  session_id: string
+  ttft_ms?: number
+}
+export type SDKThinkingTokensMessage = {
+  type: 'system'
+  subtype: 'thinking_tokens'
+  estimated_tokens: number
+  estimated_tokens_delta: number
   uuid: string
   session_id: string
 }
@@ -692,6 +705,7 @@ export type SDKMessage =
   | SDKSystemMessage
   | SDKUILogMessage
   | SDKPartialAssistantMessage
+  | SDKThinkingTokensMessage
   | SDKCompactBoundaryMessage
   | SDKStatusMessage
   | SDKAPIRetryMessage
