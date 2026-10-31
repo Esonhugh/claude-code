@@ -235,6 +235,7 @@ function ModeIndicator({
   const store = useAppStateStore()
   const [remoteSessionUrl] = useState(() => store.getState().remoteSessionUrl)
   const viewSelectionMode = useAppState(s => s.viewSelectionMode)
+  const agentsHintExpired = useAppState(s => s.agentsHintExpired === true)
   const viewingAgentTaskId = useAppState(s => s.viewingAgentTaskId)
   const expandedView = useAppState(s => s.expandedView)
   const prStatus = usePrStatus(isLoading, isPrStatusEnabled())
@@ -498,6 +499,7 @@ function ModeIndicator({
   if (
     feature('BG_SESSIONS') &&
     showAgentsHint &&
+    !agentsHintExpired &&
     !isLoading &&
     !tasksSelected &&
     !teamsSelected &&
