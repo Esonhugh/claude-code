@@ -40,7 +40,12 @@ export type SimpleCommand = {
 }
 
 export type ParseForSecurityResult =
-  | { kind: 'simple'; commands: SimpleCommand[] }
+  | {
+      kind: 'simple'
+      commands: SimpleCommand[]
+      /** Some argument reads a variable whose value was set earlier in the command. */
+      usesAssignedValue?: boolean
+    }
   | { kind: 'too-complex'; reason: string; nodeType?: string }
   | { kind: 'parse-unavailable' }
 
@@ -470,9 +475,66 @@ function walkProgram(root: Node): ParseForSecurityResult {
   // `NOW=$(date) && jq --arg now "$NOW" ...` — $NOW is known to be the
   // $(date) output (already extracted as inner command).
   const varScope = new Map<string, string>()
+  assignedValueUsed = false
   const err = collectCommands(root, commands, varScope)
   if (err) return err
-  return { kind: 'simple', commands }
+  return { kind: 'simple', commands, usesAssignedValue: assignedValueUsed }
+}
+
+// Set by resolveSimpleExpansion while walkProgram runs.
+let assignedValueUsed = false
+
+/**
+ * After a branch that may or may not have run (an if body, the far side of
+ * `||`, any pass of a loop), a variable keeps a known value only if the branch
+ * left it unchanged.
+ */
+function mergeBranchScope(
+  varScope: Map<string, string>,
+  branch: Map<string, string>,
+): void {
+  for (const [name, value] of branch) {
+    if (varScope.get(name) !== value) varScope.set(name, VAR_PLACEHOLDER)
+  }
+  for (const name of varScope.keys()) {
+    if (!branch.has(name)) varScope.set(name, VAR_PLACEHOLDER)
+  }
+}
+
+/**
+ * Walk loop parts once on a copy, then forget every value they change: later
+ * passes run with those values, so only what the loop leaves alone is known.
+ */
+function forgetLoopAssignments(
+  parts: Node[],
+  varScope: Map<string, string>,
+): ParseForSecurityResult | null {
+  const firstPass = new Map(varScope)
+  for (const part of parts) {
+    const err = collectCommands(part, [], firstPass)
+    if (err) return err
+  }
+  mergeBranchScope(varScope, firstPass)
+  return null
+}
+
+/** Names that `read`, `printf -v`, `getopts`, `mapfile` and `readarray` store into. */
+function storedVariableNames(argv: string[]): string[] {
+  const [name, ...args] = argv
+  if (name === 'printf') {
+    const i = args.findIndex(a => a.startsWith('-v'))
+    if (i === -1) return []
+    return [args[i] === '-v' ? (args[i + 1] ?? '') : args[i]!.slice(2)]
+  }
+  if (
+    name === 'read' ||
+    name === 'getopts' ||
+    name === 'mapfile' ||
+    name === 'readarray'
+  ) {
+    return args.filter(a => /^[A-Za-z_][A-Za-z0-9_]*$/.test(a))
+  }
+  return []
 }
 
 /**
@@ -490,6 +552,23 @@ function collectCommands(
     const result = walkCommand(node, [], commands, varScope)
     if (result.kind !== 'simple') return result
     commands.push(...result.commands)
+    for (const c of result.commands) {
+      for (const name of storedVariableNames(c.argv)) {
+        const existing = varScope.get(name)
+        if (existing === undefined) continue
+        // SECURITY: the stored value comes from input, not the command text.
+        // `VAR=../../etc/passwd && if true || read VAR; then cat "/tmp/$VAR"; fi`:
+        // the read may not run, so a tracked literal cannot be overwritten.
+        if (!containsAnyPlaceholder(existing)) {
+          return {
+            kind: 'too-complex',
+            reason: `'${c.argv[0]} ${name}' overwrites tracked literal '${existing}' with a value read at run time`,
+            nodeType: 'command',
+          }
+        }
+        varScope.set(name, VAR_PLACEHOLDER)
+      }
+    }
     return null
   }
 
@@ -541,7 +620,10 @@ function collectCommands(
     // For `pipeline`, ALL stages run in subshells — start with a copy so
     // nothing mutates caller's scope. For `list`/`program`, the `&&`/`;`
     // chain mutates caller's scope (sequential); fork only on `||`/`&`.
-    let scope = isPipeline ? new Map(varScope) : varScope
+    // With `||`/`&` every segment may or may not run, so each one walks a
+    // copy that is merged back at the end.
+    let scope = isPipeline || snapshot ? new Map(varScope) : varScope
+    const segments = [scope]
     for (const child of node.children) {
       if (!child) continue
       if (SEPARATOR_TYPES.has(child.type)) {
@@ -555,11 +637,15 @@ function collectCommands(
           // For list/program: snapshot is non-null (pre-scan set it).
           // `|`/`|&` only appear under `pipeline` nodes; `||`/`&` under list.
           scope = new Map(snapshot ?? varScope)
+          segments.push(scope)
         }
         continue
       }
       const err = collectCommands(child, commands, scope)
       if (err) return err
+    }
+    if (snapshot) {
+      for (const segment of segments) mergeBranchScope(varScope, segment)
     }
     return null
   }
@@ -746,18 +832,23 @@ function collectCommands(
         nodeType: 'for_statement',
       }
     }
-    // SECURITY: Body uses a scope COPY — vars assigned inside the loop
-    // body don't leak to commands after `done`. The loop var itself is
-    // set in the REAL scope (bash semantics: $i still set after loop)
-    // and copied into the body scope. ALWAYS VAR_PLACEHOLDER — see above.
+    // SECURITY: The loop var itself is set in the REAL scope (bash
+    // semantics: $i still set after loop). ALWAYS VAR_PLACEHOLDER — see
+    // above. Values the body changes are unknown on every pass and after
+    // `done`: `x=echo; for i in 1 2; do $x f; x=touch; done` runs touch.
     varScope.set(loopVar, VAR_PLACEHOLDER)
+    const body = doGroup.children.filter(
+      (c): c is Node =>
+        !!c && c.type !== 'do' && c.type !== 'done' && c.type !== ';',
+    )
+    const forgetErr = forgetLoopAssignments(body, varScope)
+    if (forgetErr) return forgetErr
     const bodyScope = new Map(varScope)
-    for (const c of doGroup.children) {
-      if (!c) continue
-      if (c.type === 'do' || c.type === 'done' || c.type === ';') continue
+    for (const c of body) {
       const err = collectCommands(c, commands, bodyScope)
       if (err) return err
     }
+    mergeBranchScope(varScope, bodyScope)
     return null
   }
 
@@ -778,6 +869,25 @@ function collectCommands(
     // tree-sitter if_statement children: if, COND..., then, THEN-BODY...,
     // [elif_clause...], [else_clause], fi. We distinguish condition from
     // then-body by tracking whether we've seen the `then` token.
+    if (node.type === 'while_statement') {
+      // The condition and body both run again on every pass.
+      const parts: Node[] = []
+      for (const child of node.children) {
+        if (!child || child.type === 'while' || child.type === 'until') continue
+        if (child.type === ';') continue
+        if (child.type === 'do_group') {
+          for (const c of child.children) {
+            if (c && c.type !== 'do' && c.type !== 'done' && c.type !== ';') {
+              parts.push(c)
+            }
+          }
+        } else {
+          parts.push(child)
+        }
+      }
+      const forgetErr = forgetLoopAssignments(parts, varScope)
+      if (forgetErr) return forgetErr
+    }
     let seenThen = false
     for (const child of node.children) {
       if (!child) continue
@@ -807,6 +917,7 @@ function collectCommands(
           const err = collectCommands(c, commands, bodyScope)
           if (err) return err
         }
+        mergeBranchScope(varScope, bodyScope)
         continue
       }
       if (child.type === 'elif_clause' || child.type === 'else_clause') {
@@ -826,6 +937,7 @@ function collectCommands(
           const err = collectCommands(c, commands, branchScope)
           if (err) return err
         }
+        mergeBranchScope(varScope, branchScope)
         continue
       }
       // Condition (seenThen=false) or then-body (seenThen=true).
@@ -836,6 +948,7 @@ function collectCommands(
       const before = commands.length
       const err = collectCommands(child, commands, targetScope)
       if (err) return err
+      if (seenThen) mergeBranchScope(varScope, targetScope)
       // If condition included `read VAR...`, track vars in REAL scope.
       // read var value is UNKNOWN (stdin input) → use VAR_PLACEHOLDER
       // (unknown-value sentinel, string-only).
@@ -1965,6 +2078,7 @@ function resolveSimpleExpansion(
   // '__LOOP_STATIC__', resolved as cwd-relative → PASSED → bypass.
   const trackedValue = varScope.get(varName)
   if (trackedValue !== undefined) {
+    assignedValueUsed = true
     if (containsAnyPlaceholder(trackedValue)) {
       // Non-literal: bare → reject, inside string → VAR_PLACEHOLDER
       // (walkString's solo-placeholder gate rejects `"$VAR"` alone).
@@ -2030,14 +2144,45 @@ function stripRawString(text: string): string {
   return text.slice(1, -1)
 }
 
+const TOO_COMPLEX_LABELS = new Map([
+  ['simple_expansion', 'A variable'],
+  ['expansion', 'A variable in braces'],
+  ['command_substitution', 'A nested command'],
+  ['process_substitution', 'A command used as a file'],
+  ['brace_expression', 'A brace pattern'],
+  ['ansi_c_string', 'Text with escape codes'],
+  ['translated_string', 'Translatable text'],
+  ['test_command', 'A test in brackets'],
+  ['herestring_redirect', 'A here-string'],
+  ['heredoc_redirect', 'A here-document'],
+  ['subshell', 'A group in parentheses'],
+  ['compound_statement', 'A group in braces or double parentheses'],
+  ['for_statement', 'A for or select loop'],
+  ['c_style_for_statement', 'A counting for loop'],
+  ['while_statement', 'A while or until loop'],
+  ['until_statement', 'An until loop'],
+  ['if_statement', 'An if statement'],
+  ['case_statement', 'A case statement'],
+  ['function_definition', 'A function definition'],
+  ['array', 'A list of values'],
+  ['string', 'Quoted text'],
+  ['file_redirect', 'A file redirect'],
+  ['pipeline', 'A pipeline'],
+  ['concatenation', 'Joined pieces of text'],
+  ['variable_assignment', 'A variable assignment'],
+  ['variable_assignments', 'Variable assignments'],
+])
+
 function tooComplex(node: Node): ParseForSecurityResult {
-  const reason =
-    node.type === 'ERROR'
-      ? 'Parse error'
-      : DANGEROUS_TYPES.has(node.type)
-        ? `Contains ${node.type}`
-        : `Unhandled node type: ${node.type}`
-  return { kind: 'too-complex', reason, nodeType: node.type }
+  if (node.type === 'ERROR') {
+    return { kind: 'too-complex', reason: 'Parse error', nodeType: node.type }
+  }
+  const label = TOO_COMPLEX_LABELS.get(node.type)
+  return {
+    kind: 'too-complex',
+    reason: `${label === undefined ? 'This command' : `${label} in this command`} can't be checked before it runs`,
+    nodeType: node.type,
+  }
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -2088,8 +2233,6 @@ const EVAL_LIKE_BUILTINS = new Set([
   'source',
   '.',
   'exec',
-  'command',
-  'builtin',
   'fc',
   // `coproc rm -rf /` spawns rm as a coprocess. tree-sitter parses it as
   // a plain command with argv[0]='coproc', so permission rules and path
@@ -2218,8 +2361,22 @@ export function checkSemantics(commands: SimpleCommand[]): SemanticCheckResult {
     // circular import with bashPermissions.ts.
     let a = cmd.argv
     for (;;) {
-      if (a[0] === 'time' || a[0] === 'nohup') {
+      if (a[0] === 'time' || a[0] === 'nohup' || a[0] === 'builtin') {
         a = a.slice(1)
+      } else if (a[0] === 'command') {
+        // `command [-p] [--] cmd` runs cmd; `command -v/-V NAME` only looks
+        // NAME up. Any other flag hides where the wrapped command starts.
+        let i = 1
+        while (a[i] && /^-[pvV]+$/.test(a[i]!)) i++
+        if (a.slice(1, i).some(f => /[vV]/.test(f))) break
+        if (a[i] === '--') i++
+        else if (a[i]?.startsWith('-')) {
+          return {
+            ok: false,
+            reason: `command with ${a[i]} flag cannot be statically analyzed`,
+          }
+        }
+        a = a.slice(i)
       } else if (a[0] === 'timeout') {
         // `timeout 5`, `timeout 5s`, `timeout 5.5`, plus optional GNU flags
         // preceding the duration. Long: --foreground, --kill-after=N,

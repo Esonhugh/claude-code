@@ -355,6 +355,29 @@ if (process.env[childFlag] !== '1') {
     )
   })
 
+  test('commands that read a variable they set are never auto-allowed', async () => {
+    const allow = ['Bash(echo:*)', 'Bash(git status:*)']
+    for (const command of [
+      'x=hi; echo "$x"',
+      'x=echo; $x f',
+      'x=echo; for i in 1 2; do $x f; x=touch; done',
+      'x=echo; for i in 1 2; do "$x" f; x=touch; done',
+      'x=echo; if true; then x=touch; fi; "$x" f',
+      'x=echo; false || x=touch; "$x" f',
+      'x=echo; printf -v x touch; "$x" f',
+      'for i in a b; do echo "item $i"; done',
+    ]) {
+      const result = await decide(command, 'default', { allow })
+      expect({ command, behavior: result.behavior }).not.toEqual({
+        command,
+        behavior: 'allow',
+      })
+    }
+    await expectBehavior('echo "$x"', 'default', { allow: ['Bash(echo "$x")'] }, 'allow')
+    await expectBehavior('builtin echo hi', 'default', { allow }, 'allow')
+    await expectBehavior('builtin eval "echo hi"', 'default', { allow }, 'ask')
+  })
+
   test('dangerouslyDisableSandbox asks unless an allow rule covers the command', async () => {
     const { SandboxManager } =
       await import('../../utils/sandbox/sandbox-adapter.js')
