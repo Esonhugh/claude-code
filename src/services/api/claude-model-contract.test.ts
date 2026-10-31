@@ -1990,7 +1990,7 @@ test('Mods named sections reach the actual SDK system field and invalidate on th
       customSystemPrompt: undefined, appendSystemPrompt: 'SIDE_APPEND_LITERAL',
       thinkingConfig: { type: 'disabled' }, agents: [], mods: runtime,
     })
-    expect((await runSideQuestion({ question: 'side question', cacheSafeParams: fallback })).response).toBe('OK')
+    expect(await runSideQuestion({ question: 'side question', cacheSafeParams: fallback })).toMatchObject({ response: 'OK', synthetic: false })
     expect(requests).toHaveLength(5)
     // Official 2.1.292: the fallback's own model selects lean sections, independently of the earlier query.
     const fallbackNamed = getSystemPromptSections(fallback.systemPrompt)!.filter(section => 'name' in section)
