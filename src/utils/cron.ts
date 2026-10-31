@@ -228,8 +228,8 @@ export function cronToHuman(cron: string, opts?: { utc?: boolean }): string {
     string,
   ]
 
-  // Every N minutes: step/N * * * *
-  const everyMinMatch = minute.match(/^\*\/(\d+)$/)
+  // Every N minutes: step/N * * * * (a bare * is every minute)
+  const everyMinMatch = minute === '*' ? ['*', '1'] : minute.match(/^\*\/(\d+)$/)
   if (
     everyMinMatch &&
     hour === '*' &&

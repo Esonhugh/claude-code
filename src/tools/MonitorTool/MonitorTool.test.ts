@@ -176,3 +176,10 @@ test('sandbox auto-allow does not apply to monitor commands', async () => {
     for (const spy of spies) spy.mockRestore()
   }
 })
+
+// Like 2.1.311 a blank command is rejected instead of starting a monitor on nothing.
+test('a blank command is rejected', () => {
+  for (const command of ['', '   ']) {
+    assert.equal(MonitorTool.inputSchema.safeParse({ description: 'd', command }).success, false)
+  }
+})

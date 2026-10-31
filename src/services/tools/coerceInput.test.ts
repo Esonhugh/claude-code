@@ -34,3 +34,11 @@ test('Bash accepts timeout_ms and command_description', () => {
     .toEqual({ command: 'ls', timeout: 5000, description: 'list' })
   expect(BashTool.coerceInput!({ command: 'ls' })).toBeNull()
 })
+
+test('Grep reads file_path and rg flags as its own parameters', async () => {
+  const { GrepTool } = await import('../../tools/GrepTool/GrepTool.js')
+  expect(repaired(GrepTool, { pattern: 'x', file_path: '/a', '-l': true, '-r': true }))
+    .toEqual({ pattern: 'x', path: '/a', output_mode: 'files_with_matches' })
+  expect(GrepTool.coerceInput!({ pattern: 'x', '-c': 'true' })).toEqual({ pattern: 'x', output_mode: 'count' })
+  expect(GrepTool.coerceInput!({ pattern: 'x', path: '/a' })).toBeNull()
+})

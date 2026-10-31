@@ -1120,7 +1120,7 @@ ${resolved.candidates.map(candidate => `  ${candidate.name} [${candidate.ref}]`)
         return {
           data: {
             success: false,
-            message: `Unknown recipient "${input.to}". Use ListAgents to discover local sessions, or use a known agent or teammate name.`,
+            message: `No agent named '${input.to}' is reachable.\nUse ListAgents to see everyone you can message.`,
           },
         }
       }
