@@ -401,6 +401,8 @@ export const SDKControlGetContextUsageResponseSchema = lazySchema(() =>
           attachmentTokens: z.number(),
           assistantMessageTokens: z.number(),
           userMessageTokens: z.number(),
+          redirectedContextTokens: z.number(),
+          unattributedTokens: z.number(),
           toolCallsByType: z.array(
             z.object({
               name: z.string(),
