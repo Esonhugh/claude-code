@@ -820,9 +820,9 @@ test('side queries turn thinking off with each model\'s accepted form', async ()
   for (const model of ['claude-sonnet-5', 'claude-sonnet-5-5', 'claude-opus-5-5'])
     await sideQuery({model,messages:[{role:'user',content:'test'}],thinking:false,querySource:'auto_mode'})
   await sideQuery({model:'claude-sonnet-5-5',messages:[{role:'user',content:'test'}],thinking:false,effort:'max',querySource:'auto_mode'})
-  // claude-sonnet-5-5 rejects disabled thinking (between_tools is its off switch, also
-  // rejected at xhigh/max); claude-opus-5-5 thinks on every request.
-  expect(requests.map(request => request.thinking as unknown)).toEqual([{type:'disabled'}, {type:'between_tools'}, {type:'adaptive'}, {type:'adaptive'}])
+  // claude-sonnet-5-5 rejects disabled thinking, so like official 2.1.311 it
+  // thinks adaptively instead; claude-opus-5-5 thinks on every request.
+  expect(requests.map(request => request.thinking as unknown)).toEqual([{type:'disabled'}, {type:'adaptive'}, {type:'adaptive'}, {type:'adaptive'}])
 })
 
 test('classifier side queries keep the attribution header for OAuth when the env opts out, like official', async () => {
@@ -2209,11 +2209,14 @@ test.each([
   },
 )
 
-test('Sonnet 5.5 uses between-tools reasoning when thinking is disabled', async () => {
-  const request = await query('claude-sonnet-5-5', { type: 'disabled' })
-  expect(request.thinking as unknown).toEqual({ type: 'between_tools' })
-  expect(request.temperature).toBeUndefined()
-})
+test.each(['claude-sonnet-5-5', 'claude-haiku-5-5'])(
+  '%s rejects disabled thinking, so a disabled config thinks adaptively like official',
+  async model => {
+    const request = await query(model, { type: 'disabled' })
+    expect(request.thinking as unknown).toEqual({ type: 'adaptive' })
+    expect(request.temperature).toBeUndefined()
+  },
+)
 
 test.each(['xhigh', 'max'] as const)(
   'Sonnet 5.5 uses adaptive reasoning for disabled thinking at %s effort',

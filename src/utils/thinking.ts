@@ -185,7 +185,9 @@ export function supportsManualThinkingBudget(model: string): boolean {
   return getCanonicalName(model) === 'claude-mythos-preview'
 }
 
-export function usesBetweenToolsWhenThinkingDisabled(model: string): boolean {
+// The API rejects `thinking: {type: 'disabled'}` on these models; like official,
+// a disabled config is sent as adaptive thinking instead.
+export function rejectsDisabledThinking(model: string): boolean {
   const canonical = getCanonicalName(model)
   return canonical === 'claude-sonnet-5-5' || canonical === 'claude-haiku-5-5'
 }
