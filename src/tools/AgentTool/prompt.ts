@@ -190,7 +190,7 @@ When NOT to use the ${AGENT_TOOL_NAME} tool:
   const concurrencyNote =
     !listViaAttachment && getSubscriptionType() !== 'pro'
       ? `
-- Launch multiple agents concurrently whenever possible, to maximize performance; to do that, use a single message with multiple tool uses`
+- When you launch multiple agents for independent work, send them in a single message with multiple tool uses so they run concurrently.`
       : ''
 
   // Non-coordinator gets the full prompt with all sections

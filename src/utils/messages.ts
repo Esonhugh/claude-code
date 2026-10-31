@@ -4559,7 +4559,7 @@ You have exited auto mode. The user may now want to interact more directly. You 
       }
       if (attachment.isInitial && attachment.showConcurrencyNote) {
         parts.push(
-          `Launch multiple agents concurrently whenever possible, to maximize performance; to do that, use a single message with multiple tool uses.`,
+          'When you launch multiple agents for independent work, send them in a single message with multiple tool uses so they run concurrently.',
         )
       }
       return wrapMessagesInSystemReminder([

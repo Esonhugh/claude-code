@@ -45,13 +45,6 @@ export function shouldUseLeanPrompt(model: string): boolean {
   return typeof flag === 'object' && flag !== null && Object.entries(flag).some(([selector, value]) => value === true && name.includes(selector))
 }
 
-export function usesSystemTurnReminders(model: string): boolean {
-  const name = canonical(model)
-  if (name === 'claude-sonnet-5' || name === 'claude-opus-4-8') return false
-  if (isEnvTruthy(process.env.CLAUDE_CODE_FORCE_MID_CONVERSATION_SYSTEM)) return true
-  return promptCapabilityOverride(model, 'mid_conv_system') ?? (leanModels.has(name) || !legacy(name))
-}
-
 export function usesDetailedCommunication(model: string): boolean {
   return promptCapabilityOverride(model, 'fable_5_1_prompt_bundle') ?? ['claude-fable-5-1', 'claude-mythos-5'].includes(canonical(model))
 }
