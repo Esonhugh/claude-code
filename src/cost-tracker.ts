@@ -312,6 +312,14 @@ function addToTotalModelUsage(
   modelUsage.thinkingTokens = (modelUsage.thinkingTokens ?? 0) + (usage.output_tokens_details?.thinking_tokens ?? 0)
   modelUsage.cacheReadInputTokens += usage.cache_read_input_tokens ?? 0
   modelUsage.cacheCreationInputTokens += usage.cache_creation_input_tokens ?? 0
+  if (usage.cache_creation) {
+    modelUsage.cacheCreationEphemeral5mInputTokens =
+      (modelUsage.cacheCreationEphemeral5mInputTokens ?? 0) +
+      (usage.cache_creation.ephemeral_5m_input_tokens ?? 0)
+    modelUsage.cacheCreationEphemeral1hInputTokens =
+      (modelUsage.cacheCreationEphemeral1hInputTokens ?? 0) +
+      (usage.cache_creation.ephemeral_1h_input_tokens ?? 0)
+  }
   modelUsage.webSearchRequests +=
     usage.server_tool_use?.web_search_requests ?? 0
   modelUsage.costUSD += cost

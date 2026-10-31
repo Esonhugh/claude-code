@@ -40,8 +40,11 @@ afterEach(() => {
 })
 
 describe('BashTool prompt', () => {
-  test('has a short Git section with attribution lines when configured', () => {
+  test('has a short Git section only when git instructions are turned on', () => {
     attribution = { commit: '', pr: '' }
+    delete process.env.CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS
+    expect(getSimplePrompt()).not.toContain('# Git')
+    process.env.CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS = '0'
     const prompt = getSimplePrompt()
     expect(prompt).toContain('# Git')
     expect(prompt).toContain('Commit or push only when the user asks. If on the default branch, branch first.')
