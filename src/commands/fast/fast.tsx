@@ -27,7 +27,9 @@ import {
   isFastModeEnabled,
   isFastModeSupportedByModel,
   prefetchFastModeStatus,
+  setFastModeSessionOptIn,
 } from '../../utils/fastMode.js'
+import { setMainLoopModelOverride } from '../../bootstrap/state.js'
 import { formatDuration } from '../../utils/format.js'
 import { formatModelPricing, getOpusCostTier } from '../../utils/modelCost.js'
 import { getAPIProvider } from '../../utils/model/providers.js'
@@ -36,18 +38,24 @@ import { updateSettingsForSource } from '../../utils/settings/settings.js'
 function applyFastMode(
   enable: boolean,
   setAppState: (f: (prev: AppState) => AppState) => void,
+  sessionOnly = false,
 ): void {
   clearFastModeCooldown()
-  updateSettingsForSource('userSettings', {
-    fastMode: enable ? true : undefined,
-  })
+  if (!sessionOnly) {
+    updateSettingsForSource('userSettings', {
+      fastMode: enable ? true : undefined,
+    })
+  }
   if (enable) {
     setAppState(prev => {
       // Only switch model if current model doesn't support fast mode
       const needsModelSwitch = !isFastModeSupportedByModel(prev.mainLoopModel)
+      if (needsModelSwitch && sessionOnly) {
+        setMainLoopModelOverride(getFastModeModel())
+      }
       return {
         ...prev,
-        ...(needsModelSwitch
+        ...(needsModelSwitch && !sessionOnly
           ? { mainLoopModel: getFastModeModel(), mainLoopModelForSession: null }
           : {}),
         fastMode: true,
@@ -208,14 +216,16 @@ export async function handleFastModeShortcut(
   enable: boolean,
   getAppState: () => AppState,
   setAppState: (f: (prev: AppState) => AppState) => void,
+  sessionOnly = false,
 ): Promise<string> {
+  if (sessionOnly) setFastModeSessionOptIn(enable)
   const unavailableReason = getFastModeUnavailableReason()
   if (unavailableReason) {
     return `Fast mode unavailable: ${unavailableReason}`
   }
 
   const { mainLoopModel } = getAppState()
-  applyFastMode(enable, setAppState)
+  applyFastMode(enable, setAppState, sessionOnly)
   logEvent('tengu_fast_mode_toggled', {
     enabled: enable,
     source:
@@ -231,9 +241,9 @@ export async function handleFastModeShortcut(
       getAPIProvider() === 'openai'
         ? 'Priority processing; increased usage applies'
         : formatModelPricing(getOpusCostTier(true))
-    return `${fastIcon} Fast mode ON${modelUpdated} · ${pricing}`
+    return `${fastIcon} Fast mode ON${modelUpdated} · ${pricing}${sessionOnly ? ' (this session only)' : ''}`
   } else {
-    return `Fast mode OFF`
+    return `Fast mode OFF${sessionOnly ? ' (this session only)' : ''}`
   }
 }
 

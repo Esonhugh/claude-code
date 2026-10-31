@@ -362,12 +362,12 @@ assert.equal(
   (unknownFar.messages[0] as { content?: unknown }).content,
   'Unknown command: /nosuchcmd',
 )
+// In -p the unknown command reaches the model with a note instead.
 const unknownHeadless = await runUnknown('/nosuchcmd', true)
-assert.equal(unknownHeadless.resultText, 'Unknown command: /nosuchcmd')
-assert.equal(
-  (unknownHeadless.messages.at(-1) as { message?: { content?: unknown } })
-    .message?.content,
-  '<local-command-stdout>Unknown command: /nosuchcmd</local-command-stdout>',
+assert.equal(unknownHeadless.shouldQuery, true)
+assert.match(
+  JSON.stringify(unknownHeadless.messages),
+  /starts with the slash command \/nosuchcmd, but no command with that name is available/,
 )
 
 // Official 2.1.311 shows a malformed command (failed !`cmd` pattern) as is.

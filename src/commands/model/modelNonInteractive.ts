@@ -22,7 +22,7 @@ export const call: LocalCommandCall = async (args, context) => {
   if (!name || COMMON_INFO_ARGS.includes(name)) {
     return {
       type: 'text',
-      value: `Current model: ${renderDefaultModelSetting(getMainLoopModel())}\n${USAGE}`,
+      value: `Current model: \`${renderDefaultModelSetting(getMainLoopModel())}\`\n${USAGE}`,
     }
   }
   if (COMMON_HELP_ARGS.includes(name)) {
@@ -61,16 +61,13 @@ export const call: LocalCommandCall = async (args, context) => {
     }
   }
 
+  // Headless switches last for this session only; settings.json keeps its
+  // saved default (official 2.1.311).
   const model = requested ?? getDefaultMainLoopModel()
   setMainLoopModelOverride(model)
-  context.setAppState(prev => ({
-    ...prev,
-    mainLoopModel: requested,
-    mainLoopModelForSession: null,
-  }))
   notifySessionMetadataChanged({ model })
   return {
     type: 'text',
-    value: `Set model to ${renderDefaultModelSetting(model)}`,
+    value: `Set model to \`${renderDefaultModelSetting(model)}\` for this session only`,
   }
 }

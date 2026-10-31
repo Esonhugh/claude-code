@@ -88,6 +88,7 @@ import {
   isSystemLocalCommandMessage,
   normalizeMessages,
   prepareUserContent,
+  wrapInSystemReminder,
 } from '../messages.js'
 import type { ModelAlias } from '../model/aliases.js'
 import { parseToolListFromCLI } from '../permissions/permissionSetup.js'
@@ -325,7 +326,60 @@ export function looksLikeCommand(commandName: string): boolean {
   return !/[^a-zA-Z0-9:\-_]/.test(commandName)
 }
 
-function findClosestCommandName(
+const UNKNOWN_COMMAND_NAME_LIMIT = 40
+
+function unknownCommandNote(
+  commandName: string,
+  suggestion: string | undefined,
+  names: string[],
+  commandCount: number,
+): string {
+  const listed = names.slice(0, UNKNOWN_COMMAND_NAME_LIMIT)
+  const more = Math.max(0, commandCount - listed.length)
+  const available =
+    listed.length === 0
+      ? more > 0
+        ? `This session has ${more} slash ${more === 1 ? 'command' : 'commands'}, but none can be named here.`
+        : 'No slash commands are available in this session.'
+      : `Slash commands available in this session: ${listed.map(name => `/${name}`).join(', ')}${more > 0 ? `, and ${more} more` : ''}.`
+  return [
+    `The user's message starts with the slash command /${commandName}, but no command with that name is available in this session, so it did not run.`,
+    suggestion
+      ? `The closest available command is /${suggestion}. Ask the user before running it.`
+      : undefined,
+    available,
+    'Treat the message as a plain request and do the task with the tools you have. If the task needs that command, tell the user it is not installed in this session. The user can add it as an organization plugin or a project skill. Do not give installation steps you are not sure of. Do not say the command ran.',
+  ]
+    .filter(line => line !== undefined)
+    .join(' ')
+}
+
+function headlessCommandReply(
+  commandName: string,
+  args: string,
+  precedingInputBlocks: ContentBlockParam[],
+  attachmentMessages: AttachmentMessage[],
+  text: string,
+): ProcessUserInputBaseResult {
+  return {
+    messages: [
+      ...attachmentMessages,
+      createUserMessage({
+        content: prepareUserContent({
+          inputString: `/${commandName}${args ? ` ${args}` : ''}`,
+          precedingInputBlocks,
+        }),
+      }),
+      createUserMessage({
+        content: `<local-command-stdout>${text}</local-command-stdout>`,
+      }),
+    ],
+    shouldQuery: false,
+    resultText: text,
+  }
+}
+
+export function findClosestCommandName(
   name: string,
   commands: Command[],
 ): string | undefined {
@@ -370,6 +424,7 @@ export async function processSlashCommand(
   isAlreadyProcessing?: boolean,
   canUseTool?: CanUseToolFn,
   modInvocation?: ModCommandInvocation,
+  screenedPromptId?: string,
 ): Promise<ProcessUserInputBaseResult> {
   const parsed = parseSlashCommand(inputString)
   if (!parsed) {
@@ -424,6 +479,48 @@ export async function processSlashCommand(
           commandName as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
       })
 
+      if (context.options.isNonInteractiveSession) {
+        if (builtInCommandNames().has(commandName)) {
+          return headlessCommandReply(
+            commandName,
+            parsedArgs,
+            precedingInputBlocks,
+            attachmentMessages,
+            `/${commandName} isn't available in this environment.`,
+          )
+        }
+        // Official 2.1.311: in -p an unknown command reaches the model as a
+        // plain request, with a note that it did not run.
+        const visible = context.options.commands.filter(
+          cmd => !cmd.isHidden && cmd.userInvocable !== false,
+        )
+        const modelCommands = visible.filter(
+          cmd => cmd.type === 'prompt' && !cmd.disableModelInvocation,
+        )
+        const promptId = screenedPromptId ?? randomUUID()
+        setPromptId(promptId)
+        return {
+          messages: [
+            createUserMessage({
+              content: prepareUserContent({ inputString, precedingInputBlocks }),
+              uuid,
+            }),
+            createUserMessage({
+              content: wrapInSystemReminder(
+                unknownCommandNote(
+                  commandName,
+                  findClosestCommandName(commandName, modelCommands),
+                  modelCommands.map(cmd => getCommandName(cmd)),
+                  visible.length,
+                ),
+              ),
+              isMeta: true,
+            }),
+            ...attachmentMessages,
+          ],
+          shouldQuery: true,
+        }
+      }
       // Official 2.1.311: a warning naming the command, with the closest
       // visible command (edit distance <= 2) as a suggestion.
       const suggestion = findClosestCommandName(
@@ -433,24 +530,6 @@ export async function processSlashCommand(
       const unknownMessage = suggestion
         ? `Unknown command: /${commandName}. Did you mean /${suggestion}?`
         : `Unknown command: /${commandName}`
-      if (context.options.isNonInteractiveSession) {
-        return {
-          messages: [
-            ...attachmentMessages,
-            createUserMessage({
-              content: prepareUserContent({
-                inputString: `/${commandName}${parsedArgs ? ` ${parsedArgs}` : ''}`,
-                precedingInputBlocks,
-              }),
-            }),
-            createUserMessage({
-              content: `<local-command-stdout>${unknownMessage}</local-command-stdout>`,
-            }),
-          ],
-          shouldQuery: false,
-          resultText: unknownMessage,
-        }
-      }
       return {
         messages: [
           ...attachmentMessages,
@@ -471,7 +550,7 @@ export async function processSlashCommand(
       }
     }
 
-    const promptId = randomUUID()
+    const promptId = screenedPromptId ?? randomUUID()
     setPromptId(promptId)
     logEvent('tengu_input_prompt', {})
     // Log user prompt event for OTLP
@@ -492,7 +571,7 @@ export async function processSlashCommand(
     }
   }
 
-  setPromptId(randomUUID())
+  setPromptId(screenedPromptId ?? randomUUID())
   let command = userInvocableCommand ?? commandExists!
   const subcommand = resolveSubcommand(command, parsedArgs)
   const subcommandTarget = subcommand
@@ -1048,6 +1127,7 @@ async function getMessagesForSlashCommand(
             ],
             shouldQuery: false,
             command,
+            resultText: e instanceof Error ? e.message : String(e),
           }
         }
       }

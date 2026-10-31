@@ -253,6 +253,7 @@ export { getCommandName, isCommandEnabled } from './types/command.js'
 // Commands that get eliminated from the external build
 export const INTERNAL_ONLY_COMMANDS = [
   backfillSessions,
+  files,
   breakCache,
   bughunter,
   commit,
@@ -317,7 +318,6 @@ const COMMANDS = memoize((): Command[] => [
   exit,
   fastNonInteractive,
   fast,
-  files,
   goal,
   goalNonInteractive,
   heapDump,

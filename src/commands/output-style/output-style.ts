@@ -35,7 +35,7 @@ export const call: LocalCommandCall = async args => {
     })
     return {
       type: 'text',
-      value: `Output style: ${current}\nAvailable styles:\n${rows.join('\n')}\nUsage: /output-style <style>`,
+      value: `Output style: ${current}\n\nAvailable styles:\n${rows.join('\n')}\n\nUsage: /output-style <style>`,
     }
   }
   if (match === current) {

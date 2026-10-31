@@ -97,6 +97,7 @@ function fixture(
   })
   const dependencies = {
     randomUUID: () => `id-${++id}`,
+    setPromptId: () => {},
     createHash,
     persistToolResult: async (content: string, toolUseID: string) => ({
       filepath: `/fixture/${toolUseID}.txt`, originalSize: content.length,
