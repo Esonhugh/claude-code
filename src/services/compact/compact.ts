@@ -50,7 +50,7 @@ import {
   tokenStatsToStatsigMetrics,
 } from '../../utils/contextAnalysis.js'
 import { logForDebugging } from '../../utils/debug.js'
-import { hasExactErrorMessage } from '../../utils/errors.js'
+import { errorMessage, hasExactErrorMessage } from '../../utils/errors.js'
 import { cacheToObject } from '../../utils/fileStateCache.js'
 import {
   type CacheSafeParams,
@@ -412,6 +412,7 @@ export function annotateBoundaryWithPreservedSegment(
         anchorUuid,
         tailUuid: keep.at(-1)!.uuid,
       },
+      preservedMessages: { anchorUuid, uuids: keep.map(m => m.uuid) },
     },
   }
 }
@@ -446,6 +447,8 @@ export async function compactConversation(
     customInstructions?: string,
   ) => Promise<RemoteCompactionResult | undefined>,
 ): Promise<CompactionResult> {
+  const compactStartedAt = Date.now()
+  let compactFailure: unknown
   try {
     if (messages.length === 0) {
       throw new Error(ERROR_MESSAGE_NOT_ENOUGH_MESSAGES)
@@ -772,6 +775,9 @@ export async function compactConversation(
       ...hookMessages,
     ])
 
+    boundaryMarker.compactMetadata.postTokens = truePostCompactTokenCount
+    boundaryMarker.compactMetadata.durationMs = Date.now() - compactStartedAt
+
     const querySourceForEvent =
       recompactionInfo?.querySource ?? context.options.querySource ?? 'unknown'
 
@@ -875,6 +881,7 @@ export async function compactConversation(
       compactionUsage,
     }
   } catch (error) {
+    compactFailure = error
     // Only show the error notification for manual /compact.
     // Auto-compact failures are retried on the next turn and the
     // notification is confusing when compaction eventually succeeds.
@@ -886,8 +893,17 @@ export async function compactConversation(
     context.setStreamMode?.('requesting')
     context.setResponseLength?.(() => 0)
     context.onCompactProgress?.({ type: 'compact_end' })
-    context.setSDKStatus?.(null)
+    context.setSDKStatus?.(null, compactOutcome(compactFailure))
   }
+}
+
+export function compactOutcome(failure: unknown): {
+  compact_result: 'success' | 'failed'
+  compact_error?: string
+} {
+  return failure === undefined
+    ? { compact_result: 'success' }
+    : { compact_result: 'failed', compact_error: errorMessage(failure) }
 }
 
 /**
