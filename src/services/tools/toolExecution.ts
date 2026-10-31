@@ -33,6 +33,7 @@ import {
   findToolByName,
   type Tool,
   type ToolProgress,
+  type ToolPermissionContext,
   type ToolProgressData,
   type ToolUseContext,
   type Tools,
@@ -41,6 +42,7 @@ import type { BashToolInput } from '../../tools/BashTool/BashTool.js'
 import { AGENT_TOOL_NAME } from '../../tools/AgentTool/constants.js'
 import { startSpeculativeClassifierCheck } from '../../tools/BashTool/bashPermissions.js'
 import { BASH_TOOL_NAME } from '../../tools/BashTool/toolName.js'
+import { hasEmbeddedSearchTools } from '../../utils/embeddedTools.js'
 import { FILE_EDIT_TOOL_NAME } from '../../tools/FileEditTool/constants.js'
 import { FILE_READ_TOOL_NAME } from '../../tools/FileReadTool/prompt.js'
 import { FILE_WRITE_TOOL_NAME } from '../../tools/FileWriteTool/prompt.js'
@@ -74,6 +76,7 @@ import {
   TelemetrySafeError_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
 } from '../../utils/errors.js'
 import { executePermissionDeniedHooks } from '../../utils/hooks.js'
+import { getDenyRuleForTool } from '../../utils/permissions/permissions.js'
 import { logError } from '../../utils/log.js'
 import {
   CANCEL_MESSAGE,
@@ -449,6 +452,46 @@ async function waitForPendingMcpTool(
   return { tool: signal.aborted ? undefined : tool, tools, waitedMs }
 }
 
+// Built-in tools that getAllBaseTools() leaves out while their feature is off.
+const SWITCHABLE_BUILT_IN_TOOLS = new Set([
+  'TaskCreate',
+  'TaskGet',
+  'TaskUpdate',
+  'TaskList',
+  'EnterWorktree',
+  'ExitWorktree',
+  'ExitPlanMode',
+  'LSP',
+])
+
+/**
+ * Why a built-in tool the model called is missing, as official 2.1.311 words
+ * it, so the model stops retrying it.
+ */
+export function unknownToolSuffix(
+  toolName: string,
+  context: ToolPermissionContext,
+  sessionToolNames: readonly string[] = [],
+  embeddedSearch = hasEmbeddedSearchTools(),
+): string {
+  if (embeddedSearch && (toolName === 'Glob' || toolName === 'Grep')) {
+    if (!sessionToolNames.includes(BASH_TOOL_NAME))
+      return `. ${toolName} is disabled for this session.`
+    return toolName === 'Glob'
+      ? `. Glob is not available in this session \u2014 find files with \`find\` via the ${BASH_TOOL_NAME} tool instead.`
+      : `. Grep is not available in this session \u2014 search file contents with \`grep\` via the ${BASH_TOOL_NAME} tool instead.`
+  }
+  const known = findToolByName(getAllBaseTools(), toolName)
+  if (!known) {
+    return SWITCHABLE_BUILT_IN_TOOLS.has(toolName)
+      ? `. ${toolName} is disabled for this session, in subagents as well as here.`
+      : ''
+  }
+  return !known.isEnabled() || getDenyRuleForTool(context, known)
+    ? `. ${toolName} is disabled for this session, in subagents as well as here.`
+    : `. ${toolName} is not among the tools available here. Continue with the tools you have.`
+}
+
 export async function* runToolUse(
   toolUse: ToolUseBlock,
   assistantMessage: AssistantMessage,
@@ -564,17 +607,18 @@ export async function* runToolUse(
       }),
       ...mcpToolDetailsForAnalytics(toolName, mcpServerType, mcpServerBaseUrl),
     })
+    const error = `Error: No such tool available: ${toolName}${unknownToolSuffix(toolName, toolUseContext.getAppState().toolPermissionContext, currentTools.map(t => t.name))}`
     yield {
       message: createUserMessage({
         content: [
           {
             type: 'tool_result',
-            content: `<tool_use_error>Error: No such tool available: ${toolName}</tool_use_error>`,
+            content: `<tool_use_error>${error}</tool_use_error>`,
             is_error: true,
             tool_use_id: toolUse.id,
           },
         ],
-        toolUseResult: `Error: No such tool available: ${toolName}`,
+        toolUseResult: error,
         sourceToolAssistantUUID: assistantMessage.uuid,
       }),
     }

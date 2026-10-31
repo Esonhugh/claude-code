@@ -472,13 +472,23 @@ export const SkillTool: Tool<InputSchema, Output, Progress> = buildTool({
       context,
     )
     if (!resolved) {
-      return parseDirectMcpSkillCommand(normalizedCommandName, context)
-        ? { result: true }
-        : {
-            result: false,
-            message: `Unknown skill: ${normalizedCommandName}`,
-            errorCode: 2,
-          }
+      if (parseDirectMcpSkillCommand(normalizedCommandName, context)) {
+        return { result: true }
+      }
+      const { findClosestCommandName } = await import(
+        'src/utils/processUserInput/processSlashCommand.js'
+      )
+      const suggestion = findClosestCommandName(
+        normalizedCommandName,
+        await getAllCommands(context),
+      )
+      return {
+        result: false,
+        message: suggestion
+          ? `Unknown skill: ${normalizedCommandName}. Did you mean ${suggestion}?`
+          : `Unknown skill: ${normalizedCommandName}`,
+        errorCode: 2,
+      }
     }
 
     if (isSkillHiddenFromModel(resolved.command)) {

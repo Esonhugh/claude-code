@@ -9,7 +9,7 @@ import { findToolByName, type Tools, type ToolUseContext } from '../../Tool.js'
 import { BASH_TOOL_NAME } from '../../tools/BashTool/toolName.js'
 import type { AssistantMessage, Message } from '../../types/message.js'
 import { createChildAbortController } from '../../utils/abortController.js'
-import { runToolUse } from './toolExecution.js'
+import { runToolUse, unknownToolSuffix } from './toolExecution.js'
 import type { ModSnapshot } from '../mods/runtime.js'
 import { createToolCatalogForContext } from '../mods/toolCatalog.js'
 import { createModToolHost } from '../mods/toolHost.js'
@@ -133,6 +133,7 @@ export class StreamingToolExecutor {
     }
     const toolDefinition = findToolByName(this.toolDefinitions, block.name)
     if (!toolDefinition) {
+      const error = `Error: No such tool available: ${block.name}${unknownToolSuffix(block.name, this.toolUseContext.getAppState().toolPermissionContext, this.toolDefinitions.map(t => t.name))}`
       this.tools.push({
         id: block.id,
         block,
@@ -145,12 +146,12 @@ export class StreamingToolExecutor {
             content: [
               {
                 type: 'tool_result',
-                content: `<tool_use_error>Error: No such tool available: ${block.name}</tool_use_error>`,
+                content: `<tool_use_error>${error}</tool_use_error>`,
                 is_error: true,
                 tool_use_id: block.id,
               },
             ],
-            toolUseResult: `Error: No such tool available: ${block.name}`,
+            toolUseResult: error,
             sourceToolAssistantUUID: assistantMessage.uuid,
           }),
         ],
