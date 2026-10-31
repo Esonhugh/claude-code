@@ -5,13 +5,14 @@ import { handleFastModeShortcut } from './fast.js'
 export const call: LocalCommandCall = async (args, context) => {
   await prefetchFastModeStatus()
   const arg = args.trim().toLowerCase()
-  if (arg === 'on' || arg === 'off') {
+  if (!arg || arg === 'on' || arg === 'off') {
     return {
       type: 'text',
       value: await handleFastModeShortcut(
-        arg === 'on',
+        arg ? arg === 'on' : !context.getAppState().fastMode,
         context.getAppState,
         context.setAppState,
+        true,
       ),
     }
   }

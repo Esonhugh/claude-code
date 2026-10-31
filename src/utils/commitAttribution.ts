@@ -834,9 +834,6 @@ export async function getStagedFiles(): Promise<string[]> {
   return []
 }
 
-// formatAttributionTrailer moved to attributionTrailer.ts for tree-shaking
-// (contains excluded strings that should not be in external builds)
-
 /**
  * Check if we're in a transient git state (rebase, merge, cherry-pick).
  */

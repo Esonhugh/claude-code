@@ -379,6 +379,8 @@ function resolveServedModelAlias(model: ModelSetting): ModelSetting {
       return getDefaultHaikuModel()
     case 'fable':
       return getDefaultFableModel()
+    case 'fable[1m]':
+      return `${getDefaultFableModel()}[1m]`
     default:
       return model
   }

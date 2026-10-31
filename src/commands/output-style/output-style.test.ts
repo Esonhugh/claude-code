@@ -22,12 +22,12 @@ const run = async (args: string) =>
 
 test('lists the built-in styles like 2.1.311', async () => {
   const listed = await run('')
-  expect(listed).toStartWith('Output style: default\nAvailable styles:\n- default (current)\n')
+  expect(listed).toStartWith('Output style: default\n\nAvailable styles:\n- default (current)\n')
   expect(listed).toContain(
     '- Proactive: Claude executes immediately, minimizes interruptions, and prefers action over planning',
   )
   expect(listed).toContain('- Concise: Claude responds tersely')
-  expect(listed).toEndWith('Usage: /output-style <style>')
+  expect(listed).toEndWith('\n\nUsage: /output-style <style>')
   expect(await run('nope')).toStartWith(
     'Unknown output style "nope". Available styles: default, Proactive, Concise, Explanatory, Learning',
   )

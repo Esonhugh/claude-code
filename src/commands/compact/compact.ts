@@ -55,8 +55,13 @@ export const call: LocalCommandCall = async (args, context) => {
   // model doesn't summarize content that was intentionally removed.
   messages = getMessagesAfterCompactBoundary(messages)
 
+  // Official 2.1.311: an empty conversation compacts to nothing, and one
+  // the model never answered (e.g. only /clear) has too few rounds.
   if (messages.length === 0) {
-    throw new Error('No messages to compact')
+    return { type: 'text', value: '' }
+  }
+  if (!messages.some(message => message.type === 'assistant')) {
+    throw new Error(ERROR_MESSAGE_NOT_ENOUGH_MESSAGES)
   }
 
   const customInstructions = args.trim()

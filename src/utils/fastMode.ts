@@ -81,6 +81,14 @@ export type SdkFastModeDisabledReason =
   | 'disabled_by_env'
   | 'sdk_opt_in_required'
 
+// Set when `/fast` turns fast mode on in a headless session: like
+// official 2.1.311 that counts as the SDK opt-in, for this session only.
+let fastModeSessionOptIn = false
+
+export function setFastModeSessionOptIn(value: boolean): void {
+  fastModeSessionOptIn = value
+}
+
 function getFastModeBlock(): {
   code: SdkFastModeDisabledReason
   message: string
@@ -126,7 +134,7 @@ function getFastModeBlock(): {
     !getKairosActive()
   ) {
     const flagFastMode = getSettingsForSource('flagSettings')?.fastMode
-    if (!flagFastMode) {
+    if (!flagFastMode && !fastModeSessionOptIn) {
       const reason = 'Fast mode is not available in the Agent SDK'
       logForDebugging(`Fast mode unavailable: ${reason}`)
       return { code: 'sdk_opt_in_required', message: reason }
