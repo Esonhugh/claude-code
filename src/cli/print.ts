@@ -372,7 +372,7 @@ import {
 import {
   modelSupportsAdaptiveThinking,
   requiresAlwaysOnAdaptiveThinking,
-  usesBetweenToolsWhenThinkingDisabled,
+  rejectsDisabledThinking,
 } from 'src/utils/thinking.js'
 import { modelSupportsAutoMode } from 'src/utils/betas.js'
 import { validateModel } from 'src/utils/model/validateModel.js'
@@ -1479,10 +1479,10 @@ function runHeadlessStreaming(
       ...(hasAdaptiveThinking && { supportsAdaptiveThinking: true }),
       ...(hasFastMode && { supportsFastMode: true }),
       ...(hasAutoMode && { supportsAutoMode: true }),
-      // Off maps to adaptive or between-tools thinking on these models.
+      // Off maps to adaptive thinking on these models.
       supportsThinkingOff:
         !requiresAlwaysOnAdaptiveThinking(resolvedModel) &&
-        !usesBetweenToolsWhenThinkingDisabled(resolvedModel),
+        !rejectsDisabledThinking(resolvedModel),
     }
   })
   let activeUserSpecifiedModel = options.userSpecifiedModel
