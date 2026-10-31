@@ -115,6 +115,7 @@ import {
   finalContextTokensFromLastResponse,
   tokenCountWithEstimation,
 } from './utils/tokens.js'
+import { bytesPerTokenForModel } from './services/tokenEstimation.js'
 import { ESCALATED_MAX_TOKENS } from './utils/context.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from './services/analytics/growthbook.js'
 import { SLEEP_TOOL_NAME } from './tools/SleepTool/prompt.js'
@@ -1091,7 +1092,10 @@ async function* queryLoop(
       !collapseOwnsIt
     ) {
       const { isAtBlockingLimit } = calculateTokenWarningState(
-        tokenCountWithEstimation(projectedMessagesForQuery) - snipTokensFreed,
+        tokenCountWithEstimation(
+          projectedMessagesForQuery,
+          bytesPerTokenForModel(toolUseContext.options.mainLoopModel),
+        ) - snipTokensFreed,
         toolUseContext.options.mainLoopModel,
         toolUseContext.options.autoCompactWindow,
       )

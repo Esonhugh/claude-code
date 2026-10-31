@@ -36,7 +36,7 @@ test('like official, /context folds skills to one count line until /context all'
   expect(folded).not.toContain('alpha')
 
   const expanded = await renderToString(<ContextVisualization data={data} />, 100)
-  expect(expanded).toContain('└ alpha: 700 tokens')
+  expect(expanded).toContain('└ alpha: ~700 tokens')
   expect(expanded).not.toContain('/context all to expand')
 })
 
@@ -61,4 +61,30 @@ test('like official, the legend names the model on its own lines and shows a non
 
   const auto = await renderToString(<ContextVisualization data={data} collapsed />, 100)
   expect(auto).not.toContain('Auto-compact window')
+})
+
+test('like official, expanded skills list built-in skills as a tree with rounded estimates', async () => {
+  const out = await renderToString(
+    <ContextVisualization
+      data={{
+        ...data,
+        skills: {
+          totalSkills: 3,
+          includedSkills: 3,
+          tokens: 600,
+          skillFrontmatter: [
+            { name: 'init', source: 'built-in', tokens: 12 },
+            { name: 'dataviz', source: 'built-in', tokens: 476 },
+            { name: 'mine', source: 'userSettings', tokens: 112 },
+          ],
+        },
+      } as ContextData}
+    />,
+    100,
+  )
+  const lines = out.split('\n').map(line => line.trim())
+  const builtIn = lines.indexOf('Built-in')
+  expect(builtIn).toBeGreaterThan(lines.indexOf('User'))
+  expect(lines.slice(builtIn + 1, builtIn + 3)).toEqual(['├ dataviz: ~480 tokens', '└ init: < 20 tokens'])
+  expect(lines).toContain('└ mine: ~110 tokens')
 })

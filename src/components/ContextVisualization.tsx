@@ -315,9 +315,9 @@ export function ContextVisualization({
                 <Text dimColor>Loaded</Text>
                 {mcpTools
                   .filter(t => t.isLoaded)
-                  .map((tool, i) => (
+                  .map((tool, i, list) => (
                     <Box key={i}>
-                      <Text>└ {tool.name}: </Text>
+                      <Text>{i === list.length - 1 ? '└' : '├'} {tool.name}: </Text>
                       <Text dimColor>{formatTokens(tool.tokens)} tokens</Text>
                     </Box>
                   ))}
@@ -329,18 +329,18 @@ export function ContextVisualization({
                 <Text dimColor>Available</Text>
                 {mcpTools
                   .filter(t => !t.isLoaded)
-                  .map((tool, i) => (
+                  .map((tool, i, list) => (
                     <Box key={i}>
-                      <Text dimColor>└ {tool.name}</Text>
+                      <Text dimColor>{i === list.length - 1 ? '└' : '├'} {tool.name}</Text>
                     </Box>
                   ))}
               </Box>
             )}
             {/* Show all tools normally when not deferred */}
             {!collapsed && !hasDeferredMcpTools &&
-              mcpTools.map((tool, i) => (
+              mcpTools.map((tool, i, list) => (
                 <Box key={i}>
-                  <Text>└ {tool.name}: </Text>
+                  <Text>{i === list.length - 1 ? '└' : '├'} {tool.name}: </Text>
                   <Text dimColor>{formatTokens(tool.tokens)} tokens</Text>
                 </Box>
               ))}
@@ -360,17 +360,17 @@ export function ContextVisualization({
               {/* Always-loaded + deferred-but-loaded tools */}
               <Box flexDirection="column" marginTop={1}>
                 <Text dimColor>Loaded</Text>
-                {systemTools?.map((tool, i) => (
+                {systemTools?.map((tool, i, list) => (
                   <Box key={`sys-${i}`}>
-                    <Text>└ {tool.name}: </Text>
+                    <Text>{i === list.length - 1 ? '└' : '├'} {tool.name}: </Text>
                     <Text dimColor>{formatTokens(tool.tokens)} tokens</Text>
                   </Box>
                 ))}
                 {deferredBuiltinTools
                   .filter(t => t.isLoaded)
-                  .map((tool, i) => (
+                  .map((tool, i, list) => (
                     <Box key={`def-${i}`}>
-                      <Text>└ {tool.name}: </Text>
+                      <Text>{i === list.length - 1 ? '└' : '├'} {tool.name}: </Text>
                       <Text dimColor>{formatTokens(tool.tokens)} tokens</Text>
                     </Box>
                   ))}
@@ -382,9 +382,9 @@ export function ContextVisualization({
                     <Text dimColor>Available</Text>
                     {deferredBuiltinTools
                       .filter(t => !t.isLoaded)
-                      .map((tool, i) => (
+                      .map((tool, i, list) => (
                         <Box key={i}>
-                          <Text dimColor>└ {tool.name}</Text>
+                          <Text dimColor>{i === list.length - 1 ? '└' : '├'} {tool.name}</Text>
                         </Box>
                       ))}
                   </Box>
@@ -397,9 +397,9 @@ export function ContextVisualization({
           isAnt() && (
             <Box flexDirection="column" marginTop={1}>
               <Text bold>[ANT-ONLY] System prompt sections</Text>
-              {systemPromptSections.map((section, i) => (
+              {systemPromptSections.map((section, i, list) => (
                 <Box key={i}>
-                  <Text>└ {section.name}: </Text>
+                  <Text>{i === list.length - 1 ? '└' : '├'} {section.name}: </Text>
                   <Text dimColor>{formatTokens(section.tokens)} tokens</Text>
                 </Box>
               ))}
@@ -422,9 +422,9 @@ export function ContextVisualization({
               ([sourceDisplay, sourceAgents]) => (
                 <Box key={sourceDisplay} flexDirection="column" marginTop={1}>
                   <Text dimColor>{sourceDisplay}</Text>
-                  {sourceAgents.map((agent, i) => (
+                  {sourceAgents.map((agent, i, list) => (
                     <Box key={i}>
-                      <Text>└ {agent.agentType}: </Text>
+                      <Text>{i === list.length - 1 ? '└' : '├'} {agent.agentType}: </Text>
                       <Text dimColor>{formatTokens(agent.tokens)} tokens</Text>
                     </Box>
                   ))}
@@ -446,9 +446,9 @@ export function ContextVisualization({
                 noun="file"
                 tokens={memoryFiles.reduce((sum, f) => sum + f.tokens, 0)}
               />
-            ) : memoryFiles.map((file, i) => (
+            ) : memoryFiles.map((file, i, list) => (
               <Box key={i}>
-                <Text>└ {getDisplayPath(file.path)}: </Text>
+                <Text>{i === list.length - 1 ? '└' : '├'} {getDisplayPath(file.path)}: </Text>
                 <Text dimColor>{formatTokens(file.tokens)} tokens</Text>
               </Box>
             ))}
@@ -471,10 +471,15 @@ export function ContextVisualization({
               ([sourceDisplay, sourceSkills]) => (
                 <Box key={sourceDisplay} flexDirection="column" marginTop={1}>
                   <Text dimColor>{sourceDisplay}</Text>
-                  {sourceSkills.map((skill, i) => (
+                  {sourceSkills.map((skill, i, list) => (
                     <Box key={i}>
-                      <Text>└ {skill.name}: </Text>
-                      <Text dimColor>{formatTokens(skill.tokens)} tokens</Text>
+                      <Text>{i === list.length - 1 ? '└' : '├'} {skill.name}: </Text>
+                      <Text dimColor>
+                        {skill.tokens < 20
+                          ? '< 20'
+                          : `~${formatTokens(Math.round(skill.tokens / 10) * 10)}`}{' '}
+                        tokens
+                      </Text>
                     </Box>
                   ))}
                 </Box>
@@ -537,9 +542,9 @@ export function ContextVisualization({
             {messageBreakdown.toolCallsByType.length > 0 && (
               <Box flexDirection="column" marginTop={1}>
                 <Text bold>[ANT-ONLY] Top tools</Text>
-                {messageBreakdown.toolCallsByType.slice(0, 5).map((tool, i) => (
+                {messageBreakdown.toolCallsByType.slice(0, 5).map((tool, i, list) => (
                   <Box key={i} marginLeft={1}>
-                    <Text>└ {tool.name}: </Text>
+                    <Text>{i === list.length - 1 ? '└' : '├'} {tool.name}: </Text>
                     <Text dimColor>
                       calls {formatTokens(tool.callTokens)}, results{' '}
                       {formatTokens(tool.resultTokens)}
@@ -554,9 +559,9 @@ export function ContextVisualization({
                 <Text bold>[ANT-ONLY] Top attachments</Text>
                 {messageBreakdown.attachmentsByType
                   .slice(0, 5)
-                  .map((attachment, i) => (
+                  .map((attachment, i, list) => (
                     <Box key={i} marginLeft={1}>
-                      <Text>└ {attachment.name}: </Text>
+                      <Text>{i === list.length - 1 ? '└' : '├'} {attachment.name}: </Text>
                       <Text dimColor>
                         {formatTokens(attachment.tokens)} tokens
                       </Text>

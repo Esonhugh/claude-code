@@ -17,6 +17,7 @@ import {
 } from '../services/compact/autoCompact.js'
 import {
   countMessagesTokensWithAPI,
+  bytesPerTokenForModel,
   roughTokenCountEstimation,
   roughTokenCountEstimationForMessages,
 } from '../services/tokenEstimation.js'
@@ -99,6 +100,7 @@ async function countTokens(
           messages.length > 0 ? messages : [{ role: 'user', content: 'foo' }],
         tools,
       }),
+      bytesPerTokenForModel(model),
     ) + (tools.length > 0 ? TOOL_TOKEN_COUNT_OVERHEAD : 0)
 
   if (detail === 'summary') {
@@ -200,7 +202,7 @@ interface SlashCommandInfo {
 /** Individual skill detail for context display */
 interface SkillFrontmatter {
   name: string
-  source: SettingSource | 'plugin'
+  source: SettingSource | 'plugin' | 'built-in'
   tokens: number
 }
 
@@ -739,10 +741,13 @@ async function countSkillTokens(
     // (name, description, whenToUse) since full content is only loaded on invocation
     const skillFrontmatter: SkillFrontmatter[] = skills.map(skill => ({
       name: getCommandName(skill),
-      source: (skill.type === 'prompt' ? skill.source : 'plugin') as
-        | SettingSource
-        | 'plugin',
-      tokens: estimateSkillFrontmatterTokens(skill),
+      source:
+        skill.type !== 'prompt'
+          ? 'plugin'
+          : skill.source === 'bundled' || skill.source === 'builtin'
+            ? 'built-in'
+            : (skill.source as SettingSource | 'plugin'),
+      tokens: estimateSkillFrontmatterTokens(skill, bytesPerTokenForModel(model)),
     }))
 
     return {
@@ -1049,6 +1054,7 @@ async function approximateMessageTokens(
           microcompactResult.messages as Parameters<
             typeof roughTokenCountEstimationForMessages
           >[0],
+          bytesPerTokenForModel(model),
         )
       : await countTokens(
           normalizedMessages as Anthropic.Beta.Messages.BetaMessageParam[],
@@ -1073,7 +1079,10 @@ function getAssistantMessageId(message: Message): string | undefined {
   return undefined
 }
 
-function estimateTokensAfterLastApiUsage(messages: Message[]): number {
+export function estimateTokensAfterLastApiUsage(
+  messages: Message[],
+  bytesPerToken = 4,
+): number {
   let anchorIndex = -1
   for (let index = messages.length - 1; index >= 0; index--) {
     const message = messages[index]
@@ -1095,11 +1104,8 @@ function estimateTokensAfterLastApiUsage(messages: Message[]): number {
   }
 
   return roughTokenCountEstimationForMessages(
-    messages
-      .slice(anchorIndex + 1)
-      .filter(message => message.type !== 'attachment') as Parameters<
-      typeof roughTokenCountEstimationForMessages
-    >[0],
+    normalizeMessagesForAPI(messages.slice(anchorIndex + 1)),
+    bytesPerToken,
   )
 }
 
@@ -1241,17 +1247,15 @@ export function buildContextUsageData({
     0,
   )
   const messageCapacity = Math.max(0, contextWindow - fixedTokens - reservedTokens)
-  const reconciledMessageTokens =
+  const apiMessageTokens =
     apiInputTokens === null
+      ? null
+      : Math.max(0, apiInputTokens - fixedTokens) +
+        estimatedTokensAfterLastApiUsage
+  const reconciledMessageTokens =
+    apiMessageTokens === null
       ? messageBreakdown.totalTokens
-      : Math.max(
-          0,
-          Math.min(
-            Math.max(0, apiInputTokens - fixedTokens) +
-              estimatedTokensAfterLastApiUsage,
-            messageCapacity,
-          ),
-        )
+      : Math.max(0, Math.min(apiMessageTokens, messageCapacity))
 
   addCategory(
     'messages',
@@ -1280,7 +1284,8 @@ export function buildContextUsageData({
     'free',
   )
 
-  const totalTokens = apiInputTokens ?? usedTokens
+  const totalTokens =
+    apiMessageTokens === null ? usedTokens : fixedTokens + apiMessageTokens
   const isNarrowScreen = terminalWidth !== undefined && terminalWidth < 80
   const gridWidth =
     contextWindow >= 1_000_000
@@ -1559,6 +1564,7 @@ export async function analyzeContextUsage(
     apiUsage,
     estimatedTokensAfterLastApiUsage: estimateTokensAfterLastApiUsage(
       usageMessages,
+      bytesPerTokenForModel(runtimeModel),
     ),
     skipReservedBuffer,
     autoCompactThreshold: isAutoCompact

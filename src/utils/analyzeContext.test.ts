@@ -4,6 +4,7 @@ import type { Message } from '../types/message.js'
 import { withSystemPromptSections } from './systemPromptType.js'
 
 const tokenEstimation = await import('../services/tokenEstimation.js')
+const { createAssistantMessage, createCommandInputMessage, createUserMessage } = await import('./messages.js')
 const tokenCountRequests: Array<{ tool: string; model: string }> = []
 const tokenCountSpy = spyOn(
   tokenEstimation,
@@ -19,6 +20,7 @@ const {
   buildContextUsageData,
   countMcpToolTokens,
   countToolSchemaTokens,
+  estimateTokensAfterLastApiUsage,
   estimateToolSchemaTokenAllocation,
   getLoadedDeferredToolNames,
   getNamedSystemPromptEntries,
@@ -288,9 +290,26 @@ describe('buildContextUsageData', () => {
     })
 
     expect(data.categories.find(category => category.name === 'Messages')?.tokens).toBe(90)
-    expect(data.totalTokens).toBe(115)
-    expect(data.percentage).toBe(115)
+    expect(data.totalTokens).toBe(125)
+    expect(data.percentage).toBe(125)
     expect(data.categories.find(category => category.name === 'Free space')?.tokens).toBe(0)
+  })
+
+  test('totals fixed categories plus reconciled messages when API usage is below them', () => {
+    const data = build({
+      systemPromptTokens: 80,
+      skillFrontmatterTokens: 1_600,
+      apiUsage: {
+        input_tokens: 10,
+        output_tokens: 5,
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: 0,
+      },
+      estimatedTokensAfterLastApiUsage: 200,
+    })
+
+    expect(data.categories.find(category => category.name === 'Messages')?.tokens).toBe(200)
+    expect(data.totalTokens).toBe(1_880)
   })
 
   test('keeps locally estimated totals unclamped when API usage is absent', () => {
@@ -317,5 +336,26 @@ describe('buildContextUsageData', () => {
 
     expect(data.gridRows).toHaveLength(rows)
     expect(data.gridRows.every(row => row.length === width)).toBe(true)
+  })
+})
+
+describe('estimateTokensAfterLastApiUsage', () => {
+  test('counts local command output sent after the last API response', () => {
+    const reply = createAssistantMessage({
+      content: 'hi',
+      usage: {
+        input_tokens: 10,
+        output_tokens: 1,
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: 0,
+      } as never,
+    })
+    reply.message.model = 'claude-opus-5-5'
+    const output = createCommandInputMessage(
+      '<local-command-stdout>' + 'x'.repeat(400) + '</local-command-stdout>',
+    )
+
+    expect(estimateTokensAfterLastApiUsage([createUserMessage({ content: 'hi' }), reply])).toBe(0)
+    expect(estimateTokensAfterLastApiUsage([reply, output])).toBeGreaterThan(100)
   })
 })

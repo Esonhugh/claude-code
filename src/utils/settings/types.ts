@@ -919,6 +919,24 @@ export const SettingsSchema = lazySchema(() =>
           'When false, prompt suggestions are disabled. When absent or true, ' +
             'prompt suggestions are enabled.',
         ),
+      skillListingBudgetFraction: z
+        .number()
+        .gt(0)
+        .lte(1)
+        .optional()
+        .describe(
+          'Fraction of the context window (in characters) reserved for the skill listing sent to Claude (default: 0.01 = 1%). ' +
+            'When the listing exceeds this, descriptions are shortened to fit. Raise to opt in to higher per-turn context cost.',
+        ),
+      skillListingMaxDescChars: z
+        .number()
+        .int()
+        .positive()
+        .optional()
+        .describe(
+          'Per-skill description character cap in the skill listing sent to Claude (default: 1536). ' +
+            'Descriptions longer than this are truncated. Raise to opt in to higher per-turn context cost.',
+        ),
       skillOverrides: z
         .record(
           z.string(),
