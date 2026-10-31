@@ -550,6 +550,7 @@ export function stripSafeWrappers(command: string): string {
     // timeout ran. Contrast ENV_VAR_PATTERN below which already allowlists.
     /^timeout[ \t]+(?:(?:--(?:foreground|preserve-status|verbose)|--(?:kill-after|signal)=[A-Za-z0-9_.+-]+|--(?:kill-after|signal)[ \t]+[A-Za-z0-9_.+-]+|-v|-[ks][ \t]+[A-Za-z0-9_.+-]+|-[ks][A-Za-z0-9_.+-]+)[ \t]+)*(?:--[ \t]+)?\d+(?:\.\d+)?[smhd]?[ \t]+/,
     /^time[ \t]+(?:--[ \t]+)?/,
+    /^builtin[ \t]+(?:--[ \t]+)?/,
     // SECURITY: keep in sync with checkSemantics wrapper-strip (ast.ts
     // ~:1990-2080) AND stripWrappersFromArgv (pathValidation.ts ~:1260).
     // Previously this pattern REQUIRED `-n N`; checkSemantics already handled
@@ -690,7 +691,7 @@ export function stripWrappersFromArgv(argv: string[]): string[] {
   // as baseCmd and skips path validation. See SAFE_WRAPPER_PATTERNS comment.
   let a = argv
   for (;;) {
-    if (a[0] === 'time' || a[0] === 'nohup') {
+    if (a[0] === 'time' || a[0] === 'nohup' || a[0] === 'builtin') {
       a = a.slice(a[1] === '--' ? 2 : 1)
     } else if (a[0] === 'timeout') {
       const i = skipTimeoutFlags(a)
@@ -1938,6 +1939,45 @@ export async function bashToolHasPermission(
   context: ToolUseContext,
   getCommandSubcommandPrefixFn = getCommandSubcommandPrefix,
 ): Promise<PermissionResult> {
+  const result = await checkBashCommandPermission(
+    input,
+    context,
+    getCommandSubcommandPrefixFn,
+  )
+  // A value set earlier in the command is only as safe as every way the
+  // command could have set it, so such a command is never auto-allowed,
+  // unless the user allowed this exact command or the sandbox contains it.
+  if (
+    result.behavior !== 'allow' ||
+    !input.command.includes('$') ||
+    (result.decisionReason?.type === 'other' &&
+      result.decisionReason.reason ===
+        'Auto-allowed with sandbox (autoAllowBashIfSandboxed enabled)') ||
+    (result.decisionReason?.type === 'rule' &&
+      result.decisionReason.rule.ruleValue.ruleContent === input.command.trim())
+  ) {
+    return result
+  }
+  const root = await parseCommandRawForRemoval(input.command)
+  const parsed = root ? parseForSecurityFromAst(input.command, root) : null
+  if (parsed?.kind !== 'simple' || !parsed.usesAssignedValue) return result
+  const decisionReason: PermissionDecisionReason = {
+    type: 'other',
+    reason: "A variable set in this command can't be checked before it runs",
+  }
+  return {
+    behavior: 'passthrough',
+    decisionReason,
+    message: createPermissionRequestMessage(BashTool.name, decisionReason),
+    suggestions: [],
+  }
+}
+
+async function checkBashCommandPermission(
+  input: z.infer<typeof BashTool.inputSchema>,
+  context: ToolUseContext,
+  getCommandSubcommandPrefixFn = getCommandSubcommandPrefix,
+): Promise<PermissionResult> {
   let appState = context.getAppState()
 
   // 0. AST-based security parse. This replaces both tryParseShellCommand
@@ -2257,7 +2297,7 @@ export async function bashToolHasPermission(
   const commandOperatorResult = await checkCommandOperatorPermissions(
     input,
     (i: z.infer<typeof BashTool.inputSchema>) =>
-      bashToolHasPermission(i, context, getCommandSubcommandPrefixFn),
+      checkBashCommandPermission(i, context, getCommandSubcommandPrefixFn),
     { isNormalizedCdCommand, isNormalizedGitCommand },
     astRoot,
   )

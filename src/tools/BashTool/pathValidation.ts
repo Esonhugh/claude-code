@@ -1441,7 +1441,7 @@ function skipEnvFlags(a: readonly string[]): number {
 export function stripWrappersFromArgv(argv: string[]): string[] {
   let a = argv
   for (;;) {
-    if (a[0] === 'time' || a[0] === 'nohup') {
+    if (a[0] === 'time' || a[0] === 'nohup' || a[0] === 'builtin') {
       a = a.slice(a[1] === '--' ? 2 : 1)
     } else if (a[0] === 'timeout') {
       const i = skipTimeoutFlags(a)
