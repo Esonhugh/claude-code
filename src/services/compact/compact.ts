@@ -417,6 +417,45 @@ export function annotateBoundaryWithPreservedSegment(
   }
 }
 
+const KEPT_TAIL_NOTE =
+  'The messages after this summary are the most recent messages from before compaction, kept verbatim. The summary was written without seeing them, so something it says has not happened yet may already have happened in them.'
+
+/**
+ * Like official 2.1.311, full compaction summarizes every API round but the
+ * last and keeps that round verbatim. Kept assistant usage is zeroed so the
+ * pre-compact context size is not read back as the current one.
+ */
+export function splitKeptTail(messages: Message[]): {
+  toSummarize: Message[]
+  toKeep: Message[]
+} {
+  const groups = groupMessagesByApiRound(
+    messages.filter(m => m.type !== 'progress'),
+  )
+  const toSummarize = groups.slice(0, -1).flat()
+  if (groups.length < 2 || !toSummarize.some(m => m.type === 'assistant')) {
+    return { toSummarize: messages, toKeep: [] }
+  }
+  const toKeep = groups.at(-1)!.map(m =>
+    m.type === 'assistant'
+      ? {
+          ...m,
+          message: {
+            ...m.message,
+            usage: {
+              ...m.message.usage,
+              input_tokens: 0,
+              output_tokens: 0,
+              cache_creation_input_tokens: 0,
+              cache_read_input_tokens: 0,
+            },
+          },
+        }
+      : m,
+  )
+  return { toSummarize, toKeep }
+}
+
 /**
  * Merges user-supplied custom instructions with hook-provided instructions.
  * User instructions come first; hook instructions are appended.
@@ -495,6 +534,7 @@ export async function compactConversation(
     )
 
     let messagesToSummarize = messages
+    let messagesToKeep: Message[] = []
     let summaryResponse: AssistantMessage | undefined
     let remoteResult: RemoteCompactionResult | undefined
     let summary: string
@@ -509,7 +549,13 @@ export async function compactConversation(
       const summaryRequest = createUserMessage({
         content: compactPrompt,
       })
-      let retryCacheSafeParams = cacheSafeParams
+      const split = splitKeptTail(messages)
+      messagesToSummarize = split.toSummarize
+      messagesToKeep = split.toKeep
+      let retryCacheSafeParams =
+        messagesToKeep.length > 0 && cacheSafeParams.forkContextMessages.length > 0
+          ? { ...cacheSafeParams, forkContextMessages: messagesToSummarize }
+          : cacheSafeParams
       let generatedSummary: string | null
       let ptlAttempts = 0
       for (;;) {
@@ -633,6 +679,7 @@ export async function compactConversation(
         preCompactReadFileState,
         context,
         POST_COMPACT_MAX_FILES_TO_RESTORE,
+        messagesToKeep,
       ),
       createAsyncAgentAttachmentsIfNeeded(context),
     ])
@@ -677,25 +724,25 @@ export async function compactConversation(
     // post-compact turn. Empty message history → diff against nothing →
     // announces the full set. Git status is re-read like 2.1.311.
     getGitStatus.cache.clear?.()
-    for (const att of await getSessionContextAttachments(context, [])) {
+    for (const att of await getSessionContextAttachments(context, messagesToKeep)) {
       postCompactFileAttachments.push(createAttachmentMessage(att))
     }
     for (const att of getDeferredToolsDeltaAttachment(
       context.options.tools,
       context.options.mainLoopModel,
-      [],
+      messagesToKeep,
       { callSite: 'compact_full' },
     )) {
       postCompactFileAttachments.push(createAttachmentMessage(att))
     }
-    for (const att of await getAgentListingDeltaAttachment(context, [])) {
+    for (const att of await getAgentListingDeltaAttachment(context, messagesToKeep)) {
       postCompactFileAttachments.push(createAttachmentMessage(att))
     }
     for (const att of getMcpInstructionsDeltaAttachment(
       context.options.mcpClients,
       context.options.tools,
       context.options.mainLoopModel,
-      [],
+      messagesToKeep,
     )) {
       postCompactFileAttachments.push(createAttachmentMessage(att))
     }
@@ -740,11 +787,13 @@ export async function compactConversation(
       ? []
       : [
           createUserMessage({
-            content: getCompactUserSummaryMessage(
-              summary,
-              suppressFollowUpQuestions,
-              transcriptPath,
-            ),
+            content:
+              // With a kept tail official always asks to resume directly.
+              getCompactUserSummaryMessage(
+                summary,
+                suppressFollowUpQuestions || messagesToKeep.length > 0,
+                transcriptPath,
+              ) + (messagesToKeep.length > 0 ? `\n\n${KEPT_TAIL_NOTE}` : ''),
             isCompactSummary: true,
             isVisibleInTranscriptOnly: true,
           }),
@@ -769,6 +818,8 @@ export async function compactConversation(
       boundaryMarker,
       // @ts-ignore - recovered code
       ...summaryMessages,
+      // @ts-ignore - recovered code
+      ...messagesToKeep,
       // @ts-ignore - recovered code
       ...postCompactFileAttachments,
       // @ts-ignore - recovered code
@@ -870,8 +921,16 @@ export async function compactConversation(
       .join('\n')
 
     return {
-      boundaryMarker,
+      boundaryMarker:
+        summaryMessages.length > 0
+          ? annotateBoundaryWithPreservedSegment(
+              boundaryMarker,
+              summaryMessages.at(-1)!.uuid,
+              messagesToKeep,
+            )
+          : boundaryMarker,
       summaryMessages,
+      messagesToKeep,
       attachments: postCompactFileAttachments,
       hookResults: hookMessages,
       userDisplayMessage: combinedUserDisplayMessage || undefined,
