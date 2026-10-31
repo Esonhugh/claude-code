@@ -4,6 +4,7 @@ import {
   formatDescriptionWithSource,
   getCommand,
   getCommandName,
+  getMenuDescription,
 } from '../../commands.js'
 import type { SuggestionItem } from '../../components/PromptInput/PromptInputFooterSuggestions.js'
 import { getSkillUsageScore } from './skillUsageTracking.js'
@@ -12,11 +13,42 @@ import { getSkillUsageScore } from './skillUsageTracking.js'
 const SEPARATORS = /[:_-]/g
 
 type CommandSearchItem = {
-  descriptionKey: string[]
   partKey: string[] | undefined
   commandName: string
   command: Command
   aliasKey: string[] | undefined
+  // Sorted, so a word-prefix lookup is a binary search.
+  descriptionWords: string[]
+}
+
+// Description rows rank after every name, part or alias match.
+const DESCRIPTION_BUCKET = 10
+
+function getDescriptionWords(description: string): string[] {
+  const words = new Set<string>()
+  for (const word of description.toLowerCase().split(/\s+/)) {
+    if (/[^a-z0-9]/.test(word)) {
+      words.add(word.replace(/[^a-z0-9]/g, ''))
+      for (const part of word.split(/[^a-z0-9]+/)) words.add(part)
+    } else {
+      words.add(word)
+    }
+  }
+  words.delete('')
+  return [...words].sort()
+}
+
+function countWordsWithPrefix(words: string[], prefix: string): number {
+  let low = 0
+  let high = words.length
+  while (low < high) {
+    const mid = (low + high) >>> 1
+    if (words[mid]! < prefix) low = mid + 1
+    else high = mid
+  }
+  let count = 0
+  while (words[low + count]?.startsWith(prefix)) count++
+  return count
 }
 
 // Cache the Fuse index keyed by the commands array identity. The commands
@@ -24,59 +56,49 @@ type CommandSearchItem = {
 // rather than on every keystroke.
 let fuseCache: {
   commands: Command[]
+  items: CommandSearchItem[]
   fuse: Fuse<CommandSearchItem>
 } | null = null
 
-function getCommandFuse(commands: Command[]): Fuse<CommandSearchItem> {
+function getCommandFuse(commands: Command[]): {
+  items: CommandSearchItem[]
+  fuse: Fuse<CommandSearchItem>
+} {
   if (fuseCache?.commands === commands) {
-    return fuseCache.fuse
+    return fuseCache
   }
 
-  const commandData: CommandSearchItem[] = commands
+  const items: CommandSearchItem[] = commands
     .filter(cmd => !cmd.isHidden)
     .map(cmd => {
       const commandName = getCommandName(cmd)
       const parts = commandName.split(SEPARATORS).filter(Boolean)
 
       return {
-        descriptionKey: (cmd.description ?? '')
-          .split(' ')
-          .map(word => cleanWord(word))
-          .filter(Boolean),
         partKey: parts.length > 1 ? parts : undefined,
         commandName,
         command: cmd,
         aliasKey: cmd.aliases,
+        descriptionWords: getDescriptionWords(cmd.description ?? ''),
       }
     })
 
-  const fuse = new Fuse(commandData, {
+  // Official 2.1.311: only names, name parts and aliases go through Fuse;
+  // descriptions match by word prefix in generateCommandSuggestions.
+  const fuse = new Fuse(items, {
     includeScore: true,
-    threshold: 0.3, // relatively strict matching
-    location: 0, // prefer matches at the beginning of strings
-    distance: 100, // increased to allow matching in descriptions
+    threshold: 0.3,
+    location: 0,
+    distance: 100,
     keys: [
-      {
-        name: 'commandName',
-        weight: 3, // Highest priority for command names
-      },
-      {
-        name: 'partKey',
-        weight: 2, // Next highest priority for command parts
-      },
-      {
-        name: 'aliasKey',
-        weight: 2, // Same high priority for aliases
-      },
-      {
-        name: 'descriptionKey',
-        weight: 0.5, // Lower priority for descriptions
-      },
+      { name: 'commandName', weight: 3 },
+      { name: 'partKey', weight: 2 },
+      { name: 'aliasKey', weight: 2 },
     ],
   })
 
-  fuseCache = { commands, fuse }
-  return fuse
+  fuseCache = { commands, items, fuse }
+  return fuseCache
 }
 
 /**
@@ -287,6 +309,7 @@ function findMatchedAlias(
 function createCommandSuggestionItem(
   cmd: Command,
   matchedAlias?: string,
+  query?: string,
 ): SuggestionItem {
   const commandName = getCommandName(cmd)
   // Only show the alias if the user typed it
@@ -294,7 +317,9 @@ function createCommandSuggestionItem(
 
   const isWorkflow = cmd.type === 'prompt' && cmd.kind === 'workflow'
   const fullDescription =
-    (isWorkflow ? cmd.description : formatDescriptionWithSource(cmd)) +
+    (isWorkflow
+      ? cmd.description
+      : formatDescriptionWithSource(cmd, getMenuDescription(cmd))) +
     (cmd.type === 'prompt' && cmd.argNames?.length
       ? ` (arguments: ${cmd.argNames.join(', ')})`
       : '')
@@ -302,8 +327,9 @@ function createCommandSuggestionItem(
   return {
     id: getCommandId(cmd),
     displayText: `/${commandName}${aliasText}`,
-    tag: isWorkflow ? 'workflow' : undefined,
+    tag: isWorkflow ? 'dynamic workflow' : undefined,
     description: fullDescription,
+    query,
     metadata: cmd,
   }
 }
@@ -422,87 +448,64 @@ export function generateCommandSuggestions(
     hiddenExact = undefined
   }
 
-  const fuse = getCommandFuse(commands)
-  const searchResults = fuse.search(query)
+  const { items, fuse } = getCommandFuse(commands)
+  const rows = fuse.search(query).map(result => ({
+    item: result.item,
+    bucket: Math.floor((result.score ?? 0) * 10),
+    descriptionHits: 0,
+  }))
+  const wordQuery = query.replace(/[^a-z0-9]/g, '')
+  if (wordQuery !== '') {
+    const matched = new Set(rows.map(row => row.item))
+    for (const item of items) {
+      if (matched.has(item)) continue
+      const descriptionHits = countWordsWithPrefix(
+        item.descriptionWords,
+        wordQuery,
+      )
+      if (descriptionHits > 0) {
+        rows.push({ item, bucket: DESCRIPTION_BUCKET, descriptionHits })
+      }
+    }
+  }
 
-  // Sort results prioritizing exact/prefix command name matches over fuzzy description matches
-  // Priority order:
-  // 1. Exact name match (highest)
-  // 2. Exact alias match
-  // 3. Prefix name match
-  // 4. Prefix alias match
-  // 5. Fuzzy match (lowest)
-  // Precompute per-item values once to avoid O(n log n) recomputation in comparator
-  const withMeta = searchResults.map(r => {
-    const name = r.item.commandName.toLowerCase()
-    const aliases = r.item.aliasKey?.map(alias => alias.toLowerCase()) ?? []
-    const usage =
-      r.item.command.type === 'prompt'
-        ? getSkillUsageScore(getCommandName(r.item.command))
-        : 0
-    return { r, name, aliases, usage }
+  // Rank: exact name, exact alias, shortest prefix name, shortest prefix
+  // alias, Fuse score bucket, more description hits, then skill usage.
+  const ranked = rows.map(row => {
+    const name = row.item.commandName.toLowerCase()
+    const aliases = row.item.aliasKey?.map(alias => alias.toLowerCase()) ?? []
+    const prefixAlias = aliases.find(alias => alias.startsWith(query))
+    const command = row.item.command
+    return {
+      row,
+      rankKey: [
+        name === query ? 0 : 1,
+        aliases.includes(query) ? 0 : 1,
+        name.startsWith(query) ? name.length : Infinity,
+        prefixAlias ? prefixAlias.length : Infinity,
+        row.bucket,
+        -row.descriptionHits,
+        command.type === 'prompt' ? -getSkillUsageScore(getCommandName(command)) : 0,
+      ],
+    }
   })
-
-  const sortedResults = withMeta.sort((a, b) => {
-    const aName = a.name
-    const bName = b.name
-    const aAliases = a.aliases
-    const bAliases = b.aliases
-
-    // Check for exact name match (highest priority)
-    const aExactName = aName === query
-    const bExactName = bName === query
-    if (aExactName && !bExactName) return -1
-    if (bExactName && !aExactName) return 1
-
-    // Check for exact alias match
-    const aExactAlias = aAliases.some(alias => alias === query)
-    const bExactAlias = bAliases.some(alias => alias === query)
-    if (aExactAlias && !bExactAlias) return -1
-    if (bExactAlias && !aExactAlias) return 1
-
-    // Check for prefix name match
-    const aPrefixName = aName.startsWith(query)
-    const bPrefixName = bName.startsWith(query)
-    if (aPrefixName && !bPrefixName) return -1
-    if (bPrefixName && !aPrefixName) return 1
-    // Among prefix name matches, prefer the shorter name (closer to exact)
-    if (aPrefixName && bPrefixName && aName.length !== bName.length) {
-      return aName.length - bName.length
+  ranked.sort((a, b) => {
+    for (let i = 0; i < a.rankKey.length; i++) {
+      if (a.rankKey[i]! < b.rankKey[i]!) return -1
+      if (a.rankKey[i]! > b.rankKey[i]!) return 1
     }
-
-    // Check for prefix alias match
-    const aPrefixAlias = aAliases.find(alias => alias.startsWith(query))
-    const bPrefixAlias = bAliases.find(alias => alias.startsWith(query))
-    if (aPrefixAlias && !bPrefixAlias) return -1
-    if (bPrefixAlias && !aPrefixAlias) return 1
-    // Among prefix alias matches, prefer the shorter alias
-    if (
-      aPrefixAlias &&
-      bPrefixAlias &&
-      aPrefixAlias.length !== bPrefixAlias.length
-    ) {
-      return aPrefixAlias.length - bPrefixAlias.length
-    }
-
-    // For similar match types, use Fuse score with usage as tiebreaker
-    const scoreDiff = (a.r.score ?? 0) - (b.r.score ?? 0)
-    if (Math.abs(scoreDiff) > 0.1) {
-      return scoreDiff
-    }
-    // For similar Fuse scores, prefer more frequently used skills
-    return b.usage - a.usage
+    return 0
   })
 
   // Map search results to suggestion items
   // Note: We intentionally don't deduplicate here because commands with the same name
   // from different sources (e.g., projectSettings vs userSettings) may have different
   // implementations and should both be available to the user
-  const fuseSuggestions = sortedResults.map(result => {
-    const cmd = result.r.item.command
+  const fuseSuggestions = ranked.map(({ row }) => {
+    const cmd = row.item.command
     // Only show alias in parentheses if the user typed an alias
     const matchedAlias = findMatchedAlias(query, cmd.aliases)
-    return createCommandSuggestionItem(cmd, matchedAlias)
+    return createCommandSuggestionItem(cmd, matchedAlias, query)
   })
   // Skip the prepend if hiddenExact is already in fuseSuggestions — this
   // happens when isHidden flips false→true mid-session (OAuth expiry,
@@ -513,7 +516,10 @@ export function generateCommandSuggestions(
   if (hiddenExact) {
     const hiddenId = getCommandId(hiddenExact)
     if (!fuseSuggestions.some(s => s.id === hiddenId)) {
-      return [createCommandSuggestionItem(hiddenExact), ...fuseSuggestions]
+      return [
+        createCommandSuggestionItem(hiddenExact, undefined, query),
+        ...fuseSuggestions,
+      ]
     }
   }
   return fuseSuggestions
@@ -558,11 +564,6 @@ export function applyCommandSuggestion(
       onSubmit(newInput, /* isSubmittingSlashCommand */ true)
     }
   }
-}
-
-// Helper function at bottom of file per CLAUDE.md
-function cleanWord(word: string) {
-  return word.toLowerCase().replace(/[^a-z0-9]/g, '')
 }
 
 /**
