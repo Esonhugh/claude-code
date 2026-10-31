@@ -173,7 +173,9 @@ export function SelectMulti<T>({
                 shouldShowUpArrow={areMoreOptionsAbove && isFirstVisibleOption}
               >
                 {!hideIndexes && (
-                  <Text dimColor>{`${i}.`.padEnd(maxIndexWidth)}</Text>
+                  <Box flexShrink={0}>
+                    <Text dimColor>{`${i}.`.padEnd(maxIndexWidth)}</Text>
+                  </Box>
                 )}
                 <Text color={isSelected ? 'success' : undefined}>
                   [{isSelected ? figures.tick : ' '}]

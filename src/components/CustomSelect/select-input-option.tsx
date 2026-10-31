@@ -258,7 +258,9 @@ export function SelectInputOption<T>({
           flexDirection="row"
           flexShrink={layout === 'compact' ? 0 : undefined}
         >
-          <Text dimColor>{`${index}.`.padEnd(maxIndexWidth + 2)}</Text>
+          <Box flexShrink={0}>
+            <Text dimColor>{`${index}.`.padEnd(maxIndexWidth + 2)}</Text>
+          </Box>
           {children}
           {showLabel ? (
             <>
