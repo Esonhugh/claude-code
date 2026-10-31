@@ -1667,7 +1667,7 @@ export const SDKAssistantMessageErrorSchema = lazySchema(() =>
 )
 
 export const SDKStatusSchema = lazySchema(() =>
-  z.union([z.literal('compacting'), z.null()]),
+  z.union([z.literal('compacting'), z.literal('requesting'), z.null()]),
 )
 
 // SDKUserMessage content without uuid/session_id
@@ -2002,6 +2002,8 @@ export const SDKCompactBoundaryMessageSchema = lazySchema(() =>
     compact_metadata: z.object({
       trigger: z.enum(['manual', 'auto']),
       pre_tokens: z.number(),
+      post_tokens: z.number().optional(),
+      duration_ms: z.number().optional(),
       preserved_segment: z
         .object({
           head_uuid: UUIDPlaceholder(),
@@ -2016,6 +2018,16 @@ export const SDKCompactBoundaryMessageSchema = lazySchema(() =>
             'includes preserved content. Unset when compaction summarizes ' +
             'everything (no messagesToKeep).',
         ),
+      preserved_messages: z
+        .object({
+          anchor_uuid: UUIDPlaceholder(),
+          uuids: z.array(UUIDPlaceholder()),
+        })
+        .optional()
+        .describe(
+          'Ordered messagesToKeep UUIDs. Supersedes preserved_segment: ' +
+            'readers relink uuids[i] to uuids[i-1] (uuids[0] to anchor_uuid).',
+        ),
     }),
     uuid: UUIDPlaceholder(),
     session_id: z.string(),
@@ -2028,6 +2040,8 @@ export const SDKStatusMessageSchema = lazySchema(() =>
     subtype: z.literal('status'),
     status: SDKStatusSchema(),
     permissionMode: PermissionModeSchema().optional(),
+    compact_result: z.enum(['success', 'failed']).optional(),
+    compact_error: z.string().optional(),
     uuid: UUIDPlaceholder(),
     session_id: z.string(),
   }),

@@ -246,7 +246,7 @@ export type RewindFilesResult = { canRewind: boolean; error?: string; filesChang
 
 // SDK Error type
 export type SDKAssistantMessageError = 'authentication_failed' | 'billing_error' | 'rate_limit' | 'invalid_request' | 'server_error' | 'unknown' | 'max_output_tokens'
-export type SDKStatus = 'compacting' | null
+export type SDKStatus = 'compacting' | 'requesting' | null
 
 // Rate Limit
 export type SDKRateLimitInfo = {
@@ -379,7 +379,10 @@ export type SDKCompactBoundaryMessage = {
   compact_metadata: {
     trigger: 'manual' | 'auto'
     pre_tokens: number
+    post_tokens?: number
+    duration_ms?: number
     preserved_segment?: { head_uuid: string; anchor_uuid: string; tail_uuid: string }
+    preserved_messages?: { anchor_uuid: string; uuids: string[] }
   }
   uuid: string
   session_id: string
@@ -389,6 +392,8 @@ export type SDKStatusMessage = {
   subtype: 'status'
   status: SDKStatus
   permissionMode?: PermissionMode
+  compact_result?: 'success' | 'failed'
+  compact_error?: string
   uuid: string
   session_id: string
 }

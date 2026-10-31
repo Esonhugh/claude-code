@@ -119,11 +119,14 @@ export function toSDKCompactMetadata(
   meta: CompactMetadata,
 ): SDKCompactMetadata {
   const seg = meta.preservedSegment
+  const kept = meta.preservedMessages
   return {
     // @ts-ignore - recovered code
     trigger: meta.trigger,
     // @ts-ignore - recovered code
     pre_tokens: meta.preTokens,
+    ...(typeof meta.postTokens === 'number' && { post_tokens: meta.postTokens }),
+    ...(typeof meta.durationMs === 'number' && { duration_ms: meta.durationMs }),
     ...(seg && {
       preserved_segment: {
         // @ts-ignore - recovered code
@@ -134,6 +137,9 @@ export function toSDKCompactMetadata(
         tail_uuid: seg.tailUuid,
       },
     }),
+    ...(kept && {
+      preserved_messages: { anchor_uuid: kept.anchorUuid, uuids: kept.uuids },
+    }),
   }
 }
 
@@ -141,12 +147,20 @@ export function toSDKCompactMetadata(
  * Shared SDK→internal compact_metadata converter.
  */
 export function fromSDKCompactMetadata(
-  meta: SDKCompactMetadata,
+  meta: Omit<SDKCompactMetadata, 'preserved_messages'> & {
+    preserved_messages?: { anchor_uuid: string; uuids: readonly string[] }
+  },
 ): CompactMetadata {
   const seg = meta.preserved_segment
+  const kept = meta.preserved_messages
   return {
     trigger: meta.trigger,
     preTokens: meta.pre_tokens,
+    ...(meta.post_tokens !== undefined && { postTokens: meta.post_tokens }),
+    ...(meta.duration_ms !== undefined && { durationMs: meta.duration_ms }),
+    ...(kept && {
+      preservedMessages: { anchorUuid: kept.anchor_uuid, uuids: [...kept.uuids] },
+    }),
     ...(seg && {
       preservedSegment: {
         headUuid: seg.head_uuid,

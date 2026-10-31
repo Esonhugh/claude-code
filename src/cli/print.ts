@@ -143,7 +143,6 @@ import {
 import { registerCleanup } from 'src/utils/cleanupRegistry.js'
 import { createIdleTimeoutManager } from 'src/utils/idleTimeout.js'
 import type {
-  SDKStatus,
   ModelInfo,
   SDKMessage,
   SDKUserMessage,
@@ -653,7 +652,7 @@ export async function runHeadless(
     workload: string | undefined
     setupTrigger?: 'init' | 'maintenance' | undefined
     sessionStartHooksPromise?: ReturnType<typeof processSessionStartHooks>
-    setSDKStatus?: (status: SDKStatus) => void
+    setSDKStatus?: ToolUseContext['setSDKStatus']
   },
 ): Promise<void> {
   if (
@@ -1245,7 +1244,7 @@ function runHeadlessStreaming(
     includePartialMessages?: boolean | undefined
     enableAuthStatus?: boolean | undefined
     agent?: string | undefined
-    setSDKStatus?: (status: SDKStatus) => void
+    setSDKStatus?: ToolUseContext['setSDKStatus']
     promptSuggestions?: boolean | undefined
     workload?: string | undefined
   },
@@ -2599,11 +2598,12 @@ function runHeadlessStreaming(
                 ),
               agents: options.modsSession?.runtime?.agents.projection({ activeAgents: currentAgents, allAgents: currentAgents }).activeAgents ?? currentAgents,
               orphanedPermission: cmd.orphanedPermission,
-              setSDKStatus: status => {
+              setSDKStatus: (status, compact) => {
                 output.enqueue({
                   type: 'system',
                   subtype: 'status',
                   status,
+                  ...compact,
                   session_id: getSessionId(),
                   uuid: randomUUID(),
                 })

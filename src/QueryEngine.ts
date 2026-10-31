@@ -16,7 +16,6 @@ import type {
   SDKCompactBoundaryMessage,
   SDKMessage,
   SDKPermissionDenial,
-  SDKStatus,
   SDKUserMessageReplay,
 } from 'src/entrypoints/agentSdkTypes.js'
 import { accumulateUsage, updateUsage } from 'src/services/api/claude.js'
@@ -185,7 +184,7 @@ export type QueryEngineConfig = {
   /** Handler for URL elicitations triggered by MCP tool -32042 errors. */
   handleElicitation?: ToolUseContext['handleElicitation']
   includePartialMessages?: boolean
-  setSDKStatus?: (status: SDKStatus) => void
+  setSDKStatus?: ToolUseContext['setSDKStatus']
   abortController?: AbortController
   orphanedPermission?: OrphanedPermission
   /**
@@ -913,7 +912,8 @@ export class QueryEngine {
         is_error: false,
         duration_ms: Date.now() - startTime,
         duration_api_ms: getTotalAPIDuration(),
-        num_turns: messages.length - 1,
+        // Local slash commands make no model turns.
+        num_turns: 0,
         result: resultText ?? '',
         stop_reason: null,
         session_id: getSessionId(),
@@ -1220,7 +1220,13 @@ export class QueryEngine {
           }
           break
         case 'stream_request_start':
-          // Don't yield stream request start messages
+          yield {
+            type: 'system',
+            subtype: 'status' as const,
+            status: 'requesting' as const,
+            uuid: randomUUID(),
+            session_id: getSessionId(),
+          }
           break
         case 'system': {
           // Snip boundary: replay on our store to remove zombie messages and
@@ -1591,7 +1597,7 @@ export async function* ask({
   includePartialMessages?: boolean
   handleElicitation?: ToolUseContext['handleElicitation']
   agents?: AgentDefinition[]
-  setSDKStatus?: (status: SDKStatus) => void
+  setSDKStatus?: ToolUseContext['setSDKStatus']
   orphanedPermission?: OrphanedPermission
 }): AsyncGenerator<SDKMessage, void, unknown> {
   // @ts-ignore - recovered code

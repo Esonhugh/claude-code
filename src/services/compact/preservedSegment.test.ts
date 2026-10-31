@@ -37,3 +37,25 @@ test('nothing loggable to keep leaves the boundary unannotated', () => {
   const progress = { type: 'progress', uuid: randomUUID() } as unknown as Message
   expect(annotateBoundaryWithPreservedSegment(boundary, boundary.uuid, [progress])).toBe(boundary)
 })
+
+test('compact_metadata carries post_tokens, duration_ms and preserved_messages like SDK 0.3.311', async () => {
+  const { toSDKCompactMetadata, fromSDKCompactMetadata } = await import('../../utils/messages/mappers.js')
+  const first = createUserMessage({ content: 'first prompt' })
+  const last = createUserMessage({ content: 'last prompt' })
+  const annotated = annotateBoundaryWithPreservedSegment(
+    { ...boundary, compactMetadata: { trigger: 'manual', preTokens: 900, postTokens: 120, durationMs: 2500 } } as SystemCompactBoundaryMessage,
+    boundary.uuid,
+    [first, last],
+  )
+  const sdk = toSDKCompactMetadata(annotated.compactMetadata)
+  expect(sdk).toEqual({
+    trigger: 'manual',
+    pre_tokens: 900,
+    post_tokens: 120,
+    duration_ms: 2500,
+    preserved_segment: { head_uuid: first.uuid, anchor_uuid: boundary.uuid, tail_uuid: last.uuid },
+    preserved_messages: { anchor_uuid: boundary.uuid, uuids: [first.uuid, last.uuid] },
+  })
+  expect(toSDKCompactMetadata({ trigger: 'auto', preTokens: 5 })).toEqual({ trigger: 'auto', pre_tokens: 5 })
+  expect(fromSDKCompactMetadata(sdk)).toMatchObject({ postTokens: 120, durationMs: 2500, preservedMessages: { anchorUuid: boundary.uuid, uuids: [first.uuid, last.uuid] } })
+})

@@ -9,6 +9,7 @@ import { notifyCompaction } from '../../services/api/promptCacheBreakDetection.j
 import {
   type CompactionResult,
   compactConversation,
+  compactOutcome,
   ERROR_MESSAGE_INCOMPLETE_RESPONSE,
   CompactionBlockedError,
   ERROR_MESSAGE_NOT_ENOUGH_MESSAGES,
@@ -175,6 +176,7 @@ async function compactViaReactive(
     hookType: 'pre_compact',
   })
   context.setSDKStatus?.('compacting')
+  let compactFailure: unknown
 
   try {
     // Hooks and cache-param build are independent — run concurrently.
@@ -247,11 +249,14 @@ async function compactViaReactive(
       },
       displayText: buildDisplayText(context, combinedMessage),
     }
+  } catch (error) {
+    compactFailure = error
+    throw error
   } finally {
     context.setStreamMode?.('requesting')
     context.setResponseLength?.(() => 0)
     context.onCompactProgress?.({ type: 'compact_end' })
-    context.setSDKStatus?.(null)
+    context.setSDKStatus?.(null, compactOutcome(compactFailure))
   }
 }
 
