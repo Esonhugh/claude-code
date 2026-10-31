@@ -1,7 +1,9 @@
 import { feature } from 'bun:bundle'
 import { prependBullets } from '../../constants/prompts.js'
+import { getAttributionTexts } from '../../utils/attribution.js'
 import { hasEmbeddedSearchTools } from '../../utils/embeddedTools.js'
 import { isEnvTruthy } from '../../utils/envUtils.js'
+import { shouldIncludeGitInstructions } from '../../utils/gitSettings.js'
 import { getClaudeTempDir } from '../../utils/permissions/filesystem.js'
 import { SandboxManager } from '../../utils/sandbox/sandbox-adapter.js'
 import { jsonStringify } from '../../utils/slowOperations.js'
@@ -23,6 +25,19 @@ export function getDefaultTimeoutMs(): number {
 
 export function getMaxTimeoutMs(): number {
   return getMaxBashTimeoutMs()
+}
+
+function getGitSection(): string {
+  if (!shouldIncludeGitInstructions()) return ''
+  const { commit, pr } = getAttributionTexts()
+  return [
+    '# Git',
+    '- Commit or push only when the user asks. If on the default branch, branch first.',
+    '- Interactive flags (`-i`, e.g. `git rebase -i`) are not supported. Use the `gh` CLI for GitHub (PRs, issues, API).',
+    '- GitHub notifies whoever a bare `@name` in a PR, issue or comment names: write one only for a real login you mean to notify, and put roles, placeholders and code (`@reviewer`, `@types/node`) in backticks.',
+    ...(commit ? [`- End git commit messages with:\n${commit}`] : []),
+    ...(pr ? [`- End PR bodies with:\n${pr}`] : []),
+  ].join('\n')
 }
 
 function getCommitAndPRInstructions(): string {
@@ -184,6 +199,7 @@ export function getSimplePrompt(): string {
     '',
     ...items.map(item => `- ${item}`),
     getSimpleSandboxSection(),
+    ...(getGitSection() ? ['', getGitSection()] : []),
     ...(getCommitAndPRInstructions() ? ['', getCommitAndPRInstructions()] : []),
   ].join('\n')
 }
