@@ -16,12 +16,12 @@
 
 ### 版本状态
 
-- 发布候选：`dev` 合并到 `master` 后打 tag `v2.1.296`。本条目汇总 `v2.1.295` tag（master `e3fca04`）之后至 PR #406 的全部变更；`Makefile VERSION` 与 README 发布版本同步为 `2.1.296`，`package.json` 保持 `0.0.0-dev`。版本号与官方版本号无对应关系（本轮对照基线为官方 2.1.311）。
+- 发布候选：`dev` 合并到 `master` 后打 tag `v2.1.296`。本条目汇总 `v2.1.295` tag（master `e3fca04`）之后至 PR #410 的全部变更；`Makefile VERSION` 与 README 发布版本同步为 `2.1.296`，`package.json` 保持 `0.0.0-dev`。版本号与官方版本号无对应关系（本轮对照基线为官方 2.1.311）。
 
 ### 关联提交
 
-- PR 合并提交（`git log --first-parent e3fca04..dev`）：#263、#272、#280 Teams 通知；#264、#269 agent 视图 pill（加入后又按用户要求撤回）；#268、#274、#276、#283、#284、#288、#303、#306 agent 生命周期；#290、#296、#302 coordinator 模式；#278、#289 SQLite 记忆检索；#293 Bash 折叠；#304、#316 权限与 Bedrock；#309、#311 REPL 对话框；#313 任务通知格式；#315、#319、#321 agent summary；#317、#331 Agent SDK；#323、#325、#329、#334、#346、#349 `/hooks`、`/theme`、`/agents`、`/memory`、`/config`；#327 内嵌搜索工具；#332 流式工具执行；#339 新 hook 事件；#342、#344、#347、#350 多轮对照修复；#354 权限模式转换与 Stop hook；#357 session memory；#359 权限提示与 footer 对齐官方；#363 模型默认值、会话标题与 `/ide`；#368 斜杠命令、`!` 命令回复与输出上限；#371、#374、#379 `--continue`/`--resume` 保留 prompt cache 与历史；#376 `/feedback`、`/output-style`、`/effort`、`/model` 与 SDK 字段；#383 `/hooks`、`/clear`、`/fast`、`/ide` 与对话框文案；#386 `/btw`、`/skills`、`/usage`、`/model`、`/status` 等命令对齐；#389 plan 模式权限、工具列表、会话标题与 agent 视图入口；#392 `/powerup`、agent 视图默认、编辑器上下文、插件市场筛选与内嵌 seccomp；#393 `/powerup` lint 修复；#395 rewind 链接安全、MCP transport、footer 与快捷键默认值；#398 内置技能、`/clear` 标题与 `/help` 提示；#401 会话费用计算；#403 Bash 权限 AST 解析；#404 `claude-api` lint 修复；#406 PR CI 运行 eslint。
-- 对应 issue：#16、#71、#72、#73、#74、#75、#76、#88、#141、#158、#261、#262、#265、#266、#267、#270、#271、#273、#275、#277、#279、#281、#282、#285、#286、#287、#291、#292、#294、#295、#297、#298、#299、#300、#301、#305、#307、#308、#310、#314、#318、#320、#326、#328、#330、#333、#335、#336、#337、#338、#340、#341、#343、#345、#348、#351、#352、#353、#355、#356、#361、#362、#365、#366、#370、#373、#375、#378、#382、#384、#388、#391、#394、#397、#399、#400、#402、#405。
+- PR 合并提交（`git log --first-parent e3fca04..dev`）：#263、#272、#280 Teams 通知；#264、#269 agent 视图 pill（加入后又按用户要求撤回）；#268、#274、#276、#283、#284、#288、#303、#306 agent 生命周期；#290、#296、#302 coordinator 模式；#278、#289 SQLite 记忆检索；#293 Bash 折叠；#304、#316 权限与 Bedrock；#309、#311 REPL 对话框；#313 任务通知格式；#315、#319、#321 agent summary；#317、#331 Agent SDK；#323、#325、#329、#334、#346、#349 `/hooks`、`/theme`、`/agents`、`/memory`、`/config`；#327 内嵌搜索工具；#332 流式工具执行；#339 新 hook 事件；#342、#344、#347、#350 多轮对照修复；#354 权限模式转换与 Stop hook；#357 session memory；#359 权限提示与 footer 对齐官方；#363 模型默认值、会话标题与 `/ide`；#368 斜杠命令、`!` 命令回复与输出上限；#371、#374、#379 `--continue`/`--resume` 保留 prompt cache 与历史；#376 `/feedback`、`/output-style`、`/effort`、`/model` 与 SDK 字段；#383 `/hooks`、`/clear`、`/fast`、`/ide` 与对话框文案；#386 `/btw`、`/skills`、`/usage`、`/model`、`/status` 等命令对齐；#389 plan 模式权限、工具列表、会话标题与 agent 视图入口；#392 `/powerup`、agent 视图默认、编辑器上下文、插件市场筛选与内嵌 seccomp；#393 `/powerup` lint 修复；#395 rewind 链接安全、MCP transport、footer 与快捷键默认值；#398 内置技能、`/clear` 标题与 `/help` 提示；#401 会话费用计算；#403 Bash 权限 AST 解析；#404 `claude-api` lint 修复；#406 PR CI 运行 eslint；#410 Select 换行、plan 模式 accept-edits 选项与 `/resume` 选择器。
+- 对应 issue：#16、#71、#72、#73、#74、#75、#76、#88、#141、#158、#261、#262、#265、#266、#267、#270、#271、#273、#275、#277、#279、#281、#282、#285、#286、#287、#291、#292、#294、#295、#297、#298、#299、#300、#301、#305、#307、#308、#310、#314、#318、#320、#326、#328、#330、#333、#335、#336、#337、#338、#340、#341、#343、#345、#348、#351、#352、#353、#355、#356、#361、#362、#365、#366、#370、#373、#375、#378、#382、#384、#388、#391、#394、#397、#399、#400、#402、#405、#408。
 
 ### 变更内容
 
@@ -61,7 +61,7 @@
 - plan 模式（auto 可用时）下 cwd 内的写文件不再被直接放行；Bash/PowerShell 提示的 “Yes, and always allow access to …” 只添加规则与目录，不再把会话切到 acceptEdits（#351、#352）。
 - `sh -c` 中命中 deny 规则时询问；`env`/`command` 等包装的读取命令按读取处理；危险删除的包装命令增加 `exec`、`setsid`、`ionice`、`busybox`、`doas`、`pkexec`；相对路径 deny 规则同时匹配符号链接；plan 审批经过模式转换检查；Terminal 中用控制键编辑过的行需要询问（#71、#72、#73、#74、#75、#76）。
 - 权限提示文案对齐官方：Write 第 2 项写明将要应用的更新（如 “Yes, and switch to accept edits … for this session (shift+tab)”），ExitPlanMode 第 1 项为 “Yes, and switch to default (ask each time) for this session”，bypass 警告框不显示编号；Bash 提示在 default/acceptEdits 模式且 auto 可用时增加 “Yes, and switch to auto mode” 选项与 Tip，命令显示在虚线之间（#355）。
-- plan 模式即使在 auto 可用时也询问用户，不再交给分类器；以 bypass 启动的会话进入 plan 模式时提示其不会询问；Bash 提示的标签显示完整路径（#388）。
+- plan 模式即使在 auto 可用时也询问用户，不再交给分类器；以 bypass 启动的会话进入 plan 模式时提示其不会询问；Bash 提示的标签显示完整路径（#388）。只有从 default 进入 plan 模式时，Write 提示才提供切换到 accept edits 的选项（#408）。
 - rewind 不再通过符号链接、硬链接或非普通文件写入或删除被跟踪路径，恢复时以 `O_NOFOLLOW` 打开目标，被拒绝的路径记在 `skippedLinks` 并由 `rewind_files` 返回（#394）。
 - release 构建启用 `TREE_SITTER_BASH`，Bash 权限检查改用 AST 解析，与官方一致：if/循环/`||` 分支中可能被改的变量视为未知，`read`、`printf -v`、`mapfile` 等的目标变量视为未知；命令读取自己设置的变量时询问（精确命令规则与沙箱自动放行除外）；引号内的 `"$HOME"` 按真实 home 目录做路径检查；`command`、`builtin` 作为包装命令剥离（#402）。
 - Bedrock/Vertex 凭证错误最多刷新 2 次，无凭证的 `claude -p` 约 4 秒失败（原约 3 分钟）（#16）。
@@ -92,6 +92,7 @@
 - 新增 `/powerup`（10 节官方功能课程，进度写入 `powerupsUnlocked`）；`/config` 新增 `defaultToAgentsView`（BG_SESSIONS 构建中裸 `claude` 默认打开 agent 视图）与 `externalEditorContext`（`$EDITOR` 缓冲区开头以注释附上 Claude 上一条回复，保存时去掉）；`/plugin` Discover 在有 2 个及以上 marketplace 时显示标签行，`ctrl+s` 切换（#391）。
 - Linux binary 内嵌 `apply-seccomp`，`/sandbox` 依赖项显示 `seccomp filter: installed`，与官方一致（#391）。
 - BG_SESSIONS 构建中输入框为空且空闲时 footer 显示 `← for agents`，遵循 `leftArrowOpensAgents`（#394）。
+- 选项文字换行时，Select 的指示符与序号不再被挤压；`/resume` 选择器以 Pane 显示，`Space` 预览，footer 末尾不再多出分隔符（#408）。
 - `/clear` 后的第一条输入重新生成会话标题；本地命令 caveat 使用官方文案；终端高度不少于 44 行时 `/help` 显示 `/powerup` 提示（#397）。
 
 #### Agent SDK
