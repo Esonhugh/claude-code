@@ -492,6 +492,7 @@ export async function processSlashCommand(
     }
   }
 
+  setPromptId(randomUUID())
   let command = userInvocableCommand ?? commandExists!
   const subcommand = resolveSubcommand(command, parsedArgs)
   const subcommandTarget = subcommand

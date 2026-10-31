@@ -31,3 +31,16 @@ for (const [label, canReadOutputFile, outputFile, text] of [
     })
   })
 }
+
+// Official 2.1.311: canContinueAgent (SendMessage available) gates the continue hints.
+test('async and completed receipts drop the SendMessage hint when the agent cannot be continued', () => {
+  const asyncText = (canContinueAgent: boolean) => (AgentTool.mapToolResultToToolResultBlockParam({status: 'async_launched' as const,
+    agentId: 'owned-agent', description: 'd', resolvedModel: 'm', prompt: 'p', outputFile: '', canReadOutputFile: false, canContinueAgent}, 't').content as {text: string}[])[0]!.text
+  expect(asyncText(true)).toContain("(internal ID - do not mention to user. Use SendMessage with to: 'owned-agent', summary: '<5-10 word recap>' to continue this agent.)")
+  expect(asyncText(false)).toContain('agentId: owned-agent (internal ID - do not mention to user.)\n')
+  const done = (canContinueAgent: boolean) => (AgentTool.mapToolResultToToolResultBlockParam({status: 'completed' as const, prompt: 'p',
+    agentId: 'owned-agent', agentType: 'general-purpose', content: [{type: 'text', text: 'ok'}], totalToolUseCount: 1, totalDurationMs: 2,
+    totalTokens: 3, usage: {} as never, canContinueAgent} as never, 't').content as {text: string}[]).at(-1)!.text
+  expect(done(true)).toStartWith("agentId: owned-agent (use SendMessage with to: 'owned-agent', summary: '<5-10 word recap>' to continue this agent)\n<usage>")
+  expect(done(false)).toStartWith('agentId: owned-agent\n<usage>')
+})

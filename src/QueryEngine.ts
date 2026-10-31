@@ -67,6 +67,7 @@ import { SYNTHETIC_OUTPUT_TOOL_NAME } from './tools/SyntheticOutputTool/Syntheti
 import type { Message, MessageOrigin, UserMessage } from './types/message.js'
 import type { OrphanedPermission, QueuedCommand } from './types/textInputTypes.js'
 import { createAbortController } from './utils/abortController.js'
+import { applyCompletedMessageDisplayHooks } from './utils/hooks/messageDisplay.js'
 import { getModHttpServices } from './services/mods/hostOperations.js'
 import type { AttributionState } from './utils/commitAttribution.js'
 import { getGlobalConfig } from './utils/config.js'
@@ -329,6 +330,7 @@ export class QueryEngine {
       skipAttachments?: boolean
     },
   ): AsyncGenerator<SDKMessage, void, unknown> {
+    const displayTurnId = randomUUID()
     const {
       cwd,
       commands,
@@ -1075,7 +1077,9 @@ export class QueryEngine {
             lastStopReason = message.message.stop_reason
           }
           this.mutableMessages.push(message)
-          yield* normalizeMessage(message)
+          yield* normalizeMessage(
+            await applyCompletedMessageDisplayHooks(message, displayTurnId, this.abortController.signal),
+          )
           break
         case 'progress':
           this.mutableMessages.push(message)

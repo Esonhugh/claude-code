@@ -61,6 +61,7 @@ import {
   executePreCompactHooks,
 } from '../../utils/hooks.js'
 import { logError } from '../../utils/log.js'
+import { createAgentId } from '../../utils/uuid.js'
 import { MEMORY_TYPE_VALUES } from '../../utils/memory/types.js'
 import {
   createCompactBoundaryMessage,
@@ -123,6 +124,8 @@ import {
   getCompactPrompt,
   getCompactUserSummaryMessage,
   getPartialCompactPrompt,
+  hasSummaryBlock,
+  SUMMARY_BLOCK_NUDGE,
 } from './prompt.js'
 
 export const POST_COMPACT_MAX_FILES_TO_RESTORE = 5
@@ -573,6 +576,38 @@ export async function compactConversation(
         throw new Error(generatedSummary)
       }
       summary = generatedSummary
+      // Official 2.1.311: a reply without a <summary> block gets one more
+      // request with a nudge; the first reply stays when the second also fails.
+      if (
+        !hasSummaryBlock(summary) &&
+        getFeatureValue_CACHED_MAY_BE_STALE('tengu_dapper_fountain', true)
+      ) {
+        try {
+          const retryResponse = await streamCompactSummary({
+            messages: messagesToSummarize,
+            summaryRequest: createUserMessage({
+              content: compactPrompt + SUMMARY_BLOCK_NUDGE,
+            }),
+            appState,
+            context,
+            preCompactTokenCount,
+            cacheSafeParams: retryCacheSafeParams,
+          })
+          const retrySummary = getAssistantMessageText(retryResponse)
+          if (
+            !retryResponse.isApiErrorMessage &&
+            retrySummary &&
+            !startsWithApiErrorPrefix(retrySummary) &&
+            hasSummaryBlock(retrySummary)
+          ) {
+            summaryResponse = retryResponse
+            summary = retrySummary
+          }
+        } catch (error) {
+          if (context.abortController.signal.aborted) throw error
+          logError(error)
+        }
+      }
     }
 
     // Store the current file state before clearing
@@ -1316,7 +1351,10 @@ async function streamCompactSummary({
           // Pass the compact context's abortController so user Esc aborts the
           // fork — same signal the streaming fallback uses at
           // `signal: context.abortController.signal` below.
-          overrides: { abortController: context.abortController },
+          overrides: {
+            abortController: context.abortController,
+            agentId: createAgentId(),
+          },
         })
         const assistantMsg = getLastAssistantMessage(result.messages)
         const assistantText = assistantMsg
