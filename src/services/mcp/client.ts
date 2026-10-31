@@ -971,6 +971,19 @@ export const connectToServer = memoize(
     let inProcessServer:
       | { connect(t: Transport): Promise<void>; close(): Promise<void> }
       | undefined
+    if (
+      'url' in serverRef &&
+      typeof serverRef.url === 'string' &&
+      !URL.canParse(serverRef.url)
+    ) {
+      return {
+        name,
+        type: 'failed' as const,
+        config: serverRef,
+        error:
+          "'url' is not a valid URL. Update the server's config and reconnect.",
+      }
+    }
     try {
       let transport
 
