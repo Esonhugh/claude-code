@@ -27,8 +27,8 @@ import { getTheme } from '../utils/theme.js'
 import { ConfigurableShortcutHint } from './ConfigurableShortcutHint.js'
 import { Select } from './CustomSelect/select.js'
 import { Byline } from './design-system/Byline.js'
-import { Divider } from './design-system/Divider.js'
 import { KeyboardShortcutHint } from './design-system/KeyboardShortcutHint.js'
+import { Pane } from './design-system/Pane.js'
 import { SearchBox } from './SearchBox.js'
 import { SessionPreview } from './SessionPreview.js'
 import { Spinner } from './Spinner.js'
@@ -969,7 +969,10 @@ export function LogSelector({
           setViewMode('rename')
           setRenameValue('')
           logEvent('tengu_session_rename_started', {})
-        } else if (lowerInput === 'v' && key.ctrl && focusedLog) {
+        } else if (
+          ((input === ' ' && keyIsNotCtrlOrMeta) || (lowerInput === 'v' && key.ctrl)) &&
+          focusedLog
+        ) {
           setPreviewLog(focusedLog)
           setViewMode('preview')
           logEvent('tengu_session_preview_opened', {
@@ -1035,8 +1038,7 @@ export function LogSelector({
   if (logs.length === 0) {
     if (!onToggleAllProjects) return null
     return (
-      <Box flexDirection="column">
-        <Divider color="suggestion" />
+      <Pane color="suggestion">
         <Text bold color="suggestion">
           Resume session
         </Text>
@@ -1086,7 +1088,7 @@ export function LogSelector({
             </Byline>
           </Text>
         </Box>
-      </Box>
+      </Pane>
     )
   }
 
@@ -1106,12 +1108,7 @@ export function LogSelector({
 
   return (
     <Box flexDirection="column" height={maxHeight - 1}>
-      <Box flexShrink={0}>
-        <Divider color="suggestion" />
-      </Box>
-      <Box flexShrink={0}>
-        <Text> </Text>
-      </Box>
+      <Pane color="suggestion">
 
       {hasTags ? (
         <TagTabs
@@ -1382,7 +1379,7 @@ export function LogSelector({
                   action={showAllWorktrees ? 'only show current worktree' : 'show all worktrees'}
                 />
               )}
-              <KeyboardShortcutHint shortcut="Ctrl+V" action="preview" />
+              <KeyboardShortcutHint shortcut="Space" action="preview" />
               <KeyboardShortcutHint shortcut="Ctrl+R" action="rename" />
               <Text>Type to search</Text>
               <ConfigurableShortcutHint
@@ -1398,6 +1395,7 @@ export function LogSelector({
           </Text>
         )}
       </Box>
+      </Pane>
     </Box>
   )
 }
