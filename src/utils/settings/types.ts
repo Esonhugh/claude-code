@@ -410,7 +410,7 @@ export const SettingsSchema = lazySchema(() =>
         .boolean()
         .optional()
         .describe(
-          "Include built-in commit and PR workflow instructions in Claude's system prompt (default: true)",
+          "Include built-in commit and PR workflow instructions and git status in Claude's system prompt (default: false)",
         ),
       permissions: PermissionsSchema()
         .optional()

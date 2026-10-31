@@ -149,7 +149,7 @@ export const getGitStatus = memoize(async (): Promise<string | null> => {
 /**
  * Git status announced once per conversation as a persisted session_context
  * attachment (2.1.311), so resume rebuilds the same prompt prefix. Skipped in
- * CCR or when git instructions are disabled.
+ * CCR or unless git instructions are turned on.
  */
 export async function getSessionGitStatus(): Promise<string | null> {
   if (isEnvTruthy(process.env.CLAUDE_CODE_REMOTE) || !shouldIncludeGitInstructions()) {
