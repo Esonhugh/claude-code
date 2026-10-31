@@ -253,6 +253,8 @@ export interface ContextData {
     attachmentTokens: number
     assistantMessageTokens: number
     userMessageTokens: number
+    redirectedContextTokens: number
+    unattributedTokens: number
     toolCallsByType: Array<{
       name: string
       callTokens: number
@@ -1454,6 +1456,16 @@ export function buildContextUsageData({
       attachmentTokens: messageBreakdown.attachmentTokens,
       assistantMessageTokens: messageBreakdown.assistantMessageTokens,
       userMessageTokens: messageBreakdown.userMessageTokens,
+      redirectedContextTokens: 0,
+      unattributedTokens: Math.max(
+        0,
+        reconciledMessageTokens -
+          messageBreakdown.toolCallTokens -
+          messageBreakdown.toolResultTokens -
+          messageBreakdown.attachmentTokens -
+          messageBreakdown.assistantMessageTokens -
+          messageBreakdown.userMessageTokens,
+      ),
       toolCallsByType: Array.from(toolsMap, ([name, tokens]) => ({
         name,
         ...tokens,

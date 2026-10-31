@@ -340,6 +340,21 @@ describe('buildContextUsageData', () => {
     expect(data.totalTokens).toBe(1_880)
   })
 
+  test('message breakdown reports unattributed message tokens like SDK 0.3.311', () => {
+    const data = build({
+      systemPromptTokens: 10,
+      apiUsage: {
+        input_tokens: 110,
+        output_tokens: 5,
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: 0,
+      },
+      messageBreakdown: { ...emptyMessageBreakdown, totalTokens: 60, userMessageTokens: 40, assistantMessageTokens: 20 },
+      skipReservedBuffer: true,
+    })
+    expect(data.messageBreakdown).toMatchObject({ redirectedContextTokens: 0, unattributedTokens: 40 })
+  })
+
   test('keeps locally estimated totals unclamped when API usage is absent', () => {
     const data = build({
       contextWindow: 100,
