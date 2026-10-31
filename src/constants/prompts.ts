@@ -574,7 +574,7 @@ ${CYBER_RISK_INSTRUCTION}`,
     composition
       ? await Promise.all(dynamicSections.map(section => section.compute()))
       : await resolveSystemPromptSections(dynamicSections)
-  const coreSections: PromptSection[] = lean ? [{ id: 'lean_body', layer: 'stable-core', content: getLeanPromptBody(outputStyleConfig, model) }] : [
+  const coreSections: PromptSection[] = lean ? [{ id: 'lean_body', layer: 'stable-core', content: getLeanPromptBody(outputStyleConfig) }] : [
     {
       id: 'identity',
       layer: 'stable-core',

@@ -11,7 +11,7 @@ import { clearSystemPromptSections } from './systemPromptSections.js'
 
 ;(globalThis as typeof globalThis & { MACRO: MacroGlobals }).MACRO = { VERSION: 'test', ISSUES_EXPLAINER: 'report an issue' }
 const { getSystemPrompt } = await import('./prompts.js')
-const keys = ['HOME', 'CLAUDE_CONFIG_DIR', 'ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN', 'CLAUDE_CODE_SIMPLE', 'CLAUDE_CODE_SIMPLE_SYSTEM_PROMPT', 'CLAUDE_CODE_DISABLE_AUTO_MEMORY', 'CLAUDE_CODE_MODEL_CAPABILITIES', 'CLAUDE_CODE_INTRO_FRAME', 'CLAUDE_CODE_USE_OPENAI', 'CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX', 'CLAUDE_CODE_USE_FOUNDRY', 'CLAUDE_CODE_TURN_UPDATES', 'CLAUDE_CODE_FORCE_MID_CONVERSATION_SYSTEM']
+const keys = ['HOME', 'CLAUDE_CONFIG_DIR', 'ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN', 'CLAUDE_CODE_SIMPLE', 'CLAUDE_CODE_SIMPLE_SYSTEM_PROMPT', 'CLAUDE_CODE_DISABLE_AUTO_MEMORY', 'CLAUDE_CODE_MODEL_CAPABILITIES', 'CLAUDE_CODE_INTRO_FRAME', 'CLAUDE_CODE_USE_OPENAI', 'CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX', 'CLAUDE_CODE_USE_FOUNDRY', 'CLAUDE_CODE_TURN_UPDATES']
 let saved: (string | undefined)[]
 let root: string
 beforeEach(async () => {
@@ -48,6 +48,10 @@ test('Sonnet 5.5 selects the official lean body and advertises its lean trait', 
 const LEAN_INTRO_292 = 'You are an interactive agent that helps users with software engineering tasks.'
 const LEAN_INTRO_303 = 'You are an agent working with the user toward their goals, using your own judgment along the way.'
 
+// The fork never sends mid-conversation system turns (#409), so the body always names <system-reminder> tags.
+const SYSTEM_TURN_REMINDER = 'The system may send updates, reminders, or modifications to rules via mid-conversation system turns. These are system-controlled, unlike function results.'
+const TAG_REMINDER = '`<system-reminder>` tags in messages and tool results are injected by the harness, not the user.'
+
 // Official 2.1.292 actual API runs: core strings/scopes captured with each model/override.
 test.each(fixture.cases)('matches official lean selection and core sections for $name', async sample => {
   Object.assign(process.env, sample.env ?? {})
@@ -60,7 +64,7 @@ test.each(fixture.cases)('matches official lean selection and core sections for 
   expect(getSystemPromptFacts(prompt)?.traits.includes('lean')).toBe(sample.lean)
   const sections = getSystemPromptSections(prompt)!
   if (sample.lean) {
-    expect(sections.filter(s => 'scope' in s && s.scope === 'shared' && 'text' in s && s.text)).toEqual([{ name: 'lean_body', scope: 'shared', text: sample.core.find(s => s.id === 'lean_body')!.text.replace(fixture.securityInstruction, '').replace(LEAN_INTRO_292, LEAN_INTRO_303) }])
+    expect(sections.filter(s => 'scope' in s && s.scope === 'shared' && 'text' in s && s.text)).toEqual([{ name: 'lean_body', scope: 'shared', text: sample.core.find(s => s.id === 'lean_body')!.text.replace(`${fixture.securityInstruction}\n\n`, '').replace(LEAN_INTRO_292, LEAN_INTRO_303).replace(SYSTEM_TURN_REMINDER, TAG_REMINDER) }])
     for (const section of sample.core.filter(s => s.id !== 'lean_body')) {
       expect(sections.find(s => 'name' in s && s.name === section.id)).toEqual({ name: section.id, scope: 'session', text: section.text })
     }

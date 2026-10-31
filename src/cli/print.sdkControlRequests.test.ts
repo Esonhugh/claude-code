@@ -222,7 +222,7 @@ if (process.env[childFlag] !== '1') {
   })
 
   test('host dialog requests (memory, skills, sandbox, hooks, permissions, diff, tasks, feedback) answer', async () => {
-    const [memory, skills, sandbox, hooks, rules, diff, taskOut, endedTask, bgAll, bgOne, rated, badRating, feedback] = await run([
+    const [memory, skills, sandbox, hooks, rules, diff, taskOut, endedTask, bgAll, bgOne, rated, badRating, badCleared, feedback] = await run([
       { subtype: 'get_memory_dialog' },
       { subtype: 'get_skills_dialog' },
       { subtype: 'get_sandbox_dialog' },
@@ -235,6 +235,7 @@ if (process.env[childFlag] !== '1') {
       { subtype: 'background_tasks', tool_use_id: 'toolu_nosuch' },
       { subtype: 'message_rated', messageUuid: 'm1', sentiment: 'positive' },
       { subtype: 'message_rated', messageUuid: 'm1', sentiment: 'meh' },
+      { subtype: 'message_rated', messageUuid: 'm1', sentiment: 'positive', cleared: 'yes' },
       { subtype: 'submit_feedback', description: 'x' },
     ])
     expect(memory.subtype).toBe('success')
@@ -266,6 +267,7 @@ if (process.env[childFlag] !== '1') {
     expect(bgOne.response).toEqual({ backgrounded: false })
     expect(rated.response).toEqual({})
     expect(badRating.subtype).toBe('error')
+    expect(badCleared).toMatchObject({ subtype: 'error', error: expect.stringContaining('and cleared a boolean') })
     expect(feedback.response).toMatchObject({ feedback_id: null, unavailable_reason: expect.any(String) })
   })
 }

@@ -1,4 +1,9 @@
-import { getInlinePlugins, getInlinePluginsNoMcp } from '../bootstrap/state.js'
+import {
+  getAdditionalDirectoriesForClaudeMd,
+  getInlinePlugins,
+  getInlinePluginsNoMcp,
+  setAdditionalDirectoriesForClaudeMd,
+} from '../bootstrap/state.js'
 import { setModToolCheckPermissionHost } from '../services/tools/toolHooks.js'
 import { getInitializePluginsApplied } from '../entrypoints/sdk/launchInitialize.js'
 import { createSdkStreamState } from './streamState.js'
@@ -11,7 +16,7 @@ import { feature } from 'bun:bundle'
 import { restoreSendMessagePins } from '../utils/sendMessagePins.js'
 import { FAILED_PROMPT_BATCH_DROP, UNSUBMITTED_PROMPT_DROP } from '../services/mods/promptAdapter.js'
 import { readFile, stat } from 'fs/promises'
-import { dirname, join } from 'path'
+import { dirname, join, resolve } from 'path'
 import {
   downloadUserSettings,
   redownloadUserSettings,
@@ -207,7 +212,10 @@ import {
 } from 'src/constants/outputStyles.js'
 import { clearOutputStyleCaches } from 'src/outputStyles/loadOutputStylesDir.js'
 import { FileReadTool } from 'src/tools/FileReadTool/FileReadTool.js'
-import { checkReadPermissionForTool } from 'src/utils/permissions/filesystem.js'
+import {
+  allWorkingDirectories,
+  checkReadPermissionForTool,
+} from 'src/utils/permissions/filesystem.js'
 import { isSettingSourceEnabled } from 'src/utils/settings/constants.js'
 import { formatPeerPrompt } from 'src/utils/peerProtocol.js'
 import { TEAMMATE_MESSAGE_TAG, TICK_TAG } from 'src/constants/xml.js'
@@ -236,7 +244,7 @@ import {
   restorePermissionModeForResume,
   transitionPermissionMode,
 } from 'src/utils/permissions/permissionSetup.js'
-import { logPermissionModeChange } from 'src/utils/permissions/PermissionUpdate.js'
+import { applyPermissionUpdate, logPermissionModeChange } from 'src/utils/permissions/PermissionUpdate.js'
 import { parseMcpPermissionModeOverride } from 'src/utils/permissions/mcpPermissionModeOverride.js'
 import {
   tryGenerateSuggestion,
@@ -297,6 +305,7 @@ import {
   areMcpConfigsEqual,
   reconnectMcpServerImpl,
   callMCPToolForMod,
+  callMCPToolWithUrlElicitationRetry,
   findMCPConnectionForMod,
 } from 'src/services/mcp/client.js'
 import {
@@ -313,8 +322,9 @@ import {
   runElicitationHooks,
   runElicitationResultHooks,
 } from 'src/services/mcp/elicitationHandler.js'
-import { executeNotificationHooks } from 'src/utils/hooks.js'
-import { getMcpPrefix } from 'src/services/mcp/mcpStringUtils.js'
+import { executeDirectoryAddedHooks, executeNotificationHooks } from 'src/utils/hooks.js'
+import { getMcpPrefix, mcpInfoFromString } from 'src/services/mcp/mcpStringUtils.js'
+import { normalizeNameForMCP } from 'src/services/mcp/normalization.js'
 import {
   commandBelongsToServer,
   filterToolsByServer,
@@ -422,6 +432,7 @@ import { asSessionId } from 'src/types/ids.js'
 import { jsonStringify } from '../utils/slowOperations.js'
 import { skillChangeDetector } from '../utils/skills/skillChangeDetector.js'
 import { getCommands, clearCommandsCache } from '../commands.js'
+import { clearMemoryFileCaches } from '../utils/claudemd.js'
 import {
   isBareMode,
   isEnvTruthy,
@@ -3699,7 +3710,7 @@ function runHeadlessStreaming(
             for (const content of (await getPostModelSwitchContext(switchInfo, 'sdk')) ?? []) {
               mutableMessages.push(createUserMessage({ content, isMeta: true }))
             }
-            sendControlResponseSuccess(message)
+            sendControlResponseSuccess(message, { model })
           }).catch(error => {
             logError(error)
             sendControlResponseError(message, 'set_model failed')
@@ -4078,6 +4089,100 @@ function runHeadlessStreaming(
           } catch (error) {
             sendControlResponseError(message, `mcp_read_resource: ${errorMessage(error)}`)
           }
+        } else if (message.request.subtype === 'mcp_call') {
+          // Trusted control channel: no permission check, like official 2.1.311.
+          const { tool, arguments: args } = message.request as { tool?: unknown; arguments?: unknown }
+          if (typeof tool !== 'string') {
+            sendControlResponseError(message, 'mcp_call: tool must be a string')
+            continue
+          }
+          const info = mcpInfoFromString(tool)
+          if (!info?.toolName) {
+            sendControlResponseError(message, `Not a fully-qualified MCP tool name: ${tool}`)
+            continue
+          }
+          const connection = [...getAppState().mcp.clients, ...dynamicMcpState.clients]
+            .find(c => normalizeNameForMCP(c.name) === info.serverName)
+          if (connection?.type !== 'connected') {
+            sendControlResponseError(message, `MCP server not connected: ${info.serverName}`)
+            continue
+          }
+          if (connection.config.type === 'sdk') {
+            sendControlResponseError(message, `mcp_call does not support SDK MCP servers. SDK servers are caller-provided — invoke ${info.serverName} directly.`)
+            continue
+          }
+          const toolName = [...getAppState().mcp.tools, ...dynamicMcpState.tools]
+            .find(t => t.name === tool)?.mcpInfo?.toolName ?? info.toolName
+          void (async () => {
+            try {
+              const result = await callMCPToolWithUrlElicitationRetry({
+                client: connection,
+                clientConnection: connection,
+                tool: toolName,
+                args: args !== null && typeof args === 'object' ? args as Record<string, unknown> : {},
+                signal: createAbortController().signal,
+                setAppState,
+              })
+              sendControlResponseSuccess(message, {
+                content: result.content,
+                structuredContent: result.structuredContent,
+                _meta: result._meta,
+              })
+            } catch (error) {
+              sendControlResponseError(message, errorMessage(error))
+            }
+          })()
+        } else if (message.request.subtype === 'register_repo_root') {
+          const request = message.request as {
+            directory?: unknown
+            reload_claude_md?: unknown
+            reload_skills?: unknown
+            reload_plugins?: unknown
+          }
+          if (typeof request.directory !== 'string' || request.directory === '') {
+            sendControlResponseError(message, 'register_repo_root: directory must be a non-empty string')
+            continue
+          }
+          const directory = resolve(expandPath(request.directory))
+          void (async () => {
+            try {
+              if (!(await stat(directory)).isDirectory()) {
+                sendControlResponseError(message, `register_repo_root: ${request.directory} is not a directory`)
+                return
+              }
+              if (allWorkingDirectories(getAppState().toolPermissionContext).has(directory)) {
+                sendControlResponseError(message, `register_repo_root: ${request.directory} is already a registered working directory`)
+                return
+              }
+              setAppState(prev => ({
+                ...prev,
+                toolPermissionContext: applyPermissionUpdate(prev.toolPermissionContext, {
+                  type: 'addDirectories',
+                  directories: [directory],
+                  destination: 'session',
+                }),
+              }))
+              const claudeMdDirs = getAdditionalDirectoriesForClaudeMd()
+              if (!claudeMdDirs.includes(directory)) {
+                setAdditionalDirectoriesForClaudeMd([...claudeMdDirs, directory])
+              }
+              SandboxManager.refreshConfig()
+              void executeDirectoryAddedHooks(directory, 'register_repo_root', getAppState).catch(logError)
+              if (request.reload_claude_md === true) clearMemoryFileCaches()
+              if (request.reload_skills === true) {
+                clearCommandsCache()
+                currentCommands = await getCommands(cwd())
+              }
+              if (request.reload_plugins === true) {
+                await refreshActivePlugins(setAppState)
+                await applyPluginMcpDiff()
+                currentCommands = await getCommands(cwd())
+              }
+              sendControlResponseSuccess(message, { directory })
+            } catch (error) {
+              sendControlResponseError(message, `register_repo_root: ${errorMessage(error)}`)
+            }
+          })()
         } else if (message.request.subtype === 'mcp_reconnect') {
           const serverName = message.request.serverName as string
           // @ts-ignore - recovered code
@@ -4843,11 +4948,12 @@ function runHeadlessStreaming(
             (request.sentiment !== 'positive' && request.sentiment !== 'negative') ||
             (request.surface !== undefined &&
               request.surface !== 'tool_use' &&
-              request.surface !== 'assistant_text')
+              request.surface !== 'assistant_text') ||
+            (request.cleared !== undefined && typeof request.cleared !== 'boolean')
           ) {
             sendControlResponseError(
               message,
-              'message_rated: messageUuid must be a string, sentiment "positive" or "negative", surface "tool_use" or "assistant_text"',
+              'message_rated: messageUuid must be a string, sentiment "positive" or "negative", surface "tool_use" or "assistant_text", and cleared a boolean',
             )
           } else {
             logEvent('tengu_message_rated', {
@@ -5022,7 +5128,10 @@ function runHeadlessStreaming(
                 question,
                 cacheSafeParams,
               })
-              sendControlResponseSuccess(message, { response: result.response })
+              sendControlResponseSuccess(message, {
+                response: result.response,
+                synthetic: result.synthetic,
+              })
             } catch (e) {
               sendControlResponseError(message, errorMessage(e))
             }
