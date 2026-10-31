@@ -204,7 +204,7 @@ export function FastModePicker({
   )
 }
 
-async function handleFastModeShortcut(
+export async function handleFastModeShortcut(
   enable: boolean,
   getAppState: () => AppState,
   setAppState: (f: (prev: AppState) => AppState) => void,

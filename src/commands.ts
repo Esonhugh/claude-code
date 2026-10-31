@@ -10,13 +10,13 @@ import issue from './commands/issue/index.js'
 import feedback from './commands/feedback/index.js'
 import cd from './commands/cd/index.js'
 import clear from './commands/clear/index.js'
-import color from './commands/color/index.js'
+import color, { colorNonInteractive } from './commands/color/index.js'
 import commit from './commands/commit.js'
 import copy from './commands/copy/index.js'
 import desktop from './commands/desktop/index.js'
 import commitPushPr from './commands/commit-push-pr.js'
 import compact from './commands/compact/index.js'
-import config from './commands/config/index.js'
+import config, { configNonInteractive } from './commands/config/index.js'
 import { context, contextNonInteractive } from './commands/context/index.js'
 import focus from './commands/focus/index.js'
 import background from './commands/background/index.js'
@@ -52,7 +52,7 @@ import onboarding from './commands/onboarding/index.js'
 import recap from './commands/recap/index.js'
 import powerup from './commands/powerup/index.js'
 import releaseNotes from './commands/release-notes/index.js'
-import rename from './commands/rename/index.js'
+import rename, { renameNonInteractive } from './commands/rename/index.js'
 import resume from './commands/resume/index.js'
 import { ultrareview } from './commands/review.js'
 import session from './commands/session/index.js'
@@ -140,7 +140,7 @@ import thinkback from './commands/thinkback/index.js'
 import thinkbackPlay from './commands/thinkback-play/index.js'
 import permissions from './commands/permissions/index.js'
 import plan from './commands/plan/index.js'
-import fast from './commands/fast/index.js'
+import fast, { fastNonInteractive } from './commands/fast/index.js'
 import passes from './commands/passes/index.js'
 import privacySettings from './commands/privacy-settings/index.js'
 import hooks from './commands/hooks/index.js'
@@ -198,7 +198,7 @@ import {
 import env from './commands/env/index.js'
 import exit from './commands/exit/index.js'
 import exportCommand from './commands/export/index.js'
-import model from './commands/model/index.js'
+import model, { modelNonInteractive } from './commands/model/index.js'
 import tag from './commands/tag/index.js'
 import outputStyle from './commands/output-style/index.js'
 import remoteEnv from './commands/remote-env/index.js'
@@ -209,7 +209,7 @@ import {
 } from './commands/extra-usage/index.js'
 import rateLimitOptions from './commands/rate-limit-options/index.js'
 import statusline from './commands/statusline.js'
-import effort from './commands/effort/index.js'
+import effort, { effortNonInteractive } from './commands/effort/index.js'
 import stats from './commands/stats/index.js'
 // insights.ts is 113KB (3200 lines, includes diffLines/html rendering). Lazy
 // shim defers the heavy module until /insights is actually invoked.
@@ -293,8 +293,10 @@ const COMMANDS = memoize((): Command[] => [
   cd,
   chrome,
   clear,
+  colorNonInteractive,
   color,
   compact,
+  configNonInteractive,
   config,
   copy,
   desktop,
@@ -310,8 +312,10 @@ const COMMANDS = memoize((): Command[] => [
   cost,
   daybreak,
   diff,
+  effortNonInteractive,
   effort,
   exit,
+  fastNonInteractive,
   fast,
   files,
   goal,
@@ -329,6 +333,7 @@ const COMMANDS = memoize((): Command[] => [
   memory,
   setupMemoryDb,
   mobile,
+  modelNonInteractive,
   model,
   outputStyle,
   remoteEnv,
@@ -338,6 +343,7 @@ const COMMANDS = memoize((): Command[] => [
   releaseNotes,
   reloadPlugins,
   reloadSkills,
+  renameNonInteractive,
   rename,
   resume,
   session,

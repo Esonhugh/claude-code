@@ -16,6 +16,8 @@ export type BundledSkillDefinition = {
   name: string
   // Function-valued text is re-read on every access (it can depend on gates)
   description: string | (() => string)
+  menuDescription?: string
+  terminalOriented?: boolean
   aliases?: string[]
   subcommands?: Record<string, string>
   whenToUse?: string | (() => string)
@@ -114,6 +116,8 @@ export function registerBundledSkill(definition: BundledSkillDefinition): void {
     isEnabled: definition.isEnabled,
     isHidden: !(definition.userInvocable ?? true),
     progressMessage: definition.progressMessage ?? 'running',
+    menuDescription: definition.menuDescription,
+    terminalOriented: definition.terminalOriented,
     getPromptForCommand,
   }
   defineBundledSkillText(command, definition)
