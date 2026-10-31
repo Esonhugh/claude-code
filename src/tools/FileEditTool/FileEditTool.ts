@@ -281,7 +281,15 @@ export const FileEditTool = buildTool({
       fileContent !== null &&
       findActualString(fileContent, old_string) !== null &&
       canWriteWithoutRead(FileEditTool, input, toolUseContext)
-    if ((!readTimestamp || readTimestamp.isPartialView) && !writeWithoutRead()) {
+    // An unread file needs no match here: a missing old_string is reported
+    // below as such, not as "not read yet" (2.1.311).
+    const unreadWriteAllowed =
+      !readTimestamp && canWriteWithoutRead(FileEditTool, input, toolUseContext)
+    if (
+      (!readTimestamp || readTimestamp.isPartialView) &&
+      !unreadWriteAllowed &&
+      !writeWithoutRead()
+    ) {
       return {
         result: false,
         behavior: 'ask',

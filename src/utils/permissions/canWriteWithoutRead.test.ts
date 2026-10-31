@@ -23,9 +23,10 @@ type Opts = {
   mode?: ToolPermissionContext['mode']
   model?: string
   withRead?: boolean
+  withBash?: boolean
   readFileState?: Map<string, unknown>
 }
-function contextFor({ mode = 'acceptEdits', model = 'claude-sonnet-5-5', withRead = true, readFileState = new Map() }: Opts = {}) {
+function contextFor({ mode = 'acceptEdits', model = 'claude-sonnet-5-5', withRead = true, withBash = false, readFileState = new Map() }: Opts = {}) {
   const initial = getDefaultAppState()
   const state = {
     ...initial,
@@ -45,7 +46,7 @@ function contextFor({ mode = 'acceptEdits', model = 'claude-sonnet-5-5', withRea
     options: {
       isNonInteractiveSession: true,
       mainLoopModel: model,
-      tools: withRead ? [FileReadTool, FileWriteTool, FileEditTool] : [FileWriteTool, FileEditTool],
+      tools: [...(withRead ? [FileReadTool] : []), ...(withBash ? [{ name: 'Bash' }] : []), FileWriteTool, FileEditTool],
     },
   } as unknown as ToolUseContext
 }
@@ -68,7 +69,7 @@ test('Write overwrites an unread file when the write needs no prompt', async () 
 test.each([
   ['default mode asks for the write', { mode: 'default' as const }],
   ['legacy model keeps the guard', { model: 'claude-sonnet-4-5-20250929' }],
-  ['session without Read keeps the guard', { withRead: false }],
+  ['session that cannot read keeps the guard', { withRead: false }],
 ])('Write keeps the read guard: %s', async (_name, opts) => {
   const path = fresh('w2.txt')
   const result = await FileWriteTool.validateInput!({ file_path: path, content: 'x' }, contextFor(opts))
@@ -85,6 +86,12 @@ test('Write keeps the read guard for notebooks and partial reads', async () => {
     .toMatchObject({ result: false, message: NOT_READ })
 })
 
+test('Bash can read the file too, so a session with Bash and no Read skips the guard', async () => {
+  const path = fresh('w5.txt')
+  expect(await FileWriteTool.validateInput!({ file_path: path, content: 'x' }, contextFor({ withRead: false, withBash: true })))
+    .toEqual({ result: true })
+})
+
 test('bypassPermissions writes an unread in-project file', async () => {
   const path = fresh('w4.txt')
   expect(await FileWriteTool.validateInput!({ file_path: path, content: 'x' }, contextFor({ mode: 'bypassPermissions' })))
@@ -98,8 +105,9 @@ test('Edit applies to an unread file when old_string still matches', async () =>
   expect(await FileEditTool.validateInput!(input, context)).toMatchObject({ result: true })
   await FileEditTool.call(input, context, undefined as never, parent)
   expect(readFileSync(path, 'utf8')).toBe('new line\n')
+  // Like 2.1.311 the unread file is no reason to refuse; the real problem is reported.
   expect(await FileEditTool.validateInput!({ ...input, file_path: fresh('e2.txt'), old_string: 'missing' }, contextFor()))
-    .toMatchObject({ result: false, message: NOT_READ })
+    .toMatchObject({ result: false, errorCode: 8, message: 'String to replace not found in file.\nString: missing' })
   expect(await FileEditTool.validateInput!({ ...input, file_path: fresh('e3.txt') }, contextFor({ mode: 'default' })))
     .toMatchObject({ result: false, message: NOT_READ })
 })
