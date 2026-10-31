@@ -789,7 +789,7 @@ function loadSettingsFromFlag(settingsFile: string): void {
       // It's a file path - resolve and validate by attempting to read
       const { resolvedPath: resolvedSettingsPath } = safeResolvePath(
         getFsImplementation(),
-        settingsFile,
+        resolve(settingsFile),
       )
       try {
         readFileSync(resolvedSettingsPath, 'utf8')
@@ -1510,7 +1510,13 @@ async function run(): Promise<CommanderCommand> {
         '--max-turns <turns>',
         'Maximum number of agentic turns in non-interactive mode. This will early exit the conversation after the specified number of turns. (only works with --print)',
       )
-        .argParser(Number)
+        .argParser(value => {
+          const turns = Number(value)
+          if (!Number.isFinite(turns)) {
+            throw new InvalidArgumentError('must be a number')
+          }
+          return turns
+        })
         .hideHelp(),
     )
     .addOption(
@@ -1520,7 +1526,7 @@ async function run(): Promise<CommanderCommand> {
       ).argParser(value => {
         const amount = Number(value)
         if (isNaN(amount) || amount <= 0) {
-          throw new Error(
+          throw new InvalidArgumentError(
             '--max-budget-usd must be a positive number greater than 0',
           )
         }
@@ -3002,7 +3008,16 @@ async function run(): Promise<CommanderCommand> {
         isSyntheticOutputToolEnabled({ isNonInteractiveSession }) &&
         options.jsonSchema
       ) {
-        jsonSchema = jsonParse(options.jsonSchema) as ToolInputJSONSchema
+        try {
+          jsonSchema = jsonParse(options.jsonSchema) as ToolInputJSONSchema
+        } catch (error) {
+          process.stderr.write(
+            chalk.red(
+              `Error: --json-schema is not valid JSON: ${errorMessage(error)}\n`,
+            ),
+          )
+          process.exit(1)
+        }
       }
 
       if (jsonSchema) {
@@ -3210,8 +3225,18 @@ async function run(): Promise<CommanderCommand> {
       // Parse CLI agents if provided via --agents flag (safe mode ignores them)
       let cliAgents: typeof agentDefinitionsResult.activeAgents = []
       if (agentsJson && !isSafeMode()) {
+        let parsedAgents: unknown
         try {
-          const parsedAgents = safeParseJSON(agentsJson)
+          parsedAgents = jsonParse(agentsJson)
+        } catch (error) {
+          process.stderr.write(
+            chalk.red(
+              `Error: Invalid --agents configuration:\ninvalid JSON: ${errorMessage(error)}\n`,
+            ),
+          )
+          process.exit(1)
+        }
+        try {
           if (parsedAgents) {
             cliAgents = parseAgentsFromJson(parsedAgents, 'flagSettings')
           }
