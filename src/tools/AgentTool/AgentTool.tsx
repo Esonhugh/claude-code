@@ -2,7 +2,8 @@ import { parkAgentForChildren } from './backgroundOwner.js'
 import { WORKFLOW_SUBAGENT_TYPE } from '../WorkflowTool/constants.js'
 import { feature } from 'bun:bundle'
 import * as React from 'react'
-import { buildTool, type ToolDef, toolMatchesName } from 'src/Tool.js'
+import { buildTool, type ToolDef, toolMatchesName, type Tools } from 'src/Tool.js'
+import { SEND_MESSAGE_TOOL_NAME } from '../SendMessageTool/constants.js'
 import type {
   AssistantMessage,
   Message as MessageType,
@@ -367,6 +368,7 @@ export const outputSchema = lazySchema(() => {
   const syncOutputSchema = agentToolResultSchema().extend({
     status: z.literal('completed'),
     prompt: z.string(),
+    canContinueAgent: z.boolean().optional(),
   })
 
   const asyncOutputSchema = z.object({
@@ -384,6 +386,7 @@ export const outputSchema = lazySchema(() => {
       .describe(
         'Whether the calling agent has Read/Bash tools to check progress',
       ),
+    canContinueAgent: z.boolean().optional(),
   })
 
   return z.union([syncOutputSchema, asyncOutputSchema])
@@ -1492,6 +1495,7 @@ export const AgentTool = buildTool({
           prompt: prompt,
           outputFile: getTaskOutputPath(agentBackgroundTask.agentId),
           canReadOutputFile,
+          canContinueAgent: canContinueAgent(toolUseContext.options.tools),
         },
       }
     } else {
@@ -2068,6 +2072,7 @@ export const AgentTool = buildTool({
                       prompt: prompt,
                       outputFile: getTaskOutputPath(backgroundedTaskId),
                       canReadOutputFile,
+                      canContinueAgent: canContinueAgent(toolUseContext.options.tools),
                     },
                   }
                 }
@@ -2364,6 +2369,7 @@ export const AgentTool = buildTool({
               prompt,
               ...agentResult,
               ...worktreeResult,
+              canContinueAgent: canContinueAgent(toolUseContext.options.tools),
             },
           }
         }),
@@ -2507,7 +2513,7 @@ The agent is now running and will receive instructions via mailbox.`,
       }
     }
     if (data.status === 'async_launched') {
-      const prefix = `Async agent launched successfully. (This tool result is internal metadata — never quote or paste any part of it, including the agentId below, into a user-facing reply.)\nagentId: ${data.agentId} (internal ID - do not mention to user. Use SendMessage with to: '${data.agentId}', summary: '<5-10 word recap>' to continue this agent.)\nThe agent is working in the background. You will be notified automatically when it completes. You know nothing about its results until that notification arrives — do not report, assume, or predict them; continue other work or respond to the user in the meantime.`
+      const prefix = `Async agent launched successfully. (This tool result is internal metadata — never quote or paste any part of it, including the agentId below, into a user-facing reply.)\nagentId: ${data.agentId} (internal ID - do not mention to user.${data.canContinueAgent === false ? '' : ` Use ${SEND_MESSAGE_TOOL_NAME} with to: '${data.agentId}', summary: '<5-10 word recap>' to continue this agent.`})\nThe agent is working in the background. You will be notified automatically when it completes. You know nothing about its results until that notification arrives — do not report, assume, or predict them; continue other work or respond to the user in the meantime.`
       const instructions = data.canReadOutputFile && data.outputFile
         ? `Do not duplicate this agent's work — avoid working with the same files or topics it is using.\noutput_file: ${data.outputFile}\nDo NOT ${FILE_READ_TOOL_NAME} or tail this file via the shell tool — it is the full subagent JSONL transcript and reading it will overflow your context. If the user asks for progress, say the agent is still running; you'll get a completion notification.`
         : `In your own words, briefly tell the user what you launched — do not echo this tool result. Agent results will arrive in a subsequent message. If the user asks for progress, say the agent is still running.`
@@ -2566,7 +2572,7 @@ The agent is now running and will receive instructions via mailbox.`,
           ...contentOrMarker,
           {
             type: 'text',
-            text: `agentId: ${data.agentId} (use SendMessage with to: '${data.agentId}' to continue this agent)${worktreeInfoText}
+            text: `agentId: ${data.agentId}${data.canContinueAgent === false ? '' : ` (use ${SEND_MESSAGE_TOOL_NAME} with to: '${data.agentId}', summary: '<5-10 word recap>' to continue this agent)`}${worktreeInfoText}
 <usage>subagent_tokens: ${data.totalTokens}
 tool_uses: ${data.totalToolUseCount}
 duration_ms: ${data.totalDurationMs}</usage>`,
@@ -2590,6 +2596,11 @@ duration_ms: ${data.totalDurationMs}</usage>`,
 
 // buildTool spreads the definition; preserve a live schema getter for settings changes.
 Object.defineProperty(AgentTool, 'inputSchema', { get: inputSchema })
+
+/** Official 2.1.311: an agent can be continued only when SendMessage is offered. */
+function canContinueAgent(tools: Tools): boolean {
+  return tools.some(tool => toolMatchesName(tool, SEND_MESSAGE_TOOL_NAME))
+}
 
 function resolveTeamName(
   input: { team_name?: string },
