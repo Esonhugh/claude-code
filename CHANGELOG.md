@@ -16,12 +16,12 @@
 
 ### 版本状态
 
-- 发布候选：`dev` 合并到 `master` 后打 tag `v2.1.296`。本条目汇总 `v2.1.295` tag（master `e3fca04`）之后至 PR #419 的全部变更；`Makefile VERSION` 与 README 发布版本同步为 `2.1.296`，`package.json` 保持 `0.0.0-dev`。版本号与官方版本号无对应关系（本轮对照基线为官方 2.1.311）。
+- 发布候选：`dev` 合并到 `master` 后打 tag `v2.1.296`。本条目汇总 `v2.1.295` tag（master `e3fca04`）之后至 PR #422 的全部变更；`Makefile VERSION` 与 README 发布版本同步为 `2.1.296`，`package.json` 保持 `0.0.0-dev`。版本号与官方版本号无对应关系（本轮对照基线为官方 2.1.311）。
 
 ### 关联提交
 
-- PR 合并提交（`git log --first-parent e3fca04..dev`）：#263、#272、#280 Teams 通知；#264、#269 agent 视图 pill（加入后又按用户要求撤回）；#268、#274、#276、#283、#284、#288、#303、#306 agent 生命周期；#290、#296、#302 coordinator 模式；#278、#289 SQLite 记忆检索；#293 Bash 折叠；#304、#316 权限与 Bedrock；#309、#311 REPL 对话框；#313 任务通知格式；#315、#319、#321 agent summary；#317、#331 Agent SDK；#323、#325、#329、#334、#346、#349 `/hooks`、`/theme`、`/agents`、`/memory`、`/config`；#327 内嵌搜索工具；#332 流式工具执行；#339 新 hook 事件；#342、#344、#347、#350 多轮对照修复；#354 权限模式转换与 Stop hook；#357 session memory；#359 权限提示与 footer 对齐官方；#363 模型默认值、会话标题与 `/ide`；#368 斜杠命令、`!` 命令回复与输出上限；#371、#374、#379 `--continue`/`--resume` 保留 prompt cache 与历史；#376 `/feedback`、`/output-style`、`/effort`、`/model` 与 SDK 字段；#383 `/hooks`、`/clear`、`/fast`、`/ide` 与对话框文案；#386 `/btw`、`/skills`、`/usage`、`/model`、`/status` 等命令对齐；#389 plan 模式权限、工具列表、会话标题与 agent 视图入口；#392 `/powerup`、agent 视图默认、编辑器上下文、插件市场筛选与内嵌 seccomp；#393 `/powerup` lint 修复；#395 rewind 链接安全、MCP transport、footer 与快捷键默认值；#398 内置技能、`/clear` 标题与 `/help` 提示；#401 会话费用计算；#403 Bash 权限 AST 解析；#404 `claude-api` lint 修复；#406 PR CI 运行 eslint；#410 Select 换行、plan 模式 accept-edits 选项与 `/resume` 选择器；#413 `/context`、按模型估算 token、`/doctor` 技能与界面细节；#416 SDK 初始化字段、headless 命令、`/verify`、Explore agent 与命令补全；#419 system prompt、hook、压缩、Agent 结果与 `-p --resume`。
-- 对应 issue：#16、#71、#72、#73、#74、#75、#76、#88、#141、#158、#261、#262、#265、#266、#267、#270、#271、#273、#275、#277、#279、#281、#282、#285、#286、#287、#291、#292、#294、#295、#297、#298、#299、#300、#301、#305、#307、#308、#310、#314、#318、#320、#326、#328、#330、#333、#335、#336、#337、#338、#340、#341、#343、#345、#348、#351、#352、#353、#355、#356、#361、#362、#365、#366、#370、#373、#375、#378、#382、#384、#388、#391、#394、#397、#399、#400、#402、#405、#408、#412、#415、#418。
+- PR 合并提交（`git log --first-parent e3fca04..dev`）：#263、#272、#280 Teams 通知；#264、#269 agent 视图 pill（加入后又按用户要求撤回）；#268、#274、#276、#283、#284、#288、#303、#306 agent 生命周期；#290、#296、#302 coordinator 模式；#278、#289 SQLite 记忆检索；#293 Bash 折叠；#304、#316 权限与 Bedrock；#309、#311 REPL 对话框；#313 任务通知格式；#315、#319、#321 agent summary；#317、#331 Agent SDK；#323、#325、#329、#334、#346、#349 `/hooks`、`/theme`、`/agents`、`/memory`、`/config`；#327 内嵌搜索工具；#332 流式工具执行；#339 新 hook 事件；#342、#344、#347、#350 多轮对照修复；#354 权限模式转换与 Stop hook；#357 session memory；#359 权限提示与 footer 对齐官方；#363 模型默认值、会话标题与 `/ide`；#368 斜杠命令、`!` 命令回复与输出上限；#371、#374、#379 `--continue`/`--resume` 保留 prompt cache 与历史；#376 `/feedback`、`/output-style`、`/effort`、`/model` 与 SDK 字段；#383 `/hooks`、`/clear`、`/fast`、`/ide` 与对话框文案；#386 `/btw`、`/skills`、`/usage`、`/model`、`/status` 等命令对齐；#389 plan 模式权限、工具列表、会话标题与 agent 视图入口；#392 `/powerup`、agent 视图默认、编辑器上下文、插件市场筛选与内嵌 seccomp；#393 `/powerup` lint 修复；#395 rewind 链接安全、MCP transport、footer 与快捷键默认值；#398 内置技能、`/clear` 标题与 `/help` 提示；#401 会话费用计算；#403 Bash 权限 AST 解析；#404 `claude-api` lint 修复；#406 PR CI 运行 eslint；#410 Select 换行、plan 模式 accept-edits 选项与 `/resume` 选择器；#413 `/context`、按模型估算 token、`/doctor` 技能与界面细节；#416 SDK 初始化字段、headless 命令、`/verify`、Explore agent 与命令补全；#419 system prompt、hook、压缩、Agent 结果与 `-p --resume`；#422 工具提示词精简、SDK control request 与 `auth status`。
+- 对应 issue：#16、#71、#72、#73、#74、#75、#76、#88、#141、#158、#261、#262、#265、#266、#267、#270、#271、#273、#275、#277、#279、#281、#282、#285、#286、#287、#291、#292、#294、#295、#297、#298、#299、#300、#301、#305、#307、#308、#310、#314、#318、#320、#326、#328、#330、#333、#335、#336、#337、#338、#340、#341、#343、#345、#348、#351、#352、#353、#355、#356、#361、#362、#365、#366、#370、#373、#375、#378、#382、#384、#388、#391、#394、#397、#399、#400、#402、#405、#408、#412、#415、#418、#421。
 
 ### 变更内容
 
@@ -48,6 +48,8 @@
 - Explore agent 使用官方提示词，模型改为 `inherit`（父模型高于 Opus 时上限为 `opus`，`CLAUDE_CODE_DISABLE_EXPLORE_INHERIT_CAP` 关闭上限），与官方一致；原先外部用户使用 haiku，费用会随主模型上升（#415）。
 - `/verify` 改为官方技能并对所有用户开放（#415）。
 - system prompt 的会话指引、`# Memory` 段落与新增的 `# Context management` 段落对齐官方 2.1.311，移除 `summarize_tool_results` 段落；Write/Edit 结果附上“file state is current in your context”说明；压缩回复缺少 `<summary>` 块时再请求一次；`claude -p --resume <id>` 不带 prompt 时报错退出（原先卡住），`--resume` 接受完整会话标题（#418）。
+- 工具与 harness 提示词精简并修正：Bash 描述从 2519 字符缩短，Monitor 描述去掉大部分示例，Read 改为只读需要的部分，agent 列表只在独立任务时建议并行启动，lean 提示说明提醒通过 `<system-reminder>` 送达（#421）。
+- 同时存在 API key 与 OAuth token 时，`claude auth status` 报告 API key（与实际请求一致），并补上 `analyticsDisabled`、`projectsDirectory` 与 `configDirectory`；`mcp get`/`mcp login` 找不到服务器时列出已配置的服务器或提示 `claude mcp add`（#421）。
 
 #### Agent 与 Teams
 
@@ -107,6 +109,7 @@
 
 - 子代理消息带官方字段与结果摘要，支持 `set_mcp_permission_mode_override`、`tool_result_meta`、`askForTools` 校验，`task_notification` 顺序与官方一致（#88、#158）。
 - `mcp_status` 报告每个服务器的 `transport`（#394）。
+- 新增 `mcp_call` 与 `register_repo_root` control request；`set_model` 返回 `{ model }`，`side_question` 响应带 `synthetic`，`message_rated` 校验 `cleared`（#421）。
 - `system/init`、`initialize` 与 `get_context_usage` 补齐官方 2.1.311 字段（如 `analytics_disabled`、`claude_code_version`、`current_permission_mode`、`mcp_servers[].source`、分类 `id`）；标题等辅助请求不再发送 `thinking` 参数（#366）。
 - `initialize`、`reload_plugins` 与 `system/init` 的命令、agent 与模型字段对齐官方 2.1.311（如 `aliases`、`builtin`、`terminal_slash_commands`、`capabilities`、`fast_mode_disabled_reason`、`session_state`、`supportsThinkingOff`）；`get_context_usage` 与 `/context` 增加 “MCP server instructions” 行；`-p` 与 SDK 支持 `/model`、`/effort`、`/fast`、`/color`、`/rename`、`/config key=value`、`/reload-plugins` 与 `/reload-skills`，headless `/model` 对下一轮生效（#415）。
 
