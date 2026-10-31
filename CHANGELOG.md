@@ -16,12 +16,12 @@
 
 ### 版本状态
 
-- 发布候选：`dev` 合并到 `master` 后打 tag `v2.1.296`。本条目汇总 `v2.1.295` tag（master `e3fca04`）之后至 PR #401 的全部变更；`Makefile VERSION` 与 README 发布版本同步为 `2.1.296`，`package.json` 保持 `0.0.0-dev`。版本号与官方版本号无对应关系（本轮对照基线为官方 2.1.311）。
+- 发布候选：`dev` 合并到 `master` 后打 tag `v2.1.296`。本条目汇总 `v2.1.295` tag（master `e3fca04`）之后至 PR #406 的全部变更；`Makefile VERSION` 与 README 发布版本同步为 `2.1.296`，`package.json` 保持 `0.0.0-dev`。版本号与官方版本号无对应关系（本轮对照基线为官方 2.1.311）。
 
 ### 关联提交
 
-- PR 合并提交（`git log --first-parent e3fca04..dev`）：#263、#272、#280 Teams 通知；#264、#269 agent 视图 pill（加入后又按用户要求撤回）；#268、#274、#276、#283、#284、#288、#303、#306 agent 生命周期；#290、#296、#302 coordinator 模式；#278、#289 SQLite 记忆检索；#293 Bash 折叠；#304、#316 权限与 Bedrock；#309、#311 REPL 对话框；#313 任务通知格式；#315、#319、#321 agent summary；#317、#331 Agent SDK；#323、#325、#329、#334、#346、#349 `/hooks`、`/theme`、`/agents`、`/memory`、`/config`；#327 内嵌搜索工具；#332 流式工具执行；#339 新 hook 事件；#342、#344、#347、#350 多轮对照修复；#354 权限模式转换与 Stop hook；#357 session memory；#359 权限提示与 footer 对齐官方；#363 模型默认值、会话标题与 `/ide`；#368 斜杠命令、`!` 命令回复与输出上限；#371、#374、#379 `--continue`/`--resume` 保留 prompt cache 与历史；#376 `/feedback`、`/output-style`、`/effort`、`/model` 与 SDK 字段；#383 `/hooks`、`/clear`、`/fast`、`/ide` 与对话框文案；#386 `/btw`、`/skills`、`/usage`、`/model`、`/status` 等命令对齐；#389 plan 模式权限、工具列表、会话标题与 agent 视图入口；#392 `/powerup`、agent 视图默认、编辑器上下文、插件市场筛选与内嵌 seccomp；#393 `/powerup` lint 修复；#395 rewind 链接安全、MCP transport、footer 与快捷键默认值；#398 内置技能、`/clear` 标题与 `/help` 提示；#401 会话费用计算。
-- 对应 issue：#16、#71、#72、#73、#74、#75、#76、#88、#141、#158、#261、#262、#265、#266、#267、#270、#271、#273、#275、#277、#279、#281、#282、#285、#286、#287、#291、#292、#294、#295、#297、#298、#299、#300、#301、#305、#307、#308、#310、#314、#318、#320、#326、#328、#330、#333、#335、#336、#337、#338、#340、#341、#343、#345、#348、#351、#352、#353、#355、#356、#361、#362、#365、#366、#370、#373、#375、#378、#382、#384、#388、#391、#394、#397、#399、#400。
+- PR 合并提交（`git log --first-parent e3fca04..dev`）：#263、#272、#280 Teams 通知；#264、#269 agent 视图 pill（加入后又按用户要求撤回）；#268、#274、#276、#283、#284、#288、#303、#306 agent 生命周期；#290、#296、#302 coordinator 模式；#278、#289 SQLite 记忆检索；#293 Bash 折叠；#304、#316 权限与 Bedrock；#309、#311 REPL 对话框；#313 任务通知格式；#315、#319、#321 agent summary；#317、#331 Agent SDK；#323、#325、#329、#334、#346、#349 `/hooks`、`/theme`、`/agents`、`/memory`、`/config`；#327 内嵌搜索工具；#332 流式工具执行；#339 新 hook 事件；#342、#344、#347、#350 多轮对照修复；#354 权限模式转换与 Stop hook；#357 session memory；#359 权限提示与 footer 对齐官方；#363 模型默认值、会话标题与 `/ide`；#368 斜杠命令、`!` 命令回复与输出上限；#371、#374、#379 `--continue`/`--resume` 保留 prompt cache 与历史；#376 `/feedback`、`/output-style`、`/effort`、`/model` 与 SDK 字段；#383 `/hooks`、`/clear`、`/fast`、`/ide` 与对话框文案；#386 `/btw`、`/skills`、`/usage`、`/model`、`/status` 等命令对齐；#389 plan 模式权限、工具列表、会话标题与 agent 视图入口；#392 `/powerup`、agent 视图默认、编辑器上下文、插件市场筛选与内嵌 seccomp；#393 `/powerup` lint 修复；#395 rewind 链接安全、MCP transport、footer 与快捷键默认值；#398 内置技能、`/clear` 标题与 `/help` 提示；#401 会话费用计算；#403 Bash 权限 AST 解析；#404 `claude-api` lint 修复；#406 PR CI 运行 eslint。
+- 对应 issue：#16、#71、#72、#73、#74、#75、#76、#88、#141、#158、#261、#262、#265、#266、#267、#270、#271、#273、#275、#277、#279、#281、#282、#285、#286、#287、#291、#292、#294、#295、#297、#298、#299、#300、#301、#305、#307、#308、#310、#314、#318、#320、#326、#328、#330、#333、#335、#336、#337、#338、#340、#341、#343、#345、#348、#351、#352、#353、#355、#356、#361、#362、#365、#366、#370、#373、#375、#378、#382、#384、#388、#391、#394、#397、#399、#400、#402、#405。
 
 ### 变更内容
 
@@ -63,6 +63,7 @@
 - 权限提示文案对齐官方：Write 第 2 项写明将要应用的更新（如 “Yes, and switch to accept edits … for this session (shift+tab)”），ExitPlanMode 第 1 项为 “Yes, and switch to default (ask each time) for this session”，bypass 警告框不显示编号；Bash 提示在 default/acceptEdits 模式且 auto 可用时增加 “Yes, and switch to auto mode” 选项与 Tip，命令显示在虚线之间（#355）。
 - plan 模式即使在 auto 可用时也询问用户，不再交给分类器；以 bypass 启动的会话进入 plan 模式时提示其不会询问；Bash 提示的标签显示完整路径（#388）。
 - rewind 不再通过符号链接、硬链接或非普通文件写入或删除被跟踪路径，恢复时以 `O_NOFOLLOW` 打开目标，被拒绝的路径记在 `skippedLinks` 并由 `rewind_files` 返回（#394）。
+- release 构建启用 `TREE_SITTER_BASH`，Bash 权限检查改用 AST 解析，与官方一致：if/循环/`||` 分支中可能被改的变量视为未知，`read`、`printf -v`、`mapfile` 等的目标变量视为未知；命令读取自己设置的变量时询问（精确命令规则与沙箱自动放行除外）；引号内的 `"$HOME"` 按真实 home 目录做路径检查；`command`、`builtin` 作为包装命令剥离（#402）。
 - Bedrock/Vertex 凭证错误最多刷新 2 次，无凭证的 `claude -p` 约 4 秒失败（原约 3 分钟）（#16）。
 
 #### Hooks
@@ -107,7 +108,7 @@
 ### 测试覆盖
 
 - 每个 PR 在重建的 binary 上以 tmux 与脚本化假 Messages API 对照官方 2.1.311；多轮对照（项目共享目录 `research/multiturn-2026-10-29/` 与 `research/multiturn-2026-10-30-evidence/`）：假 API 37 步 dev 37/37 ×5、官方 35/35 ×5；权限模式转换 36 步修复后 36/36，与官方一致；真实模型 13 轮工具命中 dev 39/39、官方 36/39；Agent SDK probe 两侧均 32/33。
-- PR CI：Windows e2e、macOS Seatbelt e2e、Linux 沙箱测试、官方对照与 Linux x64/arm64 搜索工具构建（#331）。
+- PR CI：Windows e2e、macOS Seatbelt e2e、Linux 沙箱测试、官方对照与 Linux x64/arm64 搜索工具构建（#331），以及 eslint（#405）。
 - 发版前在 `dev` 上运行 `make release-check` 与 `make build`，并以重建的 binary 跑过 SIGINT SessionEnd、`CI=true` 无凭证 `-p` 与 team shutdown 三项回归。
 
 ## 2026-10-27 - v2.1.295 - MCP v2 SDK、Windows 原生沙箱、沙箱网络与工具提示词对齐官方 2.1.311、/code-review 技能、agent 面板、DO_NOT_TRACK
