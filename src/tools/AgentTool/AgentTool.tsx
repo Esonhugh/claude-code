@@ -72,7 +72,10 @@ import {
   normalizeMessages,
 } from '../../utils/messages.js'
 import { subagentResultText } from '../../utils/subagentHandback.js'
-import { getAgentModel } from '../../utils/model/agent.js'
+import {
+  getAgentDefinitionModel,
+  getAgentModel,
+} from '../../utils/model/agent.js'
 import { getRuntimeMainLoopModel } from '../../utils/model/model.js'
 import { doesMostRecentAssistantMessageExceed200k } from '../../utils/tokens.js'
 import { permissionModeSchema } from '../../utils/permissions/PermissionMode.js'
@@ -847,7 +850,7 @@ export const AgentTool = buildTool({
       )
 
       const launch = {
-        model: result.data.model ?? getAgentModel(selectedAgent.model, toolUseContext.options.mainLoopModel, model, permissionMode, { inWorkflowRun: toolUseContext.workflowAgentSystemPrompt !== undefined }),
+        model: result.data.model ?? getAgentModel(getAgentDefinitionModel(selectedAgent, toolUseContext.options.mainLoopModel), toolUseContext.options.mainLoopModel, model, permissionMode, { inWorkflowRun: toolUseContext.workflowAgentSystemPrompt !== undefined }),
         agentId: result.loopAgentId ?? result.data.teammate_id,
         teammateId: result.data.teammate_id,
       }
@@ -950,7 +953,7 @@ export const AgentTool = buildTool({
           mainLoopModel: toolUseContext.options.mainLoopModel,
           exceeds200kTokens: appState.toolPermissionContext.mode === 'plan' && doesMostRecentAssistantMessageExceed200k(toolUseContext.messages),
         })
-      : getAgentModel(selectedAgent.model, toolUseContext.options.mainLoopModel, model, permissionMode, { inWorkflowRun: toolUseContext.workflowAgentSystemPrompt !== undefined })
+      : getAgentModel(getAgentDefinitionModel(selectedAgent, toolUseContext.options.mainLoopModel), toolUseContext.options.mainLoopModel, model, permissionMode, { inWorkflowRun: toolUseContext.workflowAgentSystemPrompt !== undefined })
 
     const childSubagentDepth = getNextSubagentDepth(toolUseContext.options)
     const parentAgentId =

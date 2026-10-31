@@ -26,6 +26,8 @@ export type LocalCommandResult =
 export type PromptCommand = {
   type: 'prompt'
   progressMessage: string
+  /** Shorter text for the slash-command menu and /help (built-in skills). */
+  menuDescription?: string
   contentLength: number // Length of command content in characters (used for token estimation)
   argNames?: string[]
   allowedTools?: string[]
@@ -210,6 +212,8 @@ export type CommandBase = {
   isHidden?: boolean
   name: string
   aliases?: string[]
+  /** UX bound to the local terminal; remote/phone UIs hide it (system/init terminal_slash_commands). */
+  terminalOriented?: boolean
   // First-argument tokens that dispatch to another command when it is enabled,
   // e.g. `/code-review ultra` -> `/ultrareview`
   subcommands?: Record<string, string>

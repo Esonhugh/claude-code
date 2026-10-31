@@ -59,9 +59,10 @@ function getToolsDescription(agent: AgentDefinition): string {
  * Format one agent line for the agent_listing_delta attachment message:
  * `- type: whenToUse (Tools: ...)`.
  */
-export function formatAgentLine(agent: AgentDefinition): string {
+export function formatAgentLine(agent: AgentDefinition, lean = false): string {
   const toolsDescription = getToolsDescription(agent)
-  return `- ${agent.agentType}: ${agent.whenToUse} (Tools: ${toolsDescription})`
+  const whenToUse = (lean && agent.whenToUseLean) || agent.whenToUse
+  return `- ${agent.agentType}: ${whenToUse} (Tools: ${toolsDescription})`
 }
 
 /**

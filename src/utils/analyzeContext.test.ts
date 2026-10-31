@@ -18,6 +18,7 @@ const tokenCountSpy = spyOn(
 
 const {
   buildContextUsageData,
+  countMcpInstructionsTokens,
   countMcpToolTokens,
   countToolSchemaTokens,
   estimateTokensAfterLastApiUsage,
@@ -105,6 +106,33 @@ describe('countMcpToolTokens', () => {
     expect(result.mcpToolDetails.find(item => item.name === 'large')!.tokens).toBeGreaterThan(
       result.mcpToolDetails.find(item => item.name === 'small')!.tokens,
     )
+  })
+})
+
+describe('countMcpInstructionsTokens', () => {
+  test('counts connected servers with instructions and splits by text length', async () => {
+    const result = await countMcpInstructionsTokens(
+      [
+        { type: 'connected', name: 'zeta', instructions: 'z '.repeat(200) },
+        { type: 'connected', name: 'alpha', instructions: 'short' },
+        { type: 'connected', name: 'none' },
+        { type: 'failed', name: 'broken', instructions: 'ignored' },
+      ] as never,
+      'runtime-model',
+      'summary',
+    )
+
+    expect(result.mcpInstructionsTokens).toBeGreaterThan(0)
+    expect(result.mcpInstructionsDetails.map(item => item.serverName)).toEqual(['alpha', 'zeta'])
+    const [alpha, zeta] = result.mcpInstructionsDetails
+    expect(zeta!.tokens).toBeGreaterThan(alpha!.tokens)
+  })
+
+  test('returns nothing when no server has instructions', async () => {
+    expect(await countMcpInstructionsTokens([], 'runtime-model', 'summary')).toEqual({
+      mcpInstructionsTokens: 0,
+      mcpInstructionsDetails: [],
+    })
   })
 })
 

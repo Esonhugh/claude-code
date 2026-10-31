@@ -82,6 +82,7 @@ import {
   getDefaultHaikuModel,
   getDefaultOpusModel,
 } from './model/model.js'
+import { shouldUseLeanPrompt } from './model/leanPrompt.js'
 import type { ReadResourceResult } from '@modelcontextprotocol/client'
 import { getSkillToolCommands, getMcpSkillCommands } from '../commands.js'
 import type { Command } from '../types/command.js'
@@ -1794,7 +1795,12 @@ export async function getAgentListingDeltaAttachment(
     {
       type: 'agent_listing_delta',
       addedTypes: added.map(a => a.agentType),
-      addedLines: added.map(formatAgentLine),
+      addedLines: added.map(agent =>
+        formatAgentLine(
+          agent,
+          shouldUseLeanPrompt(toolUseContext.options.mainLoopModel),
+        ),
+      ),
       removedTypes: removed,
       isInitial: announced.size === 0,
       showConcurrencyNote: getSubscriptionType() !== 'pro',

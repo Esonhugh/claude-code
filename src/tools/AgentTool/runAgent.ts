@@ -79,7 +79,10 @@ import {
   getStopHookMessage,
 } from '../../utils/hooks.js'
 import { createUserMessage, wrapInSystemReminder } from '../../utils/messages.js'
-import { getAgentModel } from '../../utils/model/agent.js'
+import {
+  getAgentDefinitionModel,
+  getAgentModel,
+} from '../../utils/model/agent.js'
 import { getCanonicalName } from '../../utils/model/model.js'
 import {
   clearAgentTranscriptSubdir,
@@ -616,7 +619,10 @@ export async function* runAgent({
 
   const resolvedAgentModel = resolvedModel ??
     getAgentModel(
-      agentDefinition.model,
+      getAgentDefinitionModel(
+        agentDefinition,
+        toolUseContext.options.mainLoopModel,
+      ),
       toolUseContext.options.mainLoopModel,
       model,
       permissionMode,

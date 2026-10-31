@@ -122,6 +122,7 @@ import {
 } from './utils/messages/mappers.js'
 import {
   buildSystemInitMessage,
+  SDK_INIT_CAPABILITIES,
   sdkCompatToolName,
 } from './utils/messages/systemInit.js'
 import {
@@ -831,6 +832,7 @@ export class QueryEngine {
       skills,
       plugins: enabledPlugins,
       fastMode: initialAppState.fastMode,
+      capabilities: SDK_INIT_CAPABILITIES,
       additionalDirectories: Array.from(
         // @ts-ignore - recovered code
         initialAppState.toolPermissionContext.additionalWorkingDirectories.keys(),

@@ -8,6 +8,7 @@ import { microcompactMessages } from 'src/services/compact/microCompact.js'
 import { getCommandName } from '../commands.js'
 import { getSystemContext } from '../context.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../services/analytics/growthbook.js'
+import type { MCPServerConnection } from '../services/mcp/types.js'
 import {
   AUTOCOMPACT_BUFFER_TOKENS,
   getEffectiveContextWindowSize,
@@ -129,6 +130,7 @@ export type ContextCategoryId =
   | 'system_prompt'
   | 'system_tools'
   | 'mcp_tools'
+  | 'mcp_instructions'
   | 'mcp_tools_deferred'
   | 'system_tools_deferred'
   | 'custom_agents'
@@ -231,6 +233,8 @@ export interface ContextData {
   readonly model: string
   readonly memoryFiles: MemoryFile[]
   readonly mcpTools: McpTool[]
+  /** The mcp_instructions row by server; each share is estimated from its text length. */
+  readonly mcpInstructions?: McpInstructionsDetail[]
   /** Ant-only: per-tool breakdown of deferred built-in tools */
   readonly deferredBuiltinTools?: DeferredBuiltinTool[]
   /** Ant-only: per-tool breakdown of always-loaded built-in tools */
@@ -855,6 +859,44 @@ export async function countMcpToolTokens(
   }
 }
 
+export type McpInstructionsDetail = { serverName: string; tokens: number }
+
+export async function countMcpInstructionsTokens(
+  mcpClients: readonly MCPServerConnection[],
+  model: string,
+  detail: ContextBreakdownDetail,
+  signal?: AbortSignal,
+): Promise<{
+  mcpInstructionsTokens: number
+  mcpInstructionsDetails: McpInstructionsDetail[]
+}> {
+  const blocks = mcpClients
+    .flatMap(client =>
+      client.type === 'connected' && client.instructions
+        ? [[client.name, `## ${client.name}\n${client.instructions}`] as const]
+        : [],
+    )
+    .sort(([a], [b]) => a.localeCompare(b))
+  if (blocks.length === 0) {
+    return { mcpInstructionsTokens: 0, mcpInstructionsDetails: [] }
+  }
+  const tokens = await countTokens(
+    [{ role: 'user', content: blocks.map(([, block]) => block).join('\n\n') }],
+    [],
+    model,
+    detail,
+    signal,
+  )
+  const totalLength = blocks.reduce((sum, [, block]) => sum + block.length, 0)
+  return {
+    mcpInstructionsTokens: tokens,
+    mcpInstructionsDetails: blocks.map(([serverName, block]) => ({
+      serverName,
+      tokens: Math.round((tokens * block.length) / totalLength),
+    })),
+  }
+}
+
 async function countCustomAgentTokens(
   agentDefinitions: { activeAgents: AgentDefinition[] },
   model: string,
@@ -1119,6 +1161,8 @@ export interface BuildContextUsageDataInput {
   claudeMdTokens: number
   builtInToolTokens: number
   mcpToolTokens: number
+  mcpInstructionsTokens?: number
+  mcpInstructionsDetails?: McpInstructionsDetail[]
   deferredToolTokens: number
   deferredBuiltinTokens: number
   agentTokens: number
@@ -1153,6 +1197,8 @@ export function buildContextUsageData({
   claudeMdTokens,
   builtInToolTokens,
   mcpToolTokens,
+  mcpInstructionsTokens = 0,
+  mcpInstructionsDetails,
   deferredToolTokens,
   deferredBuiltinTokens,
   agentTokens,
@@ -1200,6 +1246,12 @@ export function buildContextUsageData({
     'inactive',
   )
   addCategory('mcp_tools', 'MCP tools', mcpToolTokens, 'cyan_FOR_SUBAGENTS_ONLY')
+  addCategory(
+    'mcp_instructions',
+    'MCP server instructions',
+    mcpInstructionsTokens,
+    'green_FOR_SUBAGENTS_ONLY',
+  )
   addCategory(
     'mcp_tools_deferred',
     'MCP tools (deferred)',
@@ -1378,6 +1430,7 @@ export function buildContextUsageData({
       ...tool,
       isLoaded: tool.isLoaded === true,
     })),
+    ...(mcpInstructionsDetails && { mcpInstructions: mcpInstructionsDetails }),
     deferredBuiltinTools: isAnt() ? deferredBuiltinDetails : undefined,
     systemTools: isAnt() ? systemToolDetails : undefined,
     systemPromptSections: isAnt() ? systemPromptSections : undefined,
@@ -1460,6 +1513,7 @@ export async function analyzeContextUsage(
       systemToolDetails,
     },
     { mcpToolTokens, mcpToolDetails, deferredToolTokens },
+    { mcpInstructionsTokens, mcpInstructionsDetails },
     { agentTokens, agentDetails },
     { slashCommandTokens, commandInfo },
     messageBreakdown,
@@ -1481,6 +1535,12 @@ export async function analyzeContextUsage(
       agentDefinitions,
       runtimeModel,
       messages,
+      detail,
+      signal,
+    ),
+    countMcpInstructionsTokens(
+      toolUseContext?.options.mcpClients ?? [],
+      runtimeModel,
       detail,
       signal,
     ),
@@ -1547,6 +1607,8 @@ export async function analyzeContextUsage(
     claudeMdTokens,
     builtInToolTokens,
     mcpToolTokens,
+    mcpInstructionsTokens,
+    mcpInstructionsDetails,
     deferredToolTokens,
     deferredBuiltinTokens,
     agentTokens,

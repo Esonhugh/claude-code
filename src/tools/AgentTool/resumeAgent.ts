@@ -29,7 +29,10 @@ import {
   filterUnresolvedToolUses,
   filterWhitespaceOnlyAssistantMessages,
 } from '../../utils/messages.js'
-import { getAgentModel } from '../../utils/model/agent.js'
+import {
+  getAgentDefinitionModel,
+  getAgentModel,
+} from '../../utils/model/agent.js'
 import { getRuntimeMainLoopModel } from '../../utils/model/model.js'
 import { doesMostRecentAssistantMessageExceed200k } from '../../utils/tokens.js'
 import { getQuerySourceForAgent } from '../../utils/promptCategory.js'
@@ -288,7 +291,7 @@ export async function resumeAgentBackground({
     exceeds200kTokens: appState.toolPermissionContext.mode === 'plan' &&
       doesMostRecentAssistantMessageExceed200k(toolUseContext.messages),
   }) : getAgentModel(
-    selectedAgent.model,
+    getAgentDefinitionModel(selectedAgent, toolUseContext.options.mainLoopModel),
     toolUseContext.options.mainLoopModel,
     meta?.model,
     permissionMode,

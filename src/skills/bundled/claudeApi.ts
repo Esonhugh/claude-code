@@ -312,6 +312,7 @@ export function registerClaudeApiSkill(): void {
   const disabled = isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_CLAUDE_API_SKILL)
   registerBundledSkill({
     name: 'claude-api',
+    menuDescription: 'Build and debug apps that use the Claude API',
     description: DESCRIPTION,
     allowedTools: ['WebFetch(domain:platform.claude.com)'],
     userInvocable: true,

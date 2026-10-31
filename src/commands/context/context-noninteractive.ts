@@ -71,9 +71,15 @@ export async function collectContextData(
     tools,
     agentDefinitions,
     options.columns, // terminalWidth
-    // analyzeContextUsage only reads options.{customSystemPrompt,appendSystemPrompt}
+    // analyzeContextUsage only reads options.{customSystemPrompt,appendSystemPrompt,mcpClients}
     // but its signature declares the full Pick<ToolUseContext, 'options'>.
-    { options: { customSystemPrompt, appendSystemPrompt } } as Pick<
+    {
+      options: {
+        customSystemPrompt,
+        appendSystemPrompt,
+        mcpClients: appState.mcp.clients,
+      },
+    } as Pick<
       ToolUseContext,
       'options'
     >,

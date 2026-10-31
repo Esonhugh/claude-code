@@ -1375,6 +1375,18 @@ export const SlashCommandSchema = lazySchema(() =>
       argumentHint: z
         .string()
         .describe('Hint for skill arguments (e.g., "<file>")'),
+      aliases: z
+        .array(z.string())
+        .optional()
+        .describe(
+          'Alternate names that resolve to this command (e.g., /cost and /stats both resolve to /usage)',
+        ),
+      builtin: z
+        .boolean()
+        .optional()
+        .describe(
+          "True when the command is Claude Code's own; absent for a command defined by a user, project, plugin or MCP server.",
+        ),
     })
     .describe(
       'Information about an available skill (invoked via /command syntax).',
@@ -1390,7 +1402,7 @@ export const AgentInfoSchema = lazySchema(() =>
         .string()
         .optional()
         .describe(
-          "Model alias this agent uses. If omitted, inherits the parent's model",
+          "Model this agent uses: an alias or model ID, or 'inherit' for the parent's model. If omitted, uses the default subagent model when one is configured, else the parent's model",
         ),
     })
     .describe(
@@ -1443,6 +1455,10 @@ export const ModelInfoSchema = lazySchema(() =>
         .boolean()
         .optional()
         .describe('Whether this model supports auto mode'),
+      supportsThinkingOff: z
+        .boolean()
+        .optional()
+        .describe('Whether thinking can be turned off for this model'),
     })
     .describe('Information about an available model.'),
 )
@@ -1912,6 +1928,12 @@ export const SDKSystemMessageSchema = lazySchema(() =>
     model: z.string(),
     permissionMode: PermissionModeSchema(),
     slash_commands: z.array(z.string()),
+    terminal_slash_commands: z
+      .array(z.string())
+      .optional()
+      .describe(
+        'Subset of slash_commands whose UX is bound to the local terminal (e.g. exit, statusline). Phone/remote UIs should hide these from command menus; desktop surfaces may keep them. Present only when non-empty.',
+      ),
     output_style: z.string(),
     skills: z.array(z.string()),
     plugins: z.array(
@@ -1926,7 +1948,14 @@ export const SDKSystemMessageSchema = lazySchema(() =>
           ),
       }),
     ),
+    capabilities: z
+      .array(z.string())
+      .optional()
+      .describe(
+        'Protocol capabilities this CLI supports, so SDK consumers can feature-detect instead of version-sniffing. Open set: ignore unknown values.',
+      ),
     fast_mode_state: FastModeStateSchema().optional(),
+    fast_mode_disabled_reason: FastModeDisabledReasonSchema().optional(),
     memory_paths: z
       .object({ auto: z.string().optional() })
       .optional()
@@ -2468,5 +2497,24 @@ export const FastModeStateSchema = lazySchema(() =>
     .enum(['off', 'cooldown', 'on'])
     .describe(
       'Fast mode state: off, in cooldown after rate limit, or actively enabled.',
+    ),
+)
+
+export const FastModeDisabledReasonSchema = lazySchema(() =>
+  z
+    .enum([
+      'free',
+      'preference',
+      'extra_usage_disabled',
+      'network_error',
+      'unknown',
+      'not_first_party',
+      'disabled_by_env',
+      'model_not_allowed',
+      'sdk_opt_in_required',
+      'pending',
+    ])
+    .describe(
+      "Why fast mode can't serve right now. Absent when nothing blocks it (a request may still choose standard speed). A paused-after-rate-limit run is not here; it rides fast_mode_state as 'cooldown'.",
     ),
 )

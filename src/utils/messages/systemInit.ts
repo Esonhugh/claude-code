@@ -20,7 +20,7 @@ import { getAnthropicApiKeyWithSource } from '../auth.js'
 import { getCwd } from '../cwd.js'
 import { isAnalyticsDisabled } from '../../services/analytics/config.js'
 import { isPolicyAllowed } from '../../services/policyLimits/index.js'
-import { getFastModeState } from '../fastMode.js'
+import { getFastModeDisabledReason, getFastModeState } from '../fastMode.js'
 import { getSettings_DEPRECATED } from '../settings/settings.js'
 
 // TODO(next-minor): remove this translation once SDK consumers have migrated
@@ -31,7 +31,18 @@ export function sdkCompatToolName(name: string): string {
   return name === AGENT_TOOL_NAME ? LEGACY_AGENT_TOOL_NAME : name
 }
 
-type CommandLike = { name: string; userInvocable?: boolean; isHidden?: boolean }
+// Control-protocol features print.ts implements (interrupt replies carry
+// still_queued; mcp_read_resource reads ui:// resources).
+export const SDK_INIT_CAPABILITIES = [
+  'interrupt_receipt_v1',
+  'mcp_read_resource_v1',
+] as const
+
+type CommandLike = {
+  name: string
+  userInvocable?: boolean
+  terminalOriented?: boolean
+}
 
 export type SystemInitInputs = {
   tools: ReadonlyArray<{ name: string }>
@@ -48,6 +59,7 @@ export type SystemInitInputs = {
   plugins: ReadonlyArray<{ name: string; path: string; source: string }>
   fastMode: boolean | undefined
   additionalDirectories?: readonly string[]
+  capabilities?: readonly string[]
 }
 
 // Official 2.1.311 McpServerStatus.source: sdk | plugin | the config scope.
@@ -94,13 +106,15 @@ export function buildSystemInitMessage(inputs: SystemInitInputs): SDKMessage {
     model: inputs.model,
     permissionMode: inputs.permissionMode,
     slash_commands: inputs.commands
-      .filter(c => c.userInvocable !== false && !c.isHidden)
+      .filter(c => c.userInvocable !== false)
       .map(c => c.name),
     apiKeySource: getAnthropicApiKeyWithSource().source as ApiKeySource,
     betas: getSdkBetas(),
     claude_code_version: MACRO.VERSION,
     output_style: outputStyle,
-    agents: inputs.agents.map(agent => agent.agentType),
+    agents: inputs.agents
+      .map(agent => agent.agentType)
+      .sort((a, b) => a.localeCompare(b)),
     skills: inputs.skills
       .filter(s => s.userInvocable !== false)
       .map(skill => skill.name),
@@ -110,6 +124,15 @@ export function buildSystemInitMessage(inputs: SystemInitInputs): SDKMessage {
       source: plugin.source,
     })),
     uuid: randomUUID(),
+  }
+  const terminalSlashCommands = inputs.commands
+    .filter(c => c.userInvocable !== false && c.terminalOriented === true)
+    .map(c => c.name)
+  if (terminalSlashCommands.length > 0) {
+    initMessage.terminal_slash_commands = terminalSlashCommands
+  }
+  if (inputs.capabilities?.length) {
+    initMessage.capabilities = [...inputs.capabilities]
   }
   if (isAutoMemoryEnabled()) {
     initMessage.memory_paths = { auto: getAutoMemPath() }
@@ -126,6 +149,10 @@ export function buildSystemInitMessage(inputs: SystemInitInputs): SDKMessage {
     initMessage.additional_directories = [...inputs.additionalDirectories]
   }
   initMessage.fast_mode_state = getFastModeState(inputs.model, inputs.fastMode)
+  const fastModeDisabledReason = getFastModeDisabledReason()
+  if (fastModeDisabledReason !== null) {
+    initMessage.fast_mode_disabled_reason = fastModeDisabledReason
+  }
   // This build sends effort only as the top-level parameter and has no
   // focus view.
   initMessage.per_turn_effort_active = false

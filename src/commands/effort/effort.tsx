@@ -25,6 +25,9 @@ import { updateSettingsForSource } from '../../utils/settings/settings.js'
 
 const COMMON_HELP_ARGS = ['help', '-h', '--help']
 
+export const EFFORT_HELP =
+  'Usage: /effort [none|minimal|low|medium|high|xhigh|max|ultra|ultracode|auto]\n\nEffort levels:\n- none: No reasoning for latency-critical OpenAI tasks (this session only)\n- minimal: Minimal reasoning effort\n- low: Quick, straightforward implementation\n- medium: Balanced approach with standard testing\n- high: Comprehensive implementation with extensive testing\n- xhigh: Extended capability for supported Anthropic and OpenAI models\n- max: Maximum capability\n- ultra: Ultra effort\n- ultracode: xhigh + dynamic workflow orchestration\n- auto: Use the default effort level for your model'
+
 type EffortCommandResult = {
   message: string
   effortUpdate?: { value: EffortValue | undefined }
@@ -301,9 +304,7 @@ export async function call(
   args = args?.trim() || ''
 
   if (COMMON_HELP_ARGS.includes(args)) {
-    onDone(
-      'Usage: /effort [none|minimal|low|medium|high|xhigh|max|ultra|ultracode|auto]\n\nEffort levels:\n- none: No reasoning for latency-critical OpenAI tasks (this session only)\n- minimal: Minimal reasoning effort\n- low: Quick, straightforward implementation\n- medium: Balanced approach with standard testing\n- high: Comprehensive implementation with extensive testing\n- xhigh: Extended capability for supported Anthropic and OpenAI models\n- max: Maximum capability\n- ultra: Ultra effort\n- ultracode: xhigh + dynamic workflow orchestration\n- auto: Use the default effort level for your model',
-    )
+    onDone(EFFORT_HELP)
     return
   }
 

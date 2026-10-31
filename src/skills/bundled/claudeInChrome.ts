@@ -19,6 +19,7 @@ IMPORTANT: Start by calling mcp__claude-in-chrome__tabs_context_mcp to get infor
 export function registerClaudeInChromeSkill(): void {
   registerBundledSkill({
     name: 'claude-in-chrome',
+    menuDescription: 'Let Claude browse and interact with pages in your Chrome',
     description:
       'Automates your Chrome browser to interact with web pages - clicking elements, filling forms, capturing screenshots, reading console logs, and navigating sites. Opens pages in new tabs within your existing Chrome session. Requires site-level permissions before executing (configured in the extension).',
     whenToUse:

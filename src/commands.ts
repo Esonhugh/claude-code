@@ -10,13 +10,13 @@ import issue from './commands/issue/index.js'
 import feedback from './commands/feedback/index.js'
 import cd from './commands/cd/index.js'
 import clear from './commands/clear/index.js'
-import color from './commands/color/index.js'
+import color, { colorNonInteractive } from './commands/color/index.js'
 import commit from './commands/commit.js'
 import copy from './commands/copy/index.js'
 import desktop from './commands/desktop/index.js'
 import commitPushPr from './commands/commit-push-pr.js'
 import compact from './commands/compact/index.js'
-import config from './commands/config/index.js'
+import config, { configNonInteractive } from './commands/config/index.js'
 import { context, contextNonInteractive } from './commands/context/index.js'
 import focus from './commands/focus/index.js'
 import background from './commands/background/index.js'
@@ -52,7 +52,7 @@ import onboarding from './commands/onboarding/index.js'
 import recap from './commands/recap/index.js'
 import powerup from './commands/powerup/index.js'
 import releaseNotes from './commands/release-notes/index.js'
-import rename from './commands/rename/index.js'
+import rename, { renameNonInteractive } from './commands/rename/index.js'
 import resume from './commands/resume/index.js'
 import { ultrareview } from './commands/review.js'
 import session from './commands/session/index.js'
@@ -140,7 +140,7 @@ import thinkback from './commands/thinkback/index.js'
 import thinkbackPlay from './commands/thinkback-play/index.js'
 import permissions from './commands/permissions/index.js'
 import plan from './commands/plan/index.js'
-import fast from './commands/fast/index.js'
+import fast, { fastNonInteractive } from './commands/fast/index.js'
 import passes from './commands/passes/index.js'
 import privacySettings from './commands/privacy-settings/index.js'
 import hooks from './commands/hooks/index.js'
@@ -198,7 +198,7 @@ import {
 import env from './commands/env/index.js'
 import exit from './commands/exit/index.js'
 import exportCommand from './commands/export/index.js'
-import model from './commands/model/index.js'
+import model, { modelNonInteractive } from './commands/model/index.js'
 import tag from './commands/tag/index.js'
 import outputStyle from './commands/output-style/index.js'
 import remoteEnv from './commands/remote-env/index.js'
@@ -209,7 +209,7 @@ import {
 } from './commands/extra-usage/index.js'
 import rateLimitOptions from './commands/rate-limit-options/index.js'
 import statusline from './commands/statusline.js'
-import effort from './commands/effort/index.js'
+import effort, { effortNonInteractive } from './commands/effort/index.js'
 import stats from './commands/stats/index.js'
 // insights.ts is 113KB (3200 lines, includes diffLines/html rendering). Lazy
 // shim defers the heavy module until /insights is actually invoked.
@@ -293,8 +293,10 @@ const COMMANDS = memoize((): Command[] => [
   cd,
   chrome,
   clear,
+  colorNonInteractive,
   color,
   compact,
+  configNonInteractive,
   config,
   copy,
   desktop,
@@ -310,8 +312,10 @@ const COMMANDS = memoize((): Command[] => [
   cost,
   daybreak,
   diff,
+  effortNonInteractive,
   effort,
   exit,
+  fastNonInteractive,
   fast,
   files,
   goal,
@@ -329,6 +333,7 @@ const COMMANDS = memoize((): Command[] => [
   memory,
   setupMemoryDb,
   mobile,
+  modelNonInteractive,
   model,
   outputStyle,
   remoteEnv,
@@ -338,6 +343,7 @@ const COMMANDS = memoize((): Command[] => [
   releaseNotes,
   reloadPlugins,
   reloadSkills,
+  renameNonInteractive,
   rename,
   resume,
   session,
@@ -801,6 +807,16 @@ export function getCommand(commandName: string, commands: Command[]): Command {
   return command
 }
 
+/** The menu text of a built-in skill, else its description. */
+export function getMenuDescription(cmd: Command): string {
+  return (
+    (cmd.type === 'prompt' &&
+      (cmd.source === 'builtin' || cmd.source === 'bundled') &&
+      cmd.menuDescription) ||
+    cmd.description
+  )
+}
+
 /**
  * Formats a command's description with its source annotation for user-facing UI.
  * Use this in typeahead, help screens, and other places where users need to see
@@ -808,36 +824,70 @@ export function getCommand(commandName: string, commands: Command[]): Command {
  *
  * For model-facing prompts (like SkillTool), use cmd.description directly.
  */
-export function formatDescriptionWithSource(cmd: Command): string {
+export function formatDescriptionWithSource(
+  cmd: Command,
+  description = cmd.description,
+): string {
   if (cmd.type !== 'prompt') {
-    return cmd.description
+    return description
   }
 
   if (cmd.kind === 'workflow') {
-    return `${cmd.description} (workflow)`
+    return `${description} (dynamic workflow)`
   }
 
   if (cmd.source === 'plugin') {
     const pluginName = cmd.pluginInfo?.pluginManifest.name
     if (pluginName) {
-      return `(${pluginName}) ${cmd.description}`
+      return `(${pluginName}) ${description}`
     }
-    return `${cmd.description} (plugin)`
-  }
-
-  if (cmd.source === 'builtin') {
-    return cmd.description
+    return `${description} (plugin)`
   }
 
   if (cmd.source === 'mcp') {
     return cmd.loadedFrom === 'codex_app'
-      ? `${cmd.description} (Codex)`
-      : cmd.description
+      ? `${description} (Codex)`
+      : description
   }
 
-  if (cmd.source === 'bundled') {
-    return `${cmd.description} (bundled)`
+  if (cmd.source === 'builtin' || cmd.source === 'bundled') {
+    return description
   }
 
-  return `${cmd.description} (${getSettingSourceName(cmd.source)})`
+  return `${description} (${getSettingSourceName(cmd.source)})`
+}
+
+function isBuiltinCommand(cmd: Command): boolean {
+  if (cmd.type === 'prompt') {
+    return cmd.source === 'builtin' || cmd.source === 'bundled'
+  }
+  return cmd.loadedFrom !== 'mcp' && cmd.loadedFrom !== 'plugin'
+}
+
+/** The SDK `commands` rows (initialize, supportedCommands, reload_plugins). */
+export function toSdkSlashCommands(commands: readonly Command[]): Array<{
+  name: string
+  description: string
+  argumentHint: string
+  aliases?: string[]
+  builtin?: boolean
+}> {
+  const seen = new Set<string>()
+  return commands
+    .filter(cmd => {
+      if (cmd.userInvocable === false || seen.has(cmd.name)) return false
+      seen.add(cmd.name)
+      return true
+    })
+    .map(cmd => {
+      const name = getCommandName(cmd)
+      const aliases = cmd.aliases?.filter(alias => alias !== name)
+      return {
+        name,
+        description: formatDescriptionWithSource(cmd),
+        argumentHint: cmd.argumentHint || '',
+        ...(aliases?.length ? { aliases } : {}),
+        ...(isBuiltinCommand(cmd) && { builtin: true }),
+      }
+    })
 }

@@ -15,6 +15,8 @@ import type {
   PermissionUpdate,
   PermissionBehavior,
   PermissionRuleValue,
+  FastModeState,
+  FastModeDisabledReason,
 } from './coreTypes.generated.js'
 
 // Keep alive
@@ -68,6 +70,10 @@ export type SDKControlInitializeResponse = {
   models: ModelInfo[]
   agents: AgentInfo[]
   account: AccountInfo
+  fast_mode_state?: FastModeState
+  fast_mode_disabled_reason?: FastModeDisabledReason
+  /** The session's state when this reply was sent. */
+  session_state?: 'idle' | 'running' | 'requires_action'
 }
 
 export type SDKControlInterruptRequest = {

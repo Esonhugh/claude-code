@@ -33,6 +33,7 @@ export type ApiKeySource = 'user' | 'project' | 'org' | 'temporary' | 'oauth'
 export type ConfigScope = 'local' | 'user' | 'project'
 export type SdkBeta = 'context-1m-2025-08-07'
 export type FastModeState = 'off' | 'cooldown' | 'on'
+export type FastModeDisabledReason = 'free' | 'preference' | 'extra_usage_disabled' | 'network_error' | 'unknown' | 'not_first_party' | 'disabled_by_env' | 'model_not_allowed' | 'sdk_opt_in_required' | 'pending'
 
 // Thinking Config
 export type ThinkingAdaptive = { type: 'adaptive' }
@@ -212,9 +213,9 @@ export type PromptRequest = { prompt: string; message: string; options: PromptRe
 export type PromptResponse = { prompt_response: string; selected: string }
 
 // Skill/Command Types
-export type SlashCommand = { name: string; description: string; argumentHint: string }
+export type SlashCommand = { name: string; description: string; argumentHint: string; aliases?: string[]; builtin?: boolean }
 export type AgentInfo = { name: string; description: string; model?: string }
-export type ModelInfo = { value: string; resolvedModel?: string; displayName: string; description: string; supportsEffort?: boolean; supportedEffortLevels?: ('none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra')[]; supportsAdaptiveThinking?: boolean; supportsFastMode?: boolean; supportsAutoMode?: boolean }
+export type ModelInfo = { value: string; resolvedModel?: string; displayName: string; description: string; supportsEffort?: boolean; supportedEffortLevels?: ('none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra')[]; supportsAdaptiveThinking?: boolean; supportsFastMode?: boolean; supportsAutoMode?: boolean; supportsThinkingOff?: boolean }
 export type AccountInfo = { email?: string; organization?: string; subscriptionType?: string; tokenSource?: string; apiKeySource?: string; apiProvider?: 'firstParty' | 'bedrock' | 'vertex' | 'foundry' | 'openai' }
 
 // Agent Definition
@@ -340,10 +341,13 @@ export type SDKSystemMessage = {
   model: string
   permissionMode: PermissionMode
   slash_commands: string[]
+  terminal_slash_commands?: string[]
   output_style: string
   skills: string[]
   plugins: Array<{ name: string; path: string; source?: string }>
+  capabilities?: string[]
   fast_mode_state?: FastModeState
+  fast_mode_disabled_reason?: FastModeDisabledReason
   memory_paths?: { auto?: string }
   original_cwd?: string
   additional_directories?: string[]

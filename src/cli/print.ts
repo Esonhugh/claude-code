@@ -25,6 +25,7 @@ import {
   formatDescriptionWithSource,
   getCommandName,
   getSkillToolCommands,
+  toSdkSlashCommands,
 } from 'src/commands.js'
 import { createStreamlinedTransformer } from 'src/utils/streamlinedTransform.js'
 import { installStreamJsonStdoutGuard } from 'src/utils/streamJsonStdoutGuard.js'
@@ -223,7 +224,7 @@ import {
   recheckAutoModeGate,
 } from 'src/utils/settings/applySettingsChange.js'
 import {
-  isFastModeAvailable,
+  getFastModeDisabledReason,
   isFastModeEnabled,
   isFastModeSupportedByModel,
   getFastModeState,
@@ -357,13 +358,18 @@ import {
   resolveAppliedEffort,
   toPersistableEffort,
 } from 'src/utils/effort.js'
-import { modelSupportsAdaptiveThinking } from 'src/utils/thinking.js'
+import {
+  modelSupportsAdaptiveThinking,
+  requiresAlwaysOnAdaptiveThinking,
+  usesBetweenToolsWhenThinkingDisabled,
+} from 'src/utils/thinking.js'
 import { modelSupportsAutoMode } from 'src/utils/betas.js'
 import { validateModel } from 'src/utils/model/validateModel.js'
 import { ensureModelStringsInitialized } from 'src/utils/model/modelStrings.js'
 import {
   getSessionId,
   getOriginalCwd,
+  getMainLoopModelOverride,
   setMainLoopModelOverride,
   setMainThreadAgentType,
   switchSession,
@@ -1446,6 +1452,10 @@ function runHeadlessStreaming(
       ...(hasAdaptiveThinking && { supportsAdaptiveThinking: true }),
       ...(hasFastMode && { supportsFastMode: true }),
       ...(hasAutoMode && { supportsAutoMode: true }),
+      // Off maps to adaptive or between-tools thinking on these models.
+      supportsThinkingOff:
+        !requiresAlwaysOnAdaptiveThinking(resolvedModel) &&
+        !usesBetweenToolsWhenThinkingDisabled(resolvedModel),
     }
   })
   let activeUserSpecifiedModel = options.userSpecifiedModel
@@ -2482,6 +2492,11 @@ function runHeadlessStreaming(
           // inside the closure.
           const cmd = command
           let promptAdmitted = false
+          // A headless /model sets the override; it outranks the spawn model.
+          const modelOverride = getMainLoopModelOverride()
+          if (typeof modelOverride === 'string') {
+            activeUserSpecifiedModel = modelOverride
+          }
           try {
             await runWithWorkload(cmd.workload ?? options.workload, async () => {
               for await (const message of ask({
@@ -3877,17 +3892,11 @@ function runHeadlessStreaming(
 
             sendControlResponseSuccess(message, {
               // @ts-ignore - recovered code
-              commands: currentCommands
-                .filter(cmd => cmd.userInvocable !== false)
-                .map(cmd => ({
-                  name: getCommandName(cmd),
-                  description: formatDescriptionWithSource(cmd),
-                  argumentHint: cmd.argumentHint || '',
-                })),
+              commands: toSdkSlashCommands(currentCommands),
               agents: currentAgents.map(a => ({
                 name: a.agentType,
                 description: a.whenToUse,
-                model: a.model === 'inherit' ? undefined : a.model,
+                model: a.model,
               })),
               plugins,
               mcpServers: buildMcpServerStatuses(),
@@ -5669,19 +5678,14 @@ async function handleInitializeRequest(
   const initResponse: SDKControlInitializeResponse = {
     ...(pluginsApplied === undefined ? {} : { plugins_applied: pluginsApplied }),
     ...(capabilities.length ? { capabilities } : {}),
-    commands: commands
-      .filter(cmd => cmd.userInvocable !== false)
-      .map(cmd => ({
-        name: getCommandName(cmd),
-        description: formatDescriptionWithSource(cmd),
-        argumentHint: cmd.argumentHint || '',
+    commands: toSdkSlashCommands(commands),
+    agents: [...agents]
+      .sort((a, b) => a.agentType.localeCompare(b.agentType))
+      .map(agent => ({
+        name: agent.agentType,
+        description: agent.whenToUse,
+        model: agent.model,
       })),
-    agents: agents.map(agent => ({
-      name: agent.agentType,
-      description: agent.whenToUse,
-      // 'inherit' is an internal sentinel; normalize to undefined for the public API
-      model: agent.model === 'inherit' ? undefined : agent.model,
-    })),
     // @ts-ignore - recovered code
     output_style: outputStyle,
     available_output_styles: Object.keys(availableOutputStyles),
@@ -5712,14 +5716,15 @@ async function handleInitializeRequest(
     feedback_mode: { kind: 'disabled' },
   }
 
-  if (isFastModeEnabled() && isFastModeAvailable()) {
-    const appState = getAppState()
-    // @ts-ignore - recovered code
-    initResponse.fast_mode_state = getFastModeState(
-      options.userSpecifiedModel ?? null,
-      appState.fastMode,
-    )
+  initResponse.fast_mode_state = getFastModeState(
+    options.userSpecifiedModel ?? null,
+    getAppState().fastMode,
+  )
+  const fastModeDisabledReason = getFastModeDisabledReason()
+  if (fastModeDisabledReason !== null) {
+    initResponse.fast_mode_disabled_reason = fastModeDisabledReason
   }
+  initResponse.session_state = getSessionState()
 
   output.enqueue({
     type: 'control_response',

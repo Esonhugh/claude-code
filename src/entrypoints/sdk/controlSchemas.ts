@@ -17,6 +17,7 @@ import {
   AccountInfoSchema,
   AgentDefinitionSchema,
   AgentInfoSchema,
+  FastModeDisabledReasonSchema,
   FastModeStateSchema,
   HookEventSchema,
   HookInputSchema,
@@ -103,6 +104,11 @@ export const SDKControlInitializeResponseSchema = lazySchema(() =>
         .optional()
         .describe('@internal CLI process PID for tmux socket isolation'),
       fast_mode_state: FastModeStateSchema().optional(),
+      fast_mode_disabled_reason: FastModeDisabledReasonSchema().optional(),
+      session_state: z
+        .enum(['idle', 'running', 'requires_action'])
+        .optional()
+        .describe("The session's state when this reply was sent."),
       claude_code_version: z.string().optional(),
       current_permission_mode: z.string().optional(),
       user_output_styles_dir: z.string().optional(),
@@ -337,6 +343,12 @@ export const SDKControlGetContextUsageResponseSchema = lazySchema(() =>
           isLoaded: z.boolean().optional(),
         }),
       ),
+      mcpInstructions: z
+        .array(z.object({ serverName: z.string(), tokens: z.number() }))
+        .optional()
+        .describe(
+          "The 'mcp_instructions' row by server. Only the row's total is counted: each server's share of it is estimated from the length of its text.",
+        ),
       deferredBuiltinTools: z
         .array(
           z.object({
