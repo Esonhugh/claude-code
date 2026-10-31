@@ -31,7 +31,10 @@ import {
 } from '../../utils/fileHistory.js'
 import { logFileOperation } from '../../utils/fileOperationAnalytics.js'
 import {
+  detectNotText,
   type LineEndingType,
+  type NotTextKind,
+  notTextMessage,
   readFileSyncWithMetadata,
 } from '../../utils/fileRead.js'
 import { formatFileSize } from '../../utils/format.js'
@@ -207,6 +210,15 @@ export const FileEditTool = buildTool({
     let fileContent: string | null
     try {
       const fileBuffer = await fs.readFileBytes(fullFilePath)
+      const notText = detectNotText(fileBuffer)
+      if (notText) {
+        return {
+          result: false,
+          behavior: 'ask',
+          message: notTextMessage(notText),
+          errorCode: 11,
+        }
+      }
       const encoding: BufferEncoding =
         fileBuffer.length >= 2 &&
         fileBuffer[0] === 0xff &&
@@ -463,7 +475,9 @@ export const FileEditTool = buildTool({
       fileExists,
       encoding,
       lineEndings: endings,
+      notText,
     } = readFileForEdit(absoluteFilePath)
+    if (notText) throw new Error(notTextMessage(notText))
 
     if (fileExists) {
       const lastWriteTime = getFileModificationTime(absoluteFilePath)
@@ -625,6 +639,7 @@ function readFileForEdit(absoluteFilePath: string): {
   fileExists: boolean
   encoding: BufferEncoding
   lineEndings: LineEndingType
+  notText?: NotTextKind
 } {
   try {
     // eslint-disable-next-line custom-rules/no-sync-fs
@@ -634,6 +649,7 @@ function readFileForEdit(absoluteFilePath: string): {
       fileExists: true,
       encoding: meta.encoding,
       lineEndings: meta.lineEndings,
+      notText: meta.notText,
     }
   } catch (e) {
     if (isENOENT(e)) {

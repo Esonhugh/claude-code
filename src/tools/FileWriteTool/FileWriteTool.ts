@@ -25,7 +25,10 @@ import {
   fileHistoryTrackEdit,
 } from '../../utils/fileHistory.js'
 import { logFileOperation } from '../../utils/fileOperationAnalytics.js'
-import { readFileSyncWithMetadata } from '../../utils/fileRead.js'
+import {
+  notTextMessage,
+  readFileSyncWithMetadata,
+} from '../../utils/fileRead.js'
 import { getFsImplementation } from '../../utils/fsOperations.js'
 import {
   fetchSingleFileGitDiff,
@@ -195,6 +198,20 @@ export const FileWriteTool = buildTool({
     try {
       const fileStat = await fs.stat(fullFilePath)
       fileMtimeMs = fileStat.mtimeMs
+      if (fileStat.isDirectory()) {
+        return {
+          result: false,
+          message: `${file_path} is a directory, not a file. To create a file inside it, include the file name in file_path.`,
+          errorCode: 17,
+        }
+      }
+      if (!fileStat.isFile()) {
+        return {
+          result: false,
+          message: `${file_path} exists but is not a regular file (a device, FIFO or socket). Write only creates or overwrites regular files.`,
+          errorCode: 18,
+        }
+      }
     } catch (e) {
       if (isENOENT(e)) {
         return { result: true }
@@ -292,6 +309,7 @@ export const FileWriteTool = buildTool({
       }
     }
 
+    if (meta?.notText) throw new Error(notTextMessage(meta.notText))
     if (meta !== null) {
       const lastWriteTime = getFileModificationTime(fullFilePath)
       const lastRead = readFileState.get(fullFilePath)
