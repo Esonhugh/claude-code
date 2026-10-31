@@ -221,6 +221,7 @@ import {
   tokenCountFromLastAPIResponse,
   tokenCountWithEstimation,
 } from './tokens.js'
+import { bytesPerTokenForModel } from '../services/tokenEstimation.js'
 import {
   getEffectiveContextWindowSize,
   isAutoCompactEnabled,
@@ -3060,7 +3061,11 @@ async function getSkillListingAttachments(
     toolUseContext.options.mainLoopModel,
     getSdkBetas(),
   )
-  const content = formatCommandsWithinBudget(newSkills, contextWindowTokens)
+  const content = formatCommandsWithinBudget(
+    newSkills,
+    contextWindowTokens,
+    bytesPerTokenForModel(toolUseContext.options.mainLoopModel),
+  )
 
   return [
     {
@@ -4222,7 +4227,10 @@ export function getCompactionReminderAttachment(
   }
 
   const effectiveWindow = getEffectiveContextWindowSize(model)
-  const usedTokens = tokenCountWithEstimation(messages)
+  const usedTokens = tokenCountWithEstimation(
+    messages,
+    bytesPerTokenForModel(model),
+  )
   if (usedTokens < effectiveWindow * 0.25) {
     return []
   }

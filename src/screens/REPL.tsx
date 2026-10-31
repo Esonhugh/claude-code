@@ -27,6 +27,7 @@ import figures from 'figures'
 // eslint-disable-next-line custom-rules/prefer-use-keybindings -- / n N Esc [ v are bare letters in transcript modal context, same class as g/G/j/k in ScrollKeybindingHandler
 import { useInput } from '../ink.js'
 import { useSearchInput } from '../hooks/useSearchInput.js'
+import { useTimeout } from '../hooks/useTimeout.js'
 import { useTerminalSize } from '../hooks/useTerminalSize.js'
 import { useSearchHighlight } from '../ink/hooks/use-search-highlight.js'
 import type { JumpHandle } from '../components/VirtualMessageList.js'
@@ -1140,6 +1141,15 @@ export function REPL({
   const ultraplanLaunchPending = useAppState(s => s.ultraplanLaunchPending)
   const viewingAgentTaskId = useAppState(s => s.viewingAgentTaskId)
   const setAppState = useSetAppState()
+
+  const agentsHintExpired = useTimeout(10_000)
+  useEffect(() => {
+    setAppState(prev =>
+      (prev.agentsHintExpired ?? false) === agentsHintExpired
+        ? prev
+        : { ...prev, agentsHintExpired },
+    )
+  }, [agentsHintExpired, setAppState])
 
   // Bootstrap: retained local_agent that hasn't loaded disk yet → read
   // sidechain JSONL and UUID-merge with whatever stream has appended so far.

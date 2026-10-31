@@ -20,6 +20,7 @@ export type BundledSkillDefinition = {
   subcommands?: Record<string, string>
   whenToUse?: string | (() => string)
   argumentHint?: string | (() => string)
+  progressMessage?: string
   allowedTools?: string[]
   disallowedTools?: string[]
   background?: boolean
@@ -112,7 +113,7 @@ export function registerBundledSkill(definition: BundledSkillDefinition): void {
     formatForegroundForkResult: definition.formatForegroundForkResult,
     isEnabled: definition.isEnabled,
     isHidden: !(definition.userInvocable ?? true),
-    progressMessage: 'running',
+    progressMessage: definition.progressMessage ?? 'running',
     getPromptForCommand,
   }
   defineBundledSkillText(command, definition)
