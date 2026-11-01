@@ -1,7 +1,6 @@
 import axios from 'axios'
 import {
   exchangeOpenAICodeForTokens,
-  getOpenAIProxyConfig,
   OPENAI_OAUTH_CLIENT_ID,
   OPENAI_OAUTH_ISSUER,
 } from './client.js'
@@ -65,7 +64,6 @@ export async function requestOpenAIDeviceCode({
     JSON.stringify({ client_id: OPENAI_OAUTH_CLIENT_ID }),
     {
       headers: { 'Content-Type': 'application/json' },
-      proxy: getOpenAIProxyConfig(),
       signal,
       timeout: 15000,
       validateStatus: () => true,
@@ -118,7 +116,6 @@ export async function pollOpenAIDeviceCode({
       }),
       {
         headers: { 'Content-Type': 'application/json' },
-        proxy: getOpenAIProxyConfig(),
         signal,
         timeout: 15000,
         validateStatus: () => true,

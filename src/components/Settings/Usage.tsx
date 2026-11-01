@@ -45,9 +45,9 @@ type LimitBarProps = {
 export function formatOpenAIAccountLine(account?: OpenAIAccount | null): string | null {
   if (!account?.name && !account?.email) return null
   if (account.name && account.email) {
-    return `Openai Account Name: ${account.name} (${account.email})`
+    return `OpenAI Account: ${account.name} (${account.email})`
   }
-  return `Openai Account Name: ${account.name ?? account.email}`
+  return `OpenAI Account: ${account.name ?? account.email}`
 }
 
 export function formatUsageLoadError(err: unknown): string {

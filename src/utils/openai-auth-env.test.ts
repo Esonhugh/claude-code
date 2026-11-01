@@ -94,13 +94,17 @@ try {
     JSON.stringify({
       name: 'Alice',
       email: 'alice@example.com',
-      'https://api.openai.com/auth': { chatgpt_plan_type: 'plus' },
+      'https://api.openai.com/auth': {
+        chatgpt_plan_type: 'plus',
+        chatgpt_account_id: 'acct-from-id-token',
+      },
     }),
   ).toString('base64url')
   assert.deepEqual(decodeOpenAIIdTokenClaims(`header.${payload}.signature`), {
     name: 'Alice',
     email: 'alice@example.com',
     chatgptPlanType: 'plus',
+    chatgptAccountId: 'acct-from-id-token',
   })
   assert.equal(formatOpenAIPlanName('plus'), 'Plus')
   assert.equal(formatOpenAIPlanName('pro'), 'Pro')
@@ -127,7 +131,8 @@ try {
   getChatGPTOAuthInfo.cache.clear?.()
   assert.deepEqual(getOpenAIAuthInfo(), {
     accessToken: 'chatgpt-token',
-    accountId: undefined,
+    // Fork logins saved before account_id was persisted: read it from id_token.
+    accountId: 'acct-from-id-token',
     isChatGPT: true,
     accountName: 'Alice',
     email: 'alice@example.com',

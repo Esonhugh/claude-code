@@ -143,6 +143,59 @@ try {
   }))
   assert.equal(getModelOptions()[0]?.value, 'gpt-online')
 
+  // ChatGPT: the default follows the account's /codex/models priority, like
+  // Codex CLI; hidden models never become the default.
+  const { getDefaultMainLoopModelSetting } = await import('./model.js')
+  assert.equal(getDefaultMainLoopModelSetting(), 'gpt-5.6-sol')
+  const chatgptModels = openAIModelOptions.parseOpenAIModelOptions({
+    models: [
+      { slug: 'gpt-older', display_name: 'GPT Older', priority: 6 },
+      { slug: 'gpt-hidden-top', visibility: 'hide', priority: 0 },
+      { slug: 'gpt-newest', display_name: 'GPT Newest', priority: 1 },
+    ],
+  })
+  assert.deepEqual(
+    chatgptModels.map(option => option.value),
+    ['gpt-newest', 'gpt-older', 'gpt-hidden-top'],
+  )
+  authModule.getOpenAIAuthInfo.cache.set(undefined, {
+    accessToken: 'chatgpt-token',
+    accountId: 'acct-1',
+    isChatGPT: true,
+  })
+  const chatgptDiscoveryKey =
+    openAIModelOptions.getModelDiscoveryCacheKey() ?? undefined
+  saveGlobalConfig(current => ({
+    ...current,
+    additionalModelOptionsCache: chatgptModels,
+    additionalModelOptionsCacheKey: chatgptDiscoveryKey,
+  }))
+  assert.equal(getDefaultMainLoopModelSetting(), 'gpt-newest')
+  saveGlobalConfig(current => ({
+    ...current,
+    additionalModelOptionsCache: chatgptModels.slice(2),
+  }))
+  assert.equal(getDefaultMainLoopModelSetting(), 'gpt-5.6-sol')
+  saveGlobalConfig(current => ({
+    ...current,
+    additionalModelOptionsCache: chatgptModels,
+    additionalModelOptionsCacheKey: 'openai:chatgpt:other-account',
+  }))
+  assert.equal(getDefaultMainLoopModelSetting(), 'gpt-5.6-sol')
+  authModule.getOpenAIAuthInfo.cache.set(undefined, {
+    accessToken: 'cached-api-token',
+    isChatGPT: false,
+  })
+  saveGlobalConfig(current => ({
+    ...current,
+    additionalModelOptionsCache: [
+      { value: 'gpt-online', label: 'GPT Online', description: 'From API' },
+    ],
+    additionalModelOptionsCacheKey: cachedDiscoveryKey,
+  }))
+  // API-key and gateway lists carry no priority, so the static default stays.
+  assert.equal(getDefaultMainLoopModelSetting(), 'gpt-5.6-sol')
+
   const requests: Array<{
     url: string
     headers: Record<string, string> | undefined

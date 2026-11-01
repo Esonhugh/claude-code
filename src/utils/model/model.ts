@@ -24,6 +24,7 @@ import { getAPIProvider, isFirstPartyAnthropicBaseUrl } from './providers.js'
 import { LIGHTNING_BOLT } from '../../constants/figures.js'
 import { isModelAllowed } from './modelAllowlist.js'
 import { getServedDefaultModel } from './servedModelCatalog.js'
+import { getOpenAIServedDefaultModel } from './openaiModelOptions.js'
 import { type ModelAlias, isModelAlias } from './aliases.js'
 import { capitalize } from '../stringUtils.js'
 import { isAnt } from 'src/utils/userType.js'
@@ -144,7 +145,9 @@ export function getDefaultOpusModel(): ModelName {
     return process.env.ANTHROPIC_DEFAULT_OPUS_MODEL
   }
   const provider = getAPIProvider()
-  if (provider === 'openai') return OPENAI_MODEL_CONFIG.opus
+  if (provider === 'openai') {
+    return getOpenAIServedDefaultModel() ?? OPENAI_MODEL_CONFIG.opus
+  }
   // Keep established SDK/endpoint defaults for third-party providers.
   return provider === 'firstParty'
     ? getModelStrings().opus55
