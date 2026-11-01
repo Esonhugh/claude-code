@@ -971,9 +971,14 @@ export class QueryEngine {
         is_error: false,
         duration_ms: Date.now() - startTime,
         duration_api_ms: getTotalAPIDuration(),
-        // Local slash commands make no model turns.
+        // Local slash commands make no model turns, and like 2.1.311 a
+        // /compact result has no text.
         num_turns: 0,
-        result: resultText ?? '',
+        result: messagesFromUserInput.some(
+          msg => msg.type === 'system' && msg.subtype === 'compact_boundary',
+        )
+          ? ''
+          : (resultText ?? ''),
         stop_reason: null,
         session_id: getSessionId(),
         total_cost_usd: getTotalCost(),

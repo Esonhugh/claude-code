@@ -19,6 +19,7 @@ function context(): ToolUseContext {
   return {
     options: {
       tools: [{ name: 'Agent' }],
+      mainLoopModel: 'claude-sonnet-4-6',
       agentDefinitions: {
         activeAgents: [reviewer],
         allowedAgentTypes: undefined,

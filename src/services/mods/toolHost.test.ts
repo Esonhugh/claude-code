@@ -205,6 +205,8 @@ describe('author tool host through the real executor', () => {
 
   test('spawn uses the real parent assistant context when available', async () => {
     if (!isForkSubagentEnabled()) return
+    // The fork renders the parent's system prompt, which reads build macros.
+    ;(globalThis as typeof globalThis & { MACRO: MacroGlobals }).MACRO ??= { VERSION: 'test', ISSUES_EXPLAINER: 'report an issue' }
     const f = fixture()
     f.context.options.mainLoopModel = 'claude-sonnet-4-6'
     f.context.options.agentDefinitions = {
@@ -228,7 +230,8 @@ describe('author tool host through the real executor', () => {
     f.context.setAppState = updater => {
       state = typeof updater === 'function' ? updater(state as never) as never : updater as never
     }
-    const result = await f.host.spawn({ prompt: 'Review changes' }, f.snapshot, new AbortController().signal, 'author')
+    // Like 2.1.311, the fork is chosen explicitly; an omitted type is general-purpose.
+    const result = await f.host.spawn({ prompt: 'Review changes', subagentType: 'fork' }, f.snapshot, new AbortController().signal, 'author')
     if ('deny' in result) throw new Error(result.deny)
     expect(state.tasks[result.agentId!]).toMatchObject({ agentType: 'fork', spawnedBy: 'author' })
   })

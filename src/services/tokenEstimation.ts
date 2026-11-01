@@ -9,7 +9,10 @@ import type { Attachment } from '../utils/attachments.js'
 import { getModelBetas } from '../utils/betas.js'
 import { getVertexRegionForModel, isEnvTruthy } from '../utils/envUtils.js'
 import { logError } from '../utils/log.js'
-import { normalizeAttachmentForAPI } from '../utils/messages.js'
+import {
+  attachmentMessagesForAPI,
+  normalizeAttachmentForAPI,
+} from '../utils/messages.js'
 import {
   createBedrockRuntimeClient,
   getInferenceProfileBackingModel,
@@ -401,7 +404,11 @@ export function roughTokenCountEstimationForMessage(
   }
 
   if (message.type === 'attachment' && message.attachment) {
-    const userMessages = normalizeAttachmentForAPI(message.attachment)
+    // Count what the request sends: a mod's prompt.attachment projection
+    // replaces the raw attachment in normalizeMessagesForAPI.
+    const userMessages =
+      attachmentMessagesForAPI.get(message as never) ??
+      normalizeAttachmentForAPI(message.attachment)
     let total = 0
     for (const userMsg of userMessages) {
       total += roughTokenCountEstimationForContent(

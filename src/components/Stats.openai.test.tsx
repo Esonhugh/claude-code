@@ -34,8 +34,12 @@ class Output extends Writable {
   rows = 40
   isTTY = false
   output = ''
+  // Piped output skips a frame identical to the last one written, so the
+  // screen is the last frame written, not what came since output was cleared.
+  frame = ''
   _write(chunk: Buffer, _encoding: BufferEncoding, callback: () => void) {
     this.output += chunk.toString()
+    this.frame = chunk.toString()
     callback()
   }
 }
@@ -140,11 +144,11 @@ test.each([144, 80])('embedded Stats preserves chart rows and nested focus at %s
     assert.ok(predicate(), output())
   }
   // For keys whose effect has no plain-text change (header focus styling),
-  // wait for the frame the key produces before sending the next one.
+  // give the key time to land before sending the next one; an unchanged
+  // frame is not written again.
   async function press(key: string) {
-    const length = stdout.output.length
     stdin.push(key)
-    await waitFor(() => stdout.output.length > length)
+    await new Promise(resolve => setTimeout(resolve, 100))
   }
   try {
     await waitFor(() => /Total tokens:/.test(output()))
@@ -409,11 +413,10 @@ test('nested Stats tabs leave each header key to one owner', async () => {
     assert.match(stripAnsi(stdout.output), /Lifetime tokens: 42/)
     stdin.push('\u001b[A')
     await settle()
-    stdout.output = ''
     stdin.push('\u001b[B')
     await settle()
-    assert.match(stripAnsi(stdout.output), /Tabs: ←\/→ or Tab\/Shift\+Tab · ↓ enter chart/)
-    assert.doesNotMatch(stripAnsi(stdout.output), /↑\/↓ ±1 day/)
+    assert.match(stripAnsi(stdout.frame), /Tabs: ←\/→ or Tab\/Shift\+Tab · ↓ enter chart/)
+    assert.doesNotMatch(stripAnsi(stdout.frame), /↑\/↓ ±1 day/)
     stdout.output = ''
     await pushReads(stdin, ['\u001b[A', '\t'])
     await settle()

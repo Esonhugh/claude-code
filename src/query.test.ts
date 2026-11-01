@@ -487,7 +487,7 @@ describe('query autocompact failures', () => {
       expect(result.compactionFailure).toEqual({
         message: 'Not enough messages to compact.',
       })
-      expect(measuredUsage).toHaveBeenCalledWith([])
+      expect(measuredUsage).toHaveBeenCalledWith([], expect.any(Number))
     } finally {
       enabled.mockRestore()
       measuredUsage.mockRestore()

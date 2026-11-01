@@ -2,7 +2,7 @@ import { afterEach, beforeEach, expect, test } from 'bun:test'
 import { mkdtemp, realpath, rm, mkdir, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { resetStateForTests, setIsInteractive } from '../bootstrap/state.js'
+import { regenerateSessionId, resetStateForTests, setIsInteractive } from '../bootstrap/state.js'
 import { resetSettingsCache } from '../utils/settings/settingsCache.js'
 import { getSystemPromptFacts, getSystemPromptSections } from '../utils/systemPromptType.js'
 import fixture from './fixtures/leanPrompt292.json'
@@ -86,10 +86,21 @@ test('session guidance and tail sections match official 2.1.311', async () => {
   expect(lean).toContain('# Context management\nWhen the conversation grows long, some or all of the current context is summarized;')
   expect(lean).toContain('When you have enough information to act, act. Do not re-derive facts already established in the conversation, re-litigate a decision the user has already made, or narrate options you will not pursue. If you are weighing a choice, give a recommendation, not an exhaustive survey')
   const full = text(await getSystemPrompt(tools, 'claude-sonnet-4-6'))
-  expect(full).toContain('Use the Agent tool with specialized agents')
-  expect(full).toContain("For broad codebase exploration or research that'll take more than 3 queries, spawn Agent with subagent_type=Explore. Otherwise use ")
+  // Fork mode is on in -p too; like 2.1.311 the fork is named explicitly,
+  // since an omitted subagent_type is general-purpose.
+  expect(full).toContain('Calling Agent with subagent_type: "fork" creates a fork \u2014 it inherits your full conversation context and keeps its tool output out of your context. Reach for it when research or multi-step implementation work would otherwise fill your context with raw output you won\'t need again. Other subagent_type values start fresh agents with no context. **If you ARE the fork** \u2014 execute directly; do not re-delegate.')
+  expect(full).not.toContain('without a subagent_type')
+  expect(full).not.toContain('subagent_type=Explore')
   expect(full).not.toContain('For simple, directed codebase searches')
   expect(full).toContain('# Context management')
+  process.env.CLAUDE_CODE_FORK_SUBAGENT = '0'
+  regenerateSessionId() // fork mode is decided once per session
+  clearSystemPromptSections()
+  try {
+    const noFork = text(await getSystemPrompt(tools, 'claude-sonnet-4-6'))
+    expect(noFork).toContain('Use the Agent tool with specialized agents')
+    expect(noFork).toContain("For broad codebase exploration or research that'll take more than 3 queries, spawn Agent with subagent_type=Explore. Otherwise use ")
+  } finally { delete process.env.CLAUDE_CODE_FORK_SUBAGENT }
   process.env.CLAUDE_CODE_ACT_DONT_REDERIVE = '0'
   clearSystemPromptSections()
   try {
