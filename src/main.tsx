@@ -401,10 +401,12 @@ import {
   getIsNonInteractiveSession,
   getSdkBetas,
   getIsRemoteMode,
+  isRestrictedSession,
   getSessionId,
   getUserMsgOptIn,
   setAllowedChannels,
   setAllowedSettingSources,
+  setRestrictedSession,
   setChromeFlagOverride,
   setClientType,
   setCwdState,
@@ -892,6 +894,16 @@ function eagerLoadSettings(): void {
   const settingSourcesArg = eagerParseCliFlag('--setting-sources')
   if (settingSourcesArg !== undefined) {
     loadSettingSourcesFromFlag(settingSourcesArg)
+  }
+
+  // --restricted reads no user, project or local settings files; managed
+  // settings and --settings still apply.
+  const separator = process.argv.indexOf('--')
+  const argv = separator === -1 ? process.argv : process.argv.slice(0, separator)
+  if (argv.includes('--restricted') || isEnvTruthy(process.env.CLAUDE_CODE_RESTRICTED)) {
+    setRestrictedSession(true)
+    setAllowedSettingSources([])
+    resetSettingsCache()
   }
 
   const managedSettings = eagerParseCliFlag('--managed-settings')
@@ -1609,6 +1621,11 @@ async function run(): Promise<CommanderCommand> {
     .option(
       '--tools <tools...>',
       'Specify the list of available tools from the built-in set. Use "" to disable all tools, "default" to use all tools, or specify tool names (e.g. "Bash,Edit,Read").',
+    )
+    .option(
+      '--restricted',
+      'Restricted mode: removes the built-in tools that run commands or code (Bash, PowerShell and the other code-running tools) and WebFetch unless --tools names them, and ignores user, project and local settings files (managed settings and --settings still apply; add --strict-mcp-config to skip MCP servers too). Also confines the file tools to the working directories (--add-dir included), refuses bypassPermissions, and lets only a person or the configured permission handler approve writes to settings, git and tool-configuration files.',
+      () => true,
     )
     .option(
       '--disallowedTools, --disallowed-tools <tools...>',
@@ -2393,6 +2410,15 @@ async function run(): Promise<CommanderCommand> {
       }
       const { mode: permissionMode, notification: permissionModeNotification } =
         initialPermission
+      if (
+        isRestrictedSession() &&
+        (permissionMode === 'bypassPermissions' || allowDangerouslySkipPermissions)
+      ) {
+        process.stderr.write(
+          chalk.red('Error: bypassPermissions not supported in restricted mode\n'),
+        )
+        process.exit(1)
+      }
 
       // Store session bypass permissions mode for trust dialog check
       setSessionBypassPermissionsMode(permissionMode === 'bypassPermissions')

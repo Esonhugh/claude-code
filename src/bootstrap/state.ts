@@ -94,6 +94,7 @@ type State = {
   flagSettingsInline: Record<string, unknown> | null
   cliAutoCompactWindow: number | 'auto' | undefined
   forwardSubagentText: boolean
+  restrictedSession: boolean
   parentManagedSettings: Record<string, unknown> | null
   projectConfigRoot: string | null
   allowedSettingSources: SettingSource[]
@@ -339,6 +340,7 @@ function getInitialState(): State {
     flagSettingsInline: null,
     cliAutoCompactWindow: undefined,
     forwardSubagentText: false,
+    restrictedSession: false,
     parentManagedSettings: null,
     projectConfigRoot: null,
     allowedSettingSources: [
@@ -1286,6 +1288,15 @@ export function getForwardSubagentText(): boolean {
 
 export function setForwardSubagentText(value: boolean): void {
   STATE.forwardSubagentText = value
+}
+
+/** --restricted (or CLAUDE_CODE_RESTRICTED): no code-running tools, no user/project/local settings. */
+export function isRestrictedSession(): boolean {
+  return STATE.restrictedSession
+}
+
+export function setRestrictedSession(value: boolean): void {
+  STATE.restrictedSession = value
 }
 
 /** Policy-tier settings from --managed-settings (the SDK's managedSettings option). */

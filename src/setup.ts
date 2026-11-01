@@ -14,6 +14,7 @@ import {
   getIsNonInteractiveSession,
   getProjectRoot,
   getSessionId,
+  isRestrictedSession,
   setOriginalCwd,
   setProjectRoot,
   switchSession,
@@ -136,7 +137,14 @@ export async function setup(
   // --bare / SIMPLE: skip UDS messaging server and teammate snapshot.
   // Scripted calls don't receive injected messages and don't use swarm teammates.
   // Explicit --messaging-socket-path is the escape hatch (per #23222 gate pattern).
-  if (
+  // --restricted skips it even with --messaging-socket-path, like official.
+  if (isRestrictedSession()) {
+    logForDebugging(
+      messagingSocketPath === undefined
+        ? '[uds-messaging] Skipped: restricted session'
+        : '[uds-messaging] Skipped: restricted session (--messaging-socket-path ignored)',
+    )
+  } else if (
     !isSSHLocalUI() &&
     (!isBareMode() || messagingSocketPath !== undefined)
   ) {
