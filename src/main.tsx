@@ -1604,7 +1604,7 @@ async function run(): Promise<CommanderCommand> {
     )
     .option(
       '--allowedTools, --allowed-tools <tools...>',
-      'Comma or space-separated list of tool names to allow (e.g. "Bash(git:*) Edit")',
+      'Comma or space-separated list of tool names to allow (e.g. "Bash(git *) Edit")',
     )
     .option(
       '--tools <tools...>',
@@ -1612,7 +1612,7 @@ async function run(): Promise<CommanderCommand> {
     )
     .option(
       '--disallowedTools, --disallowed-tools <tools...>',
-      'Comma or space-separated list of tool names to deny (e.g. "Bash(git:*) Edit")',
+      'Comma or space-separated list of tool names to deny (e.g. "Bash(git *) Edit")',
     )
     .option(
       '--mcp-config <configs...>',
