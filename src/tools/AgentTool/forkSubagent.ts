@@ -34,16 +34,24 @@ export function isForkSubagentEnabled(): boolean {
   }
   if (!canUseScriptFork()) return false
   if (enabledSource === undefined) {
+    // Like 2.1.311, fork mode is on by default in -p and SDK sessions too.
     enabledSource = isEnvTruthy(process.env.CLAUDE_CODE_FORK_SUBAGENT)
       ? 'env'
-      : getIsNonInteractiveSession()
-        ? undefined
-        : 'default'
-    if (enabledSource !== undefined) {
-      logForDebugging(`[ForkMode] enabled source=${enabledSource} sessionId=${sessionId}`)
-    }
+      : 'default'
+    logForDebugging(`[ForkMode] enabled source=${enabledSource} sessionId=${sessionId}`)
   }
   return enabledSource !== undefined
+}
+
+/**
+ * Fork mode that also makes every agent run in the background (2.1.311 _ht):
+ * on interactively, and in -p/SDK only when CLAUDE_CODE_FORK_SUBAGENT is set.
+ */
+export function isForkAsyncDefault(): boolean {
+  return (
+    isForkSubagentEnabled() &&
+    (enabledSource === 'env' || !getIsNonInteractiveSession())
+  )
 }
 
 function canUseScriptFork(): boolean {

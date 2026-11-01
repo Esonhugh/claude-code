@@ -376,41 +376,11 @@ export const SettingsSchema = lazySchema(() =>
       env: EnvironmentVariablesSchema()
         .optional()
         .describe('Environment variables to set for Claude Code sessions'),
-      // Attribution for commits and PRs
-      attribution: z
-        .object({
-          commit: z
-            .string()
-            .optional()
-            .describe(
-              'Attribution text for git commits, including any trailers. ' +
-                'Empty string hides attribution.',
-            ),
-          pr: z
-            .string()
-            .optional()
-            .describe(
-              'Attribution text for pull request descriptions. ' +
-                'Empty string hides attribution.',
-            ),
-        })
-        .optional()
-        .describe(
-          'Customize attribution text for commits and PRs. ' +
-            'Unset fields do not include attribution.',
-        ),
-      includeCoAuthoredBy: z
-        .boolean()
-        .optional()
-        .describe(
-          'Deprecated: Use attribution instead. ' +
-            "Whether to include Claude's co-authored by attribution in commits and PRs (defaults to false)",
-        ),
       includeGitInstructions: z
         .boolean()
         .optional()
         .describe(
-          "Include built-in commit and PR workflow instructions in Claude's system prompt (default: true)",
+          "Include built-in commit and PR workflow instructions and git status in Claude's system prompt (default: false)",
         ),
       permissions: PermissionsSchema()
         .optional()
@@ -829,6 +799,12 @@ export const SettingsSchema = lazySchema(() =>
         .describe(
           'Whether /rename updates the terminal tab title (defaults to true). Set to false to keep auto-generated topic titles.',
         ),
+      respondToBashCommands: z
+        .boolean()
+        .optional()
+        .describe(
+          'Whether Claude responds after an input-box ! bash command runs. Set to false to add the command output to context without a response. Default: true.',
+        ),
       alwaysThinkingEnabled: z
         .boolean()
         .optional()
@@ -913,6 +889,24 @@ export const SettingsSchema = lazySchema(() =>
           'When false, prompt suggestions are disabled. When absent or true, ' +
             'prompt suggestions are enabled.',
         ),
+      skillListingBudgetFraction: z
+        .number()
+        .gt(0)
+        .lte(1)
+        .optional()
+        .describe(
+          'Fraction of the context window (in characters) reserved for the skill listing sent to Claude (default: 0.01 = 1%). ' +
+            'When the listing exceeds this, descriptions are shortened to fit. Raise to opt in to higher per-turn context cost.',
+        ),
+      skillListingMaxDescChars: z
+        .number()
+        .int()
+        .positive()
+        .optional()
+        .describe(
+          'Per-skill description character cap in the skill listing sent to Claude (default: 1536). ' +
+            'Descriptions longer than this are truncated. Raise to opt in to higher per-turn context cost.',
+        ),
       skillOverrides: z
         .record(
           z.string(),
@@ -929,6 +923,16 @@ export const SettingsSchema = lazySchema(() =>
         .describe(
           'When false, a long conversation left idle is not compacted before ' +
             'its one-hour prompt cache expires. Default true.',
+        ),
+      agentSummary: z
+        .enum(['full', 'short', 'off'])
+        .optional()
+        .catch(undefined)
+        .describe(
+          'Progress label for running background agents (' +
+            'subagentStatusLine, SDK task_progress). "full" (default) forks ' +
+            "the agent's transcript every 30s; \"short\" sends compact notes " +
+            'of recent steps instead; "off" disables it.',
         ),
       awaySummaryEnabled: z
         .boolean()
@@ -1185,6 +1189,12 @@ export const SettingsSchema = lazySchema(() =>
         .describe(
           'IANA time zone for times shown in the UI, e.g. "UTC" or "Europe/Dublin". Default: the system time zone. An unknown name falls back to the system time zone.',
         ),
+      axScreenReader: z
+        .boolean()
+        .optional()
+        .describe(
+          'Render screen-reader friendly output (flat text, no decorative borders or animations). Overridden by the CLAUDE_AX_SCREEN_READER env var and the --ax-screen-reader CLI flag. Ignored in project and local settings.',
+        ),
       prefersReducedMotion: z
         .boolean()
         .optional()
@@ -1219,7 +1229,7 @@ export const SettingsSchema = lazySchema(() =>
             .enum(['everyTurns', 'sessionEnd', 'off'])
             .optional()
             .describe(
-              'When background memory extraction runs: sessionEnd (default, once when the conversation ends: exit, /clear, /resume), everyTurns (after each turn), or off. Each run is a model call, so less often costs fewer tokens.',
+              'When background memory extraction runs: off (default), sessionEnd (once when the conversation ends: exit, /clear, /resume), or everyTurns (after each turn). Each run is a model call, so less often costs fewer tokens.',
             ),
         })
         .optional()

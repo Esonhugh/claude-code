@@ -271,21 +271,22 @@ test('resize and appended messages preserve a scrolled-up viewport', async () =>
   })
 
   try {
+    // Piped output skips a frame identical to the last one written, so an
+    // empty write means the screen still shows the previous frame.
+    let screen = ''
+    async function frame(change: () => void): Promise<string> {
+      stdout.output = ''
+      change()
+      await Bun.sleep(40)
+      if (stdout.output) screen = stripAnsi(stdout.output)
+      return screen
+    }
     await Bun.sleep(40)
-    scrollRef.current!.scrollTo(0)
-    await Bun.sleep(40)
-    stdout.output = ''
-    instance.rerender(draw(80, items))
-    await Bun.sleep(40)
-    const before = stripAnsi(stdout.output)
+    const before = await frame(() => scrollRef.current!.scrollTo(0))
     expect(before).toContain('message-0\n')
     expect(scrollRef.current!.isSticky()).toBe(false)
-    instance.rerender(draw(40, items))
-    await Bun.sleep(40)
-    stdout.output = ''
-    instance.rerender(draw(40, [...items, 'new tail message']))
-    await Bun.sleep(40)
-    expect(stripAnsi(stdout.output)).toBe(before)
+    await frame(() => instance.rerender(draw(40, items)))
+    expect(await frame(() => instance.rerender(draw(40, [...items, 'new tail message'])))).toBe(before)
     expect(scrollRef.current!.isSticky()).toBe(false)
   } finally {
     instance.unmount()

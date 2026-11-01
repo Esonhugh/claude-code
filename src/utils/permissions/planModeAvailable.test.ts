@@ -245,7 +245,7 @@ describe('Plan mode opt-in', () => {
       await AskUserQuestionTool.prompt(options),
       await TaskCreateTool.prompt(),
       await AgentTool.prompt(options),
-      ...agents.map(formatAgentLine),
+      ...agents.map(agent => formatAgentLine(agent)),
       JSON.stringify(AgentTool.inputSchema),
       ...normalizeAttachmentForAPI({ type: 'auto_mode', reminderType: 'full' })
         .map(message => JSON.stringify(message.message.content)),
@@ -259,7 +259,7 @@ describe('Plan mode opt-in', () => {
 
     configure({ planModeAvailable: true })
     expect(await AskUserQuestionTool.prompt(options)).toContain('Plan mode note:')
-    expect(await TaskCreateTool.prompt()).toContain('- Plan mode')
+    expect(await TaskCreateTool.prompt()).toContain(', or to track the work in plan mode')
   })
 
   test('skips Plan in the mode cycle without removing an existing restriction or exit', () => {

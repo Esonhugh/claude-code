@@ -1,5 +1,5 @@
 
-VERSION := 2.1.295
+VERSION := 2.1.296
 BUILD_OS := $(shell uname -s | tr '[:upper:]' '[:lower:]')
 BUILD_ARCH := $(shell uname -m | sed -e 's/^aarch64$$/arm64/' -e 's/^x86_64$$/x64/')
 FILE := ./dist/release/claude-code-v$(VERSION)-$(BUILD_OS)-$(BUILD_ARCH)
@@ -14,6 +14,7 @@ CLAUDE_KEEP_PACK ?= 0
 .PHONY: build linux-baseline test release-check check-mods-control-types download-claude clean-download-claude
 
 build:
+	-bun ./scripts/build-search-tools.mjs
 ifneq ($(strip $(CLAUDE_CODE_BUILD_DIR)),)
 	CLAUDE_CODE_VERSION=$(VERSION) CLAUDE_CODE_BUILD_DIR="$(CLAUDE_CODE_BUILD_DIR)" bun package:binary
 else

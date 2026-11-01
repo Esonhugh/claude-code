@@ -12,6 +12,144 @@
 - `## 2.1.88 base` 是唯一基线条目，固定放在文件末尾，不作为 release note。
 - `bun run check:changelog` 是格式规范的可执行门禁；发布时还会校验 tag 版本与最新发布条目一致。
 
+## 2026-10-30 - v2.1.296 - Agent 生命周期与 Teams 修复、内嵌 bfs/ugrep 搜索、coordinator 模式、/hooks /theme /config 对齐官方 2.1.311、权限模式转换修复
+
+### 版本状态
+
+- 发布候选：`dev` 合并到 `master` 后打 tag `v2.1.296`。本条目汇总 `v2.1.295` tag（master `e3fca04`）之后至 PR #498 的全部变更；`Makefile VERSION` 与 README 发布版本同步为 `2.1.296`，`package.json` 保持 `0.0.0-dev`。版本号与官方版本号无对应关系（本轮对照基线为官方 2.1.311）。
+
+### 关联提交
+
+- PR 合并提交（`git log --first-parent e3fca04..dev`）：#263、#272、#280 Teams 通知；#264、#269 agent 视图 pill（加入后又按用户要求撤回）；#268、#274、#276、#283、#284、#288、#303、#306 agent 生命周期；#290、#296、#302 coordinator 模式；#278、#289 SQLite 记忆检索；#293 Bash 折叠；#304、#316 权限与 Bedrock；#309、#311 REPL 对话框；#313 任务通知格式；#315、#319、#321 agent summary；#317、#331 Agent SDK；#323、#325、#329、#334、#346、#349 `/hooks`、`/theme`、`/agents`、`/memory`、`/config`；#327 内嵌搜索工具；#332 流式工具执行；#339 新 hook 事件；#342、#344、#347、#350 多轮对照修复；#354 权限模式转换与 Stop hook；#357 session memory；#359 权限提示与 footer 对齐官方；#363 模型默认值、会话标题与 `/ide`；#368 斜杠命令、`!` 命令回复与输出上限；#371、#374、#379 `--continue`/`--resume` 保留 prompt cache 与历史；#376 `/feedback`、`/output-style`、`/effort`、`/model` 与 SDK 字段；#383 `/hooks`、`/clear`、`/fast`、`/ide` 与对话框文案；#386 `/btw`、`/skills`、`/usage`、`/model`、`/status` 等命令对齐；#389 plan 模式权限、工具列表、会话标题与 agent 视图入口；#392 `/powerup`、agent 视图默认、编辑器上下文、插件市场筛选与内嵌 seccomp；#393 `/powerup` lint 修复；#395 rewind 链接安全、MCP transport、footer 与快捷键默认值；#398 内置技能、`/clear` 标题与 `/help` 提示；#401 会话费用计算；#403 Bash 权限 AST 解析；#404 `claude-api` lint 修复；#406 PR CI 运行 eslint；#410 Select 换行、plan 模式 accept-edits 选项与 `/resume` 选择器；#413 `/context`、按模型估算 token、`/doctor` 技能与界面细节；#416 SDK 初始化字段、headless 命令、`/verify`、Explore agent 与命令补全；#419 system prompt、hook、压缩、Agent 结果与 `-p --resume`；#422 工具提示词精简、SDK control request 与 `auth status`；#425 调度与 worktree 工具提示词精简；#428 Terminal、NotebookEdit、Task/TodoWrite 提示词与 Bash Git 规则；#430 Sonnet/Haiku 5.5 关闭 thinking 时改用 adaptive；#434 SDK 压缩与状态消息、`/cost`；#436 压缩保留最后一轮与 `/compact` 后恢复会话；#439 SDK result 与流字段、git 指引默认关闭；#442 SDK control response 字段；#445 headless 斜杠命令、工具错误提示与移除 attribution 设置；#448 工具输入修复、Bash 超时与文件类型检查；#451 ripgrep 报错、工具结果文案与 CLI 参数校验；#453 未信任工作区忽略项目 allow 规则与 additionalDirectories；#456 `mcp` 子命令、管道输出、stream-json 输入与 `--agent` 校验；#459 先读后写检查随读权限、工具结果说明、Glob/Grep 路径报错与 Bash 超时输出；#462 bypass 写项目外文件、Read 空文件与空行、agent 列表排序；#465 PreToolUse hook 拒绝提示、`continue:false` 与 SDK `permission_denials`；#470 `continue:false` 先执行调用、SDK `permission_denied` 事件与 `status` 发送条件；#468 ChatGPT 登录走代理、account id、Usage 标签与按账号的默认模型；#476 CLI 帮助排版、`--agents` 文件、`-p` 参数与空会话 `/context`；#477 `REPL.submit` 测试夹具更新；#480 `--autocompact`、`--forward-subagent-text`、`-p` fork 模式、`--brief` 与 `Bash(cmd *)` 建议；#483 `claude purge`、`respawn --all` 与 `--restricted`；#486 `--ax-screen-reader` 与后台会话命令用法文本；#489 `rm --force-remove-worktree` 与 agents 派发选项；#492 `/rename` 后输入框会话名、`-p` 设置加载报告与 rm 帮助；#495 auto-mode CLI 与 Haiku 主模型下的分类器模型；#498 mod 附件 token 计数、`/compact` mod 输出、fork 提示词与过期单测。
+- 对应 issue：#16、#71、#72、#73、#74、#75、#76、#88、#141、#158、#261、#262、#265、#266、#267、#270、#271、#273、#275、#277、#279、#281、#282、#285、#286、#287、#291、#292、#294、#295、#297、#298、#299、#300、#301、#305、#307、#308、#310、#314、#318、#320、#326、#328、#330、#333、#335、#336、#337、#338、#340、#341、#343、#345、#348、#351、#352、#353、#355、#356、#361、#362、#365、#366、#370、#373、#375、#378、#382、#384、#388、#391、#394、#397、#399、#400、#402、#405、#408、#412、#415、#418、#421、#424、#427、#429、#433、#435、#438、#441、#444、#447、#450、#455、#458、#461、#464、#467、#469、#471、#473、#474、#475、#479、#482、#485、#488、#491、#494、#497。
+
+### 变更内容
+
+#### 需要用户处理的行为变化
+
+- `memory.extraction` 默认改为 `off`，退出时不再等待“Saving memories…”；需要时设为 `sessionEnd` 或 `everyTurns`（#305）。
+- session memory（为当前会话维护 `session-memory/summary.md`）默认关闭，与官方一致，开启 auto memory 也不会运行；13 轮真实对话中省去 23 至 29 次额外的 `Edit` 调用（#356）。auto memory（`autoMemoryEnabled`，默认开）现在只负责加载与检索长期记忆，后台补记由 `memory.extraction` 单独控制，默认 `off`。
+- Linux 与 macOS binary 内嵌 bfs 4.1.1 与 ugrep 7.8.4，Glob/Grep 工具改由 Bash 中的 `find`/`grep` 完成，与官方一致；`--tools` 或 `--allowedTools` 点名 Glob 或 Grep 时保留这两个工具；Windows 不变（#326、#141）。
+- `/agents` 交互向导移除，输入 `/agents` 显示官方的提示，改为手写 `.claude/agents/*.md`（#328）。
+- coordinator 模式进入默认构建，只在 `CLAUDE_CODE_COORDINATOR_MODE` 加上 `-p`/SDK 或 `CLAUDE_CODE_REMOTE` 时开启，本地交互会话不会进入（#285）。
+- 主循环始终使用流式工具执行（#330）。
+- transcript 保存 attachment，与官方一致；`--continue`/`--resume` 后不再重复公布列表，system 与消息的 prompt cache 不再失效（#370）。git status 从 system prompt 移到 `session_context` attachment，每个会话只公布一次（压缩后再公布），改过文件的会话恢复后不再整段重写 cache（#373）。rewind 选 Summarize from here（partial compact）后恢复会话不再丢失保留段的历史（#378）。完整压缩与官方 2.1.311 一致，总结除最后一个 API 轮次外的全部内容，最后一轮原样保留（边界带 `preserved_segment`）；以本地命令输出结尾的会话恢复时不再被当作中断的 prompt，也不再补 “No response requested.”（#435）。
+- `/output-style` 恢复为可用命令：列出 default、Proactive、Concise、Explanatory 与 Learning，`/output-style <name>` 写入本地设置；Proactive 与 Concise 使用官方提示词与每轮提醒（#366）。
+- 移除 `TeamCreate` 与 `TeamDelete` 工具，新增 `ReportFindings` 工具，与官方 2.1.311 一致；Bash 提示的 `ctrl+e` 解释功能移除（#388）。
+- 快捷键默认值对齐官方：Chat 中 `ctrl+l` 为 `chat:clearInput`、`cmd+k` 为 `chat:clearScreen`（均重绘并保留输入）；确认对话框不再响应 `y`/`n`；新增 Task `ctrl+x ctrl+b` 与 DiffDialog `j`/`k`（#394）。
+- 内置 `claude-api` 技能改为官方 2.1.311 内容并默认启用（`CLAUDE_CODE_DISABLE_CLAUDE_API_SKILL` 关闭），`managed-agents-secure` 子命令带官方的 PreToolUse 守卫；新增内置技能 `fewer-permission-prompts`、`run`、`run-skill-generator`；Skill 工具列表包含 `init`、`security-review` 等内置提示命令（#397、#399）。
+- 会话费用按官方 2.1.311 计算：1 小时 cache 写入按 2 倍输入价，`claude-sonnet-5-5` cache 读取为 $0.10/Mtok，`inference_geo` 为 `us` 时 token 费用乘 1.1，Opus 4.6/4.7 fast 为 $30/$150（#400）。
+- Teams 不再处理收件箱中的 `mode_set_request` 与 `team_permission_update`，与官方一致（#74）。
+- 子代理嵌套深度保持 5 层（官方为 3 层，按用户决定不改）。
+- 模型默认值对齐官方：first party 下 `haiku` 别名指向 `claude-haiku-5-5`（第三方提供商仍为 4.5），Haiku 5.5 使用 adaptive thinking、effort 与 1M 上下文和对应定价；Sonnet 5.5 默认 effort 为 medium；自定义 `ANTHROPIC_BASE_URL` 且无 Console key 时，辅助请求使用主循环模型（#361）。
+- `claude-sonnet-5-5` 与 `claude-haiku-5-5` 上关闭 thinking 的请求（主循环、子代理、辅助请求与 API key 检查）改为发送 `adaptive`，不再发送 `between_tools`，与官方 2.1.311 一致；修复 Haiku 5.5 子代理返回 400 `thinking.type.between_tools is not supported` 的问题（#429）。
+- 移除 `/vim` 与 `/pr-comments`，与官方一致（vim 模式仍在 `/config` 中切换）；`!` 命令执行后 Claude 默认会回复，可设 `respondToBashCommands: false` 关闭；Opus 5.5 与 Sonnet 5.5 默认最大输出 token 改为 128k，其余模型按官方目录取值（#366）。
+- 内置的 commit/PR 工作流指引、Bash 描述中的 `# Git` 段落与 git status 默认不再放入 system prompt（与官方默认开启不同，按用户决定）；设 `includeGitInstructions: true` 或 `CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS=0` 开启（#438）。
+- headless 与 SDK 会话在未信任的工作区中忽略项目 `.claude/settings.json`（cwd 为 home 时的用户设置除外）与 git 跟踪的 `.claude/settings.local.json` 里的 `permissions.allow` 和 `permissions.additionalDirectories`，并在 stderr 各提示一次，与官方 2.1.311 一致；deny 与 ask 规则照常生效。交互式会话由信任对话框列出这些条目，接受信任后不再像以前那样整个会话丢弃 git 跟踪的 local 规则（#450）。
+- 使用 ChatGPT 登录 OpenAI 时，默认模型（以及 `opus` 别名）改为账号 `/codex/models` 列表中按 `priority` 排在最前的模型，隐藏模型排在最后；没有可用缓存、API key 或网关列表时仍回退到 `gpt-5.6-sol`（#473）。
+- `-p` 与 SDK 会话默认开启 fork 模式（与官方 2.1.311 一致）：headless 下由子代理再启动的子代理在前台运行；`-p` 中的 agent 仍默认后台运行并保留 `run_in_background`（#479）。
+- 移除 `attribution` 与 `includeCoAuthoredBy` 设置，不再提供 Co-Authored-By 入口（按用户决定）；远程会话链接保留（#444）。
+- `-p`/SDK 中的斜杠命令对齐官方 2.1.311：仅交互可用的内置命令提示不可用，未知命令交给模型并附说明，本地命令错误作为 result 文本，`/compact` 拒绝模型从未回复的会话，`/config` 列出可用键，`/fast` 只在本会话开启，`/model` 不再写入 settings.json；斜杠命令的 UserPromptSubmit 使用新的 `prompt_id`；缺失的内置工具说明原因（已禁用、此处不可用或改用 Bash 的 `find`/`grep`），未知技能提示最接近的命令（#444）。
+- `/doctor`（别名 `/checkup`）改为官方 2.1.311 的体检技能，检查配置并提出修复，`/doctor prompt-audit` 转交 `claude-api` 的提示词审计；`claude doctor` CLI 仍打开原诊断界面（#412）。
+- token 估算按模型取值：Claude 5 等新 tokenizer 模型按 3 字节/token，旧模型仍为 4，影响 `/context`、自动压缩与阻塞阈值以及技能列表预算；技能列表预算为上下文窗口 × 字节/token × `skillListingBudgetFraction`（默认 0.01），单个描述上限为 `skillListingMaxDescChars`（默认 1536，原为 250 字符）（#412）。
+- Explore agent 使用官方提示词，模型改为 `inherit`（父模型高于 Opus 时上限为 `opus`，`CLAUDE_CODE_DISABLE_EXPLORE_INHERIT_CAP` 关闭上限），与官方一致；原先外部用户使用 haiku，费用会随主模型上升（#415）。
+- `/verify` 改为官方技能并对所有用户开放（#415）。
+- system prompt 的会话指引、`# Memory` 段落与新增的 `# Context management` 段落对齐官方 2.1.311，移除 `summarize_tool_results` 段落；Write/Edit 结果附上“file state is current in your context”说明；压缩回复缺少 `<summary>` 块时再请求一次；`claude -p --resume <id>` 不带 prompt 时报错退出（原先卡住），`--resume` 接受完整会话标题（#418）。
+- 工具与 harness 提示词精简并修正：Bash 描述从 2519 字符缩短，Monitor 描述去掉大部分示例，Read 改为只读需要的部分，agent 列表只在独立任务时建议并行启动，lean 提示说明提醒通过 `<system-reminder>` 送达（#421）。`ScheduleWakeup`、`EnterWorktree`、`ExitWorktree` 与 `CronCreate` 的描述改为紧凑条目、保留全部规则，Monitor 恢复 CI 轮询示例；Task 工具与 TodoWrite 描述每行一条规则（TodoWrite 由 9.1K 缩到 1.2K 字符），NotebookEdit 改为描述 `cell_id`，Terminal 写明全部 action 与 capture-pane 模式；Bash 描述增加简短的 `# Git` 段落（仅在要求时 commit/push、默认分支上先建分支、不用 `-i`、GitHub 操作用 `gh`），受 `includeGitInstructions` 与 `CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS` 控制；首个请求的 system 与工具定义约 45.6K 字符（官方 2.1.311 约 64.6K）（#424、#427）。
+- Terminal 的 `kill-pane` 与 TaskStop 不再给模型排队任务通知，只发 SDK `stopped` 事件，与 Bash 任务一致（#427）。
+- 会话能通过 Bash 或 PowerShell 读文件时，Write/Edit 不再要求先 Read；Bash 超时的 `sleep` 直接结束而不转后台，被结束的命令报告 “Command timed out”，因超时转入后台的命令会说明；Edit、Write 与 NotebookEdit 拒绝非 UTF-8 文本文件，Write 写入目录或设备时说明原因，无法读取头部的图片被拒绝；Read、Edit、Write 与 Bash 的常见错误输入在校验前自动修正；嵌入的 bfs/ugrep 路径不可读时忽略，不再把 `/$bunfs` 路径泄漏给子进程的环境变量（#447）。
+- Grep 与 Glob 遇到 ripgrep 拒绝的正则、文件类型或 glob 时报告错误，不再显示 “no matches”，Grep 也接受 `file_path` 与 `-l`/`-c`/`-r` 写法；WebFetch 说明无点主机名，SendMessage 的不可达提示、Monitor 拒绝空命令、CronCreate 的 “Every minute” 与下次运行时间与官方一致；`--max-turns`、`--agents`、`--json-schema`、`--max-budget-usd` 的非法值立即报错，`--settings` 找不到文件时显示解析后的路径（#450）。
+- `claude mcp list`/`mcp get` 显示连接失败原因，`url` 无效时给出提示，删除命令与未找到提示的文案与官方一致，`mcp reset-project-choices` 现在也清除 `settings.local.json` 中的批准；非 TTY 输出不再带同步更新控制序列，未变化的帧不再重复写出；stream-json 输入的坏行与缺少 role 的报错按类型和长度说明；未知的 `--agent` 直接报错，deny/ask 规则写了不存在的工具时给出警告，帮助与安装文案对齐官方（#455）。
+- 先读后写检查在所有权限模式下都跟随读权限：Read 有 deny/ask 规则时仍要求先读，路径级 ask 只在 bypass 下视为可读（Bash 仍算可读）；Edit 未读文件时不再声称文件已在上下文中，恢复过期读取时附上官方说明；Write 与 Grep 的输入被自动修正时在结果中说明；Glob/Grep 路径不存在或不是目录时以普通错误文本返回；因超时转入后台的 Bash 命令保留已有输出并提示可用 TaskStop 停止（#458）。
+- bypass 模式下写入工作目录外未读过的文件不再被误要求先读；Read 读空文件时提示文件为空而不是偏移越界，读到空行时照常显示带行号的空行；Agent 找不到子代理类型时按名称排序列出可用类型（#461）。
+- PreToolUse hook 拒绝调用时，模型只通过工具结果看到拒绝原因，不再额外收到重复的 hook 错误提示；PreToolUse hook 返回 `continue:false` 时先执行该调用再结束本轮（以前加载 Mods 时会拒绝该调用）；SDK result 的 `permission_denials` 也列出被 hook 拒绝的调用（#464、#469）。
+- OpenAI 的 token 交换、刷新与 device code 请求不再单独设置代理，改由全局代理 agent 处理并遵守 `NO_PROXY`，修复在 CONNECT 代理后登录返回 403（#467）；登录与刷新时从 id_token 保存 ChatGPT `account_id`，并在 Responses、用量、模型列表、Codex Apps 与 ssh 代理请求中发送 `chatgpt-account-id`；Usage 页的账号行改为 `OpenAI Account`，与 Status 页一致（#471）。
+- `--help` 采用官方 2.1.311 的排版（选项列宽上限 36、描述按宽度换行），隐藏 `--await-initialize`、`--channels`、`--dangerously-load-development-channels`、`--messaging-socket-path` 与 `--mcp-debug`（仍可使用）；`-p` 下 `--agents` 的值不是 JSON 对象时按文件读取；新增 `--prompt-suggestions`；`--fallback-model` 与 `--model` 相同时不再报错；空会话的 `/context` 不再计入消息 token（#475）。
+- 新增 `--autocompact <auto|tokens>` 覆盖本会话的自动压缩窗口；新增 `--forward-subagent-text`（也可用 `CLAUDE_CODE_FORWARD_SUBAGENT_TEXT` 或 SDK initialize 的 `forwardSubagentText`）转发前台子代理文本与嵌套子代理消息；默认构建包含 brief 模式，`--brief` 开启 SendUserMessage 与对话布局；Bash/PowerShell 前缀规则建议、帮助与示例改用 `cmd *` 写法；`-p` 结果新增 `queued_turn_count`，`--resume` 帮助注明可按名称恢复，`--model` 帮助列出 `fable`（#479）。
+- 新增 `claude purge [path]`（`--dry-run`、`-y`、`-i`、`--all`，输出与官方 2.1.311 一致），同时删除该项目在 SQLite 记忆检索索引中的记录；`claude respawn --all` 按从新到旧重启所有运行中的后台会话；新增 `--restricted`（或 `CLAUDE_CODE_RESTRICTED=1`）：除非 `--tools` 指定，否则移除执行代码的工具与 WebFetch，忽略用户、项目与 local 设置，拒绝 bypassPermissions，关闭自动记忆与 UDS 消息，改用 Glob/Grep，文件工具限制在工作目录内，设置与 `.git` 写入仍需人工批准（#482）。
+- 新增读屏模式：`--ax-screen-reader`、`CLAUDE_AX_SCREEN_READER` 或用户/managed/`--settings` 中的 `axScreenReader`（项目与 local 设置不能开启）；Ink 输出改为纯文本，不画边框、颜色与内边距，不进入全屏，行格式（`you:`/`claude:` 前缀、`warning:`/`effort:` 标签、提示符位置等）与官方 2.1.311 一致；`stop`/`kill`、`attach`、`logs`、`respawn` 的 `--help`、缺少 id 与未知选项输出官方的 `Usage:` 文本，`claude --help` 中 attach、stop、rm 的说明对齐官方（#485）。
+- `claude rm` 无法移除会话 worktree 时保留会话并报告 `remove_failed`，给出官方后续步骤；`--force-remove-worktree <id>` 删除目录并保留分支（tracked 文件有未提交改动或 git 已不认该 worktree 时不提供）；agent 视图连按 ctrl+x 走同一路径；rm 参数解析、错误文本与用法行对齐 2.1.311。`claude agents` 支持官方派发选项（model、effort、permission mode、`--agent` 等），并传给 agent 视图派发的每个会话，header/footer 显示对应值（#488）。
+- `/rename` 后输入框立即显示新会话名（此前不刷新）；`--name` 启动即显示会话名。`-p` 文本模式下，未加载的设置文件和被跳过的条目按 2.1.311 的文本输出到 stderr，JSON 输出模式不输出；`-p`、`--name` 帮助文本对齐官方。`claude rm` 帮助恢复为 `rm <id>`，缺少 id 时打印用法并以 1 退出（#491）。
+- `claude auto-mode`：`config` 展开 `"$defaults"`，输出与 2.1.311 一致；`defaults` 支持 `--label <prefix>`；`critique` 不再把只有 `$defaults` 的列表当作自定义规则，含 `$defaults` 的部分标为与默认规则并存；`reset` 列出被移除的键，并给出 `claude auto-mode config` 提示和 flag/managed 说明。主模型为 Haiku 时，auto mode 分类器与官方一样改用 Sonnet 5（#494）。
+- 阻塞上限的 token 估算改为统计实际发送的附件，mod 的 `prompt.attachment` 投影也计入；mod `command.run` hook 在 `/compact` 时恢复 `resultText`（SDK `result` 仍与 2.1.311 一样为空）；fork 模式提示词改用官方文本（`subagent_type: "fork"` 才创建 fork，其他取值启动无上下文的新 agent）；同步更新多处行为已变而断言过期的单测（#497）。
+- SDK 新增 `system/permission_denied` 事件，在调用未经询问就被拒绝时发送（`-p` 下无人应答的 ask 或规则 deny，stdio 下询问宿主前的 deny；hook 决定不报告）；`system/status` 的 `requesting` 只在 `--include-partial-messages` 时发送（#469）。
+- 同时存在 API key 与 OAuth token 时，`claude auth status` 报告 API key（与实际请求一致），并补上 `analyticsDisabled`、`projectsDirectory` 与 `configDirectory`；`mcp get`/`mcp login` 找不到服务器时列出已配置的服务器或提示 `claude mcp add`（#421）。
+
+#### Agent 与 Teams
+
+- leader 重新收到 teammate 的 idle 通知；idle 通知带上回复结果（最多 4000 字符），每批最多 16000 字符；被 TaskStop 的 agent 报告 killed 而不是 failed（#262、#270、#271、#279）。
+- 退出时同步结束后台 agent 的 shell 进程组，终端关闭时也会执行清理与 SessionEnd hook；恢复的 agent 保留最后一轮历史并使用自己的嵌套深度；TaskStop 可按名字或 `name@team` 停止 teammate（#265、#266、#267）。
+- 后台子代理自己的后台 Bash/Monitor 在其回合结束后继续运行，等待期间发送“is waiting on its own background work”提示（#273、#275）。
+- 通知行显示用时，回合行显示 `done <时间>` 与 `Waiting for N background agents`；Bash/PowerShell 只拒绝 25 秒及以上的开头 `sleep`；agent 通知在回合中途送达，SendMessage 恢复时返回 `Resuming agent <名字>`（#282、#287）。
+- 达到回合上限的 worker 报告“stopped at its N-turn limit”并带部分结果，worker 回合上限改为 500（#281）。
+- 有名字的 Agent 加入隐式的 `session-<id>` team；`/exit` 有后台工作时弹出确认；闲置 teammate 30 秒后从面板隐藏；SendMessage 接受 `name@team`；`--continue` 后可按 id 恢复 teammate；被结束的 agent 的工具调用补上结果（#294、#295、#298、#299、#300、#301、#305）。
+- coordinator 保留 Skill（只读加载）、ListAgents 与 Workflow，`CLAUDE_CODE_BRIEF` 与 `CLAUDE_CODE_COORDINATOR_EXTRA_TOOLS` 生效（#291、#297）。
+- 新设置 `agentSummary`（`full`/`short`/`off`，`/config` 中为 “Background agent summaries”）；summary 请求改为 `maxTurns: 1` 且不写 cache；agent 面板行显示 summary（#314、#318、#320）。
+- 任务通知使用官方格式（system-reminder 与 SYSTEM NOTIFICATION 标题，带 `subagent_tokens`）；teammate 发给 leader 的消息使用 peer 包装；workflow agent 以 `workflow-subagent` 运行并保留 ListAgents 与 Cron 工具；teammate 的其他 agent 提醒只注入一次（#336、#337、#341）。
+
+#### 权限
+
+- plan 模式（auto 可用时）下 cwd 内的写文件不再被直接放行；Bash/PowerShell 提示的 “Yes, and always allow access to …” 只添加规则与目录，不再把会话切到 acceptEdits（#351、#352）。
+- `sh -c` 中命中 deny 规则时询问；`env`/`command` 等包装的读取命令按读取处理；危险删除的包装命令增加 `exec`、`setsid`、`ionice`、`busybox`、`doas`、`pkexec`；相对路径 deny 规则同时匹配符号链接；plan 审批经过模式转换检查；Terminal 中用控制键编辑过的行需要询问（#71、#72、#73、#74、#75、#76）。
+- 权限提示文案对齐官方：Write 第 2 项写明将要应用的更新（如 “Yes, and switch to accept edits … for this session (shift+tab)”），ExitPlanMode 第 1 项为 “Yes, and switch to default (ask each time) for this session”，bypass 警告框不显示编号；Bash 提示在 default/acceptEdits 模式且 auto 可用时增加 “Yes, and switch to auto mode” 选项与 Tip，命令显示在虚线之间（#355）。
+- plan 模式即使在 auto 可用时也询问用户，不再交给分类器；以 bypass 启动的会话进入 plan 模式时提示其不会询问；Bash 提示的标签显示完整路径（#388）。只有从 default 进入 plan 模式时，Write 提示才提供切换到 accept edits 的选项（#408）。
+- rewind 不再通过符号链接、硬链接或非普通文件写入或删除被跟踪路径，恢复时以 `O_NOFOLLOW` 打开目标，被拒绝的路径记在 `skippedLinks` 并由 `rewind_files` 返回（#394）。
+- release 构建启用 `TREE_SITTER_BASH`，Bash 权限检查改用 AST 解析，与官方一致：if/循环/`||` 分支中可能被改的变量视为未知，`read`、`printf -v`、`mapfile` 等的目标变量视为未知；命令读取自己设置的变量时询问（精确命令规则与沙箱自动放行除外）；引号内的 `"$HOME"` 按真实 home 目录做路径检查；`command`、`builtin` 作为包装命令剥离（#402）。
+- Bedrock/Vertex 凭证错误最多刷新 2 次，无凭证的 `claude -p` 约 4 秒失败（原约 3 分钟）（#16）。
+
+#### Hooks
+
+- 新增 `PostToolBatch` 与 `UserPromptExpansion` 事件（#338）。
+- `effort` 只出现在带工具上下文的 hook 事件中，UserPromptSubmit 输入带 `session_title`；`--continue` 时 SessionStart 输入带 `seconds_since_last_response`、`context_tokens`、`prompt_cache_likely_expired` 与 `estimated_cache_write_usd`（#366）。
+- `-p`/SDK 中也触发 `MessageDisplay`；斜杠命令回合的 hook 输入带 `prompt_id`；Write 的 `tool_response` 带 `userModified`；Agent 结果带 `canContinueAgent`（#418）。
+- hook 输入补齐 `prompt_id`、PostToolUse `duration_ms`、TeammateIdle `agent_id`/`agent_type`、SendMessage `recipient_kind`；Stop 与 SubagentStop 输入带 `background_tasks` 与 `session_crons`（#335、#341、#353）。
+
+#### 记忆
+
+- SQLite 记忆模式下 SearchMemory 成为默认检索方式；中文提示也能召回，首个请求前即带上召回结果（#277、#286）。
+
+#### 界面
+
+- `/hooks` 改为按事件分组的平铺列表；`/theme` 支持 Auto（跟随终端）与自定义主题（`~/.claude/themes/<slug>.json`），主题目录变化自动重载；`/memory` 与 `/config` 的布局、按键与行项目对齐官方 2.1.311（#328、#333、#345、#348）。
+- `/tasks` 在 “Completed” 下列出已完成的后台 agent，面板立即隐藏它们；Workflow 调用显示描述与 “Completed in …” 结果行；`/context` 列表折叠到 `/context all`（#343）。
+- 非全屏模式下连续 2 条及以上的 Bash 命令折叠为一组（#292）。
+- 权限提示上按 Esc 会中止当前回合；修复多个对话框的缩进、换行与空状态；`/sandbox` 仅依赖视图显示按键提示；Write 结果写作 “Wrote 1 line”（#307、#308、#310、#355）。
+- default 模式的 footer 显示 “⏸ manual mode on”；回合等待行不再把 workflow 自己的 agent 计为后台 agent；auth 冲突提示使用官方文案（#355）。
+- 不带参数的 `/effort` 打开 effort 滑块；对话中途 `/model` 切换模型时弹出 “Switch model?” 确认，提示当前模型的 cache 将失效；`CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` 下 `/feedback` 仍列出并说明被关闭的原因；Markdown 正文中形似 HTML 的标签按原样显示（#366、#375）。
+- 会话标题使用官方的命名提示，交互会话生成的标题写入 transcript，`/resume` 与会话列表可见；`/ide` 等待扩展安装完成并报告失败（#362、#365）。
+- 斜杠命令不再预选模糊匹配项，没有选中建议时 Enter 提交输入的命令，未知命令使用官方警告；命令 stderr 以纯文本显示、不带 `Error:` 前缀；`/copy` 写入每用户的 Claude 临时目录；`/terminal-setup` 与 `/mcp` 空状态文案对齐官方（#366）。
+- `/hooks` 的命令列不再换行；`/clear` 不再显示 `⎿ (no content)`；`/fast` 去掉可用性限制，网关下也打开对话框；`/ide` 安装失败使用官方格式；权限、沙箱、resume、后台任务、export、workflows 与 shell 模式的对话框标题与 footer 对齐官方（#382）。
+- `/btw` 支持 `c` 复制与 `f` 把旁答 fork 为后台 agent；`/skills` 菜单、`/model` 仅本会话选择与选择器文案、`/status` 的认证/策略行与安装诊断、`/clear <name>` 为旧会话命名、`/config` 的 thinking 锁定说明与 Worktree base ref 行，以及 effort、context、help、resume、rewind、插件界面的文案与布局对齐官方；`/usage` 与 `/cost` 报告主线程的 prompt cache 统计（#384）。`/cost` 只对真实订阅用户显示订阅提示，其余情况显示费用合计（#433）。
+- 连按两次 `←` 打开 agent 视图，`/config` 增加对应行；会话标题只根据用户输入生成；压缩后恢复的会话不再重复公布技能列表（#388）。
+- 新增 `/powerup`（10 节官方功能课程，进度写入 `powerupsUnlocked`）；`/config` 新增 `defaultToAgentsView`（BG_SESSIONS 构建中裸 `claude` 默认打开 agent 视图）与 `externalEditorContext`（`$EDITOR` 缓冲区开头以注释附上 Claude 上一条回复，保存时去掉）；`/plugin` Discover 在有 2 个及以上 marketplace 时显示标签行，`ctrl+s` 切换（#391）。
+- Linux binary 内嵌 `apply-seccomp`，`/sandbox` 依赖项显示 `seccomp filter: installed`，与官方一致（#391）。
+- BG_SESSIONS 构建中输入框为空且空闲时 footer 显示 `← for agents`，遵循 `leftArrowOpensAgents`（#394）。
+- 选项文字换行时，Select 的指示符与序号不再被挤压；`/resume` 选择器以 Pane 显示，`Space` 预览，footer 末尾不再多出分隔符（#408）。
+- `/context` 网格不再隔行留空（yoga 计算 flex basis 时扣除子节点的交叉轴 margin）；总数按官方计算并显示 Messages 分类；非全屏模式下列出技能树（含 Built-in 分组、`├`/`└` 与 `~480 tokens` 格式）；`/status`、`/usage`、`/cost` 按 Esc 显示 `Settings dialog dismissed`；`← for agents` 提示在会话打开 10 秒后隐藏；`/security-review` 使用官方允许的工具，在非 git 目录中拒绝并提示 `cd`（#412）。
+- 命令补全按官方算法搜索：名称、名称片段与别名模糊匹配，描述只按词首匹配；行布局对齐官方（描述列紧跟名称列、长描述换到缩进的第二行、按行计算窗口、输入内容加粗、workflow 标注 `[dynamic workflow]`）；内置技能使用官方的短菜单描述与注册顺序（#415）。
+- `/clear` 后的第一条输入重新生成会话标题；本地命令 caveat 使用官方文案；终端高度不少于 44 行时 `/help` 显示 `/powerup` 提示（#397）。
+
+#### Agent SDK
+
+- 子代理消息带官方字段与结果摘要，支持 `set_mcp_permission_mode_override`、`tool_result_meta`、`askForTools` 校验，`task_notification` 顺序与官方一致（#88、#158）。
+- `mcp_status` 报告每个服务器的 `transport`（#394）。
+- 新增 `mcp_call` 与 `register_repo_root` control request；`set_model` 返回 `{ model }`，`side_question` 响应带 `synthetic`，`message_rated` 校验 `cleared`（#421）。
+- `compact_metadata` 带 `post_tokens`、`duration_ms` 与 `preserved_messages`，压缩后的 `status: null` 带 `compact_result`/`compact_error`，每次 API 请求前发送 `status: "requesting"`；本地命令的 result 为 `num_turns: 0`，`/compact` 的 result 为空字符串（#433）。
+- result 带 `terminal_reason`、`ttft_ms`、`api_error_status`、`result_index`、`fast_mode_disabled_reason` 与 `local_command`；assistant 消息带 `request_id` 与 `timestamp`，`message_start` 流事件带 `ttft_ms`；`modelUsage` 区分 5 分钟与 1 小时 cache 写入；新增 `system/thinking_tokens` 估算消息，字段与 SDK 0.3.311 一致（#438）。`get_context_usage` 的 `messageBreakdown` 带 `redirectedContextTokens` 与 `unattributedTokens`；`get_hooks_listing` 只在 safe mode 下返回 `safeMode`（#441）。
+- `system/init`、`initialize` 与 `get_context_usage` 补齐官方 2.1.311 字段（如 `analytics_disabled`、`claude_code_version`、`current_permission_mode`、`mcp_servers[].source`、分类 `id`）；标题等辅助请求不再发送 `thinking` 参数（#366）。
+- `initialize`、`reload_plugins` 与 `system/init` 的命令、agent 与模型字段对齐官方 2.1.311（如 `aliases`、`builtin`、`terminal_slash_commands`、`capabilities`、`fast_mode_disabled_reason`、`session_state`、`supportsThinkingOff`）；`get_context_usage` 与 `/context` 增加 “MCP server instructions” 行；`-p` 与 SDK 支持 `/model`、`/effort`、`/fast`、`/color`、`/rename`、`/config key=value`、`/reload-plugins` 与 `/reload-skills`，headless `/model` 对下一轮生效（#415）。
+
+#### 已知缺口
+
+- `src/services/compact/autoCompact.contextWindow.test.ts` 与 `idleCompaction.test.ts` 的部分用例依赖本机环境变量与凭证，在云容器中失败，改动前后一致，不影响运行时行为。
+- 后台 Workflow 的结果行在完成后显示 “Completed …”，官方保持 “/workflows to view dynamic workflow runs”；两者渲染逻辑相同，差异来自 task 保留时长。#79（工作区 MCP 审批存储、插件仓库分级）与 #366 的 `display: "updates"`/`clear_thinking`、`/stats` 界面移植留到后续版本。
+
+### 测试覆盖
+
+- 每个 PR 在重建的 binary 上以 tmux 与脚本化假 Messages API 对照官方 2.1.311；多轮对照（项目共享目录 `research/multiturn-2026-10-29/` 与 `research/multiturn-2026-10-30-evidence/`）：假 API 37 步 dev 37/37 ×5、官方 35/35 ×5；权限模式转换 36 步修复后 36/36，与官方一致；真实模型 13 轮工具命中 dev 39/39、官方 36/39；Agent SDK probe 两侧均 32/33。
+- PR CI：Windows e2e、macOS Seatbelt e2e、Linux 沙箱测试、官方对照与 Linux x64/arm64 搜索工具构建（#331），以及 eslint（#405）。
+- 发版前在 `dev` 上运行 `make release-check` 与 `make build`，并以重建的 binary 跑过 SIGINT SessionEnd、`CI=true` 无凭证 `-p` 与 team shutdown 三项回归。
+
 ## 2026-10-27 - v2.1.295 - MCP v2 SDK、Windows 原生沙箱、沙箱网络与工具提示词对齐官方 2.1.311、/code-review 技能、agent 面板、DO_NOT_TRACK
 
 ### 版本状态

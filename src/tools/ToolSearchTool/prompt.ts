@@ -3,6 +3,8 @@ import { isReplBridgeActive } from '../../bootstrap/state.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../services/analytics/growthbook.js'
 import type { Tool } from '../../Tool.js'
 import { AGENT_TOOL_NAME } from '../AgentTool/constants.js'
+import { SEND_MESSAGE_TOOL_NAME } from '../SendMessageTool/constants.js'
+import { isTeammate } from '../../utils/teammate.js'
 
 // Dead code elimination: Brief tool name only needed when KAIROS or KAIROS_BRIEF is on
 /* eslint-disable @typescript-eslint/no-require-imports */
@@ -82,6 +84,10 @@ export function isDeferredTool(tool: Tool, override?: boolean): boolean {
     const m = require('../AgentTool/forkSubagent.js') as ForkMod
     if (m.isForkSubagentEnabled()) return false
   }
+
+  // A teammate reports to its lead through SendMessage; official 2.1.311 loads
+  // it up front for teammates instead of behind a ToolSearch round trip.
+  if (tool.name === SEND_MESSAGE_TOOL_NAME && isTeammate()) return false
 
   // Brief is the primary communication channel whenever the tool is present.
   // Its prompt contains the text-visibility contract, which the model must

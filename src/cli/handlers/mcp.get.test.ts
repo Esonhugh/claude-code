@@ -1,5 +1,6 @@
 import { describe, expect, mock, spyOn, test } from 'bun:test'
-import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises'
+import figures from 'figures'
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -86,7 +87,9 @@ async function runChild(): Promise<void> {
     ...client,
     connectToServer: async (name: string) => {
       connected.push(name)
-      return { type: 'failed', name }
+      return name === 'typeless'
+        ? { type: 'failed', name, error: 'Connection closed' }
+        : { type: 'failed', name }
     },
   }))
   const shutdown = await import('../../utils/gracefulShutdown.js')
@@ -138,7 +141,7 @@ async function runChild(): Promise<void> {
     const pending = await get('pending')
     expect(pending.output).toContain('Status: ⏸ Pending approval')
     const rejected = await get('rejected')
-    expect(rejected.output).toContain('Status: ✗ Rejected')
+    expect(rejected.output).toContain(`Status: ${figures.cross} Rejected`)
     expect(connected).toEqual([])
   })
 
@@ -151,7 +154,8 @@ async function runChild(): Promise<void> {
   test('policy-denied servers are not found', async () => {
     const denied = await get('denied')
     expect(denied.exitCodes).toEqual([1])
-    expect(denied.errors).toContain('No MCP server found with name: denied')
+    expect(denied.errors).toContain('No MCP server named "denied". Configured servers: ')
+    expect(denied.errors).not.toContain('denied,')
     expect(connected).toEqual([])
   })
 
@@ -163,6 +167,16 @@ async function runChild(): Promise<void> {
     expect(typeless.output).toContain('Args: typeless')
   })
 
+  test('a failed connection shows its reason and an unquoted remove command like 2.1.311', async () => {
+    const typeless = await get('typeless')
+    expect(typeless.output).toContain(
+      `Status: ${figures.cross} Failed to connect\n  Issue: Connection closed`,
+    )
+    expect(typeless.output).toContain(
+      'To remove this server, run: claude mcp remove typeless -s project',
+    )
+  })
+
   test('a per-server timeout is shown, flagged when below the minimum', async () => {
     const timed = await get('timed')
     expect(timed.output).toContain(
@@ -170,5 +184,22 @@ async function runChild(): Promise<void> {
     )
     const typeless = await get('typeless')
     expect(typeless.output).not.toContain('Timeout:')
+  })
+
+  test('reset-project-choices clears approvals stored in settings.local.json', async () => {
+    const { mcpResetChoicesHandler } = await import('./mcp.js')
+    const log = spyOn(console, 'log').mockImplementation(() => {})
+    const exit = spyOn(process, 'exit').mockImplementation((() => {}) as typeof process.exit)
+    try {
+      await mcpResetChoicesHandler()
+    } finally {
+      log.mockRestore()
+      exit.mockRestore()
+    }
+    const local = JSON.parse(
+      await readFile(join(process.cwd(), '.claude', 'settings.local.json'), 'utf8'),
+    )
+    expect(local.enabledMcpjsonServers).toBeUndefined()
+    expect(local.disabledMcpjsonServers).toBeUndefined()
   })
 }

@@ -19,6 +19,7 @@ import {
 } from './workflowScriptPersistence.js'
 import { shouldEnableWorkflows, workflowSizeGuidelinePrompt } from './workflowFeatureFlags.js'
 import { WORKFLOW_TOOL_NAME } from './constants.js'
+import { renderToolResultMessage } from './UI.js'
 import { AGENT_TOOL_NAME } from '../AgentTool/constants.js'
 import { WORKFLOW_AUTHORING_SKILL_NAME } from '../../skills/bundled/workflowAuthoring.js'
 
@@ -115,6 +116,18 @@ function inlineWorkflowName(script: string): string | undefined {
     : undefined
 }
 
+function workflowScriptLabel(script: string): string {
+  if (hasWorkflowScriptMeta(script)) {
+    try {
+      return parseWorkflowScript(script).meta.description
+    } catch {
+      // Unparsable meta: label the call with its first line below.
+    }
+  }
+  const firstLine = script.split('\n').find(line => line.trim())?.trim() ?? ''
+  return firstLine.length > 60 ? `${firstLine.slice(0, 59)}…` : firstLine
+}
+
 function resolveCwd(context: WorkflowFacadeToolContext | unknown): string {
   if (
     context &&
@@ -177,9 +190,8 @@ export function normalizeWorkflowFacadeInput(
 
 export const WorkflowFacadeTool = buildTool({
   name: WORKFLOW_TOOL_NAME,
-  searchHint: 'run workflow scripts',
+  searchHint: 'orchestrate subagents with deterministic JavaScript workflow',
   maxResultSizeChars: 100_000,
-  shouldDefer: true,
   async description() {
     return 'Run an official-compatible workflow script or saved workflow'
   },
@@ -278,13 +290,22 @@ Before writing a script, load the \`${WORKFLOW_AUTHORING_SKILL_NAME}\` skill —
       updatedInput: await workflowPermissionPreviewInput(previewInput, cwd),
     }
   },
+  // Official 2.1.311 labels: the script's meta description, or
+  // "dynamic workflow: <name>" for a saved one.
   renderToolUseMessage(input) {
     const normalized = normalizeWorkflowFacadeInput(input as WorkflowFacadeInput)
-    if (normalized.kind === 'saved-workflow') return `Workflow ${normalized.selector}`
-    if (normalized.kind === 'script-path') return `Workflow ${normalized.scriptPath}`
-    if (normalized.kind === 'plan') return 'Workflow plan'
-    return `Workflow ${inlineWorkflowName(normalized.script) ?? 'inline script'}`
+    if (normalized.kind === 'plan') return 'plan'
+    const script = 'script' in normalized ? normalized.script : undefined
+    const label =
+      normalized.kind === 'saved-workflow'
+        ? `dynamic workflow: ${normalized.selector}`
+        : normalized.kind === 'script-path'
+          ? normalized.scriptPath
+          : undefined
+    if (!script) return label ?? ''
+    return label ? `${label} · ${workflowScriptLabel(script)}` : workflowScriptLabel(script)
   },
+  renderToolResultMessage,
   async call(input, context, canUseTool, assistantMessage) {
     const cwd = resolveCwd(context)
     const normalized = normalizeWorkflowFacadeInput(input as WorkflowFacadeInput)

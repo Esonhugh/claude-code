@@ -29,7 +29,10 @@ import {
   filterUnresolvedToolUses,
   filterWhitespaceOnlyAssistantMessages,
 } from '../../utils/messages.js'
-import { getAgentModel } from '../../utils/model/agent.js'
+import {
+  getAgentDefinitionModel,
+  getAgentModel,
+} from '../../utils/model/agent.js'
 import { getRuntimeMainLoopModel } from '../../utils/model/model.js'
 import { doesMostRecentAssistantMessageExceed200k } from '../../utils/tokens.js'
 import { getQuerySourceForAgent } from '../../utils/promptCategory.js'
@@ -38,6 +41,7 @@ import {
   PLAN_MODE_DISABLED_MESSAGE,
 } from '../../utils/planModeV2.js'
 import {
+  flushSessionStorage,
   getAgentTranscript,
   readAgentMetadata,
 } from '../../utils/sessionStorage.js'
@@ -51,7 +55,7 @@ import {
   runAsyncAgentLifecycle,
 } from './agentToolUtils.js'
 import { GENERAL_PURPOSE_AGENT } from './built-in/generalPurposeAgent.js'
-import { FORK_AGENT, isForkSubagentEnabled } from './forkSubagent.js'
+import { FORK_AGENT, isForkAsyncDefault } from './forkSubagent.js'
 import type { AgentDefinition } from './loadAgentsDir.js'
 import { isBuiltInAgent } from './loadAgentsDir.js'
 import { runAgent } from './runAgent.js'
@@ -95,7 +99,9 @@ export async function resumeAgentBackground({
     }
   }
   refuseUserStop()
-  const startTime = Date.now()
+  // Like official 2.1.311, a resumed agent reports time since it first started.
+  const previous = toolUseContext.getAppState().tasks[agentId]
+  const startTime = isLocalAgentTask(previous) ? previous.startTime : Date.now()
   const inline = delivery === 'reply' && isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS)
   const appState = toolUseContext.getAppState()
   // In-process teammates get a no-op setAppState; setAppStateForTasks
@@ -103,6 +109,9 @@ export async function resumeAgentBackground({
   const rootSetAppState =
     toolUseContext.setAppStateForTasks ?? toolUseContext.setAppState
 
+  // A parked owner is woken as soon as its child reports, often while its own
+  // last turn is still queued for disk; read the transcript after that write.
+  await flushSessionStorage()
   const [transcript, meta] = await Promise.all([
     getAgentTranscript(asAgentId(agentId)),
     readAgentMetadata(asAgentId(agentId)),
@@ -282,7 +291,7 @@ export async function resumeAgentBackground({
     exceeds200kTokens: appState.toolPermissionContext.mode === 'plan' &&
       doesMostRecentAssistantMessageExceed200k(toolUseContext.messages),
   }) : getAgentModel(
-    selectedAgent.model,
+    getAgentDefinitionModel(selectedAgent, toolUseContext.options.mainLoopModel),
     toolUseContext.options.mainLoopModel,
     meta?.model,
     permissionMode,
@@ -321,7 +330,11 @@ export async function resumeAgentBackground({
       ...resumedMessages,
       createUserMessage({ content: prompt, isMeta: promptIsMeta || undefined }),
     ],
-    toolUseContext: workerContext,
+    // The waking context belongs to the caller; keep this agent's own depth.
+    toolUseContext: {
+      ...workerContext,
+      options: { ...workerContext.options, subagentDepth: meta?.spawnDepth ?? 1 },
+    },
     canUseTool,
     isAsync: true,
     spawnedBySkill: skillAttribution,
@@ -436,6 +449,7 @@ export async function resumeAgentBackground({
               abortController: agentBackgroundTask.abortController!,
             },
             onCacheSafeParams,
+            keepBackgroundShells: true,
           }),
         metadata,
         description: uiDescription,
@@ -455,7 +469,7 @@ export async function resumeAgentBackground({
         agentIdForCleanup: agentId,
         enableSummarization:
           isCoordinatorMode() ||
-          isForkSubagentEnabled() ||
+          isForkAsyncDefault() ||
           getSdkAgentProgressSummariesEnabled(),
         getWorktreeResult: getWorktreeResult ?? (async () =>
           resumedWorktreePath ? { worktreePath: resumedWorktreePath } : {}),

@@ -64,6 +64,29 @@ try {
     { homeDir },
   )
   assert.equal(authModule.getOpenAIAuthInfo.cache.get(undefined), undefined)
+
+  // Like Codex CLI, persist tokens.account_id from the id_token claim so the
+  // chatgpt-account-id header is sent and Codex CLI can share the file.
+  const idPayload = Buffer.from(
+    JSON.stringify({
+      'https://api.openai.com/auth': { chatgpt_account_id: 'acct-from-id-token' },
+    }),
+  ).toString('base64url')
+  await saveOpenAIAuth(
+    {
+      auth_mode: 'chatgpt',
+      tokens: {
+        id_token: `header.${idPayload}.signature`,
+        access_token: 'claim-access-token',
+      },
+      last_refresh: '2026-06-20T00:00:02.000Z',
+    },
+    { homeDir },
+  )
+  assert.equal(
+    JSON.parse(await readFile(authPath, 'utf-8')).tokens.account_id,
+    'acct-from-id-token',
+  )
   assert.equal(authModule.getOpenAIApiKey.cache.get(undefined), undefined)
 
   await saveOpenAIApiKey('sk-test-api-key', { homeDir })

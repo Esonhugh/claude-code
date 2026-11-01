@@ -1,6 +1,6 @@
 import figures from 'figures'
 import * as React from 'react'
-import { Box, Text } from 'src/ink.js'
+import { Box, isScreenReaderEnabled, Text } from 'src/ink.js'
 import {
   AGENT_COLOR_TO_THEME_COLOR,
   AGENT_COLORS,
@@ -60,7 +60,7 @@ function PromptChar({
 
   return (
     <Text color={color} dimColor={isLoading}>
-      {figures.pointer}&nbsp;
+      {isScreenReaderEnabled() ? '$' : figures.pointer}&nbsp;
     </Text>
   )
 }

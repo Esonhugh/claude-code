@@ -637,44 +637,6 @@ export function teammatesKeepOtherMode(
 }
 
 /**
- * Sets multiple team members' permission modes in a single atomic operation.
- * Avoids race conditions when updating multiple teammates at once.
- * @param teamName - The name of the team
- * @param modeUpdates - Array of {memberName, mode} to update
- */
-export async function setMultipleMemberModes(
-  teamName: string,
-  modeUpdates: Array<{ memberName: string; mode: PermissionMode }>,
-): Promise<boolean> {
-  try {
-    return await mutateTeamFileAsync(teamName, {
-      mutation: 'setMultipleMemberModes',
-      mutate(teamFile) {
-        const updateMap = new Map(modeUpdates.map(u => [u.memberName, u.mode]))
-        let anyChanged = false
-
-        for (const member of teamFile.members) {
-          const newMode = updateMap.get(member.name)
-          if (newMode !== undefined && member.mode !== newMode) {
-            member.mode = newMode
-            anyChanged = true
-          }
-        }
-
-        if (anyChanged) {
-          logForDebugging(
-            `[TeammateTool] Set ${modeUpdates.length} member modes in team ${teamName}`,
-          )
-        }
-        return { result: true, changed: anyChanged }
-      },
-    })
-  } catch {
-    return false
-  }
-}
-
-/**
  * Sets a team member's active status.
  * Called when a teammate becomes idle (isActive=false) or starts a new turn (isActive=true).
  * @param teamName - The name of the team

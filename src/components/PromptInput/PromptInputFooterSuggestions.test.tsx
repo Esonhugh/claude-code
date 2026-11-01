@@ -28,7 +28,10 @@ async function renderMenu(rows: number, items: SuggestionItem[], selected = 0) {
   )
   try {
     await new Promise(resolve => setTimeout(resolve, 50))
-    return stripAnsi(output).split('\n').filter(line => line.includes('/cmd'))
+    const lines = stripAnsi(output).split('\n')
+    const last = lines.findLastIndex(line => line.includes('/cmd'))
+    const first = lines.findIndex(line => line.includes('/cmd'))
+    return first === -1 ? [] : lines.slice(first, last + 2).filter(line => line.trim() !== '')
   } finally {
     instance.unmount()
     instance.cleanup()
@@ -57,4 +60,34 @@ test('file rows get the same pointer gutter', async () => {
   const stdout = await renderMenu(30, files.map(f => ({ ...f, displayText: `/cmd ${f.displayText}` })), 0)
   expect(stdout[0]).toStartWith(`${figures.pointer} + /cmd src/alpha.ts`)
   expect(stdout[1]).toMatch(/^ {2}\+ \/cmd src\/beta\.ts/)
+})
+
+// Official 2.1.311: the description column starts right after the name column
+// (pointer included), long descriptions wrap onto a second indented row, and
+// the window counts rows rather than items.
+test('long descriptions wrap onto a second row under the description column', async () => {
+  const long = 'word '.repeat(40).trim()
+  const lines = await renderMenu(30, [
+    { id: 'cmd-a', displayText: '/cmda', description: long },
+    { id: 'cmd-b', displayText: '/cmdb', description: 'short' },
+  ])
+  expect(lines).toHaveLength(3)
+  const column = lines[0]!.indexOf('word')
+  expect(column).toBe('/cmda'.length + 5)
+  expect(lines[1]!.indexOf('word')).toBe(column)
+  expect(lines[1]!.trimEnd()).toEndWith('…')
+  expect(lines[2]!.indexOf('short')).toBe(column)
+})
+
+test('the window counts wrapped rows against the height', async () => {
+  const long = 'word '.repeat(40).trim()
+  const items = Array.from({ length: 10 }, (_, i) => ({
+    id: `cmd-${i}`,
+    displayText: `/cmd${i}`,
+    description: long,
+  }))
+  // 12 rows → 6 visible rows → 3 two-row items.
+  const lines = await renderMenu(12, items)
+  expect(lines).toHaveLength(6)
+  expect(lines.filter(line => line.includes('/cmd'))).toHaveLength(3)
 })

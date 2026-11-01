@@ -73,6 +73,7 @@ export function BypassPermissionsModeDialog({
       </Box>
 
       <Select
+        hideIndexes
         options={[
           { label: onDecline ? 'No' : 'No, exit', value: 'decline' },
           { label: 'Yes, I accept', value: 'accept' },

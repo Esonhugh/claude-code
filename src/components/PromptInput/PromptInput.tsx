@@ -1,4 +1,5 @@
 import { feature } from 'bun:bundle'
+import { spawnSync } from 'child_process'
 import chalk from 'chalk'
 import * as path from 'path'
 import * as React from 'react'
@@ -11,6 +12,9 @@ import {
   useSyncExternalStore,
 } from 'react'
 import { useNotifications } from 'src/context/notifications.js'
+import { detachAttachedClients, getSelfCommand } from 'src/daemon/protocol.js'
+import instances from 'src/ink/instances.js'
+import { isBgSession } from 'src/utils/concurrentSessions.js'
 import { useCommandQueue } from 'src/hooks/useCommandQueue.js'
 import {
   type IDEAtMentioned,
@@ -66,7 +70,7 @@ import { useTerminalSize } from '../../hooks/useTerminalSize.js'
 import { useTypeahead } from '../../hooks/useTypeahead.js'
 import type { BorderTextOptions } from '../../ink/render-border.js'
 import { stringWidth } from '../../ink/stringWidth.js'
-import { Box, type ClickEvent, type Key, Text, useInput } from '../../ink.js'
+import { Box, type ClickEvent, isScreenReaderEnabled, type Key, Text, useInput } from '../../ink.js'
 import { useOptionalKeybindingContext } from '../../keybindings/KeybindingContext.js'
 import { getShortcutDisplay } from '../../keybindings/shortcutFormat.js'
 import {
@@ -169,7 +173,10 @@ import { logPermissionModeChange } from '../../utils/permissions/PermissionUpdat
 import { transitionPermissionMode } from '../../utils/permissions/permissionSetup.js'
 import { getPlatform } from '../../utils/platform.js'
 import type { ProcessUserInputContext } from '../../utils/processUserInput/processUserInput.js'
-import { editPromptInEditor } from '../../utils/promptEditor.js'
+import {
+  editPromptInEditor,
+  getLastResponseText,
+} from '../../utils/promptEditor.js'
 import { findBtwTriggerPositions } from '../../utils/sideQuestion.js'
 import { findSlashCommandPositions } from '../../utils/suggestions/commandSuggestions.js'
 import {
@@ -339,6 +346,7 @@ type Props = {
 // Bottom slot has maxHeight="50%"; reserve lines for footer, border, status.
 const PROMPT_FOOTER_LINES = 5
 const MIN_INPUT_VIEWPORT_LINES = 3
+const LEFT_ARROW_CONFIRM_MS = 3000
 
 function PromptInput({
   debug,
@@ -1691,8 +1699,10 @@ function PromptInput({
         suggestionsState.suggestions.length > 0 &&
         suggestionsState.suggestions.every(s => s.description === 'directory')
 
+      // With nothing selected (a fuzzy-only match), Enter submits what was typed.
       if (
         suggestionsState.suggestions.length > 0 &&
+        suggestionsState.selectedSuggestion >= 0 &&
         !isSubmittingSlashCommand &&
         !hasDirectorySuggestions
       ) {
@@ -1938,6 +1948,55 @@ function PromptInput({
     () => onShowMessageSelector(),
   )
 
+  // Like 2.1.311: ← twice within 3s at an empty idle prompt opens the agents
+  // view (a bg session detaches back to it instead).
+  const leftArrowArmedAtRef = useRef(0)
+  const pressLeftForAgents = useCallback(() => {
+    const now = Date.now()
+    if (now - leftArrowArmedAtRef.current > LEFT_ARROW_CONFIRM_MS) {
+      leftArrowArmedAtRef.current = now
+      addNotification({
+        key: 'left-arrow-agents',
+        text: isBgSession()
+          ? 'Press ← again to go back to agents'
+          : 'Press ← again to open agents',
+        priority: 'immediate',
+        timeoutMs: LEFT_ARROW_CONFIRM_MS,
+      })
+      return
+    }
+    leftArrowArmedAtRef.current = 0
+    removeNotification('left-arrow-agents')
+    if (isBgSession()) {
+      detachAttachedClients()
+      return
+    }
+    const ink = instances.get(process.stdout)
+    if (!ink) return
+    const [command, ...args] = getSelfCommand()
+    const run = () =>
+      spawnSync(command!, [...args, 'agents'], { stdio: 'inherit' })
+    if (isFullscreenEnvEnabled()) {
+      ink.enterAlternateScreen()
+      try {
+        run()
+      } finally {
+        ink.exitAlternateScreen()
+      }
+      return
+    }
+    // The agents view saves and restores the main screen itself, so the
+    // prompt frame and cursor come back exactly where Ink left them.
+    ink.pause()
+    ink.suspendStdin()
+    try {
+      run()
+    } finally {
+      ink.resumeStdin()
+      ink.resume()
+    }
+  }, [addNotification, removeNotification])
+
   // Function to get the queued command for editing. Returns true if commands were popped.
   const popAllCommandsFromQueue = useCallback((): boolean => {
     const result = popAllEditable(input, cursorOffset)
@@ -2020,7 +2079,13 @@ function PromptInput({
 
     try {
       // Pass pastedContents to expand collapsed text references
-      const result = await editPromptInEditor(input, pastedContents)
+      const result = await editPromptInEditor(
+        input,
+        pastedContents,
+        getGlobalConfig().externalEditorContext
+          ? getLastResponseText(messages)
+          : undefined,
+      )
 
       if (result.error) {
         addNotification({
@@ -2055,6 +2120,7 @@ function PromptInput({
     input,
     cursorOffset,
     pastedContents,
+    messages,
     pushToBuffer,
     trackAndSetInput,
     addNotification,
@@ -2775,6 +2841,17 @@ function PromptInput({
       }
     }
 
+    if (
+      feature('BG_SESSIONS') &&
+      key.leftArrow &&
+      !input &&
+      !isLoading &&
+      viewSelectionMode !== 'viewing-agent' &&
+      getGlobalConfig().leftArrowOpensAgents !== false
+    ) {
+      pressLeftForAgents()
+    }
+
     if (key.return && helpOpen) {
       setHelpOpen(false)
     }
@@ -3224,6 +3301,68 @@ function PromptInput({
     <TextInput {...baseProps} />
   )
 
+  const inputRow = swarmBanner ? (
+    <>
+      <Text color={swarmBanner.bgColor}>
+        {swarmBanner.text ? (
+          <>
+            {'─'.repeat(
+              Math.max(0, columns - stringWidth(swarmBanner.text) - 4),
+            )}
+            <Text backgroundColor={swarmBanner.bgColor} color="inverseText">
+              {' '}
+              {swarmBanner.text}{' '}
+            </Text>
+            {'──'}
+          </>
+        ) : (
+          '─'.repeat(columns)
+        )}
+      </Text>
+      <Box flexDirection="row" width="100%">
+        <PromptInputModeIndicator
+          mode={mode}
+          isLoading={isLoading}
+          viewingAgentName={viewingAgentName}
+          viewingAgentColor={viewingAgentColor}
+          viewingAgentThemeColor={viewingAgentThemeColor}
+        />
+        <Box flexGrow={1} flexShrink={1} onClick={handleInputClick}>
+          {textInputElement}
+        </Box>
+      </Box>
+      <Text color={swarmBanner.bgColor}>{'─'.repeat(columns)}</Text>
+    </>
+  ) : (
+    <Box
+      flexDirection="row"
+      alignItems="flex-start"
+      justifyContent="flex-start"
+      borderColor={getBorderColor()}
+      borderStyle="round"
+      borderLeft={false}
+      borderRight={false}
+      borderBottom
+      width="100%"
+      borderText={buildBorderText(
+        showFastIcon ?? false,
+        showFastIconHint,
+        fastModeCooldown,
+      )}
+    >
+      <PromptInputModeIndicator
+        mode={mode}
+        isLoading={isLoading}
+        viewingAgentName={viewingAgentName}
+        viewingAgentColor={viewingAgentColor}
+        viewingAgentThemeColor={viewingAgentThemeColor}
+      />
+      <Box flexGrow={1} flexShrink={1} onClick={handleInputClick}>
+        {textInputElement}
+      </Box>
+    </Box>
+  )
+
   return (
     <Box ref={promptAnchor} flexDirection="column" marginTop={briefOwnsGap ? 0 : 1}>
       {!isFullscreenEnvEnabled() && <PromptInputQueuedCommands />}
@@ -3233,67 +3372,7 @@ function PromptInput({
         </Box>
       )}
       <PromptInputStashNotice hasStash={stashedPrompt !== undefined} />
-      {swarmBanner ? (
-        <>
-          <Text color={swarmBanner.bgColor}>
-            {swarmBanner.text ? (
-              <>
-                {'─'.repeat(
-                  Math.max(0, columns - stringWidth(swarmBanner.text) - 4),
-                )}
-                <Text backgroundColor={swarmBanner.bgColor} color="inverseText">
-                  {' '}
-                  {swarmBanner.text}{' '}
-                </Text>
-                {'──'}
-              </>
-            ) : (
-              '─'.repeat(columns)
-            )}
-          </Text>
-          <Box flexDirection="row" width="100%">
-            <PromptInputModeIndicator
-              mode={mode}
-              isLoading={isLoading}
-              viewingAgentName={viewingAgentName}
-              viewingAgentColor={viewingAgentColor}
-              viewingAgentThemeColor={viewingAgentThemeColor}
-            />
-            <Box flexGrow={1} flexShrink={1} onClick={handleInputClick}>
-              {textInputElement}
-            </Box>
-          </Box>
-          <Text color={swarmBanner.bgColor}>{'─'.repeat(columns)}</Text>
-        </>
-      ) : (
-        <Box
-          flexDirection="row"
-          alignItems="flex-start"
-          justifyContent="flex-start"
-          borderColor={getBorderColor()}
-          borderStyle="round"
-          borderLeft={false}
-          borderRight={false}
-          borderBottom
-          width="100%"
-          borderText={buildBorderText(
-            showFastIcon ?? false,
-            showFastIconHint,
-            fastModeCooldown,
-          )}
-        >
-          <PromptInputModeIndicator
-            mode={mode}
-            isLoading={isLoading}
-            viewingAgentName={viewingAgentName}
-            viewingAgentColor={viewingAgentColor}
-            viewingAgentThemeColor={viewingAgentThemeColor}
-          />
-          <Box flexGrow={1} flexShrink={1} onClick={handleInputClick}>
-            {textInputElement}
-          </Box>
-        </Box>
-      )}
+      {!isScreenReaderEnabled() && inputRow}
       <PinnedNotifications />
       <PromptInputFooter
         apiKeyStatus={apiKeyStatus}
@@ -3312,6 +3391,7 @@ function PromptInput({
         toolPermissionContext={effectiveToolPermissionContext}
         helpOpen={helpOpen}
         suppressHint={input.length > 0}
+        isInputEmpty={input.length === 0}
         isLoading={isLoading}
         tasksSelected={tasksSelected}
         teamsSelected={teamsSelected}
@@ -3329,6 +3409,8 @@ function PromptInput({
         onOpenTasksDialog={handleOpenTasksDialog}
         isLocalJSXCommandActive={isLocalJSXCommandActive}
       />
+      {/* Screen readers read the status lines first and end on the prompt, like 2.1.311. */}
+      {isScreenReaderEnabled() && inputRow}
       {isFullscreenEnvEnabled() ? (
         // position=absolute takes zero layout height so the spinner
         // doesn't shift when a notification appears/disappears. Yoga

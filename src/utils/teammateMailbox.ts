@@ -277,14 +277,16 @@ export async function markMessageAsReadByIndex(
 }
 
 /**
- * Mark all messages in a teammate's inbox as read
+ * Mark the delivered messages in a teammate's inbox as read
  * Uses file locking to prevent race conditions
  * @param agentName - The agent name to mark messages as read for
  * @param teamName - Optional team name
+ * @param delivered - The unread messages the caller read and handled
  */
 export async function markMessagesAsRead(
   agentName: string,
-  teamName?: string,
+  teamName: string | undefined,
+  delivered: readonly TeammateMessage[],
 ): Promise<void> {
   const inboxPath = getInboxPath(agentName, teamName)
   logForDebugging(
@@ -322,13 +324,17 @@ export async function markMessagesAsRead(
 
     // Read messages are never read back (only resume drops them), so drop the
     // ones already read instead of rewriting an ever-growing inbox each poll.
+    // Only mark what the caller handled: a message written after its read
+    // must stay unread for the next poll.
+    const wasDelivered = (m: TeammateMessage) =>
+      delivered.some(d => d.from === m.from && d.timestamp === m.timestamp && d.text === m.text)
     const kept = messages
       .filter(m => !m.read)
-      .map(m => ({ ...m, read: true }))
+      .map(m => (wasDelivered(m) ? { ...m, read: true } : m))
 
     await writeFile(inboxPath, jsonStringify(kept, null, 2), 'utf-8')
     logForDebugging(
-      `[TeammateMailbox] markMessagesAsRead: WROTE ${unreadCount} message(s) as read to ${inboxPath} (dropped ${messages.length - kept.length} already read)`,
+      `[TeammateMailbox] markMessagesAsRead: WROTE ${count(kept, m => m.read)} message(s) as read to ${inboxPath} (dropped ${messages.length - kept.length} already read)`,
     )
   } catch (error) {
     const code = getErrnoCode(error)
@@ -399,7 +405,7 @@ export function formatTeammateMessages(
     summary?: string
   }>,
 ): string {
-  return messages
+  return capIdleResultsInDrain(messages)
     .map(m => {
       const colorAttr = m.color ? ` color="${m.color}"` : ''
       const summaryAttr = m.summary ? ` summary="${m.summary}"` : ''
@@ -422,7 +428,12 @@ export type IdleNotificationMessage = {
   completedTaskId?: string
   completedStatus?: 'resolved' | 'blocked' | 'failed'
   failureReason?: string
+  /** The teammate's final reply this turn, capped at IDLE_RESULT_MAX_CHARS */
+  result?: string
 }
+
+const IDLE_RESULT_MAX_CHARS = 4000
+const IDLE_RESULTS_DRAIN_MAX_CHARS = 16000
 
 /**
  * Creates an idle notification message to send to the team leader
@@ -435,8 +446,10 @@ export function createIdleNotification(
     completedTaskId?: string
     completedStatus?: 'resolved' | 'blocked' | 'failed'
     failureReason?: string
+    result?: string
   },
 ): IdleNotificationMessage {
+  const result = options?.result?.trim()
   return {
     type: 'idle_notification',
     from: agentId,
@@ -446,7 +459,66 @@ export function createIdleNotification(
     completedTaskId: options?.completedTaskId,
     completedStatus: options?.completedStatus,
     failureReason: options?.failureReason,
+    result:
+      result && result.length > IDLE_RESULT_MAX_CHARS
+        ? `${result.slice(0, IDLE_RESULT_MAX_CHARS)}\n${
+            options?.idleReason === 'failed'
+              ? '[result truncated]'
+              : `[result truncated — ask the agent for the rest via ${SEND_MESSAGE_TOOL_NAME}]`
+          }`
+        : result || undefined,
   }
+}
+
+/**
+ * Caps the idle-notification results delivered to the leader in one batch at
+ * IDLE_RESULTS_DRAIN_MAX_CHARS, keeping the newest results whole and replacing
+ * older ones with a truncation note (official 2.1.312 behaviour).
+ */
+export function capIdleResultsInDrain<T extends { text: string }>(
+  messages: T[],
+): T[] {
+  const now = Date.now()
+  const withResult = messages
+    .map((message, index) => ({ index, idle: isIdleNotification(message.text) }))
+    .filter(
+      (entry): entry is { index: number; idle: IdleNotificationMessage } =>
+        !!entry.idle?.result,
+    )
+    .map(entry => {
+      const time = Date.parse(entry.idle.timestamp)
+      return { ...entry, recency: Number.isNaN(time) ? -Infinity : Math.min(time, now) }
+    })
+    .sort((a, b) => b.recency - a.recency || b.index - a.index)
+
+  const capped = messages.slice()
+  let budget = IDLE_RESULTS_DRAIN_MAX_CHARS
+  for (const { index, idle } of withResult) {
+    const message = capped[index]!
+    if (message.text.length <= budget) {
+      budget -= message.text.length
+      continue
+    }
+    const { result: _result, ...rest } = idle
+    const askHint =
+      idle.idleReason === 'failed'
+        ? ''
+        : `; ask the agent for it via ${SEND_MESSAGE_TOOL_NAME}`
+    let text = jsonStringify({
+      ...rest,
+      result: `[result truncated — this drain's results exceeded ${IDLE_RESULTS_DRAIN_MAX_CHARS} characters${askHint}]`,
+    })
+    if (text.length > budget) {
+      text = jsonStringify({ ...rest, result: '[result truncated]' })
+    }
+    if (text.length >= message.text.length) {
+      budget = Math.max(0, budget - message.text.length)
+      continue
+    }
+    budget = Math.max(0, budget - text.length)
+    capped[index] = { ...message, text }
+  }
+  return capped
 }
 
 /**
@@ -882,6 +954,29 @@ export async function sendShutdownRequestToMailbox(
   return { requestId, target: targetName }
 }
 
+const SHUTDOWN_REQUEST_ID_PATTERN = /^shutdown-[0-9]{1,20}@[\w.-]{1,64}$/
+
+/**
+ * Appends official 2.1.311's reply instructions to a team lead's shutdown_request
+ * before a teammate reads it, so the model answers with a real shutdown_response
+ * instead of a plain-text acknowledgment.
+ */
+export function withShutdownReplyInstructions(text: string, from: string): string {
+  if (from !== TEAM_LEAD_NAME || !text.includes('"shutdown_request"')) return text
+  const request = isShutdownRequest(text)
+  if (!request) return text
+  const exact = SHUTDOWN_REQUEST_ID_PATTERN.test(request.requestId)
+  const input = jsonStringify({
+    to: TEAM_LEAD_NAME,
+    message: {
+      type: 'shutdown_response',
+      request_id: exact ? request.requestId : '<requestId of the shutdown request>',
+      approve: true,
+    },
+  })
+  return `${text}\n\nThis is a shutdown request. To approve it, call ${SEND_MESSAGE_TOOL_NAME} with exactly this input, where "message" is a JSON object rather than a string${exact ? '' : " and request_id is the request's requestId value, copied verbatim"}: ${input}. Approving ends your process; a plain-text acknowledgment does not shut you down. To decline, for example because you're mid-task, send the same input with "approve": false and a "reason".`
+}
+
 /**
  * Checks if a message text contains a shutdown request
  */
@@ -1049,20 +1144,6 @@ export type ModeSetRequestMessage = z.infer<
 >
 
 /**
- * Creates a mode set request message to send to a teammate
- */
-export function createModeSetRequestMessage(params: {
-  mode: string
-  from: string
-}): ModeSetRequestMessage {
-  return {
-    type: 'mode_set_request',
-    mode: params.mode as ModeSetRequestMessage['mode'],
-    from: params.from,
-  }
-}
-
-/**
  * Checks if a message text contains a mode set request
  */
 export function isModeSetRequest(
@@ -1228,6 +1309,63 @@ export function getLastPeerDmSummary(messages: Message[]): string | undefined {
         return `[to ${to}] ${summary}`
       }
     }
+  }
+  return undefined
+}
+
+function isWakeBoundary(msg: Message): boolean {
+  return (
+    msg.type === 'user' &&
+    msg.isMeta !== true &&
+    (typeof msg.message.content === 'string' ||
+      !msg.message.content.some(block => block.type === 'tool_result'))
+  )
+}
+
+/**
+ * The teammate's final text reply since it last woke up, sent to the leader
+ * with its idle notification. Undefined when the teammate already reported to
+ * the leader with a successful SendMessage after that reply.
+ */
+export function getIdleResult(messages: Message[]): string | undefined {
+  let start = 0
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i] && isWakeBoundary(messages[i]!)) {
+      start = i + 1
+      break
+    }
+  }
+  const turn = messages.slice(start)
+
+  const okResults = new Map<string, boolean>()
+  for (const msg of turn) {
+    if (msg.type !== 'user' || typeof msg.message.content === 'string') continue
+    for (const block of msg.message.content) {
+      if (block.type === 'tool_result') {
+        okResults.set(block.tool_use_id, block.is_error !== true)
+      }
+    }
+  }
+
+  for (let i = turn.length - 1; i >= 0; i--) {
+    const msg = turn[i]
+    if (msg?.type !== 'assistant' || msg.isApiErrorMessage) continue
+    const reportedToLead = msg.message.content.some(
+      block =>
+        block.type === 'tool_use' &&
+        block.name === SEND_MESSAGE_TOOL_NAME &&
+        typeof block.input === 'object' &&
+        block.input !== null &&
+        'to' in block.input &&
+        typeof block.input.to === 'string' &&
+        block.input.to.toLowerCase() === TEAM_LEAD_NAME.toLowerCase() &&
+        okResults.get(block.id) === true,
+    )
+    if (reportedToLead) return undefined
+    const text = msg.message.content
+      .flatMap(block => (block.type === 'text' ? [block.text] : []))
+      .join('\n')
+    if (text.trim()) return text
   }
   return undefined
 }

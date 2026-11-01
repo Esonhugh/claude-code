@@ -13,7 +13,7 @@ import {
   getOpenAIAuthInfo,
 } from '../auth.js'
 import { CACHE_PATHS } from '../cachePaths.js'
-import { checkHasTrustDialogAccepted } from '../config.js'
+import { checkHasTrustDialogAccepted, getGlobalConfig } from '../config.js'
 import { logForDebugging } from '../debug.js'
 import { isEnvDefinedFalsy } from '../envUtils.js'
 import { getClaudeCodeUserAgent } from '../userAgent.js'
@@ -62,6 +62,7 @@ type OpenAIModel = {
 
 type CodexModel = {
   slug?: unknown
+  priority?: unknown
   display_name?: unknown
   name?: unknown
   description?: unknown
@@ -134,6 +135,23 @@ export function getModelDiscoveryCacheKey(): string | null {
     return `openai:chatgpt:${auth.accountId?.trim() || credentialIdentity(auth.accessToken)}`
   }
   return `openai:${getModelsBaseURL(process.env.OPENAI_BASE_URL ?? 'https://api.openai.com/v1')}:api:${credentialIdentity(auth.accessToken)}`
+}
+
+/**
+ * The ChatGPT account's default model: the first cached /codex/models entry
+ * when it is not hidden. API-key and gateway lists have no priority order.
+ */
+export function getOpenAIServedDefaultModel(): string | undefined {
+  if (!getOpenAIAuthInfo()?.isChatGPT) return undefined
+  const config = getGlobalConfig()
+  if (config.additionalModelOptionsCacheKey !== getModelDiscoveryCacheKey()) {
+    return undefined
+  }
+  const first = config.additionalModelOptionsCache?.[0]
+  if (typeof first?.value !== 'string' || first.label.endsWith(' (Hidden)')) {
+    return undefined
+  }
+  return first.value
 }
 
 /**
@@ -438,7 +456,16 @@ export function parseOpenAIModelOptions(
   options: ParseModelOptions = {},
 ): ModelOption[] {
   if (Array.isArray(data.models)) {
-    return data.models
+    // Codex CLI order: listed models by priority, hidden ones last. The first
+    // entry is the account's default (see getOpenAIServedDefaultModel).
+    const priority = (model: CodexModel) =>
+      typeof model.priority === 'number' ? model.priority : Infinity
+    return [...data.models]
+      .sort(
+        (a, b) =>
+          Number(a.visibility === 'hide') - Number(b.visibility === 'hide') ||
+          priority(a) - priority(b),
+      )
       .filter(model => model.supported_in_api !== false)
       .filter(model => typeof model.slug === 'string' && model.slug.length > 0)
       .filter(

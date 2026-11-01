@@ -124,8 +124,7 @@ const call: LocalJSXCommandCall = async (onDone, context, args) => {
 export default {
   type: 'local-jsx',
   name: 'tui',
-  description:
-    'Inspect or switch the terminal UI renderer (default | fullscreen)',
+  description: 'Set the terminal UI renderer (default | fullscreen)',
   argumentHint: '[status|default|fullscreen]',
   load: () => Promise.resolve({ call }),
 } satisfies Command

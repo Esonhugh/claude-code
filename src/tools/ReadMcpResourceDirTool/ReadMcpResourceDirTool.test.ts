@@ -682,10 +682,6 @@ describe('MCP directory read registration and classification', () => {
   it('is available through generic resource helper registration paths', () => {
     const toolsSource = readFileSync('src/tools.ts', 'utf8')
     const clientSource = readFileSync('src/services/mcp/client.ts', 'utf8')
-    const selectorSource = readFileSync(
-      'src/components/agents/ToolSelector.tsx',
-      'utf8',
-    )
 
     assert.match(toolsSource, /ReadMcpResourceDirTool/)
     assert.match(
@@ -696,7 +692,6 @@ describe('MCP directory read registration and classification', () => {
       clientSource,
       /resourceTools\.push\([\s\S]*ListMcpResourcesTool[\s\S]*ReadMcpResourceTool[\s\S]*ReadMcpResourceDirTool[\s\S]*\)/,
     )
-    assert.match(selectorSource, /ReadMcpResourceDirTool\.name/)
   })
 
   it('is safe in auto mode and counted as a streamlined read tool with ReadMcpResourceTool', () => {

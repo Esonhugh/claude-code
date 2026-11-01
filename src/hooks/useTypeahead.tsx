@@ -59,6 +59,7 @@ import {
   generateCommandSuggestions,
   getBestCommandMatch,
   isCommandInput,
+  shouldPreselectCommandSuggestion,
 } from '../utils/suggestions/commandSuggestions.js'
 import {
   getDirectoryCompletions,
@@ -1137,7 +1138,12 @@ export function useTypeahead({
         setSuggestionsState(() => ({
           commandArgumentHint,
           suggestions: commandItems,
-          selectedSuggestion: commandItems.length > 0 ? 0 : -1,
+          selectedSuggestion: shouldPreselectCommandSuggestion(
+            value,
+            commandItems,
+          )
+            ? 0
+            : -1,
         }))
         setSuggestionType(commandItems.length > 0 ? 'command' : 'none')
 

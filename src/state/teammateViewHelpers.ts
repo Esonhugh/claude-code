@@ -55,8 +55,49 @@ function releaseTeammate(task: InProcessTeammateTaskState): InProcessTeammateTas
   return {
     ...task,
     retain: terminal ? false : undefined,
-    evictAfter: terminal ? Date.now() + PANEL_GRACE_MS : undefined,
+    evictAfter:
+      terminal || task.isIdle ? Date.now() + PANEL_GRACE_MS : undefined,
   }
+}
+
+/**
+ * Official 2.1.311: an idle teammate stays alive but leaves the panel
+ * PANEL_GRACE_MS after its turn (evictAfter: 0 hides the row). While other
+ * agents are busy the deadline keeps moving, so the team stays listed
+ * together. Called from the panel's 1s tick.
+ */
+export function hideIdleTeammates(
+  setAppState: (updater: (prev: AppState) => AppState) => void,
+  now = Date.now(),
+): void {
+  setAppState(prev => {
+    const busy = Object.values(prev.tasks).some(
+      task =>
+        (isInProcessTeammate(task) && task.status === 'running' && !task.isIdle) ||
+        (isLocalAgent(task) && task.status === 'running' && task.agentType !== 'main-session'),
+    )
+    let tasks: AppState['tasks'] | undefined
+    for (const task of Object.values(prev.tasks)) {
+      if (!isInProcessTeammate(task) || task.status !== 'running' || !task.isIdle) continue
+      if (!task.evictAfter || task.id === prev.viewingAgentTaskId) continue
+      let next: InProcessTeammateTaskState | undefined
+      if (busy) {
+        if (task.evictAfter - now < PANEL_GRACE_MS / 2) {
+          next = { ...task, evictAfter: now + PANEL_GRACE_MS }
+        }
+      } else if (
+        task.evictAfter <= now &&
+        !task.awaitingPlanApproval &&
+        task.pendingUserMessages.length === 0
+      ) {
+        next = { ...task, evictAfter: 0 }
+      }
+      if (!next) continue
+      tasks ??= { ...prev.tasks }
+      tasks[task.id] = next
+    }
+    return tasks ? { ...prev, tasks } : prev
+  })
 }
 
 /**

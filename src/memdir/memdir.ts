@@ -29,10 +29,12 @@ import { formatFileSize } from '../utils/format.js'
 import { getProjectDir } from '../utils/sessionStorage.js'
 import { getInitialSettings } from '../utils/settings/settings.js'
 import {
-  MEMORY_FRONTMATTER_EXAMPLE,
+  MEMORY_FILE_SIZE_RULE,
   MEMORY_INDEX_RULE,
+  MEMORY_LINK_RULE,
   MEMORY_RECALL_RULE,
   MEMORY_SAVE_RULES,
+  MEMORY_TYPES,
   MEMORY_TYPES_SUMMARY,
   SEARCH_MEMORY_GUIDELINE,
   USER_CLAUDE_MD_RULE,
@@ -214,27 +216,37 @@ export function buildMemoryLines(
     `# ${displayName}`,
     '',
     (memoryDir
-      ? `You have a persistent, file-based memory system at \`${memoryDir}\`. ${DIR_EXISTS_GUIDANCE}`
-      : `You have a persistent, file-based memory system. The directory path is provided in your session context. ${DIR_EXISTS_GUIDANCE}`) +
-      ' Each memory is one file holding one fact, with this frontmatter:',
+      ? `You have a persistent file-based memory at \`${memoryDir}\`. ${DIR_EXISTS_GUIDANCE}`
+      : `You have a persistent file-based memory. The directory path is provided in your session context. ${DIR_EXISTS_GUIDANCE}`) +
+      ' Each memory is one file holding one fact, with frontmatter:',
     '',
-    ...MEMORY_FRONTMATTER_EXAMPLE,
+    '```markdown',
+    '---',
+    'name: <short-kebab-case-slug>',
+    'description: <one-line summary, used to decide relevance during recall>',
+    'metadata:',
+    `  type: ${MEMORY_TYPES.join(' | ')}`,
+    '---',
+    '',
+    '<the fact; for feedback/project, follow with **Why:** and **How to apply:** lines. Link related memories with [[their-name]].>',
+    '```',
+    '',
+    MEMORY_LINK_RULE + (skipIndex ? ` ${MEMORY_FILE_SIZE_RULE}` : ''),
     '',
     MEMORY_TYPES_SUMMARY,
     '',
     ...(skipIndex
       ? []
       : [
-          `After writing the file, add a one-line pointer in \`${ENTRYPOINT_NAME}\`. ${MEMORY_INDEX_RULE}`,
+          `After writing the file, add a one-line pointer in \`${ENTRYPOINT_NAME}\` (\`- [Title](file.md) — hook\`). ${MEMORY_INDEX_RULE}`,
           '',
         ]),
     `${MEMORY_SAVE_RULES} ${MEMORY_RECALL_RULE}`,
-    '',
-    ...(extraGuidelines ?? []),
-    '',
+    ...(extraGuidelines?.length ? ['', ...extraGuidelines] : []),
   ]
 
-  if (memoryDir !== null) lines.push(...buildSearchingPastContextSection(memoryDir))
+  const searching = memoryDir === null ? [] : buildSearchingPastContextSection(memoryDir)
+  if (searching.length > 0) lines.push('', ...searching)
 
   return lines
 }
@@ -277,9 +289,10 @@ export function buildMemoryPrompt(params: {
       memory_type:
         memoryType as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
     })
-    lines.push(`## ${ENTRYPOINT_NAME}`, '', neutralizeMemoryContent(t.content))
+    lines.push('', `## ${ENTRYPOINT_NAME}`, '', neutralizeMemoryContent(t.content))
   } else {
     lines.push(
+      '',
       `## ${ENTRYPOINT_NAME}`,
       '',
       `Your ${ENTRYPOINT_NAME} is currently empty. When you save new memories, they will appear here.`,
@@ -468,7 +481,7 @@ export async function loadMemoryPrompt(): Promise<string | null> {
         'auto' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
     })
     return buildMemoryLines(
-      'auto memory',
+      'Memory',
       autoDir,
       extraGuidelines,
       skipIndex,

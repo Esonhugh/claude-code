@@ -3,6 +3,7 @@
  * Hooks are user-defined shell commands that can be executed at various points
  * in Claude Code's lifecycle.
  */
+import type { PromptCacheFacts } from './promptCacheFacts.js'
 import { isDeepStrictEqual } from 'node:util'
 import { basename } from 'path'
 import { spawn, type ChildProcessWithoutNullStreams } from 'child_process'
@@ -34,7 +35,10 @@ import {
   addToTurnHookDuration,
   getOriginalCwd,
   getMainThreadAgentType,
+  getPromptId,
+  getSessionCronTasks,
 } from '../bootstrap/state.js'
+import { isBackgroundTask } from '../tasks/types.js'
 import { checkHasTrustDialogAccepted } from './config.js'
 import {
   getHooksConfigFromSnapshot,
@@ -45,6 +49,7 @@ import {
 import {
   getTranscriptPathForSession,
   getAgentTranscriptPath,
+  getCurrentSessionTitle,
 } from './sessionStorage.js'
 import type { AgentId } from '../types/ids.js'
 import {
@@ -103,6 +108,8 @@ import type {
   FileChangedHookInput,
   InstructionsLoadedHookInput,
   UserPromptSubmitHookInput,
+  UserPromptExpansionHookInput,
+  PostToolBatchHookInput,
   PermissionRequestHookInput,
   ElicitationHookInput,
   ElicitationResultHookInput,
@@ -251,7 +258,9 @@ function executeInBackground({
       if (result.code === 2) {
         enqueuePendingNotification({
           value: wrapInSystemReminder(
-            `Stop hook blocking error from command "${hookName}": ${stderr || stdout}`,
+            escapeSystemReminderTags(
+              `Stop hook blocking error from command "${hookName}": ${stderr || stdout}`,
+            ),
           ),
           mode: 'task-notification',
         })
@@ -323,6 +332,7 @@ export function createBaseHookInput(
   session_id: string
   transcript_path: string
   cwd: string
+  prompt_id?: string
   permission_mode?: string
   agent_id?: string
   agent_type?: string
@@ -336,21 +346,38 @@ export function createBaseHookInput(
     session_id: resolvedSessionId,
     transcript_path: getTranscriptPathForSession(resolvedSessionId),
     cwd: getCwd(),
+    prompt_id: getPromptId() ?? undefined,
     permission_mode: permissionMode,
     agent_id: agentInfo?.agentId,
     agent_type: resolvedAgentType,
   }
 }
 
+// Official 2.1.311 builds these inputs with the tool-use context, the only
+// ones that carry `effort`; prompt, session-lifecycle and task hooks don't.
+const EFFORT_HOOK_EVENTS: ReadonlySet<string> = new Set([
+  'PreToolUse',
+  'PostToolUse',
+  'PostToolUseFailure',
+  'PostToolBatch',
+  'PermissionRequest',
+  'PermissionDenied',
+  'Stop',
+  'SubagentStop',
+  'StopFailure',
+  'InstructionsLoaded',
+])
+
 /**
  * The effort level hooks see as `effort.level` and `$CLAUDE_EFFORT`: what the
  * next request would send for the session model, if that model takes effort.
  */
 function getHookEffortLevel(
+  hookEvent: string,
   appState: AppState | undefined,
   model: string | undefined,
 ): string | undefined {
-  if (!appState) return undefined
+  if (!appState || !EFFORT_HOOK_EVENTS.has(hookEvent)) return undefined
   const resolvedModel = model ?? getMainLoopModel()
   if (!modelSupportsEffort(resolvedModel)) return undefined
   const effort = resolveAppliedEffort(resolvedModel, appState.effortValue)
@@ -386,6 +413,7 @@ export interface HookResult {
   watchPaths?: string[]
   elicitationResultResponse?: ElicitationResponse
   retry?: boolean
+  suppressOriginalPrompt?: boolean
   displayContent?: string
   sessionTitle?: string
   reloadSkills?: boolean
@@ -412,6 +440,7 @@ export type AggregatedHookResult = {
   elicitationResponse?: ElicitationResponse
   elicitationResultResponse?: ElicitationResponse
   retry?: boolean
+  suppressOriginalPrompt?: boolean
   displayContent?: string
   sessionTitle?: string
   reloadSkills?: boolean
@@ -684,7 +713,13 @@ function processHookJSONOutput({
         result.additionalContext = json.hookSpecificOutput.additionalContext
         break
       case 'UserPromptSubmit':
+      case 'PostToolBatch':
         result.additionalContext = json.hookSpecificOutput.additionalContext
+        break
+      case 'UserPromptExpansion':
+        result.additionalContext = json.hookSpecificOutput.additionalContext
+        result.suppressOriginalPrompt =
+          json.hookSpecificOutput.suppressOriginalPrompt
         break
       case 'SessionStart':
         result.additionalContext = json.hookSpecificOutput.additionalContext
@@ -1811,6 +1846,9 @@ export async function getMatchingHooks(
       case 'DirectoryAdded':
         matchQuery = hookInput.source
         break
+      case 'UserPromptExpansion':
+        matchQuery = hookInput.command_name
+        break
       default:
         break
     }
@@ -2365,6 +2403,7 @@ async function* executeHooks({
   const batchStartTime = Date.now()
 
   const effortLevel = getHookEffortLevel(
+    hookEvent,
     appState,
     toolUseContext?.options?.mainLoopModel,
   )
@@ -3238,6 +3277,12 @@ async function* executeHooks({
         retry: result.retry,
       }
     }
+    if (result.suppressOriginalPrompt) {
+      yield {
+        ...hookMetadata,
+        suppressOriginalPrompt: result.suppressOriginalPrompt,
+      }
+    }
     // Yield elicitation response if provided (from Elicitation hooks)
     if (result.elicitationResponse) {
       yield {
@@ -3411,7 +3456,7 @@ async function executeHooksOutsideREPL({
     })
   }
 
-  const effortLevel = getHookEffortLevel(appState, undefined)
+  const effortLevel = getHookEffortLevel(hookEvent, appState, undefined)
 
   // Validate and stringify the hook input
   let jsonInput: string
@@ -3833,6 +3878,7 @@ export async function* executePostToolHooks<ToolInput, ToolResponse>(
   signal?: AbortSignal,
   timeoutMs: number = TOOL_HOOK_EXECUTION_TIMEOUT_MS,
   sourceScope?: HookSourceScope,
+  durationMs?: number,
 ): AsyncGenerator<AggregatedHookResult> {
   const hookInput: PostToolUseHookInput = {
     ...createBaseHookInput(permissionMode, undefined, toolUseContext),
@@ -3841,6 +3887,7 @@ export async function* executePostToolHooks<ToolInput, ToolResponse>(
     tool_input: toolInput,
     tool_response: toolResponse,
     tool_use_id: toolUseID,
+    duration_ms: durationMs,
   }
 
   yield* executeHooks({
@@ -3878,6 +3925,7 @@ export async function* executePostToolUseFailureHooks<ToolInput>(
   signal?: AbortSignal,
   timeoutMs: number = TOOL_HOOK_EXECUTION_TIMEOUT_MS,
   sourceScope?: HookSourceScope,
+  durationMs?: number,
 ): AsyncGenerator<AggregatedHookResult> {
   const appState = toolUseContext.getAppState()
   const sessionId = toolUseContext.agentId ?? getSessionId()
@@ -3893,6 +3941,7 @@ export async function* executePostToolUseFailureHooks<ToolInput>(
     tool_use_id: toolUseID,
     error,
     is_interrupt: isInterrupt,
+    duration_ms: durationMs,
   }
 
   yield* executeHooks({
@@ -3900,6 +3949,39 @@ export async function* executePostToolUseFailureHooks<ToolInput>(
     hookInput,
     toolUseID,
     matchQuery: toolName,
+    signal,
+    timeoutMs,
+    toolUseContext,
+  })
+}
+
+/**
+ * Execute PostToolBatch hooks once after every tool call in a batch has
+ * resolved, before the next model request.
+ */
+export async function* executePostToolBatchHooks(
+  toolCalls: PostToolBatchHookInput['tool_calls'],
+  toolUseID: string,
+  toolUseContext: ToolUseContext,
+  permissionMode?: string,
+  signal?: AbortSignal,
+  timeoutMs: number = TOOL_HOOK_EXECUTION_TIMEOUT_MS,
+): AsyncGenerator<AggregatedHookResult> {
+  const appState = toolUseContext.getAppState()
+  const sessionId = toolUseContext.agentId ?? getSessionId()
+  if (!hasHookForEvent('PostToolBatch', appState, sessionId)) {
+    return
+  }
+
+  const hookInput: PostToolBatchHookInput = {
+    ...createBaseHookInput(permissionMode, undefined, toolUseContext),
+    hook_event_name: 'PostToolBatch',
+    tool_calls: toolCalls,
+  }
+
+  yield* executeHooks({
+    hookInput,
+    toolUseID,
     signal,
     timeoutMs,
     toolUseContext,
@@ -4052,6 +4134,7 @@ export async function* executeStopHooks(
       undefined
     : undefined
 
+  const pendingWork = getStopHookPendingWork(appState)
   const hookInput: StopHookInput | SubagentStopHookInput = subagentId
     ? {
         ...createBaseHookInput(permissionMode),
@@ -4061,12 +4144,14 @@ export async function* executeStopHooks(
         agent_transcript_path: getAgentTranscriptPath(subagentId),
         agent_type: agentType ?? '',
         last_assistant_message: lastAssistantText,
+        ...pendingWork,
       }
     : {
         ...createBaseHookInput(permissionMode),
         hook_event_name: 'Stop',
         stop_hook_active: stopHookActive,
         last_assistant_message: lastAssistantText,
+        ...pendingWork,
       }
 
   // Trust check is now centralized in executeHooks()
@@ -4080,6 +4165,50 @@ export async function* executeStopHooks(
     messages,
     requestPrompt,
   })
+}
+
+const STOP_HOOK_TASK_TYPE_LABELS: Record<string, string> = {
+  local_agent: 'subagent',
+  local_workflow: 'workflow',
+  local_bash: 'shell',
+  monitor_mcp: 'monitor',
+  in_process_teammate: 'teammate',
+  dream: 'dream',
+  remote_agent: 'cloud session',
+}
+const STOP_HOOK_FIELD_CAP = 1000
+
+function clipStopHookField(value: string): string {
+  if (value.length <= STOP_HOOK_FIELD_CAP) return value
+  return `${value.slice(0, STOP_HOOK_FIELD_CAP)}\u2026 [+${value.length - STOP_HOOK_FIELD_CAP} chars]`
+}
+
+/**
+ * Stop/SubagentStop fields that let hooks tell "session is done" from
+ * "session is waiting for background work or a scheduled wakeup".
+ */
+function getStopHookPendingWork(appState: AppState | undefined) {
+  const background_tasks = Object.values(appState?.tasks ?? {})
+    .filter(isBackgroundTask)
+    .map(task => ({
+      id: task.id,
+      type: STOP_HOOK_TASK_TYPE_LABELS[task.type] ?? task.type,
+      status: task.status,
+      description: clipStopHookField(task.description),
+      ...(task.type === 'local_bash' && {
+        command: clipStopHookField(task.command),
+      }),
+      ...(task.type === 'local_agent' && { agent_type: task.agentType }),
+      ...(task.type === 'local_workflow' &&
+        task.workflowName !== undefined && { name: task.workflowName }),
+    }))
+  const session_crons = getSessionCronTasks().map(task => ({
+    id: task.id,
+    schedule: task.cron,
+    recurring: task.recurring ?? false,
+    prompt: clipStopHookField(task.prompt),
+  }))
+  return { background_tasks, session_crons }
 }
 
 /**
@@ -4098,9 +4227,10 @@ export async function* executeTeammateIdleHooks(
   permissionMode?: string,
   signal?: AbortSignal,
   timeoutMs: number = TOOL_HOOK_EXECUTION_TIMEOUT_MS,
+  agentInfo?: { agentId?: string; agentType?: string },
 ): AsyncGenerator<AggregatedHookResult> {
   const hookInput: TeammateIdleHookInput = {
-    ...createBaseHookInput(permissionMode),
+    ...createBaseHookInput(permissionMode, undefined, agentInfo),
     hook_event_name: 'TeammateIdle',
     teammate_name: teammateName,
     team_name: teamName,
@@ -4229,6 +4359,7 @@ export async function* executeUserPromptSubmitHooks(
     ...createBaseHookInput(permissionMode),
     hook_event_name: 'UserPromptSubmit',
     prompt,
+    session_title: getCurrentSessionTitle(getSessionId()),
   }
 
   yield* executeHooks({
@@ -4239,6 +4370,44 @@ export async function* executeUserPromptSubmitHooks(
     timeoutMs: TOOL_HOOK_EXECUTION_TIMEOUT_MS,
     toolUseContext,
     requestPrompt,
+  })
+}
+
+/**
+ * Execute UserPromptExpansion hooks when a user-typed slash command expands
+ * into a prompt. Exit code 2 or decision "block" blocks the expansion.
+ */
+export async function* executeUserPromptExpansionHooks(
+  expansionType: UserPromptExpansionHookInput['expansion_type'],
+  commandName: string,
+  commandArgs: string,
+  commandSource: string | undefined,
+  prompt: string,
+  permissionMode: string | undefined,
+  toolUseContext: ToolUseContext,
+): AsyncGenerator<AggregatedHookResult> {
+  const appState = toolUseContext.getAppState()
+  const sessionId = toolUseContext.agentId ?? getSessionId()
+  if (!hasHookForEvent('UserPromptExpansion', appState, sessionId)) {
+    return
+  }
+
+  const hookInput: UserPromptExpansionHookInput = {
+    ...createBaseHookInput(permissionMode),
+    hook_event_name: 'UserPromptExpansion',
+    expansion_type: expansionType,
+    command_name: commandName,
+    command_args: commandArgs,
+    ...(commandSource !== undefined && { command_source: commandSource }),
+    prompt,
+  }
+
+  yield* executeHooks({
+    hookInput,
+    toolUseID: randomUUID(),
+    signal: toolUseContext.abortController.signal,
+    timeoutMs: TOOL_HOOK_EXECUTION_TIMEOUT_MS,
+    toolUseContext,
   })
 }
 
@@ -4261,6 +4430,7 @@ export async function* executeSessionStartHooks(
   timeoutMs: number = TOOL_HOOK_EXECUTION_TIMEOUT_MS,
   forceSyncExecution?: boolean,
   sourceScope?: HookSourceScope,
+  cacheFacts?: PromptCacheFacts,
 ): AsyncGenerator<AggregatedHookResult> {
   const hookInput: SessionStartHookInput = {
     ...createBaseHookInput(undefined, sessionId),
@@ -4268,6 +4438,12 @@ export async function* executeSessionStartHooks(
     source,
     agent_type: agentType,
     model,
+    ...(cacheFacts && {
+      seconds_since_last_response: cacheFacts.secondsSinceLastResponse,
+      context_tokens: cacheFacts.contextTokens,
+      prompt_cache_likely_expired: cacheFacts.promptCacheLikelyExpired,
+      estimated_cache_write_usd: cacheFacts.estimatedCacheWriteUsd,
+    }),
   }
 
   yield* executeHooks({

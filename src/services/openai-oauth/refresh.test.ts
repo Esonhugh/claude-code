@@ -75,11 +75,8 @@ try {
     refresh_token: 'old-refresh-token',
   })
   assert.equal(requests[0]!.headers?.['Content-Type'], 'application/json')
-  assert.deepEqual(requests[0]!.proxy, {
-    protocol: 'http',
-    host: '127.0.0.1',
-    port: 8080,
-  })
+  // Proxying is left to the global axios interceptor (configureGlobalAgents).
+  assert.equal(requests[0]!.proxy, undefined)
 
   const refreshed = JSON.parse(await readFile(getOpenAIAuthPath(homeDir), 'utf-8'))
   assert.equal(refreshed.tokens.id_token, 'new-id-token')

@@ -49,7 +49,10 @@ import {
 } from '../../bootstrap/state.js'
 import { CACHE_PATHS } from '../cachePaths.js'
 import { logForDebugging } from '../debug.js'
-import { extractEmbeddedBinary } from '../embeddedRipgrep.js'
+import {
+  extractEmbeddedBinary,
+  readableEmbeddedSource,
+} from '../embeddedRipgrep.js'
 import { expandPath } from '../path.js'
 import { getPlatform, type Platform } from '../platform.js'
 import { settingsChangeDetector } from '../settings/changeDetector.js'
@@ -745,6 +748,10 @@ export function convertToSandboxRuntimeConfig(
     ripgrep: ripgrepConfig,
     bwrapPath: policySandbox?.bwrapPath,
     socatPath: policySandbox?.socatPath,
+    ...((getPlatform() === 'linux' || getPlatform() === 'wsl') &&
+      getApplySeccompPath() && {
+        seccomp: { applyPath: getApplySeccompPath()! },
+      }),
     ...(getPlatform() === 'windows' &&
       getSrtWinPath() && {
         windows: {
@@ -783,11 +790,30 @@ function isInsideWindowsWriteGrant(
 }
 
 /**
+ * apply-seccomp, which the Linux sandbox spawns to block unix sockets. The
+ * compiled binary embeds it; a source checkout lets the runtime find its
+ * vendored copy.
+ */
+export const getApplySeccompPath = memoize((): string | undefined => {
+  const sourcePath = readableEmbeddedSource(
+    'CLAUDE_CODE_EMBEDDED_APPLY_SECCOMP_PATH',
+  )
+  const version = process.env.CLAUDE_CODE_EMBEDDED_APPLY_SECCOMP_VERSION
+  if (!sourcePath || !version) return undefined
+  return extractEmbeddedBinary(
+    sourcePath,
+    join(CACHE_PATHS.applySeccomp(), `${version}-${process.arch}`, 'apply-seccomp'),
+  )
+})
+
+/**
  * srt-win.exe, which the Windows sandbox spawns. The compiled binary embeds
  * it; a source checkout uses the runtime's vendored copy.
  */
 export const getSrtWinPath = memoize((): string | undefined => {
-  const sourcePath = process.env.CLAUDE_CODE_EMBEDDED_SRT_WIN_PATH
+  const sourcePath = readableEmbeddedSource(
+    'CLAUDE_CODE_EMBEDDED_SRT_WIN_PATH',
+  )
   const version = process.env.CLAUDE_CODE_EMBEDDED_SRT_WIN_VERSION
   if (sourcePath && version) {
     return extractEmbeddedBinary(
@@ -887,18 +913,30 @@ const checkDependencies = memoize((): SandboxDependencyCheck => {
   const { bwrapPath, socatPath } =
     getSettingsForSource('policySettings')?.sandbox ?? {}
   const platform = getPlatform()
-  if ((!bwrapPath && !socatPath) || (platform !== 'linux' && platform !== 'wsl')) {
+  const applyPath = getApplySeccompPath()
+  if (
+    (!bwrapPath && !socatPath && !applyPath) ||
+    (platform !== 'linux' && platform !== 'wsl')
+  ) {
     return result
   }
   // The runtime only reads binary overrides from an initialized config, so
-  // swap its PATH-based bwrap/socat findings for ones against the overrides.
+  // swap its default findings for ones against the overrides.
   const onPath = checkLinuxDependencies({})
+  const overridden = checkLinuxDependencies({
+    bwrapPath,
+    socatPath,
+    seccompConfig: applyPath ? { applyPath } : undefined,
+  })
   return {
     errors: [
       ...result.errors.filter(e => !onPath.errors.includes(e)),
-      ...checkLinuxDependencies({ bwrapPath, socatPath }).errors,
+      ...overridden.errors,
     ],
-    warnings: result.warnings,
+    warnings: [
+      ...result.warnings.filter(w => !onPath.warnings.includes(w)),
+      ...overridden.warnings,
+    ],
   }
 })
 

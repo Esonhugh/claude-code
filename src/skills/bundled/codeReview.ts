@@ -33,8 +33,8 @@ import {
   type ReviewCell,
 } from './codeReviewContent.js'
 
-// Port of official 2.1.311 /code-review. The fork has no ReportFindings tool,
-// so the review always runs as a fork that returns a JSON array of findings.
+// Port of official 2.1.311 /code-review without the ReportFindings variants:
+// the review always runs as a fork that returns a JSON array of findings.
 
 const REVIEW_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const
 type ReviewLevel = (typeof REVIEW_LEVELS)[number]
@@ -732,6 +732,7 @@ export function formatCodeReviewResult(resultText: string): string {
 export function registerCodeReviewSkill(): void {
   registerBundledSkill({
     name: 'code-review',
+    menuDescription: 'Review the current diff or a PR for bugs and cleanups',
     aliases: ['review'],
     subcommands: { ultra: 'ultrareview' },
     description: getDescription,

@@ -15,7 +15,6 @@ const {
   removeMemberFromTeam,
   removeTeammateFromTeamFile,
   setMemberMode,
-  setMultipleMemberModes,
   addHiddenPaneId,
   removeHiddenPaneId,
   writeTeamFileAsync,
@@ -59,13 +58,9 @@ test('removeTeammateFromTeamFile and removeMemberFromTeam mutate the team file',
 
 test('mode and hidden pane mutations persist to the team file', async () => {
   expect(await setMemberMode(TEAM, 'researcher', 'plan')).toBe(true)
-  expect(await setMultipleMemberModes(TEAM, [
-    { memberName: 'writer', mode: 'acceptEdits' },
-  ])).toBe(true)
   expect(await addHiddenPaneId(TEAM, '%1')).toBe(true)
   let teamFile = (await readTeamFileAsync(TEAM))!
   expect(teamFile.members.find(m => m.name === 'researcher')?.mode).toBe('plan')
-  expect(teamFile.members.find(m => m.name === 'writer')?.mode).toBe('acceptEdits')
   expect(teamFile.hiddenPaneIds).toEqual(['%1'])
   expect(await removeHiddenPaneId(TEAM, '%1')).toBe(true)
   teamFile = (await readTeamFileAsync(TEAM))!

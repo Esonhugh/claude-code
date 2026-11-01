@@ -41,7 +41,7 @@ function parseTerminalNotification(text: string) {
     status: text.match(/<status>([^<]+)<\/status>/)?.[1],
     output_file: text.match(/<output-file>([^<]+)<\/output-file>/)?.[1] ?? '',
     usage: {
-      total_tokens: Number(usage.match(/<total_tokens>(\d+)<\/total_tokens>/)?.[1]),
+      total_tokens: Number(usage.match(/<subagent_tokens>(\d+)<\/subagent_tokens>/)?.[1]),
       tool_uses: Number(usage.match(/<tool_uses>(\d+)<\/tool_uses>/)?.[1]),
     },
   }

@@ -19,6 +19,7 @@ import type {
 import type { CanUseToolFn } from 'src/hooks/useCanUseTool.js'
 import type { Tool, ToolUseContext } from 'src/Tool.js'
 import { type HookCallback, hookJSONOutputSchema } from 'src/types/hooks.js'
+import { getSessionId } from 'src/bootstrap/state.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { logForDiagnosticsNoPII } from 'src/utils/diagLogs.js'
 import { AbortError } from 'src/utils/errors.js'
@@ -458,16 +459,20 @@ export class StructuredIO {
         return message
       }
       // @ts-ignore - recovered code
-      if (message.message.role !== 'user') {
+      if (message.message?.role !== 'user') {
         exitWithMessage(
           // @ts-ignore - recovered code
-          `Error: Expected message role 'user', got '${message.message.role}'`,
+          `Error: Expected message role 'user', got '${String(message.message?.role)}'`,
         )
       }
       return message
     } catch (error) {
       // biome-ignore lint/suspicious/noConsole:: intentional console output
-      console.error(`Error parsing streaming input line: ${line}: ${error}`)
+      // Like 2.1.311, name the line by type and size rather than echo it.
+      const type = /"type"\s*:\s*"([\w-]{1,40})"/.exec(line)?.[1] ?? 'unknown'
+      console.error(
+        `Error parsing streaming input line (type=${type}, ${line.length} chars): ${error instanceof Error ? error.name : typeof error}`,
+      )
       // eslint-disable-next-line custom-rules/no-process-exit
       process.exit(1)
     }
@@ -547,6 +552,29 @@ export class StructuredIO {
    * that a rule or the new mode now allows is approved and the host's prompt
    * is cancelled.
    */
+  /** Report a call refused before any permission prompt (2.1.311 shape). */
+  emitPermissionDenied(
+    toolName: string,
+    toolUseID: string,
+    agentId: string | undefined,
+    decision: PermissionDecision,
+  ): void {
+    if (decision.behavior === 'allow' || decision.decisionReason?.type === 'hook')
+      return
+    this.outbound.enqueue({
+      type: 'system',
+      subtype: 'permission_denied',
+      tool_name: toolName,
+      tool_use_id: toolUseID,
+      agent_id: agentId,
+      decision_reason_type: decision.decisionReason?.type,
+      decision_reason: serializeDecisionReason(decision.decisionReason),
+      message: decision.message,
+      uuid: randomUUID(),
+      session_id: getSessionId(),
+    })
+  }
+
   recheckPendingPermissions(): void {
     for (const recheck of this.pendingPermissionRechecks) recheck()
   }
@@ -572,10 +600,14 @@ export class StructuredIO {
           toolUseID,
         ))
       // If the tool is allowed or denied, return the result
-      if (
-        mainPermissionResult.behavior === 'allow' ||
-        mainPermissionResult.behavior === 'deny'
-      ) {
+      if (mainPermissionResult.behavior === 'allow') return mainPermissionResult
+      if (mainPermissionResult.behavior === 'deny') {
+        this.emitPermissionDenied(
+          tool.name,
+          toolUseID,
+          toolUseContext.agentId,
+          mainPermissionResult,
+        )
         return mainPermissionResult
       }
 

@@ -18,6 +18,7 @@ import {
   createUserMessage,
   prepareUserContent,
 } from '../messages.js'
+import { getInitialSettings } from '../settings/settings.js'
 import { resolveDefaultShell } from '../shell/resolveDefaultShell.js'
 import { isPowerShellToolEnabled } from '../shell/shellToolUtils.js'
 import { processToolResultBlock } from '../toolResultStorage.js'
@@ -169,9 +170,17 @@ export async function processBashCommand(
       typeof mapped.content === 'string'
         ? mapped.content
         : escapeXml(data.stdout)
+    // 2.1.311: Claude responds to a finished `!` command unless
+    // respondToBashCommands is false; an interrupted or backgrounded one
+    // stays a local command.
+    const respond =
+      (getInitialSettings().respondToBashCommands ?? true) &&
+      !data.interrupted &&
+      !('backgroundTaskId' in data && data.backgroundTaskId) &&
+      !context.abortController.signal.aborted
     return {
       messages: [
-        createSyntheticUserCaveatMessage(),
+        ...(respond ? [] : [createSyntheticUserCaveatMessage()]),
         userMessage,
         ...attachmentMessages,
         ...(data.stdout || stderr || !data.interrupted
@@ -185,7 +194,7 @@ export async function processBashCommand(
           ? [createUserInterruptionMessage({ toolUse: false })]
           : []),
       ],
-      shouldQuery: false,
+      shouldQuery: respond,
     }
   } catch (e) {
     if (e instanceof ShellError) {

@@ -10,7 +10,7 @@ import { Box, Text } from '../../ink.js'
 import type { Tool } from '../../Tool.js'
 import type { ProgressMessage } from '../../types/message.js'
 import type { PowerShellProgress } from '../../types/tools.js'
-import type { ThemeName } from '../../utils/theme.js'
+import type { ResolvedTheme } from '../../utils/theme.js'
 import type { Out, PowerShellToolInput } from './PowerShellTool.js'
 
 // Constants for command display
@@ -19,7 +19,7 @@ const MAX_COMMAND_DISPLAY_CHARS = 160
 
 export function renderToolUseMessage(
   input: Partial<PowerShellToolInput>,
-  { verbose, theme: _theme }: { verbose: boolean; theme: ThemeName },
+  { verbose, theme: _theme }: { verbose: boolean; theme: ResolvedTheme },
 ): React.ReactNode {
   const { command } = input
   if (!command) {
@@ -110,7 +110,7 @@ export function renderToolResultMessage(
     style: _style,
   }: {
     verbose: boolean
-    theme: ThemeName
+    theme: ResolvedTheme
     tools: Tool[]
     style?: 'condensed'
   },

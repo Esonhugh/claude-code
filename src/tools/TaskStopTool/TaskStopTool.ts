@@ -1,7 +1,7 @@
 import { z } from 'zod/v4'
 import type { TaskStateBase } from '../../Task.js'
 import { buildTool, type ToolDef } from '../../Tool.js'
-import { stopTask } from '../../tasks/stopTask.js'
+import { resolveStopTaskId, stopTask } from '../../tasks/stopTask.js'
 import { lazySchema } from '../../utils/lazySchema.js'
 import { jsonStringify } from '../../utils/slowOperations.js'
 import { DESCRIPTION, TASK_STOP_TOOL_NAME } from './prompt.js'
@@ -62,8 +62,8 @@ export const TaskStopTool = buildTool({
   },
   async validateInput({ task_id, shell_id }, { getAppState, agentId }) {
     // Support both task_id and shell_id (deprecated KillShell compat)
-    const id = task_id ?? shell_id
-    if (!id) {
+    const rawId = task_id ?? shell_id
+    if (!rawId) {
       return {
         result: false,
         message: 'Missing required parameter: task_id',
@@ -72,6 +72,7 @@ export const TaskStopTool = buildTool({
     }
 
     const appState = getAppState()
+    const id = resolveStopTaskId(rawId, appState.tasks)
     const task = appState.tasks?.[id] as TaskStateBase | undefined
 
     if (!task) {

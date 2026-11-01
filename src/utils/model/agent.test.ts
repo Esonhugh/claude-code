@@ -177,3 +177,38 @@ describe('CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL', () => {
     expect(getAgentModel('def-model', 'parent-model', undefined, 'default', { inWorkflowRun: true })).toBe('def-model')
   })
 })
+
+describe('getAgentDefinitionModel', () => {
+  const explore = { agentType: 'Explore', source: 'built-in', model: 'inherit' }
+
+  test('built-in Explore inherits the parent model, capped at opus above Opus like 2.1.311', async () => {
+    const { getAgentDefinitionModel } = await import('./agent.js')
+    const saved = process.env.CLAUDE_CODE_DISABLE_EXPLORE_INHERIT_CAP
+    delete process.env.CLAUDE_CODE_DISABLE_EXPLORE_INHERIT_CAP
+    try {
+      expect(getAgentDefinitionModel(explore, 'claude-opus-5-5')).toBe('inherit')
+      expect(getAgentDefinitionModel(explore, 'claude-fable-5-1')).toBe('opus')
+      process.env.CLAUDE_CODE_DISABLE_EXPLORE_INHERIT_CAP = '1'
+      expect(getAgentDefinitionModel(explore, 'claude-fable-5-1')).toBe('inherit')
+    } finally {
+      if (saved === undefined) delete process.env.CLAUDE_CODE_DISABLE_EXPLORE_INHERIT_CAP
+      else process.env.CLAUDE_CODE_DISABLE_EXPLORE_INHERIT_CAP = saved
+    }
+  })
+
+  test('other agents keep their own model', async () => {
+    const { getAgentDefinitionModel } = await import('./agent.js')
+    expect(
+      getAgentDefinitionModel(
+        { agentType: 'Explore', source: 'userSettings', model: 'haiku' },
+        'claude-fable-5-1',
+      ),
+    ).toBe('haiku')
+    expect(
+      getAgentDefinitionModel(
+        { agentType: 'Plan', source: 'built-in', model: 'inherit' },
+        'claude-fable-5-1',
+      ),
+    ).toBe('inherit')
+  })
+})

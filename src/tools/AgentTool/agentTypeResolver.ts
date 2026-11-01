@@ -20,7 +20,12 @@ export function normalizeAgentType(value: string): string {
 }
 
 function formatAvailableAgents(agents: readonly AgentDefinition[]): string {
-  return agents.map(a => a.agentType).join(', ') || 'none'
+  return (
+    agents
+      .map(a => a.agentType)
+      .sort((a, b) => a.localeCompare(b))
+      .join(', ') || 'none'
+  )
 }
 
 export function resolveAgentType({

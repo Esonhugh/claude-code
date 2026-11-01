@@ -6,6 +6,7 @@ import {
   COST_TIER_3_15,
   COST_HAIKU_35,
   COST_HAIKU_45,
+  COST_HAIKU_55,
   formatModelPricing,
   getModelPricingString,
 } from '../modelCost.js'
@@ -199,6 +200,16 @@ function getHaiku45Option(): ModelOption {
   }
 }
 
+function getHaiku55Option(): ModelOption {
+  return {
+    value: 'haiku',
+    label: 'Haiku',
+    description: `Haiku 5.5 · Fastest for quick answers${isClaudeAISubscriber() ? '' : ` · ${formatModelPricing(COST_HAIKU_55)}`}`,
+    descriptionForModel:
+      'Haiku 5.5 - fastest for quick answers. Lower cost but less capable than Sonnet.',
+  }
+}
+
 function getHaiku35Option(): ModelOption {
   const is3P = getAPIProvider() !== 'firstParty'
   return {
@@ -230,17 +241,19 @@ function getFirstPartyOption(
         : getDefaultSonnetModel()
   const name = getMarketingNameForModel(model) ?? model
   const pricing = isClaudeAISubscriber() ? undefined : getModelPricingString(model)
+  // 2.1.311 wording; the picker labels by family, the description names the model.
   const description =
     family === 'fable'
-      ? 'For the hardest and longest-running tasks'
+      ? 'Most capable for your hardest and longest-running tasks'
       : family === 'opus'
-        ? 'For complex coding and agent tasks'
-        : 'Balanced performance for everyday tasks'
+        ? 'Best for everyday, complex tasks'
+        : 'Efficient for routine tasks'
+  const label = family === 'fable' ? 'Fable' : family === 'opus' ? 'Opus' : 'Sonnet'
   return {
     value: context1m ? `${family}[1m]` : family,
-    label: `${name}${context1m ? ' (1M context)' : ''}`,
+    label: `${label}${context1m ? ' (1M context)' : ''}`,
     description: `${name} · ${description}${context1m ? ' · 1M context' : ''}${pricing ? ` · ${pricing}` : ''}`,
-    descriptionForModel: `${name} - ${description.toLowerCase()}`,
+    descriptionForModel: `${name} - ${description.toLowerCase()}${family === 'sonnet' ? '. Generally recommended for most coding tasks' : ''}`,
   }
 }
 
@@ -366,6 +379,8 @@ function resolveServedModelAlias(model: ModelSetting): ModelSetting {
       return getDefaultHaikuModel()
     case 'fable':
       return getDefaultFableModel()
+    case 'fable[1m]':
+      return `${getDefaultFableModel()}[1m]`
     default:
       return model
   }
@@ -441,10 +456,10 @@ function getProviderModelOptions(fastMode: boolean): ModelOption[] {
 
     const options = [
       getDefaultOptionForUser(fastMode),
-      getFirstPartyOption('fable'),
       getFirstPartyOption('opus'),
+      getFirstPartyOption('fable'),
       getFirstPartyOption('sonnet'),
-      getCustomHaikuOption() ?? getHaiku45Option(),
+      getCustomHaikuOption() ?? getHaiku55Option(),
     ]
     for (const option of discoveredModelOptions ?? []) {
       if (!options.some(existing => existing.value === option.value)) {

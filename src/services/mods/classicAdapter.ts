@@ -278,6 +278,7 @@ export function createModClassicAdapter(options: ModClassicAdapterOptions) {
             signal,
             undefined,
             options.sourceScope,
+            input.duration_ms,
           ),
           signal,
         )
@@ -403,6 +404,7 @@ export function createModClassicAdapter(options: ModClassicAdapterOptions) {
             signal,
             undefined,
             options.sourceScope,
+            input.duration_ms,
           ),
           signal,
         )
@@ -440,7 +442,6 @@ export function createModClassicAdapter(options: ModClassicAdapterOptions) {
         > = {}
         let decision: Pick<ClassicPreToolUseResult, 'allow' | 'ask' | 'deny'> =
           {}
-        let stopped: string | undefined
         let blockingReason: string | undefined
         for await (const item of executePreToolHooks(
           tool,
@@ -460,8 +461,6 @@ export function createModClassicAdapter(options: ModClassicAdapterOptions) {
           signal.throwIfAborted()
           if (item.additionalContexts)
             (result.additionalContext ??= []).push(...item.additionalContexts)
-          if (item.preventContinuation)
-            stopped = item.stopReason ?? 'Execution stopped by PreToolUse hook'
           if (item.updatedInput !== undefined)
             result.updatedInput = item.updatedInput
           if (item.blockingError)
@@ -497,7 +496,6 @@ export function createModClassicAdapter(options: ModClassicAdapterOptions) {
           }
         }
         signal.throwIfAborted()
-        if (stopped !== undefined) return { ...result, deny: stopped }
         if (decision.deny !== undefined)
           return { ...result, deny: decision.deny }
         if (decision.ask !== undefined) return { ...result, ask: decision.ask }

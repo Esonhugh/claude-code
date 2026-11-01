@@ -33,11 +33,12 @@ const variant = process.env.CLAUDE_CODE_FORK_MODE_VARIANT!
 const backgroundDisabled = variant === 'disabled'
 const { setIsInteractive } = await import('../../bootstrap/state.js')
 setIsInteractive(['interactive', 'off', 'disabled'].includes(variant))
-const forkEnabled = !['print', 'off'].includes(variant)
-const headless = variant === 'headless'
+const forkEnabled = variant !== 'off'
+const forkAsyncDefault = forkEnabled && variant !== 'print'
+const headless = variant === 'headless' || variant === 'print'
 const observedParams: Record<string, unknown>[] = []
 const observedExecutionModes: boolean[] = []
-const streams: Array<{ started: ReturnType<typeof Promise.withResolvers<void>>; finish: ReturnType<typeof Promise.withResolvers<void>>; error?: Error }> = []
+const streams: Array<{ started: ReturnType<typeof Promise.withResolvers<void>>; finish: ReturnType<typeof Promise.withResolvers<void>>; error?: Error; before?: unknown[] }> = []
 mock.module('./runAgent.js', () => ({
   async *runAgent(params: { isAsync: boolean; [key: string]: unknown }) {
     observedParams.push(params)
@@ -47,6 +48,7 @@ mock.module('./runAgent.js', () => ({
     stream.started.resolve()
     await stream.finish.promise
     if (stream.error) throw stream.error
+    for (const message of stream.before ?? []) yield message
     yield { type: 'assistant', uuid: crypto.randomUUID(), timestamp: new Date().toISOString(), message: {
       id: 'msg_concurrency', type: 'message', role: 'assistant', model: 'claude-sonnet-4-6',
       content: [{ type: 'text', text: 'done' }], stop_reason: 'end_turn', stop_sequence: null,
@@ -67,8 +69,8 @@ afterEach(async () => {
   if (initialEnv === undefined) delete process.env.CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS
   else process.env.CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS = initialEnv
 })
-function hold(error?: Error) {
-  const stream = { started: Promise.withResolvers<void>(), finish: Promise.withResolvers<void>(), error }
+function hold(error?: Error, before?: unknown[]) {
+  const stream = { started: Promise.withResolvers<void>(), finish: Promise.withResolvers<void>(), error, before }
   streams.push(stream)
   pending.push(stream.finish)
   return stream
@@ -117,7 +119,7 @@ test('schema and prompt describe explicit forks and the general-purpose default'
   expect(prompt).toContain('If omitted, the general-purpose agent is used.')
   expect(prompt.includes('subagent_type: "fork"')).toBe(forkEnabled)
   expect(prompt).not.toContain('omit it to fork yourself')
-  expect('run_in_background' in AgentTool.inputSchema.shape).toBe(!forkEnabled && !backgroundDisabled)
+  expect('run_in_background' in AgentTool.inputSchema.shape).toBe(!forkAsyncDefault && !backgroundDisabled)
 })
 
 test('omitted type uses general-purpose; fork mode forces async unless caller is headless', async () => {
@@ -125,7 +127,7 @@ test('omitted type uses general-purpose; fork mode forces async unless caller is
   expect((params.agentDefinition as { agentType: string }).agentType).toBe('general-purpose')
   expect(params.forkContextMessages).toBeUndefined()
   expect(params.useExactTools).toBeUndefined()
-  const async = forkEnabled && !backgroundDisabled && !headless
+  const async = forkAsyncDefault && !backgroundDisabled && !headless
   expect(params.isAsync).toBe(async)
   expect(result.data.status).toBe(async ? 'async_launched' : 'completed')
 })
@@ -265,28 +267,54 @@ test('fork inherits the parent plan model rather than its bubble permission mode
   } finally { setMainLoopModelOverride(null) }
 })
 
-test('Agent is immediately available in fork mode and the session latch obeys hard opt-out', async () => {
+test('foreground agent progress carries text and nested agents only with --forward-subagent-text', async () => {
+  if (variant !== 'print') return
+  const { setForwardSubagentText } = await import('../../bootstrap/state.js')
+  const { createProgressMessage } = await import('../../utils/messages.js')
+  const nested = createProgressMessage({ toolUseID: 'agent_inner', parentToolUseID: 'toolu_inner', data: { type: 'agent_progress', message: createAssistantMessage({ content: 'deep' }), prompt: '', agentId: 'inner' } as never })
+  for (const forward of [false, true]) {
+    setForwardSubagentText(forward)
+    const progress: Array<{ toolUseID: string; parentToolUseID?: string; data: { message: { message: { content: Array<{ type: string }> } } } }> = []
+    const context = setup().context
+    context.messages = [createUserMessage({ content: 'INHERITED-HISTORY' })]
+    const stream = hold(undefined, [nested])
+    const completion = AgentTool.call({ ...input, run_in_background: false }, context, allowed, parent, p => progress.push(p as never))
+    inFlight.push(completion.then(() => {}, () => {}))
+    await stream.started.promise
+    stream.finish.resolve()
+    await completion
+    const relayed = progress.filter(p => p.parentToolUseID === 'toolu_inner')
+    const text = progress.filter(p => p.parentToolUseID === undefined && p.data.message.message.content[0]?.type === 'text' && p.data.message.message.content[0] && JSON.stringify(p.data.message).includes('done'))
+    expect(relayed).toHaveLength(forward ? 1 : 0)
+    expect(text).toHaveLength(forward ? 1 : 0)
+  }
+  setForwardSubagentText(false)
+})
+
+test('Agent is immediately available in fork mode; only interactive or opted-in sessions force async', async () => {
   const { isDeferredTool } = await import('../ToolSearchTool/prompt.js')
-  const { isForkSubagentEnabled } = await import('./forkSubagent.js')
+  const { isForkAsyncDefault, isForkSubagentEnabled } = await import('./forkSubagent.js')
   const { regenerateSessionId } = await import('../../bootstrap/state.js')
   expect(isForkSubagentEnabled()).toBe(forkEnabled)
+  expect(isForkAsyncDefault()).toBe(forkAsyncDefault)
   if (forkEnabled) expect(isDeferredTool(AgentTool)).toBe(false)
   regenerateSessionId()
   setIsInteractive(false)
   delete process.env.CLAUDE_CODE_FORK_SUBAGENT
-  expect(isForkSubagentEnabled()).toBe(false)
-  process.env.CLAUDE_CODE_FORK_SUBAGENT = 'true'
   expect(isForkSubagentEnabled()).toBe(true)
-  delete process.env.CLAUDE_CODE_FORK_SUBAGENT
-  expect(isForkSubagentEnabled()).toBe(true)
+  expect(isForkAsyncDefault()).toBe(false)
+  expect('run_in_background' in AgentTool.inputSchema.shape).toBe(!backgroundDisabled)
   process.env.CLAUDE_CODE_FORK_SUBAGENT = 'false'
   expect(isForkSubagentEnabled()).toBe(false)
-  delete process.env.CLAUDE_CODE_FORK_SUBAGENT
-  expect(isForkSubagentEnabled()).toBe(true)
   regenerateSessionId()
-  expect(isForkSubagentEnabled()).toBe(false)
+  process.env.CLAUDE_CODE_FORK_SUBAGENT = 'true'
+  expect(isForkAsyncDefault()).toBe(true)
+  delete process.env.CLAUDE_CODE_FORK_SUBAGENT
+  expect(isForkAsyncDefault()).toBe(true)
+  regenerateSessionId()
+  expect(isForkAsyncDefault()).toBe(false)
   setIsInteractive(true)
-  expect(isForkSubagentEnabled()).toBe(true)
+  expect(isForkAsyncDefault()).toBe(true)
   expect('run_in_background' in AgentTool.inputSchema.shape).toBe(false)
   process.env.CLAUDE_CODE_FORK_SUBAGENT = '0'
   expect('run_in_background' in AgentTool.inputSchema.shape).toBe(!backgroundDisabled)

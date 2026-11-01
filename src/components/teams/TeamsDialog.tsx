@@ -7,19 +7,14 @@ import { useRegisterOverlay } from '../../context/overlayContext.js'
 import { stringWidth } from '../../ink/stringWidth.js'
 // eslint-disable-next-line custom-rules/prefer-use-keybindings -- raw j/k/arrow dialog navigation
 import { Box, Text, useInput } from '../../ink.js'
-import { useKeybindings } from '../../keybindings/useKeybinding.js'
-import { useShortcutDisplay } from '../../keybindings/useShortcutDisplay.js'
 import {
   type AppState,
-  useAppState,
   useSetAppState,
 } from '../../state/AppState.js'
-import { getEmptyToolPermissionContext } from '../../Tool.js'
 import { AGENT_COLOR_TO_THEME_COLOR } from '../../tools/AgentTool/agentColorManager.js'
 import { logForDebugging } from '../../utils/debug.js'
 import { execFileNoThrow } from '../../utils/execFileNoThrow.js'
 import { truncateToWidth } from '../../utils/format.js'
-import { getNextPermissionMode } from '../../utils/permissions/getNextPermissionMode.js'
 import {
   getModeColor,
   type PermissionMode,
@@ -45,8 +40,6 @@ import {
   addHiddenPaneId,
   removeHiddenPaneId,
   removeMemberFromTeam,
-  setMemberMode,
-  setMultipleMemberModes,
 } from '../../utils/swarm/teamHelpers.js'
 import {
   listTasks,
@@ -58,11 +51,7 @@ import {
   type TeammateStatus,
   type TeamSummary,
 } from '../../utils/teamDiscovery.js'
-import {
-  createModeSetRequestMessage,
-  sendShutdownRequestToMailbox,
-  writeToMailbox,
-} from '../../utils/teammateMailbox.js'
+import { sendShutdownRequestToMailbox } from '../../utils/teammateMailbox.js'
 import { Dialog } from '../design-system/Dialog.js'
 import ThemedText from '../design-system/ThemedText.js'
 
@@ -113,43 +102,10 @@ export function TeamsDialog({ initialTeams, onDone }: Props): React.ReactNode {
     return teammateStatuses.find(t => t.name === dialogLevel.memberName) ?? null
   }, [dialogLevel, teammateStatuses])
 
-  // Get isBypassPermissionsModeAvailable from AppState
-  const isBypassAvailable = useAppState(
-    s => s.toolPermissionContext.isBypassPermissionsModeAvailable,
-  )
-
   const goBackToList = (): void => {
     setDialogLevel({ type: 'teammateList', teamName: dialogLevel.teamName })
     setSelectedIndex(0)
   }
-
-  // Handler for confirm:cycleMode - cycle teammate permission modes
-  const handleCycleMode = useCallback(() => {
-    if (dialogLevel.type === 'teammateDetail' && currentTeammate) {
-      // Detail view: cycle just this teammate; refresh once config.json is written
-      void cycleTeammateMode(
-        currentTeammate,
-        dialogLevel.teamName,
-        isBypassAvailable,
-      ).then(() => setRefreshKey(k => k + 1))
-    } else if (
-      dialogLevel.type === 'teammateList' &&
-      teammateStatuses.length > 0
-    ) {
-      // List view: cycle all teammates in tandem; refresh once config.json is written
-      void cycleAllTeammateModes(
-        teammateStatuses,
-        dialogLevel.teamName,
-        isBypassAvailable,
-      ).then(() => setRefreshKey(k => k + 1))
-    }
-  }, [dialogLevel, currentTeammate, teammateStatuses, isBypassAvailable])
-
-  // Use keybindings for mode cycling
-  useKeybindings(
-    { 'confirm:cycleMode': handleCycleMode },
-    { context: 'Confirmation' },
-  )
 
   useInput((input, key) => {
     // Handle left arrow to go back
@@ -325,7 +281,6 @@ export function TeamsDialog({ initialTeams, onDone }: Props): React.ReactNode {
       return
     }
 
-    // Note: Mode cycling (shift+tab) is handled via useKeybindings with confirm:cycleMode action
   })
 
   function getMaxIndex(): number {
@@ -376,12 +331,6 @@ function TeamDetailView({
   const subtitle = `${teammates.length} ${teammates.length === 1 ? 'teammate' : 'teammates'}`
   // Check if the backend supports hide/show
   const supportsHideShow = getCachedBackend()?.supportsHideShow ?? false
-  // Get the display text for the cycle mode shortcut
-  const cycleModeShortcut = useShortcutDisplay(
-    'confirm:cycleMode',
-    'Confirmation',
-    'shift+tab',
-  )
 
   return (
     <>
@@ -411,8 +360,7 @@ function TeamDetailView({
           {figures.arrowUp}/{figures.arrowDown} select · Enter view · k kill · s
           shutdown · p prune idle
           {supportsHideShow && ' · h hide/show · H hide/show all'}
-          {' · '}
-          {cycleModeShortcut} sync cycle modes for all · Esc close
+          {' · Esc close'}
         </Text>
       </Box>
     </>
@@ -463,12 +411,6 @@ function TeammateDetailView({
   onCancel,
 }: TeammateDetailViewProps): React.ReactNode {
   const [promptExpanded, setPromptExpanded] = useState(false)
-  // Get the display text for the cycle mode shortcut
-  const cycleModeShortcut = useShortcutDisplay(
-    'confirm:cycleMode',
-    'Confirmation',
-    'shift+tab',
-  )
   const themeColor = teammate.color
     ? AGENT_COLOR_TO_THEME_COLOR[
         teammate.color as keyof typeof AGENT_COLOR_TO_THEME_COLOR
@@ -577,8 +519,6 @@ function TeammateDetailView({
         <Text dimColor>
           {figures.arrowLeft} back · Esc close · k kill · s shutdown
           {getCachedBackend()?.supportsHideShow && ' · h hide/show'}
-          {' · '}
-          {cycleModeShortcut} cycle mode
         </Text>
       </Box>
     </>
@@ -709,108 +649,3 @@ async function showTeammate(
 ): Promise<void> {
 }
 
-/**
- * Send a mode change message to a single teammate
- * Also updates config.json directly so the UI reflects the change immediately
- */
-async function sendModeChangeToTeammate(
-  teammateName: string,
-  teamName: string,
-  targetMode: PermissionMode,
-): Promise<void> {
-  // Update config.json directly so UI shows the change immediately
-  await setMemberMode(teamName, teammateName, targetMode)
-
-  // Also send message so teammate updates their local permission context
-  const message = createModeSetRequestMessage({
-    mode: targetMode,
-    from: 'team-lead',
-  })
-  void writeToMailbox(
-    teammateName,
-    {
-      from: 'team-lead',
-      text: jsonStringify(message),
-      timestamp: new Date().toISOString(),
-    },
-    teamName,
-  )
-  logForDebugging(
-    `[TeamsDialog] Sent mode change to ${teammateName}: ${targetMode}`,
-  )
-}
-
-/**
- * Cycle a single teammate's mode
- */
-async function cycleTeammateMode(
-  teammate: TeammateStatus,
-  teamName: string,
-  isBypassAvailable: boolean,
-): Promise<void> {
-  const currentMode = teammate.mode
-    ? permissionModeFromString(teammate.mode)
-    : 'default'
-  const context = {
-    ...getEmptyToolPermissionContext(),
-    mode: currentMode,
-    isBypassPermissionsModeAvailable: isBypassAvailable,
-  }
-  const nextMode = getNextPermissionMode(context)
-  await sendModeChangeToTeammate(teammate.name, teamName, nextMode)
-}
-
-/**
- * Cycle all teammates' modes in tandem
- * If modes differ, reset all to default first
- * If same, cycle all to next mode
- * Uses batch update to avoid race conditions
- */
-async function cycleAllTeammateModes(
-  teammates: TeammateStatus[],
-  teamName: string,
-  isBypassAvailable: boolean,
-): Promise<void> {
-  if (teammates.length === 0) return
-
-  const modes = teammates.map(t =>
-    t.mode ? permissionModeFromString(t.mode) : 'default',
-  )
-  const allSame = modes.every(m => m === modes[0])
-
-  // Determine target mode for all teammates
-  const targetMode = !allSame
-    ? 'default'
-    : getNextPermissionMode({
-        ...getEmptyToolPermissionContext(),
-        mode: modes[0] ?? 'default',
-        isBypassPermissionsModeAvailable: isBypassAvailable,
-      })
-
-  // Batch update config.json in a single atomic operation
-  const modeUpdates = teammates.map(t => ({
-    memberName: t.name,
-    mode: targetMode,
-  }))
-  await setMultipleMemberModes(teamName, modeUpdates)
-
-  // Send mailbox messages to each teammate
-  for (const teammate of teammates) {
-    const message = createModeSetRequestMessage({
-      mode: targetMode,
-      from: 'team-lead',
-    })
-    void writeToMailbox(
-      teammate.name,
-      {
-        from: 'team-lead',
-        text: jsonStringify(message),
-        timestamp: new Date().toISOString(),
-      },
-      teamName,
-    )
-  }
-  logForDebugging(
-    `[TeamsDialog] Sent mode change to all ${teammates.length} teammates: ${targetMode}`,
-  )
-}

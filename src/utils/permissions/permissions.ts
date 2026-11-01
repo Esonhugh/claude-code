@@ -1,4 +1,5 @@
 import { feature } from 'bun:bundle'
+import { withMcpPermissionModeOverride } from './mcpPermissionModeOverride.js'
 import { APIUserAbortError } from '@anthropic-ai/sdk'
 import type { CanUseToolFn } from '../../hooks/useCanUseTool.js'
 import {
@@ -739,6 +740,7 @@ export const hasPermissionsToUseTool: CanUseToolFn = async (
   if (tool.name === SUBAGENT_HANDBACK_TOOL_NAME) {
     return reviewSubagentHandback(tool, input, context, toolUseID)
   }
+  context = withMcpPermissionModeOverride(tool, context)
   return applyPermissionModeToResult(
     await hasPermissionsToUseToolInner(tool, input, context),
     tool,
@@ -817,12 +819,11 @@ export async function applyPermissionModeToResult(
     }
 
     // Apply auto mode: use AI classifier instead of prompting user
-    // Check this BEFORE shouldAvoidPermissionPrompts so classifiers work in headless mode
+    // Check this BEFORE shouldAvoidPermissionPrompts so classifiers work in headless mode.
+    // Like 2.1.311, plan mode asks a person even with auto active during plan.
     if (
       feature('TRANSCRIPT_CLASSIFIER') &&
-      (appState.toolPermissionContext.mode === 'auto' ||
-        (appState.toolPermissionContext.mode === 'plan' &&
-          (autoModeStateModule?.isAutoModeActive() ?? false)))
+      appState.toolPermissionContext.mode === 'auto'
     ) {
       if (tool.requiresUserInteraction?.() && result.behavior === 'ask') {
         return result
@@ -986,10 +987,7 @@ export async function applyPermissionModeToResult(
       // The mode can change while the classifier runs (Shift+Tab, SDK). Its
       // verdict only holds for auto, so decide again under the current mode.
       const modeNow = context.getAppState().toolPermissionContext.mode
-      if (
-        modeNow !== 'auto' &&
-        !(modeNow === 'plan' && (autoModeStateModule?.isAutoModeActive() ?? false))
-      ) {
+      if (modeNow !== 'auto') {
         logForDebugging(
           `Discarding auto mode classifier result for ${tool.name}: mode changed to '${modeNow}' while it ran`,
         )

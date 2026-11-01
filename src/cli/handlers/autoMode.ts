@@ -27,31 +27,59 @@ function writeRules(rules: AutoModeRules): void {
   process.stdout.write(jsonStringify(rules, null, 2) + '\n')
 }
 
-export function autoModeDefaultsHandler(): void {
-  writeRules(getDefaultExternalAutoModeRules())
+const DEFAULTS_MARKER = '$defaults'
+
+function ruleLabel(rule: string): string {
+  const end = rule.search(/[:[]/)
+  return (end === -1 ? rule : rule.slice(0, end)).trimEnd()
+}
+
+/** Like official: case-insensitive prefix match on each rule's label, ignoring `*` and `[...]`. */
+function filterRulesByLabel(rules: AutoModeRules, prefix: string): AutoModeRules {
+  const label = (rule: string) =>
+    ruleLabel(rule.replace(/\*/g, '').replace(/\[[^\]]*\]/g, '').toLowerCase())
+  const wanted = label(prefix) || prefix.toLowerCase()
+  const keep = (rule: string) => label(rule).startsWith(wanted)
+  return {
+    allow: rules.allow.filter(keep),
+    soft_deny: rules.soft_deny.filter(keep),
+    hard_deny: rules.hard_deny.filter(keep),
+    environment: rules.environment.filter(keep),
+  }
+}
+
+export function autoModeDefaultsHandler(options: { label?: string } = {}): void {
+  const defaults = getDefaultExternalAutoModeRules()
+  writeRules(options.label ? filterRulesByLabel(defaults, options.label) : defaults)
+}
+
+/** A non-empty list replaces the defaults; `$defaults` splices them in at that position. */
+function resolveSection(rules: string[] | undefined, defaults: string[]): string[] {
+  if (!rules?.length) return [...defaults]
+  const out: string[] = []
+  let spliced = false
+  for (const rule of rules) {
+    if (rule !== DEFAULTS_MARKER) out.push(rule)
+    else if (!spliced) {
+      out.push(...defaults)
+      spliced = true
+    }
+  }
+  return out
 }
 
 /**
  * Dump the effective auto mode config: user settings where provided, external
- * defaults otherwise. Per-section REPLACE semantics — matches how
- * buildYoloSystemPrompt resolves the external template (a non-empty user
- * section replaces that section's defaults entirely; an empty/absent section
- * falls through to defaults).
+ * defaults otherwise, with `$defaults` expanded the way the classifier prompt is.
  */
 export function autoModeConfigHandler(): void {
   const config = getAutoModeConfig()
   const defaults = getDefaultExternalAutoModeRules()
   writeRules({
-    allow: config?.allow?.length ? config.allow : defaults.allow,
-    soft_deny: config?.soft_deny?.length
-      ? config.soft_deny
-      : defaults.soft_deny,
-    hard_deny: config?.hard_deny?.length
-      ? config.hard_deny
-      : defaults.hard_deny,
-    environment: config?.environment?.length
-      ? config.environment
-      : defaults.environment,
+    allow: resolveSection(config?.allow, defaults.allow),
+    soft_deny: resolveSection(config?.soft_deny, defaults.soft_deny),
+    hard_deny: resolveSection(config?.hard_deny, defaults.hard_deny),
+    environment: resolveSection(config?.environment, defaults.environment),
   })
 }
 
@@ -84,11 +112,13 @@ export async function autoModeCritiqueHandler(options: {
   model?: string
 }): Promise<void> {
   const config = getAutoModeConfig()
+  const hasCustom = (rules: string[] | undefined) =>
+    (rules ?? []).some(rule => rule !== DEFAULTS_MARKER)
   const hasCustomRules =
-    (config?.allow?.length ?? 0) > 0 ||
-    (config?.soft_deny?.length ?? 0) > 0 ||
-    (config?.hard_deny?.length ?? 0) > 0 ||
-    (config?.environment?.length ?? 0) > 0
+    hasCustom(config?.allow) ||
+    hasCustom(config?.soft_deny) ||
+    hasCustom(config?.hard_deny) ||
+    hasCustom(config?.environment)
 
   if (!hasCustomRules) {
     process.stdout.write(
@@ -142,7 +172,7 @@ export async function autoModeCritiqueHandler(options: {
             '<classifier_system_prompt>\n' +
             classifierPrompt +
             '\n</classifier_system_prompt>\n\n' +
-            "Here are the user's custom rules that REPLACE the corresponding default sections:\n\n" +
+            "Here are the user's custom rules (each section header notes whether they replace or extend the defaults):\n\n" +
             userRulesSummary +
             '\nPlease critique these custom rules.',
         },
@@ -190,11 +220,21 @@ export async function autoModeResetHandler(options: {
     process.exitCode = 1
     return
   }
-  if (getSettingsForSource('userSettings')?.autoMode === undefined) {
+  const autoMode = getSettingsForSource('userSettings')?.autoMode
+  if (autoMode === undefined) {
     process.stdout.write(
       `Auto mode configuration is already at defaults \u2014 ${path} has no autoMode section.\n`,
     )
     return
+  }
+  process.stdout.write(
+    `This resets auto mode to the shipped defaults by removing the autoMode section from ${path}:\n`,
+  )
+  for (const [key, value] of Object.entries(autoMode)) {
+    const n = Array.isArray(value) ? value.length : undefined
+    process.stdout.write(
+      n === undefined ? `  - ${key}\n` : `  - ${key} (${n} ${n === 1 ? 'entry' : 'entries'})\n`,
+    )
   }
   if (!options.yes && !(await confirm('Reset auto mode configuration to defaults?'))) {
     process.stderr.write('Aborted.\n')
@@ -210,8 +250,18 @@ export async function autoModeResetHandler(options: {
     return
   }
   process.stdout.write(
-    `Auto mode configuration reset to defaults \u2014 autoMode section removed from ${path}.\n`,
+    `Auto mode configuration reset to defaults \u2014 autoMode section removed from ${path}.\n` +
+      'Run `claude auto-mode config` to see the effective rules.\n',
   )
+  if (
+    (['flagSettings', 'policySettings'] as const).some(
+      source => getSettingsForSource(source)?.autoMode !== undefined,
+    )
+  ) {
+    process.stdout.write(
+      'Note: auto mode rules from managed or --settings flag sources still apply \u2014 reset only changes your user settings file.\n',
+    )
+  }
 }
 
 function formatRulesForCritique(
@@ -219,17 +269,21 @@ function formatRulesForCritique(
   userRules: string[],
   defaultRules: string[],
 ): string {
-  if (userRules.length === 0) return ''
-  const customLines = userRules.map(r => '- ' + r).join('\n')
+  const custom = userRules.filter(rule => rule !== DEFAULTS_MARKER)
+  if (custom.length === 0) return ''
+  const extends_ = custom.length !== userRules.length
+  const customLines = custom.map(r => '- ' + r).join('\n')
   const defaultLines = defaultRules.map(r => '- ' + r).join('\n')
   return (
     '## ' +
     section +
-    ' (custom rules replacing defaults)\n' +
+    (extends_
+      ? ' (custom rules added alongside the defaults)\n'
+      : ' (custom rules replacing defaults)\n') +
     'Custom:\n' +
     customLines +
     '\n\n' +
-    'Defaults being replaced:\n' +
+    (extends_ ? 'Defaults also in effect:\n' : 'Defaults being replaced:\n') +
     defaultLines +
     '\n\n'
   )

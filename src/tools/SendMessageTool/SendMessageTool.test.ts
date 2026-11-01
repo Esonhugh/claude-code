@@ -251,6 +251,18 @@ if (process.env[childFlag] !== '1') {
     expect(resolvePeerSession).not.toHaveBeenCalled()
   })
 
+  // Official 2.1.311 answers a resume with one short line.
+  test('resuming a finished or evicted agent reports "Resuming agent <name>"', async () => {
+    const finished = 'a0123456789abcdef'
+    state.tasks[finished] = { id: finished, agentId: finished, type: 'local_agent', status: 'completed', pendingMessages: [] } as never
+    state.agentNameRegistry.set('done-worker', finished as never)
+    const byName = await SendMessageTool.call({ to: 'done-worker', message: 'again' }, context, async () => ({ behavior: 'allow' }), undefined)
+    expect(byName.data.message).toBe('Resuming agent done-worker')
+    delete state.tasks[finished]
+    const byId = await SendMessageTool.call({ to: finished, message: 'again' }, context, async () => ({ behavior: 'allow' }), undefined)
+    expect(byId.data.message).toBe('Resuming agent a012345')
+  })
+
   test('C17 produced live teammate routes by logical ID and registered name using its own mailbox team', async () => {
     const { spawnInProcessTeammate } = await import('../../utils/swarm/spawnInProcess.js')
     const produced = await spawnInProcessTeammate({name:'produced-reviewer',teamName:'produced-routing-team',prompt:'Review',planModeRequired:false,permissionMode:'default'},context)
@@ -328,6 +340,26 @@ if (process.env[childFlag] !== '1') {
     )
     expect(unknown.data.success).toBe(false)
     expect(existsSync(getInboxPath('missing-member', teamName))).toBe(false)
+  })
+
+  test('the name@team id that spawn reports addresses the teammate by name', async () => {
+    const teamName = 'id-team'
+    await writeTeamFileAsync(teamName, { name: teamName, createdAt: 1, leadAgentId: 'lead', members: [] })
+    state.teamContext = {
+      teamName, leadAgentId: 'lead', teamFilePath: '',
+      teammates: {
+        [`${peer.name}@${teamName}`]: { name: peer.name, agentType: 'general-purpose', color: 'blue', tmuxSessionName: 'in-process', tmuxPaneId: '', cwd: '/tmp', spawnedAt: 1 },
+      },
+    }
+    const result = await SendMessageTool.call(
+      { to: `${peer.name}@${teamName}`, message: 'by id' },
+      context,
+      async () => ({ behavior: 'allow' }),
+      undefined,
+    )
+    expect(result.data.success).toBe(true)
+    expect(result.data.message).toBe(`Message sent to ${peer.name}'s inbox`)
+    expect((await readMailbox(peer.name, teamName))[0]?.text).toBe('by id')
   })
 
   test('protocol messages report failure when the inbox write fails', async () => {

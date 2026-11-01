@@ -5,6 +5,7 @@
  */
 import { getMainLoopModelOverride } from '../../bootstrap/state.js'
 import {
+  getAnthropicApiKeyWithSource,
   getSubscriptionType,
   isClaudeAISubscriber,
   isProSubscriber,
@@ -19,10 +20,11 @@ import { getModelStrings, resolveOverriddenModel } from './modelStrings.js'
 import { formatModelPricing, getOpusCostTier } from '../modelCost.js'
 import { getSettings_DEPRECATED } from '../settings/settings.js'
 import type { PermissionMode } from '../permissions/PermissionMode.js'
-import { getAPIProvider } from './providers.js'
+import { getAPIProvider, isFirstPartyAnthropicBaseUrl } from './providers.js'
 import { LIGHTNING_BOLT } from '../../constants/figures.js'
 import { isModelAllowed } from './modelAllowlist.js'
 import { getServedDefaultModel } from './servedModelCatalog.js'
+import { getOpenAIServedDefaultModel } from './openaiModelOptions.js'
 import { type ModelAlias, isModelAlias } from './aliases.js'
 import { capitalize } from '../stringUtils.js'
 import { isAnt } from 'src/utils/userType.js'
@@ -33,7 +35,31 @@ export type ModelName = string
 export type ModelSetting = ModelName | ModelAlias | null
 
 export function getSmallFastModel(): ModelName {
-  return process.env.ANTHROPIC_SMALL_FAST_MODEL || getDefaultHaikuModel()
+  if (process.env.ANTHROPIC_SMALL_FAST_MODEL) {
+    return process.env.ANTHROPIC_SMALL_FAST_MODEL
+  }
+  // Official 2.1.311: a first-party session on a custom base URL without a
+  // Console API key sends helper requests to the main loop model, because
+  // the endpoint may not serve Haiku.
+  if (
+    getAPIProvider() === 'firstParty' &&
+    !process.env.ANTHROPIC_DEFAULT_HAIKU_MODEL &&
+    !isFirstPartyAnthropicBaseUrl() &&
+    !hasConsoleApiKey()
+  ) {
+    return getMainLoopModel()
+  }
+  return getDefaultHaikuModel()
+}
+
+function hasConsoleApiKey(): boolean {
+  if (process.env.ANTHROPIC_AUTH_TOKEN) return false
+  const { key, source } = getAnthropicApiKeyWithSource({
+    skipRetrievingKeyFromApiKeyHelper: true,
+  })
+  return (
+    !!key && source !== '/login managed key' && key.startsWith('sk-ant-api')
+  )
 }
 
 export function isNonCustomOpusModel(model: ModelName): boolean {
@@ -119,7 +145,9 @@ export function getDefaultOpusModel(): ModelName {
     return process.env.ANTHROPIC_DEFAULT_OPUS_MODEL
   }
   const provider = getAPIProvider()
-  if (provider === 'openai') return OPENAI_MODEL_CONFIG.opus
+  if (provider === 'openai') {
+    return getOpenAIServedDefaultModel() ?? OPENAI_MODEL_CONFIG.opus
+  }
   // Keep established SDK/endpoint defaults for third-party providers.
   return provider === 'firstParty'
     ? getModelStrings().opus55
@@ -144,8 +172,11 @@ export function getDefaultHaikuModel(): ModelName {
     return process.env.ANTHROPIC_DEFAULT_HAIKU_MODEL
   }
 
-  if (getAPIProvider() === 'openai') return OPENAI_MODEL_CONFIG.haiku
-  return getModelStrings().haiku45
+  const provider = getAPIProvider()
+  if (provider === 'openai') return OPENAI_MODEL_CONFIG.haiku
+  return provider === 'firstParty'
+    ? getModelStrings().haiku55
+    : getModelStrings().haiku45
 }
 
 /**

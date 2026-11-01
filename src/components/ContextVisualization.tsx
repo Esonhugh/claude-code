@@ -5,6 +5,7 @@ import type { ContextData } from '../utils/analyzeContext.js'
 import { generateContextSuggestions } from '../utils/contextSuggestions.js'
 import { getDisplayPath } from '../utils/file.js'
 import { formatTokens } from '../utils/format.js'
+import { getPublicModelDisplayName } from '../utils/model/model.js'
 import {
   getSourceDisplayName,
   type SettingSource,
@@ -114,13 +115,35 @@ function groupBySource<
 
 interface Props {
   data: ContextData
+  /** Official 2.1.311 folds each list to one count line unless `/context all`. */
+  collapsed?: boolean
 }
 
-export function ContextVisualization({ data }: Props): React.ReactNode {
+function CollapsedSummary({
+  count,
+  noun,
+  tokens,
+}: {
+  count: number
+  noun: string
+  tokens: number
+}): React.ReactNode {
+  return (
+    <Text dimColor>
+      └ {count} {plural(count, noun)} · {formatTokens(tokens)} tokens
+    </Text>
+  )
+}
+
+export function ContextVisualization({
+  data,
+  collapsed = false,
+}: Props): React.ReactNode {
   const {
     categories,
     totalTokens,
     rawMaxTokens,
+    autocompactSource,
     percentage,
     gridRows,
     model,
@@ -148,6 +171,7 @@ export function ContextVisualization({ data }: Props): React.ReactNode {
   )
   // Check if builtin tools are deferred
   const hasDeferredBuiltinTools = deferredBuiltinTools.length > 0
+  const modelDisplayName = getPublicModelDisplayName(model)
   const autocompactCategory = categories.find(
     cat => cat.name === RESERVED_CATEGORY_NAME,
   )
@@ -187,9 +211,11 @@ export function ContextVisualization({ data }: Props): React.ReactNode {
 
         {/* Legend to the right */}
         <Box flexDirection="column" gap={0} flexShrink={0}>
+          {modelDisplayName && <Text>{modelDisplayName}</Text>}
+          <Text dimColor>{model}</Text>
           <Text dimColor>
-            {model} · {formatTokens(totalTokens)}/{formatTokens(rawMaxTokens)}{' '}
-            tokens ({percentage}%)
+            {formatTokens(totalTokens)}/{formatTokens(rawMaxTokens)} tokens (
+            {percentage}%)
           </Text>
           <CollapseStatus />
           <Text> </Text>
@@ -250,6 +276,20 @@ export function ContextVisualization({ data }: Props): React.ReactNode {
         </Box>
       </Box>
 
+      {autocompactSource !== 'auto' && (
+        <Box marginTop={1} marginLeft={-1}>
+          <Text bold>Auto-compact window: </Text>
+          <Text dimColor>
+            {autocompactSource === 'experiment' ||
+            autocompactSource === 'clientdata'
+              ? `auto (${formatTokens(rawMaxTokens)} tokens)`
+              : autocompactSource === 'unknown-model'
+                ? `${formatTokens(rawMaxTokens)} tokens (default for an unrecognized model)`
+                : `${formatTokens(rawMaxTokens)} tokens`}
+          </Text>
+        </Box>
+      )}
+
       <Box flexDirection="column" marginLeft={-1}>
         {mcpTools.length > 0 && (
           <Box flexDirection="column" marginTop={1}>
@@ -260,38 +300,47 @@ export function ContextVisualization({ data }: Props): React.ReactNode {
                 · /mcp{hasDeferredMcpTools ? ' (loaded on-demand)' : ''}
               </Text>
             </Box>
+            {collapsed && (
+              <CollapsedSummary
+                count={mcpTools.length}
+                noun="tool"
+                tokens={mcpTools
+                  .filter(t => !hasDeferredMcpTools || t.isLoaded)
+                  .reduce((sum, t) => sum + t.tokens, 0)}
+              />
+            )}
             {/* Show loaded tools first */}
-            {mcpTools.some(t => t.isLoaded) && (
+            {!collapsed && mcpTools.some(t => t.isLoaded) && (
               <Box flexDirection="column" marginTop={1}>
                 <Text dimColor>Loaded</Text>
                 {mcpTools
                   .filter(t => t.isLoaded)
-                  .map((tool, i) => (
+                  .map((tool, i, list) => (
                     <Box key={i}>
-                      <Text>└ {tool.name}: </Text>
+                      <Text>{i === list.length - 1 ? '└' : '├'} {tool.name}: </Text>
                       <Text dimColor>{formatTokens(tool.tokens)} tokens</Text>
                     </Box>
                   ))}
               </Box>
             )}
             {/* Show available (deferred) tools */}
-            {hasDeferredMcpTools && mcpTools.some(t => !t.isLoaded) && (
+            {!collapsed && hasDeferredMcpTools && mcpTools.some(t => !t.isLoaded) && (
               <Box flexDirection="column" marginTop={1}>
                 <Text dimColor>Available</Text>
                 {mcpTools
                   .filter(t => !t.isLoaded)
-                  .map((tool, i) => (
+                  .map((tool, i, list) => (
                     <Box key={i}>
-                      <Text dimColor>└ {tool.name}</Text>
+                      <Text dimColor>{i === list.length - 1 ? '└' : '├'} {tool.name}</Text>
                     </Box>
                   ))}
               </Box>
             )}
             {/* Show all tools normally when not deferred */}
-            {!hasDeferredMcpTools &&
-              mcpTools.map((tool, i) => (
+            {!collapsed && !hasDeferredMcpTools &&
+              mcpTools.map((tool, i, list) => (
                 <Box key={i}>
-                  <Text>└ {tool.name}: </Text>
+                  <Text>{i === list.length - 1 ? '└' : '├'} {tool.name}: </Text>
                   <Text dimColor>{formatTokens(tool.tokens)} tokens</Text>
                 </Box>
               ))}
@@ -311,17 +360,17 @@ export function ContextVisualization({ data }: Props): React.ReactNode {
               {/* Always-loaded + deferred-but-loaded tools */}
               <Box flexDirection="column" marginTop={1}>
                 <Text dimColor>Loaded</Text>
-                {systemTools?.map((tool, i) => (
+                {systemTools?.map((tool, i, list) => (
                   <Box key={`sys-${i}`}>
-                    <Text>└ {tool.name}: </Text>
+                    <Text>{i === list.length - 1 ? '└' : '├'} {tool.name}: </Text>
                     <Text dimColor>{formatTokens(tool.tokens)} tokens</Text>
                   </Box>
                 ))}
                 {deferredBuiltinTools
                   .filter(t => t.isLoaded)
-                  .map((tool, i) => (
+                  .map((tool, i, list) => (
                     <Box key={`def-${i}`}>
-                      <Text>└ {tool.name}: </Text>
+                      <Text>{i === list.length - 1 ? '└' : '├'} {tool.name}: </Text>
                       <Text dimColor>{formatTokens(tool.tokens)} tokens</Text>
                     </Box>
                   ))}
@@ -333,9 +382,9 @@ export function ContextVisualization({ data }: Props): React.ReactNode {
                     <Text dimColor>Available</Text>
                     {deferredBuiltinTools
                       .filter(t => !t.isLoaded)
-                      .map((tool, i) => (
+                      .map((tool, i, list) => (
                         <Box key={i}>
-                          <Text dimColor>└ {tool.name}</Text>
+                          <Text dimColor>{i === list.length - 1 ? '└' : '├'} {tool.name}</Text>
                         </Box>
                       ))}
                   </Box>
@@ -348,9 +397,9 @@ export function ContextVisualization({ data }: Props): React.ReactNode {
           isAnt() && (
             <Box flexDirection="column" marginTop={1}>
               <Text bold>[ANT-ONLY] System prompt sections</Text>
-              {systemPromptSections.map((section, i) => (
+              {systemPromptSections.map((section, i, list) => (
                 <Box key={i}>
-                  <Text>└ {section.name}: </Text>
+                  <Text>{i === list.length - 1 ? '└' : '├'} {section.name}: </Text>
                   <Text dimColor>{formatTokens(section.tokens)} tokens</Text>
                 </Box>
               ))}
@@ -361,15 +410,21 @@ export function ContextVisualization({ data }: Props): React.ReactNode {
           <Box flexDirection="column" marginTop={1}>
             <Box>
               <Text bold>Custom agents</Text>
-              <Text dimColor> · /agents</Text>
+              <Text dimColor> · .claude/agents/</Text>
             </Box>
-            {Array.from(groupBySource(agents).entries()).map(
+            {collapsed ? (
+              <CollapsedSummary
+                count={agents.length}
+                noun="agent"
+                tokens={agents.reduce((sum, a) => sum + a.tokens, 0)}
+              />
+            ) : Array.from(groupBySource(agents).entries()).map(
               ([sourceDisplay, sourceAgents]) => (
                 <Box key={sourceDisplay} flexDirection="column" marginTop={1}>
                   <Text dimColor>{sourceDisplay}</Text>
-                  {sourceAgents.map((agent, i) => (
+                  {sourceAgents.map((agent, i, list) => (
                     <Box key={i}>
-                      <Text>└ {agent.agentType}: </Text>
+                      <Text>{i === list.length - 1 ? '└' : '├'} {agent.agentType}: </Text>
                       <Text dimColor>{formatTokens(agent.tokens)} tokens</Text>
                     </Box>
                   ))}
@@ -385,9 +440,15 @@ export function ContextVisualization({ data }: Props): React.ReactNode {
               <Text bold>Memory files</Text>
               <Text dimColor> · /memory</Text>
             </Box>
-            {memoryFiles.map((file, i) => (
+            {collapsed ? (
+              <CollapsedSummary
+                count={memoryFiles.length}
+                noun="file"
+                tokens={memoryFiles.reduce((sum, f) => sum + f.tokens, 0)}
+              />
+            ) : memoryFiles.map((file, i, list) => (
               <Box key={i}>
-                <Text>└ {getDisplayPath(file.path)}: </Text>
+                <Text>{i === list.length - 1 ? '└' : '├'} {getDisplayPath(file.path)}: </Text>
                 <Text dimColor>{formatTokens(file.tokens)} tokens</Text>
               </Box>
             ))}
@@ -400,14 +461,25 @@ export function ContextVisualization({ data }: Props): React.ReactNode {
               <Text bold>Skills</Text>
               <Text dimColor> · /skills</Text>
             </Box>
-            {Array.from(groupBySource(skills.skillFrontmatter).entries()).map(
+            {collapsed ? (
+              <CollapsedSummary
+                count={skills.skillFrontmatter.length}
+                noun="skill"
+                tokens={skills.tokens}
+              />
+            ) : Array.from(groupBySource(skills.skillFrontmatter).entries()).map(
               ([sourceDisplay, sourceSkills]) => (
                 <Box key={sourceDisplay} flexDirection="column" marginTop={1}>
                   <Text dimColor>{sourceDisplay}</Text>
-                  {sourceSkills.map((skill, i) => (
+                  {sourceSkills.map((skill, i, list) => (
                     <Box key={i}>
-                      <Text>└ {skill.name}: </Text>
-                      <Text dimColor>{formatTokens(skill.tokens)} tokens</Text>
+                      <Text>{i === list.length - 1 ? '└' : '├'} {skill.name}: </Text>
+                      <Text dimColor>
+                        {skill.tokens < 20
+                          ? '< 20'
+                          : `~${formatTokens(Math.round(skill.tokens / 10) * 10)}`}{' '}
+                        tokens
+                      </Text>
                     </Box>
                   ))}
                 </Box>
@@ -415,6 +487,16 @@ export function ContextVisualization({ data }: Props): React.ReactNode {
             )}
           </Box>
         )}
+
+        {collapsed &&
+          (mcpTools.length > 0 ||
+            agents.length > 0 ||
+            memoryFiles.length > 0 ||
+            (skills?.tokens ?? 0) > 0) && (
+            <Box marginTop={1}>
+              <Text dimColor>/context all to expand</Text>
+            </Box>
+          )}
 
         {messageBreakdown && isAnt() && (
           <Box flexDirection="column" marginTop={1}>
@@ -460,9 +542,9 @@ export function ContextVisualization({ data }: Props): React.ReactNode {
             {messageBreakdown.toolCallsByType.length > 0 && (
               <Box flexDirection="column" marginTop={1}>
                 <Text bold>[ANT-ONLY] Top tools</Text>
-                {messageBreakdown.toolCallsByType.slice(0, 5).map((tool, i) => (
+                {messageBreakdown.toolCallsByType.slice(0, 5).map((tool, i, list) => (
                   <Box key={i} marginLeft={1}>
-                    <Text>└ {tool.name}: </Text>
+                    <Text>{i === list.length - 1 ? '└' : '├'} {tool.name}: </Text>
                     <Text dimColor>
                       calls {formatTokens(tool.callTokens)}, results{' '}
                       {formatTokens(tool.resultTokens)}
@@ -477,9 +559,9 @@ export function ContextVisualization({ data }: Props): React.ReactNode {
                 <Text bold>[ANT-ONLY] Top attachments</Text>
                 {messageBreakdown.attachmentsByType
                   .slice(0, 5)
-                  .map((attachment, i) => (
+                  .map((attachment, i, list) => (
                     <Box key={i} marginLeft={1}>
-                      <Text>└ {attachment.name}: </Text>
+                      <Text>{i === list.length - 1 ? '└' : '├'} {attachment.name}: </Text>
                       <Text dimColor>
                         {formatTokens(attachment.tokens)} tokens
                       </Text>

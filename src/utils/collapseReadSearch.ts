@@ -144,6 +144,7 @@ export function getToolSearchOrReadInfo(
   toolName: string,
   toolInput: unknown,
   tools: Tools,
+  collapseBash = isFullscreenEnvEnabled(),
 ): SearchOrReadResult {
   // REPL is absorbed silently — its inner tool calls are emitted as virtual
   // messages (isVirtual: true) via newMessages and flow through this function
@@ -218,12 +219,11 @@ export function getToolSearchOrReadInfo(
   )
   const isList = result.isList ?? false
   const isCollapsible = result.isSearch || result.isRead || isList
-  // Under fullscreen mode, non-search/read Bash commands are also collapsible
-  // as their own category — "Ran N bash commands" instead of breaking the group.
+  // With collapseBash, non-search/read Bash commands are also collapsible
+  // as their own category — "Ran N shell commands" instead of breaking the group.
   return {
     isCollapsible:
-      isCollapsible ||
-      (isFullscreenEnvEnabled() ? toolName === BASH_TOOL_NAME : false),
+      isCollapsible || (collapseBash ? toolName === BASH_TOOL_NAME : false),
     isSearch: result.isSearch,
     isRead: result.isRead,
     isList,
@@ -231,7 +231,7 @@ export function getToolSearchOrReadInfo(
     isMemoryWrite: false,
     isAbsorbedSilently: false,
     ...(tool.isMcp && { mcpServerName: tool.mcpInfo?.serverName }),
-    isBash: isFullscreenEnvEnabled()
+    isBash: collapseBash
       ? !isCollapsible && toolName === BASH_TOOL_NAME
       : undefined,
   }
@@ -244,6 +244,7 @@ export function getToolSearchOrReadInfo(
 export function getSearchOrReadFromContent(
   content: { type: string; name?: string; input?: unknown } | undefined,
   tools: Tools,
+  collapseBash?: boolean,
 ): {
   isSearch: boolean
   isRead: boolean
@@ -255,7 +256,12 @@ export function getSearchOrReadFromContent(
   isBash?: boolean
 } | null {
   if (content?.type === 'tool_use' && content.name) {
-    const info = getToolSearchOrReadInfo(content.name, content.input, tools)
+    const info = getToolSearchOrReadInfo(
+      content.name,
+      content.input,
+      tools,
+      collapseBash,
+    )
     if (info.isCollapsible || info.isREPL) {
       return {
         isSearch: info.isSearch,
@@ -279,8 +285,10 @@ function isToolSearchOrRead(
   toolName: string,
   toolInput: unknown,
   tools: Tools,
+  collapseBash?: boolean,
 ): boolean {
-  return getToolSearchOrReadInfo(toolName, toolInput, tools).isCollapsible
+  return getToolSearchOrReadInfo(toolName, toolInput, tools, collapseBash)
+    .isCollapsible
 }
 
 /**
@@ -290,6 +298,7 @@ function isToolSearchOrRead(
 function getCollapsibleToolInfo(
   msg: RenderableMessage,
   tools: Tools,
+  collapseBash?: boolean,
 ): {
   name: string
   input: unknown
@@ -304,7 +313,7 @@ function getCollapsibleToolInfo(
 } | null {
   if (msg.type === 'assistant') {
     const content = msg.message.content[0]
-    const info = getSearchOrReadFromContent(content, tools)
+    const info = getSearchOrReadFromContent(content, tools, collapseBash)
     if (info && content?.type === 'tool_use') {
       // @ts-ignore - recovered code
       return { name: content.name, input: content.input, ...info }
@@ -318,6 +327,7 @@ function getCollapsibleToolInfo(
         ? { type: 'tool_use', name: msg.toolName, input: firstContent.input }
         : undefined,
       tools,
+      collapseBash,
     )
     if (info && firstContent?.type === 'tool_use') {
       return { name: msg.toolName, input: firstContent.input, ...info }
@@ -347,13 +357,14 @@ function isTextBreaker(msg: RenderableMessage): boolean {
 function isNonCollapsibleToolUse(
   msg: RenderableMessage,
   tools: Tools,
+  collapseBash?: boolean,
 ): boolean {
   if (msg.type === 'assistant') {
     const content = msg.message.content[0]
     if (
       content?.type === 'tool_use' &&
       // @ts-ignore - recovered code
-      !isToolSearchOrRead(content.name, content.input, tools)
+      !isToolSearchOrRead(content.name, content.input, tools, collapseBash)
     ) {
       return true
     }
@@ -362,7 +373,7 @@ function isNonCollapsibleToolUse(
     const firstContent = msg.messages[0]?.message.content[0]
     if (
       firstContent?.type === 'tool_use' &&
-      !isToolSearchOrRead(msg.toolName, firstContent.input, tools)
+      !isToolSearchOrRead(msg.toolName, firstContent.input, tools, collapseBash)
     ) {
       return true
     }
@@ -409,20 +420,21 @@ function shouldSkipMessage(msg: RenderableMessage): boolean {
 function isCollapsibleToolUse(
   msg: RenderableMessage,
   tools: Tools,
+  collapseBash?: boolean,
 ): msg is CollapsibleMessage {
   if (msg.type === 'assistant') {
     const content = msg.message.content[0]
     return (
       content?.type === 'tool_use' &&
       // @ts-ignore - recovered code
-      isToolSearchOrRead(content.name, content.input, tools)
+      isToolSearchOrRead(content.name, content.input, tools, collapseBash)
     )
   }
   if (msg.type === 'grouped_tool_use') {
     const firstContent = msg.messages[0]?.message.content[0]
     return (
       firstContent?.type === 'tool_use' &&
-      isToolSearchOrRead(msg.toolName, firstContent.input, tools)
+      isToolSearchOrRead(msg.toolName, firstContent.input, tools, collapseBash)
     )
   }
   return false
@@ -614,7 +626,7 @@ type GroupAccumulator = {
   // MCP tool calls (tracked separately so display says "Queried slack" not "Read N files")
   mcpCallCount?: number
   mcpServerNames?: Set<string>
-  // Bash commands that aren't search/read (tracked separately for "Ran N bash commands")
+  // Bash commands that aren't search/read (tracked separately for "Ran N shell commands")
   bashCount?: number
   // Bash tool_use_id → command string, so tool results can be scanned for
   // commit SHAs / PR URLs (surfaced as "committed abc123, created PR #42")
@@ -658,15 +670,13 @@ function createEmptyGroup(): GroupAccumulator {
   }
   group.mcpCallCount = 0
   group.mcpServerNames = new Set()
-  if (isFullscreenEnvEnabled()) {
-    group.bashCount = 0
-    group.bashCommands = new Map()
-    group.commits = []
-    group.pushes = []
-    group.branches = []
-    group.prs = []
-    group.gitOpBashCount = 0
-  }
+  group.bashCount = 0
+  group.bashCommands = new Map()
+  group.commits = []
+  group.pushes = []
+  group.branches = []
+  group.prs = []
+  group.gitOpBashCount = 0
   return group
 }
 
@@ -743,16 +753,14 @@ function createCollapsedGroup(
     result.mcpCallCount = group.mcpCallCount
     result.mcpServerNames = [...(group.mcpServerNames ?? [])]
   }
-  if (isFullscreenEnvEnabled()) {
-    if ((group.bashCount ?? 0) > 0) {
-      result.bashCount = group.bashCount
-      result.gitOpBashCount = group.gitOpBashCount
-    }
-    if ((group.commits?.length ?? 0) > 0) result.commits = group.commits
-    if ((group.pushes?.length ?? 0) > 0) result.pushes = group.pushes
-    if ((group.branches?.length ?? 0) > 0) result.branches = group.branches
-    if ((group.prs?.length ?? 0) > 0) result.prs = group.prs
+  if ((group.bashCount ?? 0) > 0) {
+    result.bashCount = group.bashCount
+    result.gitOpBashCount = group.gitOpBashCount
   }
+  if ((group.commits?.length ?? 0) > 0) result.commits = group.commits
+  if ((group.pushes?.length ?? 0) > 0) result.pushes = group.pushes
+  if ((group.branches?.length ?? 0) > 0) result.branches = group.branches
+  if ((group.prs?.length ?? 0) > 0) result.prs = group.prs
   if (group.hookCount > 0) {
     result.hookTotalMs = group.hookTotalMs
     result.hookCount = group.hookCount
@@ -776,6 +784,20 @@ export function collapseReadSearchGroups(
   messages: RenderableMessage[],
   tools: Tools,
 ): RenderableMessage[] {
+  // Outside fullscreen a plain Bash command only collapses alongside another
+  // one: groups holding a single one are rebuilt with it left expanded.
+  const loneBashIds = new Set<string>()
+  const result = collapseGroups(messages, tools, loneBashIds)
+  return loneBashIds.size > 0
+    ? collapseGroups(messages, tools, loneBashIds)
+    : result
+}
+
+function collapseGroups(
+  messages: RenderableMessage[],
+  tools: Tools,
+  loneBashIds: Set<string>,
+): RenderableMessage[] {
   const result: RenderableMessage[] = []
   let currentGroup = createEmptyGroup()
   let deferredSkippable: RenderableMessage[] = []
@@ -783,6 +805,11 @@ export function collapseReadSearchGroups(
   function flushGroup(): void {
     if (currentGroup.messages.length === 0) {
       return
+    }
+    if (!isFullscreenEnvEnabled() && currentGroup.bashCount === 1) {
+      for (const id of currentGroup.bashCommands?.keys() ?? []) {
+        loneBashIds.add(id)
+      }
     }
     result.push(createCollapsedGroup(currentGroup))
     for (const deferred of deferredSkippable) {
@@ -793,9 +820,12 @@ export function collapseReadSearchGroups(
   }
 
   for (const msg of messages) {
-    if (isCollapsibleToolUse(msg, tools)) {
+    const collapseBash =
+      isFullscreenEnvEnabled() ||
+      !getToolUseIdsFromMessage(msg).some(id => loneBashIds.has(id))
+    if (isCollapsibleToolUse(msg, tools, collapseBash)) {
       // This is a collapsible tool use - type predicate narrows to CollapsibleMessage
-      const toolInfo = getCollapsibleToolInfo(msg, tools)!
+      const toolInfo = getCollapsibleToolInfo(msg, tools, collapseBash)!
 
       if (toolInfo.isMemoryWrite) {
         // Memory file write/edit — check if it's team memory
@@ -823,9 +853,9 @@ export function collapseReadSearchGroups(
         if (input?.query) {
           currentGroup.latestDisplayHint = `"${input.query}"`
         }
-      } else if (isFullscreenEnvEnabled() && toolInfo.isBash) {
+      } else if (toolInfo.isBash) {
         // Non-search/read Bash command — counted separately so the summary
-        // says "Ran N bash commands" instead of breaking the group.
+        // says "Ran N shell commands" instead of breaking the group.
         const count = countToolUses(msg)
         currentGroup.bashCount = (currentGroup.bashCount ?? 0) + count
         const input = toolInfo.input as { command?: string } | undefined
@@ -904,7 +934,7 @@ export function collapseReadSearchGroups(
     } else if (isCollapsibleToolResult(msg, currentGroup.toolUseIds)) {
       currentGroup.messages.push(msg)
       // Scan bash results for commit SHAs / PR URLs to surface in the summary
-      if (isFullscreenEnvEnabled() && currentGroup.bashCommands?.size) {
+      if (currentGroup.bashCommands?.size) {
         scanBashResultForGitOps(msg, currentGroup)
       }
     } else if (currentGroup.messages.length > 0 && isPreToolHookSummary(msg)) {
@@ -922,7 +952,7 @@ export function collapseReadSearchGroups(
       msg.attachment.type === 'relevant_memories'
     ) {
       // Absorb auto-injected memory attachments so "recalled N memories"
-      // renders inline with "ran N bash commands" instead of as a separate
+      // renders inline with "ran N shell commands" instead of as a separate
       // ⏺ block. Do NOT add paths to readFilePaths/memoryReadFilePaths —
       // that would poison the readOperationCount fallback (bash-only reads
       // have no paths; adding memory paths makes readFilePaths.size > 0 and
@@ -951,7 +981,7 @@ export function collapseReadSearchGroups(
       // Assistant text breaks the group
       flushGroup()
       result.push(msg)
-    } else if (isNonCollapsibleToolUse(msg, tools)) {
+    } else if (isNonCollapsibleToolUse(msg, tools, collapseBash)) {
       // Non-collapsible tool use breaks the group
       flushGroup()
       result.push(msg)

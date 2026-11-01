@@ -12,7 +12,11 @@ import {
   GLOBAL_CLAUDE_FOLDER_PERMISSION_PATTERN,
 } from 'src/tools/FileEditTool/constants.js'
 import type { z } from 'zod/v4'
-import { getOriginalCwd, getSessionId } from '../../bootstrap/state.js'
+import {
+  getOriginalCwd,
+  getSessionId,
+  isRestrictedSession,
+} from '../../bootstrap/state.js'
 import { checkStatsigFeatureGate_CACHED_MAY_BE_STALE } from '../../services/analytics/growthbook.js'
 import type {
   AnyObject,
@@ -20,7 +24,9 @@ import type {
   ToolPermissionContext,
   ToolUseContext,
 } from '../../Tool.js'
+import { BASH_TOOL_NAME } from '../../tools/BashTool/toolName.js'
 import { FILE_READ_TOOL_NAME } from '../../tools/FileReadTool/prompt.js'
+import { POWERSHELL_TOOL_NAME } from '../../tools/PowerShellTool/toolName.js'
 import { getCwd } from '../cwd.js'
 import { getClaudeConfigHomeDir } from '../envUtils.js'
 import { getCanonicalName } from '../model/model.js'
@@ -53,7 +59,11 @@ import type {
 import type { PermissionRule, PermissionRuleSource } from './PermissionRule.js'
 import { createReadRuleSuggestion } from './PermissionUpdate.js'
 import type { PermissionUpdate } from './PermissionUpdateSchema.js'
-import { getRuleByContentsForToolName } from './permissions.js'
+import {
+  getAskRuleForTool,
+  getDenyRuleForTool,
+  getRuleByContentsForToolName,
+} from './permissions.js'
 
 declare const MACRO: { VERSION: string }
 
@@ -703,7 +713,7 @@ export function checkPathSafetyForAutoEdit(
       return {
         safe: false,
         message: `Claude requested permissions to write to ${path}, but you haven't granted it yet.`,
-        classifierApprovable: true,
+        classifierApprovable: !isRestrictedSession(),
       }
     }
   }
@@ -714,7 +724,7 @@ export function checkPathSafetyForAutoEdit(
       return {
         safe: false,
         message: `Claude requested permissions to edit ${path} which is a sensitive file.`,
-        classifierApprovable: true,
+        classifierApprovable: !isRestrictedSession(),
       }
     }
   }
@@ -1028,8 +1038,15 @@ function getPatternsByRoot(
     // A deny or ask rule written on a symlinked directory also guards the
     // directory's real location (official 2.1.268). Allow rules do not get a
     // twin: a swapped symlink must not widen what they grant.
-    if (behavior !== 'allow' && root !== null) {
-      const twin = physicalTwinPattern(root, relativePattern)
+    // A relative pattern with an inner slash is anchored at the cwd.
+    const anchored =
+      root !== null
+        ? { root, pattern: relativePattern }
+        : relativePattern.slice(0, -1).includes(DIR_SEP)
+          ? { root: getCwd(), pattern: `${DIR_SEP}${relativePattern}` }
+          : null
+    if (behavior !== 'allow' && anchored !== null) {
+      const twin = physicalTwinPattern(anchored.root, anchored.pattern)
       if (twin !== null && !patternsForRoot(DIR_SEP).has(twin)) {
         patternsForRoot(DIR_SEP).set(twin, rule)
       }
@@ -1215,6 +1232,22 @@ export function matchingRuleForInput(
 /**
  * Permission result for read permission for the specified tool & tool input
  */
+/** --restricted: file tools never reach outside the working directories without an allow rule. */
+function restrictedOutsideDecision(
+  path: string,
+  toolPermissionContext: ToolPermissionContext,
+): PermissionDecision {
+  const dirs = Array.from(allWorkingDirectories(toolPermissionContext)).join(', ')
+  return {
+    behavior: 'deny',
+    message: `${path} is outside ${dirs}; --restricted confines the file tools to the working directory.`,
+    decisionReason: {
+      type: 'other',
+      reason: 'restricted session: path is outside the working directories',
+    },
+  }
+}
+
 export function checkReadPermissionForTool(
   tool: Tool,
   input: { [key: string]: unknown },
@@ -1364,6 +1397,10 @@ export function checkReadPermissionForTool(
     }
   }
 
+  if (isRestrictedSession()) {
+    return restrictedOutsideDecision(path, toolPermissionContext)
+  }
+
   // 12. Default to asking for permission
   // At this point, isInWorkingDir is false (from step #6), so path is outside working directories
   return {
@@ -1436,6 +1473,14 @@ export function checkWritePermissionForTool<Input extends AnyObject>(
   )
   if (internalEditResult.behavior !== 'passthrough') {
     return internalEditResult
+  }
+
+  if (
+    isRestrictedSession() &&
+    !pathInAllowedWorkingPath(path, toolPermissionContext, pathsToCheck) &&
+    !matchingAllowRuleForPaths(pathsToCheck, toolPermissionContext, 'edit')
+  ) {
+    return restrictedOutsideDecision(path, toolPermissionContext)
   }
 
   // 1.6. Check for .claude/** allow rules BEFORE safety checks
@@ -1619,7 +1664,8 @@ const READ_GUARD_MODELS = new Set([
 /**
  * Like 2.1.311: Write/Edit may change a file the model has not Read (or read
  * stale) when the write runs without a prompt anyway — allowed by mode or
- * rule, or an in-directory write in bypassPermissions — the session can Read,
+ * rule, or an in-directory write in bypassPermissions — the session can read
+ * the file (Read, Bash or PowerShell),
  * and the model is not one that keeps the guard.
  */
 export function canWriteWithoutRead<Input extends AnyObject>(
@@ -1630,16 +1676,55 @@ export function canWriteWithoutRead<Input extends AnyObject>(
   if (READ_GUARD_MODELS.has(getCanonicalName(context.options.mainLoopModel))) {
     return false
   }
-  if (!context.options.tools.some(t => t.name === FILE_READ_TOOL_NAME)) {
+  // The model can read the file anyway: with Read, or with a shell (cat).
+  const canRead = context.options.tools.some(
+    t =>
+      t.name === FILE_READ_TOOL_NAME ||
+      t.name === BASH_TOOL_NAME ||
+      t.name === POWERSHELL_TOOL_NAME,
+  )
+  if (!canRead) {
     return false
   }
+  // Like official 2.1.311, the guard is skipped when the model could read the
+  // file without a prompt; whether the write itself needs one is decided by
+  // the permission check that follows.
   const permissionContext = context.getAppState().toolPermissionContext
-  const decision = checkWritePermissionForTool(tool, input, permissionContext)
+  const readTool = { name: FILE_READ_TOOL_NAME }
+  if (
+    getDenyRuleForTool(permissionContext, readTool) ||
+    getAskRuleForTool(permissionContext, readTool)
+  ) {
+    return false
+  }
+  const decision = checkReadPermissionForTool(tool, input, permissionContext)
   if (decision.behavior === 'allow') return true
+  // Only the plain outside-working-directory ask counts as readable, and
+  // only in bypass; rule and safety-check asks keep the guard.
   return (
     decision.behavior === 'ask' &&
-    decision.decisionReason === undefined &&
+    decision.decisionReason?.type === 'workingDir' &&
     permissionContext.mode === 'bypassPermissions'
+  )
+}
+
+/**
+ * Only suggest setMode:acceptEdits when it would be an upgrade. In auto
+ * mode the classifier already auto-approves edits; in bypassPermissions
+ * everything is allowed; in acceptEdits it's a no-op. Suggesting it
+ * anyway and having the SDK host apply it on "Always allow" silently
+ * downgrades auto → acceptEdits, which then prompts for MCP/Bash. Plan
+ * mode counts as the mode it was entered from.
+ */
+export function canSuggestAcceptEdits(
+  toolPermissionContext: ToolPermissionContext,
+): boolean {
+  if (toolPermissionContext.mode === 'default') return true
+  return (
+    toolPermissionContext.mode === 'plan' &&
+    !['acceptEdits', 'auto', 'bypassPermissions', 'dontAsk'].includes(
+      toolPermissionContext.prePlanMode ?? 'default',
+    )
   )
 }
 
@@ -1668,14 +1753,7 @@ export function generateSuggestions(
     return suggestions
   }
 
-  // Only suggest setMode:acceptEdits when it would be an upgrade. In auto
-  // mode the classifier already auto-approves edits; in bypassPermissions
-  // everything is allowed; in acceptEdits it's a no-op. Suggesting it
-  // anyway and having the SDK host apply it on "Always allow" silently
-  // downgrades auto → acceptEdits, which then prompts for MCP/Bash.
-  const shouldSuggestAcceptEdits =
-    toolPermissionContext.mode === 'default' ||
-    toolPermissionContext.mode === 'plan'
+  const shouldSuggestAcceptEdits = canSuggestAcceptEdits(toolPermissionContext)
 
   if (operationType === 'write' || operationType === 'create') {
     const updates: PermissionUpdate[] = shouldSuggestAcceptEdits

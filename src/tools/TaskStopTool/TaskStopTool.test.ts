@@ -35,3 +35,21 @@ test('a subagent stops only tasks it owns, like official 2.1.311', async () => {
     errorCode: 4,
   })
 })
+
+test('a teammate can be addressed by the agent id or name the spawn result reported', async () => {
+  const state = {
+    ...getDefaultAppState(),
+    tasks: {
+      tmate1: {
+        id: 'tmate1',
+        type: 'in_process_teammate',
+        status: 'running',
+        identity: { agentId: 'mate1@life', agentName: 'mate1', teamName: 'life' },
+      },
+    },
+  } as unknown as AppState
+  const context = { getAppState: () => state } as unknown as ToolUseContext
+  for (const task_id of ['mate1@life', 'mate1']) {
+    expect(await TaskStopTool.validateInput!({ task_id }, context)).toEqual({ result: true })
+  }
+})

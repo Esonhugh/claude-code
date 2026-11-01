@@ -39,9 +39,12 @@ import { focusHiddenSuffix } from '../../utils/focusView.js'
 import Link from '../../ink/components/Link.js'
 import ThemedText from '../design-system/ThemedText.js'
 import { CtrlOToExpand } from '../CtrlOToExpand.js'
-import { useAppStateStore } from '../../state/AppState.js'
+import { useAppState, useAppStateStore } from '../../state/AppState.js'
 import { isBackgroundTask, type TaskState } from '../../tasks/types.js'
 import { getPillLabel } from '../../tasks/pillLabel.js'
+import { countPendingBackgroundWork } from '../../tasks/pendingBackgroundWork.js'
+import { getCommandQueue } from '../../utils/messageQueueManager.js'
+import { formatDoneAt } from '../../utils/timeFormat.js'
 import { useSelectedMessageBg } from '../messageActions.js'
 import { HOOK_TIMING_DISPLAY_THRESHOLD_MS } from '../../services/tools/toolExecution.js'
 import { isAnt } from 'src/utils/userType.js'
@@ -137,7 +140,7 @@ export function SystemTextMessage({
   if (message.subtype === 'permission_retry') {
     return (
       <Box marginTop={addMargin ? 1 : 0} backgroundColor={bg} width="100%">
-        <Text dimColor>{TEARDROP_ASTERISK} </Text>
+        <Text dimColor aria-hidden>{TEARDROP_ASTERISK} </Text>
         <Text>Allowed </Text>
         <Text bold>{message.commands.join(', ')}</Text>
       </Box>
@@ -378,11 +381,18 @@ function NativeTurnDurationMessage({ message, addMargin, verb }: {
 }): React.ReactNode {
   const bg = useSelectedMessageBg()
   const store = useAppStateStore()
-  const [backgroundTaskSummary] = useState(() => {
-    const tasks = store.getState().tasks
-    const running = (Object.values(tasks ?? {}) as TaskState[]).filter(
-      isBackgroundTask,
-    )
+  // Like official 2.1.311: whether the waited-on work is still pending and when
+  // the turn was done are fixed when the row first draws; "still running" is live.
+  const [snapshot] = useState(() => {
+    const pending = countPendingBackgroundWork({ tasks: store.getState().tasks, queuedCommands: getCommandQueue() })
+    return {
+      waitingAgents: pending.pendingAgents > 0 ? message.pendingBackgroundAgentCount ?? 0 : 0,
+      waitingWorkflows: pending.pendingWorkflows > 0 ? message.pendingWorkflowCount ?? 0 : 0,
+      doneAt: formatDoneAt(message.timestamp),
+    }
+  })
+  const backgroundTaskSummary = useAppState(state => {
+    const running = (Object.values(state.tasks ?? {}) as TaskState[]).filter(isBackgroundTask)
     return running.length > 0 ? getPillLabel(running) : null
   })
 
@@ -408,6 +418,8 @@ function NativeTurnDurationMessage({ message, addMargin, verb }: {
   if (!showTurnDuration && !hasBudget) {
     return null
   }
+  const { waitingAgents, waitingWorkflows, doneAt } = snapshot
+  const waiting = showTurnDuration && (waitingAgents > 0 || waitingWorkflows > 0)
 
   return (
     <Box
@@ -417,12 +429,32 @@ function NativeTurnDurationMessage({ message, addMargin, verb }: {
       width="100%"
     >
       <Box minWidth={2}>
-        <Text dimColor>{TEARDROP_ASTERISK}</Text>
+        <Text dimColor aria-hidden>{TEARDROP_ASTERISK}</Text>
       </Box>
       <Text dimColor>
-        {showTurnDuration && `${verb} for ${duration}`}
+        {waiting ? (
+          <>
+            Waiting for
+            {waitingAgents > 0 && (
+              <>
+                {' '}<Text bold dimColor>{waitingAgents}</Text>
+                {` background ${waitingAgents === 1 ? 'agent' : 'agents'}`}
+              </>
+            )}
+            {waitingAgents > 0 && waitingWorkflows > 0 && ' and'}
+            {waitingWorkflows > 0 && (
+              <>
+                {' '}<Text bold dimColor>{waitingWorkflows}</Text>
+                {` ${waitingWorkflows === 1 ? 'dynamic workflow' : 'dynamic workflows'}`}
+              </>
+            )}
+            {' to finish'}
+          </>
+        ) : (
+          showTurnDuration && `${verb} for ${duration}${doneAt ? ` \u00B7 done ${doneAt}` : ''}`
+        )}
         {budgetSuffix}
-        {backgroundTaskSummary &&
+        {!waiting && backgroundTaskSummary &&
           ` \u00B7 ${backgroundTaskSummary} still running`}
         {focusHiddenSuffix(message.focusHiddenCount)}
       </Text>
@@ -503,7 +535,7 @@ function ThinkingMessage({
       width="100%"
     >
       <Box minWidth={2}>
-        <Text dimColor>{TEARDROP_ASTERISK}</Text>
+        <Text dimColor aria-hidden>{TEARDROP_ASTERISK}</Text>
       </Box>
       <Text dimColor>{message.content}</Text>
     </Box>

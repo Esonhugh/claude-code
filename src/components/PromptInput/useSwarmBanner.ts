@@ -43,6 +43,10 @@ type SwarmBannerInfo = {
  * - --agent CLI flag: Returns "@agentName" with cyan background
  */
 export function useSwarmBanner(): SwarmBannerInfo {
+  // React Compiler: the banner reads store.getState() and teammate globals
+  // during render, which the compiler can't see as deps — memoizing would
+  // keep a stale banner (e.g. after /rename). Opt out.
+  'use no memo'
   const teamContext = useAppState(s => s.teamContext)
   const standaloneAgentContext = useAppState(s => s.standaloneAgentContext)
   const agent = useAppState(s => s.agent)

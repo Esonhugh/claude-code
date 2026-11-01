@@ -11,23 +11,17 @@ import {
   useAppStateStore,
   useSetAppState,
 } from '../state/AppState.js'
-import { findToolByName } from '../Tool.js'
+import { findToolByName, type ToolPermissionContext } from '../Tool.js'
 import { getAllBaseTools } from '../tools.js'
-import type { PermissionUpdate } from '../types/permissions.js'
+import type { PermissionMode, PermissionUpdate } from '../types/permissions.js'
 import { logForDebugging } from '../utils/debug.js'
 import {
   findInProcessTeammateTaskId,
   handlePlanApprovalResponse,
 } from '../utils/inProcessTeammateHelpers.js'
 import { createAssistantMessage } from '../utils/messages.js'
-import {
-  permissionModeFromString,
-  toExternalPermissionMode,
-} from '../utils/permissions/PermissionMode.js'
-import {
-  applyPermissionUpdate,
-  logPermissionModeChange,
-} from '../utils/permissions/PermissionUpdate.js'
+import { formatPeerPrompt } from '../utils/peerProtocol.js'
+import { toExternalPermissionMode } from '../utils/permissions/PermissionMode.js'
 import { transitionPermissionModeWithGates } from '../utils/permissions/permissionSetup.js'
 import { jsonStringify } from '../utils/slowOperations.js'
 import { isInsideTmux } from '../utils/swarm/backends/detection.js'
@@ -47,8 +41,9 @@ import {
   isTeamLead,
   isTeammate,
 } from '../utils/teammate.js'
-import { isInProcessTeammate } from '../utils/teammateContext.js'
+import { runOutsideTeammateContext } from '../utils/teammateContext.js'
 import {
+  capIdleResultsInDrain,
   isModeSetRequest,
   isPermissionRequest,
   isPermissionResponse,
@@ -72,39 +67,59 @@ import {
 } from './useSwarmPermissionPoller.js'
 
 /**
+ * The teammate's context once the lead approves its plan: the lead's mode (or
+ * default), entered through the same gates as any other mode switch. A mode
+ * this session cannot enter falls back to default.
+ */
+export function planApprovedContext(
+  current: ToolPermissionContext,
+  leaderMode: PermissionMode | undefined,
+): ToolPermissionContext {
+  const targetMode = toExternalPermissionMode(leaderMode ?? 'default')
+  try {
+    return transitionPermissionModeWithGates(current, targetMode)
+  } catch (error) {
+    logForDebugging(
+      `[InboxPoller] Plan approval asked for ${targetMode}: ${error instanceof Error ? error.message : String(error)}; using default`,
+    )
+    return transitionPermissionModeWithGates(current, 'default')
+  }
+}
+
+/**
  * Get the agent name to poll for messages.
- * - In-process teammates return undefined (they use waitForNextPromptOrShutdown instead)
  * - Process-based teammates use their CLAUDE_CODE_AGENT_NAME
  * - Team leads use their name from teamContext.teammates
  * - Standalone sessions return undefined
+ *
+ * The poller belongs to this process's REPL, never to an in-process teammate
+ * (those poll via waitForNextPromptOrShutdown in inProcessRunner.ts). A
+ * teammate's setAppState can re-render the REPL synchronously, leaking that
+ * teammate's AsyncLocalStorage context into this hook, so it is ignored here.
  */
-function getAgentNameToPoll(appState: AppState): string | undefined {
-  // In-process teammates should NOT use useInboxPoller - they have their own
-  // polling mechanism via waitForNextPromptOrShutdown() in inProcessRunner.ts.
-  // Using useInboxPoller would cause message routing issues since in-process
-  // teammates share the same React context and AppState with the leader.
-  //
-  // Note: This can be called when the leader's REPL re-renders while an
-  // in-process teammate's AsyncLocalStorage context is active (due to shared
-  // setAppState). We return undefined to gracefully skip polling rather than
-  // throwing, since this is a normal occurrence during concurrent execution.
-  if (isInProcessTeammate()) {
+export function getAgentNameToPoll(appState: AppState): string | undefined {
+  return runOutsideTeammateContext(() => {
+    if (isTeammate()) {
+      return getAgentName()
+    }
+    // Team lead polls using their agent name (not ID)
+    if (isTeamLead(appState.teamContext)) {
+      const leadAgentId = appState.teamContext!.leadAgentId
+      // Look up the lead's name from teammates map
+      const leadName = appState.teamContext!.teammates[leadAgentId]?.name
+      return leadName || 'team-lead'
+    }
     return undefined
-  }
-  if (isTeammate()) {
-    return getAgentName()
-  }
-  // Team lead polls using their agent name (not ID)
-  if (isTeamLead(appState.teamContext)) {
-    const leadAgentId = appState.teamContext!.leadAgentId
-    // Look up the lead's name from teammates map
-    const leadName = appState.teamContext!.teammates[leadAgentId]?.name
-    return leadName || 'team-lead'
-  }
-  return undefined
+  })
 }
 
 const INBOX_POLL_INTERVAL_MS = 1000
+
+// The lead reads teammate messages as peer input, framed like official 2.1.311
+// so a teammate's words never pass for the user's (no escalation, no laundering).
+export function frameForLead(formatted: string): string {
+  return isTeammate() ? formatted : formatPeerPrompt(formatted)
+}
 
 type Props = {
   enabled: boolean
@@ -164,23 +179,13 @@ export function useInboxPoller({
             `[InboxPoller] Received plan approval response from team-lead: approved=${approvalResponse.approved}`,
           )
           if (approvalResponse.approved) {
-            // Use leader's permission mode if provided, otherwise default
-            const targetMode = approvalResponse.permissionMode ?? 'default'
-
-            // Transition out of plan mode
-            setAppState(prev => ({
-              ...prev,
-              toolPermissionContext: applyPermissionUpdate(
-                prev.toolPermissionContext,
-                {
-                  type: 'setMode',
-                  mode: toExternalPermissionMode(targetMode),
-                  destination: 'session',
-                },
-              ),
-            }))
+            const next = planApprovedContext(
+              store.getState().toolPermissionContext,
+              approvalResponse.permissionMode,
+            )
+            setAppState(prev => ({ ...prev, toolPermissionContext: next }))
             logForDebugging(
-              `[InboxPoller] Plan approved by team lead, exited plan mode to ${targetMode}`,
+              `[InboxPoller] Plan approved by team lead, exited plan mode to ${next.mode}`,
             )
           } else {
             logForDebugging(
@@ -198,7 +203,7 @@ export function useInboxPoller({
     // Helper to mark messages as read in the inbox file.
     // Called after messages are successfully delivered or reliably queued.
     const markRead = () => {
-      void markMessagesAsRead(agentName, currentAppState.teamContext?.teamName)
+      void markMessagesAsRead(agentName, currentAppState.teamContext?.teamName, unread)
     }
 
     // Separate permission messages from regular teammate messages
@@ -494,104 +499,17 @@ export function useInboxPoller({
       }
     }
 
-    // Handle team permission updates (teammate side) - apply permission to context
-    if (teamPermissionUpdates.length > 0 && isTeammate()) {
+    // Like official 2.1.311, the inbox never changes permissions: anything
+    // that can write the mailbox file could forge these as team-lead.
+    for (const _ of teamPermissionUpdates) {
       logForDebugging(
-        `[InboxPoller] Found ${teamPermissionUpdates.length} team permission update(s)`,
+        '[InboxPoller] Dropping team_permission_update message: permission rules are never accepted from the inbox',
       )
-
-      for (const m of teamPermissionUpdates) {
-        const parsed = isTeamPermissionUpdate(m.text)
-        if (!parsed) {
-          logForDebugging(
-            `[InboxPoller] Failed to parse team permission update: ${m.text.substring(0, 100)}`,
-          )
-          continue
-        }
-
-        // Validate required nested fields to prevent crashes from malformed messages
-        if (
-          !parsed.permissionUpdate?.rules ||
-          !parsed.permissionUpdate?.behavior
-        ) {
-          logForDebugging(
-            `[InboxPoller] Invalid team permission update: missing permissionUpdate.rules or permissionUpdate.behavior`,
-          )
-          continue
-        }
-
-        // Apply the permission update to the teammate's context
-        logForDebugging(
-          `[InboxPoller] Applying team permission update: ${parsed.toolName} allowed in ${parsed.directoryPath}`,
-        )
-        logForDebugging(
-          `[InboxPoller] Permission update rules: ${jsonStringify(parsed.permissionUpdate.rules)}`,
-        )
-
-        setAppState(prev => {
-          const updated = applyPermissionUpdate(prev.toolPermissionContext, {
-            type: 'addRules',
-            rules: parsed.permissionUpdate.rules,
-            behavior: parsed.permissionUpdate.behavior,
-            destination: 'session',
-          })
-          logForDebugging(
-            `[InboxPoller] Updated session allow rules: ${jsonStringify(updated.alwaysAllowRules.session)}`,
-          )
-          return {
-            ...prev,
-            toolPermissionContext: updated,
-          }
-        })
-      }
     }
-
-    // Handle mode set requests (teammate side) - team lead changing teammate's mode
-    if (modeSetRequests.length > 0 && isTeammate()) {
+    for (const _ of modeSetRequests) {
       logForDebugging(
-        `[InboxPoller] Found ${modeSetRequests.length} mode set request(s)`,
+        '[InboxPoller] Dropping mode_set_request message: permission mode changes are never accepted from the inbox',
       )
-
-      for (const m of modeSetRequests) {
-        // Only accept mode changes from team-lead
-        if (m.from !== 'team-lead') {
-          logForDebugging(
-            `[InboxPoller] Ignoring mode set request from non-team-lead: ${m.from}`,
-          )
-          continue
-        }
-
-        const parsed = isModeSetRequest(m.text)
-        if (!parsed) {
-          logForDebugging(
-            `[InboxPoller] Failed to parse mode set request: ${m.text.substring(0, 100)}`,
-          )
-          continue
-        }
-
-        const targetMode = permissionModeFromString(parsed.mode)
-        // Same gates and transition as any other mode switch (bypass/auto/plan
-        // availability, auto's dangerous-rule stripping).
-        const current = store.getState().toolPermissionContext
-        let next: typeof current
-        try {
-          next = transitionPermissionModeWithGates(current, targetMode)
-        } catch (error) {
-          logForDebugging(
-            `[InboxPoller] Refusing mode change from team-lead to ${targetMode}: ${error instanceof Error ? error.message : String(error)}`,
-          )
-          next = current
-        }
-        logPermissionModeChange('teammate', current.mode, next.mode, 'mode_set_request from team-lead')
-        setAppState(prev => ({ ...prev, toolPermissionContext: next }))
-
-        // Update config.json so team lead sees the mode actually in effect
-        const teamName = currentAppState.teamContext?.teamName
-        const agentName = getAgentName()
-        if (teamName && agentName) {
-          await setMemberMode(teamName, agentName, next.mode)
-        }
-      }
     }
 
     // Handle plan approval requests (leader side) - auto-approve and write response to teammate inbox
@@ -770,7 +688,7 @@ export function useInboxPoller({
 
     // Format messages with XML wrapper for Claude (include color if available)
     // Transform plan approval requests to include instructions for Claude
-    const formatted = regularMessages
+    const formatted = capIdleResultsInDrain(regularMessages)
       .map(m => {
         const colorAttr = m.color ? ` color="${m.color}"` : ''
         const summaryAttr = m.summary ? ` summary="${m.summary}"` : ''
@@ -779,6 +697,7 @@ export function useInboxPoller({
         return `<${TEAMMATE_MESSAGE_TAG} teammate_id="${m.from}"${colorAttr}${summaryAttr}>\n${messageContent}\n</${TEAMMATE_MESSAGE_TAG}>`
       })
       .join('\n\n')
+    const framed = frameForLead(formatted)
 
     // Helper to queue messages in AppState for later delivery
     const queueMessages = () => {
@@ -804,7 +723,7 @@ export function useInboxPoller({
     if (!isLoading && !focusedInputDialog) {
       // IDLE: Submit as new turn immediately
       logForDebugging(`[InboxPoller] Session idle, submitting immediately`)
-      const submitted = onSubmitTeammateMessage(formatted)
+      const submitted = onSubmitTeammateMessage(framed)
       if (!submitted) {
         // Submission rejected (query already running), queue for later
         logForDebugging(
@@ -876,16 +795,17 @@ export function useInboxPoller({
     )
 
     // Format messages with XML wrapper for Claude (include color if available)
-    const formatted = pendingMessages
+    const formatted = capIdleResultsInDrain(pendingMessages)
       .map(m => {
         const colorAttr = m.color ? ` color="${m.color}"` : ''
         const summaryAttr = m.summary ? ` summary="${m.summary}"` : ''
         return `<${TEAMMATE_MESSAGE_TAG} teammate_id="${m.from}"${colorAttr}${summaryAttr}>\n${m.text}\n</${TEAMMATE_MESSAGE_TAG}>`
       })
       .join('\n\n')
+    const framed = frameForLead(formatted)
 
     // Try to submit - only clear messages if successful
-    const submitted = onSubmitTeammateMessage(formatted)
+    const submitted = onSubmitTeammateMessage(framed)
     if (submitted) {
       // Clear the specific messages we just submitted by their IDs
       const submittedIds = new Set(pendingMessages.map(m => m.id))
@@ -912,7 +832,10 @@ export function useInboxPoller({
 
   // Poll if running as a teammate or as a team lead
   const shouldPoll = enabled && !!getAgentNameToPoll(store.getState())
-  useInterval(() => void poll(), shouldPoll ? INBOX_POLL_INTERVAL_MS : null)
+  useInterval(
+    () => runOutsideTeammateContext(() => void poll()),
+    shouldPoll ? INBOX_POLL_INTERVAL_MS : null,
+  )
 
   // Initial poll on mount (only once)
   const hasDoneInitialPollRef = useRef(false)
@@ -922,7 +845,7 @@ export function useInboxPoller({
     // Use store.getState() to avoid dependency on appState object
     if (getAgentNameToPoll(store.getState())) {
       hasDoneInitialPollRef.current = true
-      void poll()
+      runOutsideTeammateContext(() => void poll())
     }
     // Note: poll uses store.getState() (not appState) so it won't re-run on appState changes
     // The ref guard is a safety measure to ensure initial poll only happens once

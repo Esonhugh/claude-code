@@ -64,6 +64,14 @@ export function runWithTeammateContext<T>(
 }
 
 /**
+ * Run a function with no in-process teammate context, even when called from
+ * inside one (e.g. a leader REPL render triggered by a teammate's setAppState).
+ */
+export function runOutsideTeammateContext<T>(fn: () => T): T {
+  return teammateContextStorage.exit(fn)
+}
+
+/**
  * Check if current execution is within an in-process teammate.
  * This is faster than getTeammateContext() !== undefined for simple checks.
  */

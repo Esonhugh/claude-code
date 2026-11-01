@@ -55,6 +55,7 @@ type TaskProgressEvent = {
   run_id?: string
   tool_use_id?: string
   description: string
+  subagent_type?: string
   usage: {
     total_tokens: number
     tool_uses: number

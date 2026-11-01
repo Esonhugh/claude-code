@@ -46,7 +46,7 @@ import { getSubscriptionType } from '../utils/auth.js'
 import { clearMemoryFileCaches, getMemoryFiles } from '../utils/claudemd.js'
 import { getCwd } from '../utils/cwd.js'
 import { logForDebugging } from '../utils/debug.js'
-import { getClaudeConfigHomeDir } from '../utils/envUtils.js'
+import { getClaudeConfigHomeDir, isSafeMode } from '../utils/envUtils.js'
 import { errorMessage } from '../utils/errors.js'
 import { renderMessagesToPlainText } from '../utils/exportRenderer.js'
 import { tailFile } from '../utils/fsOperations.js'
@@ -504,7 +504,18 @@ export function buildHooksListingResponse(appState: AppState, toolNames: string[
       allDisabled: appState.settings.disableAllHooks === true,
       policyHookCount: Object.values(policy?.hooks ?? {}).flatMap(m => m ?? []).flatMap(m => m.hooks).length,
     },
-    safeMode: null,
+    ...(isSafeMode()
+      ? {
+          safeMode: {
+            managedHooksStillApply: Object.keys(policy ?? {}).length > 0,
+            exitHint: !process.argv.includes('--safe-mode')
+              ? 'unset CLAUDE_CODE_SAFE_MODE'
+              : process.env.CLAUDE_CODE_SESSION_KIND === 'bg'
+                ? 'run /stop, then claude --resume from your shell'
+                : 'restart without --safe-mode',
+          },
+        }
+      : {}),
   }
 }
 

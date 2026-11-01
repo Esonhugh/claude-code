@@ -10,6 +10,7 @@ import type {
   SDKCompactBoundaryMessage,
   SDKMessage,
   SDKRateLimitInfo,
+  SDKToolResultMeta,
 } from 'src/entrypoints/agentSdkTypes.js'
 import type { ClaudeAILimits } from 'src/services/claudeAiLimits.js'
 import { EXIT_PLAN_MODE_V2_TOOL_NAME } from 'src/tools/ExitPlanModeTool/constants.js'
@@ -17,11 +18,49 @@ import type {
   AssistantMessage,
   CompactMetadata,
   Message,
+  UserMessage,
 } from 'src/types/message.js'
 import type { DeepImmutable } from 'src/types/utils.js'
 import stripAnsi from 'strip-ansi'
 import { createAssistantMessage } from '../messages.js'
 import { getPlan } from '../plans.js'
+
+/**
+ * Like official 2.1.311, SDK tool_result_meta for a user message holding one
+ * tool_result. Subagent messages carry only permission_decision.
+ */
+export function toolResultMeta(
+  message: UserMessage,
+  subagent = false,
+): SDKToolResultMeta[] {
+  const kind = subagent ? undefined : message.toolDenialKind
+  const decision = message.permissionDecision
+  if (kind === undefined && decision === undefined) return []
+  const content = message.message.content
+  if (!Array.isArray(content)) return []
+  const results = content.filter(block => block.type === 'tool_result')
+  if (results.length !== 1) return []
+  return [
+    {
+      id: results[0]!.tool_use_id,
+      ...(kind !== undefined && {
+        non_execution_kind: kind,
+        ...(message.userFeedback !== undefined && {
+          user_feedback: message.userFeedback,
+        }),
+      }),
+      ...(decision !== undefined && {
+        permission_decision: {
+          decision: decision.decision,
+          source: decision.source,
+          ...(decision.reasonType !== undefined && {
+            reason_type: decision.reasonType,
+          }),
+        },
+      }),
+    },
+  ]
+}
 
 export function toInternalMessages(
   messages: readonly DeepImmutable<SDKMessage>[],
@@ -80,11 +119,14 @@ export function toSDKCompactMetadata(
   meta: CompactMetadata,
 ): SDKCompactMetadata {
   const seg = meta.preservedSegment
+  const kept = meta.preservedMessages
   return {
     // @ts-ignore - recovered code
     trigger: meta.trigger,
     // @ts-ignore - recovered code
     pre_tokens: meta.preTokens,
+    ...(typeof meta.postTokens === 'number' && { post_tokens: meta.postTokens }),
+    ...(typeof meta.durationMs === 'number' && { duration_ms: meta.durationMs }),
     ...(seg && {
       preserved_segment: {
         // @ts-ignore - recovered code
@@ -95,6 +137,9 @@ export function toSDKCompactMetadata(
         tail_uuid: seg.tailUuid,
       },
     }),
+    ...(kept && {
+      preserved_messages: { anchor_uuid: kept.anchorUuid, uuids: kept.uuids },
+    }),
   }
 }
 
@@ -102,12 +147,20 @@ export function toSDKCompactMetadata(
  * Shared SDK→internal compact_metadata converter.
  */
 export function fromSDKCompactMetadata(
-  meta: SDKCompactMetadata,
+  meta: Omit<SDKCompactMetadata, 'preserved_messages'> & {
+    preserved_messages?: { anchor_uuid: string; uuids: readonly string[] }
+  },
 ): CompactMetadata {
   const seg = meta.preserved_segment
+  const kept = meta.preserved_messages
   return {
     trigger: meta.trigger,
     preTokens: meta.pre_tokens,
+    ...(meta.post_tokens !== undefined && { postTokens: meta.post_tokens }),
+    ...(meta.duration_ms !== undefined && { durationMs: meta.duration_ms }),
+    ...(kept && {
+      preservedMessages: { anchorUuid: kept.anchor_uuid, uuids: [...kept.uuids] },
+    }),
     ...(seg && {
       preservedSegment: {
         headUuid: seg.head_uuid,
@@ -133,7 +186,8 @@ export function toSDKMessages(messages: Message[]): SDKMessage[] {
             error: message.error,
           },
         ]
-      case 'user':
+      case 'user': {
+        const meta = toolResultMeta(message)
         return [
           {
             type: 'user',
@@ -150,8 +204,10 @@ export function toSDKMessages(messages: Message[]): SDKMessage[] {
             ...(message.toolUseResult !== undefined
               ? { tool_use_result: message.toolUseResult }
               : {}),
+            ...(meta.length > 0 && { tool_result_meta: meta }),
           },
         ]
+      }
       case 'system':
         if (message.subtype === 'compact_boundary' && message.compactMetadata) {
           return [

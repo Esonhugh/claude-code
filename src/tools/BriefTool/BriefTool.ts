@@ -91,9 +91,10 @@ export function isBriefEntitled(): boolean {
   return feature('KAIROS') || feature('KAIROS_BRIEF')
     ? getKairosActive() ||
         isEnvTruthy(process.env.CLAUDE_CODE_BRIEF) ||
+        // On unless the server turns it off: the fork ships brief mode.
         getFeatureValue_CACHED_WITH_REFRESH(
           'tengu_kairos_brief',
-          false,
+          true,
           KAIROS_BRIEF_REFRESH_MS,
         )
     : false

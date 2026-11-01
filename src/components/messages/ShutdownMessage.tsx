@@ -85,6 +85,14 @@ export function ShutdownRejectedDisplay({
   )
 }
 
+// A teammate's copy of the request carries reply instructions after the JSON
+// (withShutdownReplyInstructions); render it as the request itself.
+function parseShutdownRequest(content: string) {
+  const head = content.split('\n\n', 1)[0]!
+  if (head === content) return isShutdownRequest(content)
+  return content.startsWith('\n\nThis is a shutdown request.', head.length) ? isShutdownRequest(head) : null
+}
+
 /**
  * Try to parse and render a shutdown message from raw content.
  * Returns the rendered component if it's a shutdown message, null otherwise.
@@ -92,7 +100,7 @@ export function ShutdownRejectedDisplay({
 export function tryRenderShutdownMessage(
   content: string,
 ): React.ReactNode | null {
-  const request = isShutdownRequest(content)
+  const request = parseShutdownRequest(content)
   if (request) {
     return <ShutdownRequestDisplay request={request} />
   }
@@ -116,7 +124,7 @@ export function tryRenderShutdownMessage(
  * Returns null if the content is not a shutdown message.
  */
 export function getShutdownMessageSummary(content: string): string | null {
-  const request = isShutdownRequest(content)
+  const request = parseShutdownRequest(content)
   if (request) {
     return `[Shutdown Request from ${request.from}]${request.reason ? ` ${request.reason}` : ''}`
   }

@@ -1,4 +1,5 @@
 import { feature } from 'bun:bundle'
+import { FILE_READ_TOOL_NAME } from '../FileReadTool/prompt.js'
 import type { ToolResultBlockParam } from '@anthropic-ai/sdk/resources/index.mjs'
 import {
   copyFile,
@@ -221,8 +222,8 @@ function isAutobackgroundingAllowed(command: string): boolean {
 /**
  * PS-flavored port of BashTool's detectBlockedSleepPattern.
  * Catches `Start-Sleep N`, `Start-Sleep -Seconds N`, `sleep N` (built-in alias)
- * as the first statement. Does NOT block `Start-Sleep -Milliseconds` (sub-second
- * pacing is fine) or float seconds (legit rate limiting).
+ * as the first statement, from 25 seconds up like official 2.1.311. Does NOT
+ * block `Start-Sleep -Milliseconds`.
  */
 export function detectBlockedSleepPattern(command: string): string | null {
   // First statement only — split on PS statement separators: `;`, `|`,
@@ -237,12 +238,12 @@ export function detectBlockedSleepPattern(command: string): string | null {
       ?.trim() ?? ''
   // Match: Start-Sleep N, Start-Sleep -Seconds N, Start-Sleep -s N, sleep N
   // (case-insensitive; -Seconds can be abbreviated to -s per PS convention)
-  const m = /^(?:start-sleep|sleep)(?:\s+-s(?:econds)?)?\s+(\d+)\s*$/i.exec(
+  const m = /^(?:start-sleep|sleep)(?:\s+-s(?:econds)?)?\s+(\d+(?:\.\d*)?)\s*$/i.exec(
     first,
   )
   if (!m) return null
-  const secs = parseInt(m[1]!, 10)
-  if (secs < 2) return null // sub-2s sleeps are fine (rate limiting, pacing)
+  const secs = parseFloat(m[1]!)
+  if (secs < 25) return null
 
   const rest = command
     .trim()
@@ -515,7 +516,7 @@ export const PowerShellTool = buildTool({
       if (sleepPattern !== null) {
         return {
           result: false,
-          message: `Blocked: ${sleepPattern}. Run blocking commands in the background with run_in_background: true — you'll get a completion notification when done. For streaming events (watching logs, polling APIs), use the Monitor tool. If you genuinely need a delay (rate limiting, deliberate pacing), keep it under 2 seconds.`,
+          message: `Blocked: ${sleepPattern}. To wait for a condition, use Monitor with an until-loop (e.g. \`until <check>; do sleep 2; done\` — Monitor runs bash). To wait for a command you started, use run_in_background: true. Do not chain shorter sleeps to work around this block.`,
           errorCode: 10,
         }
       }
@@ -589,7 +590,7 @@ export const PowerShellTool = buildTool({
       } else if (backgroundedByUser) {
         backgroundInfo = `Command was manually backgrounded by user with ID: ${backgroundTaskId}. Output is being written to: ${outputPath}`
       } else {
-        backgroundInfo = `Command running in background with ID: ${backgroundTaskId}. Output is being written to: ${outputPath}`
+        backgroundInfo = `Command running in background with ID: ${backgroundTaskId}. Output is being written to: ${outputPath}. You will be notified when it completes. To check interim output, use ${FILE_READ_TOOL_NAME} on that file path.`
       }
     }
 

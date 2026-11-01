@@ -85,7 +85,7 @@ import {
   createSyntheticOutputTool,
   isSyntheticOutputToolEnabled,
 } from './tools/SyntheticOutputTool/SyntheticOutputTool.js'
-import { getTools } from './tools.js'
+import { getAllBaseTools, getTools } from './tools.js'
 import {
   canUserConfigureAdvisor,
   getInitialAdvisorSetting,
@@ -127,6 +127,7 @@ import { createSystemMessage, createUserMessage } from './utils/messages.js'
 import { getPlatform } from './utils/platform.js'
 import { getBaseRenderOptions } from './utils/renderOptions.js'
 import { initializeFullscreenMode } from './utils/fullscreen.js'
+import { initScreenReaderMode } from './utils/screenReader.js'
 import { isFocusViewConfigured } from './utils/focusView.js'
 import { configureTuiRestart } from './utils/tuiRestart.js'
 import { getSessionIngressAuthToken } from './utils/sessionIngressAuth.js'
@@ -213,12 +214,14 @@ import {
 } from './services/plugins/pluginCliCommands.js'
 import { initBundledSkills } from './skills/bundled/index.js'
 import type { AgentColorName } from './tools/AgentTool/agentColorManager.js'
+import { formatHelp } from './utils/cliHelp.js'
 import {
   getActiveAgentsFromList,
   getAgentDefinitionsWithOverrides,
   isBuiltInAgent,
   isCustomAgent,
   parseAgentsFromJson,
+  readAgentsFlag,
 } from './tools/AgentTool/loadAgentsDir.js'
 import type { LogOption } from './types/logs.js'
 import type { Message as MessageType } from './types/message.js'
@@ -232,7 +235,7 @@ import {
   shouldAutoEnableClaudeInChrome,
   shouldEnableClaudeInChrome,
 } from './utils/claudeInChrome/setup.js'
-import { getContextWindowForModel } from './utils/context.js'
+import { getContextWindowForModel, parseCompactionWindow } from './utils/context.js'
 import { loadConversationForResume } from './utils/conversationRecovery.js'
 import { buildDeepLinkBanner } from './utils/deepLink/banner.js'
 import {
@@ -278,6 +281,7 @@ import {
   parseToolListFromCLI,
   removeDangerousPermissions,
   stripDangerousPermissionsForAutoMode,
+  unknownToolRuleWarnings,
   verifyAutoModeGateAccess,
 } from './utils/permissions/permissionSetup.js'
 import { permissionRuleValueFromString } from './utils/permissions/permissionRuleParser.js'
@@ -286,6 +290,8 @@ import { TASK_GET_TOOL_NAME } from './tools/TaskGetTool/constants.js'
 import { TASK_LIST_TOOL_NAME } from './tools/TaskListTool/constants.js'
 import { TASK_UPDATE_TOOL_NAME } from './tools/TaskUpdateTool/constants.js'
 import { TODO_WRITE_TOOL_NAME } from './tools/TodoWriteTool/constants.js'
+import { GLOB_TOOL_NAME } from './tools/GlobTool/prompt.js'
+import { GREP_TOOL_NAME } from './tools/GrepTool/prompt.js'
 import { cleanupOrphanedPluginVersionsInBackground } from './utils/plugins/cacheUtils.js'
 import { initializeVersionedPlugins } from './utils/plugins/installedPluginsManager.js'
 import { getManagedPluginNames } from './utils/plugins/managedPlugins.js'
@@ -316,6 +322,7 @@ import {
 } from './utils/settings/settings.js'
 import { resetSettingsCache } from './utils/settings/settingsCache.js'
 import type { ValidationError } from './utils/settings/validation.js'
+import { formatSettingsLoadReport } from './utils/settings/validation.js'
 import {
   DEFAULT_TASKS_MODE_TASK_LIST_ID,
   TASK_STATUSES,
@@ -396,15 +403,19 @@ import {
   getIsNonInteractiveSession,
   getSdkBetas,
   getIsRemoteMode,
+  isRestrictedSession,
   getSessionId,
   getUserMsgOptIn,
   setAllowedChannels,
   setAllowedSettingSources,
+  setRestrictedSession,
   setChromeFlagOverride,
   setClientType,
   setCwdState,
   setDirectConnectServerUrl,
   setFlagSettingsPath,
+  setCliAutoCompactWindow,
+  setForwardSubagentText,
   setInitialMainLoopModel,
   setParentManagedSettings,
   setProjectConfigRoot,
@@ -424,6 +435,7 @@ import {
   setSessionSource,
   setUserMsgOptIn,
   setTodoToolsOptIn,
+  setSearchToolsOptIn,
   setPermissionPromptToolName,
   switchSession,
   getSessionStartedAt,
@@ -786,7 +798,7 @@ function loadSettingsFromFlag(settingsFile: string): void {
       // It's a file path - resolve and validate by attempting to read
       const { resolvedPath: resolvedSettingsPath } = safeResolvePath(
         getFsImplementation(),
-        settingsFile,
+        resolve(settingsFile),
       )
       try {
         readFileSync(resolvedSettingsPath, 'utf8')
@@ -884,6 +896,16 @@ function eagerLoadSettings(): void {
   const settingSourcesArg = eagerParseCliFlag('--setting-sources')
   if (settingSourcesArg !== undefined) {
     loadSettingSourcesFromFlag(settingSourcesArg)
+  }
+
+  // --restricted reads no user, project or local settings files; managed
+  // settings and --settings still apply.
+  const separator = process.argv.indexOf('--')
+  const argv = separator === -1 ? process.argv : process.argv.slice(0, separator)
+  if (argv.includes('--restricted') || isEnvTruthy(process.env.CLAUDE_CODE_RESTRICTED)) {
+    setRestrictedSession(true)
+    setAllowedSettingSources([])
+    resetSettingsCache()
   }
 
   const managedSettings = eagerParseCliFlag('--managed-settings')
@@ -1239,6 +1261,7 @@ async function run(): Promise<CommanderCommand> {
     return Object.assign(
       { sortSubcommands: true, sortOptions: true } as const,
       {
+        formatHelp,
         compareOptions: (a: Option, b: Option) =>
           getOptionSortKey(a).localeCompare(getOptionSortKey(b)),
       },
@@ -1402,7 +1425,7 @@ async function run(): Promise<CommanderCommand> {
     )
     .option(
       '-p, --print',
-      'Print response and exit (useful for pipes). Note: The workspace trust dialog is skipped when Claude is run with the -p mode. Only use this flag in directories you trust.',
+      'Print response and exit (useful for pipes). Note: The workspace trust dialog is skipped when Claude is run in non-interactive mode (via -p, or when stdout is not a TTY, e.g. piped or redirected output). Only use this in directories you trust. Settings files that fail validation are silently ignored in this mode (no error dialog is shown).',
       () => true,
     )
     .option(
@@ -1456,17 +1479,30 @@ async function run(): Promise<CommanderCommand> {
       'Include partial message chunks as they arrive (only works with --print and --output-format=stream-json)',
       () => true,
     )
-    .option('--await-initialize', 'Read launch-scoped plugins from the first initialize stdin line (requires --input-format=stream-json)')
+    .option(
+      '--forward-subagent-text',
+      'Forward subagent text and thinking blocks as assistant/user messages with parent_tool_use_id set (only works with --print and --output-format=stream-json)',
+      () => true,
+    )
+    .addOption(
+      new Option(
+        '--await-initialize',
+        'Read launch-scoped plugins from the first initialize stdin line (requires --input-format=stream-json)',
+      ).hideHelp(),
+    )
     .addOption(
       new Option(
         '--input-format <format>',
         'Input format (only works with --print): "text" (default), or "stream-json" (realtime streaming input)',
       ).choices(['text', 'stream-json']),
     )
-    .option(
-      '--mcp-debug',
-      '[DEPRECATED. Use --debug instead] Enable MCP debug mode (shows MCP server errors)',
-      () => true,
+    .addOption(
+      new Option(
+        '--mcp-debug',
+        '[DEPRECATED. Use --debug instead] Enable MCP debug mode (shows MCP server errors)',
+      )
+        .argParser(() => true)
+        .hideHelp(),
     )
     .option(
       '--dangerously-skip-permissions',
@@ -1507,7 +1543,13 @@ async function run(): Promise<CommanderCommand> {
         '--max-turns <turns>',
         'Maximum number of agentic turns in non-interactive mode. This will early exit the conversation after the specified number of turns. (only works with --print)',
       )
-        .argParser(Number)
+        .argParser(value => {
+          const turns = Number(value)
+          if (!Number.isFinite(turns)) {
+            throw new InvalidArgumentError('must be a number')
+          }
+          return turns
+        })
         .hideHelp(),
     )
     .addOption(
@@ -1517,7 +1559,7 @@ async function run(): Promise<CommanderCommand> {
       ).argParser(value => {
         const amount = Number(value)
         if (isNaN(amount) || amount <= 0) {
-          throw new Error(
+          throw new InvalidArgumentError(
             '--max-budget-usd must be a positive number greater than 0',
           )
         }
@@ -1545,6 +1587,29 @@ async function run(): Promise<CommanderCommand> {
     )
     .addOption(
       new Option(
+        '--autocompact <auto|tokens>',
+        'Auto-compact window size (auto, or 100k–1M tokens)',
+      ).argParser(value => {
+        if (value.trim().toLowerCase() === 'auto') return 'auto' as const
+        const tokens = parseCompactionWindow(value)
+        if (tokens === undefined)
+          throw new InvalidArgumentError(
+            "It must be 'auto', or between 100k and 1M (e.g. 500k, 200000, or 200 as shorthand)",
+          )
+        return tokens
+      }),
+    )
+    .addOption(
+      new Option(
+        '--prompt-suggestions [value]',
+        'Enable prompt suggestions. In print/SDK mode, emits a prompt_suggestion message after each turn with a predicted next user prompt',
+      )
+        .choices(['true', 'false', '1', '0', 'yes', 'no', 'on', 'off'])
+        .preset('true')
+        .argParser(value => ['true', '1', 'yes', 'on'].includes(value)),
+    )
+    .addOption(
+      new Option(
         '--enable-auth-status',
         'Enable auth status messages in SDK mode',
       )
@@ -1553,15 +1618,20 @@ async function run(): Promise<CommanderCommand> {
     )
     .option(
       '--allowedTools, --allowed-tools <tools...>',
-      'Comma or space-separated list of tool names to allow (e.g. "Bash(git:*) Edit")',
+      'Comma or space-separated list of tool names to allow (e.g. "Bash(git *) Edit")',
     )
     .option(
       '--tools <tools...>',
       'Specify the list of available tools from the built-in set. Use "" to disable all tools, "default" to use all tools, or specify tool names (e.g. "Bash,Edit,Read").',
     )
     .option(
+      '--restricted',
+      'Restricted mode: removes the built-in tools that run commands or code (Bash, PowerShell and the other code-running tools) and WebFetch unless --tools names them, and ignores user, project and local settings files (managed settings and --settings still apply; add --strict-mcp-config to skip MCP servers too). Also confines the file tools to the working directories (--add-dir included), refuses bypassPermissions, and lets only a person or the configured permission handler approve writes to settings, git and tool-configuration files.',
+      () => true,
+    )
+    .option(
       '--disallowedTools, --disallowed-tools <tools...>',
-      'Comma or space-separated list of tool names to deny (e.g. "Bash(git:*) Edit")',
+      'Comma or space-separated list of tool names to deny (e.g. "Bash(git *) Edit")',
     )
     .option(
       '--mcp-config <configs...>',
@@ -1638,7 +1708,7 @@ async function run(): Promise<CommanderCommand> {
     )
     .option(
       '-r, --resume [value]',
-      'Resume a conversation by session ID, or open interactive picker with optional search term',
+      'Resume a conversation by session ID or name, or open interactive picker with optional search term',
       value => value || true,
     )
     .option(
@@ -1727,7 +1797,7 @@ async function run(): Promise<CommanderCommand> {
     // @[MODEL LAUNCH]: Update the example model ID in the --model help text.
     .option(
       '--model <model>',
-      `Model for the current session. Provide an alias for the latest model (e.g. 'sonnet' or 'opus') or a model's full name (e.g. 'claude-sonnet-4-6').`,
+      `Model for the current session. Provide an alias for the latest model (e.g. 'fable', 'opus', or 'sonnet') or a model's full name.`,
     )
     .addOption(
       new Option(
@@ -1789,11 +1859,11 @@ async function run(): Promise<CommanderCommand> {
     )
     .option(
       '-n, --name <name>',
-      'Set a display name for this session (shown in /resume and terminal title)',
+      'Set a display name for this session (shown in the prompt box, /resume picker, and terminal title)',
     )
     .option(
-      '--agents <json>',
-      'JSON object defining custom agents (e.g. \'{"reviewer": {"description": "Reviews code", "prompt": "You are a code reviewer"}}\')',
+      '--agents <json-or-file>',
+      'JSON object defining custom agents, or with --print the path to a file that holds one (e.g. \'{"reviewer": {"description": "Reviews code", "prompt": "You are a code reviewer"}}\')',
     )
     .option(
       '--setting-sources <sources>',
@@ -1806,7 +1876,7 @@ async function run(): Promise<CommanderCommand> {
     // --plugin-dir takes exactly one arg; repeat the flag for multiple dirs.
     .option(
       '--plugin-dir <path>',
-      'Load plugins from a directory for this session only (repeatable: --plugin-dir A --plugin-dir B)',
+      'Load a plugin from a directory or .zip for this session only; a folder of plugins loads each child (repeatable: --plugin-dir A --plugin-dir B.zip)',
       (val: string, prev: string[]) => [...prev, val],
       [] as string[],
     )
@@ -1832,6 +1902,19 @@ async function run(): Promise<CommanderCommand> {
       if ((options as { background?: boolean }).background) {
         const { handleBgFlag } = await import('./cli/bg.js')
         await handleBgFlag(prompt, process.argv.slice(2), (options as { name?: string }).name)
+        process.exit(0)
+      }
+      // Like 2.1.311: a bare `claude` opens the agents view when
+      // defaultToAgentsView is set.
+      if (
+        feature('BG_SESSIONS') &&
+        process.argv.length <= 2 &&
+        process.stdin.isTTY &&
+        process.stdout.isTTY &&
+        getGlobalConfig().defaultToAgentsView === true
+      ) {
+        const { runAgentView } = await import('./cli/agentView.js')
+        await runAgentView()
         process.exit(0)
       }
       // --safe-mode / CLAUDE_CODE_SAFE_MODE: CLAUDE.md loading is gated on
@@ -1961,6 +2044,13 @@ async function run(): Promise<CommanderCommand> {
       let fileDownloadPromise: Promise<DownloadResult[]> | undefined
 
       const agentsJson = options.agents
+      setCliAutoCompactWindow(
+        options.autocompact as number | 'auto' | undefined,
+      )
+      setForwardSubagentText(
+        options.forwardSubagentText === true ||
+          isEnvTruthy(process.env.CLAUDE_CODE_FORWARD_SUBAGENT_TEXT),
+      )
       const agentCli = options.agent
       if (feature('BG_SESSIONS') && agentCli) {
         process.env.CLAUDE_CODE_AGENT = agentCli
@@ -2223,16 +2313,6 @@ async function run(): Promise<CommanderCommand> {
       // Get isNonInteractiveSession from state (was set before init())
       const isNonInteractiveSession = getIsNonInteractiveSession()
 
-      // Validate that fallback model is different from main model
-      if (fallbackModel && options.model && fallbackModel === options.model) {
-        process.stderr.write(
-          chalk.red(
-            'Error: Fallback model cannot be the same as the main model. Please specify a different model for --fallback-model.\n',
-          ),
-        )
-        process.exit(1)
-      }
-
       // Handle system prompt options
       let systemPrompt = options.systemPrompt
       if (options.systemPromptFile) {
@@ -2332,6 +2412,15 @@ async function run(): Promise<CommanderCommand> {
       }
       const { mode: permissionMode, notification: permissionModeNotification } =
         initialPermission
+      if (
+        isRestrictedSession() &&
+        (permissionMode === 'bypassPermissions' || allowDangerouslySkipPermissions)
+      ) {
+        process.stderr.write(
+          chalk.red('Error: bypassPermissions not supported in restricted mode\n'),
+        )
+        process.exit(1)
+      }
 
       // Store session bypass permissions mode for trust dialog check
       setSessionBypassPermissionsMode(permissionMode === 'bypassPermissions')
@@ -2759,6 +2848,13 @@ async function run(): Promise<CommanderCommand> {
           TASK_LIST_TOOL_NAME,
         ].some(name => launchToolNames.includes(name)),
       )
+      // Like official 2.1.311, naming Glob or Grep keeps them when the
+      // embedded bfs/ugrep would otherwise replace them.
+      setSearchToolsOptIn(
+        [GLOB_TOOL_NAME, GREP_TOOL_NAME].some(name =>
+          launchToolNames.includes(name),
+        ),
+      )
       if (options.permissionPrompts !== 'none') {
         setPermissionPromptToolName(
           sdkUrl ? 'stdio' : options.permissionPromptTool,
@@ -2827,6 +2923,13 @@ async function run(): Promise<CommanderCommand> {
           toolPermissionContext,
         )
       }
+
+      const knownToolNames = new Set(
+        getAllBaseTools().flatMap(tool => [tool.name, ...(tool.aliases ?? [])]),
+      )
+      warnings.push(
+        ...unknownToolRuleWarnings(toolPermissionContext, knownToolNames),
+      )
 
       // Print any warnings from initialization
       warnings.forEach(warning => {
@@ -2964,7 +3067,7 @@ async function run(): Promise<CommanderCommand> {
       // (mirrors useMergedTools.ts filtering for REPL/interactive path)
       if (
         feature('COORDINATOR_MODE') &&
-        isEnvTruthy(process.env.CLAUDE_CODE_COORDINATOR_MODE)
+        coordinatorModeModule?.isCoordinatorMode()
       ) {
         const { applyCoordinatorToolFilter } = await import(
           './utils/toolPool.js'
@@ -2979,7 +3082,16 @@ async function run(): Promise<CommanderCommand> {
         isSyntheticOutputToolEnabled({ isNonInteractiveSession }) &&
         options.jsonSchema
       ) {
-        jsonSchema = jsonParse(options.jsonSchema) as ToolInputJSONSchema
+        try {
+          jsonSchema = jsonParse(options.jsonSchema) as ToolInputJSONSchema
+        } catch (error) {
+          process.stderr.write(
+            chalk.red(
+              `Error: --json-schema is not valid JSON: ${errorMessage(error)}\n`,
+            ),
+          )
+          process.exit(1)
+        }
       }
 
       if (jsonSchema) {
@@ -3187,8 +3299,23 @@ async function run(): Promise<CommanderCommand> {
       // Parse CLI agents if provided via --agents flag (safe mode ignores them)
       let cliAgents: typeof agentDefinitionsResult.activeAgents = []
       if (agentsJson && !isSafeMode()) {
+        const agentsText = await readAgentsFlag(agentsJson, isNonInteractiveSession)
+        if (agentsText.ok === false) {
+          process.stderr.write(chalk.red(`${agentsText.error}\n`))
+          process.exit(1)
+        }
+        let parsedAgents: unknown
         try {
-          const parsedAgents = safeParseJSON(agentsJson)
+          parsedAgents = jsonParse(agentsText.json)
+        } catch (error) {
+          process.stderr.write(
+            chalk.red(
+              `Error: Invalid --agents configuration:\ninvalid JSON: ${errorMessage(error)}\n`,
+            ),
+          )
+          process.exit(1)
+        }
+        try {
           if (parsedAgents) {
             cliAgents = parseAgentsFromJson(parsedAgents, 'flagSettings')
           }
@@ -3222,6 +3349,23 @@ async function run(): Promise<CommanderCommand> {
         mainThreadAgentDefinition = agentDefinitions.activeAgents.find(
           agent => agent.agentType === agentSetting,
         )
+        if (
+          !mainThreadAgentDefinition &&
+          agentCli &&
+          outputFormat !== 'stream-json' &&
+          !options.resume &&
+          !options.continue
+        ) {
+          // Like 2.1.311, an explicit --agent that does not exist is an error
+          // rather than a silent fallback to the default agent.
+          const available = agentDefinitions.activeAgents
+            .map(agent => agent.agentType)
+            .join(', ')
+          process.stderr.write(
+            `--agent '${agentCli}' not found. Available agents: ${available || '(none)'}\n`,
+          )
+          process.exit(1)
+        }
         if (!mainThreadAgentDefinition) {
           logForDebugging(
             `Warning: agent "${agentSetting}" not found. ` +
@@ -3378,6 +3522,7 @@ async function run(): Promise<CommanderCommand> {
 
       // Show setup screens after commands are loaded
       if (!isNonInteractiveSession) {
+        initScreenReaderMode()
         initializeFullscreenMode(getInitialSettings().tui)
         const ctx = getRenderContext(false)
         getFpsMetrics = ctx.getFpsMetrics
@@ -3526,6 +3671,9 @@ async function run(): Promise<CommanderCommand> {
             onExit: () => gracefulShutdownSync(1),
           })
         }
+      } else if (outputFormat !== 'json' && outputFormat !== 'stream-json') {
+        const report = formatSettingsLoadReport(getSettingsWithErrors().errors)
+        if (report) process.stderr.write(report)
       }
 
       // Check quota status, fast mode, passes eligibility, and bootstrap data
@@ -4186,6 +4334,7 @@ async function run(): Promise<CommanderCommand> {
             sessionMirror: options.sessionMirror === true,
             rewindFiles: options.rewindFiles,
             enableAuthStatus: options.enableAuthStatus,
+            promptSuggestions: options.promptSuggestions,
             agent: agentCli,
             workload: options.workload,
             setupTrigger: setupTrigger ?? undefined,
@@ -4285,6 +4434,8 @@ async function run(): Promise<CommanderCommand> {
 
       const initialState: AppState = {
         settings: getInitialSettings(),
+        // Like 2.1.311, --name shows in the prompt box from the start.
+        ...(sessionNameArg && { standaloneAgentContext: { name: sessionNameArg } }),
         tasks: {},
         taskDecorations: {},
         runningSubagents: 0,
@@ -5538,10 +5689,16 @@ async function run(): Promise<CommanderCommand> {
       new Option(
         '--messaging-socket-path <path>',
         'Unix domain socket path for the UDS messaging server (defaults to a tmp path)',
-      ),
+      ).hideHelp(),
     )
   }
 
+  program.addOption(
+    new Option(
+      '--ax-screen-reader',
+      'Render screen-reader friendly output (flat text, no decorative borders or animations).',
+    ),
+  )
   if (feature('KAIROS') || feature('KAIROS_BRIEF')) {
     program.addOption(
       new Option(
@@ -5563,13 +5720,13 @@ async function run(): Promise<CommanderCommand> {
       new Option(
         '--channels <servers...>',
         'Enable inbound notifications from approved channel plugins for this session: plugin:<name>@<marketplace> (space-separated).',
-      ),
+      ).hideHelp(),
     )
     program.addOption(
       new Option(
         '--dangerously-load-development-channels <servers...>',
         'Load development channels: plugin:<name>@<marketplace> or server:<name>. Interactive only; requires startup confirmation; organization policy still applies.',
-      ),
+      ).hideHelp(),
     )
   }
 
@@ -5750,7 +5907,7 @@ async function run(): Promise<CommanderCommand> {
 
   mcp
     .command('login <name>')
-    .description('Authenticate with an MCP server (HTTP or SSE)')
+    .description('Authenticate with an MCP server (HTTP, SSE, or claude.ai connector)')
     .option(
       '--no-browser',
       'Print the authorization URL instead of opening a browser (for SSH/headless sessions — paste the redirect URL back when prompted)',
@@ -5770,7 +5927,7 @@ async function run(): Promise<CommanderCommand> {
 
   mcp
     .command('add-json <name> <json>')
-    .description('Add an MCP server (stdio or SSE) with a JSON string')
+    .description('Add an MCP server (stdio, SSE, HTTP, or WebSocket) with a JSON string')
     .option(
       '-s, --scope <scope>',
       'Configuration scope (local, user, or project)',
@@ -6349,21 +6506,58 @@ async function run(): Promise<CommanderCommand> {
       await setupTokenHandler(root)
     })
 
-  // Agents command - list configured agents and background sessions
+  // Agents command - background sessions, plus the defaults for the sessions
+  // it dispatches (2.1.311)
+  const repeat = (value: string, previous: string[] = []) => [...previous, value]
   program
     .command('agents')
-    .description('List configured agents and background sessions')
+    .description('Manage background agents')
+    .option('--add-dir <directory>', 'Additional directory to allow tool access to in dispatched sessions (repeatable)', repeat)
+    .option('--agent <agent>', "Default agent for sessions dispatched from agent view. Overrides the 'agent' setting.")
+    .option('--all', 'With --json: also include completed background sessions')
+    .option(
+      '--allow-dangerously-skip-permissions',
+      'Make bypass-permissions mode available to dispatched sessions without defaulting to it',
+    )
+    .option('--cwd <path>', 'Show only background sessions started under <path>')
+    .option('--dangerously-skip-permissions', 'Alias for --permission-mode bypassPermissions')
+    .option('--effort <level>', 'Default effort level for sessions dispatched from agent view')
+    .option(
+      '--json',
+      'Print active sessions (interactive and background) as a JSON array and exit (for scripting; does not require a TTY)',
+    )
+    .option('--mcp-config <config>', 'MCP server configuration to apply to dispatched sessions (repeatable)', repeat)
+    .option('--model <model>', 'Default model for sessions dispatched from agent view')
+    .option('--permission-mode <mode>', 'Default permission mode for sessions dispatched from agent view')
+    .option(
+      '--plugin-dir <path>',
+      'Load plugins from specified directory for the agent view and dispatched sessions; a folder of plugins loads each child (repeatable)',
+      repeat,
+    )
+    .option('--restricted', 'Start dispatched sessions in restricted mode')
     .option(
       '--setting-sources <sources>',
       'Comma-separated list of setting sources to load (user, project, local).',
     )
-    .option(
-      '--json',
-      'Print active sessions (interactive and background) as a JSON array and exit',
-    )
-    .option('--all', 'With --json: also include completed background sessions')
-    .option('--cwd <path>', 'Show only background sessions started under <path>')
-    .action(async (opts: { json?: boolean; all?: boolean; cwd?: string }) => {
+    .option('--settings <file-or-json>', 'Settings file or JSON string to apply to the agent view and dispatched sessions')
+    .option('--strict-mcp-config', 'Only use MCP servers from --mcp-config in dispatched sessions')
+    .action(async (opts: {
+      json?: boolean
+      all?: boolean
+      cwd?: string
+      addDir?: string[]
+      agent?: string
+      allowDangerouslySkipPermissions?: boolean
+      dangerouslySkipPermissions?: boolean
+      effort?: string
+      mcpConfig?: string[]
+      model?: string
+      permissionMode?: string
+      pluginDir?: string[]
+      restricted?: boolean
+      settings?: string
+      strictMcpConfig?: boolean
+    }) => {
       const bg = await import('./cli/bg.js')
       if (opts.json) {
         const rows = await bg.listAgentRows({ all: opts.all, cwd: opts.cwd })
@@ -6372,7 +6566,32 @@ async function run(): Promise<CommanderCommand> {
       }
       if (process.stdin.isTTY && process.stdout.isTTY) {
         const { runAgentView } = await import('./cli/agentView.js')
-        await runAgentView({ cwd: opts.cwd })
+        // Flags every session dispatched from the view starts with.
+        const dispatchFlags = [
+          ...(opts.addDir ?? []).flatMap(dir => ['--add-dir', dir]),
+          ...(opts.agent ? ['--agent', opts.agent] : []),
+          ...(opts.allowDangerouslySkipPermissions ? ['--allow-dangerously-skip-permissions'] : []),
+          ...(opts.dangerouslySkipPermissions ? ['--dangerously-skip-permissions'] : []),
+          ...(opts.effort ? ['--effort', opts.effort] : []),
+          ...(opts.mcpConfig ?? []).flatMap(config => ['--mcp-config', config]),
+          ...(opts.model ? ['--model', opts.model] : []),
+          ...(opts.permissionMode ? ['--permission-mode', opts.permissionMode] : []),
+          ...(opts.pluginDir ?? []).flatMap(dir => ['--plugin-dir', dir]),
+          ...(opts.restricted ? ['--restricted'] : []),
+          ...(opts.settings ? ['--settings', opts.settings] : []),
+          ...(opts.strictMcpConfig ? ['--strict-mcp-config'] : []),
+        ]
+        await runAgentView({
+          cwd: opts.cwd,
+          dispatch: {
+            flags: dispatchFlags,
+            model: opts.model,
+            effort: opts.effort,
+            permissionMode: opts.dangerouslySkipPermissions ? 'bypassPermissions' : opts.permissionMode,
+            agent: opts.agent,
+            allowBypass: opts.allowDangerouslySkipPermissions,
+          },
+        })
         process.exit(0)
       }
       const { listJobs } = await import('./daemon/protocol.js')
@@ -6385,59 +6604,123 @@ async function run(): Promise<CommanderCommand> {
       process.exit(0)
     })
 
-  program
-    .command('attach <id|name>')
-    .description(
-      'Open a background session in this terminal (Ctrl+Z detaches). Part of the session name works too',
-    )
-    .action(async (id: string) => {
-      const { attachHandler } = await import('./cli/bg.js')
-      await attachHandler(id)
-      process.exit(0)
+  // The background-session commands print 2.1.311's own usage text for
+  // --help, a missing id and an unknown option.
+  const sessionNameHint = 'Part of the session name works in place of the id. Put a name with spaces in quotes.'
+  const bgUsage = (command: { helpInformation(): string }, usage: string, help: string): void => {
+    command.helpInformation = () => `Usage: ${usage}\n\n  ${help}\n`
+    Object.assign(command, {
+      missingArgument() {
+        process.stderr.write(`Usage: ${usage}\n`)
+        process.exit(1)
+      },
+      unknownOption(flag: string) {
+        process.stderr.write(`unknown option '${flag}'\nUsage: ${usage}\n`)
+        process.exit(1)
+      },
     })
+  }
 
-  program
-    .command('logs <id|name>')
-    .description("Print a background session's recent terminal output")
-    .action(async (id: string) => {
-      const { logsHandler } = await import('./cli/bg.js')
-      await logsHandler(id)
-      process.exit(0)
-    })
+  bgUsage(
+    program
+      .command('attach <id|name>')
+      .description(
+        'Open a background session in this terminal. <id> is the short id that `claude --bg` prints and `claude agents` lists. Part of the session name works too',
+      )
+      .action(async (id: string) => {
+        const { attachHandler } = await import('./cli/bg.js')
+        await attachHandler(id)
+        process.exit(0)
+      }),
+    'claude attach <id|name>',
+    `Open the background session in this terminal. Ctrl+Z drops back to your shell; the session keeps running. ${sessionNameHint}`,
+  )
 
-  program
-    .command('stop <id>')
-    .alias('kill')
-    .description(
-      'Stop a background session. Its conversation is kept: `claude attach <id>` opens it again',
-    )
-    .action(async (id: string) => {
-      const { stopHandler } = await import('./cli/bg.js')
-      await stopHandler(id)
-      process.exit(0)
-    })
+  bgUsage(
+    program
+      .command('logs <id|name>')
+      .description("Print a background session's recent terminal output")
+      .action(async (id: string) => {
+        const { logsHandler } = await import('./cli/bg.js')
+        await logsHandler(id)
+        process.exit(0)
+      }),
+    'claude logs <id|name>',
+    `Print the background session's recent terminal output. ${sessionNameHint}`,
+  )
 
-  program
+  bgUsage(
+    program
+      .command('stop <id>')
+      .alias('kill')
+      .description(
+        'Stop a background session. Its conversation is kept: `claude attach <id>` opens it again, `claude --resume` works once it is stopped',
+      )
+      .action(async (id: string) => {
+        const { stopHandler } = await import('./cli/bg.js')
+        await stopHandler(id)
+        process.exit(0)
+      }),
+    'claude stop <id>',
+    'Stop a background session. Its conversation is kept; resume it later with `claude attach <id>`.',
+  )
+
+  // Like 2.1.311, rm reads its arguments itself, so its errors carry its usage line.
+  const rmCommand = program
     .command('rm <id>')
-    .description('Delete a background session and its worktree. Unlike `stop`, works on already-exited sessions')
-    .option(
-      '--discard-unpushed <commit>@<worktree-id>',
-      "also discard the worktree's unpushed commits (and any uncommitted changes) — pass the value a previous 'claude rm <id>' reported",
-    )
-    .action(async (id: string, opts: { discardUnpushed?: string }) => {
+    .description('Delete a background session, and its worktree when that is safe. Works on sessions that have already exited')
+    .allowUnknownOption()
+    .allowExcessArguments()
+    .action(async (_id, _opts, command) => {
       const { rmHandler } = await import('./cli/bg.js')
-      await rmHandler(id, opts)
+      await rmHandler(command.args)
       process.exit(process.exitCode ?? 0)
     })
+  const rmUsage =
+    'Usage: claude rm <id> [--discard-unpushed <commit>@<worktree-id>] [--force-remove-worktree <worktree-id>]'
+  Object.assign(rmCommand, {
+    missingArgument() {
+      process.stderr.write(`${rmUsage}\n`)
+      process.exit(1)
+    },
+  })
+  rmCommand.helpInformation = () =>
+    [
+      rmUsage,
+      '',
+      '  Delete a background session and its worktree. Unlike `stop`, works on already-exited sessions.',
+      "  --discard-unpushed <commit>@<worktree-id>  also discard the worktree's unpushed commits (and any uncommitted changes) while it is still the same worktree at that commit — pass the value a previous 'claude rm <id>' reported",
+      "  --force-remove-worktree <worktree-id>      delete the worktree directory even though git couldn't remove it (git must still list it as a worktree; no uncommitted changes to tracked files; the branch is kept) — pass the value a previous 'claude rm <id>' reported",
+      '',
+    ].join('\n')
 
   program
-    .command('respawn <id>')
-    .description('Restart a background session so it runs the current Claude Code version')
-    .action(async (id: string) => {
-      const { respawnHandler } = await import('./cli/bg.js')
-      await respawnHandler(id)
-      process.exit(0)
+    .command('purge [path]')
+    .description(
+      "Delete a project's Claude Code data (transcripts, tasks, file history, and its entry in ~/.claude.json) from this computer only",
+    )
+    .option('--dry-run', 'List what would be deleted without deleting anything')
+    .option('-y, --yes', 'Skip confirmation prompt')
+    .option('-i, --interactive', 'Prompt for each item before deleting')
+    .option('--all', 'Purge state for every project (mutually exclusive with [path])')
+    .action(async (path: string | undefined, opts: { dryRun?: boolean; yes?: boolean; interactive?: boolean; all?: boolean }) => {
+      const { purgeProjectHandler } = await import('./cli/handlers/purge.js')
+      await purgeProjectHandler(path, opts)
     })
+
+  bgUsage(
+    program
+      .command('respawn [id]')
+      .option('--all', 'Restart every running background session')
+      .description('Restart a background session, or all of them with --all, so it runs the current Claude Code version')
+      .action(async (id: string | undefined, opts: { all?: boolean }) => {
+        const { respawnHandler } = await import('./cli/bg.js')
+        await respawnHandler(id, opts)
+        process.exit(process.exitCode ?? 0)
+      }),
+    'claude respawn <id>|--all',
+    'Restart a background session (or all of them) so it picks up the current Claude binary.',
+  )
 
   if (feature('TRANSCRIPT_CLASSIFIER')) {
     // Skip when tengu_auto_mode_config.enabled === 'disabled' (circuit breaker).
@@ -6452,11 +6735,15 @@ async function run(): Promise<CommanderCommand> {
         .description(
           'Print the default auto mode environment, allow, soft_deny, and hard_deny rules as JSON',
         )
-        .action(async () => {
+        .option(
+          '--label <prefix>',
+          'Show only rules whose label starts with this prefix (case-insensitive)',
+        )
+        .action(async (options: { label?: string }) => {
           const { autoModeDefaultsHandler } = await import(
             './cli/handlers/autoMode.js'
           )
-          autoModeDefaultsHandler()
+          autoModeDefaultsHandler(options)
           process.exit(0)
         })
 
@@ -6548,7 +6835,7 @@ async function run(): Promise<CommanderCommand> {
   program
     .command('doctor')
     .description(
-      'Check the health of your Claude Code auto-updater. Note: The workspace trust dialog is skipped and stdio servers from .mcp.json are spawned for health checks. Only use this command in directories you trust.',
+      'Check the health of your Claude Code installation. The workspace trust dialog is skipped and stdio servers from .mcp.json are spawned for health checks, so only run it in directories you trust. For a full checkup that can also fix issues, run /doctor in a session.',
     )
     .action(async () => {
       const [{ doctorHandler }, { createRoot }] = await Promise.all([
@@ -6597,7 +6884,7 @@ async function run(): Promise<CommanderCommand> {
   program
     .command('update')
     .alias('upgrade')
-    .description('Check for updates and install if available')
+    .description('Check for updates and install if available; package-manager installs update through the package manager')
     .action(async () => {
       const { update } = await import('src/cli/update.js')
       await update()

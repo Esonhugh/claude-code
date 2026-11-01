@@ -18,6 +18,7 @@ import {
 import { containsPathTraversal, getDirectoryForPath } from '../../utils/path.js'
 import {
   allWorkingDirectories,
+  canSuggestAcceptEdits,
   checkEditableInternalPath,
   checkPathSafetyForAutoEdit,
   checkReadableInternalPath,
@@ -1791,7 +1792,10 @@ function checkPathConstraintsForStatement(
           }
         }
 
-        if (operationType === 'write' || operationType === 'create') {
+        if (
+          (operationType === 'write' || operationType === 'create') &&
+          canSuggestAcceptEdits(toolPermissionContext)
+        ) {
           suggestions.push({
             type: 'setMode',
             mode: 'acceptEdits',
@@ -1904,7 +1908,10 @@ function checkPathConstraintsForStatement(
             }
           }
 
-          if (operationType === 'write' || operationType === 'create') {
+          if (
+            (operationType === 'write' || operationType === 'create') &&
+            canSuggestAcceptEdits(toolPermissionContext)
+          ) {
             suggestions.push({
               type: 'setMode',
               mode: 'acceptEdits',

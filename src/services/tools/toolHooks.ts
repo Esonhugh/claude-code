@@ -369,13 +369,8 @@ async function* runClassicToolHooks(
         additionalContexts: answer.additionalContext,
       }
       if (event === 'PreToolUse') {
-        const stopped = observations.findLast(item => item.preventContinuation)
-        if (stopped) {
-          delete answer.allow
-          delete answer.ask
-          answer.deny =
-            stopped.stopReason ?? 'Execution stopped by PreToolUse hook'
-        }
+        // Like 2.1.311 a continue:false stop does not refuse the call: the
+        // tool runs and the turn ends after it (the stop is sent separately).
         folded.permissionBehavior =
           answer.deny !== undefined
             ? 'deny'
@@ -409,7 +404,7 @@ async function* runClassicToolHooks(
                 item.blockingError,
               ) === answer.deny,
           )
-        folded.hookSource = stopped?.hookSource ?? origin?.hookSource
+        folded.hookSource = origin?.hookSource
       } else {
         if (answer.block !== undefined) {
           const origin = observations.findLast(
@@ -472,6 +467,7 @@ export async function* runPostToolUseHooks<Input extends AnyObject, Output>(
   mcpServerType: McpServerType,
   mcpServerBaseUrl: string | undefined,
   sourceScope: HookSourceScope = 'all',
+  durationMs?: number,
 ): AsyncGenerator<PostToolUseHooksResult<Output>> {
   const postToolStartTime = Date.now()
   try {
@@ -490,6 +486,7 @@ export async function* runPostToolUseHooks<Input extends AnyObject, Output>(
         tool_use_id: toolUseID,
         tool_input: toolInput,
         tool_response: toolOutput,
+        duration_ms: durationMs,
       },
       scope =>
         executePostToolHooks(
@@ -502,6 +499,7 @@ export async function* runPostToolUseHooks<Input extends AnyObject, Output>(
           toolUseContext.abortController.signal,
           undefined,
           scope,
+          durationMs,
         ),
       sourceScope,
     )) {
@@ -653,6 +651,7 @@ export async function* runPostToolUseFailureHooks<Input extends AnyObject>(
   mcpServerType: McpServerType,
   mcpServerBaseUrl: string | undefined,
   sourceScope: HookSourceScope = 'all',
+  durationMs?: number,
 ): AsyncGenerator<
   MessageUpdateLazy<AttachmentMessage | ProgressMessage<HookProgress>>
 > {
@@ -673,6 +672,7 @@ export async function* runPostToolUseFailureHooks<Input extends AnyObject>(
         tool_input: processedInput,
         error,
         is_interrupt: isInterrupt,
+        duration_ms: durationMs,
       },
       scope =>
         executePostToolUseFailureHooks(
@@ -686,6 +686,7 @@ export async function* runPostToolUseFailureHooks<Input extends AnyObject>(
           toolUseContext.abortController.signal,
           undefined,
           scope,
+          durationMs,
         ),
       sourceScope,
     )) {
@@ -1109,7 +1110,17 @@ export async function* runPreToolUseHooks(
       managedPass,
     )) {
       try {
-        if (result.message) {
+        // Like 2.1.311, a block reaches the model only as the tool result,
+        // not also as a hook_blocking_error reminder.
+        if (
+          result.message &&
+          !(
+            (result.message as unknown as AttachmentMessage).type ===
+              'attachment' &&
+            (result.message as unknown as AttachmentMessage).attachment.type ===
+              'hook_blocking_error'
+          )
+        ) {
           // @ts-ignore - recovered code
           yield { type: 'message', message: { message: result.message } }
         }

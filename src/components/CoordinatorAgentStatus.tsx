@@ -21,6 +21,7 @@ import {
 import { isPanelAgentTask } from "../tasks/LocalAgentTask/LocalAgentTask.js";
 import { logForDebugging } from "../utils/debug.js";
 import { evictTerminalTask } from "../utils/task/framework.js";
+import { hideIdleTeammates } from "../state/teammateViewHelpers.js";
 import { truncateToWidth } from "../utils/truncate.js";
 import { KeyboardShortcutHint } from "./design-system/KeyboardShortcutHint.js";
 import {
@@ -96,10 +97,15 @@ export function CoordinatorTaskPanel({
     viewingAgentTaskId,
     idleTeammatesExpanded,
   );
-  const hasAgentTasks = visibleTasks.some(
-    (task) =>
-      task.type === "local_agent" || task.type === "in_process_teammate",
-  );
+  // Finished background agents leave the panel but still need evicting.
+  const hasAgentTasks =
+    visibleTasks.some(
+      (task) =>
+        task.type === "local_agent" || task.type === "in_process_teammate",
+    ) ||
+    Object.values(tasks).some(
+      (task) => isPanelAgentTask(task) && (task.evictAfter ?? 0) > 0,
+    );
   const hasWorkflowTasks = visibleTasks.some(
     (task) => task.type === "local_workflow",
   );
@@ -119,6 +125,7 @@ export function CoordinatorTaskPanel({
             evictTerminalTask(t.id, setAppState);
           }
         }
+        hideIdleTeammates(setAppState, now);
         setTick((prev: number) => prev + 1);
       },
       1000,

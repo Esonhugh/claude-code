@@ -33,6 +33,7 @@ import {
   findToolByName,
   type Tool,
   type ToolProgress,
+  type ToolPermissionContext,
   type ToolProgressData,
   type ToolUseContext,
   type Tools,
@@ -41,6 +42,7 @@ import type { BashToolInput } from '../../tools/BashTool/BashTool.js'
 import { AGENT_TOOL_NAME } from '../../tools/AgentTool/constants.js'
 import { startSpeculativeClassifierCheck } from '../../tools/BashTool/bashPermissions.js'
 import { BASH_TOOL_NAME } from '../../tools/BashTool/toolName.js'
+import { hasEmbeddedSearchTools } from '../../utils/embeddedTools.js'
 import { FILE_EDIT_TOOL_NAME } from '../../tools/FileEditTool/constants.js'
 import { FILE_READ_TOOL_NAME } from '../../tools/FileReadTool/prompt.js'
 import { FILE_WRITE_TOOL_NAME } from '../../tools/FileWriteTool/prompt.js'
@@ -59,6 +61,8 @@ import type {
   Message,
   ProgressMessage,
   StopHookInfo,
+  ToolDenialKind,
+  ToolPermissionDecisionMeta,
 } from '../../types/message.js'
 import { count } from '../../utils/array.js'
 import { createAbortController } from '../../utils/abortController.js'
@@ -72,6 +76,7 @@ import {
   TelemetrySafeError_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
 } from '../../utils/errors.js'
 import { executePermissionDeniedHooks } from '../../utils/hooks.js'
+import { getDenyRuleForTool } from '../../utils/permissions/permissions.js'
 import { logError } from '../../utils/log.js'
 import {
   CANCEL_MESSAGE,
@@ -82,6 +87,7 @@ import {
   withMemoryCorrectionHint,
 } from '../../utils/messages.js'
 import type {
+  PermissionDecision,
   PermissionDecisionReason,
   PermissionResult,
 } from '../../utils/permissions/PermissionResult.js'
@@ -266,6 +272,46 @@ function decisionReasonToOTelSource(
   }
 }
 
+// Like official 2.1.311, the SDK's tool_result_meta.non_execution_kind for a
+// call the permission check refused.
+function toolDenialKindFor(decision: PermissionDecision): ToolDenialKind {
+  if (decision.behavior === 'ask') return 'user-rejected'
+  const reason = decision.decisionReason
+  if (reason?.type === 'classifier' && reason.classifier === 'auto-mode') {
+    if (reason.reason === 'Classifier unavailable') return 'automode-unavailable'
+    if (reason.noVerdict) return 'automode-parsing-error'
+    return 'automode-blocked'
+  }
+  return 'permission-rule'
+}
+
+// Like official 2.1.311, the SDK's tool_result_meta.permission_decision.
+// reasonType is only set when the check decided by itself, not when a person
+// or the SDK host answered or the outcome was still a question.
+function toolPermissionDecisionMeta(
+  decision: PermissionDecision,
+  recordedSource: string | undefined,
+  aborted: boolean,
+): ToolPermissionDecisionMeta {
+  const reason = decision.decisionReason
+  const source =
+    recordedSource ??
+    (decision.behavior === 'ask'
+      ? aborted
+        ? 'user_abort'
+        : 'config'
+      : decisionReasonToOTelSource(reason, decision.behavior))
+  const answeredByPerson =
+    decision.behavior === 'ask' ||
+    source.startsWith('user_') ||
+    reason?.type === 'permissionPromptTool'
+  return {
+    decision: decision.behavior === 'allow' ? 'accept' : 'reject',
+    source,
+    ...(reason && !answeredByPerson && { reasonType: reason.type }),
+  }
+}
+
 function getNextImagePasteId(messages: Message[]): number {
   let maxId = 0
   for (const message of messages) {
@@ -406,6 +452,46 @@ async function waitForPendingMcpTool(
   return { tool: signal.aborted ? undefined : tool, tools, waitedMs }
 }
 
+// Built-in tools that getAllBaseTools() leaves out while their feature is off.
+const SWITCHABLE_BUILT_IN_TOOLS = new Set([
+  'TaskCreate',
+  'TaskGet',
+  'TaskUpdate',
+  'TaskList',
+  'EnterWorktree',
+  'ExitWorktree',
+  'ExitPlanMode',
+  'LSP',
+])
+
+/**
+ * Why a built-in tool the model called is missing, as official 2.1.311 words
+ * it, so the model stops retrying it.
+ */
+export function unknownToolSuffix(
+  toolName: string,
+  context: ToolPermissionContext,
+  sessionToolNames: readonly string[] = [],
+  embeddedSearch = hasEmbeddedSearchTools(),
+): string {
+  if (embeddedSearch && (toolName === 'Glob' || toolName === 'Grep')) {
+    if (!sessionToolNames.includes(BASH_TOOL_NAME))
+      return `. ${toolName} is disabled for this session.`
+    return toolName === 'Glob'
+      ? `. Glob is not available in this session \u2014 find files with \`find\` via the ${BASH_TOOL_NAME} tool instead.`
+      : `. Grep is not available in this session \u2014 search file contents with \`grep\` via the ${BASH_TOOL_NAME} tool instead.`
+  }
+  const known = findToolByName(getAllBaseTools(), toolName)
+  if (!known) {
+    return SWITCHABLE_BUILT_IN_TOOLS.has(toolName)
+      ? `. ${toolName} is disabled for this session, in subagents as well as here.`
+      : ''
+  }
+  return !known.isEnabled() || getDenyRuleForTool(context, known)
+    ? `. ${toolName} is disabled for this session, in subagents as well as here.`
+    : `. ${toolName} is not among the tools available here. Continue with the tools you have.`
+}
+
 export async function* runToolUse(
   toolUse: ToolUseBlock,
   assistantMessage: AssistantMessage,
@@ -521,17 +607,18 @@ export async function* runToolUse(
       }),
       ...mcpToolDetailsForAnalytics(toolName, mcpServerType, mcpServerBaseUrl),
     })
+    const error = `Error: No such tool available: ${toolName}${unknownToolSuffix(toolName, toolUseContext.getAppState().toolPermissionContext, currentTools.map(t => t.name))}`
     yield {
       message: createUserMessage({
         content: [
           {
             type: 'tool_result',
-            content: `<tool_use_error>Error: No such tool available: ${toolName}</tool_use_error>`,
+            content: `<tool_use_error>${error}</tool_use_error>`,
             is_error: true,
             tool_use_id: toolUse.id,
           },
         ],
-        toolUseResult: `Error: No such tool available: ${toolName}`,
+        toolUseResult: error,
         sourceToolAssistantUUID: assistantMessage.uuid,
       }),
     }
@@ -595,6 +682,21 @@ export async function* runToolUse(
       yield update
     }
   } catch (error) {
+    // A tool.call dispatch rejects with the abort reason (e.g. 'user-cancel')
+    // when the user interrupts; report it as a cancel, not a tool failure.
+    const { signal } = toolUseContext.abortController
+    if (signal.aborted && error === signal.reason) {
+      const content = createToolResultStopMessage(toolUse.id)
+      content.content = withMemoryCorrectionHint(CANCEL_MESSAGE)
+      yield {
+        message: createUserMessage({
+          content: [content],
+          toolUseResult: CANCEL_MESSAGE,
+          sourceToolAssistantUUID: assistantMessage.uuid,
+        }),
+      }
+      return
+    }
     logError(error)
     const errorMessage = error instanceof Error ? error.message : String(error)
     const toolInfo = tool ? ` (${tool.name})` : ''
@@ -661,15 +763,29 @@ function streamedCheckPermissionsAndCallTool(
   ) => {
     const abortController = createAbortController()
     const listeners = new Map<AbortSignal, () => void>()
+    let abortedByParent = false
     for (const parent of new Set([context.abortController.signal, signal])) {
       if (!parent) continue
-      const abort = () => abortController.abort(parent.reason)
+      const abort = () => {
+        abortedByParent = true
+        abortController.abort(parent.reason)
+      }
       if (parent.aborted) abort()
       else {
         parent.addEventListener('abort', abort, { once: true })
         listeners.set(parent, abort)
       }
     }
+    // An abort raised inside the tool run (permission dialog rejection via
+    // cancelAndAbort) must end the turn, so bubble it to the caller's controller.
+    abortController.signal.addEventListener(
+      'abort',
+      () => {
+        if (!abortedByParent && !context.abortController.signal.aborted)
+          context.abortController.abort(abortController.signal.reason)
+      },
+      { once: true },
+    )
     return checkPermissionsAndCallTool(
       tool,
       toolUseID,
@@ -712,7 +828,7 @@ function streamedCheckPermissionsAndCallTool(
         stream.enqueue({
           message: createProgressMessage({
             toolUseID: progress.toolUseID,
-            parentToolUseID: toolUseID,
+            parentToolUseID: progress.parentToolUseID ?? toolUseID,
             data: progress.data,
           }),
         })
@@ -755,8 +871,9 @@ function streamedCheckPermissionsAndCallTool(
         } else if ('updatedInput' in result.hookPermissionResult)
           args = result.hookPermissionResult.updatedInput ?? args
       } else if (result.type === 'hookUpdatedInput') args = result.updatedInput
-      else if (result.type === 'stopReason') stopped = result.stopReason
-      else if (result.type === 'stop' || result.type === 'preventContinuation')
+      // A continue:false stop is not a refusal: core reuses this pass, runs
+      // the call and ends the turn after it, like 2.1.311.
+      else if (result.type === 'stop')
         stopped ??= 'Execution stopped by PreToolUse hook'
     }
     if (stopped !== undefined)
@@ -952,7 +1069,8 @@ async function checkPermissionsAndCallTool(
   managedPass?: ManagedPreToolUsePass,
 ): Promise<MessageUpdateLazy[]> {
   // Validate input types with zod (surprisingly, the model is not great at generating valid input)
-  const parsedInput = tool.inputSchema.safeParse(input)
+  const coerced = tool.coerceInput?.(input) ?? null
+  const parsedInput = tool.inputSchema.safeParse(coerced?.input ?? input)
   if (!parsedInput.success) {
     let errorContent = formatZodValidationError(tool.name, parsedInput.error)
 
@@ -1282,6 +1400,11 @@ async function checkPermissionsAndCallTool(
   )
   const permissionDecision = resolved.decision
   processedInput = resolved.input
+  const permissionDecisionMeta = toolPermissionDecisionMeta(
+    permissionDecision,
+    toolUseContext.toolDecisions?.get(toolUseID)?.source,
+    toolUseContext.abortController.signal.aborted,
+  )
   const permissionDurationMs = Date.now() - permissionStart
   // In auto mode, canUseTool awaits the classifier (side_query) — if that's
   // slow the collapsed view shows "Running…" with no (Ns) tick since
@@ -1425,7 +1548,12 @@ async function checkPermissionsAndCallTool(
         content: messageContent,
         imagePasteIds: rejectImageIds,
         toolUseResult: `Error: ${errorMessage}`,
-        toolDenialKind: permissionDecision.behavior === 'ask' ? 'user-rejected' : 'permission-rule',
+        toolDenialKind: toolDenialKindFor(permissionDecision),
+        userFeedback:
+          permissionDecision.behavior === 'ask'
+            ? permissionDecision.userFeedback
+            : undefined,
+        permissionDecision: permissionDecisionMeta,
         sourceToolAssistantUUID: assistantMessage.uuid,
       }),
     })
@@ -1458,6 +1586,19 @@ async function checkPermissionsAndCallTool(
           }),
         })
       }
+    }
+
+    // A PreToolUse continue:false still ends the turn when the call is refused.
+    if (shouldPreventContinuation) {
+      resultingMessages.push({
+        message: createAttachmentMessage({
+          type: 'hook_stopped_continuation',
+          message: stopReason || 'Execution stopped by hook',
+          hookName: `PreToolUse:${tool.name}`,
+          toolUseID: toolUseID,
+          hookEvent: 'PreToolUse',
+        }),
+      })
     }
 
     return resultingMessages
@@ -1524,6 +1665,7 @@ async function checkPermissionsAndCallTool(
             },
           ],
           toolUseResult: `InputValidationError: permission handler updatedInput failed schema for ${tool.name}`,
+          permissionDecision: permissionDecisionMeta,
           sourceToolAssistantUUID: assistantMessage.uuid,
         }),
       })
@@ -1828,7 +1970,7 @@ async function checkPermissionsAndCallTool(
       // don't modify the output), otherwise map from scratch.
       // Mods choose the final result after this pipeline returns. Persisting a
       // discarded branch here would occupy the tool-use ID's write-once file.
-      const toolResultBlock = executionRecord
+      const mappedBlock = executionRecord
         ? preMappedBlock ??
           tool.mapToolResultToToolResultBlockParam(toolUseResult, toolUseID)
         : preMappedBlock
@@ -1838,6 +1980,20 @@ async function checkPermissionsAndCallTool(
               tool.maxResultSizeChars,
             )
           : await processToolResultBlock(tool, toolUseResult, toolUseID)
+
+      // Like 2.1.311, a repaired input shape is explained after the result.
+      const resultNote = coerced?.resultNote
+      const toolResultBlock: ToolResultBlockParam =
+        !resultNote || mappedBlock.is_error
+          ? mappedBlock
+          : {
+              ...mappedBlock,
+              content:
+                typeof mappedBlock.content === 'string' ||
+                mappedBlock.content === undefined
+                  ? `${mappedBlock.content ?? ''}\n\n${resultNote}`
+                  : [...mappedBlock.content, { type: 'text', text: resultNote }],
+            }
 
       // Build content blocks - tool result first, then optional feedback
       const contentBlocks: ContentBlockParam[] = [toolResultBlock]
@@ -1887,6 +2043,7 @@ async function checkPermissionsAndCallTool(
               ? undefined
               : toolUseResult,
           mcpMeta: toolUseContext.agentId ? undefined : mcpMeta,
+          permissionDecision: permissionDecisionMeta,
           sourceToolAssistantUUID: assistantMessage.uuid,
         }),
         contextModifier: toolContextModifier
@@ -1911,6 +2068,7 @@ async function checkPermissionsAndCallTool(
       mcpServerType,
       mcpServerBaseUrl,
       managedPass ? 'non-managed' : 'all',
+      durationMs,
     )) {
       if ('updatedToolOutput' in hookResult) {
         toolOutput = hookResult.updatedToolOutput
@@ -2152,6 +2310,8 @@ async function checkPermissionsAndCallTool(
       requestId,
       mcpServerType,
       mcpServerBaseUrl,
+      'all',
+      durationMs,
     )) {
       hookMessages.push(hookResult)
     }
@@ -2174,6 +2334,8 @@ async function checkPermissionsAndCallTool(
                 McpToolCallError_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS
               ? error.mcpMeta
               : undefined,
+          toolDenialKind: isInterrupt ? 'interrupted' : undefined,
+          permissionDecision: permissionDecisionMeta,
           sourceToolAssistantUUID: assistantMessage.uuid,
         }),
       },

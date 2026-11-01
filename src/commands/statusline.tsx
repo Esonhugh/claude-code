@@ -15,6 +15,7 @@ const statusline = {
     'Edit(~/.claude/settings.json)',
   ],
   source: 'builtin',
+  disableModelInvocation: true,
   disableNonInteractive: true,
   async getPromptForCommand(args): Promise<ContentBlockParam[]> {
     const prompt =

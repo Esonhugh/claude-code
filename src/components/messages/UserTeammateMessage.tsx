@@ -1,11 +1,17 @@
 import type { TextBlockParam } from '@anthropic-ai/sdk/resources/index.mjs'
 import figures from 'figures'
 import * as React from 'react'
+import { BLACK_CIRCLE } from '../../constants/figures.js'
 import { TEAMMATE_MESSAGE_TAG } from '../../constants/xml.js'
 import { Ansi, Box, Text, type TextProps } from '../../ink.js'
 import { toInkColor } from '../../utils/ink.js'
 import { jsonParse } from '../../utils/slowOperations.js'
-import { isShutdownApproved } from '../../utils/teammateMailbox.js'
+import {
+  isIdleNotification,
+  isShutdownApproved,
+  type IdleNotificationMessage,
+} from '../../utils/teammateMailbox.js'
+import { Markdown } from '../Markdown.js'
 import { MessageResponse } from '../MessageResponse.js'
 import { tryRenderPlanApprovalMessage } from './PlanApprovalMessage.js'
 import { tryRenderShutdownMessage } from './ShutdownMessage.js'
@@ -114,17 +120,25 @@ export function UserTeammateMessage({
           )
         }
 
+        const idle = msg.summary ? null : isIdleNotification(msg.content)
+        if (idle) {
+          return (
+            <IdleNotificationPanel
+              key={index}
+              displayName={displayName}
+              inkColor={inkColor}
+              notification={idle}
+              expanded={isTranscriptMode}
+            />
+          )
+        }
+
         // Try to parse as structured JSON message
         let parsedIdleNotification: { type?: string } | null = null
         try {
           parsedIdleNotification = jsonParse(msg.content)
         } catch {
           // Not JSON
-        }
-
-        // Hide idle notifications - they are processed silently
-        if (parsedIdleNotification?.type === 'idle_notification') {
-          return null
         }
 
         // Task completed notification - show which task was completed
@@ -196,6 +210,72 @@ export function TeammateMessageContent({
           <Text>
             <Ansi>{content}</Ansi>
           </Text>
+        </Box>
+      )}
+    </Box>
+  )
+}
+
+const IDLE_PREVIEW_MAX_CHARS = 200
+
+/** "Teammate @x finished" line plus the result the teammate sent with its idle notification. */
+export function IdleNotificationPanel({
+  displayName,
+  inkColor,
+  notification,
+  expanded,
+}: {
+  displayName: string
+  inkColor: TextProps['color']
+  notification: IdleNotificationMessage
+  expanded?: boolean
+}): React.ReactNode {
+  const { idleReason, failureReason, summary, completedTaskId } = notification
+  const result = notification.result?.trim()
+  const preview =
+    result && result.length > IDLE_PREVIEW_MAX_CHARS
+      ? `${result.slice(0, IDLE_PREVIEW_MAX_CHARS)}\u2026`
+      : result
+  return (
+    <Box flexDirection="column" marginTop={1}>
+      <Text>
+        <Text
+          color={
+            idleReason === 'failed'
+              ? 'error'
+              : idleReason === 'interrupted'
+                ? 'warning'
+                : 'success'
+          }
+        >
+          {BLACK_CIRCLE}
+        </Text>{' '}
+        Teammate{' '}
+        <Text color={inkColor} bold>
+          @{displayName}
+        </Text>{' '}
+        {idleReason === 'failed'
+          ? 'failed'
+          : idleReason === 'interrupted'
+            ? 'was interrupted'
+            : 'finished'}
+        {failureReason && <Text dimColor>: {failureReason}</Text>}
+        {expanded && completedTaskId && (
+          <Text dimColor> (task #{completedTaskId})</Text>
+        )}
+      </Text>
+      {expanded && summary && (
+        <Box paddingLeft={2}>
+          <Text dimColor>Last DM: {summary}</Text>
+        </Box>
+      )}
+      {result && (
+        <Box paddingLeft={2}>
+          {expanded ? (
+            <Markdown>{result}</Markdown>
+          ) : (
+            <Text dimColor>{preview}</Text>
+          )}
         </Box>
       )}
     </Box>

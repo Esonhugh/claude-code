@@ -1,7 +1,7 @@
 import type { ToolUseBlockParam } from '@anthropic-ai/sdk/resources/index.mjs'
 import React, { useMemo } from 'react'
 import { useTerminalSize } from 'src/hooks/useTerminalSize.js'
-import type { ThemeName } from 'src/utils/theme.js'
+import type { ResolvedTheme } from 'src/utils/theme.js'
 import type { Command } from '../../commands.js'
 import { BLACK_CIRCLE } from '../../constants/figures.js'
 import { stringWidth } from '../../ink/stringWidth.js'
@@ -230,7 +230,7 @@ function renderToolUseMessage(
     theme,
     verbose,
     commands,
-  }: { theme: ThemeName; verbose: boolean; commands: Command[] },
+  }: { theme: ResolvedTheme; verbose: boolean; commands: Command[] },
 ): React.ReactNode {
   try {
     const parsed = tool.inputSchema.safeParse(input)

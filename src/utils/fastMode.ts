@@ -73,9 +73,28 @@ function getDisabledReasonMessage(
   }
 }
 
-export function getFastModeUnavailableReason(): string | null {
+// Why fast mode can't serve right now, as the SDK reports it in
+// fast_mode_disabled_reason. Null when nothing blocks it.
+export type SdkFastModeDisabledReason =
+  | FastModeDisabledReason
+  | 'not_first_party'
+  | 'disabled_by_env'
+  | 'sdk_opt_in_required'
+
+// Set when `/fast` turns fast mode on in a headless session: like
+// official 2.1.311 that counts as the SDK opt-in, for this session only.
+let fastModeSessionOptIn = false
+
+export function setFastModeSessionOptIn(value: boolean): void {
+  fastModeSessionOptIn = value
+}
+
+function getFastModeBlock(): {
+  code: SdkFastModeDisabledReason
+  message: string
+} | null {
   if (!isFastModeEnabled()) {
-    return 'Fast mode is not available'
+    return { code: 'disabled_by_env', message: 'Fast mode is not available' }
   }
 
   const provider = getAPIProvider()
@@ -90,7 +109,7 @@ export function getFastModeUnavailableReason(): string | null {
   // Statsig reason has priority over other reasons.
   if (statigReason !== null) {
     logForDebugging(`Fast mode unavailable: ${statigReason}`)
-    return statigReason
+    return { code: 'unknown', message: statigReason }
   }
 
   // Previously, fast mode required the native binary (bun build). This is no
@@ -99,7 +118,11 @@ export function getFastModeUnavailableReason(): string | null {
     !isInBundledMode() &&
     getFeatureValue_CACHED_MAY_BE_STALE('tengu_marble_sandcastle', false)
   ) {
-    return 'Fast mode requires the native binary · Install from: https://claude.com/product/claude-code'
+    return {
+      code: 'unknown',
+      message:
+        'Fast mode requires the native binary · Install from: https://claude.com/product/claude-code',
+    }
   }
 
   // Not available in the SDK unless explicitly opted in via --settings.
@@ -111,10 +134,10 @@ export function getFastModeUnavailableReason(): string | null {
     !getKairosActive()
   ) {
     const flagFastMode = getSettingsForSource('flagSettings')?.fastMode
-    if (!flagFastMode) {
+    if (!flagFastMode && !fastModeSessionOptIn) {
       const reason = 'Fast mode is not available in the Agent SDK'
       logForDebugging(`Fast mode unavailable: ${reason}`)
-      return reason
+      return { code: 'sdk_opt_in_required', message: reason }
     }
   }
 
@@ -122,7 +145,7 @@ export function getFastModeUnavailableReason(): string | null {
   if (provider !== 'firstParty') {
     const reason = 'Fast mode is not available on Bedrock, Vertex, or Foundry'
     logForDebugging(`Fast mode unavailable: ${reason}`)
-    return reason
+    return { code: 'not_first_party', message: reason }
   }
 
   if (orgStatus.status === 'disabled') {
@@ -142,10 +165,18 @@ export function getFastModeUnavailableReason(): string | null {
       getClaudeAIOAuthTokens() !== null ? 'oauth' : 'api-key'
     const reason = getDisabledReasonMessage(orgStatus.reason, authType)
     logForDebugging(`Fast mode unavailable: ${reason}`)
-    return reason
+    return { code: orgStatus.reason, message: reason }
   }
 
   return null
+}
+
+export function getFastModeUnavailableReason(): string | null {
+  return getFastModeBlock()?.message ?? null
+}
+
+export function getFastModeDisabledReason(): SdkFastModeDisabledReason | null {
+  return getFastModeBlock()?.code ?? null
 }
 
 // @[MODEL LAUNCH]: Update supported Fast Mode models.
@@ -422,6 +453,9 @@ export function resolveFastModeStatusFromCache(): void {
 }
 
 export async function prefetchFastModeStatus(): Promise<void> {
+  // 2.1.311 settles a pending status from the cache before any early return,
+  // so fast mode never reads as available without a server answer.
+  resolveFastModeStatusFromCache()
   // Skip network requests if nonessential traffic is disabled
   if (isEssentialTrafficOnly()) {
     return

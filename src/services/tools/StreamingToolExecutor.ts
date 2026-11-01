@@ -9,7 +9,7 @@ import { findToolByName, type Tools, type ToolUseContext } from '../../Tool.js'
 import { BASH_TOOL_NAME } from '../../tools/BashTool/toolName.js'
 import type { AssistantMessage, Message } from '../../types/message.js'
 import { createChildAbortController } from '../../utils/abortController.js'
-import { runToolUse } from './toolExecution.js'
+import { runToolUse, unknownToolSuffix } from './toolExecution.js'
 import type { ModSnapshot } from '../mods/runtime.js'
 import { createToolCatalogForContext } from '../mods/toolCatalog.js'
 import { createModToolHost } from '../mods/toolHost.js'
@@ -52,6 +52,8 @@ export class StreamingToolExecutor {
   private siblingAbortController: AbortController
   private discarded = false
   private modsSnapshot?: ModSnapshot
+  // The query's own snapshot; the context handed back keeps it, like runTools.
+  private readonly queryModsSnapshot?: ModSnapshot
   private admissionClosed = false
   // Signal to wake up getRemainingResults when progress is available
   private progressAvailableResolve?: () => void
@@ -62,6 +64,7 @@ export class StreamingToolExecutor {
     toolUseContext: ToolUseContext,
   ) {
     this.toolUseContext = toolUseContext
+    this.queryModsSnapshot = toolUseContext.modsSnapshot
     this.siblingAbortController = createChildAbortController(
       toolUseContext.abortController,
     )
@@ -90,7 +93,10 @@ export class StreamingToolExecutor {
     const snapshot = this.modsSnapshot
     this.modsSnapshot = undefined
     if (snapshot) {
-      this.toolUseContext = { ...this.toolUseContext, modsSnapshot: undefined }
+      this.toolUseContext = {
+        ...this.toolUseContext,
+        modsSnapshot: this.queryModsSnapshot,
+      }
       snapshot.release()
     }
   }
@@ -127,6 +133,7 @@ export class StreamingToolExecutor {
     }
     const toolDefinition = findToolByName(this.toolDefinitions, block.name)
     if (!toolDefinition) {
+      const error = `Error: No such tool available: ${block.name}${unknownToolSuffix(block.name, this.toolUseContext.getAppState().toolPermissionContext, this.toolDefinitions.map(t => t.name))}`
       this.tools.push({
         id: block.id,
         block,
@@ -139,12 +146,12 @@ export class StreamingToolExecutor {
             content: [
               {
                 type: 'tool_result',
-                content: `<tool_use_error>Error: No such tool available: ${block.name}</tool_use_error>`,
+                content: `<tool_use_error>${error}</tool_use_error>`,
                 is_error: true,
                 tool_use_id: block.id,
               },
             ],
-            toolUseResult: `Error: No such tool available: ${block.name}`,
+            toolUseResult: error,
             sourceToolAssistantUUID: assistantMessage.uuid,
           }),
         ],
@@ -155,7 +162,9 @@ export class StreamingToolExecutor {
     const serialized = this.modsSnapshot?.hasHooks('tool.call')
     const parsedInput = serialized
       ? undefined
-      : toolDefinition.inputSchema.safeParse(block.input)
+      : toolDefinition.inputSchema.safeParse(
+          toolDefinition.coerceInput?.(block.input)?.input ?? block.input,
+        )
     const isConcurrencySafe = parsedInput?.success
       ? (() => {
           try {
@@ -223,6 +232,7 @@ export class StreamingToolExecutor {
           },
         ],
         toolUseResult: 'User rejected tool use',
+        toolDenialKind: 'user-rejected',
         sourceToolAssistantUUID: assistantMessage.uuid,
       })
     }
@@ -255,6 +265,7 @@ export class StreamingToolExecutor {
         },
       ],
       toolUseResult: msg,
+      toolDenialKind: 'cancelled',
       sourceToolAssistantUUID: assistantMessage.uuid,
     })
   }
@@ -594,7 +605,7 @@ export class StreamingToolExecutor {
    */
   getUpdatedContext(): ToolUseContext {
     return this.modsSnapshot
-      ? { ...this.toolUseContext, modsSnapshot: undefined }
+      ? { ...this.toolUseContext, modsSnapshot: this.queryModsSnapshot }
       : this.toolUseContext
   }
 }
