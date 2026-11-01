@@ -84,6 +84,7 @@ export function getEnabledFeatures(value = process.env.CLAUDE_CODE_RECOVER_FEATU
     'SSH_REMOTE',
     'UDS_INBOX',
     'KAIROS_CHANNELS',
+    'KAIROS_BRIEF',
     'TRANSCRIPT_CLASSIFIER',
     'MONITOR_TOOL',
     'EXTRACT_MEMORIES',
