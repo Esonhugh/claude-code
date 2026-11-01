@@ -16,7 +16,13 @@ import { AlternateScreen } from '../ink/components/AlternateScreen.js'
 import { Box, createRoot, Text, useInput } from '../ink.js'
 import { getDisplayedEffortLevel } from '../utils/effort.js'
 import { truncate } from '../utils/format.js'
-import { getMainLoopModel, renderModelSetting } from '../utils/model/model.js'
+import { getMainLoopModel, parseUserSpecifiedModel, renderModelSetting } from '../utils/model/model.js'
+import {
+  getModeColor,
+  permissionModeFromString,
+  permissionModeSymbol,
+  permissionModeTitle,
+} from '../utils/permissions/PermissionMode.js'
 import { getBaseRenderOptions } from '../utils/renderOptions.js'
 import { getProjectDir } from '../utils/sessionStoragePortable.js'
 import { getInitialSettings } from '../utils/settings/settings.js'
@@ -170,13 +176,48 @@ function InputLine({ value, placeholder }: { value: string; placeholder: string 
   )
 }
 
+/** What `claude agents` options set for the sessions it dispatches. */
+export type Dispatch = {
+  flags: string[]
+  model?: string
+  effort?: string
+  permissionMode?: string
+  agent?: string
+  allowBypass?: boolean
+}
+
+/** The footer's summary of non-default dispatch options, like 2.1.311. */
+function DispatchDefaults({ dispatch }: { dispatch: Dispatch }): React.ReactNode {
+  const mode = dispatch.permissionMode ? permissionModeFromString(dispatch.permissionMode) : 'default'
+  const parts: React.ReactNode[] = []
+  if (mode !== 'default') {
+    parts.push(
+      <Text key="mode" color={getModeColor(mode)}>
+        {permissionModeSymbol(mode)} {permissionModeTitle(mode).toLowerCase()}
+      </Text>,
+    )
+  } else if (dispatch.allowBypass) {
+    parts.push(
+      <Text key="bypass" color={getModeColor('bypassPermissions')}>
+        {permissionModeSymbol('bypassPermissions')} bypass available
+      </Text>,
+    )
+  }
+  if (dispatch.agent) parts.push(`@${dispatch.agent}`)
+  if (dispatch.model) parts.push(dispatch.model)
+  if (dispatch.effort) parts.push(dispatch.effort)
+  return parts.map((part, i) => <React.Fragment key={i}>{part} · </React.Fragment>)
+}
+
 function AgentView({
   cwd,
+  dispatch,
   initialFocus,
   cameFrom,
   onAction,
 }: {
   cwd: string | undefined
+  dispatch: Dispatch
   initialFocus: string | undefined
   cameFrom: string | undefined
   onAction: (action: Action) => void
@@ -250,7 +291,7 @@ function AgentView({
     try {
       const job = await spawnBackgroundSession({
         cwd: process.cwd(),
-        flags: [],
+        flags: dispatch.flags,
         prompt,
         origin: `transient — started on-demand by \`claude agents\` (pid ${process.pid}) in ${process.cwd()}`,
       })
@@ -326,8 +367,8 @@ function AgentView({
 
   const counts = { needs: 0, working: 0, completed: 0 }
   for (const row of list) counts[row.group]++
-  const model = getMainLoopModel()
   const settings = getInitialSettings()
+  const model = dispatch.model ? parseUserSpecifiedModel(dispatch.model) : getMainLoopModel()
   const nameWidth = Math.min(30, Math.max(4, ...list.map(row => stringWidth(row.job.name))))
 
   const detailFor = (row: Row) => {
@@ -353,7 +394,7 @@ function AgentView({
             <Text bold>{getConfiguredUiName(settings)}</Text> <Text dimColor>v{MACRO.VERSION}</Text>
           </Text>
           <Text dimColor>
-            New sessions: {renderModelSetting(model)} · {getDisplayedEffortLevel(model, settings.effortLevel)} effort
+            New sessions: {renderModelSetting(model)} · {dispatch.effort ?? getDisplayedEffortLevel(model, settings.effortLevel)} effort
           </Text>
           <Text dimColor wrap="truncate-start">
             {cwd ?? process.cwd()}
@@ -412,7 +453,11 @@ function AgentView({
             <Text dimColor>{'  space to reply           ctrl+x to delete      ? to close'}</Text>
           </Box>
         ) : (
-          <Text dimColor>{`  ${hint}`}</Text>
+          <Text dimColor wrap="truncate-end">
+            {'  '}
+            {!armed && !reply && !input && <DispatchDefaults dispatch={dispatch} />}
+            {hint}
+          </Text>
         )}
       </Box>
     </Box>
@@ -423,7 +468,7 @@ function AgentView({
  * `claude agents` in a terminal: lists background sessions by what they
  * need, starts new ones, and opens one in place (Ctrl+Z comes back here).
  */
-export async function runAgentView(options: { cwd?: string } = {}): Promise<void> {
+export async function runAgentView(options: { cwd?: string; dispatch?: Dispatch } = {}): Promise<void> {
   let focus: string | undefined
   let cameFrom: string | undefined
   for (;;) {
@@ -431,7 +476,7 @@ export async function runAgentView(options: { cwd?: string } = {}): Promise<void
     const action = await new Promise<Action>(resolve => {
       root.render(
         <AlternateScreen mouseTracking={false}>
-          <AgentView cwd={options.cwd} initialFocus={focus} cameFrom={cameFrom} onAction={resolve} />
+          <AgentView cwd={options.cwd} dispatch={options.dispatch ?? { flags: [] }} initialFocus={focus} cameFrom={cameFrom} onAction={resolve} />
         </AlternateScreen>,
       )
     })

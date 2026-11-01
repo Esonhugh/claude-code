@@ -6500,21 +6500,58 @@ async function run(): Promise<CommanderCommand> {
       await setupTokenHandler(root)
     })
 
-  // Agents command - list configured agents and background sessions
+  // Agents command - background sessions, plus the defaults for the sessions
+  // it dispatches (2.1.311)
+  const repeat = (value: string, previous: string[] = []) => [...previous, value]
   program
     .command('agents')
-    .description('List configured agents and background sessions')
+    .description('Manage background agents')
+    .option('--add-dir <directory>', 'Additional directory to allow tool access to in dispatched sessions (repeatable)', repeat)
+    .option('--agent <agent>', "Default agent for sessions dispatched from agent view. Overrides the 'agent' setting.")
+    .option('--all', 'With --json: also include completed background sessions')
+    .option(
+      '--allow-dangerously-skip-permissions',
+      'Make bypass-permissions mode available to dispatched sessions without defaulting to it',
+    )
+    .option('--cwd <path>', 'Show only background sessions started under <path>')
+    .option('--dangerously-skip-permissions', 'Alias for --permission-mode bypassPermissions')
+    .option('--effort <level>', 'Default effort level for sessions dispatched from agent view')
+    .option(
+      '--json',
+      'Print active sessions (interactive and background) as a JSON array and exit (for scripting; does not require a TTY)',
+    )
+    .option('--mcp-config <config>', 'MCP server configuration to apply to dispatched sessions (repeatable)', repeat)
+    .option('--model <model>', 'Default model for sessions dispatched from agent view')
+    .option('--permission-mode <mode>', 'Default permission mode for sessions dispatched from agent view')
+    .option(
+      '--plugin-dir <path>',
+      'Load plugins from specified directory for the agent view and dispatched sessions; a folder of plugins loads each child (repeatable)',
+      repeat,
+    )
+    .option('--restricted', 'Start dispatched sessions in restricted mode')
     .option(
       '--setting-sources <sources>',
       'Comma-separated list of setting sources to load (user, project, local).',
     )
-    .option(
-      '--json',
-      'Print active sessions (interactive and background) as a JSON array and exit',
-    )
-    .option('--all', 'With --json: also include completed background sessions')
-    .option('--cwd <path>', 'Show only background sessions started under <path>')
-    .action(async (opts: { json?: boolean; all?: boolean; cwd?: string }) => {
+    .option('--settings <file-or-json>', 'Settings file or JSON string to apply to the agent view and dispatched sessions')
+    .option('--strict-mcp-config', 'Only use MCP servers from --mcp-config in dispatched sessions')
+    .action(async (opts: {
+      json?: boolean
+      all?: boolean
+      cwd?: string
+      addDir?: string[]
+      agent?: string
+      allowDangerouslySkipPermissions?: boolean
+      dangerouslySkipPermissions?: boolean
+      effort?: string
+      mcpConfig?: string[]
+      model?: string
+      permissionMode?: string
+      pluginDir?: string[]
+      restricted?: boolean
+      settings?: string
+      strictMcpConfig?: boolean
+    }) => {
       const bg = await import('./cli/bg.js')
       if (opts.json) {
         const rows = await bg.listAgentRows({ all: opts.all, cwd: opts.cwd })
@@ -6523,7 +6560,32 @@ async function run(): Promise<CommanderCommand> {
       }
       if (process.stdin.isTTY && process.stdout.isTTY) {
         const { runAgentView } = await import('./cli/agentView.js')
-        await runAgentView({ cwd: opts.cwd })
+        // Flags every session dispatched from the view starts with.
+        const dispatchFlags = [
+          ...(opts.addDir ?? []).flatMap(dir => ['--add-dir', dir]),
+          ...(opts.agent ? ['--agent', opts.agent] : []),
+          ...(opts.allowDangerouslySkipPermissions ? ['--allow-dangerously-skip-permissions'] : []),
+          ...(opts.dangerouslySkipPermissions ? ['--dangerously-skip-permissions'] : []),
+          ...(opts.effort ? ['--effort', opts.effort] : []),
+          ...(opts.mcpConfig ?? []).flatMap(config => ['--mcp-config', config]),
+          ...(opts.model ? ['--model', opts.model] : []),
+          ...(opts.permissionMode ? ['--permission-mode', opts.permissionMode] : []),
+          ...(opts.pluginDir ?? []).flatMap(dir => ['--plugin-dir', dir]),
+          ...(opts.restricted ? ['--restricted'] : []),
+          ...(opts.settings ? ['--settings', opts.settings] : []),
+          ...(opts.strictMcpConfig ? ['--strict-mcp-config'] : []),
+        ]
+        await runAgentView({
+          cwd: opts.cwd,
+          dispatch: {
+            flags: dispatchFlags,
+            model: opts.model,
+            effort: opts.effort,
+            permissionMode: opts.dangerouslySkipPermissions ? 'bypassPermissions' : opts.permissionMode,
+            agent: opts.agent,
+            allowBypass: opts.allowDangerouslySkipPermissions,
+          },
+        })
         process.exit(0)
       }
       const { listJobs } = await import('./daemon/protocol.js')
