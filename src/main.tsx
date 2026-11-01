@@ -6667,7 +6667,7 @@ async function run(): Promise<CommanderCommand> {
 
   // Like 2.1.311, rm reads its arguments itself, so its errors carry its usage line.
   const rmCommand = program
-    .command('rm [id]')
+    .command('rm <id>')
     .description('Delete a background session, and its worktree when that is safe. Works on sessions that have already exited')
     .allowUnknownOption()
     .allowExcessArguments()
@@ -6676,9 +6676,17 @@ async function run(): Promise<CommanderCommand> {
       await rmHandler(command.args)
       process.exit(process.exitCode ?? 0)
     })
+  const rmUsage =
+    'Usage: claude rm <id> [--discard-unpushed <commit>@<worktree-id>] [--force-remove-worktree <worktree-id>]'
+  Object.assign(rmCommand, {
+    missingArgument() {
+      process.stderr.write(`${rmUsage}\n`)
+      process.exit(1)
+    },
+  })
   rmCommand.helpInformation = () =>
     [
-      'Usage: claude rm <id> [--discard-unpushed <commit>@<worktree-id>] [--force-remove-worktree <worktree-id>]',
+      rmUsage,
       '',
       '  Delete a background session and its worktree. Unlike `stop`, works on already-exited sessions.',
       "  --discard-unpushed <commit>@<worktree-id>  also discard the worktree's unpushed commits (and any uncommitted changes) while it is still the same worktree at that commit — pass the value a previous 'claude rm <id>' reported",
