@@ -494,7 +494,8 @@ describe('classic adapter executor boundary', () => {
       }),
     ).toEqual({})
   })
-  test('PreToolUse continue:false cannot become allow and reports the stop through the host observer', async () => {
+  // Like 2.1.311 the call still runs; the host ends the turn after it.
+  test('PreToolUse continue:false does not refuse the call and reports the stop through the host observer', async () => {
     const f = fixture([
       { preventContinuation: true, stopReason: 'session stopped' },
       { permissionBehavior: 'allow', updatedInput: { command: 'changed' } },
@@ -502,7 +503,7 @@ describe('classic adapter executor boundary', () => {
     expect(
       await f.classic.PreToolUse({ tool: 'Bash', tool_use_id: 'stopped' }),
     ).toEqual({
-      deny: 'session stopped',
+      allow: true,
       updatedInput: { command: 'changed' },
     })
     expect(f.observed[0]!.result.preventContinuation).toBe(true)

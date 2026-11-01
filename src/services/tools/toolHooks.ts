@@ -369,13 +369,8 @@ async function* runClassicToolHooks(
         additionalContexts: answer.additionalContext,
       }
       if (event === 'PreToolUse') {
-        const stopped = observations.findLast(item => item.preventContinuation)
-        if (stopped) {
-          delete answer.allow
-          delete answer.ask
-          answer.deny =
-            stopped.stopReason ?? 'Execution stopped by PreToolUse hook'
-        }
+        // Like 2.1.311 a continue:false stop does not refuse the call: the
+        // tool runs and the turn ends after it (the stop is sent separately).
         folded.permissionBehavior =
           answer.deny !== undefined
             ? 'deny'
@@ -409,7 +404,7 @@ async function* runClassicToolHooks(
                 item.blockingError,
               ) === answer.deny,
           )
-        folded.hookSource = stopped?.hookSource ?? origin?.hookSource
+        folded.hookSource = origin?.hookSource
       } else {
         if (answer.block !== undefined) {
           const origin = observations.findLast(
