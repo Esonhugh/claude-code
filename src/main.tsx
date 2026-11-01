@@ -6528,41 +6528,70 @@ async function run(): Promise<CommanderCommand> {
       process.exit(0)
     })
 
-  program
-    .command('attach <id|name>')
-    .description(
-      'Open a background session in this terminal (Ctrl+Z detaches). Part of the session name works too',
-    )
-    .action(async (id: string) => {
-      const { attachHandler } = await import('./cli/bg.js')
-      await attachHandler(id)
-      process.exit(0)
+  // The background-session commands print 2.1.311's own usage text for
+  // --help, a missing id and an unknown option.
+  const sessionNameHint = 'Part of the session name works in place of the id. Put a name with spaces in quotes.'
+  const bgUsage = (command: { helpInformation(): string }, usage: string, help: string): void => {
+    command.helpInformation = () => `Usage: ${usage}\n\n  ${help}\n`
+    Object.assign(command, {
+      missingArgument() {
+        process.stderr.write(`Usage: ${usage}\n`)
+        process.exit(1)
+      },
+      unknownOption(flag: string) {
+        process.stderr.write(`unknown option '${flag}'\nUsage: ${usage}\n`)
+        process.exit(1)
+      },
     })
+  }
 
-  program
-    .command('logs <id|name>')
-    .description("Print a background session's recent terminal output")
-    .action(async (id: string) => {
-      const { logsHandler } = await import('./cli/bg.js')
-      await logsHandler(id)
-      process.exit(0)
-    })
+  bgUsage(
+    program
+      .command('attach <id|name>')
+      .description(
+        'Open a background session in this terminal. <id> is the short id that `claude --bg` prints and `claude agents` lists. Part of the session name works too',
+      )
+      .action(async (id: string) => {
+        const { attachHandler } = await import('./cli/bg.js')
+        await attachHandler(id)
+        process.exit(0)
+      }),
+    'claude attach <id|name>',
+    `Open the background session in this terminal. Ctrl+Z drops back to your shell; the session keeps running. ${sessionNameHint}`,
+  )
 
-  program
-    .command('stop <id>')
-    .alias('kill')
-    .description(
-      'Stop a background session. Its conversation is kept: `claude attach <id>` opens it again',
-    )
-    .action(async (id: string) => {
-      const { stopHandler } = await import('./cli/bg.js')
-      await stopHandler(id)
-      process.exit(0)
-    })
+  bgUsage(
+    program
+      .command('logs <id|name>')
+      .description("Print a background session's recent terminal output")
+      .action(async (id: string) => {
+        const { logsHandler } = await import('./cli/bg.js')
+        await logsHandler(id)
+        process.exit(0)
+      }),
+    'claude logs <id|name>',
+    `Print the background session's recent terminal output. ${sessionNameHint}`,
+  )
+
+  bgUsage(
+    program
+      .command('stop <id>')
+      .alias('kill')
+      .description(
+        'Stop a background session. Its conversation is kept: `claude attach <id>` opens it again, `claude --resume` works once it is stopped',
+      )
+      .action(async (id: string) => {
+        const { stopHandler } = await import('./cli/bg.js')
+        await stopHandler(id)
+        process.exit(0)
+      }),
+    'claude stop <id>',
+    'Stop a background session. Its conversation is kept; resume it later with `claude attach <id>`.',
+  )
 
   program
     .command('rm <id>')
-    .description('Delete a background session and its worktree. Unlike `stop`, works on already-exited sessions')
+    .description('Delete a background session, and its worktree when that is safe. Works on sessions that have already exited')
     .option(
       '--discard-unpushed <commit>@<worktree-id>',
       "also discard the worktree's unpushed commits (and any uncommitted changes) — pass the value a previous 'claude rm <id>' reported",
@@ -6587,15 +6616,19 @@ async function run(): Promise<CommanderCommand> {
       await purgeProjectHandler(path, opts)
     })
 
-  program
-    .command('respawn [id]')
-    .option('--all', 'Restart every running background session')
-    .description('Restart a background session, or all of them with --all, so it runs the current Claude Code version')
-    .action(async (id: string | undefined, opts: { all?: boolean }) => {
-      const { respawnHandler } = await import('./cli/bg.js')
-      await respawnHandler(id, opts)
-      process.exit(process.exitCode ?? 0)
-    })
+  bgUsage(
+    program
+      .command('respawn [id]')
+      .option('--all', 'Restart every running background session')
+      .description('Restart a background session, or all of them with --all, so it runs the current Claude Code version')
+      .action(async (id: string | undefined, opts: { all?: boolean }) => {
+        const { respawnHandler } = await import('./cli/bg.js')
+        await respawnHandler(id, opts)
+        process.exit(process.exitCode ?? 0)
+      }),
+    'claude respawn <id>|--all',
+    'Restart a background session (or all of them) so it picks up the current Claude binary.',
+  )
 
   if (feature('TRANSCRIPT_CLASSIFIER')) {
     // Skip when tengu_auto_mode_config.enabled === 'disabled' (circuit breaker).
