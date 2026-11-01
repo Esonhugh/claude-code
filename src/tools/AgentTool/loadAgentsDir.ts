@@ -1,6 +1,7 @@
 import { feature } from 'bun:bundle'
 import memoize from 'lodash-es/memoize.js'
-import { basename } from 'path'
+import { open } from 'fs/promises'
+import { basename, resolve } from 'path'
 import type { SettingSource } from 'src/utils/settings/constants.js'
 import { z } from 'zod/v4'
 import { isAutoMemoryEnabled } from '../../memdir/paths.js'
@@ -26,6 +27,7 @@ import {
   parseAutoCompactWindowFromFrontmatter,
   parsePositiveIntFromFrontmatter,
 } from '../../utils/frontmatterParser.js'
+import { safeParseJSON } from '../../utils/json.js'
 import { lazySchema } from '../../utils/lazySchema.js'
 import { logError } from '../../utils/log.js'
 import {
@@ -541,6 +543,53 @@ export function parseAgentFromJson(
 /**
  * Parses multiple agents from a JSON object
  */
+const AGENTS_FILE_MAX_BYTES = 268435456
+
+/**
+ * The --agents value as JSON text. Like 2.1.311, a value that is not a JSON
+ * object is a file path, read only with --print.
+ */
+export async function readAgentsFlag(
+  value: string,
+  isPrint: boolean,
+): Promise<{ ok: true; json: string } | { ok: false; error: string }> {
+  const trimmed = value.trimStart()
+  if (trimmed.startsWith('{') || safeParseJSON(trimmed, false) !== null)
+    return { ok: true, json: value }
+  if (!isPrint)
+    return {
+      ok: false,
+      error:
+        'Error: --agents takes a JSON object, or a file path only with --print (-p). Pass the agents as inline JSON, or run with -p to read them from a file.',
+    }
+  const path = resolve(value)
+  try {
+    await using file = await open(path, 'r')
+    const stat = await file.stat()
+    if (stat.nlink > 1)
+      return {
+        ok: false,
+        error: `Error: --agents file has more than one hard link: ${path} (its other names are not write-protected; pass a file with one name)`,
+      }
+    if (stat.size > AGENTS_FILE_MAX_BYTES)
+      return {
+        ok: false,
+        error: `Error: --agents file is larger than ${AGENTS_FILE_MAX_BYTES} bytes: ${path}`,
+      }
+    return { ok: true, json: await file.readFile('utf8') }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT')
+      return {
+        ok: false,
+        error: `Error: --agents file not found: ${path} (a value that is not a JSON object is read as a file path)`,
+      }
+    return {
+      ok: false,
+      error: `Error reading --agents file ${path}: ${(error as Error).message}`,
+    }
+  }
+}
+
 export function parseAgentsFromJson(
   agentsJson: unknown,
   source: SettingSource = 'flagSettings',

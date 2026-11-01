@@ -17,6 +17,7 @@ const tokenCountSpy = spyOn(
 })
 
 const {
+  approximateMessageTokens,
   buildContextUsageData,
   countMcpInstructionsTokens,
   countMcpToolTokens,
@@ -400,5 +401,13 @@ describe('estimateTokensAfterLastApiUsage', () => {
 
     expect(estimateTokensAfterLastApiUsage([createUserMessage({ content: 'hi' }), reply])).toBe(0)
     expect(estimateTokensAfterLastApiUsage([reply, output])).toBeGreaterThan(100)
+  })
+})
+
+// Like 2.1.311, /context before any message shows no Messages row.
+describe('approximateMessageTokens', () => {
+  test('an empty conversation counts zero message tokens', async () => {
+    for (const detail of ['summary', 'full'] as const)
+      expect((await approximateMessageTokens([], 'claude-sonnet-4-6', detail)).totalTokens).toBe(0)
   })
 })

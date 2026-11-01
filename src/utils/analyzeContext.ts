@@ -1030,7 +1030,7 @@ function processAttachment(
   )
 }
 
-async function approximateMessageTokens(
+export async function approximateMessageTokens(
   messages: Message[],
   model: string,
   detail: ContextBreakdownDetail,
@@ -1092,6 +1092,9 @@ async function approximateMessageTokens(
     }
     return _.message
   })
+  // An empty conversation has no message tokens; counting it would size
+  // countTokens' placeholder message instead.
+  if (normalizedMessages.length === 0) return breakdown
   const approximateMessageTokens =
     detail === 'summary'
       ? roughTokenCountEstimationForMessages(
