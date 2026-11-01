@@ -55,7 +55,11 @@ import type {
 import type { PermissionRule, PermissionRuleSource } from './PermissionRule.js'
 import { createReadRuleSuggestion } from './PermissionUpdate.js'
 import type { PermissionUpdate } from './PermissionUpdateSchema.js'
-import { getRuleByContentsForToolName } from './permissions.js'
+import {
+  getAskRuleForTool,
+  getDenyRuleForTool,
+  getRuleByContentsForToolName,
+} from './permissions.js'
 
 declare const MACRO: { VERSION: string }
 
@@ -1650,8 +1654,18 @@ export function canWriteWithoutRead<Input extends AnyObject>(
   if (!canRead) {
     return false
   }
+  // Like official 2.1.311, the guard is skipped when the model could read the
+  // file without a prompt; whether the write itself needs one is decided by
+  // the permission check that follows.
   const permissionContext = context.getAppState().toolPermissionContext
-  const decision = checkWritePermissionForTool(tool, input, permissionContext)
+  const readTool = { name: FILE_READ_TOOL_NAME }
+  if (
+    getDenyRuleForTool(permissionContext, readTool) ||
+    getAskRuleForTool(permissionContext, readTool)
+  ) {
+    return false
+  }
+  const decision = checkReadPermissionForTool(tool, input, permissionContext)
   if (decision.behavior === 'allow') return true
   return (
     decision.behavior === 'ask' &&
