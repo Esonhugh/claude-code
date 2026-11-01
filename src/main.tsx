@@ -213,12 +213,14 @@ import {
 } from './services/plugins/pluginCliCommands.js'
 import { initBundledSkills } from './skills/bundled/index.js'
 import type { AgentColorName } from './tools/AgentTool/agentColorManager.js'
+import { formatHelp } from './utils/cliHelp.js'
 import {
   getActiveAgentsFromList,
   getAgentDefinitionsWithOverrides,
   isBuiltInAgent,
   isCustomAgent,
   parseAgentsFromJson,
+  readAgentsFlag,
 } from './tools/AgentTool/loadAgentsDir.js'
 import type { LogOption } from './types/logs.js'
 import type { Message as MessageType } from './types/message.js'
@@ -1243,6 +1245,7 @@ async function run(): Promise<CommanderCommand> {
     return Object.assign(
       { sortSubcommands: true, sortOptions: true } as const,
       {
+        formatHelp,
         compareOptions: (a: Option, b: Option) =>
           getOptionSortKey(a).localeCompare(getOptionSortKey(b)),
       },
@@ -1460,17 +1463,25 @@ async function run(): Promise<CommanderCommand> {
       'Include partial message chunks as they arrive (only works with --print and --output-format=stream-json)',
       () => true,
     )
-    .option('--await-initialize', 'Read launch-scoped plugins from the first initialize stdin line (requires --input-format=stream-json)')
+    .addOption(
+      new Option(
+        '--await-initialize',
+        'Read launch-scoped plugins from the first initialize stdin line (requires --input-format=stream-json)',
+      ).hideHelp(),
+    )
     .addOption(
       new Option(
         '--input-format <format>',
         'Input format (only works with --print): "text" (default), or "stream-json" (realtime streaming input)',
       ).choices(['text', 'stream-json']),
     )
-    .option(
-      '--mcp-debug',
-      '[DEPRECATED. Use --debug instead] Enable MCP debug mode (shows MCP server errors)',
-      () => true,
+    .addOption(
+      new Option(
+        '--mcp-debug',
+        '[DEPRECATED. Use --debug instead] Enable MCP debug mode (shows MCP server errors)',
+      )
+        .argParser(() => true)
+        .hideHelp(),
     )
     .option(
       '--dangerously-skip-permissions',
@@ -1552,6 +1563,15 @@ async function run(): Promise<CommanderCommand> {
       '--replay-user-messages',
       'Re-emit user messages from stdin back on stdout for acknowledgment (only works with --input-format=stream-json and --output-format=stream-json)',
       () => true,
+    )
+    .addOption(
+      new Option(
+        '--prompt-suggestions [value]',
+        'Enable prompt suggestions. In print/SDK mode, emits a prompt_suggestion message after each turn with a predicted next user prompt',
+      )
+        .choices(['true', 'false', '1', '0', 'yes', 'no', 'on', 'off'])
+        .preset('true')
+        .argParser(value => ['true', '1', 'yes', 'on'].includes(value)),
     )
     .addOption(
       new Option(
@@ -1802,8 +1822,8 @@ async function run(): Promise<CommanderCommand> {
       'Set a display name for this session (shown in /resume and terminal title)',
     )
     .option(
-      '--agents <json>',
-      'JSON object defining custom agents (e.g. \'{"reviewer": {"description": "Reviews code", "prompt": "You are a code reviewer"}}\')',
+      '--agents <json-or-file>',
+      'JSON object defining custom agents, or with --print the path to a file that holds one (e.g. \'{"reviewer": {"description": "Reviews code", "prompt": "You are a code reviewer"}}\')',
     )
     .option(
       '--setting-sources <sources>',
@@ -2245,16 +2265,6 @@ async function run(): Promise<CommanderCommand> {
 
       // Get isNonInteractiveSession from state (was set before init())
       const isNonInteractiveSession = getIsNonInteractiveSession()
-
-      // Validate that fallback model is different from main model
-      if (fallbackModel && options.model && fallbackModel === options.model) {
-        process.stderr.write(
-          chalk.red(
-            'Error: Fallback model cannot be the same as the main model. Please specify a different model for --fallback-model.\n',
-          ),
-        )
-        process.exit(1)
-      }
 
       // Handle system prompt options
       let systemPrompt = options.systemPrompt
@@ -3233,9 +3243,14 @@ async function run(): Promise<CommanderCommand> {
       // Parse CLI agents if provided via --agents flag (safe mode ignores them)
       let cliAgents: typeof agentDefinitionsResult.activeAgents = []
       if (agentsJson && !isSafeMode()) {
+        const agentsText = await readAgentsFlag(agentsJson, isNonInteractiveSession)
+        if (agentsText.ok === false) {
+          process.stderr.write(chalk.red(`${agentsText.error}\n`))
+          process.exit(1)
+        }
         let parsedAgents: unknown
         try {
-          parsedAgents = jsonParse(agentsJson)
+          parsedAgents = jsonParse(agentsText.json)
         } catch (error) {
           process.stderr.write(
             chalk.red(
@@ -4259,6 +4274,7 @@ async function run(): Promise<CommanderCommand> {
             sessionMirror: options.sessionMirror === true,
             rewindFiles: options.rewindFiles,
             enableAuthStatus: options.enableAuthStatus,
+            promptSuggestions: options.promptSuggestions,
             agent: agentCli,
             workload: options.workload,
             setupTrigger: setupTrigger ?? undefined,
@@ -5611,7 +5627,7 @@ async function run(): Promise<CommanderCommand> {
       new Option(
         '--messaging-socket-path <path>',
         'Unix domain socket path for the UDS messaging server (defaults to a tmp path)',
-      ),
+      ).hideHelp(),
     )
   }
 
@@ -5636,13 +5652,13 @@ async function run(): Promise<CommanderCommand> {
       new Option(
         '--channels <servers...>',
         'Enable inbound notifications from approved channel plugins for this session: plugin:<name>@<marketplace> (space-separated).',
-      ),
+      ).hideHelp(),
     )
     program.addOption(
       new Option(
         '--dangerously-load-development-channels <servers...>',
         'Load development channels: plugin:<name>@<marketplace> or server:<name>. Interactive only; requires startup confirmation; organization policy still applies.',
-      ),
+      ).hideHelp(),
     )
   }
 
