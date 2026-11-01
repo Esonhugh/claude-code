@@ -127,6 +127,7 @@ import { createSystemMessage, createUserMessage } from './utils/messages.js'
 import { getPlatform } from './utils/platform.js'
 import { getBaseRenderOptions } from './utils/renderOptions.js'
 import { initializeFullscreenMode } from './utils/fullscreen.js'
+import { initScreenReaderMode } from './utils/screenReader.js'
 import { isFocusViewConfigured } from './utils/focusView.js'
 import { configureTuiRestart } from './utils/tuiRestart.js'
 import { getSessionIngressAuthToken } from './utils/sessionIngressAuth.js'
@@ -3520,6 +3521,7 @@ async function run(): Promise<CommanderCommand> {
 
       // Show setup screens after commands are loaded
       if (!isNonInteractiveSession) {
+        initScreenReaderMode()
         initializeFullscreenMode(getInitialSettings().tui)
         const ctx = getRenderContext(false)
         getFpsMetrics = ctx.getFpsMetrics
@@ -5685,6 +5687,12 @@ async function run(): Promise<CommanderCommand> {
     )
   }
 
+  program.addOption(
+    new Option(
+      '--ax-screen-reader',
+      'Render screen-reader friendly output (flat text, no decorative borders or animations).',
+    ),
+  )
   if (feature('KAIROS') || feature('KAIROS_BRIEF')) {
     program.addOption(
       new Option(

@@ -382,11 +382,11 @@ function ModeIndicator({
   const modePart =
     !currentMode || getIsRemoteMode() ? null : !hasActiveMode ? (
       <Text color="inactive" key="mode">
-        {PAUSE_ICON} manual mode on
+        <Text aria-hidden>{PAUSE_ICON} </Text>manual mode on
       </Text>
     ) : (
       <Text color={getModeColor(currentMode)} key="mode">
-        {permissionModeSymbol(currentMode)}{' '}
+        <Text aria-hidden>{permissionModeSymbol(currentMode)} </Text>
         {getPermissionModeFooterLabel(currentMode)} on
         {shouldShowModeHint && (
           <Text dimColor>
