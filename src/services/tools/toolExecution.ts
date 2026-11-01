@@ -1068,9 +1068,8 @@ async function checkPermissionsAndCallTool(
   managedPass?: ManagedPreToolUsePass,
 ): Promise<MessageUpdateLazy[]> {
   // Validate input types with zod (surprisingly, the model is not great at generating valid input)
-  const parsedInput = tool.inputSchema.safeParse(
-    tool.coerceInput?.(input) ?? input,
-  )
+  const coerced = tool.coerceInput?.(input) ?? null
+  const parsedInput = tool.inputSchema.safeParse(coerced?.input ?? input)
   if (!parsedInput.success) {
     let errorContent = formatZodValidationError(tool.name, parsedInput.error)
 
@@ -1957,7 +1956,7 @@ async function checkPermissionsAndCallTool(
       // don't modify the output), otherwise map from scratch.
       // Mods choose the final result after this pipeline returns. Persisting a
       // discarded branch here would occupy the tool-use ID's write-once file.
-      const toolResultBlock = executionRecord
+      const mappedBlock = executionRecord
         ? preMappedBlock ??
           tool.mapToolResultToToolResultBlockParam(toolUseResult, toolUseID)
         : preMappedBlock
@@ -1967,6 +1966,20 @@ async function checkPermissionsAndCallTool(
               tool.maxResultSizeChars,
             )
           : await processToolResultBlock(tool, toolUseResult, toolUseID)
+
+      // Like 2.1.311, a repaired input shape is explained after the result.
+      const resultNote = coerced?.resultNote
+      const toolResultBlock: ToolResultBlockParam =
+        !resultNote || mappedBlock.is_error
+          ? mappedBlock
+          : {
+              ...mappedBlock,
+              content:
+                typeof mappedBlock.content === 'string' ||
+                mappedBlock.content === undefined
+                  ? `${mappedBlock.content ?? ''}\n\n${resultNote}`
+                  : [...mappedBlock.content, { type: 'text', text: resultNote }],
+            }
 
       // Build content blocks - tool result first, then optional feedback
       const contentBlocks: ContentBlockParam[] = [toolResultBlock]

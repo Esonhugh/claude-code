@@ -1,6 +1,8 @@
 import { feature } from 'bun:bundle'
 import { formatDuration } from '../../utils/format.js'
 import { FILE_READ_TOOL_NAME } from '../FileReadTool/prompt.js'
+import { TASK_STOP_TOOL_NAME } from '../TaskStopTool/prompt.js'
+import { getMaxOutputLength } from '../../utils/shell/outputLimits.js'
 import isPlainObject from 'lodash-es/isPlainObject.js'
 import type { ToolResultBlockParam } from '@anthropic-ai/sdk/resources/index.mjs'
 import {
@@ -56,7 +58,10 @@ import {
   fileHistoryTrackEdit,
 } from '../../utils/fileHistory.js'
 import { truncate } from '../../utils/format.js'
-import { getFsImplementation } from '../../utils/fsOperations.js'
+import {
+  getFsImplementation,
+  readFileRange,
+} from '../../utils/fsOperations.js'
 import { lazySchema } from '../../utils/lazySchema.js'
 import { expandPath } from '../../utils/path.js'
 import type { PermissionResult } from '../../utils/permissions/PermissionResult.js'
@@ -736,7 +741,7 @@ export const BashTool = buildTool({
       delete next.command_description
       changed = true
     }
-    return changed ? next : null
+    return changed ? { input: next } : null
   },
   get outputSchema(): OutputSchema {
     return outputSchema()
@@ -883,7 +888,7 @@ export const BashTool = buildTool({
       } else if (backgroundedByUser) {
         backgroundInfo = `Command was manually backgrounded by user with ID: ${backgroundTaskId}. Output is being written to: ${outputPath}`
       } else if (timedOutAfterMs !== undefined) {
-        backgroundInfo = `Command did not complete within its ${formatDuration(timedOutAfterMs)} timeout and was moved to the background (ID: ${backgroundTaskId}). Output is being written to: ${outputPath}. You will be notified when it completes. To check interim output, use ${FILE_READ_TOOL_NAME} on that file path.`
+        backgroundInfo = `Command did not complete within its ${formatDuration(timedOutAfterMs)} timeout and was moved to the background (ID: ${backgroundTaskId}). Output is being written to: ${outputPath}. You will be notified when it completes. It is running now: do not start a second copy while it runs. If it is no longer needed, stop it with ${TASK_STOP_TOOL_NAME}. To check interim output, use ${FILE_READ_TOOL_NAME} on that file path.`
       } else {
         backgroundInfo = `Command running in background with ID: ${backgroundTaskId}. Output is being written to: ${outputPath}. You will be notified when it completes. To check interim output, use ${FILE_READ_TOOL_NAME} on that file path.`
       }
@@ -1248,6 +1253,19 @@ async function* runShellCommand({
   // Start the command execution
   const resultPromise = shellCommand.result
 
+  async function readPartialOutput(): Promise<string> {
+    try {
+      const range = await readFileRange(
+        shellCommand.taskOutput.path,
+        0,
+        getMaxOutputLength(),
+      )
+      return range?.content ?? ''
+    } catch {
+      return ''
+    }
+  }
+
   // Helper to spawn a background task and return its ID
   async function spawnBackgroundTask(): Promise<string> {
     const handle = await spawnShellTask(
@@ -1405,7 +1423,8 @@ async function* runShellCommand({
 
     if (backgroundShellId) {
       return {
-        stdout: '',
+        // Like 2.1.311 the output so far is kept when the timeout moves it.
+        stdout: timedOut ? await readPartialOutput() : '',
         stderr: '',
         code: 0,
         interrupted: false,
@@ -1468,7 +1487,7 @@ async function* runShellCommand({
       // Check if command was backgrounded (either via old mechanism or new backgroundAll)
       if (backgroundShellId) {
         return {
-          stdout: '',
+          stdout: timedOut ? await readPartialOutput() : '',
           stderr: '',
           code: 0,
           interrupted: false,

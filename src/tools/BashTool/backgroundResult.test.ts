@@ -22,3 +22,15 @@ test('a command moved to the background by its timeout says so', () => {
   )
   expect(String(block.content)).toStartWith('Command did not complete within its 1s timeout and was moved to the background (ID: b2). Output is being written to: ')
 })
+
+test('like 2.1.311 a timed-out command keeps its partial output and warns against a second copy', () => {
+  const block = BashTool.mapToolResultToToolResultBlockParam(
+    { stdout: 'a\nb\n', stderr: '', interrupted: false, backgroundTaskId: 'b3', timedOutAfterMs: 1000 } as never,
+    'toolu_3',
+  )
+  const content = String(block.content)
+  expect(content).toStartWith('a\nb\nCommand did not complete within its 1s timeout')
+  expect(content).toEndWith(
+    'You will be notified when it completes. It is running now: do not start a second copy while it runs. If it is no longer needed, stop it with TaskStop. To check interim output, use Read on that file path.',
+  )
+})

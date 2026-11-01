@@ -587,9 +587,12 @@ export type Tool<
   /**
    * Repairs a common wrong input shape (an alias key, a value that means
    * "unset") before schema validation, so the call runs instead of failing.
-   * Returns null when there is nothing to repair.
+   * Returns null when there is nothing to repair. A resultNote is appended to
+   * the tool result so the model learns the right parameter names.
    */
-  coerceInput?(input: unknown): Record<string, unknown> | null
+  coerceInput?(
+    input: unknown,
+  ): { input: Record<string, unknown>; resultNote?: string } | null
 
   /**
    * Determines if this tool is allowed to run with this input in the current context.
