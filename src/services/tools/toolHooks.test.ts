@@ -705,7 +705,9 @@ describe('classic events at existing tool hook boundaries', () => {
     })
   })
 
-  test('raw PreToolUse stop survives a module replacing the folded deny', async () => {
+  // Like 2.1.311 a stop does not refuse the call; it survives the module's
+  // decision and ends the turn after the tool runs.
+  test('raw PreToolUse stop survives a module allowing the call', async () => {
     registerHookCallbacks({
       PreToolUse: [
         {
@@ -734,8 +736,8 @@ describe('classic events at existing tool hook boundaries', () => {
     ])
     expect(
       results.find(r => r.type === 'hookPermissionResult')
-        ?.hookPermissionResult,
-    ).toMatchObject({ behavior: 'deny', message: 'stop host' })
+        ?.hookPermissionResult.behavior,
+    ).toBe('allow')
   })
 
   test('unawaited next settles before the final decision and does not duplicate contexts', async () => {
@@ -780,7 +782,7 @@ describe('classic events at existing tool hook boundaries', () => {
     expect(
       results.find(r => r.type === 'hookPermissionResult')?.hookPermissionResult
         .behavior,
-    ).toBe('deny')
+    ).toBe('allow')
     expect(contexts(results)).toEqual([])
     expect(f.releases()).toBe(1)
   })
@@ -1357,9 +1359,9 @@ describe('classic events at existing tool hook boundaries', () => {
     expect(JSON.stringify(results)).not.toContain('hook_blocking_error')
   })
 
-  // With Mods the fork refuses the call when a PreToolUse hook says
-  // continue:false; like 2.1.311 the turn must still end there.
-  test('a PreToolUse continue:false stops the turn after the refused call', async () => {
+  // Like 2.1.311 a PreToolUse continue:false lets the call run, then ends
+  // the turn (user decision 2026-11-01).
+  test('a PreToolUse continue:false runs the call and then stops the turn', async () => {
     registerHookCallbacks({
       PreToolUse: [{ hooks: [{ type: 'callback', callback: async () => ({ continue: false, stopReason: 'stop here' }) }] }],
     })
@@ -1375,7 +1377,7 @@ describe('classic events at existing tool hook boundaries', () => {
     const updates = await Array.fromAsync(runToolUse(block, createAssistantMessage({ content: [block] }), async () => ({ behavior: 'allow' }), f.context))
     const stopped = updates.find(u => u.message?.type === 'attachment' && u.message.attachment.type === 'hook_stopped_continuation')
     expect(stopped?.message).toMatchObject({ attachment: { message: 'stop here', hookEvent: 'PreToolUse' } })
-    expect(calls).toBe(0)
+    expect(calls).toBe(1)
   })
 })
 

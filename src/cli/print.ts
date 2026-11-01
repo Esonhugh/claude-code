@@ -5637,16 +5637,24 @@ export function getCanUseToolFn(
           assistantMessage,
           toolUseId,
         ))
-      if (decision.behavior !== 'ask') return decision
-      return (
-        (await runPrintPermissionRequestHooks(
-          tool,
-          input,
-          toolUseContext,
-          toolUseId,
-          decision,
-        )) ?? decision
+      const final =
+        decision.behavior === 'ask'
+          ? ((await runPrintPermissionRequestHooks(
+              tool,
+              input,
+              toolUseContext,
+              toolUseId,
+              decision,
+            )) ?? decision)
+          : decision
+      // No prompt can be shown here, so an unanswered ask is refused too.
+      structuredIO.emitPermissionDenied(
+        tool.name,
+        toolUseId,
+        toolUseContext.agentId,
+        final,
       )
+      return final
     }
   }
   // Lazy lookup: MCP connects are per-server incremental in print mode, so

@@ -2047,6 +2047,25 @@ export const SDKThinkingTokensMessageSchema = lazySchema(() =>
     ),
 )
 
+export const SDKPermissionDeniedMessageSchema = lazySchema(() =>
+  z
+    .object({
+      type: z.literal('system'),
+      subtype: z.literal('permission_denied'),
+      tool_name: z.string(),
+      tool_use_id: z.string(),
+      agent_id: z.string().optional(),
+      decision_reason_type: z.string().optional(),
+      decision_reason: z.string().optional(),
+      message: z.string(),
+      uuid: UUIDPlaceholder(),
+      session_id: z.string(),
+    })
+    .describe(
+      'A tool call was refused before any permission prompt was shown.',
+    ),
+)
+
 export const SDKCompactBoundaryMessageSchema = lazySchema(() =>
   z.object({
     type: z.literal('system'),
@@ -2533,6 +2552,7 @@ export const SDKMessageSchema = lazySchema(() =>
     SDKUIFocusMessageSchema(),
     SDKPartialAssistantMessageSchema(),
     SDKThinkingTokensMessageSchema(),
+    SDKPermissionDeniedMessageSchema(),
     SDKCompactBoundaryMessageSchema(),
     SDKStatusMessageSchema(),
     SDKAPIRetryMessageSchema(),

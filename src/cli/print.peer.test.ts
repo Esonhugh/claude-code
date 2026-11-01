@@ -462,6 +462,51 @@ if (process.env[childFlag] !== '1') {
     }
   })
 
+  // Like 2.1.311, status:requesting is a partial-message event.
+  test('QueryEngine emits status:requesting only with partial messages', async () => {
+    const mocks = [
+      spyOn(contextModule, 'fetchSystemPromptParts').mockResolvedValue({
+        defaultSystemPrompt: [],
+        userContext: {},
+        systemContext: {},
+      }),
+      spyOn(commandModule, 'getSlashCommandToolSkills').mockResolvedValue([]),
+      spyOn(plugins, 'loadAllPluginsCacheOnly').mockResolvedValue({ enabled: [], disabled: [], errors: [] }),
+      spyOn(fileHistory, 'fileHistoryEnabled').mockReturnValue(false),
+      spyOn(storage, 'recordTranscript').mockResolvedValue(undefined),
+      spyOn(hooks, 'executeUserPromptSubmitHooks').mockImplementation(async function* () {}),
+      spyOn(attachments, 'getAttachmentMessages').mockImplementation(async function* () {}),
+      spyOn(queryModule, 'query').mockImplementation(async function* () {
+        yield { type: 'stream_request_start' } as never
+        yield createAssistantMessage({ content: 'done' })
+        return { reason: 'completed' }
+      }),
+    ]
+    const statuses = async (includePartialMessages: boolean) => {
+      let state = getDefaultAppState()
+      const engine = new QueryEngine({
+        cwd: process.cwd(), tools: [], commands: [], mcpClients: [], agents: [],
+        canUseTool: async () => ({ behavior: 'allow', updatedInput: {} }),
+        getAppState: () => state,
+        setAppState: update => { state = update(state) },
+        readFileCache: createFileStateCacheWithSizeLimit(10),
+        userSpecifiedModel: 'claude-sonnet-4-6',
+        thinkingConfig: { type: 'disabled' },
+        includePartialMessages,
+      })
+      const found: unknown[] = []
+      for await (const message of engine.submitMessage('status check'))
+        if (message.type === 'system' && message.subtype === 'status') found.push(message.status)
+      return found
+    }
+    try {
+      expect(await statuses(false)).toEqual([])
+      expect(await statuses(true)).toEqual(['requesting'])
+    } finally {
+      for (const mock of mocks) mock.mockRestore()
+    }
+  })
+
   test('AppStateProvider keeps peer permissions live and releases its subscription on unmount', async () => {
     const { render } = await import('../ink.js')
     const { AppStateProvider, useAppStateStore } =

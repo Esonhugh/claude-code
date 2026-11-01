@@ -871,8 +871,9 @@ function streamedCheckPermissionsAndCallTool(
         } else if ('updatedInput' in result.hookPermissionResult)
           args = result.hookPermissionResult.updatedInput ?? args
       } else if (result.type === 'hookUpdatedInput') args = result.updatedInput
-      else if (result.type === 'stopReason') stopped = result.stopReason
-      else if (result.type === 'stop' || result.type === 'preventContinuation')
+      // A continue:false stop is not a refusal: core reuses this pass, runs
+      // the call and ends the turn after it, like 2.1.311.
+      else if (result.type === 'stop')
         stopped ??= 'Execution stopped by PreToolUse hook'
     }
     if (stopped !== undefined)

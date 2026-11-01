@@ -386,6 +386,18 @@ export type SDKThinkingTokensMessage = {
   uuid: string
   session_id: string
 }
+export type SDKPermissionDeniedMessage = {
+  type: 'system'
+  subtype: 'permission_denied'
+  tool_name: string
+  tool_use_id: string
+  agent_id?: string
+  decision_reason_type?: string
+  decision_reason?: string
+  message: string
+  uuid: string
+  session_id: string
+}
 export type SDKCompactBoundaryMessage = {
   type: 'system'
   subtype: 'compact_boundary'
@@ -706,6 +718,7 @@ export type SDKMessage =
   | SDKUILogMessage
   | SDKPartialAssistantMessage
   | SDKThinkingTokensMessage
+  | SDKPermissionDeniedMessage
   | SDKCompactBoundaryMessage
   | SDKStatusMessage
   | SDKAPIRetryMessage
