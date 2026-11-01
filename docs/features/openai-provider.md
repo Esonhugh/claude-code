@@ -34,7 +34,7 @@ CLAUDE_CODE_USE_OPENAI=1 claude
 CLAUDE_CODE_USE_OPENAI=1 OPENAI_API_KEY=<your-api-key> claude
 ```
 
-**3. 选模型：** 默认 `gpt-5.6-sol`，欢迎画面会显示。`/model` 列出当前账号或网关可用的模型（下图是一个返回两个模型的兼容网关）：
+**3. 选模型：** ChatGPT 账号登录时，默认模型跟随账号 `/codex/models` 列表里优先级最高的非隐藏模型（和 Codex CLI 一致），拿到列表之前、或者用 API key / 网关时，默认是 `gpt-5.6-sol`。欢迎画面会显示当前默认模型。`/model` 列出当前账号或网关可用的模型（下图是一个返回两个模型的兼容网关）：
 
 ![OpenAI 模型列表](images/openai-provider-model.png)
 
@@ -52,7 +52,7 @@ CLAUDE_CODE_USE_OPENAI=1 OPENAI_BASE_URL=https://gateway.example/api OPENAI_API_
 
 | 你写的 | 实际发送 | 可用环境变量覆盖 |
 | --- | --- | --- |
-| 不指定 / `opus` | `gpt-5.6-sol` | `ANTHROPIC_DEFAULT_OPUS_MODEL` |
+| 不指定 / `opus` | ChatGPT 账号：列表里的第一个模型；否则 `gpt-5.6-sol` | `ANTHROPIC_DEFAULT_OPUS_MODEL` |
 | `sonnet` | `gpt-5.6-terra` | `ANTHROPIC_DEFAULT_SONNET_MODEL` |
 | `haiku` | `gpt-5.6-luna` | `ANTHROPIC_DEFAULT_HAIKU_MODEL` |
 | 其他名字（包括完整的 Claude 模型 ID） | 原样发送 | — |

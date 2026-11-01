@@ -11,6 +11,9 @@ let servedDefault: { model: string; orgConfigured: boolean } | undefined
 mock.module('./servedModelCatalog.js', () => ({
   getServedDefaultModel: () => servedDefault,
 }))
+mock.module('./openaiModelOptions.js', () => ({
+  getOpenAIServedDefaultModel: () => undefined,
+}))
 
 mock.module('../../bootstrap/state.js', () => ({
   getMainLoopModelOverride: () => modelOverride,
