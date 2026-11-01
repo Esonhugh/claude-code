@@ -126,7 +126,10 @@ test('native completion verb remains stable when its row is unmounted and remoun
   try {
     const word=getTurnCompletionVerb(f.message.uuid)
     await f.waitFor(()=>f.output().includes(word+' for'))
-    f.instance.rerender(null)
+    // Piped Ink output skips a frame identical to the last one written, so
+    // show a placeholder while the row is unmounted.
+    f.instance.rerender(<Text>unmounted</Text>)
+    await f.waitFor(()=>f.output().includes('unmounted'))
     f.clear()
     f.instance.rerender(<AppStoreContext value={createStore(getDefaultAppState())}><SystemTextMessage message={f.message} addMargin={false} verbose={false}/></AppStoreContext>)
     await f.waitFor(()=>f.output().includes(word+' for'))
@@ -278,7 +281,10 @@ test('a site that finishes after its row unmounts cannot paint its obsolete draw
   const f=await screen()
   try {
     await f.waitFor(()=>seen.length>0)
-    f.instance.rerender(null)
+    // Piped Ink output skips a frame identical to the last one written, so
+    // show a placeholder while the row is unmounted.
+    f.instance.rerender(<Text>unmounted</Text>)
+    await f.waitFor(()=>f.output().includes('unmounted'))
     f.clear()
     await runtime.settle()
     await new Promise(resolve=>setTimeout(resolve,80))

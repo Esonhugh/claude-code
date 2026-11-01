@@ -3783,6 +3783,7 @@ describe('ModsPane input repair', () => {
       speculation: { status: 'idle' }, isSideQuestionVisible: false, queuedCommands: [],
       isQueuedCommandEditable: () => false, messages: [{}], input: '', isLoading: false,
       doublePressEscFromEmpty: () => { rewind++ },
+      feature: () => false,
     }
     new Function('scope', `with(scope) {${new Bun.Transpiler({ loader: 'tsx' }).transformSync(source.slice(start, end))}}`)(scope)
     handler('', { escape: true })
