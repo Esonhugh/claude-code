@@ -322,6 +322,7 @@ import {
 } from './utils/settings/settings.js'
 import { resetSettingsCache } from './utils/settings/settingsCache.js'
 import type { ValidationError } from './utils/settings/validation.js'
+import { formatSettingsLoadReport } from './utils/settings/validation.js'
 import {
   DEFAULT_TASKS_MODE_TASK_LIST_ID,
   TASK_STATUSES,
@@ -1424,7 +1425,7 @@ async function run(): Promise<CommanderCommand> {
     )
     .option(
       '-p, --print',
-      'Print response and exit (useful for pipes). Note: The workspace trust dialog is skipped when Claude is run with the -p mode. Only use this flag in directories you trust.',
+      'Print response and exit (useful for pipes). Note: The workspace trust dialog is skipped when Claude is run in non-interactive mode (via -p, or when stdout is not a TTY, e.g. piped or redirected output). Only use this in directories you trust. Settings files that fail validation are silently ignored in this mode (no error dialog is shown).',
       () => true,
     )
     .option(
@@ -1858,7 +1859,7 @@ async function run(): Promise<CommanderCommand> {
     )
     .option(
       '-n, --name <name>',
-      'Set a display name for this session (shown in /resume and terminal title)',
+      'Set a display name for this session (shown in the prompt box, /resume picker, and terminal title)',
     )
     .option(
       '--agents <json-or-file>',
@@ -3670,6 +3671,9 @@ async function run(): Promise<CommanderCommand> {
             onExit: () => gracefulShutdownSync(1),
           })
         }
+      } else if (outputFormat !== 'json' && outputFormat !== 'stream-json') {
+        const report = formatSettingsLoadReport(getSettingsWithErrors().errors)
+        if (report) process.stderr.write(report)
       }
 
       // Check quota status, fast mode, passes eligibility, and bootstrap data
@@ -4430,6 +4434,8 @@ async function run(): Promise<CommanderCommand> {
 
       const initialState: AppState = {
         settings: getInitialSettings(),
+        // Like 2.1.311, --name shows in the prompt box from the start.
+        ...(sessionNameArg && { standaloneAgentContext: { name: sessionNameArg } }),
         tasks: {},
         taskDecorations: {},
         runningSubagents: 0,
@@ -6661,7 +6667,7 @@ async function run(): Promise<CommanderCommand> {
 
   // Like 2.1.311, rm reads its arguments itself, so its errors carry its usage line.
   const rmCommand = program
-    .command('rm [id]')
+    .command('rm <id>')
     .description('Delete a background session, and its worktree when that is safe. Works on sessions that have already exited')
     .allowUnknownOption()
     .allowExcessArguments()
@@ -6670,9 +6676,17 @@ async function run(): Promise<CommanderCommand> {
       await rmHandler(command.args)
       process.exit(process.exitCode ?? 0)
     })
+  const rmUsage =
+    'Usage: claude rm <id> [--discard-unpushed <commit>@<worktree-id>] [--force-remove-worktree <worktree-id>]'
+  Object.assign(rmCommand, {
+    missingArgument() {
+      process.stderr.write(`${rmUsage}\n`)
+      process.exit(1)
+    },
+  })
   rmCommand.helpInformation = () =>
     [
-      'Usage: claude rm <id> [--discard-unpushed <commit>@<worktree-id>] [--force-remove-worktree <worktree-id>]',
+      rmUsage,
       '',
       '  Delete a background session and its worktree. Unlike `stop`, works on already-exited sessions.',
       "  --discard-unpushed <commit>@<worktree-id>  also discard the worktree's unpushed commits (and any uncommitted changes) while it is still the same worktree at that commit — pass the value a previous 'claude rm <id>' reported",

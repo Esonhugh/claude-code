@@ -62,6 +62,8 @@ export type ValidationError = {
   suggestion?: string
   /** Link to relevant documentation */
   docLink?: string
+  /** 'warning': only this entry was skipped; the rest of the file loaded */
+  severity?: 'warning'
   /** MCP-specific metadata - only present for MCP configuration errors */
   mcpErrorMetadata?: {
     /** Which configuration scope this error came from */
@@ -96,6 +98,35 @@ function getReceivedType(value: unknown): string {
 function extractReceivedFromMessage(msg: string): string | undefined {
   const match = msg.match(/received (\w+)/)
   return match ? match[1] : undefined
+}
+
+/**
+ * The stderr report a text-mode -p run prints for settings problems, like
+ * 2.1.311 (the interactive REPL shows a dialog instead). Undefined when none.
+ */
+export function formatSettingsLoadReport(errors: ValidationError[]): string | undefined {
+  const own = errors.filter(e => !e.mcpErrorMetadata)
+  const failedFiles = new Set(own.filter(e => e.severity !== 'warning').map(e => e.file))
+  const notLoaded = own.filter(e => failedFiles.has(e.file))
+  const skipped = own.filter(e => !failedFiles.has(e.file))
+  const list = (group: ValidationError[]): string =>
+    [...new Set(group.map(e => e.file ?? ''))]
+      .map(file => [file, group.filter(e => (e.file ?? '') === file)] as const)
+      .flatMap(([file, entries]) => [
+        ...entries.slice(0, 10).map(e => `  ${file}${e.path ? ` (${e.path})` : ''}: ${e.message}`),
+        ...(entries.length > 10 ? [`  … and ${entries.length - 10} more in ${file}`] : []),
+      ])
+      .join('\n')
+  const parts: string[] = []
+  if (notLoaded.length > 0) {
+    parts.push(
+      `These settings files did not load, so nothing in them is in effect, including hooks and permission rules. Each loads again once the problem listed for it is fixed:\n${list(notLoaded)}`,
+    )
+  }
+  if (skipped.length > 0) {
+    parts.push(`These settings entries were skipped; the rest of each file is in effect:\n${list(skipped)}`)
+  }
+  return parts.length > 0 ? `${parts.join('\n')}\n` : undefined
 }
 
 export function formatZodError(
