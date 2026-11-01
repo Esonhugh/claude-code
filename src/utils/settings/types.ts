@@ -1189,6 +1189,12 @@ export const SettingsSchema = lazySchema(() =>
         .describe(
           'IANA time zone for times shown in the UI, e.g. "UTC" or "Europe/Dublin". Default: the system time zone. An unknown name falls back to the system time zone.',
         ),
+      axScreenReader: z
+        .boolean()
+        .optional()
+        .describe(
+          'Render screen-reader friendly output (flat text, no decorative borders or animations). Overridden by the CLAUDE_AX_SCREEN_READER env var and the --ax-screen-reader CLI flag. Ignored in project and local settings.',
+        ),
       prefersReducedMotion: z
         .boolean()
         .optional()

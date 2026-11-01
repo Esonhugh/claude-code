@@ -1,5 +1,5 @@
 // biome-ignore-all assist/source/organizeImports: ANT-ONLY import markers must not be reordered
-import { Box, Text } from '../ink.js'
+import { Box, isScreenReaderEnabled, Text } from '../ink.js'
 import * as React from 'react'
 import {
   getLargeMemoryFiles,
@@ -61,7 +61,7 @@ const largeMemoryFilesNotice: StatusNoticeDefinition = {
 
           return (
             <Box key={file.path} flexDirection="row">
-              <Text color="warning">{figures.warning}</Text>
+              <Text color="warning">{isScreenReaderEnabled() ? 'warning:' : figures.warning}</Text>
               <Text color="warning">
                 Large <Text bold>{displayPath}</Text> will impact performance (
                 {formatNumber(file.content.length)} chars &gt;{' '}
@@ -91,7 +91,7 @@ const claudeAiSubscriberExternalTokenNotice: StatusNoticeDefinition = {
     const authTokenInfo = getAuthTokenSource()
     return (
       <Box flexDirection="row" marginTop={1}>
-        <Text color="warning">{figures.warning}</Text>
+        <Text color="warning">{isScreenReaderEnabled() ? 'warning:' : figures.warning}</Text>
         <Text color="warning">
           Auth conflict: Using {authTokenInfo.source} instead of Claude account
           subscription token. Either unset {authTokenInfo.source}, or run
@@ -120,7 +120,7 @@ const apiKeyConflictNotice: StatusNoticeDefinition = {
     })
     return (
       <Box flexDirection="row" marginTop={1}>
-        <Text color="warning">{figures.warning}</Text>
+        <Text color="warning">{isScreenReaderEnabled() ? 'warning:' : figures.warning}</Text>
         <Text color="warning">
           Auth conflict: Using {apiKeySource} instead of Anthropic Console key.
           Either unset {apiKeySource}, or run `claude /logout`.
@@ -156,7 +156,7 @@ const bothAuthMethodsNotice: StatusNoticeDefinition = {
     return (
       <Box flexDirection="column" marginTop={1}>
         <Text>
-          <Text color="warning">{figures.warning}</Text> Both {tokenSource}{' '}
+          <Text color="warning">{isScreenReaderEnabled() ? 'warning:' : figures.warning}</Text> Both {tokenSource}{' '}
           and {apiKeySource} set · auth may not work as expected
         </Text>
         <Box flexDirection="column" paddingLeft={2}>
@@ -199,7 +199,7 @@ const largeAgentDescriptionsNotice: StatusNoticeDefinition = {
     )
     return (
       <Box flexDirection="row">
-        <Text color="warning">{figures.warning}</Text>
+        <Text color="warning">{isScreenReaderEnabled() ? 'warning:' : figures.warning}</Text>
         <Text color="warning">
           Agent descriptions are over the{' '}
           {formatNumber(AGENT_DESCRIPTIONS_THRESHOLD)}-token limit (~

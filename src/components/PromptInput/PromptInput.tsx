@@ -70,7 +70,7 @@ import { useTerminalSize } from '../../hooks/useTerminalSize.js'
 import { useTypeahead } from '../../hooks/useTypeahead.js'
 import type { BorderTextOptions } from '../../ink/render-border.js'
 import { stringWidth } from '../../ink/stringWidth.js'
-import { Box, type ClickEvent, type Key, Text, useInput } from '../../ink.js'
+import { Box, type ClickEvent, isScreenReaderEnabled, type Key, Text, useInput } from '../../ink.js'
 import { useOptionalKeybindingContext } from '../../keybindings/KeybindingContext.js'
 import { getShortcutDisplay } from '../../keybindings/shortcutFormat.js'
 import {
@@ -3301,6 +3301,68 @@ function PromptInput({
     <TextInput {...baseProps} />
   )
 
+  const inputRow = swarmBanner ? (
+    <>
+      <Text color={swarmBanner.bgColor}>
+        {swarmBanner.text ? (
+          <>
+            {'─'.repeat(
+              Math.max(0, columns - stringWidth(swarmBanner.text) - 4),
+            )}
+            <Text backgroundColor={swarmBanner.bgColor} color="inverseText">
+              {' '}
+              {swarmBanner.text}{' '}
+            </Text>
+            {'──'}
+          </>
+        ) : (
+          '─'.repeat(columns)
+        )}
+      </Text>
+      <Box flexDirection="row" width="100%">
+        <PromptInputModeIndicator
+          mode={mode}
+          isLoading={isLoading}
+          viewingAgentName={viewingAgentName}
+          viewingAgentColor={viewingAgentColor}
+          viewingAgentThemeColor={viewingAgentThemeColor}
+        />
+        <Box flexGrow={1} flexShrink={1} onClick={handleInputClick}>
+          {textInputElement}
+        </Box>
+      </Box>
+      <Text color={swarmBanner.bgColor}>{'─'.repeat(columns)}</Text>
+    </>
+  ) : (
+    <Box
+      flexDirection="row"
+      alignItems="flex-start"
+      justifyContent="flex-start"
+      borderColor={getBorderColor()}
+      borderStyle="round"
+      borderLeft={false}
+      borderRight={false}
+      borderBottom
+      width="100%"
+      borderText={buildBorderText(
+        showFastIcon ?? false,
+        showFastIconHint,
+        fastModeCooldown,
+      )}
+    >
+      <PromptInputModeIndicator
+        mode={mode}
+        isLoading={isLoading}
+        viewingAgentName={viewingAgentName}
+        viewingAgentColor={viewingAgentColor}
+        viewingAgentThemeColor={viewingAgentThemeColor}
+      />
+      <Box flexGrow={1} flexShrink={1} onClick={handleInputClick}>
+        {textInputElement}
+      </Box>
+    </Box>
+  )
+
   return (
     <Box ref={promptAnchor} flexDirection="column" marginTop={briefOwnsGap ? 0 : 1}>
       {!isFullscreenEnvEnabled() && <PromptInputQueuedCommands />}
@@ -3310,67 +3372,7 @@ function PromptInput({
         </Box>
       )}
       <PromptInputStashNotice hasStash={stashedPrompt !== undefined} />
-      {swarmBanner ? (
-        <>
-          <Text color={swarmBanner.bgColor}>
-            {swarmBanner.text ? (
-              <>
-                {'─'.repeat(
-                  Math.max(0, columns - stringWidth(swarmBanner.text) - 4),
-                )}
-                <Text backgroundColor={swarmBanner.bgColor} color="inverseText">
-                  {' '}
-                  {swarmBanner.text}{' '}
-                </Text>
-                {'──'}
-              </>
-            ) : (
-              '─'.repeat(columns)
-            )}
-          </Text>
-          <Box flexDirection="row" width="100%">
-            <PromptInputModeIndicator
-              mode={mode}
-              isLoading={isLoading}
-              viewingAgentName={viewingAgentName}
-              viewingAgentColor={viewingAgentColor}
-              viewingAgentThemeColor={viewingAgentThemeColor}
-            />
-            <Box flexGrow={1} flexShrink={1} onClick={handleInputClick}>
-              {textInputElement}
-            </Box>
-          </Box>
-          <Text color={swarmBanner.bgColor}>{'─'.repeat(columns)}</Text>
-        </>
-      ) : (
-        <Box
-          flexDirection="row"
-          alignItems="flex-start"
-          justifyContent="flex-start"
-          borderColor={getBorderColor()}
-          borderStyle="round"
-          borderLeft={false}
-          borderRight={false}
-          borderBottom
-          width="100%"
-          borderText={buildBorderText(
-            showFastIcon ?? false,
-            showFastIconHint,
-            fastModeCooldown,
-          )}
-        >
-          <PromptInputModeIndicator
-            mode={mode}
-            isLoading={isLoading}
-            viewingAgentName={viewingAgentName}
-            viewingAgentColor={viewingAgentColor}
-            viewingAgentThemeColor={viewingAgentThemeColor}
-          />
-          <Box flexGrow={1} flexShrink={1} onClick={handleInputClick}>
-            {textInputElement}
-          </Box>
-        </Box>
-      )}
+      {!isScreenReaderEnabled() && inputRow}
       <PinnedNotifications />
       <PromptInputFooter
         apiKeyStatus={apiKeyStatus}
@@ -3407,6 +3409,8 @@ function PromptInput({
         onOpenTasksDialog={handleOpenTasksDialog}
         isLocalJSXCommandActive={isLocalJSXCommandActive}
       />
+      {/* Screen readers read the status lines first and end on the prompt, like 2.1.311. */}
+      {isScreenReaderEnabled() && inputRow}
       {isFullscreenEnvEnabled() ? (
         // position=absolute takes zero layout height so the spinner
         // doesn't shift when a notification appears/disappears. Yoga

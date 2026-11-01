@@ -14,6 +14,7 @@ import renderNodeToOutput, {
   setOverlayActive,
 } from './render-node-to-output.js'
 import { createScreen, type StylePool } from './screen.js'
+import { isScreenReaderEnabled, screenReaderLines } from './screen-reader.js'
 
 export type RenderOptions = {
   frontFrame: Frame
@@ -83,6 +84,19 @@ export default function createRenderer(
         ),
         viewport: { width: terminalWidth, height: terminalRows },
         cursor: { x: 0, y: 0, visible: true },
+      }
+    }
+
+    if (isScreenReaderEnabled()) {
+      const lines = screenReaderLines(node, terminalWidth)
+      const screen = backScreen ?? createScreen(terminalWidth, lines.length, stylePool, charPool, hyperlinkPool)
+      if (output) output.reset(terminalWidth, lines.length, screen)
+      else output = new Output({ width: terminalWidth, height: lines.length, stylePool, screen })
+      lines.forEach((line, y) => output!.write(0, y, line))
+      return {
+        screen: output.get(),
+        viewport: { width: terminalWidth, height: terminalRows },
+        cursor: { x: 0, y: lines.length, visible: !isTTY || lines.length === 0 },
       }
     }
 

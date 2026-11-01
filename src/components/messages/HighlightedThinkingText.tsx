@@ -2,7 +2,7 @@ import figures from 'figures'
 import * as React from 'react'
 import { useContext } from 'react'
 import { useQueuedMessage } from '../../context/QueuedMessageContext.js'
-import { Box, Text } from '../../ink.js'
+import { Box, isScreenReaderEnabled, Text } from '../../ink.js'
 import { formatBriefTimestamp } from '../../utils/formatBriefTimestamp.js'
 import {
   findThinkingTriggerPositions,
@@ -48,7 +48,7 @@ export function HighlightedThinkingText({
   if (triggers.length === 0) {
     return (
       <Text>
-        <Text color={pointerColor}>{figures.pointer} </Text>
+        <Text color={pointerColor}>{isScreenReaderEnabled() ? 'you:' : figures.pointer} </Text>
         <Text color="text">{text}</Text>
       </Text>
     )
@@ -84,7 +84,7 @@ export function HighlightedThinkingText({
 
   return (
     <Text>
-      <Text color={pointerColor}>{figures.pointer} </Text>
+      <Text color={pointerColor}>{isScreenReaderEnabled() ? 'you:' : figures.pointer} </Text>
       {parts}
     </Text>
   )

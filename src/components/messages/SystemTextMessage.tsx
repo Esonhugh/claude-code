@@ -140,7 +140,7 @@ export function SystemTextMessage({
   if (message.subtype === 'permission_retry') {
     return (
       <Box marginTop={addMargin ? 1 : 0} backgroundColor={bg} width="100%">
-        <Text dimColor>{TEARDROP_ASTERISK} </Text>
+        <Text dimColor aria-hidden>{TEARDROP_ASTERISK} </Text>
         <Text>Allowed </Text>
         <Text bold>{message.commands.join(', ')}</Text>
       </Box>
@@ -429,7 +429,7 @@ function NativeTurnDurationMessage({ message, addMargin, verb }: {
       width="100%"
     >
       <Box minWidth={2}>
-        <Text dimColor>{TEARDROP_ASTERISK}</Text>
+        <Text dimColor aria-hidden>{TEARDROP_ASTERISK}</Text>
       </Box>
       <Text dimColor>
         {waiting ? (
@@ -535,7 +535,7 @@ function ThinkingMessage({
       width="100%"
     >
       <Box minWidth={2}>
-        <Text dimColor>{TEARDROP_ASTERISK}</Text>
+        <Text dimColor aria-hidden>{TEARDROP_ASTERISK}</Text>
       </Box>
       <Text dimColor>{message.content}</Text>
     </Box>
