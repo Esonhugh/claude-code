@@ -1324,12 +1324,14 @@ export class QueryEngine {
           break
         case 'stream_request_start':
           requestStartedAt = Date.now()
-          yield {
-            type: 'system',
-            subtype: 'status' as const,
-            status: 'requesting' as const,
-            uuid: randomUUID(),
-            session_id: getSessionId(),
+          if (includePartialMessages) {
+            yield {
+              type: 'system',
+              subtype: 'status' as const,
+              status: 'requesting' as const,
+              uuid: randomUUID(),
+              session_id: getSessionId(),
+            }
           }
           break
         case 'system': {

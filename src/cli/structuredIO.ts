@@ -19,6 +19,7 @@ import type {
 import type { CanUseToolFn } from 'src/hooks/useCanUseTool.js'
 import type { Tool, ToolUseContext } from 'src/Tool.js'
 import { type HookCallback, hookJSONOutputSchema } from 'src/types/hooks.js'
+import { getSessionId } from 'src/bootstrap/state.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { logForDiagnosticsNoPII } from 'src/utils/diagLogs.js'
 import { AbortError } from 'src/utils/errors.js'
@@ -551,6 +552,29 @@ export class StructuredIO {
    * that a rule or the new mode now allows is approved and the host's prompt
    * is cancelled.
    */
+  /** Report a call refused before any permission prompt (2.1.311 shape). */
+  emitPermissionDenied(
+    toolName: string,
+    toolUseID: string,
+    agentId: string | undefined,
+    decision: PermissionDecision,
+  ): void {
+    if (decision.behavior === 'allow' || decision.decisionReason?.type === 'hook')
+      return
+    this.outbound.enqueue({
+      type: 'system',
+      subtype: 'permission_denied',
+      tool_name: toolName,
+      tool_use_id: toolUseID,
+      agent_id: agentId,
+      decision_reason_type: decision.decisionReason?.type,
+      decision_reason: serializeDecisionReason(decision.decisionReason),
+      message: decision.message,
+      uuid: randomUUID(),
+      session_id: getSessionId(),
+    })
+  }
+
   recheckPendingPermissions(): void {
     for (const recheck of this.pendingPermissionRechecks) recheck()
   }
@@ -576,10 +600,14 @@ export class StructuredIO {
           toolUseID,
         ))
       // If the tool is allowed or denied, return the result
-      if (
-        mainPermissionResult.behavior === 'allow' ||
-        mainPermissionResult.behavior === 'deny'
-      ) {
+      if (mainPermissionResult.behavior === 'allow') return mainPermissionResult
+      if (mainPermissionResult.behavior === 'deny') {
+        this.emitPermissionDenied(
+          tool.name,
+          toolUseID,
+          toolUseContext.agentId,
+          mainPermissionResult,
+        )
         return mainPermissionResult
       }
 
