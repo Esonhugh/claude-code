@@ -8,7 +8,7 @@ import type { ToolPermissionContext, ToolUseContext } from '../../Tool.js'
 // an answer confirms it for the session, and only a failed first call (other than a 401) demotes
 // it. The probe is per session, so each scenario runs in its own TRANSCRIPT_CLASSIFIER child.
 const childFlag = 'CLAUDE_CODE_SONNET5_PROBE_TEST_CHILD'
-const scenarios = ['first call fails', 'first call answers', 'first call is unauthorized'] as const
+const scenarios = ['first call fails', 'first call answers', 'first call is unauthorized', 'haiku main model'] as const
 
 if (process.env[childFlag] === undefined) {
   for (const scenario of scenarios) {
@@ -22,7 +22,8 @@ if (process.env[childFlag] === undefined) {
           cwd: join(import.meta.dir, '../../..'),
           env: {
             ...env, [childFlag]: scenario, HOME: home, CLAUDE_CONFIG_DIR: home,
-            ANTHROPIC_API_KEY: 'test-only-not-a-real-key', ANTHROPIC_MODEL: 'claude-opus-5-5',
+            ANTHROPIC_API_KEY: 'test-only-not-a-real-key',
+            ANTHROPIC_MODEL: scenario === 'haiku main model' ? 'claude-haiku-5-5' : 'claude-opus-5-5',
             DISABLE_TELEMETRY: '1', CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
           },
           stdout: 'pipe', stderr: 'pipe',
@@ -121,6 +122,14 @@ if (process.env[childFlag] === undefined) {
 
       sonnet5Failure = undefined
       expect((await check('after-401')).models.every(model => model === 'claude-sonnet-5')).toBe(true)
+    })
+  }
+
+  if (scenario === 'haiku main model') {
+    test('like official 2.1.311, a Haiku main model still gets the Sonnet 5 classifier', async () => {
+      const result = await check('haiku')
+      expect(result.behavior).toBe('allow')
+      expect(result.models.every(model => model === 'claude-sonnet-5')).toBe(true)
     })
   }
 }

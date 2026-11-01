@@ -6735,11 +6735,15 @@ async function run(): Promise<CommanderCommand> {
         .description(
           'Print the default auto mode environment, allow, soft_deny, and hard_deny rules as JSON',
         )
-        .action(async () => {
+        .option(
+          '--label <prefix>',
+          'Show only rules whose label starts with this prefix (case-insensitive)',
+        )
+        .action(async (options: { label?: string }) => {
           const { autoModeDefaultsHandler } = await import(
             './cli/handlers/autoMode.js'
           )
-          autoModeDefaultsHandler()
+          autoModeDefaultsHandler(options)
           process.exit(0)
         })
 
