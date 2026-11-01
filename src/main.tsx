@@ -322,6 +322,7 @@ import {
 } from './utils/settings/settings.js'
 import { resetSettingsCache } from './utils/settings/settingsCache.js'
 import type { ValidationError } from './utils/settings/validation.js'
+import { formatSettingsLoadReport } from './utils/settings/validation.js'
 import {
   DEFAULT_TASKS_MODE_TASK_LIST_ID,
   TASK_STATUSES,
@@ -1424,7 +1425,7 @@ async function run(): Promise<CommanderCommand> {
     )
     .option(
       '-p, --print',
-      'Print response and exit (useful for pipes). Note: The workspace trust dialog is skipped when Claude is run with the -p mode. Only use this flag in directories you trust.',
+      'Print response and exit (useful for pipes). Note: The workspace trust dialog is skipped when Claude is run in non-interactive mode (via -p, or when stdout is not a TTY, e.g. piped or redirected output). Only use this in directories you trust. Settings files that fail validation are silently ignored in this mode (no error dialog is shown).',
       () => true,
     )
     .option(
@@ -3670,6 +3671,9 @@ async function run(): Promise<CommanderCommand> {
             onExit: () => gracefulShutdownSync(1),
           })
         }
+      } else if (outputFormat !== 'json' && outputFormat !== 'stream-json') {
+        const report = formatSettingsLoadReport(getSettingsWithErrors().errors)
+        if (report) process.stderr.write(report)
       }
 
       // Check quota status, fast mode, passes eligibility, and bootstrap data
