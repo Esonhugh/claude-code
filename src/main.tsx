@@ -1858,7 +1858,7 @@ async function run(): Promise<CommanderCommand> {
     )
     .option(
       '-n, --name <name>',
-      'Set a display name for this session (shown in /resume and terminal title)',
+      'Set a display name for this session (shown in the prompt box, /resume picker, and terminal title)',
     )
     .option(
       '--agents <json-or-file>',
@@ -4430,6 +4430,8 @@ async function run(): Promise<CommanderCommand> {
 
       const initialState: AppState = {
         settings: getInitialSettings(),
+        // Like 2.1.311, --name shows in the prompt box from the start.
+        ...(sessionNameArg && { standaloneAgentContext: { name: sessionNameArg } }),
         tasks: {},
         taskDecorations: {},
         runningSubagents: 0,
