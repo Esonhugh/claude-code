@@ -1587,6 +1587,19 @@ async function checkPermissionsAndCallTool(
       }
     }
 
+    // A PreToolUse continue:false still ends the turn when the call is refused.
+    if (shouldPreventContinuation) {
+      resultingMessages.push({
+        message: createAttachmentMessage({
+          type: 'hook_stopped_continuation',
+          message: stopReason || 'Execution stopped by hook',
+          hookName: `PreToolUse:${tool.name}`,
+          toolUseID: toolUseID,
+          hookEvent: 'PreToolUse',
+        }),
+      })
+    }
+
     return resultingMessages
   }
   logEvent('tengu_tool_use_can_use_tool_allowed', {

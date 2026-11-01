@@ -1115,7 +1115,17 @@ export async function* runPreToolUseHooks(
       managedPass,
     )) {
       try {
-        if (result.message) {
+        // Like 2.1.311, a block reaches the model only as the tool result,
+        // not also as a hook_blocking_error reminder.
+        if (
+          result.message &&
+          !(
+            (result.message as unknown as AttachmentMessage).type ===
+              'attachment' &&
+            (result.message as unknown as AttachmentMessage).attachment.type ===
+              'hook_blocking_error'
+          )
+        ) {
           // @ts-ignore - recovered code
           yield { type: 'message', message: { message: result.message } }
         }

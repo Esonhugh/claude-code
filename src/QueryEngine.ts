@@ -161,6 +161,40 @@ const snipProjection = feature('HISTORY_SNIP')
   : null
 /* eslint-enable @typescript-eslint/no-require-imports */
 
+/**
+ * Like 2.1.311, permission_denials also lists calls a hook refused; those
+ * never reach canUseTool, so they are read from the refused tool result.
+ */
+export function toolDenialsIn(
+  message: UserMessage,
+  messages: readonly Message[],
+  recorded: ReadonlySet<string>,
+): SDKPermissionDenial[] {
+  const kind = message.toolDenialKind
+  if (!kind || kind === 'interrupted' || kind === 'cancelled') return []
+  const content = message.message.content
+  if (!Array.isArray(content)) return []
+  const denials: SDKPermissionDenial[] = []
+  for (const block of content) {
+    if (block.type !== 'tool_result' || recorded.has(block.tool_use_id)) continue
+    for (const prior of messages) {
+      if (prior.type !== 'assistant') continue
+      const use = prior.message.content.find(
+        c => c.type === 'tool_use' && c.id === block.tool_use_id,
+      )
+      if (use?.type === 'tool_use') {
+        denials.push({
+          tool_name: sdkCompatToolName(use.name),
+          tool_use_id: use.id,
+          tool_input: use.input as Record<string, unknown>,
+        })
+        break
+      }
+    }
+  }
+  return denials
+}
+
 export type QueryEngineConfig = {
   modsSession?: ModsSession
   cwd: string
@@ -1137,6 +1171,13 @@ export class QueryEngine {
           break
         case 'user':
           lastApiErrorStatus = null
+          this.permissionDenials.push(
+            ...toolDenialsIn(
+              message,
+              this.mutableMessages,
+              new Set(this.permissionDenials.map(d => d.tool_use_id)),
+            ),
+          )
           this.mutableMessages.push(message)
           yield* normalizeMessage(message)
           break

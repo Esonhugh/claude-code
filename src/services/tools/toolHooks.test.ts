@@ -1342,6 +1342,41 @@ describe('classic events at existing tool hook boundaries', () => {
     expect(executed).toBe(1)
     expect(f.captures()).toBe(0)
   })
+
+  // Like 2.1.311 a PreToolUse deny reaches the model only as the tool result,
+  // not also as a "hook blocking error" reminder.
+  test('a command hook deny yields no separate blocking error message', async () => {
+    configure({}, { hooks: { PreToolUse: [{ hooks: [{
+      type: 'command',
+      command: `printf '%s' '${JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: 'no deny' } })}'`,
+    }] }] } })
+    const results = await Array.fromAsync(pre(fixture()))
+    expect(
+      results.find(r => r.type === 'hookPermissionResult')?.hookPermissionResult,
+    ).toMatchObject({ behavior: 'deny', message: 'PreToolUse:ClassicFixture hook error: no deny' })
+    expect(JSON.stringify(results)).not.toContain('hook_blocking_error')
+  })
+
+  // With Mods the fork refuses the call when a PreToolUse hook says
+  // continue:false; like 2.1.311 the turn must still end there.
+  test('a PreToolUse continue:false stops the turn after the refused call', async () => {
+    registerHookCallbacks({
+      PreToolUse: [{ hooks: [{ type: 'callback', callback: async () => ({ continue: false, stopReason: 'stop here' }) }] }],
+    })
+    const f = fixture(async (e, next) => next(e))
+    let calls = 0
+    Object.assign(f.tool, {
+      call: async () => { calls++; return { data: 'ran' } },
+      mapToolResultToToolResultBlockParam: (data: string, id: string) => ({ type: 'tool_result', tool_use_id: id, content: data }),
+      checkPermissions: async () => ({ behavior: 'allow' }),
+    })
+    Object.assign(f.context, { setAppState: () => {}, setInProgressToolUseIDs: () => {} })
+    const block = { type: 'tool_use' as const, caller: { type: 'direct' as const }, id: 'stop-id', name: f.tool.name, input: { value: 'x' } }
+    const updates = await Array.fromAsync(runToolUse(block, createAssistantMessage({ content: [block] }), async () => ({ behavior: 'allow' }), f.context))
+    const stopped = updates.find(u => u.message?.type === 'attachment' && u.message.attachment.type === 'hook_stopped_continuation')
+    expect(stopped?.message).toMatchObject({ attachment: { message: 'stop here', hookEvent: 'PreToolUse' } })
+    expect(calls).toBe(0)
+  })
 })
 
 
