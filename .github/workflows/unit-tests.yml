@@ -1,0 +1,42 @@
+name: Unit tests
+
+# Every bun unit test file, each in its own process (module mocks leak across
+# files in one process). The bwrap network tests run in linux-sandbox-tests.
+on:
+  workflow_dispatch:
+  pull_request:
+
+jobs:
+  unit-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Run unit tests
+        run: |
+          mkdir -p "$RUNNER_TEMP/unit"
+          git ls-files 'src/**/*.test.ts' 'src/**/*.test.tsx' \
+            | grep -vxF -e src/utils/permissions/permissions.networkLists.test.ts -e src/utils/sandbox/sandbox-adapter.test.ts \
+            > "$RUNNER_TEMP/unit/files.txt"
+          export LOGS="$RUNNER_TEMP/unit"
+          xargs -P 4 -I{} sh -c 'log="$LOGS/$(echo "$1" | tr / _).log"; bun test --timeout 60000 "$1" >"$log" 2>&1 || echo "$1" >>"$LOGS/failed.txt"' _ {} \
+            < "$RUNNER_TEMP/unit/files.txt"
+          echo "$(wc -l < "$RUNNER_TEMP/unit/files.txt") test files"
+          if [ -s "$LOGS/failed.txt" ]; then
+            while read -r f; do
+              echo "::group::FAIL $f"
+              cat "$LOGS/$(echo "$f" | tr / _).log"
+              echo "::endgroup::"
+            done < "$LOGS/failed.txt"
+            echo "Failed files:"; cat "$LOGS/failed.txt"
+            exit 1
+          fi
