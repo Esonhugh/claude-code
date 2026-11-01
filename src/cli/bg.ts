@@ -267,7 +267,28 @@ export async function respawnJob(job: JobRecord, origin: string): Promise<JobRec
   return response.job!
 }
 
-export async function respawnHandler(query?: string): Promise<void> {
+export async function respawnHandler(query?: string, options: { all?: boolean } = {}): Promise<void> {
+  // Like 2.1.311, a session id wins over --all.
+  if (options.all && query) process.stderr.write('warning: extra arguments ignored: --all\n')
+  if (options.all && !query) {
+    // Like 2.1.311: every running session, newest first.
+    const live = (await listJobs()).filter(job => job.state === 'running').reverse()
+    if (live.length === 0) {
+      process.stdout.write('no live jobs to respawn\n')
+      return
+    }
+    for (const job of live) {
+      try {
+        await respawnJob(job, 'started by `claude respawn --all`')
+        process.stdout.write(`respawned ${job.id}\n`)
+      } catch (error) {
+        process.stderr.write(`${job.id}: ${error instanceof Error ? error.message : String(error)}\n`)
+        process.exitCode = 1
+      }
+    }
+    return
+  }
+  if (!query) fail('usage: claude respawn <id>|--all')
   const job = await findJob(query)
   try {
     await respawnJob(job, 'started by `claude respawn`')

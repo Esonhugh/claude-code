@@ -12,7 +12,11 @@ import {
   GLOBAL_CLAUDE_FOLDER_PERMISSION_PATTERN,
 } from 'src/tools/FileEditTool/constants.js'
 import type { z } from 'zod/v4'
-import { getOriginalCwd, getSessionId } from '../../bootstrap/state.js'
+import {
+  getOriginalCwd,
+  getSessionId,
+  isRestrictedSession,
+} from '../../bootstrap/state.js'
 import { checkStatsigFeatureGate_CACHED_MAY_BE_STALE } from '../../services/analytics/growthbook.js'
 import type {
   AnyObject,
@@ -709,7 +713,7 @@ export function checkPathSafetyForAutoEdit(
       return {
         safe: false,
         message: `Claude requested permissions to write to ${path}, but you haven't granted it yet.`,
-        classifierApprovable: true,
+        classifierApprovable: !isRestrictedSession(),
       }
     }
   }
@@ -720,7 +724,7 @@ export function checkPathSafetyForAutoEdit(
       return {
         safe: false,
         message: `Claude requested permissions to edit ${path} which is a sensitive file.`,
-        classifierApprovable: true,
+        classifierApprovable: !isRestrictedSession(),
       }
     }
   }
@@ -1228,6 +1232,22 @@ export function matchingRuleForInput(
 /**
  * Permission result for read permission for the specified tool & tool input
  */
+/** --restricted: file tools never reach outside the working directories without an allow rule. */
+function restrictedOutsideDecision(
+  path: string,
+  toolPermissionContext: ToolPermissionContext,
+): PermissionDecision {
+  const dirs = Array.from(allWorkingDirectories(toolPermissionContext)).join(', ')
+  return {
+    behavior: 'deny',
+    message: `${path} is outside ${dirs}; --restricted confines the file tools to the working directory.`,
+    decisionReason: {
+      type: 'other',
+      reason: 'restricted session: path is outside the working directories',
+    },
+  }
+}
+
 export function checkReadPermissionForTool(
   tool: Tool,
   input: { [key: string]: unknown },
@@ -1377,6 +1397,10 @@ export function checkReadPermissionForTool(
     }
   }
 
+  if (isRestrictedSession()) {
+    return restrictedOutsideDecision(path, toolPermissionContext)
+  }
+
   // 12. Default to asking for permission
   // At this point, isInWorkingDir is false (from step #6), so path is outside working directories
   return {
@@ -1449,6 +1473,14 @@ export function checkWritePermissionForTool<Input extends AnyObject>(
   )
   if (internalEditResult.behavior !== 'passthrough') {
     return internalEditResult
+  }
+
+  if (
+    isRestrictedSession() &&
+    !pathInAllowedWorkingPath(path, toolPermissionContext, pathsToCheck) &&
+    !matchingAllowRuleForPaths(pathsToCheck, toolPermissionContext, 'edit')
+  ) {
+    return restrictedOutsideDecision(path, toolPermissionContext)
   }
 
   // 1.6. Check for .claude/** allow rules BEFORE safety checks

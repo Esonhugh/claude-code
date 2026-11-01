@@ -1,5 +1,5 @@
 import path from 'node:path'
-import { getSearchToolsOptIn } from '../bootstrap/state.js'
+import { getSearchToolsOptIn, isRestrictedSession } from '../bootstrap/state.js'
 import { CACHE_PATHS } from './cachePaths.js'
 import {
   extractEmbeddedBinary,
@@ -22,6 +22,8 @@ import { isEnvDefinedFalsy } from './envUtils.js'
  */
 export function hasEmbeddedSearchTools(): boolean {
   if (isEnvDefinedFalsy(process.env.EMBEDDED_SEARCH_TOOLS)) return false
+  // --restricted removes Bash, which the embedded bfs/ugrep run through.
+  if (isRestrictedSession()) return false
   if (
     !readableEmbeddedSource('CLAUDE_CODE_EMBEDDED_BFS_PATH') ||
     !readableEmbeddedSource('CLAUDE_CODE_EMBEDDED_UGREP_PATH') ||
