@@ -135,15 +135,15 @@ if (process.env[childFlag] !== '1') {
     }
   })
 
-  test('like official, Claude mode classifies with Sonnet 5 unless the main model is a smaller one', async () => {
+  test('like official 2.1.311, Claude mode classifies with Sonnet 5 unless the main model is Sonnet 4.x', async () => {
     useOpenAIOAuth(false)
     reply = '<block>no</block>'
     try {
       for (const [main, classifier] of [
         ['claude-opus-5-5', 'claude-sonnet-5'],
         ['claude-sonnet-5-5', 'claude-sonnet-5'],
-        ['claude-haiku-4-5', 'claude-haiku-4-5'],
-        ['claude-haiku-5-5', 'claude-haiku-5-5'],
+        ['claude-haiku-4-5', 'claude-sonnet-5'],
+        ['claude-haiku-5-5', 'claude-sonnet-5'],
         ['claude-sonnet-4-6', 'claude-sonnet-4-6'],
       ] as const) {
         process.env.ANTHROPIC_MODEL = main
