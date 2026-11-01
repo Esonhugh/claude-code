@@ -97,6 +97,20 @@ test('bypassPermissions writes an unread in-project file', async () => {
     .toEqual({ result: true })
 })
 
+test('bypassPermissions writes an unread file outside the project, like 2.1.311', async () => {
+  const outside = realpathSync(mkdtempSync(join(tmpdir(), 'cc-read-guard-out-')))
+  try {
+    const path = join(outside, 'o.txt')
+    writeFileSync(path, 'old\n')
+    expect(await FileWriteTool.validateInput!({ file_path: path, content: 'x' }, contextFor({ mode: 'bypassPermissions' })))
+      .toEqual({ result: true })
+    expect(await FileWriteTool.validateInput!({ file_path: path, content: 'x' }, contextFor({ mode: 'default' })))
+      .toMatchObject({ result: false, message: NOT_READ })
+  } finally {
+    rmSync(outside, { recursive: true, force: true })
+  }
+})
+
 test('Edit applies to an unread file when old_string still matches', async () => {
   const path = fresh('e1.txt')
   const context = contextFor()
