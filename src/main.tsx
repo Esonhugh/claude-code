@@ -1689,7 +1689,7 @@ async function run(): Promise<CommanderCommand> {
     )
     .option(
       '-r, --resume [value]',
-      'Resume a conversation by session ID, or open interactive picker with optional search term',
+      'Resume a conversation by session ID or name, or open interactive picker with optional search term',
       value => value || true,
     )
     .option(
@@ -1778,7 +1778,7 @@ async function run(): Promise<CommanderCommand> {
     // @[MODEL LAUNCH]: Update the example model ID in the --model help text.
     .option(
       '--model <model>',
-      `Model for the current session. Provide an alias for the latest model (e.g. 'sonnet' or 'opus') or a model's full name (e.g. 'claude-sonnet-4-6').`,
+      `Model for the current session. Provide an alias for the latest model (e.g. 'fable', 'opus', or 'sonnet') or a model's full name.`,
     )
     .addOption(
       new Option(
