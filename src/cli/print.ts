@@ -648,6 +648,7 @@ export async function runHeadless(
     forkSession: boolean | undefined
     rewindFiles: string | undefined
     enableAuthStatus: boolean | undefined
+    promptSuggestions?: boolean | undefined
     agent: string | undefined
     workload: string | undefined
     setupTrigger?: 'init' | 'maintenance' | undefined
