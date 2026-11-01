@@ -1617,8 +1617,7 @@ let sonnet5ClassifierProbe: 'unprobed' | 'confirmed' | 'demoted' = 'unprobed'
 
 function getDefaultSonnet5Classifier(mainModel: string): string | undefined {
   const canonical = getCanonicalName(mainModel)
-  if (canonical === 'claude-sonnet-4-6' || canonical === 'claude-sonnet-4-5' || canonical.startsWith('claude-haiku-'))
-    return undefined
+  if (canonical === 'claude-sonnet-4-6' || canonical === 'claude-sonnet-4-5') return undefined
   const configured = process.env.ANTHROPIC_DEFAULT_SONNET_MODEL
   // These are too large to serve as the classifier; official uses the Sonnet 5 default instead.
   if (configured && !['claude-sonnet-5-5', 'claude-opus-5-5'].includes(getCanonicalName(configured)))
