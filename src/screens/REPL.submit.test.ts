@@ -981,7 +981,7 @@ test('successful same-ID resume resets diff without waiting for identity change'
     resetCostState: noop, switchSession: noop, asSessionId: (id: string) => id,
     importModule: async () => ({ renameRecordingForSession: async () => {} }),
     resetSessionFilePointer: async () => {}, clearSessionMetadata: noop,
-    restoreSessionMetadata: noop, haikuTitleAttemptedRef: { current: false },
+    restoreSessionMetadata: noop, haikuTitleAttemptedRef: { current: false }, haikuTitleSessionRef: { current: '' },
     setHaikuTitle: noop, exitRestoredWorktree: noop, restoreWorktreeForResume: noop,
     adoptResumedSessionFile: noop, restoreRemoteAgentTasks: noop, store: { getState: () => state },
     setMessages: () => { replaced = true }, modsSession: undefined,
@@ -1608,7 +1608,11 @@ for (const order of ['dismissal-first', 'abort-first'] as const) {
         abortController: controller,
         requestModAuthoringConsent: signal =>
           modsSession.requestAuthoringConsent(requestPrompt, signal),
-        getAppState: () => ({ sessionState: { sessionHooks: {} } }),
+        getAppState: () => ({
+          sessionState: { sessionHooks: {} },
+          sessionHooks: new Map(),
+          toolPermissionContext: { mode: 'default' },
+        }),
         setAppState: noop,
       } as never,
       noop,
@@ -1882,12 +1886,17 @@ test('real PromptInput rejects suggestions and empty input before invoking submi
   }
   const submit = extract(path, 'onSubmit')(base)
   await submit('')
-  base.suggestionsState.suggestions = [{ description: 'file' }]
+  base.suggestionsState = { suggestions: [{ description: 'file' }], selectedSuggestion: 0 } as any
   await submit('blocked')
   expect(calls).toEqual([])
   await submit('/actual', true)
   expect(calls).toHaveLength(1)
   expect(calls[0]![0]).toBe('/actual')
+  // A fuzzy-only match with nothing selected submits what was typed (#366).
+  base.suggestionsState = { suggestions: [{ description: 'file' }], selectedSuggestion: -1 } as any
+  await submit('typed')
+  expect(calls).toHaveLength(2)
+  expect(calls[1]![0]).toBe('typed')
 })
 
 test('real PromptInput accepts a shown suggestion after case-only edits', async () => {
@@ -2778,7 +2787,7 @@ test.each([false, true])('same-ID resume clears raw context after cwd/transcript
     resetCostState: noop, switchSession: noop, asSessionId: (id: string) => id,
     importModule: async () => ({ renameRecordingForSession: async () => {} }),
     resetSessionFilePointer: async () => {}, clearSessionMetadata: noop,
-    restoreSessionMetadata: noop, haikuTitleAttemptedRef: { current: false },
+    restoreSessionMetadata: noop, haikuTitleAttemptedRef: { current: false }, haikuTitleSessionRef: { current: '' },
     setHaikuTitle: noop, exitRestoredWorktree: noop,
     restoreWorktreeForResume: () => { cwd = '/target-repo' },
     adoptResumedSessionFile: () => { transcript = 'target-transcript' },
@@ -2888,6 +2897,8 @@ test('query refresh reloads raw REPL context with live overlays and instruction 
     resetLoadingState: noop,
     logQueryProfileReport: noop,
     onTurnComplete: undefined,
+    haikuTitleSessionRef: { current: 'session' },
+    getSessionId: () => 'session',
   })
 
   await onQueryImpl([], [], new AbortController(), true, [], 'fixture')
