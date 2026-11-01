@@ -13,7 +13,10 @@ export function PermissionRuleDescription({
   switch (ruleValue.toolName) {
     case BashTool.name: {
       if (ruleValue.ruleContent) {
-        if (ruleValue.ruleContent.endsWith(':*')) {
+        if (
+          ruleValue.ruleContent.endsWith(':*') ||
+          ruleValue.ruleContent.endsWith(' *')
+        ) {
           return (
             <Text dimColor>
               Any Bash command starting with{' '}

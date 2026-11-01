@@ -15,7 +15,7 @@ import { FILE_READ_TOOL_NAME } from '../FileReadTool/prompt.js'
 import { GLOB_TOOL_NAME } from '../GlobTool/prompt.js'
 import { SEND_MESSAGE_TOOL_NAME } from '../SendMessageTool/constants.js'
 import { AGENT_TOOL_NAME } from './constants.js'
-import { isForkSubagentEnabled } from './forkSubagent.js'
+import { isForkAsyncDefault, isForkSubagentEnabled } from './forkSubagent.js'
 import type { AgentDefinition } from './loadAgentsDir.js'
 import { isAnt } from 'src/utils/userType.js'
 
@@ -203,7 +203,7 @@ Usage notes:
     // eslint-disable-next-line custom-rules/no-process-env-top-level
     !isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS) &&
     !isInProcessTeammate() &&
-    !forkEnabled
+    !isForkAsyncDefault()
       ? `
 - Agents run in the background by default. Set run_in_background: false when blocked on the result. Completion is announced automatically—do not poll, sleep, or check proactively.`
       : ''

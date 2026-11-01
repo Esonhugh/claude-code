@@ -58,6 +58,7 @@ export type SDKControlInitializeRequest = {
   loginWithClaudeAi?: boolean
   promptSuggestions?: boolean
   agentProgressSummaries?: boolean
+  forwardSubagentText?: boolean
   [key: string]: unknown
 }
 

@@ -218,7 +218,7 @@ export function suggestionForPrefix(
       rules: [
         {
           toolName,
-          ruleContent: `${prefix}:*`,
+          ruleContent: `${prefix} *`,
         },
       ],
       behavior: 'allow',

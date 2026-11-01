@@ -86,7 +86,7 @@ export function PowerShellPermissionRequest(
       .then(prefixes => {
         if (cancelled || hasUserEditedPrefix.current) return
         if (prefixes.length > 0) {
-          setEditablePrefix(`${prefixes[0]}:*`)
+          setEditablePrefix(`${prefixes[0]} *`)
         }
       })
       .catch(() => {})

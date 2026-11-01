@@ -227,9 +227,9 @@ function BashPermissionRequestInner({
           : undefined
       }
       const two = getSimpleCommandPrefix(command)
-      if (two) return `${two}:*`
+      if (two) return `${two} *`
       const one = getFirstWordPrefix(command)
-      if (one) return `${one}:*`
+      if (one) return `${one} *`
       return command
     },
   )
@@ -249,7 +249,7 @@ function BashPermissionRequestInner({
       .then(prefixes => {
         if (cancelled || hasUserEditedPrefix.current) return
         if (prefixes.length > 0) {
-          setEditablePrefix(`${prefixes[0]}:*`)
+          setEditablePrefix(`${prefixes[0]} *`)
         }
       })
       .catch(() => {}) // Keep sync prefix on tree-sitter failure

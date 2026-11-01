@@ -13,6 +13,7 @@ import { getQuerySourceForAgent } from 'src/utils/promptCategory.js'
 import { z } from 'zod/v4'
 import {
   clearInvokedSkillsForAgent,
+  getForwardSubagentText,
   getSdkAgentProgressSummariesEnabled,
   getIsNonInteractiveSession,
 } from '../../bootstrap/state.js'
@@ -143,6 +144,7 @@ import {
   buildWorktreeNotice,
   FORK_AGENT,
   getForkAgentAvailability,
+  isForkAsyncDefault,
   isForkSubagentEnabled,
   isInForkChild,
 } from './forkSubagent.js'
@@ -316,12 +318,12 @@ const planAndBackgroundDisabledInputSchema = lazySchema(() => planDisabledSchema
 // Cache schema variants, not the startup decision: imports can request the
 // schema before CLI bootstrap sets the session's interactive mode.
 function planEnabledInputSchema() {
-  return isBackgroundTasksDisabled || isForkSubagentEnabled()
+  return isBackgroundTasksDisabled || isForkAsyncDefault()
     ? backgroundDisabledInputSchema()
     : planEnabledSchema()
 }
 function planDisabledInputSchema() {
-  return isBackgroundTasksDisabled || isForkSubagentEnabled()
+  return isBackgroundTasksDisabled || isForkAsyncDefault()
     ? planAndBackgroundDisabledInputSchema()
     : planDisabledSchema()
 }
@@ -755,8 +757,9 @@ export const AgentTool = buildTool({
     // lifecycle. The built-in web-fetch helper ignores implicit async routing.
     const shouldRunInBackground = () => {
       const forkMode = isForkSubagentEnabled()
+      const forkAsyncDefault = isForkAsyncDefault()
       const callerIsHeadlessSubagent = forkMode && toolUseContext.agentId !== undefined && toolUseContext.innerCall !== true && !isCurrentInProcessTeammate && getIsNonInteractiveSession()
-      const forceAsync = forkMode && !isCurrentInProcessTeammate && !callerIsHeadlessSubagent
+      const forceAsync = forkAsyncDefault && !isCurrentInProcessTeammate && !callerIsHeadlessSubagent
       const implicitAsync =
         isCoordinatorMode() && !isCurrentInProcessTeammate ||
         forceAsync ||
@@ -1468,7 +1471,7 @@ export const AgentTool = buildTool({
             agentIdForCleanup: asyncAgentId,
             enableSummarization:
               isCoordinator ||
-              isForkSubagentEnabled() ||
+              isForkAsyncDefault() ||
               getSdkAgentProgressSummariesEnabled(),
             getWorktreeResult: cleanupWorktreeIfNeeded,
             onRunSettled: releaseSlot,
@@ -2128,6 +2131,22 @@ export const AgentTool = buildTool({
                 }
               }
 
+              // Like 2.1.311, nested subagent messages reach the SDK only with
+              // --forward-subagent-text, still tagged with their own Agent call.
+              if (
+                message.type === 'progress' &&
+                (message.data.type === 'agent_progress' ||
+                  message.data.type === 'skill_progress') &&
+                getForwardSubagentText() &&
+                onProgress
+              ) {
+                onProgress({
+                  toolUseID: message.toolUseID,
+                  parentToolUseID: message.parentToolUseID,
+                  data: message.data as Progress,
+                })
+              }
+
               // Forward bash_progress events from sub-agent to parent so the SDK
               // receives tool_progress events just as it does for the main agent.
               if (
@@ -2157,9 +2176,11 @@ export const AgentTool = buildTool({
               }
 
               const normalizedNew = normalizeMessages([message])
+              const forwardText = getForwardSubagentText()
               for (const m of normalizedNew) {
                 for (const content of m.message.content) {
                   if (
+                    !forwardText &&
                     content.type !== 'tool_use' &&
                     content.type !== 'tool_result'
                   ) {

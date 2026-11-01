@@ -395,6 +395,8 @@ export type Progress = ToolProgressData | HookProgress
 
 export type ToolProgress<P extends ToolProgressData> = {
   toolUseID: string
+  /** Set when relaying a nested subagent's progress; defaults to this tool call. */
+  parentToolUseID?: string
   data: P
 }
 

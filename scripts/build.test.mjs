@@ -56,6 +56,7 @@ assert.equal(feature('UDS_INBOX'), true);
 assert.equal(getEnabledFeatures('').has('KAIROS_CHANNELS'), true);
 assert.equal(getEnabledFeatures('WORKFLOW_SCRIPTS').has('KAIROS_CHANNELS'), true);
 assert.equal(feature('KAIROS_CHANNELS'), true);
+assert.equal(getEnabledFeatures('').has('KAIROS_BRIEF'), true);
 assert.equal(getEnabledFeatures('').has('MONITOR_TOOL'), true);
 assert.equal(feature('MONITOR_TOOL'), true);
 assert.equal(getEnabledFeatures('').has('KAIROS'), false);

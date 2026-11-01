@@ -71,7 +71,7 @@ export function UserPromptMessage({
             (briefEnvEnabled ||
               getFeatureValue_CACHED_MAY_BE_STALE(
                 'tengu_kairos_brief',
-                false,
+                true,
               )))) &&
         isBriefOnly &&
         !isTranscriptMode &&

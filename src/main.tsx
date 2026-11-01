@@ -234,7 +234,7 @@ import {
   shouldAutoEnableClaudeInChrome,
   shouldEnableClaudeInChrome,
 } from './utils/claudeInChrome/setup.js'
-import { getContextWindowForModel } from './utils/context.js'
+import { getContextWindowForModel, parseCompactionWindow } from './utils/context.js'
 import { loadConversationForResume } from './utils/conversationRecovery.js'
 import { buildDeepLinkBanner } from './utils/deepLink/banner.js'
 import {
@@ -410,6 +410,8 @@ import {
   setCwdState,
   setDirectConnectServerUrl,
   setFlagSettingsPath,
+  setCliAutoCompactWindow,
+  setForwardSubagentText,
   setInitialMainLoopModel,
   setParentManagedSettings,
   setProjectConfigRoot,
@@ -1463,6 +1465,11 @@ async function run(): Promise<CommanderCommand> {
       'Include partial message chunks as they arrive (only works with --print and --output-format=stream-json)',
       () => true,
     )
+    .option(
+      '--forward-subagent-text',
+      'Forward subagent text and thinking blocks as assistant/user messages with parent_tool_use_id set (only works with --print and --output-format=stream-json)',
+      () => true,
+    )
     .addOption(
       new Option(
         '--await-initialize',
@@ -1566,6 +1573,20 @@ async function run(): Promise<CommanderCommand> {
     )
     .addOption(
       new Option(
+        '--autocompact <auto|tokens>',
+        'Auto-compact window size (auto, or 100k–1M tokens)',
+      ).argParser(value => {
+        if (value.trim().toLowerCase() === 'auto') return 'auto' as const
+        const tokens = parseCompactionWindow(value)
+        if (tokens === undefined)
+          throw new InvalidArgumentError(
+            "It must be 'auto', or between 100k and 1M (e.g. 500k, 200000, or 200 as shorthand)",
+          )
+        return tokens
+      }),
+    )
+    .addOption(
+      new Option(
         '--prompt-suggestions [value]',
         'Enable prompt suggestions. In print/SDK mode, emits a prompt_suggestion message after each turn with a predicted next user prompt',
       )
@@ -1583,7 +1604,7 @@ async function run(): Promise<CommanderCommand> {
     )
     .option(
       '--allowedTools, --allowed-tools <tools...>',
-      'Comma or space-separated list of tool names to allow (e.g. "Bash(git:*) Edit")',
+      'Comma or space-separated list of tool names to allow (e.g. "Bash(git *) Edit")',
     )
     .option(
       '--tools <tools...>',
@@ -1591,7 +1612,7 @@ async function run(): Promise<CommanderCommand> {
     )
     .option(
       '--disallowedTools, --disallowed-tools <tools...>',
-      'Comma or space-separated list of tool names to deny (e.g. "Bash(git:*) Edit")',
+      'Comma or space-separated list of tool names to deny (e.g. "Bash(git *) Edit")',
     )
     .option(
       '--mcp-config <configs...>',
@@ -1668,7 +1689,7 @@ async function run(): Promise<CommanderCommand> {
     )
     .option(
       '-r, --resume [value]',
-      'Resume a conversation by session ID, or open interactive picker with optional search term',
+      'Resume a conversation by session ID or name, or open interactive picker with optional search term',
       value => value || true,
     )
     .option(
@@ -1757,7 +1778,7 @@ async function run(): Promise<CommanderCommand> {
     // @[MODEL LAUNCH]: Update the example model ID in the --model help text.
     .option(
       '--model <model>',
-      `Model for the current session. Provide an alias for the latest model (e.g. 'sonnet' or 'opus') or a model's full name (e.g. 'claude-sonnet-4-6').`,
+      `Model for the current session. Provide an alias for the latest model (e.g. 'fable', 'opus', or 'sonnet') or a model's full name.`,
     )
     .addOption(
       new Option(
@@ -2004,6 +2025,13 @@ async function run(): Promise<CommanderCommand> {
       let fileDownloadPromise: Promise<DownloadResult[]> | undefined
 
       const agentsJson = options.agents
+      setCliAutoCompactWindow(
+        options.autocompact as number | 'auto' | undefined,
+      )
+      setForwardSubagentText(
+        options.forwardSubagentText === true ||
+          isEnvTruthy(process.env.CLAUDE_CODE_FORWARD_SUBAGENT_TEXT),
+      )
       const agentCli = options.agent
       if (feature('BG_SESSIONS') && agentCli) {
         process.env.CLAUDE_CODE_AGENT = agentCli

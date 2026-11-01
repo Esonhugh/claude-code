@@ -267,6 +267,7 @@ import {
   setInitJsonSchema,
   getInitJsonSchema,
   setSdkAgentProgressSummariesEnabled,
+  setForwardSubagentText,
 } from 'src/bootstrap/state.js'
 import { createSyntheticOutputTool } from 'src/tools/SyntheticOutputTool/SyntheticOutputTool.js'
 import { parseSessionIdentifier } from 'src/utils/sessionUrl.js'
@@ -1100,6 +1101,14 @@ export async function runHeadless(
     // Like official 2.1.311: each written result is numbered in run order.
     if (message.type === 'result') {
       message.result_index = resultIndex++
+      // User sends still waiting, so a host knows another result follows.
+      message.queued_turn_count = getCommandQueueSnapshot().filter(
+        command =>
+          command.mode === 'prompt' &&
+          command.agentId === undefined &&
+          !command.isMeta &&
+          (command.origin === undefined || command.origin.kind === 'human'),
+      ).length
     }
     if (transformToStreamlined) {
       // Streamlined mode: transform messages and stream immediately
@@ -3490,6 +3499,9 @@ function runHeadlessStreaming(
             getFeatureValue_CACHED_MAY_BE_STALE('tengu_slate_prism', true)
           ) {
             setSdkAgentProgressSummariesEnabled(true)
+          }
+          if (!initialized && message.request.forwardSubagentText) {
+            setForwardSubagentText(true)
           }
 
           initialized = true

@@ -132,4 +132,48 @@ if (process.env[childFlag] !== '1') {
       for (const mock of mocks) mock.mockRestore()
     }
   })
+
+  test('results count the user sends still queued, like 2.1.311 queued_turn_count', async () => {
+    const results: Array<{ queued_turn_count?: number }> = []
+    let asks = 0
+    const mocks = [
+      spyOn(grove, 'isQualifiedForGrove').mockResolvedValue(false),
+      spyOn(growthbook, 'initializeGrowthBook').mockResolvedValue(undefined),
+      spyOn(env, 'isBareMode').mockReturnValue(true),
+      spyOn(shutdown, 'gracefulShutdownSync').mockImplementation(() => {}),
+      spyOn(processUtils, 'registerProcessOutputErrorHandlers').mockImplementation(() => {}),
+      spyOn(stdoutGuard, 'installStreamJsonStdoutGuard').mockImplementation(() => () => {}),
+      spyOn(modelStrings, 'ensureModelStringsInitialized').mockResolvedValue(undefined),
+      spyOn(toolPool, 'assembleToolPool').mockReturnValue([]),
+      spyOn(SandboxManager, 'getSandboxUnavailableReason').mockReturnValue(undefined),
+      spyOn(SandboxManager, 'isSandboxingEnabled').mockReturnValue(false),
+      spyOn(storage, 'recordQueueOperation').mockResolvedValue(undefined),
+      spyOn(StructuredIO.prototype, 'write').mockImplementation(async message => {
+        if (message.type === 'result') results.push(message as { queued_turn_count?: number })
+      }),
+      spyOn(engine, 'ask').mockImplementation(async function* () {
+        if (asks++ === 0) {
+          queue.enqueue({mode:'prompt',value:'NEXT',uuid:'66666666-6666-4666-8666-666666666666'})
+          queue.enqueue({mode:'task-notification',value:'NOTICE'})
+          queue.enqueue({mode:'prompt',value:'META',isMeta:true})
+          queue.enqueue({mode:'prompt',value:'OTHER',agentId:'other' as import('../types/ids.js').AgentId})
+        }
+        yield {type:'result',subtype:'success',is_error:false,result:'done'} as import('../entrypoints/agentSdkTypes.js').SDKMessage
+      }),
+    ]
+    async function* input() {
+      yield JSON.stringify({type:'user',message:{role:'user',content:'FIRST'}}) + '\n'
+    }
+    let state = getDefaultAppState()
+    try {
+      await runHeadless(input(), () => state, updater => { state = updater(state) }, [], [], {}, [], {
+        outputFormat:'stream-json',verbose:true,sessionStartHooksPromise:Promise.resolve([]),
+      } as Parameters<typeof runHeadless>[7])
+      expect(results[0]?.queued_turn_count).toBe(1)
+      expect(results.at(-1)?.queued_turn_count).toBe(0)
+    } finally {
+      queue.resetCommandQueue()
+      for (const mock of mocks) mock.mockRestore()
+    }
+  })
 }
