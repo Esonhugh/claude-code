@@ -429,7 +429,7 @@ export const FileReadTool = buildTool({
       delete next.description
       changed = true
     }
-    return changed ? next : null
+    return changed ? { input: next } : null
   },
   async preparePermissionMatcher({ file_path }) {
     return pattern => matchWildcardPattern(pattern, file_path)

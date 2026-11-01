@@ -1,6 +1,5 @@
 import isPlainObject from 'lodash-es/isPlainObject.js'
 import { z } from 'zod/v4'
-import type { ValidationResult } from '../../Tool.js'
 import { buildTool, type ToolDef } from '../../Tool.js'
 import { getCwd } from '../../utils/cwd.js'
 import { isENOENT } from '../../utils/errors.js'
@@ -198,13 +197,17 @@ export const GrepTool = buildTool({
   coerceInput(input) {
     if (!isPlainObject(input)) return null
     const next = { ...(input as Record<string, unknown>) }
-    let changed = false
+    const notes: string[] = []
     const isTrue = (value: unknown) => value === true || value === 'true'
-    if (typeof next.file_path === 'string' && next.file_path !== '') {
-      if (!Object.hasOwn(next, 'path') || next.path === next.file_path) {
-        next.path = next.file_path
+    const filePath = next.file_path
+    if (typeof filePath === 'string' && filePath !== '') {
+      const noPath = !Object.hasOwn(next, 'path')
+      if (noPath || next.path === filePath) {
+        next.path = filePath
         delete next.file_path
-        changed = true
+        notes.push(
+          `${GREP_TOOL_NAME}'s parameter for where to search is named \`path\`. ${noPath ? '`file_path` was read as `path`.' : '`file_path` repeated `path` and was ignored.'}`,
+        )
       }
     }
     for (const [flag, mode] of [
@@ -212,55 +215,32 @@ export const GrepTool = buildTool({
       ['-c', 'count'],
     ] as const) {
       if (!isTrue(next[flag])) continue
-      if (!Object.hasOwn(next, 'output_mode') || next.output_mode === mode) {
+      const noMode = !Object.hasOwn(next, 'output_mode')
+      if (noMode || next.output_mode === mode) {
         delete next[flag]
         next.output_mode = mode
-        changed = true
+        notes.push(
+          noMode
+            ? `\`${flag}\` is not a ${GREP_TOOL_NAME} parameter and was read as \`output_mode: "${mode}"\`.`
+            : `\`${flag}\` repeated \`output_mode\` and was ignored.`,
+        )
       }
     }
     if (isTrue(next['-r'])) {
       delete next['-r']
-      changed = true
+      notes.push(
+        `\`-r\` was ignored: ${GREP_TOOL_NAME} always searches a directory recursively.`,
+      )
     }
-    return changed ? next : null
+    return notes.length
+      ? { input: next, resultNote: `Note: ${notes.join(' ')}` }
+      : null
   },
   getPath({ path }): string {
     return path || getCwd()
   },
   async preparePermissionMatcher({ pattern }) {
     return rulePattern => matchWildcardPattern(rulePattern, pattern)
-  },
-  async validateInput({ path }): Promise<ValidationResult> {
-    // If path is provided, validate that it exists
-    if (path) {
-      const fs = getFsImplementation()
-      const absolutePath = expandPath(path)
-
-      // SECURITY: Skip filesystem operations for UNC paths to prevent NTLM credential leaks.
-      if (absolutePath.startsWith('\\\\') || absolutePath.startsWith('//')) {
-        return { result: true }
-      }
-
-      try {
-        await fs.stat(absolutePath)
-      } catch (e: unknown) {
-        if (isENOENT(e)) {
-          const cwdSuggestion = await suggestPathUnderCwd(absolutePath)
-          let message = `Path does not exist: ${path}. ${FILE_NOT_FOUND_CWD_NOTE} ${getCwd()}.`
-          if (cwdSuggestion) {
-            message += ` Did you mean ${cwdSuggestion}?`
-          }
-          return {
-            result: false,
-            message,
-            errorCode: 1,
-          }
-        }
-        throw e
-      }
-    }
-
-    return { result: true }
   },
   async checkPermissions(input, context): Promise<PermissionDecision> {
     const appState = context.getAppState()
@@ -359,6 +339,20 @@ export const GrepTool = buildTool({
     { abortController, getAppState },
   ) {
     const absolutePath = path ? expandPath(path) : getCwd()
+    // Like 2.1.311 a missing path is a tool error, so the model sees it as
+    // plain text rather than an input validation error.
+    // SECURITY: Skip filesystem operations for UNC paths to prevent NTLM credential leaks.
+    if (path && !absolutePath.startsWith('\\\\') && !absolutePath.startsWith('//')) {
+      try {
+        await getFsImplementation().stat(absolutePath)
+      } catch (e: unknown) {
+        if (!isENOENT(e)) throw e
+        const cwdSuggestion = await suggestPathUnderCwd(absolutePath)
+        throw new Error(
+          `Path does not exist: ${path}. ${FILE_NOT_FOUND_CWD_NOTE} ${getCwd()}.${cwdSuggestion ? ` Did you mean ${cwdSuggestion}?` : ''}`,
+        )
+      }
+    }
     const args = ['--hidden']
 
     // Exclude VCS directories to avoid noise from version control metadata

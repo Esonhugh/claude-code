@@ -128,11 +128,11 @@ export const FileWriteTool = buildTool({
   coerceInput(input) {
     if (!isPlainObject(input)) return null
     const next = { ...(input as Record<string, unknown>) }
-    let changed = false
+    const notes: string[] = []
     if (!Object.hasOwn(next, 'file_path') && typeof next.path === 'string') {
       next.file_path = next.path
       delete next.path
-      changed = true
+      notes.push('`path` was read as `file_path`.')
     }
     const contentAliases = ['file_text', 'file_content'].filter(key =>
       Object.hasOwn(next, key),
@@ -146,17 +146,33 @@ export const FileWriteTool = buildTool({
     ) {
       next.content = next[alias]
       delete next[alias]
-      changed = true
+      notes.push(`\`${alias}\` was read as \`content\`.`)
     }
     if (Object.hasOwn(next, 'description')) {
       delete next.description
-      changed = true
+      notes.push('`description` was ignored.')
     }
     if (next.command === 'create') {
       delete next.command
-      changed = true
+      notes.push('`command` was ignored.')
     }
-    return changed ? next : null
+    for (const [key, aliases] of [
+      ['file_path', ['path', 'file']],
+      ['content', ['file_text', 'file_content', 'new_text', 'body', 'text', 'contents']],
+    ] as const) {
+      for (const repeated of aliases) {
+        if (typeof next[key] === 'string' && next[repeated] === next[key]) {
+          delete next[repeated]
+          notes.push(`\`${repeated}\` repeated \`${key}\` and was ignored.`)
+        }
+      }
+    }
+    return notes.length
+      ? {
+          input: next,
+          resultNote: `Note: ${FILE_WRITE_TOOL_NAME}'s parameters are named \`file_path\` and \`content\`. ${notes.join(' ')}`,
+        }
+      : null
   },
   get outputSchema(): OutputSchema {
     return outputSchema()

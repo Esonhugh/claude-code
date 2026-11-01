@@ -142,7 +142,7 @@ export const FileEditTool = buildTool({
         changed = true
       }
     }
-    return changed ? next : null
+    return changed ? { input: next } : null
   },
   backfillObservableInput(input) {
     // hooks.mdx documents file_path as absolute; expand so hook allowlists
@@ -506,6 +506,8 @@ export const FileEditTool = buildTool({
     } = readFileForEdit(absoluteFilePath)
     if (notText) throw new Error(notTextMessage(notText))
 
+    let staleRecovered = false
+    let contentNotInModelContext = false
     if (fileExists) {
       const lastWriteTime = getFileModificationTime(absoluteFilePath)
       const lastRead = readFileState.get(absoluteFilePath)
@@ -528,6 +530,8 @@ export const FileEditTool = buildTool({
         ) {
           throw new Error(FILE_UNEXPECTEDLY_MODIFIED_ERROR)
         }
+        if (!lastRead) contentNotInModelContext = true
+        else if (!contentUnchanged) staleRecovered = true
       }
     }
 
@@ -623,6 +627,8 @@ export const FileEditTool = buildTool({
 
     // 8. Yield result
     const data = {
+      ...(staleRecovered && { staleRecovered }),
+      ...(contentNotInModelContext && { contentNotInModelContext }),
       filePath: file_path,
       oldString: actualOldString,
       newString: new_string,
@@ -637,11 +643,22 @@ export const FileEditTool = buildTool({
     }
   },
   mapToolResultToToolResultBlockParam(data: FileEditOutput, toolUseID) {
-    const { filePath, userModified, replaceAll } = data
+    const {
+      filePath,
+      userModified,
+      replaceAll,
+      staleRecovered,
+      contentNotInModelContext,
+    } = data
     const modifiedNote = userModified
       ? '.  The user modified your proposed changes before accepting them. '
       : ''
-    const stateNote = userModified ? '' : FILE_STATE_CURRENT_NOTE
+    // Like 2.1.311: only claim the file state is current when the model saw it.
+    const stateNote = staleRecovered
+      ? ' (note: the file had been modified on disk since you last read it — the edit applied cleanly, but the file contains other changes not in your context. Read it before edits that depend on surrounding content.)'
+      : userModified || contentNotInModelContext
+        ? ''
+        : FILE_STATE_CURRENT_NOTE
 
     if (replaceAll) {
       return {

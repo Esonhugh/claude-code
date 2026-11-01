@@ -163,7 +163,7 @@ export class StreamingToolExecutor {
     const parsedInput = serialized
       ? undefined
       : toolDefinition.inputSchema.safeParse(
-          toolDefinition.coerceInput?.(block.input) ?? block.input,
+          toolDefinition.coerceInput?.(block.input)?.input ?? block.input,
         )
     const isConcurrencySafe = parsedInput?.success
       ? (() => {
