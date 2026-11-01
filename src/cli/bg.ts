@@ -172,8 +172,21 @@ export async function stopHandler(query?: string): Promise<void> {
   }
 }
 
-/** Why `rm` left a worktree in place; `discard` is the --discard-unpushed value. */
-export type KeptWorktree = { reason: 'uncommitted' | 'unpushed'; detail: string; count: number; discard: string }
+/**
+ * Why `rm` left a worktree in place; `discard` is the --discard-unpushed
+ * value. For remove_failed, `detail` is git's error, and `forceRemove` the
+ * --force-remove-worktree value when the directory may be deleted by force
+ * (otherwise `withheld` says why not).
+ */
+export type KeptWorktree = {
+  reason: 'uncommitted' | 'unpushed' | 'remove_failed'
+  detail: string
+  count: number
+  discard: string
+  forceRemove?: string
+  withheld?: 'tracked_changes' | 'not_registered'
+  forceFailed?: boolean
+}
 
 export type RemoveResult = { worktreePath?: string; kept?: KeptWorktree }
 
@@ -181,9 +194,15 @@ function worktreeDigest(path: string): string {
   return createHash('sha256').update(path).digest('hex').slice(0, 12)
 }
 
-async function git(cwd: string, args: string[]): Promise<{ code: number; stdout: string }> {
-  const { code, stdout } = await execFileNoThrowWithCwd(gitExe(), args, { cwd })
-  return { code, stdout }
+async function git(cwd: string, args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
+  const { code, stdout, stderr } = await execFileNoThrowWithCwd(gitExe(), args, { cwd })
+  return { code, stdout, stderr }
+}
+
+/** Whether git still lists `path` as a linked worktree of `repo`. */
+async function isRegisteredWorktree(repo: string, path: string): Promise<boolean> {
+  const list = await git(repo, ['worktree', 'list', '--porcelain'])
+  return list.stdout.split('\n').some(line => line === `worktree ${path}`)
 }
 
 /**
@@ -191,7 +210,7 @@ async function git(cwd: string, args: string[]): Promise<{ code: number; stdout:
  * (unless that would lose uncommitted or unpushed work) and its job state.
  * `discard` names the HEAD a previous refusal reported, to drop that work.
  */
-export async function removeJob(job: JobRecord, discard?: string): Promise<RemoveResult> {
+export async function removeJob(job: JobRecord, discard?: string, forceRemove?: string): Promise<RemoveResult> {
   const worktree = job.worktree
   if (worktree && !worktree.hookBased && existsSync(worktree.worktreePath)) {
     const path = worktree.worktreePath
@@ -221,8 +240,41 @@ export async function removeJob(job: JobRecord, discard?: string): Promise<Remov
       }
     }
     if (job.state === 'running') await stopJob(job)
-    await git(worktree.originalCwd, ['worktree', 'remove', '--force', path])
-    if (worktree.worktreeBranch) await git(worktree.originalCwd, ['branch', '-D', worktree.worktreeBranch])
+    const removal = await git(worktree.originalCwd, ['worktree', 'remove', '--force', path])
+    if (existsSync(path)) {
+      // Like 2.1.311: the session stays until the directory is gone. Deleting
+      // it by force needs the --force-remove-worktree value from this refusal,
+      // a worktree git still lists, and no uncommitted tracked changes.
+      const digest = worktreeDigest(path)
+      const tracked = await git(path, ['status', '--porcelain', '--untracked-files=no'])
+      const withheld = !(await isRegisteredWorktree(worktree.originalCwd, path))
+        ? 'not_registered'
+        : tracked.code !== 0 || tracked.stdout.trim()
+          ? 'tracked_changes'
+          : undefined
+      const detail = (removal.stderr || removal.stdout).trim().split('\n')[0]?.replace(/^fatal:\s*/, '') ?? ''
+      let forceFailed = false
+      if (withheld === undefined && forceRemove === digest) {
+        await rm(path, { recursive: true, force: true }).catch(() => {})
+        await git(worktree.originalCwd, ['worktree', 'prune'])
+        forceFailed = existsSync(path)
+      }
+      if (existsSync(path)) {
+        return {
+          worktreePath: path,
+          kept: {
+            reason: 'remove_failed',
+            detail,
+            count: 0,
+            discard: discardKey,
+            ...(withheld ? { withheld } : { forceRemove: digest }),
+            ...(forceFailed && { forceFailed }),
+          },
+        }
+      }
+    } else if (worktree.worktreeBranch) {
+      await git(worktree.originalCwd, ['branch', '-D', worktree.worktreeBranch])
+    }
   } else if (job.state === 'running') {
     await stopJob(job)
   }
@@ -233,6 +285,29 @@ export async function removeJob(job: JobRecord, discard?: string): Promise<Remov
 /** The `kept <id>` explanation lines, shared with the agent view. */
 export function keptWorktreeLines(result: KeptWorktree, id: string): string[] {
   const again = `run 'claude rm ${id}' again`
+  if (result.reason === 'remove_failed') {
+    const failure = result.detail ? result.detail.replace(/^\p{Ll}/u, c => c.toUpperCase()) : 'The removal failed'
+    const stays = 'The session stays until the directory is gone.'
+    if (result.withheld === 'tracked_changes') {
+      return [
+        `Worktree not removed. ${failure}. It also has uncommitted changes to tracked files, so Claude Code won't delete the directory by force. ${stays}`,
+        `commit or stash its uncommitted changes (or remove the directory yourself), then ${again}`,
+      ]
+    }
+    if (result.withheld === 'not_registered') {
+      return [
+        `Worktree not removed. ${failure}. Claude Code couldn't confirm from a git repository that this is one of its linked worktrees, so it won't delete the directory by force. ${stays}`,
+        `remove the directory yourself if you don't need it, then ${again}`,
+      ]
+    }
+    const force = `claude rm ${id} --force-remove-worktree ${result.forceRemove}`
+    return [
+      `Worktree not removed. ${failure}. ${stays}`,
+      result.forceFailed
+        ? `close anything using the directory or fix its permissions, then retry: ${force}`
+        : `close anything still using the directory, then delete it anyway: ${force}`,
+    ]
+  }
   if (result.reason === 'uncommitted') {
     return [
       'The worktree has uncommitted changes. Deleting it would lose them.',
@@ -246,9 +321,45 @@ export function keptWorktreeLines(result: KeptWorktree, id: string): string[] {
   ]
 }
 
-export async function rmHandler(query?: string, options: { discardUnpushed?: string } = {}): Promise<void> {
+export const RM_USAGE =
+  'claude rm <id> [--discard-unpushed <commit>@<worktree-id>] [--force-remove-worktree <worktree-id>]'
+
+/** `claude rm` arguments, parsed like 2.1.311 so its errors carry the usage line. */
+export async function rmHandler(args: string[]): Promise<void> {
+  let query: string | undefined
+  let discard: string | undefined
+  let forceRemove: string | undefined
+  let error: string | undefined
+  const extra: string[] = []
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]!
+    if (arg === '--discard-unpushed' || arg.startsWith('--discard-unpushed=')) {
+      const value = ((arg === '--discard-unpushed' ? args[++i] : arg.slice(19)) ?? '').toLowerCase()
+      if (!/^[0-9a-f]{40}@[0-9a-f]{12}$/.test(value)) {
+        error = "option '--discard-unpushed' takes the <commit>@<worktree-id> value shown by a previous 'claude rm <id>' refusal\n"
+        break
+      }
+      discard = value
+    } else if (arg === '--force-remove-worktree' || arg.startsWith('--force-remove-worktree=')) {
+      const value = ((arg === '--force-remove-worktree' ? args[++i] : arg.slice(24)) ?? '').toLowerCase()
+      if (!/^[0-9a-f]{12}$/.test(value)) {
+        error = "option '--force-remove-worktree' takes the <worktree-id> value shown by a previous 'claude rm <id>' refusal\n"
+        break
+      }
+      forceRemove = value
+    } else if (arg.startsWith('-')) {
+      error = `unknown option '${arg}'\n`
+      break
+    } else if (query === undefined) query = arg
+    else extra.push(arg)
+  }
+  if (error !== undefined || !query) {
+    process.stderr.write(`${error ?? ''}Usage: ${RM_USAGE}\n`)
+    process.exit(1)
+  }
+  if (extra.length) process.stderr.write(`warning: extra arguments ignored: ${extra.join(' ')}\n`)
   const job = await findJob(query)
-  const result = await removeJob(job, options.discardUnpushed?.toLowerCase())
+  const result = await removeJob(job, discard, forceRemove)
   if (result.kept) {
     process.stdout.write(
       `kept ${job.id} — its worktree is still at “${result.worktreePath}”\n` +

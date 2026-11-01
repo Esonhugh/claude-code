@@ -102,6 +102,14 @@ function formatAge(since: string): string {
 }
 
 function keptRowText(kept: KeptWorktree): string {
+  if (kept.reason === 'remove_failed') {
+    if (kept.withheld === 'tracked_changes')
+      return 'worktree not removed, and it has uncommitted changes — commit or stash them, then ctrl+x again'
+    if (kept.withheld === 'not_registered') return 'worktree not removed — remove the directory yourself, then ctrl+x again'
+    return kept.forceFailed
+      ? "couldn't delete the worktree directory — ctrl+x again retries"
+      : "git couldn't remove the worktree — ctrl+x again deletes it anyway"
+  }
   return kept.reason === 'uncommitted'
     ? 'uncommitted changes — ctrl+x again discards them'
     : `${kept.detail} — ctrl+x again discards them`
@@ -211,7 +219,7 @@ function AgentView({
       }
       return
     }
-    const result = await removeJob(job, kept[job.id]?.discard)
+    const result = await removeJob(job, kept[job.id]?.discard, kept[job.id]?.forceRemove)
     if (result.kept) {
       setKept(k => ({ ...k, [job.id]: result.kept! }))
       setNotice(keptWorktreeLines(result.kept, job.id)[0]!)

@@ -6597,18 +6597,26 @@ async function run(): Promise<CommanderCommand> {
     'Stop a background session. Its conversation is kept; resume it later with `claude attach <id>`.',
   )
 
-  program
-    .command('rm <id>')
+  // Like 2.1.311, rm reads its arguments itself, so its errors carry its usage line.
+  const rmCommand = program
+    .command('rm [id]')
     .description('Delete a background session, and its worktree when that is safe. Works on sessions that have already exited')
-    .option(
-      '--discard-unpushed <commit>@<worktree-id>',
-      "also discard the worktree's unpushed commits (and any uncommitted changes) — pass the value a previous 'claude rm <id>' reported",
-    )
-    .action(async (id: string, opts: { discardUnpushed?: string }) => {
+    .allowUnknownOption()
+    .allowExcessArguments()
+    .action(async (_id, _opts, command) => {
       const { rmHandler } = await import('./cli/bg.js')
-      await rmHandler(id, opts)
+      await rmHandler(command.args)
       process.exit(process.exitCode ?? 0)
     })
+  rmCommand.helpInformation = () =>
+    [
+      'Usage: claude rm <id> [--discard-unpushed <commit>@<worktree-id>] [--force-remove-worktree <worktree-id>]',
+      '',
+      '  Delete a background session and its worktree. Unlike `stop`, works on already-exited sessions.',
+      "  --discard-unpushed <commit>@<worktree-id>  also discard the worktree's unpushed commits (and any uncommitted changes) while it is still the same worktree at that commit — pass the value a previous 'claude rm <id>' reported",
+      "  --force-remove-worktree <worktree-id>      delete the worktree directory even though git couldn't remove it (git must still list it as a worktree; no uncommitted changes to tracked files; the branch is kept) — pass the value a previous 'claude rm <id>' reported",
+      '',
+    ].join('\n')
 
   program
     .command('purge [path]')
