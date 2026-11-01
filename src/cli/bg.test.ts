@@ -105,3 +105,30 @@ test('removeJob keeps a worktree with uncommitted or unpushed work and removes a
   expect(existsSync(ahead.worktree!.worktreePath)).toBe(false)
   delete process.env.CLAUDE_CONFIG_DIR
 })
+
+test('respawn --all skips sessions that are not running, like 2.1.311', async () => {
+  const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = await import('fs')
+  const { tmpdir } = await import('os')
+  const { join } = await import('path')
+  const { spyOn } = await import('bun:test')
+  const { getJobDir } = await import('../daemon/protocol.js')
+  const { respawnHandler } = await import('./bg.js')
+  const dir = mkdtempSync(join(tmpdir(), 'respawn-all-'))
+  const previous = process.env.CLAUDE_CONFIG_DIR
+  process.env.CLAUDE_CONFIG_DIR = dir
+  const out = spyOn(process.stdout, 'write').mockImplementation(() => true)
+  const err = spyOn(process.stderr, 'write').mockImplementation(() => true)
+  try {
+    mkdirSync(getJobDir('aaaa1111'), { recursive: true })
+    writeFileSync(join(getJobDir('aaaa1111'), 'state.json'), JSON.stringify({ ...job('aaaa1111', 'done'), state: 'exited' }))
+    await respawnHandler(undefined, { all: true })
+    expect(out.mock.calls.map(c => String(c[0]))).toEqual(['no live jobs to respawn\n'])
+    expect(err.mock.calls).toEqual([])
+  } finally {
+    out.mockRestore()
+    err.mockRestore()
+    if (previous === undefined) delete process.env.CLAUDE_CONFIG_DIR
+    else process.env.CLAUDE_CONFIG_DIR = previous
+    rmSync(dir, { recursive: true, force: true })
+  }
+})

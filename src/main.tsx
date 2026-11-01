@@ -1857,7 +1857,7 @@ async function run(): Promise<CommanderCommand> {
     // --plugin-dir takes exactly one arg; repeat the flag for multiple dirs.
     .option(
       '--plugin-dir <path>',
-      'Load plugins from a directory for this session only (repeatable: --plugin-dir A --plugin-dir B)',
+      'Load a plugin from a directory or .zip for this session only; a folder of plugins loads each child (repeatable: --plugin-dir A --plugin-dir B.zip)',
       (val: string, prev: string[]) => [...prev, val],
       [] as string[],
     )
@@ -6548,12 +6548,27 @@ async function run(): Promise<CommanderCommand> {
     })
 
   program
-    .command('respawn <id>')
-    .description('Restart a background session so it runs the current Claude Code version')
-    .action(async (id: string) => {
+    .command('purge [path]')
+    .description(
+      "Delete a project's Claude Code data (transcripts, tasks, file history, and its entry in ~/.claude.json) from this computer only",
+    )
+    .option('--dry-run', 'List what would be deleted without deleting anything')
+    .option('-y, --yes', 'Skip confirmation prompt')
+    .option('-i, --interactive', 'Prompt for each item before deleting')
+    .option('--all', 'Purge state for every project (mutually exclusive with [path])')
+    .action(async (path: string | undefined, opts: { dryRun?: boolean; yes?: boolean; interactive?: boolean; all?: boolean }) => {
+      const { purgeProjectHandler } = await import('./cli/handlers/purge.js')
+      await purgeProjectHandler(path, opts)
+    })
+
+  program
+    .command('respawn [id]')
+    .option('--all', 'Restart every running background session')
+    .description('Restart a background session, or all of them with --all, so it runs the current Claude Code version')
+    .action(async (id: string | undefined, opts: { all?: boolean }) => {
       const { respawnHandler } = await import('./cli/bg.js')
-      await respawnHandler(id)
-      process.exit(0)
+      await respawnHandler(id, opts)
+      process.exit(process.exitCode ?? 0)
     })
 
   if (feature('TRANSCRIPT_CLASSIFIER')) {
