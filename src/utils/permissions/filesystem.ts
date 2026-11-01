@@ -1667,9 +1667,11 @@ export function canWriteWithoutRead<Input extends AnyObject>(
   }
   const decision = checkReadPermissionForTool(tool, input, permissionContext)
   if (decision.behavior === 'allow') return true
+  // Only the plain outside-working-directory ask counts as readable, and
+  // only in bypass; rule and safety-check asks keep the guard.
   return (
     decision.behavior === 'ask' &&
-    decision.decisionReason === undefined &&
+    decision.decisionReason?.type === 'workingDir' &&
     permissionContext.mode === 'bypassPermissions'
   )
 }

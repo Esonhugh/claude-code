@@ -99,6 +99,7 @@ describe('agent type resolution', () => {
     ).toThrow("Agent type 'general purpose' has been denied")
   })
 
+  // 2.1.311 lists the alternatives in name order.
   test('reports missing agents and available alternatives', () => {
     expect(() =>
       resolveAgentTypeForTesting({
@@ -108,7 +109,7 @@ describe('agent type resolution', () => {
         permissionContext,
       }),
     ).toThrow(
-      "Agent type 'missing-agent' not found. Available agents: general-purpose, code-reviewer",
+      "Agent type 'missing-agent' not found. Available agents: code-reviewer, general-purpose",
     )
   })
 })

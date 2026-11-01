@@ -737,12 +737,15 @@ export const FileReadTool = buildTool({
           content =
             memoryFileFreshnessPrefix(data) +
             formatFileLines(data.file)
-        } else {
-          // Determine the appropriate warning message
+        } else if (data.file.numLines >= 1 && data.file.totalLines > 1) {
+          // Like 2.1.311 a blank line in range is still a numbered line.
           content =
-            data.file.totalLines === 0
-              ? '<system-reminder>Warning: the file exists but the contents are empty.</system-reminder>'
-              : `<system-reminder>Warning: the file exists but is shorter than the provided offset (${data.file.startLine}). The file has ${data.file.totalLines} lines.</system-reminder>`
+            memoryFileFreshnessPrefix(data) + `${data.file.startLine}\t`
+        } else if (data.file.numLines >= 1 || data.file.totalLines === 0) {
+          content =
+            '<system-reminder>Warning: the file exists but the contents are empty.</system-reminder>'
+        } else {
+          content = `<system-reminder>Warning: the file exists but is shorter than the provided offset (${data.file.startLine}). The file has ${data.file.totalLines} lines.</system-reminder>`
         }
 
         return {
