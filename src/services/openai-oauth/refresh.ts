@@ -1,6 +1,5 @@
 import axios from 'axios'
 import { readFile } from 'fs/promises'
-import { getOpenAIProxyConfig } from './client.js'
 import { getOpenAIAuthPath, saveOpenAIAuth } from './storage.js'
 import type { OpenAIAuthDotJson, OpenAITokenExchangeResponse } from './types.js'
 
@@ -83,7 +82,6 @@ export async function checkAndRefreshOpenAITokenIfNeeded({
     },
     {
       headers: { 'Content-Type': 'application/json' },
-      proxy: getOpenAIProxyConfig(),
       timeout: 15000,
     },
   )
