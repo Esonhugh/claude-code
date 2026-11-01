@@ -1101,6 +1101,7 @@ async function getMessagesForSlashCommand(
               ),
               shouldQuery: false,
               command,
+              resultText: result.displayText,
             }
           }
 
