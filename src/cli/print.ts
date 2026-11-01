@@ -1105,6 +1105,7 @@ export async function runHeadless(
       message.queued_turn_count = getCommandQueueSnapshot().filter(
         command =>
           command.mode === 'prompt' &&
+          command.agentId === undefined &&
           !command.isMeta &&
           (command.origin === undefined || command.origin.kind === 'human'),
       ).length
