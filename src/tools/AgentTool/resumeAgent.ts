@@ -55,7 +55,7 @@ import {
   runAsyncAgentLifecycle,
 } from './agentToolUtils.js'
 import { GENERAL_PURPOSE_AGENT } from './built-in/generalPurposeAgent.js'
-import { FORK_AGENT, isForkSubagentEnabled } from './forkSubagent.js'
+import { FORK_AGENT, isForkAsyncDefault } from './forkSubagent.js'
 import type { AgentDefinition } from './loadAgentsDir.js'
 import { isBuiltInAgent } from './loadAgentsDir.js'
 import { runAgent } from './runAgent.js'
@@ -469,7 +469,7 @@ export async function resumeAgentBackground({
         agentIdForCleanup: agentId,
         enableSummarization:
           isCoordinatorMode() ||
-          isForkSubagentEnabled() ||
+          isForkAsyncDefault() ||
           getSdkAgentProgressSummariesEnabled(),
         getWorktreeResult: getWorktreeResult ?? (async () =>
           resumedWorktreePath ? { worktreePath: resumedWorktreePath } : {}),

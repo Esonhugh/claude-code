@@ -2,6 +2,7 @@ import { feature } from 'bun:bundle'
 import { z } from 'zod/v4'
 import {
   clearInvokedSkillsForAgent,
+  getForwardSubagentText,
   getIsNonInteractiveSession,
 } from '../../bootstrap/state.js'
 import {
@@ -64,7 +65,10 @@ import {
 } from '../../utils/messages.js'
 import type { PermissionMode } from '../../utils/permissions/PermissionMode.js'
 import { permissionRuleValueFromString } from '../../utils/permissions/permissionRuleParser.js'
-import { normalizeSubagentMessage } from '../../utils/queryHelpers.js'
+import {
+  normalizeMessage,
+  normalizeSubagentMessage,
+} from '../../utils/queryHelpers.js'
 import { enqueueSdkEvent } from '../../utils/sdkEventQueue.js'
 import {
   buildTranscriptForClassifier,
@@ -876,11 +880,21 @@ export async function runAsyncAgentLifecycle({
       reportObservedAgentProgress(toolUseContext, message)
       // SDK consumers see a background agent's messages live, like official.
       if (getIsNonInteractiveSession() && toolUseContext.toolUseId) {
-        for (const sdkMessage of normalizeSubagentMessage(message, toolUseContext.toolUseId, {
-          agentId: taskId,
-          agentType: metadata.agentType,
-          description,
-        })) {
+        // Nested subagents' messages arrive as progress; like 2.1.311 they
+        // reach the SDK only with --forward-subagent-text.
+        const sdkMessages =
+          message.type !== 'progress'
+            ? normalizeSubagentMessage(message, toolUseContext.toolUseId, {
+                agentId: taskId,
+                agentType: metadata.agentType,
+                description,
+              })
+            : getForwardSubagentText() &&
+                (message.data.type === 'agent_progress' ||
+                  message.data.type === 'skill_progress')
+              ? normalizeMessage(message)
+              : []
+        for (const sdkMessage of sdkMessages) {
           enqueueSdkEvent(sdkMessage)
         }
       }

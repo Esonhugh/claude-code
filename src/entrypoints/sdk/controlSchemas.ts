@@ -83,6 +83,7 @@ export const SDKControlInitializeRequestSchema = lazySchema(() =>
       agents: z.record(z.string(), AgentDefinitionSchema()).optional(),
       promptSuggestions: z.boolean().optional(),
       agentProgressSummaries: z.boolean().optional(),
+      forwardSubagentText: z.boolean().optional(),
     })
     .describe(
       'Initializes the SDK session with hooks, MCP servers, and agent configuration.',

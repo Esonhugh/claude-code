@@ -92,6 +92,8 @@ type State = {
   questionPreviewFormat: 'markdown' | 'html' | undefined
   flagSettingsPath: string | undefined
   flagSettingsInline: Record<string, unknown> | null
+  cliAutoCompactWindow: number | 'auto' | undefined
+  forwardSubagentText: boolean
   parentManagedSettings: Record<string, unknown> | null
   projectConfigRoot: string | null
   allowedSettingSources: SettingSource[]
@@ -335,6 +337,8 @@ function getInitialState(): State {
     apiKeyFromFd: undefined,
     flagSettingsPath: undefined,
     flagSettingsInline: null,
+    cliAutoCompactWindow: undefined,
+    forwardSubagentText: false,
     parentManagedSettings: null,
     projectConfigRoot: null,
     allowedSettingSources: [
@@ -1264,6 +1268,24 @@ export function setFlagSettingsInline(
   settings: Record<string, unknown> | null,
 ): void {
   STATE.flagSettingsInline = settings
+}
+
+/** --autocompact for this session; it wins over settings files. */
+export function getCliAutoCompactWindow(): number | 'auto' | undefined {
+  return STATE.cliAutoCompactWindow
+}
+
+export function setCliAutoCompactWindow(value: number | 'auto' | undefined): void {
+  STATE.cliAutoCompactWindow = value
+}
+
+/** --forward-subagent-text: SDK output also carries subagent text and thinking. */
+export function getForwardSubagentText(): boolean {
+  return STATE.forwardSubagentText
+}
+
+export function setForwardSubagentText(value: boolean): void {
+  STATE.forwardSubagentText = value
 }
 
 /** Policy-tier settings from --managed-settings (the SDK's managedSettings option). */

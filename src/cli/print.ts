@@ -267,6 +267,7 @@ import {
   setInitJsonSchema,
   getInitJsonSchema,
   setSdkAgentProgressSummariesEnabled,
+  setForwardSubagentText,
 } from 'src/bootstrap/state.js'
 import { createSyntheticOutputTool } from 'src/tools/SyntheticOutputTool/SyntheticOutputTool.js'
 import { parseSessionIdentifier } from 'src/utils/sessionUrl.js'
@@ -3490,6 +3491,9 @@ function runHeadlessStreaming(
             getFeatureValue_CACHED_MAY_BE_STALE('tengu_slate_prism', true)
           ) {
             setSdkAgentProgressSummariesEnabled(true)
+          }
+          if (!initialized && message.request.forwardSubagentText) {
+            setForwardSubagentText(true)
           }
 
           initialized = true

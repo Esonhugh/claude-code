@@ -234,7 +234,7 @@ import {
   shouldAutoEnableClaudeInChrome,
   shouldEnableClaudeInChrome,
 } from './utils/claudeInChrome/setup.js'
-import { getContextWindowForModel } from './utils/context.js'
+import { getContextWindowForModel, parseCompactionWindow } from './utils/context.js'
 import { loadConversationForResume } from './utils/conversationRecovery.js'
 import { buildDeepLinkBanner } from './utils/deepLink/banner.js'
 import {
@@ -410,6 +410,8 @@ import {
   setCwdState,
   setDirectConnectServerUrl,
   setFlagSettingsPath,
+  setCliAutoCompactWindow,
+  setForwardSubagentText,
   setInitialMainLoopModel,
   setParentManagedSettings,
   setProjectConfigRoot,
@@ -1463,6 +1465,11 @@ async function run(): Promise<CommanderCommand> {
       'Include partial message chunks as they arrive (only works with --print and --output-format=stream-json)',
       () => true,
     )
+    .option(
+      '--forward-subagent-text',
+      'Forward subagent text and thinking blocks as assistant/user messages with parent_tool_use_id set (only works with --print and --output-format=stream-json)',
+      () => true,
+    )
     .addOption(
       new Option(
         '--await-initialize',
@@ -1563,6 +1570,20 @@ async function run(): Promise<CommanderCommand> {
       '--replay-user-messages',
       'Re-emit user messages from stdin back on stdout for acknowledgment (only works with --input-format=stream-json and --output-format=stream-json)',
       () => true,
+    )
+    .addOption(
+      new Option(
+        '--autocompact <auto|tokens>',
+        'Auto-compact window size (auto, or 100k–1M tokens)',
+      ).argParser(value => {
+        if (value.trim().toLowerCase() === 'auto') return 'auto' as const
+        const tokens = parseCompactionWindow(value)
+        if (tokens === undefined)
+          throw new InvalidArgumentError(
+            "It must be 'auto', or between 100k and 1M (e.g. 500k, 200000, or 200 as shorthand)",
+          )
+        return tokens
+      }),
     )
     .addOption(
       new Option(
@@ -2004,6 +2025,13 @@ async function run(): Promise<CommanderCommand> {
       let fileDownloadPromise: Promise<DownloadResult[]> | undefined
 
       const agentsJson = options.agents
+      setCliAutoCompactWindow(
+        options.autocompact as number | 'auto' | undefined,
+      )
+      setForwardSubagentText(
+        options.forwardSubagentText === true ||
+          isEnvTruthy(process.env.CLAUDE_CODE_FORWARD_SUBAGENT_TEXT),
+      )
       const agentCli = options.agent
       if (feature('BG_SESSIONS') && agentCli) {
         process.env.CLAUDE_CODE_AGENT = agentCli

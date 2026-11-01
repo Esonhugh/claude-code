@@ -828,7 +828,7 @@ function streamedCheckPermissionsAndCallTool(
         stream.enqueue({
           message: createProgressMessage({
             toolUseID: progress.toolUseID,
-            parentToolUseID: toolUseID,
+            parentToolUseID: progress.parentToolUseID ?? toolUseID,
             data: progress.data,
           }),
         })
