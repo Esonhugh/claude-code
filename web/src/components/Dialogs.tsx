@@ -214,7 +214,7 @@ const TITLES: Record<DialogKind, (t: T) => string> = {
   hooks: () => 'Hooks',
   mods: () => 'Mods',
   settings: t => t('settings'),
-  stats: () => 'Stats',
+  stats: t => t('stats'),
   keys: t => t('shortcuts'),
 }
 

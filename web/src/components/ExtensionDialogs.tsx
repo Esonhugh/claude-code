@@ -164,16 +164,17 @@ export function McpBody({ z, flash, control }: ExtProps) {
                   {z('重连')}
                 </button>
               )}
-              {x.source !== 'sdk' && (
-                <Switch
-                  on={x.status !== 'disabled'}
-                  label={z('启用')}
-                  disabled={busy[x.name]}
-                  onToggle={() => {
-                    const on = x.status === 'disabled'
-                    void act(x.name, { subtype: 'mcp_toggle', serverName: x.name, enabled: on }, on ? `已启用 ${x.name}` : `已停用 ${x.name}`)
-                  }}
-                />
+              {st === 'disabled' && (
+                <button
+                  className="btn"
+                  type="button"
+                  data-mcp-enable={x.name}
+                  onClick={() =>
+                    void act(x.name, { subtype: 'mcp_toggle', serverName: x.name, enabled: true }, `已启用 ${x.name}`)
+                  }
+                >
+                  {z('启用')}
+                </button>
               )}
             </div>
           </div>
@@ -608,19 +609,16 @@ export function ModsBody({ z, flash, control }: ExtProps) {
         <div className="xrow" key={m.plugin}>
           <div>
             <b className="mono">{m.id}</b> <span className="note mono">{m.plugin}</span>
-            <small>{m.description}</small>
-            {(m.surfaces.length > 0 || m.events.length > 0) && (
-              <small>
-                {m.surfaces.length > 0 && `${z('界面：')}${m.surfaces.map(s => z(SURFACES[s] ?? s)).join(z('、'))}`}
-                {m.surfaces.length > 0 && m.events.length > 0 && ' · '}
-                {m.events.length > 0 && (
-                  <>
-                    {z('事件：')}
-                    <span className="mono">{m.events.join(', ')}</span>
-                  </>
-                )}
-              </small>
-            )}
+            <small className="clamp" title={m.description}>
+              {m.description}
+            </small>
+            <small className="clamp">
+              {z('界面：')}
+              {m.surfaces.length ? m.surfaces.map(s => z(SURFACES[s] ?? s)).join(z('、')) : '—'}
+              {' · '}
+              {z('事件：')}
+              <span className="mono">{m.events.length ? m.events.join(', ') : '—'}</span>
+            </small>
           </div>
           <div className="acts">
             <button className="btn" type="button" data-mod-edit={m.id} onClick={() => void open(m)}>

@@ -869,6 +869,7 @@ export function App() {
           setSidebarOpen(false)
           setDialog(kind)
         }}
+        dialogOpen={!!dialog}
       />
       {previewing && preview && (
         <section className="artview" aria-label={t('artifact')}>

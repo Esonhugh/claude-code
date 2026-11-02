@@ -1,4 +1,4 @@
-import { type MouseEvent, useEffect, useMemo, useRef, useState } from 'react'
+import { type MouseEvent, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { ext, type Stats } from '../extApi'
 import {
   dayPart,
@@ -23,6 +23,7 @@ const W = 600
 const H = 170
 const L = 40
 const B = 20
+const WEEKDAYS = ['周日', '周一', '周二', '周三', '周四', '周五', '周六']
 
 /** The prototype's `/stats` dialog: KPI tiles, daily chart, model share, heatmap, hours. */
 export function StatsBody({ z }: { z: Z }) {
@@ -30,12 +31,22 @@ export function StatsBody({ z }: { z: Z }) {
   const [error, setError] = useState<string>()
   const [range, setRange] = useState<StatRange>('30d')
   const [hover, setHover] = useState<{ i: number; left: number }>()
-  const [heatTip, setHeatTip] = useState<{ i: number; left: number; top: number }>()
+  const [heatTip, setHeatTip] = useState<{ i: number; x: number; top: number; bottom: number }>()
   const chartRef = useRef<HTMLDivElement>(null)
   const heatRef = useRef<HTMLDivElement>(null)
+  const heatTipRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
     ext.stats().then(setStats, (e: Error) => setError(e.message))
   }, [])
+  // Centered above the cell, kept inside the heatmap, below the cell when there is no room above.
+  useLayoutEffect(() => {
+    const tip = heatTipRef.current
+    if (!tip || !heatTip) return
+    const width = heatRef.current!.getBoundingClientRect().width
+    tip.style.left = `${Math.min(width - tip.offsetWidth, Math.max(0, heatTip.x - tip.offsetWidth / 2))}px`
+    const up = heatTip.top - tip.offsetHeight - 6
+    tip.style.top = `${up >= 0 ? up : heatTip.bottom + 6}px`
+  }, [heatTip])
   const models = useMemo(() => (stats ? topModels(stats) : []), [stats])
   const allDays = useMemo(() => (stats ? statDays(stats, models) : []), [stats, models])
   if (error) return <p className="note">{error}</p>
@@ -74,8 +85,9 @@ export function StatsBody({ z }: { z: Z }) {
     const box = cell.getBoundingClientRect()
     setHeatTip({
       i: Number(cell.dataset.i),
-      left: Math.min(wrap.width - 150, Math.max(0, box.left - wrap.left + box.width + 6)),
-      top: box.top - wrap.top + box.height + 6,
+      x: box.left - wrap.left + box.width / 2,
+      top: box.top - wrap.top,
+      bottom: box.bottom - wrap.top,
     })
   }
   const tile = (k: string, v: string | number, sub: string) => (
@@ -218,16 +230,24 @@ export function StatsBody({ z }: { z: Z }) {
             ))}
           </div>
           {heatDay && (
-            <div className="stip" id="heat-tip" style={{ left: heatTip.left, top: heatTip.top }}>
-              <b>{dLabel(heatDay.dt)}</b>
-              <span>
-                <span>tokens</span>
-                {fmtK(dayTotal(heatDay))}
-              </span>
-              <span>
-                <span>{z('会话')}</span>
-                {heatDay.sessions}
-              </span>
+            <div className="stip heattip" id="heat-tip" ref={heatTipRef}>
+              <b>
+                {dLabel(heatDay.dt)} {z(WEEKDAYS[heatDay.dt.getDay()]!)}
+              </b>
+              {dayTotal(heatDay) ? (
+                <>
+                  <span>
+                    <span>{z('输出 tokens')}</span>
+                    {fmtK(dayTotal(heatDay))}
+                  </span>
+                  <span>
+                    <span>{z('会话')}</span>
+                    {heatDay.sessions}
+                  </span>
+                </>
+              ) : (
+                <span>{z('没有使用')}</span>
+              )}
             </div>
           )}
         </div>

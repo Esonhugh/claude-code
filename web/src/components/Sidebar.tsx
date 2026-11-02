@@ -1,4 +1,5 @@
-import { type RefObject, useState } from 'react'
+import { type RefObject, useEffect, useState } from 'react'
+import { ext } from '../extApi'
 import type { SessionEnv } from '../protocol'
 import { groupHistory, type HistoryEntry } from '../store'
 import { Clawd, readStored, type T, writeStored } from './ui'
@@ -30,6 +31,33 @@ function accountText(env: SessionEnv): { name?: string; detail?: string; avatar:
   return { avatar: '?' }
 }
 
+type ExtCounts = { channels?: string; memory?: string; mods?: string }
+
+/** Counts for the Channels, Memory and Mods entries, reloaded whenever no dialog is open. */
+function useExtCounts(env: SessionEnv, dialogOpen: boolean): ExtCounts {
+  const [counts, setCounts] = useState<ExtCounts>({})
+  const key = (env.mcpServers ?? [])
+    .filter(m => m.status === 'connected')
+    .map(m => m.name)
+    .join('\n')
+  useEffect(() => {
+    if (dialogOpen) return
+    const connected = key.split('\n')
+    let live = true
+    const set = (patch: ExtCounts) => live && setCounts(c => ({ ...c, ...patch }))
+    ext.channels().then(
+      list => set({ channels: String(list.filter(c => c.def && connected.includes(c.server)).length) }),
+      () => undefined,
+    )
+    ext.memory().then(m => set({ memory: String(m.files.length) }), () => undefined)
+    ext.mods().then(list => set({ mods: `${list.filter(m => m.on).length}/${list.length}` }), () => undefined)
+    return () => {
+      live = false
+    }
+  }, [dialogOpen, key])
+  return counts
+}
+
 /** Left column: brand, new session, search, extension entries, history by folder, footer. */
 export function Sidebar({
   t,
@@ -48,6 +76,7 @@ export function Sidebar({
   onStop,
   onMore,
   onDialog,
+  dialogOpen = false,
 }: {
   t: T
   open: boolean
@@ -65,6 +94,7 @@ export function Sidebar({
   onStop: (id: string) => void
   onMore: () => void
   onDialog: (kind: DialogKind) => void
+  dialogOpen?: boolean
 }) {
   const [filter, setFilter] = useState('')
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>(() =>
@@ -79,6 +109,7 @@ export function Sidebar({
     writeStored(COLLAPSED_KEY, next)
   }
   const mcp = env.mcpServers
+  const counts = useExtCounts(env, dialogOpen)
   const account = accountText(env)
   const snav: { kind: DialogKind; ico: string; label: string; cnt?: string }[] = [
     {
@@ -87,12 +118,12 @@ export function Sidebar({
       label: 'MCP',
       cnt: mcp && `${mcp.filter(m => m.status === 'connected').length}/${mcp.length}`,
     },
-    { kind: 'channels', ico: '⇆', label: 'Channels' },
+    { kind: 'channels', ico: '⇆', label: 'Channels', cnt: counts.channels },
     { kind: 'skills', ico: '/', label: 'Skills', cnt: env.skills && String(env.skills.length) },
     { kind: 'plugins', ico: '⧉', label: t('plugins'), cnt: env.plugins && String(env.plugins.length) },
-    { kind: 'memory', ico: 'M', label: t('memory') },
+    { kind: 'memory', ico: 'M', label: t('memory'), cnt: counts.memory },
     { kind: 'hooks', ico: '↯', label: 'Hooks', cnt: env.hooks && String(env.hooks.length) },
-    { kind: 'mods', ico: '◇', label: 'Mods' },
+    { kind: 'mods', ico: '◇', label: 'Mods', cnt: counts.mods },
   ]
   return (
     <aside className={`sessions sidebar${open ? ' open' : ''}`} id="sessions" aria-label={t('sessionGroup')}>
@@ -252,7 +283,8 @@ export function Sidebar({
           {t('settings')}
         </button>
         <button type="button" onClick={() => onDialog('stats')}>
-          <span className="ico">▤</span>Stats
+          <span className="ico">▤</span>
+          {t('stats')}
         </button>
         <button type="button" onClick={() => onDialog('keys')}>
           <span className="ico">?</span>

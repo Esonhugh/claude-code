@@ -911,6 +911,18 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       page.on('pageerror', e => errors.push(e.message))
       await page.goto(signInUrl)
       await page.locator('.wl-hi').waitFor()
+      // Counts beside Memory and Mods, like the prototype's `4` and `3/4`.
+      const memoryCount = await page.locator('.snav button', { hasText: 'Memory' }).locator('.cnt').textContent({ timeout: 15_000 })
+      expect(memoryCount).toMatch(/^\d+$/)
+      expect(await page.locator('.snav button', { hasText: 'Mods' }).locator('.cnt').textContent()).toMatch(/^\d+\/\d+$/)
+      // The side panel tabs scroll inside their row; the page never scrolls sideways.
+      const noPageScroll = () => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)
+      await page.locator('.session-row').first().locator('.session-title').click()
+      await page.locator('.side .tabs').waitFor()
+      expect(await noPageScroll()).toBe(true)
+      await page.setViewportSize({ width: 390, height: 844 })
+      expect(await noPageScroll()).toBe(true)
+      await page.setViewportSize({ width: 1440, height: 900 })
       const dialog = page.locator('.dialog')
       const close = async () => {
         await dialog.getByRole('button', { name: 'Close', exact: true }).click()
@@ -969,6 +981,7 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       await page.locator('.snav button', { hasText: 'Memory' }).click()
       const userMemory = dialog.locator('#memlist button', { hasText: 'User instructions' })
       await userMemory.waitFor({ timeout: 15_000 })
+      expect(String(await dialog.locator('#memlist [data-mem]').count())).toBe(memoryCount!)
       await userMemory.click()
       await dialog.locator('.memview', { hasText: 'E2E_MEMORY_MARKER' }).waitFor()
       await dialog.locator('#mem-q').fill('E2E_MEMORY')
