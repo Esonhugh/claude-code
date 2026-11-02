@@ -1,6 +1,6 @@
 # `claude web`：本地 Web 对话与研究界面设计
 
-状态：实现中。各阶段先合进 `claude-web` 分支，全部完成后再合进 `dev`；M0（骨架和安全层）见 PR 说明
+状态：已实现并合进 `dev`（M0–M5 经 `claude-web` 分支在 #536 合入，之后按原型重做界面并加了项目模式），随 v2.1.296 发布。下文保留设计时的描述，实现与设计不同的地方已就地改正，汇总见第 11 节“实现状态”
 基线：`dev` 64fd4f3
 日期：2026-11-02
 Issue：#502
@@ -88,7 +88,7 @@ claude web 进程（Bun.serve）
 
 - 列表：服务端读 `~/.claude/projects/<cwd>/*.jsonl`，复用 `src/utils/listSessionsImpl.ts` 的 `listSessionsImpl`，返回 id、标题、最后时间。左侧按项目目录分组（组名是目录名，下面一行是完整路径），组内按最后时间倒序，组可以折叠，悬停组名出现“+”在该目录新建会话。当前会话所在的组默认展开，其余按上次的折叠状态。列表分页加载，每组先显示最近 20 个，滚到底再取。
 - 新会话页：点"+ 新会话"或组名旁的"+"，对话区换成一个起始页，不弹菜单：居中是按时间段的问候和账号名（图标用侧边栏同一个），下面是大输入框，"+"和对话输入框是同一个菜单（上传文件、添加图片、使用 skill、引用工作区文件），也支持粘贴和拖入；输入框下方左边是目录选择（可搜索，列出最近的项目目录、临时对话和"打开文件夹…"），右边是权限模式和模型。权限模式从 settings 的 `permissions.defaultMode` 起（没设置就是 default），不沿用当前会话中途切换过的模式，可以在这里改，选项和输入框下方的一样（含 bypass permissions）。输入框里同样支持 `/` 命令 / skill 和 `@` 文件补全。再往下是所选目录最近的 3 个会话卡片（标题、时间、最后一段回复的摘要），点卡片按只读方式打开那个会话，"查看全部"跳到侧边栏搜索。第一条消息发出时才在所选目录启动子进程，会话标题先取消息前段，之后再换成生成的标题。Esc 关闭起始页回到原会话。
-- 临时对话：新会话页目录选择里的第一项。不选目录，在 `~/.claude/web/tmp/<id>/` 这样的独立临时目录里运行，不加载任何项目的 CLAUDE.md 和项目级设置（只用用户级设置和记忆），在历史里单独成组。适合翻译、问答这类和项目无关的对话。另外两项是“在当前项目新建”和“打开文件夹…”（未信任的目录先走信任确认）。
+- 临时对话：新会话页目录选择里的第一项。不选目录，在 `~/.claude/web/temp/chat-<随机>/` 这样的独立临时目录里运行，不加载任何项目的 CLAUDE.md 和项目级设置（只用用户级设置和记忆），在历史里单独成组。适合翻译、问答这类和项目无关的对话。另外两项是“在当前项目新建”和“打开文件夹…”（未信任的目录先走信任确认）。
 - 打开历史：切到一个历史会话时只读，服务端解析 transcript 分页返回消息，前端渲染，不启动子进程，切来切去不花钱也不占进程。用户点进输入框或开始输入时，才在后台以 `--resume <id>` 在该会话原来的工作目录里启动子进程（输入期间完成预热，发送时不用等冷启动）；还在运行的会话（绿点）直接接上，不重新 resume。恢复失败时输入框上方提示原因，草稿保留。切换会话时整个工作区跟着换：对话流、顶部状态条（运行中 / 未运行、工作目录）、右侧面板、输入框下方的权限模式都属于所选会话；待确认、待办、目标和 mod 横条只属于有进程的那个会话。未运行的会话右侧只有 Status（名称、状态、工作目录、最后活动、轮次、transcript 里的模型），其他页签在会话恢复并且真的有 agents、终端、后台任务时才出现。每个会话记住自己的权限模式，恢复的会话从 `defaultMode` 起。起始页还没有会话，所以不显示右侧面板，对话区占满。
 - 同一会话同一时间只允许一个浏览器标签连接（沿用 `canAttach`）。其余标签只读，并提示"已在别处打开"。
 - 默认工作目录：`--workspace`，否则 `~/.claude/web/workspace`。不默认用启动时的 cwd，因为 Web UI 主要用于对话，不一定在项目目录里。也可以在新建会话时选目录。
@@ -250,7 +250,7 @@ claude web 进程（Bun.serve）
 
 所以只加**一个** fork 专用 control request，Web、SSH、Direct Connect 三处共用：
 
-- `send_task_message {task_id, text, model?}`：在 `src/cli/print.ts` 里按上表调用同一组函数，返回 `queued`、`resumed`、`injected` 或失败原因。`model` 只对已结束的 subagent 有效：恢复时覆盖 `resumeAgentBackground` 从元数据读出的 `meta.model`（`src/tools/AgentTool/resumeAgent.ts`），运行中的 agent 和 team 成员带了 `model` 直接报错。
+- `send_task_message {task_id, text, model?, effort?}`：在 `src/cli/print.ts` 里按上表调用同一组函数，返回 `queued`、`resumed`、`injected` 或失败原因。`model` 和 `effort` 只对已结束的 subagent 有效：恢复时覆盖 `resumeAgentBackground` 从元数据读出的 `meta.model`（`src/tools/AgentTool/resumeAgent.ts`），运行中的 agent 和 team 成员带了 `model` 直接报错。进程里已经没有这个 agent 时（例如服务重启后）从它的 transcript 恢复（#550）。
 
 agent 输入框右侧显示它的模型（来自 agent 元数据或 `system/task_started`）。已结束的 subagent 可以在这里选别的模型，下一条消息恢复时生效，投递结果写明"模型 A → B"；运行中的 subagent 和 team 成员只读显示，因为模型在启动时就定了；workflow 里的 agent 没有输入框。
 
@@ -266,7 +266,7 @@ Terminal 工具是 fork 独有的（官方没有），它开的每个 PTY 会话
 - 列表：来自 `task_started` / `task_updated` / `background_tasks_changed`，每行显示命令、状态（running / completed / failed / killed）、退出码、尺寸和是哪个 agent 开的。点一行展开屏幕。
 - 屏幕内容：复用官方已有的 `get_task_output` control request（官方 2.1.316 也有，返回最后 8 KiB；fork 实现在 `src/cli/hostControlRequests.ts:597`，目前只认 shell 和 Monitor task）。fork 让它也接受 `interactive_terminal`，默认返回当前屏幕的纯文本（`screenToPreview`，`src/utils/pty/terminalScreenToPreview.ts:33`），不另加请求。浏览器每收到这个 task 的事件或每秒最多拉一次。
 - 颜色：请求里带 fork 独有的可选字段 `format: "screen"` 时，回包多一个结构化的 `screen: { cols, rows, lines: [[{ text, fg? }]] }`，按 `TerminalScreenCell.style.fg`（`src/utils/pty/terminalScreen.ts`）把同色的连续字符合成一段。浏览器把 `fg`（30–37、90–97）映射成 CSS 类上色，不收也不解析 ANSI 文本。现在屏幕模型只记前景色，背景色、粗体等以后加到 `style` 里，`screen` 的段落结构不变。不带这个字段时行为和官方一致，TUI 的 preview 仍按纯文本处理。
-- 操作：第一版只读，加"停止"按钮（`stop_task`）。终端由 agent 驱动，用户从页面往里打字会和 agent 抢输入，放到后续版本，届时要单独走权限确认。
+- 操作："停止"按钮（`stop_task`）。实现时提前做了输入（#541）：屏幕下方的输入框回车发一行，另有 Ctrl+C 按钮，走 fork 专用的 `send_terminal_input { task_id, text?, key?, enter? }`（zod 校验，只对运行中的终端有效，和 agent 的 send-keys 一样更新待回显行）；列表和输出用 `get_background_tasks` 与 `get_task_output { format: "screen" }`，面板打开且有任务运行时每秒轮询一次。
 - `claude ssh` / Direct Connect 的终端列表有和 #503 一样的缺口（`remoteTasks` 没人渲染），一起处理。
 
 **断线和恢复**
@@ -293,7 +293,7 @@ Terminal 工具是 fork 独有的（官方没有），它开的每个 PTY 会话
 - **Hooks**：弹窗按事件分组列出所有 hook，每条显示匹配、命令、超时和来源（用户、项目、插件、本会话）。用户和项目的 hook 可以添加、编辑、删除，写回对应的 settings.json；插件和本会话（skill / agent frontmatter、SDK 注册）的 hook 只读，本会话的随会话结束失效。顶部有“停用全部 hooks”（`disableAllHooks`）。
 - **Mods**：弹窗列出已加载的 mod（所属插件、用到的界面位置和事件、上次加载错误），可以启用 / 停用、重新加载，或打开源文件编辑，保存后热重载（`$.state` 保留）。mod 的界面走已有的远程 UI 协议（`src/services/mods/remoteUiRender.ts`，`ui_render` / `ui_press` / `ui_input` / `ui_select` / `ui_invalidate`）：服务端把 `ui.render` 的结果作为元素树发给浏览器，浏览器用 DOM 画 `Box`、`Text`、`Button`、`Input`、`Select`、`Link`、`Code`、`Markdown`、`Svg`，不接受 mod 给的原始 HTML。位置和 TUI 一一对应（`ModRenderComponent`，`src/services/mods/ui.ts:8`）：`AbovePrompt` 画在输入框上方；`Pane` 变成右侧的一个页签（以 mod 名命名，排在 Background Tasks 后面，带 × 关闭，关闭发 `ui.close`）；`UserMessage`、`AssistantMessage`、`ToolUse`、`ToolResult`、`ToolGroup`、`ToolProgress`、`CommandOutput`、`TurnDuration`、`InfoNotice` 替换对话流里对应的消息或卡片，mod 不处理时用默认渲染；`Spinner` 是对话底部的状态行，`SessionMode` 是输入框下方左侧的权限模式文字，`PromptHint` 是输入框的提示文字，`AskUserQuestion` 在输入框上方的待确认区域里显示。按钮和输入通过 `ui_press` 等交回 mod。不经过渲染的调用也有对应位置：`ui.toast` 是底部的短暂提示，`ui.notice` 是持续显示的提示条，`ui.notify` 走浏览器通知，`ui.copy` 写剪贴板；改写、补全输入框的 `ui_prompt_*` 依赖 #511，接通后作用在网页输入框上。网页以 `surface: "desktop"` 参与渲染（`ModRenderSurface`，`src/services/mods/ui.ts:7`），和官方桌面端走同一分支，`viewport.columns` / `rows` 按面板宽高和等宽字体估算。已知不能完全一致的地方：按终端列数手工排版或画字符画的 mod（非等宽 Text 会错位）、只在 `surface === "terminal"` 分支里画界面的 mod、和浏览器快捷键冲突的组合键（这类组合键需要换绑）。主题色名（`success`、`inactive`、`diffAddedWord` 等）映射到网页的颜色变量。M 阶段用 `examples/mods/` 和 mods-test-lab 跑一遍兼容矩阵。`Client` 组件（mod 自带的前端模块）第一版不支持，显示占位。`Code` 的 `format: "diff"` 用和 Edit 卡片同一套红绿行渲染（服务端或前端解析统一 diff 文本，不是 ANSI）；内置的官方 diff mod（`assets/builtin-diff-2.1.295.zip`，接管 `/diff`）只用 Select、Button、Text 和 diff 格式的 Code，所以在网页里能完整显示：比较基准（未提交 / 相对分支 / 某一轮）、文件列表、选中文件的 diff，`ask` 把选中的 diff 附到下一条消息，并用 `PromptHint` 改输入框提示。
 - **设置补充**：常规页有界面名称，对应 settings.json 的 `uiName`（`src/components/LogoV2/uiName.ts`），左上角和浏览器标签页标题跟着变，留空是 EsonClaw。设置的页签在滚动时固定在顶部，切换页签回到顶部。
-- **Stats**：左侧边栏"设置"下面是一个纯文字入口 Stats，打开弹窗，用和 `/stats` 相同的聚合（`src/utils/stats.ts` 的 `aggregateClaudeCodeStatsForRange`，范围 7 天 / 30 天 / 全部）：最常用模型、输出 tokens、会话数和最长会话、连续使用天数、最活跃的一天、高峰时段；按模型分色的每日输出曲线（全部范围按周汇总，悬停显示当时每个模型的数字）；模型占比；最近 25 周的活跃度格子；一天中各小时的使用分布。模型颜色固定按模型分配，不随排名变化。侧边栏不放用量小组件。设置的用量页签另有本会话指标（缓存命中率、工具调用、首 token 延迟、API 重试、改动行数、subagent 占比）。
+- **Stats**（中文界面叫“统计”）：实现时放进了账号菜单（认证、设置之后），打开弹窗，用和 `/stats` 相同的聚合（`src/utils/stats.ts` 的 `aggregateClaudeCodeStatsForRange`，范围 7 天 / 30 天 / 全部）：最常用模型、输出 tokens、会话数和最长会话、连续使用天数、最活跃的一天、高峰时段；按模型分色的每日输出曲线（全部范围按周汇总，悬停显示当时每个模型的数字）；模型占比；最近 25 周的活跃度格子；一天中各小时的使用分布。模型颜色固定按模型分配，不随排名变化。侧边栏不放用量小组件。设置的用量页签另有本会话指标（缓存命中率、工具调用、首 token 延迟、API 重试、改动行数、subagent 占比）。
 - **输入框**：参照 Claude 应用的样式，输入区是一个圆角框，右下角是圆形的发送箭头（没输入时变灰）；框下方一行，左边是“+”（上传文件、图片、skill、引用文件）和权限模式，右边是目标和模型。输入区和对话流同一底色，不加分隔线。起始页的大输入框用同样的发送按钮。
 - **搜索记忆和历史会话**：服务端和 CLI 是同一个程序，直接调用 `searchMemory()`（`src/memdir/memoryIndex.ts`，`~/.claude/memory-index.sqlite`，FTS5 trigram，中文可用），不新增 control request。记忆弹窗的搜索框可选范围：全部 / 记忆 / 历史会话（对应 SearchMemory 的 user、project、session），结果显示片段和来源，点历史会话的结果跳到那个会话并高亮命中处；弹窗里有 “SQLite 全文索引” 开关（`memory.sqlite.enabled`）和索引状态（文件数、段数、更新时间）。左侧“搜索历史会话”先按标题和目录匹配，开了索引且输入至少 2 个字时，下面再列 “会话内容” 的命中句子。索引关闭时记忆只做文件内的子串匹配，历史会话只按标题搜，并提示可以打开索引。
 - **外观和配色**：设置里“外观”选跟随系统 / 浅色 / 深色，“配色”选默认（蓝）、陶土（棕 + 米白）、黑白；每套配色都有自己的浅色和深色色值，只改颜色变量（背景、面板、文字、边线、强调色），状态色（成功、警告、错误）和图表色不跟着换。两项都存在浏览器本地，不写 settings.json，和终端的 `/theme` 互不影响。
@@ -321,7 +321,7 @@ Terminal 工具是 fork 独有的（官方没有），它开的每个 PTY 会话
 - 前端放在 `web/`，用 Vite 构建，`bun run build:web` 输出 `web/dist`。
 - `scripts/build-web.mjs` 在 Vite 构建后把 `web/dist` 的每个文件写进 `web/dist/assets.json`（文本原样，二进制 base64），`src/web/assets.ts` 直接 import 这个 JSON，所以 `dist/cli.js` 和单文件二进制都自带页面，运行时不读磁盘。`bun run build` 在 `WEB_UI` 开启时先跑这一步。
 - 用 feature flag `WEB_UI` 控制，加进 `scripts/build.mjs` 的默认 feature 列表；关掉时子命令和资源都不进包。
-- 体积预算：首屏 JS gzip 后不超过 300 KB；shiki 语法、KaTeX 字体、mermaid、pdf.js、mammoth、exceljs 全部按需加载。整体给二进制增加的体积目标不超过 8 MB，构建时检查。
+- 体积预算：首屏 JS gzip 后不超过 300 KB；shiki 语法、KaTeX 字体、mermaid、pdf.js、mammoth、exceljs 全部按需加载。原定整体不超过 8 MB，mermaid 的布局引擎和随包的 IBM Plex 字体让实测到了 11.95 MiB，`scripts/check-web-size.mjs` 的预算定为 13.75 MiB，由 `make release-check` 检查。
 
 需要新增的依赖（按 CLAUDE.md，实现前单独确认）：`vite`、`@vitejs/plugin-react`、`react-dom`、`mdast-util-from-markdown` 及 GFM/math 扩展、`shiki`、`katex`、`mermaid`、`pdfjs-dist`、`dompurify`、`mammoth`、`exceljs`。`react` 已有。
 
@@ -331,8 +331,10 @@ Terminal 工具是 fork 独有的（官方没有），它开的每个 PTY 会话
 claude web [--port <n>] [--host <ip>] [--workspace <dir>] [--no-open]
            [--dangerously-allow-local-network]
            [--trusted-host <host>] [--idle-timeout <ms>] [--max-sessions <n>]
-           [--tls-cert <file> --tls-key <file>]
+           [--tls-cert <file> --tls-key <file>] [--preview-origin <url>...]
 ```
+
+- `--preview-origin`：实现时加的参数，预览栏除本机 loopback 开发服务器以外还能在框架里显示的 http(s) 来源。
 
 - `--dangerously-allow-local-network`：绑 `0.0.0.0`，只放行局域网来源（见第 4 节），启动时打印警告，不自动打开浏览器之外的任何东西。和 `--host` 同时给时以 `--host` 为准，但 `--host` 是局域网地址时必须带这个参数。
 
@@ -364,5 +366,37 @@ claude web [--port <n>] [--host <ip>] [--workspace <dir>] [--no-open]
 
 1. 默认工作目录用 `~/.claude/web/workspace` 还是启动时的 cwd？本稿倾向前者，因为 Web 主要用于对话。
 2. 是否允许 TUI 和 Web 同时连同一个会话（一方只读）？本稿第一版只做互斥。
-3. 输入框是否在 M2 换成 Lexical 以支持 `@` 文件补全，还是先用 textarea 加简单弹出列表？
+3. 输入框是否在 M2 换成 Lexical 以支持 `@` 文件补全，还是先用 textarea 加简单弹出列表？已定：textarea 加弹出列表（`/` 命令和 skill、`@` 工作区文件）。
 4. OpenAI provider 会话是否在 M0 就支持？协议层相同，理论上不需要额外工作，但需要单独验收。
+
+## 11. 实现状态
+
+已合进 `dev` 的部分（Issue #502）：
+
+| PR | 内容 |
+|---|---|
+| #524 | M0：`WEB_UI` flag、`claude web` 子命令、token → HMAC cookie、Host/Origin/`Sec-Fetch-Site` 检查、CSP、资源嵌入二进制、`~/.claude/web.lock` |
+| #525 | M1：增量 Markdown、shiki、KaTeX、Mermaid、工具卡片、审批（含总是允许）、权限模式和模型切换、上下文和费用 |
+| #528 | M2：历史侧栏、只读打开、聚焦输入框时 `--resume`、重命名、停止、起始页 |
+| #531 | M3：上传、`/api/files`（realpath 允许根、凭据黑名单、Range）、预览面板（也是 #522 的一部分） |
+| #533、#534 | M4：Agents 面板、workflow 泳道、team 分组和消息时间线、`send_task_message`、刷新后用 `replayTasks` 重建；来源、导出、`/` 面板；M5 局域网、TLS、`--trusted-host` |
+| #536 | `claude-web` 集成分支合进 `dev`；还包括 `--preview-origin` 网页预览、手机抽屉、无障碍和体积检查 |
+| #537–#540 | 按批准的原型（`docs/design/claude-web-demo.html`）重做界面：设计系统、IBM Plex 字体、组件按原型 DOM 重写；原型补账号卡片、认证子菜单、API key 弹窗、热力图悬停 |
+| #541 | Terminals、Monitor、Background Tasks 页签接真实数据（`get_task_output` 的 `format: "screen"`、`get_background_tasks`、`send_terminal_input`） |
+| #542 | 账号卡片、认证子菜单（Anthropic / OpenAI 的 OAuth 和 API key、Base URL）、设置（常规、用量、功能开关）、`/api/account`、`/api/settings`、`/api/usage` |
+| #543 | MCP、Channels、Skills、插件、记忆、Hooks、Mods、统计弹窗接真实数据（`/api/ext/*`） |
+| #544 | Edit / Write diff、审批结果行、上下文弹层、待办和目标、`@` 补全、`↑` `↓` 调出历史输入、回退确认、`/compact` 和 `/recap` 折叠 |
+| #552 | 登录状态按 `claude auth status` 判断（宿主管理的 token、`ANTHROPIC_AUTH_TOKEN`、apiKeyHelper、Bedrock / Vertex / Foundry）；新会话上传预览不再 500；`Bun.serve` 加 `error` 处理，只回纯 JSON 500；待办置顶在两项之间显示“下一项：…”（同 CLI 的 `Next:`） |
+| #545、#548–#551 | 项目模式，见 [`claude-web-project.md`](claude-web-project.md) 第 9 节 |
+
+和设计不同的地方：
+
+- 终端第一版就能输入（5.5），Stats 在账号菜单里（5.7），体积预算 13.75 MiB（第 6 节），多了 `--preview-origin`（第 7 节）。
+- 删除会话是 `DELETE /api/sessions/:id?transcript=1`：先结束会话，再删 transcript 和同名目录（realpath 后必须在 transcript 目录里），并清掉侧栏标记；不带 `transcript=1` 只结束进程。
+- 弹窗内 Tab 循环、Esc 先关最上层的菜单或弹窗、关闭后焦点回到打开它的按钮、窄屏 Ctrl+K 先打开抽屉等键盘行为是 #551 统一补上的；手机宽度下导出菜单改成 `position: fixed`，不再被顶栏裁掉。
+
+已知缺口：
+
+- 不列 Cron 任务和本机其他会话（UDS）；工具卡片不显示耗时；设置用量页没有首 token 延迟和重试次数；mod 没有加载诊断，Channels 没有每个 channel 的消息数。
+- macOS 上 API key 存进登录钥匙串，临时 HOME 隔离不了，所以 macOS 的 web e2e 跳过账号用例；Windows 没有 SIGTERM，跳过服务重启用例。
+- 尚未验证：IPv6 双栈和真实局域网网卡、真实浏览器里的打印预览、用真实 OAuth 跑 deep-research。
