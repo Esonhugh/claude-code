@@ -40,6 +40,7 @@ export function StartPage({
   onOpen,
   onViewAll,
   menuButton,
+  gate,
 }: {
   t: T
   env: SessionEnv
@@ -58,6 +59,8 @@ export function StartPage({
   onOpen: (entry: HistoryEntry) => void
   onViewAll: () => void
   menuButton: ReactNode
+  /** The sign-in gate, shown above the input while signed out. */
+  gate?: ReactNode
 }) {
   const [query, setQuery] = useState('')
   const folderInput = useRef<HTMLInputElement>(null)
@@ -88,6 +91,7 @@ export function StartPage({
           <Clawd />
           <span>{name ? t('greetName', { greet, name }) : greet}</span>
         </div>
+        {gate}
         <InputBox
           t={t}
           start

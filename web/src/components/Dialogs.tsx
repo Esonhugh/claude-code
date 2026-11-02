@@ -1,18 +1,11 @@
-import { type ReactNode, useState } from 'react'
-import { type Lang, LANGS } from '../i18n'
+import { useState } from 'react'
 import type { Hook, SessionEnv } from '../protocol'
 import { Dialog } from './Dialog'
+import { SettingsBody } from './Settings'
 import type { DialogKind } from './Sidebar'
 import type { T } from './ui'
 
-export type Theme = 'system' | 'light' | 'dark'
-export type Palette = 'default' | 'clay' | 'mono'
-
-const PALETTES: [Palette, 'paletteDefault' | 'paletteClay' | 'paletteMono', string, string][] = [
-  ['default', 'paletteDefault', '#3a56c8', '#f3f4f7'],
-  ['clay', 'paletteClay', '#b0573a', '#faf9f5'],
-  ['mono', 'paletteMono', '#111111', '#ffffff'],
-]
+export type { Palette, Theme } from './Settings'
 
 const MCP_BADGE: Record<string, ['completed' | 'killed' | 'idle', 'connected' | 'needsAuth' | 'connectFailedBadge' | 'connecting']> = {
   connected: ['completed', 'connected'],
@@ -140,143 +133,6 @@ function HooksBody({ t, hooks }: { t: T; hooks?: Hook[] }) {
             ))}
         </div>
       ))}
-    </>
-  )
-}
-
-function Seg<V extends string>({
-  label,
-  value,
-  options,
-  onChange,
-}: {
-  label: string
-  value: V
-  options: { value: V; label: ReactNode }[]
-  onChange: (v: V) => void
-}) {
-  return (
-    <div className="seg" role="radiogroup" aria-label={label}>
-      {options.map(o => (
-        <button type="button" role="radio" key={o.value} aria-checked={value === o.value} onClick={() => onChange(o.value)}>
-          {o.label}
-        </button>
-      ))}
-    </div>
-  )
-}
-
-function SettingsBody({
-  t,
-  lang,
-  setLang,
-  uiName,
-  theme,
-  setTheme,
-  palette,
-  setPalette,
-  workspace,
-}: {
-  t: T
-  lang: Lang
-  setLang: (lang: Lang) => void
-  uiName: string
-  theme: Theme
-  setTheme: (theme: Theme) => void
-  palette: Palette
-  setPalette: (palette: Palette) => void
-  workspace?: string
-}) {
-  const [tab, setTab] = useState<'general' | 'usage' | 'features'>('general')
-  const tabs = [
-    ['general', t('general')],
-    ['usage', t('usageTab')],
-    ['features', t('featuresTab')],
-  ] as const
-  return (
-    <>
-      <div className="settabs">
-        {tabs.map(([key, label]) => (
-          <button type="button" key={key} aria-pressed={tab === key} onClick={() => setTab(key)}>
-            {label}
-          </button>
-        ))}
-      </div>
-      {tab === 'general' ? (
-        <div>
-          <div className="setrow">
-            <div>
-              <b>{t('uiLanguage')}</b>
-              <small>{t('uiLanguageHint')}</small>
-            </div>
-            <Seg label="Language" value={lang} options={LANGS.map(l => ({ value: l.id, label: l.label }))} onChange={setLang} />
-          </div>
-          <div className="setrow">
-            <div>
-              <b>{t('uiName')}</b>
-              <small>{t('uiNameHint')}</small>
-            </div>
-            <span className="mono">{uiName}</span>
-          </div>
-          <div className="setrow">
-            <div>
-              <b>{t('appearance')}</b>
-              <small>{t('appearanceHint')}</small>
-            </div>
-            <Seg
-              label={t('appearance')}
-              value={theme}
-              options={[
-                { value: 'system', label: t('themeSystem') },
-                { value: 'light', label: t('themeLight') },
-                { value: 'dark', label: t('themeDark') },
-              ]}
-              onChange={setTheme}
-            />
-          </div>
-          <div className="setrow">
-            <div>
-              <b>{t('palette')}</b>
-              <small>{t('paletteHint')}</small>
-            </div>
-            <Seg
-              label={t('palette')}
-              value={palette}
-              options={PALETTES.map(([value, key, a, b]) => ({
-                value,
-                label: (
-                  <>
-                    <span className="swatch" aria-hidden="true">
-                      <i style={{ background: a }} />
-                      <i style={{ background: b }} />
-                    </span>
-                    {t(key)}
-                  </>
-                ),
-              }))}
-              onChange={setPalette}
-            />
-          </div>
-          {workspace && (
-            <div className="setrow">
-              <div>
-                <b>{t('workDir')}</b>
-                <small>{t('workDirHint')}</small>
-              </div>
-              <span className="mono">{workspace}</span>
-            </div>
-          )}
-          <div className="setrow">
-            <div>
-              <b>{t('accessAddress')}</b>
-              <small>{t('accessAddressHint')}</small>
-            </div>
-            <span className="mono">{location.host}</span>
-          </div>
-        </div>
-      ) : (
-        <p className="note">{t('notYet')}</p>
-      )}
     </>
   )
 }

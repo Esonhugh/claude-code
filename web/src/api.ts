@@ -123,3 +123,83 @@ export function openSessionSocket(
 }
 
 export class SocketRefusedError extends Error {}
+
+export type AuthProvider = 'anthropic' | 'openai'
+
+/** `/api/account`: keys only ever arrive masked. */
+export type Account = {
+  kind: 'claude' | 'chatgpt' | 'apikey' | null
+  provider: AuthProvider
+  name?: string
+  plan?: string
+  source?: string
+  keys: { provider: AuthProvider; base_url: string; source?: string; masked?: string }[]
+  pending?: { provider: AuthProvider; url: string; manual_url: string }
+  error?: string
+}
+
+async function sendJson(path: string, method: string, body?: unknown): Promise<unknown> {
+  const res = await fetch(path, {
+    method,
+    headers: { 'Content-Type': 'application/json' },
+    ...(body !== undefined && { body: JSON.stringify(body) }),
+  })
+  if (!res.ok) throw new Error(await errorText(res))
+  return res.status === 200 ? res.json() : undefined
+}
+
+export const getAccount = () => getJson<Account>('/api/account')
+
+export const saveApiKey = (provider: AuthProvider, key: string, baseUrl: string) =>
+  sendJson('/api/account/api-key', 'POST', { provider, key, base_url: baseUrl }) as Promise<Account>
+
+export const startOAuth = (provider: AuthProvider) =>
+  sendJson('/api/account/oauth', 'POST', { provider }) as Promise<{ url: string; manual_url: string }>
+
+export const submitOAuthCode = (code: string) => sendJson('/api/account/oauth/code', 'POST', { code })
+
+export const cancelOAuth = () => sendJson('/api/account/oauth', 'DELETE')
+
+export const logout = () => sendJson('/api/account/logout', 'POST', {}) as Promise<Account>
+
+export type FeatureKey = 'autoCompact' | 'gitInstructions' | 'memoryExtraction' | 'agentSummary' | 'promptSuggestions'
+export type WebSettings = { uiName: string; features: Record<FeatureKey, boolean>; allow_local_network: boolean }
+
+export const getSettings = () => getJson<WebSettings>('/api/settings')
+
+export const patchSettings = (patch: { uiName?: string; features?: Partial<Record<FeatureKey, boolean>> }) =>
+  sendJson('/api/settings', 'PATCH', patch) as Promise<WebSettings>
+
+export type UsageWindow = { utilization: number; resets_at?: string | null }
+
+/** The `get_usage` control response (src/cli/hostControlRequests.ts); `/api/usage` answers the same shape. */
+export type Usage = {
+  session?: {
+    total_cost_usd?: number
+    total_api_duration_ms?: number
+    total_duration_ms?: number
+    total_lines_added?: number
+    total_lines_removed?: number
+    model_usage?: Record<
+      string,
+      {
+        inputTokens?: number
+        outputTokens?: number
+        cacheReadInputTokens?: number
+        cacheCreationInputTokens?: number
+        costUSD?: number
+      }
+    >
+  }
+  subscription_type?: string | null
+  rate_limits?: {
+    five_hour?: UsageWindow | null
+    seven_day?: UsageWindow | null
+    seven_day_opus?: UsageWindow | null
+    seven_day_sonnet?: UsageWindow | null
+    model_scoped?: { display_name: string; utilization: number; resets_at?: string | null }[]
+    extra_usage?: { is_enabled?: boolean } | null
+  } | null
+}
+
+export const getUsage = () => getJson<Usage>('/api/usage')

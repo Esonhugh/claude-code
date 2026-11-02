@@ -551,6 +551,7 @@ export const REQUEST_PREFIX = {
   stopTask: 'web-stop-task-',
   taskMessage: 'web-task-message-',
   settings: 'web-settings-',
+  usage: 'web-usage-',
   effort: 'web-effort-',
 } as const
 
