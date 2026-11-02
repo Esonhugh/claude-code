@@ -30,6 +30,7 @@ import {
   PERMISSION_MODES,
 } from './components/Chat'
 import { Preview } from './components/Preview'
+import { chatMarkdown, exportFileName } from './exportChat'
 import {
   filesBase,
   formatBytes,
@@ -56,6 +57,7 @@ import {
   unsupportedControlResponse,
   userMessage,
 } from './protocol'
+import { turnSources } from './sources'
 import {
   appReducer,
   groupHistory,
@@ -488,6 +490,35 @@ export function App() {
     [tasks],
   )
   useEffect(() => setAgentsView({ kind: 'tree' }), [view])
+  const items = chat?.items
+  const sourcesById = useMemo(
+    () => turnSources(items ?? [], agentsValue.byToolUse),
+    [items, agentsValue],
+  )
+  const chatTitle = state.history.find(h => h.id === view)?.title ?? 'Claude'
+  const exportMarkdown = () => {
+    if (!chat) return
+    const text = chatMarkdown(
+      chatTitle,
+      chat.items,
+      sourcesById,
+      { you: t('you'), sources: t('sources') },
+      chat.model,
+    )
+    const url = URL.createObjectURL(new Blob([text], { type: 'text/markdown;charset=utf-8' }))
+    const link = document.createElement('a')
+    link.href = url
+    link.download = exportFileName(chatTitle, 'md')
+    link.click()
+    setTimeout(() => URL.revokeObjectURL(url), 1000)
+  }
+  const exportPdf = () => {
+    // The print dialog offers the document title as the PDF file name.
+    const previous = document.title
+    document.title = exportFileName(chatTitle, 'pdf').slice(0, -'.pdf'.length)
+    window.print()
+    document.title = previous
+  }
   const runningAgents = Object.values(tasks ?? {}).filter(
     task => !['completed', 'failed', 'stopped', 'killed'].includes(task.status),
   ).length
@@ -874,6 +905,31 @@ export function App() {
             </>
           )}
           {!chat && <span className="cwd" />}
+          {chat && chat.items.length > 0 && (
+            <details className="export-menu">
+              <summary className="ghost">{t('export')}</summary>
+              <div className="export-options">
+                {(
+                  [
+                    ['exportMarkdown', exportMarkdown],
+                    ['exportPdf', exportPdf],
+                  ] as const
+                ).map(([key, run]) => (
+                  <button
+                    type="button"
+                    className="ghost"
+                    key={key}
+                    onClick={e => {
+                      e.currentTarget.closest('details')?.removeAttribute('open')
+                      run()
+                    }}
+                  >
+                    {t(key)}
+                  </button>
+                ))}
+              </div>
+            </details>
+          )}
           {chat && (
             <button
               type="button"
@@ -1012,6 +1068,7 @@ export function App() {
                     t={t}
                     fallbackModel={chat.model}
                     streaming={chat.busy && item.id === chat.streamingId}
+                    sources={sourcesById.get(item.id)}
                   />
                 ))}
               </div>

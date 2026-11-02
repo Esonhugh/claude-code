@@ -4,6 +4,7 @@ import { baseName, splitMentions } from '../files'
 import type { MessageKey } from '../i18n'
 import { Markdown } from '../markdown/Markdown'
 import type { Approval, ApprovalChoice, Block, Item } from '../protocol'
+import type { Source } from '../sources'
 import { stripAnsi, toolSummary } from '../tools'
 
 /** `claude-opus-5-5` → `Opus 5.5`; anything else is shown as is. */
@@ -133,11 +134,13 @@ export function Message({
   t,
   fallbackModel,
   streaming,
+  sources,
 }: {
   item: Item
   t: (key: MessageKey) => string
   fallbackModel?: string
   streaming: boolean
+  sources?: Source[]
 }) {
   const files = useContext(FilesContext)
   if (item.kind === 'user') {
@@ -186,6 +189,20 @@ export function Message({
         }
         return <ToolCard key={i} block={block} t={t} />
       })}
+      {sources && sources.length > 0 && (
+        <div className="sources">
+          <div className="sources-title">{t('sources')}</div>
+          <ol>
+            {sources.map(source => (
+              <li key={source.url}>
+                <a href={source.url} target="_blank" rel="noopener noreferrer" title={source.url}>
+                  {source.title ?? new URL(source.url).hostname}
+                </a>
+              </li>
+            ))}
+          </ol>
+        </div>
+      )}
     </div>
   )
 }
