@@ -65,13 +65,20 @@ export class SessionManager {
     cwd,
     permissionMode,
     model,
+    resume,
     sessionKey,
   }: {
     cwd: string
     permissionMode?: string
     model?: string
+    /** Transcript id to continue; reuses a running session with that id. */
+    resume?: string
     sessionKey?: string
   }): SessionInfo {
+    if (resume) {
+      const running = this.sessions.get(resume)
+      if (running) return running
+    }
     if (sessionKey) {
       for (const session of this.sessions.values()) {
         if (session.sessionKey === sessionKey) return session
@@ -84,12 +91,13 @@ export class SessionManager {
       )
     }
 
-    const id = randomUUID()
+    const id = resume ?? randomUUID()
     const child = this.backend.spawn({
       sessionId: id,
       cwd,
       permissionMode,
-      model,
+      ...(model && { model }),
+      ...(resume && { resume: true }),
     })
     const session: Session = {
       id,
@@ -139,6 +147,13 @@ export class SessionManager {
     )
     this.startIdleTimer(session)
     return session
+  }
+
+  list(): (SessionInfo & { attached: boolean })[] {
+    return [...this.sessions.values()].map(session => ({
+      ...session,
+      attached: !!session.socket,
+    }))
   }
 
   get(id: string): SessionInfo | undefined {

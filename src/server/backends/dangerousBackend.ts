@@ -6,6 +6,8 @@ export type SpawnSessionOptions = {
   cwd: string
   permissionMode?: string
   model?: string
+  /** Continue this existing transcript (its id becomes the session id). */
+  resume?: boolean
 }
 
 /**
@@ -31,6 +33,7 @@ export class DangerousBackend {
     cwd,
     permissionMode,
     model,
+    resume,
   }: SpawnSessionOptions): ChildProcess {
     const [command, ...entry] = isInBundledMode()
       ? [process.execPath]
@@ -50,7 +53,7 @@ export class DangerousBackend {
         '--verbose',
         '--permission-prompt-tool',
         'stdio',
-        '--session-id',
+        resume ? '--resume' : '--session-id',
         sessionId,
         ...(permissionMode ? ['--permission-mode', permissionMode] : []),
         ...(model ? ['--model', model] : []),

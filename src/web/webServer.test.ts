@@ -215,4 +215,35 @@ describe('claude web server', () => {
     })
     expect(deleted.status).toBe(204)
   })
+
+  it('validates history ids and rename bodies', async () => {
+    const r = start()
+    const cookie = await signIn(r)
+    const bad = await fetch(`${r.base}/api/history/..%2F..%2Fetc/messages`, {
+      headers: { cookie },
+    })
+    expect(bad.status).toBe(400)
+    const missing = await fetch(
+      `${r.base}/api/history/99999999-2222-4333-8444-555555555555/messages`,
+      { headers: { cookie } },
+    )
+    expect(missing.status).toBe(404)
+    const rename = await fetch(
+      `${r.base}/api/history/99999999-2222-4333-8444-555555555555`,
+      {
+        method: 'PATCH',
+        headers: { cookie, origin: r.origin },
+        body: JSON.stringify({ title: '   ' }),
+      },
+    )
+    expect(rename.status).toBe(400)
+    const resume = await fetch(`${r.base}/api/sessions`, {
+      method: 'POST',
+      headers: { cookie, origin: r.origin },
+      body: JSON.stringify({ resume: '--help' }),
+    })
+    expect(resume.status).toBe(400)
+    const info = await fetch(`${r.base}/api/info`, { headers: { cookie } })
+    expect(await info.json()).toEqual({ workspace: r.workspace })
+  })
 })

@@ -299,6 +299,26 @@ export function reduce(state: ChatState, raw: unknown): ChatState {
       const message = isObj(raw.message) ? raw.message : {}
       const content = Array.isArray(message.content) ? message.content : []
       let next = state
+      if (raw.isReplay === true) {
+        const text =
+          typeof message.content === 'string'
+            ? message.content
+            : content
+                .map(part =>
+                  isObj(part) && part.type === 'text' ? (str(part.text) ?? '') : '',
+                )
+                .filter(Boolean)
+                .join('\n')
+        if (text) {
+          next = {
+            ...next,
+            items: [
+              ...next.items,
+              { kind: 'user', id: str(raw.uuid) ?? `user-${next.items.length}`, text },
+            ],
+          }
+        }
+      }
       for (const part of content) {
         if (!isObj(part) || part.type !== 'tool_result') continue
         const toolId = str(part.tool_use_id)

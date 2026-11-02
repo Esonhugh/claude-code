@@ -8,6 +8,7 @@ import {
   type SessionManager,
   SessionManagerError,
 } from '../server/sessionManager.js'
+import { listHistory, readTranscript, renameSession, SESSION_ID } from './history.js'
 import {
   allowedHosts,
   checkToken,
@@ -57,6 +58,7 @@ const SECURITY_HEADERS = {
 const createSessionBodySchema = lazySchema(() =>
   z.object({
     cwd: z.string().optional(),
+    resume: z.string().regex(SESSION_ID).optional(),
     permission_mode: z.enum(PERMISSION_MODES).optional(),
     // A model alias or id; passed to `--model` as one argv entry.
     model: z
@@ -68,6 +70,25 @@ const createSessionBodySchema = lazySchema(() =>
 
 const WS_PATH = /^\/api\/sessions\/([^/]+)\/ws$/
 const SESSION_PATH = /^\/api\/sessions\/([^/]+)$/
+const HISTORY_PATH = /^\/api\/history\/([^/]+)$/
+const HISTORY_MESSAGES_PATH = /^\/api\/history\/([^/]+)\/messages$/
+
+const renameBodySchema = lazySchema(() =>
+  z.object({ title: z.string().trim().min(1).max(200) }),
+)
+
+function intParam(url: URL, name: string, fallback: number, max: number): number {
+  const value = Number(url.searchParams.get(name) ?? fallback)
+  return Number.isInteger(value) && value >= 0 ? Math.min(value, max) : fallback
+}
+
+async function readJson(req: Request): Promise<unknown> {
+  try {
+    return await req.json()
+  } catch {
+    return undefined
+  }
+}
 
 function withHeaders(res: Response): Response {
   for (const [key, value] of Object.entries(SECURITY_HEADERS)) {
@@ -94,9 +115,14 @@ function isDirectory(path: string): boolean {
  * `/?token=` URL once. `/api` and the WebSocket additionally require the
  * request to come from this server's own origin.
  *
- *   POST   /api/sessions        → { session_id, work_dir }
- *   GET    /api/sessions/:id/ws → stream-json relay to the session
- *   DELETE /api/sessions/:id    → stop the session
+ *   GET    /api/info                    → { workspace }
+ *   GET    /api/sessions                → running sessions
+ *   POST   /api/sessions                → { session_id, work_dir } (new or resume)
+ *   GET    /api/sessions/:id/ws         → stream-json relay to the session
+ *   DELETE /api/sessions/:id            → stop the session
+ *   GET    /api/history                 → transcripts on disk, newest first
+ *   GET    /api/history/:id/messages    → a page of one transcript
+ *   PATCH  /api/history/:id             → rename (custom title)
  */
 export function startWebServer(
   config: WebServerConfig,
@@ -117,7 +143,7 @@ export function startWebServer(
     if (!parsed.success) {
       return errorResponse(400, `Invalid request: ${parsed.error.message}`)
     }
-    const { cwd, permission_mode: permissionMode, model } = parsed.data
+    const { cwd, resume, permission_mode: permissionMode, model } = parsed.data
     let workDir = config.workspace
     if (cwd) {
       if (!isAbsolute(cwd) || !isDirectory(cwd)) {
@@ -132,6 +158,7 @@ export function startWebServer(
         cwd: workDir,
         permissionMode,
         model,
+        resume,
       })
       return Response.json({
         session_id: session.id,
@@ -147,11 +174,53 @@ export function startWebServer(
 
   async function handleApi(
     req: Request,
-    pathname: string,
+    url: URL,
     srv: { upgrade: (req: Request, opts: { data: SocketData }) => boolean },
   ): Promise<Response | undefined> {
+    const { pathname } = url
+    if (pathname === '/api/info' && req.method === 'GET') {
+      return Response.json({ workspace: config.workspace })
+    }
     if (pathname === '/api/sessions' && req.method === 'POST') {
       return createSession(req)
+    }
+    if (pathname === '/api/sessions' && req.method === 'GET') {
+      return Response.json(
+        sessionManager.list().map(s => ({
+          id: s.id,
+          work_dir: s.workDir,
+          status: s.status,
+          attached: s.attached,
+        })),
+      )
+    }
+    if (pathname === '/api/history' && req.method === 'GET') {
+      return Response.json(
+        await listHistory(
+          intParam(url, 'offset', 0, 100_000),
+          intParam(url, 'limit', 50, 200),
+        ),
+      )
+    }
+    const messagesMatch = HISTORY_MESSAGES_PATH.exec(pathname)
+    if (messagesMatch && req.method === 'GET') {
+      const id = decodeURIComponent(messagesMatch[1]!)
+      if (!SESSION_ID.test(id)) return errorResponse(400, 'Invalid session id')
+      const before = url.searchParams.has('before')
+        ? intParam(url, 'before', 0, Number.MAX_SAFE_INTEGER)
+        : undefined
+      const page = await readTranscript(id, before, intParam(url, 'limit', 200, 500))
+      return page ? Response.json(page) : errorResponse(404, 'Session not found')
+    }
+    const historyMatch = HISTORY_PATH.exec(pathname)
+    if (historyMatch && req.method === 'PATCH') {
+      const id = decodeURIComponent(historyMatch[1]!)
+      if (!SESSION_ID.test(id)) return errorResponse(400, 'Invalid session id')
+      const parsed = renameBodySchema().safeParse(await readJson(req))
+      if (!parsed.success) return errorResponse(400, 'Invalid title')
+      return (await renameSession(id, parsed.data.title))
+        ? new Response(null, { status: 204 })
+        : errorResponse(404, 'Session not found')
     }
     const wsMatch = WS_PATH.exec(pathname)
     if (wsMatch && req.method === 'GET') {
@@ -226,7 +295,7 @@ export function startWebServer(
       }
 
       if (isApi) {
-        const res = await handleApi(req, pathname, srv)
+        const res = await handleApi(req, url, srv)
         return res && withHeaders(res)
       }
       if (req.method !== 'GET' && req.method !== 'HEAD') {

@@ -90,6 +90,7 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
   let api: ReturnType<typeof Bun.serve>
   let web: ReturnType<typeof Bun.spawn>
   let signInUrl = ''
+  const promptsSeen: string[] = []
   let home = ''
   let workspace = ''
 
@@ -108,6 +109,7 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
           messages: { role: string; content: string | Block[] }[]
         }
         const last = body.messages.at(-1)!
+        promptsSeen.push(JSON.stringify(body.messages))
         const lastBlocks = typeof last.content === 'string' ? [] : last.content
         let blocks: Record<string, unknown>[] = [
           { type: 'text', text: 'Hello from the fake model' },
@@ -264,6 +266,63 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       await browser.close()
     }
   }, 90_000)
+
+  it('lists, reopens, renames, stops and resumes sessions', async () => {
+    const playwrightPath = Bun.spawnSync(['node', '-p', "require.resolve('playwright')"])
+      .stdout.toString()
+      .trim()
+    const { chromium } = await import(playwrightPath)
+    const browser = await chromium.launch()
+    try {
+      const context = await browser.newContext({ locale: 'en-US' })
+      const page = await context.newPage()
+      const errors: string[] = []
+      page.on('pageerror', e => errors.push(e.message))
+      await page.goto(signInUrl)
+
+      // The chat from the previous test is listed under the workspace group.
+      const row = page.locator('.session-row', { hasText: 'hi there' })
+      await row.waitFor({ timeout: 15_000 })
+      expect(await page.locator('.group-name small').first().textContent()).toBe(workspace)
+      await row.locator('.session-title').click()
+      await page.getByText('Hello from the fake model').waitFor()
+      await page.getByText('show MARKDOWN').waitFor()
+      // Still running with no tab attached, so this tab picks it up.
+      await page.locator('.status-live').waitFor({ timeout: 15_000 })
+
+      // The listing may retitle the row once the transcript has a summary.
+      const active = page.locator('.session-row.active')
+      await active.getByRole('button', { name: 'Stop session' }).click()
+      await page.locator('.status-readonly').waitFor({ timeout: 15_000 })
+      await page.waitForFunction(() => !document.querySelector('.session-row .dot'))
+
+      await active.getByRole('button', { name: 'Rename' }).click()
+      const rename = page.locator('input.rename')
+      await rename.fill('Renamed chat')
+      await rename.press('Enter')
+      await page.locator('.session-row', { hasText: 'Renamed chat' }).waitFor()
+
+      // Typing resumes the transcript in its own folder with its history.
+      const before = promptsSeen.length
+      const input = page.getByPlaceholder('Message Claude')
+      await input.click()
+      await page.locator('.status-live').waitFor({ timeout: 30_000 })
+      await input.fill('hello again')
+      await input.press('Enter')
+      await page.getByText('Hello from the fake model').nth(1).waitFor({ timeout: 30_000 })
+      const resumedPrompt = promptsSeen.slice(before).at(-1) ?? ''
+      expect(resumedPrompt).toContain('hi there')
+      expect(resumedPrompt).toContain('hello again')
+
+      await page.reload()
+      await page.locator('.session-row', { hasText: 'Renamed chat' }).waitFor({ timeout: 15_000 })
+      await page.getByRole('button', { name: '+ New chat' }).click()
+      await page.getByText('What can I help you with?').waitFor()
+      expect(errors).toEqual([])
+    } finally {
+      await browser.close()
+    }
+  }, 120_000)
 
   it('shuts down on SIGTERM and removes the lock', async () => {
     web.kill('SIGTERM')
