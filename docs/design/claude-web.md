@@ -182,7 +182,7 @@ claude web 进程（Bun.serve）
 
 ### 5.4 右侧边栏：Agents 页签与直接对话
 
-右侧边栏的页签依次是 **Status**、**Files**、**Agents**、**Workflow**、**Terminals**、**Background Tasks**（见 5.5、5.7），默认打开 Status。有 agent 在跑时可以切到 Agents，边栏可以拖宽；workflow 视图可以"展开到全屏"。窄屏时边栏变成抽屉。
+右侧边栏的页签依次是 **Status**、**Files**、**Agents**、**Workflow**、**Terminals**、**Monitor**、**Background Tasks**（见 5.5、5.7），默认打开 Status。有 agent 在跑时可以切到 Agents，边栏可以拖宽；workflow 视图可以"展开到全屏"。窄屏时边栏变成抽屉。
 
 **1. 存活 agents 的层级树**
 
@@ -261,11 +261,16 @@ Terminal 工具是 fork 独有的（官方没有），它开的每个 PTY 会话
 
 - **Status**：对应 TUI 的 `/status` 和 `/context`。显示会话名称、ID、工作目录、轮次和压缩次数；模型、思考强度、权限模式；上下文占用；本会话 token 和折合价格、订阅额度；后台 agent、workflow、终端、待确认请求的数量；版本、账号、MCP 连接数、channels、已加载的指令文件、记忆、沙箱和 hooks。数据来自 `initialize` 回包、`get_context_usage`、`get_settings` 和 `/usage`，每秒刷新。
 - **Files**：列出本会话上传、读取、修改和生成的文件，每行是类型、文件名、所在目录、来源（上传 / 读取 / 修改 / 生成）、时间和来源工具。点一行在下方预览（5.2 的预览器），修改过的文件显示本会话的 diff。数据从 transcript 里的工具调用推出来，不另建索引。
-- **Background Tasks**：后台 Bash（`run_in_background`）、Monitor、`CronCreate` 和 `ScheduleWakeup`。每行是类型、命令或计划、谁启动的、耗时、最后一行输出或下次运行时间；运行中的可以停止，计划中的可以取消，都走 `stop_task`。
+- **Monitor**：每个 Monitor 一行（描述、谁启动的、耗时、事件数），点开显示命令和按时间倒序的事件列表，可以停止（`stop_task`）。
+- **Background Tasks**：后台 Bash（`run_in_background`）、`CronCreate` 和 `ScheduleWakeup`。每行是类型、命令或计划、谁启动的、耗时、最后一行输出或下次运行时间；运行中的可以停止，计划中的可以取消，都走 `stop_task`。
 - **Workflow 输出**：点已完成的 agent 卡片显示它的摘要和结构化输出（workflow schema 校验后的 JSON），可以复制或在对话中引用；点阶段名显示该阶段每个 agent 的状态和摘要。运行中的 agent 只显示最新进度，结构化输出要等它结束。
-- **Skills 和插件**：放在左侧边栏历史会话上方。Skills 弹窗按项目、用户、插件、内置分组，可以搜索、启用 / 停用、查看 SKILL.md、一键插入 `/name`。插件弹窗有四个页签：已安装（启用、更新、卸载，显示包含的 skills / commands / hooks / MCP）、发现（市场搜索和安装）、MCP 服务器（来源、传输方式、连接状态、工具数，需要登录或连接失败时给出登录 / 重连）、市场源（添加、刷新、移除）。和 `claude plugin`、`/plugin` 共用配置。设置里不再放模型和权限，它们只在输入框下方切换：左侧是权限模式（图标加 `plan mode on` 这类 TUI 同款文字，点击选择或在输入框里按 shift+tab 轮换），右侧是 `Opus 5.5 · high`，点击选模型和思考强度。不显示“模型：”之类的标签。
+- **MCP、Skills、插件、记忆**：放在左侧边栏历史会话上方，依次是 MCP、Skills、插件、记忆，底部只留设置和快捷键。MCP 弹窗列出服务器的来源（用户、项目、插件、`--channels`）、传输方式、连接状态和工具数，需要登录或连接失败时给出登录 / 重连，和 `claude mcp`、`/mcp` 共用配置。Skills 弹窗按项目、用户、插件、内置分组，可以搜索、启用 / 停用、查看 SKILL.md、一键插入 `/name`。插件弹窗有三个页签：已安装（启用、更新、卸载，显示包含的 skills / commands / hooks / MCP）、发现（市场搜索和安装）、市场源（添加、刷新、移除）。和 `claude plugin`、`/plugin` 共用配置。设置里不再放模型和权限，它们只在输入框下方切换：左侧是权限模式（图标加 `plan mode on` 这类 TUI 同款文字，点击选择或在输入框里按 shift+tab 轮换），右侧是 `Opus 5.5 · high`，点击选模型和思考强度。不显示“模型：”之类的标签。
 - **Channel 消息**：channel 是发 `notifications/claude/channel` 的 MCP 服务器（`src/services/mcp/channelNotification.ts`）。入站消息在对话里单独渲染，带来源徽标和 `meta` 里的发送者，不显示成"你"。回复走 channel 自己的 MCP 工具，显示为普通工具卡片。声明了 `claude/channel/permission` 能力的 channel 会收到权限请求，审批卡片上注明"也已推送到 X"，从 channel 批准后卡片显示批准来源。
 - **MCP 交互**：MCP 工具调用和内置工具一样渲染成工具卡片，标出服务器名。服务器发来的 elicitation 渲染成表单卡片（按 schema 生成字段，提交 / 拒绝 / 取消分别回 accept / decline / cancel）。需要 OAuth 的服务器在浏览器新标签里完成登录，凭据只留在本机。
+
+- **本机会话（UDS）**：Status 面板单列一组，显示本会话名（其他会话用它寻址）、socket 路径、收件状态，以及本机其他 claude 会话（忙 / 空闲 / 暂缓模式）。Agents 页签底部也列出这些会话，点开可以直接发消息，投递结果按对方状态显示 delivered / queued / held。别的会话发来的消息在暂缓模式下显示成待放行卡片（放行 / 丢弃），对应 TUI 的 `PeerInboundDialog`。左侧历史里正在运行的会话带绿点。
+- **按消息回退**：悬停用户消息出现“回退”，确认后可选只回退对话（`rewind_conversation`）或同时还原文件（再发 `rewind_files`）。之后的轮次从对话里移除，原消息放回输入框，完整记录仍在 transcript。
+- **快捷键**：`?` 或左下角“快捷键”打开帮助。和 TUI 一致的有 Enter、Shift+Enter、Shift+Tab、Esc、`/`、`@`；页面级的有 Ctrl/⌘+K 搜索历史会话、Ctrl/⌘+. 打开 Status。
 
 ### 5.6 界面语言
 
