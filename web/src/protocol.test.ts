@@ -232,6 +232,22 @@ describe('reduce', () => {
     })
   })
 
+  it('takes the model from the settings answer over the replayed init', () => {
+    // A page that reattaches gets the session's first init again; the model picked since is in `applied`.
+    const state = fold([
+      { type: 'system', subtype: 'init', session_id: 's', model: 'claude-opus-5-5', cwd: '/w' },
+      {
+        type: 'control_response',
+        response: {
+          subtype: 'success',
+          request_id: 'web-settings-1',
+          response: { effective: {}, applied: { model: 'claude-haiku-5-5', effort: 'high' } },
+        },
+      },
+    ])
+    expect(state.model).toBe('claude-haiku-5-5')
+  })
+
   it('queues permission requests and answers them in the control format', () => {
     const state = fold([
       {

@@ -988,6 +988,8 @@ function reduceControlResponse(state: ChatState, raw: Json): ChatState {
     const applied = isObj(body.applied) ? body.applied : {}
     return {
       ...state,
+      // A reattached page is sent the session's first init; `applied` has the model in use now.
+      model: str(applied.model) ?? state.model,
       effort: str(applied.effort) ?? state.effort,
       env: {
         ...state.env,
