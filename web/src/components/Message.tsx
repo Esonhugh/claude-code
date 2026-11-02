@@ -203,7 +203,13 @@ function DiffBody({
         !diff.created &&
         path && (
           <div className="tfoot">
-            <span>{tilde(path)}</span>
+            {files.open ? (
+              <button type="button" className="pathlink" title={path} onClick={() => files.open?.(path)}>
+                {tilde(path)}
+              </button>
+            ) : (
+              <span>{tilde(path)}</span>
+            )}
             {files.showFiles && (
               <>
                 <span>·</span>
@@ -246,11 +252,22 @@ function ToolCard({ block, t }: { block: Extract<Block, { kind: 'tool' }>; t: T 
     <details className={`toolcard${block.isError ? ' bad' : ''}`} open={diff && !diff.created ? true : undefined}>
       <summary>
         <span className="tname">{block.name}</span>
-        <span className="tcmd">
-          {block.name === 'TodoWrite'
-            ? t('todosUpdated')
-            : shortSummary(block, files.cwd)}
-        </span>
+        {path ? (
+          // The file path opens the file, as the prototype's data-file links do.
+          <button
+            type="button"
+            className="tcmd pathlink"
+            title={path}
+            onClick={e => {
+              e.preventDefault()
+              files.open?.(path)
+            }}
+          >
+            {shortSummary(block, files.cwd)}
+          </button>
+        ) : (
+          <span className="tcmd">{block.name === 'TodoWrite' ? t('todosUpdated') : shortSummary(block, files.cwd)}</span>
+        )}
         <span className="tacts">
           {task && (
             <button
@@ -265,15 +282,14 @@ function ToolCard({ block, t }: { block: Extract<Block, { kind: 'tool' }>; t: T 
               {isFinished(task) ? task.status : (formatDuration(task.durationMs) ?? task.status)}
             </button>
           )}
-          {(path || webUrl) && (
+          {webUrl && (
             <button
               type="button"
               className="chipbtn tool-preview"
               title={webUrl}
               onClick={e => {
                 e.preventDefault()
-                if (path) files.open?.(path)
-                else web.open?.(webUrl!)
+                web.open?.(webUrl)
               }}
             >
               {t('preview')}
