@@ -305,6 +305,10 @@ Terminal 工具是 fork 独有的（官方没有），它开的每个 PTY 会话
 - **说明文字**：弹窗和面板里不放解释实现或机制的段落（例如"和 claude mcp 共用配置""停止走 stop_task"），按钮和状态本身要能看懂；只保留用户需要动手时的提示（例如未登录时怎么登录）。记忆弹窗顶部是"自动记忆"开关（`autoMemoryEnabled`），不是一行状态说明。
 - **快捷键**：`?` 或左下角“快捷键”打开帮助。和 TUI 一致的有 Enter、Shift+Enter、Shift+Tab、Esc、`/`、`@`；页面级的有 Ctrl/⌘+K 搜索历史会话、Ctrl/⌘+. 打开 Status。
 
+### 5.8 项目（协调者模式）
+
+侧栏顺序（置顶、项目、临时对话、按最近修改排序的目录）、项目视图（中间协调者会话、右侧派出的任务）和本地 SQLite 存储见 [`claude-web-project.md`](claude-web-project.md)。
+
 ### 5.6 界面语言
 
 - 界面支持简体中文、繁體中文和 English。首次打开按 `navigator.languages` 选择：`zh-TW`、`zh-HK`、`zh-MO` 和 `*-Hant` 用繁体，其他 `zh*` 用简体，其余用英文。设置“常规”页和顶栏可以切换，选择存在浏览器 `localStorage`，不写 settings.json。
