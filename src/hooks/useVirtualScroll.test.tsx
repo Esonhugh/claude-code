@@ -48,7 +48,7 @@ function List({
 }
 
 async function waitFor(predicate: () => boolean): Promise<void> {
-  const deadline = performance.now() + 2000
+  const deadline = performance.now() + 10_000
   while (!predicate() && performance.now() < deadline) {
     await Bun.sleep(5)
   }

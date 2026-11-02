@@ -39,19 +39,26 @@ test('Space opens the session preview and the footer says so', async () => {
       exitOnCtrlC: false,
     },
   )
-  const wait = () => new Promise(resolve => setTimeout(resolve, 80))
+  const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
   try {
-    await wait()
+    const deadline = Date.now() + 10_000
+    while (!/Esc to cancel\n/.test(stripAnsi(output)) && Date.now() < deadline) await sleep(20)
     const list = stripAnsi(output)
     // Like 2.1.311 the picker is a Pane: its contents sit two columns in.
     expect(list).toMatch(/(^|\n) {2}Resume session/)
     expect(list).toMatch(/Space to preview · Ctrl\+R to rename · Type to search · Esc to cancel\n/)
     output = ''
-    stdin.write(' ')
-    await wait()
+    // The list paints before TreeSelect reports its focused row back to
+    // LogSelector, and Space with no focused session does nothing. Under CI
+    // load that gap outlasts a fixed sleep, so press again until it opens;
+    // extra presses are ignored once the preview owns input.
+    while (!stripAnsi(output).includes('Loading session…') && Date.now() < deadline) {
+      stdin.write(' ')
+      await sleep(100)
+    }
     expect(stripAnsi(output)).toContain('Loading session…')
   } finally {
     instance.unmount()
     instance.cleanup()
   }
-})
+}, 30_000)

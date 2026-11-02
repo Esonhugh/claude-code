@@ -788,6 +788,21 @@ export class StructuredIO {
   }
 
   /**
+   * Sends an engine -> client Mods UI ask; undefined when the client gives no
+   * parsable answer in time or replies with an error (official 2.1.316).
+   */
+  async sendUiHostRequest<Response>(
+    request: SDKControlRequest['request'],
+    schema: z.Schema,
+    timeoutMs: number,
+  ): Promise<Response | undefined> {
+    return this.sendRequest<Response>(request, schema, AbortSignal.timeout(timeoutMs)).catch(error => {
+      logForDebugging(`[ModsUIClient] ${request.subtype} got no answer: ${error instanceof Error ? error.message : String(error)}`)
+      return undefined
+    })
+  }
+
+  /**
    * Sends an elicitation request to the SDK consumer and returns the response.
    */
   async handleElicitation(

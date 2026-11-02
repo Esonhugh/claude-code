@@ -121,7 +121,7 @@ cat requests.jsonl | claude -p --input-format stream-json --output-format stream
 
 `session.attach` 和 `session.detach` 是观察事件：调用 `$.session.surfaces()` 已能看到更新后的 roster，`next(e)` 不负责提交连接，返回伪造 clientId、抛错或取消通知也不会回滚传输状态。终端 binding 不发 attach；session.end 的 detach 使用 `reason:'end'`。调试日志可查找 `[ModsUIClient]`。
 
-当前入口接通全部18类客户端控制，包括连接、绘制、回调、Client 模块、Pane、滚动、焦点及 prompt 控制。五类远程 responder 和完整 UI/diff 继续实现与验收；已接通控制的有限对跑见下文专项。`answers` 只接受官方声明的五类 responder 名称，数组最多 5 项（重复值仍合法），不能据此认为 responder 已实现。实际 SDK 协议对照与限制见 [远程连接专项](../../docs/research/mods-remote-roster-292-20261007.md)，作者事件定义见 [Anthropic Mods reference](https://code.claude.com/docs/en/plugins/mods/reference)。
+当前入口接通全部18类客户端控制，包括连接、绘制、回调、Client 模块、Pane、滚动、焦点及 prompt 控制。完整 UI/diff 继续实现与验收；已接通控制的有限对跑见下文专项。`answers` 接受官方 2.1.316 的六类名称（`ui_copy`、`ui_prompt_read`、`ui_prompt_fill`、`ui_prompt_paint`、`ui_prompt_suggest`、`ui_read_selection`），数组最多 6 项（重复值仍合法）。headless stream-json 会话中，插件的 `$.prompt.read` / `fill` / `suggest`、发往远程 surface 的 `$.ui.copy` 和 `$.ui.selection` 会以引擎请求发给声明了对应名称的客户端：只问第一个声明者，5 秒内未应答、回错误或无法解析时按“空输入框 / 未填入 / 未显示 / 未复制 / 无选区”结算；`ui_read_selection` 同时问所有声明者，取第一个非空选区。`ui_prompt_paint` 只被接受，fork 尚无 `$.prompt.paint`，不会发出。`--sdk-url` 远程传输不发这些请求（#511）。实际 SDK 协议对照与限制见 [远程连接专项](../../docs/research/mods-remote-roster-292-20261007.md)，作者事件定义见 [Anthropic Mods reference](https://code.claude.com/docs/en/plugins/mods/reference)。
 
 ### SDK 远程绘制与 Client 模块
 
