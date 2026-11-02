@@ -86,7 +86,8 @@ claude web 进程（Bun.serve）
 
 ### 3.3 会话与历史
 
-- 列表：服务端读 `~/.claude/projects/<cwd>/*.jsonl`，复用 `src/utils/listSessionsImpl.ts` 的 `listSessionsImpl`，返回 id、标题、最后时间。
+- 列表：服务端读 `~/.claude/projects/<cwd>/*.jsonl`，复用 `src/utils/listSessionsImpl.ts` 的 `listSessionsImpl`，返回 id、标题、最后时间。左侧按项目目录分组（组名是目录名，下面一行是完整路径），组内按最后时间倒序，组可以折叠，悬停组名出现“+”在该目录新建会话。当前会话所在的组默认展开，其余按上次的折叠状态。列表分页加载，每组先显示最近 20 个，滚到底再取。
+- 临时对话：新会话菜单里的第一项。不选目录，在 `~/.claude/web/tmp/<id>/` 这样的独立临时目录里运行，不加载任何项目的 CLAUDE.md 和项目级设置（只用用户级设置和记忆），在历史里单独成组。适合翻译、问答这类和项目无关的对话。另外两项是“在当前项目新建”和“打开文件夹…”（未信任的目录先走信任确认）。
 - 打开历史：服务端解析 transcript 返回消息，前端渲染；用户继续发言时以 `--resume <id>` 启动子进程。
 - 同一会话同一时间只允许一个浏览器标签连接（沿用 `canAttach`）。其余标签只读，并提示"已在别处打开"。
 - 默认工作目录：`--workspace`，否则 `~/.claude/web/workspace`。不默认用启动时的 cwd，因为 Web UI 主要用于对话，不一定在项目目录里。也可以在新建会话时选目录。
@@ -139,6 +140,14 @@ claude web 进程（Bun.serve）
 | CSV / XLSX | CSV 自己解析；XLSX 用 exceljs（MIT） | SheetJS 社区版的分发方式有问题，不用 |
 | DOCX | mammoth（BSD-2）转 HTML，再走 HTML 预览 | 版式不精确，够阅读 |
 | PPTX / 旧版 Office | 本机有 `soffice` 时在服务端转 PDF；没有就只提供下载 | 不打包 LibreOffice（MPL-2.0，体积大） |
+
+**懒加载**：预览器和大依赖都不进首屏包。pdf.js、exceljs、mammoth、mermaid、KaTeX、shiki 各自是独立 chunk，第一次用到对应类型时才 `import()`。文件内容也按需取：
+
+- PDF 只渲染可见页和前后各一页，其余页滚动到附近再渲染；超过 50 MB 只提供下载。
+- 文本和代码文件超过 1 MB 或 2 万行时只取前 2000 行，给“继续加载”；CSV/XLSX 只解析前 500 行并显示总行数，翻页再取。
+- `/api/files` 支持 `Range`，大文件分段读，不整读进内存。
+- 对话里的长工具输出默认折叠，只显示头尾若干行，展开时再向服务端取全文；历史会话打开时先取最近 50 轮，往上滚再分页取更早的。
+- 长列表（消息、文件、事件、历史会话）用虚拟滚动，只挂载可见行。
 
 给模型的部分不变：上传的图片作为 image block 发送；其他文件放到工作目录，在消息里写成 `@路径`，由现有 Read 工具读取（Read 已支持 PDF 和图片）。
 
