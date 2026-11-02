@@ -1047,6 +1047,11 @@ export function startWebServer(
           new Response(asset.body as BodyInit, { headers: { 'Content-Type': asset.type } }),
         )
       },
+      // Without this, Bun answers an uncaught error with its debug page (source lines and paths).
+      error(err) {
+        logger.warn(`request failed: ${err.message}`)
+        return withHeaders(errorResponse(500, 'Internal error'))
+      },
       websocket: {
         open(ws) {
           if (!sessionManager.attach(ws.data.sessionId, ws)) {

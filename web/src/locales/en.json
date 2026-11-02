@@ -256,6 +256,7 @@
   "nChecks": "{n} checks",
   "todosPin": "Todos {done}/{total}",
   "allDone": "All done",
+  "todoNext": "Next: {task}",
   "goalLabel": "Goal",
   "goalRan": "Running {time} · {n} checks",
   "goalCheckFailed": "Not met: {reason}",
