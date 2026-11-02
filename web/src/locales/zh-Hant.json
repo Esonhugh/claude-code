@@ -256,6 +256,7 @@
   "nChecks": "{n} 次檢查",
   "todosPin": "待辦 {done}/{total}",
   "allDone": "全部完成",
+  "todoNext": "下一項：{task}",
   "goalLabel": "目標",
   "goalRan": "已執行 {time} · {n} 次檢查",
   "goalCheckFailed": "未通過：{reason}",

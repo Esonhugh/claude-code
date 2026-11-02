@@ -1265,7 +1265,8 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       const pin = page.locator('.pins .pin')
       // The pin appears with the tasks and fills in as they are updated.
       await pin.locator('b', { hasText: 'Todos 1/2' }).waitFor({ timeout: 30_000 })
-      expect(await pin.locator('.ptxt').textContent()).toBe('Writing tests')
+      // The two updates land one after the other; between them the pin names the next todo.
+      await pin.locator('.ptxt', { hasText: /^Writing tests$/ }).waitFor({ timeout: 30_000 })
       await pin.locator('button').click()
       expect(await pin.locator('.todo-i.completed').textContent()).toContain('Read the code')
       await page.getByText('WEB_DONE').nth(1).waitFor({ timeout: 30_000 })

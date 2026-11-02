@@ -770,19 +770,26 @@ export function AskDock({
 
 const TODO_MARK: Record<string, string> = { completed: '✓', in_progress: '◼', pending: '☐' }
 
+/** The running todo; between todos the next one, as the CLI's `Next:` line; `All done` only once all are. */
+export function pinText(t: T, todos: Todo[]): string {
+  const current = todos.find(x => x.status === 'in_progress')
+  if (current) return current.activeForm ?? current.content
+  const next = todos.find(x => x.status !== 'completed')
+  return next ? t('todoNext', { task: next.content }) : t('allDone')
+}
+
 /** The todo pin above the input box: `待办 2/5 · 正在…`, unfolding into the list. */
 export function Pins({ t, todos }: { t: T; todos: Todo[] }) {
   const [open, setOpen] = useState(false)
   if (!todos.length) return null
   const done = todos.filter(x => x.status === 'completed').length
-  const current = todos.find(x => x.status === 'in_progress')
   return (
     <div className="pins">
       <div className="pin">
         <button type="button" aria-expanded={open} onClick={() => setOpen(!open)}>
           <span className="pmark">☰</span>
           <b>{t('todosPin', { done: String(done), total: String(todos.length) })}</b>
-          <span className="ptxt">{current ? (current.activeForm ?? current.content) : t('allDone')}</span>
+          <span className="ptxt">{pinText(t, todos)}</span>
         </button>
         {open && (
           <div className="pbody">
