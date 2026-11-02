@@ -1,9 +1,33 @@
 import { describe, expect, it } from 'bun:test'
 import { localFileSrc } from './markdown/safeUrl'
-import { mentionPath, parseCsv, previewKind, splitMentions } from './files'
+import { mentionPath, parseCsv, previewKind, sessionFiles, splitMentions } from './files'
 import { userMessage } from './protocol'
 
 describe('files', () => {
+  it('lists the files a chat uploaded, read, edited and wrote, newest action first', () => {
+    const tool = (id: string, name: string, path: string) => ({
+      kind: 'tool' as const,
+      id,
+      name,
+      input: JSON.stringify({ file_path: path }),
+    })
+    const files = sessionFiles([
+      { kind: 'user', id: 'u1', text: 'see @"/h/.claude/web/uploads/s1/notes.txt" and @/w/a.md' },
+      {
+        kind: 'assistant',
+        id: 'a1',
+        streamed: false,
+        blocks: [tool('t1', 'Read', '/w/a.md'), tool('t2', 'Edit', '/w/b.ts'), tool('t3', 'Read', '/w/b.ts'), tool('t4', 'Write', '/w/c.md'), { kind: 'tool', id: 't5', name: 'Bash', input: '{}' }],
+      },
+    ])
+    expect(files).toEqual([
+      { path: '/w/c.md', source: 'written' },
+      { path: '/w/b.ts', source: 'edited' },
+      { path: '/w/a.md', source: 'read' },
+      { path: '/h/.claude/web/uploads/s1/notes.txt', source: 'upload' },
+    ])
+  })
+
   it('picks a viewer by extension and falls back to text', () => {
     expect(previewKind('/a/report.PDF')).toBe('pdf')
     expect(previewKind('/a/deck.pptx')).toBe('office')

@@ -324,9 +324,9 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       })
       await page.goto(signInUrl)
       expect(new URL(page.url()).search).toBe('')
-      await page.getByText('What can I help you with?').waitFor()
+      await page.locator('.wl-hi').waitFor()
 
-      const input = page.getByPlaceholder('Message Claude')
+      const input = page.getByLabel('Message', { exact: true })
       await input.fill('hi there')
       await input.press('Enter')
       await page.getByText('Hello from the fake model').waitFor({ timeout: 30_000 })
@@ -335,16 +335,16 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       await input.fill('please TOUCH a file')
       await input.press('Enter')
       const dialog = page.getByRole('dialog')
-      await dialog.getByText('Allow Bash?').waitFor({ timeout: 30_000 })
+      await dialog.getByText('Claude wants to run a command').waitFor({ timeout: 30_000 })
       expect(await dialog.textContent()).toContain('touch made.txt')
-      await dialog.getByRole('button', { name: 'Allow', exact: true }).click()
+      await dialog.getByRole('option', { name: /Allow once/ }).click()
       await page.getByText('WEB_DONE').waitFor({ timeout: 30_000 })
       expect(existsSync(join(workspace, 'made.txt'))).toBe(true)
 
       await input.fill('please DENYME')
       await input.press('Enter')
-      await dialog.getByText('Allow Bash?').waitFor({ timeout: 30_000 })
-      await dialog.getByRole('button', { name: 'Deny' }).click()
+      await dialog.getByText('Claude wants to run a command').waitFor({ timeout: 30_000 })
+      await dialog.getByRole('option', { name: /Deny and tell Claude/ }).click()
       await page.getByText('WEB_DONE').nth(1).waitFor({ timeout: 30_000 })
       expect(existsSync(join(workspace, 'denied.txt'))).toBe(false)
 
@@ -368,10 +368,10 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       expect(await page.evaluate(() => (window as { __xss?: number }).__xss)).toBeUndefined()
       expect(dialogs).toEqual([])
 
-      const mode = page.getByLabel('Permission mode')
-      await mode.selectOption('acceptEdits')
+      await page.locator('.footbtn.perm').click()
+      await page.getByRole('menuitemradio', { name: /accept edits on/ }).click()
       await page.waitForFunction(
-        () => (document.querySelector('select.mode') as HTMLSelectElement | null)?.value === 'acceptEdits',
+        () => document.querySelector('.footbtn.perm')?.getAttribute('data-mode') === 'acceptEdits',
       )
       expect(await page.getByLabel('Model').count()).toBe(1)
       expect(errors).toEqual([])
@@ -396,7 +396,7 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       // The chat from the previous test is listed under the workspace group.
       const row = page.locator('.session-row', { hasText: 'hi there' })
       await row.waitFor({ timeout: 15_000 })
-      expect(await page.locator('.group-name small').first().textContent()).toBe(workspace)
+      expect(await page.locator('.proj-t small').first().textContent()).toBe(workspace)
       await row.locator('.session-title').click()
       await page.getByText('Hello from the fake model').waitFor()
       await page.getByText('show MARKDOWN').waitFor()
@@ -404,10 +404,10 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       await page.locator('.status-live').waitFor({ timeout: 15_000 })
 
       // The listing may retitle the row once the transcript has a summary.
-      const active = page.locator('.session-row.active')
+      const active = page.locator('.session-row[aria-current="true"]')
       await active.getByRole('button', { name: 'Stop session' }).click()
       await page.locator('.status-readonly').waitFor({ timeout: 15_000 })
-      await page.waitForFunction(() => !document.querySelector('.session-row .dot'))
+      await page.waitForFunction(() => !document.querySelector('.session-row .live'))
 
       await active.getByRole('button', { name: 'Rename' }).click()
       const rename = page.locator('input.rename')
@@ -417,7 +417,7 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
 
       // Typing resumes the transcript in its own folder with its history.
       const before = promptsSeen.length
-      const input = page.getByPlaceholder('Message Claude')
+      const input = page.getByLabel('Message', { exact: true })
       await input.click()
       await page.locator('.status-live').waitFor({ timeout: 30_000 })
       await input.fill('hello again')
@@ -429,8 +429,8 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
 
       await page.reload()
       await page.locator('.session-row', { hasText: 'Renamed chat' }).waitFor({ timeout: 15_000 })
-      await page.getByRole('button', { name: '+ New chat' }).click()
-      await page.getByText('What can I help you with?').waitFor()
+      await page.getByRole('button', { name: '+ New session' }).click()
+      await page.locator('.wl-hi').waitFor()
       expect(errors).toEqual([])
     } finally {
       await browser.close()
@@ -480,12 +480,12 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       const errors: string[] = []
       page.on('pageerror', e => errors.push(e.message))
       await page.goto(signInUrl)
-      await page.getByText('What can I help you with?').waitFor()
+      await page.locator('.wl-hi').waitFor()
 
-      await page.locator('input[type=file]').setInputFiles([notes, pixel])
+      await page.getByLabel('Upload file').setInputFiles([notes, pixel])
       await page.locator('.attachment', { hasText: 'notes.txt' }).waitFor()
       const before = promptsSeen.length
-      const input = page.getByPlaceholder('Message Claude')
+      const input = page.getByLabel('Message', { exact: true })
       await input.fill(`FILES ${files.map(f => `@${f}`).join(' ')}`)
       await input.press('Enter')
       await page.getByText('Hello from the fake model').waitFor({ timeout: 30_000 })
@@ -560,19 +560,18 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       const errors: string[] = []
       page.on('pageerror', e => errors.push(e.message))
       await page.goto(signInUrl)
-      await page.getByText('What can I help you with?').waitFor()
-      const input = page.getByPlaceholder('Message Claude')
+      await page.locator('.wl-hi').waitFor()
+      const input = page.getByLabel('Message', { exact: true })
       await input.fill('please SPAWNBG an agent')
       await input.press('Enter')
 
       // The Agent card links to its task; the panel lists it.
       const chip = page.locator('.agent-chip')
       await chip.waitFor({ timeout: 30_000 })
-      await page.getByRole('button', { name: /^Agents/ }).click()
-      const panel = page.locator('aside.agents')
-      await panel.waitFor()
+      const panel = page.locator('aside.side')
+      await panel.getByRole('tab', { name: /^Agents/ }).click()
       // Finished agents fold by default; wait for it to finish, then unfold.
-      const finished = panel.getByRole('button', { name: /Finished/ })
+      const finished = panel.getByRole('button', { name: /Ended/ })
       await finished.waitFor({ timeout: 60_000 })
       if ((await finished.getAttribute('aria-expanded')) === 'false') await finished.click()
       await panel.locator('.agent-row', { hasText: 'Look around' }).click()
@@ -584,11 +583,11 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       await panel.getByText('The agent resumed with your message.').waitFor({ timeout: 30_000 })
       await panel.getByText('FOLLOWUP_DONE').waitFor({ timeout: 60_000 })
 
-      // Back to the tree and fold the whole panel away.
+      // Back to the tree, then away to another tab.
       await panel.getByRole('button', { name: 'Back' }).click()
       await panel.getByText('Main session').waitFor()
-      await panel.getByRole('button', { name: 'Collapse panel' }).click()
-      await panel.waitFor({ state: 'detached' })
+      await panel.getByRole('tab', { name: 'Status' }).click()
+      await panel.locator('.agent-row').first().waitFor({ state: 'detached' })
       expect(errors).toEqual([])
     } finally {
       await browser.close()
@@ -607,13 +606,13 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       const errors: string[] = []
       page.on('pageerror', e => errors.push(e.message))
       await page.goto(signInUrl)
-      await page.getByText('What can I help you with?').waitFor()
-      const input = page.getByPlaceholder('Message Claude')
+      await page.locator('.wl-hi').waitFor()
+      const input = page.getByLabel('Message', { exact: true })
       await input.fill('hi palette')
       await input.press('Enter')
       await page.getByText('Hello from the fake model').waitFor({ timeout: 30_000 })
 
-      const palette = page.getByRole('listbox', { name: 'Commands' })
+      const palette = page.getByRole('listbox', { name: 'Completions' })
       await input.fill('/')
       await palette.waitFor()
       expect(await palette.getByRole('option').count()).toBeGreaterThan(5)
@@ -660,8 +659,8 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       const errors: string[] = []
       page.on('pageerror', e => errors.push(e.message))
       await page.goto(signInUrl)
-      await page.getByText('What can I help you with?').waitFor()
-      const input = page.getByPlaceholder('Message Claude')
+      await page.locator('.wl-hi').waitFor()
+      const input = page.getByLabel('Message', { exact: true })
       await input.fill('please RUN_WF now')
       await input.press('Enter')
 
@@ -669,37 +668,37 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       const dialog = page.getByRole('dialog')
       await page.locator('.agent-chip').or(dialog).first().waitFor({ timeout: 30_000 })
       if (await dialog.isVisible()) {
-        await dialog.getByRole('button', { name: 'Allow', exact: true }).click()
+        await dialog.getByRole('option', { name: /Allow once/ }).click()
       }
       await page.locator('.agent-chip').waitFor({ timeout: 30_000 })
-      const panel = page.locator('aside.agents')
-      if (!(await panel.isVisible())) await page.getByRole('button', { name: /^Agents/ }).click()
-      await panel.waitFor()
+      const panel = page.locator('aside.side')
+      const agentsTab = panel.getByRole('tab', { name: /^Agents/ })
+      await agentsTab.click()
 
       // Both phases ran; the workflow agents sit in its lanes, not in the tree.
-      const finished = panel.getByRole('button', { name: /Finished/ })
+      const finished = panel.getByRole('button', { name: /Ended/ })
       await finished.waitFor({ timeout: 60_000 })
       if ((await finished.getAttribute('aria-expanded')) === 'false') await finished.click()
       await panel.locator('.agent-row', { hasText: 'two-phase' }).first().click()
       await panel.getByText('Phase 2/2 · Write').waitFor({ timeout: 30_000 })
       await panel.getByRole('button', { name: 'Expand' }).click()
       const lanes = page.locator('.lanes')
-      await lanes.locator('.lane-head', { hasText: 'Gather' }).waitFor()
-      await lanes.locator('.lane-head', { hasText: 'Write' }).waitFor()
-      expect(await lanes.locator('.lane-card').allTextContents()).toEqual(['gather-a', 'write-b'])
-      await lanes.locator('.lane-card', { hasText: 'write-b' }).click()
+      await lanes.locator('.lane h3', { hasText: 'Gather' }).waitFor()
+      await lanes.locator('.lane h3', { hasText: 'Write' }).waitFor()
+      expect(await lanes.locator('.wcard b').allTextContents()).toEqual(['gather-a', 'write-b'])
+      await lanes.locator('.wcard', { hasText: 'write-b' }).click()
       await panel.getByText('B_OUT').waitFor({ timeout: 30_000 })
       await panel.getByText('Workflow agents are read-only.').waitFor()
-      await panel.getByRole('button', { name: 'Back' }).click()
+      await agentsTab.click()
 
       await input.fill('please MAKE_TEAM now')
       await input.press('Enter')
-      const team = panel.locator('.agent-section', { hasText: 'Team' })
+      const team = panel.locator('.team-section', { hasText: 'Team' })
       await team.locator('.agent-row', { hasText: 'alice' }).waitFor({ timeout: 30_000 })
       await team.locator('.agent-row', { hasText: 'bob' }).waitFor()
       // Both report idle to the lead, which sees it as a teammate message.
       await team.getByText('0 working · 2 idle').waitFor({ timeout: 60_000 })
-      await page.locator('.msg-teammate', { hasText: 'alice' }).first().waitFor()
+      await page.locator('.msg.teammate', { hasText: 'alice' }).first().waitFor()
       await page.getByText('LEAD_SAW_MEMBER').first().waitFor({ timeout: 30_000 })
       await team.locator('.agent-row', { hasText: 'Messages' }).click()
       await panel.locator('.team-timeline li', { hasText: 'ALICE_DONE' }).waitFor()
@@ -724,7 +723,7 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       await page.reload()
       await page.locator('.session-row', { hasText: 'RUN_WF' }).locator('.session-title').click()
       await page.locator('.status-live').waitFor({ timeout: 30_000 })
-      if (!(await panel.isVisible())) await page.getByRole('button', { name: /^Agents/ }).click()
+      await agentsTab.click()
       await team.locator('.agent-row', { hasText: 'alice' }).waitFor({ timeout: 30_000 })
       await team.locator('.agent-row', { hasText: 'bob' }).waitFor()
       if ((await finished.getAttribute('aria-expanded')) === 'false') await finished.click()
@@ -763,13 +762,13 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
           selector,
         )
       await page.goto(signInUrl)
-      await page.getByText('What can I help you with?').waitFor()
+      await page.locator('.wl-hi').waitFor()
       expect(await noSideScroll()).toBe(true)
 
       // The history sidebar is an off-canvas drawer: Esc closes it and hands
       // focus back to the menu button.
-      const menu = page.getByRole('button', { name: 'Menu' })
-      expect(await visibility('.sidebar')).toBe('hidden')
+      const menu = page.getByRole('button', { name: 'Open sessions' })
+      expect(await visibility('.sessions')).toBe('hidden')
       await menu.click()
       expect(await menu.getAttribute('aria-expanded')).toBe('true')
       await page.waitForFunction(() => document.activeElement?.classList.contains('new-chat'))
@@ -777,19 +776,19 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       await shot(page, 'phone-light-sidebar')
       await page.keyboard.press('Escape')
       await page.waitForFunction(
-        () => getComputedStyle(document.querySelector('.sidebar')!).visibility === 'hidden',
+        () => getComputedStyle(document.querySelector('.sessions')!).visibility === 'hidden',
       )
       expect(await page.evaluate(() => document.activeElement?.getAttribute('aria-label'))).toBe(
-        'Menu',
+        'Open sessions',
       )
 
-      const input = page.getByPlaceholder('Message Claude')
+      const input = page.getByLabel('Message', { exact: true })
       await input.fill('hi from a phone')
-      await page.getByRole('button', { name: 'Send' }).click()
+      await page.getByRole('button', { name: 'Start' }).click()
       await page.getByText('Hello from the fake model').waitFor({ timeout: 30_000 })
       expect(await noSideScroll()).toBe(true)
       for (const box of await page
-        .locator('.topbar button, .topbar select, .composer button')
+        .locator('.meta button, .composer button')
         .evaluateAll((els: Element[]) => els.map(el => el.getBoundingClientRect().toJSON()))) {
         expect(box.height).toBeGreaterThanOrEqual(40)
         expect(box.right).toBeLessThanOrEqual(375)
@@ -801,22 +800,27 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       await page.waitForTimeout(300)
       await page.mouse.click(360, 400)
       await page.waitForFunction(
-        () => getComputedStyle(document.querySelector('.sidebar')!).visibility === 'hidden',
+        () => getComputedStyle(document.querySelector('.sessions')!).visibility === 'hidden',
       )
 
-      // ...and the right panel, which also takes focus while it is open.
-      const agents = page.getByRole('button', { name: /^Agents/ })
+      // ...and the right panel, a bottom sheet that also takes focus while it is open.
+      const agents = page.getByRole('button', { name: 'Open panel' })
+      expect(await visibility('.side')).toBe('hidden')
       await agents.click()
-      const panel = page.locator('aside.agents')
-      await panel.waitFor()
-      await page.waitForFunction(() => !!document.activeElement?.closest('aside.agents'))
+      const panel = page.locator('aside.side')
+      await panel.getByRole('tab', { name: /^Agents/ }).click()
+      await page.waitForFunction(() => !!document.activeElement?.closest('aside.side'))
+      await page.waitForTimeout(300)
       const box = await panel.boundingBox()
-      expect(box!.x).toBeGreaterThan(0)
+      expect(box!.x).toBeGreaterThanOrEqual(0)
+      expect(box!.y).toBeGreaterThan(0)
       expect(box!.x + box!.width).toBeLessThanOrEqual(375)
       await page.emulateMedia({ colorScheme: 'dark' })
       await shot(page, 'phone-dark-agents')
-      await page.mouse.click(10, 400)
-      await panel.waitFor({ state: 'detached' })
+      await page.mouse.click(187, 20)
+      await page.waitForFunction(
+        () => getComputedStyle(document.querySelector('.side')!).visibility === 'hidden',
+      )
       expect(await agents.evaluate((el: Element) => el === document.activeElement)).toBe(true)
       await shot(page, 'phone-dark-chat')
       expect(await noSideScroll()).toBe(true)
@@ -853,11 +857,11 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       const errors: string[] = []
       page.on('pageerror', e => errors.push(e.message))
       await page.goto(signInUrl)
-      await page.getByText('What can I help you with?').waitFor()
-      const input = page.getByPlaceholder('Message Claude')
+      await page.locator('.wl-hi').waitFor()
+      const input = page.getByLabel('Message', { exact: true })
       await input.fill(`PREVIEW_URLS ${devUrl} ${uiOrigin}/api/info`)
       await input.press('Enter')
-      const reply = page.locator('.msg-assistant .markdown', { hasText: 'Dev server:' })
+      const reply = page.locator('.msg.assistant .markdown', { hasText: 'Dev server:' })
       await reply.waitFor({ timeout: 30_000 })
       // Only the dev server gets a Preview button; the UI's own /api does not.
       await reply.locator('.link-preview').first().waitFor()
@@ -873,8 +877,8 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       expect(await frame.getAttribute('referrerpolicy')).toBe('no-referrer')
       await page.frameLocator('iframe.web-preview-frame').getByText('DEV_SERVER_MARKER').waitFor({ timeout: 15_000 })
       expect(await page.locator('.preview .preview-name').textContent()).toBe(devUrl)
-      expect(await page.locator('.preview a', { hasText: 'Open in new tab' }).getAttribute('href')).toBe(devUrl)
-      await page.locator('.preview').getByRole('button', { name: 'Reload' }).click()
+      expect(await page.locator('.preview a', { hasText: 'New tab' }).getAttribute('href')).toBe(devUrl)
+      await page.locator('.preview').getByRole('button', { name: 'Refresh' }).click()
       await page.frameLocator('iframe.web-preview-frame').getByText('DEV_SERVER_MARKER').waitFor({ timeout: 15_000 })
       await page.locator('.preview').getByRole('button', { name: 'Close' }).click()
       await frame.waitFor({ state: 'detached' })

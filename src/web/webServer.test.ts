@@ -264,7 +264,28 @@ describe('claude web server', () => {
     })
     expect(resume.status).toBe(400)
     const info = await fetch(`${r.base}/api/info`, { headers: { cookie } })
-    expect(await info.json()).toEqual({ workspace: r.workspace, preview_origins: [] })
+    expect(await info.json()).toEqual({
+      workspace: r.workspace,
+      preview_origins: [],
+      temp_root: join(r.configDir, 'web', 'temp'),
+    })
+  })
+
+  it('starts a temporary chat in a fresh folder under the config dir', async () => {
+    const r = start()
+    const cookie = await signIn(r)
+    const create = async () => {
+      const res = await fetch(`${r.base}/api/sessions`, {
+        method: 'POST',
+        headers: { cookie, origin: r.origin },
+        body: JSON.stringify({ temporary: true }),
+      })
+      expect(res.status).toBe(200)
+      return ((await res.json()) as { work_dir: string }).work_dir
+    }
+    const [a, b] = [await create(), await create()]
+    expect(a.startsWith(join(r.configDir, 'web', 'temp', 'chat-'))).toBe(true)
+    expect(b).not.toBe(a)
   })
 
   it('tells the page its preview origins and lets it frame them', async () => {

@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import type { MessageKey } from '../i18n'
 
 /**
- * A local dev server or `--preview-origin` page in the preview slot. The URL
+ * A local dev server or `--preview-origin` page in the artifact view. The URL
  * has passed `previewTarget`, so its origin is never this UI's; that is what
  * makes allow-same-origin safe here.
  */
@@ -25,21 +25,25 @@ export function WebPreview({
   }, [onClose])
   return (
     <aside className="preview" aria-label={t('preview')}>
-      <div className="preview-bar">
-        <span className="preview-name" title={url}>
-          {url}
+      <div className="arthead preview-bar">
+        <span className="kind mono">URL</span>
+        <span className="nm">
+          <b className="mono preview-name" title={url}>
+            {url}
+          </b>
         </span>
-        <button type="button" className="ghost" onClick={() => setReloads(n => n + 1)}>
-          {t('reload')}
-        </button>
-        <a className="ghost" href={url} target="_blank" rel="noopener noreferrer">
-          {t('openNewTab')}
-        </a>
-        <button type="button" className="ghost" aria-label={t('close')} onClick={onClose}>
-          ×
-        </button>
+        <span className="grp" style={{ marginLeft: 'auto' }}>
+          <button type="button" className="btn" onClick={() => setReloads(n => n + 1)}>
+            {t('reload')}
+          </button>
+          <a className="btn" href={url} target="_blank" rel="noopener noreferrer">
+            {t('openNewTab')}
+          </a>
+          <button type="button" className="btn" aria-label={t('close')} onClick={onClose}>
+            ×
+          </button>
+        </span>
       </div>
-      <div className="web-preview-hint">{t('webPreviewHint')}</div>
       <iframe
         key={`${url}#${reloads}`}
         className="web-preview-frame"

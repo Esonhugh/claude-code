@@ -28,7 +28,7 @@ export type HistoryEntry = {
   lastModified: number
 }
 
-export type StartOptions = { cwd?: string; mode: string; model?: string }
+export type StartOptions = { cwd?: string; mode: string; model?: string; temporary?: boolean; effort?: string }
 
 export type AppState = {
   /** Session shown in the main area; null is the new-chat start page. */
@@ -197,12 +197,21 @@ export function appReducer(state: AppState, action: AppAction): AppState {
   }
 }
 
-export type HistoryGroup = { cwd: string; name: string; entries: HistoryEntry[] }
+export type HistoryGroup = { cwd: string; name: string; entries: HistoryEntry[]; temp?: true }
 
-/** Groups sessions by working directory, groups ordered by their newest session. */
-export function groupHistory(entries: HistoryEntry[], filter = ''): HistoryGroup[] {
+/**
+ * Groups sessions by working directory, groups ordered by their newest
+ * session. Temporary chats (folders under `tempRoot`) share one group.
+ */
+export function groupHistory(
+  entries: HistoryEntry[],
+  filter = '',
+  tempRoot?: string,
+): HistoryGroup[] {
   const needle = filter.trim().toLowerCase()
   const groups = new Map<string, HistoryEntry[]>()
+  const isTemp = (cwd: string) =>
+    !!tempRoot && (cwd === tempRoot || cwd.startsWith(`${tempRoot}/`) || cwd.startsWith(`${tempRoot}\\`))
   for (const entry of entries) {
     if (
       needle &&
@@ -211,7 +220,7 @@ export function groupHistory(entries: HistoryEntry[], filter = ''): HistoryGroup
     ) {
       continue
     }
-    const key = entry.cwd ?? ''
+    const key = isTemp(entry.cwd ?? '') ? tempRoot! : (entry.cwd ?? '')
     groups.set(key, [...(groups.get(key) ?? []), entry])
   }
   return [...groups.entries()]
@@ -219,6 +228,7 @@ export function groupHistory(entries: HistoryEntry[], filter = ''): HistoryGroup
       cwd,
       name: cwd.split(/[\\/]/).filter(Boolean).at(-1) ?? cwd,
       entries: list.sort((a, b) => b.lastModified - a.lastModified),
+      ...(cwd === tempRoot && { temp: true as const }),
     }))
     .sort((a, b) => b.entries[0]!.lastModified - a.entries[0]!.lastModified)
 }

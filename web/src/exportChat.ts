@@ -1,6 +1,6 @@
 // Builds a Markdown copy of a conversation for download.
 
-import { modelLabel } from './components/Chat'
+import { modelLabel } from './components/Message'
 import type { Item } from './protocol'
 import type { Source } from './sources'
 import { toolSummary } from './tools'
@@ -28,7 +28,7 @@ export function chatMarkdown(
   for (const item of items) {
     if (item.kind === 'user') {
       parts.push(`## ${labels.you}`, item.text)
-    } else if (item.kind === 'error') {
+    } else if (item.kind === 'error' || item.kind === 'local') {
       parts.push(`> ${oneLine(item.text, 500)}`)
     } else if (item.kind === 'teammate') {
       parts.push(`## @${oneLine(item.from)}`, item.text)

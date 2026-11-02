@@ -35,6 +35,8 @@ export async function listHistory(
 
 type ContentBlock = { type?: string; text?: string }
 
+const LOCAL_COMMAND = /^<(command-name|command-message|local-command-stdout|local-command-stderr)>/
+
 function isVisible(message: Record<string, unknown>): boolean {
   if (message.type === 'assistant') return true
   if (message.type !== 'user' || message.isMeta || message.isCompactSummary) {
@@ -42,7 +44,8 @@ function isVisible(message: Record<string, unknown>): boolean {
   }
   const inner = message.message as { content?: unknown } | undefined
   const content = inner?.content
-  if (typeof content === 'string') return !content.startsWith('<')
+  // Slash commands and their local output show like the TUI's `> /model` and `⎿` lines.
+  if (typeof content === 'string') return !content.startsWith('<') || LOCAL_COMMAND.test(content)
   if (!Array.isArray(content)) return false
   // Tool results render inside the assistant's tool card.
   return (content as ContentBlock[]).some(
@@ -101,6 +104,8 @@ function toStreamJson(
       message: m.message,
       // stream-json's flag for user messages echoed back from the transcript.
       ...(m.type === 'user' && { isReplay: true }),
+      // The live stream marks API error messages with `error`; keep that for the page.
+      ...(m.type === 'assistant' && m.isApiErrorMessage === true && { isApiErrorMessage: true }),
     }))
 }
 

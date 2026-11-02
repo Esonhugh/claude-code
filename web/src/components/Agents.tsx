@@ -19,13 +19,19 @@ import {
   workflowAgent,
 } from '../agents'
 import { loadAgentIssuers, loadAgentTranscript } from '../api'
-import type { MessageKey } from '../i18n'
 import { initialState, type Item, reduce } from '../protocol'
-import { Message, TeamDot, teamEventLabel } from './Chat'
-
-type T = (key: MessageKey, vars?: Record<string, string>) => string
+import { Dialog } from './Dialog'
+import { Message, TeamDot, teamEventLabel } from './Message'
+import type { T } from './ui'
 
 const COLLAPSED_KEY = 'claude-web-agents-collapsed'
+
+/** Task types the Agents tab shows; shells, terminals and monitors have their own tabs. */
+export const AGENT_TYPES = new Set(['local_agent', 'remote_agent', 'local_workflow', 'in_process_teammate'])
+
+export function agentTasks(tasks: Tasks): Tasks {
+  return Object.fromEntries(Object.entries(tasks).filter(([, task]) => AGENT_TYPES.has(task.type)))
+}
 
 function readCollapsed(): Set<string> {
   try {
@@ -54,218 +60,192 @@ function useCollapsed() {
   return [collapsed, toggle] as const
 }
 
-function StatusDot({ status }: { status: string }) {
-  return <span className={`agent-dot agent-${status}`} aria-label={status} />
+/** `.dot` classes the prototype styles: running, idle, failed, killed, pending. */
+export function dotClass(status: string): string {
+  return status === 'stopped' ? 'killed' : status
 }
 
-function meta(task: AgentTask): string {
-  return [
-    formatDuration(task.durationMs),
-    formatTokens(task.tokens),
-    !isFinished(task) && task.lastTool,
-  ]
+export function statusText(status: string, t: T): string {
+  return status === 'killed' || status === 'stopped' ? t('statusKilled') : status
+}
+
+export function taskMeta(task: AgentTask): string {
+  return [formatDuration(task.durationMs), formatTokens(task.tokens) && `${formatTokens(task.tokens)} tok`, !isFinished(task) && task.lastTool]
     .filter(Boolean)
     .join(' · ')
 }
 
-function Caret({ open, onClick, label }: { open: boolean; onClick: () => void; label: string }) {
-  return (
-    <button
-      type="button"
-      className="ghost caret"
-      aria-expanded={open}
-      aria-label={label}
-      onClick={e => {
-        e.stopPropagation()
-        onClick()
-      }}
-    >
-      {open ? '▾' : '▸'}
-    </button>
-  )
-}
-
-function PhaseList({
-  task,
-  collapsed,
-  toggle,
-  onOpenAgent,
-  t,
+/** One `.node` row: lead, name and description, status badge, meta line. */
+export function Node({
+  lead,
+  name,
+  desc,
+  badge,
+  badgeClass = '',
+  meta,
+  className = '',
+  onOpen,
+  onStop,
+  stopLabel,
 }: {
-  task: AgentTask
-  collapsed: Set<string>
-  toggle: (key: string) => void
-  onOpenAgent: (workflow: AgentTask, label: string) => void
-  t: T
+  lead: ReactNode
+  name: ReactNode
+  desc?: string
+  badge?: string
+  badgeClass?: string
+  meta?: string
+  className?: string
+  onOpen?: () => void
+  onStop?: () => void
+  stopLabel?: string
 }) {
   return (
-    <ul className="agent-children">
-      {(task.phases ?? []).map(phase => {
-        const key = `${task.id}:phase:${phase.index}`
-        const open = !collapsed.has(key)
-        const done = phase.agents.filter(a => a.status === 'completed').length
-        return (
-          <li key={phase.index}>
-            <div className="agent-row phase-row">
-              <Caret open={open} onClick={() => toggle(key)} label={phase.label} />
-              <StatusDot status={phase.status} />
-              <span className="agent-name">{phase.label}</span>
-              <span className="agent-desc">{phase.message}</span>
-              <span className="agent-meta">
-                {t('phaseAgents', { done: String(done), total: String(phase.agents.length) })}
-              </span>
-            </div>
-            {open && (
-              <ul className="agent-children">
-                {phase.agents.map(agent => (
-                  <li key={agent.label}>
-                    <button
-                      type="button"
-                      className="agent-row agent-leaf"
-                      onClick={() => onOpenAgent(task, agent.label)}
-                    >
-                      <StatusDot status={agent.status} />
-                      <span className="agent-name">{agent.label}</span>
-                      <span className="agent-meta">{agent.status}</span>
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </li>
-        )
-      })}
-    </ul>
+    <div
+      className={`node agent-row ${className}`.trim()}
+      role={onOpen ? 'button' : undefined}
+      tabIndex={onOpen ? 0 : undefined}
+      onClick={onOpen}
+      onKeyDown={e => {
+        if (e.key === 'Enter' && e.target === e.currentTarget) onOpen?.()
+      }}
+    >
+      <span className="lead">{lead}</span>
+      <span className="name">
+        <b>{name}</b>
+        {desc && <span>{desc}</span>}
+      </span>
+      {onStop && (
+        <button
+          type="button"
+          className="stop"
+          aria-label={stopLabel}
+          onClick={e => {
+            e.stopPropagation()
+            onStop()
+          }}
+        >
+          ■
+        </button>
+      )}
+      {badge && <span className={`badge ${badgeClass}`.trim()}>{badge}</span>}
+      {meta && <span className="meta2">{meta}</span>}
+    </div>
   )
 }
 
-function TaskRow({
+function TaskNode({
   task,
-  level = 0,
   subtasks,
   collapsed,
   toggle,
   onOpen,
-  onOpenAgent,
+  onWorkflow,
   onStop,
   t,
 }: {
   task: AgentTask
-  level?: number
-  /** Subagents by the agent that started them. */
   subtasks: Map<string, AgentTask[]>
   collapsed: Set<string>
   toggle: (key: string) => void
   onOpen: (task: AgentTask) => void
-  onOpenAgent: (workflow: AgentTask, label: string) => void
+  onWorkflow: (task: AgentTask) => void
   onStop: (taskId: string) => void
   t: T
 }) {
-  const hasPhases = !!task.phases?.length
   const children = subtasks.get(task.id) ?? []
-  const foldable = hasPhases || children.length > 0
-  const open = foldable && !collapsed.has(task.id)
+  const open = children.length > 0 && !collapsed.has(task.id)
+  const stop = !isFinished(task) ? () => onStop(task.id) : undefined
+  if (task.type === 'local_workflow') {
+    const phases = task.phases ?? []
+    const agents = phases.flatMap(p => p.agents)
+    return (
+      <Node
+        lead={<span className="glyph">◆</span>}
+        name={taskName(task)}
+        desc={task.description}
+        badge={
+          phases.length
+            ? t('workflowPhase', {
+                n: String(currentPhase(phases) + 1),
+                total: String(phases.length),
+                name: phases[currentPhase(phases)]!.label,
+              })
+            : statusText(task.status, t)
+        }
+        badgeClass={dotClass(task.status)}
+        meta={t('phaseAgents', {
+          done: String(agents.filter(a => a.status === 'completed').length),
+          total: String(agents.length),
+        })}
+        onOpen={() => onWorkflow(task)}
+        onStop={stop}
+        stopLabel={t('stopTask', { name: taskName(task) })}
+      />
+    )
+  }
   return (
-    <li>
-      <div
-        className="agent-row"
-        role="button"
-        tabIndex={0}
-        style={{ paddingLeft: `${8 + level * 14}px` }}
-        onClick={() => onOpen(task)}
-        onKeyDown={e => {
-          if (e.key === 'Enter') onOpen(task)
-        }}
-      >
-        {foldable ? (
-          <Caret open={open} onClick={() => toggle(task.id)} label={taskName(task)} />
-        ) : (
-          <span className="caret-space" />
-        )}
-        <StatusDot status={task.status} />
-        <span className="agent-name">{taskName(task)}</span>
-        <span className="agent-desc">{task.description}</span>
-        <span className="agent-meta">{meta(task)}</span>
-        {!isFinished(task) && (
-          <button
-            type="button"
-            className="ghost agent-stop"
-            aria-label={t('stopTask', { name: taskName(task) })}
-            onClick={e => {
-              e.stopPropagation()
-              onStop(task.id)
-            }}
-          >
-            ■
-          </button>
-        )}
-      </div>
-      {open && hasPhases && (
-        <PhaseList
-          task={task}
-          collapsed={collapsed}
-          toggle={toggle}
-          onOpenAgent={onOpenAgent}
-          t={t}
-        />
-      )}
-      {open && children.length > 0 && (
-        <ul className="agent-tree">
+    <>
+      <Node
+        lead={
+          children.length ? (
+            <button
+              type="button"
+              className="caret"
+              aria-expanded={open}
+              aria-label={taskName(task)}
+              onClick={e => {
+                e.stopPropagation()
+                toggle(task.id)
+              }}
+            >
+              {open ? '▾' : '▸'}
+            </button>
+          ) : (
+            <span className={`dot ${dotClass(task.status)}`} />
+          )
+        }
+        name={taskName(task)}
+        desc={task.description}
+        badge={statusText(task.status, t)}
+        badgeClass={dotClass(task.status)}
+        meta={taskMeta(task)}
+        onOpen={() => onOpen(task)}
+        onStop={stop}
+        stopLabel={t('stopTask', { name: taskName(task) })}
+      />
+      {open && (
+        <div className="branch">
           {children.map(child => (
-            <TaskRow
+            <TaskNode
               key={child.id}
               task={child}
-              level={level + 1}
               subtasks={subtasks}
               collapsed={collapsed}
               toggle={toggle}
               onOpen={onOpen}
-              onOpenAgent={onOpenAgent}
+              onWorkflow={onWorkflow}
               onStop={onStop}
               t={t}
             />
           ))}
-        </ul>
+        </div>
       )}
-    </li>
+    </>
   )
 }
 
 const IDLE_FOLD = 3
 
-function MemberRow({
-  member,
-  onOpen,
-  t,
-}: {
-  member: TeamMember
-  onOpen: (taskId: string) => void
-  t: T
-}) {
-  const state =
-    member.state === 'working'
-      ? t('memberWorking')
-      : member.state === 'idle'
-        ? t('teamIdle')
-        : t('memberStopped')
-  return (
-    <li>
-      <button
-        type="button"
-        className={`agent-row agent-leaf member-${member.state}`}
-        onClick={() => onOpen(member.task.id)}
-      >
-        <TeamDot color={member.color} />
-        <span className="agent-name">{member.name}</span>
-        <span className="agent-desc">{member.task.description}</span>
-        <span className="agent-meta">{[state, meta(member.task)].filter(Boolean).join(' · ')}</span>
-      </button>
-    </li>
-  )
+function memberState(member: TeamMember, t: T): string {
+  return member.state === 'working'
+    ? t('memberWorking')
+    : member.state === 'idle'
+      ? t('teamIdle')
+      : t('memberStopped')
 }
 
 /** The team group: members (idle ones folded past three, as in the TUI) and its messages. */
-function TeamSection({
+function TeamGroup({
   team,
   collapsed,
   toggle,
@@ -287,50 +267,56 @@ function TeamSection({
   // Folded unless the user opened it; the key records the opposite of the default.
   const idleOpen = idle.length <= IDLE_FOLD || collapsed.has('team:idle')
   const row = (member: TeamMember) => (
-    <MemberRow key={member.task.id} member={member} onOpen={onOpenMember} t={t} />
+    <Node
+      key={member.task.id}
+      className={`member-${member.state}`}
+      lead={<TeamDot color={member.color} />}
+      name={member.name}
+      desc={member.task.description}
+      badge={memberState(member, t)}
+      badgeClass={member.state === 'working' ? 'running' : member.state === 'idle' ? 'idle' : 'killed'}
+      meta={taskMeta(member.task)}
+      onOpen={() => onOpenMember(member.task.id)}
+    />
   )
   return (
-    <section className="agent-section">
-      <button
-        type="button"
-        className="ghost agent-section-head"
-        aria-expanded={open}
-        onClick={() => toggle('team')}
-      >
-        {open ? '▾' : '▸'} {t('team')} ·{' '}
-        {t('teamSummary', { working: String(working.length), idle: String(idle.length) })}
-      </button>
+    <div className="agent-section team-section">
+      <Node
+        lead={<span className="glyph">{open ? '▾' : '▸'}</span>}
+        name={t('team')}
+        badge={String(team.members.length)}
+        meta={t('teamSummary', { working: String(working.length), idle: String(idle.length) })}
+        onOpen={() => toggle('team')}
+      />
       {open && (
-        <ul className="agent-tree">
+        <div className="branch">
           {working.map(row)}
           {idleOpen ? (
             idle.map(row)
           ) : (
-            <li>
-              <button type="button" className="agent-row agent-leaf" onClick={() => toggle('team:idle')}>
-                <span className="caret-space" />
-                <span className="agent-desc">{t('idleAgents', { n: String(idle.length) })}</span>
-              </button>
-            </li>
+            <Node
+              lead={<span className="glyph">▸</span>}
+              name={t('idleAgents', { n: String(idle.length) })}
+              onOpen={() => toggle('team:idle')}
+            />
           )}
           {stopped.map(row)}
-          <li>
-            <button type="button" className="agent-row agent-leaf" onClick={onOpenMessages}>
-              <span className="caret-space" />
-              <span className="agent-name">{t('teamMessages')}</span>
-              <span className="agent-meta">{team.events.length}</span>
-            </button>
-          </li>
-        </ul>
+          <Node
+            lead={<span className="glyph">≡</span>}
+            name={t('teamMessages')}
+            badge={String(team.events.length)}
+            onOpen={onOpenMessages}
+          />
+        </div>
       )}
-    </section>
+    </div>
   )
 }
 
 /** Lead and teammate messages in order, like a group chat. */
 function TeamTimeline({ team, t }: { team: Team; t: T }) {
   const colors = new Map(team.members.map(m => [m.name, m.color]))
-  if (!team.events.length) return <div className="preview-note">{t('noTeamMessages')}</div>
+  if (!team.events.length) return <p className="note">{t('noTeamMessages')}</p>
   return (
     <ul className="team-timeline">
       {team.events.map(event => {
@@ -351,183 +337,41 @@ function TeamTimeline({ team, t }: { team: Team; t: T }) {
   )
 }
 
-function Section({
+function Group({
   id,
   title,
-  tasks,
+  count,
   collapsed,
   toggle,
   children,
 }: {
   id: string
   title: string
-  tasks: AgentTask[]
+  count: number
   collapsed: Set<string>
   toggle: (key: string) => void
-  children: (task: AgentTask) => ReactNode
+  children: ReactNode
 }) {
-  if (!tasks.length) return null
+  if (!count) return null
   const open = !collapsed.has(id)
   return (
-    <section className="agent-section">
-      <button
-        type="button"
-        className="ghost agent-section-head"
-        aria-expanded={open}
-        onClick={() => toggle(id)}
-      >
-        {open ? '▾' : '▸'} {title} · {tasks.length}
-      </button>
-      {open && <ul className="agent-tree">{tasks.map(children)}</ul>}
-    </section>
-  )
-}
-
-function WorkflowLanes({
-  phases,
-  onOpenAgent,
-}: {
-  phases: WorkflowPhase[]
-  onOpenAgent: (label: string) => void
-}) {
-  const current = currentPhase(phases)
-  return (
-    <div className="lanes">
-      {phases.map((phase, i) => (
-        <div key={phase.index} className={`lane${i === current ? ' lane-current' : ''}`}>
-          <div className="lane-head">
-            <StatusDot status={phase.status} />
-            <strong>{phase.label}</strong>
-            <small>
-              {phase.agents.filter(a => a.status === 'completed').length}/{phase.agents.length}
-            </small>
-          </div>
-          {phase.message && <div className="lane-desc">{phase.message}</div>}
-          {phase.agents.map(agent => (
-            <button
-              type="button"
-              key={agent.label}
-              className={`lane-card agent-${agent.status}`}
-              onClick={() => onOpenAgent(agent.label)}
-            >
-              <StatusDot status={agent.status} />
-              <span>{agent.label}</span>
-            </button>
-          ))}
-        </div>
-      ))}
-    </div>
-  )
-}
-
-function WorkflowView({
-  task,
-  onOpenAgent,
-  onStop,
-  t,
-}: {
-  task: AgentTask
-  onOpenAgent: (workflow: AgentTask, label: string) => void
-  onStop: (taskId: string) => void
-  t: T
-}) {
-  const [expanded, setExpanded] = useState(false)
-  const phases = task.phases ?? []
-  const current = phases[currentPhase(phases)]
-  const allAgents = phases.flatMap(p => p.agents)
-  useEffect(() => {
-    if (!expanded) return
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        e.stopPropagation()
-        setExpanded(false)
-      }
-    }
-    window.addEventListener('keydown', onKey, true)
-    return () => window.removeEventListener('keydown', onKey, true)
-  }, [expanded])
-  return (
-    <div className="workflow-view">
-      <div className="workflow-line">
-        <StatusDot status={task.status} />
-        <span>
-          {current
-            ? t('workflowPhase', {
-                n: String(currentPhase(phases) + 1),
-                total: String(phases.length),
-                name: current.label,
-              })
-            : task.status}
-        </span>
-        <span className="agent-meta">
-          {t('phaseAgents', {
-            done: String(allAgents.filter(a => a.status === 'completed').length),
-            total: String(allAgents.length),
-          })}
-        </span>
-        {phases.length > 0 && (
-          <button type="button" className="ghost" onClick={() => setExpanded(true)}>
-            {t('expand')}
-          </button>
-        )}
-        {!isFinished(task) && (
-          <button type="button" className="ghost" onClick={() => onStop(task.id)}>
-            {t('stopWorkflow')}
-          </button>
-        )}
+    <div className="agent-section">
+      <div className="group-h">
+        <button type="button" aria-expanded={open} onClick={() => toggle(id)}>
+          {title} · {count}
+        </button>
       </div>
-      {current && (
-        <div className="lane-cards">
-          {current.agents.map(agent => (
-            <button
-              type="button"
-              key={agent.label}
-              className={`lane-card agent-${agent.status}`}
-              onClick={() => onOpenAgent(task, agent.label)}
-            >
-              <StatusDot status={agent.status} />
-              <span>{agent.label}</span>
-            </button>
-          ))}
-        </div>
-      )}
-      {task.summary && <div className="agent-summary">{task.summary}</div>}
-      {expanded && (
-        <div className="modal-scrim" onClick={() => setExpanded(false)}>
-          <div
-            className="modal"
-            role="dialog"
-            aria-label={taskName(task)}
-            onClick={e => e.stopPropagation()}
-          >
-            <div className="modal-head">
-              <strong>{taskName(task)}</strong>
-              <span className="agent-desc">{task.description}</span>
-              <span className="agent-meta">{meta(task)}</span>
-              <button
-                type="button"
-                className="ghost"
-                aria-label={t('close')}
-                onClick={() => setExpanded(false)}
-              >
-                ×
-              </button>
-            </div>
-            <WorkflowLanes
-              phases={phases}
-              onOpenAgent={label => {
-                setExpanded(false)
-                onOpenAgent(task, label)
-              }}
-            />
-          </div>
+      {open && (
+        <div className="tree">
+          <div className="branch">{children}</div>
         </div>
       )}
     </div>
   )
 }
 
-function AgentView({
+/** An agent's own conversation, with an input when it can be messaged. */
+export function AgentView({
   sessionId,
   agentId,
   task,
@@ -575,10 +419,7 @@ function AgentView({
       live = false
     }
   }, [sessionId, agentId, tick, poll])
-  const items = useMemo(
-    () => (messages ?? []).reduce(reduce, initialState).items,
-    [messages],
-  )
+  const items = useMemo(() => (messages ?? []).reduce(reduce, initialState).items, [messages])
   const send = async () => {
     const text = draft.trim()
     if (!text || !onSend) return
@@ -590,58 +431,61 @@ function AgentView({
       setNote(err instanceof Error ? err.message : String(err))
     }
   }
-  const stoppedTeammate =
-    task?.type === 'in_process_teammate' && task !== undefined && isFinished(task)
+  const stoppedTeammate = task?.type === 'in_process_teammate' && isFinished(task)
   return (
-    <div className="agent-view">
-      <div className="agent-feed">
-        {failed && !messages && <div className="preview-note">{t('agentNoTranscript')}</div>}
-        {!failed && !messages && <div className="preview-note">{t('loading')}</div>}
+    <div className="agent-pane">
+      {task && (
+        <div className="card">
+          <span className="sub">
+            {[task.subagentType ?? task.type, task.description, taskMeta(task)].filter(Boolean).join(' · ')}
+          </span>
+        </div>
+      )}
+      <div className="transcript agent-feed">
+        {failed && !messages && <p className="note">{t('agentNoTranscript')}</p>}
+        {!failed && !messages && <p className="note">{t('loading')}</p>}
         {items.map(item => (
           <Message key={item.id} item={item} t={t} streaming={false} />
         ))}
-        {task?.outputFile && isFinished(task) && task.summary && (
-          <div className="agent-summary">{task.summary}</div>
-        )}
+        {task?.outputFile && isFinished(task) && task.summary && <div className="card">{task.summary}</div>}
       </div>
-      {onSend ? (
-        <div className="agent-input">
-          {note && (
-            <div className="preview-note" role="status">
-              {note}
-            </div>
-          )}
-          <div className="input-card">
-            <textarea
-              rows={1}
-              value={draft}
-              disabled={stoppedTeammate}
-              placeholder={
-                stoppedTeammate
-                  ? t('teammateStopped')
-                  : t('sendTo', { name: name ?? (task ? taskName(task) : agentId) })
-              }
-              onChange={e => setDraft(e.target.value)}
-              onKeyDown={e => {
-                if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
-                  e.preventDefault()
-                  void send()
-                }
-              }}
-            />
-            <button
-              type="button"
-              className="send"
-              aria-label={t('send')}
-              disabled={!draft.trim() || stoppedTeammate}
-              onClick={() => void send()}
-            >
-              ↑
-            </button>
-          </div>
+      {note && (
+        <div className="delivery" role="status">
+          {note}
         </div>
+      )}
+      {onSend ? (
+        <form
+          className="agent-input"
+          onSubmit={e => {
+            e.preventDefault()
+            void send()
+          }}
+        >
+          <textarea
+            rows={1}
+            value={draft}
+            disabled={stoppedTeammate}
+            aria-label={t('message')}
+            placeholder={
+              stoppedTeammate
+                ? t('teammateStopped')
+                : t('sendTo', { name: name ?? (task ? taskName(task) : agentId) })
+            }
+            onChange={e => setDraft(e.target.value)}
+            onKeyDown={e => {
+              if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+                e.preventDefault()
+                void send()
+              }
+            }}
+          />
+          <button type="submit" className="btn primary" disabled={!draft.trim() || stoppedTeammate}>
+            {t('send')}
+          </button>
+        </form>
       ) : (
-        <div className="preview-note">{t('agentReadonly')}</div>
+        <p className="note">{t('agentReadonly')}</p>
       )}
     </div>
   )
@@ -675,17 +519,17 @@ function useIssuers(sessionId: string, tasks: Tasks): Record<string, string> {
   return issuers
 }
 
-/** Right-hand Agents panel: a collapsible tree, workflow view and agent chat. */
-export function AgentsPanel({
+/** The Agents tab: a tree rooted at the main session, and an agent's conversation. */
+export function AgentsTab({
   sessionId,
-  tasks,
+  tasks: allTasks,
   items,
   busy,
   view,
   setView,
+  onWorkflow,
   onStop,
   onSend,
-  onClose,
   t,
 }: {
   sessionId: string
@@ -695,36 +539,20 @@ export function AgentsPanel({
   busy: boolean
   view: AgentsView
   setView: (view: AgentsView) => void
+  onWorkflow: (taskId: string) => void
   onStop: (taskId: string) => void
   onSend: (taskId: string, text: string) => Promise<string>
-  onClose: () => void
   t: T
 }) {
+  const tasks = useMemo(() => agentTasks(allTasks), [allTasks])
   const [collapsed, toggle] = useCollapsed()
   const issuers = useIssuers(sessionId, tasks)
   const groups = groupTasks(tasks, issuers)
   const team = useMemo(() => buildTeam(tasks, items), [tasks, items])
-  const openTask = (task: AgentTask) => setView({ kind: 'task', id: task.id })
-  const openAgent = (workflow: AgentTask, label: string) => {
-    const task = workflowAgent(tasks, workflow, label)
-    setView(task ? { kind: 'task', id: task.id } : { kind: 'agent', id: label, name: label })
-  }
   const selected = view.kind === 'task' ? tasks[view.id] : undefined
   const member = selected && team?.members.find(m => m.task.id === selected.id)
   const parent = selected && parentId(selected, tasks, issuers)
   const inWorkflow = parent !== undefined && tasks[parent]?.type === 'local_workflow'
-  const title =
-    view.kind === 'tree'
-      ? t('agents')
-      : view.kind === 'team'
-        ? t('team')
-        : member
-          ? member.name
-          : selected
-            ? taskName(selected)
-            : view.kind === 'agent'
-              ? view.name
-              : ''
 
   useEffect(() => {
     if (view.kind === 'tree') return
@@ -738,84 +566,44 @@ export function AgentsPanel({
   }, [view.kind, setView])
 
   const row = (task: AgentTask) => (
-    <TaskRow
+    <TaskNode
       key={task.id}
       task={task}
       subtasks={groups.children}
       collapsed={collapsed}
       toggle={toggle}
-      onOpen={openTask}
-      onOpenAgent={openAgent}
+      onOpen={task => setView({ kind: 'task', id: task.id })}
+      onWorkflow={task => onWorkflow(task.id)}
       onStop={onStop}
       t={t}
     />
   )
 
-  return (
-    <aside className="preview agents" aria-label={t('agents')}>
-      <div className="preview-bar">
-        {view.kind !== 'tree' && (
-          <button
-            type="button"
-            className="ghost"
-            aria-label={t('back')}
-            onClick={() => setView({ kind: 'tree' })}
-          >
-            ‹
+  if (view.kind !== 'tree') {
+    const title =
+      view.kind === 'team'
+        ? t('team')
+        : member
+          ? member.name
+          : selected
+            ? taskName(selected)
+            : view.kind === 'agent'
+              ? view.name
+              : ''
+    return (
+      <>
+        <div className="crumb">
+          <button type="button" aria-label={t('back')} onClick={() => setView({ kind: 'tree' })}>
+            Agents
           </button>
-        )}
-        <span className="preview-name">{title}</span>
-        {selected && <span className="agent-meta">{meta(selected)}</span>}
-        <button type="button" className="ghost" aria-label={t('collapsePanel')} onClick={onClose}>
-          »
-        </button>
-      </div>
-      <div className="preview-body">
-        {view.kind === 'tree' && (
-          <>
-            <div className="agent-row agent-root">
-              <span className="caret-space" />
-              <StatusDot status={busy ? 'running' : 'idle'} />
-              <span className="agent-name">{t('mainSession')}</span>
-              <span className="agent-meta">{busy ? t('statusLive') : t('idle')}</span>
-            </div>
-            {!groups.running.length && !groups.finished.length && !team && (
-              <div className="preview-note">{t('noAgents')}</div>
-            )}
-            <Section
-              id="running"
-              title={t('runningGroup')}
-              tasks={groups.running}
-              collapsed={collapsed}
-              toggle={toggle}
-            >
-              {row}
-            </Section>
-            {team && (
-              <TeamSection
-                team={team}
-                collapsed={collapsed}
-                toggle={toggle}
-                onOpenMember={id => setView({ kind: 'task', id })}
-                onOpenMessages={() => setView({ kind: 'team' })}
-                t={t}
-              />
-            )}
-            <Section
-              id="finished"
-              title={t('finishedGroup')}
-              tasks={groups.finished}
-              collapsed={collapsed}
-              toggle={toggle}
-            >
-              {row}
-            </Section>
-          </>
-        )}
-        {selected?.type === 'local_workflow' && (
-          <WorkflowView task={selected} onOpenAgent={openAgent} onStop={onStop} t={t} />
-        )}
-        {selected && selected.type !== 'local_workflow' && (
+          / {title}
+          {selected && (
+            <>
+              <span className={`dot ${dotClass(selected.status)}`} /> {statusText(selected.status, t)}
+            </>
+          )}
+        </div>
+        {selected && (
           <AgentView
             sessionId={sessionId}
             agentId={member?.agentId ?? selected.id}
@@ -826,11 +614,235 @@ export function AgentsPanel({
           />
         )}
         {view.kind === 'team' && team && <TeamTimeline team={team} t={t} />}
-        {view.kind === 'task' && !selected && <div className="preview-note">{t('noAgents')}</div>}
-        {view.kind === 'agent' && (
-          <AgentView sessionId={sessionId} agentId={view.id} t={t} />
+        {view.kind === 'task' && !selected && <p className="note">{t('noAgents')}</p>}
+        {view.kind === 'agent' && <AgentView sessionId={sessionId} agentId={view.id} t={t} />}
+      </>
+    )
+  }
+  return (
+    <>
+      <div className="group-h">{t('runningGroup')}</div>
+      <div className="tree">
+        <Node
+          lead={<span className={`dot ${busy ? 'running' : 'idle'}`} />}
+          name={t('mainSession')}
+          badge={busy ? 'running' : 'idle'}
+          badgeClass={busy ? 'running' : 'idle'}
+        />
+        {(groups.running.length > 0 || team) && (
+          <div className="branch">
+            {groups.running.map(row)}
+            {team && (
+              <TeamGroup
+                team={team}
+                collapsed={collapsed}
+                toggle={toggle}
+                onOpenMember={id => setView({ kind: 'task', id })}
+                onOpenMessages={() => setView({ kind: 'team' })}
+                t={t}
+              />
+            )}
+          </div>
         )}
       </div>
-    </aside>
+      {!groups.running.length && !groups.finished.length && !team && (
+        <p className="note">{t('noAgents')}</p>
+      )}
+      <Group
+        id="finished"
+        title={t('endedGroup')}
+        count={groups.finished.length}
+        collapsed={collapsed}
+        toggle={toggle}
+      >
+        {groups.finished.map(row)}
+      </Group>
+    </>
+  )
+}
+
+function WorkflowLanes({
+  phases,
+  onOpenAgent,
+}: {
+  phases: WorkflowPhase[]
+  onOpenAgent: (label: string) => void
+}) {
+  const current = currentPhase(phases)
+  return (
+    <div className="lanes wfd-lanes">
+      {phases.map((phase, i) => (
+        <div key={phase.index} className={`lane${i === current ? ' cur' : ''}`}>
+          <h3>
+            <span className={`dot ${dotClass(phase.status)}`} />
+            {i + 1}. {phase.label} · {phase.agents.filter(a => a.status === 'completed').length}/
+            {phase.agents.length}
+          </h3>
+          {phase.message && <p>{phase.message}</p>}
+          {phase.agents.map(agent => (
+            <button type="button" key={agent.label} className="wcard" onClick={() => onOpenAgent(agent.label)}>
+              <b>{agent.label}</b>
+              <span>
+                <span className={`dot ${dotClass(agent.status)}`} /> {agent.status}
+              </span>
+            </button>
+          ))}
+          {i < phases.length - 1 && (
+            <span className="arrow" aria-hidden="true">
+              →
+            </span>
+          )}
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function PhaseLine({ phases, task, t, onExpand }: { phases: WorkflowPhase[]; task: AgentTask; t: T; onExpand?: () => void }) {
+  const i = currentPhase(phases)
+  const phase = phases[i]
+  if (!phase) {
+    return (
+      <div className="wfcur">
+        <span className={`dot ${dotClass(task.status)}`} />
+        <b>{taskName(task)}</b>
+        <span className="note">{statusText(task.status, t)}</span>
+      </div>
+    )
+  }
+  const running = phase.agents.filter(a => a.status === 'running').map(a => a.label)
+  return (
+    <div className="wfcur">
+      <span className={`dot ${dotClass(phase.status)}`} />
+      <b>{t('workflowPhase', { n: String(i + 1), total: String(phases.length), name: phase.label })}</b>
+      <span className="note">
+        {t('phaseDone', {
+          done: String(phase.agents.filter(a => a.status === 'completed').length),
+          total: String(phase.agents.length),
+        })}
+        {running.length > 0 && t('runningNow', { names: running.join('、') })}
+      </span>
+      {onExpand && (
+        <button className="btn" type="button" onClick={onExpand}>
+          {t('expand')}
+        </button>
+      )}
+    </div>
+  )
+}
+
+/** The Workflow tab: the current phase of a workflow, its agent cards and the full lanes on demand. */
+export function WorkflowTab({
+  sessionId,
+  tasks,
+  selectedId,
+  setSelectedId,
+  onStop,
+  t,
+}: {
+  sessionId: string
+  tasks: Tasks
+  selectedId?: string
+  setSelectedId: (id: string | undefined) => void
+  onStop: (taskId: string) => void
+  t: T
+}) {
+  const workflows = Object.values(tasks)
+    .filter(task => task.type === 'local_workflow')
+    .sort((a, b) => b.seq - a.seq)
+  const [expanded, setExpanded] = useState(false)
+  const [agentLabel, setAgentLabel] = useState<string>()
+  const task = (selectedId && tasks[selectedId]) || workflows[0]
+  useEffect(() => setAgentLabel(undefined), [task?.id])
+  if (!task) return <p className="note">{t('noWorkflow')}</p>
+  const phases = task.phases ?? []
+  const allAgents = phases.flatMap(p => p.agents)
+  const done = allAgents.filter(a => a.status === 'completed').length
+  const current = phases[currentPhase(phases)]
+  const agentTask = agentLabel ? workflowAgent(tasks, task, agentLabel) : undefined
+  return (
+    <>
+      <div className="crumb">
+        {workflows.length > 1 ? (
+          workflows.map(w => (
+            <button type="button" key={w.id} onClick={() => setSelectedId(w.id)} aria-pressed={w.id === task.id}>
+              {taskName(w)}
+            </button>
+          ))
+        ) : (
+          <span>workflow {taskName(task)}</span>
+        )}
+        {!isFinished(task) && (
+          <button type="button" onClick={() => onStop(task.id)}>
+            {t('stopWorkflow')}
+          </button>
+        )}
+      </div>
+      <PhaseLine phases={phases} task={task} t={t} onExpand={phases.length ? () => setExpanded(true) : undefined} />
+      {allAgents.length > 0 && (
+        <div className="bar">
+          <i style={{ width: `${Math.round((done / allAgents.length) * 100)}%` }} />
+        </div>
+      )}
+      {current && (
+        <div className="wfnow">
+          {current.agents.map(agent => (
+            <button
+              type="button"
+              key={agent.label}
+              className="wcard"
+              aria-pressed={agentLabel === agent.label}
+              onClick={() => setAgentLabel(agent.label)}
+            >
+              <b>{agent.label}</b>
+              <span>
+                <span className={`dot ${dotClass(agent.status)}`} /> {agent.status}
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
+      {task.summary && <div className="card">{task.summary}</div>}
+      {agentLabel && (
+        <div className="wfout">
+          <div className="fhead">
+            <b className="mono">{agentLabel}</b>
+            {agentTask && <span className="note">{taskMeta(agentTask)}</span>}
+          </div>
+          <AgentView sessionId={sessionId} agentId={agentTask?.id ?? agentLabel} task={agentTask} t={t} />
+        </div>
+      )}
+      {expanded && (
+        <Dialog t={t} xl title="Workflow" onClose={() => setExpanded(false)}>
+          <div className="wfdlg">
+            <div className="wfd-head">
+              <b>{taskName(task)}</b>
+              {task.description && <span>{task.description}</span>}
+              <span>
+                {[taskMeta(task), t('phaseAgents', { done: String(done), total: String(allAgents.length) })]
+                  .filter(Boolean)
+                  .join(' · ')}
+              </span>
+              {!isFinished(task) && (
+                <button className="btn" type="button" onClick={() => onStop(task.id)}>
+                  {t('stopWorkflow')}
+                </button>
+              )}
+            </div>
+            <div className="bar">
+              <i style={{ width: `${allAgents.length ? Math.round((done / allAgents.length) * 100) : 0}%` }} />
+            </div>
+            <PhaseLine phases={phases} task={task} t={t} />
+            <WorkflowLanes
+              phases={phases}
+              onOpenAgent={label => {
+                setExpanded(false)
+                setAgentLabel(label)
+              }}
+            />
+          </div>
+        </Dialog>
+      )}
+    </>
   )
 }

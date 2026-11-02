@@ -1,3 +1,5 @@
+import type { Item } from './protocol'
+
 export type PreviewKind =
   | 'image'
   | 'svg'
@@ -183,4 +185,48 @@ export function splitMentions(text: string): TextSegment[] {
   }
   if (last < text.length) out.push({ text: text.slice(last) })
   return out
+}
+
+export type SessionFile = { path: string; source: 'upload' | 'read' | 'edited' | 'written' }
+
+const TOOL_SOURCE: Record<string, SessionFile['source']> = {
+  Read: 'read',
+  Edit: 'edited',
+  MultiEdit: 'edited',
+  NotebookEdit: 'edited',
+  Write: 'written',
+}
+const RANK = { read: 0, upload: 1, edited: 2, written: 3 }
+
+/**
+ * Files a chat touched, newest first: uploads and @-mentions in user messages
+ * and file tools in the transcript. A file keeps its strongest action.
+ */
+export function sessionFiles(items: Item[]): SessionFile[] {
+  const found = new Map<string, SessionFile['source']>()
+  const add = (path: string, source: SessionFile['source']) => {
+    const prev = found.get(path)
+    found.delete(path)
+    found.set(path, prev && RANK[prev] > RANK[source] ? prev : source)
+  }
+  for (const item of items) {
+    if (item.kind === 'user') {
+      for (const seg of splitMentions(item.text)) {
+        if ('path' in seg) add(seg.path, /[\\/]web[\\/]uploads[\\/]/.test(seg.path) ? 'upload' : 'read')
+      }
+    }
+    if (item.kind !== 'assistant') continue
+    for (const block of item.blocks) {
+      const source = block?.kind === 'tool' ? TOOL_SOURCE[block.name] : undefined
+      if (!source || block?.kind !== 'tool') continue
+      try {
+        const input = JSON.parse(block.input) as { file_path?: unknown; notebook_path?: unknown }
+        const path = input.file_path ?? input.notebook_path
+        if (typeof path === 'string') add(path, source)
+      } catch {
+        // Input still streaming.
+      }
+    }
+  }
+  return [...found].reverse().map(([path, source]) => ({ path, source }))
 }

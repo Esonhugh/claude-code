@@ -14,6 +14,7 @@ export async function createSession(body: {
   resume?: string
   permission_mode?: string
   model?: string
+  temporary?: boolean
 }): Promise<CreatedSession> {
   const res = await fetch('/api/sessions', {
     method: 'POST',
@@ -74,7 +75,7 @@ export const listRunning = () =>
   getJson<{ id: string; work_dir: string; attached: boolean }[]>('/api/sessions')
 
 export const getInfo = () =>
-  getJson<{ workspace: string; preview_origins?: string[] }>('/api/info')
+  getJson<{ workspace: string; preview_origins?: string[]; temp_root?: string }>('/api/info')
 
 export async function renameSession(id: string, title: string): Promise<void> {
   const res = await fetch(`/api/history/${encodeURIComponent(id)}`, {

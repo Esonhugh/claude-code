@@ -32,7 +32,16 @@ beforeEach(() => {
       message: { id: 'msg_1', role: 'assistant', model: 'claude-opus-5-5', content: [{ type: 'text', text: 'first answer' }] },
     }),
     line({ type: 'user', uuid: 'a0000000-0000-4000-8000-000000000004', parentUuid: 'a0000000-0000-4000-8000-000000000003', cwd, message: { role: 'user', content: '<command-name>/clear</command-name>' } }),
-    line({ type: 'user', uuid: 'a0000000-0000-4000-8000-000000000005', parentUuid: 'a0000000-0000-4000-8000-000000000004', cwd, message: { role: 'user', content: [{ type: 'text', text: 'second question' }] } }),
+    line({ type: 'user', uuid: 'a0000000-0000-4000-8000-000000000006', parentUuid: 'a0000000-0000-4000-8000-000000000004', cwd, message: { role: 'user', content: '<local-command-stdout>cleared</local-command-stdout>' } }),
+    line({
+      type: 'assistant',
+      uuid: 'a0000000-0000-4000-8000-000000000007',
+      parentUuid: 'a0000000-0000-4000-8000-000000000006',
+      cwd,
+      isApiErrorMessage: true,
+      message: { id: 'msg_e', role: 'assistant', model: '<synthetic>', content: [{ type: 'text', text: 'API Error: 500' }] },
+    }),
+    line({ type: 'user', uuid: 'a0000000-0000-4000-8000-000000000005', parentUuid: 'a0000000-0000-4000-8000-000000000007', cwd, message: { role: 'user', content: [{ type: 'text', text: 'second question' }] } }),
   ]
   writeFileSync(join(dir, `${ID}.jsonl`), entries.join('\n') + '\n')
   const agentDir = join(dir, ID, 'subagents', 'workflows', 'run1')
@@ -124,17 +133,20 @@ describe('web history', () => {
   it('returns visible messages as stream-json and pages backwards', async () => {
     const page = await readTranscript(ID, undefined, 10)
     expect(page?.cwd).toBe(join(root, 'project'))
-    expect(page?.total).toBe(3)
-    expect(page?.messages.map(m => m.type)).toEqual(['user', 'assistant', 'user'])
+    expect(page?.total).toBe(6)
+    expect(page?.messages.map(m => m.type)).toEqual(['user', 'assistant', 'user', 'user', 'assistant', 'user'])
     expect(page?.messages[0]).toMatchObject({ isReplay: true, parent_tool_use_id: null })
     expect(JSON.stringify(page?.messages)).not.toContain('hidden meta')
-    expect(JSON.stringify(page?.messages)).not.toContain('command-name')
+    // Slash commands and their output stay, for the page to show as command lines.
+    expect(page?.messages[2]).toMatchObject({ message: { content: '<command-name>/clear</command-name>' } })
+    expect(page?.messages[3]).toMatchObject({ message: { content: '<local-command-stdout>cleared</local-command-stdout>' } })
+    expect(page?.messages[4]).toMatchObject({ isApiErrorMessage: true })
 
     const last = await readTranscript(ID, undefined, 1)
-    expect(last).toMatchObject({ start: 2, total: 3 })
-    const earlier = await readTranscript(ID, 2, 5)
+    expect(last).toMatchObject({ start: 5, total: 6 })
+    const earlier = await readTranscript(ID, 5, 5)
     expect(earlier?.start).toBe(0)
-    expect(earlier?.messages).toHaveLength(2)
+    expect(earlier?.messages).toHaveLength(5)
   })
 
   it('renames by appending a custom title', async () => {
