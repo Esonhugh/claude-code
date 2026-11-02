@@ -71,6 +71,8 @@ export function StartPage({
   onOpen,
   onViewAll,
   menuButton,
+  gate,
+  signedOut,
 }: {
   t: T
   env: SessionEnv
@@ -93,6 +95,9 @@ export function StartPage({
   onOpen: (entry: HistoryEntry) => void
   onViewAll: () => void
   menuButton: ReactNode
+  /** The sign-in gate, shown above the input while signed out. */
+  gate?: ReactNode
+  signedOut?: boolean
 }) {
   const [query, setQuery] = useState('')
   const folderInput = useRef<HTMLInputElement>(null)
@@ -124,6 +129,7 @@ export function StartPage({
           <Clawd />
           <span>{name ? t('greetName', { greet, name }) : greet}</span>
         </div>
+        {gate}
         {trustDir && (
           <div className="gate" role="alertdialog" aria-label={t('trustTitle')}>
             <b>{t('trustTitle')}</b>
@@ -142,6 +148,7 @@ export function StartPage({
           t={t}
           start
           busy={false}
+          signedOut={signedOut}
           draft={draft}
           setDraft={setDraft}
           onSend={onStart}

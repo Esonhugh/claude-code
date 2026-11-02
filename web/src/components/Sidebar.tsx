@@ -1,4 +1,5 @@
-import { type RefObject, useState } from 'react'
+import { type ReactNode, type RefObject, useEffect, useState } from 'react'
+import { ext } from '../extApi'
 import { tilde } from '../files'
 import type { SessionEnv } from '../protocol'
 import { groupHistory, type HistoryEntry } from '../store'
@@ -8,6 +9,7 @@ const COLLAPSED_KEY = 'claude-web-collapsed'
 
 export type DialogKind =
   | 'mcp'
+  | 'channels'
   | 'skills'
   | 'plugins'
   | 'memory'
@@ -17,17 +19,31 @@ export type DialogKind =
   | 'stats'
   | 'keys'
 
-function accountText(env: SessionEnv): { name?: string; detail?: string; avatar: string } {
-  const account = env.account
-  const keySource = account?.apiKeySource ?? env.apiKeySource
-  if (account?.email) {
-    return { name: account.email, detail: account.subscriptionType, avatar: account.email[0]!.toUpperCase() }
-  }
-  if (keySource && keySource !== 'none') {
-    const openai = account?.apiProvider === 'openai'
-    return { name: openai ? 'OpenAI API key' : 'Anthropic API key', detail: keySource, avatar: '⚿' }
-  }
-  return { avatar: '?' }
+type ExtCounts = { channels?: string; memory?: string; mods?: string }
+
+/** Counts for the Channels, Memory and Mods entries, reloaded whenever no dialog is open. */
+function useExtCounts(env: SessionEnv, dialogOpen: boolean): ExtCounts {
+  const [counts, setCounts] = useState<ExtCounts>({})
+  const key = (env.mcpServers ?? [])
+    .filter(m => m.status === 'connected')
+    .map(m => m.name)
+    .join('\n')
+  useEffect(() => {
+    if (dialogOpen) return
+    const connected = key.split('\n')
+    let live = true
+    const set = (patch: ExtCounts) => live && setCounts(c => ({ ...c, ...patch }))
+    ext.channels().then(
+      list => set({ channels: String(list.filter(c => c.def && connected.includes(c.server)).length) }),
+      () => undefined,
+    )
+    ext.memory().then(m => set({ memory: String(m.files.length) }), () => undefined)
+    ext.mods().then(list => set({ mods: `${list.filter(m => m.on).length}/${list.length}` }), () => undefined)
+    return () => {
+      live = false
+    }
+  }, [dialogOpen, key])
+  return counts
 }
 
 /** Left column: brand, new session, search, extension entries, history by folder, footer. */
@@ -48,6 +64,8 @@ export function Sidebar({
   onStop,
   onMore,
   onDialog,
+  dialogOpen = false,
+  account,
 }: {
   t: T
   open: boolean
@@ -65,6 +83,9 @@ export function Sidebar({
   onStop: (id: string) => void
   onMore: () => void
   onDialog: (kind: DialogKind) => void
+  dialogOpen?: boolean
+  /** The account card (Account.tsx). */
+  account: ReactNode
 }) {
   const [filter, setFilter] = useState('')
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>(() =>
@@ -79,7 +100,7 @@ export function Sidebar({
     writeStored(COLLAPSED_KEY, next)
   }
   const mcp = env.mcpServers
-  const account = accountText(env)
+  const counts = useExtCounts(env, dialogOpen)
   const snav: { kind: DialogKind; ico: string; label: string; cnt?: string }[] = [
     {
       kind: 'mcp',
@@ -87,11 +108,12 @@ export function Sidebar({
       label: 'MCP',
       cnt: mcp && `${mcp.filter(m => m.status === 'connected').length}/${mcp.length}`,
     },
+    { kind: 'channels', ico: '⇆', label: 'Channels', cnt: counts.channels },
     { kind: 'skills', ico: '/', label: 'Skills', cnt: env.skills && String(env.skills.length) },
     { kind: 'plugins', ico: '⧉', label: t('plugins'), cnt: env.plugins && String(env.plugins.length) },
-    { kind: 'memory', ico: 'M', label: t('memory') },
+    { kind: 'memory', ico: 'M', label: t('memory'), cnt: counts.memory },
     { kind: 'hooks', ico: '↯', label: 'Hooks', cnt: env.hooks && String(env.hooks.length) },
-    { kind: 'mods', ico: '◇', label: 'Mods' },
+    { kind: 'mods', ico: '◇', label: 'Mods', cnt: counts.mods },
   ]
   return (
     <aside className={`sessions sidebar${open ? ' open' : ''}`} id="sessions" aria-label={t('sessionGroup')}>
@@ -246,28 +268,7 @@ export function Sidebar({
         )}
       </div>
       <div className="foot">
-        <button type="button" onClick={() => onDialog('settings')}>
-          <span className="ico">⚙</span>
-          {t('settings')}
-        </button>
-        <button type="button" onClick={() => onDialog('stats')}>
-          <span className="ico">▤</span>Stats
-        </button>
-        <button type="button" onClick={() => onDialog('keys')}>
-          <span className="ico">?</span>
-          {t('shortcuts')}
-        </button>
-        <div className="acctwrap">
-          <div className="acct">
-            <span className={`avatar${account.name ? '' : ' none'}`}>{account.avatar}</span>
-            <div>
-              {account.name ?? t('accountLabel')}
-              <small>
-                {[account.detail, t('localHost', { host: location.host })].filter(Boolean).join(' · ')}
-              </small>
-            </div>
-          </div>
-        </div>
+        {account}
       </div>
     </aside>
   )

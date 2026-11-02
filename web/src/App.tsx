@@ -1,20 +1,28 @@
 import { type DragEvent, useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react'
 import {
+  type AuthProvider,
   createSession,
   deleteSession,
   getInfo,
+  getSettings as getWebSettings,
+  getUsage,
   listHistory,
   listRunning,
   listWorkspaceFiles,
   loadTranscript,
   NeedsTrustError,
   openSessionSocket,
+  patchSettings,
   renameSession,
+  type Usage,
+  type WebSettings,
 } from './api'
 import { buildTeam } from './agents'
+import { AccountCard, ApiKeyDialog, LoginGate, useAccount } from './components/Account'
 import type { AgentsView } from './components/Agents'
 import { AskDock, ContextChip, GoalMenu, InputBox, ModeButton, ModelMenu, modelButtonLabel, Pins } from './components/Composer'
 import { AppDialog, type Palette, type Theme } from './components/Dialogs'
+import type { ContextUsage } from './components/Settings'
 import { AgentsContext, ChatContext, FilesContext, Message, TeamBar } from './components/Message'
 import { Preview } from './components/Preview'
 import { type DialogKind, Sidebar } from './components/Sidebar'
@@ -130,6 +138,8 @@ export function App() {
   const [trustDir, setTrustDir] = useState<string>()
   const [rewindTarget, setRewindTarget] = useState<string>()
   const [sidebarOpen, setSidebarOpen] = useState(false)
+  const [keyDialog, setKeyDialog] = useState<AuthProvider>()
+  const [webSettings, setWebSettings] = useState<WebSettings>()
   const pendingRequests = useRef(new Map<string, (response: Record<string, unknown>) => void>())
   const [knownModels, setKnownModels] = useState<ModelOption[]>(() => readStored(MODELS_KEY, []))
   const [knownEnv, setKnownEnv] = useState<SessionEnv>(() => readStored(ENV_KEY, {}))
@@ -143,6 +153,8 @@ export function App() {
   stateRef.current = state
 
   const t: T = useCallback((key, vars) => translate(lang, key, vars), [lang])
+  const account = useAccount(t)
+  const signedOut = !!account.account && !account.account.kind
   const setLang = (next: Lang) => {
     setLangState(next)
     saveLang(next)
@@ -165,7 +177,7 @@ export function App() {
   const setFiles = (next: File[]) => setAttachments(a => ({ ...a, [draftKey]: next }))
   const env: SessionEnv = chat && Object.keys(chat.env).length ? chat.env : knownEnv
   const models = chat?.models.length ? chat.models : knownModels
-  const uiName = env.uiName || DEFAULT_UI_NAME
+  const uiName = (webSettings ? webSettings.uiName : env.uiName) || DEFAULT_UI_NAME
   const previewing = !!preview && preview.sessionId === view
   const since = useTurnStart(chat?.busy, view)
 
@@ -287,6 +299,7 @@ export function App() {
 
   useEffect(() => {
     void refreshHistory()
+    getWebSettings().then(setWebSettings, () => {})
     getInfo().then(
       res => {
         setHome(res.home)
@@ -343,6 +356,17 @@ export function App() {
         else resolve((response.response ?? {}) as Record<string, unknown>)
       })
     })
+
+  const requestAsyncRef = useRef(requestAsync)
+  requestAsyncRef.current = requestAsync
+  // Stable per session so the dialogs do not refetch on every render.
+  const control = useMemo(
+    () =>
+      view && chat?.mode === 'live'
+        ? (body: Record<string, unknown>) => requestAsyncRef.current(view, REQUEST_PREFIX.ext, body)
+        : undefined,
+    [view, chat?.mode],
+  )
 
   const stopTask = (id: string, taskId: string) =>
     request(id, REQUEST_PREFIX.stopTask, { subtype: 'stop_task', task_id: taskId })
@@ -709,6 +733,21 @@ export function App() {
     setTimeout(() => document.querySelector<HTMLTextAreaElement>('.cbox textarea, .wl-box textarea')?.focus())
   }
 
+  // Settings > Usage: the open session's /usage, or this machine's plan limits.
+  const live = !!view && chat?.mode === 'live'
+  const usageSource = {
+    usage: () => (live ? (requestAsync(view, REQUEST_PREFIX.usage, { subtype: 'get_usage' }) as Promise<Usage>) : getUsage()),
+    context: live
+      ? () => requestAsync(view, REQUEST_PREFIX.context, { subtype: 'get_context_usage' }) as Promise<ContextUsage>
+      : undefined,
+    tools: (chat?.items ?? []).reduce<Record<string, number>>((acc, item) => {
+      if (item.kind === 'assistant') for (const b of item.blocks) if (b.kind === 'tool') acc[b.name] = (acc[b.name] ?? 0) + 1
+      return acc
+    }, {}),
+    subagents: Object.values(chat?.tasks ?? {}).filter(task => task.type !== 'local_workflow').length,
+    live,
+  }
+
   const menuButton = (
     <button
       type="button"
@@ -793,6 +832,8 @@ export function App() {
         searchRef.current?.focus()
       }}
       menuButton={menuButton}
+      gate={<LoginGate t={t} api={account} onKeyDialog={setKeyDialog} />}
+      signedOut={signedOut}
     />
   ) : (
     <AgentsContext.Provider value={agentsValue}>
@@ -909,6 +950,7 @@ export function App() {
                 {chat.notice}
               </div>
             )}
+            <LoginGate t={t} api={account} onKeyDialog={setKeyDialog} />
             {approval && view && (
               <AskDock
                 approval={approval}
@@ -923,6 +965,7 @@ export function App() {
               t={t}
               busy={chat.busy}
               disabled={chat.mode === 'elsewhere'}
+              signedOut={signedOut}
               draft={draft}
               setDraft={setDraft}
               onSend={() => void sendInChat()}
@@ -996,6 +1039,18 @@ export function App() {
           setSidebarOpen(false)
           setDialog(kind)
         }}
+        dialogOpen={!!dialog}
+        account={
+          <AccountCard
+            t={t}
+            api={account}
+            onKeyDialog={setKeyDialog}
+            onDialog={kind => {
+              setSidebarOpen(false)
+              setDialog(kind)
+            }}
+          />
+        }
       />
       {previewing && preview && (
         <section className="artview" aria-label={t('artifact')}>
@@ -1060,21 +1115,35 @@ export function App() {
         <AppDialog
           kind={dialog}
           t={t}
-          env={env}
+          lang={lang}
+          control={control}
           onClose={() => setDialog(undefined)}
           onUseSkill={useSkill}
+          onOpenSession={id => {
+            const entry = state.history.find(h => h.id === id)
+            if (!entry) return
+            setDialog(undefined)
+            void openSession(entry)
+          }}
           settings={{
             lang,
             setLang,
-            uiName,
             theme,
             setTheme,
             palette,
             setPalette,
             workspace: info.workspace,
+            settings: webSettings,
+            onSettings: patch => {
+              patchSettings(patch).then(setWebSettings, () => {})
+            },
+            account: account.account,
+            usage: usageSource,
+            models,
           }}
         />
       )}
+      {keyDialog && <ApiKeyDialog t={t} api={account} provider={keyDialog} onClose={() => setKeyDialog(undefined)} />}
     </div>
   )
 }

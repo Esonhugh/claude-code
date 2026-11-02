@@ -105,6 +105,7 @@ export class SessionManager {
     model,
     resume,
     sessionKey,
+    channels,
   }: {
     cwd: string
     permissionMode?: string
@@ -112,6 +113,8 @@ export class SessionManager {
     /** Transcript id to continue; reuses a running session with that id. */
     resume?: string
     sessionKey?: string
+    /** `--channels` entries for the new session's process. */
+    channels?: string[]
   }): SessionInfo {
     if (resume) {
       const running = this.sessions.get(resume)
@@ -136,6 +139,7 @@ export class SessionManager {
       permissionMode,
       ...(model && { model }),
       ...(resume && { resume: true }),
+      ...(channels?.length && { channels }),
     })
     const session: Session = {
       id,

@@ -31,6 +31,8 @@ import {
   renameSession,
   SESSION_ID,
 } from './history.js'
+import { type AccountBackend, createAccountApi } from './account.js'
+import * as ext from './extensions.js'
 import { isAllowedPeer, lanHostNames } from './network.js'
 import {
   allowedHosts,
@@ -65,6 +67,8 @@ export type WebServerConfig = {
   previewOrigins?: string[]
   /** Folder trust as the TUI's trust dialog records it; replaceable in tests. */
   folderTrust?: { isTrusted: (dir: string) => boolean; save: (dir: string) => void }
+  /** Defaults to this machine's credential store and settings (tests pass a fake). */
+  account?: AccountBackend
 }
 
 type SocketData = { sessionId: string }
@@ -202,6 +206,138 @@ function errorResponse(status: number, message: string): Response {
   return Response.json({ error: message }, { status })
 }
 
+const EXT_PATH = /^\/api\/ext\/([a-z]+)(?:\/([^/]+))?(?:\/([a-z]+))?$/
+const onBodySchema = lazySchema(() => z.object({ on: z.boolean() }))
+const idBodySchema = lazySchema(() => z.object({ id: z.string().max(300) }))
+const pluginBodySchema = lazySchema(() =>
+  z.object({
+    id: z.string().max(300),
+    action: z.enum(['install', 'uninstall', 'enable', 'disable', 'update']),
+  }),
+)
+const marketplaceBodySchema = lazySchema(() =>
+  z.object({ source: z.string().max(500) }).or(
+    z.object({ name: z.string().max(200), action: z.enum(['refresh', 'remove']) }),
+  ),
+)
+const channelBodySchema = lazySchema(() => z.object({ plugin: z.string().max(300), on: z.boolean() }))
+const memoryToggleSchema = lazySchema(() => z.object({ key: z.enum(['autoMemory', 'sqlite']), on: z.boolean() }))
+const modSourceSchema = lazySchema(() => z.object({ source: z.string().max(512 * 1024) }))
+
+async function parseBody<T>(req: Request, schema: z.ZodType<T>): Promise<T> {
+  const parsed = schema.safeParse(await readJson(req))
+  if (!parsed.success) throw new ext.ExtError('Invalid request')
+  return parsed.data
+}
+
+/**
+ * The sidebar dialogs' data and actions (see extensions.ts).
+ *
+ *   GET  /api/ext/skills                 → skills with group, source and on/off
+ *   GET  /api/ext/skills/:name           → { content } of its SKILL.md
+ *   PUT  /api/ext/skills/:name {on}      → skillOverrides in local settings
+ *   GET  /api/ext/plugins                → { installed, discover, marketplaces }
+ *   POST /api/ext/plugins {id, action}   → install/uninstall/enable/disable/update
+ *   POST /api/ext/marketplaces {source} | {name, action}
+ *   GET  /api/ext/channels               → channel plugins and their defaults
+ *   PUT  /api/ext/channels {plugin, on}  → default `--channels` for new sessions
+ *   GET  /api/ext/memory                 → memory files, auto memory, FTS index
+ *   GET  /api/ext/memory/search?q=&scope=
+ *   PUT  /api/ext/memory {key, on}       → autoMemoryEnabled / memory.sqlite.enabled
+ *   GET  /api/ext/hooks                  → hooks by source, disableAllHooks
+ *   POST/PUT/DELETE /api/ext/hooks       → add / {id,...} edit / {id} delete
+ *   PUT  /api/ext/hooks/disabled {on}
+ *   GET  /api/ext/mods                   → plugins with hook modules
+ *   GET|PUT /api/ext/mods/:id/source     → entry module source
+ *   PUT  /api/ext/mods/:id {on}
+ *   GET  /api/ext/stats                  → daily tokens/sessions, streaks, hours
+ */
+async function handleExtApi(req: Request, url: URL, configDir: string): Promise<Response> {
+  const match = EXT_PATH.exec(url.pathname)
+  if (!match) return errorResponse(404, 'Not found')
+  const [, area, rawArg, sub] = match
+  const arg = rawArg === undefined ? undefined : decodeURIComponent(rawArg)
+  const route = `${req.method} ${area}${arg === undefined ? '' : '/:arg'}${sub ? `/${sub}` : ''}`
+  const ok = () => new Response(null, { status: 204 })
+  try {
+    switch (route) {
+      case 'GET skills':
+        return Response.json(await ext.listSkills())
+      case 'GET skills/:arg':
+        return Response.json(await ext.skillContent(arg!))
+      case 'PUT skills/:arg':
+        await ext.setSkillEnabled(arg!, (await parseBody(req, onBodySchema())).on)
+        return ok()
+      case 'GET plugins':
+        return Response.json(await ext.listPlugins())
+      case 'POST plugins': {
+        const body = await parseBody(req, pluginBodySchema())
+        return Response.json(await ext.pluginAction(body.action, body.id))
+      }
+      case 'POST marketplaces': {
+        const body = await parseBody(req, marketplaceBodySchema())
+        if ('source' in body) return Response.json(await ext.addMarketplace(body.source))
+        await ext.marketplaceAction(body.action, body.name)
+        return ok()
+      }
+      case 'GET channels':
+        return Response.json(await ext.listChannels(configDir))
+      case 'PUT channels': {
+        const body = await parseBody(req, channelBodySchema())
+        await ext.setDefaultChannel(configDir, body.plugin, body.on)
+        return ok()
+      }
+      case 'GET memory':
+        return Response.json(await ext.listMemory())
+      case 'GET memory/:arg':
+        if (arg !== 'search') break
+        return Response.json(
+          await ext.searchMemoryIndex(
+            url.searchParams.get('q') ?? '',
+            (['memory', 'session'] as const).find(s => s === url.searchParams.get('scope')) ?? 'all',
+          ),
+        )
+      case 'PUT memory': {
+        const body = await parseBody(req, memoryToggleSchema())
+        ext.setMemoryToggle(body.key, body.on)
+        return ok()
+      }
+      case 'GET hooks':
+        return Response.json(await ext.listHooks())
+      case 'POST hooks':
+        ext.addHook(await parseBody(req, ext.hookInputSchema))
+        return ok()
+      case 'PUT hooks': {
+        const body = await parseBody(req, ext.hookInputSchema.extend({ id: z.string().max(300) }))
+        ext.updateHook(body.id, body)
+        return ok()
+      }
+      case 'DELETE hooks':
+        ext.deleteHook((await parseBody(req, idBodySchema())).id)
+        return ok()
+      case 'PUT hooks/:arg':
+        if (arg !== 'disabled') break
+        ext.setHooksDisabled((await parseBody(req, onBodySchema())).on)
+        return ok()
+      case 'GET mods':
+        return Response.json(await ext.listMods())
+      case 'PUT mods/:arg':
+        return Response.json(await ext.setModEnabled(arg!, (await parseBody(req, onBodySchema())).on))
+      case 'GET mods/:arg/source':
+        return Response.json(await ext.modSource(arg!))
+      case 'PUT mods/:arg/source':
+        await ext.saveModSource(arg!, (await parseBody(req, modSourceSchema())).source)
+        return ok()
+      case 'GET stats':
+        return Response.json(await ext.loadStats())
+    }
+  } catch (err) {
+    if (err instanceof ext.ExtError) return errorResponse(err.status, err.message)
+    return errorResponse(500, err instanceof Error ? err.message : String(err))
+  }
+  return errorResponse(404, 'Not found')
+}
+
 type Listener = ReturnType<typeof Bun.serve>
 
 /**
@@ -266,6 +402,7 @@ function isDirectory(path: string): boolean {
  *   GET    /api/files/:id/list?q=       → { files } for `@` completion
  *   GET    /api/files/:id?path=         → a file the session may show (Range)
  *   GET    /api/files/:id/pdf?path=     → Office document converted to PDF
+ *   /api/account*, /api/settings, /api/usage → see createAccountApi
  */
 export function startWebServer(
   config: WebServerConfig,
@@ -289,6 +426,14 @@ export function startWebServer(
     return res
   }
   const uploadLimits = config.uploadLimits ?? DEFAULT_UPLOAD_LIMITS
+  let accountApi: ReturnType<typeof createAccountApi> | undefined
+  const handleAccount = async (req: Request, url: URL) => {
+    accountApi ??= createAccountApi(
+      config.account ?? (await import('./accountBackend.js')).localAccountBackend(),
+      { allowLocalNetwork: config.allowLocalNetwork === true },
+    )
+    return accountApi(req, url)
+  }
 
   async function sessionCwd(id: string): Promise<string | undefined> {
     return sessionManager.get(id)?.workDir ?? (await transcriptFileScope(id)).cwd
@@ -396,6 +541,7 @@ export function startWebServer(
         permissionMode,
         model,
         resume,
+        channels: ext.readDefaultChannels(config.configDir ?? getClaudeConfigHomeDir()),
       })
       return Response.json({
         session_id: session.id,
@@ -489,6 +635,17 @@ export function startWebServer(
       return (await renameSession(id, parsed.data.title))
         ? new Response(null, { status: 204 })
         : errorResponse(404, 'Session not found')
+    }
+    if (pathname.startsWith('/api/ext/')) {
+      return handleExtApi(req, url, config.configDir ?? getClaudeConfigHomeDir())
+    }
+    if (
+      pathname.startsWith('/api/account') ||
+      pathname === '/api/settings' ||
+      pathname === '/api/usage'
+    ) {
+      const res = await handleAccount(req, url)
+      if (res) return res
     }
     const filesMatch = FILES_PATH.exec(pathname)
     if (filesMatch) {

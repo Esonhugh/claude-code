@@ -196,7 +196,7 @@ h1, h2, h3 { text-wrap: balance; margin: 0 }
 .sess .t, .sess small { grid-column: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
 .sess .act { grid-column: 2; grid-row: 1 / span 2; font-size: 11px; color: var(--accent); border: 1px solid var(--line); background: var(--surface); border-radius: 999px; padding: 1px 8px; display: none }
 .sess:hover .act, .sess:focus-visible .act { display: inline-block }
-.foot { border-top: 1px solid var(--line); padding: 8px 12px 12px; display: grid; gap: 2px }
+.foot { border-top: 1px solid var(--line); padding: 6px 12px 8px; display: grid; gap: 2px }
 .foot button { border: 0; background: transparent; text-align: left; padding: 7px 8px; border-radius: 6px; display: flex; gap: 10px; align-items: center }
 .foot button:hover { background: var(--sunken) }
 .spark { display: flex; align-items: flex-end; gap: 6px; height: 90px; padding-top: 6px }
@@ -220,7 +220,8 @@ h1, h2, h3 { text-wrap: balance; margin: 0 }
 .mshare .v { color: var(--muted); font-variant-numeric: tabular-nums; text-align: right }
 .heat { display: grid; grid-auto-flow: column; grid-template-rows: repeat(7, auto); grid-template-columns: repeat(25, minmax(0, 1fr)); gap: 4px }
 .heat i { aspect-ratio: 1; border-radius: 3px; background: var(--sunken); display: block }
-.heatwrap { display: block }
+.heatwrap { display: block; position: relative } .heat i:hover { outline: 1px solid var(--fg); outline-offset: 1px }
+.heattip { min-width: 0; white-space: nowrap }
 .heatleg { display: flex; align-items: center; gap: 4px; justify-content: flex-end; font-size: 11px; color: var(--muted) } .heatleg i { width: 12px; height: 12px; border-radius: 3px; display: block; background: var(--sunken) }
 .heat i[data-l="1"], .heatleg i[data-l="1"] { background: color-mix(in srgb, var(--accent) 30%, var(--sunken)) } .heat i[data-l="2"], .heatleg i[data-l="2"] { background: color-mix(in srgb, var(--accent) 55%, var(--sunken)) }
 .heat i[data-l="3"], .heatleg i[data-l="3"] { background: color-mix(in srgb, var(--accent) 78%, var(--sunken)) } .heat i[data-l="4"], .heatleg i[data-l="4"] { background: var(--accent) }
@@ -233,13 +234,36 @@ h1, h2, h3 { text-wrap: balance; margin: 0 }
 .mgrid > div { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; display: grid; gap: 2px }
 .mgrid b { font-size: 16px; font-weight: 600; font-variant-numeric: tabular-nums } .mgrid small { color: var(--muted); font-size: 11.5px }
 .foot .ico { width: 16px; text-align: center; color: var(--muted); font-family: var(--f-mono) }
-.acctwrap { position: relative; margin-top: 4px }
-.foot .acct, .acct { width: 100%; display: flex; gap: 10px; align-items: center; padding: 8px; font-size: 12.5px; text-align: left; color: var(--fg) }
+.acctwrap { position: relative }
+.foot .acct, .acct { width: 100%; display: flex; gap: 8px; align-items: center; padding: 5px 8px; font-size: 12.5px; text-align: left; color: var(--fg) }
 .acct .avatar.none { background: var(--idle) }
-.acctmenu { position: absolute; bottom: calc(100% + 6px); left: 0; right: 0; z-index: 30; padding: 6px; display: flex; flex-direction: column; gap: 2px; font-size: 13px }
-.acctmenu[hidden] { display: none }
-.acctmenu .ah { padding: 6px 8px 8px; border-bottom: 1px solid var(--line); margin-bottom: 4px } .acctmenu .ah small { display: block; color: var(--muted); font-size: 11.5px }
-.acctmenu button { justify-content: flex-start }
+.pop.acctmenu { position: absolute; bottom: calc(100% + 6px); left: 0; right: 0; z-index: 30; padding: 6px; display: flex; flex-direction: column; gap: 1px; font-size: 13px; overflow: visible; max-height: none }
+.acctmenu[hidden], .authmenu[hidden] { display: none }
+.acctmenu .ah { display: flex; gap: 10px; align-items: center; padding: 6px 8px 8px; border-bottom: 1px solid var(--line); margin-bottom: 4px; min-width: 0 } .acctmenu .ah > div { min-width: 0 } .acctmenu .ah b { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600 } .acctmenu .ah small { display: block; color: var(--muted); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
+.acctmenu .ah .avatar { width: 28px; height: 28px; font-size: 12.5px; flex: none; background: var(--accent) } .acctmenu .ah .avatar.none { background: var(--idle) }
+.acctmenu hr { border: 0; border-top: 1px solid var(--line); margin: 4px 0 }
+.mi { border: 0; background: transparent; text-align: left; padding: 6px 8px; border-radius: 6px; font: inherit; font-size: 13px; color: var(--fg); display: flex; gap: 8px; align-items: center; cursor: pointer; width: 100%; white-space: nowrap; min-width: 0 }
+.mi:hover, .mi[aria-expanded="true"], .mi:focus-visible { background: var(--sunken) }
+.mi .ico { width: 16px; text-align: center; color: var(--muted); font-family: var(--f-mono); flex: none }
+.mi small { margin-left: auto; color: var(--muted); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis }
+.mi kbd { margin-left: auto; font-family: var(--f-mono); font-size: 11px; color: var(--muted); border: 1px solid var(--line); border-radius: 4px; padding: 0 5px; line-height: 16px }
+.mi .chev { color: var(--muted); flex: none; margin-left: auto }
+.authwrap { position: relative }
+.pop.authmenu { position: fixed; width: 300px; z-index: 31; padding: 6px; display: flex; flex-direction: column; gap: 1px; max-height: none; right: auto; overflow: visible }
+.authmenu .mh { font-size: 11px; color: var(--muted); padding: 4px 8px 2px; text-transform: uppercase; letter-spacing: .06em }
+.authrow { display: flex; align-items: center; gap: 2px; border-radius: 6px } .authrow:hover { background: var(--sunken) }
+.authrow .mi { flex: 1 } .authrow .mi:hover { background: transparent }
+.authrow .mi .ck { width: 16px; text-align: center; color: var(--accent); flex: none }
+.authrow .mi span.lbl { display: grid; min-width: 0 } .authrow .mi span.lbl small { margin-left: 0; text-align: left }
+.authrow .edit { border: 0; background: transparent; color: var(--muted); font: inherit; font-size: 12px; padding: 4px 8px; border-radius: 6px; cursor: pointer; flex: none } .authrow .edit:hover { color: var(--fg); background: var(--surface) }
+@media (max-width: 760px) { .pop.authmenu { position: static; width: auto; box-shadow: none; border: 0; border-left: 2px solid var(--line); border-radius: 0; margin: 2px 0 4px 14px; padding: 2px 0 2px 6px } }
+.keyform { display: grid; gap: 12px } .keyform .seg { justify-self: start }
+.keyform label { display: grid; gap: 5px; font-size: 12.5px; color: var(--muted) } .keyform label b { color: var(--fg); font-weight: 600; font-size: 13px }
+.keyform input { border: 1px solid var(--line); border-radius: 8px; padding: 7px 10px; background: var(--bg); color: var(--fg); font: inherit; font-family: var(--f-mono); font-size: 12.5px; min-width: 0 }
+.keyform input[aria-invalid="true"] { border-color: var(--bad) }
+.keyform .err { color: var(--bad); font-size: 12px } .keyform .err:empty { display: none }
+.keyform .btns { display: flex; gap: 8px; justify-content: flex-end }
+#ui-name-input { width: 150px; border: 1px solid var(--line); border-radius: 8px; padding: 5px 8px; background: var(--bg); color: var(--fg) }
 .gate { max-width: var(--col); margin: 0 auto 10px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); padding: 14px; display: flex; flex-direction: column; gap: 10px }
 .gate .gopts { display: flex; gap: 8px; flex-wrap: wrap } .gate .gopts .btn { flex: 1 1 160px; justify-content: center }
 .composer .gate .gmanual { display: flex; flex-direction: row; align-items: center; gap: 6px; max-width: none; margin: 0 }
@@ -261,10 +285,13 @@ h1, h2, h3 { text-wrap: balance; margin: 0 }
 .hookform { display: grid; grid-template-columns: auto 1fr; gap: 6px 10px; align-items: center; padding: 10px; border: 1px solid var(--line); border-radius: 10px; margin-top: 8px }
 .hookform input, .hookform select, .modsrc { border: 1px solid var(--line); border-radius: 8px; padding: 6px 9px; background: var(--bg); color: var(--fg); font: inherit; font-size: 12.5px; min-width: 0 }
 .hookform .btns { grid-column: 1 / -1; justify-content: flex-end }
+.hookform .footbtn { width: 100%; justify-content: space-between; border: 1px solid var(--line); border-radius: 8px; padding: 6px 9px; background: var(--bg); color: var(--fg) }
+.pickmenu { top: calc(100% + 4px); bottom: auto; width: 100%; max-height: 240px; overflow: auto }
 .modsrc { width: 100%; min-height: 220px; font-family: var(--f-mono); font-size: 12px; line-height: 1.5; resize: vertical; box-sizing: border-box }
 .applist { border-top: 1px solid var(--line); margin-top: 10px; padding-top: 8px }
-.acct .avatar { background: var(--accent) }
-.acct small { color: var(--muted); display: block; font-size: 11.5px }
+.acct .avatar { background: var(--accent); width: 22px; height: 22px; font-size: 11px; flex: none }
+.acct > div { min-width: 0; line-height: 1.25 } .acct b { display: block; font-weight: 500; font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
+.acct small { color: var(--muted); display: block; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
 .menu-btn { display: none; border: 1px solid var(--line); background: var(--surface); border-radius: 6px; padding: 4px 9px }
 .scrim { position: fixed; inset: 0; background: rgba(10, 14, 20, .45); z-index: 20 }
 
@@ -465,6 +492,7 @@ button.chip { cursor: pointer; font: inherit; color: inherit }
 .xrow { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 12px; align-items: center; padding: 10px 0; border-bottom: 1px solid var(--line) }
 .xrow:last-child { border-bottom: 0 }
 .xrow b { font-weight: 500 } .xrow small { color: var(--muted); font-size: 12px; display: block }
+.xrow small.clamp { overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
 .xrow .tags { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 4px }
 .xrow .tag { font-size: 11px; padding: 0 7px; border-radius: 999px; background: var(--sunken); color: var(--muted) }
 .xrow .acts { display: flex; gap: 6px; align-items: center }
@@ -658,7 +686,6 @@ a.btn { text-decoration: none; color: var(--fg); display: inline-block }
 .history .more:hover { color: var(--fg) }
 .history > .note { padding: 8px }
 .acct { border: 0; background: transparent; border-radius: 6px }
-.acct > div { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
 
 /* messages the protocol adds beyond the prototype */
 .msg .bubble { white-space: pre-wrap; overflow-wrap: anywhere }

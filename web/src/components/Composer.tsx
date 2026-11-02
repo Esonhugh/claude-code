@@ -230,7 +230,8 @@ export function InputBox({
   t,
   start,
   busy,
-  disabled,
+  disabled: disabledProp,
+  signedOut,
   draft,
   setDraft,
   onSend,
@@ -250,6 +251,8 @@ export function InputBox({
   start?: boolean
   busy: boolean
   disabled?: boolean
+  /** Signed out: the box is disabled and says why (prototype `setPlaceholder`). */
+  signedOut?: boolean
   draft: string
   setDraft: (v: string) => void
   onSend: () => void
@@ -272,6 +275,7 @@ export function InputBox({
   const imagePicker = useRef<HTMLInputElement>(null)
   const box = useRef<HTMLTextAreaElement>(null)
   const paletteId = useId()
+  const disabled = disabledProp || signedOut
   const chatPlaceholder = usePlaceholder(t)
   const [plusOpen, setPlusOpen] = useState(false)
   const [selected, setSelected] = useState(0)
@@ -518,7 +522,7 @@ export function InputBox({
     <textarea
       ref={box}
       value={draft}
-      placeholder={start ? t('startPlaceholder') : chatPlaceholder}
+      placeholder={signedOut ? t('signInToSend') : start ? t('startPlaceholder') : chatPlaceholder}
       aria-label={t('message')}
       disabled={disabled}
       role="combobox"

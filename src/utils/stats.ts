@@ -77,6 +77,8 @@ export type ClaudeCodeStats = {
   lastSessionDate: string | null
   peakActivityDay: string | null
   peakActivityHour: number | null
+  // Sessions started in each hour of the day (0-23)
+  hourCounts?: { [hour: number]: number }
 
   // Speculation time saved
   totalSpeculationTimeSavedMs: number
@@ -606,6 +608,7 @@ function cacheToStats(
     lastSessionDate,
     peakActivityDay,
     peakActivityHour,
+    hourCounts: Object.fromEntries(hourCountsMap),
     totalSpeculationTimeSavedMs,
   }
 
@@ -825,6 +828,7 @@ function processedStatsToClaudeCodeStats(
     lastSessionDate,
     peakActivityDay,
     peakActivityHour,
+    hourCounts: stats.hourCounts,
     totalSpeculationTimeSavedMs: stats.totalSpeculationTimeSavedMs,
   }
 

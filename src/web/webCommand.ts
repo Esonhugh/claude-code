@@ -1,5 +1,9 @@
 import { accessSync, constants, mkdirSync } from 'fs'
 import { join } from 'path'
+import { setCwdState, setOriginalCwd, setProjectRoot } from '../bootstrap/state.js'
+import { resetSettingsCache } from '../utils/settings/settingsCache.js'
+import { initBuiltinPlugins } from '../plugins/bundled/index.js'
+import { initBundledSkills } from '../skills/bundled/index.js'
 import { DangerousBackend } from '../server/backends/dangerousBackend.js'
 import {
   probeRunningServer,
@@ -160,6 +164,15 @@ export async function runWebCommand(opts: WebCommandOptions): Promise<void> {
   const workspace =
     opts.workspace ?? join(getClaudeConfigHomeDir(), 'web', 'workspace')
   mkdirSync(workspace, { recursive: true })
+  // The dialogs' project-scope settings (hooks, skills, memory) are the
+  // workspace's, where sessions start by default.
+  setOriginalCwd(workspace)
+  setProjectRoot(workspace)
+  setCwdState(workspace)
+  resetSettingsCache()
+  // The Skills and Mods dialogs list built-in skills and plugins like a session does.
+  await initBuiltinPlugins()
+  initBundledSkills()
   const uploadsDir = join(getClaudeConfigHomeDir(), 'web', 'uploads')
   mkdirSync(uploadsDir, { recursive: true })
 
