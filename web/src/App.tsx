@@ -951,6 +951,7 @@ export function App() {
           onOpenFile={openFile}
           onStopTask={taskId => stopTask(view, taskId)}
           onSendTask={(taskId, text) => sendToTask(view, taskId, text)}
+          onRequest={body => requestAsync(view, REQUEST_PREFIX.background, body)}
           onClose={() => setSheetOpen(false)}
         />
       )}

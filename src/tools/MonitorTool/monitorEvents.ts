@@ -16,6 +16,29 @@ const MAX_PENDING_BYTES = 1_048_576
 const BUCKET_CAPACITY = 10
 const BUCKET_REFILL_MS = 2000
 const SUPPRESSION_KILL_MS = 30_000
+const RECENT_EVENTS_PER_TASK = 50
+const RECENT_EVENT_TASKS = 50
+
+export type MonitorEventRecord = { time: number; text: string }
+
+// Fork-only: the latest events of recent monitors, for host apps that list
+// them (`get_background_tasks`). Bounded per task and by task count.
+const recentEvents = new Map<string, MonitorEventRecord[]>()
+
+function recordMonitorEvent(taskId: string, time: number, text: string): void {
+  const events = recentEvents.get(taskId) ?? []
+  events.push({ time, text })
+  if (events.length > RECENT_EVENTS_PER_TASK) events.shift()
+  recentEvents.delete(taskId)
+  recentEvents.set(taskId, events)
+  if (recentEvents.size > RECENT_EVENT_TASKS) {
+    recentEvents.delete(recentEvents.keys().next().value!)
+  }
+}
+
+export function getMonitorEvents(taskId: string): MonitorEventRecord[] {
+  return recentEvents.get(taskId) ?? []
+}
 
 export function buildMonitorEventNotification(
   taskId: string,
@@ -102,6 +125,7 @@ export function createMonitorEventStream(
   let lastSuppressedAt: number | undefined
 
   function emit(body: string): void {
+    if (taskRef.id) recordMonitorEvent(taskRef.id, now(), body)
     notify(buildMonitorEventNotification(taskRef.id ?? '', description, body))
   }
 

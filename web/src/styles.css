@@ -173,6 +173,9 @@ h1, h2, h3 { text-wrap: balance; margin: 0 }
 .delivery.no { background: var(--bad-soft); color: var(--bad) }
 .screen .f31 { color: #ff7b72 } .screen .f32 { color: #7ee787 } .screen .f33 { color: #e3b341 } .screen .f34 { color: #79c0ff } .screen .f35 { color: #d2a8ff } .screen .f36 { color: #56d4dd } .screen .f90 { color: #8b949e } .screen .f1 { font-weight: 600 }
 .screen { background: var(--term-bg); color: var(--term-fg); border-radius: 8px; padding: 10px 12px; margin: 0; white-space: pre; overflow-x: auto; font-size: 12px; line-height: 1.45; min-height: 140px }
+.screen .f30 { color: #6e7681 } .screen .f37 { color: #d7dde7 } .screen .f91 { color: #ffa198 } .screen .f92 { color: #aff5b4 } .screen .f93 { color: #f8e3a1 } .screen .f94 { color: #a5d6ff } .screen .f95 { color: #e2c5ff } .screen .f96 { color: #b3f0ff } .screen .f97 { color: #ffffff }
+.term-input { display: flex; gap: 6px }
+.term-input input { flex: 1; min-width: 0; border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; background: var(--bg); color: var(--fg); font-size: 12px }
 .pdfbar { display: flex; gap: 8px; align-items: center; font-size: 12px; color: var(--muted); flex-wrap: wrap }
 .pdfbar .btn { padding: 2px 8px; min-width: 28px }
 .pdfbar input { width: 42px; font: inherit; text-align: center; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--fg); padding: 2px 4px }
@@ -598,7 +601,7 @@ body.hist #goal-wrap + .footwrap { margin-left: auto }
 .keys kbd { font-family: var(--f-mono); font-size: 11.5px; border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 5px; padding: 1px 6px; background: var(--sunken); margin-left: 3px }
 .keys .kh { grid-column: 1 / -1; font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; margin-top: 6px }
 .events { display: flex; flex-direction: column; gap: 4px; max-height: 260px; overflow: auto; font-size: 13px }
-.events > div { display: grid; grid-template-columns: 68px minmax(0, 1fr); gap: 8px }
+.events > div { display: grid; grid-template-columns: 68px minmax(0, 1fr); gap: 8px } .pane .events .note { padding: 0 }
 .proj { display: flex; flex-direction: column; gap: 1px; margin-top: 4px }
 .proj-h { display: flex; align-items: center; gap: 2px }
 .proj-t { flex: 1; min-width: 0; border: 0; background: transparent; text-align: left; padding: 5px 6px; border-radius: 6px; display: grid; grid-template-columns: 12px minmax(0, 1fr) auto; column-gap: 6px; align-items: center; cursor: pointer }

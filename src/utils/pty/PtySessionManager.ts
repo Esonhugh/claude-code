@@ -13,7 +13,9 @@ import {
   applyTerminalOutput,
   createTerminalScreenRenderer,
   renderedPreview,
+  renderedScreen,
   resizeTerminalScreenRenderer,
+  type StructuredTerminalScreen,
   type TerminalScreenRenderer,
 } from './terminalScreenRenderer.js'
 
@@ -160,6 +162,13 @@ export class PtySessionManager {
     const session = this.getSession(sessionId)
     this.refreshSession(sessionId, session)
     return renderedPreview(session.renderer)
+  }
+
+  getRenderedScreen(sessionId: string): StructuredTerminalScreen {
+    this.reapExpiredSessions()
+    const session = this.getSession(sessionId)
+    this.refreshSession(sessionId, session)
+    return renderedScreen(session.renderer)
   }
 
   resize(sessionId: string, cols: number, rows: number): TerminalSessionRecord {

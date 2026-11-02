@@ -553,6 +553,7 @@ export const REQUEST_PREFIX = {
   settings: 'web-settings-',
   usage: 'web-usage-',
   effort: 'web-effort-',
+  background: 'web-bg-',
 } as const
 
 /** Settings `hooks` ({ Event: [{ matcher, hooks: [{ command, timeout }] }] }) as flat rows. */

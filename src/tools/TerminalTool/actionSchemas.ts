@@ -102,3 +102,14 @@ export const actionSchema = z.object({
   force: z.boolean().optional(),
   dangerouslyDisableSandbox: z.boolean().optional(),
 }).passthrough()
+
+// Fork-only `send_terminal_input` control request: keys a host app's user
+// types into a running Terminal task.
+export const hostTerminalInputSchema = z.object({
+  task_id: z.string().min(1),
+  text: z.string().max(4096).optional(),
+  key: z.enum(SPECIAL_KEYS).optional(),
+  enter: z.boolean().optional(),
+}).refine(input => !!input.text || input.key !== undefined || input.enter === true, {
+  message: 'send_terminal_input requires text, key, or enter=true',
+})

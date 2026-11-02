@@ -27,7 +27,9 @@ import { capturePaneActionSchema } from './actionSchemas.js'
 import {
   applyTerminalKeystrokes,
   getTerminalManager,
+  getTerminalScreen,
   refreshTerminalTaskPreview,
+  sendTerminalInputFromHost,
   TerminalTool,
   resetTerminalManagerForTesting,
   terminalTaskRegistry,
@@ -882,6 +884,63 @@ test('the permission dialog description names the whole submitted line', async (
     {} as never,
   )
   assert.equal(description, 'Runs: rm -rf build')
+})
+
+test('the task keeps the command the tool was asked to run, not the spawned argv', async () => {
+  const context = createContext()
+  const tasks = () => Object.values(context.getAppState().tasks) as TerminalTask[]
+  await TerminalTool.call(
+    { action: 'new-session', command: 'python', args: ['retrieval_eval.py', '--split', 'dev'], cwd: process.cwd() },
+    context,
+    allowPermission,
+    TEST_ASSISTANT_MESSAGE,
+  )
+  await TerminalTool.call(
+    { action: 'new-session', command: 'bash', args: ['-c', 'echo a b'], cwd: process.cwd() },
+    context,
+    allowPermission,
+    TEST_ASSISTANT_MESSAGE,
+  )
+  await TerminalTool.call({ action: 'new-session', cwd: process.cwd() }, context, allowPermission, TEST_ASSISTANT_MESSAGE)
+  const [python, bash, shell] = tasks()
+  assert.equal(python?.requestedCommand, 'python retrieval_eval.py --split dev')
+  assert.equal(bash?.requestedCommand, "bash -c 'echo a b'")
+  // No command: the default shell, named without its resolved path or login args.
+  const resolved = resolveTerminalCommand({ cwd: process.cwd() }).command
+  assert.equal(shell?.requestedCommand, resolved.split('/').at(-1))
+  assert.equal(shell?.command, resolved)
+})
+
+test('host input reaches the PTY, shows on the colored screen and joins the pending line', async () => {
+  const context = createContext()
+  const opened = await TerminalTool.call(
+    { action: 'new-session', cwd: process.cwd(), cols: 40, rows: 4 },
+    context,
+    allowPermission,
+    TEST_ASSISTANT_MESSAGE,
+  )
+  const target = String((opened.data as { target: string }).target)
+  // The fake driver echoes what is written, like a shell with echo on.
+  await sendTerminalInputFromHost(target, { text: 'A \x1b[31mred\x1b[0m \x1b[1;94mB' }, context.setAppState)
+  assert.deepEqual(getTerminalScreen(target), {
+    cols: 40,
+    rows: 4,
+    lines: [[{ text: 'A ' }, { text: 'red', fg: 31 }, { text: ' ' }, { text: 'B', fg: 94, bold: true }], [], [], []],
+  })
+  const task = Object.values(context.getAppState().tasks).find(
+    (value): value is TerminalTask => value.type === 'interactive_terminal' && value.sessionId === target,
+  )
+  assert.match(task?.preview ?? '', /A red B/)
+
+  resetTerminalManagerForTesting(createFakeTerminalManager())
+  const session = await openPermissionSession({ mode: 'default' })
+  await sendTerminalInputFromHost(session.target, { text: 'rm -rf ' }, context.setAppState)
+  const description = await TerminalTool.description(
+    { action: 'send-keys', target: session.target, text: 'build', enter: true },
+    {} as never,
+  )
+  assert.equal(description, 'Runs: rm -rf build')
+  assert.equal(getTerminalScreen('term-nosuch'), undefined)
 })
 
 test('refreshes task preview on display-message for large terminal redraw output', async () => {
