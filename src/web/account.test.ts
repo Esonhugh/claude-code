@@ -6,7 +6,8 @@ import { createServerLogger } from '../server/serverLog.js'
 import { SessionManager } from '../server/sessionManager.js'
 import type { AccountBackend, AccountStatus, AuthProvider, WebSettings } from './account.js'
 import { isValidBaseUrl } from './account.js'
-import { keyTail } from './accountBackend.js'
+import { setOauthTokenFromFd } from '../bootstrap/state.js'
+import { keyTail, localAccountBackend } from './accountBackend.js'
 import { startWebServer } from './webServer.js'
 
 const TOKEN = 'account-test-token'
@@ -301,5 +302,53 @@ describe('keyTail', () => {
   it('keeps only the last four characters of a full-length key', () => {
     expect(keyTail('sk-ant-api03-abcdefghijklmnop')).toBe('mnop')
     expect(keyTail('short')).toBeUndefined()
+  })
+})
+
+describe('local account status', () => {
+  const NAMES = [
+    'CLAUDE_CONFIG_DIR',
+    'ANTHROPIC_API_KEY',
+    'ANTHROPIC_AUTH_TOKEN',
+    'CLAUDE_CODE_OAUTH_TOKEN',
+    'CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR',
+    'CLAUDE_CODE_USE_BEDROCK',
+    'CLAUDE_CODE_USE_VERTEX',
+    'CLAUDE_CODE_USE_FOUNDRY',
+    'CLAUDE_CODE_USE_OPENAI',
+    'CLAUDE_CODE_REMOTE',
+    'CLAUDE_CODE_ENTRYPOINT',
+  ]
+  const prior = Object.fromEntries(NAMES.map(n => [n, process.env[n]]))
+  const clean = () => {
+    for (const n of NAMES) delete process.env[n]
+    process.env.CLAUDE_CONFIG_DIR = realpathSync(mkdtempSync(join(tmpdir(), 'web-acct-status-')))
+    setOauthTokenFromFd(null)
+  }
+  afterEach(() => {
+    for (const n of NAMES) {
+      if (prior[n] === undefined) delete process.env[n]
+      else process.env[n] = prior[n]
+    }
+    setOauthTokenFromFd(null)
+  })
+
+  it('is signed in wherever `claude auth status` is logged in', async () => {
+    const status = () => localAccountBackend().status()
+    clean()
+    expect((await status()).kind).toBeNull()
+
+    // A token the host hands the CLI (a CCR token file or descriptor).
+    clean()
+    setOauthTokenFromFd('host-provided-test-value')
+    expect(await status()).toMatchObject({ kind: 'claude', provider: 'anthropic' })
+
+    clean()
+    process.env.ANTHROPIC_AUTH_TOKEN = 'auth-token-test-value'
+    expect(await status()).toMatchObject({ kind: 'apikey', source: 'ANTHROPIC_AUTH_TOKEN' })
+
+    clean()
+    process.env.CLAUDE_CODE_USE_BEDROCK = '1'
+    expect(await status()).toMatchObject({ kind: 'apikey', source: 'bedrock' })
   })
 })

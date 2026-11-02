@@ -14,6 +14,7 @@ import {
   getOpenAIApiKey,
   getOpenAIAuthInfo,
   getSubscriptionName,
+  isUsing3PServices,
   removeApiKey,
   saveApiKey,
 } from '../utils/auth.js'
@@ -41,7 +42,12 @@ const ENV_CREDENTIALS: Record<AuthProvider, string[]> = {
   anthropic: ['ANTHROPIC_API_KEY'],
   openai: ['OPENAI_API_KEY', 'OPENAI_AUTH_TOKEN'],
 }
-const OAUTH_SOURCES = new Set(['claude.ai', 'CLAUDE_CODE_OAUTH_TOKEN', 'CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR'])
+const OAUTH_SOURCES = new Set([
+  'claude.ai',
+  'CLAUDE_CODE_OAUTH_TOKEN',
+  'CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR',
+  'CCR_OAUTH_TOKEN_FILE',
+])
 
 /** The last four characters, shown as `····wxyz`; nothing for a key too short to spare them. */
 export function keyTail(key: string): string | undefined {
@@ -115,7 +121,8 @@ async function status(): Promise<AccountStatus> {
   if (anthropic?.source === 'ANTHROPIC_API_KEY') {
     return { kind: 'apikey', provider: 'anthropic', source: anthropic.source, keys }
   }
-  if (OAUTH_SOURCES.has(getAuthTokenSource().source)) {
+  const token = getAuthTokenSource()
+  if (OAUTH_SOURCES.has(token.source)) {
     const account = getOauthAccountInfo()
     return {
       kind: 'claude',
@@ -126,6 +133,9 @@ async function status(): Promise<AccountStatus> {
     }
   }
   if (anthropic) return { kind: 'apikey', provider: 'anthropic', source: anthropic.source, keys }
+  // The rest of what `claude auth status` counts as logged in: ANTHROPIC_AUTH_TOKEN, an apiKeyHelper, a cloud provider.
+  if (token.hasToken) return { kind: 'apikey', provider: 'anthropic', source: token.source, keys }
+  if (isUsing3PServices()) return { kind: 'apikey', provider: 'anthropic', source: getAPIProvider(), keys }
   return { kind: null, provider: 'anthropic', keys }
 }
 

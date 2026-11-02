@@ -433,6 +433,52 @@ describe('claude web server', () => {
     )
   })
 
+  it('serves an upload while the session transcript has no messages yet', async () => {
+    const r = start()
+    const prior = process.env.CLAUDE_CONFIG_DIR
+    process.env.CLAUDE_CONFIG_DIR = r.configDir
+    try {
+      const cookie = await signIn(r)
+      const id = '99999999-2222-4333-8444-555555555556'
+      const dir = join(r.configDir, 'projects', r.workspace.replace(/[^a-zA-Z0-9]/g, '-'))
+      mkdirSync(dir, { recursive: true })
+      writeFileSync(join(dir, `${id}.jsonl`), JSON.stringify({ type: 'custom-title', sessionId: id, customTitle: 'New' }) + '\n')
+      const saved = await fetch(`${r.base}/api/files/${id}?name=notes.txt`, {
+        method: 'POST',
+        headers: { cookie, origin: r.origin },
+        body: 'NOTES_BODY',
+      })
+      const { path } = (await saved.json()) as { path: string }
+      const served = await fetch(`${r.base}/api/files/${id}?path=${encodeURIComponent(path)}`, { headers: { cookie } })
+      expect(served.status).toBe(200)
+      expect(await served.text()).toBe('NOTES_BODY')
+
+    } finally {
+      if (prior === undefined) delete process.env.CLAUDE_CONFIG_DIR
+      else process.env.CLAUDE_CONFIG_DIR = prior
+    }
+  })
+
+  it('answers an uncaught error with a plain JSON 500, not the debug page', async () => {
+    const r = start({
+      folderTrust: {
+        isTrusted: () => {
+          throw new Error('SECRET_DETAIL')
+        },
+        save: () => {},
+      },
+    })
+    const cookie = await signIn(r)
+    const other = realpathSync(mkdtempSync(join(tmpdir(), 'web-other-')))
+    const res = await fetch(`${r.base}/api/sessions`, {
+      method: 'POST',
+      headers: { cookie, origin: r.origin },
+      body: JSON.stringify({ cwd: other }),
+    })
+    expect(res.status).toBe(500)
+    expect(await res.json()).toEqual({ error: 'Internal error' })
+  })
+
   it('uploads within the limits and serves only allowed files', async () => {
     const r = start()
     const cookie = await signIn(r)

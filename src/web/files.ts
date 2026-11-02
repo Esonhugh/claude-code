@@ -97,7 +97,12 @@ export async function transcriptFileScope(
 ): Promise<{ cwd?: string; files: string[] }> {
   const found = await resolveSessionFilePath(sessionId)
   if (!found) return { files: [] }
-  const log = await loadTranscriptFromFile(found.filePath)
+  const log = await loadTranscriptFromFile(found.filePath).catch((err: unknown) => {
+    // A new session's transcript can hold metadata before its first message is flushed.
+    if (err instanceof Error && /^No (messages|valid conversation chain) found/.test(err.message)) return undefined
+    throw err
+  })
+  if (!log) return { cwd: found.projectPath, files: [] }
   const files = new Set<string>()
   let cwd: string | undefined
   for (const m of log.messages as unknown as Record<string, unknown>[]) {
