@@ -999,7 +999,7 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
 
       // Both phases ran; the workflow agents sit in its lanes, not in the tree.
       const finished = panel.getByRole('button', { name: /Ended/ })
-      await finished.waitFor({ timeout: 60_000 })
+      await showing(finished.waitFor({ timeout: 60_000 }), panel)
       if ((await finished.getAttribute('aria-expanded')) === 'false') await finished.click()
       await panel.locator('.agent-row', { hasText: 'two-phase' }).first().click()
       await panel.getByText('Phase 2/2 · Write').waitFor({ timeout: 30_000 })
@@ -1703,7 +1703,7 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       await cardOf('Slow').click({ button: 'right' })
       await menu.waitFor()
       await page.keyboard.press('s')
-      await cardOf('Slow').locator('.pjbadge.stopped').waitFor({ timeout: 30_000 })
+      await showing(cardOf('Slow').locator('.pjbadge.stopped').waitFor({ timeout: 30_000 }), side)
       await cardOf('Slow').click()
       expect(await taskInput.getAttribute('placeholder')).toBe('Task stopped')
       expect(await taskInput.isDisabled()).toBe(true)
