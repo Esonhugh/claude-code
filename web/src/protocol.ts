@@ -554,6 +554,7 @@ export const REQUEST_PREFIX = {
   effort: 'web-effort-',
   /** The sidebar dialogs' requests (mcp_status, reload_plugins…). */
   ext: 'web-ext-',
+  background: 'web-bg-',
 } as const
 
 /** Settings `hooks` ({ Event: [{ matcher, hooks: [{ command, timeout }] }] }) as flat rows. */
