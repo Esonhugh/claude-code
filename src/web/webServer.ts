@@ -624,7 +624,17 @@ export function startWebServer(
     if (req.method === 'PATCH') {
       const parsed = patchProjectBodySchema().safeParse(await readJson(req))
       if (!parsed.success) return errorResponse(400, 'Invalid request')
-      return Response.json(projectJson(projects().update(id, parsed.data)!))
+      const updated = projects().update(id, parsed.data)!
+      const changed =
+        updated.instructions !== project.instructions || updated.worker_model !== project.worker_model
+      // A running coordinator picks up new instructions or task model by restarting with --resume.
+      if (changed && updated.coordinator_session_id) {
+        sessionManager.restart(updated.coordinator_session_id, {
+          permissionMode: updated.permission_mode,
+          coordinator: coordinatorSpawn(updated),
+        })
+      }
+      return Response.json(projectJson(updated))
     }
     if (req.method === 'DELETE') {
       if (new URL(req.url).searchParams.get('purge') === '1') projects().remove(id)
