@@ -123,9 +123,9 @@ describe('reduce', () => {
       },
     ])
     expect(state.approvals).toEqual([
-      { requestId: 'r1', toolName: 'Bash', input: { command: 'ls' } },
+      { requestId: 'r1', toolName: 'Bash', input: { command: 'ls' }, suggestions: [] },
     ])
-    expect(permissionResponse(state.approvals[0]!, true)).toEqual({
+    expect(permissionResponse(state.approvals[0]!, 'allow')).toEqual({
       type: 'control_response',
       response: {
         subtype: 'success',
@@ -133,9 +133,49 @@ describe('reduce', () => {
         response: { behavior: 'allow', updatedInput: { command: 'ls' } },
       },
     })
-    expect(permissionResponse(state.approvals[0]!, false)).toMatchObject({
+    expect(permissionResponse(state.approvals[0]!, 'deny')).toMatchObject({
       response: { response: { behavior: 'deny' } },
     })
+  })
+
+  it('sends the offered rules with "always allow"', () => {
+    const rule = { type: 'addRules', rules: [{ toolName: 'Bash', ruleContent: 'ls:*' }], behavior: 'allow', destination: 'localSettings' }
+    const state = fold([
+      {
+        type: 'control_request',
+        request_id: 'r2',
+        request: { subtype: 'can_use_tool', tool_name: 'Bash', input: { command: 'ls' }, permission_suggestions: [rule] },
+      },
+    ])
+    expect(permissionResponse(state.approvals[0]!, 'always')).toMatchObject({
+      response: { response: { behavior: 'allow', updatedPermissions: [rule] } },
+    })
+  })
+
+  it('records models, context usage, mode changes and cost', () => {
+    const state = fold([
+      { type: 'system', subtype: 'init', model: 'claude-opus-5-5', permissionMode: 'default' },
+      {
+        type: 'control_response',
+        response: {
+          subtype: 'success',
+          request_id: 'web-init-1',
+          response: { models: [{ value: 'default', displayName: 'Default' }, { value: 'sonnet', displayName: 'Sonnet' }] },
+        },
+      },
+      { type: 'control_response', response: { subtype: 'success', request_id: 'web-mode-2', response: { mode: 'plan' } } },
+      { type: 'control_response', response: { subtype: 'error', request_id: 'web-model-3', error: 'bad model' } },
+      { type: 'result', subtype: 'success', is_error: false, total_cost_usd: 0.25 },
+      { type: 'control_response', response: { subtype: 'success', request_id: 'web-context-4', response: { percentUsed: 12.5 } } },
+    ])
+    expect(state.models).toEqual([
+      { value: 'default', displayName: 'Default' },
+      { value: 'sonnet', displayName: 'Sonnet' },
+    ])
+    expect(state.permissionMode).toBe('plan')
+    expect(state.notice).toBe('bad model')
+    expect(state.costUsd).toBe(0.25)
+    expect(state.contextPercent).toBe(12.5)
   })
 
   it('answers control requests the page does not handle with an error', () => {

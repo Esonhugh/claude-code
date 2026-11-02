@@ -29,7 +29,11 @@ export type Approval = {
   requestId: string
   toolName: string
   input: Record<string, unknown>
+  /** Rules the engine offers for "always allow" (PermissionUpdate[]). */
+  suggestions: unknown[]
 }
+
+export type ModelOption = { value: string; displayName: string }
 
 export type ChatState = {
   items: Item[]
@@ -39,9 +43,20 @@ export type ChatState = {
   approvals: Approval[]
   /** Message id of the assistant message currently streaming. */
   streamingId?: string
+  permissionMode?: string
+  models: ModelOption[]
+  contextPercent?: number
+  costUsd?: number
+  /** Error from the last control request the user triggered (mode, model). */
+  notice?: string
 }
 
-export const initialState: ChatState = { items: [], busy: false, approvals: [] }
+export const initialState: ChatState = {
+  items: [],
+  busy: false,
+  approvals: [],
+  models: [],
+}
 
 type Json = Record<string, unknown>
 
@@ -231,6 +246,7 @@ export function reduce(state: ChatState, raw: unknown): ChatState {
         ...state,
         model: str(raw.model) ?? state.model,
         cwd: str(raw.cwd) ?? state.cwd,
+        permissionMode: str(raw.permissionMode) ?? state.permissionMode,
       }
 
     case 'stream_event':
@@ -297,6 +313,9 @@ export function reduce(state: ChatState, raw: unknown): ChatState {
     }
 
     case 'result': {
+      if (typeof raw.total_cost_usd === 'number') {
+        state = { ...state, costUsd: raw.total_cost_usd }
+      }
       const failed = raw.is_error === true || raw.subtype !== 'success'
       const next = {
         ...state,
@@ -323,14 +342,67 @@ export function reduce(state: ChatState, raw: unknown): ChatState {
             requestId,
             toolName: str(request.tool_name) ?? '',
             input: isObj(request.input) ? request.input : {},
+            suggestions: Array.isArray(request.permission_suggestions)
+              ? request.permission_suggestions
+              : [],
           },
         ],
       }
     }
 
+    case 'control_response':
+      return reduceControlResponse(state, raw)
+
     default:
       return state
   }
+}
+
+// Requests the page sends carry an id prefix naming what the answer is for.
+export const REQUEST_PREFIX = {
+  initialize: 'web-init-',
+  context: 'web-context-',
+  mode: 'web-mode-',
+  model: 'web-model-',
+  interrupt: 'web-interrupt-',
+} as const
+
+function reduceControlResponse(state: ChatState, raw: Json): ChatState {
+  const response = isObj(raw.response) ? raw.response : {}
+  const id = str(response.request_id) ?? ''
+  if (response.subtype === 'error') {
+    if (id.startsWith(REQUEST_PREFIX.mode) || id.startsWith(REQUEST_PREFIX.model)) {
+      return { ...state, notice: str(response.error) ?? 'Request failed' }
+    }
+    return state
+  }
+  const body = isObj(response.response) ? response.response : {}
+  if (id.startsWith(REQUEST_PREFIX.initialize)) {
+    const models = Array.isArray(body.models)
+      ? body.models.filter(isObj).map(m => ({
+          value: str(m.value) ?? '',
+          displayName: str(m.displayName) ?? str(m.value) ?? '',
+        }))
+      : []
+    return { ...state, models: models.filter(m => m.value) }
+  }
+  if (id.startsWith(REQUEST_PREFIX.context)) {
+    return typeof body.percentUsed === 'number'
+      ? { ...state, contextPercent: body.percentUsed }
+      : state
+  }
+  if (id.startsWith(REQUEST_PREFIX.mode)) {
+    return { ...state, notice: undefined, permissionMode: str(body.mode) ?? state.permissionMode }
+  }
+  if (id.startsWith(REQUEST_PREFIX.model)) return { ...state, notice: undefined }
+  return state
+}
+
+export function setLocal(
+  state: ChatState,
+  patch: Partial<Pick<ChatState, 'permissionMode' | 'model' | 'notice'>>,
+): ChatState {
+  return { ...state, ...patch }
 }
 
 /** Control requests the page cannot answer yet get an error, so the session never waits on them. */
@@ -349,19 +421,25 @@ export function unsupportedControlResponse(raw: unknown): Json | undefined {
   }
 }
 
+export type ApprovalChoice = 'allow' | 'always' | 'deny'
+
 export function permissionResponse(
   approval: Approval,
-  allow: boolean,
+  choice: ApprovalChoice,
 ): Json {
+  const response =
+    choice === 'deny'
+      ? { behavior: 'deny', message: 'The user denied this tool use.' }
+      : {
+          behavior: 'allow',
+          updatedInput: approval.input,
+          ...(choice === 'always' && approval.suggestions.length
+            ? { updatedPermissions: approval.suggestions }
+            : {}),
+        }
   return {
     type: 'control_response',
-    response: {
-      subtype: 'success',
-      request_id: approval.requestId,
-      response: allow
-        ? { behavior: 'allow', updatedInput: approval.input }
-        : { behavior: 'deny', message: 'The user denied this tool use.' },
-    },
+    response: { subtype: 'success', request_id: approval.requestId, response },
   }
 }
 
@@ -374,10 +452,9 @@ export function userMessage(text: string): Json {
   }
 }
 
-export function interruptRequest(id: string): Json {
-  return {
-    type: 'control_request',
-    request_id: id,
-    request: { subtype: 'interrupt' },
-  }
+export function controlRequest(
+  id: string,
+  request: Record<string, unknown>,
+): Json {
+  return { type: 'control_request', request_id: id, request }
 }

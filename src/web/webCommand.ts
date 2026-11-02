@@ -9,6 +9,7 @@ import {
 import { createServerLogger } from '../server/serverLog.js'
 import { SessionManager } from '../server/sessionManager.js'
 import { registerCleanup } from '../utils/cleanupRegistry.js'
+import { shouldRejectRootBypassPermissions } from '../setup.js'
 import { getClaudeConfigHomeDir } from '../utils/envUtils.js'
 import { execFileNoThrowWithCwd } from '../utils/execFileNoThrow.js'
 import { createWebSecrets } from './auth.js'
@@ -117,7 +118,11 @@ export async function runWebCommand(opts: WebCommandOptions): Promise<void> {
 
   const logger = createServerLogger()
   const sessionManager = new SessionManager(
-    new DangerousBackend({ includePartialMessages: true }),
+    new DangerousBackend({
+      includePartialMessages: true,
+      // Root sessions refuse the flag at startup, so only offer it elsewhere.
+      allowBypassPermissions: !shouldRejectRootBypassPermissions(),
+    }),
     {
       idleTimeoutMs: Number(opts.idleTimeout),
       maxSessions: Number(opts.maxSessions),

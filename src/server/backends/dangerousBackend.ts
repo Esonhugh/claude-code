@@ -5,6 +5,7 @@ export type SpawnSessionOptions = {
   sessionId: string
   cwd: string
   permissionMode?: string
+  model?: string
 }
 
 /**
@@ -18,10 +19,19 @@ export type SpawnSessionOptions = {
  */
 export class DangerousBackend {
   constructor(
-    private options: { includePartialMessages?: boolean } = {},
+    private options: {
+      includePartialMessages?: boolean
+      /** Let the client switch to bypassPermissions later (claude web). */
+      allowBypassPermissions?: boolean
+    } = {},
   ) {}
 
-  spawn({ sessionId, cwd, permissionMode }: SpawnSessionOptions): ChildProcess {
+  spawn({
+    sessionId,
+    cwd,
+    permissionMode,
+    model,
+  }: SpawnSessionOptions): ChildProcess {
     const [command, ...entry] = isInBundledMode()
       ? [process.execPath]
       : [process.execPath, process.argv[1]!]
@@ -43,8 +53,12 @@ export class DangerousBackend {
         '--session-id',
         sessionId,
         ...(permissionMode ? ['--permission-mode', permissionMode] : []),
+        ...(model ? ['--model', model] : []),
         ...(this.options.includePartialMessages
           ? ['--include-partial-messages']
+          : []),
+        ...(this.options.allowBypassPermissions
+          ? ['--allow-dangerously-skip-permissions']
           : []),
       ],
       { cwd, env, stdio: ['pipe', 'pipe', 'pipe'] },

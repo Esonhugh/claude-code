@@ -58,6 +58,11 @@ const createSessionBodySchema = lazySchema(() =>
   z.object({
     cwd: z.string().optional(),
     permission_mode: z.enum(PERMISSION_MODES).optional(),
+    // A model alias or id; passed to `--model` as one argv entry.
+    model: z
+      .string()
+      .regex(/^[A-Za-z0-9][\w.:[\]/@-]{0,127}$/)
+      .optional(),
   }),
 )
 
@@ -112,7 +117,7 @@ export function startWebServer(
     if (!parsed.success) {
       return errorResponse(400, `Invalid request: ${parsed.error.message}`)
     }
-    const { cwd, permission_mode: permissionMode } = parsed.data
+    const { cwd, permission_mode: permissionMode, model } = parsed.data
     let workDir = config.workspace
     if (cwd) {
       if (!isAbsolute(cwd) || !isDirectory(cwd)) {
@@ -123,7 +128,11 @@ export function startWebServer(
       mkdirSync(workDir, { recursive: true })
     }
     try {
-      const session = sessionManager.create({ cwd: workDir, permissionMode })
+      const session = sessionManager.create({
+        cwd: workDir,
+        permissionMode,
+        model,
+      })
       return Response.json({
         session_id: session.id,
         work_dir: session.workDir,

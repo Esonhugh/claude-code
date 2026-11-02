@@ -12,6 +12,7 @@ async function errorText(res: Response): Promise<string> {
 export async function createSession(body: {
   cwd?: string
   permission_mode?: string
+  model?: string
 }): Promise<CreatedSession> {
   const res = await fetch('/api/sessions', {
     method: 'POST',

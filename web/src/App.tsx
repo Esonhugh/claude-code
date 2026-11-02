@@ -15,27 +15,33 @@ import {
   saveLang,
   translate,
 } from './i18n'
+import { Markdown } from './markdown/Markdown'
 import {
   addError,
   addUserMessage,
   type Approval,
+  type ApprovalChoice,
   type Block,
   type ChatState,
+  controlRequest,
   initialState,
-  interruptRequest,
   type Item,
   permissionResponse,
   reduce,
   removeApproval,
+  REQUEST_PREFIX,
+  setLocal,
   unsupportedControlResponse,
   userMessage,
 } from './protocol'
+import { toolSummary, stripAnsi } from './tools'
 
 type Action =
   | { type: 'message'; raw: unknown }
   | { type: 'user'; text: string }
   | { type: 'error'; text: string }
   | { type: 'answered'; requestId: string }
+  | { type: 'local'; patch: Parameters<typeof setLocal>[1] }
   | { type: 'reset' }
 
 function chatReducer(state: ChatState, action: Action): ChatState {
@@ -48,6 +54,8 @@ function chatReducer(state: ChatState, action: Action): ChatState {
       return addError(state, action.text)
     case 'answered':
       return removeApproval(state, action.requestId)
+    case 'local':
+      return setLocal(state, action.patch)
     case 'reset':
       return initialState
   }
@@ -83,7 +91,7 @@ function ToolCard({
     <details className={`tool${block.isError ? ' tool-error' : ''}`}>
       <summary>
         <span className="tool-name">{block.name}</span>
-        <span className="tool-args">{block.input}</span>
+        <span className="tool-args">{toolSummary(block.name, block.input)}</span>
       </summary>
       <div className="tool-body">
         <div className="tool-label">{t('toolInput')}</div>
@@ -91,7 +99,7 @@ function ToolCard({
         {block.result !== undefined && (
           <>
             <div className="tool-label">{t('toolOutput')}</div>
-            <pre>{block.result}</pre>
+            <pre>{stripAnsi(block.result)}</pre>
           </>
         )}
       </div>
@@ -103,10 +111,12 @@ function Message({
   item,
   t,
   fallbackModel,
+  streaming,
 }: {
   item: Item
   t: (key: MessageKey) => string
   fallbackModel?: string
+  streaming: boolean
 }) {
   if (item.kind === 'user') {
     return (
@@ -131,9 +141,11 @@ function Message({
         if (!block) return null
         if (block.kind === 'text') {
           return (
-            <div key={i} className="text">
-              {block.text}
-            </div>
+            <Markdown
+              key={i}
+              text={block.text}
+              streaming={streaming && i === item.blocks.length - 1}
+            />
           )
         }
         if (block.kind === 'thinking') {
@@ -150,6 +162,64 @@ function Message({
   )
 }
 
+const PERMISSION_MODES = [
+  'default',
+  'acceptEdits',
+  'plan',
+  'auto',
+  'bypassPermissions',
+] as const
+
+const MODE_KEYS: Record<(typeof PERMISSION_MODES)[number], MessageKey> = {
+  default: 'modeDefault',
+  acceptEdits: 'modeAcceptEdits',
+  plan: 'modePlan',
+  auto: 'modeAuto',
+  bypassPermissions: 'modeBypass',
+}
+
+function ApprovalCard({
+  approval,
+  t,
+  onAnswer,
+}: {
+  approval: Approval
+  t: (key: MessageKey, vars?: Record<string, string>) => string
+  onAnswer: (choice: ApprovalChoice) => void
+}) {
+  return (
+    <div className="approval" role="dialog" aria-label={approval.toolName}>
+      <div className="approval-title">
+        {t('approvalTitle', { tool: approval.toolName })}
+      </div>
+      <div className="approval-summary">
+        {toolSummary(approval.toolName, JSON.stringify(approval.input))}
+      </div>
+      <details>
+        <summary>{t('toolInput')}</summary>
+        <pre>{JSON.stringify(approval.input, null, 2)}</pre>
+      </details>
+      <div className="approval-actions">
+        <button type="button" onClick={() => onAnswer('deny')}>
+          {t('deny')}
+        </button>
+        {approval.suggestions.length > 0 && (
+          <button type="button" onClick={() => onAnswer('always')}>
+            {t('allowAlways')}
+          </button>
+        )}
+        <button
+          type="button"
+          className="primary"
+          onClick={() => onAnswer('allow')}
+        >
+          {t('allow')}
+        </button>
+      </div>
+    </div>
+  )
+}
+
 export function App() {
   const [state, dispatch] = useReducer(chatReducer, initialState)
   const [lang, setLang] = useState<Lang>(initialLang)
@@ -158,6 +228,7 @@ export function App() {
   const sessionRef = useRef<string | null>(null)
   const requestSeq = useRef(0)
   const feedRef = useRef<HTMLDivElement>(null)
+  const stickToBottom = useRef(true)
 
   const t = useCallback(
     (key: MessageKey, vars?: Record<string, string>) =>
@@ -171,7 +242,7 @@ export function App() {
 
   useEffect(() => {
     const feed = feedRef.current
-    if (feed) feed.scrollTop = feed.scrollHeight
+    if (feed && stickToBottom.current) feed.scrollTop = feed.scrollHeight
   }, [state.items])
 
   useEffect(
@@ -185,15 +256,33 @@ export function App() {
     socketRef.current?.send(JSON.stringify(msg) + '\n')
   }
 
+  const request = (prefix: string, body: Record<string, unknown>) => {
+    requestSeq.current += 1
+    sendRaw(controlRequest(`${prefix}${requestSeq.current}`, body))
+  }
+
   const ensureSocket = async (): Promise<WebSocket> => {
     const current = socketRef.current
     if (current && current.readyState <= WebSocket.OPEN) return current
-    const { session_id: sessionId } = await createSession({})
+    const { session_id: sessionId } = await createSession({
+      ...(state.permissionMode && { permission_mode: state.permissionMode }),
+      ...(state.model && { model: state.model }),
+    })
     sessionRef.current = sessionId
     const socket = await openSessionSocket(sessionId, raw => {
       dispatch({ type: 'message', raw })
       const reply = unsupportedControlResponse(raw)
       if (reply) socket.send(JSON.stringify(reply) + '\n')
+      if ((raw as { type?: string }).type === 'result') {
+        requestSeq.current += 1
+        socket.send(
+          JSON.stringify(
+            controlRequest(`${REQUEST_PREFIX.context}${requestSeq.current}`, {
+              subtype: 'get_context_usage',
+            }),
+          ) + '\n',
+        )
+      }
     })
     socket.addEventListener('close', () => {
       if (socketRef.current !== socket) return
@@ -202,6 +291,7 @@ export function App() {
       dispatch({ type: 'error', text: t('sessionEnded') })
     })
     socketRef.current = socket
+    request(REQUEST_PREFIX.initialize, { subtype: 'initialize' })
     return socket
   }
 
@@ -209,6 +299,7 @@ export function App() {
     const text = draft.trim()
     if (!text || state.busy) return
     setDraft('')
+    stickToBottom.current = true
     dispatch({ type: 'user', text })
     try {
       const socket = await ensureSocket()
@@ -223,14 +314,26 @@ export function App() {
     }
   }
 
-  const stop = () => {
-    requestSeq.current += 1
-    sendRaw(interruptRequest(`web-interrupt-${requestSeq.current}`))
+  const stop = () => request(REQUEST_PREFIX.interrupt, { subtype: 'interrupt' })
+
+  const answer = (approval: Approval, choice: ApprovalChoice) => {
+    sendRaw(permissionResponse(approval, choice))
+    dispatch({ type: 'answered', requestId: approval.requestId })
   }
 
-  const answer = (approval: Approval, allow: boolean) => {
-    sendRaw(permissionResponse(approval, allow))
-    dispatch({ type: 'answered', requestId: approval.requestId })
+  const changeMode = (mode: string) => {
+    if (socketRef.current) {
+      request(REQUEST_PREFIX.mode, { subtype: 'set_permission_mode', mode })
+    } else {
+      dispatch({ type: 'local', patch: { permissionMode: mode } })
+    }
+  }
+
+  const changeModel = (model: string) => {
+    dispatch({ type: 'local', patch: { model, notice: undefined } })
+    if (socketRef.current) {
+      request(REQUEST_PREFIX.model, { subtype: 'set_model', model })
+    }
   }
 
   const newChat = () => {
@@ -248,9 +351,33 @@ export function App() {
       e.preventDefault()
       void send()
     }
+    if (e.key === 'Escape' && state.busy) stop()
   }
 
   const approval = state.approvals[0]
+  const mode = state.permissionMode ?? 'default'
+  const modelOptions = state.models.length
+    ? state.models
+    : state.model
+      ? [{ value: state.model, displayName: modelLabel(state.model) ?? state.model }]
+      : []
+  const currentModel =
+    modelOptions.find(m => m.value === state.model)?.value ??
+    modelOptions.find(m => modelLabel(m.value) === modelLabel(state.model))
+      ?.value ??
+    ''
+  const usage = [
+    state.contextPercent !== undefined &&
+      t('contextUsed', { percent: String(Math.round(state.contextPercent)) }),
+    state.costUsd !== undefined &&
+      new Intl.NumberFormat(lang, {
+        style: 'currency',
+        currency: 'USD',
+        maximumFractionDigits: 2,
+      }).format(state.costUsd),
+  ]
+    .filter(Boolean)
+    .join(' · ')
 
   return (
     <div className="app">
@@ -275,7 +402,15 @@ export function App() {
           ))}
         </select>
       </header>
-      <main className="feed" ref={feedRef}>
+      <main
+        className="feed"
+        ref={feedRef}
+        onScroll={e => {
+          const el = e.currentTarget
+          stickToBottom.current =
+            el.scrollHeight - el.scrollTop - el.clientHeight < 40
+        }}
+      >
         <div className="col">
           {state.items.length === 0 && (
             <h1 className="greeting">{t('greeting')}</h1>
@@ -286,6 +421,7 @@ export function App() {
               item={item}
               t={t}
               fallbackModel={state.model}
+              streaming={state.busy && item.id === state.streamingId}
             />
           ))}
         </div>
@@ -293,23 +429,15 @@ export function App() {
       <footer className="composer">
         <div className="col">
           {approval && (
-            <div className="approval" role="dialog">
-              <div className="approval-title">
-                {t('approvalTitle', { tool: approval.toolName })}
-              </div>
-              <pre>{JSON.stringify(approval.input, null, 2)}</pre>
-              <div className="approval-actions">
-                <button type="button" onClick={() => answer(approval, false)}>
-                  {t('deny')}
-                </button>
-                <button
-                  type="button"
-                  className="primary"
-                  onClick={() => answer(approval, true)}
-                >
-                  {t('allow')}
-                </button>
-              </div>
+            <ApprovalCard
+              approval={approval}
+              t={t}
+              onAnswer={choice => answer(approval, choice)}
+            />
+          )}
+          {state.notice && (
+            <div className="notice" role="status">
+              {state.notice}
             </div>
           )}
           <div className="input-card">
@@ -339,6 +467,35 @@ export function App() {
               >
                 ↑
               </button>
+            )}
+          </div>
+          <div className="composer-footer">
+            <select
+              aria-label={t('permissionMode')}
+              className={`mode mode-${mode}`}
+              value={mode}
+              onChange={e => changeMode(e.target.value)}
+            >
+              {PERMISSION_MODES.map(m => (
+                <option key={m} value={m}>
+                  {t(MODE_KEYS[m])}
+                </option>
+              ))}
+            </select>
+            <span className="usage">{usage}</span>
+            {modelOptions.length > 0 && (
+              <select
+                aria-label={t('model')}
+                value={currentModel}
+                onChange={e => changeModel(e.target.value)}
+              >
+                {currentModel === '' && <option value="">{modelLabel(state.model) ?? t('model')}</option>}
+                {modelOptions.map(m => (
+                  <option key={m.value} value={m.value}>
+                    {m.displayName}
+                  </option>
+                ))}
+              </select>
             )}
           </div>
         </div>

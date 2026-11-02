@@ -64,10 +64,12 @@ export class SessionManager {
   create({
     cwd,
     permissionMode,
+    model,
     sessionKey,
   }: {
     cwd: string
     permissionMode?: string
+    model?: string
     sessionKey?: string
   }): SessionInfo {
     if (sessionKey) {
@@ -83,7 +85,12 @@ export class SessionManager {
     }
 
     const id = randomUUID()
-    const child = this.backend.spawn({ sessionId: id, cwd, permissionMode })
+    const child = this.backend.spawn({
+      sessionId: id,
+      cwd,
+      permissionMode,
+      model,
+    })
     const session: Session = {
       id,
       status: 'detached',

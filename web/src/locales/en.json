@@ -13,5 +13,16 @@
   "toolOutput": "Output",
   "sessionEnded": "The session ended.",
   "connectFailed": "Could not start a session: {error}",
-  "language": "Language"
+  "language": "Language",
+  "allowAlways": "Always allow",
+  "permissionMode": "Permission mode",
+  "model": "Model",
+  "contextUsed": "{percent}% context",
+  "modeDefault": "Ask before edits",
+  "modeAcceptEdits": "Accept edits",
+  "modePlan": "Plan mode",
+  "modeAuto": "Auto",
+  "modeBypass": "Bypass permissions",
+  "copy": "Copy",
+  "copied": "Copied"
 }
