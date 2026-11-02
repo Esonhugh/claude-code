@@ -9,6 +9,8 @@ import { join } from 'path'
 //   make build && CLAUDE_WEB_BINARY=$PWD/built-claude \
 //     bun test src/web/web.binary.test.ts
 const binary = process.env.CLAUDE_WEB_BINARY
+// Unique per run, so a shell left over from another run never matches.
+const BG_MARK = `BG_TAIL_${process.pid}`
 
 const sse = (blocks: Record<string, unknown>[], stop: string) => {
   const ev = (type: string, data: Record<string, unknown>) =>
@@ -267,6 +269,29 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
           blocks = [{ type: 'text', text: `Dev server: ${dev} and this UI: ${own}` }]
         } else if (lastBlocks.some(b => b.type === 'tool_result')) {
           blocks = [{ type: 'text', text: 'WEB_DONE' }]
+        } else if (lastText.includes('OPEN_TERMINAL')) {
+          // A colored line, then cat echoes whatever is typed.
+          blocks = [{
+            type: 'tool_use',
+            id: 'toolu_terminal',
+            name: 'Terminal',
+            input: {
+              action: 'new-session',
+              command: 'bash',
+              args: ['--norc', '--noprofile', '-c', "printf '\\033[31mRED_MARK\\033[0m ready\\n'; exec cat"],
+              cols: 80,
+              rows: 12,
+            },
+          }]
+          stop = 'tool_use'
+        } else if (lastText.includes('BG_SHELL')) {
+          blocks = [{
+            type: 'tool_use',
+            id: 'toolu_bg_shell',
+            name: 'Bash',
+            input: { command: `echo ${BG_MARK}; sleep 300`, description: 'Background sleep', run_in_background: true },
+          }]
+          stop = 'tool_use'
         } else if (lastText.includes('TOUCH')) {
           touch('made.txt')
         } else if (lastText.includes('DENYME')) {
@@ -948,6 +973,14 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       expect(await card.locator('.dl.add span').textContent()).toBe('gamma')
       expect(await card.locator('.dstat').allTextContents()).toEqual(['+1', '−1'])
       expect(await card.locator('.tfoot').textContent()).toContain('~/workspace/edit.txt')
+      // No separate preview button: the path itself opens the file.
+      expect(await card.locator('.tool-preview').count()).toBe(0)
+      await card.locator('.tcmd').click()
+      const preview = page.locator('.preview')
+      await preview.locator('.preview-name', { hasText: 'edit.txt' }).waitFor()
+      await preview.getByText('gamma').waitFor()
+      await page.keyboard.press('Escape')
+      await preview.waitFor({ state: 'detached' })
 
       // The context chip opens its breakdown.
       await page.locator('#ctx-chip').click()
@@ -987,6 +1020,77 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       await input.press('ArrowDown')
       await input.press('ArrowDown')
       expect(await input.inputValue()).toBe('')
+      expect(errors).toEqual([])
+      // Stay under the server's session limit for the tests after this one.
+      await page.evaluate(async () => {
+        for (const s of (await (await fetch('/api/sessions')).json()) as { id: string }[]) {
+          await fetch(`/api/sessions/${s.id}`, { method: 'DELETE' })
+        }
+      })
+    } finally {
+      await browser.close()
+    }
+  }, 120_000)
+
+  it('shows a colored terminal screen, types into it and stops a background shell', async () => {
+    const playwrightPath = Bun.spawnSync(['node', '-p', "require.resolve('playwright')"])
+      .stdout.toString()
+      .trim()
+    const { chromium } = await import(playwrightPath)
+    const browser = await chromium.launch()
+    try {
+      const context = await browser.newContext({ locale: 'en-US', viewport: { width: 1440, height: 900 } })
+      const page = await context.newPage()
+      const errors: string[] = []
+      page.on('pageerror', e => errors.push(e.message))
+      await page.goto(signInUrl)
+      await page.locator('.wl-hi').waitFor()
+      const input = page.getByLabel('Message', { exact: true })
+      const dialog = page.getByRole('dialog')
+
+      await input.fill('please OPEN_TERMINAL')
+      await input.press('Enter')
+      await dialog.getByRole('option', { name: /Allow once/ }).click()
+      await page.getByText('WEB_DONE').waitFor({ timeout: 30_000 })
+      const panel = page.locator('aside.side')
+      await panel.getByRole('tab', { name: /^Terminals/ }).click()
+      const row = panel.locator('.tree .node', { hasText: 'bash --norc' })
+      await row.waitFor({ timeout: 15_000 })
+      expect(await row.locator('.badge').textContent()).toBe('running')
+      expect(await row.locator('.meta2').textContent()).toBe('Main session opened · 80×12')
+      // The server sends styled spans; the page only maps them to classes.
+      const screen = panel.getByLabel('Terminal screen')
+      await screen.locator('.f31', { hasText: 'RED_MARK' }).waitFor({ timeout: 15_000 })
+      expect(await screen.textContent()).toContain('RED_MARK ready')
+
+      const typed = panel.getByLabel('Type into the terminal, Enter to submit')
+      await typed.fill('hello-from-web')
+      await typed.press('Enter')
+      // The tty echoes the line and cat prints it back.
+      await page.waitForFunction(
+        () => (document.querySelector('.screen')?.textContent ?? '').split('hello-from-web').length === 3,
+        undefined,
+        { timeout: 15_000 },
+      )
+      await panel.getByRole('button', { name: 'Stop', exact: true }).click()
+      await row.locator('.badge.killed').waitFor({ timeout: 15_000 })
+      await typed.waitFor({ state: 'detached' })
+
+      await input.fill('please BG_SHELL')
+      await input.press('Enter')
+      // echo and sleep are read-only, so this one runs without asking.
+      await page.getByText('WEB_DONE').nth(1).waitFor({ timeout: 30_000 })
+      const bgTab = panel.getByRole('tab', { name: /^Background Tasks/ })
+      await bgTab.click()
+      const bgRow = panel.locator('.bgrow', { hasText: `echo ${BG_MARK}; sleep 300` })
+      await bgRow.waitFor({ timeout: 15_000 })
+      expect(await bgRow.locator('.tag').textContent()).toBe('Bash')
+      await bgRow.locator('.meta2', { hasText: BG_MARK }).waitFor({ timeout: 15_000 })
+      expect(await bgRow.locator('.meta2').textContent()).toMatch(new RegExp(`^Main session · \\d+s · ${BG_MARK}$`))
+      await bgRow.getByRole('button', { name: 'Stop' }).click()
+      await bgRow.locator('.badge.killed').or(bgRow.locator('.badge.completed')).waitFor({ timeout: 15_000 })
+      await bgRow.getByRole('button', { name: 'Stop' }).waitFor({ state: 'detached' })
+      expect(Bun.spawnSync(['pgrep', '-f', `${BG_MARK}; sleep 300`]).exitCode).toBe(1)
       expect(errors).toEqual([])
     } finally {
       await browser.close()

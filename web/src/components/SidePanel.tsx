@@ -1,19 +1,16 @@
 import { type ReactNode, useEffect, useMemo, useState } from 'react'
-import { type AgentTask, formatDuration, isFinished, type Tasks } from '../agents'
+import { type AgentTask, isFinished } from '../agents'
+import type { Groups } from '../background'
 import { sessionFiles, tilde } from '../files'
 import type { ModelOption, Todo } from '../protocol'
 import type { SessionChat } from '../store'
-import { AgentsTab, type AgentsView, agentTasks, dotClass, WorkflowTab } from './Agents'
+import { AgentsTab, type AgentsView, agentTasks, WorkflowTab } from './Agents'
+import { BackgroundPane, type HostRequest, MonitorPane, TerminalsPane, useBackground } from './BackgroundPanes'
 import { shortTokens } from './Composer'
 import { modelName } from './Message'
 import { formatElapsed, modeOf, type T } from './ui'
 
 export type SideTab = 'status' | 'files' | 'agents' | 'workflow' | 'terminals' | 'monitor' | 'bg'
-
-const ofType = (tasks: Tasks, type: string) =>
-  Object.values(tasks)
-    .filter(task => task.type === type)
-    .sort((a, b) => b.seq - a.seq)
 
 const runningCount = (tasks: AgentTask[]) => tasks.filter(task => !isFinished(task)).length
 
@@ -126,6 +123,7 @@ function StatusPane({
   statusText,
   todos,
   request,
+  groups,
 }: {
   t: T
   chat: SessionChat
@@ -135,6 +133,7 @@ function StatusPane({
   statusText: string
   todos: Todo[]
   request?: (body: Json) => Promise<Json>
+  groups: Groups
 }) {
   const data = useStatusData(sessionId, chat.mode === 'live', chat.busy, request)
   const rounds = chat.items.filter(i => i.kind === 'user').length
@@ -148,8 +147,7 @@ function StatusPane({
   const memories = Array.isArray(data.memory?.memories) ? data.memory.memories.filter(m => isObj(m) && m.name !== 'MEMORY.md').length : 0
   const env = chat.env
   const agents = Object.values(agentTasks(chat.tasks))
-  const terminals = ofType(chat.tasks, 'interactive_terminal')
-  const monitors = ofType(chat.tasks, 'monitor_mcp')
+  const { terminals, monitors } = groups
   const pct = chat.contextPercent === undefined ? undefined : Math.round(chat.contextPercent)
   const account = env.account?.email
     ? [env.account.subscriptionType, env.account.email].filter(Boolean).join(' · ')
@@ -312,46 +310,6 @@ function FilesPane({
   )
 }
 
-/** Terminals, Monitor and Background Tasks: one row per task with its status and a stop button. */
-function TaskRows({
-  t,
-  tasks,
-  empty,
-  tag,
-  onStop,
-}: {
-  t: T
-  tasks: AgentTask[]
-  empty: string
-  tag?: string
-  onStop: (id: string) => void
-}) {
-  if (!tasks.length) return <p className="note">{empty}</p>
-  return (
-    <div className="tree">
-      {tasks.map(task => (
-        <div className="node bgrow" key={task.id}>
-          <span className="lead">
-            <span className={`dot ${dotClass(task.status)}`} />
-          </span>
-          <span className="name">
-            {tag && <span className="tag">{tag}</span>} <span className="mono">{task.description}</span>
-          </span>
-          <span className={`badge ${dotClass(task.status)}`}>{task.status}</span>
-          <span className="meta2">{[formatDuration(task.durationMs), task.summary ?? task.error].filter(Boolean).join(' · ')}</span>
-          {!isFinished(task) && (
-            <span className="bgact">
-              <button className="btn" type="button" onClick={() => onStop(task.id)}>
-                {t('stop')}
-              </button>
-            </span>
-          )}
-        </div>
-      ))}
-    </div>
-  )
-}
-
 /** The right column: Status, Files, Agents, Workflow, Terminals, Monitor, Background Tasks. */
 export function SidePanel({
   t,
@@ -372,6 +330,7 @@ export function SidePanel({
   onStopTask,
   onSendTask,
   onRequest,
+  onStatusRequest,
   todos = [],
   onClose,
 }: {
@@ -393,15 +352,15 @@ export function SidePanel({
   onStopTask: (id: string) => void
   onSendTask: (id: string, text: string) => Promise<string>
   /** A control request to the session; Status reads usage, memory and sandbox with it. */
-  onRequest?: (body: Record<string, unknown>) => Promise<Record<string, unknown>>
+  onStatusRequest?: HostRequest
   todos?: Todo[]
+  onRequest: HostRequest
   onClose: () => void
 }) {
   const files = useMemo(() => sessionFiles(chat.items).length, [chat.items])
   const agents = Object.keys(agentTasks(chat.tasks)).length
-  const terminals = ofType(chat.tasks, 'interactive_terminal')
-  const monitors = ofType(chat.tasks, 'monitor_mcp')
-  const background = ofType(chat.tasks, 'local_bash')
+  const bg = useBackground(sessionId, chat.tasks, ['terminals', 'monitor', 'bg'].includes(tab), onRequest)
+  const { terminals, monitors, background } = bg.groups
   const tabs: { id: SideTab; label: string; count?: number }[] = [
     { id: 'status', label: 'Status' },
     { id: 'files', label: 'Files', count: files },
@@ -446,7 +405,8 @@ export function SidePanel({
             models={models}
             statusText={statusText}
             todos={todos}
-            request={onRequest}
+            request={onStatusRequest}
+            groups={bg.groups}
           />
         )}
         {tab === 'files' && <FilesPane t={t} chat={chat} current={currentFile} onOpen={onOpenFile} />}
@@ -477,10 +437,23 @@ export function SidePanel({
             t={t}
           />
         )}
-        {tab === 'terminals' && <TaskRows t={t} tasks={terminals} empty={t('noTerminals')} onStop={onStopTask} />}
-        {tab === 'monitor' && <TaskRows t={t} tasks={monitors} empty={t('noMonitors')} onStop={onStopTask} />}
+        {tab === 'terminals' && (
+          <TerminalsPane
+            t={t}
+            tasks={chat.tasks}
+            groups={bg.groups}
+            details={bg.details}
+            screens={bg.screens}
+            refreshScreen={bg.refreshScreen}
+            request={onRequest}
+            onStop={onStopTask}
+          />
+        )}
+        {tab === 'monitor' && (
+          <MonitorPane t={t} tasks={chat.tasks} groups={bg.groups} details={bg.details} onStop={onStopTask} />
+        )}
         {tab === 'bg' && (
-          <TaskRows t={t} tasks={background} empty={t('noBackground')} tag="Bash" onStop={onStopTask} />
+          <BackgroundPane t={t} tasks={chat.tasks} groups={bg.groups} details={bg.details} onStop={onStopTask} />
         )}
       </div>
     </aside>

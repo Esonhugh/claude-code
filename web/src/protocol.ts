@@ -817,6 +817,7 @@ export const REQUEST_PREFIX = {
   effort: 'web-effort-',
   status: 'web-status-',
   rewind: 'web-rewind-',
+  background: 'web-bg-',
 } as const
 
 export type Todo = { content: string; status: string; activeForm?: string }

@@ -462,6 +462,8 @@ import { isBackgroundTask } from '../tasks/types.js'
 import { StopTaskError, stopTask } from '../tasks/stopTask.js'
 import { deliverTaskMessage } from '../tasks/deliverTaskMessage.js'
 import { isMainSessionTask } from '../tasks/LocalMainSessionTask.js'
+import { isTerminalTask } from '../tasks/TerminalTask.js'
+import { hostTerminalInputSchema } from '../tools/TerminalTool/actionSchemas.js'
 import { isTerminalTaskStatus } from '../taskStatus.js'
 import { drainSdkOutput, getTaskRunId } from '../utils/sdkEventQueue.js'
 import { initializeGrowthBook } from '../services/analytics/growthbook.js'
@@ -4926,7 +4928,8 @@ function runHeadlessStreaming(
           message.request.subtype === 'get_hooks_listing' ||
           message.request.subtype === 'list_permission_rules' ||
           message.request.subtype === 'get_workspace_diff' ||
-          message.request.subtype === 'get_task_output'
+          message.request.subtype === 'get_task_output' ||
+          message.request.subtype === 'get_background_tasks'
         ) {
           // Answered off the input loop: /usage and /status fetch from the
           // network, git and the file index may be slow.
@@ -4934,6 +4937,7 @@ function runHeadlessStreaming(
             subtype: string
             query?: unknown
             task_id?: unknown
+            format?: unknown
           }
           void import('./hostControlRequests.js')
             .then((host): Promise<object> | object => {
@@ -4972,7 +4976,12 @@ function runHeadlessStreaming(
                   if (typeof request.task_id !== 'string') {
                     throw new Error('get_task_output: task_id must be a string')
                   }
-                  return host.buildTaskOutputResponse(getAppState(), request.task_id)
+                  if (request.format !== undefined && request.format !== 'screen') {
+                    throw new Error('get_task_output: format must be "screen" when given')
+                  }
+                  return host.buildTaskOutputResponse(getAppState(), request.task_id, request.format as 'screen' | undefined)
+                case 'get_background_tasks':
+                  return host.buildBackgroundTasksResponse(getAppState())
                 default:
                   return host.buildExportConversationResponse(
                     mutableMessages,
@@ -5096,6 +5105,26 @@ function runHeadlessStreaming(
                 sendControlResponseError(message, errorMessage(error))
               }
             }
+          }
+        } else if (message.request.subtype === 'send_terminal_input') {
+          // Fork-only: the host's user typing into a Terminal tool session.
+          const parsed = hostTerminalInputSchema.safeParse(message.request)
+          const task = parsed.success ? getAppState().tasks[parsed.data.task_id] : undefined
+          if (!parsed.success) {
+            sendControlResponseError(
+              message,
+              'send_terminal_input: task_id must be a non-empty string, with text (at most 4096 characters), a key, or enter: true',
+            )
+          } else if (!isTerminalTask(task) || task.status !== 'running') {
+            sendControlResponseError(message, 'send_terminal_input: no running terminal with that task_id')
+          } else {
+            const { text, key, enter } = parsed.data
+            void import('../tools/TerminalTool/TerminalTool.js')
+              .then(terminal => terminal.sendTerminalInputFromHost(task.sessionId, { text, key, enter }, setAppState))
+              .then(
+                () => sendControlResponseSuccess(message, {}),
+                error => sendControlResponseError(message, errorMessage(error)),
+              )
           }
         } else if (message.request.subtype === 'send_task_message') {
           // Fork-only: typing into a viewed agent (REPL onAgentSubmit) for

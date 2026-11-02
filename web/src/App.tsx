@@ -1045,9 +1045,10 @@ export function App() {
           setWorkflowId={setWorkflowId}
           onOpenFile={openFile}
           onStopTask={taskId => stopTask(view, taskId)}
-          onRequest={statusRequest}
+          onStatusRequest={statusRequest}
           todos={todos}
           onSendTask={(taskId, text) => sendToTask(view, taskId, text)}
+          onRequest={body => requestAsync(view, REQUEST_PREFIX.background, body)}
           onClose={() => setSheetOpen(false)}
         />
       )}
