@@ -124,6 +124,7 @@ claude web 进程（Bun.serve）
 | Mermaid | fenced code 语言是 `mermaid` 时懒加载 mermaid 渲染 SVG；渲染失败退回代码块；流式输出中的未闭合块先显示代码，结束后再渲染 |
 | 图片 | 工具结果中的 base64 image block；Markdown 中引用的本地图片转成 `/api/files/...`；点击放大 |
 | 工具调用 | 折叠卡片：标题一行（工具名 + 关键参数），展开看输入和输出；Bash 输出按纯文本显示（strip ANSI） |
+| 发送者 | 用户消息标“你”；助手消息标 `Claude (模型)`，例如 `Claude (Opus 5.5)`，模型取这条 assistant 消息的 `message.model` 映射成显示名，所以中途换过模型的会话每条显示各自的模型 |
 | thinking | 默认折叠 |
 | 研究类输出 | WebSearch/WebFetch 的来源列成引用列表；deep-research workflow 的进度显示成步骤列表 |
 
@@ -246,7 +247,9 @@ claude web 进程（Bun.serve）
 
 所以只加**一个** fork 专用 control request，Web、SSH、Direct Connect 三处共用：
 
-- `send_task_message {task_id, text}`：在 `src/cli/print.ts` 里按上表调用同一组函数，返回 `queued`、`resumed`、`injected` 或失败原因。
+- `send_task_message {task_id, text, model?}`：在 `src/cli/print.ts` 里按上表调用同一组函数，返回 `queued`、`resumed`、`injected` 或失败原因。`model` 只对已结束的 subagent 有效：恢复时覆盖 `resumeAgentBackground` 从元数据读出的 `meta.model`（`src/tools/AgentTool/resumeAgent.ts`），运行中的 agent 和 team 成员带了 `model` 直接报错。
+
+agent 输入框右侧显示它的模型（来自 agent 元数据或 `system/task_started`）。已结束的 subagent 可以在这里选别的模型，下一条消息恢复时生效，投递结果写明"模型 A → B"；运行中的 subagent 和 team 成员只读显示，因为模型在启动时就定了；workflow 里的 agent 没有输入框。
 
 其余都用现有机制：
 
@@ -273,9 +276,10 @@ Terminal 工具是 fork 独有的（官方没有），它开的每个 PTY 会话
 - **Files**：列出本会话上传、读取、修改和生成的文件，每行是类型、文件名、所在目录、来源（上传 / 读取 / 修改 / 生成）、时间和来源工具。点一行在下方预览（5.2 的预览器），修改过的文件显示本会话的 diff。数据从 transcript 里的工具调用推出来，不另建索引。
 - **Monitor**：每个 Monitor 一行（描述、谁启动的、耗时、事件数），点开显示命令和按时间倒序的事件列表，可以停止（`stop_task`）。
 - **Background Tasks**：后台 Bash（`run_in_background`）、`CronCreate` 和 `ScheduleWakeup`。每行是类型、命令或计划、谁启动的、耗时、最后一行输出或下次运行时间；运行中的可以停止，计划中的可以取消，都走 `stop_task`。
-- **Workflow 输出**：点已完成的 agent 卡片显示它的摘要和结构化输出（workflow schema 校验后的 JSON），可以复制或在对话中引用；点阶段名显示该阶段每个 agent 的状态和摘要。运行中的 agent 只显示最新进度，结构化输出要等它结束。
+- **Workflow 输出**：点已完成的 agent 卡片显示它的摘要和结构化输出（workflow schema 校验后的 JSON），可以复制或在对话中引用；点阶段名显示该阶段每个 agent 的状态和摘要。运行中的 agent 只显示最新进度，结构化输出要等它结束。边栏顶部固定一行当前阶段（第几阶段、完成数、正在跑的 agent），旁边"展开"打开大弹窗：顶部是 workflow 名、问题、开始时间、耗时、token 和"停止 workflow"，左列按阶段列出全部 agent，右侧是选中 agent 的任务、最近步骤或结构化输出，下面是"中间结果预览"，把已完成 agent 的输出拼成表格，汇总阶段还没跑完也能先看。
 - **MCP、Skills、插件、记忆**：放在左侧边栏历史会话上方，依次是 MCP、Skills、插件、记忆、Hooks、Mods，底部只留设置、快捷键和账号。MCP 弹窗列出服务器的来源（用户、项目、插件、`--channels`）、传输方式、连接状态和工具数，需要登录或连接失败时给出登录 / 重连，和 `claude mcp`、`/mcp` 共用配置。Skills 弹窗按项目、用户、插件、内置分组，可以搜索、启用 / 停用、查看 SKILL.md、一键插入 `/name`。插件弹窗有三个页签：已安装（启用、更新、卸载，显示包含的 skills / commands / hooks / MCP）、发现（市场搜索和安装）、市场源（添加、刷新、移除）。和 `claude plugin`、`/plugin` 共用配置。启用、停用 skill 后自动发一次 `reload_skills`，插件的启用、停用、安装、更新、卸载后自动发一次 `reload_plugins`，当前会话立刻生效，不用手动重载。设置里不再放模型和权限，它们只在输入框下方切换：左侧是权限模式（图标加 `plan mode on` 这类 TUI 同款文字，点击选择，输入框里按 Shift+Tab 也能轮换，但不显示按键提示，切换时也不往对话里插提示行，避免连按时刷屏），右侧是 `Opus 5.5 · high`，点击选模型和思考强度。不显示“模型：”之类的标签。有目标时，模型左边多一个“◎ 目标 · N 次检查”。
 - **Channel 消息**：channel 是发 `notifications/claude/channel` 的 MCP 服务器（`src/services/mcp/channelNotification.ts`）。入站消息在对话里单独渲染，带来源徽标和 `meta` 里的发送者，不显示成"你"。回复走 channel 自己的 MCP 工具，显示为普通工具卡片。声明了 `claude/channel/permission` 能力的 channel 会收到权限请求，审批卡片上注明"也已推送到 X"，从 channel 批准后卡片显示批准来源。
+- **Channels 管理**：左侧边栏在 MCP 下面加 Channels 入口。弹窗列出已有的 channel（所属插件、本会话是否启用、今天收到几条和最近一条、能否远程审批），未启用的可以"在本会话启用"，走现有的 `channel_enable` control request（`src/cli/print.ts`），只接受已连接的插件提供的服务器；"新会话默认"开关写进新会话启动时的 `--channels` 列表。不是插件提供的服务器只能用 `--dangerously-load-development-channels` 启动，这里只显示原因、不给按钮。下方从已添加的 marketplace 列出可安装的 channel 插件，"安装并启用"先装插件、`reload_plugins`，再 `channel_enable`。`CLAUDE_CODE_DISABLE_CHANNELS` 或托管策略 `channelsEnabled: false` 时整个入口显示为已被策略关闭。
 - **MCP 交互**：MCP 工具调用和内置工具一样渲染成工具卡片，标出服务器名。服务器发来的 elicitation 渲染成表单卡片（按 schema 生成字段，提交 / 拒绝 / 取消分别回 accept / decline / cancel）。需要 OAuth 的服务器在浏览器新标签里完成登录，凭据只留在本机。
 
 - **待确认请求**：权限请求和 MCP elicitation 不插在对话流里等人看到，而是从输入框正上方弹出（同一时间只显示一个，其余排队显示“还有 N 个待处理”），同时只把对话区淡出（顶部状态、成员条和对话流降低不透明度），左右侧栏照常可以看和点，不用整页遮罩。数字键选项、↑↓ 加 Enter 确认、Esc 拒绝（焦点在侧栏或输入控件里时不拦截这些键）；对话里原位置留一行占位，处理后写上结果。
@@ -289,6 +293,7 @@ Terminal 工具是 fork 独有的（官方没有），它开的每个 PTY 会话
 - **本机会话（UDS）**：Status 面板单列一组，显示本会话名（其他会话用它寻址）、socket 路径、收件状态，以及本机其他 claude 会话（忙 / 空闲 / 暂缓模式）。Agents 页签底部也列出这些会话，点开可以直接发消息，投递结果按对方状态显示 delivered / queued / held。别的会话发来的消息在暂缓模式下显示成待放行卡片（放行 / 丢弃），对应 TUI 的 `PeerInboundDialog`。左侧历史里正在运行的会话带绿点。
 - **压缩**：压缩点只显示一条细分隔线（`✻ 上下文在这里压缩过 · 时间 · 自动 / /compact`），下面可以展开摘要。压缩前的消息不默认渲染：滚到对话顶部时自动从 transcript 分页取回并插到上方，保持当前滚动位置不跳；取完显示"已经到会话开头"。这些消息照常显示，只是模型那边已经只看摘要（fork 保留最近一轮原文，`splitKeptTail`）。上下文占用点开有明细和自动压缩阈值，`/compact` 和自动压缩时在对话里显示进度和可取消的 spinner。
 - **按消息回退**：悬停用户消息出现“回退”，确认后可选只回退对话（`rewind_conversation`）或同时还原文件（再发 `rewind_files`）。之后的轮次从对话里移除，原消息放回输入框，完整记录仍在 transcript。
+- **说明文字**：弹窗和面板里不放解释实现或机制的段落（例如"和 claude mcp 共用配置""停止走 stop_task"），按钮和状态本身要能看懂；只保留用户需要动手时的提示（例如未登录时怎么登录）。记忆弹窗顶部是"自动记忆"开关（`autoMemoryEnabled`），不是一行状态说明。
 - **快捷键**：`?` 或左下角“快捷键”打开帮助。和 TUI 一致的有 Enter、Shift+Enter、Shift+Tab、Esc、`/`、`@`；页面级的有 Ctrl/⌘+K 搜索历史会话、Ctrl/⌘+. 打开 Status。
 
 ### 5.6 界面语言
