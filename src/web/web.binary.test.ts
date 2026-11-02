@@ -955,7 +955,8 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       }
 
       // Stats: KPI tiles, chart and a heatmap cell that shows its count on hover.
-      await page.locator('.sessions .foot button', { hasText: 'Stats' }).click()
+      await page.locator('#acct-btn').click()
+      await page.locator('#acct-menu').getByRole('menuitem', { name: /Stats/ }).click()
       const cell = dialog.locator('.heat i[data-i]').last()
       await cell.waitFor({ timeout: 15_000 })
       await dialog.locator('svg[role=img]').first().waitFor()
@@ -1088,4 +1089,158 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
     expect(await web.exited).toBe(143)
     expect(existsSync(join(home, '.claude', 'web.lock'))).toBe(false)
   }, 30_000)
+})
+
+// Account menu → Auth submenu → API key dialog against the real credential
+// store and settings, in a HOME of its own so the suite above is untouched.
+describe.skipIf(!binary)('claude web account (built binary)', () => {
+  const FAKE_KEY = 'sk-ant-api03-WEBTEST_fake_key_0123456789abcdefWXYZ'
+  let api: ReturnType<typeof Bun.serve>
+  let web: ReturnType<typeof Bun.spawn>
+  let signInUrl = ''
+  let home = ''
+  const keysSeen: string[] = []
+
+  beforeAll(async () => {
+    api = Bun.serve({
+      hostname: '127.0.0.1',
+      port: 0,
+      fetch(req) {
+        if (!new URL(req.url).pathname.endsWith('/messages')) return Response.json({})
+        keysSeen.push(req.headers.get('x-api-key') ?? '')
+        return new Response(sse([{ type: 'text', text: 'KEY_OK' }], 'end_turn'), {
+          headers: { 'content-type': 'text/event-stream' },
+        })
+      },
+    })
+    home = realpathSync(mkdtempSync(join(tmpdir(), 'web-bin-acct-')))
+    mkdirSync(join(home, 'workspace'))
+    web = Bun.spawn([binary!, 'web', '--no-open', '--port', '0', '--workspace', join(home, 'workspace')], {
+      cwd: home,
+      env: {
+        PATH: process.env.PATH ?? '/usr/bin:/bin',
+        HOME: home,
+        IS_SANDBOX: '1',
+        // Replaced from the page; the new key has to win over this one.
+        ANTHROPIC_API_KEY: 'sk-ant-env-placeholder-0000',
+        CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
+        DISABLE_AUTOUPDATER: '1',
+      },
+      stdout: 'pipe',
+      stderr: 'pipe',
+    })
+    const reader = (web.stdout as ReadableStream<Uint8Array>).getReader()
+    let banner = ''
+    while (!/token=\S+/.test(banner)) {
+      const { value, done } = await reader.read()
+      if (done) throw new Error(`claude web exited early: ${banner}`)
+      banner += new TextDecoder().decode(value)
+    }
+    reader.releaseLock()
+    signInUrl = /http:\/\/127\.0\.0\.1:\d+\/\?token=\S+/.exec(banner)![0]
+  }, 30_000)
+
+  afterAll(() => {
+    web?.kill('SIGKILL')
+    api?.stop(true)
+  })
+
+  const globalConfig = () =>
+    JSON.parse(readFileSync(join(home, '.claude.json'), 'utf8')) as { primaryApiKey?: string }
+
+  it('sets an API key and base URL from the Auth submenu, uses them, then signs out', async () => {
+    const playwrightPath = Bun.spawnSync(['node', '-p', "require.resolve('playwright')"]).stdout.toString().trim()
+    const { chromium } = await import(playwrightPath)
+    const browser = await chromium.launch()
+    try {
+      const page = await (await browser.newContext({ locale: 'en-US' })).newPage()
+      const errors: string[] = []
+      page.on('pageerror', (e: Error) => errors.push(e.message))
+      const responses: Promise<string>[] = []
+      page.on('response', (res: { url: () => string; text: () => Promise<string> }) => {
+        if (res.url().includes('/api/account')) responses.push(res.text().catch(() => ''))
+      })
+      await page.goto(signInUrl)
+      const card = page.locator('#acct-btn')
+      await card.getByText('API User').waitFor({ timeout: 15_000 })
+      expect(await card.locator('.avatar').textContent()).toBe('A')
+      expect(await card.locator('div').textContent()).toBe('API User')
+
+      await card.click()
+      const menu = page.locator('#acct-menu')
+      expect(await menu.locator('.ah').textContent()).toContain('API UserAnthropic API key · pay as you go')
+      expect(await menu.getByRole('menuitem').allTextContents()).toEqual([
+        expect.stringContaining('Auth'),
+        expect.stringContaining('Settings'),
+        expect.stringContaining('Stats'),
+        expect.stringContaining('Shortcuts'),
+        expect.stringContaining('Sign out'),
+      ])
+      await menu.getByRole('menuitem', { name: /Auth/ }).click()
+      const auth = page.locator('#auth-menu')
+      await auth.getByText('Switch auth').waitFor()
+      const anthropicRow = auth.getByRole('menuitemradio', { name: /Anthropic API key/ })
+      expect(await anthropicRow.getAttribute('aria-checked')).toBe('true')
+      expect(await anthropicRow.textContent()).toContain('Saved ····0000 · api.anthropic.com')
+      expect(await auth.getByRole('menuitemradio', { name: /OpenAI API key/ }).textContent()).toContain('Not set')
+      await auth.getByRole('button', { name: 'Edit Anthropic API key' }).click()
+
+      const dialog = page.getByRole('dialog', { name: 'API key' })
+      const base = `http://127.0.0.1:${api.port}`
+      expect(await dialog.getByRole('radio', { name: 'Anthropic' }).getAttribute('aria-checked')).toBe('true')
+      expect(await page.evaluate(() => document.activeElement?.id)).toBe('ak-key')
+      await dialog.getByLabel('API key').fill(FAKE_KEY)
+      await dialog.getByLabel('Base URL').fill('ftp://nope.example')
+      await dialog.getByRole('button', { name: 'Save and use' }).click()
+      await dialog.getByText('Base URL must start with http:// or https://').waitFor()
+      expect(await dialog.getByLabel('Base URL').getAttribute('aria-invalid')).toBe('true')
+      await dialog.getByLabel('Base URL').fill(base)
+      await dialog.getByRole('button', { name: 'Save and use' }).click()
+      await page.getByText('Saved, now using Anthropic API key').waitFor()
+      await dialog.waitFor({ state: 'detached' })
+      await card.click()
+      await menu.getByRole('menuitem', { name: /Auth/ }).click()
+      expect(await auth.getByRole('menuitemradio', { name: /Anthropic API key/ }).textContent()).toContain(
+        `Saved ····WXYZ · 127.0.0.1:${api.port}`,
+      )
+      await page.keyboard.press('Escape')
+
+      // The TUI's stores: settings `env` and the global config key (no keychain on Linux).
+      const settings = JSON.parse(readFileSync(join(home, '.claude', 'settings.json'), 'utf8')) as {
+        env?: Record<string, string>
+      }
+      expect(settings.env?.ANTHROPIC_BASE_URL).toBe(base)
+      expect(globalConfig().primaryApiKey).toBe(FAKE_KEY)
+      expect((await Promise.all(responses)).join('\n')).not.toContain(FAKE_KEY)
+      expect(await page.content()).not.toContain(FAKE_KEY)
+
+      // A new session uses the stored key against the new base URL.
+      const input = page.getByLabel('Message', { exact: true })
+      await input.fill('hello key')
+      await input.press('Enter')
+      await page.getByText('KEY_OK').waitFor({ timeout: 30_000 })
+      // Cloud containers keep an OAuth token at a fixed path that `claude -p`
+      // prefers over a /login key (src/utils/authFileDescriptor.ts); elsewhere
+      // the stored key is what goes out.
+      if (!existsSync('/home/claude/.claude/remote/.oauth_token')) expect(keysSeen.at(-1)).toBe(FAKE_KEY)
+
+      await card.click()
+      await menu.getByRole('menuitem', { name: /Sign out/ }).click()
+      await card.getByText('Signed out').waitFor()
+      await page.getByText('Not signed in').waitFor()
+      expect(globalConfig().primaryApiKey).toBeUndefined()
+      expect(await input.isDisabled()).toBe(true)
+      expect(await input.getAttribute('placeholder')).toBe('Sign in to send messages')
+      expect(await page.getByRole('button', { name: 'Send' }).isDisabled()).toBe(true)
+      await page.getByRole('button', { name: '+ New session' }).click()
+      const startInput = page.getByLabel('Message', { exact: true })
+      await page.getByText('Not signed in').waitFor()
+      expect(await startInput.isDisabled()).toBe(true)
+      expect(await startInput.getAttribute('placeholder')).toBe('Sign in to send messages')
+      expect(await page.getByRole('button', { name: 'Start', exact: true }).isDisabled()).toBe(true)
+      expect(errors).toEqual([])
+    } finally {
+      await browser.close()
+    }
+  }, 90_000)
 })

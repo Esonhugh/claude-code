@@ -1,4 +1,4 @@
-import { type RefObject, useEffect, useState } from 'react'
+import { type ReactNode, type RefObject, useEffect, useState } from 'react'
 import { ext } from '../extApi'
 import type { SessionEnv } from '../protocol'
 import { groupHistory, type HistoryEntry } from '../store'
@@ -17,19 +17,6 @@ export type DialogKind =
   | 'settings'
   | 'stats'
   | 'keys'
-
-function accountText(env: SessionEnv): { name?: string; detail?: string; avatar: string } {
-  const account = env.account
-  const keySource = account?.apiKeySource ?? env.apiKeySource
-  if (account?.email) {
-    return { name: account.email, detail: account.subscriptionType, avatar: account.email[0]!.toUpperCase() }
-  }
-  if (keySource && keySource !== 'none') {
-    const openai = account?.apiProvider === 'openai'
-    return { name: openai ? 'OpenAI API key' : 'Anthropic API key', detail: keySource, avatar: '⚿' }
-  }
-  return { avatar: '?' }
-}
 
 type ExtCounts = { channels?: string; memory?: string; mods?: string }
 
@@ -77,6 +64,7 @@ export function Sidebar({
   onMore,
   onDialog,
   dialogOpen = false,
+  account,
 }: {
   t: T
   open: boolean
@@ -95,6 +83,8 @@ export function Sidebar({
   onMore: () => void
   onDialog: (kind: DialogKind) => void
   dialogOpen?: boolean
+  /** The account card (Account.tsx). */
+  account: ReactNode
 }) {
   const [filter, setFilter] = useState('')
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>(() =>
@@ -110,7 +100,6 @@ export function Sidebar({
   }
   const mcp = env.mcpServers
   const counts = useExtCounts(env, dialogOpen)
-  const account = accountText(env)
   const snav: { kind: DialogKind; ico: string; label: string; cnt?: string }[] = [
     {
       kind: 'mcp',
@@ -278,29 +267,7 @@ export function Sidebar({
         )}
       </div>
       <div className="foot">
-        <button type="button" onClick={() => onDialog('settings')}>
-          <span className="ico">⚙</span>
-          {t('settings')}
-        </button>
-        <button type="button" onClick={() => onDialog('stats')}>
-          <span className="ico">▤</span>
-          {t('stats')}
-        </button>
-        <button type="button" onClick={() => onDialog('keys')}>
-          <span className="ico">?</span>
-          {t('shortcuts')}
-        </button>
-        <div className="acctwrap">
-          <div className="acct">
-            <span className={`avatar${account.name ? '' : ' none'}`}>{account.avatar}</span>
-            <div>
-              {account.name ?? t('accountLabel')}
-              <small>
-                {[account.detail, t('localHost', { host: location.host })].filter(Boolean).join(' · ')}
-              </small>
-            </div>
-          </div>
-        </div>
+        {account}
       </div>
     </aside>
   )

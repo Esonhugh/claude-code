@@ -83,14 +83,36 @@ export async function exchangeOpenAICodeForTokens({
   return response.data as OpenAITokenExchangeResponse
 }
 
+/** The authorization code from a pasted `.../auth/callback?code=…&state=…` URL. */
+export function codeFromCallbackUrl(pasted: string, state: string): string {
+  let url: URL
+  try {
+    url = new URL(pasted.trim())
+  } catch {
+    throw new Error('Paste the full address the login page redirected to')
+  }
+  const code = url.searchParams.get('code')
+  if (!code) throw new Error('No OpenAI authorization code received')
+  if (url.searchParams.get('state') !== state) {
+    throw new Error('Invalid OpenAI OAuth state parameter')
+  }
+  return code
+}
+
 export async function loginOpenAIWithOAuth({
   openBrowser: openBrowserOverride,
   homeDir,
   onAuthUrl,
+  manualCallback,
 }: {
   openBrowser?: (url: string) => Promise<void>
   homeDir?: string
   onAuthUrl?: (url: string) => void
+  /**
+   * Resolves with the redirect URL pasted by hand when the browser cannot
+   * reach the loopback listener; rejecting it cancels the login.
+   */
+  manualCallback?: Promise<string>
 } = {}): Promise<string> {
   const pkce = createOpenAIPKCE()
   const listener = new OpenAIAuthCodeListener(OPENAI_OAUTH_CALLBACK_PATH)
@@ -103,12 +125,14 @@ export async function loginOpenAIWithOAuth({
   onAuthUrl?.(authUrl)
 
   try {
-    const authorizationCode = await listener.waitForAuthorization(
-      pkce.state,
-      async () => {
+    const authorizationCode = await Promise.race([
+      listener.waitForAuthorization(pkce.state, async () => {
         await (openBrowserOverride ?? openBrowser)(authUrl)
-      },
-    )
+      }),
+      ...(manualCallback
+        ? [manualCallback.then(url => codeFromCallbackUrl(url, pkce.state))]
+        : []),
+    ])
     const tokens = await exchangeOpenAICodeForTokens({
       authorizationCode,
       codeVerifier: pkce.codeVerifier,

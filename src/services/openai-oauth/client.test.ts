@@ -19,7 +19,17 @@ const {
   exchangeOpenAICodeForTokens,
   createOpenAIPKCE,
   loginOpenAIWithOAuth,
+  codeFromCallbackUrl,
 } = await import('./client.js')
+
+// The web UI's manual fallback: a pasted redirect URL must carry the code and our state.
+assert.equal(
+  codeFromCallbackUrl(' http://localhost:1455/auth/callback?code=abc&state=s1 ', 's1'),
+  'abc',
+)
+assert.throws(() => codeFromCallbackUrl('http://localhost:1455/auth/callback?code=abc&state=other', 's1'), /state/)
+assert.throws(() => codeFromCallbackUrl('http://localhost:1455/auth/callback?state=s1', 's1'), /code/)
+assert.throws(() => codeFromCallbackUrl('abc', 's1'), /full address/)
 
 try {
   delete process.env.https_proxy

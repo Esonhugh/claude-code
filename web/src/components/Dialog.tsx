@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useId, useRef } from 'react'
+import { type ReactNode, useEffect, useId, useRef, useState } from 'react'
 import type { T } from './ui'
 
 /** The prototype's `.dialog`: centered card, title, close button, scrolling body. */
@@ -19,12 +19,10 @@ export function Dialog({
   const closeRef = useRef<HTMLButtonElement>(null)
   const onCloseRef = useRef(onClose)
   onCloseRef.current = onClose
-  // Read during the first render, before a body's autoFocus field takes focus.
-  const openerRef = useRef(document.activeElement as HTMLElement | null)
-  const boxRef = useRef<HTMLDivElement>(null)
+  // Read during render: a child with autoFocus takes focus before effects run.
+  const [opener] = useState(() => document.activeElement as HTMLElement | null)
   useEffect(() => {
-    const opener = openerRef.current
-    if (!boxRef.current?.contains(document.activeElement)) closeRef.current?.focus()
+    if (!closeRef.current?.closest('.dialog')?.contains(document.activeElement)) closeRef.current?.focus()
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         e.stopPropagation()
@@ -47,7 +45,7 @@ export function Dialog({
         if (e.target === e.currentTarget) onClose()
       }}
     >
-      <div className={xl ? 'xl' : undefined} ref={boxRef}>
+      <div className={xl ? 'xl' : undefined}>
         <header>
           <h2 id={titleId}>{title}</h2>
           <button ref={closeRef} className="btn" type="button" onClick={onClose}>
