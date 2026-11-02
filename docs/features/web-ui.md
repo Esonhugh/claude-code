@@ -56,6 +56,10 @@ fork 是通用个人 agent，所以网页界面默认面向对话和研究，不
 | Anthropic API key | “Anthropic API key” 和来源 | 按量费用 | `ANTHROPIC_API_KEY` 或 `apiKeyHelper`；网页不收集 key |
 | OpenAI API key | “OpenAI API key” 和来源、base URL | 按量费用 | `CLAUDE_CODE_USE_OPENAI=1` 加 `OPENAI_API_KEY`，可选 `OPENAI_BASE_URL`；没有 auto 模式和 Codex apps |
 
+## 搜索
+
+左侧“搜索历史会话”按标题和目录匹配；打开记忆弹窗里的 “SQLite 全文索引”（即 `memory.sqlite.enabled`，见 [记忆](memory.md)）后，还会列出会话内容里命中的句子，点一下跳到那个会话并高亮。记忆弹窗的搜索可以选全部、记忆或历史会话，用的是同一个 `~/.claude/memory-index.sqlite` 索引。
+
 ## 外观
 
 设置里可以选外观（跟随系统、浅色、深色）和配色（默认、陶土、黑白），每套配色都有浅色和深色两组颜色。这两项只存在浏览器里，不影响终端的 `/theme`。
