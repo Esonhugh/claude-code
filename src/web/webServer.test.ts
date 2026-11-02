@@ -19,9 +19,12 @@ import {
 const TOKEN = 'web-test-token'
 
 // Stands in for `claude -p` stream-json: a user message is answered with a
-// result naming the text and the child's cwd.
+// result naming the text and the child's cwd. With session state events on,
+// the turn is bracketed by running/idle, and a "hold" turn never ends.
 const FAKE_CHILD = `
 const out = m => process.stdout.write(JSON.stringify(m) + '\\n')
+const states = !!process.env.CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS
+const state = s => states && out({ type: 'system', subtype: 'session_state_changed', state: s })
 let buf = ''
 process.stdin.on('data', chunk => {
   buf += chunk
@@ -30,7 +33,11 @@ process.stdin.on('data', chunk => {
     const msg = JSON.parse(buf.slice(0, i))
     buf = buf.slice(i + 1)
     if (msg.type === 'user') {
-      out({ type: 'result', subtype: 'success', is_error: false, result: msg.message.content[0].text + ' in ' + process.cwd() })
+      const text = msg.message.content[0].text
+      state('running')
+      if (text === 'hold') continue
+      out({ type: 'result', subtype: 'success', is_error: false, result: text + ' in ' + process.cwd() })
+      state('idle')
     }
   }
 })
@@ -68,6 +75,7 @@ function start(overrides: Partial<WebServerConfig> = {}): Running {
       spawned.push(options)
       return spawn(process.execPath, ['-e', FAKE_CHILD], {
         cwd: options.cwd,
+        env: { ...process.env, ...options.env },
         stdio: ['pipe', 'pipe', 'pipe'],
       })
     },
@@ -555,7 +563,11 @@ describe('claude web server', () => {
     expect(spawnedWith.permissionMode).toBe('acceptEdits')
     expect(spawnedWith.systemPrompt).toContain('You are a **coordinator**')
     expect(spawnedWith.appendSystemPrompt).toBe('PROJECT_NOTE')
-    expect(spawnedWith.env).toEqual({ CLAUDE_CODE_COORDINATOR_MODE: '1', CLAUDE_CODE_SUBAGENT_MODEL: 'haiku' })
+    expect(spawnedWith.env).toEqual({
+      CLAUDE_CODE_COORDINATOR_MODE: '1',
+      CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: '1',
+      CLAUDE_CODE_SUBAGENT_MODEL: 'haiku',
+    })
 
     // Still running: the same session, no new child.
     expect((await open()).session_id).toBe(first.session_id)
@@ -573,6 +585,63 @@ describe('claude web server', () => {
     expect((await fetch(`${r.base}/api/projects/${id}`, { method: 'DELETE', headers })).status).toBe(204)
     expect(((await (await fetch(`${r.base}/api/sessions`, { headers })).json()) as unknown[]).length).toBe(0)
     expect((await fetch(`${r.base}/api/projects/${id}/coordinator`, { method: 'POST', headers })).status).toBe(404)
+  })
+
+  it('restarts the coordinator with new instructions or task model once its turn ends', async () => {
+    const r = start()
+    const cookie = await signIn(r)
+    const headers = { cookie, origin: r.origin }
+    const created = await fetch(`${r.base}/api/projects`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ name: 'P', cwd: r.workspace, instructions: 'OLD' }),
+    })
+    const { id } = (await created.json()) as { id: string }
+    const patch = (body: object) =>
+      fetch(`${r.base}/api/projects/${id}`, { method: 'PATCH', headers, body: JSON.stringify(body) })
+    const opened = await fetch(`${r.base}/api/projects/${id}/coordinator`, { method: 'POST', headers })
+    const { session_id: sessionId } = (await opened.json()) as { session_id: string }
+
+    const ws = new WebSocket(`${r.base.replace('http', 'ws')}/api/sessions/${sessionId}/ws`, {
+      headers,
+    } as unknown as string[])
+    const lines: Record<string, unknown>[] = []
+    ws.onmessage = e => lines.push(JSON.parse(String(e.data)))
+    await new Promise(resolve => (ws.onopen = resolve))
+    const say = (text: string) =>
+      ws.send(JSON.stringify({ type: 'user', message: { role: 'user', content: [{ type: 'text', text }] } }) + '\n')
+    const waitFor = async (check: () => boolean) => {
+      for (let i = 0; i < 200 && !check(); i++) await Bun.sleep(10)
+      expect(check()).toBe(true)
+    }
+    const resultSeen = (text: string) => () => lines.some(l => l.result === `${text} in ${r.workspace}`)
+
+    // A turn is running: the restart waits for it.
+    say('hold')
+    await waitFor(() => lines.some(l => l.state === 'running'))
+    expect((await patch({ instructions: 'NEW' })).status).toBe(200)
+    await Bun.sleep(50)
+    expect(r.spawned).toHaveLength(1)
+    say('finish')
+    await waitFor(() => r.spawned.length === 2)
+    expect(r.spawned[1]).toMatchObject({ sessionId, resume: true, appendSystemPrompt: 'NEW' })
+
+    // The same socket talks to the new process.
+    say('again')
+    await waitFor(resultSeen('again'))
+
+    // Renaming leaves it alone; a new task model while idle restarts at once.
+    await patch({ name: 'Q' })
+    await Bun.sleep(50)
+    expect(r.spawned).toHaveLength(2)
+    await patch({ worker_model: 'opus' })
+    await waitFor(() => r.spawned.length === 3)
+    expect(r.spawned[2]!.env).toMatchObject({ CLAUDE_CODE_SUBAGENT_MODEL: 'opus' })
+    expect(r.spawned[2]!.appendSystemPrompt).toBe('NEW')
+    say('last')
+    await waitFor(resultSeen('last'))
+    expect(ws.readyState).toBe(WebSocket.OPEN)
+    ws.close()
   })
 })
 

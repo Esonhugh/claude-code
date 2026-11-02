@@ -216,6 +216,8 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
           blocks = [{ type: 'text', text: 'COORD_LAUNCHED' }]
         } else if (coordinator && lastText.includes('AFTER_RESUME')) {
           blocks = [{ type: 'text', text: 'COORD_RESUMED' }]
+        } else if (coordinator && lastText.includes('AFTER_RESTART')) {
+          blocks = [{ type: 'text', text: 'COORD_RESTARTED' }]
         } else if (!coordinator && lastText.includes('WORKER_ONE')) {
           blocks = [{ type: 'text', text: 'ONE_OUT' }]
         } else if (!coordinator && lastText.includes('WORKER_TWO')) {
@@ -1137,6 +1139,21 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
         coordinator_session_id: string
       }[]
       expect(reopened[0]!.coordinator_session_id).toBe(sessionId)
+
+      // New instructions restart the coordinator under the same page socket.
+      const patched = await page.evaluate(
+        async (id: string) =>
+          (await fetch(`/api/projects/${id}`, { method: 'PATCH', body: JSON.stringify({ instructions: 'RULES_V2' }) })).status,
+        project!.id,
+      )
+      expect(patched).toBe(200)
+      const beforeRestart = coordinatorSeen.length
+      await again.fill('AFTER_RESTART')
+      await again.press('Enter')
+      await page.locator('.pv-chat').getByText('COORD_RESTARTED').waitFor({ timeout: 60_000 })
+      const restarted = coordinatorSeen.slice(beforeRestart).find(([, messages]) => messages.includes('AFTER_RESTART'))!
+      expect(restarted[0]).toContain('RULES_V2')
+      expect(restarted[0]).not.toContain('PROJECT_RULES_MARK')
       expect(errors).toEqual([])
       await page.evaluate(async () => {
         for (const s of (await (await fetch('/api/sessions')).json()) as { id: string }[]) {

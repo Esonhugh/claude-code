@@ -44,12 +44,16 @@ describe('coordinatorSpawn', () => {
     expect(spawn.systemPrompt).toContain('You are a **coordinator**')
     expect(spawn.systemPrompt).toContain('**Agent** - Spawn a new worker')
     expect(spawn.appendSystemPrompt).toBe('Cite sources.')
-    expect(spawn.env).toEqual({ CLAUDE_CODE_COORDINATOR_MODE: '1', CLAUDE_CODE_SUBAGENT_MODEL: 'sonnet' })
+    expect(spawn.env).toEqual({
+      CLAUDE_CODE_COORDINATOR_MODE: '1',
+      CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: '1',
+      CLAUDE_CODE_SUBAGENT_MODEL: 'sonnet',
+    })
   })
 
   it('leaves out empty instructions and an inherited model', () => {
     const spawn = coordinatorSpawn({ instructions: ' ', worker_model: null })
     expect(spawn.appendSystemPrompt).toBeUndefined()
-    expect(spawn.env).toEqual({ CLAUDE_CODE_COORDINATOR_MODE: '1' })
+    expect(spawn.env).toEqual({ CLAUDE_CODE_COORDINATOR_MODE: '1', CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: '1' })
   })
 })

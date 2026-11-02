@@ -496,9 +496,18 @@ export function App() {
     }
   }
 
-  /** The project's permission mode: the live coordinator's and the stored one change together. */
-  const changeProjectMode = (p: Project, id: string, mode: string) => {
-    changeMode(id, mode)
+  /** The project keeps a permission mode only once the live coordinator accepted it. */
+  const changeProjectMode = async (p: Project, id: string, mode: string) => {
+    if (sockets.current.has(id)) {
+      try {
+        await requestAsync(id, REQUEST_PREFIX.mode, { subtype: 'set_permission_mode', mode })
+      } catch {
+        // The reducer shows the refusal as the chat notice.
+        return
+      }
+    } else {
+      changeMode(id, mode)
+    }
     setProjects(list => list.map(x => (x.id === p.id ? { ...x, permission_mode: mode } : x)))
     patchProject(p.id, { permission_mode: mode }).catch(() => {})
   }
@@ -1158,7 +1167,7 @@ export function App() {
             onFocus={() => chat.mode === 'readonly' && void resume(view)}
             listFiles={listFiles}
             prompts={prompts}
-            onMode={mode => changeProjectMode(project, view, mode)}
+            onMode={mode => void changeProjectMode(project, view, mode)}
             onModel={model => changeModel(view, model)}
             onEffort={effort => changeEffort(view, effort)}
             onAnswer={(approval, choice) => answer(view, approval, choice)}
