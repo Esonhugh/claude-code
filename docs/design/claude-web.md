@@ -182,7 +182,7 @@ claude web 进程（Bun.serve）
 
 ### 5.4 右侧边栏：Agents 页签与直接对话
 
-右侧边栏有三个页签：**Agents**、**Terminals**（5.5）和 **Files**（5.2 的预览）。有 agent 在跑时边栏自动展开到 Agents，可以拖宽；workflow 视图可以"展开到全屏"。窄屏时边栏变成抽屉。
+右侧边栏的页签依次是 **Status**、**Files**、**Agents**、**Workflow**、**Terminals**、**Background Tasks**（见 5.5、5.7），默认打开 Status。有 agent 在跑时可以切到 Agents，边栏可以拖宽；workflow 视图可以"展开到全屏"。窄屏时边栏变成抽屉。
 
 **1. 存活 agents 的层级树**
 
@@ -246,7 +246,7 @@ claude web 进程（Bun.serve）
 
 ### 5.5 Terminals 页签
 
-Terminal 工具是 fork 独有的（官方没有），它开的每个 PTY 会话注册成 `interactive_terminal` 类型的 task（`src/tasks/TerminalTask.ts:26`）。后台 Bash 和 Monitor 是 `local_bash` task。两者在这个页签里一起列出。
+Terminal 工具是 fork 独有的（官方没有），它开的每个 PTY 会话注册成 `interactive_terminal` 类型的 task（`src/tasks/TerminalTask.ts:26`），在这个页签里列出。后台 Bash 和 Monitor（`local_bash` task）以及定时任务放在 Background Tasks 页签（5.7）。
 
 - 列表：来自 `task_started` / `task_updated` / `background_tasks_changed`，每行显示命令、状态（running / completed / failed / killed）、退出码、尺寸和是哪个 agent 开的。点一行展开屏幕。
 - 屏幕内容：复用官方已有的 `get_task_output` control request（官方 2.1.316 也有，返回最后 8 KiB；fork 实现在 `src/cli/hostControlRequests.ts:597`，目前只认 shell 和 Monitor task）。fork 让它也接受 `interactive_terminal`，返回当前屏幕的纯文本（`screenToPreview`，`src/utils/pty/terminalScreenToPreview.ts:33`），不另加请求。浏览器每收到这个 task 的事件或每秒最多拉一次。屏幕是纯文本，不在浏览器里解析 ANSI，与 TUI 的 Dialog preview 一致。
@@ -256,6 +256,16 @@ Terminal 工具是 fork 独有的（官方没有），它开的每个 PTY 会话
 **断线和恢复**
 
 浏览器刷新或重连时，服务端先发一次 `background_tasks_changed` 快照，再补发每个活跃任务最近一次 `task_progress`，侧边栏据此重建。服务端只在内存里给每个任务保留最近一份进度，不另存一套状态。
+
+### 5.7 其他边栏页签、扩展管理和外部输入
+
+- **Status**：对应 TUI 的 `/status` 和 `/context`。显示会话名称、ID、工作目录、轮次和压缩次数；模型、思考强度、权限模式；上下文占用；本会话 token 和折合价格、订阅额度；后台 agent、workflow、终端、待确认请求的数量；版本、账号、MCP 连接数、channels、已加载的指令文件、记忆、沙箱和 hooks。数据来自 `initialize` 回包、`get_context_usage`、`get_settings` 和 `/usage`，每秒刷新。
+- **Files**：列出本会话上传、读取、修改和生成的文件，每行是类型、文件名、所在目录、来源（上传 / 读取 / 修改 / 生成）、时间和来源工具。点一行在下方预览（5.2 的预览器），修改过的文件显示本会话的 diff。数据从 transcript 里的工具调用推出来，不另建索引。
+- **Background Tasks**：后台 Bash（`run_in_background`）、Monitor、`CronCreate` 和 `ScheduleWakeup`。每行是类型、命令或计划、谁启动的、耗时、最后一行输出或下次运行时间；运行中的可以停止，计划中的可以取消，都走 `stop_task`。
+- **Workflow 输出**：点已完成的 agent 卡片显示它的摘要和结构化输出（workflow schema 校验后的 JSON），可以复制或在对话中引用；点阶段名显示该阶段每个 agent 的状态和摘要。运行中的 agent 只显示最新进度，结构化输出要等它结束。
+- **Skills 和插件**：放在左侧边栏历史会话上方。Skills 弹窗按项目、用户、插件、内置分组，可以搜索、启用 / 停用、查看 SKILL.md、一键插入 `/name`。插件弹窗有四个页签：已安装（启用、更新、卸载，显示包含的 skills / commands / hooks / MCP）、发现（市场搜索和安装）、MCP 服务器（来源、传输方式、连接状态、工具数，需要登录或连接失败时给出登录 / 重连）、市场源（添加、刷新、移除）。和 `claude plugin`、`/plugin` 共用配置。设置里不再放模型和权限，它们只在输入框下方切换。
+- **Channel 消息**：channel 是发 `notifications/claude/channel` 的 MCP 服务器（`src/services/mcp/channelNotification.ts`）。入站消息在对话里单独渲染，带来源徽标和 `meta` 里的发送者，不显示成"你"。回复走 channel 自己的 MCP 工具，显示为普通工具卡片。声明了 `claude/channel/permission` 能力的 channel 会收到权限请求，审批卡片上注明"也已推送到 X"，从 channel 批准后卡片显示批准来源。
+- **MCP 交互**：MCP 工具调用和内置工具一样渲染成工具卡片，标出服务器名。服务器发来的 elicitation 渲染成表单卡片（按 schema 生成字段，提交 / 拒绝 / 取消分别回 accept / decline / cancel）。需要 OAuth 的服务器在浏览器新标签里完成登录，凭据只留在本机。
 
 ### 5.6 界面语言
 
