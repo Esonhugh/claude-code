@@ -143,6 +143,50 @@ export async function resolveAllowedFile(
   return undefined
 }
 
+// Folders `@` completion never walks into: dependencies, build output, VCS.
+const SKIPPED_DIRS = new Set(['node_modules', 'dist', 'build', 'target', '__pycache__', 'vendor'])
+
+/**
+ * Files under `root` whose relative path contains `query` (case-insensitive),
+ * for `@` completion: names starting with it first, then shorter paths.
+ * Hidden entries, credentials and the claude config dir are left out, the
+ * same rules `resolveAllowedFile` applies; the walk stops after `scanLimit` entries.
+ */
+export async function listWorkspaceFiles(
+  root: string,
+  query: string,
+  options: { configDir: string; limit?: number; scanLimit?: number },
+): Promise<string[]> {
+  const base = await real(root)
+  if (!base) return []
+  const configDir = await real(options.configDir)
+  const needle = query.toLowerCase()
+  const limit = options.limit ?? 30
+  let budget = options.scanLimit ?? 20_000
+  const hits: string[] = []
+  const queue = ['']
+  while (queue.length && budget > 0) {
+    const rel = queue.shift()!
+    const dir = join(base, rel)
+    if (configDir && within(dir, configDir)) continue
+    const entries = await readdir(dir, { withFileTypes: true }).catch(() => [])
+    for (const e of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+      if (--budget <= 0) break
+      if (e.name.startsWith('.')) continue
+      const path = rel ? `${rel}/${e.name}` : e.name
+      if (e.isDirectory()) {
+        if (!SKIPPED_DIRS.has(e.name)) queue.push(path)
+      } else if (e.isFile() && !DENIED_NAME.test(e.name) && path.toLowerCase().includes(needle)) {
+        hits.push(path)
+      }
+    }
+  }
+  const starts = (p: string) => (basename(p).toLowerCase().startsWith(needle) ? 0 : 1)
+  return hits
+    .sort((a, b) => starts(a) - starts(b) || a.split('/').length - b.split('/').length || a.localeCompare(b))
+    .slice(0, limit)
+}
+
 const CONVERTIBLE = new Set(['.ppt', '.pptx', '.odp', '.doc', '.rtf', '.odt', '.xls', '.ods'])
 
 /**

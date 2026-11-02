@@ -5,6 +5,11 @@ import zhHans from './locales/zh-Hans.json'
 import zhHant from './locales/zh-Hant.json'
 import {
   addUserMessage,
+  answerApproval,
+  currentTodos,
+  type Item,
+  rewindTo,
+  startRecap,
   initialState,
   permissionResponse,
   reduce,
@@ -331,6 +336,231 @@ describe('reduce', () => {
         request: { subtype: 'can_use_tool' },
       }),
     ).toBeUndefined()
+  })
+})
+
+describe('conversation extras', () => {
+  it('measures how long the model thought while it streamed', () => {
+    const state = fold([
+      ev({ type: 'message_start', message: { id: 'm1' } }),
+      ev({ type: 'content_block_start', index: 0, content_block: { type: 'thinking', thinking: '' } }),
+    ])
+    const block = (state.items[1] as { blocks: { startedAt?: number }[] }).blocks[0]!
+    block.startedAt = Date.now() - 6_200
+    const done = reduce(state, ev({ type: 'content_block_stop', index: 0 }))
+    const ms = (done.items[1] as { blocks: { ms?: number }[] }).blocks[0]!.ms!
+    expect(Math.round(ms / 1000)).toBe(6)
+  })
+
+  it('keeps the patch of a file edit result on its tool block', () => {
+    const state = fold([
+      { type: 'assistant', message: { id: 'm1', content: [{ type: 'tool_use', id: 't1', name: 'Edit', input: { file_path: '/w/a' } }] } },
+      {
+        type: 'user',
+        tool_use_result: { type: 'update', originalFile: 'big', structuredPatch: [{ oldStart: 1, lines: [] }] },
+        message: { content: [{ type: 'tool_result', tool_use_id: 't1', content: 'ok' }] },
+      },
+    ])
+    expect((state.items[1] as { blocks: unknown[] }).blocks[0]).toMatchObject({
+      result: 'ok',
+      meta: { type: 'update', structuredPatch: [{ oldStart: 1, lines: [] }] },
+    })
+    expect(JSON.stringify(state)).not.toContain('big')
+  })
+
+  it('marks a compaction and puts its summary under it instead of a bubble', () => {
+    const state = fold([
+      { type: 'system', subtype: 'compact_boundary', uuid: 'c1', timestamp: '2026-11-02T10:42:00Z', compact_metadata: { trigger: 'auto', pre_tokens: 186000, post_tokens: 12000 } },
+      { type: 'user', isReplay: true, uuid: 's1', message: { content: 'This session is being continued from a previous conversation. Done: X.' } },
+    ])
+    expect(state.items.slice(1)).toEqual([
+      {
+        kind: 'compact',
+        id: 'c1',
+        trigger: 'auto',
+        preTokens: 186000,
+        postTokens: 12000,
+        at: Date.parse('2026-11-02T10:42:00Z'),
+        summary: 'This session is being continued from a previous conversation. Done: X.',
+      },
+    ])
+  })
+
+  it('lets the compaction mark stand for a typed /compact and its output', () => {
+    const sent = addUserMessage(fold([{ type: 'result', subtype: 'success' }]), '/compact', undefined, 'u1')
+    const state = [
+      { type: 'system', subtype: 'compact_boundary', uuid: 'c1', compact_metadata: { trigger: 'manual', pre_tokens: 12000 } },
+      { type: 'assistant', message: { id: 'l1', model: '<synthetic>', content: [{ type: 'text', text: 'Compacted' }] } },
+    ].reduce(reduce, sent)
+    expect(state.items.slice(1).map(i => i.kind)).toEqual(['compact'])
+  })
+
+  it('turns the answer to /recap into a ※ line', () => {
+    const sent = startRecap(fold([{ type: 'result', subtype: 'success' }]), 18)
+    expect(sent.busy).toBe(true)
+    const auto = reduce(sent, { type: 'assistant', message: { id: 'r1', model: '<synthetic>', content: [{ type: 'text', text: 'Reviewing a paper.' }] } })
+    expect(auto.items.at(-1)).toEqual({ kind: 'recap', id: 'r1', text: 'Reviewing a paper.', away: 18 })
+    expect(auto.recapPending).toBeUndefined()
+    // Typed by hand (or replayed from the transcript): the `/recap` bubble goes.
+    const typed = [
+      { type: 'user', isReplay: true, uuid: 'u2', message: { content: '<command-name>/recap</command-name>' } },
+      { type: 'user', isReplay: true, uuid: 'u3', message: { content: '<local-command-stdout>Reviewing.</local-command-stdout>' } },
+    ].reduce(reduce, initialState)
+    expect(typed.items).toEqual([{ kind: 'recap', id: 'u3', text: 'Reviewing.' }])
+    // Other local output stays a ⎿ line.
+    const other = reduce(initialState, { type: 'assistant', message: { id: 'l1', model: '<synthetic>', content: [{ type: 'text', text: 'Set model' }] } })
+    expect(other.items).toEqual([{ kind: 'local', id: 'l1', text: 'Set model' }])
+  })
+
+  it('follows the goal and adds a divider when it ends', () => {
+    const goal = (g: Record<string, unknown>, uuid: string) => ({ type: 'system', subtype: 'goal_state_changed', uuid, goal: { type: 'goal_status', id: 'g', condition: 'tests pass', ...g } })
+    let state = fold([goal({ status: 'active', iterations: 0, setAt: 5 }, 'g0')])
+    expect(state.goal).toEqual({ condition: 'tests pass', status: 'active', iterations: 0, setAt: 5, checks: [] })
+    state = reduce(state, goal({ status: 'active', iterations: 1, reason: 'lint fails' }, 'g1'))
+    state = reduce(state, goal({ status: 'active', iterations: 2, reason: 'lint fails' }, 'g2'))
+    expect(state.goal).toMatchObject({ iterations: 2, checks: ['lint fails'] })
+    state = reduce(state, goal({ status: 'met', iterations: 3, durationMs: 60_000 }, 'g3'))
+    expect(state.goal).toBeUndefined()
+    expect(state.items.at(-1)).toEqual({ kind: 'goal', id: 'g3', status: 'met', iterations: 3, durationMs: 60_000 })
+  })
+
+  it('follows a goal set or cleared from this page, which -p does not stream', () => {
+    const set = addUserMessage(initialState, '/goal tests pass', undefined, 'u1')
+    expect(set.goal).toMatchObject({ condition: 'tests pass', status: 'active', iterations: 0, checks: [] })
+    const cleared = addUserMessage({ ...set, busy: false }, '/goal clear', undefined, 'u2')
+    expect(cleared.goal).toBeUndefined()
+    expect(cleared.items.at(-1)).toEqual({ kind: 'goal', id: 'goal-u2', status: 'cleared', iterations: 0 })
+    // `/goal` alone only shows the goal.
+    expect(addUserMessage(set, '/goal', undefined, 'u3').goal).toBe(set.goal)
+  })
+
+  it('remembers the answer to an approval by its tool use id', () => {
+    const state = fold([
+      {
+        type: 'control_request',
+        request_id: 'r1',
+        request: {
+          subtype: 'can_use_tool',
+          tool_name: 'Bash',
+          tool_use_id: 't9',
+          input: { command: 'npm test' },
+          permission_suggestions: [{ type: 'addRules', rules: [{ toolName: 'Bash', ruleContent: 'npm test:*' }] }],
+        },
+      },
+    ])
+    expect(state.approvals[0]?.toolUseId).toBe('t9')
+    const always = answerApproval(state, state.approvals[0]!, 'always')
+    expect(always.approvals).toEqual([])
+    expect(always.decisions).toEqual({ t9: { toolName: 'Bash', choice: 'always', rules: 'Bash(npm test:*)' } })
+    expect(answerApproval(state, state.approvals[0]!, 'deny').decisions.t9).toEqual({ toolName: 'Bash', choice: 'deny' })
+  })
+
+  it('groups get_context_usage into the meter rows', () => {
+    const state = fold([
+      {
+        type: 'control_response',
+        response: {
+          subtype: 'success',
+          request_id: 'web-context-1',
+          response: {
+            totalTokens: 76000,
+            maxTokens: 200000,
+            percentage: 38,
+            isAutoCompactEnabled: true,
+            autoCompactThreshold: 187000,
+            categories: [
+              { id: 'system_prompt', name: 'System prompt', tokens: 9000 },
+              { id: 'memory_files', name: 'Memory files', tokens: 3000 },
+              { id: 'system_tools', name: 'System tools', tokens: 12000 },
+              { id: 'mcp_tools', name: 'MCP tools', tokens: 4000 },
+              { id: 'mcp_tools_deferred', name: 'MCP tools (deferred)', tokens: 999, isDeferred: true },
+              { id: 'messages', name: 'Messages', tokens: 48000 },
+              { id: 'free_space', name: 'Free space', tokens: 111000 },
+            ],
+          },
+        },
+      },
+    ])
+    expect(state.contextPercent).toBe(38)
+    expect(state.context).toEqual({
+      total: 76000,
+      max: 200000,
+      percent: 38,
+      system: 12000,
+      tools: 16000,
+      messages: 48000,
+      autoCompact: true,
+      threshold: 187000,
+    })
+  })
+
+  it('keeps the latest rate limit per window', () => {
+    const state = fold([
+      { type: 'rate_limit_event', rate_limit_info: { status: 'allowed', rateLimitType: 'five_hour', utilization: 0.42, resetsAt: 1_800_000_000 } },
+    ])
+    expect(state.rateLimits.five_hour).toEqual({ type: 'five_hour', utilization: 0.42, resetsAt: 1_800_000_000 })
+  })
+
+  it('reads the todo list of the latest TodoWrite call', () => {
+    const todo = (id: string, todos: unknown) => ({ kind: 'tool' as const, id, name: 'TodoWrite', input: JSON.stringify({ todos }) })
+    const items: Item[] = [
+      { kind: 'assistant', id: 'a1', streamed: false, blocks: [todo('t1', [{ content: 'old', status: 'pending' }])] },
+      {
+        kind: 'assistant',
+        id: 'a2',
+        streamed: false,
+        blocks: [
+          todo('t2', [
+            { content: 'Read', status: 'completed', activeForm: 'Reading' },
+            { content: 'Write', status: 'in_progress', activeForm: 'Writing' },
+          ]),
+          { kind: 'tool', id: 't3', name: 'TodoWrite', input: '{"todos": [' },
+        ],
+      },
+    ]
+    expect(currentTodos(items)).toEqual([
+      { content: 'Read', status: 'completed', activeForm: 'Reading' },
+      { content: 'Write', status: 'in_progress', activeForm: 'Writing' },
+    ])
+    expect(currentTodos([])).toEqual([])
+  })
+
+  it('builds the todo list from TaskCreate and TaskUpdate calls', () => {
+    const tool = (id: string, name: string, input: unknown, result?: string, isError?: boolean) => ({
+      kind: 'tool' as const,
+      id,
+      name,
+      input: JSON.stringify(input),
+      ...(result !== undefined && { result }),
+      ...(isError && { isError }),
+    })
+    const items: Item[] = [
+      {
+        kind: 'assistant',
+        id: 'a1',
+        streamed: false,
+        blocks: [
+          tool('t1', 'TaskCreate', { subject: 'Read', activeForm: 'Reading' }, 'Task #1 created successfully: Read'),
+          tool('t2', 'TaskCreate', { subject: 'Write' }, 'Task #2 created successfully: Write'),
+          tool('t3', 'TaskCreate', { subject: 'Ship' }, 'Task #3 created successfully: Ship'),
+          tool('t4', 'TaskUpdate', { taskId: '1', status: 'completed' }, 'ok'),
+          tool('t5', 'TaskUpdate', { taskId: '2', status: 'in_progress', activeForm: 'Writing' }, 'ok'),
+          tool('t6', 'TaskUpdate', { taskId: '3', status: 'deleted' }, 'ok'),
+          tool('t7', 'TaskUpdate', { taskId: '2', status: 'completed' }, 'no such task', true),
+        ],
+      },
+    ]
+    expect(currentTodos(items)).toEqual([
+      { content: 'Read', status: 'completed', activeForm: 'Reading' },
+      { content: 'Write', status: 'in_progress', activeForm: 'Writing' },
+    ])
+  })
+
+  it('drops a rewound prompt and what followed, leaving a note', () => {
+    const state = fold([{ type: 'assistant', message: { id: 'm1', content: [{ type: 'text', text: 'a' }] } }])
+    const next = addUserMessage(state, 'again', undefined, 'u2')
+    expect(rewindTo(next, 'u2', 'Rewound').items.map(i => i.kind)).toEqual(['user', 'assistant', 'note'])
+    expect(rewindTo(next, 'missing', 'x')).toBe(next)
   })
 })
 

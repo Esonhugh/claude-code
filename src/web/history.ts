@@ -39,7 +39,15 @@ const LOCAL_COMMAND = /^<(command-name|command-message|local-command-stdout|loca
 
 function isVisible(message: Record<string, unknown>): boolean {
   if (message.type === 'assistant') return true
-  if (message.type !== 'user' || message.isMeta || message.isCompactSummary) {
+  // The compaction divider and the summary under it.
+  if (message.type === 'system') {
+    return message.subtype === 'compact_boundary' || (message.subtype === 'local_command' && typeof message.content === 'string')
+  }
+  if (message.type === 'user' && message.isCompactSummary) return true
+  if (message.type === 'attachment') {
+    return (message.attachment as { type?: string } | undefined)?.type === 'goal_status'
+  }
+  if (message.type !== 'user' || message.isMeta) {
     return false
   }
   const inner = message.message as { content?: unknown } | undefined
@@ -97,16 +105,67 @@ function toStreamJson(
 ): Record<string, unknown>[] {
   return (messages as Record<string, unknown>[])
     .filter(m => (sidechain || !m.isSidechain) && isVisible(m))
-    .map(m => ({
-      type: m.type,
-      uuid: m.uuid,
-      parent_tool_use_id: null,
-      message: m.message,
-      // stream-json's flag for user messages echoed back from the transcript.
-      ...(m.type === 'user' && { isReplay: true }),
-      // The live stream marks API error messages with `error`; keep that for the page.
-      ...(m.type === 'assistant' && m.isApiErrorMessage === true && { isApiErrorMessage: true }),
-    }))
+    .map(m => {
+      // Shaped like the live stream's `system/compact_boundary` and `goal_state_changed`.
+      if (m.type === 'system' && m.subtype === 'local_command') {
+        // `/name` and its `<local-command-stdout>`, as the live stream replays them.
+        return { type: 'user', uuid: m.uuid, timestamp: m.timestamp, parent_tool_use_id: null, isReplay: true, message: { role: 'user', content: m.content } }
+      }
+      if (m.type === 'system') {
+        const meta = (m.compactMetadata ?? {}) as { trigger?: unknown; preTokens?: unknown; postTokens?: unknown }
+        return {
+          type: 'system',
+          subtype: 'compact_boundary',
+          uuid: m.uuid,
+          timestamp: m.timestamp,
+          compact_metadata: { trigger: meta.trigger, pre_tokens: meta.preTokens, post_tokens: meta.postTokens },
+        }
+      }
+      if (m.type === 'attachment') {
+        return { type: 'system', subtype: 'goal_state_changed', uuid: m.uuid, goal: m.attachment }
+      }
+      return {
+        type: m.type,
+        uuid: m.uuid,
+        timestamp: m.timestamp,
+        parent_tool_use_id: null,
+        message: m.message,
+        // stream-json's flag for user messages echoed back from the transcript.
+        ...(m.type === 'user' && { isReplay: true }),
+        ...(m.isCompactSummary === true && { isCompactSummary: true }),
+        // A file edit's patch for the diff card; not the whole file it also holds.
+        ...(m.type === 'user' && editPatch(m.toolUseResult)),
+        // The live stream marks API error messages with `error`; keep that for the page.
+        ...(m.type === 'assistant' && m.isApiErrorMessage === true && { isApiErrorMessage: true }),
+      }
+    })
+}
+
+function editPatch(result: unknown): { tool_use_result?: Record<string, unknown> } {
+  if (typeof result !== 'object' || result === null) return {}
+  const { type, structuredPatch } = result as { type?: unknown; structuredPatch?: unknown }
+  if (!Array.isArray(structuredPatch)) return {}
+  return { tool_use_result: { type, structuredPatch } }
+}
+
+/** The first assistant text of a session, cut to a card's length. */
+export async function readSnippet(id: string): Promise<string | undefined> {
+  const found = await resolveSessionFilePath(id)
+  if (!found) return undefined
+  const log = await loadTranscriptFromFile(found.filePath)
+  for (const m of log.messages as unknown as Record<string, unknown>[]) {
+    if (m.type !== 'assistant' || m.isSidechain || m.isApiErrorMessage) continue
+    const content = (m.message as { content?: unknown } | undefined)?.content
+    if (!Array.isArray(content)) continue
+    const text = (content as ContentBlock[])
+      .filter(b => b.type === 'text' && b.text)
+      .map(b => b.text)
+      .join(' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+    if (text) return text.slice(0, 240)
+  }
+  return ''
 }
 
 async function findFiles(

@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSy
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { sanitizePath } from '../utils/sessionStoragePortable.js'
-import { findAgentIssuers, listHistory, readAgentTranscript, readTranscript, renameSession } from './history.js'
+import { findAgentIssuers, listHistory, readAgentTranscript, readSnippet, readTranscript, renameSession } from './history.js'
 
 const ID = '11111111-2222-4333-8444-555555555555'
 let root = ''
@@ -147,6 +147,51 @@ describe('web history', () => {
     const earlier = await readTranscript(ID, 5, 5)
     expect(earlier?.start).toBe(0)
     expect(earlier?.messages).toHaveLength(5)
+  })
+
+  it('replays compaction, goals, local commands and edit patches like the live stream', async () => {
+    const file = join(root, 'config', 'projects', sanitizePath(join(root, 'project')), `${ID}.jsonl`)
+    const cwd = join(root, 'project')
+    const patch = [{ oldStart: 3, oldLines: 1, newStart: 3, newLines: 1, lines: ['-a', '+b'] }]
+    writeFileSync(
+      file,
+      readFileSync(file, 'utf8') +
+        [
+          line({
+            type: 'system',
+            subtype: 'compact_boundary',
+            uuid: 'a0000000-0000-4000-8000-000000000008',
+            parentUuid: null,
+            cwd,
+            content: 'Conversation compacted',
+            compactMetadata: { trigger: 'auto', preTokens: 186000 },
+          }),
+          line({ type: 'user', uuid: 'a0000000-0000-4000-8000-000000000009', parentUuid: 'a0000000-0000-4000-8000-000000000008', cwd, isCompactSummary: true, isVisibleInTranscriptOnly: true, message: { role: 'user', content: 'This session is being continued from a previous conversation. Summary.' } }),
+          line({ type: 'attachment', uuid: 'a0000000-0000-4000-8000-000000000010', parentUuid: 'a0000000-0000-4000-8000-000000000009', cwd, attachment: { type: 'goal_status', id: 'g1', condition: 'tests pass', status: 'active', iterations: 1 } }),
+          line({ type: 'system', subtype: 'local_command', uuid: 'a0000000-0000-4000-8000-000000000011', parentUuid: 'a0000000-0000-4000-8000-000000000010', cwd, content: '<local-command-stdout>recap text</local-command-stdout>' }),
+          line({
+            type: 'user',
+            uuid: 'a0000000-0000-4000-8000-000000000012',
+            parentUuid: 'a0000000-0000-4000-8000-000000000011',
+            cwd,
+            toolUseResult: { type: 'update', filePath: '/x', originalFile: 'whole file', structuredPatch: patch },
+            message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_e', content: 'ok' }] },
+          }),
+        ].join('\n') +
+        '\n',
+    )
+    const messages = (await readTranscript(ID, undefined, 50))!.messages.slice(-5)
+    expect(messages[0]).toMatchObject({ type: 'system', subtype: 'compact_boundary', compact_metadata: { trigger: 'auto', pre_tokens: 186000 } })
+    expect(messages[1]).toMatchObject({ type: 'user', isCompactSummary: true })
+    expect(messages[2]).toMatchObject({ type: 'system', subtype: 'goal_state_changed', goal: { condition: 'tests pass', status: 'active' } })
+    expect(messages[3]).toMatchObject({ type: 'user', isReplay: true, message: { content: '<local-command-stdout>recap text</local-command-stdout>' } })
+    expect(messages[4]).toMatchObject({ tool_use_result: { type: 'update', structuredPatch: patch } })
+    expect(JSON.stringify(messages[4])).not.toContain('whole file')
+  })
+
+  it('reads the first assistant text as the snippet of a recent card', async () => {
+    expect(await readSnippet(ID)).toBe('first answer')
+    expect(await readSnippet('99999999-2222-4333-8444-555555555555')).toBeUndefined()
   })
 
   it('renames by appending a custom title', async () => {

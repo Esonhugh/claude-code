@@ -9,18 +9,31 @@ async function errorText(res: Response): Promise<string> {
   }
 }
 
+/** The folder needs the trust confirmation the TUI asks for before a session may start there. */
+export class NeedsTrustError extends Error {
+  constructor(readonly directory: string) {
+    super(`Not trusted yet: ${directory}`)
+  }
+}
+
 export async function createSession(body: {
   cwd?: string
   resume?: string
   permission_mode?: string
   model?: string
   temporary?: boolean
+  /** The user accepted the trust confirmation for `cwd`. */
+  trust?: boolean
 }): Promise<CreatedSession> {
   const res = await fetch('/api/sessions', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   })
+  if (res.status === 409) {
+    const answer = (await res.clone().json().catch(() => ({}))) as { needs_trust?: unknown }
+    if (typeof answer.needs_trust === 'string') throw new NeedsTrustError(answer.needs_trust)
+  }
   if (!res.ok) throw new Error(await errorText(res))
   return (await res.json()) as CreatedSession
 }
@@ -75,7 +88,17 @@ export const listRunning = () =>
   getJson<{ id: string; work_dir: string; attached: boolean }[]>('/api/sessions')
 
 export const getInfo = () =>
-  getJson<{ workspace: string; preview_origins?: string[]; temp_root?: string }>('/api/info')
+  getJson<{ workspace: string; preview_origins?: string[]; temp_root?: string; home?: string }>('/api/info')
+
+/** Files under the session's working directory matching an `@` query, relative to it. */
+export const listWorkspaceFiles = (sessionId: string, query: string) =>
+  getJson<{ files: string[] }>(
+    `/api/files/${encodeURIComponent(sessionId)}/list?q=${encodeURIComponent(query)}`,
+  ).then(r => r.files)
+
+/** The first assistant text of a transcript, for the start page's recent cards. */
+export const loadSnippet = (sessionId: string) =>
+  getJson<{ snippet: string }>(`/api/history/${encodeURIComponent(sessionId)}/snippet`).then(r => r.snippet)
 
 export async function renameSession(id: string, title: string): Promise<void> {
   const res = await fetch(`/api/history/${encodeURIComponent(id)}`, {

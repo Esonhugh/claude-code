@@ -1,4 +1,5 @@
-import { mkdirSync, mkdtempSync, statSync } from 'fs'
+import { mkdirSync, mkdtempSync, realpathSync, statSync } from 'fs'
+import { homedir } from 'os'
 import { basename, extname, isAbsolute, join } from 'path'
 import { z } from 'zod/v4'
 import { PERMISSION_MODES } from '../types/permissions.js'
@@ -8,10 +9,12 @@ import {
   type SessionManager,
   SessionManagerError,
 } from '../server/sessionManager.js'
+import { isPathTrusted, savePathTrusted } from '../utils/config.js'
 import { getClaudeConfigHomeDir } from '../utils/envUtils.js'
 import {
   convertToPdf,
   DEFAULT_UPLOAD_LIMITS,
+  listWorkspaceFiles,
   resolveAllowedFile,
   saveUpload,
   transcriptFileScope,
@@ -23,6 +26,7 @@ import {
   findAgentIssuers,
   listHistory,
   readAgentTranscript,
+  readSnippet,
   readTranscript,
   renameSession,
   SESSION_ID,
@@ -61,6 +65,8 @@ export type WebServerConfig = {
   tls?: { cert: string; key: string }
   /** Origins from `parsePreviewOrigin` that the page may frame. */
   previewOrigins?: string[]
+  /** Folder trust as the TUI's trust dialog records it; replaceable in tests. */
+  folderTrust?: { isTrusted: (dir: string) => boolean; save: (dir: string) => void }
   /** Defaults to this machine's credential store and settings (tests pass a fake). */
   account?: AccountBackend
 }
@@ -126,6 +132,8 @@ const createSessionBodySchema = lazySchema(() =>
     // A temporary chat: a fresh empty folder under `<config>/web/temp`.
     temporary: z.boolean().optional(),
     resume: z.string().regex(SESSION_ID).optional(),
+    // The user accepted the trust confirmation for `cwd` (the TUI's trust dialog).
+    trust: z.boolean().optional(),
     permission_mode: z.enum(PERMISSION_MODES).optional(),
     // A model alias or id; passed to `--model` as one argv entry.
     model: z
@@ -141,7 +149,8 @@ const HISTORY_PATH = /^\/api\/history\/([^/]+)$/
 const HISTORY_MESSAGES_PATH = /^\/api\/history\/([^/]+)\/messages$/
 const AGENT_MESSAGES_PATH = /^\/api\/history\/([^/]+)\/agents\/([^/]+)\/messages$/
 const AGENT_ISSUERS_PATH = /^\/api\/history\/([^/]+)\/agent-issuers$/
-const FILES_PATH = /^\/api\/files\/([^/]+)(\/pdf)?$/
+const FILES_PATH = /^\/api\/files\/([^/]+)(\/pdf|\/list)?$/
+const SNIPPET_PATH = /^\/api\/history\/([^/]+)\/snippet$/
 
 // Served as text so a file from the workspace never runs as a page on this origin.
 const ACTIVE_TYPES = new Set(['.html', '.htm', '.xhtml', '.svg', '.xml', '.js', '.mjs'])
@@ -355,6 +364,14 @@ function listen(
   }
 }
 
+function realOr(path: string): string {
+  try {
+    return realpathSync(path)
+  } catch {
+    return path
+  }
+}
+
 function isDirectory(path: string): boolean {
   try {
     return statSync(path).isDirectory()
@@ -369,9 +386,10 @@ function isDirectory(path: string): boolean {
  * `/?token=` URL once. `/api` and the WebSocket additionally require the
  * request to come from this server's own origin.
  *
- *   GET    /api/info                    → { workspace, preview_origins, temp_root }
+ *   GET    /api/info                    → { workspace, preview_origins, temp_root, home }
  *   GET    /api/sessions                → running sessions
- *   POST   /api/sessions                → { session_id, work_dir } (new or resume)
+ *   POST   /api/sessions                → { session_id, work_dir } (new or resume);
+ *                                          409 { needs_trust } for an untrusted folder
  *   GET    /api/sessions/:id/ws         → stream-json relay to the session
  *   DELETE /api/sessions/:id            → stop the session
  *   GET    /api/history                 → transcripts on disk, newest first
@@ -379,7 +397,9 @@ function isDirectory(path: string): boolean {
  *   PATCH  /api/history/:id             → rename (custom title)
  *   GET    /api/history/:id/agents/:agent/messages → a subagent's transcript
  *   GET    /api/history/:id/agent-issuers?tool_use_id= → { [tool use id]: agent id }
+ *   GET    /api/history/:id/snippet     → { snippet } first assistant text
  *   POST   /api/files/:id?name=         → upload into the session's folder
+ *   GET    /api/files/:id/list?q=       → { files } for `@` completion
  *   GET    /api/files/:id?path=         → a file the session may show (Range)
  *   GET    /api/files/:id/pdf?path=     → Office document converted to PDF
  *   /api/account*, /api/settings, /api/usage → see createAccountApi
@@ -415,6 +435,10 @@ export function startWebServer(
     return accountApi(req, url)
   }
 
+  async function sessionCwd(id: string): Promise<string | undefined> {
+    return sessionManager.get(id)?.workDir ?? (await transcriptFileScope(id)).cwd
+  }
+
   async function sessionFile(id: string, path: string): Promise<string | undefined> {
     if (!isAbsolute(path)) return undefined
     const running = sessionManager.get(id)
@@ -431,9 +455,20 @@ export function startWebServer(
     req: Request,
     url: URL,
     id: string,
-    pdf: boolean,
+    kind: string | undefined,
   ): Promise<Response> {
     if (!SESSION_ID.test(id)) return errorResponse(400, 'Invalid session id')
+    const pdf = kind === '/pdf'
+    if (kind === '/list') {
+      if (req.method !== 'GET') return errorResponse(405, 'Method not allowed')
+      const cwd = await sessionCwd(id)
+      const files = cwd
+        ? await listWorkspaceFiles(cwd, (url.searchParams.get('q') ?? '').slice(0, 200), {
+            configDir: config.configDir ?? getClaudeConfigHomeDir(),
+          })
+        : []
+      return Response.json({ files })
+    }
     if (req.method === 'POST' && !pdf) {
       const length = Number(req.headers.get('content-length'))
       if (!Number.isFinite(length) || length <= 0) {
@@ -479,7 +514,7 @@ export function startWebServer(
     if (!parsed.success) {
       return errorResponse(400, `Invalid request: ${parsed.error.message}`)
     }
-    const { cwd, temporary, resume, permission_mode: permissionMode, model } = parsed.data
+    const { cwd, temporary, resume, permission_mode: permissionMode, model, trust } = parsed.data
     let workDir = config.workspace
     if (temporary && !cwd && !resume) {
       mkdirSync(tempRoot, { recursive: true })
@@ -487,6 +522,14 @@ export function startWebServer(
     } else if (cwd) {
       if (!isAbsolute(cwd) || !isDirectory(cwd)) {
         return errorResponse(400, `Not a directory: ${cwd}`)
+      }
+      // A folder other than the workspace needs the trust the TUI asks for;
+      // `claude -p` skips that dialog, so the page asks instead.
+      const directory = realpathSync(cwd)
+      const folderTrust = config.folderTrust ?? { isTrusted: isPathTrusted, save: savePathTrusted }
+      if (!resume && directory !== realOr(config.workspace) && !folderTrust.isTrusted(directory)) {
+        if (!trust) return Response.json({ error: 'Folder not trusted', needs_trust: directory }, { status: 409 })
+        folderTrust.save(directory)
       }
       workDir = cwd
     } else {
@@ -523,6 +566,7 @@ export function startWebServer(
         workspace: config.workspace,
         preview_origins: previewOrigins,
         temp_root: tempRoot,
+        home: homedir(),
       })
     }
     if (pathname === '/api/sessions' && req.method === 'POST') {
@@ -575,6 +619,13 @@ export function startWebServer(
       }
       return Response.json(await findAgentIssuers(id, toolUseIds))
     }
+    const snippetMatch = SNIPPET_PATH.exec(pathname)
+    if (snippetMatch && req.method === 'GET') {
+      const id = decodeURIComponent(snippetMatch[1]!)
+      if (!SESSION_ID.test(id)) return errorResponse(400, 'Invalid session id')
+      const snippet = await readSnippet(id)
+      return snippet === undefined ? errorResponse(404, 'Session not found') : Response.json({ snippet })
+    }
     const historyMatch = HISTORY_PATH.exec(pathname)
     if (historyMatch && req.method === 'PATCH') {
       const id = decodeURIComponent(historyMatch[1]!)
@@ -598,7 +649,7 @@ export function startWebServer(
     }
     const filesMatch = FILES_PATH.exec(pathname)
     if (filesMatch) {
-      return handleFiles(req, url, decodeURIComponent(filesMatch[1]!), !!filesMatch[2])
+      return handleFiles(req, url, decodeURIComponent(filesMatch[1]!), filesMatch[2])
     }
     const wsMatch = WS_PATH.exec(pathname)
     if (wsMatch && req.method === 'GET') {

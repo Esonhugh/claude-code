@@ -28,8 +28,10 @@ export function chatMarkdown(
   for (const item of items) {
     if (item.kind === 'user') {
       parts.push(`## ${labels.you}`, item.text)
-    } else if (item.kind === 'error' || item.kind === 'local') {
+    } else if (item.kind === 'error' || item.kind === 'local' || item.kind === 'recap' || item.kind === 'note') {
       parts.push(`> ${oneLine(item.text, 500)}`)
+    } else if (item.kind === 'compact' || item.kind === 'goal') {
+      continue
     } else if (item.kind === 'teammate') {
       parts.push(`## @${oneLine(item.from)}`, item.text)
     } else {

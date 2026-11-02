@@ -230,3 +230,20 @@ export function sessionFiles(items: Item[]): SessionFile[] {
   }
   return [...found].reverse().map(([path, source]) => ({ path, source }))
 }
+
+/** `/home/me/papers` → `~/papers`, like the prototype; other paths as they are. */
+export function homeRelative(path: string, home: string | undefined): string {
+  if (!home || home === '/') return path
+  const root = home.replace(/[\\/]+$/, '')
+  if (path === root) return '~'
+  return path.startsWith(`${root}/`) || path.startsWith(`${root}\\`) ? `~${path.slice(root.length)}` : path
+}
+
+let knownHome: string | undefined
+
+/** Set once from `/api/info`; `tilde` then abbreviates paths everywhere. */
+export function setHome(home: string | undefined): void {
+  knownHome = home
+}
+
+export const tilde = (path: string): string => homeRelative(path, knownHome)

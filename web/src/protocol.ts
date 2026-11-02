@@ -7,7 +7,8 @@ import type { SlashCommand } from './commands'
 
 export type Block =
   | { kind: 'text'; text: string }
-  | { kind: 'thinking'; text: string }
+  /** `startedAt` / `ms`: how long the model thought, measured while it streamed. */
+  | { kind: 'thinking'; text: string; startedAt?: number; ms?: number }
   | {
       kind: 'tool'
       id: string
@@ -15,10 +16,28 @@ export type Block =
       input: string
       result?: string
       isError?: boolean
+      /** The file edit part of `tool_use_result` (Edit, Write): its structured patch. */
+      meta?: { type?: string; structuredPatch?: unknown[] }
     }
 
 export type Item =
   | { kind: 'user'; id: string; text: string; images?: string[] }
+  /** `compact_boundary`: the conversation was summarized here. */
+  | {
+      kind: 'compact'
+      id: string
+      trigger: string
+      preTokens?: number
+      postTokens?: number
+      at?: number
+      summary?: string
+    }
+  /** A one-line `/recap` (the TUI's `※` away summary); `away` in minutes. */
+  | { kind: 'recap'; id: string; text: string; away?: number }
+  /** A centered muted line the page adds itself, e.g. after a rewind. */
+  | { kind: 'note'; id: string; text: string }
+  /** A goal ended (met, cleared or failed). */
+  | { kind: 'goal'; id: string; status: string; iterations?: number; durationMs?: number }
   | {
       kind: 'assistant'
       id: string
@@ -38,7 +57,34 @@ export type Approval = {
   input: Record<string, unknown>
   /** Rules the engine offers for "always allow" (PermissionUpdate[]). */
   suggestions: unknown[]
+  toolUseId?: string
 }
+
+/** The user's answer to an approval, shown where the request was. */
+export type Decision = { toolName: string; choice: ApprovalChoice; rules?: string }
+
+/** `/goal` as `system/goal_state_changed` reports it. `checks`: reasons the condition was not met yet. */
+export type Goal = {
+  condition: string
+  status: string
+  iterations: number
+  setAt?: number
+  checks: string[]
+}
+
+/** `get_context_usage`, grouped like the prototype's meter. */
+export type ContextUsage = {
+  total: number
+  max: number
+  percent: number
+  system: number
+  tools: number
+  messages: number
+  autoCompact: boolean
+  threshold?: number
+}
+
+export type RateLimit = { type?: string; utilization?: number; resetsAt?: number }
 
 export type ModelOption = {
   value: string
@@ -85,6 +131,16 @@ export type ChatState = {
   commands: SlashCommand[]
   /** Commands bound to the local terminal; hidden from the palette. */
   terminalCommands: string[]
+  /** Answered approvals by tool use id (request id when the request had none). */
+  decisions: Record<string, Decision>
+  goal?: Goal
+  context?: ContextUsage
+  /** Latest `rate_limit_event` per window type. */
+  rateLimits: Record<string, RateLimit>
+  /** A `/recap` is on its way; its output becomes a `※` line. */
+  recapPending?: { away?: number }
+  /** When the first message of this chat was sent (ms). */
+  startedAt?: number
 }
 
 export const initialState: ChatState = {
@@ -96,6 +152,8 @@ export const initialState: ChatState = {
   tasks: {},
   commands: [],
   terminalCommands: [],
+  decisions: {},
+  rateLimits: {},
 }
 
 type Json = Record<string, unknown>
@@ -205,9 +263,21 @@ function reduceStreamEvent(state: ChatState, event: Json): ChatState {
         : undefined
       if (!streamingId || index < 0 || !block) return state
       if (block.kind === 'tool') block.input = ''
+      if (block.kind === 'thinking') block.startedAt = Date.now()
       return updateLastAssistant(state, streamingId, item => {
         const blocks = item.blocks.slice()
         blocks[index] = block
+        return { ...item, blocks }
+      })
+    }
+    case 'content_block_stop': {
+      const index = typeof event.index === 'number' ? event.index : -1
+      if (!streamingId || index < 0) return state
+      return updateLastAssistant(state, streamingId, item => {
+        const block = item.blocks[index]
+        if (block?.kind !== 'thinking' || block.startedAt === undefined) return item
+        const blocks = item.blocks.slice()
+        blocks[index] = { ...block, ms: Date.now() - block.startedAt }
         return { ...item, blocks }
       })
     }
@@ -252,18 +322,155 @@ export function addUserMessage(
   images?: string[],
   uuid?: string,
 ): ChatState {
+  const id = uuid ?? `user-${state.items.length}`
+  const items: Item[] = [...state.items, { kind: 'user', id, text, ...(images?.length && { images }) }]
+  // `-p` keeps the goal a slash command sets or clears out of the stream (the
+  // judge's later checks do arrive), so follow it from the command itself.
+  const arg = /^\/goal\s+(\S[\s\S]*)$/.exec(text.trim())?.[1]
+  let goal = state.goal
+  if (arg === 'clear') {
+    if (goal) items.push({ kind: 'goal', id: `goal-${id}`, status: 'cleared', iterations: goal.iterations })
+    goal = undefined
+  } else if (arg) {
+    goal = { condition: arg, status: 'active', iterations: 0, setAt: Date.now(), checks: [] }
+  }
+  return { ...state, busy: true, startedAt: state.startedAt ?? Date.now(), items, goal }
+}
+
+/** The rules an "always allow" answer adds, as `Bash(npm test:*)`. */
+export function approvalRules(approval: Approval): string[] {
+  return approval.suggestions
+    .flatMap(s => {
+      const rule = s as { rules?: { toolName?: string; ruleContent?: string }[] }
+      return (rule.rules ?? []).map(r => (r.ruleContent ? `${r.toolName}(${r.ruleContent})` : (r.toolName ?? '')))
+    })
+    .filter(Boolean)
+}
+
+/** Drops an answered approval and remembers the answer for its place in the chat. */
+export function answerApproval(state: ChatState, approval: Approval, choice: ApprovalChoice): ChatState {
+  const rules = choice === 'always' ? approvalRules(approval).join(', ') : ''
+  return {
+    ...removeApproval(state, approval.requestId),
+    decisions: {
+      ...state.decisions,
+      [approval.toolUseId ?? approval.requestId]: {
+        toolName: approval.toolName,
+        choice,
+        ...(rules && { rules }),
+      },
+    },
+  }
+}
+
+/** A `/recap` the page sent itself: no bubble, its answer shows as a `※` line. */
+export function startRecap(state: ChatState, away?: number): ChatState {
+  return { ...state, busy: true, recapPending: away === undefined ? {} : { away } }
+}
+
+/** The text of user content (a string or text blocks). */
+function contentText(content: unknown): string {
+  if (typeof content === 'string') return content
+  if (!Array.isArray(content)) return ''
+  return content
+    .map(part => (isObj(part) && part.type === 'text' ? (str(part.text) ?? '') : ''))
+    .filter(Boolean)
+    .join('\n')
+}
+
+const COMPACT_SUMMARY = /^This session is being continued from a previous conversation/
+
+/**
+ * Adds a local command's output, or a `※` recap line when it answers a
+ * `/recap` (one the page sent, or one the user typed whose bubble it replaces).
+ */
+function addLocal(state: ChatState, item: Extract<Item, { kind: 'local' }>): ChatState {
+  const last = state.items.at(-1)
+  const typed = last?.kind === 'user' && last.text.trim() === '/recap'
+  if (!item.isError && (state.recapPending || typed)) {
+    const items = typed ? state.items.slice(0, -1) : state.items
+    return {
+      ...state,
+      recapPending: undefined,
+      items: [...items, { kind: 'recap', id: item.id, text: item.text, ...(state.recapPending?.away !== undefined && { away: state.recapPending.away }) }],
+    }
+  }
+  // "Compacted" after a compaction: the mark already says so.
+  if (!item.isError && last?.kind === 'compact') return { ...state, recapPending: undefined }
+  return { ...state, recapPending: undefined, items: [...state.items, item] }
+}
+
+function reduceGoal(state: ChatState, raw: Json): ChatState {
+  const goal = isObj(raw.goal) ? raw.goal : {}
+  const status = str(goal.status) ?? ''
+  const iterations = typeof goal.iterations === 'number' ? goal.iterations : 0
+  if (status === 'active') {
+    const prev = state.goal?.status === 'active' && state.goal.condition === str(goal.condition) ? state.goal : undefined
+    const reason = str(goal.reason)
+    const checks = prev?.checks ?? []
+    return {
+      ...state,
+      goal: {
+        condition: str(goal.condition) ?? '',
+        status,
+        iterations,
+        ...(typeof goal.setAt === 'number' && { setAt: goal.setAt }),
+        checks: reason && goal.met !== true && checks.at(-1) !== reason ? [...checks, reason] : checks,
+      },
+    }
+  }
+  const ended: Item = {
+    kind: 'goal',
+    id: str(raw.uuid) ?? `goal-${state.items.length}`,
+    status,
+    ...(typeof goal.iterations === 'number' && { iterations }),
+    ...(typeof goal.durationMs === 'number' && { durationMs: goal.durationMs }),
+  }
   return {
     ...state,
-    busy: true,
-    items: [
-      ...state.items,
-      {
-        kind: 'user',
-        id: uuid ?? `user-${state.items.length}`,
-        text,
-        ...(images?.length && { images }),
-      },
-    ],
+    goal: undefined,
+    items: state.items.some(i => i.id === ended.id) ? state.items : [...state.items, ended],
+  }
+}
+
+const SYSTEM_CONTEXT = new Set(['system_prompt', 'memory_files', 'custom_agents'])
+const TOOL_CONTEXT = new Set(['system_tools', 'mcp_tools', 'mcp_instructions', 'skills'])
+
+/** The meter groups of a `get_context_usage` answer. */
+export function contextUsage(body: Json): ContextUsage | undefined {
+  const total = typeof body.totalTokens === 'number' ? body.totalTokens : undefined
+  const max = typeof body.maxTokens === 'number' ? body.maxTokens : undefined
+  const percent = typeof body.percentage === 'number' ? body.percentage : body.percentUsed
+  if (total === undefined || !max || typeof percent !== 'number') return undefined
+  let system = 0
+  let tools = 0
+  let messages = 0
+  for (const c of Array.isArray(body.categories) ? body.categories.filter(isObj) : []) {
+    const tokens = typeof c.tokens === 'number' && c.isDeferred !== true ? c.tokens : 0
+    const id = str(c.id) ?? ''
+    if (id === 'messages') messages += tokens
+    else if (SYSTEM_CONTEXT.has(id)) system += tokens
+    else if (TOOL_CONTEXT.has(id)) tools += tokens
+  }
+  return {
+    total,
+    max,
+    percent,
+    system,
+    tools,
+    messages,
+    autoCompact: body.isAutoCompactEnabled === true,
+    ...(typeof body.autoCompactThreshold === 'number' && { threshold: body.autoCompactThreshold }),
+  }
+}
+
+/** Removes a rewound prompt and everything after it. */
+export function rewindTo(state: ChatState, userId: string, note: string): ChatState {
+  const index = state.items.findIndex(i => i.id === userId)
+  if (index === -1) return state
+  return {
+    ...state,
+    items: [...state.items.slice(0, index), { kind: 'note', id: `note-${userId}`, text: note }],
   }
 }
 
@@ -343,6 +550,30 @@ export function reduce(state: ChatState, raw: unknown): ChatState {
 
   switch (raw.type) {
     case 'system':
+      if (raw.subtype === 'compact_boundary') {
+        const meta = isObj(raw.compact_metadata) ? raw.compact_metadata : {}
+        const id = str(raw.uuid) ?? `compact-${state.items.length}`
+        if (state.items.some(i => i.id === id)) return state
+        const at = typeof raw.timestamp === 'string' ? Date.parse(raw.timestamp) : Date.now()
+        // The mark stands for a typed `/compact`, as the `※` line does for `/recap`.
+        const last = state.items.at(-1)
+        const typed = last?.kind === 'user' && /^\/compact(\s|$)/.test(last.text.trim())
+        return {
+          ...state,
+          items: [
+            ...(typed ? state.items.slice(0, -1) : state.items),
+            {
+              kind: 'compact',
+              id,
+              trigger: str(meta.trigger) ?? 'manual',
+              ...(typeof meta.pre_tokens === 'number' && { preTokens: meta.pre_tokens }),
+              ...(typeof meta.post_tokens === 'number' && { postTokens: meta.post_tokens }),
+              ...(Number.isFinite(at) && { at }),
+            },
+          ],
+        }
+      }
+      if (raw.subtype === 'goal_state_changed') return reduceGoal(state, raw)
       if (raw.subtype !== 'init') {
         const tasks = reduceTasks(state.tasks, raw)
         return tasks === state.tasks ? state : { ...state, tasks }
@@ -390,11 +621,10 @@ export function reduce(state: ChatState, raw: unknown): ChatState {
           .join('\n')
           .trim()
         if (!text || state.items.some(i => i.id === id)) return state
-        const item: Item =
-          raw.error !== undefined || raw.isApiErrorMessage === true
-            ? { kind: 'error', id, text }
-            : { kind: 'local', id, text }
-        return { ...state, items: [...state.items, item] }
+        if (raw.error !== undefined || raw.isApiErrorMessage === true) {
+          return { ...state, items: [...state.items, { kind: 'error', id, text }] }
+        }
+        return addLocal(state, { kind: 'local', id, text })
       }
       const existing = state.items.find(
         (i): i is Extract<Item, { kind: 'assistant' }> =>
@@ -438,16 +668,21 @@ export function reduce(state: ChatState, raw: unknown): ChatState {
       const uuid = str(raw.uuid)
       // The echo of a message this page sent is already shown.
       const echo = uuid !== undefined && state.items.some(i => i.id === uuid)
+      const compact = next.items.findLast(i => i.kind === 'compact')
+      if (
+        compact?.kind === 'compact' &&
+        compact.summary === undefined &&
+        (raw.isCompactSummary === true || COMPACT_SUMMARY.test(contentText(message.content)))
+      ) {
+        return {
+          ...next,
+          items: next.items.map(i => (i === compact ? { ...compact, summary: contentText(message.content) } : i)),
+        }
+      }
       if (raw.isReplay === true && !echo) {
-        const text =
-          typeof message.content === 'string'
-            ? message.content
-            : content
-                .map(part =>
-                  isObj(part) && part.type === 'text' ? (str(part.text) ?? '') : '',
-                )
-                .filter(Boolean)
-                .join('\n')
+        const at = typeof raw.timestamp === 'string' ? Date.parse(raw.timestamp) : NaN
+        if (next.startedAt === undefined && Number.isFinite(at)) next = { ...next, startedAt: at }
+        const text = contentText(message.content)
         const images = content
           .map(part => (isObj(part) && part.type === 'image' ? imageDataUrl(part) : undefined))
           .filter((u): u is string => !!u)
@@ -458,7 +693,7 @@ export function reduce(state: ChatState, raw: unknown): ChatState {
         if (fromTeammates.length) {
           next = { ...next, items: [...next.items, ...fromTeammates] }
         } else if (local) {
-          if (local.text) next = { ...next, items: [...next.items, { kind: 'local', id: itemId, ...local }] }
+          if (local.text) next = addLocal(next, { kind: 'local', id: itemId, ...local })
         } else if (command !== undefined) {
           next = { ...next, items: [...next.items, { kind: 'user', id: itemId, text: command }] }
         } else if (text || images.length) {
@@ -476,6 +711,15 @@ export function reduce(state: ChatState, raw: unknown): ChatState {
           }
         }
       }
+      // Keep only the patch of a file edit's result; it also carries the whole file.
+      const result = isObj(raw.tool_use_result) ? raw.tool_use_result : undefined
+      const meta =
+        result && (Array.isArray(result.structuredPatch) || result.type === 'create')
+          ? {
+              ...(typeof result.type === 'string' && { type: result.type }),
+              ...(Array.isArray(result.structuredPatch) && { structuredPatch: result.structuredPatch }),
+            }
+          : undefined
       for (const part of content) {
         if (!isObj(part) || part.type !== 'tool_result') continue
         const toolId = str(part.tool_use_id)
@@ -484,6 +728,7 @@ export function reduce(state: ChatState, raw: unknown): ChatState {
           ...b,
           result: toolResultText(part.content),
           isError: part.is_error === true,
+          ...(meta && { meta }),
         }))
       }
       return next
@@ -499,6 +744,7 @@ export function reduce(state: ChatState, raw: unknown): ChatState {
         busy: false,
         approvals: [],
         streamingId: undefined,
+        recapPending: undefined,
       }
       if (!failed) return next
       const errors = Array.isArray(raw.errors)
@@ -528,6 +774,7 @@ export function reduce(state: ChatState, raw: unknown): ChatState {
             suggestions: Array.isArray(request.permission_suggestions)
               ? request.permission_suggestions
               : [],
+            ...(str(request.tool_use_id) && { toolUseId: str(request.tool_use_id) }),
           },
         ],
       }
@@ -535,6 +782,22 @@ export function reduce(state: ChatState, raw: unknown): ChatState {
 
     case 'control_response':
       return reduceControlResponse(state, raw)
+
+    case 'rate_limit_event': {
+      const info = isObj(raw.rate_limit_info) ? raw.rate_limit_info : {}
+      const type = str(info.rateLimitType) ?? 'unknown'
+      return {
+        ...state,
+        rateLimits: {
+          ...state.rateLimits,
+          [type]: {
+            type,
+            ...(typeof info.utilization === 'number' && { utilization: info.utilization }),
+            ...(typeof info.resetsAt === 'number' && { resetsAt: info.resetsAt }),
+          },
+        },
+      }
+    }
 
     default:
       return state
@@ -553,10 +816,80 @@ export const REQUEST_PREFIX = {
   settings: 'web-settings-',
   usage: 'web-usage-',
   effort: 'web-effort-',
+  status: 'web-status-',
+  rewind: 'web-rewind-',
   /** The sidebar dialogs' requests (mcp_status, reload_plugins…). */
   ext: 'web-ext-',
   background: 'web-bg-',
 } as const
+
+export type Todo = { content: string; status: string; activeForm?: string }
+
+/**
+ * The todo list: the latest TodoWrite call's list, or, on sessions that plan
+ * with TaskCreate / TaskUpdate instead, the tasks those calls left.
+ */
+export function currentTodos(items: Item[]): Todo[] {
+  let todos: (Todo & { id?: string })[] = []
+  for (const item of items) {
+    if (item.kind !== 'assistant') continue
+    for (const block of item.blocks) {
+      if (block.kind !== 'tool' || block.isError) continue
+      let input: Record<string, unknown>
+      try {
+        input = JSON.parse(block.input) as Record<string, unknown>
+      } catch {
+        // Still streaming; the list so far stands.
+        continue
+      }
+      if (block.name === 'TodoWrite' && Array.isArray(input.todos)) {
+        todos = input.todos.filter(isObj).map(t => ({
+          content: str(t.content) ?? '',
+          status: str(t.status) ?? 'pending',
+          ...(str(t.activeForm) && { activeForm: str(t.activeForm) }),
+        }))
+      } else if (block.name === 'TaskCreate') {
+        const id = /^Task #(\S+) created/.exec(block.result ?? '')?.[1]
+        if (!id) continue
+        todos.push({ id, content: str(input.subject) ?? '', status: 'pending', ...(str(input.activeForm) && { activeForm: str(input.activeForm) }) })
+      } else if (block.name === 'TaskUpdate' && block.result !== undefined) {
+        const status = str(input.status)
+        if (status === 'deleted') {
+          todos = todos.filter(t => t.id !== str(input.taskId))
+          continue
+        }
+        todos = todos.map(t =>
+          t.id === str(input.taskId)
+            ? {
+                ...t,
+                ...(status && { status }),
+                ...(str(input.subject) && { content: str(input.subject) }),
+                ...(str(input.activeForm) && { activeForm: str(input.activeForm) }),
+              }
+            : t,
+        )
+      }
+    }
+  }
+  return todos.map(t => ({ content: t.content, status: t.status, ...(t.activeForm && { activeForm: t.activeForm }) }))
+}
+
+/** The team the lead created (TeamCreate `team_name`), if any. */
+export function teamName(items: Item[]): string | undefined {
+  for (const item of items) {
+    if (item.kind !== 'assistant') continue
+    for (const block of item.blocks) {
+      if (block?.kind !== 'tool' || block.name !== 'TeamCreate') continue
+      try {
+        const name = (JSON.parse(block.input) as { team_name?: unknown }).team_name
+        if (typeof name === 'string' && name) return name
+      } catch {
+        // Still streaming.
+      }
+    }
+  }
+  return undefined
+}
 
 /** Settings `hooks` ({ Event: [{ matcher, hooks: [{ command, timeout }] }] }) as flat rows. */
 function hooksFrom(raw: unknown): Hook[] {
@@ -647,6 +980,8 @@ function reduceControlResponse(state: ChatState, raw: Json): ChatState {
     }
   }
   if (id.startsWith(REQUEST_PREFIX.context)) {
+    const context = contextUsage(body)
+    if (context) return { ...state, context, contextPercent: context.percent }
     return typeof body.percentUsed === 'number'
       ? { ...state, contextPercent: body.percentUsed }
       : state

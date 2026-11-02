@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test'
 import { localFileSrc } from './markdown/safeUrl'
-import { mentionPath, parseCsv, previewKind, sessionFiles, splitMentions } from './files'
+import { homeRelative, mentionPath, parseCsv, previewKind, sessionFiles, splitMentions } from './files'
 import { userMessage } from './protocol'
 
 describe('files', () => {
@@ -74,5 +74,17 @@ describe('files', () => {
       { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AAAA' } },
       { type: 'text', text: 'look' },
     ])
+  })
+})
+
+describe('homeRelative', () => {
+  it('abbreviates the home folder and paths under it', () => {
+    expect(homeRelative('/home/me', '/home/me')).toBe('~')
+    expect(homeRelative('/home/me/papers/long', '/home/me/')).toBe('~/papers/long')
+  })
+  it('leaves other paths alone', () => {
+    expect(homeRelative('/home/meg/x', '/home/me')).toBe('/home/meg/x')
+    expect(homeRelative('/tmp/x', undefined)).toBe('/tmp/x')
+    expect(homeRelative('/tmp/x', '/')).toBe('/tmp/x')
   })
 })

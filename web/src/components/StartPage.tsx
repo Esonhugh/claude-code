@@ -1,4 +1,6 @@
-import { type ReactNode, useRef, useState } from 'react'
+import { type ReactNode, useEffect, useRef, useState } from 'react'
+import { loadSnippet } from '../api'
+import { tilde } from '../files'
 import type { ModelOption, SessionEnv } from '../protocol'
 import type { HistoryEntry, StartOptions } from '../store'
 import { InputBox, ModeItems, ModelMenu, modelButtonLabel } from './Composer'
@@ -21,6 +23,32 @@ function greeting(t: T): string {
 
 const folderName = (dir: string) => dir.split(/[\\/]/).filter(Boolean).at(-1) ?? dir
 
+const snippetCache = new Map<string, string>()
+
+/** The recent cards' snippets (first assistant text), fetched once per session id. */
+function useSnippets(ids: string[]): Record<string, string> {
+  const [, setVersion] = useState(0)
+  const key = ids.join(',')
+  useEffect(() => {
+    let live = true
+    for (const id of key ? key.split(',') : []) {
+      if (snippetCache.has(id)) continue
+      snippetCache.set(id, '')
+      loadSnippet(id).then(
+        text => {
+          snippetCache.set(id, text)
+          if (live) setVersion(v => v + 1)
+        },
+        () => {},
+      )
+    }
+    return () => {
+      live = false
+    }
+  }, [key])
+  return Object.fromEntries(ids.map(id => [id, snippetCache.get(id) ?? '']))
+}
+
 /** The new-session page: greeting, big input, folder / mode / model, recent sessions. */
 export function StartPage({
   t,
@@ -36,6 +64,9 @@ export function StartPage({
   files,
   setFiles,
   error,
+  trustDir,
+  onTrust,
+  onCancelTrust,
   onStart,
   onOpen,
   onViewAll,
@@ -56,6 +87,10 @@ export function StartPage({
   files: File[]
   setFiles: (f: File[]) => void
   error?: string
+  /** A folder waiting for the trust confirmation before the session starts. */
+  trustDir?: string
+  onTrust: () => void
+  onCancelTrust: () => void
   onStart: () => void
   onOpen: (entry: HistoryEntry) => void
   onViewAll: () => void
@@ -84,6 +119,7 @@ export function StartPage({
     .filter(h => (options.temporary ? isTemp(h.cwd) : (h.cwd ?? '') === (cwd ?? '')))
     .slice(0, 3)
   const name = env.account?.email?.split('@')[0]
+  const snippets = useSnippets(recent.map(h => h.id))
   const greet = greeting(t)
   return (
     <section className="welcome" aria-label={t('newSession').replace(/^\+\s*/, '')}>
@@ -94,6 +130,20 @@ export function StartPage({
           <span>{name ? t('greetName', { greet, name }) : greet}</span>
         </div>
         {gate}
+        {trustDir && (
+          <div className="gate" role="alertdialog" aria-label={t('trustTitle')}>
+            <b>{t('trustTitle')}</b>
+            <span className="note">{t('trustNote', { dir: tilde(trustDir) })}</span>
+            <div className="gopts">
+              <button className="btn primary" type="button" onClick={onTrust}>
+                {t('trustAccept')}
+              </button>
+              <button className="btn" type="button" onClick={onCancelTrust}>
+                {t('cancel')}
+              </button>
+            </div>
+          </div>
+        )}
         <InputBox
           t={t}
           start
@@ -152,7 +202,7 @@ export function StartPage({
                     <span className="mono">⌂</span>
                     <span>
                       {folderName(dir)}
-                      <small>{dir}</small>
+                      <small>{tilde(dir)}</small>
                     </span>
                   </button>
                 ))}
@@ -223,7 +273,7 @@ export function StartPage({
         </div>
         <div className="wl-recent">
           <div className="rh">
-            <span>{options.temporary ? t('recentTemporary') : t('recentIn', { path: cwd ?? '' })}</span>
+            <span>{options.temporary ? t('recentTemporary') : t('recentIn', { path: tilde(cwd ?? '') })}</span>
             <button type="button" onClick={onViewAll}>
               {t('viewAll')}
             </button>
@@ -232,6 +282,7 @@ export function StartPage({
             <div className="wl-cards">
               {recent.map(entry => (
                 <button type="button" key={entry.id} className="wl-card recent-card" onClick={() => onOpen(entry)}>
+                  <span className="sn">{snippets[entry.id] || '…'}</span>
                   <b>{entry.title}</b>
                   <small>
                     {new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(

@@ -195,7 +195,35 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
         }
         // Teammates see only their own prompt; the lead's history also has MAKE_TEAM.
         const teammate = !allText.includes('MAKE_TEAM')
-        if (lastText.includes('MEMBER_PING')) {
+        if (allText.includes('EDITME') && lastText.includes('toolu_read_edit')) {
+          // Edit needs the file read first, so EDITME reads it, then edits it.
+          blocks = [
+            {
+              type: 'tool_use',
+              id: 'toolu_edit',
+              name: 'Edit',
+              input: { file_path: join(workspace, 'edit.txt'), old_string: 'beta', new_string: 'gamma' },
+            },
+          ]
+          stop = 'tool_use'
+        } else if (lastText.includes('EDITME')) {
+          blocks = [{ type: 'tool_use', id: 'toolu_read_edit', name: 'Read', input: { file_path: join(workspace, 'edit.txt') } }]
+          stop = 'tool_use'
+        } else if (lastText.includes('toolu_task_b')) {
+          // Plan with the task tools: finish the first task, start the second.
+          const ids = [...lastText.matchAll(/Task #(\d+) created/g)].map(m => m[1])
+          blocks = [
+            { type: 'tool_use', id: 'toolu_task_c', name: 'TaskUpdate', input: { taskId: ids[0], status: 'completed' } },
+            { type: 'tool_use', id: 'toolu_task_d', name: 'TaskUpdate', input: { taskId: ids[1], status: 'in_progress' } },
+          ]
+          stop = 'tool_use'
+        } else if (lastText.includes('TODOS')) {
+          blocks = [
+            { type: 'tool_use', id: 'toolu_task_a', name: 'TaskCreate', input: { subject: 'Read the code', description: 'Read it', activeForm: 'Reading the code' } },
+            { type: 'tool_use', id: 'toolu_task_b', name: 'TaskCreate', input: { subject: 'Write tests', description: 'Write them', activeForm: 'Writing tests' } },
+          ]
+          stop = 'tool_use'
+        } else if (lastText.includes('MEMBER_PING')) {
           blocks = [{ type: 'text', text: 'MEMBER_PONG' }]
         } else if (teammate && allText.includes('TEAM_ALICE')) {
           blocks = [{ type: 'text', text: 'ALICE_DONE' }]
@@ -300,6 +328,7 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
           CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
           DISABLE_AUTOUPDATER: '1',
           CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: '1',
+          CLAUDE_CODE_ENABLE_TODO_TOOLS: '1',
         },
         stdout: 'pipe',
         stderr: 'pipe',
@@ -361,7 +390,7 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       const input = page.getByLabel('Message', { exact: true })
       await input.fill('hi there')
       await input.press('Enter')
-      await page.getByText('Hello from the fake model').waitFor({ timeout: 30_000 })
+      await page.locator('.feed').getByText('Hello from the fake model').waitFor({ timeout: 30_000 })
       await page.getByText('Claude (Opus 5.5)').first().waitFor()
 
       await input.fill('please TOUCH a file')
@@ -428,9 +457,9 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       // The chat from the previous test is listed under the workspace group.
       const row = page.locator('.session-row', { hasText: 'hi there' })
       await row.waitFor({ timeout: 15_000 })
-      expect(await page.locator('.proj-t small').first().textContent()).toBe(workspace)
+      expect(await page.locator('.proj-t small').first().textContent()).toBe('~/workspace')
       await row.locator('.session-title').click()
-      await page.getByText('Hello from the fake model').waitFor()
+      await page.locator('.feed').getByText('Hello from the fake model').waitFor()
       await page.getByText('show MARKDOWN').waitFor()
       // Still running with no tab attached, so this tab picks it up.
       await page.locator('.status-live').waitFor({ timeout: 15_000 })
@@ -454,7 +483,7 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       await page.locator('.status-live').waitFor({ timeout: 30_000 })
       await input.fill('hello again')
       await input.press('Enter')
-      await page.getByText('Hello from the fake model').nth(1).waitFor({ timeout: 30_000 })
+      await page.locator('.feed').getByText('Hello from the fake model').nth(1).waitFor({ timeout: 30_000 })
       const resumedPrompt = promptsSeen.slice(before).at(-1) ?? ''
       expect(resumedPrompt).toContain('hi there')
       expect(resumedPrompt).toContain('hello again')
@@ -520,7 +549,7 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       const input = page.getByLabel('Message', { exact: true })
       await input.fill(`FILES ${files.map(f => `@${f}`).join(' ')}`)
       await input.press('Enter')
-      await page.getByText('Hello from the fake model').waitFor({ timeout: 30_000 })
+      await page.locator('.feed').getByText('Hello from the fake model').waitFor({ timeout: 30_000 })
       const prompt = promptsSeen.slice(before).join('\n')
       expect(prompt).toContain('"type":"image"')
       expect(prompt).toContain('NOTES_BODY')
@@ -642,7 +671,7 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       const input = page.getByLabel('Message', { exact: true })
       await input.fill('hi palette')
       await input.press('Enter')
-      await page.getByText('Hello from the fake model').waitFor({ timeout: 30_000 })
+      await page.locator('.feed').getByText('Hello from the fake model').waitFor({ timeout: 30_000 })
 
       const palette = page.getByRole('listbox', { name: 'Completions' })
       await input.fill('/')
@@ -748,7 +777,7 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       // The team outlives the turn: another prompt, and nobody has stopped.
       await input.fill('hello after the team')
       await input.press('Enter')
-      await page.getByText('Hello from the fake model').last().waitFor({ timeout: 30_000 })
+      await page.locator('.feed').getByText('Hello from the fake model').last().waitFor({ timeout: 30_000 })
       expect(await team.locator('.member-stopped').count()).toBe(0)
 
       // A reload rebuilds the panel from what the server replays.
@@ -817,7 +846,7 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       const input = page.getByLabel('Message', { exact: true })
       await input.fill('hi from a phone')
       await page.getByRole('button', { name: 'Start' }).click()
-      await page.getByText('Hello from the fake model').waitFor({ timeout: 30_000 })
+      await page.locator('.feed').getByText('Hello from the fake model').waitFor({ timeout: 30_000 })
       expect(await noSideScroll()).toBe(true)
       for (const box of await page
         .locator('.meta button, .composer button')
@@ -920,6 +949,95 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       dev.stop(true)
     }
   }, 90_000)
+
+  it('shows edit diffs, approval results, the context popover, todo pins and @ completion', async () => {
+    writeFileSync(join(workspace, 'edit.txt'), 'alpha\nbeta\n')
+    writeFileSync(join(workspace, 'README.md'), '# workspace\n')
+    const playwrightPath = Bun.spawnSync(['node', '-p', "require.resolve('playwright')"]).stdout.toString().trim()
+    const { chromium } = await import(playwrightPath)
+    const browser = await chromium.launch()
+    try {
+      const page = await (await browser.newContext({ locale: 'en-US' })).newPage()
+      const errors: string[] = []
+      page.on('pageerror', (e: Error) => errors.push(e.message))
+      await page.goto(signInUrl)
+      await page.locator('.sessions .new-chat').click()
+      await page.locator('.wl-hi').waitFor()
+      const input = page.getByLabel('Message', { exact: true })
+
+      await input.fill('please EDITME')
+      await input.press('Enter')
+      const dialog = page.locator('.askdock')
+      await dialog.getByText('Claude wants to use Edit').waitFor({ timeout: 30_000 })
+      await dialog.getByRole('option', { name: /Allow once/ }).click()
+      await page.getByText('WEB_DONE').waitFor({ timeout: 30_000 })
+      expect(readFileSync(join(workspace, 'edit.txt'), 'utf8')).toBe('alpha\ngamma\n')
+      // The answer stays where the request was, and the card shows the diff.
+      expect(await page.locator('.ask-ref.done').textContent()).toBe('Allowed once')
+      const card = page.locator('.toolcard', { has: page.locator('.tname', { hasText: 'Edit' }) })
+      expect(await card.locator('.tcmd').textContent()).toBe('edit.txt')
+      expect(await card.locator('.dl.del span').textContent()).toBe('beta')
+      expect(await card.locator('.dl.add span').textContent()).toBe('gamma')
+      expect(await card.locator('.dstat').allTextContents()).toEqual(['+1', '−1'])
+      expect(await card.locator('.tfoot').textContent()).toContain('~/workspace/edit.txt')
+      // No separate preview button: the path itself opens the file.
+      expect(await card.locator('.tool-preview').count()).toBe(0)
+      await card.locator('.tcmd').click()
+      const preview = page.locator('.preview')
+      await preview.locator('.preview-name', { hasText: 'edit.txt' }).waitFor()
+      await preview.getByText('gamma').waitFor()
+      await page.keyboard.press('Escape')
+      await preview.waitFor({ state: 'detached' })
+
+      // The context chip opens its breakdown.
+      await page.locator('#ctx-chip').click()
+      const pop = page.locator('#ctxpop')
+      await pop.getByRole('button', { name: '/compact now' }).waitFor()
+      await pop.locator('.ctxlegend').waitFor({ timeout: 15_000 })
+      expect(await pop.locator('.ctxmeter i').count()).toBe(3)
+      expect(await pop.textContent()).toMatch(/Context \d+% · [\d.]+k? \/ \d+[kM]/)
+      await page.keyboard.press('Escape')
+      await pop.waitFor({ state: 'detached' })
+
+      await input.fill('TODOS please')
+      await input.press('Enter')
+      const pin = page.locator('.pins .pin')
+      // The pin appears with the tasks and fills in as they are updated.
+      await pin.locator('b', { hasText: 'Todos 1/2' }).waitFor({ timeout: 30_000 })
+      expect(await pin.locator('.ptxt').textContent()).toBe('Writing tests')
+      await pin.locator('button').click()
+      expect(await pin.locator('.todo-i.completed').textContent()).toContain('Read the code')
+      await page.getByText('WEB_DONE').nth(1).waitFor({ timeout: 30_000 })
+
+      // @ lists workspace files; Enter puts the mention in the box.
+      // Keep the pointer off the palette so hovering does not move the selection.
+      await page.mouse.move(0, 0)
+      await input.fill('look at @READ')
+      const option = page.getByRole('option', { name: /@README\.md/ })
+      await option.waitFor({ timeout: 10_000 })
+      await input.press('Enter')
+      expect(await input.inputValue()).toBe('look at @README.md ')
+
+      // ↑ on an empty box brings back the previous prompt.
+      await input.fill('')
+      await input.press('ArrowUp')
+      expect(await input.inputValue()).toBe('TODOS please')
+      await input.press('ArrowUp')
+      expect(await input.inputValue()).toBe('please EDITME')
+      await input.press('ArrowDown')
+      await input.press('ArrowDown')
+      expect(await input.inputValue()).toBe('')
+      expect(errors).toEqual([])
+      // Stay under the server's session limit for the tests after this one.
+      await page.evaluate(async () => {
+        for (const s of (await (await fetch('/api/sessions')).json()) as { id: string }[]) {
+          await fetch(`/api/sessions/${s.id}`, { method: 'DELETE' })
+        }
+      })
+    } finally {
+      await browser.close()
+    }
+  }, 120_000)
 
   it('opens the extension dialogs: stats, hooks, skills and memory', async () => {
     const playwrightPath = Bun.spawnSync(['node', '-p', "require.resolve('playwright')"])
