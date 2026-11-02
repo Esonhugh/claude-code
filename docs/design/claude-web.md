@@ -98,9 +98,10 @@ claude web 进程（Bun.serve）
 | 威胁 | 措施 |
 |---|---|
 | 别的网站从浏览器里调接口（CSRF / 跨站 WebSocket） | 所有 `/api` 和 WS 升级都检查：`Origin` 必须与服务地址同源，`Origin: null` 拒绝；`Sec-Fetch-Site: cross-site` 拒绝；cookie 设 `SameSite=Strict` |
-| DNS rebinding | `Host` 头必须是 `127.0.0.1:<port>`、`localhost:<port>`、`[::1]:<port>` 或 `--trusted-host` 指定的值 |
+| DNS rebinding | `Host` 头必须是 `127.0.0.1:<port>`、`localhost:<port>`、`[::1]:<port>` 或 `--trusted-host` 指定的值；开了 `--dangerously-allow-local-network` 时，再加上本机各网卡的局域网地址和 `<hostname>.local` |
 | 本机其他用户或进程 | 启动时生成 32 字节随机 token，只出现在打印的 URL 和打开浏览器的参数里。`GET /?token=` 校验后换成 HMAC 签名的 HttpOnly cookie，再重定向到不带 token 的 URL。比较用 `timingSafeEqual` |
-| 绑到公网 | 默认只绑 `127.0.0.1`。拒绝 `0.0.0.0` 和 `::`。非 loopback 地址需要 `--host <ip>` 并打印警告，且第一版要求同时给 `--tls-cert/--tls-key` |
+| 绑到局域网 | 默认只绑 `127.0.0.1`。`--dangerously-allow-local-network` 改绑 `0.0.0.0`（有 IPv6 时同时绑 `::`），让同一局域网的手机、平板能打开。启动时打印醒目警告和每个局域网地址的带 token URL。只接受来源地址属于 loopback、RFC 1918（10/8、172.16/12、192.168/16）、链路本地（169.254/16、fe80::/10）、CGNAT 100.64/10（Tailscale）和 ULA fc00::/7 的连接，其他来源直接断开，这样机器有公网 IP 时也不会暴露到外网。token、cookie、Origin/Host 检查照常生效。没给 `--tls-cert/--tls-key` 时流量是明文，同网段可被嗅探，警告里写明 |
+| 绑到公网 | 第一版不支持。`--host` 只接受 loopback 或上面的局域网地址，其他地址报错退出 |
 | 渲染模型输出导致 XSS | Markdown 里的 raw HTML 一律当文本；链接只允许 `http/https/mailto`；图片只允许 `data:image/*` 和 `/api/files/*`；Mermaid 用 `securityLevel: 'strict'`；HTML 预览放在 `sandbox`（不含 `allow-same-origin`）的 iframe 里，并先过 DOMPurify |
 | 全局 CSP | `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; frame-src blob:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'` |
 | 文件接口路径穿越 | `/api/files` 只服务"允许根"下的文件：会话工作目录、上传目录、本会话 transcript 里工具实际读写过的路径。先 `realpath` 再比较前缀，拒绝符号链接逃逸。`~/.claude` 下的凭据文件、`.credentials.json`、`*.key`、`.env` 一律拒绝 |
@@ -269,9 +270,12 @@ Terminal 工具是 fork 独有的（官方没有），它开的每个 PTY 会话
 
 ```
 claude web [--port <n>] [--host <ip>] [--workspace <dir>] [--no-open]
+           [--dangerously-allow-local-network]
            [--trusted-host <host>] [--idle-timeout <ms>] [--max-sessions <n>]
            [--tls-cert <file> --tls-key <file>]
 ```
+
+- `--dangerously-allow-local-network`：绑 `0.0.0.0`，只放行局域网来源（见第 6 节），启动时打印警告，不自动打开浏览器之外的任何东西。和 `--host` 同时给时以 `--host` 为准，但 `--host` 是局域网地址时必须带这个参数。
 
 - 默认端口 0（随机），打印 `Claude web UI: http://127.0.0.1:<port>/?token=...`。
 - 已有 `claude web` 在跑时，打印已有地址并打开浏览器，不再起第二个（参照 `src/server/lockfile.ts`）。
