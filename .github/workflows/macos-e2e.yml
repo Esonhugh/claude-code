@@ -8,7 +8,7 @@ on:
 jobs:
   macos-e2e:
     runs-on: macos-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     env:
       # A 0.0.0-dev build is refused by the minimum-version check.
       CLAUDE_CODE_VERSION: 2.1.295

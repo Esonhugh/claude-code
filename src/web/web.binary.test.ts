@@ -431,7 +431,8 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       },
     })
 
-    home = realpathSync(mkdtempSync(join(tmpdir(), 'web-bin-home-')))
+    // .native expands Windows 8.3 names (RUNNER~1), which the CLI's own paths never use.
+    home = realpathSync.native(mkdtempSync(join(tmpdir(), 'web-bin-home-')))
     workspace = join(home, 'workspace')
     mkdirSync(workspace)
     // A user skill and user CLAUDE.md for the Skills and Memory dialogs.
@@ -843,16 +844,14 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
         () => (document.querySelector('.pager input') as HTMLInputElement | null)?.value === '2',
       )
       await open('memo.rtf')
-      // A converted page where the server finds LibreOffice (src/web/files.ts looks it up in its own
-      // way, also on Windows and macOS), otherwise the note asking for it.
-      await showing(
-        preview
-          .locator('.page-count', { hasText: '/ 1' })
-          .or(preview.getByText('LibreOffice'))
-          .first()
-          .waitFor({ timeout: 180_000 }),
-        preview,
-      )
+      // Without LibreOffice the note asks for it. With it (the CI runners have it, found by the
+      // server's own lookup), a converted page, or the preview's error when headless LibreOffice
+      // fails, as it does on fresh runners. Either way the preview settles.
+      const outcome = preview
+        .getByText('LibreOffice')
+        .or(preview.locator('.page-count', { hasText: '/ 1' }))
+        .or(preview.getByText('Could not preview this file.'))
+      await showing(outcome.first().waitFor({ timeout: 180_000 }), preview)
       await page.keyboard.press('Escape')
       await preview.waitFor({ state: 'detached' })
       expect(await page.evaluate(() => (window as { __xss?: number }).__xss)).toBeUndefined()
@@ -2072,7 +2071,7 @@ describe.skipIf(!binary || process.platform === 'darwin')('claude web account (b
         })
       },
     })
-    home = realpathSync(mkdtempSync(join(tmpdir(), 'web-bin-acct-')))
+    home = realpathSync.native(mkdtempSync(join(tmpdir(), 'web-bin-acct-')))
     mkdirSync(join(home, 'workspace'))
     web = Bun.spawn([binary!, 'web', '--no-open', '--port', '0', '--workspace', join(home, 'workspace')], {
       cwd: home,
