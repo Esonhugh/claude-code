@@ -397,7 +397,7 @@ function Sidebar({
   }
 
   return (
-    <aside className="sidebar">
+    <aside className="sidebar" id="sidebar">
       <button type="button" className="new-chat" onClick={() => onNew()}>
         + {t('newChat')}
       </button>
@@ -405,6 +405,7 @@ function Sidebar({
         className="search"
         type="search"
         placeholder={t('searchHistory')}
+        aria-label={t('searchHistory')}
         value={filter}
         onChange={e => setFilter(e.target.value)}
       />
@@ -852,6 +853,43 @@ export function App() {
   }
   const [startError, setStartError] = useState<string>()
   const [sidebarOpen, setSidebarOpen] = useState(false)
+  const menuRef = useRef<HTMLButtonElement>(null)
+  const panelOpen = !!((preview && preview.sessionId === view) || (agentsOpen && chat))
+  const panelOpener = useRef<HTMLElement | null>(null)
+
+  // On narrow screens both side panels are drawers: move focus into them when
+  // they open, close the sidebar on Esc (the panels handle their own), and
+  // give focus back to whatever opened them once they close.
+  useEffect(() => {
+    if (!sidebarOpen) return
+    document.querySelector<HTMLElement>('.sidebar .new-chat')?.focus()
+    const onKey = (e: globalThis.KeyboardEvent) => {
+      if (e.key === 'Escape') setSidebarOpen(false)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => {
+      window.removeEventListener('keydown', onKey)
+      const active = document.activeElement
+      if (!active || active === document.body || active.closest('.sidebar')) {
+        menuRef.current?.focus()
+      }
+    }
+  }, [sidebarOpen])
+  useEffect(() => {
+    if (!panelOpen) return
+    panelOpener.current = document.activeElement as HTMLElement | null
+    if (window.matchMedia('(max-width: 760px)').matches) {
+      document.querySelector<HTMLElement>('.preview button')?.focus()
+    }
+    return () => {
+      const active = document.activeElement
+      if (!active || active === document.body) panelOpener.current?.focus()
+    }
+  }, [panelOpen])
+  const closePanel = () => {
+    if (preview && preview.sessionId === view) closePreview()
+    else setAgentsOpen(false)
+  }
 
   const stop = (id: string) => request(id, REQUEST_PREFIX.interrupt, { subtype: 'interrupt' })
 
@@ -922,9 +960,13 @@ export function App() {
 
   return (
     <div
-      className={`app${sidebarOpen ? ' sidebar-open' : ''}${(preview && preview.sessionId === view) || (agentsOpen && chat) ? ' previewing' : ''}`}
+      className={`app${sidebarOpen ? ' sidebar-open' : ''}${panelOpen ? ' previewing' : ''}`}
     >
-      <div className="scrim" onClick={() => setSidebarOpen(false)} />
+      <div
+        className="scrim"
+        aria-hidden="true"
+        onClick={() => (sidebarOpen ? setSidebarOpen(false) : closePanel())}
+      />
       <Sidebar
         t={t}
         history={state.history}
@@ -963,15 +1005,18 @@ export function App() {
         <header className="topbar">
           <button
             type="button"
+            ref={menuRef}
             className="ghost menu"
             aria-label={t('menu')}
+            aria-controls="sidebar"
+            aria-expanded={sidebarOpen}
             onClick={() => setSidebarOpen(true)}
           >
             ☰
           </button>
           {chat && (
             <>
-              <span className={`status status-${chat.mode}`}>
+              <span className={`status status-${chat.mode}`} role="status">
                 {t(
                   chat.mode === 'live'
                     ? 'statusLive'
@@ -1127,6 +1172,7 @@ export function App() {
             <main
               className="feed"
               ref={feedRef}
+              aria-busy={chat.busy}
               onScroll={e => {
                 const el = e.currentTarget
                 stickToBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40

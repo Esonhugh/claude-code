@@ -606,6 +606,102 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
     }
   }, 120_000)
 
+  it('fits a phone screen with drawers for both side panels', async () => {
+    const playwrightPath = Bun.spawnSync(['node', '-p', "require.resolve('playwright')"])
+      .stdout.toString()
+      .trim()
+    const { chromium } = await import(playwrightPath)
+    const browser = await chromium.launch()
+    // Optional: CLAUDE_WEB_SCREENS=<dir> saves screenshots along the way.
+    const screens = process.env.CLAUDE_WEB_SCREENS
+    const shot = async (page: { screenshot(o: { path: string }): Promise<unknown> }, name: string) => {
+      if (screens) await page.screenshot({ path: join(screens, `${name}.png`) })
+    }
+    try {
+      const context = await browser.newContext({
+        locale: 'en-US',
+        viewport: { width: 375, height: 740 },
+        hasTouch: true,
+      })
+      const page = await context.newPage()
+      const errors: string[] = []
+      page.on('pageerror', e => errors.push(e.message))
+      const noSideScroll = () =>
+        page.evaluate(() => document.scrollingElement!.scrollWidth <= window.innerWidth)
+      const visibility = (selector: string) =>
+        page.evaluate(
+          (s: string) => getComputedStyle(document.querySelector(s)!).visibility,
+          selector,
+        )
+      await page.goto(signInUrl)
+      await page.getByText('What can I help you with?').waitFor()
+      expect(await noSideScroll()).toBe(true)
+
+      // The history sidebar is an off-canvas drawer: Esc closes it and hands
+      // focus back to the menu button.
+      const menu = page.getByRole('button', { name: 'Menu' })
+      expect(await visibility('.sidebar')).toBe('hidden')
+      await menu.click()
+      expect(await menu.getAttribute('aria-expanded')).toBe('true')
+      await page.waitForFunction(() => document.activeElement?.classList.contains('new-chat'))
+      await page.waitForTimeout(300)
+      await shot(page, 'phone-light-sidebar')
+      await page.keyboard.press('Escape')
+      await page.waitForFunction(
+        () => getComputedStyle(document.querySelector('.sidebar')!).visibility === 'hidden',
+      )
+      expect(await page.evaluate(() => document.activeElement?.getAttribute('aria-label'))).toBe(
+        'Menu',
+      )
+
+      const input = page.getByPlaceholder('Message Claude')
+      await input.fill('hi from a phone')
+      await page.getByRole('button', { name: 'Send' }).click()
+      await page.getByText('Hello from the fake model').waitFor({ timeout: 30_000 })
+      expect(await noSideScroll()).toBe(true)
+      for (const box of await page
+        .locator('.topbar button, .topbar select, .composer button')
+        .evaluateAll((els: Element[]) => els.map(el => el.getBoundingClientRect().toJSON()))) {
+        expect(box.height).toBeGreaterThanOrEqual(40)
+        expect(box.right).toBeLessThanOrEqual(375)
+      }
+      await shot(page, 'phone-light-chat')
+
+      // Tapping the backdrop closes the sidebar drawer...
+      await menu.click()
+      await page.waitForTimeout(300)
+      await page.mouse.click(360, 400)
+      await page.waitForFunction(
+        () => getComputedStyle(document.querySelector('.sidebar')!).visibility === 'hidden',
+      )
+
+      // ...and the right panel, which also takes focus while it is open.
+      const agents = page.getByRole('button', { name: /^Agents/ })
+      await agents.click()
+      const panel = page.locator('aside.agents')
+      await panel.waitFor()
+      await page.waitForFunction(() => !!document.activeElement?.closest('aside.agents'))
+      const box = await panel.boundingBox()
+      expect(box!.x).toBeGreaterThan(0)
+      expect(box!.x + box!.width).toBeLessThanOrEqual(375)
+      await page.emulateMedia({ colorScheme: 'dark' })
+      await shot(page, 'phone-dark-agents')
+      await page.mouse.click(10, 400)
+      await panel.waitFor({ state: 'detached' })
+      expect(await agents.evaluate((el: Element) => el === document.activeElement)).toBe(true)
+      await shot(page, 'phone-dark-chat')
+      expect(await noSideScroll()).toBe(true)
+
+      await page.setViewportSize({ width: 1280, height: 800 })
+      await shot(page, 'desktop-dark-chat')
+      await page.emulateMedia({ colorScheme: 'light' })
+      await shot(page, 'desktop-light-chat')
+      expect(errors).toEqual([])
+    } finally {
+      await browser.close()
+    }
+  }, 120_000)
+
   it('shuts down on SIGTERM and removes the lock', async () => {
     web.kill('SIGTERM')
     expect(await web.exited).toBe(143)

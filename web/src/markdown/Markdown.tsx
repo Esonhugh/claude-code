@@ -16,6 +16,7 @@ import React, {
   useMemo,
   useState,
 } from 'react'
+import { LANGS, type Lang, translate } from '../i18n'
 import { highlight } from './highlight'
 import { parseMarkdown, splitSettled } from './parse'
 import { localFileSrc, safeImageSrc, safeLinkHref } from './safeUrl'
@@ -71,11 +72,18 @@ export function CodeBlock({
     })
   }
 
+  // Markdown is rendered without the app's `t`; the page language is on <html>.
+  const pageLang = typeof document === 'undefined' ? '' : document.documentElement.lang
+  const copyLabel = translate(
+    LANGS.some(l => l.id === pageLang) ? (pageLang as Lang) : 'en',
+    copied ? 'copied' : 'copy',
+  )
+
   return (
     <div className="codeblock">
       <div className="codeblock-bar">
         <span>{lang ?? ''}</span>
-        <button type="button" className="ghost" onClick={copy}>
+        <button type="button" className="ghost" aria-label={copyLabel} onClick={copy}>
           {copied ? '✓' : '⧉'}
         </button>
       </div>
