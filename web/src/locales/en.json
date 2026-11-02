@@ -50,6 +50,8 @@
   "uploadFailed": "Upload failed: {error}",
   "preview": "Preview",
   "openNewTab": "Open in new tab",
+  "reload": "Reload",
+  "webPreviewHint": "Blank page? The site may refuse to be framed; open it in a new tab.",
   "download": "Download",
   "close": "Close",
   "loading": "Loading…",

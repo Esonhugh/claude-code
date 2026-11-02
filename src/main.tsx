@@ -6107,6 +6107,11 @@ async function run(): Promise<CommanderCommand> {
       .option('--tls-cert <file>', 'TLS certificate (PEM); serve https')
       .option('--tls-key <file>', 'TLS private key (PEM); use with --tls-cert')
       .option(
+        '--preview-origin <url>',
+        'Extra http(s) origin whose pages the preview panel may show in a frame, e.g. http://dev.internal:8080 (repeatable)',
+        (value: string, previous: string[] = []) => [...previous, value],
+      )
+      .option(
         '--workspace <dir>',
         'Working directory for new sessions (default: ~/.claude/web/workspace)',
       )
@@ -6133,6 +6138,7 @@ async function run(): Promise<CommanderCommand> {
           trustedHost?: string[]
           tlsCert?: string
           tlsKey?: string
+          previewOrigin?: string[]
         }) => {
           // Same as `claude server`: give Ctrl+C back to the terminal.
           stopCapturingEarlyInput()

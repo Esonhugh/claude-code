@@ -11,19 +11,44 @@ import type {
 import React, {
   memo,
   type ReactNode,
+  useContext,
   useEffect,
   useId,
   useMemo,
   useState,
 } from 'react'
+import { WebPreviewContext } from '../webPreview'
 import { highlight } from './highlight'
 import { parseMarkdown, splitSettled } from './parse'
 import { localFileSrc, safeImageSrc, safeLinkHref } from './safeUrl'
+
+type WebPreview = React.ContextType<typeof WebPreviewContext>
 
 type Ctx = {
   definitions: Map<string, Definition>
   streaming: boolean
   filesBase?: string
+  preview?: WebPreview
+}
+
+/** `node` followed by a "Preview" button when `url` can be framed. */
+function withPreview(node: ReactNode, url: string, ctx: Ctx, key: number): ReactNode {
+  const { target, open, label } = ctx.preview ?? {}
+  const href = target?.(url)
+  if (!href || !open) return node
+  return (
+    <React.Fragment key={key}>
+      {node}
+      <button
+        type="button"
+        className="ghost link-preview"
+        title={href}
+        onClick={() => open(href)}
+      >
+        {label}
+      </button>
+    </React.Fragment>
+  )
 }
 
 function collectDefinitions(root: Root, into = new Map<string, Definition>()) {
@@ -222,9 +247,10 @@ function renderLink(
   title: string | null | undefined,
   children: ReactNode[],
   key: number,
+  ctx: Ctx,
 ): ReactNode {
   if (!href) return <span key={key}>{children}</span>
-  return (
+  return withPreview(
     <a
       key={key}
       href={href}
@@ -233,7 +259,10 @@ function renderLink(
       rel="noopener noreferrer nofollow"
     >
       {children}
-    </a>
+    </a>,
+    href,
+    ctx,
+    key,
   )
 }
 
@@ -294,11 +323,11 @@ function renderNode(node: RootContent, ctx: Ctx, key: number): ReactNode {
     case 'delete':
       return <del key={key}>{renderChildren(node, ctx)}</del>
     case 'inlineCode':
-      return <code key={key}>{node.value}</code>
+      return withPreview(<code key={key}>{node.value}</code>, node.value.trim(), ctx, key)
     case 'break':
       return <br key={key} />
     case 'link':
-      return renderLink(safeLinkHref(node.url), node.title, renderChildren(node, ctx), key)
+      return renderLink(safeLinkHref(node.url), node.title, renderChildren(node, ctx), key, ctx)
     case 'linkReference': {
       const def = ctx.definitions.get(node.identifier)
       return renderLink(
@@ -306,6 +335,7 @@ function renderNode(node: RootContent, ctx: Ctx, key: number): ReactNode {
         def?.title,
         renderChildren(node, ctx),
         key,
+        ctx,
       )
     }
     case 'image':
@@ -336,14 +366,16 @@ function renderNode(node: RootContent, ctx: Ctx, key: number): ReactNode {
 const Settled = memo(function Settled({
   text,
   filesBase,
+  preview,
 }: {
   text: string
   filesBase?: string
+  preview: WebPreview
 }) {
   const root = useMemo(() => parseMarkdown(text), [text])
   const ctx = useMemo(
-    () => ({ definitions: collectDefinitions(root), streaming: false, filesBase }),
-    [root, filesBase],
+    () => ({ definitions: collectDefinitions(root), streaming: false, filesBase, preview }),
+    [root, filesBase, preview],
   )
   return <>{root.children.map((node, i) => renderNode(node, ctx, i))}</>
 })
@@ -362,6 +394,7 @@ export function Markdown({
   /** `/api/files/<session>`: local image paths load through it. */
   filesBase?: string
 }) {
+  const preview = useContext(WebPreviewContext)
   const { settled, tail } = useMemo(
     () => (streaming ? splitSettled(text) : { settled: text, tail: '' }),
     [text, streaming],
@@ -370,13 +403,13 @@ export function Markdown({
   const tailCtx = useMemo(
     () =>
       tailRoot
-        ? { definitions: collectDefinitions(tailRoot), streaming: true, filesBase }
+        ? { definitions: collectDefinitions(tailRoot), streaming: true, filesBase, preview }
         : undefined,
-    [tailRoot, filesBase],
+    [tailRoot, filesBase, preview],
   )
   return (
     <div className="markdown">
-      {settled && <Settled text={settled} filesBase={filesBase} />}
+      {settled && <Settled text={settled} filesBase={filesBase} preview={preview} />}
       {tailRoot && tailCtx && tailRoot.children.map((node, i) => renderNode(node, tailCtx, i))}
     </div>
   )

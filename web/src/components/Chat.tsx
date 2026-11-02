@@ -13,6 +13,7 @@ import { Markdown } from '../markdown/Markdown'
 import type { Approval, ApprovalChoice, Block, Item } from '../protocol'
 import type { Source } from '../sources'
 import { stripAnsi, toolSummary } from '../tools'
+import { firstPreviewUrl, WebPreviewContext } from '../webPreview'
 
 /** `claude-opus-5-5` → `Opus 5.5`; anything else is shown as is. */
 export function modelLabel(model: string | undefined): string | undefined {
@@ -90,7 +91,12 @@ function ToolCard({
 }) {
   const files = useContext(FilesContext)
   const agents = useContext(AgentsContext)
+  const web = useContext(WebPreviewContext)
   const path = files.open && !block.isError ? toolFilePath(block.name, block.input) : undefined
+  const webUrl =
+    !path && block.result && web.target && web.open
+      ? firstPreviewUrl(stripAnsi(block.result), web.target)
+      : undefined
   const task = agents.byToolUse?.get(block.id)
   return (
     <details className={`tool${block.isError ? ' tool-error' : ''}`}>
@@ -116,6 +122,19 @@ function ToolCard({
             onClick={e => {
               e.preventDefault()
               files.open?.(path)
+            }}
+          >
+            {t('preview')}
+          </button>
+        )}
+        {webUrl && (
+          <button
+            type="button"
+            className="ghost tool-preview"
+            title={webUrl}
+            onClick={e => {
+              e.preventDefault()
+              web.open?.(webUrl)
             }}
           >
             {t('preview')}

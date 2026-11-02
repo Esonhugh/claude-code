@@ -234,6 +234,9 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
             },
           ]
           stop = 'tool_use'
+        } else if (/PREVIEW_URLS ([^"\\\s]+) ([^"\\\s]+)/.test(lastText)) {
+          const [, dev, own] = /PREVIEW_URLS ([^"\\\s]+) ([^"\\\s]+)/.exec(lastText)!
+          blocks = [{ type: 'text', text: `Dev server: ${dev} and this UI: ${own}` }]
         } else if (lastBlocks.some(b => b.type === 'tool_result')) {
           blocks = [{ type: 'text', text: 'WEB_DONE' }]
         } else if (lastText.includes('TOUCH')) {
@@ -731,6 +734,60 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       await browser.close()
     }
   }, 240_000)
+
+  it('previews a loopback dev server in a frame but never the UI itself', async () => {
+    const dev = Bun.serve({
+      hostname: '127.0.0.1',
+      port: 0,
+      fetch: () =>
+        new Response('<h1>DEV_SERVER_MARKER</h1>', {
+          headers: { 'content-type': 'text/html; charset=utf-8' },
+        }),
+    })
+    const devUrl = `http://127.0.0.1:${dev.port}/`
+    const uiOrigin = new URL(signInUrl).origin
+    const playwrightPath = Bun.spawnSync(['node', '-p', "require.resolve('playwright')"])
+      .stdout.toString()
+      .trim()
+    const { chromium } = await import(playwrightPath)
+    const browser = await chromium.launch()
+    try {
+      const context = await browser.newContext({ locale: 'en-US' })
+      const page = await context.newPage()
+      const errors: string[] = []
+      page.on('pageerror', e => errors.push(e.message))
+      await page.goto(signInUrl)
+      await page.getByText('What can I help you with?').waitFor()
+      const input = page.getByPlaceholder('Message Claude')
+      await input.fill(`PREVIEW_URLS ${devUrl} ${uiOrigin}/api/info`)
+      await input.press('Enter')
+      const reply = page.locator('.msg-assistant .markdown', { hasText: 'Dev server:' })
+      await reply.waitFor({ timeout: 30_000 })
+      // Only the dev server gets a Preview button; the UI's own /api does not.
+      await reply.locator('.link-preview').first().waitFor()
+      expect(await reply.locator('.link-preview').count()).toBe(1)
+      expect(await reply.locator('.link-preview').getAttribute('title')).toBe(devUrl)
+      await reply.locator('.link-preview').click()
+
+      const frame = page.locator('iframe.web-preview-frame')
+      await frame.waitFor()
+      expect(await frame.getAttribute('sandbox')).toBe(
+        'allow-scripts allow-forms allow-popups allow-same-origin',
+      )
+      expect(await frame.getAttribute('referrerpolicy')).toBe('no-referrer')
+      await page.frameLocator('iframe.web-preview-frame').getByText('DEV_SERVER_MARKER').waitFor({ timeout: 15_000 })
+      expect(await page.locator('.preview .preview-name').textContent()).toBe(devUrl)
+      expect(await page.locator('.preview a', { hasText: 'Open in new tab' }).getAttribute('href')).toBe(devUrl)
+      await page.locator('.preview').getByRole('button', { name: 'Reload' }).click()
+      await page.frameLocator('iframe.web-preview-frame').getByText('DEV_SERVER_MARKER').waitFor({ timeout: 15_000 })
+      await page.locator('.preview').getByRole('button', { name: 'Close' }).click()
+      await frame.waitFor({ state: 'detached' })
+      expect(errors).toEqual([])
+    } finally {
+      await browser.close()
+      dev.stop(true)
+    }
+  }, 90_000)
 
   it('shuts down on SIGTERM and removes the lock', async () => {
     web.kill('SIGTERM')

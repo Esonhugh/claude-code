@@ -963,6 +963,36 @@ pre {
   background: #fff;
 }
 
+.web-preview-hint {
+  padding: 4px 12px;
+  border-bottom: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.web-preview-frame {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  border: 0;
+  background: #fff;
+}
+
+.link-preview {
+  margin-left: 4px;
+  padding: 0 6px;
+  font-size: 12px;
+}
+
+@media print {
+  .link-preview {
+    display: none;
+  }
+}
+
 .pager {
   display: flex;
   align-items: center;
