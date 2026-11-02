@@ -494,7 +494,7 @@ export function startWebServer(
         const asset = assets.get(pathname) ?? assets.get('/index.html')
         if (!asset) return withHeaders(errorResponse(404, 'Not found'))
         return withHeaders(
-          new Response(asset.body, { headers: { 'Content-Type': asset.type } }),
+          new Response(asset.body as BodyInit, { headers: { 'Content-Type': asset.type } }),
         )
       },
       websocket: {

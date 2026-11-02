@@ -38,13 +38,14 @@ const BROWSER_ENV_KEYS = [
   'LOCALAPPDATA',
 ]
 
+// Commander fills the defaults; its typings still mark them optional.
 export type WebCommandOptions = {
-  port: string
+  port?: string
   host?: string
   workspace?: string
   open: boolean
-  idleTimeout: string
-  maxSessions: string
+  idleTimeout?: string
+  maxSessions?: string
   dangerouslyAllowLocalNetwork?: boolean
   trustedHost?: string[]
   tlsCert?: string
@@ -115,7 +116,7 @@ export async function runWebCommand(opts: WebCommandOptions): Promise<void> {
       fail(`Cannot read TLS file: ${file}`)
     }
   }
-  const port = Number(opts.port)
+  const port = Number(opts.port ?? 0)
   if (!Number.isInteger(port) || port < 0 || port > 65535) {
     fail(`Invalid --port: ${opts.port}`)
   }
@@ -158,8 +159,8 @@ export async function runWebCommand(opts: WebCommandOptions): Promise<void> {
       replayUserMessages: true,
     }),
     {
-      idleTimeoutMs: Number(opts.idleTimeout),
-      maxSessions: Number(opts.maxSessions),
+      idleTimeoutMs: Number(opts.idleTimeout ?? 600_000),
+      maxSessions: Number(opts.maxSessions ?? 8),
       logger,
       replayTasks: true,
     },
