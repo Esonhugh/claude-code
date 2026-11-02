@@ -1280,3 +1280,111 @@ pre {
   color: var(--muted);
   font-size: 12px;
 }
+
+/* Sources and export (M4). */
+
+.sources {
+  margin: 8px 0;
+  font-size: 13px;
+}
+
+.sources-title {
+  color: var(--muted);
+}
+
+.sources ol {
+  margin: 2px 0 0;
+  padding-left: 22px;
+}
+
+.sources a {
+  color: var(--accent);
+  overflow-wrap: anywhere;
+}
+
+.export-menu {
+  position: relative;
+  font-size: 13px;
+}
+
+.export-menu > summary {
+  list-style: none;
+  cursor: pointer;
+  padding: 4px 10px;
+  border-radius: 8px;
+}
+
+.export-menu > summary::-webkit-details-marker {
+  display: none;
+}
+
+.export-menu[open] > summary {
+  background: var(--user-bg);
+}
+
+.export-options {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 4px);
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  min-width: 160px;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+  box-shadow: 0 4px 16px rgb(0 0 0 / 12%);
+}
+
+.export-options button {
+  text-align: left;
+  white-space: nowrap;
+}
+
+/* Export as PDF prints the conversation alone. */
+@media print {
+  :root {
+    --bg: #ffffff;
+    --panel: #ffffff;
+    --text: #000000;
+    --muted: #555555;
+    --line: #dddddd;
+    --user-bg: #f2f2f2;
+    --code-bg: #f6f6f6;
+    color-scheme: light;
+  }
+
+  html,
+  body,
+  #root,
+  .app,
+  .main,
+  .feed {
+    display: block;
+    height: auto;
+    overflow: visible;
+  }
+
+  .app > :not(.main),
+  .main > :not(.feed),
+  .feed .more,
+  .tool-preview,
+  .thinking {
+    display: none !important;
+  }
+
+  .feed .col {
+    max-width: none;
+  }
+
+  pre {
+    max-height: none;
+    overflow: visible;
+  }
+
+  .tool,
+  .sources {
+    break-inside: avoid;
+  }
+}
