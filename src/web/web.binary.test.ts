@@ -1240,7 +1240,7 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       expect(await card.locator('.dl.del span').textContent()).toBe('beta')
       expect(await card.locator('.dl.add span').textContent()).toBe('gamma')
       expect(await card.locator('.dstat').allTextContents()).toEqual(['+1', '−1'])
-      expect(await card.locator('.tfoot').textContent()).toContain('~/workspace/edit.txt')
+      expect(await card.locator('.tfoot').textContent()).toContain(`~${sep}workspace${sep}edit.txt`)
       // No separate preview button: the path itself opens the file.
       expect(await card.locator('.tool-preview').count()).toBe(0)
       await card.locator('.tcmd').click()
