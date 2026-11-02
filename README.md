@@ -102,6 +102,7 @@ bun ./dist/cli.js --help
 |  | [快捷键与 Vim 模式](docs/features/keybindings-vim.md) | 自己改快捷键、回合中途排队或立即插话、在输入框里用 Vim 的选择和括号跳转 |
 |  | [自定义 UI / Branding 与 Status line](docs/features/branding.md) | 改界面上显示的产品名、换掉 Logo 的 ASCII 图，用自己的脚本定制底部状态栏 |
 |  | [/diff 视图](docs/features/diff-view.md) | 全屏右侧 diff 面板：会话 / 未提交 / 分支三种基准、按轮次回看、把单个文件 diff 附到下一条提示 |
+|  | [Claude Web（设计中）](docs/features/web-ui.md) | 计划中的 `claude web`：在浏览器里用类似 ChatGPT 的界面对话，预览 PDF / Office 文档，看 agents、workflow 和终端；目前是设计稿和可交互原型，尚未实现 |
 |  | [调试日志](docs/features/debugging.md) | 遇到问题时打开详细日志，看清楚 Claude Code 在后台做了什么、请求发到了哪 |
 |  | [遥测与反馈](docs/features/telemetry.md) | 默认不向 Anthropic 发送使用数据，`/feedback` 也随之隐藏；需要时一个环境变量打开；设了 `DO_NOT_TRACK=1` 则一律不发 |
 | 远程执行 | [Direct Connect](docs/features/direct-connect.md) | 在一台机器上 `claude server`，在另一处用 `claude cc://...` 连过去：工具在 server 上执行，界面和权限确认在你这边 |
