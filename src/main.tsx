@@ -6103,6 +6103,10 @@ async function run(): Promise<CommanderCommand> {
       .option('--tls-cert <file>', 'TLS certificate (PEM); serve https')
       .option('--tls-key <file>', 'TLS private key (PEM); use with --tls-cert')
       .option(
+        '--preview-origin <url...>',
+        'Extra http(s) origins whose pages the preview panel may show in a frame, e.g. http://dev.internal:8080',
+      )
+      .option(
         '--workspace <dir>',
         'Working directory for new sessions (default: ~/.claude/web/workspace)',
       )

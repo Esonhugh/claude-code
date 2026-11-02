@@ -57,26 +57,59 @@ export type WebServerConfig = {
   allowLocalNetwork?: boolean
   /** PEM file paths; when set the server speaks https/wss only. */
   tls?: { cert: string; key: string }
+  /** Origins from `parsePreviewOrigin` that the page may frame. */
+  previewOrigins?: string[]
 }
 
 type SocketData = { sessionId: string }
 
-const CSP = [
-  "default-src 'self'",
-  "script-src 'self'",
-  "style-src 'self' 'unsafe-inline'",
-  "img-src 'self' data: blob:",
-  "font-src 'self' data:",
-  "connect-src 'self'",
-  'frame-src blob:',
-  "worker-src 'self' blob:",
-  "object-src 'none'",
-  "base-uri 'none'",
-  "frame-ancestors 'none'",
-].join('; ')
+// CSP host sources cannot name IPv6 literals, so `[::1]` is not listed.
+const LOOPBACK_FRAME_SOURCES = ['localhost', '127.0.0.1'].flatMap(host => [
+  `http://${host}:*`,
+  `https://${host}:*`,
+])
+
+/** The page's CSP; loopback dev servers and `--preview-origin`s may be framed. */
+export function contentSecurityPolicy(previewOrigins: string[] = []): string {
+  return [
+    "default-src 'self'",
+    "script-src 'self'",
+    "style-src 'self' 'unsafe-inline'",
+    "img-src 'self' data: blob:",
+    "font-src 'self' data:",
+    "connect-src 'self'",
+    ['frame-src blob:', ...LOOPBACK_FRAME_SOURCES, ...previewOrigins].join(' '),
+    "worker-src 'self' blob:",
+    "object-src 'none'",
+    "base-uri 'none'",
+    "frame-ancestors 'none'",
+  ].join('; ')
+}
+
+/**
+ * A `--preview-origin` value as a bare origin (`http://host:port`), or
+ * undefined unless it is http(s) with no credentials, path, query, fragment
+ * or wildcard. The result goes into the CSP, so nothing else may get through.
+ */
+export function parsePreviewOrigin(value: string): string | undefined {
+  if (/[*?#\s]/.test(value)) return undefined
+  let url: URL
+  try {
+    url = new URL(value)
+  } catch {
+    return undefined
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') return undefined
+  if (url.username || url.password || url.pathname !== '/') return undefined
+  // WHATWG hosts may still hold `;` or `,`, which would split the CSP, and
+  // CSP host sources cannot name IPv6 literals.
+  if (!/^[a-z0-9-]+(\.[a-z0-9-]+)*$/.test(url.hostname)) {
+    return undefined
+  }
+  return url.origin
+}
 
 const SECURITY_HEADERS = {
-  'Content-Security-Policy': CSP,
   'X-Content-Type-Options': 'nosniff',
   'Referrer-Policy': 'no-referrer',
   'Cross-Origin-Opener-Policy': 'same-origin',
@@ -154,13 +187,6 @@ async function readJson(req: Request): Promise<unknown> {
   }
 }
 
-function withHeaders(res: Response): Response {
-  for (const [key, value] of Object.entries(SECURITY_HEADERS)) {
-    res.headers.set(key, value)
-  }
-  return res
-}
-
 function errorResponse(status: number, message: string): Response {
   return Response.json({ error: message }, { status })
 }
@@ -205,7 +231,7 @@ function isDirectory(path: string): boolean {
  * `/?token=` URL once. `/api` and the WebSocket additionally require the
  * request to come from this server's own origin.
  *
- *   GET    /api/info                    → { workspace }
+ *   GET    /api/info                    → { workspace, preview_origins }
  *   GET    /api/sessions                → running sessions
  *   POST   /api/sessions                → { session_id, work_dir } (new or resume)
  *   GET    /api/sessions/:id/ws         → stream-json relay to the session
@@ -230,6 +256,15 @@ export function startWebServer(
     ...(config.allowLocalNetwork ? lanHostNames() : []),
   ]
   let hosts = allowedHosts(config.port, extraHosts)
+  const previewOrigins = config.previewOrigins ?? []
+  const csp = contentSecurityPolicy(previewOrigins)
+  const withHeaders = (res: Response): Response => {
+    res.headers.set('Content-Security-Policy', csp)
+    for (const [key, value] of Object.entries(SECURITY_HEADERS)) {
+      res.headers.set(key, value)
+    }
+    return res
+  }
   const uploadLimits = config.uploadLimits ?? DEFAULT_UPLOAD_LIMITS
 
   async function sessionFile(id: string, path: string): Promise<string | undefined> {
@@ -332,7 +367,10 @@ export function startWebServer(
   ): Promise<Response | undefined> {
     const { pathname } = url
     if (pathname === '/api/info' && req.method === 'GET') {
-      return Response.json({ workspace: config.workspace })
+      return Response.json({
+        workspace: config.workspace,
+        preview_origins: previewOrigins,
+      })
     }
     if (pathname === '/api/sessions' && req.method === 'POST') {
       return createSession(req)

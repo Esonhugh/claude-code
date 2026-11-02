@@ -50,6 +50,8 @@
   "uploadFailed": "上传失败：{error}",
   "preview": "预览",
   "openNewTab": "新标签页打开",
+  "reload": "重新加载",
+  "webPreviewHint": "页面空白？该网站可能禁止被嵌入，请在新标签页打开。",
   "download": "下载",
   "close": "关闭",
   "loading": "加载中…",

@@ -14,7 +14,11 @@ import { getClaudeConfigHomeDir } from '../utils/envUtils.js'
 import { execFileNoThrowWithCwd } from '../utils/execFileNoThrow.js'
 import { createWebSecrets } from './auth.js'
 import { lanInterfaceAddresses, resolveBindHost } from './network.js'
-import { startWebServer, type WebAsset } from './webServer.js'
+import {
+  parsePreviewOrigin,
+  startWebServer,
+  type WebAsset,
+} from './webServer.js'
 
 const LOCK_NAME = 'web.lock'
 // A Host header value: a DNS name or bracketed IPv6 address, optional port.
@@ -50,6 +54,7 @@ export type WebCommandOptions = {
   trustedHost?: string[]
   tlsCert?: string
   tlsKey?: string
+  previewOrigin?: string[]
 }
 
 function urlHost(host: string): string {
@@ -102,6 +107,17 @@ export async function runWebCommand(opts: WebCommandOptions): Promise<void> {
   for (const host of trustedHosts) {
     if (!TRUSTED_HOST.test(host)) fail(`Invalid --trusted-host: ${host}`)
   }
+  const previewOrigins = [
+    ...new Set(
+      (opts.previewOrigin ?? []).map(
+        value =>
+          parsePreviewOrigin(value) ??
+          fail(
+            `Invalid --preview-origin: ${value} (expected an http(s) origin such as http://dev.internal:8080, with no path)`,
+          ),
+      ),
+    ),
+  ]
   if (!opts.tlsCert !== !opts.tlsKey) {
     fail('--tls-cert and --tls-key must be given together.')
   }
@@ -179,6 +195,7 @@ export async function runWebCommand(opts: WebCommandOptions): Promise<void> {
         trustedHosts,
         allowLocalNetwork,
         tls,
+        previewOrigins,
       },
       sessionManager,
       assets,

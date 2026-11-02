@@ -37,6 +37,7 @@ import {
   PERMISSION_MODES,
 } from './components/Chat'
 import { Preview } from './components/Preview'
+import { WebPreview } from './components/WebPreview'
 import { chatMarkdown, exportFileName } from './exportChat'
 import {
   filesBase,
@@ -66,6 +67,7 @@ import {
   userMessage,
 } from './protocol'
 import { turnSources } from './sources'
+import { previewTarget, WebPreviewContext } from './webPreview'
 import {
   appReducer,
   groupHistory,
@@ -513,7 +515,10 @@ export function App() {
   const [lang, setLang] = useState<Lang>(initialLang)
   const [drafts, setDrafts] = useState<Record<string, string>>({})
   const [attachments, setAttachments] = useState<Record<string, File[]>>({})
-  const [preview, setPreview] = useState<{ sessionId: string; path: string }>()
+  const [preview, setPreview] = useState<
+    { sessionId: string; path: string } | { sessionId: string; url: string }
+  >()
+  const [previewOrigins, setPreviewOrigins] = useState<string[]>([])
   const [dragging, setDragging] = useState(false)
   const [agentsOpen, setAgentsOpenState] = useState<boolean>(() =>
     readStored(AGENTS_OPEN_KEY, false),
@@ -550,6 +555,18 @@ export function App() {
         : {},
     [view],
   )
+  const webPreviewValue = useMemo(() => {
+    const target = (href: string) =>
+      previewTarget(href, { uiOrigin: location.origin, origins: previewOrigins })
+    return {
+      target,
+      open: (url: string) => {
+        const href = target(url)
+        if (view && href) setPreview({ sessionId: view, url: href })
+      },
+      label: t('preview'),
+    }
+  }, [view, previewOrigins, t])
   const closePreview = useCallback(() => setPreview(undefined), [])
   const setAgentsOpen = (open: boolean) => {
     setAgentsOpenState(open)
@@ -633,6 +650,7 @@ export function App() {
     void refreshHistory()
     getInfo().then(info => {
       setWorkspace(info.workspace)
+      setPreviewOrigins(info.preview_origins ?? [])
     }, () => {})
     const map = sockets.current
     return () => {
@@ -1172,6 +1190,7 @@ export function App() {
         ) : (
           <AgentsContext.Provider value={agentsValue}>
           <FilesContext.Provider value={filesValue}>
+          <WebPreviewContext.Provider value={webPreviewValue}>
             <main
               className="feed"
               ref={feedRef}
@@ -1253,17 +1272,22 @@ export function App() {
                 </div>
               </div>
             </footer>
+          </WebPreviewContext.Provider>
           </FilesContext.Provider>
           </AgentsContext.Provider>
         )}
       </div>
       {preview && preview.sessionId === view ? (
-        <Preview
-          sessionId={preview.sessionId}
-          path={preview.path}
-          t={t}
-          onClose={closePreview}
-        />
+        'url' in preview ? (
+          <WebPreview url={preview.url} t={t} onClose={closePreview} />
+        ) : (
+          <Preview
+            sessionId={preview.sessionId}
+            path={preview.path}
+            t={t}
+            onClose={closePreview}
+          />
+        )
       ) : (
         agentsOpen &&
         chat &&
