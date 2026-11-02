@@ -13,6 +13,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # A fresh checkout leaves every index entry racily clean, and the
+      # --no-optional-locks Git calls under test never save a refresh, so each
+      # one rehashes the whole tree (get_workspace_diff ran past 5s under load).
+      - name: Refresh the Git index
+        run: git update-index -q --refresh
+
       - name: Install ripgrep
         run: sudo apt-get update && sudo apt-get install -y ripgrep
 
