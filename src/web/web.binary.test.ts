@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'bun:test'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, utimesSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
-import { join } from 'path'
+import { join, sep } from 'path'
 
 // End-to-end check of a built binary: `claude web` serving the embedded page,
 // a real `claude -p` session against a scripted Messages API, driven from
@@ -179,7 +179,8 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
 
   const startWeb = async () => {
     web = Bun.spawn(
-      [binary!, 'web', '--no-open', '--port', '0', '--workspace', workspace],
+      // Above the default 8, so a test that fails before closing its sessions does not starve the next ones.
+      [binary!, 'web', '--no-open', '--port', '0', '--workspace', workspace, '--max-sessions', '32'],
       {
         cwd: home,
         env: {
@@ -673,7 +674,7 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       await row('Delete me').hover()
       const card = page.locator('.sbtip')
       await card.waitFor()
-      expect(await card.textContent()).toContain('Folder ~/other')
+      expect(await card.textContent()).toContain(`Folder ~${sep}other`)
       expect(await card.textContent()).toContain(`ID ${dropId}`)
       expect(await card.textContent()).not.toContain('Changes')
       const id = card.locator('i.mono')
@@ -834,12 +835,13 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
         () => (document.querySelector('.pager input') as HTMLInputElement | null)?.value === '2',
       )
       await open('memo.rtf')
-      // The server converts with soffice or libreoffice, whichever it finds (src/web/files.ts).
-      if (Bun.which('soffice') || Bun.which('libreoffice')) {
-        await preview.locator('.page-count', { hasText: '/ 1' }).waitFor({ timeout: 120_000 })
-      } else {
-        await preview.getByText('LibreOffice').waitFor({ timeout: 30_000 })
-      }
+      // A converted page where the server finds LibreOffice (src/web/files.ts looks it up in its own
+      // way, also on Windows and macOS), otherwise the note asking for it.
+      await preview
+        .locator('.page-count', { hasText: '/ 1' })
+        .or(preview.getByText('LibreOffice'))
+        .first()
+        .waitFor({ timeout: 120_000 })
       await page.keyboard.press('Escape')
       await preview.waitFor({ state: 'detached' })
       expect(await page.evaluate(() => (window as { __xss?: number }).__xss)).toBeUndefined()
@@ -1343,7 +1345,7 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       await card.locator('span', { hasText: /^Tasks/ }).getByText('2 tasks').waitFor()
       // Both finished and not yet looked at.
       await card.locator('span', { hasText: /^Needs you/ }).getByText('2 tasks').waitFor()
-      expect(await card.textContent()).toContain('Folder ~/workspace')
+      expect(await card.textContent()).toContain(`Folder ~${sep}workspace`)
       await page.mouse.move(800, 400)
 
       const projects = (await page.evaluate(async () => (await fetch('/api/projects')).json())) as {
@@ -2027,7 +2029,8 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
     }
   }, 120_000)
 
-  it('shuts down on SIGTERM and removes the lock', async () => {
+  // Windows has no SIGTERM: kill() ends the process before it can remove the lock.
+  it.skipIf(process.platform === 'win32')('shuts down on SIGTERM and removes the lock', async () => {
     web.kill('SIGTERM')
     expect(await web.exited).toBe(143)
     expect(existsSync(join(home, '.claude', 'web.lock'))).toBe(false)
@@ -2036,7 +2039,8 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
 
 // Account menu → Auth submenu → API key dialog against the real credential
 // store and settings, in a HOME of its own so the suite above is untouched.
-describe.skipIf(!binary)('claude web account (built binary)', () => {
+// On macOS the key goes to the login Keychain, which a temporary HOME does not isolate.
+describe.skipIf(!binary || process.platform === 'darwin')('claude web account (built binary)', () => {
   const FAKE_KEY = 'sk-ant-api03-WEBTEST_fake_key_0123456789abcdefWXYZ'
   let api: ReturnType<typeof Bun.serve>
   let web: ReturnType<typeof Bun.spawn>
