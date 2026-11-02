@@ -21,12 +21,18 @@ const TOKEN = 'web-test-token'
 // Stands in for `claude -p` stream-json: a user message is answered with a
 // result naming the text and the child's cwd. With session state events on,
 // the turn is bracketed by running/idle, and a "hold" turn never ends.
-// "dispatch" starts worker a1 and finishes it; control requests succeed.
+// "dispatch" starts worker a1 and finishes it; "start" starts worker a2,
+// which is killed with the child, as `claude -p` does; control requests succeed.
 const FAKE_CHILD = `
 const out = m => process.stdout.write(JSON.stringify(m) + '\\n')
 const states = !!process.env.CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS
 const state = s => states && out({ type: 'system', subtype: 'session_state_changed', state: s })
 let buf = ''
+let worker
+process.on('SIGTERM', () => {
+  if (worker) out({ type: 'system', subtype: 'task_notification', task_id: worker, status: 'killed' })
+  process.exit(0)
+})
 process.stdin.on('data', chunk => {
   buf += chunk
   let i
@@ -40,6 +46,10 @@ process.stdin.on('data', chunk => {
       const text = msg.message.content[0].text
       state('running')
       if (text === 'hold') continue
+      if (text === 'start') {
+        worker = 'a2'
+        out({ type: 'system', subtype: 'task_started', task_id: 'a2', description: 'Worker two', prompt: 'go on', task_type: 'local_agent', spawn_depth: 1 })
+      }
       if (text === 'dispatch') {
         out({ type: 'system', subtype: 'task_started', task_id: 'a1', description: 'Worker one', prompt: 'do it', task_type: 'local_agent', spawn_depth: 1 })
         out({ type: 'system', subtype: 'task_notification', task_id: 'a1', status: 'completed', summary: 'done it', usage: { total_tokens: 1500, tool_uses: 1, duration_ms: 2000 } })
@@ -776,8 +786,22 @@ describe('claude web server', () => {
     ws.close()
     await fetch(`${r.base}/api/sessions/${sessionId}`, { method: 'DELETE', headers })
     // Reopened, it starts on the model and effort it had.
-    await fetch(`${r.base}/api/projects/${id}/coordinator`, { method: 'POST', headers })
+    const reopened = await fetch(`${r.base}/api/projects/${id}/coordinator`, { method: 'POST', headers })
     expect(r.spawned.at(-1)).toMatchObject({ model: 'sonnet', effort: 'high' })
+
+    // A worker killed because the server stops can be continued after the restart.
+    const next = (await reopened.json()) as { session_id: string }
+    const ws2 = new WebSocket(`${r.base.replace('http', 'ws')}/api/sessions/${next.session_id}/ws`, {
+      headers,
+    } as unknown as string[])
+    await new Promise(resolve => (ws2.onopen = resolve))
+    ws2.send(JSON.stringify({ type: 'user', message: { role: 'user', content: [{ type: 'text', text: 'start' }] } }) + '\n')
+    await waitFor(async () => ((await (await api('/tasks')).json()) as unknown[]).length === 2)
+    running.splice(running.indexOf(r), 1)
+    await r.stop()
+    const again = start({ configDir: r.configDir })
+    const res = await fetch(`${again.base}/api/projects/${id}/tasks/a2`, { headers: { cookie: await signIn(again), origin: again.origin } })
+    expect(await res.json()).toMatchObject({ state: 'stopped', stop_reason: 'restart' })
   })
 })
 

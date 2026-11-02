@@ -9,7 +9,7 @@ import type { Database } from 'bun:sqlite'
 /** running · blocked (an unanswered approval) · review (finished, not looked at) · done · stopped. */
 export type TaskState = 'running' | 'blocked' | 'review' | 'done' | 'stopped'
 
-/** Why a task stopped: the user (or the coordinator) stopped it, it failed, or its process went away. */
+/** Why a task stopped: the user (or the coordinator) stopped it, it failed, or its process went away (or was restarting). */
 export type StopReason = 'user' | 'failed' | 'exited' | 'restart'
 
 export type Task = {
@@ -118,6 +118,8 @@ const LIVE: TaskState[] = ['running', 'blocked']
 export class TaskStore {
   /** send_task_message request id → the task and the model and effort it asked for. */
   private messages = new Map<string, { taskId: string; model?: string; effort?: string }>()
+  /** Tasks the page (`stop_task`) or the coordinator (TaskStop) asked to stop; any other stop is its process going away. */
+  private stopAsked = new Set<string>()
 
   constructor(
     private db: Database,
@@ -175,6 +177,15 @@ export class TaskStore {
   /** One line of the coordinator's stdout. */
   fromChild(projectId: string, sessionId: string, line: string): void {
     if (line.includes('"subtype":"task_')) return this.taskEvent(projectId, sessionId, line)
+    if (line.includes('"name":"TaskStop"')) {
+      const message = parseLine(line)?.message
+      const content = isObj(message) && Array.isArray(message.content) ? message.content : []
+      for (const block of content) {
+        const taskId = isObj(block) && block.name === 'TaskStop' && isObj(block.input) ? str(block.input.task_id) : undefined
+        if (taskId) this.stopAsked.add(taskId)
+      }
+      return
+    }
     if (line.includes('"type":"control_request"')) {
       const msg = parseLine(line)
       const request = isObj(msg?.request) ? msg.request : {}
@@ -229,6 +240,10 @@ export class TaskStore {
     const request = isObj(msg?.request) ? msg.request : {}
     const requestId = str(msg?.request_id)
     const taskId = str(request.task_id)
+    if (msg?.type === 'control_request' && request.subtype === 'stop_task' && taskId) {
+      this.stopAsked.add(taskId)
+      return
+    }
     if (msg?.type !== 'control_request' || request.subtype !== 'send_task_message' || !requestId || !taskId) return
     if (!this.get(projectId, taskId)) return
     this.messages.set(requestId, { taskId, model: str(request.model), effort: str(request.effort) })
@@ -310,7 +325,9 @@ export class TaskStore {
           this.patch(task, { ...metered, state: 'review', summary, approval_id: null, finished_at: now, reviewed_at: null })
           this.event(id, 'finished', { status })
         } else if (status === 'failed' || status === 'stopped' || status === 'killed') {
-          const reason: StopReason = status === 'failed' ? 'failed' : 'user'
+          // Already stopped: the server stopping its coordinators marked it first.
+          if (!LIVE.includes(task.state)) return
+          const reason: StopReason = status === 'failed' ? 'failed' : this.stopAsked.delete(id) ? 'user' : 'exited'
           this.patch(task, {
             ...metered,
             state: 'stopped',

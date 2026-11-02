@@ -22,6 +22,8 @@ type Session = SessionInfo & {
   pending: string[]
   /** Each task's `system/task_*` lines, for a client that attaches later. */
   taskLines?: Map<string, string[]>
+  /** Unanswered `can_use_tool` requests by request id, for a client that attaches later. */
+  asks: Map<string, string>
   idleTimer?: ReturnType<typeof setTimeout>
   exited: Promise<void>
   spawnOptions: SpawnSessionOptions
@@ -68,6 +70,23 @@ function closed(child: ChildProcess): Promise<void> {
 }
 
 /** Keeps a task's lines in order, with only its latest progress snapshot. */
+/** Keeps a `can_use_tool` request until it is answered (`control_response`) or cancelled. */
+function recordAsk(asks: Map<string, string>, line: string): void {
+  let msg: { type?: string; request_id?: unknown; request?: { subtype?: unknown }; response?: { request_id?: unknown } }
+  try {
+    msg = JSON.parse(line)
+  } catch {
+    return
+  }
+  if (msg.type === 'control_request' && msg.request?.subtype === 'can_use_tool' && typeof msg.request_id === 'string') {
+    asks.set(msg.request_id, line)
+  } else if (msg.type === 'control_cancel_request' && typeof msg.request_id === 'string') {
+    asks.delete(msg.request_id)
+  } else if (msg.type === 'control_response' && typeof msg.response?.request_id === 'string') {
+    asks.delete(msg.response.request_id)
+  }
+}
+
 function recordTaskLine(taskLines: Map<string, string[]>, line: string): void {
   if (!line.includes('"subtype":"task_')) return
   let msg: { type?: unknown; subtype?: unknown; task_id?: unknown }
@@ -189,6 +208,7 @@ export class SessionManager {
       sessionKey,
       socket: null,
       pending: [],
+      asks: new Map(),
       ...(this.replayTasks && { taskLines: new Map() }),
       exited: closed(child),
       spawnOptions,
@@ -254,6 +274,7 @@ export class SessionManager {
     session.exited = closed(child)
     session.spawnOptions = options
     session.busy = false
+    session.asks.clear()
     this.wire(session, child)
     this.write(session.id, queued.join('\n'))
     if (session.restartWith && !session.busy) void this.respawn(session)
@@ -264,6 +285,7 @@ export class SessionManager {
     createInterface({ input: child.stdout! }).on('line', line => {
       if (!line.trim()) return
       if (session.taskLines) recordTaskLine(session.taskLines, line)
+      if (line.includes('"can_use_tool"') || line.includes('"control_cancel_request"')) recordAsk(session.asks, line)
       if (line.includes('"subtype":"session_state_changed"') && session.process === child) {
         this.trackTurn(session, line)
       }
@@ -337,6 +359,9 @@ export class SessionManager {
     for (const lines of session.taskLines?.values() ?? []) {
       for (const line of lines) socket.send(line + '\n')
     }
+    for (const line of session.asks.values()) {
+      if (!session.pending.includes(line)) socket.send(line + '\n')
+    }
     for (const line of session.pending.splice(0)) socket.send(line + '\n')
     this.logger?.info(`session ${id} attached`)
     return true
@@ -363,6 +388,7 @@ export class SessionManager {
     if (!stdin || stdin.destroyed) return
     for (const line of lines) {
       if (line.includes('"type":"user"')) session.busy = true
+      if (line.includes('"type":"control_response"')) recordAsk(session.asks, line)
       this.observer?.line?.(id, line, 'client')
       stdin.write(line + '\n')
     }

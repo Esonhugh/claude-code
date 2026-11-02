@@ -1071,6 +1071,8 @@ export function startWebServer(
   return {
     port,
     stop: force => {
+      // Before the coordinators go: their workers stop because the server does.
+      taskStore?.stopLive('restart')
       for (const server of servers) void server.stop(force)
     },
   }

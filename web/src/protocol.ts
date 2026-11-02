@@ -757,7 +757,8 @@ export function reduce(state: ChatState, raw: unknown): ChatState {
       const next = {
         ...state,
         busy: false,
-        approvals: [],
+        // A background worker outlives the turn that started it, and so does its request.
+        approvals: state.approvals.filter(a => a.agentId),
         streamingId: undefined,
         recapPending: undefined,
       }

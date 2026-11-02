@@ -71,13 +71,30 @@ describe('TaskStore', () => {
   })
 
   it('marks stopped and failed tasks with their reason', () => {
+    const { store, project, child, client, started } = setup()
+    for (const id of ['a1', 'a2', 'a3', 'a4']) started(id)
+    client({ type: 'control_request', request_id: 's1', request: { subtype: 'stop_task', task_id: 'a1' } })
+    child({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 't', name: 'TaskStop', input: { task_id: 'a3' } }] } })
+    const ended = (id: string, status: string, summary?: string) => child({ type: 'system', subtype: 'task_notification', task_id: id, status, summary })
+    ended('a1', 'stopped', 'Agent "x" was stopped')
+    ended('a2', 'failed', 'boom')
+    ended('a3', 'killed')
+    // Killed with its process (the coordinator shut down): a message continues it.
+    ended('a4', 'killed')
+    expect(store.list(project.id).map(t => [t.id, t.state, t.stop_reason, t.error])).toEqual([
+      ['a1', 'stopped', 'user', null],
+      ['a2', 'stopped', 'failed', 'boom'],
+      ['a3', 'stopped', 'user', null],
+      ['a4', 'stopped', 'exited', null],
+    ])
+  })
+
+  it('keeps the restart reason when the server stops its coordinators', () => {
     const { store, project, child, started } = setup()
     started('a1')
-    started('a2')
-    child({ type: 'system', subtype: 'task_notification', task_id: 'a1', status: 'stopped', summary: 'Agent "x" was stopped' })
-    child({ type: 'system', subtype: 'task_notification', task_id: 'a2', status: 'failed', summary: 'boom' })
-    expect(store.get(project.id, 'a1')).toMatchObject({ state: 'stopped', stop_reason: 'user' })
-    expect(store.get(project.id, 'a2')).toMatchObject({ state: 'stopped', stop_reason: 'failed', error: 'boom' })
+    store.stopLive('restart')
+    child({ type: 'system', subtype: 'task_notification', task_id: 'a1', status: 'killed' })
+    expect(store.get(project.id, 'a1')).toMatchObject({ state: 'stopped', stop_reason: 'restart' })
   })
 
   it('records a message to a task and resumes an ended one with the model it asked for', () => {

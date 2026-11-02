@@ -97,9 +97,10 @@ function useWorkerTranscript(projectId: string, task: ProjectTask, followUntil: 
     setMessages([])
   }, [task.id])
   useEffect(() => {
-    if (!live && followUntil <= Date.now()) return
+    // The worker's last lines can reach its transcript after the task is reported ended.
+    const until = live ? 0 : Math.max(followUntil, Date.now() + 6000)
     const timer = setInterval(() => {
-      if (live || Date.now() < followUntil) setPoll(n => n + 1)
+      if (live || Date.now() < until) setPoll(n => n + 1)
       else clearInterval(timer)
     }, 1500)
     return () => clearInterval(timer)
@@ -407,8 +408,11 @@ export function ProjectView({
   const inputs = useMemo(() => agentInputs(chat.items), [chat.items])
   const notes = useMemo(() => notesByItem(chat.taskNotes, chat.items), [chat.taskNotes, chat.items])
   const byToolUse = useMemo(() => new Map(tasks.filter(x => x.tool_use_id).map(x => [x.tool_use_id!, x])), [tasks])
+  // Until the coordinator's first turn reports them, the model and effort it was started with.
+  const chatModel = chat.model ?? project.coordinator_model ?? undefined
+  const chatEffort = chat.effort ?? project.coordinator_effort ?? undefined
   const coordinatorModel =
-    !chat.model || chat.model === 'default' ? (models.find(m => m.value === 'default')?.resolvedModel ?? chat.model) : chat.model
+    !chatModel || chatModel === 'default' ? (models.find(m => m.value === 'default')?.resolvedModel ?? chatModel) : chatModel
   const modelOf = (task: ProjectTask) =>
     picks[task.id]?.model ??
     taskModel(task, task.tool_use_id ? inputs.get(task.tool_use_id) : undefined, project.worker_model, coordinatorModel)
@@ -598,8 +602,7 @@ export function ProjectView({
       setTaskFiles(f => ({ ...f, [task.id]: [] }))
       setTaskNotice(undefined)
       const pick = isLive(task) ? {} : (picks[task.id] ?? {})
-      const delivery = await onSendTask(task.id, [text, mentions.join(' ')].filter(Boolean).join('\n\n'), pick)
-      say(delivery === 'queued' ? t('taskQueued') : delivery === 'resumed' ? t('taskResumed') : delivery)
+      say(await onSendTask(task.id, [text, mentions.join(' ')].filter(Boolean).join('\n\n'), pick))
       setFollowUntil(Date.now() + 30_000)
       setRefresh(r => r + 1)
     } catch (err) {
@@ -694,7 +697,7 @@ export function ProjectView({
       <Message
         item={item}
         t={t}
-        fallbackModel={chat.model}
+        fallbackModel={chatModel}
         models={models}
         streaming={chat.busy && item.id === chat.streamingId}
         role={item.kind === 'assistant' ? t('coordinatorRole') : undefined}
@@ -822,12 +825,12 @@ export function ProjectView({
               <>
                 {modeButton}
                 {models.length > 0 && (
-                  <FootMenu right label={t('model')} button={modelButtonLabel(chat.model, chat.effort, models, t)}>
+                  <FootMenu right label={t('model')} button={modelButtonLabel(chatModel, chatEffort, models, t)}>
                     {close => (
                       <ModelMenu
                         t={t}
-                        model={chat.model}
-                        effort={chat.effort}
+                        model={chatModel}
+                        effort={chatEffort}
                         models={models}
                         onModel={onModel}
                         onEffort={onEffort}
@@ -859,7 +862,7 @@ export function ProjectView({
             project={project}
             task={open}
             model={modelOf(open)}
-            effort={picks[open.id]?.effort ?? open.effort ?? chat.effort}
+            effort={picks[open.id]?.effort ?? open.effort ?? chatEffort}
             models={models}
             head={taskHead(open)}
             approvals={chat.approvals.filter(a => a.agentId === open.id)}

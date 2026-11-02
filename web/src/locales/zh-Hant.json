@@ -458,8 +458,6 @@
   "taskModelNext": "模型 · 下一條訊息起生效",
   "taskModelLocked": "執行中的任務不能換模型",
   "taskBoardTitle": "任務看板",
-  "taskQueued": "已排隊，下一個工具間隙送達",
-  "taskResumed": "已在背景恢復這個任務",
   "taskStoppedRestart": "服務重啟時停止了，傳訊息可繼續",
   "taskStoppedExited": "協調者結束時停止了，傳訊息可繼續",
   "taskFailedReason": "失敗：{error}",
