@@ -2,6 +2,7 @@ import { type ReactNode, useEffect, useRef, useState } from 'react'
 import type { Account, FeatureKey, Usage, UsageWindow, WebSettings } from '../api'
 import { type Lang, LANGS } from '../i18n'
 import type { ModelOption } from '../protocol'
+import { keyName } from './Account'
 import { modelName } from './Message'
 import { formatElapsed, type T } from './ui'
 
@@ -148,7 +149,7 @@ function UsageTab({
           <h4>
             {t('costTitle')}{' '}
             <small>
-              {account.source} · {t('payAsYouGo')}
+              {keyName(account.provider)} · {t('payAsYouGo')}
             </small>
           </h4>
           <dl className="kv">

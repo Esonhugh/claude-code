@@ -14,6 +14,7 @@ import {
   getOpenAIApiKey,
   getOpenAIAuthInfo,
   getSubscriptionName,
+  removeApiKey,
   saveApiKey,
 } from '../utils/auth.js'
 import { getGlobalConfig, saveGlobalConfig } from '../utils/config.js'
@@ -42,10 +43,9 @@ const ENV_CREDENTIALS: Record<AuthProvider, string[]> = {
 }
 const OAUTH_SOURCES = new Set(['claude.ai', 'CLAUDE_CODE_OAUTH_TOKEN', 'CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR'])
 
-/** `sk-ant-...wxyz`: the TUI's `sk-ant-...` form, keeping only the last four characters. */
-export function maskKey(key: string): string {
-  const prefix = key.startsWith('sk-ant-') ? 'sk-ant-' : key.startsWith('sk-') ? 'sk-' : ''
-  return key.length < 12 ? `${prefix}...` : `${prefix}...${key.slice(-4)}`
+/** The last four characters, shown as `····wxyz`; nothing for a key too short to spare them. */
+export function keyTail(key: string): string | undefined {
+  return key.length < 12 ? undefined : key.slice(-4)
 }
 
 function clearAuthCaches(): void {
@@ -89,7 +89,7 @@ function keyInfo(provider: AuthProvider, found: { key: string | null; source: st
   return {
     provider,
     base_url: process.env[BASE_URL_ENV[provider]] ?? '',
-    ...(found && { source: found.source, ...(found.key && { masked: maskKey(found.key) }) }),
+    ...(found && { source: found.source, ...(found.key && { tail: keyTail(found.key) }) }),
   }
 }
 
@@ -139,6 +139,17 @@ async function useApiKey(provider: AuthProvider, key: string | undefined): Promi
   }
   if (key) dropEnvCredentials(provider)
   useProvider(provider)
+  clearAuthCaches()
+}
+
+async function removeStoredApiKey(provider: AuthProvider): Promise<void> {
+  if (provider === 'anthropic') {
+    await removeApiKey()
+  } else if (getOpenAIAuthInfo()?.isChatGPT === false && !process.env.OPENAI_API_KEY && !process.env.OPENAI_AUTH_TOKEN) {
+    // auth.json holds only the key here; a ChatGPT login stays.
+    await rm(getOpenAIAuthPath(), { force: true })
+  }
+  dropEnvCredentials(provider)
   clearAuthCaches()
 }
 
@@ -252,6 +263,7 @@ export function localAccountBackend(): AccountBackend {
   return {
     status,
     useApiKey,
+    removeApiKey: removeStoredApiKey,
     setBaseUrl,
     startOAuth,
     logout,

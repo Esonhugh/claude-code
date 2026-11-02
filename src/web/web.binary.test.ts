@@ -968,34 +968,46 @@ describe.skipIf(!binary)('claude web account (built binary)', () => {
       await page.goto(signInUrl)
       const card = page.locator('#acct-btn')
       await card.getByText('API User').waitFor({ timeout: 15_000 })
-      expect((await card.textContent())?.trim()).toBe('API User')
+      expect(await card.locator('.avatar').textContent()).toBe('A')
+      expect(await card.locator('div').textContent()).toBe('API User')
 
       await card.click()
       const menu = page.locator('#acct-menu')
-      expect(await menu.locator('.ah').textContent()).toContain('Anthropic API key · api.anthropic.com')
+      expect(await menu.locator('.ah').textContent()).toContain('API UserAnthropic API key · pay as you go')
       expect(await menu.getByRole('menuitem').allTextContents()).toEqual([
-        expect.stringContaining('Authentication'),
+        expect.stringContaining('Auth'),
         expect.stringContaining('Settings'),
         expect.stringContaining('Stats'),
         expect.stringContaining('Shortcuts'),
-        'Sign out',
+        expect.stringContaining('Sign out'),
       ])
-      await menu.getByRole('menuitem', { name: /Authentication/ }).click()
-      await menu.getByText('Current: Anthropic API key · sk-ant-...0000').waitFor()
-      await menu.getByRole('menuitem', { name: 'Use Anthropic API key instead' }).click()
+      await menu.getByRole('menuitem', { name: /Auth/ }).click()
+      const auth = page.locator('#auth-menu')
+      await auth.getByText('Switch auth').waitFor()
+      const anthropicRow = auth.getByRole('menuitemradio', { name: /Anthropic API key/ })
+      expect(await anthropicRow.getAttribute('aria-checked')).toBe('true')
+      expect(await anthropicRow.textContent()).toContain('Saved ····0000 · api.anthropic.com')
+      expect(await auth.getByRole('menuitemradio', { name: /OpenAI API key/ }).textContent()).toContain('Not set')
+      await auth.getByRole('button', { name: 'Edit Anthropic API key' }).click()
 
-      const dialog = page.getByRole('dialog', { name: 'Anthropic API key' })
+      const dialog = page.getByRole('dialog', { name: 'API key' })
       const base = `http://127.0.0.1:${api.port}`
-      await dialog.getByLabel('Base URL').fill('ftp://nope.example')
-      expect(await dialog.getByRole('button', { name: 'Save' }).isDisabled()).toBe(true)
+      expect(await dialog.getByRole('radio', { name: 'Anthropic' }).getAttribute('aria-checked')).toBe('true')
       await dialog.getByLabel('API key').fill(FAKE_KEY)
+      await dialog.getByLabel('Base URL').fill('ftp://nope.example')
+      await dialog.getByRole('button', { name: 'Save and use' }).click()
+      await dialog.getByText('Base URL must start with http:// or https://').waitFor()
+      expect(await dialog.getByLabel('Base URL').getAttribute('aria-invalid')).toBe('true')
       await dialog.getByLabel('Base URL').fill(base)
-      await dialog.getByRole('button', { name: 'Save' }).click()
-      await page.getByText('Switched to Anthropic API key').waitFor()
+      await dialog.getByRole('button', { name: 'Save and use' }).click()
+      await page.getByText('Saved, now using Anthropic API key').waitFor()
       await dialog.waitFor({ state: 'detached' })
       await card.click()
-      expect(await menu.locator('.ah').textContent()).toContain(`127.0.0.1:${api.port}`)
-      await card.click()
+      await menu.getByRole('menuitem', { name: /Auth/ }).click()
+      expect(await auth.getByRole('menuitemradio', { name: /Anthropic API key/ }).textContent()).toContain(
+        `Saved ····WXYZ · 127.0.0.1:${api.port}`,
+      )
+      await page.keyboard.press('Escape')
 
       // The TUI's stores: settings `env` and the global config key (no keychain on Linux).
       const settings = JSON.parse(readFileSync(join(home, '.claude', 'settings.json'), 'utf8')) as {
@@ -1017,7 +1029,7 @@ describe.skipIf(!binary)('claude web account (built binary)', () => {
       if (!existsSync('/home/claude/.claude/remote/.oauth_token')) expect(keysSeen.at(-1)).toBe(FAKE_KEY)
 
       await card.click()
-      await menu.getByRole('menuitem', { name: 'Sign out' }).click()
+      await menu.getByRole('menuitem', { name: /Sign out/ }).click()
       await card.getByText('Signed out').waitFor()
       await page.getByText('Not signed in').waitFor()
       expect(globalConfig().primaryApiKey).toBeUndefined()

@@ -6,7 +6,7 @@ import { createServerLogger } from '../server/serverLog.js'
 import { SessionManager } from '../server/sessionManager.js'
 import type { AccountBackend, AccountStatus, AuthProvider, WebSettings } from './account.js'
 import { isValidBaseUrl } from './account.js'
-import { maskKey } from './accountBackend.js'
+import { keyTail } from './accountBackend.js'
 import { startWebServer } from './webServer.js'
 
 const TOKEN = 'account-test-token'
@@ -41,7 +41,7 @@ function fakeBackend() {
       keys: (['anthropic', 'openai'] as const).map(provider => ({
         provider,
         base_url: state.base[provider],
-        ...(state.stored[provider] && { source: 'stored', masked: maskKey(state.stored[provider]!) }),
+        ...(state.stored[provider] && { source: 'stored', tail: keyTail(state.stored[provider]!) }),
       })),
     }),
     useApiKey: async (provider, key) => {
@@ -76,6 +76,10 @@ function fakeBackend() {
           state.cancelled++
         },
       }
+    },
+    removeApiKey: async provider => {
+      delete state.stored[provider]
+      if (state.kind === 'apikey' && state.provider === provider) state.kind = null
     },
     logout: async () => {
       state.kind = null
@@ -135,7 +139,7 @@ async function start(allowLocalNetwork = false) {
 }
 
 describe('account endpoints', () => {
-  it('saves a key but never sends it back, only a masked form', async () => {
+  it('saves a key but never sends it back, only its last four characters', async () => {
     const { call, state } = await start()
     const res = await call('/api/account/api-key', 'POST', {
       provider: 'anthropic',
@@ -152,12 +156,12 @@ describe('account endpoints', () => {
       provider: 'anthropic',
       base_url: 'https://gateway.example/anthropic',
       source: 'stored',
-      masked: 'sk-ant-...cdef',
+      tail: 'cdef',
     })
     expect(state.stored.anthropic).toBe(SECRET)
     const again = await (await call('/api/account')).text()
     expect(again).not.toContain(SECRET)
-    expect(again).toContain('sk-ant-...cdef')
+    expect(again).toContain('"tail":"cdef"')
   })
 
   it('switches to a stored key without a new one, and refuses when there is none', async () => {
@@ -263,6 +267,20 @@ describe('account endpoints', () => {
   })
 })
 
+describe('removing a key', () => {
+  it('deletes the stored key and validates the provider', async () => {
+    const { call, state } = await start()
+    await call('/api/account/api-key', 'POST', { provider: 'anthropic', key: SECRET })
+    const res = await call('/api/account/api-key', 'DELETE', { provider: 'anthropic' })
+    const body = (await res.json()) as AccountStatus
+    expect(body.kind).toBeNull()
+    expect(body.keys[0]!.source).toBeUndefined()
+    expect(state.stored.anthropic).toBeUndefined()
+    expect((await call('/api/account/api-key', 'DELETE', { provider: 'x' })).status).toBe(400)
+    expect((await call('/api/account/api-key', 'DELETE', { provider: 'openai' }, { origin: 'http://attacker.example' })).status).toBe(403)
+  })
+})
+
 describe('settings endpoints', () => {
   it('reads and writes uiName and feature switches', async () => {
     const { call, state } = await start(true)
@@ -279,10 +297,9 @@ describe('settings endpoints', () => {
   })
 })
 
-describe('maskKey', () => {
-  it('keeps the provider prefix and the last four characters', () => {
-    expect(maskKey('sk-ant-api03-abcdefghijklmnop')).toBe('sk-ant-...mnop')
-    expect(maskKey('sk-proj-abcdefghijklmnop')).toBe('sk-...mnop')
-    expect(maskKey('short')).toBe('...')
+describe('keyTail', () => {
+  it('keeps only the last four characters of a full-length key', () => {
+    expect(keyTail('sk-ant-api03-abcdefghijklmnop')).toBe('mnop')
+    expect(keyTail('short')).toBeUndefined()
   })
 })

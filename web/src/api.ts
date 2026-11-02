@@ -126,14 +126,15 @@ export class SocketRefusedError extends Error {}
 
 export type AuthProvider = 'anthropic' | 'openai'
 
-/** `/api/account`: keys only ever arrive masked. */
+/** `/api/account`: of a key the page only ever gets its last four characters. */
 export type Account = {
   kind: 'claude' | 'chatgpt' | 'apikey' | null
   provider: AuthProvider
   name?: string
   plan?: string
   source?: string
-  keys: { provider: AuthProvider; base_url: string; source?: string; masked?: string }[]
+  /** `source` is set when the provider has a key configured. */
+  keys: { provider: AuthProvider; base_url: string; source?: string; tail?: string }[]
   pending?: { provider: AuthProvider; url: string; manual_url: string }
   error?: string
 }
@@ -152,6 +153,13 @@ export const getAccount = () => getJson<Account>('/api/account')
 
 export const saveApiKey = (provider: AuthProvider, key: string, baseUrl: string) =>
   sendJson('/api/account/api-key', 'POST', { provider, key, base_url: baseUrl }) as Promise<Account>
+
+export const removeApiKey = (provider: AuthProvider) =>
+  sendJson('/api/account/api-key', 'DELETE', { provider }) as Promise<Account>
+
+/** Switches to the provider's saved key, keeping its base URL. */
+export const useSavedKey = (provider: AuthProvider) =>
+  sendJson('/api/account/api-key', 'POST', { provider }) as Promise<Account>
 
 export const startOAuth = (provider: AuthProvider) =>
   sendJson('/api/account/oauth', 'POST', { provider }) as Promise<{ url: string; manual_url: string }>

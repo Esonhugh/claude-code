@@ -1,13 +1,15 @@
-import { type FormEvent, type ReactNode, useCallback, useEffect, useRef, useState } from 'react'
+import { type CSSProperties, type FormEvent, useCallback, useEffect, useRef, useState } from 'react'
 import {
   type Account,
   type AuthProvider,
   cancelOAuth,
   getAccount,
   logout,
+  removeApiKey,
   saveApiKey,
   startOAuth,
   submitOAuthCode,
+  useSavedKey,
 } from '../api'
 import { Dialog } from './Dialog'
 import type { T } from './ui'
@@ -16,7 +18,10 @@ const DEFAULT_BASE: Record<AuthProvider, string> = {
   anthropic: 'https://api.anthropic.com',
   openai: 'https://api.openai.com/v1',
 }
+const PROVIDERS = ['anthropic', 'openai'] as const
 const PROVIDER_NAME: Record<AuthProvider, string> = { anthropic: 'Anthropic', openai: 'OpenAI' }
+// Wide screens open the Auth submenu as a flyout on hover; narrow ones inline.
+const WIDE = '(min-width: 761px)'
 
 export const keyName = (provider: AuthProvider) => `${PROVIDER_NAME[provider]} API key`
 
@@ -42,16 +47,7 @@ export function baseHost(provider: AuthProvider, baseUrl: string): string {
   return (baseUrl || DEFAULT_BASE[provider]).replace(/^https?:\/\//, '').replace(/\/+$/, '')
 }
 
-const keyOf = (account: Account, provider: AuthProvider) => account.keys.find(k => k.provider === provider)
-
-function KeyIcon() {
-  return (
-    <svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <circle cx="5.5" cy="10.5" r="3" />
-      <path d="M7.7 8.3 13.5 2.5M11 5l2 2M12.5 3.5l1.5 1.5" />
-    </svg>
-  )
-}
+const keyOf = (account: Account | undefined, provider: AuthProvider) => account?.keys.find(k => k.provider === provider)
 
 /** The account the page shows, kept fresh while an OAuth login is pending. */
 export function useAccount(t: T) {
@@ -109,12 +105,21 @@ export function useAccount(t: T) {
         }
       }, t('loginOpened'))
     },
+    /** A saved key is switched to directly; otherwise the dialog asks for one. */
+    useKey: (provider: AuthProvider, openDialog: (p: AuthProvider) => void) => {
+      if (!keyOf(account, provider)?.source) return openDialog(provider)
+      void run(() => useSavedKey(provider), t('switchedTo', { name: keyName(provider) }))
+    },
     submitCode: (code: string) => run(() => submitOAuthCode(code)),
     cancel: () => run(() => cancelOAuth()),
     logout: () => run(() => logout(), t('signedOutFlash')),
     saveKey: async (provider: AuthProvider, key: string, baseUrl: string) => {
       setAccount(await saveApiKey(provider, key, baseUrl))
-      show(t('switchedTo', { name: keyName(provider) }))
+      show(t('savedAndUsing', { name: keyName(provider) }))
+    },
+    removeKey: async (provider: AuthProvider) => {
+      setAccount(await removeApiKey(provider))
+      show(t('keyRemoved', { name: keyName(provider) }))
     },
     copied: () => show(t('linkCopied')),
   }
@@ -122,22 +127,17 @@ export function useAccount(t: T) {
 
 export type AccountApi = ReturnType<typeof useAccount>
 
-/** The card itself: avatar, name and plan only; the details live in the menu. */
-function cardText(t: T, account: Account | undefined): { avatar: ReactNode; name: string; plan?: string } {
-  if (!account?.kind) return { avatar: '?', name: t('acctSignedOut') }
-  if (account.kind === 'apikey') return { avatar: <KeyIcon />, name: t('apiUser') }
+/** Avatar letter, name and the line under it (plan, key type, or a sign-in hint). */
+function who(t: T, account: Account | undefined) {
+  if (!account?.kind) return { avatar: '?', name: t('acctSignedOut'), sub: t('chooseSignIn') }
+  if (account.kind === 'apikey') {
+    return { avatar: 'A', name: 'API User', sub: `${keyName(account.provider)} · ${t('payAsYouGo')}` }
+  }
   const name = account.name ?? (account.kind === 'chatgpt' ? 'ChatGPT' : 'Claude')
-  return { avatar: name[0]!.toUpperCase(), name, plan: account.plan }
+  return { avatar: name[0]!.toUpperCase(), name, plan: account.plan, sub: account.plan ?? '' }
 }
 
-function authStatus(t: T, account: Account): string {
-  if (account.kind === 'claude') return [t('authClaude'), account.plan].filter(Boolean).join(' · ')
-  if (account.kind === 'chatgpt') return [t('authChatgpt'), account.plan].filter(Boolean).join(' · ')
-  const key = keyOf(account, account.provider)
-  return [keyName(account.provider), key?.masked ?? account.source].filter(Boolean).join(' · ')
-}
-
-/** Sidebar account card and its menu: header, Auth submenu, sign out. */
+/** Sidebar account card; its menu holds the Auth submenu, Settings, Stats, Shortcuts and sign out. */
 export function AccountCard({
   t,
   api,
@@ -147,22 +147,28 @@ export function AccountCard({
   t: T
   api: AccountApi
   onKeyDialog: (p: AuthProvider) => void
-  /** Settings, Stats and Shortcuts live in this menu, below the Auth submenu. */
   onDialog: (kind: 'settings' | 'stats' | 'keys') => void
 }) {
   const { account } = api
-  const [menu, setMenu] = useState<'main' | 'auth'>()
+  const [open, setOpen] = useState(false)
+  const [auth, setAuth] = useState(false)
+  const [place, setPlace] = useState<CSSProperties>()
   const wrap = useRef<HTMLDivElement>(null)
-  const host = location.hostname
+  const authBtn = useRef<HTMLButtonElement>(null)
+  const closeTimer = useRef<ReturnType<typeof setTimeout>>(undefined)
+  const close = useCallback(() => {
+    setOpen(false)
+    setAuth(false)
+  }, [])
   useEffect(() => {
-    if (!menu) return
+    if (!open) return
     const onDown = (e: MouseEvent) => {
-      if (!wrap.current?.contains(e.target as Node)) setMenu(undefined)
+      if (!wrap.current?.contains(e.target as Node)) close()
     }
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         e.stopPropagation()
-        setMenu(undefined)
+        close()
       }
     }
     document.addEventListener('mousedown', onDown)
@@ -171,104 +177,38 @@ export function AccountCard({
       document.removeEventListener('mousedown', onDown)
       window.removeEventListener('keydown', onKey, true)
     }
-  }, [menu])
-  const card = cardText(t, account)
+  }, [open, close])
+  // The sidebar clips overflow, so the flyout is fixed next to the Auth row.
+  const showAuth = (on: boolean) => {
+    clearTimeout(closeTimer.current)
+    setAuth(on)
+    const r = authBtn.current?.getBoundingClientRect()
+    if (on && r && window.matchMedia(WIDE).matches) {
+      setPlace({ left: r.right + 4, bottom: Math.max(8, window.innerHeight - r.bottom - 6) })
+    } else setPlace(undefined)
+  }
   const pick = (action: () => void) => () => {
-    setMenu(undefined)
+    close()
     action()
   }
-  const keyButtons = (label: 'useKeyInstead' | 'useKey') =>
-    (['anthropic', 'openai'] as const).map(p => (
-      <button type="button" className="btn" role="menuitem" key={p} onClick={pick(() => onKeyDialog(p))}>
-        {t(label, { name: keyName(p) })}
-      </button>
-    ))
-  const pages = (
-    <>
-      <button type="button" className="btn" role="menuitem" onClick={pick(() => onDialog('settings'))}>
-        <span className="ico">⚙</span>
-        {t('settings')}
-      </button>
-      <button type="button" className="btn" role="menuitem" onClick={pick(() => onDialog('stats'))}>
-        <span className="ico">▤</span>Stats
-      </button>
-      <button type="button" className="btn" role="menuitem" onClick={pick(() => onDialog('keys'))}>
-        <span className="ico">?</span>
-        {t('shortcuts')}
-      </button>
-    </>
-  )
-  let items
-  if (!account?.kind) {
-    items = (
-      <>
-        <button type="button" className="btn" role="menuitem" onClick={pick(() => api.login('anthropic'))}>
-          {t('signInClaude')}
-        </button>
-        <button type="button" className="btn" role="menuitem" onClick={pick(() => api.login('openai'))}>
-          {t('signInChatgpt')}
-        </button>
-        {keyButtons('useKey')}
-        <div className="sep" role="separator" />
-        {pages}
-      </>
-    )
-  } else if (menu === 'auth') {
-    items = (
-      <>
-        <div className="ah">
-          <button type="button" className="ah-back" aria-label={t('back')} onClick={() => setMenu('main')}>
-            ‹
-          </button>
-          <b>{t('authMenu')}</b>
-          <small>{t('authCurrent', { status: authStatus(t, account) })}</small>
-        </div>
-        {account.kind !== 'claude' && (
-          <button type="button" className="btn" role="menuitem" onClick={pick(() => api.login('anthropic'))}>
-            {t('switchClaude')}
-          </button>
-        )}
-        {account.kind !== 'chatgpt' && (
-          <button type="button" className="btn" role="menuitem" onClick={pick(() => api.login('openai'))}>
-            {t('switchChatgpt')}
-          </button>
-        )}
-        {keyButtons('useKeyInstead')}
-      </>
-    )
-  } else {
-    const key = keyOf(account, account.provider)
-    items = (
-      <>
-        <div className="ah acct-h">
-          <span className="avatar">{card.avatar}</span>
-          <div>
-            <b>{card.name}</b>
-            {account.kind === 'apikey' ? (
-              <small>
-                {keyName(account.provider)} · <span className="mono">{baseHost(account.provider, key?.base_url ?? '')}</span>{' '}
-                · {t('payAsYouGo')}
-              </small>
-            ) : (
-              card.plan && <small>{account.kind === 'chatgpt' ? `${card.plan} · OpenAI` : card.plan}</small>
-            )}
-            <small>{t('localHost', { host })}</small>
-          </div>
-        </div>
-        <button type="button" className="btn sub" role="menuitem" aria-haspopup="menu" onClick={() => setMenu('auth')}>
-          <span>
-            {t('authMenu')}
-            <small>{authStatus(t, account)}</small>
-          </span>
-          <span aria-hidden="true">›</span>
-        </button>
-        {pages}
-        <button type="button" className="btn" role="menuitem" onClick={pick(() => void api.logout())}>
-          {t('signOut')}
-        </button>
-      </>
-    )
-  }
+  const me = who(t, account)
+  const rows = [
+    { id: 'anthropic-oauth', label: 'Anthropic OAuth', sub: t('authClaude'), on: account?.kind === 'claude', go: () => api.login('anthropic') },
+    { id: 'openai-oauth', label: 'OpenAI OAuth', sub: t('authChatgpt'), on: account?.kind === 'chatgpt', go: () => api.login('openai') },
+    ...PROVIDERS.map(p => {
+      const key = keyOf(account, p)
+      return {
+        id: p,
+        label: keyName(p),
+        sub: key?.source
+          ? `${t('keySaved', { tail: key.tail ?? '' })} · ${baseHost(p, key.base_url)}`
+          : t('keyNotSet'),
+        on: account?.kind === 'apikey' && account.provider === p,
+        go: () => api.useKey(p, onKeyDialog),
+        edit: () => onKeyDialog(p),
+      }
+    }),
+  ]
   return (
     <div className="acctwrap" ref={wrap}>
       <button
@@ -276,18 +216,102 @@ export function AccountCard({
         className="acct"
         id="acct-btn"
         aria-haspopup="menu"
-        aria-expanded={!!menu}
-        onClick={() => setMenu(menu ? undefined : 'main')}
+        aria-expanded={open}
+        onClick={() => (open ? close() : setOpen(true))}
       >
-        <span className={`avatar${account?.kind ? '' : ' none'}`}>{card.avatar}</span>
+        <span className={`avatar${account?.kind ? '' : ' none'}`}>{me.avatar}</span>
         <div>
-          {card.name}
-          {card.plan && <small>{card.plan}</small>}
+          <b>{me.name}</b>
+          {me.plan && <small>{me.plan}</small>}
         </div>
       </button>
-      {menu && (
-        <div className="pop acctmenu" id="acct-menu" role="menu">
-          {items}
+      {open && (
+        <div
+          className="pop acctmenu"
+          id="acct-menu"
+          role="menu"
+          onMouseLeave={() => {
+            if (auth && window.matchMedia(WIDE).matches) closeTimer.current = setTimeout(() => setAuth(false), 400)
+          }}
+          onMouseEnter={() => clearTimeout(closeTimer.current)}
+        >
+          <div className="ah">
+            <span className={`avatar${account?.kind ? '' : ' none'}`}>{me.avatar}</span>
+            <div>
+              <b>{me.name}</b>
+              <small>{me.sub}</small>
+            </div>
+          </div>
+          <div
+            className="authwrap"
+            onMouseEnter={() => {
+              if (!auth && window.matchMedia(WIDE).matches) showAuth(true)
+            }}
+          >
+            <button
+              type="button"
+              className="mi"
+              ref={authBtn}
+              role="menuitem"
+              aria-haspopup="menu"
+              aria-expanded={auth}
+              // Hover already opened it on wide screens; a click there must not close it again.
+              onClick={() => showAuth(window.matchMedia(WIDE).matches || !auth)}
+            >
+              <span className="ico">⚿</span>
+              {t('authMenu')}
+              <span className="chev">›</span>
+            </button>
+            {auth && (
+              <div className="pop authmenu" id="auth-menu" role="menu" style={place}>
+                <div className="mh">{t('switchAuth')}</div>
+                {rows.map(row => (
+                  <div className="authrow" key={row.id}>
+                    <button
+                      type="button"
+                      className="mi"
+                      role="menuitemradio"
+                      aria-checked={row.on}
+                      onClick={pick(row.on && !('edit' in row) ? () => {} : row.go)}
+                    >
+                      <span className="ck">{row.on ? '✓' : ''}</span>
+                      <span className="lbl">
+                        {row.label}
+                        <small>{row.sub}</small>
+                      </span>
+                    </button>
+                    {'edit' in row && (
+                      <button type="button" className="edit" aria-label={`${t('edit')} ${row.label}`} onClick={pick(row.edit)}>
+                        {t('edit')}
+                      </button>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+          <button type="button" className="mi" role="menuitem" onClick={pick(() => onDialog('settings'))}>
+            <span className="ico">⚙</span>
+            {t('settings')}
+          </button>
+          <button type="button" className="mi" role="menuitem" onClick={pick(() => onDialog('stats'))}>
+            <span className="ico">▤</span>
+            {t('statsLabel')}
+          </button>
+          <button type="button" className="mi" role="menuitem" onClick={pick(() => onDialog('keys'))}>
+            <span className="ico">⌨</span>
+            {t('shortcuts')}
+            <kbd>?</kbd>
+          </button>
+          {account?.kind && (
+            <>
+              <hr />
+              <button type="button" className="mi" role="menuitem" onClick={pick(() => void api.logout())}>
+                <span className="ico">⏻</span>
+                {t('signOut')}
+              </button>
+            </>
+          )}
         </div>
       )}
       {api.flash && (
@@ -299,11 +323,11 @@ export function AccountCard({
   )
 }
 
-/** Key and base URL for one provider; the stored key only ever shows masked. */
+/** The prototype's `keyBody()`: provider switch, key, base URL; the saved key shows only its last four characters. */
 export function ApiKeyDialog({
   t,
   api,
-  provider,
+  provider: initial,
   onClose,
 }: {
   t: T
@@ -311,75 +335,88 @@ export function ApiKeyDialog({
   provider: AuthProvider
   onClose: () => void
 }) {
-  const stored = api.account && keyOf(api.account, provider)
+  const [provider, setProvider] = useState(initial)
+  const stored = keyOf(api.account, provider)
+  const saved = !!stored?.source
   const [key, setKey] = useState('')
   const [baseUrl, setBaseUrl] = useState(stored?.base_url ?? '')
-  const [error, setError] = useState<string>()
+  const [error, setError] = useState<{ field: 'key' | 'base' | 'server'; text: string }>()
   const [busy, setBusy] = useState(false)
-  const base = baseUrl.trim()
-  const badBase = !isValidBaseUrl(base)
-  const submit = async (e: FormEvent) => {
-    e.preventDefault()
-    if (badBase) return
-    if (!key.trim() && !stored?.masked) {
-      setError(t('apiKeyRequired'))
-      return
-    }
+  const switchTo = (next: AuthProvider) => {
+    setProvider(next)
+    setKey('')
+    setBaseUrl(keyOf(api.account, next)?.base_url ?? '')
+    setError(undefined)
+  }
+  const act = async (action: () => Promise<void>) => {
     setBusy(true)
     try {
-      await api.saveKey(provider, key.trim(), base)
+      await action()
       onClose()
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
+      setError({ field: 'server', text: err instanceof Error ? err.message : String(err) })
       setBusy(false)
     }
   }
+  const submit = (e: FormEvent) => {
+    e.preventDefault()
+    const base = baseUrl.trim().replace(/\/+$/, '')
+    if (!key.trim() && !saved) return setError({ field: 'key', text: t('apiKeyRequired') })
+    if (!isValidBaseUrl(base)) return setError({ field: 'base', text: t('baseUrlInvalid') })
+    void act(() => api.saveKey(provider, key.trim(), base))
+  }
   return (
-    <Dialog t={t} title={keyName(provider)} onClose={onClose}>
-      <form className="hookform keyform" onSubmit={e => void submit(e)}>
-        <label htmlFor="key-input">API key</label>
-        <input
-          id="key-input"
-          className="mono"
-          type="password"
-          autoComplete="off"
-          spellCheck={false}
-          autoFocus
-          value={key}
-          placeholder={stored?.masked ? t('apiKeyKeep', { masked: stored.masked }) : provider === 'anthropic' ? 'sk-ant-…' : 'sk-…'}
-          onChange={e => {
-            setKey(e.target.value)
-            setError(undefined)
-          }}
-        />
-        <label htmlFor="base-input">Base URL</label>
-        <input
-          id="base-input"
-          className="mono"
-          type="url"
-          autoComplete="off"
-          spellCheck={false}
-          value={baseUrl}
-          placeholder={DEFAULT_BASE[provider]}
-          aria-invalid={badBase}
-          onChange={e => setBaseUrl(e.target.value)}
-        />
-        <span />
-        <small className="note">
-          {badBase ? t('baseUrlInvalid') : t('baseUrlHint', { name: provider === 'anthropic' ? 'ANTHROPIC_BASE_URL' : 'OPENAI_BASE_URL' })}
-        </small>
-        {error && (
-          <div className="notice" role="alert" style={{ gridColumn: '1 / -1' }}>
-            {error}
-          </div>
-        )}
+    <Dialog t={t} title="API key" onClose={onClose}>
+      <form className="keyform" id="apikey-form" noValidate onSubmit={submit}>
+        <div className="seg" role="radiogroup" aria-label="Provider">
+          {PROVIDERS.map(p => (
+            <button type="button" role="radio" key={p} aria-checked={provider === p} onClick={() => switchTo(p)}>
+              {PROVIDER_NAME[p]}
+            </button>
+          ))}
+        </div>
+        <label>
+          <b>API key</b>
+          <input
+            id="ak-key"
+            type="password"
+            autoComplete="off"
+            spellCheck={false}
+            autoFocus
+            value={key}
+            aria-invalid={error?.field === 'key' || undefined}
+            placeholder={saved ? t('apiKeyKeep', { tail: stored?.tail ?? '' }) : provider === 'openai' ? 'sk-…' : 'sk-ant-…'}
+            onChange={e => setKey(e.target.value)}
+          />
+        </label>
+        <label>
+          <b>Base URL</b>
+          <input
+            id="ak-base"
+            type="url"
+            autoComplete="off"
+            spellCheck={false}
+            value={baseUrl}
+            aria-invalid={error?.field === 'base' || undefined}
+            placeholder={DEFAULT_BASE[provider]}
+            onChange={e => setBaseUrl(e.target.value)}
+          />
+        </label>
+        <span className="err" id="ak-err" role="alert">
+          {error?.text}
+        </span>
         <div className="btns">
-          <span className="note">{t('credentialsLocal')}</span>
-          <button className="btn" type="button" onClick={onClose}>
+          {saved && (
+            <button type="button" className="btn" disabled={busy} onClick={() => void act(() => api.removeKey(provider))}>
+              {t('removeKey')}
+            </button>
+          )}
+          <span style={{ flex: 1 }} />
+          <button type="button" className="btn" onClick={onClose}>
             {t('cancel')}
           </button>
-          <button className="btn primary" type="submit" disabled={busy || badBase}>
-            {t('save')}
+          <button type="submit" className="btn primary" disabled={busy}>
+            {t('saveAndUse')}
           </button>
         </div>
       </form>
@@ -452,7 +489,7 @@ export function LoginGate({ t, api, onKeyDialog }: { t: T; api: AccountApi; onKe
           {t('signInChatgpt')}
         </button>
         {(['anthropic', 'openai'] as const).map(p => (
-          <button className="btn" type="button" key={p} onClick={() => onKeyDialog(p)}>
+          <button className="btn" type="button" key={p} onClick={() => api.useKey(p, onKeyDialog)}>
             {t('useKey', { name: keyName(p) })}
           </button>
         ))}
