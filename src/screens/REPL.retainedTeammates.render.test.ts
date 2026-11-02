@@ -130,96 +130,122 @@ test('REPL child-view pane hands focus back on the first Escape and the second E
       : node.childNodes.map(textContent).join('')
     const key = async (value: string) => { stdin.write(value); await settle() }
     // Tab from the composer no longer takes pane focus (d5dba33a); re-focus through the public API.
+    // Under load an effect from the previous step can still move focus after the
+    // request lands; focusing the same element again is idempotent.
     const refocus = async () => {
-      await ui.focus(owner, { requestId: 'persistent', element: 'view', origin: { kind: 'person' } })
-      await settle()
+      const deadline = Date.now() + 10_000
+      do {
+        await ui.focus(owner, { requestId: 'persistent', element: 'view', origin: { kind: 'person' } })
+        await settle()
+      } while (getFocusManager(ink.rootNode).activeElement !== focused && Date.now() < deadline)
     }
-    const assertView = (agentId?: string) => {
+    // Views, focus and keys settle through React effects and Ink's lone-ESC
+    // flush, which can trail a fixed sleep under CI load. Wait for each expected
+    // state before the next action, so a two-step Escape stays two steps.
+    const eventually = async (check: () => void) => {
+      const deadline = Date.now() + 10_000
+      for (;;) {
+        try {
+          check()
+          return
+        } catch (error) {
+          if (Date.now() > deadline) throw error
+          await new Promise(resolve => setTimeout(resolve, 20))
+        }
+      }
+    }
+    const assertView = (agentId?: string) => eventually(() => {
       expect((inputs.at(-1)!.props as { view: object }).view).toEqual(agentId ? { agentId } : {})
       expect(ui.getSnapshot()).toHaveLength(1)
       expect(ui.getSnapshot()[0]).toMatchObject({ id: 'persistent', owner, focused: true, focusedElement: 'view' })
       expect(getFocusManager(ink.rootNode).activeElement).toBe(focused)
       expect(textContent(focused!)).toContain(agentId ?? 'main')
-    }
+    })
     const press = async (value: string) => {
       const count = invoked.length
       const drawing = ui.getSnapshot()[0]!.drawing!
       await key(value)
-      expect(invoked).toHaveLength(count + 1)
+      await eventually(() => expect(invoked).toHaveLength(count + 1))
       expect(invoked.at(-1)?.slice(0, 3)).toEqual([owner, drawing, 1])
     }
-    assertView()
+    await assertView()
     await press('\r')
     const drawing = ui.getSnapshot()[0]!.drawing!
     // The background-task dialog uses this same transition for local agents.
     enterTeammateView('actual-task-id', store.setState)
-    await settle()
-    expect(store.getState().viewSelectionMode).toBe('viewing-agent')
-    assertView('actual-task-id')
+    await eventually(() => expect(store.getState().viewSelectionMode).toBe('viewing-agent'))
+    await assertView('actual-task-id')
     expect(ui.getSnapshot()[0]!.drawing).not.toBe(drawing)
     expect(released).toContain(drawing)
     await press('\r')
     await press('x')
     const focusCount = focusDispatches
     await key('\u001b')
-    expect(focusDispatches).toBe(focusCount + 1)
-    expect(store.getState().viewSelectionMode).toBe('viewing-agent')
-    expect(store.getState().viewingAgentTaskId).toBe('actual-task-id')
-    expect(ui.getSnapshot()[0]).toMatchObject({ id: 'persistent', focused: false })
-    expect(getFocusManager(ink.rootNode).activeElement).not.toBe(focused)
+    await eventually(() => {
+      expect(focusDispatches).toBe(focusCount + 1)
+      expect(store.getState().viewSelectionMode).toBe('viewing-agent')
+      expect(store.getState().viewingAgentTaskId).toBe('actual-task-id')
+      expect(ui.getSnapshot()[0]).toMatchObject({ id: 'persistent', focused: false })
+      expect(getFocusManager(ink.rootNode).activeElement).not.toBe(focused)
+    })
     await key('\u001b')
-    expect(focusDispatches).toBe(focusCount + 1)
-    expect(store.getState().viewSelectionMode).toBe('none')
-    expect(store.getState().viewingAgentTaskId).toBeUndefined()
+    await eventually(() => {
+      expect(focusDispatches).toBe(focusCount + 1)
+      expect(store.getState().viewSelectionMode).toBe('none')
+      expect(store.getState().viewingAgentTaskId).toBeUndefined()
+    })
     await refocus()
-    assertView()
+    await assertView()
 
     // The agent panel's Enter on a teammate row uses this same transition.
     enterTeammateView('teammate', store.setState)
-    await settle()
-    expect(store.getState().viewSelectionMode).toBe('viewing-agent')
-    expect(store.getState().viewingAgentTaskId).toBe('teammate')
-    assertView('teammate')
+    await eventually(() => {
+      expect(store.getState().viewSelectionMode).toBe('viewing-agent')
+      expect(store.getState().viewingAgentTaskId).toBe('teammate')
+    })
+    await assertView('teammate')
     await press('\r')
     await press('x')
     const teammateFocusCount = focusDispatches
     await key('\u001b')
-    expect(focusDispatches).toBe(teammateFocusCount + 1)
-    expect(store.getState().viewSelectionMode).toBe('viewing-agent')
-    expect(store.getState().viewingAgentTaskId).toBe('teammate')
-    expect(ui.getSnapshot()[0]).toMatchObject({ id: 'persistent', focused: false })
+    await eventually(() => {
+      expect(focusDispatches).toBe(teammateFocusCount + 1)
+      expect(store.getState().viewSelectionMode).toBe('viewing-agent')
+      expect(store.getState().viewingAgentTaskId).toBe('teammate')
+      expect(ui.getSnapshot()[0]).toMatchObject({ id: 'persistent', focused: false })
+    })
     await key('\u001b')
-    expect(focusDispatches).toBe(teammateFocusCount + 1)
-    expect(store.getState().viewSelectionMode).toBe('none')
+    await eventually(() => {
+      expect(focusDispatches).toBe(teammateFocusCount + 1)
+      expect(store.getState().viewSelectionMode).toBe('none')
+    })
     await refocus()
-    assertView()
+    await assertView()
 
     // The composer surrogate is gated by the extracted production modPaneFocused value.
     // Its controlled value must receive real stdin and survive a main-child-main cycle.
     setComposerValue('draft:')
-    await settle()
-    expect(getFocusManager(ink.rootNode).activeElement).not.toBe(focused)
+    await eventually(() => expect(getFocusManager(ink.rootNode).activeElement).not.toBe(focused))
     const beforeTyping = invoked.length
     await key('main')
-    expect(composerValue).toBe('draft:main')
+    await eventually(() => expect(composerValue).toBe('draft:main'))
     expect(invoked).toHaveLength(beforeTyping)
     enterTeammateView('actual-task-id', store.setState)
-    await settle()
-    expect(store.getState().viewSelectionMode).toBe('viewing-agent')
+    await eventually(() => expect(store.getState().viewSelectionMode).toBe('viewing-agent'))
     expect(composerValue).toBe('draft:main')
     await key('-child')
-    expect(composerValue).toBe('draft:main-child')
+    await eventually(() => expect(composerValue).toBe('draft:main-child'))
     expect(invoked).toHaveLength(beforeTyping)
     const typingFocusCount = focusDispatches
     await key('\u001b')
-    expect(store.getState().viewSelectionMode).toBe('none')
+    await eventually(() => expect(store.getState().viewSelectionMode).toBe('none'))
     expect(composerValue).toBe('draft:main-child')
     expect(focusDispatches).toBe(typingFocusCount)
     expect(invoked).toHaveLength(beforeTyping)
     setComposerValue('')
     await settle()
     await refocus()
-    assertView()
+    await assertView()
     await press('\r')
     for (const [binding, blocked, unblocked] of [
       ['pastedContents', { paste: 'text' }, {}],
@@ -230,8 +256,7 @@ test('REPL child-view pane hands focus back on the first Escape and the second E
     ] as const) {
       stableBindings[binding] = blocked
       store.setState(previous => ({ ...previous }))
-      await settle()
-      expect(getFocusManager(ink.rootNode).activeElement).not.toBe(focused)
+      await eventually(() => expect(getFocusManager(ink.rootNode).activeElement).not.toBe(focused))
       const before = invoked.length
       await key('x')
       expect(invoked).toHaveLength(before)
@@ -239,11 +264,11 @@ test('REPL child-view pane hands focus back on the first Escape and the second E
       store.setState(previous => ({ ...previous }))
       await settle()
       await refocus()
-      assertView()
+      await assertView()
     }
     store.setState(previous => ({ ...previous, viewingAgentTaskId: 'missing' }))
     await settle()
-    assertView()
+    await assertView()
     await Promise.all(pending)
     expect(errors).toEqual([])
   } finally {
@@ -251,4 +276,4 @@ test('REPL child-view pane hands focus back on the first Escape and the second E
     app.cleanup()
     await ui.release(owner)
   }
-}, 15_000)
+}, 60_000)

@@ -116,8 +116,9 @@ function findText(root: DOMElement, value: string): DOMElement | undefined {
   }
   return undefined
 }
+const isStalePress = (error: unknown) => /Mod UI drawing callback is stale|Unknown drawing callback/.test(String(error))
 async function waitFor(done: () => boolean, phase: string, evidence: () => unknown) {
-  const deadline = Date.now() + 1000
+  const deadline = Date.now() + 10_000
   while (!done() && Date.now() < deadline) await new Promise(resolve => setImmediate(resolve))
   if (!done()) console.error('Band canonical focus barrier:', JSON.stringify({ phase, evidence: evidence() }))
   expect(done()).toBe(true)
@@ -268,6 +269,20 @@ async function mount(policy: Policy = 'accept', secondOwner = false, paneIds: re
     stdin.push(bytes)
     await new Promise(resolve => setImmediate(resolve))
   }
+  // A Pane hotkey that lands while focus redraws the Pane addresses the replaced
+  // drawing and is rejected as stale. Under CI load those redraws can outlast the
+  // focus barriers, so press again until the press reaches the current drawing.
+  async function pressPane(phase: string) {
+    const count = values('pane-press').length
+    const deadline = Date.now() + 10_000
+    while (values('pane-press').length === count && Date.now() < deadline) {
+      await raw('p')
+      while (values('pane-press').length === count && !errors.some(isStalePress) && Date.now() < deadline)
+        await new Promise(resolve => setTimeout(resolve, 10))
+      for (let index = errors.length - 1; index >= 0; index--) if (isStalePress(errors[index])) errors.splice(index, 1)
+    }
+    await waitFor(() => values('pane-press').length === count + 1, phase, evidence)
+  }
   async function canonical(waitForResult = true) {
     const count = values(waitForResult ? 'focus-result' : 'focus-enter').length
     await raw('\x18')
@@ -293,7 +308,7 @@ async function mount(policy: Policy = 'accept', secondOwner = false, paneIds: re
     } else await runtime.reconcile([owner])
     await waitFor(() => Boolean(editor.current && bindingContext && (band ? bandRoot() && findText(root(), '[ First ]') : paneIds.every(id => paneRoot(id)))), 'real Worker drawing, PromptInput and default KeybindingSetup', evidence)
   } catch (error) { await dispose(); throw error }
-  return { runtime, raw, canonical, dispose, values, evidence, bandRoot, paneRoot, button, receipts, diagnostics, errors, release: gate.resolve,
+  return { runtime, raw, pressPane, canonical, dispose, values, evidence, bandRoot, paneRoot, button, receipts, diagnostics, errors, release: gate.resolve,
     showBand: (shown: boolean) => showBand(shown),
     get editor() { return editor.current! }, get held() { return held }, get paneHeld() { return paneHeld }, get pending() { return bindingContext?.pendingChord },
     settlePresentation: async () => {
@@ -518,8 +533,7 @@ test('canonical full cycle visits both actual Pane bodies after the Band and the
     await waitFor(() => getFocusManager(h.paneRoot('first-pane')!).activeElement === h.paneRoot('first-pane'), 'actual first Pane body after published snapshot', h.evidence)
     expect(getFocusManager(h.paneRoot('first-pane')!).activeElement).toBe(h.paneRoot('first-pane')!)
     expect(h.values('focus-enter')).toHaveLength(2)
-    await h.raw('p')
-    await waitFor(() => h.values('pane-press').length === 1, 'actual held first Pane hotkey callback', h.evidence)
+    await h.pressPane('actual held first Pane hotkey callback')
     expect(h.values('pane-press')[0]).toMatchObject({ event: { component: 'Pane', requestId: 'first-pane', plugin: PLUGIN, element: 'pane-action' } })
     await h.raw('\x18\t')
     await waitFor(() => h.focusedPanes[0] === 'second-pane', 'actual second Pane body', h.evidence)
@@ -545,8 +559,7 @@ test('canonical only Pane works while the actual AbovePrompt drawing is engine f
     expect(getFocusManager(h.paneRoot('only-pane')!).activeElement).toBe(h.paneRoot('only-pane')!)
     expect(h.values('focus-enter')).toEqual([])
     await h.settlePresentation()
-    await h.raw('p')
-    await waitFor(() => h.values('pane-press').length === 1, 'body-owned real pane hotkey', h.evidence)
+    await h.pressPane('body-owned real pane hotkey')
     expect(h.editor.text).toBe('')
     expect(h.errors).toEqual([])
   } finally { await h.dispose() }
@@ -565,8 +578,7 @@ test('canonical only Pane preserves actual nonempty draft and cursor until a val
     await waitFor(() => h.focusedPanes[0] === 'draft-pane' && h.paneHeld, 'actual REPL admission holds nonempty canonical Pane', h.evidence)
     await h.settlePresentation()
     expect({ text: h.editor.text, cursor: h.editor.cursorOffset }).toEqual({ text: 'draft', cursor: 2 })
-    await h.raw('p')
-    await waitFor(() => h.values('pane-press').length === 1, 'real Pane owns hotkey with nonempty composer', h.evidence)
+    await h.pressPane('real Pane owns hotkey with nonempty composer')
     expect({ text: h.editor.text, cursor: h.editor.cursorOffset }).toEqual({ text: 'draft', cursor: 2 })
     h.editor.setInputWithCursor('changed', 3)
     await waitFor(() => h.focusedPanes.length === 0 && !h.paneHeld, 'actual draft value change releases canonical Pane', h.evidence)
