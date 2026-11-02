@@ -2,7 +2,7 @@ import { describe, expect, it } from 'bun:test'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { createElement } from 'react'
 import { Markdown } from './Markdown'
-import { splitSettled } from './parse'
+import { normalizeMathDelimiters, splitSettled } from './parse'
 import { safeImageSrc, safeLinkHref } from './safeUrl'
 import { stripAnsi, toolSummary } from '../tools'
 
@@ -53,6 +53,36 @@ describe('Markdown', () => {
   it('renders the same output whether or not the text is streaming', () => {
     const text = 'para one\n\n- a\n- b\n\n```js\nlet x\n\nlet y\n```\n\ntail **bo'
     expect(html(text, true)).toBe(html(text, false))
+  })
+})
+
+describe('normalizeMathDelimiters', () => {
+  it('turns \\( \\) and \\[ \\] into dollar math outside code', () => {
+    const text = [
+      'Energy \\(E = mc^2\\) and',
+      '\\[',
+      '\\int_0^1 x\\,dx',
+      '\\]',
+      'keep `\\(code\\)` and',
+      '```',
+      '\\(fenced\\)',
+      '```',
+    ].join('\n')
+    const out = normalizeMathDelimiters(text)
+    expect(out).toContain('Energy $E = mc^2$ and')
+    expect(out).toContain('$$\n\\int_0^1 x\\,dx\n$$')
+    expect(out).toContain('`\\(code\\)`')
+    expect(out).toContain('```\n\\(fenced\\)\n```')
+  })
+
+  it('renders them as math', () => {
+    const html = renderToStaticMarkup(
+      createElement(Markdown, { text: 'inline \\(a^2\\)\n\n\\[b^2\\]' }),
+    )
+    expect(html).toContain('a^2')
+    expect(html).toContain('b^2')
+    expect(html).not.toContain('\\(')
+    expect(html).not.toContain('\\[')
   })
 })
 

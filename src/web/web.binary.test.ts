@@ -77,6 +77,11 @@ const MARKDOWN_REPLY = [
   'E = mc^2',
   '$$',
   '',
+  'Inline \\(a^2 + b^2\\) and',
+  '\\[',
+  '\\int_0^1 x\\,dx',
+  '\\]',
+  '',
   '```mermaid',
   'graph TD; A-->B',
   '```',
@@ -293,6 +298,8 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       expect(await page.locator('.markdown th').first().textContent()).toBe('name')
       await page.locator('.codeblock pre.shiki').waitFor({ timeout: 30_000 })
       await page.locator('.katex').first().waitFor({ timeout: 30_000 })
+      await page.locator('.katex').nth(2).waitFor({ timeout: 30_000 })
+      expect(await page.locator('.markdown').last().textContent()).not.toContain('\\(')
       await page.locator('.mermaid svg').waitFor({ timeout: 30_000 })
       expect(await page.locator('a[href^="javascript"]').count()).toBe(0)
       expect(await page.locator('a[href="https://example.com"]').count()).toBe(1)
