@@ -11,6 +11,7 @@ async function errorText(res: Response): Promise<string> {
 
 export async function createSession(body: {
   cwd?: string
+  resume?: string
   permission_mode?: string
   model?: string
 }): Promise<CreatedSession> {
@@ -25,6 +26,49 @@ export async function createSession(body: {
 
 export async function deleteSession(id: string): Promise<void> {
   await fetch(`/api/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' })
+}
+
+async function getJson<T>(path: string): Promise<T> {
+  const res = await fetch(path)
+  if (!res.ok) throw new Error(await errorText(res))
+  return (await res.json()) as T
+}
+
+export type HistoryItem = {
+  id: string
+  title: string
+  cwd?: string
+  lastModified: number
+}
+
+export const listHistory = (offset: number, limit: number) =>
+  getJson<HistoryItem[]>(`/api/history?offset=${offset}&limit=${limit}`)
+
+export type TranscriptPage = {
+  messages: unknown[]
+  start: number
+  total: number
+  cwd?: string
+  title?: string
+}
+
+export const loadTranscript = (id: string, before?: number) =>
+  getJson<TranscriptPage>(
+    `/api/history/${encodeURIComponent(id)}/messages?limit=200${before === undefined ? '' : `&before=${before}`}`,
+  )
+
+export const listRunning = () =>
+  getJson<{ id: string; work_dir: string; attached: boolean }[]>('/api/sessions')
+
+export const getInfo = () => getJson<{ workspace: string }>('/api/info')
+
+export async function renameSession(id: string, title: string): Promise<void> {
+  const res = await fetch(`/api/history/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ title }),
+  })
+  if (!res.ok) throw new Error(await errorText(res))
 }
 
 /** Opens the session's stream-json socket; resolves once it is open. */
@@ -54,8 +98,13 @@ export function openSessionSocket(
     socket.addEventListener('open', () => resolve(socket), { once: true })
     socket.addEventListener(
       'close',
-      () => reject(new Error('WebSocket closed before it opened')),
+      event =>
+        reject(
+          new SocketRefusedError(event.reason || 'WebSocket closed before it opened'),
+        ),
       { once: true },
     )
   })
 }
+
+export class SocketRefusedError extends Error {}

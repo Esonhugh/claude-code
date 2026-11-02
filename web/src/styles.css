@@ -55,8 +55,266 @@ textarea {
 
 .app {
   display: flex;
-  flex-direction: column;
   height: 100%;
+}
+
+.main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.sidebar {
+  width: 280px;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border-right: 1px solid var(--line);
+  background: var(--panel);
+  overflow: hidden;
+}
+
+.new-chat {
+  text-align: left;
+  padding: 8px 12px;
+}
+
+.search {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg);
+  padding: 6px 10px;
+  font: inherit;
+  color: inherit;
+}
+
+.history {
+  flex: 1;
+  overflow-y: auto;
+  margin: 0 -4px;
+  padding: 0 4px;
+}
+
+.group {
+  margin-bottom: 8px;
+}
+
+.group-head {
+  display: flex;
+  align-items: center;
+}
+
+.group-name {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  border: 0;
+  background: transparent;
+  padding: 4px 6px;
+  text-align: left;
+}
+
+.group-name span {
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.group-name small,
+.recent-card small {
+  color: var(--muted);
+  font-size: 11px;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.group-add {
+  visibility: hidden;
+}
+
+.group-head:hover .group-add,
+.group-add:focus-visible {
+  visibility: visible;
+}
+
+.session-row {
+  display: flex;
+  align-items: center;
+  border-radius: 8px;
+}
+
+.session-row.active,
+.session-row:hover {
+  background: var(--user-bg);
+}
+
+.session-title {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border: 0;
+  background: transparent;
+  padding: 5px 8px;
+  text-align: left;
+  font-size: 14px;
+}
+
+.session-title span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #12b76a;
+  flex: none;
+}
+
+.row-actions {
+  display: none;
+}
+
+.session-row:hover .row-actions,
+.session-row.active .row-actions {
+  display: flex;
+}
+
+.row-actions button {
+  padding: 2px 6px;
+  font-size: 12px;
+}
+
+.rename {
+  flex: 1;
+  margin: 2px 4px;
+  padding: 3px 6px;
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  background: var(--bg);
+  font: inherit;
+  color: inherit;
+}
+
+.more {
+  display: block;
+  margin: 4px auto 12px;
+  color: var(--muted);
+}
+
+.status {
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.status-live::before {
+  content: '';
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #12b76a;
+  margin-right: 6px;
+}
+
+.menu,
+.scrim {
+  display: none;
+}
+
+.start {
+  flex: 1;
+  overflow-y: auto;
+  padding: 24px 0;
+}
+
+.start .greeting {
+  margin: 14vh 0 20px;
+}
+
+.input-big {
+  padding: 14px 12px 12px 18px;
+}
+
+.start-options {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  font-size: 13px;
+}
+
+.start-options select {
+  border-color: transparent;
+  background: transparent;
+  color: var(--muted);
+  max-width: 45%;
+}
+
+.spacer {
+  flex: 1;
+}
+
+.recent {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 8px;
+  margin-top: 28px;
+}
+
+.recent-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  padding: 10px 12px;
+  text-align: left;
+  min-width: 0;
+}
+
+.recent-title {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (max-width: 760px) {
+  .sidebar {
+    position: fixed;
+    inset: 0 auto 0 0;
+    z-index: 20;
+    transform: translateX(-100%);
+    transition: transform 0.2s;
+    box-shadow: 0 0 24px rgb(0 0 0 / 20%);
+  }
+
+  .sidebar-open .sidebar {
+    transform: none;
+  }
+
+  .sidebar-open .scrim {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 10;
+    background: rgb(0 0 0 / 30%);
+  }
+
+  .menu {
+    display: inline-block;
+  }
 }
 
 .topbar {

@@ -6,7 +6,23 @@ import {
   useRef,
   useState,
 } from 'react'
-import { createSession, deleteSession, openSessionSocket } from './api'
+import {
+  createSession,
+  deleteSession,
+  getInfo,
+  listHistory,
+  listRunning,
+  loadTranscript,
+  openSessionSocket,
+  renameSession,
+} from './api'
+import {
+  ApprovalCard,
+  MODE_KEYS,
+  Message,
+  modelLabel,
+  PERMISSION_MODES,
+} from './components/Chat'
 import {
   initialLang,
   type Lang,
@@ -15,491 +31,818 @@ import {
   saveLang,
   translate,
 } from './i18n'
-import { Markdown } from './markdown/Markdown'
 import {
-  addError,
-  addUserMessage,
   type Approval,
   type ApprovalChoice,
-  type Block,
-  type ChatState,
   controlRequest,
-  initialState,
-  type Item,
+  type ModelOption,
   permissionResponse,
-  reduce,
-  removeApproval,
   REQUEST_PREFIX,
-  setLocal,
   unsupportedControlResponse,
   userMessage,
 } from './protocol'
-import { toolSummary, stripAnsi } from './tools'
+import {
+  appReducer,
+  groupHistory,
+  type HistoryEntry,
+  initialAppState,
+  type SessionChat,
+} from './store'
 
-type Action =
-  | { type: 'message'; raw: unknown }
-  | { type: 'user'; text: string }
-  | { type: 'error'; text: string }
-  | { type: 'answered'; requestId: string }
-  | { type: 'local'; patch: Parameters<typeof setLocal>[1] }
-  | { type: 'reset' }
+type T = (key: MessageKey, vars?: Record<string, string>) => string
 
-function chatReducer(state: ChatState, action: Action): ChatState {
-  switch (action.type) {
-    case 'message':
-      return reduce(state, action.raw)
-    case 'user':
-      return addUserMessage(state, action.text)
-    case 'error':
-      return addError(state, action.text)
-    case 'answered':
-      return removeApproval(state, action.requestId)
-    case 'local':
-      return setLocal(state, action.patch)
-    case 'reset':
-      return initialState
-  }
-}
+const HISTORY_PAGE = 50
+const MODELS_KEY = 'claude-web-models'
+const COLLAPSED_KEY = 'claude-web-collapsed'
 
-/** `claude-opus-5-5` → `Opus 5.5`; anything else is shown as is. */
-export function modelLabel(model: string | undefined): string | undefined {
-  if (!model) return undefined
-  const match = /^claude-(opus|sonnet|haiku|fable)-(\d+)(?:-(\d{1,2}))?(?:-|\[|$)/.exec(
-    model,
-  )
-  if (!match) return model
-  const family = match[1]!.charAt(0).toUpperCase() + match[1]!.slice(1)
-  return `${family} ${match[2]}${match[3] ? `.${match[3]}` : ''}`
-}
-
-function prettyJson(text: string): string {
+function readStored<V>(key: string, fallback: V): V {
   try {
-    return JSON.stringify(JSON.parse(text), null, 2)
+    const raw = localStorage.getItem(key)
+    return raw ? (JSON.parse(raw) as V) : fallback
   } catch {
-    return text
+    return fallback
   }
 }
 
-function ToolCard({
-  block,
-  t,
-}: {
-  block: Extract<Block, { kind: 'tool' }>
-  t: (key: MessageKey) => string
-}) {
-  return (
-    <details className={`tool${block.isError ? ' tool-error' : ''}`}>
-      <summary>
-        <span className="tool-name">{block.name}</span>
-        <span className="tool-args">{toolSummary(block.name, block.input)}</span>
-      </summary>
-      <div className="tool-body">
-        <div className="tool-label">{t('toolInput')}</div>
-        <pre>{prettyJson(block.input)}</pre>
-        {block.result !== undefined && (
-          <>
-            <div className="tool-label">{t('toolOutput')}</div>
-            <pre>{stripAnsi(block.result)}</pre>
-          </>
-        )}
-      </div>
-    </details>
-  )
-}
-
-function Message({
-  item,
-  t,
-  fallbackModel,
-  streaming,
-}: {
-  item: Item
-  t: (key: MessageKey) => string
-  fallbackModel?: string
-  streaming: boolean
-}) {
-  if (item.kind === 'user') {
-    return (
-      <div className="msg msg-user">
-        <div className="sender">{t('you')}</div>
-        <div className="bubble">{item.text}</div>
-      </div>
-    )
+function writeStored(key: string, value: unknown): void {
+  try {
+    localStorage.setItem(key, JSON.stringify(value))
+  } catch {
+    // Not persisted; fine for a per-browser convenience.
   }
-  if (item.kind === 'error') {
-    return (
-      <div className="msg msg-error" role="alert">
-        {item.text}
-      </div>
-    )
-  }
-  const label = modelLabel(item.model ?? fallbackModel)
-  return (
-    <div className="msg msg-assistant">
-      <div className="sender">{label ? `Claude (${label})` : 'Claude'}</div>
-      {item.blocks.map((block, i) => {
-        if (!block) return null
-        if (block.kind === 'text') {
-          return (
-            <Markdown
-              key={i}
-              text={block.text}
-              streaming={streaming && i === item.blocks.length - 1}
-            />
-          )
-        }
-        if (block.kind === 'thinking') {
-          return (
-            <details key={i} className="thinking">
-              <summary>{t('thinking')}</summary>
-              <div className="text">{block.text}</div>
-            </details>
-          )
-        }
-        return <ToolCard key={i} block={block} t={t} />
-      })}
-    </div>
-  )
 }
 
-const PERMISSION_MODES = [
-  'default',
-  'acceptEdits',
-  'plan',
-  'auto',
-  'bypassPermissions',
-] as const
-
-const MODE_KEYS: Record<(typeof PERMISSION_MODES)[number], MessageKey> = {
-  default: 'modeDefault',
-  acceptEdits: 'modeAcceptEdits',
-  plan: 'modePlan',
-  auto: 'modeAuto',
-  bypassPermissions: 'modeBypass',
-}
-
-function ApprovalCard({
-  approval,
+function Composer({
   t,
-  onAnswer,
+  busy,
+  disabled,
+  placeholder,
+  draft,
+  setDraft,
+  onSend,
+  onStop,
+  onFocus,
+  big,
 }: {
-  approval: Approval
-  t: (key: MessageKey, vars?: Record<string, string>) => string
-  onAnswer: (choice: ApprovalChoice) => void
+  t: T
+  busy: boolean
+  disabled?: boolean
+  placeholder: string
+  draft: string
+  setDraft: (v: string) => void
+  onSend: () => void
+  onStop: () => void
+  onFocus?: () => void
+  big?: boolean
 }) {
+  const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+      e.preventDefault()
+      onSend()
+    }
+    if (e.key === 'Escape' && busy) onStop()
+  }
   return (
-    <div className="approval" role="dialog" aria-label={approval.toolName}>
-      <div className="approval-title">
-        {t('approvalTitle', { tool: approval.toolName })}
-      </div>
-      <div className="approval-summary">
-        {toolSummary(approval.toolName, JSON.stringify(approval.input))}
-      </div>
-      <details>
-        <summary>{t('toolInput')}</summary>
-        <pre>{JSON.stringify(approval.input, null, 2)}</pre>
-      </details>
-      <div className="approval-actions">
-        <button type="button" onClick={() => onAnswer('deny')}>
-          {t('deny')}
+    <div className={`input-card${big ? ' input-big' : ''}`}>
+      <textarea
+        value={draft}
+        placeholder={placeholder}
+        rows={big ? 3 : 1}
+        disabled={disabled}
+        onChange={e => setDraft(e.target.value)}
+        onKeyDown={onKeyDown}
+        onFocus={onFocus}
+        autoFocus={big}
+      />
+      {busy ? (
+        <button type="button" className="send" aria-label={t('stop')} onClick={onStop}>
+          ■
         </button>
-        {approval.suggestions.length > 0 && (
-          <button type="button" onClick={() => onAnswer('always')}>
-            {t('allowAlways')}
-          </button>
-        )}
+      ) : (
         <button
           type="button"
-          className="primary"
-          onClick={() => onAnswer('allow')}
+          className="send"
+          aria-label={t('send')}
+          disabled={disabled || !draft.trim()}
+          onClick={onSend}
         >
-          {t('allow')}
+          ↑
         </button>
-      </div>
+      )}
     </div>
+  )
+}
+
+function ModeSelect({
+  t,
+  value,
+  onChange,
+}: {
+  t: T
+  value: string
+  onChange: (mode: string) => void
+}) {
+  return (
+    <select
+      aria-label={t('permissionMode')}
+      className={`mode mode-${value}`}
+      value={value}
+      onChange={e => onChange(e.target.value)}
+    >
+      {PERMISSION_MODES.map(m => (
+        <option key={m} value={m}>
+          {t(MODE_KEYS[m])}
+        </option>
+      ))}
+    </select>
+  )
+}
+
+function ModelSelect({
+  t,
+  value,
+  options,
+  onChange,
+}: {
+  t: T
+  value: string | undefined
+  options: ModelOption[]
+  onChange: (model: string) => void
+}) {
+  const list =
+    options.length || !value
+      ? options
+      : [{ value, displayName: modelLabel(value) ?? value }]
+  if (!list.length) return null
+  const current =
+    list.find(m => m.value === value)?.value ??
+    list.find(m => modelLabel(m.value) === modelLabel(value))?.value ??
+    ''
+  return (
+    <select aria-label={t('model')} value={current} onChange={e => onChange(e.target.value)}>
+      {current === '' && <option value="">{modelLabel(value) ?? t('model')}</option>}
+      {list.map(m => (
+        <option key={m.value} value={m.value}>
+          {m.displayName}
+        </option>
+      ))}
+    </select>
+  )
+}
+
+function Sidebar({
+  t,
+  history,
+  historyDone,
+  running,
+  view,
+  onNew,
+  onOpen,
+  onRename,
+  onStop,
+  onMore,
+}: {
+  t: T
+  history: HistoryEntry[]
+  historyDone: boolean
+  running: Record<string, boolean>
+  view: string | null
+  onNew: (cwd?: string) => void
+  onOpen: (entry: HistoryEntry) => void
+  onRename: (entry: HistoryEntry, title: string) => void
+  onStop: (id: string) => void
+  onMore: () => void
+}) {
+  const [filter, setFilter] = useState('')
+  const [collapsed, setCollapsed] = useState<Record<string, boolean>>(() =>
+    readStored(COLLAPSED_KEY, {}),
+  )
+  const [editing, setEditing] = useState<string | null>(null)
+  const groups = groupHistory(history, filter)
+  const activeCwd = history.find(h => h.id === view)?.cwd
+
+  const toggle = (cwd: string) => {
+    const next = { ...collapsed, [cwd]: !collapsed[cwd] }
+    setCollapsed(next)
+    writeStored(COLLAPSED_KEY, next)
+  }
+
+  return (
+    <aside className="sidebar">
+      <button type="button" className="new-chat" onClick={() => onNew()}>
+        + {t('newChat')}
+      </button>
+      <input
+        className="search"
+        type="search"
+        placeholder={t('searchHistory')}
+        value={filter}
+        onChange={e => setFilter(e.target.value)}
+      />
+      <nav className="history" aria-label={t('history')}>
+        {groups.map(group => {
+          const isCollapsed = !filter && group.cwd !== activeCwd && collapsed[group.cwd]
+          return (
+            <section key={group.cwd} className="group">
+              <div className="group-head">
+                <button
+                  type="button"
+                  className="group-name"
+                  title={group.cwd}
+                  aria-expanded={!isCollapsed}
+                  onClick={() => toggle(group.cwd)}
+                >
+                  <span>{group.name || t('noFolder')}</span>
+                  <small>{group.cwd}</small>
+                </button>
+                <button
+                  type="button"
+                  className="ghost group-add"
+                  aria-label={t('newChatHere')}
+                  title={t('newChatHere')}
+                  onClick={() => onNew(group.cwd || undefined)}
+                >
+                  +
+                </button>
+              </div>
+              {!isCollapsed &&
+                group.entries.map(entry => (
+                  <div
+                    key={entry.id}
+                    className={`session-row${entry.id === view ? ' active' : ''}`}
+                  >
+                    {editing === entry.id ? (
+                      <input
+                        className="rename"
+                        defaultValue={entry.title}
+                        autoFocus
+                        aria-label={t('rename')}
+                        onBlur={() => setEditing(null)}
+                        onKeyDown={e => {
+                          if (e.key === 'Escape') setEditing(null)
+                          if (e.key === 'Enter') {
+                            const title = e.currentTarget.value.trim()
+                            if (title) onRename(entry, title)
+                            setEditing(null)
+                          }
+                        }}
+                      />
+                    ) : (
+                      <button
+                        type="button"
+                        className="session-title"
+                        onClick={() => onOpen(entry)}
+                        onDoubleClick={() => setEditing(entry.id)}
+                      >
+                        {running[entry.id] && (
+                          <span className="dot" aria-label={t('running')} />
+                        )}
+                        <span>{entry.title}</span>
+                      </button>
+                    )}
+                    <span className="row-actions">
+                      <button
+                        type="button"
+                        className="ghost"
+                        aria-label={t('rename')}
+                        title={t('rename')}
+                        onClick={() => setEditing(entry.id)}
+                      >
+                        ✎
+                      </button>
+                      {running[entry.id] && (
+                        <button
+                          type="button"
+                          className="ghost"
+                          aria-label={t('stopSession')}
+                          title={t('stopSession')}
+                          onClick={() => onStop(entry.id)}
+                        >
+                          ■
+                        </button>
+                      )}
+                    </span>
+                  </div>
+                ))}
+            </section>
+          )
+        })}
+        {!historyDone && !filter && (
+          <button type="button" className="ghost more" onClick={onMore}>
+            {t('loadMore')}
+          </button>
+        )}
+      </nav>
+    </aside>
   )
 }
 
 export function App() {
-  const [state, dispatch] = useReducer(chatReducer, initialState)
+  const [state, dispatch] = useReducer(appReducer, initialAppState)
   const [lang, setLang] = useState<Lang>(initialLang)
-  const [draft, setDraft] = useState('')
-  const socketRef = useRef<WebSocket | null>(null)
-  const sessionRef = useRef<string | null>(null)
+  const [drafts, setDrafts] = useState<Record<string, string>>({})
+  const [workspace, setWorkspace] = useState<string>()
+  const [knownModels, setKnownModels] = useState<ModelOption[]>(() =>
+    readStored(MODELS_KEY, []),
+  )
+  const sockets = useRef(new Map<string, WebSocket>())
   const requestSeq = useRef(0)
   const feedRef = useRef<HTMLDivElement>(null)
   const stickToBottom = useRef(true)
+  const stateRef = useRef(state)
+  stateRef.current = state
 
-  const t = useCallback(
-    (key: MessageKey, vars?: Record<string, string>) =>
-      translate(lang, key, vars),
+  const t: T = useCallback(
+    (key, vars) => translate(lang, key, vars),
     [lang],
   )
+
+  const chat: SessionChat | undefined = state.view ? state.chats[state.view] : undefined
+  const draftKey = state.view ?? ''
+  const draft = drafts[draftKey] ?? ''
+  const setDraft = (value: string) => setDrafts(d => ({ ...d, [draftKey]: value }))
+
+  const refreshHistory = useCallback(async (append = false) => {
+    const offset = append ? stateRef.current.history.length : 0
+    try {
+      const [entries, running] = await Promise.all([
+        listHistory(offset, HISTORY_PAGE),
+        listRunning(),
+      ])
+      dispatch({
+        type: 'history',
+        entries,
+        append,
+        done: entries.length < HISTORY_PAGE,
+      })
+      dispatch({ type: 'running', ids: running.map(r => r.id) })
+    } catch {
+      // The sidebar keeps what it has; the next refresh retries.
+    }
+  }, [])
 
   useEffect(() => {
     document.documentElement.lang = lang
   }, [lang])
 
   useEffect(() => {
+    void refreshHistory()
+    getInfo().then(info => {
+      setWorkspace(info.workspace)
+    }, () => {})
+    const map = sockets.current
+    return () => {
+      for (const socket of map.values()) socket.close()
+    }
+  }, [refreshHistory])
+
+  useEffect(() => {
     const feed = feedRef.current
     if (feed && stickToBottom.current) feed.scrollTop = feed.scrollHeight
-  }, [state.items])
+  }, [chat?.items, state.view])
 
-  useEffect(
-    () => () => {
-      socketRef.current?.close()
-    },
-    [],
-  )
+  useEffect(() => {
+    if (chat?.models.length) {
+      setKnownModels(chat.models)
+      writeStored(MODELS_KEY, chat.models)
+    }
+  }, [chat?.models])
 
-  const sendRaw = (msg: unknown) => {
-    socketRef.current?.send(JSON.stringify(msg) + '\n')
+  const send = (id: string, msg: unknown) => {
+    sockets.current.get(id)?.send(JSON.stringify(msg) + '\n')
   }
 
-  const request = (prefix: string, body: Record<string, unknown>) => {
+  const request = (id: string, prefix: string, body: Record<string, unknown>) => {
     requestSeq.current += 1
-    sendRaw(controlRequest(`${prefix}${requestSeq.current}`, body))
+    send(id, controlRequest(`${prefix}${requestSeq.current}`, body))
   }
 
-  const ensureSocket = async (): Promise<WebSocket> => {
-    const current = socketRef.current
-    if (current && current.readyState <= WebSocket.OPEN) return current
-    const { session_id: sessionId } = await createSession({
-      ...(state.permissionMode && { permission_mode: state.permissionMode }),
-      ...(state.model && { model: state.model }),
-    })
-    sessionRef.current = sessionId
-    const socket = await openSessionSocket(sessionId, raw => {
-      dispatch({ type: 'message', raw })
+  const attach = async (id: string): Promise<void> => {
+    const socket = await openSessionSocket(id, raw => {
+      dispatch({ type: 'chat', id, action: { type: 'message', raw } })
       const reply = unsupportedControlResponse(raw)
       if (reply) socket.send(JSON.stringify(reply) + '\n')
       if ((raw as { type?: string }).type === 'result') {
-        requestSeq.current += 1
-        socket.send(
-          JSON.stringify(
-            controlRequest(`${REQUEST_PREFIX.context}${requestSeq.current}`, {
-              subtype: 'get_context_usage',
-            }),
-          ) + '\n',
-        )
+        request(id, REQUEST_PREFIX.context, { subtype: 'get_context_usage' })
+        void refreshHistory()
       }
     })
     socket.addEventListener('close', () => {
-      if (socketRef.current !== socket) return
-      socketRef.current = null
-      sessionRef.current = null
-      dispatch({ type: 'error', text: t('sessionEnded') })
+      if (sockets.current.get(id) !== socket) return
+      sockets.current.delete(id)
+      dispatch({ type: 'mode', id, mode: 'readonly' })
+      dispatch({ type: 'chat', id, action: { type: 'error', text: t('sessionEnded') } })
+      void refreshHistory()
     })
-    socketRef.current = socket
-    request(REQUEST_PREFIX.initialize, { subtype: 'initialize' })
-    return socket
+    sockets.current.set(id, socket)
+    dispatch({ type: 'mode', id, mode: 'live' })
+    request(id, REQUEST_PREFIX.initialize, { subtype: 'initialize' })
   }
 
-  const send = async () => {
-    const text = draft.trim()
-    if (!text || state.busy) return
-    setDraft('')
+  const loadInto = async (id: string, before?: number) => {
+    const page = await loadTranscript(id, before)
+    dispatch({
+      type: 'loaded',
+      id,
+      messages: page.messages,
+      start: page.start,
+      workDir: page.cwd,
+      prepend: before !== undefined,
+    })
+  }
+
+  const openSession = async (entry: HistoryEntry) => {
     stickToBottom.current = true
-    dispatch({ type: 'user', text })
+    dispatch({ type: 'view', id: entry.id })
+    if (stateRef.current.chats[entry.id]) return
+    dispatch({ type: 'mode', id: entry.id, mode: 'readonly' })
     try {
-      const socket = await ensureSocket()
-      socket.send(JSON.stringify(userMessage(text)) + '\n')
+      await loadInto(entry.id)
     } catch (err) {
       dispatch({
-        type: 'error',
-        text: t('connectFailed', {
-          error: err instanceof Error ? err.message : String(err),
-        }),
+        type: 'chat',
+        id: entry.id,
+        action: { type: 'error', text: err instanceof Error ? err.message : String(err) },
       })
+      return
+    }
+    // A session still running with no tab attached is picked up directly.
+    const running = await listRunning().catch(() => [])
+    const live = running.find(r => r.id === entry.id)
+    if (live?.attached) dispatch({ type: 'mode', id: entry.id, mode: 'elsewhere' })
+    else if (live) await attach(entry.id).catch(() => {})
+  }
+
+  /** Starts the process for a read-only transcript (prewarm on focus). */
+  const resume = async (id: string): Promise<boolean> => {
+    const current = stateRef.current.chats[id]
+    if (!current || current.mode === 'live') return true
+    if (current.mode === 'connecting' || current.mode === 'elsewhere') return false
+    dispatch({ type: 'mode', id, mode: 'connecting' })
+    try {
+      const running = await listRunning()
+      if (running.find(r => r.id === id)?.attached) {
+        dispatch({ type: 'mode', id, mode: 'elsewhere' })
+        return false
+      }
+      const entry = stateRef.current.history.find(h => h.id === id)
+      await createSession({
+        resume: id,
+        cwd: current.workDir ?? entry?.cwd,
+        ...(current.permissionMode && { permission_mode: current.permissionMode }),
+      })
+      await attach(id)
+      return true
+    } catch (err) {
+      dispatch({ type: 'mode', id, mode: 'readonly' })
+      dispatch({
+        type: 'chat',
+        id,
+        action: {
+          type: 'local',
+          patch: {
+            notice: t('resumeFailed', {
+              error: err instanceof Error ? err.message : String(err),
+            }),
+          },
+        },
+      })
+      return false
     }
   }
 
-  const stop = () => request(REQUEST_PREFIX.interrupt, { subtype: 'interrupt' })
-
-  const answer = (approval: Approval, choice: ApprovalChoice) => {
-    sendRaw(permissionResponse(approval, choice))
-    dispatch({ type: 'answered', requestId: approval.requestId })
+  const sendInChat = async () => {
+    const id = state.view
+    const text = draft.trim()
+    if (!id || !chat || !text || chat.busy) return
+    if (chat.mode !== 'live' && !(await resume(id))) return
+    setDrafts(d => ({ ...d, [id]: '' }))
+    stickToBottom.current = true
+    dispatch({ type: 'chat', id, action: { type: 'user', text } })
+    send(id, userMessage(text))
   }
 
-  const changeMode = (mode: string) => {
-    if (socketRef.current) {
-      request(REQUEST_PREFIX.mode, { subtype: 'set_permission_mode', mode })
+  const startChat = async () => {
+    const text = (drafts[''] ?? '').trim()
+    if (!text) return
+    const { cwd, mode, model } = state.start
+    try {
+      const created = await createSession({
+        ...(cwd && { cwd }),
+        ...(mode !== 'default' && { permission_mode: mode }),
+        ...(model && { model }),
+      })
+      const id = created.session_id
+      setDrafts(d => ({ ...d, '': '' }))
+      stickToBottom.current = true
+      dispatch({
+        type: 'created',
+        id,
+        workDir: created.work_dir,
+        title: text.split('\n')[0]!.slice(0, 80),
+        start: state.start,
+      })
+      await attach(id)
+      dispatch({ type: 'chat', id, action: { type: 'user', text } })
+      send(id, userMessage(text))
+    } catch (err) {
+      setStartError(
+        t('connectFailed', { error: err instanceof Error ? err.message : String(err) }),
+      )
+    }
+  }
+  const [startError, setStartError] = useState<string>()
+  const [sidebarOpen, setSidebarOpen] = useState(false)
+
+  const stop = (id: string) => request(id, REQUEST_PREFIX.interrupt, { subtype: 'interrupt' })
+
+  const answer = (id: string, approval: Approval, choice: ApprovalChoice) => {
+    send(id, permissionResponse(approval, choice))
+    dispatch({ type: 'chat', id, action: { type: 'answered', requestId: approval.requestId } })
+  }
+
+  const changeMode = (id: string, mode: string) => {
+    if (sockets.current.has(id)) {
+      request(id, REQUEST_PREFIX.mode, { subtype: 'set_permission_mode', mode })
     } else {
-      dispatch({ type: 'local', patch: { permissionMode: mode } })
+      dispatch({ type: 'chat', id, action: { type: 'local', patch: { permissionMode: mode } } })
     }
   }
 
-  const changeModel = (model: string) => {
-    dispatch({ type: 'local', patch: { model, notice: undefined } })
-    if (socketRef.current) {
-      request(REQUEST_PREFIX.model, { subtype: 'set_model', model })
+  const changeModel = (id: string, model: string) => {
+    dispatch({ type: 'chat', id, action: { type: 'local', patch: { model, notice: undefined } } })
+    if (sockets.current.has(id)) {
+      request(id, REQUEST_PREFIX.model, { subtype: 'set_model', model })
     }
   }
 
-  const newChat = () => {
-    const socket = socketRef.current
-    const sessionId = sessionRef.current
-    socketRef.current = null
-    sessionRef.current = null
+  const stopSession = async (id: string) => {
+    const socket = sockets.current.get(id)
+    sockets.current.delete(id)
     socket?.close()
-    if (sessionId) void deleteSession(sessionId)
-    dispatch({ type: 'reset' })
+    await deleteSession(id).catch(() => {})
+    if (stateRef.current.chats[id]) dispatch({ type: 'mode', id, mode: 'readonly' })
+    void refreshHistory()
   }
 
-  const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
-      e.preventDefault()
-      void send()
+  const rename = async (entry: HistoryEntry, title: string) => {
+    try {
+      await renameSession(entry.id, title)
+      dispatch({ type: 'renamed', id: entry.id, title })
+    } catch {
+      // A session that has not written a transcript yet cannot be renamed.
     }
-    if (e.key === 'Escape' && state.busy) stop()
   }
 
-  const approval = state.approvals[0]
-  const mode = state.permissionMode ?? 'default'
-  const modelOptions = state.models.length
-    ? state.models
-    : state.model
-      ? [{ value: state.model, displayName: modelLabel(state.model) ?? state.model }]
-      : []
-  const currentModel =
-    modelOptions.find(m => m.value === state.model)?.value ??
-    modelOptions.find(m => modelLabel(m.value) === modelLabel(state.model))
-      ?.value ??
-    ''
-  const usage = [
-    state.contextPercent !== undefined &&
-      t('contextUsed', { percent: String(Math.round(state.contextPercent)) }),
-    state.costUsd !== undefined &&
-      new Intl.NumberFormat(lang, {
-        style: 'currency',
-        currency: 'USD',
-        maximumFractionDigits: 2,
-      }).format(state.costUsd),
-  ]
-    .filter(Boolean)
-    .join(' · ')
+  const newChat = (cwd?: string) => {
+    setStartError(undefined)
+    dispatch({ type: 'startOptions', patch: { cwd } })
+    dispatch({ type: 'view', id: null })
+  }
+
+  const usage = chat
+    ? [
+        chat.contextPercent !== undefined &&
+          t('contextUsed', { percent: String(Math.round(chat.contextPercent)) }),
+        chat.costUsd !== undefined &&
+          new Intl.NumberFormat(lang, {
+            style: 'currency',
+            currency: 'USD',
+            maximumFractionDigits: 2,
+          }).format(chat.costUsd),
+      ]
+        .filter(Boolean)
+        .join(' · ')
+    : ''
+
+  const recentDirs = [
+    ...new Set(
+      [workspace, ...state.history.map(h => h.cwd)].filter((d): d is string => !!d),
+    ),
+  ].slice(0, 12)
 
   return (
-    <div className="app">
-      <header className="topbar">
-        <button type="button" className="ghost" onClick={newChat}>
-          + {t('newChat')}
-        </button>
-        <span className="cwd">{state.cwd}</span>
-        <select
-          aria-label={t('language')}
-          value={lang}
-          onChange={e => {
-            const next = e.target.value as Lang
-            setLang(next)
-            saveLang(next)
-          }}
-        >
-          {LANGS.map(l => (
-            <option key={l.id} value={l.id}>
-              {l.label}
-            </option>
-          ))}
-        </select>
-      </header>
-      <main
-        className="feed"
-        ref={feedRef}
-        onScroll={e => {
-          const el = e.currentTarget
-          stickToBottom.current =
-            el.scrollHeight - el.scrollTop - el.clientHeight < 40
+    <div className={`app${sidebarOpen ? ' sidebar-open' : ''}`}>
+      <div className="scrim" onClick={() => setSidebarOpen(false)} />
+      <Sidebar
+        t={t}
+        history={state.history}
+        historyDone={state.historyDone}
+        running={state.running}
+        view={state.view}
+        onNew={cwd => {
+          setSidebarOpen(false)
+          newChat(cwd)
         }}
-      >
-        <div className="col">
-          {state.items.length === 0 && (
-            <h1 className="greeting">{t('greeting')}</h1>
+        onOpen={entry => {
+          setSidebarOpen(false)
+          void openSession(entry)
+        }}
+        onRename={(entry, title) => void rename(entry, title)}
+        onStop={id => void stopSession(id)}
+        onMore={() => void refreshHistory(true)}
+      />
+      <div className="main">
+        <header className="topbar">
+          <button
+            type="button"
+            className="ghost menu"
+            aria-label={t('menu')}
+            onClick={() => setSidebarOpen(true)}
+          >
+            ☰
+          </button>
+          {chat && (
+            <>
+              <span className={`status status-${chat.mode}`}>
+                {t(
+                  chat.mode === 'live'
+                    ? 'statusLive'
+                    : chat.mode === 'elsewhere'
+                      ? 'statusElsewhere'
+                      : chat.mode === 'connecting'
+                        ? 'statusConnecting'
+                        : 'statusIdle',
+                )}
+              </span>
+              <span className="cwd">{chat.cwd ?? chat.workDir}</span>
+            </>
           )}
-          {state.items.map(item => (
-            <Message
-              key={item.id}
-              item={item}
-              t={t}
-              fallbackModel={state.model}
-              streaming={state.busy && item.id === state.streamingId}
-            />
-          ))}
-        </div>
-      </main>
-      <footer className="composer">
-        <div className="col">
-          {approval && (
-            <ApprovalCard
-              approval={approval}
-              t={t}
-              onAnswer={choice => answer(approval, choice)}
-            />
-          )}
-          {state.notice && (
-            <div className="notice" role="status">
-              {state.notice}
+          {!chat && <span className="cwd" />}
+          <select
+            aria-label={t('language')}
+            value={lang}
+            onChange={e => {
+              const next = e.target.value as Lang
+              setLang(next)
+              saveLang(next)
+            }}
+          >
+            {LANGS.map(l => (
+              <option key={l.id} value={l.id}>
+                {l.label}
+              </option>
+            ))}
+          </select>
+        </header>
+
+        {!chat ? (
+          <main className="start">
+            <div className="col">
+              <h1 className="greeting">{t('greeting')}</h1>
+              <Composer
+                t={t}
+                big
+                busy={false}
+                placeholder={t('placeholder')}
+                draft={drafts[''] ?? ''}
+                setDraft={v => setDrafts(d => ({ ...d, '': v }))}
+                onSend={() => void startChat()}
+                onStop={() => {}}
+              />
+              {startError && (
+                <div className="notice" role="alert">
+                  {startError}
+                </div>
+              )}
+              <div className="start-options">
+                <select
+                  aria-label={t('folder')}
+                  value={state.start.cwd ?? workspace ?? ''}
+                  onChange={e => {
+                    if (e.target.value === '__other__') {
+                      const path = window.prompt(t('folderPrompt'))?.trim()
+                      if (path) dispatch({ type: 'startOptions', patch: { cwd: path } })
+                      return
+                    }
+                    dispatch({ type: 'startOptions', patch: { cwd: e.target.value || undefined } })
+                  }}
+                >
+                  {[...new Set([...(state.start.cwd ? [state.start.cwd] : []), ...recentDirs])].map(
+                    dir => (
+                      <option key={dir} value={dir}>
+                        {dir === workspace ? `${t('workspace')} · ${dir}` : dir}
+                      </option>
+                    ),
+                  )}
+                  <option value="__other__">{t('otherFolder')}</option>
+                </select>
+                <span className="spacer" />
+                <ModeSelect
+                  t={t}
+                  value={state.start.mode}
+                  onChange={mode => dispatch({ type: 'startOptions', patch: { mode } })}
+                />
+                <ModelSelect
+                  t={t}
+                  value={state.start.model}
+                  options={knownModels}
+                  onChange={model => dispatch({ type: 'startOptions', patch: { model } })}
+                />
+              </div>
+              <div className="recent">
+                {state.history
+                  .filter(h => (h.cwd ?? '') === (state.start.cwd ?? workspace ?? ''))
+                  .slice(0, 3)
+                  .map(entry => (
+                    <button
+                      type="button"
+                      key={entry.id}
+                      className="recent-card"
+                      onClick={() => void openSession(entry)}
+                    >
+                      <span className="recent-title">{entry.title}</span>
+                      <small>
+                        {new Intl.DateTimeFormat(lang, {
+                          dateStyle: 'medium',
+                          timeStyle: 'short',
+                        }).format(entry.lastModified)}
+                      </small>
+                    </button>
+                  ))}
+              </div>
             </div>
-          )}
-          <div className="input-card">
-            <textarea
-              value={draft}
-              placeholder={t('placeholder')}
-              rows={1}
-              onChange={e => setDraft(e.target.value)}
-              onKeyDown={onKeyDown}
-            />
-            {state.busy ? (
-              <button
-                type="button"
-                className="send"
-                aria-label={t('stop')}
-                onClick={stop}
-              >
-                ■
-              </button>
-            ) : (
-              <button
-                type="button"
-                className="send"
-                aria-label={t('send')}
-                disabled={!draft.trim()}
-                onClick={() => void send()}
-              >
-                ↑
-              </button>
-            )}
-          </div>
-          <div className="composer-footer">
-            <select
-              aria-label={t('permissionMode')}
-              className={`mode mode-${mode}`}
-              value={mode}
-              onChange={e => changeMode(e.target.value)}
+          </main>
+        ) : (
+          <>
+            <main
+              className="feed"
+              ref={feedRef}
+              onScroll={e => {
+                const el = e.currentTarget
+                stickToBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40
+              }}
             >
-              {PERMISSION_MODES.map(m => (
-                <option key={m} value={m}>
-                  {t(MODE_KEYS[m])}
-                </option>
-              ))}
-            </select>
-            <span className="usage">{usage}</span>
-            {modelOptions.length > 0 && (
-              <select
-                aria-label={t('model')}
-                value={currentModel}
-                onChange={e => changeModel(e.target.value)}
-              >
-                {currentModel === '' && <option value="">{modelLabel(state.model) ?? t('model')}</option>}
-                {modelOptions.map(m => (
-                  <option key={m.value} value={m.value}>
-                    {m.displayName}
-                  </option>
+              <div className="col">
+                {chat.start > 0 && (
+                  <button
+                    type="button"
+                    className="ghost more"
+                    onClick={() => state.view && void loadInto(state.view, chat.start)}
+                  >
+                    {t('loadEarlier')}
+                  </button>
+                )}
+                {chat.items.map(item => (
+                  <Message
+                    key={item.id}
+                    item={item}
+                    t={t}
+                    fallbackModel={chat.model}
+                    streaming={chat.busy && item.id === chat.streamingId}
+                  />
                 ))}
-              </select>
-            )}
-          </div>
-        </div>
-      </footer>
+              </div>
+            </main>
+            <footer className="composer">
+              <div className="col">
+                {chat.approvals[0] && state.view && (
+                  <ApprovalCard
+                    approval={chat.approvals[0]}
+                    t={t}
+                    onAnswer={choice => answer(state.view!, chat.approvals[0]!, choice)}
+                  />
+                )}
+                {chat.mode === 'elsewhere' && (
+                  <div className="notice" role="status">
+                    {t('openElsewhere')}
+                  </div>
+                )}
+                {chat.notice && (
+                  <div className="notice" role="status">
+                    {chat.notice}
+                  </div>
+                )}
+                <Composer
+                  t={t}
+                  busy={chat.busy}
+                  disabled={chat.mode === 'elsewhere'}
+                  placeholder={t('placeholder')}
+                  draft={draft}
+                  setDraft={setDraft}
+                  onSend={() => void sendInChat()}
+                  onStop={() => state.view && stop(state.view)}
+                  onFocus={() => state.view && chat.mode === 'readonly' && void resume(state.view)}
+                />
+                <div className="composer-footer">
+                  <ModeSelect
+                    t={t}
+                    value={chat.permissionMode ?? 'default'}
+                    onChange={mode => state.view && changeMode(state.view, mode)}
+                  />
+                  <span className="usage">{usage}</span>
+                  <ModelSelect
+                    t={t}
+                    value={chat.model}
+                    options={chat.models.length ? chat.models : knownModels}
+                    onChange={model => state.view && changeModel(state.view, model)}
+                  />
+                </div>
+              </div>
+            </footer>
+          </>
+        )}
+      </div>
     </div>
   )
 }
