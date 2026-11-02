@@ -2,6 +2,8 @@
 // model the chat renders. Unknown message types are ignored, so newer engine
 // messages never break the page.
 
+import { reduceTasks, type Tasks } from './agents'
+
 export type Block =
   | { kind: 'text'; text: string }
   | { kind: 'thinking'; text: string }
@@ -49,6 +51,8 @@ export type ChatState = {
   costUsd?: number
   /** Error from the last control request the user triggered (mode, model). */
   notice?: string
+  /** Subagents, workflows and other background tasks, by task id. */
+  tasks: Tasks
 }
 
 export const initialState: ChatState = {
@@ -56,6 +60,7 @@ export const initialState: ChatState = {
   busy: false,
   approvals: [],
   models: [],
+  tasks: {},
 }
 
 type Json = Record<string, unknown>
@@ -258,7 +263,10 @@ export function reduce(state: ChatState, raw: unknown): ChatState {
 
   switch (raw.type) {
     case 'system':
-      if (raw.subtype !== 'init') return state
+      if (raw.subtype !== 'init') {
+        const tasks = reduceTasks(state.tasks, raw)
+        return tasks === state.tasks ? state : { ...state, tasks }
+      }
       return {
         ...state,
         model: str(raw.model) ?? state.model,
@@ -410,6 +418,8 @@ export const REQUEST_PREFIX = {
   mode: 'web-mode-',
   model: 'web-model-',
   interrupt: 'web-interrupt-',
+  stopTask: 'web-stop-task-',
+  taskMessage: 'web-task-message-',
 } as const
 
 function reduceControlResponse(state: ChatState, raw: Json): ChatState {

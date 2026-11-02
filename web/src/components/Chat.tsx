@@ -1,4 +1,5 @@
 import { createContext, useContext } from 'react'
+import { type AgentTask, formatDuration, isFinished, taskName } from '../agents'
 import { baseName, splitMentions } from '../files'
 import type { MessageKey } from '../i18n'
 import { Markdown } from '../markdown/Markdown'
@@ -20,6 +21,12 @@ export function modelLabel(model: string | undefined): string | undefined {
 export const FilesContext = createContext<{
   open?: (path: string) => void
   base?: string
+}>({})
+
+/** Lets an Agent tool card show its task and open it in the Agents panel. */
+export const AgentsContext = createContext<{
+  byToolUse?: Map<string, AgentTask>
+  open?: (taskId: string) => void
 }>({})
 
 const FILE_TOOLS = new Set(['Read', 'Write', 'Edit', 'MultiEdit', 'NotebookEdit'])
@@ -74,12 +81,26 @@ function ToolCard({
   t: (key: MessageKey) => string
 }) {
   const files = useContext(FilesContext)
+  const agents = useContext(AgentsContext)
   const path = files.open && !block.isError ? toolFilePath(block.name, block.input) : undefined
+  const task = agents.byToolUse?.get(block.id)
   return (
     <details className={`tool${block.isError ? ' tool-error' : ''}`}>
       <summary>
         <span className="tool-name">{block.name}</span>
         <span className="tool-args">{toolSummary(block.name, block.input)}</span>
+        {task && (
+          <button
+            type="button"
+            className={`ghost tool-preview agent-chip agent-${task.status}`}
+            onClick={e => {
+              e.preventDefault()
+              agents.open?.(task.id)
+            }}
+          >
+            {taskName(task)} · {isFinished(task) ? task.status : (formatDuration(task.durationMs) ?? task.status)}
+          </button>
+        )}
         {path && (
           <button
             type="button"

@@ -177,7 +177,26 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
           ]
           stop = 'tool_use'
         }
-        if (lastBlocks.some(b => b.type === 'tool_result')) {
+        if (lastText.includes('FOLLOWUP_MSG')) {
+          blocks = [{ type: 'text', text: 'FOLLOWUP_DONE' }]
+        } else if (lastText.includes('SUBTASK_BG')) {
+          blocks = [{ type: 'text', text: 'SUB_RESULT' }]
+        } else if (lastText.includes('SPAWNBG')) {
+          blocks = [
+            {
+              type: 'tool_use',
+              id: 'toolu_agent_bg',
+              name: 'Agent',
+              input: {
+                description: 'Look around',
+                prompt: 'SUBTASK_BG please look around',
+                subagent_type: 'general-purpose',
+                run_in_background: true,
+              },
+            },
+          ]
+          stop = 'tool_use'
+        } else if (lastBlocks.some(b => b.type === 'tool_result')) {
           blocks = [{ type: 'text', text: 'WEB_DONE' }]
         } else if (lastText.includes('TOUCH')) {
           touch('made.txt')
@@ -486,6 +505,53 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       await browser.close()
     }
   }, 240_000)
+
+  it('shows background agents in the panel and messages a finished one', async () => {
+    const playwrightPath = Bun.spawnSync(['node', '-p', "require.resolve('playwright')"])
+      .stdout.toString()
+      .trim()
+    const { chromium } = await import(playwrightPath)
+    const browser = await chromium.launch()
+    try {
+      const context = await browser.newContext({ locale: 'en-US' })
+      const page = await context.newPage()
+      const errors: string[] = []
+      page.on('pageerror', e => errors.push(e.message))
+      await page.goto(signInUrl)
+      await page.getByText('What can I help you with?').waitFor()
+      const input = page.getByPlaceholder('Message Claude')
+      await input.fill('please SPAWNBG an agent')
+      await input.press('Enter')
+
+      // The Agent card links to its task; the panel lists it.
+      const chip = page.locator('.agent-chip')
+      await chip.waitFor({ timeout: 30_000 })
+      await page.getByRole('button', { name: /^Agents/ }).click()
+      const panel = page.locator('aside.agents')
+      await panel.waitFor()
+      // Finished agents fold by default; wait for it to finish, then unfold.
+      const finished = panel.getByRole('button', { name: /Finished/ })
+      await finished.waitFor({ timeout: 60_000 })
+      if ((await finished.getAttribute('aria-expanded')) === 'false') await finished.click()
+      await panel.locator('.agent-row', { hasText: 'Look around' }).click()
+      await panel.getByText('SUB_RESULT').waitFor({ timeout: 30_000 })
+
+      const agentInput = panel.getByPlaceholder('Message general-purpose')
+      await agentInput.fill('FOLLOWUP_MSG now')
+      await agentInput.press('Enter')
+      await panel.getByText('The agent resumed with your message.').waitFor({ timeout: 30_000 })
+      await panel.getByText('FOLLOWUP_DONE').waitFor({ timeout: 60_000 })
+
+      // Back to the tree and fold the whole panel away.
+      await panel.getByRole('button', { name: 'Back' }).click()
+      await panel.getByText('Main session').waitFor()
+      await panel.getByRole('button', { name: 'Collapse panel' }).click()
+      await panel.waitFor({ state: 'detached' })
+      expect(errors).toEqual([])
+    } finally {
+      await browser.close()
+    }
+  }, 180_000)
 
   it('shuts down on SIGTERM and removes the lock', async () => {
     web.kill('SIGTERM')

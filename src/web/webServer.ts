@@ -18,7 +18,14 @@ import {
   UploadError,
   type UploadLimits,
 } from './files.js'
-import { listHistory, readTranscript, renameSession, SESSION_ID } from './history.js'
+import {
+  AGENT_ID,
+  listHistory,
+  readAgentTranscript,
+  readTranscript,
+  renameSession,
+  SESSION_ID,
+} from './history.js'
 import {
   allowedHosts,
   checkToken,
@@ -87,6 +94,7 @@ const WS_PATH = /^\/api\/sessions\/([^/]+)\/ws$/
 const SESSION_PATH = /^\/api\/sessions\/([^/]+)$/
 const HISTORY_PATH = /^\/api\/history\/([^/]+)$/
 const HISTORY_MESSAGES_PATH = /^\/api\/history\/([^/]+)\/messages$/
+const AGENT_MESSAGES_PATH = /^\/api\/history\/([^/]+)\/agents\/([^/]+)\/messages$/
 const FILES_PATH = /^\/api\/files\/([^/]+)(\/pdf)?$/
 
 // Served as text so a file from the workspace never runs as a page on this origin.
@@ -172,6 +180,7 @@ function isDirectory(path: string): boolean {
  *   GET    /api/history                 → transcripts on disk, newest first
  *   GET    /api/history/:id/messages    → a page of one transcript
  *   PATCH  /api/history/:id             → rename (custom title)
+ *   GET    /api/history/:id/agents/:agent/messages → a subagent's transcript
  *   POST   /api/files/:id?name=         → upload into the session's folder
  *   GET    /api/files/:id?path=         → a file the session may show (Range)
  *   GET    /api/files/:id/pdf?path=     → Office document converted to PDF
@@ -317,6 +326,16 @@ export function startWebServer(
         : undefined
       const page = await readTranscript(id, before, intParam(url, 'limit', 200, 500))
       return page ? Response.json(page) : errorResponse(404, 'Session not found')
+    }
+    const agentMatch = AGENT_MESSAGES_PATH.exec(pathname)
+    if (agentMatch && req.method === 'GET') {
+      const id = decodeURIComponent(agentMatch[1]!)
+      const agentId = decodeURIComponent(agentMatch[2]!)
+      if (!SESSION_ID.test(id) || !AGENT_ID.test(agentId)) {
+        return errorResponse(400, 'Invalid id')
+      }
+      const page = await readAgentTranscript(id, agentId)
+      return page ? Response.json(page) : errorResponse(404, 'Agent not found')
     }
     const historyMatch = HISTORY_PATH.exec(pathname)
     if (historyMatch && req.method === 'PATCH') {
