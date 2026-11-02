@@ -112,16 +112,13 @@ import {
 import { registerSandboxPermissionCallback } from '../hooks/useSwarmPermissionPoller.js'
 import { getTeamName, getAgentName } from '../utils/teammate.js'
 import { WorkerPendingPermission } from '../components/permissions/WorkerPendingPermission.js'
-import {
-  injectUserMessageToTeammate,
-  getAllInProcessTeammateTasks,
-} from '../tasks/InProcessTeammateTask/InProcessTeammateTask.js'
+import { getAllInProcessTeammateTasks } from '../tasks/InProcessTeammateTask/InProcessTeammateTask.js'
 import {
   isLocalAgentTask,
-  queuePendingMessage,
-  appendMessageToLocalAgent,
   type LocalAgentTaskState,
 } from '../tasks/LocalAgentTask/LocalAgentTask.js'
+import { deliverTaskMessage } from '../tasks/deliverTaskMessage.js'
+import { capitalize } from '../utils/stringUtils.js'
 import {
   registerLeaderToolUseConfirmQueue,
   unregisterLeaderToolUseConfirmQueue,
@@ -5945,47 +5942,12 @@ export function REPL({
       setPastedContents({})
       const consumedGeneration = draftGenerationRef.current
       if (modsSession) await awaitMods()
-      const currentTask = store.getState().tasks[task.id]
-      if (isLocalAgentTask(task)) {
-        appendMessageToLocalAgent(
-          task.id,
-          createUserMessage({ content: input }),
-          setAppState,
-        )
-        if (isLocalAgentTask(currentTask) && currentTask.status === 'running') {
-          queuePendingMessage(task.id, input, setAppState)
-        } else {
-          void resumeAgentBackground({
-            agentId: task.id,
-            prompt: input,
-            toolUseContext: getToolUseContext(
-              messagesRef.current,
-              [],
-              new AbortController(),
-              mainLoopModel,
-            ),
-            canUseTool,
-          }).catch(err => {
-            logForDebugging(
-              `resumeAgentBackground failed: ${errorMessage(err)}`,
-            )
-            addNotification({
-              key: `resume-agent-failed-${task.id}`,
-              jsx: (
-                <Text color="error">
-                  Failed to resume agent: {errorMessage(err)}
-                </Text>
-              ),
-              priority: 'low',
-            })
-          })
-        }
-      } else {
-        const sent = isInProcessTeammateTask(currentTask)
-          ? currentTask.status === 'running' &&
-            injectUserMessageToTeammate(currentTask.id, input, setAppState)
-          : false
-        if (sent) return
+      // An evicted agent can still resume from its transcript on disk.
+      const currentTask = store.getState().tasks[task.id] ?? (isLocalAgentTask(task) ? task : undefined)
+      let delivery: ReturnType<typeof deliverTaskMessage>
+      try {
+        delivery = deliverTaskMessage(currentTask, input, setAppState)
+      } catch (err) {
         if (
           draftGenerationRef.current === consumedGeneration &&
           inputValueRef.current === ''
@@ -5994,9 +5956,34 @@ export function REPL({
           helpers.setCursorOffset(input.length)
         }
         addNotification({
-          key: `teammate-message-not-sent-${task.id}`,
-          text: 'Teammate has stopped; message was not sent.',
+          key: `task-message-not-sent-${task.id}`,
+          text: `${capitalize(errorMessage(err))}.`,
           priority: 'immediate',
+        })
+        return
+      }
+      if (delivery === 'resume') {
+        void resumeAgentBackground({
+          agentId: task.id,
+          prompt: input,
+          toolUseContext: getToolUseContext(
+            messagesRef.current,
+            [],
+            new AbortController(),
+            mainLoopModel,
+          ),
+          canUseTool,
+        }).catch(err => {
+          logForDebugging(`resumeAgentBackground failed: ${errorMessage(err)}`)
+          addNotification({
+            key: `resume-agent-failed-${task.id}`,
+            jsx: (
+              <Text color="error">
+                Failed to resume agent: {errorMessage(err)}
+              </Text>
+            ),
+            priority: 'low',
+          })
         })
       }
     },

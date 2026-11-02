@@ -108,7 +108,7 @@ if (process.env[childFlag] !== '1') {
     expect(injected.response).toEqual({ delivery: 'injected' })
     expect(tasks.t1.pendingUserMessages).toEqual(['hello teammate'])
     expect(teammateGone).toMatchObject({ subtype: 'error', error: 'send_task_message: teammate has stopped; message was not sent' })
-    expect(unknown).toMatchObject({ subtype: 'error', error: 'send_task_message: no agent or teammate task with id nosuch' })
+    expect(unknown).toMatchObject({ subtype: 'error', error: 'send_task_message: no agent or teammate task' })
     expect(empty).toMatchObject({ subtype: 'error', error: 'send_task_message: task_id and text must be non-empty strings' })
     expect(screen.response).toEqual({ output: '$ echo hi\nhi', total_bytes: 12, truncated: false })
   })

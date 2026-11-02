@@ -458,14 +458,8 @@ import { handleTeammateShutdownApproved } from '../utils/swarm/teammateShutdown.
 import { getRunningTasks } from '../utils/task/framework.js'
 import { isBackgroundTask } from '../tasks/types.js'
 import { StopTaskError, stopTask } from '../tasks/stopTask.js'
-import {
-  appendMessageToLocalAgent,
-  isLocalAgentTask,
-  queuePendingMessage,
-} from '../tasks/LocalAgentTask/LocalAgentTask.js'
+import { deliverTaskMessage } from '../tasks/deliverTaskMessage.js'
 import { isMainSessionTask } from '../tasks/LocalMainSessionTask.js'
-import { injectUserMessageToTeammate } from '../tasks/InProcessTeammateTask/InProcessTeammateTask.js'
-import { isInProcessTeammateTask } from '../tasks/InProcessTeammateTask/types.js'
 import { isTerminalTaskStatus } from '../taskStatus.js'
 import { drainSdkOutput, getTaskRunId } from '../utils/sdkEventQueue.js'
 import { initializeGrowthBook } from '../services/analytics/growthbook.js'
@@ -5065,43 +5059,30 @@ function runHeadlessStreaming(
             }
           }
         } else if (message.request.subtype === 'send_task_message') {
-          // Fork-only: the REPL's "type into a viewed agent" routing
-          // (REPL.tsx handleAgentViewSubmit) for hosts without the Ink UI.
+          // Fork-only: typing into a viewed agent (REPL onAgentSubmit) for
+          // hosts without the Ink UI.
           const { task_id: taskId, text } = message.request
-          const task = typeof taskId === 'string' ? getAppState().tasks[taskId] : undefined
           if (typeof taskId !== 'string' || typeof text !== 'string' || !text.trim()) {
             sendControlResponseError(message, 'send_task_message: task_id and text must be non-empty strings')
-          } else if (isLocalAgentTask(task) && !isMainSessionTask(task)) {
-            if (task.status === 'running') {
-              appendMessageToLocalAgent(taskId, createUserMessage({ content: text }), setAppState)
-              queuePendingMessage(taskId, text, setAppState)
-              sendControlResponseSuccess(message, { delivery: 'queued' })
-            } else if (task.stoppedByUser) {
-              sendControlResponseError(message, `send_task_message: agent ${taskId} was stopped by the user`)
-            } else {
-              appendMessageToLocalAgent(taskId, createUserMessage({ content: text }), setAppState)
-              void import('../tools/AgentTool/resumeAgent.js')
-                .then(({ resumeAgentBackground }) =>
-                  resumeAgentBackground({
-                    agentId: taskId,
-                    prompt: text,
-                    toolUseContext: getModToolContext(),
-                    canUseTool,
-                  }),
-                )
-                .then(
-                  () => sendControlResponseSuccess(message, { delivery: 'resumed' }),
-                  error => sendControlResponseError(message, `send_task_message: ${errorMessage(error)}`),
-                )
-            }
-          } else if (isInProcessTeammateTask(task)) {
-            if (task.status === 'running' && injectUserMessageToTeammate(taskId, text, setAppState)) {
-              sendControlResponseSuccess(message, { delivery: 'injected' })
-            } else {
-              sendControlResponseError(message, 'send_task_message: teammate has stopped; message was not sent')
-            }
           } else {
-            sendControlResponseError(message, `send_task_message: no agent or teammate task with id ${taskId}`)
+            const task = getAppState().tasks[taskId]
+            try {
+              const delivery = deliverTaskMessage(isMainSessionTask(task) ? undefined : task, text, setAppState)
+              if (delivery !== 'resume') {
+                sendControlResponseSuccess(message, { delivery })
+              } else {
+                void import('../tools/AgentTool/resumeAgent.js')
+                  .then(({ resumeAgentBackground }) =>
+                    resumeAgentBackground({ agentId: taskId, prompt: text, toolUseContext: getModToolContext(), canUseTool }),
+                  )
+                  .then(
+                    () => sendControlResponseSuccess(message, { delivery: 'resumed' }),
+                    error => sendControlResponseError(message, `send_task_message: ${errorMessage(error)}`),
+                  )
+              }
+            } catch (error) {
+              sendControlResponseError(message, `send_task_message: ${errorMessage(error)}`)
+            }
           }
         } else if (message.request.subtype === 'generate_session_title') {
           // Fire-and-forget so the Haiku call does not block the stdin loop
