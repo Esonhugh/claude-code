@@ -1,3 +1,4 @@
+import { parseEffortValue } from '../../utils/effort.js'
 import { promises as fsp } from 'fs'
 import { getSdkAgentProgressSummariesEnabled } from '../../bootstrap/state.js'
 import { getCommands } from '../../commands.js'
@@ -81,6 +82,8 @@ export async function resumeAgentBackground({
   promptIsMeta,
   getWorktreeResult,
   delivery = 'notification',
+  model: modelOverride,
+  effort: effortOverride,
 }: {
   agentId: string
   prompt: string
@@ -90,6 +93,9 @@ export async function resumeAgentBackground({
   promptIsMeta?: boolean
   getWorktreeResult?: () => Promise<{worktreePath?: string; worktreeBranch?: string}>
   delivery?: 'notification' | 'reply'
+  /** Run the resumed agent on this model instead of the one it started with. */
+  model?: string
+  effort?: string
 }): Promise<ResumeAgentResult> {
   const refuseUserStop = () => {
     const task = toolUseContext.getAppState().tasks[agentId]
@@ -202,8 +208,11 @@ export async function resumeAgentBackground({
     selectedAgent = GENERAL_PURPOSE_AGENT
   }
 
-  if (scope?.effort !== undefined) selectedAgent = { ...selectedAgent, effort: scope.effort }
+  const requestedEffort = parseEffortValue(effortOverride)
+  if (requestedEffort !== undefined) selectedAgent = { ...selectedAgent, effort: requestedEffort }
+  else if (scope?.effort !== undefined) selectedAgent = { ...selectedAgent, effort: scope.effort }
   else if (meta?.effort !== undefined) selectedAgent = { ...selectedAgent, effort: meta.effort }
+  const agentModel = modelOverride ?? meta?.model
   const uiDescription = meta?.description ?? '(resumed)'
 
   let forkParentSystemPrompt: SystemPrompt | undefined
@@ -293,7 +302,7 @@ export async function resumeAgentBackground({
   }) : getAgentModel(
     getAgentDefinitionModel(selectedAgent, toolUseContext.options.mainLoopModel),
     toolUseContext.options.mainLoopModel,
-    meta?.model,
+    agentModel,
     permissionMode,
   )
 
@@ -303,7 +312,7 @@ export async function resumeAgentBackground({
     prompt,
     description: uiDescription,
     subagentType: selectedAgent.agentType,
-    model: meta?.model,
+    model: agentModel,
     permissionMode,
     fork: isResumedFork,
   })
@@ -348,7 +357,7 @@ export async function resumeAgentBackground({
       selectedAgent.agentType,
       isBuiltInAgent(selectedAgent),
     ),
-    model: meta?.model,
+    model: agentModel,
     ...(isResumedFork && { resolvedModel: resolvedAgentModel }),
     // Fork resume: pass parent's system prompt (cache-identical prefix).
     // Non-fork: undefined → runAgent recomputes under wrapWithCwd so

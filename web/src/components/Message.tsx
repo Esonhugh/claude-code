@@ -389,6 +389,7 @@ export function Message({
   streaming,
   sources,
   role,
+  who = 'Claude',
   taskCard,
 }: {
   item: Item
@@ -399,6 +400,8 @@ export function Message({
   sources?: Source[]
   /** After the model in the label: ` · 协调者` in a project. */
   role?: string
+  /** Who speaks, in place of `Claude` (a project task's `worker`). */
+  who?: string
   /** A project draws its Agent calls as one-line task cards, grouped after the text. */
   taskCard?: (block: Extract<Block, { kind: 'tool' }>) => ReactNode
 }) {
@@ -534,7 +537,8 @@ export function Message({
   return (
     <div className="msg assistant">
       <span className="who">
-        Claude{label && <span className="wm"> ({label})</span>}
+        {who}
+        {label && <span className="wm"> ({label})</span>}
         {role}
       </span>
       {item.blocks.map((block, i) => {

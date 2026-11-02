@@ -1,45 +1,290 @@
-import { type CSSProperties, type DragEvent, Fragment, type PointerEvent, type ReactNode, useEffect, useMemo, useRef, useState } from 'react'
-import type { AgentTask } from '../agents'
-import type { Project } from '../api'
+import {
+  type CSSProperties,
+  type DragEvent,
+  Fragment,
+  type KeyboardEvent,
+  type MouseEvent,
+  type PointerEvent,
+  type ReactNode,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react'
+import { createPortal } from 'react-dom'
+import { listTasks, loadTaskTranscript, type Project, type ProjectTask, reviewTask } from '../api'
 import { mentionPath, tilde, uploadFile } from '../files'
-import { agentInputs, notesByItem, projectTasks, TASK_GROUPS, taskMeta, taskNoteText, type TaskState, taskState } from '../projects'
-import type { Approval, ApprovalChoice, Block, ModelOption, TaskNote } from '../protocol'
+import {
+  agentInputs,
+  canMessage,
+  isLive,
+  notesByItem,
+  TASK_GROUPS,
+  TASK_LANES,
+  taskMeta,
+  taskModel,
+  taskNoteText,
+  type TaskState,
+  withApprovals,
+  workerItems,
+} from '../projects'
+import { type Approval, type ApprovalChoice, type Block, currentTodos, initialState, type ModelOption, reduce, type TaskNote } from '../protocol'
 import type { SessionChat } from '../store'
 import { AskDock, InputBox, ModeButton, ModelMenu, modelButtonLabel } from './Composer'
 import { Dialog } from './Dialog'
 import { Message, modelName } from './Message'
 import { WORKER_MODELS } from './ProjectDialog'
-import { FootMenu, type T } from './ui'
+import { FootMenu, readStored, type T, writeStored } from './ui'
 
 type Show = 'chat' | 'tasks'
+
+/** The width of the coordinator column, kept per browser. */
+const WIDTH_KEY = 'claude-web-pv-width'
+
+/** A model alias or id as the prototype names it (`Opus 5.5`). */
+function modelLabel(value: string | null | undefined, models: ModelOption[]): string | undefined {
+  if (!value) return undefined
+  return WORKER_MODELS.find(m => m.value === value)?.label ?? modelName(value, models) ?? value
+}
 
 function TaskCard({
   t,
   task,
-  state,
+  summary,
   meta,
   mini,
   current,
   onOpen,
+  onMenu,
 }: {
   t: T
-  task: Pick<AgentTask, 'id' | 'description' | 'summary'>
-  state: TaskState
+  task: Pick<ProjectTask, 'id' | 'title' | 'state'>
+  summary: string
   meta: string
   mini?: boolean
   current: boolean
   onOpen: () => void
+  onMenu?: (e: MouseEvent) => void
 }) {
+  const state = task.state
   return (
-    <button type="button" className={`pjcard${mini ? ' mini' : ''}`} aria-current={current} onClick={onOpen}>
+    <button
+      type="button"
+      className={`pjcard${mini ? ' mini' : ''}`}
+      aria-current={current}
+      data-task={task.id}
+      onClick={onOpen}
+      onContextMenu={onMenu}
+    >
       <span className={`dot ${state === 'done' ? '' : state}`} />
-      <span className="tt">{task.description}</span>
+      <span className="tt">{task.title}</span>
       <span className={`pjbadge ${state}`}>{t(`taskState_${state}`)}</span>
-      <span className="sm">{task.summary ?? ''}</span>
+      <span className="sm">{summary}</span>
       <span className="mt">{meta}</span>
     </button>
   )
 }
+
+/** The worker's conversation, fetched from its transcript a page of new messages at a time. */
+function useWorkerTranscript(projectId: string, task: ProjectTask, followUntil: number): unknown[] {
+  const [messages, setMessages] = useState<unknown[]>([])
+  const next = useRef(0)
+  const [poll, setPoll] = useState(0)
+  const live = isLive(task)
+  useEffect(() => {
+    next.current = 0
+    setMessages([])
+  }, [task.id])
+  useEffect(() => {
+    // The worker's last lines can reach its transcript after the task is reported ended.
+    const until = live ? 0 : Math.max(followUntil, Date.now() + 6000)
+    const timer = setInterval(() => {
+      if (live || Date.now() < until) setPoll(n => n + 1)
+      else clearInterval(timer)
+    }, 1500)
+    return () => clearInterval(timer)
+  }, [live, followUntil])
+  useEffect(() => {
+    let current = true
+    loadTaskTranscript(projectId, task.id, next.current).then(
+      page => {
+        if (!current) return
+        next.current = page.next
+        if (page.reset) setMessages(page.messages)
+        else if (page.messages.length) setMessages(prev => [...prev, ...page.messages])
+      },
+      () => {},
+    )
+    return () => {
+      current = false
+    }
+  }, [projectId, task.id, task.state, task.tool_uses, task.summary, poll])
+  return messages
+}
+
+/** The open task: checklist, brief, the worker's conversation and its own input box. */
+function TaskPane({
+  t,
+  project,
+  task,
+  model,
+  effort,
+  models,
+  head,
+  approvals,
+  modeButton,
+  signedOut,
+  draft,
+  setDraft,
+  files,
+  setFiles,
+  listFiles,
+  skills,
+  notice,
+  followUntil,
+  meta,
+  pick,
+  onPick,
+  onSend,
+  onAnswer,
+}: {
+  t: T
+  project: Project
+  task: ProjectTask
+  model: string | undefined
+  effort: string | undefined
+  models: ModelOption[]
+  head: ReactNode
+  approvals: Approval[]
+  modeButton: ReactNode
+  signedOut?: boolean
+  draft: string
+  setDraft: (v: string) => void
+  files: File[]
+  setFiles: (files: File[]) => void
+  listFiles: (query: string) => Promise<string[]>
+  skills?: string[]
+  notice?: string
+  followUntil: number
+  meta: string
+  pick: { model?: string; effort?: string }
+  onPick: (pick: { model?: string; effort?: string }) => void
+  onSend: () => void
+  onAnswer: (approval: Approval, choice: ApprovalChoice) => void
+}) {
+  const messages = useWorkerTranscript(project.id, task, followUntil)
+  const items = useMemo(() => messages.reduce(reduce, initialState).items, [messages])
+  const shown = useMemo(() => workerItems(items, task.brief), [items, task.brief])
+  const todos = useMemo(() => currentTodos(items), [items])
+  const feedRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    const feed = feedRef.current
+    if (feed) feed.scrollTop = feed.scrollHeight
+  }, [shown.length, task.state])
+  const live = isLive(task)
+  const open = canMessage(task)
+  const approval = approvals[0]
+  const label = modelLabel(model, models)
+  const done = todos.filter(x => x.status === 'completed').length
+  return (
+    <>
+      {head}
+      <div className="feed" ref={feedRef}>
+        <div className="pjcheck">
+          <b>{task.title}</b>
+          {todos.map((todo, i) => (
+            <div key={i} className={`todo-i ${todo.status}`}>
+              <span>{todo.status === 'completed' ? '✓' : todo.status === 'in_progress' ? '◐' : '○'}</span>
+              <span>{todo.content}</span>
+            </div>
+          ))}
+          <span className="note">
+            {todos.length > 0 && `${done}/${todos.length} · `}
+            <span className={`pjbadge ${task.state}`}>{t(`taskState_${task.state}`)}</span>
+            {task.worktree && (
+              <>
+                {' · '}
+                <span className="mono">{tilde(task.worktree)}</span>
+              </>
+            )}
+          </span>
+        </div>
+        {task.brief && (
+          <div className="msg">
+            <span className="who">{t('taskBrief')}</span>
+            <div className="pjbrief">{task.brief}</div>
+          </div>
+        )}
+        {shown.map(item => (
+          <Message key={item.id} item={item} t={t} who="worker" fallbackModel={model} models={models} streaming={false} />
+        ))}
+        {task.state === 'running' && (
+          <div className="status-line">
+            <span className="glyph">✻</span>
+            <span className="verb shimmer">Working…</span>
+            <span className="mono">{meta}</span>
+          </div>
+        )}
+      </div>
+      <div className="composer">
+        {notice && (
+          <div className="notice" role="status">
+            {notice}
+          </div>
+        )}
+        {approval && (
+          <AskDock
+            approval={approval}
+            more={approvals.length - 1}
+            cwd={task.worktree ?? project.cwd}
+            t={t}
+            onAnswer={choice => onAnswer(approval, choice)}
+          />
+        )}
+        <InputBox
+          t={t}
+          busy={false}
+          disabled={!open}
+          signedOut={signedOut}
+          draft={draft}
+          setDraft={setDraft}
+          onSend={onSend}
+          onStop={() => {}}
+          files={files}
+          setFiles={setFiles}
+          skills={skills}
+          listFiles={listFiles}
+          placeholder={t(!open ? 'taskPhStopped' : live ? 'taskPhRunning' : 'taskPhEnded')}
+          crow={
+            <>
+              {modeButton}
+              {models.length > 0 && (
+                <FootMenu right label={t('model')} button={`${label ?? t('model')}${effort ? ` · ${effort}` : ''}`}>
+                  {close => (
+                    <ModelMenu
+                      t={t}
+                      model={pick.model ?? model}
+                      effort={effort}
+                      models={models}
+                      heading={live ? t('taskModelLocked') : t('taskModelNext')}
+                      locked={live}
+                      onModel={value => onPick({ ...pick, model: value })}
+                      onEffort={level => onPick({ ...pick, effort: level })}
+                      close={close}
+                    />
+                  )}
+                </FootMenu>
+              )}
+            </>
+          }
+        />
+      </div>
+    </>
+  )
+}
+
+type TaskMenu = { task: ProjectTask; x: number; y: number }
 
 /**
  * A project: its coordinator conversation in the middle, the tasks it
@@ -69,6 +314,7 @@ export function ProjectView({
   onSettings,
   onStopTask,
   onSendTask,
+  onTasks,
   uploadTo,
 }: {
   t: T
@@ -92,35 +338,96 @@ export function ProjectView({
   onAnswer: (approval: Approval, choice: ApprovalChoice) => void
   onSettings: () => void
   onStopTask: (taskId: string) => void
-  onSendTask: (taskId: string, text: string) => Promise<string>
+  /** Resolves with the delivery (`queued`, `resumed`…); an ended task resumes on `model` and `effort`. */
+  onSendTask: (taskId: string, text: string, pick: { model?: string; effort?: string }) => Promise<string>
+  /** The task rows as last fetched, for the sidebar's counts. */
+  onTasks: (rows: ProjectTask[]) => void
   /** The coordinator's session id: task attachments are uploaded there. */
   uploadTo: string
 }) {
   const [show, setShow] = useState<Show>('chat')
   const [wide, setWide] = useState(false)
-  const [width, setWidth] = useState<number>()
+  const [width, setWidth] = useState<number | undefined>(() => readStored<number | undefined>(WIDTH_KEY, undefined))
   const [openId, setOpenId] = useState<string>()
-  const [reviewed, setReviewed] = useState<ReadonlySet<string>>(new Set())
   const [board, setBoard] = useState(false)
+  const [rows, setRows] = useState<ProjectTask[]>([])
+  const [refresh, setRefresh] = useState(0)
+  const [now, setNow] = useState(() => Date.now())
   const [taskDrafts, setTaskDrafts] = useState<Record<string, string>>({})
   const [taskFiles, setTaskFiles] = useState<Record<string, File[]>>({})
+  const [picks, setPicks] = useState<Record<string, { model?: string; effort?: string }>>({})
   const [taskNotice, setTaskNotice] = useState<string>()
+  const [followUntil, setFollowUntil] = useState(0)
+  const [menu, setMenu] = useState<TaskMenu | null>(null)
+  const [flash, setFlash] = useState<string>()
+  const flashTimer = useRef<ReturnType<typeof setTimeout>>(undefined)
   const feedRef = useRef<HTMLDivElement>(null)
   const viewRef = useRef<HTMLElement>(null)
+  const menuRef = useRef<HTMLDivElement>(null)
+  const onTasksRef = useRef(onTasks)
+  onTasksRef.current = onTasks
 
-  const tasks = useMemo(() => projectTasks(chat.tasks), [chat.tasks])
+  // Refetched whenever the stream reports on a task or an approval comes or goes;
+  // the server folds each line into the table before relaying it.
+  const streamKey = useMemo(
+    () =>
+      Object.values(chat.tasks)
+        .map(x => `${x.id}:${x.status}:${x.toolUses ?? ''}:${x.summary ?? ''}`)
+        .join('|') + `#${chat.approvals.map(a => a.requestId).join(',')}`,
+    [chat.tasks, chat.approvals],
+  )
+  useEffect(() => {
+    let current = true
+    listTasks(project.id).then(
+      next => {
+        if (!current) return
+        setRows(next)
+        onTasksRef.current(next)
+      },
+      () => {},
+    )
+    return () => {
+      current = false
+    }
+  }, [project.id, streamKey, refresh])
+
+  const tasks = useMemo(() => withApprovals(rows, chat.approvals), [rows, chat.approvals])
+  const anyLive = tasks.some(isLive)
+  // The running clock, and a slower refetch for the tokens read from the workers' transcripts.
+  useEffect(() => {
+    if (!anyLive) return
+    let n = 0
+    const timer = setInterval(() => {
+      setNow(Date.now())
+      if (++n % 3 === 0) setRefresh(r => r + 1)
+    }, 1000)
+    return () => clearInterval(timer)
+  }, [anyLive])
+  useEffect(() => () => clearTimeout(flashTimer.current), [])
+
   const inputs = useMemo(() => agentInputs(chat.items), [chat.items])
   const notes = useMemo(() => notesByItem(chat.taskNotes, chat.items), [chat.taskNotes, chat.items])
-  const byToolUse = useMemo(() => new Map(tasks.filter(x => x.toolUseId).map(x => [x.toolUseId!, x])), [tasks])
-  const stateOf = (task: AgentTask) => taskState(task, reviewed)
-  const workerModel =
-    WORKER_MODELS.find(m => m.value && m.value === project.worker_model)?.label ??
-    modelName(chat.model, models) ??
-    project.worker_model ??
-    undefined
+  const byToolUse = useMemo(() => new Map(tasks.filter(x => x.tool_use_id).map(x => [x.tool_use_id!, x])), [tasks])
+  // Until the coordinator's first turn reports them, the model and effort it was started with.
+  const chatModel = chat.model ?? project.coordinator_model ?? undefined
+  const chatEffort = chat.effort ?? project.coordinator_effort ?? undefined
+  const coordinatorModel =
+    !chatModel || chatModel === 'default' ? (models.find(m => m.value === 'default')?.resolvedModel ?? chatModel) : chatModel
+  const modelOf = (task: ProjectTask) =>
+    picks[task.id]?.model ??
+    taskModel(task, task.tool_use_id ? inputs.get(task.tool_use_id) : undefined, project.worker_model, coordinatorModel)
+  const metaOf = (task: ProjectTask) => taskMeta(task, modelLabel(modelOf(task), models), now)
+  const summaryOf = (task: ProjectTask) =>
+    task.state === 'stopped' && task.stop_reason === 'restart'
+      ? t('taskStoppedRestart')
+      : task.state === 'stopped' && task.stop_reason === 'exited'
+        ? t('taskStoppedExited')
+        : task.state === 'stopped' && task.stop_reason === 'failed' && task.error
+          ? t('taskFailedReason', { error: task.error })
+          : (task.summary ?? '')
   const mode = chat.permissionMode ?? project.permission_mode
-  const running = tasks.filter(x => stateOf(x) === 'running').length
-  const blocked = tasks.filter(x => stateOf(x) === 'blocked').length
+  const running = tasks.filter(x => x.state === 'running').length
+  const blocked = tasks.filter(x => x.state === 'blocked').length
   const open = openId ? tasks.find(x => x.id === openId) : undefined
 
   useEffect(() => {
@@ -130,37 +437,102 @@ export function ProjectView({
   // Esc closes an open task, as the prototype does.
   useEffect(() => {
     if (!openId) return
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && !document.querySelector('.dialog')) setOpenId(undefined)
+    const onKey = (e: globalThis.KeyboardEvent) => {
+      if (e.key === 'Escape' && !e.defaultPrevented && !document.querySelector('.dialog, .ctxmenu')) setOpenId(undefined)
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [openId])
 
+  const say = (text: string) => {
+    setFlash(text)
+    clearTimeout(flashTimer.current)
+    flashTimer.current = setTimeout(() => setFlash(undefined), 2200)
+  }
   const openTask = (id: string) => {
+    setMenu(null)
     setOpenId(id)
     setShow('tasks')
     setBoard(false)
+    setTaskNotice(undefined)
   }
-  const card = (task: AgentTask, mini?: boolean) => (
+  const markDone = (task: ProjectTask) =>
+    reviewTask(project.id, task.id).then(
+      () => setRefresh(r => r + 1),
+      err => say(err instanceof Error ? err.message : String(err)),
+    )
+  const copyBrief = (task: ProjectTask) =>
+    navigator.clipboard.writeText(task.brief).then(
+      () => say(t('copied')),
+      err => say(err instanceof Error ? err.message : String(err)),
+    )
+
+  // ---- the task right-click menu ----
+  const openMenu = (e: MouseEvent, task: ProjectTask) => {
+    e.preventDefault()
+    setMenu({ task, x: e.clientX, y: e.clientY })
+  }
+  const menuAction = (action: 'open' | 'done' | 'stop' | 'copy') => {
+    if (!menu) return
+    const task = tasks.find(x => x.id === menu.task.id) ?? menu.task
+    setMenu(null)
+    if (action === 'open') openTask(task.id)
+    else if (action === 'done' && task.state === 'review') void markDone(task)
+    else if (action === 'stop' && isLive(task)) onStopTask(task.id)
+    else if (action === 'copy') void copyBrief(task)
+  }
+  useLayoutEffect(() => {
+    const el = menuRef.current
+    if (!menu || !el) return
+    el.style.left = `${Math.min(menu.x, innerWidth - el.offsetWidth - 8)}px`
+    el.style.top = `${Math.min(menu.y, innerHeight - el.offsetHeight - 8)}px`
+    el.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus()
+  }, [menu])
+  useEffect(() => {
+    if (!menu) return
+    const click = (e: globalThis.MouseEvent) => {
+      if (!e.composedPath().includes(menuRef.current!)) setMenu(null)
+    }
+    const key = (e: globalThis.KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        e.stopPropagation()
+        return setMenu(null)
+      }
+      if (e.metaKey || e.ctrlKey || e.altKey) return
+      const action = ({ o: 'open', d: 'done', s: 'stop', c: 'copy' } as const)[e.key.toLowerCase() as 'o']
+      if (!action) return
+      e.preventDefault()
+      menuAction(action)
+    }
+    document.addEventListener('click', click)
+    addEventListener('keydown', key, true)
+    return () => {
+      document.removeEventListener('click', click)
+      removeEventListener('keydown', key, true)
+    }
+  })
+
+  const card = (task: ProjectTask, mini?: boolean) => (
     <TaskCard
       key={task.id}
       t={t}
       task={task}
-      state={stateOf(task)}
-      meta={taskMeta(task, stateOf(task), workerModel)}
+      summary={summaryOf(task)}
+      meta={metaOf(task)}
       mini={mini}
       current={task.id === openId}
       onOpen={() => openTask(task.id)}
+      onMenu={e => openMenu(e, task)}
     />
   )
-  // An Agent call is its task's card; before `task_started` arrives it is drawn from the call itself.
+  // An Agent call is its task's card; before the task is known it is drawn from the call itself.
   const taskCard = (block: Extract<Block, { kind: 'tool' }>) => {
     if (block.name !== 'Agent') return undefined
     const task = byToolUse.get(block.id)
     if (task) return card(task, true)
-    const pending = { id: block.id, description: inputs.get(block.id)?.description ?? '' }
-    return <TaskCard t={t} task={pending} state="running" meta="" mini current={false} onOpen={() => {}} />
+    const pending = { id: block.id, title: inputs.get(block.id)?.description ?? '', state: 'running' as const }
+    return <TaskCard t={t} task={pending} summary="" meta="" mini current={false} onOpen={() => {}} />
   }
 
   const seg = (
@@ -188,6 +560,15 @@ export function ProjectView({
   const wideButton = ib(t(wide ? 'restorePane' : 'expandPane'), wide ? '⤡' : '⤢', () => setWide(!wide), true, true)
   const modeButton = <ModeButton t={t} mode={mode} onMode={onMode} />
 
+  // ---- the splitter between the columns: drag it, or focus it and use ← →. ----
+  const clampWidth = (px: number) => {
+    const box = viewRef.current?.getBoundingClientRect()
+    return box ? Math.max(320, Math.min(box.width - 360, px)) : px
+  }
+  const setKeptWidth = (px: number) => {
+    setWidth(px)
+    writeStored(WIDTH_KEY, px)
+  }
   const drag = (e: PointerEvent<HTMLDivElement>) => {
     const view = viewRef.current
     if (!view) return
@@ -195,8 +576,7 @@ export function ProjectView({
     const handle = e.currentTarget
     handle.classList.add('on')
     handle.setPointerCapture(e.pointerId)
-    const move = (ev: globalThis.PointerEvent) =>
-      setWidth(Math.max(320, Math.min(box.width - 360, ev.clientX - box.left)))
+    const move = (ev: globalThis.PointerEvent) => setKeptWidth(clampWidth(ev.clientX - box.left))
     const up = () => {
       handle.classList.remove('on')
       handle.removeEventListener('pointermove', move)
@@ -205,22 +585,33 @@ export function ProjectView({
     handle.addEventListener('pointermove', move)
     handle.addEventListener('pointerup', up)
   }
+  const dragKey = (e: KeyboardEvent<HTMLDivElement>) => {
+    if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return
+    e.preventDefault()
+    const current = width ?? viewRef.current?.querySelector<HTMLElement>('.pv-chat')?.offsetWidth ?? 0
+    setKeptWidth(clampWidth(current + (e.key === 'ArrowLeft' ? -24 : 24)))
+  }
 
-  const sendTask = async (task: AgentTask) => {
+  const sendTask = async (task: ProjectTask) => {
     const text = (taskDrafts[task.id] ?? '').trim()
     const pending = taskFiles[task.id] ?? []
-    if (!text && !pending.length) return
+    if ((!text && !pending.length) || !canMessage(task)) return
     try {
       const mentions = await Promise.all(pending.map(async f => mentionPath((await uploadFile(uploadTo, f)).path)))
       setTaskDrafts(d => ({ ...d, [task.id]: '' }))
       setTaskFiles(f => ({ ...f, [task.id]: [] }))
-      setTaskNotice(await onSendTask(task.id, [text, mentions.join(' ')].filter(Boolean).join('\n\n')))
+      setTaskNotice(undefined)
+      const pick = isLive(task) ? {} : (picks[task.id] ?? {})
+      say(await onSendTask(task.id, [text, mentions.join(' ')].filter(Boolean).join('\n\n'), pick))
+      setFollowUntil(Date.now() + 30_000)
+      setRefresh(r => r + 1)
     } catch (err) {
       setTaskNotice(err instanceof Error ? err.message : String(err))
     }
   }
 
-  const approval = chat.approvals[0]
+  const coordinatorApprovals = chat.approvals.filter(a => !a.agentId)
+  const approval = coordinatorApprovals[0]
   const head = (
     <div className="pv-head">
       {menuButton}
@@ -263,7 +654,7 @@ export function ProjectView({
       <div className="pjlist">
         {tasks.length ? (
           TASK_GROUPS.map(group => {
-            const list = tasks.filter(x => group.states.includes(stateOf(x)))
+            const list = tasks.filter(x => group.states.includes(x.state))
             return list.length ? (
               <Fragment key={group.key}>
                 <div className="grp-h">{t(group.key)}</div>
@@ -278,101 +669,24 @@ export function ProjectView({
     </>
   )
 
-  const taskView = (task: AgentTask) => {
-    const state = stateOf(task)
-    const live = state === 'running' || state === 'blocked'
-    const brief = task.toolUseId ? inputs.get(task.toolUseId)?.prompt : undefined
-    return (
-      <>
-        <div className="pv-head">
-          {menuButton}
-          <div className="pv-crumb">
-            <button type="button" onClick={() => setOpenId(undefined)}>
-              {t('pvTasks')}
-            </button>
-            <span aria-hidden="true">›</span>
-            <span>{task.description}</span>
-          </div>
-          <span className="sp" />
-          {seg}
-          {ib(t('markDone'), '✓', () => setReviewed(new Set([...reviewed, task.id])), state === 'review')}
-          {ib(t('stop'), '■', () => onStopTask(task.id), live)}
-          {wideButton}
-          {ib(t('close'), '✕', () => setOpenId(undefined))}
-        </div>
-        <div className="feed">
-          <div className="pjcheck">
-            <b>{task.description}</b>
-            <span className="note">
-              <span className={`pjbadge ${state}`}>{t(`taskState_${state}`)}</span>
-            </span>
-          </div>
-          {brief && (
-            <div className="msg">
-              <span className="who">{t('taskBrief')}</span>
-              <div className="pjbrief">{brief}</div>
-            </div>
-          )}
-          {task.summary && (
-            <div className="msg">
-              <span className="who">
-                worker{workerModel && <span className="wm"> ({workerModel})</span>}
-              </span>
-              <div className="md">
-                <p>{task.summary}</p>
-              </div>
-            </div>
-          )}
-          {state === 'running' && (
-            <div className="status-line">
-              <span className="glyph">✻</span>
-              <span className="verb shimmer">Working…</span>
-              <span className="mono">{taskMeta(task, state, workerModel)}</span>
-            </div>
-          )}
-        </div>
-        <div className="composer">
-          {taskNotice && (
-            <div className="notice" role="status">
-              {taskNotice}
-            </div>
-          )}
-          <InputBox
-            t={t}
-            busy={false}
-            disabled={state === 'stopped'}
-            signedOut={signedOut}
-            draft={taskDrafts[task.id] ?? ''}
-            setDraft={v => setTaskDrafts(d => ({ ...d, [task.id]: v }))}
-            onSend={() => void sendTask(task)}
-            onStop={() => {}}
-            files={taskFiles[task.id] ?? []}
-            setFiles={next => setTaskFiles(f => ({ ...f, [task.id]: next }))}
-            skills={chat.env.skills}
-            listFiles={listFiles}
-            placeholder={t(state === 'stopped' ? 'taskPhStopped' : live ? 'taskPhRunning' : 'taskPhEnded')}
-            crow={
-              <>
-                {modeButton}
-                <FootMenu right label={t('model')} button={`${workerModel ?? t('model')}${chat.effort ? ` · ${chat.effort}` : ''}`}>
-                  {() => (
-                    <>
-                      <div className="mh">{live ? t('taskModelLocked') : t('modelGroup')}</div>
-                      {models.map(m => (
-                        <button type="button" role="menuitemradio" key={m.value} disabled aria-checked={modelName(m.value, models) === workerModel}>
-                          {modelName(m.value, models) ?? m.displayName}
-                        </button>
-                      ))}
-                    </>
-                  )}
-                </FootMenu>
-              </>
-            }
-          />
-        </div>
-      </>
-    )
-  }
+  const taskHead = (task: ProjectTask) => (
+    <div className="pv-head">
+      {menuButton}
+      <div className="pv-crumb">
+        <button type="button" onClick={() => setOpenId(undefined)}>
+          {t('pvTasks')}
+        </button>
+        <span aria-hidden="true">›</span>
+        <span>{task.title}</span>
+      </div>
+      <span className="sp" />
+      {seg}
+      {ib(t('markDone'), '✓', () => void markDone(task), task.state === 'review')}
+      {ib(t('stop'), '■', () => onStopTask(task.id), isLive(task))}
+      {wideButton}
+      {ib(t('close'), '✕', () => setOpenId(undefined))}
+    </div>
+  )
 
   const noteText = (note: TaskNote) => {
     const { key, vars } = taskNoteText(note, chat.tasks[note.taskId])
@@ -383,7 +697,7 @@ export function ProjectView({
       <Message
         item={item}
         t={t}
-        fallbackModel={chat.model}
+        fallbackModel={chatModel}
         models={models}
         streaming={chat.busy && item.id === chat.streamingId}
         role={item.kind === 'assistant' ? t('coordinatorRole') : undefined}
@@ -392,6 +706,45 @@ export function ProjectView({
       {notes.get(item.id)?.map(note => <Note key={`${note.taskId}-${note.status}`} text={noteText(note)} />)}
     </Fragment>
   ))
+
+  const lanes = TASK_LANES.map(({ key, states }) => {
+    const list = tasks.filter(x => (states as readonly TaskState[]).includes(x.state))
+    return (
+      <div className="lane" key={key}>
+        <h3>
+          {t(key)}
+          <span className="note">{list.length}</span>
+        </h3>
+        {list.length ? (
+          list.map(x => (
+            <button
+              type="button"
+              className="wcard"
+              key={x.id}
+              data-task={x.id}
+              onClick={() => openTask(x.id)}
+              onContextMenu={e => openMenu(e, x)}
+            >
+              <b>{x.title}</b>
+              <span>{summaryOf(x)}</span>
+              <span className="mono">{metaOf(x)}</span>
+            </button>
+          ))
+        ) : (
+          <p>—</p>
+        )}
+      </div>
+    )
+  })
+
+  const menuTask = menu && (tasks.find(x => x.id === menu.task.id) ?? menu.task)
+  const menuItem = (action: 'open' | 'done' | 'stop' | 'copy', ico: string, label: string, key: string, enabled = true) => (
+    <button type="button" className="mi" role="menuitem" disabled={!enabled} onClick={() => menuAction(action)}>
+      <span className="ico">{ico}</span>
+      {label}
+      <kbd>{key}</kbd>
+    </button>
+  )
 
   return (
     <section
@@ -444,7 +797,7 @@ export function ProjectView({
           {approval && (
             <AskDock
               approval={approval}
-              more={chat.approvals.length - 1}
+              more={coordinatorApprovals.length - 1}
               cwd={chat.cwd ?? chat.workDir}
               t={t}
               onAnswer={choice => onAnswer(approval, choice)}
@@ -472,12 +825,12 @@ export function ProjectView({
               <>
                 {modeButton}
                 {models.length > 0 && (
-                  <FootMenu right label={t('model')} button={modelButtonLabel(chat.model, chat.effort, models, t)}>
+                  <FootMenu right label={t('model')} button={modelButtonLabel(chatModel, chatEffort, models, t)}>
                     {close => (
                       <ModelMenu
                         t={t}
-                        model={chat.model}
-                        effort={chat.effort}
+                        model={chatModel}
+                        effort={chatEffort}
                         models={models}
                         onModel={onModel}
                         onEffort={onEffort}
@@ -492,44 +845,71 @@ export function ProjectView({
         </div>
       </div>
       <aside className="pv-side" aria-label={t('pvTasks')}>
-        <div className="pv-drag" role="separator" aria-orientation="vertical" aria-label={t('dragResize')} onPointerDown={drag} />
-        {open ? taskView(open) : sideList}
+        <div
+          className="pv-drag"
+          role="separator"
+          tabIndex={0}
+          aria-orientation="vertical"
+          aria-label={t('dragResize')}
+          aria-valuenow={width}
+          onPointerDown={drag}
+          onKeyDown={dragKey}
+        />
+        {open ? (
+          <TaskPane
+            key={open.id}
+            t={t}
+            project={project}
+            task={open}
+            model={modelOf(open)}
+            effort={picks[open.id]?.effort ?? open.effort ?? chatEffort}
+            models={models}
+            head={taskHead(open)}
+            approvals={chat.approvals.filter(a => a.agentId === open.id)}
+            modeButton={modeButton}
+            signedOut={signedOut}
+            draft={taskDrafts[open.id] ?? ''}
+            setDraft={v => setTaskDrafts(d => ({ ...d, [open.id]: v }))}
+            files={taskFiles[open.id] ?? []}
+            setFiles={next => setTaskFiles(f => ({ ...f, [open.id]: next }))}
+            listFiles={listFiles}
+            skills={chat.env.skills}
+            notice={taskNotice}
+            followUntil={followUntil}
+            meta={metaOf(open)}
+            pick={picks[open.id] ?? {}}
+            onPick={pick => setPicks(p => ({ ...p, [open.id]: pick }))}
+            onSend={() => void sendTask(open)}
+            onAnswer={onAnswer}
+          />
+        ) : (
+          sideList
+        )}
       </aside>
       {board && (
         <Dialog t={t} title={t('taskBoardTitle')} xl onClose={() => setBoard(false)}>
-          <div className="lanes wfd-lanes">
-            {(
-              [
-                ['groupRunning', ['running']],
-                ['taskState_blocked', ['blocked']],
-                ['taskState_review', ['review']],
-                ['groupEnded', ['done', 'stopped']],
-              ] as const
-            ).map(([key, states]) => {
-              const list = tasks.filter(x => (states as readonly TaskState[]).includes(stateOf(x)))
-              return (
-                <div className="lane" key={key}>
-                  <h3>
-                    {t(key)}
-                    <span className="note">{list.length}</span>
-                  </h3>
-                  {list.length ? (
-                    list.map(x => (
-                      <button type="button" className="wcard" key={x.id} onClick={() => openTask(x.id)}>
-                        <b>{x.description}</b>
-                        <span>{x.summary ?? ''}</span>
-                        <span className="mono">{taskMeta(x, stateOf(x), workerModel)}</span>
-                      </button>
-                    ))
-                  ) : (
-                    <p>—</p>
-                  )}
-                </div>
-              )
-            })}
-          </div>
+          <div className="lanes wfd-lanes">{lanes}</div>
         </Dialog>
       )}
+      {menu &&
+        menuTask &&
+        createPortal(
+          <div ref={menuRef} className="pop ctxmenu" role="menu" aria-label={t('taskMenu')}>
+            {menuItem('open', '↗', t('taskOpen'), 'O')}
+            {menuItem('done', '✓', t('markDone'), 'D', menuTask.state === 'review')}
+            {menuItem('stop', '■', t('stop'), 'S', isLive(menuTask))}
+            <hr />
+            {menuItem('copy', '⧉', t('copyBrief'), 'C', !!menuTask.brief)}
+          </div>,
+          document.body,
+        )}
+      {flash &&
+        createPortal(
+          <div className="flash" role="status" aria-live="polite">
+            {flash}
+          </div>,
+          document.body,
+        )}
     </section>
   )
 }

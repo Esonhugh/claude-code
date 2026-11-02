@@ -1,30 +1,38 @@
 // A project's tasks: the workers its coordinator dispatched with the Agent
-// tool, folded from `system/task_*` (docs/design/claude-web-project.md 4.2).
+// tool (docs/design/claude-web-project.md 4.2). The server keeps them in its
+// tasks table; the page adds what only it knows yet (a pending approval) and
+// the running clock.
 
-import { type AgentTask, isFinished, type Tasks } from './agents'
+import type { AgentTask } from './agents'
+import type { ProjectTask } from './api'
 import type { MessageKey } from './i18n'
-import type { Item, TaskNote } from './protocol'
+import type { Approval, Item, TaskNote } from './protocol'
 
 /** running · blocked (an unanswered approval) · review (finished, not looked at) · done · stopped. */
-export type TaskState = 'running' | 'blocked' | 'review' | 'done' | 'stopped'
+export type TaskState = ProjectTask['state']
 
-export function taskState(task: AgentTask, reviewed: ReadonlySet<string>): TaskState {
-  if (!isFinished(task)) return 'running'
-  if (task.status === 'completed') return reviewed.has(task.id) ? 'done' : 'review'
-  return 'stopped'
+/** The rows as the page shows them: a task whose worker asks for approval here is blocked. */
+export function withApprovals(rows: ProjectTask[], approvals: Approval[]): ProjectTask[] {
+  const asking = new Set(approvals.flatMap(a => (a.agentId ? [a.agentId] : [])))
+  return rows.map(row => (asking.has(row.id) && row.state === 'running' ? { ...row, state: 'blocked' } : row))
 }
 
-/** The coordinator's own workers, in dispatch order. */
-export function projectTasks(tasks: Tasks): AgentTask[] {
-  return Object.values(tasks)
-    // The coordinator's own Agent calls have spawn depth 1 (older engines leave it out).
-    .filter(task => task.type === 'local_agent' && task.depth <= 1)
-    .sort((a, b) => a.seq - b.seq)
-}
+export const isLive = (task: ProjectTask) => task.state === 'running' || task.state === 'blocked'
+
+/** A task the user stopped stays stopped; any other can be messaged (an ended one resumes). */
+export const canMessage = (task: ProjectTask) => !(task.state === 'stopped' && task.stop_reason === 'user')
 
 export const TASK_GROUPS: { key: MessageKey; states: TaskState[] }[] = [
   { key: 'groupNeedsYou', states: ['blocked', 'review'] },
   { key: 'groupRunning', states: ['running'] },
+  { key: 'groupEnded', states: ['done', 'stopped'] },
+]
+
+/** The kanban's columns. */
+export const TASK_LANES: { key: MessageKey; states: TaskState[] }[] = [
+  { key: 'groupRunning', states: ['running'] },
+  { key: 'taskState_blocked', states: ['blocked'] },
+  { key: 'taskState_review', states: ['review'] },
   { key: 'groupEnded', states: ['done', 'stopped'] },
 ]
 
@@ -34,21 +42,38 @@ export function formatTaskTime(ms: number | undefined): string {
   return s >= 60 ? `${Math.floor(s / 60)}m${String(s % 60).padStart(2, '0')}s` : `${s}s`
 }
 
+/** How long the task has run: its last report, or the clock since its run started while it runs. */
+export function taskElapsed(task: ProjectTask, now: number): number {
+  return isLive(task) ? Math.max(task.duration_ms, now - task.started_at) : task.duration_ms
+}
+
 /** `Opus 5.5 · 1m35s · 6.8k tok · WebFetch` (the tool only while it runs). */
-export function taskMeta(task: AgentTask, state: TaskState, model: string | undefined): string {
+export function taskMeta(task: ProjectTask, model: string | undefined, now: number): string {
   return [
     model,
-    formatTaskTime(task.durationMs),
-    `${((task.tokens ?? 0) / 1000).toFixed(1)}k tok`,
-    state === 'running' ? task.lastTool : undefined,
+    formatTaskTime(taskElapsed(task, now)),
+    `${(task.tokens / 1000).toFixed(1)}k tok`,
+    task.state === 'running' ? task.last_tool : undefined,
   ]
     .filter(Boolean)
     .join(' · ')
 }
 
-/** The Agent call's input by tool use id, for a task's brief (`prompt`). */
-export function agentInputs(items: Item[]): Map<string, { description?: string; prompt?: string }> {
-  const inputs = new Map<string, { description?: string; prompt?: string }>()
+/** Which model the task runs on: the user's pick, the Agent call's, the project's, or the coordinator's. */
+export function taskModel(
+  task: ProjectTask,
+  input: { model?: string } | undefined,
+  workerModel: string | null,
+  coordinatorModel: string | undefined,
+): string | undefined {
+  return task.model ?? input?.model ?? workerModel ?? coordinatorModel
+}
+
+export type AgentInput = { description?: string; prompt?: string; model?: string }
+
+/** The Agent call's input by tool use id, for a task's brief (`prompt`) and model. */
+export function agentInputs(items: Item[]): Map<string, AgentInput> {
+  const inputs = new Map<string, AgentInput>()
   for (const item of items) {
     if (item.kind !== 'assistant') continue
     for (const block of item.blocks) {
@@ -58,6 +83,7 @@ export function agentInputs(items: Item[]): Map<string, { description?: string; 
         inputs.set(block.id, {
           ...(typeof input.description === 'string' && { description: input.description }),
           ...(typeof input.prompt === 'string' && { prompt: input.prompt }),
+          ...(typeof input.model === 'string' && { model: input.model }),
         })
       } catch {
         // Still streaming: the input is not whole yet.
@@ -68,7 +94,10 @@ export function agentInputs(items: Item[]): Map<string, { description?: string; 
 }
 
 /** The notice line for a task that ended: key and variables. */
-export function taskNoteText(note: TaskNote, task: AgentTask | undefined): { key: MessageKey; vars: Record<string, string> } {
+export function taskNoteText(
+  note: TaskNote,
+  task: Pick<AgentTask, 'description' | 'durationMs'> | undefined,
+): { key: MessageKey; vars: Record<string, string> } {
   const title = task?.description ?? note.taskId
   if (note.status === 'completed') {
     return { key: 'taskFinishedNote', vars: { title, time: formatTaskTime(task?.durationMs) } }
@@ -85,4 +114,12 @@ export function notesByItem(notes: TaskNote[], items: Item[]): Map<string, TaskN
     out.set(key, [...(out.get(key) ?? []), note])
   }
   return out
+}
+
+/** The worker's conversation without its first prompt, which the task shows as its brief. */
+export function workerItems(items: Item[], brief: string): Item[] {
+  const first = items.findIndex(i => i.kind === 'user')
+  return first !== -1 && items[first]!.kind === 'user' && (items[first] as { text: string }).text.trim() === brief.trim()
+    ? items.filter((_, i) => i !== first)
+    : items
 }

@@ -291,3 +291,38 @@ describe('SessionManager task replay', () => {
     expect(await reattach(false)).toEqual([])
   })
 })
+
+describe('SessionManager approvals', () => {
+  it('replays an unanswered permission request to a reattaching client, once', async () => {
+    const manager = new SessionManager({
+      spawn: opts => spawn(process.execPath, ['-e', FAKE_CHILD], { cwd: opts.cwd, stdio: ['pipe', 'pipe', 'pipe'] }),
+    })
+    const socket = () => {
+      const lines: Record<string, unknown>[] = []
+      return { lines, send: (data: string) => lines.push(JSON.parse(data)), close: () => {} }
+    }
+    const kinds = (lines: Record<string, unknown>[]) => lines.map(l => [l.type, l.request_id])
+    try {
+      const { id } = manager.create({ cwd: '/' })
+      const first = socket()
+      manager.attach(id, first)
+      manager.write(id, '{"type":"user"}\n')
+      for (let i = 0; i < 100 && !first.lines.length; i++) await Bun.sleep(20)
+      expect(kinds(first.lines)).toEqual([['control_request', 'perm-1']])
+      manager.detach(id, first)
+      const second = socket()
+      manager.attach(id, second)
+      expect(kinds(second.lines)).toEqual([['control_request', 'perm-1']])
+
+      manager.write(id, JSON.stringify({ type: 'control_response', response: { subtype: 'success', request_id: 'perm-1', response: { behavior: 'allow' } } }) + '\n')
+      for (let i = 0; i < 100 && second.lines.length < 2; i++) await Bun.sleep(20)
+      expect(second.lines.at(-1)?.type).toBe('result')
+      manager.detach(id, second)
+      const third = socket()
+      manager.attach(id, third)
+      expect(third.lines).toEqual([])
+    } finally {
+      await manager.destroyAll()
+    }
+  })
+})

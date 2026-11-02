@@ -6,6 +6,8 @@ export type SpawnSessionOptions = {
   cwd: string
   permissionMode?: string
   model?: string
+  /** `--effort` (low, medium, high, xhigh, max). */
+  effort?: string
   /** Continue this existing transcript (its id becomes the session id). */
   resume?: boolean
   /** `plugin:<name>@<marketplace>` entries passed as `--channels`. */
@@ -44,6 +46,7 @@ export class DangerousBackend {
     cwd,
     permissionMode,
     model,
+    effort,
     resume,
     channels,
     systemPrompt,
@@ -72,6 +75,7 @@ export class DangerousBackend {
         sessionId,
         ...(permissionMode ? ['--permission-mode', permissionMode] : []),
         ...(model ? ['--model', model] : []),
+        ...(effort ? ['--effort', effort] : []),
         ...(channels?.length ? ['--channels', ...channels] : []),
         ...(systemPrompt ? ['--system-prompt', systemPrompt] : []),
         ...(appendSystemPrompt ? ['--append-system-prompt', appendSystemPrompt] : []),

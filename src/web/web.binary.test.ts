@@ -14,7 +14,7 @@ const COORDINATOR_MARK = 'You are a **coordinator**'
 // Unique per run, so a shell left over from another run never matches.
 const BG_MARK = `BG_TAIL_${process.pid}`
 
-const sse = (blocks: Record<string, unknown>[], stop: string) => {
+const sse = (blocks: Record<string, unknown>[], stop: string, inputTokens = 1) => {
   const ev = (type: string, data: Record<string, unknown>) =>
     `event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`
   let out = ev('message_start', {
@@ -25,7 +25,7 @@ const sse = (blocks: Record<string, unknown>[], stop: string) => {
       model: 'claude-opus-5-5',
       content: [],
       stop_reason: null,
-      usage: { input_tokens: 1, output_tokens: 1 },
+      usage: { input_tokens: inputTokens, output_tokens: 1 },
     },
   })
   blocks.forEach((block, index) => {
@@ -162,6 +162,48 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
   const coordinatorSeen: [string, string][] = []
   let home = ''
   let workspace = ''
+  // The model of each request a resumed Quick task makes.
+  const resumedModels: string[] = []
+  // The Slow and Hang workers wait on this until the suite ends.
+  let releaseWorkers = () => {}
+  const workersHeld = new Promise<void>(resolve => (releaseWorkers = resolve))
+  const agent = (description: string, prompt: string) => ({
+    type: 'tool_use',
+    id: `toolu_${description.toLowerCase()}`,
+    name: 'Agent',
+    input: { description, prompt, subagent_type: 'worker' },
+  })
+
+  const startWeb = async () => {
+    web = Bun.spawn(
+      [binary!, 'web', '--no-open', '--port', '0', '--workspace', workspace],
+      {
+        cwd: home,
+        env: {
+          PATH: process.env.PATH ?? '/usr/bin:/bin',
+          HOME: home,
+          IS_SANDBOX: '1',
+          ANTHROPIC_API_KEY: 'sk-fake',
+          ANTHROPIC_BASE_URL: `http://127.0.0.1:${api.port}`,
+          CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
+          DISABLE_AUTOUPDATER: '1',
+          CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: '1',
+          CLAUDE_CODE_ENABLE_TODO_TOOLS: '1',
+        },
+        stdout: 'pipe',
+        stderr: 'pipe',
+      },
+    )
+    const reader = (web.stdout as ReadableStream<Uint8Array>).getReader()
+    let banner = ''
+    while (!/token=\S+/.test(banner)) {
+      const { value, done } = await reader.read()
+      if (done) throw new Error(`claude web exited early: ${banner}`)
+      banner += new TextDecoder().decode(value)
+    }
+    reader.releaseLock()
+    signInUrl = /http:\/\/127\.0\.0\.1:\d+\/\?token=\S+/.exec(banner)![0]
+  }
 
   beforeAll(async () => {
     // TOUCH asks for `touch made.txt`; after the tool result the turn ends
@@ -175,6 +217,7 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
         }
         type Block = { type: string }
         const body = (await req.json()) as {
+          model?: string
           system?: string | { text?: string }[]
           messages: { role: string; content: string | Block[] }[]
         }
@@ -185,6 +228,7 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
           { type: 'text', text: 'Hello from the fake model' },
         ]
         let stop = 'end_turn'
+        let inputTokens = 1
         const lastText = JSON.stringify(last.content)
         const allText = JSON.stringify(body.messages)
         const systemText = typeof body.system === 'string' ? body.system : (body.system ?? []).map(b => b.text ?? '').join('\n')
@@ -203,7 +247,49 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
         }
         // Teammates see only their own prompt; the lead's history also has MAKE_TEAM.
         const teammate = !allText.includes('MAKE_TEAM')
-        if (coordinator && lastText.includes('DISPATCH_TWO')) {
+        if (coordinator && lastText.includes('DISPATCH_P3')) {
+          blocks = [
+            agent('Ask', 'WORKER_ASK create asked.txt'),
+            agent('Quick', 'WORKER_QUICK answer quickly'),
+            agent('Slow', 'WORKER_SLOW read slow.txt and wait'),
+          ]
+          stop = 'tool_use'
+        } else if (coordinator && lastText.includes('DISPATCH_HANG')) {
+          blocks = [agent('Hang', 'WORKER_HANG wait for the server')]
+          stop = 'tool_use'
+        } else if (!coordinator && allText.includes('WORKER_ASK')) {
+          // Bash outside the allow list: the worker's request reaches the page.
+          if (lastText.includes('toolu_ask_bash')) {
+            blocks = [{ type: 'text', text: 'ASK_OUT' }]
+          } else {
+            blocks = [{ type: 'tool_use', id: 'toolu_ask_bash', name: 'Bash', input: { command: 'touch asked.txt', description: 'Create asked file' } }]
+            stop = 'tool_use'
+          }
+        } else if (!coordinator && allText.includes('WORKER_QUICK')) {
+          inputTokens = 2400
+          if (lastText.includes('QUICK_MORE')) {
+            resumedModels.push(body.model ?? '')
+            blocks = [{ type: 'text', text: 'QUICK_AGAIN' }]
+          } else {
+            blocks = [{ type: 'text', text: 'QUICK_OUT' }]
+          }
+        } else if (!coordinator && allText.includes('WORKER_SLOW')) {
+          inputTokens = 3200
+          if (lastText.includes('toolu_slow_read')) {
+            await workersHeld
+            blocks = [{ type: 'text', text: 'SLOW_OUT' }]
+          } else {
+            blocks = [{ type: 'tool_use', id: 'toolu_slow_read', name: 'Read', input: { file_path: join(workspace, 'slow.txt') } }]
+            stop = 'tool_use'
+          }
+        } else if (!coordinator && allText.includes('WORKER_HANG')) {
+          if (lastText.includes('HANG_RESUME')) {
+            blocks = [{ type: 'text', text: 'HANG_BACK' }]
+          } else {
+            await workersHeld
+            blocks = [{ type: 'text', text: 'HANG_OUT' }]
+          }
+        } else if (coordinator && lastText.includes('DISPATCH_TWO')) {
           blocks = [
             { type: 'text', text: 'Dispatching two tasks.' },
             { type: 'tool_use', id: 'toolu_pj_one', name: 'Agent', input: { description: 'Task one', prompt: 'WORKER_ONE do the first part', subagent_type: 'worker' } },
@@ -326,7 +412,7 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
         } else if (lastText.includes('MARKDOWN')) {
           blocks = [{ type: 'text', text: MARKDOWN_REPLY }]
         }
-        return new Response(sse(blocks, stop), {
+        return new Response(sse(blocks, stop, inputTokens), {
           headers: { 'content-type': 'text/event-stream' },
         })
       },
@@ -342,37 +428,11 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       '---\nname: e2e-skill\ndescription: E2E sample skill\n---\n\nE2E_SKILL_BODY\n',
     )
     writeFileSync(join(home, '.claude', 'CLAUDE.md'), '# Notes\n\nE2E_MEMORY_MARKER\n')
-    web = Bun.spawn(
-      [binary!, 'web', '--no-open', '--port', '0', '--workspace', workspace],
-      {
-        cwd: home,
-        env: {
-          PATH: process.env.PATH ?? '/usr/bin:/bin',
-          HOME: home,
-          IS_SANDBOX: '1',
-          ANTHROPIC_API_KEY: 'sk-fake',
-          ANTHROPIC_BASE_URL: `http://127.0.0.1:${api.port}`,
-          CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
-          DISABLE_AUTOUPDATER: '1',
-          CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: '1',
-          CLAUDE_CODE_ENABLE_TODO_TOOLS: '1',
-        },
-        stdout: 'pipe',
-        stderr: 'pipe',
-      },
-    )
-    const reader = (web.stdout as ReadableStream<Uint8Array>).getReader()
-    let banner = ''
-    while (!/token=\S+/.test(banner)) {
-      const { value, done } = await reader.read()
-      if (done) throw new Error(`claude web exited early: ${banner}`)
-      banner += new TextDecoder().decode(value)
-    }
-    reader.releaseLock()
-    signInUrl = /http:\/\/127\.0\.0\.1:\d+\/\?token=\S+/.exec(banner)![0]
+    await startWeb()
   }, 30_000)
 
   afterAll(() => {
+    releaseWorkers()
     web?.kill('SIGKILL')
     api?.stop(true)
   })
@@ -1275,7 +1335,9 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       await page.mouse.move(800, 400)
       await page.locator('.pjrow', { hasText: 'E2E project' }).hover()
       const card = page.locator('.sbtip')
-      await card.getByText('2 tasks').waitFor()
+      await card.locator('span', { hasText: /^Tasks/ }).getByText('2 tasks').waitFor()
+      // Both finished and not yet looked at.
+      await card.locator('span', { hasText: /^Needs you/ }).getByText('2 tasks').waitFor()
       expect(await card.textContent()).toContain('Folder ~/workspace')
       await page.mouse.move(800, 400)
 
@@ -1506,6 +1568,212 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       await browser.close()
     }
   }, 120_000)
+
+  it('runs project tasks: approval, done, copy, model, stop, board, splitter and resume after a restart', async () => {
+    const playwrightPath = Bun.spawnSync(['node', '-p', "require.resolve('playwright')"])
+      .stdout.toString()
+      .trim()
+    const { chromium } = await import(playwrightPath)
+    const browser = await chromium.launch()
+    try {
+      const context = await browser.newContext({ locale: 'en-US', viewport: { width: 1440, height: 900 } })
+      const page = await context.newPage()
+      const errors: string[] = []
+      page.on('pageerror', (e: Error) => errors.push(e.message))
+      writeFileSync(join(workspace, 'slow.txt'), 'slow\n')
+      await page.goto(signInUrl)
+      await page.locator('.wl-hi').waitFor()
+      await context.grantPermissions(['clipboard-read', 'clipboard-write'], { origin: new URL(page.url()).origin })
+
+      await page.getByRole('button', { name: 'New project', exact: true }).click()
+      const dialog = page.locator('.dialog')
+      await dialog.locator('#pj-name').fill('Task project')
+      await dialog.locator('#pj-path').fill(workspace)
+      await dialog.getByRole('button', { name: 'Create project' }).click()
+      await page.locator('#projview .pv-head b', { hasText: 'Task project' }).waitFor({ timeout: 30_000 })
+      const project = ((await page.evaluate(async () => (await fetch('/api/projects')).json())) as { id: string; name: string }[]).find(
+        p => p.name === 'Task project',
+      )!
+      const tasksOf = async () =>
+        (await page.evaluate(async (id: string) => (await fetch(`/api/projects/${id}/tasks`)).json(), project.id)) as {
+          title: string
+          state: string
+          model: string | null
+        }[]
+      const reopen = async () => {
+        await page.locator('.pjrow', { hasText: 'Task project' }).click()
+        await page.locator('#projview .pv-head b', { hasText: 'Task project' }).waitFor({ timeout: 30_000 })
+      }
+
+      const chatInput = page.locator('.pv-chat').getByLabel('Message', { exact: true })
+      await chatInput.fill('please DISPATCH_P3')
+      await chatInput.press('Enter')
+      const side = page.locator('.pv-side')
+      const cardOf = (title: string) => side.locator('.pjlist .pjcard', { has: page.locator('.tt', { hasText: new RegExp(`^${title}$`) }) })
+      const backToList = () => side.locator('.pv-crumb button').click()
+      const flash = page.locator('.flash')
+      for (const title of ['Ask', 'Quick', 'Slow']) await cardOf(title).waitFor({ timeout: 60_000 })
+
+      // Approval: the worker's Bash request waits in its own task, blocked, and is answered with 1.
+      await cardOf('Ask').locator('.pjbadge.blocked').waitFor({ timeout: 60_000 })
+      expect(await page.locator('.pv-chat .askdock').count()).toBe(0)
+      await cardOf('Ask').click()
+      expect(await side.locator('.pjbrief').textContent()).toBe('WORKER_ASK create asked.txt')
+      await side.locator('.askdock').getByText('Claude wants to run a command').waitFor({ timeout: 30_000 })
+      expect(await side.locator('.askdock code').textContent()).toContain('touch asked.txt')
+      // A page opened later still gets the unanswered request.
+      await page.reload()
+      await reopen()
+      await cardOf('Ask').click()
+      await side.locator('.askdock').getByText('Claude wants to run a command').waitFor({ timeout: 30_000 })
+      expect(await side.locator('.askdock').count()).toBe(1)
+      await side.locator('.pjcheck').click()
+      await page.keyboard.press('1')
+      await side.getByText('ASK_OUT').waitFor({ timeout: 60_000 })
+      expect(existsSync(join(workspace, 'asked.txt'))).toBe(true)
+      await side.locator('.toolcard', { has: page.locator('.tname', { hasText: 'Bash' }) }).waitFor()
+      // Done: from review, kept across a reload.
+      await side.locator('.pjcheck .pjbadge.review').waitFor({ timeout: 30_000 })
+      await side.getByRole('button', { name: 'Mark done' }).click()
+      await side.locator('.pjcheck .pjbadge.done').waitFor()
+      await page.reload()
+      await reopen()
+      await cardOf('Ask').locator('.pjbadge.done').waitFor({ timeout: 30_000 })
+      expect((await tasksOf()).find(x => x.title === 'Ask')!.state).toBe('done')
+
+      // Progress: the slow task's card counts its time and tokens.
+      await page.waitForFunction(() => {
+        const card = Array.from(document.querySelectorAll('.pv-side .pjcard')).find(c => c.querySelector('.tt')?.textContent === 'Slow')
+        const meta = card?.querySelector('.mt')?.textContent ?? ''
+        return /[1-9]\d*s · /.test(meta) && /[1-9]\.\dk tok/.test(meta)
+      }, undefined, { timeout: 30_000 })
+
+      // Right click → C copies the brief to the real clipboard; paste it into the task's own box.
+      await cardOf('Quick').locator('.pjbadge.review').waitFor({ timeout: 60_000 })
+      await cardOf('Quick').click({ button: 'right' })
+      const menu = page.getByRole('menu', { name: 'Task actions' })
+      await menu.waitFor()
+      expect(await menu.getByRole('menuitem', { name: /Stop/ }).isDisabled()).toBe(true)
+      await page.keyboard.press('c')
+      await flash.getByText('Copied').waitFor()
+      await menu.waitFor({ state: 'detached' })
+      expect(await page.evaluate(() => navigator.clipboard.readText())).toBe('WORKER_QUICK answer quickly')
+      await cardOf('Quick').click()
+      const taskInput = side.getByLabel('Message', { exact: true })
+      expect(await taskInput.getAttribute('placeholder')).toBe('Message this task; it resumes with its context')
+      await taskInput.click()
+      await page.keyboard.press('ControlOrMeta+v')
+      expect(await taskInput.inputValue()).toBe('WORKER_QUICK answer quickly')
+      await page.keyboard.type(' QUICK_MORE')
+      // Message: an ended task resumes on the model picked for it.
+      await side.getByRole('button', { name: 'Model' }).click()
+      await page.getByRole('menuitemradio', { name: /^Sonnet/ }).click()
+      expect(await side.getByRole('button', { name: 'Model' }).textContent()).toMatch(/^Sonnet/)
+      await taskInput.press('Enter')
+      await flash.getByText('The agent resumed with your message.').waitFor({ timeout: 30_000 })
+      await side.getByText('QUICK_AGAIN').waitFor({ timeout: 60_000 })
+      expect(resumedModels.some(m => m.includes('sonnet'))).toBe(true)
+      expect((await tasksOf()).find(x => x.title === 'Quick')!.model).toContain('sonnet')
+
+      // A running task queues a message; S in its menu stops it.
+      await backToList()
+      await cardOf('Slow').click()
+      await taskInput.fill('SLOW_NOTE')
+      await taskInput.press('Enter')
+      await flash.getByText('Queued; the agent reads it at its next step.').waitFor({ timeout: 30_000 })
+      await backToList()
+      await cardOf('Slow').click({ button: 'right' })
+      await menu.waitFor()
+      await page.keyboard.press('s')
+      await cardOf('Slow').locator('.pjbadge.stopped').waitFor({ timeout: 30_000 })
+      await cardOf('Slow').click()
+      expect(await taskInput.getAttribute('placeholder')).toBe('Task stopped')
+      expect(await taskInput.isDisabled()).toBe(true)
+      await backToList()
+
+      // The board: lanes by state, with the same right-click menu; O opens the task.
+      await side.getByRole('button', { name: 'Board' }).click()
+      const board = page.locator('.dialog .lanes')
+      const lane = (name: string) => board.locator('.lane', { has: page.locator('h3', { hasText: name }) })
+      await lane('Review').locator('.wcard', { hasText: 'Quick' }).waitFor({ timeout: 30_000 })
+      expect(await lane('Ended').locator('.wcard').count()).toBe(2)
+      await lane('Review').locator('.wcard', { hasText: 'Quick' }).click({ button: 'right' })
+      await menu.waitFor()
+      await page.keyboard.press('o')
+      await page.locator('.dialog').waitFor({ state: 'detached' })
+      expect(await side.locator('.pv-crumb').textContent()).toContain('Quick')
+      await backToList()
+
+      // The splitter: ← narrows the chat by 24px, a drag sets it, and the width survives a reload.
+      const chatWidth = async () => (await page.locator('.pv-chat').boundingBox())!.width
+      const before = await chatWidth()
+      await side.locator('.pv-drag').focus()
+      await page.keyboard.press('ArrowLeft')
+      expect(Math.round(await chatWidth())).toBe(Math.round(before - 24))
+      const handle = (await side.locator('.pv-drag').boundingBox())!
+      await page.mouse.move(handle.x + handle.width / 2, handle.y + 200)
+      await page.mouse.down()
+      await page.mouse.move(handle.x - 100, handle.y + 200, { steps: 5 })
+      await page.mouse.up()
+      const dragged = await chatWidth()
+      expect(Math.abs(dragged - (before - 24 - 100))).toBeLessThan(8)
+      await page.reload()
+      await reopen()
+      expect(Math.abs((await chatWidth()) - dragged)).toBeLessThan(2)
+
+      // The coordinator's model is kept in the project.
+      const chatModel = page.locator('.pv-chat').getByRole('button', { name: 'Model' })
+      await chatModel.click()
+      await page.getByRole('menuitemradio', { name: /^Haiku/ }).click()
+      await page.waitForFunction(
+        async (id: string) =>
+          ((await (await fetch('/api/projects')).json()) as { id: string; coordinator_model: string | null }[]).find(p => p.id === id)
+            ?.coordinator_model?.includes('haiku'),
+        project.id,
+        { timeout: 30_000 },
+      )
+
+      // Resume after a server restart: the hung task is stopped, and a message continues it.
+      await chatInput.fill('please DISPATCH_HANG')
+      await chatInput.press('Enter')
+      await cardOf('Hang').waitFor({ timeout: 60_000 })
+      const workerAsked = () => promptsSeen.some(p => p.includes('WORKER_HANG') && !p.includes('DISPATCH_HANG'))
+      for (let i = 0; i < 300 && !workerAsked(); i++) await Bun.sleep(100)
+      expect(workerAsked()).toBe(true)
+      web.kill('SIGTERM')
+      expect(await web.exited).toBe(143)
+      await startWeb()
+      await page.goto(signInUrl)
+      await reopen()
+      await cardOf('Hang').locator('.pjbadge.stopped').waitFor({ timeout: 30_000 })
+      expect(await cardOf('Hang').locator('.sm').textContent()).toMatch(/^Stopped (by a server restart|when the coordinator exited); send a message to continue$/)
+      expect(await cardOf('Ask').locator('.pjbadge.done').count()).toBe(1)
+      await page.waitForFunction(
+        () => /Haiku/.test(document.querySelector('.pv-chat .footbtn[aria-label="Model"]')?.textContent ?? ''),
+        undefined,
+        { timeout: 30_000 },
+      )
+      await cardOf('Hang').click()
+      await taskInput.fill('HANG_RESUME')
+      await taskInput.press('Enter')
+      await flash.getByText('The agent resumed with your message.').waitFor({ timeout: 30_000 })
+      await side.getByText('HANG_BACK').waitFor({ timeout: 60_000 })
+
+      // The sidebar's counts come from the database.
+      await page.mouse.move(800, 400)
+      await page.locator('.pjrow', { hasText: 'Task project' }).hover()
+      await page.locator('.sbtip').getByText('4 tasks').waitFor()
+      expect(await tasksOf()).toHaveLength(4)
+      expect(errors).toEqual([])
+      await page.evaluate(async () => {
+        for (const s of (await (await fetch('/api/sessions')).json()) as { id: string }[]) {
+          await fetch(`/api/sessions/${s.id}`, { method: 'DELETE' })
+        }
+      })
+    } finally {
+      await browser.close()
+    }
+  }, 300_000)
 
   it('shuts down on SIGTERM and removes the lock', async () => {
     web.kill('SIGTERM')

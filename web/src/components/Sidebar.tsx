@@ -464,7 +464,7 @@ export function Sidebar({
             onContextMenu={e => openMenu(e, { kind: 'pj', project: p })}
           >
             <span className="t">
-              {p.running ? <span className="live" /> : <span className="pjico" aria-hidden="true">⌗</span>}
+              {run > 0 ? <span className="live" /> : <span className="pjico" aria-hidden="true">⌗</span>}
               {p.name}
             </span>
             {needs > 0 && (

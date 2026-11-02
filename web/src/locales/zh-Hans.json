@@ -457,5 +457,11 @@
   "taskPhEnded": "发给这个任务，带着原有上下文继续",
   "taskModelNext": "模型 · 下一条消息起生效",
   "taskModelLocked": "运行中的任务不能换模型",
-  "taskBoardTitle": "任务看板"
+  "taskBoardTitle": "任务看板",
+  "taskStoppedRestart": "服务重启时停止了，发消息可继续",
+  "taskStoppedExited": "协调者退出时停止了，发消息可继续",
+  "taskFailedReason": "失败：{error}",
+  "taskOpen": "打开任务",
+  "copyBrief": "复制任务说明",
+  "taskMenu": "任务操作"
 }

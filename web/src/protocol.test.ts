@@ -256,6 +256,16 @@ describe('reduce', () => {
     })
   })
 
+  it('keeps a background worker\'s request when the turn that started it ends', () => {
+    const ask = (id: string, agent?: string) => ({
+      type: 'control_request',
+      request_id: id,
+      request: { subtype: 'can_use_tool', tool_name: 'Bash', input: {}, ...(agent && { agent_id: agent }) },
+    })
+    const state = fold([ask('r1'), ask('r2', 'a1'), { type: 'result', subtype: 'success', is_error: false }])
+    expect(state.approvals.map(a => [a.requestId, a.agentId])).toEqual([['r2', 'a1']])
+  })
+
   it('sends the offered rules with "always allow"', () => {
     const rule = { type: 'addRules', rules: [{ toolName: 'Bash', ruleContent: 'ls:*' }], behavior: 'allow', destination: 'localSettings' }
     const state = fold([

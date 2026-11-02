@@ -58,6 +58,8 @@ export type Approval = {
   /** Rules the engine offers for "always allow" (PermissionUpdate[]). */
   suggestions: unknown[]
   toolUseId?: string
+  /** The subagent asking (a project task), when it is not the session itself. */
+  agentId?: string
 }
 
 /** The user's answer to an approval, shown where the request was. */
@@ -755,7 +757,8 @@ export function reduce(state: ChatState, raw: unknown): ChatState {
       const next = {
         ...state,
         busy: false,
-        approvals: [],
+        // A background worker outlives the turn that started it, and so does its request.
+        approvals: state.approvals.filter(a => a.agentId),
         streamingId: undefined,
         recapPending: undefined,
       }
@@ -788,6 +791,7 @@ export function reduce(state: ChatState, raw: unknown): ChatState {
               ? request.permission_suggestions
               : [],
             ...(str(request.tool_use_id) && { toolUseId: str(request.tool_use_id) }),
+            ...(str(request.agent_id) && { agentId: str(request.agent_id) }),
           },
         ],
       }

@@ -295,6 +295,8 @@ export type SDKControlSendTaskMessageRequest = {
   subtype: 'send_task_message'
   task_id: string
   text: string
+  model?: string
+  effort?: string
 }
 
 export type SDKControlSetCwdRequest = {

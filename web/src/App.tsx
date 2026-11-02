@@ -16,10 +16,11 @@ import {
   patchProject,
   patchSettings,
   type Project,
+  type ProjectTask,
   type Usage,
   type WebSettings,
 } from './api'
-import { buildTeam, isFinished } from './agents'
+import { buildTeam } from './agents'
 import { AccountCard, ApiKeyDialog, LoginGate, useAccount } from './components/Account'
 import type { AgentsView } from './components/Agents'
 import { AskDock, ContextChip, GoalMenu, InputBox, ModeButton, ModelMenu, modelButtonLabel, Pins } from './components/Composer'
@@ -53,7 +54,6 @@ import {
 } from './protocol'
 import { turnSources } from './sources'
 import { appReducer, type HistoryEntry, initialAppState, type SessionChat } from './store'
-import { projectTasks } from './projects'
 import { previewTarget, WebPreviewContext } from './webPreview'
 
 const HISTORY_PAGE = 200
@@ -387,11 +387,17 @@ export function App() {
   const stopTask = (id: string, taskId: string) =>
     request(id, REQUEST_PREFIX.stopTask, { subtype: 'stop_task', task_id: taskId })
 
-  const sendToTask = async (id: string, taskId: string, text: string): Promise<string> => {
+  const sendToTask = async (
+    id: string,
+    taskId: string,
+    text: string,
+    pick: { model?: string; effort?: string } = {},
+  ): Promise<string> => {
     const body = await requestAsync(id, REQUEST_PREFIX.taskMessage, {
       subtype: 'send_task_message',
       task_id: taskId,
       text,
+      ...pick,
     })
     const delivery = String(body.delivery ?? '')
     return delivery === 'queued' || delivery === 'injected' || delivery === 'resumed'
@@ -814,18 +820,24 @@ export function App() {
 
   // Coordinators are reached through their project, not the folder list.
   const projectSessions = new Set(projects.flatMap(p => (p.coordinator_session_id ? [p.coordinator_session_id] : [])))
-  // Task counts come from the coordinator's chat once it is loaded.
-  const sidebarProjects = projects.map((p): SidebarProject => {
-    const coordinator = p.coordinator_session_id ? state.chats[p.coordinator_session_id] : undefined
-    if (!coordinator) return p
-    const tasks = projectTasks(coordinator.tasks)
-    // A resumed transcript does not replay its tasks, so none means unknown.
-    return {
-      ...p,
-      ...(tasks.length > 0 && { tasks: tasks.length, tasksRunning: tasks.filter(task => !isFinished(task)).length }),
-      needsYou: coordinator.approvals.length,
-    }
-  })
+  // Task counts come from the server's tasks table.
+  const sidebarProjects = projects.map(
+    (p): SidebarProject => ({ ...p, tasks: p.task_count, tasksRunning: p.running_tasks, needsYou: p.needs_you }),
+  )
+  /** The open project's rows as its view last fetched them, fresher than the project list. */
+  const countTasks = (projectId: string, rows: ProjectTask[]) =>
+    setProjects(list =>
+      list.map(x =>
+        x.id === projectId
+          ? {
+              ...x,
+              task_count: rows.length,
+              running_tasks: rows.filter(r => r.state === 'running' || r.state === 'blocked').length,
+              needs_you: rows.filter(r => r.state === 'blocked' || r.state === 'review').length,
+            }
+          : x,
+      ),
+    )
 
   const statusText = chat
     ? chat.busy && chat.mode === 'live' && since !== undefined
@@ -1183,7 +1195,12 @@ export function App() {
             onAnswer={(approval, choice) => answer(view, approval, choice)}
             onSettings={() => setProjectDialog(project)}
             onStopTask={taskId => stopTask(view, taskId)}
-            onSendTask={(taskId, text) => sendToTask(view, taskId, text)}
+            onSendTask={async (taskId, text, pick) => {
+              // A coordinator that stopped (or a server that restarted) is resumed first.
+              if (chat.mode !== 'live' && !(await resume(view))) throw new Error(t('statusIdle'))
+              return sendToTask(view, taskId, text, pick)
+            }}
+            onTasks={rows => countTasks(project.id, rows)}
             uploadTo={view}
           />,
         )}

@@ -48,6 +48,8 @@ export function ModelMenu({
   onModel,
   onEffort,
   close,
+  heading,
+  locked = false,
 }: {
   t: T
   model: string | undefined
@@ -56,17 +58,22 @@ export function ModelMenu({
   onModel: (value: string) => void
   onEffort?: (level: string) => void
   close: () => void
+  /** In place of "Model" (a project task's menu says when a pick applies). */
+  heading?: string
+  /** Shown but not changeable (a running task keeps its model). */
+  locked?: boolean
 }) {
   const current = modelOption(model, models)
   const levels = (current ?? models.find(m => m.value === 'default'))?.effortLevels ?? FALLBACK_EFFORTS
   return (
     <>
-      <div className="mh">{t('modelGroup')}</div>
+      <div className="mh">{heading ?? t('modelGroup')}</div>
       {models.map(m => (
         <button
           type="button"
           role="menuitemradio"
           key={m.value}
+          disabled={locked}
           aria-checked={current?.value === m.value}
           onClick={() => {
             onModel(m.value)
@@ -86,6 +93,7 @@ export function ModelMenu({
                 type="button"
                 role="radio"
                 key={level}
+                disabled={locked}
                 aria-checked={effort === level}
                 onClick={() => onEffort(level)}
               >

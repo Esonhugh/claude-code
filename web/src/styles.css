@@ -873,7 +873,7 @@ body.proj .main, body.proj .side, body.proj .artview, body.proj #panel-btn { dis
 .pv-side .feed { padding: 16px 24px; gap: 14px }
 .pv-side .composer { background: var(--surface); padding: 6px 24px 12px }
 .pv-drag { position: absolute; left: -4px; top: 0; bottom: 0; width: 8px; cursor: col-resize; z-index: 3 }
-.pv-drag:hover, .pv-drag.on { background: color-mix(in srgb, var(--accent) 25%, transparent) }
+.pv-drag:hover, .pv-drag.on, .pv-drag:focus-visible { background: color-mix(in srgb, var(--accent) 25%, transparent) }
 .pjcard { border: 1px solid var(--line); background: var(--surface); border-radius: 10px; padding: 8px 12px; display: grid; grid-template-columns: 10px minmax(0, 1fr) auto; gap: 2px 10px; align-items: center; text-align: left; width: 100%; font: inherit; color: var(--fg); cursor: pointer }
 .pjcard:hover { border-color: var(--accent) } .pjcard[aria-current="true"] { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset }
 .pjcard .tt { font-weight: 500; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
