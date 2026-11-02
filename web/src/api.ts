@@ -57,6 +57,11 @@ export const loadTranscript = (id: string, before?: number) =>
     `/api/history/${encodeURIComponent(id)}/messages?limit=200${before === undefined ? '' : `&before=${before}`}`,
   )
 
+export const loadAgentTranscript = (sessionId: string, agentId: string) =>
+  getJson<{ messages: unknown[] }>(
+    `/api/history/${encodeURIComponent(sessionId)}/agents/${encodeURIComponent(agentId)}/messages`,
+  )
+
 export const listRunning = () =>
   getJson<{ id: string; work_dir: string; attached: boolean }[]>('/api/sessions')
 

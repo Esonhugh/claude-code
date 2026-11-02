@@ -19,7 +19,9 @@ import {
   openSessionSocket,
   renameSession,
 } from './api'
+import { AgentsPanel, type AgentsView } from './components/Agents'
 import {
+  AgentsContext,
   ApprovalCard,
   FilesContext,
   MODE_KEYS,
@@ -67,6 +69,7 @@ type T = (key: MessageKey, vars?: Record<string, string>) => string
 const HISTORY_PAGE = 50
 const MODELS_KEY = 'claude-web-models'
 const COLLAPSED_KEY = 'claude-web-collapsed'
+const AGENTS_OPEN_KEY = 'claude-web-agents-open'
 // The Messages API rejects larger inline images; those are uploaded instead.
 const INLINE_IMAGE_BYTES = 5 * 1024 * 1024
 
@@ -427,6 +430,11 @@ export function App() {
   const [attachments, setAttachments] = useState<Record<string, File[]>>({})
   const [preview, setPreview] = useState<{ sessionId: string; path: string }>()
   const [dragging, setDragging] = useState(false)
+  const [agentsOpen, setAgentsOpenState] = useState<boolean>(() =>
+    readStored(AGENTS_OPEN_KEY, false),
+  )
+  const [agentsView, setAgentsView] = useState<AgentsView>({ kind: 'tree' })
+  const pendingRequests = useRef(new Map<string, (response: Record<string, unknown>) => void>())
   const [workspace, setWorkspace] = useState<string>()
   const [knownModels, setKnownModels] = useState<ModelOption[]>(() =>
     readStored(MODELS_KEY, []),
@@ -458,6 +466,31 @@ export function App() {
     [view],
   )
   const closePreview = useCallback(() => setPreview(undefined), [])
+  const setAgentsOpen = (open: boolean) => {
+    setAgentsOpenState(open)
+    writeStored(AGENTS_OPEN_KEY, open)
+  }
+  const tasks = chat?.tasks
+  const agentsValue = useMemo(
+    () => ({
+      byToolUse: new Map(
+        Object.values(tasks ?? {})
+          .filter(task => task.toolUseId)
+          .map(task => [task.toolUseId!, task]),
+      ),
+      open: (taskId: string) => {
+        setPreview(undefined)
+        setAgentsOpenState(true)
+        writeStored(AGENTS_OPEN_KEY, true)
+        setAgentsView({ kind: 'task', id: taskId })
+      },
+    }),
+    [tasks],
+  )
+  useEffect(() => setAgentsView({ kind: 'tree' }), [view])
+  const runningAgents = Object.values(tasks ?? {}).filter(
+    task => !['completed', 'failed', 'stopped', 'killed'].includes(task.status),
+  ).length
 
   const refreshHistory = useCallback(async (append = false) => {
     const offset = append ? stateRef.current.history.length : 0
@@ -511,11 +544,49 @@ export function App() {
 
   const request = (id: string, prefix: string, body: Record<string, unknown>) => {
     requestSeq.current += 1
-    send(id, controlRequest(`${prefix}${requestSeq.current}`, body))
+    const requestId = `${prefix}${requestSeq.current}`
+    send(id, controlRequest(requestId, body))
+    return requestId
+  }
+
+  /** Sends a control request and resolves with its success body. */
+  const requestAsync = (id: string, prefix: string, body: Record<string, unknown>) =>
+    new Promise<Record<string, unknown>>((resolve, reject) => {
+      if (!sockets.current.has(id)) {
+        reject(new Error(t('statusIdle')))
+        return
+      }
+      const requestId = request(id, prefix, body)
+      pendingRequests.current.set(requestId, response => {
+        if (response.subtype === 'error') reject(new Error(String(response.error ?? 'error')))
+        else resolve((response.response ?? {}) as Record<string, unknown>)
+      })
+    })
+
+  const stopTask = (id: string, taskId: string) =>
+    request(id, REQUEST_PREFIX.stopTask, { subtype: 'stop_task', task_id: taskId })
+
+  const sendToTask = async (id: string, taskId: string, text: string): Promise<string> => {
+    const body = await requestAsync(id, REQUEST_PREFIX.taskMessage, {
+      subtype: 'send_task_message',
+      task_id: taskId,
+      text,
+    })
+    const delivery = String(body.delivery ?? '')
+    return delivery === 'queued' || delivery === 'injected' || delivery === 'resumed'
+      ? t(`delivery_${delivery}` as MessageKey)
+      : delivery
   }
 
   const attach = async (id: string): Promise<void> => {
     const socket = await openSessionSocket(id, raw => {
+      const msg = raw as { type?: string; response?: Record<string, unknown> }
+      const requestId = msg.type === 'control_response' ? msg.response?.request_id : undefined
+      const pending = typeof requestId === 'string' && pendingRequests.current.get(requestId)
+      if (pending) {
+        pendingRequests.current.delete(requestId as string)
+        pending(msg.response!)
+      }
       dispatch({ type: 'chat', id, action: { type: 'message', raw } })
       const reply = unsupportedControlResponse(raw)
       if (reply) socket.send(JSON.stringify(reply) + '\n')
@@ -739,7 +810,7 @@ export function App() {
 
   return (
     <div
-      className={`app${sidebarOpen ? ' sidebar-open' : ''}${preview && preview.sessionId === view ? ' previewing' : ''}`}
+      className={`app${sidebarOpen ? ' sidebar-open' : ''}${(preview && preview.sessionId === view) || (agentsOpen && chat) ? ' previewing' : ''}`}
     >
       <div className="scrim" onClick={() => setSidebarOpen(false)} />
       <Sidebar
@@ -803,6 +874,20 @@ export function App() {
             </>
           )}
           {!chat && <span className="cwd" />}
+          {chat && (
+            <button
+              type="button"
+              className={`ghost agents-toggle${agentsOpen ? ' active' : ''}`}
+              aria-expanded={agentsOpen}
+              onClick={() => {
+                setAgentsOpen(!agentsOpen)
+                if (!agentsOpen) setPreview(undefined)
+              }}
+            >
+              {t('agents')}
+              {runningAgents > 0 && <span className="badge">{runningAgents}</span>}
+            </button>
+          )}
           <select
             aria-label={t('language')}
             value={lang}
@@ -900,6 +985,7 @@ export function App() {
             </div>
           </main>
         ) : (
+          <AgentsContext.Provider value={agentsValue}>
           <FilesContext.Provider value={filesValue}>
             <main
               className="feed"
@@ -979,15 +1065,32 @@ export function App() {
               </div>
             </footer>
           </FilesContext.Provider>
+          </AgentsContext.Provider>
         )}
       </div>
-      {preview && preview.sessionId === view && (
+      {preview && preview.sessionId === view ? (
         <Preview
           sessionId={preview.sessionId}
           path={preview.path}
           t={t}
           onClose={closePreview}
         />
+      ) : (
+        agentsOpen &&
+        chat &&
+        view && (
+          <AgentsPanel
+            sessionId={view}
+            tasks={chat.tasks}
+            busy={chat.busy}
+            view={agentsView}
+            setView={setAgentsView}
+            onStop={taskId => stopTask(view, taskId)}
+            onSend={(taskId, text) => sendToTask(view, taskId, text)}
+            onClose={() => setAgentsOpen(false)}
+            t={t}
+          />
+        )
       )}
     </div>
   )

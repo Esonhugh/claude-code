@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSy
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { sanitizePath } from '../utils/sessionStoragePortable.js'
-import { listHistory, readTranscript, renameSession } from './history.js'
+import { listHistory, readAgentTranscript, readTranscript, renameSession } from './history.js'
 
 const ID = '11111111-2222-4333-8444-555555555555'
 let root = ''
@@ -35,6 +35,23 @@ beforeEach(() => {
     line({ type: 'user', uuid: 'a0000000-0000-4000-8000-000000000005', parentUuid: 'a0000000-0000-4000-8000-000000000004', cwd, message: { role: 'user', content: [{ type: 'text', text: 'second question' }] } }),
   ]
   writeFileSync(join(dir, `${ID}.jsonl`), entries.join('\n') + '\n')
+  const agentDir = join(dir, ID, 'subagents', 'workflows', 'run1')
+  mkdirSync(agentDir, { recursive: true })
+  writeFileSync(
+    join(agentDir, 'agent-abc123.jsonl'),
+    [
+      line({ type: 'user', isSidechain: true, agentId: 'abc123', uuid: 'b0000000-0000-4000-8000-000000000001', parentUuid: null, cwd, message: { role: 'user', content: 'sub task' } }),
+      line({
+        type: 'assistant',
+        isSidechain: true,
+        agentId: 'abc123',
+        uuid: 'b0000000-0000-4000-8000-000000000002',
+        parentUuid: 'b0000000-0000-4000-8000-000000000001',
+        cwd,
+        message: { id: 'msg_s', role: 'assistant', model: 'claude-opus-5-5', content: [{ type: 'text', text: 'sub answer' }] },
+      }),
+    ].join('\n') + '\n',
+  )
 })
 
 afterEach(() => {
@@ -44,6 +61,39 @@ afterEach(() => {
 })
 
 describe('web history', () => {
+  it('finds a subagent transcript under the session folder', async () => {
+    const page = await readAgentTranscript(ID, 'abc123')
+    expect(page?.messages.map(m => m.type)).toEqual(['user', 'assistant'])
+    expect(JSON.stringify(page?.messages)).toContain('sub answer')
+    expect(await readAgentTranscript(ID, 'missing')).toBeUndefined()
+  })
+
+  it('shows a resumed agent once per message', async () => {
+    // Resuming an agent appends its earlier messages again, with the same uuids.
+    const file = join(root, 'config', 'projects', sanitizePath(join(root, 'project')), ID, 'subagents', 'workflows', 'run1', 'agent-abc123.jsonl')
+    const before = readFileSync(file, 'utf8')
+    writeFileSync(
+      file,
+      before +
+        before +
+        line({
+          type: 'user',
+          isSidechain: true,
+          agentId: 'abc123',
+          uuid: 'b0000000-0000-4000-8000-000000000003',
+          parentUuid: 'b0000000-0000-4000-8000-000000000002',
+          message: { role: 'user', content: 'follow up' },
+        }) +
+        '\n',
+    )
+    const page = await readAgentTranscript(ID, 'abc123')
+    expect(page?.messages.map(m => m.uuid)).toEqual([
+      'b0000000-0000-4000-8000-000000000001',
+      'b0000000-0000-4000-8000-000000000002',
+      'b0000000-0000-4000-8000-000000000003',
+    ])
+  })
+
   it('lists the session with its folder', async () => {
     const list = await listHistory(0, 10)
     expect(list).toHaveLength(1)
