@@ -36,7 +36,11 @@
 5. **临时对话**。
 6. **最近目录**：按目录分组的历史会话，组按“最近修改”倒序排，最近修改取该目录下会话 transcript 的修改时间和会话改过的文件里最新的那个。
 
-每行只有一行标题，行高比原来小。悬停出现提示卡片：标题加上能拿到的字段（最近修改、目录、状态、改动的文件数；项目是目录、任务数、等你处理、开始于），拿不到的字段整行不显示。行右侧悬停出现置顶 / 取消置顶。每段标题可以折叠。
+每行只有一行标题，行高比原来小。没有标题的会话显示最后一条消息；连消息都没有就显示 session id（等宽、灰色）。
+
+悬停出现提示卡片：标题加上能拿到的字段（最近修改、目录、状态、改动的文件数、ID；项目是目录、任务数、等你处理、开始于），拿不到的字段整行不显示。鼠标可以移到卡片上，卡片里的文字（比如 session id）可以选中复制；卡片打开时移到别的行，会稍等一下再切换，斜着移向卡片时不会被换掉。行右侧悬停出现置顶 / 取消置顶。每段标题可以折叠。
+
+右键菜单：会话是标为未读 / 已读（U）、置顶（P）、重命名（R，行内编辑）、移至项目（子菜单，会话作为已完成任务挂到那个项目下，对话仍在原 transcript）、封存（A，从列表移走，搜索仍能找到）、删除（D，菜单内二次确认）；项目是重命名（R）、项目设置（S）、封存（A，停止协调者）、删除（D）。菜单打开时按对应字母直接执行，Esc 关闭。未读的会话标题加粗、前面有蓝点，点开即标为已读。
 
 ## 4. 运行模型
 
@@ -112,7 +116,14 @@ CREATE TABLE task_events (        -- 中栏的通知行和任务时间线
   kind TEXT NOT NULL,             -- started | finished | stopped | approval | message | reviewed
   payload TEXT                    -- JSON
 );
-CREATE TABLE pins (session_id TEXT PRIMARY KEY, pinned_at INTEGER NOT NULL);
+CREATE TABLE session_meta (       -- 侧栏对会话的标记，transcript 本身不改
+  session_id TEXT PRIMARY KEY,
+  title TEXT,                     -- 重命名后的标题；NULL 用 transcript 里的标题
+  pinned_at INTEGER,
+  unread INTEGER NOT NULL DEFAULT 0,
+  archived_at INTEGER,
+  project_id TEXT REFERENCES projects(id) ON DELETE SET NULL  -- 移至项目
+);
 CREATE TABLE folders (path TEXT PRIMARY KEY, last_touched INTEGER NOT NULL);  -- “最近目录”排序缓存
 ```
 
@@ -134,7 +145,8 @@ CREATE TABLE folders (path TEXT PRIMARY KEY, last_touched INTEGER NOT NULL);  --
 | `GET /api/projects/:id/tasks/:tid/transcript?after=` | worker 过程，增量 |
 | `POST /api/projects/:id/tasks/:tid/message` | 转成 `send_task_message` |
 | `POST /api/projects/:id/tasks/:tid/stop` / `.../review` | `stop_task` / 标记完成 |
-| `GET /api/sidebar` / `PUT /api/pins/:sessionId` / `DELETE /api/pins/:sessionId` | 侧栏各段数据和置顶 |
+| `GET /api/sidebar` | 侧栏各段数据（含标题回退：标题 → 最后一条消息 → session id） |
+| `PATCH /api/sessions/:sessionId/meta` / `DELETE /api/sessions/:sessionId` | 置顶、未读、重命名、封存、移至项目 / 删除 transcript |
 
 ## 7. 分阶段
 
@@ -142,7 +154,7 @@ CREATE TABLE folders (path TEXT PRIMARY KEY, last_touched INTEGER NOT NULL);  --
 
 | 阶段 | 内容 | 验收 |
 |---|---|---|
-| P1 侧栏 | 置顶、项目、临时对话、按最近修改排序的目录；单行行高和悬停卡片；`pins`、`folders` 表 | 三种语言截图与原型一致；置顶跨刷新保留；目录顺序随会话活动变化 |
+| P1 侧栏 | 置顶、项目、临时对话、按最近修改排序的目录；单行行高、可移入的悬停卡片、右键菜单；`session_meta`、`folders` 表 | 三种语言截图与原型一致；置顶跨刷新保留；目录顺序随会话活动变化 |
 | P2 项目和协调者 | `projects` 表、新建 / 设置弹窗、协调者子进程（4.1）、中栏 | fake API 下协调者派出两个任务；`-p` 里确实用了协调者提示词；重开项目能 resume |
 | P3 任务面板 | `tasks`、`task_events`；右栏列表、任务对话、审批、发消息、停止、标记完成、看板、拖宽 | 给运行中和已完成的任务各发一条消息，投递结果与 REPL 一致；worker 的权限请求出现在对应任务上；服务重启后状态正确 |
 | P4 收尾 | 窄屏、无障碍、`docs/features/web-ui.md` 补章节 | 390px 截图；真实 OAuth 跑一次三任务的项目 |
