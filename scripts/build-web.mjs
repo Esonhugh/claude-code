@@ -19,10 +19,11 @@ const TEXT_TYPES = {
   '.svg': 'image/svg+xml',
   '.txt': 'text/plain; charset=utf-8',
 };
+// KaTeX's @font-face rules list woff2 before woff and ttf. Every browser that
+// runs this page's ES modules picks woff2, so the fallbacks are never fetched.
+const UNUSED_FONT_FALLBACKS = new Set(['.woff', '.ttf']);
 const BINARY_TYPES = {
   '.woff2': 'font/woff2',
-  '.woff': 'font/woff',
-  '.ttf': 'font/ttf',
   '.png': 'image/png',
   '.ico': 'image/x-icon',
   '.wasm': 'application/wasm',
@@ -47,6 +48,7 @@ export async function buildWeb() {
   for (const file of listFiles(distDir)) {
     if (path.basename(file) === 'assets.json') continue;
     const ext = path.extname(file);
+    if (UNUSED_FONT_FALLBACKS.has(ext)) continue;
     const urlPath = '/' + path.relative(distDir, file).split(path.sep).join('/');
     if (TEXT_TYPES[ext]) {
       assets[urlPath] = { type: TEXT_TYPES[ext], text: fs.readFileSync(file, 'utf8') };
