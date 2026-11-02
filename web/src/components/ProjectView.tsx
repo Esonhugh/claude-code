@@ -337,7 +337,8 @@ export function ProjectView({
   onEffort: (effort: string) => void
   onAnswer: (approval: Approval, choice: ApprovalChoice) => void
   onSettings: () => void
-  onStopTask: (taskId: string) => void
+  /** Rejects when the coordinator is gone or refuses the stop. */
+  onStopTask: (taskId: string) => Promise<unknown>
   /** Resolves with the delivery (`queued`, `resumed`…); an ended task resumes on `model` and `effort`. */
   onSendTask: (taskId: string, text: string, pick: { model?: string; effort?: string }) => Promise<string>
   /** The task rows as last fetched, for the sidebar's counts. */
@@ -449,6 +450,7 @@ export function ProjectView({
     clearTimeout(flashTimer.current)
     flashTimer.current = setTimeout(() => setFlash(undefined), 2200)
   }
+  const stopTask = (id: string) => onStopTask(id).catch((err: unknown) => say(err instanceof Error ? err.message : String(err)))
   const openTask = (id: string) => {
     setMenu(null)
     setOpenId(id)
@@ -478,7 +480,7 @@ export function ProjectView({
     setMenu(null)
     if (action === 'open') openTask(task.id)
     else if (action === 'done' && task.state === 'review') void markDone(task)
-    else if (action === 'stop' && isLive(task)) onStopTask(task.id)
+    else if (action === 'stop' && isLive(task)) void stopTask(task.id)
     else if (action === 'copy') void copyBrief(task)
   }
   useLayoutEffect(() => {
@@ -682,7 +684,7 @@ export function ProjectView({
       <span className="sp" />
       {seg}
       {ib(t('markDone'), '✓', () => void markDone(task), task.state === 'review')}
-      {ib(t('stop'), '■', () => onStopTask(task.id), isLive(task))}
+      {ib(t('stop'), '■', () => void stopTask(task.id), isLive(task))}
       {wideButton}
       {ib(t('close'), '✕', () => setOpenId(undefined))}
     </div>

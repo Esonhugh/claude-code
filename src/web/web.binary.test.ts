@@ -1600,6 +1600,18 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       const errors: string[] = []
       page.on('pageerror', (e: Error) => errors.push(e.message))
       writeFileSync(join(workspace, 'slow.txt'), 'slow\n')
+      // Session sockets pass through; while refuseStop is set, the next stop_task is answered with an error.
+      let refuseStop = false
+      await page.routeWebSocket(/\/api\/sessions\/[^/]+\/ws$/, (ws: any) => {
+        const server = ws.connectToServer()
+        ws.onMessage((raw: string) => {
+          if (!refuseStop || !String(raw).includes('"subtype":"stop_task"')) return server.send(raw)
+          const msg = JSON.parse(String(raw)) as { request_id?: string }
+          refuseStop = false
+          ws.send(JSON.stringify({ type: 'control_response', response: { subtype: 'error', request_id: msg.request_id, error: 'STOP_REFUSED' } }) + '\n')
+        })
+        server.onMessage((raw: string) => ws.send(raw))
+      })
       await page.goto(signInUrl)
       await page.locator('.wl-hi').waitFor()
       await context.grantPermissions(['clipboard-read', 'clipboard-write'], { origin: new URL(page.url()).origin })
@@ -1701,6 +1713,13 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       await taskInput.press('Enter')
       await flash.getByText('Queued; the agent reads it at its next step.').waitFor({ timeout: 30_000 })
       await backToList()
+      // A refused stop says so, and the task keeps running.
+      refuseStop = true
+      await cardOf('Slow').click({ button: 'right' })
+      await menu.waitFor()
+      await page.keyboard.press('s')
+      await flash.getByText('STOP_REFUSED').waitFor({ timeout: 30_000 })
+      expect(await cardOf('Slow').locator('.pjbadge.stopped').count()).toBe(0)
       await cardOf('Slow').click({ button: 'right' })
       await menu.waitFor()
       await page.keyboard.press('s')
