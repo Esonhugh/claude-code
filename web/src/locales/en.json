@@ -120,6 +120,7 @@
   "noSessionsInFolder": "No sessions in this folder yet.",
   "composerPlaceholder": "Message Claude, type / for commands and skills",
   "composerPlaceholderShort": "Message Claude",
+  "signInToSend": "Sign in to send messages",
   "completions": "Completions",
   "commandsSection": "Command",
   "commandTag": "Command",

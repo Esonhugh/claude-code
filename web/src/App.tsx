@@ -147,6 +147,7 @@ export function App() {
 
   const t: T = useCallback((key, vars) => translate(lang, key, vars), [lang])
   const account = useAccount(t)
+  const signedOut = !!account.account && !account.account.kind
   const setLang = (next: Lang) => {
     setLangState(next)
     saveLang(next)
@@ -696,6 +697,7 @@ export function App() {
       }}
       menuButton={menuButton}
       gate={<LoginGate t={t} api={account} onKeyDialog={setKeyDialog} />}
+      signedOut={signedOut}
     />
   ) : (
     <AgentsContext.Provider value={agentsValue}>
@@ -820,6 +822,7 @@ export function App() {
               t={t}
               busy={chat.busy}
               disabled={chat.mode === 'elsewhere'}
+              signedOut={signedOut}
               draft={draft}
               setDraft={setDraft}
               onSend={() => void sendInChat()}

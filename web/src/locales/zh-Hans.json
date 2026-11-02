@@ -120,6 +120,7 @@
   "noSessionsInFolder": "这个目录还没有会话。",
   "composerPlaceholder": "给 Claude 发消息，输入 / 调出命令和 skill",
   "composerPlaceholderShort": "给 Claude 发消息",
+  "signInToSend": "登录后才能发消息",
   "completions": "补全",
   "commandsSection": "命令",
   "commandTag": "命令",

@@ -120,6 +120,7 @@
   "noSessionsInFolder": "這個目錄還沒有會話。",
   "composerPlaceholder": "給 Claude 發訊息，輸入 / 調出命令和 skill",
   "composerPlaceholderShort": "給 Claude 發訊息",
+  "signInToSend": "登入後才能發訊息",
   "completions": "補全",
   "commandsSection": "命令",
   "commandTag": "命令",

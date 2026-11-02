@@ -41,6 +41,7 @@ export function StartPage({
   onViewAll,
   menuButton,
   gate,
+  signedOut,
 }: {
   t: T
   env: SessionEnv
@@ -61,6 +62,7 @@ export function StartPage({
   menuButton: ReactNode
   /** The sign-in gate, shown above the input while signed out. */
   gate?: ReactNode
+  signedOut?: boolean
 }) {
   const [query, setQuery] = useState('')
   const folderInput = useRef<HTMLInputElement>(null)
@@ -96,6 +98,7 @@ export function StartPage({
           t={t}
           start
           busy={false}
+          signedOut={signedOut}
           draft={draft}
           setDraft={setDraft}
           onSend={onStart}
