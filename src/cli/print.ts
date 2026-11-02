@@ -2990,11 +2990,21 @@ function runHeadlessStreaming(
               .join('\n\n')
 
             // Enqueue and process
-            enqueue({
-              mode: 'prompt',
-              value: formatPeerPrompt(formatted),
-              uuid: randomUUID(),
-            })
+            const prompt = formatPeerPrompt(formatted)
+            const uuid = randomUUID()
+            enqueue({ mode: 'prompt', value: prompt, uuid })
+            // QueryEngine acks only user-authored prompts, so echo this one
+            // here or replay consumers never see what teammates sent.
+            if (options.replayUserMessages) {
+              output.enqueue({
+                type: 'user',
+                message: { role: 'user', content: prompt },
+                session_id: getSessionId(),
+                parent_tool_use_id: null,
+                uuid,
+                isReplay: true,
+              } satisfies SDKUserMessageReplay)
+            }
             void run()
             return // run() will come back here after processing
           }

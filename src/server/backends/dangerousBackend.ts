@@ -5,6 +5,9 @@ export type SpawnSessionOptions = {
   sessionId: string
   cwd: string
   permissionMode?: string
+  model?: string
+  /** Continue this existing transcript (its id becomes the session id). */
+  resume?: boolean
 }
 
 /**
@@ -17,7 +20,25 @@ export type SpawnSessionOptions = {
  * which the server relays to and from the connected client.
  */
 export class DangerousBackend {
-  spawn({ sessionId, cwd, permissionMode }: SpawnSessionOptions): ChildProcess {
+  constructor(
+    private options: {
+      includePartialMessages?: boolean
+      /** Let the client switch to bypassPermissions later (claude web). */
+      allowBypassPermissions?: boolean
+      /** Extra directories every session's tools may use (`--add-dir`). */
+      addDirs?: string[]
+      /** Echo queued prompts, such as teammate messages (`--replay-user-messages`). */
+      replayUserMessages?: boolean
+    } = {},
+  ) {}
+
+  spawn({
+    sessionId,
+    cwd,
+    permissionMode,
+    model,
+    resume,
+  }: SpawnSessionOptions): ChildProcess {
     const [command, ...entry] = isInBundledMode()
       ? [process.execPath]
       : [process.execPath, process.argv[1]!]
@@ -36,9 +57,18 @@ export class DangerousBackend {
         '--verbose',
         '--permission-prompt-tool',
         'stdio',
-        '--session-id',
+        resume ? '--resume' : '--session-id',
         sessionId,
         ...(permissionMode ? ['--permission-mode', permissionMode] : []),
+        ...(model ? ['--model', model] : []),
+        ...(this.options.includePartialMessages
+          ? ['--include-partial-messages']
+          : []),
+        ...(this.options.allowBypassPermissions
+          ? ['--allow-dangerously-skip-permissions']
+          : []),
+        ...(this.options.addDirs ?? []).flatMap(dir => ['--add-dir', dir]),
+        ...(this.options.replayUserMessages ? ['--replay-user-messages'] : []),
       ],
       { cwd, env, stdio: ['pipe', 'pipe', 'pipe'] },
     )

@@ -90,6 +90,7 @@ export function getEnabledFeatures(value = process.env.CLAUDE_CODE_RECOVER_FEATU
     'EXTRACT_MEMORIES',
     'AWAY_SUMMARY',
     'DIRECT_CONNECT',
+    'WEB_UI',
     'BG_SESSIONS',
     'DAEMON',
     'COORDINATOR_MODE',
@@ -296,6 +297,10 @@ export function prepareBuildDirectory(value) {
 export async function buildCli({ outputDir, embedSharpNative: embeddedSharp = embedSharpNative } = {}) {
   const distDir = path.join(outputDir ?? projectDir, 'dist');
   await fs.promises.mkdir(distDir, { recursive: true });
+  if (enabledFeatures.has('WEB_UI')) {
+    const { buildWeb } = await import('./build-web.mjs');
+    await buildWeb();
+  }
 
   await build({
   absWorkingDir: projectDir,
