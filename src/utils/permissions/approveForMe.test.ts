@@ -146,6 +146,8 @@ test('a Claude API key gets auto mode like a Claude login', () => {
 })
 
 test('Shift+Tab moves from accept edits straight into auto mode, with no opt-in step', () => {
+  // A Claude credential; the child runs without the parent's.
+  process.env.ANTHROPIC_API_KEY = 'sk-ant-test-not-real'
   const context = { ...getDefaultAppState().toolPermissionContext, mode: 'acceptEdits' as const, isAutoModeAvailable: true }
   expect(getNextPermissionMode(context)).toBe('auto')
   expect(getNextPermissionMode({ ...context, mode: 'auto' })).toBe('default')

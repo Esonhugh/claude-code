@@ -4,12 +4,17 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 const originalFixtureRoot = process.env.CLAUDE_CODE_TEST_FIXTURES_ROOT
+const originalRecord = process.env.VCR_RECORD
 const fixtureRoot = await mkdtemp(join(tmpdir(), 'token-vcr-model-'))
 process.env.CLAUDE_CODE_TEST_FIXTURES_ROOT = fixtureRoot
+// Record into the temp root even under CI, which otherwise refuses missing fixtures.
+process.env.VCR_RECORD = '1'
 
 const { withTokenCountVCR } = await import('./vcr.js')
 
 afterAll(async () => {
+  if (originalRecord === undefined) delete process.env.VCR_RECORD
+  else process.env.VCR_RECORD = originalRecord
   if (originalFixtureRoot === undefined) {
     delete process.env.CLAUDE_CODE_TEST_FIXTURES_ROOT
   } else {
