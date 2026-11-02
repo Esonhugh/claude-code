@@ -669,7 +669,7 @@ export async function buildBackgroundTasksResponse(appState: AppState, now = Dat
       if (isTerminalTask(task)) {
         return {
           ...base,
-          command: [task.command, ...task.args].join(' '),
+          command: task.requestedCommand ?? [task.command, ...task.args].join(' '),
           cols: task.cols,
           rows: task.rows,
           ...(task.exitCode !== undefined && task.exitCode !== null && { exit_code: task.exitCode }),

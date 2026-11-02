@@ -886,6 +886,31 @@ test('the permission dialog description names the whole submitted line', async (
   assert.equal(description, 'Runs: rm -rf build')
 })
 
+test('the task keeps the command the tool was asked to run, not the spawned argv', async () => {
+  const context = createContext()
+  const tasks = () => Object.values(context.getAppState().tasks) as TerminalTask[]
+  await TerminalTool.call(
+    { action: 'new-session', command: 'python', args: ['retrieval_eval.py', '--split', 'dev'], cwd: process.cwd() },
+    context,
+    allowPermission,
+    TEST_ASSISTANT_MESSAGE,
+  )
+  await TerminalTool.call(
+    { action: 'new-session', command: 'bash', args: ['-c', 'echo a b'], cwd: process.cwd() },
+    context,
+    allowPermission,
+    TEST_ASSISTANT_MESSAGE,
+  )
+  await TerminalTool.call({ action: 'new-session', cwd: process.cwd() }, context, allowPermission, TEST_ASSISTANT_MESSAGE)
+  const [python, bash, shell] = tasks()
+  assert.equal(python?.requestedCommand, 'python retrieval_eval.py --split dev')
+  assert.equal(bash?.requestedCommand, "bash -c 'echo a b'")
+  // No command: the default shell, named without its resolved path or login args.
+  const resolved = resolveTerminalCommand({ cwd: process.cwd() }).command
+  assert.equal(shell?.requestedCommand, resolved.split('/').at(-1))
+  assert.equal(shell?.command, resolved)
+})
+
 test('host input reaches the PTY, shows on the colored screen and joins the pending line', async () => {
   const context = createContext()
   const opened = await TerminalTool.call(

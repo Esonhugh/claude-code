@@ -124,7 +124,7 @@ if (process.env[childFlag] !== '1') {
     const store = createStore({
       ...initial,
       tasks: {
-        term1: { ...base, id: 'term1', type: 'interactive_terminal', status: 'running', sessionId: 'term-9', command: 'python3', args: ['-q'], cwd: '/', cols: 80, rows: 24, preview: '>>> 1+1\n\n2', closed: false, agentId: 'a1' },
+        term1: { ...base, id: 'term1', type: 'interactive_terminal', status: 'running', sessionId: 'term-9', command: '/usr/bin/python3', args: ['-q'], requestedCommand: 'python3 -q', cwd: '/', cols: 80, rows: 24, preview: '>>> 1+1\n\n2', closed: false, agentId: 'a1' },
         term2: { ...base, id: 'term2', type: 'interactive_terminal', status: 'completed', endTime: 5000, sessionId: 'term-8', command: 'bash', args: [], cwd: '/', cols: 80, rows: 24, preview: '', closed: true, exitCode: 0 },
         b1: { ...base, ...shell, id: 'b1', type: 'local_bash', status: 'running', command: 'sleep 300', kind: 'bash' },
         m1: { ...base, ...shell, id: 'm1', type: 'local_bash', status: 'killed', endTime: 2000, command: 'tail -f log', description: 'watch', kind: 'monitor', result: { code: 143, interrupted: true } },
@@ -153,7 +153,7 @@ if (process.env[childFlag] !== '1') {
     const byId = Object.fromEntries((listing.response.tasks as { task_id: string }[]).map(t => [t.task_id, t]))
     expect(Object.keys(byId).sort()).toEqual(['b1', 'm1', 'term1', 'term2'])
     expect(byId.term1).toMatchObject({ task_type: 'interactive_terminal', command: 'python3 -q', cols: 80, rows: 24, agent_id: 'a1', status: 'running' })
-    expect(byId.term2).toMatchObject({ exit_code: 0, duration_ms: 5000 })
+    expect(byId.term2).toMatchObject({ command: 'bash', exit_code: 0, duration_ms: 5000 })
     expect(byId.b1).toMatchObject({ task_type: 'local_bash', kind: 'bash', command: 'sleep 300', tail: '' })
     expect(byId.m1).toMatchObject({ kind: 'monitor', exit_code: 143, duration_ms: 2000, events: [{ time: 1000, text: 'epoch 1 done' }] })
     const shape = 'send_terminal_input: task_id must be a non-empty string, with text (at most 4096 characters), a key, or enter: true'

@@ -54,7 +54,7 @@ import { DEFAULT_MAX_BUFFERED_CHUNKS } from '../../utils/pty/types.js'
 import { errorMessage } from '../../utils/errors.js'
 import { quote } from '../../utils/bash/shellQuote.js'
 import { runWithCwdOverride } from '../../utils/cwd.js'
-import { resolve } from 'path'
+import { basename, resolve } from 'path'
 import {
   createPermissionRequestMessage,
   getAskRuleForTool,
@@ -634,6 +634,10 @@ export const TerminalTool: Tool<InputSchema, Output> = buildTool({
               status: 'running',
               sessionId: target,
               command: String(opened.command),
+              requestedCommand: quote([
+                parsed.data.command?.trim() || basename(String(opened.command)),
+                ...(parsed.data.args ?? []),
+              ]),
               args: opened.args,
               cwd: parsed.data.cwd || process.cwd(),
               cols: opened.cols,
