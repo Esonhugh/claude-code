@@ -264,7 +264,7 @@ h1, h2, h3 { text-wrap: balance; margin: 0 }
 .acctwrap { position: relative; margin-top: 4px }
 .foot .acct, .acct { width: 100%; display: flex; gap: 10px; align-items: center; padding: 8px; font-size: 12.5px; text-align: left; color: var(--fg) }
 .acct .avatar.none { background: var(--idle) }
-.pop.acctmenu { position: absolute; bottom: calc(100% + 6px); left: 0; right: 0; min-width: 220px; z-index: 30; padding: 6px; display: flex; flex-direction: column; gap: 1px; font-size: 13px; overflow: visible; max-height: none }
+.pop.acctmenu { position: absolute; bottom: calc(100% + 6px); left: 0; right: 0; z-index: 30; padding: 6px; display: flex; flex-direction: column; gap: 1px; font-size: 13px; overflow: visible; max-height: none }
 .acctmenu[hidden], .authmenu[hidden] { display: none }
 .acctmenu .ah { display: flex; gap: 10px; align-items: center; padding: 6px 8px 8px; border-bottom: 1px solid var(--line); margin-bottom: 4px; min-width: 0 } .acctmenu .ah > div { min-width: 0 } .acctmenu .ah b { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600 } .acctmenu .ah small { display: block; color: var(--muted); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
 .acctmenu .ah .avatar { width: 28px; height: 28px; font-size: 12.5px; flex: none; background: var(--accent) } .acctmenu .ah .avatar.none { background: var(--idle) }
@@ -274,7 +274,7 @@ h1, h2, h3 { text-wrap: balance; margin: 0 }
 .mi .ico { width: 16px; text-align: center; color: var(--muted); font-family: var(--f-mono); flex: none }
 .mi small { margin-left: auto; color: var(--muted); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis }
 .mi kbd { margin-left: auto; font-family: var(--f-mono); font-size: 11px; color: var(--muted); border: 1px solid var(--line); border-radius: 4px; padding: 0 5px; line-height: 16px }
-.mi .chev { color: var(--muted); flex: none } .mi small + .chev { margin-left: 0 }
+.mi .chev { color: var(--muted); flex: none; margin-left: auto }
 .authwrap { position: relative }
 .pop.authmenu { position: fixed; width: 300px; z-index: 31; padding: 6px; display: flex; flex-direction: column; gap: 1px; max-height: none; right: auto; overflow: visible }
 .authmenu .mh { font-size: 11px; color: var(--muted); padding: 4px 8px 2px; text-transform: uppercase; letter-spacing: .06em }
@@ -1711,7 +1711,7 @@ rewind：stale_target / unseen_later_turn / rewound
       return `<div class="authrow"><button type="button" class="mi" role="menuitemradio" aria-checked="${on}" data-auth="${k}"><span class="ck">${on ? '✓' : ''}</span><span class="lbl">${l}<small>${sub}</small></span></button>${key ? `<button type="button" class="edit" data-keyedit="${k}">编辑</button>` : ''}</div>`
     }).join('')
     $('#acct-menu').innerHTML = `<div class="ah"><span class="avatar${account ? '' : ' none'}">${av}</span><div><b>${!account ? '未登录' : account.kind === 'apikey' ? 'API User' : esc(account.name)}</b><small>${!account ? '选一种方式登录' : account.kind === 'apikey' ? `${keyName(account)} · 按量计费` : esc(account.plan)}</small></div></div>
-      <div class="authwrap"><button type="button" class="mi" data-authsub aria-haspopup="menu" aria-expanded="${authOpen}"><span class="ico">⚿</span>Auth<small>${authName(account)}</small><span class="chev">›</span></button>
+      <div class="authwrap"><button type="button" class="mi" data-authsub aria-haspopup="menu" aria-expanded="${authOpen}"><span class="ico">⚿</span>Auth<span class="chev">›</span></button>
         <div class="pop authmenu" id="auth-menu" role="menu"${authOpen ? '' : ' hidden'}><div class="ast${account ? '' : ' off'}"><span class="dot"></span>${account ? `已登录 · ${authName(account)}` : '未登录'}</div><div class="mh">切换认证</div>${auth}</div></div>
       <button type="button" class="mi" data-dialog="settings"><span class="ico">⚙</span>设置</button>
       <button type="button" class="mi" data-dialog="stats"><span class="ico">▤</span>Stats</button>
