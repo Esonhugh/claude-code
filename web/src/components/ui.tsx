@@ -92,6 +92,8 @@ export function FootMenu({
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         e.stopPropagation()
+        // Focus inside the menu would be lost when it unmounts.
+        if (wrap.current?.contains(document.activeElement)) wrap.current.querySelector<HTMLElement>('.footbtn')?.focus()
         setOpen(false)
       }
     }

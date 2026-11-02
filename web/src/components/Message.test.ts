@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test'
 import type { ModelOption } from '../protocol'
-import { modelName } from './Message'
+import { modelName, relativeTo } from './Message'
 
 const models: ModelOption[] = [
   {
@@ -29,5 +29,14 @@ describe('modelName', () => {
   it('falls back to a readable label without a models list', () => {
     expect(modelName('claude-sonnet-5-5', [])).toBe('Sonnet 5.5')
     expect(modelName(undefined, models)).toBeUndefined()
+  })
+})
+
+describe('relativeTo', () => {
+  it('drops the chat folder from a path under it, with either separator', () => {
+    expect(relativeTo('/home/u/workspace/edit.txt', '/home/u/workspace')).toBe('edit.txt')
+    expect(relativeTo('C:\\Users\\u\\workspace\\edit.txt', 'C:\\Users\\u\\workspace')).toBe('edit.txt')
+    expect(relativeTo('C:\\Users\\u\\workspace\\a\\b.txt', 'C:\\Users\\u\\workspace\\')).toBe('a\\b.txt')
+    expect(relativeTo('C:\\Users\\u\\workspace2\\x.txt', 'C:\\Users\\u\\workspace')).toBe('C:\\Users\\u\\workspace2\\x.txt')
   })
 })

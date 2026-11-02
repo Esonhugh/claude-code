@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'bun:test'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, utimesSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
-import { join } from 'path'
+import { join, sep } from 'path'
 
 // End-to-end check of a built binary: `claude web` serving the embedded page,
 // a real `claude -p` session against a scripted Messages API, driven from
@@ -9,6 +9,17 @@ import { join } from 'path'
 //   make build && CLAUDE_WEB_BINARY=$PWD/built-claude \
 //     bun test src/web/web.binary.test.ts
 const binary = process.env.CLAUDE_WEB_BINARY
+// Windows finds the home folder in USERPROFILE and needs SystemRoot to start processes.
+// A wait that, on timeout, also reports what the element shows instead.
+const showing = async (wait: Promise<unknown>, what: { textContent: () => Promise<string | null> }) => {
+  try {
+    await wait
+  } catch (e) {
+    throw new Error(`${e instanceof Error ? e.message.split('\n')[0] : e}\nShowing: ${(await what.textContent().catch(() => null))?.slice(-600)}`)
+  }
+}
+const windowsHome = (home: string) =>
+  process.platform === 'win32' ? { USERPROFILE: home, SystemRoot: process.env.SystemRoot ?? 'C:\\Windows' } : {}
 // The coordinator's system prompt (src/coordinator/coordinatorMode.ts).
 const COORDINATOR_MARK = 'You are a **coordinator**'
 // Unique per run, so a shell left over from another run never matches.
@@ -176,12 +187,14 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
 
   const startWeb = async () => {
     web = Bun.spawn(
-      [binary!, 'web', '--no-open', '--port', '0', '--workspace', workspace],
+      // Above the default 8, so a test that fails before closing its sessions does not starve the next ones.
+      [binary!, 'web', '--no-open', '--port', '0', '--workspace', workspace, '--max-sessions', '32'],
       {
         cwd: home,
         env: {
           PATH: process.env.PATH ?? '/usr/bin:/bin',
           HOME: home,
+          ...windowsHome(home),
           IS_SANDBOX: '1',
           ANTHROPIC_API_KEY: 'sk-fake',
           ANTHROPIC_BASE_URL: `http://127.0.0.1:${api.port}`,
@@ -418,7 +431,8 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       },
     })
 
-    home = realpathSync(mkdtempSync(join(tmpdir(), 'web-bin-home-')))
+    // .native expands Windows 8.3 names (RUNNER~1), which the CLI's own paths never use.
+    home = realpathSync.native(mkdtempSync(join(tmpdir(), 'web-bin-home-')))
     workspace = join(home, 'workspace')
     mkdirSync(workspace)
     // A user skill and user CLAUDE.md for the Skills and Memory dialogs.
@@ -669,7 +683,7 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       await row('Delete me').hover()
       const card = page.locator('.sbtip')
       await card.waitFor()
-      expect(await card.textContent()).toContain('Folder ~/other')
+      expect(await card.textContent()).toContain(`Folder ~${sep}other`)
       expect(await card.textContent()).toContain(`ID ${dropId}`)
       expect(await card.textContent()).not.toContain('Changes')
       const id = card.locator('i.mono')
@@ -830,11 +844,14 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
         () => (document.querySelector('.pager input') as HTMLInputElement | null)?.value === '2',
       )
       await open('memo.rtf')
-      if (Bun.which('soffice')) {
-        await preview.locator('.page-count', { hasText: '/ 1' }).waitFor({ timeout: 120_000 })
-      } else {
-        await preview.getByText('LibreOffice').waitFor({ timeout: 30_000 })
-      }
+      // Without LibreOffice the note asks for it. With it (the CI runners have it, found by the
+      // server's own lookup), a converted page, or the preview's error when headless LibreOffice
+      // fails, as it does on fresh runners. Either way the preview settles.
+      const outcome = preview
+        .getByText('LibreOffice')
+        .or(preview.locator('.page-count', { hasText: '/ 1' }))
+        .or(preview.getByText('Could not preview this file.'))
+      await showing(outcome.first().waitFor({ timeout: 180_000 }), preview)
       await page.keyboard.press('Escape')
       await preview.waitFor({ state: 'detached' })
       expect(await page.evaluate(() => (window as { __xss?: number }).__xss)).toBeUndefined()
@@ -851,7 +868,7 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
     } finally {
       await browser.close()
     }
-  }, 240_000)
+  }, 300_000)
 
   it('shows background agents in the panel and messages a finished one', async () => {
     const playwrightPath = Bun.spawnSync(['node', '-p', "require.resolve('playwright')"])
@@ -1212,7 +1229,7 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       await input.fill('please EDITME')
       await input.press('Enter')
       const dialog = page.locator('.askdock')
-      await dialog.getByText('Claude wants to use Edit').waitFor({ timeout: 30_000 })
+      await showing(dialog.getByText('Claude wants to use Edit').waitFor({ timeout: 30_000 }), page.locator('.feed'))
       await dialog.getByRole('option', { name: /Allow once/ }).click()
       await page.getByText('WEB_DONE').waitFor({ timeout: 30_000 })
       expect(readFileSync(join(workspace, 'edit.txt'), 'utf8')).toBe('alpha\ngamma\n')
@@ -1223,7 +1240,7 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       expect(await card.locator('.dl.del span').textContent()).toBe('beta')
       expect(await card.locator('.dl.add span').textContent()).toBe('gamma')
       expect(await card.locator('.dstat').allTextContents()).toEqual(['+1', '−1'])
-      expect(await card.locator('.tfoot').textContent()).toContain('~/workspace/edit.txt')
+      expect(await card.locator('.tfoot').textContent()).toContain(`~${sep}workspace${sep}edit.txt`)
       // No separate preview button: the path itself opens the file.
       expect(await card.locator('.tool-preview').count()).toBe(0)
       await card.locator('.tcmd').click()
@@ -1338,7 +1355,7 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       await card.locator('span', { hasText: /^Tasks/ }).getByText('2 tasks').waitFor()
       // Both finished and not yet looked at.
       await card.locator('span', { hasText: /^Needs you/ }).getByText('2 tasks').waitFor()
-      expect(await card.textContent()).toContain('Folder ~/workspace')
+      expect(await card.textContent()).toContain(`Folder ~${sep}workspace`)
       await page.mouse.move(800, 400)
 
       const projects = (await page.evaluate(async () => (await fetch('/api/projects')).json())) as {
@@ -1562,7 +1579,8 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       await bgRow.getByRole('button', { name: 'Stop' }).click()
       await bgRow.locator('.badge.killed').or(bgRow.locator('.badge.completed')).waitFor({ timeout: 15_000 })
       await bgRow.getByRole('button', { name: 'Stop' }).waitFor({ state: 'detached' })
-      expect(Bun.spawnSync(['pgrep', '-f', `${BG_MARK}; sleep 300`]).exitCode).toBe(1)
+      // pgrep is POSIX only.
+      if (process.platform !== 'win32') expect(Bun.spawnSync(['pgrep', '-f', `${BG_MARK}; sleep 300`]).exitCode).toBe(1)
       expect(errors).toEqual([])
     } finally {
       await browser.close()
@@ -1740,6 +1758,13 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       const workerAsked = () => promptsSeen.some(p => p.includes('WORKER_HANG') && !p.includes('DISPATCH_HANG'))
       for (let i = 0; i < 300 && !workerAsked(); i++) await Bun.sleep(100)
       expect(workerAsked()).toBe(true)
+      // Windows has no SIGTERM: the kill below is immediate, so let the worker's transcript reach disk first.
+      const workerSaved = () =>
+        [...new Bun.Glob('**/subagents/**/agent-*.jsonl').scanSync({ cwd: join(home, '.claude', 'projects'), absolute: true })].some(f =>
+          readFileSync(f, 'utf8').includes('WORKER_HANG'),
+        )
+      for (let i = 0; i < 300 && !workerSaved(); i++) await Bun.sleep(100)
+      expect(workerSaved()).toBe(true)
       web.kill('SIGTERM')
       expect(await web.exited).toBe(143)
       await startWeb()
@@ -1756,7 +1781,7 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       await cardOf('Hang').click()
       await taskInput.fill('HANG_RESUME')
       await taskInput.press('Enter')
-      await flash.getByText('The agent resumed with your message.').waitFor({ timeout: 30_000 })
+      await showing(flash.getByText('The agent resumed with your message.').waitFor({ timeout: 30_000 }), side)
       await side.getByText('HANG_BACK').waitFor({ timeout: 60_000 })
 
       // The sidebar's counts come from the database.
@@ -1775,7 +1800,255 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
     }
   }, 300_000)
 
-  it('shuts down on SIGTERM and removes the lock', async () => {
+  it('sweeps the page by keyboard, mouse and clipboard on a desktop screen', async () => {
+    const playwrightPath = Bun.spawnSync(['node', '-p', "require.resolve('playwright')"]).stdout.toString().trim()
+    const { chromium } = await import(playwrightPath)
+    const browser = await chromium.launch()
+    try {
+      const context = await browser.newContext({ locale: 'en-US', viewport: { width: 1440, height: 900 } })
+      const page = await context.newPage()
+      const errors: string[] = []
+      page.on('pageerror', (e: Error) => errors.push(e.message))
+      await page.goto(signInUrl)
+      await context.grantPermissions(['clipboard-read', 'clipboard-write'], { origin: new URL(page.url()).origin })
+      // Whether the last right click was taken by the page (a custom menu) or left to the browser.
+      await page.addInitScript(() =>
+        addEventListener('contextmenu', e => document.documentElement.setAttribute('data-cm', String(e.defaultPrevented))),
+      )
+      await page.reload()
+      const focused = () =>
+        page.evaluate(() => {
+          const el = document.activeElement as HTMLElement
+          return el.id || el.getAttribute('aria-label') || (el.textContent ?? '').trim()
+        })
+      const inDialog = () => page.evaluate(() => !!document.activeElement?.closest('.dialog'))
+      const box = page.getByLabel('Message', { exact: true })
+
+      // The welcome box: Shift+Enter is a newline, paste works, right click keeps the browser's menu.
+      await box.click()
+      await page.keyboard.type('one')
+      await page.keyboard.press('Shift+Enter')
+      await page.keyboard.type('two')
+      expect(await box.inputValue()).toBe('one\ntwo')
+      await box.click({ button: 'right' })
+      expect(await page.locator('html').getAttribute('data-cm')).toBe('false')
+      await page.evaluate(() => navigator.clipboard.writeText('PASTED_PROMPT'))
+      await box.fill('')
+      await page.keyboard.press('ControlOrMeta+v')
+      expect(await box.inputValue()).toBe('PASTED_PROMPT')
+      await box.fill('')
+
+      // A menu closed with Esc gives focus back to its button.
+      const folder = page.locator('.wl-bar .footbtn').first()
+      await folder.click()
+      await page.getByLabel('Search folders', { exact: true }).waitFor()
+      await page.keyboard.press('Escape')
+      expect(await page.locator('.wl-pick').count()).toBe(0)
+      expect(await page.evaluate(() => document.activeElement?.closest('.wl-bar .footbtn') !== null)).toBe(true)
+
+      // Shortcuts: ? opens the list, Ctrl+K focuses search, Ctrl+Shift+O starts over.
+      await page.locator('.welcome').click({ position: { x: 5, y: 5 } })
+      await page.keyboard.press('?')
+      await page.locator('.dialog h2', { hasText: 'Shortcuts' }).waitFor()
+      await page.keyboard.press('Escape')
+      await page.locator('.dialog').waitFor({ state: 'detached' })
+      await page.keyboard.press('ControlOrMeta+k')
+      expect(await focused()).toBe('Search sessions')
+      await page.keyboard.press('Escape')
+
+      // A dialog keeps Tab inside, a menu in it closes alone on Esc, and focus returns to the opener.
+      const hooks = page.locator('#sessions nav button', { hasText: 'Hooks' })
+      await hooks.focus()
+      await page.keyboard.press('Enter')
+      await page.locator('.dialog').waitFor()
+      for (let i = 0; i < 25; i++) {
+        await page.keyboard.press('Tab')
+        expect(await inDialog()).toBe(true)
+      }
+      for (let i = 0; i < 5; i++) {
+        await page.keyboard.press('Shift+Tab')
+        expect(await inDialog()).toBe(true)
+      }
+      await page.locator('[data-hook-new]').click()
+      await page.locator('#hk-event').click()
+      await page.locator('.dialog [role="menu"]').waitFor()
+      await page.keyboard.press('Escape')
+      await page.locator('.dialog [role="menu"]').waitFor({ state: 'detached' })
+      expect(await page.locator('.dialog').count()).toBe(1)
+      await page.locator('#hk-cmd').focus()
+      await page.evaluate(() => navigator.clipboard.writeText('echo SWEEP_HOOK'))
+      await page.keyboard.press('ControlOrMeta+v')
+      await page.locator('#hk-matcher').fill('Bash')
+      await page.locator('#hk-matcher').press('Enter')
+      await page.locator('.dialog').getByText('echo SWEEP_HOOK').waitFor()
+      await page.keyboard.press('Escape')
+      await page.locator('.dialog').waitFor({ state: 'detached' })
+      expect(await focused()).toContain('Hooks')
+
+      // The account menu: Esc from the Auth submenu returns to the account button; a dialog
+      // opened from the menu returns there too. Settings persist after a reload.
+      await page.locator('#acct-btn').click()
+      await page.locator('#acct-menu .mi', { hasText: 'Auth' }).click()
+      await page.locator('#auth-menu').waitFor()
+      await page.keyboard.press('Escape')
+      expect(await page.locator('#acct-menu').count()).toBe(0)
+      expect(await focused()).toBe('acct-btn')
+      await page.locator('#acct-btn').click()
+      await page.locator('#acct-menu .mi', { hasText: 'Settings' }).click()
+      const name = page.locator('#ui-name-input')
+      await name.fill('')
+      await page.evaluate(() => navigator.clipboard.writeText('SweepName'))
+      await name.focus()
+      await page.keyboard.press('ControlOrMeta+v')
+      await page.locator('.dialog [role="radio"]', { hasText: 'Dark' }).click()
+      await page.locator('.dialog .settabs button').nth(2).click()
+      const feature = page.locator('.dialog [role="switch"]').first()
+      const was = await feature.getAttribute('aria-checked')
+      await feature.click()
+      await page.waitForFunction(
+        (v: string | null) => document.querySelector('.dialog [role="switch"]')?.getAttribute('aria-checked') !== v,
+        was,
+      )
+      await page.waitForTimeout(600)
+      await page.keyboard.press('Escape')
+      expect(await focused()).toBe('acct-btn')
+      await page.reload()
+      await page.locator('#acct-btn').click()
+      await page.locator('#acct-menu .mi', { hasText: 'Settings' }).click()
+      expect(await page.evaluate(() => document.documentElement.dataset.theme)).toBe('dark')
+      expect(await page.locator('#ui-name-input').inputValue()).toBe('SweepName')
+      await page.locator('.dialog .settabs button').nth(2).click()
+      expect(await page.locator('.dialog [role="switch"]').first().getAttribute('aria-checked')).not.toBe(was)
+      await page.locator('.dialog [role="switch"]').first().click()
+      await page.locator('.dialog .settabs button').first().click()
+      await page.locator('.dialog [role="radio"]', { hasText: 'System' }).click()
+      await page.locator('#ui-name-input').fill('')
+      await page.waitForTimeout(600)
+      await page.keyboard.press('Escape')
+
+      // A chat: Enter sends, the code block copies to the clipboard, a reply keeps the browser's menu.
+      await box.fill('show MARKDOWN sweep')
+      await box.press('Enter')
+      const code = page.locator('.codeblock', { hasText: 'const answer' })
+      await code.waitFor({ timeout: 30_000 })
+      await code.getByRole('button', { name: 'Copy' }).click()
+      expect(await page.evaluate(() => navigator.clipboard.readText())).toBe('const answer: number = 42')
+      await page.locator('.feed').getByText('Report').click({ button: 'right' })
+      expect(await page.locator('html').getAttribute('data-cm')).toBe('false')
+      const cbox = page.locator('.cbox textarea')
+      await cbox.click()
+      await page.keyboard.type('a')
+      await page.keyboard.press('Shift+Enter')
+      await page.keyboard.type('b')
+      expect(await cbox.inputValue()).toBe('a\nb')
+      await cbox.fill('')
+      // Shift+Tab cycles the permission mode; Ctrl+. opens the status panel.
+      const mode = page.locator('.footbtn.perm')
+      const before = await mode.textContent()
+      await page.keyboard.press('Shift+Tab')
+      await page.waitForFunction((b: string | null) => document.querySelector('.footbtn.perm')?.textContent !== b, before)
+      await page.keyboard.press('ControlOrMeta+.')
+      await page.locator('.side').waitFor()
+
+      // The model and effort picked for a session survive a reload.
+      const model = page.getByLabel('Model', { exact: true })
+      await model.click()
+      await page.locator('[role="menu"] [role="menuitemradio"]', { hasText: 'Haiku' }).click()
+      await model.click()
+      await page.getByRole('radio', { name: 'high', exact: true }).click()
+      await page.keyboard.press('Escape')
+      await page.waitForFunction(() => /Haiku.*high/.test(document.querySelector('[aria-label="Model"]')?.textContent ?? ''))
+      await page.waitForTimeout(500)
+      await page.reload()
+      await page.locator('#sessions .sess', { hasText: 'show MARKDOWN sweep' }).first().click()
+      await page.locator('.codeblock', { hasText: 'const answer' }).waitFor({ timeout: 30_000 })
+      await page.waitForFunction(() => /Haiku.*high/.test(document.querySelector('[aria-label="Model"]')?.textContent ?? ''), null, { timeout: 15_000 })
+      expect(errors).toEqual([])
+      await page.evaluate(async () => {
+        for (const s of (await (await fetch('/api/sessions')).json()) as { id: string }[]) {
+          await fetch(`/api/sessions/${s.id}`, { method: 'DELETE' })
+        }
+      })
+    } finally {
+      await browser.close()
+    }
+  }, 180_000)
+
+  it('keeps menus, drawers and dialogs usable on a phone screen', async () => {
+    const playwrightPath = Bun.spawnSync(['node', '-p', "require.resolve('playwright')"]).stdout.toString().trim()
+    const { chromium } = await import(playwrightPath)
+    const browser = await chromium.launch()
+    try {
+      const context = await browser.newContext({ locale: 'en-US', viewport: { width: 390, height: 844 }, hasTouch: true })
+      const page = await context.newPage()
+      const errors: string[] = []
+      page.on('pageerror', (e: Error) => errors.push(e.message))
+      await page.goto(signInUrl)
+      const noScroll = () => page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)
+      // On screen and not clipped or covered: the point at its center belongs to it.
+      const inside = (sel: string) =>
+        page.evaluate((s: string) => {
+          const el = document.querySelector(s)!
+          const r = el.getBoundingClientRect()
+          const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2)
+          return r.left >= 0 && r.top >= 0 && r.right <= innerWidth && r.bottom <= innerHeight && el.contains(hit)
+        }, sel)
+      const focused = () => page.evaluate(() => document.activeElement?.className ?? '')
+      const menuBtn = page.locator('.menu-btn').first()
+      expect(await noScroll()).toBe(true)
+
+      // Ctrl+K opens the drawer with the search box focused.
+      await page.getByLabel('Message', { exact: true }).click()
+      await page.keyboard.press('ControlOrMeta+k')
+      await page.waitForFunction(() => document.activeElement?.getAttribute('aria-label') === 'Search sessions')
+      expect(await noScroll()).toBe(true)
+      // A dialog opened from the drawer hands focus back to the menu button once both are closed.
+      await page.locator('#sessions nav button', { hasText: 'Hooks' }).click()
+      await page.locator('.dialog').waitFor()
+      expect(await inside('.dialog > div')).toBe(true)
+      await page.keyboard.press('Tab')
+      expect(await page.evaluate(() => !!document.activeElement?.closest('.dialog'))).toBe(true)
+      await page.keyboard.press('Escape')
+      await page.locator('.dialog').waitFor({ state: 'detached' })
+      expect(await focused()).toContain('menu-btn')
+
+      // Every chat menu stays on screen.
+      const box = page.getByLabel('Message', { exact: true })
+      await box.fill('hello phone sweep')
+      await box.press('Enter')
+      await page.locator('.feed').getByText('Hello from the fake model').waitFor({ timeout: 30_000 })
+      expect(await noScroll()).toBe(true)
+      for (const [trigger, menu] of [
+        [page.locator('.export .footbtn'), '.export [role="menu"]'],
+        [page.getByLabel('Model', { exact: true }), '.composer [role="menu"]'],
+        [page.locator('.footbtn.perm'), '.composer [role="menu"]'],
+        [page.getByLabel('Add a file or skill'), '.composer .pop'],
+      ] as const) {
+        await trigger.click()
+        await page.locator(menu).waitFor()
+        expect(await inside(menu)).toBe(true)
+        await page.keyboard.press('Escape')
+        await page.locator(menu).waitFor({ state: 'detached' })
+      }
+      await menuBtn.click()
+      await page.locator('#acct-btn').click()
+      expect(await inside('#acct-menu')).toBe(true)
+      await page.locator('#acct-menu .mi', { hasText: 'Auth' }).click()
+      expect(await inside('#auth-menu')).toBe(true)
+      await page.keyboard.press('Escape')
+      expect(errors).toEqual([])
+      await page.evaluate(async () => {
+        for (const s of (await (await fetch('/api/sessions')).json()) as { id: string }[]) {
+          await fetch(`/api/sessions/${s.id}`, { method: 'DELETE' })
+        }
+      })
+    } finally {
+      await browser.close()
+    }
+  }, 120_000)
+
+  // Windows has no SIGTERM: kill() ends the process before it can remove the lock.
+  it.skipIf(process.platform === 'win32')('shuts down on SIGTERM and removes the lock', async () => {
     web.kill('SIGTERM')
     expect(await web.exited).toBe(143)
     expect(existsSync(join(home, '.claude', 'web.lock'))).toBe(false)
@@ -1784,7 +2057,8 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
 
 // Account menu → Auth submenu → API key dialog against the real credential
 // store and settings, in a HOME of its own so the suite above is untouched.
-describe.skipIf(!binary)('claude web account (built binary)', () => {
+// On macOS the key goes to the login Keychain, which a temporary HOME does not isolate.
+describe.skipIf(!binary || process.platform === 'darwin')('claude web account (built binary)', () => {
   const FAKE_KEY = 'sk-ant-api03-WEBTEST_fake_key_0123456789abcdefWXYZ'
   let api: ReturnType<typeof Bun.serve>
   let web: ReturnType<typeof Bun.spawn>
@@ -1804,13 +2078,14 @@ describe.skipIf(!binary)('claude web account (built binary)', () => {
         })
       },
     })
-    home = realpathSync(mkdtempSync(join(tmpdir(), 'web-bin-acct-')))
+    home = realpathSync.native(mkdtempSync(join(tmpdir(), 'web-bin-acct-')))
     mkdirSync(join(home, 'workspace'))
     web = Bun.spawn([binary!, 'web', '--no-open', '--port', '0', '--workspace', join(home, 'workspace')], {
       cwd: home,
       env: {
         PATH: process.env.PATH ?? '/usr/bin:/bin',
         HOME: home,
+        ...windowsHome(home),
         IS_SANDBOX: '1',
         // Replaced from the page; the new key has to win over this one.
         ANTHROPIC_API_KEY: 'sk-ant-env-placeholder-0000',

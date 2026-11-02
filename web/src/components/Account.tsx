@@ -168,6 +168,7 @@ export function AccountCard({
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         e.stopPropagation()
+        if (wrap.current?.contains(document.activeElement)) document.getElementById('acct-btn')?.focus()
         close()
       }
     }
@@ -188,6 +189,8 @@ export function AccountCard({
     } else setPlace(undefined)
   }
   const pick = (action: () => void) => () => {
+    // The item goes away with the menu; a dialog it opens returns focus to the account button.
+    document.getElementById('acct-btn')?.focus()
     close()
     action()
   }

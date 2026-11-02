@@ -45,6 +45,15 @@ jobs:
         shell: bash
         run: bun scripts/windows-sessions-e2e.ts dist/release/claude-code-v*-win32-x64.exe
 
+      # Playwright is not a project dependency; it is added for this step only.
+      - name: Web e2e
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          bun add --no-save playwright@1.63.0
+          bunx playwright install chromium
+          CLAUDE_WEB_BINARY="$(cygpath -m "$(ls "$PWD"/dist/release/claude-code-v*-win32-x64.exe | head -n 1)")" bun test --timeout 300000 src/web/web.binary.test.ts
+
       - name: Upload binary
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4

@@ -684,11 +684,22 @@ export function App() {
     }
   }
 
+  // The drawer's search box can take focus only once the drawer is open.
+  const searchOnOpen = useRef(false)
+  const focusSearch = () => {
+    if (isNarrow(1100) && !sidebarOpen) {
+      searchOnOpen.current = true
+      setSidebarOpen(true)
+    } else searchRef.current?.focus()
+  }
   // The sessions drawer (≤1100px) takes focus when it opens and gives it back
   // to the menu button when it closes; Esc closes it.
   useEffect(() => {
     if (!sidebarOpen) return
-    document.querySelector<HTMLElement>('.sessions .new-chat')?.focus()
+    if (searchOnOpen.current) {
+      searchOnOpen.current = false
+      searchRef.current?.focus()
+    } else document.querySelector<HTMLElement>('.sessions .new-chat')?.focus()
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') setSidebarOpen(false)
     }
@@ -729,8 +740,7 @@ export function App() {
       const typing = (e.target as HTMLElement | null)?.closest?.('input, textarea, select, [contenteditable]')
       if (mod && !e.shiftKey && e.key.toLowerCase() === 'k') {
         e.preventDefault()
-        if (isNarrow(1100)) setSidebarOpen(true)
-        searchRef.current?.focus()
+        focusSearch()
       } else if (mod && e.shiftKey && e.key.toLowerCase() === 'o') {
         e.preventDefault()
         newChat()
@@ -914,10 +924,7 @@ export function App() {
       onCancelTrust={() => setTrustDir(undefined)}
       onStart={() => void startChat()}
       onOpen={entry => void openSession(entry)}
-      onViewAll={() => {
-        if (isNarrow(1100)) setSidebarOpen(true)
-        searchRef.current?.focus()
-      }}
+      onViewAll={focusSearch}
       menuButton={menuButton}
       gate={<LoginGate t={t} api={account} onKeyDialog={setKeyDialog} />}
       signedOut={signedOut}

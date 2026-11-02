@@ -66,9 +66,11 @@ export const FilesContext = createContext<{
 }>({})
 
 /** `notes/a.md` for a file under `cwd`, else the `~` form. */
-function relativeTo(path: string, cwd: string | undefined): string {
+export function relativeTo(path: string, cwd: string | undefined): string {
   const root = cwd?.replace(/[\\/]+$/, '')
-  return root && path.startsWith(`${root}/`) ? path.slice(root.length + 1) : tilde(path)
+  // Windows paths separate with `\`.
+  if (root && path.startsWith(root) && /[\\/]/.test(path.charAt(root.length))) return path.slice(root.length + 1)
+  return tilde(path)
 }
 
 /** The tool's one-line summary, with its file path relative to the chat folder. */

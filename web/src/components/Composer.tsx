@@ -289,6 +289,7 @@ export function InputBox({
   const disabled = disabledProp || signedOut
   const chatPlaceholder = usePlaceholder(t)
   const [plusOpen, setPlusOpen] = useState(false)
+  const plusRef = useRef<HTMLButtonElement>(null)
   const [selected, setSelected] = useState(0)
   // Esc closes the palette for this exact draft; typing reopens it.
   const [dismissed, setDismissed] = useState<string>()
@@ -341,8 +342,18 @@ export function InputBox({
     const close = (e: MouseEvent) => {
       if (!(e.target as HTMLElement).closest('.plusmenu, .plus')) setPlusOpen(false)
     }
+    const onKey = (e: globalThis.KeyboardEvent) => {
+      if (e.key !== 'Escape') return
+      e.stopPropagation()
+      plusRef.current?.focus()
+      setPlusOpen(false)
+    }
     document.addEventListener('mousedown', close)
-    return () => document.removeEventListener('mousedown', close)
+    window.addEventListener('keydown', onKey, true)
+    return () => {
+      document.removeEventListener('mousedown', close)
+      window.removeEventListener('keydown', onKey, true)
+    }
   }, [plusOpen])
   // Grow with the text up to the CSS max-height.
   useEffect(() => {
@@ -491,6 +502,7 @@ export function InputBox({
     <button
       type="button"
       className="plus"
+      ref={plusRef}
       aria-label={t('addFileOrSkill')}
       aria-expanded={plusOpen}
       disabled={disabled}
