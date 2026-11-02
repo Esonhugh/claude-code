@@ -2549,6 +2549,7 @@ export function REPL({
     setIsLoading: setIsExternalLoading,
     setToolUseConfirmQueue,
     tools: combinedInitialTools,
+    setAppState,
   })
 
   // SSH session hook - manages ssh child process for `claude ssh` mode.

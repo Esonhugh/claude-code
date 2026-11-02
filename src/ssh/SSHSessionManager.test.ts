@@ -62,6 +62,34 @@ describe('SSHSessionManager', () => {
     ])
   })
 
+  it('answers task control requests from the child', async () => {
+    const proc = createFakeProcess()
+    const written: Array<{ request_id: string; request: Record<string, unknown> }> = []
+    proc.stdin.on('data', chunk => {
+      for (const line of String(chunk).split('\n').filter(Boolean)) written.push(JSON.parse(line))
+    })
+    const manager = new SSHSessionManager(proc as never, { onMessage() {}, onPermissionRequest() {} })
+    manager.connect()
+    proc.stdout.write('{"type":"system","subtype":"init","model":"test"}\n')
+    await nextTick()
+
+    const sent = manager.sendTaskControlRequest({ subtype: 'send_task_message', task_id: 'a1', text: 'hi' })
+    const failed = manager.sendTaskControlRequest({ subtype: 'stop_task', task_id: 'gone' })
+    await nextTick()
+    assert.deepEqual(written.map(w => w.request), [
+      { subtype: 'send_task_message', task_id: 'a1', text: 'hi' },
+      { subtype: 'stop_task', task_id: 'gone' },
+    ])
+    proc.stdout.write(JSON.stringify({ type: 'control_response', response: { subtype: 'success', request_id: written[0]!.request_id, response: { delivery: 'queued' } } }) + '\n')
+    proc.stdout.write(JSON.stringify({ type: 'control_response', response: { subtype: 'error', request_id: written[1]!.request_id, error: 'nope' } }) + '\n')
+    assert.deepEqual(await sent, { delivery: 'queued' })
+    await assert.rejects(failed, /nope/)
+
+    const pending = manager.sendTaskControlRequest({ subtype: 'get_task_output', task_id: 't1' })
+    manager.disconnect()
+    await assert.rejects(pending, /SSH session disconnected/)
+  })
+
   it('routes permission requests and writes responses', async () => {
     const proc = createFakeProcess()
     let requestId = ''
