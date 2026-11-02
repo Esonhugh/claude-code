@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useId, useRef } from 'react'
+import { type ReactNode, useEffect, useId, useRef, useState } from 'react'
 import type { T } from './ui'
 
 /** The prototype's `.dialog`: centered card, title, close button, scrolling body. */
@@ -19,9 +19,10 @@ export function Dialog({
   const closeRef = useRef<HTMLButtonElement>(null)
   const onCloseRef = useRef(onClose)
   onCloseRef.current = onClose
+  // Read during render: a child with autoFocus takes focus before effects run.
+  const [opener] = useState(() => document.activeElement as HTMLElement | null)
   useEffect(() => {
-    const opener = document.activeElement as HTMLElement | null
-    closeRef.current?.focus()
+    if (!closeRef.current?.closest('.dialog')?.contains(document.activeElement)) closeRef.current?.focus()
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         e.stopPropagation()

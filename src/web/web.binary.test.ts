@@ -993,6 +993,7 @@ describe.skipIf(!binary)('claude web account (built binary)', () => {
       const dialog = page.getByRole('dialog', { name: 'API key' })
       const base = `http://127.0.0.1:${api.port}`
       expect(await dialog.getByRole('radio', { name: 'Anthropic' }).getAttribute('aria-checked')).toBe('true')
+      expect(await page.evaluate(() => document.activeElement?.id)).toBe('ak-key')
       await dialog.getByLabel('API key').fill(FAKE_KEY)
       await dialog.getByLabel('Base URL').fill('ftp://nope.example')
       await dialog.getByRole('button', { name: 'Save and use' }).click()
