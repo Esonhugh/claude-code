@@ -113,7 +113,7 @@ h1, h2, h3 { text-wrap: balance; margin: 0 }
 .figure { border: 1px solid var(--line); border-radius: 8px; padding: 10px; background: var(--surface) }
 .figure figcaption { font-size: 12px; color: var(--muted); margin-top: 4px }
 
-.card { border: 1px solid var(--line); background: var(--surface); border-radius: 10px; padding: 10px 12px; display: grid; gap: 6px; text-align: left; width: 100% }
+.card { border: 1px solid var(--line); background: var(--surface); border-radius: 10px; padding: 10px 12px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; text-align: left; width: 100% }
 .card.clickable:hover { border-color: var(--accent) }
 .card .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; min-width: 0 }
 .card .title { font-weight: 600 }
@@ -273,6 +273,7 @@ h1, h2, h3 { text-wrap: balance; margin: 0 }
 .composer .gate .gmanual { display: flex; flex-direction: row; align-items: center; gap: 6px; max-width: none; margin: 0 }
 .gate .glink { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--accent) } .gate .gmanual input { flex: 1; min-width: 0; border: 1px solid var(--line); border-radius: 8px; padding: 6px 9px; background: var(--bg); color: var(--fg); font: inherit; font-size: 12.5px }
 .modtree .mbox { display: flex; gap: 8px } .modtree .mbox.col { flex-direction: column } .modtree .mbox.wrap { flex-wrap: wrap }
+.modtree .mbox > * { min-width: 0 } .modtree .mbox.col > * { max-width: 100% }
 .modtree .t-green { color: var(--ok) } .modtree .t-red { color: var(--bad) } .modtree .t-yellow { color: var(--warn) } .modtree .t-dim { color: var(--muted) }
 .modband { max-width: var(--col); margin: 0 auto 8px; font-size: 12.5px; padding: 5px 10px; border: 1px dashed var(--line); border-radius: 10px; display: flex; gap: 8px; align-items: center }
 .modband .src { margin-left: auto; color: var(--muted); font-size: 11px }
