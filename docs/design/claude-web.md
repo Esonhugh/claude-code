@@ -257,6 +257,13 @@ Terminal 工具是 fork 独有的（官方没有），它开的每个 PTY 会话
 
 浏览器刷新或重连时，服务端先发一次 `background_tasks_changed` 快照，再补发每个活跃任务最近一次 `task_progress`，侧边栏据此重建。服务端只在内存里给每个任务保留最近一份进度，不另存一套状态。
 
+### 5.6 界面语言
+
+- 界面支持简体中文、繁體中文和 English。首次打开按 `navigator.languages` 选择：`zh-TW`、`zh-HK`、`zh-MO` 和 `*-Hant` 用繁体，其他 `zh*` 用简体，其余用英文。设置“常规”页和顶栏可以切换，选择存在浏览器 `localStorage`，不写 settings.json。
+- 文案放在前端的 `locales/{zh-Hans,zh-Hant,en}.json`，键名用英文 id，组件里不写死中文。缺失的键回退到 English，单测检查三份文件键集一致。繁体文案人工维护，不在运行时做简繁转换。
+- 只翻译界面文案。模型回复、工具输出、记忆和文件内容原样显示；回复语言由模型和 settings 里的 `language` 决定。
+- 日期和数字用 `Intl.DateTimeFormat` / `Intl.NumberFormat` 按当前语言格式化。
+
 ## 6. 构建和打包
 
 - 前端放在 `web/`，用 Vite 构建，`bun run build:web` 输出 `web/dist`。
@@ -275,7 +282,7 @@ claude web [--port <n>] [--host <ip>] [--workspace <dir>] [--no-open]
            [--tls-cert <file> --tls-key <file>]
 ```
 
-- `--dangerously-allow-local-network`：绑 `0.0.0.0`，只放行局域网来源（见第 6 节），启动时打印警告，不自动打开浏览器之外的任何东西。和 `--host` 同时给时以 `--host` 为准，但 `--host` 是局域网地址时必须带这个参数。
+- `--dangerously-allow-local-network`：绑 `0.0.0.0`，只放行局域网来源（见第 4 节），启动时打印警告，不自动打开浏览器之外的任何东西。和 `--host` 同时给时以 `--host` 为准，但 `--host` 是局域网地址时必须带这个参数。
 
 - 默认端口 0（随机），打印 `Claude web UI: http://127.0.0.1:<port>/?token=...`。
 - 已有 `claude web` 在跑时，打印已有地址并打开浏览器，不再起第二个（参照 `src/server/lockfile.ts`）。
