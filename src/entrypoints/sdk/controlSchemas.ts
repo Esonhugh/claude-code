@@ -620,9 +620,11 @@ export const SDKControlSendTaskMessageRequestSchema = lazySchema(() =>
       subtype: z.literal('send_task_message'),
       task_id: z.string(),
       text: z.string(),
+      model: z.string().optional(),
+      effort: z.string().optional(),
     })
     .describe(
-      'Fork-only. Sends a user message to a subagent or teammate task, as typing into its view does in the REPL: a running agent gets it at its next tool round (queued), an ended one is resumed with it (resumed), a running teammate gets it injected (injected).',
+      'Fork-only. Sends a user message to a subagent or teammate task, as typing into its view does in the REPL: a running agent gets it at its next tool round (queued), an ended one is resumed with it (resumed), a running teammate gets it injected (injected). An ended agent is also resumed from its transcript when this process no longer holds it (after a restart). `model` and `effort` apply to a resumed agent only.',
     ),
 )
 

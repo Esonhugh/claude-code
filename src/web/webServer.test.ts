@@ -21,6 +21,7 @@ const TOKEN = 'web-test-token'
 // Stands in for `claude -p` stream-json: a user message is answered with a
 // result naming the text and the child's cwd. With session state events on,
 // the turn is bracketed by running/idle, and a "hold" turn never ends.
+// "dispatch" starts worker a1 and finishes it; control requests succeed.
 const FAKE_CHILD = `
 const out = m => process.stdout.write(JSON.stringify(m) + '\\n')
 const states = !!process.env.CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS
@@ -32,10 +33,17 @@ process.stdin.on('data', chunk => {
   while ((i = buf.indexOf('\\n')) !== -1) {
     const msg = JSON.parse(buf.slice(0, i))
     buf = buf.slice(i + 1)
+    if (msg.type === 'control_request') {
+      out({ type: 'control_response', response: { subtype: 'success', request_id: msg.request_id, response: {} } })
+    }
     if (msg.type === 'user') {
       const text = msg.message.content[0].text
       state('running')
       if (text === 'hold') continue
+      if (text === 'dispatch') {
+        out({ type: 'system', subtype: 'task_started', task_id: 'a1', description: 'Worker one', prompt: 'do it', task_type: 'local_agent', spawn_depth: 1 })
+        out({ type: 'system', subtype: 'task_notification', task_id: 'a1', status: 'completed', summary: 'done it', usage: { total_tokens: 1500, tool_uses: 1, duration_ms: 2000 } })
+      }
       out({ type: 'result', subtype: 'success', is_error: false, result: text + ' in ' + process.cwd() })
       state('idle')
     }
@@ -710,6 +718,66 @@ describe('claude web server', () => {
     await waitFor(resultSeen('last'))
     expect(ws.readyState).toBe(WebSocket.OPEN)
     ws.close()
+  })
+
+  it('keeps the coordinator\'s tasks, model and effort in the database', async () => {
+    const r = start()
+    const cookie = await signIn(r)
+    const headers = { cookie, origin: r.origin }
+    const created = await fetch(`${r.base}/api/projects`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ name: 'P', cwd: r.workspace }),
+    })
+    const { id } = (await created.json()) as { id: string }
+    const opened = await fetch(`${r.base}/api/projects/${id}/coordinator`, { method: 'POST', headers })
+    const { session_id: sessionId } = (await opened.json()) as { session_id: string }
+    const ws = new WebSocket(`${r.base.replace('http', 'ws')}/api/sessions/${sessionId}/ws`, {
+      headers,
+    } as unknown as string[])
+    const lines: Record<string, unknown>[] = []
+    ws.onmessage = e => lines.push(JSON.parse(String(e.data)))
+    await new Promise(resolve => (ws.onopen = resolve))
+    const send = (m: object) => ws.send(JSON.stringify(m) + '\n')
+    const waitFor = async (check: () => boolean | Promise<boolean>) => {
+      for (let i = 0; i < 200 && !(await check()); i++) await Bun.sleep(10)
+      expect(await check()).toBe(true)
+    }
+    const api = (path: string, init?: RequestInit) => fetch(`${r.base}/api/projects/${id}${path}`, { headers, ...init })
+
+    send({ type: 'user', message: { role: 'user', content: [{ type: 'text', text: 'dispatch' }] } })
+    await waitFor(async () => ((await (await api('/tasks')).json()) as unknown[]).length === 1)
+    expect(await (await api('/tasks')).json()).toMatchObject([
+      { id: 'a1', title: 'Worker one', brief: 'do it', state: 'review', tokens: 1500, duration_ms: 2000, session_id: sessionId },
+    ])
+    const listed = (await (await fetch(`${r.base}/api/projects`, { headers })).json()) as Record<string, unknown>[]
+    expect(listed[0]).toMatchObject({ task_count: 1, running_tasks: 0, needs_you: 1 })
+
+    // Task routes check their ids; a task with no transcript yet has an empty one.
+    expect((await api('/tasks/..%2Fx/transcript')).status).toBe(400)
+    expect((await api('/tasks/nosuch/transcript')).status).toBe(404)
+    expect(await (await api('/tasks/a1/transcript?after=0')).json()).toEqual({ messages: [], next: 0, reset: false, tokens: 0 })
+    expect((await api('/tasks/a1/review')).status).toBe(405)
+    expect(await (await api('/tasks/a1/review', { method: 'POST' })).json()).toMatchObject({ state: 'done' })
+
+    // The coordinator's model and effort are kept once it accepts them, and a restart keeps them.
+    send({ type: 'control_request', request_id: 'web-model-1', request: { subtype: 'set_model', model: 'sonnet' } })
+    send({ type: 'control_request', request_id: 'web-effort-1', request: { subtype: 'apply_flag_settings', settings: { effortLevel: 'high' } } })
+    await waitFor(async () => {
+      const [p] = (await (await fetch(`${r.base}/api/projects`, { headers })).json()) as Record<string, unknown>[]
+      return p!.coordinator_model === 'sonnet' && p!.coordinator_effort === 'high'
+    })
+    await api('', { method: 'PATCH', body: JSON.stringify({ instructions: 'NEW' }) })
+    await waitFor(() => r.spawned.length === 2)
+    expect(r.spawned[1]).toMatchObject({ resume: true, model: 'sonnet', effort: 'high', appendSystemPrompt: 'NEW' })
+
+    // Stopping the coordinator stops what was still running.
+    send({ type: 'user', message: { role: 'user', content: [{ type: 'text', text: 'hold' }] } })
+    ws.close()
+    await fetch(`${r.base}/api/sessions/${sessionId}`, { method: 'DELETE', headers })
+    // Reopened, it starts on the model and effort it had.
+    await fetch(`${r.base}/api/projects/${id}/coordinator`, { method: 'POST', headers })
+    expect(r.spawned.at(-1)).toMatchObject({ model: 'sonnet', effort: 'high' })
   })
 })
 

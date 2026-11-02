@@ -265,9 +265,15 @@ export type Project = {
   worker_model: string | null
   permission_mode: string
   coordinator_session_id: string | null
+  coordinator_model?: string | null
+  coordinator_effort?: string | null
   created_at: number
   updated_at: number
   running: boolean
+  /** From the tasks table: all, still running (blocked included), and waiting on the user. */
+  task_count?: number
+  running_tasks?: number
+  needs_you?: number
 }
 
 export type ProjectFields = {
@@ -299,3 +305,44 @@ export const patchProject = (id: string, patch: ProjectFields) =>
 /** Starts the project's coordinator, or resumes it; a running one is reused. */
 export const openCoordinator = (id: string) =>
   sendJson(`/api/projects/${encodeURIComponent(id)}/coordinator`, 'POST') as Promise<CreatedSession>
+
+/** A row of `GET /api/projects/:id/tasks` (src/web/tasks.ts). */
+export type ProjectTask = {
+  id: string
+  session_id: string
+  agent_id: string
+  tool_use_id: string | null
+  title: string
+  brief: string
+  subagent_type: string | null
+  model: string | null
+  effort: string | null
+  worktree: string | null
+  state: 'running' | 'blocked' | 'review' | 'done' | 'stopped'
+  stop_reason: 'user' | 'failed' | 'exited' | 'restart' | null
+  error: string | null
+  summary: string | null
+  tokens: number
+  tool_uses: number
+  duration_ms: number
+  last_tool: string | null
+  approval_id: string | null
+  created_at: number
+  started_at: number
+  finished_at: number | null
+  reviewed_at: number | null
+}
+
+const tasksPath = (projectId: string, taskId?: string) =>
+  `/api/projects/${encodeURIComponent(projectId)}/tasks${taskId === undefined ? '' : `/${encodeURIComponent(taskId)}`}`
+
+export const listTasks = (projectId: string) => getJson<ProjectTask[]>(tasksPath(projectId))
+
+/** The worker's conversation from message `after` on; `reset` when it had to start over. */
+export const loadTaskTranscript = (projectId: string, taskId: string, after: number) =>
+  getJson<{ messages: unknown[]; next: number; reset: boolean; tokens: number }>(
+    `${tasksPath(projectId, taskId)}/transcript?after=${after}`,
+  )
+
+export const reviewTask = (projectId: string, taskId: string) =>
+  sendJson(`${tasksPath(projectId, taskId)}/review`, 'POST') as Promise<ProjectTask>

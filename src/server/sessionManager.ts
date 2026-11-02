@@ -33,6 +33,14 @@ type Session = SessionInfo & {
   queued?: string[]
 }
 
+/** Sees every stream-json line of every session (claude web keeps a project's tasks from them). */
+export type SessionObserver = {
+  /** A line from the child's stdout (`child`) or written to its stdin by the client (`client`). */
+  line?: (sessionId: string, line: string, from: 'child' | 'client') => void
+  /** The session's process ended for good (not a restart). */
+  exit?: (sessionId: string) => void
+}
+
 export type CoordinatorOptions = Pick<
   SpawnSessionOptions,
   'systemPrompt' | 'appendSystemPrompt' | 'env'
@@ -97,6 +105,7 @@ export class SessionManager {
   private maxSessions: number
   private logger?: ServerLogger
   private replayTasks: boolean
+  private observer?: SessionObserver
 
   constructor(
     private backend: SessionBackend,
@@ -117,10 +126,15 @@ export class SessionManager {
     this.replayTasks = options.replayTasks ?? false
   }
 
+  observe(observer: SessionObserver): void {
+    this.observer = observer
+  }
+
   create({
     cwd,
     permissionMode,
     model,
+    effort,
     resume,
     sessionKey,
     channels,
@@ -129,6 +143,7 @@ export class SessionManager {
     cwd: string
     permissionMode?: string
     model?: string
+    effort?: string
     /** Transcript id to continue; reuses a running session with that id. */
     resume?: string
     sessionKey?: string
@@ -159,6 +174,7 @@ export class SessionManager {
       cwd,
       permissionMode,
       ...(model && { model }),
+      ...(effort && { effort }),
       ...(resume && { resume: true }),
       ...(channels?.length && { channels }),
       ...coordinator,
@@ -189,20 +205,25 @@ export class SessionManager {
   }
 
   /**
-   * Respawns a session's process with `--resume` and new coordinator flags,
-   * keeping the attached socket. Waits for a running turn to end first.
+   * Respawns a session's process with `--resume` and these flags (in place
+   * of the ones it started with), keeping the attached socket. Waits for a
+   * running turn to end first.
    */
   restart(
     id: string,
-    { permissionMode, coordinator }: { permissionMode?: string; coordinator: CoordinatorOptions },
+    options: Pick<SpawnSessionOptions, 'permissionMode' | 'model' | 'effort'> & { coordinator: CoordinatorOptions },
   ): 'restarted' | 'pending' | undefined {
     const session = this.sessions.get(id)
     if (!session || session.status === 'stopping') return undefined
-    const { systemPrompt: _s, appendSystemPrompt: _a, env: _e, ...base } = session.spawnOptions
+    const { sessionId, cwd, channels } = session.spawnOptions
     session.restartWith = {
-      ...base,
-      ...(permissionMode && { permissionMode }),
-      ...coordinator,
+      sessionId,
+      cwd,
+      ...(channels && { channels }),
+      ...(options.permissionMode && { permissionMode: options.permissionMode }),
+      ...(options.model && { model: options.model }),
+      ...(options.effort && { effort: options.effort }),
+      ...options.coordinator,
       resume: true,
     }
     if (session.busy || session.queued) return 'pending'
@@ -224,6 +245,7 @@ export class SessionManager {
     session.queued = undefined
     if (this.sessions.get(session.id) !== session) return
     if (session.status === 'stopping') {
+      this.observer?.exit?.(session.id)
       this.remove(session, 1000, 'session process exited')
       return
     }
@@ -245,6 +267,7 @@ export class SessionManager {
       if (line.includes('"subtype":"session_state_changed"') && session.process === child) {
         this.trackTurn(session, line)
       }
+      this.observer?.line?.(id, line, 'child')
       if (session.socket) {
         session.socket.send(line + '\n')
         return
@@ -260,6 +283,7 @@ export class SessionManager {
     child.once('error', err => {
       this.logger?.error(`session ${id} failed to start: ${err.message}`)
       if (session.process !== child) return
+      this.observer?.exit?.(id)
       this.remove(session, 1011, 'session process failed to start')
     })
     // 'close' (not 'exit') so every stdout line is relayed before the socket
@@ -269,6 +293,7 @@ export class SessionManager {
         `session ${id} exited (${signal ?? `code ${code ?? 'unknown'}`})`,
       )
       if (session.process !== child || session.queued) return
+      this.observer?.exit?.(id)
       const clean = code === 0 || session.status === 'stopping'
       this.remove(session, clean ? 1000 : 1011, 'session process exited')
     })
@@ -338,6 +363,7 @@ export class SessionManager {
     if (!stdin || stdin.destroyed) return
     for (const line of lines) {
       if (line.includes('"type":"user"')) session.busy = true
+      this.observer?.line?.(id, line, 'client')
       stdin.write(line + '\n')
     }
   }
@@ -367,6 +393,10 @@ export class SessionManager {
     clearTimeout(session.idleTimer)
     if (this.idleTimeoutMs <= 0) return
     session.idleTimer = setTimeout(() => {
+      // A detached coordinator keeps its workers running until its turn ends.
+      if (session.busy && session.spawnOptions.env?.CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS) {
+        return this.startIdleTimer(session)
+      }
       this.logger?.info(`session ${session.id} idle timeout`)
       void this.destroy(session.id)
     }, this.idleTimeoutMs)

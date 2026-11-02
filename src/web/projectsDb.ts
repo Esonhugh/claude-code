@@ -2,6 +2,7 @@ import type { Database } from 'bun:sqlite'
 import { randomUUID } from 'crypto'
 import { mkdirSync } from 'fs'
 import { dirname } from 'path'
+import { TASK_MIGRATION } from './tasks.js'
 
 /**
  * `~/.claude/web/projects.sqlite`: projects, tasks and the sidebar's marks
@@ -37,6 +38,8 @@ const MIGRATIONS: string[][] = [
     )`,
     'CREATE TABLE folders (path TEXT PRIMARY KEY, last_touched INTEGER NOT NULL)',
   ],
+  // P3: the coordinators' tasks, and the coordinator's own model and effort.
+  TASK_MIGRATION,
 ]
 
 export type Project = {
@@ -47,13 +50,25 @@ export type Project = {
   worker_model: string | null
   permission_mode: string
   coordinator_session_id: string | null
+  /** The coordinator's model and effort as last changed from its input box; kept across restarts. */
+  coordinator_model: string | null
+  coordinator_effort: string | null
   created_at: number
   updated_at: number
   archived_at: number | null
 }
 
 export type ProjectPatch = Partial<
-  Pick<Project, 'name' | 'instructions' | 'worker_model' | 'permission_mode' | 'coordinator_session_id'>
+  Pick<
+    Project,
+    | 'name'
+    | 'instructions'
+    | 'worker_model'
+    | 'permission_mode'
+    | 'coordinator_session_id'
+    | 'coordinator_model'
+    | 'coordinator_effort'
+  >
 >
 
 export function openProjectsDb(path: string): Database {

@@ -37,6 +37,7 @@ import { type AccountBackend, createAccountApi } from './account.js'
 import { coordinatorSpawn } from './coordinator.js'
 import { deleteSessionMeta, openProjectsDb, patchSessionMeta, type Project, ProjectStore } from './projectsDb.js'
 import { deleteTranscript, loadSidebar } from './sidebar.js'
+import { parseLine, type Task, TaskStore, transcriptTokens } from './tasks.js'
 import * as ext from './extensions.js'
 import { isAllowedPeer, lanHostNames } from './network.js'
 import {
@@ -194,7 +195,8 @@ const AGENT_MESSAGES_PATH = /^\/api\/history\/([^/]+)\/agents\/([^/]+)\/messages
 const AGENT_ISSUERS_PATH = /^\/api\/history\/([^/]+)\/agent-issuers$/
 const FILES_PATH = /^\/api\/files\/([^/]+)(\/pdf|\/list)?$/
 const SNIPPET_PATH = /^\/api\/history\/([^/]+)\/snippet$/
-const PROJECT_PATH = /^\/api\/projects\/([^/]+)(\/coordinator)?$/
+const PROJECT_PATH = /^\/api\/projects\/([^/]+)(?:\/(coordinator|tasks)(?:\/([^/]+)(?:\/(transcript|review))?)?)?$/
+const EFFORT = /^[a-z]{1,20}$/
 
 // Served as text so a file from the workspace never runs as a page on this origin.
 const ACTIVE_TYPES = new Set(['.html', '.htm', '.xhtml', '.svg', '.xml', '.js', '.mjs'])
@@ -573,16 +575,81 @@ export function startWebServer(
   }
 
   let projectsDb: Database | undefined
-  const db = () =>
-    (projectsDb ??= openProjectsDb(
+  let taskStore: TaskStore | undefined
+  const db = () => {
+    if (projectsDb) return projectsDb
+    projectsDb = openProjectsDb(
       config.projectsDb ?? join(config.configDir ?? getClaudeConfigHomeDir(), 'web', 'projects.sqlite'),
-    ))
+    )
+    // Workers that were running died with the previous server.
+    taskStore = new TaskStore(projectsDb)
+    taskStore.stopLive('restart')
+    return projectsDb
+  }
+  const tasks = () => (db(), taskStore!)
   let projectStore: ProjectStore | undefined
   const projects = () => (projectStore ??= new ProjectStore(db()))
-  const projectJson = (p: Project) => ({
-    ...p,
-    running: !!p.coordinator_session_id && !!sessionManager.get(p.coordinator_session_id),
+  const projectJson = (p: Project, counts = tasks().counts()) => {
+    const count = counts.get(p.id)
+    return {
+      ...p,
+      running: !!p.coordinator_session_id && !!sessionManager.get(p.coordinator_session_id),
+      task_count: count?.tasks ?? 0,
+      running_tasks: count?.running ?? 0,
+      needs_you: count?.needsYou ?? 0,
+    }
+  }
+
+  // Coordinator session id → its project, for the lines the session manager relays.
+  const coordinators = new Map<string, string>()
+  // The coordinator's own set_model / effort requests in flight, kept once it accepts them.
+  const settingRequests = new Map<string, { projectId: string; patch: Pick<Project, 'coordinator_model'> | Pick<Project, 'coordinator_effort'> }>()
+  sessionManager.observe({
+    line(sessionId, line, from) {
+      const projectId = coordinators.get(sessionId)
+      if (!projectId) return
+      if (from === 'child') {
+        tasks().fromChild(projectId, sessionId, line)
+        if (settingRequests.size && line.includes('"type":"control_response"')) {
+          const response = parseLine(line)?.response as { request_id?: unknown; subtype?: unknown } | undefined
+          const requestId = typeof response?.request_id === 'string' ? response.request_id : ''
+          const pending = settingRequests.get(requestId)
+          if (pending) {
+            settingRequests.delete(requestId)
+            if (response!.subtype === 'success') projects().update(pending.projectId, pending.patch)
+          }
+        }
+        return
+      }
+      tasks().fromClient(projectId, line)
+      if (!line.includes('"type":"control_request"')) return
+      const msg = parseLine(line)
+      const request = (msg?.request ?? {}) as Record<string, unknown>
+      const requestId = typeof msg?.request_id === 'string' ? msg.request_id : undefined
+      if (!requestId) return
+      if (request.subtype === 'set_model' && typeof request.model === 'string') {
+        const model = request.model === 'default' || !MODEL.test(request.model) ? null : request.model
+        settingRequests.set(requestId, { projectId, patch: { coordinator_model: model } })
+      }
+      const effort = (request.settings as { effortLevel?: unknown } | undefined)?.effortLevel
+      if (request.subtype === 'apply_flag_settings' && typeof effort === 'string' && EFFORT.test(effort)) {
+        settingRequests.set(requestId, { projectId, patch: { coordinator_effort: effort } })
+      }
+    },
+    exit(sessionId) {
+      const projectId = coordinators.get(sessionId)
+      if (!projectId) return
+      coordinators.delete(sessionId)
+      tasks().stopLive('exited', projectId)
+    },
   })
+
+  /** A task with its tokens read from the worker's transcript while its progress has none yet. */
+  async function taskJson(task: Task): Promise<Task> {
+    if (task.tokens || (task.state !== 'running' && task.state !== 'blocked')) return task
+    const page = await readAgentTranscript(task.session_id, task.agent_id).catch(() => undefined)
+    return page ? { ...task, tokens: transcriptTokens(page.messages) } : task
+  }
 
   /**
    *   GET    /api/projects                  → projects, newest change first
@@ -594,7 +661,10 @@ export function startWebServer(
    */
   async function handleProjects(req: Request, pathname: string): Promise<Response> {
     if (pathname === '/api/projects') {
-      if (req.method === 'GET') return Response.json(projects().list().map(projectJson))
+      if (req.method === 'GET') {
+        const counts = tasks().counts()
+        return Response.json(projects().list().map(p => projectJson(p, counts)))
+      }
       if (req.method !== 'POST') return errorResponse(405, 'Method not allowed')
       const parsed = createProjectBodySchema().safeParse(await readJson(req))
       if (!parsed.success) return errorResponse(400, 'Invalid request')
@@ -617,10 +687,11 @@ export function startWebServer(
     if (!id || !SESSION_ID.test(id)) return errorResponse(400, 'Invalid project id')
     const project = projects().get(id)
     if (!project || project.archived_at !== null) return errorResponse(404, 'Project not found')
-    if (match![2]) {
+    if (match![2] === 'coordinator') {
       if (req.method !== 'POST') return errorResponse(405, 'Method not allowed')
       return openCoordinator(project)
     }
+    if (match![2] === 'tasks') return handleTasks(req, project, match![3], match![4])
     if (req.method === 'PATCH') {
       const parsed = patchProjectBodySchema().safeParse(await readJson(req))
       if (!parsed.success) return errorResponse(400, 'Invalid request')
@@ -631,6 +702,8 @@ export function startWebServer(
       if (changed && updated.coordinator_session_id) {
         sessionManager.restart(updated.coordinator_session_id, {
           permissionMode: updated.permission_mode,
+          ...(updated.coordinator_model && { model: updated.coordinator_model }),
+          ...(updated.coordinator_effort && { effort: updated.coordinator_effort }),
           coordinator: coordinatorSpawn(updated),
         })
       }
@@ -645,6 +718,43 @@ export function startWebServer(
     return errorResponse(405, 'Method not allowed')
   }
 
+  /**
+   *   GET  /api/projects/:id/tasks                       → the project's tasks, oldest first
+   *   GET  /api/projects/:id/tasks/:task/transcript?after= → { messages, next }: the worker's
+   *                                                          conversation from message `after` on
+   *   POST /api/projects/:id/tasks/:task/review          → mark a finished task done
+   */
+  async function handleTasks(
+    req: Request,
+    project: Project,
+    rawTaskId: string | undefined,
+    action: string | undefined,
+  ): Promise<Response> {
+    if (rawTaskId === undefined) {
+      if (req.method !== 'GET') return errorResponse(405, 'Method not allowed')
+      return Response.json(await Promise.all(tasks().list(project.id).map(taskJson)))
+    }
+    const taskId = decodeURIComponent(rawTaskId)
+    if (!AGENT_ID.test(taskId)) return errorResponse(400, 'Invalid task id')
+    const task = tasks().get(project.id, taskId)
+    if (!task) return errorResponse(404, 'Task not found')
+    if (action === 'review') {
+      if (req.method !== 'POST') return errorResponse(405, 'Method not allowed')
+      return Response.json(tasks().review(project.id, taskId))
+    }
+    if (action === 'transcript' && req.method === 'GET') {
+      const url = new URL(req.url)
+      const page = await readAgentTranscript(task.session_id, task.agent_id)
+      const messages = page?.messages ?? []
+      const after = intParam(url, 'after', 0, Number.MAX_SAFE_INTEGER)
+      // A transcript shorter than what the page has was rewritten: send it whole.
+      const from = after > messages.length ? 0 : after
+      return Response.json({ messages: messages.slice(from), next: messages.length, reset: from !== after, tokens: transcriptTokens(messages) })
+    }
+    if (action === undefined && req.method === 'GET') return Response.json(await taskJson(task))
+    return errorResponse(405, 'Method not allowed')
+  }
+
   /** The running coordinator, else its transcript resumed, else a new one recorded on the project. */
   async function openCoordinator(project: Project): Promise<Response> {
     if (!isDirectory(project.cwd)) return errorResponse(400, 'Not a directory')
@@ -655,10 +765,13 @@ export function startWebServer(
       const session = sessionManager.create({
         cwd: project.cwd,
         permissionMode: project.permission_mode,
+        ...(project.coordinator_model && { model: project.coordinator_model }),
+        ...(project.coordinator_effort && { effort: project.coordinator_effort }),
         resume,
         channels: ext.readDefaultChannels(config.configDir ?? getClaudeConfigHomeDir()),
         coordinator: coordinatorSpawn(project),
       })
+      coordinators.set(session.id, project.id)
       if (session.id !== previous) projects().update(project.id, { coordinator_session_id: session.id })
       return Response.json({ session_id: session.id, work_dir: session.workDir })
     } catch (err) {

@@ -457,5 +457,13 @@
   "taskPhEnded": "Message this task; it resumes with its context",
   "taskModelNext": "Model · applies from the next message",
   "taskModelLocked": "A running task keeps its model",
-  "taskBoardTitle": "Task board"
+  "taskBoardTitle": "Task board",
+  "taskQueued": "Queued, delivered between tool calls",
+  "taskResumed": "Resumed this task in the background",
+  "taskStoppedRestart": "Stopped by a server restart; send a message to continue",
+  "taskStoppedExited": "Stopped when the coordinator exited; send a message to continue",
+  "taskFailedReason": "Failed: {error}",
+  "taskOpen": "Open task",
+  "copyBrief": "Copy brief",
+  "taskMenu": "Task actions"
 }

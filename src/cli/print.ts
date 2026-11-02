@@ -291,6 +291,7 @@ import {
   recordTranscript,
   searchSessionsByCustomTitle,
   getSessionIdFromLog,
+  getAgentTranscriptPath,
 } from 'src/utils/sessionStorage.js'
 import { incrementPromptCount } from 'src/utils/commitAttribution.js'
 import feedbackCommand, { feedbackDisabledReason } from '../commands/feedback/index.js'
@@ -430,7 +431,8 @@ import {
   startQueryProfile,
   logQueryProfileReport,
 } from 'src/utils/queryProfiler.js'
-import { asSessionId } from 'src/types/ids.js'
+import { asAgentId, asSessionId } from 'src/types/ids.js'
+import { existsSync } from 'fs'
 import { jsonStringify } from '../utils/slowOperations.js'
 import { skillChangeDetector } from '../utils/skills/skillChangeDetector.js'
 import { getCommands, clearCommandsCache } from '../commands.js'
@@ -5129,19 +5131,33 @@ function runHeadlessStreaming(
         } else if (message.request.subtype === 'send_task_message') {
           // Fork-only: typing into a viewed agent (REPL onAgentSubmit) for
           // hosts without the Ink UI.
-          const { task_id: taskId, text } = message.request
+          const { task_id: taskId, text, model, effort } = message.request
           if (typeof taskId !== 'string' || typeof text !== 'string' || !text.trim()) {
             sendControlResponseError(message, 'send_task_message: task_id and text must be non-empty strings')
           } else {
             const task = getAppState().tasks[taskId]
+            // An agent from before a restart is gone from AppState; its transcript can still resume it.
+            const fromTranscript =
+              task === undefined &&
+              /^[\w-]{1,100}$/.test(taskId) &&
+              existsSync(getAgentTranscriptPath(asAgentId(taskId)))
             try {
-              const delivery = deliverTaskMessage(isMainSessionTask(task) ? undefined : task, text, setAppState)
+              const delivery = fromTranscript
+                ? 'resume'
+                : deliverTaskMessage(isMainSessionTask(task) ? undefined : task, text, setAppState)
               if (delivery !== 'resume') {
                 sendControlResponseSuccess(message, { delivery })
               } else {
                 void import('../tools/AgentTool/resumeAgent.js')
                   .then(({ resumeAgentBackground }) =>
-                    resumeAgentBackground({ agentId: taskId, prompt: text, toolUseContext: getModToolContext(), canUseTool }),
+                    resumeAgentBackground({
+                      agentId: taskId,
+                      prompt: text,
+                      toolUseContext: getModToolContext(),
+                      canUseTool,
+                      ...(typeof model === 'string' && model && { model }),
+                      ...(typeof effort === 'string' && effort && { effort }),
+                    }),
                   )
                   .then(
                     () => sendControlResponseSuccess(message, { delivery: 'resumed' }),
