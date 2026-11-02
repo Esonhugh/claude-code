@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test'
-import { appReducer, groupHistory, initialAppState } from './store'
+import { appReducer, groupSidebar, initialAppState } from './store'
 
 const replay = (uuid: string, text: string) => ({
   type: 'user',
@@ -8,31 +8,53 @@ const replay = (uuid: string, text: string) => ({
   message: { role: 'user', content: text },
 })
 
-describe('groupHistory', () => {
-  it('groups by folder, newest group first, and filters by title or path', () => {
+describe('groupSidebar', () => {
+  it('groups by folder, folders by last change, and filters by title or path', () => {
     const entries = [
       { id: 'a', title: 'Alpha', cwd: '/w/one', lastModified: 1 },
       { id: 'b', title: 'Beta', cwd: '/w/two', lastModified: 5 },
       { id: 'c', title: 'Gamma', cwd: '/w/one', lastModified: 3 },
     ]
-    const groups = groupHistory(entries)
-    expect(groups.map(g => g.name)).toEqual(['two', 'one'])
-    expect(groups[1]!.entries.map(e => e.id)).toEqual(['c', 'a'])
-    expect(groupHistory(entries, 'gam').map(g => g.entries.map(e => e.id))).toEqual([['c']])
-    expect(groupHistory(entries, '/w/two')[0]!.entries[0]!.id).toBe('b')
+    const { folders } = groupSidebar(entries)
+    expect(folders.map(g => [g.name, g.lastChange, g.count])).toEqual([['two', 5, 1], ['one', 3, 2]])
+    expect(folders[1]!.entries.map(e => e.id)).toEqual(['c', 'a'])
+    // A file written in /w/one after the last session moves the folder up.
+    expect(groupSidebar(entries, { folders: { '/w/one': 9 } }).folders.map(g => g.name)).toEqual(['one', 'two'])
+    expect(groupSidebar(entries, { filter: 'gam' }).folders.map(g => g.entries.map(e => e.id))).toEqual([['c']])
+    expect(groupSidebar(entries, { filter: '/w/two' }).folders[0]!.entries[0]!.id).toBe('b')
   })
 
-  it('puts temporary chats, each in its own folder, into one group', () => {
+  it('puts pinned sessions and temporary chats in their own sections', () => {
     const entries = [
       { id: 'a', title: 'Alpha', cwd: '/c/web/temp/chat-1', lastModified: 1 },
-      { id: 'b', title: 'Beta', cwd: '/w/two', lastModified: 5 },
+      { id: 'b', title: 'Beta', cwd: '/w/two', lastModified: 5, pinnedAt: 1 },
       { id: 'c', title: 'Gamma', cwd: '/c/web/temp/chat-2', lastModified: 3 },
+      { id: 'd', title: 'Delta', cwd: '/w/two', lastModified: 4 },
     ]
-    const groups = groupHistory(entries, '', '/c/web/temp')
-    expect(groups.map(g => [g.cwd, g.temp ?? false, g.entries.map(e => e.id)])).toEqual([
-      ['/w/two', false, ['b']],
-      ['/c/web/temp', true, ['c', 'a']],
-    ])
+    const groups = groupSidebar(entries, { tempRoot: '/c/web/temp' })
+    expect(groups.pinned.map(e => e.id)).toEqual(['b'])
+    expect(groups.temporary.map(e => e.id)).toEqual(['c', 'a'])
+    expect(groups.folders.map(g => [g.cwd, g.count, g.entries.map(e => e.id)])).toEqual([['/w/two', 2, ['d']]])
+  })
+
+  it('orders pinned sessions as their folders are ordered', () => {
+    const entries = [
+      { id: 'a', title: 'A', cwd: '/w/old', lastModified: 9, pinnedAt: 1 },
+      { id: 'b', title: 'B', cwd: '/w/new', lastModified: 2, pinnedAt: 1 },
+      { id: 'c', title: 'C', cwd: '/w/new', lastModified: 10 },
+    ]
+    const groups = groupSidebar(entries, { folders: { '/w/old': 9, '/w/new': 20 } })
+    expect(groups.pinned.map(e => e.id)).toEqual(['b', 'a'])
+  })
+
+  it('hides archived sessions unless searching, and sessions moved into a project', () => {
+    const entries = [
+      { id: 'a', title: 'Alpha', cwd: '/w', lastModified: 1, archived: true },
+      { id: 'b', title: 'Beta', cwd: '/w', lastModified: 2, projectId: 'p1' },
+      { id: 'c', title: 'Gamma', cwd: '/w', lastModified: 3 },
+    ]
+    expect(groupSidebar(entries).folders[0]!.entries.map(e => e.id)).toEqual(['c'])
+    expect(groupSidebar(entries, { filter: 'alp' }).folders[0]!.entries.map(e => e.id)).toEqual(['a'])
   })
 })
 
@@ -82,11 +104,13 @@ describe('appReducer', () => {
     state = appReducer(state, {
       type: 'history',
       entries: [{ id: 'disk', title: 'Disk', lastModified: 2 }],
-      append: false,
-      done: true,
+      folders: {},
+      more: false,
     })
     expect(state.history.map(h => h.id)).toEqual(['fresh', 'disk'])
-    state = appReducer(state, { type: 'renamed', id: 'disk', title: 'Renamed' })
-    expect(state.history[1]!.title).toBe('Renamed')
+    state = appReducer(state, { type: 'meta', id: 'disk', patch: { title: 'Renamed', pinnedAt: 1 } })
+    expect(state.history[1]).toMatchObject({ title: 'Renamed', pinnedAt: 1 })
+    state = appReducer(state, { type: 'removed', id: 'fresh' })
+    expect(state.history.map(h => h.id)).toEqual(['disk'])
   })
 })

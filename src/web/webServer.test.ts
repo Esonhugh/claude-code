@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'bun:test'
 import { spawn } from 'child_process'
-import { mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from 'fs'
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from 'fs'
 import { homedir, hostname, networkInterfaces, tmpdir } from 'os'
 import { join } from 'path'
 import type { SpawnSessionOptions } from '../server/backends/dangerousBackend.js'
@@ -270,6 +270,66 @@ describe('claude web server', () => {
       temp_root: join(r.configDir, 'web', 'temp'),
       home: homedir(),
     })
+  })
+
+  it('keeps sidebar marks and deletes transcripts behind the cookie and origin checks', async () => {
+    const r = start()
+    const prior = process.env.CLAUDE_CONFIG_DIR
+    process.env.CLAUDE_CONFIG_DIR = r.configDir
+    try {
+      const cookie = await signIn(r)
+      const id = '99999999-2222-4333-8444-555555555555'
+      const dir = join(r.configDir, 'projects', r.workspace.replace(/[^a-zA-Z0-9]/g, '-'))
+      mkdirSync(dir, { recursive: true })
+      const line = { type: 'user', sessionId: id, cwd: r.workspace, uuid: 'a0000000-0000-4000-8000-000000000001', message: { role: 'user', content: 'hello there' } }
+      writeFileSync(join(dir, `${id}.jsonl`), JSON.stringify(line) + '\n')
+      const meta = (body: unknown, opts: { sid?: string; origin?: string; cookie?: string } = {}) =>
+        fetch(`${r.base}/api/sessions/${opts.sid ?? id}/meta`, {
+          method: 'PATCH',
+          headers: { cookie: opts.cookie ?? cookie, origin: opts.origin ?? r.origin },
+          body: JSON.stringify(body),
+        })
+
+      expect((await fetch(`${r.base}/api/sidebar`)).status).toBe(401)
+      expect((await meta({ pinned: true }, { cookie: '' })).status).toBe(401)
+      expect((await meta({ pinned: true }, { origin: 'https://evil.example' })).status).toBe(403)
+      expect((await meta({ pinned: true }, { sid: '..%2F..%2Fetc' })).status).toBe(400)
+      expect((await meta({})).status).toBe(400)
+      expect((await meta({ pinned: 'yes' })).status).toBe(400)
+      expect((await meta({ title: '   ' })).status).toBe(400)
+      expect((await meta({ extra: 1 })).status).toBe(400)
+      expect((await meta({ project_id: '../x' })).status).toBe(400)
+      expect((await meta({ project_id: 'p1' })).status).toBe(400)
+
+      const pinned = await meta({ pinned: true, unread: true, title: ' Renamed ' })
+      expect(pinned.status).toBe(200)
+      expect(await pinned.json()).toMatchObject({ title: 'Renamed', unread: true })
+      const sidebar = (await (await fetch(`${r.base}/api/sidebar`, { headers: { cookie } })).json()) as {
+        sessions: { id: string; title: string; pinnedAt?: number; unread?: boolean }[]
+        folders: Record<string, number>
+      }
+      expect(sidebar.sessions).toEqual([
+        expect.objectContaining({ id, title: 'Renamed', label: 'title', unread: true, cwd: r.workspace }),
+      ])
+      expect(sidebar.sessions[0]!.pinnedAt).toBeNumber()
+      expect(Object.keys(sidebar.folders)).toEqual([r.workspace])
+
+      const del = (sid: string, opts: { origin?: string } = {}) =>
+        fetch(`${r.base}/api/sessions/${sid}?transcript=1`, {
+          method: 'DELETE',
+          headers: { cookie, origin: opts.origin ?? r.origin },
+        })
+      expect((await del(id, { origin: 'https://evil.example' })).status).toBe(403)
+      expect((await del('..%2F..%2Fetc')).status).toBe(400)
+      expect((await del(id)).status).toBe(204)
+      expect(existsSync(join(dir, `${id}.jsonl`))).toBe(false)
+      expect((await del(id)).status).toBe(404)
+      const after = (await (await fetch(`${r.base}/api/sidebar`, { headers: { cookie } })).json()) as { sessions: unknown[] }
+      expect(after.sessions).toEqual([])
+    } finally {
+      if (prior === undefined) delete process.env.CLAUDE_CONFIG_DIR
+      else process.env.CLAUDE_CONFIG_DIR = prior
+    }
   })
 
   it('starts a temporary chat in a fresh folder under the config dir', async () => {

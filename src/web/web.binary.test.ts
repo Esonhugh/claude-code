@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'bun:test'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, utimesSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 
@@ -457,7 +457,7 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       // The chat from the previous test is listed under the workspace group.
       const row = page.locator('.session-row', { hasText: 'hi there' })
       await row.waitFor({ timeout: 15_000 })
-      expect(await page.locator('.proj-t small').first().textContent()).toBe('~/workspace')
+      expect(await page.locator('.proj-t b').first().textContent()).toBe('workspace')
       await row.locator('.session-title').click()
       await page.locator('.feed').getByText('Hello from the fake model').waitFor()
       await page.getByText('show MARKDOWN').waitFor()
@@ -466,12 +466,17 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
 
       // The listing may retitle the row once the transcript has a summary.
       const active = page.locator('.session-row[aria-current="true"]')
-      await active.getByRole('button', { name: 'Stop session' }).click()
+      await page.evaluate(async () => {
+        for (const s of (await (await fetch('/api/sessions')).json()) as { id: string }[]) {
+          await fetch(`/api/sessions/${s.id}`, { method: 'DELETE' })
+        }
+      })
       await page.locator('.status-readonly').waitFor({ timeout: 15_000 })
       await page.waitForFunction(() => !document.querySelector('.session-row .live'))
 
-      await active.getByRole('button', { name: 'Rename' }).click()
-      const rename = page.locator('input.rename')
+      await active.click({ button: 'right' })
+      await page.getByRole('menuitem', { name: /Rename/ }).click()
+      const rename = page.locator('input.ren')
       await rename.fill('Renamed chat')
       await rename.press('Enter')
       await page.locator('.session-row', { hasText: 'Renamed chat' }).waitFor()
@@ -492,6 +497,126 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       await page.locator('.session-row', { hasText: 'Renamed chat' }).waitFor({ timeout: 15_000 })
       await page.getByRole('button', { name: '+ New session' }).click()
       await page.locator('.wl-hi').waitFor()
+      expect(errors).toEqual([])
+    } finally {
+      await browser.close()
+    }
+  }, 120_000)
+
+  it('pins, renames, marks unread, orders folders by activity, shows the hover card and deletes', async () => {
+    // Two older sessions in another folder, written as transcripts on disk.
+    const other = join(home, 'other')
+    mkdirSync(other, { recursive: true })
+    const projectDir = join(home, '.claude', 'projects', other.replace(/[^a-zA-Z0-9]/g, '-'))
+    mkdirSync(projectDir, { recursive: true })
+    const seed = (id: string, title: string) => {
+      const file = join(projectDir, `${id}.jsonl`)
+      const at = new Date(Date.now() - 3 * 864e5)
+      const base = { sessionId: id, cwd: other, timestamp: at.toISOString(), isSidechain: false }
+      writeFileSync(
+        file,
+        [
+          { ...base, type: 'user', uuid: crypto.randomUUID(), parentUuid: null, message: { role: 'user', content: title } },
+          { type: 'custom-title', sessionId: id, customTitle: title },
+        ]
+          .map(l => JSON.stringify(l))
+          .join('\n') + '\n',
+      )
+      utimesSync(file, at, at)
+      return file
+    }
+    const keepId = 'aaaaaaaa-1111-4222-8333-444444444444'
+    const dropId = 'bbbbbbbb-1111-4222-8333-444444444444'
+    seed(keepId, 'Old note')
+    const dropFile = seed(dropId, 'Delete me')
+
+    const playwrightPath = Bun.spawnSync(['node', '-p', "require.resolve('playwright')"]).stdout.toString().trim()
+    const { chromium } = await import(playwrightPath)
+    const browser = await chromium.launch()
+    try {
+      const context = await browser.newContext({ locale: 'en-US', viewport: { width: 1440, height: 900 } })
+      const page = await context.newPage()
+      const errors: string[] = []
+      page.on('pageerror', (e: Error) => errors.push(e.message))
+      await page.goto(signInUrl)
+      const row = (title: string) => page.locator('#sessions .history .sess', { hasText: title })
+      const folders = () => page.locator('.proj-t b').allTextContents()
+      const sections = () => page.locator('.sb-h > button:first-child').allTextContents()
+      await row('Old note').waitFor({ timeout: 15_000 })
+      expect((await folders()).slice(0, 2)).toEqual(['workspace', 'other'])
+
+      // Pin from the row's hover button; it survives a reload.
+      await row('Old note').hover()
+      await row('Old note').locator('..').getByRole('button', { name: 'Pin' }).click()
+      await page.locator('.sb-sec').first().getByText('Old note').waitFor()
+      await page.reload()
+      await row('Old note').first().waitFor({ timeout: 15_000 })
+      expect((await sections())[0]).toContain('Pinned')
+      expect(await page.locator('.sb-sec').first().locator('.sess').allTextContents()).toEqual(['Old note'])
+
+      // Rename from the right-click menu (R), inline.
+      await row('Old note').click({ button: 'right' })
+      await page.locator('.ctxmenu').waitFor()
+      await page.keyboard.press('r')
+      const input = page.locator('input.ren')
+      await input.fill('Kept note')
+      await input.press('Enter')
+      await row('Kept note').waitFor()
+
+      // Esc closes the menu; U marks unread: bold title and a blue dot.
+      await row('Kept note').click({ button: 'right' })
+      await page.keyboard.press('Escape')
+      await page.locator('.ctxmenu').waitFor({ state: 'detached' })
+      await row('Kept note').click({ button: 'right' })
+      await page.keyboard.press('u')
+      await page.locator('.sess.unread', { hasText: 'Kept note' }).locator('.ud').waitFor()
+      await page.reload()
+      await page.locator('.sess.unread', { hasText: 'Kept note' }).waitFor({ timeout: 15_000 })
+
+      // The hover card: fields that are known, the pointer can rest on it and its text can be selected.
+      await page.mouse.move(800, 400)
+      await row('Delete me').hover()
+      const card = page.locator('.sbtip')
+      await card.waitFor()
+      expect(await card.textContent()).toContain('Folder ~/other')
+      expect(await card.textContent()).toContain(`ID ${dropId}`)
+      expect(await card.textContent()).not.toContain('Changes')
+      const id = card.locator('i.mono')
+      await id.hover()
+      await page.waitForTimeout(500)
+      expect(await card.isVisible()).toBe(true)
+      await id.click({ clickCount: 3 })
+      expect(await page.evaluate(() => getSelection()?.toString().trim())).toBe(dropId)
+
+      // Opening an unread session marks it read and closes the card.
+      await row('Kept note').click()
+      await card.waitFor({ state: 'detached' })
+      await page.waitForFunction(() => !document.querySelector('.sess.unread'))
+
+      // Activity in the other folder moves it to the top.
+      const message = page.getByLabel('Message', { exact: true })
+      await message.click()
+      await page.locator('.status-live').waitFor({ timeout: 30_000 })
+      await message.fill('hello from other')
+      await message.press('Enter')
+      await page.locator('.feed').getByText('Hello from the fake model').waitFor({ timeout: 30_000 })
+      await page.waitForFunction(() => document.querySelector('.proj-t b')?.textContent === 'other', null, { timeout: 15_000 })
+      await page.evaluate(async () => {
+        for (const s of (await (await fetch('/api/sessions')).json()) as { id: string }[]) {
+          await fetch(`/api/sessions/${s.id}`, { method: 'DELETE' })
+        }
+      })
+
+      // Delete asks inside the menu first.
+      await row('Delete me').click({ button: 'right' })
+      await page.keyboard.press('d')
+      await page.locator('.ctxq').getByText('Delete "Delete me"? This can\'t be undone.').waitFor()
+      await page.locator('.ctxmenu .btn.danger').click()
+      await row('Delete me').waitFor({ state: 'detached' })
+      expect(existsSync(dropFile)).toBe(false)
+      await page.reload()
+      await row('Kept note').waitFor({ timeout: 15_000 })
+      expect(await row('Delete me').count()).toBe(0)
       expect(errors).toEqual([])
     } finally {
       await browser.close()

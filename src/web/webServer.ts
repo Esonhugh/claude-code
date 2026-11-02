@@ -32,6 +32,8 @@ import {
   SESSION_ID,
 } from './history.js'
 import { type AccountBackend, createAccountApi } from './account.js'
+import { deleteSessionMeta, patchSessionMeta, projectExists, projectsDb } from './projectsDb.js'
+import { deleteTranscript, loadSidebar } from './sidebar.js'
 import * as ext from './extensions.js'
 import { isAllowedPeer, lanHostNames } from './network.js'
 import {
@@ -145,6 +147,7 @@ const createSessionBodySchema = lazySchema(() =>
 
 const WS_PATH = /^\/api\/sessions\/([^/]+)\/ws$/
 const SESSION_PATH = /^\/api\/sessions\/([^/]+)$/
+const SESSION_META_PATH = /^\/api\/sessions\/([^/]+)\/meta$/
 const HISTORY_PATH = /^\/api\/history\/([^/]+)$/
 const HISTORY_MESSAGES_PATH = /^\/api\/history\/([^/]+)\/messages$/
 const AGENT_MESSAGES_PATH = /^\/api\/history\/([^/]+)\/agents\/([^/]+)\/messages$/
@@ -187,6 +190,19 @@ function fileResponse(req: Request, path: string, download: boolean): Response {
 
 const renameBodySchema = lazySchema(() =>
   z.object({ title: z.string().trim().min(1).max(200) }),
+)
+
+// The sidebar's marks on a session; `title: null` drops a rename.
+const sessionMetaBodySchema = lazySchema(() =>
+  z
+    .strictObject({
+      title: z.string().trim().min(1).max(200).nullable().optional(),
+      pinned: z.boolean().optional(),
+      unread: z.boolean().optional(),
+      archived: z.boolean().optional(),
+      project_id: z.string().regex(/^[\w-]{1,100}$/).nullable().optional(),
+    })
+    .refine(body => Object.keys(body).length > 0),
 )
 
 function intParam(url: URL, name: string, fallback: number, max: number): number {
@@ -392,6 +408,9 @@ function isDirectory(path: string): boolean {
  *                                          409 { needs_trust } for an untrusted folder
  *   GET    /api/sessions/:id/ws         → stream-json relay to the session
  *   DELETE /api/sessions/:id            → stop the session
+ *   DELETE /api/sessions/:id?transcript=1 → stop it and delete its transcript
+ *   PATCH  /api/sessions/:id/meta       → pin, unread, rename, archive, move to project
+ *   GET    /api/sidebar?limit=          → sessions with their marks, folders' last change
  *   GET    /api/history                 → transcripts on disk, newest first
  *   GET    /api/history/:id/messages    → a page of one transcript
  *   PATCH  /api/history/:id             → rename (custom title)
@@ -426,6 +445,7 @@ export function startWebServer(
     return res
   }
   const uploadLimits = config.uploadLimits ?? DEFAULT_UPLOAD_LIMITS
+  const db = () => projectsDb(join(config.configDir ?? getClaudeConfigHomeDir(), 'web', 'projects.sqlite'))
   let accountApi: ReturnType<typeof createAccountApi> | undefined
   const handleAccount = async (req: Request, url: URL) => {
     accountApi ??= createAccountApi(
@@ -582,6 +602,19 @@ export function startWebServer(
         })),
       )
     }
+    if (pathname === '/api/sidebar' && req.method === 'GET') {
+      return Response.json(await loadSidebar(db(), intParam(url, 'limit', 200, 2000) || 200))
+    }
+    const metaMatch = SESSION_META_PATH.exec(pathname)
+    if (metaMatch && req.method === 'PATCH') {
+      const id = decodeURIComponent(metaMatch[1]!)
+      if (!SESSION_ID.test(id)) return errorResponse(400, 'Invalid session id')
+      const parsed = sessionMetaBodySchema().safeParse(await readJson(req))
+      if (!parsed.success) return errorResponse(400, 'Invalid request')
+      const projectId = parsed.data.project_id
+      if (projectId && !projectExists(db(), projectId)) return errorResponse(400, 'Unknown project')
+      return Response.json(patchSessionMeta(db(), id, parsed.data))
+    }
     if (pathname === '/api/history' && req.method === 'GET') {
       return Response.json(
         await listHistory(
@@ -665,9 +698,15 @@ export function startWebServer(
     }
     const sessionMatch = SESSION_PATH.exec(pathname)
     if (sessionMatch && req.method === 'DELETE') {
-      const found = await sessionManager.destroy(
-        decodeURIComponent(sessionMatch[1]!),
-      )
+      const id = decodeURIComponent(sessionMatch[1]!)
+      if (url.searchParams.get('transcript') === '1') {
+        if (!SESSION_ID.test(id)) return errorResponse(400, 'Invalid session id')
+        await sessionManager.destroy(id)
+        if (!(await deleteTranscript(id))) return errorResponse(404, 'Session not found')
+        deleteSessionMeta(db(), id)
+        return new Response(null, { status: 204 })
+      }
+      const found = await sessionManager.destroy(id)
       return found
         ? new Response(null, { status: 204 })
         : errorResponse(404, 'Session not found')
