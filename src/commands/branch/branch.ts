@@ -4,6 +4,7 @@ import { getOriginalCwd, getSessionId } from '../../bootstrap/state.js'
 import type { LocalJSXCommandContext } from '../../commands.js'
 import { logEvent } from '../../services/analytics/index.js'
 import type { LocalJSXCommandOnDone } from '../../types/command.js'
+import type { Message } from '../../types/message.js'
 import type {
   ContentReplacementEntry,
   Entry,
@@ -15,6 +16,7 @@ import { parseJSONL } from '../../utils/json.js'
 import {
   getProjectDir,
   getTranscriptPath,
+  getCurrentSessionTitle,
   getTranscriptPathForSession,
   isTranscriptMessage,
   saveCustomTitle,
@@ -58,7 +60,10 @@ export function deriveFirstPrompt(
  * Preserves all original metadata (timestamps, gitBranch, etc.) while updating
  * sessionId and adding forkedFrom traceability.
  */
-async function createFork(customTitle?: string): Promise<{
+async function createFork(
+  customTitle?: string,
+  extraMessages: Message[] = [],
+): Promise<{
   sessionId: UUID
   startedAt: number
   title: string | undefined
@@ -149,6 +154,25 @@ async function createFork(customTitle?: string): Promise<{
     }
   }
 
+  // Messages that exist only in memory (e.g. a /btw exchange) continue the
+  // branch after the copied transcript, like 2.1.311.
+  const last = mainConversationEntries.at(-1)!
+  for (const message of extraMessages) {
+    const serialized = {
+      ...message,
+      cwd: last.cwd,
+      userType: last.userType,
+      entrypoint: last.entrypoint,
+      version: last.version,
+      gitBranch: last.gitBranch,
+      sessionId: forkSessionId,
+      timestamp: new Date().toISOString(),
+    } as SerializedMessage
+    serializedMessages.push(serialized)
+    lines.push(jsonStringify({ ...serialized, parentUuid, isSidechain: false }))
+    if (message.type !== 'progress') parentUuid = message.uuid
+  }
+
   // Append content-replacement entry (if any) with the fork's sessionId.
   // Written as a SINGLE entry (same shape as insertContentReplacement) so
   // loadTranscriptFile's content-replacement branch picks it up.
@@ -229,8 +253,19 @@ export async function call(
   context: LocalJSXCommandContext,
   args: string,
 ): Promise<React.ReactNode> {
-  const customTitle = args?.trim() || undefined
+  await branchAndResume(context, onDone, { customTitle: args?.trim() || undefined })
+  return null
+}
 
+/** Branch the conversation and resume into the branch; false on failure. */
+export async function branchAndResume(
+  context: Pick<LocalJSXCommandContext, 'resume'>,
+  onDone: LocalJSXCommandOnDone,
+  {
+    customTitle,
+    extraMessages,
+  }: { customTitle?: string; extraMessages?: Message[] } = {},
+): Promise<boolean> {
   const originalSessionId = getSessionId()
 
   try {
@@ -241,7 +276,7 @@ export async function call(
       serializedMessages,
       contentReplacementRecords,
       startedAt,
-    } = await createFork(customTitle)
+    } = await createFork(customTitle, extraMessages)
 
     // Build LogOption for resume
     const now = new Date()
@@ -253,8 +288,11 @@ export async function call(
     // This ensures /status and /resume show the same session name
     // Always add " (Branch)" suffix to make it clear this is a branched session
     // Handle collisions by adding a number suffix (e.g., " (Branch 2)", " (Branch 3)")
-    const baseName = title ?? firstPrompt
-    const effectiveTitle = await getUniqueForkName(baseName)
+    // 2.1.311 keeps an explicit title as typed; only the derived one gets
+    // the " (Branch)" suffix.
+    const effectiveTitle =
+      title?.replace(/\s+/g, ' ').trim() ||
+      (await getUniqueForkName(firstPrompt))
     await saveCustomTitle(sessionId, effectiveTitle, forkPath)
 
     logEvent('tengu_conversation_forked', {
@@ -279,9 +317,10 @@ export async function call(
     }
 
     // Resume into the fork
-    const titleInfo = title ? ` "${title}"` : ''
-    const resumeHint = `\nTo resume the original: claude -r ${originalSessionId}`
-    const successMessage = `Branched conversation${titleInfo}. You are now in the branch.${resumeHint}`
+    const titleInfo = title ? ` "${effectiveTitle}"` : ''
+    const originalTitle = getCurrentSessionTitle(originalSessionId)
+    const originalInfo = originalTitle ? ` ("${originalTitle}")` : ''
+    const successMessage = `Branched conversation${titleInfo}. You are now in the new branch (session ${sessionId}). Use /resume ${originalSessionId}${originalInfo} to return to the original, or run \`claude -r ${originalSessionId}\` in a new terminal.`
 
     if (context.resume) {
       await context.resume(sessionId, forkLog, 'fork')
@@ -293,11 +332,11 @@ export async function call(
       )
     }
 
-    return null
+    return true
   } catch (error) {
     const message =
       error instanceof Error ? error.message : 'Unknown error occurred'
     onDone(`Failed to branch conversation: ${message}`)
-    return null
+    return false
   }
 }

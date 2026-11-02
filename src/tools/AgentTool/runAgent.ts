@@ -3,6 +3,7 @@ import type { UUID } from 'crypto'
 import { randomUUID } from 'crypto'
 import uniqBy from 'lodash-es/uniqBy.js'
 import { logForDebugging } from 'src/utils/debug.js'
+import type { AgentOwnRequests } from '../../services/AgentSummary/agentSummary.js'
 import { addInvokedSkill, getIsNonInteractiveSession, getProjectRoot, getSessionId } from '../../bootstrap/state.js'
 import {
   getCommand,
@@ -78,7 +79,10 @@ import {
   getStopHookMessage,
 } from '../../utils/hooks.js'
 import { createUserMessage, wrapInSystemReminder } from '../../utils/messages.js'
-import { getAgentModel } from '../../utils/model/agent.js'
+import {
+  getAgentDefinitionModel,
+  getAgentModel,
+} from '../../utils/model/agent.js'
 import { getCanonicalName } from '../../utils/model/model.js'
 import {
   clearAgentTranscriptSubdir,
@@ -127,6 +131,7 @@ import {
   capAgentPermissionMode,
   resolveDeclaredAgentPermissionMode,
   shouldBubbleAgentPermissionPrompts,
+  withAgentPermissionMode,
 } from './permissionMode.js'
 import { getCurrentSubagentDepth } from './subagentDepth.js'
 import { getCommandAllowedTools } from '../../utils/permissions/permissionsLoader.js'
@@ -453,6 +458,7 @@ export async function* runAgent({
   toolUseContext,
   canUseTool,
   isAsync,
+  filterToolsAsAsync = isAsync,
   canShowPermissionPrompts,
   forkContextMessages,
   querySource,
@@ -484,6 +490,7 @@ export async function* runAgent({
   recordedUuids,
   extraMetadata,
   handback,
+  keepBackgroundShells,
 }: {
   agentDefinition: AgentDefinition
   /** Host-built named sections, before per-agent environment enhancement. */
@@ -492,6 +499,11 @@ export async function* runAgent({
   toolUseContext: ToolUseContext
   canUseTool: CanUseToolFn
   isAsync: boolean
+  /** Apply the async-agent tool allow-list. Defaults to isAsync. */
+  filterToolsAsAsync?: boolean
+  /** Leave this agent's background shells running on exit: its async lifecycle
+   * parks the agent on them and reclaims them itself. */
+  keepBackgroundShells?: boolean
   /** Whether this agent can show permission prompts. Defaults to !isAsync.
    * Set to true for in-process teammates that run async but share the terminal. */
   canShowPermissionPrompts?: boolean
@@ -530,7 +542,7 @@ export async function* runAgent({
   /** Optional callback invoked with CacheSafeParams after constructing the agent's
    * system prompt, context, and tools. Used by background summarization to fork
    * the agent's conversation for periodic progress summaries. */
-  onCacheSafeParams?: (params: CacheSafeParams) => void
+  onCacheSafeParams?: (params: CacheSafeParams, ownRequests: AgentOwnRequests) => void
   /** Replacement state reconstructed from a resumed sidechain transcript so
    * the same tool results are re-replaced (prompt cache stability). When
    * omitted, createSubagentContext clones the parent's state. */
@@ -607,7 +619,10 @@ export async function* runAgent({
 
   const resolvedAgentModel = resolvedModel ??
     getAgentModel(
-      agentDefinition.model,
+      getAgentDefinitionModel(
+        agentDefinition,
+        toolUseContext.options.mainLoopModel,
+      ),
       toolUseContext.options.mainLoopModel,
       model,
       permissionMode,
@@ -690,27 +705,15 @@ export async function* runAgent({
   }
   const resolvedUserContext = resolveUserContext(baseUserContext)
 
-  // Explore/Plan are read-only search agents — the parent-session-start
-  // gitStatus (up to 40KB, explicitly labeled stale) is dead weight. If they
-  // need git info they run `git status` themselves and get fresh data.
-  // Saves ~1-3 Gtok/week fleet-wide.
-  const { gitStatus: _omittedGitStatus, ...systemContextNoGit } =
-    baseSystemContext
-  const resolvedSystemContext =
-    agentDefinition.agentType === 'Explore' ||
-    agentDefinition.agentType === 'Plan'
-      ? systemContextNoGit
-      : baseSystemContext
-
   // Read fresh parent rules and mode; a fixed spawn mode stays fixed.
   let preloadedSkillAllowedTools: string[] = []
   const agentGetAppState = () => {
     const state = toolUseContext.getAppState()
     const mode = resolvePermissionMode(state.toolPermissionContext.mode)
-    let toolPermissionContext =
-      state.toolPermissionContext.mode === mode
-        ? state.toolPermissionContext
-        : { ...state.toolPermissionContext, mode }
+    let toolPermissionContext = withAgentPermissionMode(
+      state.toolPermissionContext,
+      mode,
+    )
 
     // Set flag to auto-deny prompts for agents that can't show UI
     // Use explicit canShowPermissionPrompts if provided, otherwise:
@@ -806,7 +809,7 @@ export async function* runAgent({
     : resolveAgentTools(
         { ...agentDefinition, permissionMode },
         availableTools,
-        isAsync,
+        filterToolsAsAsync,
         false,
         // Same depth the Agent tool's call-time limit check reads.
         getCurrentSubagentDepth({
@@ -1024,9 +1027,11 @@ export async function* runAgent({
       : resolvedTools
 
   // Like official 2.1.311, a new agent that can SendMessage learns which other
-  // named agents in this session it can reach.
+  // named agents in this session it can reach. A transcript with recorded
+  // messages (a teammate's later turns) does not get it again.
   if (
     contentReplacementState === undefined &&
+    !recordedUuids?.size &&
     mergedTools.some(tool => tool.name === SEND_MESSAGE_TOOL_NAME) &&
     !initialMessages.some(message => message.type === 'user' && message.isMeta && typeof message.message.content === 'string' && message.message.content.includes(OTHER_AGENTS_ACTIVE))
   ) {
@@ -1035,10 +1040,14 @@ export async function* runAgent({
       .map(([name]) => name)
       .sort()
     if (names.length > 0) {
-      initialMessages.push(createUserMessage({
+      const reminder = createUserMessage({
         content: wrapInSystemReminder(`${OTHER_AGENTS_ACTIVE}({to: name, message}): ${escapeXml([MAIN_RECIPIENT, ...names].join(', '))}.`),
         isMeta: true,
-      }))
+      })
+      initialMessages.push(reminder)
+      // Official yields it like its other start-of-run attachments, so a
+      // teammate keeps it in its history instead of getting it every turn.
+      yield reminder
     }
   }
 
@@ -1185,6 +1194,12 @@ export async function* runAgent({
   let queryIterator: ReturnType<typeof query> | undefined
   let queryIteratorDone = false
   const subagentMessages = [...initialMessages]
+  const ownRequests: AgentOwnRequests = {
+    requestsBegun: 0,
+    responsesBegun: 0,
+    isAwaitingResponse: false,
+    lastResponseAt: undefined,
+  }
   const finishModConversation = toolUseContext.mods?.trackConversation({
     agentId, sessionId: getSessionId(), messages: () => subagentMessages,
     toolUseId, workflow: transcriptSubdir !== undefined, parentAgentId: toolUseContext.agentId,
@@ -1197,11 +1212,12 @@ export async function* runAgent({
       userContext: resolvedUserContext,
       refreshUserContext: async () =>
         resolveUserContext(override?.userContext ?? await getUserContext()),
-      systemContext: resolvedSystemContext,
+      systemContext: baseSystemContext,
       canUseTool,
       toolUseContext: agentToolUseContext,
       querySource,
-      onCacheSafeParams,
+      onCacheSafeParams: onCacheSafeParams &&
+        (params => onCacheSafeParams(params, ownRequests)),
       maxTurns: maxTurns ?? agentDefinition.maxTurns,
     })
     while (true) {
@@ -1213,6 +1229,20 @@ export async function* runAgent({
       }
       const message = next.value
       if (message.type === 'assistant' || message.type === 'stream_event') registeredTurn?.observe(message)
+      if (message.type === 'stream_request_start') {
+        ownRequests.requestsBegun++
+        ownRequests.isAwaitingResponse = true
+      } else if (
+        ownRequests.isAwaitingResponse &&
+        ((message.type === 'stream_event' &&
+          // @ts-ignore - recovered code
+          message.event.type === 'message_start') ||
+          (message.type === 'assistant' && !message.isApiErrorMessage))
+      ) {
+        ownRequests.responsesBegun++
+        ownRequests.isAwaitingResponse = false
+        ownRequests.lastResponseAt = Date.now()
+      }
       if (
         process.env.CLAUDE_CODE_RUN_AGENT_FAULT_INJECTION_FOR_TESTING ===
           'after_query_start' &&
@@ -1262,6 +1292,7 @@ export async function* runAgent({
 }
 )`,
           )
+          yield message
           break
         }
         yield message
@@ -1405,7 +1436,7 @@ export async function* runAgent({
     // Kill any background bash tasks this agent spawned. Without this, a
     // `run_in_background` shell loop (e.g. test fixture fake-logs.sh) outlives
     // the agent as a PPID=1 zombie once the main session eventually exits.
-    killShellTasksForAgent(agentId, toolUseContext.getAppState, rootSetAppState)
+    if (!keepBackgroundShells) killShellTasksForAgent(agentId, toolUseContext.getAppState, rootSetAppState)
     /* eslint-disable @typescript-eslint/no-require-imports */
     if (feature('MONITOR_TOOL')) {
       const mcpMod =

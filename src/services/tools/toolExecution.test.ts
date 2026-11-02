@@ -2,7 +2,11 @@ import { afterAll, describe, expect, test } from 'bun:test'
 import { z } from 'zod/v4'
 import type { Tool, ToolUseContext } from '../../Tool.js'
 import { buildTool, getEmptyToolPermissionContext } from '../../Tool.js'
-import { createAssistantMessage } from '../../utils/messages.js'
+import {
+  createAssistantMessage,
+  INTERRUPT_MESSAGE_FOR_TOOL_USE,
+} from '../../utils/messages.js'
+import { AbortError } from '../../utils/errors.js'
 import {
   getSessionSettingsCache,
   setSessionSettingsCache,
@@ -89,6 +93,20 @@ test('an empty permission handler updatedInput keeps the model input', async () 
     f.block, f.assistant, async () => ({ behavior: 'allow', updatedInput: {} }), f.context,
   ))
   expect(f.calls).toEqual([{ value: 'original' }])
+})
+
+test('a permission rejection that aborts the tool context aborts the query', async () => {
+  const f = fixture(async (event, next) => next(event))
+  await Array.fromAsync(runToolUse(
+    f.block, f.assistant,
+    async (_tool, _input, context) => {
+      context.abortController.abort()
+      return { behavior: 'ask', message: 'rejected' }
+    },
+    f.context,
+  ))
+  expect(f.calls).toEqual([])
+  expect(f.context.abortController.signal.aborted).toBe(true)
 })
 
 function fixture(
@@ -376,6 +394,34 @@ describe('Mods at the whole tool execution boundary', () => {
     } finally {
       finish.resolve()
       await running
+      await f.cleanup()
+    }
+  })
+
+  test('a user interrupt during a wrapped tool reports the interrupt, not a tool error', async () => {
+    const f = await workerFixture(`export function register(on) {
+      on('tool.call', ($, e, next) => next(e));
+    }`)
+    const entered = Promise.withResolvers<void>()
+    f.tool.call = async (input, context) => {
+      const signal = context.abortController.signal
+      entered.resolve()
+      await new Promise<void>(resolve => signal.addEventListener('abort', () => resolve(), { once: true }))
+      throw new AbortError()
+    }
+    try {
+      const running = Array.fromAsync(runToolUse(
+        f.block, f.assistant, async () => ({ behavior: 'allow' }), f.context,
+      ))
+      await within(entered.promise)
+      f.context.abortController.abort('user-cancel')
+      const updates = await within(running)
+      const results = updates.flatMap(update => update.message?.type === 'user' && Array.isArray(update.message.message.content)
+        ? update.message.message.content.filter(block => block.type === 'tool_result') : [])
+      expect(results).toHaveLength(1)
+      expect(String(results[0]!.content)).toContain(INTERRUPT_MESSAGE_FOR_TOOL_USE)
+      expect(String(results[0]!.content)).not.toContain('Error calling tool')
+    } finally {
       await f.cleanup()
     }
   })

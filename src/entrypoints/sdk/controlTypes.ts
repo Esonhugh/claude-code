@@ -15,6 +15,8 @@ import type {
   PermissionUpdate,
   PermissionBehavior,
   PermissionRuleValue,
+  FastModeState,
+  FastModeDisabledReason,
 } from './coreTypes.generated.js'
 
 // Keep alive
@@ -56,6 +58,7 @@ export type SDKControlInitializeRequest = {
   loginWithClaudeAi?: boolean
   promptSuggestions?: boolean
   agentProgressSummaries?: boolean
+  forwardSubagentText?: boolean
   [key: string]: unknown
 }
 
@@ -68,6 +71,10 @@ export type SDKControlInitializeResponse = {
   models: ModelInfo[]
   agents: AgentInfo[]
   account: AccountInfo
+  fast_mode_state?: FastModeState
+  fast_mode_disabled_reason?: FastModeDisabledReason
+  /** The session's state when this reply was sent. */
+  session_state?: 'idle' | 'running' | 'requires_action'
 }
 
 export type SDKControlInterruptRequest = {
@@ -282,6 +289,25 @@ export type SDKControlMcpToggleRequest = {
 export type SDKControlStopTaskRequest = {
   subtype: 'stop_task'
   task_id: string
+}
+
+export type SDKControlSendTaskMessageRequest = {
+  subtype: 'send_task_message'
+  task_id: string
+  text: string
+}
+
+export type SDKControlSetCwdRequest = {
+  subtype: 'set_cwd'
+  path: string
+  trust_accepted?: boolean
+  trusted_directory?: string
+}
+
+export type SDKControlRewindConversationRequest = {
+  subtype: 'rewind_conversation'
+  target_message_uuid: string
+  last_seen_user_message_uuid: string
 }
 
 export type SDKControlApplyFlagSettingsRequest = {

@@ -25,13 +25,17 @@ describe('AgentTool prompt', () => {
     const previousApiKey = process.env.ANTHROPIC_API_KEY
     const previousListInMessages =
       process.env.CLAUDE_CODE_AGENT_LIST_IN_MESSAGES
+    const previousFork = process.env.CLAUDE_CODE_FORK_SUBAGENT
     process.env.ANTHROPIC_API_KEY = 'test-key'
+    process.env.CLAUDE_CODE_FORK_SUBAGENT = '0'
     delete process.env.CLAUDE_CODE_AGENT_LIST_IN_MESSAGES
 
     let prompt: string
     try {
       prompt = await getPrompt([agent])
     } finally {
+      if (previousFork === undefined) delete process.env.CLAUDE_CODE_FORK_SUBAGENT
+      else process.env.CLAUDE_CODE_FORK_SUBAGENT = previousFork
       if (previousApiKey === undefined) delete process.env.ANTHROPIC_API_KEY
       else process.env.ANTHROPIC_API_KEY = previousApiKey
       if (previousListInMessages === undefined)

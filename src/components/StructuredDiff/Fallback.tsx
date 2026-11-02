@@ -1,7 +1,7 @@
 import { diffWordsWithSpace, type StructuredPatchHunk } from 'diff'
 import * as React from 'react'
 import { useMemo } from 'react'
-import type { ThemeName } from 'src/utils/theme.js'
+import type { ResolvedTheme } from 'src/utils/theme.js'
 import { stringWidth } from '../../ink/stringWidth.js'
 import { Box, NoSelect, Text, useTheme, wrapText } from '../../ink.js'
 
@@ -223,7 +223,7 @@ function generateWordDiffElements(
   width: number,
   maxWidth: number,
   dim: boolean,
-  overrideTheme?: ThemeName,
+  overrideTheme?: ResolvedTheme,
 ): React.ReactNode[] | null {
   const { type, i, wordDiff, matchedLine, originalCode } = item
 
@@ -375,7 +375,7 @@ function formatDiff(
   startingLineNumber: number,
   width: number,
   dim: boolean,
-  overrideTheme?: ThemeName,
+  overrideTheme?: ResolvedTheme,
 ): React.ReactNode[] {
   // Ensure width is at least 1 to prevent rendering issues with very narrow terminals
   const safeWidth = Math.max(1, Math.floor(width))

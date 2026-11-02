@@ -11,7 +11,10 @@ import type { NotebookCell, NotebookContent } from '../../types/notebook.js'
 import { getCwd } from '../../utils/cwd.js'
 import { isENOENT } from '../../utils/errors.js'
 import { getFileModificationTime, writeTextContent } from '../../utils/file.js'
-import { readFileSyncWithMetadata } from '../../utils/fileRead.js'
+import {
+  notTextMessage,
+  readFileSyncWithMetadata,
+} from '../../utils/fileRead.js'
 import { safeParseJSON } from '../../utils/json.js'
 import { lazySchema } from '../../utils/lazySchema.js'
 import { parseCellId } from '../../utils/notebook.js'
@@ -239,7 +242,15 @@ export const NotebookEditTool = buildTool({
 
     let content: string
     try {
-      content = readFileSyncWithMetadata(fullPath).content
+      const meta = readFileSyncWithMetadata(fullPath)
+      if (meta.notText) {
+        return {
+          result: false,
+          message: notTextMessage(meta.notText),
+          errorCode: 15,
+        }
+      }
+      content = meta.content
     } catch (e) {
       if (isENOENT(e)) {
         return {

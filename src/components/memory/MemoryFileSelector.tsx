@@ -7,6 +7,7 @@ import { use, useEffect, useState } from 'react'
 import { getOriginalCwd } from '../../bootstrap/state.js'
 import { useExitOnCtrlCDWithKeybindings } from '../../hooks/useExitOnCtrlCDWithKeybindings.js'
 import { Box, Text } from '../../ink.js'
+import { stringWidth } from '../../ink/stringWidth.js'
 import { useKeybinding } from '../../keybindings/useKeybinding.js'
 import { getMemoryIndexStatus } from '../../memdir/memoryIndex.js'
 import {
@@ -15,7 +16,10 @@ import {
   isSqliteMemoryEnabled,
 } from '../../memdir/paths.js'
 import { logEvent } from '../../services/analytics/index.js'
-import { isAutoDreamEnabled } from '../../services/autoDream/config.js'
+import {
+  isAutoDreamAvailable,
+  isAutoDreamEnabled,
+} from '../../services/autoDream/config.js'
 import { readLastConsolidatedAt } from '../../services/autoDream/consolidationLock.js'
 import { useAppState } from '../../state/AppState.js'
 import { getAgentMemoryDir } from '../../tools/AgentTool/agentMemory.js'
@@ -26,8 +30,8 @@ import { getDisplayPath } from '../../utils/file.js'
 import { formatFileSize, formatRelativeTimeAgo } from '../../utils/format.js'
 import { projectIsInGitRepo } from '../../utils/memory/versions.js'
 import { updateSettingsForSource } from '../../utils/settings/settings.js'
-import { Select } from '../CustomSelect/index.js'
 import { ListItem } from '../design-system/ListItem.js'
+import { MenuList } from '../design-system/MenuList.js'
 
 /* eslint-disable @typescript-eslint/no-require-imports */
 const teamMemPaths = feature('TEAMMEM')
@@ -117,13 +121,13 @@ export function MemoryFileSelector({
       !file.isNested &&
       file.path === userMemoryPath
     ) {
-      label = `User memory`
+      label = `User instructions`
     } else if (
       file.type === 'Project' &&
       !file.isNested &&
       file.path === projectMemoryPath
     ) {
-      label = `Project memory`
+      label = `Project instructions`
     } else if (depth > 0) {
       // For child nodes (imported files), show indented with L
       label = `${indent}L ${displayPath}${existsLabel}`
@@ -170,7 +174,6 @@ export function MemoryFileSelector({
 
   const agentDefinitions = useAppState(s => s.agentDefinitions)
   if (isAutoMemoryEnabled()) {
-    // Always show auto-memory folder option
     folderOptions.push({
       label: 'Open auto-memory folder',
       value: `${OPEN_FOLDER_PREFIX}${getAutoMemPath()}`,
@@ -226,7 +229,9 @@ export function MemoryFileSelector({
   // Dream row is only meaningful when auto-memory is on (dream consolidates
   // that dir). Snapshot at mount so the row doesn't vanish mid-navigation
   // if the user toggles auto-memory off.
-  const [showDreamRow] = useState(isAutoMemoryEnabled)
+  const [showDreamRow] = useState(
+    () => isAutoMemoryEnabled() && isAutoDreamAvailable(),
+  )
 
   // Dream status: prefer live task state (this session fired it), fall back
   // to the cross-process lock mtime.
@@ -262,6 +267,7 @@ export function MemoryFileSelector({
   }
 
   function handleToggleAutoDream(): void {
+    if (!autoMemoryOn) return
     const newValue = !autoDreamOn
     updateSettingsForSource('userSettings', { autoDreamEnabled: newValue })
     setAutoDreamOn(newValue)
@@ -297,30 +303,69 @@ export function MemoryFileSelector({
     { context: 'Select', isActive: toggleFocused },
   )
 
+  const toggles = [
+    { label: 'Auto-memory', value: autoMemoryOn, description: undefined },
+    ...(showDreamRow
+      ? [
+          {
+            label: 'Auto-dream',
+            value: autoMemoryOn && autoDreamOn,
+            description: autoMemoryOn
+              ? dreamStatus || '…'
+              : 'off while auto-memory is off',
+          },
+        ]
+      : []),
+  ]
+  const toggleLabelWidth = Math.max(...toggles.map(t => t.label.length))
+  const initialIndex = Math.max(
+    0,
+    memoryOptions.findIndex(opt => opt.value === initialPath),
+  )
+
   return (
     <Box flexDirection="column" width="100%">
       <Box flexDirection="column" marginBottom={1}>
-        <ListItem isFocused={focusedToggle === 0}>
-          <Text>Auto-memory: {autoMemoryOn ? 'on' : 'off'}</Text>
-        </ListItem>
-        {showDreamRow && (
-          <ListItem isFocused={focusedToggle === 1} styled={false}>
-            <Text color={focusedToggle === 1 ? 'suggestion' : undefined}>
-              Auto-dream: {autoDreamOn ? 'on' : 'off'}
-              {dreamStatus && <Text dimColor> · {dreamStatus}</Text>}
-              {!isDreamRunning && autoDreamOn && (
-                <Text dimColor> · /dream to run</Text>
-              )}
-            </Text>
+        {toggles.map((toggle, index) => (
+          <ListItem
+            key={toggle.label}
+            isFocused={focusedToggle === index}
+            description={toggle.description}
+            styled={false}
+          >
+            <Box flexDirection="row">
+              <Box width={toggleLabelWidth + 2}>
+                <Text color={focusedToggle === index ? 'suggestion' : undefined}>
+                  {toggle.label}
+                </Text>
+              </Box>
+              <Text>{String(toggle.value)}</Text>
+            </Box>
           </ListItem>
-        )}
+        ))}
       </Box>
 
-      <Select
-        defaultFocusValue={initialPath}
-        options={memoryOptions}
+      <MenuList
+        rows={memoryOptions.map(option =>
+          stringWidth(option.description) <= 30
+            ? {
+                kind: 'item' as const,
+                key: option.value,
+                label: option.label,
+                meta: [option.description],
+              }
+            : {
+                kind: 'item' as const,
+                key: option.value,
+                label: option.label,
+                description: option.description,
+              },
+        )}
+        defaultFocusIndex={initialIndex}
         isDisabled={toggleFocused}
-        onChange={value => {
+        onSelect={index => {
+          const value = memoryOptions[index]?.value
+          if (value === undefined) return
           if (value.startsWith(OPEN_FOLDER_PREFIX)) {
             const folderPath = value.slice(OPEN_FOLDER_PREFIX.length)
             // Ensure folder exists before opening (idempotent; swallow
@@ -333,7 +378,6 @@ export function MemoryFileSelector({
           lastSelectedPath = value // Remember the selection
           onSelect(value)
         }}
-        onCancel={onCancel}
         onUpFromFirstItem={() => setFocusedToggle(lastToggleIndex)}
       />
     </Box>

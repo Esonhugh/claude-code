@@ -112,6 +112,21 @@ export interface StopHookInfo {
 // Core message types (discriminated union on `type`)
 // ---------------------------------------------------------------------------
 
+export type ToolDenialKind =
+  | 'user-rejected'
+  | 'permission-rule'
+  | 'automode-blocked'
+  | 'automode-unavailable'
+  | 'automode-parsing-error'
+  | 'interrupted'
+  | 'cancelled'
+
+export type ToolPermissionDecisionMeta = {
+  decision: 'accept' | 'reject' | 'cancelled'
+  source: string
+  reasonType?: string
+}
+
 export interface UserMessage {
   type: 'user'
   uuid: UUID
@@ -130,8 +145,16 @@ export interface UserMessage {
     direction?: PartialCompactDirection
   }
   toolUseResult?: unknown
-  /** Explicit refusal metadata; ordinary execution failures do not set it. */
-  toolDenialKind?: 'permission-rule' | 'user-rejected'
+  /**
+   * Why an is_error tool_result carries no execution output (SDK
+   * tool_result_meta.non_execution_kind); ordinary execution failures do not
+   * set it.
+   */
+  toolDenialKind?: ToolDenialKind
+  /** The deny comment a human typed at a permission prompt. */
+  userFeedback?: string
+  /** How the call's permission check ended (SDK tool_result_meta.permission_decision). */
+  permissionDecision?: ToolPermissionDecisionMeta
   mcpMeta?: {
     _meta?: Record<string, unknown>
     structuredContent?: Record<string, unknown>
@@ -286,6 +309,9 @@ export interface SystemTurnDurationMessage extends SystemBase {
   subtype: 'turn_duration'
   durationMs?: number
   budgetTokens?: number
+  /** Background agents/workflows still owed when the turn ended (official 2.1.311). */
+  pendingBackgroundAgentCount?: number
+  pendingWorkflowCount?: number
   [key: string]: any
 }
 

@@ -39,7 +39,7 @@ function dequeuedTerminalNotification(taskId: string) {
   const usage = text.match(/<usage>([\s\S]*?)<\/usage>/)?.[1] ?? ''
   return {
     status: text.match(/<status>([^<]+)<\/status>/)?.[1],
-    total_tokens: Number(usage.match(/<total_tokens>(\d+)<\/total_tokens>/)?.[1]),
+    total_tokens: Number(usage.match(/<subagent_tokens>(\d+)<\/subagent_tokens>/)?.[1]),
     tool_uses: Number(usage.match(/<tool_uses>(\d+)<\/tool_uses>/)?.[1]),
   }
 }

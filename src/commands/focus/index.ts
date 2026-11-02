@@ -7,6 +7,7 @@ const focus: Command = {
   description: 'Toggle focus view: just your prompt, summary, and response',
   argumentHint: '[on|off]',
   immediate: true,
+  terminalOriented: true,
   isEnabled: () => !getIsNonInteractiveSession(),
   load: () => import('./focus.js'),
 }

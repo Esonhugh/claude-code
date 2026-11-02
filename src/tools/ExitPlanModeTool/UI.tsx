@@ -9,7 +9,7 @@ import type { ToolProgressData } from '../../Tool.js'
 import type { ProgressMessage } from '../../types/message.js'
 import { getDisplayPath } from '../../utils/file.js'
 import { getPlan } from '../../utils/plans.js'
-import type { ThemeName } from '../../utils/theme.js'
+import type { ResolvedTheme } from '../../utils/theme.js'
 import type { Output } from './ExitPlanModeV2Tool.js'
 
 export function renderToolUseMessage(): React.ReactNode {
@@ -19,7 +19,7 @@ export function renderToolUseMessage(): React.ReactNode {
 export function renderToolResultMessage(
   output: Output,
   _progressMessagesForMessage: ProgressMessage<ToolProgressData>[],
-  { theme: _theme }: { theme: ThemeName },
+  { theme: _theme }: { theme: ResolvedTheme },
 ): React.ReactNode {
   const { plan, filePath } = output
   const isEmpty = !plan || plan.trim() === ''
@@ -76,7 +76,7 @@ export function renderToolResultMessage(
 
 export function renderToolUseRejectedMessage(
   { plan }: { plan?: string },
-  { theme: _theme }: { theme: ThemeName },
+  { theme: _theme }: { theme: ResolvedTheme },
 ): React.ReactNode {
   const planContent = plan ?? getPlan() ?? 'No plan found'
 

@@ -72,7 +72,7 @@ mock.module('./model.js', () => ({
   renderDefaultModelSetting: (model: string) => names[model] ?? model,
 }))
 mock.module('../modelCost.js', () => ({
-  COST_TIER_3_15: 'old-price', COST_HAIKU_35: 'haiku35', COST_HAIKU_45: 'haiku45',
+  COST_TIER_3_15: 'old-price', COST_HAIKU_35: 'haiku35', COST_HAIKU_45: 'haiku45', COST_HAIKU_55: 'haiku55',
   formatModelPricing: (cost: string) => cost,
   getModelPricingString: (model: string) => names[model] ? `pricing:${model}` : undefined,
 }))
@@ -248,8 +248,8 @@ test('first-party bootstrap options extend the static catalog and preserve unkno
   currentModel = 'Gateway/Current'
   expect(getModelOptions().map(option => option.value)).toEqual([
     null,
-    'fable',
     'opus',
+    'fable',
     'sonnet',
     'haiku',
     'Bootstrap/Unknown',
@@ -272,8 +272,8 @@ test('first-party bootstrap cache is isolated by endpoint and credential identit
   firstPartyCacheKey = discoveredCacheKey
   expect(getModelOptions().map(option => option.value)).toEqual([
     null,
-    'fable',
     'opus',
+    'fable',
     'sonnet',
     'haiku',
     'claude-account-a',
@@ -295,8 +295,8 @@ test('gateway models are appended to the bootstrap catalog without duplicates', 
   discoveredCacheKey = firstPartyCacheKey ?? undefined
   expect(getModelOptions().map(option => option.value)).toEqual([
     null,
-    'fable',
     'opus',
+    'fable',
     'sonnet',
     'haiku',
     'Bootstrap/Extra',

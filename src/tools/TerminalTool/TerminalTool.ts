@@ -52,10 +52,13 @@ import { syncTerminalTaskAfterStatus } from './taskState.js'
 import { DEFAULT_MAX_BUFFERED_CHUNKS } from '../../utils/pty/types.js'
 import { errorMessage } from '../../utils/errors.js'
 import { quote } from '../../utils/bash/shellQuote.js'
+import { runWithCwdOverride } from '../../utils/cwd.js'
+import { resolve } from 'path'
 import {
   createPermissionRequestMessage,
   getAskRuleForTool,
   getDenyRuleForTool,
+  getRuleByContentsForToolName,
 } from '../../utils/permissions/permissions.js'
 import type { PermissionResult } from '../../utils/permissions/PermissionResult.js'
 import { bashToolHasPermission } from '../BashTool/bashPermissions.js'
@@ -80,40 +83,54 @@ type Output = SuccessOutput | ErrorOutput
 // Enter. Denied send-keys never reach the PTY, so this stays in sync with
 // what the shell has buffered.
 const terminalInputLines = new Map<string, string>()
+// Sessions whose pending line was edited with keys the replay cannot follow
+// (Tab completion, history, cursor movement), so its text is unknown.
+const terminalUnknownLines = new Set<string>()
 
 /**
  * Replays keystrokes over a session's pending line like a line editor: Enter
- * (CR/LF) submits the line, Ctrl-C/Ctrl-U clear it, Backspace deletes a
- * character, and escape sequences and other control keys are ignored.
+ * (CR/LF) submits the line, Ctrl-C/Ctrl-U clear it and Backspace deletes a
+ * character. Any other control key or escape sequence can change the line in
+ * ways the replay cannot see, so it marks the line unknown until it is
+ * submitted or cleared.
  */
 export function applyTerminalKeystrokes(
   pending: string,
   sequence: string,
-): { line: string; submitted: string[] } {
+  pendingUnknown = false,
+): { line: string; unknown: boolean; submitted: string[]; submittedUnknown: boolean } {
   let line = pending
+  let unknown = pendingUnknown
+  let submittedUnknown = false
   const submitted: string[] = []
-  // Escape sequences (arrows, function keys) do not change the typed line.
   // eslint-disable-next-line no-control-regex
-  const input = sequence.replace(/\x1b(?:\[[0-9;?]*[@-~]|O.)?/g, '')
+  const input = sequence.replace(/\x1b(?:\[[0-9;?]*[@-~]|O.)?/g, '\x1b')
   for (const char of input) {
     if (char === '\r' || char === '\n') {
-      if (line.trim()) submitted.push(line)
+      if (unknown || line.trim()) submitted.push(line)
+      submittedUnknown ||= unknown
       line = ''
+      unknown = false
     } else if (char === '\x03' || char === '\x15') {
       line = ''
+      unknown = false
     } else if (char === '\x7f' || char === '\b') {
       line = line.slice(0, -1)
     } else if (char >= ' ') {
       line += char
+    } else {
+      unknown = true
     }
   }
-  return { line, submitted }
+  return { line, unknown, submitted, submittedUnknown }
 }
 
 type TerminalPermissionInput = {
   action: string
   command?: string
   args?: string[]
+  cwd?: string
+  env?: Record<string, string>
   target?: string
   text?: string
   key?: Parameters<typeof sendKeysSequence>[0]['key']
@@ -122,27 +139,42 @@ type TerminalPermissionInput = {
 
 function getSendKeysLines(input: TerminalPermissionInput) {
   const pending = (input.target && terminalInputLines.get(input.target)) || ''
-  return { pending, ...applyTerminalKeystrokes(pending, sendKeysSequence(input)) }
+  const pendingUnknown = !!input.target && terminalUnknownLines.has(input.target)
+  return {
+    pending,
+    ...applyTerminalKeystrokes(pending, sendKeysSequence(input), pendingUnknown),
+  }
 }
 
 // The shell input a Terminal action would run: `submitted` is executed now,
-// `typed` only sits on the command line. Undefined for actions that only
-// read, resize or stop an existing session.
+// `typed` only sits on the command line, and `unknown` marks a submitted line
+// whose text the keystroke replay could not follow. Undefined for actions that
+// only read, resize or stop an existing session.
 function getTerminalCommand(
   input: TerminalPermissionInput,
-): { submitted?: string; typed?: string } | undefined {
+): { submitted?: string; typed?: string; unknown?: boolean } | undefined {
   if (input.action === 'new-session') {
-    return {
-      submitted: quote([
-        input.command?.trim() || process.env.SHELL || 'sh',
-        ...(input.args ?? []),
-      ]),
-    }
+    // cwd is applied when the command is checked; env assignments are part of
+    // the command, so only safe env vars keep matching Bash allow rules.
+    const assignments = Object.entries(input.env ?? {}).map(([key, value]) =>
+      /^[A-Za-z_][A-Za-z0-9_]*$/.test(key)
+        ? `${key}=${quote([value])}`
+        : quote([`${key}=${value}`]),
+    )
+    const argv = quote([
+      input.command?.trim() || process.env.SHELL || 'sh',
+      ...(input.args ?? []),
+    ])
+    return { submitted: [...assignments, argv].join(' ') }
   }
   if (input.action !== 'send-keys') return undefined
-  const { pending, line, submitted } = getSendKeysLines(input)
+  const { pending, line, submitted, submittedUnknown } = getSendKeysLines(input)
   if (submitted.length > 0) {
-    return { submitted: submitted.join('\n'), typed: line.trim() ? line : undefined }
+    return {
+      submitted: submitted.join('\n'),
+      typed: line.trim() ? line : undefined,
+      unknown: submittedUnknown || undefined,
+    }
   }
   return line.trim() && line !== pending ? { typed: line } : undefined
 }
@@ -212,6 +244,7 @@ export function resetTerminalManagerForTesting(manager?: PtySessionManager): voi
   terminalTaskPollers.clear()
   terminalTaskRegistry.clear()
   terminalInputLines.clear()
+  terminalUnknownLines.clear()
   terminalTerminationReasons.clear()
   sandboxedTerminalSessions.clear()
 }
@@ -244,6 +277,7 @@ async function finalizeTerminalTask(
 
   terminalTaskRegistry.delete(sessionId)
   terminalInputLines.delete(sessionId)
+  terminalUnknownLines.delete(sessionId)
   terminalTerminationReasons.delete(sessionId)
   stopTerminalTaskPolling(sessionId)
   if (sandboxedTerminalSessions.delete(sessionId)) {
@@ -413,8 +447,15 @@ export const TerminalTool: Tool<InputSchema, Output> = buildTool({
   searchHint: 'persistent terminal PTY sessions, interactive shell, REPL and TUI',
   shouldDefer: true,
   maxResultSizeChars: 100_000,
-  async description() {
-    return DESCRIPTION
+  async description(input) {
+    // The permission dialog shows this: name the whole line Enter submits,
+    // not only the keys in this call.
+    const command = input && getTerminalCommand(input)
+    if (command?.submitted === undefined) return DESCRIPTION
+    const cwd = input.action === 'new-session' && input.cwd ? ` (in ${input.cwd})` : ''
+    return command.unknown
+      ? `Submits a line edited with control keys; the terminal shows the command. Replayed text: ${command.submitted}`
+      : `Runs${cwd}: ${command.submitted}`
   },
   async prompt() {
     return PROMPT
@@ -442,14 +483,24 @@ export const TerminalTool: Tool<InputSchema, Output> = buildTool({
       if (input.args) {
         parts.push(`args=${JSON.stringify(input.args)}`)
       }
+      if (input.cwd) {
+        parts.push(`cwd=${input.cwd}`)
+      }
+      // Env names only: values may be secrets.
+      if (input.env && Object.keys(input.env).length > 0) {
+        parts.push(`env=${JSON.stringify(Object.keys(input.env))}`)
+      }
       if (input.dangerouslyDisableSandbox) {
         parts.push('dangerouslyDisableSandbox=true')
       }
     }
     if (input.action === 'send-keys') {
       const command = getTerminalCommand(input)
-      if (command?.submitted) {
+      if (command?.submitted !== undefined) {
         parts.push(`command=${JSON.stringify(command.submitted)}`)
+      }
+      if (command?.unknown) {
+        parts.push('edited-with-control-keys=true')
       }
       if (command?.typed) {
         parts.push(`typed=${JSON.stringify(command.typed)}`)
@@ -468,7 +519,33 @@ export const TerminalTool: Tool<InputSchema, Output> = buildTool({
     if (command?.submitted === undefined) {
       return { behavior: 'allow', updatedInput: input }
     }
-    const result = await checkShellCommand(command.submitted, context)
+    // Path checks resolve relative arguments against the session's cwd.
+    const cwd = input.action === 'new-session' && input.cwd ? resolve(input.cwd) : undefined
+    const result = cwd
+      ? await runWithCwdOverride(cwd, () => checkShellCommand(command.submitted!, context))
+      : await checkShellCommand(command.submitted, context)
+    if (result.behavior === 'deny') return result
+    if (command.unknown) {
+      // The shell may run something other than the replayed text. Deny rules
+      // cannot be checked against it, so they keep it asking in bypass mode.
+      const hasBashDenyRules =
+        getRuleByContentsForToolName(
+          context.getAppState().toolPermissionContext,
+          BASH_TOOL_NAME,
+          'deny',
+        ).size > 0
+      return {
+        behavior: 'ask',
+        message:
+          'This Terminal line was edited with Tab, arrow or other control keys, so Claude Code cannot tell which command the shell will run. Check the terminal before approving.',
+        decisionReason: {
+          type: 'safetyCheck',
+          reason: 'Terminal line edited with control keys',
+          classifierApprovable: false,
+          bypassImmune: hasBashDenyRules,
+        },
+      }
+    }
     return 'updatedInput' in result && result.updatedInput
       ? { ...result, updatedInput: input }
       : result
@@ -552,9 +629,11 @@ export const TerminalTool: Tool<InputSchema, Output> = buildTool({
             }
           }
           const manager = getTerminalManager()
-          const { line } = getSendKeysLines(parsed.data)
+          const { line, unknown } = getSendKeysLines(parsed.data)
           const written = handleWrite(manager, parsed.data)
           terminalInputLines.set(parsed.data.target, line)
+          if (unknown) terminalUnknownLines.add(parsed.data.target)
+          else terminalUnknownLines.delete(parsed.data.target)
           await refreshTerminalTaskPreview(parsed.data.target, setTaskAppState, manager)
           return { data: written }
         }

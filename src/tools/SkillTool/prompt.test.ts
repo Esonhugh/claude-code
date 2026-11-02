@@ -17,7 +17,7 @@ import type { ToolUseContext } from 'src/Tool.js'
 import { createFileStateCacheWithSizeLimit } from 'src/utils/fileStateCache.js'
 import { createModsRuntime } from '../../services/mods/runtime.js'
 import { SkillTool } from './SkillTool.js'
-import { formatCommandsWithinBudget, getPrompt } from './prompt.js'
+import { formatCommandsWithinBudget, getCharBudget, getPrompt } from './prompt.js'
 
 function command(name: string): Command {
   return {
@@ -36,6 +36,18 @@ describe('SkillTool prompt', () => {
     expect(formatCommandsWithinBudget(forward)).toBe(
       formatCommandsWithinBudget(reverse),
     )
+  })
+
+  test('budgets the listing like 2.1.311: 1% of the window at the model bytes per token', () => {
+    expect(getCharBudget(1_000_000, 3)).toBe(30_000)
+    expect(getCharBudget(200_000)).toBe(8_000)
+    expect(getCharBudget(undefined, 3)).toBe(6_000)
+  })
+
+  test('caps each listed description at 1536 characters like 2.1.311', () => {
+    const long = { ...command('long'), description: 'x'.repeat(2_000) } as Command
+    const line = formatCommandsWithinBudget([long], 1_000_000)
+    expect(line).toBe(`- long: ${'x'.repeat(1_535)}\u2026`)
   })
 
   test('keeps invocation boundaries without tutorial examples', async () => {

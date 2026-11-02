@@ -1,10 +1,10 @@
 import { AGENT_TOOL_NAME } from '../../tools/AgentTool/constants.js'
+import { REPORT_FINDINGS_TOOL_NAME } from '../../tools/ReportFindingsTool/constants.js'
 import { plural } from '../../utils/stringUtils.js'
 
 // Prompt texts of official 2.1.311 /code-review and /simplify, verbatim. The
-// ReportFindings-tool variants are left out: the fork has no such tool, so
-// the review always returns a JSON array.
-const REPORT_FINDINGS_TOOL_NAME = 'ReportFindings'
+// ReportFindings-tool variants are left out, so the review always returns a
+// JSON array.
 
 export type FindingsCap = number | 'all'
 type ReviewOutput = (cap: FindingsCap) => string

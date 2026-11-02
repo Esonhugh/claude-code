@@ -12,10 +12,14 @@ import {
 import {
   getGlobalConfig,
   getProjectPathForConfig,
+  resetTrustDialogAcceptedCacheForTesting,
   saveGlobalConfig,
 } from '../config.js'
 import { resetSettingsCache } from '../settings/settingsCache.js'
-import { loadAllPermissionRulesFromDisk } from './permissionsLoader.js'
+import {
+  getAdditionalDirectoriesFromSettings,
+  loadAllPermissionRulesFromDisk,
+} from './permissionsLoader.js'
 
 const dirs: string[] = []
 
@@ -64,6 +68,7 @@ const originalProjects = getGlobalConfig().projects
 beforeEach(() => {
   process.env.NODE_ENV = 'test'
   resetStateForTests()
+  resetTrustDialogAcceptedCacheForTesting()
 })
 
 afterEach(() => {
@@ -86,4 +91,39 @@ test('allow rules from an untracked settings.local.json apply', () => {
 test('allow rules from a git-tracked settings.local.json apply in an explicitly trusted workspace', () => {
   useRepo({ track: true, trust: true })
   expect(localRules()).toEqual(['allow:Bash(curl:*)', 'deny:Bash(rm:*)'])
+})
+
+function useProject(trust: boolean): string {
+  const dir = useRepo({ track: false, trust })
+  writeFileSync(
+    join(dir, '.claude', 'settings.json'),
+    JSON.stringify({
+      permissions: {
+        allow: ['Bash(git:*)'],
+        ask: ['Bash(npm:*)'],
+        additionalDirectories: ['/srv/shared'],
+      },
+    }),
+  )
+  setAllowedSettingSources(['projectSettings'])
+  resetSettingsCache()
+  return dir
+}
+
+function projectRules(): string[] {
+  return loadAllPermissionRulesFromDisk()
+    .filter(rule => rule.source === 'projectSettings')
+    .map(rule => `${rule.ruleBehavior}:${rule.ruleValue.toolName}(${rule.ruleValue.ruleContent})`)
+}
+
+test('like 2.1.311, project allow rules and additionalDirectories are dropped until the workspace is trusted', () => {
+  useProject(false)
+  expect(projectRules()).toEqual(['ask:Bash(npm:*)'])
+  expect(getAdditionalDirectoriesFromSettings()).toEqual([])
+})
+
+test('project allow rules and additionalDirectories apply in a trusted workspace', () => {
+  useProject(true)
+  expect(projectRules()).toEqual(['allow:Bash(git:*)', 'ask:Bash(npm:*)'])
+  expect(getAdditionalDirectoriesFromSettings()).toEqual(['/srv/shared'])
 })

@@ -1,4 +1,3 @@
-import { feature } from 'bun:bundle'
 import * as React from 'react'
 import { useExitOnCtrlCDWithKeybindings } from '../hooks/useExitOnCtrlCDWithKeybindings.js'
 import { useTerminalSize } from '../hooks/useTerminalSize.js'
@@ -10,15 +9,22 @@ import {
   useThemeSetting,
 } from '../ink.js'
 import { useRegisterKeybindingContext } from '../keybindings/KeybindingContext.js'
-import { useKeybinding } from '../keybindings/useKeybinding.js'
+import { useKeybinding, useKeybindings } from '../keybindings/useKeybinding.js'
 import { useShortcutDisplay } from '../keybindings/useShortcutDisplay.js'
 import { useAppState, useSetAppState } from '../state/AppState.js'
+import {
+  type CustomTheme,
+  customThemeSetting,
+  getCustomThemes,
+  parseCustomThemeSetting,
+  subscribeCustomThemes,
+} from '../utils/customThemes.js'
 import { gracefulShutdown } from '../utils/gracefulShutdown.js'
 import { updateSettingsForSource } from '../utils/settings/settings.js'
 import type { ThemeSetting } from '../utils/theme.js'
-import { Select } from './CustomSelect/index.js'
 import { Byline } from './design-system/Byline.js'
 import { KeyboardShortcutHint } from './design-system/KeyboardShortcutHint.js'
+import { MenuList } from './design-system/MenuList.js'
 import {
   getColorModuleUnavailableReason,
   getSyntaxTheme,
@@ -35,7 +41,14 @@ export type ThemePickerProps = {
   skipExitHandling?: boolean
   /** Called when the user cancels (presses Escape). If skipExitHandling is true and this is provided, it will be called instead of just saving the preview. */
   onCancel?: () => void
+  /**
+   * Enables custom themes: "New custom theme…" calls it with no theme, and
+   * ctrl+e on a custom theme calls it with that theme.
+   */
+  onCustomTheme?: (theme?: CustomTheme) => void
 }
+
+const NEW_CUSTOM_THEME = '__new_custom_theme__' as const
 
 export function ThemePicker({
   onThemeSelect,
@@ -45,6 +58,7 @@ export function ThemePicker({
   hideEscToCancel = false,
   skipExitHandling = false,
   onCancel: onCancelProp,
+  onCustomTheme,
 }: ThemePickerProps): React.ReactNode {
   const [theme] = useTheme()
   const themeSetting = useThemeSetting()
@@ -87,10 +101,17 @@ export function ThemePicker({
     skipExitHandling ? () => {} : undefined,
   )
 
-  const themeOptions: { label: string; value: ThemeSetting }[] = [
-    ...(feature('AUTO_THEME')
-      ? [{ label: 'Auto (match terminal)', value: 'auto' as const }]
-      : []),
+  const customThemes = React.useSyncExternalStore(
+    subscribeCustomThemes,
+    getCustomThemes,
+  )
+
+  const themeOptions: {
+    label: string
+    value: ThemeSetting | typeof NEW_CUSTOM_THEME
+    meta?: string
+  }[] = [
+    { label: 'Auto (match terminal)', value: 'auto' },
     { label: 'Dark mode', value: 'dark' },
     { label: 'Light mode', value: 'light' },
     {
@@ -109,7 +130,59 @@ export function ThemePicker({
       label: 'Light mode (ANSI colors only)',
       value: 'light-ansi',
     },
+    ...customThemes.map(theme => ({
+      label: theme.name,
+      value: customThemeSetting(theme.slug),
+      meta: 'custom',
+    })),
+    ...(onCustomTheme
+      ? [{ label: 'New custom theme…', value: NEW_CUSTOM_THEME }]
+      : []),
   ]
+  const currentIndex = themeOptions.findIndex(
+    option => option.value === themeSetting,
+  )
+  const [focusedValue, setFocusedValue] = React.useState(
+    themeOptions[Math.max(0, currentIndex)]?.value,
+  )
+
+  const handleCancel = skipExitHandling
+    ? () => {
+        cancelPreview()
+        onCancelProp?.()
+      }
+    : async () => {
+        cancelPreview()
+        await gracefulShutdown(0)
+      }
+
+  useKeybindings(
+    {
+      'select:cancel': () => void handleCancel(),
+    },
+    { context: 'Select' },
+  )
+
+  const editCustomShortcut = useShortcutDisplay(
+    'theme:editCustom',
+    'ThemePicker',
+    'ctrl+e',
+  )
+  const focusedSlug = focusedValue ? parseCustomThemeSetting(focusedValue) : null
+  const focusedCustomTheme = onCustomTheme
+    ? customThemes.find(theme => theme.slug === focusedSlug)
+    : undefined
+
+  useKeybinding(
+    'theme:editCustom',
+    () => {
+      if (focusedCustomTheme) {
+        cancelPreview()
+        onCustomTheme?.(focusedCustomTheme)
+      }
+    },
+    { context: 'ThemePicker' },
+  )
 
   const content = (
     <Box flexDirection="column" gap={1}>
@@ -127,29 +200,35 @@ export function ThemePicker({
           </Text>
           {helpText && !showHelpTextBelow && <Text dimColor>{helpText}</Text>}
         </Box>
-        <Select
-          options={themeOptions}
-          onFocus={setting => {
-            setPreviewTheme(setting as ThemeSetting)
+        <MenuList
+          rows={themeOptions.map(option => ({
+            kind: 'item',
+            key: option.value,
+            icon: option.value === themeSetting ? '✔' : ' ',
+            iconColor: 'success',
+            label: option.label,
+            meta: option.meta ? [option.meta] : [],
+          }))}
+          visibleItemCount={themeOptions.length}
+          defaultFocusIndex={Math.max(0, currentIndex)}
+          onFocus={index => {
+            const value = themeOptions[index]?.value
+            if (value === undefined) return
+            setFocusedValue(value)
+            if (value === NEW_CUSTOM_THEME) cancelPreview()
+            else setPreviewTheme(value)
           }}
-          onChange={(setting: string) => {
+          onSelect={index => {
+            const value = themeOptions[index]?.value
+            if (value === undefined) return
+            if (value === NEW_CUSTOM_THEME) {
+              cancelPreview()
+              onCustomTheme?.()
+              return
+            }
             savePreview()
-            onThemeSelect(setting as ThemeSetting)
+            onThemeSelect(value)
           }}
-          onCancel={
-            skipExitHandling
-              ? () => {
-                  cancelPreview()
-                  onCancelProp?.()
-                }
-              : async () => {
-                  cancelPreview()
-                  await gracefulShutdown(0)
-                }
-          }
-          visibleOptionCount={themeOptions.length}
-          defaultValue={themeSetting}
-          defaultFocusValue={themeSetting}
         />
       </Box>
       <Box flexDirection="column" width="100%">
@@ -214,6 +293,12 @@ export function ThemePicker({
                 ) : (
                   <Byline>
                     <KeyboardShortcutHint shortcut="Enter" action="select" />
+                    {focusedCustomTheme && (
+                      <KeyboardShortcutHint
+                        shortcut={editCustomShortcut}
+                        action="edit"
+                      />
+                    )}
                     <KeyboardShortcutHint shortcut="Esc" action="cancel" />
                   </Byline>
                 )}

@@ -10,6 +10,7 @@ export type SDKUIAnswer =
   | 'ui_copy'
   | 'ui_prompt_read'
   | 'ui_prompt_fill'
+  | 'ui_prompt_paint'
   | 'ui_prompt_suggest'
   | 'ui_read_selection'
 export type SDKUIRenderComponent =

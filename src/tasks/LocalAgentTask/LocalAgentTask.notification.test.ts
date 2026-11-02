@@ -206,3 +206,13 @@ test('C5 a rejected enqueue leaves the task retryable', async () => {
   assert.equal(state.tasks['reject-agent']?.notified, true)
   assert.equal(mainThreadNotifications().length, 1)
 })
+
+// Official 2.1.311 enqueues agent notifications at 'next', so a running turn
+// picks them up between tool rounds instead of waiting for the turn to end.
+test('agent notifications are delivered mid-turn (priority next)', async () => {
+  reset()
+  spawn('mid-turn-agent')
+  enqueueAgentNotification({ taskId: 'mid-turn-agent', description: 'mid', status: 'completed', setAppState, finalMessage: 'done' })
+  await flush()
+  assert.equal(mainThreadNotifications()[0]?.priority, 'next')
+})

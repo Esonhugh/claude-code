@@ -1,8 +1,13 @@
 import * as React from 'react'
+import { useTerminalSize } from '../../hooks/useTerminalSize.js'
 import { Box, Text } from '../../ink.js'
 import { PromptInputHelpMenu } from '../PromptInput/PromptInputHelpMenu.js'
 
+// Official 2.1.311 drops the /powerup hint on short terminals.
+const MIN_ROWS_FOR_POWERUP_HINT = 44
+
 export function General(): React.ReactNode {
+  const { rows } = useTerminalSize()
   return (
     <Box flexDirection="column" paddingY={1} gap={1}>
       <Box>
@@ -11,6 +16,14 @@ export function General(): React.ReactNode {
           and executes commands — right from your terminal.
         </Text>
       </Box>
+      {rows >= MIN_ROWS_FOR_POWERUP_HINT && (
+        <Box>
+          <Text dimColor>
+            New here? Run <Text color="suggestion">/powerup</Text> to learn the
+            features most people miss.
+          </Text>
+        </Box>
+      )}
       <Box flexDirection="column">
         <Box>
           <Text bold>Shortcuts</Text>

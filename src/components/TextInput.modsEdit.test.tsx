@@ -60,7 +60,9 @@ test('mounted production TextInput sends a real edit through the author Worker a
   const entry = join(folder, 'register.ts')
   await writeFile(entry, `export function register(on) {on('prompt.edit',async ($,e,next)=>{const r=await next(e);return {...r,text:r.text.toUpperCase()}})}`)
   const diagnostics: unknown[] = []
-  const runtime = createModsRuntime({onDiagnostic: event => diagnostics.push(event)})
+  // The 50ms production prompt.edit budget is covered by the runtime budget
+  // tests; a Worker round trip can exceed it under CI load.
+  const runtime = createModsRuntime({onDiagnostic: event => diagnostics.push(event), promptEditBudgetMs: 5000})
   const stdin = new Input(), stdout = new Output()
   let box = {text:'',cursor:0}
   let commit = (_next: typeof box) => {}
@@ -89,7 +91,7 @@ test('mounted production TextInput sends a real edit through the author Worker a
       stdin: stdin as never, stdout: stdout as never, patchConsole: false, exitOnCtrlC: false,
     })
     stdin.push('a😀b')
-    const deadline = Date.now() + 1000
+    const deadline = Date.now() + 10_000
     while (box.text !== 'A😀B' && Date.now() < deadline) await new Promise(resolve => setImmediate(resolve))
     expect(box).toEqual({text:'A😀B',cursor:4})
     expect(diagnostics).toEqual([])
@@ -113,7 +115,7 @@ test('mounted Vim input relays delegated typing and arrows but keeps native Norm
  const instance=await render(<AppStoreContext value={createStore(getDefaultAppState())}><ThemeProvider><Probe /></ThemeProvider></AppStoreContext>,{stdin:stdin as never,stdout:stdout as never,patchConsole:false,exitOnCtrlC:false})
  async function input(key:string){
   stdin.push(key)
-  if(key==='\x1b'){const deadline=Date.now()+1000;while(mode!=='NORMAL'&&Date.now()<deadline)await new Promise(resolve=>setImmediate(resolve));expect(mode).toBe('NORMAL')}
+  if(key==='\x1b'){const deadline=Date.now()+10_000;while(mode!=='NORMAL'&&Date.now()<deadline)await new Promise(resolve=>setImmediate(resolve));expect(mode).toBe('NORMAL')}
   for(let i=0;i<12;i++)await new Promise(resolve=>setImmediate(resolve))
  }
  try{

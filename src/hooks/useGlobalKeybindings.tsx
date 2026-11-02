@@ -7,7 +7,7 @@
 import { feature } from 'bun:bundle'
 import { useCallback } from 'react'
 import instances from '../ink/instances.js'
-import { useKeybinding } from '../keybindings/useKeybinding.js'
+import { useKeybinding, useKeybindings } from '../keybindings/useKeybinding.js'
 import type { Screen } from '../screens/REPL.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../services/analytics/growthbook.js'
 import {
@@ -196,13 +196,18 @@ export function GlobalKeybindingHandlers({
     context: 'Global',
   })
 
-  // Clear screen and force full redraw (ctrl+l). Recovery path when the
+  // Clear screen and force full redraw. Recovery path when the
   // terminal was cleared externally (macOS Cmd+K) and Ink's diff engine
   // thinks unchanged cells don't need repainting.
   const handleRedraw = useCallback(() => {
     instances.get(process.stdout)?.forceRedraw()
   }, [])
   useKeybinding('app:redraw', handleRedraw, { context: 'Global' })
+  // Official binds ctrl+l / cmd+k in Chat to these; both redraw and keep the input.
+  useKeybindings(
+    { 'chat:clearInput': handleRedraw, 'chat:clearScreen': handleRedraw },
+    { context: 'Chat' },
+  )
 
   // Transcript-specific bindings (only active when in transcript mode)
   const isInTranscript = screen === 'transcript'

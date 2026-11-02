@@ -10,9 +10,11 @@ import type { Command } from '../../commands.js'
 const clear = {
   type: 'local',
   name: 'clear',
-  description: 'Clear conversation history and free up context',
+  description:
+    'Start a new session with empty context; previous session stays on disk (resumable with /resume)',
+  argumentHint: '[name]',
   aliases: ['reset', 'new'],
-  supportsNonInteractive: false, // Should just create a new session
+  supportsNonInteractive: true,
   load: () => import('./clear.js'),
 } satisfies Command
 

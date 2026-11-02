@@ -35,6 +35,14 @@ export class DirectConnectSessionManager {
   private config: DirectConnectConfig
   private callbacks: DirectConnectCallbacks
   private pendingPermissionRequests = new Map<string, string>()
+  private pendingTaskRequests = new Map<
+    string,
+    {
+      resolve: (response: Record<string, unknown>) => void
+      reject: (error: Error) => void
+      timeout: ReturnType<typeof setTimeout>
+    }
+  >()
 
   constructor(config: DirectConnectConfig, callbacks: DirectConnectCallbacks) {
     this.config = config
@@ -113,6 +121,25 @@ export class DirectConnectSessionManager {
           continue
         }
 
+        if (parsed.type === 'control_response') {
+          const response = parsed.response as {
+            request_id?: string
+            subtype?: string
+            error?: string
+            response?: Record<string, unknown>
+          }
+          const pending = response.request_id
+            ? this.pendingTaskRequests.get(response.request_id)
+            : undefined
+          if (pending && response.request_id) {
+            this.pendingTaskRequests.delete(response.request_id)
+            clearTimeout(pending.timeout)
+            if (response.subtype === 'error') pending.reject(new Error(response.error ?? 'Request failed'))
+            else pending.resolve(response.response ?? {})
+          }
+          continue
+        }
+
         if (parsed.type === 'control_cancel_request') {
           const toolUseId = this.pendingPermissionRequests.get(parsed.request_id)
           this.pendingPermissionRequests.delete(parsed.request_id)
@@ -122,7 +149,6 @@ export class DirectConnectSessionManager {
 
         // Forward SDK messages (assistant, result, system, etc.)
         if (
-          parsed.type !== 'control_response' &&
           parsed.type !== 'keep_alive' &&
           // @ts-ignore - recovered code
           parsed.type !== 'streamlined_text' &&
@@ -138,6 +164,7 @@ export class DirectConnectSessionManager {
 
     this.ws.addEventListener('close', () => {
       this.pendingPermissionRequests.clear()
+      this.rejectPendingTaskRequests()
       this.callbacks.onDisconnected?.()
     })
 
@@ -219,6 +246,32 @@ export class DirectConnectSessionManager {
     this.ws.send(request)
   }
 
+  /** send_task_message / stop_task / get_task_output for one of the session's tasks. */
+  sendTaskControlRequest(
+    request: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      return Promise.reject(new Error('Direct Connect session is not connected'))
+    }
+    const requestId = crypto.randomUUID()
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        if (!this.pendingTaskRequests.delete(requestId)) return
+        reject(new Error('Direct Connect task request timed out'))
+      }, 30_000)
+      this.pendingTaskRequests.set(requestId, { resolve, reject, timeout })
+      this.ws!.send(jsonStringify({ type: 'control_request', request_id: requestId, request }))
+    })
+  }
+
+  private rejectPendingTaskRequests(): void {
+    for (const pending of this.pendingTaskRequests.values()) {
+      clearTimeout(pending.timeout)
+      pending.reject(new Error('Direct Connect session disconnected'))
+    }
+    this.pendingTaskRequests.clear()
+  }
+
   private sendErrorResponse(requestId: string, error: string): void {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
       return
@@ -236,6 +289,7 @@ export class DirectConnectSessionManager {
 
   disconnect(): void {
     this.pendingPermissionRequests.clear()
+    this.rejectPendingTaskRequests()
     if (this.ws) {
       this.ws.close()
       this.ws = null

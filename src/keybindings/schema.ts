@@ -102,6 +102,8 @@ export const KEYBINDING_ACTIONS = [
   'chat:undo',
   'chat:externalEditor',
   'chat:stash',
+  'chat:clearInput',
+  'chat:clearScreen',
   'chat:imagePaste',
   'chat:messageActions',
   // Autocomplete menu actions
@@ -118,7 +120,6 @@ export const KEYBINDING_ACTIONS = [
   'confirm:previousField',
   'confirm:cycleMode',
   'confirm:toggle',
-  'confirm:toggleExplanation',
   // Tabs navigation actions
   'tabs:next',
   'tabs:previous',
@@ -134,6 +135,7 @@ export const KEYBINDING_ACTIONS = [
   'task:background',
   // Theme picker actions
   'theme:toggleSyntaxHighlighting',
+  'theme:editCustom',
   // Help menu actions
   'help:dismiss',
   // Attachment navigation (select dialog image attachments)
@@ -170,16 +172,20 @@ export const KEYBINDING_ACTIONS = [
   'select:next',
   'select:previous',
   'select:accept',
+  'select:first',
+  'select:last',
+  'select:pageUp',
+  'select:pageDown',
   'select:cancel',
   // Plugin dialog actions
   'plugin:toggle',
   'plugin:install',
+  'plugin:cycleMarketplace',
   // Permission dialog actions
   'permission:toggleDebug',
   // Settings config panel actions
   'settings:search',
   'settings:retry',
-  'settings:close',
   // Voice actions
   'voice:pushToTalk',
 ] as const

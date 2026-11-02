@@ -10,6 +10,8 @@ version: 0.1.0
 
 repo 內已有更嚴格的驗收 skill（`claude-code-feature-validation`、`claude-agent-workflow-validation`、`release-validation`）：做正式發布門禁或 Agent/Workflow 生命週期驗收時改用它們，本 skill 是日常實測的速查。
 
+多輪對話 / 長對話 / 權限切換 / Mods / slash / resume-cache / 真模型 token 的整輪 dev vs 官方掃描，改用 `multiturn-parity-sweep`（附 tmux 驅動腳本和 fake API）。
+
 下文 `/mnt/project-files/` 是 Claude 專案的共享資料夾；不在該環境時，對應腳本需自行準備。
 
 ## 1. 建置

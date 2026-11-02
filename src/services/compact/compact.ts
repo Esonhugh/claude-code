@@ -39,7 +39,9 @@ import {
   getAgentListingDeltaAttachment,
   getDeferredToolsDeltaAttachment,
   getMcpInstructionsDeltaAttachment,
+  getSessionContextAttachments,
 } from '../../utils/attachments.js'
+import { getGitStatus } from '../../context.js'
 import { isMemoryFilePath } from '../../utils/claudemd.js'
 import { getMemoryPath } from '../../utils/config.js'
 import { COMPACT_MAX_OUTPUT_TOKENS } from '../../utils/context.js'
@@ -48,7 +50,7 @@ import {
   tokenStatsToStatsigMetrics,
 } from '../../utils/contextAnalysis.js'
 import { logForDebugging } from '../../utils/debug.js'
-import { hasExactErrorMessage } from '../../utils/errors.js'
+import { errorMessage, hasExactErrorMessage } from '../../utils/errors.js'
 import { cacheToObject } from '../../utils/fileStateCache.js'
 import {
   type CacheSafeParams,
@@ -59,6 +61,7 @@ import {
   executePreCompactHooks,
 } from '../../utils/hooks.js'
 import { logError } from '../../utils/log.js'
+import { createAgentId } from '../../utils/uuid.js'
 import { MEMORY_TYPE_VALUES } from '../../utils/memory/types.js'
 import {
   createCompactBoundaryMessage,
@@ -77,6 +80,7 @@ import {
 } from '../../utils/sessionActivity.js'
 import { processSessionStartHooks } from '../../utils/sessionStart.js'
 import {
+  cleanMessagesForLogging,
   getTranscriptPath,
   reAppendSessionMetadata,
 } from '../../utils/sessionStorage.js'
@@ -120,6 +124,8 @@ import {
   getCompactPrompt,
   getCompactUserSummaryMessage,
   getPartialCompactPrompt,
+  hasSummaryBlock,
+  SUMMARY_BLOCK_NUDGE,
 } from './prompt.js'
 
 export const POST_COMPACT_MAX_FILES_TO_RESTORE = 5
@@ -393,7 +399,8 @@ export function annotateBoundaryWithPreservedSegment(
   anchorUuid: UUID,
   messagesToKeep: readonly Message[] | undefined,
 ): SystemCompactBoundaryMessage {
-  const keep = messagesToKeep ?? []
+  // Only messages that reach the transcript can anchor the relink on resume.
+  const keep = cleanMessagesForLogging([...(messagesToKeep ?? [])])
   if (keep.length === 0) return boundary
   return {
     ...boundary,
@@ -405,8 +412,48 @@ export function annotateBoundaryWithPreservedSegment(
         anchorUuid,
         tailUuid: keep.at(-1)!.uuid,
       },
+      preservedMessages: { anchorUuid, uuids: keep.map(m => m.uuid) },
     },
   }
+}
+
+const KEPT_TAIL_NOTE =
+  'The messages after this summary are the most recent messages from before compaction, kept verbatim. The summary was written without seeing them, so something it says has not happened yet may already have happened in them.'
+
+/**
+ * Like official 2.1.311, full compaction summarizes every API round but the
+ * last and keeps that round verbatim. Kept assistant usage is zeroed so the
+ * pre-compact context size is not read back as the current one.
+ */
+export function splitKeptTail(messages: Message[]): {
+  toSummarize: Message[]
+  toKeep: Message[]
+} {
+  const groups = groupMessagesByApiRound(
+    messages.filter(m => m.type !== 'progress'),
+  )
+  const toSummarize = groups.slice(0, -1).flat()
+  if (groups.length < 2 || !toSummarize.some(m => m.type === 'assistant')) {
+    return { toSummarize: messages, toKeep: [] }
+  }
+  const toKeep = groups.at(-1)!.map(m =>
+    m.type === 'assistant'
+      ? {
+          ...m,
+          message: {
+            ...m.message,
+            usage: {
+              ...m.message.usage,
+              input_tokens: 0,
+              output_tokens: 0,
+              cache_creation_input_tokens: 0,
+              cache_read_input_tokens: 0,
+            },
+          },
+        }
+      : m,
+  )
+  return { toSummarize, toKeep }
 }
 
 /**
@@ -439,6 +486,8 @@ export async function compactConversation(
     customInstructions?: string,
   ) => Promise<RemoteCompactionResult | undefined>,
 ): Promise<CompactionResult> {
+  const compactStartedAt = Date.now()
+  let compactFailure: unknown
   try {
     if (messages.length === 0) {
       throw new Error(ERROR_MESSAGE_NOT_ENOUGH_MESSAGES)
@@ -485,6 +534,7 @@ export async function compactConversation(
     )
 
     let messagesToSummarize = messages
+    let messagesToKeep: Message[] = []
     let summaryResponse: AssistantMessage | undefined
     let remoteResult: RemoteCompactionResult | undefined
     let summary: string
@@ -499,7 +549,13 @@ export async function compactConversation(
       const summaryRequest = createUserMessage({
         content: compactPrompt,
       })
-      let retryCacheSafeParams = cacheSafeParams
+      const split = splitKeptTail(messages)
+      messagesToSummarize = split.toSummarize
+      messagesToKeep = split.toKeep
+      let retryCacheSafeParams =
+        messagesToKeep.length > 0 && cacheSafeParams.forkContextMessages.length > 0
+          ? { ...cacheSafeParams, forkContextMessages: messagesToSummarize }
+          : cacheSafeParams
       let generatedSummary: string | null
       let ptlAttempts = 0
       for (;;) {
@@ -569,6 +625,38 @@ export async function compactConversation(
         throw new Error(generatedSummary)
       }
       summary = generatedSummary
+      // Official 2.1.311: a reply without a <summary> block gets one more
+      // request with a nudge; the first reply stays when the second also fails.
+      if (
+        !hasSummaryBlock(summary) &&
+        getFeatureValue_CACHED_MAY_BE_STALE('tengu_dapper_fountain', true)
+      ) {
+        try {
+          const retryResponse = await streamCompactSummary({
+            messages: messagesToSummarize,
+            summaryRequest: createUserMessage({
+              content: compactPrompt + SUMMARY_BLOCK_NUDGE,
+            }),
+            appState,
+            context,
+            preCompactTokenCount,
+            cacheSafeParams: retryCacheSafeParams,
+          })
+          const retrySummary = getAssistantMessageText(retryResponse)
+          if (
+            !retryResponse.isApiErrorMessage &&
+            retrySummary &&
+            !startsWithApiErrorPrefix(retrySummary) &&
+            hasSummaryBlock(retrySummary)
+          ) {
+            summaryResponse = retryResponse
+            summary = retrySummary
+          }
+        } catch (error) {
+          if (context.abortController.signal.aborted) throw error
+          logError(error)
+        }
+      }
     }
 
     // Store the current file state before clearing
@@ -591,6 +679,7 @@ export async function compactConversation(
         preCompactReadFileState,
         context,
         POST_COMPACT_MAX_FILES_TO_RESTORE,
+        messagesToKeep,
       ),
       createAsyncAgentAttachmentsIfNeeded(context),
     ])
@@ -633,23 +722,27 @@ export async function compactConversation(
     // Compaction ate prior delta attachments. Re-announce from the current
     // state so the model has tool/instruction context on the first
     // post-compact turn. Empty message history → diff against nothing →
-    // announces the full set.
+    // announces the full set. Git status is re-read like 2.1.311.
+    getGitStatus.cache.clear?.()
+    for (const att of await getSessionContextAttachments(context, messagesToKeep)) {
+      postCompactFileAttachments.push(createAttachmentMessage(att))
+    }
     for (const att of getDeferredToolsDeltaAttachment(
       context.options.tools,
       context.options.mainLoopModel,
-      [],
+      messagesToKeep,
       { callSite: 'compact_full' },
     )) {
       postCompactFileAttachments.push(createAttachmentMessage(att))
     }
-    for (const att of await getAgentListingDeltaAttachment(context, [])) {
+    for (const att of await getAgentListingDeltaAttachment(context, messagesToKeep)) {
       postCompactFileAttachments.push(createAttachmentMessage(att))
     }
     for (const att of getMcpInstructionsDeltaAttachment(
       context.options.mcpClients,
       context.options.tools,
       context.options.mainLoopModel,
-      [],
+      messagesToKeep,
     )) {
       postCompactFileAttachments.push(createAttachmentMessage(att))
     }
@@ -694,11 +787,13 @@ export async function compactConversation(
       ? []
       : [
           createUserMessage({
-            content: getCompactUserSummaryMessage(
-              summary,
-              suppressFollowUpQuestions,
-              transcriptPath,
-            ),
+            content:
+              // With a kept tail official always asks to resume directly.
+              getCompactUserSummaryMessage(
+                summary,
+                suppressFollowUpQuestions || messagesToKeep.length > 0,
+                transcriptPath,
+              ) + (messagesToKeep.length > 0 ? `\n\n${KEPT_TAIL_NOTE}` : ''),
             isCompactSummary: true,
             isVisibleInTranscriptOnly: true,
           }),
@@ -724,10 +819,15 @@ export async function compactConversation(
       // @ts-ignore - recovered code
       ...summaryMessages,
       // @ts-ignore - recovered code
+      ...messagesToKeep,
+      // @ts-ignore - recovered code
       ...postCompactFileAttachments,
       // @ts-ignore - recovered code
       ...hookMessages,
     ])
+
+    boundaryMarker.compactMetadata.postTokens = truePostCompactTokenCount
+    boundaryMarker.compactMetadata.durationMs = Date.now() - compactStartedAt
 
     const querySourceForEvent =
       recompactionInfo?.querySource ?? context.options.querySource ?? 'unknown'
@@ -821,8 +921,16 @@ export async function compactConversation(
       .join('\n')
 
     return {
-      boundaryMarker,
+      boundaryMarker:
+        summaryMessages.length > 0
+          ? annotateBoundaryWithPreservedSegment(
+              boundaryMarker,
+              summaryMessages.at(-1)!.uuid,
+              messagesToKeep,
+            )
+          : boundaryMarker,
       summaryMessages,
+      messagesToKeep,
       attachments: postCompactFileAttachments,
       hookResults: hookMessages,
       userDisplayMessage: combinedUserDisplayMessage || undefined,
@@ -832,6 +940,7 @@ export async function compactConversation(
       compactionUsage,
     }
   } catch (error) {
+    compactFailure = error
     // Only show the error notification for manual /compact.
     // Auto-compact failures are retried on the next turn and the
     // notification is confusing when compaction eventually succeeds.
@@ -843,8 +952,17 @@ export async function compactConversation(
     context.setStreamMode?.('requesting')
     context.setResponseLength?.(() => 0)
     context.onCompactProgress?.({ type: 'compact_end' })
-    context.setSDKStatus?.(null)
+    context.setSDKStatus?.(null, compactOutcome(compactFailure))
   }
+}
+
+export function compactOutcome(failure: unknown): {
+  compact_result: 'success' | 'failed'
+  compact_error?: string
+} {
+  return failure === undefined
+    ? { compact_result: 'success' }
+    : { compact_result: 'failed', compact_error: errorMessage(failure) }
 }
 
 /**
@@ -1059,6 +1177,9 @@ export async function partialCompactConversation(
 
     // Re-announce only what was in the summarized portion — messagesToKeep
     // is scanned, so anything already announced there is skipped.
+    for (const att of await getSessionContextAttachments(context, messagesToKeep)) {
+      postCompactFileAttachments.push(createAttachmentMessage(att))
+    }
     for (const att of getDeferredToolsDeltaAttachment(
       context.options.tools,
       context.options.mainLoopModel,
@@ -1305,7 +1426,10 @@ async function streamCompactSummary({
           // Pass the compact context's abortController so user Esc aborts the
           // fork — same signal the streaming fallback uses at
           // `signal: context.abortController.signal` below.
-          overrides: { abortController: context.abortController },
+          overrides: {
+            abortController: context.abortController,
+            agentId: createAgentId(),
+          },
         })
         const assistantMsg = getLastAssistantMessage(result.messages)
         const assistantText = assistantMsg

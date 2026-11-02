@@ -67,7 +67,10 @@ import {
   createUserMessage,
 } from '../../utils/messages.js'
 import { evictTaskOutput } from '../../utils/task/diskOutput.js'
-import { evictTerminalTask } from '../../utils/task/framework.js'
+import {
+  evictTerminalTask,
+  PANEL_GRACE_MS,
+} from '../../utils/task/framework.js'
 import { tokenCountWithEstimation } from '../../utils/tokens.js'
 import { createAbortController } from '../abortController.js'
 import { type AgentContext, runWithAgentContext } from '../agentContext.js'
@@ -99,16 +102,18 @@ import type { TeammateContext } from '../teammateContext.js'
 import { runWithTeammateContext } from '../teammateContext.js'
 import {
   createIdleNotification,
+  getIdleResult,
   getLastPeerDmSummary,
   isPermissionResponse,
   isShutdownRequest,
   markMessageAsReadByIndex,
   readMailbox,
+  withShutdownReplyInstructions,
   writeToMailbox,
 } from '../teammateMailbox.js'
 import { unregisterAgent as unregisterPerfettoAgent } from '../telemetry/perfettoTracing.js'
 import { createContentReplacementState, type ContentReplacementState } from '../toolResultStorage.js'
-import { TEAM_LEAD_NAME } from './constants.js'
+import { TEAM_LEAD_NAME, TEAMMATE_SHUTDOWN_APPROVED } from './constants.js'
 import {
   getLeaderSetToolPermissionContext,
   getLeaderToolUseConfirmQueue,
@@ -484,6 +489,24 @@ const teammatePermissionViews = new WeakMap<
 >()
 
 /**
+ * A lifecycle abort (stop, kill) also aborts the running turn so its tool stops;
+ * the returned function unlinks the turn once it is over.
+ * A teammate approving its own shutdown is the exception: its SendMessage call
+ * finishes like official (PostToolUse fires) and the runner exits after it.
+ */
+export function linkTurnToLifecycle(
+  lifecycle: AbortController,
+  turn: AbortController,
+): () => void {
+  const abortTurn = () => {
+    if (lifecycle.signal.reason === TEAMMATE_SHUTDOWN_APPROVED) return
+    turn.abort(lifecycle.signal.reason)
+  }
+  lifecycle.signal.addEventListener('abort', abortTurn, { once: true })
+  return () => lifecycle.signal.removeEventListener('abort', abortTurn)
+}
+
+/**
  * The leader's AppState as an in-process teammate sees it, read on every call
  * so a mode change reaches a turn in flight. Like official subagents, the
  * teammate runs in the leader's mode while the leader is in bypass,
@@ -627,6 +650,7 @@ async function sendIdleNotification(
     completedTaskId?: string
     completedStatus?: 'resolved' | 'blocked' | 'failed'
     failureReason?: string
+    result?: string
   },
 ): Promise<void> {
   const notification = createIdleNotification(agentName, options)
@@ -1112,8 +1136,10 @@ export async function runInProcessTeammate(
 
       // Create a per-turn abort controller for this iteration.
       // This allows Escape to stop current work without killing the whole teammate.
-      // The lifecycle abortController still kills the whole teammate if needed.
+      // The lifecycle abortController still kills the whole teammate if needed,
+      // and aborts this turn too so a running tool stops with it.
       const currentWorkAbortController = createAbortController()
+      const unlinkTurn = linkTurnToLifecycle(abortController, currentWorkAbortController)
 
       // Store the work controller in task state so UI can abort it
       updateTaskState(
@@ -1231,7 +1257,12 @@ export async function runInProcessTeammate(
           // Mark task as running (not idle)
           updateTaskState(
             taskId,
-            task => ({ ...task, status: 'running', isIdle: false }),
+            task => ({
+              ...task,
+              status: 'running',
+              isIdle: false,
+              evictAfter: undefined,
+            }),
             setAppState,
           )
 
@@ -1367,6 +1398,7 @@ export async function runInProcessTeammate(
       })
 
       // Clear the work controller from state (it's no longer valid)
+      unlinkTurn()
       updateTaskState(
         taskId,
         task => ({ ...task, currentWorkAbortController: undefined }),
@@ -1410,7 +1442,14 @@ export async function runInProcessTeammate(
         task => {
           // Call any registered idle callbacks
           task.onIdleCallbacks?.forEach(cb => cb())
-          return { ...task, isIdle: true, onIdleCallbacks: [] }
+          // Official 2.1.311: an idle teammate leaves the panel after the
+          // grace period (see hideIdleTeammates) but stays alive.
+          return {
+            ...task,
+            isIdle: true,
+            evictAfter: Date.now() + PANEL_GRACE_MS,
+            onIdleCallbacks: [],
+          }
         },
         setAppState,
       )
@@ -1428,6 +1467,7 @@ export async function runInProcessTeammate(
           {
             idleReason: workWasAborted ? 'interrupted' : 'available',
             summary: getLastPeerDmSummary(allMessages),
+            result: workWasAborted ? undefined : getIdleResult(allMessages),
           },
         )
       } else {
@@ -1460,7 +1500,10 @@ export async function runInProcessTeammate(
           )
           currentPrompt = formatAsTeammateMessage(
             waitResult.request?.from || 'team-lead',
-            waitResult.originalMessage,
+            withShutdownReplyInstructions(
+              waitResult.originalMessage,
+              waitResult.request?.from || 'team-lead',
+            ),
           )
           // Add shutdown request to task.messages for transcript display
           appendTeammateMessage(

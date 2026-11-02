@@ -1,3 +1,6 @@
 export const DESCRIPTION =
   'Replace the contents of a specific cell in a Jupyter notebook.'
-export const PROMPT = `Completely replaces the contents of a specific cell in a Jupyter notebook (.ipynb file) with new source. Jupyter notebooks are interactive documents that combine code, text, and visualizations, commonly used for data analysis and scientific computing. The notebook_path parameter must be an absolute path, not a relative path. The cell_number is 0-indexed. Use edit_mode=insert to add a new cell at the index specified by cell_number. Use edit_mode=delete to delete the cell at the index specified by cell_number.`
+export const PROMPT = `Replace, insert, or delete one cell in a Jupyter notebook (.ipynb).
+- Read the notebook first in this conversation; the edit fails otherwise. \`notebook_path\` must be absolute.
+- \`cell_id\` is the id from the Read output's \`<cell id="...">\` tag (e.g. "cell-2" when the cell has no own id). Required for replace and delete.
+- \`edit_mode\`: "replace" (default), "insert" (adds a cell after \`cell_id\`, or first when cell_id is omitted; \`cell_type\` is required), or "delete".`

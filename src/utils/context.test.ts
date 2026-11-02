@@ -68,24 +68,24 @@ afterEach(() => {
 })
 
 test.each([
-  'claude-fable-5-1',
-  'claude-mythos-5-1',
-  'claude-mythos-5',
-  'claude-mythos-preview',
-  'claude-opus-5-5',
-  'claude-sonnet-5-5',
-  'claude-fable-5',
-  'claude-opus-5',
-  'claude-sonnet-5',
-  'claude-opus-4-8',
-  'claude-opus-4-7',
-])(
-  '%s has native 1M input context and a conservative 32K output default',
-  (model) => {
+  ['claude-fable-5-1', 64_000],
+  ['claude-mythos-5-1', 64_000],
+  ['claude-mythos-5', 64_000],
+  ['claude-mythos-preview', 64_000],
+  ['claude-opus-5-5', 128_000],
+  ['claude-sonnet-5-5', 128_000],
+  ['claude-fable-5', 64_000],
+  ['claude-opus-5', 64_000],
+  ['claude-sonnet-5', 64_000],
+  ['claude-opus-4-8', 64_000],
+  ['claude-opus-4-7', 64_000],
+] as const)(
+  '%s has native 1M input context and the 2.1.311 catalog output default',
+  (model, defaultTokens) => {
     expect(modelSupports1M(model)).toBe(true)
     expect(getContextWindowForModel(model)).toBe(1_000_000)
     expect(getModelMaxOutputTokens(model)).toEqual({
-      default: 32_000,
+      default: defaultTokens,
       upperLimit: 128_000,
     })
     process.env.CLAUDE_CODE_DISABLE_1M_CONTEXT = '1'
@@ -94,6 +94,13 @@ test.each([
     expect(getContextWindowForModel(`${model}[1m]`)).toBe(200_000)
   },
 )
+
+test('claude-haiku-5-5 defaults to 128K output like 2.1.311', () => {
+  expect(getModelMaxOutputTokens('claude-haiku-5-5')).toEqual({
+    default: 128_000,
+    upperLimit: 128_000,
+  })
+})
 
 test.each(['gpt-5.6-sol', 'gpt-6-astra', 'gpt-5.6-terra', 'gpt-5.6-luna'])(
   '%s budgets against the 922K input limit, not its 1,050K total window',

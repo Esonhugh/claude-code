@@ -6,6 +6,7 @@ import {
 } from '../../constants/tools.js'
 import type { Tools } from '../../Tool.js'
 import { MonitorTool } from '../MonitorTool/MonitorTool.js'
+import { SCHEDULE_WAKEUP_TOOL_NAME } from '../ScheduleWakeupTool/prompt.js'
 import { SEND_MESSAGE_TOOL_NAME } from '../SendMessageTool/constants.js'
 import { TASK_STOP_TOOL_NAME } from '../TaskStopTool/prompt.js'
 import { filterToolsForAgent } from './agentToolUtils.js'
@@ -25,5 +26,8 @@ for (const isAsync of [false, true]) {
     )
   }
 }
+
+// Official 2.1.311 keeps ScheduleWakeup (the /loop pacer) on the main thread only.
+assert.equal(ALL_AGENT_DISALLOWED_TOOLS.has(SCHEDULE_WAKEUP_TOOL_NAME), true)
 
 console.log('agentToolUtils.officialTools.test.ts passed')

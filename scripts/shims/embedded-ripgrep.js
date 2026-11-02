@@ -2,11 +2,15 @@ import embeddedRipgrepPath from __CLAUDE_CODE_RIPGREP_BINARY__ with { type: 'fil
 import builtinModsArchivePath from __CLAUDE_CODE_BUILTIN_MODS_ARCHIVE__ with { type: 'file' };
 import builtinDiffArchivePath from __CLAUDE_CODE_BUILTIN_DIFF_ARCHIVE__ with { type: 'file' };
 __CLAUDE_CODE_SRT_WIN_IMPORT__
+__CLAUDE_CODE_APPLY_SECCOMP_IMPORT__
+__CLAUDE_CODE_SEARCH_TOOLS_IMPORT__
 
 process.env.CLAUDE_CODE_EMBEDDED_RIPGREP_PATH = embeddedRipgrepPath;
 process.env.CLAUDE_CODE_EMBEDDED_RIPGREP_VERSION = '__CLAUDE_CODE_RIPGREP_VERSION__';
 process.env.CLAUDE_CODE_BUILTIN_MODS_ARCHIVE = builtinModsArchivePath;
 __CLAUDE_CODE_SRT_WIN_ENV__
+__CLAUDE_CODE_APPLY_SECCOMP_ENV__
+__CLAUDE_CODE_SEARCH_TOOLS_ENV__
 if (!process.env.CLAUDE_CODE_BUILTIN_DIFF_ARCHIVE) process.env.CLAUDE_CODE_BUILTIN_DIFF_ARCHIVE = builtinDiffArchivePath;
 
 await import(__CLAUDE_CODE_EMBEDDED_SHARP__);

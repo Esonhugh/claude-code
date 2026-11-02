@@ -28,6 +28,7 @@ import { ENTER_WORKTREE_TOOL_NAME } from '../tools/EnterWorktreeTool/constants.j
 import { EXIT_WORKTREE_TOOL_NAME } from '../tools/ExitWorktreeTool/constants.js'
 import { WORKFLOW_TOOL_NAME } from '../tools/WorkflowTool/constants.js'
 import { GOAL_TOOL_NAME } from '../tools/GoalTool/constants.js'
+import { SCHEDULE_WAKEUP_TOOL_NAME } from '../tools/ScheduleWakeupTool/prompt.js'
 import {
   CRON_CREATE_TOOL_NAME,
   CRON_DELETE_TOOL_NAME,
@@ -44,6 +45,8 @@ export const ALL_AGENT_DISALLOWED_TOOLS = new Set([
   ASK_USER_QUESTION_TOOL_NAME,
   // Prevent recursive workflow execution inside subagents.
   WORKFLOW_TOOL_NAME,
+  // The /loop pacer wakes the main session; official keeps it off subagents.
+  SCHEDULE_WAKEUP_TOOL_NAME,
 ])
 
 export const CUSTOM_AGENT_DISALLOWED_TOOLS = new Set([
@@ -112,4 +115,7 @@ export const COORDINATOR_MODE_ALLOWED_TOOLS = new Set([
   TASK_STOP_TOOL_NAME,
   SEND_MESSAGE_TOOL_NAME,
   SYNTHETIC_OUTPUT_TOOL_NAME,
+  SKILL_TOOL_NAME,
+  'ListAgents',
+  WORKFLOW_TOOL_NAME,
 ])

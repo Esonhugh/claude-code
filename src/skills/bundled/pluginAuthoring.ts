@@ -2,7 +2,7 @@ import { generateModDeclarationFiles } from '../../services/mods/declarations.js
 import { registerBundledSkill } from '../bundledSkills.js'
 
 const DESCRIPTION =
-  'Make a mod: a pane, band, status line, toast, or hook inside Claude Code, written as a plugin of function hooks. Load before writing or debugging a hooks module.'
+  "Make a mod: a change to Claude's own interface or behaviour, such as a panel or pane that stays beside the chat and updates, a band, status line, toast, slash command, or hook on tool calls. Use to make, change or debug a mod or its hooks module."
 
 const REFERENCE = `# Local Mods authoring reference
 
@@ -95,6 +95,7 @@ export function pluginAuthoringPrompt(args: string, authoringRoot?: string): str
 export function registerPluginAuthoringSkill(): void {
   registerBundledSkill({
     name: 'plugin-authoring',
+    menuDescription: 'Write a mod: a live pane, view or behaviour change in Claude Code',
     description: DESCRIPTION,
     userInvocable: true,
     files: PLUGIN_AUTHORING_FILES,

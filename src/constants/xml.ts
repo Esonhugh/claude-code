@@ -26,6 +26,7 @@ export const TICK_TAG = 'tick'
 
 // XML tag names for task notifications (background task completions)
 export const TASK_NOTIFICATION_TAG = 'task-notification'
+export const SYSTEM_NOTIFICATION_HEADER = '[SYSTEM NOTIFICATION - NOT USER INPUT]'
 export const TASK_ID_TAG = 'task-id'
 export const TOOL_USE_ID_TAG = 'tool-use-id'
 export const TASK_TYPE_TAG = 'task-type'

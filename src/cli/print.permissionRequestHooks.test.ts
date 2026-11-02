@@ -26,6 +26,7 @@ if (process.env[childFlag] !== '1') {
   const { resetSettingsCache, setSessionSettingsCache } = await import('../utils/settings/settingsCache.js')
   const { getDefaultAppState } = await import('../state/AppStateStore.js')
   const { createCanUseToolWithPermissionPrompt, getCanUseToolFn } = await import('./print.js')
+  const { StructuredIO } = await import('./structuredIO.js')
 
   let home: string
   let savedHome: string | undefined
@@ -92,16 +93,51 @@ if (process.env[childFlag] !== '1') {
 
   const assistant = { message: { id: 'msg_test' } } as never
 
+  function denials() {
+    const io = new StructuredIO((async function* () {})())
+    const emitted: unknown[] = []
+    io.outbound.enqueue = message => void emitted.push(message)
+    return { emitted, io }
+  }
+
+  // Like 2.1.311, a call refused before any prompt is reported as
+  // system/permission_denied; a PermissionRequest hook's answer is not.
+  test('plain --print reports an unanswered prompt as permission_denied', async () => {
+    const d = denials()
+    const canUseTool = getCanUseToolFn(undefined, d.io, () => [])
+    const decision = await canUseTool(promptingTool, {}, { ...toolUseContext(), agentId: 'a1' } as ToolUseContext, assistant, 'toolu_4')
+    expect(d.emitted).toEqual([{
+      type: 'system',
+      subtype: 'permission_denied',
+      tool_name: 'NeedsApproval',
+      tool_use_id: 'toolu_4',
+      agent_id: 'a1',
+      decision_reason_type: decision.decisionReason?.type,
+      decision_reason: undefined,
+      message: "Claude requested permissions to use NeedsApproval, but you haven't granted it yet.",
+      uuid: expect.any(String),
+      session_id: expect.any(String),
+    }])
+  })
+
+  test('plain --print does not report a PermissionRequest hook denial', async () => {
+    permissionRequestHook('deny')
+    const d = denials()
+    const decision = await getCanUseToolFn(undefined, d.io, () => [])(promptingTool, {}, toolUseContext(), assistant, 'toolu_5')
+    expect(decision.behavior).toBe('deny')
+    expect(d.emitted).toEqual([])
+  })
+
   test('plain --print runs PermissionRequest hooks for a prompt', async () => {
     const calls = permissionRequestHook('allow')
-    const canUseTool = getCanUseToolFn(undefined, undefined as never, () => [])
+    const canUseTool = getCanUseToolFn(undefined, denials().io, () => [])
     const decision = await canUseTool(promptingTool, {}, toolUseContext(), assistant, 'toolu_1')
     expect(calls()).toBe(1)
     expect(decision).toMatchObject({ behavior: 'allow', decisionReason: { type: 'hook', hookName: 'PermissionRequest' } })
   })
 
   test('plain --print keeps the prompt result when no hook decides', async () => {
-    const canUseTool = getCanUseToolFn(undefined, undefined as never, () => [])
+    const canUseTool = getCanUseToolFn(undefined, denials().io, () => [])
     expect((await canUseTool(promptingTool, {}, toolUseContext(), assistant, 'toolu_2')).behavior).toBe('ask')
   })
 

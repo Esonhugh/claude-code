@@ -591,7 +591,9 @@ export function Select<T>({
               >
                 <>
                   {!hideIndexes && (
-                    <Text dimColor>{`${i}.`.padEnd(maxIndexWidth + 1)}</Text>
+                    <Box flexShrink={0}>
+                      <Text dimColor>{`${i}.`.padEnd(maxIndexWidth + 1)}</Text>
+                    </Box>
                   )}
                   <Text
                     dimColor={isOptionDisabled}
@@ -889,7 +891,9 @@ export function Select<T>({
           >
             <Box flexDirection="row" flexShrink={0}>
               {!hideIndexes && (
-                <Text dimColor>{`${i}.`.padEnd(maxIndexWidth + 2)}</Text>
+                <Box flexShrink={0}>
+                  <Text dimColor>{`${i}.`.padEnd(maxIndexWidth + 2)}</Text>
+                </Box>
               )}
               <Text
                 dimColor={isOptionDisabled}

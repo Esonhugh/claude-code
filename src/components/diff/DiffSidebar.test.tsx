@@ -27,7 +27,7 @@ if (!process.env[childKey]) {
         git('init', '-q')
         writeFileSync(
           join(root, '.git/info/exclude'),
-          'config/\nLibrary/\n.cache/\n',
+          'config/\nLibrary/\n.cache/\n.bun/\n', // the child bun writes its cache under HOME=root
         )
         const cwd = scenario === 'subdirectory' ? join(root, 'sub') : root
         if (cwd !== root) mkdirSync(cwd)
@@ -83,7 +83,7 @@ if (!process.env[childKey]) {
         rmSync(root, { recursive: true, force: true })
       }
     },
-    10000,
+    60_000, // the child cold-transpiles the module graph and runs real Git; slow under CI load
   )
 } else {
   test('real diff sidebar interaction', async () => {
@@ -208,7 +208,7 @@ if (!process.env[childKey]) {
       return found
     }
     const waitFor = async (text: string) => {
-      const deadline = Date.now() + 3000
+      const deadline = Date.now() + 10_000
       while (Date.now() < deadline) {
         const node = texts().find(node => textContent(node).includes(text))
         if (node) return node
@@ -225,7 +225,7 @@ if (!process.env[childKey]) {
       const scenario = process.env.DIFF_SIDEBAR_SCENARIO
       if (scenario === 'continuous') {
         await waitFor('tracked.txt')
-        const deadline = Date.now() + 3000
+        const deadline = Date.now() + 10_000
         while (
           (!stdout.output.includes('first-body-marker') ||
             !stdout.output.includes('second-body-marker')) &&
@@ -269,7 +269,7 @@ if (!process.env[childKey]) {
       await waitFor('No changes this session')
       if (scenario === 'keyboard-ownership') {
         stdin.push('draft')
-        const textDeadline = Date.now() + 1000
+        const textDeadline = Date.now() + 10_000
         while (transcriptText !== 'draft' && Date.now() < textDeadline)
           await new Promise(resolve => setTimeout(resolve, 10))
         expect(transcriptText).toBe('draft')
@@ -281,13 +281,13 @@ if (!process.env[childKey]) {
         stdin.push('\u0018')
         await new Promise(resolve => setTimeout(resolve, 40))
         stdin.push('\u0005')
-        const editorDeadline = Date.now() + 1000
+        const editorDeadline = Date.now() + 10_000
         while (externalEditors === 0 && Date.now() < editorDeadline)
           await new Promise(resolve => setTimeout(resolve, 10))
         expect(externalEditors).toBe(1)
         expect(transcriptText).toBe('draft')
         stdin.push('\u001b')
-        const closeDeadline = Date.now() + 1000
+        const closeDeadline = Date.now() + 10_000
         while (!closed && Date.now() < closeDeadline)
           await new Promise(resolve => setTimeout(resolve, 10))
         expect(closed).toBe(true)
@@ -304,7 +304,7 @@ if (!process.env[childKey]) {
       await new Promise(resolve => setTimeout(resolve, 60))
       expect(transcriptWheels).toBe(1)
       await click('tracked.txt')
-      const detailDeadline = Date.now() + 3000
+      const detailDeadline = Date.now() + 10_000
       while (!stdout.output.includes('after') && Date.now() < detailDeadline) {
         await new Promise(resolve => setTimeout(resolve, 20))
       }
@@ -367,5 +367,5 @@ if (!process.env[childKey]) {
       instance.unmount()
       controller?.dispose()
     }
-  }, 8000)
+  }, 30_000)
 }

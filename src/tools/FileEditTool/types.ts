@@ -75,6 +75,14 @@ const outputSchema = lazySchema(() =>
       .boolean()
       .describe('Whether the user modified the proposed changes'),
     replaceAll: z.boolean().describe('Whether all occurrences were replaced'),
+    staleRecovered: z
+      .boolean()
+      .optional()
+      .describe('Whether the file had changed on disk since the last read'),
+    contentNotInModelContext: z
+      .boolean()
+      .optional()
+      .describe('Whether the file was edited without a prior full read'),
     gitDiff: gitDiffSchema().optional(),
   }),
 )

@@ -24,8 +24,8 @@ import {
   formatTeammateMessageContent,
 } from './PlanApprovalMessage.js'
 import { BLACK_CIRCLE } from '../../constants/figures.js'
-import { TeammateMessageContent } from './UserTeammateMessage.js'
-import { isShutdownApproved } from '../../utils/teammateMailbox.js'
+import { IdleNotificationPanel, TeammateMessageContent } from './UserTeammateMessage.js'
+import { isIdleNotification, isShutdownApproved } from '../../utils/teammateMailbox.js'
 import { CtrlOToExpand } from '../CtrlOToExpand.js'
 import { FilePathLink } from '../FilePathLink.js'
 import { feature } from 'bun:bundle'
@@ -54,18 +54,13 @@ export function AttachmentMessage({
     : false
   // Handle teammate_mailbox BEFORE switch
   if (isAgentSwarmsEnabled() && attachment.type === 'teammate_mailbox') {
-    // Filter out idle notifications BEFORE counting - they are hidden in the UI
-    // so showing them in the count would be confusing ("2 messages in mailbox:" with nothing shown)
     const visibleMessages = attachment.messages.filter(msg => {
       if (isShutdownApproved(msg.text)) {
         return false
       }
       try {
         const parsed = jsonParse(msg.text)
-        return (
-          parsed?.type !== 'idle_notification' &&
-          parsed?.type !== 'teammate_terminated'
-        )
+        return parsed?.type !== 'teammate_terminated'
       } catch {
         return true // Non-JSON messages are visible
       }
@@ -102,7 +97,18 @@ export function AttachmentMessage({
             )
           }
 
-          // Note: idle_notification messages already filtered out above
+          const idle = msg.summary ? null : isIdleNotification(msg.text)
+          if (idle) {
+            return (
+              <IdleNotificationPanel
+                key={idx}
+                displayName={msg.from}
+                inkColor={toInkColor(msg.color)}
+                notification={idle}
+                expanded={isTranscriptMode}
+              />
+            )
+          }
 
           // Try to render as plan approval message (request or response)
           const planApprovalElement = tryRenderPlanApprovalMessage(

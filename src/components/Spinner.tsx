@@ -120,7 +120,7 @@ export function SpinnerWithVerb(props: Props): React.ReactNode {
     (getKairosActive() ||
       (getUserMsgOptIn() &&
         (briefEnvEnabled ||
-          getFeatureValue_CACHED_MAY_BE_STALE('tengu_kairos_brief', false)))) &&
+          getFeatureValue_CACHED_MAY_BE_STALE('tengu_kairos_brief', true)))) &&
     isBriefOnly &&
     !viewingAgentTaskId
   ) {

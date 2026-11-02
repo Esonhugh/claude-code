@@ -40,7 +40,7 @@ export function executeCd(
   }
 }
 
-function addCwdToAdditionalWorkingDirectories(
+export function addCwdToAdditionalWorkingDirectories(
   context: Pick<LocalJSXCommandContext, 'getAppState' | 'setAppState'>,
   cwd: string,
 ): void {

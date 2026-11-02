@@ -4,7 +4,6 @@ import { NO_CONTENT_MESSAGE } from '../../constants/messages.js'
 import { Box, Text } from '../../ink.js'
 import { extractTag } from '../../utils/messages.js'
 import { Markdown } from '../Markdown.js'
-import { MessageResponse } from '../MessageResponse.js'
 
 type Props = {
   content: string
@@ -15,25 +14,28 @@ export function UserLocalCommandOutputMessage({
 }: Props): React.ReactNode {
   const stdout = extractTag(content, 'local-command-stdout')
   const stderr = extractTag(content, 'local-command-stderr')
-  if (!stdout && !stderr) {
-    return (
-      <MessageResponse>
-        <Text dimColor>{NO_CONTENT_MESSAGE}</Text>
-      </MessageResponse>
-    )
-  }
-
   const lines: React.ReactNode[] = []
-  if (stdout?.trim()) {
+  if (stdout?.trim() && stdout.trim() !== NO_CONTENT_MESSAGE) {
     lines.push(<IndentedContent key="stdout">{stdout.trim()}</IndentedContent>)
   }
   if (stderr?.trim()) {
-    lines.push(<IndentedContent key="stderr">{stderr.trim()}</IndentedContent>)
+    lines.push(
+      <IndentedContent key="stderr" isError>
+        {stderr.trim()}
+      </IndentedContent>,
+    )
   }
-  return lines
+  // Commands like /clear print nothing; 2.1.311 renders no "(no content)" row.
+  return lines.length > 0 ? lines : null
 }
 
-function IndentedContent({ children }: { children: string }): React.ReactNode {
+function IndentedContent({
+  children,
+  isError = false,
+}: {
+  children: string
+  isError?: boolean
+}): React.ReactNode {
   if (
     children.startsWith(`${DIAMOND_OPEN} `) ||
     children.startsWith(`${DIAMOND_FILLED} `)
@@ -44,7 +46,14 @@ function IndentedContent({ children }: { children: string }): React.ReactNode {
     <Box flexDirection="row">
       <Text dimColor>{'  ⎿  '}</Text>
       <Box flexDirection="column" flexGrow={1}>
-        <Markdown>{children}</Markdown>
+        {/* stderr is plain text like 2.1.311: Markdown would eat <placeholders> and backticks. */}
+        {isError ? (
+          <Text color="error" wrap="wrap">
+            {children}
+          </Text>
+        ) : (
+          <Markdown>{children}</Markdown>
+        )}
       </Box>
     </Box>
   )

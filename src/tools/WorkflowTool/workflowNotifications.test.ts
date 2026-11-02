@@ -95,7 +95,7 @@ for (const entry of ['plan', 'script'] as const) {
       expect(text).toContain(`<status>${status}</status>`)
       expect(text).toContain('<tool-use-id>toolu_terminal</tool-use-id>')
       expect(text).toContain('Description &lt;safe&gt;')
-      expect(text).toContain('<total_tokens>110</total_tokens><tool_uses>1</tool_uses>')
+      expect(text).toContain('<subagent_tokens>110</subagent_tokens><tool_uses>1</tool_uses>')
       expect(text).toMatch(/<duration_ms>\d+<\/duration_ms>/)
       expect(finished.notified).toBe(true)
       // print.ts turns the <status>-bearing XML into the SDK task_notification;

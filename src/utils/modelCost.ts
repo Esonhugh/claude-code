@@ -3,11 +3,13 @@ import type { AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS } from 
 import { logEvent } from 'src/services/analytics/index.js'
 import { setHasUnknownModelCost } from '../bootstrap/state.js'
 import { isFastModeEnabled } from './fastMode.js'
+import { formatTokens } from './format.js'
 import {
   CLAUDE_3_5_HAIKU_CONFIG,
   CLAUDE_3_5_V2_SONNET_CONFIG,
   CLAUDE_3_7_SONNET_CONFIG,
   CLAUDE_HAIKU_4_5_CONFIG,
+  CLAUDE_HAIKU_5_5_CONFIG,
   CLAUDE_OPUS_4_1_CONFIG,
   CLAUDE_OPUS_4_5_CONFIG,
   CLAUDE_OPUS_4_6_CONFIG,
@@ -39,6 +41,8 @@ export type ModelCosts = {
   promptCacheWriteTokens: number
   promptCacheReadTokens: number
   webSearchRequests: number
+  /** Rates that apply once a request's prompt exceeds abovePromptTokens. */
+  longPrompt?: Omit<ModelCosts, 'longPrompt'> & { abovePromptTokens: number }
 }
 
 // Standard pricing tier for Sonnet models: $3 input / $15 output per Mtok
@@ -105,6 +109,15 @@ export const COST_TIER_FAST_10_50 = {
   webSearchRequests: 0.01,
 } as const satisfies ModelCosts
 
+// Fast mode for Opus 4.6/4.7: $30 input / $150 output per Mtok
+export const COST_TIER_FAST_30_150 = {
+  inputTokens: 30,
+  outputTokens: 150,
+  promptCacheWriteTokens: 37.5,
+  promptCacheReadTokens: 3,
+  webSearchRequests: 0.01,
+} as const satisfies ModelCosts
+
 // Pricing for Haiku 3.5: $0.80 input / $4 output per Mtok
 export const COST_HAIKU_35 = {
   inputTokens: 0.8,
@@ -121,6 +134,23 @@ export const COST_HAIKU_45 = {
   promptCacheWriteTokens: 1.25,
   promptCacheReadTokens: 0.1,
   webSearchRequests: 0.01,
+} as const satisfies ModelCosts
+
+// Pricing for Haiku 5.5: $0.10 input / $0.50 output per Mtok (official 2.1.311 catalog `haiku_55`)
+export const COST_HAIKU_55 = {
+  inputTokens: 0.1,
+  outputTokens: 0.5,
+  promptCacheWriteTokens: 0.125,
+  promptCacheReadTokens: 0.01,
+  webSearchRequests: 0.01,
+  longPrompt: {
+    abovePromptTokens: 100_000,
+    inputTokens: 0.5,
+    outputTokens: 2.5,
+    promptCacheWriteTokens: 0.625,
+    promptCacheReadTokens: 0.05,
+    webSearchRequests: 0.01,
+  },
 } as const satisfies ModelCosts
 
 const DEFAULT_UNKNOWN_MODEL_COST = COST_TIER_5_25
@@ -153,7 +183,7 @@ export const MODEL_COSTS: Record<ModelShortName, ModelCosts> = {
     inputTokens: 2,
     outputTokens: 10,
     promptCacheWriteTokens: 2.5,
-    promptCacheReadTokens: 0.2,
+    promptCacheReadTokens: 0.1,
     webSearchRequests: 0.01,
   },
   'claude-sonnet-5': {
@@ -197,6 +227,8 @@ export const MODEL_COSTS: Record<ModelShortName, ModelCosts> = {
     COST_HAIKU_35,
   [firstPartyNameToCanonical(CLAUDE_HAIKU_4_5_CONFIG.firstParty)]:
     COST_HAIKU_45,
+  [firstPartyNameToCanonical(CLAUDE_HAIKU_5_5_CONFIG.firstParty)]:
+    COST_HAIKU_55,
   [firstPartyNameToCanonical(CLAUDE_3_5_V2_SONNET_CONFIG.firstParty)]:
     COST_TIER_3_15,
   [firstPartyNameToCanonical(CLAUDE_3_7_SONNET_CONFIG.firstParty)]:
@@ -223,14 +255,33 @@ export const MODEL_COSTS: Record<ModelShortName, ModelCosts> = {
 /**
  * Calculates the USD cost based on token usage and model cost configuration
  */
-function tokensToUSDCost(modelCosts: ModelCosts, usage: Usage): number {
-  return (
+function tokensToUSDCost(costs: ModelCosts, usage: Usage): number {
+  const promptTokens =
+    usage.input_tokens +
+    (usage.cache_read_input_tokens ?? 0) +
+    (usage.cache_creation_input_tokens ?? 0)
+  const modelCosts =
+    costs.longPrompt && promptTokens > costs.longPrompt.abovePromptTokens
+      ? costs.longPrompt
+      : costs
+  // 1h cache writes are billed at 2x the base input rate (official 2.1.311).
+  const cacheWriteTokens = usage.cache_creation_input_tokens ?? 0
+  const cacheWrite1hTokens = Math.min(
+    Math.max(usage.cache_creation?.ephemeral_1h_input_tokens ?? 0, 0),
+    cacheWriteTokens,
+  )
+  const tokenCost =
     (usage.input_tokens / 1_000_000) * modelCosts.inputTokens +
     (usage.output_tokens / 1_000_000) * modelCosts.outputTokens +
     ((usage.cache_read_input_tokens ?? 0) / 1_000_000) *
       modelCosts.promptCacheReadTokens +
-    ((usage.cache_creation_input_tokens ?? 0) / 1_000_000) *
+    ((cacheWriteTokens - cacheWrite1hTokens) / 1_000_000) *
       modelCosts.promptCacheWriteTokens +
+    (cacheWrite1hTokens / 1_000_000) * modelCosts.inputTokens * 2
+  // US-only inference is billed at 1.1x token prices.
+  const geoMultiplier = usage.inference_geo === 'us' ? 1.1 : 1
+  return (
+    tokenCost * geoMultiplier +
     (usage.server_tool_use?.web_search_requests ?? 0) *
       modelCosts.webSearchRequests
   )
@@ -247,6 +298,12 @@ export function getModelCosts(model: string, usage: Usage): ModelCosts {
     }
     if (shortName === 'claude-opus-5' || shortName === 'claude-opus-4-8') {
       return COST_TIER_FAST_10_50
+    }
+    if (
+      shortName === firstPartyNameToCanonical(CLAUDE_OPUS_4_6_CONFIG.firstParty) ||
+      shortName === firstPartyNameToCanonical(CLAUDE_OPUS_4_7_CONFIG.firstParty)
+    ) {
+      return COST_TIER_FAST_30_150
     }
   }
 
@@ -319,7 +376,11 @@ function formatPrice(price: number): string {
  * e.g., "$3/$15 per Mtok"
  */
 export function formatModelPricing(costs: ModelCosts): string {
-  return `${formatPrice(costs.inputTokens)}/${formatPrice(costs.outputTokens)} per Mtok`
+  const base = `${formatPrice(costs.inputTokens)}/${formatPrice(costs.outputTokens)} per Mtok`
+  const long = costs.longPrompt
+  return long
+    ? `${base} (${formatPrice(long.inputTokens)}/${formatPrice(long.outputTokens)} for prompts over ${formatTokens(long.abovePromptTokens)})`
+    : base
 }
 
 /**

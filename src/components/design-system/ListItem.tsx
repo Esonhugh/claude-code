@@ -168,7 +168,7 @@ export function ListItem({
   return (
     <Box ref={cursorRef} flexDirection="column">
       <Box flexDirection="row" gap={1}>
-        {renderIndicator()}
+        <Box flexShrink={0}>{renderIndicator()}</Box>
         {styled ? (
           <Text color={textColor} dimColor={disabled}>
             {children}
@@ -176,7 +176,11 @@ export function ListItem({
         ) : (
           children
         )}
-        {isSelected && !disabled && <Text color="success">{figures.tick}</Text>}
+        {isSelected && !disabled && (
+          <Box flexShrink={0}>
+            <Text color="success">{figures.tick}</Text>
+          </Box>
+        )}
       </Box>
       {description && (
         <Box paddingLeft={2}>

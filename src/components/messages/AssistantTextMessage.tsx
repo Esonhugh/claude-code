@@ -3,7 +3,7 @@ import React, { useContext } from 'react'
 import { ERROR_MESSAGE_USER_ABORT } from 'src/services/compact/compact.js'
 import { isRateLimitErrorMessage } from 'src/services/rateLimitMessages.js'
 import { BLACK_CIRCLE } from '../../constants/figures.js'
-import { Box, NoSelect, Text } from '../../ink.js'
+import { Box, isScreenReaderEnabled, NoSelect, Text } from '../../ink.js'
 import {
   API_ERROR_MESSAGE_PREFIX,
   API_TIMEOUT_ERROR_MESSAGE,
@@ -229,7 +229,8 @@ function NativeAssistantTextMessage({
           backgroundColor={isSelected ? 'messageActionsBackground' : undefined}
         >
           <Box flexDirection="row">
-            {shouldShowDot && (
+            {shouldShowDot && isScreenReaderEnabled() && <Text>claude:</Text>}
+            {shouldShowDot && !isScreenReaderEnabled() && (
               <NoSelect fromLeftEdge minWidth={2}>
                 <Text color={isSelected ? 'suggestion' : 'text'}>
                   {BLACK_CIRCLE}

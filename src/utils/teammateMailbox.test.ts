@@ -29,18 +29,27 @@ const message = (text: string) => ({
 test('markMessagesAsRead drops already-read messages when rewriting the inbox', async () => {
   expect(await writeToMailbox('lead', message('a'), TEAM)).toBe(true)
   expect(await writeToMailbox('lead', message('b'), TEAM)).toBe(true)
-  await markMessagesAsRead('lead', TEAM)
+  await markMessagesAsRead('lead', TEAM, await readUnreadMessages('lead', TEAM))
   expect((await readMailbox('lead', TEAM)).map(m => [m.text, m.read])).toEqual([
     ['a', true],
     ['b', true],
   ])
 
   expect(await writeToMailbox('lead', message('c'), TEAM)).toBe(true)
-  expect((await readUnreadMessages('lead', TEAM)).map(m => m.text)).toEqual(['c'])
-  await markMessagesAsRead('lead', TEAM)
+  const unread = await readUnreadMessages('lead', TEAM)
+  expect(unread.map(m => m.text)).toEqual(['c'])
+  await markMessagesAsRead('lead', TEAM, unread)
   expect((await readMailbox('lead', TEAM)).map(m => [m.text, m.read])).toEqual([
     ['c', true],
   ])
+})
+
+test('markMessagesAsRead keeps a message that arrived after the poll read the inbox', async () => {
+  expect(await writeToMailbox('racer', message('a'), TEAM)).toBe(true)
+  const polled = await readUnreadMessages('racer', TEAM)
+  expect(await writeToMailbox('racer', message('late'), TEAM)).toBe(true)
+  await markMessagesAsRead('racer', TEAM, polled)
+  expect((await readUnreadMessages('racer', TEAM)).map(m => m.text)).toEqual(['late'])
 })
 
 test('clearMailbox waits for the inbox lock instead of racing writers', async () => {
@@ -57,4 +66,73 @@ test('clearMailbox waits for the inbox lock instead of racing writers', async ()
   await release()
   await clearing
   expect(await readMailbox('locked', TEAM)).toEqual([])
+})
+
+const { createIdleNotification, getIdleResult } = await import('./teammateMailbox.js')
+type Msg = Parameters<typeof getIdleResult>[0][number]
+const user = (content: unknown): Msg => ({ type: 'user', message: { role: 'user', content } }) as unknown as Msg
+const assistant = (...content: unknown[]): Msg => ({ type: 'assistant', message: { role: 'assistant', content } }) as unknown as Msg
+const text = (t: string) => ({ type: 'text', text: t })
+const sendTo = (id: string, to: string) => ({ type: 'tool_use', id, name: 'SendMessage', input: { to, message: 'hi' } })
+const result = (id: string, is_error = false) => user([{ type: 'tool_result', tool_use_id: id, content: 'ok', is_error }])
+
+test('getIdleResult returns the last text reply of the current turn only', () => {
+  expect(getIdleResult([
+    user('first task'),
+    assistant(text('old answer')),
+    user('<teammate-message>second task</teammate-message>'),
+    assistant(text('working'), { type: 'tool_use', id: 't1', name: 'Bash', input: {} }),
+    result('t1'),
+    assistant(text('part one'), text('part two')),
+  ])).toBe('part one\npart two')
+  expect(getIdleResult([user('task'), assistant(text('done')), user('next'), assistant({ type: 'tool_use', id: 't', name: 'Bash', input: {} })])).toBeUndefined()
+})
+
+test('getIdleResult is empty when the teammate already reported to the lead after its reply', () => {
+  expect(getIdleResult([user('task'), assistant(text('summary')), assistant(sendTo('s1', 'team-lead')), result('s1')])).toBeUndefined()
+  // a failed DM, or one to a peer, does not count as reporting to the lead
+  expect(getIdleResult([user('task'), assistant(text('summary')), assistant(sendTo('s1', 'team-lead')), result('s1', true)])).toBe('summary')
+  expect(getIdleResult([user('task'), assistant(text('summary')), assistant(sendTo('s1', 'peer')), result('s1')])).toBe('summary')
+  // a DM before the final reply does not suppress the reply
+  expect(getIdleResult([user('task'), assistant(sendTo('s1', 'team-lead')), result('s1'), assistant(text('final'))])).toBe('final')
+})
+
+test('createIdleNotification caps the result like official', () => {
+  const long = 'x'.repeat(4001)
+  expect(createIdleNotification('mate', { idleReason: 'available', result: long }).result).toBe(
+    `${'x'.repeat(4000)}\n[result truncated — ask the agent for the rest via SendMessage]`,
+  )
+  expect(createIdleNotification('mate', { idleReason: 'failed', result: long }).result).toBe(`${'x'.repeat(4000)}\n[result truncated]`)
+  expect(createIdleNotification('mate', { result: '  short  ' }).result).toBe('short')
+  expect(createIdleNotification('mate', { result: '   ' }).result).toBeUndefined()
+})
+
+const { capIdleResultsInDrain } = await import('./teammateMailbox.js')
+const idleFrom = (from: string, timestamp: string, result: string, idleReason: 'available' | 'failed' = 'available') => ({
+  from,
+  text: JSON.stringify({ type: 'idle_notification', from, timestamp, idleReason, result }),
+})
+
+test('capIdleResultsInDrain keeps the newest results whole within 16000 characters', () => {
+  const big = 'r'.repeat(3800)
+  const drain = [
+    idleFrom('m1', '2026-10-29T00:00:01.000Z', big),
+    idleFrom('m2', '2026-10-29T00:00:02.000Z', big),
+    { from: 'm3', text: 'plain text stays as is' },
+    idleFrom('m4', '2026-10-29T00:00:03.000Z', big),
+    idleFrom('m5', '2026-10-29T00:00:04.000Z', big),
+    idleFrom('m6', '2026-10-29T00:00:05.000Z', big, 'failed'),
+  ]
+  const capped = capIdleResultsInDrain(drain)
+  const results = capped.map(m => (m.text.startsWith('{') ? JSON.parse(m.text).result : m.text))
+  // m6, m5, m4, m2 fit (4 × ~4000); the oldest one is replaced by a note
+  expect(results.slice(1)).toEqual([big, 'plain text stays as is', big, big, big])
+  expect(results[0]).toBe("[result truncated — this drain's results exceeded 16000 characters; ask the agent for it via SendMessage]")
+  expect(JSON.parse(capped[0]!.text)).toMatchObject({ type: 'idle_notification', from: 'm1', idleReason: 'available' })
+  expect(capped[2]).toBe(drain[2])
+})
+
+test('capIdleResultsInDrain leaves small drains untouched', () => {
+  const drain = [idleFrom('m1', '2026-10-29T00:00:01.000Z', 'done'), { from: 'm2', text: 'hi' }]
+  expect(capIdleResultsInDrain(drain)).toEqual(drain)
 })

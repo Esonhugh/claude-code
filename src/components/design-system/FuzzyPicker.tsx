@@ -59,6 +59,8 @@ type Props<T> = {
    */
   matchLabel?: string
   selectAction?: string
+  /** Hint label for Esc, e.g. "done" → "Esc to done". */
+  cancelAction?: string
   extraHints?: React.ReactNode
 }
 
@@ -88,6 +90,7 @@ export function FuzzyPicker<T>({
   emptyMessage = 'No results',
   matchLabel,
   selectAction = 'select',
+  cancelAction = 'cancel',
   extraHints,
 }: Props<T>): React.ReactNode {
   const isTerminalFocused = useTerminalFocus()
@@ -275,7 +278,7 @@ export function FuzzyPicker<T>({
                 action={onShiftTab.action}
               />
             )}
-            <KeyboardShortcutHint shortcut="Esc" action="cancel" />
+            <KeyboardShortcutHint shortcut="Esc" action={cancelAction} />
             {extraHints}
           </Byline>
         </Text>

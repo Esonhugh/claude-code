@@ -1,5 +1,6 @@
 import { spawnSync } from 'child_process'
 import { getIsInteractive } from '../bootstrap/state.js'
+import { isScreenReaderEnabled } from '../ink/screen-reader.js'
 import { logForDebugging } from './debug.js'
 import { isEnvDefinedFalsy, isEnvTruthy } from './envUtils.js'
 import { execFileNoThrow } from './execFileNoThrow.js'
@@ -121,6 +122,8 @@ export function getFullscreenModeSource(): string {
 }
 
 export function isFullscreenEnvEnabled(): boolean {
+  // Screen-reader mode renders flat text in the main screen.
+  if (isScreenReaderEnabled()) return false
   // Explicit user opt-out always wins.
   if (isEnvDefinedFalsy(process.env.CLAUDE_CODE_NO_FLICKER)) return false
   // Explicit opt-in overrides auto-detection (escape hatch).

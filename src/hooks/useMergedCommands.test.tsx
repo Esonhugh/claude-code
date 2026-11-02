@@ -355,9 +355,9 @@ async function helpOutput(
     await new Promise(resolve => setImmediate(resolve))
     stdin.push('\u001b[C')
     const commandsDeadline = performance.now() + 1000
-    while (!stripAnsi(stdout.output).includes('Browse default commands:') && performance.now() < commandsDeadline)
+    while (!stripAnsi(stdout.output).includes('Browse default commands') && performance.now() < commandsDeadline)
       await new Promise(resolve => setTimeout(resolve, 5))
-    assert.match(stripAnsi(stdout.output), /Browse default commands:/)
+    assert.match(stripAnsi(stdout.output), /Browse default commands/)
     stdout.output = ''
     stdin.push('\u001b[C')
     const deadline = performance.now() + 1000

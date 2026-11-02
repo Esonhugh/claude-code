@@ -153,4 +153,31 @@ if (process.env[childFlag] !== '1') {
     expect(state().strippedDangerousRules).toBeUndefined()
     expect(isAutoModeActive()).toBe(false)
   })
+
+  test("a subagent's dialog updates the session's context, not the agent's view", async () => {
+    const { ctx: root, state } = context({ mode: 'default' })
+    const agentView = {
+      ...state(),
+      mode: 'acceptEdits',
+      awaitAutomatedChecksBeforeDialog: true,
+      alwaysAllowRules: { session: ['Agent-only'] },
+    } as ToolPermissionContext
+    const agent = {
+      ...root,
+      agentId: 'agent-1',
+      getAppState: () => ({ ...root.getAppState(), toolPermissionContext: agentView }),
+      getAppStateForTasks: root.getAppState,
+    } as unknown as ToolUseContext
+    let applied: ToolPermissionContext | undefined
+    const permission = createPermissionContext(tool, {}, agent, assistant, 'toolu_agent', next => {
+      applied = next
+    })
+    await permission.persistPermissions([
+      { type: 'addRules', rules: [{ toolName: 'Bash', ruleContent: 'ls:*' }], behavior: 'allow', destination: 'session' },
+    ])
+    expect(applied!.mode).toBe('default')
+    expect(applied!.awaitAutomatedChecksBeforeDialog).toBeUndefined()
+    expect(applied!.alwaysAllowRules.session).toEqual(['Bash(ls:*)'])
+    expect(applied!.alwaysAllowRules.localSettings).toEqual(['Bash(python3:*)', 'Read'])
+  })
 }

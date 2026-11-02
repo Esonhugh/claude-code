@@ -15,7 +15,7 @@ const { enableConfigs } = await import('../../utils/config.js')
 enableConfigs()
 
 await import('../../commands.js')
-const feedback = (await import('./index.js')).default
+const { default: feedback, feedbackDisabledReason } = await import('./index.js')
 const { isFeedbackSurveyDisabled } = await import(
   '../../services/analytics/config.js'
 )
@@ -28,6 +28,8 @@ function withEnv(env: Record<string, string>, run: () => void) {
       'DISABLE_TELEMETRY',
       'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC',
       'ANTHROPIC_BASE_URL',
+      'DISABLE_FEEDBACK_COMMAND',
+      'DISABLE_BUG_COMMAND',
     ])
       delete process.env[key]
     process.env.NODE_ENV = 'production'
@@ -62,4 +64,18 @@ test('opted-in feedback stays off with DISABLE_TELEMETRY or a gateway base URL',
       assert.equal(isFeedbackSurveyDisabled(), true)
     })
   }
+})
+
+test('feedback switched off by env stays listed and answers with the reason like 2.1.311', () => {
+  withEnv({ CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1' }, () => {
+    assert.equal(feedback.isEnabled(), true)
+    assert.equal(
+      feedbackDisabledReason(),
+      '/feedback has been disabled via the CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC environment variable',
+    )
+  })
+  withEnv({ CLAUDE_CODE_ENABLE_ANTHROPIC_TELEMETRY: '1', DISABLE_FEEDBACK_COMMAND: '1' }, () => {
+    assert.equal(feedback.isEnabled(), true)
+    assert.match(feedbackDisabledReason()!, /DISABLE_FEEDBACK_COMMAND environment variable$/)
+  })
 })

@@ -42,6 +42,8 @@ export function findBtwTriggerPositions(text: string): Array<{
 
 export type SideQuestionResult = {
   response: string | null
+  /** The response is a placeholder written by Claude Code, not model text. */
+  synthetic: boolean
   usage: NonNullableUsage
 }
 
@@ -96,7 +98,7 @@ ${question}`
   })
 
   return {
-    response: extractSideQuestionResponse(agentResult.messages),
+    ...extractSideQuestionResponse(agentResult.messages),
     usage: agentResult.totalUsage,
   }
 }
@@ -122,7 +124,9 @@ ${question}`
  *   - API error exhausts retries → query yields system api_error + user
  *     interruption, no assistant message at all.
  */
-function extractSideQuestionResponse(messages: Message[]): string | null {
+function extractSideQuestionResponse(
+  messages: Message[],
+): Pick<SideQuestionResult, 'response' | 'synthetic'> {
   // Flatten all assistant content blocks across the per-block messages.
   const assistantBlocks = messages.flatMap(m =>
     m.type === 'assistant' ? m.message.content : [],
@@ -131,13 +135,16 @@ function extractSideQuestionResponse(messages: Message[]): string | null {
   if (assistantBlocks.length > 0) {
     // Concatenate all text blocks (there's normally at most one, but be safe).
     const text = extractTextContent(assistantBlocks, '\n\n').trim()
-    if (text) return text
+    if (text) return { response: text, synthetic: false }
 
     // No text — check if the model tried to call a tool despite instructions.
     const toolUse = assistantBlocks.find(b => b.type === 'tool_use')
     if (toolUse) {
       const toolName = 'name' in toolUse ? toolUse.name : 'a tool'
-      return `(The model tried to call ${toolName} instead of answering directly. Try rephrasing or ask in the main conversation.)`
+      return {
+        response: `(The model tried to call ${toolName} instead of answering directly. Try rephrasing or ask in the main conversation.)`,
+        synthetic: true,
+      }
     }
   }
 
@@ -148,9 +155,12 @@ function extractSideQuestionResponse(messages: Message[]): string | null {
       m.type === 'system' && 'subtype' in m && m.subtype === 'api_error',
   )
   if (apiErr) {
-    // @ts-ignore - recovered code
-    return `(API error: ${formatAPIError(apiErr.error)})`
+    return {
+      // @ts-ignore - recovered code
+      response: `(API error: ${formatAPIError(apiErr.error)})`,
+      synthetic: true,
+    }
   }
 
-  return null
+  return { response: null, synthetic: false }
 }

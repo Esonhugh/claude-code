@@ -1,11 +1,13 @@
 import { createHash, type UUID } from 'crypto'
 import { diffLines } from 'diff'
-import type { Stats } from 'fs'
+import { constants as fsConstants, type Stats } from 'fs'
 import {
   chmod,
   copyFile,
   link,
+  lstat,
   mkdir,
+  open,
   readFile,
   stat,
   unlink,
@@ -349,7 +351,7 @@ export async function fileHistoryRewind(
     updater: (prev: FileHistoryState) => FileHistoryState,
   ) => void,
   messageId: UUID,
-): Promise<void> {
+): Promise<{ skippedLinks: number } | undefined> {
   if (!fileHistoryEnabled()) {
     return
   }
@@ -379,13 +381,17 @@ export async function fileHistoryRewind(
     logForDebugging(
       `FileHistory: [Rewind] Rewinding to snapshot for ${messageId}`,
     )
-    const filesChanged = await applySnapshot(captured, targetSnapshot)
+    const { filesChanged, skippedLinks } = await applySnapshot(
+      captured,
+      targetSnapshot,
+    )
 
     logForDebugging(`FileHistory: [Rewind] Finished rewinding to ${messageId}`)
     logEvent('tengu_file_history_rewind_success', {
       trackedFilesCount: captured.trackedFiles.size,
       filesChangedCount: filesChanged.length,
     })
+    return { skippedLinks }
   } catch (error) {
     logError(error)
     logEvent('tengu_file_history_rewind_failed', {
@@ -537,8 +543,9 @@ export async function fileHistoryHasAnyChanges(
 async function applySnapshot(
   state: FileHistoryState,
   targetSnapshot: FileHistorySnapshot,
-): Promise<string[]> {
+): Promise<{ filesChanged: string[]; skippedLinks: number }> {
   const filesChanged: string[] = []
+  let skippedLinks = 0
   for (const trackingPath of state.trackedFiles) {
     try {
       const filePath = maybeExpandFilePath(trackingPath)
@@ -559,6 +566,19 @@ async function applySnapshot(
         continue
       }
 
+      const unsafe = await unsafeRewindDestination(filePath)
+      if (unsafe) {
+        skippedLinks++
+        logEvent('tengu_file_history_rewind_restore_file_failed', {
+          dryRun: false,
+        })
+        logForDebugging(
+          `FileHistory: [Rewind] Refusing to touch ${filePath}: ${unsafe}`,
+          { level: 'error' },
+        )
+        continue
+      }
+
       if (backupFileName === null) {
         // File did not exist at the target version; delete it if present.
         try {
@@ -574,7 +594,10 @@ async function applySnapshot(
 
       // File should exist at a specific version. Restore only if it differs.
       if (await checkOriginFileChanged(filePath, backupFileName)) {
-        await restoreBackup(filePath, backupFileName)
+        if (!(await restoreBackup(filePath, backupFileName))) {
+          skippedLinks++
+          continue
+        }
         logForDebugging(
           `FileHistory: [Rewind] Restored ${filePath} from ${backupFileName}`,
         )
@@ -587,7 +610,31 @@ async function applySnapshot(
       })
     }
   }
-  return filesChanged
+  return { filesChanged, skippedLinks }
+}
+
+/**
+ * Rewind must not write or delete through a link a command may have planted
+ * at a tracked path. Returns why the path is unsafe, or undefined.
+ */
+async function unsafeRewindDestination(
+  filePath: string,
+): Promise<string | undefined> {
+  try {
+    const stats = await lstat(filePath)
+    if (stats.isSymbolicLink()) return 'destination is a symlink'
+    if (!stats.isFile()) return 'destination is not a regular file'
+    if (stats.nlink > 1) {
+      return `destination is hard-linked (nlink=${stats.nlink})`
+    }
+  } catch (e: unknown) {
+    const code = getErrnoCode(e)
+    if (code === 'ELOOP' || code === 'ENOTDIR') {
+      return `destination path does not resolve (${code})`
+    }
+    if (!isENOENT(e)) throw e
+  }
+  return undefined
 }
 
 /**
@@ -799,12 +846,13 @@ async function createBackup(
 
 /**
  * Restores a file from its backup path with proper directory creation and permissions.
- * Lazy mkdir: tries copyFile first, creates the directory on ENOENT.
+ * Lazy mkdir: opens the destination first, creates the directory on ENOENT.
+ * Returns false when the destination turned into a link.
  */
 async function restoreBackup(
   filePath: string,
   backupFileName: string,
-): Promise<void> {
+): Promise<boolean> {
   const backupPath = resolveBackupPath(backupFileName)
 
   // Stat first: if the backup is missing, log and bail before attempting
@@ -818,22 +866,48 @@ async function restoreBackup(
       logError(
         new Error(`FileHistory: [Rewind] Backup file not found: ${backupPath}`),
       )
-      return
+      return true
     }
     throw e
   }
 
-  // Lazy mkdir: 99% of calls hit the fast path (destination dir exists).
+  // O_NOFOLLOW: a symlink swapped in after the destination check is refused
+  // instead of followed.
+  const flags =
+    fsConstants.O_WRONLY |
+    fsConstants.O_CREAT |
+    fsConstants.O_TRUNC |
+    (fsConstants.O_NOFOLLOW ?? 0)
+  const content = await readFile(backupPath)
+  let handle
   try {
-    await copyFile(backupPath, filePath)
+    // Lazy mkdir: 99% of calls hit the fast path (destination dir exists).
+    try {
+      handle = await open(filePath, flags, backupStats.mode)
+    } catch (e: unknown) {
+      if (!isENOENT(e)) throw e
+      await mkdir(dirname(filePath), { recursive: true })
+      handle = await open(filePath, flags, backupStats.mode)
+    }
   } catch (e: unknown) {
-    if (!isENOENT(e)) throw e
-    await mkdir(dirname(filePath), { recursive: true })
-    await copyFile(backupPath, filePath)
+    const code = getErrnoCode(e)
+    if (code === 'ELOOP' || code === 'EMLINK') {
+      logForDebugging(
+        `FileHistory: [Rewind] Refusing to restore ${filePath}: destination became a symlink (O_NOFOLLOW)`,
+        { level: 'error' },
+      )
+      return false
+    }
+    throw e
   }
-
-  // Restore the file permissions
-  await chmod(filePath, backupStats.mode)
+  try {
+    await handle.writeFile(content)
+    // Restore the file permissions
+    await handle.chmod(backupStats.mode)
+  } finally {
+    await handle.close()
+  }
+  return true
 }
 
 /**

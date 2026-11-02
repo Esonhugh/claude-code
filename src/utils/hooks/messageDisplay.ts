@@ -1,4 +1,4 @@
-import type { UUID } from 'crypto'
+import { randomUUID, type UUID } from 'crypto'
 import { getPromptId } from '../../bootstrap/state.js'
 import type { ToolUseContext } from '../../Tool.js'
 import type { Message } from '../../types/message.js'
@@ -51,5 +51,44 @@ export async function applyMessageDisplayHooks(
     // one per block otherwise, so record both.
     if (content.length === 1) displayOverrides.set(message.uuid, displayContent)
     displayOverrides.set(deriveUUID(message.uuid as UUID, index), displayContent)
+  }
+}
+
+/**
+ * Headless/SDK path: run MessageDisplay once on a completed assistant message
+ * (texts joined, index 0, final) and return the copy to emit. The first text
+ * block carries the display text; later text blocks are emptied.
+ */
+export async function applyCompletedMessageDisplayHooks<T extends Message>(
+  message: T,
+  turnId: string,
+  signal?: AbortSignal,
+): Promise<T> {
+  if (message.type !== 'assistant' || !Array.isArray(message.message.content)) return message
+  const content = message.message.content
+  const text = content.map(block => (block.type === 'text' ? block.text : '')).join('')
+  if (text === '') return message
+  const { executeMessageDisplayHooks } = await import('../hooks.js')
+  let displayContent: string | undefined
+  for await (const result of executeMessageDisplayHooks(
+    { turnId, messageId: randomUUID(), index: 0, final: true, delta: text },
+    undefined,
+    signal,
+  )) {
+    if (result.displayContent !== undefined) displayContent = result.displayContent
+  }
+  if (displayContent === undefined) return message
+  let first = true
+  return {
+    ...message,
+    message: {
+      ...message.message,
+      content: content.map(block => {
+        if (block.type !== 'text') return block
+        const replaced = { ...block, text: first ? displayContent : '' }
+        first = false
+        return replaced
+      }),
+    },
   }
 }

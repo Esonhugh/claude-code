@@ -378,7 +378,7 @@ describe('official 2.1.292 Mods UI wire contracts', () => {
     ).toBe(false)
   })
 
-  test('answers accepts five repeated entries and rejects a sixth before mutating the roster', async () => {
+  test('answers accepts six repeated entries (2.1.316 adds ui_prompt_paint) and rejects a seventh before mutating the roster', async () => {
     const runtime = createModsRuntime()
     await runtime.bind({
       cwd: process.cwd(),
@@ -394,15 +394,15 @@ describe('official 2.1.292 Mods UI wire contracts', () => {
     })
     try {
       for (const [client_id, count] of [
-        ['five', 5],
         ['six', 6],
+        ['seven', 7],
       ] as const)
         control.handleRequest({
           type: 'control_request',
           request_id: client_id,
           request: {
             subtype: 'ui_attach',
-            surface: count === 5 ? 'desktop' : 'mobile',
+            surface: count === 6 ? 'desktop' : 'mobile',
             client_id,
             answers: Array(count).fill('ui_copy'),
           },
@@ -410,7 +410,7 @@ describe('official 2.1.292 Mods UI wire contracts', () => {
       await control.settle()
       expect(receipts).toEqual([{ surfaces: ['desktop'] }, modUIAttachError])
       expect(runtime.remoteClients.surfaces()).toEqual(['desktop'])
-      expect(runtime.remoteClients.detach('six').detached).toBe(false)
+      expect(runtime.remoteClients.detach('seven').detached).toBe(false)
     } finally {
       await runtime.dispose()
     }

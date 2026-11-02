@@ -7,7 +7,7 @@ import {
 } from '../../utils/configConstants.js'
 import { getModelOptions } from '../../utils/model/modelOptions.js'
 import { validateModel } from '../../utils/model/validateModel.js'
-import { THEME_NAMES, THEME_SETTINGS } from '../../utils/theme.js'
+import { THEME_SETTINGS } from '../../utils/theme.js'
 import { isAnt } from 'src/utils/userType.js'
 
 
@@ -33,7 +33,7 @@ export const SUPPORTED_SETTINGS: Record<string, SettingConfig> = {
     source: 'global',
     type: 'string',
     description: 'Color theme for the UI',
-    options: feature('AUTO_THEME') ? THEME_SETTINGS : THEME_NAMES,
+    options: THEME_SETTINGS,
   },
   editorMode: {
     source: 'global',

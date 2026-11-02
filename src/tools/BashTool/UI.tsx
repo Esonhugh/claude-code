@@ -15,7 +15,7 @@ import { env } from '../../utils/env.js'
 import { isEnvTruthy } from '../../utils/envUtils.js'
 import { getDisplayPath } from '../../utils/file.js'
 import { isFullscreenEnvEnabled } from '../../utils/fullscreen.js'
-import type { ThemeName } from '../../utils/theme.js'
+import type { ResolvedTheme } from '../../utils/theme.js'
 import type { BashProgress, BashToolInput, Out } from './BashTool.js'
 import BashToolResultMessage from './BashToolResultMessage.js'
 import { extractBashCommentLabel } from './commentLabel.js'
@@ -75,7 +75,7 @@ export function BackgroundHint({
 
 export function renderToolUseMessage(
   input: Partial<BashToolInput>,
-  { verbose, theme: _theme }: { verbose: boolean; theme: ThemeName },
+  { verbose, theme: _theme }: { verbose: boolean; theme: ResolvedTheme },
 ): React.ReactNode {
   const { command } = input
   if (!command) {
@@ -181,7 +181,7 @@ export function renderToolResultMessage(
     style: _style,
   }: {
     verbose: boolean
-    theme: ThemeName
+    theme: ResolvedTheme
     tools: Tool[]
     style?: 'condensed'
   },

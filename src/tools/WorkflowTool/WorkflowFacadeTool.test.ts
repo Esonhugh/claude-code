@@ -154,7 +154,8 @@ assert.match(facadePrompt, /\n\nBefore writing a script, load the `workflow-auth
 assert.match(facadePrompt, /default workflow size guideline: medium — keep workflows under 10 agents/)
 assert.doesNotMatch(facadePrompt, /# Workflow authoring reference|legacy workflow DSL|avoid workflow orchestration/)
 setSessionSettingsCache({ settings: { enableWorkflows: true, planModeAvailable: true }, errors: [] })
-assert.equal(WorkflowFacadeTool.shouldDefer, true)
+// Official 2.1.311 loads Workflow up front instead of behind ToolSearch.
+assert.notEqual((WorkflowFacadeTool as { shouldDefer?: boolean }).shouldDefer, true)
 assert.doesNotThrow(() => WorkflowFacadeTool.inputSchema.parse({
   name: 'research',
   description: 'ignored compatibility field',

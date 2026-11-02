@@ -1,15 +1,19 @@
 import { feature } from 'bun:bundle'
 import { shouldAutoEnableClaudeInChrome } from 'src/utils/claudeInChrome/setup.js'
 import { registerBatchSkill } from './batch.js'
+import { registerClaudeApiSkill } from './claudeApi.js'
 import { registerClaudeInChromeSkill } from './claudeInChrome.js'
 import { registerCodeReviewSkill } from './codeReview.js'
 import { registerDatavizSkill } from './dataviz.js'
 import { registerDebugSkill } from './debug.js'
+import { registerDoctorSkill } from './doctor.js'
+import { registerFewerPermissionPromptsSkill } from './fewerPermissionPrompts.js'
 import { registerKeybindingsSkill } from './keybindings.js'
 import { registerTerminalSkill } from './terminal.js'
 import { registerLoremIpsumSkill } from './loremIpsum.js'
 import { registerPluginAuthoringSkill } from './pluginAuthoring.js'
 import { registerRememberSkill } from './remember.js'
+import { registerRunSkill, registerRunSkillGeneratorSkill } from './run.js'
 import { registerSimplifySkill } from './simplify.js'
 import { registerSkillifySkill } from './skillify.js'
 import { registerStuckSkill } from './stuck.js'
@@ -27,21 +31,36 @@ import { registerWorkflowAuthoringSkill } from './workflowAuthoring.js'
  * 3. Import and call that function here
  */
 export function initBundledSkills(): void {
+  // Official 2.1.311 order: menus and init list skills in registration order.
+  registerDatavizSkill()
   registerUpdateConfigSkill()
   registerKeybindingsSkill()
   registerVerifySkill()
   registerDebugSkill()
-  registerDatavizSkill()
+  registerCodeReviewSkill()
+  registerSimplifySkill()
+  registerBatchSkill()
+  registerFewerPermissionPromptsSkill()
+  registerDoctorSkill()
+  if (feature('AGENT_TRIGGERS')) {
+    /* eslint-disable @typescript-eslint/no-require-imports */
+    const { registerLoopSkill } = require('./loop.js')
+    /* eslint-enable @typescript-eslint/no-require-imports */
+    // /loop's isEnabled delegates to isKairosCronEnabled() — same lazy
+    // per-invocation pattern as the cron tools. Registered unconditionally;
+    // the skill's own isEnabled callback decides visibility.
+    registerLoopSkill()
+  }
+  registerClaudeApiSkill()
+  registerWorkflowAuthoringSkill()
+  registerRunSkill()
+  registerRunSkillGeneratorSkill()
+  registerPluginAuthoringSkill()
   registerLoremIpsumSkill()
   registerSkillifySkill()
-  registerPluginAuthoringSkill()
   registerRememberSkill()
-  registerSimplifySkill()
-  registerCodeReviewSkill()
-  registerBatchSkill()
   registerStuckSkill()
   registerTerminalSkill()
-  registerWorkflowAuthoringSkill()
   if (feature('KAIROS') || feature('KAIROS_DREAM')) {
     /* eslint-disable @typescript-eslint/no-require-imports */
     const { registerDreamSkill } = require('./dream.js')
@@ -60,15 +79,6 @@ export function initBundledSkills(): void {
     /* eslint-enable @typescript-eslint/no-require-imports */
     registerAutoModeSetupSkill()
   }
-  if (feature('AGENT_TRIGGERS')) {
-    /* eslint-disable @typescript-eslint/no-require-imports */
-    const { registerLoopSkill } = require('./loop.js')
-    /* eslint-enable @typescript-eslint/no-require-imports */
-    // /loop's isEnabled delegates to isKairosCronEnabled() — same lazy
-    // per-invocation pattern as the cron tools. Registered unconditionally;
-    // the skill's own isEnabled callback decides visibility.
-    registerLoopSkill()
-  }
   if (feature('AGENT_TRIGGERS_REMOTE')) {
     /* eslint-disable @typescript-eslint/no-require-imports */
     const {
@@ -77,19 +87,7 @@ export function initBundledSkills(): void {
     /* eslint-enable @typescript-eslint/no-require-imports */
     registerScheduleRemoteAgentsSkill()
   }
-  if (feature('BUILDING_CLAUDE_APPS')) {
-    /* eslint-disable @typescript-eslint/no-require-imports */
-    const { registerClaudeApiSkill } = require('./claudeApi.js')
-    /* eslint-enable @typescript-eslint/no-require-imports */
-    registerClaudeApiSkill()
-  }
   if (shouldAutoEnableClaudeInChrome()) {
     registerClaudeInChromeSkill()
-  }
-  if (feature('RUN_SKILL_GENERATOR')) {
-    /* eslint-disable @typescript-eslint/no-require-imports */
-    const { registerRunSkillGeneratorSkill } = require('./runSkillGenerator.js')
-    /* eslint-enable @typescript-eslint/no-require-imports */
-    registerRunSkillGeneratorSkill()
   }
 }

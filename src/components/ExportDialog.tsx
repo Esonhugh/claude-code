@@ -137,8 +137,8 @@ export function ExportDialog({
 
   return (
     <Dialog
-      title="Export Conversation"
-      subtitle="Select export method:"
+      title="Export conversation"
+      subtitle="Select export method"
       color="permission"
       onCancel={handleCancel}
       inputGuide={renderInputGuide}

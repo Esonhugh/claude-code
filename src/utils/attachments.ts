@@ -1,4 +1,6 @@
 // biome-ignore-all assist/source/organizeImports: ANT-ONLY import markers must not be reordered
+import { OUTPUT_STYLE_CONFIG } from '../constants/outputStyles.js'
+import { isBackgroundTask } from '../tasks/types.js'
 import {
   logEvent,
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
@@ -80,6 +82,7 @@ import {
   getDefaultHaikuModel,
   getDefaultOpusModel,
 } from './model/model.js'
+import { shouldUseLeanPrompt } from './model/leanPrompt.js'
 import type { ReadResourceResult } from '@modelcontextprotocol/client'
 import { getSkillToolCommands, getMcpSkillCommands } from '../commands.js'
 import type { Command } from '../types/command.js'
@@ -88,6 +91,7 @@ import uniqBy from 'lodash-es/uniqBy.js'
 import { getProjectRoot } from '../bootstrap/state.js'
 import { formatCommandsWithinBudget } from '../tools/SkillTool/prompt.js'
 import { getContextWindowForModel } from './context.js'
+import { getSessionGitStatus } from '../context.js'
 import type { DiscoverySignal } from '../services/skillSearch/signals.js'
 // Conditional require for DCE. All skill-search string literals that would
 // otherwise leak into external builds live inside these modules. The only
@@ -218,6 +222,7 @@ import {
   tokenCountFromLastAPIResponse,
   tokenCountWithEstimation,
 } from './tokens.js'
+import { bytesPerTokenForModel } from '../services/tokenEstimation.js'
 import {
   getEffectiveContextWindowSize,
   isAutoCompactEnabled,
@@ -243,7 +248,7 @@ import {
 } from '../services/apps/pluginProjection.js'
 import { memoryAge, memoryFreshnessText } from '../memdir/memoryAge.js'
 import { neutralizeMemoryContent } from '../memdir/neutralizeMemoryContent.js'
-import { findMemoryFilesForPrompt } from '../memdir/memoryIndex.js'
+import { findMemoryFilesForPrompt, hasCjk } from '../memdir/memoryIndex.js'
 import {
   getAutoMemPath,
   getSqliteMemoryScopes,
@@ -581,10 +586,13 @@ export type Attachment =
       origin?: MessageOrigin
       /** Carried from QueuedCommand.isMeta — distinguishes human-typed from system-injected */
       isMeta?: boolean
+      /** A task notification drained in the same batch as a human prompt. */
+      inHumanTurn?: boolean
     }
   | {
       type: 'output_style'
       style: string
+      turnReminder?: string
     }
   | {
       type: 'diagnostics'
@@ -723,6 +731,10 @@ export type Attachment =
   | {
       type: 'date_change'
       newDate: string
+    }
+  | {
+      type: 'session_context'
+      context: { [k: string]: string }
     }
   | {
       type: 'ultrathink_effort'
@@ -883,6 +895,9 @@ export async function getAttachments(
     maybe('date_change', () =>
       Promise.resolve(getDateChangeAttachments(messages)),
     ),
+    maybe('session_context', () =>
+      getSessionContextAttachments(toolUseContext, messages),
+    ),
     maybe('ultrathink_effort', () =>
       Promise.resolve(getUltrathinkEffortAttachment(input)),
     ),
@@ -1008,7 +1023,7 @@ export async function getAttachments(
           getOpenedFileFromIDE(ideSelection, toolUseContext),
         ),
         maybe('output_style', async () =>
-          Promise.resolve(getOutputStyleAttachment()),
+          Promise.resolve(getOutputStyleAttachment(toolUseContext)),
         ),
         maybe('diagnostics', async () =>
           getDiagnosticAttachments(toolUseContext),
@@ -1116,6 +1131,12 @@ export async function getQueuedCommandAttachments(
   const filtered = queuedCommands.filter(_ =>
     INLINE_NOTIFICATION_MODES.has(_.mode),
   )
+  const hasHumanPrompt = filtered.some(
+    _ =>
+      _.mode === 'prompt' &&
+      (_.origin === undefined || _.origin.kind === 'human') &&
+      _.isMeta !== true,
+  )
   return Promise.all(
     filtered.map(async _ => {
       const imageBlocks = await buildImageContentBlocks(_.pastedContents)
@@ -1136,6 +1157,8 @@ export async function getQueuedCommandAttachments(
         commandMode: _.mode,
         origin: _.origin,
         isMeta: _.isMeta,
+        ...(hasHumanPrompt &&
+          _.mode === 'task-notification' && { inHumanTurn: true }),
       }
     }),
   )
@@ -1631,6 +1654,25 @@ export function getDateChangeAttachments(
   return [{ type: 'date_change', newDate: currentDate }]
 }
 
+// Git status is announced once per conversation (again after compaction) and
+// persisted, so resume rebuilds the same prefix. Explore/Plan run git status
+// themselves when needed.
+export async function getSessionContextAttachments(
+  toolUseContext: ToolUseContext,
+  messages: Message[] | undefined,
+): Promise<Attachment[]> {
+  if (
+    messages === undefined ||
+    toolUseContext.agentType === 'Explore' ||
+    toolUseContext.agentType === 'Plan' ||
+    messages.some(m => m.type === 'attachment' && m.attachment.type === 'session_context')
+  ) {
+    return []
+  }
+  const gitStatus = await getSessionGitStatus()
+  return gitStatus ? [{ type: 'session_context', context: { gitStatus } }] : []
+}
+
 function getUltrathinkEffortAttachment(input: string | null): Attachment[] {
   if (!isUltrathinkEnabled() || !input || !hasUltrathinkKeyword(input)) {
     return []
@@ -1753,7 +1795,12 @@ export async function getAgentListingDeltaAttachment(
     {
       type: 'agent_listing_delta',
       addedTypes: added.map(a => a.agentType),
-      addedLines: added.map(formatAgentLine),
+      addedLines: added.map(agent =>
+        formatAgentLine(
+          agent,
+          shouldUseLeanPrompt(toolUseContext.options.mainLoopModel),
+        ),
+      ),
       removedTypes: removed,
       isInitial: announced.size === 0,
       showConcurrencyNote: getSubscriptionType() !== 'pro',
@@ -1798,7 +1845,9 @@ function getCriticalSystemReminderAttachment(
   return [{ type: 'critical_system_reminder', content: reminder }]
 }
 
-function getOutputStyleAttachment(): Attachment[] {
+function getOutputStyleAttachment(
+  toolUseContext: ToolUseContext,
+): Attachment[] {
   const settings = getSettings_DEPRECATED()
   const outputStyle = settings?.outputStyle || 'default'
 
@@ -1807,10 +1856,24 @@ function getOutputStyleAttachment(): Attachment[] {
     return []
   }
 
+  // Like official 2.1.311: the main thread gets the style's waiting reminder
+  // while a background task it started is still running.
+  const config =
+    OUTPUT_STYLE_CONFIG[outputStyle as keyof typeof OUTPUT_STYLE_CONFIG]
+  const waiting =
+    config?.waitingTurnReminder !== undefined &&
+    toolUseContext.agentId === undefined &&
+    Object.values(toolUseContext.getAppState().tasks).some(
+      task => isBackgroundTask(task) && task.status === 'running',
+    )
+
   return [
     {
       type: 'output_style',
       style: outputStyle,
+      turnReminder: waiting
+        ? config.waitingTurnReminder
+        : config?.turnReminder,
     },
   ]
 }
@@ -2635,8 +2698,9 @@ export function startRelevantMemoryPrefetch(
   }
 
   const input = getUserMessageText(lastUserMessage)
-  // Single-word prompts lack enough context for meaningful term extraction
-  if (!input || !/\s/.test(input.trim())) {
+  // Single-word prompts lack enough context for meaningful term extraction.
+  // CJK prompts have no spaces; the SQLite index splits them into trigrams.
+  if (!input || (!/\s/.test(input.trim()) && !(isSqliteMemoryEnabled() && hasCjk(input)))) {
     return undefined
   }
 
@@ -3003,7 +3067,11 @@ async function getSkillListingAttachments(
     toolUseContext.options.mainLoopModel,
     getSdkBetas(),
   )
-  const content = formatCommandsWithinBudget(newSkills, contextWindowTokens)
+  const content = formatCommandsWithinBudget(
+    newSkills,
+    contextWindowTokens,
+    bytesPerTokenForModel(toolUseContext.options.mainLoopModel),
+  )
 
   return [
     {
@@ -4165,7 +4233,10 @@ export function getCompactionReminderAttachment(
   }
 
   const effectiveWindow = getEffectiveContextWindowSize(model)
-  const usedTokens = tokenCountWithEstimation(messages)
+  const usedTokens = tokenCountWithEstimation(
+    messages,
+    bytesPerTokenForModel(model),
+  )
   if (usedTokens < effectiveWindow * 0.25) {
     return []
   }

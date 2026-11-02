@@ -34,7 +34,8 @@ if (process.env[childFlag] !== '1') {
   ;(globalThis as typeof globalThis & { MACRO: MacroGlobals }).MACRO = { VERSION: 'test' }
   const { setSessionSettingsCache } = await import('../../utils/settings/settingsCache.js')
   const { setAutoModeCircuitBroken } = await import('../../utils/permissions/autoModeState.js')
-  const { resolveDeclaredAgentPermissionMode } = await import('./permissionMode.js')
+  const { resolveDeclaredAgentPermissionMode, withAgentPermissionMode } = await import('./permissionMode.js')
+  const { getDefaultAppState } = await import('../../state/AppStateStore.js')
 
   type SettingsJson = import('../../utils/settings/types.js').SettingsJson
   const withSettings = (settings: SettingsJson) => setSessionSettingsCache({ settings, errors: [] })
@@ -64,5 +65,21 @@ if (process.env[childFlag] !== '1') {
       delete process.env.ANTHROPIC_MODEL
     }
     expect(resolveDeclaredAgentPermissionMode('default', 'auto')).toBe('auto')
+  })
+
+  test('an agent in auto under a default parent drops allow rules that skip the classifier', () => {
+    withSettings({})
+    const parent = {
+      ...getDefaultAppState().toolPermissionContext,
+      mode: 'default' as const,
+      alwaysAllowRules: { session: ['Bash(python3:*)', 'Bash(ls:*)'] },
+    }
+    const agent = withAgentPermissionMode(parent, 'auto')
+    expect(agent.mode).toBe('auto')
+    expect(agent.alwaysAllowRules.session).toEqual(['Bash(ls:*)'])
+    expect(agent.strippedDangerousRules?.session).toEqual(['Bash(python3:*)'])
+    expect(parent.alwaysAllowRules.session).toEqual(['Bash(python3:*)', 'Bash(ls:*)'])
+    expect(withAgentPermissionMode(parent, 'acceptEdits').alwaysAllowRules.session).toEqual(['Bash(python3:*)', 'Bash(ls:*)'])
+    expect(withAgentPermissionMode(parent, 'default')).toBe(parent)
   })
 }

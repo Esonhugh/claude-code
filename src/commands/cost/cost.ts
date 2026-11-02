@@ -1,12 +1,23 @@
 import { formatTotalCost } from '../../cost-tracker.js'
 import { currentLimits } from '../../services/claudeAiLimits.js'
 import type { LocalCommandCall } from '../../types/command.js'
-import { isClaudeAISubscriber } from '../../utils/auth.js'
+import {
+  getOauthAccountInfo,
+  getSubscriptionType,
+  hasProfileScope,
+  isClaudeAISubscriber,
+} from '../../utils/auth.js'
 import { isAnt } from 'src/utils/userType.js'
 
 
 export const call: LocalCommandCall = async () => {
-  if (isClaudeAISubscriber()) {
+  // Like official: only a sign-in that knows its plan, on plan (not
+  // usage-based) billing, gets the subscription notice instead of the totals.
+  if (
+    isClaudeAISubscriber() &&
+    (getSubscriptionType() !== null || hasProfileScope()) &&
+    getOauthAccountInfo()?.billingType !== 'usage_based'
+  ) {
     let value: string
 
     if (currentLimits.isUsingOverage) {

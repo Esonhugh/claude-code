@@ -47,7 +47,10 @@ import { isReplModeEnabled } from '../tools/REPLTool/constants.js'
 import { feature } from 'bun:bundle'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from 'src/services/analytics/growthbook.js'
 import { shouldUseGlobalCacheScope } from '../utils/betas.js'
-import { isForkSubagentEnabled } from '../tools/AgentTool/forkSubagent.js'
+import {
+  isForkAsyncDefault,
+  isForkSubagentEnabled,
+} from '../tools/AgentTool/forkSubagent.js'
 import {
   systemPromptSection,
   DANGEROUS_uncachedSystemPromptSection,
@@ -313,7 +316,7 @@ export function getUsingYourToolsSection(enabledTools: Set<string>): string {
 
 function getAgentToolSection(): string {
   return isForkSubagentEnabled()
-    ? `Calling ${AGENT_TOOL_NAME} without a subagent_type creates a fork, which runs in the background and keeps its tool output out of your context \u2014 so you can keep chatting with the user while it works. Reach for it when research or multi-step implementation work would otherwise fill your context with raw output you won't need again. **If you ARE the fork** \u2014 execute directly; do not re-delegate.`
+    ? `Calling ${AGENT_TOOL_NAME} with subagent_type: "fork" creates a fork \u2014 it inherits your full conversation context${isForkAsyncDefault() ? ', runs in the background, and keeps its tool output out of your context \u2014 so you can keep chatting with the user while it works' : ' and keeps its tool output out of your context'}. Reach for it when research or multi-step implementation work would otherwise fill your context with raw output you won't need again. Other subagent_type values start fresh agents with no context. **If you ARE the fork** \u2014 execute directly; do not re-delegate.`
     : `Use the ${AGENT_TOOL_NAME} tool with specialized agents when the task at hand matches the agent's description. Subagents are valuable for parallelizing independent queries or for protecting the main context window from excessive results, but they should not be used excessively when not needed. Importantly, avoid duplicating work that subagents are already doing - if you delegate research to a subagent, do not also perform the same searches yourself.`
 }
 
@@ -351,8 +354,8 @@ function getSessionSpecificGuidanceSection(
   enabledTools: Set<string>,
   skillToolCommands: Command[],
   excludeDynamicSections = false,
+  lean = false,
 ): string | null {
-  const hasAskUserQuestionTool = enabledTools.has(ASK_USER_QUESTION_TOOL_NAME)
   const hasSkills =
     !excludeDynamicSections && skillToolCommands.length > 0 && enabledTools.has(SKILL_TOOL_NAME)
   const hasAgentTool = enabledTools.has(AGENT_TOOL_NAME)
@@ -361,25 +364,20 @@ function getSessionSpecificGuidanceSection(
     : `the ${GLOB_TOOL_NAME} or ${GREP_TOOL_NAME}`
 
   const items = [
-    hasAskUserQuestionTool
-      ? `If you do not understand why the user has denied a tool call, use the ${ASK_USER_QUESTION_TOOL_NAME} to ask them.`
-      : null,
     getIsNonInteractiveSession()
       ? null
       : `If you need the user to run a shell command themselves (e.g., an interactive login like \`gcloud auth login\`), suggest they type \`! <command>\` in the prompt — the \`!\` prefix runs the command in this session so its output lands directly in the conversation.`,
     // isForkSubagentEnabled() reads getIsNonInteractiveSession() — must be
     // post-boundary or it fragments the static prefix on session type.
-    hasAgentTool ? getAgentToolSection() : null,
-    ...(hasAgentTool &&
+    hasAgentTool && !lean ? getAgentToolSection() : null,
+    !lean &&
+    hasAgentTool &&
     areExplorePlanAgentsEnabled() &&
     !isForkSubagentEnabled()
-      ? [
-          `For simple, directed codebase searches (e.g. for a specific file/class/function) use ${searchTools} directly.`,
-          `For broader codebase exploration and deep research, use the ${AGENT_TOOL_NAME} tool with subagent_type=${EXPLORE_AGENT.agentType}. This is slower than using ${searchTools} directly, so use this only when a simple, directed search proves to be insufficient or when your task will clearly require more than ${EXPLORE_AGENT_MIN_QUERIES} queries.`,
-        ]
-      : []),
+      ? `For broad codebase exploration or research that'll take more than ${EXPLORE_AGENT_MIN_QUERIES} queries, spawn ${AGENT_TOOL_NAME} with subagent_type=${EXPLORE_AGENT.agentType}. Otherwise use ${searchTools} directly.`
+      : null,
     hasSkills
-      ? `/<skill-name> (e.g., /commit) is shorthand for users to invoke a user-invocable skill. When executed, the skill gets expanded to a full prompt. Use the ${SKILL_TOOL_NAME} tool to execute them. IMPORTANT: Only use ${SKILL_TOOL_NAME} for skills listed in its user-invocable skills section - do not guess or use built-in CLI commands.`
+      ? `When the user types \`/<skill-name>\`, invoke it via ${SKILL_TOOL_NAME}. Only use skills listed in the user-invocable skills section — don't guess.`
       : null,
     DISCOVER_SKILLS_TOOL_NAME !== null &&
     hasSkills &&
@@ -509,7 +507,6 @@ ${CYBER_RISK_INSTRUCTION}`,
       { name: 'mcp_instructions', text: null },
       { name: 'scratchpad', text: getScratchpadInstructions() },
       { name: 'frc', text: getFunctionResultClearingSection(model) },
-      { name: 'summarize_tool_results', text: SUMMARIZE_TOOL_RESULTS_SECTION },
       { name: 'proactive', text: getProactiveSection() },
     ].map(section => ({ ...section, scope: 'session' as const })), facts, recipe)
   }
@@ -520,8 +517,9 @@ ${CYBER_RISK_INSTRUCTION}`,
       systemPromptSection('pronouns', () => LEAN_PRONOUNS),
       systemPromptSection('action_caution', () => LEAN_ACTION_CAUTION),
     ] : []),
-    systemPromptSection('session_guidance', () =>
-      getSessionSpecificGuidanceSection(enabledTools, skillToolCommands, excludeDynamicSections),
+    // Cache key carries the lean bit (official `session_guidance:L`) so a /model switch recomputes it.
+    systemPromptSection(lean ? 'session_guidance:L' : 'session_guidance', () =>
+      getSessionSpecificGuidanceSection(enabledTools, skillToolCommands, excludeDynamicSections, lean),
     ),
     ...(excludeDynamicSections ? [] : [systemPromptSection('memory', () => loadMemoryPrompt())]),
     systemPromptSection('ant_model_override', () =>
@@ -543,10 +541,8 @@ ${CYBER_RISK_INSTRUCTION}`,
       'Scratchpad path includes the current sessionId',
     ),
     systemPromptSection('frc', () => getFunctionResultClearingSection(model)),
-    systemPromptSection(
-      'summarize_tool_results',
-      () => SUMMARIZE_TOOL_RESULTS_SECTION,
-    ),
+    systemPromptSection('context_management', () => CONTEXT_MANAGEMENT_SECTION),
+    systemPromptSection('act_dont_rederive', () => getActDontRederiveSection()),
     // Numeric length anchors — research shows ~1.2% output token reduction vs
     // qualitative "be concise". Ant-only to measure quality impact first.
     ...(isAnt()
@@ -581,7 +577,7 @@ ${CYBER_RISK_INSTRUCTION}`,
     composition
       ? await Promise.all(dynamicSections.map(section => section.compute()))
       : await resolveSystemPromptSections(dynamicSections)
-  const coreSections: PromptSection[] = lean ? [{ id: 'lean_body', layer: 'stable-core', content: getLeanPromptBody(outputStyleConfig, model) }] : [
+  const coreSections: PromptSection[] = lean ? [{ id: 'lean_body', layer: 'stable-core', content: getLeanPromptBody(outputStyleConfig) }] : [
     {
       id: 'identity',
       layer: 'stable-core',
@@ -626,7 +622,7 @@ ${CYBER_RISK_INSTRUCTION}`,
     ...coreSections,
     ...(excludeDynamicSections ? [{ id: 'memory_static', layer: 'capability' as const, content: loadStaticMemoryPrompt() }] : []),
     ...resolvedDynamicSections.map((content, index) => ({
-      id: dynamicSections[index]!.name,
+      id: dynamicSections[index]!.name.split(':')[0]!,
       layer: 'task-dynamic' as const,
       content,
     })),
@@ -657,11 +653,13 @@ ${CYBER_RISK_INSTRUCTION}`,
     ...(shouldUseGlobalCacheScope()
       ? [{ text: SYSTEM_PROMPT_DYNAMIC_BOUNDARY }]
       : []),
-    ...dynamicSections.map(section => ({
-      name: section.name,
-      scope: 'session' as const,
-      text: selectedDynamicContentByName.get(section.name) ?? null,
-    })),
+    ...sourceSections
+      .filter(section => section.layer === 'task-dynamic')
+      .map(section => ({
+        name: section.id,
+        scope: 'session' as const,
+        text: selectedDynamicContentByName.get(section.id) ?? null,
+      })),
   ]
 
   return withSystemPromptSections(sections, facts, recipe)
@@ -894,7 +892,18 @@ function getFunctionResultClearingSection(model: string): string | null {
 Old tool results will be automatically cleared from context to free up space. The ${(config as any).keepRecent} most recent results are always kept.`
 }
 
-const SUMMARIZE_TOOL_RESULTS_SECTION = `When working with tool results, write down any important information you might need later in your response, as the original tool result may be cleared later.`
+const CONTEXT_MANAGEMENT_SECTION = `# Context management
+When the conversation grows long, some or all of the current context is summarized; the summary, along with any remaining unsummarized context, is provided in the next context window so work can continue \u2014 you don't need to wrap up early or hand off mid-task.`
+
+function getActDontRederiveSection(): string | null {
+  const env = process.env.CLAUDE_CODE_ACT_DONT_REDERIVE
+  const enabled = env !== undefined
+    ? isEnvTruthy(env)
+    : getFeatureValue_CACHED_MAY_BE_STALE('tengu_cedar_lantern', true)
+  return enabled
+    ? 'When you have enough information to act, act. Do not re-derive facts already established in the conversation, re-litigate a decision the user has already made, or narrate options you will not pursue. If you are weighing a choice, give a recommendation, not an exhaustive survey'
+    : null
+}
 
 function getBriefSection(): string | null {
   if (!(feature('KAIROS') || feature('KAIROS_BRIEF'))) return null

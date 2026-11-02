@@ -110,6 +110,7 @@ import {
   extractQuotaStatusFromHeaders,
 } from '../claudeAiLimits.js'
 import { getAPIContextManagement } from '../compact/apiMicrocompact.js'
+import { recordMainThreadCacheUsage } from './promptCacheStats.js'
 
 /* eslint-disable @typescript-eslint/no-require-imports */
 const autoModeStateModule = feature('TRANSCRIPT_CLASSIFIER')
@@ -189,7 +190,7 @@ import {
   requiresAdaptiveThinkingContract,
   requiresAlwaysOnAdaptiveThinking,
   supportsManualThinkingBudget,
-  usesBetweenToolsWhenThinkingDisabled,
+  rejectsDisabledThinking,
   modelSupportsAdaptiveThinking,
   modelSupportsThinking,
   shouldEnableThinkingByDefault,
@@ -659,13 +660,12 @@ export async function verifyApiKey(
         async anthropic => {
           const messages: MessageParam[] = [{ role: 'user', content: 'test' }]
           const verificationThinking: BetaMessageStreamParams['thinking'] | undefined =
-            requiresAlwaysOnAdaptiveThinking(model)
+            requiresAlwaysOnAdaptiveThinking(model) ||
+            rejectsDisabledThinking(model)
               ? { type: 'adaptive' }
-              : usesBetweenToolsWhenThinkingDisabled(model)
-                ? ({ type: 'between_tools' } as unknown as BetaMessageStreamParams['thinking'])
-                : requiresAdaptiveThinkingContract(model)
-                  ? { type: 'disabled' }
-                  : undefined
+              : requiresAdaptiveThinkingContract(model)
+                ? { type: 'disabled' }
+                : undefined
           // biome-ignore lint/plugin: API key verification is intentionally a minimal direct call
           await anthropic.beta.messages.create({
             model,
@@ -1902,9 +1902,7 @@ async function* queryModelRequest(
     const adaptiveOnly = requiresAdaptiveThinkingContract(options.model)
     const alwaysOnAdaptive = requiresAlwaysOnAdaptiveThinking(options.model)
     const manualThinkingBudget = supportsManualThinkingBudget(options.model)
-    const betweenToolsWhenDisabled = usesBetweenToolsWhenThinkingDisabled(
-      options.model,
-    )
+    const rejectsDisabled = rejectsDisabledThinking(options.model)
     const adaptiveDisabled = isEnvTruthy(
       process.env.CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING,
     )
@@ -1912,20 +1910,17 @@ async function* queryModelRequest(
       thinkingConfig.type === 'disabled' ||
       isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_THINKING) ||
       (adaptiveOnly && adaptiveDisabled)
-    const effortRequiresAdaptive = effort === 'xhigh' || effort === 'max'
+    const mechanical =
+      thinkingConfig.type === 'disabled' && thinkingConfig.mechanical === true
     const hasThinking =
-      alwaysOnAdaptive ||
-      !thinkingDisabled ||
-      (betweenToolsWhenDisabled && effortRequiresAdaptive)
-    let thinking: BetaMessageStreamParams['thinking'] | undefined =
-      alwaysOnAdaptive ||
-      (betweenToolsWhenDisabled && thinkingDisabled && effortRequiresAdaptive)
+      !mechanical && (alwaysOnAdaptive || rejectsDisabled || !thinkingDisabled)
+    let thinking: BetaMessageStreamParams['thinking'] | undefined = mechanical
+      ? undefined
+      : alwaysOnAdaptive || (rejectsDisabled && thinkingDisabled)
         ? { type: 'adaptive' }
-        : betweenToolsWhenDisabled && thinkingDisabled
-          ? ({ type: 'between_tools' } as unknown as BetaMessageStreamParams['thinking'])
-          : adaptiveOnly && !hasThinking
-            ? { type: 'disabled' }
-            : undefined
+        : adaptiveOnly && !hasThinking
+          ? { type: 'disabled' }
+          : undefined
 
     // IMPORTANT: Do not change the adaptive-vs-budget thinking selection below
     // without notifying the model launch DRI and research. This is a sensitive
@@ -2735,6 +2730,17 @@ async function* queryModelRequest(
           request_id: (streamRequestId ??
             'unknown') as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
         })
+      }
+
+      if (
+        !options.agentId &&
+        (options.querySource.startsWith('repl_main_thread') ||
+          options.querySource === 'sdk')
+      ) {
+        recordMainThreadCacheUsage(
+          usage,
+          should1hCacheTTL(options.querySource) ? '1h' : '5m',
+        )
       }
 
       // Check if the cache actually broke based on response tokens
@@ -3672,12 +3678,7 @@ export async function queryHaiku({
       const result = await queryModelWithoutStreaming({
         messages,
         systemPrompt,
-        thinkingConfig: {
-          type:
-            requiresAdaptiveThinkingContract(model) && shouldEnableThinkingByDefault()
-              ? 'adaptive'
-              : 'disabled',
-        },
+        thinkingConfig: { type: 'disabled', mechanical: true },
         tools: [],
         signal,
         options: {

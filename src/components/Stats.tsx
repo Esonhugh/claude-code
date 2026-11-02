@@ -495,6 +495,30 @@ function OverviewTab({
         </Box>
       </Box>
 
+      {/* Token breakdown, like 2.1.311 */}
+      {modelEntries.length > 0 && (
+        <Text wrap="truncate">
+          {(
+            [
+              ['Input', 'inputTokens'],
+              ['Output', 'outputTokens'],
+              ['Cache read', 'cacheReadInputTokens'],
+              ['Cache write', 'cacheCreationInputTokens'],
+            ] as const
+          ).map(([label, key], i) => (
+            <React.Fragment key={key}>
+              {i > 0 && ' · '}
+              {label}{' '}
+              <Text color="claude">
+                {formatNumber(
+                  modelEntries.reduce((sum, [, usage]) => sum + usage[key], 0),
+                )}
+              </Text>
+            </React.Fragment>
+          ))}
+        </Text>
+      )}
+
       {/* Speculation time saved (ant-only) */}
       {isAnt() &&
         stats.totalSpeculationTimeSavedMs > 0 && (

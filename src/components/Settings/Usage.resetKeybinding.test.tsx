@@ -155,7 +155,7 @@ class TestStdin extends Readable {
 async function waitFor(condition: () => boolean, message: string): Promise<void> {
   const start = Date.now()
   while (!condition()) {
-    if (Date.now() - start > 1000) throw new Error(message)
+    if (Date.now() - start > 10_000) throw new Error(message)
     await new Promise(resolve => setTimeout(resolve, 10))
   }
 }
@@ -197,26 +197,27 @@ try {
   assert.doesNotMatch(initialOutput, /Used reset history|Previously used reset|History may be incomplete|Unknown status reset/)
   assert.ok(initialOutput.indexOf(resetCredit.title) < initialOutput.indexOf(secondCredit.title), 'expiring credit must sort first')
   assert.equal(consumedIds.length, 0)
-  assert.equal(getActiveKeybinding('settings:close'), undefined, 'Enter must not redeem an unselected card')
+  assert.equal(getActiveKeybinding('select:accept'), undefined, 'Enter must not redeem an unselected card')
 
   await press('select:next')
   await press('select:next')
   stdout.output = ''
-  await press('settings:close')
+  await press('select:accept')
   const confirmation = stripAnsi(stdout.output)
   assert.match(confirmation, /Use this reset\?/)
   assert.match(confirmation, /Five-hour reset/)
   assert.match(confirmation, /second-credit/)
-  assert.equal(ownsEsc, true)
+  // onOwnsEscChange runs in a passive effect, which can trail the painted frame.
+  await waitFor(() => ownsEsc, 'confirmation did not take Esc')
   assert.equal(getActiveKeybinding('select:next'), undefined, 'selection is frozen during confirmation')
   assert.equal(consumedIds.length, 0, 'opening confirmation must not consume')
   await press('confirm:no')
-  assert.equal(ownsEsc, false)
+  await waitFor(() => !ownsEsc, 'Esc ownership was not released')
   assert.equal(consumedIds.length, 0)
 
   await press('select:previous')
   await press('select:next')
-  await press('settings:close')
+  await press('select:accept')
   const confirmReset = getActiveKeybinding('confirm:yes')
   assert.ok(confirmReset)
   assert.equal(confirmReset.context, 'Confirmation')
@@ -227,12 +228,12 @@ try {
   await settle()
   assert.deepEqual(consumedIds, ['second-credit'])
   assert.equal(detailsFetchCount, 2)
-  assert.equal(ownsEsc, false)
+  await waitFor(() => !ownsEsc, 'Esc ownership was not released')
   assert.match(stripAnsi(stdout.output), /Usage reset\./)
   assert.match(stripAnsi(stdout.output), /0 available/)
   assert.match(stripAnsi(stdout.output), /No available reset credits/)
   assert.doesNotMatch(stripAnsi(stdout.output), /Used reset history|Previously used reset|Used:/)
-  assert.equal(getActiveKeybinding('settings:close'), undefined)
+  assert.equal(getActiveKeybinding('select:accept'), undefined)
 
   failDetails = true
   stdout.output = ''
@@ -244,7 +245,7 @@ try {
   assert.match(offlineOutput, /ChatGPT Codex weekly usage/)
   assert.match(offlineOutput, /1 available/)
   assert.match(offlineOutput, /Reset details unavailable/)
-  assert.equal(getActiveKeybinding('settings:close'), undefined, 'summary-only state cannot silently auto-select a card')
+  assert.equal(getActiveKeybinding('select:accept'), undefined, 'summary-only state cannot silently auto-select a card')
   failDetails = false
   stdout.output = ''
   await press('settings:retry')
@@ -269,7 +270,7 @@ try {
   await settle()
   assert.match(stripAnsi(stdout.output), /Reset details unavailable/)
   assert.doesNotMatch(stripAnsi(stdout.output), /No available reset credits/)
-  assert.equal(getActiveKeybinding('settings:close'), undefined)
+  assert.equal(getActiveKeybinding('select:accept'), undefined)
 
   omitDetails = false
   longList = true

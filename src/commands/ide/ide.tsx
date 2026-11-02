@@ -25,9 +25,11 @@ import {
   detectIDEs,
   detectRunningIDEs,
   type IdeType,
+  isIDEExtensionInstalled,
   isJetBrainsIde,
   isSupportedJetBrainsTerminal,
   isSupportedTerminal,
+  maybeInstallIDEExtension,
   toIDEDisplayName,
 } from '../../utils/ide.js'
 import { getCurrentWorktreeSession } from '../../utils/worktree.js'
@@ -309,8 +311,15 @@ function InstallOnMount({
   useEffect(() => {
     onInstall(ide)
   }, [ide, onInstall])
-  return null
+  return (
+    <Text dimColor>
+      Installing the Claude Code extension in {toIDEDisplayName(ide)}…
+    </Text>
+  )
 }
+
+const VS_CODE_EXTENSION_INSTALL_DOCS =
+  'https://code.claude.com/docs/en/vs-code#install-the-extension'
 
 export async function call(
   onDone: (
@@ -395,18 +404,31 @@ export async function call(
   ) {
     const runningIDEs = await detectRunningIDEs()
 
-    const onInstall = (ide: IdeType) => {
-      if (context.onInstallIDEExtension) {
-        context.onInstallIDEExtension(ide)
-        // The completion message will be shown after installation
-        if (isJetBrainsIde(ide)) {
-          onDone(
-            `Installed plugin to ${chalk.bold(toIDEDisplayName(ide))}\n` +
-              `Please ${chalk.bold('restart your IDE')} completely for it to take effect`,
-          )
-        } else {
-          onDone(`Installed extension to ${chalk.bold(toIDEDisplayName(ide))}`)
-        }
+    const onInstall = async (ide: IdeType) => {
+      if (isJetBrainsIde(ide)) {
+        context.onInstallIDEExtension?.(ide)
+        onDone(
+          `Installed plugin to ${chalk.bold(toIDEDisplayName(ide))}\n` +
+            `Please ${chalk.bold('restart your IDE')} completely for it to take effect`,
+        )
+        return
+      }
+      // Official 2.1.311 waits for the install and reports a failure instead
+      // of announcing success up front.
+      const name = toIDEDisplayName(ide)
+      const previouslyInstalled = await isIDEExtensionInstalled(ide)
+      const status = await maybeInstallIDEExtension(ide)
+      if (status?.installed) {
+        context.onInstallIDEExtension?.(ide)
+        onDone(
+          previouslyInstalled
+            ? `The Claude Code extension is installed in ${chalk.bold(name)}. Reload the ${name} window (Developer: Reload Window), then run /ide again.`
+            : `Installed the Claude Code extension in ${chalk.bold(name)}.`,
+        )
+      } else {
+        onDone(
+          `Couldn't install the Claude Code extension in ${chalk.bold(name)}:\n${status?.error ?? 'unknown error'}\nTo install it yourself, see ${VS_CODE_EXTENSION_INSTALL_DOCS}`,
+        )
       }
     }
 

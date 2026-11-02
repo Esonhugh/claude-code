@@ -28,6 +28,11 @@ import {
 import { isCommandImmediate, type Command } from '../types/command.js'
 import { processSlashCommand } from '../utils/processUserInput/processSlashCommand.js'
 import { DiffController } from '../services/diff/controller.js'
+import * as teammateTask from '../tasks/InProcessTeammateTask/InProcessTeammateTask.js'
+import * as localAgentTask from '../tasks/LocalAgentTask/LocalAgentTask.js'
+import { deliverTaskMessage } from '../tasks/deliverTaskMessage.js'
+import { capitalize } from '../utils/stringUtils.js'
+import { errorMessage } from '../utils/errors.js'
 import { QueryGuard } from '../utils/QueryGuard.js'
 import {
   getUserContextInstructionFiles,
@@ -981,7 +986,7 @@ test('successful same-ID resume resets diff without waiting for identity change'
     resetCostState: noop, switchSession: noop, asSessionId: (id: string) => id,
     importModule: async () => ({ renameRecordingForSession: async () => {} }),
     resetSessionFilePointer: async () => {}, clearSessionMetadata: noop,
-    restoreSessionMetadata: noop, haikuTitleAttemptedRef: { current: false },
+    restoreSessionMetadata: noop, haikuTitleAttemptedRef: { current: false }, haikuTitleSessionRef: { current: '' },
     setHaikuTitle: noop, exitRestoredWorktree: noop, restoreWorktreeForResume: noop,
     adoptResumedSessionFile: noop, restoreRemoteAgentTasks: noop, store: { getState: () => state },
     setMessages: () => { replaced = true }, modsSession: undefined,
@@ -1608,7 +1613,11 @@ for (const order of ['dismissal-first', 'abort-first'] as const) {
         abortController: controller,
         requestModAuthoringConsent: signal =>
           modsSession.requestAuthoringConsent(requestPrompt, signal),
-        getAppState: () => ({ sessionState: { sessionHooks: {} } }),
+        getAppState: () => ({
+          sessionState: { sessionHooks: {} },
+          sessionHooks: new Map(),
+          toolPermissionContext: { mode: 'default' },
+        }),
         setAppState: noop,
       } as never,
       noop,
@@ -1882,12 +1891,17 @@ test('real PromptInput rejects suggestions and empty input before invoking submi
   }
   const submit = extract(path, 'onSubmit')(base)
   await submit('')
-  base.suggestionsState.suggestions = [{ description: 'file' }]
+  base.suggestionsState = { suggestions: [{ description: 'file' }], selectedSuggestion: 0 } as any
   await submit('blocked')
   expect(calls).toEqual([])
   await submit('/actual', true)
   expect(calls).toHaveLength(1)
   expect(calls[0]![0]).toBe('/actual')
+  // A fuzzy-only match with nothing selected submits what was typed (#366).
+  base.suggestionsState = { suggestions: [{ description: 'file' }], selectedSuggestion: -1 } as any
+  await submit('typed')
+  expect(calls).toHaveLength(2)
+  expect(calls[1]![0]).toBe('typed')
 })
 
 test('real PromptInput accepts a shown suggestion after case-only edits', async () => {
@@ -2004,14 +2018,27 @@ test('lower immediate dispatch also leaves the caller-owned editor untouched', a
   expect(h.draft).toEqual(before)
 })
 
+// onAgentSubmit routes through the shared deliverTaskMessage; spy on the task
+// primitives it calls.
+const routingSpies: { mockRestore(): void }[] = []
+afterEach(() => { for (const spy of routingSpies.splice(0)) spy.mockRestore() })
+function spyAgentRouting(inject: () => boolean = () => true) {
+  const queued: string[] = []
+  routingSpies.push(
+    spyOn(localAgentTask, 'queuePendingMessage').mockImplementation((id: string) => { queued.push(id) }),
+    spyOn(localAgentTask, 'appendMessageToLocalAgent').mockImplementation(() => {}),
+    spyOn(teammateTask, 'injectUserMessageToTeammate').mockImplementation(inject),
+  )
+  return { queued }
+}
+
 test('viewed-agent submit consumes before Mods and never clears a later edit', async () => {
   const h = harness()
   let sent = 0
   const runningTask = { id: 'teammate', type: 'in_process_teammate', status: 'running' }
-  const submit = extract('./REPL.tsx', 'onAgentSubmit')({ ...h.scope,
+  spyAgentRouting(() => { sent++; return true })
+  const submit = extract('./REPL.tsx', 'onAgentSubmit')({ ...h.scope, deliverTaskMessage, capitalize, errorMessage, isLocalAgentTask: localAgentTask.isLocalAgentTask,
     store: { getState: () => ({ tasks: { teammate: runningTask } }) },
-    isLocalAgentTask: () => false, isInProcessTeammateTask: (value: any) => value?.type === 'in_process_teammate',
-    injectUserMessageToTeammate: () => { sent++; return true },
   })
   const pending = submit('submitted', runningTask, h.helpers)
   expect(h.draft.text).toBe('')
@@ -2026,14 +2053,10 @@ test.each(['completed', 'missing', 'running'])('local Agent submit uses fresh %s
   const h = harness()
   const task = { id: 'local', type: 'local_agent', status: status === 'running' ? 'completed' : 'running' }
   const currentTask = status === 'missing' ? undefined : { ...task, status }
-  const queued: string[] = []
   const resumed: string[] = []
-  const submit = extract('./REPL.tsx', 'onAgentSubmit')({ ...h.scope,
+  const { queued } = spyAgentRouting()
+  const submit = extract('./REPL.tsx', 'onAgentSubmit')({ ...h.scope, deliverTaskMessage, capitalize, errorMessage, isLocalAgentTask: localAgentTask.isLocalAgentTask,
     store: { getState: () => ({ tasks: { local: currentTask } }) },
-    isLocalAgentTask: (value: any) => value?.type === 'local_agent',
-    appendMessageToLocalAgent: noop,
-    createUserMessage: (value: any) => value,
-    queuePendingMessage: (id: string) => queued.push(id),
     resumeAgentBackground: async ({ agentId }: any) => { resumed.push(agentId) },
     getToolUseContext: () => ({}),
     canUseTool: noop,
@@ -2051,11 +2074,10 @@ test('viewed teammate that finishes during Mods keeps the input and reports it w
   let currentTask = taskAtSubmit
   const notifications: any[] = []
   let sent = 0
-  const submit = extract('./REPL.tsx', 'onAgentSubmit')({ ...h.scope,
+  spyAgentRouting(() => { sent++; return false })
+  const submit = extract('./REPL.tsx', 'onAgentSubmit')({ ...h.scope, deliverTaskMessage, capitalize, errorMessage, isLocalAgentTask: localAgentTask.isLocalAgentTask,
     store: { getState: () => ({ tasks: { teammate: currentTask } }) },
     addNotification: (notification: any) => notifications.push(notification),
-    isLocalAgentTask: () => false, isInProcessTeammateTask: (value: any) => value?.type === 'in_process_teammate',
-    injectUserMessageToTeammate: () => { sent++; return false },
   })
   const pending = submit('submitted', taskAtSubmit, h.helpers)
   expect(h.draft.text).toBe('')
@@ -2066,7 +2088,7 @@ test('viewed teammate that finishes during Mods keeps the input and reports it w
   expect(h.draft.text).toBe('submitted')
   expect(notifications).toEqual([
     expect.objectContaining({
-      key: 'teammate-message-not-sent-teammate',
+      key: 'task-message-not-sent-teammate',
       text: 'Teammate has stopped; message was not sent.',
     }),
   ])
@@ -2076,11 +2098,10 @@ test('teammate terminal transition during injection retains the input and restor
   const h = harness()
   const task = { id: 'teammate', type: 'in_process_teammate', status: 'running' }
   const notifications: any[] = []
-  const submit = extract('./REPL.tsx', 'onAgentSubmit')({ ...h.scope,
+  spyAgentRouting(() => false)
+  const submit = extract('./REPL.tsx', 'onAgentSubmit')({ ...h.scope, deliverTaskMessage, capitalize, errorMessage, isLocalAgentTask: localAgentTask.isLocalAgentTask,
     store: { getState: () => ({ tasks: { teammate: task } }) },
     addNotification: (notification: any) => notifications.push(notification),
-    isLocalAgentTask: () => false, isInProcessTeammateTask: (value: any) => value?.type === 'in_process_teammate',
-    injectUserMessageToTeammate: () => false,
   })
   const pending = submit('submitted', task, h.helpers)
   h.release()
@@ -2093,11 +2114,10 @@ test('teammate terminal transition during injection retains the input and restor
 test('terminal teammate rejection does not overwrite a later edit', async () => {
   const h = harness()
   const task = { id: 'teammate', type: 'in_process_teammate', status: 'completed' }
-  const submit = extract('./REPL.tsx', 'onAgentSubmit')({ ...h.scope,
+  spyAgentRouting(() => false)
+  const submit = extract('./REPL.tsx', 'onAgentSubmit')({ ...h.scope, deliverTaskMessage, capitalize, errorMessage, isLocalAgentTask: localAgentTask.isLocalAgentTask,
     store: { getState: () => ({ tasks: { teammate: task } }) },
     addNotification: noop,
-    isLocalAgentTask: () => false, isInProcessTeammateTask: (value: any) => value?.type === 'in_process_teammate',
-    injectUserMessageToTeammate: () => false,
   })
   const pending = submit('submitted', task, h.helpers)
   h.setText('next draft')
@@ -2112,12 +2132,11 @@ for (const status of ['completed', 'failed', 'killed']) {
     const task = { id: 'teammate', type: 'in_process_teammate', status }
     let sent = 0
     let mainAgentSubmissions = 0
-    const submit = extract('./REPL.tsx', 'onAgentSubmit')({ ...h.scope,
+    spyAgentRouting(() => { sent++; return false })
+    const submit = extract('./REPL.tsx', 'onAgentSubmit')({ ...h.scope, deliverTaskMessage, capitalize, errorMessage, isLocalAgentTask: localAgentTask.isLocalAgentTask,
       store: { getState: () => ({ tasks: { teammate: task } }) },
       addNotification: noop,
       onSubmit: () => { mainAgentSubmissions++ },
-      isLocalAgentTask: () => false, isInProcessTeammateTask: (value: any) => value?.type === 'in_process_teammate',
-      injectUserMessageToTeammate: () => { sent++; return false },
     })
     const pending = submit('submitted', task, h.helpers)
     h.release()
@@ -2778,7 +2797,7 @@ test.each([false, true])('same-ID resume clears raw context after cwd/transcript
     resetCostState: noop, switchSession: noop, asSessionId: (id: string) => id,
     importModule: async () => ({ renameRecordingForSession: async () => {} }),
     resetSessionFilePointer: async () => {}, clearSessionMetadata: noop,
-    restoreSessionMetadata: noop, haikuTitleAttemptedRef: { current: false },
+    restoreSessionMetadata: noop, haikuTitleAttemptedRef: { current: false }, haikuTitleSessionRef: { current: '' },
     setHaikuTitle: noop, exitRestoredWorktree: noop,
     restoreWorktreeForResume: () => { cwd = '/target-repo' },
     adoptResumedSessionFile: () => { transcript = 'target-transcript' },
@@ -2888,6 +2907,8 @@ test('query refresh reloads raw REPL context with live overlays and instruction 
     resetLoadingState: noop,
     logQueryProfileReport: noop,
     onTurnComplete: undefined,
+    haikuTitleSessionRef: { current: 'session' },
+    getSessionId: () => 'session',
   })
 
   await onQueryImpl([], [], new AbortController(), true, [], 'fixture')

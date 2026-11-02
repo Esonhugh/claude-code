@@ -56,15 +56,15 @@ if (process.env[childFlag] !== '1') {
     const store = createStore(getDefaultAppState(), onChangeAppState)
     const oldModel = bootstrap.getMainLoopModelOverride()
     const expected: import('../entrypoints/sdk/controlTypes.js').SDKControlResponse['response'][] = [
-      {subtype:'success',request_id:'0'},
-      {subtype:'success',request_id:'1'},
+      {subtype:'success',request_id:'0',response:{model:'owned-good'}},
+      {subtype:'success',request_id:'1',response:{model:'owned-good'}},
       {subtype:'error',request_id:'2',error:'Authentication failed. Please check your API credentials.',error_code:'auth_failed'},
       {subtype:'error',request_id:'3',error:"Model 'owned-missing' not found",error_code:'catalog_unknown'},
       {subtype:'error',request_id:'4',error:'API error: 403 owned validation failure · model not changed'},
       {subtype:'error',request_id:'5',error:'API error: 500 owned validation failure · model not changed',error_code:'check_failed'},
       {subtype:'error',request_id:'6',error:'API error: 400 owned validation failure · model not changed'},
       {subtype:'error',request_id:'7',error:'Network error. Please check your internet connection.',error_code:'check_failed'},
-      {subtype:'success',request_id:'8'},
+      {subtype:'success',request_id:'8',response:{model:'sonnet'}},
       {subtype:'error',request_id:'9',error:'Model "(unrecognized model name)" is not a recognized model id. Run /model to see available models.',error_code:'catalog_unknown'},
     ]
     const models = ['owned-good','owned-good','owned-auth','owned-missing','owned-denied','owned-server','owned-bad','owned-network','sonnet','']
@@ -174,7 +174,7 @@ if (process.env[childFlag] !== '1') {
       } as Parameters<typeof runHeadless>[7])
       expect(calls).toEqual([{model: requested, effort: 'medium'}])
       expect(frames.filter(frame => frame.type === 'control_response').map(frame => frame.response))
-        .toEqual([{subtype: 'success', request_id: 'ordered-model'}])
+        .toEqual([{subtype: 'success', request_id: 'ordered-model', response: {model: requested}}])
     } finally {
       bootstrap.setMainLoopModelOverride(oldModel)
       for (const mock of mocks) mock.mockRestore()

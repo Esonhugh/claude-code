@@ -412,6 +412,8 @@ export type QueuedCommand = {
   agentId?: AgentId
   /** Background task whose notification is delivered to this agent. */
   taskId?: string
+  /** The task already sent its SDK task_notification; print.ts must not send it again. */
+  sdkTaskNotificationSent?: true
 }
 
 /**

@@ -17,38 +17,48 @@ import { toError } from '../../utils/errors.js'
 import { truncate } from '../../utils/format.js'
 import { logError } from '../../utils/log.js'
 import { isAnt } from 'src/utils/userType.js'
+import { getInitialSettings } from '../../utils/settings/settings.js'
 import { getSkillOverride } from '../../utils/skillOverrides.js'
 
 
-// Skill listing gets 1% of the context window (in characters)
-export const SKILL_BUDGET_CONTEXT_PERCENT = 0.01
-export const CHARS_PER_TOKEN = 4
-export const DEFAULT_CHAR_BUDGET = 8_000 // Fallback: 1% of 200k × 4
+// Skill listing gets skillListingBudgetFraction (default 1%) of the context
+// window, in characters at the main model's bytes per token.
+const DEFAULT_SKILL_BUDGET_FRACTION = 0.01
+const DEFAULT_CONTEXT_WINDOW_TOKENS = 200_000
 
-// Per-entry hard cap. The listing is for discovery only — the Skill tool loads
-// full content on invoke, so verbose whenToUse strings waste turn-1 cache_creation
-// tokens without improving match rate. Applies to all entries, including bundled,
-// since the cap is generous enough to preserve the core use case.
-export const MAX_LISTING_DESC_CHARS = 250
+// Per-entry cap (skillListingMaxDescChars). The listing is for discovery only —
+// the Skill tool loads full content on invoke.
+const DEFAULT_MAX_LISTING_DESC_CHARS = 1536
 
-export function getCharBudget(contextWindowTokens?: number): number {
+export function getCharBudget(
+  contextWindowTokens?: number,
+  bytesPerToken = 4,
+): number {
   if (Number(process.env.SLASH_COMMAND_TOOL_CHAR_BUDGET)) {
     return Number(process.env.SLASH_COMMAND_TOOL_CHAR_BUDGET)
   }
-  if (contextWindowTokens) {
-    return Math.floor(
-      contextWindowTokens * CHARS_PER_TOKEN * SKILL_BUDGET_CONTEXT_PERCENT,
-    )
-  }
-  return DEFAULT_CHAR_BUDGET
+  const fraction =
+    getInitialSettings().skillListingBudgetFraction ??
+    DEFAULT_SKILL_BUDGET_FRACTION
+  return Math.max(
+    1,
+    Math.floor(
+      (contextWindowTokens || DEFAULT_CONTEXT_WINDOW_TOKENS) *
+        bytesPerToken *
+        fraction,
+    ),
+  )
 }
 
 function getCommandDescription(cmd: Command): string {
   const desc = cmd.whenToUse
     ? `${cmd.description} - ${cmd.whenToUse}`
     : cmd.description
-  return desc.length > MAX_LISTING_DESC_CHARS
-    ? desc.slice(0, MAX_LISTING_DESC_CHARS - 1) + '\u2026'
+  const maxChars =
+    getInitialSettings().skillListingMaxDescChars ??
+    DEFAULT_MAX_LISTING_DESC_CHARS
+  return desc.length > maxChars
+    ? desc.slice(0, maxChars - 1) + '\u2026'
     : desc
 }
 
@@ -74,13 +84,14 @@ const MIN_DESC_LENGTH = 20
 export function formatCommandsWithinBudget(
   commands: Command[],
   contextWindowTokens?: number,
+  bytesPerToken = 4,
 ): string {
   if (commands.length === 0) return ''
 
   const sortedCommands = [...commands].sort((a, b) =>
     a.name < b.name ? -1 : a.name > b.name ? 1 : 0,
   )
-  const budget = getCharBudget(contextWindowTokens)
+  const budget = getCharBudget(contextWindowTokens, bytesPerToken)
 
   // Try full descriptions first
   const fullEntries = sortedCommands.map(cmd => ({

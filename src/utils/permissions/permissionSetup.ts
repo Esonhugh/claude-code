@@ -5,6 +5,7 @@ import {
   getPermissionModeSetByCli,
   handleAutoModeTransition,
   handlePlanModeTransition,
+  isRestrictedSession,
   setHasExitedPlanMode,
   setNeedsAutoModeExitAttachment,
 } from '../../bootstrap/state.js'
@@ -33,6 +34,7 @@ import {
 } from './PermissionMode.js'
 import { applyPermissionRulesToPermissionContext } from './permissions.js'
 import {
+  getAdditionalDirectoriesFromSettings,
   loadAllPermissionRulesFromDisk,
   shouldAllowManagedPermissionRulesOnly,
 } from './permissionsLoader.js'
@@ -65,6 +67,12 @@ import { TERMINAL_TOOL_NAME } from '../../tools/TerminalTool/prompt.js'
 import { FILE_EDIT_TOOL_NAME } from '../../tools/FileEditTool/constants.js'
 import { FILE_WRITE_TOOL_NAME } from '../../tools/FileWriteTool/prompt.js'
 import { NOTEBOOK_EDIT_TOOL_NAME } from '../../tools/NotebookEditTool/constants.js'
+import { MONITOR_TOOL_NAME } from '../../tools/MonitorTool/prompt.js'
+import { CRON_CREATE_TOOL_NAME } from '../../tools/ScheduleCronTool/prompt.js'
+import { WORKFLOW_TOOL_NAME } from '../../tools/WorkflowTool/constants.js'
+import { REMOTE_TRIGGER_TOOL_NAME } from '../../tools/RemoteTriggerTool/prompt.js'
+import { REPL_TOOL_NAME } from '../../tools/REPLTool/constants.js'
+import { WEB_FETCH_TOOL_NAME } from '../../tools/WebFetchTool/prompt.js'
 import {
   getAllBaseTools,
   getToolsForDefaultPreset,
@@ -1084,6 +1092,19 @@ export function parseToolListFromCLI(tools: string[]): string[] {
   return result
 }
 
+/** Tools --restricted removes unless --tools names them: they run commands or code, or fetch the web. */
+const RESTRICTED_SESSION_TOOLS = [
+  BASH_TOOL_NAME,
+  POWERSHELL_TOOL_NAME,
+  TERMINAL_TOOL_NAME,
+  REPL_TOOL_NAME,
+  MONITOR_TOOL_NAME,
+  CRON_CREATE_TOOL_NAME,
+  WORKFLOW_TOOL_NAME,
+  REMOTE_TRIGGER_TOOL_NAME,
+  WEB_FETCH_TOOL_NAME,
+]
+
 export async function initializeToolPermissionContext({
   allowedToolsCli,
   disallowedToolsCli,
@@ -1114,16 +1135,24 @@ export async function initializeToolPermissionContext({
 
   // If base tools are specified, automatically deny all tools NOT in the base set
   // We need to check if base tools were explicitly provided (not just empty default)
+  let baseToolsSet = new Set<string>()
   if (baseToolsCli && baseToolsCli.length > 0) {
     const baseToolsResult = parseBaseToolsFromCLI(baseToolsCli)
     // Normalize legacy tool names (e.g., 'Task' → 'Agent') so user-provided
     // base tool lists using old names still match canonical names.
-    const baseToolsSet = new Set(baseToolsResult.map(normalizeLegacyToolName))
+    baseToolsSet = new Set(baseToolsResult.map(normalizeLegacyToolName))
     // All base tools, not just the enabled ones: ListAgents/SendMessage turn on
     // once the UDS socket starts, which happens after this runs.
     const allToolNames = getAllBaseTools().map(tool => tool.name)
     const toolsToDisallow = allToolNames.filter(tool => !baseToolsSet.has(tool))
     parsedDisallowedToolsCli = [...parsedDisallowedToolsCli, ...toolsToDisallow]
+  }
+  if (isRestrictedSession()) {
+    const known = new Set(getAllBaseTools().map(tool => tool.name))
+    parsedDisallowedToolsCli = [
+      ...parsedDisallowedToolsCli,
+      ...RESTRICTED_SESSION_TOOLS.filter(tool => known.has(tool) && !baseToolsSet.has(tool)),
+    ]
   }
 
   const warnings: string[] = []
@@ -1157,7 +1186,8 @@ export async function initializeToolPermissionContext({
     (permissionMode === 'bypassPermissions' ||
       allowDangerouslySkipPermissions) &&
     !growthBookDisableBypassPermissionsMode &&
-    !settingsDisableBypassPermissionsMode
+    !settingsDisableBypassPermissionsMode &&
+    !isRestrictedSession()
 
   // Load all permission rules from disk
   const rulesFromDisk = loadAllPermissionRulesFromDisk()
@@ -1213,7 +1243,9 @@ export async function initializeToolPermissionContext({
     ? overlayDirectories(loadSSHPermissionOverlay()).map(directory => directory.path)
     : []
   const allAdditionalDirectories = [
-    ...(settings.permissions?.additionalDirectories || []),
+    ...(isManagedSSHRemoteRuntime()
+      ? (settings.permissions?.additionalDirectories ?? [])
+      : getAdditionalDirectoriesFromSettings()),
     ...sshOverlayAdditionalDirectories,
     ...addDirs,
   ]
@@ -1750,4 +1782,37 @@ export function transitionPlanAutoMode(
   autoModeStateModule?.setAutoModeActive(false)
   setNeedsAutoModeExitAttachment(true)
   return restoreDangerousPermissions(context)
+}
+
+/**
+ * Like official 2.1.311: a deny or ask rule whose tool name matches no tool
+ * can never apply, which is almost always a typo. Session rules are skipped;
+ * names with an underscore (MCP tools) cannot be checked before connecting.
+ */
+export function unknownToolRuleWarnings(
+  context: Pick<ToolPermissionContext, 'alwaysDenyRules' | 'alwaysAskRules'>,
+  knownToolNames: ReadonlySet<string>,
+): string[] {
+  const warnings: string[] = []
+  for (const [behavior, bySource] of [
+    ['deny', context.alwaysDenyRules],
+    ['ask', context.alwaysAskRules],
+  ] as const) {
+    for (const [source, rules] of Object.entries(bySource)) {
+      if (source === 'session') continue
+      for (const rule of rules ?? []) {
+        const value = permissionRuleValueFromString(rule)
+        if (
+          value.toolName.includes('_') ||
+          knownToolNames.has(value.toolName)
+        ) {
+          continue
+        }
+        warnings.push(
+          `Permission ${behavior} rule "${permissionRuleValueToString(value)}" matches no known tool — check for typos.`,
+        )
+      }
+    }
+  }
+  return warnings
 }

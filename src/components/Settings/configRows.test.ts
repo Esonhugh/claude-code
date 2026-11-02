@@ -50,7 +50,7 @@ afterAll(() => {
   rmSync(home, { recursive: true, force: true })
 })
 
-test('exposes real built-in config rows in menu order, including dialog-only rows', async () => {
+test('exposes real built-in config rows in official 2.1.311 menu order, including dialog-only rows', async () => {
   const { getConfigRows } = await import('./configRows.js')
   let state = { settings: {}, verbose: false, thinkingEnabled: true, mainLoopModel: null } as AppState
   const rows = getConfigRows({
@@ -59,10 +59,10 @@ test('exposes real built-in config rows in menu order, including dialog-only row
   })
   const keys = [
     'autoCompact', 'idleCompaction', 'tips', 'prefersReducedMotion',
-    'thinkingEnabled', 'fileCheckpointingEnabled', 'verbose',
+    'thinkingEnabled', 'fileCheckpointingEnabled', 'workflows', 'workflowSizeGuideline', 'verbose',
     'terminalProgressBarEnabled', 'showTurnDuration', 'timeFormat', 'defaultPermissionMode',
-    'workflows', 'workflowSizeGuideline', 'respectGitignore', 'copyFullResponse', 'autoUpdatesChannel', 'theme',
-    'notifChannel', 'outputStyle', 'language', 'editorMode', 'prStatusFooterEnabled',
+    'respectGitignore', 'copyFullResponse', 'autoUpdatesChannel', 'theme',
+    'notifChannel', 'outputStyle', 'language', 'editorMode', 'externalEditorContext', 'prStatusFooterEnabled',
     'model', 'claudeInChromeDefaultEnabled',
   ]
   expect(rows.filter(row => keys.includes(row.key)).map(row => row.key)).toEqual(keys)
@@ -128,7 +128,7 @@ test('writers persist settings in the correct source, preserve siblings and upda
   expect(JSON.parse(readFileSync(join(home, '.claude/settings.local.json'), 'utf8')).prefersReducedMotion).toBe(true)
 })
 
-test('all six concrete themes persist and notify the UI, while invalid choices cannot write', async () => {
+test('auto and all six concrete themes persist and notify the UI, while invalid choices cannot write', async () => {
   const { getConfigRows } = await import('./configRows.js')
   const config = await import('../../utils/config.js')
   const { getGlobalClaudeFile } = await import('../../utils/env.js')
@@ -142,7 +142,7 @@ test('all six concrete themes persist and notify the UI, while invalid choices c
     options: { setTheme: (theme: string) => { selected = theme } },
   }
   const theme = getConfigRows(context).find(row => row.key === 'theme')!
-  expect(theme.options).toEqual(['dark', 'light', 'light-daltonized', 'dark-daltonized', 'light-ansi', 'dark-ansi'])
+  expect(theme.options).toEqual(['auto', 'dark', 'light', 'light-daltonized', 'dark-daltonized', 'light-ansi', 'dark-ansi'])
   for (const value of theme.options!) {
     await theme.set!(value)
     expect<string>(config.getGlobalConfig().theme).toBe(value)
@@ -227,7 +227,7 @@ test('production rows include the custom-key setting without host-specific optio
   }
   try {
     const row = getConfigRows(context).find(row => row.key === 'apiKey')
-    expect(row).toMatchObject({ label: 'Use custom API key', kind: 'boolean', value: false })
+    expect(row).toMatchObject({ label: 'Use custom API key: redential-config-key', kind: 'boolean', value: false })
     await row!.set!(true)
     expect(getConfigRows(context).find(row => row.key === 'apiKey')?.value).toBe(true)
     expect(config.getGlobalConfig().customApiKeyResponses.approved).toContain('redential-config-key')
@@ -254,7 +254,7 @@ test('global boolean and choice writers preserve unrelated config on disk', asyn
   }
   config.saveGlobalConfig(current => ({ ...current, editorMode: 'emacs', theme: 'light-ansi' }))
   expect(getConfigRows(context).find(row => row.key === 'editorMode')?.value).toBe('normal')
-  for (const key of ['autoCompact', 'fileCheckpointingEnabled', 'terminalProgressBarEnabled', 'showTurnDuration', 'respectGitignore', 'copyFullResponse', 'prStatusFooterEnabled', 'claudeInChromeDefaultEnabled']) {
+  for (const key of ['autoCompact', 'fileCheckpointingEnabled', 'terminalProgressBarEnabled', 'showTurnDuration', 'respectGitignore', 'copyFullResponse', 'externalEditorContext', 'prStatusFooterEnabled', 'claudeInChromeDefaultEnabled']) {
     const row = getConfigRows(context).find(row => row.key === key)!
     const value = !row.value
     await row.set!(value)
@@ -307,12 +307,26 @@ test('Idle compaction and Time format rows write user settings like official', a
   expect(settings.getSettingsForSource('userSettings')?.idleCompaction).toBe(false)
   await row('idleCompaction')!.set!(true)
   expect(settings.getSettingsForSource('userSettings')?.idleCompaction).toBeUndefined()
+  expect(row('agentSummary')).toMatchObject({
+    label: 'Background agent summaries', kind: 'choice', value: 'full', options: ['full', 'short', 'off'],
+  })
+  await row('agentSummary')!.set!('off')
+  expect(settings.getSettingsForSource('userSettings')?.agentSummary).toBe('off')
+  expect(row('agentSummary')?.value).toBe('off')
+  await row('agentSummary')!.set!('full')
+  expect(settings.getSettingsForSource('userSettings')?.agentSummary).toBeUndefined()
   expect(row('timeFormat')).toMatchObject({
     label: 'Time format', kind: 'choice', value: 'auto', options: ['auto', '12-hour', '24-hour', '24-hour-utc'],
   })
   await row('timeFormat')!.set!('24-hour-utc')
   expect(settings.getSettingsForSource('userSettings')?.timeFormat).toBe('24-hour-utc')
   expect(row('timeFormat')?.value).toBe('24-hour-utc')
+  expect(row('worktreeBaseRef')).toMatchObject({
+    label: 'Worktree base ref', kind: 'choice', value: 'fresh', options: ['fresh', 'head'],
+  })
+  await row('worktreeBaseRef')!.set!('head')
+  expect(settings.getSettingsForSource('userSettings')?.worktree?.baseRef).toBe('head')
+  expect(row('worktreeBaseRef')?.value).toBe('head')
 })
 
 test('a policy enableWorkflows under CLAUDE_CODE_DISABLE_WORKFLOWS locks the row off, not on', async () => {
@@ -498,4 +512,56 @@ test('settings write errors propagate without changing AppState', async () => {
     expect(() => row.set!(false)).toThrow('disk full')
     expect(state).toBe(initial)
   } finally { failure.mockRestore() }
+})
+
+const officialRowsTest = 'official 2.1.311 rows for recap, usage-limit resume, keyword trigger and peer messages'
+test(officialRowsTest, async () => {
+  // Session recap and peer messages are compiled behind AWAY_SUMMARY and UDS_INBOX; assert in a child with both on.
+  if (process.env.CLAUDE_CODE_CONFIG_ROWS_FEATURES_CHILD !== '1') {
+    const child = Bun.spawn([process.execPath, 'test', '--feature=AWAY_SUMMARY', '--feature=UDS_INBOX', import.meta.path, '-t', officialRowsTest], {
+      cwd: join(import.meta.dir, '../../..'),
+      env: { ...originalEnv, CLAUDE_CODE_CONFIG_ROWS_FEATURES_CHILD: '1' },
+      stdout: 'pipe', stderr: 'pipe',
+    })
+    const [code, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()])
+    if (code !== 0) throw new Error(`${stdout}\n${stderr}`)
+    return
+  }
+  const { getConfigRows } = await import('./configRows.js')
+  let state = { settings: {}, verbose: false, thinkingEnabled: true, mainLoopModel: null } as AppState
+  const context = { getAppState: () => state, setAppState: (update: (state: AppState) => AppState) => { state = update(state) } }
+  const keys = getConfigRows(context).map(row => row.key)
+  const order = ['autoCompact', 'idleCompaction', 'autoContinueAtUsageLimit', 'thinkingEnabled', 'recap', 'fileCheckpointingEnabled', 'workflows', 'workflowKeywordTriggerEnabled', 'claudeInChromeDefaultEnabled', 'crossSessionInbound']
+  expect(keys.filter(key => order.includes(key))).toEqual(order)
+  const row = (key: string) => getConfigRows(context).find(item => item.key === key)!
+  expect(row('recap')).toMatchObject({ label: 'Session recap', value: true })
+  expect(row('autoContinueAtUsageLimit')).toMatchObject({ label: 'Continue automatically at usage limit', value: true })
+  expect(row('workflowKeywordTriggerEnabled')).toMatchObject({ label: 'Ultracode keyword trigger', value: true })
+  expect(row('crossSessionInbound')).toMatchObject({ label: 'Messages from your other sessions', kind: 'choice', value: 'default', options: ['default', 'accept', 'hold', 'refuse'] })
+
+  await row('recap').set!(false)
+  await row('autoContinueAtUsageLimit').set!(false)
+  await row('workflowKeywordTriggerEnabled').set!(false)
+  await row('crossSessionInbound').set!('hold')
+  const saved = () => JSON.parse(readFileSync(join(home, 'settings.json'), 'utf8'))
+  expect(saved()).toMatchObject({ awaySummaryEnabled: false, autoContinueAtUsageLimit: false, workflowKeywordTriggerEnabled: false, crossSessionInbound: 'hold' })
+  expect(row('recap').value).toBe(false)
+  expect(row('crossSessionInbound').value).toBe('hold')
+
+  await row('recap').set!(true)
+  await row('workflowKeywordTriggerEnabled').set!(true)
+  await row('crossSessionInbound').set!('default')
+  expect(saved().awaySummaryEnabled).toBeUndefined()
+  expect(saved().workflowKeywordTriggerEnabled).toBeUndefined()
+  expect(saved().crossSessionInbound).toBeUndefined()
+}, 120_000)
+
+test('switching editor mode hands the prompt a new settings object so it re-renders into vim', async () => {
+  const { getConfigRows } = await import('./configRows.js')
+  const initial = {}
+  let state = { settings: initial, verbose: false, thinkingEnabled: true, mainLoopModel: null } as AppState
+  const context = { getAppState: () => state, setAppState: (update: (state: AppState) => AppState) => { state = update(state) } }
+  await getConfigRows(context).find(row => row.key === 'editorMode')!.set!('vim')
+  expect(state.settings).not.toBe(initial)
+  await getConfigRows(context).find(row => row.key === 'editorMode')!.set!('normal')
 })

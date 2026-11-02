@@ -5,7 +5,7 @@ import {
   executePreModelSwitchHooks,
   type ModelSwitchHookInfo,
 } from '../hooks.js'
-import { wrapInSystemReminder } from '../messages.js'
+import { escapeSystemReminderTags, wrapInSystemReminder } from '../messages.js'
 import { tokenCountFromLastAPIResponse } from '../tokens.js'
 import {
   getDefaultMainLoopModel,
@@ -58,6 +58,8 @@ export async function getPostModelSwitchContext(
     toolUseContext,
   )
   return contexts.length > 0
-    ? contexts.map(context => wrapInSystemReminder(context))
+    ? contexts.map(context =>
+        wrapInSystemReminder(escapeSystemReminderTags(context)),
+      )
     : undefined
 }

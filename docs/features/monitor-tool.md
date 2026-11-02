@@ -39,7 +39,7 @@ Monitor 工具让 Claude 在后台跑一条命令（例如 `tail -f app.log | gr
 
 ## 和 Bash 的分工
 
-开启 Monitor 后，Bash（以及 PowerShell）会拒绝以 `sleep N`（N ≥ 2）开头的前台命令，并提示 Claude：长时间任务用后台运行，等事件用 Monitor，真要停顿就控制在 2 秒以内。这个拒绝只发给模型，界面上看到的是一行折叠的 `Ran 1 bash command`，和官方一致。
+开启 Monitor 后，Bash（以及 PowerShell）会拒绝以 `sleep N`（N ≥ 25，与官方 2.1.311 一致）开头的前台命令，并提示 Claude：等条件用 Monitor 加 until 循环，等自己启动的命令用后台运行，不要拆成多个短 sleep 绕过。这个拒绝只发给模型，界面上看到的是一行折叠的 `Ran 1 bash command`，和官方一致。
 
 ## 权限
 

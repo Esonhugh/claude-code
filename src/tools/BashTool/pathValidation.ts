@@ -9,7 +9,10 @@ import {
 } from '../../utils/bash/commands.js'
 import { tryParseShellCommand } from '../../utils/bash/shellQuote.js'
 import { expandTilde, getDirectoryForPath } from '../../utils/path.js'
-import { allWorkingDirectories } from '../../utils/permissions/filesystem.js'
+import {
+  allWorkingDirectories,
+  canSuggestAcceptEdits,
+} from '../../utils/permissions/filesystem.js'
 import {
   requiresExplicitUserApproval,
   type PermissionAskDecision,
@@ -67,6 +70,20 @@ export type PathCommand =
   | 'egrep'
   | 'fgrep'
   | 'tee'
+  | 'cmp'
+  | 'comm'
+  | 'expand'
+  | 'unexpand'
+  | 'fmt'
+  | 'fold'
+  | 'numfmt'
+  | 'pr'
+  | 'rev'
+  | 'tsort'
+  | 'man'
+  | 'gawk'
+  | 'mawk'
+  | 'nawk'
 
 /**
  * SECURITY: Extract positional (non-flag) arguments, correctly handling the
@@ -257,6 +274,20 @@ export const PATH_EXTRACTORS: Record<
   sha256sum: filterOutFlags,
   sha1sum: filterOutFlags,
   md5sum: filterOutFlags,
+  cmp: filterOutFlags,
+  comm: filterOutFlags,
+  expand: filterOutFlags,
+  unexpand: filterOutFlags,
+  fmt: filterOutFlags,
+  fold: filterOutFlags,
+  numfmt: filterOutFlags,
+  pr: filterOutFlags,
+  rev: filterOutFlags,
+  tsort: filterOutFlags,
+  man: filterOutFlags,
+  gawk: filterOutFlags,
+  mawk: filterOutFlags,
+  nawk: filterOutFlags,
 
   // tac: -s/--separator takes a value
   tac: args => {
@@ -536,6 +567,20 @@ const ACTION_VERBS: Record<PathCommand, string> = {
   egrep: 'search for patterns in files from',
   fgrep: 'search for patterns in files from',
   tee: 'write to files in',
+  cmp: 'compare files from',
+  comm: 'compare files from',
+  expand: 'convert tabs in files from',
+  unexpand: 'convert spaces in files from',
+  fmt: 'reformat files from',
+  fold: 'wrap lines of files from',
+  numfmt: 'reformat numbers in files from',
+  pr: 'paginate files from',
+  rev: 'read files (reversed lines) from',
+  tsort: 'sort files from',
+  man: 'read manual page files from',
+  gawk: 'process text from files in',
+  mawk: 'process text from files in',
+  nawk: 'process text from files in',
 }
 
 export const COMMAND_OPERATION_TYPE: Record<PathCommand, FileOperationType> = {
@@ -579,6 +624,20 @@ export const COMMAND_OPERATION_TYPE: Record<PathCommand, FileOperationType> = {
   egrep: 'read',
   fgrep: 'read',
   tee: 'write',
+  cmp: 'read',
+  comm: 'read',
+  expand: 'read',
+  unexpand: 'read',
+  fmt: 'read',
+  fold: 'read',
+  numfmt: 'read',
+  pr: 'read',
+  rev: 'read',
+  tsort: 'read',
+  man: 'read',
+  gawk: 'read',
+  mawk: 'read',
+  nawk: 'read',
 }
 
 /**
@@ -771,7 +830,10 @@ export function createPathChecker(
       }
 
       // For write operations, also suggest enabling accept-edits mode
-      if (operationType === 'write' || operationType === 'create') {
+      if (
+        (operationType === 'write' || operationType === 'create') &&
+        canSuggestAcceptEdits(context)
+      ) {
         suggestions.push({
           type: 'setMode',
           mode: 'acceptEdits',
@@ -878,8 +940,11 @@ function validateSinglePathCommand(
   // Example: 'timeout 10 rm -rf /' would otherwise see 'timeout' as the base command.
   const strippedCmd = stripSafeWrappers(cmd)
 
-  // Parse command into arguments, handling quotes and globs
-  const extractedArgs = parseCommandArguments(strippedCmd)
+  // Parse command into arguments, handling quotes and globs. The argv-level
+  // strip also covers `env` and `command`, which stripSafeWrappers leaves.
+  const extractedArgs = stripWrappersFromArgv(
+    parseCommandArguments(strippedCmd),
+  )
   if (extractedArgs.length === 0) {
     return {
       behavior: 'passthrough',
@@ -1382,7 +1447,7 @@ function skipEnvFlags(a: readonly string[]): number {
 export function stripWrappersFromArgv(argv: string[]): string[] {
   let a = argv
   for (;;) {
-    if (a[0] === 'time' || a[0] === 'nohup') {
+    if (a[0] === 'time' || a[0] === 'nohup' || a[0] === 'builtin') {
       a = a.slice(a[1] === '--' ? 2 : 1)
     } else if (a[0] === 'timeout') {
       const i = skipTimeoutFlags(a)
@@ -1415,6 +1480,13 @@ export function stripWrappersFromArgv(argv: string[]): string[] {
       const i = skipEnvFlags(a)
       if (i < 0) return a
       a = a.slice(i)
+    } else if (
+      (a[0] === 'command' || a[0] === 'builtin') &&
+      a[1] !== undefined &&
+      !a[1].startsWith('-')
+    ) {
+      // `command cat f` runs cat; `command -v cat` only looks it up.
+      a = a.slice(1)
     } else {
       return a
     }

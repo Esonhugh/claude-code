@@ -19,6 +19,8 @@ export type ExecResult = {
   backgroundedByUser?: boolean
   /** Set when assistant-mode auto-backgrounded a long-running blocking command. */
   assistantAutoBackgrounded?: boolean
+  /** Set when the command hit its timeout and was moved to the background. */
+  timedOutAfterMs?: number
   /** Set when stdout was too large to fit inline — points to the output file on disk. */
   outputFilePath?: string
   /** Total size of the output file in bytes (set when outputFilePath is set). */
@@ -111,6 +113,14 @@ class StreamWrapper {
  * by polling the file tail.
  * For hooks: pipe mode with StreamWrappers for real-time detection.
  */
+// Commands still running, so shutdown can wait for their final results to
+// reach the transcript before the process exits.
+const liveCommands = new Set<ShellCommandImpl>()
+
+export async function waitForLiveShellResults(): Promise<void> {
+  await Promise.allSettled([...liveCommands].map(command => command.result))
+}
+
 class ShellCommandImpl implements ShellCommand {
   #status: 'running' | 'backgrounded' | 'completed' | 'killed' = 'running'
   #backgroundTaskId: string | undefined
@@ -177,6 +187,7 @@ class ShellCommandImpl implements ShellCommand {
     }
 
     this.result = this.#createResultPromise()
+    liveCommands.add(this)
   }
 
   get status(): 'running' | 'backgrounded' | 'completed' | 'killed' {
@@ -289,6 +300,7 @@ class ShellCommandImpl implements ShellCommand {
   }
 
   async #handleExit(code: number): Promise<void> {
+    liveCommands.delete(this)
     this.#cleanupListeners()
     if (this.#status === 'running' || this.#status === 'backgrounded') {
       this.#status = 'completed'
@@ -336,8 +348,19 @@ class ShellCommandImpl implements ShellCommand {
 
   #doKill(code?: number): void {
     this.#status = 'killed'
-    if (this.#childProcess.pid) {
-      treeKill(this.#childProcess.pid, 'SIGKILL')
+    const pid = this.#childProcess.pid
+    if (pid) {
+      // tree-kill finds children with an async `ps`; on shutdown the process
+      // exits before it signals anyone. Detached shells lead their own group,
+      // so signal it synchronously first (ESRCH when not detached).
+      if (process.platform !== 'win32') {
+        try {
+          process.kill(-pid, 'SIGKILL')
+        } catch {
+          // Not a group leader (ESRCH): tree-kill below covers it.
+        }
+      }
+      treeKill(pid, 'SIGKILL')
     }
     this.#resolveExitCode(code ?? SIGKILL)
   }

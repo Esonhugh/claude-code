@@ -207,7 +207,7 @@ async function runChild(): Promise<void> {
   test('login refuses servers it cannot authenticate', async () => {
     flows.length = 0
     const cases: Array<[string, string]> = [
-      ['missing', 'No MCP server found with name: missing'],
+      ['missing', 'No MCP server named "missing". Configured servers: failing, headered, local, pastey, remote'],
       [
         'local',
         `"local" doesn't support OAuth login — it's only available for HTTP and SSE servers.`,

@@ -1,4 +1,3 @@
-import { basename, sep } from 'path'
 import React, { type ReactNode } from 'react'
 import { getOriginalCwd } from '../../bootstrap/state.js'
 import { Text } from '../../ink.js'
@@ -36,37 +35,42 @@ function commandListDisplayTruncated(commands: string[]): ReactNode {
   return commandListDisplay(commands)
 }
 
+// 2.1.311 (`p3e`) names every path in full: "a", "a and b", "a, b, and c".
 function formatPathList(paths: string[]): ReactNode {
   if (paths.length === 0) return ''
-
-  // Extract directory names from paths
-  const names = paths.map(p => basename(p) || p)
-
-  if (names.length === 1) {
+  if (paths.length === 1) return <Text bold>{paths[0]}</Text>
+  if (paths.length === 2) {
     return (
       <Text>
-        <Text bold>{names[0]}</Text>
-        {sep}
+        <Text bold>{paths[0]}</Text> and <Text bold>{paths[1]}</Text>
       </Text>
     )
   }
-  if (names.length === 2) {
-    return (
-      <Text>
-        <Text bold>{names[0]}</Text>
-        {sep} and <Text bold>{names[1]}</Text>
-        {sep}
-      </Text>
-    )
-  }
-
-  // For 3+, show first two with "and N more"
   return (
     <Text>
-      <Text bold>{names[0]}</Text>
-      {sep}, <Text bold>{names[1]}</Text>
-      {sep} and {paths.length - 2} more
+      {paths.slice(0, -1).map((path, i) => (
+        <Text key={i}>
+          <Text bold>{path}</Text>,{' '}
+        </Text>
+      ))}
+      and <Text bold>{paths.at(-1)}</Text>
     </Text>
+  )
+}
+
+// Official drops the "always allow" label when its names exceed this width.
+const MAX_LABEL_NAMES_LENGTH = 160
+
+/**
+ * The updates the "Yes, and apply suggestions" option applies: only the kinds
+ * its label describes, so a suggested mode switch (e.g. setMode acceptEdits
+ * for a write in the cwd) is not applied behind a directory/rule label.
+ */
+export function shellSuggestionUpdates(
+  suggestions: PermissionUpdate[],
+): PermissionUpdate[] {
+  return suggestions.filter(
+    s => s.type === 'addRules' || s.type === 'addDirectories',
   )
 }
 
@@ -112,6 +116,13 @@ export function generateShellSuggestionsLabel(
     ),
   ]
 
+  if (
+    [...shellCommands, ...readPaths, ...directories].join(' and ').length >
+    MAX_LABEL_NAMES_LENGTH
+  ) {
+    return null
+  }
+
   // Check what we have
   const hasDirectories = directories.length > 0
   const hasReadPaths = readPaths.length > 0
@@ -120,18 +131,6 @@ export function generateShellSuggestionsLabel(
   // Handle single type cases
   if (hasReadPaths && !hasDirectories && !hasCommands) {
     // Only Read rules - use "reading from" language
-    if (readPaths.length === 1) {
-      const firstPath = readPaths[0]!
-      const dirName = basename(firstPath) || firstPath
-      return (
-        <Text>
-          Yes, allow reading from <Text bold>{dirName}</Text>
-          {sep} from this project
-        </Text>
-      )
-    }
-
-    // Multiple read paths
     return (
       <Text>
         Yes, allow reading from {formatPathList(readPaths)} from this project
@@ -141,18 +140,6 @@ export function generateShellSuggestionsLabel(
 
   if (hasDirectories && !hasReadPaths && !hasCommands) {
     // Only directory permissions - use "access to" language
-    if (directories.length === 1) {
-      const firstDir = directories[0]!
-      const dirName = basename(firstDir) || firstDir
-      return (
-        <Text>
-          Yes, and always allow access to <Text bold>{dirName}</Text>
-          {sep} from this project
-        </Text>
-      )
-    }
-
-    // Multiple directories
     return (
       <Text>
         Yes, and always allow access to {formatPathList(directories)} from this

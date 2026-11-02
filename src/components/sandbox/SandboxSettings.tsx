@@ -6,6 +6,8 @@ import type { SandboxDependencyCheck } from '../../utils/sandbox/sandbox-adapter
 import { SandboxManager } from '../../utils/sandbox/sandbox-adapter.js'
 import { getSettings_DEPRECATED } from '../../utils/settings/settings.js'
 import { Select } from '../CustomSelect/select.js'
+import { Byline } from '../design-system/Byline.js'
+import { KeyboardShortcutHint } from '../design-system/KeyboardShortcutHint.js'
 import { Pane } from '../design-system/Pane.js'
 import { Tab, Tabs, useTabHeaderFocus } from '../design-system/Tabs.js'
 import { SandboxConfigTab } from './SandboxConfigTab.js'
@@ -152,9 +154,19 @@ export function SandboxSettings({
 
   return (
     <Pane color="permission">
-      <Tabs title="Sandbox:" color="permission" defaultTab="Mode">
+      <Tabs title="Sandbox" color="permission" defaultTab="Mode">
         {tabs}
       </Tabs>
+      {hasErrors && (
+        <Text dimColor>
+          <Byline>
+            <KeyboardShortcutHint shortcut="←/→" action="switch" />
+            <KeyboardShortcutHint shortcut="↑/↓" action="navigate" />
+            <KeyboardShortcutHint shortcut="Enter" action="select" />
+            <KeyboardShortcutHint shortcut="Esc" action="close" />
+          </Byline>
+        </Text>
+      )}
     </Pane>
   )
 }

@@ -5,7 +5,7 @@ import { getFirstPartyModelCacheKey } from './firstPartyModelCacheKey.js'
 import { getCanonicalName } from './model.js'
 import { getAPIProvider } from './providers.js'
 
-const leanModels = new Set(['claude-sonnet-5-5', 'claude-opus-4-8', 'claude-opus-5', 'claude-opus-5-5', 'claude-fable-5', 'claude-fable-5-1', 'claude-mythos-5'])
+const leanModels = new Set(['claude-haiku-5-5', 'claude-sonnet-5-5', 'claude-opus-4-8', 'claude-opus-5', 'claude-opus-5-5', 'claude-fable-5', 'claude-fable-5-1', 'claude-mythos-5'])
 const canonical = (model: string) => getCanonicalName(model).replace(/\[1m\]/gi, '').toLowerCase()
 const legacy = (model: string) => /claude-3-|haiku|sonnet/.test(model) || /^claude-opus-4-(0|1|5|6|7)$/.test(model)
 
@@ -43,13 +43,6 @@ export function shouldUseLeanPrompt(model: string): boolean {
   if (getFeatureValue_CACHED_MAY_BE_STALE('tengu_velvet_tide', false)) return true
   const flag = clientData()?.simple_system_prompt
   return typeof flag === 'object' && flag !== null && Object.entries(flag).some(([selector, value]) => value === true && name.includes(selector))
-}
-
-export function usesSystemTurnReminders(model: string): boolean {
-  const name = canonical(model)
-  if (name === 'claude-sonnet-5' || name === 'claude-opus-4-8') return false
-  if (isEnvTruthy(process.env.CLAUDE_CODE_FORCE_MID_CONVERSATION_SYSTEM)) return true
-  return promptCapabilityOverride(model, 'mid_conv_system') ?? (leanModels.has(name) || !legacy(name))
 }
 
 export function usesDetailedCommunication(model: string): boolean {

@@ -2126,7 +2126,13 @@ function computeFlexBasis(
     ? MeasureMode.Exactly
     : MeasureMode.Undefined
   if (!isDefined(crossConstraint) && isDefined(availableCross)) {
-    crossConstraint = availableCross
+    // layoutNode sizes the border box, so the child's own cross margins come
+    // out of the available space (a negative margin widens it).
+    crossConstraint = Math.max(
+      0,
+      availableCross -
+        childMarginForAxis(child, isMainRow ? FlexDirection.Column : FlexDirection.Row, ownerWidth),
+    )
     crossConstraintMode =
       crossMode === MeasureMode.Exactly && isStretchAlign(child)
         ? MeasureMode.Exactly

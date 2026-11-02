@@ -6,7 +6,7 @@ const btw = {
   description:
     'Ask a quick side question without interrupting the main conversation',
   immediate: true,
-  argumentHint: '<question>',
+  argumentHint: '[question]',
   load: () => import('./btw.js'),
 } satisfies Command
 

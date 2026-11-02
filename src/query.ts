@@ -90,6 +90,7 @@ import {
   getAttachmentMessages,
   startRelevantMemoryPrefetch,
 } from './utils/attachments.js'
+import { isSqliteMemoryEnabled } from './memdir/paths.js'
 /* eslint-disable @typescript-eslint/no-require-imports */
 const skillPrefetch = feature('EXPERIMENTAL_SKILL_SEARCH')
   ? (require('./services/skillSearch/prefetch.js') as typeof import('./services/skillSearch/prefetch.js'))
@@ -114,16 +115,19 @@ import {
   finalContextTokensFromLastResponse,
   tokenCountWithEstimation,
 } from './utils/tokens.js'
+import { bytesPerTokenForModel } from './services/tokenEstimation.js'
 import { ESCALATED_MAX_TOKENS } from './utils/context.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from './services/analytics/growthbook.js'
 import { SLEEP_TOOL_NAME } from './tools/SleepTool/prompt.js'
 import { executePostSamplingHooks } from './utils/hooks/postSamplingHooks.js'
-import { executeStopFailureHooks } from './utils/hooks.js'
+import {
+  executePostToolBatchHooks,
+  executeStopFailureHooks,
+} from './utils/hooks.js'
 import type { QuerySource } from './constants/querySource.js'
 import { createDumpPromptsFetch } from './services/api/dumpPrompts.js'
 import { StreamingToolExecutor } from './services/tools/StreamingToolExecutor.js'
 import { queryCheckpoint } from './utils/queryProfiler.js'
-import { runTools } from './services/tools/toolOrchestration.js'
 import { applyToolResultBudget } from './utils/toolResultStorage.js'
 import { recordContentReplacement } from './utils/sessionStorage.js'
 import { handleStopHooks } from './query/stopHooks.js'
@@ -767,6 +771,25 @@ async function* queryLoop(
 
     let messagesForQuery = [...getMessagesAfterCompactBoundary(messages)]
 
+    // SQLite recall is a local index lookup, so wait for it before the first
+    // request: a reply without tool calls never reaches the consume point below.
+    if (
+      turnCount === 1 &&
+      isSqliteMemoryEnabled() &&
+      pendingMemoryPrefetch &&
+      pendingMemoryPrefetch.consumedOnIteration === -1
+    ) {
+      for (const memAttachment of filterDuplicateMemoryAttachments(
+        await pendingMemoryPrefetch.promise,
+        toolUseContext.readFileState,
+      )) {
+        const msg = createAttachmentMessage(memAttachment)
+        yield msg
+        messagesForQuery.push(msg)
+      }
+      pendingMemoryPrefetch.consumedOnIteration = 0
+    }
+
     let tracking = autoCompactTracking
 
     // Enforce per-message budget on aggregate tool result size. Runs BEFORE
@@ -995,14 +1018,11 @@ async function* queryLoop(
     let needsFollowUp = false
 
     queryCheckpoint('query_setup_start')
-    const useStreamingToolExecution = config.gates.streamingToolExecution
-    let streamingToolExecutor = useStreamingToolExecution
-      ? new StreamingToolExecutor(
-          toolUseContext.options.tools,
-          canUseTool,
-          toolUseContext,
-        )
-      : null
+    let streamingToolExecutor = new StreamingToolExecutor(
+      toolUseContext.options.tools,
+      canUseTool,
+      toolUseContext,
+    )
 
     const appState = toolUseContext.getAppState()
     const permissionMode = appState.toolPermissionContext.mode
@@ -1072,7 +1092,10 @@ async function* queryLoop(
       !collapseOwnsIt
     ) {
       const { isAtBlockingLimit } = calculateTokenWarningState(
-        tokenCountWithEstimation(projectedMessagesForQuery) - snipTokensFreed,
+        tokenCountWithEstimation(
+          projectedMessagesForQuery,
+          bytesPerTokenForModel(toolUseContext.options.mainLoopModel),
+        ) - snipTokensFreed,
         toolUseContext.options.mainLoopModel,
         toolUseContext.options.autoCompactWindow,
       )
@@ -1229,14 +1252,12 @@ async function* queryLoop(
               // Discard pending results from the failed streaming attempt and create
               // a fresh executor. This prevents orphan tool_results (with old tool_use_ids)
               // from being yielded after the fallback response arrives.
-              if (streamingToolExecutor) {
-                streamingToolExecutor.discard()
-                streamingToolExecutor = new StreamingToolExecutor(
-                  toolUseContext.options.tools,
-                  canUseTool,
-                  toolUseContext,
-                )
-              }
+              streamingToolExecutor.discard()
+              streamingToolExecutor = new StreamingToolExecutor(
+                toolUseContext.options.tools,
+                canUseTool,
+                toolUseContext,
+              )
             }
             // Backfill tool_use inputs on a cloned message before yield so
             // SDK stream output and transcript serialization see legacy/derived
@@ -1343,10 +1364,7 @@ async function* queryLoop(
                 needsFollowUp = true
               }
 
-              if (
-                streamingToolExecutor &&
-                !toolUseContext.abortController.signal.aborted
-              ) {
+              if (!toolUseContext.abortController.signal.aborted) {
                 for (const toolBlock of msgToolUseBlocks) {
                   // @ts-ignore - recovered code
                   streamingToolExecutor.addTool(toolBlock, message)
@@ -1354,10 +1372,7 @@ async function* queryLoop(
               }
             }
 
-            if (
-              streamingToolExecutor &&
-              !toolUseContext.abortController.signal.aborted
-            ) {
+            if (!toolUseContext.abortController.signal.aborted) {
               for (const result of streamingToolExecutor.getCompletedResults()) {
                 if (result.message) {
                   yield result.message
@@ -1422,14 +1437,12 @@ async function* queryLoop(
             // Discard pending results from the failed attempt and create a
             // fresh executor. This prevents orphan tool_results (with old
             // tool_use_ids) from leaking into the retry.
-            if (streamingToolExecutor) {
-              streamingToolExecutor.discard()
-              streamingToolExecutor = new StreamingToolExecutor(
-                toolUseContext.options.tools,
-                canUseTool,
-                toolUseContext,
-              )
-            }
+            streamingToolExecutor.discard()
+            streamingToolExecutor = new StreamingToolExecutor(
+              toolUseContext.options.tools,
+              canUseTool,
+              toolUseContext,
+            )
 
             // Update tool use context with new model
             toolUseContext.options.mainLoopModel = fallbackModel
@@ -1527,24 +1540,15 @@ async function* queryLoop(
       )
     }
 
-    // We need to handle a streaming abort before anything else.
-    // When using streamingToolExecutor, we must consume getRemainingResults() so the
-    // executor can generate synthetic tool_result blocks for queued/in-progress tools.
-    // Without this, tool_use blocks would lack matching tool_result blocks.
+    // We need to handle a streaming abort before anything else: consume
+    // getRemainingResults() so the executor generates synthetic tool_result
+    // blocks for queued/in-progress tools. Without this, tool_use blocks would
+    // lack matching tool_result blocks.
     if (toolUseContext.abortController.signal.aborted) {
-      if (streamingToolExecutor) {
-        // Consume remaining results - executor generates synthetic tool_results for
-        // aborted tools since it checks the abort signal in executeTool()
-        for await (const update of streamingToolExecutor.getRemainingResults()) {
-          if (update.message) {
-            yield update.message
-          }
+      for await (const update of streamingToolExecutor.getRemainingResults()) {
+        if (update.message) {
+          yield update.message
         }
-      } else {
-        yield* yieldMissingToolResultBlocks(
-          assistantMessages,
-          'Interrupted by user',
-        )
       }
       // chicago MCP: auto-unhide + lock release on interrupt. Same cleanup
       // as the natural turn-end path in stopHooks.ts. Main thread only —
@@ -1937,27 +1941,12 @@ async function* queryLoop(
     }
 
     let shouldPreventContinuation = false
+    let postToolBatchStopReason: string | undefined
     let updatedToolUseContext = toolUseContext
 
     queryCheckpoint('query_tool_execution_start')
 
-    if (streamingToolExecutor) {
-      logEvent('tengu_streaming_tool_execution_used', {
-        tool_count: toolUseBlocks.length,
-        queryChainId: queryChainIdForAnalytics,
-        queryDepth: queryTracking.depth,
-      })
-    } else {
-      logEvent('tengu_streaming_tool_execution_not_used', {
-        tool_count: toolUseBlocks.length,
-        queryChainId: queryChainIdForAnalytics,
-        queryDepth: queryTracking.depth,
-      })
-    }
-
-    const toolUpdates = streamingToolExecutor
-      ? streamingToolExecutor.getRemainingResults()
-      : runTools(toolUseBlocks, assistantMessages, canUseTool, toolUseContext)
+    const toolUpdates = streamingToolExecutor.getRemainingResults()
 
     for await (let update of toolUpdates) {
       if (update.message) {
@@ -1994,6 +1983,74 @@ async function* queryLoop(
       }
     }
     queryCheckpoint('query_tool_execution_end')
+
+    // PostToolBatch: once per batch, after every tool call resolved and
+    // before the next model request.
+    if (
+      toolUseBlocks.length > 0 &&
+      !toolUseContext.abortController.signal.aborted
+    ) {
+      const toolResponses = new Map<string, unknown>()
+      for (const result of toolResults) {
+        if (result.type !== 'user' || !Array.isArray(result.message.content))
+          continue
+        for (const block of result.message.content) {
+          if (block.type === 'tool_result')
+            toolResponses.set(block.tool_use_id, block.content)
+        }
+      }
+      const batchHookID = `hook-${deps.uuid()}`
+      try {
+        for await (const result of executePostToolBatchHooks(
+          toolUseBlocks.map(block => ({
+            tool_name: block.name,
+            tool_input: block.input,
+            tool_use_id: block.id,
+            tool_response: toolResponses.get(block.id),
+          })),
+          batchHookID,
+          updatedToolUseContext,
+          updatedToolUseContext.getAppState().toolPermissionContext.mode,
+          updatedToolUseContext.abortController.signal,
+        )) {
+          const message = result.message as Message | undefined
+          if (
+            message &&
+            !(
+              message.type === 'attachment' &&
+              message.attachment.type === 'hook_blocking_error'
+            )
+          ) {
+            yield message
+          }
+          if (result.additionalContexts && result.additionalContexts.length > 0) {
+            const contextMessage = createAttachmentMessage({
+              type: 'hook_additional_context',
+              content: result.additionalContexts,
+              hookName: 'PostToolBatch',
+              toolUseID: batchHookID,
+              hookEvent: 'PostToolBatch',
+            })
+            yield contextMessage
+            toolResults.push(
+              ...normalizeMessagesForAPI(
+                [contextMessage],
+                updatedToolUseContext.options.tools,
+              ).filter(_ => _.type === 'user'),
+            )
+          }
+          if (result.blockingError || result.preventContinuation) {
+            postToolBatchStopReason ??=
+              result.blockingError?.blockingError ??
+              result.stopReason ??
+              'Execution stopped by PostToolBatch hook'
+          }
+        }
+      } catch (error) {
+        if (!updatedToolUseContext.abortController.signal.aborted) throw error
+        logForDebugging('PostToolBatch hooks cancelled')
+      }
+    }
 
     // Generate tool use summary after tool batch completes — passed to next recursive call
     let nextPendingToolUseSummary:
@@ -2103,6 +2160,17 @@ async function* queryLoop(
       return { reason: 'aborted_tools' }
     }
 
+    if (postToolBatchStopReason !== undefined) {
+      yield createAttachmentMessage({
+        type: 'hook_stopped_continuation',
+        message: postToolBatchStopReason,
+        hookName: 'PostToolBatch',
+        toolUseID: `hook-${deps.uuid()}`,
+        hookEvent: 'PostToolBatch',
+      })
+      return { reason: 'hook_stopped' }
+    }
+
     // If a hook indicated to prevent continuation, stop here
     if (shouldPreventContinuation) {
       return { reason: 'hook_stopped' }
@@ -2135,9 +2203,9 @@ async function* queryLoop(
     // Get queued commands snapshot before processing attachments.
     // These will be sent as attachments so Claude can respond to them in the current turn.
     //
-    // Drain pending notifications. LocalShellTask completions are 'next'
-    // (when MONITOR_TOOL is on) and drain without Sleep. Other task types
-    // (agent/workflow/framework) still default to 'later' — the Sleep flush
+    // Drain pending notifications. LocalShellTask (when MONITOR_TOOL is on)
+    // and agent completions are 'next' and drain without Sleep. Other task
+    // types (workflow/framework) still default to 'later' — the Sleep flush
     // covers those. If all task types move to 'next', this branch could go.
     //
     // Slash commands are excluded from mid-turn drain — they must go through

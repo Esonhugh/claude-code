@@ -61,14 +61,8 @@ import { isPlanModeAvailable } from './utils/planModeV2.js'
 import { TestingPermissionTool } from './tools/testing/TestingPermissionTool.js'
 import { GrepTool } from './tools/GrepTool/GrepTool.js'
 import { TungstenTool } from './tools/TungstenTool/TungstenTool.js'
-// Lazy require to break circular dependency: tools.ts -> TeamCreateTool/TeamDeleteTool -> ... -> tools.ts
+// Lazy require to break circular dependency: tools.ts -> SendMessageTool -> ... -> tools.ts
 /* eslint-disable @typescript-eslint/no-require-imports */
-const getTeamCreateTool = () =>
-  require('./tools/TeamCreateTool/TeamCreateTool.js')
-    .TeamCreateTool as typeof import('./tools/TeamCreateTool/TeamCreateTool.js').TeamCreateTool
-const getTeamDeleteTool = () =>
-  require('./tools/TeamDeleteTool/TeamDeleteTool.js')
-    .TeamDeleteTool as typeof import('./tools/TeamDeleteTool/TeamDeleteTool.js').TeamDeleteTool
 const getSendMessageTool = () =>
   require('./tools/SendMessageTool/SendMessageTool.js')
     .SendMessageTool as typeof import('./tools/SendMessageTool/SendMessageTool.js').SendMessageTool
@@ -89,6 +83,7 @@ import { TaskGetTool } from './tools/TaskGetTool/TaskGetTool.js'
 import { TaskUpdateTool } from './tools/TaskUpdateTool/TaskUpdateTool.js'
 import { TaskListTool } from './tools/TaskListTool/TaskListTool.js'
 import { GoalTool } from './tools/GoalTool/GoalTool.js'
+import { ReportFindingsTool } from './tools/ReportFindingsTool/ReportFindingsTool.js'
 import { SearchMemoryTool } from './tools/SearchMemoryTool/SearchMemoryTool.js'
 import uniqBy from 'lodash-es/uniqBy.js'
 import { isToolSearchEnabledOptimistic } from './utils/toolSearch.js'
@@ -144,7 +139,6 @@ import { hasEmbeddedSearchTools } from './utils/embeddedTools.js'
 import { isEnvTruthy } from './utils/envUtils.js'
 import { isWorkflowScriptsFeatureEnabled } from './tools/WorkflowTool/workflowFeatureFlags.js'
 import { isPowerShellToolEnabled } from './utils/shell/shellToolUtils.js'
-import { isAgentSwarmsEnabled } from './utils/agentSwarmsEnabled.js'
 import { isWorktreeModeEnabled } from './utils/worktreeModeEnabled.js'
 import {
   REPL_TOOL_NAME,
@@ -224,6 +218,7 @@ export function getAllBaseTools(
     TaskStopTool,
     AskUserQuestionTool,
     SkillTool,
+    ReportFindingsTool,
     EnterPlanModeTool,
     ...(isAnt() ? [ConfigTool] : []),
     ...(isAnt() ? [TungstenTool] : []),
@@ -239,9 +234,6 @@ export function getAllBaseTools(
     ...(isWorktreeModeEnabled() ? [EnterWorktreeTool, ExitWorktreeTool] : []),
     getSendMessageTool(),
     ...(ListAgentsTool ? [ListAgentsTool] : []),
-    ...(isAgentSwarmsEnabled()
-      ? [getTeamCreateTool(), getTeamDeleteTool()]
-      : []),
     ...(VerifyPlanExecutionTool ? [VerifyPlanExecutionTool] : []),
     ...(isAnt() && REPLTool ? [REPLTool] : []),
     ...getWorkflowTools(),

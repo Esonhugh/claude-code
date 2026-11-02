@@ -284,7 +284,7 @@ const failedNotification = getCommandQueue().find(command =>
 )
 assert.ok(failedNotification)
 assert.match(String(failedNotification.value), /<status>failed<\/status>/)
-assert.match(String(failedNotification.value), /<total_tokens>12<\/total_tokens>/)
+assert.match(String(failedNotification.value), /<subagent_tokens>12<\/subagent_tokens>/)
 assert.match(String(failedNotification.value), /<tool_uses>1<\/tool_uses>/)
 assert.equal(summaryStarts, 4)
 assert.equal(summaryStops, 4)
@@ -296,7 +296,7 @@ const lateUsageRun = await runBackgroundContinuation('late-usage-failed')
 const lateUsageNotifications = notificationFor(lateUsageRun.taskId)
 assert.equal(lateUsageNotifications.length, 1)
 assert.match(String(lateUsageNotifications[0]?.value), /<status>failed<\/status>/)
-assert.match(String(lateUsageNotifications[0]?.value), /<total_tokens>50<\/total_tokens>/)
+assert.match(String(lateUsageNotifications[0]?.value), /<subagent_tokens>50<\/subagent_tokens>/)
 
 // A throw after the task is already completed must not report it as failed.
 const parkThrowRun = await runBackgroundContinuation('park-throws')

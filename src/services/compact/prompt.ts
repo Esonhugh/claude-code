@@ -292,6 +292,17 @@ export function getPartialCompactPrompt(
   return prompt
 }
 
+/** Appended to the compact prompt when the first reply had no <summary> block. */
+export const SUMMARY_BLOCK_NUDGE =
+  '\n\nFor this reply only: write what the instructions above ask for, with the summary inside <summary></summary> tags. Every message before those instructions, the newest one included, is conversation to summarize: do not answer it, and do not do the work that it asks for. What it says on how to summarize still holds. This paragraph is about how to write this summary. The user did not write it.'
+
+/** A closed <summary> block, or an opening <summary> line of a cut-off reply. */
+export function hasSummaryBlock(reply: string): boolean {
+  const withoutAnalysis = reply.replace(/<analysis>[\s\S]*?<\/analysis>/, '')
+  return /<summary>([\s\S]*?)<\/summary>/.test(withoutAnalysis) ||
+    /^[ \t]*<summary>/m.test(withoutAnalysis)
+}
+
 export function getCompactPrompt(customInstructions?: string): string {
   let prompt = NO_TOOLS_PREAMBLE + BASE_COMPACT_PROMPT
 

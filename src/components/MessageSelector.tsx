@@ -539,7 +539,7 @@ export function MessageSelector({
               </Text>
             ) : (
               <Text>
-                Restore and fork the conversation to the point before…
+                Restore the conversation to the point before…
               </Text>
             )}
             <Box width="100%" flexDirection="column">
@@ -623,7 +623,7 @@ export function MessageSelector({
             ) : (
               <>
                 {!error && hasMessagesToSelect && 'Enter to continue · '}Esc to
-                exit
+                cancel
               </>
             )}
           </Text>

@@ -13,7 +13,7 @@ describe('calculateUSDCost', () => {
     ['claude-fable-5-1', 10, 50, 12.5, 0.25],
     ['claude-mythos-5-1', 10, 50, 12.5, 0.25],
     ['claude-opus-5-5', 4, 20, 5, 0.2],
-    ['claude-sonnet-5-5', 2, 10, 2.5, 0.2],
+    ['claude-sonnet-5-5', 2, 10, 2.5, 0.1],
     ['claude-fable-5', 10, 50, 12.5, 1],
     ['claude-mythos-5', 10, 50, 12.5, 1],
     ['claude-opus-5', 5, 25, 6.25, 0.5],
@@ -50,6 +50,8 @@ describe('calculateUSDCost', () => {
     ['claude-opus-5-5', 8, 40, 10, 0.4],
     ['claude-opus-5', 10, 50, 12.5, 1],
     ['claude-opus-4-8', 10, 50, 12.5, 1],
+    ['claude-opus-4-7', 30, 150, 37.5, 3],
+    ['claude-opus-4-6', 30, 150, 37.5, 3],
   ] as const)(
     '%s uses its fast-mode premium when the response reports fast speed',
     (model, input, output, cacheWrite, cacheRead) => {
@@ -68,6 +70,31 @@ describe('calculateUSDCost', () => {
       })
     },
   )
+
+  // Official 2.1.311 bills 1h cache writes at 2x the base input rate.
+  test('bills 1h cache writes at the 1h rate and the rest at the 5m rate', () => {
+    const usage = {
+      input_tokens: 0,
+      output_tokens: 0,
+      cache_read_input_tokens: 0,
+      cache_creation_input_tokens: 3_000_000,
+      cache_creation: {
+        ephemeral_1h_input_tokens: 1_000_000,
+        ephemeral_5m_input_tokens: 2_000_000,
+      },
+    } as Usage
+    expect(calculateUSDCost(MODEL, usage)).toBeCloseTo(6 + 2 * 3.75)
+  })
+
+  test('applies the 1.1x US inference geo multiplier to token costs only', () => {
+    const usage = {
+      input_tokens: 1_000_000,
+      output_tokens: 0,
+      server_tool_use: { web_search_requests: 10 },
+      inference_geo: 'us',
+    } as unknown as Usage
+    expect(calculateUSDCost(MODEL, usage)).toBeCloseTo(3 * 1.1 + 0.1)
+  })
 
   test('client context markers do not turn a known OpenAI price into an estimate', () => {
     expect(getModelPricingString('gpt-5.6-sol[1m]')).toBe('$4/$20 per Mtok')

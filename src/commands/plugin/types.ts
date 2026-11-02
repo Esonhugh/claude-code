@@ -1,8 +1,9 @@
 import type { MCPServerConnection } from '../../services/mcp/types.js'
 import type { Tool } from '../../Tool.js'
+import type { LocalJSXCommandOnDone } from '../../types/command.js'
 
 export interface PluginSettingsProps {
-  onComplete: (result?: string) => void
+  onComplete: LocalJSXCommandOnDone
   args?: string
   showMcpRedirectMessage?: boolean
 }

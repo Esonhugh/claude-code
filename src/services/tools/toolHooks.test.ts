@@ -5,13 +5,14 @@ import { join } from 'node:path'
 import type { Tool, ToolUseContext } from '../../Tool.js'
 import { z } from 'zod/v4'
 import { runToolUse } from './toolExecution.js'
-import { createAssistantMessage } from '../../utils/messages.js'
+import { CANCEL_MESSAGE, createAssistantMessage } from '../../utils/messages.js'
 import { getEmptyToolPermissionContext } from '../../Tool.js'
 import {
   clearRegisteredHooks,
   registerHookCallbacks,
   setIsInteractive,
   getIsInteractive,
+  setPromptId,
 } from '../../bootstrap/state.js'
 import { resetHooksConfigSnapshot } from '../../utils/hooks/hooksConfigSnapshot.js'
 import {
@@ -704,7 +705,9 @@ describe('classic events at existing tool hook boundaries', () => {
     })
   })
 
-  test('raw PreToolUse stop survives a module replacing the folded deny', async () => {
+  // Like 2.1.311 a stop does not refuse the call; it survives the module's
+  // decision and ends the turn after the tool runs.
+  test('raw PreToolUse stop survives a module allowing the call', async () => {
     registerHookCallbacks({
       PreToolUse: [
         {
@@ -733,8 +736,8 @@ describe('classic events at existing tool hook boundaries', () => {
     ])
     expect(
       results.find(r => r.type === 'hookPermissionResult')
-        ?.hookPermissionResult,
-    ).toMatchObject({ behavior: 'deny', message: 'stop host' })
+        ?.hookPermissionResult.behavior,
+    ).toBe('allow')
   })
 
   test('unawaited next settles before the final decision and does not duplicate contexts', async () => {
@@ -779,7 +782,7 @@ describe('classic events at existing tool hook boundaries', () => {
     expect(
       results.find(r => r.type === 'hookPermissionResult')?.hookPermissionResult
         .behavior,
-    ).toBe('deny')
+    ).toBe('allow')
     expect(contexts(results)).toEqual([])
     expect(f.releases()).toBe(1)
   })
@@ -1069,7 +1072,7 @@ describe('classic events at existing tool hook boundaries', () => {
     expect(calls).toBe(0)
     expect(f.releases()).toBe(1)
     expect(JSON.stringify(updates)).not.toContain('must not deliver')
-    expect(JSON.stringify(updates)).toContain('fixture cancelled')
+    expect(JSON.stringify(updates)).toContain(CANCEL_MESSAGE)
   })
 
   test('managed post reviews additive synthetic context and retains stop/block after short circuit', async () => {
@@ -1340,6 +1343,41 @@ describe('classic events at existing tool hook boundaries', () => {
     await Array.fromAsync(pre(f))
     expect(executed).toBe(1)
     expect(f.captures()).toBe(0)
+  })
+
+  // Like 2.1.311 a PreToolUse deny reaches the model only as the tool result,
+  // not also as a "hook blocking error" reminder.
+  test('a command hook deny yields no separate blocking error message', async () => {
+    configure({}, { hooks: { PreToolUse: [{ hooks: [{
+      type: 'command',
+      command: `printf '%s' '${JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: 'no deny' } })}'`,
+    }] }] } })
+    const results = await Array.fromAsync(pre(fixture()))
+    expect(
+      results.find(r => r.type === 'hookPermissionResult')?.hookPermissionResult,
+    ).toMatchObject({ behavior: 'deny', message: 'PreToolUse:ClassicFixture hook error: no deny' })
+    expect(JSON.stringify(results)).not.toContain('hook_blocking_error')
+  })
+
+  // Like 2.1.311 a PreToolUse continue:false lets the call run, then ends
+  // the turn (user decision 2026-11-01).
+  test('a PreToolUse continue:false runs the call and then stops the turn', async () => {
+    registerHookCallbacks({
+      PreToolUse: [{ hooks: [{ type: 'callback', callback: async () => ({ continue: false, stopReason: 'stop here' }) }] }],
+    })
+    const f = fixture(async (e, next) => next(e))
+    let calls = 0
+    Object.assign(f.tool, {
+      call: async () => { calls++; return { data: 'ran' } },
+      mapToolResultToToolResultBlockParam: (data: string, id: string) => ({ type: 'tool_result', tool_use_id: id, content: data }),
+      checkPermissions: async () => ({ behavior: 'allow' }),
+    })
+    Object.assign(f.context, { setAppState: () => {}, setInProgressToolUseIDs: () => {} })
+    const block = { type: 'tool_use' as const, caller: { type: 'direct' as const }, id: 'stop-id', name: f.tool.name, input: { value: 'x' } }
+    const updates = await Array.fromAsync(runToolUse(block, createAssistantMessage({ content: [block] }), async () => ({ behavior: 'allow' }), f.context))
+    const stopped = updates.find(u => u.message?.type === 'attachment' && u.message.attachment.type === 'hook_stopped_continuation')
+    expect(stopped?.message).toMatchObject({ attachment: { message: 'stop here', hookEvent: 'PreToolUse' } })
+    expect(calls).toBe(1)
   })
 })
 
@@ -1662,4 +1700,44 @@ test('tool.check hasHooks honours the registration tool filter', async () => {
   } finally {
     await runtime.dispose()
   }
+})
+
+describe('hook input fields (official 2.1.311 BaseHookInput)', () => {
+  test('PostToolUse and PostToolUseFailure carry prompt_id and duration_ms', async () => {
+    const seen: Record<string, unknown>[] = []
+    const capture = { hooks: [{ type: 'callback' as const, callback: async (input: unknown) => {
+      seen.push(input as Record<string, unknown>)
+      return {}
+    } }] }
+    registerHookCallbacks({ PostToolUse: [capture], PostToolUseFailure: [capture] })
+    setPromptId('prompt-1')
+    try {
+      const f = fixture()
+      await Array.fromAsync(runPostToolUseHooks(
+        f.context, f.tool, 'id', 'message', {}, { value: 'ok' },
+        undefined, undefined, undefined, 'all', 42,
+      ))
+      await Array.fromAsync(runPostToolUseFailureHooks(
+        f.context, f.tool, 'id', 'message', {}, 'boom', false,
+        undefined, undefined, undefined, 'all', 7,
+      ))
+    } finally {
+      setPromptId(null)
+    }
+    expect(seen.map(i => [i.hook_event_name, i.prompt_id, i.duration_ms])).toEqual([
+      ['PostToolUse', 'prompt-1', 42],
+      ['PostToolUseFailure', 'prompt-1', 7],
+    ])
+  })
+})
+
+test('TeammateIdle carries the teammate agent_id and agent_type', async () => {
+  const { executeTeammateIdleHooks } = await import('../../utils/hooks.js')
+  const seen: Record<string, unknown>[] = []
+  registerHookCallbacks({ TeammateIdle: [{ hooks: [{ type: 'callback', callback: async (input: unknown) => {
+    seen.push(input as Record<string, unknown>)
+    return {}
+  } }] }] })
+  await Array.fromAsync(executeTeammateIdleHooks('mate1', 'session-1', 'default', undefined, undefined, { agentId: 'amate1-1', agentType: 'mate1' }))
+  expect(seen.map(i => [i.teammate_name, i.agent_id, i.agent_type])).toEqual([['mate1', 'amate1-1', 'mate1']])
 })

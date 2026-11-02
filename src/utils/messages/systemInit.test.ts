@@ -25,23 +25,35 @@ const baseInputs = {
   fastMode: undefined,
 }
 
-test('omits hidden and non-invocable commands from system init discovery', () => {
+test('lists hidden commands but omits non-invocable ones like official', () => {
   const message = buildSystemInitMessage({
     ...baseInputs,
     commands: [
       { name: 'default-visible' },
       { name: 'visible', userInvocable: true },
-      { name: 'hidden', isHidden: true },
       { name: 'internal', userInvocable: false },
-      { name: 'hidden-internal', userInvocable: false, isHidden: true },
+      { name: 'doctor', terminalOriented: true },
     ],
+    capabilities: ['interrupt_receipt_v1'],
   })
 
   expect(message).toMatchObject({
     type: 'system',
     subtype: 'init',
-    slash_commands: ['default-visible', 'visible'],
+    slash_commands: ['default-visible', 'visible', 'doctor'],
+    terminal_slash_commands: ['doctor'],
+    capabilities: ['interrupt_receipt_v1'],
   })
+})
+
+test('omits terminal_slash_commands and capabilities when empty', () => {
+  const message = buildSystemInitMessage({
+    ...baseInputs,
+    commands: [{ name: 'visible' }],
+  }) as SDKSystemMessage
+
+  expect(message.terminal_slash_commands).toBeUndefined()
+  expect(message.capabilities).toBeUndefined()
 })
 
 test('reports original_cwd and the auto-memory path like official', () => {
@@ -52,4 +64,13 @@ test('reports original_cwd and the auto-memory path like official', () => {
   else process.env.CLAUDE_CODE_DISABLE_AUTO_MEMORY = previous
   expect(message.original_cwd).toBe(process.cwd())
   expect(message.memory_paths?.auto).toEndWith('/memory/')
+})
+
+test('lists agents in name order like official', () => {
+  const message = buildSystemInitMessage({
+    ...baseInputs,
+    commands: [],
+    agents: [{ agentType: 'general-purpose' }, { agentType: 'statusline-setup' }, { agentType: 'Explore' }, { agentType: 'Plan' }],
+  }) as SDKSystemMessage
+  expect(message.agents).toEqual(['Explore', 'general-purpose', 'Plan', 'statusline-setup'])
 })

@@ -100,6 +100,7 @@ Examples:
 export function registerBatchSkill(): void {
   registerBundledSkill({
     name: 'batch',
+    menuDescription: 'Plan a large change; background agents each open a PR',
     description:
       'Research and plan a large-scale change, then execute it in parallel across 5–30 isolated worktree agents that each open a PR.',
     whenToUse:

@@ -30,7 +30,7 @@ test('formatUsageLoadError includes axios network message without response', () 
 test('formatOpenAIAccountLine includes name and email when both are present', () => {
   assert.equal(
     formatOpenAIAccountLine({ name: 'Alice', email: 'alice@example.com' }),
-    'Openai Account Name: Alice (alice@example.com)',
+    'OpenAI Account: Alice (alice@example.com)',
   )
 })
 

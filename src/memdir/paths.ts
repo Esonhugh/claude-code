@@ -4,6 +4,7 @@ import { isAbsolute, join, normalize, sep } from 'path'
 import {
   getIsNonInteractiveSession,
   getProjectRoot,
+  isRestrictedSession,
 } from '../bootstrap/state.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../services/analytics/growthbook.js'
 import {
@@ -29,8 +30,8 @@ import {
  *   5. Default: enabled
  */
 export function isAutoMemoryEnabled(): boolean {
-  // Safe mode wins over every opt-in, like official.
-  if (isSafeMode()) {
+  // Safe mode and --restricted win over every opt-in, like official.
+  if (isSafeMode() || isRestrictedSession()) {
     return false
   }
   const envVal = process.env.CLAUDE_CODE_DISABLE_AUTO_MEMORY

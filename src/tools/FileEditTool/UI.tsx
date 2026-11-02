@@ -17,7 +17,7 @@ import { logError } from '../../utils/log.js'
 import { getPlansDirectory } from '../../utils/plans.js'
 import { readEditContext } from '../../utils/readEditContext.js'
 import { firstLineOf } from '../../utils/stringUtils.js'
-import type { ThemeName } from '../../utils/theme.js'
+import type { ResolvedTheme } from '../../utils/theme.js'
 import type { FileEditOutput } from './types.js'
 import {
   findActualString,
@@ -120,7 +120,7 @@ export function renderToolUseRejectedMessage(
     messages: Message[]
     progressMessagesForMessage: ProgressMessage[]
     style?: 'condensed'
-    theme: ThemeName
+    theme: ResolvedTheme
     tools: Tools
     verbose: boolean
   },

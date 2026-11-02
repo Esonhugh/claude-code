@@ -228,7 +228,10 @@ export function getAssistantMessageContentLength(
  * bearing record we walk back to the FIRST sibling with the same message.id
  * so every interleaved tool_result is included in the rough estimate.
  */
-export function tokenCountWithEstimation(messages: readonly Message[]): number {
+export function tokenCountWithEstimation(
+  messages: readonly Message[],
+  bytesPerToken = 4,
+): number {
   let i = messages.length - 1
   while (i >= 0) {
     const message = messages[i]
@@ -258,11 +261,11 @@ export function tokenCountWithEstimation(messages: readonly Message[]): number {
       return (
         getTokenCountFromUsage(usage) +
         // @ts-ignore - recovered code
-        roughTokenCountEstimationForMessages(messages.slice(i + 1))
+        roughTokenCountEstimationForMessages(messages.slice(i + 1), bytesPerToken)
       )
     }
     i--
   }
   // @ts-ignore - recovered code
-  return roughTokenCountEstimationForMessages(messages)
+  return roughTokenCountEstimationForMessages(messages, bytesPerToken)
 }

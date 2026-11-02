@@ -823,7 +823,7 @@ export function PluginSettings({
   // the close AND delivers the message to the transcript.
   useEffect(() => {
     if (viewState.type === 'menu' && !result) {
-      onComplete()
+      onComplete(undefined, { display: 'skip' })
     }
   }, [viewState.type, result, onComplete])
 
@@ -1041,7 +1041,7 @@ export function PluginSettings({
         ...(showCodexApps
           ? [<Tab key="codex-apps" id="codex-apps" title="Codex Apps">
             <ManageCodexApps
-              onBack={() => onComplete()}
+              onBack={() => onComplete(undefined, { display: 'skip' })}
               onSearchModeChange={setChildSearchActive}
             />
           </Tab>]

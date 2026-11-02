@@ -17,7 +17,7 @@ import { isAnt } from 'src/utils/userType.js'
 // live check prevents transitionPermissionMode from throwing
 // (permissionSetup.ts:~559), which would silently crash the shift+tab handler
 // and leave the user stuck at the current mode.
-function canCycleToAuto(ctx: ToolPermissionContext): boolean {
+export function canCycleToAuto(ctx: ToolPermissionContext): boolean {
   if (feature('TRANSCRIPT_CLASSIFIER')) {
     const gateEnabled = isAutoModeGateEnabled()
     const can = !!ctx.isAutoModeAvailable && gateEnabled

@@ -1,4 +1,4 @@
-import axios, { type AxiosProxyConfig } from 'axios'
+import axios from 'axios'
 import { openBrowser } from '../../utils/browser.js'
 import { createOpenAIPKCE } from './pkce.js'
 import { OpenAIAuthCodeListener } from './auth-code-listener.js'
@@ -17,21 +17,6 @@ export const OPENAI_OAUTH_ORIGINATOR = 'codex_cli_rs'
 export const OPENAI_CODEX_CLIENT_VERSION = '0.164.0'
 
 export { createOpenAIPKCE }
-
-export function getOpenAIProxyConfig(): AxiosProxyConfig | undefined {
-  const proxyUrl = process.env.https_proxy
-    ?? process.env.HTTPS_PROXY
-    ?? process.env.http_proxy
-    ?? process.env.HTTP_PROXY
-  if (!proxyUrl) return undefined
-
-  const parsed = new URL(proxyUrl)
-  return {
-    protocol: parsed.protocol.replace(/:$/, ''),
-    host: parsed.hostname,
-    port: parsed.port ? Number(parsed.port) : undefined,
-  }
-}
 
 export function buildOpenAIAuthUrl({
   codeChallenge,
@@ -80,7 +65,6 @@ export async function exchangeOpenAICodeForTokens({
   })
   const response = await axios.post(OPENAI_OAUTH_TOKEN_URL, body, {
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    proxy: getOpenAIProxyConfig(),
     timeout: 15000,
   }).catch(error => {
     const response = error?.response

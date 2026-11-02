@@ -1,4 +1,5 @@
 import { describe, expect, mock, spyOn, test } from 'bun:test'
+import figures from 'figures'
 import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -119,7 +120,7 @@ async function runChild(): Promise<void> {
 
   test('only approved, enabled servers are health-checked', () => {
     expect(connected).toEqual(['approved'])
-    expect(output).toContain('approved: echo approved - ✓ Connected')
+    expect(output).toContain(`approved: echo approved - ${figures.tick} Connected`)
   })
 
   test('pending servers are listed as pending approval', () => {

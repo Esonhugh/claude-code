@@ -4,8 +4,19 @@ import { CACHE_PATHS } from './cachePaths.js'
 
 const BINARY_NAME = process.platform === 'win32' ? 'rg.exe' : 'rg'
 
+/**
+ * The embedded binary named by `envName`, when this process can read it. The
+ * compiled entrypoint sets these vars and child processes inherit them, so a
+ * nested CLI that is not the same compiled binary sees a /$bunfs path it
+ * cannot open.
+ */
+export function readableEmbeddedSource(envName: string): string | undefined {
+  const sourcePath = process.env[envName]
+  return sourcePath && fs.existsSync(sourcePath) ? sourcePath : undefined
+}
+
 export function getEmbeddedRipgrepPath(): string | undefined {
-  const sourcePath = process.env.CLAUDE_CODE_EMBEDDED_RIPGREP_PATH
+  const sourcePath = readableEmbeddedSource('CLAUDE_CODE_EMBEDDED_RIPGREP_PATH')
   const version = process.env.CLAUDE_CODE_EMBEDDED_RIPGREP_VERSION
   if (!sourcePath || !version) return undefined
 

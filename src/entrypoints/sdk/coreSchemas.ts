@@ -22,6 +22,8 @@ export const ModelUsageSchema = lazySchema(() =>
     thinkingTokens: z.number().int().optional(),
     cacheReadInputTokens: z.number().int(),
     cacheCreationInputTokens: z.number().int(),
+    cacheCreationEphemeral5mInputTokens: z.number().int().optional(),
+    cacheCreationEphemeral1hInputTokens: z.number().int().optional(),
     webSearchRequests: z.number().int(),
     costUSD: z.number(),
     contextWindow: z.number().int(),
@@ -212,6 +214,12 @@ export const McpServerStatusSchema = lazySchema(() =>
         .string()
         .optional()
         .describe('Definition origin: SDK host, plugin, or configuration scope. Use the origin rather than the configured name.'),
+      transport: z
+        .string()
+        .optional()
+        .describe(
+          "@internal The server's transport as configured (stdio, sse, http, ws, sdk, claudeai-proxy …), reported even where `config` is withheld. Absent on CLIs that predate the field.",
+        ),
       tools: z
         .array(
           z.object({
@@ -378,8 +386,10 @@ export const HOOK_EVENTS = [
   'PreToolUse',
   'PostToolUse',
   'PostToolUseFailure',
+  'PostToolBatch',
   'Notification',
   'UserPromptSubmit',
+  'UserPromptExpansion',
   'SessionStart',
   'SessionEnd',
   'Stop',
@@ -415,6 +425,13 @@ export const BaseHookInputSchema = lazySchema(() =>
     session_id: z.string(),
     transcript_path: z.string(),
     cwd: z.string(),
+    prompt_id: z
+      .string()
+      .optional()
+      .describe(
+        'UUID correlating a user prompt with all subsequent events until the next prompt. ' +
+          'Same value as the OpenTelemetry `prompt.id` attribute. Absent until the first user input.',
+      ),
     permission_mode: z.string().optional(),
     agent_id: z
       .string()
@@ -473,6 +490,10 @@ export const PostToolUseHookInputSchema = lazySchema(() =>
       tool_input: z.unknown(),
       tool_response: z.unknown(),
       tool_use_id: z.string(),
+      duration_ms: z
+        .number()
+        .optional()
+        .describe('Tool execution time in milliseconds. Excludes permission-prompt and hook time.'),
     }),
   ),
 )
@@ -486,8 +507,34 @@ export const PostToolUseFailureHookInputSchema = lazySchema(() =>
       tool_use_id: z.string(),
       error: z.string(),
       is_interrupt: z.boolean().optional(),
+      duration_ms: z
+        .number()
+        .optional()
+        .describe('Tool execution time in milliseconds. Excludes permission-prompt and hook time.'),
     }),
   ),
+)
+
+export const PostToolBatchToolCallSchema = lazySchema(() =>
+  z.object({
+    tool_name: z.string(),
+    tool_input: z.unknown(),
+    tool_use_id: z.string(),
+    tool_response: z.unknown().optional(),
+  }),
+)
+
+export const PostToolBatchHookInputSchema = lazySchema(() =>
+  BaseHookInputSchema()
+    .and(
+      z.object({
+        hook_event_name: z.literal('PostToolBatch'),
+        tool_calls: z.array(PostToolBatchToolCallSchema()),
+      }),
+    )
+    .describe(
+      'Hook input for the PostToolBatch event. Fired once after every tool call in a batch has resolved, before the next model request.',
+    ),
 )
 
 export const PermissionDeniedHookInputSchema = lazySchema(() =>
@@ -518,6 +565,20 @@ export const UserPromptSubmitHookInputSchema = lazySchema(() =>
     z.object({
       hook_event_name: z.literal('UserPromptSubmit'),
       prompt: z.string(),
+      session_title: z.string().optional(),
+    }),
+  ),
+)
+
+export const UserPromptExpansionHookInputSchema = lazySchema(() =>
+  BaseHookInputSchema().and(
+    z.object({
+      hook_event_name: z.literal('UserPromptExpansion'),
+      expansion_type: z.enum(['slash_command', 'mcp_prompt']),
+      command_name: z.string(),
+      command_args: z.string(),
+      command_source: z.string().optional(),
+      prompt: z.string(),
     }),
   ),
 )
@@ -529,6 +590,10 @@ export const SessionStartHookInputSchema = lazySchema(() =>
       source: z.enum(['startup', 'resume', 'clear', 'compact']),
       agent_type: z.string().optional(),
       model: z.string().optional(),
+      seconds_since_last_response: z.number().optional(),
+      context_tokens: z.number().optional(),
+      prompt_cache_likely_expired: z.boolean().optional(),
+      estimated_cache_write_usd: z.number().optional(),
     }),
   ),
 )
@@ -542,6 +607,52 @@ export const SetupHookInputSchema = lazySchema(() =>
   ),
 )
 
+const StopHookBackgroundTaskSchema = lazySchema(() =>
+  z.object({
+    id: z.string(),
+    type: z
+      .string()
+      .describe(
+        "Friendly task-type label (e.g. 'shell', 'subagent', 'monitor', 'workflow'). " +
+          'Falls back to the raw discriminant for unknown types.',
+      ),
+    status: z.string(),
+    description: z
+      .string()
+      .describe(
+        'Free-text description. Capped at 1000 chars; clipped values append an in-string "\u2026 [+N chars]" marker.',
+      ),
+    command: z
+      .string()
+      .optional()
+      .describe("Shell command line. Only present for 'shell' tasks."),
+    agent_type: z
+      .string()
+      .optional()
+      .describe("Subagent type name. Only present for 'subagent' tasks."),
+    name: z
+      .string()
+      .optional()
+      .describe("Workflow name. Only present for 'workflow' tasks."),
+  }),
+)
+
+const StopHookSessionCronSchema = lazySchema(() =>
+  z.object({
+    id: z.string(),
+    schedule: z.string().describe('Cron expression, e.g. "0 9 * * 1-5".'),
+    recurring: z
+      .boolean()
+      .describe(
+        'False for one-shot wakeups whose cron field encodes a single fire time; ' +
+          'true for tasks that re-fire on every match.',
+      ),
+    prompt: z
+      .string()
+      .describe('Prompt text submitted when the cron fires. Capped at 1000 chars.'),
+  }),
+)
+
 export const StopHookInputSchema = lazySchema(() =>
   BaseHookInputSchema().and(
     z.object({
@@ -553,6 +664,21 @@ export const StopHookInputSchema = lazySchema(() =>
         .describe(
           'Text content of the last assistant message before stopping. ' +
             'Avoids the need to read and parse the transcript file.',
+        ),
+      background_tasks: z
+        .array(StopHookBackgroundTaskSchema())
+        .optional()
+        .describe(
+          'In-flight background work (running/pending + backgrounded) registered in this session. ' +
+            'Lets hooks distinguish "session is done" from "session is paused waiting for background work to wake it". ' +
+            'Empty array when nothing is in flight.',
+        ),
+      session_crons: z
+        .array(StopHookSessionCronSchema())
+        .optional()
+        .describe(
+          'Session-scoped cron tasks (CronCreate, ScheduleWakeup, /loop) that will wake this session later. ' +
+            'Empty array when none are scheduled.',
         ),
     }),
   ),
@@ -593,6 +719,21 @@ export const SubagentStopHookInputSchema = lazySchema(() =>
         .describe(
           'Text content of the last assistant message before stopping. ' +
             'Avoids the need to read and parse the transcript file.',
+        ),
+      background_tasks: z
+        .array(StopHookBackgroundTaskSchema())
+        .optional()
+        .describe(
+          'In-flight background work (running/pending + backgrounded) registered in this session. ' +
+            'Lets hooks distinguish "session is done" from "session is paused waiting for background work to wake it". ' +
+            'Empty array when nothing is in flight.',
+        ),
+      session_crons: z
+        .array(StopHookSessionCronSchema())
+        .optional()
+        .describe(
+          'Session-scoped cron tasks (CronCreate, ScheduleWakeup, /loop) that will wake this session later. ' +
+            'Empty array when none are scheduled.',
         ),
     }),
   ),
@@ -898,9 +1039,11 @@ export const HookInputSchema = lazySchema(() =>
     PreToolUseHookInputSchema(),
     PostToolUseHookInputSchema(),
     PostToolUseFailureHookInputSchema(),
+    PostToolBatchHookInputSchema(),
     PermissionDeniedHookInputSchema(),
     NotificationHookInputSchema(),
     UserPromptSubmitHookInputSchema(),
+    UserPromptExpansionHookInputSchema(),
     SessionStartHookInputSchema(),
     SessionEndHookInputSchema(),
     StopHookInputSchema(),
@@ -953,6 +1096,17 @@ export const UserPromptSubmitHookSpecificOutputSchema = lazySchema(() =>
   }),
 )
 
+export const UserPromptExpansionHookSpecificOutputSchema = lazySchema(() =>
+  z.object({
+    hookEventName: z.literal('UserPromptExpansion'),
+    additionalContext: z.string().optional(),
+    suppressOriginalPrompt: z
+      .boolean()
+      .optional()
+      .describe('When decision is "block", omit the original prompt from the block message'),
+  }),
+)
+
 export const SessionStartHookSpecificOutputSchema = lazySchema(() =>
   z.object({
     hookEventName: z.literal('SessionStart'),
@@ -989,6 +1143,13 @@ export const PostToolUseHookSpecificOutputSchema = lazySchema(() =>
     additionalContext: z.string().optional(),
     updatedToolOutput: z.unknown().optional(),
     updatedMCPToolOutput: z.unknown().optional(),
+  }),
+)
+
+export const PostToolBatchHookSpecificOutputSchema = lazySchema(() =>
+  z.object({
+    hookEventName: z.literal('PostToolBatch'),
+    additionalContext: z.string().optional(),
   }),
 )
 
@@ -1104,11 +1265,13 @@ export const SyncHookJSONOutputSchema = lazySchema(() =>
       .union([
         PreToolUseHookSpecificOutputSchema(),
         UserPromptSubmitHookSpecificOutputSchema(),
+        UserPromptExpansionHookSpecificOutputSchema(),
         SessionStartHookSpecificOutputSchema(),
         SetupHookSpecificOutputSchema(),
         SubagentStartHookSpecificOutputSchema(),
         PostToolUseHookSpecificOutputSchema(),
         PostToolUseFailureHookSpecificOutputSchema(),
+        PostToolBatchHookSpecificOutputSchema(),
         StopHookSpecificOutputSchema(),
         SubagentStopHookSpecificOutputSchema(),
         PermissionDeniedHookSpecificOutputSchema(),
@@ -1214,6 +1377,18 @@ export const SlashCommandSchema = lazySchema(() =>
       argumentHint: z
         .string()
         .describe('Hint for skill arguments (e.g., "<file>")'),
+      aliases: z
+        .array(z.string())
+        .optional()
+        .describe(
+          'Alternate names that resolve to this command (e.g., /cost and /stats both resolve to /usage)',
+        ),
+      builtin: z
+        .boolean()
+        .optional()
+        .describe(
+          "True when the command is Claude Code's own; absent for a command defined by a user, project, plugin or MCP server.",
+        ),
     })
     .describe(
       'Information about an available skill (invoked via /command syntax).',
@@ -1229,7 +1404,7 @@ export const AgentInfoSchema = lazySchema(() =>
         .string()
         .optional()
         .describe(
-          "Model alias this agent uses. If omitted, inherits the parent's model",
+          "Model this agent uses: an alias or model ID, or 'inherit' for the parent's model. If omitted, uses the default subagent model when one is configured, else the parent's model",
         ),
     })
     .describe(
@@ -1282,6 +1457,10 @@ export const ModelInfoSchema = lazySchema(() =>
         .boolean()
         .optional()
         .describe('Whether this model supports auto mode'),
+      supportsThinkingOff: z
+        .boolean()
+        .optional()
+        .describe('Whether thinking can be turned off for this model'),
     })
     .describe('Information about an available model.'),
 )
@@ -1443,6 +1622,9 @@ export const RewindFilesResultSchema = lazySchema(() =>
       filesChanged: z.array(z.string()).optional(),
       insertions: z.number().optional(),
       deletions: z.number().optional(),
+      skippedLinks: z.number().optional().describe(
+        'Count of tracked files NOT restored or deleted because a symlink, hard link, or other non-regular file was detected at the tracked path, its parent directory no longer resolves to where it pointed when the checkpoint was taken, or its backup could not be safely read. Only populated by a real (non-dryRun) rewind — on a dryRun response the field is never set and the preview counts do not reflect link-safety refusals. Absent or 0 on a real rewind means no link-safety refusals occurred; other per-file failures (for example a missing backup file) are not counted here; they are reported in telemetry, and when every differing file fails to restore the rewind itself fails (canRewind: false).',
+      ),
     })
     .describe('Result of a rewindFiles operation.'),
 )
@@ -1487,7 +1669,7 @@ export const SDKAssistantMessageErrorSchema = lazySchema(() =>
 )
 
 export const SDKStatusSchema = lazySchema(() =>
-  z.union([z.literal('compacting'), z.null()]),
+  z.union([z.literal('compacting'), z.literal('requesting'), z.null()]),
 )
 
 // SDKUserMessage content without uuid/session_id
@@ -1496,8 +1678,48 @@ const SDKUserMessageContentSchema = lazySchema(() =>
     type: z.literal('user'),
     message: APIUserMessagePlaceholder(),
     parent_tool_use_id: z.string().nullable(),
+    agent_id: z
+      .string()
+      .optional()
+      .describe(
+        'ID of the subagent that produced this message: the `task_id` of its task events, unchanged when the subagent is resumed. Absent on main-thread messages.',
+      ),
+    subagent_type: z.string().optional(),
+    task_description: z
+      .string()
+      .optional()
+      .describe('Description of the subagent task that produced this message.'),
     isSynthetic: z.boolean().optional(),
     tool_use_result: z.unknown().optional(),
+    tool_result_meta: z
+      .array(
+        z.object({
+          id: z.string(),
+          non_execution_kind: z
+            .enum([
+              'user-rejected',
+              'permission-rule',
+              'automode-blocked',
+              'automode-unavailable',
+              'automode-parsing-error',
+              'interrupted',
+              'cancelled',
+            ])
+            .optional(),
+          user_feedback: z.string().optional(),
+          permission_decision: z
+            .object({
+              decision: z.enum(['accept', 'reject', 'cancelled']),
+              source: z.string(),
+              reason_type: z.string().optional(),
+            })
+            .optional(),
+        }),
+      )
+      .optional()
+      .describe(
+        '@internal Metadata for this message\'s tool_result blocks, keyed by tool_use_id. non_execution_kind is why an is_error result carries no execution output; permission_decision is how the call\'s permission check ended. Subagent messages carry only permission_decision. Never sent to the model.',
+      ),
     priority: z.enum(['now', 'next', 'later']).optional(),
     timestamp: z
       .string()
@@ -1571,9 +1793,22 @@ export const SDKAssistantMessageSchema = lazySchema(() =>
     type: z.literal('assistant'),
     message: APIAssistantMessagePlaceholder(),
     parent_tool_use_id: z.string().nullable(),
+    agent_id: z
+      .string()
+      .optional()
+      .describe(
+        'ID of the subagent that produced this message: the `task_id` of its task events, unchanged when the subagent is resumed. Absent on main-thread messages.',
+      ),
+    subagent_type: z.string().optional(),
+    task_description: z
+      .string()
+      .optional()
+      .describe('Description of the subagent task that produced this message.'),
+    timestamp: z.string().optional(),
     error: SDKAssistantMessageErrorSchema().optional(),
     uuid: UUIDPlaceholder(),
     session_id: z.string(),
+    request_id: z.string().optional(),
   }),
 )
 
@@ -1626,13 +1861,39 @@ export const SDKPermissionDenialSchema = lazySchema(() =>
   }),
 )
 
+export const TerminalReasonSchema = lazySchema(() =>
+  z.enum([
+    'blocking_limit',
+    'rapid_refill_breaker',
+    'prompt_too_long',
+    'image_error',
+    'model_error',
+    'api_error',
+    'malformed_tool_use_exhausted',
+    'aborted_streaming',
+    'aborted_tools',
+    'stop_hook_prevented',
+    'hook_stopped',
+    'tool_deferred',
+    'max_turns',
+    'background_requested',
+    'completed',
+    'budget_exhausted',
+    'structured_output_retry_exhausted',
+    'tool_deferred_unavailable',
+    'turn_setup_failed',
+  ]),
+)
+
 export const SDKResultSuccessSchema = lazySchema(() =>
   z.object({
     type: z.literal('result'),
     subtype: z.literal('success'),
     duration_ms: z.number(),
     duration_api_ms: z.number(),
+    ttft_ms: z.number().optional(),
     is_error: z.boolean(),
+    api_error_status: z.number().nullable().optional(),
     num_turns: z.number(),
     result: z.string(),
     stop_reason: z.string().nullable(),
@@ -1642,6 +1903,10 @@ export const SDKResultSuccessSchema = lazySchema(() =>
     permission_denials: z.array(SDKPermissionDenialSchema()),
     structured_output: z.unknown().optional(),
     fast_mode_state: FastModeStateSchema().optional(),
+    terminal_reason: TerminalReasonSchema().optional(),
+    result_index: z.number().int().optional(),
+    queued_turn_count: z.number().int().optional(),
+    fast_mode_disabled_reason: FastModeDisabledReasonSchema().optional(),
     uuid: UUIDPlaceholder(),
     session_id: z.string(),
   }),
@@ -1665,8 +1930,13 @@ export const SDKResultErrorSchema = lazySchema(() =>
     usage: NonNullableUsagePlaceholder(),
     modelUsage: z.record(z.string(), ModelUsageSchema()),
     permission_denials: z.array(SDKPermissionDenialSchema()),
+    api_error_status: z.number().nullable().optional(),
     errors: z.array(z.string()),
     fast_mode_state: FastModeStateSchema().optional(),
+    terminal_reason: TerminalReasonSchema().optional(),
+    result_index: z.number().int().optional(),
+    queued_turn_count: z.number().int().optional(),
+    fast_mode_disabled_reason: FastModeDisabledReasonSchema().optional(),
     uuid: UUIDPlaceholder(),
     session_id: z.string(),
   }),
@@ -1690,11 +1960,18 @@ export const SDKSystemMessageSchema = lazySchema(() =>
       z.object({
         name: z.string(),
         status: z.string(),
+        source: z.string().optional(),
       }),
     ),
     model: z.string(),
     permissionMode: PermissionModeSchema(),
     slash_commands: z.array(z.string()),
+    terminal_slash_commands: z
+      .array(z.string())
+      .optional()
+      .describe(
+        'Subset of slash_commands whose UX is bound to the local terminal (e.g. exit, statusline). Phone/remote UIs should hide these from command menus; desktop surfaces may keep them. Present only when non-empty.',
+      ),
     output_style: z.string(),
     skills: z.array(z.string()),
     plugins: z.array(
@@ -1709,7 +1986,14 @@ export const SDKSystemMessageSchema = lazySchema(() =>
           ),
       }),
     ),
+    capabilities: z
+      .array(z.string())
+      .optional()
+      .describe(
+        'Protocol capabilities this CLI supports, so SDK consumers can feature-detect instead of version-sniffing. Open set: ignore unknown values.',
+      ),
     fast_mode_state: FastModeStateSchema().optional(),
+    fast_mode_disabled_reason: FastModeDisabledReasonSchema().optional(),
     memory_paths: z
       .object({ auto: z.string().optional() })
       .optional()
@@ -1718,6 +2002,11 @@ export const SDKSystemMessageSchema = lazySchema(() =>
       .string()
       .optional()
       .describe('@internal Working directory the session started in.'),
+    additional_directories: z.array(z.string()).optional(),
+    per_turn_effort_active: z.boolean().optional(),
+    view_mode: z.enum(['focus', 'default']).optional(),
+    analytics_disabled: z.boolean().optional(),
+    product_feedback_disabled: z.boolean().optional(),
     uuid: UUIDPlaceholder(),
     session_id: z.string(),
   }),
@@ -1741,7 +2030,42 @@ export const SDKPartialAssistantMessageSchema = lazySchema(() =>
     parent_tool_use_id: z.string().nullable(),
     uuid: UUIDPlaceholder(),
     session_id: z.string(),
+    ttft_ms: z.number().optional(),
   }),
+)
+
+export const SDKThinkingTokensMessageSchema = lazySchema(() =>
+  z
+    .object({
+      type: z.literal('system'),
+      subtype: z.literal('thinking_tokens'),
+      estimated_tokens: z.number(),
+      estimated_tokens_delta: z.number(),
+      uuid: UUIDPlaceholder(),
+      session_id: z.string(),
+    })
+    .describe(
+      'Live thinking-token estimate for the current thinking block, from thinking_delta.estimated_tokens.',
+    ),
+)
+
+export const SDKPermissionDeniedMessageSchema = lazySchema(() =>
+  z
+    .object({
+      type: z.literal('system'),
+      subtype: z.literal('permission_denied'),
+      tool_name: z.string(),
+      tool_use_id: z.string(),
+      agent_id: z.string().optional(),
+      decision_reason_type: z.string().optional(),
+      decision_reason: z.string().optional(),
+      message: z.string(),
+      uuid: UUIDPlaceholder(),
+      session_id: z.string(),
+    })
+    .describe(
+      'A tool call was refused before any permission prompt was shown.',
+    ),
 )
 
 export const SDKCompactBoundaryMessageSchema = lazySchema(() =>
@@ -1751,6 +2075,8 @@ export const SDKCompactBoundaryMessageSchema = lazySchema(() =>
     compact_metadata: z.object({
       trigger: z.enum(['manual', 'auto']),
       pre_tokens: z.number(),
+      post_tokens: z.number().optional(),
+      duration_ms: z.number().optional(),
       preserved_segment: z
         .object({
           head_uuid: UUIDPlaceholder(),
@@ -1765,6 +2091,16 @@ export const SDKCompactBoundaryMessageSchema = lazySchema(() =>
             'includes preserved content. Unset when compaction summarizes ' +
             'everything (no messagesToKeep).',
         ),
+      preserved_messages: z
+        .object({
+          anchor_uuid: UUIDPlaceholder(),
+          uuids: z.array(UUIDPlaceholder()),
+        })
+        .optional()
+        .describe(
+          'Ordered messagesToKeep UUIDs. Supersedes preserved_segment: ' +
+            'readers relink uuids[i] to uuids[i-1] (uuids[0] to anchor_uuid).',
+        ),
     }),
     uuid: UUIDPlaceholder(),
     session_id: z.string(),
@@ -1777,6 +2113,8 @@ export const SDKStatusMessageSchema = lazySchema(() =>
     subtype: z.literal('status'),
     status: SDKStatusSchema(),
     permissionMode: PermissionModeSchema().optional(),
+    compact_result: z.enum(['success', 'failed']).optional(),
+    compact_error: z.string().optional(),
     uuid: UUIDPlaceholder(),
     session_id: z.string(),
   }),
@@ -2092,6 +2430,7 @@ export const SDKTaskProgressMessageSchema = lazySchema(() =>
     run_id: z.string().optional().describe('Id of one run of the task; a resumed task keeps its task_id and gets a new run_id.'),
     tool_use_id: z.string().optional(),
     description: z.string(),
+    subagent_type: z.string().optional(),
     usage: z.object({
       total_tokens: z.number(),
       tool_uses: z.number(),
@@ -2214,6 +2553,8 @@ export const SDKMessageSchema = lazySchema(() =>
     SDKUIScrollMessageSchema(),
     SDKUIFocusMessageSchema(),
     SDKPartialAssistantMessageSchema(),
+    SDKThinkingTokensMessageSchema(),
+    SDKPermissionDeniedMessageSchema(),
     SDKCompactBoundaryMessageSchema(),
     SDKStatusMessageSchema(),
     SDKAPIRetryMessageSchema(),
@@ -2245,5 +2586,24 @@ export const FastModeStateSchema = lazySchema(() =>
     .enum(['off', 'cooldown', 'on'])
     .describe(
       'Fast mode state: off, in cooldown after rate limit, or actively enabled.',
+    ),
+)
+
+export const FastModeDisabledReasonSchema = lazySchema(() =>
+  z
+    .enum([
+      'free',
+      'preference',
+      'extra_usage_disabled',
+      'network_error',
+      'unknown',
+      'not_first_party',
+      'disabled_by_env',
+      'model_not_allowed',
+      'sdk_opt_in_required',
+      'pending',
+    ])
+    .describe(
+      "Why fast mode can't serve right now. Absent when nothing blocks it (a request may still choose standard speed). A paused-after-rate-limit run is not here; it rides fast_mode_state as 'cooldown'.",
     ),
 )

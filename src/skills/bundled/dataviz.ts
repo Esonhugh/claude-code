@@ -10,6 +10,7 @@ const DESCRIPTION =
 export function registerDatavizSkill(): void {
   registerBundledSkill({
     name: 'dataviz',
+    menuDescription: 'Chart and dashboard design guidance',
     description: DESCRIPTION,
     userInvocable: true,
     files: SKILL_FILES,

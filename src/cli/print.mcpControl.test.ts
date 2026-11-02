@@ -45,6 +45,7 @@ if (process.env[childFlag] !== '1') {
   const mcpClient = await import('../services/mcp/client.js')
   const mcpConfig = await import('../services/mcp/config.js')
   const { SandboxManager } = await import('../utils/sandbox/sandbox-adapter.js')
+  const { allWorkingDirectories } = await import('../utils/permissions/filesystem.js')
 
   type AppState = ReturnType<typeof getDefaultAppState>
   const tool = (name: string) => ({ name }) as unknown as Tool
@@ -191,6 +192,57 @@ if (process.env[childFlag] !== '1') {
       expect(state.mcp.tools.map(t => t.name)).toEqual([toolName])
     } finally {
       for (const mock of mocks) mock.mockRestore()
+    }
+  })
+  test('mcp_call runs a connected server tool without a model turn', async () => {
+    const config: ScopedMcpServerConfig = { type: 'http', url: 'http://127.0.0.1:9/mcp', scope: 'dynamic' }
+    const calls: unknown[] = []
+    const server = connected('my.server', config) as MCPServerConnection & { client: Record<string, unknown> }
+    server.client.callTool = async (params: unknown) => {
+      calls.push(params)
+      return { content: [{ type: 'text', text: 'pong' }], structuredContent: { ok: true }, _meta: { m: 1 } }
+    }
+    const sdk = connected('sdk', { type: 'sdk', name: 'sdk', scope: 'dynamic' } as ScopedMcpServerConfig)
+    const initial = getDefaultAppState()
+    initial.mcp.clients = [server, sdk]
+    const { responses } = await runControls(initial, [
+      { subtype: 'mcp_call', tool: 'mcp__my_server__ping', arguments: { n: 1 } },
+      { subtype: 'mcp_call', tool: 7 },
+      { subtype: 'mcp_call', tool: 'mcp__my_server' },
+      { subtype: 'mcp_call', tool: 'mcp__absent__ping' },
+      { subtype: 'mcp_call', tool: 'mcp__sdk__ping' },
+    ])
+    expect(calls).toEqual([expect.objectContaining({ name: 'ping', arguments: { n: 1 } })])
+    // Same processing as a model-turn call: structured results become the model-facing content.
+    expect(responses[0]).toMatchObject({
+      subtype: 'success',
+      response: { content: '{"ok":true}', structuredContent: { ok: true }, _meta: { m: 1 } },
+    })
+    expect(responses.slice(1).map(r => r.subtype === 'error' ? r.error : r.subtype)).toEqual([
+      'mcp_call: tool must be a string',
+      'Not a fully-qualified MCP tool name: mcp__my_server',
+      'MCP server not connected: absent',
+      'mcp_call does not support SDK MCP servers. SDK servers are caller-provided — invoke sdk directly.',
+    ])
+  })
+  test('register_repo_root adds a session working directory once', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'cc-repo-root-'))
+    try {
+      const { state, responses } = await runControls(getDefaultAppState(), [
+        { subtype: 'register_repo_root', directory: root },
+        { subtype: 'register_repo_root', directory: root },
+        { subtype: 'register_repo_root', directory: join(root, 'missing') },
+        { subtype: 'register_repo_root' },
+      ])
+      expect(responses[0]).toMatchObject({ subtype: 'success', response: { directory: root } })
+      expect(allWorkingDirectories(state.toolPermissionContext).has(root)).toBe(true)
+      expect(responses.slice(1).map(r => r.subtype === 'error' ? r.error : r.subtype)).toEqual([
+        `register_repo_root: ${root} is already a registered working directory`,
+        expect.stringContaining('register_repo_root: ENOENT'),
+        'register_repo_root: directory must be a non-empty string',
+      ])
+    } finally {
+      rmSync(root, { recursive: true, force: true })
     }
   })
 }

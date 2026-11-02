@@ -25,7 +25,16 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
+      - name: Build bfs and ugrep
+        run: |
+          brew list pkgconf >/dev/null 2>&1 || brew install pkgconf
+          bun ./scripts/build-search-tools.mjs
+          dist/search-tools/*-darwin-arm64/ugrep --version
+          dist/search-tools/*-darwin-arm64/bfs --version
+
       - name: Build binary
+        env:
+          CLAUDE_CODE_REQUIRE_SEARCH_TOOLS: '1'
         run: |
           bun run build
           bun run package:binary

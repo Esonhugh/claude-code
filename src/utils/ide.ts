@@ -878,6 +878,20 @@ export async function isIDEExtensionInstalled(
   return false
 }
 
+// 2.1.311 wording: the exec error (or the exit status), then stderr on its own
+// line when it adds something.
+export function installFailureMessage(
+  command: string,
+  result: { code: number; error?: string; stderr: string },
+): string {
+  const message =
+    result.error && result.error !== String(result.code)
+      ? result.error
+      : `The ${basename(command)} command exited with status ${result.code}`
+  const stderr = result.stderr.trim()
+  return stderr && !message.includes(stderr) ? `${message}\n${stderr}` : message
+}
+
 async function installIDEExtension(ideType: IdeType): Promise<string | null> {
   if (isVSCodeIde(ideType)) {
     const command = await getVSCodeIDECommand(ideType)
@@ -899,7 +913,7 @@ async function installIDEExtension(ideType: IdeType): Promise<string | null> {
           },
         )
         if (result.code !== 0) {
-          throw new Error(`${result.code}: ${result.error} ${result.stderr}`)
+          throw new Error(installFailureMessage(command, result))
         }
         version = getClaudeCodeVersion()
       }
@@ -1473,7 +1487,7 @@ async function installFromArtifactory(command: string): Promise<string> {
       )
 
       if (result.code !== 0) {
-        throw new Error(`${result.code}: ${result.error} ${result.stderr}`)
+        throw new Error(installFailureMessage(command, result))
       }
 
       return version

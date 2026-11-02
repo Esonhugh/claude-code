@@ -455,3 +455,10 @@ test('C17 real teammate loop uses the constructor-produced logical ID across tur
   assert.equal(task.identity.agentId, 'reviewer@logical-loop-team')
   assert.equal(conversation.parentToolUseContext.agentId, conversation.parentAgentId)
 })
+
+test('stopping a teammate aborts the turn it is running, so its tools stop too', async () => {
+  observedOverrides = []
+  await runCase('complete')
+  assert.equal(observedOverrides.length, 1)
+  assert.equal(observedOverrides[0]?.abortController?.signal.aborted, true)
+})

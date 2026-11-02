@@ -6,9 +6,12 @@ import { cronToHuman, parseCronExpression } from '../../utils/cron.js'
 import {
   addCronTask,
   getCronFilePath,
+  jitteredNextCronRunMs,
   listAllCronTasks,
   nextCronRunMs,
+  oneShotJitteredNextCronRunMs,
 } from '../../utils/cronTasks.js'
+import { getCronJitterConfig } from '../../utils/cronJitterConfig.js'
 import { lazySchema } from '../../utils/lazySchema.js'
 import { semanticBoolean } from '../../utils/semanticBoolean.js'
 import { getTeammateContext } from '../../utils/teammateContext.js'
@@ -48,6 +51,7 @@ const outputSchema = lazySchema(() =>
     humanSchedule: z.string(),
     recurring: z.boolean(),
     durable: z.boolean().optional(),
+    nextFireAt: z.number().optional(),
   }),
 )
 type OutputSchema = ReturnType<typeof outputSchema>
@@ -118,6 +122,7 @@ export const CronCreateTool = buildTool({
     // Kill switch forces session-only; schema stays stable so the model sees
     // no validation errors when the gate flips mid-session.
     const effectiveDurable = durable && isDurableCronEnabled()
+    const createdAt = Date.now()
     const id = await addCronTask(
       cron,
       prompt,
@@ -131,16 +136,24 @@ export const CronCreateTool = buildTool({
     // — check() reads the session store directly — but the enable flag
     // is still what starts the tick loop.
     setScheduledTasksEnabled(true)
+    const nextFireAt = (
+      recurring ? jitteredNextCronRunMs : oneShotJitteredNextCronRunMs
+    )(cron, createdAt, id, getCronJitterConfig())
     return {
       data: {
         id,
         humanSchedule: cronToHuman(cron),
         recurring,
         durable: effectiveDurable,
+        ...(nextFireAt !== null && { nextFireAt }),
       },
     }
   },
   mapToolResultToToolResultBlockParam(output, toolUseID) {
+    const nextRun =
+      output.nextFireAt === undefined
+        ? ''
+        : ` Next run: ${formatNextRun(output.nextFireAt)}.`
     const where = output.durable
       ? 'Persisted to .claude/scheduled_tasks.json'
       : 'Session-only (not written to disk, dies when Claude exits)'
@@ -148,10 +161,24 @@ export const CronCreateTool = buildTool({
       tool_use_id: toolUseID,
       type: 'tool_result',
       content: output.recurring
-        ? `Scheduled recurring job ${output.id} (${output.humanSchedule}). ${where}. Auto-expires after ${DEFAULT_MAX_AGE_DAYS} days. Use CronDelete to cancel sooner.`
-        : `Scheduled one-shot task ${output.id} (${output.humanSchedule}). ${where}. It will fire once then auto-delete.`,
+        ? `Scheduled recurring job ${output.id} (${output.humanSchedule}).${nextRun} ${where}. Auto-expires after ${DEFAULT_MAX_AGE_DAYS} days. Use CronDelete to cancel sooner.`
+        : `Scheduled one-shot task ${output.id} (${output.humanSchedule}).${nextRun} ${where}. It will fire once then auto-delete.`,
     }
   },
   renderToolUseMessage: renderCreateToolUseMessage,
   renderToolResultMessage: renderCreateResultMessage,
 } satisfies ToolDef<InputSchema, CreateOutput>)
+
+/** "Oct 31 8:03pm", in local time like the schedule itself. */
+function formatNextRun(ms: number): string {
+  return new Date(ms)
+    .toLocaleString('en-US', {
+      month: 'short',
+      day: 'numeric',
+      hour: 'numeric',
+      minute: '2-digit',
+      hour12: true,
+    })
+    .replace(',', '')
+    .replace(/\s([AP]M)$/, (_match, ampm: string) => ampm.toLowerCase())
+}

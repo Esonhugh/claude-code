@@ -315,10 +315,11 @@ test('built tool blocks are installed and old handles cannot escape to a later c
 
 test('compact sees the whole transcript beyond the session reader limit', async () => {
   await register(`export function register(on) {on('session.compact',($,e)=>({messages:[{role:'user',text:String(e.messages.length)+':'+e.messages[0].text,toolUses:[]}]}));}`)
-  const ctx=context();ctx.messages=Array.from({length:4100},(_,i)=>createUserMessage({content:'row-'+i}))
+  // /compact needs at least one model answer (official 2.1.311).
+  const ctx=context();ctx.messages=[...Array.from({length:4100},(_,i)=>createUserMessage({content:'row-'+i})),createAssistantMessage({content:'answer'})]
   const result=await call('',ctx)
   expect(result.type).toBe('compact')
-  expect(JSON.stringify(compact.buildPostCompactMessages((result as any).compactionResult))).toContain('4100:row-0')
+  expect(JSON.stringify(compact.buildPostCompactMessages((result as any).compactionResult))).toContain('4101:row-0')
 })
 
 test('disabled, recursive and below-threshold auto paths do not dispatch compact', async () => {

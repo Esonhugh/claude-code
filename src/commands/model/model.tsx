@@ -38,10 +38,12 @@ import {
   getPostModelSwitchContext,
 } from '../../utils/model/modelSwitchHooks.js'
 import { validateModel } from '../../utils/model/validateModel.js'
+import { getPromptCacheFacts } from '../../utils/promptCacheFacts.js'
 import type { ModelSwitchHookInfo } from '../../utils/hooks.js'
 
 type PendingModelSwitch = {
   info: ModelSwitchHookInfo
+  fromHook: boolean
   reason?: string
   apply: () => void
 }
@@ -53,19 +55,35 @@ function ConfirmModelSwitch({
   pending: PendingModelSwitch
   onCancel: () => void
 }): React.ReactNode {
+  // Official 2.1.311 asks the same way for a hook's "ask" and for a switch
+  // that would forfeit a warm prompt cache.
+  const target = renderDefaultModelSetting(pending.info.toModel)
   return (
-    <Dialog title="Switch model?" onCancel={onCancel} color="warning">
-      <Text>
-        A PreModelSwitch hook asks you to confirm switching to{' '}
-        <Text bold>{pending.info.toModel}</Text>.
-      </Text>
-      {pending.reason ? <Text dimColor>{pending.reason}</Text> : null}
+    <Dialog
+      title="Switch model?"
+      subtitle={
+        pending.fromHook
+          ? 'A PreModelSwitch hook asked you to confirm'
+          : 'Your next response will be slower and use more tokens'
+      }
+      onCancel={onCancel}
+      color="warning"
+    >
+      {pending.fromHook ? (
+        <Text>{pending.reason ?? ''}</Text>
+      ) : (
+        <Text>
+          This conversation is cached for the current model. Switching to{' '}
+          <Text bold>{target}</Text> means the full history gets re-read on
+          your next message.
+        </Text>
+      )}
       <Select
         onChange={value => (value === 'yes' ? pending.apply() : onCancel())}
         onCancel={onCancel}
         options={[
-          { label: 'Yes, switch', value: 'yes' },
-          { label: 'No, keep the current model', value: 'no' },
+          { label: `Yes, switch to ${target}`, value: 'yes' },
+          { label: 'No, go back', value: 'no' },
         ]}
       />
     </Dialog>
@@ -97,7 +115,16 @@ async function preModelSwitch(
     return false
   }
   if (verdict.decision === 'ask') {
-    setPending({ info, reason: verdict.reason, apply })
+    setPending({ info, fromHook: true, reason: verdict.reason, apply })
+    return false
+  }
+  const cache = getPromptCacheFacts(context.messages, info.fromModel)
+  if (
+    info.toModel !== info.fromModel &&
+    cache !== undefined &&
+    !cache.promptCacheLikelyExpired
+  ) {
+    setPending({ info, fromHook: false, apply })
     return false
   }
   return true
@@ -143,10 +170,24 @@ function ModelPickerWrapper({
     )
   }
 
+  function handleSelectForSession(
+    model: string | null,
+    effort: EffortLevel | undefined,
+  ): void {
+    const info = getModelSwitchHookInfo(model, context.messages)
+    const apply = () => void applySelect(model, effort, info, true)
+    void preModelSwitch(info, 'picker', context, onDone, setPending, apply).then(
+      proceed => {
+        if (proceed) apply()
+      },
+    )
+  }
+
   async function applySelect(
     model: string | null,
     effort: EffortLevel | undefined,
     info: ModelSwitchHookInfo,
+    forSession = false,
   ): Promise<void> {
     logEvent('tengu_model_command_menu', {
       action:
@@ -156,13 +197,15 @@ function ModelPickerWrapper({
       to_model:
         model as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
     })
-    setAppState(prev => ({
-      ...prev,
-      mainLoopModel: model,
-      mainLoopModelForSession: null,
-    }))
+    // A session-only pick rides mainLoopModelForSession so the saved default
+    // (mainLoopModel → userSettings) stays as it was.
+    setAppState(prev =>
+      forSession
+        ? { ...prev, mainLoopModelForSession: model ?? getDefaultMainLoopModelSetting() }
+        : { ...prev, mainLoopModel: model, mainLoopModelForSession: null },
+    )
 
-    let message = `Set model to ${chalk.bold(renderModelLabel(model))} and saved as your default for new sessions`
+    let message = `Set model to ${chalk.bold(renderModelLabel(model))}${forSession ? ' for this session only' : ' and saved as your default for new sessions'}`
     if (effort !== undefined) {
       message += ` with ${chalk.bold(effort)} effort`
     }
@@ -217,6 +260,7 @@ function ModelPickerWrapper({
       initial={mainLoopModel}
       sessionModel={mainLoopModelForSession}
       onSelect={handleSelect}
+      onSelectForSession={handleSelectForSession}
       onCancel={handleCancel}
       isStandaloneCommand
       showFastModeNotice={

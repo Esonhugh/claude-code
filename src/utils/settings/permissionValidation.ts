@@ -176,7 +176,7 @@ export function validatePermissionRule(rule: string): {
         valid: false,
         error: 'Prefix cannot be empty before :*',
         suggestion: 'Specify a command prefix before :*',
-        examples: ['Bash(npm:*)', 'Bash(git:*)'],
+        examples: ['Bash(npm *)', 'Bash(git *)'],
       }
     }
 

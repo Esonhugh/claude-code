@@ -453,17 +453,6 @@ const externalTips: Tip[] = [
   },
   // @ts-ignore - recovered code
   {
-    id: 'custom-agents',
-    content: async () =>
-      'Use /agents to optimize specific tasks. Eg. Software Architect, Code Writer, Code Reviewer',
-    cooldownSessions: 15,
-    async isRelevant() {
-      const config = getGlobalConfig()
-      return config.numStartups > 5
-    },
-  },
-  // @ts-ignore - recovered code
-  {
     id: 'agent-flag',
     content: async () =>
       'Use --agent <agent_name> to directly start a conversation with a subagent',

@@ -5,6 +5,7 @@ import { sanitizeToolNameForAnalytics } from '../../services/analytics/metadata.
 import { env } from '../../utils/env.js'
 import { shouldShowAlwaysAllowOptions } from '../../utils/permissions/permissionsLoader.js'
 import { truncateToLines } from '../../utils/stringUtils.js'
+import { TERMINAL_TOOL_NAME } from '../../tools/TerminalTool/prompt.js'
 import { logUnaryEvent } from '../../utils/unaryLogging.js'
 import { type UnaryEvent, usePermissionRequestLogging } from './hooks.js'
 import { PermissionDialog } from './PermissionDialog.js'
@@ -121,7 +122,11 @@ export function FallbackPermissionRequest({
   }, [toolUseConfirm, onDone, onReject])
 
   const originalCwd = getOriginalCwd()
-  const showAlwaysAllowOptions = shouldShowAlwaysAllowOptions()
+  // A whole-tool Terminal allow rule would let every later command run
+  // unchecked, so Terminal only offers one-time approval.
+  const showAlwaysAllowOptions =
+    shouldShowAlwaysAllowOptions() &&
+    toolUseConfirm.tool.name !== TERMINAL_TOOL_NAME
   const options = useMemo((): PermissionPromptOption<FallbackOptionValue>[] => {
     const result: PermissionPromptOption<FallbackOptionValue>[] = [
       {

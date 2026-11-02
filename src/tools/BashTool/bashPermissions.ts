@@ -78,7 +78,7 @@ import {
   bashCommandIsSafeAsync_DEPRECATED,
   stripSafeHeredocSubstitutions,
 } from './bashSecurity.js'
-import { checkDangerousRemoval } from './dangerousRemoval.js'
+import { checkDangerousRemoval, inlineShellRemovals } from './dangerousRemoval.js'
 import { checkPermissionMode } from './modeValidation.js'
 import { checkPathConstraints } from './pathValidation.js'
 import * as bashPathValidation from './pathValidation.js'
@@ -550,6 +550,7 @@ export function stripSafeWrappers(command: string): string {
     // timeout ran. Contrast ENV_VAR_PATTERN below which already allowlists.
     /^timeout[ \t]+(?:(?:--(?:foreground|preserve-status|verbose)|--(?:kill-after|signal)=[A-Za-z0-9_.+-]+|--(?:kill-after|signal)[ \t]+[A-Za-z0-9_.+-]+|-v|-[ks][ \t]+[A-Za-z0-9_.+-]+|-[ks][A-Za-z0-9_.+-]+)[ \t]+)*(?:--[ \t]+)?\d+(?:\.\d+)?[smhd]?[ \t]+/,
     /^time[ \t]+(?:--[ \t]+)?/,
+    /^builtin[ \t]+(?:--[ \t]+)?/,
     // SECURITY: keep in sync with checkSemantics wrapper-strip (ast.ts
     // ~:1990-2080) AND stripWrappersFromArgv (pathValidation.ts ~:1260).
     // Previously this pattern REQUIRED `-n N`; checkSemantics already handled
@@ -690,7 +691,7 @@ export function stripWrappersFromArgv(argv: string[]): string[] {
   // as baseCmd and skips path validation. See SAFE_WRAPPER_PATTERNS comment.
   let a = argv
   for (;;) {
-    if (a[0] === 'time' || a[0] === 'nohup') {
+    if (a[0] === 'time' || a[0] === 'nohup' || a[0] === 'builtin') {
       a = a.slice(a[1] === '--' ? 2 : 1)
     } else if (a[0] === 'timeout') {
       const i = skipTimeoutFlags(a)
@@ -1802,7 +1803,7 @@ function checkRemovalPermission(
         }
       }
     }
-    if (removal.behavior !== 'ask') return null
+    if (removal.behavior !== 'ask') return checkInlineShellRemovalDeny(input, toolPermissionContext, root)
     if (getDenyRules(toolPermissionContext).length === 0) return removal
 
     const commands = [input.command]
@@ -1862,6 +1863,33 @@ function checkRemovalPermission(
   }
 }
 
+// Like official, a deny rule that matches a removal inside a `sh -c` script
+// makes the whole script ask (in every mode) instead of running it.
+function checkInlineShellRemovalDeny(
+  input: z.infer<typeof BashTool.inputSchema>,
+  toolPermissionContext: ToolPermissionContext,
+  root: Node | null | typeof PARSE_ABORTED,
+): PermissionResult | null {
+  if (!root || typeof root === 'symbol') return null
+  const denyRules = getRuleByContentsForTool(toolPermissionContext, BashTool, 'deny')
+  if (denyRules.size === 0) return null
+  for (const command of inlineShellRemovals(root)) {
+    const rule = filterRulesByContentsMatchingInput(
+      { ...input, command }, denyRules, 'prefix',
+      { stripAllEnvVars: true, skipCompoundCheck: true },
+    )[0]
+    if (!rule) continue
+    const reason = 'A permission rule denies a command in this shell -c script'
+    return {
+      behavior: 'ask',
+      message: 'A permission rule denies a command inside this shell -c script, so Claude Code could not check it for dangerous removals. Approving runs the whole script, including that command.',
+      decisionReason: { type: 'safetyCheck', reason, classifierApprovable: false, bypassImmune: true },
+      suggestions: [],
+    }
+  }
+  return null
+}
+
 function isAllowedByRule(result: PermissionResult): boolean {
   const reason = result.decisionReason
   if (reason?.type === 'rule') return true
@@ -1907,6 +1935,45 @@ export function requireApprovalOutsideSandbox(
  * The main implementation to check if we need to ask for user permission to call BashTool with a given input
  */
 export async function bashToolHasPermission(
+  input: z.infer<typeof BashTool.inputSchema>,
+  context: ToolUseContext,
+  getCommandSubcommandPrefixFn = getCommandSubcommandPrefix,
+): Promise<PermissionResult> {
+  const result = await checkBashCommandPermission(
+    input,
+    context,
+    getCommandSubcommandPrefixFn,
+  )
+  // A value set earlier in the command is only as safe as every way the
+  // command could have set it, so such a command is never auto-allowed,
+  // unless the user allowed this exact command or the sandbox contains it.
+  if (
+    result.behavior !== 'allow' ||
+    !input.command.includes('$') ||
+    (result.decisionReason?.type === 'other' &&
+      result.decisionReason.reason ===
+        'Auto-allowed with sandbox (autoAllowBashIfSandboxed enabled)') ||
+    (result.decisionReason?.type === 'rule' &&
+      result.decisionReason.rule.ruleValue.ruleContent === input.command.trim())
+  ) {
+    return result
+  }
+  const root = await parseCommandRawForRemoval(input.command)
+  const parsed = root ? parseForSecurityFromAst(input.command, root) : null
+  if (parsed?.kind !== 'simple' || !parsed.usesAssignedValue) return result
+  const decisionReason: PermissionDecisionReason = {
+    type: 'other',
+    reason: "A variable set in this command can't be checked before it runs",
+  }
+  return {
+    behavior: 'passthrough',
+    decisionReason,
+    message: createPermissionRequestMessage(BashTool.name, decisionReason),
+    suggestions: [],
+  }
+}
+
+async function checkBashCommandPermission(
   input: z.infer<typeof BashTool.inputSchema>,
   context: ToolUseContext,
   getCommandSubcommandPrefixFn = getCommandSubcommandPrefix,
@@ -2230,7 +2297,7 @@ export async function bashToolHasPermission(
   const commandOperatorResult = await checkCommandOperatorPermissions(
     input,
     (i: z.infer<typeof BashTool.inputSchema>) =>
-      bashToolHasPermission(i, context, getCommandSubcommandPrefixFn),
+      checkBashCommandPermission(i, context, getCommandSubcommandPrefixFn),
     { isNormalizedCdCommand, isNormalizedGitCommand },
     astRoot,
   )

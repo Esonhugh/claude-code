@@ -256,7 +256,7 @@ export function readSettingsFile(
     const ruleWarnings = [
       ...filterInvalidPermissionRules(data, path),
       ...filterInvalidHooks(data, path),
-    ]
+    ].map(warning => ({ ...warning, severity: 'warning' as const }))
 
     const result = SettingsSchema().safeParse(data)
 

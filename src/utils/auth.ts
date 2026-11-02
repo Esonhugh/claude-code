@@ -2069,6 +2069,7 @@ type OpenAIIdTokenClaims = {
   name?: string
   email?: string
   chatgptPlanType?: string
+  chatgptAccountId?: string
 }
 
 export function formatOpenAIPlanName(planType?: string | null): string | null {
@@ -2121,6 +2122,10 @@ export function decodeOpenAIIdTokenClaims(
         typeof authClaims?.chatgpt_plan_type === 'string'
           ? authClaims.chatgpt_plan_type
           : undefined,
+      chatgptAccountId:
+        typeof authClaims?.chatgpt_account_id === 'string'
+          ? authClaims.chatgpt_account_id
+          : undefined,
     }
   } catch {
     return null
@@ -2164,7 +2169,7 @@ export const getChatGPTOAuthInfo = memoize((): OpenAIAuthInfo | null => {
   const planType = idTokenClaims?.chatgptPlanType
   return {
     accessToken: data.tokens.access_token,
-    accountId: data.tokens.account_id,
+    accountId: data.tokens.account_id ?? idTokenClaims?.chatgptAccountId,
     isChatGPT: true,
     accountName:
       data.tokens.account_name ?? data.account?.name ?? idTokenClaims?.name,

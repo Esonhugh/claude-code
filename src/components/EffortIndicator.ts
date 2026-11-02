@@ -6,6 +6,7 @@ import {
   EFFORT_XHIGH,
 } from '../constants/figures.js'
 import type { Notification } from '../context/notifications.js'
+import { isScreenReaderEnabled } from '../ink/screen-reader.js'
 import {
   type EffortLevel,
   type EffortValue,
@@ -25,7 +26,8 @@ export function getEffortNotificationText(
   if (!modelSupportsEffort(model)) return undefined
   const applied = resolveAppliedEffort(model, effortValue)
   const level = convertEffortValueToLevel(applied ?? 'high')
-  return `${effortLevelToSymbol(applied === 'xhigh' ? 'xhigh' : level)} ${applied ?? level} · /effort`
+  const label = isScreenReaderEnabled() ? 'effort:' : effortLevelToSymbol(applied === 'xhigh' ? 'xhigh' : level)
+  return `${label} ${applied ?? level} · /effort`
 }
 
 /** The effort notice; a newer one replaces the one still on screen instead of being dropped as a duplicate. */

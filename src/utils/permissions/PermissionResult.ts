@@ -36,6 +36,20 @@ export function requiresExplicitUserApproval(
   return false
 }
 
+/** An ask rule (directly or in a subcommand) made this prompt. */
+export function isAskRuleDecision(
+  reason: PermissionDecisionReason | undefined,
+): boolean {
+  if (reason?.type === 'rule') return reason.rule.ruleBehavior === 'ask'
+  if (reason?.type === 'subcommandResults') {
+    return Array.from(reason.reasons.values()).some(
+      result =>
+        result.behavior === 'ask' && isAskRuleDecision(result.decisionReason),
+    )
+  }
+  return false
+}
+
 /** A safety check that still asks in bypassPermissions mode. */
 export function isBypassImmune(
   reason: PermissionDecisionReason | undefined,

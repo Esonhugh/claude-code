@@ -205,6 +205,8 @@ describe('author tool host through the real executor', () => {
 
   test('spawn uses the real parent assistant context when available', async () => {
     if (!isForkSubagentEnabled()) return
+    // The fork renders the parent's system prompt, which reads build macros.
+    ;(globalThis as typeof globalThis & { MACRO: MacroGlobals }).MACRO ??= { VERSION: 'test', ISSUES_EXPLAINER: 'report an issue' }
     const f = fixture()
     f.context.options.mainLoopModel = 'claude-sonnet-4-6'
     f.context.options.agentDefinitions = {
@@ -228,7 +230,8 @@ describe('author tool host through the real executor', () => {
     f.context.setAppState = updater => {
       state = typeof updater === 'function' ? updater(state as never) as never : updater as never
     }
-    const result = await f.host.spawn({ prompt: 'Review changes' }, f.snapshot, new AbortController().signal, 'author')
+    // Like 2.1.311, the fork is chosen explicitly; an omitted type is general-purpose.
+    const result = await f.host.spawn({ prompt: 'Review changes', subagentType: 'fork' }, f.snapshot, new AbortController().signal, 'author')
     if ('deny' in result) throw new Error(result.deny)
     expect(state.tasks[result.agentId!]).toMatchObject({ agentType: 'fork', spawnedBy: 'author' })
   })
@@ -243,7 +246,7 @@ describe('author tool host through the real executor', () => {
     const root = await mkdtemp(join(tmpdir(), 'tool-host-background-child-'))
     for (const name of ['home', 'config', 'tmp']) await mkdir(join(root, name))
     const child = Bun.spawn([
-      process.execPath, 'test', '--timeout', '5000', '--test-name-pattern',
+      process.execPath, 'test', '--timeout', '30000', '--test-name-pattern',
       '^author tool host through the real executor spawn registers a real background agent and returns once it starts$',
       import.meta.path,
     ], {
@@ -258,7 +261,9 @@ describe('author tool host through the real executor', () => {
         OPENAI_API_KEY: 'mods-test-dummy-source-only', OPENAI_BASE_URL: 'http://127.0.0.1:9/v1',
         [childFlag]: '1',
       },
-      stdout: 'pipe', stderr: 'pipe', timeout: 4500,
+      // The child transpiles the whole module graph with the cache off (about
+      // 3s idle), so a tight wall-clock budget kills it under CI load.
+      stdout: 'pipe', stderr: 'pipe', timeout: 50_000,
     })
     try {
       const [code, stdout, stderr] = await Promise.all([
@@ -271,7 +276,7 @@ describe('author tool host through the real executor', () => {
       if (child.exitCode === null) { child.kill(); await child.exited }
       await rm(root, { recursive: true, force: true })
     }
-  })
+  }, 60_000)
 
   test('spawn deny creates no task and abort propagates', async () => {
     const denied = fixture([hook('agent.spawn', async () => ({ deny: 'No agent' }))])

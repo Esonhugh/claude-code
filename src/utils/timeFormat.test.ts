@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { formatClockTime, resolveTimeFormat, strftime } from './timeFormat.js'
+import { formatClockTime, formatDoneAt, resolveTimeFormat, strftime } from './timeFormat.js'
 
 const date = new Date(Date.UTC(2026, 9, 26, 18, 5, 9))
 
@@ -35,5 +35,21 @@ describe('timeFormat', () => {
 
   test('patterns are capped at 100 characters', () => {
     expect(formatClockTime(date, resolveTimeFormat(`%Y${'x'.repeat(200)}`, 'UTC'))).toHaveLength(100)
+  })
+})
+
+describe('formatDoneAt', () => {
+  const at = '2026-10-29T03:23:10.000Z'
+  const utc12 = resolveTimeFormat('12-hour', 'UTC')
+  test('today shows only the clock time, without a leading zero', () => {
+    expect(formatDoneAt(at, new Date('2026-10-29T09:00:00Z'), utc12, 'en-US')).toBe('3:23 AM')
+    expect(formatDoneAt(at, new Date('2026-10-29T09:00:00Z'), resolveTimeFormat('24-hour-utc', undefined), 'en-US')).toBe('03:23Z')
+  })
+  test('earlier days add the weekday, then the date', () => {
+    expect(formatDoneAt(at, new Date('2026-10-31T09:00:00Z'), utc12, 'en-US')).toBe('Thursday 3:23 AM')
+    expect(formatDoneAt(at, new Date('2026-11-20T09:00:00Z'), utc12, 'en-US')).toBe('Thursday, Oct 29, 3:23 AM')
+  })
+  test('patterns keep the pattern for the time', () => {
+    expect(formatDoneAt(at, new Date('2026-10-31T09:00:00Z'), resolveTimeFormat('%H:%M', 'UTC'), 'en-US')).toBe('Thursday 03:23')
   })
 })

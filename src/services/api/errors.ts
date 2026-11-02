@@ -52,6 +52,7 @@ import {
 import { shouldProcessRateLimits } from '../rateLimitMocking.js' // Used for /mock-limits command
 import { extractConnectionErrorDetails, formatAPIError } from './errorUtils.js'
 import { isAnt } from 'src/utils/userType.js'
+import { isAwsCredentialsProviderError } from 'src/utils/aws.js'
 
 
 export const API_ERROR_MESSAGE_PREFIX = 'API Error'
@@ -930,6 +931,14 @@ function formatAssistantMessageFromError(
         ? `The model ${model} is not available on your ${getAPIProvider()} deployment. Try ${switchCmd} to switch to ${fallbackSuggestion}, or ask your admin to enable this model.`
         : `There's an issue with the selected model (${model}). It may not exist or you may not have access to it. Run ${switchCmd} to pick a different model.`,
       error: 'invalid_request',
+    })
+  }
+
+  if (isAwsCredentialsProviderError(error)) {
+    const detail = (error as Error).message.trimEnd().replace(/[.!?…]+$/, '')
+    return createAssistantAPIErrorMessage({
+      content: `${API_ERROR_MESSAGE_PREFIX}: Could not load AWS credentials · ${detail}. Check or refresh your AWS credentials and try again.`,
+      error: 'authentication_failed',
     })
   }
 

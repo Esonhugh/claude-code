@@ -9,7 +9,6 @@ import { NOTEBOOK_EDIT_TOOL_NAME } from 'src/tools/NotebookEditTool/constants.js
 import { hasEmbeddedSearchTools } from 'src/utils/embeddedTools.js'
 import { AGENT_TOOL_NAME } from '../constants.js'
 import type { BuiltInAgentDefinition } from '../loadAgentsDir.js'
-import { isAnt } from 'src/utils/userType.js'
 
 
 function getExploreSystemPrompt(): string {
@@ -23,27 +22,54 @@ function getExploreSystemPrompt(): string {
     ? `- Use \`grep\` via ${BASH_TOOL_NAME} for searching file contents with regex`
     : `- Use ${GREP_TOOL_NAME} for searching file contents with regex`
 
-  return `You are Claude Code's codebase exploration specialist.
+  return `You are a file search specialist for Claude Code, Anthropic's official CLI for Claude. You excel at thoroughly navigating and exploring codebases.
 
-READ-ONLY: search and analyze existing files only. Do not create, modify, delete, move, or copy files; write temporary files; redirect output to files; install packages; mutate git state; or run any state-changing command.
+=== CRITICAL: READ-ONLY MODE - NO FILE MODIFICATIONS ===
+This is a READ-ONLY exploration task. You are STRICTLY PROHIBITED from:
+- Creating new files (no Write, touch, or file creation of any kind)
+- Modifying existing files (no Edit operations)
+- Deleting files (no rm or deletion)
+- Moving or copying files (no mv or cp)
+- Creating temporary files anywhere, including /tmp
+- Using redirect operators (>, >>, |) or heredocs to write to files
+- Running ANY commands that change system state
+
+Your role is EXCLUSIVELY to search and analyze existing code. You do NOT have access to file editing tools - attempting to edit files will fail.
+
+Your strengths:
+- Rapidly finding files using glob patterns
+- Searching code and text with powerful regex patterns
+- Reading and analyzing file contents
 
 Guidelines:
 ${globGuidance}
 ${grepGuidance}
-- Use ${FILE_READ_TOOL_NAME} for known paths.
-- Use ${BASH_TOOL_NAME} only for read-only commands such as ls, git status/log/diff, find${embedded ? ', grep' : ''}, cat, head, and tail.
-- Match the requested thoroughness. Run independent searches and reads in parallel.
-- Return a clear report directly; do not create an output file.`
+- Use ${FILE_READ_TOOL_NAME} when you know the specific file path you need to read
+- Use ${BASH_TOOL_NAME} ONLY for read-only operations (ls, git status, git log, git diff, find${embedded ? ', grep' : ''}, cat, head, tail)
+- NEVER use ${BASH_TOOL_NAME} for: mkdir, touch, rm, cp, mv, git add, git commit, npm install, pip install, or any file creation/modification
+- Adapt your search approach based on the thoroughness level specified by the caller
+- Communicate your final report directly as a regular message - do NOT attempt to create files
+
+NOTE: You are meant to be a fast agent that returns output as quickly as possible. In order to achieve this you must:
+- Make efficient use of the tools that you have at your disposal: be smart about how you search for files and implementations
+- Wherever possible you should try to spawn multiple parallel tool calls for grepping and reading files
+
+Complete the user's search request efficiently and report your findings clearly.`
 }
 
 export const EXPLORE_AGENT_MIN_QUERIES = 3
 
 const EXPLORE_WHEN_TO_USE =
-  'Fast agent specialized for exploring codebases. Use this when you need to quickly find files by patterns (eg. "src/components/**/*.tsx"), search code for keywords (eg. "API endpoints"), or answer questions about the codebase (eg. "how do API endpoints work?"). When calling this agent, specify the desired thoroughness level: "quick" for basic searches, "medium" for moderate exploration, or "very thorough" for comprehensive analysis across multiple locations and naming conventions.'
+  'Fast read-only search agent for locating code. Use it to find files by pattern (eg. "src/components/**/*.tsx"), grep for symbols or keywords (eg. "API endpoints"), or answer "where is X defined / which files reference Y." Do NOT use it for code review, design-doc auditing, cross-file consistency checks, or open-ended analysis — it reads excerpts rather than whole files and will miss content past its read window. When calling, specify search breadth: "quick" for a single targeted lookup, "medium" for moderate exploration, or "very thorough" to search across multiple locations and naming conventions.'
+
+// Agent listing text under the lean system prompt.
+const EXPLORE_WHEN_TO_USE_LEAN =
+  'Read-only search agent for broad fan-out searches — when answering means sweeping many files, directories, or naming conventions and you only need the conclusion, not the file dumps. It reads excerpts rather than whole files, so it locates code; it doesn\'t review or audit it. Specify search breadth: "medium" for moderate exploration, "very thorough" for multiple locations and naming conventions.'
 
 export const EXPLORE_AGENT: BuiltInAgentDefinition = {
   agentType: 'Explore',
   whenToUse: EXPLORE_WHEN_TO_USE,
+  whenToUseLean: EXPLORE_WHEN_TO_USE_LEAN,
   disallowedTools: [
     AGENT_TOOL_NAME,
     EXIT_PLAN_MODE_TOOL_NAME,
@@ -53,9 +79,8 @@ export const EXPLORE_AGENT: BuiltInAgentDefinition = {
   ],
   source: 'built-in',
   baseDir: 'built-in',
-  // Ants get inherit to use the main agent's model; external users get haiku for speed
-  // Note: For ants, getAgentModel() checks tengu_explore_agent GrowthBook flag at runtime
-  model: isAnt() ? 'inherit' : 'haiku',
+  // Capped at Opus by getAgentDefinitionModel.
+  model: 'inherit',
   // Explore is a fast read-only search agent — it doesn't need commit/PR/lint
   // rules from CLAUDE.md. The main agent has full context and interprets results.
   omitClaudeMd: true,

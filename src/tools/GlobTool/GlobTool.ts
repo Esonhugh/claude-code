@@ -1,5 +1,4 @@
 import { z } from 'zod/v4'
-import type { ValidationResult } from '../../Tool.js'
 import { buildTool, type ToolDef } from '../../Tool.js'
 import { getCwd } from '../../utils/cwd.js'
 import { isENOENT } from '../../utils/errors.js'
@@ -91,47 +90,6 @@ export const GlobTool = buildTool({
   async preparePermissionMatcher({ pattern }) {
     return rulePattern => matchWildcardPattern(rulePattern, pattern)
   },
-  async validateInput({ path }): Promise<ValidationResult> {
-    // If path is provided, validate that it exists and is a directory
-    if (path) {
-      const fs = getFsImplementation()
-      const absolutePath = expandPath(path)
-
-      // SECURITY: Skip filesystem operations for UNC paths to prevent NTLM credential leaks.
-      if (absolutePath.startsWith('\\\\') || absolutePath.startsWith('//')) {
-        return { result: true }
-      }
-
-      let stats
-      try {
-        stats = await fs.stat(absolutePath)
-      } catch (e: unknown) {
-        if (isENOENT(e)) {
-          const cwdSuggestion = await suggestPathUnderCwd(absolutePath)
-          let message = `Directory does not exist: ${path}. ${FILE_NOT_FOUND_CWD_NOTE} ${getCwd()}.`
-          if (cwdSuggestion) {
-            message += ` Did you mean ${cwdSuggestion}?`
-          }
-          return {
-            result: false,
-            message,
-            errorCode: 1,
-          }
-        }
-        throw e
-      }
-
-      if (!stats.isDirectory()) {
-        return {
-          result: false,
-          message: `Path is not a directory: ${path}`,
-          errorCode: 2,
-        }
-      }
-    }
-
-    return { result: true }
-  },
   async checkPermissions(input, context): Promise<PermissionDecision> {
     const appState = context.getAppState()
     return checkReadPermissionForTool(
@@ -153,6 +111,26 @@ export const GlobTool = buildTool({
   },
   async call(input, { abortController, getAppState, globLimits }) {
     const start = Date.now()
+    // Like 2.1.311 a bad path is a tool error, so the model sees it as plain
+    // text rather than an input validation error.
+    const { path } = input
+    const absolutePath = path ? expandPath(path) : ''
+    // SECURITY: Skip filesystem operations for UNC paths to prevent NTLM credential leaks.
+    if (path && !absolutePath.startsWith('\\\\') && !absolutePath.startsWith('//')) {
+      let stats
+      try {
+        stats = await getFsImplementation().stat(absolutePath)
+      } catch (e: unknown) {
+        if (!isENOENT(e)) throw e
+        const cwdSuggestion = await suggestPathUnderCwd(absolutePath)
+        throw new Error(
+          `Directory does not exist: ${path}. ${FILE_NOT_FOUND_CWD_NOTE} ${getCwd()}.${cwdSuggestion ? ` Did you mean ${cwdSuggestion}?` : ''}`,
+        )
+      }
+      if (!stats.isDirectory()) {
+        throw new Error(`Path is not a directory: ${path}`)
+      }
+    }
     const appState = getAppState()
     const limit = globLimits?.maxResults ?? 100
     const { files, truncated } = await glob(

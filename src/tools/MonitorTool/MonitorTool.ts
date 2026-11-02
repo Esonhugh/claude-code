@@ -41,7 +41,10 @@ const inputSchema = lazySchema(() =>
       .describe(
         `Kill the monitor after this deadline. Default ${DEFAULT_MONITOR_TIMEOUT_MS}ms. Deadlines above ${getMonitorTimeoutCapMs()}ms are capped to ${getMonitorTimeoutCapMs()}ms. You are notified at expiry and can re-arm.`,
       ),
-    command: z.string().describe(MONITOR_COMMAND_DESCRIPTION),
+    command: z
+      .string()
+      .refine(command => command.trim() !== "", 'command must not be empty')
+      .describe(MONITOR_COMMAND_DESCRIPTION),
     ...allowedDomainsInputField(),
   }),
 )

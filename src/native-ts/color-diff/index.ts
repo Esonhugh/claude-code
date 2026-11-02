@@ -20,6 +20,8 @@
 import { diffArrays } from 'diff'
 import type * as hljsNamespace from 'highlight.js'
 import { basename, extname } from 'path'
+import { resolveThemeSetting } from '../../utils/systemTheme.js'
+import type { ThemeSetting } from '../../utils/theme.js'
 
 // Lazy: defers loading highlight.js until first render. The full bundle
 // registers 190+ language grammars at require time (~50MB, 100-200ms on
@@ -177,6 +179,11 @@ type Theme = {
   foreground: Color
   background: Color
   scopes: Record<string, Color>
+}
+
+// A custom theme ("custom:<slug>") renders code with its built-in base.
+function builtinThemeName(themeName: string): string {
+  return resolveThemeSetting(themeName as ThemeSetting)
 }
 
 function defaultSyntaxThemeName(themeName: string): string {
@@ -859,7 +866,8 @@ export class ColorDiff {
     this.prefixContent = prefixContent ?? null
   }
 
-  render(themeName: string, width: number, dim: boolean): string[] | null {
+  render(themeSetting: string, width: number, dim: boolean): string[] | null {
+    const themeName = builtinThemeName(themeSetting)
     const mode = detectColorMode(themeName)
     const theme = buildTheme(themeName, mode)
     const lang = detectLanguage(this.filePath, this.firstLine)
@@ -943,7 +951,8 @@ export class ColorFile {
     this.filePath = filePath
   }
 
-  render(themeName: string, width: number, dim: boolean): string[] | null {
+  render(themeSetting: string, width: number, dim: boolean): string[] | null {
+    const themeName = builtinThemeName(themeSetting)
     const mode = detectColorMode(themeName)
     const theme = buildTheme(themeName, mode)
     const lines = this.code.split('\n')
@@ -975,7 +984,10 @@ export function getSyntaxTheme(themeName: string): SyntaxTheme {
   const envTheme =
     process.env.CLAUDE_CODE_SYNTAX_HIGHLIGHT ?? process.env.BAT_THEME
   void envTheme
-  return { theme: defaultSyntaxThemeName(themeName), source: null }
+  return {
+    theme: defaultSyntaxThemeName(builtinThemeName(themeName)),
+    source: null,
+  }
 }
 
 // Lazy loader to match vendor/color-diff-src/index.ts API

@@ -1,4 +1,5 @@
 import { dirname, isAbsolute, sep } from 'path'
+import isPlainObject from 'lodash-es/isPlainObject.js'
 import { logEvent } from 'src/services/analytics/index.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../services/analytics/growthbook.js'
 import { diagnosticTracker } from '../../services/diagnosticTracking.js'
@@ -31,7 +32,10 @@ import {
 } from '../../utils/fileHistory.js'
 import { logFileOperation } from '../../utils/fileOperationAnalytics.js'
 import {
+  detectNotText,
   type LineEndingType,
+  type NotTextKind,
+  notTextMessage,
   readFileSyncWithMetadata,
 } from '../../utils/fileRead.js'
 import { formatFileSize } from '../../utils/format.js'
@@ -53,6 +57,7 @@ import { validateInputForSettingsFileEdit } from '../../utils/settings/validateE
 import { NOTEBOOK_EDIT_TOOL_NAME } from '../NotebookEditTool/constants.js'
 import {
   FILE_EDIT_TOOL_NAME,
+  FILE_STATE_CURRENT_NOTE,
   FILE_UNEXPECTEDLY_MODIFIED_ERROR,
 } from './constants.js'
 import { getEditToolDescription } from './prompt.js'
@@ -112,6 +117,32 @@ export const FileEditTool = buildTool({
   },
   getPath(input): string {
     return input.file_path
+  },
+  // Like 2.1.311: accept the str_replace_editor names models carry over.
+  coerceInput(input) {
+    if (!isPlainObject(input)) return null
+    const next = { ...(input as Record<string, unknown>) }
+    let changed = false
+    if ('replace_name' in next) {
+      if (!('replace_all' in next)) {
+        next.replace_all =
+          next.replace_name === true || next.replace_name === 'true'
+      }
+      delete next.replace_name
+      changed = true
+    }
+    for (const [alias, key] of [
+      ['path', 'file_path'],
+      ['old_str', 'old_string'],
+      ['new_str', 'new_string'],
+    ] as const) {
+      if (alias in next && !(key in next) && typeof next[alias] === 'string') {
+        next[key] = next[alias]
+        delete next[alias]
+        changed = true
+      }
+    }
+    return changed ? { input: next } : null
   },
   backfillObservableInput(input) {
     // hooks.mdx documents file_path as absolute; expand so hook allowlists
@@ -206,6 +237,15 @@ export const FileEditTool = buildTool({
     let fileContent: string | null
     try {
       const fileBuffer = await fs.readFileBytes(fullFilePath)
+      const notText = detectNotText(fileBuffer)
+      if (notText) {
+        return {
+          result: false,
+          behavior: 'ask',
+          message: notTextMessage(notText),
+          errorCode: 11,
+        }
+      }
       const encoding: BufferEncoding =
         fileBuffer.length >= 2 &&
         fileBuffer[0] === 0xff &&
@@ -280,7 +320,15 @@ export const FileEditTool = buildTool({
       fileContent !== null &&
       findActualString(fileContent, old_string) !== null &&
       canWriteWithoutRead(FileEditTool, input, toolUseContext)
-    if ((!readTimestamp || readTimestamp.isPartialView) && !writeWithoutRead()) {
+    // An unread file needs no match here: a missing old_string is reported
+    // below as such, not as "not read yet" (2.1.311).
+    const unreadWriteAllowed =
+      !readTimestamp && canWriteWithoutRead(FileEditTool, input, toolUseContext)
+    if (
+      (!readTimestamp || readTimestamp.isPartialView) &&
+      !unreadWriteAllowed &&
+      !writeWithoutRead()
+    ) {
       return {
         result: false,
         behavior: 'ask',
@@ -454,8 +502,12 @@ export const FileEditTool = buildTool({
       fileExists,
       encoding,
       lineEndings: endings,
+      notText,
     } = readFileForEdit(absoluteFilePath)
+    if (notText) throw new Error(notTextMessage(notText))
 
+    let staleRecovered = false
+    let contentNotInModelContext = false
     if (fileExists) {
       const lastWriteTime = getFileModificationTime(absoluteFilePath)
       const lastRead = readFileState.get(absoluteFilePath)
@@ -478,6 +530,8 @@ export const FileEditTool = buildTool({
         ) {
           throw new Error(FILE_UNEXPECTEDLY_MODIFIED_ERROR)
         }
+        if (!lastRead) contentNotInModelContext = true
+        else if (!contentUnchanged) staleRecovered = true
       }
     }
 
@@ -573,6 +627,8 @@ export const FileEditTool = buildTool({
 
     // 8. Yield result
     const data = {
+      ...(staleRecovered && { staleRecovered }),
+      ...(contentNotInModelContext && { contentNotInModelContext }),
       filePath: file_path,
       oldString: actualOldString,
       newString: new_string,
@@ -587,23 +643,35 @@ export const FileEditTool = buildTool({
     }
   },
   mapToolResultToToolResultBlockParam(data: FileEditOutput, toolUseID) {
-    const { filePath, userModified, replaceAll } = data
+    const {
+      filePath,
+      userModified,
+      replaceAll,
+      staleRecovered,
+      contentNotInModelContext,
+    } = data
     const modifiedNote = userModified
       ? '.  The user modified your proposed changes before accepting them. '
       : ''
+    // Like 2.1.311: only claim the file state is current when the model saw it.
+    const stateNote = staleRecovered
+      ? ' (note: the file had been modified on disk since you last read it — the edit applied cleanly, but the file contains other changes not in your context. Read it before edits that depend on surrounding content.)'
+      : userModified || contentNotInModelContext
+        ? ''
+        : FILE_STATE_CURRENT_NOTE
 
     if (replaceAll) {
       return {
         tool_use_id: toolUseID,
         type: 'tool_result',
-        content: `The file ${filePath} has been updated${modifiedNote}. All occurrences were successfully replaced.`,
+        content: `The file ${filePath} has been updated${modifiedNote}. All occurrences were successfully replaced.${stateNote}`,
       }
     }
 
     return {
       tool_use_id: toolUseID,
       type: 'tool_result',
-      content: `The file ${filePath} has been updated successfully${modifiedNote}.`,
+      content: `The file ${filePath} has been updated successfully${modifiedNote}.${stateNote}`,
     }
   },
 } satisfies ToolDef<ReturnType<typeof inputSchema>, FileEditOutput>)
@@ -615,6 +683,7 @@ function readFileForEdit(absoluteFilePath: string): {
   fileExists: boolean
   encoding: BufferEncoding
   lineEndings: LineEndingType
+  notText?: NotTextKind
 } {
   try {
     // eslint-disable-next-line custom-rules/no-sync-fs
@@ -624,6 +693,7 @@ function readFileForEdit(absoluteFilePath: string): {
       fileExists: true,
       encoding: meta.encoding,
       lineEndings: meta.lineEndings,
+      notText: meta.notText,
     }
   } catch (e) {
     if (isENOENT(e)) {

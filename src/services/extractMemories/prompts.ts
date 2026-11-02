@@ -66,7 +66,7 @@ export function buildExtractAutoOnlyPrompt(
     ...(skipIndex
       ? []
       : [
-          `After writing the file, add a one-line pointer in \`MEMORY.md\`. ${MEMORY_INDEX_RULE}`,
+          `After writing the file, add a one-line pointer in \`MEMORY.md\` (\`- [Title](file.md) — hook\`). ${MEMORY_INDEX_RULE}`,
           '',
         ]),
     MEMORY_SAVE_RULES,

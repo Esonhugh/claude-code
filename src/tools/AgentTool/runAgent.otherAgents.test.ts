@@ -44,7 +44,8 @@ if (process.env[childFlag] !== '1') {
   const { SendMessageTool } = await import('../SendMessageTool/SendMessageTool.js')
   const { runAgent } = await import('./runAgent.js')
 
-  async function reminders(names: string[], tools: unknown[], resumed = false): Promise<string[]> {
+  let yielded: Message[] = []
+  async function reminders(names: string[], tools: unknown[], resumed = false, recordedUuids?: Set<string>): Promise<string[]> {
     const agentId = createAgentId('other-agents-test')
     let appState = getDefaultAppState()
     appState = {
@@ -64,7 +65,8 @@ if (process.env[childFlag] !== '1') {
       setInProgressToolUseIDs: () => {}, setResponseLength: () => {}, updateFileHistoryState: () => {}, updateAttributionState: () => {},
       messages: [],
     }
-    for await (const _ of runAgent({
+    yielded = []
+    for await (const message of runAgent({
       agentDefinition: GENERAL_PURPOSE_AGENT,
       promptMessages: [createUserMessage({ content: 'do the task' })],
       toolUseContext: context as never,
@@ -74,7 +76,8 @@ if (process.env[childFlag] !== '1') {
       availableTools: tools as never,
       override: { agentId, userContext: {}, systemContext: {}, systemPrompt: asSystemPrompt([]) },
       ...(resumed && { contentReplacementState: { seenIds: new Set(), replacements: new Map() } as never }),
-    })) { /* drain */ }
+      ...(recordedUuids && { recordedUuids: recordedUuids as never }),
+    })) { yielded.push(message as Message) }
     return seen.flatMap(m => m.type === 'user' && m.isMeta && typeof m.message.content === 'string' && m.message.content.includes('Other agents active') ? [m.message.content] : [])
   }
 
@@ -88,5 +91,14 @@ if (process.env[childFlag] !== '1') {
     expect(await reminders([], [SendMessageTool])).toEqual([])
     expect(await reminders(['alpha'], [])).toEqual([])
     expect(await reminders(['alpha'], [SendMessageTool], true)).toEqual([])
+  })
+
+  // Official 2.1.311 skips the reminder once the agent's transcript has recorded
+  // messages, so a teammate's later turns do not carry it again.
+  test('a teammate turn with recorded history gets no reminder, like official 2.1.311', async () => {
+    expect(await reminders(['alpha'], [SendMessageTool], false, new Set())).toHaveLength(1)
+    // The first turn yields it, so the teammate runner keeps it in the history.
+    expect(yielded.filter(m => m.type === 'user' && m.isMeta && String(m.message.content).includes('Other agents active'))).toHaveLength(1)
+    expect(await reminders(['alpha'], [SendMessageTool], false, new Set([crypto.randomUUID()]))).toEqual([])
   })
 }

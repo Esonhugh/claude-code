@@ -2,7 +2,11 @@ import type { SDKAutocompactStateMessage } from '../../entrypoints/agentSdkTypes
 import type { CanUseToolFn } from '../../hooks/useCanUseTool.js'
 import { hasPermissionsToUseTool } from '../../utils/permissions/permissions.js'
 import { feature } from 'bun:bundle'
-import { getSdkBetas, markPostCompaction } from 'src/bootstrap/state.js'
+import {
+  getCliAutoCompactWindow,
+  getSdkBetas,
+  markPostCompaction,
+} from 'src/bootstrap/state.js'
 import type { QuerySource } from '../../constants/querySource.js'
 import type { ToolUseContext } from '../../Tool.js'
 import type { Message } from '../../types/message.js'
@@ -22,6 +26,7 @@ import { getEnabledSettingSources } from '../../utils/settings/constants.js'
 import { getSettingsForSource } from '../../utils/settings/settings.js'
 import { logError } from '../../utils/log.js'
 import { tokenCountWithEstimation } from '../../utils/tokens.js'
+import { bytesPerTokenForModel } from '../tokenEstimation.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../analytics/growthbook.js'
 import { getMaxOutputTokensForModel } from '../api/claude.js'
 import { notifyCompaction } from '../api/promptCacheBreakDetection.js'
@@ -64,6 +69,8 @@ export function getAutoCompactWindowModelKey(model: string): string {
 export function getConfiguredAutoCompactWindow(
   model: string,
 ): number | undefined {
+  const cli = getCliAutoCompactWindow()
+  if (cli !== undefined) return cli === 'auto' ? undefined : cli
   const key = getAutoCompactWindowModelKey(model)
   let topLevel: number | undefined
   let perModel: number | 'auto' | undefined
@@ -336,7 +343,9 @@ export async function shouldAutoCompact(
     }
   }
 
-  const tokenCount = tokenCountWithEstimation(messages) - snipTokensFreed
+  const tokenCount =
+    tokenCountWithEstimation(messages, bytesPerTokenForModel(model)) -
+    snipTokensFreed
   const threshold = getAutoCompactThreshold(model, autoCompactWindowCeiling)
   const effectiveWindow = getEffectiveContextWindowSize(
     model,
@@ -386,7 +395,8 @@ export function getLargerContextSummaryModel(
     return undefined
   }
   const { isAtBlockingLimit } = calculateTokenWarningState(
-    tokenCountWithEstimation(messages) - snipTokensFreed,
+    tokenCountWithEstimation(messages, bytesPerTokenForModel(model)) -
+      snipTokensFreed,
     model,
     autoCompactWindowCeiling,
   )

@@ -1,10 +1,11 @@
 /**
  * HooksConfigMenu is a read-only browser for configured hooks.
  *
- * Users can drill into each hook event, see configured matchers and hooks
- * (of any type: command, prompt, agent, http), and view individual hook
- * details. To add or modify hooks, users should edit settings.json directly
- * or ask Claude — the menu directs them there.
+ * It opens on the configured hooks grouped by event; "All events" drills into
+ * each hook event, its matchers and hooks (of any type: command, prompt,
+ * agent, http), and any hook opens its read-only details. To add or modify
+ * hooks, users should edit settings.json directly or ask Claude — the menu
+ * directs them there.
  *
  * The menu is read-only because the old editing UI only supported
  * command-type hooks and duplicating the settings.json editing surface
@@ -32,6 +33,7 @@ import {
 } from '../../utils/settings/settings.js'
 import { plural } from '../../utils/stringUtils.js'
 import { Dialog } from '../design-system/Dialog.js'
+import { HooksListMode } from './HooksListMode.js'
 import { SelectEventMode } from './SelectEventMode.js'
 import { SelectHookMode } from './SelectHookMode.js'
 import { SelectMatcherMode } from './SelectMatcherMode.js'
@@ -46,15 +48,20 @@ type Props = {
 }
 
 type ModeState =
+  | { mode: 'list' }
   | { mode: 'select-event' }
   | { mode: 'select-matcher'; event: HookEvent }
   | { mode: 'select-hook'; event: HookEvent; matcher: string }
-  | { mode: 'view-hook'; event: HookEvent; hook: IndividualHookConfig }
+  | {
+      mode: 'view-hook'
+      event: HookEvent
+      hook: IndividualHookConfig
+      from: 'list' | 'select-hook'
+    }
 
 export function HooksConfigMenu({ toolNames, onExit }: Props): React.ReactNode {
-  const [modeState, setModeState] = useState<ModeState>({
-    mode: 'select-event',
-  })
+  const [modeState, setModeState] = useState<ModeState>({ mode: 'list' })
+  const [listFocusIndex, setListFocusIndex] = useState(0)
   // Cache whether hooks are disabled by policy settings.
   // getSettingsForSource() is expensive (file read + JSON parse + validation),
   // so we compute it once on mount and only re-compute when policy settings change.
@@ -128,11 +135,23 @@ export function HooksConfigMenu({ toolNames, onExit }: Props): React.ReactNode {
     onExit('Hooks dialog dismissed', { display: 'system' })
   }, [onExit])
 
-  // Escape handling for select-event mode - exit the menu
+  // Escape handling for list mode - exit the menu
   useKeybinding('confirm:no', handleExit, {
     context: 'Confirmation',
-    isActive: mode === 'select-event',
+    isActive: mode === 'list',
   })
+
+  // Escape handling for select-event mode - back to the list
+  useKeybinding(
+    'confirm:no',
+    () => {
+      setModeState({ mode: 'list' })
+    },
+    {
+      context: 'Confirmation',
+      isActive: mode === 'select-event',
+    },
+  )
 
   // Escape handling for select-matcher mode - go to select-event
   useKeybinding(
@@ -166,19 +185,23 @@ export function HooksConfigMenu({ toolNames, onExit }: Props): React.ReactNode {
     },
   )
 
-  // Escape handling for view-hook mode - go to select-hook
+  // Escape handling for view-hook mode - back to where it was opened from
+  const closeViewHook = useCallback(() => {
+    if (modeState.mode !== 'view-hook') return
+    const { event, hook, from } = modeState
+    if (from === 'list') {
+      setModeState({ mode: 'list' })
+      return
+    }
+    setModeState({
+      mode: 'select-hook',
+      event,
+      matcher: hook.matcher || '',
+    })
+  }, [modeState])
   useKeybinding(
     'confirm:no',
-    () => {
-      if (modeState.mode === 'view-hook') {
-        const { event, hook } = modeState
-        setModeState({
-          mode: 'select-hook',
-          event,
-          matcher: hook.matcher || '',
-        })
-      }
-    },
+    closeViewHook,
     {
       context: 'Confirmation',
       isActive: mode === 'view-hook',
@@ -246,13 +269,33 @@ export function HooksConfigMenu({ toolNames, onExit }: Props): React.ReactNode {
   }
 
   switch (modeState.mode) {
+    case 'list':
+      return (
+        <HooksListMode
+          hookEventMetadata={hookEventMetadata}
+          hooksByEventAndMatcher={hooksByEventAndMatcher}
+          restrictedByPolicy={restrictedByPolicy}
+          defaultFocusIndex={listFocusIndex}
+          onFocusRow={setListFocusIndex}
+          onSelectHook={hook => {
+            setModeState({
+              mode: 'view-hook',
+              event: hook.event,
+              hook,
+              from: 'list',
+            })
+          }}
+          onOpenEvents={() => {
+            setModeState({ mode: 'select-event' })
+          }}
+          onCancel={handleExit}
+        />
+      )
     case 'select-event':
       return (
         <SelectEventMode
           hookEventMetadata={hookEventMetadata}
           hooksByEvent={hooksByEvent}
-          totalHooksCount={totalHooksCount}
-          restrictedByPolicy={restrictedByPolicy}
           onSelectEvent={event => {
             if (getMatcherMetadata(event, combinedToolNames) !== undefined) {
               setModeState({ mode: 'select-matcher', event })
@@ -260,7 +303,9 @@ export function HooksConfigMenu({ toolNames, onExit }: Props): React.ReactNode {
               setModeState({ mode: 'select-hook', event, matcher: '' })
             }
           }}
-          onCancel={handleExit}
+          onCancel={() => {
+            setModeState({ mode: 'list' })
+          }}
         />
       )
     case 'select-matcher':
@@ -294,6 +339,7 @@ export function HooksConfigMenu({ toolNames, onExit }: Props): React.ReactNode {
               mode: 'view-hook',
               event: modeState.event,
               hook,
+              from: 'select-hook',
             })
           }}
           onCancel={() => {
@@ -319,14 +365,7 @@ export function HooksConfigMenu({ toolNames, onExit }: Props): React.ReactNode {
           eventSupportsMatcher={
             getMatcherMetadata(modeState.event, combinedToolNames) !== undefined
           }
-          onCancel={() => {
-            const { event, hook } = modeState
-            setModeState({
-              mode: 'select-hook',
-              event,
-              matcher: hook.matcher || '',
-            })
-          }}
+          onCancel={closeViewHook}
         />
       )
   }

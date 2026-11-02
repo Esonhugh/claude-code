@@ -16,6 +16,7 @@ const ENV_KEYS = [
   'CLAUDE_CODE_MAX_RETRIES',
   'CLAUDE_CODE_OVERLOADED_RETRY_BASE_DELAY_MS',
   'CLAUDE_CODE_OVERLOADED_RETRY_MAX_DELAY_MS',
+  'CLAUDE_CODE_USE_BEDROCK',
 ] as const
 const savedEnv = Object.fromEntries(ENV_KEYS.map(k => [k, process.env[k]]))
 
@@ -210,4 +211,21 @@ test('a configured fallback model triggers after repeated 529s for any primary m
 
   const sameModel = await run(overloaded, 4, 'claude-sonnet-4-6')
   expect(sameModel.error).not.toBeInstanceOf(FallbackTriggeredError)
+})
+
+test('Bedrock stops after two credential refreshes when no AWS credentials load', async () => {
+  process.env.CLAUDE_CODE_USE_BEDROCK = '1'
+  const credentialError = () =>
+    Object.assign(new Error('Could not load credentials from any providers'), {
+      name: 'CredentialsProviderError',
+    })
+  const missing = await run(credentialError, 10)
+  expect(missing.error).toBeInstanceOf(CannotRetryError)
+  expect(missing.attempts).toBe(3)
+
+  const refreshed = await run(
+    attempt => (attempt < 3 ? credentialError() : null),
+    10,
+  )
+  expect(refreshed.result).toBe('ok')
 })

@@ -85,12 +85,16 @@ type State = {
   sdkAgentProgressSummariesEnabled: boolean
   userMsgOptIn: boolean
   todoToolsOptIn: boolean
+  searchToolsOptIn: boolean
   permissionPromptToolName: string | undefined
   clientType: string
   sessionSource: string | undefined
   questionPreviewFormat: 'markdown' | 'html' | undefined
   flagSettingsPath: string | undefined
   flagSettingsInline: Record<string, unknown> | null
+  cliAutoCompactWindow: number | 'auto' | undefined
+  forwardSubagentText: boolean
+  restrictedSession: boolean
   parentManagedSettings: Record<string, unknown> | null
   projectConfigRoot: string | null
   allowedSettingSources: SettingSource[]
@@ -269,6 +273,8 @@ type State = {
   // logAPISuccess to tag the first post-compaction API call so we can
   // distinguish compaction-induced cache misses from TTL expiry.
   pendingPostCompaction: boolean
+  // Same signal for the /usage prompt-cache line (consumed separately).
+  pendingCacheRebuild: boolean
 }
 
 // ALSO HERE - THINK THRICE BEFORE MODIFYING
@@ -322,6 +328,7 @@ function getInitialState(): State {
     sdkAgentProgressSummariesEnabled: false,
     userMsgOptIn: false,
     todoToolsOptIn: false,
+    searchToolsOptIn: false,
     permissionPromptToolName: undefined,
     clientType: 'cli',
     sessionSource: undefined,
@@ -331,6 +338,9 @@ function getInitialState(): State {
     apiKeyFromFd: undefined,
     flagSettingsPath: undefined,
     flagSettingsInline: null,
+    cliAutoCompactWindow: undefined,
+    forwardSubagentText: false,
+    restrictedSession: false,
     parentManagedSettings: null,
     projectConfigRoot: null,
     allowedSettingSources: [
@@ -446,6 +456,7 @@ function getInitialState(): State {
     lastMainRequestId: undefined,
     lastApiCompletionTimestamp: null,
     pendingPostCompaction: false,
+    pendingCacheRebuild: false,
   }
 
   return state
@@ -822,6 +833,17 @@ export function setLastApiCompletionTimestamp(timestamp: number): void {
  *  include isPostCompaction=true, then the flag auto-resets. */
 export function markPostCompaction(): void {
   STATE.pendingPostCompaction = true
+  STATE.pendingCacheRebuild = true
+}
+
+export function isCacheRebuildPending(): boolean {
+  return STATE.pendingCacheRebuild
+}
+
+export function consumeCacheRebuild(): boolean {
+  const was = STATE.pendingCacheRebuild
+  STATE.pendingCacheRebuild = false
+  return was
 }
 
 /** Consume the post-compaction flag. Returns true once after compaction,
@@ -1193,6 +1215,15 @@ export function setTodoToolsOptIn(value: boolean): void {
   STATE.todoToolsOptIn = value
 }
 
+// Set when --tools or --allowedTools names Glob or Grep.
+export function getSearchToolsOptIn(): boolean {
+  return STATE.searchToolsOptIn
+}
+
+export function setSearchToolsOptIn(value: boolean): void {
+  STATE.searchToolsOptIn = value
+}
+
 // Who answers permission prompts in a non-interactive session ('stdio' for
 // SDK hosts, an MCP tool name, or undefined when nobody does).
 export function getPermissionPromptToolName(): string | undefined {
@@ -1239,6 +1270,33 @@ export function setFlagSettingsInline(
   settings: Record<string, unknown> | null,
 ): void {
   STATE.flagSettingsInline = settings
+}
+
+/** --autocompact for this session; it wins over settings files. */
+export function getCliAutoCompactWindow(): number | 'auto' | undefined {
+  return STATE.cliAutoCompactWindow
+}
+
+export function setCliAutoCompactWindow(value: number | 'auto' | undefined): void {
+  STATE.cliAutoCompactWindow = value
+}
+
+/** --forward-subagent-text: SDK output also carries subagent text and thinking. */
+export function getForwardSubagentText(): boolean {
+  return STATE.forwardSubagentText
+}
+
+export function setForwardSubagentText(value: boolean): void {
+  STATE.forwardSubagentText = value
+}
+
+/** --restricted (or CLAUDE_CODE_RESTRICTED): no code-running tools, no user/project/local settings. */
+export function isRestrictedSession(): boolean {
+  return STATE.restrictedSession
+}
+
+export function setRestrictedSession(value: boolean): void {
+  STATE.restrictedSession = value
 }
 
 /** Policy-tier settings from --managed-settings (the SDK's managedSettings option). */

@@ -14,11 +14,11 @@ import type { ContentBlockParam } from '@anthropic-ai/sdk/resources/messages.mjs
 
 export const EXTERNAL_PERMISSION_MODES = [
   'acceptEdits',
+  'auto',
   'bypassPermissions',
   'default',
   'dontAsk',
   'plan',
-  'auto',
 ] as const
 
 export type ExternalPermissionMode = (typeof EXTERNAL_PERMISSION_MODES)[number]
@@ -230,6 +230,11 @@ export type PermissionAskDecision<
    * message in the tool result. Used when users paste images as feedback.
    */
   contentBlocks?: ContentBlockParam[]
+  /**
+   * The deny comment a human typed at a permission prompt (local dialog or a
+   * bridge client), reported as SDK tool_result_meta.user_feedback.
+   */
+  userFeedback?: string
 }
 
 /**
@@ -413,19 +418,6 @@ export type YoloClassifierResult = {
   stage2RequestId?: string
   /** API message id (msg_xxx) for stage 2 (set whenever stage 2 ran) */
   stage2MsgId?: string
-}
-
-// ============================================================================
-// Permission Explainer Types
-// ============================================================================
-
-export type RiskLevel = 'LOW' | 'MEDIUM' | 'HIGH'
-
-export type PermissionExplanation = {
-  riskLevel: RiskLevel
-  explanation: string
-  reasoning: string
-  risk: string
 }
 
 // ============================================================================

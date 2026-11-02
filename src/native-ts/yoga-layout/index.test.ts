@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test'
-import Yoga, { FlexDirection, MeasureMode, Overflow } from './index.js'
+import Yoga, { Edge, FlexDirection, MeasureMode, Overflow } from './index.js'
 
 test('resizing scroll content repositions a fixed suffix after a flexible label', () => {
   const box = (parent?: ReturnType<typeof Yoga.Node.create>) => {
@@ -46,6 +46,36 @@ test('resizing scroll content repositions a fixed suffix after a flexible label'
       expect(suffix.getComputedLeft()).toBe(labelBox.getComputedWidth())
       expect(suffix.getComputedLeft() + suffix.getComputedWidth()).toBe(width)
     }
+  } finally {
+    root.freeRecursive()
+  }
+})
+
+test('a shrink-to-fit column measures a negative-margin child at its own width', () => {
+  const root = Yoga.Node.create()
+  root.setFlexDirection(FlexDirection.Row)
+  root.setWidth(40)
+  const column = Yoga.Node.create()
+  column.setFlexDirection(FlexDirection.Column)
+  column.setFlexShrink(0)
+  root.insertChild(column, 0)
+  const row = Yoga.Node.create()
+  row.setFlexDirection(FlexDirection.Row)
+  row.setMargin(Edge.Left, -1)
+  column.insertChild(row, 0)
+  for (let i = 0; i < 5; i++) {
+    const cell = Yoga.Node.create()
+    cell.setFlexShrink(1)
+    cell.setMeasureFunc(width => (width >= 2 ? { width: 2, height: 1 } : { width: 1, height: 2 }))
+    row.insertChild(cell, i)
+  }
+
+  try {
+    root.calculateLayout(40, undefined)
+    expect(column.getComputedWidth()).toBe(9)
+    expect(row.getComputedWidth()).toBe(10)
+    expect(row.getComputedHeight()).toBe(1)
+    expect(column.getComputedHeight()).toBe(1)
   } finally {
     root.freeRecursive()
   }

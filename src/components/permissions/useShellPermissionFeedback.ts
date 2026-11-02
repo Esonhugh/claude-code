@@ -17,12 +17,10 @@ export function useShellPermissionFeedback({
   toolUseConfirm,
   onDone,
   onReject,
-  explainerVisible,
 }: {
   toolUseConfirm: ToolUseConfirm
   onDone: () => void
   onReject: () => void
-  explainerVisible: boolean
 }): {
   yesInputMode: boolean
   noInputMode: boolean
@@ -85,9 +83,7 @@ export function useShellPermissionFeedback({
 
     // Log escape if no feedback was provided (user pressed ESC)
     if (!hasFeedback) {
-      logEvent('tengu_permission_request_escape', {
-        explainer_visible: explainerVisible,
-      })
+      logEvent('tengu_permission_request_escape', {})
       // Increment escape count for attribution tracking
       setAppState(prev => ({
         ...prev,

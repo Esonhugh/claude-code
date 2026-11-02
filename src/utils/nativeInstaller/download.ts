@@ -125,7 +125,7 @@ export async function getLatestVersion(
   const channel = channelOrVersion as ReleaseChannel
   if (channel !== 'stable' && channel !== 'latest') {
     throw new Error(
-      `Invalid channel: ${channelOrVersion}. Use 'stable' or 'latest'`,
+      `Invalid channel: ${channelOrVersion}. Use 'latest' or 'stable'`,
     )
   }
 

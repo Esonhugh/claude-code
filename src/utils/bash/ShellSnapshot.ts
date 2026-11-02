@@ -8,7 +8,7 @@ import { registerCleanup } from '../cleanupRegistry.js'
 import { getCwd } from '../cwd.js'
 import { logForDebugging } from '../debug.js'
 import {
-  embeddedSearchToolsBinaryPath,
+  embeddedSearchToolPaths,
   hasEmbeddedSearchTools,
 } from '../embeddedTools.js'
 import { getClaudeConfigHomeDir } from '../envUtils.js'
@@ -26,7 +26,7 @@ const SNAPSHOT_CREATION_TIMEOUT = 10000 // 10 seconds
 /**
  * Creates a shell function that invokes `binaryPath` with a specific argv[0].
  * This uses the bun-internal ARGV0 dispatch trick: the bun binary checks its
- * argv[0] and runs the embedded tool (rg, bfs, ugrep) that matches.
+ * argv[0] and runs the embedded tool (rg) that matches.
  *
  * @param prependArgs - Arguments to inject before the user's args (e.g.,
  *   default flags). Injected literally; each element must be a valid shell
@@ -57,6 +57,55 @@ function createArgv0ShellFunction(
     '}',
   ].join('\n')
 }
+
+/**
+ * Creates a shell function that runs `binaryPath` in place of `funcName`.
+ * Like official 2.1.311, it falls back to the system command when the binary
+ * is gone or an argument matches one of `passthroughPatterns` (unquoted case
+ * patterns), so options the shadowing tool would treat differently keep
+ * their system meaning.
+ */
+function createSearchToolShellFunction(
+  funcName: string,
+  binaryPath: string,
+  prependArgs: string[],
+  passthroughPatterns: string[] = [],
+): string {
+  const quotedPath = quote([binaryPath])
+  return [
+    `function ${funcName} {`,
+    ...(passthroughPatterns.length > 0
+      ? [
+          '  local _cc_a',
+          '  for _cc_a in "$@"; do',
+          `    case "$_cc_a" in ${passthroughPatterns.join('|')}) command ${funcName} "$@"; return ;; esac`,
+          '  done',
+        ]
+      : []),
+    `  if [[ ! -x ${quotedPath} ]]; then command ${funcName} "$@"; return; fi`,
+    `  ${quotedPath} ${prependArgs.join(' ')} "$@"`,
+    '}',
+  ].join('\n')
+}
+
+/**
+ * ugrep options that run commands, read or write config files, or change the
+ * input format. Like official 2.1.311 these go to the system grep.
+ */
+const UGREP_PASSTHROUGH_PATTERNS = [
+  '-*-filter*',
+  '-*-pager*',
+  '-*-view*',
+  '-*-format-open*',
+  '-*-config*',
+  '---*',
+  '-@*',
+  '-*-save-config*',
+  '-[Zz]*',
+  '-[!-]*[Zz]*',
+  '--null',
+  '--null-data',
+]
 
 /**
  * Creates ripgrep shell integration (alias or function)
@@ -105,8 +154,8 @@ const VCS_DIRECTORIES_TO_EXCLUDE = [
 ] as const
 
 /**
- * Creates shell integration for `find` and `grep`, backed by bfs and ugrep
- * embedded in the bun binary (ant-native only). Unlike the rg integration,
+ * Creates shell integration for `find` and `grep`, backed by the bfs and
+ * ugrep embedded in Linux and macOS release builds. Unlike the rg integration,
  * this always shadows the system find/grep since bfs/ugrep are drop-in
  * replacements and we want consistent fast behavior.
  *
@@ -115,6 +164,8 @@ const VCS_DIRECTORIES_TO_EXCLUDE = [
  * so they're tuned to match those tools' semantics, not GNU find/grep.
  *
  * `find` ↔ GlobTool:
+ * - Inject `-S dfs`: depth-first order like GNU find (bfs defaults to
+ *   breadth-first).
  * - Inject `-regextype findutils-default`: bfs defaults to POSIX BRE for
  *   -regex, but GNU find defaults to emacs-flavor (which supports `\|`
  *   alternation). Without this, `find . -regex '.*\.\(js\|ts\)'` silently
@@ -154,7 +205,7 @@ export function createFindGrepShellIntegration(): string | null {
   if (!hasEmbeddedSearchTools()) {
     return null
   }
-  const binaryPath = embeddedSearchToolsBinaryPath()
+  const { bfs, ugrep } = embeddedSearchToolPaths()
   return [
     // User shell configs may define aliases like `alias find=gfind` or
     // `alias grep=ggrep` (common on macOS with Homebrew GNU tools). The
@@ -164,17 +215,24 @@ export function createFindGrepShellIntegration(): string | null {
     // (same fix the rg integration uses).
     'unalias find 2>/dev/null || true',
     'unalias grep 2>/dev/null || true',
-    createArgv0ShellFunction('find', 'bfs', binaryPath, [
+    createSearchToolShellFunction('find', bfs, [
+      '-S',
+      'dfs',
       '-regextype',
       'findutils-default',
     ]),
-    createArgv0ShellFunction('grep', 'ugrep', binaryPath, [
-      '-G',
-      '--ignore-files',
-      '--hidden',
-      '-I',
-      ...VCS_DIRECTORIES_TO_EXCLUDE.map(d => `--exclude-dir=${d}`),
-    ]),
+    createSearchToolShellFunction(
+      'grep',
+      ugrep,
+      [
+        '-G',
+        '--ignore-files',
+        '--hidden',
+        '-I',
+        ...VCS_DIRECTORIES_TO_EXCLUDE.map(d => `--exclude-dir=${d}`),
+      ],
+      UGREP_PASSTHROUGH_PATTERNS,
+    ),
   ].join('\n')
 }
 
@@ -314,14 +372,14 @@ RIPGREP_FUNC_END
       echo "fi" >> "$SNAPSHOT_FILE"
   `
 
-  // For ant-native builds, shadow find/grep with bfs/ugrep embedded in the bun
-  // binary. Unlike rg (which only activates if system rg is absent), we always
+  // For release builds, shadow find/grep with the embedded bfs/ugrep.
+  // Unlike rg (which only activates if system rg is absent), we always
   // shadow find/grep since bfs/ugrep are drop-in replacements and we want
   // consistent fast behavior in Claude's shell.
   const findGrepIntegration = createFindGrepShellIntegration()
   if (findGrepIntegration !== null) {
     content += `
-      # Shadow find/grep with embedded bfs/ugrep (ant-native only)
+      # Shadow find/grep with embedded bfs/ugrep
       echo "# Shadow find/grep with embedded bfs/ugrep" >> "$SNAPSHOT_FILE"
       cat >> "$SNAPSHOT_FILE" << 'FIND_GREP_FUNC_END'
 ${findGrepIntegration}

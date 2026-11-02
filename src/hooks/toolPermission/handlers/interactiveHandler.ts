@@ -220,7 +220,10 @@ function handleInteractivePermission(
         },
         { permissionPromptStartTimeMs },
       )
-      resolveOnce(ctx.cancelAndAbort(feedback, undefined, contentBlocks))
+      resolveOnce({
+        ...ctx.cancelAndAbort(feedback, undefined, contentBlocks),
+        ...(feedback && { userFeedback: feedback }),
+      })
     },
     async recheckPermission() {
       if (requiresExplicitUserApproval || isResolved()) return
@@ -313,7 +316,10 @@ function handleInteractivePermission(
             },
             { permissionPromptStartTimeMs },
           )
-          resolveOnce(ctx.cancelAndAbort(response.message))
+          resolveOnce({
+            ...ctx.cancelAndAbort(response.message),
+            ...(response.message && { userFeedback: response.message }),
+          })
         }
       },
     )

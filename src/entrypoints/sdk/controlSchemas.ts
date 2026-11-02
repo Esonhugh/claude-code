@@ -17,6 +17,7 @@ import {
   AccountInfoSchema,
   AgentDefinitionSchema,
   AgentInfoSchema,
+  FastModeDisabledReasonSchema,
   FastModeStateSchema,
   HookEventSchema,
   HookInputSchema,
@@ -82,6 +83,7 @@ export const SDKControlInitializeRequestSchema = lazySchema(() =>
       agents: z.record(z.string(), AgentDefinitionSchema()).optional(),
       promptSuggestions: z.boolean().optional(),
       agentProgressSummaries: z.boolean().optional(),
+      forwardSubagentText: z.boolean().optional(),
     })
     .describe(
       'Initializes the SDK session with hooks, MCP servers, and agent configuration.',
@@ -103,6 +105,18 @@ export const SDKControlInitializeResponseSchema = lazySchema(() =>
         .optional()
         .describe('@internal CLI process PID for tmux socket isolation'),
       fast_mode_state: FastModeStateSchema().optional(),
+      fast_mode_disabled_reason: FastModeDisabledReasonSchema().optional(),
+      session_state: z
+        .enum(['idle', 'running', 'requires_action'])
+        .optional()
+        .describe("The session's state when this reply was sent."),
+      claude_code_version: z.string().optional(),
+      current_permission_mode: z.string().optional(),
+      user_output_styles_dir: z.string().optional(),
+      analytics_disabled: z.boolean().optional(),
+      feedback_mode: z
+        .object({ kind: z.enum(['post', 'bundle', 'share', 'disabled']) })
+        .optional(),
     })
     .describe(
       'Response from session initialization with available commands, models, and account info.',
@@ -286,6 +300,7 @@ export const SDKControlGetContextUsageRequestSchema = lazySchema(() =>
 
 const ContextCategorySchema = lazySchema(() =>
   z.object({
+    id: z.string().optional(),
     name: z.string(),
     tokens: z.number(),
     color: z.string(),
@@ -329,6 +344,12 @@ export const SDKControlGetContextUsageResponseSchema = lazySchema(() =>
           isLoaded: z.boolean().optional(),
         }),
       ),
+      mcpInstructions: z
+        .array(z.object({ serverName: z.string(), tokens: z.number() }))
+        .optional()
+        .describe(
+          "The 'mcp_instructions' row by server. Only the row's total is counted: each server's share of it is estimated from the length of its text.",
+        ),
       deferredBuiltinTools: z
         .array(
           z.object({
@@ -381,6 +402,8 @@ export const SDKControlGetContextUsageResponseSchema = lazySchema(() =>
           attachmentTokens: z.number(),
           assistantMessageTokens: z.number(),
           userMessageTokens: z.number(),
+          redirectedContextTokens: z.number(),
+          unattributedTokens: z.number(),
           toolCallsByType: z.array(
             z.object({
               name: z.string(),
@@ -425,6 +448,9 @@ export const SDKControlRewindFilesResponseSchema = lazySchema(() =>
       filesChanged: z.array(z.string()).optional(),
       insertions: z.number().optional(),
       deletions: z.number().optional(),
+      skippedLinks: z.number().optional().describe(
+        'Count of tracked files NOT restored or deleted because a symlink, hard link, or other non-regular file was detected at the tracked path, its parent directory no longer resolves to where it pointed when the checkpoint was taken, or its backup could not be safely read. Only populated by a real (non-dryRun) rewind — on a dryRun response the field is never set and the preview counts do not reflect link-safety refusals. Absent or 0 on a real rewind means no link-safety refusals occurred; other per-file failures (for example a missing backup file) are not counted here; they are reported in telemetry, and when every differing file fails to restore the rewind itself fails (canRewind: false).',
+      ),
     })
     .describe('Result of a rewindFiles operation.'),
 )
@@ -563,6 +589,43 @@ export const SDKControlStopTaskRequestSchema = lazySchema(() =>
     .describe('Stops a running task.'),
 )
 
+export const SDKControlSetCwdRequestSchema = lazySchema(() =>
+  z
+    .object({
+      subtype: z.literal('set_cwd'),
+      path: z.string(),
+      trust_accepted: z.boolean().optional(),
+      trusted_directory: z.string().optional(),
+    })
+    .describe(
+      'Moves the session to a new working directory, the headless twin of /cd. Answers {status: "ok" | "needs_trust" | "rejected"}; on needs_trust, re-send with trust_accepted: true and trusted_directory echoing the directory after the user accepts. Rejected while a turn is in flight.',
+    ),
+)
+
+export const SDKControlRewindConversationRequestSchema = lazySchema(() =>
+  z
+    .object({
+      subtype: z.literal('rewind_conversation'),
+      target_message_uuid: z.string(),
+      last_seen_user_message_uuid: z.string().describe('The newest user message the host has shown; a rewind that would drop a later one is refused (unseen_later_turn, or stale_target when it is missing).'),
+    })
+    .describe(
+      'Drops the target user message and everything after it, as picking it in /rewind does. Answers {rewound, targetMessageUuid, prefillText, precedingAssistantUuid}, or rewound: false with error and reason. Files are restored separately with rewind_files.',
+    ),
+)
+
+export const SDKControlSendTaskMessageRequestSchema = lazySchema(() =>
+  z
+    .object({
+      subtype: z.literal('send_task_message'),
+      task_id: z.string(),
+      text: z.string(),
+    })
+    .describe(
+      'Fork-only. Sends a user message to a subagent or teammate task, as typing into its view does in the REPL: a running agent gets it at its next tool round (queued), an ended one is resumed with it (resumed), a running teammate gets it injected (injected).',
+    ),
+)
+
 export const SDKControlApplyFlagSettingsRequestSchema = lazySchema(() =>
   z
     .object({
@@ -688,6 +751,9 @@ export const SDKControlRequestInnerSchema = lazySchema(() =>
     SDKControlMcpReconnectRequestSchema(),
     SDKControlMcpToggleRequestSchema(),
     SDKControlStopTaskRequestSchema(),
+    SDKControlSendTaskMessageRequestSchema(),
+    SDKControlSetCwdRequestSchema(),
+    SDKControlRewindConversationRequestSchema(),
     SDKControlApplyFlagSettingsRequestSchema(),
     SDKControlGetSettingsRequestSchema(),
     SDKControlElicitationRequestSchema(),

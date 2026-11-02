@@ -6,6 +6,7 @@ import type {
   ImageBlockParam,
 } from '@anthropic-ai/sdk/resources/messages.mjs'
 import { createHash, randomUUID } from 'crypto'
+import { setPromptId } from '../../bootstrap/state.js'
 import type { QuerySource } from 'src/constants/querySource.js'
 import { logEvent } from 'src/services/analytics/index.js'
 import {
@@ -195,7 +196,10 @@ export async function processUserInput({
   // UserPromptSubmit screens a skill or custom command before it expands, so a
   // blocking hook also stops the shell commands embedded in it (2.1.299).
   let screened: ProcessUserInputBaseResult | undefined
+  let screenedPromptId: string | undefined
   if (!skipHooks && !isRemoteShellInput && !deferCommands && expandsPromptCommand()) {
+    screenedPromptId = randomUUID()
+    setPromptId(screenedPromptId)
     screened = await runClassicHooks(
       { messages: [], shouldQuery: true },
       getContentText(input) || '',
@@ -225,10 +229,12 @@ export async function processUserInput({
     skipAttachments || isRemoteShellInput || promptSubmitMetadata?.origin.kind === 'plugin',
     preExpansionInput,
     deferCommands,
+    screenedPromptId,
   )
   queryCheckpoint('query_process_user_input_base_end')
 
-  if (!result.shouldQuery || isRemoteShellInput || skipHooks || screened) {
+  // A `!` command Claude responds to still skips UserPromptSubmit, like 2.1.311.
+  if (!result.shouldQuery || isRemoteShellInput || skipHooks || screened || mode === 'bash') {
     if (screened && result.shouldQuery) result.messages.push(...screened.messages)
     applyPluginPromptOrigin(result)
     if (!result.deferred) onPromptAdmission?.(result)
@@ -663,6 +669,7 @@ async function processUserInputBase(
   skipAttachments?: boolean,
   preExpansionInput?: string,
   deferCommands?: boolean,
+  promptId?: string,
 ): Promise<ProcessUserInputBaseResult & { isRegularPrompt?: boolean }> {
   let inputString: string | null = null
   let precedingInputBlocks: ContentBlockParam[] = []
@@ -916,6 +923,8 @@ async function processUserInputBase(
       uuid,
       isAlreadyProcessing,
       canUseTool,
+      undefined,
+      promptId,
     )
     return addImageMetadataMessage(slashResult, imageMetadataTexts)
   }

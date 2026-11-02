@@ -1,6 +1,6 @@
 // biome-ignore-all assist/source/organizeImports: ANT-ONLY import markers must not be reordered
 import * as React from 'react'
-import { Box, Text, color } from '../../ink.js'
+import { Box, Text, color, isScreenReaderEnabled } from '../../ink.js'
 import { useTerminalSize } from '../../hooks/useTerminalSize.js'
 import { stringWidth } from '../../ink/stringWidth.js'
 import {
@@ -181,9 +181,10 @@ export function LogoV2(): React.ReactNode {
 
   // Show condensed logo if no new changelog and not showing onboarding and not forcing full logo
   if (
-    !hasReleaseNotes &&
-    !showOnboarding &&
-    !isEnvTruthy(process.env.CLAUDE_CODE_FORCE_FULL_LOGO)
+    isScreenReaderEnabled() ||
+    (!hasReleaseNotes &&
+      !showOnboarding &&
+      !isEnvTruthy(process.env.CLAUDE_CODE_FORCE_FULL_LOGO))
   ) {
     return (
       <>

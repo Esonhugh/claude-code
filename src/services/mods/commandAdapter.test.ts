@@ -91,6 +91,8 @@ function context(commands: Command[]): ProcessUserInputContext {
     getAppState: () => ({
       sessionState: { sessionHooks: {} },
       fileHistory: { snapshots: [] },
+      sessionHooks: new Map(),
+      toolPermissionContext: { mode: 'default' },
     }),
     setAppState() {},
   } as unknown as ProcessUserInputContext

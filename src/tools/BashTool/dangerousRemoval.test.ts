@@ -22,6 +22,24 @@ function expectMandatory(command: string, directory = cwd, env: Record<string, s
 }
 
 describe('dangerous removal analysis', () => {
+  test('sees removals behind exec, setsid, ionice, busybox, doas and pkexec', () => {
+    for (const command of [
+      'exec rm -rf /',
+      'exec -a name rm -rf /',
+      'setsid -f rm -rf /',
+      'ionice -c 3 rm -rf /',
+      'busybox rm -rf /',
+      'doas -u root rm -rf /',
+      'pkexec --user root rm -rf /',
+      "exec sh -c 'rm -rf /'",
+    ])
+      expectMandatory(command)
+    expect(check('exec rm -rf build').behavior).toBe('passthrough')
+  })
+  test('asks for a shell -c script built from a variable when the command mentions rm', () => {
+    expectMandatory('CMD="rm -rf /"; bash -c "$CMD"')
+    expect(check('CMD="ls"; bash -c "$CMD"').behavior).toBe('passthrough')
+  })
   test('requires explicit approval for rm -rf "$HOME/.config"', () => {
     expectMandatory('rm -rf "$HOME/.config"')
   })

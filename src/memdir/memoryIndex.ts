@@ -48,7 +48,7 @@ const MIN_TRIGRAM_CHARS = 3
 let db: Database | undefined
 let dbPath: string | undefined
 
-function defaultIndexPath(): string {
+export function defaultIndexPath(): string {
   return join(getClaudeConfigHomeDir(), 'memory-index.sqlite')
 }
 
@@ -245,8 +245,31 @@ function prune(index: Database, { files, dirs }: Listing): void {
   }
 }
 
+const CJK_OR_OTHER = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]+|[^\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]+/gu
+const CJK_CHAR = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]/u
+
+/**
+ * Chinese and Japanese write words without spaces, so a whole sentence would
+ * be one phrase that never matches. Split such runs into overlapping
+ * trigrams; any of them may match, and bm25 ranks chunks sharing more first.
+ */
+function splitCjk(word: string): string[] {
+  return (word.match(CJK_OR_OTHER) ?? []).flatMap(part => {
+    const chars = [...part]
+    if (!CJK_CHAR.test(part) || chars.length <= MIN_TRIGRAM_CHARS) return [part]
+    return Array.from({ length: chars.length - MIN_TRIGRAM_CHARS + 1 }, (_, i) =>
+      chars.slice(i, i + MIN_TRIGRAM_CHARS).join(''),
+    )
+  })
+}
+
+/** True when a prompt has CJK text, which carries several words without spaces. */
+export function hasCjk(text: string): boolean {
+  return CJK_CHAR.test(text)
+}
+
 function terms(query: string): string[] {
-  return query.split(/\s+/).map(t => t.trim()).filter(Boolean)
+  return [...new Set(query.split(/\s+/).filter(Boolean).flatMap(splitCjk))]
 }
 
 export async function searchMemory(params: {
@@ -314,6 +337,7 @@ export async function findMemoryFilesForPrompt(params: {
       params.prompt
         .toLowerCase()
         .split(/[^\p{L}\p{N}_-]+/u)
+        .flatMap(splitCjk)
         .filter(w => [...w].length >= MIN_TRIGRAM_CHARS && !RECALL_STOPWORDS.has(w)),
     ),
   ]
@@ -353,6 +377,36 @@ export async function buildMemoryIndex(scopes: readonly MemoryScope[]): Promise<
   index.run("INSERT OR REPLACE INTO meta (key, value) VALUES ('built_at', ?)", [String(Date.now())])
   index.run('VACUUM')
   return getMemoryIndexStatus()
+}
+
+/** Rows that index one project's memory and transcripts; `claude purge` removes them. */
+export function countProjectIndexRows(projectDir: string): number {
+  return projectIndexRows(projectDir, false)
+}
+
+export function deleteProjectIndexRows(projectDir: string): void {
+  projectIndexRows(projectDir, true)
+}
+
+function projectIndexRows(projectDir: string, remove: boolean): number {
+  const path = dbPath ?? defaultIndexPath()
+  // Never create an index just to purge it.
+  if (!db && (path === ':memory:' || !existsSync(path))) return 0
+  const index = openIndex()
+  const project = basename(projectDir)
+  const prefix = resolve(projectDir) + sep
+  const where = 'substr(path, 1, ?) = ?'
+  const args = [prefix.length, prefix] as const
+  if (remove) {
+    index.transaction(() => {
+      index.run(`DELETE FROM chunks WHERE project = ? OR ${where}`, [project, ...args])
+      index.run(`DELETE FROM files WHERE ${where}`, [...args])
+    })()
+    return 0
+  }
+  const chunks = index.query(`SELECT count(*) AS n FROM chunks WHERE project = ? OR ${where}`).get(project, ...args) as { n: number }
+  const files = index.query(`SELECT count(*) AS n FROM files WHERE ${where}`).get(...args) as { n: number }
+  return chunks.n + files.n
 }
 
 export function getMemoryIndexStatus(): MemoryIndexStatus {

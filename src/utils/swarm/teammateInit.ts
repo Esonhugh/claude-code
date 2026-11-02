@@ -13,6 +13,7 @@ import { jsonStringify } from '../slowOperations.js'
 import { getTeammateColor } from '../teammate.js'
 import {
   createIdleNotification,
+  getIdleResult,
   getLastPeerDmSummary,
   writeToMailbox,
 } from '../teammateMailbox.js'
@@ -109,6 +110,7 @@ export function initializeTeammateHooks(
       const notification = createIdleNotification(agentName, {
         idleReason: 'available',
         summary: getLastPeerDmSummary(messages),
+        result: getIdleResult(messages),
       })
       await writeToMailbox(leadAgentName, {
         from: agentName,

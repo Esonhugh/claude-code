@@ -179,3 +179,27 @@ test('main-screen full reset continues advancing rows with newlines', () => {
   expect(output).not.toContain('\u001b[1;1H')
   expect(output).not.toContain('\u001b[2;1H')
 })
+
+test('no synchronized-update markers are written when stdout is not a terminal', () => {
+  const chunks: string[] = []
+  const stdout = {
+    write(chunk: string | Uint8Array) {
+      chunks.push(chunk.toString())
+      return true
+    },
+  } as NodeJS.WriteStream
+  writeDiffToTerminal({ stdout, stderr: process.stderr }, [
+    { type: 'stdout', content: 'Checking installation status...' },
+  ])
+  expect(chunks.join('')).toBe('Checking installation status...')
+})
+
+test('a non-TTY re-render of an unchanged frame writes nothing', () => {
+  const stylePool = new StylePool()
+  const [prev, next] = resetFrames(stylePool)
+  const log = new LogUpdate({ isTTY: false, stylePool })
+  expect(log.render(prev, next)).toEqual([
+    { type: 'stdout', content: 'next\nlast' },
+  ])
+  expect(log.render(next, next)).toEqual([])
+})

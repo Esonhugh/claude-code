@@ -1,4 +1,3 @@
-import { feature } from 'bun:bundle'
 import React, {
   createContext,
   useContext,
@@ -9,10 +8,18 @@ import React, {
 import useStdin from '../../ink/hooks/use-stdin.js'
 import { getGlobalConfig, saveGlobalConfig } from '../../utils/config.js'
 import {
+  subscribeCustomThemes,
+  watchCustomThemes,
+} from '../../utils/customThemes.js'
+import {
   getSystemThemeName,
   type SystemTheme,
 } from '../../utils/systemTheme.js'
-import type { ThemeName, ThemeSetting } from '../../utils/theme.js'
+import type {
+  ResolvedTheme,
+  ThemeName,
+  ThemeSetting,
+} from '../../utils/theme.js'
 
 type ThemeContextValue = {
   /** The saved user preference. May be 'auto'. */
@@ -22,7 +29,7 @@ type ThemeContextValue = {
   savePreview: () => void
   cancelPreview: () => void
   /** The resolved theme to render with. Never 'auto'. */
-  currentTheme: ThemeName
+  currentTheme: ResolvedTheme
 }
 
 // Non-'auto' default so useTheme() works without a provider (tests, tooling).
@@ -73,27 +80,32 @@ export function ThemeProvider({
   const { internal_querier } = useStdin()
 
   // Watch for live terminal theme changes while 'auto' is active.
-  // Positive feature() pattern so the watcher import is dead-code-eliminated
-  // in external builds.
   useEffect(() => {
-    if (feature('AUTO_THEME')) {
-      if (activeSetting !== 'auto' || !internal_querier) return
-      let cleanup: (() => void) | undefined
-      let cancelled = false
-      void import('../../utils/systemThemeWatcher.js').then(
-        ({ watchSystemTheme }) => {
-          if (cancelled) return
-          cleanup = watchSystemTheme(internal_querier, setSystemTheme)
-        },
-      )
-      return () => {
-        cancelled = true
-        cleanup?.()
-      }
+    if (activeSetting !== 'auto' || !internal_querier) return
+    let cleanup: (() => void) | undefined
+    let cancelled = false
+    void import('../../utils/systemThemeWatcher.js').then(
+      ({ watchSystemTheme }) => {
+        if (cancelled) return
+        cleanup = watchSystemTheme(internal_querier, setSystemTheme)
+      },
+    )
+    return () => {
+      cancelled = true
+      cleanup?.()
     }
   }, [activeSetting, internal_querier])
 
-  const currentTheme: ThemeName =
+  // Re-render when a custom theme is saved, edited on disk or previewed in
+  // the editor.
+  const [customThemesVersion, setCustomThemesVersion] = useState(0)
+  useEffect(
+    () => subscribeCustomThemes(() => setCustomThemesVersion(v => v + 1)),
+    [],
+  )
+  useEffect(() => watchCustomThemes(), [])
+
+  const currentTheme: ResolvedTheme =
     activeSetting === 'auto' ? systemTheme : activeSetting
 
   const value = useMemo<ThemeContextValue>(
@@ -130,7 +142,9 @@ export function ThemeProvider({
       },
       currentTheme,
     }),
-    [themeSetting, previewTheme, currentTheme, onThemeSave],
+    // customThemesVersion: a new context value re-renders theme consumers.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [themeSetting, previewTheme, currentTheme, onThemeSave, customThemesVersion],
   )
 
   return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>
@@ -140,7 +154,7 @@ export function ThemeProvider({
  * Returns the resolved theme for rendering (never 'auto') and a setter that
  * accepts any ThemeSetting (including 'auto').
  */
-export function useTheme(): [ThemeName, (setting: ThemeSetting) => void] {
+export function useTheme(): [ResolvedTheme, (setting: ThemeSetting) => void] {
   const { currentTheme, setThemeSetting } = useContext(ThemeContext)
   return [currentTheme, setThemeSetting]
 }

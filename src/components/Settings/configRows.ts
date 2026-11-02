@@ -35,6 +35,7 @@ import { transitionPlanAutoMode } from '../../utils/permissions/permissionSetup.
 import { isPlanModeAvailable } from '../../utils/planModeV2.js'
 import {
   defaultWorkflowSizeGuideline,
+  isWorkflowKeywordTriggerEnabled,
   shouldEnableWorkflows,
   WORKFLOW_SIZE_GUIDELINES,
   workflowsDefaultOn,
@@ -44,6 +45,7 @@ import { getInitialSettings, getSettingsForSource, getUseAutoModeDuringPlan, upd
 import type { EditableSettingSource } from '../../utils/settings/constants.js'
 import type { SettingsJson } from '../../utils/settings/types.js'
 import { clearCliTeammateModeOverride, getCliTeammateModeOverride } from '../../utils/swarm/backends/teammateModeSnapshot.js'
+import { customThemeSetting, getCustomThemes } from '../../utils/customThemes.js'
 import { THEME_NAMES, type ThemeSetting } from '../../utils/theme.js'
 import { sanitizeTimeFormat, TIME_FORMAT_PRESETS } from '../../utils/timeFormat.js'
 import { isAnt } from '../../utils/userType.js'
@@ -103,6 +105,16 @@ export function getConfigRows(context: Context): ModConfigRowProvider[] {
       set(value) { writeSettings('userSettings', { idleCompaction: value ? undefined : false }) },
     },
     {
+      key: 'autoContinueAtUsageLimit', label: 'Continue automatically at usage limit', kind: 'boolean',
+      value: settings.autoContinueAtUsageLimit ?? true,
+      set(value) { writeSettings('userSettings', { autoContinueAtUsageLimit: value as boolean }) },
+    },
+    {
+      key: 'agentSummary', label: 'Background agent summaries', kind: 'choice',
+      value: settings.agentSummary ?? 'full', options: ['full', 'short', 'off'],
+      set(value) { writeSettings('userSettings', { agentSummary: value === 'full' ? undefined : value as 'short' | 'off' }) },
+    },
+    {
       key: 'tips', label: 'Show tips', kind: 'boolean',
       value: settings.spinnerTipsEnabled ?? true,
       set(value) { writeSettings('localSettings', { spinnerTipsEnabled: value as boolean }) },
@@ -142,9 +154,30 @@ export function getConfigRows(context: Context): ModConfigRowProvider[] {
         context.setAppState(current => ({ ...current, promptSuggestionEnabled: value as boolean }))
       },
     }] : []),
+    ...(feature('AWAY_SUMMARY') ? [{
+      key: 'recap', label: 'Session recap', kind: 'boolean' as const,
+      value: settings.awaySummaryEnabled !== false,
+      set(value: ModConfigValue) { writeSettings('userSettings', { awaySummaryEnabled: value ? undefined : false }) },
+    }] : []),
     ...(isAnt() ? [globalBoolean('speculationEnabled', 'Speculative execution', global.speculationEnabled ?? true)] : []),
     ...(!isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_FILE_CHECKPOINTING)
       ? [globalBoolean('fileCheckpointingEnabled', 'Rewind code (checkpoints)', global.fileCheckpointingEnabled)] : []),
+    {
+      key: 'workflows', label: 'Dynamic workflows', kind: 'boolean', value: shouldEnableWorkflows(settings),
+      set(value) {
+        writeSettings('userSettings', { enableWorkflows: value === workflowsDefaultOn() ? undefined : value as boolean, disableWorkflows: undefined })
+      },
+    },
+    {
+      key: 'workflowKeywordTriggerEnabled', label: 'Ultracode keyword trigger', kind: 'boolean',
+      value: isWorkflowKeywordTriggerEnabled(settings),
+      set(value) { writeSettings('userSettings', { workflowKeywordTriggerEnabled: value ? undefined : false }) },
+    },
+    ...(shouldEnableWorkflows(settings) && settings.workflowSizeGuideline === undefined ? [{
+      key: 'workflowSizeGuideline', label: 'Dynamic workflow size', kind: 'choice' as const,
+      value: global.workflowSizeGuideline ?? defaultWorkflowSizeGuideline(), options: [...WORKFLOW_SIZE_GUIDELINES],
+      set(value: ModConfigValue) { saveGlobalConfig(current => ({ ...current, workflowSizeGuideline: value as WorkflowSizeGuideline })) },
+    }] : []),
     {
       key: 'verbose', label: 'Verbose output', kind: 'boolean', value: state.verbose,
       set(value) {
@@ -169,6 +202,11 @@ export function getConfigRows(context: Context): ModConfigRowProvider[] {
         writeSettings('userSettings', { permissions: { defaultMode: value as (typeof PERMISSION_MODES)[number] } })
       },
     },
+    {
+      key: 'worktreeBaseRef', label: 'Worktree base ref', kind: 'choice',
+      value: settings.worktree?.baseRef ?? 'fresh', options: ['fresh', 'head'],
+      set(value) { writeSettings('userSettings', { worktree: { baseRef: value as 'fresh' | 'head' } }) },
+    },
     ...(feature('TRANSCRIPT_CLASSIFIER') ? [{
       key: 'useAutoModeDuringPlan', label: 'Use auto mode during plan', kind: 'boolean' as const,
       // The runtime value: project settings are ignored and any trusted source set to false wins.
@@ -178,27 +216,20 @@ export function getConfigRows(context: Context): ModConfigRowProvider[] {
         context.setAppState(current => ({ ...current, toolPermissionContext: transitionPlanAutoMode(current.toolPermissionContext) }))
       },
     }] : []),
-    {
-      key: 'workflows', label: 'Dynamic workflows', kind: 'boolean', value: shouldEnableWorkflows(settings),
-      set(value) {
-        writeSettings('userSettings', { enableWorkflows: value === workflowsDefaultOn() ? undefined : value as boolean, disableWorkflows: undefined })
-      },
-    },
-    ...(shouldEnableWorkflows(settings) && settings.workflowSizeGuideline === undefined ? [{
-      key: 'workflowSizeGuideline', label: 'Dynamic workflow size', kind: 'choice' as const,
-      value: global.workflowSizeGuideline ?? defaultWorkflowSizeGuideline(), options: [...WORKFLOW_SIZE_GUIDELINES],
-      set(value: ModConfigValue) { saveGlobalConfig(current => ({ ...current, workflowSizeGuideline: value as WorkflowSizeGuideline })) },
-    }] : []),
     globalBoolean('respectGitignore', 'Respect .gitignore in file picker', global.respectGitignore),
-    globalBoolean('copyFullResponse', 'Always copy full response (skip /copy picker)', global.copyFullResponse),
+    globalBoolean('copyFullResponse', 'Skip the /copy picker', global.copyFullResponse),
     ...(isFullscreenEnvEnabled() ? [globalBoolean('copyOnSelect', 'Copy on select', global.copyOnSelect ?? true)] : []),
+    ...(feature('BG_SESSIONS') ? [
+      globalBoolean('defaultToAgentsView', 'Open agents view by default', global.defaultToAgentsView ?? false),
+      globalBoolean('leftArrowOpensAgents', '← opens agents', global.leftArrowOpensAgents ?? true),
+    ] : []),
     {
       key: 'autoUpdatesChannel', label: 'Auto-update channel', kind: 'text',
       value: getAutoUpdaterDisabledReason() ? 'disabled' : settings.autoUpdatesChannel ?? 'latest',
     },
     {
       key: 'theme', label: 'Theme', kind: 'choice', value: global.theme,
-      options: feature('AUTO_THEME') ? ['auto', ...THEME_NAMES] : THEME_NAMES,
+      options: ['auto', ...THEME_NAMES, ...getCustomThemes().map(theme => customThemeSetting(theme.slug))],
       set(value) {
         saveGlobalConfig(current => ({ ...current, theme: value as ThemeSetting }))
         options?.setTheme?.(value as ThemeSetting)
@@ -212,12 +243,12 @@ export function getConfigRows(context: Context): ModConfigRowProvider[] {
     },
     ...(feature('KAIROS') || feature('KAIROS_PUSH_NOTIFICATION') ? [
       globalBoolean('taskCompleteNotifEnabled', 'Push when idle', global.taskCompleteNotifEnabled ?? false),
-      globalBoolean('inputNeededNotifEnabled', 'Push when input needed', global.inputNeededNotifEnabled ?? false),
+      globalBoolean('inputNeededNotifEnabled', 'Push when actions required', global.inputNeededNotifEnabled ?? false),
       globalBoolean('agentPushNotifEnabled', 'Push when Claude decides', global.agentPushNotifEnabled ?? false),
     ] : []),
     { key: 'outputStyle', label: 'Output style', kind: 'text', value: settings.outputStyle || DEFAULT_OUTPUT_STYLE_NAME },
     ...(showDefaultView ? [{
-      key: 'defaultView', label: 'What you see by default', kind: 'choice' as const,
+      key: 'defaultView', label: 'Default view', kind: 'choice' as const,
       value: settings.defaultView === undefined ? 'default' : String(settings.defaultView),
       options: ['transcript', 'chat', 'default'],
       set(value: ModConfigValue) {
@@ -231,8 +262,14 @@ export function getConfigRows(context: Context): ModConfigRowProvider[] {
       key: 'editorMode', label: 'Editor mode', kind: 'choice',
       value: global.editorMode === 'emacs' ? 'normal' : global.editorMode || 'normal',
       options: ['normal', 'vim'],
-      set(value) { saveGlobalConfig(current => ({ ...current, editorMode: value as GlobalConfig['editorMode'] })) },
+      set(value) {
+        saveGlobalConfig(current => ({ ...current, editorMode: value as GlobalConfig['editorMode'] }))
+        // The prompt reads editorMode from global config on render; a new settings
+        // object re-renders it so vim mode applies right away.
+        context.setAppState(current => ({ ...current, settings: { ...current.settings } }))
+      },
     },
+    globalBoolean('externalEditorContext', 'Show last response in external editor', global.externalEditorContext ?? false),
     globalBoolean('prStatusFooterEnabled', 'Show PR status footer', global.prStatusFooterEnabled ?? true),
     { key: 'model', label: 'Model', kind: 'text', value: state.mainLoopModel ?? 'Default (recommended)' },
     ...(hasAccessToIDEExtensionDiffFeature(options?.mcpClients ?? []) ? [{
@@ -289,12 +326,21 @@ export function getConfigRows(context: Context): ModConfigRowProvider[] {
         context.setAppState(current => ({ ...current, replBridgeEnabled: getRemoteControlAtStartup(), replBridgeOutboundOnly: false }))
       },
     }] : []),
+    // Managed policy owns this setting outright, so official hides the row instead of locking it.
+    ...(feature('UDS_INBOX') && getSettingsForSource('policySettings')?.crossSessionInbound === undefined ? [{
+      key: 'crossSessionInbound', label: 'Messages from your other sessions', kind: 'choice' as const,
+      value: settings.crossSessionInbound ?? 'default', options: ['default', 'accept', 'hold', 'refuse'],
+      set(value: ModConfigValue) {
+        writeSettings('userSettings', { crossSessionInbound: value === 'default' ? undefined : value as 'accept' | 'hold' | 'refuse' })
+        ;(require('../../utils/udsMessaging.js') as typeof import('../../utils/udsMessaging.js')).refreshPeerInboundPolicy()
+      },
+    }] : []),
     ...(options?.hasExternalIncludes ? [{
       key: 'showExternalIncludesDialog', label: 'External CLAUDE.md includes', kind: 'text' as const,
       value: String(!!getCurrentProjectConfig().hasClaudeMdExternalIncludesApproved),
     }] : []),
     ...(customApiKeySuffix ? [{
-      key: 'apiKey', label: 'Use custom API key', kind: 'boolean' as const,
+      key: 'apiKey', label: `Use custom API key: ${customApiKeySuffix}`, kind: 'boolean' as const,
       value: global.customApiKeyResponses?.approved?.includes(customApiKeySuffix) ?? false,
       set(value: ModConfigValue) {
         const suffix = customApiKeySuffix
@@ -314,6 +360,7 @@ export function getConfigRows(context: Context): ModConfigRowProvider[] {
     const policy = getSettingsForSource('policySettings')
     if (key === 'autoCompact') return policy?.autoCompactEnabled
     if (key === 'tips') return policy?.spinnerTipsEnabled
+    if (key === 'recap') return policy?.awaySummaryEnabled
     if (key === 'defaultPermissionMode') return policy?.permissions?.defaultMode
     if (key === 'thinkingEnabled') return policy?.alwaysThinkingEnabled
     if (key === 'notifChannel') return policy?.preferredNotifChannel

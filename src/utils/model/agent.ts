@@ -1,5 +1,4 @@
 import type { PermissionMode } from '../permissions/PermissionMode.js'
-import { capitalize } from '../stringUtils.js'
 import { MODEL_ALIASES } from './aliases.js'
 import { applyBedrockRegionPrefix, getBedrockRegionPrefix } from './bedrock.js'
 import {
@@ -7,16 +6,11 @@ import {
   getRuntimeMainLoopModel,
   parseUserSpecifiedModel,
 } from './model.js'
+import { isEnvTruthy } from '../envUtils.js'
 import { getAPIProvider } from './providers.js'
 
 export const AGENT_MODEL_OPTIONS = [...MODEL_ALIASES, 'inherit'] as const
 export type AgentModelAlias = (typeof AGENT_MODEL_OPTIONS)[number]
-
-export type AgentModelOption = {
-  value: AgentModelAlias
-  label: string
-  description: string
-}
 
 /**
  * Get the default subagent model. Returns 'inherit' so subagents inherit
@@ -34,6 +28,27 @@ export function getDefaultSubagentModel(): string {
  * This ensures subagents use the same region as the parent, which is necessary when
  * IAM permissions are scoped to specific cross-region inference profiles.
  */
+/**
+ * The built-in Explore agent inherits the parent's model, capped at Opus:
+ * under a model family ranked above Opus (Fable, Mythos) it runs on Opus.
+ */
+export function getAgentDefinitionModel(
+  agent: { agentType: string; source: string; model?: string },
+  parentModel: string,
+): string | undefined {
+  if (agent.agentType !== 'Explore' || agent.source !== 'built-in') {
+    return agent.model
+  }
+  if (isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_EXPLORE_INHERIT_CAP)) {
+    return 'inherit'
+  }
+  const canonical = getCanonicalName(parentModel)
+  return canonical.startsWith('claude-fable') ||
+    canonical.startsWith('claude-mythos')
+    ? 'opus'
+    : 'inherit'
+}
+
 /** Official 2.1.296: one model for every workflow agent; unset or "inherit" changes nothing. */
 export function getWorkflowSubagentModel(): string | undefined {
   const model = process.env.CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL
@@ -118,39 +133,4 @@ function aliasMatchesParentTier(alias: string, parentModel: string): boolean {
     default:
       return false
   }
-}
-
-export function getAgentModelDisplay(model: string | undefined): string {
-  // When model is omitted, getDefaultSubagentModel() returns 'inherit' at runtime
-  if (!model) return 'Inherit from parent (default)'
-  if (model === 'inherit') return 'Inherit from parent'
-  return capitalize(model)
-}
-
-/**
- * Get available model options for agents
- */
-export function getAgentModelOptions(): AgentModelOption[] {
-  return [
-    {
-      value: 'sonnet',
-      label: 'Sonnet',
-      description: 'Balanced performance - best for most agents',
-    },
-    {
-      value: 'opus',
-      label: 'Opus',
-      description: 'Most capable for complex reasoning tasks',
-    },
-    {
-      value: 'haiku',
-      label: 'Haiku',
-      description: 'Fast and efficient for simple tasks',
-    },
-    {
-      value: 'inherit',
-      label: 'Inherit from parent',
-      description: 'Use the same model as the main conversation',
-    },
-  ]
 }

@@ -3,6 +3,8 @@ export const SWARM_SESSION_NAME = 'claude-swarm'
 export const SWARM_VIEW_WINDOW_NAME = 'swarm-view'
 export const TMUX_COMMAND = 'tmux'
 export const HIDDEN_SESSION_NAME = 'claude-hidden'
+/** Abort reason when an in-process teammate approves its own shutdown. */
+export const TEAMMATE_SHUTDOWN_APPROVED = 'teammate-shutdown-approved'
 
 /**
  * Gets the socket name for external swarm sessions (when user is not in tmux).

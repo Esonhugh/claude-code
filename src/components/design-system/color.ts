@@ -1,6 +1,6 @@
 import { type ColorType, colorize } from '../../ink/colorize.js'
 import type { Color } from '../../ink/styles.js'
-import { getTheme, type Theme, type ThemeName } from '../../utils/theme.js'
+import { getTheme, type ResolvedTheme, type Theme } from '../../utils/theme.js'
 
 /**
  * Curried theme-aware color function. Resolves theme keys to raw color
@@ -8,7 +8,7 @@ import { getTheme, type Theme, type ThemeName } from '../../utils/theme.js'
  */
 export function color(
   c: keyof Theme | Color | undefined,
-  theme: ThemeName,
+  theme: ResolvedTheme,
   type: ColorType = 'foreground',
 ): (text: string) => string {
   return text => {

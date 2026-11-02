@@ -45,7 +45,9 @@ import {
   updateTaskState,
 } from '../../utils/task/framework.js'
 import { emitTaskProgress } from '../../utils/task/sdkProgress.js'
+import { emitTaskTerminatedSdk } from '../../utils/sdkEventQueue.js'
 import type { TaskState } from '../types.js'
+import { SEND_MESSAGE_TOOL_NAME } from '../../tools/SendMessageTool/constants.js'
 
 export type ToolActivity = {
   toolName: string
@@ -228,6 +230,8 @@ export type LocalAgentTaskState = TaskStateBase & {
   parentAgentId?: string
   /** Agent whose turn receives this task's notifications; separate from transcript lineage. */
   ownerAgentId?: string
+  /** A workflow agent() call awaits this agent and reports it with the workflow. */
+  awaitedByCaller?: boolean
   /** Saved fork skill identity corroborates permission scoping on resume. */
   forkedSkillName?: string
   resuming?: boolean
@@ -235,6 +239,8 @@ export type LocalAgentTaskState = TaskStateBase & {
   isIdle?: boolean
   finalizing?: boolean
   keepaliveReasons?: Set<string>
+  /** The owner was told this run stopped with its own background work still running. */
+  waitingNotice?: boolean
   spawnDepth: number
   model?: string
   abortController?: AbortController
@@ -295,6 +301,16 @@ function retainAgentForChild(ownerId: string | undefined, childId: string, setAp
  */
 export function isPanelAgentTask(t: unknown): t is LocalAgentTaskState {
   return isLocalAgentTask(t) && t.agentType !== 'main-session' && t.parentAgentId === undefined
+}
+
+/**
+ * A background subagent that finished cleanly. Official 2.1.311 drops it from
+ * the agent panel right away and lists it under /tasks "Completed" until it is
+ * evicted.
+ */
+export function isCompletedBackgroundAgent(t: unknown): t is LocalAgentTaskState {
+  return isLocalAgentTask(t) && t.status === 'completed' && t.agentType !== 'main-session' &&
+    t.isBackgrounded && (t.keepaliveReasons?.size ?? 0) === 0
 }
 
 export function queuePendingMessage(
@@ -360,10 +376,16 @@ export function enqueueAgentNotification({
   toolUseId,
   worktreePath,
   worktreeBranch,
+  waiting,
+  turnLimit,
 }: {
   taskId: string
   description: string
   status: 'completed' | 'failed' | 'killed'
+  /** Interim notice: the agent stopped with its own background work still running. */
+  waiting?: boolean
+  /** The agent stopped at its maxTurns limit; its result is partial. */
+  turnLimit?: number
   error?: string
   setAppState: SetAppState
   finalMessage?: string
@@ -406,13 +428,13 @@ export function enqueueAgentNotification({
   // preserved; only the pre-computed response is discarded.
   abortSpeculation(setAppState)
 
-  const summary = escapeXml(
+  const summaryText =
     status === 'completed'
-      ? `Agent "${description}" finished`
+      ? `Agent "${description}" ${waiting ? 'is waiting on its own background work' : turnLimit !== undefined ? `stopped at its ${turnLimit}-turn limit (partial result; ${SEND_MESSAGE_TOOL_NAME} to task-id to continue)` : 'finished'}`
       : status === 'failed'
         ? `Agent "${description}" failed: ${error || 'Unknown error'}`
-        : `Agent "${description}" was stopped`,
-  )
+        : `Agent "${description}" was stopped`
+  const summary = escapeXml(summaryText)
 
   const outputPath = getTaskOutputPath(taskId)
   const toolUseIdLine = toolUseId
@@ -422,9 +444,12 @@ export function enqueueAgentNotification({
   const truncatedResult = escapedResult.length > NOTIFICATION_RESULT_MAX_CHARS
     ? `${escapedResult.slice(0, NOTIFICATION_RESULT_MAX_CHARS)}\n... (truncated ${escapedResult.length - NOTIFICATION_RESULT_MAX_CHARS} chars, full result in ${escapeXml(outputPath)})`
     : escapedResult
+  const noteSection = waiting
+    ? '\n<note>This agent stopped with background work of its own still running. It may resume on its own when that work completes or reports, and the same task-id notifies again if it does; the result below may be interim.</note>'
+    : '\n<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>'
   const resultSection = finalMessage ? `\n<result>${truncatedResult}</result>` : ''
   const usageSection = usage
-    ? `\n<usage><total_tokens>${usage.totalTokens}</total_tokens><tool_uses>${usage.toolUses}</tool_uses><duration_ms>${usage.durationMs}</duration_ms></usage>`
+    ? `\n<usage><subagent_tokens>${usage.totalTokens}</subagent_tokens><tool_uses>${usage.toolUses}</tool_uses><duration_ms>${usage.durationMs}</duration_ms></usage>`
     : ''
   const worktreeSection = worktreePath
     ? `\n<${WORKTREE_TAG}><${WORKTREE_PATH_TAG}>${escapeXml(worktreePath)}</${WORKTREE_PATH_TAG}>${worktreeBranch ? `<${WORKTREE_BRANCH_TAG}>${escapeXml(worktreeBranch)}</${WORKTREE_BRANCH_TAG}>` : ''}</${WORKTREE_TAG}>`
@@ -434,19 +459,41 @@ export function enqueueAgentNotification({
 <${TASK_ID_TAG}>${escapeXml(taskId)}</${TASK_ID_TAG}>${toolUseIdLine}
 <${OUTPUT_FILE_TAG}>${escapeXml(outputPath)}</${OUTPUT_FILE_TAG}>
 <${STATUS_TAG}>${status}</${STATUS_TAG}>
-<${SUMMARY_TAG}>${summary}</${SUMMARY_TAG}>${resultSection}${usageSection}${worktreeSection}
+<${SUMMARY_TAG}>${summary}</${SUMMARY_TAG}>${noteSection}${resultSection}${usageSection}${worktreeSection}
 </${TASK_NOTIFICATION_TAG}>`
 
+  // Like official 2.1.311, SDK consumers get task_notification as the agent
+  // stops, before it leaves background_tasks_changed; a finished agent's
+  // summary is its result text.
+  emitTaskTerminatedSdk(taskId, status === 'killed' ? 'stopped' : status, {
+    toolUseId,
+    summary:
+      status === 'completed' && !waiting && finalMessage
+        ? finalMessage
+        : summaryText,
+    outputFile: outputPath,
+    usage: usage && {
+      total_tokens: usage.totalTokens,
+      tool_uses: usage.toolUses,
+      duration_ms: usage.durationMs,
+    },
+  })
   const markNotified = () =>
-    updateTaskState<LocalAgentTaskState>(taskId, setAppState, task => ({
-      ...task,
-      notified: true,
-    }))
+    updateTaskState<LocalAgentTaskState>(taskId, setAppState, task =>
+      // A wake can re-register the agent before the interim notice settles; that new run notifies on its own.
+      waiting && task.status === 'running' ? task : {
+        ...task,
+        notified: true,
+        waitingNotice: waiting,
+      })
   const pending = enqueuePendingNotification({
     value: message,
     mode: 'task-notification',
+    // Like official 2.1.311: a running turn picks it up between tool rounds.
+    priority: 'next',
     agentId: routedAgentId,
     taskId,
+    sdkTaskNotificationSent: true,
   })
   if (!pending) {
     markNotified()
@@ -559,12 +606,13 @@ export function markAgentsNotified(
   setAppState: SetAppState,
 ): void {
   updateTaskState<LocalAgentTaskState>(taskId, setAppState, task => {
-    if (task.notified) {
+    if (task.notified && !task.waitingNotice) {
       return task
     }
     return {
       ...task,
       notified: true,
+      waitingNotice: undefined,
     }
   })
 }

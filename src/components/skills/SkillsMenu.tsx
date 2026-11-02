@@ -1,4 +1,3 @@
-import capitalize from 'lodash-es/capitalize.js'
 import figures from 'figures'
 import * as React from 'react'
 import { useMemo, useState } from 'react'
@@ -10,16 +9,8 @@ import {
   type PromptCommand,
 } from '../../commands.js'
 import { Box, Text, useInput } from '../../ink.js'
-import {
-  estimateSkillFrontmatterTokens,
-  getSkillsPath,
-} from '../../skills/loadSkillsDir.js'
-import { getDisplayPath } from '../../utils/file.js'
+import { estimateSkillFrontmatterTokens } from '../../skills/loadSkillsDir.js'
 import { formatTokens } from '../../utils/format.js'
-import {
-  getSettingSourceName,
-  type SettingSource,
-} from '../../utils/settings/constants.js'
 import { updateSettingsForSource } from '../../utils/settings/settings.js'
 import {
   getSkillOverride,
@@ -30,11 +21,11 @@ import {
 import { plural } from '../../utils/stringUtils.js'
 import { ConfigurableShortcutHint } from '../ConfigurableShortcutHint.js'
 import { Dialog } from '../design-system/Dialog.js'
+import { MenuList, type MenuListRow } from '../design-system/MenuList.js'
+import { SearchBox } from '../SearchBox.js'
 
 // Skills are always PromptCommands with CommandBase properties
 type SkillCommand = CommandBase & PromptCommand
-
-type SkillSource = SettingSource | 'plugin' | 'mcp' | 'codex_app'
 
 type Props = {
   onExit: (
@@ -44,129 +35,144 @@ type Props = {
   commands: Command[]
 }
 
-function getSourceTitle(source: SkillSource): string {
-  if (source === 'plugin') {
-    return 'Plugin skills'
+// 2.1.311 lists every skill in one flat list; the source is a meta column.
+function getSourceLabel(skill: SkillCommand): string {
+  if (skill.loadedFrom === 'codex_app') return 'codex'
+  if (skill.source === 'plugin') {
+    return skill.pluginInfo?.pluginManifest.name ?? 'plugin'
   }
-  if (source === 'mcp') {
-    return 'MCP skills'
+  if (skill.source === 'mcp') {
+    const idx = skill.name.indexOf(':')
+    return idx > 0 ? skill.name.slice(0, idx) : 'mcp'
   }
-  if (source === 'codex_app') {
-    return 'Codex skills'
+  switch (skill.source) {
+    case 'userSettings':
+      return 'user'
+    case 'projectSettings':
+      return 'project'
+    case 'localSettings':
+      return 'local'
+    case 'policySettings':
+      return 'managed'
+    default:
+      return String(skill.source)
   }
-  return `${capitalize(getSettingSourceName(source))} skills`
 }
 
-function getSourceSubtitle(
-  source: SkillSource,
-  skills: SkillCommand[],
-): string | undefined {
-  // MCP skills show server names; file-based skills show filesystem paths.
-  // Skill names are `<server>:<skill>`, not `mcp__<server>__…`.
-  if (source === 'mcp' || source === 'codex_app') {
-    const servers = [
-      ...new Set(
-        skills
-          .map(s => {
-            const idx = s.name.indexOf(':')
-            return idx > 0 ? s.name.slice(0, idx) : null
-          })
-          .filter((n): n is string => n != null),
-      ),
-    ]
-    return servers.length > 0 ? servers.join(', ') : undefined
-  }
-  const skillsPath = getDisplayPath(getSkillsPath(source, 'skills'))
-  const hasCommandsSkills = skills.some(
-    s => s.loadedFrom === 'commands_DEPRECATED',
-  )
-  return hasCommandsSkills
-    ? `${skillsPath}, ${getDisplayPath(getSkillsPath(source, 'commands'))}`
-    : skillsPath
+export function formatSkillTokens(tokens: number): string {
+  return tokens < 20 ? '< 20' : `~${formatTokens(Math.round(tokens / 10) * 10)}`
 }
 
-const SOURCE_ORDER: SkillSource[] = [
-  'projectSettings',
-  'userSettings',
-  'policySettings',
-  'plugin',
-  'mcp',
-  'codex_app',
-]
+const OVERRIDE_WORD: Partial<Record<SkillOverride, string>> = {
+  'name-only': 'name-only',
+  'user-invocable-only': 'user-only',
+}
 
 export function SkillsMenu({ onExit, commands }: Props): React.ReactNode {
-  // Filter commands for skills and cast to SkillCommand
   const skills = useMemo(() => {
-    return commands.filter(
-      (cmd): cmd is SkillCommand =>
-        cmd.type === 'prompt' &&
-        (cmd.loadedFrom === 'skills' ||
-          cmd.loadedFrom === 'commands_DEPRECATED' ||
-          cmd.loadedFrom === 'plugin' ||
-          cmd.loadedFrom === 'mcp' ||
-          cmd.loadedFrom === 'codex_app'),
-    )
+    return commands
+      .filter(
+        (cmd): cmd is SkillCommand =>
+          cmd.type === 'prompt' &&
+          (cmd.loadedFrom === 'skills' ||
+            cmd.loadedFrom === 'commands_DEPRECATED' ||
+            cmd.loadedFrom === 'plugin' ||
+            cmd.loadedFrom === 'mcp' ||
+            cmd.loadedFrom === 'codex_app'),
+      )
+      .sort((a, b) => getCommandName(a).localeCompare(getCommandName(b)))
   }, [commands])
-
-  const skillsBySource = useMemo((): Record<SkillSource, SkillCommand[]> => {
-    const groups: Record<SkillSource, SkillCommand[]> = {
-      policySettings: [],
-      userSettings: [],
-      projectSettings: [],
-      localSettings: [],
-      flagSettings: [],
-      plugin: [],
-      mcp: [],
-      codex_app: [],
-    }
-
-    for (const skill of skills) {
-      const source: SkillSource =
-        skill.loadedFrom === 'codex_app'
-          ? 'codex_app'
-          : (skill.source as SkillSource)
-      if (source in groups) {
-        groups[source].push(skill)
-      }
-    }
-
-    for (const group of Object.values(groups)) {
-      group.sort((a, b) => getCommandName(a).localeCompare(getCommandName(b)))
-    }
-
-    return groups
-  }, [skills])
-
-  const handleCancel = (): void => {
-    onExit('Skills dialog dismissed', { display: 'system' })
-  }
-
-  const orderedSkills = useMemo(
-    () => SOURCE_ORDER.flatMap(source => skillsBySource[source]),
-    [skillsBySource],
-  )
-  const [selectedIndex, setSelectedIndex] = useState(0)
-  const [overrides, setOverrides] = useState<Record<string, SkillOverride>>(
+  const [sortByTokens, setSortByTokens] = useState(false)
+  const ordered = useMemo(
     () =>
-      Object.fromEntries(
-        orderedSkills.map(skill => [skill.name, getSkillOverride(skill)]),
-      ),
+      sortByTokens
+        ? [...skills].sort(
+            (a, b) =>
+              estimateSkillFrontmatterTokens(b) -
+              estimateSkillFrontmatterTokens(a),
+          )
+        : skills,
+    [skills, sortByTokens],
   )
+  const [initial] = useState<Record<string, SkillOverride>>(() =>
+    Object.fromEntries(skills.map(skill => [skill.name, getSkillOverride(skill)])),
+  )
+  const [overrides, setOverrides] = useState(initial)
+  const [query, setQuery] = useState('')
+  const [searching, setSearching] = useState(false)
+  const [focused, setFocused] = useState(0)
 
-  useInput((input, key) => {
-    if (key.upArrow) {
-      setSelectedIndex(i => Math.max(0, i - 1))
-    } else if (key.downArrow) {
-      setSelectedIndex(i => Math.min(orderedSkills.length - 1, i + 1))
-    } else if (key.return || input === ' ') {
-      const skill = orderedSkills[selectedIndex]
-      if (!skill || !isSkillOverridable(skill)) return
-      const next = nextSkillOverride(overrides[skill.name] ?? 'on')
+  const lowered = query.toLowerCase()
+  const visible = query
+    ? ordered.filter(
+        skill =>
+          getCommandName(skill).toLowerCase().includes(lowered) ||
+          (skill.description ?? '').toLowerCase().includes(lowered) ||
+          getSourceLabel(skill).toLowerCase().includes(lowered),
+      )
+    : ordered
+
+  // Changes are saved together when the menu closes, like 2.1.311.
+  const close = (): void => {
+    const changed = skills.filter(
+      skill => overrides[skill.name] !== initial[skill.name],
+    )
+    if (changed.length > 0) {
       // "on" is the default, so it removes the entry instead of storing it.
       updateSettingsForSource('localSettings', {
-        skillOverrides: { [skill.name]: next === 'on' ? undefined : next },
+        skillOverrides: Object.fromEntries(
+          changed.map(skill => {
+            const value = overrides[skill.name]
+            return [skill.name, value === 'on' ? undefined : value]
+          }),
+        ),
       })
-      setOverrides(prev => ({ ...prev, [skill.name]: next }))
+    }
+    onExit(
+      changed.length > 0
+        ? `Updated ${changed.length} skill ${plural(changed.length, 'override')}`
+        : 'No changes',
+      { display: 'system' },
+    )
+  }
+
+  const cycle = (index: number): void => {
+    const skill = visible[index]
+    if (!skill || !isSkillOverridable(skill)) return
+    setOverrides(prev => ({
+      ...prev,
+      [skill.name]: nextSkillOverride(prev[skill.name] ?? 'on'),
+    }))
+  }
+
+  useInput((input, key) => {
+    if (searching) {
+      if (key.escape) {
+        setQuery('')
+        setSearching(false)
+      } else if (key.downArrow || key.return) {
+        setSearching(false)
+      } else if (key.backspace || key.delete) {
+        setQuery(q => q.slice(0, -1))
+      } else if (input && !key.ctrl && !key.meta) {
+        setQuery(q => q + input)
+      }
+      return
+    }
+    if (key.escape) {
+      close()
+    } else if (input === 't' && !key.ctrl && !key.meta && visible.length > 0) {
+      setSortByTokens(sorted => !sorted)
+    } else if (
+      input &&
+      input !== ' ' &&
+      !key.ctrl &&
+      !key.meta &&
+      !key.return &&
+      !key.tab
+    ) {
+      setSearching(true)
+      setQuery(q => q + (input.startsWith('/') ? input.slice(1) : input))
     }
   })
 
@@ -175,7 +181,7 @@ export function SkillsMenu({ onExit, commands }: Props): React.ReactNode {
       <Dialog
         title="Skills"
         subtitle="No skills found"
-        onCancel={handleCancel}
+        onCancel={() => onExit('Skills dialog dismissed', { display: 'system' })}
         hideInputGuide
       >
         <Text dimColor>
@@ -193,72 +199,64 @@ export function SkillsMenu({ onExit, commands }: Props): React.ReactNode {
     )
   }
 
-  const renderSkill = (skill: SkillCommand) => {
-    const selected = orderedSkills[selectedIndex] === skill
+  const count = query
+    ? `${visible.length}/${skills.length} ${plural(skills.length, 'skill')}`
+    : `${skills.length} ${plural(skills.length, 'skill')}`
+  const hints = searching
+    ? 'type to filter · ↓/enter to select · esc to clear'
+    : visible.length === 0
+      ? '/ to search, Esc to close'
+      : 'enter/space to cycle, / to search, t to sort, Esc to close'
+
+  const rows: MenuListRow[] = visible.map(skill => {
     const override = overrides[skill.name] ?? 'on'
-    const estimatedTokens = estimateSkillFrontmatterTokens(skill)
-    const tokenDisplay = `~${formatTokens(estimatedTokens)}`
-    const pluginName =
-      skill.source === 'plugin'
-        ? skill.pluginInfo?.pluginManifest.name
-        : undefined
-
-    return (
-      <Box key={`${skill.name}-${skill.source}`}>
-        <Text color={selected ? 'suggestion' : undefined}>
-          {selected ? figures.pointer : ' '}{' '}
-          {override === 'off' ? figures.circle : figures.tick}{' '}
-          {getCommandName(skill)}
-        </Text>
-        <Text dimColor>
-          {override === 'name-only' || override === 'user-invocable-only'
-            ? ` · ${override === 'name-only' ? 'name-only' : 'user-only'}`
-            : ''}
-          {pluginName ? ` · ${pluginName}` : ''} · {tokenDisplay} description
-          tokens
-        </Text>
-      </Box>
-    )
-  }
-
-  const renderSkillGroup = (source: SkillSource) => {
-    const groupSkills = skillsBySource[source]
-    if (groupSkills.length === 0) return null
-
-    const title = getSourceTitle(source)
-    const subtitle = getSourceSubtitle(source, groupSkills)
-
-    return (
-      <Box flexDirection="column" key={source}>
-        <Box>
-          <Text bold dimColor>
-            {title}
-          </Text>
-          {subtitle && <Text dimColor> ({subtitle})</Text>}
-        </Box>
-        {groupSkills.map(skill => renderSkill(skill))}
-      </Box>
-    )
-  }
+    return {
+      kind: 'item',
+      key: `${skill.name}-${skill.source}`,
+      icon: override === 'off' ? figures.circle : figures.tick,
+      iconColor: override === 'off' ? undefined : 'success',
+      label: getCommandName(skill),
+      meta: [
+        OVERRIDE_WORD[override] ?? '',
+        getSourceLabel(skill),
+        `${formatSkillTokens(estimateSkillFrontmatterTokens(skill))} tok`,
+      ],
+    }
+  })
 
   return (
     <Dialog
       title="Skills"
-      subtitle={`${skills.length} ${plural(skills.length, 'skill')} · enter/space to cycle`}
-      onCancel={handleCancel}
+      subtitle={`${count}${sortByTokens ? ' · sorted by tokens' : ''} · ${hints}`}
+      onCancel={close}
+      isCancelActive={false}
       hideInputGuide
     >
-      <Box flexDirection="column" gap={1}>
-        {SOURCE_ORDER.map(renderSkillGroup)}
-      </Box>
-      <Text dimColor italic>
-        <ConfigurableShortcutHint
-          action="confirm:no"
-          context="Confirmation"
-          fallback="Esc"
-          description="close"
+      <SearchBox
+        query={query}
+        isFocused={searching}
+        isTerminalFocused
+        placeholder="Search skills…"
+      />
+      {visible.length === 0 ? (
+        <Box marginTop={1}>
+          <Text dimColor>No skills match &quot;{query}&quot;</Text>
+        </Box>
+      ) : (
+        <MenuList
+          key={`${query}-${sortByTokens ? 'tok' : 'name'}`}
+          rows={rows}
+          defaultFocusIndex={Math.min(focused, rows.length - 1)}
+          onFocus={setFocused}
+          onSelect={cycle}
+          isDisabled={searching}
         />
-      </Text>
+      )}
+      {skills.some(skill => skill.source === 'plugin') && (
+        <Box marginTop={1}>
+          <Text dimColor>Plugin skills are managed via /plugin</Text>
+        </Box>
+      )}
     </Dialog>
   )
 }

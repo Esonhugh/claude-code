@@ -59,6 +59,7 @@ const RETRY_WATCHDOG_DEFAULT_MAX_RETRIES = 300
 const MAX_RETRIES_CAP = 15
 const FLOOR_OUTPUT_TOKENS = 3000
 const MAX_529_RETRIES = 3
+const MAX_CLOUD_CREDENTIAL_REFRESHES = 2
 export const BASE_DELAY_MS = 500
 
 // Foreground query sources where the user IS blocking on the result — these
@@ -237,6 +238,7 @@ export async function* withRetry<T>(
   let client: Anthropic | null = null
   let consecutive529Errors = options.initialConsecutive529Errors ?? 0
   let lastError: unknown
+  let cloudCredentialRefreshes = 0
   let persistentAttempt = 0
   const capacityWait = { spentMs: 0, usageLimitSpentMs: 0 }
   for (let attempt = 1; attempt <= maxRetries + 1; attempt++) {
@@ -435,6 +437,14 @@ export async function* withRetry<T>(
       // AWS/GCP errors aren't always APIError, but can be retried
       const handledCloudAuthError =
         handleAwsCredentialError(error) || handleGcpCredentialError(error)
+      // A credential the SDK cannot load fails the same way after every
+      // refresh; like official, give up after MAX_CLOUD_CREDENTIAL_REFRESHES.
+      if (
+        (isAwsCredentialsProviderError(error) || isVertexAuthError(error)) &&
+        ++cloudCredentialRefreshes > MAX_CLOUD_CREDENTIAL_REFRESHES
+      ) {
+        throw new CannotRetryError(caught, retryContext)
+      }
       if (
         !handledCloudAuthError &&
         (!(error instanceof APIError) || !shouldRetry(error))

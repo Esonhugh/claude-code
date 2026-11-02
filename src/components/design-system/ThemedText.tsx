@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react'
 import React, { useContext } from 'react'
 import Text from '../../ink/components/Text.js'
+import { isScreenReaderEnabled } from '../../ink/screen-reader.js'
 import type { Color, Styles } from '../../ink/styles.js'
 import { getTheme, type Theme } from '../../utils/theme.js'
 import { useTheme } from './ThemeProvider.js'
@@ -60,6 +61,9 @@ export type Props = {
    */
   readonly wrap?: Styles['textWrap']
 
+  /** Decorative: left out in screen-reader mode. */
+  readonly 'aria-hidden'?: boolean
+
   readonly children?: ReactNode
 }
 
@@ -100,6 +104,7 @@ export default function ThemedText({
   inverse = false,
   wrap = 'wrap',
   children,
+  'aria-hidden': ariaHidden,
 }: Props): React.ReactNode {
   const [themeName] = useTheme()
   const theme = getTheme(themeName)
@@ -113,6 +118,7 @@ export default function ThemedText({
         ? (theme.inactive as Color)
         : resolveColor(color, theme)
   const resolvedBackgroundColor = resolveColor(backgroundColor, theme)
+  if (ariaHidden && isScreenReaderEnabled()) return null
 
   return (
     <Text

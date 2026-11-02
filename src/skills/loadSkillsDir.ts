@@ -114,11 +114,14 @@ export function getSkillsPath(
  * Estimates token count for a skill based on frontmatter only
  * (name, description, whenToUse) since full content is only loaded on invocation.
  */
-export function estimateSkillFrontmatterTokens(skill: Command): number {
+export function estimateSkillFrontmatterTokens(
+  skill: Command,
+  bytesPerToken = 4,
+): number {
   const frontmatterText = [skill.name, skill.description, skill.whenToUse]
     .filter(Boolean)
     .join(' ')
-  return roughTokenCountEstimation(frontmatterText)
+  return roughTokenCountEstimation(frontmatterText, bytesPerToken)
 }
 
 /**

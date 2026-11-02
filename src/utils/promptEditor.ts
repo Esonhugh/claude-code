@@ -4,11 +4,13 @@ import {
   getPastedTextRefNumLines,
 } from '../history.js'
 import instances from '../ink/instances.js'
+import type { Message } from '../types/message.js'
 import type { PastedContent } from './config.js'
 import { classifyGuiEditor, getExternalEditor } from './editor.js'
 import { execSync_DEPRECATED } from './execSyncWrapper.js'
 import { getFsImplementation } from './fsOperations.js'
 import { toIDEDisplayName } from './ide.js'
+import { getAssistantMessageText } from './messages.js'
 import { writeFileSync_DEPRECATED } from './slowOperations.js'
 import { generateTempFilePath } from './tempfile.js'
 
@@ -134,10 +136,74 @@ function recollapsePastedContent(
   return collapsed
 }
 
+const CONTEXT_MAX_LINES = 50
+const CONTEXT_MAX_MESSAGES = 8
+const CONTEXT_MAX_BYTES = 65536
+const REPLY_MARKER =
+  '# ─── Write your reply below this line ──────────────────────────'
+
+/**
+ * Claude's text since the last human prompt (2.1.311 externalEditorContext):
+ * up to 8 assistant messages and 64 KB, oldest first.
+ */
+export function getLastResponseText(messages: Message[]): string | undefined {
+  const texts: string[] = []
+  let bytes = 0
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i]!
+    if (message.type === 'assistant') {
+      const text = getAssistantMessageText(message)?.trim()
+      if (!text) continue
+      const size = Buffer.byteLength(text, 'utf8')
+      if (
+        texts.length >= CONTEXT_MAX_MESSAGES ||
+        (texts.length > 0 && bytes + size > CONTEXT_MAX_BYTES)
+      ) {
+        break
+      }
+      texts.push(text)
+      bytes += size
+    } else if (message.type === 'user') {
+      const content = message.message.content
+      if (
+        typeof content !== 'string' &&
+        content.some(block => block.type === 'tool_result')
+      ) {
+        continue
+      }
+      if (message.isMeta) continue
+      break
+    }
+  }
+  return texts.length > 0 ? texts.reverse().join('\n\n') : undefined
+}
+
+function formatContextHeader(context: string): string {
+  let lines = context.split('\n')
+  if (lines.length > CONTEXT_MAX_LINES) {
+    lines = lines.slice(-CONTEXT_MAX_LINES)
+    lines.unshift('… (earlier output truncated)')
+  }
+  return (
+    "# ─── Claude's last response (for reference; removed on save) ───\n" +
+    `${lines.map(line => (line ? `# ${line}` : '#')).join('\n')}\n` +
+    `${REPLY_MARKER}\n\n`
+  )
+}
+
+function stripContextHeader(content: string): string {
+  const index = content.indexOf(REPLY_MARKER)
+  if (index === -1) return content
+  return content
+    .slice(index + REPLY_MARKER.length)
+    .replace(/^\r?\n\r?\n?/, '')
+}
+
 // sync IO: called from sync context (React components, sync command handlers)
 export function editPromptInEditor(
   currentPrompt: string,
   pastedContents?: Record<number, PastedContent>,
+  context?: string,
 ): EditorResult {
   const fs = getFsImplementation()
   const tempFile = generateTempFilePath()
@@ -149,7 +215,8 @@ export function editPromptInEditor(
       : currentPrompt
 
     // Write expanded prompt to temp file
-    writeFileSync_DEPRECATED(tempFile, expandedPrompt, {
+    const header = context ? formatContextHeader(context) : ''
+    writeFileSync_DEPRECATED(tempFile, header + expandedPrompt, {
       encoding: 'utf-8',
       flush: true,
     })
@@ -162,7 +229,9 @@ export function editPromptInEditor(
     }
 
     // Trim a single trailing newline if present (common editor behavior)
-    let finalContent = result.content
+    let finalContent = context
+      ? stripContextHeader(result.content)
+      : result.content
     if (finalContent.endsWith('\n') && !finalContent.endsWith('\n\n')) {
       finalContent = finalContent.slice(0, -1)
     }

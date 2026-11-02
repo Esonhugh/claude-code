@@ -6,6 +6,11 @@ import {
   createToolStub,
 } from '../remote/remotePermissionBridge.js'
 import {
+  applyRemoteTaskEvent,
+  createRemoteTaskControl,
+  setRemoteTaskControl,
+} from '../remote/remoteTaskControl.js'
+import {
   convertSDKMessage,
   isSessionEndMessage,
 } from '../remote/sdkMessageAdapter.js'
@@ -13,6 +18,7 @@ import {
   type DirectConnectConfig,
   DirectConnectSessionManager,
 } from '../server/directConnectManager.js'
+import type { AppState } from '../state/AppStateStore.js'
 import type { Tool } from '../Tool.js'
 import { findToolByName } from '../Tool.js'
 import type { Message as MessageType } from '../types/message.js'
@@ -34,6 +40,7 @@ type UseDirectConnectProps = {
   setIsLoading: (loading: boolean) => void
   setToolUseConfirmQueue: React.Dispatch<React.SetStateAction<ToolUseConfirm[]>>
   tools: Tool[]
+  setAppState?: (f: (prev: AppState) => AppState) => void
 }
 
 export function useDirectConnect({
@@ -42,12 +49,16 @@ export function useDirectConnect({
   setIsLoading,
   setToolUseConfirmQueue,
   tools,
+  setAppState,
 }: UseDirectConnectProps): UseDirectConnectResult {
   const isRemoteMode = !!config
 
   const managerRef = useRef<DirectConnectSessionManager | null>(null)
   const hasReceivedInitRef = useRef(false)
   const isConnectedRef = useRef(false)
+  const remoteTasksRef = useRef<AppState['remoteTasks']>({})
+  const setAppStateRef = useRef(setAppState)
+  setAppStateRef.current = setAppState
 
   // Keep a ref to tools so the WebSocket callback doesn't go stale
   const toolsRef = useRef(tools)
@@ -75,6 +86,17 @@ export function useDirectConnect({
             return
           }
           hasReceivedInitRef.current = true
+        }
+
+        const remoteTasks = applyRemoteTaskEvent(remoteTasksRef.current, sdkMessage)
+        if (remoteTasks !== remoteTasksRef.current) {
+          remoteTasksRef.current = remoteTasks
+          setAppStateRef.current?.(prev => ({
+            ...prev,
+            remoteTasks,
+            remoteBackgroundTaskCount: Object.keys(remoteTasks).length,
+          }))
+          return
         }
 
         const converted = convertSDKMessage(sdkMessage, {
@@ -179,6 +201,9 @@ export function useDirectConnect({
       onConnected: () => {
         logForDebugging('[useDirectConnect] Connected')
         isConnectedRef.current = true
+        setRemoteTaskControl(
+          createRemoteTaskControl(request => manager.sendTaskControlRequest(request)),
+        )
       },
       onDisconnected: () => {
         logForDebugging('[useDirectConnect] Disconnected')
@@ -205,6 +230,7 @@ export function useDirectConnect({
 
     return () => {
       logForDebugging('[useDirectConnect] Cleanup - disconnecting')
+      setRemoteTaskControl(null)
       manager.disconnect()
       managerRef.current = null
     }

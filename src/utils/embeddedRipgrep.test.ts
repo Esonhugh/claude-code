@@ -24,6 +24,11 @@ if (process.platform !== 'win32') {
 }
 assert.equal(getEmbeddedRipgrepPath(), extractedPath)
 
+// A compiled parent exports its /$bunfs path to child processes; a child that
+// cannot read it has no embedded ripgrep instead of failing to extract it.
+process.env.CLAUDE_CODE_EMBEDDED_RIPGREP_PATH = '/$bunfs/root/rg-parent'
+assert.equal(getEmbeddedRipgrepPath(), undefined)
+
 if (originalSourcePath === undefined) {
   delete process.env.CLAUDE_CODE_EMBEDDED_RIPGREP_PATH
 } else {

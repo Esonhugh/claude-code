@@ -229,6 +229,22 @@ export async function runModToolCall({
       },
       { signal: toolUseContext.abortController.signal, validateResult },
     )
+  } catch (error) {
+    await Promise.allSettled(pending)
+    // Cancellation ends dispatch before the tool finishes, and a Mod's own
+    // failure after it (its realm sees a different abort error). The tool's
+    // outcome (a killed shell's `Exit code 137` and partial output) is still
+    // the record of the call, like official, not the cancellation.
+    const last = runs.at(-1)
+    if (
+      toolUseContext.abortController.signal.aborted &&
+      last &&
+      (last.error !== undefined || last.messages.length)
+    ) {
+      if (last.error !== undefined) throw last.error
+      return last.messages
+    }
+    throw error
   } finally {
     // A Mod can return without awaiting next. Cancellation also ends dispatch
     // before a non-cancellable tool finishes; neither releases its admission.
@@ -364,6 +380,8 @@ export async function runModToolCall({
     imagePasteIds: oldMessage?.imagePasteIds,
     mcpMeta: oldMessage?.mcpMeta,
     toolDenialKind: finalResult.deny !== undefined ? 'permission-rule' : oldMessage?.toolDenialKind,
+    userFeedback: finalResult.deny !== undefined ? undefined : oldMessage?.userFeedback,
+    permissionDecision: finalResult.deny !== undefined ? undefined : oldMessage?.permissionDecision,
     toolUseResult:
       toolUseContext.agentId && !toolUseContext.preserveToolUseResults
         ? undefined

@@ -1,4 +1,5 @@
 import chalk from 'chalk'
+import { getCustomThemePalette, parseCustomThemeSetting } from './customThemes.js'
 import { env } from './env.js'
 
 export type Theme = {
@@ -106,11 +107,47 @@ export type ThemeName = (typeof THEME_NAMES)[number]
 
 export const THEME_SETTINGS = ['auto', ...THEME_NAMES] as const
 
+/** A saved custom theme (`<config>/themes/<slug>.json`), stored as `custom:<slug>`. */
+export type CustomThemeSetting = `custom:${string}`
+
 /**
  * A theme preference as stored in user config. `'auto'` follows the system
  * dark/light mode and is resolved to a ThemeName at runtime.
  */
-export type ThemeSetting = (typeof THEME_SETTINGS)[number]
+export type ThemeSetting = (typeof THEME_SETTINGS)[number] | CustomThemeSetting
+
+/** The theme the UI renders with: a built-in or a custom theme, never 'auto'. */
+export type ResolvedTheme = ThemeName | CustomThemeSetting
+
+const ANSI_COLOR_NAMES = new Set([
+  'black',
+  'red',
+  'green',
+  'yellow',
+  'blue',
+  'magenta',
+  'cyan',
+  'white',
+  'blackBright',
+  'redBright',
+  'greenBright',
+  'yellowBright',
+  'blueBright',
+  'magentaBright',
+  'cyanBright',
+  'whiteBright',
+])
+
+/** Whether `value` is a color a theme can use: rgb(r,g,b), #rrggbb, #rgb, ansi256(n) or ansi:<name>. */
+export function isThemeColorValue(value: unknown): value is string {
+  if (typeof value !== 'string') return false
+  if (/^rgb\(\s?\d{1,3},\s?\d{1,3},\s?\d{1,3}\s?\)$/.test(value)) return true
+  if (/^#[0-9a-fA-F]{6}$/.test(value) || /^#[0-9a-fA-F]{3}$/.test(value)) {
+    return true
+  }
+  if (/^ansi256\(\d{1,3}\)$/.test(value)) return true
+  return value.startsWith('ansi:') && ANSI_COLOR_NAMES.has(value.slice(5))
+}
 
 /**
  * Light theme using explicit RGB values to avoid inconsistencies
@@ -623,7 +660,14 @@ const darkDaltonizedTheme: Theme = {
   rainbow_violet_shimmer: 'rgb(230,180,210)',
 }
 
-export function getTheme(themeName: ThemeName): Theme {
+export function getTheme(themeName: ResolvedTheme): Theme {
+  const slug = parseCustomThemeSetting(themeName)
+  return slug === null
+    ? getBuiltinTheme(themeName as ThemeName)
+    : getCustomThemePalette(slug)
+}
+
+export function getBuiltinTheme(themeName: ThemeName): Theme {
   switch (themeName) {
     case 'light':
       return lightTheme

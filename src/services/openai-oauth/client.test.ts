@@ -147,11 +147,10 @@ try {
   } finally {
     delete process.env.https_proxy
   }
-  assert.deepEqual(requests[2]!.proxy, {
-    protocol: 'http',
-    host: '127.0.0.1',
-    port: 7890,
-  })
+  // The global axios interceptor from configureGlobalAgents() owns proxying.
+  // A per-request `proxy` on top of its CONNECT agent sends the request to the
+  // proxy through a tunnel to the proxy itself, which proxies reject.
+  assert.equal(requests[2]!.proxy, undefined)
   assert.equal(requests[2]!.hasHttpsAgent, false)
 
   axios.post = (async () => {

@@ -102,6 +102,44 @@ if (process.env[childFlag] !== '1') {
     expect(JSON.parse(out).hard_deny).toEqual(['Never read ~/.ssh'])
   })
 
+  const captureStdout = async (run: () => unknown) => {
+    let out = ''
+    const write = process.stdout.write
+    process.stdout.write = ((chunk: string) => { out += chunk; return true }) as typeof process.stdout.write
+    try { await run() } finally { process.stdout.write = write }
+    return out
+  }
+
+  test('like official, claude auto-mode config splices the defaults in at "$defaults"', async () => {
+    const { autoModeConfigHandler } = await import('../../cli/handlers/autoMode.js')
+    const defaults = getDefaultExternalAutoModeRules()
+    useUserSettings({ autoMode: { environment: ['Source control: acme', '$defaults'], soft_deny: ['$defaults', 'Never migrate'], allow: ['Staging is fine'] } })
+    const config = JSON.parse(await captureStdout(() => autoModeConfigHandler()))
+    expect(config.environment).toEqual(['Source control: acme', ...defaults.environment])
+    expect(config.soft_deny).toEqual([...defaults.soft_deny, 'Never migrate'])
+    expect(config.allow).toEqual(['Staging is fine'])
+    expect(config.hard_deny).toEqual(defaults.hard_deny)
+  })
+
+  test('like official, claude auto-mode defaults --label keeps rules whose label starts with the prefix', async () => {
+    const { autoModeDefaultsHandler } = await import('../../cli/handlers/autoMode.js')
+    const defaults = getDefaultExternalAutoModeRules()
+    const filtered = JSON.parse(await captureStdout(() => autoModeDefaultsHandler({ label: 'git destructive' })))
+    expect(filtered.soft_deny).toEqual(defaults.soft_deny.filter(rule => rule.startsWith('Git Destructive')))
+    expect(filtered.soft_deny).toHaveLength(1)
+    expect(filtered.allow).toEqual([])
+    expect(filtered.hard_deny).toEqual([])
+    const env = JSON.parse(await captureStdout(() => autoModeDefaultsHandler({ label: '**Trusted repo**' })))
+    expect(env.environment).toHaveLength(1)
+    expect(env.environment[0]).toStartWith('**Trusted repo**')
+  })
+
+  test('like official, a "$defaults"-only list is not a custom rule for critique', async () => {
+    const { autoModeCritiqueHandler } = await import('../../cli/handlers/autoMode.js')
+    useUserSettings({ autoMode: { environment: ['$defaults'] } })
+    expect(await captureStdout(() => autoModeCritiqueHandler({}))).toStartWith('No custom auto mode rules found.')
+  })
+
   test('like official, autoMode rules in settings.local.json are ignored with a one-time warning', async () => {
     const { setOriginalCwd } = await import('../../bootstrap/state.js')
     const { getAutoModeConfig } = await import('../settings/settings.js')
@@ -167,5 +205,7 @@ if (process.env[childFlag] !== '1') {
     expect(saved.autoMode).toBeUndefined()
     expect(saved.model).toBe('sonnet')
     expect(out).toContain('Auto mode configuration reset to defaults')
+    expect(out).toContain(`This resets auto mode to the shipped defaults by removing the autoMode section from ${settingsPath}:\n  - soft_deny (1 entry)\n  - classifyAllShell\n`)
+    expect(out).toContain('Run `claude auto-mode config` to see the effective rules.\n')
   })
 }

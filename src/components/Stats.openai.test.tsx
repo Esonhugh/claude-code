@@ -34,8 +34,12 @@ class Output extends Writable {
   rows = 40
   isTTY = false
   output = ''
+  // Piped output skips a frame identical to the last one written, so the
+  // screen is the last frame written, not what came since output was cleared.
+  frame = ''
   _write(chunk: Buffer, _encoding: BufferEncoding, callback: () => void) {
     this.output += chunk.toString()
+    this.frame = chunk.toString()
     callback()
   }
 }
@@ -140,11 +144,11 @@ test.each([144, 80])('embedded Stats preserves chart rows and nested focus at %s
     assert.ok(predicate(), output())
   }
   // For keys whose effect has no plain-text change (header focus styling),
-  // wait for the frame the key produces before sending the next one.
+  // give the key time to land before sending the next one; an unchanged
+  // frame is not written again.
   async function press(key: string) {
-    const length = stdout.output.length
     stdin.push(key)
-    await waitFor(() => stdout.output.length > length)
+    await new Promise(resolve => setTimeout(resolve, 100))
   }
   try {
     await waitFor(() => /Total tokens:/.test(output()))
@@ -237,16 +241,12 @@ test('local empty leaves OpenAI available, lazy cached and refreshable', async (
     assert.ok(predicate(), stripAnsi(stdout.output))
   }
   try {
-    await settle()
+    await waitFor(() => /No stats available yet/.test(stripAnsi(stdout.output)) && /OpenAI/.test(stripAnsi(stdout.output)))
     assert.equal(requests, 0)
-    assert.match(stripAnsi(stdout.output), /No stats available yet/)
-    assert.match(stripAnsi(stdout.output), /OpenAI/)
     stdin.push('\t')
     await settle()
     stdin.push('\t')
-    await settle()
-    assert.equal(requests, 1)
-    assert.match(stripAnsi(stdout.output), /Lifetime tokens: 42/)
+    await waitFor(() => requests === 1 && /Lifetime tokens: 42/.test(stripAnsi(stdout.output)))
     assert.match(stripAnsi(stdout.output), /No token usage in this window/)
     stdin.push('\u001b[B')
     await waitFor(() => stripAnsi(stdout.output).includes('↑/↓ ±1 day'))
@@ -273,14 +273,12 @@ test('local empty leaves OpenAI available, lazy cached and refreshable', async (
     await checkDay('\u001b[B', 0)
     await checkDay('\u001b[C', 0)
     stdin.push('v')
-    await settle()
-    assert.match(stripAnsi(stdout.output), /Weekly \(Sunday/)
+    await waitFor(() => /Weekly \(Sunday/.test(stripAnsi(stdout.output)))
     stdin.push('\u001b[D')
     await settle()
     assert.equal(requests, 1)
     stdin.push('v')
-    await settle()
-    assert.match(stripAnsi(stdout.output), /window\s+cumulative/)
+    await waitFor(() => /window\s+cumulative/.test(stripAnsi(stdout.output)))
     stdin.push('\t')
     await settle()
     stdout.output = ''
@@ -292,13 +290,10 @@ test('local empty leaves OpenAI available, lazy cached and refreshable', async (
     assert.equal(requests, 1)
     fail = true
     stdin.push('r')
-    await settle()
-    assert.equal(requests, 2)
-    assert.match(stripAnsi(stdout.output), /Failed to load OpenAI activity/)
+    await waitFor(() => requests === 2 && /Failed to load OpenAI activity/.test(stripAnsi(stdout.output)))
     fail = false
     stdin.push('r')
-    await settle()
-    assert.equal(requests, 3)
+    await waitFor(() => requests === 3)
   } finally {
     instance.unmount()
     mock.restore()
@@ -409,11 +404,10 @@ test('nested Stats tabs leave each header key to one owner', async () => {
     assert.match(stripAnsi(stdout.output), /Lifetime tokens: 42/)
     stdin.push('\u001b[A')
     await settle()
-    stdout.output = ''
     stdin.push('\u001b[B')
     await settle()
-    assert.match(stripAnsi(stdout.output), /Tabs: ←\/→ or Tab\/Shift\+Tab · ↓ enter chart/)
-    assert.doesNotMatch(stripAnsi(stdout.output), /↑\/↓ ±1 day/)
+    assert.match(stripAnsi(stdout.frame), /Tabs: ←\/→ or Tab\/Shift\+Tab · ↓ enter chart/)
+    assert.doesNotMatch(stripAnsi(stdout.frame), /↑\/↓ ±1 day/)
     stdout.output = ''
     await pushReads(stdin, ['\u001b[A', '\t'])
     await settle()

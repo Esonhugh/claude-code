@@ -1,6 +1,5 @@
 import { mkdir, writeFile } from 'fs/promises'
 import { marked, type Tokens } from 'marked'
-import { tmpdir } from 'os'
 import { join } from 'path'
 import React, { useRef } from 'react'
 import type { CommandResultDisplay } from '../../commands.js'
@@ -18,9 +17,9 @@ import type { LocalJSXCommandCall } from '../../types/command.js'
 import type { AssistantMessage, Message } from '../../types/message.js'
 import { getGlobalConfig, saveGlobalConfig } from '../../utils/config.js'
 import { extractTextContent, stripPromptXMLTags } from '../../utils/messages.js'
+import { getClaudeTempDir } from '../../utils/permissions/filesystem.js'
 import { countCharInString } from '../../utils/stringUtils.js'
 
-const COPY_DIR = join(tmpdir(), 'claude')
 const RESPONSE_FILENAME = 'response.md'
 const MAX_LOOKBACK = 20
 
@@ -76,8 +75,10 @@ export function fileExtension(lang: string | undefined): string {
 }
 
 async function writeToFile(text: string, filename: string): Promise<string> {
-  const filePath = join(COPY_DIR, filename)
-  await mkdir(COPY_DIR, { recursive: true })
+  // Per-user temp dir like 2.1.311: a shared /tmp/claude could be pre-created by another user.
+  const dir = getClaudeTempDir()
+  const filePath = join(dir, filename)
+  await mkdir(dir, { recursive: true })
   await writeFile(filePath, text, 'utf-8')
   return filePath
 }

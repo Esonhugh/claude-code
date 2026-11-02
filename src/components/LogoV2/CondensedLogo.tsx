@@ -4,11 +4,12 @@ import { useMainLoopModel } from '../../hooks/useMainLoopModel.js'
 import { useTerminalSize } from '../../hooks/useTerminalSize.js'
 import { stringWidth } from '../../ink/stringWidth.js'
 import { expandTabs } from '../../ink/tabstops.js'
-import { Box, Text } from '../../ink.js'
+import { Box, isScreenReaderEnabled, Text } from '../../ink.js'
 import { useAppState } from '../../state/AppState.js'
 import { getEffortSuffix } from '../../utils/effort.js'
 import { truncate } from '../../utils/format.js'
 import { isFullscreenEnvEnabled } from '../../utils/fullscreen.js'
+import { screenReaderStatusLine } from '../../utils/screenReader.js'
 import {
   formatModelAndBilling,
   getLogoDisplayData,
@@ -63,6 +64,25 @@ export function CondensedLogo(): ReactNode {
       incrementOverageCreditUpsellSeenCount()
     }
   }, [showOverageCreditUpsell, showGuestPassesUpsell])
+
+  if (isScreenReaderEnabled()) {
+    return (
+      <Box flexDirection="column">
+        <Text>{screenReaderStatusLine()}</Text>
+        <Text>
+          {uiName} v{version}
+        </Text>
+        <Text>
+          {modelDisplayName + getEffortSuffix(model, effortValue)} · {billingType}
+        </Text>
+        <Text>{agentName ? `@${agentName} · ${cwd}` : cwd}</Text>
+        {showGuestPassesUpsell && <GuestPassesUpsell />}
+        {!showGuestPassesUpsell && showOverageCreditUpsell && (
+          <OverageCreditUpsell maxWidth={columns} twoLine />
+        )}
+      </Box>
+    )
+  }
 
   // Calculate available width for text content
   // Account for: condensed clawd width + gap (2) + padding (2)

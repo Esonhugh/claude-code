@@ -14,7 +14,11 @@ import { render } from '../../ink.js'
 import { getDefaultAppState } from '../../state/AppState.js'
 import { AppStateProvider } from '../../state/AppState.js'
 import type { AppState } from '../../state/AppStateStore.js'
-import { getBackgroundTasksDialogInitialState } from './backgroundTasksDialogState.js'
+import type { LocalAgentTaskState } from '../../tasks/LocalAgentTask/LocalAgentTask.js'
+import {
+  getBackgroundTasksDialogInitialState,
+  getScopedBackgroundTasks,
+} from './backgroundTasksDialogState.js'
 
 function createTaskBase(id: string, description: string, startTime: number): TaskStateBase {
   return {
@@ -90,6 +94,31 @@ const noInteractive = getBackgroundTasksDialogInitialState({
   scope: 'terminal',
 })
 assert.deepEqual(noInteractive, {
+  viewState: { mode: 'list' },
+  skippedListOnMount: false,
+  initialSelectedIndex: 0,
+})
+
+// Official 2.1.311 lists a finished background agent under "Completed" in
+// /tasks until it is evicted, and opens the list rather than its detail view.
+const completedAgent = {
+  ...createTaskBase('done-agent', 'bg quick 1', 4),
+  type: 'local_agent',
+  status: 'completed',
+  agentId: 'done-agent',
+  agentType: 'general-purpose',
+  isBackgrounded: true,
+  evictAfter: 30_004,
+} as unknown as LocalAgentTaskState
+assert.deepEqual(
+  getScopedBackgroundTasks({ done: completedAgent }, undefined).map(t => t.id),
+  ['done-agent'],
+)
+assert.deepEqual(
+  getScopedBackgroundTasks({ done: { ...completedAgent, evictAfter: 0 } }, undefined),
+  [],
+)
+assert.deepEqual(getBackgroundTasksDialogInitialState({ tasks: { done: completedAgent } }), {
   viewState: { mode: 'list' },
   skippedListOnMount: false,
   initialSelectedIndex: 0,
@@ -350,7 +379,7 @@ const interaction = await render(React.createElement(AppStateProvider,
 const flush = async () => { await new Promise(resolve => setTimeout(resolve, 50)) }
 try {
   await flush()
-  assert.match(stripAnsi(interactionOut.output), /Background tasks/)
+  assert.match(stripAnsi(interactionOut.output), /Background/)
   assert.match(stripAnsi(interactionOut.output), /@team-lead/)
   assert.match(stripAnsi(interactionOut.output), /@worker/)
   interactionIn.push('\x1b[B')
@@ -370,7 +399,7 @@ try {
   assert.ok((liveState.tasks.worker as import('../../tasks/InProcessTeammateTask/types.js').InProcessTeammateTaskState)?.evictAfter)
   showDialog!(true)
   await flush()
-  assert.match(stripAnsi(interactionOut.output), /Background tasks/)
+  assert.match(stripAnsi(interactionOut.output), /Background/)
   interactionIn.push('\x1b[B')
   await flush()
   interactionIn.push('\r')
@@ -605,7 +634,7 @@ test.each(['running', 'completed', 'failed', 'killed'] as const)(
       } } as unknown as React.ComponentProps<typeof AppStateProvider>,
       React.createElement(KeybindingSetup, null, React.createElement(PromptInputFooterLeftSide, {
         exitMessage: { show: false }, vimMode: undefined, mode: 'prompt',
-        toolPermissionContext, suppressHint: false, isLoading: false,
+        toolPermissionContext, suppressHint: false, isInputEmpty: true, isLoading: false,
         tasksSelected: false, teamsSelected: false, tmuxSelected: false,
         isSearching: false, historyQuery: '', setHistoryQuery: () => {}, historyFailedMatch: false,
       }))), {

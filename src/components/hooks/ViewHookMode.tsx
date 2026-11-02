@@ -6,11 +6,14 @@
  */
 import * as React from 'react'
 import { Box, Text } from '../../ink.js'
+import { getDisplayPath } from '../../utils/file.js'
 import {
   hookSourceDescriptionDisplayString,
   type IndividualHookConfig,
 } from '../../utils/hooks/hooksSettings.js'
+import { getSettingsFilePathForSource } from '../../utils/settings/settings.js'
 import { Dialog } from '../design-system/Dialog.js'
+import { KeyboardShortcutHint } from '../design-system/KeyboardShortcutHint.js'
 
 type Props = {
   selectedHook: IndividualHookConfig
@@ -23,62 +26,99 @@ export function ViewHookMode({
   eventSupportsMatcher,
   onCancel,
 }: Props): React.ReactNode {
+  const matcher = selectedHook.matcher || 'matches everything'
+  const subtitle = eventSupportsMatcher
+    ? `${selectedHook.event} · ${matcher}`
+    : selectedHook.event
+  const statusMessage =
+    'statusMessage' in selectedHook.config
+      ? selectedHook.config.statusMessage
+      : undefined
+
   return (
     <Dialog
-      title="Hook details"
+      title={getHookTypeTitle(selectedHook.config)}
+      subtitle={subtitle}
       onCancel={onCancel}
-      inputGuide={() => <Text>Esc to go back</Text>}
+      inputGuide={() => <KeyboardShortcutHint shortcut="Esc" action="go back" />}
     >
       <Box flexDirection="column" gap={1}>
         <Box flexDirection="column">
-          <Text>
-            Event: <Text bold>{selectedHook.event}</Text>
-          </Text>
-          {eventSupportsMatcher && (
-            <Text>
-              Matcher: <Text bold>{selectedHook.matcher || '(all)'}</Text>
-            </Text>
-          )}
-          <Text>
-            Type: <Text bold>{selectedHook.config.type}</Text>
-          </Text>
-          <Text>
-            Source:{' '}
-            <Text dimColor>
-              {hookSourceDescriptionDisplayString(selectedHook.source)}
-            </Text>
-          </Text>
+          <DetailRow label="Source:">
+            {hookSourceDescriptionDisplayString(selectedHook.source)}
+          </DetailRow>
           {selectedHook.pluginName && (
-            <Text>
-              Plugin: <Text dimColor>{selectedHook.pluginName}</Text>
-            </Text>
+            <DetailRow label="Plugin:">{selectedHook.pluginName}</DetailRow>
+          )}
+          {statusMessage && (
+            <DetailRow label="Status message:">{statusMessage}</DetailRow>
           )}
         </Box>
         <Box flexDirection="column">
-          <Text dimColor>{getContentFieldLabel(selectedHook.config)}:</Text>
+          <Text dimColor>{getContentFieldLabel(selectedHook.config)}</Text>
           <Box
-            borderStyle="round"
-            borderDimColor
-            paddingLeft={1}
-            paddingRight={1}
+            borderColor="subtle"
+            borderStyle="dashed"
+            borderLeft={false}
+            borderRight={false}
+            paddingX={1}
           >
             <Text>{getContentFieldValue(selectedHook.config)}</Text>
           </Box>
         </Box>
-        {'statusMessage' in selectedHook.config &&
-          selectedHook.config.statusMessage && (
-            <Text>
-              Status message:{' '}
-              <Text dimColor>{selectedHook.config.statusMessage}</Text>
-            </Text>
-          )}
-        <Text dimColor>
-          To modify or remove this hook, edit settings.json directly or ask
-          Claude to help.
-        </Text>
+        <Text dimColor>{getEditHint(selectedHook)}</Text>
       </Box>
     </Dialog>
   )
+}
+
+function DetailRow({
+  label,
+  children,
+}: {
+  label: string
+  children: React.ReactNode
+}): React.ReactNode {
+  return (
+    <Box flexDirection="row" gap={2}>
+      <Text bold>{label}</Text>
+      <Text dimColor>{children}</Text>
+    </Box>
+  )
+}
+
+function getHookTypeTitle(config: IndividualHookConfig['config']): string {
+  switch (config.type) {
+    case 'command':
+      return 'Command hook'
+    case 'prompt':
+      return 'Prompt hook'
+    case 'agent':
+      return 'Agent hook'
+    case 'http':
+      return 'HTTP hook'
+  }
+}
+
+function getEditHint(hook: IndividualHookConfig): string {
+  switch (hook.source) {
+    case 'userSettings':
+    case 'projectSettings':
+    case 'localSettings': {
+      const path = getSettingsFilePathForSource(hook.source)
+      return `To change or remove this hook, edit ${path ? getDisplayPath(path) : 'settings.json'} or ask Claude.`
+    }
+    case 'pluginHook':
+      return hook.pluginName
+        ? `This hook comes from the ${hook.pluginName} plugin and stops running when that plugin is disabled (/plugin).`
+        : 'This hook comes from a plugin and stops running when that plugin is disabled (/plugin).'
+    case 'builtinHook':
+      return "This hook is built in to Claude Code and can't be changed or removed."
+    case 'sessionHook':
+      return "This hook was registered while Claude Code was running (by /goal, an agent or a skill), not by a settings file, and can't be changed here."
+    case 'policySettings':
+      return "This hook is set by your organization's managed settings and can't be changed here."
+  }
 }
 
 /**
@@ -102,7 +142,7 @@ function getContentFieldLabel(config: IndividualHookConfig['config']): string {
  * Get the actual content value for a hook's primary field, bypassing
  * statusMessage so the detail view always shows the real command/prompt/URL.
  */
-function getContentFieldValue(config: IndividualHookConfig['config']): string {
+export function getContentFieldValue(config: IndividualHookConfig['config']): string {
   switch (config.type) {
     case 'command':
       return config.command

@@ -1,3 +1,4 @@
+import { getIsNonInteractiveSession } from '../../bootstrap/state.js'
 import type { Command } from '../../commands.js'
 import {
   FAST_MODE_MODEL_DISPLAY,
@@ -12,9 +13,8 @@ const fast = {
   get description() {
     return getAPIProvider() === 'openai'
       ? 'Toggle fast mode'
-      : `Toggle fast mode (${FAST_MODE_MODEL_DISPLAY} only)`
+      : `Toggle fast mode (${FAST_MODE_MODEL_DISPLAY})`
   },
-  availability: ['claude-ai', 'console', 'chatgpt'],
   isEnabled: () => isFastModeEnabled(),
   get isHidden() {
     return !isFastModeEnabled()
@@ -27,3 +27,18 @@ const fast = {
 } satisfies Command
 
 export default fast
+
+export const fastNonInteractive = {
+  type: 'local',
+  name: 'fast',
+  supportsNonInteractive: true,
+  get description() {
+    return fast.description
+  },
+  argumentHint: '[on|off]',
+  isEnabled: () => getIsNonInteractiveSession() && isFastModeEnabled(),
+  get isHidden() {
+    return !getIsNonInteractiveSession() || !isFastModeEnabled()
+  },
+  load: () => import('./fastNonInteractive.js'),
+} satisfies Command

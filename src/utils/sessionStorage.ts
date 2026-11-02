@@ -4640,21 +4640,15 @@ export async function loadAllSubagentTranscriptsFromDisk(): Promise<{
 // without awaiting recordTranscript's return value (race-free hint tracking).
 export function isLoggableMessage(m: Message): boolean {
   if (m.type === 'progress') return false
-  // IMPORTANT: We deliberately filter out most attachments for non-ants because
-  // they have sensitive info for training that we don't want exposed to the public.
-  // When enabled, we allow hook_additional_context through since it contains
-  // user-configured hook output that is useful for session context on resume.
-  if (m.type === 'attachment' && getUserType() !== 'ant') {
-    if (m.attachment.type === 'goal_status') {
-      return true
-    }
-    if (
-      // @ts-ignore - recovered code
-      m.attachment.type === 'hook_additional_context' &&
-      isEnvTruthy(process.env.CLAUDE_CODE_SAVE_HOOK_ADDITIONAL_CONTEXT)
-    ) {
-      return true
-    }
+  // Attachments persist like 2.1.311 so --continue/--resume rebuild the same
+  // request prefix (listing deltas, date, env context) and keep the prompt cache.
+  if (
+    m.type === 'attachment' &&
+    m.attachment.type === 'hook_success' &&
+    !m.attachment.content &&
+    !m.attachment.stdout?.trim() &&
+    !m.attachment.stderr?.trim()
+  ) {
     return false
   }
   return true

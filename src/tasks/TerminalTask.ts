@@ -12,6 +12,7 @@ import type { Task } from '../Task.js'
 import type { SetAppState } from '../Task.js'
 import type { AgentId } from '../types/ids.js'
 import { enqueuePendingNotification } from '../utils/messageQueueManager.js'
+import { emitTaskTerminatedSdk } from '../utils/sdkEventQueue.js'
 import { updateTaskState } from '../utils/task/framework.js'
 import { escapeXml } from '../utils/xml.js'
 
@@ -80,6 +81,19 @@ export function enqueueTerminalTaskNotification(
   }
 
   const task = taskToNotify
+  // Like a Bash task killed via TaskStop: the caller already knows the pane is
+  // gone, so only close the SDK bookend instead of waking the model.
+  if (
+    task.terminationReason === 'kill-pane' ||
+    task.terminationReason === 'task-stop'
+  ) {
+    emitTaskTerminatedSdk(task.id, 'stopped', {
+      toolUseId: task.toolUseId,
+      summary: task.description,
+      outputFile: task.outputFile,
+    })
+    return
+  }
   const toolUseIdLine = task.toolUseId
     ? `\n<${TOOL_USE_ID_TAG}>${task.toolUseId}</${TOOL_USE_ID_TAG}>`
     : ''

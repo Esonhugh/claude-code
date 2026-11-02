@@ -1,0 +1,90 @@
+import { expect, test } from 'bun:test'
+import React from 'react'
+import type { ContextData } from '../utils/analyzeContext.js'
+import { renderToString } from '../utils/staticRender.js'
+import { ContextVisualization } from './ContextVisualization.js'
+
+const data = {
+  categories: [],
+  totalTokens: 2_000,
+  maxTokens: 200_000,
+  rawMaxTokens: 200_000,
+  autocompactSource: 'auto',
+  percentage: 1,
+  gridRows: [],
+  model: 'claude-test',
+  memoryFiles: [],
+  mcpTools: [],
+  agents: [],
+  skills: {
+    totalSkills: 2,
+    includedSkills: 2,
+    tokens: 1_200,
+    skillFrontmatter: [
+      { name: 'alpha', source: 'userSettings', tokens: 700 },
+      { name: 'beta', source: 'projectSettings', tokens: 500 },
+    ],
+  },
+  isAutoCompactEnabled: true,
+  apiUsage: null,
+} as unknown as ContextData
+
+test('like official, /context folds skills to one count line until /context all', async () => {
+  const folded = await renderToString(<ContextVisualization data={data} collapsed />, 100)
+  expect(folded).toContain('└ 2 skills · 1.2k tokens')
+  expect(folded).toContain('/context all to expand')
+  expect(folded).not.toContain('alpha')
+
+  const expanded = await renderToString(<ContextVisualization data={data} />, 100)
+  expect(expanded).toContain('└ alpha: ~700 tokens')
+  expect(expanded).not.toContain('/context all to expand')
+})
+
+test('like official, the legend names the model on its own lines and shows a non-auto auto-compact window', async () => {
+  const out = await renderToString(
+    <ContextVisualization
+      data={{ ...data, model: 'claude-opus-5-5', autocompactSource: 'model-default' } as ContextData}
+      collapsed
+    />,
+    100,
+  )
+  const lines = out.split('\n').map(line => line.trim())
+  const name = lines.indexOf('Opus 5.5')
+  expect(name).toBeGreaterThan(-1)
+  expect(lines.slice(name + 1, name + 3)).toEqual(['claude-opus-5-5', '2k/200k tokens (1%)'])
+  expect(out).toContain('Auto-compact window: 200k tokens')
+  const indent = (prefix: string) => {
+    const line = out.split('\n').find(line => line.trimStart().startsWith(prefix))!
+    return line.length - line.trimStart().length
+  }
+  expect(indent('Auto-compact window')).toBe(indent('Skills'))
+
+  const auto = await renderToString(<ContextVisualization data={data} collapsed />, 100)
+  expect(auto).not.toContain('Auto-compact window')
+})
+
+test('like official, expanded skills list built-in skills as a tree with rounded estimates', async () => {
+  const out = await renderToString(
+    <ContextVisualization
+      data={{
+        ...data,
+        skills: {
+          totalSkills: 3,
+          includedSkills: 3,
+          tokens: 600,
+          skillFrontmatter: [
+            { name: 'init', source: 'built-in', tokens: 12 },
+            { name: 'dataviz', source: 'built-in', tokens: 476 },
+            { name: 'mine', source: 'userSettings', tokens: 112 },
+          ],
+        },
+      } as ContextData}
+    />,
+    100,
+  )
+  const lines = out.split('\n').map(line => line.trim())
+  const builtIn = lines.indexOf('Built-in')
+  expect(builtIn).toBeGreaterThan(lines.indexOf('User'))
+  expect(lines.slice(builtIn + 1, builtIn + 3)).toEqual(['├ dataviz: ~480 tokens', '└ init: < 20 tokens'])
+  expect(lines).toContain('└ mine: ~110 tokens')
+})

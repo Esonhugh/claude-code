@@ -3,7 +3,7 @@ import { randomBytes } from 'crypto'
 import { copyFile, mkdir, readFile, writeFile } from 'fs/promises'
 import { homedir, platform } from 'os'
 import { dirname, join } from 'path'
-import type { ThemeName } from 'src/utils/theme.js'
+import type { ResolvedTheme } from 'src/utils/theme.js'
 import { pathToFileURL } from 'url'
 import { supportsHyperlinks } from '../../ink/supports-hyperlinks.js'
 import { color } from '../../ink.js'
@@ -104,7 +104,7 @@ export function shouldOfferTerminalSetup(): boolean {
   )
 }
 
-export async function setupTerminal(theme: ThemeName): Promise<string> {
+export async function setupTerminal(theme: ResolvedTheme): Promise<string> {
   let result = ''
 
   switch (env.terminal) {
@@ -195,8 +195,6 @@ No configuration needed. Just use Shift+Enter to add newlines.`
     let platformTerminals = ''
     if (currentPlatform === 'macos') {
       platformTerminals = '   • macOS: Apple Terminal\n'
-    } else if (currentPlatform === 'windows') {
-      platformTerminals = '   • Windows: Windows Terminal\n'
     }
     // For Linux and other platforms, we don't show native terminal options
     // since they're not currently supported
@@ -209,11 +207,11 @@ ${chalk.dim('Note: You can already use backslash (\\\\) + return to add newlines
 To set up the shortcut (optional):
 1. Exit tmux/screen temporarily
 2. Run /terminal-setup directly in one of these terminals:
-${platformTerminals}   • IDE: VSCode, Cursor, Windsurf, Zed
+${platformTerminals}   • IDE: VSCode, Cursor, Devin Desktop, Zed
    • Other: Alacritty
 3. Return to tmux/screen - settings will persist
 
-${chalk.dim('Note: iTerm2, WezTerm, Ghostty, Kitty, and Warp support Shift+Enter natively.')}`
+${chalk.dim('Note: iTerm2, WezTerm, Ghostty, Kitty, Warp, and Windows Terminal support Shift+Enter natively.')}`
     onDone(message)
     return null
   }
@@ -232,7 +230,7 @@ type VSCodeKeybinding = {
 
 async function installBindingsForVSCodeTerminal(
   editor: 'VSCode' | 'Cursor' | 'Windsurf' = 'VSCode',
-  theme: ThemeName,
+  theme: ResolvedTheme,
 ): Promise<string> {
   // Check if we're running in a VSCode Remote SSH session
   // In this case, keybindings need to be installed on the LOCAL machine
@@ -405,7 +403,7 @@ async function disableAudioBellForProfile(
 
 // Enable Option as Meta key for Terminal.app
 async function enableOptionAsMetaForTerminal(
-  theme: ThemeName,
+  theme: ResolvedTheme,
 ): Promise<string> {
   try {
     // Create a backup of the current plist file
@@ -500,7 +498,7 @@ async function enableOptionAsMetaForTerminal(
   }
 }
 
-async function installBindingsForAlacritty(theme: ThemeName): Promise<string> {
+async function installBindingsForAlacritty(theme: ResolvedTheme): Promise<string> {
   const ALACRITTY_KEYBINDING = `[[keyboard.bindings]]
 key = "Return"
 mods = "Shift"
@@ -609,7 +607,7 @@ chars = "\\u001B\\r"`
   }
 }
 
-async function installBindingsForZed(theme: ThemeName): Promise<string> {
+async function installBindingsForZed(theme: ResolvedTheme): Promise<string> {
   // Zed uses JSON keybindings similar to VSCode
   const zedDir = join(homedir(), '.config', 'zed')
   const keymapPath = join(zedDir, 'keymap.json')

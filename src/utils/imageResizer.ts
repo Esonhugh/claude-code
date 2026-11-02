@@ -398,17 +398,18 @@ export async function maybeResizeAndDownsampleImageBuffer(
     // Calculate the base64 size (API limit is on base64-encoded length)
     const base64Size = Math.ceil((originalSize * 4) / 3)
 
-    // Size-under-5MB does not imply dimensions-under-cap. Don't return the
-    // raw buffer if the PNG header says it's oversized — fall through to
-    // ImageResizeError instead. PNG sig is 8 bytes, IHDR dims at 16-24.
+    // Like 2.1.311: without sharp the header must say what this is and that
+    // it fits; a raw buffer the API cannot decode would fail the request.
+    const headerDimensions = readImageHeaderDimensions(imageBuffer)
+    if (headerDimensions === undefined) {
+      throw new ImageResizeError(
+        'Unable to resize image — image processing is unavailable and dimensions could not be read from the file header. ' +
+          'Please convert the image to PNG, JPEG, GIF, or WebP.',
+      )
+    }
     const overDim =
-      imageBuffer.length >= 24 &&
-      imageBuffer[0] === 0x89 &&
-      imageBuffer[1] === 0x50 &&
-      imageBuffer[2] === 0x4e &&
-      imageBuffer[3] === 0x47 &&
-      (imageBuffer.readUInt32BE(16) > IMAGE_MAX_WIDTH ||
-        imageBuffer.readUInt32BE(20) > IMAGE_MAX_HEIGHT)
+      headerDimensions.width > IMAGE_MAX_WIDTH ||
+      headerDimensions.height > IMAGE_MAX_HEIGHT
 
     // If original image's base64 encoding is within API limit, allow it through uncompressed
     if (base64Size <= API_IMAGE_MAX_BASE64_SIZE && !overDim) {
@@ -430,6 +431,94 @@ export async function maybeResizeAndDownsampleImageBuffer(
             `Please resize the image manually or use a smaller image.`,
     )
   }
+}
+
+/** Width and height from a PNG, GIF, JPEG or WebP header, without decoding. */
+export function readImageHeaderDimensions(
+  buffer: Buffer,
+): { width: number; height: number } | undefined {
+  if (buffer.length < 10) return undefined
+  if (
+    buffer.length >= 24 &&
+    buffer[0] === 0x89 &&
+    buffer[1] === 0x50 &&
+    buffer[2] === 0x4e &&
+    buffer[3] === 0x47
+  ) {
+    return { width: buffer.readUInt32BE(16), height: buffer.readUInt32BE(20) }
+  }
+  if (buffer[0] === 0x47 && buffer[1] === 0x49 && buffer[2] === 0x46) {
+    return { width: buffer.readUInt16LE(6), height: buffer.readUInt16LE(8) }
+  }
+  if (buffer[0] === 0xff && buffer[1] === 0xd8) {
+    const sof = findJpegStartOfFrame(buffer)
+    return sof === undefined
+      ? undefined
+      : {
+          height: buffer.readUInt16BE(sof + 5),
+          width: buffer.readUInt16BE(sof + 7),
+        }
+  }
+  if (
+    buffer.length >= 30 &&
+    buffer.toString('ascii', 0, 4) === 'RIFF' &&
+    buffer.toString('ascii', 8, 12) === 'WEBP'
+  ) {
+    const chunk = buffer.toString('ascii', 12, 16)
+    if (chunk === 'VP8 ') {
+      return {
+        width: buffer.readUInt16LE(26) & 0x3fff,
+        height: buffer.readUInt16LE(28) & 0x3fff,
+      }
+    }
+    if (chunk === 'VP8L') {
+      const bits = buffer.readUInt32LE(21)
+      return {
+        width: (bits & 0x3fff) + 1,
+        height: ((bits >> 14) & 0x3fff) + 1,
+      }
+    }
+    if (chunk === 'VP8X') {
+      return {
+        width: buffer.readUIntLE(24, 3) + 1,
+        height: buffer.readUIntLE(27, 3) + 1,
+      }
+    }
+  }
+  return undefined
+}
+
+/** Offset of the first SOF marker (dimensions follow it), skipping other segments. */
+function findJpegStartOfFrame(buffer: Buffer): number | undefined {
+  let offset = 2
+  while (offset + 9 < buffer.length) {
+    if (buffer[offset] !== 0xff) {
+      offset++
+      continue
+    }
+    const marker = buffer[offset + 1]!
+    if (marker === 0xff) {
+      offset++
+      continue
+    }
+    if (
+      marker >= 0xc0 &&
+      marker <= 0xcf &&
+      marker !== 0xc4 &&
+      marker !== 0xc8 &&
+      marker !== 0xcc
+    ) {
+      return offset
+    }
+    if ((marker >= 0xd0 && marker <= 0xd9) || marker === 0x01) {
+      offset += 2
+      continue
+    }
+    const length = buffer.readUInt16BE(offset + 2)
+    if (length < 2) return undefined
+    offset += 2 + length
+  }
+  return undefined
 }
 
 export interface ImageBlockWithDimensions {

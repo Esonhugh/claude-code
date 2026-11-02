@@ -9,7 +9,6 @@
  * handed in; useDirectConnect creates its WebSocket inside the effect.
  */
 
-import isEqual from 'lodash-es/isEqual.js'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { applyGoalStatusAttachment } from '../commands/goal/restore.js'
 import type { ToolUseConfirm } from '../components/permissions/PermissionRequest.js'
@@ -25,6 +24,11 @@ import {
   convertSDKMessage,
   isSessionEndMessage,
 } from '../remote/sdkMessageAdapter.js'
+import {
+  applyRemoteTaskEvent,
+  createRemoteTaskControl,
+  setRemoteTaskControl,
+} from '../remote/remoteTaskControl.js'
 import type { SSHSession } from '../ssh/createSSHSession.js'
 import type { SSHSessionManager } from '../ssh/SSHSessionManager.js'
 import type { AppState } from '../state/AppStateStore.js'
@@ -253,62 +257,12 @@ export function useSSHSession({
         }
 
         if (sdkMessage.type === 'system') {
-          if (sdkMessage.subtype === 'task_started') {
-            updateRemoteTasks(tasks => {
-              const current = tasks[sdkMessage.task_id]
-              if (
-                current &&
-                current.toolUseId === sdkMessage.tool_use_id &&
-                current.taskType === sdkMessage.task_type &&
-                current.description === sdkMessage.description &&
-                current.workflowName === sdkMessage.workflow_name &&
-                current.prompt === sdkMessage.prompt
-              ) {
-                return tasks
-              }
-              return {
-                ...tasks,
-                [sdkMessage.task_id]: {
-                  taskId: sdkMessage.task_id,
-                  toolUseId: sdkMessage.tool_use_id,
-                  taskType: sdkMessage.task_type,
-                  description: sdkMessage.description,
-                  workflowName: sdkMessage.workflow_name,
-                  prompt: sdkMessage.prompt,
-                },
-              }
-            })
-            return
-          }
-          if (sdkMessage.subtype === 'task_notification') {
-            updateRemoteTasks(tasks => {
-              if (!tasks[sdkMessage.task_id]) return tasks
-              const next = { ...tasks }
-              delete next[sdkMessage.task_id]
-              return next
-            })
-            return
-          }
-          if (sdkMessage.subtype === 'task_progress') {
-            updateRemoteTasks(tasks => {
-              const current = tasks[sdkMessage.task_id]
-              if (!current) return tasks
-              const next = {
-                ...current,
-                description: sdkMessage.description,
-                usage: {
-                  totalTokens: sdkMessage.usage.total_tokens,
-                  toolUses: sdkMessage.usage.tool_uses,
-                  durationMs: sdkMessage.usage.duration_ms,
-                },
-                lastToolName: sdkMessage.last_tool_name,
-                summary: sdkMessage.summary,
-                workflowProgress: sdkMessage.workflow_progress,
-              }
-              return isEqual(current, next)
-                ? tasks
-                : { ...tasks, [sdkMessage.task_id]: next }
-            })
+          if (
+            sdkMessage.subtype === 'task_started' ||
+            sdkMessage.subtype === 'task_notification' ||
+            sdkMessage.subtype === 'task_progress'
+          ) {
+            updateRemoteTasks(tasks => applyRemoteTaskEvent(tasks, sdkMessage))
             return
           }
           if (sdkMessage.subtype === 'goal_state_changed') {
@@ -626,6 +580,18 @@ export function useSSHSession({
     session,
     setIsLoading,
   ])
+
+  useEffect(() => {
+    if (!session || !isReady) return
+    setRemoteTaskControl(
+      createRemoteTaskControl(request => {
+        const manager = managerRef.current
+        if (!manager) return Promise.reject(new Error('SSH session is not connected'))
+        return manager.sendTaskControlRequest(request)
+      }),
+    )
+    return () => setRemoteTaskControl(null)
+  }, [session, isReady])
 
   const getPermissionMode = useCallback(() => permissionModeRef.current, [])
 

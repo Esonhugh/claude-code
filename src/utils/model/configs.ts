@@ -154,6 +154,13 @@ export const CLAUDE_SONNET_5_5_CONFIG = {
   foundry: 'claude-sonnet-5-5',
 } as const satisfies ModelConfig
 
+export const CLAUDE_HAIKU_5_5_CONFIG = {
+  firstParty: 'claude-haiku-5-5',
+  bedrock: 'anthropic.claude-haiku-5-5',
+  vertex: 'claude-haiku-5-5',
+  foundry: 'claude-haiku-5-5',
+} as const satisfies ModelConfig
+
 export const OPENAI_MODEL_CONFIG = {
   default: 'gpt-5.6-sol',
   opus: 'gpt-5.6-sol',
@@ -165,6 +172,7 @@ export const OPENAI_MODEL_CONFIG = {
 export const ALL_MODEL_CONFIGS = {
   haiku35: CLAUDE_3_5_HAIKU_CONFIG,
   haiku45: CLAUDE_HAIKU_4_5_CONFIG,
+  haiku55: CLAUDE_HAIKU_5_5_CONFIG,
   sonnet35: CLAUDE_3_5_V2_SONNET_CONFIG,
   sonnet37: CLAUDE_3_7_SONNET_CONFIG,
   sonnet40: CLAUDE_SONNET_4_CONFIG,

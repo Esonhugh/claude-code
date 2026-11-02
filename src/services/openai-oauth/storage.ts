@@ -2,6 +2,7 @@ import { chmod, mkdir, writeFile } from 'fs/promises'
 import { homedir } from 'os'
 import { join } from 'path'
 import {
+  decodeOpenAIIdTokenClaims,
   getChatGPTOAuthInfo,
   getOpenAIApiKey,
   getOpenAIAuthInfo,
@@ -34,7 +35,15 @@ export async function saveOpenAIAuth(
   auth: OpenAIAuthDotJson,
   opts: { homeDir?: string } = {},
 ): Promise<string> {
-  return writeOpenAIAuthFile(auth, opts)
+  const accountId =
+    auth.tokens.account_id ??
+    decodeOpenAIIdTokenClaims(auth.tokens.id_token)?.chatgptAccountId
+  return writeOpenAIAuthFile(
+    accountId
+      ? { ...auth, tokens: { ...auth.tokens, account_id: accountId } }
+      : auth,
+    opts,
+  )
 }
 
 export async function saveOpenAIApiKey(

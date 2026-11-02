@@ -43,7 +43,7 @@ describe('Explore and Plan built-in agents', () => {
     )
   })
 
-  test('keep compact read-only prompts', () => {
+  test('keep read-only prompts', () => {
     const agents = getBuiltInAgents()
     const explore = agents.find(agent => agent.agentType === 'Explore')
     const plan = agents.find(agent => agent.agentType === 'Plan')
@@ -51,9 +51,9 @@ describe('Explore and Plan built-in agents', () => {
     const explorePrompt = explore?.getSystemPrompt(context)
     const planPrompt = plan?.getSystemPrompt(context)
 
-    expect(explorePrompt).toContain('READ-ONLY')
-    expect(explorePrompt).toContain('state-changing command')
-    expect(explorePrompt?.length).toBeLessThan(1_400)
+    // Explore uses the 2.1.311 file search specialist prompt verbatim.
+    expect(explorePrompt).toContain('=== CRITICAL: READ-ONLY MODE - NO FILE MODIFICATIONS ===')
+    expect(explorePrompt).toContain('Running ANY commands that change system state')
     expect(planPrompt).toContain('READ-ONLY')
     expect(planPrompt).toContain('Critical Files for Implementation')
     expect(planPrompt?.length).toBeLessThan(1_600)
@@ -82,7 +82,7 @@ describe('Coordinator built-in worker agent', () => {
       whenToUse:
         'For executing tasks autonomously — research, implementation, or verification.',
       tools: ['*'],
-      maxTurns: 200,
+      maxTurns: 500,
       permissionMode: 'bubble',
       source: 'built-in',
       baseDir: 'built-in',

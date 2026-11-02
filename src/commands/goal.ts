@@ -51,8 +51,7 @@ export function consumeLastGoalHookRegistration(): {
 export const goalNonInteractive: Command = {
   type: 'prompt',
   name: 'goal',
-  description: 'Work autonomously toward a goal',
-  argumentHint: '[ <condition> | clear ]',
+  description: 'Set a goal — keep working until the condition is met',
   progressMessage: 'Set a goal — keep working until the condition is met',
   contentLength: 0,
   source: 'builtin',

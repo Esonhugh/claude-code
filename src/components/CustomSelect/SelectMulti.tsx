@@ -163,7 +163,7 @@ export function SelectMulti<T>({
           }
 
           return (
-            <Box key={String(option.value)} gap={1}>
+            <Box key={String(option.value)} flexDirection="column">
               <SelectOption
                 isFocused={isOptionFocused}
                 isSelected={
@@ -171,10 +171,11 @@ export function SelectMulti<T>({
                 }
                 shouldShowDownArrow={areMoreOptionsBelow && isLastVisibleOption}
                 shouldShowUpArrow={areMoreOptionsAbove && isFirstVisibleOption}
-                description={option.description}
               >
                 {!hideIndexes && (
-                  <Text dimColor>{`${i}.`.padEnd(maxIndexWidth)}</Text>
+                  <Box flexShrink={0}>
+                    <Text dimColor>{`${i}.`.padEnd(maxIndexWidth)}</Text>
+                  </Box>
                 )}
                 <Text color={isSelected ? 'success' : undefined}>
                   [{isSelected ? figures.tick : ' '}]
@@ -183,6 +184,11 @@ export function SelectMulti<T>({
                   {option.label}
                 </Text>
               </SelectOption>
+              {option.description && (
+                <Box paddingLeft={hideIndexes ? 6 : maxIndexWidth + 8}>
+                  <Text color="inactive">{option.description}</Text>
+                </Box>
+              )}
             </Box>
           )
         })}

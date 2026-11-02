@@ -98,6 +98,8 @@ try {
 
   resetProviderEnv()
   process.env.CLAUDE_CODE_OAUTH_TOKEN = 'test-oauth-token'
+  // An API key in the environment would outrank the OAuth token.
+  delete process.env.ANTHROPIC_API_KEY
   const authModule = await import('../../utils/auth.js')
   authModule.getClaudeAIOAuthTokens.cache.clear?.()
   const oauthRequests: Request[] = []

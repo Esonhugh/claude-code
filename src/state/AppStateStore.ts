@@ -127,6 +127,8 @@ export type AppState = DeepImmutable<{
   coordinatorTaskTargetId?: string
   // Idle teammates past the first three fold into one panel row until expanded.
   idleTeammatesExpanded?: boolean
+  // The idle "← for agents" footer hint hides 10s after the session opens.
+  agentsHintExpired?: boolean
   viewSelectionMode: 'none' | 'viewing-agent'
   // Which footer pill is focused (arrow-key navigation below the prompt).
   // Lives in AppState so pill components rendered outside PromptInput

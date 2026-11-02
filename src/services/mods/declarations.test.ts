@@ -119,7 +119,7 @@ describe('generated Mods declarations', () => {
         void [text,bytes,either,explicitText,stat,statWithOptions,textOnly,bytesAsText];`,
     }
     expect(messages(diagnostics(files, [declaration, plugin], {skipLibCheck:false}))).toBe('')
-  })
+  }, 30_000) // the first type check loads TypeScript (~5s on a loaded machine)
 
   test('preserves each official PromptOrigin branch for author Extract types', () => {
     const declaration = '/virtual/claude-code.d.ts'

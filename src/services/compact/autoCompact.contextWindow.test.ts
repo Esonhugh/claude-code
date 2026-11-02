@@ -170,3 +170,17 @@ test('a conversation too long for a smaller new model is summarized by the previ
     merged.mockRestore()
   }
 })
+
+// Like 2.1.311, --autocompact sets the window for the session over settings.
+test('--autocompact wins over configured settings, and auto drops them', async () => {
+  const { setCliAutoCompactWindow } = await import('../../bootstrap/state.js')
+  try {
+    setCliAutoCompactWindow(300_000)
+    expect(getConfiguredAutoCompactWindow('custom-model')).toBe(300_000)
+    setCliAutoCompactWindow('auto')
+    expect(getConfiguredAutoCompactWindow('custom-model')).toBeUndefined()
+  } finally {
+    setCliAutoCompactWindow(undefined)
+  }
+  expect(getConfiguredAutoCompactWindow('custom-model')).toBe(150_000)
+})

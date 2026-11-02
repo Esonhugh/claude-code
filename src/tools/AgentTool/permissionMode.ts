@@ -1,7 +1,10 @@
 import type { ToolPermissionContext } from '../../Tool.js'
 import type { PermissionMode } from '../../types/permissions.js'
 import { logForDebugging } from '../../utils/debug.js'
-import { getAutoModeUnavailableReason } from '../../utils/permissions/permissionSetup.js'
+import {
+  getAutoModeUnavailableReason,
+  stripDangerousPermissionsForAutoMode,
+} from '../../utils/permissions/permissionSetup.js'
 import { isPlanModeAvailable, PLAN_MODE_DISABLED_MESSAGE } from '../../utils/planModeV2.js'
 
 const AGENT_PERMISSION_MODE_RANK: Record<PermissionMode, number> = {
@@ -77,4 +80,16 @@ export function applyRequestedAgentPermissionMode(
     throw new Error(PLAN_MODE_DISABLED_MESSAGE)
   }
   return mode === context.mode ? context : { ...context, mode }
+}
+
+// The parent's context in the agent's mode. Like the main session entering
+// auto, an agent that runs in auto while its parent does not ignores allow
+// rules that would let it skip the classifier.
+export function withAgentPermissionMode(
+  parent: ToolPermissionContext,
+  mode: PermissionMode,
+): ToolPermissionContext {
+  if (parent.mode === mode) return parent
+  const context = { ...parent, mode }
+  return mode === 'auto' ? stripDangerousPermissionsForAutoMode(context) : context
 }

@@ -1,9 +1,12 @@
 import type { Command } from '../../commands.js'
 
 const agents = {
-  type: 'local-jsx',
+  type: 'local',
   name: 'agents',
-  description: 'Manage agent configurations',
+  description:
+    '(removed) Ask Claude to create/manage subagents, or edit .claude/agents/',
+  isHidden: true,
+  supportsNonInteractive: true,
   load: () => import('./agents.js'),
 } satisfies Command
 

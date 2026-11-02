@@ -3124,7 +3124,7 @@ export function ManagePlugins({
       <Box marginTop={1} marginLeft={1}>
         <Text dimColor italic>
           <Byline>
-            <Text>type to search</Text>
+            <Text>Type to search</Text>
             <ConfigurableShortcutHint
               action="plugin:toggle"
               context="Plugin"
@@ -3135,13 +3135,13 @@ export function ManagePlugins({
               action="select:accept"
               context="Select"
               fallback="Enter"
-              description="details"
+              description="view"
             />
             <ConfigurableShortcutHint
               action="confirm:no"
               context="Confirmation"
               fallback="Esc"
-              description="back"
+              description="go back"
             />
           </Byline>
         </Text>
