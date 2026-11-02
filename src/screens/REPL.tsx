@@ -5942,8 +5942,9 @@ export function REPL({
       setPastedContents({})
       const consumedGeneration = draftGenerationRef.current
       if (modsSession) await awaitMods()
-      // An evicted agent can still resume from its transcript on disk.
-      const currentTask = store.getState().tasks[task.id] ?? (isLocalAgentTask(task) ? task : undefined)
+      // An evicted agent has ended; it can still resume from its transcript on disk.
+      const currentTask = store.getState().tasks[task.id] ??
+        (isLocalAgentTask(task) ? { ...task, status: 'completed' as const } : undefined)
       let delivery: ReturnType<typeof deliverTaskMessage>
       try {
         delivery = deliverTaskMessage(currentTask, input, setAppState)
