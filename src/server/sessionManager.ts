@@ -96,8 +96,8 @@ export class SessionManager {
       sessionId: id,
       cwd,
       permissionMode,
-      model,
-      resume: !!resume,
+      ...(model && { model }),
+      ...(resume && { resume: true }),
     })
     const session: Session = {
       id,
