@@ -33,7 +33,15 @@ test('a second Worker crash during recovery still restores survivor hooks and ti
     })
     const outcome = await runtime.reconcile(inputs).then(() => ({}), error => ({ error }))
     await runtime.settle()
-    expect(await runtime.dispatch('tool.call', {}, async () => ({ result: 'core' }))).toEqual({ result: 1 })
+    // settle() does not wait on timer waits, so the restored after(0) can land after it.
+    const ticks = async () => runtime.dispatch('tool.call', {}, async () => ({ result: 'core' }))
+    const deadline = Date.now() + 5000
+    let result = await ticks()
+    while ((result as { result?: unknown }).result === 0 && Date.now() < deadline) {
+      await new Promise(resolve => setTimeout(resolve, 20))
+      result = await ticks()
+    }
+    expect(result).toEqual({ result: 1 })
     expect(outcome).toEqual({})
     expect(paint).toContain('RECOVERY_BAND')
     expect(diagnostics.filter(event => event.stage === 'worker').map(event => event.workerFault?.culprit?.plugin))
