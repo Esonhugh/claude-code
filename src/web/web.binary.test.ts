@@ -2089,6 +2089,8 @@ describe.skipIf(!binary || process.platform === 'darwin')('claude web account (b
         IS_SANDBOX: '1',
         // Replaced from the page; the new key has to win over this one.
         ANTHROPIC_API_KEY: 'sk-ant-env-placeholder-0000',
+        // Not a descriptor: keeps a host's token file (/home/claude/.claude/remote) from signing this server in.
+        CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR: 'none',
         CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
         DISABLE_AUTOUPDATER: '1',
       },
