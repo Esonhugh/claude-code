@@ -27,6 +27,8 @@ export class DangerousBackend {
       allowBypassPermissions?: boolean
       /** Extra directories every session's tools may use (`--add-dir`). */
       addDirs?: string[]
+      /** Echo queued prompts, such as teammate messages (`--replay-user-messages`). */
+      replayUserMessages?: boolean
     } = {},
   ) {}
 
@@ -66,6 +68,7 @@ export class DangerousBackend {
           ? ['--allow-dangerously-skip-permissions']
           : []),
         ...(this.options.addDirs ?? []).flatMap(dir => ['--add-dir', dir]),
+        ...(this.options.replayUserMessages ? ['--replay-user-messages'] : []),
       ],
       { cwd, env, stdio: ['pipe', 'pipe', 'pipe'] },
     )

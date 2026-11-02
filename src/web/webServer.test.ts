@@ -243,6 +243,9 @@ describe('claude web server', () => {
       { headers: { cookie } },
     )
     expect(missing.status).toBe(404)
+    const issuers = `${r.base}/api/history/99999999-2222-4333-8444-555555555555/agent-issuers`
+    expect((await fetch(`${issuers}?tool_use_id=..%2Fx`, { headers: { cookie } })).status).toBe(400)
+    expect(await (await fetch(`${issuers}?tool_use_id=toolu_1`, { headers: { cookie } })).json()).toEqual({})
     const rename = await fetch(
       `${r.base}/api/history/99999999-2222-4333-8444-555555555555`,
       {

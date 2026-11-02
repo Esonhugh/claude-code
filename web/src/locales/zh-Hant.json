@@ -89,5 +89,13 @@
   "export": "匯出",
   "exportMarkdown": "Markdown (.md)",
   "exportPdf": "PDF（列印）",
-  "commands": "指令"
+  "commands": "指令",
+  "team": "團隊",
+  "teamSummary": "{working} 個工作中 · {idle} 個閒置",
+  "idleAgents": "{n} 個閒置 agent",
+  "teamIdle": "閒置",
+  "memberWorking": "工作中",
+  "memberStopped": "已停止",
+  "teamMessages": "訊息",
+  "noTeamMessages": "還沒有訊息。"
 }

@@ -59,6 +59,7 @@ import {
   type ApprovalChoice,
   controlRequest,
   type ModelOption,
+  newUuid,
   permissionResponse,
   REQUEST_PREFIX,
   unsupportedControlResponse,
@@ -814,8 +815,9 @@ export function App() {
     setDrafts(d => ({ ...d, [id]: '' }))
     setAttachments(a => ({ ...a, [id]: [] }))
     stickToBottom.current = true
-    dispatch({ type: 'chat', id, action: { type: 'user', ...content } })
-    send(id, userMessage(content.text, content.images))
+    const uuid = newUuid()
+    dispatch({ type: 'chat', id, action: { type: 'user', ...content, uuid } })
+    send(id, userMessage(content.text, content.images, uuid))
   }
 
   const startChat = async () => {
@@ -842,8 +844,9 @@ export function App() {
         start: state.start,
       })
       await attach(id)
-      dispatch({ type: 'chat', id, action: { type: 'user', ...content } })
-      send(id, userMessage(content.text, content.images))
+      const uuid = newUuid()
+      dispatch({ type: 'chat', id, action: { type: 'user', ...content, uuid } })
+      send(id, userMessage(content.text, content.images, uuid))
     } catch (err) {
       setStartError(
         t('connectFailed', { error: err instanceof Error ? err.message : String(err) }),
@@ -1222,6 +1225,7 @@ export function App() {
           <AgentsPanel
             sessionId={view}
             tasks={chat.tasks}
+            items={chat.items}
             busy={chat.busy}
             view={agentsView}
             setView={setAgentsView}

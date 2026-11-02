@@ -30,6 +30,8 @@ export function chatMarkdown(
       parts.push(`## ${labels.you}`, item.text)
     } else if (item.kind === 'error') {
       parts.push(`> ${oneLine(item.text, 500)}`)
+    } else if (item.kind === 'teammate') {
+      parts.push(`## @${oneLine(item.from)}`, item.text)
     } else {
       if (previous !== 'assistant') {
         const label = modelLabel(item.model ?? fallbackModel)

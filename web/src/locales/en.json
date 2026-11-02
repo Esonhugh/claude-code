@@ -89,5 +89,13 @@
   "export": "Export",
   "exportMarkdown": "Markdown (.md)",
   "exportPdf": "PDF (print)",
-  "commands": "Commands"
+  "commands": "Commands",
+  "team": "Team",
+  "teamSummary": "{working} working · {idle} idle",
+  "idleAgents": "{n} idle agents",
+  "teamIdle": "idle",
+  "memberWorking": "working",
+  "memberStopped": "stopped",
+  "teamMessages": "Messages",
+  "noTeamMessages": "No messages yet."
 }

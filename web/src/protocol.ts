@@ -27,6 +27,8 @@ export type Item =
       blocks: Block[]
     }
   | { kind: 'error'; id: string; text: string }
+  /** A message a teammate sent the lead (`<teammate-message>`). */
+  | { kind: 'teammate'; id: string; from: string; color?: string; summary?: string; text: string }
 
 export type Approval = {
   requestId: string
@@ -218,6 +220,7 @@ export function addUserMessage(
   state: ChatState,
   text: string,
   images?: string[],
+  uuid?: string,
 ): ChatState {
   return {
     ...state,
@@ -226,7 +229,7 @@ export function addUserMessage(
       ...state.items,
       {
         kind: 'user',
-        id: `user-${state.items.length}`,
+        id: uuid ?? `user-${state.items.length}`,
         text,
         ...(images?.length && { images }),
       },
@@ -261,6 +264,24 @@ export function addError(state: ChatState, text: string): ChatState {
       { kind: 'error', id: `error-${state.items.length}`, text },
     ],
   }
+}
+
+const TEAMMATE_MESSAGE =
+  /<teammate-message\s+teammate_id="([^"]+)"(?:\s+color="([^"]+)")?(?:\s+summary="([^"]+)")?>\n?([\s\S]*?)\n?<\/teammate-message>/g
+
+/** The teammate messages a prompt delivers to the lead, if it is one. */
+export function teammateMessages(
+  text: string,
+  id: string,
+): Extract<Item, { kind: 'teammate' }>[] {
+  return [...text.matchAll(TEAMMATE_MESSAGE)].map((m, i) => ({
+    kind: 'teammate',
+    id: `${id}-${i}`,
+    from: m[1]!,
+    ...(m[2] && { color: m[2] }),
+    ...(m[3] && { summary: m[3] }),
+    text: m[4]!,
+  }))
 }
 
 export function reduce(state: ChatState, raw: unknown): ChatState {
@@ -334,7 +355,10 @@ export function reduce(state: ChatState, raw: unknown): ChatState {
       const message = isObj(raw.message) ? raw.message : {}
       const content = Array.isArray(message.content) ? message.content : []
       let next = state
-      if (raw.isReplay === true) {
+      const uuid = str(raw.uuid)
+      // The echo of a message this page sent is already shown.
+      const echo = uuid !== undefined && state.items.some(i => i.id === uuid)
+      if (raw.isReplay === true && !echo) {
         const text =
           typeof message.content === 'string'
             ? message.content
@@ -347,14 +371,17 @@ export function reduce(state: ChatState, raw: unknown): ChatState {
         const images = content
           .map(part => (isObj(part) && part.type === 'image' ? imageDataUrl(part) : undefined))
           .filter((u): u is string => !!u)
-        if (text || images.length) {
+        const fromTeammates = teammateMessages(text, uuid ?? `user-${next.items.length}`)
+        if (fromTeammates.length) {
+          next = { ...next, items: [...next.items, ...fromTeammates] }
+        } else if (text || images.length) {
           next = {
             ...next,
             items: [
               ...next.items,
               {
                 kind: 'user',
-                id: str(raw.uuid) ?? `user-${next.items.length}`,
+                id: uuid ?? `user-${next.items.length}`,
                 text,
                 ...(images.length && { images }),
               },
@@ -522,8 +549,20 @@ export function permissionResponse(
   }
 }
 
-/** `images` are `data:image/…;base64,…` URLs, sent as image blocks. */
-export function userMessage(text: string, images: string[] = []): Json {
+/** A random v4 UUID; crypto.randomUUID needs a secure context. */
+export function newUuid(): string {
+  const b = crypto.getRandomValues(new Uint8Array(16))
+  b[6] = (b[6]! & 0x0f) | 0x40
+  b[8] = (b[8]! & 0x3f) | 0x80
+  const hex = [...b].map(x => x.toString(16).padStart(2, '0')).join('')
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`
+}
+
+/**
+ * `images` are `data:image/…;base64,…` URLs, sent as image blocks. `uuid`
+ * lets the page recognise the session's echo of this message.
+ */
+export function userMessage(text: string, images: string[] = [], uuid?: string): Json {
   const blocks = images.flatMap(url => {
     const match = /^data:(image\/[\w+.-]+);base64,(.*)$/.exec(url)
     return match
@@ -534,6 +573,7 @@ export function userMessage(text: string, images: string[] = []): Json {
     type: 'user',
     session_id: '',
     parent_tool_use_id: null,
+    ...(uuid && { uuid }),
     message: {
       role: 'user',
       content: [...blocks, ...(text ? [{ type: 'text', text }] : [])],

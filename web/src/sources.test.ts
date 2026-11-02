@@ -105,6 +105,16 @@ describe('chatMarkdown', () => {
     )
   })
 
+  it('writes teammate messages under the member name', () => {
+    const md = chatMarkdown(
+      'Team',
+      [{ kind: 'teammate', id: 't1', from: 'alice', text: 'done with the review' }],
+      new Map(),
+      { you: 'You', sources: 'Sources' },
+    )
+    expect(md).toContain('## @alice\n\ndone with the review')
+  })
+
   it('escapes link titles and URLs', () => {
     expect(sourceMarkdown({ url: 'https://a.example/x_(y)', title: 'a [b]' })).toBe(
       '[a \\[b\\]](https://a.example/x_%28y%29)',

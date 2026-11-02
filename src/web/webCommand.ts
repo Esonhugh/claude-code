@@ -154,11 +154,14 @@ export async function runWebCommand(opts: WebCommandOptions): Promise<void> {
       allowBypassPermissions: !shouldRejectRootBypassPermissions(),
       // Uploaded files are referenced by path; Read them without a prompt.
       addDirs: [uploadsDir],
+      // Teammate messages to the lead reach the page only as replayed prompts.
+      replayUserMessages: true,
     }),
     {
       idleTimeoutMs: Number(opts.idleTimeout),
       maxSessions: Number(opts.maxSessions),
       logger,
+      replayTasks: true,
     },
   )
   const { token, cookieKey } = createWebSecrets()

@@ -89,5 +89,13 @@
   "export": "导出",
   "exportMarkdown": "Markdown (.md)",
   "exportPdf": "PDF（打印）",
-  "commands": "命令"
+  "commands": "命令",
+  "team": "团队",
+  "teamSummary": "{working} 个工作中 · {idle} 个空闲",
+  "idleAgents": "{n} 个空闲 agent",
+  "teamIdle": "空闲",
+  "memberWorking": "工作中",
+  "memberStopped": "已停止",
+  "teamMessages": "消息",
+  "noTeamMessages": "还没有消息。"
 }
