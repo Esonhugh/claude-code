@@ -552,6 +552,8 @@ export const REQUEST_PREFIX = {
   taskMessage: 'web-task-message-',
   settings: 'web-settings-',
   effort: 'web-effort-',
+  /** The sidebar dialogs' requests (mcp_status, reload_plugins…). */
+  ext: 'web-ext-',
 } as const
 
 /** Settings `hooks` ({ Event: [{ matcher, hooks: [{ command, timeout }] }] }) as flat rows. */

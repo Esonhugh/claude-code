@@ -19,9 +19,12 @@ export function Dialog({
   const closeRef = useRef<HTMLButtonElement>(null)
   const onCloseRef = useRef(onClose)
   onCloseRef.current = onClose
+  // Read during the first render, before a body's autoFocus field takes focus.
+  const openerRef = useRef(document.activeElement as HTMLElement | null)
+  const boxRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
-    const opener = document.activeElement as HTMLElement | null
-    closeRef.current?.focus()
+    const opener = openerRef.current
+    if (!boxRef.current?.contains(document.activeElement)) closeRef.current?.focus()
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         e.stopPropagation()
@@ -44,7 +47,7 @@ export function Dialog({
         if (e.target === e.currentTarget) onClose()
       }}
     >
-      <div className={xl ? 'xl' : undefined}>
+      <div className={xl ? 'xl' : undefined} ref={boxRef}>
         <header>
           <h2 id={titleId}>{title}</h2>
           <button ref={closeRef} className="btn" type="button" onClick={onClose}>

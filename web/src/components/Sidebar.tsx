@@ -7,6 +7,7 @@ const COLLAPSED_KEY = 'claude-web-collapsed'
 
 export type DialogKind =
   | 'mcp'
+  | 'channels'
   | 'skills'
   | 'plugins'
   | 'memory'
@@ -86,6 +87,7 @@ export function Sidebar({
       label: 'MCP',
       cnt: mcp && `${mcp.filter(m => m.status === 'connected').length}/${mcp.length}`,
     },
+    { kind: 'channels', ico: '⇆', label: 'Channels' },
     { kind: 'skills', ico: '/', label: 'Skills', cnt: env.skills && String(env.skills.length) },
     { kind: 'plugins', ico: '⧉', label: t('plugins'), cnt: env.plugins && String(env.plugins.length) },
     { kind: 'memory', ico: 'M', label: t('memory') },

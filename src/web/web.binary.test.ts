@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'bun:test'
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 
@@ -255,6 +255,13 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
     home = realpathSync(mkdtempSync(join(tmpdir(), 'web-bin-home-')))
     workspace = join(home, 'workspace')
     mkdirSync(workspace)
+    // A user skill and user CLAUDE.md for the Skills and Memory dialogs.
+    mkdirSync(join(home, '.claude', 'skills', 'e2e-skill'), { recursive: true })
+    writeFileSync(
+      join(home, '.claude', 'skills', 'e2e-skill', 'SKILL.md'),
+      '---\nname: e2e-skill\ndescription: E2E sample skill\n---\n\nE2E_SKILL_BODY\n',
+    )
+    writeFileSync(join(home, '.claude', 'CLAUDE.md'), '# Notes\n\nE2E_MEMORY_MARKER\n')
     web = Bun.spawn(
       [binary!, 'web', '--no-open', '--port', '0', '--workspace', workspace],
       {
@@ -888,6 +895,90 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       dev.stop(true)
     }
   }, 90_000)
+
+  it('opens the extension dialogs: stats, hooks, skills and memory', async () => {
+    const playwrightPath = Bun.spawnSync(['node', '-p', "require.resolve('playwright')"])
+      .stdout.toString()
+      .trim()
+    const { chromium } = await import(playwrightPath)
+    const browser = await chromium.launch()
+    const readJson = (file: string) =>
+      existsSync(file) ? (JSON.parse(readFileSync(file, 'utf8')) as Record<string, any>) : {}
+    try {
+      const context = await browser.newContext({ locale: 'en-US', viewport: { width: 1440, height: 900 } })
+      const page = await context.newPage()
+      const errors: string[] = []
+      page.on('pageerror', e => errors.push(e.message))
+      await page.goto(signInUrl)
+      await page.locator('.wl-hi').waitFor()
+      const dialog = page.locator('.dialog')
+      const close = async () => {
+        await dialog.getByRole('button', { name: 'Close', exact: true }).click()
+        await dialog.waitFor({ state: 'detached' })
+      }
+
+      // Stats: KPI tiles, chart and a heatmap cell that shows its count on hover.
+      await page.locator('.sessions .foot button', { hasText: 'Stats' }).click()
+      const cell = dialog.locator('.heat i[data-i]').last()
+      await cell.waitFor({ timeout: 15_000 })
+      await dialog.locator('svg[role=img]').first().waitFor()
+      await cell.hover()
+      const tip = dialog.locator('#heat-tip')
+      await tip.waitFor()
+      expect(await tip.textContent()).toMatch(/\d/)
+      await close()
+
+      // Hooks: add one to user settings, then delete it.
+      const userSettings = join(home, '.claude', 'settings.json')
+      await page.locator('.snav button', { hasText: 'Hooks' }).click()
+      await dialog.locator('[data-hook-new]').click()
+      await dialog.locator('#hk-matcher').fill('Bash')
+      await dialog.locator('#hk-cmd').fill('echo e2e-hook')
+      await dialog.locator('#hook-form button[type=submit]').click()
+      const del = dialog.locator('.hookrow', { hasText: 'echo e2e-hook' }).locator('[data-hook-del]')
+      await del.waitFor()
+      expect(readJson(userSettings).hooks).toEqual({
+        PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: 'echo e2e-hook', timeout: 60 }] }],
+      })
+      await del.click()
+      await del.waitFor({ state: 'detached' })
+      expect(JSON.stringify(readJson(userSettings).hooks ?? {})).not.toContain('e2e-hook')
+      await close()
+
+      // Skills: preview SKILL.md and turn the skill off in local settings.
+      const localSettings = join(workspace, '.claude', 'settings.local.json')
+      await page.locator('.snav button', { hasText: 'Skills' }).click()
+      await dialog.locator('#skill-q').fill('e2e-skill')
+      await dialog.locator('[data-skill="e2e-skill"]').click()
+      await dialog.locator('.memview', { hasText: 'E2E_SKILL_BODY' }).waitFor()
+      const toggle = dialog.locator('.acts [role=switch]')
+      expect(await toggle.getAttribute('aria-checked')).toBe('true')
+      await toggle.click()
+      await page.waitForFunction(
+        () => document.querySelector('.dialog .acts [role=switch]')?.getAttribute('aria-checked') === 'false',
+      )
+      expect(readJson(localSettings).skillOverrides).toEqual({ 'e2e-skill': 'off' })
+      await toggle.click()
+      await page.waitForFunction(
+        () => document.querySelector('.dialog .acts [role=switch]')?.getAttribute('aria-checked') === 'true',
+      )
+      expect(readJson(localSettings).skillOverrides?.['e2e-skill']).toBeUndefined()
+      await close()
+
+      // Memory: the user CLAUDE.md is listed and shown in the viewer.
+      await page.locator('.snav button', { hasText: 'Memory' }).click()
+      const userMemory = dialog.locator('#memlist button', { hasText: 'User instructions' })
+      await userMemory.waitFor({ timeout: 15_000 })
+      await userMemory.click()
+      await dialog.locator('.memview', { hasText: 'E2E_MEMORY_MARKER' }).waitFor()
+      await dialog.locator('#mem-q').fill('E2E_MEMORY')
+      await dialog.locator('.memview mark', { hasText: 'E2E_MEMORY' }).waitFor()
+      await close()
+      expect(errors).toEqual([])
+    } finally {
+      await browser.close()
+    }
+  }, 120_000)
 
   it('shuts down on SIGTERM and removes the lock', async () => {
     web.kill('SIGTERM')

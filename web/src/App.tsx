@@ -318,6 +318,17 @@ export function App() {
       })
     })
 
+  const requestAsyncRef = useRef(requestAsync)
+  requestAsyncRef.current = requestAsync
+  // Stable per session so the dialogs do not refetch on every render.
+  const control = useMemo(
+    () =>
+      view && chat?.mode === 'live'
+        ? (body: Record<string, unknown>) => requestAsyncRef.current(view, REQUEST_PREFIX.ext, body)
+        : undefined,
+    [view, chat?.mode],
+  )
+
   const stopTask = (id: string, taskId: string) =>
     request(id, REQUEST_PREFIX.stopTask, { subtype: 'stop_task', task_id: taskId })
 
@@ -919,9 +930,16 @@ export function App() {
         <AppDialog
           kind={dialog}
           t={t}
-          env={env}
+          lang={lang}
+          control={control}
           onClose={() => setDialog(undefined)}
           onUseSkill={useSkill}
+          onOpenSession={id => {
+            const entry = state.history.find(h => h.id === id)
+            if (!entry) return
+            setDialog(undefined)
+            void openSession(entry)
+          }}
           settings={{
             lang,
             setLang,

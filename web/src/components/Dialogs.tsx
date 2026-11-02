@@ -1,9 +1,15 @@
-import { type ReactNode, useState } from 'react'
+import { type ReactNode, useEffect, useRef, useState } from 'react'
 import { type Lang, LANGS } from '../i18n'
-import type { Hook, SessionEnv } from '../protocol'
 import { Dialog } from './Dialog'
+import { ChannelsBody, McpBody, ModsBody, PluginsBody } from './ExtensionDialogs'
+import type { Control, ExtProps } from './extShared'
+import { HooksBody } from './HooksDialog'
+import { MemoryBody } from './MemoryDialog'
 import type { DialogKind } from './Sidebar'
+import { SkillsBody } from './SkillsDialog'
+import { StatsBody } from './StatsDialog'
 import type { T } from './ui'
+import { zh } from './zhText'
 
 export type Theme = 'system' | 'light' | 'dark'
 export type Palette = 'default' | 'clay' | 'mono'
@@ -13,136 +19,6 @@ const PALETTES: [Palette, 'paletteDefault' | 'paletteClay' | 'paletteMono', stri
   ['clay', 'paletteClay', '#b0573a', '#faf9f5'],
   ['mono', 'paletteMono', '#111111', '#ffffff'],
 ]
-
-const MCP_BADGE: Record<string, ['completed' | 'killed' | 'idle', 'connected' | 'needsAuth' | 'connectFailedBadge' | 'connecting']> = {
-  connected: ['completed', 'connected'],
-  'needs-auth': ['idle', 'needsAuth'],
-  failed: ['killed', 'connectFailedBadge'],
-  pending: ['idle', 'connecting'],
-}
-
-function McpBody({ t, env }: { t: T; env: SessionEnv }) {
-  if (!env.mcpServers?.length) return <p className="note">{t('notYet')}</p>
-  return (
-    <div>
-      {env.mcpServers.map(server => {
-        const badge = MCP_BADGE[server.status]
-        return (
-          <div className="xrow" key={server.name}>
-            <div>
-              <b className="mono">{server.name}</b>
-            </div>
-            <div className="acts">
-              <span className={`badge ${badge?.[0] ?? 'idle'}`}>{badge ? t(badge[1]) : server.status}</span>
-            </div>
-          </div>
-        )
-      })}
-    </div>
-  )
-}
-
-function SkillsBody({ t, env, onUse }: { t: T; env: SessionEnv; onUse: (name: string) => void }) {
-  const [query, setQuery] = useState('')
-  const skills = env.skills ?? []
-  const hits = skills.filter(name => name.toLowerCase().includes(query.trim().toLowerCase()))
-  const [open, setOpen] = useState<string>()
-  const current = hits.includes(open ?? '') ? open : hits[0]
-  if (!skills.length) return <p className="note">{t('notYet')}</p>
-  return (
-    <>
-      <div className="memsearch">
-        <input
-          placeholder={t('searchSkill')}
-          aria-label={t('searchSkill')}
-          value={query}
-          autoComplete="off"
-          autoFocus
-          onChange={e => setQuery(e.target.value)}
-        />
-      </div>
-      <div className="memgrid">
-        <div className="memlist">
-          {hits.map(name => (
-            <button type="button" key={name} aria-current={name === current} onClick={() => setOpen(name)}>
-              /{name}
-            </button>
-          ))}
-          {!hits.length && (
-            <p className="note" style={{ padding: '6px 8px' }}>
-              {t('noMatchingSkill')}
-            </p>
-          )}
-        </div>
-        {current && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 10, minWidth: 0 }}>
-            <div className="xrow" style={{ border: 0, padding: 0 }}>
-              <div>
-                <b className="mono">/{current}</b>
-              </div>
-              <div className="acts">
-                <button className="btn primary" type="button" onClick={() => onUse(current)}>
-                  {t('useInChat')}
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
-      </div>
-    </>
-  )
-}
-
-function PluginsBody({ t, env }: { t: T; env: SessionEnv }) {
-  if (!env.plugins?.length) return <p className="note">{t('noPlugins')}</p>
-  return (
-    <div>
-      {env.plugins.map(plugin => (
-        <div className="xrow" key={plugin.path}>
-          <div>
-            <b>{plugin.name}</b>
-            <small className="mono">{plugin.path}</small>
-          </div>
-          <div className="acts">
-            <span className="badge completed">{t('installed')}</span>
-          </div>
-        </div>
-      ))}
-    </div>
-  )
-}
-
-function HooksBody({ t, hooks }: { t: T; hooks?: Hook[] }) {
-  if (!hooks?.length) return <p className="note">{t('notYet')}</p>
-  const events = [...new Set(hooks.map(h => h.event))]
-  return (
-    <>
-      {events.map(event => (
-        <div key={event}>
-          <div className="grp-h mono" style={{ textTransform: 'none', letterSpacing: 0 }}>
-            {event}
-          </div>
-          {hooks
-            .filter(h => h.event === event)
-            .map((h, i) => (
-              <div className="xrow hookrow" key={i}>
-                <div>
-                  <b className="mono">{h.matcher || t('allMatch')}</b>
-                  <small>
-                    <code>{h.command}</code>
-                    {h.timeout !== undefined && ` · ${h.timeout}s`}
-                  </small>
-                </div>
-                <div className="acts">
-                  <span className="note">{t('readOnly')}</span>
-                </div>
-              </div>
-            ))}
-        </div>
-      ))}
-    </>
-  )
-}
 
 function Seg<V extends string>({
   label,
@@ -331,6 +207,7 @@ function KeysBody({ t }: { t: T }) {
 
 const TITLES: Record<DialogKind, (t: T) => string> = {
   mcp: t => t('mcpTitle'),
+  channels: () => 'Channels',
   skills: () => 'Skills',
   plugins: t => t('plugins'),
   memory: t => t('memory'),
@@ -341,31 +218,59 @@ const TITLES: Record<DialogKind, (t: T) => string> = {
   keys: t => t('shortcuts'),
 }
 
-/** The sidebar's dialogs. Entries the session cannot report yet show an empty state. */
+/** The sidebar's dialogs; the extension entries load their data from /api/ext and the open session. */
 export function AppDialog({
   kind,
   t,
-  env,
+  lang,
+  control,
   onClose,
   onUseSkill,
+  onOpenSession,
   settings,
 }: {
   kind: DialogKind
   t: T
-  env: SessionEnv
+  lang: Lang
+  /** Control requests to the session on screen, when it is running. */
+  control?: Control
   onClose: () => void
   onUseSkill: (name: string) => void
+  onOpenSession: (id: string) => void
   settings: Omit<Parameters<typeof SettingsBody>[0], 't'>
 }) {
+  const [flashText, setFlashText] = useState<string>()
+  const timer = useRef<ReturnType<typeof setTimeout>>(undefined)
+  useEffect(() => () => clearTimeout(timer.current), [])
+  const props: ExtProps = {
+    z: text => zh(lang, text),
+    lang,
+    control,
+    flash: text => {
+      setFlashText(text)
+      clearTimeout(timer.current)
+      timer.current = setTimeout(() => setFlashText(undefined), 2200)
+    },
+  }
   return (
-    <Dialog t={t} title={TITLES[kind](t)} onClose={onClose}>
-      {kind === 'mcp' && <McpBody t={t} env={env} />}
-      {kind === 'skills' && <SkillsBody t={t} env={env} onUse={onUseSkill} />}
-      {kind === 'plugins' && <PluginsBody t={t} env={env} />}
-      {kind === 'hooks' && <HooksBody t={t} hooks={env.hooks} />}
-      {kind === 'settings' && <SettingsBody t={t} {...settings} />}
-      {kind === 'keys' && <KeysBody t={t} />}
-      {(kind === 'memory' || kind === 'mods' || kind === 'stats') && <p className="note">{t('notYet')}</p>}
-    </Dialog>
+    <>
+      <Dialog t={t} title={TITLES[kind](t)} onClose={onClose}>
+        {kind === 'mcp' && <McpBody {...props} />}
+        {kind === 'channels' && <ChannelsBody {...props} />}
+        {kind === 'skills' && <SkillsBody {...props} onUse={onUseSkill} />}
+        {kind === 'plugins' && <PluginsBody {...props} />}
+        {kind === 'memory' && <MemoryBody {...props} onOpenSession={onOpenSession} />}
+        {kind === 'hooks' && <HooksBody {...props} />}
+        {kind === 'mods' && <ModsBody {...props} />}
+        {kind === 'stats' && <StatsBody z={props.z} />}
+        {kind === 'settings' && <SettingsBody t={t} {...settings} />}
+        {kind === 'keys' && <KeysBody t={t} />}
+      </Dialog>
+      {flashText && (
+        <div className="flash" role="status" aria-live="polite">
+          {flashText}
+        </div>
+      )}
+    </>
   )
 }

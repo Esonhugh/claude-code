@@ -217,7 +217,7 @@ h1, h2, h3 { text-wrap: balance; margin: 0 }
 .mshare .v { color: var(--muted); font-variant-numeric: tabular-nums; text-align: right }
 .heat { display: grid; grid-auto-flow: column; grid-template-rows: repeat(7, auto); grid-template-columns: repeat(25, minmax(0, 1fr)); gap: 4px }
 .heat i { aspect-ratio: 1; border-radius: 3px; background: var(--sunken); display: block }
-.heatwrap { display: block }
+.heatwrap { display: block; position: relative }
 .heatleg { display: flex; align-items: center; gap: 4px; justify-content: flex-end; font-size: 11px; color: var(--muted) } .heatleg i { width: 12px; height: 12px; border-radius: 3px; display: block; background: var(--sunken) }
 .heat i[data-l="1"], .heatleg i[data-l="1"] { background: color-mix(in srgb, var(--accent) 30%, var(--sunken)) } .heat i[data-l="2"], .heatleg i[data-l="2"] { background: color-mix(in srgb, var(--accent) 55%, var(--sunken)) }
 .heat i[data-l="3"], .heatleg i[data-l="3"] { background: color-mix(in srgb, var(--accent) 78%, var(--sunken)) } .heat i[data-l="4"], .heatleg i[data-l="4"] { background: var(--accent) }
@@ -258,6 +258,8 @@ h1, h2, h3 { text-wrap: balance; margin: 0 }
 .hookform { display: grid; grid-template-columns: auto 1fr; gap: 6px 10px; align-items: center; padding: 10px; border: 1px solid var(--line); border-radius: 10px; margin-top: 8px }
 .hookform input, .hookform select, .modsrc { border: 1px solid var(--line); border-radius: 8px; padding: 6px 9px; background: var(--bg); color: var(--fg); font: inherit; font-size: 12.5px; min-width: 0 }
 .hookform .btns { grid-column: 1 / -1; justify-content: flex-end }
+.hookform .footbtn { width: 100%; justify-content: space-between; border: 1px solid var(--line); border-radius: 8px; padding: 6px 9px; background: var(--bg); color: var(--fg) }
+.pickmenu { top: calc(100% + 4px); bottom: auto; width: 100%; max-height: 240px; overflow: auto }
 .modsrc { width: 100%; min-height: 220px; font-family: var(--f-mono); font-size: 12px; line-height: 1.5; resize: vertical; box-sizing: border-box }
 .applist { border-top: 1px solid var(--line); margin-top: 10px; padding-top: 8px }
 .acct .avatar { background: var(--accent) }
