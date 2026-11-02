@@ -72,7 +72,7 @@ describe('Markdown', () => {
         }),
       ),
     )
-    expect(out.match(/class="ghost link-preview"/g)).toHaveLength(2)
+    expect(out.match(/class="chipbtn link-preview"/g)).toHaveLength(2)
     expect(out).toContain('title="http://localhost:5173/"')
     expect(out).toContain('title="http://127.0.0.1:8080/"')
     expect(html('Open http://localhost:5173/')).not.toContain('link-preview')

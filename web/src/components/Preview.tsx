@@ -286,14 +286,13 @@ function XlsxView({ url, t }: { url: string; t: T }) {
   if (!book || !table) return <div className="preview-note">{t('loading')}</div>
   return (
     <>
-      <div className="tabs" role="tablist">
+      <div className="sheettabs" role="tablist">
         {book.worksheets.map((ws, i) => (
           <button
             type="button"
             role="tab"
             key={ws.id}
             aria-selected={i === sheet}
-            className={i === sheet ? 'tab active' : 'tab'}
             onClick={() => setSheet(i)}
           >
             {ws.name}
@@ -478,32 +477,42 @@ export function Preview({
   }, [onClose])
   return (
     <aside className="preview" aria-label={t('preview')}>
-      <div className="preview-bar">
-        <span className="preview-name" title={path}>
-          {baseName(path)}
+      <div className="arthead preview-bar">
+        <span className="kind mono">{(extension(path) || 'TXT').toUpperCase()}</span>
+        <span className="nm">
+          <b className="mono preview-name" title={path}>
+            {baseName(path)}
+          </b>
+          <small className="mono">{path.slice(0, path.length - baseName(path).length)}</small>
         </span>
-        {isHtml &&
-          WIDTHS.map(w => (
-            <button
-              type="button"
-              key={w.key}
-              className={`ghost${htmlWidth === w.width ? ' active' : ''}`}
-              onClick={() => setHtmlWidth(w.width)}
-            >
-              {t(w.key)}
-            </button>
-          ))}
-        <a className="ghost" href={fileUrl(sessionId, path)} target="_blank" rel="noopener">
-          {t('openNewTab')}
-        </a>
-        <a className="ghost" href={fileUrl(sessionId, path, { download: true })}>
-          {t('download')}
-        </a>
-        <button type="button" className="ghost" aria-label={t('close')} onClick={onClose}>
-          ×
-        </button>
+        {isHtml && (
+          <span className="seg" role="radiogroup">
+            {WIDTHS.map(w => (
+              <button
+                type="button"
+                role="radio"
+                key={w.key}
+                aria-checked={htmlWidth === w.width}
+                onClick={() => setHtmlWidth(w.width)}
+              >
+                {t(w.key)}
+              </button>
+            ))}
+          </span>
+        )}
+        <span className="grp" style={{ marginLeft: 'auto' }}>
+          <a className="btn" href={fileUrl(sessionId, path)} target="_blank" rel="noopener">
+            {t('openNewTab')}
+          </a>
+          <a className="btn" href={fileUrl(sessionId, path, { download: true })}>
+            {t('download')}
+          </a>
+          <button type="button" className="btn" aria-label={t('close')} onClick={onClose}>
+            ×
+          </button>
+        </span>
       </div>
-      <div className="preview-body">
+      <div className="artbody preview-body">
         <Boundary key={path} fallback={error => <ErrorNote error={error} t={t} />}>
           <Body sessionId={sessionId} path={path} t={t} htmlWidth={htmlWidth} />
         </Boundary>

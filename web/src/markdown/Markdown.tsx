@@ -42,7 +42,7 @@ function withPreview(node: ReactNode, url: string, ctx: Ctx, key: number): React
       {node}
       <button
         type="button"
-        className="ghost link-preview"
+        className="chipbtn link-preview"
         title={href}
         onClick={() => open(href)}
       >

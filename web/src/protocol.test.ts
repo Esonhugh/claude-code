@@ -353,6 +353,6 @@ describe('i18n', () => {
   })
 
   it('fills placeholders', () => {
-    expect(translate('en', 'approvalTitle', { tool: 'Bash' })).toBe('Allow Bash?')
+    expect(translate('en', 'wantsToUse', { tool: 'Bash' })).toBe('Claude wants to use Bash')
   })
 })

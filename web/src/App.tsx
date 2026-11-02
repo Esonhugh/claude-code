@@ -1,15 +1,4 @@
-import {
-  type ClipboardEvent,
-  type DragEvent,
-  type KeyboardEvent,
-  useCallback,
-  useEffect,
-  useId,
-  useMemo,
-  useReducer,
-  useRef,
-  useState,
-} from 'react'
+import { type DragEvent, useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react'
 import {
   createSession,
   deleteSession,
@@ -20,41 +9,19 @@ import {
   openSessionSocket,
   renameSession,
 } from './api'
-import {
-  filterCommands,
-  moveSelection,
-  paletteQuery,
-  type SlashCommand,
-} from './commands'
-import { AgentsPanel, type AgentsView } from './components/Agents'
-import {
-  AgentsContext,
-  ApprovalCard,
-  FilesContext,
-  MODE_KEYS,
-  Message,
-  modelLabel,
-  PERMISSION_MODES,
-} from './components/Chat'
+import type { AgentsView } from './components/Agents'
+import { AskDock, InputBox, ModeButton, ModelMenu, modelButtonLabel } from './components/Composer'
+import { AppDialog, type Palette, type Theme } from './components/Dialogs'
+import { AgentsContext, FilesContext, Message } from './components/Message'
 import { Preview } from './components/Preview'
+import { type DialogKind, Sidebar } from './components/Sidebar'
+import { SidePanel, type SideTab } from './components/SidePanel'
+import { StartPage } from './components/StartPage'
+import { FootMenu, formatElapsed, nextMode, readStored, type T, writeStored } from './components/ui'
 import { WebPreview } from './components/WebPreview'
 import { chatMarkdown, exportFileName } from './exportChat'
-import {
-  filesBase,
-  formatBytes,
-  IMAGE_TYPES,
-  mentionPath,
-  readAsDataUrl,
-  uploadFile,
-} from './files'
-import {
-  initialLang,
-  type Lang,
-  LANGS,
-  type MessageKey,
-  saveLang,
-  translate,
-} from './i18n'
+import { filesBase, IMAGE_TYPES, mentionPath, readAsDataUrl, uploadFile } from './files'
+import { initialLang, type Lang, type MessageKey, saveLang, translate } from './i18n'
 import {
   type Approval,
   type ApprovalChoice,
@@ -63,25 +30,22 @@ import {
   newUuid,
   permissionResponse,
   REQUEST_PREFIX,
+  type SessionEnv,
   unsupportedControlResponse,
   userMessage,
 } from './protocol'
 import { turnSources } from './sources'
+import { appReducer, type HistoryEntry, initialAppState, type SessionChat } from './store'
 import { previewTarget, WebPreviewContext } from './webPreview'
-import {
-  appReducer,
-  groupHistory,
-  type HistoryEntry,
-  initialAppState,
-  type SessionChat,
-} from './store'
-
-type T = (key: MessageKey, vars?: Record<string, string>) => string
 
 const HISTORY_PAGE = 50
 const MODELS_KEY = 'claude-web-models'
-const COLLAPSED_KEY = 'claude-web-collapsed'
-const AGENTS_OPEN_KEY = 'claude-web-agents-open'
+const ENV_KEY = 'claude-web-env'
+const THEME_KEY = 'claude-web-theme'
+const PALETTE_KEY = 'claude-web-palette'
+const DEFAULT_UI_NAME = 'EsonClaw'
+const VERBS = ['Cogitating', 'Pondering', 'Brewing', 'Crunching']
+const GLYPHS = ['·', '✢', '✳', '✶', '✻', '✽']
 // The Messages API rejects larger inline images; those are uploaded instead.
 const INLINE_IMAGE_BYTES = 5 * 1024 * 1024
 
@@ -103,461 +67,112 @@ async function prepareContent(
   return { text: [text, mentions.join(' ')].filter(Boolean).join('\n\n'), images }
 }
 
-function readStored<V>(key: string, fallback: V): V {
-  try {
-    const raw = localStorage.getItem(key)
-    return raw ? (JSON.parse(raw) as V) : fallback
-  } catch {
-    return fallback
-  }
-}
+const isNarrow = (px: number) => window.matchMedia(`(max-width: ${px}px)`).matches
 
-function writeStored(key: string, value: unknown): void {
-  try {
-    localStorage.setItem(key, JSON.stringify(value))
-  } catch {
-    // Not persisted; fine for a per-browser convenience.
-  }
-}
-
-function Composer({
-  t,
-  busy,
-  disabled,
-  placeholder,
-  draft,
-  setDraft,
-  onSend,
-  onStop,
-  onFocus,
-  big,
-  files,
-  setFiles,
-  commands = [],
-  hiddenCommands,
-}: {
-  t: T
-  busy: boolean
-  disabled?: boolean
-  placeholder: string
-  draft: string
-  setDraft: (v: string) => void
-  onSend: () => void
-  onStop: () => void
-  onFocus?: () => void
-  big?: boolean
-  files: File[]
-  setFiles: (files: File[]) => void
-  commands?: SlashCommand[]
-  hiddenCommands?: string[]
-}) {
-  const picker = useRef<HTMLInputElement>(null)
-  const paletteId = useId()
-  const [selected, setSelected] = useState(0)
-  // Esc closes the palette for this exact draft; typing reopens it.
-  const [dismissed, setDismissed] = useState<string>()
-  const query = dismissed === draft ? undefined : paletteQuery(draft)
-  const matches =
-    query === undefined ? [] : filterCommands(commands, query, hiddenCommands)
-  const active = Math.min(selected, matches.length - 1)
+/** `✻ Cogitating… 12s  esc 中断` while a turn runs. */
+function StatusLine({ t, since, onStop }: { t: T; since: number; onStop: () => void }) {
+  const [tick, setTick] = useState(0)
+  const verb = useMemo(() => VERBS[Math.floor(Math.random() * VERBS.length)], [since])
   useEffect(() => {
-    if (active >= 0) {
-      document.getElementById(`${paletteId}-${active}`)?.scrollIntoView({ block: 'nearest' })
-    }
-  }, [active, paletteId])
-  const pick = (command: SlashCommand) => {
-    setDraft(`/${command.name} `)
-    setSelected(0)
-  }
-  const onPaste = (e: ClipboardEvent<HTMLTextAreaElement>) => {
-    const pasted = [...e.clipboardData.files]
-    if (!pasted.length) return
-    e.preventDefault()
-    setFiles([...files, ...pasted])
-  }
-  const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (matches.length && !e.nativeEvent.isComposing) {
-      const command = matches[active]!
-      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
-        e.preventDefault()
-        setSelected(moveSelection(active, e.key === 'ArrowDown' ? 1 : -1, matches.length))
-        return
-      }
-      // Enter on a fully typed name sends it; otherwise it completes the name.
-      if (
-        e.key === 'Tab' ||
-        (e.key === 'Enter' && !e.shiftKey && draft !== `/${command.name}`)
-      ) {
-        e.preventDefault()
-        pick(command)
-        return
-      }
-      if (e.key === 'Escape') {
-        e.preventDefault()
-        setDismissed(draft)
-        return
-      }
-    }
-    if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
-      e.preventDefault()
-      onSend()
-    }
-    if (e.key === 'Escape' && busy) onStop()
-  }
+    const id = setInterval(() => setTick(n => n + 1), 120)
+    return () => clearInterval(id)
+  }, [])
   return (
-    <div className={`input-card${big ? ' input-big' : ''}`}>
-      {matches.length > 0 && (
-        <ul className="palette" id={paletteId} role="listbox" aria-label={t('commands')}>
-          {matches.map((command, i) => (
-            <li
-              key={command.name}
-              id={`${paletteId}-${i}`}
-              role="option"
-              aria-selected={i === active}
-              className={i === active ? 'active' : undefined}
-              // Keep focus in the textarea.
-              onMouseDown={e => e.preventDefault()}
-              onMouseEnter={() => setSelected(i)}
-              onClick={() => pick(command)}
-            >
-              <span className="palette-name">
-                /{command.name}
-                {command.argumentHint && <small> {command.argumentHint}</small>}
-              </span>
-              <span className="palette-desc">{command.description}</span>
-            </li>
-          ))}
-        </ul>
-      )}
-      {files.length > 0 && (
-        <div className="attachments">
-          {files.map((file, i) => (
-            <span className="attachment" key={`${file.name}-${i}`}>
-              <span className="attachment-name">{file.name}</span>
-              <small>{formatBytes(file.size)}</small>
-              <button
-                type="button"
-                className="ghost"
-                aria-label={t('removeAttachment', { name: file.name })}
-                onClick={() => setFiles(files.filter((_, j) => j !== i))}
-              >
-                ×
-              </button>
-            </span>
-          ))}
-        </div>
-      )}
-      <textarea
-        value={draft}
-        placeholder={placeholder}
-        rows={big ? 3 : 1}
-        disabled={disabled}
-        role="combobox"
-        aria-expanded={matches.length > 0}
-        aria-controls={paletteId}
-        aria-autocomplete="list"
-        aria-activedescendant={matches.length ? `${paletteId}-${active}` : undefined}
-        onChange={e => {
-          setDraft(e.target.value)
-          setSelected(0)
-        }}
-        onKeyDown={onKeyDown}
-        onPaste={onPaste}
-        onFocus={onFocus}
-        autoFocus={big}
-      />
-      <input
-        ref={picker}
-        type="file"
-        multiple
-        hidden
-        aria-label={t('attach')}
-        onChange={e => {
-          setFiles([...files, ...(e.target.files ?? [])])
-          e.target.value = ''
-        }}
-      />
-      <button
-        type="button"
-        className="ghost attach"
-        aria-label={t('attach')}
-        disabled={disabled}
-        onClick={() => picker.current?.click()}
-      >
-        +
+    <div className="status-line" role="status">
+      <span className="glyph">{GLYPHS[tick % GLYPHS.length]}</span>
+      <span className="verb shimmer">{verb}…</span>
+      <span className="mono">{formatElapsed(Date.now() - since)}</span>
+      <button type="button" onClick={onStop}>
+        {t('escInterrupt')}
       </button>
-      {busy ? (
-        <button type="button" className="send" aria-label={t('stop')} onClick={onStop}>
-          ■
-        </button>
-      ) : (
-        <button
-          type="button"
-          className="send"
-          aria-label={t('send')}
-          disabled={disabled || (!draft.trim() && !files.length)}
-          onClick={onSend}
-        >
-          ↑
-        </button>
-      )}
     </div>
   )
 }
 
-function ModeSelect({
-  t,
-  value,
-  onChange,
-}: {
-  t: T
-  value: string
-  onChange: (mode: string) => void
-}) {
-  return (
-    <select
-      aria-label={t('permissionMode')}
-      className={`mode mode-${value}`}
-      value={value}
-      onChange={e => onChange(e.target.value)}
-    >
-      {PERMISSION_MODES.map(m => (
-        <option key={m} value={m}>
-          {t(MODE_KEYS[m])}
-        </option>
-      ))}
-    </select>
-  )
-}
-
-function ModelSelect({
-  t,
-  value,
-  options,
-  onChange,
-}: {
-  t: T
-  value: string | undefined
-  options: ModelOption[]
-  onChange: (model: string) => void
-}) {
-  const list =
-    options.length || !value
-      ? options
-      : [{ value, displayName: modelLabel(value) ?? value }]
-  if (!list.length) return null
-  const current =
-    list.find(m => m.value === value)?.value ??
-    list.find(m => modelLabel(m.value) === modelLabel(value))?.value ??
-    ''
-  return (
-    <select aria-label={t('model')} value={current} onChange={e => onChange(e.target.value)}>
-      {current === '' && <option value="">{modelLabel(value) ?? t('model')}</option>}
-      {list.map(m => (
-        <option key={m.value} value={m.value}>
-          {m.displayName}
-        </option>
-      ))}
-    </select>
-  )
-}
-
-function Sidebar({
-  t,
-  history,
-  historyDone,
-  running,
-  view,
-  onNew,
-  onOpen,
-  onRename,
-  onStop,
-  onMore,
-}: {
-  t: T
-  history: HistoryEntry[]
-  historyDone: boolean
-  running: Record<string, boolean>
-  view: string | null
-  onNew: (cwd?: string) => void
-  onOpen: (entry: HistoryEntry) => void
-  onRename: (entry: HistoryEntry, title: string) => void
-  onStop: (id: string) => void
-  onMore: () => void
-}) {
-  const [filter, setFilter] = useState('')
-  const [collapsed, setCollapsed] = useState<Record<string, boolean>>(() =>
-    readStored(COLLAPSED_KEY, {}),
-  )
-  const [editing, setEditing] = useState<string | null>(null)
-  const groups = groupHistory(history, filter)
-  const activeCwd = history.find(h => h.id === view)?.cwd
-
-  const toggle = (cwd: string) => {
-    const next = { ...collapsed, [cwd]: !collapsed[cwd] }
-    setCollapsed(next)
-    writeStored(COLLAPSED_KEY, next)
-  }
-
-  return (
-    <aside className="sidebar" id="sidebar">
-      <button type="button" className="new-chat" onClick={() => onNew()}>
-        + {t('newChat')}
-      </button>
-      <input
-        className="search"
-        type="search"
-        placeholder={t('searchHistory')}
-        aria-label={t('searchHistory')}
-        value={filter}
-        onChange={e => setFilter(e.target.value)}
-      />
-      <nav className="history" aria-label={t('history')}>
-        {groups.map(group => {
-          const isCollapsed = !filter && group.cwd !== activeCwd && collapsed[group.cwd]
-          return (
-            <section key={group.cwd} className="group">
-              <div className="group-head">
-                <button
-                  type="button"
-                  className="group-name"
-                  title={group.cwd}
-                  aria-expanded={!isCollapsed}
-                  onClick={() => toggle(group.cwd)}
-                >
-                  <span>{group.name || t('noFolder')}</span>
-                  <small>{group.cwd}</small>
-                </button>
-                <button
-                  type="button"
-                  className="ghost group-add"
-                  aria-label={t('newChatHere')}
-                  title={t('newChatHere')}
-                  onClick={() => onNew(group.cwd || undefined)}
-                >
-                  +
-                </button>
-              </div>
-              {!isCollapsed &&
-                group.entries.map(entry => (
-                  <div
-                    key={entry.id}
-                    className={`session-row${entry.id === view ? ' active' : ''}`}
-                  >
-                    {editing === entry.id ? (
-                      <input
-                        className="rename"
-                        defaultValue={entry.title}
-                        autoFocus
-                        aria-label={t('rename')}
-                        onBlur={() => setEditing(null)}
-                        onKeyDown={e => {
-                          if (e.key === 'Escape') setEditing(null)
-                          if (e.key === 'Enter') {
-                            const title = e.currentTarget.value.trim()
-                            if (title) onRename(entry, title)
-                            setEditing(null)
-                          }
-                        }}
-                      />
-                    ) : (
-                      <button
-                        type="button"
-                        className="session-title"
-                        onClick={() => onOpen(entry)}
-                        onDoubleClick={() => setEditing(entry.id)}
-                      >
-                        {running[entry.id] && (
-                          <span className="dot" aria-label={t('running')} />
-                        )}
-                        <span>{entry.title}</span>
-                      </button>
-                    )}
-                    <span className="row-actions">
-                      <button
-                        type="button"
-                        className="ghost"
-                        aria-label={t('rename')}
-                        title={t('rename')}
-                        onClick={() => setEditing(entry.id)}
-                      >
-                        ✎
-                      </button>
-                      {running[entry.id] && (
-                        <button
-                          type="button"
-                          className="ghost"
-                          aria-label={t('stopSession')}
-                          title={t('stopSession')}
-                          onClick={() => onStop(entry.id)}
-                        >
-                          ■
-                        </button>
-                      )}
-                    </span>
-                  </div>
-                ))}
-            </section>
-          )
-        })}
-        {!historyDone && !filter && (
-          <button type="button" className="ghost more" onClick={onMore}>
-            {t('loadMore')}
-          </button>
-        )}
-      </nav>
-    </aside>
-  )
+/** Seconds since the current turn started; ticks while busy. */
+function useTurnStart(busy: boolean | undefined, view: string | null): number | undefined {
+  const [since, setSince] = useState<number>()
+  const [, setTick] = useState(0)
+  useEffect(() => setSince(busy ? Date.now() : undefined), [busy, view])
+  useEffect(() => {
+    if (!busy) return
+    const id = setInterval(() => setTick(n => n + 1), 1000)
+    return () => clearInterval(id)
+  }, [busy])
+  return since
 }
 
 export function App() {
   const [state, dispatch] = useReducer(appReducer, initialAppState)
-  const [lang, setLang] = useState<Lang>(initialLang)
+  const [lang, setLangState] = useState<Lang>(initialLang)
+  const [theme, setThemeState] = useState<Theme>(() => readStored(THEME_KEY, 'system'))
+  const [palette, setPaletteState] = useState<Palette>(() => readStored(PALETTE_KEY, 'default'))
   const [drafts, setDrafts] = useState<Record<string, string>>({})
   const [attachments, setAttachments] = useState<Record<string, File[]>>({})
   const [preview, setPreview] = useState<
     { sessionId: string; path: string } | { sessionId: string; url: string }
   >()
-  const [previewOrigins, setPreviewOrigins] = useState<string[]>([])
+  const [info, setInfo] = useState<{ workspace?: string; tempRoot?: string; previewOrigins: string[] }>({
+    previewOrigins: [],
+  })
   const [dragging, setDragging] = useState(false)
-  const [agentsOpen, setAgentsOpenState] = useState<boolean>(() =>
-    readStored(AGENTS_OPEN_KEY, false),
-  )
+  const [sideTab, setSideTab] = useState<SideTab>('status')
+  const [sheetOpen, setSheetOpen] = useState(false)
   const [agentsView, setAgentsView] = useState<AgentsView>({ kind: 'tree' })
+  const [workflowId, setWorkflowId] = useState<string>()
+  const [dialog, setDialog] = useState<DialogKind>()
+  const [startError, setStartError] = useState<string>()
+  const [sidebarOpen, setSidebarOpen] = useState(false)
   const pendingRequests = useRef(new Map<string, (response: Record<string, unknown>) => void>())
-  const [workspace, setWorkspace] = useState<string>()
-  const [knownModels, setKnownModels] = useState<ModelOption[]>(() =>
-    readStored(MODELS_KEY, []),
-  )
+  const [knownModels, setKnownModels] = useState<ModelOption[]>(() => readStored(MODELS_KEY, []))
+  const [knownEnv, setKnownEnv] = useState<SessionEnv>(() => readStored(ENV_KEY, {}))
   const sockets = useRef(new Map<string, WebSocket>())
   const requestSeq = useRef(0)
   const feedRef = useRef<HTMLDivElement>(null)
+  const searchRef = useRef<HTMLInputElement>(null)
+  const menuRef = useRef<HTMLButtonElement>(null)
   const stickToBottom = useRef(true)
   const stateRef = useRef(state)
   stateRef.current = state
 
-  const t: T = useCallback(
-    (key, vars) => translate(lang, key, vars),
-    [lang],
-  )
+  const t: T = useCallback((key, vars) => translate(lang, key, vars), [lang])
+  const setLang = (next: Lang) => {
+    setLangState(next)
+    saveLang(next)
+  }
+  const setTheme = (next: Theme) => {
+    setThemeState(next)
+    writeStored(THEME_KEY, next)
+  }
+  const setPalette = (next: Palette) => {
+    setPaletteState(next)
+    writeStored(PALETTE_KEY, next)
+  }
 
   const chat: SessionChat | undefined = state.view ? state.chats[state.view] : undefined
-  const draftKey = state.view ?? ''
+  const view = state.view
+  const draftKey = view ?? ''
   const draft = drafts[draftKey] ?? ''
   const setDraft = (value: string) => setDrafts(d => ({ ...d, [draftKey]: value }))
   const files = attachments[draftKey] ?? []
   const setFiles = (next: File[]) => setAttachments(a => ({ ...a, [draftKey]: next }))
-  const view = state.view
-  const filesValue = useMemo(
-    () =>
-      view
-        ? { open: (path: string) => setPreview({ sessionId: view, path }), base: filesBase(view) }
-        : {},
+  const env: SessionEnv = chat && Object.keys(chat.env).length ? chat.env : knownEnv
+  const models = chat?.models.length ? chat.models : knownModels
+  const uiName = env.uiName || DEFAULT_UI_NAME
+  const previewing = !!preview && preview.sessionId === view
+  const since = useTurnStart(chat?.busy, view)
+
+  const openFile = useCallback(
+    (path: string) => {
+      if (!view) return
+      setPreview({ sessionId: view, path })
+      setSheetOpen(false)
+    },
     [view],
   )
+  const filesValue = useMemo(() => (view ? { open: openFile, base: filesBase(view) } : {}), [view, openFile])
   const webPreviewValue = useMemo(() => {
-    const target = (href: string) =>
-      previewTarget(href, { uiOrigin: location.origin, origins: previewOrigins })
+    const target = (href: string) => previewTarget(href, { uiOrigin: location.origin, origins: info.previewOrigins })
     return {
       target,
       open: (url: string) => {
@@ -566,12 +181,8 @@ export function App() {
       },
       label: t('preview'),
     }
-  }, [view, previewOrigins, t])
+  }, [view, info.previewOrigins, t])
   const closePreview = useCallback(() => setPreview(undefined), [])
-  const setAgentsOpen = (open: boolean) => {
-    setAgentsOpenState(open)
-    writeStored(AGENTS_OPEN_KEY, open)
-  }
   const tasks = chat?.tasks
   const agentsValue = useMemo(
     () => ({
@@ -582,29 +193,31 @@ export function App() {
       ),
       open: (taskId: string) => {
         setPreview(undefined)
-        setAgentsOpenState(true)
-        writeStored(AGENTS_OPEN_KEY, true)
-        setAgentsView({ kind: 'task', id: taskId })
+        const task = tasks?.[taskId]
+        if (task?.type === 'local_workflow') {
+          setWorkflowId(taskId)
+          setSideTab('workflow')
+        } else {
+          setSideTab('agents')
+          setAgentsView({ kind: 'task', id: taskId })
+        }
+        if (isNarrow(760)) setSheetOpen(true)
       },
     }),
     [tasks],
   )
-  useEffect(() => setAgentsView({ kind: 'tree' }), [view])
+  useEffect(() => {
+    setAgentsView({ kind: 'tree' })
+    setWorkflowId(undefined)
+    setSheetOpen(false)
+  }, [view])
   const items = chat?.items
-  const sourcesById = useMemo(
-    () => turnSources(items ?? [], agentsValue.byToolUse),
-    [items, agentsValue],
-  )
+  const sourcesById = useMemo(() => turnSources(items ?? [], agentsValue.byToolUse), [items, agentsValue])
   const chatTitle = state.history.find(h => h.id === view)?.title ?? 'Claude'
+
   const exportMarkdown = () => {
     if (!chat) return
-    const text = chatMarkdown(
-      chatTitle,
-      chat.items,
-      sourcesById,
-      { you: t('you'), sources: t('sources') },
-      chat.model,
-    )
+    const text = chatMarkdown(chatTitle, chat.items, sourcesById, { you: t('you'), sources: t('sources') }, chat.model)
     const url = URL.createObjectURL(new Blob([text], { type: 'text/markdown;charset=utf-8' }))
     const link = document.createElement('a')
     link.href = url
@@ -619,23 +232,12 @@ export function App() {
     window.print()
     document.title = previous
   }
-  const runningAgents = Object.values(tasks ?? {}).filter(
-    task => !['completed', 'failed', 'stopped', 'killed'].includes(task.status),
-  ).length
 
   const refreshHistory = useCallback(async (append = false) => {
     const offset = append ? stateRef.current.history.length : 0
     try {
-      const [entries, running] = await Promise.all([
-        listHistory(offset, HISTORY_PAGE),
-        listRunning(),
-      ])
-      dispatch({
-        type: 'history',
-        entries,
-        append,
-        done: entries.length < HISTORY_PAGE,
-      })
+      const [entries, running] = await Promise.all([listHistory(offset, HISTORY_PAGE), listRunning()])
+      dispatch({ type: 'history', entries, append, done: entries.length < HISTORY_PAGE })
       dispatch({ type: 'running', ids: running.map(r => r.id) })
     } catch {
       // The sidebar keeps what it has; the next refresh retries.
@@ -645,13 +247,27 @@ export function App() {
   useEffect(() => {
     document.documentElement.lang = lang
   }, [lang])
+  useEffect(() => {
+    const root = document.documentElement
+    if (theme === 'system') delete root.dataset.theme
+    else root.dataset.theme = theme
+    if (palette === 'default') delete root.dataset.palette
+    else root.dataset.palette = palette
+  }, [theme, palette])
+  useEffect(() => {
+    document.title = uiName
+  }, [uiName])
+  useEffect(() => {
+    document.body.classList.toggle('nosess', !chat)
+    document.body.classList.toggle('art', previewing)
+  }, [chat, previewing])
 
   useEffect(() => {
     void refreshHistory()
-    getInfo().then(info => {
-      setWorkspace(info.workspace)
-      setPreviewOrigins(info.preview_origins ?? [])
-    }, () => {})
+    getInfo().then(
+      res => setInfo({ workspace: res.workspace, tempRoot: res.temp_root, previewOrigins: res.preview_origins ?? [] }),
+      () => {},
+    )
     const map = sockets.current
     return () => {
       for (const socket of map.values()) socket.close()
@@ -661,7 +277,7 @@ export function App() {
   useEffect(() => {
     const feed = feedRef.current
     if (feed && stickToBottom.current) feed.scrollTop = feed.scrollHeight
-  }, [chat?.items, state.view])
+  }, [chat?.items, chat?.approvals, view])
 
   useEffect(() => {
     if (chat?.models.length) {
@@ -669,6 +285,13 @@ export function App() {
       writeStored(MODELS_KEY, chat.models)
     }
   }, [chat?.models])
+  const chatEnv = chat?.env
+  useEffect(() => {
+    if (chatEnv && Object.keys(chatEnv).length) {
+      setKnownEnv(chatEnv)
+      writeStored(ENV_KEY, chatEnv)
+    }
+  }, [chatEnv])
 
   const send = (id: string, msg: unknown) => {
     sockets.current.get(id)?.send(JSON.stringify(msg) + '\n')
@@ -710,6 +333,8 @@ export function App() {
       : delivery
   }
 
+  const getSettings = (id: string) => request(id, REQUEST_PREFIX.settings, { subtype: 'get_settings' })
+
   const attach = async (id: string): Promise<void> => {
     const socket = await openSessionSocket(id, raw => {
       const msg = raw as { type?: string; response?: Record<string, unknown> }
@@ -722,6 +347,7 @@ export function App() {
       dispatch({ type: 'chat', id, action: { type: 'message', raw } })
       const reply = unsupportedControlResponse(raw)
       if (reply) socket.send(JSON.stringify(reply) + '\n')
+      if (typeof requestId === 'string' && requestId.startsWith(REQUEST_PREFIX.effort)) getSettings(id)
       if ((raw as { type?: string }).type === 'result') {
         request(id, REQUEST_PREFIX.context, { subtype: 'get_context_usage' })
         void refreshHistory()
@@ -737,6 +363,7 @@ export function App() {
     sockets.current.set(id, socket)
     dispatch({ type: 'mode', id, mode: 'live' })
     request(id, REQUEST_PREFIX.initialize, { subtype: 'initialize' })
+    getSettings(id)
   }
 
   const loadInto = async (id: string, before?: number) => {
@@ -800,11 +427,7 @@ export function App() {
         id,
         action: {
           type: 'local',
-          patch: {
-            notice: t('resumeFailed', {
-              error: err instanceof Error ? err.message : String(err),
-            }),
-          },
+          patch: { notice: t('resumeFailed', { error: err instanceof Error ? err.message : String(err) }) },
         },
       })
       return false
@@ -843,10 +466,10 @@ export function App() {
     const text = (drafts[''] ?? '').trim()
     const pending = attachments[''] ?? []
     if (!text && !pending.length) return
-    const { cwd, mode, model } = state.start
+    const { cwd, mode, model, temporary, effort } = state.start
     try {
       const created = await createSession({
-        ...(cwd && { cwd }),
+        ...(temporary ? { temporary: true } : cwd && { cwd }),
         ...(mode !== 'default' && { permission_mode: mode }),
         ...(model && { model }),
       })
@@ -863,60 +486,84 @@ export function App() {
         start: state.start,
       })
       await attach(id)
+      if (effort) changeEffort(id, effort)
       const uuid = newUuid()
       dispatch({ type: 'chat', id, action: { type: 'user', ...content, uuid } })
       send(id, userMessage(content.text, content.images, uuid))
     } catch (err) {
-      setStartError(
-        t('connectFailed', { error: err instanceof Error ? err.message : String(err) }),
-      )
+      setStartError(t('connectFailed', { error: err instanceof Error ? err.message : String(err) }))
     }
   }
-  const [startError, setStartError] = useState<string>()
-  const [sidebarOpen, setSidebarOpen] = useState(false)
-  const menuRef = useRef<HTMLButtonElement>(null)
-  const panelOpen = !!((preview && preview.sessionId === view) || (agentsOpen && chat))
-  const panelOpener = useRef<HTMLElement | null>(null)
 
-  // On narrow screens both side panels are drawers: move focus into them when
-  // they open, close the sidebar on Esc (the panels handle their own), and
-  // give focus back to whatever opened them once they close.
+  // The sessions drawer (≤1100px) takes focus when it opens and gives it back
+  // to the menu button when it closes; Esc closes it.
   useEffect(() => {
     if (!sidebarOpen) return
-    document.querySelector<HTMLElement>('.sidebar .new-chat')?.focus()
-    const onKey = (e: globalThis.KeyboardEvent) => {
+    document.querySelector<HTMLElement>('.sessions .new-chat')?.focus()
+    const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') setSidebarOpen(false)
     }
     window.addEventListener('keydown', onKey)
     return () => {
       window.removeEventListener('keydown', onKey)
       const active = document.activeElement
-      if (!active || active === document.body || active.closest('.sidebar')) {
-        menuRef.current?.focus()
-      }
+      if (!active || active === document.body || active.closest('.sessions')) menuRef.current?.focus()
     }
   }, [sidebarOpen])
+
+  // The phone's bottom sheet likewise takes focus and returns it to the panel button.
   useEffect(() => {
-    if (!panelOpen) return
-    panelOpener.current = document.activeElement as HTMLElement | null
-    if (window.matchMedia('(max-width: 760px)').matches) {
-      document.querySelector<HTMLElement>('.preview button')?.focus()
+    if (!sheetOpen) return
+    document.querySelector<HTMLElement>('.side [role=tab][aria-selected=true]')?.focus()
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setSheetOpen(false)
     }
+    window.addEventListener('keydown', onKey)
     return () => {
+      window.removeEventListener('keydown', onKey)
       const active = document.activeElement
-      if (!active || active === document.body) panelOpener.current?.focus()
+      if (!active || active === document.body || active.closest('.side')) {
+        document.querySelector<HTMLElement>('#panel-btn')?.focus()
+      }
     }
-  }, [panelOpen])
-  const closePanel = () => {
-    if (preview && preview.sessionId === view) closePreview()
-    else setAgentsOpen(false)
+  }, [sheetOpen])
+
+  const openStatus = () => {
+    setPreview(undefined)
+    setSideTab('status')
+    if (isNarrow(760)) setSheetOpen(true)
   }
+  // Page shortcuts: Ctrl+K search, Ctrl+Shift+O new session, Ctrl+. Status, ? help.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const mod = e.ctrlKey || e.metaKey
+      const typing = (e.target as HTMLElement | null)?.closest?.('input, textarea, select, [contenteditable]')
+      if (mod && !e.shiftKey && e.key.toLowerCase() === 'k') {
+        e.preventDefault()
+        if (isNarrow(1100)) setSidebarOpen(true)
+        searchRef.current?.focus()
+      } else if (mod && e.shiftKey && e.key.toLowerCase() === 'o') {
+        e.preventDefault()
+        newChat()
+      } else if (mod && e.key === '.') {
+        e.preventDefault()
+        if (stateRef.current.view) openStatus()
+      } else if (e.key === '?' && !mod && !typing && !dialog) {
+        e.preventDefault()
+        setDialog('keys')
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  })
 
   const stop = (id: string) => request(id, REQUEST_PREFIX.interrupt, { subtype: 'interrupt' })
 
   const answer = (id: string, approval: Approval, choice: ApprovalChoice) => {
     send(id, permissionResponse(approval, choice))
     dispatch({ type: 'chat', id, action: { type: 'answered', requestId: approval.requestId } })
+    // "Deny and tell Claude what to do": the answer goes in the input box.
+    if (choice === 'deny') document.querySelector<HTMLTextAreaElement>('.cbox textarea')?.focus()
   }
 
   const changeMode = (id: string, mode: string) => {
@@ -929,8 +576,13 @@ export function App() {
 
   const changeModel = (id: string, model: string) => {
     dispatch({ type: 'chat', id, action: { type: 'local', patch: { model, notice: undefined } } })
+    if (sockets.current.has(id)) request(id, REQUEST_PREFIX.model, { subtype: 'set_model', model })
+  }
+
+  function changeEffort(id: string, effort: string) {
+    dispatch({ type: 'chat', id, action: { type: 'local', patch: { effort, notice: undefined } } })
     if (sockets.current.has(id)) {
-      request(id, REQUEST_PREFIX.model, { subtype: 'set_model', model })
+      request(id, REQUEST_PREFIX.effort, { subtype: 'apply_flag_settings', settings: { effortLevel: effort } })
     }
   }
 
@@ -952,52 +604,249 @@ export function App() {
     }
   }
 
-  const newChat = (cwd?: string) => {
+  function newChat(cwd?: string) {
     setStartError(undefined)
-    dispatch({ type: 'startOptions', patch: { cwd } })
+    setSidebarOpen(false)
+    dispatch({ type: 'startOptions', patch: { cwd, temporary: false } })
     dispatch({ type: 'view', id: null })
   }
 
-  const usage = chat
-    ? [
-        chat.contextPercent !== undefined &&
-          t('contextUsed', { percent: String(Math.round(chat.contextPercent)) }),
-        chat.costUsd !== undefined &&
-          new Intl.NumberFormat(lang, {
-            style: 'currency',
-            currency: 'USD',
-            maximumFractionDigits: 2,
-          }).format(chat.costUsd),
-      ]
-        .filter(Boolean)
-        .join(' · ')
-    : ''
+  const useSkill = (name: string) => {
+    setDialog(undefined)
+    setDraft(`/${name} `)
+    setTimeout(() => document.querySelector<HTMLTextAreaElement>('.cbox textarea, .wl-box textarea')?.focus())
+  }
 
-  const recentDirs = [
-    ...new Set(
-      [workspace, ...state.history.map(h => h.cwd)].filter((d): d is string => !!d),
-    ),
-  ].slice(0, 12)
+  const menuButton = (
+    <button
+      type="button"
+      ref={menuRef}
+      className="menu-btn"
+      aria-label={t('openSessions')}
+      aria-controls="sessions"
+      aria-expanded={sidebarOpen}
+      onClick={() => setSidebarOpen(true)}
+    >
+      ☰
+    </button>
+  )
+
+  const statusText = chat
+    ? chat.busy && chat.mode === 'live' && since !== undefined
+      ? t('elapsedRunning', { time: formatElapsed(Date.now() - since) })
+      : t(
+          chat.mode === 'live'
+            ? 'statusLive'
+            : chat.mode === 'elsewhere'
+              ? 'statusElsewhere'
+              : chat.mode === 'connecting'
+                ? 'statusConnecting'
+                : 'statusIdle',
+        )
+    : ''
+  const approval = chat?.approvals[0]
+
+  const main = !chat ? (
+    <StartPage
+      t={t}
+      env={env}
+      options={state.start}
+      setOptions={patch => dispatch({ type: 'startOptions', patch })}
+      workspace={info.workspace}
+      history={state.history}
+      tempRoot={info.tempRoot}
+      models={models}
+      draft={drafts[''] ?? ''}
+      setDraft={v => setDrafts(d => ({ ...d, '': v }))}
+      files={attachments[''] ?? []}
+      setFiles={next => setAttachments(a => ({ ...a, '': next }))}
+      error={startError}
+      onStart={() => void startChat()}
+      onOpen={entry => void openSession(entry)}
+      onViewAll={() => {
+        if (isNarrow(1100)) setSidebarOpen(true)
+        searchRef.current?.focus()
+      }}
+      menuButton={menuButton}
+    />
+  ) : (
+    <AgentsContext.Provider value={agentsValue}>
+      <FilesContext.Provider value={filesValue}>
+        <WebPreviewContext.Provider value={webPreviewValue}>
+          <div className="meta">
+            {menuButton}
+            <span className={`chip status status-${chat.mode}`} role="status">
+              <span className={`dot ${chat.busy ? 'running' : chat.mode === 'live' ? 'completed' : 'idle'}`} />
+              {statusText}
+            </span>
+            <span className="chip mono" title={chat.cwd ?? chat.workDir}>
+              {chat.cwd ?? chat.workDir}
+            </span>
+            {chat.contextPercent !== undefined && (
+              <span className="chip">
+                <span>{Math.round(chat.contextPercent)}%</span> {t('contextChip')}
+              </span>
+            )}
+            <span className="sp" />
+            {chat.items.length > 0 && (
+              <div className="export">
+                <FootMenu button={t('export')}>
+                  {close => (
+                    <>
+                      <button
+                        type="button"
+                        role="menuitem"
+                        onClick={() => {
+                          close()
+                          exportMarkdown()
+                        }}
+                      >
+                        {t('exportMarkdown')}
+                      </button>
+                      <button
+                        type="button"
+                        role="menuitem"
+                        onClick={() => {
+                          close()
+                          exportPdf()
+                        }}
+                      >
+                        {t('exportPdf')}
+                      </button>
+                    </>
+                  )}
+                </FootMenu>
+              </div>
+            )}
+            <button
+              type="button"
+              className="menu-btn panel-btn"
+              id="panel-btn"
+              aria-label={t('openPanel')}
+              aria-expanded={sheetOpen}
+              onClick={() => {
+                setPreview(undefined)
+                setSheetOpen(true)
+              }}
+            >
+              ▤
+            </button>
+          </div>
+          <div
+            className="feed"
+            ref={feedRef}
+            aria-busy={chat.busy}
+            onScroll={e => {
+              const el = e.currentTarget
+              stickToBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40
+            }}
+          >
+            {chat.start > 0 && (
+              <div className="older-sentinel">
+                <button type="button" onClick={() => view && void loadInto(view, chat.start)}>
+                  {t('loadEarlier')}
+                </button>
+              </div>
+            )}
+            {chat.items.map(item => (
+              <Message
+                key={item.id}
+                item={item}
+                t={t}
+                fallbackModel={chat.model}
+                models={models}
+                streaming={chat.busy && item.id === chat.streamingId}
+                sources={sourcesById.get(item.id)}
+              />
+            ))}
+            {chat.approvals.map(a => (
+              <div className="ask-ref" key={a.requestId}>
+                <span className="spin" aria-hidden="true" />
+                {t('askRef', { tool: a.toolName })}
+              </div>
+            ))}
+            {chat.busy && since !== undefined && <StatusLine t={t} since={since} onStop={() => view && stop(view)} />}
+          </div>
+          <div className="composer">
+            {chat.mode === 'elsewhere' && (
+              <div className="notice" role="status">
+                {t('openElsewhere')}
+              </div>
+            )}
+            {chat.notice && (
+              <div className="notice" role="status">
+                {chat.notice}
+              </div>
+            )}
+            {approval && view && (
+              <AskDock
+                approval={approval}
+                more={chat.approvals.length - 1}
+                cwd={chat.cwd ?? chat.workDir}
+                t={t}
+                onAnswer={choice => answer(view, approval, choice)}
+              />
+            )}
+            <InputBox
+              t={t}
+              busy={chat.busy}
+              disabled={chat.mode === 'elsewhere'}
+              draft={draft}
+              setDraft={setDraft}
+              onSend={() => void sendInChat()}
+              onStop={() => view && stop(view)}
+              onFocus={() => view && chat.mode === 'readonly' && void resume(view)}
+              files={files}
+              setFiles={setFiles}
+              commands={chat.commands}
+              hiddenCommands={chat.terminalCommands}
+              skills={chat.env.skills}
+              onShiftTab={() => view && changeMode(view, nextMode(chat.permissionMode))}
+              crow={
+                <>
+                  <ModeButton
+                    t={t}
+                    mode={chat.permissionMode ?? 'default'}
+                    onMode={mode => view && changeMode(view, mode)}
+                  />
+                  {models.length > 0 && (
+                    <FootMenu right label={t('model')} button={modelButtonLabel(chat.model, chat.effort, models, t)}>
+                      {close => (
+                        <ModelMenu
+                          t={t}
+                          model={chat.model}
+                          effort={chat.effort}
+                          models={models}
+                          onModel={model => view && changeModel(view, model)}
+                          onEffort={effort => view && changeEffort(view, effort)}
+                          close={close}
+                        />
+                      )}
+                    </FootMenu>
+                  )}
+                </>
+              }
+            />
+          </div>
+        </WebPreviewContext.Provider>
+      </FilesContext.Provider>
+    </AgentsContext.Provider>
+  )
 
   return (
-    <div
-      className={`app${sidebarOpen ? ' sidebar-open' : ''}${panelOpen ? ' previewing' : ''}`}
-    >
-      <div
-        className="scrim"
-        aria-hidden="true"
-        onClick={() => (sidebarOpen ? setSidebarOpen(false) : closePanel())}
-      />
+    <div className="app">
       <Sidebar
         t={t}
+        open={sidebarOpen}
+        uiName={uiName}
+        env={env}
         history={state.history}
         historyDone={state.historyDone}
         running={state.running}
-        view={state.view}
-        onNew={cwd => {
-          setSidebarOpen(false)
-          newChat(cwd)
-        }}
+        view={view}
+        tempRoot={info.tempRoot}
+        searchRef={searchRef}
+        onNew={cwd => newChat(cwd)}
         onOpen={entry => {
           setSidebarOpen(false)
           void openSession(entry)
@@ -1005,9 +854,24 @@ export function App() {
         onRename={(entry, title) => void rename(entry, title)}
         onStop={id => void stopSession(id)}
         onMore={() => void refreshHistory(true)}
+        onDialog={kind => {
+          setSidebarOpen(false)
+          setDialog(kind)
+        }}
       />
-      <div
-        className={`main${dragging ? ' dragging' : ''}`}
+      {previewing && preview && (
+        <section className="artview" aria-label={t('artifact')}>
+          <WebPreviewContext.Provider value={webPreviewValue}>
+            {'url' in preview ? (
+              <WebPreview url={preview.url} t={t} onClose={closePreview} />
+            ) : (
+              <Preview sessionId={preview.sessionId} path={preview.path} t={t} onClose={closePreview} />
+            )}
+          </WebPreviewContext.Provider>
+        </section>
+      )}
+      <main
+        className={`main${approval ? ' asking' : ''}${dragging ? ' dragging' : ''}`}
         onDragOver={(e: DragEvent) => {
           if (!e.dataTransfer.types.includes('Files') || chat?.mode === 'elsewhere') return
           e.preventDefault()
@@ -1023,288 +887,52 @@ export function App() {
           setFiles([...files, ...e.dataTransfer.files])
         }}
       >
-        <header className="topbar">
-          <button
-            type="button"
-            ref={menuRef}
-            className="ghost menu"
-            aria-label={t('menu')}
-            aria-controls="sidebar"
-            aria-expanded={sidebarOpen}
-            onClick={() => setSidebarOpen(true)}
-          >
-            ☰
-          </button>
-          {chat && (
-            <>
-              <span className={`status status-${chat.mode}`} role="status">
-                {t(
-                  chat.mode === 'live'
-                    ? 'statusLive'
-                    : chat.mode === 'elsewhere'
-                      ? 'statusElsewhere'
-                      : chat.mode === 'connecting'
-                        ? 'statusConnecting'
-                        : 'statusIdle',
-                )}
-              </span>
-              <span className="cwd">{chat.cwd ?? chat.workDir}</span>
-            </>
-          )}
-          {!chat && <span className="cwd" />}
-          {chat && chat.items.length > 0 && (
-            <details className="export-menu">
-              <summary className="ghost">{t('export')}</summary>
-              <div className="export-options">
-                {(
-                  [
-                    ['exportMarkdown', exportMarkdown],
-                    ['exportPdf', exportPdf],
-                  ] as const
-                ).map(([key, run]) => (
-                  <button
-                    type="button"
-                    className="ghost"
-                    key={key}
-                    onClick={e => {
-                      e.currentTarget.closest('details')?.removeAttribute('open')
-                      run()
-                    }}
-                  >
-                    {t(key)}
-                  </button>
-                ))}
-              </div>
-            </details>
-          )}
-          {chat && (
-            <button
-              type="button"
-              className={`ghost agents-toggle${agentsOpen ? ' active' : ''}`}
-              aria-expanded={agentsOpen}
-              onClick={() => {
-                setAgentsOpen(!agentsOpen)
-                if (!agentsOpen) setPreview(undefined)
-              }}
-            >
-              {t('agents')}
-              {runningAgents > 0 && <span className="badge">{runningAgents}</span>}
-            </button>
-          )}
-          <select
-            aria-label={t('language')}
-            value={lang}
-            onChange={e => {
-              const next = e.target.value as Lang
-              setLang(next)
-              saveLang(next)
-            }}
-          >
-            {LANGS.map(l => (
-              <option key={l.id} value={l.id}>
-                {l.label}
-              </option>
-            ))}
-          </select>
-        </header>
-
-        {!chat ? (
-          <main className="start">
-            <div className="col">
-              <h1 className="greeting">{t('greeting')}</h1>
-              <Composer
-                t={t}
-                big
-                busy={false}
-                placeholder={t('placeholder')}
-                draft={drafts[''] ?? ''}
-                setDraft={v => setDrafts(d => ({ ...d, '': v }))}
-                onSend={() => void startChat()}
-                onStop={() => {}}
-                files={files}
-                setFiles={setFiles}
-              />
-              {startError && (
-                <div className="notice" role="alert">
-                  {startError}
-                </div>
-              )}
-              <div className="start-options">
-                <select
-                  aria-label={t('folder')}
-                  value={state.start.cwd ?? workspace ?? ''}
-                  onChange={e => {
-                    if (e.target.value === '__other__') {
-                      const path = window.prompt(t('folderPrompt'))?.trim()
-                      if (path) dispatch({ type: 'startOptions', patch: { cwd: path } })
-                      return
-                    }
-                    dispatch({ type: 'startOptions', patch: { cwd: e.target.value || undefined } })
-                  }}
-                >
-                  {[...new Set([...(state.start.cwd ? [state.start.cwd] : []), ...recentDirs])].map(
-                    dir => (
-                      <option key={dir} value={dir}>
-                        {dir === workspace ? `${t('workspace')} · ${dir}` : dir}
-                      </option>
-                    ),
-                  )}
-                  <option value="__other__">{t('otherFolder')}</option>
-                </select>
-                <span className="spacer" />
-                <ModeSelect
-                  t={t}
-                  value={state.start.mode}
-                  onChange={mode => dispatch({ type: 'startOptions', patch: { mode } })}
-                />
-                <ModelSelect
-                  t={t}
-                  value={state.start.model}
-                  options={knownModels}
-                  onChange={model => dispatch({ type: 'startOptions', patch: { model } })}
-                />
-              </div>
-              <div className="recent">
-                {state.history
-                  .filter(h => (h.cwd ?? '') === (state.start.cwd ?? workspace ?? ''))
-                  .slice(0, 3)
-                  .map(entry => (
-                    <button
-                      type="button"
-                      key={entry.id}
-                      className="recent-card"
-                      onClick={() => void openSession(entry)}
-                    >
-                      <span className="recent-title">{entry.title}</span>
-                      <small>
-                        {new Intl.DateTimeFormat(lang, {
-                          dateStyle: 'medium',
-                          timeStyle: 'short',
-                        }).format(entry.lastModified)}
-                      </small>
-                    </button>
-                  ))}
-              </div>
-            </div>
-          </main>
-        ) : (
-          <AgentsContext.Provider value={agentsValue}>
-          <FilesContext.Provider value={filesValue}>
-          <WebPreviewContext.Provider value={webPreviewValue}>
-            <main
-              className="feed"
-              ref={feedRef}
-              aria-busy={chat.busy}
-              onScroll={e => {
-                const el = e.currentTarget
-                stickToBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40
-              }}
-            >
-              <div className="col">
-                {chat.start > 0 && (
-                  <button
-                    type="button"
-                    className="ghost more"
-                    onClick={() => state.view && void loadInto(state.view, chat.start)}
-                  >
-                    {t('loadEarlier')}
-                  </button>
-                )}
-                {chat.items.map(item => (
-                  <Message
-                    key={item.id}
-                    item={item}
-                    t={t}
-                    fallbackModel={chat.model}
-                    streaming={chat.busy && item.id === chat.streamingId}
-                    sources={sourcesById.get(item.id)}
-                  />
-                ))}
-              </div>
-            </main>
-            <footer className="composer">
-              <div className="col">
-                {chat.approvals[0] && state.view && (
-                  <ApprovalCard
-                    approval={chat.approvals[0]}
-                    t={t}
-                    onAnswer={choice => answer(state.view!, chat.approvals[0]!, choice)}
-                  />
-                )}
-                {chat.mode === 'elsewhere' && (
-                  <div className="notice" role="status">
-                    {t('openElsewhere')}
-                  </div>
-                )}
-                {chat.notice && (
-                  <div className="notice" role="status">
-                    {chat.notice}
-                  </div>
-                )}
-                <Composer
-                  t={t}
-                  busy={chat.busy}
-                  disabled={chat.mode === 'elsewhere'}
-                  placeholder={t('placeholder')}
-                  draft={draft}
-                  setDraft={setDraft}
-                  onSend={() => void sendInChat()}
-                  onStop={() => state.view && stop(state.view)}
-                  onFocus={() => state.view && chat.mode === 'readonly' && void resume(state.view)}
-                  files={files}
-                  setFiles={setFiles}
-                  commands={chat.commands}
-                  hiddenCommands={chat.terminalCommands}
-                />
-                <div className="composer-footer">
-                  <ModeSelect
-                    t={t}
-                    value={chat.permissionMode ?? 'default'}
-                    onChange={mode => state.view && changeMode(state.view, mode)}
-                  />
-                  <span className="usage">{usage}</span>
-                  <ModelSelect
-                    t={t}
-                    value={chat.model}
-                    options={chat.models.length ? chat.models : knownModels}
-                    onChange={model => state.view && changeModel(state.view, model)}
-                  />
-                </div>
-              </div>
-            </footer>
-          </WebPreviewContext.Provider>
-          </FilesContext.Provider>
-          </AgentsContext.Provider>
-        )}
-      </div>
-      {preview && preview.sessionId === view ? (
-        'url' in preview ? (
-          <WebPreview url={preview.url} t={t} onClose={closePreview} />
-        ) : (
-          <Preview
-            sessionId={preview.sessionId}
-            path={preview.path}
-            t={t}
-            onClose={closePreview}
-          />
-        )
-      ) : (
-        agentsOpen &&
-        chat &&
-        view && (
-          <AgentsPanel
-            sessionId={view}
-            tasks={chat.tasks}
-            items={chat.items}
-            busy={chat.busy}
-            view={agentsView}
-            setView={setAgentsView}
-            onStop={taskId => stopTask(view, taskId)}
-            onSend={(taskId, text) => sendToTask(view, taskId, text)}
-            onClose={() => setAgentsOpen(false)}
-            t={t}
-          />
-        )
+        {main}
+      </main>
+      {chat && view && (
+        <SidePanel
+          t={t}
+          open={sheetOpen}
+          tab={sideTab}
+          setTab={setSideTab}
+          sessionId={view}
+          chat={chat}
+          title={chatTitle}
+          models={models}
+          statusText={statusText}
+          currentFile={preview && 'path' in preview ? preview.path : undefined}
+          agentsView={agentsView}
+          setAgentsView={setAgentsView}
+          workflowId={workflowId}
+          setWorkflowId={setWorkflowId}
+          onOpenFile={openFile}
+          onStopTask={taskId => stopTask(view, taskId)}
+          onSendTask={(taskId, text) => sendToTask(view, taskId, text)}
+          onClose={() => setSheetOpen(false)}
+        />
+      )}
+      {sidebarOpen && <div className="scrim" aria-hidden="true" onClick={() => setSidebarOpen(false)} />}
+      {sheetOpen && (
+        <div className="scrim" style={{ zIndex: 26 }} aria-hidden="true" onClick={() => setSheetOpen(false)} />
+      )}
+      {dialog && (
+        <AppDialog
+          kind={dialog}
+          t={t}
+          env={env}
+          onClose={() => setDialog(undefined)}
+          onUseSkill={useSkill}
+          settings={{
+            lang,
+            setLang,
+            uiName,
+            theme,
+            setTheme,
+            palette,
+            setPalette,
+            workspace: info.workspace,
+          }}
+        />
       )}
     </div>
   )
