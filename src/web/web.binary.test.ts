@@ -1758,6 +1758,13 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       const workerAsked = () => promptsSeen.some(p => p.includes('WORKER_HANG') && !p.includes('DISPATCH_HANG'))
       for (let i = 0; i < 300 && !workerAsked(); i++) await Bun.sleep(100)
       expect(workerAsked()).toBe(true)
+      // Windows has no SIGTERM: the kill below is immediate, so let the worker's transcript reach disk first.
+      const workerSaved = () =>
+        [...new Bun.Glob('**/subagents/**/agent-*.jsonl').scanSync({ cwd: join(home, '.claude', 'projects'), absolute: true })].some(f =>
+          readFileSync(f, 'utf8').includes('WORKER_HANG'),
+        )
+      for (let i = 0; i < 300 && !workerSaved(); i++) await Bun.sleep(100)
+      expect(workerSaved()).toBe(true)
       web.kill('SIGTERM')
       expect(await web.exited).toBe(143)
       await startWeb()
