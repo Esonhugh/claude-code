@@ -27,6 +27,7 @@ import {
   renameSession,
   SESSION_ID,
 } from './history.js'
+import { type AccountBackend, createAccountApi } from './account.js'
 import { isAllowedPeer, lanHostNames } from './network.js'
 import {
   allowedHosts,
@@ -59,6 +60,8 @@ export type WebServerConfig = {
   tls?: { cert: string; key: string }
   /** Origins from `parsePreviewOrigin` that the page may frame. */
   previewOrigins?: string[]
+  /** Defaults to this machine's credential store and settings (tests pass a fake). */
+  account?: AccountBackend
 }
 
 type SocketData = { sessionId: string }
@@ -246,6 +249,7 @@ function isDirectory(path: string): boolean {
  *   POST   /api/files/:id?name=         → upload into the session's folder
  *   GET    /api/files/:id?path=         → a file the session may show (Range)
  *   GET    /api/files/:id/pdf?path=     → Office document converted to PDF
+ *   /api/account*, /api/settings, /api/usage → see createAccountApi
  */
 export function startWebServer(
   config: WebServerConfig,
@@ -269,6 +273,14 @@ export function startWebServer(
     return res
   }
   const uploadLimits = config.uploadLimits ?? DEFAULT_UPLOAD_LIMITS
+  let accountApi: ReturnType<typeof createAccountApi> | undefined
+  const handleAccount = async (req: Request, url: URL) => {
+    accountApi ??= createAccountApi(
+      config.account ?? (await import('./accountBackend.js')).localAccountBackend(),
+      { allowLocalNetwork: config.allowLocalNetwork === true },
+    )
+    return accountApi(req, url)
+  }
 
   async function sessionFile(id: string, path: string): Promise<string | undefined> {
     if (!isAbsolute(path)) return undefined
@@ -438,6 +450,14 @@ export function startWebServer(
       return (await renameSession(id, parsed.data.title))
         ? new Response(null, { status: 204 })
         : errorResponse(404, 'Session not found')
+    }
+    if (
+      pathname.startsWith('/api/account') ||
+      pathname === '/api/settings' ||
+      pathname === '/api/usage'
+    ) {
+      const res = await handleAccount(req, url)
+      if (res) return res
     }
     const filesMatch = FILES_PATH.exec(pathname)
     if (filesMatch) {
