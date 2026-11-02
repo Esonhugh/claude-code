@@ -1712,7 +1712,7 @@ rewind：stale_target / unseen_later_turn / rewound
       <div class="authwrap"><button type="button" class="mi" data-authsub aria-haspopup="menu" aria-expanded="${authOpen}"><span class="ico">⚿</span>认证<span class="chev">›</span></button>
         <div class="pop authmenu" id="auth-menu" role="menu"${authOpen ? '' : ' hidden'}><div class="mh">切换认证</div>${auth}</div></div>
       <button type="button" class="mi" data-dialog="settings"><span class="ico">⚙</span>设置</button>
-      <button type="button" class="mi" data-dialog="stats"><span class="ico">▤</span>Stats</button>
+      <button type="button" class="mi" data-dialog="stats"><span class="ico">▤</span>统计</button>
       <button type="button" class="mi" data-dialog="keys"><span class="ico">⌨</span>快捷键<kbd>?</kbd></button>
       ${account ? '<hr><button type="button" class="mi" data-logout><span class="ico">⏻</span>退出登录</button>' : ''}`
     placeAuth()
@@ -2530,7 +2530,7 @@ rewind：stale_target / unseen_later_turn / rewound
     ['页面'], ['搜索历史会话', 'Ctrl+K'], ['新会话', 'Ctrl+Shift+O'], ['打开右侧边栏 Status', 'Ctrl+.'], ['快捷键帮助', '?'], ['关闭弹窗', 'Esc'],
   ]
   const keysBody = () => `<div class="keys">${keyRows.map(([l, k]) => k ? `<span>${l}</span><span>${k.split(' → ').length > 1 ? k : k.split('+').map(x => /^[A-Za-z↑.\/@?]|Ctrl|Shift|Enter|Tab|Esc/.test(x) ? `<kbd>${x}</kbd>` : x).join('+')}</span>` : `<div class="kh">${l}</div>`).join('')}</div><p class="note">macOS 上 Ctrl 换成 ⌘。快捷键和 TUI 保持一致的部分（Enter、Shift+Tab、Esc、/、@）行为相同。</p>`
-  const dialogs = { apikey: ['API key', () => keyBody()], mcp: ['MCP 服务器', () => mcpBody()], keys: ['快捷键', () => keysBody()], settings: ['设置', () => settingsBody()], memory: ['记忆', () => memoryBody()], skills: ['Skills', () => skillsBody()], plugins: ['插件', () => pluginsBody()], hooks: ['Hooks', () => hooksBody()], channels: ['Channels', () => channelsBody()], workflow: ['Workflow', () => wfBody()], stats: ['Stats', () => `<div>${statsBody()}</div>`], mods: ['Mods', () => modsBody()] }
+  const dialogs = { apikey: ['API key', () => keyBody()], mcp: ['MCP 服务器', () => mcpBody()], keys: ['快捷键', () => keysBody()], settings: ['设置', () => settingsBody()], memory: ['记忆', () => memoryBody()], skills: ['Skills', () => skillsBody()], plugins: ['插件', () => pluginsBody()], hooks: ['Hooks', () => hooksBody()], channels: ['Channels', () => channelsBody()], workflow: ['Workflow', () => wfBody()], stats: ['统计', () => `<div>${statsBody()}</div>`], mods: ['Mods', () => modsBody()] }
   const refresh = () => { const y = $('#dialog-body .memlist')?.scrollTop ?? 0; $('#dialog-body').innerHTML = dialogs[dialogKind][1](); const l = $('#dialog-body .memlist'); if (l) l.scrollTop = y }
   document.addEventListener('input', e => {
     if (e.target.id !== 'skill-q') return
