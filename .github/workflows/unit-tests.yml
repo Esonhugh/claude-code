@@ -37,7 +37,7 @@ jobs:
           ANTHROPIC_API_KEY: sk-ant-test-placeholder
         run: |
           mkdir -p "$RUNNER_TEMP/unit"
-          git ls-files 'src/**/*.test.ts' 'src/**/*.test.tsx' \
+          git ls-files 'src/**/*.test.ts' 'src/**/*.test.tsx' 'web/src/**/*.test.ts' \
             | grep -vxF -e src/utils/permissions/permissions.networkLists.test.ts -e src/utils/sandbox/sandbox-adapter.test.ts \
             > "$RUNNER_TEMP/unit/files.txt"
           export LOGS="$RUNNER_TEMP/unit"

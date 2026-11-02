@@ -1,0 +1,17 @@
+{
+  "you": "你",
+  "placeholder": "给 Claude 发消息",
+  "send": "发送",
+  "stop": "停止",
+  "newChat": "新会话",
+  "greeting": "有什么可以帮你？",
+  "approvalTitle": "允许使用 {tool}？",
+  "allow": "允许",
+  "deny": "拒绝",
+  "thinking": "思考过程",
+  "toolInput": "输入",
+  "toolOutput": "输出",
+  "sessionEnded": "会话已结束。",
+  "connectFailed": "无法启动会话：{error}",
+  "language": "语言"
+}

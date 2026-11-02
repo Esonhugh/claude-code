@@ -17,6 +17,10 @@ export type SpawnSessionOptions = {
  * which the server relays to and from the connected client.
  */
 export class DangerousBackend {
+  constructor(
+    private options: { includePartialMessages?: boolean } = {},
+  ) {}
+
   spawn({ sessionId, cwd, permissionMode }: SpawnSessionOptions): ChildProcess {
     const [command, ...entry] = isInBundledMode()
       ? [process.execPath]
@@ -39,6 +43,9 @@ export class DangerousBackend {
         '--session-id',
         sessionId,
         ...(permissionMode ? ['--permission-mode', permissionMode] : []),
+        ...(this.options.includePartialMessages
+          ? ['--include-partial-messages']
+          : []),
       ],
       { cwd, env, stdio: ['pipe', 'pipe', 'pipe'] },
     )

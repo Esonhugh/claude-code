@@ -1,6 +1,6 @@
 # `claude web`：本地 Web 对话与研究界面设计
 
-状态：设计稿，未实现（计划在 v2.1.296 发版后开始）
+状态：实现中。各阶段先合进 `claude-web` 分支，全部完成后再合进 `dev`；M0（骨架和安全层）见 PR 说明
 基线：`dev` 64fd4f3
 日期：2026-11-02
 Issue：#502
@@ -315,7 +315,7 @@ Terminal 工具是 fork 独有的（官方没有），它开的每个 PTY 会话
 ## 6. 构建和打包
 
 - 前端放在 `web/`，用 Vite 构建，`bun run build:web` 输出 `web/dist`。
-- `scripts/package-binary.mjs` 生成资源清单模块，用 `import x from '...' with { type: 'file' }` 把 dist 每个文件嵌进二进制（与现有 ripgrep、sharp、bfs/ugrep 的嵌入方式一致）。运行时从 `$bunfs` 读取。
+- `scripts/build-web.mjs` 在 Vite 构建后把 `web/dist` 的每个文件写进 `web/dist/assets.json`（文本原样，二进制 base64），`src/web/assets.ts` 直接 import 这个 JSON，所以 `dist/cli.js` 和单文件二进制都自带页面，运行时不读磁盘。`bun run build` 在 `WEB_UI` 开启时先跑这一步。
 - 用 feature flag `WEB_UI` 控制，加进 `scripts/build.mjs` 的默认 feature 列表；关掉时子命令和资源都不进包。
 - 体积预算：首屏 JS gzip 后不超过 300 KB；shiki 语法、KaTeX 字体、mermaid、pdf.js、mammoth、exceljs 全部按需加载。整体给二进制增加的体积目标不超过 8 MB，构建时检查。
 
