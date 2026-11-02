@@ -4717,6 +4717,8 @@ async function run(): Promise<CommanderCommand> {
             cwd: getOriginalCwd(),
             dangerouslySkipPermissions:
               _pendingConnect.dangerouslySkipPermissions,
+            // The remote session runs the mode the local footer shows.
+            permissionMode: permissionModeCli,
           })
           if (session.workDir) {
             setOriginalCwd(session.workDir)
