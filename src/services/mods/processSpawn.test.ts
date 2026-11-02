@@ -71,10 +71,12 @@ const trigger = () => runtime!.dispatch('tool.call', {tool:'Read',tool_use_id:'s
 test.each([false,true])('a streaming hook timeout stops its opened real child and catch has a fresh lifetime: catch=%s', async catching => {
   const child=join(root,'timeout-child.mjs')
   await writeFile(child, `import {writeFileSync} from 'node:fs';writeFileSync('child.pid',String(process.pid));process.stdout.write('ready');setInterval(()=>{},1000);setTimeout(()=>process.exit(99),25000);`)
+  // Busy in short slices: the catch's 1s grace starts at the timeout while
+  // the Worker is still inside the current slice.
   const author=await plugin('timeout-stream-author',`export function register(on){
     on('turn.step',async function*($,e){
       const flow=$.process.spawn({argv:${JSON.stringify([process.execPath,child])}});await flow.next();
-      for(let i=0;i<40;i++){const end=Date.now()+350;while(Date.now()<end){}await $.clock.sleep(1)}
+      for(let i=0;i<280;i++){const end=Date.now()+50;while(Date.now()<end){}await $.clock.sleep(1)}
       return {...e,answer:'must time out',toolUses:[],stopReason:'end_turn',usage:null};
     })${catching ? `.catch(async function*($,e){
       const child=$.process.spawn({argv:${JSON.stringify([process.execPath,'-e', "import {writeFileSync} from 'node:fs';writeFileSync('fresh.pid',String(process.pid));process.stdout.write('fresh');process.exitCode=8;"])}});
