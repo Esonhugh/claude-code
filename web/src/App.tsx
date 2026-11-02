@@ -1,7 +1,10 @@
 import {
+  type ClipboardEvent,
+  type DragEvent,
   type KeyboardEvent,
   useCallback,
   useEffect,
+  useMemo,
   useReducer,
   useRef,
   useState,
@@ -18,11 +21,21 @@ import {
 } from './api'
 import {
   ApprovalCard,
+  FilesContext,
   MODE_KEYS,
   Message,
   modelLabel,
   PERMISSION_MODES,
 } from './components/Chat'
+import { Preview } from './components/Preview'
+import {
+  filesBase,
+  formatBytes,
+  IMAGE_TYPES,
+  mentionPath,
+  readAsDataUrl,
+  uploadFile,
+} from './files'
 import {
   initialLang,
   type Lang,
@@ -54,6 +67,26 @@ type T = (key: MessageKey, vars?: Record<string, string>) => string
 const HISTORY_PAGE = 50
 const MODELS_KEY = 'claude-web-models'
 const COLLAPSED_KEY = 'claude-web-collapsed'
+// The Messages API rejects larger inline images; those are uploaded instead.
+const INLINE_IMAGE_BYTES = 5 * 1024 * 1024
+
+/** Images go inline as image blocks; other files are uploaded and @-mentioned. */
+async function prepareContent(
+  sessionId: string,
+  text: string,
+  files: File[],
+): Promise<{ text: string; images: string[] }> {
+  const images: string[] = []
+  const mentions: string[] = []
+  for (const file of files) {
+    if (IMAGE_TYPES.has(file.type) && file.size <= INLINE_IMAGE_BYTES) {
+      images.push(await readAsDataUrl(file))
+    } else {
+      mentions.push(mentionPath((await uploadFile(sessionId, file)).path))
+    }
+  }
+  return { text: [text, mentions.join(' ')].filter(Boolean).join('\n\n'), images }
+}
 
 function readStored<V>(key: string, fallback: V): V {
   try {
@@ -83,6 +116,8 @@ function Composer({
   onStop,
   onFocus,
   big,
+  files,
+  setFiles,
 }: {
   t: T
   busy: boolean
@@ -94,7 +129,16 @@ function Composer({
   onStop: () => void
   onFocus?: () => void
   big?: boolean
+  files: File[]
+  setFiles: (files: File[]) => void
 }) {
+  const picker = useRef<HTMLInputElement>(null)
+  const onPaste = (e: ClipboardEvent<HTMLTextAreaElement>) => {
+    const pasted = [...e.clipboardData.files]
+    if (!pasted.length) return
+    e.preventDefault()
+    setFiles([...files, ...pasted])
+  }
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
       e.preventDefault()
@@ -104,6 +148,24 @@ function Composer({
   }
   return (
     <div className={`input-card${big ? ' input-big' : ''}`}>
+      {files.length > 0 && (
+        <div className="attachments">
+          {files.map((file, i) => (
+            <span className="attachment" key={`${file.name}-${i}`}>
+              <span className="attachment-name">{file.name}</span>
+              <small>{formatBytes(file.size)}</small>
+              <button
+                type="button"
+                className="ghost"
+                aria-label={t('removeAttachment', { name: file.name })}
+                onClick={() => setFiles(files.filter((_, j) => j !== i))}
+              >
+                ×
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
       <textarea
         value={draft}
         placeholder={placeholder}
@@ -111,9 +173,30 @@ function Composer({
         disabled={disabled}
         onChange={e => setDraft(e.target.value)}
         onKeyDown={onKeyDown}
+        onPaste={onPaste}
         onFocus={onFocus}
         autoFocus={big}
       />
+      <input
+        ref={picker}
+        type="file"
+        multiple
+        hidden
+        aria-label={t('attach')}
+        onChange={e => {
+          setFiles([...files, ...(e.target.files ?? [])])
+          e.target.value = ''
+        }}
+      />
+      <button
+        type="button"
+        className="ghost attach"
+        aria-label={t('attach')}
+        disabled={disabled}
+        onClick={() => picker.current?.click()}
+      >
+        +
+      </button>
       {busy ? (
         <button type="button" className="send" aria-label={t('stop')} onClick={onStop}>
           ■
@@ -123,7 +206,7 @@ function Composer({
           type="button"
           className="send"
           aria-label={t('send')}
-          disabled={disabled || !draft.trim()}
+          disabled={disabled || (!draft.trim() && !files.length)}
           onClick={onSend}
         >
           ↑
@@ -341,6 +424,9 @@ export function App() {
   const [state, dispatch] = useReducer(appReducer, initialAppState)
   const [lang, setLang] = useState<Lang>(initialLang)
   const [drafts, setDrafts] = useState<Record<string, string>>({})
+  const [attachments, setAttachments] = useState<Record<string, File[]>>({})
+  const [preview, setPreview] = useState<{ sessionId: string; path: string }>()
+  const [dragging, setDragging] = useState(false)
   const [workspace, setWorkspace] = useState<string>()
   const [knownModels, setKnownModels] = useState<ModelOption[]>(() =>
     readStored(MODELS_KEY, []),
@@ -361,6 +447,17 @@ export function App() {
   const draftKey = state.view ?? ''
   const draft = drafts[draftKey] ?? ''
   const setDraft = (value: string) => setDrafts(d => ({ ...d, [draftKey]: value }))
+  const files = attachments[draftKey] ?? []
+  const setFiles = (next: File[]) => setAttachments(a => ({ ...a, [draftKey]: next }))
+  const view = state.view
+  const filesValue = useMemo(
+    () =>
+      view
+        ? { open: (path: string) => setPreview({ sessionId: view, path }), base: filesBase(view) }
+        : {},
+    [view],
+  )
+  const closePreview = useCallback(() => setPreview(undefined), [])
 
   const refreshHistory = useCallback(async (append = false) => {
     const offset = append ? stateRef.current.history.length : 0
@@ -514,17 +611,34 @@ export function App() {
   const sendInChat = async () => {
     const id = state.view
     const text = draft.trim()
-    if (!id || !chat || !text || chat.busy) return
+    const pending = files
+    if (!id || !chat || (!text && !pending.length) || chat.busy) return
     if (chat.mode !== 'live' && !(await resume(id))) return
+    let content: { text: string; images: string[] }
+    try {
+      content = await prepareContent(id, text, pending)
+    } catch (err) {
+      dispatch({
+        type: 'chat',
+        id,
+        action: {
+          type: 'local',
+          patch: { notice: t('uploadFailed', { error: err instanceof Error ? err.message : String(err) }) },
+        },
+      })
+      return
+    }
     setDrafts(d => ({ ...d, [id]: '' }))
+    setAttachments(a => ({ ...a, [id]: [] }))
     stickToBottom.current = true
-    dispatch({ type: 'chat', id, action: { type: 'user', text } })
-    send(id, userMessage(text))
+    dispatch({ type: 'chat', id, action: { type: 'user', ...content } })
+    send(id, userMessage(content.text, content.images))
   }
 
   const startChat = async () => {
     const text = (drafts[''] ?? '').trim()
-    if (!text) return
+    const pending = attachments[''] ?? []
+    if (!text && !pending.length) return
     const { cwd, mode, model } = state.start
     try {
       const created = await createSession({
@@ -533,18 +647,20 @@ export function App() {
         ...(model && { model }),
       })
       const id = created.session_id
+      const content = await prepareContent(id, text, pending)
       setDrafts(d => ({ ...d, '': '' }))
+      setAttachments(a => ({ ...a, '': [] }))
       stickToBottom.current = true
       dispatch({
         type: 'created',
         id,
         workDir: created.work_dir,
-        title: text.split('\n')[0]!.slice(0, 80),
+        title: (text || pending[0]!.name).split('\n')[0]!.slice(0, 80),
         start: state.start,
       })
       await attach(id)
-      dispatch({ type: 'chat', id, action: { type: 'user', text } })
-      send(id, userMessage(text))
+      dispatch({ type: 'chat', id, action: { type: 'user', ...content } })
+      send(id, userMessage(content.text, content.images))
     } catch (err) {
       setStartError(
         t('connectFailed', { error: err instanceof Error ? err.message : String(err) }),
@@ -622,7 +738,9 @@ export function App() {
   ].slice(0, 12)
 
   return (
-    <div className={`app${sidebarOpen ? ' sidebar-open' : ''}`}>
+    <div
+      className={`app${sidebarOpen ? ' sidebar-open' : ''}${preview && preview.sessionId === view ? ' previewing' : ''}`}
+    >
       <div className="scrim" onClick={() => setSidebarOpen(false)} />
       <Sidebar
         t={t}
@@ -642,7 +760,23 @@ export function App() {
         onStop={id => void stopSession(id)}
         onMore={() => void refreshHistory(true)}
       />
-      <div className="main">
+      <div
+        className={`main${dragging ? ' dragging' : ''}`}
+        onDragOver={(e: DragEvent) => {
+          if (!e.dataTransfer.types.includes('Files') || chat?.mode === 'elsewhere') return
+          e.preventDefault()
+          setDragging(true)
+        }}
+        onDragLeave={(e: DragEvent) => {
+          if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDragging(false)
+        }}
+        onDrop={(e: DragEvent) => {
+          setDragging(false)
+          if (!e.dataTransfer.files.length || chat?.mode === 'elsewhere') return
+          e.preventDefault()
+          setFiles([...files, ...e.dataTransfer.files])
+        }}
+      >
         <header className="topbar">
           <button
             type="button"
@@ -699,6 +833,8 @@ export function App() {
                 setDraft={v => setDrafts(d => ({ ...d, '': v }))}
                 onSend={() => void startChat()}
                 onStop={() => {}}
+                files={files}
+                setFiles={setFiles}
               />
               {startError && (
                 <div className="notice" role="alert">
@@ -764,7 +900,7 @@ export function App() {
             </div>
           </main>
         ) : (
-          <>
+          <FilesContext.Provider value={filesValue}>
             <main
               className="feed"
               ref={feedRef}
@@ -823,6 +959,8 @@ export function App() {
                   onSend={() => void sendInChat()}
                   onStop={() => state.view && stop(state.view)}
                   onFocus={() => state.view && chat.mode === 'readonly' && void resume(state.view)}
+                  files={files}
+                  setFiles={setFiles}
                 />
                 <div className="composer-footer">
                   <ModeSelect
@@ -840,9 +978,17 @@ export function App() {
                 </div>
               </div>
             </footer>
-          </>
+          </FilesContext.Provider>
         )}
       </div>
+      {preview && preview.sessionId === view && (
+        <Preview
+          sessionId={preview.sessionId}
+          path={preview.path}
+          t={t}
+          onClose={closePreview}
+        />
+      )}
     </div>
   )
 }

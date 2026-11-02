@@ -19,3 +19,22 @@ export function safeImageSrc(url: string): string | undefined {
   }
   return url.startsWith('/api/files/') && !url.includes('..') ? url : undefined
 }
+
+/**
+ * A local absolute path in model output (`/tmp/a.png`, `file:///…`, `C:\\…`)
+ * becomes a URL on this server's file API for the session at `filesBase`.
+ */
+export function localFileSrc(url: string, filesBase: string | undefined): string {
+  if (!filesBase) return url
+  let path: string | undefined
+  if (url.startsWith('file://')) {
+    try {
+      path = decodeURIComponent(new URL(url).pathname)
+    } catch {
+      return url
+    }
+  } else if (/^\/(?!\/|api\/)/.test(url) || /^[A-Za-z]:[\\/]/.test(url)) {
+    path = url
+  }
+  return path ? `${filesBase}?path=${encodeURIComponent(path)}` : url
+}

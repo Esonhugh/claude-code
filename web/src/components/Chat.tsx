@@ -1,3 +1,5 @@
+import { createContext, useContext } from 'react'
+import { baseName, splitMentions } from '../files'
 import type { MessageKey } from '../i18n'
 import { Markdown } from '../markdown/Markdown'
 import type { Approval, ApprovalChoice, Block, Item } from '../protocol'
@@ -12,6 +14,48 @@ export function modelLabel(model: string | undefined): string | undefined {
   if (!match) return model
   const family = match[1]!.charAt(0).toUpperCase() + match[1]!.slice(1)
   return `${family} ${match[2]}${match[3] ? `.${match[3]}` : ''}`
+}
+
+/** Lets messages open files in the preview panel of the current session. */
+export const FilesContext = createContext<{
+  open?: (path: string) => void
+  base?: string
+}>({})
+
+const FILE_TOOLS = new Set(['Read', 'Write', 'Edit', 'MultiEdit', 'NotebookEdit'])
+
+function toolFilePath(name: string, input: string): string | undefined {
+  if (!FILE_TOOLS.has(name)) return undefined
+  try {
+    const parsed = JSON.parse(input) as { file_path?: unknown; notebook_path?: unknown }
+    const path = parsed.file_path ?? parsed.notebook_path
+    return typeof path === 'string' ? path : undefined
+  } catch {
+    return undefined
+  }
+}
+
+function UserText({ text }: { text: string }) {
+  const files = useContext(FilesContext)
+  return (
+    <>
+      {splitMentions(text).map((seg, i) =>
+        'path' in seg ? (
+          <button
+            type="button"
+            key={i}
+            className="file-chip"
+            title={seg.path}
+            onClick={() => files.open?.(seg.path)}
+          >
+            {baseName(seg.path)}
+          </button>
+        ) : (
+          <span key={i}>{seg.text}</span>
+        ),
+      )}
+    </>
+  )
 }
 
 function prettyJson(text: string): string {
@@ -29,11 +73,25 @@ function ToolCard({
   block: Extract<Block, { kind: 'tool' }>
   t: (key: MessageKey) => string
 }) {
+  const files = useContext(FilesContext)
+  const path = files.open && !block.isError ? toolFilePath(block.name, block.input) : undefined
   return (
     <details className={`tool${block.isError ? ' tool-error' : ''}`}>
       <summary>
         <span className="tool-name">{block.name}</span>
         <span className="tool-args">{toolSummary(block.name, block.input)}</span>
+        {path && (
+          <button
+            type="button"
+            className="ghost tool-preview"
+            onClick={e => {
+              e.preventDefault()
+              files.open?.(path)
+            }}
+          >
+            {t('preview')}
+          </button>
+        )}
       </summary>
       <div className="tool-body">
         <div className="tool-label">{t('toolInput')}</div>
@@ -60,11 +118,17 @@ export function Message({
   fallbackModel?: string
   streaming: boolean
 }) {
+  const files = useContext(FilesContext)
   if (item.kind === 'user') {
     return (
       <div className="msg msg-user">
         <div className="sender">{t('you')}</div>
-        <div className="bubble">{item.text}</div>
+        <div className="bubble">
+          {item.images?.map((src, i) => (
+            <img key={i} className="bubble-image" src={src} alt="" />
+          ))}
+          <UserText text={item.text} />
+        </div>
       </div>
     )
   }
@@ -85,6 +149,7 @@ export function Message({
           return (
             <Markdown
               key={i}
+              filesBase={files.base}
               text={block.text}
               streaming={streaming && i === item.blocks.length - 1}
             />
