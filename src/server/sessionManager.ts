@@ -24,7 +24,19 @@ type Session = SessionInfo & {
   taskLines?: Map<string, string[]>
   idleTimer?: ReturnType<typeof setTimeout>
   exited: Promise<void>
+  spawnOptions: SpawnSessionOptions
+  /** A turn is in progress (set by a written user message, cleared by `session_state_changed` idle). */
+  busy: boolean
+  /** Options for a restart waiting on the current turn to end. */
+  restartWith?: SpawnSessionOptions
+  /** Lines written while the process is being replaced. */
+  queued?: string[]
 }
+
+export type CoordinatorOptions = Pick<
+  SpawnSessionOptions,
+  'systemPrompt' | 'appendSystemPrompt' | 'env'
+>
 
 // Bounds memory for a detached session whose child keeps printing.
 const MAX_PENDING_LINES = 1000
@@ -39,6 +51,12 @@ export class SessionManagerError extends Error {
     super(message)
     this.name = 'SessionManagerError'
   }
+}
+
+function closed(child: ChildProcess): Promise<void> {
+  return new Promise(resolve => {
+    child.once('close', () => resolve())
+  })
 }
 
 /** Keeps a task's lines in order, with only its latest progress snapshot. */
@@ -117,7 +135,7 @@ export class SessionManager {
     /** `--channels` entries for the new session's process. */
     channels?: string[]
     /** Prompt flags and environment of a project's coordinator. */
-    coordinator?: Pick<SpawnSessionOptions, 'systemPrompt' | 'appendSystemPrompt' | 'env'>
+    coordinator?: CoordinatorOptions
   }): SessionInfo {
     if (resume) {
       const running = this.sessions.get(resume)
@@ -136,7 +154,7 @@ export class SessionManager {
     }
 
     const id = resume ?? randomUUID()
-    const child = this.backend.spawn({
+    const spawnOptions: SpawnSessionOptions = {
       sessionId: id,
       cwd,
       permissionMode,
@@ -144,7 +162,8 @@ export class SessionManager {
       ...(resume && { resume: true }),
       ...(channels?.length && { channels }),
       ...coordinator,
-    })
+    }
+    const child = this.backend.spawn(spawnOptions)
     const session: Session = {
       id,
       status: 'detached',
@@ -155,15 +174,77 @@ export class SessionManager {
       socket: null,
       pending: [],
       ...(this.replayTasks && { taskLines: new Map() }),
-      exited: new Promise(resolve => {
-        child.once('close', () => resolve())
-      }),
+      exited: closed(child),
+      spawnOptions,
+      busy: false,
     }
     this.sessions.set(id, session)
+    this.wire(session, child)
 
+    this.logger?.info(
+      `session ${id} created in ${cwd}${permissionMode ? ` (permission mode ${permissionMode})` : ''}`,
+    )
+    this.startIdleTimer(session)
+    return session
+  }
+
+  /**
+   * Respawns a session's process with `--resume` and new coordinator flags,
+   * keeping the attached socket. Waits for a running turn to end first.
+   */
+  restart(
+    id: string,
+    { permissionMode, coordinator }: { permissionMode?: string; coordinator: CoordinatorOptions },
+  ): 'restarted' | 'pending' | undefined {
+    const session = this.sessions.get(id)
+    if (!session || session.status === 'stopping') return undefined
+    const { systemPrompt: _s, appendSystemPrompt: _a, env: _e, ...base } = session.spawnOptions
+    session.restartWith = {
+      ...base,
+      ...(permissionMode && { permissionMode }),
+      ...coordinator,
+      resume: true,
+    }
+    if (session.busy || session.queued) return 'pending'
+    void this.respawn(session)
+    return 'restarted'
+  }
+
+  private async respawn(session: Session): Promise<void> {
+    const options = session.restartWith!
+    session.restartWith = undefined
+    session.queued = []
+    this.logger?.info(`session ${session.id} restarting`)
+    session.process.stdin?.end()
+    session.process.kill('SIGTERM')
+    const forceKill = setTimeout(() => session.process.kill('SIGKILL'), KILL_GRACE_MS)
+    await session.exited
+    clearTimeout(forceKill)
+    const queued = session.queued
+    session.queued = undefined
+    if (this.sessions.get(session.id) !== session) return
+    if (session.status === 'stopping') {
+      this.remove(session, 1000, 'session process exited')
+      return
+    }
+    const child = this.backend.spawn(options)
+    session.process = child
+    session.exited = closed(child)
+    session.spawnOptions = options
+    session.busy = false
+    this.wire(session, child)
+    this.write(session.id, queued.join('\n'))
+    if (session.restartWith && !session.busy) void this.respawn(session)
+  }
+
+  private wire(session: Session, child: ChildProcess): void {
+    const id = session.id
     createInterface({ input: child.stdout! }).on('line', line => {
       if (!line.trim()) return
       if (session.taskLines) recordTaskLine(session.taskLines, line)
+      if (line.includes('"subtype":"session_state_changed"') && session.process === child) {
+        this.trackTurn(session, line)
+      }
       if (session.socket) {
         session.socket.send(line + '\n')
         return
@@ -178,6 +259,7 @@ export class SessionManager {
     child.stdin!.on('error', () => {})
     child.once('error', err => {
       this.logger?.error(`session ${id} failed to start: ${err.message}`)
+      if (session.process !== child) return
       this.remove(session, 1011, 'session process failed to start')
     })
     // 'close' (not 'exit') so every stdout line is relayed before the socket
@@ -186,15 +268,22 @@ export class SessionManager {
       this.logger?.info(
         `session ${id} exited (${signal ?? `code ${code ?? 'unknown'}`})`,
       )
+      if (session.process !== child || session.queued) return
       const clean = code === 0 || session.status === 'stopping'
       this.remove(session, clean ? 1000 : 1011, 'session process exited')
     })
+  }
 
-    this.logger?.info(
-      `session ${id} created in ${cwd}${permissionMode ? ` (permission mode ${permissionMode})` : ''}`,
-    )
-    this.startIdleTimer(session)
-    return session
+  private trackTurn(session: Session, line: string): void {
+    let state: unknown
+    try {
+      state = (JSON.parse(line) as { state?: unknown }).state
+    } catch {
+      return
+    }
+    if (typeof state !== 'string') return
+    session.busy = state !== 'idle'
+    if (!session.busy && session.restartWith && !session.queued) void this.respawn(session)
   }
 
   list(): (SessionInfo & { attached: boolean })[] {
@@ -238,10 +327,18 @@ export class SessionManager {
   }
 
   write(id: string, data: string): void {
-    const stdin = this.sessions.get(id)?.process.stdin
+    const session = this.sessions.get(id)
+    if (!session) return
+    const lines = data.split('\n').filter(line => line.trim())
+    if (session.queued) {
+      session.queued.push(...lines)
+      return
+    }
+    const stdin = session.process.stdin
     if (!stdin || stdin.destroyed) return
-    for (const line of data.split('\n')) {
-      if (line.trim()) stdin.write(line + '\n')
+    for (const line of lines) {
+      if (line.includes('"type":"user"')) session.busy = true
+      stdin.write(line + '\n')
     }
   }
 
@@ -249,6 +346,7 @@ export class SessionManager {
     const session = this.sessions.get(id)
     if (!session) return false
     session.status = 'stopping'
+    session.restartWith = undefined
     clearTimeout(session.idleTimer)
     session.process.stdin?.end()
     session.process.kill('SIGTERM')

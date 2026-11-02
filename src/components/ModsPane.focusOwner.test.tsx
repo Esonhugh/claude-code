@@ -106,12 +106,14 @@ function callbackOf(tree: unknown, key: string): ModUiCallback | undefined {
 }
 function authorSource(initialFocus: boolean, field: boolean) {
   return [
-    'let draws=0; export function register(on) {',
+    // One Button node for every drawing: a press admitted just before a redraw (PageDown and p in
+    // one read) retargets to the new drawing instead of being rejected as a released callback.
+    'let draws=0,ui,pressButton; export function register(on) {',
     'on("session.start",async($,e,next)=>{await $.ui.open({id:"' + PANE + '",rows:5' + (initialFocus ? ',focus:true' : '') + '});return next(e)});',
-    'on("ui.render",{component:"Pane"},($,e)=>{const {Box,Text,Button,Input}=$.ui.resolve(e);draws++;return Box({flexDirection:"column",children:[',
+    'on("ui.render",{component:"Pane"},($,e)=>{const {Box,Text,Button,Input}=$.ui.resolve(e);ui=$.ui;draws++;return Box({flexDirection:"column",children:[',
     'Text({children:"author drawing:"+draws}),',
     field ? 'Input({key:"field",placeholder:"author field",autoFocus:true,onInput:(value,event)=>$.ui.status(JSON.stringify({kind:"field",value,event})),onSubmit:(value,event)=>$.ui.status(JSON.stringify({kind:"field-submit",value,event}))}),' : '',
-    'Button({key:"press",label:"Press p",hotkey:"p",onPress:event=>$.ui.status(JSON.stringify({kind:"press",event}))}),',
+    'pressButton??=Button({key:"press",label:"Press p",hotkey:"p",onPress:event=>ui.status(JSON.stringify({kind:"press",event}))}),',
     '...Array.from({length:40},(_,i)=>Text({children:"author row:"+i}))]})});',
     'on("command.run",{command:"promote"},async($)=>{const result=await $.ui.open({id:"' + PANE + '",rows:5,focus:true});await $.ui.status(JSON.stringify({kind:"promoted",result}));return {}});',
     field ? 'on("command.run",{command:"refresh"},($)=>{$.ui.invalidate("ui.render");return {}});' : '',

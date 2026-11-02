@@ -28,6 +28,8 @@ export function coordinatorSpawn(project: Pick<Project, 'instructions' | 'worker
     ...(instructions && { appendSystemPrompt: instructions }),
     env: {
       CLAUDE_CODE_COORDINATOR_MODE: '1',
+      // Turn boundaries, so a settings change can restart an idle coordinator.
+      CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: '1',
       ...(project.worker_model && { CLAUDE_CODE_SUBAGENT_MODEL: project.worker_model }),
     },
   }
