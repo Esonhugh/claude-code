@@ -269,6 +269,14 @@ export class SSHSessionManager {
       timeout: ReturnType<typeof setTimeout>
     }
   >()
+  private pendingTaskRequests = new Map<
+    string,
+    {
+      resolve: (response: Record<string, unknown>) => void
+      reject: (error: Error) => void
+      timeout: ReturnType<typeof setTimeout>
+    }
+  >()
   private pendingAcknowledgements = new Map<
     string,
     ReturnType<typeof setTimeout>
@@ -528,6 +536,29 @@ export class SSHSessionManager {
     })
   }
 
+  /** send_task_message / stop_task / get_task_output for one of the child's tasks. */
+  sendTaskControlRequest(
+    request: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    if (this.callbacks.onBootstrap && !this.initialized) {
+      return Promise.reject(new Error('SSH session is not ready'))
+    }
+    const requestId = randomUUID()
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        if (!this.pendingTaskRequests.delete(requestId)) return
+        reject(new Error('SSH task request timed out'))
+      }, CONTROL_REQUEST_TIMEOUT_MS)
+      timeout.unref()
+      this.pendingTaskRequests.set(requestId, { resolve, reject, timeout })
+      if (!this.write({ type: 'control_request', request_id: requestId, request })) {
+        this.pendingTaskRequests.delete(requestId)
+        clearTimeout(timeout)
+        reject(new Error('SSH session is not connected'))
+      }
+    })
+  }
+
   getFileSuggestions(
     request: SSHFileSuggestionQuery,
     signal: AbortSignal,
@@ -623,6 +654,7 @@ export class SSHSessionManager {
     this.rejectPendingShellRequests('SSH session disconnected')
     this.rejectPendingFileSuggestionRequests('SSH session disconnected')
     this.rejectPendingPermissionsRequests('SSH session disconnected')
+    this.rejectPendingTaskRequests('SSH session disconnected')
     this.clearPendingAcknowledgements()
     this.clearExpectedPermissionResponseEchoes()
     if (this.proc.exitCode === null && this.proc.signalCode === null) {
@@ -753,6 +785,15 @@ export class SSHSessionManager {
           return
         }
         pendingPermissions.resolve(response.response)
+        return
+      }
+
+      const pendingTask = this.pendingTaskRequests.get(requestId)
+      if (pendingTask) {
+        this.pendingTaskRequests.delete(requestId)
+        clearTimeout(pendingTask.timeout)
+        if (response.subtype === 'error') pendingTask.reject(new Error(response.error))
+        else pendingTask.resolve((response.response ?? {}) as Record<string, unknown>)
         return
       }
 
@@ -987,6 +1028,14 @@ export class SSHSessionManager {
     this.pendingFileSuggestionRequests.clear()
   }
 
+  private rejectPendingTaskRequests(error: string): void {
+    for (const pending of this.pendingTaskRequests.values()) {
+      clearTimeout(pending.timeout)
+      pending.reject(new Error(error))
+    }
+    this.pendingTaskRequests.clear()
+  }
+
   private rejectPendingPermissionsRequests(error: string): void {
     for (const pending of this.pendingPermissionsRequests.values()) {
       clearTimeout(pending.timeout)
@@ -1008,6 +1057,7 @@ export class SSHSessionManager {
     this.rejectPendingShellRequests('SSH session disconnected')
     this.rejectPendingFileSuggestionRequests('SSH session disconnected')
     this.rejectPendingPermissionsRequests('SSH session disconnected')
+    this.rejectPendingTaskRequests('SSH session disconnected')
     this.clearPendingAcknowledgements()
     this.clearExpectedPermissionResponseEchoes()
     this.stdoutInterface?.close()

@@ -458,6 +458,8 @@ import { handleTeammateShutdownApproved } from '../utils/swarm/teammateShutdown.
 import { getRunningTasks } from '../utils/task/framework.js'
 import { isBackgroundTask } from '../tasks/types.js'
 import { StopTaskError, stopTask } from '../tasks/stopTask.js'
+import { deliverTaskMessage } from '../tasks/deliverTaskMessage.js'
+import { isMainSessionTask } from '../tasks/LocalMainSessionTask.js'
 import { isTerminalTaskStatus } from '../taskStatus.js'
 import { drainSdkOutput, getTaskRunId } from '../utils/sdkEventQueue.js'
 import { initializeGrowthBook } from '../services/analytics/growthbook.js'
@@ -3821,6 +3823,13 @@ function runHeadlessStreaming(
               result.error ?? 'Unexpected error',
             )
           }
+        } else if (message.request.subtype === 'set_cwd' || message.request.subtype === 'rewind_conversation') {
+          const { handleSetCwd, handleRewindConversation } = await import('./sessionControlRequests.js')
+          const result = message.request.subtype === 'set_cwd'
+            ? handleSetCwd(message.request, { busy: running, getAppState, setAppState })
+            : handleRewindConversation(message.request, { messages: mutableMessages, busy: running, queued: hasCommandsInQueue(), setAppState })
+          if ('error' in result && !('reason' in result)) sendControlResponseError(message, result.error)
+          else sendControlResponseSuccess(message, result)
         } else if (message.request.subtype === 'cancel_async_message') {
           const targetUuid = message.request.message_uuid
           const removed = dequeueAllMatching(cmd => cmd.uuid === targetUuid)
@@ -5054,6 +5063,32 @@ function runHeadlessStreaming(
               } else {
                 sendControlResponseError(message, errorMessage(error))
               }
+            }
+          }
+        } else if (message.request.subtype === 'send_task_message') {
+          // Fork-only: typing into a viewed agent (REPL onAgentSubmit) for
+          // hosts without the Ink UI.
+          const { task_id: taskId, text } = message.request
+          if (typeof taskId !== 'string' || typeof text !== 'string' || !text.trim()) {
+            sendControlResponseError(message, 'send_task_message: task_id and text must be non-empty strings')
+          } else {
+            const task = getAppState().tasks[taskId]
+            try {
+              const delivery = deliverTaskMessage(isMainSessionTask(task) ? undefined : task, text, setAppState)
+              if (delivery !== 'resume') {
+                sendControlResponseSuccess(message, { delivery })
+              } else {
+                void import('../tools/AgentTool/resumeAgent.js')
+                  .then(({ resumeAgentBackground }) =>
+                    resumeAgentBackground({ agentId: taskId, prompt: text, toolUseContext: getModToolContext(), canUseTool }),
+                  )
+                  .then(
+                    () => sendControlResponseSuccess(message, { delivery: 'resumed' }),
+                    error => sendControlResponseError(message, `send_task_message: ${errorMessage(error)}`),
+                  )
+              }
+            } catch (error) {
+              sendControlResponseError(message, `send_task_message: ${errorMessage(error)}`)
             }
           }
         } else if (message.request.subtype === 'generate_session_title') {

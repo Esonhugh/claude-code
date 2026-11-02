@@ -66,6 +66,8 @@ import { useShortcutDisplay } from '../../keybindings/useShortcutDisplay.js'
 import { count } from '../../utils/array.js'
 import { Byline } from '../design-system/Byline.js'
 import { Dialog } from '../design-system/Dialog.js'
+import { getRemoteTaskControl } from '../../remote/remoteTaskControl.js'
+import { RemoteTasksDialog } from './RemoteTasksDialog.js'
 import { KeyboardShortcutHint } from '../design-system/KeyboardShortcutHint.js'
 import { AsyncAgentDetailDialog } from './AsyncAgentDetailDialog.js'
 import { BackgroundTask as BackgroundTaskComponent } from './BackgroundTask.js'
@@ -243,7 +245,13 @@ const MonitorMcpDetailDialog = feature('MONITOR_TOOL')
   : null
 /* eslint-enable @typescript-eslint/no-require-imports */
 
-export function BackgroundTasksDialog({
+export function BackgroundTasksDialog(props: Props): React.ReactNode {
+  // claude ssh / Direct Connect: the tasks live in the remote child.
+  if (getRemoteTaskControl()) return <RemoteTasksDialog onDone={props.onDone} />
+  return <LocalBackgroundTasksDialog {...props} />
+}
+
+function LocalBackgroundTasksDialog({
   onDone,
   toolUseContext,
   initialDetailTaskId,

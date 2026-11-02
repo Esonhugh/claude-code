@@ -39,6 +39,7 @@ import { readLastConsolidatedAt } from '../services/autoDream/consolidationLock.
 import { estimateSkillFrontmatterTokens } from '../skills/loadSkillsDir.js'
 import type { AppState } from '../state/AppState.js'
 import { isLocalShellTask } from '../tasks/LocalShellTask/guards.js'
+import { isTerminalTask } from '../tasks/TerminalTask.js'
 import { getAgentMemoryDir } from '../tools/AgentTool/agentMemory.js'
 import type { Tools } from '../Tool.js'
 import type { Message } from '../types/message.js'
@@ -596,6 +597,12 @@ const SHELL_TASK_ID = /^b[0-9a-z]{8}$/
 
 export async function buildTaskOutputResponse(appState: AppState, taskId: string) {
   const task = appState.tasks[taskId]
+  // Fork-only: a Terminal tool session answers with its current screen text,
+  // the same preview the TUI's terminal dialog shows.
+  if (isTerminalTask(task)) {
+    const bytes = Buffer.byteLength(task.preview)
+    return { output: task.preview, total_bytes: bytes, truncated: false }
+  }
   if (task ? !isLocalShellTask(task) : !SHELL_TASK_ID.test(taskId)) {
     throw new Error('get_task_output: no shell or Monitor task with that task_id in this session')
   }

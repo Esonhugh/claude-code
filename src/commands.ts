@@ -706,7 +706,7 @@ export const REMOTE_SAFE_COMMANDS: Set<Command> = new Set(
  * project metadata even though execution belongs to the managed remote child.
  */
 export function getSSHLocalCommands(): Command[] {
-  return [...REMOTE_SAFE_COMMAND_LIST, yolo, permissions].filter(
+  return [...REMOTE_SAFE_COMMAND_LIST, yolo, permissions, tasks].filter(
     command =>
       meetsAvailabilityRequirement(command) && isCommandEnabled(command),
   )

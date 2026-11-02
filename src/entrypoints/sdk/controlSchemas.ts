@@ -589,6 +589,43 @@ export const SDKControlStopTaskRequestSchema = lazySchema(() =>
     .describe('Stops a running task.'),
 )
 
+export const SDKControlSetCwdRequestSchema = lazySchema(() =>
+  z
+    .object({
+      subtype: z.literal('set_cwd'),
+      path: z.string(),
+      trust_accepted: z.boolean().optional(),
+      trusted_directory: z.string().optional(),
+    })
+    .describe(
+      'Moves the session to a new working directory, the headless twin of /cd. Answers {status: "ok" | "needs_trust" | "rejected"}; on needs_trust, re-send with trust_accepted: true and trusted_directory echoing the directory after the user accepts. Rejected while a turn is in flight.',
+    ),
+)
+
+export const SDKControlRewindConversationRequestSchema = lazySchema(() =>
+  z
+    .object({
+      subtype: z.literal('rewind_conversation'),
+      target_message_uuid: z.string(),
+      last_seen_user_message_uuid: z.string().describe('The newest user message the host has shown; a rewind that would drop a later one is refused (unseen_later_turn, or stale_target when it is missing).'),
+    })
+    .describe(
+      'Drops the target user message and everything after it, as picking it in /rewind does. Answers {rewound, targetMessageUuid, prefillText, precedingAssistantUuid}, or rewound: false with error and reason. Files are restored separately with rewind_files.',
+    ),
+)
+
+export const SDKControlSendTaskMessageRequestSchema = lazySchema(() =>
+  z
+    .object({
+      subtype: z.literal('send_task_message'),
+      task_id: z.string(),
+      text: z.string(),
+    })
+    .describe(
+      'Fork-only. Sends a user message to a subagent or teammate task, as typing into its view does in the REPL: a running agent gets it at its next tool round (queued), an ended one is resumed with it (resumed), a running teammate gets it injected (injected).',
+    ),
+)
+
 export const SDKControlApplyFlagSettingsRequestSchema = lazySchema(() =>
   z
     .object({
@@ -714,6 +751,9 @@ export const SDKControlRequestInnerSchema = lazySchema(() =>
     SDKControlMcpReconnectRequestSchema(),
     SDKControlMcpToggleRequestSchema(),
     SDKControlStopTaskRequestSchema(),
+    SDKControlSendTaskMessageRequestSchema(),
+    SDKControlSetCwdRequestSchema(),
+    SDKControlRewindConversationRequestSchema(),
     SDKControlApplyFlagSettingsRequestSchema(),
     SDKControlGetSettingsRequestSchema(),
     SDKControlElicitationRequestSchema(),
