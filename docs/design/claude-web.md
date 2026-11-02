@@ -143,7 +143,7 @@ claude web 进程（Bun.serve）
 
 ### 5.3 Subagent、Workflow 与 Agent Team
 
-终端里这三类东西挤在 spinner 下面的几行状态里，是 Web UI 最能发挥的地方。原则：**主对话流保持干净，只放一张可点开的卡片；细节放在右侧"任务面板"，进度实时更新**。
+终端里这三类东西挤在 spinner 下面的几行状态里，是 Web UI 最能发挥的地方。原则：**主对话流保持干净，只放一张可点开的卡片；细节放在右侧边栏的 Agents 页签，进度实时更新**（布局和交互见 5.4）。
 
 数据来源全部是现有 stream-json 事件，加上服务端按需读取的落盘文件，不需要子进程新增协议：
 
@@ -166,7 +166,7 @@ claude web 进程（Bun.serve）
 **Workflow**
 
 - 对话流里是一张 workflow 卡片：`workflow_name`、总进度条（`completedAgents/totalAgents`）、当前阶段名、状态（running / paused / completed / failed / killed）。
-- 任务面板里画成**阶段泳道**：每个阶段一列（`type:'phase'` 条目），列里是该阶段的 agent 小卡（`type:'agent'` 条目，按 `phaseIndex` 归组，显示 pending / running / completed / failed / skipped）。点 agent 小卡按 agent id 加载它的 transcript。
+- 侧边栏里画成**阶段泳道**：每个阶段一列（`type:'phase'` 条目），列里是该阶段的 agent 小卡（`type:'agent'` 条目，按 `phaseIndex` 归组，显示 pending / running / completed / failed / skipped）。点 agent 小卡按 agent id 加载它的 transcript。
 - 阶段图本身用自定义 React 组件画，不用 Mermaid：Mermaid 每次更新都要整图重绘，不适合每秒变化的状态。workflow 结束后可以"导出为 Mermaid"，方便贴进文档。
 - deep-research 就是一个 workflow，所以 M4 的研究模式直接复用这块，另外把各 agent 收集到的来源汇总成引用列表。
 - 已知缺口：快照里没有每个 agent 的用量和是否命中缓存（内部 `workflow_agent` 事件有 `cacheHit`，`src/tools/WorkflowTool/workflowSpec.ts:79`），也没有 `workflow_log`。如果 M4 需要，只在快照条目上加可选字段，保持 SDK 兼容。
@@ -174,14 +174,66 @@ claude web 进程（Bun.serve）
 **Agent Team**
 
 - 页面顶部出现 team 条：team 名、成员头像（用成员颜色）、每人状态（working / idle / 已关闭）。点成员打开他的 transcript。
-- 任务面板切到"Team"视图，左边成员列表，右边是**消息时间线**：lead 与成员之间的 `<teammate-message>`、idle 通知、shutdown 请求和确认，按时间排列，像群聊。用户也可以在这里直接给某个成员发消息（复用 SendMessage 的 inbox 机制，经服务端写 inbox，不让浏览器直接碰文件）。
+- 侧边栏的 team 分组下有**消息时间线**：lead 与成员之间的 `<teammate-message>`、idle 通知、shutdown 请求和确认，按时间排列，像群聊。直接给成员发消息见 5.4。
 - 成员的权限请求和 lead 的一样走审批卡片，卡片上标明是哪个成员提出的。
 - 需要改的地方：headless 模式在输入流关闭时才注入 `SHUTDOWN_TEAM_PROMPT` 要求解散 team（`src/cli/print.ts:501`、`:3007`）。Web 会话的 stdin 一直开着，所以 team 可以跨轮存活，这一点要在 M4 用真实二进制验证。lead 收到的成员消息现在是作为新的 prompt 入队（`src/cli/print.ts:2985` 附近），浏览器需要 `--replay-user-messages` 才看得到，届时在 `DangerousBackend` 里为 Web 打开它。
 - team 默认仍需 `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1`，Web 不单独放开。
 
+### 5.4 右侧边栏：Agents 页签与直接对话
+
+右侧边栏有两个页签：**Agents** 和 **Files**（5.2 的预览）。有 agent 在跑时边栏自动展开到 Agents，可以拖宽；workflow 视图可以"展开到全屏"。窄屏时边栏变成抽屉。
+
+**1. 存活 agents 的层级树**
+
+```
+● 主会话                              running · 2m10s
+├─ ● researcher  搜集 2026 年资料       running · 41s · 12k tok · WebSearch
+│   └─ ○ Explore  读 PDF 附录           completed · 18s
+├─ ◆ workflow deep-research            phase 2/3 · 5/9 agents
+└─ ▣ team paper-review                 3 working · 2 idle
+    ├─ ● alice (蓝)  审方法论            working · Read
+    ├─ ● bob (绿)    审实验              working
+    └─ 2 idle agents                    (点开展开)
+```
+
+- 根是主会话。subagent 按派生关系挂在父节点下面，workflow 和 team 各是一个分组节点。
+- 每行显示状态、名字或类型、description、耗时、tokens、最近一次工具，数据来自 `task_progress`。
+- 分成运行中、空闲、已结束三组，已结束的默认折叠。空闲成员超过 3 个时折叠成"N idle agents"，与 TUI 一致（`src/components/CoordinatorAgentStatusRows.ts`）。
+- 每行有停止按钮（`stop_task`）。
+- 缺口：`task_started` 只有 `spawn_depth`，没有父任务 id，后台嵌套 agent 挂不到正确的父节点。实现时给 `task_started` 加可选的 `parent_task_id`。
+
+**2. Workflow：多列关系图**
+
+点 workflow 节点，边栏切换成 workflow 视图：
+
+- 每个阶段一列，从左到右按执行顺序排，列头是阶段名、说明和状态。
+- 列里是这个阶段的 agent 卡片（状态、耗时、tokens），相邻两列之间画连线，表示上一阶段的输出流向下一阶段。
+- 子 workflow 显示成一张可展开的卡片，展开后在卡片内部再画一层列。
+- 列多时横向滚动，或者展开到全屏。点 agent 卡片进入下面第 3 点的对话视图。
+
+**3. 点开 agent 后直接对话**
+
+点树里任意 agent，边栏切换成这个 agent 的对话视图：上面是它的完整过程（工具调用、文本，渲染与主对话相同），底部是输入框，标着"发送给 researcher"。按 Esc 或点面包屑回到树。
+
+消息的投递规则照搬 REPL 现有逻辑（`src/screens/REPL.tsx:5935`），不另外设计：
+
+| agent 类型和状态 | 发送后的行为 | 现有函数 |
+|---|---|---|
+| subagent，运行中 | 进入它的待处理队列，在下一个工具间隙送达 | `queuePendingMessage`（`src/tasks/LocalAgentTask/LocalAgentTask.tsx:316`） |
+| subagent，已结束 | 带着原有上下文在后台恢复，这条消息作为新的 prompt | `resumeAgentBackground`（`src/tools/AgentTool/resumeAgent.ts:75`） |
+| team 成员，运行中 | 直接插入成员的对话 | `injectUserMessageToTeammate`（`src/tasks/InProcessTeammateTask/InProcessTeammateTask.tsx:83`） |
+| team 成员，已停止 | 输入框禁用，提示"成员已停止" | 与 REPL 的提示相同 |
+| workflow 里的 agent | 只读，只能停止 | workflow 脚本依赖 agent 的结构化输出，中途插话会破坏结果 |
+
+**需要新增的协议**（只加在 fork 的 headless 模式里，不影响现有 SDK 客户端）：
+
+- `send_task_message {task_id, text}`：在 `src/cli/print.ts` 里按上表调用同一组函数，返回 `queued`、`resumed`、`injected` 或错误原因。
+- `get_task_transcript {task_id, after_uuid?}`：返回这个 agent 的 transcript 增量，路径解析留在子进程里（`getAgentTranscriptPath`，`src/utils/sessionStorage.ts:259`），服务端不自己拼路径。
+- 实时刷新不另开推送通道：对话视图打开期间，浏览器每收到这个 agent 的一条 `task_progress`，就用 `after_uuid` 拉一次增量。
+
 **断线和恢复**
 
-浏览器刷新或重连时，服务端先发一次 `background_tasks_changed` 快照，再补发每个活跃任务最近一次 `task_progress`，任务面板据此重建。服务端只在内存里给每个任务保留最近一份进度，不另存一套状态。
+浏览器刷新或重连时，服务端先发一次 `background_tasks_changed` 快照，再补发每个活跃任务最近一次 `task_progress`，侧边栏据此重建。服务端只在内存里给每个任务保留最近一份进度，不另存一套状态。
 
 ## 6. 构建和打包
 
@@ -214,7 +266,7 @@ claude web [--port <n>] [--host <ip>] [--workspace <dir>] [--no-open]
 | M1 对话体验 | Markdown 增量渲染、代码高亮、KaTeX、Mermaid、图片；工具卡片；审批卡片；中断；切模型和权限模式；用量显示 | 渲染快照测试；XSS 用例（raw HTML、`javascript:` 链接、恶意 mermaid）不执行；审批允许和拒绝都正确回到子进程 |
 | M2 会话管理 | 侧边栏历史、恢复、新建、停止、重命名；选择工作目录；单标签独占 | 恢复后上下文延续；TUI 和 Web 打开同一会话时互斥提示 |
 | M3 文件与文档 | 上传和拖放、附件条、`/api/files` 允许根、右侧预览面板（PDF、图片、文本、HTML、CSV/XLSX、DOCX，有 soffice 时 PPTX） | 路径穿越和符号链接逃逸用例被拒；上传上限生效；各类型样例文件可预览 |
-| M4 Agent 可视化与研究 | 任务面板；subagent 嵌套卡片；workflow 阶段泳道；Agent Team 条和消息时间线；断线重建；引用列表、导出对话为 Markdown/PDF、`/` 命令面板（只列适合 Web 的命令） | fake API 下跑一个两阶段 workflow 和一个两人 team，面板状态与 TUI 一致；刷新页面后面板能恢复；team 跨轮存活且 shutdown 后成员从 config.json 移除；真实 OAuth 跑一次 deep-research |
+| M4 Agent 可视化与研究 | 右侧边栏 Agents 页签（层级树、workflow 多列图、team 分组和消息时间线）；点开 agent 直接对话（`send_task_message`、`get_task_transcript`、`parent_task_id`）；断线重建；引用列表、导出对话为 Markdown/PDF、`/` 命令面板（只列适合 Web 的命令） | fake API 下跑一个两阶段 workflow 和一个两人 team，侧边栏状态与 TUI 一致；给运行中和已结束的 subagent、运行中的成员各发一条消息，投递结果与 REPL 相同；刷新页面后面板能恢复；team 跨轮存活且 shutdown 后成员从 config.json 移除；真实 OAuth 跑一次 deep-research |
 | M5 加固与文档 | 非 loopback + TLS、移动端布局、无障碍、`docs/features/web-ui.md` 和 README 表格一行、体积检查进 release-check | `make release-check` 通过；功能文档按现有模板附分步截图 |
 
 ## 9. 测试
