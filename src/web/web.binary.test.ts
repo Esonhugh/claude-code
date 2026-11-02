@@ -553,6 +553,59 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
     }
   }, 180_000)
 
+  it('completes slash commands from the palette and runs them', async () => {
+    const playwrightPath = Bun.spawnSync(['node', '-p', "require.resolve('playwright')"])
+      .stdout.toString()
+      .trim()
+    const { chromium } = await import(playwrightPath)
+    const browser = await chromium.launch()
+    try {
+      const context = await browser.newContext({ locale: 'en-US' })
+      const page = await context.newPage()
+      const errors: string[] = []
+      page.on('pageerror', e => errors.push(e.message))
+      await page.goto(signInUrl)
+      await page.getByText('What can I help you with?').waitFor()
+      const input = page.getByPlaceholder('Message Claude')
+      await input.fill('hi palette')
+      await input.press('Enter')
+      await page.getByText('Hello from the fake model').waitFor({ timeout: 30_000 })
+
+      const palette = page.getByRole('listbox', { name: 'Commands' })
+      await input.fill('/')
+      await palette.waitFor()
+      expect(await palette.getByRole('option').count()).toBeGreaterThan(5)
+      await input.press('Escape')
+      await palette.waitFor({ state: 'detached' })
+
+      // Terminal-only commands (from system/init) are not offered.
+      await input.fill('/col')
+      await page.waitForTimeout(200)
+      expect(await palette.getByRole('option', { name: /^\/color/ }).count()).toBe(0)
+
+      // `cost` is an alias of `usage`, a local command: no model call.
+      await input.fill('/cos')
+      const usage = palette.getByRole('option', { name: /^\/usage/ })
+      await usage.waitFor()
+      expect(await usage.textContent()).toContain('cost')
+      await input.press('Enter')
+      expect(await input.inputValue()).toBe('/usage ')
+      await palette.waitFor({ state: 'detached' })
+      const before = promptsSeen.length
+      await input.press('Enter')
+      await page.getByText('Total cost:').waitFor({ timeout: 30_000 })
+      expect(promptsSeen.length).toBe(before)
+
+      // Mouse: click a row to complete it.
+      await input.fill('/cont')
+      await palette.getByRole('option', { name: /^\/context/ }).click()
+      expect(await input.inputValue()).toBe('/context ')
+      expect(errors).toEqual([])
+    } finally {
+      await browser.close()
+    }
+  }, 120_000)
+
   it('shuts down on SIGTERM and removes the lock', async () => {
     web.kill('SIGTERM')
     expect(await web.exited).toBe(143)

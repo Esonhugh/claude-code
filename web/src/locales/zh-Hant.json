@@ -88,5 +88,6 @@
   "sources": "來源",
   "export": "匯出",
   "exportMarkdown": "Markdown (.md)",
-  "exportPdf": "PDF（列印）"
+  "exportPdf": "PDF（列印）",
+  "commands": "指令"
 }

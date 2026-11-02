@@ -512,6 +512,60 @@ pre {
   border-radius: 18px;
   background: var(--panel);
   padding: 10px 10px 10px 16px;
+  position: relative;
+}
+
+/* `/` command palette, opening above the input card. */
+.palette {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(100% + 6px);
+  z-index: 5;
+  max-height: 280px;
+  overflow-y: auto;
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--panel);
+  box-shadow: 0 6px 24px rgb(0 0 0 / 8%);
+}
+
+.palette li {
+  display: flex;
+  gap: 12px;
+  align-items: baseline;
+  padding: 6px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 14px;
+}
+
+.palette li.active {
+  background: var(--user-bg);
+}
+
+.palette-name {
+  flex: none;
+  max-width: 50%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.palette-name small,
+.palette-desc {
+  color: var(--muted);
+}
+
+.palette-desc {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .input-card textarea {

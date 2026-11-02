@@ -88,5 +88,6 @@
   "sources": "Sources",
   "export": "Export",
   "exportMarkdown": "Markdown (.md)",
-  "exportPdf": "PDF (print)"
+  "exportPdf": "PDF (print)",
+  "commands": "Commands"
 }
