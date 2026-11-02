@@ -85,13 +85,34 @@ async function settle() {
   await new Promise(resolve => setTimeout(resolve, 80))
 }
 
+let inputEmitter: ReturnType<typeof useStdin>['internal_eventEmitter'] | undefined
 function EnableInput(): null {
-  const { setRawMode } = useStdin()
+  const { setRawMode, internal_eventEmitter } = useStdin()
   useEffect(() => {
     setRawMode(true)
     return () => setRawMode(false)
   }, [setRawMode])
+  useEffect(() => {
+    inputEmitter = internal_eventEmitter
+    return () => { if (inputEmitter === internal_eventEmitter) inputEmitter = undefined }
+  }, [internal_eventEmitter])
   return null
+}
+
+// A lone ESC is held for App's 50ms flush timer, which can outlast settle()
+// under load; wait until the Escape key is actually dispatched. The listener
+// goes first because a capturing handler can stop the rest.
+async function pressEscape(stdin: { push(chunk: string): unknown }) {
+  const emitter = inputEmitter!
+  let listener!: (event: { key: { escape: boolean } }) => void
+  const dispatched = new Promise<boolean>(resolve => {
+    listener = event => { if (event.key.escape) resolve(true) }
+    emitter.prependListener('input', listener)
+    setTimeout(() => resolve(false), 2000)
+  })
+  stdin.push('\u001b')
+  try { expect(await dispatched).toBe(true) } finally { emitter.removeListener('input', listener) }
+  await settle()
 }
 
 type InkInstance = {
@@ -1120,8 +1141,7 @@ describe('ModsPane Client consumer', () => {
       stdin.push('x')
       await settle()
       expect(host.calls.keys).toEqual([{ key: 'x' }])
-      stdin.push('\u001b')
-      await settle()
+      await pressEscape(stdin)
       expect(host.calls.keys).toHaveLength(1)
 
       const button = renderedElement(stdout, '[ Run ]', 'ink-text').parentNode!
@@ -1367,8 +1387,7 @@ describe('ModsPane Client consumer', () => {
       await waitFor('reply:down:1:0:state=1')
       stdin.push('k')
       await waitFor('reply:key:k:state=1')
-      stdin.push('\u001b')
-      await settle()
+      await pressEscape(stdin)
       await settle()
       const beforeEscapeKey = stdout.output.length
       stdin.push('q')
@@ -3253,8 +3272,7 @@ describe('ModsPane input repair', () => {
       stdin.push('\u001b[B\u001b[B')
       await settle()
       expect(requests).toBe(1)
-      stdin.push('\u001b')
-      await settle()
+      await pressEscape(stdin)
       finish!({ focused: true, element: 'b' })
       await settle()
       expect(requests).toBe(1)
@@ -3558,8 +3576,7 @@ describe('ModsPane input repair', () => {
       stdin.push('\u001b[B')
       await settle()
       expect(requests).toEqual(['two'])
-      stdin.push('\u001b')
-      await settle()
+      await pressEscape(stdin)
       expect(ui.getSnapshot()[0]!.focused).toBe(false)
       const input = inputElement(stdout, 'PERSON_ENTRY')
       const rect = nodeCache.get(input)!
@@ -3607,7 +3624,7 @@ describe('ModsPane input repair', () => {
       await settle()
       expect(calls).toEqual(['file:4'])
       if (mode === 'unmount') { instance.unmount(); unmounted = true }
-      else if (mode === 'escape') { stdin.push('\u001b'); await settle() }
+      else if (mode === 'escape') { await pressEscape(stdin) }
       else if (mode === 'owner') owner = {}
       else if (mode === 'hidden') visible = false
       waiting = false
@@ -3922,7 +3939,7 @@ describe('ModsPane input repair', () => {
     const draw = () => <Bindings bindings={{
       'ctrl+x b': 'app:cycleDiffBase', 'ctrl+up': 'app:diffFileListUp',
       'opt+down': unbind ? null : 'app:diffFileListDown',
-    }}><ModsPane canFocus pane={pane(tree, { owner, drawing, focused: false, visible })}
+    }}><EnableInput /><ModsPane canFocus pane={pane(tree, { owner, drawing, focused: false, visible })}
       onFocus={async () => ({})} onScroll={async () => { throw new Error('modifier scrolled') }} onClose={async () => {}}
       onInteract={async (_pane, lease, _callback, _kind, key) => { calls.push(`${lease}:${key}`) }}
     />{!visible && <Builtin />}</Bindings>
@@ -3938,8 +3955,7 @@ describe('ModsPane input repair', () => {
       expect(calls).toEqual(['7:up', '7:down', '7:duplicate'])
       stdin.push('\u0018')
       await settle()
-      stdin.push('\u001b')
-      await settle()
+      await pressEscape(stdin)
       expect(calls).toHaveLength(3)
       drawing = 8
       unbind = true
@@ -5116,8 +5132,7 @@ describe('ModsPane Ink interaction', () => {
       const button = renderedElement(stdout, '[ Run ]', 'ink-text').parentNode!
       const manager = getFocusManager(button)
       expect(manager.activeElement).not.toBeNull()
-      stdin.push('\u001b')
-      await settle()
+      await pressEscape(stdin)
       expect(manager.activeElement).toBeNull()
     } finally {
       instance.unmount()
@@ -5154,8 +5169,7 @@ describe('ModsPane Ink interaction', () => {
       await settle()
       stdin.push('\u001b[6~')
       await settle()
-      stdin.push('\u001b')
-      await settle()
+      await pressEscape(stdin)
       expect(scroll).toEqual([1, 10])
       expect(closes).toBe(1)
     } finally {
@@ -5235,8 +5249,7 @@ describe('ModsPane person pointer and Escape like official', () => {
       /></Bindings>, { stdout: stdout as never, stdin: stdin as never, patchConsole: false, exitOnCtrlC: false })
       try {
         await settle()
-        stdin.push('\u001b')
-        await settle()
+        await pressEscape(stdin)
         expect(closed).toHaveLength(closes)
         expect(after).toHaveLength(closes ? 0 : 1)
       } finally { instance.unmount() }

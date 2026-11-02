@@ -4,7 +4,7 @@ import { PassThrough } from 'node:stream'
 import { basename } from 'node:path'
 import stripAnsi from 'strip-ansi'
 import { getOriginalCwd } from '../bootstrap/state.js'
-import { render } from '../ink.js'
+import { render, useStdin } from '../ink.js'
 import { KeybindingSetup } from '../keybindings/KeybindingProviderSetup.js'
 import { AppStateProvider } from '../state/AppState.js'
 import { LogSelector } from './LogSelector.js'
@@ -16,8 +16,11 @@ test('an empty project list keeps the picker open with Ctrl+A and Esc', async ()
   stdout.resume()
   const stdin = Object.assign(new PassThrough(), { isTTY: true, setRawMode() {}, ref() {}, unref() {} })
   const calls: string[] = []
+  let emitter: ReturnType<typeof useStdin>['internal_eventEmitter'] | undefined
+  function Probe(): null { emitter = useStdin().internal_eventEmitter; return null }
   const instance = await render(
     <AppStateProvider>
+      <Probe />
       <KeybindingSetup>
         <LogSelector
           logs={[]}
@@ -46,7 +49,15 @@ test('an empty project list keeps the picker open with Ctrl+A and Esc', async ()
     expect(stripAnsi(output)).toMatch(/Ctrl\+A to show all projects · Type to search · Esc to cancel/)
     stdin.write('\x01')
     await wait()
+    // A lone ESC waits on App's 50ms flush timer, which can outlast wait() under load.
+    let listener!: (event: { key: { escape: boolean } }) => void
+    const dispatched = new Promise<boolean>(resolve => {
+      listener = event => { if (event.key.escape) resolve(true) }
+      emitter!.prependListener('input', listener)
+      setTimeout(() => resolve(false), 2000)
+    })
     stdin.write('\x1b')
+    try { expect(await dispatched).toBe(true) } finally { emitter!.removeListener('input', listener) }
     await wait()
     expect(calls).toEqual(['toggle', 'cancel'])
   } finally {
