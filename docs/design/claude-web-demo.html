@@ -2247,7 +2247,8 @@ rewind：stale_target / unseen_later_turn / rewound
     tip.hidden = false
     const w = $('#heat-wrap').getBoundingClientRect(), r = c.getBoundingClientRect()
     tip.style.left = Math.min(w.width - tip.offsetWidth, Math.max(0, r.left - w.left + r.width / 2 - tip.offsetWidth / 2)) + 'px'
-    tip.style.top = (r.top - w.top - tip.offsetHeight - 6) + 'px'
+    const up = r.top - w.top - tip.offsetHeight - 6
+    tip.style.top = (up >= 0 ? up : r.bottom - w.top + 6) + 'px'
   })
   document.addEventListener('mousemove', e => {
     const hit = e.target.closest?.('#stat-hit'), tip = $('#stat-tip'), xl = $('#stat-x')
