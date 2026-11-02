@@ -10,6 +10,8 @@ import { createSdkStreamState } from './streamState.js'
 import { createModCommandQueue } from '../services/mods/commandRunQueue.js'
 import { createModMcpConnections } from '../services/mods/mcpConnect.js'
 import { createModRemoteUIControl } from '../services/mods/remoteUiControl.js'
+import { createModRemoteUiHost, MOD_REMOTE_ASK_TIMEOUT_MS } from '../services/mods/remoteUiAsk.js'
+import { SDKControlUIResponseSchemas } from '../entrypoints/sdk/modsControlSchemas.js'
 import { copyModCallerChain } from '../services/mods/callerChain.js'
 // biome-ignore-all assist/source/organizeImports: ANT-ONLY import markers must not be reordered
 import { feature } from 'bun:bundle'
@@ -3116,6 +3118,17 @@ function runHeadlessStreaming(
     },
   })
   const modMcpConnections = createModMcpConnections({getState:getAppState,setState:setAppState})
+  // Like 2.1.316, only clients on the spawning host's pipes are asked; a remote transport is not.
+  const remoteUiHost = options.outputFormat === 'stream-json' && !(structuredIO instanceof RemoteIO)
+    ? createModRemoteUiHost({
+        clients: (answer, surface) => options.modsSession?.runtime?.remoteClients.answering(answer, surface) ?? [],
+        ask: request => structuredIO.sendUiHostRequest(
+          request as SDKControlRequest['request'],
+          SDKControlUIResponseSchemas[request.subtype](),
+          MOD_REMOTE_ASK_TIMEOUT_MS,
+        ),
+      })
+    : undefined
   const inboundBinding = options.modsSession?.bind({
     cwd: cwd(), surface: null, isInteractive: false, sessionId: getSessionId(),
   }, setAppState, {
@@ -3126,6 +3139,15 @@ function runHeadlessStreaming(
     model: () => activeUserSpecifiedModel ? parseUserSpecifiedModel(activeUserSpecifiedModel) : getMainLoopModel(),
     turns: () => countModSessionTurns(mutableMessages),
     ...getModHttpServices(),
+    ...(remoteUiHost ? {
+      prompt: () => remoteUiHost.prompt,
+      uiSelection: () => remoteUiHost.selection(),
+      uiCopy: async ({ text, surface }, plugin) => {
+        const copied = surface === 'terminal' ? undefined : await remoteUiHost.copy(text, surface, plugin)
+        logForDebugging(`[Mods:${plugin}] ui.copy: ${text.length} chars to ${surface}: ${copied ? 'copied' : 'no client there took it; nothing copied'}`)
+        return copied ? { isCopied: true } : { isCopied: false, reason: 'no-clipboard' }
+      },
+    } : {}),
     configRows: () =>
       getConfigRows({
         getAppState,

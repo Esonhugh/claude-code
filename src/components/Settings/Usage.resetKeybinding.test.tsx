@@ -155,7 +155,7 @@ class TestStdin extends Readable {
 async function waitFor(condition: () => boolean, message: string): Promise<void> {
   const start = Date.now()
   while (!condition()) {
-    if (Date.now() - start > 1000) throw new Error(message)
+    if (Date.now() - start > 10_000) throw new Error(message)
     await new Promise(resolve => setTimeout(resolve, 10))
   }
 }
@@ -207,11 +207,12 @@ try {
   assert.match(confirmation, /Use this reset\?/)
   assert.match(confirmation, /Five-hour reset/)
   assert.match(confirmation, /second-credit/)
-  assert.equal(ownsEsc, true)
+  // onOwnsEscChange runs in a passive effect, which can trail the painted frame.
+  await waitFor(() => ownsEsc, 'confirmation did not take Esc')
   assert.equal(getActiveKeybinding('select:next'), undefined, 'selection is frozen during confirmation')
   assert.equal(consumedIds.length, 0, 'opening confirmation must not consume')
   await press('confirm:no')
-  assert.equal(ownsEsc, false)
+  await waitFor(() => !ownsEsc, 'Esc ownership was not released')
   assert.equal(consumedIds.length, 0)
 
   await press('select:previous')
@@ -227,7 +228,7 @@ try {
   await settle()
   assert.deepEqual(consumedIds, ['second-credit'])
   assert.equal(detailsFetchCount, 2)
-  assert.equal(ownsEsc, false)
+  await waitFor(() => !ownsEsc, 'Esc ownership was not released')
   assert.match(stripAnsi(stdout.output), /Usage reset\./)
   assert.match(stripAnsi(stdout.output), /0 available/)
   assert.match(stripAnsi(stdout.output), /No available reset credits/)

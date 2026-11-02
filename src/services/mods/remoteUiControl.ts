@@ -9,7 +9,7 @@ import type { ModsRuntime } from './runtime.js'
 import { createModRemoteRenderer } from './remoteUiRender.js'
 
 export const modUIAttachError =
-  'ui_attach: surface must be "desktop", "mobile" or "vscode", client_id 1-64 of letters, digits, . _ - (the colon is the engine\'s), viewport (when given) positive integer columns and rows with isFullscreen (when given) a boolean, and answers (when given) a list of "ui_copy", "ui_prompt_read", "ui_prompt_fill", "ui_prompt_suggest", "ui_read_selection"'
+  'ui_attach: surface must be "desktop", "mobile" or "vscode", client_id 1-64 of letters, digits, . _ - (the colon is the engine\'s), viewport (when given) positive integer columns and rows with isFullscreen (when given) a boolean, and answers (when given) a list of "ui_copy", "ui_prompt_read", "ui_prompt_fill", "ui_prompt_paint", "ui_prompt_suggest", "ui_read_selection"'
 export const modUIDetachError =
   "ui_detach: client_id must be 1-64 of letters, digits, . _ - (the colon is the engine's)"
 export const modUIRenderError =

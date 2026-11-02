@@ -25,6 +25,7 @@ import { createModTurnRegistry, type ModRegisteredTurn, type ModTurnEnd } from '
 import { createModTurnCompletion } from './turnAdapter.js'
 import {sanitizePromptFillInput} from './promptFillUnicode.js'
 import type { ModUiSelection } from './uiSelection.js'
+import type { SDKUIAnswer } from '../../entrypoints/sdk/modsControlTypes.js'
 import {validateModModelCompleteInput} from './modelTextBlocks.js'
 import {validateModUiCopyArgs, type ModUiCopyArgs, type ModUiCopyResult} from './uiCopy.js'
 import { validatePromptDecorations, validatePromptEditInput, validatePromptEditResult } from './promptEdit.js'
@@ -166,7 +167,7 @@ export type ModHostServices = ModRequestServices & ModHttpServices & {
   builtinCommands?(): readonly Command[]
   presentation?(): CommandPresentation
   uiPresentation?(): ModUiPresentation
-  uiSelection?(): ModUiSelection | undefined
+  uiSelection?(): ModUiSelection | undefined | Promise<ModUiSelection | undefined>
   uiCopy?(input: ModUiCopyArgs & {surface: ModRenderSurface}, plugin: string, signal: AbortSignal): Promise<ModUiCopyResult>
   uiLog?(plugin: string, text: string, to: 'transcript' | 'debug'): void
   /** Keeps a plugin's own row (door `note`) in the main conversation. */
@@ -264,7 +265,7 @@ export type ModRemoteClientInput = {
   surface: Exclude<ModRenderSurface, 'terminal'>
   clientId: string
   viewport?: { columns: number; rows: number; isFullscreen?: boolean }
-  answers?: readonly ('ui_copy' | 'ui_prompt_read' | 'ui_prompt_fill' | 'ui_prompt_suggest' | 'ui_read_selection')[]
+  answers?: readonly SDKUIAnswer[]
 }
 type AttachedClient = {
   surface: ModRenderSurface
@@ -772,6 +773,11 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
     })
     queue = pending.then(() => {}, () => {})
     return pending
+  }
+
+  /** The terminal's own composer, or in a headless session the attached clients' through the host's prompt service. */
+  function composerBound(): boolean {
+    return binding?.surface === 'terminal' && binding.isInteractive || binding?.surface === null && services.prompt?.()?.remote === true
   }
 
   function attachedSurfaces(): ModRenderSurface[] {
@@ -1619,7 +1625,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
         return messages()
       }
       case 'prompt.read': {
-        const box = services.prompt?.()?.read() ?? emptyPromptBox()
+        const box = await services.prompt?.()?.read() ?? emptyPromptBox()
         validatePromptBox(box)
         return structuredClone(box)
       }
@@ -1743,13 +1749,12 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
     ) {
       if (!caller.declaration.calls.includes('prompt.read')) return emptyPromptBox()
       checkCall(caller, 'prompt.read', interfaceTable, lease)
-      if (!binding || binding.surface !== 'terminal' || !binding.isInteractive)
-        return emptyPromptBox()
+      if (!composerBound()) return emptyPromptBox()
       const result = await withReference(caller, () => dispatch(
         'prompt.read',
         {},
         async () => {
-          const box = services.prompt?.()?.read() ?? emptyPromptBox()
+          const box = await services.prompt?.()?.read() ?? emptyPromptBox()
           validatePromptBox(box)
           return { value: structuredClone(box) }
         },
@@ -1917,8 +1922,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
               async rewritten => applyPromptFill(
                 prompt,
                 sanitizePromptFillInput(rewritten as PromptFillInput, getFeatureValue_CACHED_MAY_BE_STALE('tengu_tranquil_cloud', true)),
-                !binding || binding.surface !== 'terminal' || !binding.isInteractive
-                  ? 'no_composer' : prompt?.isBlocked?.() === true ? 'dialog' : undefined,
+                !composerBound() ? 'no_composer' : prompt?.isBlocked?.() === true ? 'dialog' : undefined,
               ),
               snapshot,
               table,
@@ -2011,9 +2015,10 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
               op,
               eventInput,
               async rewritten => {
+                // A remote composer decides itself whether it is empty and idle.
                 if (!owner.suggestionEligible || typeof rewritten.text !== 'string' || rewritten.text.trim() === '' ||
-                    binding?.surface !== 'terminal' || !binding.isInteractive ||
-                    prompt?.read().text !== '' || prompt.canSuggest?.() === false)
+                    !composerBound() || !prompt || binding?.surface === 'terminal' &&
+                    ((await prompt.read()).text !== '' || prompt.canSuggest?.() === false))
                   return { isShown: false }
                 const shown = await prompt.suggest?.(
                   rewritten.text,
@@ -3966,6 +3971,10 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
     remotePrompt,
     remoteClients: { attach:attachRemoteClient, detach:detachRemoteClient, surfaces:attachedSurfaces,
       has: (clientId: string) => attachedClients.has(clientId),
+      /** Clients whose ui_attach named this engine request under answers, in attach order. */
+      answering: (answer: SDKUIAnswer, surface?: ModRenderSurface) => [...attachedClients.values()]
+        .filter(client => client.surface !== 'terminal' && (surface === undefined || client.surface === surface) && client.answers?.includes(answer) === true)
+        .map(client => ({clientId: client.clientId, surface: client.surface as Exclude<ModRenderSurface, 'terminal'>})),
       placesPanes: (clientId: string) => attachedClients.get(clientId)?.viewport?.isFullscreen !== undefined,
     },
 
