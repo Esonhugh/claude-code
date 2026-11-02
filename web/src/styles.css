@@ -819,3 +819,74 @@ a.btn { text-decoration: none; color: var(--fg); display: inline-block }
   .toolcard, .sources { break-inside: avoid }
 }
 @media (max-width: 760px) and (pointer: coarse) { .meta button, .composer button { min-height: 40px } }
+
+/* sidebar: the project section */
+.sb-sec { display: flex; flex-direction: column; gap: 1px; margin-top: 6px }
+.sb-h { display: flex; align-items: center; gap: 2px }
+.sb-h > button:first-child { flex: 1; border: 0; background: transparent; text-align: left; padding: 4px 6px; border-radius: 6px; font: inherit; font-size: 11px; letter-spacing: .06em; color: var(--muted); display: flex; gap: 6px; align-items: center; cursor: pointer }
+.sb-h > button:first-child:hover { color: var(--fg) } .sb-h .caret { font-size: 9px }
+.sb-h .proj-new { opacity: .75 }
+.srow { position: relative; display: grid }
+.pjrow .t .pjico { color: var(--muted); font-family: var(--f-mono); margin-right: 6px }
+.pjn { grid-column: 2; font-size: 11px; padding: 0 7px; border-radius: 999px; background: var(--warn-soft); color: var(--warn); font-variant-numeric: tabular-nums }
+.history .pjrow { padding: 4px 8px; font-size: 13px }
+/* project view: sessions | coordinator session | dispatched task agents */
+body.proj .app { grid-template-columns: 220px minmax(0, 1fr) }
+body.proj .main, body.proj .side, body.proj .artview, body.proj #panel-btn { display: none !important }
+.projview { display: grid; grid-template-columns: var(--pvl, clamp(380px, 38%, 620px)) minmax(0, 1fr); min-width: 0; min-height: 0; background: var(--bg) }
+.projview.wide { grid-template-columns: minmax(0, 1fr) }
+.projview.wide .pv-chat { display: none }
+.pv-chat { display: flex; flex-direction: column; min-width: 0; min-height: 0; position: relative }
+.pv-chat .feed { padding: 16px 18px; gap: 14px }
+.pv-chat .composer { padding: 6px 18px 12px }
+.pv-head { display: flex; align-items: center; gap: 8px; padding: 0 12px 0 18px; height: 44px; border-bottom: 1px solid var(--line); font-size: 12.5px; color: var(--muted); min-width: 0; flex: none }
+.pv-head b { color: var(--fg); font-size: 13.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0 }
+.pv-head .chip { flex: none } .pv-head .sp { margin-left: auto }
+.pv-head .ib { border: 0; background: transparent; color: var(--muted); width: 28px; height: 28px; border-radius: 6px; display: grid; place-items: center; cursor: pointer; flex: none; font-size: 14px; padding: 0 }
+.pv-head .ib:hover { background: var(--sunken); color: var(--fg) } .pv-head .ib:disabled { opacity: .35; cursor: default; background: transparent }
+.pv-crumb { display: flex; align-items: center; gap: 6px; min-width: 0 }
+.pv-crumb button { border: 0; background: transparent; padding: 0; font: inherit; font-weight: 600; color: var(--fg); cursor: pointer; white-space: nowrap }
+.pv-crumb span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--muted) }
+.pv-side { display: flex; flex-direction: column; min-width: 0; min-height: 0; border-left: 1px solid var(--line); background: var(--surface); position: relative }
+.pv-side .feed { padding: 16px 24px; gap: 14px }
+.pv-side .composer { background: var(--surface); padding: 6px 24px 12px }
+.pv-drag { position: absolute; left: -4px; top: 0; bottom: 0; width: 8px; cursor: col-resize; z-index: 3 }
+.pv-drag:hover, .pv-drag.on { background: color-mix(in srgb, var(--accent) 25%, transparent) }
+.pjcard { border: 1px solid var(--line); background: var(--surface); border-radius: 10px; padding: 8px 12px; display: grid; grid-template-columns: 10px minmax(0, 1fr) auto; gap: 2px 10px; align-items: center; text-align: left; width: 100%; font: inherit; color: var(--fg); cursor: pointer }
+.pjcard:hover { border-color: var(--accent) } .pjcard[aria-current="true"] { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset }
+.pjcard .tt { font-weight: 500; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
+.pjcard .sm { grid-column: 2 / 4; color: var(--muted); font-size: 12px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
+.pjcard .mt { grid-column: 2 / 4; color: var(--muted); font-size: 11.5px; font-family: var(--f-mono); font-variant-numeric: tabular-nums }
+.pjcard .bar { grid-column: 2 / 4; height: 4px; margin-top: 3px }
+.pjbadge { font-size: 11px; padding: 0 7px; border-radius: 999px; background: var(--sunken); color: var(--muted); white-space: nowrap }
+.pjbadge.running { background: var(--ok-soft); color: var(--ok) } .pjbadge.blocked { background: var(--warn-soft); color: var(--warn) }
+.pjbadge.review { background: var(--accent-soft); color: var(--accent) } .pjbadge.stopped { background: var(--bad-soft); color: var(--bad) }
+.dot.blocked { background: var(--warn) } .dot.review { background: var(--accent) } .dot.stopped { background: var(--bad) }
+.pjcards { display: flex; flex-direction: column; gap: 6px }
+.pjcard.mini { grid-template-columns: 10px auto minmax(0, 1fr) auto; padding: 7px 12px; column-gap: 8px }
+.pjcard.mini .sm { grid-column: 3; grid-row: 1 } .pjcard.mini .tt { max-width: 100% } .pjcard.mini .mt { display: none } .pjcard.mini .pjbadge { grid-column: 4 }
+.pj-note { max-width: var(--col); width: 100%; margin: 0 auto; font-size: 12.5px; color: var(--muted); display: flex; gap: 8px }
+.pj-note .g { font-family: var(--f-mono); color: var(--accent) }
+.pjlist { padding: 16px 24px; display: flex; flex-direction: column; gap: 6px; overflow: auto; flex: 1; min-height: 0 }
+.pjlist .grp-h { margin: 10px 2px 2px } .pjlist .grp-h:first-child { margin-top: 0 }
+.pjcheck { border: 1px solid var(--line); border-radius: 10px; padding: 10px 14px; display: flex; flex-direction: column; gap: 4px; font-size: 13px; max-width: var(--col); width: 100%; margin: 0 auto }
+.pjcheck b { font-weight: 600; margin-bottom: 2px }
+.pjbrief { max-width: var(--col); width: 100%; margin: 0 auto; border-left: 2px solid var(--accent); background: var(--sunken); border-radius: 0 8px 8px 0; padding: 8px 12px; font-size: 13px; white-space: pre-wrap }
+.pjform { display: grid; gap: 12px }
+.pjform input, .pjform textarea { border: 1px solid var(--line); border-radius: 8px; padding: 6px 9px; background: var(--bg); color: var(--fg); font: inherit; width: 100% }
+.pjform textarea { min-height: 84px; resize: vertical }
+.pjform .setrow.col { grid-template-columns: minmax(0, 1fr) }
+.pv-seg { display: none }
+@media (max-width: 1100px) { body.proj .app { grid-template-columns: minmax(0, 1fr) } }
+@media (max-width: 760px) {
+  [data-pv-wide] { display: none !important }
+  .projview, .projview.wide { grid-template-columns: minmax(0, 1fr) }
+  .pv-seg { display: inline-flex } .pv-drag { display: none }
+  .projview[data-show="chat"] .pv-side, .projview[data-show="tasks"] .pv-chat { display: none }
+  .projview .pv-chat { display: flex }
+  .pv-side { border-left: 0 } .pv-side .feed, .pjlist { padding: 12px 16px } .pv-side .composer, .pv-chat .composer { padding: 6px 16px 12px } .pv-chat .feed { padding: 12px 16px }
+  .pv-head { padding: 0 8px 0 16px } .pv-head .chip.mono { display: none }
+}
+.pv-head .seg { flex: none } .pv-seg button { white-space: nowrap }
+.pv-head .menu-btn { flex: none; padding: 2px 9px }
+@media (min-width: 761px) { .pv-side .pv-head .menu-btn { display: none } }

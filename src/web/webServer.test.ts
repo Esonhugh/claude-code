@@ -9,6 +9,7 @@ import { SessionManager } from '../server/sessionManager.js'
 import { addressKind } from './network.js'
 import {
   contentSecurityPolicy,
+  normalizeProjectDir,
   parsePreviewOrigin,
   startWebServer,
   type WebAsset,
@@ -46,6 +47,8 @@ type Running = {
   workspace: string
   uploads: string
   configDir: string
+  /** What each child was spawned with. */
+  spawned: SpawnSessionOptions[]
   stop: () => Promise<void>
 }
 
@@ -59,12 +62,15 @@ function start(overrides: Partial<WebServerConfig> = {}): Running {
   const workspace = realpathSync(mkdtempSync(join(tmpdir(), 'web-ws-')))
   const configDir = realpathSync(mkdtempSync(join(tmpdir(), 'web-cfg-')))
   const uploads = join(configDir, 'web', 'uploads')
+  const spawned: SpawnSessionOptions[] = []
   const manager = new SessionManager({
-    spawn: ({ cwd }: SpawnSessionOptions) =>
-      spawn(process.execPath, ['-e', FAKE_CHILD], {
-        cwd,
+    spawn: (options: SpawnSessionOptions) => {
+      spawned.push(options)
+      return spawn(process.execPath, ['-e', FAKE_CHILD], {
+        cwd: options.cwd,
         stdio: ['pipe', 'pipe', 'pipe'],
-      }),
+      })
+    },
   })
   const server = startWebServer(
     {
@@ -89,6 +95,7 @@ function start(overrides: Partial<WebServerConfig> = {}): Running {
     workspace,
     uploads,
     configDir,
+    spawned,
     stop: async () => {
       server.stop(true)
       await manager.destroyAll()
@@ -465,6 +472,124 @@ describe('claude web server', () => {
       () => undefined,
     )
     expect(plain?.status).not.toBe(200)
+  })
+
+  it('creates, lists, edits and archives projects behind the API checks', async () => {
+    const trusted = new Set<string>()
+    const r = start({ folderTrust: { isTrusted: dir => trusted.has(dir), save: dir => trusted.add(dir) } })
+    const cookie = await signIn(r)
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), 'web-proj-')))
+    const call = (method: string, path: string, body?: unknown, headers: Record<string, string> = { cookie, origin: r.origin }) =>
+      fetch(`${r.base}${path}`, { method, headers, ...(body !== undefined && { body: JSON.stringify(body) }) })
+
+    expect((await call('GET', '/api/projects', undefined, {})).status).toBe(401)
+    expect((await call('POST', '/api/projects', { name: 'x', cwd: dir }, { cookie })).status).toBe(403)
+    expect((await call('GET', '/api/projects')).status).toBe(200)
+    expect(await (await call('GET', '/api/projects')).json()).toEqual([])
+    for (const bad of [
+      { name: '', cwd: dir },
+      { name: 'x', cwd: 'relative/dir' },
+      { name: 'x', cwd: join(dir, 'missing') },
+      { name: 'x', cwd: dir, permission_mode: 'yolo' },
+      { name: 'x', cwd: dir, worker_model: '--evil' },
+      { name: 'x', cwd: dir, extra: 1 },
+    ]) {
+      expect((await call('POST', '/api/projects', bad)).status).toBe(400)
+    }
+
+    const refused = await call('POST', '/api/projects', { name: 'Alpha', cwd: dir })
+    expect(refused.status).toBe(409)
+    expect(((await refused.json()) as { needs_trust: string }).needs_trust).toBe(dir)
+    const created = await call('POST', '/api/projects', {
+      name: ' Alpha ',
+      cwd: `${dir}/./sub/..`,
+      trust: true,
+      instructions: 'Be brief.',
+      worker_model: 'sonnet',
+    })
+    expect(created.status).toBe(201)
+    const project = (await created.json()) as Record<string, unknown>
+    expect(project).toMatchObject({
+      name: 'Alpha',
+      cwd: dir,
+      instructions: 'Be brief.',
+      worker_model: 'sonnet',
+      permission_mode: 'default',
+      coordinator_session_id: null,
+      running: false,
+    })
+    expect([...trusted]).toEqual([dir])
+
+    const id = String(project.id)
+    expect((await call('PATCH', '/api/projects/not-an-id', { name: 'x' })).status).toBe(400)
+    expect((await call('PATCH', `/api/projects/${crypto.randomUUID()}`, { name: 'x' })).status).toBe(404)
+    expect((await call('PATCH', `/api/projects/${id}`, { cwd: '/' })).status).toBe(400)
+    const patched = await call('PATCH', `/api/projects/${id}`, { name: 'Beta', worker_model: null, permission_mode: 'plan' })
+    expect(await patched.json()).toMatchObject({ name: 'Beta', worker_model: null, permission_mode: 'plan', cwd: dir })
+
+    expect((await call('DELETE', `/api/projects/${id}`)).status).toBe(204)
+    expect(await (await call('GET', '/api/projects')).json()).toEqual([])
+    expect((await call('PATCH', `/api/projects/${id}`, { name: 'x' })).status).toBe(404)
+  })
+
+  it('starts the coordinator with its prompt and resumes it on reopen', async () => {
+    const r = start()
+    const cookie = await signIn(r)
+    const headers = { cookie, origin: r.origin }
+    const created = await fetch(`${r.base}/api/projects`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ name: 'P', cwd: r.workspace, instructions: 'PROJECT_NOTE', worker_model: 'haiku', permission_mode: 'acceptEdits' }),
+    })
+    const { id } = (await created.json()) as { id: string }
+    const open = async () => {
+      const res = await fetch(`${r.base}/api/projects/${id}/coordinator`, { method: 'POST', headers })
+      expect(res.status).toBe(200)
+      return (await res.json()) as { session_id: string; work_dir: string }
+    }
+    const first = await open()
+    expect(first.work_dir).toBe(r.workspace)
+    expect(r.spawned).toHaveLength(1)
+    const spawnedWith = r.spawned[0]!
+    expect(spawnedWith.resume).toBeUndefined()
+    expect(spawnedWith.permissionMode).toBe('acceptEdits')
+    expect(spawnedWith.systemPrompt).toContain('You are a **coordinator**')
+    expect(spawnedWith.appendSystemPrompt).toBe('PROJECT_NOTE')
+    expect(spawnedWith.env).toEqual({ CLAUDE_CODE_COORDINATOR_MODE: '1', CLAUDE_CODE_SUBAGENT_MODEL: 'haiku' })
+
+    // Still running: the same session, no new child.
+    expect((await open()).session_id).toBe(first.session_id)
+    expect(r.spawned).toHaveLength(1)
+    const listed = (await (await fetch(`${r.base}/api/projects`, { headers })).json()) as { coordinator_session_id: string; running: boolean }[]
+    expect(listed[0]).toMatchObject({ coordinator_session_id: first.session_id, running: true })
+
+    // Stopped before it wrote a transcript: a fresh coordinator replaces it.
+    await fetch(`${r.base}/api/sessions/${first.session_id}`, { method: 'DELETE', headers })
+    const second = await open()
+    expect(second.session_id).not.toBe(first.session_id)
+    expect(r.spawned[1]!.resume).toBeUndefined()
+
+    // Archiving stops it.
+    expect((await fetch(`${r.base}/api/projects/${id}`, { method: 'DELETE', headers })).status).toBe(204)
+    expect(((await (await fetch(`${r.base}/api/sessions`, { headers })).json()) as unknown[]).length).toBe(0)
+    expect((await fetch(`${r.base}/api/projects/${id}/coordinator`, { method: 'POST', headers })).status).toBe(404)
+  })
+})
+
+describe('normalizeProjectDir', () => {
+  it('expands ~, resolves dots and symlinks, and refuses relative or missing paths', () => {
+    const home = realpathSync(mkdtempSync(join(tmpdir(), 'web-home-')))
+    mkdirSync(join(home, 'code', 'app'), { recursive: true })
+    symlinkSync(join(home, 'code'), join(home, 'link'))
+    expect(normalizeProjectDir('~', home)).toBe(home)
+    expect(normalizeProjectDir('~/code/app/', home)).toBe(join(home, 'code', 'app'))
+    expect(normalizeProjectDir(`${home}/code/../code/app`, home)).toBe(join(home, 'code', 'app'))
+    expect(normalizeProjectDir(`${home}/link/app`, home)).toBe(join(home, 'code', 'app'))
+    expect(normalizeProjectDir('code/app', home)).toBeUndefined()
+    expect(normalizeProjectDir('~other/x', home)).toBeUndefined()
+    expect(normalizeProjectDir(join(home, 'missing'), home)).toBeUndefined()
+    writeFileSync(join(home, 'file.txt'), '')
+    expect(normalizeProjectDir(join(home, 'file.txt'), home)).toBeUndefined()
   })
 })
 

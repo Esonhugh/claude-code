@@ -246,6 +246,7 @@ export function InputBox({
   crow,
   listFiles,
   prompts = [],
+  placeholder,
 }: {
   t: T
   start?: boolean
@@ -270,6 +271,8 @@ export function InputBox({
   listFiles?: (query: string) => Promise<string[]>
   /** Prompts sent in this chat, oldest first, for ↑ / ↓. */
   prompts?: string[]
+  /** Replaces the chat placeholder (a project's coordinator and task boxes). */
+  placeholder?: string
 }) {
   const picker = useRef<HTMLInputElement>(null)
   const imagePicker = useRef<HTMLInputElement>(null)
@@ -522,7 +525,7 @@ export function InputBox({
     <textarea
       ref={box}
       value={draft}
-      placeholder={signedOut ? t('signInToSend') : start ? t('startPlaceholder') : chatPlaceholder}
+      placeholder={signedOut ? t('signInToSend') : start ? t('startPlaceholder') : (placeholder ?? chatPlaceholder)}
       aria-label={t('message')}
       disabled={disabled}
       role="combobox"

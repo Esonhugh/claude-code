@@ -1,4 +1,5 @@
 import { type ReactNode, type RefObject, useEffect, useState } from 'react'
+import type { Project } from '../api'
 import { ext } from '../extApi'
 import { tilde } from '../files'
 import type { SessionEnv } from '../protocol'
@@ -6,6 +7,8 @@ import { groupHistory, type HistoryEntry } from '../store'
 import { Clawd, readStored, type T, writeStored } from './ui'
 
 const COLLAPSED_KEY = 'claude-web-collapsed'
+// The projects section shares the folders' collapsed map under a key no folder can have.
+const PROJECTS_KEY = '\0projects'
 
 export type DialogKind =
   | 'mcp'
@@ -66,6 +69,10 @@ export function Sidebar({
   onDialog,
   dialogOpen = false,
   account,
+  projects,
+  projectId,
+  onProject,
+  onNewProject,
 }: {
   t: T
   open: boolean
@@ -86,6 +93,11 @@ export function Sidebar({
   dialogOpen?: boolean
   /** The account card (Account.tsx). */
   account: ReactNode
+  projects: Project[]
+  /** The project shown, if any. */
+  projectId?: string
+  onProject: (project: Project) => void
+  onNewProject: () => void
 }) {
   const [filter, setFilter] = useState('')
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>(() =>
@@ -150,6 +162,32 @@ export function Sidebar({
         ))}
       </nav>
       <div className="history" role="navigation" aria-label={t('sessionGroup')}>
+        <div className="sb-sec">
+          <div className="sb-h">
+            <button type="button" aria-expanded={!collapsed[PROJECTS_KEY]} onClick={() => toggle(PROJECTS_KEY)}>
+              <span className="caret" aria-hidden="true">
+                {collapsed[PROJECTS_KEY] ? '▸' : '▾'}
+              </span>
+              {t('projectsSection')}
+            </button>
+            <button type="button" className="proj-new" aria-label={t('newProject')} title={t('newProject')} onClick={onNewProject}>
+              +
+            </button>
+          </div>
+          {!collapsed[PROJECTS_KEY] &&
+            projects
+              .filter(p => !filter.trim() || `${p.name}${p.cwd}`.toLowerCase().includes(filter.trim().toLowerCase()))
+              .map(p => (
+                <div className="srow" key={p.id}>
+                  <button className="sess pjrow" type="button" aria-current={p.id === projectId} title={p.name} onClick={() => onProject(p)}>
+                    <span className="t">
+                      {p.running ? <span className="live" /> : <span className="pjico" aria-hidden="true">⌗</span>}
+                      {p.name}
+                    </span>
+                  </button>
+                </div>
+              ))}
+        </div>
         {groups.map(group => {
           const opened = !!filter || group.cwd === activeCwd || !collapsed[group.cwd]
           const name = group.temp ? t('temporaryChats') : group.name || group.cwd

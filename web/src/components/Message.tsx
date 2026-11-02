@@ -1,4 +1,4 @@
-import { createContext, useContext, useState } from 'react'
+import { createContext, Fragment, type ReactNode, useContext, useState } from 'react'
 import {
   type AgentTask,
   type Team,
@@ -388,6 +388,8 @@ export function Message({
   models = [],
   streaming,
   sources,
+  role,
+  taskCard,
 }: {
   item: Item
   t: T
@@ -395,6 +397,10 @@ export function Message({
   models?: ModelOption[]
   streaming: boolean
   sources?: Source[]
+  /** After the model in the label: ` · 协调者` in a project. */
+  role?: string
+  /** A project draws its Agent calls as one-line task cards, grouped after the text. */
+  taskCard?: (block: Extract<Block, { kind: 'tool' }>) => ReactNode
 }) {
   const files = useContext(FilesContext)
   const { rewind } = useContext(ChatContext)
@@ -519,13 +525,20 @@ export function Message({
     )
   }
   const label = modelName(item.model ?? fallbackModel, models)
+  const cards = taskCard
+    ? item.blocks.flatMap((block, i) => {
+        const card = block?.kind === 'tool' ? taskCard(block) : undefined
+        return card ? [{ i, card }] : []
+      })
+    : []
   return (
     <div className="msg assistant">
       <span className="who">
         Claude{label && <span className="wm"> ({label})</span>}
+        {role}
       </span>
       {item.blocks.map((block, i) => {
-        if (!block) return null
+        if (!block || cards.some(c => c.i === i)) return null
         if (block.kind === 'text') {
           return (
             <Markdown
@@ -553,6 +566,7 @@ export function Message({
         }
         return <ToolCard key={i} block={block} t={t} />
       })}
+      {cards.length > 0 && <div className="pjcards">{cards.map(c => <Fragment key={c.i}>{c.card}</Fragment>)}</div>}
       {sources && sources.length > 0 && (
         <div className="sources">
           <div>{t('sources')}</div>
