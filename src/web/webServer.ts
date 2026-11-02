@@ -26,6 +26,7 @@ import {
   renameSession,
   SESSION_ID,
 } from './history.js'
+import { isAllowedPeer, lanHostNames } from './network.js'
 import {
   allowedHosts,
   checkToken,
@@ -51,6 +52,10 @@ export type WebServerConfig = {
   /** Defaults to the claude config dir; files under it are not served. */
   configDir?: string
   trustedHosts?: string[]
+  /** Also answer to this machine's LAN addresses and `<hostname>.local`. */
+  allowLocalNetwork?: boolean
+  /** PEM file paths; when set the server speaks https/wss only. */
+  tls?: { cert: string; key: string }
 }
 
 type SocketData = { sessionId: string }
@@ -158,6 +163,32 @@ function errorResponse(status: number, message: string): Response {
   return Response.json({ error: message }, { status })
 }
 
+type Listener = ReturnType<typeof Bun.serve>
+
+/**
+ * `0.0.0.0` means every interface: bind `::` first (dual-stack on most
+ * systems), fall back to IPv4 when there is no IPv6, and add an IPv4 socket
+ * on the same port where `::` is IPv6-only.
+ */
+function listen(
+  host: string,
+  port: number,
+  serve: (hostname: string, port: number) => Listener,
+): Listener[] {
+  if (host !== '0.0.0.0') return [serve(host, port)]
+  let v6: Listener
+  try {
+    v6 = serve('::', port)
+  } catch {
+    return [serve('0.0.0.0', port)]
+  }
+  try {
+    return [v6, serve('0.0.0.0', v6.port ?? port)]
+  } catch {
+    return [v6]
+  }
+}
+
 function isDirectory(path: string): boolean {
   try {
     return statSync(path).isDirectory()
@@ -191,7 +222,11 @@ export function startWebServer(
   assets: Map<string, WebAsset>,
   logger: ServerLogger,
 ): { port: number; stop: (force?: boolean) => void } {
-  let hosts = allowedHosts(config.port, config.trustedHosts)
+  const extraHosts = [
+    ...(config.trustedHosts ?? []),
+    ...(config.allowLocalNetwork ? lanHostNames() : []),
+  ]
+  let hosts = allowedHosts(config.port, extraHosts)
   const uploadLimits = config.uploadLimits ?? DEFAULT_UPLOAD_LIMITS
 
   async function sessionFile(id: string, path: string): Promise<string | undefined> {
@@ -375,89 +410,106 @@ export function startWebServer(
     return errorResponse(404, 'Not found')
   }
 
-  const server = Bun.serve<SocketData, never>({
-    hostname: config.host,
-    port: config.port,
-    async fetch(req, srv) {
-      const url = new URL(req.url)
-      const { pathname } = url
-      const isApi = pathname === '/api' || pathname.startsWith('/api/')
-      // Same-origin GETs and page loads may omit Origin; anything that can
-      // change state (and every WebSocket handshake) must carry it.
-      const requireOrigin =
-        req.method !== 'GET' ||
-        req.headers.get('upgrade')?.toLowerCase() === 'websocket'
-      const reason = untrustedReason(req, hosts, { requireOrigin })
-      if (reason) {
-        logger.warn(`rejected ${req.method} ${pathname} (untrusted ${reason})`)
-        return withHeaders(errorResponse(403, 'Forbidden'))
-      }
-
-      if (pathname === '/' && url.searchParams.has('token')) {
-        if (!checkToken(config.token, url.searchParams.get('token'))) {
-          logger.warn('rejected an invalid token')
-          return withHeaders(errorResponse(401, 'Invalid token'))
+  const serve = (hostname: string, port: number) =>
+    Bun.serve<SocketData, never>({
+      hostname,
+      port,
+      tls: config.tls && {
+        cert: Bun.file(config.tls.cert),
+        key: Bun.file(config.tls.key),
+      },
+      async fetch(req, srv) {
+        // Before anything else: only loopback and LAN peers are served.
+        const peer = srv.requestIP(req)?.address
+        if (!isAllowedPeer(peer)) {
+          logger.warn(`rejected a connection from ${peer ?? 'an unknown address'}`)
+          return new Response(null, { status: 403 })
         }
-        return withHeaders(
-          new Response(null, {
-            status: 302,
-            headers: {
-              Location: '/',
-              'Set-Cookie': cookieHeader(signCookie(config.cookieKey), false),
-            },
-          }),
-        )
-      }
-
-      if (!verifyCookie(config.cookieKey, readCookie(req, COOKIE_NAME))) {
-        return withHeaders(
-          isApi
-            ? errorResponse(401, 'Unauthorized')
-            : new Response(
-                'Open the URL printed by `claude web` in the terminal to sign in.\n',
-                {
-                  status: 401,
-                  headers: { 'Content-Type': 'text/plain; charset=utf-8' },
-                },
-              ),
-        )
-      }
-
-      if (isApi) {
-        const res = await handleApi(req, url, srv)
-        return res && withHeaders(res)
-      }
-      if (req.method !== 'GET' && req.method !== 'HEAD') {
-        return withHeaders(errorResponse(405, 'Method not allowed'))
-      }
-      const asset = assets.get(pathname) ?? assets.get('/index.html')
-      if (!asset) return withHeaders(errorResponse(404, 'Not found'))
-      return withHeaders(
-        new Response(asset.body, { headers: { 'Content-Type': asset.type } }),
-      )
-    },
-    websocket: {
-      open(ws) {
-        if (!sessionManager.attach(ws.data.sessionId, ws)) {
-          ws.close(1008, 'Session unavailable')
+        const url = new URL(req.url)
+        const { pathname } = url
+        const isApi = pathname === '/api' || pathname.startsWith('/api/')
+        // Same-origin GETs and page loads may omit Origin; anything that can
+        // change state (and every WebSocket handshake) must carry it.
+        const requireOrigin =
+          req.method !== 'GET' ||
+          req.headers.get('upgrade')?.toLowerCase() === 'websocket'
+        const reason = untrustedReason(req, hosts, { requireOrigin })
+        if (reason) {
+          logger.warn(`rejected ${req.method} ${pathname} (untrusted ${reason})`)
+          return withHeaders(errorResponse(403, 'Forbidden'))
         }
-      },
-      message(ws, message) {
-        sessionManager.write(ws.data.sessionId, message.toString())
-      },
-      close(ws) {
-        sessionManager.detach(ws.data.sessionId, ws)
-      },
-    },
-  })
 
-  const port = server.port ?? config.port
-  hosts = allowedHosts(port, config.trustedHosts)
-  logger.info(`listening on http://${config.host}:${port}`)
+        if (pathname === '/' && url.searchParams.has('token')) {
+          if (!checkToken(config.token, url.searchParams.get('token'))) {
+            logger.warn('rejected an invalid token')
+            return withHeaders(errorResponse(401, 'Invalid token'))
+          }
+          return withHeaders(
+            new Response(null, {
+              status: 302,
+              headers: {
+                Location: '/',
+                'Set-Cookie': cookieHeader(
+                  signCookie(config.cookieKey),
+                  config.tls !== undefined,
+                ),
+              },
+            }),
+          )
+        }
+
+        if (!verifyCookie(config.cookieKey, readCookie(req, COOKIE_NAME))) {
+          return withHeaders(
+            isApi
+              ? errorResponse(401, 'Unauthorized')
+              : new Response(
+                  'Open the URL printed by `claude web` in the terminal to sign in.\n',
+                  {
+                    status: 401,
+                    headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+                  },
+                ),
+          )
+        }
+
+        if (isApi) {
+          const res = await handleApi(req, url, srv)
+          return res && withHeaders(res)
+        }
+        if (req.method !== 'GET' && req.method !== 'HEAD') {
+          return withHeaders(errorResponse(405, 'Method not allowed'))
+        }
+        const asset = assets.get(pathname) ?? assets.get('/index.html')
+        if (!asset) return withHeaders(errorResponse(404, 'Not found'))
+        return withHeaders(
+          new Response(asset.body, { headers: { 'Content-Type': asset.type } }),
+        )
+      },
+      websocket: {
+        open(ws) {
+          if (!sessionManager.attach(ws.data.sessionId, ws)) {
+            ws.close(1008, 'Session unavailable')
+          }
+        },
+        message(ws, message) {
+          sessionManager.write(ws.data.sessionId, message.toString())
+        },
+        close(ws) {
+          sessionManager.detach(ws.data.sessionId, ws)
+        },
+      },
+    })
+
+  const servers = listen(config.host, config.port, serve)
+  const port = servers[0]!.port ?? config.port
+  hosts = allowedHosts(port, extraHosts)
+  logger.info(
+    `listening on ${config.tls ? 'https' : 'http'}://${servers.map(s => s.hostname).join(', ')} port ${port}`,
+  )
   return {
     port,
     stop: force => {
-      void server.stop(force)
+      for (const server of servers) void server.stop(force)
     },
   }
 }

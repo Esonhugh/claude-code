@@ -1,12 +1,17 @@
 import { afterEach, describe, expect, it } from 'bun:test'
 import { spawn } from 'child_process'
 import { mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from 'fs'
-import { tmpdir } from 'os'
+import { hostname, networkInterfaces, tmpdir } from 'os'
 import { join } from 'path'
 import type { SpawnSessionOptions } from '../server/backends/dangerousBackend.js'
 import { createServerLogger } from '../server/serverLog.js'
 import { SessionManager } from '../server/sessionManager.js'
-import { startWebServer, type WebAsset } from './webServer.js'
+import { addressKind } from './network.js'
+import {
+  startWebServer,
+  type WebAsset,
+  type WebServerConfig,
+} from './webServer.js'
 
 const TOKEN = 'web-test-token'
 
@@ -48,7 +53,7 @@ afterEach(async () => {
   await Promise.all(running.splice(0).map(r => r.stop()))
 })
 
-function start(): Running {
+function start(overrides: Partial<WebServerConfig> = {}): Running {
   const workspace = realpathSync(mkdtempSync(join(tmpdir(), 'web-ws-')))
   const configDir = realpathSync(mkdtempSync(join(tmpdir(), 'web-cfg-')))
   const uploads = join(configDir, 'web', 'uploads')
@@ -69,12 +74,13 @@ function start(): Running {
       uploadsDir: uploads,
       configDir,
       uploadLimits: { fileBytes: 1000, sessionBytes: 1500 },
+      ...overrides,
     },
     manager,
     assets,
     createServerLogger({ write: () => {} }),
   )
-  const origin = `http://127.0.0.1:${server.port}`
+  const origin = `${overrides.tls ? 'https' : 'http'}://127.0.0.1:${server.port}`
   const r: Running = {
     base: origin,
     origin,
@@ -319,5 +325,67 @@ describe('claude web server', () => {
       { headers: { cookie } },
     )
     expect(other.status).toBe(404)
+  })
+
+  it('answers to <hostname>.local only with the local network flag', async () => {
+    const name = hostname().toLowerCase().split('.')[0]
+    const signInAs = (r: Running) =>
+      fetch(`${r.base}/?token=${TOKEN}`, {
+        redirect: 'manual',
+        headers: { host: `${name}.local:${new URL(r.base).port}` },
+      })
+    expect((await signInAs(start())).status).toBe(403)
+    const lan = start({ host: '0.0.0.0', allowLocalNetwork: true })
+    expect((await signInAs(lan)).status).toBe(302)
+    // The token is still required, and foreign hosts are still refused.
+    expect((await fetch(`${lan.base}/`)).status).toBe(401)
+    const foreign = await fetch(`${lan.base}/?token=${TOKEN}`, {
+      redirect: 'manual',
+      headers: { host: 'attacker.example' },
+    })
+    expect(foreign.status).toBe(403)
+  })
+
+  it('refuses peers outside loopback and LAN ranges', async () => {
+    const publicAddress = Object.values(networkInterfaces())
+      .flat()
+      .find(i => i && i.family === 'IPv4' && addressKind(i.address) === 'other')
+    if (!publicAddress) return
+    const r = start({ host: '0.0.0.0', allowLocalNetwork: true })
+    const port = new URL(r.base).port
+    // Connecting to our own non-LAN address makes it the peer address.
+    const res = await fetch(`http://${publicAddress.address}:${port}/?token=${TOKEN}`, {
+      redirect: 'manual',
+      headers: { host: `127.0.0.1:${port}` },
+    })
+    expect(res.status).toBe(403)
+    expect(res.headers.get('set-cookie')).toBeNull()
+  })
+
+  it('serves https with a Secure cookie when given a certificate', async () => {
+    if (!Bun.which('openssl')) return
+    const dir = mkdtempSync(join(tmpdir(), 'web-tls-'))
+    const cert = join(dir, 'cert.pem')
+    const key = join(dir, 'key.pem')
+    const made = Bun.spawnSync(
+      [
+        'openssl', 'req', '-x509', '-newkey', 'rsa:2048', '-nodes',
+        '-keyout', key, '-out', cert, '-days', '1', '-subj', '/CN=127.0.0.1',
+      ],
+      { stdout: 'ignore', stderr: 'ignore' },
+    )
+    if (made.exitCode !== 0) return
+    const r = start({ tls: { cert, key } })
+    expect(r.base.startsWith('https://')).toBe(true)
+    const res = await fetch(`${r.base}/?token=${TOKEN}`, {
+      redirect: 'manual',
+      tls: { rejectUnauthorized: false },
+    })
+    expect(res.status).toBe(302)
+    expect(res.headers.get('set-cookie')).toContain('; Secure')
+    const plain = await fetch(`http://127.0.0.1:${new URL(r.base).port}/`).catch(
+      () => undefined,
+    )
+    expect(plain?.status).not.toBe(200)
   })
 })

@@ -61,7 +61,12 @@ export function allowedHosts(port: number, trusted: string[] = []): Set<string> 
     `127.0.0.1:${port}`,
     `localhost:${port}`,
     `[::1]:${port}`,
-    ...trusted.map(host => (host.includes(':') ? host : `${host}:${port}`)),
+    ...trusted.map(host =>
+      // `name:port` or `[v6]:port` already carry a port.
+      /^(\[[^\]]*\]|[^:]*):\d+$/.test(host)
+        ? host.toLowerCase()
+        : `${host.toLowerCase()}:${port}`,
+    ),
   ])
 }
 

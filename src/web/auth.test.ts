@@ -107,8 +107,15 @@ describe('untrustedReason', () => {
   })
 
   it('adds trusted hosts with the server port', () => {
-    const extended = allowedHosts(4000, ['box.local', 'other:9'])
+    const extended = allowedHosts(4000, [
+      'Box.local',
+      'other:9',
+      '[fd00::5]',
+      '[fe80::1]:7',
+    ])
     expect(extended.has('box.local:4000')).toBe(true)
     expect(extended.has('other:9')).toBe(true)
+    expect(extended.has('[fd00::5]:4000')).toBe(true)
+    expect(extended.has('[fe80::1]:7')).toBe(true)
   })
 })

@@ -1,4 +1,4 @@
-import { mkdirSync } from 'fs'
+import { accessSync, constants, mkdirSync } from 'fs'
 import { join } from 'path'
 import { DangerousBackend } from '../server/backends/dangerousBackend.js'
 import {
@@ -13,10 +13,12 @@ import { shouldRejectRootBypassPermissions } from '../setup.js'
 import { getClaudeConfigHomeDir } from '../utils/envUtils.js'
 import { execFileNoThrowWithCwd } from '../utils/execFileNoThrow.js'
 import { createWebSecrets } from './auth.js'
+import { lanInterfaceAddresses, resolveBindHost } from './network.js'
 import { startWebServer, type WebAsset } from './webServer.js'
 
 const LOCK_NAME = 'web.lock'
-const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1'])
+// A Host header value: a DNS name or bracketed IPv6 address, optional port.
+const TRUSTED_HOST = /^([a-z0-9-]+(\.[a-z0-9-]+)*|\[[0-9a-f:.]+\])(:\d{1,5})?$/i
 // Only what a browser launcher needs; API keys and tokens stay out of it.
 const BROWSER_ENV_KEYS = [
   'PATH',
@@ -38,11 +40,19 @@ const BROWSER_ENV_KEYS = [
 
 export type WebCommandOptions = {
   port: string
-  host: string
+  host?: string
   workspace?: string
   open: boolean
   idleTimeout: string
   maxSessions: string
+  dangerouslyAllowLocalNetwork?: boolean
+  trustedHost?: string[]
+  tlsCert?: string
+  tlsKey?: string
+}
+
+function urlHost(host: string): string {
+  return host.includes(':') ? `[${host}]` : host
 }
 
 function browserEnv(): NodeJS.ProcessEnv {
@@ -84,8 +94,26 @@ export async function runWebCommand(opts: WebCommandOptions): Promise<void> {
       'claude web requires the Bun runtime; run it from the packaged claude binary.',
     )
   }
-  if (!LOOPBACK_HOSTS.has(opts.host)) {
-    fail(`--host must be a loopback address (127.0.0.1, ::1 or localhost).`)
+  const allowLocalNetwork = opts.dangerouslyAllowLocalNetwork === true
+  const bind = resolveBindHost(opts.host, allowLocalNetwork)
+  if ('error' in bind) fail(bind.error)
+  const trustedHosts = opts.trustedHost ?? []
+  for (const host of trustedHosts) {
+    if (!TRUSTED_HOST.test(host)) fail(`Invalid --trusted-host: ${host}`)
+  }
+  if (!opts.tlsCert !== !opts.tlsKey) {
+    fail('--tls-cert and --tls-key must be given together.')
+  }
+  const tls =
+    opts.tlsCert && opts.tlsKey
+      ? { cert: opts.tlsCert, key: opts.tlsKey }
+      : undefined
+  for (const file of tls ? [tls.cert, tls.key] : []) {
+    try {
+      accessSync(file, constants.R_OK)
+    } catch {
+      fail(`Cannot read TLS file: ${file}`)
+    }
   }
   const port = Number(opts.port)
   if (!Number.isInteger(port) || port < 0 || port > 65535) {
@@ -134,33 +162,71 @@ export async function runWebCommand(opts: WebCommandOptions): Promise<void> {
     },
   )
   const { token, cookieKey } = createWebSecrets()
-  const server = startWebServer(
-    { host: opts.host, port, token, cookieKey, workspace, uploadsDir },
-    sessionManager,
-    assets,
-    logger,
-  )
+  let server: ReturnType<typeof startWebServer>
+  try {
+    server = startWebServer(
+      {
+        host: bind.host,
+        port,
+        token,
+        cookieKey,
+        workspace,
+        uploadsDir,
+        trustedHosts,
+        allowLocalNetwork,
+        tls,
+      },
+      sessionManager,
+      assets,
+      logger,
+    )
+  } catch (err) {
+    fail(`Could not start the web server: ${(err as Error).message}`)
+  }
 
-  const urlHost = opts.host === '::1' ? '[::1]' : opts.host
-  const baseUrl = `http://${urlHost}:${server.port}/`
+  const scheme = tls ? 'https' : 'http'
+  const primaryHost = bind.host === '0.0.0.0' ? '127.0.0.1' : bind.host
+  const baseUrl = `${scheme}://${urlHost(primaryHost)}:${server.port}/`
   await writeServerLock(
     {
       pid: process.pid,
       port: server.port,
-      host: opts.host,
+      host: bind.host,
       httpUrl: baseUrl,
       startedAt: Date.now(),
     },
     LOCK_NAME,
   )
   const signInUrl = `${baseUrl}?token=${token}`
+  const lanAddresses =
+    bind.host === '0.0.0.0' ? lanInterfaceAddresses() : []
   process.stdout.write(
     [
       `Claude web UI: ${signInUrl}`,
+      ...lanAddresses.map(
+        address =>
+          `  on your network: ${scheme}://${urlHost(address)}:${server.port}/?token=${token}`,
+      ),
       `Sessions start in ${workspace} and run with your local credentials and full access to this machine. Press Ctrl+C to stop.`,
       '',
     ].join('\n'),
   )
+  if (allowLocalNetwork) {
+    process.stderr.write(
+      [
+        '',
+        'WARNING: --dangerously-allow-local-network is on.',
+        'Anyone on your local network who gets the URL above can run commands on this machine as you.',
+        'Connections from loopback, private (RFC 1918), link-local, CGNAT and ULA addresses are accepted; others are refused.',
+        ...(tls
+          ? []
+          : [
+              'Traffic is plaintext HTTP: others on the same network can read it, including the token. Use --tls-cert/--tls-key to encrypt it.',
+            ]),
+        '',
+      ].join('\n'),
+    )
+  }
 
   registerCleanup(async () => {
     await removeServerLock(LOCK_NAME)
