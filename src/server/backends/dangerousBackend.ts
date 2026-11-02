@@ -25,6 +25,8 @@ export class DangerousBackend {
       includePartialMessages?: boolean
       /** Let the client switch to bypassPermissions later (claude web). */
       allowBypassPermissions?: boolean
+      /** Extra directories every session's tools may use (`--add-dir`). */
+      addDirs?: string[]
     } = {},
   ) {}
 
@@ -63,6 +65,7 @@ export class DangerousBackend {
         ...(this.options.allowBypassPermissions
           ? ['--allow-dangerously-skip-permissions']
           : []),
+        ...(this.options.addDirs ?? []).flatMap(dir => ['--add-dir', dir]),
       ],
       { cwd, env, stdio: ['pipe', 'pipe', 'pipe'] },
     )

@@ -505,6 +505,7 @@ pre {
 
 .input-card {
   display: flex;
+  flex-wrap: wrap;
   align-items: flex-end;
   gap: 8px;
   border: 1px solid var(--line);
@@ -762,4 +763,240 @@ pre {
 .footnote {
   font-size: 13px;
   color: var(--muted);
+}
+
+/* Attachments, file chips and the preview panel (M3). */
+
+.attachments {
+  order: -2;
+  flex-basis: 100%;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.attachment {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 260px;
+  padding: 2px 4px 2px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg);
+  font-size: 13px;
+}
+
+.attachment-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.attachment small {
+  color: var(--muted);
+  flex: none;
+}
+
+.attach {
+  order: -1;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border-radius: 50%;
+  flex: none;
+  font-size: 20px;
+  line-height: 1;
+}
+
+.main.dragging {
+  outline: 2px dashed var(--accent);
+  outline-offset: -8px;
+}
+
+.file-chip {
+  display: inline-block;
+  max-width: 100%;
+  margin: 2px 0;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel);
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
+}
+
+.bubble-image {
+  display: block;
+  max-width: 240px;
+  max-height: 240px;
+  margin-bottom: 6px;
+  border-radius: 8px;
+}
+
+.tool-preview {
+  margin-left: auto;
+  padding: 0 8px;
+  font-size: 12px;
+}
+
+.preview {
+  flex: 0 0 min(50%, 760px);
+  min-width: 360px;
+  display: flex;
+  flex-direction: column;
+  border-left: 1px solid var(--line);
+  background: var(--panel);
+}
+
+.preview-bar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
+  font-size: 13px;
+}
+
+.preview-bar a {
+  color: inherit;
+  text-decoration: none;
+  padding: 4px 8px;
+  border-radius: 6px;
+}
+
+.preview-bar .active {
+  background: var(--user-bg);
+}
+
+.preview-name {
+  flex: 1;
+  min-width: 0;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.preview-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 16px;
+}
+
+.preview-note {
+  color: var(--muted);
+  font-size: 13px;
+  padding: 8px 0;
+}
+
+.preview-image {
+  max-width: 100%;
+  height: auto;
+}
+
+.preview-frame {
+  display: block;
+  width: 100%;
+  height: calc(100% - 4px);
+  min-height: 400px;
+  margin: 0 auto;
+  border: 1px solid var(--line);
+  background: #fff;
+}
+
+.pager {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  margin-bottom: 10px;
+  font-size: 13px;
+}
+
+.pager input {
+  width: 48px;
+  text-align: center;
+  font: inherit;
+  color: inherit;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+
+.pdf-page canvas {
+  display: block;
+  max-width: 100%;
+  box-shadow: 0 1px 4px rgb(0 0 0 / 15%);
+  background: #fff;
+}
+
+.sheet {
+  overflow: auto;
+}
+
+.sheet table {
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.sheet th,
+.sheet td {
+  border: 1px solid var(--line);
+  padding: 2px 8px;
+  white-space: nowrap;
+  text-align: left;
+}
+
+.sheet th {
+  background: var(--code-bg);
+}
+
+.tabs {
+  display: flex;
+  gap: 4px;
+  overflow-x: auto;
+  margin-bottom: 8px;
+}
+
+.tab {
+  padding: 2px 10px;
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.tab.active {
+  background: var(--user-bg);
+}
+
+.docx-page {
+  max-width: 800px;
+  margin: 0 auto;
+  padding: 48px 56px;
+  background: #fff;
+  color: #1f1e1d;
+  box-shadow: 0 1px 4px rgb(0 0 0 / 15%);
+}
+
+.docx-page img {
+  max-width: 100%;
+}
+
+@media (max-width: 1100px) {
+  .previewing .sidebar {
+    display: none;
+  }
+}
+
+@media (max-width: 760px) {
+  .preview {
+    position: fixed;
+    inset: 0;
+    z-index: 30;
+    min-width: 0;
+  }
 }

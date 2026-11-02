@@ -15,7 +15,7 @@ export type Block =
     }
 
 export type Item =
-  | { kind: 'user'; id: string; text: string }
+  | { kind: 'user'; id: string; text: string; images?: string[] }
   | {
       kind: 'assistant'
       id: string
@@ -202,15 +202,32 @@ function reduceStreamEvent(state: ChatState, event: Json): ChatState {
   }
 }
 
-export function addUserMessage(state: ChatState, text: string): ChatState {
+export function addUserMessage(
+  state: ChatState,
+  text: string,
+  images?: string[],
+): ChatState {
   return {
     ...state,
     busy: true,
     items: [
       ...state.items,
-      { kind: 'user', id: `user-${state.items.length}`, text },
+      {
+        kind: 'user',
+        id: `user-${state.items.length}`,
+        text,
+        ...(images?.length && { images }),
+      },
     ],
   }
+}
+
+function imageDataUrl(part: Json): string | undefined {
+  const source = isObj(part.source) ? part.source : undefined
+  if (source?.type !== 'base64') return undefined
+  const type = str(source.media_type)
+  const data = str(source.data)
+  return type && data ? `data:${type};base64,${data}` : undefined
 }
 
 export function removeApproval(
@@ -309,12 +326,20 @@ export function reduce(state: ChatState, raw: unknown): ChatState {
                 )
                 .filter(Boolean)
                 .join('\n')
-        if (text) {
+        const images = content
+          .map(part => (isObj(part) && part.type === 'image' ? imageDataUrl(part) : undefined))
+          .filter((u): u is string => !!u)
+        if (text || images.length) {
           next = {
             ...next,
             items: [
               ...next.items,
-              { kind: 'user', id: str(raw.uuid) ?? `user-${next.items.length}`, text },
+              {
+                kind: 'user',
+                id: str(raw.uuid) ?? `user-${next.items.length}`,
+                text,
+                ...(images.length && { images }),
+              },
             ],
           }
         }
@@ -463,12 +488,22 @@ export function permissionResponse(
   }
 }
 
-export function userMessage(text: string): Json {
+/** `images` are `data:image/…;base64,…` URLs, sent as image blocks. */
+export function userMessage(text: string, images: string[] = []): Json {
+  const blocks = images.flatMap(url => {
+    const match = /^data:(image\/[\w+.-]+);base64,(.*)$/.exec(url)
+    return match
+      ? [{ type: 'image', source: { type: 'base64', media_type: match[1], data: match[2] } }]
+      : []
+  })
   return {
     type: 'user',
     session_id: '',
     parent_tool_use_id: null,
-    message: { role: 'user', content: [{ type: 'text', text }] },
+    message: {
+      role: 'user',
+      content: [...blocks, ...(text ? [{ type: 'text', text }] : [])],
+    },
   }
 }
 

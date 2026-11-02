@@ -18,9 +18,13 @@ import React, {
 } from 'react'
 import { highlight } from './highlight'
 import { parseMarkdown, splitSettled } from './parse'
-import { safeImageSrc, safeLinkHref } from './safeUrl'
+import { localFileSrc, safeImageSrc, safeLinkHref } from './safeUrl'
 
-type Ctx = { definitions: Map<string, Definition>; streaming: boolean }
+type Ctx = {
+  definitions: Map<string, Definition>
+  streaming: boolean
+  filesBase?: string
+}
 
 function collectDefinitions(root: Root, into = new Map<string, Definition>()) {
   const walk = (node: Nodes) => {
@@ -37,7 +41,7 @@ function plainText(node: Nodes): string {
   return ''
 }
 
-function CodeBlock({
+export function CodeBlock({
   code,
   lang,
   streaming,
@@ -237,8 +241,9 @@ function renderImage(
   url: string,
   alt: string | null | undefined,
   key: number,
+  ctx: Ctx,
 ): ReactNode {
-  const src = safeImageSrc(url)
+  const src = safeImageSrc(localFileSrc(url, ctx.filesBase))
   if (!src) return <span key={key}>{alt || url}</span>
   return <img key={key} src={src} alt={alt ?? ''} loading="lazy" />
 }
@@ -304,10 +309,10 @@ function renderNode(node: RootContent, ctx: Ctx, key: number): ReactNode {
       )
     }
     case 'image':
-      return renderImage(node.url, node.alt, key)
+      return renderImage(node.url, node.alt, key, ctx)
     case 'imageReference': {
       const def = ctx.definitions.get(node.identifier)
-      return def ? renderImage(def.url, node.alt, key) : <span key={key}>{node.alt}</span>
+      return def ? renderImage(def.url, node.alt, key, ctx) : <span key={key}>{node.alt}</span>
     }
     case 'footnoteReference':
       return <sup key={key}>[{node.label ?? node.identifier}]</sup>
@@ -328,11 +333,17 @@ function renderNode(node: RootContent, ctx: Ctx, key: number): ReactNode {
   }
 }
 
-const Settled = memo(function Settled({ text }: { text: string }) {
+const Settled = memo(function Settled({
+  text,
+  filesBase,
+}: {
+  text: string
+  filesBase?: string
+}) {
   const root = useMemo(() => parseMarkdown(text), [text])
   const ctx = useMemo(
-    () => ({ definitions: collectDefinitions(root), streaming: false }),
-    [root],
+    () => ({ definitions: collectDefinitions(root), streaming: false, filesBase }),
+    [root, filesBase],
   )
   return <>{root.children.map((node, i) => renderNode(node, ctx, i))}</>
 })
@@ -344,9 +355,12 @@ const Settled = memo(function Settled({ text }: { text: string }) {
 export function Markdown({
   text,
   streaming = false,
+  filesBase,
 }: {
   text: string
   streaming?: boolean
+  /** `/api/files/<session>`: local image paths load through it. */
+  filesBase?: string
 }) {
   const { settled, tail } = useMemo(
     () => (streaming ? splitSettled(text) : { settled: text, tail: '' }),
@@ -356,13 +370,13 @@ export function Markdown({
   const tailCtx = useMemo(
     () =>
       tailRoot
-        ? { definitions: collectDefinitions(tailRoot), streaming: true }
+        ? { definitions: collectDefinitions(tailRoot), streaming: true, filesBase }
         : undefined,
-    [tailRoot],
+    [tailRoot, filesBase],
   )
   return (
     <div className="markdown">
-      {settled && <Settled text={settled} />}
+      {settled && <Settled text={settled} filesBase={filesBase} />}
       {tailRoot && tailCtx && tailRoot.children.map((node, i) => renderNode(node, tailCtx, i))}
     </div>
   )

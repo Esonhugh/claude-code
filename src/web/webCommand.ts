@@ -115,6 +115,8 @@ export async function runWebCommand(opts: WebCommandOptions): Promise<void> {
   const workspace =
     opts.workspace ?? join(getClaudeConfigHomeDir(), 'web', 'workspace')
   mkdirSync(workspace, { recursive: true })
+  const uploadsDir = join(getClaudeConfigHomeDir(), 'web', 'uploads')
+  mkdirSync(uploadsDir, { recursive: true })
 
   const logger = createServerLogger()
   const sessionManager = new SessionManager(
@@ -122,6 +124,8 @@ export async function runWebCommand(opts: WebCommandOptions): Promise<void> {
       includePartialMessages: true,
       // Root sessions refuse the flag at startup, so only offer it elsewhere.
       allowBypassPermissions: !shouldRejectRootBypassPermissions(),
+      // Uploaded files are referenced by path; Read them without a prompt.
+      addDirs: [uploadsDir],
     }),
     {
       idleTimeoutMs: Number(opts.idleTimeout),
@@ -131,7 +135,7 @@ export async function runWebCommand(opts: WebCommandOptions): Promise<void> {
   )
   const { token, cookieKey } = createWebSecrets()
   const server = startWebServer(
-    { host: opts.host, port, token, cookieKey, workspace },
+    { host: opts.host, port, token, cookieKey, workspace, uploadsDir },
     sessionManager,
     assets,
     logger,

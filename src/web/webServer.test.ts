@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'bun:test'
 import { spawn } from 'child_process'
-import { mkdtempSync, realpathSync } from 'fs'
+import { mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import type { SpawnSessionOptions } from '../server/backends/dangerousBackend.js'
@@ -37,6 +37,8 @@ type Running = {
   base: string
   origin: string
   workspace: string
+  uploads: string
+  configDir: string
   stop: () => Promise<void>
 }
 
@@ -48,6 +50,8 @@ afterEach(async () => {
 
 function start(): Running {
   const workspace = realpathSync(mkdtempSync(join(tmpdir(), 'web-ws-')))
+  const configDir = realpathSync(mkdtempSync(join(tmpdir(), 'web-cfg-')))
+  const uploads = join(configDir, 'web', 'uploads')
   const manager = new SessionManager({
     spawn: ({ cwd }: SpawnSessionOptions) =>
       spawn(process.execPath, ['-e', FAKE_CHILD], {
@@ -62,6 +66,9 @@ function start(): Running {
       token: TOKEN,
       cookieKey: Buffer.alloc(32, 1),
       workspace,
+      uploadsDir: uploads,
+      configDir,
+      uploadLimits: { fileBytes: 1000, sessionBytes: 1500 },
     },
     manager,
     assets,
@@ -72,6 +79,8 @@ function start(): Running {
     base: origin,
     origin,
     workspace,
+    uploads,
+    configDir,
     stop: async () => {
       server.stop(true)
       await manager.destroyAll()
@@ -245,5 +254,70 @@ describe('claude web server', () => {
     expect(resume.status).toBe(400)
     const info = await fetch(`${r.base}/api/info`, { headers: { cookie } })
     expect(await info.json()).toEqual({ workspace: r.workspace })
+  })
+
+  it('uploads within the limits and serves only allowed files', async () => {
+    const r = start()
+    const cookie = await signIn(r)
+    const created = await fetch(`${r.base}/api/sessions`, {
+      method: 'POST',
+      headers: { cookie, origin: r.origin },
+      body: '{}',
+    })
+    const { session_id: id } = (await created.json()) as { session_id: string }
+    const upload = (name: string, body: string) =>
+      fetch(`${r.base}/api/files/${id}?name=${encodeURIComponent(name)}`, {
+        method: 'POST',
+        headers: { cookie, origin: r.origin },
+        body,
+      })
+
+    const saved = await upload('../../evil\u0007.txt', 'hello')
+    expect(saved.status).toBe(200)
+    const info = (await saved.json()) as { path: string; name: string }
+    expect(info.name).toBe('evil.txt')
+    expect(info.path).toBe(join(r.uploads, id, 'evil.txt'))
+    expect(((await (await upload('evil.txt', 'x')).json()) as { name: string }).name).toBe(
+      'evil (1).txt',
+    )
+    expect((await upload('big.bin', 'x'.repeat(1001))).status).toBe(413)
+    expect((await upload('a.bin', 'x'.repeat(900))).status).toBe(200)
+    expect((await upload('b.bin', 'x'.repeat(900))).status).toBe(413)
+
+    const get = (path: string, headers: Record<string, string> = {}) =>
+      fetch(`${r.base}/api/files/${id}?path=${encodeURIComponent(path)}`, {
+        headers: { cookie, ...headers },
+      })
+    const served = await get(info.path)
+    expect(await served.text()).toBe('hello')
+    const ranged = await get(info.path, { range: 'bytes=1-3' })
+    expect(ranged.status).toBe(206)
+    expect(await ranged.text()).toBe('ell')
+
+    writeFileSync(join(r.workspace, 'page.html'), '<script>alert(1)</script>')
+    const page = await get(join(r.workspace, 'page.html'))
+    expect(page.headers.get('content-type')).toBe('text/plain; charset=utf-8')
+
+    const outside = realpathSync(mkdtempSync(join(tmpdir(), 'web-out-')))
+    writeFileSync(join(outside, 'secret.txt'), 'nope')
+    symlinkSync(join(outside, 'secret.txt'), join(r.workspace, 'link.txt'))
+    writeFileSync(join(r.workspace, '.env'), 'TOKEN=1')
+    mkdirSync(join(r.configDir, 'projects'), { recursive: true })
+    writeFileSync(join(r.configDir, 'projects', 'x.txt'), 'no')
+    for (const path of [
+      join(outside, 'secret.txt'),
+      join(r.workspace, 'link.txt'),
+      join(r.workspace, '..', 'x'),
+      join(r.workspace, '.env'),
+      join(r.configDir, 'projects', 'x.txt'),
+      'relative.txt',
+    ]) {
+      expect((await get(path)).status).toBe(404)
+    }
+    const other = await fetch(
+      `${r.base}/api/files/99999999-2222-4333-8444-555555555555?path=${encodeURIComponent(info.path)}`,
+      { headers: { cookie } },
+    )
+    expect(other.status).toBe(404)
   })
 })

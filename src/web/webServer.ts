@@ -1,5 +1,5 @@
 import { mkdirSync, statSync } from 'fs'
-import { isAbsolute } from 'path'
+import { basename, extname, isAbsolute, join } from 'path'
 import { z } from 'zod/v4'
 import { PERMISSION_MODES } from '../types/permissions.js'
 import { lazySchema } from '../utils/lazySchema.js'
@@ -8,6 +8,16 @@ import {
   type SessionManager,
   SessionManagerError,
 } from '../server/sessionManager.js'
+import { getClaudeConfigHomeDir } from '../utils/envUtils.js'
+import {
+  convertToPdf,
+  DEFAULT_UPLOAD_LIMITS,
+  resolveAllowedFile,
+  saveUpload,
+  transcriptFileScope,
+  UploadError,
+  type UploadLimits,
+} from './files.js'
 import { listHistory, readTranscript, renameSession, SESSION_ID } from './history.js'
 import {
   allowedHosts,
@@ -28,6 +38,11 @@ export type WebServerConfig = {
   token: string
   cookieKey: Buffer
   workspace: string
+  /** Uploads land in `<uploadsDir>/<session id>/`. */
+  uploadsDir: string
+  uploadLimits?: UploadLimits
+  /** Defaults to the claude config dir; files under it are not served. */
+  configDir?: string
   trustedHosts?: string[]
 }
 
@@ -72,6 +87,40 @@ const WS_PATH = /^\/api\/sessions\/([^/]+)\/ws$/
 const SESSION_PATH = /^\/api\/sessions\/([^/]+)$/
 const HISTORY_PATH = /^\/api\/history\/([^/]+)$/
 const HISTORY_MESSAGES_PATH = /^\/api\/history\/([^/]+)\/messages$/
+const FILES_PATH = /^\/api\/files\/([^/]+)(\/pdf)?$/
+
+// Served as text so a file from the workspace never runs as a page on this origin.
+const ACTIVE_TYPES = new Set(['.html', '.htm', '.xhtml', '.svg', '.xml', '.js', '.mjs'])
+
+function fileResponse(req: Request, path: string, download: boolean): Response {
+  const file = Bun.file(path)
+  const size = file.size
+  const ext = extname(path).toLowerCase()
+  const type = ACTIVE_TYPES.has(ext)
+    ? 'text/plain; charset=utf-8'
+    : file.type || 'application/octet-stream'
+  const headers: Record<string, string> = {
+    'Content-Type': type,
+    'Accept-Ranges': 'bytes',
+    'Content-Disposition': `${download ? 'attachment' : 'inline'}; filename*=UTF-8''${encodeURIComponent(basename(path))}`,
+  }
+  const range = /^bytes=(\d*)-(\d*)$/.exec(req.headers.get('range') ?? '')
+  if (range && (range[1] || range[2])) {
+    const start = range[1] ? Number(range[1]) : Math.max(0, size - Number(range[2]))
+    const end = range[1] && range[2] ? Math.min(Number(range[2]), size - 1) : size - 1
+    if (start > end || start >= size) {
+      return new Response(null, {
+        status: 416,
+        headers: { 'Content-Range': `bytes */${size}` },
+      })
+    }
+    return new Response(file.slice(start, end + 1), {
+      status: 206,
+      headers: { ...headers, 'Content-Range': `bytes ${start}-${end}/${size}` },
+    })
+  }
+  return new Response(file, { headers })
+}
 
 const renameBodySchema = lazySchema(() =>
   z.object({ title: z.string().trim().min(1).max(200) }),
@@ -123,6 +172,9 @@ function isDirectory(path: string): boolean {
  *   GET    /api/history                 → transcripts on disk, newest first
  *   GET    /api/history/:id/messages    → a page of one transcript
  *   PATCH  /api/history/:id             → rename (custom title)
+ *   POST   /api/files/:id?name=         → upload into the session's folder
+ *   GET    /api/files/:id?path=         → a file the session may show (Range)
+ *   GET    /api/files/:id/pdf?path=     → Office document converted to PDF
  */
 export function startWebServer(
   config: WebServerConfig,
@@ -131,6 +183,60 @@ export function startWebServer(
   logger: ServerLogger,
 ): { port: number; stop: (force?: boolean) => void } {
   let hosts = allowedHosts(config.port, config.trustedHosts)
+  const uploadLimits = config.uploadLimits ?? DEFAULT_UPLOAD_LIMITS
+
+  async function sessionFile(id: string, path: string): Promise<string | undefined> {
+    if (!isAbsolute(path)) return undefined
+    const running = sessionManager.get(id)
+    const transcript = await transcriptFileScope(id)
+    const cwd = running?.workDir ?? transcript.cwd
+    return resolveAllowedFile(path, {
+      roots: [join(config.uploadsDir, id), ...(cwd ? [cwd] : [])],
+      files: transcript.files,
+      configDir: config.configDir ?? getClaudeConfigHomeDir(),
+    })
+  }
+
+  async function handleFiles(
+    req: Request,
+    url: URL,
+    id: string,
+    pdf: boolean,
+  ): Promise<Response> {
+    if (!SESSION_ID.test(id)) return errorResponse(400, 'Invalid session id')
+    if (req.method === 'POST' && !pdf) {
+      const length = Number(req.headers.get('content-length'))
+      if (!Number.isFinite(length) || length <= 0) {
+        return errorResponse(411, 'Content-Length required')
+      }
+      if (length > uploadLimits.fileBytes) {
+        return errorResponse(413, 'File is larger than the upload limit')
+      }
+      try {
+        const saved = await saveUpload(
+          config.uploadsDir,
+          id,
+          url.searchParams.get('name') ?? 'upload',
+          await req.arrayBuffer(),
+          uploadLimits,
+        )
+        return Response.json(saved)
+      } catch (err) {
+        if (err instanceof UploadError) return errorResponse(err.status, err.message)
+        throw err
+      }
+    }
+    if (req.method !== 'GET' && req.method !== 'HEAD') {
+      return errorResponse(405, 'Method not allowed')
+    }
+    const file = await sessionFile(id, url.searchParams.get('path') ?? '')
+    if (!file) return errorResponse(404, 'File not found')
+    if (!pdf) return fileResponse(req, file, url.searchParams.has('download'))
+    const converted = await convertToPdf(file)
+    return converted
+      ? fileResponse(req, converted, false)
+      : errorResponse(501, 'No converter available for this file')
+  }
 
   async function createSession(req: Request): Promise<Response> {
     let raw: unknown
@@ -221,6 +327,10 @@ export function startWebServer(
       return (await renameSession(id, parsed.data.title))
         ? new Response(null, { status: 204 })
         : errorResponse(404, 'Session not found')
+    }
+    const filesMatch = FILES_PATH.exec(pathname)
+    if (filesMatch) {
+      return handleFiles(req, url, decodeURIComponent(filesMatch[1]!), !!filesMatch[2])
     }
     const wsMatch = WS_PATH.exec(pathname)
     if (wsMatch && req.method === 'GET') {

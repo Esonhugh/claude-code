@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'bun:test'
-import { existsSync, mkdirSync, mkdtempSync, realpathSync } from 'fs'
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 
@@ -85,6 +85,51 @@ const MARKDOWN_REPLY = [
   '',
   '[click](javascript:window.__xss=3) [safe](https://example.com)',
 ].join('\n')
+
+/** A valid PDF with one line of text on each page. */
+function tinyPdf(pages: string[]): Uint8Array {
+  const objects = [
+    '<< /Type /Catalog /Pages 2 0 R >>',
+    `<< /Type /Pages /Kids [${pages.map((_, i) => `${4 + i * 2} 0 R`).join(' ')}] /Count ${pages.length} >>`,
+    '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>',
+    ...pages.flatMap((text, i) => {
+      const stream = `BT /F1 24 Tf 72 720 Td (${text}) Tj ET`
+      return [
+        `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents ${5 + i * 2} 0 R >>`,
+        `<< /Length ${stream.length} >>\nstream\n${stream}\nendstream`,
+      ]
+    }),
+  ]
+  let out = '%PDF-1.4\n'
+  const offsets = objects.map((body, i) => {
+    const offset = out.length
+    out += `${i + 1} 0 obj\n${body}\nendobj\n`
+    return offset
+  })
+  const xref = out.length
+  out += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`
+  out += offsets.map(o => `${String(o).padStart(10, '0')} 00000 n \n`).join('')
+  out += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`
+  return new TextEncoder().encode(out)
+}
+
+async function tinyDocx(text: string): Promise<Uint8Array> {
+  const { default: JSZip } = await import('jszip')
+  const zip = new JSZip()
+  zip.file(
+    '[Content_Types].xml',
+    '<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>',
+  )
+  zip.file(
+    '_rels/.rels',
+    '<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>',
+  )
+  zip.file(
+    'word/document.xml',
+    `<?xml version="1.0" encoding="UTF-8"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>${text}</w:t></w:r></w:p></w:body></w:document>`,
+  )
+  return zip.generateAsync({ type: 'uint8array' })
+}
 
 describe.skipIf(!binary)('claude web (built binary)', () => {
   let api: ReturnType<typeof Bun.serve>
@@ -323,6 +368,117 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       await browser.close()
     }
   }, 120_000)
+
+  it('attaches files and previews documents by type', async () => {
+    const samples = join(workspace, 'samples')
+    mkdirSync(samples)
+    const sample = (name: string, body: string | Uint8Array) => {
+      writeFileSync(join(samples, name), body)
+      return join(samples, name)
+    }
+    const { default: ExcelJS } = await import('exceljs')
+    const book = new ExcelJS.Workbook()
+    book.addWorksheet('First').addRows([['col1', 'col2'], ['a', 1]])
+    book.addWorksheet('Second').addRows([['SECOND_SHEET_CELL']])
+    const files = [
+      sample('readme.md', '## MD_HEADING\n\ntext'),
+      sample('table.csv', 'col1,col2\n"x, y",2\n'),
+      sample('page.html', '<h1>HTML_BODY</h1><script>parent.__xss=4</script>'),
+      sample('chart.svg', '<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><script>parent.__xss=5</script><rect width="10" height="10"/></svg>'),
+      sample('book.xlsx', new Uint8Array(await book.xlsx.writeBuffer())),
+      sample('letter.docx', await tinyDocx('DOCX_BODY')),
+      sample('slides.pdf', tinyPdf(['PAGE_ONE', 'PAGE_TWO'])),
+      sample('memo.rtf', '{\\rtf1\\ansi RTF_BODY\\par}'),
+    ]
+    const notes = join(home, 'notes.txt')
+    writeFileSync(notes, 'NOTES_BODY')
+    const pixel = join(home, 'pixel.png')
+    writeFileSync(
+      pixel,
+      Buffer.from(
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+        'base64',
+      ),
+    )
+
+    const playwrightPath = Bun.spawnSync(['node', '-p', "require.resolve('playwright')"])
+      .stdout.toString()
+      .trim()
+    const { chromium } = await import(playwrightPath)
+    const browser = await chromium.launch()
+    try {
+      const context = await browser.newContext({ locale: 'en-US' })
+      const page = await context.newPage()
+      const errors: string[] = []
+      page.on('pageerror', e => errors.push(e.message))
+      await page.goto(signInUrl)
+      await page.getByText('What can I help you with?').waitFor()
+
+      await page.locator('input[type=file]').setInputFiles([notes, pixel])
+      await page.locator('.attachment', { hasText: 'notes.txt' }).waitFor()
+      const before = promptsSeen.length
+      const input = page.getByPlaceholder('Message Claude')
+      await input.fill(`FILES ${files.map(f => `@${f}`).join(' ')}`)
+      await input.press('Enter')
+      await page.getByText('Hello from the fake model').waitFor({ timeout: 30_000 })
+      const prompt = promptsSeen.slice(before).join('\n')
+      expect(prompt).toContain('"type":"image"')
+      expect(prompt).toContain('NOTES_BODY')
+      expect(await page.locator('.attachment').count()).toBe(0)
+      await page.locator('.bubble-image').waitFor()
+
+      const preview = page.locator('.preview')
+      const open = async (name: string) => {
+        await page.locator('.file-chip', { hasText: name }).click()
+        await preview.locator('.preview-name', { hasText: name }).waitFor()
+      }
+      await open('notes.txt')
+      await preview.getByText('NOTES_BODY').waitFor()
+      await open('readme.md')
+      await preview.locator('.markdown h3', { hasText: 'MD_HEADING' }).waitFor()
+      await open('table.csv')
+      await preview.locator('.sheet td', { hasText: 'x, y' }).waitFor()
+      await open('page.html')
+      const frame = preview.locator('iframe.preview-frame')
+      await frame.waitFor()
+      expect(await frame.getAttribute('sandbox')).toBe('')
+      await page.frameLocator('iframe.preview-frame').getByText('HTML_BODY').waitFor()
+      await open('chart.svg')
+      await preview.locator('img[src^="blob:"]').waitFor()
+      await open('book.xlsx')
+      await preview.getByRole('tab', { name: 'Second' }).click()
+      await preview.getByText('SECOND_SHEET_CELL').waitFor({ timeout: 30_000 })
+      await open('letter.docx')
+      await preview.locator('.docx-page', { hasText: 'DOCX_BODY' }).waitFor({ timeout: 30_000 })
+      await open('slides.pdf')
+      await preview.locator('.page-count', { hasText: '/ 2' }).waitFor({ timeout: 30_000 })
+      await preview.getByRole('button', { name: 'Next page' }).click()
+      await page.waitForFunction(
+        () => (document.querySelector('.pager input') as HTMLInputElement | null)?.value === '2',
+      )
+      await open('memo.rtf')
+      if (Bun.which('soffice')) {
+        await preview.locator('.page-count', { hasText: '/ 1' }).waitFor({ timeout: 120_000 })
+      } else {
+        await preview.getByText('LibreOffice').waitFor({ timeout: 30_000 })
+      }
+      await page.keyboard.press('Escape')
+      await preview.waitFor({ state: 'detached' })
+      expect(await page.evaluate(() => (window as { __xss?: number }).__xss)).toBeUndefined()
+
+      const statuses = await page.evaluate(async (paths: string[]) => {
+        const sessions = (await (await fetch('/api/sessions')).json()) as { id: string }[]
+        const id = sessions.at(-1)!.id
+        return Promise.all(
+          paths.map(async p => (await fetch(`/api/files/${id}?path=${encodeURIComponent(p)}`)).status),
+        )
+      }, ['/etc/passwd', join(home, '.claude', 'web.lock'), `${samples}/../../notes.txt`])
+      expect(statuses).toEqual([404, 404, 404])
+      expect(errors).toEqual([])
+    } finally {
+      await browser.close()
+    }
+  }, 240_000)
 
   it('shuts down on SIGTERM and removes the lock', async () => {
     web.kill('SIGTERM')
