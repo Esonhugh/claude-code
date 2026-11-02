@@ -106,6 +106,13 @@ async function mountDialog(
   const stdin = new Input()
   const onSave = mock(() => {})
   const onCancel = mock(() => {})
+  // useInput listeners register in passive effects, which can run after the
+  // first frame under load; this sibling's effect runs after the dialog's.
+  let ready = false
+  const Ready = () => {
+    useEffect(() => { ready = true }, [])
+    return null
+  }
   const instance = await render(
     <Keys>
       <PluginOptionsDialog
@@ -116,6 +123,7 @@ async function mountDialog(
         onCancel={onCancel}
         {...props}
       />
+      <Ready />
     </Keys>,
     {
       stdout: stdout as unknown as NodeJS.WriteStream,
@@ -124,7 +132,8 @@ async function mountDialog(
       exitOnCtrlC: false,
     },
   )
-  await new Promise(resolve => setTimeout(resolve, 40))
+  const deadline = Date.now() + 10_000
+  while (!ready && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 10))
   return {
     onSave,
     onCancel,
