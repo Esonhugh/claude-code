@@ -589,6 +589,18 @@ export const SDKControlStopTaskRequestSchema = lazySchema(() =>
     .describe('Stops a running task.'),
 )
 
+export const SDKControlSendTaskMessageRequestSchema = lazySchema(() =>
+  z
+    .object({
+      subtype: z.literal('send_task_message'),
+      task_id: z.string(),
+      text: z.string(),
+    })
+    .describe(
+      'Fork-only. Sends a user message to a subagent or teammate task, as typing into its view does in the REPL: a running agent gets it at its next tool round (queued), an ended one is resumed with it (resumed), a running teammate gets it injected (injected).',
+    ),
+)
+
 export const SDKControlApplyFlagSettingsRequestSchema = lazySchema(() =>
   z
     .object({
@@ -714,6 +726,7 @@ export const SDKControlRequestInnerSchema = lazySchema(() =>
     SDKControlMcpReconnectRequestSchema(),
     SDKControlMcpToggleRequestSchema(),
     SDKControlStopTaskRequestSchema(),
+    SDKControlSendTaskMessageRequestSchema(),
     SDKControlApplyFlagSettingsRequestSchema(),
     SDKControlGetSettingsRequestSchema(),
     SDKControlElicitationRequestSchema(),

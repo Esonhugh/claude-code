@@ -291,6 +291,12 @@ export type SDKControlStopTaskRequest = {
   task_id: string
 }
 
+export type SDKControlSendTaskMessageRequest = {
+  subtype: 'send_task_message'
+  task_id: string
+  text: string
+}
+
 export type SDKControlApplyFlagSettingsRequest = {
   subtype: 'apply_flag_settings'
   settings: Record<string, unknown>

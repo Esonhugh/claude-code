@@ -42,8 +42,7 @@ if (process.env[childFlag] !== '1') {
   const { SandboxManager } = await import('../utils/sandbox/sandbox-adapter.js')
   const { readFileSync } = await import('node:fs')
 
-  async function run(requests: Record<string, unknown>[]) {
-    const store = createStore(getDefaultAppState(), onChangeAppState)
+  async function run(requests: Record<string, unknown>[], store = createStore(getDefaultAppState(), onChangeAppState)) {
     const frames: StdoutMessage[] = []
     const receipts = new Map<string, ReturnType<typeof Promise.withResolvers<void>>>()
     const mocks = [
@@ -78,6 +77,41 @@ if (process.env[childFlag] !== '1') {
     }
     return frames.filter(frame => frame.type === 'control_response').map(frame => frame.response as Record<string, any>)
   }
+
+  test('send_task_message routes like typing into an agent view; get_task_output reads a Terminal screen', async () => {
+    const base = { description: 'd', startTime: 0, outputFile: '/dev/null', outputOffset: 0, notified: false }
+    const initial = getDefaultAppState()
+    const store = createStore({
+      ...initial,
+      tasks: {
+        a1: { ...base, id: 'a1', type: 'local_agent', status: 'running', agentId: 'a1', prompt: 'p', messages: [], pendingMessages: [] },
+        a2: { ...base, id: 'a2', type: 'local_agent', status: 'killed', agentId: 'a2', prompt: 'p', messages: [], pendingMessages: [], stoppedByUser: true },
+        t1: { ...base, id: 't1', type: 'in_process_teammate', status: 'running', messages: [], pendingUserMessages: [] },
+        t2: { ...base, id: 't2', type: 'in_process_teammate', status: 'completed', messages: [], pendingUserMessages: [] },
+        term1: { ...base, id: 'term1', type: 'interactive_terminal', status: 'running', sessionId: 's', command: 'bash', args: [], cwd: '/', cols: 80, rows: 24, preview: '$ echo hi\nhi', closed: false },
+      } as unknown as typeof initial.tasks,
+    }, onChangeAppState)
+    const [queued, stopped, injected, teammateGone, unknown, empty, screen] = await run([
+      { subtype: 'send_task_message', task_id: 'a1', text: 'also check the appendix' },
+      { subtype: 'send_task_message', task_id: 'a2', text: 'x' },
+      { subtype: 'send_task_message', task_id: 't1', text: 'hello teammate' },
+      { subtype: 'send_task_message', task_id: 't2', text: 'x' },
+      { subtype: 'send_task_message', task_id: 'nosuch', text: 'x' },
+      { subtype: 'send_task_message', task_id: 'a1', text: '  ' },
+      { subtype: 'get_task_output', task_id: 'term1' },
+    ], store)
+    expect(queued.response).toEqual({ delivery: 'queued' })
+    const tasks = store.getState().tasks as Record<string, any>
+    expect(tasks.a1.pendingMessages).toEqual(['also check the appendix'])
+    expect(tasks.a1.messages).toHaveLength(1)
+    expect(stopped).toMatchObject({ subtype: 'error', error: 'send_task_message: agent a2 was stopped by the user' })
+    expect(injected.response).toEqual({ delivery: 'injected' })
+    expect(tasks.t1.pendingUserMessages).toEqual(['hello teammate'])
+    expect(teammateGone).toMatchObject({ subtype: 'error', error: 'send_task_message: teammate has stopped; message was not sent' })
+    expect(unknown).toMatchObject({ subtype: 'error', error: 'send_task_message: no agent or teammate task with id nosuch' })
+    expect(empty).toMatchObject({ subtype: 'error', error: 'send_task_message: task_id and text must be non-empty strings' })
+    expect(screen.response).toEqual({ output: '$ echo hi\nhi', total_bytes: 12, truncated: false })
+  })
 
   test('reload_skills and reload_output_styles answer instead of Unsupported', async () => {
     const [skills, styles] = await run([{ subtype: 'reload_skills' }, { subtype: 'reload_output_styles' }])
