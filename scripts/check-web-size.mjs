@@ -5,8 +5,8 @@ import fs from 'node:fs';
 import process from 'node:process';
 import { URL } from 'node:url';
 
-// About 15% above the measured 11.72 MiB.
-const BUDGET_BYTES = 13.5 * 1024 * 1024;
+// About 15% above the measured 11.95 MiB (with the bundled IBM Plex fonts).
+const BUDGET_BYTES = 13.75 * 1024 * 1024;
 const manifest = new URL('../web/dist/assets.json', import.meta.url);
 
 let size;
