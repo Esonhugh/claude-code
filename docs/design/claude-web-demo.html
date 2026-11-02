@@ -589,6 +589,8 @@ button.chip { cursor: pointer; font: inherit; color: inherit }
 .footmenu { position: absolute; bottom: calc(100% + 6px); left: 0; width: min(340px, calc(100vw - 40px)); z-index: 30; padding: 6px; display: flex; flex-direction: column; gap: 2px }
 .footmenu.right { left: auto; right: 0 }
 #goal-wrap:not([hidden]) + .footwrap { margin-left: 4px } #goal-wrap[hidden] + .footwrap { margin-left: auto }
+/* History view hides the goal button without [hidden]; keep the model button right. */
+body.hist #goal-wrap + .footwrap { margin-left: auto }
 .footbtn.goal { color: var(--accent) }
 .goalmenu { width: min(380px, calc(100vw - 40px)); padding: 10px 12px; gap: 6px; font-size: 13px }
 .goalmenu .gp { color: var(--fg); line-height: 1.5 } .goalmenu .gm { color: var(--muted); font-size: 12px }

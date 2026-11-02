@@ -91,6 +91,19 @@ const MARKDOWN_REPLY = [
   '[click](javascript:window.__xss=3) [safe](https://example.com)',
 ].join('\n')
 
+// Two phases with one agent each; the agents answer A_OUT and B_OUT.
+const WORKFLOW_SCRIPT = `export const meta = {
+  name: "two-phase",
+  description: "Two phase test workflow",
+  phases: [{ title: "Gather", detail: "collect" }, { title: "Write", detail: "write up" }],
+}
+phase("Gather")
+const a = await agent("WFAGENT_A gather", { label: "gather-a" })
+phase("Write")
+const b = await agent("WFAGENT_B write", { label: "write-b" })
+return { a, b }
+`
+
 /** A valid PDF with one line of text on each page. */
 function tinyPdf(pages: string[]): Uint8Array {
   const objects = [
@@ -166,6 +179,7 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
         ]
         let stop = 'end_turn'
         const lastText = JSON.stringify(last.content)
+        const allText = JSON.stringify(body.messages)
         const touch = (file: string) => {
           blocks = [
             {
@@ -177,7 +191,31 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
           ]
           stop = 'tool_use'
         }
-        if (lastText.includes('FOLLOWUP_MSG')) {
+        // Teammates see only their own prompt; the lead's history also has MAKE_TEAM.
+        const teammate = !allText.includes('MAKE_TEAM')
+        if (lastText.includes('MEMBER_PING')) {
+          blocks = [{ type: 'text', text: 'MEMBER_PONG' }]
+        } else if (teammate && allText.includes('TEAM_ALICE')) {
+          blocks = [{ type: 'text', text: 'ALICE_DONE' }]
+        } else if (teammate && allText.includes('TEAM_BOB')) {
+          blocks = [{ type: 'text', text: 'BOB_DONE' }]
+        } else if (lastText.includes('teammate-message')) {
+          blocks = [{ type: 'text', text: 'LEAD_SAW_MEMBER' }]
+        } else if (lastText.includes('WFAGENT_A')) {
+          blocks = [{ type: 'text', text: 'A_OUT' }]
+        } else if (lastText.includes('WFAGENT_B')) {
+          blocks = [{ type: 'text', text: 'B_OUT' }]
+        } else if (lastText.includes('RUN_WF')) {
+          blocks = [{ type: 'tool_use', id: 'toolu_wf', name: 'Workflow', input: { script: WORKFLOW_SCRIPT } }]
+          stop = 'tool_use'
+        } else if (lastText.includes('MAKE_TEAM')) {
+          // A named Agent call joins the session's team (Agent Teams on).
+          blocks = [
+            { type: 'tool_use', id: 'toolu_alice', name: 'Agent', input: { name: 'alice', description: 'Review methods', prompt: 'TEAM_ALICE review methods' } },
+            { type: 'tool_use', id: 'toolu_bob', name: 'Agent', input: { name: 'bob', description: 'Review results', prompt: 'TEAM_BOB review results' } },
+          ]
+          stop = 'tool_use'
+        } else if (lastText.includes('FOLLOWUP_MSG')) {
           blocks = [{ type: 'text', text: 'FOLLOWUP_DONE' }]
         } else if (lastText.includes('SUBTASK_BG')) {
           blocks = [{ type: 'text', text: 'SUB_RESULT' }]
@@ -196,6 +234,9 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
             },
           ]
           stop = 'tool_use'
+        } else if (/PREVIEW_URLS ([^"\\\s]+) ([^"\\\s]+)/.test(lastText)) {
+          const [, dev, own] = /PREVIEW_URLS ([^"\\\s]+) ([^"\\\s]+)/.exec(lastText)!
+          blocks = [{ type: 'text', text: `Dev server: ${dev} and this UI: ${own}` }]
         } else if (lastBlocks.some(b => b.type === 'tool_result')) {
           blocks = [{ type: 'text', text: 'WEB_DONE' }]
         } else if (lastText.includes('TOUCH')) {
@@ -226,6 +267,7 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
           ANTHROPIC_BASE_URL: `http://127.0.0.1:${api.port}`,
           CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
           DISABLE_AUTOUPDATER: '1',
+          CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: '1',
         },
         stdout: 'pipe',
         stderr: 'pipe',
@@ -534,7 +576,7 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       await finished.waitFor({ timeout: 60_000 })
       if ((await finished.getAttribute('aria-expanded')) === 'false') await finished.click()
       await panel.locator('.agent-row', { hasText: 'Look around' }).click()
-      await panel.getByText('SUB_RESULT').waitFor({ timeout: 30_000 })
+      await panel.locator('.agent-feed').getByText('SUB_RESULT').first().waitFor({ timeout: 30_000 })
 
       const agentInput = panel.getByPlaceholder('Message general-purpose')
       await agentInput.fill('FOLLOWUP_MSG now')
@@ -552,6 +594,296 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       await browser.close()
     }
   }, 180_000)
+
+  it('completes slash commands from the palette and runs them', async () => {
+    const playwrightPath = Bun.spawnSync(['node', '-p', "require.resolve('playwright')"])
+      .stdout.toString()
+      .trim()
+    const { chromium } = await import(playwrightPath)
+    const browser = await chromium.launch()
+    try {
+      const context = await browser.newContext({ locale: 'en-US' })
+      const page = await context.newPage()
+      const errors: string[] = []
+      page.on('pageerror', e => errors.push(e.message))
+      await page.goto(signInUrl)
+      await page.getByText('What can I help you with?').waitFor()
+      const input = page.getByPlaceholder('Message Claude')
+      await input.fill('hi palette')
+      await input.press('Enter')
+      await page.getByText('Hello from the fake model').waitFor({ timeout: 30_000 })
+
+      const palette = page.getByRole('listbox', { name: 'Commands' })
+      await input.fill('/')
+      await palette.waitFor()
+      expect(await palette.getByRole('option').count()).toBeGreaterThan(5)
+      await input.press('Escape')
+      await palette.waitFor({ state: 'detached' })
+
+      // Terminal-only commands (from system/init) are not offered.
+      await input.fill('/col')
+      await page.waitForTimeout(200)
+      expect(await palette.getByRole('option', { name: /^\/color/ }).count()).toBe(0)
+
+      // `cost` is an alias of `usage`, a local command: no model call.
+      await input.fill('/cos')
+      const usage = palette.getByRole('option', { name: /^\/usage/ })
+      await usage.waitFor()
+      expect(await usage.textContent()).toContain('cost')
+      await input.press('Enter')
+      expect(await input.inputValue()).toBe('/usage ')
+      await palette.waitFor({ state: 'detached' })
+      const before = promptsSeen.length
+      await input.press('Enter')
+      await page.getByText('Total cost:').waitFor({ timeout: 30_000 })
+      expect(promptsSeen.length).toBe(before)
+
+      // Mouse: click a row to complete it.
+      await input.fill('/cont')
+      await palette.getByRole('option', { name: /^\/context/ }).click()
+      expect(await input.inputValue()).toBe('/context ')
+      expect(errors).toEqual([])
+    } finally {
+      await browser.close()
+    }
+  }, 120_000)
+
+  it('shows a workflow and a team, messages a teammate and restores the panel after a reload', async () => {
+    const playwrightPath = Bun.spawnSync(['node', '-p', "require.resolve('playwright')"])
+      .stdout.toString()
+      .trim()
+    const { chromium } = await import(playwrightPath)
+    const browser = await chromium.launch()
+    try {
+      const context = await browser.newContext({ locale: 'en-US' })
+      const page = await context.newPage()
+      const errors: string[] = []
+      page.on('pageerror', e => errors.push(e.message))
+      await page.goto(signInUrl)
+      await page.getByText('What can I help you with?').waitFor()
+      const input = page.getByPlaceholder('Message Claude')
+      await input.fill('please RUN_WF now')
+      await input.press('Enter')
+
+      // The Workflow tool may ask first.
+      const dialog = page.getByRole('dialog')
+      await page.locator('.agent-chip').or(dialog).first().waitFor({ timeout: 30_000 })
+      if (await dialog.isVisible()) {
+        await dialog.getByRole('button', { name: 'Allow', exact: true }).click()
+      }
+      await page.locator('.agent-chip').waitFor({ timeout: 30_000 })
+      const panel = page.locator('aside.agents')
+      if (!(await panel.isVisible())) await page.getByRole('button', { name: /^Agents/ }).click()
+      await panel.waitFor()
+
+      // Both phases ran; the workflow agents sit in its lanes, not in the tree.
+      const finished = panel.getByRole('button', { name: /Finished/ })
+      await finished.waitFor({ timeout: 60_000 })
+      if ((await finished.getAttribute('aria-expanded')) === 'false') await finished.click()
+      await panel.locator('.agent-row', { hasText: 'two-phase' }).first().click()
+      await panel.getByText('Phase 2/2 · Write').waitFor({ timeout: 30_000 })
+      await panel.getByRole('button', { name: 'Expand' }).click()
+      const lanes = page.locator('.lanes')
+      await lanes.locator('.lane-head', { hasText: 'Gather' }).waitFor()
+      await lanes.locator('.lane-head', { hasText: 'Write' }).waitFor()
+      expect(await lanes.locator('.lane-card').allTextContents()).toEqual(['gather-a', 'write-b'])
+      await lanes.locator('.lane-card', { hasText: 'write-b' }).click()
+      await panel.getByText('B_OUT').waitFor({ timeout: 30_000 })
+      await panel.getByText('Workflow agents are read-only.').waitFor()
+      await panel.getByRole('button', { name: 'Back' }).click()
+
+      await input.fill('please MAKE_TEAM now')
+      await input.press('Enter')
+      const team = panel.locator('.agent-section', { hasText: 'Team' })
+      await team.locator('.agent-row', { hasText: 'alice' }).waitFor({ timeout: 30_000 })
+      await team.locator('.agent-row', { hasText: 'bob' }).waitFor()
+      // Both report idle to the lead, which sees it as a teammate message.
+      await team.getByText('0 working · 2 idle').waitFor({ timeout: 60_000 })
+      await page.locator('.msg-teammate', { hasText: 'alice' }).first().waitFor()
+      await page.getByText('LEAD_SAW_MEMBER').first().waitFor({ timeout: 30_000 })
+      await team.locator('.agent-row', { hasText: 'Messages' }).click()
+      await panel.locator('.team-timeline li', { hasText: 'ALICE_DONE' }).waitFor()
+      await panel.getByRole('button', { name: 'Back' }).click()
+
+      // A message to a running teammate goes straight into its conversation.
+      await team.locator('.agent-row', { hasText: 'alice' }).click()
+      const memberInput = panel.getByPlaceholder('Message alice')
+      await memberInput.fill('MEMBER_PING hi')
+      await memberInput.press('Enter')
+      await panel.getByText('Sent to the teammate.').waitFor({ timeout: 30_000 })
+      await panel.getByText('MEMBER_PONG').waitFor({ timeout: 60_000 })
+      await panel.getByRole('button', { name: 'Back' }).click()
+
+      // The team outlives the turn: another prompt, and nobody has stopped.
+      await input.fill('hello after the team')
+      await input.press('Enter')
+      await page.getByText('Hello from the fake model').last().waitFor({ timeout: 30_000 })
+      expect(await team.locator('.member-stopped').count()).toBe(0)
+
+      // A reload rebuilds the panel from what the server replays.
+      await page.reload()
+      await page.locator('.session-row', { hasText: 'RUN_WF' }).locator('.session-title').click()
+      await page.locator('.status-live').waitFor({ timeout: 30_000 })
+      if (!(await panel.isVisible())) await page.getByRole('button', { name: /^Agents/ }).click()
+      await team.locator('.agent-row', { hasText: 'alice' }).waitFor({ timeout: 30_000 })
+      await team.locator('.agent-row', { hasText: 'bob' }).waitFor()
+      if ((await finished.getAttribute('aria-expanded')) === 'false') await finished.click()
+      await panel.locator('.agent-row', { hasText: 'two-phase' }).first().waitFor()
+      expect(errors).toEqual([])
+    } finally {
+      await browser.close()
+    }
+  }, 240_000)
+
+  it('fits a phone screen with drawers for both side panels', async () => {
+    const playwrightPath = Bun.spawnSync(['node', '-p', "require.resolve('playwright')"])
+      .stdout.toString()
+      .trim()
+    const { chromium } = await import(playwrightPath)
+    const browser = await chromium.launch()
+    // Optional: CLAUDE_WEB_SCREENS=<dir> saves screenshots along the way.
+    const screens = process.env.CLAUDE_WEB_SCREENS
+    const shot = async (page: { screenshot(o: { path: string }): Promise<unknown> }, name: string) => {
+      if (screens) await page.screenshot({ path: join(screens, `${name}.png`) })
+    }
+    try {
+      const context = await browser.newContext({
+        locale: 'en-US',
+        viewport: { width: 375, height: 740 },
+        hasTouch: true,
+      })
+      const page = await context.newPage()
+      const errors: string[] = []
+      page.on('pageerror', e => errors.push(e.message))
+      const noSideScroll = () =>
+        page.evaluate(() => document.scrollingElement!.scrollWidth <= window.innerWidth)
+      const visibility = (selector: string) =>
+        page.evaluate(
+          (s: string) => getComputedStyle(document.querySelector(s)!).visibility,
+          selector,
+        )
+      await page.goto(signInUrl)
+      await page.getByText('What can I help you with?').waitFor()
+      expect(await noSideScroll()).toBe(true)
+
+      // The history sidebar is an off-canvas drawer: Esc closes it and hands
+      // focus back to the menu button.
+      const menu = page.getByRole('button', { name: 'Menu' })
+      expect(await visibility('.sidebar')).toBe('hidden')
+      await menu.click()
+      expect(await menu.getAttribute('aria-expanded')).toBe('true')
+      await page.waitForFunction(() => document.activeElement?.classList.contains('new-chat'))
+      await page.waitForTimeout(300)
+      await shot(page, 'phone-light-sidebar')
+      await page.keyboard.press('Escape')
+      await page.waitForFunction(
+        () => getComputedStyle(document.querySelector('.sidebar')!).visibility === 'hidden',
+      )
+      expect(await page.evaluate(() => document.activeElement?.getAttribute('aria-label'))).toBe(
+        'Menu',
+      )
+
+      const input = page.getByPlaceholder('Message Claude')
+      await input.fill('hi from a phone')
+      await page.getByRole('button', { name: 'Send' }).click()
+      await page.getByText('Hello from the fake model').waitFor({ timeout: 30_000 })
+      expect(await noSideScroll()).toBe(true)
+      for (const box of await page
+        .locator('.topbar button, .topbar select, .composer button')
+        .evaluateAll((els: Element[]) => els.map(el => el.getBoundingClientRect().toJSON()))) {
+        expect(box.height).toBeGreaterThanOrEqual(40)
+        expect(box.right).toBeLessThanOrEqual(375)
+      }
+      await shot(page, 'phone-light-chat')
+
+      // Tapping the backdrop closes the sidebar drawer...
+      await menu.click()
+      await page.waitForTimeout(300)
+      await page.mouse.click(360, 400)
+      await page.waitForFunction(
+        () => getComputedStyle(document.querySelector('.sidebar')!).visibility === 'hidden',
+      )
+
+      // ...and the right panel, which also takes focus while it is open.
+      const agents = page.getByRole('button', { name: /^Agents/ })
+      await agents.click()
+      const panel = page.locator('aside.agents')
+      await panel.waitFor()
+      await page.waitForFunction(() => !!document.activeElement?.closest('aside.agents'))
+      const box = await panel.boundingBox()
+      expect(box!.x).toBeGreaterThan(0)
+      expect(box!.x + box!.width).toBeLessThanOrEqual(375)
+      await page.emulateMedia({ colorScheme: 'dark' })
+      await shot(page, 'phone-dark-agents')
+      await page.mouse.click(10, 400)
+      await panel.waitFor({ state: 'detached' })
+      expect(await agents.evaluate((el: Element) => el === document.activeElement)).toBe(true)
+      await shot(page, 'phone-dark-chat')
+      expect(await noSideScroll()).toBe(true)
+
+      await page.setViewportSize({ width: 1280, height: 800 })
+      await shot(page, 'desktop-dark-chat')
+      await page.emulateMedia({ colorScheme: 'light' })
+      await shot(page, 'desktop-light-chat')
+      expect(errors).toEqual([])
+    } finally {
+      await browser.close()
+    }
+  }, 120_000)
+
+  it('previews a loopback dev server in a frame but never the UI itself', async () => {
+    const dev = Bun.serve({
+      hostname: '127.0.0.1',
+      port: 0,
+      fetch: () =>
+        new Response('<h1>DEV_SERVER_MARKER</h1>', {
+          headers: { 'content-type': 'text/html; charset=utf-8' },
+        }),
+    })
+    const devUrl = `http://127.0.0.1:${dev.port}/`
+    const uiOrigin = new URL(signInUrl).origin
+    const playwrightPath = Bun.spawnSync(['node', '-p', "require.resolve('playwright')"])
+      .stdout.toString()
+      .trim()
+    const { chromium } = await import(playwrightPath)
+    const browser = await chromium.launch()
+    try {
+      const context = await browser.newContext({ locale: 'en-US' })
+      const page = await context.newPage()
+      const errors: string[] = []
+      page.on('pageerror', e => errors.push(e.message))
+      await page.goto(signInUrl)
+      await page.getByText('What can I help you with?').waitFor()
+      const input = page.getByPlaceholder('Message Claude')
+      await input.fill(`PREVIEW_URLS ${devUrl} ${uiOrigin}/api/info`)
+      await input.press('Enter')
+      const reply = page.locator('.msg-assistant .markdown', { hasText: 'Dev server:' })
+      await reply.waitFor({ timeout: 30_000 })
+      // Only the dev server gets a Preview button; the UI's own /api does not.
+      await reply.locator('.link-preview').first().waitFor()
+      expect(await reply.locator('.link-preview').count()).toBe(1)
+      expect(await reply.locator('.link-preview').getAttribute('title')).toBe(devUrl)
+      await reply.locator('.link-preview').click()
+
+      const frame = page.locator('iframe.web-preview-frame')
+      await frame.waitFor()
+      expect(await frame.getAttribute('sandbox')).toBe(
+        'allow-scripts allow-forms allow-popups allow-same-origin',
+      )
+      expect(await frame.getAttribute('referrerpolicy')).toBe('no-referrer')
+      await page.frameLocator('iframe.web-preview-frame').getByText('DEV_SERVER_MARKER').waitFor({ timeout: 15_000 })
+      expect(await page.locator('.preview .preview-name').textContent()).toBe(devUrl)
+      expect(await page.locator('.preview a', { hasText: 'Open in new tab' }).getAttribute('href')).toBe(devUrl)
+      await page.locator('.preview').getByRole('button', { name: 'Reload' }).click()
+      await page.frameLocator('iframe.web-preview-frame').getByText('DEV_SERVER_MARKER').waitFor({ timeout: 15_000 })
+      await page.locator('.preview').getByRole('button', { name: 'Close' }).click()
+      await frame.waitFor({ state: 'detached' })
+      expect(errors).toEqual([])
+    } finally {
+      await browser.close()
+      dev.stop(true)
+    }
+  }, 90_000)
 
   it('shuts down on SIGTERM and removes the lock', async () => {
     web.kill('SIGTERM')

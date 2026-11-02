@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSy
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { sanitizePath } from '../utils/sessionStoragePortable.js'
-import { listHistory, readAgentTranscript, readTranscript, renameSession } from './history.js'
+import { findAgentIssuers, listHistory, readAgentTranscript, readTranscript, renameSession } from './history.js'
 
 const ID = '11111111-2222-4333-8444-555555555555'
 let root = ''
@@ -92,6 +92,27 @@ describe('web history', () => {
       'b0000000-0000-4000-8000-000000000002',
       'b0000000-0000-4000-8000-000000000003',
     ])
+  })
+
+  it('finds the subagent that issued an Agent call', async () => {
+    const dir = join(root, 'config', 'projects', sanitizePath(join(root, 'project')), ID, 'subagents')
+    writeFileSync(
+      join(dir, 'agent-parent1.jsonl'),
+      line({
+        type: 'assistant',
+        isSidechain: true,
+        agentId: 'parent1',
+        uuid: 'c0000000-0000-4000-8000-000000000001',
+        parentUuid: null,
+        message: {
+          id: 'msg_p',
+          role: 'assistant',
+          content: [{ type: 'tool_use', id: 'toolu_child', name: 'Agent', input: { prompt: 'go' } }],
+        },
+      }) + '\n',
+    )
+    expect(await findAgentIssuers(ID, ['toolu_child', 'toolu_none'])).toEqual({ toolu_child: 'parent1' })
+    expect(await findAgentIssuers('99999999-2222-4333-8444-555555555555', ['toolu_child'])).toEqual({})
   })
 
   it('lists the session with its folder', async () => {

@@ -50,6 +50,8 @@
   "uploadFailed": "上傳失敗：{error}",
   "preview": "預覽",
   "openNewTab": "新分頁開啟",
+  "reload": "重新載入",
+  "webPreviewHint": "頁面空白？該網站可能禁止被嵌入，請在新分頁開啟。",
   "download": "下載",
   "close": "關閉",
   "loading": "載入中…",
@@ -84,5 +86,18 @@
   "agentNoTranscript": "這個 agent 還沒有紀錄。",
   "delivery_queued": "已排隊，agent 會在下一步讀到。",
   "delivery_injected": "已傳給成員。",
-  "delivery_resumed": "agent 已帶著這則訊息恢復執行。"
+  "delivery_resumed": "agent 已帶著這則訊息恢復執行。",
+  "sources": "來源",
+  "export": "匯出",
+  "exportMarkdown": "Markdown (.md)",
+  "exportPdf": "PDF（列印）",
+  "commands": "指令",
+  "team": "團隊",
+  "teamSummary": "{working} 個工作中 · {idle} 個閒置",
+  "idleAgents": "{n} 個閒置 agent",
+  "teamIdle": "閒置",
+  "memberWorking": "工作中",
+  "memberStopped": "已停止",
+  "teamMessages": "訊息",
+  "noTeamMessages": "還沒有訊息。"
 }

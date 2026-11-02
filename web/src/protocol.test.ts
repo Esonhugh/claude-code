@@ -178,6 +178,31 @@ describe('reduce', () => {
     expect(state.contextPercent).toBe(12.5)
   })
 
+  it('records slash commands from initialize and terminal-only ones from init', () => {
+    const state = fold([
+      {
+        type: 'control_response',
+        response: {
+          subtype: 'success',
+          request_id: 'web-init-1',
+          response: {
+            commands: [
+              { name: 'usage', description: 'Show usage', argumentHint: '', aliases: ['cost'] },
+              { name: 'color', description: 'Set the prompt bar color', argumentHint: '[red|blue]' },
+              { description: 'no name' },
+            ],
+          },
+        },
+      },
+      { type: 'system', subtype: 'init', terminal_slash_commands: ['color'] },
+    ])
+    expect(state.commands).toEqual([
+      { name: 'usage', description: 'Show usage', argumentHint: '', aliases: ['cost'] },
+      { name: 'color', description: 'Set the prompt bar color', argumentHint: '[red|blue]' },
+    ])
+    expect(state.terminalCommands).toEqual(['color'])
+  })
+
   it('answers control requests the page does not handle with an error', () => {
     expect(
       unsupportedControlResponse({

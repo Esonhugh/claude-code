@@ -20,12 +20,14 @@ import {
 } from './files.js'
 import {
   AGENT_ID,
+  findAgentIssuers,
   listHistory,
   readAgentTranscript,
   readTranscript,
   renameSession,
   SESSION_ID,
 } from './history.js'
+import { isAllowedPeer, lanHostNames } from './network.js'
 import {
   allowedHosts,
   checkToken,
@@ -51,26 +53,63 @@ export type WebServerConfig = {
   /** Defaults to the claude config dir; files under it are not served. */
   configDir?: string
   trustedHosts?: string[]
+  /** Also answer to this machine's LAN addresses and `<hostname>.local`. */
+  allowLocalNetwork?: boolean
+  /** PEM file paths; when set the server speaks https/wss only. */
+  tls?: { cert: string; key: string }
+  /** Origins from `parsePreviewOrigin` that the page may frame. */
+  previewOrigins?: string[]
 }
 
 type SocketData = { sessionId: string }
 
-const CSP = [
-  "default-src 'self'",
-  "script-src 'self'",
-  "style-src 'self' 'unsafe-inline'",
-  "img-src 'self' data: blob:",
-  "font-src 'self' data:",
-  "connect-src 'self'",
-  'frame-src blob:',
-  "worker-src 'self' blob:",
-  "object-src 'none'",
-  "base-uri 'none'",
-  "frame-ancestors 'none'",
-].join('; ')
+// CSP host sources cannot name IPv6 literals, so `[::1]` is not listed.
+const LOOPBACK_FRAME_SOURCES = ['localhost', '127.0.0.1'].flatMap(host => [
+  `http://${host}:*`,
+  `https://${host}:*`,
+])
+
+/** The page's CSP; loopback dev servers and `--preview-origin`s may be framed. */
+export function contentSecurityPolicy(previewOrigins: string[] = []): string {
+  return [
+    "default-src 'self'",
+    "script-src 'self'",
+    "style-src 'self' 'unsafe-inline'",
+    "img-src 'self' data: blob:",
+    "font-src 'self' data:",
+    "connect-src 'self'",
+    ['frame-src blob:', ...LOOPBACK_FRAME_SOURCES, ...previewOrigins].join(' '),
+    "worker-src 'self' blob:",
+    "object-src 'none'",
+    "base-uri 'none'",
+    "frame-ancestors 'none'",
+  ].join('; ')
+}
+
+/**
+ * A `--preview-origin` value as a bare origin (`http://host:port`), or
+ * undefined unless it is http(s) with no credentials, path, query, fragment
+ * or wildcard. The result goes into the CSP, so nothing else may get through.
+ */
+export function parsePreviewOrigin(value: string): string | undefined {
+  if (/[*?#\s]/.test(value)) return undefined
+  let url: URL
+  try {
+    url = new URL(value)
+  } catch {
+    return undefined
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') return undefined
+  if (url.username || url.password || url.pathname !== '/') return undefined
+  // WHATWG hosts may still hold `;` or `,`, which would split the CSP, and
+  // CSP host sources cannot name IPv6 literals.
+  if (!/^[a-z0-9-]+(\.[a-z0-9-]+)*$/.test(url.hostname)) {
+    return undefined
+  }
+  return url.origin
+}
 
 const SECURITY_HEADERS = {
-  'Content-Security-Policy': CSP,
   'X-Content-Type-Options': 'nosniff',
   'Referrer-Policy': 'no-referrer',
   'Cross-Origin-Opener-Policy': 'same-origin',
@@ -95,6 +134,7 @@ const SESSION_PATH = /^\/api\/sessions\/([^/]+)$/
 const HISTORY_PATH = /^\/api\/history\/([^/]+)$/
 const HISTORY_MESSAGES_PATH = /^\/api\/history\/([^/]+)\/messages$/
 const AGENT_MESSAGES_PATH = /^\/api\/history\/([^/]+)\/agents\/([^/]+)\/messages$/
+const AGENT_ISSUERS_PATH = /^\/api\/history\/([^/]+)\/agent-issuers$/
 const FILES_PATH = /^\/api\/files\/([^/]+)(\/pdf)?$/
 
 // Served as text so a file from the workspace never runs as a page on this origin.
@@ -147,15 +187,34 @@ async function readJson(req: Request): Promise<unknown> {
   }
 }
 
-function withHeaders(res: Response): Response {
-  for (const [key, value] of Object.entries(SECURITY_HEADERS)) {
-    res.headers.set(key, value)
-  }
-  return res
-}
-
 function errorResponse(status: number, message: string): Response {
   return Response.json({ error: message }, { status })
+}
+
+type Listener = ReturnType<typeof Bun.serve>
+
+/**
+ * `0.0.0.0` means every interface: bind `::` first (dual-stack on most
+ * systems), fall back to IPv4 when there is no IPv6, and add an IPv4 socket
+ * on the same port where `::` is IPv6-only.
+ */
+function listen(
+  host: string,
+  port: number,
+  serve: (hostname: string, port: number) => Listener,
+): Listener[] {
+  if (host !== '0.0.0.0') return [serve(host, port)]
+  let v6: Listener
+  try {
+    v6 = serve('::', port)
+  } catch {
+    return [serve('0.0.0.0', port)]
+  }
+  try {
+    return [v6, serve('0.0.0.0', v6.port ?? port)]
+  } catch {
+    return [v6]
+  }
 }
 
 function isDirectory(path: string): boolean {
@@ -172,7 +231,7 @@ function isDirectory(path: string): boolean {
  * `/?token=` URL once. `/api` and the WebSocket additionally require the
  * request to come from this server's own origin.
  *
- *   GET    /api/info                    → { workspace }
+ *   GET    /api/info                    → { workspace, preview_origins }
  *   GET    /api/sessions                → running sessions
  *   POST   /api/sessions                → { session_id, work_dir } (new or resume)
  *   GET    /api/sessions/:id/ws         → stream-json relay to the session
@@ -181,6 +240,7 @@ function isDirectory(path: string): boolean {
  *   GET    /api/history/:id/messages    → a page of one transcript
  *   PATCH  /api/history/:id             → rename (custom title)
  *   GET    /api/history/:id/agents/:agent/messages → a subagent's transcript
+ *   GET    /api/history/:id/agent-issuers?tool_use_id= → { [tool use id]: agent id }
  *   POST   /api/files/:id?name=         → upload into the session's folder
  *   GET    /api/files/:id?path=         → a file the session may show (Range)
  *   GET    /api/files/:id/pdf?path=     → Office document converted to PDF
@@ -191,7 +251,20 @@ export function startWebServer(
   assets: Map<string, WebAsset>,
   logger: ServerLogger,
 ): { port: number; stop: (force?: boolean) => void } {
-  let hosts = allowedHosts(config.port, config.trustedHosts)
+  const extraHosts = [
+    ...(config.trustedHosts ?? []),
+    ...(config.allowLocalNetwork ? lanHostNames() : []),
+  ]
+  let hosts = allowedHosts(config.port, extraHosts)
+  const previewOrigins = config.previewOrigins ?? []
+  const csp = contentSecurityPolicy(previewOrigins)
+  const withHeaders = (res: Response): Response => {
+    res.headers.set('Content-Security-Policy', csp)
+    for (const [key, value] of Object.entries(SECURITY_HEADERS)) {
+      res.headers.set(key, value)
+    }
+    return res
+  }
   const uploadLimits = config.uploadLimits ?? DEFAULT_UPLOAD_LIMITS
 
   async function sessionFile(id: string, path: string): Promise<string | undefined> {
@@ -294,7 +367,10 @@ export function startWebServer(
   ): Promise<Response | undefined> {
     const { pathname } = url
     if (pathname === '/api/info' && req.method === 'GET') {
-      return Response.json({ workspace: config.workspace })
+      return Response.json({
+        workspace: config.workspace,
+        preview_origins: previewOrigins,
+      })
     }
     if (pathname === '/api/sessions' && req.method === 'POST') {
       return createSession(req)
@@ -337,6 +413,15 @@ export function startWebServer(
       const page = await readAgentTranscript(id, agentId)
       return page ? Response.json(page) : errorResponse(404, 'Agent not found')
     }
+    const issuersMatch = AGENT_ISSUERS_PATH.exec(pathname)
+    if (issuersMatch && req.method === 'GET') {
+      const id = decodeURIComponent(issuersMatch[1]!)
+      const toolUseIds = url.searchParams.getAll('tool_use_id')
+      if (!SESSION_ID.test(id) || toolUseIds.length > 100 || !toolUseIds.every(t => AGENT_ID.test(t))) {
+        return errorResponse(400, 'Invalid id')
+      }
+      return Response.json(await findAgentIssuers(id, toolUseIds))
+    }
     const historyMatch = HISTORY_PATH.exec(pathname)
     if (historyMatch && req.method === 'PATCH') {
       const id = decodeURIComponent(historyMatch[1]!)
@@ -375,89 +460,106 @@ export function startWebServer(
     return errorResponse(404, 'Not found')
   }
 
-  const server = Bun.serve<SocketData, never>({
-    hostname: config.host,
-    port: config.port,
-    async fetch(req, srv) {
-      const url = new URL(req.url)
-      const { pathname } = url
-      const isApi = pathname === '/api' || pathname.startsWith('/api/')
-      // Same-origin GETs and page loads may omit Origin; anything that can
-      // change state (and every WebSocket handshake) must carry it.
-      const requireOrigin =
-        req.method !== 'GET' ||
-        req.headers.get('upgrade')?.toLowerCase() === 'websocket'
-      const reason = untrustedReason(req, hosts, { requireOrigin })
-      if (reason) {
-        logger.warn(`rejected ${req.method} ${pathname} (untrusted ${reason})`)
-        return withHeaders(errorResponse(403, 'Forbidden'))
-      }
-
-      if (pathname === '/' && url.searchParams.has('token')) {
-        if (!checkToken(config.token, url.searchParams.get('token'))) {
-          logger.warn('rejected an invalid token')
-          return withHeaders(errorResponse(401, 'Invalid token'))
+  const serve = (hostname: string, port: number) =>
+    Bun.serve<SocketData, never>({
+      hostname,
+      port,
+      tls: config.tls && {
+        cert: Bun.file(config.tls.cert),
+        key: Bun.file(config.tls.key),
+      },
+      async fetch(req, srv) {
+        // Before anything else: only loopback and LAN peers are served.
+        const peer = srv.requestIP(req)?.address
+        if (!isAllowedPeer(peer)) {
+          logger.warn(`rejected a connection from ${peer ?? 'an unknown address'}`)
+          return new Response(null, { status: 403 })
         }
-        return withHeaders(
-          new Response(null, {
-            status: 302,
-            headers: {
-              Location: '/',
-              'Set-Cookie': cookieHeader(signCookie(config.cookieKey), false),
-            },
-          }),
-        )
-      }
-
-      if (!verifyCookie(config.cookieKey, readCookie(req, COOKIE_NAME))) {
-        return withHeaders(
-          isApi
-            ? errorResponse(401, 'Unauthorized')
-            : new Response(
-                'Open the URL printed by `claude web` in the terminal to sign in.\n',
-                {
-                  status: 401,
-                  headers: { 'Content-Type': 'text/plain; charset=utf-8' },
-                },
-              ),
-        )
-      }
-
-      if (isApi) {
-        const res = await handleApi(req, url, srv)
-        return res && withHeaders(res)
-      }
-      if (req.method !== 'GET' && req.method !== 'HEAD') {
-        return withHeaders(errorResponse(405, 'Method not allowed'))
-      }
-      const asset = assets.get(pathname) ?? assets.get('/index.html')
-      if (!asset) return withHeaders(errorResponse(404, 'Not found'))
-      return withHeaders(
-        new Response(asset.body, { headers: { 'Content-Type': asset.type } }),
-      )
-    },
-    websocket: {
-      open(ws) {
-        if (!sessionManager.attach(ws.data.sessionId, ws)) {
-          ws.close(1008, 'Session unavailable')
+        const url = new URL(req.url)
+        const { pathname } = url
+        const isApi = pathname === '/api' || pathname.startsWith('/api/')
+        // Same-origin GETs and page loads may omit Origin; anything that can
+        // change state (and every WebSocket handshake) must carry it.
+        const requireOrigin =
+          req.method !== 'GET' ||
+          req.headers.get('upgrade')?.toLowerCase() === 'websocket'
+        const reason = untrustedReason(req, hosts, { requireOrigin })
+        if (reason) {
+          logger.warn(`rejected ${req.method} ${pathname} (untrusted ${reason})`)
+          return withHeaders(errorResponse(403, 'Forbidden'))
         }
-      },
-      message(ws, message) {
-        sessionManager.write(ws.data.sessionId, message.toString())
-      },
-      close(ws) {
-        sessionManager.detach(ws.data.sessionId, ws)
-      },
-    },
-  })
 
-  const port = server.port ?? config.port
-  hosts = allowedHosts(port, config.trustedHosts)
-  logger.info(`listening on http://${config.host}:${port}`)
+        if (pathname === '/' && url.searchParams.has('token')) {
+          if (!checkToken(config.token, url.searchParams.get('token'))) {
+            logger.warn('rejected an invalid token')
+            return withHeaders(errorResponse(401, 'Invalid token'))
+          }
+          return withHeaders(
+            new Response(null, {
+              status: 302,
+              headers: {
+                Location: '/',
+                'Set-Cookie': cookieHeader(
+                  signCookie(config.cookieKey),
+                  config.tls !== undefined,
+                ),
+              },
+            }),
+          )
+        }
+
+        if (!verifyCookie(config.cookieKey, readCookie(req, COOKIE_NAME))) {
+          return withHeaders(
+            isApi
+              ? errorResponse(401, 'Unauthorized')
+              : new Response(
+                  'Open the URL printed by `claude web` in the terminal to sign in.\n',
+                  {
+                    status: 401,
+                    headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+                  },
+                ),
+          )
+        }
+
+        if (isApi) {
+          const res = await handleApi(req, url, srv)
+          return res && withHeaders(res)
+        }
+        if (req.method !== 'GET' && req.method !== 'HEAD') {
+          return withHeaders(errorResponse(405, 'Method not allowed'))
+        }
+        const asset = assets.get(pathname) ?? assets.get('/index.html')
+        if (!asset) return withHeaders(errorResponse(404, 'Not found'))
+        return withHeaders(
+          new Response(asset.body as BodyInit, { headers: { 'Content-Type': asset.type } }),
+        )
+      },
+      websocket: {
+        open(ws) {
+          if (!sessionManager.attach(ws.data.sessionId, ws)) {
+            ws.close(1008, 'Session unavailable')
+          }
+        },
+        message(ws, message) {
+          sessionManager.write(ws.data.sessionId, message.toString())
+        },
+        close(ws) {
+          sessionManager.detach(ws.data.sessionId, ws)
+        },
+      },
+    })
+
+  const servers = listen(config.host, config.port, serve)
+  const port = servers[0]!.port ?? config.port
+  hosts = allowedHosts(port, extraHosts)
+  logger.info(
+    `listening on ${config.tls ? 'https' : 'http'}://${servers.map(s => s.hostname).join(', ')} port ${port}`,
+  )
   return {
     port,
     stop: force => {
-      void server.stop(force)
+      for (const server of servers) void server.stop(force)
     },
   }
 }

@@ -1,10 +1,19 @@
 import { createContext, useContext } from 'react'
-import { type AgentTask, formatDuration, isFinished, taskName } from '../agents'
+import {
+  type AgentTask,
+  formatDuration,
+  isFinished,
+  taskName,
+  teamColor,
+  teammateEvent,
+} from '../agents'
 import { baseName, splitMentions } from '../files'
 import type { MessageKey } from '../i18n'
 import { Markdown } from '../markdown/Markdown'
 import type { Approval, ApprovalChoice, Block, Item } from '../protocol'
+import type { Source } from '../sources'
 import { stripAnsi, toolSummary } from '../tools'
+import { firstPreviewUrl, WebPreviewContext } from '../webPreview'
 
 /** `claude-opus-5-5` → `Opus 5.5`; anything else is shown as is. */
 export function modelLabel(model: string | undefined): string | undefined {
@@ -82,7 +91,12 @@ function ToolCard({
 }) {
   const files = useContext(FilesContext)
   const agents = useContext(AgentsContext)
+  const web = useContext(WebPreviewContext)
   const path = files.open && !block.isError ? toolFilePath(block.name, block.input) : undefined
+  const webUrl =
+    !path && block.result && web.target && web.open
+      ? firstPreviewUrl(stripAnsi(block.result), web.target)
+      : undefined
   const task = agents.byToolUse?.get(block.id)
   return (
     <details className={`tool${block.isError ? ' tool-error' : ''}`}>
@@ -113,6 +127,19 @@ function ToolCard({
             {t('preview')}
           </button>
         )}
+        {webUrl && (
+          <button
+            type="button"
+            className="ghost tool-preview"
+            title={webUrl}
+            onClick={e => {
+              e.preventDefault()
+              web.open?.(webUrl)
+            }}
+          >
+            {t('preview')}
+          </button>
+        )}
       </summary>
       <div className="tool-body">
         <div className="tool-label">{t('toolInput')}</div>
@@ -128,16 +155,31 @@ function ToolCard({
   )
 }
 
+/** How a teammate protocol message reads; plain messages have no label. */
+export function teamEventLabel(
+  type: string | undefined,
+  t: (key: MessageKey) => string,
+): string | undefined {
+  if (!type) return undefined
+  return type === 'idle_notification' ? t('teamIdle') : type.replace(/_/g, ' ')
+}
+
+export function TeamDot({ color }: { color?: string }) {
+  return <span className="team-dot" style={{ background: teamColor(color) }} />
+}
+
 export function Message({
   item,
   t,
   fallbackModel,
   streaming,
+  sources,
 }: {
   item: Item
   t: (key: MessageKey) => string
   fallbackModel?: string
   streaming: boolean
+  sources?: Source[]
 }) {
   const files = useContext(FilesContext)
   if (item.kind === 'user') {
@@ -150,6 +192,18 @@ export function Message({
           ))}
           <UserText text={item.text} />
         </div>
+      </div>
+    )
+  }
+  if (item.kind === 'teammate') {
+    const event = teammateEvent(item.text)
+    const label = teamEventLabel(event.type, t)
+    return (
+      <div className="msg msg-teammate">
+        <TeamDot color={item.color} />
+        <strong>{item.from}</strong>
+        {label && <span className="team-event">{label}</span>}
+        <span className="team-text">{event.detail || item.summary}</span>
       </div>
     )
   }
@@ -186,6 +240,20 @@ export function Message({
         }
         return <ToolCard key={i} block={block} t={t} />
       })}
+      {sources && sources.length > 0 && (
+        <div className="sources">
+          <div className="sources-title">{t('sources')}</div>
+          <ol>
+            {sources.map(source => (
+              <li key={source.url}>
+                <a href={source.url} target="_blank" rel="noopener noreferrer" title={source.url}>
+                  {source.title ?? new URL(source.url).hostname}
+                </a>
+              </li>
+            ))}
+          </ol>
+        </div>
+      )}
     </div>
   )
 }

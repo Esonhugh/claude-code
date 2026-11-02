@@ -6091,7 +6091,21 @@ async function run(): Promise<CommanderCommand> {
       .command('web')
       .description('Open a local web UI for chatting with Claude')
       .option('--port <number>', 'HTTP port (0 = random)', '0')
-      .option('--host <string>', 'Loopback bind address', '127.0.0.1')
+      .option(
+        '--host <string>',
+        'Bind address: loopback, or a local network address with --dangerously-allow-local-network (default: 127.0.0.1)',
+      )
+      .option(
+        '--dangerously-allow-local-network',
+        'Listen on all interfaces and accept connections from local network addresses (the sign-in token is still required)',
+      )
+      .option('--trusted-host <host...>', 'Extra Host header values to accept')
+      .option('--tls-cert <file>', 'TLS certificate (PEM); serve https')
+      .option('--tls-key <file>', 'TLS private key (PEM); use with --tls-cert')
+      .option(
+        '--preview-origin <url...>',
+        'Extra http(s) origins whose pages the preview panel may show in a frame, e.g. http://dev.internal:8080',
+      )
       .option(
         '--workspace <dir>',
         'Working directory for new sessions (default: ~/.claude/web/workspace)',
@@ -6108,14 +6122,7 @@ async function run(): Promise<CommanderCommand> {
         '8',
       )
       .action(
-        async (opts: {
-          port: string
-          host: string
-          workspace?: string
-          open: boolean
-          idleTimeout: string
-          maxSessions: string
-        }) => {
+        async opts => {
           // Same as `claude server`: give Ctrl+C back to the terminal.
           stopCapturingEarlyInput()
           if (process.stdin.isTTY) {

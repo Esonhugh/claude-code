@@ -50,6 +50,8 @@
   "uploadFailed": "上传失败：{error}",
   "preview": "预览",
   "openNewTab": "新标签页打开",
+  "reload": "重新加载",
+  "webPreviewHint": "页面空白？该网站可能禁止被嵌入，请在新标签页打开。",
   "download": "下载",
   "close": "关闭",
   "loading": "加载中…",
@@ -84,5 +86,18 @@
   "agentNoTranscript": "这个 agent 还没有记录。",
   "delivery_queued": "已排队，agent 会在下一步读到。",
   "delivery_injected": "已发给成员。",
-  "delivery_resumed": "agent 已带着这条消息恢复运行。"
+  "delivery_resumed": "agent 已带着这条消息恢复运行。",
+  "sources": "来源",
+  "export": "导出",
+  "exportMarkdown": "Markdown (.md)",
+  "exportPdf": "PDF（打印）",
+  "commands": "命令",
+  "team": "团队",
+  "teamSummary": "{working} 个工作中 · {idle} 个空闲",
+  "idleAgents": "{n} 个空闲 agent",
+  "teamIdle": "空闲",
+  "memberWorking": "工作中",
+  "memberStopped": "已停止",
+  "teamMessages": "消息",
+  "noTeamMessages": "还没有消息。"
 }

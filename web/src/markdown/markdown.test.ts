@@ -5,6 +5,7 @@ import { Markdown } from './Markdown'
 import { normalizeMathDelimiters, splitSettled } from './parse'
 import { safeImageSrc, safeLinkHref } from './safeUrl'
 import { stripAnsi, toolSummary } from '../tools'
+import { previewTarget, WebPreviewContext } from '../webPreview'
 
 const html = (text: string, streaming = false) =>
   renderToStaticMarkup(createElement(Markdown, { text, streaming }))
@@ -53,6 +54,28 @@ describe('Markdown', () => {
   it('renders the same output whether or not the text is streaming', () => {
     const text = 'para one\n\n- a\n- b\n\n```js\nlet x\n\nlet y\n```\n\ntail **bo'
     expect(html(text, true)).toBe(html(text, false))
+  })
+
+  it('offers Preview next to links and code the web preview can frame', () => {
+    const preview = {
+      target: (href: string) =>
+        previewTarget(href, { uiOrigin: 'http://127.0.0.1:4000', origins: [] }),
+      open: () => {},
+      label: 'Preview',
+    }
+    const out = renderToStaticMarkup(
+      createElement(
+        WebPreviewContext.Provider,
+        { value: preview },
+        createElement(Markdown, {
+          text: 'Open http://localhost:5173/ or `http://127.0.0.1:8080` but not https://example.com or http://127.0.0.1:4000/api/info',
+        }),
+      ),
+    )
+    expect(out.match(/class="ghost link-preview"/g)).toHaveLength(2)
+    expect(out).toContain('title="http://localhost:5173/"')
+    expect(out).toContain('title="http://127.0.0.1:8080/"')
+    expect(html('Open http://localhost:5173/')).not.toContain('link-preview')
   })
 })
 

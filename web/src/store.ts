@@ -42,7 +42,7 @@ export type AppState = {
 
 export type ChatAction =
   | { type: 'message'; raw: unknown }
-  | { type: 'user'; text: string; images?: string[] }
+  | { type: 'user'; text: string; images?: string[]; uuid?: string }
   | { type: 'error'; text: string }
   | { type: 'answered'; requestId: string }
   | { type: 'local'; patch: Parameters<typeof setLocal>[1] }
@@ -83,7 +83,7 @@ function reduceChat(state: ChatState, action: ChatAction): ChatState {
     case 'message':
       return reduce(state, action.raw)
     case 'user':
-      return addUserMessage(state, action.text, action.images)
+      return addUserMessage(state, action.text, action.images, action.uuid)
     case 'error':
       return addError(state, action.text)
     case 'answered':

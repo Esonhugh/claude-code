@@ -1,12 +1,19 @@
 import { afterEach, describe, expect, it } from 'bun:test'
 import { spawn } from 'child_process'
 import { mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from 'fs'
-import { tmpdir } from 'os'
+import { hostname, networkInterfaces, tmpdir } from 'os'
 import { join } from 'path'
 import type { SpawnSessionOptions } from '../server/backends/dangerousBackend.js'
 import { createServerLogger } from '../server/serverLog.js'
 import { SessionManager } from '../server/sessionManager.js'
-import { startWebServer, type WebAsset } from './webServer.js'
+import { addressKind } from './network.js'
+import {
+  contentSecurityPolicy,
+  parsePreviewOrigin,
+  startWebServer,
+  type WebAsset,
+  type WebServerConfig,
+} from './webServer.js'
 
 const TOKEN = 'web-test-token'
 
@@ -48,7 +55,7 @@ afterEach(async () => {
   await Promise.all(running.splice(0).map(r => r.stop()))
 })
 
-function start(): Running {
+function start(overrides: Partial<WebServerConfig> = {}): Running {
   const workspace = realpathSync(mkdtempSync(join(tmpdir(), 'web-ws-')))
   const configDir = realpathSync(mkdtempSync(join(tmpdir(), 'web-cfg-')))
   const uploads = join(configDir, 'web', 'uploads')
@@ -69,12 +76,13 @@ function start(): Running {
       uploadsDir: uploads,
       configDir,
       uploadLimits: { fileBytes: 1000, sessionBytes: 1500 },
+      ...overrides,
     },
     manager,
     assets,
     createServerLogger({ write: () => {} }),
   )
-  const origin = `http://127.0.0.1:${server.port}`
+  const origin = `${overrides.tls ? 'https' : 'http'}://127.0.0.1:${server.port}`
   const r: Running = {
     base: origin,
     origin,
@@ -237,6 +245,9 @@ describe('claude web server', () => {
       { headers: { cookie } },
     )
     expect(missing.status).toBe(404)
+    const issuers = `${r.base}/api/history/99999999-2222-4333-8444-555555555555/agent-issuers`
+    expect((await fetch(`${issuers}?tool_use_id=..%2Fx`, { headers: { cookie } })).status).toBe(400)
+    expect(await (await fetch(`${issuers}?tool_use_id=toolu_1`, { headers: { cookie } })).json()).toEqual({})
     const rename = await fetch(
       `${r.base}/api/history/99999999-2222-4333-8444-555555555555`,
       {
@@ -253,7 +264,18 @@ describe('claude web server', () => {
     })
     expect(resume.status).toBe(400)
     const info = await fetch(`${r.base}/api/info`, { headers: { cookie } })
-    expect(await info.json()).toEqual({ workspace: r.workspace })
+    expect(await info.json()).toEqual({ workspace: r.workspace, preview_origins: [] })
+  })
+
+  it('tells the page its preview origins and lets it frame them', async () => {
+    const r = start({ previewOrigins: ['http://dev.internal:8080'] })
+    const cookie = await signIn(r)
+    const info = await fetch(`${r.base}/api/info`, { headers: { cookie } })
+    expect((await info.json()).preview_origins).toEqual(['http://dev.internal:8080'])
+    const page = await fetch(`${r.base}/`, { headers: { cookie } })
+    expect(page.headers.get('content-security-policy')).toBe(
+      contentSecurityPolicy(['http://dev.internal:8080']),
+    )
   })
 
   it('uploads within the limits and serves only allowed files', async () => {
@@ -319,5 +341,121 @@ describe('claude web server', () => {
       { headers: { cookie } },
     )
     expect(other.status).toBe(404)
+  })
+
+  it('answers to <hostname>.local only with the local network flag', async () => {
+    const name = hostname().toLowerCase().split('.')[0]
+    const signInAs = (r: Running) =>
+      fetch(`${r.base}/?token=${TOKEN}`, {
+        redirect: 'manual',
+        headers: { host: `${name}.local:${new URL(r.base).port}` },
+      })
+    expect((await signInAs(start())).status).toBe(403)
+    const lan = start({ host: '0.0.0.0', allowLocalNetwork: true })
+    expect((await signInAs(lan)).status).toBe(302)
+    // The token is still required, and foreign hosts are still refused.
+    expect((await fetch(`${lan.base}/`)).status).toBe(401)
+    const foreign = await fetch(`${lan.base}/?token=${TOKEN}`, {
+      redirect: 'manual',
+      headers: { host: 'attacker.example' },
+    })
+    expect(foreign.status).toBe(403)
+  })
+
+  it('refuses peers outside loopback and LAN ranges', async () => {
+    const publicAddress = Object.values(networkInterfaces())
+      .flat()
+      .find(i => i && i.family === 'IPv4' && addressKind(i.address) === 'other')
+    if (!publicAddress) return
+    const r = start({ host: '0.0.0.0', allowLocalNetwork: true })
+    const port = new URL(r.base).port
+    // Connecting to our own non-LAN address makes it the peer address.
+    const res = await fetch(`http://${publicAddress.address}:${port}/?token=${TOKEN}`, {
+      redirect: 'manual',
+      headers: { host: `127.0.0.1:${port}` },
+    })
+    expect(res.status).toBe(403)
+    expect(res.headers.get('set-cookie')).toBeNull()
+  })
+
+  it('serves https with a Secure cookie when given a certificate', async () => {
+    if (!Bun.which('openssl')) return
+    const dir = mkdtempSync(join(tmpdir(), 'web-tls-'))
+    const cert = join(dir, 'cert.pem')
+    const key = join(dir, 'key.pem')
+    const made = Bun.spawnSync(
+      [
+        'openssl', 'req', '-x509', '-newkey', 'rsa:2048', '-nodes',
+        '-keyout', key, '-out', cert, '-days', '1', '-subj', '/CN=127.0.0.1',
+      ],
+      { stdout: 'ignore', stderr: 'ignore' },
+    )
+    if (made.exitCode !== 0) return
+    const r = start({ tls: { cert, key } })
+    expect(r.base.startsWith('https://')).toBe(true)
+    const res = await fetch(`${r.base}/?token=${TOKEN}`, {
+      redirect: 'manual',
+      tls: { rejectUnauthorized: false },
+    })
+    expect(res.status).toBe(302)
+    expect(res.headers.get('set-cookie')).toContain('; Secure')
+    const plain = await fetch(`http://127.0.0.1:${new URL(r.base).port}/`).catch(
+      () => undefined,
+    )
+    expect(plain?.status).not.toBe(200)
+  })
+})
+
+describe('contentSecurityPolicy', () => {
+  it('frames only blobs, loopback dev servers and the configured origins', () => {
+    const loopback =
+      'http://localhost:* https://localhost:* http://127.0.0.1:* https://127.0.0.1:*'
+    expect(contentSecurityPolicy()).toBe(
+      `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; frame-src blob: ${loopback}; worker-src 'self' blob:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'`,
+    )
+    expect(
+      contentSecurityPolicy(['http://dev.internal:8080', 'https://grafana.lan'])
+        .split('; ')
+        .find(d => d.startsWith('frame-src ')),
+    ).toBe(`frame-src blob: ${loopback} http://dev.internal:8080 https://grafana.lan`)
+  })
+})
+
+describe('parsePreviewOrigin', () => {
+  it('normalizes an http(s) origin', () => {
+    expect(parsePreviewOrigin('http://dev.internal:8080')).toBe('http://dev.internal:8080')
+    expect(parsePreviewOrigin('http://dev.internal:8080/')).toBe('http://dev.internal:8080')
+    expect(parsePreviewOrigin('HTTPS://Grafana.LAN:443/')).toBe('https://grafana.lan')
+    expect(parsePreviewOrigin('http://192.168.1.9:3000')).toBe('http://192.168.1.9:3000')
+    expect(parsePreviewOrigin('http://bücher.lan')).toBe('http://xn--bcher-kva.lan')
+  })
+
+  it('refuses paths, credentials, wildcards, IPv6 literals and other schemes', () => {
+    for (const value of [
+      'http://[fd00::1]:3000',
+      'http://dev.internal:8080/app',
+      'http://dev.internal:8080/?x=1',
+      'http://dev.internal:8080/?',
+      'http://dev.internal:8080/#top',
+      'http://user:pass@dev.internal',
+      'http://user@dev.internal',
+      'http://*.internal',
+      '*',
+      'http://dev.internal:*',
+      'javascript:alert(1)',
+      'data:text/html,x',
+      'ftp://dev.internal',
+      'ws://dev.internal',
+      'dev.internal:8080',
+      'http://dev internal',
+      "http://dev.internal; script-src 'unsafe-inline'",
+      'http://dev.internal:8080 http://evil.example',
+      'http://dev.internal;frame-src',
+      'http://a,b',
+      "http://a'b",
+      '',
+    ]) {
+      expect(parsePreviewOrigin(value)).toBeUndefined()
+    }
   })
 })

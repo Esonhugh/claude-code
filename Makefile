@@ -42,6 +42,7 @@ release-check:
 	node "$$dir/build/dist/cli.js" --version | grep -F "$(VERSION) (Claude Code)" && \
 	node "$$dir/build/dist/cli.js" --help >/dev/null; \
 	status=$$?; rm -rf "$$dir"; exit $$status
+	bun ./scripts/check-web-size.mjs
 	git diff --check
 
 check-mods-control-types:

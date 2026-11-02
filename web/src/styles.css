@@ -4,7 +4,9 @@
   --text: #1f1e1d;
   --muted: #6b6a68;
   --line: #e5e3dc;
-  --accent: #c96442;
+  /* Darker than the brand #c96442 so white text on it and accent text on
+     the page both reach 4.5:1. */
+  --accent: #b05535;
   --accent-text: #ffffff;
   --user-bg: #f0eee6;
   --error: #b42318;
@@ -21,6 +23,7 @@
     --muted: #a3a29d;
     --line: #3e3e3a;
     --accent: #d97757;
+    --accent-text: #1f1e1d;
     --user-bg: #3a3936;
     --error: #f97066;
     --code-bg: #1f1f1d;
@@ -512,6 +515,60 @@ pre {
   border-radius: 18px;
   background: var(--panel);
   padding: 10px 10px 10px 16px;
+  position: relative;
+}
+
+/* `/` command palette, opening above the input card. */
+.palette {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(100% + 6px);
+  z-index: 5;
+  max-height: 280px;
+  overflow-y: auto;
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--panel);
+  box-shadow: 0 6px 24px rgb(0 0 0 / 8%);
+}
+
+.palette li {
+  display: flex;
+  gap: 12px;
+  align-items: baseline;
+  padding: 6px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 14px;
+}
+
+.palette li.active {
+  background: var(--user-bg);
+}
+
+.palette-name {
+  flex: none;
+  max-width: 50%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.palette-name small,
+.palette-desc {
+  color: var(--muted);
+}
+
+.palette-desc {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .input-card textarea {
@@ -909,6 +966,36 @@ pre {
   background: #fff;
 }
 
+.web-preview-hint {
+  padding: 4px 12px;
+  border-bottom: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.web-preview-frame {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  border: 0;
+  background: #fff;
+}
+
+.link-preview {
+  margin-left: 4px;
+  padding: 0 6px;
+  font-size: 12px;
+}
+
+@media print {
+  .link-preview {
+    display: none;
+  }
+}
+
 .pager {
   display: flex;
   align-items: center;
@@ -1175,6 +1262,76 @@ pre {
   white-space: pre-wrap;
 }
 
+.team-dot {
+  width: 10px;
+  height: 10px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--muted);
+}
+
+.member-idle .agent-name,
+.member-stopped .agent-name {
+  color: var(--muted);
+}
+
+.msg-teammate {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.msg-teammate .team-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.team-event {
+  flex: none;
+  padding: 0 6px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font-size: 11px;
+}
+
+.team-timeline {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.team-timeline li {
+  margin: 0 0 10px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--user-bg);
+  font-size: 13px;
+}
+
+.team-timeline li.team-from-lead {
+  background: var(--panel);
+  border: 1px solid var(--line);
+}
+
+.team-route {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+}
+
+.team-timeline .team-text {
+  margin-top: 4px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .workflow-line {
   display: flex;
   align-items: center;
@@ -1279,4 +1436,250 @@ pre {
 .lane-desc {
   color: var(--muted);
   font-size: 12px;
+}
+
+/* Sources and export (M4). */
+
+.sources {
+  margin: 8px 0;
+  font-size: 13px;
+}
+
+.sources-title {
+  color: var(--muted);
+}
+
+.sources ol {
+  margin: 2px 0 0;
+  padding-left: 22px;
+}
+
+.sources a {
+  color: var(--accent);
+  overflow-wrap: anywhere;
+}
+
+.export-menu {
+  position: relative;
+  font-size: 13px;
+}
+
+.export-menu > summary {
+  list-style: none;
+  cursor: pointer;
+  padding: 4px 10px;
+  border-radius: 8px;
+}
+
+.export-menu > summary::-webkit-details-marker {
+  display: none;
+}
+
+.export-menu[open] > summary {
+  background: var(--user-bg);
+}
+
+.export-options {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 4px);
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  min-width: 160px;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+  box-shadow: 0 4px 16px rgb(0 0 0 / 12%);
+}
+
+.export-options button {
+  text-align: left;
+  white-space: nowrap;
+}
+
+/* Export as PDF prints the conversation alone. */
+@media print {
+  :root {
+    --bg: #ffffff;
+    --panel: #ffffff;
+    --text: #000000;
+    --muted: #555555;
+    --line: #dddddd;
+    --user-bg: #f2f2f2;
+    --code-bg: #f6f6f6;
+    color-scheme: light;
+  }
+
+  html,
+  body,
+  #root,
+  .app,
+  .main,
+  .feed {
+    display: block;
+    height: auto;
+    overflow: visible;
+  }
+
+  .app > :not(.main),
+  .main > :not(.feed),
+  .feed .more,
+  .tool-preview,
+  .thinking {
+    display: none !important;
+  }
+
+  .feed .col {
+    max-width: none;
+  }
+
+  pre {
+    max-height: none;
+    overflow: visible;
+  }
+
+  .tool,
+  .sources {
+    break-inside: avoid;
+  }
+}
+
+/* Keyboard focus and narrow screens (M5). */
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.input-card:focus-within {
+  border-color: var(--accent);
+}
+
+.input-card textarea:focus-visible {
+  outline: 0;
+}
+
+.session-row:focus-within .row-actions {
+  display: flex;
+}
+
+@media (hover: none) {
+  .group-add {
+    visibility: visible;
+  }
+}
+
+@media (max-width: 760px) {
+  .sidebar {
+    width: min(300px, 85vw);
+    visibility: hidden;
+    /* Hide only after sliding out; show at once so focus can move in. */
+    transition:
+      transform 0.2s,
+      visibility 0s 0.2s;
+  }
+
+  .previewing .sidebar {
+    display: flex;
+  }
+
+  .sidebar-open .sidebar {
+    visibility: visible;
+    z-index: 40;
+    transition: transform 0.2s;
+  }
+
+  .sidebar-open .scrim {
+    z-index: 35;
+  }
+
+  .previewing .scrim {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 25;
+    background: rgb(0 0 0 / 30%);
+  }
+
+  .preview {
+    inset: 0 0 0 auto;
+    width: min(calc(100% - 40px), 520px);
+    box-shadow: 0 0 24px rgb(0 0 0 / 20%);
+  }
+
+  .topbar {
+    gap: 4px;
+    padding: 4px 8px;
+  }
+
+  .topbar select {
+    max-width: 96px;
+  }
+
+  .input-card textarea {
+    font-size: 16px;
+  }
+
+  .start .greeting {
+    margin-top: 8vh;
+  }
+
+  .start-options {
+    flex-wrap: wrap;
+  }
+
+  .start-options select {
+    max-width: 100%;
+  }
+
+  .composer-footer select {
+    min-width: 0;
+    max-width: 40%;
+  }
+
+  .topbar button,
+  .topbar select,
+  .topbar summary,
+  .sidebar button,
+  .sidebar input,
+  .start-options select,
+  .composer-footer select,
+  .approval-actions button,
+  .preview-bar button,
+  .preview-bar a,
+  .modal-head button,
+  .agent-row,
+  .lane-card {
+    min-height: 40px;
+  }
+
+  .menu,
+  .attach,
+  .send,
+  .group-add,
+  .row-actions button,
+  .preview-bar button,
+  .modal-head button {
+    min-width: 40px;
+  }
+
+  .attach,
+  .send {
+    height: 40px;
+  }
+
+  .export-menu > summary {
+    display: flex;
+    align-items: center;
+  }
+
+  .modal-scrim {
+    padding: 8px;
+  }
+
+  .modal-head {
+    flex-wrap: wrap;
+  }
 }

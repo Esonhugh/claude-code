@@ -1,5 +1,5 @@
 import type { UUID } from 'crypto'
-import { readdir } from 'fs/promises'
+import { readdir, readFile } from 'fs/promises'
 import { dirname, join } from 'path'
 import { listSessionsImpl } from '../utils/listSessionsImpl.js'
 import {
@@ -104,16 +104,23 @@ function toStreamJson(
     }))
 }
 
-async function findFile(dir: string, name: string, depth = 3): Promise<string | undefined> {
+async function findFiles(
+  dir: string,
+  match: (name: string) => boolean,
+  depth = 3,
+): Promise<string[]> {
   const entries = await readdir(dir, { withFileTypes: true }).catch(() => [])
-  for (const e of entries) if (e.isFile() && e.name === name) return join(dir, e.name)
-  if (depth === 0) return undefined
+  const found = entries.filter(e => e.isFile() && match(e.name)).map(e => join(dir, e.name))
+  if (depth === 0) return found
   for (const e of entries) {
-    if (!e.isDirectory()) continue
-    const found = await findFile(join(dir, e.name), name, depth - 1)
-    if (found) return found
+    if (e.isDirectory()) found.push(...(await findFiles(join(dir, e.name), match, depth - 1)))
   }
-  return undefined
+  return found
+}
+
+async function subagentsDir(sessionId: string): Promise<string | undefined> {
+  const found = await resolveSessionFilePath(sessionId)
+  return found && join(dirname(found.filePath), sessionId, 'subagents')
 }
 
 /**
@@ -124,15 +131,35 @@ export async function readAgentTranscript(
   sessionId: string,
   agentId: string,
 ): Promise<{ messages: Record<string, unknown>[] } | undefined> {
-  const found = await resolveSessionFilePath(sessionId)
-  if (!found) return undefined
-  const file = await findFile(
-    join(dirname(found.filePath), sessionId, 'subagents'),
-    `agent-${agentId}.jsonl`,
-  )
+  const dir = await subagentsDir(sessionId)
+  if (!dir) return undefined
+  const [file] = await findFiles(dir, name => name === `agent-${agentId}.jsonl`)
   if (!file) return undefined
   const log = await loadTranscriptFromFile(file)
   return { messages: toStreamJson(log.messages, true) }
+}
+
+/**
+ * Which subagent issued each of these Agent tool calls: the agent whose
+ * transcript holds the `tool_use` block, by tool use id.
+ */
+export async function findAgentIssuers(
+  sessionId: string,
+  toolUseIds: string[],
+): Promise<Record<string, string>> {
+  const issuers: Record<string, string> = {}
+  const dir = await subagentsDir(sessionId)
+  if (!dir || !toolUseIds.length) return issuers
+  const files = await findFiles(dir, name => /^agent-[\w-]+\.jsonl$/.test(name))
+  for (const file of files) {
+    const text = await readFile(file, 'utf8').catch(() => '')
+    for (const id of toolUseIds) {
+      if (!issuers[id] && text.includes(`"type":"tool_use","id":"${id}"`)) {
+        issuers[id] = /agent-([\w-]+)\.jsonl$/.exec(file)![1]!
+      }
+    }
+  }
+  return issuers
 }
 
 export async function renameSession(id: string, title: string): Promise<boolean> {

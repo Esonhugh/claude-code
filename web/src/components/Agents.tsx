@@ -1,20 +1,27 @@
 import { type ReactNode, useEffect, useMemo, useState } from 'react'
 import {
   type AgentTask,
+  buildTeam,
   canChat,
   currentPhase,
   formatDuration,
   formatTokens,
   groupTasks,
   isFinished,
-  taskName,
+  parentId,
   type Tasks,
+  taskName,
+  type Team,
+  TEAM_LEAD,
+  type TeamMember,
+  unresolvedIssuers,
   type WorkflowPhase,
+  workflowAgent,
 } from '../agents'
-import { loadAgentTranscript } from '../api'
+import { loadAgentIssuers, loadAgentTranscript } from '../api'
 import type { MessageKey } from '../i18n'
-import { initialState, reduce } from '../protocol'
-import { Message } from './Chat'
+import { initialState, type Item, reduce } from '../protocol'
+import { Message, TeamDot, teamEventLabel } from './Chat'
 
 type T = (key: MessageKey, vars?: Record<string, string>) => string
 
@@ -88,7 +95,7 @@ function PhaseList({
   task: AgentTask
   collapsed: Set<string>
   toggle: (key: string) => void
-  onOpenAgent: (id: string, name: string) => void
+  onOpenAgent: (workflow: AgentTask, label: string) => void
   t: T
 }) {
   return (
@@ -115,7 +122,7 @@ function PhaseList({
                     <button
                       type="button"
                       className="agent-row agent-leaf"
-                      onClick={() => onOpenAgent(agent.label, agent.label)}
+                      onClick={() => onOpenAgent(task, agent.label)}
                     >
                       <StatusDot status={agent.status} />
                       <span className="agent-name">{agent.label}</span>
@@ -134,6 +141,8 @@ function PhaseList({
 
 function TaskRow({
   task,
+  level = 0,
+  subtasks,
   collapsed,
   toggle,
   onOpen,
@@ -142,28 +151,33 @@ function TaskRow({
   t,
 }: {
   task: AgentTask
+  level?: number
+  /** Subagents by the agent that started them. */
+  subtasks: Map<string, AgentTask[]>
   collapsed: Set<string>
   toggle: (key: string) => void
   onOpen: (task: AgentTask) => void
-  onOpenAgent: (id: string, name: string) => void
+  onOpenAgent: (workflow: AgentTask, label: string) => void
   onStop: (taskId: string) => void
   t: T
 }) {
   const hasPhases = !!task.phases?.length
-  const open = hasPhases && !collapsed.has(task.id)
+  const children = subtasks.get(task.id) ?? []
+  const foldable = hasPhases || children.length > 0
+  const open = foldable && !collapsed.has(task.id)
   return (
     <li>
       <div
         className="agent-row"
         role="button"
         tabIndex={0}
-        style={{ paddingLeft: `${8 + task.depth * 14}px` }}
+        style={{ paddingLeft: `${8 + level * 14}px` }}
         onClick={() => onOpen(task)}
         onKeyDown={e => {
           if (e.key === 'Enter') onOpen(task)
         }}
       >
-        {hasPhases ? (
+        {foldable ? (
           <Caret open={open} onClick={() => toggle(task.id)} label={taskName(task)} />
         ) : (
           <span className="caret-space" />
@@ -186,7 +200,7 @@ function TaskRow({
           </button>
         )}
       </div>
-      {open && (
+      {open && hasPhases && (
         <PhaseList
           task={task}
           collapsed={collapsed}
@@ -195,7 +209,145 @@ function TaskRow({
           t={t}
         />
       )}
+      {open && children.length > 0 && (
+        <ul className="agent-tree">
+          {children.map(child => (
+            <TaskRow
+              key={child.id}
+              task={child}
+              level={level + 1}
+              subtasks={subtasks}
+              collapsed={collapsed}
+              toggle={toggle}
+              onOpen={onOpen}
+              onOpenAgent={onOpenAgent}
+              onStop={onStop}
+              t={t}
+            />
+          ))}
+        </ul>
+      )}
     </li>
+  )
+}
+
+const IDLE_FOLD = 3
+
+function MemberRow({
+  member,
+  onOpen,
+  t,
+}: {
+  member: TeamMember
+  onOpen: (taskId: string) => void
+  t: T
+}) {
+  const state =
+    member.state === 'working'
+      ? t('memberWorking')
+      : member.state === 'idle'
+        ? t('teamIdle')
+        : t('memberStopped')
+  return (
+    <li>
+      <button
+        type="button"
+        className={`agent-row agent-leaf member-${member.state}`}
+        onClick={() => onOpen(member.task.id)}
+      >
+        <TeamDot color={member.color} />
+        <span className="agent-name">{member.name}</span>
+        <span className="agent-desc">{member.task.description}</span>
+        <span className="agent-meta">{[state, meta(member.task)].filter(Boolean).join(' · ')}</span>
+      </button>
+    </li>
+  )
+}
+
+/** The team group: members (idle ones folded past three, as in the TUI) and its messages. */
+function TeamSection({
+  team,
+  collapsed,
+  toggle,
+  onOpenMember,
+  onOpenMessages,
+  t,
+}: {
+  team: Team
+  collapsed: Set<string>
+  toggle: (key: string) => void
+  onOpenMember: (taskId: string) => void
+  onOpenMessages: () => void
+  t: T
+}) {
+  const open = !collapsed.has('team')
+  const working = team.members.filter(m => m.state === 'working')
+  const idle = team.members.filter(m => m.state === 'idle')
+  const stopped = team.members.filter(m => m.state === 'stopped')
+  // Folded unless the user opened it; the key records the opposite of the default.
+  const idleOpen = idle.length <= IDLE_FOLD || collapsed.has('team:idle')
+  const row = (member: TeamMember) => (
+    <MemberRow key={member.task.id} member={member} onOpen={onOpenMember} t={t} />
+  )
+  return (
+    <section className="agent-section">
+      <button
+        type="button"
+        className="ghost agent-section-head"
+        aria-expanded={open}
+        onClick={() => toggle('team')}
+      >
+        {open ? '▾' : '▸'} {t('team')} ·{' '}
+        {t('teamSummary', { working: String(working.length), idle: String(idle.length) })}
+      </button>
+      {open && (
+        <ul className="agent-tree">
+          {working.map(row)}
+          {idleOpen ? (
+            idle.map(row)
+          ) : (
+            <li>
+              <button type="button" className="agent-row agent-leaf" onClick={() => toggle('team:idle')}>
+                <span className="caret-space" />
+                <span className="agent-desc">{t('idleAgents', { n: String(idle.length) })}</span>
+              </button>
+            </li>
+          )}
+          {stopped.map(row)}
+          <li>
+            <button type="button" className="agent-row agent-leaf" onClick={onOpenMessages}>
+              <span className="caret-space" />
+              <span className="agent-name">{t('teamMessages')}</span>
+              <span className="agent-meta">{team.events.length}</span>
+            </button>
+          </li>
+        </ul>
+      )}
+    </section>
+  )
+}
+
+/** Lead and teammate messages in order, like a group chat. */
+function TeamTimeline({ team, t }: { team: Team; t: T }) {
+  const colors = new Map(team.members.map(m => [m.name, m.color]))
+  if (!team.events.length) return <div className="preview-note">{t('noTeamMessages')}</div>
+  return (
+    <ul className="team-timeline">
+      {team.events.map(event => {
+        const label = teamEventLabel(event.type, t)
+        return (
+          <li key={event.id} className={event.from === TEAM_LEAD ? 'team-from-lead' : undefined}>
+            <div className="team-route">
+              <TeamDot color={event.color ?? colors.get(event.from)} />
+              <strong>{event.from}</strong>
+              <span>→ {event.to}</span>
+              {label && <span className="team-event">{label}</span>}
+            </div>
+            {event.text && <div className="team-text">{event.text}</div>}
+          </li>
+        )
+      })}
+    </ul>
   )
 }
 
@@ -236,7 +388,7 @@ function WorkflowLanes({
   onOpenAgent,
 }: {
   phases: WorkflowPhase[]
-  onOpenAgent: (id: string, name: string) => void
+  onOpenAgent: (label: string) => void
 }) {
   const current = currentPhase(phases)
   return (
@@ -256,7 +408,7 @@ function WorkflowLanes({
               type="button"
               key={agent.label}
               className={`lane-card agent-${agent.status}`}
-              onClick={() => onOpenAgent(agent.label, agent.label)}
+              onClick={() => onOpenAgent(agent.label)}
             >
               <StatusDot status={agent.status} />
               <span>{agent.label}</span>
@@ -275,7 +427,7 @@ function WorkflowView({
   t,
 }: {
   task: AgentTask
-  onOpenAgent: (id: string, name: string) => void
+  onOpenAgent: (workflow: AgentTask, label: string) => void
   onStop: (taskId: string) => void
   t: T
 }) {
@@ -331,7 +483,7 @@ function WorkflowView({
               type="button"
               key={agent.label}
               className={`lane-card agent-${agent.status}`}
-              onClick={() => onOpenAgent(agent.label, agent.label)}
+              onClick={() => onOpenAgent(task, agent.label)}
             >
               <StatusDot status={agent.status} />
               <span>{agent.label}</span>
@@ -363,9 +515,9 @@ function WorkflowView({
             </div>
             <WorkflowLanes
               phases={phases}
-              onOpenAgent={(id, name) => {
+              onOpenAgent={label => {
                 setExpanded(false)
-                onOpenAgent(id, name)
+                onOpenAgent(task, label)
               }}
             />
           </div>
@@ -379,12 +531,15 @@ function AgentView({
   sessionId,
   agentId,
   task,
+  name,
   onSend,
   t,
 }: {
   sessionId: string
   agentId: string
   task?: AgentTask
+  /** Shown in the input's placeholder; defaults to the task's name. */
+  name?: string
   onSend?: (text: string) => Promise<string>
   t: T
 }) {
@@ -464,7 +619,7 @@ function AgentView({
               placeholder={
                 stoppedTeammate
                   ? t('teammateStopped')
-                  : t('sendTo', { name: task ? taskName(task) : agentId })
+                  : t('sendTo', { name: name ?? (task ? taskName(task) : agentId) })
               }
               onChange={e => setDraft(e.target.value)}
               onKeyDown={e => {
@@ -496,11 +651,35 @@ export type AgentsView =
   | { kind: 'tree' }
   | { kind: 'task'; id: string }
   | { kind: 'agent'; id: string; name: string }
+  | { kind: 'team' }
+
+/** Issuers of the Agent calls made inside subagents, looked up as they appear. */
+function useIssuers(sessionId: string, tasks: Tasks): Record<string, string> {
+  const [issuers, setIssuers] = useState<Record<string, string>>({})
+  const [attempt, setAttempt] = useState(0)
+  const pending = unresolvedIssuers(tasks, issuers).join(',')
+  useEffect(() => {
+    if (!pending) return
+    let live = true
+    // The issuing transcript may not be flushed yet; retry a few times.
+    const retry = attempt < 5 ? setTimeout(() => live && setAttempt(n => n + 1), 2000) : undefined
+    loadAgentIssuers(sessionId, pending.split(',')).then(
+      found => live && Object.keys(found).length && setIssuers(prev => ({ ...prev, ...found })),
+      () => {},
+    )
+    return () => {
+      live = false
+      clearTimeout(retry)
+    }
+  }, [sessionId, pending, attempt])
+  return issuers
+}
 
 /** Right-hand Agents panel: a collapsible tree, workflow view and agent chat. */
 export function AgentsPanel({
   sessionId,
   tasks,
+  items,
   busy,
   view,
   setView,
@@ -511,6 +690,8 @@ export function AgentsPanel({
 }: {
   sessionId: string
   tasks: Tasks
+  /** The lead's chat, for teammate names and team messages. */
+  items: Item[]
   busy: boolean
   view: AgentsView
   setView: (view: AgentsView) => void
@@ -520,13 +701,30 @@ export function AgentsPanel({
   t: T
 }) {
   const [collapsed, toggle] = useCollapsed()
-  const groups = groupTasks(tasks)
+  const issuers = useIssuers(sessionId, tasks)
+  const groups = groupTasks(tasks, issuers)
+  const team = useMemo(() => buildTeam(tasks, items), [tasks, items])
   const openTask = (task: AgentTask) => setView({ kind: 'task', id: task.id })
-  const openAgent = (id: string, name: string) =>
-    setView(tasks[id] ? { kind: 'task', id } : { kind: 'agent', id, name })
+  const openAgent = (workflow: AgentTask, label: string) => {
+    const task = workflowAgent(tasks, workflow, label)
+    setView(task ? { kind: 'task', id: task.id } : { kind: 'agent', id: label, name: label })
+  }
   const selected = view.kind === 'task' ? tasks[view.id] : undefined
+  const member = selected && team?.members.find(m => m.task.id === selected.id)
+  const parent = selected && parentId(selected, tasks, issuers)
+  const inWorkflow = parent !== undefined && tasks[parent]?.type === 'local_workflow'
   const title =
-    view.kind === 'tree' ? t('agents') : selected ? taskName(selected) : view.kind === 'agent' ? view.name : ''
+    view.kind === 'tree'
+      ? t('agents')
+      : view.kind === 'team'
+        ? t('team')
+        : member
+          ? member.name
+          : selected
+            ? taskName(selected)
+            : view.kind === 'agent'
+              ? view.name
+              : ''
 
   useEffect(() => {
     if (view.kind === 'tree') return
@@ -543,6 +741,7 @@ export function AgentsPanel({
     <TaskRow
       key={task.id}
       task={task}
+      subtasks={groups.children}
       collapsed={collapsed}
       toggle={toggle}
       onOpen={openTask}
@@ -580,7 +779,7 @@ export function AgentsPanel({
               <span className="agent-name">{t('mainSession')}</span>
               <span className="agent-meta">{busy ? t('statusLive') : t('idle')}</span>
             </div>
-            {!groups.running.length && !groups.finished.length && (
+            {!groups.running.length && !groups.finished.length && !team && (
               <div className="preview-note">{t('noAgents')}</div>
             )}
             <Section
@@ -592,6 +791,16 @@ export function AgentsPanel({
             >
               {row}
             </Section>
+            {team && (
+              <TeamSection
+                team={team}
+                collapsed={collapsed}
+                toggle={toggle}
+                onOpenMember={id => setView({ kind: 'task', id })}
+                onOpenMessages={() => setView({ kind: 'team' })}
+                t={t}
+              />
+            )}
             <Section
               id="finished"
               title={t('finishedGroup')}
@@ -609,12 +818,14 @@ export function AgentsPanel({
         {selected && selected.type !== 'local_workflow' && (
           <AgentView
             sessionId={sessionId}
-            agentId={selected.id}
+            agentId={member?.agentId ?? selected.id}
             task={selected}
-            onSend={canChat(selected) ? text => onSend(selected.id, text) : undefined}
+            name={member?.name}
+            onSend={canChat(selected) && !inWorkflow ? text => onSend(selected.id, text) : undefined}
             t={t}
           />
         )}
+        {view.kind === 'team' && team && <TeamTimeline team={team} t={t} />}
         {view.kind === 'task' && !selected && <div className="preview-note">{t('noAgents')}</div>}
         {view.kind === 'agent' && (
           <AgentView sessionId={sessionId} agentId={view.id} t={t} />
