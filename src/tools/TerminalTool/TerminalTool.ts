@@ -9,6 +9,7 @@ import {
 import { registerCleanup } from '../../utils/cleanupRegistry.js'
 import { createBunPtyDriver } from '../../utils/pty/bunPtyDriver.js'
 import { PtySessionManager } from '../../utils/pty/PtySessionManager.js'
+import type { StructuredTerminalScreen } from '../../utils/pty/terminalScreenRenderer.js'
 import type {
   TerminalTaskState,
   TerminalTerminationReason,
@@ -389,6 +390,34 @@ export async function refreshTerminalTaskPreview(
         ? undefined
         : pendingTerminationReason,
   })
+}
+
+/** The session's visible screen as styled spans; undefined once it is gone. */
+export function getTerminalScreen(sessionId: string): StructuredTerminalScreen | undefined {
+  try {
+    return terminalManagerInstance?.getRenderedScreen(sessionId)
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * Fork-only: keys a host app's user types into a terminal. They advance the
+ * pending line like the tool's own send-keys, so a line the agent later
+ * submits is checked together with what the user typed into it.
+ */
+export async function sendTerminalInputFromHost(
+  sessionId: string,
+  input: Pick<TerminalPermissionInput, 'text' | 'key' | 'enter'>,
+  setAppState: Parameters<typeof updateTaskState>[1],
+): Promise<void> {
+  const manager = getTerminalManager()
+  const { line, unknown } = getSendKeysLines({ action: 'send-keys', target: sessionId, ...input })
+  manager.write(sessionId, sendKeysSequence(input))
+  terminalInputLines.set(sessionId, line)
+  if (unknown) terminalUnknownLines.add(sessionId)
+  else terminalUnknownLines.delete(sessionId)
+  await refreshTerminalTaskPreview(sessionId, setAppState, manager)
 }
 
 function invalidInput(message: string, details: Record<string, unknown>): ErrorOutput {

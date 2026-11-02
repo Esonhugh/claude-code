@@ -88,3 +88,57 @@ export function resizeTerminalScreenRenderer(
 export function renderedPreview(renderer: TerminalScreenRenderer): string {
   return visibleLines(renderer.terminal).join('\n').trim()
 }
+
+/** A run of same-styled characters; `fg` is an SGR code (30–37, 90–97). */
+export type TerminalScreenSpan = { text: string; fg?: number; bold?: true }
+
+export type StructuredTerminalScreen = {
+  cols: number
+  rows: number
+  lines: TerminalScreenSpan[][]
+}
+
+/**
+ * The visible screen as rows of styled spans, read from the emulator's cell
+ * buffer so hosts can color it without parsing ANSI. Only the 16 basic
+ * foreground colors are kept; trailing blanks are dropped.
+ */
+export function renderedScreen(
+  renderer: TerminalScreenRenderer,
+): StructuredTerminalScreen {
+  const { terminal } = renderer
+  const buffer = terminal.buffer.active
+  const cell = buffer.getNullCell()
+  const lines: TerminalScreenSpan[][] = []
+  for (let row = 0; row < terminal.rows; row += 1) {
+    const line = buffer.getLine(buffer.baseY + row)
+    const spans: TerminalScreenSpan[] = []
+    for (let col = 0; line && col < terminal.cols; col += 1) {
+      line.getCell(col, cell)
+      if (cell.getWidth() === 0) continue
+      const palette = cell.isFgPalette() ? cell.getFgColor() : -1
+      const fg =
+        palette >= 0 && palette < 8
+          ? 30 + palette
+          : palette >= 8 && palette < 16
+            ? 82 + palette
+            : undefined
+      const bold = cell.isBold() ? true : undefined
+      const text = cell.getChars() || ' '
+      const last = spans.at(-1)
+      if (last && last.fg === fg && last.bold === bold) last.text += text
+      else spans.push({ text, ...(fg && { fg }), ...(bold && { bold }) })
+    }
+    while (spans.length) {
+      const last = spans.at(-1)!
+      const trimmed = last.text.trimEnd()
+      if (trimmed) {
+        last.text = trimmed
+        break
+      }
+      spans.pop()
+    }
+    lines.push(spans)
+  }
+  return { cols: terminal.cols, rows: terminal.rows, lines }
+}

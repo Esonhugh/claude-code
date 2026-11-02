@@ -552,6 +552,7 @@ export const REQUEST_PREFIX = {
   taskMessage: 'web-task-message-',
   settings: 'web-settings-',
   effort: 'web-effort-',
+  background: 'web-bg-',
 } as const
 
 /** Settings `hooks` ({ Event: [{ matcher, hooks: [{ command, timeout }] }] }) as flat rows. */

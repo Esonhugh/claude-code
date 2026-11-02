@@ -41,6 +41,8 @@ import type { AppState } from '../state/AppState.js'
 import { isLocalShellTask } from '../tasks/LocalShellTask/guards.js'
 import { isTerminalTask } from '../tasks/TerminalTask.js'
 import { getAgentMemoryDir } from '../tools/AgentTool/agentMemory.js'
+import { getMonitorEvents } from '../tools/MonitorTool/monitorEvents.js'
+import { getTerminalScreen } from '../tools/TerminalTool/TerminalTool.js'
 import type { Tools } from '../Tool.js'
 import type { Message } from '../types/message.js'
 import { getSubscriptionType } from '../utils/auth.js'
@@ -595,13 +597,26 @@ const TASK_OUTPUT_TAIL_BYTES = 8 * 1024
 // task leaves AppState, so its output stays readable by an id of this shape.
 const SHELL_TASK_ID = /^b[0-9a-z]{8}$/
 
-export async function buildTaskOutputResponse(appState: AppState, taskId: string) {
+export async function buildTaskOutputResponse(
+  appState: AppState,
+  taskId: string,
+  format?: 'screen',
+) {
   const task = appState.tasks[taskId]
   // Fork-only: a Terminal tool session answers with its current screen text,
-  // the same preview the TUI's terminal dialog shows.
+  // the same preview the TUI's terminal dialog shows. `format: "screen"` adds
+  // the screen as rows of colored spans from the emulator's cell buffer; once
+  // the PTY session is gone only the plain preview lines are left.
   if (isTerminalTask(task)) {
     const bytes = Buffer.byteLength(task.preview)
-    return { output: task.preview, total_bytes: bytes, truncated: false }
+    const text = { output: task.preview, total_bytes: bytes, truncated: false }
+    if (format !== 'screen') return text
+    const screen = getTerminalScreen(task.sessionId) ?? {
+      cols: task.cols,
+      rows: task.rows,
+      lines: task.preview.split('\n').map(line => (line ? [{ text: line }] : [])),
+    }
+    return { ...text, screen }
   }
   if (task ? !isLocalShellTask(task) : !SHELL_TASK_ID.test(taskId)) {
     throw new Error('get_task_output: no shell or Monitor task with that task_id in this session')
@@ -618,4 +633,64 @@ export async function buildTaskOutputResponse(appState: AppState, taskId: string
     }
     throw error
   }
+}
+
+const BACKGROUND_TAIL_BYTES = 2048
+
+async function lastOutputLine(taskId: string): Promise<string> {
+  try {
+    const { content } = await tailFile(getTaskOutputPath(taskId), BACKGROUND_TAIL_BYTES)
+    const lines = stripAnsi(content).replace(/\r\n/g, '\n').split('\n')
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const line = lines[i]!.split('\r').at(-1)!.trim()
+      if (line) return line
+    }
+    return ''
+  } catch {
+    return ''
+  }
+}
+
+/**
+ * Fork-only `get_background_tasks`: what a host's Terminals, Monitor and
+ * Background Tasks panes show beyond the task_* events, which carry no
+ * command, size, exit code, output or monitor events.
+ */
+export async function buildBackgroundTasksResponse(appState: AppState, now = Date.now()) {
+  const tasks = await Promise.all(
+    Object.values(appState.tasks).map(async task => {
+      const base = {
+        task_id: task.id,
+        task_type: task.type,
+        description: task.description,
+        status: task.status,
+        duration_ms: Math.max(0, (task.endTime ?? now) - task.startTime - (task.totalPausedMs ?? 0)),
+      }
+      if (isTerminalTask(task)) {
+        return {
+          ...base,
+          command: [task.command, ...task.args].join(' '),
+          cols: task.cols,
+          rows: task.rows,
+          ...(task.exitCode !== undefined && task.exitCode !== null && { exit_code: task.exitCode }),
+          ...(task.agentId && { agent_id: task.agentId }),
+        }
+      }
+      if (isLocalShellTask(task)) {
+        const kind = task.kind ?? 'bash'
+        return {
+          ...base,
+          kind,
+          command: task.command,
+          ...(task.result && { exit_code: task.result.code }),
+          ...(task.agentId && { agent_id: task.agentId }),
+          ...(kind === 'monitor'
+            ? { events: getMonitorEvents(task.id) }
+            : { tail: await lastOutputLine(task.id) }),
+        }
+      }
+      return task.type === 'monitor_mcp' || task.type === 'dream' ? base : undefined
+    }),
+  )
+  return { tasks: tasks.filter(task => task !== undefined) }
 }
