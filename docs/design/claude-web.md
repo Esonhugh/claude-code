@@ -200,7 +200,7 @@ claude web 进程（Bun.serve）
 - 每行显示状态、名字或类型、description、耗时、tokens、最近一次工具，数据来自 `task_progress`。
 - 分成运行中、空闲、已结束三组，已结束的默认折叠。空闲成员超过 3 个时折叠成"N idle agents"，与 TUI 一致（`src/components/CoordinatorAgentStatusRows.ts`）。
 - 每行有停止按钮（`stop_task`）。
-- 缺口：`task_started` 只有 `spawn_depth`，没有父任务 id，后台嵌套 agent 挂不到正确的父节点。实现时给 `task_started` 加可选的 `parent_task_id`。
+- 父子关系：`task_started` 只有 `spawn_depth` 和 `tool_use_id`，父节点由服务端按 `tool_use_id` 在 transcript 里反查（见下文）。
 
 **2. Workflow：多列关系图**
 
@@ -225,11 +225,23 @@ claude web 进程（Bun.serve）
 | team 成员，已停止 | 输入框禁用，提示"成员已停止" | 与 REPL 的提示相同 |
 | workflow 里的 agent | 只读，只能停止 | workflow 脚本依赖 agent 的结构化输出，中途插话会破坏结果 |
 
-**需要新增的协议**（只加在 fork 的 headless 模式里，不影响现有 SDK 客户端）：
+**为什么还要加一个请求**
 
-- `send_task_message {task_id, text}`：在 `src/cli/print.ts` 里按上表调用同一组函数，返回 `queued`、`resumed`、`injected` 或错误原因。
-- `get_task_transcript {task_id, after_uuid?}`：返回这个 agent 的 transcript 增量，路径解析留在子进程里（`getAgentTranscriptPath`，`src/utils/sessionStorage.ts:259`），服务端不自己拼路径。
-- 实时刷新不另开推送通道：对话视图打开期间，浏览器每收到这个 agent 的一条 `task_progress`，就用 `after_uuid` 拉一次增量。
+现有机制都不能直接从外部把一句话投给某个 agent：
+
+- REPL 的路由只存在于 Ink UI 里（`src/screens/REPL.tsx:5935`），headless 子进程没有对应入口。
+- stream-json 里 `user` 消息的 `agent_id` 是输出字段，表示"哪个 subagent 产生了这条消息"（`src/entrypoints/sdk/coreSchemas.ts:1681`），`print.ts` 不会按它把输入路由出去。control request 里只有 `stop_task`。
+- SendMessage 是给模型用的工具。让主 agent 转达要占主对话一轮，也不是直接对话。
+- `claude ssh` / Direct Connect 有同样的缺口：远端 task 事件被收进 `AppState.remoteTasks`，但没有组件读取它，远端 agent 既看不到也发不了消息。单独记在 #503。
+
+所以只加**一个** fork 专用 control request，Web、SSH、Direct Connect 三处共用：
+
+- `send_task_message {task_id, text}`：在 `src/cli/print.ts` 里按上表调用同一组函数，返回 `queued`、`resumed`、`injected` 或失败原因。
+
+其余都用现有机制：
+
+- agent 的过程：服务端和子进程在同一台机器、同一个二进制，直接复用 `getAgentTranscriptPath`（`src/utils/sessionStorage.ts:259`）读 transcript，不加协议。对话视图打开期间，浏览器每收到这个 agent 的一条 `task_progress`，就从服务端拉一次增量。
+- 父子关系：先用 `task_started.tool_use_id` 在父 agent 的 transcript 里找到发起它的 Agent 调用来确定父节点；只有这条路走不通时，才考虑给 `task_started` 加可选的 `parent_task_id`。
 
 **断线和恢复**
 
@@ -266,7 +278,7 @@ claude web [--port <n>] [--host <ip>] [--workspace <dir>] [--no-open]
 | M1 对话体验 | Markdown 增量渲染、代码高亮、KaTeX、Mermaid、图片；工具卡片；审批卡片；中断；切模型和权限模式；用量显示 | 渲染快照测试；XSS 用例（raw HTML、`javascript:` 链接、恶意 mermaid）不执行；审批允许和拒绝都正确回到子进程 |
 | M2 会话管理 | 侧边栏历史、恢复、新建、停止、重命名；选择工作目录；单标签独占 | 恢复后上下文延续；TUI 和 Web 打开同一会话时互斥提示 |
 | M3 文件与文档 | 上传和拖放、附件条、`/api/files` 允许根、右侧预览面板（PDF、图片、文本、HTML、CSV/XLSX、DOCX，有 soffice 时 PPTX） | 路径穿越和符号链接逃逸用例被拒；上传上限生效；各类型样例文件可预览 |
-| M4 Agent 可视化与研究 | 右侧边栏 Agents 页签（层级树、workflow 多列图、team 分组和消息时间线）；点开 agent 直接对话（`send_task_message`、`get_task_transcript`、`parent_task_id`）；断线重建；引用列表、导出对话为 Markdown/PDF、`/` 命令面板（只列适合 Web 的命令） | fake API 下跑一个两阶段 workflow 和一个两人 team，侧边栏状态与 TUI 一致；给运行中和已结束的 subagent、运行中的成员各发一条消息，投递结果与 REPL 相同；刷新页面后面板能恢复；team 跨轮存活且 shutdown 后成员从 config.json 移除；真实 OAuth 跑一次 deep-research |
+| M4 Agent 可视化与研究 | 右侧边栏 Agents 页签（层级树、workflow 多列图、team 分组和消息时间线）；点开 agent 直接对话（新增 `send_task_message`，与 #503 共用）；断线重建；引用列表、导出对话为 Markdown/PDF、`/` 命令面板（只列适合 Web 的命令） | fake API 下跑一个两阶段 workflow 和一个两人 team，侧边栏状态与 TUI 一致；给运行中和已结束的 subagent、运行中的成员各发一条消息，投递结果与 REPL 相同；刷新页面后面板能恢复；team 跨轮存活且 shutdown 后成员从 config.json 移除；真实 OAuth 跑一次 deep-research |
 | M5 加固与文档 | 非 loopback + TLS、移动端布局、无障碍、`docs/features/web-ui.md` 和 README 表格一行、体积检查进 release-check | `make release-check` 通过；功能文档按现有模板附分步截图 |
 
 ## 9. 测试
