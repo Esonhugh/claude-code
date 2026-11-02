@@ -230,3 +230,64 @@ describe('claude server', () => {
     expect(manager.get(id)).toBeUndefined()
   })
 })
+
+// Prints a few task events on its first stdin line, then waits.
+const TASK_CHILD = `
+const out = m => process.stdout.write(JSON.stringify(m) + '\\n')
+process.stdin.once('data', () => {
+  out({ type: 'system', subtype: 'task_started', task_id: 'a1', task_type: 'local_agent' })
+  out({ type: 'system', subtype: 'task_progress', task_id: 'a1', summary: 'first' })
+  out({ type: 'assistant', message: { id: 'm1', content: [] } })
+  out({ type: 'system', subtype: 'task_progress', task_id: 'a1', summary: 'second' })
+  out({ type: 'system', subtype: 'task_notification', task_id: 'a1', status: 'completed' })
+  out({ type: 'system', subtype: 'task_started', task_id: 'w1', task_type: 'local_workflow' })
+})
+setInterval(() => {}, 1000)
+`
+
+describe('SessionManager task replay', () => {
+  async function reattach(replayTasks: boolean) {
+    const manager = new SessionManager(
+      {
+        spawn: opts =>
+          spawn(process.execPath, ['-e', TASK_CHILD], {
+            cwd: opts.cwd,
+            stdio: ['pipe', 'pipe', 'pipe'],
+          }),
+      },
+      { replayTasks },
+    )
+    const socket = () => {
+      const lines: Record<string, unknown>[] = []
+      return { lines, send: (data: string) => lines.push(JSON.parse(data)), close: () => {} }
+    }
+    try {
+      const { id } = manager.create({ cwd: '/' })
+      const first = socket()
+      manager.attach(id, first)
+      manager.write(id, '{"type":"user"}\n')
+      for (let i = 0; i < 100 && first.lines.length < 6; i++) await Bun.sleep(20)
+      expect(first.lines).toHaveLength(6)
+      manager.detach(id, first)
+      const second = socket()
+      manager.attach(id, second)
+      return second.lines
+    } finally {
+      await manager.destroyAll()
+    }
+  }
+
+  it('replays the task events a reattaching client missed', async () => {
+    const lines = await reattach(true)
+    expect(lines.map(l => [l.task_id, l.subtype, l.summary])).toEqual([
+      ['a1', 'task_started', undefined],
+      ['a1', 'task_progress', 'second'],
+      ['a1', 'task_notification', undefined],
+      ['w1', 'task_started', undefined],
+    ])
+  })
+
+  it('replays nothing unless asked to', async () => {
+    expect(await reattach(false)).toEqual([])
+  })
+})

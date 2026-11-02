@@ -1,6 +1,8 @@
 // Background work of a session (subagents, workflows, teammates, shells),
 // folded from the `system/task_*` stream-json events.
 
+import type { Item } from './protocol'
+
 type Json = Record<string, unknown>
 
 const isObj = (v: unknown): v is Json =>
@@ -196,13 +198,192 @@ export function canChat(task: AgentTask): boolean {
   return task.type === 'local_agent' || task.type === 'in_process_teammate'
 }
 
-export type TaskGroups = { running: AgentTask[]; finished: AgentTask[] }
+/**
+ * The task a task runs under: the workflow that started it, or the agent
+ * whose transcript issued its Agent call (`issuers`, looked up by the server).
+ */
+export function parentId(
+  task: AgentTask,
+  tasks: Tasks,
+  issuers: Record<string, string>,
+): string | undefined {
+  if (!task.toolUseId || task.type === 'local_workflow') return undefined
+  const workflow = Object.values(tasks).find(
+    t => t.type === 'local_workflow' && t.toolUseId === task.toolUseId,
+  )
+  if (workflow) return workflow.id
+  const issuer = issuers[task.toolUseId]
+  return issuer && issuer !== task.id && tasks[issuer] ? issuer : undefined
+}
 
-export function groupTasks(tasks: Tasks): TaskGroups {
-  const all = Object.values(tasks).sort((a, b) => a.seq - b.seq)
+/** Agent calls made inside a subagent, whose issuer the server has to find. */
+export function unresolvedIssuers(tasks: Tasks, issuers: Record<string, string>): string[] {
+  return Object.values(tasks)
+    .filter(
+      t =>
+        t.type === 'local_agent' &&
+        t.depth > 0 &&
+        t.toolUseId &&
+        !issuers[t.toolUseId] &&
+        parentId(t, tasks, issuers) === undefined,
+    )
+    .map(t => t.toolUseId!)
+}
+
+export type TaskGroups = {
+  /** Top-level tasks; teammates are grouped by `buildTeam` instead. */
+  running: AgentTask[]
+  finished: AgentTask[]
+  /** Subagents under the agent that started them (workflow agents excluded). */
+  children: Map<string, AgentTask[]>
+}
+
+export function groupTasks(tasks: Tasks, issuers: Record<string, string> = {}): TaskGroups {
+  const all = Object.values(tasks)
+    .filter(t => t.type !== 'in_process_teammate')
+    .sort((a, b) => a.seq - b.seq)
+  const roots: AgentTask[] = []
+  const children = new Map<string, AgentTask[]>()
+  for (const task of all) {
+    const parent = parentId(task, tasks, issuers)
+    if (!parent) roots.push(task)
+    else if (tasks[parent]!.type !== 'local_workflow') {
+      children.set(parent, [...(children.get(parent) ?? []), task])
+    }
+  }
   return {
-    running: all.filter(t => !isFinished(t)),
-    finished: all.filter(isFinished),
+    running: roots.filter(t => !isFinished(t)),
+    finished: roots.filter(isFinished),
+    children,
+  }
+}
+
+/** The agent a workflow phase card stands for (its description is `<workflow>: <label>`). */
+export function workflowAgent(tasks: Tasks, workflow: AgentTask, label: string): AgentTask | undefined {
+  return Object.values(tasks).find(
+    t =>
+      t.id !== workflow.id &&
+      t.toolUseId === workflow.toolUseId &&
+      t.description.endsWith(`: ${label}`),
+  )
+}
+
+/** A teammate color name, or nothing when it is not a plain CSS color word. */
+export function teamColor(color: string | undefined): string | undefined {
+  return color && /^[a-z]{1,20}$/i.test(color) ? color : undefined
+}
+
+/** A teammate message body: plain text, or a protocol message such as an idle notification. */
+export function teammateEvent(text: string): { type?: string; detail: string } {
+  try {
+    const parsed: unknown = JSON.parse(text)
+    if (isObj(parsed) && typeof parsed.type === 'string') {
+      return {
+        type: parsed.type,
+        detail:
+          str(parsed.result) ?? str(parsed.reason) ?? str(parsed.content) ?? str(parsed.message) ?? '',
+      }
+    }
+  } catch {
+    // Plain text.
+  }
+  return { detail: text }
+}
+
+export type TeamMember = {
+  task: AgentTask
+  name: string
+  color?: string
+  /** Transcript id of the teammate (`agent-<id>.jsonl`). */
+  agentId?: string
+  state: 'working' | 'idle' | 'stopped'
+}
+
+export type TeamEvent = {
+  id: string
+  from: string
+  to: string
+  color?: string
+  /** Protocol message type, e.g. `idle_notification` or `shutdown_request`. */
+  type?: string
+  text: string
+}
+
+export type Team = { members: TeamMember[]; events: TeamEvent[] }
+
+export const TEAM_LEAD = 'team-lead'
+
+function parseInput(input: string | undefined): Json {
+  try {
+    const value: unknown = JSON.parse(input ?? '')
+    return isObj(value) ? value : {}
+  } catch {
+    return {}
+  }
+}
+
+/**
+ * The session's agent team: its teammate tasks, named by the Agent calls that
+ * spawned them, and the messages between the lead and its teammates as the
+ * lead's chat shows them (teammate prompts and SendMessage calls).
+ */
+export function buildTeam(tasks: Tasks, items: Item[]): Team | undefined {
+  const teammates = Object.values(tasks)
+    .filter(t => t.type === 'in_process_teammate')
+    .sort((a, b) => a.seq - b.seq)
+  if (!teammates.length) return undefined
+  const tools = new Map<string, { input: string; result?: string }>()
+  const events: TeamEvent[] = []
+  for (const item of items) {
+    if (item.kind === 'teammate') {
+      const event = teammateEvent(item.text)
+      events.push({
+        id: item.id,
+        from: item.from,
+        to: TEAM_LEAD,
+        color: teamColor(item.color),
+        type: event.type,
+        text: event.detail || (item.summary ?? ''),
+      })
+      continue
+    }
+    if (item.kind !== 'assistant') continue
+    for (const block of item.blocks) {
+      if (block?.kind !== 'tool') continue
+      tools.set(block.id, block)
+      const input = block.name === 'SendMessage' ? parseInput(block.input) : {}
+      const to = str(input.to)
+      if (!to) continue
+      const message = input.message
+      events.push({
+        id: block.id,
+        from: TEAM_LEAD,
+        to,
+        type: isObj(message) ? str(message.type) : undefined,
+        text: typeof message === 'string' && message ? message : (str(input.summary) ?? ''),
+      })
+    }
+  }
+  const members: TeamMember[] = teammates.map(task => {
+    const tool = task.toolUseId ? tools.get(task.toolUseId) : undefined
+    const name = str(parseInput(tool?.input).name) ?? task.description
+    const last = events.findLast(e => e.from === name || e.to === name || e.to === '*')
+    return {
+      task,
+      name,
+      color: events.findLast(e => e.from === name && e.color)?.color,
+      agentId: /^agent_id: (\S+)$/m.exec(tool?.result ?? '')?.[1],
+      state: isFinished(task)
+        ? 'stopped'
+        : last?.from === name && last.type === 'idle_notification'
+          ? 'idle'
+          : 'working',
+    }
+  })
+  const names = new Set(members.map(m => m.name))
+  return {
+    members,
+    events: events.filter(e => names.has(e.from) || names.has(e.to) || e.to === '*'),
   }
 }
 

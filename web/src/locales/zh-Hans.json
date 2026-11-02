@@ -84,5 +84,13 @@
   "agentNoTranscript": "这个 agent 还没有记录。",
   "delivery_queued": "已排队，agent 会在下一步读到。",
   "delivery_injected": "已发给成员。",
-  "delivery_resumed": "agent 已带着这条消息恢复运行。"
+  "delivery_resumed": "agent 已带着这条消息恢复运行。",
+  "team": "团队",
+  "teamSummary": "{working} 个工作中 · {idle} 个空闲",
+  "idleAgents": "{n} 个空闲 agent",
+  "teamIdle": "空闲",
+  "memberWorking": "工作中",
+  "memberStopped": "已停止",
+  "teamMessages": "消息",
+  "noTeamMessages": "还没有消息。"
 }

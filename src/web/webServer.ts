@@ -20,6 +20,7 @@ import {
 } from './files.js'
 import {
   AGENT_ID,
+  findAgentIssuers,
   listHistory,
   readAgentTranscript,
   readTranscript,
@@ -95,6 +96,7 @@ const SESSION_PATH = /^\/api\/sessions\/([^/]+)$/
 const HISTORY_PATH = /^\/api\/history\/([^/]+)$/
 const HISTORY_MESSAGES_PATH = /^\/api\/history\/([^/]+)\/messages$/
 const AGENT_MESSAGES_PATH = /^\/api\/history\/([^/]+)\/agents\/([^/]+)\/messages$/
+const AGENT_ISSUERS_PATH = /^\/api\/history\/([^/]+)\/agent-issuers$/
 const FILES_PATH = /^\/api\/files\/([^/]+)(\/pdf)?$/
 
 // Served as text so a file from the workspace never runs as a page on this origin.
@@ -181,6 +183,7 @@ function isDirectory(path: string): boolean {
  *   GET    /api/history/:id/messages    → a page of one transcript
  *   PATCH  /api/history/:id             → rename (custom title)
  *   GET    /api/history/:id/agents/:agent/messages → a subagent's transcript
+ *   GET    /api/history/:id/agent-issuers?tool_use_id= → { [tool use id]: agent id }
  *   POST   /api/files/:id?name=         → upload into the session's folder
  *   GET    /api/files/:id?path=         → a file the session may show (Range)
  *   GET    /api/files/:id/pdf?path=     → Office document converted to PDF
@@ -336,6 +339,15 @@ export function startWebServer(
       }
       const page = await readAgentTranscript(id, agentId)
       return page ? Response.json(page) : errorResponse(404, 'Agent not found')
+    }
+    const issuersMatch = AGENT_ISSUERS_PATH.exec(pathname)
+    if (issuersMatch && req.method === 'GET') {
+      const id = decodeURIComponent(issuersMatch[1]!)
+      const toolUseIds = url.searchParams.getAll('tool_use_id')
+      if (!SESSION_ID.test(id) || toolUseIds.length > 100 || !toolUseIds.every(t => AGENT_ID.test(t))) {
+        return errorResponse(400, 'Invalid id')
+      }
+      return Response.json(await findAgentIssuers(id, toolUseIds))
     }
     const historyMatch = HISTORY_PATH.exec(pathname)
     if (historyMatch && req.method === 'PATCH') {

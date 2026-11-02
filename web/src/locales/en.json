@@ -84,5 +84,13 @@
   "agentNoTranscript": "No transcript for this agent yet.",
   "delivery_queued": "Queued; the agent reads it at its next step.",
   "delivery_injected": "Sent to the teammate.",
-  "delivery_resumed": "The agent resumed with your message."
+  "delivery_resumed": "The agent resumed with your message.",
+  "team": "Team",
+  "teamSummary": "{working} working · {idle} idle",
+  "idleAgents": "{n} idle agents",
+  "teamIdle": "idle",
+  "memberWorking": "working",
+  "memberStopped": "stopped",
+  "teamMessages": "Messages",
+  "noTeamMessages": "No messages yet."
 }

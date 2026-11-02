@@ -1,5 +1,12 @@
 import { createContext, useContext } from 'react'
-import { type AgentTask, formatDuration, isFinished, taskName } from '../agents'
+import {
+  type AgentTask,
+  formatDuration,
+  isFinished,
+  taskName,
+  teamColor,
+  teammateEvent,
+} from '../agents'
 import { baseName, splitMentions } from '../files'
 import type { MessageKey } from '../i18n'
 import { Markdown } from '../markdown/Markdown'
@@ -128,6 +135,19 @@ function ToolCard({
   )
 }
 
+/** How a teammate protocol message reads; plain messages have no label. */
+export function teamEventLabel(
+  type: string | undefined,
+  t: (key: MessageKey) => string,
+): string | undefined {
+  if (!type) return undefined
+  return type === 'idle_notification' ? t('teamIdle') : type.replace(/_/g, ' ')
+}
+
+export function TeamDot({ color }: { color?: string }) {
+  return <span className="team-dot" style={{ background: teamColor(color) }} />
+}
+
 export function Message({
   item,
   t,
@@ -150,6 +170,18 @@ export function Message({
           ))}
           <UserText text={item.text} />
         </div>
+      </div>
+    )
+  }
+  if (item.kind === 'teammate') {
+    const event = teammateEvent(item.text)
+    const label = teamEventLabel(event.type, t)
+    return (
+      <div className="msg msg-teammate">
+        <TeamDot color={item.color} />
+        <strong>{item.from}</strong>
+        {label && <span className="team-event">{label}</span>}
+        <span className="team-text">{event.detail || item.summary}</span>
       </div>
     )
   }

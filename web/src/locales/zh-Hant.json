@@ -84,5 +84,13 @@
   "agentNoTranscript": "這個 agent 還沒有紀錄。",
   "delivery_queued": "已排隊，agent 會在下一步讀到。",
   "delivery_injected": "已傳給成員。",
-  "delivery_resumed": "agent 已帶著這則訊息恢復執行。"
+  "delivery_resumed": "agent 已帶著這則訊息恢復執行。",
+  "team": "團隊",
+  "teamSummary": "{working} 個工作中 · {idle} 個閒置",
+  "idleAgents": "{n} 個閒置 agent",
+  "teamIdle": "閒置",
+  "memberWorking": "工作中",
+  "memberStopped": "已停止",
+  "teamMessages": "訊息",
+  "noTeamMessages": "還沒有訊息。"
 }

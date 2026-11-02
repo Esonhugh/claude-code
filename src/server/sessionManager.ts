@@ -20,12 +20,15 @@ type Session = SessionInfo & {
   socket: SessionSocket | null
   /** stdout lines produced while no client is attached. */
   pending: string[]
+  /** Each task's `system/task_*` lines, for a client that attaches later. */
+  taskLines?: Map<string, string[]>
   idleTimer?: ReturnType<typeof setTimeout>
   exited: Promise<void>
 }
 
 // Bounds memory for a detached session whose child keeps printing.
 const MAX_PENDING_LINES = 1000
+const MAX_REPLAYED_TASKS = 200
 const KILL_GRACE_MS = 5000
 
 export class SessionManagerError extends Error {
@@ -38,6 +41,34 @@ export class SessionManagerError extends Error {
   }
 }
 
+/** Keeps a task's lines in order, with only its latest progress snapshot. */
+function recordTaskLine(taskLines: Map<string, string[]>, line: string): void {
+  if (!line.includes('"subtype":"task_')) return
+  let msg: { type?: unknown; subtype?: unknown; task_id?: unknown }
+  try {
+    msg = JSON.parse(line)
+  } catch {
+    return
+  }
+  if (
+    msg.type !== 'system' ||
+    typeof msg.subtype !== 'string' ||
+    !msg.subtype.startsWith('task_') ||
+    typeof msg.task_id !== 'string'
+  ) {
+    return
+  }
+  const lines = taskLines.get(msg.task_id) ?? []
+  const kept =
+    msg.subtype === 'task_progress'
+      ? lines.filter(l => !l.includes('"subtype":"task_progress"'))
+      : lines
+  taskLines.set(msg.task_id, [...kept, line])
+  if (taskLines.size > MAX_REPLAYED_TASKS) {
+    taskLines.delete(taskLines.keys().next().value!)
+  }
+}
+
 /**
  * Owns one child process per session and relays newline-delimited
  * stream-json between it and at most one attached WebSocket.
@@ -47,6 +78,7 @@ export class SessionManager {
   private idleTimeoutMs: number
   private maxSessions: number
   private logger?: ServerLogger
+  private replayTasks: boolean
 
   constructor(
     private backend: SessionBackend,
@@ -54,11 +86,17 @@ export class SessionManager {
       idleTimeoutMs?: number
       maxSessions?: number
       logger?: ServerLogger
+      /**
+       * Replay each task's `system/task_*` lines to every newly attached
+       * client, so a reloaded page can rebuild its task list (claude web).
+       */
+      replayTasks?: boolean
     } = {},
   ) {
     this.idleTimeoutMs = options.idleTimeoutMs ?? 0
     this.maxSessions = options.maxSessions ?? 0
     this.logger = options.logger
+    this.replayTasks = options.replayTasks ?? false
   }
 
   create({
@@ -108,6 +146,7 @@ export class SessionManager {
       sessionKey,
       socket: null,
       pending: [],
+      ...(this.replayTasks && { taskLines: new Map() }),
       exited: new Promise(resolve => {
         child.once('close', () => resolve())
       }),
@@ -116,6 +155,7 @@ export class SessionManager {
 
     createInterface({ input: child.stdout! }).on('line', line => {
       if (!line.trim()) return
+      if (session.taskLines) recordTaskLine(session.taskLines, line)
       if (session.socket) {
         session.socket.send(line + '\n')
         return
@@ -171,6 +211,10 @@ export class SessionManager {
     clearTimeout(session.idleTimer)
     session.socket = socket
     session.status = 'running'
+    // Pending lines may repeat some of these; task events fold idempotently.
+    for (const lines of session.taskLines?.values() ?? []) {
+      for (const line of lines) socket.send(line + '\n')
+    }
     for (const line of session.pending.splice(0)) socket.send(line + '\n')
     this.logger?.info(`session ${id} attached`)
     return true

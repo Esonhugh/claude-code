@@ -62,6 +62,14 @@ export const loadAgentTranscript = (sessionId: string, agentId: string) =>
     `/api/history/${encodeURIComponent(sessionId)}/agents/${encodeURIComponent(agentId)}/messages`,
   )
 
+/** Which subagent issued each Agent call, by tool use id. */
+export const loadAgentIssuers = (sessionId: string, toolUseIds: string[]) =>
+  getJson<Record<string, string>>(
+    `/api/history/${encodeURIComponent(sessionId)}/agent-issuers?${toolUseIds
+      .map(id => `tool_use_id=${encodeURIComponent(id)}`)
+      .join('&')}`,
+  )
+
 export const listRunning = () =>
   getJson<{ id: string; work_dir: string; attached: boolean }[]>('/api/sessions')
 
