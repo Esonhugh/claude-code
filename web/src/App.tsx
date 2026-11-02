@@ -4,6 +4,7 @@ import {
   type KeyboardEvent,
   useCallback,
   useEffect,
+  useId,
   useMemo,
   useReducer,
   useRef,
@@ -19,6 +20,12 @@ import {
   openSessionSocket,
   renameSession,
 } from './api'
+import {
+  filterCommands,
+  moveSelection,
+  paletteQuery,
+  type SlashCommand,
+} from './commands'
 import { AgentsPanel, type AgentsView } from './components/Agents'
 import {
   AgentsContext,
@@ -121,6 +128,8 @@ function Composer({
   big,
   files,
   setFiles,
+  commands = [],
+  hiddenCommands,
 }: {
   t: T
   busy: boolean
@@ -134,8 +143,27 @@ function Composer({
   big?: boolean
   files: File[]
   setFiles: (files: File[]) => void
+  commands?: SlashCommand[]
+  hiddenCommands?: string[]
 }) {
   const picker = useRef<HTMLInputElement>(null)
+  const paletteId = useId()
+  const [selected, setSelected] = useState(0)
+  // Esc closes the palette for this exact draft; typing reopens it.
+  const [dismissed, setDismissed] = useState<string>()
+  const query = dismissed === draft ? undefined : paletteQuery(draft)
+  const matches =
+    query === undefined ? [] : filterCommands(commands, query, hiddenCommands)
+  const active = Math.min(selected, matches.length - 1)
+  useEffect(() => {
+    if (active >= 0) {
+      document.getElementById(`${paletteId}-${active}`)?.scrollIntoView({ block: 'nearest' })
+    }
+  }, [active, paletteId])
+  const pick = (command: SlashCommand) => {
+    setDraft(`/${command.name} `)
+    setSelected(0)
+  }
   const onPaste = (e: ClipboardEvent<HTMLTextAreaElement>) => {
     const pasted = [...e.clipboardData.files]
     if (!pasted.length) return
@@ -143,6 +171,28 @@ function Composer({
     setFiles([...files, ...pasted])
   }
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (matches.length && !e.nativeEvent.isComposing) {
+      const command = matches[active]!
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        e.preventDefault()
+        setSelected(moveSelection(active, e.key === 'ArrowDown' ? 1 : -1, matches.length))
+        return
+      }
+      // Enter on a fully typed name sends it; otherwise it completes the name.
+      if (
+        e.key === 'Tab' ||
+        (e.key === 'Enter' && !e.shiftKey && draft !== `/${command.name}`)
+      ) {
+        e.preventDefault()
+        pick(command)
+        return
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        setDismissed(draft)
+        return
+      }
+    }
     if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
       e.preventDefault()
       onSend()
@@ -151,6 +201,29 @@ function Composer({
   }
   return (
     <div className={`input-card${big ? ' input-big' : ''}`}>
+      {matches.length > 0 && (
+        <ul className="palette" id={paletteId} role="listbox" aria-label={t('commands')}>
+          {matches.map((command, i) => (
+            <li
+              key={command.name}
+              id={`${paletteId}-${i}`}
+              role="option"
+              aria-selected={i === active}
+              className={i === active ? 'active' : undefined}
+              // Keep focus in the textarea.
+              onMouseDown={e => e.preventDefault()}
+              onMouseEnter={() => setSelected(i)}
+              onClick={() => pick(command)}
+            >
+              <span className="palette-name">
+                /{command.name}
+                {command.argumentHint && <small> {command.argumentHint}</small>}
+              </span>
+              <span className="palette-desc">{command.description}</span>
+            </li>
+          ))}
+        </ul>
+      )}
       {files.length > 0 && (
         <div className="attachments">
           {files.map((file, i) => (
@@ -174,7 +247,15 @@ function Composer({
         placeholder={placeholder}
         rows={big ? 3 : 1}
         disabled={disabled}
-        onChange={e => setDraft(e.target.value)}
+        role="combobox"
+        aria-expanded={matches.length > 0}
+        aria-controls={paletteId}
+        aria-autocomplete="list"
+        aria-activedescendant={matches.length ? `${paletteId}-${active}` : undefined}
+        onChange={e => {
+          setDraft(e.target.value)
+          setSelected(0)
+        }}
         onKeyDown={onKeyDown}
         onPaste={onPaste}
         onFocus={onFocus}
@@ -1047,6 +1128,8 @@ export function App() {
                   onFocus={() => state.view && chat.mode === 'readonly' && void resume(state.view)}
                   files={files}
                   setFiles={setFiles}
+                  commands={chat.commands}
+                  hiddenCommands={chat.terminalCommands}
                 />
                 <div className="composer-footer">
                   <ModeSelect

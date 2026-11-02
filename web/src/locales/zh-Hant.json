@@ -84,5 +84,6 @@
   "agentNoTranscript": "這個 agent 還沒有紀錄。",
   "delivery_queued": "已排隊，agent 會在下一步讀到。",
   "delivery_injected": "已傳給成員。",
-  "delivery_resumed": "agent 已帶著這則訊息恢復執行。"
+  "delivery_resumed": "agent 已帶著這則訊息恢復執行。",
+  "commands": "指令"
 }

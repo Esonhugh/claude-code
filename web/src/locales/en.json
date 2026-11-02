@@ -84,5 +84,6 @@
   "agentNoTranscript": "No transcript for this agent yet.",
   "delivery_queued": "Queued; the agent reads it at its next step.",
   "delivery_injected": "Sent to the teammate.",
-  "delivery_resumed": "The agent resumed with your message."
+  "delivery_resumed": "The agent resumed with your message.",
+  "commands": "Commands"
 }

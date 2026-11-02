@@ -3,6 +3,7 @@
 // messages never break the page.
 
 import { reduceTasks, type Tasks } from './agents'
+import type { SlashCommand } from './commands'
 
 export type Block =
   | { kind: 'text'; text: string }
@@ -53,6 +54,10 @@ export type ChatState = {
   notice?: string
   /** Subagents, workflows and other background tasks, by task id. */
   tasks: Tasks
+  /** Slash commands the session can run, for the `/` palette. */
+  commands: SlashCommand[]
+  /** Commands bound to the local terminal; hidden from the palette. */
+  terminalCommands: string[]
 }
 
 export const initialState: ChatState = {
@@ -61,6 +66,8 @@ export const initialState: ChatState = {
   approvals: [],
   models: [],
   tasks: {},
+  commands: [],
+  terminalCommands: [],
 }
 
 type Json = Record<string, unknown>
@@ -272,6 +279,9 @@ export function reduce(state: ChatState, raw: unknown): ChatState {
         model: str(raw.model) ?? state.model,
         cwd: str(raw.cwd) ?? state.cwd,
         permissionMode: str(raw.permissionMode) ?? state.permissionMode,
+        terminalCommands: Array.isArray(raw.terminal_slash_commands)
+          ? raw.terminal_slash_commands.filter(c => typeof c === 'string')
+          : state.terminalCommands,
       }
 
     case 'stream_event':
@@ -439,7 +449,21 @@ function reduceControlResponse(state: ChatState, raw: Json): ChatState {
           displayName: str(m.displayName) ?? str(m.value) ?? '',
         }))
       : []
-    return { ...state, models: models.filter(m => m.value) }
+    const commands = Array.isArray(body.commands)
+      ? body.commands.filter(isObj).map(c => ({
+          name: str(c.name) ?? '',
+          description: str(c.description) ?? '',
+          argumentHint: str(c.argumentHint) ?? '',
+          ...(Array.isArray(c.aliases) && {
+            aliases: c.aliases.filter(a => typeof a === 'string'),
+          }),
+        }))
+      : []
+    return {
+      ...state,
+      models: models.filter(m => m.value),
+      commands: commands.filter(c => c.name),
+    }
   }
   if (id.startsWith(REQUEST_PREFIX.context)) {
     return typeof body.percentUsed === 'number'
