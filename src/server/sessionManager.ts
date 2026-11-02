@@ -106,6 +106,7 @@ export class SessionManager {
     resume,
     sessionKey,
     channels,
+    coordinator,
   }: {
     cwd: string
     permissionMode?: string
@@ -115,6 +116,8 @@ export class SessionManager {
     sessionKey?: string
     /** `--channels` entries for the new session's process. */
     channels?: string[]
+    /** Prompt flags and environment of a project's coordinator. */
+    coordinator?: Pick<SpawnSessionOptions, 'systemPrompt' | 'appendSystemPrompt' | 'env'>
   }): SessionInfo {
     if (resume) {
       const running = this.sessions.get(resume)
@@ -140,6 +143,7 @@ export class SessionManager {
       ...(model && { model }),
       ...(resume && { resume: true }),
       ...(channels?.length && { channels }),
+      ...coordinator,
     })
     const session: Session = {
       id,

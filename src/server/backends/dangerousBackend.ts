@@ -10,6 +10,11 @@ export type SpawnSessionOptions = {
   resume?: boolean
   /** `plugin:<name>@<marketplace>` entries passed as `--channels`. */
   channels?: string[]
+  /** `--system-prompt` / `--append-system-prompt` (a project's coordinator). */
+  systemPrompt?: string
+  appendSystemPrompt?: string
+  /** Extra environment for the child, such as CLAUDE_CODE_COORDINATOR_MODE. */
+  env?: Record<string, string>
 }
 
 /**
@@ -41,11 +46,14 @@ export class DangerousBackend {
     model,
     resume,
     channels,
+    systemPrompt,
+    appendSystemPrompt,
+    env: extraEnv,
   }: SpawnSessionOptions): ChildProcess {
     const [command, ...entry] = isInBundledMode()
       ? [process.execPath]
       : [process.execPath, process.argv[1]!]
-    const env = { ...process.env }
+    const env = { ...process.env, ...extraEnv }
     // Let the child classify itself as a headless (sdk-cli) entrypoint.
     delete env.CLAUDE_CODE_ENTRYPOINT
     return spawn(
@@ -65,6 +73,8 @@ export class DangerousBackend {
         ...(permissionMode ? ['--permission-mode', permissionMode] : []),
         ...(model ? ['--model', model] : []),
         ...(channels?.length ? ['--channels', ...channels] : []),
+        ...(systemPrompt ? ['--system-prompt', systemPrompt] : []),
+        ...(appendSystemPrompt ? ['--append-system-prompt', appendSystemPrompt] : []),
         ...(this.options.includePartialMessages
           ? ['--include-partial-messages']
           : []),

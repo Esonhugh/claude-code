@@ -64,8 +64,6 @@ export type SidebarData = {
   sessions: HistoryItem[]
   folders: Record<string, number>
   more: boolean
-  /** Present once the server keeps projects. */
-  projects?: ProjectSummary[]
 }
 
 export const loadSidebar = (limit: number) => getJson<SidebarData>(`/api/sidebar?limit=${limit}`)
@@ -84,21 +82,6 @@ export const patchSessionMeta = (id: string, patch: SessionMetaPatch) =>
 /** Stops the session if it runs and deletes its transcript. */
 export const deleteTranscript = (id: string) =>
   sendJson(`/api/sessions/${encodeURIComponent(id)}?transcript=1`, 'DELETE')
-
-/** A project row of the sidebar (docs/design/claude-web-project.md). */
-export type ProjectSummary = {
-  id: string
-  name: string
-  cwd?: string
-  /** Tasks in all, running, and waiting on the user (approval or review). */
-  tasks?: number
-  running?: number
-  needs_you?: number
-  created_at?: number
-}
-
-export const renameProject = (id: string, name: string) =>
-  sendJson(`/api/projects/${encodeURIComponent(id)}`, 'PATCH', { name })
 
 /** Archives the project (stops its coordinator); `purge` deletes it. */
 export const removeProject = (id: string, purge: boolean) =>
@@ -271,3 +254,48 @@ export type Usage = {
 }
 
 export const getUsage = () => getJson<Usage>('/api/usage')
+
+/** `/api/projects`: a folder with its own coordinator session (docs/design/claude-web-project.md). */
+export type Project = {
+  id: string
+  name: string
+  cwd: string
+  instructions: string
+  /** CLAUDE_CODE_SUBAGENT_MODEL for its tasks; null inherits the coordinator's model. */
+  worker_model: string | null
+  permission_mode: string
+  coordinator_session_id: string | null
+  created_at: number
+  updated_at: number
+  running: boolean
+}
+
+export type ProjectFields = {
+  name?: string
+  instructions?: string
+  worker_model?: string | null
+  permission_mode?: string
+}
+
+export const listProjects = () => getJson<Project[]>('/api/projects')
+
+export async function createProject(body: ProjectFields & { name: string; cwd: string; trust?: boolean }): Promise<Project> {
+  const res = await fetch('/api/projects', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  if (res.status === 409) {
+    const answer = (await res.clone().json().catch(() => ({}))) as { needs_trust?: unknown }
+    if (typeof answer.needs_trust === 'string') throw new NeedsTrustError(answer.needs_trust)
+  }
+  if (!res.ok) throw new Error(await errorText(res))
+  return (await res.json()) as Project
+}
+
+export const patchProject = (id: string, patch: ProjectFields) =>
+  sendJson(`/api/projects/${encodeURIComponent(id)}`, 'PATCH', patch) as Promise<Project>
+
+/** Starts the project's coordinator, or resumes it; a running one is reused. */
+export const openCoordinator = (id: string) =>
+  sendJson(`/api/projects/${encodeURIComponent(id)}/coordinator`, 'POST') as Promise<CreatedSession>

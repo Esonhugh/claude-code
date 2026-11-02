@@ -8,7 +8,7 @@ import {
   readSessionLite,
   resolveSessionFilePath,
 } from '../utils/sessionStoragePortable.js'
-import { readFolders, readSessionMeta, type SessionMeta, touchFolders } from './projectsDb.js'
+import { coordinatorSessionIds, readFolders, readSessionMeta, type SessionMeta, touchFolders } from './projectsDb.js'
 
 /** One session row of `GET /api/sidebar`. */
 export type SidebarSession = {
@@ -153,7 +153,9 @@ async function newestMtime(paths: string[]): Promise<number> {
 export async function loadSidebar(db: Database, limit: number): Promise<SidebarData> {
   const meta = readSessionMeta(db)
   const pinned = new Set([...meta].filter(([, m]) => m.pinnedAt !== null).map(([id]) => id))
-  const { list, more } = await listTranscripts(limit, pinned)
+  const coordinators = coordinatorSessionIds(db)
+  const { list: all, more } = await listTranscripts(limit, pinned)
+  const list = all.filter(t => !coordinators.has(t.id))
   const touched = new Map<string, number>()
   const touch = (cwd: string, at: number) => touched.set(cwd, Math.max(touched.get(cwd) ?? 0, at))
   const sessions: SidebarSession[] = []

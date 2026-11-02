@@ -1,18 +1,31 @@
-/**
- * `<config>/web/projects.sqlite`: what the web sidebar and projects keep
- * besides the transcripts (docs/design/claude-web-project.md, section 5).
- * Transcripts stay the source of truth; deleting this file loses only
- * pins, renames, unread marks and project metadata.
- */
 import type { Database } from 'bun:sqlite'
+import { randomUUID } from 'crypto'
 import { mkdirSync } from 'fs'
 import { dirname } from 'path'
 
 /**
- * One entry per `PRAGMA user_version` step, applied in order inside a
- * transaction. Append new steps; never edit a released one.
+ * `~/.claude/web/projects.sqlite`: projects, tasks and the sidebar's marks
+ * (docs/design/claude-web-project.md section 5). Only the server writes it;
+ * the page goes through REST. Each entry of MIGRATIONS is one schema step,
+ * applied in order and recorded in `PRAGMA user_version`.
  */
-export const MIGRATIONS: readonly (readonly string[])[] = [
+const MIGRATIONS: string[][] = [
+  // P2: projects with their coordinator session.
+  [
+    `CREATE TABLE projects (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      cwd TEXT NOT NULL,
+      instructions TEXT NOT NULL DEFAULT '',
+      worker_model TEXT,
+      permission_mode TEXT NOT NULL DEFAULT 'default',
+      coordinator_session_id TEXT,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      archived_at INTEGER
+    )`,
+  ],
+  // P1: the sidebar's marks on sessions and its folder order cache.
   [
     `CREATE TABLE session_meta (
       session_id TEXT PRIMARY KEY,
@@ -26,40 +39,90 @@ export const MIGRATIONS: readonly (readonly string[])[] = [
   ],
 ]
 
-const open = new Map<string, Database>()
-
-export function migrate(db: Database, migrations = MIGRATIONS): void {
-  const { user_version: version } = db.query('PRAGMA user_version').get() as { user_version: number }
-  if (version > migrations.length) {
-    throw new Error(`${db.filename} was written by a newer claude (schema ${version})`)
-  }
-  db.transaction(() => {
-    for (const statements of migrations.slice(version)) {
-      for (const sql of statements) db.run(sql)
-    }
-    // PRAGMA takes no bound parameters; the value is our own integer.
-    db.run(`PRAGMA user_version = ${migrations.length}`)
-  })()
+export type Project = {
+  id: string
+  name: string
+  cwd: string
+  instructions: string
+  worker_model: string | null
+  permission_mode: string
+  coordinator_session_id: string | null
+  created_at: number
+  updated_at: number
+  archived_at: number | null
 }
 
-/** The database at `path`, created and migrated on first use. */
-export function projectsDb(path: string): Database {
-  const cached = open.get(path)
-  if (cached) return cached
-  mkdirSync(dirname(path), { recursive: true })
+export type ProjectPatch = Partial<
+  Pick<Project, 'name' | 'instructions' | 'worker_model' | 'permission_mode' | 'coordinator_session_id'>
+>
+
+export function openProjectsDb(path: string): Database {
+  if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true })
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const { Database } = require('bun:sqlite') as typeof import('bun:sqlite')
   const db = new Database(path, { create: true })
   db.run('PRAGMA busy_timeout = 5000')
   db.run('PRAGMA journal_mode = WAL')
-  migrate(db)
-  open.set(path, db)
+  db.run('PRAGMA foreign_keys = ON')
+  const { user_version: version } = db.query('PRAGMA user_version').get() as { user_version: number }
+  for (let step = version; step < MIGRATIONS.length; step++) {
+    db.transaction(() => {
+      for (const sql of MIGRATIONS[step]!) db.run(sql)
+      db.run(`PRAGMA user_version = ${step + 1}`)
+    })()
+  }
   return db
 }
 
-export function closeProjectsDb(path: string): void {
-  open.get(path)?.close()
-  open.delete(path)
+export class ProjectStore {
+  constructor(private db: Database) {}
+
+  list(): Project[] {
+    return this.db
+      .query('SELECT * FROM projects WHERE archived_at IS NULL ORDER BY updated_at DESC')
+      .all() as Project[]
+  }
+
+  get(id: string): Project | undefined {
+    return (this.db.query('SELECT * FROM projects WHERE id = ?').get(id) as Project | null) ?? undefined
+  }
+
+  create(input: Pick<Project, 'name' | 'cwd' | 'instructions' | 'worker_model' | 'permission_mode'>): Project {
+    const now = Date.now()
+    const id = randomUUID()
+    this.db.run(
+      `INSERT INTO projects (id, name, cwd, instructions, worker_model, permission_mode, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [id, input.name, input.cwd, input.instructions, input.worker_model, input.permission_mode, now, now],
+    )
+    return this.get(id)!
+  }
+
+  update(id: string, patch: ProjectPatch): Project | undefined {
+    const keys = Object.keys(patch).filter(k => patch[k as keyof ProjectPatch] !== undefined) as (keyof ProjectPatch)[]
+    if (keys.length) {
+      this.db.run(
+        `UPDATE projects SET ${keys.map(k => `${k} = ?`).join(', ')}, updated_at = ? WHERE id = ? AND archived_at IS NULL`,
+        [...keys.map(k => patch[k] ?? null), Date.now(), id],
+      )
+    }
+    const project = this.get(id)
+    return project && project.archived_at === null ? project : undefined
+  }
+
+  /** Deletes the project row; sessions moved into it go back to their folders. */
+  remove(id: string): Project | undefined {
+    const project = this.get(id)
+    if (project) this.db.run('DELETE FROM projects WHERE id = ?', [id])
+    return project
+  }
+
+  archive(id: string): Project | undefined {
+    const project = this.get(id)
+    if (!project || project.archived_at !== null) return undefined
+    this.db.run('UPDATE projects SET archived_at = ? WHERE id = ?', [Date.now(), id])
+    return project
+  }
 }
 
 export type SessionMeta = {
@@ -125,10 +188,12 @@ export function deleteSessionMeta(db: Database, id: string): void {
   db.run('DELETE FROM session_meta WHERE session_id = ?', [id])
 }
 
-/** Whether a project with this id exists (the `projects` table arrives with projects). */
-export function projectExists(db: Database, id: string): boolean {
-  const table = db.query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'projects'").get()
-  return !!table && !!db.query('SELECT 1 FROM projects WHERE id = ?').get(id)
+/** Session ids of project coordinators; their transcripts belong to the project, not a folder. */
+export function coordinatorSessionIds(db: Database): Set<string> {
+  const rows = db
+    .query('SELECT coordinator_session_id AS id FROM projects WHERE coordinator_session_id IS NOT NULL')
+    .all() as { id: string }[]
+  return new Set(rows.map(r => r.id))
 }
 
 export function readFolders(db: Database): Map<string, number> {

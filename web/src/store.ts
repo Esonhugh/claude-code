@@ -1,4 +1,4 @@
-import type { HistoryItem, ProjectSummary } from './api'
+import type { HistoryItem } from './api'
 import {
   addError,
   addUserMessage,
@@ -39,7 +39,6 @@ export type AppState = {
   historyMore: boolean
   /** Folder → last change, from the server (newest transcript or written file). */
   folders: Record<string, number>
-  projects?: ProjectSummary[]
   running: Record<string, boolean>
   start: StartOptions
 }
@@ -70,7 +69,6 @@ export type AppAction =
       type: 'history'
       entries: HistoryEntry[]
       folders: Record<string, number>
-      projects?: ProjectSummary[]
       more: boolean
     }
   | { type: 'running'; ids: string[] }
@@ -194,7 +192,6 @@ export function appReducer(state: AppState, action: AppAction): AppState {
           ...action.entries,
         ],
         folders: action.folders,
-        projects: action.projects,
         historyMore: action.more,
       }
     case 'running':

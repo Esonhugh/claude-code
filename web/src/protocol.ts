@@ -2,7 +2,7 @@
 // model the chat renders. Unknown message types are ignored, so newer engine
 // messages never break the page.
 
-import { reduceTasks, type Tasks } from './agents'
+import { isFinished, reduceTasks, type Tasks } from './agents'
 import type { SlashCommand } from './commands'
 
 export type Block =
@@ -137,6 +137,8 @@ export type ChatState = {
   context?: ContextUsage
   /** Latest `rate_limit_event` per window type. */
   rateLimits: Record<string, RateLimit>
+  /** Tasks that ended, in order, each after the item that was last when it did (a project's notice lines). */
+  taskNotes: TaskNote[]
   /** A `/recap` is on its way; its output becomes a `※` line. */
   recapPending?: { away?: number }
   /** When the first message of this chat was sent (ms). */
@@ -154,6 +156,7 @@ export const initialState: ChatState = {
   terminalCommands: [],
   decisions: {},
   rateLimits: {},
+  taskNotes: [],
 }
 
 type Json = Record<string, unknown>
@@ -543,6 +546,16 @@ export function teammateMessages(
   }))
 }
 
+export type TaskNote = { taskId: string; status: string; afterId?: string }
+
+/** Records a task that just ended (once per task and status, so replays add nothing). */
+function noteEnded(state: ChatState, tasks: Tasks, raw: Json): TaskNote[] {
+  const task = typeof raw.task_id === 'string' ? tasks[raw.task_id] : undefined
+  if (raw.subtype !== 'task_notification' || !task || !isFinished(task)) return state.taskNotes
+  if (state.taskNotes.some(n => n.taskId === task.id && n.status === task.status)) return state.taskNotes
+  return [...state.taskNotes, { taskId: task.id, status: task.status, afterId: state.items.at(-1)?.id }]
+}
+
 export function reduce(state: ChatState, raw: unknown): ChatState {
   if (!isObj(raw)) return state
   // Subagent traffic (parent_tool_use_id set) belongs to the Agents panel.
@@ -576,7 +589,7 @@ export function reduce(state: ChatState, raw: unknown): ChatState {
       if (raw.subtype === 'goal_state_changed') return reduceGoal(state, raw)
       if (raw.subtype !== 'init') {
         const tasks = reduceTasks(state.tasks, raw)
-        return tasks === state.tasks ? state : { ...state, tasks }
+        return tasks === state.tasks ? state : { ...state, tasks, taskNotes: noteEnded(state, tasks, raw) }
       }
       return {
         ...state,

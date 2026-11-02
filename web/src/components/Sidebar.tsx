@@ -3,9 +3,9 @@ import { createPortal } from 'react-dom'
 import {
   deleteTranscript,
   patchSessionMeta,
-  type ProjectSummary,
+  patchProject,
+  type Project,
   removeProject,
-  renameProject,
   type SessionMetaPatch,
 } from '../api'
 import { ext } from '../extApi'
@@ -18,6 +18,9 @@ import { Clawd, readStored, type T, writeStored } from './ui'
 const COLLAPSED_KEY = 'claude-web-collapsed'
 // Folders after the first few start collapsed until the user opens them.
 const OPEN_FOLDERS = 2
+
+/** A project row, with the counts its coordinator's chat has when it is loaded. */
+export type SidebarProject = Project & { tasks?: number; tasksRunning?: number; needsYou?: number }
 
 export type DialogKind =
   | 'mcp'
@@ -81,7 +84,7 @@ function when(ts: number, lang: Lang, t: T, today = false): string {
 
 type Menu = { x: number; y: number; step: 'main' | 'move' | 'confirm' } & (
   | { kind: 'sess'; entry: HistoryEntry }
-  | { kind: 'pj'; project: ProjectSummary }
+  | { kind: 'pj'; project: SidebarProject }
 )
 
 /**
@@ -96,7 +99,6 @@ export function Sidebar({
   env,
   history,
   historyMore,
-  projects,
   folders,
   running,
   view,
@@ -107,10 +109,15 @@ export function Sidebar({
   onPatched,
   onDeleted,
   onMore,
-  onReload,
   onDialog,
   dialogOpen = false,
   account,
+  projects,
+  projectId,
+  onProject,
+  onNewProject,
+  onProjectSettings,
+  onProjectChanged,
 }: {
   t: T
   lang: Lang
@@ -119,8 +126,6 @@ export function Sidebar({
   env: SessionEnv
   history: HistoryEntry[]
   historyMore: boolean
-  /** Undefined until the server has projects (docs/design/claude-web-project.md). */
-  projects?: ProjectSummary[]
   folders: Record<string, number>
   running: Record<string, boolean>
   view: string | null
@@ -132,11 +137,18 @@ export function Sidebar({
   onPatched: (id: string, patch: Partial<HistoryEntry>) => void
   onDeleted: (id: string) => void
   onMore: () => void
-  onReload: () => void
   onDialog: (kind: DialogKind) => void
   dialogOpen?: boolean
   /** The account card (Account.tsx). */
   account: ReactNode
+  projects: SidebarProject[]
+  /** The project shown, if any. */
+  projectId?: string
+  onProject: (project: Project) => void
+  onNewProject: () => void
+  onProjectSettings: (project: Project) => void
+  /** A project was renamed (`project`), or archived or deleted (none). */
+  onProjectChanged: (id: string, project?: Project) => void
 }) {
   const [filter, setFilter] = useState('')
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>(() => readStored(COLLAPSED_KEY, {}))
@@ -272,20 +284,21 @@ export function Sidebar({
       }, fail)
     }
   }
-  const moveTo = (entry: HistoryEntry, project: ProjectSummary) => {
+  const moveTo = (entry: HistoryEntry, project: Project) => {
     closeMenu()
     patch(entry, { project_id: project.id, pinned: false }, { projectId: project.id, pinnedAt: undefined }).then(
       () => flash(t('flashMoved', { name: project.name })),
       fail,
     )
   }
-  const projectAction = (project: ProjectSummary, action: string) => {
+  const projectAction = (project: Project, action: string) => {
     closeMenu()
     if (action === 'rename') setRenaming(project.id)
+    else if (action === 'settings') onProjectSettings(project)
     else if (action === 'archive' || action === 'really-delete') {
       const purge = action === 'really-delete'
       removeProject(project.id, purge).then(() => {
-        onReload()
+        onProjectChanged(project.id)
         flash(t(purge ? 'flashProjectDeleted' : 'flashProjectArchived', { name: project.name }))
       }, fail)
     }
@@ -310,7 +323,7 @@ export function Sidebar({
       if (menu.step !== 'main' || e.metaKey || e.ctrlKey || e.altKey) return
       const keys: Record<string, string> =
         menu.kind === 'pj'
-          ? { r: 'rename', a: 'archive', d: 'delete' }
+          ? { r: 'rename', s: 'settings', a: 'archive', d: 'delete' }
           : { u: 'unread', p: 'pin', r: 'rename', a: 'archive', d: 'delete' }
       const action = keys[e.key.toLowerCase()]
       if (!action) return
@@ -413,11 +426,11 @@ export function Sidebar({
     )
   }
 
-  const projectRow = (p: ProjectSummary) => {
-    const needs = p.needs_you ?? 0
-    const run = p.running ?? 0
+  const projectRow = (p: SidebarProject) => {
+    const needs = p.needsYou ?? 0
+    const run = p.tasksRunning ?? 0
     const rows: Tip['rows'] = [
-      { k: t('tipFolder'), v: p.cwd ? tilde(p.cwd) : '' },
+      { k: t('tipFolder'), v: tilde(p.cwd) },
       {
         k: t('tipTasks'),
         v:
@@ -428,7 +441,7 @@ export function Sidebar({
               : t('tipTaskCount', { n: String(p.tasks) }),
       },
       { k: t('tipNeedsYou'), v: needs ? t('tipTaskCount', { n: String(needs) }) : '' },
-      { k: t('tipStarted'), v: p.created_at ? when(p.created_at, lang, t, true) : '' },
+      { k: t('tipStarted'), v: when(p.created_at, lang, t, true) },
     ]
     return (
       <div className="srow" key={p.id}>
@@ -436,7 +449,7 @@ export function Sidebar({
           <div className="sess pjrow">
             <span className="t">
               {renameInput(p.name, name =>
-                renameProject(p.id, name).then(onReload, fail),
+                patchProject(p.id, { name }).then(saved => onProjectChanged(p.id, saved), fail),
               )}
             </span>
           </div>
@@ -445,11 +458,13 @@ export function Sidebar({
             className="sess pjrow"
             type="button"
             data-pj={p.id}
+            aria-current={p.id === projectId}
             {...tipAttr({ t: p.name, rows: rows.filter(r => r.v) })}
+            onClick={() => onProject(p)}
             onContextMenu={e => openMenu(e, { kind: 'pj', project: p })}
           >
             <span className="t">
-              {run ? <span className="live" /> : <span className="pjico" aria-hidden="true">⌗</span>}
+              {p.running ? <span className="live" /> : <span className="pjico" aria-hidden="true">⌗</span>}
               {p.name}
             </span>
             {needs > 0 && (
@@ -482,7 +497,7 @@ export function Sidebar({
   }
 
   const pins = groups.pinned.map(e => sessRow(e, !!tempRoot && !!e.cwd?.startsWith(tempRoot), true))
-  const projectRows = (projects ?? []).filter(p => !q || `${p.name}${p.cwd ?? ''}`.toLowerCase().includes(q)).map(projectRow)
+  const projectRows = projects.filter(p => !q || `${p.name}${p.cwd}`.toLowerCase().includes(q)).map(projectRow)
   const tempRows = groups.temporary.map(e => sessRow(e, true))
   const dirs = groups.folders.map((g, i) => {
     const opened = !!q || g.cwd === activeCwd || isOpen(g.cwd, i < OPEN_FOLDERS)
@@ -578,7 +593,7 @@ export function Sidebar({
             {t('moveToProject')}
           </button>
           <hr />
-          {(projects ?? []).map(p => (
+          {projects.map(p => (
             <button type="button" className="mi" key={p.id} onClick={() => moveTo(entry, p)}>
               <span className="ico">⌗</span>
               <span>{p.name}</span>
@@ -591,12 +606,7 @@ export function Sidebar({
       return (
         <>
           {menuItem('rename', '✎', t('renameLabel'), 'R')}
-          {/* Project settings open with the project view. */}
-          <button type="button" className="mi" role="menuitem" disabled>
-            <span className="ico">⚙</span>
-            {t('projectSettings')}
-            <kbd>S</kbd>
-          </button>
+          {menuItem('settings', '⚙', t('projectSettings'), 'S')}
           <hr />
           {menuItem('archive', '▣', t('archive'), 'A')}
           {menuItem('delete', '⌫', t('deleteLabel'), 'D', true)}
@@ -613,7 +623,7 @@ export function Sidebar({
           type="button"
           className="mi"
           role="menuitem"
-          disabled={!projects?.length}
+          disabled={!projects.length}
           onClick={() => menuAction('move')}
         >
           <span className="ico">⌗</span>
@@ -666,16 +676,9 @@ export function Sidebar({
         {(projectRows.length > 0 || !q) &&
           section(
             'pj',
-            t('sbProjects'),
+            t('projectsSection'),
             projectRows,
-            // Projects are created from the project dialog, which arrives with the projects API.
-            <button
-              type="button"
-              className="proj-new"
-              aria-label={t('newProject')}
-              title={t('newProject')}
-              disabled={projects === undefined}
-            >
+            <button type="button" className="proj-new" aria-label={t('newProject')} title={t('newProject')} onClick={onNewProject}>
               +
             </button>,
           )}

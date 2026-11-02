@@ -1,15 +1,16 @@
+import type { Database } from 'bun:sqlite'
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test'
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { sanitizePath } from '../utils/sessionStoragePortable.js'
-import { closeProjectsDb, patchSessionMeta, projectsDb, readFolders } from './projectsDb.js'
+import { openProjectsDb, patchSessionMeta, ProjectStore, readFolders } from './projectsDb.js'
 import { deleteTranscript, loadSidebar, sessionTitle } from './sidebar.js'
 
 const id = (n: number) => `${String(n).repeat(8)}-2222-4333-8444-555555555555`
 let root = ''
 let prior: string | undefined
-let dbPath = ''
+let db: Database
 
 function transcript(cwd: string, sid: string, entries: Record<string, unknown>[], mtime: number) {
   const dir = join(root, 'config', 'projects', sanitizePath(cwd))
@@ -26,11 +27,11 @@ beforeEach(() => {
   root = realpathSync(mkdtempSync(join(tmpdir(), 'web-sidebar-')))
   prior = process.env.CLAUDE_CONFIG_DIR
   process.env.CLAUDE_CONFIG_DIR = join(root, 'config')
-  dbPath = join(root, 'config', 'web', 'projects.sqlite')
+  db = openProjectsDb(':memory:')
 })
 
 afterEach(() => {
-  closeProjectsDb(dbPath)
+  db.close()
   if (prior === undefined) delete process.env.CLAUDE_CONFIG_DIR
   else process.env.CLAUDE_CONFIG_DIR = prior
   rmSync(root, { recursive: true, force: true })
@@ -63,7 +64,6 @@ describe('loadSidebar', () => {
     // The file changed after the session: folder b is newer than folder a.
     utimesSync(edited, 9_000, 9_000)
     transcript(b, id(5), [{ ...user('side'), isSidechain: true }], 6_000_000)
-    const db = projectsDb(dbPath)
     patchSessionMeta(db, id(2), { pinned: true, unread: true, title: 'Renamed' }, 7)
     patchSessionMeta(db, id(3), { archived: true }, 8)
 
@@ -85,14 +85,24 @@ describe('loadSidebar', () => {
   it('shows the last message when there is no title', async () => {
     const a = join(root, 'a')
     transcript(a, id(1), [user('first'), user('second'), { type: 'last-prompt', lastPrompt: 'second' }], 1_000_000)
-    const data = await loadSidebar(projectsDb(dbPath), 10)
+    const data = await loadSidebar(db, 10)
     expect(data.sessions[0]).toMatchObject({ title: 'second', label: 'message' })
+  })
+
+  it('leaves out project coordinators', async () => {
+    const a = join(root, 'a')
+    transcript(a, id(1), [user('task')], 2_000_000)
+    transcript(a, id(2), [user('coordinate')], 1_000_000)
+    const store = new ProjectStore(db)
+    const project = store.create({ name: 'P', cwd: a, instructions: '', worker_model: null, permission_mode: 'default' })
+    store.update(project.id, { coordinator_session_id: id(2) })
+    const data = await loadSidebar(db, 10)
+    expect(data.sessions.map(s => s.id)).toEqual([id(1)])
   })
 
   it('keeps pinned sessions past the limit and says there are more', async () => {
     const a = join(root, 'a')
     for (let n = 1; n <= 4; n++) transcript(a, id(n), [user(`s${n}`)], n * 1_000_000)
-    const db = projectsDb(dbPath)
     patchSessionMeta(db, id(1), { pinned: true })
     const data = await loadSidebar(db, 2)
     expect(data.sessions.map(s => s.id)).toEqual([id(4), id(3), id(1)])
