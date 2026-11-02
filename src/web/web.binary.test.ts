@@ -9,6 +9,8 @@ import { join } from 'path'
 //   make build && CLAUDE_WEB_BINARY=$PWD/built-claude \
 //     bun test src/web/web.binary.test.ts
 const binary = process.env.CLAUDE_WEB_BINARY
+// The coordinator's system prompt (src/coordinator/coordinatorMode.ts).
+const COORDINATOR_MARK = 'You are a **coordinator**'
 // Unique per run, so a shell left over from another run never matches.
 const BG_MARK = `BG_TAIL_${process.pid}`
 
@@ -156,6 +158,8 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
   let web: ReturnType<typeof Bun.spawn>
   let signInUrl = ''
   const promptsSeen: string[] = []
+  // Requests whose system prompt is the coordinator's: [system text, messages].
+  const coordinatorSeen: [string, string][] = []
   let home = ''
   let workspace = ''
 
@@ -171,6 +175,7 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
         }
         type Block = { type: string }
         const body = (await req.json()) as {
+          system?: string | { text?: string }[]
           messages: { role: string; content: string | Block[] }[]
         }
         const last = body.messages.at(-1)!
@@ -182,6 +187,9 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
         let stop = 'end_turn'
         const lastText = JSON.stringify(last.content)
         const allText = JSON.stringify(body.messages)
+        const systemText = typeof body.system === 'string' ? body.system : (body.system ?? []).map(b => b.text ?? '').join('\n')
+        const coordinator = systemText.includes(COORDINATOR_MARK)
+        if (coordinator) coordinatorSeen.push([systemText, allText])
         const touch = (file: string) => {
           blocks = [
             {
@@ -195,7 +203,26 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
         }
         // Teammates see only their own prompt; the lead's history also has MAKE_TEAM.
         const teammate = !allText.includes('MAKE_TEAM')
-        if (allText.includes('EDITME') && lastText.includes('toolu_read_edit')) {
+        if (coordinator && lastText.includes('DISPATCH_TWO')) {
+          blocks = [
+            { type: 'text', text: 'Dispatching two tasks.' },
+            { type: 'tool_use', id: 'toolu_pj_one', name: 'Agent', input: { description: 'Task one', prompt: 'WORKER_ONE do the first part', subagent_type: 'worker' } },
+            { type: 'tool_use', id: 'toolu_pj_two', name: 'Agent', input: { description: 'Task two', prompt: 'WORKER_TWO do the second part', subagent_type: 'worker' } },
+          ]
+          stop = 'tool_use'
+        } else if (coordinator && lastText.includes('task-notification')) {
+          blocks = [{ type: 'text', text: 'COORD_SAW_RESULT' }]
+        } else if (coordinator && lastBlocks.some(b => b.type === 'tool_result')) {
+          blocks = [{ type: 'text', text: 'COORD_LAUNCHED' }]
+        } else if (coordinator && lastText.includes('AFTER_RESUME')) {
+          blocks = [{ type: 'text', text: 'COORD_RESUMED' }]
+        } else if (coordinator && lastText.includes('AFTER_RESTART')) {
+          blocks = [{ type: 'text', text: 'COORD_RESTARTED' }]
+        } else if (!coordinator && lastText.includes('WORKER_ONE')) {
+          blocks = [{ type: 'text', text: 'ONE_OUT' }]
+        } else if (!coordinator && lastText.includes('WORKER_TWO')) {
+          blocks = [{ type: 'text', text: 'TWO_OUT' }]
+        } else if (allText.includes('EDITME') && lastText.includes('toolu_read_edit')) {
           // Edit needs the file read first, so EDITME reads it, then edits it.
           blocks = [
             {
@@ -1038,6 +1065,105 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       await browser.close()
     }
   }, 120_000)
+
+  it('runs a project: the coordinator dispatches two tasks and resumes on reopen', async () => {
+    const playwrightPath = Bun.spawnSync(['node', '-p', "require.resolve('playwright')"])
+      .stdout.toString()
+      .trim()
+    const { chromium } = await import(playwrightPath)
+    const browser = await chromium.launch()
+    try {
+      const page = await (await browser.newContext({ locale: 'en-US' })).newPage()
+      const errors: string[] = []
+      page.on('pageerror', (e: Error) => errors.push(e.message))
+      await page.goto(signInUrl)
+      await page.locator('.wl-hi').waitFor()
+
+      await page.getByRole('button', { name: 'New project', exact: true }).click()
+      const dialog = page.locator('.dialog')
+      await dialog.locator('#pj-name').fill('E2E project')
+      await dialog.locator('#pj-path').fill(workspace)
+      await dialog.locator('#pj-instr').fill('PROJECT_RULES_MARK')
+      await dialog.getByRole('radio', { name: 'Haiku 5.5' }).click()
+      await dialog.getByRole('button', { name: 'Create project' }).click()
+      await page.locator('#projview .pv-head b', { hasText: 'E2E project' }).waitFor({ timeout: 30_000 })
+      await page.waitForFunction(() => document.body.classList.contains('proj'))
+      // The session's own side panel is hidden in a project.
+      expect(await page.locator('.side').isVisible()).toBe(false)
+
+      const input = page.locator('.pv-chat').getByLabel('Message', { exact: true })
+      expect(await input.getAttribute('placeholder')).toBe('Tell the coordinator what to do')
+      await input.fill('please DISPATCH_TWO')
+      await input.press('Enter')
+      // Both tasks: one-line cards in the middle, cards in the right column, then their notices.
+      await page.locator('.pv-chat .pjcard.mini', { hasText: 'Task two' }).waitFor({ timeout: 60_000 })
+      expect(await page.locator('.pv-chat .pjcard.mini').count()).toBe(2)
+      await page.locator('.pjlist .pjcard', { hasText: 'Task one' }).waitFor({ timeout: 60_000 })
+      await page.locator('.pjlist .pjcard', { hasText: 'Task two' }).waitFor()
+      await page.locator('.pv-chat .pj-note', { hasText: 'Task "Task one" finished' }).waitFor({ timeout: 60_000 })
+      await page.locator('.pv-chat .pj-note', { hasText: 'Task "Task two" finished' }).waitFor({ timeout: 60_000 })
+      await page.locator('.pv-chat').getByText('COORD_SAW_RESULT').first().waitFor({ timeout: 60_000 })
+      expect(await page.locator('.pjlist .grp-h').first().textContent()).toBe('Needs you')
+
+      // The `-p` child really ran on the coordinator prompt, with the project instructions appended.
+      expect(coordinatorSeen.length).toBeGreaterThan(0)
+      expect(coordinatorSeen[0]![0]).toContain('PROJECT_RULES_MARK')
+      expect(coordinatorSeen[0]![1]).toContain('DISPATCH_TWO')
+
+      // A task opens with its brief from the coordinator.
+      await page.locator('.pjlist .pjcard', { hasText: 'Task one' }).click()
+      await page.locator('.pjbrief', { hasText: 'WORKER_ONE do the first part' }).waitFor()
+
+      const projects = (await page.evaluate(async () => (await fetch('/api/projects')).json())) as {
+        id: string
+        coordinator_session_id: string
+        worker_model: string
+      }[]
+      expect(projects).toHaveLength(1)
+      const [project] = projects
+      expect(project!.worker_model).toBe('haiku')
+      const sessionId = project!.coordinator_session_id
+
+      // Stop the coordinator, reload and reopen: the same session resumes with its history.
+      await page.evaluate(async (id: string) => fetch(`/api/sessions/${id}`, { method: 'DELETE' }), sessionId)
+      await page.goto(new URL(signInUrl).origin)
+      await page.locator('.pjrow', { hasText: 'E2E project' }).click()
+      await page.locator('.pv-chat').getByText('please DISPATCH_TWO').waitFor({ timeout: 30_000 })
+      const seen = coordinatorSeen.length
+      const again = page.locator('.pv-chat').getByLabel('Message', { exact: true })
+      await again.fill('AFTER_RESUME')
+      await again.press('Enter')
+      await page.locator('.pv-chat').getByText('COORD_RESUMED').waitFor({ timeout: 60_000 })
+      expect(coordinatorSeen.slice(seen).some(([, messages]) => messages.includes('DISPATCH_TWO'))).toBe(true)
+      const reopened = (await page.evaluate(async () => (await fetch('/api/projects')).json())) as {
+        coordinator_session_id: string
+      }[]
+      expect(reopened[0]!.coordinator_session_id).toBe(sessionId)
+
+      // New instructions restart the coordinator under the same page socket.
+      const patched = await page.evaluate(
+        async (id: string) =>
+          (await fetch(`/api/projects/${id}`, { method: 'PATCH', body: JSON.stringify({ instructions: 'RULES_V2' }) })).status,
+        project!.id,
+      )
+      expect(patched).toBe(200)
+      const beforeRestart = coordinatorSeen.length
+      await again.fill('AFTER_RESTART')
+      await again.press('Enter')
+      await page.locator('.pv-chat').getByText('COORD_RESTARTED').waitFor({ timeout: 60_000 })
+      const restarted = coordinatorSeen.slice(beforeRestart).find(([, messages]) => messages.includes('AFTER_RESTART'))!
+      expect(restarted[0]).toContain('RULES_V2')
+      expect(restarted[0]).not.toContain('PROJECT_RULES_MARK')
+      expect(errors).toEqual([])
+      await page.evaluate(async () => {
+        for (const s of (await (await fetch('/api/sessions')).json()) as { id: string }[]) {
+          await fetch(`/api/sessions/${s.id}`, { method: 'DELETE' })
+        }
+      })
+    } finally {
+      await browser.close()
+    }
+  }, 180_000)
 
   it('opens the extension dialogs: stats, hooks, skills and memory', async () => {
     const playwrightPath = Bun.spawnSync(['node', '-p', "require.resolve('playwright')"])

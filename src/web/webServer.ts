@@ -1,6 +1,6 @@
 import { mkdirSync, mkdtempSync, realpathSync, statSync } from 'fs'
 import { homedir } from 'os'
-import { basename, extname, isAbsolute, join } from 'path'
+import { basename, extname, isAbsolute, join, resolve } from 'path'
 import { z } from 'zod/v4'
 import { PERMISSION_MODES } from '../types/permissions.js'
 import { lazySchema } from '../utils/lazySchema.js'
@@ -11,6 +11,7 @@ import {
 } from '../server/sessionManager.js'
 import { isPathTrusted, savePathTrusted } from '../utils/config.js'
 import { getClaudeConfigHomeDir } from '../utils/envUtils.js'
+import { resolveSessionFilePath } from '../utils/sessionStoragePortable.js'
 import {
   convertToPdf,
   DEFAULT_UPLOAD_LIMITS,
@@ -32,6 +33,8 @@ import {
   SESSION_ID,
 } from './history.js'
 import { type AccountBackend, createAccountApi } from './account.js'
+import { coordinatorSpawn } from './coordinator.js'
+import { openProjectsDb, type Project, ProjectStore } from './projectsDb.js'
 import * as ext from './extensions.js'
 import { isAllowedPeer, lanHostNames } from './network.js'
 import {
@@ -69,6 +72,8 @@ export type WebServerConfig = {
   folderTrust?: { isTrusted: (dir: string) => boolean; save: (dir: string) => void }
   /** Defaults to this machine's credential store and settings (tests pass a fake). */
   account?: AccountBackend
+  /** Defaults to `<configDir>/web/projects.sqlite`; tests pass `:memory:`. */
+  projectsDb?: string
 }
 
 type SocketData = { sessionId: string }
@@ -143,6 +148,41 @@ const createSessionBodySchema = lazySchema(() =>
   }),
 )
 
+const MODEL = /^[A-Za-z0-9][\w.:[\]/@-]{0,127}$/
+
+const projectFieldsSchema = lazySchema(() =>
+  z.object({
+    name: z.string().trim().min(1).max(200),
+    instructions: z.string().max(20_000).optional(),
+    // A model alias or id for CLAUDE_CODE_SUBAGENT_MODEL; null inherits the coordinator's.
+    worker_model: z.string().regex(MODEL).nullable().optional(),
+    permission_mode: z.enum(PERMISSION_MODES).optional(),
+  }),
+)
+const createProjectBodySchema = lazySchema(() =>
+  projectFieldsSchema()
+    .extend({
+      cwd: z.string().min(1).max(4096),
+      // The user accepted the trust confirmation for `cwd`.
+      trust: z.boolean().optional(),
+    })
+    .strict(),
+)
+const patchProjectBodySchema = lazySchema(() => projectFieldsSchema().partial().strict())
+
+/**
+ * A project folder as an absolute, normalized real path: `~` is the home
+ * folder, anything else must already be absolute. Undefined unless it is a
+ * folder.
+ */
+export function normalizeProjectDir(input: string, home = homedir()): string | undefined {
+  const raw = input.trim()
+  const expanded = raw === '~' ? home : /^~[\\/]/.test(raw) ? join(home, raw.slice(2)) : raw
+  if (!isAbsolute(expanded) || expanded.includes('\0')) return undefined
+  const path = resolve(expanded)
+  return isDirectory(path) ? realpathSync(path) : undefined
+}
+
 const WS_PATH = /^\/api\/sessions\/([^/]+)\/ws$/
 const SESSION_PATH = /^\/api\/sessions\/([^/]+)$/
 const HISTORY_PATH = /^\/api\/history\/([^/]+)$/
@@ -151,6 +191,7 @@ const AGENT_MESSAGES_PATH = /^\/api\/history\/([^/]+)\/agents\/([^/]+)\/messages
 const AGENT_ISSUERS_PATH = /^\/api\/history\/([^/]+)\/agent-issuers$/
 const FILES_PATH = /^\/api\/files\/([^/]+)(\/pdf|\/list)?$/
 const SNIPPET_PATH = /^\/api\/history\/([^/]+)\/snippet$/
+const PROJECT_PATH = /^\/api\/projects\/([^/]+)(\/coordinator)?$/
 
 // Served as text so a file from the workspace never runs as a page on this origin.
 const ACTIVE_TYPES = new Set(['.html', '.htm', '.xhtml', '.svg', '.xml', '.js', '.mjs'])
@@ -503,6 +544,106 @@ export function startWebServer(
       : errorResponse(501, 'No converter available for this file')
   }
 
+  /** A 409 asking the page to confirm trust in `directory`, unless it is trusted (or now accepted). */
+  function checkTrust(directory: string, accepted: boolean | undefined): Response | undefined {
+    const folderTrust = config.folderTrust ?? { isTrusted: isPathTrusted, save: savePathTrusted }
+    if (directory === realOr(config.workspace) || folderTrust.isTrusted(directory)) return undefined
+    if (!accepted) return Response.json({ error: 'Folder not trusted', needs_trust: directory }, { status: 409 })
+    folderTrust.save(directory)
+    return undefined
+  }
+
+  let projectStore: ProjectStore | undefined
+  const projects = () =>
+    (projectStore ??= new ProjectStore(
+      openProjectsDb(config.projectsDb ?? join(config.configDir ?? getClaudeConfigHomeDir(), 'web', 'projects.sqlite')),
+    ))
+  const projectJson = (p: Project) => ({
+    ...p,
+    running: !!p.coordinator_session_id && !!sessionManager.get(p.coordinator_session_id),
+  })
+
+  /**
+   *   GET    /api/projects                  → projects, newest change first
+   *   POST   /api/projects                  → create; 409 { needs_trust } for an untrusted folder
+   *   PATCH  /api/projects/:id              → name, instructions, worker_model, permission_mode
+   *   DELETE /api/projects/:id              → archive and stop its coordinator
+   *   POST   /api/projects/:id/coordinator  → { session_id, work_dir }: start or resume the coordinator
+   */
+  async function handleProjects(req: Request, pathname: string): Promise<Response> {
+    if (pathname === '/api/projects') {
+      if (req.method === 'GET') return Response.json(projects().list().map(projectJson))
+      if (req.method !== 'POST') return errorResponse(405, 'Method not allowed')
+      const parsed = createProjectBodySchema().safeParse(await readJson(req))
+      if (!parsed.success) return errorResponse(400, 'Invalid request')
+      const body = parsed.data
+      const cwd = normalizeProjectDir(body.cwd)
+      if (!cwd) return errorResponse(400, 'Not a directory')
+      const refused = checkTrust(cwd, body.trust)
+      if (refused) return refused
+      const project = projects().create({
+        name: body.name,
+        cwd,
+        instructions: body.instructions ?? '',
+        worker_model: body.worker_model ?? null,
+        permission_mode: body.permission_mode ?? 'default',
+      })
+      return Response.json(projectJson(project), { status: 201 })
+    }
+    const match = PROJECT_PATH.exec(pathname)
+    const id = match && decodeURIComponent(match[1]!)
+    if (!id || !SESSION_ID.test(id)) return errorResponse(400, 'Invalid project id')
+    const project = projects().get(id)
+    if (!project || project.archived_at !== null) return errorResponse(404, 'Project not found')
+    if (match![2]) {
+      if (req.method !== 'POST') return errorResponse(405, 'Method not allowed')
+      return openCoordinator(project)
+    }
+    if (req.method === 'PATCH') {
+      const parsed = patchProjectBodySchema().safeParse(await readJson(req))
+      if (!parsed.success) return errorResponse(400, 'Invalid request')
+      const updated = projects().update(id, parsed.data)!
+      const changed =
+        updated.instructions !== project.instructions || updated.worker_model !== project.worker_model
+      // A running coordinator picks up new instructions or task model by restarting with --resume.
+      if (changed && updated.coordinator_session_id) {
+        sessionManager.restart(updated.coordinator_session_id, {
+          permissionMode: updated.permission_mode,
+          coordinator: coordinatorSpawn(updated),
+        })
+      }
+      return Response.json(projectJson(updated))
+    }
+    if (req.method === 'DELETE') {
+      projects().archive(id)
+      if (project.coordinator_session_id) await sessionManager.destroy(project.coordinator_session_id)
+      return new Response(null, { status: 204 })
+    }
+    return errorResponse(405, 'Method not allowed')
+  }
+
+  /** The running coordinator, else its transcript resumed, else a new one recorded on the project. */
+  async function openCoordinator(project: Project): Promise<Response> {
+    if (!isDirectory(project.cwd)) return errorResponse(400, 'Not a directory')
+    const previous = project.coordinator_session_id
+    const resume =
+      previous && (sessionManager.get(previous) || (await resolveSessionFilePath(previous))) ? previous : undefined
+    try {
+      const session = sessionManager.create({
+        cwd: project.cwd,
+        permissionMode: project.permission_mode,
+        resume,
+        channels: ext.readDefaultChannels(config.configDir ?? getClaudeConfigHomeDir()),
+        coordinator: coordinatorSpawn(project),
+      })
+      if (session.id !== previous) projects().update(project.id, { coordinator_session_id: session.id })
+      return Response.json({ session_id: session.id, work_dir: session.workDir })
+    } catch (err) {
+      if (err instanceof SessionManagerError) return errorResponse(err.status, err.message)
+      throw err
+    }
+  }
+
   async function createSession(req: Request): Promise<Response> {
     let raw: unknown
     try {
@@ -525,11 +666,9 @@ export function startWebServer(
       }
       // A folder other than the workspace needs the trust the TUI asks for;
       // `claude -p` skips that dialog, so the page asks instead.
-      const directory = realpathSync(cwd)
-      const folderTrust = config.folderTrust ?? { isTrusted: isPathTrusted, save: savePathTrusted }
-      if (!resume && directory !== realOr(config.workspace) && !folderTrust.isTrusted(directory)) {
-        if (!trust) return Response.json({ error: 'Folder not trusted', needs_trust: directory }, { status: 409 })
-        folderTrust.save(directory)
+      if (!resume) {
+        const refused = checkTrust(realpathSync(cwd), trust)
+        if (refused) return refused
       }
       workDir = cwd
     } else {
@@ -635,6 +774,9 @@ export function startWebServer(
       return (await renameSession(id, parsed.data.title))
         ? new Response(null, { status: 204 })
         : errorResponse(404, 'Session not found')
+    }
+    if (pathname === '/api/projects' || pathname.startsWith('/api/projects/')) {
+      return handleProjects(req, pathname)
     }
     if (pathname.startsWith('/api/ext/')) {
       return handleExtApi(req, url, config.configDir ?? getClaudeConfigHomeDir())
