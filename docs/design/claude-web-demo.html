@@ -838,6 +838,14 @@ body.proj .main, body.proj .side, body.proj .artview, body.proj #panel-btn { dis
       <div class="feed" id="pv-feed"></div>
       <div class="composer">
         <form id="pv-form">
+          <div class="pop plusmenu" id="pv-plus-c" hidden>
+            <button type="button" data-pvplus="file" data-sc="c"><span class="mono">F</span><span>上传文件<small>PDF、文档、表格、代码</small></span></button>
+            <button type="button" data-pvplus="image" data-sc="c"><span class="mono">I</span><span>添加图片<small>也可以直接粘贴截图</small></span></button>
+            <button type="button" data-pvplus="skill" data-sc="c"><span class="mono">/</span><span>使用 skill<small>deep-research、pdf、dataviz…</small></span></button>
+            <button type="button" data-pvplus="mention" data-sc="c"><span class="mono">@</span><span>引用工作区文件<small>按路径模糊搜索</small></span></button>
+          </div>
+          <input type="file" id="pv-file-c" multiple hidden><input type="file" id="pv-img-c" accept="image/*" multiple hidden>
+          <div class="attachments" id="pv-atts-c"></div>
           <div class="cbox"><label for="pv-text" hidden>消息</label><textarea id="pv-text" placeholder="告诉协调者要做什么"></textarea><button class="send" type="submit" aria-label="发送"><svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 13V3M3.5 7.5 8 3l4.5 4.5"/></svg></button></div>
           <div class="crow" id="pv-crow"></div>
         </form>
@@ -851,6 +859,14 @@ body.proj .main, body.proj .side, body.proj .artview, body.proj #panel-btn { dis
       <div class="composer" id="pv-tcomp" hidden>
         <div class="askdock" id="pv-ask" role="dialog" hidden></div>
         <form id="pv-tform">
+          <div class="pop plusmenu" id="pv-plus-t" hidden>
+            <button type="button" data-pvplus="file" data-sc="t"><span class="mono">F</span><span>上传文件<small>PDF、文档、表格、代码</small></span></button>
+            <button type="button" data-pvplus="image" data-sc="t"><span class="mono">I</span><span>添加图片<small>也可以直接粘贴截图</small></span></button>
+            <button type="button" data-pvplus="skill" data-sc="t"><span class="mono">/</span><span>使用 skill<small>deep-research、pdf、dataviz…</small></span></button>
+            <button type="button" data-pvplus="mention" data-sc="t"><span class="mono">@</span><span>引用工作区文件<small>按路径模糊搜索</small></span></button>
+          </div>
+          <input type="file" id="pv-file-t" multiple hidden><input type="file" id="pv-img-t" accept="image/*" multiple hidden>
+          <div class="attachments" id="pv-atts-t"></div>
           <div class="cbox"><label for="pv-ttext" hidden>消息</label><textarea id="pv-ttext"></textarea><button class="send" type="submit" aria-label="发送"><svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 13V3M3.5 7.5 8 3l4.5 4.5"/></svg></button></div>
           <div class="crow" id="pv-tcrow"></div>
         </form>
@@ -2887,8 +2903,8 @@ rewind：stale_target / unseen_later_turn / rewound
   const pjMd = t => t.split('\n').reduce((a, l) => { if (l.startsWith('- ')) { if (!a.endsWith('</li>')) a += '<ul>'; return a + `<li>${esc(l.slice(2))}</li>` } return (a.endsWith('</li>') ? a + '</ul>' : a) + `<p>${esc(l)}</p>` }, '').replace(/<\/li>$/, '</li></ul>')
   function renderPjFeed() {
     const p = pjOf(), run = p.tasks.filter(x => x.st === 'running').length, wait = p.tasks.filter(x => x.st === 'blocked').length
-    $('#pv-feed').innerHTML = p.feed.map(([k, t, ids]) => k === 'user'
-      ? `<div class="msg user"><span class="who" style="align-self:flex-end">你</span><div class="bubble"${p.own || ids === true ? ' data-notr' : ''}>${esc(t)}</div></div>`
+    $('#pv-feed').innerHTML = p.feed.map(([k, t, ids, sent]) => k === 'user'
+      ? `<div class="msg user"><span class="who" style="align-self:flex-end">你</span>${pvAttHtml(sent ?? [])}<div class="bubble"${p.own || ids === true ? ' data-notr' : ''}>${esc(t)}</div></div>`
       : k === 'note' ? `<div class="pj-note"><span class="g">↳</span><span>${esc(t)}</span></div>`
       : `<div class="msg"><span class="who">Claude <span class="wm">(${esc(p.model)})</span> · 协调者</span><div class="md">${pjMd(t)}</div>${ids?.length ? `<div class="pjcards">${ids.map(id => pjCard(p.tasks.find(x => x.id === id), true)).join('')}</div>` : ''}</div>`).join('')
       + (run || wait ? `<div class="status-line"><span class="glyph">✻</span><span class="verb shimmer">Coordinating…</span><span>· 等 ${run + wait} 个任务${wait ? ` · ${wait} 个等你确认` : ''}</span></div>` : '')
@@ -2916,7 +2932,7 @@ rewind：stale_target / unseen_later_turn / rewound
     $('#pv-tfeed').innerHTML = `<div class="pjcheck"><b>${esc(x.title)}</b>${x.todo.map(([s, t]) => `<div class="todo-i ${s}"><span>${s === 'completed' ? '✓' : s === 'in_progress' ? '◐' : '○'}</span><span>${esc(t)}</span></div>`).join('')}<span class="note">${nDone}/${x.todo.length} · <span class="pjbadge ${x.st}">${pjSt[x.st]}</span>${x.wt ? ` · <span class="mono">${esc(x.wt)}</span>` : ''}</span></div>
       <div class="msg"><span class="who">协调者派的任务</span><div class="pjbrief"${x.own ? ' data-notr' : ''}>${esc(x.brief)}</div></div>
       ${x.log.map(([k, a, b, c]) => k === 'text' ? `<div class="msg"><span class="who">worker <span class="wm">(${esc(x.model)})</span></span><div class="md"><p>${esc(a)}</p></div></div>`
-        : k === 'user' ? `<div class="msg user"><span class="who" style="align-self:flex-end">你</span><div class="bubble" data-notr>${esc(a)}</div></div>`
+        : k === 'user' ? `<div class="msg user"><span class="who" style="align-self:flex-end">你</span>${pvAttHtml(b ?? [])}<div class="bubble" data-notr>${esc(a)}</div></div>`
         : k === 'note' ? `<div class="pj-note"><span class="g">↳</span><span>${esc(a)}</span></div>`
         : `<div class="msg"><details class="toolcard"><summary><span class="tname">${esc(a)}</span><span class="tcmd">${esc(b)}</span><span class="tstat${/^exit 0|s$/.test(c) ? ' ok' : ''}">${esc(c)}</span></summary></details></div>`).join('')}
       ${x.st === 'running' ? `<div class="status-line"><span class="glyph">✻</span><span class="verb shimmer">Working…</span><span class="mono" data-pjmt="${x.id}">${esc(pjMeta(x))}</span></div>` : ''}`
@@ -2937,7 +2953,7 @@ rewind：stale_target / unseen_later_turn / rewound
     const p = pjOf(), m = modes.find(y => y[0] === p.mode) ?? modes[0], lock = x && (x.st === 'running' || x.st === 'blocked')
     const permMenu = modes.map(([k, ic, l, d]) => `<button type="button" role="menuitemradio" data-pv-mode="${k}" aria-checked="${p.mode === k}"${modeOk(k) ? '' : ' disabled'}><span class="mono">${ic}</span>${modeLabel(k, l)}<small>${modeOk(k) ? d : '需要 ChatGPT 登录'}</small></button>`).join('')
     const modelMenu = `<div class="mh">${x ? lock ? '运行中的任务不能换模型' : '模型 · 下一条消息起生效' : '模型'}</div>${models.map(([k, d]) => `<button type="button" data-pv-model="${k}" data-sc="${sc}" aria-checked="${model === k}"${lock ? ' disabled' : ''}>${k}<small>${d}</small></button>`).join('')}<div class="mh">思考强度</div><div class="seg" role="radiogroup" aria-label="思考强度" style="margin:2px 8px 4px">${efforts.map(k => `<button type="button" role="radio" data-pv-effort="${k}" data-sc="${sc}" aria-checked="${effort === k}"${lock ? ' disabled' : ''}>${k}</button>`).join('')}</div>`
-    return `<div class="footwrap"><button type="button" class="footbtn perm" data-pv-menu="${sc}perm" data-mode="${m[0]}" aria-haspopup="menu" aria-expanded="${pvMenu === sc + 'perm'}"><span class="pmark" aria-hidden="true">${m[1]}</span><span>${modeLabel(m[0], m[2])}</span></button><div class="pop footmenu" role="menu"${pvMenu === sc + 'perm' ? '' : ' hidden'}>${permMenu}</div></div>
+    return `<button type="button" class="plus" data-pv-plusbtn="${sc}" aria-label="添加文件或 skill" aria-expanded="${!$('#pv-plus-' + sc).hidden}">+</button><div class="footwrap"><button type="button" class="footbtn perm" data-pv-menu="${sc}perm" data-mode="${m[0]}" aria-haspopup="menu" aria-expanded="${pvMenu === sc + 'perm'}"><span class="pmark" aria-hidden="true">${m[1]}</span><span>${modeLabel(m[0], m[2])}</span></button><div class="pop footmenu" role="menu"${pvMenu === sc + 'perm' ? '' : ' hidden'}>${permMenu}</div></div>
       <div class="footwrap right"><button type="button" class="footbtn" data-pv-menu="${sc}model" aria-haspopup="dialog" aria-expanded="${pvMenu === sc + 'model'}">${esc(model)} · ${esc(effort)}</button><div class="pop footmenu right"${pvMenu === sc + 'model' ? '' : ' hidden'}>${modelMenu}</div></div>`
   }
   document.addEventListener('click', e => {
@@ -2955,6 +2971,40 @@ rewind：stale_target / unseen_later_turn / rewound
     $('#pv-crow').innerHTML = pvFoot('c', p.model, p.effort)
     if (x) $('#pv-tcrow').innerHTML = pvFoot('t', x.model, x.effort ?? p.effort, x)
   }
+  // + menu and attachments, same as the main composer; each project composer keeps its own list
+  const pvAtts = { c: [], t: [] }
+  const pvAttHtml = l => l.length ? `<div class="bubble-atts">${l.map(f => f.url ? `<img src="${f.url}" alt="${esc(f.name)}">` : `<span class="att"><span class="kind">${esc(f.ext)}</span><span>${esc(f.name)}</span></span>`).join('')}</div>` : ''
+  function renderPvAtts(sc) { $('#pv-atts-' + sc).innerHTML = pvAtts[sc].map((f, i) => `<span class="att">${f.url ? `<img src="${f.url}" alt="">` : `<span class="kind">${esc(f.ext)}</span>`}<span>${esc(f.name)}</span><button type="button" data-pv-rmatt="${i}" data-sc="${sc}" aria-label="移除 ${esc(f.name)}">×</button></span>`).join('') }
+  function pvAddFiles(sc, list) {
+    for (const file of list) {
+      const item = { name: file.name || 'pasted-image.png', ext: (file.name?.split('.').pop() || file.type.split('/')[1] || 'file').toUpperCase().slice(0, 4) }
+      pvAtts[sc].push(item)
+      if (file.type?.startsWith('image/')) { const r = new FileReader(); r.onload = () => { item.url = r.result; renderPvAtts(sc) }; r.readAsDataURL(file) }
+    }
+    renderPvAtts(sc)
+  }
+  const pvPlus = (sc, on) => { $('#pv-plus-' + sc).hidden = !on; document.querySelector(`[data-pv-plusbtn="${sc}"]`)?.setAttribute('aria-expanded', String(on)) }
+  for (const sc of ['c', 't']) {
+    const ta = $(sc === 'c' ? '#pv-text' : '#pv-ttext'), box = ta.closest('.cbox')
+    for (const k of ['file', 'img']) $(`#pv-${k}-${sc}`).addEventListener('change', e => { pvAddFiles(sc, e.target.files); e.target.value = '' })
+    ta.addEventListener('paste', e => { const f = [...(e.clipboardData?.files ?? [])]; if (f.length) { e.preventDefault(); pvAddFiles(sc, f) } })
+    box.addEventListener('dragover', e => { e.preventDefault(); box.classList.add('drag') })
+    box.addEventListener('dragleave', () => box.classList.remove('drag'))
+    box.addEventListener('drop', e => { e.preventDefault(); box.classList.remove('drag'); pvAddFiles(sc, e.dataTransfer.files) })
+  }
+  document.addEventListener('click', e => {
+    if (!pjCur) return
+    const t = e.target
+    const pb = t.closest('[data-pv-plusbtn]'); if (pb) { const sc = pb.dataset.pvPlusbtn, on = $('#pv-plus-' + sc).hidden; pvPlus('c', false); pvPlus('t', false); pvPlus(sc, on); return }
+    const it = t.closest('[data-pvplus]')
+    if (it) {
+      const sc = it.dataset.sc, k = it.dataset.pvplus, ta = $(sc === 'c' ? '#pv-text' : '#pv-ttext'); pvPlus(sc, false)
+      if (k === 'file' || k === 'image') return $(`#pv-${k === 'file' ? 'file' : 'img'}-${sc}`).click()
+      ta.value = (ta.value && !/\s$/.test(ta.value) ? ta.value + ' ' : ta.value) + (k === 'skill' ? '/' : '@'); ta.focus(); return
+    }
+    const rm = t.closest('[data-pv-rmatt]'); if (rm) { pvAtts[rm.dataset.sc].splice(+rm.dataset.pvRmatt, 1); return renderPvAtts(rm.dataset.sc) }
+    for (const sc of ['c', 't']) if (!$('#pv-plus-' + sc).hidden && !t.closest('#pv-plus-' + sc)) pvPlus(sc, false)
+  })
   function renderPj() { if (!pjOf()) return; renderPjHead(); renderPjFeed(); renderPjSide() }
   function openProject(id) {
     if (artFile) closeArt()
@@ -2989,8 +3039,8 @@ rewind：stale_target / unseen_later_turn / rewound
     }
   })
   $('#pv-form').addEventListener('submit', e => {
-    e.preventDefault(); const p = pjOf(), text = $('#pv-text').value.trim(); if (!text) return $('#pv-text').focus()
-    $('#pv-text').value = ''; p.feed.push(['user', text, true]); renderPj()
+    e.preventDefault(); const p = pjOf(), sent = pvAtts.c.splice(0), text = $('#pv-text').value.trim() || sent.map(f => f.name).join('、'); if (!text) return $('#pv-text').focus()
+    $('#pv-text').value = ''; renderPvAtts('c'); p.feed.push(['user', text, true, sent]); renderPj()
     const id = 'n' + ++pjSeq, title = text.length > 16 ? text.slice(0, 16) + '…' : text
     setTimeout(() => {
       p.tasks.push({ id, title, own: true, st: 'running', model: p.workerModel === '继承' ? p.model : p.workerModel, t: 0, tok: 0, tool: 'Read', sum: '刚开始，正在读相关文件', wt: '', brief: text,
@@ -3005,8 +3055,8 @@ rewind：stale_target / unseen_later_turn / rewound
     }, 900)
   })
   $('#pv-tform').addEventListener('submit', e => {
-    e.preventDefault(); const x = pvTask && pjTask(pvTask), text = $('#pv-ttext').value.trim(); if (!x || !text || x.st === 'stopped') return
-    $('#pv-ttext').value = ''; x.log.push(['user', text])
+    e.preventDefault(); const x = pvTask && pjTask(pvTask), sent = pvAtts.t, text = $('#pv-ttext').value.trim() || sent.map(f => f.name).join('、'); if (!x || !text || x.st === 'stopped') return
+    pvAtts.t = []; $('#pv-ttext').value = ''; renderPvAtts('t'); x.log.push(['user', text, sent])
     if (x.st === 'running' || x.st === 'blocked') flash('已排队，下一个工具间隙送达')
     else { x.st = 'running'; x.sum = '按你的消息继续'; flash('已在后台恢复这个任务') }
     renderHistory(); renderPj()
