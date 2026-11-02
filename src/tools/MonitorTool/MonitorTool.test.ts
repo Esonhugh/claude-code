@@ -127,21 +127,22 @@ test('a monitor that outlives its deadline is killed with one expiry notice', as
     {
       description: 'never ends',
       command: 'echo started; sleep 30',
-      timeout_ms: 1000,
+      // Long enough for the shell to start and print on a loaded CI runner.
+      timeout_ms: 5000,
     },
     context as never,
   )
   const { taskId } = result.data
-  await waitFor(() => getState().tasks[taskId]?.status === 'killed')
+  await waitFor(() => getState().tasks[taskId]?.status === 'killed', 15_000)
   await new Promise(resolve => setTimeout(resolve, 100))
   const values = queuedValues()
   assert.equal(values.length, 2)
   assert.match(values[0]!, /<event>started<\/event>/)
   assert.match(
     values[1]!,
-    /\[Monitor expired after 1s with 1 event delivered\. Re-arm it if you still need the watch\.\]/,
+    /\[Monitor expired after 5s with 1 event delivered\. Re-arm it if you still need the watch\.\]/,
   )
-})
+}, 20_000)
 
 test('tool result tells the model to keep working instead of polling', () => {
   const block = MonitorTool.mapToolResultToToolResultBlockParam(

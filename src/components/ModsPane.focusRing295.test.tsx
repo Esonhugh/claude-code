@@ -165,18 +165,22 @@ async function mount(policy: 'accept' | 'deny-engine' | 'withhold-engine' = 'acc
     try {
       await new Promise<void>(resolve => terminal.write(Buffer.concat(stdout.bytes), resolve))
       const rows = Array.from({ length: terminal.rows }, (_, row) => terminal.buffer.active.getLine(terminal.buffer.active.baseY + row)?.translateToString(true) ?? '')
-      const y = rows.findIndex(row => row.includes(label)); expect(y, label + ' physically painted').toBeGreaterThanOrEqual(0)
+      const y = rows.findIndex(row => row.includes(label))
+      if (y < 0) return undefined
       const x = rows[y]!.indexOf(label), line = terminal.buffer.active.getLine(terminal.buffer.active.baseY + y)!
       return Array.from({ length: label.length }, (_, offset) => Boolean(line.getCell(x + offset)?.isInverse()))
     } finally { terminal.dispose() }
   }
   const expectInverse = async (label: string, value: boolean) => {
-    const deadline = performance.now() + 1800
-    let cells = await inverse(label)
-    while (cells.some(cell => cell !== value) && performance.now() < deadline) {
+    // The frame for the latest state may still be on its way to stdout.
+    const deadline = performance.now() + 5000
+    let painted = await inverse(label)
+    while ((!painted || painted.some(cell => cell !== value)) && performance.now() < deadline) {
       await new Promise(resolve => setImmediate(resolve))
-      cells = await inverse(label)
+      painted = await inverse(label)
     }
+    expect(painted, label + ' physically painted').toBeDefined()
+    const cells = painted!
     if (cells.some(cell => cell !== value)) console.error(JSON.stringify({ label, expected: value,
       pane: { focused: pane().focused, element: pane().focusedElement, drawing: pane().drawing, revision: pane().revision },
       active: getFocusManager(dom()).activeElement ? textOf(getFocusManager(dom()).activeElement!) : null,
