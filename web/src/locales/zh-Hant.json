@@ -1,0 +1,17 @@
+{
+  "you": "你",
+  "placeholder": "傳訊息給 Claude",
+  "send": "傳送",
+  "stop": "停止",
+  "newChat": "新對話",
+  "greeting": "有什麼可以幫你？",
+  "approvalTitle": "允許使用 {tool}？",
+  "allow": "允許",
+  "deny": "拒絕",
+  "thinking": "思考過程",
+  "toolInput": "輸入",
+  "toolOutput": "輸出",
+  "sessionEnded": "對話已結束。",
+  "connectFailed": "無法啟動對話：{error}",
+  "language": "語言"
+}

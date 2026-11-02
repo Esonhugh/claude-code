@@ -1,0 +1,17 @@
+{
+  "you": "You",
+  "placeholder": "Message Claude",
+  "send": "Send",
+  "stop": "Stop",
+  "newChat": "New chat",
+  "greeting": "What can I help you with?",
+  "approvalTitle": "Allow {tool}?",
+  "allow": "Allow",
+  "deny": "Deny",
+  "thinking": "Thinking",
+  "toolInput": "Input",
+  "toolOutput": "Output",
+  "sessionEnded": "The session ended.",
+  "connectFailed": "Could not start a session: {error}",
+  "language": "Language"
+}

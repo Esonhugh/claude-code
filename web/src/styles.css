@@ -1,0 +1,278 @@
+:root {
+  --bg: #faf9f5;
+  --panel: #ffffff;
+  --text: #1f1e1d;
+  --muted: #6b6a68;
+  --line: #e5e3dc;
+  --accent: #c96442;
+  --accent-text: #ffffff;
+  --user-bg: #f0eee6;
+  --error: #b42318;
+  --code-bg: #f4f3ee;
+  --col: 880px;
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #262624;
+    --panel: #30302e;
+    --text: #ecebe6;
+    --muted: #a3a29d;
+    --line: #3e3e3a;
+    --accent: #d97757;
+    --user-bg: #3a3936;
+    --error: #f97066;
+    --code-bg: #1f1f1d;
+    color-scheme: dark;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font: 15px/1.6 ui-sans-serif, system-ui, -apple-system, 'Segoe UI',
+    'PingFang SC', 'Noto Sans CJK SC', sans-serif;
+}
+
+button,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--line);
+}
+
+.cwd {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+select,
+button {
+  border: 1px solid var(--line);
+  background: var(--panel);
+  border-radius: 8px;
+  padding: 4px 10px;
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: default;
+  opacity: 0.4;
+}
+
+button.ghost {
+  border-color: transparent;
+  background: transparent;
+}
+
+button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-text);
+}
+
+.col {
+  width: 100%;
+  max-width: var(--col);
+  margin: 0 auto;
+  padding: 0 16px;
+}
+
+.feed {
+  flex: 1;
+  overflow-y: auto;
+  padding: 24px 0;
+}
+
+.greeting {
+  margin: 20vh 0 0;
+  text-align: center;
+  font-weight: 500;
+  font-size: 28px;
+}
+
+.msg {
+  margin: 0 0 20px;
+}
+
+.sender {
+  font-size: 12px;
+  color: var(--muted);
+  margin-bottom: 4px;
+}
+
+.msg-user {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+}
+
+.bubble {
+  background: var(--user-bg);
+  border-radius: 14px;
+  padding: 8px 14px;
+  max-width: 85%;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.msg-error {
+  color: var(--error);
+  white-space: pre-wrap;
+}
+
+.thinking,
+.tool {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  margin: 8px 0;
+  background: var(--panel);
+}
+
+.thinking > summary,
+.tool > summary {
+  cursor: pointer;
+  padding: 6px 12px;
+  color: var(--muted);
+  font-size: 13px;
+  display: flex;
+  gap: 8px;
+  min-width: 0;
+}
+
+.thinking > .text {
+  padding: 0 12px 10px;
+  color: var(--muted);
+}
+
+.tool-name {
+  font-weight: 600;
+  color: var(--text);
+}
+
+.tool-args {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.tool-error .tool-name {
+  color: var(--error);
+}
+
+.tool-body {
+  padding: 0 12px 10px;
+}
+
+.tool-label {
+  font-size: 12px;
+  color: var(--muted);
+  margin-top: 6px;
+}
+
+pre {
+  margin: 4px 0 0;
+  padding: 8px 10px;
+  background: var(--code-bg);
+  border-radius: 8px;
+  overflow: auto;
+  max-height: 320px;
+  font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.composer {
+  padding: 6px 0 16px;
+  background: var(--bg);
+}
+
+.approval {
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--panel);
+  padding: 12px 14px;
+  margin-bottom: 8px;
+  box-shadow: 0 6px 24px rgb(0 0 0 / 8%);
+}
+
+.approval-title {
+  font-weight: 600;
+}
+
+.approval-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.input-card {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: var(--panel);
+  padding: 10px 10px 10px 16px;
+}
+
+.input-card textarea {
+  flex: 1;
+  border: 0;
+  outline: 0;
+  resize: none;
+  background: transparent;
+  field-sizing: content;
+  max-height: 40vh;
+  min-height: 1.6em;
+}
+
+.send {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  padding: 0;
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-text);
+  flex: none;
+}

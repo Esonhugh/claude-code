@@ -6085,6 +6085,49 @@ async function run(): Promise<CommanderCommand> {
       )
   }
 
+  // claude web
+  if (feature('WEB_UI')) {
+    program
+      .command('web')
+      .description('Open a local web UI for chatting with Claude')
+      .option('--port <number>', 'HTTP port (0 = random)', '0')
+      .option('--host <string>', 'Loopback bind address', '127.0.0.1')
+      .option(
+        '--workspace <dir>',
+        'Working directory for new sessions (default: ~/.claude/web/workspace)',
+      )
+      .option('--no-open', 'Print the URL without opening a browser')
+      .option(
+        '--idle-timeout <ms>',
+        'Idle timeout for sessions with no open tab in ms (0 = never expire)',
+        '600000',
+      )
+      .option(
+        '--max-sessions <n>',
+        'Maximum concurrent sessions (0 = unlimited)',
+        '8',
+      )
+      .action(
+        async (opts: {
+          port: string
+          host: string
+          workspace?: string
+          open: boolean
+          idleTimeout: string
+          maxSessions: string
+        }) => {
+          // Same as `claude server`: give Ctrl+C back to the terminal.
+          stopCapturingEarlyInput()
+          if (process.stdin.isTTY) {
+            process.stdin.setRawMode(false)
+          }
+          process.stdin.pause()
+          const { runWebCommand } = await import('./web/webCommand.js')
+          await runWebCommand(opts)
+        },
+      )
+  }
+
   // `claude ssh <host> [dir]` — registered here only so --help shows it.
   // The actual interactive flow is handled by early argv rewriting in main()
   // (parallels the DIRECT_CONNECT/cc:// pattern above). If commander reaches

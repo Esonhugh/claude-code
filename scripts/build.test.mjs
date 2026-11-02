@@ -31,6 +31,7 @@ assert.equal(getEnabledFeatures('').has('TRANSCRIPT_CLASSIFIER'), true);
 assert.equal(getEnabledFeatures('').has('EXTRACT_MEMORIES'), true);
 assert.equal(getEnabledFeatures('').has('AWAY_SUMMARY'), true);
 assert.equal(getEnabledFeatures('').has('DIRECT_CONNECT'), true);
+assert.equal(getEnabledFeatures('').has('WEB_UI'), true);
 assert.equal(getEnabledFeatures('').has('BG_SESSIONS'), true);
 assert.equal(getEnabledFeatures('').has('DAEMON'), true);
 assert.equal(getEnabledFeatures('').has('COORDINATOR_MODE'), true);
