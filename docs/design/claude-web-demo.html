@@ -3101,10 +3101,12 @@ rewind：stale_target / unseen_later_turn / rewound
   })
   // sidebar hover card: title plus whatever is known (last change, folder, state); rows without a value are left out
   // the card stays while the pointer moves onto it, so its text (e.g. the session id) can be selected and copied
-  let tipT
+  let tipT, tipSkip
   const tipHide = () => { clearTimeout(tipT); tipT = setTimeout(() => { $('#sb-tip').hidden = true }, 250) }
   $('#sessions').addEventListener('mouseover', e => {
     const el = e.target.closest('[data-tip]'), tip = $('#sb-tip'); if (!el) return tipHide()
+    // after a click the row re-renders under the pointer; keep its card closed until the pointer moves to another row
+    if (el.dataset.tip === tipSkip) return; tipSkip = null
     clearTimeout(tipT); if (!tip.hidden && tip.dataset.for === el.dataset.tip) return
     // while a card is open, wait a moment before switching rows so a diagonal move onto the card keeps it
     if (!tip.hidden) { tipT = setTimeout(() => showTip(el), 180); return }
@@ -3120,6 +3122,7 @@ rewind：stale_target / unseen_later_turn / rewound
   $('#sb-tip').addEventListener('mouseenter', () => clearTimeout(tipT))
   $('#sb-tip').addEventListener('mouseleave', tipHide)
   $('#history').addEventListener('scroll', () => { $('#sb-tip').hidden = true })
+  $('#sessions').addEventListener('mousedown', e => { tipSkip = e.target.closest('[data-tip]')?.dataset.tip; clearTimeout(tipT); $('#sb-tip').hidden = true })
   // sidebar right-click menu: sessions get unread / pin / rename / move to project / archive / delete; projects get rename / settings / archive / delete
   var unread = new Set(['合并 PR #504 前检查 CI'])
   let ctx = null
