@@ -297,6 +297,19 @@ export type SDKControlSendTaskMessageRequest = {
   text: string
 }
 
+export type SDKControlSetCwdRequest = {
+  subtype: 'set_cwd'
+  path: string
+  trust_accepted?: boolean
+  trusted_directory?: string
+}
+
+export type SDKControlRewindConversationRequest = {
+  subtype: 'rewind_conversation'
+  target_message_uuid: string
+  last_seen_user_message_uuid: string
+}
+
 export type SDKControlApplyFlagSettingsRequest = {
   subtype: 'apply_flag_settings'
   settings: Record<string, unknown>

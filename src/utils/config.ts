@@ -734,6 +734,18 @@ export function isPathTrusted(dir: string): boolean {
   }
 }
 
+/** Persists trust for `dir`, the latch a trust dialog writes for it. */
+export function savePathTrusted(dir: string): void {
+  const key = normalizePathForConfigKey(resolve(dir))
+  saveGlobalConfig(current => ({
+    ...current,
+    projects: {
+      ...current.projects,
+      [key]: { ...(current.projects?.[key] ?? DEFAULT_PROJECT_CONFIG), hasTrustDialogAccepted: true },
+    },
+  }))
+}
+
 // We have to put this test code here because Jest doesn't support mocking ES modules :O
 const TEST_GLOBAL_CONFIG_FOR_TESTING: GlobalConfig = {
   ...DEFAULT_GLOBAL_CONFIG,

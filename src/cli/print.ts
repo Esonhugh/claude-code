@@ -3823,6 +3823,13 @@ function runHeadlessStreaming(
               result.error ?? 'Unexpected error',
             )
           }
+        } else if (message.request.subtype === 'set_cwd' || message.request.subtype === 'rewind_conversation') {
+          const { handleSetCwd, handleRewindConversation } = await import('./sessionControlRequests.js')
+          const result = message.request.subtype === 'set_cwd'
+            ? handleSetCwd(message.request, { busy: running, getAppState, setAppState })
+            : handleRewindConversation(message.request, { messages: mutableMessages, busy: running, queued: hasCommandsInQueue(), setAppState })
+          if ('error' in result && !('reason' in result)) sendControlResponseError(message, result.error)
+          else sendControlResponseSuccess(message, result)
         } else if (message.request.subtype === 'cancel_async_message') {
           const targetUuid = message.request.message_uuid
           const removed = dequeueAllMatching(cmd => cmd.uuid === targetUuid)
