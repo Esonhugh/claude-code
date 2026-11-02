@@ -11,7 +11,7 @@
 适合终端做不好的事：
 
 - 读长回复：Markdown、表格、代码高亮、公式、Mermaid 图和图片按网页方式渲染。
-- 处理文档：上传或拖入 PDF、Word、Excel、PowerPoint、图片，在右侧直接预览和翻页。
+- 处理文档：上传或拖入 PDF、Word、Excel、PowerPoint、图片，或者让 Claude 生成网页和报告，点开就在左边大面积预览，右边继续对话改它。
 - 看后台在做什么：subagent、Agent Team、Workflow、终端、Monitor、后台任务都在右侧面板里，点开能直接和某个 agent 对话。
 - 管理多个会话：按项目目录分组的历史，切过去先只读查看，开始输入才恢复。
 
@@ -31,9 +31,9 @@ fork 是通用个人 agent，所以网页界面默认面向对话和研究，不
 
 ![新会话页](images/claude-web-start.png)
 
-**3. 文件预览**：Files 页签列出上传、生成、读取和修改过的文件。PDF 和 PPTX 可以翻页，DOCX 显示批注，XLSX 可以切换工作表，点“放大”在大窗口里看。
+**3. 成品视图**：Files 页签列出上传、生成、读取和修改过的文件。点任何一个文件，工作区变成两栏：左边大面积显示文件，右边继续对话。顶部可以在文件间切换、选历史版本（文本文件）、按类型操作（HTML 切桌面 / 平板 / 手机宽度，Markdown 切渲染 / 源码，PDF 和 PPTX 翻页，XLSX 切工作表），输入框上方会显示“正在看哪个文件、第几页”，发出的消息带上这一行。Esc 或 × 回到普通视图。
 
-![文件预览](images/claude-web-files.png)
+![成品视图](images/claude-web-files.png)
 
 **4. Workflow**：右侧只显示当前阶段和这一阶段的 agents；点“展开”打开大窗口，上面是所有阶段的看板，下面左边是中间结果预览，右边是选中 agent 的详情。
 
