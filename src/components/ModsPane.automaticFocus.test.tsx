@@ -117,10 +117,11 @@ async function mount(kind: Kind, policy: Policy, hidden = false, decorate = fals
       const label=kind==='Button'?(key==='duplicate'?'[ Duplicate ]':'[ '+key+' ]'):key+': '
       for(let node=find(dom(),label);node;node=node.parentNode) if(typeof node.attributes.tabIndex==='number') return node
     }
-    const raw=async (value:string,count:number) => {
+    // A held Enter (focus still negotiating) dispatches after settle(); wait for its action.
+    const raw=async (value:string,count:number,awaitAction=decorate) => {
       await runtime.settle(); await until(()=>{const pane=runtime.ui.getSnapshot()[0];return pane?.revision===committedRevision && pane?.drawing===committedDrawing});
       const before=completed; reorderInput!(); stdin.push(value); await until(()=>completed===before+count); await runtime.settle();
-      if(decorate) await until(()=>receipts.some(r=>r.kind==='action'),()=>({receipts,diagnostics,errors:errors.map(String),focus:getFocusManager(dom()).activeElement?contents(getFocusManager(dom()).activeElement!):null,text:contents(dom())}))
+      if(awaitAction) await until(()=>receipts.some(r=>r.kind==='action'),()=>({receipts,diagnostics,errors:errors.map(String),focus:getFocusManager(dom()).activeElement?contents(getFocusManager(dom()).activeElement!):null,text:contents(dom())}))
       const snapshot=runtime.capture()
       try {const result=await snapshot.dispatch('command.run',{command:'checkpoint',args:'',origin:{kind:'composer'},presentation:{columns:160,isFullscreen:false}},async()=>({})) as {text:string};return JSON.parse(result.text)}
       finally {snapshot.release()}
@@ -190,7 +191,7 @@ test('a same-read arrow then Enter activates only the negotiated landing',async(
   try {
     await until(()=>h.runtime.ui.getSnapshot()[0]?.focusedElement==='first')
     await until(()=>getFocusManager(h.dom()).activeElement===h.element('first'))
-    const state=await h.raw('\u001b[B\r',2)
+    const state=await h.raw('\u001b[B\r',2,true)
     expect(state.actions).toHaveLength(1)
     expect(state.actions[0].key).toBe('second')
     expect(h.receipts.filter(r=>r.kind==='focus')).toHaveLength(2)

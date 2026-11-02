@@ -1,7 +1,7 @@
 import { expect, test } from 'bun:test'
 import { Readable, Writable } from 'node:stream'
 import React from 'react'
-import { render, useInput } from '../ink.js'
+import { render, useInput, useStdin } from '../ink.js'
 import { AppStoreContext, getDefaultAppState, type AppState } from '../state/AppState.js'
 import { createStore } from '../state/store.js'
 import type { LocalAgentTaskState } from '../tasks/LocalAgentTask/LocalAgentTask.js'
@@ -58,7 +58,9 @@ async function navigation({ overlay = false, footer = false, active = true, stat
     activeOverlays: new Set(overlay ? ['navigation-test-dialog'] : []),
   })
   const observedKeys: string[] = []
+  let emitter: ReturnType<typeof useStdin>['internal_eventEmitter'] | undefined
   function Harness() {
+    emitter = useStdin().internal_eventEmitter
     useBackgroundTaskNavigation({ isActive: active })
     useTeammateViewAutoExit()
     useInput((_input, key) => { if (key.escape) observedKeys.push('escape') })
@@ -72,7 +74,19 @@ async function navigation({ overlay = false, footer = false, active = true, stat
   await new Promise(resolve => setTimeout(resolve, 30))
   return {
     store, abortController, currentWorkAbortController, observedKeys,
-    async escape() { stdin.push('\u001b'); await new Promise(resolve => setTimeout(resolve, 100)) },
+    // A lone ESC waits on App's 50ms flush timer; wait for its dispatch, then
+    // for the handlers. The listener goes first so a consuming handler cannot hide it.
+    async escape() {
+      let listener!: (event: { key: { escape: boolean } }) => void
+      const dispatched = new Promise<boolean>(resolve => {
+        listener = event => { if (event.key.escape) resolve(true) }
+        emitter!.prependListener('input', listener)
+        setTimeout(() => resolve(false), 2000)
+      })
+      stdin.push('\u001b')
+      try { expect(await dispatched).toBe(true) } finally { emitter!.removeListener('input', listener) }
+      await new Promise(resolve => setTimeout(resolve, 100))
+    },
     async shiftDown() { stdin.push('\u001b[1;2B'); await new Promise(resolve => setTimeout(resolve, 100)) },
     close() { instance.unmount(); instance.cleanup() },
   }
