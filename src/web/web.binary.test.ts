@@ -573,7 +573,7 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       await finished.waitFor({ timeout: 60_000 })
       if ((await finished.getAttribute('aria-expanded')) === 'false') await finished.click()
       await panel.locator('.agent-row', { hasText: 'Look around' }).click()
-      await panel.getByText('SUB_RESULT').waitFor({ timeout: 30_000 })
+      await panel.locator('.agent-feed').getByText('SUB_RESULT').first().waitFor({ timeout: 30_000 })
 
       const agentInput = panel.getByPlaceholder('Message general-purpose')
       await agentInput.fill('FOLLOWUP_MSG now')
