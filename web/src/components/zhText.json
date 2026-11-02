@@ -1,0 +1,1323 @@
+{
+"en": [
+[
+"用 ChatGPT 账号登录后，这里会列出你在 ChatGPT 里连好的应用；API key 用不了。",
+"After you sign in with ChatGPT, the apps you connected in ChatGPT show up here; API keys can't use them."
+],
+[
+"关闭时只搜记忆文件；打开后也能搜历史会话内容（memory.sqlite.enabled）",
+"Off: searches memory files only; on: also searches past session content (memory.sqlite.enabled)"
+],
+[
+"工具名，例如 Bash 或 Write|Edit；留空匹配全部",
+"Tool name, e.g. Bash or Write|Edit; empty matches all"
+],
+[
+"打开一个运行中的会话后才能查看和管理 MCP 服务器。",
+"Open a running session to see and manage its MCP servers."
+],
+[
+"添加市场源：owner/repo 或 git URL",
+"Add marketplace: owner/repo or git URL"
+],
+[
+"搜索记忆（全文检索，例如：评审、RULER）",
+"Search memory (full text, e.g. review, RULER)"
+],
+[
+"ChatGPT 应用（Codex apps）",
+"ChatGPT apps (Codex apps)"
+],
+[
+"声明了审批能力，启用后权限请求也会推送过去",
+"Declares the permission capability; once enabled, permission requests are pushed there too"
+],
+[
+"还没有安装提供 channel 的插件。",
+"No plugins with channels installed yet."
+],
+[
+"打开一个运行中的会话后才能在本会话启用",
+"Open a running session to enable it there"
+],
+[
+"临时关掉所有 hook，配置保留",
+"Turn every hook off for now; the config is kept"
+],
+[
+"输入至少 2 个字搜索历史会话。",
+"Type at least 2 characters to search past sessions."
+],
+[
+"channel · 可转发审批",
+"channel · can relay approvals"
+],
+[
+"每日输出 tokens，按模型",
+"Daily output tokens by model"
+],
+[
+"还没有配置 MCP 服务器。",
+"No MCP servers configured yet."
+],
+[
+"内置 skill，不能编辑。",
+"Built-in skill, cannot be edited."
+],
+[
+"最近 25 周每天的使用量",
+"Daily usage over the last 25 weeks"
+],
+[
+"没有匹配的 skill。",
+"No matching skills."
+],
+[
+"已重新加载 skills",
+"Skills reloaded"
+],
+[
+"已停用全部 hooks",
+"All hooks disabled"
+],
+[
+"每日输出 tokens",
+"Daily output tokens"
+],
+[
+"每周输出 tokens",
+"Weekly output tokens"
+],
+[
+"SQLite 全文索引",
+"SQLite full-text index"
+],
+[
+"ChatGPT 账号",
+"ChatGPT Account"
+],
+[
+"停用全部 hooks",
+"Disable all hooks"
+],
+[
+"添加 channel",
+"Add channel"
+],
+[
+"% 的 tokens",
+"% of tokens"
+],
+[
+"可以远程批准权限请求",
+"Can approve permission requests remotely"
+],
+[
+"市场源里还没有插件。",
+"No plugins in your marketplaces yet."
+],
+[
+"第一次搜索时建立索引",
+"Built on the first search"
+],
+[
+"还没有安装 mod。",
+"No mods installed yet."
+],
+[
+"MCP 服务器未连接",
+"MCP server not connected"
+],
+[
+"输出 tokens",
+"Output tokens"
+],
+[
+"已启用 hooks",
+"Hooks enabled"
+],
+[
+"新会话不再默认启用",
+"New sessions no longer enable it by default"
+],
+[
+"输出 tokens",
+"output tokens"
+],
+[
+"搜索 skill",
+"Search skills"
+],
+[
+"还没有安装插件。",
+"No plugins installed yet."
+],
+[
+"已在新标签页打开",
+"Opened the sign-in page for"
+],
+[
+"已保存 hook",
+"Hook saved"
+],
+[
+"已删除 hook",
+"Hook deleted"
+],
+[
+"已保存并重新加载",
+"Saved and reloaded"
+],
+[
+"新会话会默认启用",
+"New sessions will enable it by default"
+],
+[
+"没有匹配的结果。",
+"No matches."
+],
+[
+"随插件启用或停用",
+"Turned on and off with its plugin"
+],
+[
+"MCP 服务器",
+"MCP servers"
+],
+[
+"已重新加载插件",
+"Plugins reloaded"
+],
+[
+"添加 hook",
+"Add hook"
+],
+[
+"保存并重新加载",
+"Save and reload"
+],
+[
+"新会话默认启用",
+"Enabled by default for new sessions"
+],
+[
+"已在本会话启用",
+"Enabled for this session"
+],
+[
+"最近 25 周",
+"last 25 weeks"
+],
+[
+"已开启自动记忆",
+"Auto memory on"
+],
+[
+"已关闭自动记忆",
+"Auto memory off"
+],
+[
+"搜索历史会话",
+"Search past sessions"
+],
+[
+"在对话中使用",
+"Use in conversation"
+],
+[
+"搜索插件市场",
+"Search the plugin marketplace"
+],
+[
+"已添加市场源",
+"Added marketplace"
+],
+[
+"本会话已启用",
+"Enabled for this session"
+],
+[
+"在本会话启用",
+"Enable for this session"
+],
+[
+"最活跃的一天",
+"Most active day"
+],
+[
+"一天中的使用",
+"Time of day"
+],
+[
+" 分钟前更新",
+" min ago"
+],
+[
+" 小时前更新",
+" h ago"
+],
+[
+"个启用 /",
+"enabled /"
+],
+[
+"更新到 v",
+"Update to v"
+],
+[
+"超时（秒）",
+"Timeout (s)"
+],
+[
+"已重新加载",
+"Reloaded"
+],
+[
+"新会话默认",
+"Default for new sessions"
+],
+[
+"安装并启用",
+"Install and enable"
+],
+[
+"最常用模型",
+"Favorite model"
+],
+[
+"下午最常用",
+"Afternoons are busiest"
+],
+[
+" 天前更新",
+" days ago"
+],
+[
+"上午最常用",
+"Mornings are busiest"
+],
+[
+"晚上最常用",
+"Evenings are busiest"
+],
+[
+"凌晨最常用",
+"Late nights are busiest"
+],
+[
+"插件已停用",
+"Plugin disabled"
+],
+[
+"没有使用",
+"No usage"
+],
+[
+"用户指令",
+"User instructions"
+],
+[
+"项目指令",
+"Project instructions"
+],
+[
+"搜索记忆",
+"Search memory"
+],
+[
+"需要登录",
+"Needs sign-in"
+],
+[
+"连接失败",
+"Failed"
+],
+[
+"安装中…",
+"Installing…"
+],
+[
+"个运行中",
+"running"
+],
+[
+"连接中…",
+"Connecting…"
+],
+[
+"的登录页",
+"in a new tab"
+],
+[
+"用户设置",
+"User settings"
+],
+[
+"项目设置",
+"Project settings"
+],
+[
+"右侧面板",
+"Right panel"
+],
+[
+"重新加载",
+"Reload"
+],
+[
+"启用中…",
+"Enabling…"
+],
+[
+"自动记忆",
+"Auto memory"
+],
+[
+"时间范围",
+"Time range"
+],
+[
+"30 天",
+"30 days"
+],
+[
+"个活跃天",
+" active days"
+],
+[
+"连续使用",
+"Streak"
+],
+[
+"高峰时段",
+"Peak hour"
+],
+[
+"模型占比",
+"Model share"
+],
+[
+" 起一周",
+" (week of)"
+],
+[
+"新标签页",
+"New tab"
+],
+[
+" 条结果",
+" results"
+],
+[
+"搜索范围",
+"Search scope"
+],
+[
+"历史会话",
+"Past sessions"
+],
+[
+"已删除 ",
+"Removed "
+],
+[
+"刚刚更新",
+"updated just now"
+],
+[
+"加载中…",
+"Loading…"
+],
+[
+"已移除 ",
+"Removed "
+],
+[
+"已刷新 ",
+"Refreshed "
+],
+[
+"托管策略",
+"Managed policy"
+],
+[
+"本地指令",
+"Local instructions"
+],
+[
+"添加中…",
+"Adding…"
+],
+[
+"已启用 ",
+"Enabled "
+],
+[
+"已停用 ",
+"Disabled "
+],
+[
+"已关闭",
+"Shut down"
+],
+[
+"运行中",
+"Running"
+],
+[
+"新会话",
+"New session"
+],
+[
+"本会话",
+"This session"
+],
+[
+"已安装",
+"Installed"
+],
+[
+"市场源",
+"Marketplaces"
+],
+[
+"个工具",
+"tools"
+],
+[
+"已连接",
+"Connected"
+],
+[
+"已刷新",
+"Refreshed"
+],
+[
+"未连接",
+"Not connected"
+],
+[
+"界面：",
+"UI:"
+],
+[
+"已启用",
+"Enabled"
+],
+[
+"已停用",
+"Disabled"
+],
+[
+"未启用",
+"Not enabled"
+],
+[
+"7 天",
+"7 days"
+],
+[
+"按模型",
+"by model"
+],
+[
+"活跃度",
+"Activity"
+],
+[
+"按小时",
+"by hour"
+],
+[
+"起一周",
+"week of"
+],
+[
+"会话",
+"Sessions"
+],
+[
+"记忆",
+"Memory"
+],
+[
+"设置",
+"Settings"
+],
+[
+"模型",
+"Model"
+],
+[
+"权限",
+"Permissions"
+],
+[
+"关闭",
+"Close"
+],
+[
+"检索",
+"Retrieve"
+],
+[
+"移除",
+"Remove"
+],
+[
+"命令",
+"Command"
+],
+[
+"文件",
+"File"
+],
+[
+"查看",
+"Show"
+],
+[
+"输出",
+"Output"
+],
+[
+"用量",
+"Usage"
+],
+[
+"输入",
+"Input"
+],
+[
+"插件",
+"Plugins"
+],
+[
+"账号",
+"Account"
+],
+[
+"项目",
+"Project"
+],
+[
+"内置",
+"Built-in"
+],
+[
+"用户",
+"User"
+],
+[
+"启用",
+"Enabled"
+],
+[
+"官方",
+"Official"
+],
+[
+"发现",
+"Discover"
+],
+[
+"卸载",
+"Uninstall"
+],
+[
+"安装",
+"Install"
+],
+[
+"登录",
+"Sign in"
+],
+[
+"重连",
+"Reconnect"
+],
+[
+"刷新",
+"Refresh"
+],
+[
+"添加",
+"Add"
+],
+[
+"取消",
+"Cancel"
+],
+[
+"对话",
+"Conversation"
+],
+[
+"刚刚",
+"just now"
+],
+[
+"自动",
+"auto"
+],
+[
+"默认",
+"Default"
+],
+[
+"连接",
+"Connect"
+],
+[
+"事件",
+"Event"
+],
+[
+"匹配",
+"Matcher"
+],
+[
+"写入",
+"Save to"
+],
+[
+"保存",
+"Save"
+],
+[
+"全部",
+"All"
+],
+[
+"删除",
+"Delete"
+],
+[
+"只读",
+"Read-only"
+],
+[
+"面板",
+"Panel"
+],
+[
+"周四",
+"Thu"
+],
+[
+"周五",
+"Fri"
+],
+[
+"周六",
+"Sat"
+],
+[
+"周日",
+"Sun"
+],
+[
+"周一",
+"Mon"
+],
+[
+"周二",
+"Tue"
+],
+[
+"最长",
+"longest"
+],
+[
+"已在",
+"Started a new session in"
+],
+[
+"较少",
+"Less"
+],
+[
+"较多",
+"More"
+],
+[
+"打开",
+"Open"
+],
+[
+"编辑",
+"Edit"
+],
+[
+"周三",
+"Wed"
+],
+[
+" 段",
+" chunks"
+],
+[
+"本地",
+"Local"
+],
+[
+"你",
+"You"
+],
+[
+"秒",
+"s"
+],
+[
+"行",
+"lines"
+],
+[
+"开",
+"on"
+],
+[
+"关",
+"off"
+],
+[
+"页",
+""
+],
+[
+"在",
+"New session in"
+],
+[
+"天",
+" days"
+]
+],
+"hant": [
+[
+"用 ChatGPT 账号登录后，这里会列出你在 ChatGPT 里连好的应用；API key 用不了。",
+"用 ChatGPT 賬號登入後，這裡會列出你在 ChatGPT 裡連好的應用；API key 用不了。"
+],
+[
+"关闭时只搜记忆文件；打开后也能搜历史会话内容（memory.sqlite.enabled）",
+"關閉時只搜記憶檔案；開啟後也能搜歷史會話內容（memory.sqlite.enabled）"
+],
+[
+"添加市场源：owner/repo 或 git URL",
+"新增市場源：owner/repo 或 git URL"
+],
+[
+"搜索记忆（全文检索，例如：评审、RULER）",
+"搜尋記憶（全文檢索，例如：評審、RULER）"
+],
+[
+"ChatGPT 应用（Codex apps）",
+"ChatGPT 應用（Codex apps）"
+],
+[
+"声明了审批能力，启用后权限请求也会推送过去",
+"宣告瞭審批能力，啟用後許可權請求也會推送過去"
+],
+[
+"临时关掉所有 hook，配置保留",
+"臨時關掉所有 hook，配置保留"
+],
+[
+"输入至少 2 个字搜索历史会话。",
+"輸入至少 2 個字搜尋歷史會話。"
+],
+[
+"channel · 可转发审批",
+"channel · 可轉發審批"
+],
+[
+"每日输出 tokens，按模型",
+"每日輸出 tokens，按模型"
+],
+[
+"没有匹配的 skill。",
+"沒有匹配的 skill。"
+],
+[
+"已重新加载 skills",
+"已重新載入 skills"
+],
+[
+"每日输出 tokens",
+"每日輸出 tokens"
+],
+[
+"每周输出 tokens",
+"每週輸出 tokens"
+],
+[
+"添加 channel",
+"新增 channel"
+],
+[
+"已启用 hooks",
+"已啟用 hooks"
+],
+[
+"新会话不再默认启用",
+"新會話不再預設啟用"
+],
+[
+"输出 tokens",
+"輸出 tokens"
+],
+[
+"搜索 skill",
+"搜尋 skill"
+],
+[
+"还没有安装插件。",
+"還沒有安裝外掛。"
+],
+[
+"已在新标签页打开",
+"已在新標籤頁開啟"
+],
+[
+"已保存 hook",
+"已儲存 hook"
+],
+[
+"已删除 hook",
+"已刪除 hook"
+],
+[
+"已保存并重新加载",
+"已儲存並重新載入"
+],
+[
+"新会话会默认启用",
+"新會話會預設啟用"
+],
+[
+"没有匹配的结果。",
+"沒有匹配的結果。"
+],
+[
+"MCP 服务器",
+"MCP 伺服器"
+],
+[
+"已重新加载插件",
+"已重新載入外掛"
+],
+[
+"添加 hook",
+"新增 hook"
+],
+[
+"保存并重新加载",
+"儲存並重新載入"
+],
+[
+"新会话默认启用",
+"新會話預設啟用"
+],
+[
+"已在本会话启用",
+"已在本會話啟用"
+],
+[
+"搜索历史会话",
+"搜尋歷史會話"
+],
+[
+"在对话中使用",
+"在對話中使用"
+],
+[
+"搜索插件市场",
+"搜尋外掛市場"
+],
+[
+"已添加市场源",
+"已新增市場源"
+],
+[
+"本会话已启用",
+"本會話已啟用"
+],
+[
+"在本会话启用",
+"在本會話啟用"
+],
+[
+"最活跃的一天",
+"最活躍的一天"
+],
+[
+"个启用 /",
+"個啟用 /"
+],
+[
+"超时（秒）",
+"超時（秒）"
+],
+[
+"已重新加载",
+"已重新載入"
+],
+[
+"新会话默认",
+"新會話預設"
+],
+[
+"安装并启用",
+"安裝並啟用"
+],
+[
+"用户指令",
+"使用者指令"
+],
+[
+"项目指令",
+"專案指令"
+],
+[
+"搜索记忆",
+"搜尋記憶"
+],
+[
+"需要登录",
+"需要登入"
+],
+[
+"连接失败",
+"連線失敗"
+],
+[
+"安装中…",
+"安裝中…"
+],
+[
+"个运行中",
+"個執行中"
+],
+[
+"连接中…",
+"連線中…"
+],
+[
+"的登录页",
+"的登入頁"
+],
+[
+"用户设置",
+"使用者設定"
+],
+[
+"项目设置",
+"專案設定"
+],
+[
+"右侧面板",
+"右側面板"
+],
+[
+"重新加载",
+"重新載入"
+],
+[
+"启用中…",
+"啟用中…"
+],
+[
+"自动记忆",
+"自動記憶"
+],
+[
+"时间范围",
+"時間範圍"
+],
+[
+"个活跃天",
+"個活躍天"
+],
+[
+"连续使用",
+"連續使用"
+],
+[
+"高峰时段",
+"高峰時段"
+],
+[
+"模型占比",
+"模型佔比"
+],
+[
+" 起一周",
+" 起一週"
+],
+[
+"新标签页",
+"新標籤頁"
+],
+[
+" 条结果",
+" 條結果"
+],
+[
+"搜索范围",
+"搜尋範圍"
+],
+[
+"历史会话",
+"歷史會話"
+],
+[
+"已关闭",
+"已關閉"
+],
+[
+"运行中",
+"執行中"
+],
+[
+"新会话",
+"新會話"
+],
+[
+"本会话",
+"本會話"
+],
+[
+"已安装",
+"已安裝"
+],
+[
+"市场源",
+"市場源"
+],
+[
+"个工具",
+"個工具"
+],
+[
+"已连接",
+"已連線"
+],
+[
+"已刷新",
+"已重新整理"
+],
+[
+"未连接",
+"未連線"
+],
+[
+"界面：",
+"介面："
+],
+[
+"已启用",
+"已啟用"
+],
+[
+"未启用",
+"未啟用"
+],
+[
+"活跃度",
+"活躍度"
+],
+[
+"按小时",
+"按小時"
+],
+[
+"起一周",
+"起一週"
+],
+[
+"会话",
+"會話"
+],
+[
+"记忆",
+"記憶"
+],
+[
+"设置",
+"設定"
+],
+[
+"权限",
+"許可權"
+],
+[
+"关闭",
+"關閉"
+],
+[
+"检索",
+"檢索"
+],
+[
+"文件",
+"檔案"
+],
+[
+"查看",
+"檢視"
+],
+[
+"输出",
+"輸出"
+],
+[
+"输入",
+"輸入"
+],
+[
+"插件",
+"外掛"
+],
+[
+"账号",
+"賬號"
+],
+[
+"项目",
+"專案"
+],
+[
+"内置",
+"內建"
+],
+[
+"用户",
+"使用者"
+],
+[
+"启用",
+"啟用"
+],
+[
+"发现",
+"發現"
+],
+[
+"卸载",
+"解除安裝"
+],
+[
+"安装",
+"安裝"
+],
+[
+"登录",
+"登入"
+],
+[
+"重连",
+"重連"
+],
+[
+"刷新",
+"重新整理"
+],
+[
+"添加",
+"新增"
+],
+[
+"对话",
+"對話"
+],
+[
+"刚刚",
+"剛剛"
+],
+[
+"自动",
+"自動"
+],
+[
+"默认",
+"預設"
+],
+[
+"连接",
+"連線"
+],
+[
+"写入",
+"寫入"
+],
+[
+"保存",
+"儲存"
+],
+[
+"编辑",
+"編輯"
+],
+[
+"删除",
+"刪除"
+],
+[
+"只读",
+"只讀"
+],
+[
+"周四",
+"週四"
+],
+[
+"周五",
+"週五"
+],
+[
+"周六",
+"週六"
+],
+[
+"周日",
+"週日"
+],
+[
+"周一",
+"週一"
+],
+[
+"周二",
+"週二"
+],
+[
+"最长",
+"最長"
+],
+[
+"较少",
+"較少"
+],
+[
+"较多",
+"較多"
+],
+[
+"打开",
+"開啟"
+],
+[
+"开",
+"開"
+],
+[
+"关",
+"關"
+],
+[
+"页",
+"頁"
+]
+],
+"chars": "项項对對结結长長时時写寫现現占佔条條标標户戶装裝发發续續范範还還围圍跃躍开開并並个個审審忆憶转轉检檢声聲设設没沒历歷记記场場应應这這运運动動关關号號闭閉话話刚剛间間载載钟鍾请請编編侧側败敗连連权權辑輯签籤随隨较較页頁认認峰峯准準远遠会會输輸临臨内內删刪后後评評里裏启啓过過读讀务務账賬录錄"
+}

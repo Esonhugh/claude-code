@@ -553,6 +553,8 @@ export const REQUEST_PREFIX = {
   settings: 'web-settings-',
   usage: 'web-usage-',
   effort: 'web-effort-',
+  /** The sidebar dialogs' requests (mcp_status, reload_plugins…). */
+  ext: 'web-ext-',
   background: 'web-bg-',
 } as const
 

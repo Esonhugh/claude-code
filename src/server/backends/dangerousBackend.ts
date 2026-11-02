@@ -8,6 +8,8 @@ export type SpawnSessionOptions = {
   model?: string
   /** Continue this existing transcript (its id becomes the session id). */
   resume?: boolean
+  /** `plugin:<name>@<marketplace>` entries passed as `--channels`. */
+  channels?: string[]
 }
 
 /**
@@ -38,6 +40,7 @@ export class DangerousBackend {
     permissionMode,
     model,
     resume,
+    channels,
   }: SpawnSessionOptions): ChildProcess {
     const [command, ...entry] = isInBundledMode()
       ? [process.execPath]
@@ -61,6 +64,7 @@ export class DangerousBackend {
         sessionId,
         ...(permissionMode ? ['--permission-mode', permissionMode] : []),
         ...(model ? ['--model', model] : []),
+        ...(channels?.length ? ['--channels', ...channels] : []),
         ...(this.options.includePartialMessages
           ? ['--include-partial-messages']
           : []),
