@@ -30,7 +30,7 @@ import {
   workerItems,
 } from '../projects'
 import { type Approval, type ApprovalChoice, type Block, currentTodos, initialState, type ModelOption, reduce, type TaskNote } from '../protocol'
-import type { SessionChat } from '../store'
+import type { HistoryEntry, SessionChat } from '../store'
 import { AskDock, InputBox, ModeButton, ModelMenu, modelButtonLabel } from './Composer'
 import { Dialog } from './Dialog'
 import { Message, modelName } from './Message'
@@ -316,6 +316,8 @@ export function ProjectView({
   onSendTask,
   onTasks,
   uploadTo,
+  moved,
+  onOpenSession,
 }: {
   t: T
   project: Project
@@ -345,6 +347,9 @@ export function ProjectView({
   onTasks: (rows: ProjectTask[]) => void
   /** The coordinator's session id: task attachments are uploaded there. */
   uploadTo: string
+  /** Sessions moved into this project from the sidebar; they open as the chats they are. */
+  moved: HistoryEntry[]
+  onOpenSession: (entry: HistoryEntry) => void
 }) {
   const [show, setShow] = useState<Show>('chat')
   const [wide, setWide] = useState(false)
@@ -644,7 +649,7 @@ export function ProjectView({
             {t('pvTasks')}
           </button>
           <span>
-            {t('taskCount', { n: String(tasks.length) })}
+            {t('taskCount', { n: String(tasks.length + moved.length) })}
             {running > 0 && t('taskRunningCount', { n: String(running) })}
           </span>
         </div>
@@ -654,19 +659,32 @@ export function ProjectView({
         {wideButton}
       </div>
       <div className="pjlist">
-        {tasks.length ? (
-          TASK_GROUPS.map(group => {
-            const list = tasks.filter(x => group.states.includes(x.state))
-            return list.length ? (
-              <Fragment key={group.key}>
-                <div className="grp-h">{t(group.key)}</div>
-                {list.map(x => card(x))}
-              </Fragment>
-            ) : null
-          })
-        ) : (
-          <p className="note">{t('noTasks')}</p>
+        {TASK_GROUPS.map(group => {
+          const list = tasks.filter(x => group.states.includes(x.state))
+          return list.length ? (
+            <Fragment key={group.key}>
+              <div className="grp-h">{t(group.key)}</div>
+              {list.map(x => card(x))}
+            </Fragment>
+          ) : null
+        })}
+        {moved.length > 0 && (
+          <>
+            <div className="grp-h">{t('taskMovedGroup')}</div>
+            {moved.map(entry => (
+              <TaskCard
+                key={entry.id}
+                t={t}
+                task={{ id: entry.id, title: entry.title, state: 'done' }}
+                summary={t('taskMovedIn')}
+                meta={tilde(entry.cwd ?? '')}
+                current={false}
+                onOpen={() => onOpenSession(entry)}
+              />
+            ))}
+          </>
         )}
+        {!tasks.length && !moved.length && <p className="note">{t('noTasks')}</p>}
       </div>
     </>
   )

@@ -437,6 +437,8 @@
   "groupRunning": "執行中",
   "groupEnded": "已結束",
   "noTasks": "還沒有任務。",
+  "taskMovedGroup": "移入的會話",
+  "taskMovedIn": "從會話移入",
   "taskState_running": "執行中",
   "taskState_blocked": "等你確認",
   "taskState_review": "待審閱",

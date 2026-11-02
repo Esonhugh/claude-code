@@ -1209,6 +1209,8 @@ export function App() {
             }}
             onTasks={rows => countTasks(project.id, rows)}
             uploadTo={view}
+            moved={state.history.filter(h => h.projectId === project.id)}
+            onOpenSession={entry => void openSession(entry)}
           />,
         )}
       <main
