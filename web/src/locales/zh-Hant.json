@@ -13,5 +13,16 @@
   "toolOutput": "輸出",
   "sessionEnded": "對話已結束。",
   "connectFailed": "無法啟動對話：{error}",
-  "language": "語言"
+  "language": "語言",
+  "allowAlways": "總是允許",
+  "permissionMode": "權限模式",
+  "model": "模型",
+  "contextUsed": "上下文 {percent}%",
+  "modeDefault": "編輯前詢問",
+  "modeAcceptEdits": "自動接受編輯",
+  "modePlan": "計畫模式",
+  "modeAuto": "自動",
+  "modeBypass": "略過權限確認",
+  "copy": "複製",
+  "copied": "已複製"
 }

@@ -276,3 +276,232 @@ pre {
   color: var(--accent-text);
   flex: none;
 }
+
+.composer-footer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+  font-size: 13px;
+}
+
+.composer-footer select {
+  border-color: transparent;
+  background: transparent;
+  color: var(--muted);
+  padding: 2px 6px;
+}
+
+.composer-footer .mode-bypassPermissions {
+  color: var(--error);
+}
+
+.composer-footer .mode-acceptEdits,
+.composer-footer .mode-plan,
+.composer-footer .mode-auto {
+  color: var(--accent);
+}
+
+.usage {
+  flex: 1;
+  text-align: right;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.notice {
+  color: var(--error);
+  font-size: 13px;
+  margin-bottom: 6px;
+}
+
+.approval-summary {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 13px;
+  margin: 6px 0;
+  overflow-wrap: anywhere;
+}
+
+.approval details > summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+/* Markdown */
+.markdown {
+  overflow-wrap: anywhere;
+}
+
+.markdown > :first-child {
+  margin-top: 0;
+}
+
+.markdown > :last-child {
+  margin-bottom: 0;
+}
+
+.markdown p,
+.markdown ul,
+.markdown ol,
+.markdown blockquote,
+.markdown .table-wrap,
+.markdown .codeblock {
+  margin: 0 0 12px;
+}
+
+.markdown h2,
+.markdown h3,
+.markdown h4,
+.markdown h5,
+.markdown h6 {
+  margin: 18px 0 8px;
+  line-height: 1.3;
+}
+
+.markdown h2 {
+  font-size: 20px;
+}
+
+.markdown h3 {
+  font-size: 17px;
+}
+
+.markdown h4,
+.markdown h5,
+.markdown h6 {
+  font-size: 15px;
+}
+
+.markdown ul,
+.markdown ol {
+  padding-left: 1.5em;
+}
+
+.markdown li.task {
+  list-style: none;
+  margin-left: -1.3em;
+}
+
+.markdown li.task input {
+  margin-right: 6px;
+}
+
+.markdown blockquote {
+  border-left: 3px solid var(--line);
+  padding-left: 12px;
+  color: var(--muted);
+}
+
+.markdown a {
+  color: var(--accent);
+}
+
+.markdown code {
+  font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+  background: var(--code-bg);
+  border-radius: 4px;
+  padding: 1px 4px;
+}
+
+.markdown hr {
+  border: 0;
+  border-top: 1px solid var(--line);
+  margin: 16px 0;
+}
+
+.markdown img {
+  max-width: 100%;
+  border-radius: 8px;
+}
+
+.table-wrap {
+  overflow-x: auto;
+}
+
+.markdown table {
+  border-collapse: collapse;
+  font-size: 14px;
+}
+
+.markdown th,
+.markdown td {
+  border: 1px solid var(--line);
+  padding: 4px 10px;
+}
+
+.markdown th {
+  background: var(--code-bg);
+}
+
+.codeblock {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  overflow: hidden;
+  background: var(--code-bg);
+}
+
+.codeblock-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 2px 4px 2px 12px;
+  font-size: 12px;
+  color: var(--muted);
+  border-bottom: 1px solid var(--line);
+}
+
+.codeblock-bar button {
+  padding: 0 8px;
+}
+
+.codeblock-body,
+.codeblock-body pre.shiki {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 0;
+  max-height: none;
+  overflow-x: auto;
+  white-space: pre;
+  overflow-wrap: normal;
+  background: transparent !important;
+  font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.codeblock-body:has(pre.shiki) {
+  padding: 0;
+}
+
+.codeblock-body code {
+  background: none;
+  padding: 0;
+}
+
+@media (prefers-color-scheme: dark) {
+  .shiki,
+  .shiki span {
+    color: var(--shiki-dark) !important;
+  }
+}
+
+.mermaid {
+  margin: 0 0 12px;
+  overflow-x: auto;
+  text-align: center;
+}
+
+.math-block {
+  overflow-x: auto;
+  margin: 0 0 12px;
+}
+
+.math-src {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.footnote {
+  font-size: 13px;
+  color: var(--muted);
+}

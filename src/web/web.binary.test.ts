@@ -61,6 +61,31 @@ const sse = (blocks: Record<string, unknown>[], stop: string) => {
   return out + ev('message_stop', {})
 }
 
+// Rich rendering plus the usual XSS attempts; none of them may execute.
+const MARKDOWN_REPLY = [
+  '## Report',
+  '',
+  '| name | score |',
+  '| :--- | ----: |',
+  '| alpha | 1 |',
+  '',
+  '```ts',
+  'const answer: number = 42',
+  '```',
+  '',
+  '$$',
+  'E = mc^2',
+  '$$',
+  '',
+  '```mermaid',
+  'graph TD; A-->B',
+  '```',
+  '',
+  '<img src=x onerror="window.__xss=1"><script>window.__xss=2</script>',
+  '',
+  '[click](javascript:window.__xss=3) [safe](https://example.com)',
+].join('\n')
+
 describe.skipIf(!binary)('claude web (built binary)', () => {
   let api: ReturnType<typeof Bun.serve>
   let web: ReturnType<typeof Bun.spawn>
@@ -88,18 +113,26 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
           { type: 'text', text: 'Hello from the fake model' },
         ]
         let stop = 'end_turn'
-        if (lastBlocks.some(b => b.type === 'tool_result')) {
-          blocks = [{ type: 'text', text: 'WEB_DONE' }]
-        } else if (JSON.stringify(last.content).includes('TOUCH')) {
+        const lastText = JSON.stringify(last.content)
+        const touch = (file: string) => {
           blocks = [
             {
               type: 'tool_use',
-              id: 'toolu_web_1',
+              id: `toolu_${file.replace('.', '_')}`,
               name: 'Bash',
-              input: { command: 'touch made.txt', description: 'Create file' },
+              input: { command: `touch ${file}`, description: 'Create file' },
             },
           ]
           stop = 'tool_use'
+        }
+        if (lastBlocks.some(b => b.type === 'tool_result')) {
+          blocks = [{ type: 'text', text: 'WEB_DONE' }]
+        } else if (lastText.includes('TOUCH')) {
+          touch('made.txt')
+        } else if (lastText.includes('DENYME')) {
+          touch('denied.txt')
+        } else if (lastText.includes('MARKDOWN')) {
+          blocks = [{ type: 'text', text: MARKDOWN_REPLY }]
         }
         return new Response(sse(blocks, stop), {
           headers: { 'content-type': 'text/event-stream' },
@@ -191,9 +224,41 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       const dialog = page.getByRole('dialog')
       await dialog.getByText('Allow Bash?').waitFor({ timeout: 30_000 })
       expect(await dialog.textContent()).toContain('touch made.txt')
-      await dialog.getByRole('button', { name: 'Allow' }).click()
+      await dialog.getByRole('button', { name: 'Allow', exact: true }).click()
       await page.getByText('WEB_DONE').waitFor({ timeout: 30_000 })
       expect(existsSync(join(workspace, 'made.txt'))).toBe(true)
+
+      await input.fill('please DENYME')
+      await input.press('Enter')
+      await dialog.getByText('Allow Bash?').waitFor({ timeout: 30_000 })
+      await dialog.getByRole('button', { name: 'Deny' }).click()
+      await page.getByText('WEB_DONE').nth(1).waitFor({ timeout: 30_000 })
+      expect(existsSync(join(workspace, 'denied.txt'))).toBe(false)
+
+      const dialogs: string[] = []
+      page.on('dialog', d => {
+        dialogs.push(d.message())
+        void d.dismiss()
+      })
+      await input.fill('show MARKDOWN')
+      await input.press('Enter')
+      await page.locator('.markdown table').waitFor({ timeout: 30_000 })
+      expect(await page.locator('.markdown th').first().textContent()).toBe('name')
+      await page.locator('.codeblock pre.shiki').waitFor({ timeout: 30_000 })
+      await page.locator('.katex').first().waitFor({ timeout: 30_000 })
+      await page.locator('.mermaid svg').waitFor({ timeout: 30_000 })
+      expect(await page.locator('a[href^="javascript"]').count()).toBe(0)
+      expect(await page.locator('a[href="https://example.com"]').count()).toBe(1)
+      expect(await page.getByText('<script>window.__xss=2</script>', { exact: false }).count()).toBe(1)
+      expect(await page.evaluate(() => (window as { __xss?: number }).__xss)).toBeUndefined()
+      expect(dialogs).toEqual([])
+
+      const mode = page.getByLabel('Permission mode')
+      await mode.selectOption('acceptEdits')
+      await page.waitForFunction(
+        () => (document.querySelector('select.mode') as HTMLSelectElement | null)?.value === 'acceptEdits',
+      )
+      expect(await page.getByLabel('Model').count()).toBe(1)
       expect(errors).toEqual([])
     } finally {
       await browser.close()
