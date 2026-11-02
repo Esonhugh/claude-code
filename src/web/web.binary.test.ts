@@ -834,7 +834,8 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
         () => (document.querySelector('.pager input') as HTMLInputElement | null)?.value === '2',
       )
       await open('memo.rtf')
-      if (Bun.which('soffice')) {
+      // The server converts with soffice or libreoffice, whichever it finds (src/web/files.ts).
+      if (Bun.which('soffice') || Bun.which('libreoffice')) {
         await preview.locator('.page-count', { hasText: '/ 1' }).waitFor({ timeout: 120_000 })
       } else {
         await preview.getByText('LibreOffice').waitFor({ timeout: 30_000 })
