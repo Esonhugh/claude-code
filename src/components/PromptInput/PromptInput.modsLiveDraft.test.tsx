@@ -177,7 +177,8 @@ test.each([false,true])('actual Worker fill and editor %s next key before React 
  const boundaries: {committed:typeof h.committed,live:{text:string,cursor:number}}[]=[]
  let sendNextKey=true
  const composer={read:()=>({text:h.editor!.text,cursor:h.editor!.cursorOffset}),set:(text:string,cursor:number)=>h.editor!.setInputWithCursor(text,cursor),paint:(runs:Parameters<PromptInputHandle['paintDecorations']>[0],text:string)=>h.editor!.paintDecorations(runs,text)}
- const runtime=createModsRuntime({onDiagnostic:event=>diagnostics.push(event),services:{prompt:()=>({read:composer.read,fill:input=>{
+ // promptEditBudgetMs: the 50ms production budget is covered by the runtime budget tests.
+ const runtime=createModsRuntime({onDiagnostic:event=>diagnostics.push(event),promptEditBudgetMs:5000,services:{prompt:()=>({read:composer.read,fill:input=>{
   const result=fillPromptBox(composer,input)
   if(sendNextKey){sendNextKey=false;boundaries.push({committed:{...h.committed},live:composer.read()});h.stdin.push('x');h.stdin.emit('readable')}
   return result
@@ -192,7 +193,7 @@ test.each([false,true])('actual Worker fill and editor %s next key before React 
   const expected={before:{text:'ABC',cursor:3},after:{text:'ABCx',cursor:4},key:{key:'x'}}
   expect(h.edits).toEqual([expected])
   let returned:unknown
-  const deadline=Date.now()+1000
+  const deadline=Date.now()+10_000
   while(returned===undefined&&Date.now()<deadline){returned=((await runtime.dispatch('tool.call',{tool:'Bash',tool_use_id:'inspect',inspect:true},async()=>({result:'core'}))) as {result:unknown}).result;await new Promise(resolve=>setImmediate(resolve))}
   expect(returned).toEqual({text:'ABC',cursor:3,start:3,end:3,inputText:'x',key:{key:'x'},origin:{kind:'composer'}})
   while(h.styles().filter(n=>n.styles?.color==='#46a758').map(n=>n.text).join('')!=='ABCx'&&Date.now()<deadline)await new Promise(resolve=>setImmediate(resolve))

@@ -32,6 +32,15 @@ afterAll(() => {
   rmSync(configDir, { recursive: true, force: true })
 })
 
+// Ink registers useInput listeners in passive effects, which can run after the
+// first frame is painted. This sibling's effect runs after the selector's in
+// the same commit, so keys sent once it fires reach the selector's handlers.
+let inputReady = false
+function InputReady() {
+  React.useEffect(() => { inputReady = true }, [])
+  return null
+}
+
 test('/memory lists toggles and instruction files like official 2.1.311', async () => {
   const stdout = Object.assign(new PassThrough(), { columns: 100, rows: 40, isTTY: false })
   let output = ''
@@ -44,6 +53,7 @@ test('/memory lists toggles and instruction files like official 2.1.311', async 
       <KeybindingSetup>
         <Suspense fallback={null}>
           <MemoryFileSelector onSelect={path => selected.push(path)} onCancel={() => {}} />
+          <InputReady />
         </Suspense>
       </KeybindingSetup>
     </AppStateProvider>,
@@ -57,7 +67,7 @@ test('/memory lists toggles and instruction files like official 2.1.311', async 
   const settle = () => new Promise(resolve => setTimeout(resolve, 100))
   const frame = () => stripAnsi(output).split('Auto-memory').at(-1) ?? ''
   try {
-    for (let i = 0; i < 50 && !output.includes('instructions'); i++) await settle()
+    for (let i = 0; i < 50 && !(inputReady && output.includes('instructions')); i++) await settle()
     expect(frame()).toMatch(/^\s+true\n/)
     expect(frame()).toMatch(/[❯>] User instructions\s+Saved in ~\/\.claude\/CLAUDE\.md/)
     expect(frame()).toMatch(/Project instructions\s+(Checked in at|Saved in) \.\/CLAUDE\.md/)
@@ -67,11 +77,11 @@ test('/memory lists toggles and instruction files like official 2.1.311', async 
 
     // Up from the first file focuses the toggle; Enter turns auto-memory off.
     stdin.write('\u001B[A')
-    await settle()
+    for (let i = 0; i < 50 && !/[❯>] $/.test(stripAnsi(output).split('Auto-memory').at(-2) ?? ''); i++) await settle()
     expect(stripAnsi(output).split('Auto-memory').at(-2)).toMatch(/[❯>] $/)
     expect(frame()).not.toMatch(/[❯>] /)
     stdin.write('\r')
-    await settle()
+    for (let i = 0; i < 50 && !/^\s+false\n/.test(frame()); i++) await settle()
     expect(frame()).toMatch(/^\s+false\n/)
     expect(frame()).not.toContain('Open auto-memory folder')
   } finally {
