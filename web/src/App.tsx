@@ -2,14 +2,13 @@ import { type DragEvent, type ReactNode, useCallback, useEffect, useMemo, useRed
 import {
   type AuthProvider,
   createSession,
-  deleteSession,
   getInfo,
   getSettings as getWebSettings,
   getUsage,
-  listHistory,
   listProjects,
   listRunning,
   listWorkspaceFiles,
+  loadSidebar,
   loadTranscript,
   NeedsTrustError,
   openCoordinator,
@@ -17,11 +16,10 @@ import {
   patchProject,
   patchSettings,
   type Project,
-  renameSession,
   type Usage,
   type WebSettings,
 } from './api'
-import { buildTeam } from './agents'
+import { buildTeam, isFinished } from './agents'
 import { AccountCard, ApiKeyDialog, LoginGate, useAccount } from './components/Account'
 import type { AgentsView } from './components/Agents'
 import { AskDock, ContextChip, GoalMenu, InputBox, ModeButton, ModelMenu, modelButtonLabel, Pins } from './components/Composer'
@@ -31,7 +29,7 @@ import { AgentsContext, ChatContext, FilesContext, Message, TeamBar } from './co
 import { Preview } from './components/Preview'
 import { ProjectDialog } from './components/ProjectDialog'
 import { ProjectView } from './components/ProjectView'
-import { type DialogKind, Sidebar } from './components/Sidebar'
+import { type DialogKind, Sidebar, type SidebarProject } from './components/Sidebar'
 import { SidePanel, type SideTab } from './components/SidePanel'
 import { StartPage } from './components/StartPage'
 import { FootMenu, formatElapsed, nextMode, readStored, type T, writeStored } from './components/ui'
@@ -55,9 +53,10 @@ import {
 } from './protocol'
 import { turnSources } from './sources'
 import { appReducer, type HistoryEntry, initialAppState, type SessionChat } from './store'
+import { projectTasks } from './projects'
 import { previewTarget, WebPreviewContext } from './webPreview'
 
-const HISTORY_PAGE = 50
+const HISTORY_PAGE = 200
 const MODELS_KEY = 'claude-web-models'
 const ENV_KEY = 'claude-web-env'
 const THEME_KEY = 'claude-web-theme'
@@ -151,7 +150,7 @@ export function App() {
   projectsRef.current = projects
   // The project shown in place of the chat; its coordinator is `state.view`.
   const [projectId, setProjectId] = useState<string>()
-  const [projectDialog, setProjectDialog] = useState<'new' | 'settings'>()
+  const [projectDialog, setProjectDialog] = useState<'new' | Project>()
   const pendingRequests = useRef(new Map<string, (response: Record<string, unknown>) => void>())
   const [knownModels, setKnownModels] = useState<ModelOption[]>(() => readStored(MODELS_KEY, []))
   const [knownEnv, setKnownEnv] = useState<SessionEnv>(() => readStored(ENV_KEY, {}))
@@ -282,11 +281,12 @@ export function App() {
     document.title = previous
   }
 
-  const refreshHistory = useCallback(async (append = false) => {
-    const offset = append ? stateRef.current.history.length : 0
+  const historyLimit = useRef(HISTORY_PAGE)
+  const refreshHistory = useCallback(async (more = false) => {
+    if (more) historyLimit.current += HISTORY_PAGE
     try {
-      const [entries, running] = await Promise.all([listHistory(offset, HISTORY_PAGE), listRunning()])
-      dispatch({ type: 'history', entries, append, done: entries.length < HISTORY_PAGE })
+      const [data, running] = await Promise.all([loadSidebar(historyLimit.current), listRunning()])
+      dispatch({ type: 'history', entries: data.sessions, folders: data.folders, more: data.more })
       dispatch({ type: 'running', ids: running.map(r => r.id) })
       setProjects(await listProjects())
     } catch {
@@ -769,29 +769,11 @@ export function App() {
     }
   }
 
-  const stopSession = async (id: string) => {
-    const socket = sockets.current.get(id)
-    sockets.current.delete(id)
-    socket?.close()
-    await deleteSession(id).catch(() => {})
-    if (stateRef.current.chats[id]) dispatch({ type: 'mode', id, mode: 'readonly' })
-    void refreshHistory()
-  }
-
-  const rename = async (entry: HistoryEntry, title: string) => {
-    try {
-      await renameSession(entry.id, title)
-      dispatch({ type: 'renamed', id: entry.id, title })
-    } catch {
-      // A session that has not written a transcript yet cannot be renamed.
-    }
-  }
-
-  function newChat(cwd?: string) {
+  function newChat({ cwd, temporary = false }: { cwd?: string; temporary?: boolean } = {}) {
     setProjectId(undefined)
     setStartError(undefined)
     setSidebarOpen(false)
-    dispatch({ type: 'startOptions', patch: { cwd, temporary: false } })
+    dispatch({ type: 'startOptions', patch: { cwd, temporary } })
     dispatch({ type: 'view', id: null })
   }
 
@@ -832,6 +814,18 @@ export function App() {
 
   // Coordinators are reached through their project, not the folder list.
   const projectSessions = new Set(projects.flatMap(p => (p.coordinator_session_id ? [p.coordinator_session_id] : [])))
+  // Task counts come from the coordinator's chat once it is loaded.
+  const sidebarProjects = projects.map((p): SidebarProject => {
+    const coordinator = p.coordinator_session_id ? state.chats[p.coordinator_session_id] : undefined
+    if (!coordinator) return p
+    const tasks = projectTasks(coordinator.tasks)
+    // A resumed transcript does not replay its tasks, so none means unknown.
+    return {
+      ...p,
+      ...(tasks.length > 0 && { tasks: tasks.length, tasksRunning: tasks.filter(task => !isFinished(task)).length }),
+      needsYou: coordinator.approvals.length,
+    }
+  })
 
   const statusText = chat
     ? chat.busy && chat.mode === 'live' && since !== undefined
@@ -895,7 +889,7 @@ export function App() {
       options={state.start}
       setOptions={patch => dispatch({ type: 'startOptions', patch })}
       workspace={info.workspace}
-      history={state.history}
+      history={state.history.filter(h => !h.archived && !h.projectId)}
       tempRoot={info.tempRoot}
       models={models}
       draft={drafts[''] ?? ''}
@@ -1095,34 +1089,50 @@ export function App() {
     <div className="app">
       <Sidebar
         t={t}
+        lang={lang}
         open={sidebarOpen}
         uiName={uiName}
         env={env}
         history={projectSessions.size ? state.history.filter(h => !projectSessions.has(h.id)) : state.history}
-        historyDone={state.historyDone}
+        historyMore={state.historyMore}
+        folders={state.folders}
         running={state.running}
         view={view}
         tempRoot={info.tempRoot}
         searchRef={searchRef}
-        onNew={cwd => newChat(cwd)}
+        onNew={start => newChat(start)}
         onOpen={entry => {
           setSidebarOpen(false)
           void openSession(entry)
         }}
-        onRename={(entry, title) => void rename(entry, title)}
-        onStop={id => void stopSession(id)}
+        onPatched={(id, patch) => dispatch({ type: 'meta', id, patch })}
+        onDeleted={id => {
+          sockets.current.get(id)?.close()
+          sockets.current.delete(id)
+          dispatch({ type: 'removed', id })
+          if (stateRef.current.view === id) newChat()
+        }}
         onMore={() => void refreshHistory(true)}
         onDialog={kind => {
           setSidebarOpen(false)
           setDialog(kind)
         }}
         dialogOpen={!!dialog}
-        projects={projects}
+        projects={sidebarProjects}
         projectId={inProject ? projectId : undefined}
         onProject={p => void openProject(p)}
         onNewProject={() => {
           setSidebarOpen(false)
           setProjectDialog('new')
+        }}
+        onProjectSettings={p => {
+          setSidebarOpen(false)
+          setProjectDialog(p)
+        }}
+        onProjectChanged={(id, changed) => {
+          setProjects(list => (changed ? list.map(x => (x.id === id ? changed : x)) : list.filter(x => x.id !== id)))
+          if (!changed && id === projectId) newChat()
+          if (!changed) void refreshHistory()
         }}
         account={
           <AccountCard
@@ -1171,7 +1181,7 @@ export function App() {
             onModel={model => changeModel(view, model)}
             onEffort={effort => changeEffort(view, effort)}
             onAnswer={(approval, choice) => answer(view, approval, choice)}
-            onSettings={() => setProjectDialog('settings')}
+            onSettings={() => setProjectDialog(project)}
             onStopTask={taskId => stopTask(view, taskId)}
             onSendTask={(taskId, text) => sendToTask(view, taskId, text)}
             uploadTo={view}
@@ -1260,7 +1270,7 @@ export function App() {
       {projectDialog && (
         <ProjectDialog
           t={t}
-          project={projectDialog === 'settings' ? project : undefined}
+          project={projectDialog === 'new' ? undefined : projectDialog}
           workspace={info.workspace}
           onClose={() => setProjectDialog(undefined)}
           onSaved={saved => {

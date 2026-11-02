@@ -25,6 +25,18 @@ const MIGRATIONS: string[][] = [
       archived_at INTEGER
     )`,
   ],
+  // P1: the sidebar's marks on sessions and its folder order cache.
+  [
+    `CREATE TABLE session_meta (
+      session_id TEXT PRIMARY KEY,
+      title TEXT,
+      pinned_at INTEGER,
+      unread INTEGER NOT NULL DEFAULT 0,
+      archived_at INTEGER,
+      project_id TEXT REFERENCES projects(id) ON DELETE SET NULL
+    )`,
+    'CREATE TABLE folders (path TEXT PRIMARY KEY, last_touched INTEGER NOT NULL)',
+  ],
 ]
 
 export type Project = {
@@ -98,10 +110,103 @@ export class ProjectStore {
     return project && project.archived_at === null ? project : undefined
   }
 
+  /** Deletes the project row; sessions moved into it go back to their folders. */
+  remove(id: string): Project | undefined {
+    const project = this.get(id)
+    if (project) this.db.run('DELETE FROM projects WHERE id = ?', [id])
+    return project
+  }
+
   archive(id: string): Project | undefined {
     const project = this.get(id)
     if (!project || project.archived_at !== null) return undefined
     this.db.run('UPDATE projects SET archived_at = ? WHERE id = ?', [Date.now(), id])
     return project
   }
+}
+
+export type SessionMeta = {
+  title: string | null
+  pinnedAt: number | null
+  unread: boolean
+  archivedAt: number | null
+  projectId: string | null
+}
+
+type MetaRow = {
+  session_id: string
+  title: string | null
+  pinned_at: number | null
+  unread: number
+  archived_at: number | null
+  project_id: string | null
+}
+
+const toMeta = (row: MetaRow): SessionMeta => ({
+  title: row.title,
+  pinnedAt: row.pinned_at,
+  unread: row.unread === 1,
+  archivedAt: row.archived_at,
+  projectId: row.project_id,
+})
+
+export function readSessionMeta(db: Database): Map<string, SessionMeta> {
+  const rows = db.query('SELECT * FROM session_meta').all() as MetaRow[]
+  return new Map(rows.map(row => [row.session_id, toMeta(row)]))
+}
+
+export type SessionMetaPatch = {
+  title?: string | null
+  pinned?: boolean
+  unread?: boolean
+  archived?: boolean
+  project_id?: string | null
+}
+
+/** Applies `patch` to a session's row (created on first use) and returns the row. */
+export function patchSessionMeta(db: Database, id: string, patch: SessionMetaPatch, now = Date.now()): SessionMeta {
+  return db.transaction(() => {
+    db.run('INSERT OR IGNORE INTO session_meta (session_id) VALUES (?)', [id])
+    const row = db.query('SELECT * FROM session_meta WHERE session_id = ?').get(id) as MetaRow
+    const next: MetaRow = {
+      ...row,
+      ...(patch.title !== undefined && { title: patch.title }),
+      ...(patch.pinned !== undefined && { pinned_at: patch.pinned ? (row.pinned_at ?? now) : null }),
+      ...(patch.unread !== undefined && { unread: patch.unread ? 1 : 0 }),
+      ...(patch.archived !== undefined && { archived_at: patch.archived ? (row.archived_at ?? now) : null }),
+      ...(patch.project_id !== undefined && { project_id: patch.project_id }),
+    }
+    db.run(
+      'UPDATE session_meta SET title = ?, pinned_at = ?, unread = ?, archived_at = ?, project_id = ? WHERE session_id = ?',
+      [next.title, next.pinned_at, next.unread, next.archived_at, next.project_id, id],
+    )
+    return toMeta(next)
+  })()
+}
+
+export function deleteSessionMeta(db: Database, id: string): void {
+  db.run('DELETE FROM session_meta WHERE session_id = ?', [id])
+}
+
+/** Session ids of project coordinators; their transcripts belong to the project, not a folder. */
+export function coordinatorSessionIds(db: Database): Set<string> {
+  const rows = db
+    .query('SELECT coordinator_session_id AS id FROM projects WHERE coordinator_session_id IS NOT NULL')
+    .all() as { id: string }[]
+  return new Set(rows.map(r => r.id))
+}
+
+export function readFolders(db: Database): Map<string, number> {
+  const rows = db.query('SELECT path, last_touched FROM folders').all() as { path: string; last_touched: number }[]
+  return new Map(rows.map(row => [row.path, row.last_touched]))
+}
+
+/** Raises each folder's `last_touched` to the given time; never lowers it. */
+export function touchFolders(db: Database, touched: Map<string, number>): void {
+  const upsert = db.prepare(
+    'INSERT INTO folders (path, last_touched) VALUES (?, ?) ON CONFLICT(path) DO UPDATE SET last_touched = max(last_touched, excluded.last_touched)',
+  )
+  db.transaction(() => {
+    for (const [path, at] of touched) upsert.run(path, at)
+  })()
 }

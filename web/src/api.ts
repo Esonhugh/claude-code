@@ -38,25 +38,54 @@ export async function createSession(body: {
   return (await res.json()) as CreatedSession
 }
 
-export async function deleteSession(id: string): Promise<void> {
-  await fetch(`/api/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' })
-}
-
 async function getJson<T>(path: string): Promise<T> {
   const res = await fetch(path)
   if (!res.ok) throw new Error(await errorText(res))
   return (await res.json()) as T
 }
 
+/** A session row of `GET /api/sidebar` (src/web/sidebar.ts). */
 export type HistoryItem = {
   id: string
   title: string
+  /** Where `title` came from: a title, the last message, or neither (the session id). */
+  label?: 'title' | 'message' | 'id'
   cwd?: string
   lastModified: number
+  pinnedAt?: number
+  unread?: boolean
+  archived?: boolean
+  projectId?: string
+  /** Files the session wrote, when known. */
+  files?: number
 }
 
-export const listHistory = (offset: number, limit: number) =>
-  getJson<HistoryItem[]>(`/api/history?offset=${offset}&limit=${limit}`)
+export type SidebarData = {
+  sessions: HistoryItem[]
+  folders: Record<string, number>
+  more: boolean
+}
+
+export const loadSidebar = (limit: number) => getJson<SidebarData>(`/api/sidebar?limit=${limit}`)
+
+export type SessionMetaPatch = {
+  title?: string | null
+  pinned?: boolean
+  unread?: boolean
+  archived?: boolean
+  project_id?: string | null
+}
+
+export const patchSessionMeta = (id: string, patch: SessionMetaPatch) =>
+  sendJson(`/api/sessions/${encodeURIComponent(id)}/meta`, 'PATCH', patch)
+
+/** Stops the session if it runs and deletes its transcript. */
+export const deleteTranscript = (id: string) =>
+  sendJson(`/api/sessions/${encodeURIComponent(id)}?transcript=1`, 'DELETE')
+
+/** Archives the project (stops its coordinator); `purge` deletes it. */
+export const removeProject = (id: string, purge: boolean) =>
+  sendJson(`/api/projects/${encodeURIComponent(id)}${purge ? '?purge=1' : ''}`, 'DELETE')
 
 export type TranscriptPage = {
   messages: unknown[]
@@ -99,15 +128,6 @@ export const listWorkspaceFiles = (sessionId: string, query: string) =>
 /** The first assistant text of a transcript, for the start page's recent cards. */
 export const loadSnippet = (sessionId: string) =>
   getJson<{ snippet: string }>(`/api/history/${encodeURIComponent(sessionId)}/snippet`).then(r => r.snippet)
-
-export async function renameSession(id: string, title: string): Promise<void> {
-  const res = await fetch(`/api/history/${encodeURIComponent(id)}`, {
-    method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ title }),
-  })
-  if (!res.ok) throw new Error(await errorText(res))
-}
 
 /** Opens the session's stream-json socket; resolves once it is open. */
 export function openSessionSocket(

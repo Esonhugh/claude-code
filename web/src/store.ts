@@ -1,3 +1,4 @@
+import type { HistoryItem } from './api'
 import {
   addError,
   addUserMessage,
@@ -25,12 +26,7 @@ export type SessionChat = ChatState & {
   workDir?: string
 }
 
-export type HistoryEntry = {
-  id: string
-  title: string
-  cwd?: string
-  lastModified: number
-}
+export type HistoryEntry = HistoryItem
 
 export type StartOptions = { cwd?: string; mode: string; model?: string; temporary?: boolean; effort?: string }
 
@@ -39,7 +35,10 @@ export type AppState = {
   view: string | null
   chats: Record<string, SessionChat>
   history: HistoryEntry[]
-  historyDone: boolean
+  /** More sessions exist on disk than `history` holds. */
+  historyMore: boolean
+  /** Folder → last change, from the server (newest transcript or written file). */
+  folders: Record<string, number>
   running: Record<string, boolean>
   start: StartOptions
 }
@@ -66,16 +65,23 @@ export type AppAction =
     }
   | { type: 'mode'; id: string; mode: ChatMode }
   | { type: 'created'; id: string; workDir: string; title: string; start: StartOptions }
-  | { type: 'history'; entries: HistoryEntry[]; append: boolean; done: boolean }
+  | {
+      type: 'history'
+      entries: HistoryEntry[]
+      folders: Record<string, number>
+      more: boolean
+    }
   | { type: 'running'; ids: string[] }
-  | { type: 'renamed'; id: string; title: string }
+  | { type: 'meta'; id: string; patch: Partial<HistoryEntry> }
+  | { type: 'removed'; id: string }
   | { type: 'startOptions'; patch: Partial<StartOptions> }
 
 export const initialAppState: AppState = {
   view: null,
   chats: {},
   history: [],
-  historyDone: false,
+  historyMore: false,
+  folders: {},
   running: {},
   start: { mode: 'default' },
 }
@@ -177,70 +183,79 @@ export function appReducer(state: AppState, action: AppAction): AppState {
           ...state.history.filter(h => h.id !== action.id),
         ],
       }
-    case 'history': {
-      const merged = action.append
-        ? [
-            ...state.history,
-            ...action.entries.filter(e => !state.history.some(h => h.id === e.id)),
-          ]
-        : [
-            // Keep sessions created in this tab that the disk listing lacks yet.
-            ...state.history.filter(
-              h => state.chats[h.id] && !action.entries.some(e => e.id === h.id),
-            ),
-            ...action.entries,
-          ]
-      return { ...state, history: merged, historyDone: action.done }
-    }
+    case 'history':
+      return {
+        ...state,
+        history: [
+          // Keep sessions created in this tab that the disk listing lacks yet.
+          ...state.history.filter(h => state.chats[h.id] && !action.entries.some(e => e.id === h.id)),
+          ...action.entries,
+        ],
+        folders: action.folders,
+        historyMore: action.more,
+      }
     case 'running':
       return {
         ...state,
         running: Object.fromEntries(action.ids.map(id => [id, true])),
       }
-    case 'renamed':
+    case 'meta':
       return {
         ...state,
-        history: state.history.map(h =>
-          h.id === action.id ? { ...h, title: action.title } : h,
-        ),
+        history: state.history.map(h => (h.id === action.id ? { ...h, ...action.patch } : h)),
       }
+    case 'removed':
+      return { ...state, history: state.history.filter(h => h.id !== action.id) }
     case 'startOptions':
       return { ...state, start: { ...state.start, ...action.patch } }
   }
 }
 
-export type HistoryGroup = { cwd: string; name: string; entries: HistoryEntry[]; temp?: true }
+export type FolderGroup = { cwd: string; name: string; lastChange: number; count: number; entries: HistoryEntry[] }
+
+export type SidebarGroups = { pinned: HistoryEntry[]; temporary: HistoryEntry[]; folders: FolderGroup[] }
+
+const newestFirst = (a: HistoryEntry, b: HistoryEntry) => b.lastModified - a.lastModified
 
 /**
- * Groups sessions by working directory, groups ordered by their newest
- * session. Temporary chats (folders under `tempRoot`) share one group.
+ * The sidebar's sections: pinned sessions, temporary chats (folders under
+ * `tempRoot`) and the rest by folder, folders ordered by their last change.
+ * Archived sessions show only while searching; sessions moved into a
+ * project show under the project.
  */
-export function groupHistory(
+export function groupSidebar(
   entries: HistoryEntry[],
-  filter = '',
-  tempRoot?: string,
-): HistoryGroup[] {
+  { filter = '', tempRoot, folders = {} }: { filter?: string; tempRoot?: string; folders?: Record<string, number> } = {},
+): SidebarGroups {
   const needle = filter.trim().toLowerCase()
-  const groups = new Map<string, HistoryEntry[]>()
   const isTemp = (cwd: string) =>
     !!tempRoot && (cwd === tempRoot || cwd.startsWith(`${tempRoot}/`) || cwd.startsWith(`${tempRoot}\\`))
-  for (const entry of entries) {
-    if (
-      needle &&
-      !entry.title.toLowerCase().includes(needle) &&
-      !(entry.cwd ?? '').toLowerCase().includes(needle)
-    ) {
-      continue
+  const listed = entries.filter(e => !e.projectId && (!e.archived || needle)).sort(newestFirst)
+  const match = (e: HistoryEntry) => !needle || `${e.title}${e.cwd ?? ''}`.toLowerCase().includes(needle)
+  const groups = new Map<string, HistoryEntry[]>()
+  const temporary: HistoryEntry[] = []
+  for (const entry of listed) {
+    const cwd = entry.cwd ?? ''
+    if (isTemp(cwd)) {
+      if (!entry.pinnedAt && match(entry)) temporary.push(entry)
+    } else {
+      groups.set(cwd, [...(groups.get(cwd) ?? []), entry])
     }
-    const key = isTemp(entry.cwd ?? '') ? tempRoot! : (entry.cwd ?? '')
-    groups.set(key, [...(groups.get(key) ?? []), entry])
   }
-  return [...groups.entries()]
+  const sorted = [...groups.entries()]
     .map(([cwd, list]) => ({
       cwd,
       name: cwd.split(/[\\/]/).filter(Boolean).at(-1) ?? cwd,
-      entries: list.sort((a, b) => b.lastModified - a.lastModified),
-      ...(cwd === tempRoot && { temp: true as const }),
+      lastChange: Math.max(folders[cwd] ?? 0, ...list.map(e => e.lastModified)),
+      count: list.filter(e => !e.archived).length,
+      entries: list.filter(e => !e.pinnedAt && match(e)),
     }))
-    .sort((a, b) => b.entries[0]!.lastModified - a.entries[0]!.lastModified)
+    .sort((a, b) => b.lastChange - a.lastChange)
+  // Pinned sessions keep the order they have below: temporary chats, then folder by folder.
+  const pinned = [...listed.filter(e => isTemp(e.cwd ?? '')), ...sorted.flatMap(g => groups.get(g.cwd)!)]
+  return {
+    pinned: pinned.filter(e => e.pinnedAt && match(e)),
+    temporary,
+    folders: sorted.filter(g => !needle || g.entries.length),
+  }
 }
