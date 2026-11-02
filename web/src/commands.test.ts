@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test'
-import { filterCommands, moveSelection, paletteQuery, type SlashCommand } from './commands'
+import { filterCommands, moveSelection, paletteQuery, recallPrompt, type SlashCommand } from './commands'
 
 const cmd = (name: string, aliases?: string[]): SlashCommand => ({
   name,
@@ -62,5 +62,22 @@ describe('moveSelection', () => {
     expect(moveSelection(2, 1, 3)).toBe(0)
     expect(moveSelection(0, -1, 3)).toBe(2)
     expect(moveSelection(0, 1, 0)).toBe(0)
+  })
+})
+
+describe('recallPrompt', () => {
+  const prompts = ['first', 'second', 'third']
+  it('walks back from the newest prompt and stops at the oldest', () => {
+    expect(recallPrompt(prompts, -1, 1)).toEqual({ index: 0, text: 'third' })
+    expect(recallPrompt(prompts, 1, 1)).toEqual({ index: 2, text: 'first' })
+    expect(recallPrompt(prompts, 2, 1)).toBeUndefined()
+  })
+  it('comes forward to the empty input', () => {
+    expect(recallPrompt(prompts, 1, -1)).toEqual({ index: 0, text: 'third' })
+    expect(recallPrompt(prompts, 0, -1)).toEqual({ index: -1, text: '' })
+    expect(recallPrompt(prompts, -1, -1)).toBeUndefined()
+  })
+  it('has nothing to recall in a new chat', () => {
+    expect(recallPrompt([], -1, 1)).toBeUndefined()
   })
 })

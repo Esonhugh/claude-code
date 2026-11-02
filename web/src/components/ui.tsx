@@ -68,6 +68,7 @@ export function FootMenu({
   buttonClass = '',
   buttonProps,
   menuClass = 'pop footmenu',
+  wrapId,
   right,
   label,
   children,
@@ -76,6 +77,7 @@ export function FootMenu({
   buttonClass?: string
   buttonProps?: Record<string, string | undefined>
   menuClass?: string
+  wrapId?: string
   right?: boolean
   label?: string
   children: (close: () => void) => ReactNode
@@ -101,7 +103,7 @@ export function FootMenu({
     }
   }, [open])
   return (
-    <div className={`footwrap${right ? ' right' : ''}`} ref={wrap}>
+    <div className={`footwrap${right ? ' right' : ''}`} id={wrapId} ref={wrap}>
       <button
         type="button"
         className={`footbtn ${buttonClass}`.trim()}

@@ -1,4 +1,5 @@
 import { type RefObject, useState } from 'react'
+import { tilde } from '../files'
 import type { SessionEnv } from '../protocol'
 import { groupHistory, type HistoryEntry } from '../store'
 import { Clawd, readStored, type T, writeStored } from './ui'
@@ -144,7 +145,7 @@ export function Sidebar({
                     {opened ? '▾' : '▸'}
                   </span>
                   <b>{name}</b>
-                  <small className={group.temp ? undefined : 'mono'}>{group.temp ? t('noFolderHint') : group.cwd}</small>
+                  <small className={group.temp ? undefined : 'mono'}>{group.temp ? t('noFolderHint') : tilde(group.cwd)}</small>
                   <span className="cnt">{group.entries.length}</span>
                 </button>
                 {!group.temp && (

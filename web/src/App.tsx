@@ -5,14 +5,17 @@ import {
   getInfo,
   listHistory,
   listRunning,
+  listWorkspaceFiles,
   loadTranscript,
+  NeedsTrustError,
   openSessionSocket,
   renameSession,
 } from './api'
+import { buildTeam } from './agents'
 import type { AgentsView } from './components/Agents'
-import { AskDock, InputBox, ModeButton, ModelMenu, modelButtonLabel } from './components/Composer'
+import { AskDock, ContextChip, GoalMenu, InputBox, ModeButton, ModelMenu, modelButtonLabel, Pins } from './components/Composer'
 import { AppDialog, type Palette, type Theme } from './components/Dialogs'
-import { AgentsContext, FilesContext, Message } from './components/Message'
+import { AgentsContext, ChatContext, FilesContext, Message, TeamBar } from './components/Message'
 import { Preview } from './components/Preview'
 import { type DialogKind, Sidebar } from './components/Sidebar'
 import { SidePanel, type SideTab } from './components/SidePanel'
@@ -20,17 +23,19 @@ import { StartPage } from './components/StartPage'
 import { FootMenu, formatElapsed, nextMode, readStored, type T, writeStored } from './components/ui'
 import { WebPreview } from './components/WebPreview'
 import { chatMarkdown, exportFileName } from './exportChat'
-import { filesBase, IMAGE_TYPES, mentionPath, readAsDataUrl, uploadFile } from './files'
+import { filesBase, IMAGE_TYPES, mentionPath, readAsDataUrl, setHome, tilde, uploadFile } from './files'
 import { initialLang, type Lang, type MessageKey, saveLang, translate } from './i18n'
 import {
   type Approval,
   type ApprovalChoice,
   controlRequest,
+  currentTodos,
   type ModelOption,
   newUuid,
   permissionResponse,
   REQUEST_PREFIX,
   type SessionEnv,
+  teamName,
   unsupportedControlResponse,
   userMessage,
 } from './protocol'
@@ -122,6 +127,8 @@ export function App() {
   const [workflowId, setWorkflowId] = useState<string>()
   const [dialog, setDialog] = useState<DialogKind>()
   const [startError, setStartError] = useState<string>()
+  const [trustDir, setTrustDir] = useState<string>()
+  const [rewindTarget, setRewindTarget] = useState<string>()
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const pendingRequests = useRef(new Map<string, (response: Record<string, unknown>) => void>())
   const [knownModels, setKnownModels] = useState<ModelOption[]>(() => readStored(MODELS_KEY, []))
@@ -170,7 +177,23 @@ export function App() {
     },
     [view],
   )
-  const filesValue = useMemo(() => (view ? { open: openFile, base: filesBase(view) } : {}), [view, openFile])
+  const chatCwd = chat?.cwd ?? chat?.workDir
+  const filesValue = useMemo(
+    () =>
+      view
+        ? {
+            open: openFile,
+            base: filesBase(view),
+            cwd: chatCwd,
+            showFiles: () => {
+              setPreview(undefined)
+              setSideTab('files')
+              if (isNarrow(760)) setSheetOpen(true)
+            },
+          }
+        : {},
+    [view, openFile, chatCwd],
+  )
   const webPreviewValue = useMemo(() => {
     const target = (href: string) => previewTarget(href, { uiOrigin: location.origin, origins: info.previewOrigins })
     return {
@@ -265,7 +288,10 @@ export function App() {
   useEffect(() => {
     void refreshHistory()
     getInfo().then(
-      res => setInfo({ workspace: res.workspace, tempRoot: res.temp_root, previewOrigins: res.preview_origins ?? [] }),
+      res => {
+        setHome(res.home)
+        setInfo({ workspace: res.workspace, tempRoot: res.temp_root, previewOrigins: res.preview_origins ?? [] })
+      },
       () => {},
     )
     const map = sockets.current
@@ -434,11 +460,27 @@ export function App() {
     }
   }
 
+  /** Sends a prompt the page writes itself (`/compact`, `/goal clear`); `recap` sends `/recap` with no bubble. */
+  const sendPrompt = async (id: string, text: string, recap?: { away?: number }) => {
+    const current = stateRef.current.chats[id]
+    if (!current || current.busy || current.mode === 'elsewhere') return
+    if (current.mode !== 'live' && !(await resume(id))) return
+    stickToBottom.current = true
+    const uuid = newUuid()
+    dispatch({ type: 'chat', id, action: recap ? { type: 'recap', away: recap.away } : { type: 'user', text, uuid } })
+    send(id, userMessage(text, [], uuid))
+  }
+
   const sendInChat = async () => {
     const id = state.view
     const text = draft.trim()
     const pending = files
     if (!id || !chat || (!text && !pending.length) || chat.busy) return
+    if (text === '/recap' && !pending.length) {
+      setDrafts(d => ({ ...d, [id]: '' }))
+      await sendPrompt(id, text, {})
+      return
+    }
     if (chat.mode !== 'live' && !(await resume(id))) return
     let content: { text: string; images: string[] }
     try {
@@ -462,14 +504,15 @@ export function App() {
     send(id, userMessage(content.text, content.images, uuid))
   }
 
-  const startChat = async () => {
+  const startChat = async (trust = false) => {
     const text = (drafts[''] ?? '').trim()
     const pending = attachments[''] ?? []
     if (!text && !pending.length) return
     const { cwd, mode, model, temporary, effort } = state.start
+    setTrustDir(undefined)
     try {
       const created = await createSession({
-        ...(temporary ? { temporary: true } : cwd && { cwd }),
+        ...(temporary ? { temporary: true } : cwd && { cwd, ...(trust && { trust }) }),
         ...(mode !== 'default' && { permission_mode: mode }),
         ...(model && { model }),
       })
@@ -491,7 +534,56 @@ export function App() {
       dispatch({ type: 'chat', id, action: { type: 'user', ...content, uuid } })
       send(id, userMessage(content.text, content.images, uuid))
     } catch (err) {
-      setStartError(t('connectFailed', { error: err instanceof Error ? err.message : String(err) }))
+      if (err instanceof NeedsTrustError) setTrustDir(err.directory)
+      else setStartError(t('connectFailed', { error: err instanceof Error ? err.message : String(err) }))
+    }
+  }
+
+  // Back after five minutes or more away: a one-line `/recap` (the TUI's away
+  // summary), unless a turn is running or the last thing shown is already one.
+  useEffect(() => {
+    let hiddenAt = 0
+    const onVisibility = () => {
+      if (document.hidden) {
+        hiddenAt = Date.now()
+        return
+      }
+      const away = Math.floor((Date.now() - hiddenAt) / 60_000)
+      const id = stateRef.current.view
+      const current = id ? stateRef.current.chats[id] : undefined
+      if (!hiddenAt || away < 5 || !id || !current || current.busy || current.mode !== 'live') return
+      if (current.items.findLast(i => i.kind === 'user' || i.kind === 'recap')?.kind !== 'user') return
+      void sendPrompt(id, '/recap', { away })
+    }
+    document.addEventListener('visibilitychange', onVisibility)
+    return () => document.removeEventListener('visibilitychange', onVisibility)
+  })
+
+  /** Drops a prompt and everything after it (`rewind_conversation`), optionally restoring files first. */
+  const rewindChat = async (id: string, userId: string, withFiles: boolean) => {
+    setRewindTarget(undefined)
+    const current = stateRef.current.chats[id]
+    if (!current || (current.mode !== 'live' && !(await resume(id)))) return
+    const lastSeen = stateRef.current.chats[id]?.items.findLast(i => i.kind === 'user')?.id
+    try {
+      let restored = 0
+      if (withFiles) {
+        const files = await requestAsync(id, REQUEST_PREFIX.rewind, { subtype: 'rewind_files', user_message_id: userId })
+        restored = Array.isArray(files.filesChanged) ? files.filesChanged.length : 0
+      }
+      const result = await requestAsync(id, REQUEST_PREFIX.rewind, {
+        subtype: 'rewind_conversation',
+        target_message_uuid: userId,
+        last_seen_user_message_uuid: lastSeen,
+      })
+      if (result.rewound !== true) throw new Error(String(result.reason ?? result.error ?? 'refused'))
+      const note = withFiles ? t('rewoundFiles', { n: String(restored) }) : t('rewound')
+      dispatch({ type: 'chat', id, action: { type: 'rewound', userId, note } })
+      setDrafts(d => ({ ...d, [id]: typeof result.prefillText === 'string' ? result.prefillText : '' }))
+      setTimeout(() => document.querySelector<HTMLTextAreaElement>('.cbox textarea')?.focus())
+    } catch (err) {
+      const error = err instanceof Error ? err.message : String(err)
+      dispatch({ type: 'chat', id, action: { type: 'local', patch: { notice: t('rewindFailed', { error }) } } })
     }
   }
 
@@ -561,7 +653,7 @@ export function App() {
 
   const answer = (id: string, approval: Approval, choice: ApprovalChoice) => {
     send(id, permissionResponse(approval, choice))
-    dispatch({ type: 'chat', id, action: { type: 'answered', requestId: approval.requestId } })
+    dispatch({ type: 'chat', id, action: { type: 'answered', approval, choice } })
     // "Deny and tell Claude what to do": the answer goes in the input box.
     if (choice === 'deny') document.querySelector<HTMLTextAreaElement>('.cbox textarea')?.focus()
   }
@@ -645,6 +737,36 @@ export function App() {
         )
     : ''
   const approval = chat?.approvals[0]
+  const listFiles = useCallback((query: string) => (view ? listWorkspaceFiles(view, query) : Promise.resolve([])), [view])
+  const statusRequest = useCallback(
+    (body: Record<string, unknown>) => (view ? requestAsync(view, REQUEST_PREFIX.status, body) : Promise.resolve({})),
+    [view],
+  )
+  const chatItems = chat?.items
+  const prompts = useMemo(
+    () => (chatItems ?? []).flatMap(i => (i.kind === 'user' && i.text ? [i.text] : [])),
+    [chatItems],
+  )
+  const todos = useMemo(() => currentTodos(chatItems ?? []), [chatItems])
+  const team = useMemo(() => (chat ? buildTeam(chat.tasks, chat.items) : undefined), [chat])
+  const chatValue = useMemo(
+    () => ({
+      decisions: chat?.decisions,
+      rewind:
+        view && chat && !chat.busy && chat.mode !== 'elsewhere'
+          ? {
+              target: rewindTarget,
+              turnsAfter: (id: string) => {
+                const index = chat.items.findIndex(i => i.id === id)
+                return chat.items.slice(index).filter(i => i.kind === 'user').length
+              },
+              ask: setRewindTarget,
+              go: (id: string, withFiles: boolean) => void rewindChat(view, id, withFiles),
+            }
+          : undefined,
+    }),
+    [chat, view, rewindTarget],
+  )
 
   const main = !chat ? (
     <StartPage
@@ -661,6 +783,9 @@ export function App() {
       files={attachments[''] ?? []}
       setFiles={next => setAttachments(a => ({ ...a, '': next }))}
       error={startError}
+      trustDir={trustDir}
+      onTrust={() => void startChat(true)}
+      onCancelTrust={() => setTrustDir(undefined)}
       onStart={() => void startChat()}
       onOpen={entry => void openSession(entry)}
       onViewAll={() => {
@@ -672,6 +797,7 @@ export function App() {
   ) : (
     <AgentsContext.Provider value={agentsValue}>
       <FilesContext.Provider value={filesValue}>
+        <ChatContext.Provider value={chatValue}>
         <WebPreviewContext.Provider value={webPreviewValue}>
           <div className="meta">
             {menuButton}
@@ -679,13 +805,17 @@ export function App() {
               <span className={`dot ${chat.busy ? 'running' : chat.mode === 'live' ? 'completed' : 'idle'}`} />
               {statusText}
             </span>
-            <span className="chip mono" title={chat.cwd ?? chat.workDir}>
-              {chat.cwd ?? chat.workDir}
+            <span className="chip mono" title={chatCwd}>
+              {tilde(chatCwd ?? '')}
             </span>
             {chat.contextPercent !== undefined && (
-              <span className="chip">
-                <span>{Math.round(chat.contextPercent)}%</span> {t('contextChip')}
-              </span>
+              <ContextChip
+                t={t}
+                percent={chat.contextPercent}
+                context={chat.context}
+                onOpen={() => view && sockets.current.has(view) && request(view, REQUEST_PREFIX.context, { subtype: 'get_context_usage' })}
+                onCompact={chat.mode === 'elsewhere' ? undefined : () => view && void sendPrompt(view, '/compact')}
+              />
             )}
             <span className="sp" />
             {chat.items.length > 0 && (
@@ -732,6 +862,7 @@ export function App() {
               ▤
             </button>
           </div>
+          {team && <TeamBar t={t} team={team} name={teamName(chat.items)} onOpen={agentsValue.open} />}
           <div
             className="feed"
             ref={feedRef}
@@ -787,6 +918,7 @@ export function App() {
                 onAnswer={choice => answer(view, approval, choice)}
               />
             )}
+            <Pins t={t} todos={todos} />
             <InputBox
               t={t}
               busy={chat.busy}
@@ -801,6 +933,8 @@ export function App() {
               commands={chat.commands}
               hiddenCommands={chat.terminalCommands}
               skills={chat.env.skills}
+              listFiles={listFiles}
+              prompts={prompts}
               onShiftTab={() => view && changeMode(view, nextMode(chat.permissionMode))}
               crow={
                 <>
@@ -809,6 +943,9 @@ export function App() {
                     mode={chat.permissionMode ?? 'default'}
                     onMode={mode => view && changeMode(view, mode)}
                   />
+                  {chat.goal && (
+                    <GoalMenu t={t} goal={chat.goal} onClear={() => view && void sendPrompt(view, '/goal clear')} />
+                  )}
                   {models.length > 0 && (
                     <FootMenu right label={t('model')} button={modelButtonLabel(chat.model, chat.effort, models, t)}>
                       {close => (
@@ -829,6 +966,7 @@ export function App() {
             />
           </div>
         </WebPreviewContext.Provider>
+        </ChatContext.Provider>
       </FilesContext.Provider>
     </AgentsContext.Provider>
   )
@@ -907,6 +1045,8 @@ export function App() {
           setWorkflowId={setWorkflowId}
           onOpenFile={openFile}
           onStopTask={taskId => stopTask(view, taskId)}
+          onRequest={statusRequest}
+          todos={todos}
           onSendTask={(taskId, text) => sendToTask(view, taskId, text)}
           onClose={() => setSheetOpen(false)}
         />

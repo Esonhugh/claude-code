@@ -41,3 +41,18 @@ export function moveSelection(index: number, delta: number, length: number): num
   if (length === 0) return 0
   return (((index + delta) % length) + length) % length
 }
+
+/**
+ * ↑ / ↓ through the prompts already sent, like the TUI's history. `index`
+ * counts back from the newest prompt; -1 is the empty input below them.
+ * Undefined when there is nothing further that way.
+ */
+export function recallPrompt(
+  prompts: readonly string[],
+  index: number,
+  delta: 1 | -1,
+): { index: number; text: string } | undefined {
+  const next = index + delta
+  if (next < -1 || next >= prompts.length) return undefined
+  return { index: next, text: next === -1 ? '' : prompts[prompts.length - 1 - next]! }
+}

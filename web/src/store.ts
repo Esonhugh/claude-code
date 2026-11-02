@@ -1,11 +1,15 @@
 import {
   addError,
   addUserMessage,
+  answerApproval,
+  type Approval,
+  type ApprovalChoice,
   type ChatState,
   initialState,
   reduce,
-  removeApproval,
+  rewindTo,
   setLocal,
+  startRecap,
 } from './protocol'
 
 /**
@@ -44,7 +48,9 @@ export type ChatAction =
   | { type: 'message'; raw: unknown }
   | { type: 'user'; text: string; images?: string[]; uuid?: string }
   | { type: 'error'; text: string }
-  | { type: 'answered'; requestId: string }
+  | { type: 'answered'; approval: Approval; choice: ApprovalChoice }
+  | { type: 'recap'; away?: number }
+  | { type: 'rewound'; userId: string; note: string }
   | { type: 'local'; patch: Parameters<typeof setLocal>[1] }
 
 export type AppAction =
@@ -87,7 +93,11 @@ function reduceChat(state: ChatState, action: ChatAction): ChatState {
     case 'error':
       return addError(state, action.text)
     case 'answered':
-      return removeApproval(state, action.requestId)
+      return answerApproval(state, action.approval, action.choice)
+    case 'recap':
+      return startRecap(state, action.away)
+    case 'rewound':
+      return rewindTo(state, action.userId, action.note)
     case 'local':
       return setLocal(state, action.patch)
   }
@@ -124,6 +134,8 @@ export function appReducer(state: AppState, action: AppAction): AppState {
             ...chat,
             items,
             model: chat.model ?? folded.model,
+            goal: chat.goal ?? folded.goal,
+            startedAt: action.prepend ? (folded.startedAt ?? chat.startedAt) : (chat.startedAt ?? folded.startedAt),
             start: action.start,
             workDir: action.workDir ?? chat.workDir,
           },

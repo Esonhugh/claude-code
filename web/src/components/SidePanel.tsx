@@ -1,11 +1,12 @@
-import { type ReactNode, useMemo } from 'react'
+import { type ReactNode, useEffect, useMemo, useState } from 'react'
 import { type AgentTask, formatDuration, isFinished, type Tasks } from '../agents'
-import { sessionFiles } from '../files'
-import type { ModelOption } from '../protocol'
+import { sessionFiles, tilde } from '../files'
+import type { ModelOption, Todo } from '../protocol'
 import type { SessionChat } from '../store'
 import { AgentsTab, type AgentsView, agentTasks, dotClass, WorkflowTab } from './Agents'
+import { shortTokens } from './Composer'
 import { modelName } from './Message'
-import { modeOf, type T } from './ui'
+import { formatElapsed, modeOf, type T } from './ui'
 
 export type SideTab = 'status' | 'files' | 'agents' | 'workflow' | 'terminals' | 'monitor' | 'bg'
 
@@ -29,6 +30,93 @@ function Kv({ rows }: { rows: [string, ReactNode][] }) {
   )
 }
 
+type Json = Record<string, unknown>
+const isObj = (v: unknown): v is Json => typeof v === 'object' && v !== null && !Array.isArray(v)
+const num = (v: unknown) => (typeof v === 'number' ? v : 0)
+
+/** What Status asks the session for: `get_usage`, `get_memory_dialog` and `get_sandbox_dialog`. */
+type StatusData = { usage?: Json; memory?: Json; sandbox?: Json }
+
+function useStatusData(
+  sessionId: string,
+  live: boolean,
+  busy: boolean,
+  request?: (body: Json) => Promise<Json>,
+): StatusData {
+  const [data, setData] = useState<StatusData>({})
+  useEffect(() => setData({}), [sessionId])
+  useEffect(() => {
+    if (!live || busy || !request) return
+    let current = true
+    const load = (key: keyof StatusData, subtype: string) =>
+      request({ subtype }).then(
+        body => current && setData(d => ({ ...d, [key]: body })),
+        () => {},
+      )
+    void load('usage', 'get_usage')
+    void load('memory', 'get_memory_dialog')
+    void load('sandbox', 'get_sandbox_dialog')
+    return () => {
+      current = false
+    }
+  }, [sessionId, live, busy, request])
+  return data
+}
+
+/** `今天 10:02`, or the date for an older session. */
+function startedText(at: number, t: T): string {
+  const date = new Date(at)
+  const time = date.toTimeString().slice(0, 5)
+  return date.toDateString() === new Date().toDateString()
+    ? t('todayAt', { time })
+    : `${date.toLocaleDateString()} ${time}`
+}
+
+function usageRows(t: T, chat: SessionChat, usage: Json | undefined): [string, ReactNode][] {
+  const session = isObj(usage?.session) ? usage.session : undefined
+  const models = isObj(session?.model_usage) ? Object.values(session.model_usage).filter(isObj) : []
+  const subscription = !!usage?.subscription_type
+  const cost = typeof session?.total_cost_usd === 'number' ? session.total_cost_usd : chat.costUsd
+  const limits = isObj(usage?.rate_limits) ? usage.rate_limits : undefined
+  const fiveHour = isObj(limits?.five_hour) ? limits.five_hour : undefined
+  const streamed = chat.rateLimits.five_hour
+  const quota =
+    typeof fiveHour?.utilization === 'number'
+      ? { pct: fiveHour.utilization, resets: typeof fiveHour.resets_at === 'string' ? Date.parse(fiveHour.resets_at) : NaN }
+      : streamed?.utilization !== undefined
+        ? { pct: streamed.utilization * 100, resets: (streamed.resetsAt ?? NaN) * 1000 }
+        : undefined
+  return [
+    ...(models.length
+      ? [
+          [
+            'tokens',
+            t('tokensValue', {
+              in: shortTokens(models.reduce((n, m) => n + num(m.inputTokens), 0)),
+              out: shortTokens(models.reduce((n, m) => n + num(m.outputTokens), 0)),
+              cache: shortTokens(models.reduce((n, m) => n + num(m.cacheReadInputTokens), 0)),
+            }),
+          ] as [string, ReactNode],
+        ]
+      : []),
+    ...(cost !== undefined ? [[t(subscription ? 'apiPriceLabel' : 'costLabel'), `$${cost.toFixed(2)}`] as [string, ReactNode]] : []),
+    ...(typeof session?.total_api_duration_ms === 'number' && session.total_api_duration_ms > 0
+      ? [[t('apiDurationLabel'), formatElapsed(session.total_api_duration_ms)] as [string, ReactNode]]
+      : []),
+    ...(quota
+      ? [
+          [
+            t('quota5hLabel'),
+            t('quotaValue', {
+              pct: String(Math.round(quota.pct)),
+              time: Number.isFinite(quota.resets) ? new Date(quota.resets).toTimeString().slice(0, 5) : '—',
+            }),
+          ] as [string, ReactNode],
+        ]
+      : []),
+  ]
+}
+
 function StatusPane({
   t,
   chat,
@@ -36,6 +124,8 @@ function StatusPane({
   sessionId,
   models,
   statusText,
+  todos,
+  request,
 }: {
   t: T
   chat: SessionChat
@@ -43,7 +133,19 @@ function StatusPane({
   sessionId: string
   models: ModelOption[]
   statusText: string
+  todos: Todo[]
+  request?: (body: Json) => Promise<Json>
 }) {
+  const data = useStatusData(sessionId, chat.mode === 'live', chat.busy, request)
+  const rounds = chat.items.filter(i => i.kind === 'user').length
+  const compactions = chat.items.filter(i => i.kind === 'compact').length
+  const context = chat.context
+  const usage = usageRows(t, chat, data.usage)
+  const instructions = Array.isArray(data.memory?.files)
+    ? data.memory.files.filter(f => isObj(f) && f.exists === true && typeof f.path === 'string').map(f => tilde((f as Json).path as string))
+    : undefined
+  const autoMemory = isObj(data.memory?.auto_memory) ? data.memory.auto_memory.enabled === true : undefined
+  const memories = Array.isArray(data.memory?.memories) ? data.memory.memories.filter(m => isObj(m) && m.name !== 'MEMORY.md').length : 0
   const env = chat.env
   const agents = Object.values(agentTasks(chat.tasks))
   const terminals = ofType(chat.tasks, 'interactive_terminal')
@@ -66,7 +168,9 @@ function StatusPane({
               <span className={`dot ${chat.busy ? 'running' : 'idle'}`} /> {statusText}
             </>,
           ],
-          [t('workDir'), <span className="mono">{chat.cwd ?? chat.workDir ?? ''}</span>],
+          [t('workDir'), <span className="mono">{tilde(chat.cwd ?? chat.workDir ?? '')}</span>],
+          [t('roundsLabel'), `${t('roundsValue', { n: String(rounds) })}${compactions ? t('compactedTimes', { n: String(compactions) }) : ''}`],
+          ...(chat.startedAt !== undefined ? [[t('startedLabel'), startedText(chat.startedAt, t)] as [string, ReactNode]] : []),
         ]}
       />
       <div className="group-h">{t('modelGroup')}</div>
@@ -75,24 +179,43 @@ function StatusPane({
           [t('modelGroup'), modelName(chat.model, models) ?? '—'],
           [t('effort'), chat.effort ?? '—'],
           [t('permissionModeLabel'), modeOf(chat.permissionMode).label],
+          ...(context ? [[t('autoCompactLabel'), t(context.autoCompact ? 'on' : 'off')] as [string, ReactNode]] : []),
         ]}
       />
       <div className="group-h">{t('contextGroup')}</div>
       <div className="usage">
         <div className="ulabel">
-          <b>{t('contextChip')}</b>
+          <b>{context ? `${shortTokens(context.total)} / ${shortTokens(context.max)}` : t('contextChip')}</b>
           <span className="mono">{pct === undefined ? '—' : `${pct}%`}</span>
         </div>
         <div className="bar">
           <i style={{ width: `${pct ?? 0}%` }} />
         </div>
+        {context?.autoCompact && context.threshold !== undefined && (
+          <small>{t('ctxStatusHint', { n: shortTokens(context.max - context.threshold) })}</small>
+        )}
       </div>
-      {chat.costUsd !== undefined && (
+      {usage.length > 0 && (
         <>
           <div className="group-h">{t('usageGroup')}</div>
-          <Kv rows={[[t('costLabel'), `$${chat.costUsd.toFixed(2)}`]]} />
+          <Kv rows={usage} />
         </>
       )}
+      <div className="group-h">{t('goalsGroup')}</div>
+      <Kv
+        rows={[
+          [
+            t('goalLabel'),
+            chat.goal ? `${chat.goal.condition} · ${t('nChecks', { n: String(chat.goal.iterations) })}` : t('none'),
+          ],
+          [
+            t('todosLabel'),
+            todos.length
+              ? t('todosDone', { done: String(todos.filter(x => x.status === 'completed').length), total: String(todos.length) })
+              : t('none'),
+          ],
+        ]}
+      />
       <div className="group-h">{t('backgroundGroup')}</div>
       <Kv
         rows={[
@@ -120,6 +243,15 @@ function StatusPane({
                   }),
                 ] as [string, ReactNode],
               ]
+            : []),
+          ...(instructions?.length
+            ? [[t('instructionsLabel'), instructions.join(' · ')] as [string, ReactNode]]
+            : []),
+          ...(autoMemory !== undefined
+            ? [[t('memoryLabel'), autoMemory ? t('memoryOn', { n: String(memories) }) : t('memoryOff')] as [string, ReactNode]]
+            : []),
+          ...(data.sandbox
+            ? [[t('sandboxLabel'), data.sandbox.enabled === true ? t('sandboxOn') : t('sandboxOff')] as [string, ReactNode]]
             : []),
           ...(env.hooks
             ? [
@@ -239,6 +371,8 @@ export function SidePanel({
   onOpenFile,
   onStopTask,
   onSendTask,
+  onRequest,
+  todos = [],
   onClose,
 }: {
   t: T
@@ -258,6 +392,9 @@ export function SidePanel({
   onOpenFile: (path: string) => void
   onStopTask: (id: string) => void
   onSendTask: (id: string, text: string) => Promise<string>
+  /** A control request to the session; Status reads usage, memory and sandbox with it. */
+  onRequest?: (body: Record<string, unknown>) => Promise<Record<string, unknown>>
+  todos?: Todo[]
   onClose: () => void
 }) {
   const files = useMemo(() => sessionFiles(chat.items).length, [chat.items])
@@ -301,7 +438,16 @@ export function SidePanel({
       </div>
       <div className="pane" role="tabpanel">
         {tab === 'status' && (
-          <StatusPane t={t} chat={chat} title={title} sessionId={sessionId} models={models} statusText={statusText} />
+          <StatusPane
+            t={t}
+            chat={chat}
+            title={title}
+            sessionId={sessionId}
+            models={models}
+            statusText={statusText}
+            todos={todos}
+            request={onRequest}
+          />
         )}
         {tab === 'files' && <FilesPane t={t} chat={chat} current={currentFile} onOpen={onOpenFile} />}
         {tab === 'agents' && (

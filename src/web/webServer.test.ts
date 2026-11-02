@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from 'bun:test'
 import { spawn } from 'child_process'
 import { mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from 'fs'
-import { hostname, networkInterfaces, tmpdir } from 'os'
+import { homedir, hostname, networkInterfaces, tmpdir } from 'os'
 import { join } from 'path'
 import type { SpawnSessionOptions } from '../server/backends/dangerousBackend.js'
 import { createServerLogger } from '../server/serverLog.js'
@@ -268,6 +268,7 @@ describe('claude web server', () => {
       workspace: r.workspace,
       preview_origins: [],
       temp_root: join(r.configDir, 'web', 'temp'),
+      home: homedir(),
     })
   })
 
@@ -286,6 +287,46 @@ describe('claude web server', () => {
     const [a, b] = [await create(), await create()]
     expect(a.startsWith(join(r.configDir, 'web', 'temp', 'chat-'))).toBe(true)
     expect(b).not.toBe(a)
+  })
+
+  it('asks for trust before starting in a folder other than the workspace', async () => {
+    const trusted = new Set<string>()
+    const r = start({ folderTrust: { isTrusted: dir => trusted.has(dir), save: dir => trusted.add(dir) } })
+    const cookie = await signIn(r)
+    const project = realpathSync(mkdtempSync(join(tmpdir(), 'web-project-')))
+    const create = (body: Record<string, unknown>) =>
+      fetch(`${r.base}/api/sessions`, { method: 'POST', headers: { cookie, origin: r.origin }, body: JSON.stringify(body) })
+    const refused = await create({ cwd: project })
+    expect(refused.status).toBe(409)
+    expect(((await refused.json()) as { needs_trust: string }).needs_trust).toBe(project)
+    expect(trusted.size).toBe(0)
+    expect((await create({ cwd: project, trust: true })).status).toBe(200)
+    expect([...trusted]).toEqual([project])
+    // Trusted now; and the workspace never asks.
+    expect((await create({ cwd: project })).status).toBe(200)
+    expect((await create({ cwd: r.workspace })).status).toBe(200)
+  })
+
+  it('lists workspace files for @ completion without hidden files or credentials', async () => {
+    const r = start()
+    const cookie = await signIn(r)
+    mkdirSync(join(r.workspace, 'notes'))
+    mkdirSync(join(r.workspace, 'node_modules', 'x'), { recursive: true })
+    mkdirSync(join(r.workspace, '.git'))
+    for (const f of ['README.md', 'notes/reading.md', 'notes/server.key', '.env', '.git/HEAD', 'node_modules/x/readme.md']) {
+      writeFileSync(join(r.workspace, f), 'x')
+    }
+    const created = await fetch(`${r.base}/api/sessions`, { method: 'POST', headers: { cookie, origin: r.origin }, body: '{}' })
+    const { session_id: id } = (await created.json()) as { session_id: string }
+    const list = async (q: string) =>
+      ((await (await fetch(`${r.base}/api/files/${id}/list?q=${encodeURIComponent(q)}`, { headers: { cookie } })).json()) as {
+        files: string[]
+      }).files
+    expect(await list('')).toEqual(['README.md', 'notes/reading.md'])
+    expect(await list('READ')).toEqual(['README.md', 'notes/reading.md'])
+    expect(await list('notes/')).toEqual(['notes/reading.md'])
+    expect(await list('key')).toEqual([])
+    expect((await fetch(`${r.base}/api/files/not-an-id/list?q=`, { headers: { cookie } })).status).toBe(400)
   })
 
   it('tells the page its preview origins and lets it frame them', async () => {
