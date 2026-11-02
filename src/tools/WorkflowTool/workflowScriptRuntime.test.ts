@@ -582,7 +582,8 @@ const queuedDefaultModeRun = runWorkflowScript({
   workflowRunId: 'wf_queued_default_mode',
   scriptPath: '/tmp/runtime-queued-default-mode.js',
 })
-while (!releaseQueuedDefaultModeAgent) {
+// Switch modes only after both launches read the parent's mode.
+while (!releaseQueuedDefaultModeAgent || queuedDefaultModeInputs.length < 2) {
   await new Promise(resolve => setTimeout(resolve, 0))
 }
 queuedDefaultModeState = {
