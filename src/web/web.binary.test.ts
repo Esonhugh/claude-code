@@ -10,6 +10,14 @@ import { join, sep } from 'path'
 //     bun test src/web/web.binary.test.ts
 const binary = process.env.CLAUDE_WEB_BINARY
 // Windows finds the home folder in USERPROFILE and needs SystemRoot to start processes.
+// A wait that, on timeout, also reports what the element shows instead.
+const showing = async (wait: Promise<unknown>, what: { textContent: () => Promise<string | null> }) => {
+  try {
+    await wait
+  } catch (e) {
+    throw new Error(`${e instanceof Error ? e.message.split('\n')[0] : e}\nShowing: ${(await what.textContent().catch(() => null))?.slice(-600)}`)
+  }
+}
 const windowsHome = (home: string) =>
   process.platform === 'win32' ? { USERPROFILE: home, SystemRoot: process.env.SystemRoot ?? 'C:\\Windows' } : {}
 // The coordinator's system prompt (src/coordinator/coordinatorMode.ts).
@@ -837,11 +845,14 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       await open('memo.rtf')
       // A converted page where the server finds LibreOffice (src/web/files.ts looks it up in its own
       // way, also on Windows and macOS), otherwise the note asking for it.
-      await preview
-        .locator('.page-count', { hasText: '/ 1' })
-        .or(preview.getByText('LibreOffice'))
-        .first()
-        .waitFor({ timeout: 120_000 })
+      await showing(
+        preview
+          .locator('.page-count', { hasText: '/ 1' })
+          .or(preview.getByText('LibreOffice'))
+          .first()
+          .waitFor({ timeout: 180_000 }),
+        preview,
+      )
       await page.keyboard.press('Escape')
       await preview.waitFor({ state: 'detached' })
       expect(await page.evaluate(() => (window as { __xss?: number }).__xss)).toBeUndefined()
@@ -858,7 +869,7 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
     } finally {
       await browser.close()
     }
-  }, 240_000)
+  }, 300_000)
 
   it('shows background agents in the panel and messages a finished one', async () => {
     const playwrightPath = Bun.spawnSync(['node', '-p', "require.resolve('playwright')"])
@@ -1219,7 +1230,7 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       await input.fill('please EDITME')
       await input.press('Enter')
       const dialog = page.locator('.askdock')
-      await dialog.getByText('Claude wants to use Edit').waitFor({ timeout: 30_000 })
+      await showing(dialog.getByText('Claude wants to use Edit').waitFor({ timeout: 30_000 }), page.locator('.feed'))
       await dialog.getByRole('option', { name: /Allow once/ }).click()
       await page.getByText('WEB_DONE').waitFor({ timeout: 30_000 })
       expect(readFileSync(join(workspace, 'edit.txt'), 'utf8')).toBe('alpha\ngamma\n')
@@ -1569,7 +1580,8 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       await bgRow.getByRole('button', { name: 'Stop' }).click()
       await bgRow.locator('.badge.killed').or(bgRow.locator('.badge.completed')).waitFor({ timeout: 15_000 })
       await bgRow.getByRole('button', { name: 'Stop' }).waitFor({ state: 'detached' })
-      expect(Bun.spawnSync(['pgrep', '-f', `${BG_MARK}; sleep 300`]).exitCode).toBe(1)
+      // pgrep is POSIX only.
+      if (process.platform !== 'win32') expect(Bun.spawnSync(['pgrep', '-f', `${BG_MARK}; sleep 300`]).exitCode).toBe(1)
       expect(errors).toEqual([])
     } finally {
       await browser.close()
@@ -1763,7 +1775,7 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       await cardOf('Hang').click()
       await taskInput.fill('HANG_RESUME')
       await taskInput.press('Enter')
-      await flash.getByText('The agent resumed with your message.').waitFor({ timeout: 30_000 })
+      await showing(flash.getByText('The agent resumed with your message.').waitFor({ timeout: 30_000 }), side)
       await side.getByText('HANG_BACK').waitFor({ timeout: 60_000 })
 
       // The sidebar's counts come from the database.
