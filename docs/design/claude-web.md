@@ -181,7 +181,7 @@ claude web 进程（Bun.serve）
 
 ### 5.4 右侧边栏：Agents 页签与直接对话
 
-右侧边栏有两个页签：**Agents** 和 **Files**（5.2 的预览）。有 agent 在跑时边栏自动展开到 Agents，可以拖宽；workflow 视图可以"展开到全屏"。窄屏时边栏变成抽屉。
+右侧边栏有三个页签：**Agents**、**Terminals**（5.5）和 **Files**（5.2 的预览）。有 agent 在跑时边栏自动展开到 Agents，可以拖宽；workflow 视图可以"展开到全屏"。窄屏时边栏变成抽屉。
 
 **1. 存活 agents 的层级树**
 
@@ -242,6 +242,15 @@ claude web 进程（Bun.serve）
 
 - agent 的过程：服务端和子进程在同一台机器、同一个二进制，直接复用 `getAgentTranscriptPath`（`src/utils/sessionStorage.ts:259`）读 transcript，不加协议。对话视图打开期间，浏览器每收到这个 agent 的一条 `task_progress`，就从服务端拉一次增量。
 - 父子关系：先用 `task_started.tool_use_id` 在父 agent 的 transcript 里找到发起它的 Agent 调用来确定父节点；只有这条路走不通时，才考虑给 `task_started` 加可选的 `parent_task_id`。
+
+### 5.5 Terminals 页签
+
+Terminal 工具是 fork 独有的（官方没有），它开的每个 PTY 会话注册成 `interactive_terminal` 类型的 task（`src/tasks/TerminalTask.ts:26`）。后台 Bash 和 Monitor 是 `local_bash` task。两者在这个页签里一起列出。
+
+- 列表：来自 `task_started` / `task_updated` / `background_tasks_changed`，每行显示命令、状态（running / completed / failed / killed）、退出码、尺寸和是哪个 agent 开的。点一行展开屏幕。
+- 屏幕内容：复用官方已有的 `get_task_output` control request（官方 2.1.316 也有，返回最后 8 KiB；fork 实现在 `src/cli/hostControlRequests.ts:597`，目前只认 shell 和 Monitor task）。fork 让它也接受 `interactive_terminal`，返回当前屏幕的纯文本（`screenToPreview`，`src/utils/pty/terminalScreenToPreview.ts:33`），不另加请求。浏览器每收到这个 task 的事件或每秒最多拉一次。屏幕是纯文本，不在浏览器里解析 ANSI，与 TUI 的 Dialog preview 一致。
+- 操作：第一版只读，加"停止"按钮（`stop_task`）。终端由 agent 驱动，用户从页面往里打字会和 agent 抢输入，放到后续版本，届时要单独走权限确认。
+- `claude ssh` / Direct Connect 的终端列表有和 #503 一样的缺口（`remoteTasks` 没人渲染），一起处理。
 
 **断线和恢复**
 
