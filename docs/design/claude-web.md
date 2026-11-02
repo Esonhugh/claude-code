@@ -141,6 +141,48 @@ claude web 进程（Bun.serve）
 
 给模型的部分不变：上传的图片作为 image block 发送；其他文件放到工作目录，在消息里写成 `@路径`，由现有 Read 工具读取（Read 已支持 PDF 和图片）。
 
+### 5.3 Subagent、Workflow 与 Agent Team
+
+终端里这三类东西挤在 spinner 下面的几行状态里，是 Web UI 最能发挥的地方。原则：**主对话流保持干净，只放一张可点开的卡片；细节放在右侧"任务面板"，进度实时更新**。
+
+数据来源全部是现有 stream-json 事件，加上服务端按需读取的落盘文件，不需要子进程新增协议：
+
+| 事件 / 数据 | 内容 | 现有位置 |
+|---|---|---|
+| `system/task_started` | `task_id`、`task_type`（`local_agent` / `local_workflow` / `in_process_teammate` / `local_bash` 等）、`description`、`subagent_type`、`workflow_name`、`prompt`、`spawn_depth` | `src/entrypoints/sdk/coreSchemas.ts`（`SDKTaskStartedMessageSchema`） |
+| `system/task_progress` | 用量（tokens、工具次数、耗时）、`last_tool_name`、`summary`（agent summary），以及 workflow 的 `workflow_progress` 全量快照：`type:'phase'` 条目（阶段 id、状态、说明）和 `type:'agent'` 条目（用 `phaseIndex` 关联阶段，`label` 是 agent id，带状态） | `SDKTaskProgressMessageSchema`；快照由 `src/tools/WorkflowTool/workflowScriptRuntime.ts:390` 生成 |
+| `system/task_updated` / `task_notification` | 状态变化、结束状态、`output_file`、最终 summary | 同上 |
+| `system/background_tasks_changed` | 当前所有后台任务快照，用于断线重连后对齐 | 同上 |
+| 带 `parent_tool_use_id` 的 `assistant` / `user` 消息 | 前台 subagent 的过程；开 `--forward-subagent-text` 后也有其文本输出 | `src/main.tsx:1483` |
+| 子 agent transcript、`output_file` | 完整过程，按需加载 | 会话目录下的 subagent jsonl；路径加入 `/api/files` 允许根 |
+| team 配置和 inbox | 成员列表、颜色、收发消息 | `~/.claude/teams/<team>/config.json`（`src/utils/swarm/teamHelpers.ts:157`）和 inbox 文件 |
+
+**Subagent（Agent 工具）**
+
+- 对话流里是一张卡片：agent 类型、description、状态灯、实时用量、最近一次工具名、agent summary 一行。
+- 展开后按 `parent_tool_use_id` 嵌套显示它的工具调用和文本，样式与主对话相同但缩进一级。嵌套 agent 按 `spawn_depth` 继续缩进，超过两层改成"在面板中打开"。
+- 后台 agent 完成时，卡片变成结果摘要，`output_file` 可以在预览面板打开；"停止"按钮发 `stop_task`。
+
+**Workflow**
+
+- 对话流里是一张 workflow 卡片：`workflow_name`、总进度条（`completedAgents/totalAgents`）、当前阶段名、状态（running / paused / completed / failed / killed）。
+- 任务面板里画成**阶段泳道**：每个阶段一列（`type:'phase'` 条目），列里是该阶段的 agent 小卡（`type:'agent'` 条目，按 `phaseIndex` 归组，显示 pending / running / completed / failed / skipped）。点 agent 小卡按 agent id 加载它的 transcript。
+- 阶段图本身用自定义 React 组件画，不用 Mermaid：Mermaid 每次更新都要整图重绘，不适合每秒变化的状态。workflow 结束后可以"导出为 Mermaid"，方便贴进文档。
+- deep-research 就是一个 workflow，所以 M4 的研究模式直接复用这块，另外把各 agent 收集到的来源汇总成引用列表。
+- 已知缺口：快照里没有每个 agent 的用量和是否命中缓存（内部 `workflow_agent` 事件有 `cacheHit`，`src/tools/WorkflowTool/workflowSpec.ts:79`），也没有 `workflow_log`。如果 M4 需要，只在快照条目上加可选字段，保持 SDK 兼容。
+
+**Agent Team**
+
+- 页面顶部出现 team 条：team 名、成员头像（用成员颜色）、每人状态（working / idle / 已关闭）。点成员打开他的 transcript。
+- 任务面板切到"Team"视图，左边成员列表，右边是**消息时间线**：lead 与成员之间的 `<teammate-message>`、idle 通知、shutdown 请求和确认，按时间排列，像群聊。用户也可以在这里直接给某个成员发消息（复用 SendMessage 的 inbox 机制，经服务端写 inbox，不让浏览器直接碰文件）。
+- 成员的权限请求和 lead 的一样走审批卡片，卡片上标明是哪个成员提出的。
+- 需要改的地方：headless 模式在输入流关闭时才注入 `SHUTDOWN_TEAM_PROMPT` 要求解散 team（`src/cli/print.ts:501`、`:3007`）。Web 会话的 stdin 一直开着，所以 team 可以跨轮存活，这一点要在 M4 用真实二进制验证。lead 收到的成员消息现在是作为新的 prompt 入队（`src/cli/print.ts:2985` 附近），浏览器需要 `--replay-user-messages` 才看得到，届时在 `DangerousBackend` 里为 Web 打开它。
+- team 默认仍需 `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1`，Web 不单独放开。
+
+**断线和恢复**
+
+浏览器刷新或重连时，服务端先发一次 `background_tasks_changed` 快照，再补发每个活跃任务最近一次 `task_progress`，任务面板据此重建。服务端只在内存里给每个任务保留最近一份进度，不另存一套状态。
+
 ## 6. 构建和打包
 
 - 前端放在 `web/`，用 Vite 构建，`bun run build:web` 输出 `web/dist`。
@@ -172,7 +214,7 @@ claude web [--port <n>] [--host <ip>] [--workspace <dir>] [--no-open]
 | M1 对话体验 | Markdown 增量渲染、代码高亮、KaTeX、Mermaid、图片；工具卡片；审批卡片；中断；切模型和权限模式；用量显示 | 渲染快照测试；XSS 用例（raw HTML、`javascript:` 链接、恶意 mermaid）不执行；审批允许和拒绝都正确回到子进程 |
 | M2 会话管理 | 侧边栏历史、恢复、新建、停止、重命名；选择工作目录；单标签独占 | 恢复后上下文延续；TUI 和 Web 打开同一会话时互斥提示 |
 | M3 文件与文档 | 上传和拖放、附件条、`/api/files` 允许根、右侧预览面板（PDF、图片、文本、HTML、CSV/XLSX、DOCX，有 soffice 时 PPTX） | 路径穿越和符号链接逃逸用例被拒；上传上限生效；各类型样例文件可预览 |
-| M4 研究模式 | 引用列表、deep-research 进度、导出对话为 Markdown/PDF、`/` 命令面板（只列适合 Web 的命令） | 真实 OAuth 跑一次研究任务，导出文件内容完整 |
+| M4 Agent 可视化与研究 | 任务面板；subagent 嵌套卡片；workflow 阶段泳道；Agent Team 条和消息时间线；断线重建；引用列表、导出对话为 Markdown/PDF、`/` 命令面板（只列适合 Web 的命令） | fake API 下跑一个两阶段 workflow 和一个两人 team，面板状态与 TUI 一致；刷新页面后面板能恢复；team 跨轮存活且 shutdown 后成员从 config.json 移除；真实 OAuth 跑一次 deep-research |
 | M5 加固与文档 | 非 loopback + TLS、移动端布局、无障碍、`docs/features/web-ui.md` 和 README 表格一行、体积检查进 release-check | `make release-check` 通过；功能文档按现有模板附分步截图 |
 
 ## 9. 测试
