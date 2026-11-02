@@ -39,12 +39,15 @@ export type PromptFillResult = { isFilled: boolean; refusal?: 'no_composer' | 'd
 export type PromptFilled = PromptBox & PromptFillResult
 
 export type ModPromptHost = {
-  read(): PromptBox
-  fill(input: Pick<PromptFillInput, 'text' | 'mode' | 'decorations'>): boolean
+  read(): PromptBox | Promise<PromptBox>
+  /** A remote composer answers a whole result: no attached client may take the fill. */
+  fill(input: Pick<PromptFillInput, 'text' | 'mode' | 'decorations'>): boolean | Promise<PromptFillResult>
   suggest?(text: string, owner: string): boolean | Promise<boolean>
   clearSuggestion?(owner: string): void
   canSuggest?(): boolean
   isBlocked?(): boolean
+  /** The attached clients' composer in a headless session; a headless session without it has none. */
+  remote?: true
 }
 
 export function emptyPromptBox(): PromptBox {
@@ -81,18 +84,19 @@ export function validatePromptFillInput(
   validatePromptDecorations(value.decorations)
 }
 
-export function applyPromptFill(
+export async function applyPromptFill(
   host: ModPromptHost | undefined,
   input: Pick<PromptFillInput, 'text' | 'mode' | 'decorations'>,
   refusal?: PromptFillResult['refusal'],
-): PromptFillResult {
+): Promise<PromptFillResult> {
   if (!host) return { isFilled: false, refusal: 'no_composer' }
   if (refusal !== undefined) return { isFilled: false, refusal }
-  return { isFilled: host.fill(input) }
+  const filled = await host.fill(input)
+  return typeof filled === 'boolean' ? { isFilled: filled } : filled
 }
 
 export function fillPromptBox(
-  host: Pick<ModPromptHost, 'read'> & {
+  host: { read(): PromptBox } & {
     set(text: string, cursor: number): void
     setMode?(mode: 'prompt'): void
     paint?(decorations: PromptDecoration[], text: string): void
