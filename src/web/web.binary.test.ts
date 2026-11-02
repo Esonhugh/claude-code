@@ -9,6 +9,9 @@ import { join } from 'path'
 //   make build && CLAUDE_WEB_BINARY=$PWD/built-claude \
 //     bun test src/web/web.binary.test.ts
 const binary = process.env.CLAUDE_WEB_BINARY
+// Windows finds the home folder in USERPROFILE and needs SystemRoot to start processes.
+const windowsHome = (home: string) =>
+  process.platform === 'win32' ? { USERPROFILE: home, SystemRoot: process.env.SystemRoot ?? 'C:\\Windows' } : {}
 // The coordinator's system prompt (src/coordinator/coordinatorMode.ts).
 const COORDINATOR_MARK = 'You are a **coordinator**'
 // Unique per run, so a shell left over from another run never matches.
@@ -182,6 +185,7 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
         env: {
           PATH: process.env.PATH ?? '/usr/bin:/bin',
           HOME: home,
+          ...windowsHome(home),
           IS_SANDBOX: '1',
           ANTHROPIC_API_KEY: 'sk-fake',
           ANTHROPIC_BASE_URL: `http://127.0.0.1:${api.port}`,
@@ -2058,6 +2062,7 @@ describe.skipIf(!binary)('claude web account (built binary)', () => {
       env: {
         PATH: process.env.PATH ?? '/usr/bin:/bin',
         HOME: home,
+        ...windowsHome(home),
         IS_SANDBOX: '1',
         // Replaced from the page; the new key has to win over this one.
         ANTHROPIC_API_KEY: 'sk-ant-env-placeholder-0000',

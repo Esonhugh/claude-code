@@ -53,3 +53,39 @@ jobs:
             echo "Failed files:"; cat "$LOGS/failed.txt"
             exit 1
           fi
+
+  # src/web/web.binary.test.ts drives the built binary's `claude web` from
+  # Chromium; it is skipped above, where CLAUDE_WEB_BINARY is unset.
+  web-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      # A 0.0.0-dev build is refused by the minimum-version check.
+      CLAUDE_CODE_VERSION: 2.1.296
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Install ripgrep
+        run: sudo apt-get update && sudo apt-get install -y ripgrep
+
+      # Playwright is not a project dependency; it is added for this job only.
+      - name: Install Playwright Chromium
+        run: |
+          bun add --no-save playwright@1.63.0
+          bunx playwright install --with-deps chromium
+
+      - name: Build binary
+        run: |
+          bun run build
+          bun run package:binary
+
+      - name: Web e2e
+        run: CLAUDE_WEB_BINARY="$(ls "$PWD"/dist/release/claude-code-v*-linux-x64 | head -n 1)" bun test --timeout 300000 src/web/web.binary.test.ts

@@ -42,6 +42,14 @@ jobs:
       - name: Sandbox e2e
         run: bun scripts/macos-sandbox-e2e.ts dist/release/claude-code-v*-darwin-arm64
 
+      # Playwright is not a project dependency; it is added for this step only.
+      - name: Web e2e
+        if: ${{ !cancelled() }}
+        run: |
+          bun add --no-save playwright@1.63.0
+          bunx playwright install chromium
+          CLAUDE_WEB_BINARY="$(ls "$PWD"/dist/release/claude-code-v*-darwin-arm64 | head -n 1)" bun test --timeout 300000 src/web/web.binary.test.ts
+
       # For comparison only: its failures do not fail the job.
       - name: Download official
         if: ${{ !cancelled() }}
