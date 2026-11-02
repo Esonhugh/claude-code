@@ -1,4 +1,7 @@
 import { expect, test } from 'bun:test'
+import { existsSync, mkdtempSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import type { ToolUseContext } from '../../Tool.js'
 
 ;(globalThis as typeof globalThis & { MACRO: { VERSION: string } }).MACRO = {
@@ -36,11 +39,15 @@ test.skipIf(process.platform === 'win32').each([
   ['user-cancel', true],
 ] as const)('abort reason %p marks the killed shell interrupted: %p', async (reason, interrupted) => {
   const abortController = new AbortController()
-  setTimeout(() => abortController.abort(reason), 500)
+  // Abort once the command is running; a fixed delay can fire before the
+  // shell starts on a loaded machine.
+  const marker = join(mkdtempSync(join(tmpdir(), 'killed-by-stop-')), 'started')
   const failure = BashTool.call(
-    { command: 'echo HOLD_START; sleep 30', timeout: 60_000 } as never,
+    { command: `echo HOLD_START; touch '${marker}'; sleep 30`, timeout: 60_000 } as never,
     context(abortController),
   )
+  while (!existsSync(marker)) await new Promise(resolve => setTimeout(resolve, 20))
+  abortController.abort(reason)
   await expect(failure).rejects.toBeInstanceOf(ShellError)
   const error = (await failure.catch(e => e)) as InstanceType<typeof ShellError>
   expect(error.code).toBe(137)

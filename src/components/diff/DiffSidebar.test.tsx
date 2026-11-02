@@ -27,7 +27,7 @@ if (!process.env[childKey]) {
         git('init', '-q')
         writeFileSync(
           join(root, '.git/info/exclude'),
-          'config/\nLibrary/\n.cache/\n',
+          'config/\nLibrary/\n.cache/\n.bun/\n', // the child bun writes its cache under HOME=root
         )
         const cwd = scenario === 'subdirectory' ? join(root, 'sub') : root
         if (cwd !== root) mkdirSync(cwd)

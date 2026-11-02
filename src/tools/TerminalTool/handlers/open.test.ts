@@ -19,7 +19,7 @@ test('handleOpen returns the resolved default shell when command is omitted', as
   const originalShell = process.env.SHELL
 
   try {
-    process.env.SHELL = '/bin/zsh'
+    process.env.SHELL = '/bin/sh' // must exist: a missing SHELL falls back to bash
     const manager = new PtySessionManager({
       driver: new FakePtyDriver(),
     })
@@ -31,7 +31,7 @@ test('handleOpen returns the resolved default shell when command is omitted', as
       rows: 24,
     })
 
-    assert.equal((opened as { command?: string }).command, '/bin/zsh')
+    assert.equal((opened as { command?: string }).command, '/bin/sh')
   } finally {
     if (originalShell === undefined) {
       delete process.env.SHELL

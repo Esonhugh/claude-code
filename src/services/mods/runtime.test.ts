@@ -1540,6 +1540,10 @@ describe('Mods lifecycle', () => {
     let calls = 0
     const pending = value.dispatch('tool.call', input, async () => { calls++; entered.resolve(); await release.promise; return { result: 'core' } })
     await entered.promise
+    // The Worker posts next() before its hook frame leaves the stack stamp; a
+    // crash in that window is blamed on the plugin and unloads it. Let the
+    // frame unwind so this crash stays unattributed and the plugin recovers.
+    await Bun.sleep(200)
     natives[0]!.terminate()
     await died.promise
     release.resolve()
