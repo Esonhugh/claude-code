@@ -114,6 +114,119 @@ describe('reduce', () => {
     expect(state.items.at(-1)).toMatchObject({ kind: 'error', text: 'boom' })
   })
 
+  it('shows a synthetic API error once, as an error without a model', () => {
+    const text = 'API Error: 500 {"type":"error"}'
+    const state = fold([
+      {
+        type: 'assistant',
+        error: 'unknown',
+        message: { id: 'e1', model: '<synthetic>', content: [{ type: 'text', text }] },
+      },
+      { type: 'result', subtype: 'success', is_error: true, result: text },
+    ])
+    expect(state.items.slice(1)).toEqual([{ kind: 'error', id: 'e1', text }])
+    expect(state.busy).toBe(false)
+  })
+
+  it('treats a transcript API error message as an error too', () => {
+    const state = fold([
+      {
+        type: 'assistant',
+        isApiErrorMessage: true,
+        message: { id: 'e2', model: '<synthetic>', content: [{ type: 'text', text: 'Prompt is too long' }] },
+      },
+    ])
+    expect(state.items.at(-1)).toEqual({ kind: 'error', id: 'e2', text: 'Prompt is too long' })
+  })
+
+  it('shows local command output as a system line, not as the user', () => {
+    const state = fold([
+      {
+        type: 'user',
+        isReplay: true,
+        uuid: 'u1',
+        message: { role: 'user', content: '<command-name>/model</command-name>\n<command-message>model</command-message>\n<command-args>sonnet</command-args>' },
+      },
+      {
+        type: 'user',
+        isReplay: true,
+        uuid: 'u2',
+        message: { role: 'user', content: '<local-command-stdout>Set model to Sonnet 5.5</local-command-stdout>' },
+      },
+      {
+        type: 'user',
+        isReplay: true,
+        uuid: 'u3',
+        message: { role: 'user', content: '<local-command-stderr>Unknown model</local-command-stderr>' },
+      },
+      {
+        type: 'assistant',
+        uuid: 'u4',
+        message: { id: 'a4', model: '<synthetic>', content: [{ type: 'text', text: 'Total cost: $0.00' }] },
+      },
+    ])
+    expect(state.items.slice(1)).toEqual([
+      { kind: 'user', id: 'u1', text: '/model sonnet' },
+      { kind: 'local', id: 'u2', text: 'Set model to Sonnet 5.5' },
+      { kind: 'local', id: 'u3', text: 'Unknown model', isError: true },
+      { kind: 'local', id: 'a4', text: 'Total cost: $0.00' },
+    ])
+  })
+
+  it('records the session environment from init, initialize and get_settings', () => {
+    const state = fold([
+      {
+        type: 'system',
+        subtype: 'init',
+        claude_code_version: '2.1.296',
+        mcp_servers: [{ name: 'zotero', status: 'connected' }, { name: 'x', status: 'failed' }],
+        skills: ['pdf', 'docx'],
+        plugins: [{ name: 'p1', path: '/p1' }],
+        apiKeySource: 'ANTHROPIC_API_KEY',
+      },
+      {
+        type: 'control_response',
+        response: {
+          subtype: 'success',
+          request_id: 'web-init-1',
+          response: {
+            models: [{ value: 'opus', resolvedModel: 'claude-opus-5-5', displayName: 'Opus 5.5', description: 'Most capable', supportsEffort: true, supportedEffortLevels: ['low', 'high'] }],
+            account: { email: 'a@b.c', subscriptionType: 'max' },
+          },
+        },
+      },
+      {
+        type: 'control_response',
+        response: {
+          subtype: 'success',
+          request_id: 'web-settings-2',
+          response: {
+            effective: { uiName: 'Claw', hooks: { Stop: [{ matcher: '', hooks: [{ type: 'command', command: 'say hi' }] }] } },
+            applied: { model: 'claude-opus-5-5', effort: 'high' },
+          },
+        },
+      },
+    ])
+    expect(state.models[0]).toEqual({
+      value: 'opus',
+      displayName: 'Opus 5.5',
+      resolvedModel: 'claude-opus-5-5',
+      description: 'Most capable',
+      effortLevels: ['low', 'high'],
+    })
+    expect(state.effort).toBe('high')
+    expect(state.env).toEqual({
+      version: '2.1.296',
+      mcpServers: [{ name: 'zotero', status: 'connected' }, { name: 'x', status: 'failed' }],
+      skills: ['pdf', 'docx'],
+      plugins: [{ name: 'p1', path: '/p1' }],
+      apiKeySource: 'ANTHROPIC_API_KEY',
+      account: { email: 'a@b.c', subscriptionType: 'max' },
+      uiName: 'Claw',
+      hooks: [{ event: 'Stop', matcher: '', command: 'say hi' }],
+    })
+  })
+
   it('queues permission requests and answers them in the control format', () => {
     const state = fold([
       {

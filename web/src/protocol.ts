@@ -27,6 +27,8 @@ export type Item =
       blocks: Block[]
     }
   | { kind: 'error'; id: string; text: string }
+  /** Output of a local slash command (`/model`, `/usage`), shown as a muted system line. */
+  | { kind: 'local'; id: string; text: string; isError?: boolean }
   /** A message a teammate sent the lead (`<teammate-message>`). */
   | { kind: 'teammate'; id: string; from: string; color?: string; summary?: string; text: string }
 
@@ -38,7 +40,27 @@ export type Approval = {
   suggestions: unknown[]
 }
 
-export type ModelOption = { value: string; displayName: string }
+export type ModelOption = {
+  value: string
+  displayName: string
+  resolvedModel?: string
+  description?: string
+  effortLevels?: string[]
+}
+
+export type Hook = { event: string; matcher: string; command: string; timeout?: number }
+
+/** What the session reports about itself and its machine (init, initialize, get_settings). */
+export type SessionEnv = {
+  version?: string
+  mcpServers?: { name: string; status: string }[]
+  skills?: string[]
+  plugins?: { name: string; path: string }[]
+  apiKeySource?: string
+  account?: { email?: string; subscriptionType?: string; apiKeySource?: string; apiProvider?: string }
+  uiName?: string
+  hooks?: Hook[]
+}
 
 export type ChatState = {
   items: Item[]
@@ -52,6 +74,9 @@ export type ChatState = {
   models: ModelOption[]
   contextPercent?: number
   costUsd?: number
+  /** Effort level the session applies (get_settings `applied.effort`). */
+  effort?: string
+  env: SessionEnv
   /** Error from the last control request the user triggered (mode, model). */
   notice?: string
   /** Subagents, workflows and other background tasks, by task id. */
@@ -67,12 +92,17 @@ export const initialState: ChatState = {
   busy: false,
   approvals: [],
   models: [],
+  env: {},
   tasks: {},
   commands: [],
   terminalCommands: [],
 }
 
 type Json = Record<string, unknown>
+
+function withoutUndefined<T extends object>(o: T): Partial<T> {
+  return Object.fromEntries(Object.entries(o).filter(([, v]) => v !== undefined)) as Partial<T>
+}
 
 const isObj = (v: unknown): v is Json =>
   typeof v === 'object' && v !== null && !Array.isArray(v)
@@ -266,6 +296,28 @@ export function addError(state: ChatState, text: string): ChatState {
   }
 }
 
+const SYNTHETIC_MODEL = '<synthetic>'
+
+function tag(text: string, name: string): string | undefined {
+  return new RegExp(`<${name}>([\\s\\S]*?)</${name}>`).exec(text)?.[1]
+}
+
+/** `<local-command-stdout>` / `-stderr` of a local slash command, if the text is one. */
+export function localCommandOutput(text: string): { text: string; isError?: true } | undefined {
+  if (!/^\s*<local-command-std(out|err)>/.test(text)) return undefined
+  const stderr = tag(text, 'local-command-stderr')?.trim()
+  if (stderr) return { text: stderr, isError: true }
+  return { text: tag(text, 'local-command-stdout')?.trim() ?? '' }
+}
+
+/** `/name args` of a slash command the user typed, as the transcript records it. */
+export function commandInput(text: string): string | undefined {
+  const name = tag(text, 'command-name')?.trim()
+  if (!name) return undefined
+  const args = tag(text, 'command-args')?.trim()
+  return `${name.startsWith('/') ? name : `/${name}`}${args ? ` ${args}` : ''}`
+}
+
 const TEAMMATE_MESSAGE =
   /<teammate-message\s+teammate_id="([^"]+)"(?:\s+color="([^"]+)")?(?:\s+summary="([^"]+)")?>\n?([\s\S]*?)\n?<\/teammate-message>/g
 
@@ -297,6 +349,20 @@ export function reduce(state: ChatState, raw: unknown): ChatState {
       }
       return {
         ...state,
+        env: {
+          ...state.env,
+          ...withoutUndefined({
+            version: str(raw.claude_code_version),
+            mcpServers: Array.isArray(raw.mcp_servers)
+              ? raw.mcp_servers.filter(isObj).map(m => ({ name: str(m.name) ?? '', status: str(m.status) ?? '' }))
+              : undefined,
+            skills: Array.isArray(raw.skills) ? raw.skills.filter(s => typeof s === 'string') : undefined,
+            plugins: Array.isArray(raw.plugins)
+              ? raw.plugins.filter(isObj).map(p => ({ name: str(p.name) ?? '', path: str(p.path) ?? '' }))
+              : undefined,
+            apiKeySource: str(raw.apiKeySource),
+          }),
+        },
         model: str(raw.model) ?? state.model,
         cwd: str(raw.cwd) ?? state.cwd,
         permissionMode: str(raw.permissionMode) ?? state.permissionMode,
@@ -316,6 +382,20 @@ export function reduce(state: ChatState, raw: unknown): ChatState {
         .filter(isObj)
         .map(blockFromContent)
         .filter((b): b is Block => b !== undefined)
+      // `<synthetic>` messages come from the CLI, not the model: API errors
+      // and local command output.
+      if (message.model === SYNTHETIC_MODEL) {
+        const text = blocks
+          .map(b => (b.kind === 'text' ? b.text : ''))
+          .join('\n')
+          .trim()
+        if (!text || state.items.some(i => i.id === id)) return state
+        const item: Item =
+          raw.error !== undefined || raw.isApiErrorMessage === true
+            ? { kind: 'error', id, text }
+            : { kind: 'local', id, text }
+        return { ...state, items: [...state.items, item] }
+      }
       const existing = state.items.find(
         (i): i is Extract<Item, { kind: 'assistant' }> =>
           i.kind === 'assistant' && i.id === id,
@@ -371,9 +451,16 @@ export function reduce(state: ChatState, raw: unknown): ChatState {
         const images = content
           .map(part => (isObj(part) && part.type === 'image' ? imageDataUrl(part) : undefined))
           .filter((u): u is string => !!u)
-        const fromTeammates = teammateMessages(text, uuid ?? `user-${next.items.length}`)
+        const itemId = uuid ?? `user-${next.items.length}`
+        const fromTeammates = teammateMessages(text, itemId)
+        const local = localCommandOutput(text)
+        const command = commandInput(text)
         if (fromTeammates.length) {
           next = { ...next, items: [...next.items, ...fromTeammates] }
+        } else if (local) {
+          if (local.text) next = { ...next, items: [...next.items, { kind: 'local', id: itemId, ...local }] }
+        } else if (command !== undefined) {
+          next = { ...next, items: [...next.items, { kind: 'user', id: itemId, text: command }] }
         } else if (text || images.length) {
           next = {
             ...next,
@@ -417,7 +504,13 @@ export function reduce(state: ChatState, raw: unknown): ChatState {
       const errors = Array.isArray(raw.errors)
         ? raw.errors.filter(e => typeof e === 'string').join('\n')
         : ''
-      return addError(next, str(raw.result) || errors || String(raw.subtype))
+      const text = str(raw.result) || errors || String(raw.subtype)
+      // An API error already arrived as its own message this turn.
+      const lastUser = next.items.findLastIndex(i => i.kind === 'user')
+      if (next.items.slice(lastUser + 1).some(i => i.kind === 'error' && i.text === text)) {
+        return next
+      }
+      return addError(next, text)
     }
 
     case 'control_request': {
@@ -457,13 +550,34 @@ export const REQUEST_PREFIX = {
   interrupt: 'web-interrupt-',
   stopTask: 'web-stop-task-',
   taskMessage: 'web-task-message-',
+  settings: 'web-settings-',
+  effort: 'web-effort-',
 } as const
+
+/** Settings `hooks` ({ Event: [{ matcher, hooks: [{ command, timeout }] }] }) as flat rows. */
+function hooksFrom(raw: unknown): Hook[] {
+  if (!isObj(raw)) return []
+  return Object.entries(raw).flatMap(([event, matchers]) =>
+    (Array.isArray(matchers) ? matchers : []).filter(isObj).flatMap(m =>
+      (Array.isArray(m.hooks) ? m.hooks : []).filter(isObj).map(h => ({
+        event,
+        matcher: str(m.matcher) ?? '',
+        command: str(h.command) ?? str(h.prompt) ?? str(h.type) ?? '',
+        ...(typeof h.timeout === 'number' && { timeout: h.timeout }),
+      })),
+    ),
+  )
+}
 
 function reduceControlResponse(state: ChatState, raw: Json): ChatState {
   const response = isObj(raw.response) ? raw.response : {}
   const id = str(response.request_id) ?? ''
   if (response.subtype === 'error') {
-    if (id.startsWith(REQUEST_PREFIX.mode) || id.startsWith(REQUEST_PREFIX.model)) {
+    if (
+      id.startsWith(REQUEST_PREFIX.mode) ||
+      id.startsWith(REQUEST_PREFIX.model) ||
+      id.startsWith(REQUEST_PREFIX.effort)
+    ) {
       return { ...state, notice: str(response.error) ?? 'Request failed' }
     }
     return state
@@ -474,6 +588,14 @@ function reduceControlResponse(state: ChatState, raw: Json): ChatState {
       ? body.models.filter(isObj).map(m => ({
           value: str(m.value) ?? '',
           displayName: str(m.displayName) ?? str(m.value) ?? '',
+          ...withoutUndefined({
+            resolvedModel: str(m.resolvedModel),
+            description: str(m.description),
+            effortLevels:
+              m.supportsEffort === true && Array.isArray(m.supportedEffortLevels)
+                ? m.supportedEffortLevels.filter(l => typeof l === 'string')
+                : undefined,
+          }),
         }))
       : []
     const commands = Array.isArray(body.commands)
@@ -486,10 +608,38 @@ function reduceControlResponse(state: ChatState, raw: Json): ChatState {
           }),
         }))
       : []
+    const account = isObj(body.account) ? body.account : undefined
     return {
       ...state,
       models: models.filter(m => m.value),
       commands: commands.filter(c => c.name),
+      env: {
+        ...state.env,
+        ...withoutUndefined({
+          version: str(body.claude_code_version),
+          account: account
+            ? withoutUndefined({
+                email: str(account.email),
+                subscriptionType: str(account.subscriptionType),
+                apiKeySource: str(account.apiKeySource),
+                apiProvider: str(account.apiProvider),
+              })
+            : undefined,
+        }),
+      },
+    }
+  }
+  if (id.startsWith(REQUEST_PREFIX.settings)) {
+    const effective = isObj(body.effective) ? body.effective : {}
+    const applied = isObj(body.applied) ? body.applied : {}
+    return {
+      ...state,
+      effort: str(applied.effort) ?? state.effort,
+      env: {
+        ...state.env,
+        uiName: str(effective.uiName),
+        hooks: hooksFrom(effective.hooks),
+      },
     }
   }
   if (id.startsWith(REQUEST_PREFIX.context)) {
@@ -506,7 +656,7 @@ function reduceControlResponse(state: ChatState, raw: Json): ChatState {
 
 export function setLocal(
   state: ChatState,
-  patch: Partial<Pick<ChatState, 'permissionMode' | 'model' | 'notice'>>,
+  patch: Partial<Pick<ChatState, 'permissionMode' | 'model' | 'notice' | 'effort'>>,
 ): ChatState {
   return { ...state, ...patch }
 }

@@ -21,6 +21,19 @@ describe('groupHistory', () => {
     expect(groupHistory(entries, 'gam').map(g => g.entries.map(e => e.id))).toEqual([['c']])
     expect(groupHistory(entries, '/w/two')[0]!.entries[0]!.id).toBe('b')
   })
+
+  it('puts temporary chats, each in its own folder, into one group', () => {
+    const entries = [
+      { id: 'a', title: 'Alpha', cwd: '/c/web/temp/chat-1', lastModified: 1 },
+      { id: 'b', title: 'Beta', cwd: '/w/two', lastModified: 5 },
+      { id: 'c', title: 'Gamma', cwd: '/c/web/temp/chat-2', lastModified: 3 },
+    ]
+    const groups = groupHistory(entries, '', '/c/web/temp')
+    expect(groups.map(g => [g.cwd, g.temp ?? false, g.entries.map(e => e.id)])).toEqual([
+      ['/w/two', false, ['b']],
+      ['/c/web/temp', true, ['c', 'a']],
+    ])
+  })
 })
 
 describe('appReducer', () => {

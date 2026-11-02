@@ -1,4 +1,4 @@
-import { mkdirSync, statSync } from 'fs'
+import { mkdirSync, mkdtempSync, statSync } from 'fs'
 import { basename, extname, isAbsolute, join } from 'path'
 import { z } from 'zod/v4'
 import { PERMISSION_MODES } from '../types/permissions.js'
@@ -119,6 +119,8 @@ const SECURITY_HEADERS = {
 const createSessionBodySchema = lazySchema(() =>
   z.object({
     cwd: z.string().optional(),
+    // A temporary chat: a fresh empty folder under `<config>/web/temp`.
+    temporary: z.boolean().optional(),
     resume: z.string().regex(SESSION_ID).optional(),
     permission_mode: z.enum(PERMISSION_MODES).optional(),
     // A model alias or id; passed to `--model` as one argv entry.
@@ -231,7 +233,7 @@ function isDirectory(path: string): boolean {
  * `/?token=` URL once. `/api` and the WebSocket additionally require the
  * request to come from this server's own origin.
  *
- *   GET    /api/info                    → { workspace, preview_origins }
+ *   GET    /api/info                    → { workspace, preview_origins, temp_root }
  *   GET    /api/sessions                → running sessions
  *   POST   /api/sessions                → { session_id, work_dir } (new or resume)
  *   GET    /api/sessions/:id/ws         → stream-json relay to the session
@@ -257,6 +259,7 @@ export function startWebServer(
   ]
   let hosts = allowedHosts(config.port, extraHosts)
   const previewOrigins = config.previewOrigins ?? []
+  const tempRoot = join(config.configDir ?? getClaudeConfigHomeDir(), 'web', 'temp')
   const csp = contentSecurityPolicy(previewOrigins)
   const withHeaders = (res: Response): Response => {
     res.headers.set('Content-Security-Policy', csp)
@@ -331,9 +334,12 @@ export function startWebServer(
     if (!parsed.success) {
       return errorResponse(400, `Invalid request: ${parsed.error.message}`)
     }
-    const { cwd, resume, permission_mode: permissionMode, model } = parsed.data
+    const { cwd, temporary, resume, permission_mode: permissionMode, model } = parsed.data
     let workDir = config.workspace
-    if (cwd) {
+    if (temporary && !cwd && !resume) {
+      mkdirSync(tempRoot, { recursive: true })
+      workDir = mkdtempSync(join(tempRoot, 'chat-'))
+    } else if (cwd) {
       if (!isAbsolute(cwd) || !isDirectory(cwd)) {
         return errorResponse(400, `Not a directory: ${cwd}`)
       }
@@ -370,6 +376,7 @@ export function startWebServer(
       return Response.json({
         workspace: config.workspace,
         preview_origins: previewOrigins,
+        temp_root: tempRoot,
       })
     }
     if (pathname === '/api/sessions' && req.method === 'POST') {
