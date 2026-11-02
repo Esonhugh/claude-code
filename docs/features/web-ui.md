@@ -70,7 +70,7 @@ Sessions start in ~/.claude/web/workspace and run with your local credentials an
 
 ![和 agent 对话](images/web-ui-agent-chat.png)
 
-**第 8 步：账号和认证。** 左下角是账号卡片（订阅账号显示名字和套餐，API key 显示“API User”）。点开依次是 认证 ›、设置、统计、快捷键、退出登录。“认证”子菜单在 Anthropic OAuth（Claude 账号）、OpenAI OAuth（ChatGPT 账号）、Anthropic API key、OpenAI API key 之间切换，打勾的是当前使用的；API key 行点“编辑”打开对话框，填 key 和可选的 Base URL（只接受 http / https），按“保存并使用”。key 和 TUI `/login` 存在同一个地方，页面上只显示末 4 位和主机名。没有登录时对话区显示登录卡片：点按钮在新标签页登录，打不开时复制链接登录，再把授权码粘贴回来。
+**第 8 步：账号和认证。** 左下角是账号卡片（订阅账号显示名字和套餐，API key 显示“API User”）。点开依次是 认证 ›、设置、统计、快捷键、退出登录。“认证”子菜单在 Anthropic OAuth（Claude 账号）、OpenAI OAuth（ChatGPT 账号）、Anthropic API key、OpenAI API key 之间切换，打勾的是当前使用的；API key 行点“编辑”打开对话框，填 key 和可选的 Base URL（只接受 http / https），按“保存并使用”。key 和 TUI `/login` 存在同一个地方，页面上只显示末 4 位和主机名。是否已登录和 `claude auth status` 的判断一致（宿主管理的 token、`ANTHROPIC_AUTH_TOKEN`、apiKeyHelper、Bedrock、Vertex、Foundry 都算）。没有登录时对话区显示登录卡片：点按钮在新标签页登录，打不开时复制链接登录，再把授权码粘贴回来。
 
 ![账号与认证](images/web-ui-account.png)
 
@@ -156,7 +156,7 @@ Sessions start in ~/.claude/web/workspace and run with your local credentials an
 
 ## 实际输出
 
-每轮回答下面列出这一轮读过的网页来源（WebSearch、WebFetch 和 deep-research workflow 引用的链接，只保留 http / https）。`/compact` 和 `/recap` 在对话里折叠成一行。TodoWrite 或 TaskCreate / TaskUpdate 建的待办固定在输入框上方，显示“待办 1/2”和正在做的那一项。
+每轮回答下面列出这一轮读过的网页来源（WebSearch、WebFetch 和 deep-research workflow 引用的链接，只保留 http / https）。`/compact` 和 `/recap` 在对话里折叠成一行。TodoWrite 或 TaskCreate / TaskUpdate 建的待办固定在输入框上方，显示“待办 1/2”和正在做的那一项；两项之间显示“下一项：…”，全部做完才显示“全部完成”。
 
 导出的 Markdown 带工具调用摘要和来源列表；打印成 PDF 时去掉侧栏和输入框。
 
@@ -203,7 +203,7 @@ Ctrl+C 或 SIGTERM 会停止服务、结束所有会话并删除 `~/.claude/web.
 - **Host 和 Origin**：只接受本机名字（加上 `--trusted-host`，局域网模式下再加本机的局域网地址）作为 Host，防 DNS rebinding；会改状态的请求和所有 WebSocket 握手必须带同源 Origin，`Sec-Fetch-Site: cross-site` 一律拒绝。
 - **来源地址**：任何模式下都只服务 loopback 和局域网来源（RFC 1918、链路本地、CGNAT、IPv6 ULA），其他地址直接 403。
 - **局域网访问**：必须在启动时加 `--dangerously-allow-local-network`，网页里不能打开。局域网里拿到地址的人就能以你的身份在这台机器上跑命令；没有 TLS 时流量（包括 token）是明文。
-- **CSP**：`script-src 'self'`，不允许内联脚本和外部来源，`frame-ancestors 'none'`，并加 `nosniff`。
+- **CSP**：`script-src 'self'`，不允许内联脚本和外部来源，`frame-ancestors 'none'`，并加 `nosniff`。服务端未捕获的错误只返回纯 JSON 500，不暴露源码和路径。
 - **文件 API**：只给出本会话上传目录、会话工作目录里的文件和这个会话的工具读写过的文件，符号链接解析后再判断；claude 配置目录（`~/.claude/web` 除外）和 `.env`、`*.pem`、`*.key`、`.credentials.json` 等凭据文件永远不给。HTML、SVG、JS 一律按纯文本返回，不会作为本站页面执行。
 - **账号接口**：`GET /api/account` 不返回 key，只返回末 4 位；Base URL 只接受不带账号、查询串和片段的 http / https 地址。
 - **会话权限**：网页里的会话和终端里一样走权限确认；以 root 运行（没有 `IS_SANDBOX`）时不提供 bypass 模式。打开浏览器的子进程不继承 API key 等环境变量。

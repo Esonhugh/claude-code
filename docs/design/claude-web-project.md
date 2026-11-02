@@ -191,6 +191,7 @@ CREATE TABLE folders (path TEXT PRIMARY KEY, last_touched INTEGER NOT NULL);  --
 | #548（P2） | `projects` 表、`/api/projects`、协调者子进程（4.1）、项目视图中栏、新建和设置弹窗、窄屏“对话 / 任务”切换 |
 | #549（P1） | `session_meta`、`folders` 表、`GET /api/sidebar`、`PATCH /api/sessions/:id/meta`、`DELETE /api/sessions/:id?transcript=1`、置顶 / 项目 / 临时对话 / 最近目录四段、悬停卡片、右键菜单 |
 | #550（P3） | `tasks`、`task_events` 表，任务列表、看板、可拖动和用 `←` `→` 调整的分隔条、任务对话（增量读 worker transcript）、按 `agent_id` 路由的审批、O / D / S / C 菜单、已结束任务和协调者的恢复（`send_task_message` 带 `model`、`effort`，从 transcript 恢复），侧栏项目行的数量改从库里读 |
+| #552 | 收尾稳定性：上传预览 500、纯 JSON 500、待办置顶 “Next:”、登录按 `claude auth status`；用真实 API 跑通一次项目（派任务、任务内批准、恢复已结束任务） |
 | #551（P4） | 键盘、鼠标、剪贴板的整页检查和修复（弹窗内 Tab 循环、Esc 只关最上层、焦点回到触发按钮、窄屏 Ctrl+K 打开抽屉等），web 二进制 e2e 在 Linux、macOS、Windows CI 上运行 |
 
 和设计不同的地方：

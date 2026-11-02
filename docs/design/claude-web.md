@@ -386,6 +386,7 @@ claude web [--port <n>] [--host <ip>] [--workspace <dir>] [--no-open]
 | #542 | 账号卡片、认证子菜单（Anthropic / OpenAI 的 OAuth 和 API key、Base URL）、设置（常规、用量、功能开关）、`/api/account`、`/api/settings`、`/api/usage` |
 | #543 | MCP、Channels、Skills、插件、记忆、Hooks、Mods、统计弹窗接真实数据（`/api/ext/*`） |
 | #544 | Edit / Write diff、审批结果行、上下文弹层、待办和目标、`@` 补全、`↑` `↓` 调出历史输入、回退确认、`/compact` 和 `/recap` 折叠 |
+| #552 | 登录状态按 `claude auth status` 判断（宿主管理的 token、`ANTHROPIC_AUTH_TOKEN`、apiKeyHelper、Bedrock / Vertex / Foundry）；新会话上传预览不再 500；`Bun.serve` 加 `error` 处理，只回纯 JSON 500；待办置顶在两项之间显示“下一项：…”（同 CLI 的 `Next:`） |
 | #545、#548–#551 | 项目模式，见 [`claude-web-project.md`](claude-web-project.md) 第 9 节 |
 
 和设计不同的地方：
