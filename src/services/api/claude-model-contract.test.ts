@@ -623,6 +623,92 @@ test('deferred tools loaded through ToolSearch never carry cache_control', async
   }
 })
 
+test('a loaded deferred tool that leaves the pool stays declared so history is unchanged', async () => {
+  const deltaGate = spyOn(
+    growthbook,
+    'getFeatureValue_CACHED_MAY_BE_STALE',
+  ).mockImplementation((key, fallback) =>
+    key === 'tengu_glacier_2xr' ? (true as typeof fallback) : fallback,
+  )
+  const { z } = await import('zod/v4')
+  const { ToolSearchTool } =
+    await import('../../tools/ToolSearchTool/ToolSearchTool.js')
+  const { clearToolSchemaCache } =
+    await import('../../utils/toolSchemaCache.js')
+  const { createAssistantMessage } = await import('../../utils/messages.js')
+  const previous = process.env.ENABLE_TOOL_SEARCH
+  process.env.ENABLE_TOOL_SEARCH = 'true'
+  clearToolSchemaCache()
+  const departing = {
+    name: 'mcp__corp__departing',
+    isMcp: true,
+    inputSchema: z.object({ query: z.string() }),
+    async prompt() {
+      return 'departing lookup'
+    },
+  } as unknown as import('../../Tool.js').Tool
+  const messages = [
+    createUserMessage({ content: 'test' }),
+    createAssistantMessage({
+      content: [
+        {
+          type: 'tool_use',
+          id: 'search-departing',
+          name: 'ToolSearch',
+          input: { query: 'select:mcp__corp__departing', max_results: 5 },
+        },
+      ],
+    }),
+    createUserMessage({
+      content: [
+        {
+          type: 'tool_result',
+          tool_use_id: 'search-departing',
+          content: [{ type: 'tool_reference', tool_name: departing.name }],
+        },
+      ] as unknown as Parameters<typeof createUserMessage>[0]['content'],
+    }),
+  ]
+  const send = (tools: import('../../Tool.js').Tool[]) =>
+    queryModelWithoutStreaming({
+      messages,
+      systemPrompt: asSystemPrompt([]),
+      thinkingConfig: { type: 'disabled' },
+      tools,
+      signal: new AbortController().signal,
+      options: {
+        model: 'claude-sonnet-5',
+        querySource: 'repl_main_thread',
+        agents: [],
+        mcpTools: tools.filter(tool => tool.isMcp),
+        hasAppendSystemPrompt: false,
+        isNonInteractiveSession: true,
+        enablePromptCaching: true,
+        getToolPermissionContext: async () => getEmptyToolPermissionContext(),
+      },
+    })
+  try {
+    await send([ToolSearchTool, departing])
+    const before = requests.at(-1)!
+    await send([ToolSearchTool])
+    const after = requests.at(-1)!
+    expect(after.messages).toEqual(before.messages)
+    expect(JSON.stringify(after.messages)).toContain('"tool_reference"')
+    expect(after.tools).toContainEqual(
+      expect.objectContaining({
+        name: departing.name,
+        description: 'departing lookup',
+        defer_loading: true,
+      }),
+    )
+  } finally {
+    deltaGate.mockImplementation((_key, fallback) => fallback)
+    clearToolSchemaCache()
+    if (previous === undefined) delete process.env.ENABLE_TOOL_SEARCH
+    else process.env.ENABLE_TOOL_SEARCH = previous
+  }
+})
+
 test('gateways use the tool_reference beta with the deferred placeholder', async () => {
   const { z } = await import('zod/v4')
   const { ToolSearchTool } =
@@ -1077,7 +1163,7 @@ test.each([false, true])(
         defer_loading: true,
         input_schema: { required: ['key'] },
       })
-      const unsupported = await run('claude-haiku-4-5')
+      const unsupported = await run('claude-3-5-haiku-20241022')
       expect(
         unsupported.tools?.map(tool =>
           'name' in tool ? tool.name : undefined,

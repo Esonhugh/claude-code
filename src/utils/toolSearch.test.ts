@@ -7,6 +7,7 @@ import {
   getDeferredToolsDelta,
   getToolSearchRefusal,
   isToolSearchEnabled,
+  modelSupportsToolReference,
 } from './toolSearch.js'
 import { getEmptyToolPermissionContext } from '../Tool.js'
 
@@ -95,4 +96,13 @@ test('tool search refusal classification follows 2.1.311', () => {
     if (previous === undefined) delete process.env.ANTHROPIC_BASE_URL
     else process.env.ANTHROPIC_BASE_URL = previous
   }
+})
+
+test('tool_reference support excludes only the claude-3 family, like 2.1.317', () => {
+  expect(modelSupportsToolReference('claude-haiku-5-5')).toBe(true)
+  expect(modelSupportsToolReference('claude-haiku-4-5-20251001')).toBe(true)
+  expect(modelSupportsToolReference('claude-sonnet-5-5')).toBe(true)
+  expect(modelSupportsToolReference('claude-3-5-haiku-20241022')).toBe(false)
+  expect(modelSupportsToolReference('claude-3-7-sonnet-20250219')).toBe(false)
+  expect(modelSupportsToolReference('claude-3-opus-20240229')).toBe(false)
 })
