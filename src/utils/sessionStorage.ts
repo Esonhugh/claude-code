@@ -2212,7 +2212,7 @@ function applySnipRemovals(messages: Map<UUID, TranscriptMessage>): void {
  * Replaces the `[...values].filter(pred).sort((a,b) => Date(b)-Date(a))[0]` pattern
  * which is O(n log n) + 2n Date allocations.
  */
-function findLatestMessage<T extends { timestamp: string }>(
+export function findLatestMessage<T extends { timestamp: string }>(
   messages: Iterable<T>,
   predicate: (m: T) => boolean,
 ): T | undefined {
@@ -3706,7 +3706,12 @@ function walkChainBeforeParse(buf: Buffer): Buffer {
  */
 export async function loadTranscriptFile(
   filePath: string,
-  opts?: { keepAllLeaves?: boolean; buffer?: Buffer },
+  opts?: {
+    keepAllLeaves?: boolean
+    buffer?: Buffer
+    /** Keep every message before the last compact boundary, unrelinked, for display (the web history view). */
+    keepPreCompact?: boolean
+  },
 ): Promise<{
   messages: Map<UUID, TranscriptMessage>
   summaries: Map<UUID, string>
@@ -3793,7 +3798,7 @@ export async function loadTranscriptFile(
     let buf: Buffer | null = opts?.buffer ?? null
     let metadataLines: string[] | null = null
     let hasPreservedSegment = opts?.buffer !== undefined
-    if (buf === null && !isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_PRECOMPACT_SKIP)) {
+    if (buf === null && !opts?.keepPreCompact && !isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_PRECOMPACT_SKIP)) {
       const { size } = await stat(filePath)
       if (size > SKIP_PRECOMPACT_THRESHOLD) {
         const scan = await readTranscriptForLoad(filePath, size)
@@ -3831,6 +3836,7 @@ export async function loadTranscriptFile(
     // not run).
     if (
       !opts?.keepAllLeaves &&
+      !opts?.keepPreCompact &&
       !hasPreservedSegment &&
       !isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_PRECOMPACT_SKIP) &&
       buf.length > SKIP_PRECOMPACT_THRESHOLD
@@ -3977,7 +3983,7 @@ export async function loadTranscriptFile(
     // File doesn't exist or can't be read
   }
 
-  applyPreservedSegmentRelinks(messages)
+  if (!opts?.keepPreCompact) applyPreservedSegmentRelinks(messages)
   applySnipRemovals(messages)
 
   // Compute leaf UUIDs once at load time

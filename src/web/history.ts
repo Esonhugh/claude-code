@@ -2,7 +2,11 @@ import type { UUID } from 'crypto'
 import { readdir, readFile } from 'fs/promises'
 import { dirname, join } from 'path'
 import { listSessionsImpl } from '../utils/listSessionsImpl.js'
+import type { TranscriptMessage } from '../types/logs.js'
 import {
+  buildConversationChain,
+  findLatestMessage,
+  loadTranscriptFile,
   loadTranscriptFromFile,
   saveCustomTitle,
 } from '../utils/sessionStorage.js'
@@ -86,18 +90,49 @@ export async function readTranscript(
 > {
   const found = await resolveSessionFilePath(id)
   if (!found) return undefined
-  const log = await loadTranscriptFromFile(found.filePath)
-  const visible = toStreamJson(log.messages, false)
+  const log = await loadTranscriptFile(found.filePath, { keepPreCompact: true })
+  const leaf = findLatestMessage(log.messages.values(), m => log.leafUuids.has(m.uuid))
+  if (!leaf) return undefined
+  const chain = wholeChain(log.messages, leaf)
+  const visible = toStreamJson(chain, false)
   const end = Math.min(before ?? visible.length, visible.length)
   const start = Math.max(0, end - limit)
-  const first = log.messages[0] as { cwd?: string } | undefined
+  const first = chain[0] as { cwd?: string } | undefined
   return {
     messages: visible.slice(start, end),
     start,
     total: visible.length,
     cwd: first?.cwd ?? found.projectPath,
-    title: log.customTitle ?? log.summary,
+    title: log.customTitles.get(leaf.sessionId as UUID) ?? log.summaries.get(leaf.uuid),
   }
+}
+
+/**
+ * The chain to `leaf` across compactions, as the live view showed it: what was
+ * said before each boundary (reached by its `logicalParentUuid`), the boundary
+ * and its summary, then what followed. A compaction that kept recent messages
+ * leaves them where they were said; what followed it hangs off the kept tail on
+ * disk and is moved under the summary. Paging indexes into this list stay put
+ * when a running session compacts.
+ */
+function wholeChain(messages: Map<UUID, TranscriptMessage>, leaf: TranscriptMessage): TranscriptMessage[] {
+  type Boundary = TranscriptMessage & {
+    logicalParentUuid?: UUID
+    compactMetadata?: { preservedSegment?: { anchorUuid: UUID; tailUuid: UUID } }
+  }
+  const linked = new Map(messages)
+  let boundary: Boundary | undefined
+  for (const m of messages.values()) {
+    const seg = boundary?.compactMetadata?.preservedSegment
+    if (seg && m.parentUuid === seg.tailUuid && messages.has(seg.anchorUuid)) linked.set(m.uuid, { ...m, parentUuid: seg.anchorUuid })
+    if (m.type === 'system' && m.subtype === 'compact_boundary') {
+      boundary = m as Boundary
+      if (boundary.logicalParentUuid && messages.has(boundary.logicalParentUuid)) {
+        linked.set(m.uuid, { ...m, parentUuid: boundary.logicalParentUuid })
+      }
+    }
+  }
+  return buildConversationChain(linked, linked.get(leaf.uuid) ?? leaf)
 }
 
 function toStreamJson(

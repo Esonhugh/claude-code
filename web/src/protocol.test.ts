@@ -428,6 +428,19 @@ describe('conversation extras', () => {
     expect(state.items.slice(1).map(i => i.kind)).toEqual(['compact'])
   })
 
+  it('lets the mark stand for the /compact a reloaded transcript has after it', () => {
+    const state = fold([
+      { type: 'user', uuid: 'q', isReplay: true, message: { role: 'user', content: 'question' } },
+      { type: 'system', subtype: 'compact_boundary', uuid: 'c1', compact_metadata: { trigger: 'manual' } },
+      { type: 'user', uuid: 's', isReplay: true, isCompactSummary: true, message: { role: 'user', content: 'This session is being continued from a previous conversation. S' } },
+      { type: 'user', uuid: 'cmd', isReplay: true, message: { role: 'user', content: '<command-name>/compact</command-name>\n<command-message>compact</command-message>\n<command-args></command-args>' } },
+      { type: 'user', uuid: 'out', isReplay: true, message: { role: 'user', content: '<local-command-stdout>Compacted </local-command-stdout>' } },
+      { type: 'user', uuid: 'next', isReplay: true, message: { role: 'user', content: 'after' } },
+    ])
+    expect(state.items.map(i => i.kind)).toEqual(['user', 'user', 'compact', 'user'])
+    expect(state.items.at(-1)).toMatchObject({ id: 'next', text: 'after' })
+  })
+
   it('turns the answer to /recap into a ※ line', () => {
     const sent = startRecap(fold([{ type: 'result', subtype: 'success' }]), 18)
     expect(sent.busy).toBe(true)

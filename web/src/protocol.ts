@@ -772,7 +772,9 @@ export function reduce(state: ChatState, raw: unknown): ChatState {
         } else if (local) {
           if (local.text) next = addLocal(next, { kind: 'local', id: itemId, ...local })
         } else if (command !== undefined) {
-          next = { ...next, items: [...next.items, { kind: 'user', id: itemId, text: command }] }
+          // A reloaded transcript has the `/compact` after its mark; the mark stands for it.
+          const marked = /^\/compact(\s|$)/.test(command) && next.items.at(-1)?.kind === 'compact'
+          if (!marked) next = { ...next, items: [...next.items, { kind: 'user', id: itemId, text: command }] }
         } else if (text || images.length) {
           next = {
             ...next,
