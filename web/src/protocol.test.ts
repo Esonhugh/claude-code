@@ -723,6 +723,14 @@ describe('i18n', () => {
 })
 
 describe('interrupts and session info', () => {
+  it('shows an API retry until the next reply starts', () => {
+    const busy = { ...initialState, busy: true }
+    const retrying = reduce(busy, { type: 'system', subtype: 'api_retry', attempt: 2, max_retries: 10, retry_delay_ms: 5000, error_status: 529, error: 'overloaded', uuid: 'r1' })
+    expect(retrying.retry).toMatchObject({ attempt: 2, max: 10, delayMs: 5000, status: 529 })
+    expect(reduce(retrying, { type: 'stream_event', event: { type: 'message_start', message: { id: 'm1', model: 'x' } } }).retry).toBeUndefined()
+    expect(reduce(retrying, { type: 'result', subtype: 'success' }).retry).toBeUndefined()
+  })
+
   it('marks a stopped turn as interrupted, not with its internal diagnostic', () => {
     const busy = { ...initialState, busy: true }
     const stopped = reduce(busy, {

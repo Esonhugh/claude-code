@@ -53,7 +53,8 @@ function isVisible(message: Record<string, unknown>): boolean {
   if (message.type === 'attachment') {
     const attachment = message.attachment as { type?: string; commandMode?: string } | undefined
     // A message the user sent mid-turn, fed to the model between tool calls.
-    if (attachment?.type === 'queued_command') return (attachment.commandMode ?? 'prompt') === 'prompt'
+    // A task ending the model read mid-turn: the page notes it where it happened.
+    if (attachment?.type === 'queued_command') return ['prompt', 'task-notification'].includes(attachment.commandMode ?? 'prompt')
     return attachment?.type === 'goal_status'
   }
   // A channel message is meta to the model; the person sees it, as in the TUI.
