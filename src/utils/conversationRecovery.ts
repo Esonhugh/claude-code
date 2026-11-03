@@ -27,7 +27,13 @@ import {
 import {
   LOCAL_COMMAND_STDERR_TAG,
   LOCAL_COMMAND_STDOUT_TAG,
+  STATUS_TAG,
+  SUMMARY_TAG,
+  TASK_ID_TAG,
+  TASK_NOTIFICATION_TAG,
 } from '../constants/xml.js'
+import { SEND_MESSAGE_TOOL_NAME } from '../tools/SendMessageTool/constants.js'
+import { escapeXml } from './xml.js'
 import { logError } from './log.js'
 import {
   createAssistantMessage,
@@ -159,6 +165,55 @@ export type DeserializeResult = {
  */
 export function deserializeMessages(serializedMessages: Message[]): Message[] {
   return deserializeMessagesWithInterruptDetection(serializedMessages).messages
+}
+
+const TASK_NOTIFICATION_ID = new RegExp(`<${TASK_NOTIFICATION_TAG}>[\\s\\S]*?<${TASK_ID_TAG}>([^<]+)</${TASK_ID_TAG}>`, 'g')
+
+function messageText(message: Message): string {
+  if (message.type === 'attachment') {
+    const attachment = message.attachment as { type?: string; prompt?: unknown }
+    return attachment.type === 'queued_command' && typeof attachment.prompt === 'string' ? attachment.prompt : ''
+  }
+  if (message.type !== 'user') return ''
+  const content = message.message.content
+  if (typeof content === 'string') return content
+  return content.map(block => (block.type === 'text' ? block.text : '')).join('\n')
+}
+
+/**
+ * Like official, a background agent launched or resumed in the resumed
+ * session with no task-notification after that is reported as stopped, so a
+ * coordinator does not keep waiting for a worker whose process is gone.
+ * @internal Exported for testing
+ */
+export function createOrphanedAgentNotices(messages: Message[]): Message[] {
+  const descriptions = new Map<string, string>()
+  const pending = new Set<string>()
+  for (const message of messages) {
+    if (message.type === 'user' && message.toolUseResult && typeof message.toolUseResult === 'object') {
+      const result = message.toolUseResult as Record<string, unknown>
+      if (result.status === 'async_launched' && typeof result.agentId === 'string') {
+        descriptions.set(result.agentId, typeof result.description === 'string' ? result.description : result.agentId)
+        pending.add(result.agentId)
+      } else if (result.success === true && typeof result.resumedAgentId === 'string') {
+        pending.add(result.resumedAgentId)
+      }
+    }
+    for (const match of messageText(message).matchAll(TASK_NOTIFICATION_ID)) {
+      pending.delete(match[1]!.trim())
+    }
+  }
+  return [...pending].map(agentId =>
+    createUserMessage({
+      content: `<${TASK_NOTIFICATION_TAG}>
+<${TASK_ID_TAG}>${escapeXml(agentId)}</${TASK_ID_TAG}>
+<${STATUS_TAG}>stopped</${STATUS_TAG}>
+<${SUMMARY_TAG}>${escapeXml(`Background agent "${descriptions.get(agentId) ?? agentId}" didn't finish before the previous session ended`)}</${SUMMARY_TAG}>
+<note>No completion record was found for it in the previous session. It may have been stopped, or it may have been running when the previous Claude Code process exited — either way its transcript is saved, so its progress is not lost. Resume it by sending it a message with ${SEND_MESSAGE_TOOL_NAME} and ask for a status report before assuming the task landed.</note>
+</${TASK_NOTIFICATION_TAG}>`,
+      origin: { kind: 'task-notification' },
+    }),
+  )
 }
 
 /**
@@ -624,6 +679,7 @@ export async function loadConversationForResume(
     // Deserialize messages to handle unresolved tool uses and ensure proper format
     const deserialized = deserializeMessagesWithInterruptDetection(messages!)
     messages = deserialized.messages
+    messages.push(...createOrphanedAgentNotices(messages))
 
     // Process session start hooks for resume
     const hookMessages = await processSessionStartHooks('resume', {

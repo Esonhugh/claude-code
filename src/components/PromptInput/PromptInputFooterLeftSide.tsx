@@ -273,7 +273,7 @@ function ModeIndicator({
           isBackgroundTask(t) &&
           t.type !== 'in_process_teammate' &&
           t.type !== 'local_workflow' &&
-          !(isAnt() && isPanelAgentTask(t)),
+          !isPanelAgentTask(t),
       ),
     [tasks],
   )
@@ -440,8 +440,9 @@ function ModeIndicator({
       : []),
   ]
 
+  // Panel agents get their stop hints from the panel selection, like official.
   const hasRunningAgentTasks = Object.values(tasks).some(
-    t => t.type === 'local_agent' && t.status === 'running',
+    t => t.type === 'local_agent' && t.status === 'running' && !isPanelAgentTask(t),
   )
 
   // Get hint parts separately for potential second-line rendering

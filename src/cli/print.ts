@@ -1082,6 +1082,8 @@ export async function runHeadless(
   const needsFullArray = options.outputFormat === 'json' && options.verbose
   const messages: SDKMessage[] = []
   let lastMessage: SDKMessage | undefined
+  // A background agent's notification turn adds its own result after the first one.
+  const resultTexts: string[] = []
   // Streamlined mode transforms messages when CLAUDE_CODE_STREAMLINED_OUTPUT=true and using stream-json
   // Build flag gates this out of external builds; env var is the runtime opt-in for ant builds
   const transformToStreamlined =
@@ -1169,6 +1171,9 @@ export async function runHeadless(
       if (needsFullArray) {
         messages.push(message)
       }
+      if (message.type === 'result' && message.subtype === 'success') {
+        resultTexts.push(message.result)
+      }
       lastMessage = message
     }
   }
@@ -1197,13 +1202,11 @@ export async function runHeadless(
         throw new Error('No messages returned')
       }
       switch (lastMessage.subtype) {
-        case 'success':
-          writeToStdout(
-            lastMessage.result.endsWith('\n')
-              ? lastMessage.result
-              : lastMessage.result + '\n',
-          )
+        case 'success': {
+          const text = resultTexts.join('\n\n')
+          writeToStdout(text.endsWith('\n') ? text : text + '\n')
           break
+        }
         case 'error_during_execution':
           writeToStdout(`Execution error`)
           break
@@ -1283,7 +1286,6 @@ function runHeadlessStreaming(
     | undefined
   let inputClosed = false
   let shutdownPromptInjected = false
-  let heldBackResult: StdoutMessage | null = null
   let abortController: AbortController | undefined
   let shellAbortController: AbortController | undefined
   let shellCommandRunning = false
@@ -1358,23 +1360,10 @@ function runHeadlessStreaming(
       promptId: PromptVariant
       generationRequestId: string | null
     } | null
-    pendingSuggestion: {
-      type: 'prompt_suggestion'
-      suggestion: string
-      uuid: UUID
-      session_id: string
-    } | null
-    pendingLastEmittedEntry: {
-      text: string
-      promptId: PromptVariant
-      generationRequestId: string | null
-    } | null
   } = {
     abortController: null,
     inflightPromise: null,
     lastEmitted: null,
-    pendingSuggestion: null,
-    pendingLastEmittedEntry: null,
   }
 
   // Set up AWS auth status listener if enabled
@@ -2233,7 +2222,7 @@ function runHeadlessStreaming(
   })
 
   const run = async () => {
-    if (running || shellCommandRunning) {
+    if (running || shellCommandRunning || isShuttingDown()) {
       return
     }
 
@@ -2302,32 +2291,10 @@ function runHeadlessStreaming(
       // Drains the queue, batching consecutive prompt-mode commands into one
       // ask() call so messages that queued up during a long turn coalesce
       // into a single follow-up turn instead of N separate turns.
-      const flushHeldBackResult = () => {
-        if (!heldBackResult) return
-        output.enqueue(heldBackResult)
-        heldBackResult = null
-        if (suggestionState.pendingSuggestion) {
-          output.enqueue(suggestionState.pendingSuggestion)
-          // Now that the suggestion is actually delivered, record it for acceptance tracking
-          if (suggestionState.pendingLastEmittedEntry) {
-            suggestionState.lastEmitted = {
-              ...suggestionState.pendingLastEmittedEntry,
-              emittedAt: Date.now(),
-            }
-            suggestionState.pendingLastEmittedEntry = null
-          }
-          suggestionState.pendingSuggestion = null
-        }
-      }
-      const hasRunningBackgroundAgents = () =>
-        getRunningTasks(getAppState()).some(
-          t =>
-            (t.type === 'local_agent' || t.type === 'local_workflow') &&
-            isBackgroundTask(t),
-        )
-
       const drainCommandQueue = async () => {
-        while ((command = dequeue(isMainThread))) {
+        // Like official, shutdown (SIGTERM/SIGINT) never starts another model turn,
+        // e.g. for the notification of a worker the shutdown itself stopped.
+        while (!isShuttingDown() && (command = dequeue(isMainThread))) {
           // Keep stdin controls responsive while queued turns wait for model validation.
           await pendingModelSwitches
           streamState.refresh()
@@ -2489,9 +2456,6 @@ function runHeadlessStreaming(
                 uuid: randomUUID(),
               })
             }
-            // Like official, the turn held back for this agent gets its result
-            // before the notification's own turn starts.
-            if (!hasRunningBackgroundAgents()) flushHeldBackResult()
             // No continue -- fall through to ask() so the model processes the result
           }
 
@@ -2506,8 +2470,6 @@ function runHeadlessStreaming(
           // Abort any in-flight suggestion generation and track acceptance
           suggestionState.abortController?.abort()
           suggestionState.abortController = null
-          suggestionState.pendingSuggestion = null
-          suggestionState.pendingLastEmittedEntry = null
           if (suggestionState.lastEmitted) {
             if (command.mode === 'prompt') {
               // SDK user messages enqueue ContentBlockParam[], not a plain string
@@ -2649,14 +2611,8 @@ function runHeadlessStreaming(
                   output.enqueue(event)
                 }
 
-                // Hold-back: don't emit result while background agents are running
-                if (hasRunningBackgroundAgents()) {
-                  flushHeldBackResult()
-                  heldBackResult = message
-                } else {
-                  flushHeldBackResult()
-                  output.enqueue(message)
-                }
+                // Like official, a turn's result is not held back for background agents.
+                output.enqueue(message)
               } else {
                 // Flush SDK events (task_started, task_progress) so background
                 // agent progress is streamed in real-time, not batched until result.
@@ -2749,22 +2705,8 @@ function runHeadlessStreaming(
                     promptId: result.promptId,
                     generationRequestId: result.generationRequestId,
                   }
-                  // Defer emission if the result is being held for background agents,
-                  // so that prompt_suggestion always arrives after result.
-                  // Only set lastEmitted when the suggestion is actually delivered
-                  // to the consumer; deferred suggestions may be discarded before
-                  // delivery if a new command arrives first.
-                  if (heldBackResult) {
-                    suggestionState.pendingSuggestion = suggestionMsg
-                    suggestionState.pendingLastEmittedEntry = {
-                      text: lastEmittedEntry.text,
-                      promptId: lastEmittedEntry.promptId,
-                      generationRequestId: lastEmittedEntry.generationRequestId,
-                    }
-                  } else {
-                    suggestionState.lastEmitted = lastEmittedEntry
-                    output.enqueue(suggestionMsg)
-                  }
+                  suggestionState.lastEmitted = lastEmittedEntry
+                  output.enqueue(suggestionMsg)
                 } catch (error) {
                   if (
                     error instanceof Error &&
@@ -2825,7 +2767,7 @@ function runHeadlessStreaming(
             t => isBackgroundTask(t) && t.type !== 'in_process_teammate',
           )
           const hasMainThreadQueued = peek(isMainThread) !== undefined
-          if (hasRunningBg || hasMainThreadQueued) {
+          if (!isShuttingDown() && (hasRunningBg || hasMainThreadQueued)) {
             waitingForAgents = true
             if (!hasMainThreadQueued) {
               runPhase = 'waiting_for_agents'
@@ -2836,8 +2778,6 @@ function runHeadlessStreaming(
           }
         }
       } while (waitingForAgents)
-
-      flushHeldBackResult()
     } catch (error) {
       // Emit error result message before shutting down
       // Write directly to structuredIO to ensure immediate delivery
@@ -3464,7 +3404,6 @@ function runHeadlessStreaming(
           suggestionState.abortController?.abort()
           suggestionState.abortController = null
           suggestionState.lastEmitted = null
-          suggestionState.pendingSuggestion = null
           // Snapshot synchronously with the abort, before the next turn drains
           // these messages. The drain installs its controller without yielding
           // after dequeueing, so no unarmed batch is held outside this queue.
@@ -3488,7 +3427,6 @@ function runHeadlessStreaming(
           suggestionState.abortController?.abort()
           suggestionState.abortController = null
           suggestionState.lastEmitted = null
-          suggestionState.pendingSuggestion = null
           managedSSHControl.shutdown()
     await remoteUIControl.dispose()
           sendControlResponseSuccess(message)

@@ -223,6 +223,8 @@ export type LocalAgentTaskState = TaskStateBase & {
   type: 'local_agent'
   /** Set only by an explicit user stop, never by a model/system abort. */
   stoppedByUser?: boolean
+  /** Set when a model stopped it with TaskStop. */
+  stoppedByParent?: boolean
   agentId: string
   prompt: string
   selectedAgent?: AgentDefinition
@@ -295,7 +297,7 @@ function retainAgentForChild(ownerId: string | undefined, childId: string, setAp
 
 /**
  * A local_agent task that the CoordinatorTaskPanel manages (not main-session).
- * For ants, these render in the panel instead of the background-task pill.
+ * These render in the panel instead of the background-task pill.
  * This is the ONE predicate that all pill/panel filters must agree on — if
  * the gate changes, change it here.
  */
@@ -404,6 +406,7 @@ export function enqueueAgentNotification({
   // paths synchronously while that enqueue is pending.
   let shouldEnqueue = false
   let routedAgentId: AgentId | undefined
+  let stoppedBy = ''
   setAppState(prev => {
     const task = prev.tasks[taskId]
     if (!isLocalAgentTask(task) || task.notified || notificationsInFlight.has(taskId)) {
@@ -411,6 +414,7 @@ export function enqueueAgentNotification({
     }
 
     shouldEnqueue = true
+    stoppedBy = task.stoppedByUser ? ' by user' : task.stoppedByParent ? ' by Claude' : ''
     if (task.ownerAgentId) {
       const parentTask = prev.tasks[task.ownerAgentId]
       if (isLiveLocalAgentTask(parentTask)) {
@@ -433,7 +437,7 @@ export function enqueueAgentNotification({
       ? `Agent "${description}" ${waiting ? 'is waiting on its own background work' : turnLimit !== undefined ? `stopped at its ${turnLimit}-turn limit (partial result; ${SEND_MESSAGE_TOOL_NAME} to task-id to continue)` : 'finished'}`
       : status === 'failed'
         ? `Agent "${description}" failed: ${error || 'Unknown error'}`
-        : `Agent "${description}" was stopped`
+        : `Agent "${description}" was stopped${stoppedBy}`
   const summary = escapeXml(summaryText)
 
   const outputPath = getTaskOutputPath(taskId)
@@ -546,7 +550,7 @@ export const LocalAgentTask: Task = {
 export function killAsyncAgent(
   taskId: string,
   setAppState: SetAppState,
-  source: 'system' | 'user' = 'system',
+  source: 'system' | 'user' | 'parent' = 'system',
 ): void {
   let killed = false
   updateTaskState<LocalAgentTaskState>(taskId, setAppState, task => {
@@ -566,6 +570,7 @@ export function killAsyncAgent(
       ...task,
       status: 'killed',
       ...(source === 'user' && { stoppedByUser: true }),
+      ...(source === 'parent' && { stoppedByParent: true }),
       endTime: Date.now(),
       evictAfter: task.retain ? undefined : Date.now() + PANEL_GRACE_MS,
       abortController: undefined,
