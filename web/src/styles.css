@@ -171,11 +171,8 @@ h1, h2, h3 { text-wrap: balance; margin: 0 }
 .arrow { position: absolute; right: -9px; top: 4px; color: var(--muted); font-size: 12px; background: var(--surface) }
 .transcript { display: flex; flex-direction: column; gap: 8px; font-size: 13px }
 .transcript .u { background: var(--accent-soft); padding: 6px 10px; border-radius: 8px; align-self: flex-end; max-width: 90% }
-.agent-input { display: flex; gap: 6px; border-top: 1px solid var(--line); padding: 10px 12px }
-.agent-input input { flex: 1; min-width: 0; border: 1px solid var(--line); border-radius: 8px; padding: 7px 10px; background: var(--bg); color: var(--fg); font: inherit }
-.agent-input input:disabled { opacity: .6 }
-.agent-input select { flex: none; max-width: 40%; border: 1px solid var(--line); border-radius: 8px; padding: 0 6px; background: var(--bg); color: var(--muted); font: inherit; font-size: 12px }
-.agent-input select:disabled { opacity: .7; appearance: none; padding: 0 8px }
+/* The agent's box is the chat composer, inside the side panel's padding. */
+.composer.agent-input { padding: 10px 0 0; border-top: 1px solid var(--line); background: transparent }
 .delivery { font-size: 12px; padding: 6px 10px; border-radius: 6px; background: var(--ok-soft); color: var(--ok) }
 .delivery.no { background: var(--bad-soft); color: var(--bad) }
 .screen .f31 { color: #ff7b72 } .screen .f32 { color: #7ee787 } .screen .f33 { color: #e3b341 } .screen .f34 { color: #79c0ff } .screen .f35 { color: #d2a8ff } .screen .f36 { color: #56d4dd } .screen .f90 { color: #8b949e } .screen .f1 { font-weight: 600 }
@@ -804,7 +801,6 @@ a.btn { text-decoration: none; color: var(--fg); display: inline-block }
 .group-h button { border: 0; background: transparent; color: inherit; font: inherit; letter-spacing: inherit; text-transform: inherit; padding: 0; cursor: pointer }
 .transcript .msg { max-width: none }
 .agent-pane { display: flex; flex-direction: column; gap: 10px; min-height: 0 }
-.agent-input textarea { flex: 1; min-width: 0; border: 1px solid var(--line); border-radius: 8px; padding: 7px 10px; background: var(--bg); color: var(--fg); font: inherit; resize: none; height: 36px }
 .wfcur .dot { flex: none }
 .wfnow .wcard { cursor: pointer }
 .lanes .lane h3 small { font-weight: 400; color: var(--muted) }

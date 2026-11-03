@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test'
-import { filterCommands, moveSelection, nativeCommand, paletteQuery, recallPrompt, type SlashCommand, typedInFull } from './commands'
+import { agentCommands, filterCommands, moveSelection, nativeCommand, paletteQuery, recallPrompt, type SlashCommand, typedInFull } from './commands'
 
 const cmd = (name: string, aliases?: string[]): SlashCommand => ({
   name,
@@ -53,6 +53,13 @@ describe('filterCommands', () => {
       'context',
       'usage',
     ])
+  })
+})
+
+describe('agentCommands', () => {
+  it('keeps only skills: an agent gets the text as typed, so local commands do nothing there', () => {
+    expect(agentCommands(commands, ['simplify', 'missing']).map(c => c.name)).toEqual(['simplify'])
+    expect(agentCommands(commands, [])).toEqual([])
   })
 })
 

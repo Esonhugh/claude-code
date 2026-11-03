@@ -9,13 +9,13 @@ import {
   useRef,
   useState,
 } from 'react'
-import { filterCommands, moveSelection, paletteQuery, recallPrompt, type SlashCommand, typedInFull } from '../commands'
+import { agentCommands, filterCommands, moveSelection, paletteQuery, recallPrompt, type SlashCommand, typedInFull } from '../commands'
 import type { Daybreak } from '../api'
 import { formatBytes, mentionPath } from '../files'
 import { type Approval, type ApprovalChoice, approvalRules, type ContextUsage, type Goal, type ModelOption, type Todo } from '../protocol'
 import { toolSummary } from '../tools'
 import { modelName, modelOption } from './Message'
-import { FootMenu, modeOf, offeredModes, SendIcon, type T } from './ui'
+import { FootMenu, modeOf, nextMode, offeredModes, SendIcon, type T } from './ui'
 
 const FALLBACK_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max']
 const DAYBREAK: Daybreak[] = ['off', 'blue', 'red']
@@ -706,6 +706,87 @@ export function InputBox({
 }
 
 /** Permission mode on the left of the composer row. */
+/** What a chat box can do; every field is required so no surface goes without one. */
+export type ComposerTools = {
+  /** The session's slash commands and skills (`initialize` / `system/init`). */
+  commands: SlashCommand[]
+  hiddenCommands: string[]
+  skills: string[]
+  listFiles: (query: string) => Promise<string[]>
+  /** Prompts already sent to this target, oldest first, for ↑ / ↓. */
+  prompts: string[]
+  mode: { mode: string; plan?: boolean; onMode: (mode: string) => void }
+  model: {
+    model: string | undefined
+    effort: string | undefined
+    models: ModelOption[]
+    onModel: (value: string) => void
+    onEffort: (level: string) => void
+    heading?: string
+    locked?: boolean
+    daybreak?: { value: string; onChange: (value: Daybreak) => void }
+  }
+}
+
+/** A session's palette and permission mode, the part of {@link ComposerTools} every box in it shares. */
+export function chatTools(
+  chat: { commands: SlashCommand[]; terminalCommands: string[]; permissionMode?: string; env: { skills?: string[]; planMode?: boolean } },
+  listFiles: (query: string) => Promise<string[]>,
+  prompts: string[],
+  onMode: (mode: string) => void,
+): Omit<ComposerTools, 'model'> {
+  return {
+    commands: chat.commands,
+    hiddenCommands: chat.terminalCommands,
+    skills: chat.env.skills ?? [],
+    listFiles,
+    prompts,
+    mode: { mode: chat.permissionMode ?? 'default', plan: chat.env.planMode, onMode },
+  }
+}
+
+/**
+ * The chat input used by every conversation: a session, a project's
+ * coordinator, a task and an agent in the side panel. `agent` boxes message a
+ * subagent, which gets the text as typed (the CLI's agent view does the same),
+ * so their palette offers only skills.
+ */
+export function ChatComposer({
+  tools,
+  agent,
+  extra,
+  ...box
+}: Omit<Parameters<typeof InputBox>[0], 'start' | 'commands' | 'hiddenCommands' | 'skills' | 'listFiles' | 'prompts' | 'onShiftTab' | 'crow'> & {
+  tools: ComposerTools
+  agent?: boolean
+  /** More buttons in the row, after the mode button (the chat's goal). */
+  extra?: ReactNode
+}) {
+  const { mode, model } = tools
+  return (
+    <InputBox
+      {...box}
+      commands={agent ? agentCommands(tools.commands, tools.skills) : tools.commands}
+      hiddenCommands={tools.hiddenCommands}
+      skills={tools.skills}
+      listFiles={tools.listFiles}
+      prompts={tools.prompts}
+      onShiftTab={() => mode.onMode(nextMode(mode.mode, mode.plan))}
+      crow={
+        <>
+          <ModeButton t={box.t} mode={mode.mode} plan={mode.plan} onMode={mode.onMode} />
+          {extra}
+          {model.models.length > 0 && (
+            <FootMenu right label={box.t('model')} button={modelButtonLabel(model.model, model.effort, model.models, box.t)}>
+              {close => <ModelMenu t={box.t} {...model} close={close} />}
+            </FootMenu>
+          )}
+        </>
+      }
+    />
+  )
+}
+
 export function ModeButton({
   t,
   mode,

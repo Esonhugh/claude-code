@@ -25,7 +25,7 @@ import {
 import { buildTeam, isFinished } from './agents'
 import { AccountCard, ApiKeyDialog, LoginGate, useAccount } from './components/Account'
 import { type AgentsView, agentTasks } from './components/Agents'
-import { AskDock, ContextChip, GoalMenu, InputBox, ModeButton, ModelMenu, modelButtonLabel, Pins } from './components/Composer'
+import { AskDock, ChatComposer, chatTools, ContextChip, GoalMenu, Pins } from './components/Composer'
 import { AppDialog, type Palette, type Theme } from './components/Dialogs'
 import type { ContextUsage } from './components/Settings'
 import { AgentsContext, ChatContext, FilesContext, joinTurns, Message, TeamBar } from './components/Message'
@@ -36,7 +36,7 @@ import { type DialogKind, Sidebar, type SidebarProject } from './components/Side
 import { SidePanel, type SideTab } from './components/SidePanel'
 import { StartPage } from './components/StartPage'
 import { ColumnDrag, type Columns, columnVars } from './components/ColumnDrag'
-import { FootMenu, followScroll, formatElapsed, nextMode, readStored, type T, writeStored } from './components/ui'
+import { FootMenu, followScroll, formatElapsed, readStored, type T, writeStored } from './components/ui'
 import { WebPreview } from './components/WebPreview'
 import { chatMarkdown, exportFileName } from './exportChat'
 import { dataUrlFile, filesBase, IMAGE_TYPES, mentionPath, readAsDataUrl, sessionFiles, setHome, tilde, uploadFile } from './files'
@@ -1198,7 +1198,7 @@ export function App() {
               />
             )}
             <Pins t={t} todos={todos} />
-            <InputBox
+            <ChatComposer
               t={t}
               busy={chat.busy}
               disabled={chat.mode === 'elsewhere'}
@@ -1210,41 +1210,18 @@ export function App() {
               onFocus={() => view && chat.mode === 'readonly' && void resume(view)}
               files={files}
               setFiles={setFiles}
-              commands={chat.commands}
-              hiddenCommands={chat.terminalCommands}
-              skills={chat.env.skills}
-              listFiles={listFiles}
-              prompts={prompts}
-              onShiftTab={() => view && changeMode(view, nextMode(chat.permissionMode, chat.env.planMode))}
-              crow={
-                <>
-                  <ModeButton
-                    t={t}
-                    mode={chat.permissionMode ?? 'default'}
-                    plan={chat.env.planMode}
-                    onMode={mode => view && changeMode(view, mode)}
-                  />
-                  {chat.goal && (
-                    <GoalMenu t={t} goal={chat.goal} onClear={() => view && void sendPrompt(view, '/goal clear')} />
-                  )}
-                  {models.length > 0 && (
-                    <FootMenu right label={t('model')} button={modelButtonLabel(chat.model, chat.effort, models, t)}>
-                      {close => (
-                        <ModelMenu
-                          t={t}
-                          model={chat.model}
-                          effort={chat.effort}
-                          models={models}
-                          onModel={model => view && changeModel(view, model)}
-                          onEffort={effort => view && changeEffort(view, effort)}
-                          daybreak={daybreak}
-                          close={close}
-                        />
-                      )}
-                    </FootMenu>
-                  )}
-                </>
-              }
+              tools={{
+                ...chatTools(chat, listFiles, prompts, mode => view && changeMode(view, mode)),
+                model: {
+                  model: chat.model,
+                  effort: chat.effort,
+                  models,
+                  onModel: model => view && changeModel(view, model),
+                  onEffort: effort => view && changeEffort(view, effort),
+                  daybreak,
+                },
+              }}
+              extra={chat.goal && <GoalMenu t={t} goal={chat.goal} onClear={() => view && void sendPrompt(view, '/goal clear')} />}
             />
           </div>
         </>,
@@ -1413,7 +1390,13 @@ export function App() {
           onStopTask={taskId => stopTask(view, taskId)}
           onStatusRequest={statusRequest}
           todos={todos}
-          onSendTask={(taskId, text) => sendToTask(view, taskId, text)}
+          onSendTask={(taskId, text, pick) => sendToTask(view, taskId, text, pick)}
+          agentInput={{
+            tools: chatTools(chat, listFiles, [], mode => changeMode(view, mode)),
+            model: chat.model,
+            effort: chat.effort,
+            models,
+          }}
           onRequest={body => requestAsync(view, REQUEST_PREFIX.background, body)}
           onClose={() => setSheetOpen(false)}
         />

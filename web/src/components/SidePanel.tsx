@@ -4,7 +4,7 @@ import type { Groups } from '../background'
 import { sessionFiles, tilde } from '../files'
 import type { ModelOption, Todo } from '../protocol'
 import type { SessionChat } from '../store'
-import { AgentsTab, type AgentsView, agentTasks, WorkflowTab } from './Agents'
+import { type AgentInput, type AgentPick, AgentsTab, type AgentsView, agentTasks, WorkflowTab } from './Agents'
 import { BackgroundPane, type HostRequest, MonitorPane, TerminalsPane, useBackground } from './BackgroundPanes'
 import { shortTokens } from './Composer'
 import { modelName } from './Message'
@@ -378,6 +378,7 @@ export function SidePanel({
   onOpenFile,
   onStopTask,
   onSendTask,
+  agentInput,
   onRequest,
   onStatusRequest,
   todos = [],
@@ -399,7 +400,9 @@ export function SidePanel({
   setWorkflowId: (id: string | undefined) => void
   onOpenFile: (path: string) => void
   onStopTask: (id: string) => void
-  onSendTask: (id: string, text: string) => Promise<string>
+  onSendTask: (id: string, text: string, pick: AgentPick) => Promise<string>
+  /** The palette, files, mode and model an agent's input box shares with the session's. */
+  agentInput: AgentInput
   /** A control request to the session; Status reads usage, memory and sandbox with it. */
   onStatusRequest?: HostRequest
   todos?: Todo[]
@@ -473,6 +476,7 @@ export function SidePanel({
             }}
             onStop={onStopTask}
             onSend={onSendTask}
+            input={agentInput}
             t={t}
           />
         )}

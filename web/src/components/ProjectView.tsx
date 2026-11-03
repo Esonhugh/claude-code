@@ -31,11 +31,11 @@ import {
 } from '../projects'
 import { type Approval, type ApprovalChoice, type Block, currentTodos, initialState, type ModelOption, reduce, type TaskNote } from '../protocol'
 import type { HistoryEntry, SessionChat } from '../store'
-import { AskDock, InputBox, ModeButton, ModelMenu, modelButtonLabel } from './Composer'
+import { AskDock, ChatComposer, chatTools, type ComposerTools } from './Composer'
 import { Dialog } from './Dialog'
 import { joinTurns, Message, modelName } from './Message'
 import { WORKER_MODELS } from './ProjectDialog'
-import { FootMenu, followScroll, readStored, type T, writeStored } from './ui'
+import { followScroll, readStored, type T, writeStored } from './ui'
 
 type Show = 'chat' | 'tasks'
 
@@ -133,14 +133,12 @@ function TaskPane({
   models,
   head,
   approvals,
-  modeButton,
+  tools,
   signedOut,
   draft,
   setDraft,
   files,
   setFiles,
-  listFiles,
-  skills,
   notice,
   followUntil,
   meta,
@@ -157,14 +155,13 @@ function TaskPane({
   models: ModelOption[]
   head: ReactNode
   approvals: Approval[]
-  modeButton: ReactNode
+  /** The coordinator's palette, files and mode; the model row is the task's own. */
+  tools: Omit<ComposerTools, 'prompts' | 'model'>
   signedOut?: boolean
   draft: string
   setDraft: (v: string) => void
   files: File[]
   setFiles: (files: File[]) => void
-  listFiles: (query: string) => Promise<string[]>
-  skills?: string[]
   notice?: string
   followUntil: number
   meta: string
@@ -177,6 +174,7 @@ function TaskPane({
   const items = useMemo(() => messages.reduce(reduce, initialState).items, [messages])
   const shown = useMemo(() => workerItems(items, task.brief), [items, task.brief])
   const todos = useMemo(() => currentTodos(items), [items])
+  const prompts = useMemo(() => items.flatMap(i => (i.kind === 'user' && i.text ? [i.text] : [])), [items])
   const feedRef = useRef<HTMLDivElement>(null)
   const atBottom = useRef(true)
   const feedTop = useRef(0)
@@ -187,7 +185,6 @@ function TaskPane({
   const live = isLive(task)
   const open = canMessage(task)
   const approval = approvals[0]
-  const label = modelLabel(model, models)
   const done = todos.filter(x => x.status === 'completed').length
   return (
     <>
@@ -244,8 +241,9 @@ function TaskPane({
             onAnswer={choice => onAnswer(approval, choice)}
           />
         )}
-        <InputBox
+        <ChatComposer
           t={t}
+          agent
           busy={false}
           disabled={!open}
           signedOut={signedOut}
@@ -258,31 +256,20 @@ function TaskPane({
           onStop={() => {}}
           files={files}
           setFiles={setFiles}
-          skills={skills}
-          listFiles={listFiles}
           placeholder={t(!open ? 'taskPhStopped' : live ? 'taskPhRunning' : 'taskPhEnded')}
-          crow={
-            <>
-              {modeButton}
-              {models.length > 0 && (
-                <FootMenu right label={t('model')} button={`${label ?? t('model')}${effort ? ` · ${effort}` : ''}`}>
-                  {close => (
-                    <ModelMenu
-                      t={t}
-                      model={pick.model ?? model}
-                      effort={effort}
-                      models={models}
-                      heading={live ? t('taskModelLocked') : t('taskModelNext')}
-                      locked={live}
-                      onModel={value => onPick({ ...pick, model: value })}
-                      onEffort={level => onPick({ ...pick, effort: level })}
-                      close={close}
-                    />
-                  )}
-                </FootMenu>
-              )}
-            </>
-          }
+          tools={{
+            ...tools,
+            prompts,
+            model: {
+              model: pick.model ?? model,
+              effort,
+              models,
+              heading: live ? t('taskModelLocked') : t('taskModelNext'),
+              locked: live,
+              onModel: value => onPick({ ...pick, model: value }),
+              onEffort: level => onPick({ ...pick, effort: level }),
+            },
+          }}
         />
       </div>
     </>
@@ -588,7 +575,7 @@ export function ProjectView({
     </button>
   )
   const wideButton = ib(t(wide ? 'restorePane' : 'expandPane'), wide ? '⤡' : '⤢', () => setWide(!wide), true, true)
-  const modeButton = <ModeButton t={t} mode={mode} plan={chat.env.planMode} onMode={onMode} />
+  const tools = { ...chatTools(chat, listFiles, prompts, onMode), mode: { mode, plan: chat.env.planMode, onMode } }
 
   // ---- the splitter between the columns: drag it, or focus it and use ← →. ----
   const clampWidth = (px: number) => {
@@ -871,7 +858,7 @@ export function ProjectView({
               onAnswer={choice => onAnswer(approval, choice)}
             />
           )}
-          <InputBox
+          <ChatComposer
             t={t}
             busy={chat.busy}
             disabled={chat.mode === 'elsewhere'}
@@ -879,39 +866,19 @@ export function ProjectView({
             draft={draft}
             setDraft={setDraft}
             onSend={() => {
-            atBottom.current = true
-            onSend()
-          }}
+              atBottom.current = true
+              onSend()
+            }}
             onStop={onStop}
             onFocus={onFocus}
             files={files}
             setFiles={setFiles}
-            commands={chat.commands}
-            hiddenCommands={chat.terminalCommands}
-            skills={chat.env.skills}
-            listFiles={listFiles}
-            prompts={prompts}
             placeholder={t('coordinatorPlaceholder')}
-            crow={
-              <>
-                {modeButton}
-                {models.length > 0 && (
-                  <FootMenu right label={t('model')} button={modelButtonLabel(chatModel, chatEffort, models, t)}>
-                    {close => (
-                      <ModelMenu
-                        t={t}
-                        model={chatModel}
-                        effort={chatEffort}
-                        models={models}
-                        onModel={onModel}
-                        onEffort={onEffort}
-                        close={close}
-                      />
-                    )}
-                  </FootMenu>
-                )}
-              </>
-            }
+            tools={{
+              ...tools,
+              prompts,
+              model: { model: chatModel, effort: chatEffort, models, onModel, onEffort },
+            }}
           />
         </div>
       </div>
@@ -937,14 +904,12 @@ export function ProjectView({
             models={models}
             head={taskHead(open)}
             approvals={chat.approvals.filter(a => a.agentId === open.id)}
-            modeButton={modeButton}
+            tools={tools}
             signedOut={signedOut}
             draft={taskDrafts[open.id] ?? ''}
             setDraft={v => setTaskDrafts(d => ({ ...d, [open.id]: v }))}
             files={taskFiles[open.id] ?? []}
             setFiles={next => setTaskFiles(f => ({ ...f, [open.id]: next }))}
-            listFiles={listFiles}
-            skills={chat.env.skills}
             notice={taskNotice}
             followUntil={followUntil}
             meta={metaOf(open)}
