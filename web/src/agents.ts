@@ -128,7 +128,9 @@ export function reduceTasks(tasks: Tasks, raw: unknown): Tasks {
         ? phasesFrom(raw.workflow_progress)
         : undefined
       return put({
-        description: str(raw.description),
+        // The name stays the one the task started with: an agent summary
+        // sends its current activity here.
+        description: existing?.description ? undefined : str(raw.description),
         subagentType: str(raw.subagent_type),
         toolUseId: str(raw.tool_use_id),
         lastTool: str(raw.last_tool_name),
