@@ -2493,8 +2493,11 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       await page.locator('.wl-hi').waitFor()
       const input = page.getByLabel('Message', { exact: true })
       await input.click()
-      await page.waitForTimeout(500)
-      await input.press('ArrowUp')
+      // The folder's history loads after mount; ↑ before it arrives leaves the box empty.
+      for (let i = 0; i < 50 && (await input.inputValue()) !== 'CLI_PROMPT_MARK'; i++) {
+        await page.waitForTimeout(100)
+        await input.press('ArrowUp')
+      }
       expect(await input.inputValue()).toBe('CLI_PROMPT_MARK')
       await input.press('ArrowDown')
       expect(await input.inputValue()).toBe('')
