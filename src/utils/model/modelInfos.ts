@@ -13,7 +13,7 @@ import { getGatewayModelOptions } from './openaiModelOptions.js'
 
 // The effortLevel setting's levels (ultracode is a mode, not a level): a gateway passes the value
 // through to its model, so its discovered models offer them all instead of the Claude allowlist.
-const GATEWAY_EFFORT_LEVELS: NonNullable<ModelInfo['supportedEffortLevels']> = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra']
+export const GATEWAY_EFFORT_LEVELS: NonNullable<ModelInfo['supportedEffortLevels']> = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra']
 
 /** The model picker's options as SDK `ModelInfo`: the initialize response's `models`, and `claude web`'s list before any session. */
 export function getModelInfos(): ModelInfo[] {
