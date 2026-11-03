@@ -718,6 +718,7 @@ export class QueryEngine {
       }
     }
 
+    const { signal } = this.abortController
     const {
       messages: messagesFromUserInput,
       shouldQuery,
@@ -749,7 +750,33 @@ export class QueryEngine {
       onPromptAdmission: options?.onPromptAdmission,
       querySource: 'sdk',
       canUseTool: wrappedCanUseTool,
-    })
+    }).catch((error: unknown) => {
+      if (signal.aborted && error === signal.reason) return undefined
+      throw error
+    }) ?? {}
+
+    // Interrupted before the prompt was admitted: the turn ends as an interrupted
+    // one does, instead of the throw ending the headless session.
+    if (!messagesFromUserInput) {
+      yield {
+        type: 'result',
+        subtype: 'error_during_execution',
+        duration_ms: Date.now() - startTime,
+        duration_api_ms: getTotalAPIDuration(),
+        is_error: true,
+        num_turns: 0,
+        stop_reason: null,
+        session_id: getSessionId(),
+        total_cost_usd: getTotalCost(),
+        usage: this.totalUsage,
+        modelUsage: getModelUsage(),
+        permission_denials: this.permissionDenials,
+        terminal_reason: 'aborted_streaming',
+        uuid: randomUUID(),
+        errors: [],
+      }
+      return
+    }
 
     if (options?.origin) {
       for (const message of messagesFromUserInput) {

@@ -2807,6 +2807,13 @@ async function* queryModelRequest(
         })
       }
 
+      // A provider that is not the Anthropic SDK (OpenAI compat) rejects an aborted request
+      // with the signal's reason, not APIUserAbortError: it is still the user's abort, not a
+      // reason to retry without streaming (whose own retry then logs the abort as an error).
+      if (signal.aborted && !(streamingError instanceof APIUserAbortError)) {
+        logForDebugging(`Streaming aborted by user: ${errorMessage(streamingError)}`)
+        throw new APIUserAbortError()
+      }
       if (streamingError instanceof APIUserAbortError) {
         // Check if the abort signal was triggered by the user (ESC key)
         // If the signal is aborted, it's a user-initiated abort
