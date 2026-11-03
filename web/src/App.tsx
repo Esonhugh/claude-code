@@ -156,7 +156,8 @@ export function App() {
   const [agentTargets, setAgentTargets] = useState<Record<string, MentionTarget | undefined>>({})
   const [attachments, setAttachments] = useState<Record<string, File[]>>({})
   const [preview, setPreview] = useState<
-    { sessionId: string; path: string } | { sessionId: string; url: string }
+    | { sessionId: string; path: string; image?: { src: string; target: string } }
+    | { sessionId: string; url: string }
   >()
   const [info, setInfo] = useState<{ workspace?: string; tempRoot?: string; previewOrigins: string[]; version?: string }>({
     previewOrigins: [],
@@ -262,6 +263,10 @@ export function App() {
       view
         ? {
             open: openFile,
+            openImage: (src: string, n: number, target: string) => {
+              setPreview({ sessionId: view, path: t('chatImage', { n: String(n) }), image: { src, target } })
+              setSheetOpen(false)
+            },
             base: filesBase(view),
             cwd: chatCwd,
             showFiles: () => {
@@ -271,7 +276,7 @@ export function App() {
             },
           }
         : {},
-    [view, openFile, chatCwd],
+    [view, openFile, chatCwd, t],
   )
   const webPreviewValue = useMemo(() => {
     const target = (href: string) => previewTarget(href, { uiOrigin: location.origin, origins: info.previewOrigins })
@@ -1551,6 +1556,7 @@ export function App() {
                 onClose={closePreview}
                 files={chatFiles}
                 onOpen={openFile}
+                image={preview.image}
                 onComment={signedOut ? undefined : text => void sendComment(preview.sessionId, text)}
               />
             )}

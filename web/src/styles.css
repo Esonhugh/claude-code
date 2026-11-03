@@ -787,6 +787,8 @@ a.btn { text-decoration: none; color: var(--fg); display: inline-block }
 .chipbtn { border: 1px solid var(--line); background: var(--surface); border-radius: 999px; padding: 0 8px; font-size: 11.5px; color: var(--muted); white-space: nowrap }
 .chipbtn:hover { color: var(--fg); border-color: var(--accent) }
 .file-chip { display: inline-block; max-width: 100%; margin: 2px 0; padding: 0 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom }
+.bubble-image-open { all: unset; display: block; cursor: zoom-in }
+.bubble-image-open:focus-visible { outline: 2px solid var(--accent); border-radius: 8px }
 .bubble-image { display: block; max-width: 240px; max-height: 240px; margin-bottom: 6px; border-radius: 8px }
 .sources { font-size: 12.5px; color: var(--muted) }
 .sources ol { margin: 2px 0 0; padding-left: 20px }
@@ -910,7 +912,7 @@ a.btn { text-decoration: none; color: var(--fg); display: inline-block }
 .preview-bar button:disabled { opacity: .45; cursor: not-allowed }
 .preview-bar .file-nav { gap: 6px }
 .preview-name { flex: 1 1 200px; min-width: 0; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
-.preview-body { flex: 1; overflow: auto; padding: 16px; display: flex; flex-direction: column; gap: 10px; min-height: 0 }
+.preview-body { position: relative; flex: 1; overflow: auto; padding: 16px; display: flex; flex-direction: column; gap: 10px; min-height: 0 }
 .preview-note { color: var(--muted); font-size: 12.5px }
 .preview-image { max-width: 100%; height: auto }
 .preview-frame { display: block; width: 100%; flex: 1; min-height: 480px; margin: 0 auto; border: 1px solid var(--line); border-radius: 8px; background: #fff; transition: width .2s }
@@ -923,11 +925,16 @@ a.btn { text-decoration: none; color: var(--fg); display: inline-block }
 .pdf-page canvas { display: block; max-width: 100% }
 .pinnable { position: relative; cursor: crosshair }
 .pinnable > img { display: block; width: 100% }
-.cpin { position: absolute; z-index: 2; width: 22px; height: 22px; margin: -22px 0 0 -2px; display: grid; place-items: center; border-radius: 11px 11px 11px 2px; background: var(--accent); color: var(--surface); font-size: 11px; font-weight: 600; box-shadow: 0 1px 4px rgba(0,0,0,.3); cursor: default; font-variant-numeric: tabular-nums }
+.cpin { position: absolute; z-index: 2; width: 22px; height: 22px; margin: -11px 0 0 -11px; box-sizing: border-box; border: 2px solid var(--surface); display: grid; place-items: center; border-radius: 50%; background: var(--accent); color: var(--surface); font-size: 11px; font-weight: 600; box-shadow: 0 1px 4px rgba(0,0,0,.3); cursor: default; font-variant-numeric: tabular-nums }
 .cpin.sent { opacity: .85 }
+.pinnable .cpin-box { margin-top: 16px }
 .cpin-box { position: absolute; z-index: 3; margin: 6px; width: min(280px, 80vw); display: flex; flex-direction: column; gap: 6px; padding: 8px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); box-shadow: 0 6px 20px rgba(0,0,0,.18); cursor: auto }
 .cpin-box textarea { font: inherit; font-size: 13px; resize: vertical; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--fg); padding: 6px 8px }
 .cpin-box .btns { display: flex; gap: 6px; justify-content: flex-end }
+.cpin-offer { position: absolute; z-index: 3; margin-top: 4px; padding: 3px 10px; font-size: 12.5px; box-shadow: 0 2px 8px rgba(0,0,0,.15) }
+.sheet table.commentable td, .sheet table.commentable th { cursor: cell }
+.sheet .cell-sent { box-shadow: inset 0 0 0 2px var(--accent) }
+.sheet .cell-draft { background: var(--accent-soft); box-shadow: inset 0 0 0 2px var(--accent) }
 .pdf .pager { position: sticky; top: -16px; z-index: 1; align-self: stretch; background: var(--sunken); padding: 6px 0 }
 .sheet { overflow: auto; border: 1px solid var(--line); border-radius: 8px }
 .sheet table { border-collapse: collapse; font-size: 12px; font-variant-numeric: tabular-nums; min-width: 100% }
