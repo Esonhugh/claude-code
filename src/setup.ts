@@ -159,6 +159,7 @@ export async function setup(
             isExplicit: messagingSocketPath !== undefined,
             permissionMode,
             isBypassPermissionsModeAvailable: allowDangerouslySkipPermissions,
+            headless: getIsNonInteractiveSession(),
           },
         )
       } catch (error) {

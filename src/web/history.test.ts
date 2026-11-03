@@ -298,6 +298,29 @@ describe('web history', () => {
     expect(messages[1]).toMatchObject({ type: 'assistant' })
   })
 
+  it('shows a scheduled task firing where it fired, between turns and mid-turn, never its prompt', async () => {
+    const file = join(root, 'config', 'projects', sanitizePath(join(root, 'project')), `${ID}.jsonl`)
+    const cwd = join(root, 'project')
+    const u = (n: number) => `a0000000-0000-4000-8000-0000000002${String(n).padStart(2, '0')}`
+    writeFileSync(
+      file,
+      readFileSync(file, 'utf8') +
+        [
+          line({ type: 'system', subtype: 'scheduled_task_fire', content: 'Running scheduled task (Nov 3 2:00 PM)', isMeta: false, uuid: u(1), parentUuid: 'a0000000-0000-4000-8000-000000000005', cwd, timestamp: '2026-11-03T14:00:00.000Z' }),
+          line({ type: 'user', isMeta: true, uuid: u(2), parentUuid: u(1), cwd, message: { role: 'user', content: 'CRONPROMPT check' } }),
+          line({ type: 'attachment', uuid: u(3), parentUuid: u(2), cwd, timestamp: '2026-11-03T14:01:00.000Z', attachment: { type: 'queued_command', prompt: 'CRONPROMPT again', source_uuid: u(9), commandMode: 'prompt', isMeta: true, workload: 'cron' } }),
+          line({ type: 'attachment', uuid: u(4), parentUuid: u(3), cwd, attachment: { type: 'queued_command', prompt: '[Cross-session delivery notice] x', source_uuid: u(8), commandMode: 'prompt', isMeta: true } }),
+          line({ type: 'assistant', uuid: u(5), parentUuid: u(4), cwd, message: { id: 'm20', role: 'assistant', content: [{ type: 'text', text: 'ok' }] } }),
+        ].join('\n') +
+        '\n',
+    )
+    const messages = (await readTranscript(ID, undefined, 50))!.messages.slice(-4)
+    expect(messages[0]).toEqual({ type: 'system', subtype: 'scheduled_task_fire', uuid: u(1), timestamp: '2026-11-03T14:00:00.000Z' })
+    expect(messages[1]).toEqual({ type: 'system', subtype: 'scheduled_task_fire', uuid: u(9), timestamp: '2026-11-03T14:01:00.000Z' })
+    expect(messages[2]).toMatchObject({ type: 'user', uuid: u(8), isReplay: true, isSynthetic: true })
+    expect(messages[3]).toMatchObject({ type: 'assistant' })
+  })
+
   it('keeps the history before a compaction, in the order it was written', async () => {
     const file = join(root, 'config', 'projects', sanitizePath(join(root, 'project')), `${ID}.jsonl`)
     const cwd = join(root, 'project')

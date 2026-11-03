@@ -4748,6 +4748,18 @@ export function createBridgeStatusMessage(
   }
 }
 
+export function formatCronFireTime(d: Date): string {
+  return d
+    .toLocaleString('en-US', {
+      month: 'short',
+      day: 'numeric',
+      hour: 'numeric',
+      minute: '2-digit',
+    })
+    .replace(/,? at |, /, ' ')
+    .replace(/ ([AP]M)/, (_, ampm) => ampm.toLowerCase())
+}
+
 export function createScheduledTaskFireMessage(
   content: string,
 ): SystemScheduledTaskFireMessage {

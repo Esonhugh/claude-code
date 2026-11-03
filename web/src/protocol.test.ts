@@ -763,6 +763,10 @@ describe('interrupts and session info', () => {
       ['peer', 'reviewer:looks good'],
       ['peer', 'ws:merged'],
     ])
+    // A reloaded firing keeps the time it fired, not the time of the reload.
+    const at = '2026-11-03T14:05:00.000Z'
+    const fired = reduce(initialState, { type: 'system', subtype: 'scheduled_task_fire', uuid: 'c2', timestamp: at }).items[0]
+    expect(fired?.kind === 'event' && fired.vars.time).toBe(new Date(at).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }))
     expect(hookBlock('PreToolUse:Bash hook error: [/x/guard.sh]: rm is not allowed\n')).toEqual({ hook: 'PreToolUse:Bash', why: 'rm is not allowed' })
     expect(hookBlock('PreToolUse:Write hook error: Blocked by hook')).toEqual({ hook: 'PreToolUse:Write', why: 'Blocked by hook' })
     expect(hookBlock('Exit code 1')).toBeUndefined()

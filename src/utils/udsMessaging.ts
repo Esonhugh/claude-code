@@ -35,6 +35,7 @@ let server: Server | null = null
 let keyPath: string | undefined
 let onEnqueue: (() => void) | null = null
 let getMode: (() => { mode: PermissionMode; isBypassPermissionsModeAvailable?: boolean }) | undefined
+let headless = false
 let unregisterCleanup: (() => void) | undefined
 let unsubscribeSettings: (() => void) | undefined
 let unsubscribeSession: (() => void) | undefined
@@ -123,6 +124,13 @@ function deliverNotice(notice: PeerNotice): void {
 }
 
 function hold(command: QueuedCommand): void {
+  // A held message waits for this session's user; a headless session has
+  // none, so the sender gets a refusal now instead of a silent expiry.
+  if (headless) {
+    receipt(command, 'refused')
+    logForDebugging('[uds-messaging] refused peer message: held by policy, no one here can approve it')
+    return
+  }
   if (held.length >= 100) {
     const dropped = held.shift()!
     receipt(dropped.command, 'expired')
@@ -407,9 +415,10 @@ function handleFrame(frame: unknown): void {
 
 export async function startUdsMessaging(
   path: string,
-  options: { isExplicit?: boolean; permissionMode?: PermissionMode; isBypassPermissionsModeAvailable?: boolean } = {},
+  options: { isExplicit?: boolean; permissionMode?: PermissionMode; isBypassPermissionsModeAvailable?: boolean; headless?: boolean } = {},
 ): Promise<void> {
   if (server) throw new Error('Messaging inbox is already running')
+  headless = options.headless ?? false
   receiptController = new AbortController()
   inboundController = new AbortController()
   stopping = false

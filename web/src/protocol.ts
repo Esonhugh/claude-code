@@ -752,7 +752,7 @@ export function reduce(state: ChatState, raw: unknown): ChatState {
         const item: Item =
           raw.subtype === 'ui_log'
             ? { kind: 'event', id, key: 'modLog', vars: { plugin: str(raw.plugin) ?? '', text: str(raw.text) ?? '' } }
-            : { kind: 'event', id, key: 'cronFired', vars: { time: new Date().toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) } }
+            : { kind: 'event', id, key: 'cronFired', vars: { time: new Date(str(raw.timestamp) ?? Date.now()).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) } }
         return { ...state, items: [...state.items, item] }
       }
       if (raw.subtype === 'compact_boundary') {

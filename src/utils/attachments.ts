@@ -588,6 +588,8 @@ export type Attachment =
       isMeta?: boolean
       /** A task notification drained in the same batch as a human prompt. */
       inHumanTurn?: boolean
+      /** Carried from QueuedCommand.workload; 'cron' marks a scheduled task firing. */
+      workload?: string
     }
   | {
       type: 'output_style'
@@ -1157,6 +1159,7 @@ export async function getQueuedCommandAttachments(
         commandMode: _.mode,
         origin: _.origin,
         isMeta: _.isMeta,
+        ...(_.workload && { workload: _.workload }),
         ...(hasHumanPrompt &&
           _.mode === 'task-notification' && { inHumanTurn: true }),
       }
