@@ -62,6 +62,16 @@ export function recallPrompt(
   return { index: next, text: next === -1 ? '' : prompts[prompts.length - 1 - next]! }
 }
 
+/**
+ * The prompts ↑ walks, oldest first like `prompts`: this box's own, then the
+ * folder's history (`shared`, newest first) before them, each text once.
+ */
+export function recallList(prompts: readonly string[], shared: readonly string[]): string[] {
+  const seen = new Set<string>()
+  const newestFirst = [...prompts].reverse().concat(shared).filter(p => !seen.has(p) && (seen.add(p), true))
+  return newestFirst.reverse()
+}
+
 /** Slash commands the page answers with its own panel instead of sending them: name → panel (and Settings tab). */
 const NATIVE_COMMANDS: Record<
   string,

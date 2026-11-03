@@ -4,14 +4,16 @@ import {
   type FormEvent,
   type KeyboardEvent,
   type ReactNode,
+  useCallback,
   useEffect,
   useLayoutEffect,
   useId,
+  useMemo,
   useRef,
   useState,
 } from 'react'
-import { agentCommands, filterCommands, moveSelection, paletteQuery, recallPrompt, type SlashCommand, typedInFull } from '../commands'
-import type { Daybreak } from '../api'
+import { agentCommands, filterCommands, moveSelection, paletteQuery, recallList, recallPrompt, type SlashCommand, typedInFull } from '../commands'
+import { type Daybreak, type HistoryScope, loadPromptHistory, recordPrompt } from '../api'
 import { formatBytes, mentionPath } from '../files'
 import { type Approval, type ApprovalChoice, approvalRules, type ContextUsage, type Goal, type ModelOption, type Todo } from '../protocol'
 import { toolSummary } from '../tools'
@@ -307,6 +309,7 @@ export function InputBox({
   crow,
   listFiles,
   prompts = [],
+  history,
   placeholder,
   targets,
   target,
@@ -335,6 +338,8 @@ export function InputBox({
   listFiles?: (query: string) => Promise<string[]>
   /** Prompts sent in this chat, oldest first, for ↑ / ↓. */
   prompts?: string[]
+  /** The folder's ↑ history (shared with the CLI): ↑ goes on into it, and what is sent here is added. */
+  history?: HistoryScope
   /** Replaces the chat placeholder (a project's coordinator and task boxes). */
   placeholder?: string
   /** Tasks or agents an `@` can address; the picked one gets the message instead of this chat. */
@@ -357,6 +362,16 @@ export function InputBox({
   const [mention, setMention] = useState<{ start: number; end: number; query: string }>()
   const [fileHits, setFileHits] = useState<{ query: string; files: string[] }>()
   const [recall, setRecall] = useState<{ index: number; text: string }>()
+  const [shared, setShared] = useState<string[]>([])
+  const recallable = useMemo(() => recallList(prompts, shared), [prompts, shared])
+  const historyCwd = history?.cwd
+  const loadShared = useCallback(() => {
+    if (historyCwd) loadPromptHistory(historyCwd).then(setShared, () => {})
+  }, [historyCwd])
+  useEffect(() => {
+    setShared([])
+    loadShared()
+  }, [loadShared])
   const query = dismissed === draft ? undefined : paletteQuery(draft)
   const fileMatches =
     mention && dismissed !== draft && fileHits?.query === mention.query ? fileHits.files : []
@@ -444,6 +459,15 @@ export function InputBox({
     seen.observe(el)
     return () => seen.disconnect()
   }, [draft, start])
+  // Typed prompts join the folder's history, as the CLI adds each prompt it submits.
+  const sendNow = () => {
+    const text = draft.trim()
+    if (history && text && !disabled) {
+      recordPrompt(history, text).then(loadShared, () => {})
+      setShared(s => [text, ...s.filter(p => p !== text)])
+    }
+    onSend()
+  }
   const pick = (command: SlashCommand) => {
     setDraft(`/${command.name} `)
     setSelected(0)
@@ -475,7 +499,7 @@ export function InputBox({
     // ↑ on an empty input (or on a recalled prompt left as it was) walks back through the sent prompts.
     const recalling = recall !== undefined && recall.index >= 0 && draft === recall.text
     if ((e.key === 'ArrowUp' || (e.key === 'ArrowDown' && recalling)) && (draft === '' || recalling) && !matches.length) {
-      const next = recallPrompt(prompts, recalling ? recall.index : -1, e.key === 'ArrowUp' ? 1 : -1)
+      const next = recallPrompt(recallable, recalling ? recall.index : -1, e.key === 'ArrowUp' ? 1 : -1)
       if (next) {
         e.preventDefault()
         setRecall(next)
@@ -519,7 +543,7 @@ export function InputBox({
     }
     if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
       e.preventDefault()
-      onSend()
+      sendNow()
     }
     if (e.key === 'Escape' && busy) onStop()
   }
@@ -727,7 +751,7 @@ export function InputBox({
   )
   const submit = (e: FormEvent) => {
     e.preventDefault()
-    onSend()
+    sendNow()
   }
   // Files dropped on the box attach to it; a page area that also takes drops sees `defaultPrevented`.
   const drop = {
@@ -801,6 +825,8 @@ export type ComposerTools = {
   listFiles: (query: string) => Promise<string[]>
   /** Prompts already sent to this target, oldest first, for ↑ / ↓. */
   prompts: string[]
+  /** The folder's ↑ history, shared with the CLI; undefined where there is none (a temporary chat). */
+  history: HistoryScope | undefined
   mode: { mode: string; plan?: boolean; onMode: (mode: string) => void }
   model: {
     model: string | undefined
@@ -819,6 +845,7 @@ export function chatTools(
   chat: { commands: SlashCommand[]; terminalCommands: string[]; permissionMode?: string; env: { skills?: string[]; planMode?: boolean } },
   listFiles: (query: string) => Promise<string[]>,
   prompts: string[],
+  history: HistoryScope | undefined,
   onMode: (mode: string) => void,
 ): Omit<ComposerTools, 'model'> {
   return {
@@ -827,6 +854,7 @@ export function chatTools(
     skills: chat.env.skills ?? [],
     listFiles,
     prompts,
+    history,
     mode: { mode: chat.permissionMode ?? 'default', plan: chat.env.planMode, onMode },
   }
 }
@@ -842,7 +870,7 @@ export function ChatComposer({
   agent,
   extra,
   ...box
-}: Omit<Parameters<typeof InputBox>[0], 'start' | 'commands' | 'hiddenCommands' | 'skills' | 'listFiles' | 'prompts' | 'onShiftTab' | 'crow'> & {
+}: Omit<Parameters<typeof InputBox>[0], 'start' | 'commands' | 'hiddenCommands' | 'skills' | 'listFiles' | 'prompts' | 'history' | 'onShiftTab' | 'crow'> & {
   tools: ComposerTools
   agent?: boolean
   /** More buttons in the row, after the mode button (the chat's goal). */
@@ -857,6 +885,7 @@ export function ChatComposer({
       skills={tools.skills}
       listFiles={tools.listFiles}
       prompts={tools.prompts}
+      history={tools.history}
       onShiftTab={() => mode.onMode(nextMode(mode.mode, mode.plan))}
       crow={
         <>

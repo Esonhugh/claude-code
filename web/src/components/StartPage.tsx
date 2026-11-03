@@ -190,6 +190,7 @@ export function StartPage({
           skills={skills.map(x => x.name)}
           listFiles={options.temporary ? undefined : listFiles}
           onShiftTab={() => setOptions({ mode: nextMode(options.mode, env.planMode) })}
+          history={options.temporary || !cwd ? undefined : { cwd }}
         />
         {error && (
           <div className="notice" role="alert">

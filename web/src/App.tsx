@@ -1070,6 +1070,12 @@ export function App() {
     [chatItems],
   )
   const todos = useMemo(() => currentTodos(chatItems ?? []), [chatItems])
+  // The session's folder for the shared ↑ history; a temporary chat has none.
+  const historyDir = chat?.workDir ?? chat?.cwd
+  const historyScope = useMemo(
+    () => (view && historyDir && !(info.tempRoot && historyDir.startsWith(info.tempRoot)) ? { cwd: historyDir, sessionId: view } : undefined),
+    [view, historyDir, info.tempRoot],
+  )
   const team = useMemo(() => (chat ? buildTeam(chat.tasks, chat.items) : undefined), [chat])
   const agentMentions: MentionTarget[] = chatAgents.filter(canChat).map(task => ({
     id: task.id,
@@ -1308,7 +1314,7 @@ export function App() {
               target={view && chat.tasks[agentTargets[view]?.id ?? ''] ? agentTargets[view] : undefined}
               onTarget={x => view && setAgentTargets(a => ({ ...a, [view]: x }))}
               tools={{
-                ...chatTools(chat, listFiles, prompts, mode => view && changeMode(view, mode)),
+                ...chatTools(chat, listFiles, prompts, historyScope, mode => view && changeMode(view, mode)),
                 model: {
                   model: chat.model,
                   effort: chat.effort,
@@ -1489,7 +1495,7 @@ export function App() {
           todos={todos}
           onSendTask={(taskId, text, pick) => sendToTask(view, taskId, text, pick)}
           agentInput={{
-            tools: chatTools(chat, listFiles, [], mode => changeMode(view, mode)),
+            tools: chatTools(chat, listFiles, [], historyScope, mode => changeMode(view, mode)),
             model: chat.model,
             effort: chat.effort,
             models,
