@@ -382,6 +382,10 @@ export function App() {
     if (seen.view !== view || stickToBottom.current) setNewBelow(0)
     shownTurns.current = { view, n }
     if (!feed || !stickToBottom.current) return
+    // Pinned to the bottom, the page follows the end itself; scroll anchoring would instead move
+    // the view up when a reply laid out late is shorter than its estimate, which reads as the
+    // reader scrolling up. A reader who scrolled up gets anchoring back (onScroll below).
+    feed.style.overflowAnchor = 'none'
     feed.scrollTop = feed.scrollHeight
     // Replies off screen are laid out only when scrolled to (content-visibility), so the
     // ones landed on take their real height in a later frame; follow until the height
@@ -1263,6 +1267,7 @@ export function App() {
             aria-busy={chat.busy}
             onScroll={e => {
               stickToBottom.current = followScroll(e.currentTarget, stickToBottom.current, feedTop)
+              e.currentTarget.style.overflowAnchor = stickToBottom.current ? 'none' : ''
               if (stickToBottom.current && newBelow) setNewBelow(0)
             }}
           >
