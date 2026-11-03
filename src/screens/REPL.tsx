@@ -3686,8 +3686,14 @@ export function REPL({
   const cancelRequestProps = {
     setToolUseConfirmQueue,
     onCancel,
-    onAgentsKilled: () =>
-      setMessages(prev => [...prev, createAgentsKilledMessage()]),
+    onAgentsKilled: (passiveNotice?: string) =>
+      setMessages(prev => [
+        ...prev,
+        createAgentsKilledMessage(),
+        ...(passiveNotice
+          ? [createUserMessage({ content: passiveNotice, isMeta: true, origin: { kind: 'task-notification' } })]
+          : []),
+      ]),
     isMessageSelectorVisible: isMessageSelectorVisible || !!showBashesDialog,
     screen,
     abortSignal:
