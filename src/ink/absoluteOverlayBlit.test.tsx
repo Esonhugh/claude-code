@@ -18,10 +18,10 @@ const settle = () => new Promise(resolve => setTimeout(resolve, 50))
 
 // Like the fullscreen "N new messages" pill: a full-width absolute row over
 // the last row of clean content.
-function app(label: string | null) {
+function app(label: string | null, height = 6) {
   return (
-    <Box width={40} height={6} flexDirection="column">
-      <Box flexDirection="column">
+    <Box width={40} height={height} flexDirection="column">
+      <Box flexDirection="column" flexShrink={0}>
         {['row zero', 'row one', 'row two', 'row three', 'row four', 'row five'].map(t => (
           <Text key={t}>{t}</Text>
         ))}
@@ -57,6 +57,28 @@ test('changing an absolute overlay keeps the content it does not cover', async (
     expect(row).toContain('2 new messages')
     rendered.rerender(app(null))
     await settle()
+    expect(rowText(ink.frontFrame.screen, 5).trimEnd()).toBe('row five')
+  } finally {
+    rendered.unmount()
+  }
+})
+
+// Resize while scrolled up: the pill moves with the layout but its content is
+// unchanged, and the row it left must keep what is under it.
+test('moving a clean absolute overlay keeps the row it left', async () => {
+  const stdout = new Output() as unknown as NodeJS.WriteStream
+  const rendered = await render(app('1 new'), { stdout, patchConsole: false, exitOnCtrlC: false })
+  const ink = instances.get(stdout)! as unknown as {
+    frontFrame: { screen: Parameters<typeof cellAt>[0] }
+    setAltScreenActive(active: boolean): void
+  }
+  try {
+    ink.setAltScreenActive(true)
+    rendered.rerender(app('1 new'))
+    await settle()
+    rendered.rerender(app('1 new', 5))
+    await settle()
+    expect(rowText(ink.frontFrame.screen, 4)).toContain('1 new')
     expect(rowText(ink.frontFrame.screen, 5).trimEnd()).toBe('row five')
   } finally {
     rendered.unmount()
