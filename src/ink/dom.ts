@@ -3,7 +3,7 @@ import { createLayoutNode } from './layout/engine.js'
 import type { LayoutNode } from './layout/node.js'
 import { LayoutDisplay, LayoutMeasureMode } from './layout/node.js'
 import measureText from './measure-text.js'
-import { addPendingClear, nodeCache } from './node-cache.js'
+import { addPendingClear, markAbsoluteNodeDirty, nodeCache } from './node-cache.js'
 import squashTextNodes from './squash-text-nodes.js'
 import type { Styles, TextStyles } from './styles.js'
 import { expandTabs } from './tabstops.js'
@@ -442,6 +442,16 @@ export const markDirty = (node?: DOMNode): void => {
   while (current) {
     if (current.nodeName !== '#text') {
       ;(current as DOMElement).dirty = true
+      // An opaque or filled overlay repaints every cell of its rect, so
+      // only see-through overlays (pill, notification row) need this.
+      const style = (current as DOMElement).style
+      if (
+        style.position === 'absolute' &&
+        !style.opaque &&
+        style.backgroundColor === undefined
+      ) {
+        markAbsoluteNodeDirty()
+      }
       // Only mark yoga dirty on leaf nodes that have measure functions
       if (
         !markedYoga &&
