@@ -158,6 +158,7 @@ import {
 } from './auth.js'
 import { markClaudeAiMcpConnected } from './claudeai.js'
 import { getAllMcpConfigs, isMcpServerDisabled } from './config.js'
+import { isChannelAllowlisted } from './channelAllowlist.js'
 import { getMcpServerHeaders } from './headersHelper.js'
 import { SdkControlClientTransport } from './SdkControlTransport.js'
 import type {
@@ -652,6 +653,11 @@ export function getMcpVersionNegotiation(
     logForDebugging(
       'MCP era negotiation denylist matched; the legacy handshake applies',
     )
+    return { mode: 'legacy' }
+  }
+  // Fork: the stdio probe runs a sibling server process that an approved channel
+  // plugin (fakechat, telegram) outlives, keeping its port or bot poll from the real one.
+  if (transport === 'stdio' && isChannelAllowlisted(serverRef?.pluginSource)) {
     return { mode: 'legacy' }
   }
   return auto
