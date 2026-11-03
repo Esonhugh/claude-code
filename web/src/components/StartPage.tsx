@@ -51,15 +51,16 @@ function useSnippets(ids: string[]): Record<string, string> {
   return Object.fromEntries(ids.map(id => [id, snippetCache.get(id) ?? '']))
 }
 
-/** Enabled skills from the server, so `/` lists them before any session runs. */
-function useEnabledSkills(): { name: string; description: string }[] {
+/** Enabled skills from the server, so `/` lists them before (or without) a session's own list. */
+export function useEnabledSkills(load = true): { name: string; description: string }[] {
   const [skills, setSkills] = useState<{ name: string; description: string }[]>([])
   useEffect(() => {
+    if (!load) return
     ext.skills().then(
       list => setSkills(list.filter(x => x.on).map(x => ({ name: x.name, description: x.description }))),
       () => {},
     )
-  }, [])
+  }, [load])
   return skills
 }
 

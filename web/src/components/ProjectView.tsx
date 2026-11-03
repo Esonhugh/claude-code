@@ -38,6 +38,7 @@ import { AskDock, ChatComposer, chatTools, type ComposerTools, type MentionTarge
 import { Dialog } from './Dialog'
 import { AgentConversation, joinTurns, Message, modelName, type SentMessage, useUnread } from './Message'
 import { WORKER_MODELS } from './ProjectDialog'
+import { mergeSkills, useEnabledSkills } from './StartPage'
 import { followScroll, readStored, type T, writeStored } from './ui'
 
 type Show = 'chat' | 'tasks'
@@ -692,7 +693,13 @@ export function ProjectView({
   )
   const wideButton = ib(t(wide ? 'restorePane' : 'expandPane'), wide ? '⤡' : '⤢', () => setWide(!wide), true, true)
   const history = useMemo(() => ({ cwd: project.cwd, sessionId: project.coordinator_session_id ?? undefined }), [project.cwd, project.coordinator_session_id])
-  const tools = { ...chatTools(chat, listFiles, prompts, history, onMode), mode: { mode, plan: chat.env.planMode, onMode } }
+  // A page that is not attached to the coordinator (open in another tab) never gets its
+  // command list, yet its task boxes still send; they offer the enabled skills instead.
+  const enabledSkills = useEnabledSkills(chat.commands.length === 0)
+  const palette = chat.commands.length
+    ? chat
+    : { ...chat, commands: mergeSkills([], enabledSkills), env: { ...chat.env, skills: enabledSkills.map(s => s.name) } }
+  const tools = { ...chatTools(palette, listFiles, prompts, history, onMode), mode: { mode, plan: chat.env.planMode, onMode } }
 
   // ---- the splitter between the columns: drag it, or focus it and use ← →. ----
   const clampWidth = (px: number) => {
