@@ -15,7 +15,7 @@ import {
 import { agentCommands, filterCommands, moveSelection, paletteQuery, recallList, recallPrompt, type SlashCommand, typedInFull } from '../commands'
 import { type Daybreak, type HistoryScope, loadPromptHistory, recordPrompt } from '../api'
 import { formatBytes, mentionPath } from '../files'
-import { type Approval, type ApprovalChoice, approvalRules, type ContextUsage, type Goal, type ModelOption, type Todo } from '../protocol'
+import { type Approval, type ApprovalChoice, approvalRules, type CodexAppMention, type ContextUsage, type Goal, type ModelOption, type Todo } from '../protocol'
 import { toolSummary } from '../tools'
 import { modelName, modelOption } from './Message'
 import { FootMenu, modeOf, nextMode, offeredModes, SendIcon, type T } from './ui'
@@ -308,6 +308,7 @@ export function InputBox({
   onShiftTab,
   crow,
   listFiles,
+  apps = [],
   prompts = [],
   history,
   placeholder,
@@ -336,6 +337,8 @@ export function InputBox({
   crow?: ReactNode
   /** Workspace files matching an `@` query, relative to the working directory. */
   listFiles?: (query: string) => Promise<string[]>
+  /** ChatGPT apps an `@codex-app:<mention>` can call on. */
+  apps?: CodexAppMention[]
   /** Prompts sent in this chat, oldest first, for ↑ / ↓. */
   prompts?: string[]
   /** The folder's ↑ history (shared with the CLI): ↑ goes on into it, and what is sent here is added. */
@@ -376,10 +379,11 @@ export function InputBox({
   const fileMatches =
     mention && dismissed !== draft && fileHits?.query === mention.query ? fileHits.files : []
   const targetMatches = mention && dismissed !== draft && targets && onTarget ? matchTargets(targets, mention.query) : []
-  const mentionCount = targetMatches.length + fileMatches.length
+  const appMatches = mention && dismissed !== draft ? matchApps(apps, mention.query) : []
+  const mentionCount = targetMatches.length + appMatches.length + fileMatches.length
   const matches = query === undefined ? [] : filterCommands(commands, query, hiddenCommands)
   const listLength = mentionCount || matches.length
-  const mentions = Boolean(listFiles || targets?.length)
+  const mentions = Boolean(listFiles || targets?.length || apps.length)
   const active = Math.min(selected, listLength - 1)
   useEffect(() => {
     if (!mention || !listFiles) return
@@ -418,8 +422,21 @@ export function InputBox({
     onTarget?.(picked)
     requestAnimationFrame(() => box.current?.setSelectionRange(mention.start, mention.start))
   }
-  const pickMention = (i: number) =>
-    i < targetMatches.length ? pickTarget(targetMatches[i]!) : pickFile(fileMatches[i - targetMatches.length]!)
+  const pickApp = (app: CodexAppMention) => {
+    if (!mention) return
+    const token = `@codex-app:${app.mention} `
+    const caret = mention.start + token.length
+    setDraft(`${draft.slice(0, mention.start)}${token}${draft.slice(mention.end).replace(/^ /, '')}`)
+    setMention(undefined)
+    setSelected(0)
+    requestAnimationFrame(() => box.current?.setSelectionRange(caret, caret))
+  }
+  const pickMention = (i: number) => {
+    if (i < targetMatches.length) return pickTarget(targetMatches[i]!)
+    const a = i - targetMatches.length
+    if (a < appMatches.length) return pickApp(appMatches[a]!)
+    pickFile(fileMatches[a - appMatches.length]!)
+  }
   useEffect(() => {
     if (active >= 0) {
       document.getElementById(`${paletteId}-${active}`)?.scrollIntoView({ block: 'nearest' })
@@ -568,11 +585,32 @@ export function InputBox({
           <em>{x.tag}</em>
         </button>
       ))}
-      {fileMatches.length > 0 && (targetMatches.length > 0 || !mention?.query) && (
+      {appMatches.length > 0 && <div className="sec">{t('chatgptApps')}</div>}
+      {appMatches.map((app, a) => {
+        const i = a + targetMatches.length
+        return (
+          <button
+            type="button"
+            key={app.mention}
+            id={`${paletteId}-${i}`}
+            className="opt"
+            role="option"
+            aria-selected={i === active}
+            onMouseDown={e => e.preventDefault()}
+            onMouseEnter={() => setSelected(i)}
+            onClick={() => pickApp(app)}
+          >
+            <b title={`@codex-app:${app.mention}`}>@{app.name}</b>
+            <span>{app.description ?? `codex-app:${app.mention}`}</span>
+            <em>{t('appTag')}</em>
+          </button>
+        )
+      })}
+      {fileMatches.length > 0 && (targetMatches.length + appMatches.length > 0 || !mention?.query) && (
         <div className="sec">{t('workspaceFiles')}</div>
       )}
       {fileMatches.map((path, f) => {
-        const i = f + targetMatches.length
+        const i = f + targetMatches.length + appMatches.length
         return (
           <button
             type="button"
@@ -815,6 +853,12 @@ export function matchTargets(targets: MentionTarget[], query: string): MentionTa
   return [...inName, ...targets.filter(x => !inName.includes(x) && x.detail.toLowerCase().includes(q))]
 }
 
+/** Apps whose mention or name holds the query; a typed `codex-app:` prefix is ignored. */
+export function matchApps(apps: CodexAppMention[], query: string): CodexAppMention[] {
+  const q = query.toLowerCase().replace(/^codex-app:/, '')
+  return apps.filter(app => app.mention.includes(q) || app.name.toLowerCase().includes(q))
+}
+
 /** Permission mode on the left of the composer row. */
 /** What a chat box can do; every field is required so no surface goes without one. */
 export type ComposerTools = {
@@ -823,6 +867,8 @@ export type ComposerTools = {
   hiddenCommands: string[]
   skills: string[]
   listFiles: (query: string) => Promise<string[]>
+  /** The session's enabled ChatGPT apps, offered after `@`. */
+  apps: CodexAppMention[]
   /** Prompts already sent to this target, oldest first, for ↑ / ↓. */
   prompts: string[]
   /** The folder's ↑ history, shared with the CLI; undefined where there is none (a temporary chat). */
@@ -842,7 +888,7 @@ export type ComposerTools = {
 
 /** A session's palette and permission mode, the part of {@link ComposerTools} every box in it shares. */
 export function chatTools(
-  chat: { commands: SlashCommand[]; terminalCommands: string[]; permissionMode?: string; env: { skills?: string[]; planMode?: boolean } },
+  chat: { commands: SlashCommand[]; terminalCommands: string[]; permissionMode?: string; env: { skills?: string[]; planMode?: boolean; codexApps?: CodexAppMention[] } },
   listFiles: (query: string) => Promise<string[]>,
   prompts: string[],
   history: HistoryScope | undefined,
@@ -853,6 +899,7 @@ export function chatTools(
     hiddenCommands: chat.terminalCommands,
     skills: chat.env.skills ?? [],
     listFiles,
+    apps: chat.env.codexApps ?? [],
     prompts,
     history,
     mode: { mode: chat.permissionMode ?? 'default', plan: chat.env.planMode, onMode },
@@ -870,7 +917,7 @@ export function ChatComposer({
   agent,
   extra,
   ...box
-}: Omit<Parameters<typeof InputBox>[0], 'start' | 'commands' | 'hiddenCommands' | 'skills' | 'listFiles' | 'prompts' | 'history' | 'onShiftTab' | 'crow'> & {
+}: Omit<Parameters<typeof InputBox>[0], 'start' | 'commands' | 'hiddenCommands' | 'skills' | 'listFiles' | 'apps' | 'prompts' | 'history' | 'onShiftTab' | 'crow'> & {
   tools: ComposerTools
   agent?: boolean
   /** More buttons in the row, after the mode button (the chat's goal). */
@@ -884,6 +931,7 @@ export function ChatComposer({
       hiddenCommands={tools.hiddenCommands}
       skills={tools.skills}
       listFiles={tools.listFiles}
+      apps={tools.apps}
       prompts={tools.prompts}
       history={tools.history}
       onShiftTab={() => mode.onMode(nextMode(mode.mode, mode.plan))}

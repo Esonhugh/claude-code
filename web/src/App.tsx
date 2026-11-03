@@ -533,6 +533,7 @@ export function App() {
       if (typeof requestId === 'string' && requestId.startsWith(REQUEST_PREFIX.effort)) getSettings(id)
       if ((raw as { type?: string }).type === 'result') {
         request(id, REQUEST_PREFIX.context, { subtype: 'get_context_usage' })
+        request(id, REQUEST_PREFIX.apps, { subtype: 'codex_apps' })
         void refreshHistory()
         // The CLI writes the turn to the transcript up to 100 ms after its result; read the title and folder again.
         setTimeout(() => void refreshHistory(), 500)
@@ -550,6 +551,7 @@ export function App() {
     dispatch({ type: 'mode', id, mode: 'live' })
     request(id, REQUEST_PREFIX.initialize, { subtype: 'initialize' })
     getSettings(id)
+    request(id, REQUEST_PREFIX.apps, { subtype: 'codex_apps' })
     // A session picked up mid-life has had turns already; a new one has nothing to count yet.
     if (stateRef.current.chats[id]?.items.length) request(id, REQUEST_PREFIX.context, { subtype: 'get_context_usage' })
   }

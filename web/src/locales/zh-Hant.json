@@ -306,6 +306,8 @@
   "mentionTargets": "傳給",
   "targetTag": "任務",
   "agentTag": "Agent",
+  "chatgptApps": "ChatGPT 應用",
+  "appTag": "應用",
   "messageTarget": "傳訊息給 {name}",
   "clearTarget": "改回傳給這個對話",
   "roundsLabel": "輪次",

@@ -307,6 +307,26 @@ describe('reduce', () => {
     expect(allowed.env.planMode).toBe(true)
   })
 
+  it('keeps the enabled ChatGPT apps from the codex_apps answer', () => {
+    const state = fold([
+      {
+        type: 'control_response',
+        response: {
+          subtype: 'success',
+          request_id: 'web-apps-1',
+          response: {
+            eligible: true,
+            apps: [
+              { connectorId: 'c1', name: 'Gmail', mentionName: 'gmail', tools: 3, enabled: true },
+              { connectorId: 'c2', name: 'Slack', mentionName: 'slack', tools: 2, enabled: false },
+            ],
+          },
+        },
+      },
+    ])
+    expect(state.env.codexApps).toEqual([{ mention: 'gmail', name: 'Gmail', description: undefined }])
+  })
+
   it('queues permission requests and answers them in the control format', () => {
     const state = fold([
       {

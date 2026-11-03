@@ -306,6 +306,8 @@
   "mentionTargets": "发给",
   "targetTag": "任务",
   "agentTag": "Agent",
+  "chatgptApps": "ChatGPT 应用",
+  "appTag": "应用",
   "messageTarget": "发消息给 {name}",
   "clearTarget": "改回发给这个对话",
   "roundsLabel": "轮次",
