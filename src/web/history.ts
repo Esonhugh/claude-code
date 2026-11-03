@@ -202,13 +202,14 @@ function toStreamJson(
         }
       }
       if (m.type === 'attachment') {
-        const attachment = m.attachment as { type?: string; prompt?: unknown; source_uuid?: string; isMeta?: boolean; workload?: string }
+        const attachment = m.attachment as { type?: string; prompt?: unknown; source_uuid?: string; isMeta?: boolean; workload?: string; origin?: { kind?: string } }
         if (attachment.type === 'queued_command') {
           const uuid = attachment.source_uuid ?? m.uuid
           // A scheduled task the model read mid-turn: the line the TUI shows, not its prompt.
           if (attachment.workload === 'cron') return { type: 'system', subtype: 'scheduled_task_fire', uuid, timestamp: m.timestamp }
-          // As the live stream replays it: the uuid the page sent it with.
-          return { type: 'user', uuid, timestamp: m.timestamp, parent_tool_use_id: null, isReplay: true, message: { role: 'user', content: attachment.prompt }, ...(attachment.isMeta === true && { isSynthetic: true }) }
+          // As the live stream replays it: the uuid the page sent it with. A coordinator's
+          // message to its worker is meta to the model but shown in the worker's conversation.
+          return { type: 'user', uuid, timestamp: m.timestamp, parent_tool_use_id: null, isReplay: true, message: { role: 'user', content: attachment.prompt }, ...(attachment.isMeta === true && attachment.origin?.kind !== 'coordinator' && { isSynthetic: true }) }
         }
         if (HOOK_NOTICES.has(attachment.type ?? '')) return hookNotice(m)
         return { type: 'system', subtype: 'goal_state_changed', uuid: m.uuid, goal: m.attachment }
