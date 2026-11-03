@@ -38,7 +38,10 @@ import { getMaxVersion, shouldSkipVersion } from '../autoUpdater.js'
 import { registerCleanup } from '../cleanupRegistry.js'
 import { getGlobalConfig, saveGlobalConfig } from '../config.js'
 import { logForDebugging } from '../debug.js'
-import { getCurrentInstallationType } from '../doctorDiagnostic.js'
+import {
+  getCurrentInstallationType,
+  isRunningManagedNativeInstall,
+} from '../doctorDiagnostic.js'
 import { isEnvTruthy } from '../envUtils.js'
 import { errorMessage, getErrnoCode, isENOENT, toError } from '../errors.js'
 import { execFileNoThrowWithCwd } from '../execFileNoThrow.js'
@@ -724,11 +727,13 @@ export async function checkInstall(
   const config = getGlobalConfig()
 
   // Only show warnings if:
-  // 1. User is actually running from native installation, OR
+  // 1. User is actually running from the managed native installation, OR
   // 2. User has explicitly set installMethod to 'native' in config (they're trying to use native)
   // 3. force is true (used during installation process)
   const shouldCheckNative =
-    force || installationType === 'native' || config.installMethod === 'native'
+    force ||
+    config.installMethod === 'native' ||
+    (installationType === 'native' && (await isRunningManagedNativeInstall()))
 
   if (!shouldCheckNative) {
     return []
