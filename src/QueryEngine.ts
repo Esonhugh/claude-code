@@ -199,6 +199,8 @@ export type QueryEngineConfig = {
   modsSession?: ModsSession
   cwd: string
   tools: Tools
+  /** Current tool pool between turns (MCP tools/list_changed, late connects). */
+  refreshTools?: () => Tools
   commands: Command[]
   mcpClients: MCPServerConnection[]
   agents: AgentDefinition[]
@@ -813,6 +815,7 @@ export class QueryEngine {
         commands: describedCommands,
         debug: false,
         tools: this.config.modsSession?.tools?.projection(tools) ?? tools,
+        refreshTools: this.config.refreshTools,
         verbose,
         mainLoopModel,
         thinkingConfig: initialThinkingConfig,
@@ -1644,6 +1647,7 @@ export async function* ask({
   skipAttachments,
   cwd,
   tools,
+  refreshTools,
   mcpClients,
   verbose = false,
   thinkingConfig,
@@ -1683,6 +1687,7 @@ export async function* ask({
   skipAttachments?: boolean
   cwd: string
   tools: Tools
+  refreshTools?: () => Tools
   verbose?: boolean
   mcpClients: MCPServerConnection[]
   thinkingConfig?: ThinkingConfig
@@ -1713,6 +1718,7 @@ export async function* ask({
     modsSession,
     cwd,
     tools,
+    refreshTools,
     commands,
     mcpClients,
     agents,

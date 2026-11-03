@@ -331,6 +331,7 @@ import { normalizeNameForMCP } from 'src/services/mcp/normalization.js'
 import {
   commandBelongsToServer,
   filterToolsByServer,
+  isMcpTool,
 } from 'src/services/mcp/utils.js'
 import { setupVscodeSdkMcp } from 'src/services/mcp/vscodeSdkMcp.js'
 import { getAllMcpConfigs } from 'src/services/mcp/config.js'
@@ -1803,9 +1804,11 @@ function runHeadlessStreaming(
       appState.toolPermissionContext,
       appState.mcp.tools,
     )
+    // `tools` holds the MCP tools seen at startup; take MCP tools from
+    // appState instead so tools/list_changed and reconnects replace them.
     let allTools = uniqBy(
       mergeAndFilterTools(
-        [...tools, ...sdkTools, ...dynamicMcpState.tools],
+        [...tools.filter(tool => !isMcpTool(tool)), ...sdkTools, ...dynamicMcpState.tools],
         assembledTools,
         appState.toolPermissionContext.mode,
       ),
@@ -2579,6 +2582,7 @@ function runHeadlessStreaming(
               skipAttachments: cmd.skipAttachments,
               cwd: cwd(),
               tools: allTools,
+              refreshTools: () => buildAllTools(getAppState()),
               verbose: options.verbose,
               mcpClients: allMcpClients,
               thinkingConfig: options.thinkingConfig,

@@ -200,6 +200,7 @@ import {
   DEFERRED_TOOL_PLACEHOLDER,
   extractDiscoveredToolNames,
   getDeferredToolsDelta,
+  getDepartedReferencedTools,
   getToolSearchRefusal,
   isDeferredToolsDeltaEnabled,
   isToolSearchEnabled,
@@ -1347,6 +1348,11 @@ async function* queryModelRequest(
     }
   }
 
+  const departedTools = useToolSearch
+    ? getDepartedReferencedTools(messages, tools, deferredToolNames)
+    : []
+  for (const tool of departedTools) deferredToolNames.add(tool.name)
+
   // Even if tool search mode is enabled, skip if there are no deferred tools
   // AND no MCP servers are still connecting. When servers are pending, keep
   // ToolSearch available so the model can discover tools after they connect.
@@ -1379,6 +1385,12 @@ async function* queryModelRequest(
       // Only include deferred tools that have been discovered
       return discoveredToolNames.has(tool.name)
     })
+    if (departedTools.length > 0) {
+      filteredTools = [...filteredTools, ...departedTools]
+      logForDebugging(
+        `Dynamic tool loading: keeping ${departedTools.length} departed deferred tool(s) declared`,
+      )
+    }
   } else {
     filteredTools = tools.filter(
       t => !toolMatchesName(t, TOOL_SEARCH_TOOL_NAME),

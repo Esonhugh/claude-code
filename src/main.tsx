@@ -205,6 +205,8 @@ import { initBuiltinPlugins } from './plugins/bundled/index.js'
 /* eslint-enable @typescript-eslint/no-require-imports */
 import { checkQuotaStatus } from './services/claudeAiLimits.js'
 import {
+  clearFetchToolsCache,
+  fetchToolsForClient,
   getMcpToolsCommandsAndResources,
   prefetchAllMcpResources,
 } from './services/mcp/client.js'
@@ -4159,6 +4161,35 @@ async function run(): Promise<CommanderCommand> {
           }))
           return getMcpToolsCommandsAndResources(
             ({ client, tools, commands }) => {
+              // Like useManageMCPConnections: refetch this server's tools on
+              // tools/list_changed so later requests in the same run see them.
+              if (client.type === 'connected' && client.capabilities?.tools?.listChanged) {
+                client.client.setNotificationHandler(
+                  'notifications/tools/list_changed',
+                  async () => {
+                    try {
+                      clearFetchToolsCache(client.name)
+                      const newTools = await fetchToolsForClient(client)
+                      headlessStore.setState(prev => ({
+                        ...prev,
+                        mcp: {
+                          ...prev.mcp,
+                          tools: [
+                            ...prev.mcp.tools.filter(
+                              t => t.mcpInfo?.serverName !== client.name,
+                            ),
+                            ...newTools,
+                          ],
+                        },
+                      }))
+                    } catch (err) {
+                      logForDebugging(
+                        `[MCP] ${client.name} tools/list_changed refresh failed: ${err}`,
+                      )
+                    }
+                  },
+                )
+              }
               headlessStore.setState(prev => ({
                 ...prev,
                 mcp: {

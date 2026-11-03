@@ -213,7 +213,14 @@ export function getToolSearchMode(): ToolSearchMode {
  * Default patterns for models that do NOT support tool_reference.
  * New models are assumed to support tool_reference unless explicitly listed here.
  */
-const DEFAULT_UNSUPPORTED_MODEL_PATTERNS = ['haiku']
+const DEFAULT_UNSUPPORTED_MODEL_PATTERNS = [
+  'claude-3-opus',
+  'claude-3-sonnet',
+  'claude-3-haiku',
+  'claude-3-5-sonnet',
+  'claude-3-5-haiku',
+  'claude-3-7-sonnet',
+]
 
 /**
  * Get the list of model patterns that do NOT support tool_reference.
@@ -242,8 +249,9 @@ function getUnsupportedToolReferencePatterns(): string[] {
  * UNLESS they match a pattern in the unsupported list. This ensures new
  * models work by default without code changes.
  *
- * Currently, Haiku models do NOT support tool_reference. This can be
- * updated via GrowthBook feature 'tengu_tool_search_unsupported_models'.
+ * Currently, claude-3 models do NOT support tool_reference (same list as
+ * 2.1.317). This can be updated via GrowthBook feature
+ * 'tengu_tool_search_unsupported_models'.
  *
  * @param model The model name to check
  * @returns true if the model supports tool_reference, false otherwise
@@ -407,7 +415,7 @@ async function calculateDeferredToolDescriptionChars(
  *
  * This is the definitive check that includes:
  * - MCP mode (Tst, TstAuto, McpCli, Standard)
- * - Model compatibility (haiku doesn't support tool_reference)
+ * - Model compatibility (claude-3 models don't support tool_reference)
  * - ToolSearchTool availability (must be in tools list)
  * - Threshold check for TstAuto mode
  *
@@ -638,6 +646,42 @@ export function extractDiscoveredToolNames(messages: Message[]): Set<string> {
   }
 
   return discoveredTools
+}
+
+// `${tool_use_id}:${tool_name}` of each tool_reference → the deferred tool it loaded.
+const toolsSentForReference = new Map<string, Tool>()
+
+/**
+ * Deferred tools that a tool_reference in history loaded but that have left
+ * the pool since (MCP disconnect, tools/list_changed). Like 2.1.317, requests
+ * keep declaring the version that was sent: stripping the reference instead
+ * rewrites history and misses the cache from that message on.
+ */
+export function getDepartedReferencedTools(
+  messages: Message[],
+  tools: Tools,
+  deferredToolNames: ReadonlySet<string>,
+): Tool[] {
+  const pool = new Map(tools.map(tool => [tool.name, tool]))
+  const departed = new Map<string, Tool>()
+  for (const msg of messages) {
+    if (msg.type !== 'user' || !Array.isArray(msg.message?.content)) continue
+    for (const block of msg.message.content) {
+      if (!isToolResultBlockWithContent(block)) continue
+      for (const item of block.content) {
+        if (!isToolReferenceWithName(item)) continue
+        const key = `${(block as { tool_use_id?: string }).tool_use_id}:${item.tool_name}`
+        const current = pool.get(item.tool_name)
+        if (current && deferredToolNames.has(current.name)) {
+          if (!toolsSentForReference.has(key)) toolsSentForReference.set(key, current)
+          continue
+        }
+        const sent = toolsSentForReference.get(key)
+        if (!current && sent && !departed.has(sent.name)) departed.set(sent.name, sent)
+      }
+    }
+  }
+  return [...departed.values()]
 }
 
 export type DeferredToolsDelta = {
