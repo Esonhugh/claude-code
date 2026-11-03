@@ -9,6 +9,7 @@ import {
   listRunning,
   listWorkspaceFiles,
   loadSidebar,
+  loadModels,
   loadTranscript,
   NeedsTrustError,
   openCoordinator,
@@ -33,7 +34,7 @@ import { ProjectView } from './components/ProjectView'
 import { type DialogKind, Sidebar, type SidebarProject } from './components/Sidebar'
 import { SidePanel, type SideTab } from './components/SidePanel'
 import { StartPage } from './components/StartPage'
-import { ColumnDrag, type Columns } from './components/ColumnDrag'
+import { ColumnDrag, type Columns, columnVars } from './components/ColumnDrag'
 import { FootMenu, formatElapsed, nextMode, readStored, type T, writeStored } from './components/ui'
 import { WebPreview } from './components/WebPreview'
 import { chatMarkdown, exportFileName } from './exportChat'
@@ -360,6 +361,19 @@ export function App() {
     if (feed && stickToBottom.current) feed.scrollTop = feed.scrollHeight
   }, [chat?.items, chat?.approvals, view])
 
+  // The server's own list, so a new browser or the first session already has the discovered models.
+  const provider = account.account?.provider
+  useEffect(() => {
+    loadModels().then(
+      models => {
+        if (!models.length) return
+        const known = { provider, models }
+        setKnownModels(known)
+        writeStored(MODELS_KEY, known)
+      },
+      () => {},
+    )
+  }, [provider])
   useEffect(() => {
     if (chat?.models.length) {
       const known = { provider: account.account?.provider, models: chat.models }
@@ -1186,12 +1200,7 @@ export function App() {
   return (
     <div
       className="app"
-      style={
-        {
-          ...(columns.left && { '--left-w': `${columns.left}px` }),
-          ...(columns.right && { '--right-w': `${columns.right}px` }),
-        } as CSSProperties
-      }
+      style={columnVars(columns) as CSSProperties}
     >
       <ColumnDrag side="left" label={t('resizeSessions')} columns={columns} onChange={setColumns} />
       {chat && view && !inProject && (

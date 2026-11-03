@@ -308,6 +308,10 @@ describe('claude web server', () => {
       home: homedir(),
       version: '9.9.9-test',
     })
+    const models = (await (await fetch(`${r.base}/api/models`, { headers: { cookie } })).json()) as {
+      models: { value: string }[]
+    }
+    expect(models.models.map(m => m.value)).toContain('default')
   })
 
   it('keeps sidebar marks and deletes transcripts behind the cookie and origin checks', async () => {
