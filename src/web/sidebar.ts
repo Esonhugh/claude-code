@@ -2,6 +2,7 @@ import type { Database } from 'bun:sqlite'
 import { readdir, readFile, realpath, rm, stat } from 'fs/promises'
 import { basename, dirname, join } from 'path'
 import { listCandidates, parseSessionInfoFromLite } from '../utils/listSessionsImpl.js'
+import { isPeerPrompt } from '../utils/peerProtocol.js'
 import {
   extractFirstPromptFromHead,
   extractJsonStringField,
@@ -68,6 +69,7 @@ export function sessionTitle(
  * The newest prompt in the transcript's tail. The CLI writes its `last-prompt`
  * entry only on exit, so a running session needs the scan; without it a row
  * would show the first prompt and switch to the last one when the process ends.
+ * A teammate's or another session's message is not a prompt the user typed.
  */
 function lastPrompt(tail: string): string | undefined {
   const lines = tail.split('\n')
@@ -76,7 +78,7 @@ function lastPrompt(tail: string): string | undefined {
     if (line.startsWith('{"type":"last-prompt"')) return extractLastJsonStringField(line, 'lastPrompt') || undefined
     if (!line.includes('"type":"user"') || line.includes('<command-name>')) continue
     const prompt = extractFirstPromptFromHead(line)
-    if (prompt) return prompt
+    if (prompt && !isPeerPrompt(prompt)) return prompt
   }
   return undefined
 }

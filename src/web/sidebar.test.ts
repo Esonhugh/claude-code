@@ -96,6 +96,15 @@ describe('loadSidebar', () => {
     expect(data.sessions[0]).toMatchObject({ title: 'second', label: 'message' })
   })
 
+  it("skips a teammate's or another session's message, which the user did not type", async () => {
+    const a = join(root, 'a')
+    const peer = (raw: string) => user(`Another Claude session sent a message:\n${raw}\n\nThis came from another Claude session.`)
+    transcript(a, id(1), [user('make a team'), peer('<teammate-message teammate_id="alice">\n{"type":"idle_notification"}\n</teammate-message>')], 2_000_000)
+    transcript(a, id(2), [user('ask a peer'), peer('<cross-session-message from="uds:/tmp/x">\nhi\n</cross-session-message>')], 1_000_000)
+    const data = await loadSidebar(db, 10)
+    expect(data.sessions.map(s => s.title)).toEqual(['make a team', 'ask a peer'])
+  })
+
   it('leaves out project coordinators', async () => {
     const a = join(root, 'a')
     transcript(a, id(1), [user('task')], 2_000_000)
