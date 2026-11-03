@@ -899,7 +899,7 @@ describe('GET /api/peers', () => {
       const res = await fetch(`${r.base}/api/peers?cwd=${encodeURIComponent(r.workspace)}`, { headers: { cookie } })
       const body = (await res.json()) as { peers: { name: string; address: string; status: string }[] }
       expect(body.peers).toHaveLength(1)
-      expect(body.peers[0]).toMatchObject({ name: 'here', status: 'idle', address: `uds:${peers[0]!.socket}` })
+      expect(body.peers[0]).toMatchObject({ name: 'here', session_id: 'here', status: 'idle', address: `uds:${peers[0]!.socket}` })
       expect((await fetch(`${r.base}/api/peers?cwd=rel`, { headers: { cookie } })).status).toBe(400)
     } finally {
       for (const p of peers) p.child.kill()

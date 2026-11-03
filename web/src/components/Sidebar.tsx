@@ -1,7 +1,8 @@
-import { type MouseEvent as ReactMouseEvent, type ReactNode, type RefObject, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { Fragment, type MouseEvent as ReactMouseEvent, type ReactNode, type RefObject, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import {
   deleteTranscript,
+  getPeers,
   patchSessionMeta,
   patchProject,
   type Project,
@@ -31,8 +32,8 @@ export type DialogKind =
   | 'stats'
   | 'keys'
 
-/** A hover card: a title and the fields that are known; `mono` marks the id. */
-type Tip = { t: string; rows: { k: string; v: string; mono?: boolean }[] }
+/** A hover card: a title and the fields that are known; `mono` marks the id. A session's card also names its id and folder, to look up its messaging address while it is live. */
+type Tip = { t: string; rows: { k: string; v: string; mono?: boolean }[]; sid?: string; cwd?: string }
 
 const LOCALES: Record<Lang, string> = { 'zh-Hans': 'zh-CN', 'zh-Hant': 'zh-TW', en: 'en-US' }
 
@@ -161,10 +162,18 @@ export function Sidebar({
   const tipTimer = useRef<ReturnType<typeof setTimeout>>(undefined)
   const tipKey = useRef<string | null>(null)
   const tipSkip = useRef<string | null>(null)
+  const [peerAddress, setPeerAddress] = useState<Record<string, string | undefined>>({})
   const showTip = (el: HTMLElement) => {
     const key = el.dataset.tip!
     tipKey.current = key
-    setTip({ key, ...(JSON.parse(key) as Tip), top: el.getBoundingClientRect().top })
+    const next = JSON.parse(key) as Tip
+    setTip({ key, ...next, top: el.getBoundingClientRect().top })
+    const { sid, cwd } = next
+    if (sid && cwd)
+      getPeers(cwd).then(
+        peers => setPeerAddress(map => ({ ...map, [sid]: peers.find(peer => peer.session_id === sid)?.address })),
+        () => {},
+      )
   }
   const hideTip = (delay = 250) => {
     clearTimeout(tipTimer.current)
@@ -218,7 +227,7 @@ export function Sidebar({
     card.style.left = `${side.right + 6}px`
     card.style.left = `${Math.min(side.right + 6, innerWidth - card.offsetWidth - 8)}px`
     card.style.top = `${Math.min(tip.top, innerHeight - card.offsetHeight - 8)}px`
-  }, [tip])
+  }, [tip, peerAddress])
 
   // ---- right-click menu ----
   const closeMenu = () => setMenu(null)
@@ -369,7 +378,7 @@ export function Sidebar({
             className={`sess session-row${entry.unread ? ' unread' : ''}`}
             type="button"
             aria-current={entry.id === view}
-            {...tipAttr({ t: entry.title, rows: tipRows.filter(r => r.k && r.v) })}
+            {...tipAttr({ t: entry.title, rows: tipRows.filter(r => r.k && r.v), sid: entry.id, cwd: entry.cwd })}
             onClick={() => {
               if (entry.unread) patch(entry, { unread: false }, { unread: false }).catch(fail)
               onOpen(entry)
@@ -678,9 +687,25 @@ export function Sidebar({
             onMouseLeave={() => hideTip()}
           >
             <b>{tip.t}</b>
-            {tip.rows.map(r => (
+            {[
+              ...tip.rows,
+              ...(tip.sid && peerAddress[tip.sid] ? [{ k: t('peerAddressLabel'), v: peerAddress[tip.sid]!, mono: true }] : []),
+            ].map(r => (
               <span key={r.k}>
-                {r.k} <i className={r.mono ? 'mono' : undefined}>{r.v}</i>
+                <em>{r.k}</em>{' '}
+                {/* A long folder wraps after a slash rather than mid-name. */}
+                <i className={r.mono ? 'mono' : undefined}>
+                  {r.v.split('/').map((part, i) => (
+                    <Fragment key={i}>
+                      {i > 0 && (
+                        <>
+                          /<wbr />
+                        </>
+                      )}
+                      {part}
+                    </Fragment>
+                  ))}
+                </i>
               </span>
             ))}
           </div>,

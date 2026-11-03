@@ -975,6 +975,7 @@ export function startWebServer(
         peers: peers.map(peer => ({
           name: peer.name,
           ref: peer.ref,
+          session_id: peer.sessionId,
           pid: peer.pid,
           kind: peer.kind ?? null,
           status: peer.status ?? null,
