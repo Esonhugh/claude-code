@@ -132,7 +132,11 @@ export type SessionEnv = {
   hooks?: Hook[]
   /** Settings allow plan mode (`planModeAvailable`). */
   planMode?: boolean
+  /** Enabled ChatGPT (Codex) apps, for `@codex-app:<mention>` (`codex_apps`). */
+  codexApps?: CodexAppMention[]
 }
+
+export type CodexAppMention = { mention: string; name: string; description?: string }
 
 export type ChatState = {
   items: Item[]
@@ -958,6 +962,7 @@ export const REQUEST_PREFIX = {
   /** The sidebar dialogs' requests (mcp_status, reload_plugins…). */
   ext: 'web-ext-',
   background: 'web-bg-',
+  apps: 'web-apps-',
 } as const
 
 export type Todo = { content: string; status: string; activeForm?: string }
@@ -1111,6 +1116,15 @@ function reduceControlResponse(state: ChatState, raw: Json): ChatState {
     return typeof body.percentUsed === 'number'
       ? { ...state, contextPercent: body.percentUsed }
       : state
+  }
+  if (id.startsWith(REQUEST_PREFIX.apps)) {
+    const apps = Array.isArray(body.apps) ? body.apps.filter(isObj) : []
+    const codexApps = apps.flatMap(app =>
+      app.enabled !== false && typeof app.mentionName === 'string'
+        ? [{ mention: app.mentionName, name: str(app.name) ?? app.mentionName, description: str(app.description) }]
+        : [],
+    )
+    return { ...state, env: { ...state.env, codexApps } }
   }
   if (id.startsWith(REQUEST_PREFIX.mode)) {
     return { ...state, notice: undefined, permissionMode: str(body.mode) ?? state.permissionMode }

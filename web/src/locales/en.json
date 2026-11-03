@@ -305,6 +305,8 @@
   "mentionTargets": "Send to",
   "targetTag": "task",
   "agentTag": "agent",
+  "chatgptApps": "ChatGPT apps",
+  "appTag": "app",
   "messageTarget": "Message {name}",
   "clearTarget": "Send to this chat instead",
   "roundsLabel": "Turns",

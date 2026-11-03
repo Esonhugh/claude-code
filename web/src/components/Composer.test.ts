@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test'
 import { translate } from '../i18n'
-import { effortChoices, matchTargets, pinText, shownModels } from './Composer'
+import { effortChoices, matchApps, matchTargets, pinText, shownModels } from './Composer'
 import { nextMode, offeredModes, type T } from './ui'
 
 const t: T = (key, vars) => translate('en', key, vars)
@@ -61,5 +61,17 @@ describe('matchTargets', () => {
     expect(matchTargets(tasks, '').map(x => x.id)).toEqual(['a', 'b', 'c'])
     expect(matchTargets(tasks, 'safari').map(x => x.id)).toEqual(['a', 'b'])
     expect(matchTargets(tasks, 'zzz')).toEqual([])
+  })
+})
+
+describe('matchApps', () => {
+  const apps = [
+    { mention: 'gmail', name: 'Gmail' },
+    { mention: 'google_drive', name: 'Google Drive', description: 'Files' },
+  ]
+  it('matches the mention or the name, with or without the codex-app: prefix', () => {
+    expect(matchApps(apps, '').map(x => x.mention)).toEqual(['gmail', 'google_drive'])
+    expect(matchApps(apps, 'drive').map(x => x.mention)).toEqual(['google_drive'])
+    expect(matchApps(apps, 'codex-app:gm').map(x => x.mention)).toEqual(['gmail'])
   })
 })

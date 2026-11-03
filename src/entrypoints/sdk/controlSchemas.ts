@@ -634,7 +634,7 @@ export const SDKControlCodexAppsRequestSchema = lazySchema(() =>
       subtype: z.literal('codex_apps'),
     })
     .describe(
-      'Fork-only. Lists the ChatGPT apps (Codex apps) of this session, as /plugin shows them: {eligible, reason?, apps: [{connectorId, name, description?, tools, enabled}]}. Only an OpenAI provider signed in with ChatGPT is eligible.',
+      'Fork-only. Lists the ChatGPT apps (Codex apps) of this session, as /plugin shows them: {eligible, reason?, apps: [{connectorId, name, mentionName, description?, tools, enabled}]}. Only an OpenAI provider signed in with ChatGPT is eligible.',
     ),
 )
 

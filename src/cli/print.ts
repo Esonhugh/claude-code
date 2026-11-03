@@ -5050,6 +5050,7 @@ function runHeadlessStreaming(
               ? buildCodexAppPluginProjections(getAppState().mcp.tools).map(app => ({
                   connectorId: app.connectorId,
                   name: app.displayName,
+                  mentionName: app.mentionName,
                   ...(app.description && { description: app.description }),
                   tools: app.toolNames.length,
                   enabled: !disabled.has(app.connectorId),
