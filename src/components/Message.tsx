@@ -22,7 +22,6 @@ import type {
   RenderableMessage,
 } from '../types/message.js'
 import { type AdvisorBlock, isAdvisorBlock } from '../utils/advisor.js'
-import { isFullscreenEnvEnabled } from '../utils/fullscreen.js'
 import { logError } from '../utils/log.js'
 import type { buildMessageLookups } from '../utils/messages.js'
 import { CompactSummary } from './CompactSummary.js'
@@ -187,12 +186,6 @@ function MessageImpl({
     }
     case 'system':
       if (message.subtype === 'compact_boundary') {
-        // Fullscreen keeps pre-compact messages in the ScrollBox (REPL.tsx
-        // appends instead of resetting, Messages.tsx skips the boundary
-        // filter) — scroll up for history, no need for the ctrl+o hint.
-        if (isFullscreenEnvEnabled()) {
-          return null
-        }
         return <CompactBoundaryMessage />
       }
       if (message.subtype === 'microcompact_boundary') {

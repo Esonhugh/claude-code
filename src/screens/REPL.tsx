@@ -4415,7 +4415,8 @@ export function REPL({
       const result = await call('', context)
       if (result.type !== 'compact' || controller.signal.aborted) return
       resetMicrocompactState()
-      setMessages(() => [
+      setMessages(old => [
+        ...getMessagesAfterCompactBoundary(old, { includeSnipped: true }),
         ...buildPostCompactMessages(result.compactionResult),
         createSystemMessage(IDLE_COMPACTION_NOTICE, 'info'),
       ])
@@ -4456,23 +4457,19 @@ export function REPL({
             }
           }
           if (isCompactBoundaryMessage(newMessage)) {
-            // Fullscreen: keep pre-compact messages for scrollback. query.ts
-            // slices at the boundary for API calls, Messages.tsx skips the
-            // boundary filter in fullscreen, and useLogMessages treats this
-            // as an incremental append (first uuid unchanged). Cap at one
-            // compact-interval of scrollback — normalizeMessages/applyGrouping
-            // are O(n) per render, so drop everything before the previous
-            // boundary to keep n bounded across multi-day sessions.
-            if (isFullscreenEnvEnabled()) {
-              setMessages(old => [
-                ...getMessagesAfterCompactBoundary(old, {
-                  includeSnipped: true,
-                }),
-                newMessage,
-              ])
-            } else {
-              setMessages(() => [newMessage])
-            }
+            // Keep pre-compact messages on screen in both modes, like
+            // official. query.ts slices at the boundary for API calls,
+            // Messages.tsx hides the boundary and the repeated kept tail, and
+            // useLogMessages treats this as an incremental append (first uuid
+            // unchanged). Cap at one compact-interval of history —
+            // normalizeMessages/applyGrouping are O(n) per render, so drop
+            // everything before the previous boundary to keep n bounded.
+            setMessages(old => [
+              ...getMessagesAfterCompactBoundary(old, {
+                includeSnipped: true,
+              }),
+              newMessage,
+            ])
             // Bump conversationId so Messages.tsx row keys change and
             // stale memoized rows remount with post-compact content.
             setConversationId(randomUUID())
@@ -4976,7 +4973,14 @@ export function REPL({
         // isLoading is derived from queryGuard — tryStart() above already
         // transitioned dispatching→running, so no setter call needed here.
         resetTimingRefs()
-        setMessages(oldMessages => [...oldMessages, ...newMessages])
+        setMessages(oldMessages => [
+          // A typed /compact keeps one compact-interval of history, like the
+          // auto-compact path in onQueryEvent.
+          ...(newMessages.some(isCompactBoundaryMessage)
+            ? getMessagesAfterCompactBoundary(oldMessages, { includeSnipped: true })
+            : oldMessages),
+          ...newMessages,
+        ])
         responseLengthRef.current = 0
         if (feature('TOKEN_BUDGET')) {
           const parsedBudget = input ? parseTokenBudget(input) : null

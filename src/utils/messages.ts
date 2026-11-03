@@ -4986,6 +4986,23 @@ export function findLastCompactBoundaryIndex<
 }
 
 /**
+ * The REPL keeps pre-compact messages on screen after a live compaction, like
+ * official. The boundary then sits under its own history and the kept tail
+ * repeats messages already shown above it, so drop both from the display. A
+ * leading boundary (resume, or older history trimmed) stays as the marker.
+ */
+export function getMessagesForCompactDisplay(messages: Message[]): Message[] {
+  const last = findLastCompactBoundaryIndex(messages)
+  if (last <= 0) return messages
+  const shownBefore = new Set(messages.slice(0, last).map(m => m.uuid))
+  return messages.filter(
+    (m, i) =>
+      i === 0 ||
+      (!isCompactBoundaryMessage(m) && (i < last || !shownBefore.has(m.uuid))),
+  )
+}
+
+/**
  * Returns messages from the last compact boundary onward (including the boundary).
  * If no boundary exists, returns all messages.
  *

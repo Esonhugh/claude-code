@@ -1336,9 +1336,11 @@ export async function partialCompactConversation(
 
 function addErrorNotificationIfNeeded(
   error: unknown,
-  context: Pick<ToolUseContext, 'addNotification'>,
+  context: Pick<ToolUseContext, 'addNotification' | 'abortController'>,
 ) {
   if (
+    // Esc cancels quietly, like official.
+    !context.abortController.signal.aborted &&
     !(error instanceof CompactionBlockedError) &&
     !hasExactErrorMessage(error, ERROR_MESSAGE_USER_ABORT) &&
     !hasExactErrorMessage(error, ERROR_MESSAGE_NOT_ENOUGH_MESSAGES)

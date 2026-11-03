@@ -21,6 +21,7 @@ import {
   usePromptOverlayGap,
 } from '../context/promptOverlayContext.js'
 import { useTerminalSize } from '../hooks/useTerminalSize.js'
+import { useShortcutDisplay } from '../keybindings/useShortcutDisplay.js'
 import ScrollBox, { type ScrollBoxHandle } from '../ink/components/ScrollBox.js'
 import { TerminalSizeContext } from '../ink/components/TerminalSizeContext.js'
 import instances from '../ink/instances.js'
@@ -668,6 +669,16 @@ function NewMessagesPill({
   onClick?: () => void
 }): React.ReactNode {
   const [hover, setHover] = useState(false)
+  const { columns } = useTerminalSize()
+  const shortcut = useShortcutDisplay('scroll:bottom', 'Scroll', 'ctrl+End')
+  const label =
+    count > 0 ? `${count} new ${plural(count, 'message')}` : 'Jump to bottom'
+  // Like official: name the shortcut when it fits.
+  const withShortcut = `${label} (${shortcut}) ${figures.arrowDown}`
+  const text =
+    withShortcut.length + 2 <= columns - 2
+      ? withShortcut
+      : `${label} ${figures.arrowDown}`
   return (
     <Box
       position="absolute"
@@ -687,11 +698,7 @@ function NewMessagesPill({
           }
           dimColor
         >
-          {' '}
-          {count > 0
-            ? `${count} new ${plural(count, 'message')}`
-            : 'Jump to bottom'}{' '}
-          {figures.arrowDown}{' '}
+          {` ${text} `}
         </Text>
       </Box>
     </Box>

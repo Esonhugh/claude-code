@@ -2260,7 +2260,20 @@ export function buildConversationChain(
       : undefined
   }
   transcript.reverse()
-  return recoverOrphanedParallelToolResults(messages, transcript, seen)
+  const chain = recoverOrphanedParallelToolResults(messages, transcript, seen)
+  // Leaves are user/assistant messages, so the walk drops the last turn's
+  // duration row; official keeps it on resume.
+  for (const m of messages.values()) {
+    if (
+      m.parentUuid === leafMessage.uuid &&
+      m.type === 'system' &&
+      m.subtype === 'turn_duration'
+    ) {
+      chain.push(m)
+      break
+    }
+  }
+  return chain
 }
 
 /**
