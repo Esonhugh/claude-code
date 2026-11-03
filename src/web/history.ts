@@ -73,6 +73,8 @@ function isVisible(message: Record<string, unknown>): boolean {
   }
   // A channel message is meta to the model; the person sees it, as in the TUI.
   if (message.type === 'user' && (message.origin as { kind?: unknown } | undefined)?.kind === 'channel') return true
+  // So is a message another Claude session sent (`<cross-session-message>`).
+  if (message.type === 'user' && (message.origin as { kind?: unknown } | undefined)?.kind === 'peer') return true
   if (message.type !== 'user' || message.isMeta) {
     return false
   }

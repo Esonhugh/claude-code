@@ -605,7 +605,8 @@ export function teammateMessages(
 // The whole text must be one wrapper, so a prompt that merely mentions the tag stays the person's own.
 const CHANNEL_MESSAGE = /^<channel\s+source="([^"]+)"([^>]*)>\n?([\s\S]*?)\n?<\/channel>\s*$/
 
-const PEER_MESSAGE = /^<cross-session-message([^>]*)>\n?([\s\S]*?)\n?<\/cross-session-message>\s*$/
+// The transcript keeps the lines the model reads around it ("Another Claude session sent a message:").
+const PEER_MESSAGE = /^(?:[^<\n]*\n)?<cross-session-message([^>]*)>\n?([\s\S]*?)\n?<\/cross-session-message>/
 
 /** A message from a peer session, named by its `from-name` (or address). */
 export function peerMessage(text: string, id: string): Extract<Item, { kind: 'peer' }> | undefined {
