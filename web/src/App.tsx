@@ -53,6 +53,7 @@ import {
   REQUEST_PREFIX,
   type SessionEnv,
   type TaskNote,
+  type ChatState,
   teamName,
   unsupportedControlResponse,
   userMessage,
@@ -97,7 +98,7 @@ async function prepareContent(
 const isNarrow = (px: number) => window.matchMedia(`(max-width: ${px}px)`).matches
 
 /** `✻ Cogitating… 12s  esc 中断` while a turn runs. */
-function StatusLine({ t, since, onStop }: { t: T; since: number; onStop: () => void }) {
+function StatusLine({ t, since, retry, onStop }: { t: T; since: number; retry?: ChatState['retry']; onStop: () => void }) {
   const [tick, setTick] = useState(0)
   const verb = useMemo(() => VERBS[Math.floor(Math.random() * VERBS.length)], [since])
   useEffect(() => {
@@ -109,6 +110,17 @@ function StatusLine({ t, since, onStop }: { t: T; since: number; onStop: () => v
       <span className="glyph">{GLYPHS[tick % GLYPHS.length]}</span>
       <span className="verb shimmer">{verb}…</span>
       <span className="mono">{formatElapsed(Date.now() - since)}</span>
+      {retry && (
+        // As the TUI's spinner row: the request failed and is tried again.
+        <span className="retry">
+          {t('apiRetry', {
+            status: retry.status ? ` ${retry.status}` : '',
+            s: String(Math.ceil(Math.max(0, retry.delayMs - (Date.now() - retry.at)) / 1000)),
+            n: String(retry.attempt),
+            max: String(retry.max),
+          })}
+        </span>
+      )}
       <button type="button" onClick={onStop}>
         {t('escInterrupt')}
       </button>
@@ -330,7 +342,7 @@ export function App() {
       notesByItem(
         (chat?.taskNotes ?? []).filter(note => {
           const task = tasks?.[note.taskId]
-          return task !== undefined && canChat(task) && task.depth <= 1
+          return task !== undefined && (canChat(task) || task.type === 'local_bash' || task.type === 'local_workflow') && task.depth <= 1
         }),
         items ?? [],
       ),
@@ -340,11 +352,19 @@ export function App() {
     const task = tasks?.[note.taskId]
     const { key, vars } = taskNoteText(note, task && { description: task.title ?? task.description, durationMs: task.durationMs })
     const done = key === 'taskFinishedNote'
+    const kind = task?.type === 'local_bash' ? 'bash' : task?.type === 'local_workflow' ? 'workflow' : 'agent'
+    const text = (
+      {
+        agent: { done: 'agentReturnedNote', failed: 'agentFailedNote', stopped: 'agentExitedNote' },
+        bash: { done: 'bashDoneNote', failed: 'bashFailedNote', stopped: 'bashStoppedNote' },
+        workflow: { done: 'workflowDoneNote', failed: 'workflowFailedNote', stopped: 'workflowStoppedNote' },
+      } as const
+    )[kind][done ? 'done' : key === 'taskFailedNote' ? 'failed' : 'stopped']
     return (
       <div className="pj-note agent-note" key={`${note.taskId}-${note.n}`}>
         <span className="g">{done ? '↩' : '■'}</span>
         <button type="button" onClick={() => agentsValue.open(note.taskId)}>
-          {t(done ? 'agentReturnedNote' : key === 'taskFailedNote' ? 'agentFailedNote' : 'agentExitedNote', vars)} ›
+          {t(text, vars)} ›
         </button>
       </div>
     )
@@ -1369,7 +1389,7 @@ export function App() {
                 {t('askRef', { tool: a.toolName })}
               </div>
             ))}
-            {chat.busy && since !== undefined && <StatusLine t={t} since={since} onStop={() => view && stop(view)} />}
+            {chat.busy && since !== undefined && <StatusLine t={t} since={since} retry={chat.retry} onStop={() => view && stop(view)} />}
             {newBelow > 0 && (
               <button
                 type="button"

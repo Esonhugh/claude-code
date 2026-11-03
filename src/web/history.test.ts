@@ -246,13 +246,14 @@ describe('web history', () => {
     )
     const messages = (await readTranscript(ID, undefined, 50))!.messages
     expect(messages.at(-1)).toMatchObject({ type: 'assistant' })
-    expect(messages.at(-2)).toMatchObject({
+    expect(messages.at(-3)).toMatchObject({
       type: 'user',
       isReplay: true,
       uuid: 'c0000000-0000-4000-8000-000000000001',
       message: { role: 'user', content: [{ type: 'text', text: 'also check B' }] },
     })
-    expect(JSON.stringify(messages)).not.toContain('task-notification')
+    // A task ending the model read mid-turn: the page notes it there.
+    expect(messages.at(-2)).toMatchObject({ type: 'user', isReplay: true, uuid: 'a0000000-0000-4000-8000-000000000021', message: { content: '<task-notification>x</task-notification>' } })
   })
 
   it('keeps the history before a compaction, in the order it was written', async () => {

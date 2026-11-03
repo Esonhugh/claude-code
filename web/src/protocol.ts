@@ -179,6 +179,8 @@ export type ChatState = {
   queued: Extract<Item, { kind: 'user' }>[]
   /** The prompts the session's /rewind lists (`rewind_points`), oldest first; only these offer Rewind. */
   rewindPoints?: string[]
+  /** The API request failed and is retried (`api_retry`); cleared when a reply starts or the turn ends. */
+  retry?: { attempt: number; max: number; delayMs: number; at: number; status?: number }
 }
 
 export const initialState: ChatState = {
@@ -665,8 +667,23 @@ export function reduce(state: ChatState, raw: unknown): ChatState {
     return state.queued.reduce((s, q) => addUserMessage(s, q.text, q.images, q.id), ended)
   }
 
+  if (state.retry && (raw.type === 'stream_event' || raw.type === 'assistant' || raw.type === 'result')) {
+    state = { ...state, retry: undefined }
+  }
   switch (raw.type) {
     case 'system':
+      if (raw.subtype === 'api_retry') {
+        return {
+          ...state,
+          retry: {
+            attempt: typeof raw.attempt === 'number' ? raw.attempt : 1,
+            max: typeof raw.max_retries === 'number' ? raw.max_retries : 0,
+            delayMs: typeof raw.retry_delay_ms === 'number' ? raw.retry_delay_ms : 0,
+            at: Date.now(),
+            ...(typeof raw.error_status === 'number' && { status: raw.error_status }),
+          },
+        }
+      }
       if (raw.subtype === 'compact_boundary') {
         const meta = isObj(raw.compact_metadata) ? raw.compact_metadata : {}
         const id = str(raw.uuid) ?? `compact-${state.items.length}`

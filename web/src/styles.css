@@ -384,6 +384,7 @@ h1, h2, h3 { text-wrap: balance; margin: 0 }
 .status-line { display: flex; gap: 8px; align-items: center; color: var(--muted); font-size: 13px; max-width: var(--col); width: 100%; margin: 0 auto }
 .status-line .glyph { color: #d97757; font-family: var(--f-mono); width: 14px; text-align: center }
 .status-line .verb { font-weight: 500 }
+.status-line .retry { color: var(--warn) }
 .status-line button { border: 1px solid var(--line); background: var(--surface); border-radius: 6px; padding: 1px 8px; font-size: 12px; color: var(--muted) }
 
 /* dialogs */
