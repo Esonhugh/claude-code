@@ -367,6 +367,9 @@ function snippetAround(body: string, text: string, words: string[]): Pick<Memory
 }
 
 // Words too common in prompts or memory frontmatter to signal relevance.
+/** Chunks read per prompt to count which memory files hold each word. */
+const MAX_RECALL_CHUNKS = 2000
+
 const RECALL_STOPWORDS = new Set(
   (
     'the and for are but not you your yours was were has have had what when where which who whom why how ' +
@@ -374,14 +377,29 @@ const RECALL_STOPWORDS = new Set(
     'can could should would will shall may might must does did doing done just also only very more most ' +
     'some any all each every our ours its let get got use using used make made want need please ' +
     'tell show give know think say said like one two new now out off again still been being ' +
+    'time times thanks thank good great fine okay sure yes look looks seem seems right ' +
     'name description metadata type project user feedback reference memory memories answer short sentence ' +
     '什麼 什么 怎麼 怎么 為什 为什 是不 不是 可以 一下 我們 我们 你們 你们 這個 这个 那個 那个 沒有 没有 有沒 有没'
   ).split(' '),
 )
 
+/** A word in more memory files than this carries no signal for recall. */
+function commonWordFiles(fileCount: number): number {
+  return Math.max(3, fileCount / 3)
+}
+
+/** Latin words must match whole, so `time` does not recall `runtime`; CJK pieces have no word boundaries. */
+function wordMatcher(word: string): (body: string) => boolean {
+  if (hasCjk(word)) return body => body.includes(word)
+  // Prompt words hold only letters, digits, `_` and `-`, none of them special here.
+  const pattern = new RegExp(`(?<![\\p{L}\\p{N}_])${word}(?![\\p{L}\\p{N}_])`, 'u')
+  return body => pattern.test(body)
+}
+
 /**
  * Memory files that match a user prompt, best first, for automatic recall:
- * no model call, only distinctive prompt words, memory files only.
+ * no model call, only distinctive prompt words, memory files only. A file
+ * needs a whole-word match on a word that few memory files share.
  */
 export async function findMemoryFilesForPrompt(params: {
   prompt: string
@@ -403,15 +421,31 @@ export async function findMemoryFilesForPrompt(params: {
   const listing = await listSources(params.scopes.filter(s => s !== 'session'))
   await refresh(index, listing.files)
   prune(index, listing)
-  const paths = listing.files
-    .map(f => f.path)
-    .filter(p => basename(p) !== 'MEMORY.md' && !params.exclude.has(p))
+  const paths = listing.files.map(f => f.path).filter(p => basename(p) !== 'MEMORY.md')
   if (paths.length === 0) return []
-  const rows = rankChunks(index, paths, words, params.limit, false)
+  const matchers = words.map(wordMatcher)
+  const matched = new Map<string, Set<number>>()
+  for (const row of rankChunks(index, paths, words, MAX_RECALL_CHUNKS, true)) {
+    const body = row.body!.toLowerCase()
+    const found = matched.get(row.path) ?? new Set<number>()
+    matchers.forEach((match, i) => {
+      if (match(body)) found.add(i)
+    })
+    matched.set(row.path, found)
+  }
+  const fileCounts = words.map((_, i) => [...matched.values()].filter(found => found.has(i)).length)
+  const rare = (i: number) => fileCounts[i]! <= commonWordFiles(paths.length)
   const known = new Map(
     (index.query('SELECT path, mtime FROM files').all() as { path: string; mtime: number }[]).map(r => [r.path, r.mtime]),
   )
-  return rows.map(r => ({ path: r.path, mtimeMs: known.get(r.path) ?? 0 }))
+  // Map order is rankChunks order, so ties keep the bm25 ranking.
+  return [...matched]
+    .filter(([path]) => !params.exclude.has(path))
+    .map(([path, found]) => ({ path, score: [...found].filter(rare).length }))
+    .filter(r => r.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, params.limit)
+    .map(r => ({ path: r.path, mtimeMs: known.get(r.path) ?? 0 }))
 }
 
 /**

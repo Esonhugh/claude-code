@@ -1,6 +1,8 @@
 import { randomUUID, type UUID } from 'crypto'
 import { readdir, readFile, writeFile } from 'fs/promises'
 import { dirname, join } from 'path'
+import { selectableUserMessagesFilter } from '../components/MessageSelector.js'
+import type { Message } from '../types/message.js'
 import { listSessionsImpl } from '../utils/listSessionsImpl.js'
 import type { TranscriptMessage } from '../types/logs.js'
 import {
@@ -90,6 +92,8 @@ export async function readTranscript(
       total: number
       cwd?: string
       title?: string
+      /** With the newest page: the prompts a resumed session's /rewind lists. */
+      rewindPoints?: string[]
     }
   | undefined
 > {
@@ -109,7 +113,16 @@ export async function readTranscript(
     total: visible.length,
     cwd: first?.cwd ?? found.projectPath,
     title: log.customTitles.get(leaf.sessionId as UUID) ?? log.summaries.get(leaf.uuid),
+    ...(before === undefined && { rewindPoints: await resumedRewindPoints(found.filePath, leaf.uuid) }),
   }
+}
+
+/** What --resume loads (no pre-compact messages), filtered as /rewind lists it. */
+async function resumedRewindPoints(filePath: string, leafUuid: UUID): Promise<string[]> {
+  const log = await loadTranscriptFile(filePath)
+  const leaf = log.messages.get(leafUuid)
+  if (!leaf) return []
+  return (buildConversationChain(log.messages, leaf) as Message[]).filter(selectableUserMessagesFilter).map(m => m.uuid)
 }
 
 /**

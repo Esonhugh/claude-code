@@ -1,7 +1,7 @@
 import { type ReactNode, useEffect, useMemo, useState } from 'react'
 import { type AgentTask, isFinished } from '../agents'
-import type { Groups } from '../background'
 import { getUsage } from '../api'
+import { type Groups, type Pane, usedPanes } from '../background'
 import { sessionFiles, tilde } from '../files'
 import type { ModelOption, Todo } from '../protocol'
 import type { SessionChat } from '../store'
@@ -446,7 +446,10 @@ function FilesPane({
   )
 }
 
-/** The right column: Status, Files, Agents, Workflow, Terminals, Monitor, Background Tasks. */
+/**
+ * The right column: Status, Files and Agents always; Workflow, Terminals,
+ * Monitor and Background Tasks once the session has used them (or one is open).
+ */
 export function SidePanel({
   t,
   open,
@@ -503,15 +506,18 @@ export function SidePanel({
   const agents = Object.keys(agentTasks(chat.tasks)).length
   const bg = useBackground(sessionId, chat.tasks, ['terminals', 'monitor', 'bg'].includes(tab), onRequest)
   const { terminals, monitors, background } = bg.groups
-  const tabs: { id: SideTab; label: string; count?: number }[] = [
-    { id: 'status', label: 'Status' },
-    { id: 'files', label: 'Files', count: files },
-    { id: 'agents', label: 'Agents', count: agents },
-    { id: 'workflow', label: 'Workflow' },
-    { id: 'terminals', label: 'Terminals', count: terminals.length },
-    { id: 'monitor', label: 'Monitor', count: monitors.length },
-    { id: 'bg', label: 'Background Tasks', count: background.length },
-  ]
+  const used = useMemo(() => usedPanes(chat.tasks, chat.items, bg.groups), [chat.tasks, chat.items, bg.groups])
+  const tabs = (
+    [
+      { id: 'status', label: 'Status' },
+      { id: 'files', label: 'Files', count: files },
+      { id: 'agents', label: 'Agents', count: agents },
+      { id: 'workflow', label: 'Workflow' },
+      { id: 'terminals', label: 'Terminals', count: terminals.length },
+      { id: 'monitor', label: 'Monitor', count: monitors.length },
+      { id: 'bg', label: 'Background Tasks', count: background.length },
+    ] satisfies { id: SideTab; label: string; count?: number }[]
+  ).filter(x => ['status', 'files', 'agents', tab].includes(x.id) || used.includes(x.id as Pane))
   return (
     <aside className={`side${open ? ' open' : ''}`} aria-label={t('sidebarLabel')}>
       <div className="sheet-head">

@@ -322,6 +322,10 @@ export type SDKControlRewindConversationRequest = {
   last_seen_user_message_uuid: string
 }
 
+export type SDKControlRewindPointsRequest = {
+  subtype: 'rewind_points'
+}
+
 export type SDKControlApplyFlagSettingsRequest = {
   subtype: 'apply_flag_settings'
   settings: Record<string, unknown>
