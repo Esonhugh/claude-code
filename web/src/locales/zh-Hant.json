@@ -235,6 +235,7 @@
   "usageTab": "用量",
   "featuresTab": "功能開關",
   "thoughtFor": "思考了 {n} 秒",
+  "nSteps": "{n} 個步驟",
   "thinkingNow": "思考中…",
   "newFile": "新檔案",
   "viewInFiles": "在 Files 中查看",

@@ -383,9 +383,42 @@ export function TeamBar({
   )
 }
 
-/** Each API message is its own item; one that follows another assistant item belongs to the same turn. */
-export function continuesTurn(items: Item[], index: number): boolean {
-  return items[index]?.kind === 'assistant' && items[index - 1]?.kind === 'assistant'
+const seconds = (ms: number) => Math.max(1, Math.round(ms / 1000))
+
+/**
+ * Each API message is its own item; consecutive assistant items are one turn,
+ * drawn as one message. `ids` are the joined items; `splitAfter` ends a turn early.
+ */
+export function joinTurns(items: Item[], splitAfter?: (id: string) => boolean): { item: Item; ids: string[] }[] {
+  const out: { item: Item; ids: string[] }[] = []
+  for (const item of items) {
+    const last = out.at(-1)
+    if (item.kind === 'assistant' && last?.item.kind === 'assistant' && !splitAfter?.(last.ids.at(-1)!)) {
+      last.item = { ...last.item, blocks: [...last.item.blocks, ...item.blocks] }
+      last.ids.push(item.id)
+    } else {
+      out.push({ item, ids: [item.id] })
+    }
+  }
+  return out
+}
+
+/**
+ * How a turn's blocks are drawn: text as is, a run of two or more thinking and
+ * tool blocks folded into one steps row, and adjacent task cards together.
+ */
+export type Segment = { kind: 'text' | 'step' | 'steps' | 'cards'; at: number[] }
+
+export function turnSegments(blocks: (Block | undefined)[], isCard: (index: number) => boolean): Segment[] {
+  const out: Segment[] = []
+  blocks.forEach((block, i) => {
+    if (!block) return
+    const kind = block.kind === 'text' ? 'text' : isCard(i) ? 'cards' : 'steps'
+    const last = out.at(-1)
+    if (kind !== 'text' && last?.kind === kind) last.at.push(i)
+    else out.push({ kind, at: [i] })
+  })
+  return out.map(s => (s.kind === 'steps' && s.at.length === 1 ? { ...s, kind: 'step' } : s))
 }
 
 export function Message({
@@ -399,7 +432,6 @@ export function Message({
   who = 'Claude',
   taskCard,
   queued,
-  continued,
 }: {
   item: Item
   t: T
@@ -415,8 +447,6 @@ export function Message({
   taskCard?: (block: Extract<Block, { kind: 'tool' }>) => ReactNode
   /** Sent during a running turn and not yet seen by the model. */
   queued?: boolean
-  /** Another API message of the turn above: drawn under its header. */
-  continued?: boolean
 }) {
   const files = useContext(FilesContext)
   const { rewind } = useContext(ChatContext)
@@ -541,51 +571,81 @@ export function Message({
     )
   }
   const label = modelName(item.model ?? fallbackModel, models)
-  const cards = taskCard
-    ? item.blocks.flatMap((block, i) => {
-        const card = block?.kind === 'tool' ? taskCard(block) : undefined
-        return card ? [{ i, card }] : []
-      })
-    : []
+  const cards = new Map<number, ReactNode>()
+  if (taskCard) {
+    item.blocks.forEach((block, i) => {
+      const card = block?.kind === 'tool' ? taskCard(block) : undefined
+      if (card) cards.set(i, card)
+    })
+  }
+  const segments = turnSegments(item.blocks, i => cards.has(i))
+  const step = (i: number) => {
+    const block = item.blocks[i]!
+    if (block.kind === 'thinking') {
+      const live = streaming && block.startedAt !== undefined && block.ms === undefined
+      return (
+        <details key={`${i}${live ? '-live' : ''}`} className="think" open={live || undefined}>
+          <summary className={live ? 'shimmer' : undefined}>
+            {live
+              ? t('thinkingNow')
+              : block.ms !== undefined
+                ? t('thoughtFor', { n: String(seconds(block.ms)) })
+                : t('thinking')}
+          </summary>
+          <div className="tbody">{block.text}</div>
+        </details>
+      )
+    }
+    return block.kind === 'tool' ? <ToolCard key={i} block={block} t={t} /> : null
+  }
   return (
-    <div className={continued ? 'msg assistant cont' : 'msg assistant'}>
-      {!continued && (
-        <span className="who">
-          {who}
-          {label && <span className="wm"> ({label})</span>}
-          {role}
-        </span>
-      )}
-      {item.blocks.map((block, i) => {
-        if (!block || cards.some(c => c.i === i)) return null
-        if (block.kind === 'text') {
+    <div className="msg assistant">
+      <span className="who">
+        {who}
+        {label && <span className="wm"> ({label})</span>}
+        {role}
+      </span>
+      {segments.map((segment, n) => {
+        const first = segment.at[0]!
+        if (segment.kind === 'text') {
+          const block = item.blocks[first] as Extract<Block, { kind: 'text' }>
           return (
             <Markdown
-              key={i}
+              key={first}
               filesBase={files.base}
               text={block.text}
-              streaming={streaming && i === item.blocks.length - 1}
+              streaming={streaming && first === item.blocks.length - 1}
             />
           )
         }
-        if (block.kind === 'thinking') {
-          const live = streaming && block.startedAt !== undefined && block.ms === undefined
+        if (segment.kind === 'cards') {
           return (
-            <details key={`${i}${live ? '-live' : ''}`} className="think" open={live || undefined}>
-              <summary className={live ? 'shimmer' : undefined}>
-                {live
-                  ? t('thinkingNow')
-                  : block.ms !== undefined
-                    ? t('thoughtFor', { n: String(Math.max(1, Math.round(block.ms / 1000))) })
-                    : t('thinking')}
-              </summary>
-              <div className="tbody">{block.text}</div>
-            </details>
+            <div className="pjcards" key={first}>
+              {segment.at.map(i => (
+                <Fragment key={i}>{cards.get(i)}</Fragment>
+              ))}
+            </div>
           )
         }
-        return <ToolCard key={i} block={block} t={t} />
+        if (segment.kind === 'step') return step(first)
+        const run = segment.at.map(i => item.blocks[i]!)
+        // The run the model is still on stays open, as a thinking row does.
+        const live = streaming && n === segments.length - 1
+        const tools = run.flatMap(b => (b.kind === 'tool' ? [b] : []))
+        const thought = run.reduce((ms, b) => ms + (b.kind === 'thinking' ? (b.ms ?? 0) : 0), 0)
+        const failed = tools.filter(b => b.isError).length
+        return (
+          <details key={`s${first}${live ? '-live' : ''}`} className="think steps" open={live || undefined}>
+            <summary className={live ? 'shimmer' : undefined}>
+              {t('nSteps', { n: String(run.length) })}
+              {thought > 0 && <span className="sd">{t('thoughtFor', { n: String(seconds(thought)) })}</span>}
+              {tools.length > 0 && <span className="sd mono">{[...new Set(tools.map(b => b.name))].join(', ')}</span>}
+              {failed > 0 && <span className="sd bad">✗ {failed}</span>}
+            </summary>
+            <div className="stepsbody">{segment.at.map(step)}</div>
+          </details>
+        )
       })}
-      {cards.length > 0 && <div className="pjcards">{cards.map(c => <Fragment key={c.i}>{c.card}</Fragment>)}</div>}
       {sources && sources.length > 0 && (
         <div className="sources">
           <div>{t('sources')}</div>
