@@ -823,6 +823,15 @@ describe('interrupts and session info', () => {
       errors: ['[ede_diagnostic] result_type=user last_content_type=n/a stop_reason=null', 'Boom'],
     })
     expect(failed.items.map(i => (i.kind === 'error' ? i.text : ''))).toEqual(['Boom'])
+    // Stopped before the prompt was admitted: no diagnostic, only the abort reason.
+    const early = reduce(busy, {
+      type: 'result',
+      subtype: 'error_during_execution',
+      is_error: true,
+      terminal_reason: 'aborted_streaming',
+      errors: [],
+    })
+    expect(early.items).toEqual([{ kind: 'note', id: 'interrupted-0', text: '', key: 'interrupted' }])
   })
 
   it('shows an interrupt in a reloaded transcript as a note, not as something the user typed', () => {

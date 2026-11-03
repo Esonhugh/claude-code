@@ -283,6 +283,23 @@ if (process.env[childFlag] !== '1') {
   // Official 2.1.303: stdio, http and claude.ai proxy connections negotiate MCP
   // 2026-07-28 (server/discover, falling back to initialize);
   // MCP_PROTOCOL_NEGOTIATION=legacy opts out, =auto forces it.
+  // The stdio probe runs a sibling server process; an approved channel plugin's
+  // server (fakechat, telegram) keeps a port or bot poll open after it, and the
+  // real connection then fails or loses the bot.
+  test('a channel plugin server connects with the legacy handshake, without the probe process', () => {
+    const { getMcpVersionNegotiation } = client
+    const saved = process.env.MCP_PROTOCOL_NEGOTIATION
+    delete process.env.MCP_PROTOCOL_NEGOTIATION
+    try {
+      const plugin = (pluginSource: string) => ({ type: 'stdio' as const, command: 'bun', args: [], scope: 'dynamic' as const, pluginSource })
+      expect(getMcpVersionNegotiation('stdio', plugin('fakechat@claude-plugins-official'))).toEqual({mode:'legacy'})
+      expect(getMcpVersionNegotiation('stdio', plugin('other@claude-plugins-official')).mode).toBe('auto')
+    } finally {
+      if (saved === undefined) delete process.env.MCP_PROTOCOL_NEGOTIATION
+      else process.env.MCP_PROTOCOL_NEGOTIATION = saved
+    }
+  })
+
   test('MCP_PROTOCOL_NEGOTIATION selects the version negotiation per transport', () => {
     const { getMcpVersionNegotiation } = client
     const saved = {mode:process.env.MCP_PROTOCOL_NEGOTIATION, timeout:process.env.MCP_TIMEOUT}
