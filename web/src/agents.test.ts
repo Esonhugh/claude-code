@@ -197,3 +197,11 @@ describe('agent team', () => {
     expect(echoed.items).toEqual(sent.items)
   })
 })
+
+describe('agent meta line', () => {
+  it('says "tok" once', async () => {
+    const { taskMeta } = await import('./components/Agents')
+    const task = { id: 'a', type: 'local_agent', status: 'completed', durationMs: 0, tokens: 1234 } as Parameters<typeof taskMeta>[0]
+    expect(taskMeta(task)).toBe('0s · 1.2k tok')
+  })
+})

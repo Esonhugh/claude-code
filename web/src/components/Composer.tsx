@@ -407,12 +407,21 @@ export function InputBox({
       window.removeEventListener('keydown', onKey, true)
     }
   }, [plusOpen])
-  // Grow with the text up to the CSS max-height.
+  // Grow with the text up to the CSS max-height. A hidden box (a project page is
+  // showing) measures 0: keep the CSS height and measure again once it is shown.
   useEffect(() => {
     const el = box.current
     if (!el || start) return
-    el.style.height = ''
-    el.style.height = `${Math.min(el.scrollHeight, 160)}px`
+    const grow = () => {
+      el.style.height = ''
+      if (el.scrollHeight) el.style.height = `${Math.min(el.scrollHeight, 160)}px`
+    }
+    grow()
+    const seen = new ResizeObserver(() => {
+      if (!el.style.height) grow()
+    })
+    seen.observe(el)
+    return () => seen.disconnect()
   }, [draft, start])
   const pick = (command: SlashCommand) => {
     setDraft(`/${command.name} `)
@@ -504,7 +513,7 @@ export function InputBox({
           onMouseEnter={() => setSelected(i)}
           onClick={() => pickFile(path)}
         >
-          <b>@{path}</b>
+          <b title={`@${path}`}>@{path}</b>
           <span>{path.includes('/') ? path.slice(0, path.lastIndexOf('/') + 1) : './'}</span>
           <em>{t('fileTag')}</em>
         </button>
@@ -516,6 +525,7 @@ export function InputBox({
         const isSkill = skillSet.has(command.name)
         const section = isSkill ? 'Skills' : t('commandsSection')
         const prev = matches[i - 1]
+        const description = `${command.description}${command.aliases?.length ? ` (${command.aliases.join(', ')})` : ''}`
         const head =
           !query && (!prev || skillSet.has(prev.name) !== isSkill) ? (
             <div className="sec" key={`sec-${section}`}>
@@ -536,14 +546,11 @@ export function InputBox({
             onMouseEnter={() => setSelected(i)}
             onClick={() => pick(command)}
           >
-            <b>
+            <b title={`/${command.name}${command.argumentHint ? ` ${command.argumentHint}` : ''}`}>
               /{command.name}
               {command.argumentHint && <small> {command.argumentHint}</small>}
             </b>
-            <span>
-              {command.description}
-              {command.aliases?.length ? ` (${command.aliases.join(', ')})` : ''}
-            </span>
+            <span title={description}>{description}</span>
             <em>{isSkill ? t('skillTag') : t('commandTag')}</em>
           </button>,
         ]

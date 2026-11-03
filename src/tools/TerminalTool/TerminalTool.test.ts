@@ -10,6 +10,8 @@ import { getEmptyToolPermissionContext, type ToolUseContext } from '../../Tool.j
 import type { CanUseToolFn } from '../../hooks/useCanUseTool.js'
 import type { AppState } from '../../state/AppStateStore.js'
 import type { AssistantMessage } from '../../types/message.js'
+import { killShellTasksForAgent } from '../../tasks/LocalShellTask/killShellTasks.js'
+import type { AgentId } from '../../types/ids.js'
 import { runCleanupFunctions } from '../../utils/cleanupRegistry.js'
 import { FileStateCache } from '../../utils/fileStateCache.js'
 import { hasPermissionsToUseTool } from '../../utils/permissions/permissions.js'
@@ -588,6 +590,41 @@ test('uses the shared task state setter and routes subagent notifications', asyn
     getCommandQueue().find(command => command.mode === 'task-notification')?.agentId,
     agentId,
   )
+})
+
+test('an exiting subagent closes the panes it opened, like its background shells', async () => {
+  let rootState: TestAppState = {
+    toolPermissionContext: { mode: 'default' } as AppState['toolPermissionContext'],
+    tasks: {},
+  }
+  const agentId = 'a00000000000000aa' as ToolUseContext['agentId']
+  const context = createContext({
+    agentId,
+    setAppState: _updater => {},
+    setAppStateForTasks: updater => {
+      rootState = updater(rootState as AppState) as TestAppState
+    },
+    getAppState: () => rootState as AppState,
+  })
+  const driver = new FakePtyDriver()
+  const manager = new PtySessionManager({ driver })
+  resetTerminalManagerForTesting(manager)
+  const opened = await TerminalTool.call(
+    { action: 'new-session', cwd: process.cwd(), cols: 80, rows: 24 },
+    context,
+    allowPermission,
+    TEST_ASSISTANT_MESSAGE,
+  )
+  const target = String((opened.data as { target: string }).target)
+
+  killShellTasksForAgent(
+    agentId as AgentId,
+    () => rootState as AppState,
+    context.setAppStateForTasks!,
+  )
+  await new Promise(resolve => setTimeout(resolve, 20))
+
+  assert.deepEqual(driver.killedSignals, [{ sessionId: target, signal: 'SIGTERM' }])
 })
 
 test('records the resolved default shell in task state for new-session', async () => {
