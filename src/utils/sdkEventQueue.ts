@@ -191,6 +191,7 @@ export function emitTaskTerminatedSdk(
     summary?: string
     outputFile?: string
     usage?: { total_tokens: number; tool_uses: number; duration_ms: number }
+    waiting?: boolean
   },
 ): void {
   enqueueSdkEvent({
@@ -202,5 +203,6 @@ export function emitTaskTerminatedSdk(
     output_file: opts?.outputFile ?? '',
     summary: opts?.summary ?? '',
     usage: opts?.usage,
+    ...(opts?.waiting && { waiting: true }),
   })
 }

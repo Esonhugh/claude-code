@@ -232,3 +232,28 @@ for (const [source, expected] of [
     assert.match(value, new RegExp(`<summary>${expected}</summary>`))
   })
 }
+
+test('the parent learns what the user typed straight into the agent since its last notification', async () => {
+  reset()
+  spawn('typed')
+  const { deliverTaskMessage } = await import('../deliverTaskMessage.js')
+  deliverTaskMessage(state.tasks.typed, 'use <the> appendix too', setAppState)
+  enqueueAgentNotification({ taskId: 'typed', description: 'typed', status: 'completed', setAppState, finalMessage: 'done' })
+  await flush()
+  const [first] = mainThreadNotifications()
+  assert.match(String(first?.value), /<user-messages>[\s\S]*use &lt;the&gt; appendix too[\s\S]*<\/user-messages>/)
+  // Reported once: the next notification does not repeat it.
+  assert.equal((state.tasks.typed as { userMessages?: string[] }).userMessages, undefined)
+})
+
+test('a message that resumes an ended agent is still reported after the resume re-registers it', async () => {
+  reset()
+  spawn('ended')
+  state = { ...state, tasks: { ...state.tasks, ended: { ...state.tasks.ended, status: 'completed' } as never } }
+  const { deliverTaskMessage } = await import('../deliverTaskMessage.js')
+  assert.equal(deliverTaskMessage(state.tasks.ended, 'one more thing', setAppState), 'resume')
+  spawn('ended')
+  enqueueAgentNotification({ taskId: 'ended', description: 'ended', status: 'completed', setAppState, finalMessage: 'done' })
+  await flush()
+  assert.match(String(mainThreadNotifications()[0]?.value), /<user-messages>[\s\S]*one more thing/)
+})

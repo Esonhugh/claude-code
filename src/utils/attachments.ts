@@ -1175,12 +1175,12 @@ export function getAgentPendingMessageAttachments(
     toolUseContext.setAppStateForTasks ?? toolUseContext.setAppState,
   )
   // @ts-ignore - recovered code
-  return drained.map(msg => ({
-    type: 'queued_command' as const,
-    prompt: msg,
-    origin: { kind: 'coordinator' as const },
-    isMeta: true,
-  }))
+  // A message the user typed into this agent is the user's, not the coordinator's.
+  return drained.map(msg =>
+    typeof msg === 'string'
+      ? { type: 'queued_command' as const, prompt: msg, origin: { kind: 'coordinator' as const }, isMeta: true }
+      : { type: 'queued_command' as const, prompt: msg.text, origin: { kind: 'human' as const } },
+  )
 }
 
 async function buildImageContentBlocks(

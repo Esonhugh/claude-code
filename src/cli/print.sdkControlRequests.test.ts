@@ -102,7 +102,7 @@ if (process.env[childFlag] !== '1') {
     ], store)
     expect(queued.response).toEqual({ delivery: 'queued' })
     const tasks = store.getState().tasks as Record<string, any>
-    expect(tasks.a1.pendingMessages).toEqual(['also check the appendix'])
+    expect(tasks.a1.pendingMessages).toEqual([{ text: 'also check the appendix', fromUser: true }])
     expect(tasks.a1.messages).toHaveLength(1)
     expect(stopped).toMatchObject({ subtype: 'error', error: 'send_task_message: agent a2 was stopped by the user' })
     expect(injected.response).toEqual({ delivery: 'injected' })

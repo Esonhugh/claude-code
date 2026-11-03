@@ -1,6 +1,7 @@
 import type { ToolUseContext } from '../../Tool.js'
 import {
   drainPendingMessages,
+  pendingMessageText,
   enqueueAgentNotification,
   isLocalAgentTask,
   type LocalAgentTaskState,
@@ -168,7 +169,7 @@ export function parkAgentForChildren({
     logForDebugging(`[AgentLifecycle] owner_wake agent_id=${taskId} notifications=${commands.length} messages=${stranded.length}`)
     try {
       await resume([
-        ...stranded,
+        ...stranded.map(pendingMessageText),
         ...commands.map(command => typeof command.value === 'string' ? command.value : ''),
       ].join('\n\n'))
     } catch (error) {

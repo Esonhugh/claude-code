@@ -2287,6 +2287,7 @@ export const SDKTaskNotificationMessageSchema = lazySchema(() =>
         duration_ms: z.number(),
       })
       .optional(),
+    waiting: z.boolean().optional().describe('Fork-only. The agent stopped with its own background work still running and resumes when that work reports; the task is not over.'),
     uuid: UUIDPlaceholder(),
     session_id: z.string(),
   }),

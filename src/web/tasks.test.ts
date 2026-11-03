@@ -54,6 +54,15 @@ describe('TaskStore', () => {
     expect(store.events('a1').map(e => e.kind)).toEqual(['started', 'finished', 'reviewed'])
   })
 
+  it('keeps a worker running while it only waits on its own background work', () => {
+    const { store, project, child, started } = setup()
+    started('a1')
+    child({ type: 'system', subtype: 'task_notification', task_id: 'a1', status: 'completed', waiting: true, summary: 'Agent "Task a1" is waiting on its own background work', usage: { total_tokens: 50, tool_uses: 1, duration_ms: 3000 } })
+    expect(store.get(project.id, 'a1')).toMatchObject({ state: 'running', tokens: 50, finished_at: null })
+    child({ type: 'system', subtype: 'task_notification', task_id: 'a1', status: 'completed', summary: 'done' })
+    expect(store.get(project.id, 'a1')).toMatchObject({ state: 'review', summary: 'done' })
+  })
+
   it('blocks a task on its worker\'s approval until the page answers or the request is cancelled', () => {
     const { store, project, child, client, started } = setup()
     started('a1')

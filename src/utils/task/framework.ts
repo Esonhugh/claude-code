@@ -127,6 +127,7 @@ export function registerTask(task: TaskState, setAppState: SetAppState): void {
             messages: existing.messages,
             diskLoaded: existing.diskLoaded,
             pendingMessages: existing.pendingMessages,
+            userMessages: existing.userMessages,
             keepaliveReasons: existing.keepaliveReasons,
           }
         : existing?.type === 'in_process_teammate' && task.type === 'in_process_teammate'
