@@ -299,6 +299,16 @@ export type SDKControlSendTaskMessageRequest = {
   effort?: string
 }
 
+export type SDKControlCodexAppsRequest = {
+  subtype: 'codex_apps'
+}
+
+export type SDKControlSetCodexAppEnabledRequest = {
+  subtype: 'set_codex_app_enabled'
+  connector_id: string
+  enabled: boolean
+}
+
 export type SDKControlSetCwdRequest = {
   subtype: 'set_cwd'
   path: string

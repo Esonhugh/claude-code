@@ -227,3 +227,26 @@ describe('/api/ext endpoints', () => {
     }
   })
 })
+
+describe('listPlugins', () => {
+  it('lists the Esonhugh marketplace first, then the Anthropic one, both official', async () => {
+    const pluginsDir = join(configDir, 'plugins')
+    mkdirSync(pluginsDir, { recursive: true })
+    const entry = (repo: string) => ({ source: { source: 'github', repo }, installLocation: join(pluginsDir, 'm', repo), lastUpdated: '2026-11-03T00:00:00.000Z' })
+    writeFileSync(
+      join(pluginsDir, 'known_marketplaces.json'),
+      JSON.stringify({
+        'team-market': entry('team/market'),
+        'claude-plugins-official': entry('anthropics/claude-plugins-official'),
+        'Esonhugh-Marketplace': entry('Esonhugh/Marketplace'),
+      }),
+    )
+    const { marketplaces } = await ext.listPlugins()
+    expect(marketplaces.map(m => [m.name, m.official])).toEqual([
+      ['Esonhugh-Marketplace', true],
+      ['claude-plugins-official', true],
+      ['team-market', false],
+    ])
+    rmSync(join(pluginsDir, 'known_marketplaces.json'))
+  })
+})

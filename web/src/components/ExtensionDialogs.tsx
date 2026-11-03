@@ -357,9 +357,55 @@ function Tags({ list }: { list: string[] }) {
   )
 }
 
-/** Plugins: installed / discover / marketplaces, through the same operations as `claude plugin`. */
-export function PluginsBody({ z, flash, control }: ExtProps) {
-  const [tab, setTab] = useState<'installed' | 'discover' | 'markets'>('installed')
+type CodexApp = { connectorId: string; name: string; description?: string; tools: number; enabled: boolean }
+type CodexApps = { eligible: boolean; reason?: string; apps: CodexApp[] }
+
+/** The ChatGPT apps (Codex apps) of the open session, as /plugin lists them. */
+function CodexAppsRows({ z, flash, control }: ExtProps) {
+  const [data, setData] = useState<CodexApps>()
+  const [busy, setBusy] = useState<string>()
+  const load = () =>
+    control?.({ subtype: 'codex_apps' }).then(
+      r => setData(r as unknown as CodexApps),
+      () => setData({ eligible: false, apps: [] }),
+    )
+  useEffect(() => {
+    void load()
+  }, [control])
+  if (!control) return <p className="note">{z('打开一个运行中的会话，才能查看和管理 ChatGPT 应用。')}</p>
+  if (!data) return <p className="note">{z('加载中…')}</p>
+  if (!data.eligible) return <p className="note">{z('用 ChatGPT 账号登录后，这里会列出你在 ChatGPT 里连好的应用；API key 用不了。')}</p>
+  if (!data.apps.length) return <p className="note">{z('ChatGPT 里还没有连好的应用。')}</p>
+  return (
+    <>
+      {data.apps.map(app => (
+        <div className="xrow" key={app.connectorId}>
+          <div>
+            <b>{app.name}</b> <span className="note mono">{z(`${app.tools} 个工具`)}</span>
+            {app.description && <small>{app.description}</small>}
+          </div>
+          <div className="acts">
+            <Switch
+              on={app.enabled}
+              label={z('启用')}
+              disabled={!!busy}
+              onToggle={() => {
+                setBusy(app.connectorId)
+                control({ subtype: 'set_codex_app_enabled', connector_id: app.connectorId, enabled: !app.enabled })
+                  .then(load, e => flash(errorText(e)))
+                  .finally(() => setBusy(undefined))
+              }}
+            />
+          </div>
+        </div>
+      ))}
+    </>
+  )
+}
+
+/** Plugins: installed / discover / marketplaces, plus Codex apps under the OpenAI provider. */
+export function PluginsBody({ z, flash, control, lang, openai }: ExtProps & { openai?: boolean }) {
+  const [tab, setTab] = useState<'installed' | 'discover' | 'markets' | 'codex'>('installed')
   const [data, setData] = useState<{ installed: InstalledPlugin[]; discover: MarketPlugin[]; marketplaces: Marketplace[] }>()
   const [error, setError] = useState<string>()
   const [busy, setBusy] = useState<string>()
@@ -385,6 +431,7 @@ export function PluginsBody({ z, flash, control }: ExtProps) {
   const tabs = [
     ['installed', '已安装'],
     ['discover', '发现'],
+    ...(openai ? ([['codex', 'ChatGPT 应用']] as const) : []),
     ['markets', '市场源'],
   ] as const
   let rows: ReactNode = null
@@ -423,12 +470,10 @@ export function PluginsBody({ z, flash, control }: ExtProps) {
           </div>
         ))}
         {!data.installed.length && <p className="note">{z('还没有安装插件。')}</p>}
-        <div className="applist">
-          <div className="grp-h">{z('ChatGPT 应用（Codex apps）')}</div>
-          <p className="note">{z('用 ChatGPT 账号登录后，这里会列出你在 ChatGPT 里连好的应用；API key 用不了。')}</p>
-        </div>
       </>
     )
+  } else if (tab === 'codex' && openai) {
+    rows = <CodexAppsRows z={z} flash={flash} control={control} lang={lang} />
   } else if (tab === 'discover') {
     const q = query.trim().toLowerCase()
     rows = (

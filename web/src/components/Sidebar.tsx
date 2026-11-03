@@ -52,7 +52,7 @@ function useExtCounts(env: SessionEnv, dialogOpen: boolean): ExtCounts {
       list => set({ channels: String(list.filter(c => c.def && connected.includes(c.server)).length) }),
       () => undefined,
     )
-    ext.memory().then(m => set({ memory: String(m.files.length) }), () => undefined)
+    ext.memory().then(m => set({ memory: String(m.files.filter(f => !f.missing).length) }), () => undefined)
     ext.mods().then(list => set({ mods: `${list.filter(m => m.on).length}/${list.length}` }), () => undefined)
     return () => {
       live = false

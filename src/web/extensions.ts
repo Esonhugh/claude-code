@@ -37,6 +37,7 @@ import {
   removeMarketplaceSource,
   saveMarketplaceToSettings,
 } from '../utils/plugins/marketplaceManager.js'
+import { ESONHUGH_MARKETPLACE_NAME } from '../utils/plugins/esonhughMarketplace.js'
 import { OFFICIAL_MARKETPLACE_NAME } from '../utils/plugins/officialMarketplace.js'
 import { parseMarketplaceInput } from '../utils/plugins/parseMarketplaceInput.js'
 import { loadAllPlugins } from '../utils/plugins/pluginLoader.js'
@@ -217,13 +218,17 @@ function marketplaceUrl(source: { source: string; repo?: string; url?: string; p
 export async function listPlugins() {
   const plugins = (await allPlugins()).filter(p => !p.isBuiltin)
   const known = await loadKnownMarketplacesConfig()
+  // The fork's own marketplace first, then Anthropic's, then the rest as added.
+  const rank = (name: string) => [ESONHUGH_MARKETPLACE_NAME, OFFICIAL_MARKETPLACE_NAME].indexOf(name) >>> 0
   const marketplaces = await Promise.all(
-    Object.entries(known).map(async ([name, entry]) => ({
-      name,
-      url: marketplaceUrl(entry?.source as { source: string; repo?: string; url?: string; path?: string }),
-      official: name === OFFICIAL_MARKETPLACE_NAME,
-      data: await getMarketplaceCacheOnly(name).catch(() => null),
-    })),
+    Object.entries(known)
+      .sort(([a], [b]) => rank(a) - rank(b))
+      .map(async ([name, entry]) => ({
+        name,
+        url: marketplaceUrl(entry?.source as { source: string; repo?: string; url?: string; path?: string }),
+        official: name === OFFICIAL_MARKETPLACE_NAME || name === ESONHUGH_MARKETPLACE_NAME,
+        data: await getMarketplaceCacheOnly(name).catch(() => null),
+      })),
   )
   const installedIds = new Set(plugins.map(getPluginStorageId))
   const latest = new Map<string, string>()
@@ -364,7 +369,7 @@ export async function setDefaultChannel(configDir: string, plugin: string, on: b
 
 // ---- memory (as /memory; search through the memory.sqlite FTS index) ----
 
-type MemoryEntry = { id: string; kind: string; title: string; where: string; path: string; modified?: number }
+type MemoryEntry = { id: string; kind: string; title: string; where: string; path: string; modified?: number; missing?: boolean }
 
 async function memoryEntries(): Promise<MemoryEntry[]> {
   clearMemoryFileCaches()
@@ -378,7 +383,8 @@ async function memoryEntries(): Promise<MemoryEntry[]> {
   for (const path of paths) {
     if (seen.has(path)) continue
     seen.add(path)
-    if (path !== userPath && path !== projectPath && !existsSync(path)) continue
+    const missing = !existsSync(path)
+    if (path !== userPath && path !== projectPath && missing) continue
     const kind =
       path === userPath
         ? 'user'
@@ -387,7 +393,8 @@ async function memoryEntries(): Promise<MemoryEntry[]> {
           : basename(path) === 'CLAUDE.local.md'
             ? 'local'
             : 'other'
-    entries.push({ id: `f${entries.length}`, kind, title: basename(path), where: tildify(path), path })
+    // The user and project files are listed even before they exist, so they can be created.
+    entries.push({ id: `f${entries.length}`, kind, title: basename(path), where: tildify(path), path, ...(missing && { missing }) })
   }
   if (isAutoMemoryEnabled()) {
     const headers = await scanMemoryFiles(getAutoMemPath(), new AbortController().signal)

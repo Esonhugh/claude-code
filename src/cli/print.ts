@@ -5130,6 +5130,43 @@ function runHeadlessStreaming(
                 error => sendControlResponseError(message, errorMessage(error)),
               )
           }
+        } else if (message.request.subtype === 'codex_apps') {
+          // Fork-only: the /plugin Codex apps list, for hosts without the Ink UI.
+          const [{ getCodexAppsEligibility }, { buildCodexAppPluginProjections }, { getDisabledCodexAppConnectorIds }] =
+            await Promise.all([
+              import('../services/apps/auth.js'),
+              import('../services/apps/pluginProjection.js'),
+              import('../services/apps/preferences.js'),
+            ])
+          const eligibility = getCodexAppsEligibility()
+          const disabled = getDisabledCodexAppConnectorIds()
+          sendControlResponseSuccess(message, {
+            eligible: eligibility.eligible,
+            ...('reason' in eligibility && { reason: eligibility.reason }),
+            apps: eligibility.eligible
+              ? buildCodexAppPluginProjections(getAppState().mcp.tools).map(app => ({
+                  connectorId: app.connectorId,
+                  name: app.displayName,
+                  ...(app.description && { description: app.description }),
+                  tools: app.toolNames.length,
+                  enabled: !disabled.has(app.connectorId),
+                }))
+              : [],
+          })
+        } else if (message.request.subtype === 'set_codex_app_enabled') {
+          const { connector_id: connectorId, enabled } = message.request
+          if (typeof connectorId !== 'string' || !connectorId.trim() || typeof enabled !== 'boolean') {
+            sendControlResponseError(message, 'set_codex_app_enabled: connector_id and enabled are required')
+          } else {
+            try {
+              const { setCodexAppEnabled, refreshCodexAppToolExposure } = await import('../services/apps/preferences.js')
+              setCodexAppEnabled(connectorId, enabled)
+              setAppState(prev => ({ ...prev, mcp: { ...prev.mcp, tools: refreshCodexAppToolExposure(prev.mcp.tools) } }))
+              sendControlResponseSuccess(message, {})
+            } catch (error) {
+              sendControlResponseError(message, errorMessage(error))
+            }
+          }
         } else if (message.request.subtype === 'send_task_message') {
           // Fork-only: typing into a viewed agent (REPL onAgentSubmit) for
           // hosts without the Ink UI.

@@ -13,6 +13,10 @@
 "Tool name, e.g. Bash or Write|Edit; empty matches all"
 ],
 [
+"打开一个运行中的会话，才能查看和管理 ChatGPT 应用。",
+"Open a running session to see and manage its ChatGPT apps."
+],
+[
 "打开一个运行中的会话后才能查看和管理 MCP 服务器。",
 "Open a running session to see and manage its MCP servers."
 ],
@@ -39,6 +43,10 @@
 [
 "打开一个运行中的会话后才能在本会话启用",
 "Open a running session to enable it there"
+],
+[
+"ChatGPT 里还没有连好的应用。",
+"No apps are connected in ChatGPT yet."
 ],
 [
 "临时关掉所有 hook，配置保留",
@@ -127,6 +135,10 @@
 [
 "MCP 服务器未连接",
 "MCP server not connected"
+],
+[
+"ChatGPT 应用",
+"ChatGPT apps"
 ],
 [
 "输出 tokens",
@@ -455,6 +467,10 @@
 [
 "已停用 ",
 "Disabled "
+],
+[
+" 个工具",
+" tools"
 ],
 [
 "已关闭",
@@ -803,6 +819,10 @@
 "關閉時只搜記憶檔案；開啟後也能搜歷史會話內容（memory.sqlite.enabled）"
 ],
 [
+"打开一个运行中的会话，才能查看和管理 ChatGPT 应用。",
+"開啟一個執行中的會話，才能檢視和管理 ChatGPT 應用。"
+],
+[
 "添加市场源：owner/repo 或 git URL",
 "新增市場源：owner/repo 或 git URL"
 ],
@@ -817,6 +837,10 @@
 [
 "声明了审批能力，启用后权限请求也会推送过去",
 "宣告瞭審批能力，啟用後許可權請求也會推送過去"
+],
+[
+"ChatGPT 里还没有连好的应用。",
+"ChatGPT 裡還沒有連好的應用。"
 ],
 [
 "临时关掉所有 hook，配置保留",
@@ -853,6 +877,10 @@
 [
 "添加 channel",
 "新增 channel"
+],
+[
+"ChatGPT 应用",
+"ChatGPT 應用"
 ],
 [
 "已启用 hooks",
@@ -1069,6 +1097,10 @@
 [
 "历史会话",
 "歷史會話"
+],
+[
+" 个工具",
+" 個工具"
 ],
 [
 "已关闭",
