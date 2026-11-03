@@ -39,7 +39,7 @@ import { ColumnDrag, type Columns, columnVars } from './components/ColumnDrag'
 import { FootMenu, followScroll, formatElapsed, nextMode, readStored, type T, writeStored } from './components/ui'
 import { WebPreview } from './components/WebPreview'
 import { chatMarkdown, exportFileName } from './exportChat'
-import { dataUrlFile, filesBase, IMAGE_TYPES, mentionPath, readAsDataUrl, setHome, tilde, uploadFile } from './files'
+import { dataUrlFile, filesBase, IMAGE_TYPES, mentionPath, readAsDataUrl, sessionFiles, setHome, tilde, uploadFile } from './files'
 import { initialLang, type Lang, type MessageKey, saveLang, translate } from './i18n'
 import {
   type Approval,
@@ -237,6 +237,8 @@ export function App() {
     },
     [view],
   )
+  const chatItems = chat?.items
+  const chatFiles = useMemo(() => (chatItems ? sessionFiles(chatItems) : []), [chatItems])
   const chatCwd = chat?.cwd ?? chat?.workDir
   const filesValue = useMemo(
     () =>
@@ -1003,7 +1005,6 @@ export function App() {
     (body: Record<string, unknown>) => (view ? requestAsync(view, REQUEST_PREFIX.status, body) : Promise.resolve({})),
     [view],
   )
-  const chatItems = chat?.items
   const prompts = useMemo(
     () => (chatItems ?? []).flatMap(i => (i.kind === 'user' && i.text ? [i.text] : [])),
     [chatItems],
@@ -1324,7 +1325,14 @@ export function App() {
             {'url' in preview ? (
               <WebPreview url={preview.url} t={t} onClose={closePreview} />
             ) : (
-              <Preview sessionId={preview.sessionId} path={preview.path} t={t} onClose={closePreview} />
+              <Preview
+                sessionId={preview.sessionId}
+                path={preview.path}
+                t={t}
+                onClose={closePreview}
+                files={chatFiles}
+                onOpen={openFile}
+              />
             )}
           </WebPreviewContext.Provider>
         </section>

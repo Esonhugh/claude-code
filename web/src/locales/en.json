@@ -31,6 +31,8 @@
   "uploadFailed": "Upload failed: {error}",
   "preview": "Preview",
   "openNewTab": "New tab",
+  "prevFile": "Previous file",
+  "nextFile": "Next file",
   "reload": "Refresh",
   "download": "Download",
   "close": "Close",

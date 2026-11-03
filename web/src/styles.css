@@ -850,6 +850,8 @@ a.btn { text-decoration: none; color: var(--fg); display: inline-block }
 .preview-bar { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; padding: 8px 12px; border-bottom: 1px solid var(--line); background: var(--surface) }
 .preview-bar a, .preview-bar button { border: 1px solid var(--line); background: var(--surface); padding: 3px 9px; font-size: 12.5px; border-radius: 6px; font-weight: 500; color: var(--fg); text-decoration: none }
 .preview-bar .active { background: var(--accent-soft); border-color: var(--accent); color: var(--accent) }
+.preview-bar button:disabled { opacity: .45; cursor: not-allowed }
+.preview-bar .file-nav { gap: 6px }
 .preview-name { flex: 1 1 200px; min-width: 0; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
 .preview-body { flex: 1; overflow: auto; padding: 16px; display: flex; flex-direction: column; gap: 10px; min-height: 0 }
 .preview-note { color: var(--muted); font-size: 12.5px }

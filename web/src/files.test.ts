@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test'
 import { localFileSrc } from './markdown/safeUrl'
-import { dataUrlFile, homeRelative, mentionPath, parseCsv, previewKind, sessionFiles, splitMentions } from './files'
+import { dataUrlFile, fileNeighbors, homeRelative, mentionPath, parseCsv, previewKind, sessionFiles, splitMentions } from './files'
 import { userMessage } from './protocol'
 
 describe('files', () => {
@@ -26,6 +26,15 @@ describe('files', () => {
       { path: '/w/a.md', source: 'read' },
       { path: '/h/.claude/web/uploads/s1/notes.txt', source: 'upload' },
     ])
+  })
+
+  it('steps through the chat\'s files from the one on preview, stopping at either end', () => {
+    const list = ['/w/c.md', '/w/b.ts', '/w/a.md'].map(path => ({ path, source: 'read' as const }))
+    expect(fileNeighbors(list, '/w/c.md')).toEqual({ index: 0, total: 3, prev: undefined, next: '/w/b.ts' })
+    expect(fileNeighbors(list, '/w/b.ts')).toEqual({ index: 1, total: 3, prev: '/w/c.md', next: '/w/a.md' })
+    expect(fileNeighbors(list, '/w/a.md')).toEqual({ index: 2, total: 3, prev: '/w/b.ts', next: undefined })
+    expect(fileNeighbors(list, '/elsewhere.txt')).toBeUndefined()
+    expect(fileNeighbors(list.slice(0, 1), '/w/c.md')).toBeUndefined()
   })
 
   it('picks a viewer by extension and falls back to text', () => {
