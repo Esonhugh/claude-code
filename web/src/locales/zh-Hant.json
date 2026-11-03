@@ -154,6 +154,7 @@
   "nameLabel": "名稱",
   "statusLabel": "狀態",
   "workDir": "工作目錄",
+  "peerAddressLabel": "訊息地址",
   "modelGroup": "模型",
   "permissionModeLabel": "許可權模式",
   "contextGroup": "上下文",

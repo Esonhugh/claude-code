@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test'
-import { accountText, connectionRows } from './SidePanel'
+import { accountText, connectionRows, peerAddress } from './SidePanel'
 import type { T } from './ui'
 
 describe('accountText', () => {
@@ -59,6 +59,29 @@ describe('connectionRows', () => {
   it('is empty before get_status answers or when the answer is malformed', () => {
     expect(connectionRows(undefined)).toEqual([])
     expect(connectionRows({ sections: 'x' })).toEqual([])
+  })
+})
+
+describe('peerAddress', () => {
+  it('takes the uds: messaging address from the Session rows of get_status', () => {
+    const status = {
+      sections: [
+        {
+          title: 'Session',
+          rows: [
+            { label: 'Session ID', value: 'abc' },
+            { label: 'Peer address', value: 'uds:/tmp/claude-1000/messaging/123.sock' },
+          ],
+        },
+      ],
+    }
+    expect(peerAddress(status)).toBe('uds:/tmp/claude-1000/messaging/123.sock')
+  })
+
+  it('is undefined without a socket or before get_status answers', () => {
+    const status = { sections: [{ title: 'Session', rows: [{ label: 'Peer address', value: 'Not available' }] }] }
+    expect(peerAddress(status)).toBeUndefined()
+    expect(peerAddress(undefined)).toBeUndefined()
   })
 })
 
