@@ -401,6 +401,12 @@ export function formatTokens(n: number | undefined): string | undefined {
   return n < 1000 ? `${n} tok` : `${(n / 1000).toFixed(n < 10_000 ? 1 : 0)}k tok`
 }
 
+/** Indexes of the phases running now (pipelined phases overlap), or just the current one. */
+export function runningPhases(phases: WorkflowPhase[]): number[] {
+  const running = phases.flatMap((p, i) => (p.status === 'running' ? [i] : []))
+  return running.length || !phases.length ? running : [currentPhase(phases)]
+}
+
 /** Index of the phase a workflow is in: the latest running (pipelined phases overlap), else the first pending, else the last. */
 export function currentPhase(phases: WorkflowPhase[]): number {
   const running = phases.findLastIndex(p => p.status === 'running')
