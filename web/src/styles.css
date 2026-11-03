@@ -552,6 +552,8 @@ button.chip { cursor: pointer; font: inherit; color: inherit }
 .sgroup > .kv { margin-top: 8px }
 .kv { display: grid; grid-template-columns: 84px minmax(0, 1fr); gap: 5px 10px; margin: 0; font-size: 13px }
 .kv dt { color: var(--muted) } .kv dd { margin: 0; min-width: 0; overflow-wrap: anywhere }
+.kv .sid-val { display: flex; gap: 6px; align-items: flex-start } .kv .sid-val .mono { min-width: 0; overflow-wrap: anywhere; font-size: 12px }
+.kv .sid-val button { flex: none; border: 0; background: transparent; color: var(--muted); padding: 0 2px; cursor: pointer } .kv .sid-val button:hover { color: var(--fg) }
 .filelist { display: flex; flex-direction: column; gap: 2px; max-height: 300px; overflow: auto; flex: none }
 .filerow { border: 0; background: transparent; text-align: left; padding: 7px 8px; border-radius: 6px; display: grid; grid-template-columns: 38px minmax(0, 1fr) auto; gap: 10px; align-items: center }
 .filerow:hover { background: var(--sunken) } .filerow[aria-current="true"] { background: var(--sunken) }
