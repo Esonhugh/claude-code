@@ -156,6 +156,14 @@ export function readAsDataUrl(file: File): Promise<string> {
   })
 }
 
+/** The reverse of `readAsDataUrl`: an image back as a file (`<base>.png`) for the attachments. */
+export function dataUrlFile(url: string, base: string): File | undefined {
+  const match = /^data:(image\/([\w+.-]+));base64,(.*)$/.exec(url)
+  if (!match) return undefined
+  const bytes = Uint8Array.from(atob(match[3]!), c => c.charCodeAt(0))
+  return new File([bytes], `${base}.${match[2]}`, { type: match[1] })
+}
+
 /** The CLI's quoted `@"path"` mention form (JSON string escapes). */
 export function mentionPath(path: string): string {
   return `@"${JSON.stringify(path).slice(1, -1)}"`

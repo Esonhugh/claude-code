@@ -48,6 +48,8 @@ export type ChatAction =
   | { type: 'message'; raw: unknown }
   | { type: 'user'; text: string; images?: string[]; uuid?: string }
   | { type: 'queue'; text: string; images?: string[]; uuid: string }
+  /** Stop: queued messages go back to the input instead of running next. */
+  | { type: 'unqueue' }
   | { type: 'error'; text: string }
   | { type: 'answered'; approval: Approval; choice: ApprovalChoice }
   | { type: 'recap'; away?: number }
@@ -100,6 +102,8 @@ function reduceChat(state: ChatState, action: ChatAction): ChatState {
       return addUserMessage(state, action.text, action.images, action.uuid)
     case 'queue':
       return queueUserMessage(state, action.text, action.uuid, action.images)
+    case 'unqueue':
+      return { ...state, queued: [] }
     case 'error':
       return addError(state, action.text)
     case 'answered':

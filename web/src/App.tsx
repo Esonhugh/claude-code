@@ -39,7 +39,7 @@ import { ColumnDrag, type Columns, columnVars } from './components/ColumnDrag'
 import { FootMenu, followScroll, formatElapsed, nextMode, readStored, type T, writeStored } from './components/ui'
 import { WebPreview } from './components/WebPreview'
 import { chatMarkdown, exportFileName } from './exportChat'
-import { filesBase, IMAGE_TYPES, mentionPath, readAsDataUrl, setHome, tilde, uploadFile } from './files'
+import { dataUrlFile, filesBase, IMAGE_TYPES, mentionPath, readAsDataUrl, setHome, tilde, uploadFile } from './files'
 import { initialLang, type Lang, type MessageKey, saveLang, translate } from './i18n'
 import {
   type Approval,
@@ -866,7 +866,31 @@ export function App() {
     return () => window.removeEventListener('keydown', onKey)
   })
 
-  const stop = (id: string) => request(id, REQUEST_PREFIX.interrupt, { subtype: 'interrupt' })
+  /** Interrupts the turn; like the TUI, messages still queued go back into the input box. */
+  const stop = (id: string) => {
+    const queued = stateRef.current.chats[id]?.queued ?? []
+    if (queued.length) {
+      dispatch({ type: 'chat', id, action: { type: 'unqueue' } })
+      // Sent before the interrupt, which would otherwise run them as the next turn.
+      const cancels = queued.map(q =>
+        requestAsync(id, REQUEST_PREFIX.cancelQueued, { subtype: 'cancel_async_message', message_uuid: q.id }).then(
+          r => r.cancelled === true,
+          () => false,
+        ),
+      )
+      void Promise.all(cancels).then(results => {
+        // One the model already read (not cancelled) shows up through its echo.
+        const back = queued.filter((_, i) => results[i])
+        if (!back.length) return
+        setDrafts(d => ({ ...d, [id]: [...back.map(q => q.text), d[id] ?? ''].filter(Boolean).join('\n') }))
+        const images = back
+          .flatMap(q => q.images ?? [])
+          .flatMap((url, i) => dataUrlFile(url, `image-${i + 1}`) ?? [])
+        if (images.length) setAttachments(a => ({ ...a, [id]: [...(a[id] ?? []), ...images] }))
+      })
+    }
+    request(id, REQUEST_PREFIX.interrupt, { subtype: 'interrupt' })
+  }
 
   const answer = (id: string, approval: Approval, choice: ApprovalChoice) => {
     send(id, permissionResponse(approval, choice))
