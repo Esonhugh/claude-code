@@ -4,7 +4,7 @@ import { createElement } from 'react'
 import { Markdown } from './Markdown'
 import { normalizeMathDelimiters, splitSettled } from './parse'
 import { safeImageSrc, safeLinkHref } from './safeUrl'
-import { stripAnsi, toolSummary } from '../tools'
+import { stripAnsi, toolMessage, toolSummary } from '../tools'
 import { previewTarget, WebPreviewContext } from '../webPreview'
 
 const html = (text: string, streaming = false) =>
@@ -146,6 +146,11 @@ describe('tool helpers', () => {
   it('summarizes a tool call by its key field', () => {
     expect(toolSummary('Bash', '{"command":"ls -la\\npwd"}')).toBe('ls -la')
     expect(toolSummary('Grep', '{"pattern":"foo","path":"src"}')).toBe('foo in src')
+    // Message tools read as their text, not as JSON.
+    expect(toolSummary('SubagentHandback', '{"message":"Status\\n1. done"}')).toBe('Status')
+    expect(toolSummary('SendMessage', '{"to":"alice","summary":"ping","message":"hi"}')).toBe('→ alice · ping')
+    expect(toolMessage('SubagentHandback', '{"message":"## Report"}')).toBe('## Report')
+    expect(toolMessage('Bash', '{"message":"x"}')).toBeUndefined()
     expect(toolSummary('X', 'not json')).toBe('not json')
   })
 

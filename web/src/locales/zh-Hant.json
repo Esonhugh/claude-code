@@ -237,6 +237,8 @@
   "usageTab": "用量",
   "featuresTab": "功能開關",
   "thoughtFor": "思考了 {n} 秒",
+  "handbackReport": "交回的報告",
+  "handedTo": "交給",
   "nSteps": "{n} 個步驟",
   "thinkingNow": "思考中…",
   "newFile": "新檔案",

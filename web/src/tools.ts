@@ -9,7 +9,20 @@ const KEY_FIELDS = [
   'query',
   'description',
   'prompt',
+  'summary',
+  'message',
 ]
+
+/** The text a message tool carries (a worker's report, a message to an agent), when it has one. */
+export function toolMessage(name: string, input: string): string | undefined {
+  if (name !== 'SubagentHandback' && name !== 'SendMessage') return undefined
+  try {
+    const message = (JSON.parse(input) as { message?: unknown }).message
+    return typeof message === 'string' && message.trim() ? message : undefined
+  } catch {
+    return undefined
+  }
+}
 
 export function toolSummary(name: string, input: string): string {
   let parsed: unknown
@@ -20,6 +33,10 @@ export function toolSummary(name: string, input: string): string {
   }
   if (typeof parsed !== 'object' || parsed === null) return input
   const fields = parsed as Record<string, unknown>
+  if (name === 'SendMessage' && typeof fields.to === 'string') {
+    const about = [fields.summary, fields.message].find(v => typeof v === 'string' && v.trim()) as string | undefined
+    return about ? `→ ${fields.to} · ${about.split('\n')[0]}` : `→ ${fields.to}`
+  }
   for (const key of KEY_FIELDS) {
     const value = fields[key]
     if (typeof value === 'string' && value) {
