@@ -4,7 +4,7 @@ import { type Lang, LANGS } from '../i18n'
 import type { ModelOption } from '../protocol'
 import { keyName } from './Account'
 import { modelName } from './Message'
-import { formatElapsed, type T } from './ui'
+import { compactHint, formatElapsed, type T } from './ui'
 
 export type Theme = 'system' | 'light' | 'dark'
 export type Palette = 'default' | 'clay' | 'mono'
@@ -24,7 +24,12 @@ const FEATURE_ROWS: [FeatureKey, Parameters<T>[0], Parameters<T>[0]][] = [
   ['promptSuggestions', 'featSuggestions', 'featSuggestionsHint'],
 ]
 
-export type ContextUsage = { totalTokens?: number; maxTokens?: number; autoCompactThreshold?: number }
+export type ContextUsage = {
+  totalTokens?: number
+  maxTokens?: number
+  autoCompactThreshold?: number
+  isAutoCompactEnabled?: boolean
+}
 
 /** What the Usage tab reads from the open session, when there is one. */
 export type UsageSource = {
@@ -32,7 +37,8 @@ export type UsageSource = {
   context?: () => Promise<ContextUsage>
   /** Tool calls in the transcript, by tool name. */
   tools: Record<string, number>
-  subagents: number
+  /** Agent tasks of the session, as the Agents tab counts them. */
+  subagents: { total: number; running: number }
   live: boolean
 }
 
@@ -94,6 +100,25 @@ function Meter({ label, pct, sub }: { label: string; pct: number; sub?: string }
   )
 }
 
+type ModelUsage = NonNullable<NonNullable<Usage['session']>['model_usage']>[string]
+
+/** Rows per model as CLI `/cost` groups them: by canonical model, so `opus` and `claude-opus-5-5` are one row. */
+export function usageByModel(modelUsage: Record<string, ModelUsage> | undefined): [string, ModelUsage][] {
+  const rows = new Map<string, ModelUsage>()
+  for (const [id, u] of Object.entries(modelUsage ?? {})) {
+    const key = u.canonicalModel || id
+    const row = rows.get(key) ?? {}
+    rows.set(key, {
+      inputTokens: (row.inputTokens ?? 0) + (u.inputTokens ?? 0),
+      outputTokens: (row.outputTokens ?? 0) + (u.outputTokens ?? 0),
+      cacheReadInputTokens: (row.cacheReadInputTokens ?? 0) + (u.cacheReadInputTokens ?? 0),
+      cacheCreationInputTokens: (row.cacheCreationInputTokens ?? 0) + (u.cacheCreationInputTokens ?? 0),
+      costUSD: (row.costUSD ?? 0) + (u.costUSD ?? 0),
+    })
+  }
+  return [...rows]
+}
+
 function UsageTab({
   t,
   lang,
@@ -119,7 +144,7 @@ function UsageTab({
   if (!usage && !failed) return <p className="note">{t('loading')}</p>
   const apikey = account?.kind === 'apikey'
   const limits = usage?.rate_limits
-  const windows: [string, UsageWindow | null | undefined][] = limits
+  const allWindows: [string, UsageWindow | null | undefined][] = limits
     ? [
         [t('window5h'), limits.five_hour],
         [t('weekAll'), limits.seven_day],
@@ -131,8 +156,9 @@ function UsageTab({
             ] as [string, UsageWindow | null | undefined][])),
       ]
     : []
+  const windows = allWindows.filter((w): w is [string, UsageWindow] => !!w[1] && typeof w[1].utilization === 'number')
   const session = source.live ? usage?.session : undefined
-  const rows = Object.entries(session?.model_usage ?? {})
+  const rows = usageByModel(session?.model_usage)
   const sum = (pick: (u: (typeof rows)[number][1]) => number | undefined) => rows.reduce((n, [, u]) => n + (pick(u) ?? 0), 0)
   const input = sum(u => u.inputTokens)
   const cacheRead = sum(u => u.cacheReadInputTokens)
@@ -144,7 +170,7 @@ function UsageTab({
   const ctxPct = context?.totalTokens !== undefined && context.maxTokens ? (context.totalTokens / context.maxTokens) * 100 : undefined
   return (
     <div>
-      {apikey && !limits ? (
+      {apikey && !windows.length ? (
         <div className="usegroup">
           <h4>
             {t('costTitle')}{' '}
@@ -160,14 +186,12 @@ function UsageTab({
       ) : (
         <div className="usegroup">
           <h4>{t('planLimits')}</h4>
-          {windows
-            .filter((w): w is [string, UsageWindow] => !!w[1] && typeof w[1].utilization === 'number')
-            .map(([label, w]) => {
-              const time = resetTime(lang, w.resets_at)
-              return <Meter key={label} label={label} pct={w.utilization} sub={time && t('resetsAt', { time })} />
-            })}
-          {limits ? (
-            <small className="note">{t(limits.extra_usage?.is_enabled ? 'extraUsageOn' : 'extraUsageOff')}</small>
+          {windows.map(([label, w]) => {
+            const time = resetTime(lang, w.resets_at)
+            return <Meter key={label} label={label} pct={w.utilization} sub={time && t('resetsAt', { time })} />
+          })}
+          {windows.length ? (
+            <small className="note">{t(limits?.extra_usage?.is_enabled ? 'extraUsageOn' : 'extraUsageOff')}</small>
           ) : (
             <small className="note">{t('limitsUnavailable')}</small>
           )}
@@ -233,7 +257,8 @@ function UsageTab({
             </div>
             <div>
               <small>subagent</small>
-              <b>{source.subagents}</b>
+              <b>{source.subagents.total}</b>
+              <small>{t('nRunning', { n: String(source.subagents.running) })}</small>
             </div>
           </div>
         </div>
@@ -246,8 +271,9 @@ function UsageTab({
             pct={ctxPct}
             sub={[
               `${fmtTokens(context.totalTokens!)} / ${fmtTokens(context.maxTokens)}`,
-              context.autoCompactThreshold !== undefined &&
-                t('autoCompactLeft', { left: fmtTokens(context.maxTokens - context.autoCompactThreshold) }),
+              context.isAutoCompactEnabled !== false &&
+                context.autoCompactThreshold !== undefined &&
+                compactHint(t, context.totalTokens!, context.autoCompactThreshold, fmtTokens),
             ]
               .filter(Boolean)
               .join(' · ')}

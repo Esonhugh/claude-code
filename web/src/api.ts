@@ -258,6 +258,8 @@ export type Usage = {
         cacheReadInputTokens?: number
         cacheCreationInputTokens?: number
         costUSD?: number
+        /** The model id `/cost` groups by; a model reached under two ids shares it. */
+        canonicalModel?: string
       }
     >
   }

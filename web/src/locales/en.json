@@ -294,7 +294,7 @@
   "goalsGroup": "Goal and todos",
   "todosLabel": "Todos",
   "todosDone": "{done}/{total} done",
-  "tokensValue": "↑ {in} · ↓ {out} · cache read {cache}",
+  "tokensValue": "↑ {in} · ↓ {out}",
   "apiPriceLabel": "API-equivalent cost",
   "apiDurationLabel": "API time",
   "quota5hLabel": "5-hour limit",
@@ -311,7 +311,6 @@
   "trustAccept": "Trust and continue",
   "mentionFile": "Mention a workspace file",
   "mentionFileHint": "Fuzzy search by path",
-  "ctxStatusHint": "Auto-compacts with about {n} tokens left · open the context chip for details",
   "edit": "Edit",
   "switchAuth": "Switch auth",
   "keySaved": "Saved ····{tail}",
@@ -375,7 +374,6 @@
   "toolCalls": "Tool calls",
   "linesChanged": "Lines changed",
   "currentConversation": "Current conversation",
-  "autoCompactLeft": "auto-compacts with about {left} tokens left",
   "lanAccess": "LAN access",
   "lanAccessHint": "Only available when started with --dangerously-allow-local-network, which admits LAN sources only; it cannot be turned on from the page",
   "lanOn": "On",
@@ -486,5 +484,11 @@
   "taskOpen": "Open task",
   "copyBrief": "Copy brief",
   "taskMenu": "Task actions",
-  "interrupted": "Interrupted"
+  "interrupted": "Interrupted",
+  "cacheLabel": "Cache",
+  "cacheValue": "read {read} · write {write}",
+  "compactIn": "Auto-compacts in about {n} tokens",
+  "compactDue": "Past the auto-compact point; compacts before the next turn",
+  "keyFromEnv": "API key (environment variable)",
+  "keyFromLogin": "API key (saved with /login)"
 }

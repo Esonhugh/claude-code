@@ -22,9 +22,9 @@ import {
   type Daybreak,
   type WebSettings,
 } from './api'
-import { buildTeam } from './agents'
+import { buildTeam, isFinished } from './agents'
 import { AccountCard, ApiKeyDialog, LoginGate, useAccount } from './components/Account'
-import type { AgentsView } from './components/Agents'
+import { type AgentsView, agentTasks } from './components/Agents'
 import { AskDock, ContextChip, GoalMenu, InputBox, ModeButton, ModelMenu, modelButtonLabel, Pins } from './components/Composer'
 import { AppDialog, type Palette, type Theme } from './components/Dialogs'
 import type { ContextUsage } from './components/Settings'
@@ -935,6 +935,7 @@ export function App() {
 
   // Settings > Usage: the open session's /usage, or this machine's plan limits.
   const live = !!view && chat?.mode === 'live'
+  const chatAgents = Object.values(agentTasks(chat?.tasks ?? {}))
   const usageSource = {
     usage: () => (live ? (requestAsync(view, REQUEST_PREFIX.usage, { subtype: 'get_usage' }) as Promise<Usage>) : getUsage()),
     context: live
@@ -944,7 +945,7 @@ export function App() {
       if (item.kind === 'assistant') for (const b of item.blocks) if (b.kind === 'tool') acc[b.name] = (acc[b.name] ?? 0) + 1
       return acc
     }, {}),
-    subagents: Object.values(chat?.tasks ?? {}).filter(task => task.type !== 'local_workflow').length,
+    subagents: { total: chatAgents.length, running: chatAgents.filter(task => !isFinished(task)).length },
     live,
   }
 

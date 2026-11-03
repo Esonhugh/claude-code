@@ -294,7 +294,7 @@
   "goalsGroup": "目标与待办",
   "todosLabel": "待办",
   "todosDone": "{done}/{total} 完成",
-  "tokensValue": "↑ {in} · ↓ {out} · 缓存读 {cache}",
+  "tokensValue": "↑ {in} · ↓ {out}",
   "apiPriceLabel": "折合 API 价",
   "apiDurationLabel": "API 时长",
   "quota5hLabel": "5 小时额度",
@@ -311,7 +311,6 @@
   "trustAccept": "信任并继续",
   "mentionFile": "引用工作区文件",
   "mentionFileHint": "按路径模糊搜索",
-  "ctxStatusHint": "剩约 {n} tokens 时自动压缩 · 点顶部上下文看明细",
   "edit": "编辑",
   "switchAuth": "切换认证",
   "keySaved": "已保存 ····{tail}",
@@ -375,7 +374,6 @@
   "toolCalls": "工具调用",
   "linesChanged": "改动行数",
   "currentConversation": "当前对话",
-  "autoCompactLeft": "剩约 {left} tokens 时自动压缩",
   "lanAccess": "局域网访问",
   "lanAccessHint": "启动时加 --dangerously-allow-local-network 才会开放，只放行局域网来源；网页里不能打开",
   "lanOn": "已开启",
@@ -486,5 +484,11 @@
   "taskOpen": "打开任务",
   "copyBrief": "复制任务说明",
   "taskMenu": "任务操作",
-  "interrupted": "已中断"
+  "interrupted": "已中断",
+  "cacheLabel": "缓存",
+  "cacheValue": "读 {read} · 写 {write}",
+  "compactIn": "再用约 {n} tokens 自动压缩",
+  "compactDue": "已过自动压缩点，下一轮前压缩",
+  "keyFromEnv": "API key（环境变量）",
+  "keyFromLogin": "API key（/login 保存）"
 }

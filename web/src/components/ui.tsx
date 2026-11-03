@@ -154,6 +154,11 @@ export function formatElapsed(ms: number): string {
   return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m${String(s % 60).padStart(2, '0')}s`
 }
 
+/** How far the conversation is from auto-compact (the threshold, not the window). */
+export function compactHint(t: T, total: number, threshold: number, fmt: (n: number) => string): string {
+  return total < threshold ? t('compactIn', { n: fmt(threshold - total) }) : t('compactDue')
+}
+
 /**
  * Whether a feed keeps following new output after a scroll event. Scroll events arrive a frame
  * late, after more of a reply may have rendered: only scrolling up (the reader's own move)
