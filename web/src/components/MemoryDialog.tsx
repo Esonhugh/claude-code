@@ -1,5 +1,5 @@
 import { type ReactNode, useEffect, useState } from 'react'
-import { ext, type MemoryFile, type MemoryList } from '../extApi'
+import { ext, type MemoryFile, type MemoryList, type MemorySnippet } from '../extApi'
 import { errorText, type ExtProps, Switch } from './extShared'
 
 const TITLES: Partial<Record<MemoryFile['kind'], string>> = {
@@ -45,11 +45,15 @@ export function highlight(text: string, q: string): ReactNode {
   return out
 }
 
-/** FTS snippets mark matches with [ and ]. */
-function snippetNode(snippet: string): ReactNode {
-  return snippet.split(/(\[[^\]]*\])/).map((part, i) =>
-    part.startsWith('[') && part.endsWith(']') ? <mark key={i}>{part.slice(1, -1)}</mark> : part,
-  )
+/** An index snippet with its match marked by offset, so brackets that belong to the text stay text. */
+export function snippetParts({ snippet, match }: MemorySnippet): [string, string, string] {
+  if (!match) return [snippet, '', '']
+  return [snippet.slice(0, match[0]), snippet.slice(match[0] + 1, match[1] - 1), snippet.slice(match[1])]
+}
+
+function snippetNode(hit: MemorySnippet): ReactNode {
+  const [before, matched, after] = snippetParts(hit)
+  return matched ? [before, <mark key="m">{matched}</mark>, after] : before
 }
 
 function ago(z: ExtProps['z'], ms: number): string {
@@ -67,7 +71,7 @@ export function MemoryBody({ z, lang, flash, onOpenSession }: ExtProps & { onOpe
   const [query, setQuery] = useState('')
   const [scope, setScope] = useState<'all' | 'memory' | 'session'>('all')
   const [open, setOpen] = useState<string>()
-  const [fts, setFts] = useState<{ q: string; memory: { id: string; snippet: string }[]; sessions: { session: string; snippet: string }[] }>()
+  const [fts, setFts] = useState<{ q: string; memory: (MemorySnippet & { id: string })[]; sessions: (MemorySnippet & { session: string })[] }>()
   const load = () => ext.memory().then(setData, e => setError(errorText(e)))
   useEffect(() => {
     void load()
@@ -124,7 +128,7 @@ export function MemoryBody({ z, lang, flash, onOpenSession }: ExtProps & { onOpe
     if (line) return highlight(line.replace(/^(description|name):\s*/, '').slice(0, 60), q)
     // The index also matches the other Chinese script, which a plain substring search cannot.
     const hit = ftsNow?.memory.find(h => h.id === x.id)
-    return hit ? snippetNode(hit.snippet.replace(/\s+/g, ' ').trim()) : where(x)
+    return hit ? snippetNode(hit) : where(x)
   }
   const toggle = async (key: 'autoMemory' | 'sqlite', on: boolean) => {
     try {
@@ -197,7 +201,7 @@ export function MemoryBody({ z, lang, flash, onOpenSession }: ExtProps & { onOpe
           {tHits.map((h, i) => (
             <button type="button" key={`${h.session}-${i}`} data-memhit={h.session} onClick={() => onOpenSession?.(h.session)}>
               {h.session}
-              <small>{snippetNode(h.snippet)}</small>
+              <small>{snippetNode(h)}</small>
             </button>
           ))}
           {!hits.length && !tHits.length && (

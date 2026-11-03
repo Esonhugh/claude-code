@@ -449,11 +449,11 @@ export async function searchMemoryIndex(query: string, scope: 'all' | 'memory' |
   return {
     memory: memoryHits.flatMap(h => {
       const id = h.kind === 'memory' ? byPath.get(resolve(h.path)) : undefined
-      return id ? [{ id, snippet: h.snippet }] : []
+      return id ? [{ id, snippet: h.snippet, match: h.match }] : []
     }),
     // One row per session, with its best match: every row opens the same session.
     sessions: sessionHits
-      .map(h => ({ session: basename(h.path, '.jsonl'), snippet: h.snippet }))
+      .map(h => ({ session: basename(h.path, '.jsonl'), snippet: h.snippet, match: h.match }))
       .filter((h, i, all) => all.findIndex(o => o.session === h.session) === i),
   }
 }

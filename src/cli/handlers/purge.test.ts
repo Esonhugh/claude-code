@@ -69,7 +69,7 @@ test('purge removes one project and its memory index rows, like 2.1.311 plus the
   saveGlobalConfig(c => ({ ...c, projects: { ...c.projects, [project]: {} as never, [other]: {} as never } }))
   const index = new Database(defaultIndexPath(), { create: true })
   index.run('CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT)')
-  index.run("INSERT INTO meta VALUES ('schema_version', '2')")
+  index.run("INSERT INTO meta VALUES ('schema_version', '3')")
   index.run('CREATE TABLE files (path TEXT PRIMARY KEY, mtime REAL, size INTEGER, lines INTEGER)')
   index.run("CREATE VIRTUAL TABLE chunks USING fts5(body, text UNINDEXED, path UNINDEXED, kind UNINDEXED, project UNINDEXED, line UNINDEXED, tokenize = 'trigram')")
   for (const dir of [projectDir, otherDir]) {

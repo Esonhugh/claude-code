@@ -72,6 +72,9 @@ export type MemoryFile = {
   missing?: boolean
 }
 
+/** A search snippet; `match` is where its bracketed match sits, brackets included. */
+export type MemorySnippet = { snippet: string; match?: [number, number] }
+
 export type MemoryList = {
   files: MemoryFile[]
   autoMemory: boolean
@@ -133,7 +136,7 @@ export const ext = {
   setDefaultChannel: (plugin: string, on: boolean) => call<void>('PUT', 'channels', { plugin, on }),
   memory: () => call<MemoryList>('GET', 'memory'),
   searchMemory: (q: string, scope: string) =>
-    call<{ memory: { id: string; snippet: string }[]; sessions: { session: string; snippet: string }[] }>(
+    call<{ memory: (MemorySnippet & { id: string })[]; sessions: (MemorySnippet & { session: string })[] }>(
       'GET',
       `memory/search?q=${enc(q)}&scope=${enc(scope)}`,
     ),
