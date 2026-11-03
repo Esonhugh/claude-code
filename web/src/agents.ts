@@ -297,6 +297,22 @@ export function workflowPhases(tasks: Tasks, workflow: AgentTask): WorkflowPhase
   }))
 }
 
+/**
+ * What an agent handed back: the input of its last StructuredOutput call
+ * (workflow agents with a schema), else the text of its last reply.
+ */
+export function agentOutput(messages: unknown[]): { text: string; structured: boolean } | undefined {
+  let text: string | undefined
+  for (const m of [...messages].reverse()) {
+    if (!isObj(m) || m.type !== 'assistant' || !isObj(m.message) || !Array.isArray(m.message.content)) continue
+    const blocks = m.message.content.filter(isObj)
+    const call = blocks.findLast(b => b.type === 'tool_use' && b.name === 'StructuredOutput')
+    if (call) return { text: JSON.stringify(call.input, null, 2), structured: true }
+    text ??= blocks.filter(b => b.type === 'text' && typeof b.text === 'string').map(b => b.text).join('\n') || undefined
+  }
+  return text === undefined ? undefined : { text, structured: false }
+}
+
 /** A teammate color name, or nothing when it is not a plain CSS color word. */
 export function teamColor(color: string | undefined): string | undefined {
   return color && /^[a-z]{1,20}$/i.test(color) ? color : undefined

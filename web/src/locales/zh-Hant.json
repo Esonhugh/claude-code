@@ -14,6 +14,7 @@
   "model": "模型",
   "moreModels": "更多模型（{n}）",
   "copy": "複製",
+  "agentOutput": "輸出",
   "copied": "已複製",
   "history": "對話",
   "rename": "重新命名",

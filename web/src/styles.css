@@ -822,6 +822,25 @@ a.btn { text-decoration: none; color: var(--fg); display: inline-block }
 .pane > .agent-pane > .agent-feed { flex: 1; overflow: auto; min-height: 0 }
 .wfcur .dot { flex: none }
 .wfnow + .wfcur { margin-top: 14px }
+.wfcur + .wfcur { margin-top: 8px }
+/* Workflow tab: phase drawers on top, the picked agent's output fills the rest. */
+.wftab { display: flex; flex-direction: column; gap: 10px; flex: 1; min-height: 0 }
+.wflist { display: flex; flex-direction: column; gap: 10px; flex: none }
+.wftab.split .wflist { flex: 0 1 auto; max-height: 45%; overflow: auto; padding-right: 2px }
+.wftab .wfnow { margin-top: 0 }
+.wftab > .wfout { flex: 1; min-height: 0; margin-top: 0 }
+.wftab > .wfout .agent-pane { flex: 1 }
+.wftab > .wfout .agent-feed { flex: 1; overflow: auto; min-height: 0 }
+.wfd-out { height: min(40vh, 360px); flex: none; margin-top: 0; position: sticky; bottom: 0; background: var(--surface); box-shadow: 0 -8px 16px -12px rgba(0,0,0,.25) }
+/* With an agent open, the lanes scroll on their own so its output stays in view at the bottom. */
+.wfdlg.split .wfd-lanes { max-height: 32vh; overflow: auto }
+.wfd-out .agent-pane { flex: 1; min-height: 0 }
+.wfd-out .agent-feed { flex: 1; overflow: auto; min-height: 0 }
+.wfresult { display: flex; flex-direction: column; gap: 8px; min-width: 0 }
+.wfresult pre { margin: 0; padding: 10px; background: var(--sunken); border-radius: 8px; font-size: 12px; white-space: pre-wrap; word-break: break-word; max-height: 60vh; overflow: auto }
+.wfdrawer { width: 100%; background: var(--surface); font: inherit; color: inherit; text-align: left; cursor: pointer }
+.wfdrawer::before { content: "›"; color: var(--muted); display: inline-block; width: 8px; transition: transform .15s }
+.wfdrawer[aria-expanded="true"]::before { transform: rotate(90deg) }
 .crumb .wfacts { margin-left: auto; display: flex; gap: 6px }
 .crumb .wfacts .btn { padding: 3px 10px; border: 1px solid var(--line); background: var(--surface); color: var(--fg); font-size: 12.5px }
 .crumb .wfacts .btn.danger { background: var(--bad); border-color: var(--bad); color: var(--surface) }
