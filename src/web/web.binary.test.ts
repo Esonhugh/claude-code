@@ -2243,6 +2243,11 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       }
       expect(Math.abs((await formBottom(panel)) - (await formBottom(page.locator('.main'))))).toBeLessThanOrEqual(4)
       await checkBox(panel, agentInput, true)
+      // A slow upload of the first message's file must not let the second message overtake it or take the file too.
+      await page.route(/\/api\/files\/[^?]+\?name=for-agent/, async (route: any) => {
+        await new Promise(r => setTimeout(r, 800))
+        await route.continue()
+      })
       await agentInput.fill('/e2e-sk')
       await agentInput.press('Enter')
       expect(await agentInput.inputValue()).toBe('/e2e-skill ')
@@ -2268,6 +2273,7 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       await agentInput.press('ArrowUp')
       expect((await agentInput.inputValue()).startsWith('/e2e-skill go')).toBe(true)
       expect(promptsSeen.some(p => p.includes('/e2e-skill go') && p.includes('for-agent.txt'))).toBe(true)
+      expect(promptsSeen.some(p => p.includes('for-agent (1).txt'))).toBe(false)
       await agentInput.fill('')
       // Signed out, the agent's box is disabled and says why, like the session's own.
       await page.route('**/api/account', async (route: any) => {

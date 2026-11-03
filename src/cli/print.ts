@@ -5119,6 +5119,7 @@ function runHeadlessStreaming(
                     resumeAgentBackground({
                       agentId: taskId,
                       prompt: text,
+                      fromUser: true,
                       toolUseContext: getModToolContext(),
                       canUseTool,
                       ...(typeof model === 'string' && model && { model }),
