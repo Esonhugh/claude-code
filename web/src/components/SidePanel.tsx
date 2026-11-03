@@ -27,6 +27,25 @@ function Kv({ rows }: { rows: [string, ReactNode][] }) {
   )
 }
 
+/** The whole session id (what `claude --resume` takes) with a copy button. */
+export function SessionIdValue({ id, t }: { id: string; t: T }) {
+  const [copied, setCopied] = useState(false)
+  const copy = () => {
+    void navigator.clipboard?.writeText(id).then(() => {
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1500)
+    })
+  }
+  return (
+    <span className="sid-val">
+      <span className="mono">{id}</span>
+      <button type="button" aria-label={t(copied ? 'copied' : 'copy')} title={t('copy')} onClick={copy}>
+        {copied ? '✓' : '⧉'}
+      </button>
+    </span>
+  )
+}
+
 type Json = Record<string, unknown>
 const isObj = (v: unknown): v is Json => typeof v === 'object' && v !== null && !Array.isArray(v)
 const num = (v: unknown) => (typeof v === 'number' ? v : 0)
@@ -247,7 +266,7 @@ function StatusPane({
         <Kv
           rows={[
             [t('nameLabel'), title],
-            ['ID', <span className="mono">{`${sessionId.slice(0, 4)}…${sessionId.slice(-4)}`}</span>],
+            ['ID', <SessionIdValue id={sessionId} t={t} />],
             [t('workDir'), <span className="mono">{tilde(chat.cwd ?? chat.workDir ?? '')}</span>],
             [t('roundsLabel'), roundsText],
             ...(chat.startedAt !== undefined ? [[t('startedLabel'), startedText(chat.startedAt, t)] as [string, ReactNode]] : []),

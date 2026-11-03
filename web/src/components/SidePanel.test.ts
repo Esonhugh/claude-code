@@ -17,3 +17,16 @@ describe('accountText', () => {
     expect(accountText(t, { account: { apiKeySource: 'none' } })).toBeUndefined()
   })
 })
+
+describe('session id', () => {
+  it('shows the whole id, so selecting or copying it gives a value claude --resume accepts', async () => {
+    const { createElement } = await import('react')
+    const { renderToStaticMarkup } = await import('react-dom/server')
+    const { SessionIdValue } = await import('./SidePanel')
+    const id = '1189c0de-0000-4000-8000-00000000a690'
+    const out = renderToStaticMarkup(createElement(SessionIdValue, { id, t: (key => key) as T }))
+    expect(out).toContain(id)
+    expect(out).not.toContain('…')
+    expect(out).toContain('aria-label="copy"')
+  })
+})
