@@ -92,6 +92,21 @@ function getNormalizedPaths(): [invokedPath: string, execPath: string] {
   return [invokedPath, execPath]
 }
 
+// The managed native install lives in $XDG_DATA_HOME/claude/versions and is
+// what installMethod and ~/.local/bin/claude track. A bundled binary run from
+// elsewhere (a local build such as ./built-claude, or a copied release binary)
+// is still typed 'native' but is not that install.
+export async function isRunningManagedNativeInstall(): Promise<boolean> {
+  const versionsDir = join(getXDGDataHome(), 'claude', 'versions')
+  const realExecPath = await realpath(process.execPath).catch(
+    () => process.execPath,
+  )
+  return [process.execPath, realExecPath].some(p => {
+    const rel = relative(versionsDir, p)
+    return rel !== '' && !rel.startsWith('..') && !isAbsolute(rel)
+  })
+}
+
 export async function getCurrentInstallationType(): Promise<InstallationType> {
   if (process.env.NODE_ENV === 'development') {
     return 'development'
@@ -384,7 +399,7 @@ export async function detectConfigurationIssues(
   }
 
   // Check if ~/.local/bin is in PATH for native installations
-  if (type === 'native') {
+  if (type === 'native' && (await isRunningManagedNativeInstall())) {
     const path = process.env.PATH || ''
     const pathDirectories = path.split(delimiter)
     const homeDir = homedir()
@@ -452,22 +467,11 @@ export async function detectConfigurationIssues(
       })
     }
 
-    // installMethod tracks the managed install. A bundled binary run from
-    // elsewhere (a local build such as ./built-claude, or a copied release
-    // binary) is not that install, so its config is not stale.
-    let runningManagedNative = false
-    if (type === 'native' && config.installMethod !== 'native') {
-      const versionsDir = join(getXDGDataHome(), 'claude', 'versions')
-      const realExecPath = await realpath(process.execPath).catch(
-        () => process.execPath,
-      )
-      runningManagedNative = [process.execPath, realExecPath].some(p => {
-        const rel = relative(versionsDir, p)
-        return rel !== '' && !rel.startsWith('..') && !isAbsolute(rel)
-      })
-    }
-
-    if (runningManagedNative) {
+    if (
+      type === 'native' &&
+      config.installMethod !== 'native' &&
+      (await isRunningManagedNativeInstall())
+    ) {
       warnings.push({
         issue: `Running native installation but config install method is '${config.installMethod ?? 'not set'}'`,
         fix: 'Run `claude install` to update configuration',
