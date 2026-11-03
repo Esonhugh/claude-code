@@ -67,6 +67,7 @@ export type AppAction =
       start: number
       workDir?: string
       prepend?: boolean
+      rewindPoints?: string[]
     }
   | { type: 'mode'; id: string; mode: ChatMode }
   | { type: 'created'; id: string; workDir: string; title: string; start: StartOptions }
@@ -155,6 +156,8 @@ export function appReducer(state: AppState, action: AppAction): AppState {
             startedAt: action.prepend ? (folded.startedAt ?? chat.startedAt) : (chat.startedAt ?? folded.startedAt),
             start: action.start,
             workDir: action.workDir ?? chat.workDir,
+            // A live session's own answer wins over what the transcript says a resume would list.
+            rewindPoints: chat.mode === 'live' ? chat.rewindPoints : (action.rewindPoints ?? chat.rewindPoints),
             // Task endings the coordinator read, where it read them; an older page keeps the ones shown.
             ...(!action.prepend && { taskNotes: folded.taskNotes, noteKeys: folded.noteKeys }),
           },

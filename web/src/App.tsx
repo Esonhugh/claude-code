@@ -533,6 +533,7 @@ export function App() {
       if (typeof requestId === 'string' && requestId.startsWith(REQUEST_PREFIX.effort)) getSettings(id)
       if ((raw as { type?: string }).type === 'result') {
         request(id, REQUEST_PREFIX.context, { subtype: 'get_context_usage' })
+        request(id, REQUEST_PREFIX.rewindPoints, { subtype: 'rewind_points' })
         request(id, REQUEST_PREFIX.apps, { subtype: 'codex_apps' })
         void refreshHistory()
         // The CLI writes the turn to the transcript up to 100 ms after its result; read the title and folder again.
@@ -550,6 +551,7 @@ export function App() {
     sockets.current.set(id, socket)
     dispatch({ type: 'mode', id, mode: 'live' })
     request(id, REQUEST_PREFIX.initialize, { subtype: 'initialize' })
+    request(id, REQUEST_PREFIX.rewindPoints, { subtype: 'rewind_points' })
     getSettings(id)
     request(id, REQUEST_PREFIX.apps, { subtype: 'codex_apps' })
     // A session picked up mid-life has had turns already; a new one has nothing to count yet.
@@ -565,6 +567,7 @@ export function App() {
       start: page.start,
       workDir: page.cwd,
       prepend: before !== undefined,
+      rewindPoints: page.rewindPoints,
     })
   }
 
@@ -696,15 +699,15 @@ export function App() {
     }
   }
 
-  /** Sends a prompt the page writes itself (`/compact`, `/goal clear`); `recap` sends `/recap` with no bubble. */
-  const sendPrompt = async (id: string, text: string, recap?: { away?: number }) => {
+  /** Sends a prompt the page writes itself (`/compact`, `/goal clear`, a retry); `recap` sends `/recap` with no bubble. */
+  const sendPrompt = async (id: string, text: string, recap?: { away?: number }, images?: string[]) => {
     const current = stateRef.current.chats[id]
     if (!current || current.busy || current.mode === 'elsewhere') return
     if (current.mode !== 'live' && !(await resume(id))) return
     stickToBottom.current = true
     const uuid = newUuid()
-    dispatch({ type: 'chat', id, action: recap ? { type: 'recap', away: recap.away } : { type: 'user', text, uuid } })
-    send(id, userMessage(text, [], uuid))
+    dispatch({ type: 'chat', id, action: recap ? { type: 'recap', away: recap.away } : { type: 'user', text, images, uuid } })
+    send(id, userMessage(text, images, uuid))
   }
 
   /** A bare `/stats`, `/config`, … opens the page's own panel instead of going to the session. */
@@ -836,12 +839,18 @@ export function App() {
     setRewindTarget(undefined)
     const current = stateRef.current.chats[id]
     if (!current || (current.mode !== 'live' && !(await resume(id)))) return false
-    const lastSeen = stateRef.current.chats[id]?.items.findLast(i => i.kind === 'user')?.id
     try {
+      // The prompts the engine holds now: a resume can drop what a compaction summarized.
+      const { uuids } = await requestAsync(id, REQUEST_PREFIX.rewindPoints, { subtype: 'rewind_points' })
+      const points = Array.isArray(uuids) ? uuids : []
+      if (!points.includes(userId)) throw new Error(t('rewindGone'))
+      const lastSeen = points.at(-1)
       let restored = 0
       if (withFiles) {
-        const files = await requestAsync(id, REQUEST_PREFIX.rewind, { subtype: 'rewind_files', user_message_id: userId })
-        restored = Array.isArray(files.filesChanged) ? files.filesChanged.length : 0
+        // Only a dry run reports which files differ; the restore itself does not.
+        const preview = await requestAsync(id, REQUEST_PREFIX.rewind, { subtype: 'rewind_files', user_message_id: userId, dry_run: true })
+        restored = Array.isArray(preview.filesChanged) ? preview.filesChanged.length : 0
+        await requestAsync(id, REQUEST_PREFIX.rewind, { subtype: 'rewind_files', user_message_id: userId })
       }
       const result = await requestAsync(id, REQUEST_PREFIX.rewind, {
         subtype: 'rewind_conversation',
@@ -867,7 +876,11 @@ export function App() {
     const turn = joinTurns(items).find(x => x.item.id === firstId)
     const at = items.findIndex(i => i.id === firstId)
     const user = items.slice(0, at).findLast(i => i.kind === 'user')
-    return { user: user?.kind === 'user' ? user : undefined, last: turn?.ids.at(-1) }
+    const points = stateRef.current.chats[id]?.rewindPoints
+    return {
+      user: user?.kind === 'user' && points?.includes(user.id) ? user : undefined,
+      last: turn?.ids.at(-1),
+    }
   }
 
   /** Asks the same prompt again: rewinds to it, then sends it. */
@@ -875,7 +888,7 @@ export function App() {
     const { user } = turnOf(id, firstId)
     if (!user || !(await rewindChat(id, user.id, false))) return
     setDrafts(d => ({ ...d, [id]: '' }))
-    await sendPrompt(id, user.text)
+    await sendPrompt(id, user.text, undefined, user.images)
   }
 
   /** Opens a new session holding the conversation up to this reply. */
@@ -1126,6 +1139,7 @@ export function App() {
   latest.current = { items: chatItems, rewindChat, retryTurn, forkTurn, turnOf }
   const canRewind = !!view && !!chat && !chat.busy && chat.mode !== 'elsewhere'
   const decisions = chat?.decisions
+  const rewindPoints = chat?.rewindPoints
   const chatValue = useMemo(
     () => ({
       decisions,
@@ -1133,11 +1147,8 @@ export function App() {
         view && canRewind
           ? {
               target: rewindTarget,
-              turnsAfter: (id: string) => {
-                const items = latest.current.items ?? []
-                const index = items.findIndex(i => i.id === id)
-                return items.slice(index).filter(i => i.kind === 'user').length
-              },
+              points: new Set(rewindPoints),
+              turnsAfter: (id: string) => (rewindPoints ? rewindPoints.length - rewindPoints.indexOf(id) : 0),
               ask: setRewindTarget,
               go: (id: string, withFiles: boolean) => void latest.current.rewindChat(view, id, withFiles),
             }
@@ -1145,6 +1156,7 @@ export function App() {
       turn:
         view && canRewind
           ? {
+              hasPrompt: (firstId: string) => !!latest.current.turnOf(view, firstId).user,
               retry: (firstId: string) => void latest.current.retryTurn(view, firstId),
               fork: (firstId: string) => void latest.current.forkTurn(view, firstId),
               rewind: (firstId: string) => {
@@ -1154,7 +1166,7 @@ export function App() {
             }
           : undefined,
     }),
-    [decisions, canRewind, view, rewindTarget],
+    [decisions, canRewind, view, rewindTarget, rewindPoints],
   )
 
   const withChat = (node: ReactNode) => (

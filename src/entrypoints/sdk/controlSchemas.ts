@@ -614,6 +614,16 @@ export const SDKControlRewindConversationRequestSchema = lazySchema(() =>
     ),
 )
 
+export const SDKControlRewindPointsRequestSchema = lazySchema(() =>
+  z
+    .object({
+      subtype: z.literal('rewind_points'),
+    })
+    .describe(
+      'Fork-only. Answers {uuids}: the user messages /rewind lists, oldest first, which are exactly the targets rewind_conversation accepts.',
+    ),
+)
+
 export const SDKControlSendTaskMessageRequestSchema = lazySchema(() =>
   z
     .object({
@@ -778,6 +788,7 @@ export const SDKControlRequestInnerSchema = lazySchema(() =>
     SDKControlSetCodexAppEnabledRequestSchema(),
     SDKControlSetCwdRequestSchema(),
     SDKControlRewindConversationRequestSchema(),
+    SDKControlRewindPointsRequestSchema(),
     SDKControlApplyFlagSettingsRequestSchema(),
     SDKControlGetSettingsRequestSchema(),
     SDKControlElicitationRequestSchema(),

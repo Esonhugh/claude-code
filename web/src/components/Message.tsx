@@ -88,12 +88,16 @@ export const ChatContext = createContext<{
   decisions?: Record<string, Decision>
   rewind?: {
     target?: string
+    /** The prompts the session's /rewind lists; only these show Rewind. */
+    points: Set<string>
     turnsAfter: (id: string) => number
     ask: (id: string | undefined) => void
     go: (id: string, files: boolean) => void
   }
   /** The actions under a reply, by the turn's first message id. */
   turn?: {
+    /** The reply answers a prompt that can be rewound to (Retry and Rewind need one). */
+    hasPrompt: (id: string) => boolean
     retry: (id: string) => void
     fork: (id: string) => void
     rewind: (id: string) => void
@@ -577,7 +581,7 @@ function MessageView({
           </div>
         )}
         <div className={queued ? 'msg user queued' : 'msg user'}>
-          {rewind && !queued && (
+          {rewind?.points.has(item.id) && !queued && (
             <button type="button" className="rw-btn" title={t('rewindTitle')} onClick={() => rewind.ask(item.id)}>
               {t('rewind')}
             </button>
@@ -806,15 +810,19 @@ function MessageView({
           >
             {copied ? t('copied') : t('copy')}
           </button>
-          <button type="button" onClick={() => turn.retry(item.id)}>
-            {t('retry')}
-          </button>
+          {turn.hasPrompt(item.id) && (
+            <button type="button" onClick={() => turn.retry(item.id)}>
+              {t('retry')}
+            </button>
+          )}
           <button type="button" onClick={() => turn.fork(item.id)}>
             {t('forkHere')}
           </button>
-          <button type="button" onClick={() => turn.rewind(item.id)}>
-            {t('rewind')}
-          </button>
+          {turn.hasPrompt(item.id) && (
+            <button type="button" onClick={() => turn.rewind(item.id)}>
+              {t('rewind')}
+            </button>
+          )}
         </div>
       )}
       {sources && sources.length > 0 && (

@@ -3781,6 +3781,9 @@ function runHeadlessStreaming(
               result.error ?? 'Unexpected error',
             )
           }
+        } else if (message.request.subtype === 'rewind_points') {
+          const { handleRewindPoints } = await import('./sessionControlRequests.js')
+          sendControlResponseSuccess(message, handleRewindPoints({ messages: mutableMessages }))
         } else if (message.request.subtype === 'set_cwd' || message.request.subtype === 'rewind_conversation') {
           const { handleSetCwd, handleRewindConversation } = await import('./sessionControlRequests.js')
           const result = message.request.subtype === 'set_cwd'
