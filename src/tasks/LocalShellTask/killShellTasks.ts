@@ -10,6 +10,7 @@ import { emitTaskTerminatedSdk } from '../../utils/sdkEventQueue.js'
 import { dequeueAllMatching } from '../../utils/messageQueueManager.js'
 import { evictTaskOutput } from '../../utils/task/diskOutput.js'
 import { updateTaskState } from '../../utils/task/framework.js'
+import { isTerminalTask, TerminalTask } from '../TerminalTask.js'
 import { isLocalShellTask } from './guards.js'
 
 type SetAppStateFn = (updater: (prev: AppState) => AppState) => void
@@ -83,6 +84,12 @@ export function killShellTasksForAgent(
         `killShellTasksForAgent: killing orphaned shell task ${taskId} (agent ${agentId} exiting)`,
       )
       killTask(taskId, setAppState)
+    } else if (
+      isTerminalTask(task) &&
+      task.agentId === agentId &&
+      task.status === 'running'
+    ) {
+      void TerminalTask.kill(taskId, setAppState)
     }
   }
   // Purge any queued notifications addressed to this agent — its query loop
