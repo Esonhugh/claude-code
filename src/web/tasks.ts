@@ -32,7 +32,10 @@ export type Task = {
   summary: string | null
   tokens: number
   tool_uses: number
+  /** Total time, earlier runs included. */
   duration_ms: number
+  /** Time of the runs before the current one. */
+  prior_ms: number
   last_tool: string | null
   /** The pending `can_use_tool` request while blocked. */
   approval_id: string | null
@@ -229,7 +232,7 @@ export class TaskStore {
       if (delivery !== 'resumed') return
       // Resuming a task this process still holds starts no `task_started`.
       this.patch(task, {
-        ...(LIVE.includes(task.state) ? {} : { state: 'running', started_at: this.now() }),
+        ...(LIVE.includes(task.state) ? {} : { state: 'running', started_at: this.now(), prior_ms: task.duration_ms }),
         stop_reason: null,
         error: null,
         finished_at: null,
@@ -278,7 +281,7 @@ export class TaskStore {
     const metered = {
       ...(num(usage.total_tokens) !== undefined && { tokens: num(usage.total_tokens) }),
       ...(num(usage.tool_uses) !== undefined && { tool_uses: num(usage.tool_uses) }),
-      ...(num(usage.duration_ms) !== undefined && { duration_ms: num(usage.duration_ms) }),
+      ...(num(usage.duration_ms) !== undefined && task && { duration_ms: task.prior_ms + num(usage.duration_ms)! }),
     }
     switch (msg.subtype) {
       case 'task_started': {
@@ -290,6 +293,7 @@ export class TaskStore {
             stop_reason: null,
             error: null,
             approval_id: null,
+            ...(!LIVE.includes(task.state) && { prior_ms: task.duration_ms }),
             started_at: now,
             finished_at: null,
           })
@@ -374,7 +378,8 @@ export class TaskStore {
 }
 
 /** How long a task ran when it ends without its own usage report (a stop, a restart). */
-const ran = (task: Task, now: number) => Math.max(task.duration_ms, task.started_at ? now - task.started_at : 0)
+const ran = (task: Task, now: number) =>
+  Math.max(task.duration_ms, task.started_at ? task.prior_ms + now - task.started_at : 0)
 
 /** The worker's tokens as its progress reports them: the latest call's input and output. */
 export function transcriptTokens(messages: Record<string, unknown>[]): number {

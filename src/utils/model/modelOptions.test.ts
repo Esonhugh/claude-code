@@ -284,8 +284,11 @@ test('gateway models are appended to the bootstrap catalog without duplicates', 
   gatewayOptions = [
     { value: 'Gateway/Model', label: 'Gateway Model', description: 'From gateway' },
     { value: 'sonnet', label: 'Duplicate', description: 'From gateway' },
+    { value: 'claude-opus-5-5', label: 'Opus 5.5', description: 'From gateway' },
   ]
   const values = getModelOptions().map(option => option.value)
+  // The full id of a built-in alias is the same model.
+  expect(values).not.toContain('claude-opus-5-5')
   expect(values).toContain('opus')
   expect(values).toContain('Gateway/Model')
   expect(values.filter(value => value === 'sonnet')).toHaveLength(1)

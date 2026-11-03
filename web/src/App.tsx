@@ -1,4 +1,4 @@
-import { type DragEvent, type ReactNode, useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react'
+import { type CSSProperties, type DragEvent, type ReactNode, useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react'
 import {
   type AuthProvider,
   createSession,
@@ -33,6 +33,7 @@ import { ProjectView } from './components/ProjectView'
 import { type DialogKind, Sidebar, type SidebarProject } from './components/Sidebar'
 import { SidePanel, type SideTab } from './components/SidePanel'
 import { StartPage } from './components/StartPage'
+import { ColumnDrag, type Columns } from './components/ColumnDrag'
 import { FootMenu, formatElapsed, nextMode, readStored, type T, writeStored } from './components/ui'
 import { WebPreview } from './components/WebPreview'
 import { chatMarkdown, exportFileName } from './exportChat'
@@ -54,10 +55,13 @@ import {
 } from './protocol'
 import { turnSources } from './sources'
 import { appReducer, type HistoryEntry, initialAppState, type SessionChat } from './store'
+import { nativeCommand, type SlashCommand } from './commands'
 import { previewTarget, WebPreviewContext } from './webPreview'
 
 const HISTORY_PAGE = 200
 const MODELS_KEY = 'claude-web-models'
+const COMMANDS_KEY = 'claude-web-commands'
+const COLUMNS_KEY = 'claude-web-columns'
 const ENV_KEY = 'claude-web-env'
 const THEME_KEY = 'claude-web-theme'
 const PALETTE_KEY = 'claude-web-palette'
@@ -123,8 +127,13 @@ function useTurnStart(busy: boolean | undefined, view: string | null): number | 
 export function App() {
   const [state, dispatch] = useReducer(appReducer, initialAppState)
   const [lang, setLangState] = useState<Lang>(initialLang)
-  const [theme, setThemeState] = useState<Theme>(() => readStored(THEME_KEY, 'system'))
-  const [palette, setPaletteState] = useState<Palette>(() => readStored(PALETTE_KEY, 'default'))
+  const [theme, setThemeState] = useState<Theme>(() => readStored(THEME_KEY, 'light'))
+  const [palette, setPaletteState] = useState<Palette>(() => readStored(PALETTE_KEY, 'clay'))
+  const [columns, setColumnsState] = useState<Columns>(() => readStored(COLUMNS_KEY, {}))
+  const setColumns = (next: Columns) => {
+    setColumnsState(next)
+    writeStored(COLUMNS_KEY, next)
+  }
   const [drafts, setDrafts] = useState<Record<string, string>>({})
   const [attachments, setAttachments] = useState<Record<string, File[]>>({})
   const [preview, setPreview] = useState<
@@ -139,6 +148,7 @@ export function App() {
   const [agentsView, setAgentsView] = useState<AgentsView>({ kind: 'tree' })
   const [workflowId, setWorkflowId] = useState<string>()
   const [dialog, setDialog] = useState<DialogKind>()
+  const [settingsTab, setSettingsTab] = useState<'general' | 'usage' | 'features'>()
   const [startError, setStartError] = useState<string>()
   const [trustDir, setTrustDir] = useState<string>()
   const [rewindTarget, setRewindTarget] = useState<string>()
@@ -152,7 +162,12 @@ export function App() {
   const [projectId, setProjectId] = useState<string>()
   const [projectDialog, setProjectDialog] = useState<'new' | Project>()
   const pendingRequests = useRef(new Map<string, (response: Record<string, unknown>) => void>())
-  const [knownModels, setKnownModels] = useState<ModelOption[]>(() => readStored(MODELS_KEY, []))
+  // The last session's models, with the provider they came from: another provider's list is stale.
+  const [knownModels, setKnownModels] = useState<{ provider?: string; models: ModelOption[] }>(() => {
+    const stored = readStored<unknown>(MODELS_KEY, [])
+    return Array.isArray(stored) ? { models: stored as ModelOption[] } : (stored as { provider?: string; models: ModelOption[] })
+  })
+  const [knownCommands, setKnownCommands] = useState<SlashCommand[]>(() => readStored(COMMANDS_KEY, []))
   const [knownEnv, setKnownEnv] = useState<SessionEnv>(() => readStored(ENV_KEY, {}))
   const sockets = useRef(new Map<string, WebSocket>())
   const requestSeq = useRef(0)
@@ -194,7 +209,11 @@ export function App() {
     () => (info.version && !shownEnv.version ? { ...shownEnv, version: info.version } : shownEnv),
     [shownEnv, info.version],
   )
-  const models = chat?.models.length ? chat.models : knownModels
+  const models = chat?.models.length
+    ? chat.models
+    : !knownModels.provider || knownModels.provider === account.account?.provider
+      ? knownModels.models
+      : []
   const uiName = (webSettings ? webSettings.uiName : env.uiName) || DEFAULT_UI_NAME
   const previewing = !!preview && preview.sessionId === view
   const since = useTurnStart(chat?.busy, view)
@@ -343,10 +362,17 @@ export function App() {
 
   useEffect(() => {
     if (chat?.models.length) {
-      setKnownModels(chat.models)
-      writeStored(MODELS_KEY, chat.models)
+      const known = { provider: account.account?.provider, models: chat.models }
+      setKnownModels(known)
+      writeStored(MODELS_KEY, known)
     }
-  }, [chat?.models])
+  }, [chat?.models, account.account?.provider])
+  useEffect(() => {
+    if (chat?.commands.length) {
+      setKnownCommands(chat.commands)
+      writeStored(COMMANDS_KEY, chat.commands)
+    }
+  }, [chat?.commands])
   const chatEnv = chat?.env
   useEffect(() => {
     if (chatEnv && Object.keys(chatEnv).length) {
@@ -600,11 +626,29 @@ export function App() {
     send(id, userMessage(text, [], uuid))
   }
 
+  /** A bare `/stats`, `/config`, … opens the page's own panel instead of going to the session. */
+  const openNative = (text: string, key: string) => {
+    const native = nativeCommand(text)
+    if (!native) return false
+    setDrafts(d => ({ ...d, [key]: '' }))
+    if ('menu' in native) {
+      // The model menu under the input box (it holds the effort levels too).
+      const button = document.querySelector<HTMLElement>(`.main .footbtn[aria-label="${t('model')}"]`)
+      if (!button) return false
+      setTimeout(() => button.click())
+      return true
+    }
+    setSettingsTab(native.tab)
+    setDialog(native.dialog)
+    return true
+  }
+
   const sendInChat = async () => {
     const id = state.view
     const text = draft.trim()
     const pending = files
     if (!id || !chat || (!text && !pending.length) || chat.busy) return
+    if (!pending.length && openNative(text, id)) return
     if (text === '/recap' && !pending.length) {
       setDrafts(d => ({ ...d, [id]: '' }))
       await sendPrompt(id, text, {})
@@ -637,6 +681,7 @@ export function App() {
     const text = (drafts[''] ?? '').trim()
     const pending = attachments[''] ?? []
     if (!text && !pending.length) return
+    if (!pending.length && openNative(text, '')) return
     const { cwd, mode, model, temporary, effort } = state.start
     setTrustDir(undefined)
     try {
@@ -946,6 +991,7 @@ export function App() {
       history={state.history.filter(h => !h.archived && !h.projectId)}
       tempRoot={info.tempRoot}
       models={models}
+      commands={knownCommands}
       draft={drafts[''] ?? ''}
       setDraft={v => setDrafts(d => ({ ...d, '': v }))}
       files={attachments[''] ?? []}
@@ -1138,7 +1184,19 @@ export function App() {
   )
 
   return (
-    <div className="app">
+    <div
+      className="app"
+      style={
+        {
+          ...(columns.left && { '--left-w': `${columns.left}px` }),
+          ...(columns.right && { '--right-w': `${columns.right}px` }),
+        } as CSSProperties
+      }
+    >
+      <ColumnDrag side="left" label={t('resizeSessions')} columns={columns} onChange={setColumns} />
+      {chat && view && !inProject && (
+        <ColumnDrag side="right" label={t('resizePanel')} columns={columns} onChange={setColumns} />
+      )}
       <Sidebar
         t={t}
         lang={lang}
@@ -1300,7 +1358,10 @@ export function App() {
           t={t}
           lang={lang}
           control={control}
-          onClose={() => setDialog(undefined)}
+          onClose={() => {
+            setDialog(undefined)
+            setSettingsTab(undefined)
+          }}
           onUseSkill={useSkill}
           onOpenSession={id => {
             const entry = state.history.find(h => h.id === id)
@@ -1315,6 +1376,7 @@ export function App() {
             setTheme,
             palette,
             setPalette,
+            initialTab: settingsTab,
             workspace: info.workspace,
             settings: webSettings,
             onSettings: patch => {
@@ -1331,6 +1393,7 @@ export function App() {
           t={t}
           project={projectDialog === 'new' ? undefined : projectDialog}
           workspace={info.workspace}
+          models={models}
           onClose={() => setProjectDialog(undefined)}
           onSaved={saved => {
             setProjectDialog(undefined)

@@ -115,7 +115,7 @@ export function AppDialog({
         {kind === 'mcp' && <McpBody {...props} />}
         {kind === 'channels' && <ChannelsBody {...props} />}
         {kind === 'skills' && <SkillsBody {...props} onUse={onUseSkill} />}
-        {kind === 'plugins' && <PluginsBody {...props} />}
+        {kind === 'plugins' && <PluginsBody {...props} openai={settings.account?.provider === 'openai'} />}
         {kind === 'memory' && <MemoryBody {...props} onOpenSession={onOpenSession} />}
         {kind === 'hooks' && <HooksBody {...props} />}
         {kind === 'mods' && <ModsBody {...props} />}

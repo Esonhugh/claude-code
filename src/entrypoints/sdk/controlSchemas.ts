@@ -628,6 +628,26 @@ export const SDKControlSendTaskMessageRequestSchema = lazySchema(() =>
     ),
 )
 
+export const SDKControlCodexAppsRequestSchema = lazySchema(() =>
+  z
+    .object({
+      subtype: z.literal('codex_apps'),
+    })
+    .describe(
+      'Fork-only. Lists the ChatGPT apps (Codex apps) of this session, as /plugin shows them: {eligible, reason?, apps: [{connectorId, name, description?, tools, enabled}]}. Only an OpenAI provider signed in with ChatGPT is eligible.',
+    ),
+)
+
+export const SDKControlSetCodexAppEnabledRequestSchema = lazySchema(() =>
+  z
+    .object({
+      subtype: z.literal('set_codex_app_enabled'),
+      connector_id: z.string(),
+      enabled: z.boolean(),
+    })
+    .describe('Fork-only. Turns one ChatGPT app on or off (user settings `disabledCodexApps`), as /plugin does.'),
+)
+
 export const SDKControlApplyFlagSettingsRequestSchema = lazySchema(() =>
   z
     .object({
@@ -754,6 +774,8 @@ export const SDKControlRequestInnerSchema = lazySchema(() =>
     SDKControlMcpToggleRequestSchema(),
     SDKControlStopTaskRequestSchema(),
     SDKControlSendTaskMessageRequestSchema(),
+    SDKControlCodexAppsRequestSchema(),
+    SDKControlSetCodexAppEnabledRequestSchema(),
     SDKControlSetCwdRequestSchema(),
     SDKControlRewindConversationRequestSchema(),
     SDKControlApplyFlagSettingsRequestSchema(),

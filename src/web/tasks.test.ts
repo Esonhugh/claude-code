@@ -97,6 +97,19 @@ describe('TaskStore', () => {
     expect(store.get(project.id, 'a1')).toMatchObject({ state: 'stopped', stop_reason: 'restart' })
   })
 
+  it('adds up the time of a task across a restart and a resumed run', () => {
+    const { store, project, child, client, started, tick } = setup()
+    started('a1')
+    tick(27_000)
+    store.stopLive('restart')
+    expect(store.get(project.id, 'a1')).toMatchObject({ state: 'stopped', duration_ms: 27_000 })
+    client({ type: 'control_request', request_id: 'm1', request: { subtype: 'send_task_message', task_id: 'a1', text: 'go on' } })
+    child({ type: 'control_response', response: { subtype: 'success', request_id: 'm1', response: { delivery: 'resumed' } } })
+    tick(400)
+    child({ type: 'system', subtype: 'task_notification', task_id: 'a1', status: 'completed', summary: 'ok', usage: { total_tokens: 10, duration_ms: 400 } })
+    expect(store.get(project.id, 'a1')).toMatchObject({ state: 'review', duration_ms: 27_400 })
+  })
+
   it('records a message to a task and resumes an ended one with the model it asked for', () => {
     const { store, project, child, client, started, tick } = setup()
     started('a1')

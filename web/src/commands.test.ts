@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test'
-import { filterCommands, moveSelection, paletteQuery, recallPrompt, type SlashCommand } from './commands'
+import { filterCommands, moveSelection, nativeCommand, paletteQuery, recallPrompt, type SlashCommand } from './commands'
 
 const cmd = (name: string, aliases?: string[]): SlashCommand => ({
   name,
@@ -79,5 +79,21 @@ describe('recallPrompt', () => {
   })
   it('has nothing to recall in a new chat', () => {
     expect(recallPrompt([], -1, 1)).toBeUndefined()
+  })
+})
+
+describe('nativeCommand', () => {
+  it('maps bare commands with a page panel and leaves the rest to the session', () => {
+    expect(nativeCommand('/stats')).toEqual({ dialog: 'stats' })
+    expect(nativeCommand(' /usage ')).toEqual({ dialog: 'settings', tab: 'usage' })
+    expect(nativeCommand('/plugin')).toEqual({ dialog: 'plugins' })
+    expect(nativeCommand('/keybindings')).toEqual({ dialog: 'keys' })
+    expect(nativeCommand('/model')).toEqual({ menu: 'model' })
+    expect(nativeCommand('/effort')).toEqual({ menu: 'model' })
+    expect(nativeCommand('/model sonnet')).toBeUndefined()
+    expect(nativeCommand('/stats now')).toBeUndefined()
+    expect(nativeCommand('/compact')).toBeUndefined()
+    expect(nativeCommand('stats')).toBeUndefined()
+    expect(nativeCommand('/constructor')).toBeUndefined()
   })
 })

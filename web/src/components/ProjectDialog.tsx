@@ -1,8 +1,9 @@
 import { type FormEvent, useState } from 'react'
 import { createProject, NeedsTrustError, patchProject, type Project } from '../api'
 import { tilde } from '../files'
+import type { ModelOption } from '../protocol'
 import { Dialog } from './Dialog'
-import type { T } from './ui'
+import { FootMenu, type T } from './ui'
 
 /** The task default model choices; null inherits the coordinator's model (CLAUDE_CODE_SUBAGENT_MODEL unset). */
 export const WORKER_MODELS: { value: string | null; label: string }[] = [
@@ -12,17 +13,30 @@ export const WORKER_MODELS: { value: string | null; label: string }[] = [
   { value: 'haiku', label: 'Haiku 5.5' },
 ]
 
+/**
+ * The task model choices: inherit, then the models the sessions report (discovered gateway and
+ * provider models included), or the built-in three before any session has reported; the saved
+ * value stays listed even when the list no longer has it.
+ */
+export function workerModelChoices(models: ModelOption[], current: string | null): { value: string | null; label: string }[] {
+  const listed = models.filter(m => m.value !== 'default').map(m => ({ value: m.value as string | null, label: m.displayName }))
+  const choices = [WORKER_MODELS[0]!, ...(listed.length ? listed : WORKER_MODELS.slice(1))]
+  return current && !choices.some(c => c.value === current) ? [...choices, { value: current, label: current }] : choices
+}
+
 /** New project (no `project`) or its settings: the prototype's `pjForm`. */
 export function ProjectDialog({
   t,
   project,
   workspace,
+  models,
   onSaved,
   onClose,
 }: {
   t: T
   project?: Project
   workspace?: string
+  models: ModelOption[]
   onSaved: (project: Project) => void
   onClose: () => void
 }) {
@@ -30,6 +44,7 @@ export function ProjectDialog({
   const [cwd, setCwd] = useState(() => tilde(workspace ?? '~'))
   const [instructions, setInstructions] = useState(project?.instructions ?? '')
   const [workerModel, setWorkerModel] = useState<string | null>(project?.worker_model ?? null)
+  const choices = workerModelChoices(models, workerModel)
   const [trustDir, setTrustDir] = useState<string>()
   const [error, setError] = useState<string>()
   const [busy, setBusy] = useState(false)
@@ -112,19 +127,33 @@ export function ProjectDialog({
             <b>{t('workerModel')}</b>
             <small>{t('workerModelHint')}</small>
           </div>
-          <div className="seg" role="radiogroup" aria-label={t('workerModel')}>
-            {WORKER_MODELS.map(m => (
-              <button
-                type="button"
-                role="radio"
-                key={m.label}
-                aria-checked={workerModel === m.value}
-                onClick={() => setWorkerModel(m.value)}
-              >
-                {m.label || t('inheritModel')}
-              </button>
-            ))}
-          </div>
+          <FootMenu
+            right
+            label={t('workerModel')}
+            buttonClass="pj-model"
+            button={
+              <>
+                {choices.find(c => c.value === workerModel)?.label || t('inheritModel')} <span aria-hidden="true">▾</span>
+              </>
+            }
+          >
+            {close =>
+              choices.map(m => (
+                <button
+                  type="button"
+                  role="menuitemradio"
+                  key={m.value ?? ''}
+                  aria-checked={workerModel === m.value}
+                  onClick={() => {
+                    setWorkerModel(m.value)
+                    close()
+                  }}
+                >
+                  {m.label || t('inheritModel')}
+                </button>
+              ))
+            }
+          </FootMenu>
         </div>
         {trustDir && (
           <div className="gate" role="alertdialog" aria-label={t('trustTitle')}>

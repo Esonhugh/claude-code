@@ -150,6 +150,19 @@ function editPatch(result: unknown): { tool_use_result?: Record<string, unknown>
 }
 
 /** The first assistant text of a session, cut to a card's length. */
+/** Markdown as one line of plain text: no code fences, table rules, headings, emphasis or link targets. */
+export function snippetText(markdown: string): string {
+  return markdown
+    .replace(/^\s*(```|~~~).*$/gm, '')
+    .replace(/^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)*\|?\s*$/gm, '')
+    .replace(/^\s{0,3}(#{1,6}\s+|>\s?|[-*+]\s+|\d+[.)]\s+)/gm, '')
+    .replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1')
+    .replace(/(\*\*|__|\*|_|`)(?=\S)([^\n]*?\S)\1/g, '$2')
+    .replace(/\|/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
 export async function readSnippet(id: string): Promise<string | undefined> {
   const found = await resolveSessionFilePath(id)
   if (!found) return undefined
@@ -158,12 +171,12 @@ export async function readSnippet(id: string): Promise<string | undefined> {
     if (m.type !== 'assistant' || m.isSidechain || m.isApiErrorMessage) continue
     const content = (m.message as { content?: unknown } | undefined)?.content
     if (!Array.isArray(content)) continue
-    const text = (content as ContentBlock[])
-      .filter(b => b.type === 'text' && b.text)
-      .map(b => b.text)
-      .join(' ')
-      .replace(/\s+/g, ' ')
-      .trim()
+    const text = snippetText(
+      (content as ContentBlock[])
+        .filter(b => b.type === 'text' && b.text)
+        .map(b => b.text)
+        .join('\n'),
+    )
     if (text) return text.slice(0, 240)
   }
   return ''

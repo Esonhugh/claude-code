@@ -44,7 +44,7 @@ export function formatTaskTime(ms: number | undefined): string {
 
 /** How long the task has run: its last report, or the clock since its run started while it runs. */
 export function taskElapsed(task: ProjectTask, now: number): number {
-  return isLive(task) ? Math.max(task.duration_ms, now - task.started_at) : task.duration_ms
+  return isLive(task) ? Math.max(task.duration_ms, (task.prior_ms ?? 0) + now - task.started_at) : task.duration_ms
 }
 
 /** `Opus 5.5 · 1m35s · 6.8k tok · WebFetch` (the tool only while it runs). */
@@ -52,7 +52,7 @@ export function taskMeta(task: ProjectTask, model: string | undefined, now: numb
   return [
     model,
     formatTaskTime(taskElapsed(task, now)),
-    `${(task.tokens / 1000).toFixed(1)}k tok`,
+    task.tokens > 0 ? `${(task.tokens / 1000).toFixed(1)}k tok` : undefined,
     task.state === 'running' ? task.last_tool : undefined,
   ]
     .filter(Boolean)

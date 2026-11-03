@@ -460,6 +460,7 @@ function isDirectory(path: string): boolean {
  *   GET    /api/history/:id/agents/:agent/messages → a subagent's transcript
  *   GET    /api/history/:id/agent-issuers?tool_use_id= → { [tool use id]: agent id }
  *   GET    /api/history/:id/snippet     → { snippet } first assistant text
+ *   GET    /api/folder-files?cwd=&q=    → { files } `@` search in a trusted folder before a session exists
  *   POST   /api/files/:id?name=         → upload into the session's folder
  *   GET    /api/files/:id/list?q=       → { files } for `@` completion
  *   GET    /api/files/:id?path=         → a file the session may show (Range)
@@ -871,6 +872,18 @@ export function startWebServer(
         home: homedir(),
         version: MACRO.VERSION,
       })
+    }
+    if (pathname === '/api/folder-files' && req.method === 'GET') {
+      // The start page's `@` search, before a session exists: only folders a session may already use.
+      const cwd = url.searchParams.get('cwd') ?? ''
+      if (!isAbsolute(cwd) || !isDirectory(cwd)) return errorResponse(400, 'Not a directory')
+      const folderTrust = config.folderTrust ?? { isTrusted: isPathTrusted, save: savePathTrusted }
+      const dir = realpathSync(cwd)
+      if (dir !== realOr(config.workspace) && !folderTrust.isTrusted(dir)) return Response.json({ files: [] })
+      const files = await listWorkspaceFiles(dir, (url.searchParams.get('q') ?? '').slice(0, 200), {
+        configDir: config.configDir ?? getClaudeConfigHomeDir(),
+      })
+      return Response.json({ files })
     }
     if (pathname === '/api/sessions' && req.method === 'POST') {
       return createSession(req)

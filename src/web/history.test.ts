@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSy
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { sanitizePath } from '../utils/sessionStoragePortable.js'
-import { findAgentIssuers, listHistory, readAgentTranscript, readSnippet, readTranscript, renameSession } from './history.js'
+import { findAgentIssuers, listHistory, readAgentTranscript, readSnippet, readTranscript, renameSession, snippetText } from './history.js'
 
 const ID = '11111111-2222-4333-8444-555555555555'
 let root = ''
@@ -201,5 +201,13 @@ describe('web history', () => {
     expect((await listHistory(0, 10))[0]?.title).toBe('My chat')
     expect(await renameSession('99999999-2222-4333-8444-555555555555', 'x')).toBe(false)
     expect(await readTranscript('99999999-2222-4333-8444-555555555555', undefined, 10)).toBeUndefined()
+  })
+})
+
+describe('snippetText', () => {
+  it('turns a Markdown reply into one plain line', () => {
+    expect(
+      snippetText('## Reply\n\nYou said: **hi** and `x`\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\n```ts\nconst x = 1\n```\n- see [docs](https://e.x)'),
+    ).toBe('Reply You said: hi and x a b 1 2 const x = 1 see docs')
   })
 })

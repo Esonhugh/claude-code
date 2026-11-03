@@ -68,6 +68,8 @@ export type MemoryFile = {
   where: string
   modified?: number
   body: string
+  /** A user or project CLAUDE.md that does not exist yet. */
+  missing?: boolean
 }
 
 export type MemoryList = {
