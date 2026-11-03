@@ -323,9 +323,9 @@ h1, h2, h3 { text-wrap: balance; margin: 0 }
 .att .kind { font-family: var(--f-mono); font-size: 10.5px; color: var(--muted) }
 .pop { position: absolute; left: 0; right: 0; bottom: calc(100% + 6px); background: var(--surface); border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 8px 30px rgba(0,0,0,.18); max-height: 300px; overflow: auto; padding: 4px; z-index: 5 }
 .pop button:disabled { opacity: .45; cursor: not-allowed }
-.pop .opt { display: grid; grid-template-columns: minmax(110px, auto) minmax(0, 1fr) auto; gap: 10px; align-items: baseline; padding: 6px 10px; border-radius: 6px; border: 0; background: transparent; width: 100%; text-align: left }
+.pop .opt { display: grid; grid-template-columns: fit-content(50%) minmax(0, 1fr) auto; gap: 10px; align-items: baseline; height: auto; line-height: 1.4; padding: 6px 10px; border-radius: 6px; border: 0; background: transparent; width: 100%; text-align: left }
 .pop .opt[aria-selected="true"] { background: var(--accent-soft) }
-.pop .opt b { font-family: var(--f-mono); font-weight: 500; font-size: 12.5px }
+.pop .opt b { font-family: var(--f-mono); font-weight: 500; font-size: 12.5px; min-width: 110px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
 .pop .opt span { color: var(--muted); font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
 .pop .opt em { font-style: normal; font-size: 11px; color: var(--muted); border: 1px solid var(--line); border-radius: 999px; padding: 0 7px }
 .pop .sec { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); padding: 6px 10px 2px }
@@ -503,7 +503,6 @@ button.chip { cursor: pointer; font: inherit; color: inherit }
 .snav button { border: 0; background: transparent; text-align: left; padding: 6px 8px; border-radius: 6px; display: flex; gap: 10px; align-items: center }
 .snav button:hover { background: var(--sunken) }
 .snav .ico { width: 16px; text-align: center; color: var(--muted); font-family: var(--f-mono) }
-.snav .cnt { margin-left: auto; font-size: 11px; color: var(--muted); font-family: var(--f-mono) }
 .xrow { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 12px; align-items: center; padding: 10px 0; border-bottom: 1px solid var(--line) }
 .xrow:last-child { border-bottom: 0 }
 .xrow b { font-weight: 500 } .xrow small { color: var(--muted); font-size: 12px; display: block }
@@ -634,7 +633,8 @@ body.hist #goal-wrap + .footwrap { margin-left: auto }
 .keys .kh { grid-column: 1 / -1; font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; margin-top: 6px }
 .events { display: flex; flex-direction: column; gap: 4px; max-height: 260px; overflow: auto; font-size: 13px }
 .events > div { display: grid; grid-template-columns: 68px minmax(0, 1fr); gap: 8px } .pane .events .note { padding: 0 }
-.proj { display: flex; flex-direction: column; gap: 1px; margin-top: 4px }
+/* Scoped to the sidebar: body also carries .proj while a project page shows. */
+.history .proj { display: flex; flex-direction: column; gap: 1px; margin-top: 4px }
 .proj-h { display: flex; align-items: center; gap: 2px }
 .proj-t { flex: 1; min-width: 0; border: 0; background: transparent; text-align: left; padding: 5px 6px; border-radius: 6px; display: grid; grid-template-columns: 12px minmax(0, 1fr) auto; column-gap: 6px; align-items: center; cursor: pointer }
 .proj-t:hover { background: var(--sunken) }
@@ -644,7 +644,6 @@ body.hist #goal-wrap + .footwrap { margin-left: auto }
 .proj-t .cnt { grid-column: 3; grid-row: 1 / span 2; font-size: 11px; color: var(--muted); font-family: var(--f-mono) }
 .proj-new { border: 0; background: transparent; color: var(--muted); width: 24px; height: 24px; border-radius: 6px; cursor: pointer; font-size: 15px; opacity: 0 }
 .proj-h:hover .proj-new, .proj-new:focus-visible { opacity: 1 } .proj-new:hover { background: var(--sunken); color: var(--fg) }
-.proj .sess { margin-left: 14px }
 .newwrap { position: relative; display: grid } .newbtn { width: 100% }
 .newmenu { position: static; margin-top: 4px; box-shadow: none; padding: 6px; display: flex; flex-direction: column; gap: 2px }
 .newmenu[hidden] { display: none }
@@ -945,3 +944,8 @@ body.proj .main, body.proj .side, body.proj .artview, body.proj #panel-btn { dis
 .pv-head .seg { flex: none } .pv-seg button { white-space: nowrap }
 .pv-head .menu-btn { flex: none; padding: 2px 9px }
 @media (min-width: 761px) { .pv-side .pv-head .menu-btn { display: none } }
+/* Every sidebar row keeps a fixed lead slot (live/unread dot, ⌗, folder caret) so titles line up across sections and states. */
+.history .sess .t .lead { display: inline-block; width: 12px; margin-right: 6px; text-align: center; vertical-align: middle; line-height: 1 }
+.history .sess .t .lead > * { margin-right: 0 }
+.history .proj-t { padding: 4px 8px }
+

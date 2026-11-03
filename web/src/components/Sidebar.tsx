@@ -8,7 +8,6 @@ import {
   removeProject,
   type SessionMetaPatch,
 } from '../api'
-import { ext } from '../extApi'
 import { tilde } from '../files'
 import type { Lang } from '../i18n'
 import type { SessionEnv } from '../protocol'
@@ -33,33 +32,6 @@ export type DialogKind =
   | 'settings'
   | 'stats'
   | 'keys'
-
-type ExtCounts = { channels?: string; memory?: string; mods?: string }
-
-/** Counts for the Channels, Memory and Mods entries, reloaded whenever no dialog is open. */
-function useExtCounts(env: SessionEnv, dialogOpen: boolean): ExtCounts {
-  const [counts, setCounts] = useState<ExtCounts>({})
-  const key = (env.mcpServers ?? [])
-    .filter(m => m.status === 'connected')
-    .map(m => m.name)
-    .join('\n')
-  useEffect(() => {
-    if (dialogOpen) return
-    const connected = key.split('\n')
-    let live = true
-    const set = (patch: ExtCounts) => live && setCounts(c => ({ ...c, ...patch }))
-    ext.channels().then(
-      list => set({ channels: String(list.filter(c => c.def && connected.includes(c.server)).length) }),
-      () => undefined,
-    )
-    ext.memory().then(m => set({ memory: String(m.files.filter(f => !f.missing).length) }), () => undefined)
-    ext.mods().then(list => set({ mods: `${list.filter(m => m.on).length}/${list.length}` }), () => undefined)
-    return () => {
-      live = false
-    }
-  }, [dialogOpen, key])
-  return counts
-}
 
 /** A hover card: a title and the fields that are known; `mono` marks the id. */
 type Tip = { t: string; rows: { k: string; v: string; mono?: boolean }[] }
@@ -110,7 +82,6 @@ export function Sidebar({
   onDeleted,
   onMore,
   onDialog,
-  dialogOpen = false,
   account,
   projects,
   projectId,
@@ -138,7 +109,6 @@ export function Sidebar({
   onDeleted: (id: string) => void
   onMore: () => void
   onDialog: (kind: DialogKind) => void
-  dialogOpen?: boolean
   /** The account card (Account.tsx). */
   account: ReactNode
   projects: SidebarProject[]
@@ -409,7 +379,7 @@ export function Sidebar({
             onContextMenu={e => openMenu(e, { kind: 'sess', entry })}
           >
             <span className={`t session-title${label}`}>
-              {dot}
+              <span className="lead" aria-hidden="true">{dot}</span>
               {entry.title}
             </span>
           </button>
@@ -468,7 +438,7 @@ export function Sidebar({
             onContextMenu={e => openMenu(e, { kind: 'pj', project: p })}
           >
             <span className="t">
-              {run > 0 ? <span className="live" /> : <span className="pjico" aria-hidden="true">⌗</span>}
+              <span className="lead" aria-hidden="true">{run > 0 ? <span className="live" /> : <span className="pjico">⌗</span>}</span>
               {p.name}
             </span>
             {needs > 0 && (
@@ -545,21 +515,14 @@ export function Sidebar({
     )
   })
 
-  const mcp = env.mcpServers
-  const counts = useExtCounts(env, dialogOpen)
-  const snav: { kind: DialogKind; ico: string; label: string; cnt?: string }[] = [
-    {
-      kind: 'mcp',
-      ico: '⌁',
-      label: 'MCP',
-      cnt: mcp && `${mcp.filter(m => m.status === 'connected').length}/${mcp.length}`,
-    },
-    { kind: 'channels', ico: '⇆', label: 'Channels', cnt: counts.channels },
-    { kind: 'skills', ico: '/', label: 'Skills', cnt: env.skills && String(env.skills.length) },
-    { kind: 'plugins', ico: '⧉', label: t('plugins'), cnt: env.plugins && String(env.plugins.length) },
-    { kind: 'memory', ico: 'M', label: t('memory'), cnt: counts.memory },
-    { kind: 'hooks', ico: '↯', label: 'Hooks', cnt: env.hooks && String(env.hooks.length) },
-    { kind: 'mods', ico: '◇', label: 'Mods', cnt: counts.mods },
+  const snav: { kind: DialogKind; ico: string; label: string }[] = [
+    { kind: 'mcp', ico: '⌁', label: 'MCP' },
+    { kind: 'channels', ico: '⇆', label: 'Channels' },
+    { kind: 'skills', ico: '/', label: 'Skills' },
+    { kind: 'plugins', ico: '⧉', label: t('plugins') },
+    { kind: 'memory', ico: 'M', label: t('memory') },
+    { kind: 'hooks', ico: '↯', label: 'Hooks' },
+    { kind: 'mods', ico: '◇', label: 'Mods' },
   ]
   const empty = !pins.length && !tempRows.length && !dirs.length && !projectRows.length
 
@@ -671,7 +634,6 @@ export function Sidebar({
           <button type="button" key={item.kind} onClick={() => onDialog(item.kind)}>
             <span className="ico">{item.ico}</span>
             {item.label}
-            {item.cnt && <span className="cnt">{item.cnt}</span>}
           </button>
         ))}
       </nav>

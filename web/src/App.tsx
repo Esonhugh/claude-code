@@ -1260,7 +1260,6 @@ export function App() {
           setSidebarOpen(false)
           setDialog(kind)
         }}
-        dialogOpen={!!dialog}
         projects={sidebarProjects}
         projectId={inProject ? projectId : undefined}
         onProject={p => void openProject(p)}

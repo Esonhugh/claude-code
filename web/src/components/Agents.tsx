@@ -70,7 +70,7 @@ export function statusText(status: string, t: T): string {
 }
 
 export function taskMeta(task: AgentTask): string {
-  return [formatDuration(task.durationMs), formatTokens(task.tokens) && `${formatTokens(task.tokens)} tok`, !isFinished(task) && task.lastTool]
+  return [formatDuration(task.durationMs), formatTokens(task.tokens), !isFinished(task) && task.lastTool]
     .filter(Boolean)
     .join(' · ')
 }
