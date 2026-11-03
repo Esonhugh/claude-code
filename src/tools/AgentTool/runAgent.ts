@@ -1307,6 +1307,17 @@ export async function* runAgent({
           yield message
           break
         }
+        // A message sent to the running agent (by the user or with SendMessage),
+        // fed in between tool calls: kept in its transcript so a viewer shows it
+        // and a resume still has it.
+        // @ts-ignore - recovered code
+        if (message.attachment.type === 'queued_command') {
+          await recordSidechainTranscript([message], agentId, lastRecordedUuid).catch(err =>
+            logForDebugging(`Failed to record sidechain transcript: ${err}`),
+          )
+          recordedUuids?.add(message.uuid)
+          lastRecordedUuid = message.uuid
+        }
         yield message
         continue
       }
