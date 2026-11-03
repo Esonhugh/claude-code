@@ -384,6 +384,7 @@ export function AgentView({
   name,
   onSend,
   input,
+  embedded,
   t,
 }: {
   sessionId: string
@@ -393,6 +394,8 @@ export function AgentView({
   name?: string
   onSend?: (text: string, pick: AgentPick) => Promise<void>
   input?: AgentInput
+  /** Inside a Workflow pane whose header already names the agent: no task card, no read-only note. */
+  embedded?: boolean
   t: T
 }) {
   const [messages, setMessages] = useState<unknown[]>()
@@ -458,7 +461,7 @@ export function AgentView({
   const stoppedTeammate = teammate && isFinished(task)
   return (
     <div className="agent-pane">
-      {task && (
+      {task && !embedded && (
         <div className="card">
           <span className="sub">
             {[task.subagentType ?? task.type, task.description, taskMeta(task)].filter(Boolean).join(' · ')}
@@ -515,7 +518,7 @@ export function AgentView({
           />
         </div>
       ) : (
-        <p className="note">{t('agentReadonly')}</p>
+        !embedded && <p className="note">{t('agentReadonly')}</p>
       )}
     </div>
   )
@@ -942,6 +945,7 @@ export function WorkflowTab({
             sessionId={sessionId}
             agentId={agentTask?.id ?? agentLabel}
             task={agentTask}
+            embedded
             t={t}
           />
         </div>
@@ -1014,6 +1018,7 @@ export function WorkflowTab({
                   sessionId={sessionId}
                   agentId={agentTask?.id ?? agentLabel}
                   task={agentTask}
+                  embedded
                   t={t}
                 />
               </div>
