@@ -7,6 +7,7 @@ import {
   type ApprovalChoice,
   type ChatState,
   initialState,
+  queueUserMessage,
   reduce,
   rewindTo,
   setLocal,
@@ -46,6 +47,7 @@ export type AppState = {
 export type ChatAction =
   | { type: 'message'; raw: unknown }
   | { type: 'user'; text: string; images?: string[]; uuid?: string }
+  | { type: 'queue'; text: string; images?: string[]; uuid: string }
   | { type: 'error'; text: string }
   | { type: 'answered'; approval: Approval; choice: ApprovalChoice }
   | { type: 'recap'; away?: number }
@@ -96,6 +98,8 @@ function reduceChat(state: ChatState, action: ChatAction): ChatState {
       return reduce(state, action.raw)
     case 'user':
       return addUserMessage(state, action.text, action.images, action.uuid)
+    case 'queue':
+      return queueUserMessage(state, action.text, action.uuid, action.images)
     case 'error':
       return addError(state, action.text)
     case 'answered':

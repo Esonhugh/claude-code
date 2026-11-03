@@ -1,5 +1,6 @@
 {
   "you": "你",
+  "queuedMessage": "你 · 排队中",
   "send": "发送",
   "stop": "停止",
   "allow": "允许",

@@ -12,6 +12,7 @@ import {
   startRecap,
   initialState,
   permissionResponse,
+  queueUserMessage,
   reduce,
   unsupportedControlResponse,
 } from './protocol'
@@ -23,6 +24,36 @@ function fold(messages: unknown[]) {
 }
 
 describe('reduce', () => {
+  it('queues a message sent mid-turn and moves it in when the engine echoes it', () => {
+    const asst = (id: string, text: string) => ({
+      type: 'assistant',
+      message: { id, role: 'assistant', content: [{ type: 'text', text }] },
+    })
+    let state = addUserMessage(initialState, 'first', [], 'u1')
+    state = reduce(state, asst('m1', 'working'))
+    state = queueUserMessage(state, 'also check B', 'u2')
+    expect(state.queued.map(q => q.text)).toEqual(['also check B'])
+    expect(state.items.map(i => i.kind)).toEqual(['user', 'assistant'])
+    // Fed in between tool calls: a queued_command replay with the same uuid.
+    state = reduce(state, { type: 'user', isReplay: true, uuid: 'u2', message: { role: 'user', content: 'also check B' } })
+    expect(state.queued).toEqual([])
+    expect(state.items.map(i => (i.kind === 'user' ? i.text : i.kind))).toEqual(['first', 'assistant', 'also check B'])
+    expect(state.busy).toBe(true)
+  })
+
+  it('runs a queued message the turn did not take as the next turn', () => {
+    let state = addUserMessage(initialState, 'first', [], 'u1')
+    state = queueUserMessage(state, 'later', 'u2')
+    state = reduce(state, { type: 'result', subtype: 'success', is_error: false, result: 'ok' })
+    expect(state.busy).toBe(true)
+    expect(state.queued).toEqual([])
+    expect(state.items.at(-1)).toMatchObject({ kind: 'user', id: 'u2', text: 'later' })
+    // The next turn streams its reply before the engine echoes the prompt.
+    state = reduce(state, { type: 'assistant', message: { id: 'm2', role: 'assistant', content: [{ type: 'text', text: 'answer' }] } })
+    state = reduce(state, { type: 'user', isReplay: true, uuid: 'u2', message: { role: 'user', content: 'later' } })
+    expect(state.items.map(i => i.kind)).toEqual(['user', 'user', 'assistant'])
+  })
+
   it('streams text deltas into one assistant message and ends the turn on result', () => {
     const state = fold([
       { type: 'system', subtype: 'init', model: 'claude-opus-5-5', cwd: '/w' },

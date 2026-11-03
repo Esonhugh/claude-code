@@ -833,6 +833,9 @@ export function ProjectView({
             </div>
           )}
           {feed}
+          {chat.queued.map(item => (
+            <Message key={item.id} item={item} t={t} streaming={false} queued />
+          ))}
           {notes.get('')?.map(note => <Note key={`${note.taskId}-${note.n}`} text={noteText(note)} />)}
           {(chat.busy || running + blocked > 0) && (
             <div className="status-line" role="status">

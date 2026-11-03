@@ -644,7 +644,8 @@ export function InputBox({
       />
     </>
   )
-  const send = busy ? (
+  // With text in the box a running turn still takes it (queued, fed in between tool calls).
+  const send = busy && !draft.trim() && !files.length ? (
     <button type="button" className="send" aria-label={t('stop')} onClick={onStop}>
       <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true">
         <rect x="3" y="3" width="10" height="10" rx="1.5" fill="currentColor" />

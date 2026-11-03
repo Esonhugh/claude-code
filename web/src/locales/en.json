@@ -1,5 +1,6 @@
 {
   "you": "You",
+  "queuedMessage": "You · queued",
   "send": "Send",
   "stop": "Stop",
   "allow": "Allow",

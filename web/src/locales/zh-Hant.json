@@ -1,5 +1,6 @@
 {
   "you": "你",
+  "queuedMessage": "你 · 排隊中",
   "send": "傳送",
   "stop": "停止",
   "allow": "允許",

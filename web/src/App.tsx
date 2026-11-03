@@ -679,9 +679,10 @@ export function App() {
     const id = state.view
     const text = draft.trim()
     const pending = files
-    if (!id || !chat || (!text && !pending.length) || chat.busy) return
+    if (!id || !chat || (!text && !pending.length)) return
     if (!pending.length && openNative(text, id)) return
     if (text === '/recap' && !pending.length) {
+      if (chat.busy) return
       setDrafts(d => ({ ...d, [id]: '' }))
       await sendPrompt(id, text, {})
       return
@@ -705,7 +706,7 @@ export function App() {
     setAttachments(a => ({ ...a, [id]: [] }))
     stickToBottom.current = true
     const uuid = newUuid()
-    dispatch({ type: 'chat', id, action: { type: 'user', ...content, uuid } })
+    dispatch({ type: 'chat', id, action: { type: chat.busy ? 'queue' : 'user', ...content, uuid } })
     send(id, userMessage(content.text, content.images, uuid))
   }
 
@@ -1137,6 +1138,9 @@ export function App() {
                 streaming={chat.busy && item.id === chat.streamingId}
                 sources={sourcesById.get(item.id)}
               />
+            ))}
+            {chat.queued.map(item => (
+              <Message key={item.id} item={item} t={t} streaming={false} queued />
             ))}
             {chat.approvals.map(a => (
               <div className="ask-ref" key={a.requestId}>
