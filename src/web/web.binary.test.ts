@@ -1060,7 +1060,8 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       await lanes.locator('.wcard', { hasText: 'write-b' }).click()
       const out = page.locator('.wfd-out')
       await out.getByText('B_OUT').waitFor({ timeout: 30_000 })
-      await out.getByText('Workflow agents are read-only.').waitFor()
+      // The pane header already names the agent: no task card or read-only note under it.
+      expect(await out.locator('.agent-pane > .card, .agent-pane > .note').count()).toBe(0)
       // Picking another agent swaps the conversation below.
       await lanes.locator('.wcard', { hasText: 'gather-a' }).click()
       await out.locator('.fhead', { hasText: 'gather-a' }).waitFor()
