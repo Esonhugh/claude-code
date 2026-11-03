@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useRef, useState } from 'react'
+import { type CSSProperties, type ReactNode, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { MessageKey } from '../i18n'
 
 export type T = (key: MessageKey, vars?: Record<string, string>) => string
@@ -76,6 +76,7 @@ export function FootMenu({
   menuClass = 'pop footmenu',
   wrapId,
   right,
+  fixed,
   label,
   children,
 }: {
@@ -85,11 +86,37 @@ export function FootMenu({
   menuClass?: string
   wrapId?: string
   right?: boolean
+  /** Placed against the viewport, on the side with more room: a scrolling box (a dialog body) would clip it. */
+  fixed?: boolean
   label?: string
   children: (close: () => void) => ReactNode
 }) {
   const [open, setOpen] = useState(false)
   const wrap = useRef<HTMLDivElement>(null)
+  const [place, setPlace] = useState<CSSProperties>()
+  useLayoutEffect(() => {
+    if (!open || !fixed) return
+    const update = () => {
+      const r = wrap.current?.querySelector('.footbtn')?.getBoundingClientRect()
+      if (!r) return
+      const above = r.top - 8
+      const below = window.innerHeight - r.bottom - 8
+      const up = above >= below
+      setPlace({
+        position: 'fixed',
+        ...(right ? { left: 'auto', right: window.innerWidth - r.right } : { left: r.left }),
+        ...(up ? { top: 'auto', bottom: window.innerHeight - r.top + 6 } : { bottom: 'auto', top: r.bottom + 6 }),
+        maxHeight: Math.min(440, (up ? above : below) - 6),
+      })
+    }
+    update()
+    window.addEventListener('resize', update)
+    window.addEventListener('scroll', update, true)
+    return () => {
+      window.removeEventListener('resize', update)
+      window.removeEventListener('scroll', update, true)
+    }
+  }, [open, fixed, right])
   useEffect(() => {
     if (!open) return
     const onDown = (e: MouseEvent) => {
@@ -124,7 +151,7 @@ export function FootMenu({
         {button}
       </button>
       {open && (
-        <div className={`${menuClass}${right ? ' right' : ''}`} role="menu">
+        <div className={`${menuClass}${right ? ' right' : ''}`} role="menu" style={fixed ? place : undefined}>
           {children(() => setOpen(false))}
         </div>
       )}
