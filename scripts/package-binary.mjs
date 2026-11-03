@@ -3,11 +3,24 @@ import fs from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
-import { buildCli, prepareBuildDirectory } from './build.mjs';
+import { assertSupportedBunVersion, buildCli, prepareBuildDirectory } from './build.mjs';
 import { SEARCH_TOOLS_VERSION, searchToolsDir } from './search-tools.mjs';
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const projectDir = path.resolve(scriptDir, '..');
+
+const bunCheck = spawnSync('bun', ['--version'], {
+  cwd: projectDir,
+  encoding: 'utf8',
+});
+
+if (bunCheck.error || bunCheck.status !== 0) {
+  throw new Error(
+    'Bun is required for binary packaging. Install bun and rerun bun run package:binary.',
+  );
+}
+assertSupportedBunVersion(bunCheck.stdout.trim());
+
 const outputDir = process.env.CLAUDE_CODE_BUILD_DIR
   ? prepareBuildDirectory(process.env.CLAUDE_CODE_BUILD_DIR)
   : undefined;
@@ -349,17 +362,6 @@ if (/__CLAUDE_CODE_SHARP_(?!NATIVE__)/.test(generatedSharpContents)) {
   throw new Error('Failed to generate embedded sharp module.');
 }
 await fs.promises.writeFile(generatedSharpPath, generatedSharpContents);
-
-const bunCheck = spawnSync('bun', ['--version'], {
-  cwd: projectDir,
-  encoding: 'utf8',
-});
-
-if (bunCheck.error || bunCheck.status !== 0) {
-  throw new Error(
-    'Bun is required for binary packaging. Install bun and rerun bun run package:binary.',
-  );
-}
 
 await fs.promises.mkdir(releaseDir, { recursive: true });
 
