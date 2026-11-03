@@ -1547,7 +1547,11 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
 
       // The sidebar row's hover card counts the coordinator's tasks.
       await page.mouse.move(800, 400)
+      // A project row has no pin button, so hovering it keeps its badge in place.
+      const badge = page.locator('.pjrow', { hasText: 'E2E project' }).locator('.pjn')
+      const badgeX = (await badge.boundingBox())!.x
       await page.locator('.pjrow', { hasText: 'E2E project' }).hover()
+      expect((await badge.boundingBox())!.x).toBe(badgeX)
       const card = page.locator('.sbtip')
       await card.locator('span', { hasText: /^Tasks/ }).getByText('2 tasks').waitFor()
       // Both finished and not yet looked at.
