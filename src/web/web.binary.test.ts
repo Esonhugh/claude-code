@@ -1045,6 +1045,12 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       await lanes.locator('.wcard', { hasText: 'write-b' }).click()
       await panel.getByText('B_OUT').waitFor({ timeout: 30_000 })
       await panel.getByText('Workflow agents are read-only.').waitFor()
+      // Picking another agent swaps the conversation below.
+      await panel.getByRole('button', { name: 'Expand' }).click()
+      await lanes.locator('.wcard', { hasText: 'gather-a' }).click()
+      await panel.locator('.wfout .fhead', { hasText: 'gather-a' }).waitFor()
+      await panel.locator('.wfout').getByText('A_OUT').waitFor({ timeout: 30_000 })
+      expect(await panel.locator('.wfout').getByText('B_OUT').count()).toBe(0)
       await agentsTab.click()
 
       await input.fill('please MAKE_TEAM now')

@@ -738,7 +738,8 @@ function PhaseLine({ phases, task, t, onExpand }: { phases: WorkflowPhase[]; tas
       </div>
     )
   }
-  const running = phase.agents.filter(a => a.status === 'running').map(a => a.label)
+  // Pipelined phases overlap: agents of an earlier phase may still run.
+  const running = phases.flatMap(p => p.agents).filter(a => a.status === 'running').map(a => a.label)
   return (
     <div className="wfcur">
       <span className={`dot ${dotClass(phase.status)}`} />
@@ -786,7 +787,12 @@ export function WorkflowTab({
   const phases = task.phases ?? []
   const allAgents = phases.flatMap(p => p.agents)
   const done = allAgents.filter(a => a.status === 'completed').length
-  const current = phases[currentPhase(phases)]
+  const currentIndex = currentPhase(phases)
+  const current = phases[currentIndex]
+  // The current phase's agents, plus those of other phases still running.
+  const nowAgents = phases.flatMap((p, i) =>
+    i === currentIndex ? p.agents : p.agents.filter(a => a.status === 'running'),
+  )
   const agentTask = agentLabel ? workflowAgent(tasks, task, agentLabel) : undefined
   return (
     <>
@@ -814,7 +820,7 @@ export function WorkflowTab({
       )}
       {current && (
         <div className="wfnow">
-          {current.agents.map(agent => (
+          {nowAgents.map(agent => (
             <button
               type="button"
               key={agent.label}
@@ -837,7 +843,13 @@ export function WorkflowTab({
             <b className="mono">{agentLabel}</b>
             {agentTask && <span className="note">{taskMeta(agentTask)}</span>}
           </div>
-          <AgentView sessionId={sessionId} agentId={agentTask?.id ?? agentLabel} task={agentTask} t={t} />
+          <AgentView
+            key={agentTask?.id ?? agentLabel}
+            sessionId={sessionId}
+            agentId={agentTask?.id ?? agentLabel}
+            task={agentTask}
+            t={t}
+          />
         </div>
       )}
       {expanded && (
