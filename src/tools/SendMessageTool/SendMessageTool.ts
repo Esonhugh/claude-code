@@ -121,6 +121,7 @@ export type MessageOutput = {
   success: boolean
   message: string
   msg_id?: string
+  resumedAgentId?: string
   routing?: MessageRouting
   pin?: SendMessagePin
   display?: string
@@ -1030,6 +1031,7 @@ ${resolved.candidates.map(candidate => `  ${candidate.name} [${candidate.ref}]`)
                   ...pinReceipt,
                   ...(result.inlineHandback && { inlineHandback: { displayName: toAgentId(input.to) ? input.to.slice(0, 7) : input.to, ...result.inlineHandback } }),
                   message: result.inlineHandback ? RESUMED_AGENT_MESSAGE : `Resuming agent ${toAgentId(input.to) ? input.to.slice(0, 7) : input.to}`,
+                  ...(!result.inlineHandback && { resumedAgentId: agentId }),
                 },
               }
             } catch (e) {
@@ -1060,6 +1062,7 @@ ${resolved.candidates.map(candidate => `  ${candidate.name} [${candidate.ref}]`)
                   ...pinReceipt,
                   ...(result.inlineHandback && { inlineHandback: { displayName: toAgentId(input.to) ? input.to.slice(0, 7) : input.to, ...result.inlineHandback } }),
                   message: result.inlineHandback ? RESUMED_AGENT_MESSAGE : `Resuming agent ${toAgentId(input.to) ? input.to.slice(0, 7) : input.to}`,
+                  ...(!result.inlineHandback && { resumedAgentId: agentId }),
                 },
               }
             } catch (e) {

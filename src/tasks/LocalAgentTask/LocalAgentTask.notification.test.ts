@@ -216,3 +216,19 @@ test('agent notifications are delivered mid-turn (priority next)', async () => {
   await flush()
   assert.equal(mainThreadNotifications()[0]?.priority, 'next')
 })
+
+for (const [source, expected] of [
+  ['parent', 'Agent "stopper" was stopped by Claude'],
+  ['user', 'Agent "stopper" was stopped by user'],
+  ['system', 'Agent "stopper" was stopped'],
+] as const) {
+  test(`a ${source} stop names who stopped the agent in the notification, like official`, async () => {
+    reset()
+    spawn('stopper')
+    killAsyncAgent('stopper', setAppState, source)
+    enqueueAgentNotification({ taskId: 'stopper', description: 'stopper', status: 'killed', setAppState })
+    await flush()
+    const value = String(mainThreadNotifications()[0]?.value)
+    assert.match(value, new RegExp(`<summary>${expected}</summary>`))
+  })
+}
