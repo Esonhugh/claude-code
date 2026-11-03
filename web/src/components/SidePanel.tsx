@@ -8,7 +8,7 @@ import { AgentsTab, type AgentsView, agentTasks, WorkflowTab } from './Agents'
 import { BackgroundPane, type HostRequest, MonitorPane, TerminalsPane, useBackground } from './BackgroundPanes'
 import { shortTokens } from './Composer'
 import { modelName } from './Message'
-import { formatElapsed, modeOf, type T } from './ui'
+import { compactHint, formatElapsed, modeOf, type T } from './ui'
 
 export type SideTab = 'status' | 'files' | 'agents' | 'workflow' | 'terminals' | 'monitor' | 'bg'
 
@@ -69,9 +69,10 @@ function startedText(at: number, t: T): string {
     : `${date.toLocaleDateString()} ${time}`
 }
 
-function usageRows(t: T, chat: SessionChat, usage: Json | undefined): [string, ReactNode][] {
+function usageRows(t: T, chat: SessionChat, usage: Json | undefined): { rows: [string, ReactNode][]; cost?: string } {
   const session = isObj(usage?.session) ? usage.session : undefined
   const models = isObj(session?.model_usage) ? Object.values(session.model_usage).filter(isObj) : []
+  const total = (key: string) => shortTokens(models.reduce((n, m) => n + num(m[key]), 0))
   const subscription = !!usage?.subscription_type
   const cost = typeof session?.total_cost_usd === 'number' ? session.total_cost_usd : chat.costUsd
   const limits = isObj(usage?.rate_limits) ? usage.rate_limits : undefined
@@ -83,20 +84,18 @@ function usageRows(t: T, chat: SessionChat, usage: Json | undefined): [string, R
       : streamed?.utilization !== undefined
         ? { pct: streamed.utilization * 100, resets: (streamed.resetsAt ?? NaN) * 1000 }
         : undefined
-  return [
+  const costText = cost === undefined ? undefined : `$${cost.toFixed(2)}`
+  const rows: [string, ReactNode][] = [
     ...(models.length
       ? [
+          ['tokens', t('tokensValue', { in: total('inputTokens'), out: total('outputTokens') })] as [string, ReactNode],
           [
-            'tokens',
-            t('tokensValue', {
-              in: shortTokens(models.reduce((n, m) => n + num(m.inputTokens), 0)),
-              out: shortTokens(models.reduce((n, m) => n + num(m.outputTokens), 0)),
-              cache: shortTokens(models.reduce((n, m) => n + num(m.cacheReadInputTokens), 0)),
-            }),
+            t('cacheLabel'),
+            t('cacheValue', { read: total('cacheReadInputTokens'), write: total('cacheCreationInputTokens') }),
           ] as [string, ReactNode],
         ]
       : []),
-    ...(cost !== undefined ? [[t(subscription ? 'apiPriceLabel' : 'costLabel'), `$${cost.toFixed(2)}`] as [string, ReactNode]] : []),
+    ...(costText ? [[t(subscription ? 'apiPriceLabel' : 'costLabel'), costText] as [string, ReactNode]] : []),
     ...(typeof session?.total_api_duration_ms === 'number' && session.total_api_duration_ms > 0
       ? [[t('apiDurationLabel'), formatElapsed(session.total_api_duration_ms)] as [string, ReactNode]]
       : []),
@@ -112,6 +111,35 @@ function usageRows(t: T, chat: SessionChat, usage: Json | undefined): [string, R
         ]
       : []),
   ]
+  return { rows, cost: costText }
+}
+
+const PROVIDER_NAMES: Record<string, string> = { bedrock: 'Amazon Bedrock', vertex: 'Google Vertex AI', foundry: 'Microsoft Foundry' }
+
+/** The account line: plan and email for a sign-in, else where the key comes from in words. */
+export function accountText(t: T, env: SessionChat['env']): string | undefined {
+  const account = env.account
+  if (account?.email) return [account.subscriptionType, account.email].filter(Boolean).join(' · ')
+  const provider = account?.apiProvider && PROVIDER_NAMES[account.apiProvider]
+  if (provider) return provider
+  const source = account?.apiKeySource ?? env.apiKeySource
+  if (!source || source === 'none') return undefined
+  if (source === 'ANTHROPIC_API_KEY') return t('keyFromEnv')
+  if (source === '/login managed key') return t('keyFromLogin')
+  return `API key · ${source}`
+}
+
+/** A Status section that folds; `summary` stays visible when folded. */
+function Section({ title, summary, open, children }: { title: string; summary?: string; open?: boolean; children: ReactNode }) {
+  return (
+    <details className="sgroup" open={open}>
+      <summary>
+        <span>{title}</span>
+        {summary && <small>{summary}</small>}
+      </summary>
+      {children}
+    </details>
+  )
 }
 
 function StatusPane({
@@ -148,119 +176,121 @@ function StatusPane({
   const env = chat.env
   const agents = Object.values(agentTasks(chat.tasks))
   const { terminals, monitors } = groups
+  const running = runningCount(agents) + runningCount(terminals) + runningCount(monitors)
   const pct = chat.contextPercent === undefined ? undefined : Math.round(chat.contextPercent)
-  const account = env.account?.email
-    ? [env.account.subscriptionType, env.account.email].filter(Boolean).join(' · ')
-    : (env.account?.apiKeySource ?? env.apiKeySource)
+  const account = accountText(t, env)
   const mcp = env.mcpServers
+  const roundsText = `${t('roundsValue', { n: String(rounds) })}${compactions ? t('compactedTimes', { n: String(compactions) }) : ''}`
+  const todosText = todos.length
+    ? t('todosDone', { done: String(todos.filter(x => x.status === 'completed').length), total: String(todos.length) })
+    : t('none')
   return (
     <div className="status-pane">
-      <div className="group-h">{t('sessionGroup')}</div>
-      <Kv
-        rows={[
-          [t('nameLabel'), title],
-          ['ID', <span className="mono">{`${sessionId.slice(0, 4)}…${sessionId.slice(-4)}`}</span>],
-          [
-            t('statusLabel'),
-            <>
-              <span className={`dot ${chat.busy ? 'running' : 'idle'}`} /> {statusText}
-            </>,
-          ],
-          [t('workDir'), <span className="mono">{tilde(chat.cwd ?? chat.workDir ?? '')}</span>],
-          [t('roundsLabel'), `${t('roundsValue', { n: String(rounds) })}${compactions ? t('compactedTimes', { n: String(compactions) }) : ''}`],
-          ...(chat.startedAt !== undefined ? [[t('startedLabel'), startedText(chat.startedAt, t)] as [string, ReactNode]] : []),
-        ]}
-      />
-      <div className="group-h">{t('modelGroup')}</div>
-      <Kv
-        rows={[
-          [t('modelGroup'), modelName(chat.model, models) ?? '—'],
-          [t('effort'), chat.effort ?? '—'],
-          [t('permissionModeLabel'), modeOf(chat.permissionMode).label],
-          ...(context ? [[t('autoCompactLabel'), t(context.autoCompact ? 'on' : 'off')] as [string, ReactNode]] : []),
-        ]}
-      />
-      <div className="group-h">{t('contextGroup')}</div>
-      <div className="usage">
-        <div className="ulabel">
-          <b>{context ? `${shortTokens(context.total)} / ${shortTokens(context.max)}` : t('contextChip')}</b>
-          <span className="mono">{pct === undefined ? '—' : `${pct}%`}</span>
+      <div className="status-top">
+        <div className="st-state">
+          <span className={`dot ${chat.busy ? 'running' : 'idle'}`} />
+          <b>{statusText}</b>
+          <small>{roundsText}</small>
         </div>
-        <div className="bar">
-          <i style={{ width: `${pct ?? 0}%` }} />
+        <div className="st-model">
+          {[modelName(chat.model, models) ?? '—', chat.effort, modeOf(chat.permissionMode).label].filter(Boolean).join(' · ')}
         </div>
-        {context?.autoCompact && context.threshold !== undefined && (
-          <small>{t('ctxStatusHint', { n: shortTokens(context.max - context.threshold) })}</small>
-        )}
+        <div className="usage">
+          <div className="ulabel">
+            <b>
+              {t('contextGroup')} {context ? `${shortTokens(context.total)} / ${shortTokens(context.max)}` : ''}
+            </b>
+            <span className="mono">{pct === undefined ? '—' : `${pct}%`}</span>
+          </div>
+          <div className="bar">
+            <i style={{ width: `${Math.min(100, pct ?? 0)}%` }} />
+          </div>
+          {context && (
+            <small>
+              {context.autoCompact && context.threshold !== undefined
+                ? compactHint(t, context.total, context.threshold, shortTokens)
+                : `${t('autoCompactLabel')} ${t('off')}`}
+            </small>
+          )}
+        </div>
       </div>
-      {usage.length > 0 && (
-        <>
-          <div className="group-h">{t('usageGroup')}</div>
-          <Kv rows={usage} />
-        </>
+      {usage.rows.length > 0 && (
+        <Section title={t('usageGroup')} summary={usage.cost} open>
+          <Kv rows={usage.rows} />
+        </Section>
       )}
-      <div className="group-h">{t('goalsGroup')}</div>
-      <Kv
-        rows={[
-          [
-            t('goalLabel'),
-            chat.goal ? `${chat.goal.condition} · ${t('nChecks', { n: String(chat.goal.iterations) })}` : t('none'),
-          ],
-          [
-            t('todosLabel'),
-            todos.length
-              ? t('todosDone', { done: String(todos.filter(x => x.status === 'completed').length), total: String(todos.length) })
-              : t('none'),
-          ],
-        ]}
-      />
-      <div className="group-h">{t('backgroundGroup')}</div>
-      <Kv
-        rows={[
-          ['Agents', t('nRunning', { n: String(runningCount(agents)) })],
-          ['Terminals', `${t('nRunning', { n: String(runningCount(terminals)) })} / ${terminals.length}`],
-          ['Monitor', t('nRunning', { n: String(runningCount(monitors)) })],
-          [
-            t('pendingLabel'),
-            chat.approvals.length ? t('nRequests', { n: String(chat.approvals.length) }) : t('none'),
-          ],
-        ]}
-      />
-      <div className="group-h">{t('envGroup')}</div>
-      <Kv
-        rows={[
-          ...(env.version ? [[t('versionLabel'), <span className="mono">{env.version}</span>] as [string, ReactNode]] : []),
-          ...(account ? [[t('accountLabel'), account] as [string, ReactNode]] : []),
-          ...(mcp
-            ? [
-                [
-                  'MCP',
-                  t('connectedOf', {
-                    n: String(mcp.filter(m => m.status === 'connected').length),
-                    total: String(mcp.length),
-                  }),
-                ] as [string, ReactNode],
-              ]
-            : []),
-          ...(instructions?.length
-            ? [[t('instructionsLabel'), instructions.join(' · ')] as [string, ReactNode]]
-            : []),
-          ...(autoMemory !== undefined
-            ? [[t('memoryLabel'), autoMemory ? t('memoryOn', { n: String(memories) }) : t('memoryOff')] as [string, ReactNode]]
-            : []),
-          ...(data.sandbox
-            ? [[t('sandboxLabel'), data.sandbox.enabled === true ? t('sandboxOn') : t('sandboxOff')] as [string, ReactNode]]
-            : []),
-          ...(env.hooks
-            ? [
-                [
-                  'Hooks',
-                  `${env.hooks.length}${env.hooks.length ? `（${[...new Set(env.hooks.map(h => h.event))].join(', ')}）` : ''}`,
-                ] as [string, ReactNode],
-              ]
-            : []),
-        ]}
-      />
+      <Section title={t('backgroundGroup')} summary={running ? t('nRunning', { n: String(running) }) : t('none')} open>
+        <Kv
+          rows={[
+            ['Agents', `${t('nRunning', { n: String(runningCount(agents)) })} / ${agents.length}`],
+            ['Terminals', `${t('nRunning', { n: String(runningCount(terminals)) })} / ${terminals.length}`],
+            ['Monitor', `${t('nRunning', { n: String(runningCount(monitors)) })} / ${monitors.length}`],
+            [
+              t('pendingLabel'),
+              chat.approvals.length ? t('nRequests', { n: String(chat.approvals.length) }) : t('none'),
+            ],
+          ]}
+        />
+      </Section>
+      <Section title={t('goalsGroup')} summary={chat.goal ? chat.goal.condition : todosText}>
+        <Kv
+          rows={[
+            [
+              t('goalLabel'),
+              chat.goal ? `${chat.goal.condition} · ${t('nChecks', { n: String(chat.goal.iterations) })}` : t('none'),
+            ],
+            [t('todosLabel'), todosText],
+          ]}
+        />
+      </Section>
+      <Section title={t('sessionGroup')} summary={title}>
+        <Kv
+          rows={[
+            [t('nameLabel'), title],
+            ['ID', <span className="mono">{`${sessionId.slice(0, 4)}…${sessionId.slice(-4)}`}</span>],
+            [t('workDir'), <span className="mono">{tilde(chat.cwd ?? chat.workDir ?? '')}</span>],
+            [t('roundsLabel'), roundsText],
+            ...(chat.startedAt !== undefined ? [[t('startedLabel'), startedText(chat.startedAt, t)] as [string, ReactNode]] : []),
+            ...(context ? [[t('autoCompactLabel'), t(context.autoCompact ? 'on' : 'off')] as [string, ReactNode]] : []),
+          ]}
+        />
+      </Section>
+      <Section title={t('envGroup')} summary={account}>
+        <Kv
+          rows={[
+            ...(env.version ? [[t('versionLabel'), <span className="mono">{env.version}</span>] as [string, ReactNode]] : []),
+            ...(account ? [[t('accountLabel'), account] as [string, ReactNode]] : []),
+            ...(mcp
+              ? [
+                  [
+                    'MCP',
+                    t('connectedOf', {
+                      n: String(mcp.filter(m => m.status === 'connected').length),
+                      total: String(mcp.length),
+                    }),
+                  ] as [string, ReactNode],
+                ]
+              : []),
+            ...(instructions?.length
+              ? [[t('instructionsLabel'), instructions.join(' · ')] as [string, ReactNode]]
+              : []),
+            ...(autoMemory !== undefined
+              ? [[t('memoryLabel'), autoMemory ? t('memoryOn', { n: String(memories) }) : t('memoryOff')] as [string, ReactNode]]
+              : []),
+            ...(data.sandbox
+              ? [[t('sandboxLabel'), data.sandbox.enabled === true ? t('sandboxOn') : t('sandboxOff')] as [string, ReactNode]]
+              : []),
+            ...(env.hooks
+              ? [
+                  [
+                    'Hooks',
+                    `${env.hooks.length}${env.hooks.length ? `（${[...new Set(env.hooks.map(h => h.event))].join(', ')}）` : ''}`,
+                  ] as [string, ReactNode],
+                ]
+              : []),
+          ]}
+        />
+      </Section>
     </div>
   )
 }

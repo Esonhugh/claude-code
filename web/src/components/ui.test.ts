@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test'
-import { followScroll } from './ui'
+import { compactHint, followScroll, type T } from './ui'
 
 describe('followScroll', () => {
   const at = (scrollTop: number) => ({ scrollHeight: 2000, clientHeight: 500, scrollTop })
@@ -16,5 +16,19 @@ describe('followScroll', () => {
     const top = { current: 0 }
     expect(followScroll(at(1480), false, top)).toBe(true)
     expect(followScroll(at(1490), true, top)).toBe(true)
+  })
+})
+
+describe('compactHint', () => {
+  const t = ((key: string, vars?: Record<string, string>) => `${key}${vars ? ` ${vars.n}` : ''}`) as T
+  const fmt = (n: number) => String(n)
+
+  it('counts down to the threshold instead of showing the fixed buffer', () => {
+    expect(compactHint(t, 56_000, 167_000, fmt)).toBe('compactIn 111000')
+    expect(compactHint(t, 150_000, 167_000, fmt)).toBe('compactIn 17000')
+  })
+
+  it('says the point is passed when the conversation is over the threshold', () => {
+    expect(compactHint(t, 241_000, 167_000, fmt)).toBe('compactDue')
   })
 })

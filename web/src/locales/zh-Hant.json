@@ -294,7 +294,7 @@
   "goalsGroup": "目標與待辦",
   "todosLabel": "待辦",
   "todosDone": "{done}/{total} 完成",
-  "tokensValue": "↑ {in} · ↓ {out} · 快取讀 {cache}",
+  "tokensValue": "↑ {in} · ↓ {out}",
   "apiPriceLabel": "折合 API 價",
   "apiDurationLabel": "API 時長",
   "quota5hLabel": "5 小時額度",
@@ -311,7 +311,6 @@
   "trustAccept": "信任並繼續",
   "mentionFile": "引用工作區檔案",
   "mentionFileHint": "按路徑模糊搜尋",
-  "ctxStatusHint": "剩約 {n} tokens 時自動壓縮 · 點頂部上下文看明細",
   "edit": "編輯",
   "switchAuth": "切換認證",
   "keySaved": "已儲存 ····{tail}",
@@ -375,7 +374,6 @@
   "toolCalls": "工具呼叫",
   "linesChanged": "改動行數",
   "currentConversation": "目前對話",
-  "autoCompactLeft": "剩約 {left} tokens 時自動壓縮",
   "lanAccess": "區域網存取",
   "lanAccessHint": "啟動時加 --dangerously-allow-local-network 才會開放，只放行區域網來源；網頁裡不能打開",
   "lanOn": "已開啟",
@@ -486,5 +484,11 @@
   "taskOpen": "開啟任務",
   "copyBrief": "複製任務說明",
   "taskMenu": "任務操作",
-  "interrupted": "已中斷"
+  "interrupted": "已中斷",
+  "cacheLabel": "快取",
+  "cacheValue": "讀 {read} · 寫 {write}",
+  "compactIn": "再用約 {n} tokens 自動壓縮",
+  "compactDue": "已過自動壓縮點，下一輪前壓縮",
+  "keyFromEnv": "API key（環境變數）",
+  "keyFromLogin": "API key（/login 儲存）"
 }
