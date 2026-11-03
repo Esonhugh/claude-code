@@ -5095,9 +5095,15 @@ export function REPL({
           // Skip non-query/aborted/loop turns; defer while swarm teammates are running.
           const turnDurationMs =
             Date.now() - loadingStartTimeRef.current - totalPausedMsRef.current
+          // Like official, a turn ended by a permission rejection (abort()
+          // without a reason) still gets its row; Esc ('user-cancel') and
+          // send-now ('interrupt') abort with a string reason and do not.
+          const endedByPermissionReject =
+            abortController.signal.aborted &&
+            typeof abortController.signal.reason !== 'string'
           if (
             didQuery &&
-            !abortController.signal.aborted &&
+            (!abortController.signal.aborted || endedByPermissionReject) &&
             !proactiveActive
           ) {
             logForDebugging(`[turn-duration] completed elapsedMs=${turnDurationMs}`)

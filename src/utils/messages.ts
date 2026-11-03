@@ -614,6 +614,19 @@ export function createSyntheticUserCaveatMessage(): UserMessage {
 /**
  * Formats the command-input breadcrumb the model sees when a slash command runs.
  */
+// Like official's localCommandOutput marker: the input row of a local command
+// (/context, /cost, …) is not a prompt, so the rewind list skips it. Runtime
+// only, so a resumed session lists it again, as in official.
+const LOCAL_COMMAND_INPUT = Symbol('localCommandInput')
+
+export function markLocalCommandInput(message: UserMessage): UserMessage {
+  return Object.assign(message, { [LOCAL_COMMAND_INPUT]: true })
+}
+
+export function isLocalCommandInput(message: Message): boolean {
+  return LOCAL_COMMAND_INPUT in message
+}
+
 export function formatCommandInputTags(
   commandName: string,
   args: string,
