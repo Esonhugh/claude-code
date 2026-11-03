@@ -815,6 +815,8 @@ a.btn { text-decoration: none; color: var(--fg); display: inline-block }
 
 /* ---------- markdown (web/src/markdown) on the prototype's tokens ---------- */
 .markdown { overflow-wrap: anywhere }
+/* A long chat lays out and paints only the replies near the viewport; each keeps its last measured height. */
+.main > .feed .msg .markdown { content-visibility: auto; contain-intrinsic-size: auto 240px }
 .markdown > :first-child { margin-top: 0 }
 .markdown > :last-child { margin-bottom: 0 }
 .markdown p, .markdown ul, .markdown ol, .markdown blockquote, .markdown .table-wrap, .markdown .codeblock { margin: 0 0 8px }
@@ -882,6 +884,7 @@ a.btn { text-decoration: none; color: var(--fg); display: inline-block }
   html, body, #root, .app, .main, .feed { display: block; height: auto; overflow: visible }
   .app > :not(.main), .main > :not(.feed), .feed .older-sentinel, .chipbtn, .think:not(.steps) { display: none !important }
   .msg { max-width: none }
+  .main > .feed .msg .markdown { content-visibility: visible }
   pre { max-height: none !important; overflow: visible }
   .toolcard, .sources { break-inside: avoid }
 }

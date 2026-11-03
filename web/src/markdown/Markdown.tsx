@@ -19,7 +19,7 @@ import React, {
 } from 'react'
 import { LANGS, type Lang, translate } from '../i18n'
 import { WebPreviewContext } from '../webPreview'
-import { highlight } from './highlight'
+import { cachedHighlight, highlight } from './highlight'
 import { parseMarkdown, splitSettled } from './parse'
 import { localFileSrc, safeImageSrc, safeLinkHref } from './safeUrl'
 
@@ -79,10 +79,15 @@ export function CodeBlock({
   lang: string | null | undefined
   streaming: boolean
 }) {
-  const [html, setHtml] = useState<string>()
+  const [html, setHtml] = useState(() => (streaming ? undefined : cachedHighlight(code, lang)))
   const [copied, setCopied] = useState(false)
   useEffect(() => {
     if (streaming) return
+    const hit = cachedHighlight(code, lang)
+    if (hit !== undefined) {
+      setHtml(hit)
+      return
+    }
     let live = true
     highlight(code, lang).then(
       out => live && setHtml(out),
@@ -381,16 +386,33 @@ function renderNode(node: RootContent, ctx: Ctx, key: number): ReactNode {
   }
 }
 
+// Opening a session again draws the same replies; their parse trees are kept (oldest dropped first).
+const PARSED_SIZE = 300
+const parsed = new Map<string, Root>()
+
+function parseSettled(text: string, keep: boolean): Root {
+  const hit = parsed.get(text)
+  if (hit) return hit
+  const root = parseMarkdown(text)
+  // A streaming reply's settled prefix grows paragraph by paragraph; only finished text is worth keeping.
+  if (!keep) return root
+  if (parsed.size >= PARSED_SIZE) parsed.delete(parsed.keys().next().value!)
+  parsed.set(text, root)
+  return root
+}
+
 const Settled = memo(function Settled({
   text,
+  keep,
   filesBase,
   preview,
 }: {
   text: string
+  keep: boolean
   filesBase?: string
   preview: WebPreview
 }) {
-  const root = useMemo(() => parseMarkdown(text), [text])
+  const root = useMemo(() => parseSettled(text, keep), [text, keep])
   const ctx = useMemo(
     () => ({ definitions: collectDefinitions(root), streaming: false, filesBase, preview }),
     [root, filesBase, preview],
@@ -427,7 +449,7 @@ export function Markdown({
   )
   return (
     <div className="markdown">
-      {settled && <Settled text={settled} filesBase={filesBase} preview={preview} />}
+      {settled && <Settled text={settled} keep={!streaming} filesBase={filesBase} preview={preview} />}
       {tailRoot && tailCtx && tailRoot.children.map((node, i) => renderNode(node, tailCtx, i))}
     </div>
   )

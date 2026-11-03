@@ -1,4 +1,4 @@
-import { createContext, Fragment, type ReactNode, useContext, useState } from 'react'
+import { createContext, Fragment, memo, type ReactNode, useContext, useState } from 'react'
 import {
   type AgentTask,
   type Team,
@@ -439,7 +439,33 @@ export function turnSegments(
   return out.map(s => (s.kind === 'steps' && s.at.length === 1 ? { ...s, kind: 'step' } : s))
 }
 
-export function Message({
+const sameList = <V,>(a: readonly V[] | undefined, b: readonly V[] | undefined, same = (x: V, y: V) => x === y) =>
+  a === b || (!!a && !!b && a.length === b.length && a.every((x, i) => same(x, b[i]!)))
+
+type MessageProps = Parameters<typeof MessageView>[0]
+
+/**
+ * `joinTurns` builds a new item for a multi-message turn on every render, so a
+ * turn is the same when its blocks are; a streamed delta then redraws only the
+ * message it lands in.
+ */
+function sameMessage(a: MessageProps, b: MessageProps): boolean {
+  const keys = new Set([...Object.keys(a), ...Object.keys(b)] as (keyof MessageProps)[])
+  for (const key of keys) {
+    if (key === 'item' || key === 'sources' || a[key] === b[key]) continue
+    return false
+  }
+  // Sources are found again on every update; the same links are the same list.
+  if (!sameList(a.sources, b.sources, (x, y) => x.url === y.url && x.title === y.title)) return false
+  const x = a.item
+  const y = b.item
+  if (x === y) return true
+  return x.kind === 'assistant' && y.kind === 'assistant' && x.id === y.id && x.model === y.model && x.streamed === y.streamed && sameList(x.blocks, y.blocks)
+}
+
+export const Message = memo(MessageView, sameMessage)
+
+function MessageView({
   item,
   t,
   fallbackModel,
