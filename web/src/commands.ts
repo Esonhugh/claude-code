@@ -56,3 +56,31 @@ export function recallPrompt(
   if (next < -1 || next >= prompts.length) return undefined
   return { index: next, text: next === -1 ? '' : prompts[prompts.length - 1 - next]! }
 }
+
+/** Slash commands the page answers with its own panel instead of sending them: name → panel (and Settings tab). */
+const NATIVE_COMMANDS: Record<
+  string,
+  | { dialog: 'stats' | 'settings' | 'mcp' | 'hooks' | 'plugins' | 'memory' | 'skills' | 'keys'; tab?: 'general' | 'usage' | 'features' }
+  | { menu: 'model' }
+> = {
+  model: { menu: 'model' },
+  effort: { menu: 'model' },
+  stats: { dialog: 'stats' },
+  config: { dialog: 'settings' },
+  settings: { dialog: 'settings' },
+  theme: { dialog: 'settings' },
+  usage: { dialog: 'settings', tab: 'usage' },
+  mcp: { dialog: 'mcp' },
+  hooks: { dialog: 'hooks' },
+  plugin: { dialog: 'plugins' },
+  plugins: { dialog: 'plugins' },
+  memory: { dialog: 'memory' },
+  skills: { dialog: 'skills' },
+  keybindings: { dialog: 'keys' },
+}
+
+/** The page's own panel for a bare `/stats`, `/config`, …; undefined for anything else (it is sent). */
+export function nativeCommand(text: string) {
+  const match = /^\/([a-z-]+)$/.exec(text.trim())
+  return match && Object.hasOwn(NATIVE_COMMANDS, match[1]!) ? NATIVE_COMMANDS[match[1]!] : undefined
+}

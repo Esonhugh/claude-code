@@ -1,5 +1,7 @@
-import { type ReactNode, useEffect, useRef, useState } from 'react'
-import { loadSnippet } from '../api'
+import { type ReactNode, useCallback, useEffect, useRef, useState } from 'react'
+import { listFolderFiles, loadSnippet } from '../api'
+import type { SlashCommand } from '../commands'
+import { ext } from '../extApi'
 import { tilde } from '../files'
 import type { ModelOption, SessionEnv } from '../protocol'
 import type { HistoryEntry, StartOptions } from '../store'
@@ -49,6 +51,27 @@ function useSnippets(ids: string[]): Record<string, string> {
   return Object.fromEntries(ids.map(id => [id, snippetCache.get(id) ?? '']))
 }
 
+/** Enabled skills from the server, so `/` lists them before any session runs. */
+function useEnabledSkills(): { name: string; description: string }[] {
+  const [skills, setSkills] = useState<{ name: string; description: string }[]>([])
+  useEffect(() => {
+    ext.skills().then(
+      list => setSkills(list.filter(x => x.on).map(x => ({ name: x.name, description: x.description }))),
+      () => {},
+    )
+  }, [])
+  return skills
+}
+
+/** The cached commands plus any enabled skill they lack. */
+export function mergeSkills(commands: SlashCommand[], skills: { name: string; description: string }[]): SlashCommand[] {
+  const known = new Set(commands.map(c => c.name))
+  return [
+    ...commands,
+    ...skills.filter(x => !known.has(x.name)).map(x => ({ name: x.name, description: x.description, argumentHint: '' })),
+  ]
+}
+
 /** The new-session page: greeting, big input, folder / mode / model, recent sessions. */
 export function StartPage({
   t,
@@ -59,6 +82,7 @@ export function StartPage({
   history,
   tempRoot,
   models,
+  commands,
   draft,
   setDraft,
   files,
@@ -82,6 +106,8 @@ export function StartPage({
   history: HistoryEntry[]
   tempRoot?: string
   models: ModelOption[]
+  /** The last session's `/` commands; the start page has no session to ask. */
+  commands: SlashCommand[]
   draft: string
   setDraft: (v: string) => void
   files: File[]
@@ -121,6 +147,9 @@ export function StartPage({
   const name = env.account?.email?.split('@')[0]
   const snippets = useSnippets(recent.map(h => h.id))
   const greet = greeting(t)
+  const skills = useEnabledSkills()
+  const palette = mergeSkills(commands, skills)
+  const listFiles = useCallback((q: string) => (cwd ? listFolderFiles(cwd, q) : Promise.resolve([])), [cwd])
   return (
     <section className="welcome" aria-label={t('newSession').replace(/^\+\s*/, '')}>
       {menuButton}
@@ -155,7 +184,9 @@ export function StartPage({
           onStop={() => {}}
           files={files}
           setFiles={setFiles}
-          skills={env.skills}
+          commands={palette}
+          skills={skills.map(x => x.name)}
+          listFiles={options.temporary ? undefined : listFiles}
         />
         {error && (
           <div className="notice" role="alert">
@@ -188,6 +219,23 @@ export function StartPage({
                     if (e.key === 'Enter') openTyped(close)
                   }}
                 />
+                {tempRoot && (
+                  <button
+                    type="button"
+                    role="menuitemradio"
+                    aria-checked={!!options.temporary}
+                    onClick={() => {
+                      setOptions({ cwd: undefined, temporary: true })
+                      close()
+                    }}
+                  >
+                    <span className="mono">◌</span>
+                    <span>
+                      {t('temporaryChats')}
+                      <small>{t('noFolderHint')}</small>
+                    </span>
+                  </button>
+                )}
                 {shown.map(dir => (
                   <button
                     type="button"
@@ -206,23 +254,6 @@ export function StartPage({
                     </span>
                   </button>
                 ))}
-                {tempRoot && (
-                  <button
-                    type="button"
-                    role="menuitemradio"
-                    aria-checked={!!options.temporary}
-                    onClick={() => {
-                      setOptions({ cwd: undefined, temporary: true })
-                      close()
-                    }}
-                  >
-                    <span className="mono">◌</span>
-                    <span>
-                      {t('temporaryChats')}
-                      <small>{t('noFolderHint')}</small>
-                    </span>
-                  </button>
-                )}
                 <hr />
                 <button
                   type="button"
@@ -254,6 +285,7 @@ export function StartPage({
             {models.length > 0 && (
               <FootMenu
                 menuClass="pop wl-pick wl-models"
+                label={t('model')}
                 right
                 button={modelButtonLabel(options.model ?? 'default', options.effort, models, t)}
               >

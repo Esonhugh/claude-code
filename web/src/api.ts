@@ -125,6 +125,12 @@ export const listWorkspaceFiles = (sessionId: string, query: string) =>
     `/api/files/${encodeURIComponent(sessionId)}/list?q=${encodeURIComponent(query)}`,
   ).then(r => r.files)
 
+/** The start page's `@` search in the folder a new session would use. */
+export const listFolderFiles = (cwd: string, query: string) =>
+  getJson<{ files: string[] }>(`/api/folder-files?cwd=${encodeURIComponent(cwd)}&q=${encodeURIComponent(query)}`).then(
+    r => r.files,
+  )
+
 /** The first assistant text of a transcript, for the start page's recent cards. */
 export const loadSnippet = (sessionId: string) =>
   getJson<{ snippet: string }>(`/api/history/${encodeURIComponent(sessionId)}/snippet`).then(r => r.snippet)
@@ -325,6 +331,8 @@ export type ProjectTask = {
   tokens: number
   tool_uses: number
   duration_ms: number
+  /** Time of the runs before the current one (a resumed task). */
+  prior_ms?: number
   last_tool: string | null
   approval_id: string | null
   created_at: number

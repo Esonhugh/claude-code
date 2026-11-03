@@ -10,8 +10,8 @@ export type Theme = 'system' | 'light' | 'dark'
 export type Palette = 'default' | 'clay' | 'mono'
 
 const PALETTES: [Palette, 'paletteDefault' | 'paletteClay' | 'paletteMono', string, string][] = [
-  ['default', 'paletteDefault', '#3a56c8', '#f3f4f7'],
   ['clay', 'paletteClay', '#b0573a', '#faf9f5'],
+  ['default', 'paletteDefault', '#3a56c8', '#f3f4f7'],
   ['mono', 'paletteMono', '#111111', '#ffffff'],
 ]
 
@@ -267,6 +267,7 @@ export function SettingsBody({
   setTheme,
   palette,
   setPalette,
+  initialTab,
   workspace,
   settings,
   onSettings,
@@ -281,6 +282,8 @@ export function SettingsBody({
   setTheme: (theme: Theme) => void
   palette: Palette
   setPalette: (palette: Palette) => void
+  /** The tab to open on (`/usage` opens Usage). */
+  initialTab?: 'general' | 'usage' | 'features'
   workspace?: string
   settings?: WebSettings
   onSettings: (patch: { uiName?: string; features?: Partial<Record<FeatureKey, boolean>> }) => void
@@ -288,7 +291,7 @@ export function SettingsBody({
   usage: UsageSource
   models: ModelOption[]
 }) {
-  const [tab, setTab] = useState<'general' | 'usage' | 'features'>('general')
+  const [tab, setTab] = useState<'general' | 'usage' | 'features'>(initialTab ?? 'general')
   const [uiName, setUiName] = useState(settings?.uiName ?? '')
   const typing = useRef<ReturnType<typeof setTimeout>>(undefined)
   const loadedName = settings?.uiName

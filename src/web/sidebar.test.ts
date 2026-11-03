@@ -89,6 +89,13 @@ describe('loadSidebar', () => {
     expect(data.sessions[0]).toMatchObject({ title: 'second', label: 'message' })
   })
 
+  it('shows the last message of a running session, before the CLI writes last-prompt', async () => {
+    const a = join(root, 'a')
+    transcript(a, id(1), [user('first'), user('second')], 1_000_000)
+    const data = await loadSidebar(db, 10)
+    expect(data.sessions[0]).toMatchObject({ title: 'second', label: 'message' })
+  })
+
   it('leaves out project coordinators', async () => {
     const a = join(root, 'a')
     transcript(a, id(1), [user('task')], 2_000_000)

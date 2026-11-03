@@ -3,7 +3,9 @@ import { readdir, readFile, realpath, rm, stat } from 'fs/promises'
 import { basename, dirname, join } from 'path'
 import { listCandidates, parseSessionInfoFromLite } from '../utils/listSessionsImpl.js'
 import {
+  extractFirstPromptFromHead,
   extractJsonStringField,
+  extractLastJsonStringField,
   getProjectsDir,
   readSessionLite,
   resolveSessionFilePath,
@@ -62,6 +64,23 @@ export function sessionTitle(
   return { title: id, label: 'id' }
 }
 
+/**
+ * The newest prompt in the transcript's tail. The CLI writes its `last-prompt`
+ * entry only on exit, so a running session needs the scan; without it a row
+ * would show the first prompt and switch to the last one when the process ends.
+ */
+function lastPrompt(tail: string): string | undefined {
+  const lines = tail.split('\n')
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i]!
+    if (line.startsWith('{"type":"last-prompt"')) return extractLastJsonStringField(line, 'lastPrompt') || undefined
+    if (!line.includes('"type":"user"') || line.includes('<command-name>')) continue
+    const prompt = extractFirstPromptFromHead(line)
+    if (prompt) return prompt
+  }
+  return undefined
+}
+
 async function readTranscriptInfo(c: { sessionId: string; filePath: string; mtime: number }): Promise<Transcript | null> {
   const lite = await readSessionLite(c.filePath)
   if (!lite) return null
@@ -74,7 +93,7 @@ async function readTranscriptInfo(c: { sessionId: string; filePath: string; mtim
     size: lite.size,
     // parseSessionInfoFromLite drops sessions without any prompt; those still list, by id.
     title: info?.customTitle,
-    message: info?.customTitle ? undefined : info?.summary,
+    message: info?.customTitle ? undefined : (lastPrompt(lite.tail) ?? info?.summary),
     cwd: info?.cwd ?? (extractJsonStringField(lite.head, 'cwd') || undefined),
   }
 }
