@@ -31,6 +31,7 @@ import {
   createUserMessage,
   extractTag,
   isEmptyMessageText,
+  isLocalCommandInput,
   isSyntheticMessage,
   isToolUseResultMessage,
 } from '../utils/messages.js'
@@ -915,6 +916,9 @@ export function selectableUserMessagesFilter(
     return false
   }
   if (message.isCompactSummary || message.isVisibleInTranscriptOnly) {
+    return false
+  }
+  if (isLocalCommandInput(message)) {
     return false
   }
 

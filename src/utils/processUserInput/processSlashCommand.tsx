@@ -86,6 +86,7 @@ import {
   formatCommandInputTags,
   isCompactBoundaryMessage,
   isSystemLocalCommandMessage,
+  markLocalCommandInput,
   normalizeMessages,
   prepareUserContent,
   wrapInSystemReminder,
@@ -968,12 +969,12 @@ async function getMessagesForSlashCommand(
                         ...additionalMessages,
                       ]
                   : [
-                      createUserMessage({
+                      markLocalCommandInput(createUserMessage({
                         content: prepareUserContent({
                           inputString: formatCommandInput(command, args),
                           precedingInputBlocks,
                         }),
-                      }),
+                      })),
                       result
                         ? createUserMessage({
                             content: `<local-command-stdout>${result}</local-command-stdout>`,
@@ -1042,12 +1043,12 @@ async function getMessagesForSlashCommand(
       }
       case 'local': {
         const displayArgs = command.isSensitive && args.trim() ? '***' : args
-        const userMessage = createUserMessage({
+        const userMessage = markLocalCommandInput(createUserMessage({
           content: prepareUserContent({
             inputString: formatCommandInput(command, displayArgs),
             precedingInputBlocks,
           }),
-        })
+        }))
 
         try {
           const syntheticCaveatMessage = createSyntheticUserCaveatMessage()
