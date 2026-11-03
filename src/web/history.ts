@@ -49,7 +49,10 @@ function isVisible(message: Record<string, unknown>): boolean {
   }
   if (message.type === 'user' && message.isCompactSummary) return true
   if (message.type === 'attachment') {
-    return (message.attachment as { type?: string } | undefined)?.type === 'goal_status'
+    const attachment = message.attachment as { type?: string; commandMode?: string } | undefined
+    // A message the user sent mid-turn, fed to the model between tool calls.
+    if (attachment?.type === 'queued_command') return (attachment.commandMode ?? 'prompt') === 'prompt'
+    return attachment?.type === 'goal_status'
   }
   if (message.type !== 'user' || message.isMeta) {
     return false
@@ -158,6 +161,11 @@ function toStreamJson(
         }
       }
       if (m.type === 'attachment') {
+        const attachment = m.attachment as { type?: string; prompt?: unknown; source_uuid?: string }
+        if (attachment.type === 'queued_command') {
+          // As the live stream replays it: the uuid the page sent it with.
+          return { type: 'user', uuid: attachment.source_uuid ?? m.uuid, timestamp: m.timestamp, parent_tool_use_id: null, isReplay: true, message: { role: 'user', content: attachment.prompt } }
+        }
         return { type: 'system', subtype: 'goal_state_changed', uuid: m.uuid, goal: m.attachment }
       }
       return {
