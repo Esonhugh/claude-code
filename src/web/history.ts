@@ -61,7 +61,7 @@ function isVisible(message: Record<string, unknown>): boolean {
   if (message.type === 'assistant') return true
   // The compaction divider and the summary under it.
   if (message.type === 'system') {
-    return message.subtype === 'compact_boundary' || (message.subtype === 'local_command' && typeof message.content === 'string')
+    return message.subtype === 'compact_boundary' || message.subtype === 'scheduled_task_fire' || (message.subtype === 'local_command' && typeof message.content === 'string')
   }
   if (message.type === 'user' && message.isCompactSummary) return true
   if (message.type === 'attachment') {
@@ -190,6 +190,7 @@ function toStreamJson(
         // `/name` and its `<local-command-stdout>`, as the live stream replays them.
         return { type: 'user', uuid: m.uuid, timestamp: m.timestamp, parent_tool_use_id: null, isReplay: true, message: { role: 'user', content: m.content } }
       }
+      if (m.type === 'system' && m.subtype === 'scheduled_task_fire') return { type: 'system', subtype: 'scheduled_task_fire', uuid: m.uuid, timestamp: m.timestamp }
       if (m.type === 'system') {
         const meta = (m.compactMetadata ?? {}) as { trigger?: unknown; preTokens?: unknown; postTokens?: unknown }
         return {
@@ -201,10 +202,13 @@ function toStreamJson(
         }
       }
       if (m.type === 'attachment') {
-        const attachment = m.attachment as { type?: string; prompt?: unknown; source_uuid?: string }
+        const attachment = m.attachment as { type?: string; prompt?: unknown; source_uuid?: string; isMeta?: boolean; workload?: string }
         if (attachment.type === 'queued_command') {
+          const uuid = attachment.source_uuid ?? m.uuid
+          // A scheduled task the model read mid-turn: the line the TUI shows, not its prompt.
+          if (attachment.workload === 'cron') return { type: 'system', subtype: 'scheduled_task_fire', uuid, timestamp: m.timestamp }
           // As the live stream replays it: the uuid the page sent it with.
-          return { type: 'user', uuid: attachment.source_uuid ?? m.uuid, timestamp: m.timestamp, parent_tool_use_id: null, isReplay: true, message: { role: 'user', content: attachment.prompt } }
+          return { type: 'user', uuid, timestamp: m.timestamp, parent_tool_use_id: null, isReplay: true, message: { role: 'user', content: attachment.prompt }, ...(attachment.isMeta === true && { isSynthetic: true }) }
         }
         if (HOOK_NOTICES.has(attachment.type ?? '')) return hookNotice(m)
         return { type: 'system', subtype: 'goal_state_changed', uuid: m.uuid, goal: m.attachment }

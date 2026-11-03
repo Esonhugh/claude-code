@@ -344,7 +344,9 @@ import {
 } from 'src/utils/messages/mappers.js'
 import {
   createModelSwitchBreadcrumbs,
+  createScheduledTaskFireMessage,
   createUserMessage,
+  formatCronFireTime,
 } from 'src/utils/messages.js'
 import {
   checkModelSwitch,
@@ -2454,6 +2456,10 @@ function runHeadlessStreaming(
           }
 
           const input = command.value
+          // The REPL's "Running scheduled task" line, kept in the transcript with this turn.
+          if (command.workload === WORKLOAD_CRON) {
+            mutableMessages.push(createScheduledTaskFireMessage(`Running scheduled task (${formatCronFireTime(new Date())})`))
+          }
 
           if (structuredIO instanceof RemoteIO && command.mode === 'prompt') {
             logEvent('tengu_bridge_message_received', {

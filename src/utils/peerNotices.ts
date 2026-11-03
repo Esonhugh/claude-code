@@ -54,7 +54,7 @@ function receiptTranscript(status: ReceiptStatus, sends: PeerSent[]): string {
     denied: "The recipient's user declined it; it was not delivered.",
     expired: "It was never approved, so it wasn't delivered and nothing is waiting in that session. Claude was told.",
     delivered: 'It was approved and released to that session (final delivery is up to their queue).',
-    refused: 'That session is not accepting cross-session messages (the feature is off there, or a setting or policy there refuses them); it was not delivered.',
+    refused: 'That session is not accepting cross-session messages (the feature is off there, a setting or policy there refuses them, or it is non-interactive and cannot ask its user to approve a message from a different permission mode); it was not delivered.',
   }[status]
   return `Cross-session ${count === 1 ? 'message' : `messages (${count})`} ${what}${handles(sends)}. ${why}`
 }
@@ -75,7 +75,7 @@ function receiptModel(status: ReceiptStatus, sends: PeerSent[]): string {
     case 'delivered':
       return `[Cross-session delivery notice] ${subject} ${was} approved and released to that session${detail}.`
     case 'refused':
-      return `[Cross-session delivery notice] ${subject} ${was} refused${detail}: that session is not accepting cross-session messages (the feature is off there, or a setting or policy there refuses them). Not delivered to that session's Claude. Do not wait for a reply and do not resend; tell the user, or choose another approach.`
+      return `[Cross-session delivery notice] ${subject} ${was} refused${detail}: that session is not accepting cross-session messages (the feature is off there, a setting or policy there refuses them, or it is non-interactive and cannot ask its user to approve a message from a different permission mode). Not delivered to that session's Claude. Do not wait for a reply and do not resend; tell the user, or choose another approach.`
   }
 }
 
