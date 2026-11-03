@@ -68,6 +68,12 @@ export type SidebarData = {
   more: boolean
 }
 
+/** `GET /api/peers`: live Claude sessions with a messaging socket in a folder, as ListAgents sees them. */
+export type Peer = { name: string; ref: string; pid: number; kind: string | null; status: string | null; address: string }
+
+export const getPeers = (cwd: string) =>
+  getJson<{ peers: Peer[] }>(`/api/peers?cwd=${encodeURIComponent(cwd)}`).then(r => r.peers)
+
 export const loadSidebar = (limit: number) => getJson<SidebarData>(`/api/sidebar?limit=${limit}`)
 
 /** Where a box's prompts go in the CLI's ↑ history: the folder, and the session when there is one. */

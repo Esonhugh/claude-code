@@ -15,6 +15,8 @@ import {
 } from '../server/sessionManager.js'
 import { isPathTrusted, savePathTrusted } from '../utils/config.js'
 import { getClaudeConfigHomeDir } from '../utils/envUtils.js'
+import { formatPeerAddress } from '../utils/peerProtocol.js'
+import { listAllLiveSessions } from '../utils/udsClient.js'
 import { resolveSessionFilePath } from '../utils/sessionStoragePortable.js'
 import {
   convertToPdf,
@@ -962,6 +964,23 @@ export function startWebServer(
         configDir: config.configDir ?? getClaudeConfigHomeDir(),
       })
       return Response.json({ files })
+    }
+    if (pathname === '/api/peers' && req.method === 'GET') {
+      // Live Claude sessions with a messaging socket in this folder (what ListAgents/SendMessage see).
+      const cwd = url.searchParams.get('cwd') ?? ''
+      if (!isAbsolute(cwd)) return errorResponse(400, 'Not a directory')
+      const dir = realOr(cwd)
+      const peers = (await listAllLiveSessions()).filter(peer => peer.cwd && realOr(peer.cwd) === dir)
+      return Response.json({
+        peers: peers.map(peer => ({
+          name: peer.name,
+          ref: peer.ref,
+          pid: peer.pid,
+          kind: peer.kind ?? null,
+          status: peer.status ?? null,
+          address: formatPeerAddress(peer.messagingSocketPath),
+        })),
+      })
     }
     if (pathname === '/api/sessions' && req.method === 'POST') {
       return createSession(req)

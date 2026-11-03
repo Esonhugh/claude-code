@@ -872,6 +872,43 @@ describe('claude web server', () => {
   })
 })
 
+describe('GET /api/peers', () => {
+  it('lists live sessions with a messaging socket in that folder only', async () => {
+    const r = start()
+    const cookie = await signIn(r)
+    const sockets = mkdtempSync(join(tmpdir(), 'web-socks-'))
+    const other = realpathSync(mkdtempSync(join(tmpdir(), 'web-other-')))
+    const prevConfig = process.env.CLAUDE_CONFIG_DIR
+    process.env.CLAUDE_CONFIG_DIR = r.configDir
+    mkdirSync(join(r.configDir, 'sessions'), { recursive: true })
+    // A stand-in session process listening on its own private socket.
+    const listen = (path: string) =>
+      spawn(process.execPath, ['-e', `require('net').createServer().listen(${JSON.stringify(path)}, () => { require('fs').chmodSync(${JSON.stringify(path)}, 0o600); console.log('up') })`], { stdio: ['ignore', 'pipe', 'ignore'] })
+    const peers = [
+      { cwd: r.workspace, name: 'here', socket: join(sockets, 'a.sock') },
+      { cwd: other, name: 'elsewhere', socket: join(sockets, 'b.sock') },
+    ].map(p => ({ ...p, child: listen(p.socket) }))
+    try {
+      for (const p of peers) {
+        await new Promise(resolve => p.child.stdout!.once('data', resolve))
+        writeFileSync(
+          join(r.configDir, 'sessions', `${p.child.pid}.json`),
+          JSON.stringify({ pid: p.child.pid, sessionId: p.name, cwd: p.cwd, startedAt: Date.now(), name: p.name, kind: 'interactive', status: 'idle', messagingSocketPath: p.socket, peerProtocol: 1 }),
+        )
+      }
+      const res = await fetch(`${r.base}/api/peers?cwd=${encodeURIComponent(r.workspace)}`, { headers: { cookie } })
+      const body = (await res.json()) as { peers: { name: string; address: string; status: string }[] }
+      expect(body.peers).toHaveLength(1)
+      expect(body.peers[0]).toMatchObject({ name: 'here', status: 'idle', address: `uds:${peers[0]!.socket}` })
+      expect((await fetch(`${r.base}/api/peers?cwd=rel`, { headers: { cookie } })).status).toBe(400)
+    } finally {
+      for (const p of peers) p.child.kill()
+      if (prevConfig === undefined) delete process.env.CLAUDE_CONFIG_DIR
+      else process.env.CLAUDE_CONFIG_DIR = prevConfig
+    }
+  })
+})
+
 describe('normalizeProjectDir', () => {
   it('expands ~, resolves dots and symlinks, and refuses relative or missing paths', () => {
     const home = realpathSync(mkdtempSync(join(tmpdir(), 'web-home-')))

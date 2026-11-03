@@ -1,6 +1,6 @@
 import { type ReactNode, useEffect, useMemo, useState } from 'react'
 import { type AgentTask, isFinished } from '../agents'
-import { getUsage } from '../api'
+import { getPeers, getUsage, type Peer } from '../api'
 import { type Groups, type Pane, usedPanes } from '../background'
 import { sessionFiles, tilde } from '../files'
 import type { ModelOption, Todo } from '../protocol'
@@ -144,6 +144,23 @@ function useStatusData(
   return data
 }
 
+/** Other live sessions in `cwd`: read again whenever a turn ends, since sessions come and go. */
+function usePeers(cwd: string, busy: boolean, own: string | undefined): Peer[] | undefined {
+  const [peers, setPeers] = useState<Peer[]>()
+  useEffect(() => {
+    if (!cwd || busy) return
+    let current = true
+    getPeers(cwd).then(
+      list => current && setPeers(list),
+      () => {},
+    )
+    return () => {
+      current = false
+    }
+  }, [cwd, busy])
+  return peers?.filter(p => p.address !== own)
+}
+
 /** `今天 10:02`, or the date for an older session. */
 function startedText(at: number, t: T): string {
   const date = new Date(at)
@@ -270,6 +287,10 @@ function StatusPane({
   const data = useStatusData(sessionId, chat.mode === 'live', chat.busy, request)
   // The socket lives only as long as the session process.
   const peer = chat.mode === 'live' ? peerAddress(data.status) : undefined
+  const cwd = chat.cwd ?? chat.workDir ?? ''
+  const allPeers = usePeers(cwd, chat.busy, peer)
+  // Until get_status names this session's own socket, the list would still include the session itself.
+  const peers = chat.mode === 'live' && !data.status ? undefined : allPeers
   const rounds = chat.items.filter(i => i.kind === 'user').length
   const compactions = chat.items.filter(i => i.kind === 'compact').length
   const context = chat.context
@@ -364,7 +385,7 @@ function StatusPane({
           rows={[
             [t('nameLabel'), title],
             ['ID', <SessionIdValue id={sessionId} t={t} />],
-            [t('workDir'), <span className="mono">{tilde(chat.cwd ?? chat.workDir ?? '')}</span>],
+            [t('workDir'), <span className="mono">{tilde(cwd)}</span>],
             ...(peer ? [[t('peerAddressLabel'), <SessionIdValue id={peer} t={t} />] as [string, ReactNode]] : []),
             [t('roundsLabel'), roundsText],
             ...(chat.startedAt !== undefined ? [[t('startedLabel'), startedText(chat.startedAt, t)] as [string, ReactNode]] : []),
@@ -377,6 +398,27 @@ function StatusPane({
           rows={[
             ...(env.version ? [[t('versionLabel'), <span className="mono">{env.version}</span>] as [string, ReactNode]] : []),
             ...(account ? [[t('accountLabel'), account] as [string, ReactNode]] : []),
+            ...(peers
+              ? [
+                  [
+                    t('peersLabel'),
+                    peers.length ? (
+                      <div className="peers">
+                        {peers.map(p => (
+                          <div key={p.address}>
+                            <span>
+                              {p.name} <small>[{p.ref}]{p.status ? ` · ${p.status}` : ''}</small>
+                            </span>
+                            <SessionIdValue id={p.address} t={t} />
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      t('none')
+                    ),
+                  ] as [string, ReactNode],
+                ]
+              : []),
             ...connectionRows(data.status).map(
               ([label, value]) => [label, <span className="mono">{value}</span>] as [string, ReactNode],
             ),

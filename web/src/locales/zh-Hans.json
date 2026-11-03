@@ -155,6 +155,7 @@
   "statusLabel": "状态",
   "workDir": "工作目录",
   "peerAddressLabel": "消息地址",
+  "peersLabel": "同目录 Agent",
   "modelGroup": "模型",
   "permissionModeLabel": "权限模式",
   "contextGroup": "上下文",
