@@ -322,6 +322,7 @@
   "apiPriceLabel": "折合 API 價",
   "apiDurationLabel": "API 時長",
   "quota5hLabel": "5 小時額度",
+  "quotaWeekLabel": "每週額度",
   "quotaValue": "{pct}% · {time} 重置",
   "instructionsLabel": "指令檔案",
   "memoryLabel": "記憶",

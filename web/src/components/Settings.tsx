@@ -149,7 +149,10 @@ function UsageTab({
         [t('window5h'), limits.five_hour],
         [t('weekAll'), limits.seven_day],
         ...(limits.model_scoped?.length
-          ? limits.model_scoped.map(row => [t('weekScoped', { name: row.display_name }), row] as [string, UsageWindow])
+          ? limits.model_scoped.map(
+              // ChatGPT names each extra limit with its own window ("… 5h usage", "Monthly credit limit").
+              row => [account?.kind === 'chatgpt' ? row.display_name : t('weekScoped', { name: row.display_name }), row] as [string, UsageWindow],
+            )
           : ([
               [t('weekScoped', { name: 'Opus' }), limits.seven_day_opus],
               [t('weekScoped', { name: 'Sonnet' }), limits.seven_day_sonnet],
