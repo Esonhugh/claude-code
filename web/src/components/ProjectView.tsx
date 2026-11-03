@@ -189,6 +189,7 @@ function TaskPane({
   meta,
   pick,
   onPick,
+  daybreak,
   sent,
   dropSent,
   onSend,
@@ -217,6 +218,7 @@ function TaskPane({
   meta: string
   pick: { model?: string; effort?: string }
   onPick: (pick: { model?: string; effort?: string }) => void
+  daybreak?: ComposerTools['model']['daybreak']
   /** What the user sent this task, shown at once until its conversation has it. */
   sent: SentMessage[]
   dropSent: (ids: string[]) => void
@@ -330,10 +332,11 @@ function TaskPane({
               model: pick.model ?? model,
               effort,
               models,
-              heading: live ? t('taskModelLocked') : t('taskModelNext'),
-              locked: live,
+              // A running worker keeps its model and effort for this run; the pick applies when it resumes.
+              heading: live ? t('taskModelAfterRun') : t('taskModelNext'),
               onModel: value => onPick({ ...pick, model: value }),
               onEffort: level => onPick({ ...pick, effort: level }),
+              daybreak,
             },
           }}
         />
@@ -381,6 +384,7 @@ export function ProjectView({
   moved,
   onOpenSession,
   onLoadEarlier,
+  daybreak,
 }: {
   t: T
   project: Project
@@ -417,6 +421,8 @@ export function ProjectView({
   onOpenSession: (entry: HistoryEntry) => void
   /** Prepends the transcript page before `chat.start`. */
   onLoadEarlier?: () => void
+  /** The Daybreak access program (account-wide), offered under a ChatGPT sign-in. */
+  daybreak?: ComposerTools['model']['daybreak']
 }) {
   const [show, setShow] = useState<Show>('chat')
   const [wide, setWide] = useState(false)
@@ -720,21 +726,35 @@ export function ProjectView({
     setKeptWidth(clampWidth(current + (e.key === 'ArrowLeft' ? -24 : 24)))
   }
 
-  const deliver = async (task: ProjectTask, text: string, pending: File[], clear: () => void) => {
-    const mentions = await Promise.all(pending.map(async f => mentionPath((await uploadFile(uploadTo, f)).path)))
+  const boxRef = useRef({ draft, files })
+  boxRef.current = { draft, files }
+  // Messages go out one at a time, in the order typed, even while an earlier one uploads.
+  const delivering = useRef<Promise<unknown>>(Promise.resolve())
+  const deliver = (task: ProjectTask, text: string, pending: File[], clear: () => void, restore: () => void) => {
     clear()
     const pick = isLive(task) ? {} : (picks[task.id] ?? {})
-    const message = [text, mentions.join(' ')].filter(Boolean).join('\n\n')
-    const id = `sent-${Date.now()}-${Math.random()}`
-    setSentTo(s => ({ ...s, [task.id]: [...(s[task.id] ?? []), { id, text: message }] }))
-    try {
-      await onSendTask(task.id, message, pick)
-    } catch (err) {
-      dropSent([id])
-      throw err
-    }
-    setFollowUntil(Date.now() + 30_000)
-    setRefresh(r => r + 1)
+    const run = delivering.current.catch(() => {}).then(async () => {
+      let mentions: string[]
+      try {
+        mentions = await Promise.all(pending.map(async f => mentionPath((await uploadFile(uploadTo, f)).path)))
+      } catch (err) {
+        restore()
+        throw err
+      }
+      const message = [text, mentions.join(' ')].filter(Boolean).join('\n\n')
+      const id = `sent-${Date.now()}-${Math.random()}`
+      setSentTo(s => ({ ...s, [task.id]: [...(s[task.id] ?? []), { id, text: message }] }))
+      try {
+        await onSendTask(task.id, message, pick)
+      } catch (err) {
+        dropSent([id])
+        throw err
+      }
+      setFollowUntil(Date.now() + 30_000)
+      setRefresh(r => r + 1)
+    })
+    delivering.current = run
+    return run
   }
   const sendTask = async (task: ProjectTask) => {
     const text = (taskDrafts[task.id] ?? '').trim()
@@ -747,21 +767,27 @@ export function ProjectView({
       setTaskTo(x => ({ ...x, [task.id]: [] }))
       setTaskNotice(undefined)
     }
+    const restore = () => {
+      // A failed upload gives the message back to an empty box.
+      setTaskDrafts(d => ({ ...d, [task.id]: d[task.id] || text }))
+      setTaskFiles(f => ({ ...f, [task.id]: f[task.id]?.length ? f[task.id]! : pending }))
+      setTaskTo(x => ({ ...x, [task.id]: x[task.id]?.length ? x[task.id]! : to }))
+    }
     try {
-      // No pick: the task's own box messages the task, as before.
+      // No pick: the task's own box messages the task.
       if (!to.length) {
-        await deliver(task, text, pending, clear)
+        await deliver(task, text, pending, clear, restore)
         return
       }
-      const mentions = await Promise.all(pending.map(async f => mentionPath((await uploadFile(uploadTo, f)).path)))
-      const message = [text, mentions.join(' ')].filter(Boolean).join('\n\n')
       clear()
       for (const x of to) {
-        if (x.id === COORDINATOR) await onSendCoordinator(message)
-        else {
-          const other = tasks.find(row => row.id === x.id)
-          if (other) await deliver(other, message, [], () => {})
+        if (x.id === COORDINATOR) {
+          const mentions = await Promise.all(pending.map(async f => mentionPath((await uploadFile(uploadTo, f)).path)))
+          await onSendCoordinator([text, mentions.join(' ')].filter(Boolean).join('\n\n'))
+          continue
         }
+        const other = tasks.find(row => row.id === x.id)
+        if (other) await deliver(other, text, pending, () => {}, () => {})
       }
     } catch (err) {
       setTaskNotice(err instanceof Error ? err.message : String(err))
@@ -783,22 +809,21 @@ export function ProjectView({
   const picked = toTasks.filter(x => tasks.some(task => task.id === x.id && canMessage(task)))
   const sendToTargets = async (to: ProjectTask[]) => {
     const text = draft.trim()
-    if (!text && !files.length) return
-    // Upload once, then send the same message to each pick.
-    let mentions: string[]
-    try {
-      mentions = await Promise.all(files.map(async f => mentionPath((await uploadFile(uploadTo, f)).path)))
-    } catch (err) {
-      say(err instanceof Error ? err.message : String(err))
-      return
-    }
-    const message = [text, mentions.join(' ')].filter(Boolean).join('\n\n')
+    const pending = files
+    const sentTo = toTasks
+    if (!text && !pending.length) return
     setDraft('')
     setFiles([])
     setToTasks([])
+    const restore = () => {
+      if (!boxRef.current.draft) setDraft(text)
+      if (!boxRef.current.files.length) setFiles(pending)
+      setToTasks(x => (x.length ? x : sentTo))
+    }
+    // The same message to every pick, in the order picked.
     for (const task of to) {
       try {
-        await deliver(task, message, [], () => {})
+        await deliver(task, text, pending, () => {}, restore)
       } catch (err) {
         say(err instanceof Error ? err.message : String(err))
       }
@@ -1063,7 +1088,7 @@ export function ProjectView({
             tools={{
               ...tools,
               prompts,
-              model: { model: chatModel, effort: chatEffort, models, onModel, onEffort },
+              model: { model: chatModel, effort: chatEffort, models, onModel, onEffort, daybreak },
             }}
           />
         </div>
@@ -1101,6 +1126,7 @@ export function ProjectView({
             meta={metaOf(open)}
             pick={picks[open.id] ?? {}}
             onPick={pick => setPicks(p => ({ ...p, [open.id]: pick }))}
+            daybreak={daybreak}
             sent={sentTo[open.id] ?? []}
             dropSent={dropSent}
             onSend={() => void sendTask(open)}

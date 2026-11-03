@@ -310,15 +310,19 @@ describe('web history', () => {
           line({ type: 'user', isMeta: true, uuid: u(2), parentUuid: u(1), cwd, message: { role: 'user', content: 'CRONPROMPT check' } }),
           line({ type: 'attachment', uuid: u(3), parentUuid: u(2), cwd, timestamp: '2026-11-03T14:01:00.000Z', attachment: { type: 'queued_command', prompt: 'CRONPROMPT again', source_uuid: u(9), commandMode: 'prompt', isMeta: true, workload: 'cron' } }),
           line({ type: 'attachment', uuid: u(4), parentUuid: u(3), cwd, attachment: { type: 'queued_command', prompt: '[Cross-session delivery notice] x', source_uuid: u(8), commandMode: 'prompt', isMeta: true } }),
-          line({ type: 'assistant', uuid: u(5), parentUuid: u(4), cwd, message: { id: 'm20', role: 'assistant', content: [{ type: 'text', text: 'ok' }] } }),
+          line({ type: 'attachment', uuid: u(6), parentUuid: u(4), cwd, attachment: { type: 'queued_command', prompt: 'COORD_NOTE x', source_uuid: u(7), isMeta: true, origin: { kind: 'coordinator' } } }),
+          line({ type: 'assistant', uuid: u(5), parentUuid: u(6), cwd, message: { id: 'm20', role: 'assistant', content: [{ type: 'text', text: 'ok' }] } }),
         ].join('\n') +
         '\n',
     )
-    const messages = (await readTranscript(ID, undefined, 50))!.messages.slice(-4)
+    const messages = (await readTranscript(ID, undefined, 50))!.messages.slice(-5)
     expect(messages[0]).toEqual({ type: 'system', subtype: 'scheduled_task_fire', uuid: u(1), timestamp: '2026-11-03T14:00:00.000Z' })
     expect(messages[1]).toEqual({ type: 'system', subtype: 'scheduled_task_fire', uuid: u(9), timestamp: '2026-11-03T14:01:00.000Z' })
     expect(messages[2]).toMatchObject({ type: 'user', uuid: u(8), isReplay: true, isSynthetic: true })
-    expect(messages[3]).toMatchObject({ type: 'assistant' })
+    // A coordinator's message to its worker stays visible.
+    expect(messages[3]).toMatchObject({ type: 'user', uuid: u(7), isReplay: true })
+    expect(messages[3]!.isSynthetic).toBeUndefined()
+    expect(messages[4]).toMatchObject({ type: 'assistant' })
   })
 
   it('keeps the history before a compaction, in the order it was written', async () => {

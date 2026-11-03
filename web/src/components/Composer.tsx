@@ -298,6 +298,7 @@ export function InputBox({
   draft,
   setDraft,
   onSend,
+  onSendNow,
   onStop,
   onFocus,
   files,
@@ -325,6 +326,8 @@ export function InputBox({
   draft: string
   setDraft: (v: string) => void
   onSend: () => void
+  /** ctrl+enter, like the TUI's chat:sendNow: run without waiting behind the turn. */
+  onSendNow?: () => void
   onStop: () => void
   onFocus?: () => void
   files: File[]
@@ -485,13 +488,14 @@ export function InputBox({
     return () => seen.disconnect()
   }, [draft, start])
   // Typed prompts join the folder's history, as the CLI adds each prompt it submits.
-  const sendNow = () => {
+  const sendNow = (now = false) => {
     const text = draft.trim()
     if (history && text && !disabled) {
       recordPrompt(history, text).then(loadShared, () => {})
       setShared(s => [text, ...s.filter(p => p !== text)])
     }
-    onSend()
+    if (now && onSendNow) onSendNow()
+    else onSend()
   }
   const pick = (command: SlashCommand) => {
     setDraft(`/${command.name} `)
@@ -568,7 +572,7 @@ export function InputBox({
     }
     if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
       e.preventDefault()
-      sendNow()
+      sendNow(e.ctrlKey || e.metaKey)
     }
     if (e.key === 'Escape' && busy) onStop()
   }

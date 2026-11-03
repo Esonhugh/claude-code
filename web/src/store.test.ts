@@ -146,3 +146,18 @@ describe('queued messages on stop', () => {
     expect(state.chats.s!.items.filter(i => i.kind === 'user').map(i => i.id)).toEqual(['u1'])
   })
 })
+
+describe('queued messages sent now', () => {
+  it('keep their place under the new uuid, and its echo moves them into the chat', () => {
+    let state = appReducer(initialAppState, { type: 'created', id: 's', workDir: '/w', title: 't', start: { mode: 'default' } })
+    const chat = (action: Parameters<typeof appReducer>[1] & { type: 'chat' }) => (state = appReducer(state, action))
+    chat({ type: 'chat', id: 's', action: { type: 'user', text: 'first', uuid: 'u1' } })
+    chat({ type: 'chat', id: 's', action: { type: 'queue', text: 'second', uuid: 'u2' } })
+    chat({ type: 'chat', id: 's', action: { type: 'queue', text: 'third', uuid: 'u3' } })
+    chat({ type: 'chat', id: 's', action: { type: 'requeue', from: 'u2', to: 'n2' } })
+    expect(state.chats.s!.queued.map(q => [q.id, q.text])).toEqual([['n2', 'second'], ['u3', 'third']])
+    chat({ type: 'chat', id: 's', action: { type: 'message', raw: { type: 'user', uuid: 'n2', isReplay: true, message: { role: 'user', content: 'second' } } } })
+    expect(state.chats.s!.queued.map(q => q.id)).toEqual(['u3'])
+    expect(state.chats.s!.items.filter(i => i.kind === 'user').map(i => i.id)).toEqual(['u1', 'n2'])
+  })
+})

@@ -1,4 +1,4 @@
-import { Fragment, type ReactNode, useCallback, useEffect, useMemo, useState } from 'react'
+import { Fragment, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   agentOutput,
   type AgentTask,
@@ -438,24 +438,39 @@ export function AgentView({
   const [sent, setSent] = useState<SentMessage[]>([])
   const dropSent = useCallback((ids: string[]) => setSent(s => s.filter(m => !ids.includes(m.id))), [])
   const unread = useUnread(items, sent, dropSent)
-  const send = async () => {
+  // Sends go out one at a time, in the order typed, even while an earlier one uploads.
+  const sending = useRef(Promise.resolve())
+  const send = () => {
     const text = draft.trim()
-    if ((!text && !files.length) || !onSend) return
-    const id = `sent-${Date.now()}-${Math.random()}`
-    try {
-      const mentions = await Promise.all(files.map(async f => mentionPath((await uploadFile(sessionId, f)).path)))
+    const pending = files
+    if ((!text && !pending.length) || !onSend) return
+    const runPick = running ? {} : pick
+    setDraft('')
+    setFiles([])
+    setNote(undefined)
+    sending.current = sending.current.then(async () => {
+      const id = `sent-${Date.now()}-${Math.random()}`
+      let mentions: string[]
+      try {
+        mentions = await Promise.all(pending.map(async f => mentionPath((await uploadFile(sessionId, f)).path)))
+      } catch (err) {
+        // A failed upload gives the message back to an empty box.
+        setDraft(d => d || text)
+        setFiles(f => (f.length ? f : pending))
+        setNote(err instanceof Error ? err.message : String(err))
+        return
+      }
       const message = [text, mentions.join(' ')].filter(Boolean).join('\n\n')
-      setDraft('')
-      setFiles([])
-      setNote(undefined)
       setSent(s => [...s, { id, text: message }])
-      await onSend(message, running ? {} : pick)
-      setPoll(n => n + 1)
-      setFollowUntil(Date.now() + 30_000)
-    } catch (err) {
-      setSent(s => s.filter(m => m.id !== id))
-      setNote(err instanceof Error ? err.message : String(err))
-    }
+      try {
+        await onSend(message, runPick)
+        setPoll(n => n + 1)
+        setFollowUntil(Date.now() + 30_000)
+      } catch (err) {
+        setSent(s => s.filter(m => m.id !== id))
+        setNote(err instanceof Error ? err.message : String(err))
+      }
+    })
   }
   const teammate = task?.type === 'in_process_teammate'
   const stoppedTeammate = teammate && isFinished(task)
@@ -496,7 +511,7 @@ export function AgentView({
             signedOut={input.signedOut}
             draft={draft}
             setDraft={setDraft}
-            onSend={() => void send()}
+            onSend={send}
             onStop={() => {}}
             files={files}
             setFiles={setFiles}
@@ -508,9 +523,9 @@ export function AgentView({
                 model: pick.model ?? input.model,
                 effort: pick.effort ?? input.effort,
                 models: input.models,
-                // A running agent keeps its model; a teammate never resumes.
-                heading: running || teammate ? t('taskModelLocked') : t('taskModelNext'),
-                locked: running || teammate,
+                // A running agent keeps its model for this run (the pick applies when it resumes); a teammate never resumes.
+                heading: teammate ? t('taskModelLocked') : running ? t('taskModelAfterRun') : t('taskModelNext'),
+                locked: teammate,
                 onModel: model => setPick(p => ({ ...p, model })),
                 onEffort: effort => setPick(p => ({ ...p, effort })),
               },

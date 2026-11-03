@@ -801,7 +801,9 @@ export function App() {
     return true
   }
 
-  const sendInChat = async () => {
+  // A chat's messages go out one at a time, in the order typed, even while an earlier one uploads.
+  const chatSends = useRef<Promise<void>>(Promise.resolve())
+  const sendInChat = async (now = false) => {
     const id = state.view
     const text = draft.trim()
     const pending = files
@@ -813,45 +815,62 @@ export function App() {
       await sendPrompt(id, text, {})
       return
     }
-    if (chat.mode !== 'live' && !(await resume(id))) return
     const picked = (agentTargets[id] ?? []).filter(x => chat.tasks[x.id])
-    if (picked.length) {
-      try {
-        // Upload once, then send the same message to each picked agent.
-        const mentions = await Promise.all(pending.map(async f => mentionPath((await uploadFile(id, f)).path)))
-        setDrafts(d => ({ ...d, [id]: '' }))
-        setAttachments(a => ({ ...a, [id]: [] }))
-        setAgentTargets(x => ({ ...x, [id]: [] }))
-        const message = [text, mentions.join(' ')].filter(Boolean).join('\n\n')
-        for (const x of picked) await sendToTask(id, x.id, message)
-        // The message shows in the agent's own conversation.
-        agentsValue.open(picked[0]!.id)
-      } catch (err) {
-        dispatch({ type: 'chat', id, action: { type: 'local', patch: { notice: err instanceof Error ? err.message : String(err) } } })
-      }
-      return
-    }
-    let content: { text: string; images: string[] }
-    try {
-      content = await prepareContent(id, text, pending)
-    } catch (err) {
-      dispatch({
-        type: 'chat',
-        id,
-        action: {
-          type: 'local',
-          patch: { notice: t('uploadFailed', { error: err instanceof Error ? err.message : String(err) }) },
-        },
-      })
-      return
-    }
     setDrafts(d => ({ ...d, [id]: '' }))
     setAttachments(a => ({ ...a, [id]: [] }))
-    stickToBottom.current = true
-    if (chat.notice) dispatch({ type: 'chat', id, action: { type: 'local', patch: { notice: undefined } } })
-    const uuid = newUuid()
-    dispatch({ type: 'chat', id, action: { type: chat.busy ? 'queue' : 'user', ...content, uuid } })
-    send(id, userMessage(content.text, content.images, uuid))
+    if (picked.length) setAgentTargets(x => ({ ...x, [id]: [] }))
+    // A message that could not go out returns to an empty box.
+    const restore = () => {
+      setDrafts(d => (d[id] ? d : { ...d, [id]: text }))
+      setAttachments(a => (a[id]?.length ? a : { ...a, [id]: pending }))
+      if (picked.length) setAgentTargets(x => (x[id]?.length ? x : { ...x, [id]: picked }))
+    }
+    const run = chatSends.current.then(async () => {
+      if (chat.mode !== 'live' && !(await resume(id))) return restore()
+      if (picked.length) {
+        let mentions: string[]
+        try {
+          mentions = await Promise.all(pending.map(async f => mentionPath((await uploadFile(id, f)).path)))
+        } catch (err) {
+          restore()
+          dispatch({ type: 'chat', id, action: { type: 'local', patch: { notice: err instanceof Error ? err.message : String(err) } } })
+          return
+        }
+        try {
+          // The same message to every picked agent, files uploaded once.
+          const message = [text, mentions.join(' ')].filter(Boolean).join('\n\n')
+          for (const x of picked) await sendToTask(id, x.id, message)
+          // The message shows in the agent's own conversation.
+          agentsValue.open(picked[0]!.id)
+        } catch (err) {
+          dispatch({ type: 'chat', id, action: { type: 'local', patch: { notice: err instanceof Error ? err.message : String(err) } } })
+        }
+        return
+      }
+      let content: { text: string; images: string[] }
+      try {
+        content = await prepareContent(id, text, pending)
+      } catch (err) {
+        restore()
+        dispatch({
+          type: 'chat',
+          id,
+          action: {
+            type: 'local',
+            patch: { notice: t('uploadFailed', { error: err instanceof Error ? err.message : String(err) }) },
+          },
+        })
+        return
+      }
+      stickToBottom.current = true
+      if (chat.notice) dispatch({ type: 'chat', id, action: { type: 'local', patch: { notice: undefined } } })
+      const uuid = newUuid()
+      dispatch({ type: 'chat', id, action: { type: chat.busy ? 'queue' : 'user', ...content, uuid } })
+      // 'now' interrupts the running turn and runs first, like the TUI's ctrl+enter.
+      send(id, { ...userMessage(content.text, content.images, uuid), ...(now && { priority: 'now' }) })
+    })
+    chatSends.current = run.catch(() => {})
+    await run
   }
 
   /** A comment pinned on the file preview goes out as its own message; the draft stays. */
@@ -1063,6 +1082,29 @@ export function App() {
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   })
+
+  /** ctrl+enter on an empty box or "Send now": queued messages interrupt the turn and run now. */
+  const sendQueuedNow = (id: string) => {
+    for (const q of stateRef.current.chats[id]?.queued ?? []) {
+      void requestAsync(id, REQUEST_PREFIX.cancelQueued, { subtype: 'cancel_async_message', message_uuid: q.id }).then(
+        r => {
+          // Not cancelled: the model already read it.
+          if (r.cancelled !== true) return
+          // A uuid the engine has seen is dropped as a duplicate, so it goes again under a new one.
+          const uuid = newUuid()
+          dispatch({ type: 'chat', id, action: { type: 'requeue', from: q.id, to: uuid } })
+          send(id, { ...userMessage(q.text, q.images, uuid), priority: 'now' })
+        },
+        () => {},
+      )
+    }
+  }
+  const sendNowInChat = () => {
+    const id = stateRef.current.view
+    if (!id) return
+    if (draft.trim() || files.length) void sendInChat(true)
+    else sendQueuedNow(id)
+  }
 
   /** Interrupts the turn; like the TUI, messages still queued go back into the input box. */
   const stop = (id: string) => {
@@ -1401,6 +1443,14 @@ export function App() {
             {chat.queued.map(item => (
               <Message key={item.id} item={item} t={t} streaming={false} queued />
             ))}
+            {chat.queued.length > 0 && view && (
+              <div className="queued-now">
+                <button type="button" onClick={() => sendQueuedNow(view)}>
+                  {t('sendNow')}
+                </button>
+                <span className="sub">{t('sendNowHint')}</span>
+              </div>
+            )}
             {chat.approvals.map(a => (
               <div className="ask-ref" key={a.requestId}>
                 <span className="spin" aria-hidden="true" />
@@ -1453,6 +1503,7 @@ export function App() {
               draft={draft}
               setDraft={setDraft}
               onSend={() => void sendInChat()}
+              onSendNow={sendNowInChat}
               onStop={() => view && stop(view)}
               onFocus={() => view && chat.mode === 'readonly' && void resume(view)}
               files={files}
@@ -1602,6 +1653,7 @@ export function App() {
             moved={state.history.filter(h => h.projectId === project.id)}
             onOpenSession={entry => void openSession(entry)}
             onLoadEarlier={() => void loadInto(view, chat.start)}
+            daybreak={daybreak}
           />,
         )}
       <main
@@ -1702,6 +1754,11 @@ export function App() {
           project={projectDialog === 'new' ? undefined : projectDialog}
           workspace={info.workspace}
           models={models}
+          inheritModel={
+            projectDialog === 'new'
+              ? undefined
+              : ((inProject && project?.id === projectDialog.id ? chat?.model : undefined) ?? projectDialog.coordinator_model ?? undefined)
+          }
           onClose={() => setProjectDialog(undefined)}
           onSaved={saved => {
             setProjectDialog(undefined)

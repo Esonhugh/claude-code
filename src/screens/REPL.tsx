@@ -5983,6 +5983,7 @@ export function REPL({
         void resumeAgentBackground({
           agentId: task.id,
           prompt: input,
+          fromUser: true,
           toolUseContext: getToolUseContext(
             messagesRef.current,
             [],

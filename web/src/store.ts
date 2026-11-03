@@ -51,6 +51,8 @@ export type ChatAction =
   | { type: 'queue'; text: string; images?: string[]; uuid: string }
   /** Stop: queued messages go back to the input instead of running next. */
   | { type: 'unqueue' }
+  /** Send now: a queued message goes again under a new uuid. */
+  | { type: 'requeue'; from: string; to: string }
   | { type: 'error'; text: string }
   | { type: 'answered'; approval: Approval; choice: ApprovalChoice }
   | { type: 'recap'; away?: number }
@@ -108,6 +110,8 @@ function reduceChat(state: ChatState, action: ChatAction): ChatState {
       return queueUserMessage(state, action.text, action.uuid, action.images)
     case 'unqueue':
       return { ...state, queued: [] }
+    case 'requeue':
+      return { ...state, queued: state.queued.map(q => (q.id === action.from ? { ...q, id: action.to } : q)) }
     case 'error':
       return addError(state, action.text)
     case 'answered':
