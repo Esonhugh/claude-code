@@ -21,7 +21,7 @@ import {
 import { loadAgentIssuers, loadAgentTranscript } from '../api'
 import { initialState, type Item, reduce } from '../protocol'
 import { Dialog } from './Dialog'
-import { Message, TeamDot, teamEventLabel } from './Message'
+import { continuesTurn, Message, TeamDot, teamEventLabel } from './Message'
 import type { T } from './ui'
 
 const COLLAPSED_KEY = 'claude-web-agents-collapsed'
@@ -444,8 +444,8 @@ export function AgentView({
       <div className="transcript agent-feed">
         {failed && !messages && <p className="note">{t('agentNoTranscript')}</p>}
         {!failed && !messages && <p className="note">{t('loading')}</p>}
-        {items.map(item => (
-          <Message key={item.id} item={item} t={t} streaming={false} />
+        {items.map((item, i) => (
+          <Message key={item.id} item={item} t={t} streaming={false} continued={continuesTurn(items, i)} />
         ))}
         {task?.outputFile && isFinished(task) && task.summary && <div className="card">{task.summary}</div>}
       </div>

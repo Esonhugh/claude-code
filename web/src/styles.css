@@ -86,7 +86,7 @@ h1, h2, h3 { text-wrap: balance; margin: 0 }
 .chip { display: inline-flex; align-items: center; gap: 6px; padding: 2px 9px; border: 1px solid var(--line); border-radius: 999px; background: var(--surface); white-space: nowrap }
 .teambar { display: flex; align-items: center; gap: 8px; padding: 6px 20px; border-bottom: 1px solid var(--line); background: var(--surface); font-size: 12.5px; flex-wrap: wrap }
 .avatar { width: 22px; height: 22px; border-radius: 50%; display: inline-grid; place-items: center; font-size: 11px; font-weight: 600; color: #fff; border: 0; padding: 0 }
-.feed { flex: 1; overflow: auto; padding: 20px; display: flex; flex-direction: column; gap: 18px }
+.feed { flex: 1; overflow: auto; padding: 20px; display: flex; flex-direction: column; --gap: 18px; gap: var(--gap) }
 .msg { max-width: var(--col); width: 100%; margin: 0 auto; display: flex; flex-direction: column; gap: 8px; min-width: 0 }
 /* Claude's side reads as one side of a conversation: left-aligned, the right edge kept clear. */
 .msg.assistant { padding-right: clamp(0px, 12%, 120px) }
@@ -95,6 +95,8 @@ h1, h2, h3 { text-wrap: balance; margin: 0 }
 .msg.user.queued .bubble { opacity: .6; background: transparent; border: 1px dashed var(--line) }
 .msg .who { font-size: 11.5px; color: var(--muted) }
 .msg .who .wm { opacity: .8 }
+/* The next API message of the same turn sits under the first one's header, at the in-message gap. */
+.msg.assistant.cont { margin-top: calc(8px - var(--gap, 8px)) }
 .md p { margin: 0 0 8px } .md ul { margin: 0 0 8px; padding-left: 20px }
 .md table { border-collapse: collapse; font-size: 13px; width: 100% }
 .md th, .md td { border-bottom: 1px solid var(--line); padding: 6px 8px; text-align: left; font-variant-numeric: tabular-nums }
@@ -338,7 +340,8 @@ h1, h2, h3 { text-wrap: balance; margin: 0 }
 .bubble-atts img { width: 120px; max-width: 100%; border-radius: 8px; border: 1px solid var(--line) }
 
 /* thinking, tool calls, spinner */
-.think { border-left: 2px solid var(--line); padding-left: 10px; color: var(--muted); font-size: 13px }
+.think { color: var(--muted); font-size: 13px }
+.think[open] { border-left: 2px solid var(--line); padding-left: 10px }
 .think summary { cursor: pointer; list-style: none; display: inline-flex; gap: 6px; align-items: center; user-select: none }
 .think summary::-webkit-details-marker { display: none }
 .think summary::after { content: "›"; transition: transform .15s }
@@ -458,8 +461,8 @@ body.nosess .col-drag.right, body.art .col-drag.right { display: none }
 .compact-mark .rule::before, .compact-mark .rule::after { content: ""; flex: 1; border-top: 1px dashed var(--line) }
 .compact-mark { align-items: center; gap: 4px }
 .compact-mark .rule { width: 100%; font-size: 12px }
-.compact-mark .think { font-size: 12px; border-left: 0; padding-left: 0 }
-.compact-mark .think[open] { align-self: stretch; border-left: 2px solid var(--line); padding-left: 10px }
+.compact-mark .think { font-size: 12px }
+.compact-mark .think[open] { align-self: stretch }
 .compact-mark .cm-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center }
 .older { display: flex; flex-direction: column; gap: 18px }
 .older-sentinel { text-align: center; font-size: 12px; color: var(--muted); padding: 4px 0 }
@@ -820,6 +823,8 @@ a.btn { text-decoration: none; color: var(--fg); display: inline-block }
 .markdown blockquote { border-left: 2px solid var(--line); padding-left: 10px; color: var(--muted) }
 .markdown a { color: var(--accent) }
 .markdown code { background: var(--sunken); border-radius: 4px; padding: 1px 4px }
+/* Hashes and long names fill the line instead of jumping to the next one. */
+.markdown code.long { word-break: break-all }
 .markdown hr { border: 0; border-top: 1px solid var(--line); margin: 14px 0 }
 .markdown img { max-width: 100%; border-radius: 8px }
 .table-wrap { overflow-x: auto }
@@ -894,7 +899,7 @@ body.proj .main, body.proj .side, body.proj .artview, body.proj #panel-btn { dis
 .projview.wide { grid-template-columns: minmax(0, 1fr) }
 .projview.wide .pv-chat { display: none }
 .pv-chat { display: flex; flex-direction: column; min-width: 0; min-height: 0; position: relative }
-.pv-chat .feed { padding: 16px 18px; gap: 14px }
+.pv-chat .feed { padding: 16px 18px; --gap: 14px }
 .pv-chat .composer { padding: 6px 18px 12px }
 .pv-head { display: flex; align-items: center; gap: 8px; padding: 0 12px 0 18px; height: 44px; border-bottom: 1px solid var(--line); font-size: 12.5px; color: var(--muted); min-width: 0; flex: none }
 .pv-head b { color: var(--fg); font-size: 13.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0 }
@@ -909,7 +914,7 @@ body.proj .main, body.proj .side, body.proj .artview, body.proj #panel-btn { dis
 .pv-crumb button { border: 0; background: transparent; padding: 0; font: inherit; font-weight: 600; color: var(--fg); cursor: pointer; white-space: nowrap }
 .pv-crumb span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--muted); min-width: 0 }
 .pv-side { display: flex; flex-direction: column; min-width: 0; min-height: 0; border-left: 1px solid var(--line); background: var(--surface); position: relative }
-.pv-side .feed { padding: 16px 24px; gap: 14px }
+.pv-side .feed { padding: 16px 24px; --gap: 14px }
 .pv-side .composer { background: var(--surface); padding: 6px 24px 12px }
 .pv-drag { position: absolute; left: -4px; top: 0; bottom: 0; width: 8px; cursor: col-resize; z-index: 3 }
 .pv-drag:hover, .pv-drag.on, .pv-drag:focus-visible { background: color-mix(in srgb, var(--accent) 25%, transparent) }
