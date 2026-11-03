@@ -194,6 +194,32 @@ if (process.env[childFlag] !== '1') {
       for (const mock of mocks) mock.mockRestore()
     }
   })
+  test('reload_plugins does not start a server that is disabled, such as a channel this session has not enabled', async () => {
+    const config = (command: string): ScopedMcpServerConfig => ({ type: 'stdio', command, args: [], scope: 'dynamic' })
+    const started: string[] = []
+    const refresh = await import('../utils/plugins/refresh.js')
+    const pluginLoader = await import('../utils/plugins/pluginLoader.js')
+    const mocks = [
+      spyOn(refresh, 'refreshActivePlugins').mockResolvedValue({ agentDefinitions: { allAgents: [], activeAgents: [] } } as never),
+      spyOn(pluginLoader, 'loadAllPluginsCacheOnly').mockResolvedValue({ enabled: [], disabled: [], errors: [] }),
+      spyOn(mcpConfig, 'getAllMcpConfigs').mockResolvedValue({
+        servers: { 'plugin:fakechat:fakechat': config('fakechat'), helper: config('helper') },
+        errors: [],
+      } as never),
+      spyOn(mcpConfig, 'isMcpServerDisabled').mockImplementation(n => n === 'plugin:fakechat:fakechat'),
+      spyOn(mcpClient, 'connectToServer').mockImplementation(async (n, c) => {
+        started.push(n)
+        return { type: 'failed', name: n, config: c } as MCPServerConnection
+      }),
+    ]
+    try {
+      const { responses } = await runControls(getDefaultAppState(), [{ subtype: 'reload_plugins' }])
+      expect(responses.map(r => r.subtype)).toEqual(['success'])
+      expect(started).toEqual(['helper'])
+    } finally {
+      for (const mock of mocks) mock.mockRestore()
+    }
+  })
   test('mcp_call runs a connected server tool without a model turn', async () => {
     const config: ScopedMcpServerConfig = { type: 'http', url: 'http://127.0.0.1:9/mcp', scope: 'dynamic' }
     const calls: unknown[] = []

@@ -2081,11 +2081,10 @@ function runHeadlessStreaming(
         devChannel,
         channelActive,
         // Fork: an approved channel plugin's server that starts on channel_enable.
-        ...(connection.type === 'disabled' &&
-          (feature('KAIROS') || feature('KAIROS_CHANNELS')) &&
-          isDeferredChannelServer(connection.name) && {
-            channelDeferred: true,
-          }),
+        ...((feature('KAIROS') || feature('KAIROS_CHANNELS'))
+          ? connection.type === 'disabled' &&
+            isDeferredChannelServer(connection.name) && { channelDeferred: true }
+          : {}),
       }
     })
   }
@@ -2186,6 +2185,8 @@ function runHeadlessStreaming(
     const supportedConfigs: Record<string, McpServerConfigForProcessTransport> =
       {}
     for (const [name, config] of Object.entries(newConfigs)) {
+      // Disabled, or a channel plugin this session has not enabled: startup leaves it off, so does a reload.
+      if (isMcpServerDisabled(name)) continue
       const type = config.type
       if (
         type === undefined ||
