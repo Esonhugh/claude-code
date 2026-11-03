@@ -313,7 +313,7 @@ export function InputBox({
   history,
   placeholder,
   targets,
-  target,
+  picked = [],
   onTarget,
 }: {
   t: T
@@ -345,10 +345,11 @@ export function InputBox({
   history?: HistoryScope
   /** Replaces the chat placeholder (a project's coordinator and task boxes). */
   placeholder?: string
-  /** Tasks or agents an `@` can address; the picked one gets the message instead of this chat. */
+  /** Tasks or agents an `@` can address; the picked ones get the message instead of this chat. */
   targets?: MentionTarget[]
-  target?: MentionTarget
-  onTarget?: (target: MentionTarget | undefined) => void
+  /** The picked recipients, in the order they were picked. */
+  picked?: MentionTarget[]
+  onTarget?: (picked: MentionTarget[]) => void
 }) {
   const picker = useRef<HTMLInputElement>(null)
   const imagePicker = useRef<HTMLInputElement>(null)
@@ -382,7 +383,10 @@ export function InputBox({
   const query = dismissed === draft ? undefined : paletteQuery(draft)
   const fileMatches =
     mention && dismissed !== draft && fileHits?.query === mention.query ? fileHits.files : []
-  const targetMatches = mention && dismissed !== draft && targets && onTarget ? matchTargets(targets, mention.query) : []
+  const targetMatches =
+    mention && dismissed !== draft && targets && onTarget
+      ? matchTargets(targets, mention.query).filter(x => !picked.some(p => p.id === x.id))
+      : []
   const appMatches = mention && dismissed !== draft ? matchApps(apps, mention.query) : []
   const mentionCount = targetMatches.length + appMatches.length + fileMatches.length
   const matches = query === undefined ? [] : filterCommands(commands, query, hiddenCommands)
@@ -418,12 +422,12 @@ export function InputBox({
     setSelected(0)
     requestAnimationFrame(() => box.current?.setSelectionRange(caret, caret))
   }
-  const pickTarget = (picked: MentionTarget) => {
+  const pickTarget = (x: MentionTarget) => {
     if (!mention) return
     setDraft(`${draft.slice(0, mention.start)}${draft.slice(mention.end).replace(/^ /, '')}`)
     setMention(undefined)
     setSelected(0)
-    onTarget?.(picked)
+    if (!picked.some(p => p.id === x.id)) onTarget?.([...picked, x])
     requestAnimationFrame(() => box.current?.setSelectionRange(mention.start, mention.start))
   }
   const pickApp = (app: CodexAppMention) => {
@@ -552,9 +556,9 @@ export function InputBox({
         return
       }
     }
-    if (e.key === 'Backspace' && target && box.current?.selectionEnd === 0) {
+    if (e.key === 'Backspace' && picked.length && box.current?.selectionEnd === 0) {
       e.preventDefault()
-      onTarget?.(undefined)
+      onTarget?.(picked.slice(0, -1))
       return
     }
     if (e.key === 'Tab' && e.shiftKey && onShiftTab) {
@@ -724,9 +728,11 @@ export function InputBox({
           ? t('signInToSend')
           : start
             ? t('startPlaceholder')
-            : target
-              ? t('messageTarget', { name: target.name })
-              : (placeholder ?? chatPlaceholder)
+            : picked.length === 1
+              ? t('messageTarget', { name: picked[0]!.name })
+              : picked.length > 1
+                ? t('messageTargets', { count: String(picked.length) })
+                : (placeholder ?? chatPlaceholder)
       }
       aria-label={t('message')}
       disabled={disabled}
@@ -828,12 +834,20 @@ export function InputBox({
       <Attachments t={t} files={files} setFiles={setFiles} />
       <div className="cbox">
         {inputs}
-        {target && (
-          <span className="to-chip" title={target.name}>
-            <span>@{target.name}</span>
-            <button type="button" aria-label={t('clearTarget')} onClick={() => onTarget?.(undefined)}>
-              ×
-            </button>
+        {picked.length > 0 && (
+          <span className="to-chips">
+            {picked.map(x => (
+              <span className="to-chip" key={x.id} title={x.name}>
+                <span>@{x.name}</span>
+                <button
+                  type="button"
+                  aria-label={t('clearTarget')}
+                  onClick={() => onTarget?.(picked.filter(p => p.id !== x.id))}
+                >
+                  ×
+                </button>
+              </span>
+            ))}
           </span>
         )}
         {textarea}
