@@ -9,6 +9,7 @@ import {
   groupTasks,
   isFinished,
   parentId,
+  phaseActive,
   runningPhases,
   type Tasks,
   taskName,
@@ -18,6 +19,7 @@ import {
   unresolvedIssuers,
   type WorkflowPhase,
   workflowAgent,
+  workflowPhases,
 } from '../agents'
 import { loadAgentIssuers, loadAgentTranscript } from '../api'
 import { mentionPath, uploadFile } from '../files'
@@ -65,7 +67,7 @@ function useCollapsed() {
 
 /** `.dot` classes the prototype styles: running, idle, failed, killed, pending. */
 export function dotClass(status: string): string {
-  return status === 'stopped' ? 'killed' : status
+  return status === 'stopped' ? 'killed' : status === 'queued' ? 'pending' : status
 }
 
 export function statusText(status: string, t: T): string {
@@ -701,7 +703,7 @@ function WorkflowLanes({
   return (
     <div className="lanes wfd-lanes">
       {phases.map((phase, i) => (
-        <div key={phase.index} className={`lane${i === current || phase.status === 'running' ? ' cur' : ''}`}>
+        <div key={phase.index} className={`lane${i === current || phaseActive(phase) ? ' cur' : ''}`}>
           <h3>
             <span className={`dot ${dotClass(phase.status)}`} />
             {i + 1}. {phase.label} · {phase.agents.filter(a => a.status === 'completed').length}/
@@ -732,13 +734,11 @@ function PhaseLine({
   index,
   task,
   t,
-  onExpand,
 }: {
   phases: WorkflowPhase[]
   index: number
   task: AgentTask
   t: T
-  onExpand?: () => void
 }) {
   const phase = phases[index]
   if (!phase) {
@@ -750,7 +750,8 @@ function PhaseLine({
       </div>
     )
   }
-  const running = phase.agents.filter(a => a.status === 'running').map(a => a.label)
+  // The cards show which agents run; the heading only counts them.
+  const running = phase.agents.filter(a => a.status === 'running').length
   return (
     <div className="wfcur">
       <span className={`dot ${dotClass(phase.status)}`} />
@@ -760,13 +761,8 @@ function PhaseLine({
           done: String(phase.agents.filter(a => a.status === 'completed').length),
           total: String(phase.agents.length),
         })}
-        {running.length > 0 && t('runningNow', { names: running.join('、') })}
+        {running > 0 && ` · ${t('nRunning', { n: String(running) })}`}
       </span>
-      {onExpand && (
-        <button className="btn" type="button" onClick={onExpand}>
-          {t('expand')}
-        </button>
-      )}
     </div>
   )
 }
@@ -795,7 +791,7 @@ export function WorkflowTab({
   const task = (selectedId && tasks[selectedId]) || workflows[0]
   useEffect(() => setAgentLabel(undefined), [task?.id])
   if (!task) return <p className="note">{t('noWorkflow')}</p>
-  const phases = task.phases ?? []
+  const phases = workflowPhases(tasks, task)
   const allAgents = phases.flatMap(p => p.agents)
   const done = allAgents.filter(a => a.status === 'completed').length
   const currentIndex = currentPhase(phases)
@@ -806,13 +802,23 @@ export function WorkflowTab({
     <>
       <div className="crumb">
         {workflows.length > 1 ? (
-          workflows.map(w => (
-            <button type="button" key={w.id} onClick={() => setSelectedId(w.id)} aria-pressed={w.id === task.id}>
-              {taskName(w)}
-            </button>
-          ))
+          workflows.map(w => {
+            // Runs of the same workflow are told apart by their order, oldest first.
+            const same = workflows.filter(x => taskName(x) === taskName(w))
+            return (
+              <button type="button" key={w.id} onClick={() => setSelectedId(w.id)} aria-pressed={w.id === task.id}>
+                <span className={`dot ${dotClass(w.status)}`} /> {taskName(w)}
+                {same.length > 1 && ` #${same.length - same.indexOf(w)}`}
+              </button>
+            )
+          })
         ) : (
           <span>workflow {taskName(task)}</span>
+        )}
+        {phases.length > 0 && (
+          <button type="button" onClick={() => setExpanded(true)}>
+            {t('expand')}
+          </button>
         )}
         {!isFinished(task) && (
           <button type="button" onClick={() => onStop(task.id)}>
@@ -825,15 +831,9 @@ export function WorkflowTab({
           <i style={{ width: `${Math.round((done / allAgents.length) * 100)}%` }} />
         </div>
       )}
-      {(lines.length ? lines : [currentIndex]).map((i, n) => (
+      {(lines.length ? lines : [currentIndex]).map(i => (
         <Fragment key={i}>
-          <PhaseLine
-            phases={phases}
-            index={i}
-            task={task}
-            t={t}
-            onExpand={n === 0 && phases.length ? () => setExpanded(true) : undefined}
-          />
+          <PhaseLine phases={phases} index={i} task={task} t={t} />
           {phases[i] && (
             <div className="wfnow">
               {phases[i].agents.map(agent => (

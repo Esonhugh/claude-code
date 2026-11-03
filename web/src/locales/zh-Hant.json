@@ -230,7 +230,6 @@
   "endedGroup": "已結束",
   "escInterrupt": "esc 中斷",
   "phaseDone": "{done}/{total} 完成",
-  "runningNow": " · 正在跑 {names}",
   "statusKilled": "已關閉",
   "renameLabel": "重新命名",
   "sidebarLabel": "側邊欄",
