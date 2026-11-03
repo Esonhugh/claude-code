@@ -2697,6 +2697,22 @@ export function startRelevantMemoryPrefetch(
     return undefined
   }
 
+  // SQLite recall runs on a session's first prompt only; later turns search
+  // with SearchMemory. A compact summary is not a prompt, so recall resumes after /compact.
+  if (
+    isSqliteMemoryEnabled() &&
+    messages.some(
+      m =>
+        m !== lastUserMessage &&
+        m.type === 'user' &&
+        !m.isMeta &&
+        !m.isCompactSummary &&
+        !hasToolResultContent(m.message.content),
+    )
+  ) {
+    return undefined
+  }
+
   const input = getUserMessageText(lastUserMessage)
   // Single-word prompts lack enough context for meaningful term extraction.
   // CJK prompts have no spaces; the SQLite index splits them into trigrams.
