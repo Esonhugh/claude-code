@@ -178,6 +178,10 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
   // The Slow and Hang workers wait on this until the suite ends.
   let releaseWorkers = () => {}
   const workersHeld = new Promise<void>(resolve => (releaseWorkers = resolve))
+  // The Long workers wait here on their first request until the test has sent them a message.
+  const longGates: Record<string, () => void> = {}
+  const longHeld: Record<string, Promise<void>> = {}
+  for (const name of ['LONG_A', 'LONG_B']) longHeld[name] = new Promise<void>(resolve => (longGates[name] = resolve))
   const agent = (description: string, prompt: string) => ({
     type: 'tool_use',
     id: `toolu_${description.toLowerCase()}`,
@@ -268,6 +272,31 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
             agent('Slow', 'WORKER_SLOW read slow.txt and wait'),
           ]
           stop = 'tool_use'
+        } else if (!coordinator && lastText.includes('/e2e-skill go')) {
+          // Typed into an agent, a skill reaches it as the text the CLI's agent view sends.
+          blocks = [{ type: 'text', text: 'SKILL_REACHED' }]
+        } else if (coordinator && lastText.includes('DISPATCH_LONG')) {
+          blocks = [agent('LongA', 'WORKER_LONG_A run'), agent('LongB', 'WORKER_LONG_B run')]
+          stop = 'tool_use'
+        } else if (coordinator && lastText.includes('TELL_LONG_B')) {
+          const id = /agentId: ([\w-]+)[^"]*?(?=[\s\S]*WORKER_LONG_B)/.exec(allText)?.[1] ??
+            [...allText.matchAll(/agentId: ([\w-]+)/g)].map(m => m[1]).at(-1)
+          blocks = [{ type: 'tool_use', id: 'toolu_tell_b', name: 'SendMessage', input: { to: id, summary: 'note for B', message: 'COORD_NOTE for B' } }]
+          stop = 'tool_use'
+        } else if (!coordinator && /WORKER_LONG_[AB]/.test(allText)) {
+          const name = allText.includes('WORKER_LONG_A') ? 'LONG_A' : 'LONG_B'
+          if (lastBlocks.some(b => b.type === 'tool_result')) {
+            blocks = [{ type: 'text', text: /USER_NOTE|COORD_NOTE/.test(lastText) ? `${name}_SAW_NOTE` : `${name}_OUT` }]
+          } else {
+            await longHeld[name]
+            blocks = [{ type: 'tool_use', id: `toolu_${name.toLowerCase()}_read`, name: 'Read', input: { file_path: join(workspace, 'slow.txt') } }]
+            stop = 'tool_use'
+          }
+        } else if (coordinator && lastText.includes('DISPATCH_SKILLCHK')) {
+          blocks = [agent('Skillchk', 'WORKER_SKILLCHK say hi')]
+          stop = 'tool_use'
+        } else if (!coordinator && allText.includes('WORKER_SKILLCHK')) {
+          blocks = [{ type: 'text', text: 'SKILLCHK_OUT' }]
         } else if (coordinator && lastText.includes('DISPATCH_HANG')) {
           blocks = [agent('Hang', 'WORKER_HANG wait for the server')]
           stop = 'tool_use'
@@ -448,6 +477,7 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
 
   afterAll(() => {
     releaseWorkers()
+    for (const release of Object.values(longGates)) release()
     web?.kill('SIGKILL')
     api?.stop(true)
   })
@@ -2071,6 +2101,178 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
   }, 120_000)
 
   // Windows has no SIGTERM: kill() ends the process before it can remove the lock.
+  it('gives every chat input the same palette, skills, + menu, @ files, mode and model', async () => {
+    const playwrightPath = Bun.spawnSync(['node', '-p', "require.resolve('playwright')"])
+      .stdout.toString()
+      .trim()
+    const { chromium } = await import(playwrightPath)
+    const browser = await chromium.launch()
+    try {
+      const context = await browser.newContext({ locale: 'en-US', viewport: { width: 1440, height: 900 } })
+      const page = await context.newPage()
+      const errors: string[] = []
+      page.on('pageerror', (e: Error) => errors.push(e.message))
+      writeFileSync(join(workspace, 'slow.txt'), 'slow\n')
+      await page.goto(signInUrl)
+      await page.locator('.wl-hi').waitFor()
+
+      // `agent`: the box messages a subagent, which gets the text as typed (the
+      // CLI's agent view does the same), so only skills are offered.
+      const checkBox = async (scope: any, input: any, agent: boolean) => {
+        const palette = scope.getByRole('listbox', { name: 'Completions' })
+        await scope.getByRole('button', { name: 'Add a file or skill' }).click()
+        const plus = scope.locator('.plusmenu')
+        for (const name of ['Upload file', 'Add image', 'Use a skill', 'Mention a workspace file']) {
+          await plus.getByRole('button', { name: new RegExp(name) }).waitFor({ timeout: 5_000 })
+        }
+        await plus.getByRole('button', { name: /Use a skill/ }).click()
+        await showing(palette.getByRole('option', { name: /^\/e2e-skill/ }).waitFor({ timeout: 10_000 }), scope)
+        expect(await palette.getByRole('option', { name: /^\/e2e-skill/ }).locator('em').textContent()).toBe('skill')
+        await input.fill('/cont')
+        await page.waitForTimeout(300)
+        expect(await palette.getByRole('option', { name: /^\/context/ }).count()).toBe(agent ? 0 : 1)
+        await input.fill('@slo')
+        await palette.getByRole('option', { name: /slow\.txt/ }).waitFor({ timeout: 10_000 })
+        await input.fill('')
+        await scope.getByRole('button', { name: 'Model' }).waitFor({ timeout: 5_000 })
+        // Shift+Tab cycles the permission mode, back to where it started.
+        const mode = () => scope.locator('.perm').getAttribute('data-mode')
+        const start = await mode()
+        await input.focus()
+        await page.keyboard.press('Shift+Tab')
+        await page.waitForFunction(
+          ([sel, was]: [string, string]) => document.querySelector(sel)?.getAttribute('data-mode') !== was,
+          [agent ? '.pv-side .perm, aside.side .perm' : '.composer .perm', start],
+          { timeout: 10_000 },
+        )
+        for (let i = 0; i < 6 && (await mode()) !== start; i++) {
+          await page.keyboard.press('Shift+Tab')
+          await page.waitForTimeout(300)
+        }
+        expect(await mode()).toBe(start)
+      }
+
+      // A plain chat, and the background agent it starts, in the side panel.
+      const input = page.locator('.main').getByLabel('Message', { exact: true })
+      await input.fill('please SPAWNBG an agent')
+      await input.press('Enter')
+      await page.locator('.agent-chip').waitFor({ timeout: 30_000 })
+      await checkBox(page.locator('.main .composer'), input, false)
+      const panel = page.locator('aside.side')
+      await panel.getByRole('tab', { name: /^Agents/ }).click()
+      const finished = panel.getByRole('button', { name: /Ended/ })
+      await finished.waitFor({ timeout: 60_000 })
+      if ((await finished.getAttribute('aria-expanded')) === 'false') await finished.click()
+      await panel.locator('.agent-row', { hasText: 'Look around' }).click()
+      await panel.locator('.agent-feed').getByText('SUB_RESULT').first().waitFor({ timeout: 30_000 })
+      const agentInput = panel.getByLabel('Message', { exact: true })
+      await checkBox(panel, agentInput, true)
+      await agentInput.fill('/e2e-sk')
+      await agentInput.press('Enter')
+      expect(await agentInput.inputValue()).toBe('/e2e-skill ')
+      await agentInput.pressSequentially('go')
+      await agentInput.press('Enter')
+      await panel.locator('.agent-feed .msg.user', { hasText: '/e2e-skill go' }).waitFor({ timeout: 60_000 })
+      await panel.locator('.agent-feed .msg.assistant', { hasText: 'SKILL_REACHED' }).waitFor({ timeout: 60_000 })
+      // ↑ brings back what was sent to this agent.
+      await agentInput.press('ArrowUp')
+      expect(await agentInput.inputValue()).toBe('/e2e-skill go')
+      await agentInput.fill('')
+
+      // A project: the coordinator's box and a dispatched task's box.
+      await page.getByRole('button', { name: 'New project', exact: true }).click()
+      const dialog = page.locator('.dialog')
+      await dialog.locator('#pj-name').fill('Skill project')
+      await dialog.locator('#pj-path').fill(workspace)
+      await dialog.getByRole('button', { name: 'Create project' }).click()
+      await page.locator('#projview .pv-head b', { hasText: 'Skill project' }).waitFor({ timeout: 30_000 })
+      const chatInput = page.locator('.pv-chat').getByLabel('Message', { exact: true })
+      await chatInput.fill('please DISPATCH_SKILLCHK')
+      await chatInput.press('Enter')
+      const side = page.locator('.pv-side')
+      const card = side.locator('.pjlist .pjcard', { has: page.locator('.tt', { hasText: /^Skillchk$/ }) })
+      await card.locator('.pjbadge.review').waitFor({ timeout: 60_000 })
+      await checkBox(page.locator('.pv-chat .composer'), chatInput, false)
+      await card.click()
+      await side.getByText('SKILLCHK_OUT').waitFor({ timeout: 30_000 })
+      const taskInput = side.getByLabel('Message', { exact: true })
+      await checkBox(side.locator('.composer'), taskInput, true)
+      await taskInput.fill('/e2e-skill go')
+      await taskInput.press('Enter')
+      await side.locator('.msg.user', { hasText: '/e2e-skill go' }).waitFor({ timeout: 60_000 })
+      await side.locator('.msg', { hasText: 'SKILL_REACHED' }).waitFor({ timeout: 60_000 })
+      await taskInput.press('ArrowUp')
+      expect(await taskInput.inputValue()).toBe('/e2e-skill go')
+      expect(errors).toEqual([])
+      await page.evaluate(async () => {
+        for (const s of (await (await fetch('/api/sessions')).json()) as { id: string }[]) {
+          await fetch(`/api/sessions/${s.id}`, { method: 'DELETE' })
+        }
+      })
+    } finally {
+      await browser.close()
+    }
+  }, 240_000)
+
+  it('shows a message sent to a running task, from the page and from the coordinator', async () => {
+    const playwrightPath = Bun.spawnSync(['node', '-p', "require.resolve('playwright')"])
+      .stdout.toString()
+      .trim()
+    const { chromium } = await import(playwrightPath)
+    const browser = await chromium.launch()
+    try {
+      const page = await (await browser.newContext({ locale: 'en-US', viewport: { width: 1440, height: 900 } })).newPage()
+      const errors: string[] = []
+      page.on('pageerror', (e: Error) => errors.push(e.message))
+      writeFileSync(join(workspace, 'slow.txt'), 'slow\n')
+      await page.goto(signInUrl)
+      await page.locator('.wl-hi').waitFor()
+      await page.getByRole('button', { name: 'New project', exact: true }).click()
+      const dialog = page.locator('.dialog')
+      await dialog.locator('#pj-name').fill('Long project')
+      await dialog.locator('#pj-path').fill(workspace)
+      await dialog.getByRole('button', { name: 'Create project' }).click()
+      await page.locator('#projview .pv-head b', { hasText: 'Long project' }).waitFor({ timeout: 30_000 })
+      const chatInput = page.locator('.pv-chat').getByLabel('Message', { exact: true })
+      await chatInput.fill('please DISPATCH_LONG')
+      await chatInput.press('Enter')
+      const side = page.locator('.pv-side')
+      const cardOf = (title: string) => side.locator('.pjlist .pjcard', { has: page.locator('.tt', { hasText: new RegExp(`^${title}$`) }) })
+      await cardOf('LongA').locator('.pjbadge.running').waitFor({ timeout: 60_000 })
+      await cardOf('LongB').locator('.pjbadge.running').waitFor({ timeout: 60_000 })
+      await page.locator('.pv-chat').getByText('COORD_LAUNCHED').waitFor({ timeout: 60_000 })
+
+      // From the page: typed into the running task, shown at once and once only.
+      await cardOf('LongA').click()
+      const taskInput = side.getByLabel('Message', { exact: true })
+      await taskInput.fill('USER_NOTE for A')
+      await taskInput.press('Enter')
+      await side.locator('.msg.user', { hasText: 'USER_NOTE for A' }).waitFor({ timeout: 15_000 })
+      longGates.LONG_A!()
+      await showing(side.getByText('LONG_A_SAW_NOTE').waitFor({ timeout: 60_000 }), side)
+      await page.waitForTimeout(2_000)
+      expect(await side.locator('.msg.user', { hasText: 'USER_NOTE for A' }).count()).toBe(1)
+      await side.locator('.pv-crumb button').click()
+
+      // From the coordinator: its SendMessage shows in the worker's conversation.
+      await chatInput.fill('please TELL_LONG_B')
+      await chatInput.press('Enter')
+      await page.locator('.pv-chat').getByText('COORD_LAUNCHED').nth(1).waitFor({ timeout: 60_000 })
+      longGates.LONG_B!()
+      await cardOf('LongB').click()
+      await showing(side.getByText('LONG_B_SAW_NOTE').waitFor({ timeout: 60_000 }), side)
+      await showing(side.locator('.msg', { hasText: 'COORD_NOTE for B' }).first().waitFor({ timeout: 15_000 }), side)
+      expect(errors).toEqual([])
+      await page.evaluate(async () => {
+        for (const s of (await (await fetch('/api/sessions')).json()) as { id: string }[]) {
+          await fetch(`/api/sessions/${s.id}`, { method: 'DELETE' })
+        }
+      })
+    } finally {
+      await browser.close()
+    }
+  }, 240_000)
+
   it('moves a session into a project, which lists and opens it, also after a reload', async () => {
     const playwrightPath = Bun.spawnSync(['node', '-p', "require.resolve('playwright')"])
       .stdout.toString()

@@ -6,7 +6,7 @@ import { tilde } from '../files'
 import type { ModelOption, SessionEnv } from '../protocol'
 import type { HistoryEntry, StartOptions } from '../store'
 import { InputBox, ModeItems, ModelMenu, modelButtonLabel } from './Composer'
-import { Clawd, FootMenu, modeOf, type T } from './ui'
+import { Clawd, FootMenu, modeOf, nextMode, type T } from './ui'
 
 function greeting(t: T): string {
   const hr = new Date().getHours()
@@ -189,6 +189,7 @@ export function StartPage({
           commands={palette}
           skills={skills.map(x => x.name)}
           listFiles={options.temporary ? undefined : listFiles}
+          onShiftTab={() => setOptions({ mode: nextMode(options.mode, env.planMode) })}
         />
         {error && (
           <div className="notice" role="alert">

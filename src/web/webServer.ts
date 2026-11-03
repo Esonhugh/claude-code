@@ -655,8 +655,23 @@ export function startWebServer(
    * each before the first message written after it was sent. They were sent
    * after the page had what came before, so the page's paging stays in step.
    */
-  function withQueued(messages: Record<string, unknown>[], queued: { id: number; ts: number; text: string }[]): Record<string, unknown>[] {
-    if (!queued.length) return messages
+  function withQueued(transcript: Record<string, unknown>[], queued: { id: number; ts: number; text: string }[]): Record<string, unknown>[] {
+    if (!queued.length) return transcript
+    // Once the worker reads one, its transcript has it too (a `queued_command`):
+    // that copy goes, so the one shown since it was sent keeps its place.
+    const copies = new Set<Record<string, unknown>>()
+    for (const m of queued) {
+      const copy = transcript.find(
+        x =>
+          !copies.has(x) &&
+          x.type === 'user' &&
+          (x.message as { content?: unknown } | undefined)?.content === m.text &&
+          typeof x.timestamp === 'string' &&
+          Date.parse(x.timestamp) >= m.ts,
+      )
+      if (copy) copies.add(copy)
+    }
+    const messages = copies.size ? transcript.filter(x => !copies.has(x)) : transcript
     const out: Record<string, unknown>[] = []
     let q = 0
     const user = (m: { id: number; ts: number; text: string }) => ({

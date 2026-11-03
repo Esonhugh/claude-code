@@ -19,7 +19,9 @@ import {
   workflowAgent,
 } from '../agents'
 import { loadAgentIssuers, loadAgentTranscript } from '../api'
+import { mentionPath, uploadFile } from '../files'
 import { initialState, type Item, reduce } from '../protocol'
+import { ChatComposer, type ComposerTools } from './Composer'
 import { Dialog } from './Dialog'
 import { joinTurns, Message, TeamDot, teamEventLabel } from './Message'
 import type { T } from './ui'
@@ -377,6 +379,7 @@ export function AgentView({
   task,
   name,
   onSend,
+  input,
   t,
 }: {
   sessionId: string
@@ -384,12 +387,15 @@ export function AgentView({
   task?: AgentTask
   /** Shown in the input's placeholder; defaults to the task's name. */
   name?: string
-  onSend?: (text: string) => Promise<string>
+  onSend?: (text: string, pick: AgentPick) => Promise<string>
+  input?: AgentInput
   t: T
 }) {
   const [messages, setMessages] = useState<unknown[]>()
   const [failed, setFailed] = useState(false)
   const [draft, setDraft] = useState('')
+  const [files, setFiles] = useState<File[]>([])
+  const [pick, setPick] = useState<AgentPick>({})
   const [note, setNote] = useState<string>()
   // Refetch whenever the agent reports progress or ends.
   const tick = `${task?.toolUses ?? ''}:${task?.status ?? ''}:${task?.summary ?? ''}`
@@ -420,18 +426,22 @@ export function AgentView({
     }
   }, [sessionId, agentId, tick, poll])
   const items = useMemo(() => (messages ?? []).reduce(reduce, initialState).items, [messages])
+  const prompts = useMemo(() => items.flatMap(i => (i.kind === 'user' && i.text ? [i.text] : [])), [items])
   const send = async () => {
     const text = draft.trim()
-    if (!text || !onSend) return
-    setDraft('')
+    if ((!text && !files.length) || !onSend) return
     try {
-      setNote(await onSend(text))
+      const mentions = await Promise.all(files.map(async f => mentionPath((await uploadFile(sessionId, f)).path)))
+      setDraft('')
+      setFiles([])
+      setNote(await onSend([text, mentions.join(' ')].filter(Boolean).join('\n\n'), running ? {} : pick))
       setFollowUntil(Date.now() + 30_000)
     } catch (err) {
       setNote(err instanceof Error ? err.message : String(err))
     }
   }
-  const stoppedTeammate = task?.type === 'in_process_teammate' && isFinished(task)
+  const teammate = task?.type === 'in_process_teammate'
+  const stoppedTeammate = teammate && isFinished(task)
   return (
     <div className="agent-pane">
       {task && (
@@ -454,41 +464,52 @@ export function AgentView({
           {note}
         </div>
       )}
-      {onSend ? (
-        <form
-          className="agent-input"
-          onSubmit={e => {
-            e.preventDefault()
-            void send()
-          }}
-        >
-          <textarea
-            rows={1}
-            value={draft}
+      {onSend && input ? (
+        <div className="composer agent-input">
+          <ChatComposer
+            t={t}
+            agent
+            busy={false}
             disabled={stoppedTeammate}
-            aria-label={t('message')}
-            placeholder={
-              stoppedTeammate
-                ? t('teammateStopped')
-                : t('sendTo', { name: name ?? (task ? taskName(task) : agentId) })
-            }
-            onChange={e => setDraft(e.target.value)}
-            onKeyDown={e => {
-              if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
-                e.preventDefault()
-                void send()
-              }
+            draft={draft}
+            setDraft={setDraft}
+            onSend={() => void send()}
+            onStop={() => {}}
+            files={files}
+            setFiles={setFiles}
+            placeholder={stoppedTeammate ? t('teammateStopped') : t('sendTo', { name: name ?? (task ? taskName(task) : agentId) })}
+            tools={{
+              ...input.tools,
+              prompts,
+              model: {
+                model: pick.model ?? input.model,
+                effort: pick.effort ?? input.effort,
+                models: input.models,
+                // A running agent keeps its model; a teammate never resumes.
+                heading: running || teammate ? t('taskModelLocked') : t('taskModelNext'),
+                locked: running || teammate,
+                onModel: model => setPick(p => ({ ...p, model })),
+                onEffort: effort => setPick(p => ({ ...p, effort })),
+              },
             }}
           />
-          <button type="submit" className="btn primary" disabled={!draft.trim() || stoppedTeammate}>
-            {t('send')}
-          </button>
-        </form>
+        </div>
       ) : (
         <p className="note">{t('agentReadonly')}</p>
       )}
     </div>
   )
+}
+
+/** The model and effort a finished agent resumes on. */
+export type AgentPick = { model?: string; effort?: string }
+
+/** What an agent's input box shares with the session's own. */
+export type AgentInput = {
+  tools: Omit<ComposerTools, 'prompts' | 'model'>
+  model: string | undefined
+  effort: string | undefined
+  models: ComposerTools['model']['models']
 }
 
 export type AgentsView =
@@ -530,6 +551,7 @@ export function AgentsTab({
   onWorkflow,
   onStop,
   onSend,
+  input,
   t,
 }: {
   sessionId: string
@@ -541,7 +563,8 @@ export function AgentsTab({
   setView: (view: AgentsView) => void
   onWorkflow: (taskId: string) => void
   onStop: (taskId: string) => void
-  onSend: (taskId: string, text: string) => Promise<string>
+  onSend: (taskId: string, text: string, pick: AgentPick) => Promise<string>
+  input: AgentInput
   t: T
 }) {
   const tasks = useMemo(() => agentTasks(allTasks), [allTasks])
@@ -605,11 +628,13 @@ export function AgentsTab({
         </div>
         {selected && (
           <AgentView
+            key={selected.id}
             sessionId={sessionId}
             agentId={member?.agentId ?? selected.id}
             task={selected}
             name={member?.name}
-            onSend={canChat(selected) && !inWorkflow ? text => onSend(selected.id, text) : undefined}
+            onSend={canChat(selected) && !inWorkflow ? (text, pick) => onSend(selected.id, text, pick) : undefined}
+            input={input}
             t={t}
           />
         )}

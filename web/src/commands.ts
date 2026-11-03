@@ -36,6 +36,11 @@ export function filterCommands(
   return [...prefix, ...inner]
 }
 
+/** The commands an agent can be sent: its skills, which it runs with the Skill tool. */
+export function agentCommands(commands: SlashCommand[], skills: readonly string[]): SlashCommand[] {
+  return commands.filter(c => skills.includes(c.name))
+}
+
 /** Moves the highlighted row by `delta`, wrapping around. */
 export function moveSelection(index: number, delta: number, length: number): number {
   if (length === 0) return 0
