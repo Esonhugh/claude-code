@@ -26,6 +26,7 @@ import { gracefulShutdown } from '../../utils/gracefulShutdown.js'
 import { lazySchema } from '../../utils/lazySchema.js'
 import { enqueue } from '../../utils/messageQueueManager.js'
 import { parseAddress } from '../../utils/peerAddress.js'
+import { formatPeerPrompt } from '../../utils/peerProtocol.js'
 import { semanticBoolean } from '../../utils/semanticBoolean.js'
 import { jsonStringify } from '../../utils/slowOperations.js'
 import type { BackendType } from '../../utils/swarm/backends/types.js'
@@ -861,15 +862,21 @@ export const SendMessageTool: Tool<InputSchema, SendMessageToolOutput> =
           return { data: { success: false, message: `Failed to send to ${input.to}: ${errorMessage(e)}` } }
         }
       }
+      // An agent of this session writes as itself (official <agent-message>),
+      // so its recipient can tell it from the coordinator and reply to it.
+      const agentFrom = context.agentId
+        ? [...context.getAppState().agentNameRegistry].find(([, id]) => id === context.agentId)?.[0] || getAgentName() || context.agentId
+        : undefined
+      const agentMessage = (from: string, text: string) => `<agent-message from="${escapeXmlAttr(from)}">\n${escapeClosingTag(text, 'agent-message')}\n</agent-message>`
       // "main" addresses the main conversation of this session.
       if (input.to === MAIN_RECIPIENT && typeof input.message === 'string' && !notify) {
-        if (!context.agentId) {
+        if (!context.agentId || !agentFrom) {
           return { data: { success: false, message: `You are the main conversation — "${MAIN_RECIPIENT}" addresses you. Send to a named agent instead.` } }
         }
-        const from = [...context.getAppState().agentNameRegistry].find(([, id]) => id === context.agentId)?.[0] || getAgentName() || context.agentId
+        const from = agentFrom
         enqueue({
           mode: 'prompt',
-          value: `<agent-message from="${escapeXmlAttr(from)}">\n${escapeClosingTag(input.message, 'agent-message')}\n</agent-message>`,
+          value: agentMessage(from, input.message),
           priority: 'next',
           origin: { kind: 'peer', from, senderTaskId: context.agentId },
           skipSlashCommands: true,
@@ -995,12 +1002,15 @@ ${resolved.candidates.map(candidate => `  ${candidate.name} [${candidate.ref}]`)
             return { data: { success: false, message: binding.message, display: binding.display } }
           }
           const pinReceipt = binding.pin ? { pin: binding.pin } : {}
+          const resumePrompt = agentFrom ? formatPeerPrompt(agentMessage(agentFrom, input.message), false, true) : input.message
           if (binding.pin) logForDebugging(`[SendMessage] pin_bound name=${binding.pin.name} agent_id=${binding.pin.id} ref=${binding.pin.ref}`)
           if (isLocalAgentTask(task) && !isMainSessionTask(task)) {
             if (task.status === 'running') {
               queuePendingMessage(
                 agentId,
-                input.message,
+                agentFrom && context.agentId
+                  ? { text: agentMessage(agentFrom, input.message), origin: { kind: 'peer', from: agentFrom, senderTaskId: context.agentId } }
+                  : input.message,
                 context.setAppStateForTasks ?? context.setAppState,
               )
               return {
@@ -1019,7 +1029,7 @@ ${resolved.candidates.map(candidate => `  ${candidate.name} [${candidate.ref}]`)
             try {
               const result = await resumeAgentBackground({
                 agentId,
-                prompt: input.message,
+                prompt: resumePrompt,
                 toolUseContext: context,
                 canUseTool,
                 invokingRequestId: assistantMessage?.requestId,
@@ -1050,7 +1060,7 @@ ${resolved.candidates.map(candidate => `  ${candidate.name} [${candidate.ref}]`)
             try {
               const result = await resumeAgentBackground({
                 agentId,
-                prompt: input.message,
+                prompt: resumePrompt,
                 toolUseContext: context,
                 canUseTool,
                 invokingRequestId: assistantMessage?.requestId,
