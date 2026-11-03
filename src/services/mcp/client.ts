@@ -1545,6 +1545,16 @@ export const connectToServer = memoize(
             bareElicitation: true,
           })
         }
+        // "Connection closed" alone hides why a stdio server died (e.g. a
+        // missing token); carry the last stderr lines into the status error.
+        if (stderrOutput && error instanceof Error) {
+          const tail = stderrOutput
+            .trimEnd()
+            .split(/\r?\n\s*\r?\n/)
+            .at(-1)!
+            .slice(-500)
+          error.message = `${error.message}: ${tail}`
+        }
         throw error
       }
 
