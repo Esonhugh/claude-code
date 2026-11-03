@@ -569,6 +569,33 @@ test('Agent effort override, definition and parent are isolated launch snapshots
   } finally { controlledSpawnParams = previous }
 })
 
+test('CLAUDE_CODE_SUBAGENT_EFFORT is the default below the call and the agent definition', async () => {
+  const previous = controlledSpawnParams
+  const saved = process.env.CLAUDE_CODE_SUBAGENT_EFFORT
+  process.env.CLAUDE_CODE_SUBAGENT_EFFORT = 'low'
+  try {
+    for (const [effort, definedEffort, expected] of [
+      [undefined, undefined, 'low'],
+      [undefined, 'medium', 'medium'],
+      ['high', undefined, 'high'],
+    ] as const) {
+      const context = createContext(0)
+      const definition = { ...GENERAL_PURPOSE_AGENT, effort: definedEffort }
+      ;(context.options as unknown as { agentDefinitions: { activeAgents: unknown[] } }).agentDefinitions.activeAgents = [definition]
+      context.setAppState((state: ReturnType<typeof getDefaultAppState>) => ({ ...state, effortValue: 'xhigh' }))
+      await AgentTool.call({
+        prompt: 'inspect', description: 'effort worker', run_in_background: false,
+        ...(effort === undefined ? {} : { effort }),
+      }, context as never, async () => ({ behavior: 'allow' }), createTestAssistantMessage('effort'))
+      expect(controlledSpawnParams?.agentDefinition).toHaveProperty('effort', expected)
+    }
+  } finally {
+    controlledSpawnParams = previous
+    if (saved === undefined) delete process.env.CLAUDE_CODE_SUBAGENT_EFFORT
+    else process.env.CLAUDE_CODE_SUBAGENT_EFFORT = saved
+  }
+})
+
 setSessionSettingsCache({ settings: { planModeAvailable: false }, errors: [] })
 const disabledPlanContext = createContext(0)
 await assert.rejects(

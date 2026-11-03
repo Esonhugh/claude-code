@@ -10,6 +10,7 @@ import {
   useState,
 } from 'react'
 import { filterCommands, moveSelection, paletteQuery, recallPrompt, type SlashCommand, typedInFull } from '../commands'
+import type { Daybreak } from '../api'
 import { formatBytes, mentionPath } from '../files'
 import { type Approval, type ApprovalChoice, approvalRules, type ContextUsage, type Goal, type ModelOption, type Todo } from '../protocol'
 import { toolSummary } from '../tools'
@@ -17,6 +18,7 @@ import { modelName, modelOption } from './Message'
 import { FootMenu, modeOf, offeredModes, SendIcon, type T } from './ui'
 
 const FALLBACK_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max']
+const DAYBREAK: Daybreak[] = ['off', 'blue', 'red']
 
 /** `Opus 5.5 · high`: the model button's label. */
 export function modelButtonLabel(
@@ -40,6 +42,25 @@ function modelHint(m: ModelOption): string | undefined {
 }
 
 /** Model list and effort levels, the prototype's `#model-menu`. */
+/**
+ * The effort levels the menu offers for `model` (the default model's when unset), plus the current
+ * level when the model does not list it (a settings `effortLevel`), so the menu matches the chip.
+ */
+export function effortChoices(model: string | undefined, models: ModelOption[], effort: string | undefined): string[] {
+  const listed = (modelOption(model, models) ?? models.find(m => m.value === 'default'))?.effortLevels
+  const levels = listed?.length ? listed : FALLBACK_EFFORTS
+  return effort && !levels.includes(effort) ? [...levels, effort] : levels
+}
+
+/**
+ * The model rows shown before "More models": the first four plus the current one. A list with
+ * only one more row than that shows it rather than a "More models" row.
+ */
+export function shownModels(models: ModelOption[], current: string | undefined, expanded: boolean): ModelOption[] {
+  if (expanded || models.length <= 5) return models
+  return models.filter((m, i) => i < 4 || m.value === current)
+}
+
 export function ModelMenu({
   t,
   model,
@@ -50,6 +71,7 @@ export function ModelMenu({
   close,
   heading,
   locked = false,
+  daybreak,
 }: {
   t: T
   model: string | undefined
@@ -62,13 +84,17 @@ export function ModelMenu({
   heading?: string
   /** Shown but not changeable (a running task keeps its model). */
   locked?: boolean
+  /** The Daybreak access program, offered under a ChatGPT sign-in. */
+  daybreak?: { value: string; onChange: (value: Daybreak) => void }
 }) {
   const current = modelOption(model, models)
-  const levels = (current ?? models.find(m => m.value === 'default'))?.effortLevels ?? FALLBACK_EFFORTS
+  const levels = effortChoices(model, models, effort)
+  const [expanded, setExpanded] = useState(false)
+  const shown = shownModels(models, current?.value, expanded)
   return (
     <>
       <div className="mh">{heading ?? t('modelGroup')}</div>
-      {models.map(m => (
+      {shown.map(m => (
         <button
           type="button"
           role="menuitemradio"
@@ -84,8 +110,13 @@ export function ModelMenu({
           {modelHint(m) && <small title={modelHint(m)}>{modelHint(m)}</small>}
         </button>
       ))}
+      {shown.length < models.length && (
+        <button type="button" className="mm-more" aria-expanded={false} onClick={() => setExpanded(true)}>
+          {t('moreModels', { n: String(models.length - shown.length) })} <span aria-hidden="true">›</span>
+        </button>
+      )}
       {onEffort && (
-        <>
+        <div className="mm-effort">
           <div className="mh">{t('effort')}</div>
           <div className="seg" role="radiogroup" aria-label={t('effort')}>
             {levels.map(level => (
@@ -101,7 +132,25 @@ export function ModelMenu({
               </button>
             ))}
           </div>
-        </>
+          {daybreak && (
+            <>
+              <div className="mh">Daybreak</div>
+              <div className="seg" role="radiogroup" aria-label="Daybreak">
+                {DAYBREAK.map(value => (
+                  <button
+                    type="button"
+                    role="radio"
+                    key={value}
+                    aria-checked={daybreak.value === value}
+                    onClick={() => daybreak.onChange(value)}
+                  >
+                    {value}
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
+        </div>
       )}
     </>
   )

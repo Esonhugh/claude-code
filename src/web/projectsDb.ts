@@ -42,6 +42,8 @@ const MIGRATIONS: string[][] = [
   TASK_MIGRATION,
   // What earlier runs of a resumed task took, so its time adds up across runs.
   ['ALTER TABLE tasks ADD COLUMN prior_ms INTEGER NOT NULL DEFAULT 0'],
+  // The task default effort, next to the task default model.
+  ['ALTER TABLE projects ADD COLUMN worker_effort TEXT'],
 ]
 
 export type Project = {
@@ -50,6 +52,8 @@ export type Project = {
   cwd: string
   instructions: string
   worker_model: string | null
+  /** CLAUDE_CODE_SUBAGENT_EFFORT for the coordinator's workers; null inherits the coordinator's. */
+  worker_effort: string | null
   permission_mode: string
   coordinator_session_id: string | null
   /** The coordinator's model and effort as last changed from its input box; kept across restarts. */
@@ -66,6 +70,7 @@ export type ProjectPatch = Partial<
     | 'name'
     | 'instructions'
     | 'worker_model'
+    | 'worker_effort'
     | 'permission_mode'
     | 'coordinator_session_id'
     | 'coordinator_model'
@@ -104,13 +109,13 @@ export class ProjectStore {
     return (this.db.query('SELECT * FROM projects WHERE id = ?').get(id) as Project | null) ?? undefined
   }
 
-  create(input: Pick<Project, 'name' | 'cwd' | 'instructions' | 'worker_model' | 'permission_mode'>): Project {
+  create(input: Pick<Project, 'name' | 'cwd' | 'instructions' | 'worker_model' | 'worker_effort' | 'permission_mode'>): Project {
     const now = Date.now()
     const id = randomUUID()
     this.db.run(
-      `INSERT INTO projects (id, name, cwd, instructions, worker_model, permission_mode, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      [id, input.name, input.cwd, input.instructions, input.worker_model, input.permission_mode, now, now],
+      `INSERT INTO projects (id, name, cwd, instructions, worker_model, worker_effort, permission_mode, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [id, input.name, input.cwd, input.instructions, input.worker_model, input.worker_effort, input.permission_mode, now, now],
     )
     return this.get(id)!
   }

@@ -246,11 +246,13 @@ async function readSettings(): Promise<WebSettings> {
       agentSummary: (settings.agentSummary ?? 'full') !== 'off',
       promptSuggestions: settings.promptSuggestionEnabled !== false,
     },
+    daybreak: settings.daybreak ?? 'off',
   }
 }
 
-const writeSettings: AccountBackend['writeSettings'] = async ({ uiName, features = {} }) => {
+const writeSettings: AccountBackend['writeSettings'] = async ({ uiName, features = {}, daybreak }) => {
   const patch: SettingsJson = {}
+  if (daybreak !== undefined) patch.daybreak = daybreak
   if (uiName !== undefined) patch.uiName = uiName || undefined
   if (features.gitInstructions !== undefined) patch.includeGitInstructions = features.gitInstructions
   if (features.memoryExtraction !== undefined) {

@@ -32,9 +32,13 @@ export const FEATURE_KEYS = [
 ] as const
 export type FeatureKey = (typeof FEATURE_KEYS)[number]
 
+export const DAYBREAK = ['off', 'blue', 'red'] as const
+
 export type WebSettings = {
   uiName: string
   features: Record<FeatureKey, boolean>
+  /** The OpenAI Daybreak access program (`/daybreak`); off is standard access. */
+  daybreak: (typeof DAYBREAK)[number]
 }
 
 export type OAuthFlow = {
@@ -62,7 +66,9 @@ export type AccountBackend = {
   startOAuth: (provider: AuthProvider) => OAuthFlow
   logout: () => Promise<void>
   readSettings: () => Promise<WebSettings>
-  writeSettings: (patch: Partial<{ uiName: string; features: Partial<Record<FeatureKey, boolean>> }>) => Promise<void>
+  writeSettings: (
+    patch: Partial<{ uiName: string; features: Partial<Record<FeatureKey, boolean>>; daybreak: WebSettings['daybreak'] }>,
+  ) => Promise<void>
   usage: () => Promise<object>
 }
 
@@ -109,6 +115,7 @@ const settingsBodySchema = lazySchema(() =>
   z.object({
     uiName: z.string().trim().max(32).optional(),
     features: z.partialRecord(z.enum(FEATURE_KEYS), z.boolean()).optional(),
+    daybreak: z.enum(DAYBREAK).optional(),
   }),
 )
 
@@ -137,8 +144,8 @@ const messageOf = (err: unknown) => (err instanceof Error ? err.message : String
  *   POST   /api/account/oauth/code    { code }  (manual fallback)
  *   DELETE /api/account/oauth         cancel the pending login
  *   POST   /api/account/logout
- *   GET    /api/settings              → { uiName, features, allow_local_network }
- *   PATCH  /api/settings              { uiName?, features? }
+ *   GET    /api/settings              → { uiName, features, daybreak, allow_local_network }
+ *   PATCH  /api/settings              { uiName?, features?, daybreak? }
  *   GET    /api/usage                 → the `get_usage` shape for this machine
  */
 export function createAccountApi(

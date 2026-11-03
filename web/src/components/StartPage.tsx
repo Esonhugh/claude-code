@@ -1,5 +1,5 @@
 import { type ReactNode, useCallback, useEffect, useRef, useState } from 'react'
-import { listFolderFiles, loadSnippet } from '../api'
+import { type Daybreak, listFolderFiles, loadSnippet } from '../api'
 import type { SlashCommand } from '../commands'
 import { ext } from '../extApi'
 import { tilde } from '../files'
@@ -83,6 +83,7 @@ export function StartPage({
   tempRoot,
   models,
   commands,
+  daybreak,
   draft,
   setDraft,
   files,
@@ -108,6 +109,7 @@ export function StartPage({
   models: ModelOption[]
   /** The last session's `/` commands; the start page has no session to ask. */
   commands: SlashCommand[]
+  daybreak?: { value: string; onChange: (value: Daybreak) => void }
   draft: string
   setDraft: (v: string) => void
   files: File[]
@@ -297,6 +299,7 @@ export function StartPage({
                     models={models}
                     onModel={model => setOptions({ model })}
                     onEffort={effort => setOptions({ effort })}
+                    daybreak={daybreak}
                     close={close}
                   />
                 )}

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test'
 import { translate } from '../i18n'
-import { pinText } from './Composer'
+import { effortChoices, pinText, shownModels } from './Composer'
 import { nextMode, offeredModes, type T } from './ui'
 
 const t: T = (key, vars) => translate('en', key, vars)
@@ -24,5 +24,29 @@ describe('permission modes', () => {
     expect(nextMode('acceptEdits', false)).toBe('auto')
     expect(nextMode('acceptEdits', true)).toBe('plan')
     expect(nextMode('bypassPermissions')).toBe('default')
+  })
+})
+
+describe('effortChoices', () => {
+  const models = [
+    { value: 'default', displayName: 'Default', effortLevels: ['low', 'medium', 'high', 'xhigh', 'max'] },
+    { value: 'glm-5.3', displayName: 'GLM-5.3', effortLevels: ['minimal', 'low', 'medium', 'high'] },
+    { value: 'gw-plain', displayName: 'Plain' },
+  ]
+  it("lists the model's levels and keeps a current level it lacks, so the menu matches the chip", () => {
+    expect(effortChoices('glm-5.3', models, 'medium')).toEqual(['minimal', 'low', 'medium', 'high'])
+    expect(effortChoices('glm-5.3', models, 'xhigh')).toEqual(['minimal', 'low', 'medium', 'high', 'xhigh'])
+    expect(effortChoices(undefined, models, undefined)).toEqual(['low', 'medium', 'high', 'xhigh', 'max'])
+    expect(effortChoices('gw-plain', models, undefined)).toEqual(['low', 'medium', 'high', 'xhigh', 'max'])
+  })
+})
+
+describe('shownModels', () => {
+  const models = ['default', 'opus', 'fable', 'sonnet', 'haiku', 'glm', 'kimi'].map(value => ({ value, displayName: value }))
+  it('shows the first four and the current model; the rest wait behind More models', () => {
+    expect(shownModels(models, 'opus', false).map(m => m.value)).toEqual(['default', 'opus', 'fable', 'sonnet'])
+    expect(shownModels(models, 'kimi', false).map(m => m.value)).toEqual(['default', 'opus', 'fable', 'sonnet', 'kimi'])
+    expect(shownModels(models, 'opus', true)).toHaveLength(7)
+    expect(shownModels(models.slice(0, 5), undefined, false)).toHaveLength(5)
   })
 })

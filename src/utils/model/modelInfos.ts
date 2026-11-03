@@ -9,16 +9,23 @@ import {
 } from 'src/utils/thinking.js'
 import { getDefaultMainLoopModel, parseUserSpecifiedModel } from './model.js'
 import { getModelOptions } from './modelOptions.js'
+import { getGatewayModelOptions } from './openaiModelOptions.js'
+
+// The effortLevel setting's levels (ultracode is a mode, not a level): a gateway passes the value
+// through to its model, so its discovered models offer them all instead of the Claude allowlist.
+const GATEWAY_EFFORT_LEVELS: NonNullable<ModelInfo['supportedEffortLevels']> = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra']
 
 /** The model picker's options as SDK `ModelInfo`: the initialize response's `models`, and `claude web`'s list before any session. */
 export function getModelInfos(): ModelInfo[] {
+  const gateway = new Set(getGatewayModelOptions().map(option => option.value))
   return getModelOptions().map(option => {
     const modelId = option.value === null ? 'default' : option.value
     const resolvedModel =
       modelId === 'default'
         ? getDefaultMainLoopModel()
         : parseUserSpecifiedModel(modelId)
-    const hasEffort = modelSupportsEffort(resolvedModel)
+    const fromGateway = gateway.has(modelId)
+    const hasEffort = fromGateway || modelSupportsEffort(resolvedModel)
     const hasAdaptiveThinking = modelSupportsAdaptiveThinking(resolvedModel)
     const hasFastMode = isFastModeSupportedByModel(option.value)
     const hasAutoMode = modelSupportsAutoMode(resolvedModel)
@@ -29,9 +36,9 @@ export function getModelInfos(): ModelInfo[] {
       description: option.description,
       ...(hasEffort && {
         supportsEffort: true,
-        supportedEffortLevels: [
-          ...getSupportedEffortLevelsForModel(resolvedModel),
-        ],
+        supportedEffortLevels: fromGateway
+          ? GATEWAY_EFFORT_LEVELS
+          : [...getSupportedEffortLevelsForModel(resolvedModel)],
       }),
       ...(hasAdaptiveThinking && { supportsAdaptiveThinking: true }),
       ...(hasFastMode && { supportsFastMode: true }),

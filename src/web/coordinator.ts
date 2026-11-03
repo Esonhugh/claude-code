@@ -21,7 +21,7 @@ export type CoordinatorSpawn = {
  * src/utils/systemPrompt.ts), so the prompt is built here, in the same
  * binary, and passed as `--system-prompt`.
  */
-export function coordinatorSpawn(project: Pick<Project, 'instructions' | 'worker_model'>): CoordinatorSpawn {
+export function coordinatorSpawn(project: Pick<Project, 'instructions' | 'worker_model' | 'worker_effort'>): CoordinatorSpawn {
   const instructions = project.instructions.trim()
   return {
     systemPrompt: getCoordinatorSystemPrompt(COORDINATOR_TOOLS),
@@ -35,6 +35,7 @@ export function coordinatorSpawn(project: Pick<Project, 'instructions' | 'worker
       CLAUDE_CODE_ENABLE_TASKS: '0',
       CLAUDE_CODE_ENABLE_TODO_TOOLS: '1',
       ...(project.worker_model && { CLAUDE_CODE_SUBAGENT_MODEL: project.worker_model }),
+      ...(project.worker_effort && { CLAUDE_CODE_SUBAGENT_EFFORT: project.worker_effort }),
     },
   }
 }
