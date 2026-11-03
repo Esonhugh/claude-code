@@ -873,7 +873,9 @@ a.btn { text-decoration: none; color: var(--fg); display: inline-block }
 .pager button { border: 1px solid var(--line); background: var(--surface); padding: 2px 8px; min-width: 28px; border-radius: 6px }
 .pager input { width: 42px; font: inherit; text-align: center; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--fg); padding: 2px 4px }
 .pdf { background: var(--sunken); border-radius: 8px; padding: 14px; display: flex; flex-direction: column; gap: 10px; align-items: center }
-.pdf-page canvas { display: block; max-width: 100%; box-shadow: 0 1px 4px rgba(0,0,0,.18); background: #fff }
+.pdf-page { max-width: 100%; box-shadow: 0 1px 4px rgba(0,0,0,.18); background: #fff }
+.pdf-page canvas { display: block; max-width: 100% }
+.pdf .pager { position: sticky; top: -16px; z-index: 1; align-self: stretch; background: var(--sunken); padding: 6px 0 }
 .sheet { overflow: auto; border: 1px solid var(--line); border-radius: 8px }
 .sheet table { border-collapse: collapse; font-size: 12px; font-variant-numeric: tabular-nums; min-width: 100% }
 .sheet th, .sheet td { border: 1px solid var(--line); padding: 3px 8px; white-space: nowrap; text-align: left }
