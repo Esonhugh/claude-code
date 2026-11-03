@@ -972,7 +972,8 @@ class Project {
     }
   }
 
-  async flush(): Promise<void> {
+  /** Writes the queued entries now, without waiting for other tracked writes. */
+  async drainQueued(): Promise<void> {
     // Cancel pending timer
     if (this.flushTimer) {
       clearTimeout(this.flushTimer)
@@ -984,6 +985,10 @@ class Project {
     }
     // Drain anything remaining in the queues
     await this.drainWriteQueue()
+  }
+
+  async flush(): Promise<void> {
+    await this.drainQueued()
 
     // Wait for non-queue tracked operations (e.g. removeMessageByUuid)
     if (this.pendingWriteCount === 0) {
@@ -4121,6 +4126,10 @@ async function loadSessionFile(sessionId: UUID): Promise<{
  */
 const getSessionMessages = memoize(
   async (sessionId: UUID): Promise<Set<UUID>> => {
+    // Reloaded after a compaction while writes may still be queued: read them
+    // back too, or the next recordTranscript writes those messages again.
+    // Not flush(): a tracked insertMessageChain waits on this set.
+    await getProject().drainQueued()
     const { messages } = await loadSessionFile(sessionId)
     return new Set(messages.keys())
   },

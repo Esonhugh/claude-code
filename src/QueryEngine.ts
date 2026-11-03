@@ -740,6 +740,14 @@ export class QueryEngine {
 
     // Push new messages, including user input and any attachments
     this.mutableMessages.push(...messagesFromUserInput)
+    // A /compact starts the history at its boundary, as a compaction inside the
+    // query loop does below. Kept around, the older messages would be written to
+    // the transcript again by the next compaction's preserved-tail flush: after a
+    // compaction the recorded-uuid set only holds what follows the boundary.
+    const isBoundary = (m: Message) => m.type === 'system' && m.subtype === 'compact_boundary'
+    if (messagesFromUserInput.some(isBoundary)) {
+      this.mutableMessages.splice(0, this.mutableMessages.findLastIndex(isBoundary))
+    }
 
     // Update params to reflect updates from processing /slash commands
     const messages = [...this.mutableMessages]
