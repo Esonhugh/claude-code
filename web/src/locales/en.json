@@ -155,6 +155,7 @@
   "statusLabel": "Status",
   "workDir": "Working directory",
   "peerAddressLabel": "Messaging address",
+  "peersLabel": "Agents in this folder",
   "modelGroup": "Model",
   "permissionModeLabel": "Permission mode",
   "contextGroup": "Context",
