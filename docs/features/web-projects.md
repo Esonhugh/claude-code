@@ -64,7 +64,7 @@
 | 封存 | `A` | 从列表移走，并停止它的协调者 |
 | 删除 | `D` | 菜单里再确认一次；删除项目记录，移进来的会话回到原来的目录分组 |
 
-会话的右键菜单有“移至项目 ›”，见 [Claude Web](web-ui.md#左侧栏)。
+会话的右键菜单有“移至项目 ›”，见 [Claude Web](web-ui.md#左侧栏)。移进来的会话列在任务列表的“移入的会话”分组里，标“从会话移入”，点开就是原来的对话；侧栏搜索仍能找到它。
 
 ## 操作表
 
@@ -101,7 +101,6 @@
 ## 已知限制
 
 - 任务对话里没有待办清单：后台 worker 在 todo v2 下拿不到 TodoWrite / TaskCreate。
-- 移至项目的会话从“最近目录”移走，但项目视图里还不显示它们。
 - 协调者自己决定并行几个任务，没有上限设置。
 
 截图来自 `make build` 产出的 `./built-claude`，在 1440×900 的 Chromium（Playwright）里实际操作得到，HOME 是临时目录，模型请求打到本地脚本化的假 Messages API（同 `src/web/web.binary.test.ts`），所以协调者和 worker 的回复是预设的。设计见 [项目设计文档](../design/claude-web-project.md)。
