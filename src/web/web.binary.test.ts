@@ -405,6 +405,10 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
           blocks = [{ type: 'text', text: 'FOLLOWUP_DONE' }]
         } else if (lastText.includes('SUBTASK_BG')) {
           blocks = [{ type: 'text', text: 'SUB_RESULT' }]
+        } else if (lastText.includes('HOLD_TURN')) {
+          // A long turn that only an interrupt ends early.
+          await new Promise(r => setTimeout(r, 25_000))
+          blocks = [{ type: 'text', text: 'HELD_DONE' }]
         } else if (lastText.includes('SPAWNBG')) {
           blocks = [
             {
@@ -906,7 +910,7 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       await preview.locator('.cpin.sent', { hasText: '1' }).waitFor()
       await page.locator('.msg.user', { hasText: 'PIN_NOTE' }).waitFor()
       for (let i = 0; i < 300 && promptsSeen.length === commentsBefore; i++) await Bun.sleep(100)
-      expect(promptsSeen.slice(commentsBefore).join('\n')).toContain('Comment on `' + files[3] + '` (pinned at 25% from the left, 75% from the top): PIN_NOTE')
+      expect(promptsSeen.slice(commentsBefore).join('\n')).toContain(JSON.stringify('Comment on `' + files[3] + '` (pinned at 25% from the left, 75% from the top): PIN_NOTE').slice(1, -1))
       expect(await input.inputValue()).toBe('')
       // Text, code and HTML source take a selection; tables take a cell; chat images open to pin.
       const comment = async (text: string) => {
@@ -978,7 +982,8 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       expect(await comment('MD_RANGE_NOTE')).toContain('readme.md` (line 1, on \\"MD_HEADING text\\"): MD_RANGE_NOTE')
       await open('page.html')
       await preview.getByRole('radio', { name: 'Source' }).click()
-      await preview.locator('.codeblock').waitFor()
+      // Highlighting replaces the plain code once it loads, which would drop a selection made before.
+      await preview.locator('div.codeblock-body').waitFor()
       await select('HTML_BODY')
       expect(await comment('SOURCE_NOTE')).toContain('page.html` (line 1): SOURCE_NOTE')
       await drag('second', 'script')
@@ -2362,6 +2367,11 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       }
       expect(Math.abs((await formBottom(panel)) - (await formBottom(page.locator('.main'))))).toBeLessThanOrEqual(4)
       await checkBox(panel, agentInput, true)
+      // A slow upload of the first message's file must not let the second message overtake it or take the file too.
+      await page.route(/\/api\/files\/[^?]+\?name=for-agent/, async (route: any) => {
+        await new Promise(r => setTimeout(r, 800))
+        await route.continue()
+      })
       await agentInput.fill('/e2e-sk')
       await agentInput.press('Enter')
       expect(await agentInput.inputValue()).toBe('/e2e-skill ')
@@ -2387,6 +2397,7 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       await agentInput.press('ArrowUp')
       expect((await agentInput.inputValue()).startsWith('/e2e-skill go')).toBe(true)
       expect(promptsSeen.some(p => p.includes('/e2e-skill go') && p.includes('for-agent.txt'))).toBe(true)
+      expect(promptsSeen.some(p => p.includes('for-agent (1).txt'))).toBe(false)
       await agentInput.fill('')
       // Signed out, the agent's box is disabled and says why, like the session's own.
       await page.route('**/api/account', async (route: any) => {
@@ -2408,6 +2419,23 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       await page.unroute('**/api/account')
       await page.reload()
       await page.locator('.wl-hi, .main').first().waitFor()
+      await page.locator('.session-row', { hasText: 'please SPAWNBG an agent' }).first().click()
+      await input.waitFor()
+      // The session's own box: a slow upload keeps two messages in order and sends the file once.
+      await page.route(/\/api\/files\/[^?]+\?name=slow-main/, async (route: any) => {
+        await new Promise(r => setTimeout(r, 800))
+        await route.continue()
+      })
+      await attach(page.locator('.main .composer'), 'slow-main.txt')
+      await page.locator('.main .attachment', { hasText: 'slow-main.txt' }).waitFor()
+      await input.fill('MAIN_FIRST')
+      await input.press('Enter')
+      await input.fill('MAIN_SECOND')
+      await input.press('Enter')
+      await page.locator('.main .msg.user', { hasText: 'MAIN_SECOND' }).waitFor({ timeout: 30_000 })
+      const mainSent = await page.locator('.main .msg.user').filter({ hasText: /MAIN_FIRST|MAIN_SECOND/ }).allInnerTexts()
+      expect(mainSent.map(x => (x.includes('MAIN_SECOND') ? 'second' : 'first'))).toEqual(['first', 'second'])
+      expect(promptsSeen.some(p => p.includes('slow-main (1).txt'))).toBe(false)
 
 
       // A project: the coordinator's box and a dispatched task's box.
@@ -2512,6 +2540,56 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
     }
   }, 240_000)
 
+  it('sends queued messages now, interrupting the turn, from the button and with ctrl+enter', async () => {
+    const playwrightPath = Bun.spawnSync(['node', '-p', "require.resolve('playwright')"])
+      .stdout.toString()
+      .trim()
+    const { chromium } = await import(playwrightPath)
+    const browser = await chromium.launch()
+    try {
+      const page = await (await browser.newContext({ locale: 'en-US' })).newPage()
+      const errors: string[] = []
+      page.on('pageerror', (e: Error) => errors.push(e.message))
+      await page.goto(signInUrl)
+      await page.locator('.wl-hi').waitFor()
+      await page.getByLabel('Message', { exact: true }).fill('HOLD_TURN one')
+      await page.getByLabel('Message', { exact: true }).press('Enter')
+      const input = page.locator('.main').getByLabel('Message', { exact: true })
+      await input.waitFor({ timeout: 30_000 })
+      const seen = (mark: string) => promptsSeen.some(p => p.includes(mark))
+      for (let i = 0; i < 100 && !seen('HOLD_TURN one'); i++) await Bun.sleep(100)
+      // Typed during the turn, it waits as queued; "Send now" runs it without waiting for the turn.
+      await input.fill('NOW_QUEUED')
+      await input.press('Enter')
+      const queued = page.locator('.main .msg.user.queued', { hasText: 'NOW_QUEUED' })
+      await queued.waitFor({ timeout: 10_000 })
+      const started = Date.now()
+      await page.locator('.queued-now').getByRole('button', { name: 'Send now' }).click()
+      await queued.waitFor({ state: 'detached', timeout: 15_000 })
+      await page.locator('.main .msg.user:not(.queued)', { hasText: 'NOW_QUEUED' }).waitFor()
+      for (let i = 0; i < 100 && !seen('NOW_QUEUED'); i++) await Bun.sleep(100)
+      expect(seen('NOW_QUEUED')).toBe(true)
+      expect(Date.now() - started).toBeLessThan(15_000)
+      expect(await page.locator('.main .msg', { hasText: 'HELD_DONE' }).count()).toBe(0)
+      await page.locator('.main .composer .send').waitFor()
+
+      // ctrl+enter with text does the same in one step.
+      for (let i = 0; i < 100 && (await page.locator('.main .status-line, .main .stop').count()) > 0; i++) await Bun.sleep(100)
+      await input.fill('HOLD_TURN two')
+      await input.press('Enter')
+      for (let i = 0; i < 100 && !seen('HOLD_TURN two'); i++) await Bun.sleep(100)
+      await input.fill('NOW_CTRL')
+      await input.press('Control+Enter')
+      for (let i = 0; i < 150 && !seen('NOW_CTRL'); i++) await Bun.sleep(100)
+      expect(seen('NOW_CTRL')).toBe(true)
+      await page.locator('.main .msg.user:not(.queued)', { hasText: 'NOW_CTRL' }).waitFor({ timeout: 15_000 })
+      expect(await page.locator('.main .msg', { hasText: 'HELD_DONE' }).count()).toBe(0)
+      expect(errors).toEqual([])
+    } finally {
+      await browser.close()
+    }
+  })
+
   it('shares the ↑ history with the CLI: its prompts come back, and what the page sends is added', async () => {
     const playwrightPath = Bun.spawnSync(['node', '-p', "require.resolve('playwright')"])
       .stdout.toString()
@@ -2532,8 +2610,11 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       await page.locator('.wl-hi').waitFor()
       const input = page.getByLabel('Message', { exact: true })
       await input.click()
-      await page.waitForTimeout(500)
-      await input.press('ArrowUp')
+      // The folder's history loads after mount; ↑ before it arrives leaves the box empty.
+      for (let i = 0; i < 50 && (await input.inputValue()) !== 'CLI_PROMPT_MARK'; i++) {
+        await page.waitForTimeout(100)
+        await input.press('ArrowUp')
+      }
       expect(await input.inputValue()).toBe('CLI_PROMPT_MARK')
       await input.press('ArrowDown')
       expect(await input.inputValue()).toBe('')
