@@ -436,10 +436,16 @@ export function ProjectView({
   const blocked = tasks.filter(x => x.state === 'blocked').length
   const open = openId ? tasks.find(x => x.id === openId) : undefined
 
+  // Task rows and the replayed task events land after the chat and grow its cards; follow them while the user is at the bottom.
+  const atBottom = useRef(true)
   useEffect(() => {
     const feed = feedRef.current
     if (feed) feed.scrollTop = feed.scrollHeight
   }, [chat.items, chat.taskNotes, chat.busy])
+  useEffect(() => {
+    const feed = feedRef.current
+    if (feed && atBottom.current) feed.scrollTop = feed.scrollHeight
+  }, [tasks, chat.tasks])
   // Esc closes an open task, as the prototype does.
   useEffect(() => {
     if (!openId) return
@@ -486,7 +492,7 @@ export function ProjectView({
     if (action === 'open') openTask(task.id)
     else if (action === 'done' && task.state === 'review') void markDone(task)
     else if (action === 'stop' && isLive(task)) void stopTask(task.id)
-    else if (action === 'copy') void copyBrief(task)
+    else if (action === 'copy' && task.brief) void copyBrief(task)
   }
   useLayoutEffect(() => {
     const el = menuRef.current
@@ -565,7 +571,7 @@ export function ProjectView({
     </button>
   )
   const wideButton = ib(t(wide ? 'restorePane' : 'expandPane'), wide ? '⤡' : '⤢', () => setWide(!wide), true, true)
-  const modeButton = <ModeButton t={t} mode={mode} onMode={onMode} />
+  const modeButton = <ModeButton t={t} mode={mode} plan={chat.env.planMode} onMode={onMode} />
 
   // ---- the splitter between the columns: drag it, or focus it and use ← →. ----
   const clampWidth = (px: number) => {
@@ -709,7 +715,9 @@ export function ProjectView({
   )
 
   const noteText = (note: TaskNote) => {
-    const { key, vars } = taskNoteText(note, chat.tasks[note.taskId])
+    // A coordinator that is no longer running replays no task lines; the table still has the title.
+    const row = tasks.find(x => x.id === note.taskId)
+    const { key, vars } = taskNoteText(note, chat.tasks[note.taskId] ?? (row && { description: row.title, durationMs: row.duration_ms }))
     return t(key, vars)
   }
   const feed = chat.items.map(item => (
@@ -723,7 +731,7 @@ export function ProjectView({
         role={item.kind === 'assistant' ? t('coordinatorRole') : undefined}
         taskCard={taskCard}
       />
-      {notes.get(item.id)?.map(note => <Note key={`${note.taskId}-${note.status}`} text={noteText(note)} />)}
+      {notes.get(item.id)?.map(note => <Note key={`${note.taskId}-${note.n}`} text={noteText(note)} />)}
     </Fragment>
   ))
 
@@ -787,9 +795,17 @@ export function ProjectView({
         }}
       >
         {head}
-        <div className="feed" ref={feedRef} aria-busy={chat.busy}>
+        <div
+          className="feed"
+          ref={feedRef}
+          aria-busy={chat.busy}
+          onScroll={e => {
+            const el = e.currentTarget
+            atBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40
+          }}
+        >
           {feed}
-          {notes.get('')?.map(note => <Note key={`${note.taskId}-${note.status}`} text={noteText(note)} />)}
+          {notes.get('')?.map(note => <Note key={`${note.taskId}-${note.n}`} text={noteText(note)} />)}
           {(chat.busy || running + blocked > 0) && (
             <div className="status-line" role="status">
               <span className="glyph">✻</span>

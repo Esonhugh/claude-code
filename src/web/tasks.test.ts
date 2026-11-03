@@ -115,6 +115,27 @@ describe('TaskStore', () => {
     client({ type: 'control_request', request_id: 'm2', request: { subtype: 'send_task_message', task_id: 'a1', text: 'x', model: 'opus' } })
     child({ type: 'control_response', response: { subtype: 'error', request_id: 'm2', error: 'no' } })
     expect(store.get(project.id, 'a1')).toMatchObject({ state: 'review', model: 'sonnet' })
+    expect(store.queuedMessages('a1')).toEqual([])
+  })
+
+  it('records how long a task ran when it stops without a usage report', () => {
+    const { store, project, child, started, tick } = setup()
+    started('a1')
+    started('a2')
+    tick(5000)
+    child({ type: 'system', subtype: 'task_notification', task_id: 'a1', status: 'killed' })
+    store.stopLive('restart')
+    expect(store.get(project.id, 'a1')).toMatchObject({ state: 'stopped', duration_ms: 5000 })
+    expect(store.get(project.id, 'a2')).toMatchObject({ state: 'stopped', duration_ms: 5000 })
+  })
+
+  it('keeps the text of a message queued to a running task', () => {
+    const { store, child, client, started, tick } = setup()
+    started('a1')
+    tick(500)
+    client({ type: 'control_request', request_id: 'm1', request: { subtype: 'send_task_message', task_id: 'a1', text: 'also this' } })
+    child({ type: 'control_response', response: { subtype: 'success', request_id: 'm1', response: { delivery: 'queued' } } })
+    expect(store.queuedMessages('a1')).toEqual([{ id: expect.any(Number), ts: 1500, text: 'also this' }])
   })
 
   it('stops live tasks when their process goes away', () => {

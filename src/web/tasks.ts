@@ -117,7 +117,7 @@ const LIVE: TaskState[] = ['running', 'blocked']
  */
 export class TaskStore {
   /** send_task_message request id → the task and the model and effort it asked for. */
-  private messages = new Map<string, { taskId: string; model?: string; effort?: string }>()
+  private messages = new Map<string, { taskId: string; text?: string; model?: string; effort?: string }>()
   /** Tasks the page (`stop_task`) or the coordinator (TaskStop) asked to stop; any other stop is its process going away. */
   private stopAsked = new Set<string>()
 
@@ -136,6 +136,16 @@ export class TaskStore {
 
   events(taskId: string): TaskEvent[] {
     return this.db.query('SELECT * FROM task_events WHERE task_id = ? ORDER BY id').all(taskId) as TaskEvent[]
+  }
+
+  /** Messages the user sent the task while it ran, which its transcript does not hold: when and what. */
+  queuedMessages(taskId: string): { id: number; ts: number; text: string }[] {
+    return this.events(taskId).flatMap(e => {
+      if (e.kind !== 'message' || !e.payload) return []
+      const payload = parseLine(e.payload)
+      const text = payload?.delivery === 'queued' ? str(payload.text) : undefined
+      return text ? [{ id: e.id, ts: e.ts, text }] : []
+    })
   }
 
   /** Per project: tasks, running ones (blocked included) and the ones waiting on the user. */
@@ -169,7 +179,8 @@ export class TaskStore {
       )
       .all(...(projectId ? [projectId] : [])) as Task[]
     for (const task of live) {
-      this.patch(task, { state: 'stopped', stop_reason: reason, approval_id: null, finished_at: this.now() })
+      const now = this.now()
+      this.patch(task, { state: 'stopped', stop_reason: reason, approval_id: null, duration_ms: ran(task, now), finished_at: now })
       this.event(task.id, 'stopped', { reason })
     }
   }
@@ -213,7 +224,8 @@ export class TaskStore {
       const task = this.get(projectId, sent.taskId)
       if (!task || response.subtype !== 'success') return
       const delivery = str(isObj(response.response) ? response.response.delivery : undefined)
-      this.event(task.id, 'message', { delivery })
+      // A queued message reaches the worker as an attachment its transcript does not keep, so the text is kept here.
+      this.event(task.id, 'message', { delivery, ...(delivery === 'queued' && sent.text && { text: sent.text }) })
       if (delivery !== 'resumed') return
       // Resuming a task this process still holds starts no `task_started`.
       this.patch(task, {
@@ -246,7 +258,7 @@ export class TaskStore {
     }
     if (msg?.type !== 'control_request' || request.subtype !== 'send_task_message' || !requestId || !taskId) return
     if (!this.get(projectId, taskId)) return
-    this.messages.set(requestId, { taskId, model: str(request.model), effort: str(request.effort) })
+    this.messages.set(requestId, { taskId, text: str(request.text), model: str(request.model), effort: str(request.effort) })
   }
 
   private answered(projectId: string, requestId: string): void {
@@ -322,13 +334,14 @@ export class TaskStore {
         const status = str(msg.status)
         const summary = str(msg.summary) || null
         if (status === 'completed') {
-          this.patch(task, { ...metered, state: 'review', summary, approval_id: null, finished_at: now, reviewed_at: null })
+          this.patch(task, { duration_ms: ran(task, now), ...metered, state: 'review', summary, approval_id: null, finished_at: now, reviewed_at: null })
           this.event(id, 'finished', { status })
         } else if (status === 'failed' || status === 'stopped' || status === 'killed') {
           // Already stopped: the server stopping its coordinators marked it first.
           if (!LIVE.includes(task.state)) return
           const reason: StopReason = status === 'failed' ? 'failed' : this.stopAsked.delete(id) ? 'user' : 'exited'
           this.patch(task, {
+            duration_ms: ran(task, now),
             ...metered,
             state: 'stopped',
             stop_reason: reason,
@@ -359,6 +372,9 @@ export class TaskStore {
     ])
   }
 }
+
+/** How long a task ran when it ends without its own usage report (a stop, a restart). */
+const ran = (task: Task, now: number) => Math.max(task.duration_ms, task.started_at ? now - task.started_at : 0)
 
 /** The worker's tokens as its progress reports them: the latest call's input and output. */
 export function transcriptTokens(messages: Record<string, unknown>[]): number {

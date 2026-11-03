@@ -235,12 +235,14 @@ describe('claude server', () => {
 const TASK_CHILD = `
 const out = m => process.stdout.write(JSON.stringify(m) + '\\n')
 process.stdin.once('data', () => {
+  out({ type: 'system', subtype: 'init', permissionMode: 'default', skills: ['s1'] })
   out({ type: 'system', subtype: 'task_started', task_id: 'a1', task_type: 'local_agent' })
   out({ type: 'system', subtype: 'task_progress', task_id: 'a1', summary: 'first' })
   out({ type: 'assistant', message: { id: 'm1', content: [] } })
   out({ type: 'system', subtype: 'task_progress', task_id: 'a1', summary: 'second' })
   out({ type: 'system', subtype: 'task_notification', task_id: 'a1', status: 'completed' })
   out({ type: 'system', subtype: 'task_started', task_id: 'w1', task_type: 'local_workflow' })
+  out({ type: 'system', subtype: 'status', status: null, permissionMode: 'plan' })
 })
 setInterval(() => {}, 1000)
 `
@@ -266,8 +268,8 @@ describe('SessionManager task replay', () => {
       const first = socket()
       manager.attach(id, first)
       manager.write(id, '{"type":"user"}\n')
-      for (let i = 0; i < 100 && first.lines.length < 6; i++) await Bun.sleep(20)
-      expect(first.lines).toHaveLength(6)
+      for (let i = 0; i < 100 && first.lines.length < 8; i++) await Bun.sleep(20)
+      expect(first.lines).toHaveLength(8)
       manager.detach(id, first)
       const second = socket()
       manager.attach(id, second)
@@ -277,9 +279,11 @@ describe('SessionManager task replay', () => {
     }
   }
 
-  it('replays the task events a reattaching client missed', async () => {
+  it('replays the init and the task events a reattaching client missed', async () => {
     const lines = await reattach(true)
-    expect(lines.map(l => [l.task_id, l.subtype, l.summary])).toEqual([
+    // The init first, with the permission mode as it is now.
+    expect(lines[0]).toMatchObject({ subtype: 'init', skills: ['s1'], permissionMode: 'plan' })
+    expect(lines.slice(1).map(l => [l.task_id, l.subtype, l.summary])).toEqual([
       ['a1', 'task_started', undefined],
       ['a1', 'task_progress', 'second'],
       ['a1', 'task_notification', undefined],

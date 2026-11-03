@@ -240,11 +240,12 @@ export function StartPage({
             )}
           </FootMenu>
           <span style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-            <FootMenu menuClass="pop wl-pick wl-models" right button={modeOf(options.mode).label}>
+            <FootMenu menuClass="pop wl-pick wl-modes" right button={modeOf(options.mode).label}>
               {close => (
                 <ModeItems
                   t={t}
                   mode={options.mode}
+                  plan={env.planMode}
                   onMode={mode => setOptions({ mode })}
                   close={close}
                 />

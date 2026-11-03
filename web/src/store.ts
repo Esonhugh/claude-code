@@ -144,6 +144,8 @@ export function appReducer(state: AppState, action: AppAction): AppState {
             startedAt: action.prepend ? (folded.startedAt ?? chat.startedAt) : (chat.startedAt ?? folded.startedAt),
             start: action.start,
             workDir: action.workDir ?? chat.workDir,
+            // Task endings the coordinator read, where it read them; an older page keeps the ones shown.
+            ...(!action.prepend && { taskNotes: folded.taskNotes, noteKeys: folded.noteKeys }),
           },
         },
       }

@@ -53,7 +53,8 @@ function isVisible(message: Record<string, unknown>): boolean {
   const inner = message.message as { content?: unknown } | undefined
   const content = inner?.content
   // Slash commands and their local output show like the TUI's `> /model` and `⎿` lines.
-  if (typeof content === 'string') return !content.startsWith('<') || LOCAL_COMMAND.test(content)
+  // A task ending the coordinator read: the page notes it where it happened.
+  if (typeof content === 'string') return !content.startsWith('<') || LOCAL_COMMAND.test(content) || content.startsWith('<task-notification>')
   if (!Array.isArray(content)) return false
   // Tool results render inside the assistant's tool card.
   return (content as ContentBlock[]).some(
