@@ -653,7 +653,7 @@ export function ProjectView({
     if (block.name !== 'Agent') return undefined
     const task = byToolUse.get(block.id)
     if (!task) {
-      const pending = { id: block.id, title: inputs.get(block.id)?.description ?? '', state: 'running' as const }
+      const pending = { id: block.id, title: inputs.get(block.id)?.description || t('statusConnecting'), state: 'running' as const }
       return <TaskLink t={t} task={pending} meta="" activity="" current={false} />
     }
     return (
