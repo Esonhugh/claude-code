@@ -189,6 +189,82 @@ describe('web history', () => {
     expect(JSON.stringify(messages[4])).not.toContain('whole file')
   })
 
+  it('keeps the history before a compaction, in the order it was written', async () => {
+    const file = join(root, 'config', 'projects', sanitizePath(join(root, 'project')), `${ID}.jsonl`)
+    const cwd = join(root, 'project')
+    const u = (n: number) => `a0000000-0000-4000-8000-0000000001${String(n).padStart(2, '0')}`
+    const at = (n: number) => `2026-11-02T00:01:${String(n).padStart(2, '0')}.000Z`
+    writeFileSync(
+      file,
+      readFileSync(file, 'utf8') +
+        [
+          line({ type: 'assistant', uuid: u(1), parentUuid: 'a0000000-0000-4000-8000-000000000005', cwd, timestamp: at(1), message: { id: 'msg_k', role: 'assistant', content: [{ type: 'text', text: 'kept tail' }] } }),
+          // /compact keeping the last reply: the boundary hangs off nothing, the kept reply keeps its old parent.
+          line({
+            type: 'system',
+            subtype: 'compact_boundary',
+            uuid: u(2),
+            parentUuid: null,
+            logicalParentUuid: u(1),
+            cwd,
+            timestamp: at(2),
+            compactMetadata: { trigger: 'manual', preTokens: 9000, preservedSegment: { headUuid: u(1), anchorUuid: u(3), tailUuid: u(1) } },
+          }),
+          line({ type: 'user', uuid: u(3), parentUuid: u(2), cwd, timestamp: at(3), isCompactSummary: true, message: { role: 'user', content: 'This session is being continued from a previous conversation. Summary.' } }),
+          line({ type: 'user', uuid: u(4), parentUuid: u(3), cwd, timestamp: at(4), message: { role: 'user', content: '<command-name>/compact</command-name>' } }),
+          line({ type: 'user', uuid: u(5), parentUuid: u(4), cwd, timestamp: at(5), message: { role: 'user', content: '<local-command-stdout>Compacted </local-command-stdout>' } }),
+          line({ type: 'user', uuid: u(6), parentUuid: u(5), cwd, timestamp: at(6), message: { role: 'user', content: 'after compact' } }),
+        ].join('\n') +
+        '\n',
+    )
+    const page = (await readTranscript(ID, undefined, 50))!
+    expect(page.total).toBe(12)
+    expect(page.messages.map(m => m.uuid)).toEqual([
+      'a0000000-0000-4000-8000-000000000001',
+      'a0000000-0000-4000-8000-000000000003',
+      'a0000000-0000-4000-8000-000000000004',
+      'a0000000-0000-4000-8000-000000000006',
+      'a0000000-0000-4000-8000-000000000007',
+      'a0000000-0000-4000-8000-000000000005',
+      u(1),
+      u(2),
+      u(3),
+      u(4),
+      u(5),
+      u(6),
+    ])
+    // An earlier page still reaches the first question.
+    const earlier = (await readTranscript(ID, 7, 7))!
+    expect(earlier.start).toBe(0)
+    expect(JSON.stringify(earlier.messages)).toContain('first question')
+
+    // An auto-compact before the reply to u(7): the reply hangs off the kept u(7), not the summary.
+    writeFileSync(
+      file,
+      readFileSync(file, 'utf8') +
+        [
+          line({ type: 'user', uuid: u(7), parentUuid: u(6), cwd, timestamp: at(7), message: { role: 'user', content: 'big turn' } }),
+          line({
+            type: 'system',
+            subtype: 'compact_boundary',
+            uuid: u(8),
+            parentUuid: null,
+            logicalParentUuid: u(7),
+            cwd,
+            timestamp: at(8),
+            compactMetadata: { trigger: 'auto', preTokens: 985000, preservedSegment: { headUuid: u(6), anchorUuid: u(9), tailUuid: u(7) } },
+          }),
+          line({ type: 'user', uuid: u(9), parentUuid: u(8), cwd, timestamp: at(9), isCompactSummary: true, message: { role: 'user', content: 'This session is being continued from a previous conversation. Again.' } }),
+          line({ type: 'assistant', uuid: u(10), parentUuid: u(7), cwd, timestamp: at(10), message: { id: 'msg_b', role: 'assistant', content: [{ type: 'text', text: 'big answer' }] } }),
+        ].join('\n') +
+        '\n',
+    )
+    const again = (await readTranscript(ID, undefined, 50))!
+    expect(again.messages.slice(-5).map(m => m.uuid)).toEqual([u(6), u(7), u(8), u(9), u(10)])
+    expect(again.messages.filter(m => m.subtype === 'compact_boundary')).toHaveLength(2)
+    expect(JSON.stringify(again.messages)).toContain('first question')
+  })
+
   it('reads the first assistant text as the snippet of a recent card', async () => {
     expect(await readSnippet(ID)).toBe('first answer')
     expect(await readSnippet('99999999-2222-4333-8444-555555555555')).toBeUndefined()

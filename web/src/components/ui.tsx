@@ -153,3 +153,19 @@ export function formatElapsed(ms: number): string {
   const s = Math.max(0, Math.floor(ms / 1000))
   return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m${String(s % 60).padStart(2, '0')}s`
 }
+
+/**
+ * Whether a feed keeps following new output after a scroll event. Scroll events arrive a frame
+ * late, after more of a reply may have rendered: only scrolling up (the reader's own move)
+ * unsticks, and reaching the bottom sticks again.
+ */
+export function followScroll(
+  el: { scrollHeight: number; scrollTop: number; clientHeight: number },
+  following: boolean,
+  lastTop: { current: number },
+): boolean {
+  const atEnd = el.scrollHeight - el.scrollTop - el.clientHeight < 40
+  const up = el.scrollTop < lastTop.current
+  lastTop.current = el.scrollTop
+  return atEnd || (following && !up)
+}
