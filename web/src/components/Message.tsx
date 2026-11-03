@@ -1,4 +1,4 @@
-import { createContext, Fragment, memo, type ReactNode, useContext, useState } from 'react'
+import { createContext, Fragment, memo, type ReactNode, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import {
   type AgentTask,
   type Team,
@@ -99,6 +99,40 @@ export const ChatContext = createContext<{
     rewind: (id: string) => void
   }
 }>({})
+
+/** A subagent's or worker's own conversation: the session's rewind and turn actions are not its own. */
+export function AgentConversation({ children }: { children: ReactNode }) {
+  const { decisions } = useContext(ChatContext)
+  const value = useMemo(() => ({ decisions }), [decisions])
+  return <ChatContext.Provider value={value}>{children}</ChatContext.Provider>
+}
+
+/** A message the user sent an agent, shown before its conversation has it. */
+export type SentMessage = { id: string; text: string }
+
+/**
+ * The sent messages the agent's conversation does not have yet, in order.
+ * Each is matched to one user message after where the conversation stood
+ * when it was first seen here; `drop` gets the ones that matched.
+ */
+export function useUnread(items: Item[], sent: SentMessage[], drop: (ids: string[]) => void): SentMessage[] {
+  const from = useRef(new Map<string, number>())
+  for (const m of sent) if (!from.current.has(m.id)) from.current.set(m.id, items.length)
+  const unread = useMemo(() => {
+    const claimed = new Set<number>()
+    return sent.filter(m => {
+      const start = from.current.get(m.id) ?? 0
+      const at = items.findIndex((i, n) => n >= start && !claimed.has(n) && i.kind === 'user' && i.text === m.text)
+      if (at < 0) return true
+      claimed.add(at)
+      return false
+    })
+  }, [sent, items])
+  useEffect(() => {
+    if (unread.length !== sent.length) drop(sent.filter(m => !unread.includes(m)).map(m => m.id))
+  }, [unread, sent, drop])
+  return unread
+}
 
 /** Lets an Agent tool card show its task and open it in the Agents tab. */
 export const AgentsContext = createContext<{
@@ -692,7 +726,8 @@ function MessageView({
       return (
         <div className="report" key={i}>
           <div className="rh">
-            {block.result === undefined ? <span className="spin" aria-hidden="true" /> : <span className="ok">✓</span>}
+            {/* The worker ends with its report, so a saved one may never get a result. */}
+            {block.result === undefined && streaming ? <span className="spin" aria-hidden="true" /> : <span className="ok">✓</span>}
             {t('handbackReport')}
           </div>
           <Markdown filesBase={files.base} text={report} />

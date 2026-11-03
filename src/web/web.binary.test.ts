@@ -933,7 +933,7 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       const agentInput = panel.getByPlaceholder('Message general-purpose')
       await agentInput.fill('FOLLOWUP_MSG now')
       await agentInput.press('Enter')
-      await panel.getByText('The agent resumed with your message.').waitFor({ timeout: 30_000 })
+      await panel.locator('.agent-feed .msg.user', { hasText: 'FOLLOWUP_MSG now' }).waitFor({ timeout: 5_000 })
       await panel.getByText('FOLLOWUP_DONE').waitFor({ timeout: 60_000 })
 
       // Back to the tree, then away to another tab.
@@ -1076,7 +1076,7 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       const memberInput = panel.getByPlaceholder('Message alice')
       await memberInput.fill('MEMBER_PING hi')
       await memberInput.press('Enter')
-      await panel.getByText('Sent to the teammate.').waitFor({ timeout: 30_000 })
+      await panel.locator('.agent-feed .msg.user', { hasText: 'MEMBER_PING hi' }).waitFor({ timeout: 5_000 })
       await panel.getByText('MEMBER_PONG').waitFor({ timeout: 60_000 })
       await panel.getByRole('button', { name: 'Back' }).click()
 
@@ -1748,7 +1748,7 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       await page.getByRole('menuitemradio', { name: /^Sonnet/ }).click()
       expect(await side.getByRole('button', { name: 'Model' }).textContent()).toMatch(/^Sonnet/)
       await taskInput.press('Enter')
-      await flash.getByText('The agent resumed with your message.').waitFor({ timeout: 30_000 })
+      await side.locator('.msg.user', { hasText: 'QUICK_MORE' }).waitFor({ timeout: 15_000 })
       await side.getByText('QUICK_AGAIN').waitFor({ timeout: 60_000 })
       expect(resumedModels.some(m => m.includes('sonnet'))).toBe(true)
       expect((await tasksOf()).find(x => x.title === 'Quick')!.model).toContain('sonnet')
@@ -1758,7 +1758,7 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       await cardOf('Slow').click()
       await taskInput.fill('SLOW_NOTE')
       await taskInput.press('Enter')
-      await flash.getByText('Queued; the agent reads it at its next step.').waitFor({ timeout: 30_000 })
+      await side.locator('.msg.user', { hasText: 'SLOW_NOTE' }).waitFor({ timeout: 15_000 })
       await backToList()
       // A refused stop says so, and the task keeps running.
       refuseStop = true
@@ -1848,7 +1848,7 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       await cardOf('Hang').click()
       await taskInput.fill('HANG_RESUME')
       await taskInput.press('Enter')
-      await showing(flash.getByText('The agent resumed with your message.').waitFor({ timeout: 30_000 }), side)
+      await showing(side.locator('.msg.user', { hasText: 'HANG_RESUME' }).waitFor({ timeout: 15_000 }), side)
       await side.getByText('HANG_BACK').waitFor({ timeout: 60_000 })
 
       // The sidebar's counts come from the database.
@@ -2210,11 +2210,21 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       await attach(panel, 'for-agent.txt')
       await panel.locator('.attachment', { hasText: 'for-agent.txt' }).waitFor()
       await agentInput.press('Enter')
-      await panel.locator('.agent-feed .msg.user', { hasText: '/e2e-skill go' }).waitFor({ timeout: 60_000 })
+      // A second line typed right after: both show at once, in order, with no "queued" notice.
+      await agentInput.fill('AND_ONE_MORE')
+      await agentInput.press('Enter')
+      const sentBubbles = panel.locator('.agent-feed .msg.user').filter({ hasText: /\/e2e-skill go|AND_ONE_MORE/ })
+      await panel.locator('.agent-feed .msg.user', { hasText: 'AND_ONE_MORE' }).waitFor({ timeout: 5_000 })
+      expect((await sentBubbles.allInnerTexts()).map(x => (x.includes('AND_ONE_MORE') ? 'second' : 'first'))).toEqual(['first', 'second'])
+      expect(await panel.locator('.delivery').count()).toBe(0)
+      expect(await panel.locator('.agent-feed .rw-btn').count()).toBe(0)
       await panel.locator('.agent-feed .msg.assistant', { hasText: 'SKILL_REACHED' }).waitFor({ timeout: 60_000 })
-      // The delivery note goes once the agent has answered.
-      await panel.locator('.delivery').waitFor({ state: 'detached', timeout: 10_000 })
-      // ↑ brings back what was sent to this agent.
+      await page.waitForTimeout(3_000)
+      expect(await panel.locator('.agent-feed .msg.user', { hasText: '/e2e-skill go' }).count()).toBe(1)
+      expect(await panel.locator('.agent-feed .msg.user', { hasText: 'AND_ONE_MORE' }).count()).toBe(1)
+      // ↑ brings back what was sent to this agent, newest first.
+      await agentInput.press('ArrowUp')
+      expect(await agentInput.inputValue()).toBe('AND_ONE_MORE')
       await agentInput.press('ArrowUp')
       expect((await agentInput.inputValue()).startsWith('/e2e-skill go')).toBe(true)
       expect(promptsSeen.some(p => p.includes('/e2e-skill go') && p.includes('for-agent.txt'))).toBe(true)
@@ -2313,11 +2323,15 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       const taskInput = side.getByLabel('Message', { exact: true })
       await taskInput.fill('USER_NOTE for A')
       await taskInput.press('Enter')
-      await side.locator('.msg.user', { hasText: 'USER_NOTE for A' }).waitFor({ timeout: 15_000 })
+      // Shown the moment it is sent, before the server has it.
+      await side.locator('.msg.user', { hasText: 'USER_NOTE for A' }).waitFor({ timeout: 1_000 })
+      // Its conversation is the worker's: no rewind of the coordinator's.
+      expect(await side.locator('.rw-btn').count()).toBe(0)
       longGates.LONG_A!()
       await showing(side.getByText('LONG_A_SAW_NOTE').waitFor({ timeout: 60_000 }), side)
       await page.waitForTimeout(2_000)
       expect(await side.locator('.msg.user', { hasText: 'USER_NOTE for A' }).count()).toBe(1)
+      expect(await page.getByText(/Queued; the agent/).count()).toBe(0)
       await side.locator('.pv-crumb button').click()
 
       // From the coordinator: its SendMessage shows in the worker's conversation.
