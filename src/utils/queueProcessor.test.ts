@@ -9,7 +9,10 @@ afterEach(() => clearCommandQueue())
 
 function drain(): string[][] {
   const turns: string[][] = []
-  while (processQueueIfReady({ executeInput: async cmds => { turns.push(cmds.map(c => String(c.value))) } }).processed) {}
+  let processed = true
+  while (processed) {
+    processed = processQueueIfReady({ executeInput: async cmds => { turns.push(cmds.map(c => String(c.value))) } }).processed
+  }
   return turns
 }
 

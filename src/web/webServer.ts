@@ -690,7 +690,9 @@ export function startWebServer(
     },
     exit(sessionId) {
       for (const key of [...agentSends.keys(), ...agentQueued.keys()]) {
-        if (key.startsWith(`${sessionId}:`)) agentSends.delete(key) || agentQueued.delete(key)
+        if (!key.startsWith(`${sessionId}:`)) continue
+        agentSends.delete(key)
+        agentQueued.delete(key)
       }
       const projectId = coordinators.get(sessionId)
       if (!projectId) return
