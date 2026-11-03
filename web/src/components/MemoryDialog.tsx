@@ -8,16 +8,38 @@ const TITLES: Partial<Record<MemoryFile['kind'], string>> = {
   local: '本地指令',
 }
 
-/** `text` with every case-insensitive occurrence of `q` in <mark>, like the prototype's hl(). */
-export function highlight(text: string, q: string): ReactNode {
-  if (!q) return text
-  const out: ReactNode[] = []
+/** Lowercase whitespace-separated words of a query. */
+export function queryWords(q: string): string[] {
+  return q.toLowerCase().split(/\s+/).filter(Boolean)
+}
+
+/** [start, end) of each case-insensitive occurrence of any word of `q`, left to right, longest first. */
+export function matchRanges(text: string, q: string): [number, number][] {
+  const words = queryWords(q)
   const lower = text.toLowerCase()
-  const needle = q.toLowerCase()
+  const out: [number, number][] = []
+  for (let at = 0; ; ) {
+    let i = -1
+    let len = 0
+    for (const w of words) {
+      const j = lower.indexOf(w, at)
+      if (j >= 0 && (i < 0 || j < i || (j === i && w.length > len))) [i, len] = [j, w.length]
+    }
+    if (i < 0) return out
+    out.push([i, i + len])
+    at = i + len
+  }
+}
+
+/** `text` with every case-insensitive occurrence of any word of `q` in <mark>, like the prototype's hl(). */
+export function highlight(text: string, q: string): ReactNode {
+  const ranges = matchRanges(text, q)
+  if (!ranges.length) return text
+  const out: ReactNode[] = []
   let at = 0
-  for (let i = lower.indexOf(needle); i >= 0; i = lower.indexOf(needle, at)) {
-    out.push(text.slice(at, i), <mark key={i}>{text.slice(i, i + q.length)}</mark>)
-    at = i + q.length
+  for (const [i, end] of ranges) {
+    out.push(text.slice(at, i), <mark key={i}>{text.slice(i, end)}</mark>)
+    at = end
   }
   out.push(text.slice(at))
   return out
@@ -45,7 +67,7 @@ export function MemoryBody({ z, lang, flash, onOpenSession }: ExtProps & { onOpe
   const [query, setQuery] = useState('')
   const [scope, setScope] = useState<'all' | 'memory' | 'session'>('all')
   const [open, setOpen] = useState<string>()
-  const [fts, setFts] = useState<{ q: string; memory: string[]; sessions: { session: string; snippet: string }[] }>()
+  const [fts, setFts] = useState<{ q: string; memory: { id: string; snippet: string }[]; sessions: { session: string; snippet: string }[] }>()
   const load = () => ext.memory().then(setData, e => setError(errorText(e)))
   useEffect(() => {
     void load()
@@ -58,7 +80,7 @@ export function MemoryBody({ z, lang, flash, onOpenSession }: ExtProps & { onOpe
     const timer = setTimeout(() => {
       ext.searchMemory(q, scope).then(
         r => {
-          setFts({ q, memory: r.memory.map(m => m.id), sessions: r.sessions })
+          setFts({ q, memory: r.memory, sessions: r.sessions })
           // A search refreshes the index; show its new size and time.
           void load()
         },
@@ -81,21 +103,28 @@ export function MemoryBody({ z, lang, flash, onOpenSession }: ExtProps & { onOpe
     return `${z('自动记忆')} · ${date}`
   }
   const ftsNow = fts && fts.q === q ? fts : undefined
+  const words = queryWords(q)
+  // Index hits first in rank order, then files that contain every word.
+  const rank = (x: MemoryFile) => ftsNow?.memory.findIndex(h => h.id === x.id) ?? -1
+  const order = (x: MemoryFile) => (rank(x) < 0 ? Number.MAX_SAFE_INTEGER : rank(x))
   const hits =
     eff === 'session'
       ? []
-      : data.files.filter(
-          x =>
-            !q ||
-            (title(x) + x.where + x.body).toLowerCase().includes(q.toLowerCase()) ||
-            ftsNow?.memory.includes(x.id),
-        )
+      : data.files
+          .filter(x => {
+            const hay = (title(x) + x.where + x.body).toLowerCase()
+            return words.every(w => hay.includes(w)) || rank(x) >= 0
+          })
+          .sort((a, b) => order(a) - order(b))
   const tHits = sq && eff !== 'memory' && q.length >= 2 ? (ftsNow?.sessions ?? []) : []
   const m = hits.find(x => x.id === open) ?? hits[0]
   const snippet = (x: MemoryFile): ReactNode => {
     if (!q) return where(x)
-    const line = x.body.split('\n').find(l => l.toLowerCase().includes(q.toLowerCase()))
-    return line ? highlight(line.replace(/^(description|name):\s*/, '').slice(0, 60), q) : where(x)
+    const line = x.body.split('\n').find(l => words.some(w => l.toLowerCase().includes(w)))
+    if (line) return highlight(line.replace(/^(description|name):\s*/, '').slice(0, 60), q)
+    // The index also matches the other Chinese script, which a plain substring search cannot.
+    const hit = ftsNow?.memory.find(h => h.id === x.id)
+    return hit ? snippetNode(hit.snippet.replace(/\s+/g, ' ').trim()) : where(x)
   }
   const toggle = async (key: 'autoMemory' | 'sqlite', on: boolean) => {
     try {

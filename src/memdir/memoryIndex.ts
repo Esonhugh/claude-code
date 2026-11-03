@@ -13,6 +13,7 @@ import { basename, dirname, join, resolve, sep } from 'path'
 import { getOriginalCwd, getSessionId } from '../bootstrap/state.js'
 import { getClaudeConfigHomeDir } from '../utils/envUtils.js'
 import { getProjectDir, getProjectsDir } from '../utils/sessionStorage.js'
+import { foldHanzi } from './foldHanzi.js'
 import { getAutoMemPath, type SqliteMemoryScope } from './paths.js'
 
 export type MemoryScope = SqliteMemoryScope
@@ -39,7 +40,7 @@ type Listing = { files: SourceFile[]; dirs: { dir: string; recursive: boolean }[
 type FileRow = { path: string; mtime: number; size: number; lines: number }
 
 // Bump when the tables or tokenizer change; an older index is dropped and rebuilt.
-const SCHEMA_VERSION = '1'
+const SCHEMA_VERSION = '2'
 // A transcript message longer than this is indexed by its head only.
 const MAX_CHUNK_CHARS = 4000
 // trigram needs at least three characters per term.
@@ -73,7 +74,7 @@ function openIndex(): Database {
   }
   index.run('CREATE TABLE IF NOT EXISTS files (path TEXT PRIMARY KEY, mtime REAL, size INTEGER, lines INTEGER)')
   index.run(
-    "CREATE VIRTUAL TABLE IF NOT EXISTS chunks USING fts5(body, path UNINDEXED, kind UNINDEXED, project UNINDEXED, line UNINDEXED, tokenize = 'trigram')",
+    "CREATE VIRTUAL TABLE IF NOT EXISTS chunks USING fts5(body, text UNINDEXED, path UNINDEXED, kind UNINDEXED, project UNINDEXED, line UNINDEXED, tokenize = 'trigram')",
   )
   db = index
   return index
@@ -176,7 +177,7 @@ async function refresh(index: Database, files: SourceFile[]): Promise<void> {
   const known = new Map(
     (index.query('SELECT path, mtime, size, lines FROM files').all() as FileRow[]).map(row => [row.path, row]),
   )
-  const insert = index.prepare('INSERT INTO chunks (body, path, kind, project, line) VALUES (?, ?, ?, ?, ?)')
+  const insert = index.prepare('INSERT INTO chunks (body, text, path, kind, project, line) VALUES (?, ?, ?, ?, ?, ?)')
   for (const file of files) {
     let info
     try {
@@ -217,7 +218,11 @@ async function refresh(index: Database, files: SourceFile[]): Promise<void> {
       } else {
         index.run('DELETE FROM chunks WHERE path = ?', [file.path])
       }
-      for (const chunk of chunks) insert.run(chunk.body, file.path, file.kind, file.project, chunk.line)
+      for (const chunk of chunks) {
+        // body is searched in simplified script; text keeps the original for snippets.
+        const folded = foldHanzi(chunk.body)
+        insert.run(folded, folded === chunk.body ? null : chunk.body, file.path, file.kind, file.project, chunk.line)
+      }
       index.run('INSERT OR REPLACE INTO files (path, mtime, size, lines) VALUES (?, ?, ?, ?)', [
         file.path,
         size === info.size ? info.mtimeMs : 0,
@@ -275,7 +280,7 @@ export function hasCjk(text: string): boolean {
 }
 
 function terms(query: string): string[] {
-  return [...new Set(query.split(/\s+/).filter(Boolean).flatMap(splitCjk))]
+  return [...new Set(foldHanzi(query).split(/\s+/).filter(Boolean).flatMap(splitCjk))]
 }
 
 export async function searchMemory(params: {
@@ -294,10 +299,10 @@ export async function searchMemory(params: {
   const paths = files.map(f => f.path)
   if (paths.length === 0) return []
   const rows = rankChunks(index, paths, words, params.limit, true)
-  return rows.map(({ body, ...hit }) => ({ ...hit, snippet: snippetAround(body ?? '', words) }))
+  return rows.map(({ body, text, ...hit }) => ({ ...hit, snippet: snippetAround(body ?? '', text ?? body ?? '', words) }))
 }
 
-type ChunkRow = { path: string; kind: MemorySearchHit['kind']; line: number; body: string | null }
+type ChunkRow = { path: string; kind: MemorySearchHit['kind']; line: number; body: string | null; text: string | null }
 
 /**
  * Chunks in `paths` holding any of `words`, those holding more of the words
@@ -325,7 +330,7 @@ function rankChunks(index: Database, paths: string[], query: string[], limit: nu
     .query(
       // MATERIALIZED runs MATCH once; a flattened subquery re-runs it for every row.
       `WITH m AS MATERIALIZED (${fts})
-       SELECT c.path, c.kind, c.line, ${withBody ? 'c.body' : 'NULL'} AS body
+       SELECT c.path, c.kind, c.line, ${withBody ? 'c.body, c.text' : 'NULL AS body, NULL AS text'}
        FROM chunks c LEFT JOIN m ON m.id = c.rowid
        WHERE c.path IN (${paths.map(() => '?').join(',')}) AND (${any.join(' OR ')})
        ORDER BY ${covered} DESC, m.rank, c.rowid DESC LIMIT ?`,
@@ -334,17 +339,19 @@ function rankChunks(index: Database, paths: string[], query: string[], limit: nu
 }
 
 /**
- * A window of `body` around the first query word it contains, the word in
- * brackets. FTS5 snippet() counts trigram tokens, which leaves ~24 characters.
+ * A window of the original `text` around the first query word that the
+ * searched `body` contains, the word in brackets. FTS5 snippet() counts
+ * trigram tokens, which leaves ~24 characters. Folding keeps lengths, so an
+ * offset in `body` is the same offset in `text`.
  */
-function snippetAround(body: string, words: string[]): string {
+function snippetAround(body: string, text: string, words: string[]): string {
   const lower = body.toLowerCase()
   const word = words.find(w => lower.includes(w.toLowerCase()))
-  if (!word) return body.slice(0, 200)
+  if (!word) return text.slice(0, 200)
   const at = lower.indexOf(word.toLowerCase())
   const end = at + word.length
   const start = Math.max(0, at - 80)
-  return `${start > 0 ? '…' : ''}${body.slice(start, at)}[${body.slice(at, end)}]${body.slice(end, end + 100)}${end + 100 < body.length ? '…' : ''}`
+  return `${start > 0 ? '…' : ''}${text.slice(start, at)}[${text.slice(at, end)}]${text.slice(end, end + 100)}${end + 100 < text.length ? '…' : ''}`
 }
 
 // Words too common in prompts or memory frontmatter to signal relevance.
@@ -372,7 +379,7 @@ export async function findMemoryFilesForPrompt(params: {
 }): Promise<{ path: string; mtimeMs: number }[]> {
   const words = [
     ...new Set(
-      params.prompt
+      foldHanzi(params.prompt)
         .toLowerCase()
         .split(/[^\p{L}\p{N}_-]+/u)
         .flatMap(splitCjk)
