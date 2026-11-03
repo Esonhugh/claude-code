@@ -35,7 +35,7 @@ import { AskDock, InputBox, ModeButton, ModelMenu, modelButtonLabel } from './Co
 import { Dialog } from './Dialog'
 import { Message, modelName } from './Message'
 import { WORKER_MODELS } from './ProjectDialog'
-import { FootMenu, readStored, type T, writeStored } from './ui'
+import { FootMenu, followScroll, readStored, type T, writeStored } from './ui'
 
 type Show = 'chat' | 'tasks'
 
@@ -178,9 +178,11 @@ function TaskPane({
   const shown = useMemo(() => workerItems(items, task.brief), [items, task.brief])
   const todos = useMemo(() => currentTodos(items), [items])
   const feedRef = useRef<HTMLDivElement>(null)
+  const atBottom = useRef(true)
+  const feedTop = useRef(0)
   useEffect(() => {
     const feed = feedRef.current
-    if (feed) feed.scrollTop = feed.scrollHeight
+    if (feed && atBottom.current) feed.scrollTop = feed.scrollHeight
   }, [shown.length, task.state])
   const live = isLive(task)
   const open = canMessage(task)
@@ -190,7 +192,7 @@ function TaskPane({
   return (
     <>
       {head}
-      <div className="feed" ref={feedRef}>
+      <div className="feed" ref={feedRef} onScroll={e => (atBottom.current = followScroll(e.currentTarget, atBottom.current, feedTop))}>
         <div className="pjcheck">
           <b>{task.title}</b>
           {todos.map((todo, i) => (
@@ -249,7 +251,10 @@ function TaskPane({
           signedOut={signedOut}
           draft={draft}
           setDraft={setDraft}
-          onSend={onSend}
+          onSend={() => {
+            atBottom.current = true
+            onSend()
+          }}
           onStop={() => {}}
           files={files}
           setFiles={setFiles}
@@ -318,6 +323,7 @@ export function ProjectView({
   uploadTo,
   moved,
   onOpenSession,
+  onLoadEarlier,
 }: {
   t: T
   project: Project
@@ -350,6 +356,8 @@ export function ProjectView({
   /** Sessions moved into this project from the sidebar; they open as the chats they are. */
   moved: HistoryEntry[]
   onOpenSession: (entry: HistoryEntry) => void
+  /** Prepends the transcript page before `chat.start`. */
+  onLoadEarlier?: () => void
 }) {
   const [show, setShow] = useState<Show>('chat')
   const [wide, setWide] = useState(false)
@@ -441,8 +449,16 @@ export function ProjectView({
   const feedTop = useRef(0)
   useEffect(() => {
     const feed = feedRef.current
-    if (feed) feed.scrollTop = feed.scrollHeight
+    if (feed && atBottom.current) feed.scrollTop = feed.scrollHeight
   }, [chat.items, chat.taskNotes, chat.busy])
+  // An earlier page lands above the reader; keep what they were looking at in place.
+  const fromBottom = useRef<number>(undefined)
+  useLayoutEffect(() => {
+    const feed = feedRef.current
+    if (!feed || fromBottom.current === undefined) return
+    feed.scrollTop = feed.scrollHeight - fromBottom.current
+    fromBottom.current = undefined
+  }, [chat.items])
   useEffect(() => {
     const feed = feedRef.current
     if (feed && atBottom.current) feed.scrollTop = feed.scrollHeight
@@ -800,14 +816,22 @@ export function ProjectView({
           className="feed"
           ref={feedRef}
           aria-busy={chat.busy}
-          onScroll={e => {
-            // As in the chat feed: only scrolling up unsticks; the event can land after more output rendered.
-            const el = e.currentTarget
-            if (el.scrollHeight - el.scrollTop - el.clientHeight < 40) atBottom.current = true
-            else if (el.scrollTop < feedTop.current) atBottom.current = false
-            feedTop.current = el.scrollTop
-          }}
+          onScroll={e => (atBottom.current = followScroll(e.currentTarget, atBottom.current, feedTop))}
         >
+          {chat.start > 0 && onLoadEarlier && (
+            <div className="older-sentinel">
+              <button
+                type="button"
+                onClick={() => {
+                  const feed = feedRef.current
+                  if (feed) fromBottom.current = feed.scrollHeight - feed.scrollTop
+                  onLoadEarlier()
+                }}
+              >
+                {t('loadEarlier')}
+              </button>
+            </div>
+          )}
           {feed}
           {notes.get('')?.map(note => <Note key={`${note.taskId}-${note.n}`} text={noteText(note)} />)}
           {(chat.busy || running + blocked > 0) && (
@@ -850,7 +874,10 @@ export function ProjectView({
             signedOut={signedOut}
             draft={draft}
             setDraft={setDraft}
-            onSend={onSend}
+            onSend={() => {
+            atBottom.current = true
+            onSend()
+          }}
             onStop={onStop}
             onFocus={onFocus}
             files={files}

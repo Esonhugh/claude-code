@@ -1,4 +1,4 @@
-import { type CSSProperties, type DragEvent, type ReactNode, useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react'
+import { type CSSProperties, type DragEvent, type ReactNode, useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from 'react'
 import {
   type AuthProvider,
   createSession,
@@ -36,7 +36,7 @@ import { type DialogKind, Sidebar, type SidebarProject } from './components/Side
 import { SidePanel, type SideTab } from './components/SidePanel'
 import { StartPage } from './components/StartPage'
 import { ColumnDrag, type Columns, columnVars } from './components/ColumnDrag'
-import { FootMenu, formatElapsed, nextMode, readStored, type T, writeStored } from './components/ui'
+import { FootMenu, followScroll, formatElapsed, nextMode, readStored, type T, writeStored } from './components/ui'
 import { WebPreview } from './components/WebPreview'
 import { chatMarkdown, exportFileName } from './exportChat'
 import { filesBase, IMAGE_TYPES, mentionPath, readAsDataUrl, setHome, tilde, uploadFile } from './files'
@@ -370,6 +370,14 @@ export function App() {
     const feed = feedRef.current
     if (feed && stickToBottom.current) feed.scrollTop = feed.scrollHeight
   }, [chat?.items, chat?.approvals, view])
+  // An earlier page lands above the reader; keep what they were looking at in place.
+  const fromBottom = useRef<number>(undefined)
+  useLayoutEffect(() => {
+    const feed = feedRef.current
+    if (!feed || fromBottom.current === undefined) return
+    feed.scrollTop = feed.scrollHeight - fromBottom.current
+    fromBottom.current = undefined
+  }, [chat?.items])
 
   // The server's own list, so a new browser or the first session already has the discovered models.
   const provider = account.account?.provider
@@ -1103,18 +1111,18 @@ export function App() {
             className="feed"
             ref={feedRef}
             aria-busy={chat.busy}
-            onScroll={e => {
-              // Scroll events arrive a frame late, after more of the reply may have rendered; only
-              // scrolling up (the reader's own move) unsticks, reaching the bottom sticks again.
-              const el = e.currentTarget
-              if (el.scrollHeight - el.scrollTop - el.clientHeight < 40) stickToBottom.current = true
-              else if (el.scrollTop < feedTop.current) stickToBottom.current = false
-              feedTop.current = el.scrollTop
-            }}
+            onScroll={e => (stickToBottom.current = followScroll(e.currentTarget, stickToBottom.current, feedTop))}
           >
             {chat.start > 0 && (
               <div className="older-sentinel">
-                <button type="button" onClick={() => view && void loadInto(view, chat.start)}>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const feed = feedRef.current
+                    if (feed) fromBottom.current = feed.scrollHeight - feed.scrollTop
+                    if (view) void loadInto(view, chat.start)
+                  }}
+                >
                   {t('loadEarlier')}
                 </button>
               </div>
@@ -1327,6 +1335,7 @@ export function App() {
             uploadTo={view}
             moved={state.history.filter(h => h.projectId === project.id)}
             onOpenSession={entry => void openSession(entry)}
+            onLoadEarlier={() => void loadInto(view, chat.start)}
           />,
         )}
       <main
