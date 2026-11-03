@@ -1650,6 +1650,7 @@ export function App() {
             moved={state.history.filter(h => h.projectId === project.id)}
             onOpenSession={entry => void openSession(entry)}
             onLoadEarlier={() => void loadInto(view, chat.start)}
+            daybreak={daybreak}
           />,
         )}
       <main
@@ -1750,6 +1751,11 @@ export function App() {
           project={projectDialog === 'new' ? undefined : projectDialog}
           workspace={info.workspace}
           models={models}
+          inheritModel={
+            projectDialog === 'new'
+              ? undefined
+              : ((inProject && project?.id === projectDialog.id ? chat?.model : undefined) ?? projectDialog.coordinator_model ?? undefined)
+          }
           onClose={() => setProjectDialog(undefined)}
           onSaved={saved => {
             setProjectDialog(undefined)

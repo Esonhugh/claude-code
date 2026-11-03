@@ -523,9 +523,9 @@ export function AgentView({
                 model: pick.model ?? input.model,
                 effort: pick.effort ?? input.effort,
                 models: input.models,
-                // A running agent keeps its model; a teammate never resumes.
-                heading: running || teammate ? t('taskModelLocked') : t('taskModelNext'),
-                locked: running || teammate,
+                // A running agent keeps its model for this run (the pick applies when it resumes); a teammate never resumes.
+                heading: teammate ? t('taskModelLocked') : running ? t('taskModelAfterRun') : t('taskModelNext'),
+                locked: teammate,
                 onModel: model => setPick(p => ({ ...p, model })),
                 onEffort: effort => setPick(p => ({ ...p, effort })),
               },
