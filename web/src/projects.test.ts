@@ -132,6 +132,28 @@ describe('project tasks', () => {
     expect(taskNoteText(loaded.taskNotes[1]!, undefined).vars.time).toBe('1m35s')
   })
 
+  it('notes no ending while an agent only waits on its own background work', () => {
+    const waitingSummary = 'Agent "Alpha" is waiting on its own background work'
+    let live = reduce(initialState, assistant('m1', [{ type: 'text', text: 'Go.' }]))
+    live = reduce(live, sys('task_started', { task_id: 'a', description: 'Alpha', task_type: 'local_agent', spawn_depth: 1, uuid: 's1' }))
+    live = reduce(live, sys('task_notification', { task_id: 'a', status: 'completed', waiting: true, summary: waitingSummary, uuid: 'n1' }))
+    expect(live.tasks.a?.status).toBe('running')
+    live = reduce(live, sys('task_notification', { task_id: 'a', status: 'completed', summary: 'done', uuid: 'n2' }))
+    expect(live.taskNotes.map(n => [n.status, n.n])).toEqual([['completed', 1]])
+
+    const notification = (uuid: string, summary: string) => ({
+      type: 'user',
+      isReplay: true,
+      uuid,
+      message: { role: 'user', content: `<task-notification>\n<task-id>a</task-id>\n<status>completed</status>\n<summary>${summary}</summary>\n</task-notification>` },
+    })
+    let loaded = reduce(initialState, assistant('m1', [{ type: 'text', text: 'Go.' }]))
+    loaded = reduce(loaded, notification('u1', waitingSummary))
+    loaded = reduce(loaded, assistant('m2', [{ type: 'text', text: 'Waiting.' }]))
+    loaded = reduce(loaded, notification('u2', 'Agent "Alpha" finished'))
+    expect(loaded.taskNotes.map(n => [n.afterId, n.n])).toEqual([['m2', 1]])
+  })
+
   it('formats a card meta line, with the running clock and the tool only while running', () => {
     const task = row({})
     expect(taskMeta(task, 'Opus 5.5', 30_000)).toBe('Opus 5.5 · 41s · 6.8k tok · WebFetch')

@@ -160,7 +160,8 @@ export function reduceTasks(tasks: Tasks, raw: unknown): Tasks {
     }
     case 'task_notification':
       return put({
-        status: str(raw.status),
+        // A parked agent (waiting on its own background work) has not ended.
+        status: raw.waiting === true ? undefined : str(raw.status),
         summary: str(raw.summary),
         outputFile: str(raw.output_file) || undefined,
         toolUseId: str(raw.tool_use_id),

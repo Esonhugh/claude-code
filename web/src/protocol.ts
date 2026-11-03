@@ -650,7 +650,7 @@ function noteFromLog(state: ChatState, text: string, uuid: string): Partial<Chat
   const tag = (name: string) => new RegExp(`<${name}>([^<]*)</${name}>`).exec(text)?.[1]?.trim()
   const taskId = tag('task-id')
   const status = tag('status')
-  if (!taskId || !status) return {}
+  if (!taskId || !status || tag('summary')?.endsWith('is waiting on its own background work')) return {}
   const duration = Number(tag('duration_ms'))
   return addNote(state, 'log', uuid, { taskId, status, ...(Number.isFinite(duration) && duration > 0 && { durationMs: duration }) })
 }

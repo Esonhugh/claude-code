@@ -791,6 +791,7 @@ export async function runAsyncAgentLifecycle({
   enableSummarization,
   getWorktreeResult,
   onRunSettled,
+  priorToolUses,
   resume,
   shouldNotifyOwner,
 }: {
@@ -806,6 +807,8 @@ export async function runAsyncAgentLifecycle({
   agentIdForCleanup: string
   enableSummarization: boolean
   onRunSettled?: () => void
+  /** Tool calls of the runs before this one, so a resumed agent reports its whole count. */
+  priorToolUses?: number
   resume?: (prompt: string) => Promise<unknown>
   shouldNotifyOwner?: () => boolean
   getWorktreeResult: () => Promise<{
@@ -818,6 +821,7 @@ export async function runAsyncAgentLifecycle({
     'Agent post-processing could not complete. Review the agent output before continuing.'
   const agentMessages: MessageType[] = []
   const tracker = createProgressTracker()
+  tracker.toolUseCount = priorToolUses ?? 0
   const resolveActivity = createActivityDescriptionResolver(
     toolUseContext.options.tools,
   )

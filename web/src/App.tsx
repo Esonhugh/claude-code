@@ -1,4 +1,4 @@
-import { type CSSProperties, type DragEvent, type ReactNode, useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from 'react'
+import { type CSSProperties, type DragEvent, Fragment, type ReactNode, useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from 'react'
 import {
   type AuthProvider,
   createSession,
@@ -52,11 +52,12 @@ import {
   permissionResponse,
   REQUEST_PREFIX,
   type SessionEnv,
+  type TaskNote,
   teamName,
   unsupportedControlResponse,
   userMessage,
 } from './protocol'
-import { agentInputs, messageTarget } from './projects'
+import { agentInputs, messageTarget, notesByItem, taskNoteText } from './projects'
 import { turnSources } from './sources'
 import { appReducer, type HistoryEntry, initialAppState, type SessionChat } from './store'
 import { nativeCommand, type SlashCommand } from './commands'
@@ -323,6 +324,31 @@ export function App() {
     setSheetOpen(false)
   }, [view])
   const items = chat?.items
+  // An agent the main conversation started that handed back its report or ended, under the turn it ended in.
+  const agentNotes = useMemo(
+    () =>
+      notesByItem(
+        (chat?.taskNotes ?? []).filter(note => {
+          const task = tasks?.[note.taskId]
+          return task !== undefined && canChat(task) && task.depth <= 1
+        }),
+        items ?? [],
+      ),
+    [chat?.taskNotes, tasks, items],
+  )
+  const agentNote = (note: TaskNote) => {
+    const task = tasks?.[note.taskId]
+    const { key, vars } = taskNoteText(note, task && { description: task.title ?? task.description, durationMs: task.durationMs })
+    const done = key === 'taskFinishedNote'
+    return (
+      <div className="pj-note agent-note" key={`${note.taskId}-${note.n}`}>
+        <span className="g">{done ? '↩' : '■'}</span>
+        <button type="button" onClick={() => agentsValue.open(note.taskId)}>
+          {t(done ? 'agentReturnedNote' : key === 'taskFailedNote' ? 'agentFailedNote' : 'agentExitedNote', vars)} ›
+        </button>
+      </div>
+    )
+  }
   const sourcesById = useMemo(() => turnSources(items ?? [], agentsValue.byToolUse), [items, agentsValue])
   const chatTitle = state.history.find(h => h.id === view)?.title ?? 'Claude'
 
@@ -1320,17 +1346,20 @@ export function App() {
                 </button>
               </div>
             )}
-            {joinTurns(chat.items).map(({ item, ids }) => (
-              <Message
-                key={item.id}
-                item={item}
-                t={t}
-                fallbackModel={chat.model}
-                models={models}
-                streaming={chat.busy && ids.includes(chat.streamingId ?? '')}
-                sources={ids.map(id => sourcesById.get(id)).find(Boolean)}
-              />
+            {joinTurns(chat.items, id => agentNotes.has(id)).map(({ item, ids }) => (
+              <Fragment key={item.id}>
+                <Message
+                  item={item}
+                  t={t}
+                  fallbackModel={chat.model}
+                  models={models}
+                  streaming={chat.busy && ids.includes(chat.streamingId ?? '')}
+                  sources={ids.map(id => sourcesById.get(id)).find(Boolean)}
+                />
+                {agentNotes.get(ids.at(-1)!)?.map(agentNote)}
+              </Fragment>
             ))}
+            {agentNotes.get('')?.map(agentNote)}
             {chat.queued.map(item => (
               <Message key={item.id} item={item} t={t} streaming={false} queued />
             ))}
