@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test'
-import type { ModelOption } from '../protocol'
-import { modelName, relativeTo } from './Message'
+import type { Item, ModelOption } from '../protocol'
+import { continuesTurn, modelName, relativeTo } from './Message'
 
 const models: ModelOption[] = [
   {
@@ -38,5 +38,20 @@ describe('relativeTo', () => {
     expect(relativeTo('C:\\Users\\u\\workspace\\edit.txt', 'C:\\Users\\u\\workspace')).toBe('edit.txt')
     expect(relativeTo('C:\\Users\\u\\workspace\\a\\b.txt', 'C:\\Users\\u\\workspace\\')).toBe('a\\b.txt')
     expect(relativeTo('C:\\Users\\u\\workspace2\\x.txt', 'C:\\Users\\u\\workspace')).toBe('C:\\Users\\u\\workspace2\\x.txt')
+  })
+})
+
+describe('one header per turn', () => {
+  const reply = (id: string, text: string): Item => ({ kind: 'assistant', id, streamed: false, blocks: [{ kind: 'text', text }] })
+  const items: Item[] = [
+    { kind: 'user', id: 'u1', text: 'hi' },
+    reply('a1', 'first'),
+    reply('a2', 'second'),
+    { kind: 'user', id: 'u2', text: 'again' },
+    reply('a3', 'third'),
+  ]
+
+  it('continues only an assistant message right after another one', () => {
+    expect(items.map((_, i) => continuesTurn(items, i))).toEqual([false, false, true, false, false])
   })
 })

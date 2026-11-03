@@ -33,7 +33,7 @@ import { type Approval, type ApprovalChoice, type Block, currentTodos, initialSt
 import type { HistoryEntry, SessionChat } from '../store'
 import { AskDock, InputBox, ModeButton, ModelMenu, modelButtonLabel } from './Composer'
 import { Dialog } from './Dialog'
-import { Message, modelName } from './Message'
+import { continuesTurn, Message, modelName } from './Message'
 import { WORKER_MODELS } from './ProjectDialog'
 import { FootMenu, followScroll, readStored, type T, writeStored } from './ui'
 
@@ -218,8 +218,8 @@ function TaskPane({
             <div className="pjbrief">{task.brief}</div>
           </div>
         )}
-        {shown.map(item => (
-          <Message key={item.id} item={item} t={t} who="worker" fallbackModel={model} models={models} streaming={false} />
+        {shown.map((item, i) => (
+          <Message key={item.id} item={item} t={t} who="worker" fallbackModel={model} models={models} streaming={false} continued={continuesTurn(shown, i)} />
         ))}
         {task.state === 'running' && (
           <div className="status-line">
@@ -737,10 +737,12 @@ export function ProjectView({
     const { key, vars } = taskNoteText(note, chat.tasks[note.taskId] ?? (row && { description: row.title, durationMs: row.duration_ms }))
     return t(key, vars)
   }
-  const feed = chat.items.map(item => (
+  const feed = chat.items.map((item, i) => (
     <Fragment key={item.id}>
       <Message
         item={item}
+        // A task notice under the previous message starts a new block.
+        continued={continuesTurn(chat.items, i) && !notes.has(chat.items[i - 1]!.id)}
         t={t}
         fallbackModel={chatModel}
         models={models}

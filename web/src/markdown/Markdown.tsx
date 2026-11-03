@@ -33,6 +33,9 @@ type Ctx = {
 }
 
 /** `node` followed by a "Preview" button when `url` can be framed. */
+/** Inline code with a run this long and no break opportunity (a hash, a long file name). */
+const LONG_TOKEN = /[^\s/-]{32}/
+
 function withPreview(node: ReactNode, url: string, ctx: Ctx, key: number): ReactNode {
   const { target, open, label } = ctx.preview ?? {}
   const href = target?.(url)
@@ -331,7 +334,14 @@ function renderNode(node: RootContent, ctx: Ctx, key: number): ReactNode {
     case 'delete':
       return <del key={key}>{renderChildren(node, ctx)}</del>
     case 'inlineCode':
-      return withPreview(<code key={key}>{node.value}</code>, node.value.trim(), ctx, key)
+      return withPreview(
+        <code key={key} className={LONG_TOKEN.test(node.value) ? 'long' : undefined}>
+          {node.value}
+        </code>,
+        node.value.trim(),
+        ctx,
+        key,
+      )
     case 'break':
       return <br key={key} />
     case 'link':

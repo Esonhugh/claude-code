@@ -25,6 +25,13 @@ describe('Markdown', () => {
     expect(out).toContain('<blockquote>')
   })
 
+  it('lets long inline code such as a hash break anywhere, but not short code', () => {
+    const out = html('SHA256 `e37b59415702ef4be0383035a9ae1dc943dfd812537990c284b81956a9c19c5a` in `case/`, file `tudi详情采购清单ervice_jpg.exe`')
+    expect(out).toContain('<code class="long">e37b5941')
+    expect(out).toContain('<code>case/</code>')
+    expect(out).toContain('<code>tudi详情采购清单ervice_jpg.exe</code>')
+  })
+
   it('shows raw HTML as text instead of markup', () => {
     const out = html('<img src=x onerror=alert(1)>\n\nhi <script>alert(1)</script>')
     expect(out).not.toContain('<img')

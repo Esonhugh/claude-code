@@ -383,6 +383,11 @@ export function TeamBar({
   )
 }
 
+/** Each API message is its own item; one that follows another assistant item belongs to the same turn. */
+export function continuesTurn(items: Item[], index: number): boolean {
+  return items[index]?.kind === 'assistant' && items[index - 1]?.kind === 'assistant'
+}
+
 export function Message({
   item,
   t,
@@ -394,6 +399,7 @@ export function Message({
   who = 'Claude',
   taskCard,
   queued,
+  continued,
 }: {
   item: Item
   t: T
@@ -409,6 +415,8 @@ export function Message({
   taskCard?: (block: Extract<Block, { kind: 'tool' }>) => ReactNode
   /** Sent during a running turn and not yet seen by the model. */
   queued?: boolean
+  /** Another API message of the turn above: drawn under its header. */
+  continued?: boolean
 }) {
   const files = useContext(FilesContext)
   const { rewind } = useContext(ChatContext)
@@ -540,12 +548,14 @@ export function Message({
       })
     : []
   return (
-    <div className="msg assistant">
-      <span className="who">
-        {who}
-        {label && <span className="wm"> ({label})</span>}
-        {role}
-      </span>
+    <div className={continued ? 'msg assistant cont' : 'msg assistant'}>
+      {!continued && (
+        <span className="who">
+          {who}
+          {label && <span className="wm"> ({label})</span>}
+          {role}
+        </span>
+      )}
       {item.blocks.map((block, i) => {
         if (!block || cards.some(c => c.i === i)) return null
         if (block.kind === 'text') {
