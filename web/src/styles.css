@@ -310,6 +310,9 @@ h1, h2, h3 { text-wrap: balance; margin: 0 }
 .cbox textarea:focus-visible { outline: none }
 .cbox:focus-within { border-color: var(--accent) }
 .to-chips { flex: none; align-self: flex-end; display: flex; flex-wrap: wrap; gap: 4px; max-width: 50%; margin-bottom: 2px }
+/* Two or more picks take their own row above the text, which keeps the full width. */
+.cbox:has(.to-chip + .to-chip) { flex-wrap: wrap }
+.cbox .to-chips:has(.to-chip + .to-chip) { flex-basis: 100%; max-width: 100%; align-self: auto }
 .to-chip { flex: none; max-width: 100%; display: inline-flex; align-items: center; gap: 2px; height: 26px; padding: 0 4px 0 8px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); font-size: 12.5px; font-weight: 500; white-space: nowrap }
 .to-chip span { overflow: hidden; text-overflow: ellipsis }
 .to-chip button { border: 0; background: transparent; color: inherit; padding: 0 4px; font-size: 14px; line-height: 1; cursor: pointer; opacity: .7 }
@@ -399,6 +402,8 @@ h1, h2, h3 { text-wrap: balance; margin: 0 }
 .dialog .body { overflow: auto; padding: 14px 16px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px }
 .setrow { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; align-items: center; padding-bottom: 12px; border-bottom: 1px solid var(--line) }
 .setrow:last-child { border-bottom: 0 }
+/* A long folder wraps in its own column instead of squeezing the label to one character a line. */
+.setrow .pj-cwd { max-width: min(320px, 50vw); overflow-wrap: anywhere; text-align: right }
 .setrow b { font-weight: 500 } .setrow small { display: block; color: var(--muted); font-size: 12px }
 .setrow select { font: inherit; padding: 4px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--fg) }
 .switch { width: 36px; height: 20px; border-radius: 10px; border: 0; background: var(--line); position: relative; padding: 0 }

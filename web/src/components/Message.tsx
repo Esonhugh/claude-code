@@ -52,7 +52,10 @@ export function modelOption(
 export function modelName(model: string | undefined, models: ModelOption[]): string | undefined {
   const option = modelOption(model, models)
   if (!option) return modelLabel(model)
-  const lead = option.description?.split(' · ')[0]
+  // `Opus 5.5 · Best for…`: the part before ` · ` is the full name. A plain sentence
+  // (`GPT-6.1 Terra Codex model.`) is only the description.
+  const parts = option.description?.split(' · ') ?? []
+  const lead = parts.length > 1 ? parts[0] : undefined
   return lead?.startsWith(`${option.displayName} `) ? lead : option.displayName
 }
 

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test'
 import { translate } from '../i18n'
-import { effortChoices, matchApps, matchTargets, pinText, shownModels } from './Composer'
+import { effortChoices, matchApps, matchTargets, modelButtonLabel, pinText, shownModels } from './Composer'
 import { nextMode, offeredModes, type T } from './ui'
 
 const t: T = (key, vars) => translate('en', key, vars)
@@ -24,6 +24,17 @@ describe('permission modes', () => {
     expect(nextMode('acceptEdits', false)).toBe('auto')
     expect(nextMode('acceptEdits', true)).toBe('plan')
     expect(nextMode('bypassPermissions')).toBe('default')
+  })
+})
+
+describe('modelButtonLabel', () => {
+  it('names the model a default pick runs: the default row, or the first model of a list without one', () => {
+    const claude = [{ value: 'default', displayName: 'Default', resolvedModel: 'opus' }, { value: 'opus', displayName: 'Opus 5.5' }]
+    expect(modelButtonLabel('default', undefined, claude, t)).toBe('Opus 5.5')
+    // A ChatGPT sign-in lists no default row; its first model is the account's default.
+    const openai = [{ value: 'gpt-6.1-sol', displayName: 'GPT-6.1-Sol' }, { value: 'gpt-6-astra', displayName: 'GPT-6-Astra' }]
+    expect(modelButtonLabel(undefined, undefined, openai, t)).toBe('GPT-6.1-Sol')
+    expect(modelButtonLabel('default', 'high', openai, t)).toBe('GPT-6.1-Sol · high')
   })
 })
 

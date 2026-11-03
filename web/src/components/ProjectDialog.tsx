@@ -125,7 +125,7 @@ export function ProjectDialog({
             <small>{t('projectFolderHint')}</small>
           </div>
           {project ? (
-            <span className="mono">{tilde(project.cwd)}</span>
+            <span className="mono pj-cwd">{tilde(project.cwd)}</span>
           ) : (
             <input
               id="pj-path"

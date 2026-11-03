@@ -1,5 +1,5 @@
 import { feature } from 'bun:bundle'
-import { APIError } from '@anthropic-ai/sdk'
+import { APIError, APIUserAbortError } from '@anthropic-ai/sdk'
 import type {
   BetaStopReason,
   BetaUsage as Usage,
@@ -302,7 +302,8 @@ export function logAPIError({
     )
   }
 
-  logError(error as Error)
+  // The user's own abort is counted below but is not an error to report (-p result `errors`).
+  if (!(error instanceof APIUserAbortError)) logError(error as Error)
   logEvent('tengu_api_error', {
     model: model as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
     error: errStr as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,

@@ -45,6 +45,8 @@ export type Item =
       model?: string
       streamed: boolean
       blocks: Block[]
+      /** The SDK messages (by uuid) folded into this reply, so one given again is not added twice. */
+      parts?: string[]
     }
   | { kind: 'error'; id: string; text: string }
   /** Output of a local slash command (`/model`, `/usage`), shown as a muted system line. */
@@ -606,14 +608,15 @@ export function teammateMessages(
 const CHANNEL_MESSAGE = /^<channel\s+source="([^"]+)"([^>]*)>\n?([\s\S]*?)\n?<\/channel>\s*$/
 
 // The transcript keeps the lines the model reads around it ("Another Claude session sent a message:").
-const PEER_MESSAGE = /^(?:[^<\n]*\n)?<cross-session-message([^>]*)>\n?([\s\S]*?)\n?<\/cross-session-message>/
+// Another session's message, or (`agent-message`) one a sibling worker sent with SendMessage.
+const PEER_MESSAGE = /^(?:[^<\n]*\n)?<(cross-session-message|agent-message)([^>]*)>\n?([\s\S]*?)\n?<\/\1>/
 
 /** A message from a peer session, named by its `from-name` (or address). */
 export function peerMessage(text: string, id: string): Extract<Item, { kind: 'peer' }> | undefined {
   const m = PEER_MESSAGE.exec(text.trim())
   if (!m) return undefined
-  const attr = (name: string) => new RegExp(`\\b${name}="([^"]*)"`).exec(m[1] ?? '')?.[1]
-  return { kind: 'peer', id, from: unescapeAttr(attr('from-name') ?? attr('from') ?? '?'), text: m[2] ?? '' }
+  const attr = (name: string) => new RegExp(`\\b${name}="([^"]*)"`).exec(m[2] ?? '')?.[1]
+  return { kind: 'peer', id, from: unescapeAttr(attr('from-name') ?? attr('from') ?? '?'), text: m[3] ?? '' }
 }
 
 /**
@@ -845,6 +848,10 @@ export function reduce(state: ChatState, raw: unknown): ChatState {
         (i): i is Extract<Item, { kind: 'assistant' }> =>
           i.kind === 'assistant' && i.id === id,
       )
+      // A tab that attaches after the reply was written gets it both from the transcript and from the held lines.
+      const part = str(raw.uuid)
+      if (part && existing?.parts?.includes(part)) return state
+      const parts = part ? [...(existing?.parts ?? []), part] : existing?.parts
       if (existing?.streamed) {
         // The streamed copy already has the text; take the final tool input.
         let next = state
@@ -859,6 +866,7 @@ export function reduce(state: ChatState, raw: unknown): ChatState {
         return updateLastAssistant(state, id, item => ({
           ...item,
           blocks: [...item.blocks, ...blocks],
+          parts,
         }))
       }
       return {
@@ -871,6 +879,7 @@ export function reduce(state: ChatState, raw: unknown): ChatState {
             model: str(message.model),
             streamed: false,
             blocks,
+            ...(parts && { parts }),
           },
         ],
       }

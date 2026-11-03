@@ -31,8 +31,11 @@ export function modelButtonLabel(
   t: T,
 ): string {
   // `default` is named by the model it resolves to, like the prototype's `Opus 5.5 · high`.
+  // A list without a default row (a ChatGPT sign-in) runs its first model.
   const resolved =
-    !model || model === 'default' ? (models.find(m => m.value === 'default')?.resolvedModel ?? model) : model
+    !model || model === 'default'
+      ? (models.find(m => m.value === 'default')?.resolvedModel ?? (models.some(m => m.value === 'default') ? model : models[0]?.value) ?? model)
+      : model
   const name = modelName(resolved, models) ?? t('model')
   return effort ? `${name} · ${effort}` : name
 }
@@ -40,7 +43,11 @@ export function modelButtonLabel(
 /** The description without the leading model name and the prices: `Best for everyday, complex tasks`. */
 function modelHint(m: ModelOption): string | undefined {
   const parts = (m.description ?? '').split(' · ')
-  if (parts[0]?.startsWith(`${m.displayName} `)) parts.shift()
+  if (parts[0]?.startsWith(`${m.displayName} `)) {
+    // `Opus 5.5 · …` leads with the full name; a sentence `GPT-6.1 Terra Codex model.` keeps its rest.
+    if (parts.length > 1) parts.shift()
+    else parts[0] = parts[0].slice(m.displayName.length + 1)
+  }
   return parts.filter(p => p && !p.startsWith('$')).join(' · ') || undefined
 }
 
