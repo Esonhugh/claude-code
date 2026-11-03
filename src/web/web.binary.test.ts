@@ -1052,9 +1052,9 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       await panel.locator('.agent-row', { hasText: 'two-phase' }).first().click()
       await panel.getByText('Phase 2/2 · Write').waitFor({ timeout: 30_000 })
       await panel.locator('.crumb').getByRole('button', { name: 'Expand' }).click()
-      const lanes = page.locator('.lanes')
-      await lanes.locator('.lane h3', { hasText: 'Gather' }).waitFor()
-      await lanes.locator('.lane h3', { hasText: 'Write' }).waitFor()
+      const lanes = page.locator('.kanban')
+      await lanes.locator('.kcol header', { hasText: 'Gather' }).waitFor()
+      await lanes.locator('.kcol header', { hasText: 'Write' }).waitFor()
       expect(await lanes.locator('.wcard b').allTextContents()).toEqual(['gather-a', 'write-b'])
       // A card in the lanes opens that agent's output at the dialog's bottom; the dialog stays.
       await lanes.locator('.wcard', { hasText: 'write-b' }).click()
