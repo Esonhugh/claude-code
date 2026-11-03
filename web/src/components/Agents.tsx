@@ -430,6 +430,17 @@ export function AgentView({
   }, [sessionId, agentId, tick, poll])
   const items = useMemo(() => (messages ?? []).reduce(reduce, initialState).items, [messages])
   const prompts = useMemo(() => items.flatMap(i => (i.kind === 'user' && i.text ? [i.text] : [])), [items])
+  // Where the transcript stood when the delivery note was set: the note goes once
+  // the agent has the message and answers it.
+  const [noteFrom, setNoteFrom] = useState<number>()
+  useEffect(() => {
+    if (noteFrom === undefined) return
+    const read = items.slice(noteFrom).findIndex(i => i.kind === 'user')
+    if (read >= 0 && items.slice(noteFrom + read).some(i => i.kind === 'assistant')) {
+      setNote(undefined)
+      setNoteFrom(undefined)
+    }
+  }, [items, noteFrom])
   const send = async () => {
     const text = draft.trim()
     if ((!text && !files.length) || !onSend) return
@@ -438,8 +449,10 @@ export function AgentView({
       setDraft('')
       setFiles([])
       setNote(await onSend([text, mentions.join(' ')].filter(Boolean).join('\n\n'), running ? {} : pick))
+      setNoteFrom(items.length)
       setFollowUntil(Date.now() + 30_000)
     } catch (err) {
+      setNoteFrom(undefined)
       setNote(err instanceof Error ? err.message : String(err))
     }
   }

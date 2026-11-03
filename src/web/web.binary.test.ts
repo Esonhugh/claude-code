@@ -2212,6 +2212,8 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       await agentInput.press('Enter')
       await panel.locator('.agent-feed .msg.user', { hasText: '/e2e-skill go' }).waitFor({ timeout: 60_000 })
       await panel.locator('.agent-feed .msg.assistant', { hasText: 'SKILL_REACHED' }).waitFor({ timeout: 60_000 })
+      // The delivery note goes once the agent has answered.
+      await panel.locator('.delivery').waitFor({ state: 'detached', timeout: 10_000 })
       // ↑ brings back what was sent to this agent.
       await agentInput.press('ArrowUp')
       expect((await agentInput.inputValue()).startsWith('/e2e-skill go')).toBe(true)
