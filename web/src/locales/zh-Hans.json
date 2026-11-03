@@ -235,6 +235,7 @@
   "thoughtFor": "思考了 {n} 秒",
   "handbackReport": "交回的报告",
   "handedTo": "交给",
+  "sentTo": "已发送至",
   "stepsRead": "读了 {n} 个文件",
   "stepsRead_one": "读了 {n} 个文件",
   "stepsSearched": "搜索 {n} 次",
