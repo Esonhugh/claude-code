@@ -969,6 +969,8 @@ body.proj .main, body.proj .side, body.proj .artview, body.proj #panel-btn { dis
 .tl-card .tl-act { overflow-wrap: anywhere }
 .pj-note { max-width: var(--col); width: 100%; margin: 0 auto; font-size: 12.5px; color: var(--muted); display: flex; gap: 8px }
 .pj-note .g { font-family: var(--f-mono); color: var(--accent) }
+.agent-note button { border: 0; background: none; padding: 0; font: inherit; color: inherit; cursor: pointer; text-align: left }
+.agent-note button:hover { color: var(--fg); text-decoration: underline }
 .pjlist { padding: 16px 24px; display: flex; flex-direction: column; gap: 6px; overflow: auto; flex: 1; min-height: 0 }
 .pjlist .grp-h { margin: 10px 2px 2px } .pjlist .grp-h:first-child { margin-top: 0 }
 .pjcheck { border: 1px solid var(--line); border-radius: 10px; padding: 10px 14px; display: flex; flex-direction: column; gap: 4px; font-size: 13px; max-width: var(--col); width: 100%; margin: 0 auto }
