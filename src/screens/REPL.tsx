@@ -3663,7 +3663,7 @@ export function REPL({
     void mrOnTurnComplete(messagesRef.current, true)
   }
 
-  // Function to handle queued command when canceling a permission request
+  // Esc with nothing to cancel pulls queued commands back into the input
   const handleQueuedCommandOnCancel = useCallback(() => {
     const result = popAllEditable(inputValue, 0)
     if (!result) return
@@ -7219,7 +7219,9 @@ export function REPL({
       <PermissionRequest
         key={toolUseConfirmQueue[0]?.toolUseID}
         onDone={() => setToolUseConfirmQueue(([_, ...tail]) => tail)}
-        onReject={handleQueuedCommandOnCancel}
+        // Like official: prompts queued before a rejected permission stay
+        // queued and run next, the same as after Esc mid-stream.
+        onReject={() => {}}
         toolUseConfirm={toolUseConfirmQueue[0]!}
         toolUseContext={getToolUseContext(
           messages,
