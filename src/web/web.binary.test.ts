@@ -827,7 +827,7 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       sample('memo.rtf', '{\\rtf1\\ansi RTF_BODY\\par}'),
     ]
     const notes = join(home, 'notes.txt')
-    writeFileSync(notes, 'NOTES_BODY')
+    writeFileSync(notes, 'first line\nNOTES_BODY\nlast line')
     const pixel = join(home, 'pixel.png')
     writeFileSync(
       pixel,
@@ -891,6 +891,10 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       expect(await preview.locator('.cpin-box').count()).toBe(0)
       await preview.locator('.preview-name', { hasText: 'chart.svg' }).waitFor()
       await preview.locator('.pinnable').click(spot)
+      // The mark is centred on the spot clicked.
+      const mark = (await preview.locator('.cpin').boundingBox())!
+      expect(Math.abs(mark.x + mark.width / 2 - (shape.x + spot.position.x))).toBeLessThan(1.5)
+      expect(Math.abs(mark.y + mark.height / 2 - (shape.y + spot.position.y))).toBeLessThan(1.5)
       await preview.getByLabel('Comment', { exact: true }).fill('PIN_NOTE')
       await preview.getByLabel('Comment', { exact: true }).press('Enter')
       await preview.locator('.cpin.sent', { hasText: '1' }).waitFor()
@@ -898,6 +902,57 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       for (let i = 0; i < 300 && promptsSeen.length === commentsBefore; i++) await Bun.sleep(100)
       expect(promptsSeen.slice(commentsBefore).join('\n')).toContain(JSON.stringify('Comment on `' + files[3] + '` (pinned at 25% from the left, 75% from the top): PIN_NOTE').slice(1, -1))
       expect(await input.inputValue()).toBe('')
+      // Text, code and HTML source take a selection; tables take a cell; chat images open to pin.
+      const comment = async (text: string) => {
+        const before = promptsSeen.length
+        await preview.getByLabel('Comment', { exact: true }).fill(text)
+        await preview.getByLabel('Comment', { exact: true }).press('Enter')
+        await page.locator('.msg.user', { hasText: text }).waitFor()
+        for (let i = 0; i < 300 && promptsSeen.length === before; i++) await Bun.sleep(100)
+        return promptsSeen.slice(before).join('\n')
+      }
+      const select = async (text: string) => {
+        await preview.locator('.selectable', { hasText: text }).waitFor()
+        const found = await page.evaluate((text: string) => {
+          const root = document.querySelector('.preview .selectable')
+          if (!root) return false
+          const walk = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
+          for (let n = walk.nextNode(); n; n = walk.nextNode()) {
+            const at = n.textContent!.indexOf(text)
+            if (at < 0) continue
+            const range = document.createRange()
+            range.setStart(n, at)
+            range.setEnd(n, at + text.length)
+            getSelection()!.removeAllRanges()
+            getSelection()!.addRange(range)
+            root.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }))
+            return true
+          }
+          return false
+        }, text)
+        expect(found).toBe(true)
+        await preview.locator('.cpin-offer').click()
+      }
+      await open('notes.txt')
+      await preview.getByText('NOTES_BODY').waitFor()
+      await select('NOTES_BODY')
+      expect(await comment('LINE_NOTE')).toContain('(line 2): LINE_NOTE')
+      await open('readme.md')
+      await select('MD_HEADING')
+      expect(await comment('QUOTE_NOTE')).toContain('readme.md` (line 1, on \\"MD_HEADING\\"): QUOTE_NOTE')
+      await open('page.html')
+      await preview.getByRole('radio', { name: 'Source' }).click()
+      await preview.locator('.codeblock').waitFor()
+      await select('HTML_BODY')
+      expect(await comment('SOURCE_NOTE')).toContain('page.html` (line 1): SOURCE_NOTE')
+      await open('table.csv')
+      await preview.locator('.sheet td', { hasText: 'x, y' }).click()
+      expect(await comment('CELL_NOTE')).toContain('table.csv` (cell A2): CELL_NOTE')
+      await preview.locator('.sheet td.cell-sent', { hasText: 'x, y' }).waitFor()
+      await page.locator('.bubble-image-open').first().click()
+      await preview.locator('.preview-name', { hasText: 'Image 1' }).waitFor()
+      await preview.locator('.pinnable').click({ position: { x: 1, y: 1 } })
+      expect(await comment('IMAGE_NOTE')).toContain('Comment on image 1 of my message \\"FILES readme.md table.csv')
       await open('book.xlsx')
       await preview.getByRole('tab', { name: 'Second' }).click()
       await preview.getByText('SECOND_SHEET_CELL').waitFor({ timeout: 30_000 })

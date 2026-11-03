@@ -1,6 +1,7 @@
 import {
   Component,
   createContext,
+  type CSSProperties,
   type ReactNode,
   useContext,
   useEffect,
@@ -118,36 +119,98 @@ function SvgImage({ url, name }: { url: string; name: string }) {
   ) : null
 }
 
-/** A spot on the file: fractions of the width and height, and the PDF page. */
-export type Spot = { x: number; y: number; page?: number }
-type Pin = Spot & { text: string }
+/** Where on the file a comment points. */
+export type Anchor =
+  /** A pinned spot: fractions of the width and height, and the PDF page. */
+  | { kind: 'spot'; x: number; y: number; page?: number }
+  /** Selected lines of a text or code view, from 1. */
+  | { kind: 'lines'; from: number; to: number }
+  /** Selected text of a rendered document; `line` when the source has it exactly once. */
+  | { kind: 'quote'; quote: string; line?: number }
+  /** A table cell, `B3` as a spreadsheet names it. */
+  | { kind: 'cell'; ref: string; sheet?: string }
+type Sent = { anchor: Anchor; text: string }
+/** An anchor waiting for its comment; `at` places the box in the viewer, except for spots. */
+type Draft = { anchor: Anchor; at?: { left: number; top: number } }
 
 const pct = (n: number) => Math.round(n * 100)
+const QUOTE_CHARS = 120
 
-/** The message a pinned comment sends, in the shape claude.ai uses. */
-export function pinComment(path: string, pin: Pin): string {
-  const page = pin.page ? `page ${pin.page}, ` : ''
-  return `Comment on \`${path}\` (${page}pinned at ${pct(pin.x)}% from the left, ${pct(pin.y)}% from the top): ${pin.text.trim()}`
+/** The message a comment sends, in the shape claude.ai uses: `Comment on <target> (<where>): <text>`. */
+export function commentText(target: string, anchor: Anchor, text: string): string {
+  let where: string
+  switch (anchor.kind) {
+    case 'spot':
+      where = `${anchor.page ? `page ${anchor.page}, ` : ''}pinned at ${pct(anchor.x)}% from the left, ${pct(anchor.y)}% from the top`
+      break
+    case 'lines':
+      where = anchor.from === anchor.to ? `line ${anchor.from}` : `lines ${anchor.from}-${anchor.to}`
+      break
+    case 'quote': {
+      const flat = anchor.quote.replace(/\s+/g, ' ').trim()
+      const quote = flat.length > QUOTE_CHARS ? `${flat.slice(0, QUOTE_CHARS)}…` : flat
+      where = `${anchor.line ? `line ${anchor.line}, ` : ''}on "${quote}"`
+      break
+    }
+    case 'cell':
+      where = `${anchor.sheet ? `sheet "${anchor.sheet}", ` : ''}cell ${anchor.ref}`
+  }
+  return `Comment on ${target} (${where}): ${text.trim()}`
+}
+
+/** The line a quote starts on in the source, when its first line occurs there exactly once. */
+export function quoteLine(source: string, quote: string): number | undefined {
+  const first = quote.split('\n').find(l => l.trim())?.trim()
+  if (!first) return undefined
+  const at = source.indexOf(first)
+  if (at < 0 || source.indexOf(first, at + 1) >= 0) return undefined
+  return source.slice(0, at).split('\n').length
+}
+
+/** `A`, …, `Z`, `AA` for a 0-based column. */
+export function columnName(n: number): string {
+  let name = ''
+  for (let i = n + 1; i > 0; i = Math.floor((i - 1) / 26)) name = String.fromCharCode(65 + ((i - 1) % 26)) + name
+  return name
 }
 
 const PinContext = createContext<
   | {
-      pins: Pin[]
-      draft?: Spot
-      place: (spot: Spot) => void
-      cancel: () => void
+      sent: Sent[]
+      draft?: Draft
+      place: (draft: Draft) => void
+      /** Offers a Comment button for a text selection; undefined takes it away. */
+      offer: (draft: Draft | undefined) => void
       submit: (text: string) => void
+      cancel: () => void
       t: T
     }
   | undefined
 >(undefined)
 
-function CommentBox({ spot }: { spot: Spot }) {
-  const pin = useContext(PinContext)!
+/** A box's place in the viewer's scrolled content, just under `rect`. */
+function below(el: Element, rect: DOMRect) {
+  const body = el.closest('.preview-body')
+  if (!body) return undefined
+  const view = body.getBoundingClientRect()
+  return { left: rect.left - view.left + body.scrollLeft, top: rect.bottom - view.top + body.scrollTop }
+}
+
+function CommentBox({
+  style,
+  t,
+  onSubmit,
+  onCancel,
+}: {
+  style: CSSProperties
+  t: T
+  onSubmit: (text: string) => void
+  onCancel: () => void
+}) {
   const [text, setText] = useState('')
   const [shift, setShift] = useState(0)
   const box = useRef<HTMLFormElement>(null)
-  // Opens below the pin, nudged sideways to stay inside the viewer, and scrolled into view.
+  // Opens below its anchor, nudged sideways to stay inside the viewer, and scrolled into view.
   useLayoutEffect(() => {
     const el = box.current
     const view = el?.closest('.preview-body')?.getBoundingClientRect()
@@ -156,13 +219,14 @@ function CommentBox({ spot }: { spot: Spot }) {
     setShift(Math.max(view.left + 8 - r.left, Math.min(0, view.right - 8 - r.right)))
     el.scrollIntoView({ block: 'nearest', inline: 'nearest' })
   }, [])
-  const send = () => text.trim() && pin.submit(text)
+  const send = () => text.trim() && onSubmit(text)
   return (
     <form
       ref={box}
       className="cpin-box"
-      style={{ left: `${spot.x * 100}%`, top: `${spot.y * 100}%`, transform: `translateX(${shift}px)` }}
+      style={{ ...style, transform: `translateX(${shift}px)` }}
       onClick={e => e.stopPropagation()}
+      onMouseUp={e => e.stopPropagation()}
       onSubmit={e => {
         e.preventDefault()
         send()
@@ -171,15 +235,15 @@ function CommentBox({ spot }: { spot: Spot }) {
       <textarea
         autoFocus
         rows={3}
-        aria-label={pin.t('pinComment')}
-        placeholder={pin.t('pinPlaceholder')}
+        aria-label={t('pinComment')}
+        placeholder={t('pinPlaceholder')}
         value={text}
         onChange={e => setText(e.target.value)}
         onKeyDown={e => {
           if (e.key === 'Escape') {
             // Only the box closes, not the preview.
             e.nativeEvent.stopPropagation()
-            pin.cancel()
+            onCancel()
           } else if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
             e.preventDefault()
             send()
@@ -187,22 +251,24 @@ function CommentBox({ spot }: { spot: Spot }) {
         }}
       />
       <span className="btns">
-        <button type="button" className="btn" onClick={pin.cancel}>
-          {pin.t('cancel')}
+        <button type="button" className="btn" onClick={onCancel}>
+          {t('cancel')}
         </button>
         <button type="submit" className="btn primary" disabled={!text.trim()}>
-          {pin.t('send')}
+          {t('send')}
         </button>
       </span>
     </form>
   )
 }
 
-/** Wraps a viewer so a click drops a pin there; sent pins stay as numbered marks. */
+/** Wraps an image or PDF page so a click drops a pin there; sent pins stay as numbered marks. */
 function Pinnable({ page, children }: { page?: number; children: ReactNode }) {
   const pin = useContext(PinContext)
   if (!pin) return <>{children}</>
-  const at = (s: Spot) => ({ left: `${s.x * 100}%`, top: `${s.y * 100}%` })
+  const at = (s: { x: number; y: number }) => ({ left: `${s.x * 100}%`, top: `${s.y * 100}%` })
+  const spots = pin.sent.flatMap(p => (p.anchor.kind === 'spot' ? [{ ...p.anchor, text: p.text }] : []))
+  const draft = pin.draft?.anchor.kind === 'spot' && pin.draft.anchor.page === page ? pin.draft.anchor : undefined
   return (
     <div
       className="pinnable"
@@ -211,25 +277,70 @@ function Pinnable({ page, children }: { page?: number; children: ReactNode }) {
         const r = e.currentTarget.getBoundingClientRect()
         if (!r.width || !r.height) return
         const clamp = (n: number) => Math.min(1, Math.max(0, n))
-        pin.place({ x: clamp((e.clientX - r.left) / r.width), y: clamp((e.clientY - r.top) / r.height), page })
+        pin.place({
+          anchor: { kind: 'spot', x: clamp((e.clientX - r.left) / r.width), y: clamp((e.clientY - r.top) / r.height), page },
+        })
       }}
     >
       {children}
-      {pin.pins.map((p, i) =>
+      {spots.map((p, i) =>
         p.page === page ? (
           <span key={i} className="cpin sent" style={at(p)} title={p.text} onClick={e => e.stopPropagation()}>
             {i + 1}
           </span>
         ) : null,
       )}
-      {pin.draft && pin.draft.page === page && (
+      {draft && (
         <>
-          <span className="cpin" style={at(pin.draft)}>
-            {pin.pins.length + 1}
+          <span className="cpin" style={at(draft)}>
+            {spots.length + 1}
           </span>
-          <CommentBox key={`${pin.draft.x},${pin.draft.y}`} spot={pin.draft} />
+          <CommentBox key={`${draft.x},${draft.y}`} style={at(draft)} t={pin.t} onSubmit={pin.submit} onCancel={pin.cancel} />
         </>
       )}
+    </div>
+  )
+}
+
+/**
+ * Text the reader can select to comment on. With `lines` the text is shown as written (a code
+ * view), so the selection's offset counts lines; otherwise the selection is quoted, with the
+ * line from `source` when it is found there once.
+ */
+function Selectable({ lines, source, children }: { lines?: boolean; source?: string; children: ReactNode }) {
+  const pin = useContext(PinContext)
+  const root = useRef<HTMLDivElement>(null)
+  if (!pin) return <>{children}</>
+  return (
+    <div
+      ref={root}
+      className="selectable"
+      onMouseUp={() => {
+        const el = root.current
+        const sel = window.getSelection()
+        const range = sel && !sel.isCollapsed && sel.rangeCount ? sel.getRangeAt(0) : undefined
+        const quote = range?.toString() ?? ''
+        if (!el || !range || !quote.trim() || !el.contains(range.commonAncestorContainer)) {
+          pin.offer(undefined)
+          return
+        }
+        let anchor: Anchor
+        if (lines) {
+          const code = el.querySelector('.codeblock-body') ?? el
+          const before = document.createRange()
+          before.setStart(code, 0)
+          before.setEnd(range.startContainer, range.startOffset)
+          const from = before.toString().split('\n').length
+          anchor = { kind: 'lines', from, to: from + quote.replace(/\n+$/, '').split('\n').length - 1 }
+        } else {
+          anchor = { kind: 'quote', quote, line: source === undefined ? undefined : quoteLine(source, quote) }
+        }
+        const rects = range.getClientRects()
+        const at = below(el, rects[rects.length - 1] ?? range.getBoundingClientRect())
+        if (at) pin.offer({ anchor, at })
+      }}
+    >
+      {children}
     </div>
   )
 }
@@ -427,16 +538,39 @@ function cellText(value: Cell): string {
   return ''
 }
 
-function Table({ rows, note }: { rows: string[][]; note?: string }) {
+function Table({ rows, note, sheet }: { rows: string[][]; note?: string; sheet?: string }) {
+  const pin = useContext(PinContext)
+  const sent = new Map(
+    pin?.sent.flatMap(p => (p.anchor.kind === 'cell' && p.anchor.sheet === sheet ? [[p.anchor.ref, p.text]] : [])),
+  )
+  const draft = pin?.draft?.anchor.kind === 'cell' && pin.draft.anchor.sheet === sheet ? pin.draft.anchor.ref : undefined
   return (
     <div className="sheet">
-      <table>
+      <table className={pin ? 'commentable' : undefined}>
         <tbody>
           {rows.map((row, i) => (
             <tr key={i}>
-              {row.map((cell, j) =>
-                i === 0 ? <th key={j}>{cell}</th> : <td key={j}>{cell}</td>,
-              )}
+              {row.map((cell, j) => {
+                const ref = `${columnName(j)}${i + 1}`
+                const Cell = i === 0 ? 'th' : 'td'
+                return (
+                  <Cell
+                    key={j}
+                    className={ref === draft ? 'cell-draft' : sent.has(ref) ? 'cell-sent' : undefined}
+                    title={sent.get(ref)}
+                    onClick={
+                      pin &&
+                      (e => {
+                        if (!window.getSelection()?.isCollapsed) return
+                        const at = below(e.currentTarget, e.currentTarget.getBoundingClientRect())
+                        if (at) pin.place({ anchor: { kind: 'cell', ref, sheet }, at })
+                      })
+                    }
+                  >
+                    {cell}
+                  </Cell>
+                )
+              })}
             </tr>
           ))}
         </tbody>
@@ -484,6 +618,7 @@ function XlsxView({ url, t }: { url: string; t: T }) {
       </div>
       <Table
         rows={table.rows}
+        sheet={book.worksheets[sheet]?.name}
         note={
           table.total > table.rows.length
             ? t('rowsShown', { shown: String(table.rows.length), total: String(table.total) })
@@ -503,11 +638,13 @@ function DocxView({ url, t }: { url: string; t: T }) {
   if (error) throw error
   if (value === undefined) return <div className="preview-note">{t('loading')}</div>
   return (
-    <div
-      className="docx-page"
-      // DOMPurify-sanitized output of mammoth.
-      dangerouslySetInnerHTML={{ __html: value }}
-    />
+    <Selectable>
+      <div
+        className="docx-page"
+        // DOMPurify-sanitized output of mammoth.
+        dangerouslySetInnerHTML={{ __html: value }}
+      />
+    </Selectable>
   )
 }
 
@@ -535,7 +672,10 @@ const WIDTHS = [
   { key: 'widthDesktop', width: undefined },
   { key: 'widthTablet', width: 768 },
   { key: 'widthPhone', width: 390 },
+  { key: 'htmlSource', width: 'source' },
 ] as const
+/** A frame width, or the page's source to comment on by line. */
+type HtmlView = number | 'source' | undefined
 
 function Body({
   sessionId,
@@ -546,7 +686,7 @@ function Body({
   sessionId: string
   path: string
   t: T
-  htmlWidth?: number
+  htmlWidth?: HtmlView
 }) {
   const url = fileUrl(sessionId, path)
   const name = baseName(path)
@@ -572,7 +712,11 @@ function Body({
         <TextView
           url={url}
           t={t}
-          render={text => <Markdown text={text} filesBase={filesBase(sessionId)} />}
+          render={text => (
+            <Selectable source={text}>
+              <Markdown text={text} filesBase={filesBase(sessionId)} />
+            </Selectable>
+          )}
         />
       )
     case 'html':
@@ -580,7 +724,15 @@ function Body({
         <TextView
           url={url}
           t={t}
-          render={text => <HtmlFrame html={text} width={htmlWidth} />}
+          render={text =>
+            htmlWidth === 'source' ? (
+              <Selectable lines>
+                <CodeBlock code={text} lang="html" streaming={false} />
+              </Selectable>
+            ) : (
+              <HtmlFrame html={text} width={htmlWidth} />
+            )
+          }
         />
       )
     case 'csv':
@@ -604,7 +756,9 @@ function Body({
           url={url}
           t={t}
           render={text => (
-            <CodeBlock code={text} lang={extension(path) || null} streaming={false} />
+            <Selectable lines>
+              <CodeBlock code={text} lang={extension(path) || null} streaming={false} />
+            </Selectable>
           )}
         />
       )
@@ -650,44 +804,62 @@ export function Preview({
   files = [],
   onOpen,
   onComment,
+  image,
 }: {
   sessionId: string
+  /** The file, or with `image` the name shown in the bar. */
   path: string
   t: T
   onClose: () => void
   /** The chat's files (Files tab order), stepped through with ‹ › and ←/→. */
   files?: SessionFile[]
   onOpen?: (path: string) => void
-  /** Sends a pinned comment as a chat message; without it nothing can be pinned. */
+  /** Sends a comment as a chat message; without it nothing can be commented on. */
   onComment?: (text: string) => void
+  /** An image from a chat message, shown in place of a file; `target` names it in comments. */
+  image?: { src: string; target: string }
 }) {
-  const [pins, setPins] = useState<Pin[]>([])
-  const [draft, setDraft] = useState<Spot>()
+  const [sent, setSent] = useState<Sent[]>([])
+  const [draft, setDraft] = useState<Draft>()
+  const [offer, setOffer] = useState<Draft>()
+  const subject = image?.src ?? path
   useEffect(() => {
-    setPins([])
+    setSent([])
     setDraft(undefined)
-  }, [path])
+    setOffer(undefined)
+  }, [subject])
+  // A Comment button outlives its selection only while the selection lasts.
+  useEffect(() => {
+    if (!offer) return
+    const onChange = () => window.getSelection()?.isCollapsed !== false && setOffer(undefined)
+    document.addEventListener('selectionchange', onChange)
+    return () => document.removeEventListener('selectionchange', onChange)
+  }, [offer])
   const pinValue = useMemo(
     () =>
       onComment && {
-        pins,
+        sent,
         draft,
-        place: setDraft,
-        cancel: () => setDraft(undefined),
+        place: (next: Draft) => {
+          setOffer(undefined)
+          setDraft(next)
+        },
+        offer: (next: Draft | undefined) => !draft && setOffer(next),
         submit: (text: string) => {
           if (!draft) return
-          const pin = { ...draft, text }
-          onComment(pinComment(path, pin))
-          setPins(list => [...list, pin])
+          onComment(commentText(image ? image.target : `\`${path}\``, draft.anchor, text))
+          setSent(list => [...list, { anchor: draft.anchor, text }])
           setDraft(undefined)
+          window.getSelection()?.removeAllRanges()
         },
+        cancel: () => setDraft(undefined),
         t,
       },
-    [onComment, pins, draft, path, t],
+    [onComment, sent, draft, t, image, path],
   )
-  const [htmlWidth, setHtmlWidth] = useState<number>()
-  const isHtml = previewKind(path) === 'html'
-  const nav = onOpen ? fileNeighbors(files, path) : undefined
+  const [htmlWidth, setHtmlWidth] = useState<HtmlView>()
+  const isHtml = !image && previewKind(path) === 'html'
+  const nav = onOpen && !image ? fileNeighbors(files, path) : undefined
   const prev = nav?.prev
   const next = nav?.next
   useEffect(() => {
@@ -708,12 +880,12 @@ export function Preview({
   return (
     <aside className="preview" aria-label={t('preview')}>
       <div className="arthead preview-bar">
-        <span className="kind mono">{(extension(path) || 'TXT').toUpperCase()}</span>
+        <span className="kind mono">{image ? 'IMG' : (extension(path) || 'TXT').toUpperCase()}</span>
         <span className="nm">
           <b className="mono preview-name" title={path}>
             {baseName(path)}
           </b>
-          <small className="mono">{path.slice(0, path.length - baseName(path).length)}</small>
+          {!image && <small className="mono">{path.slice(0, path.length - baseName(path).length)}</small>}
         </span>
         {isHtml && (
           <span className="seg" role="radiogroup">
@@ -756,23 +928,54 @@ export function Preview({
           </span>
         )}
         <span className="grp" style={{ marginLeft: 'auto' }}>
-          <a className="btn" href={fileUrl(sessionId, path)} target="_blank" rel="noopener">
-            {t('openNewTab')}
-          </a>
-          <a className="btn" href={fileUrl(sessionId, path, { download: true })}>
-            {t('download')}
-          </a>
+          {!image && (
+            <>
+              <a className="btn" href={fileUrl(sessionId, path)} target="_blank" rel="noopener">
+                {t('openNewTab')}
+              </a>
+              <a className="btn" href={fileUrl(sessionId, path, { download: true })}>
+                {t('download')}
+              </a>
+            </>
+          )}
           <button type="button" className="btn" aria-label={t('close')} onClick={onClose}>
             ×
           </button>
         </span>
       </div>
       <div className="artbody preview-body">
-        <Boundary key={path} fallback={error => <ErrorNote error={error} t={t} />}>
+        <Boundary key={subject} fallback={error => <ErrorNote error={error} t={t} />}>
           <PinContext.Provider value={pinValue || undefined}>
-            <Body sessionId={sessionId} path={path} t={t} htmlWidth={htmlWidth} />
+            {image ? (
+              <Pinnable>
+                <img className="preview-image" src={image.src} alt={path} />
+              </Pinnable>
+            ) : (
+              <Body sessionId={sessionId} path={path} t={t} htmlWidth={htmlWidth} />
+            )}
           </PinContext.Provider>
         </Boundary>
+        {pinValue && offer?.at && (
+          <button
+            type="button"
+            className="btn cpin-offer"
+            style={offer.at}
+            // Keeps the selection while the button is pressed.
+            onMouseDown={e => e.preventDefault()}
+            onClick={() => pinValue.place(offer)}
+          >
+            {t('pinComment')}
+          </button>
+        )}
+        {pinValue && draft?.at && (
+          <CommentBox
+            key={JSON.stringify(draft.anchor)}
+            style={draft.at}
+            t={t}
+            onSubmit={pinValue.submit}
+            onCancel={pinValue.cancel}
+          />
+        )}
       </div>
     </aside>
   )

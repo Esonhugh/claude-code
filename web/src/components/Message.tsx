@@ -59,11 +59,26 @@ export function modelName(model: string | undefined, models: ModelOption[]): str
 /** Lets messages open files in the artifact view of the current session. */
 export const FilesContext = createContext<{
   open?: (path: string) => void
+  /** Opens a message's image in the artifact view; `target` names it in comments. */
+  openImage?: (src: string, n: number, target: string) => void
   base?: string
   /** Opens the side panel's Files tab. */
   showFiles?: () => void
   cwd?: string
 }>({})
+
+/** How a comment names a message's image: `image 2 of my message "Fix the header…"`. */
+export function imageTarget(text: string, index: number): string {
+  // `@/long/path/a.md` mentions read as their file names.
+  const flat = text
+    .replace(/@"([^"]*)"|@(\S+)/g, (_, quoted: string | undefined, bare: string | undefined) =>
+      (quoted ?? bare ?? '').split(/[\\/]/).pop() ?? '',
+    )
+    .replace(/\s+/g, ' ')
+    .trim()
+  const snippet = flat.length > 40 ? `${flat.slice(0, 40)}…` : flat
+  return `image ${index + 1} of my message${snippet ? ` "${snippet}"` : ''}`
+}
 
 /** `notes/a.md` for a file under `cwd`, else the `~` form. */
 export function relativeTo(path: string, cwd: string | undefined): string {
@@ -608,9 +623,21 @@ function MessageView({
           )}
           <span className="who">{queued ? t('queuedMessage') : t('you')}</span>
           <div className="bubble">
-            {item.images?.map((src, i) => (
-              <img key={i} className="bubble-image" src={src} alt="" />
-            ))}
+            {item.images?.map((src, i) =>
+              files.openImage ? (
+                <button
+                  type="button"
+                  key={i}
+                  className="bubble-image-open"
+                  title={t('preview')}
+                  onClick={() => files.openImage?.(src, i + 1, imageTarget(item.text, i))}
+                >
+                  <img className="bubble-image" src={src} alt="" />
+                </button>
+              ) : (
+                <img key={i} className="bubble-image" src={src} alt="" />
+              ),
+            )}
             <UserText text={item.text} />
           </div>
         </div>
