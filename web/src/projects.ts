@@ -69,7 +69,7 @@ export function taskModel(
   return task.model ?? input?.model ?? workerModel ?? coordinatorModel
 }
 
-export type AgentInput = { description?: string; prompt?: string; model?: string }
+export type AgentInput = { description?: string; prompt?: string; model?: string; name?: string }
 
 /** The Agent call's input by tool use id, for a task's brief (`prompt`) and model. */
 export function agentInputs(items: Item[]): Map<string, AgentInput> {
@@ -84,6 +84,7 @@ export function agentInputs(items: Item[]): Map<string, AgentInput> {
           ...(typeof input.description === 'string' && { description: input.description }),
           ...(typeof input.prompt === 'string' && { prompt: input.prompt }),
           ...(typeof input.model === 'string' && { model: input.model }),
+          ...(typeof input.name === 'string' && { name: input.name }),
         })
       } catch {
         // Still streaming: the input is not whole yet.
@@ -91,6 +92,22 @@ export function agentInputs(items: Item[]): Map<string, AgentInput> {
     }
   }
   return inputs
+}
+
+/**
+ * Whom a SendMessage call addressed: `to` (an agent id), and the tool use id
+ * of the Agent call that gave the agent that name, when it is a name.
+ */
+export function messageTarget(input: string, inputs: Map<string, AgentInput>): { to: string; toolUseId?: string } | undefined {
+  let to: unknown
+  try {
+    to = (JSON.parse(input) as { to?: unknown }).to
+  } catch {
+    return undefined
+  }
+  if (typeof to !== 'string' || !to) return undefined
+  for (const [toolUseId, agent] of inputs) if (agent.name === to) return { to, toolUseId }
+  return { to }
 }
 
 /** The notice line for a task that ended: key and variables. */

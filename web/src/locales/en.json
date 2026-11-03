@@ -235,6 +235,7 @@
   "thoughtFor": "Thought for {n}s",
   "handbackReport": "Report handed back",
   "handedTo": "Handed to",
+  "sentTo": "Sent to",
   "stepsRead": "Read {n} files",
   "stepsRead_one": "Read 1 file",
   "stepsSearched": "Searched {n} times",

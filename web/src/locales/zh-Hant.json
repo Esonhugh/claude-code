@@ -235,6 +235,7 @@
   "thoughtFor": "思考了 {n} 秒",
   "handbackReport": "交回的報告",
   "handedTo": "交給",
+  "sentTo": "已傳送至",
   "stepsRead": "讀了 {n} 個檔案",
   "stepsRead_one": "讀了 {n} 個檔案",
   "stepsSearched": "搜尋 {n} 次",

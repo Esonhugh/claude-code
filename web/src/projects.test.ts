@@ -3,6 +3,7 @@ import type { ProjectTask } from './api'
 import {
   agentInputs,
   canMessage,
+  messageTarget,
   notesByItem,
   taskElapsed,
   taskMeta,
@@ -77,6 +78,18 @@ describe('project tasks', () => {
     const byItem = notesByItem(state.taskNotes, state.items)
     expect(byItem.get('m1')?.map(n => n.taskId)).toEqual(['a'])
     expect(notesByItem([{ taskId: 'z', status: 'completed', afterId: 'gone', n: 1 }], state.items).get('')).toHaveLength(1)
+  })
+
+  it('finds whom a SendMessage call addressed, by agent id or by the name its Agent call gave it', () => {
+    const state = reduce(
+      initialState,
+      assistant('m1', [{ type: 'tool_use', id: 'toolu_a', name: 'Agent', input: { description: 'Alpha', prompt: 'p', name: 'alpha' } }]),
+    )
+    const inputs = agentInputs(state.items)
+    expect(messageTarget(JSON.stringify({ to: 'alpha', message: 'hi' }), inputs)).toEqual({ to: 'alpha', toolUseId: 'toolu_a' })
+    expect(messageTarget(JSON.stringify({ to: 'a5f4', message: 'hi' }), inputs)).toEqual({ to: 'a5f4' })
+    expect(messageTarget('{"to": "al', inputs)).toBeUndefined()
+    expect(messageTarget(JSON.stringify({ message: 'hi' }), inputs)).toBeUndefined()
   })
 
   it('notes a resumed task each time it ends, and after a reload where the coordinator read each ending', () => {

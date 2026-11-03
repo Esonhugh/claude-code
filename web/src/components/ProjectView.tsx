@@ -18,6 +18,7 @@ import { listTasks, loadTaskTranscript, type Project, type ProjectTask, reviewTa
 import { mentionPath, tilde, uploadFile } from '../files'
 import {
   agentInputs,
+  messageTarget,
   canMessage,
   isLive,
   notesByItem,
@@ -32,6 +33,7 @@ import {
 } from '../projects'
 import { type Approval, type ApprovalChoice, type Block, currentTodos, initialState, type ModelOption, reduce, type TaskNote } from '../protocol'
 import type { HistoryEntry, SessionChat } from '../store'
+import { toolMessage } from '../tools'
 import { AskDock, ChatComposer, chatTools, type ComposerTools, type MentionTarget } from './Composer'
 import { Dialog } from './Dialog'
 import { AgentConversation, joinTurns, Message, modelName, type SentMessage, useUnread } from './Message'
@@ -55,11 +57,14 @@ function TaskCard({
   summary,
   meta,
   current,
+  sent,
   onOpen,
   onMenu,
 }: {
   t: T
   task: Pick<ProjectTask, 'id' | 'title' | 'state'>
+  /** A message sent to the task: the line reads "Sent to" and its card shows the message. */
+  sent?: boolean
   summary: string
   meta: string
   current: boolean
@@ -92,6 +97,7 @@ function TaskLink({
   meta,
   activity,
   current,
+  sent,
   onOpen,
   onMenu,
 }: {
@@ -100,14 +106,16 @@ function TaskLink({
   meta: string
   activity: string
   current: boolean
+  /** A message sent to the task: the line reads "Sent to" and its card shows the message. */
+  sent?: boolean
   onOpen?: () => void
   onMenu?: (e: MouseEvent) => void
 }) {
   const state = task.state
   return (
     <span className="tasklink">
-      <span className="g">↳</span>
-      {t('handedTo')}
+      <span className="g">{sent ? '↗' : '↳'}</span>
+      {t(sent ? 'sentTo' : 'handedTo')}
       <button type="button" className={`tl-chip ${state}`} aria-current={current} data-task={task.id} onClick={onOpen} onContextMenu={onMenu}>
         {state === 'running' ? <span className="spin" aria-hidden="true" /> : <span className={`dot ${state === 'done' ? '' : state}`} />}
         <span className="tt">{task.title}</span>
@@ -600,6 +608,23 @@ export function ProjectView({
   )
   // An Agent call reads "Handed to <task>" in the chat; before the task is known it is drawn from the call itself.
   const taskCard = (block: Extract<Block, { kind: 'tool' }>) => {
+    if (block.name === 'SendMessage' && !block.isError) {
+      const target = messageTarget(block.input, inputs)
+      const task = target && (tasks.find(x => x.agent_id === target.to) ?? (target.toolUseId ? byToolUse.get(target.toolUseId) : undefined))
+      if (!task) return undefined
+      return (
+        <TaskLink
+          t={t}
+          task={task}
+          sent
+          meta=""
+          activity={toolMessage(block.name, block.input) ?? ''}
+          current={task.id === openId}
+          onOpen={() => openTask(task.id)}
+          onMenu={e => openMenu(e, task)}
+        />
+      )
+    }
     if (block.name !== 'Agent') return undefined
     const task = byToolUse.get(block.id)
     if (!task) {

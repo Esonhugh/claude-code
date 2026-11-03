@@ -56,6 +56,7 @@ import {
   unsupportedControlResponse,
   userMessage,
 } from './protocol'
+import { agentInputs, messageTarget } from './projects'
 import { turnSources } from './sources'
 import { appReducer, type HistoryEntry, initialAppState, type SessionChat } from './store'
 import { nativeCommand, type SlashCommand } from './commands'
@@ -272,13 +273,36 @@ export function App() {
   }, [view, info.previewOrigins, t])
   const closePreview = useCallback(() => setPreview(undefined), [])
   const tasks = chat?.tasks
-  const agentsValue = useMemo(
-    () => ({
-      byToolUse: new Map(
-        Object.values(tasks ?? {})
-          .filter(task => task.toolUseId)
-          .map(task => [task.toolUseId!, task]),
-      ),
+  // The names Agent calls gave their agents, as a string so streaming does not rebuild the context.
+  const agentNames = useMemo(
+    () =>
+      [...agentInputs(chat?.items ?? [])]
+        .filter(([, input]) => input.name)
+        .map(([id, input]) => `${id}\t${input.name}`)
+        .join('\n'),
+    [chat?.items],
+  )
+  const agentsValue = useMemo(() => {
+    const byToolUse = new Map(
+      Object.values(tasks ?? {})
+        .filter(task => task.toolUseId)
+        .map(task => [task.toolUseId!, task]),
+    )
+    const names = new Map(
+      agentNames
+        .split('\n')
+        .filter(Boolean)
+        .map(line => {
+          const [id, name] = line.split('\t') as [string, string]
+          return [id, { name }]
+        }),
+    )
+    return {
+      byToolUse,
+      sentTo: (input: string) => {
+        const target = messageTarget(input, names)
+        return target && (tasks?.[target.to] ?? (target.toolUseId ? byToolUse.get(target.toolUseId) : undefined))
+      },
       open: (taskId: string) => {
         setPreview(undefined)
         const task = tasks?.[taskId]
@@ -291,9 +315,8 @@ export function App() {
         }
         if (isNarrow(760)) setSheetOpen(true)
       },
-    }),
-    [tasks],
-  )
+    }
+  }, [tasks, agentNames])
   useEffect(() => {
     setAgentsView({ kind: 'tree' })
     setWorkflowId(undefined)

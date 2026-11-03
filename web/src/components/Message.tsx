@@ -141,6 +141,8 @@ export function useUnread(items: Item[], sent: SentMessage[], drop: (ids: string
 /** Lets an Agent tool card show its task and open it in the Agents tab. */
 export const AgentsContext = createContext<{
   byToolUse?: Map<string, AgentTask>
+  /** The agent a SendMessage call's input addressed. */
+  sentTo?: (input: string) => AgentTask | undefined
   open?: (taskId: string) => void
 }>({})
 
@@ -290,7 +292,8 @@ function ToolCard({ block, t }: { block: Extract<Block, { kind: 'tool' }>; t: T 
     !path && block.result && web.target && web.open
       ? firstPreviewUrl(stripAnsi(block.result), web.target)
       : undefined
-  const task = agents.byToolUse?.get(block.id)
+  const sentTo = block.name === 'SendMessage' && !block.isError ? agents.sentTo?.(block.input) : undefined
+  const task = agents.byToolUse?.get(block.id) ?? sentTo
   const done = block.result !== undefined
   const diff = block.isError ? undefined : toolDiff(block.name, block.input, block.meta)
   const message = toolMessage(block.name, block.input)
@@ -313,7 +316,13 @@ function ToolCard({ block, t }: { block: Extract<Block, { kind: 'tool' }>; t: T 
             {shortSummary(block, files.cwd)}
           </button>
         ) : (
-          <span className="tcmd">{block.name === 'TodoWrite' ? t('todosUpdated') : shortSummary(block, files.cwd)}</span>
+          <span className="tcmd">
+            {block.name === 'TodoWrite'
+              ? t('todosUpdated')
+              : sentTo
+                ? `${t('sentTo')} ${sentTo.title ?? sentTo.description}`
+                : shortSummary(block, files.cwd)}
+          </span>
         )}
         <span className="tacts">
           {task && (
