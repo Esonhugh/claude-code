@@ -279,6 +279,7 @@
   "rewoundFiles": "Rewound, and restored {n} file changes made after it. The message is back in the input box.",
   "rewoundFiles_one": "Rewound, and restored 1 file change made after it. The message is back in the input box.",
   "rewindFailed": "Couldn't rewind: {error}",
+  "rewindGone": "this message can no longer be rewound (it was compacted away or is not a prompt)",
   "goalMet": "◎ Goal met",
   "goalCleared": "◎ Goal cleared",
   "goalFailed": "◎ Goal stopped",

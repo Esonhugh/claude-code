@@ -105,6 +105,7 @@ export type TranscriptPage = {
   total: number
   cwd?: string
   title?: string
+  rewindPoints?: string[]
 }
 
 export const loadTranscript = (id: string, before?: number) =>

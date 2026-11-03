@@ -279,6 +279,7 @@
   "rewoundFiles": "已回退，并还原了这之后的 {n} 个文件改动。原消息已放回输入框。",
   "rewoundFiles_one": "已回退，并还原了这之后的 {n} 个文件改动。原消息已放回输入框。",
   "rewindFailed": "无法回退：{error}",
+  "rewindGone": "这条消息已无法回退（已被压缩或不是用户发送的提示）",
   "goalMet": "◎ 目标已达成",
   "goalCleared": "◎ 目标已清除",
   "goalFailed": "◎ 目标未达成",

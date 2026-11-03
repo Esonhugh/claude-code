@@ -680,6 +680,17 @@ describe('conversation extras', () => {
     expect(rewindTo(next, 'u2', 'Rewound').items.map(i => i.kind)).toEqual(['user', 'assistant', 'note'])
     expect(rewindTo(next, 'missing', 'x')).toBe(next)
   })
+
+  it('keeps the rewind points the engine lists, and drops the rewound ones', () => {
+    const state = fold([
+      { type: 'control_response', response: { subtype: 'success', request_id: 'web-rwpoints-1', response: { uuids: ['u1', 'u2', 7] } } },
+    ])
+    expect(state.rewindPoints).toEqual(['u1', 'u2'])
+    const next = addUserMessage(addUserMessage({ ...state, notice: "Couldn't rewind: stale_target" }, 'one', undefined, 'u1'), 'two', undefined, 'u2')
+    const rewound = rewindTo(next, 'u2', 'Rewound')
+    expect(rewound.rewindPoints).toEqual(['u1'])
+    expect(rewound.notice).toBeUndefined()
+  })
 })
 
 describe('i18n', () => {
