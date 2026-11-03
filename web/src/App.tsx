@@ -1545,6 +1545,7 @@ export function App() {
           onOpenFile={openFile}
           onStopTask={taskId => stopTask(view, taskId)}
           onStatusRequest={statusRequest}
+          onCompact={chat.mode === 'elsewhere' ? undefined : () => void sendPrompt(view, '/compact')}
           todos={todos}
           onSendTask={(taskId, text, pick) => sendToTask(view, taskId, text, pick)}
           agentInput={{
