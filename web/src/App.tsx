@@ -130,7 +130,7 @@ export function App() {
   const [preview, setPreview] = useState<
     { sessionId: string; path: string } | { sessionId: string; url: string }
   >()
-  const [info, setInfo] = useState<{ workspace?: string; tempRoot?: string; previewOrigins: string[] }>({
+  const [info, setInfo] = useState<{ workspace?: string; tempRoot?: string; previewOrigins: string[]; version?: string }>({
     previewOrigins: [],
   })
   const [dragging, setDragging] = useState(false)
@@ -188,7 +188,12 @@ export function App() {
   const setDraft = (value: string) => setDrafts(d => ({ ...d, [draftKey]: value }))
   const files = attachments[draftKey] ?? []
   const setFiles = (next: File[]) => setAttachments(a => ({ ...a, [draftKey]: next }))
-  const env: SessionEnv = chat && Object.keys(chat.env).length ? chat.env : knownEnv
+  // The server's own version until a session reports one (the start page has no session).
+  const shownEnv = chat && Object.keys(chat.env).length ? chat.env : knownEnv
+  const env: SessionEnv = useMemo(
+    () => (info.version && !shownEnv.version ? { ...shownEnv, version: info.version } : shownEnv),
+    [shownEnv, info.version],
+  )
   const models = chat?.models.length ? chat.models : knownModels
   const uiName = (webSettings ? webSettings.uiName : env.uiName) || DEFAULT_UI_NAME
   const previewing = !!preview && preview.sessionId === view
@@ -282,6 +287,7 @@ export function App() {
   }
 
   const historyLimit = useRef(HISTORY_PAGE)
+  const [sidebarLoaded, setSidebarLoaded] = useState(false)
   const refreshHistory = useCallback(async (more = false) => {
     if (more) historyLimit.current += HISTORY_PAGE
     try {
@@ -289,6 +295,7 @@ export function App() {
       dispatch({ type: 'history', entries: data.sessions, folders: data.folders, more: data.more })
       dispatch({ type: 'running', ids: running.map(r => r.id) })
       setProjects(await listProjects())
+      setSidebarLoaded(true)
     } catch {
       // The sidebar keeps what it has; the next refresh retries.
     }
@@ -319,7 +326,7 @@ export function App() {
     getInfo().then(
       res => {
         setHome(res.home)
-        setInfo({ workspace: res.workspace, tempRoot: res.temp_root, previewOrigins: res.preview_origins ?? [] })
+        setInfo({ workspace: res.workspace, tempRoot: res.temp_root, previewOrigins: res.preview_origins ?? [], version: res.version })
       },
       () => {},
     )
@@ -423,6 +430,8 @@ export function App() {
       if ((raw as { type?: string }).type === 'result') {
         request(id, REQUEST_PREFIX.context, { subtype: 'get_context_usage' })
         void refreshHistory()
+        // The CLI writes the turn to the transcript up to 100 ms after its result; read the title and folder again.
+        setTimeout(() => void refreshHistory(), 500)
       }
     })
     socket.addEventListener('close', () => {
@@ -436,6 +445,8 @@ export function App() {
     dispatch({ type: 'mode', id, mode: 'live' })
     request(id, REQUEST_PREFIX.initialize, { subtype: 'initialize' })
     getSettings(id)
+    // A session picked up mid-life has had turns already; a new one has nothing to count yet.
+    if (stateRef.current.chats[id]?.items.length) request(id, REQUEST_PREFIX.context, { subtype: 'get_context_usage' })
   }
 
   const loadInto = async (id: string, before?: number) => {
@@ -486,10 +497,10 @@ export function App() {
       dispatch({ type: 'view', id })
       if (!stateRef.current.chats[id]) {
         dispatch({ type: 'mode', id, mode: 'connecting' })
+        const empty = () => dispatch({ type: 'loaded', id, messages: [], start: 0, workDir: created.work_dir })
         // A new coordinator has no transcript yet.
-        await loadInto(id).catch(() =>
-          dispatch({ type: 'loaded', id, messages: [], start: 0, workDir: created.work_dir }),
-        )
+        if (created.fresh) empty()
+        else await loadInto(id).catch(empty)
       }
       if (sockets.current.has(id)) return
       const running = await listRunning().catch(() => [])
@@ -501,6 +512,27 @@ export function App() {
       setStartError(t('connectFailed', { error: err instanceof Error ? err.message : String(err) }))
     }
   }
+
+  // The open session or project is kept in the address (`#s=<id>`, `#p=<id>`), so a reload reopens it.
+  const restoreTo = useRef(/^#([sp])=([\w-]+)$/.exec(location.hash))
+  const hashTarget = inProject && projectId ? `#p=${projectId}` : view ? `#s=${view}` : ''
+  useEffect(() => {
+    if (restoreTo.current) return
+    if (location.hash !== hashTarget) history.replaceState(null, '', hashTarget || location.pathname + location.search)
+  }, [hashTarget])
+  useEffect(() => {
+    const want = restoreTo.current
+    if (!want) return
+    if (!sidebarLoaded) return
+    restoreTo.current = null
+    const [, kind, id] = want
+    const p = kind === 'p' ? projects.find(x => x.id === id) : undefined
+    const entry = kind === 's' ? state.history.find(h => h.id === id) : undefined
+    if (p) void openProject(p)
+    else if (entry) void openSession(entry)
+    // Gone (deleted, archived): the start page, without the stale address.
+    else history.replaceState(null, '', location.pathname + location.search)
+  }, [sidebarLoaded])
 
   /** The project keeps a permission mode only once the live coordinator accepted it. */
   const changeProjectMode = async (p: Project, id: string, mode: string) => {
@@ -1070,12 +1102,13 @@ export function App() {
               skills={chat.env.skills}
               listFiles={listFiles}
               prompts={prompts}
-              onShiftTab={() => view && changeMode(view, nextMode(chat.permissionMode))}
+              onShiftTab={() => view && changeMode(view, nextMode(chat.permissionMode, chat.env.planMode))}
               crow={
                 <>
                   <ModeButton
                     t={t}
                     mode={chat.permissionMode ?? 'default'}
+                    plan={chat.env.planMode}
                     onMode={mode => view && changeMode(view, mode)}
                   />
                   {chat.goal && (
@@ -1302,7 +1335,11 @@ export function App() {
           onSaved={saved => {
             setProjectDialog(undefined)
             setProjects(list => [saved, ...list.filter(x => x.id !== saved.id)])
-            if (projectDialog === 'new') void openProject(saved)
+            // A new project starts with the coordinator's input box focused.
+            if (projectDialog === 'new')
+              void openProject(saved).then(() =>
+                requestAnimationFrame(() => document.querySelector<HTMLTextAreaElement>('#projview .pv-chat textarea')?.focus()),
+              )
           }}
         />
       )}

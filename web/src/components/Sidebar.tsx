@@ -165,6 +165,10 @@ export function Sidebar({
   const activeCwd = history.find(h => h.id === view)?.cwd
 
   useEffect(() => () => clearTimeout(flashTimer.current), [])
+  // Opening a session expands its folder once; the folder can still be collapsed after.
+  useEffect(() => {
+    if (activeCwd !== undefined) setCollapsed(c => (c[activeCwd] === false ? c : { ...c, [activeCwd]: false }))
+  }, [view, activeCwd])
 
   const flash = (text: string) => {
     setFlashText(text)
@@ -500,7 +504,7 @@ export function Sidebar({
   const projectRows = projects.filter(p => !q || `${p.name}${p.cwd}`.toLowerCase().includes(q)).map(projectRow)
   const tempRows = groups.temporary.map(e => sessRow(e, true))
   const dirs = groups.folders.map((g, i) => {
-    const opened = !!q || g.cwd === activeCwd || isOpen(g.cwd, i < OPEN_FOLDERS)
+    const opened = !!q || isOpen(g.cwd, i < OPEN_FOLDERS)
     const name = g.name || g.cwd
     const tip: Tip = {
       t: name,

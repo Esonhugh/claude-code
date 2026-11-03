@@ -100,7 +100,7 @@ export function taskNoteText(
 ): { key: MessageKey; vars: Record<string, string> } {
   const title = task?.description ?? note.taskId
   if (note.status === 'completed') {
-    return { key: 'taskFinishedNote', vars: { title, time: formatTaskTime(task?.durationMs) } }
+    return { key: 'taskFinishedNote', vars: { title, time: formatTaskTime(note.durationMs ?? task?.durationMs) } }
   }
   return { key: note.status === 'failed' ? 'taskFailedNote' : 'taskStoppedNote', vars: { title } }
 }

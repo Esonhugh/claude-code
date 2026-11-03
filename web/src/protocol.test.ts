@@ -229,6 +229,7 @@ describe('reduce', () => {
       account: { email: 'a@b.c', subscriptionType: 'max' },
       uiName: 'Claw',
       hooks: [{ event: 'Stop', matcher: '', command: 'say hi' }],
+      planMode: false,
     })
   })
 
@@ -246,6 +247,12 @@ describe('reduce', () => {
       },
     ])
     expect(state.model).toBe('claude-haiku-5-5')
+    expect(state.env.planMode).toBe(false)
+    const allowed = reduce(state, {
+      type: 'control_response',
+      response: { subtype: 'success', request_id: 'web-settings-2', response: { effective: { planModeAvailable: true }, applied: {} } },
+    })
+    expect(allowed.env.planMode).toBe(true)
   })
 
   it('queues permission requests and answers them in the control format', () => {
@@ -610,5 +617,51 @@ describe('i18n', () => {
 
   it('fills placeholders', () => {
     expect(translate('en', 'wantsToUse', { tool: 'Bash' })).toBe('Claude wants to use Bash')
+  })
+
+  it('uses the singular form for a count of one', () => {
+    expect(translate('en', 'waitingTasks', { n: '1' })).toBe('· waiting on 1 task')
+    expect(translate('en', 'waitingTasks', { n: '2' })).toBe('· waiting on 2 tasks')
+    expect(translate('zh-Hans', 'taskCount', { n: '1' })).toBe(translate('zh-Hans', 'taskCount', { n: '2' }).replace('2', '1'))
+  })
+})
+
+describe('interrupts and session info', () => {
+  it('marks a stopped turn as interrupted, not with its internal diagnostic', () => {
+    const busy = { ...initialState, busy: true }
+    const stopped = reduce(busy, {
+      type: 'result',
+      subtype: 'error_during_execution',
+      is_error: true,
+      errors: ['[ede_diagnostic] result_type=user last_content_type=n/a stop_reason=null'],
+    })
+    expect(stopped.busy).toBe(false)
+    expect(stopped.items).toEqual([{ kind: 'note', id: 'interrupted-0', text: '', key: 'interrupted' }])
+    const failed = reduce(busy, {
+      type: 'result',
+      subtype: 'error_during_execution',
+      is_error: true,
+      errors: ['[ede_diagnostic] result_type=user last_content_type=n/a stop_reason=null', 'Boom'],
+    })
+    expect(failed.items.map(i => (i.kind === 'error' ? i.text : ''))).toEqual(['Boom'])
+  })
+
+  it('shows an interrupt in a reloaded transcript as a note, not as something the user typed', () => {
+    for (const text of ['[Request interrupted by user]', '[Request interrupted by user for tool use]']) {
+      const state = reduce(initialState, { type: 'user', isReplay: true, uuid: 'u1', message: { role: 'user', content: [{ type: 'text', text }] } })
+      expect(state.items).toEqual([{ kind: 'note', id: 'u1', text: '', key: 'interrupted' }])
+    }
+  })
+
+  it('counts installed plugins without the built-in mods', () => {
+    const state = reduce(initialState, {
+      type: 'system',
+      subtype: 'init',
+      plugins: [
+        { name: 'agents-md', path: '/x', source: 'agents-md@builtin' },
+        { name: 'mine', path: '/y', source: 'mine@market' },
+      ],
+    })
+    expect(state.env.plugins?.map(p => p.name)).toEqual(['mine'])
   })
 })

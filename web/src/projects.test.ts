@@ -67,16 +67,56 @@ describe('project tasks', () => {
     state = reduce(state, sys('task_notification', { task_id: 'b', status: 'killed' }))
 
     expect(state.taskNotes).toEqual([
-      { taskId: 'a', status: 'completed', afterId: 'm1' },
-      { taskId: 'b', status: 'killed', afterId: 'm2' },
+      { taskId: 'a', status: 'completed', afterId: 'm1', n: 1 },
+      { taskId: 'b', status: 'killed', afterId: 'm2', n: 1 },
     ])
     expect(taskNoteText(state.taskNotes[0]!, state.tasks.a)).toEqual({ key: 'taskFinishedNote', vars: { title: 'Alpha', time: '1m35s' } })
     expect(taskNoteText(state.taskNotes[1]!, state.tasks.b)).toEqual({ key: 'taskStoppedNote', vars: { title: 'Beta' } })
-    expect(taskNoteText({ taskId: 'x', status: 'failed' }, undefined).key).toBe('taskFailedNote')
+    expect(taskNoteText({ taskId: 'x', status: 'failed', n: 1 }, undefined).key).toBe('taskFailedNote')
     expect(agentInputs(state.items).get('toolu_a')).toEqual({ description: 'Alpha', prompt: 'Do alpha', model: 'haiku' })
     const byItem = notesByItem(state.taskNotes, state.items)
     expect(byItem.get('m1')?.map(n => n.taskId)).toEqual(['a'])
-    expect(notesByItem([{ taskId: 'z', status: 'completed', afterId: 'gone' }], state.items).get('')).toHaveLength(1)
+    expect(notesByItem([{ taskId: 'z', status: 'completed', afterId: 'gone', n: 1 }], state.items).get('')).toHaveLength(1)
+  })
+
+  it('notes a resumed task each time it ends, and after a reload where the coordinator read each ending', () => {
+    const notification = (uuid: string, status: string, ms: number) => ({
+      type: 'user',
+      isReplay: true,
+      uuid,
+      message: {
+        role: 'user',
+        content: `<task-notification>\n<task-id>a</task-id>\n<status>${status}</status>\n<summary>x</summary>\n<usage><duration_ms>${ms}</duration_ms></usage>\n</task-notification>`,
+      },
+    })
+    const started = sys('task_started', { task_id: 'a', description: 'Alpha', task_type: 'local_agent', spawn_depth: 1, uuid: 's1' })
+    const failed = sys('task_notification', { task_id: 'a', status: 'failed', uuid: 'n1' })
+    const resumed = sys('task_started', { task_id: 'a', description: 'Alpha', task_type: 'local_agent', spawn_depth: 1, uuid: 's2' })
+    const done = sys('task_notification', { task_id: 'a', status: 'completed', uuid: 'n2' })
+
+    // Live: both endings, each once, though the first is seen twice.
+    let live = reduce(initialState, assistant('m1', [{ type: 'text', text: 'Go.' }]))
+    for (const line of [started, failed, failed, resumed]) live = reduce(live, line)
+    live = reduce(live, assistant('m2', [{ type: 'text', text: 'Retrying.' }]))
+    live = reduce(live, done)
+    expect(live.taskNotes.map(n => [n.status, n.afterId, n.n])).toEqual([
+      ['failed', 'm1', 1],
+      ['completed', 'm2', 2],
+    ])
+
+    // Reload: the transcript places both, the replayed task lines add nothing.
+    let loaded = reduce(initialState, assistant('m1', [{ type: 'text', text: 'Go.' }]))
+    loaded = reduce(loaded, notification('u1', 'failed', 10))
+    loaded = reduce(loaded, assistant('m2', [{ type: 'text', text: 'Retrying.' }]))
+    loaded = reduce(loaded, notification('u2', 'completed', 95_000))
+    loaded = reduce(loaded, assistant('m3', [{ type: 'text', text: 'Done.' }]))
+    for (const line of [started, failed, resumed, done]) loaded = reduce(loaded, line)
+    expect(loaded.items.map(i => i.id)).toEqual(['m1', 'm2', 'm3'])
+    expect(loaded.taskNotes.map(n => [n.status, n.afterId, n.n])).toEqual([
+      ['failed', 'm1', 1],
+      ['completed', 'm2', 2],
+    ])
+    expect(taskNoteText(loaded.taskNotes[1]!, undefined).vars.time).toBe('1m35s')
   })
 
   it('formats a card meta line, with the running clock and the tool only while running', () => {

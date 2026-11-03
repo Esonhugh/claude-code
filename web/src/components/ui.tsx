@@ -55,9 +55,15 @@ export const MODES: { key: string; mark: string; label: string; desc: MessageKey
 
 export const modeOf = (key: string | undefined) => MODES.find(m => m.key === key) ?? MODES[0]!
 
+/** The modes to offer: plan mode only when settings allow it (`planModeAvailable`) or it is on, like the TUI. */
+export const offeredModes = (plan: boolean | undefined, key?: string) =>
+  MODES.filter(m => m.key !== 'plan' || plan || key === 'plan')
+
 /** Next mode for Shift+Tab, as the TUI cycles. */
-export const nextMode = (key: string | undefined) =>
-  MODES[(MODES.indexOf(modeOf(key)) + 1) % MODES.length]!.key
+export const nextMode = (key: string | undefined, plan?: boolean) => {
+  const modes = offeredModes(plan)
+  return modes[(modes.indexOf(modeOf(key)) + 1) % modes.length]!.key
+}
 
 /**
  * A `.footbtn` with its `.pop` menu: one open at a time, closed by Esc or a

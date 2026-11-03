@@ -26,7 +26,9 @@ const B = 20
 const WEEKDAYS = ['周日', '周一', '周二', '周三', '周四', '周五', '周六']
 
 /** The prototype's `/stats` dialog: KPI tiles, daily chart, model share, heatmap, hours. */
-export function StatsBody({ z }: { z: Z }) {
+export function StatsBody({ z: zText }: { z: Z }) {
+  // The table translates 天 as " days"; English wants "1 day".
+  const z = (text: string) => zText(text).replace(/(^|[^\d.])1 (active )?days\b/, (_, pre: string, active = '') => `${pre}1 ${active}day`)
   const [stats, setStats] = useState<Stats>()
   const [error, setError] = useState<string>()
   const [range, setRange] = useState<StatRange>('30d')

@@ -14,7 +14,7 @@ import { formatBytes, mentionPath } from '../files'
 import { type Approval, type ApprovalChoice, approvalRules, type ContextUsage, type Goal, type ModelOption, type Todo } from '../protocol'
 import { toolSummary } from '../tools'
 import { modelName, modelOption } from './Message'
-import { FootMenu, MODES, modeOf, SendIcon, type T } from './ui'
+import { FootMenu, modeOf, offeredModes, SendIcon, type T } from './ui'
 
 const FALLBACK_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max']
 
@@ -81,7 +81,7 @@ export function ModelMenu({
           }}
         >
           {modelName(m.value, models) ?? m.displayName}
-          {modelHint(m) && <small>{modelHint(m)}</small>}
+          {modelHint(m) && <small title={modelHint(m)}>{modelHint(m)}</small>}
         </button>
       ))}
       {onEffort && (
@@ -111,17 +111,20 @@ export function ModelMenu({
 export function ModeItems({
   t,
   mode,
+  plan,
   onMode,
   close,
 }: {
   t: T
   mode: string
+  /** Settings allow plan mode. */
+  plan?: boolean
   onMode: (mode: string) => void
   close: () => void
 }) {
   return (
     <>
-      {MODES.map(m => (
+      {offeredModes(plan, mode).map(m => (
         <button
           type="button"
           role="menuitemradio"
@@ -649,10 +652,12 @@ export function InputBox({
 export function ModeButton({
   t,
   mode,
+  plan,
   onMode,
 }: {
   t: T
   mode: string
+  plan?: boolean
   onMode: (mode: string) => void
 }) {
   const current = modeOf(mode)
@@ -669,7 +674,7 @@ export function ModeButton({
         </>
       }
     >
-      {close => <ModeItems t={t} mode={current.key} onMode={onMode} close={close} />}
+      {close => <ModeItems t={t} mode={current.key} plan={plan} onMode={onMode} close={close} />}
     </FootMenu>
   )
 }

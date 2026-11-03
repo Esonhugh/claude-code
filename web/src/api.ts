@@ -117,7 +117,7 @@ export const listRunning = () =>
   getJson<{ id: string; work_dir: string; attached: boolean }[]>('/api/sessions')
 
 export const getInfo = () =>
-  getJson<{ workspace: string; preview_origins?: string[]; temp_root?: string; home?: string }>('/api/info')
+  getJson<{ workspace: string; preview_origins?: string[]; temp_root?: string; home?: string; version?: string }>('/api/info')
 
 /** Files under the session's working directory matching an `@` query, relative to it. */
 export const listWorkspaceFiles = (sessionId: string, query: string) =>
@@ -304,7 +304,7 @@ export const patchProject = (id: string, patch: ProjectFields) =>
 
 /** Starts the project's coordinator, or resumes it; a running one is reused. */
 export const openCoordinator = (id: string) =>
-  sendJson(`/api/projects/${encodeURIComponent(id)}/coordinator`, 'POST') as Promise<CreatedSession>
+  sendJson(`/api/projects/${encodeURIComponent(id)}/coordinator`, 'POST') as Promise<CreatedSession & { fresh?: boolean }>
 
 /** A row of `GET /api/projects/:id/tasks` (src/web/tasks.ts). */
 export type ProjectTask = {

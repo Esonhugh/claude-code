@@ -414,11 +414,11 @@ export function Message({
     return (
       <>
         {asking && (
-          <div className="rw-confirm">
+          <div className="rw-confirm" onKeyDown={e => e.key === 'Escape' && rewind.ask(undefined)}>
             <b>{t('rewindAsk')}</b>
             <span className="note">{t('rewindNote', { n: String(rewind.turnsAfter(item.id)) })}</span>
             <span className="btns">
-              <button className="btn primary" type="button" onClick={() => rewind.go(item.id, false)}>
+              <button className="btn primary" type="button" autoFocus onClick={() => rewind.go(item.id, false)}>
                 {t('rewindConversation')}
               </button>
               <button className="btn" type="button" onClick={() => rewind.go(item.id, true)}>
@@ -484,7 +484,7 @@ export function Message({
   if (item.kind === 'note') {
     return (
       <div className="note" style={{ textAlign: 'center' }}>
-        {item.text}
+        {item.key ? t(item.key) : item.text}
       </div>
     )
   }

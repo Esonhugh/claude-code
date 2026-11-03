@@ -52,6 +52,8 @@ export function translate(
   key: MessageKey,
   vars: Record<string, string> = {},
 ): string {
-  const template = messages[lang][key] ?? en[key]
+  // English keys may have a `_one` form for a count of 1.
+  const one = vars.n === '1' ? (messages[lang] as Record<string, string | undefined>)[`${key}_one`] : undefined
+  const template = one ?? messages[lang][key] ?? en[key]
   return template.replace(/\{(\w+)\}/g, (_, name: string) => vars[name] ?? '')
 }

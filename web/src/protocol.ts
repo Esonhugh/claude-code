@@ -4,6 +4,7 @@
 
 import { isFinished, reduceTasks, type Tasks } from './agents'
 import type { SlashCommand } from './commands'
+import type { MessageKey } from './i18n'
 
 export type Block =
   | { kind: 'text'; text: string }
@@ -35,7 +36,7 @@ export type Item =
   /** A one-line `/recap` (the TUI's `※` away summary); `away` in minutes. */
   | { kind: 'recap'; id: string; text: string; away?: number }
   /** A centered muted line the page adds itself, e.g. after a rewind. */
-  | { kind: 'note'; id: string; text: string }
+  | { kind: 'note'; id: string; text: string; key?: MessageKey }
   /** A goal ended (met, cleared or failed). */
   | { kind: 'goal'; id: string; status: string; iterations?: number; durationMs?: number }
   | {
@@ -108,6 +109,8 @@ export type SessionEnv = {
   account?: { email?: string; subscriptionType?: string; apiKeySource?: string; apiProvider?: string }
   uiName?: string
   hooks?: Hook[]
+  /** Settings allow plan mode (`planModeAvailable`). */
+  planMode?: boolean
 }
 
 export type ChatState = {
@@ -141,6 +144,8 @@ export type ChatState = {
   rateLimits: Record<string, RateLimit>
   /** Tasks that ended, in order, each after the item that was last when it did (a project's notice lines). */
   taskNotes: TaskNote[]
+  /** The ending lines already counted for `taskNotes` (see addNote). */
+  noteKeys: string[]
   /** A `/recap` is on its way; its output becomes a `※` line. */
   recapPending?: { away?: number }
   /** When the first message of this chat was sent (ms). */
@@ -159,6 +164,7 @@ export const initialState: ChatState = {
   decisions: {},
   rateLimits: {},
   taskNotes: [],
+  noteKeys: [],
 }
 
 type Json = Record<string, unknown>
@@ -548,14 +554,42 @@ export function teammateMessages(
   }))
 }
 
-export type TaskNote = { taskId: string; status: string; afterId?: string }
+/** A task ended; `n` counts its endings (a resumed task can end again), `durationMs` is from the transcript. */
+export type TaskNote = { taskId: string; status: string; afterId?: string; n: number; durationMs?: number }
 
-/** Records a task that just ended (once per task and status, so replays add nothing). */
-function noteEnded(state: ChatState, tasks: Tasks, raw: Json): TaskNote[] {
+/**
+ * Adds the `n`th ending of a task once. The live stream and the transcript
+ * (where the coordinator read each ending as a `<task-notification>`) each
+ * count a task's endings in order, so a reload that loads the transcript and
+ * then gets the task lines replayed shows each ending once, where it happened.
+ * `key` names the line itself, so the same line seen twice counts once.
+ */
+function addNote(state: ChatState, source: 'sys' | 'log', key: string, note: Omit<TaskNote, 'n' | 'afterId'>): Partial<ChatState> {
+  const prefix = `${source}\n${note.taskId}\n`
+  if (state.noteKeys.includes(prefix + key)) return {}
+  const n = state.noteKeys.filter(k => k.startsWith(prefix)).length + 1
+  const noteKeys = [...state.noteKeys, prefix + key]
+  if (state.taskNotes.some(x => x.taskId === note.taskId && x.n === n)) return { noteKeys }
+  return { noteKeys, taskNotes: [...state.taskNotes, { ...note, n, afterId: state.items.at(-1)?.id }] }
+}
+
+function noteEnded(state: ChatState, tasks: Tasks, raw: Json): Partial<ChatState> {
   const task = typeof raw.task_id === 'string' ? tasks[raw.task_id] : undefined
-  if (raw.subtype !== 'task_notification' || !task || !isFinished(task)) return state.taskNotes
-  if (state.taskNotes.some(n => n.taskId === task.id && n.status === task.status)) return state.taskNotes
-  return [...state.taskNotes, { taskId: task.id, status: task.status, afterId: state.items.at(-1)?.id }]
+  if (raw.subtype !== 'task_notification' || !task || !isFinished(task)) return {}
+  return addNote(state, 'sys', str(raw.uuid) ?? task.status, { taskId: task.id, status: task.status })
+}
+
+const NOTIFICATION = /^<task-notification>[\s\S]*<\/task-notification>$/
+
+/** A `<task-notification>` the coordinator read, as its transcript holds it. */
+function noteFromLog(state: ChatState, text: string, uuid: string): Partial<ChatState> | undefined {
+  if (!NOTIFICATION.test(text.trim())) return undefined
+  const tag = (name: string) => new RegExp(`<${name}>([^<]*)</${name}>`).exec(text)?.[1]?.trim()
+  const taskId = tag('task-id')
+  const status = tag('status')
+  if (!taskId || !status) return {}
+  const duration = Number(tag('duration_ms'))
+  return addNote(state, 'log', uuid, { taskId, status, ...(Number.isFinite(duration) && duration > 0 && { durationMs: duration }) })
 }
 
 export function reduce(state: ChatState, raw: unknown): ChatState {
@@ -591,7 +625,7 @@ export function reduce(state: ChatState, raw: unknown): ChatState {
       if (raw.subtype === 'goal_state_changed') return reduceGoal(state, raw)
       if (raw.subtype !== 'init') {
         const tasks = reduceTasks(state.tasks, raw)
-        return tasks === state.tasks ? state : { ...state, tasks, taskNotes: noteEnded(state, tasks, raw) }
+        return tasks === state.tasks ? state : { ...state, tasks, ...noteEnded(state, tasks, raw) }
       }
       return {
         ...state,
@@ -604,7 +638,11 @@ export function reduce(state: ChatState, raw: unknown): ChatState {
               : undefined,
             skills: Array.isArray(raw.skills) ? raw.skills.filter(s => typeof s === 'string') : undefined,
             plugins: Array.isArray(raw.plugins)
-              ? raw.plugins.filter(isObj).map(p => ({ name: str(p.name) ?? '', path: str(p.path) ?? '' }))
+              ? raw.plugins
+                  .filter(isObj)
+                  // Built-in mods (`agents-md@builtin`) are counted under Mods, not installed plugins.
+                  .filter(p => !str(p.source)?.endsWith('@builtin'))
+                  .map(p => ({ name: str(p.name) ?? '', path: str(p.path) ?? '' }))
               : undefined,
             apiKeySource: str(raw.apiKeySource),
           }),
@@ -705,7 +743,12 @@ export function reduce(state: ChatState, raw: unknown): ChatState {
         const fromTeammates = teammateMessages(text, itemId)
         const local = localCommandOutput(text)
         const command = commandInput(text)
-        if (fromTeammates.length) {
+        const notified = noteFromLog(next, text, itemId)
+        if (notified) {
+          next = { ...next, ...notified }
+        } else if (/^\[Request interrupted by user( for tool use)?\]$/.test(text.trim())) {
+          next = { ...next, items: [...next.items, { kind: 'note', id: itemId, text: '', key: 'interrupted' }] }
+        } else if (fromTeammates.length) {
           next = { ...next, items: [...next.items, ...fromTeammates] }
         } else if (local) {
           if (local.text) next = addLocal(next, { kind: 'local', id: itemId, ...local })
@@ -763,10 +806,13 @@ export function reduce(state: ChatState, raw: unknown): ChatState {
         recapPending: undefined,
       }
       if (!failed) return next
-      const errors = Array.isArray(raw.errors)
-        ? raw.errors.filter(e => typeof e === 'string').join('\n')
-        : ''
-      const text = str(raw.result) || errors || String(raw.subtype)
+      const all = Array.isArray(raw.errors) ? raw.errors.filter(e => typeof e === 'string') : []
+      // QueryEngine prefixes errors with an internal `[ede_diagnostic]` line; an interrupted turn has nothing else.
+      const shown = all.filter(e => !e.startsWith('[ede_diagnostic]'))
+      if (all.length && !shown.length && !str(raw.result)) {
+        return { ...next, items: [...next.items, { kind: 'note', id: `interrupted-${next.items.length}`, text: '', key: 'interrupted' }] }
+      }
+      const text = str(raw.result) || shown.join('\n') || String(raw.subtype)
       // An API error already arrived as its own message this turn.
       const lastUser = next.items.findLastIndex(i => i.kind === 'user')
       if (next.items.slice(lastUser + 1).some(i => i.kind === 'error' && i.text === text)) {
@@ -995,6 +1041,7 @@ function reduceControlResponse(state: ChatState, raw: Json): ChatState {
         ...state.env,
         uiName: str(effective.uiName),
         hooks: hooksFrom(effective.hooks),
+        planMode: effective.planModeAvailable === true,
       },
     }
   }
