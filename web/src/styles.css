@@ -749,7 +749,7 @@ a.btn { text-decoration: none; color: var(--fg); display: inline-block }
 .history .sess small, .history .sess .act { display: none }
 .srow { position: relative; display: grid }
 .srow .pin-b { position: absolute; right: 4px; top: 50%; transform: translateY(-50%); border: 0; background: var(--sunken); color: var(--muted); border-radius: 5px; width: 22px; height: 20px; font-size: 11px; cursor: pointer; display: none; padding: 0 }
-.srow:hover .pin-b, .pin-b:focus-visible { display: block } .srow:hover > .sess { padding-right: 30px } .srow .pin-b:hover { color: var(--fg) }
+.srow:hover .pin-b, .pin-b:focus-visible { display: block } .srow:hover > .session-row { padding-right: 30px } .srow .pin-b:hover { color: var(--fg) }
 .history .proj-t { padding: 4px 6px; grid-template-columns: 12px minmax(0, 1fr) auto } .history .proj-t small { display: none } .history .proj-t .caret, .history .proj-t .cnt { grid-row: 1 } .history .proj-t b { font-size: 12.5px }
 .history .proj { margin-top: 0 } .history .proj .sess { margin-left: 14px }
 .pjrow .t .pjico { color: var(--muted); font-family: var(--f-mono); margin-right: 6px }
