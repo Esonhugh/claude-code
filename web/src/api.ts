@@ -204,6 +204,10 @@ async function sendJson(path: string, method: string, body?: unknown): Promise<u
   return res.status === 200 ? res.json() : undefined
 }
 
+/** A new session with the conversation up to the reply `messageId` (`/branch`). */
+export const forkSession = (id: string, messageId: string) =>
+  sendJson(`/api/history/${encodeURIComponent(id)}/fork`, 'POST', { message_id: messageId }) as Promise<{ session_id: string }>
+
 export const getAccount = () => getJson<Account>('/api/account')
 
 export const saveApiKey = (provider: AuthProvider, key: string, baseUrl: string) =>

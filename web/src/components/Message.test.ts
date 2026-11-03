@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test'
 import type { Block, Item, ModelOption } from '../protocol'
-import { joinTurns, modelName, relativeTo, turnSegments } from './Message'
+import { joinTurns, modelName, relativeTo, stepActions, turnSegments } from './Message'
 
 const models: ModelOption[] = [
   {
@@ -82,5 +82,27 @@ describe('one header per turn', () => {
       { kind: 'steps', at: [3, 4] },
       { kind: 'text', at: [5] },
     ])
+  })
+})
+
+describe('stepActions', () => {
+  const call = (name: string, input: Record<string, unknown>): Extract<Block, { kind: 'tool' }> => ({ kind: 'tool', id: name + JSON.stringify(input), name, input: JSON.stringify(input) })
+  const t = (key: string, vars?: Record<string, string>) => `${key}:${Object.values(vars ?? {}).join(',')}`
+
+  it('says what a run of tools did', () => {
+    expect(
+      stepActions(
+        [
+          call('Read', { file_path: '/a' }),
+          call('Read', { file_path: '/b' }),
+          call('Read', { file_path: '/a' }),
+          call('Grep', { pattern: 'x' }),
+          call('Bash', { command: 'bun test\nmore' }),
+          call('TodoWrite', { todos: [] }),
+        ],
+        t as never,
+      ),
+    ).toEqual(['stepsRead:2', 'stepsSearched:1', 'stepsRanOne:bun test', 'TodoWrite'])
+    expect(stepActions([call('Bash', { command: 'a' }), call('Bash', { command: 'b' })], t as never)).toEqual(['stepsRan:2'])
   })
 })

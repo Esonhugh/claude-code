@@ -1,5 +1,5 @@
-import type { UUID } from 'crypto'
-import { readdir, readFile } from 'fs/promises'
+import { randomUUID, type UUID } from 'crypto'
+import { readdir, readFile, writeFile } from 'fs/promises'
 import { dirname, join } from 'path'
 import { listSessionsImpl } from '../utils/listSessionsImpl.js'
 import type { TranscriptMessage } from '../types/logs.js'
@@ -142,6 +142,14 @@ function toStreamJson(
   messages: unknown[],
   sidechain: boolean,
 ): Record<string, unknown>[] {
+  // When the entry before each message was written: a thinking block ends about that long after it.
+  const before = new Map<unknown, number>()
+  let last: number | undefined
+  for (const m of messages as Record<string, unknown>[]) {
+    const at = typeof m.timestamp === 'string' ? Date.parse(m.timestamp) : NaN
+    if (last !== undefined) before.set(m, last)
+    if (Number.isFinite(at)) last = at
+  }
   return (messages as Record<string, unknown>[])
     .filter(m => (sidechain || !m.isSidechain) && isVisible(m))
     .map(m => {
@@ -181,8 +189,17 @@ function toStreamJson(
         ...(m.type === 'user' && editPatch(m.toolUseResult)),
         // The live stream marks API error messages with `error`; keep that for the page.
         ...(m.type === 'assistant' && m.isApiErrorMessage === true && { isApiErrorMessage: true }),
+        ...(m.type === 'assistant' && thinkingMs(m, before.get(m))),
       }
     })
+}
+
+/** How long a thinking entry took, from the entry written before it; the transcript keeps no duration. */
+function thinkingMs(m: Record<string, unknown>, prev: number | undefined): { thinking_ms?: number } {
+  const content = (m.message as { content?: unknown } | undefined)?.content
+  if (prev === undefined || !Array.isArray(content) || !content.some(c => (c as { type?: unknown })?.type === 'thinking')) return {}
+  const ms = Date.parse(String(m.timestamp)) - prev
+  return Number.isFinite(ms) && ms >= 0 ? { thinking_ms: ms } : {}
 }
 
 function editPatch(result: unknown): { tool_use_result?: Record<string, unknown> } {
@@ -281,6 +298,29 @@ export async function findAgentIssuers(
     }
   }
   return issuers
+}
+
+/**
+ * A new session holding the conversation up to and including the assistant
+ * message `messageId` (an API `msg_` id), like `/branch`: same folder, new
+ * session id, each entry marked with where it came from. Resume it to continue.
+ */
+export async function forkSession(id: string, messageId: string): Promise<string | undefined> {
+  const found = await resolveSessionFilePath(id)
+  if (!found) return undefined
+  const log = await loadTranscriptFile(found.filePath)
+  const leaf = findLatestMessage(log.messages.values(), m => log.leafUuids.has(m.uuid))
+  if (!leaf) return undefined
+  const chain = buildConversationChain(log.messages, leaf)
+  const end = chain.findLastIndex(m => m.type === 'assistant' && (m.message as { id?: unknown } | undefined)?.id === messageId)
+  if (end === -1) return undefined
+  const forkId = randomUUID()
+  const lines = chain
+    .slice(0, end + 1)
+    .filter(m => !m.isSidechain)
+    .map(m => JSON.stringify({ ...m, sessionId: forkId, forkedFrom: { sessionId: id, messageUuid: m.uuid } }))
+  await writeFile(join(dirname(found.filePath), `${forkId}.jsonl`), lines.join('\n') + '\n', { encoding: 'utf8', mode: 0o600, flag: 'wx' })
+  return forkId
 }
 
 export async function renameSession(id: string, title: string): Promise<boolean> {
