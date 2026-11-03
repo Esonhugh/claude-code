@@ -226,11 +226,18 @@ export const cancelOAuth = () => sendJson('/api/account/oauth', 'DELETE')
 export const logout = () => sendJson('/api/account/logout', 'POST', {}) as Promise<Account>
 
 export type FeatureKey = 'autoCompact' | 'gitInstructions' | 'memoryExtraction' | 'agentSummary' | 'promptSuggestions'
-export type WebSettings = { uiName: string; features: Record<FeatureKey, boolean>; allow_local_network: boolean }
+export type Daybreak = 'off' | 'blue' | 'red'
+export type WebSettings = {
+  uiName: string
+  features: Record<FeatureKey, boolean>
+  /** The OpenAI Daybreak access program (`/daybreak`), shown under a ChatGPT sign-in. */
+  daybreak?: Daybreak
+  allow_local_network: boolean
+}
 
 export const getSettings = () => getJson<WebSettings>('/api/settings')
 
-export const patchSettings = (patch: { uiName?: string; features?: Partial<Record<FeatureKey, boolean>> }) =>
+export const patchSettings = (patch: { uiName?: string; features?: Partial<Record<FeatureKey, boolean>>; daybreak?: Daybreak }) =>
   sendJson('/api/settings', 'PATCH', patch) as Promise<WebSettings>
 
 export type UsageWindow = { utilization: number; resets_at?: string | null }
@@ -275,6 +282,8 @@ export type Project = {
   instructions: string
   /** CLAUDE_CODE_SUBAGENT_MODEL for its tasks; null inherits the coordinator's model. */
   worker_model: string | null
+  /** CLAUDE_CODE_SUBAGENT_EFFORT for its tasks; null inherits the coordinator's effort. */
+  worker_effort?: string | null
   permission_mode: string
   coordinator_session_id: string | null
   coordinator_model?: string | null
@@ -292,6 +301,7 @@ export type ProjectFields = {
   name?: string
   instructions?: string
   worker_model?: string | null
+  worker_effort?: string | null
   permission_mode?: string
 }
 

@@ -63,7 +63,7 @@ import { isAgentSwarmsEnabled } from '../../utils/agentSwarmsEnabled.js'
 import { getCwd, runWithCwdOverride } from '../../utils/cwd.js'
 import { logForDebugging } from '../../utils/debug.js'
 import { isEnvTruthy } from '../../utils/envUtils.js'
-import { EFFORT_LEVELS, getDefaultEffortForModel, type EffortValue } from '../../utils/effort.js'
+import { EFFORT_LEVELS, getDefaultEffortForModel, isEffortLevel, type EffortValue } from '../../utils/effort.js'
 import { getAPIProvider } from '../../utils/model/providers.js'
 import { AbortError, errorMessage, isAbortError, toError } from '../../utils/errors.js'
 import type { CacheSafeParams } from '../../utils/forkedAgent.js'
@@ -176,6 +176,12 @@ import {
   userFacingName,
   userFacingNameBackgroundColor,
 } from './UI.js'
+
+/** CLAUDE_CODE_SUBAGENT_EFFORT: the workers' effort when neither the call nor the agent sets one (a `claude web` project's task default). */
+function subagentEffortFromEnv(): EffortValue | undefined {
+  const value = process.env.CLAUDE_CODE_SUBAGENT_EFFORT?.trim()
+  return value && isEffortLevel(value) ? value : undefined
+}
 
 /* eslint-disable @typescript-eslint/no-require-imports */
 const proactiveModule =
@@ -787,7 +793,7 @@ export const AgentTool = buildTool({
     }
     // Completion remains owned by AgentTool; middleware observes launch only.
     const execute = async () => {
-    const resolvedEffort = effort ?? selectedAgent.effort ?? appState.effortValue ??
+    const resolvedEffort = effort ?? selectedAgent.effort ?? subagentEffortFromEnv() ?? appState.effortValue ??
       getDefaultEffortForModel(toolUseContext.options.mainLoopModel)
     if (resolvedEffort !== undefined) selectedAgent = { ...selectedAgent, effort: resolvedEffort }
     const workflowFraming = toolUseContext.workflowAgentSystemPrompt

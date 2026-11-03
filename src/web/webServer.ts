@@ -161,6 +161,8 @@ const projectFieldsSchema = lazySchema(() =>
     instructions: z.string().max(20_000).optional(),
     // A model alias or id for CLAUDE_CODE_SUBAGENT_MODEL; null inherits the coordinator's.
     worker_model: z.string().regex(MODEL).nullable().optional(),
+    // CLAUDE_CODE_SUBAGENT_EFFORT; null inherits the coordinator's.
+    worker_effort: z.string().regex(EFFORT).nullable().optional(),
     permission_mode: z.enum(PERMISSION_MODES).optional(),
   }),
 )
@@ -684,7 +686,7 @@ export function startWebServer(
   /**
    *   GET    /api/projects                  → projects, newest change first
    *   POST   /api/projects                  → create; 409 { needs_trust } for an untrusted folder
-   *   PATCH  /api/projects/:id              → name, instructions, worker_model, permission_mode
+   *   PATCH  /api/projects/:id              → name, instructions, worker_model, worker_effort, permission_mode
    *   DELETE /api/projects/:id              → archive and stop its coordinator
    *   DELETE /api/projects/:id?purge=1      → also delete it; its sessions go back to their folders
    *   POST   /api/projects/:id/coordinator  → { session_id, work_dir }: start or resume the coordinator
@@ -708,6 +710,7 @@ export function startWebServer(
         cwd,
         instructions: body.instructions ?? '',
         worker_model: body.worker_model ?? null,
+        worker_effort: body.worker_effort ?? null,
         permission_mode: body.permission_mode ?? 'default',
       })
       return Response.json(projectJson(project), { status: 201 })
@@ -727,7 +730,9 @@ export function startWebServer(
       if (!parsed.success) return errorResponse(400, 'Invalid request')
       const updated = projects().update(id, parsed.data)!
       const changed =
-        updated.instructions !== project.instructions || updated.worker_model !== project.worker_model
+        updated.instructions !== project.instructions ||
+        updated.worker_model !== project.worker_model ||
+        updated.worker_effort !== project.worker_effort
       // A running coordinator picks up new instructions or task model by restarting with --resume.
       if (changed && updated.coordinator_session_id) {
         sessionManager.restart(updated.coordinator_session_id, {

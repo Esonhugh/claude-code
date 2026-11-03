@@ -101,7 +101,7 @@ describe('loadSidebar', () => {
     transcript(a, id(1), [user('task')], 2_000_000)
     transcript(a, id(2), [user('coordinate')], 1_000_000)
     const store = new ProjectStore(db)
-    const project = store.create({ name: 'P', cwd: a, instructions: '', worker_model: null, permission_mode: 'default' })
+    const project = store.create({ name: 'P', cwd: a, instructions: '', worker_model: null, worker_effort: null, permission_mode: 'default' })
     store.update(project.id, { coordinator_session_id: id(2) })
     const data = await loadSidebar(db, 10)
     expect(data.sessions.map(s => s.id)).toEqual([id(1)])

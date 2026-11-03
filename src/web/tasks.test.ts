@@ -14,6 +14,7 @@ function setup() {
     cwd: '/tmp',
     instructions: '',
     worker_model: null,
+    worker_effort: null,
     permission_mode: 'default',
   })
   const child = (m: Record<string, unknown>) => store.fromChild(project.id, SESSION, line(m))

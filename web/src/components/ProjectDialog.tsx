@@ -2,6 +2,7 @@ import { type FormEvent, useState } from 'react'
 import { createProject, NeedsTrustError, patchProject, type Project } from '../api'
 import { tilde } from '../files'
 import type { ModelOption } from '../protocol'
+import { effortChoices, shownModels } from './Composer'
 import { Dialog } from './Dialog'
 import { FootMenu, type T } from './ui'
 
@@ -45,6 +46,11 @@ export function ProjectDialog({
   const [instructions, setInstructions] = useState(project?.instructions ?? '')
   const [workerModel, setWorkerModel] = useState<string | null>(project?.worker_model ?? null)
   const choices = workerModelChoices(models, workerModel)
+  const [workerEffort, setWorkerEffort] = useState<string | null>(project?.worker_effort ?? null)
+  const [moreModels, setMoreModels] = useState(false)
+  const listedModels = models.filter(m => m.value !== 'default')
+  const shownValues = new Set(shownModels(listedModels, workerModel ?? undefined, moreModels).map(m => m.value))
+  const shownChoices = choices.filter(c => c.value === null || !listedModels.length || shownValues.has(c.value) || c.value === workerModel)
   const [trustDir, setTrustDir] = useState<string>()
   const [error, setError] = useState<string>()
   const [busy, setBusy] = useState(false)
@@ -54,7 +60,7 @@ export function ProjectDialog({
     setBusy(true)
     setError(undefined)
     try {
-      const fields = { name: name.trim(), instructions: instructions.trim(), worker_model: workerModel }
+      const fields = { name: name.trim(), instructions: instructions.trim(), worker_model: workerModel, worker_effort: workerEffort }
       onSaved(
         project
           ? await patchProject(project.id, fields)
@@ -133,12 +139,14 @@ export function ProjectDialog({
             buttonClass="pj-model"
             button={
               <>
-                {choices.find(c => c.value === workerModel)?.label || t('inheritModel')} <span aria-hidden="true">▾</span>
+                {choices.find(c => c.value === workerModel)?.label || t('inheritModel')}
+                {workerEffort && ` · ${workerEffort}`} <span aria-hidden="true">▾</span>
               </>
             }
           >
-            {close =>
-              choices.map(m => (
+            {close => (
+              <>
+                {shownChoices.map(m => (
                 <button
                   type="button"
                   role="menuitemradio"
@@ -151,8 +159,30 @@ export function ProjectDialog({
                 >
                   {m.label || t('inheritModel')}
                 </button>
-              ))
-            }
+                ))}
+                {shownChoices.length < choices.length && (
+                  <button type="button" className="mm-more" onClick={() => setMoreModels(true)}>
+                    {t('moreModels', { n: String(choices.length - shownChoices.length) })} <span aria-hidden="true">›</span>
+                  </button>
+                )}
+                <div className="mm-effort">
+                  <div className="mh">{t('effort')}</div>
+                  <div className="seg" role="radiogroup" aria-label={t('effort')}>
+                    {[null, ...effortChoices(workerModel ?? undefined, models, workerEffort ?? undefined)].map(level => (
+                      <button
+                        type="button"
+                        role="radio"
+                        key={level ?? ''}
+                        aria-checked={workerEffort === level}
+                        onClick={() => setWorkerEffort(level)}
+                      >
+                        {level ?? t('inheritModel')}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </>
+            )}
           </FootMenu>
         </div>
         {trustDir && (

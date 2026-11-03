@@ -14,17 +14,17 @@ import {
   touchFolders,
 } from './projectsDb.js'
 
-const input = { name: 'A', cwd: '/tmp', instructions: '', worker_model: null, permission_mode: 'default' }
+const input = { name: 'A', cwd: '/tmp', instructions: '', worker_model: null, worker_effort: null, permission_mode: 'default' }
 
 describe('projects database', () => {
   it('migrates once and keeps rows across reopen', () => {
     const path = join(mkdtempSync(join(tmpdir(), 'web-pdb-')), 'web', 'projects.sqlite')
     const db = openProjectsDb(path)
-    expect((db.query('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(4)
+    expect((db.query('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(5)
     const created = new ProjectStore(db).create(input)
     db.close()
     const again = openProjectsDb(path)
-    expect((again.query('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(4)
+    expect((again.query('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(5)
     expect(new ProjectStore(again).get(created.id)).toEqual(created)
     again.close()
   })
@@ -32,9 +32,9 @@ describe('projects database', () => {
   it('creates, updates, lists newest change first and archives', () => {
     const store = new ProjectStore(openProjectsDb(':memory:'))
     const a = store.create(input)
-    const b = store.create({ ...input, name: 'B', worker_model: 'opus' })
+    const b = store.create({ ...input, name: 'B', worker_model: 'opus', worker_effort: 'low' })
     expect(a.archived_at).toBeNull()
-    expect(b.worker_model).toBe('opus')
+    expect(b).toMatchObject({ worker_model: 'opus', worker_effort: 'low' })
     const updated = store.update(a.id, { name: 'A2', worker_model: null, coordinator_session_id: 's1', instructions: undefined })!
     expect(updated).toMatchObject({ name: 'A2', worker_model: null, coordinator_session_id: 's1', instructions: '' })
     expect(updated.updated_at).toBeGreaterThanOrEqual(a.updated_at)
@@ -88,8 +88,8 @@ describe('sidebar marks', () => {
 })
 
 describe('coordinatorSpawn', () => {
-  it('passes the coordinator prompt, the project instructions and the task model', () => {
-    const spawn = coordinatorSpawn({ instructions: '  Cite sources.\n', worker_model: 'sonnet' })
+  it('passes the coordinator prompt, the project instructions and the task model and effort', () => {
+    const spawn = coordinatorSpawn({ instructions: '  Cite sources.\n', worker_model: 'sonnet', worker_effort: 'high' })
     expect(spawn.systemPrompt).toContain('You are a **coordinator**')
     expect(spawn.systemPrompt).toContain('**Agent** - Spawn a new worker')
     expect(spawn.appendSystemPrompt).toBe('Cite sources.')
@@ -99,11 +99,12 @@ describe('coordinatorSpawn', () => {
       CLAUDE_CODE_ENABLE_TASKS: '0',
       CLAUDE_CODE_ENABLE_TODO_TOOLS: '1',
       CLAUDE_CODE_SUBAGENT_MODEL: 'sonnet',
+      CLAUDE_CODE_SUBAGENT_EFFORT: 'high',
     })
   })
 
   it('leaves out empty instructions and an inherited model', () => {
-    const spawn = coordinatorSpawn({ instructions: ' ', worker_model: null })
+    const spawn = coordinatorSpawn({ instructions: ' ', worker_model: null, worker_effort: null })
     expect(spawn.appendSystemPrompt).toBeUndefined()
     expect(spawn.env).toEqual({
       CLAUDE_CODE_COORDINATOR_MODE: '1',
