@@ -712,43 +712,50 @@ function WorkflowLanes({
   phases,
   picked,
   onOpenAgent,
+  t,
 }: {
   phases: WorkflowPhase[]
   picked?: string
   onOpenAgent: (label: string) => void
+  t: T
 }) {
   const current = currentPhase(phases)
   return (
-    <div className="lanes wfd-lanes">
-      {phases.map((phase, i) => (
-        <div key={phase.index} className={`lane${i === current || phaseActive(phase) ? ' cur' : ''}`}>
-          <h3>
-            <span className={`dot ${dotClass(phase.status)}`} />
-            {i + 1}. {phase.label} · {phase.agents.filter(a => a.status === 'completed').length}/
-            {phase.agents.length}
-          </h3>
-          {phase.message && <p>{phase.message}</p>}
-          {phase.agents.map(agent => (
-            <button
-              type="button"
-              key={agent.label}
-              className="wcard"
-              aria-pressed={picked === agent.label}
-              onClick={() => onOpenAgent(agent.label)}
-            >
-              <b>{agent.label}</b>
-              <span>
-                <span className={`dot ${dotClass(agent.status)}`} /> {agent.status}
+    <div className="kanban">
+      {phases.map((phase, i) => {
+        const running = phase.agents.filter(a => a.status === 'running').length
+        return (
+          <section key={phase.index} className={`kcol${i === current || phaseActive(phase) ? ' cur' : ''}`}>
+            <header>
+              <span className={`dot ${dotClass(phase.status)}`} />
+              <b>
+                {i + 1}. {phase.label}
+              </b>
+              {running > 0 && <span className="note">{t('nRunning', { n: String(running) })}</span>}
+              <span className="count">
+                {phase.agents.filter(a => a.status === 'completed').length}/{phase.agents.length}
               </span>
-            </button>
-          ))}
-          {i < phases.length - 1 && (
-            <span className="arrow" aria-hidden="true">
-              →
-            </span>
-          )}
-        </div>
-      ))}
+            </header>
+            {phase.message && <p>{phase.message}</p>}
+            <div className="kcards">
+              {phase.agents.map(agent => (
+                <button
+                  type="button"
+                  key={agent.label}
+                  className="wcard"
+                  aria-pressed={picked === agent.label}
+                  onClick={() => onOpenAgent(agent.label)}
+                >
+                  <b>{agent.label}</b>
+                  <span>
+                    <span className={`dot ${dotClass(agent.status)}`} /> {agent.status}
+                  </span>
+                </button>
+              ))}
+            </div>
+          </section>
+        )
+      })}
     </div>
   )
 }
@@ -995,10 +1002,7 @@ export function WorkflowTab({
             <div className="bar">
               <i style={{ width: `${allAgents.length ? Math.round((done / allAgents.length) * 100) : 0}%` }} />
             </div>
-            {(lines.length ? lines : [currentIndex]).map(i => (
-              <PhaseLine key={i} phases={phases} index={i} task={task} t={t} />
-            ))}
-            <WorkflowLanes phases={phases} picked={agentLabel} onOpenAgent={setAgentLabel} />
+            <WorkflowLanes phases={phases} picked={agentLabel} onOpenAgent={setAgentLabel} t={t} />
             {agentLabel && (
               <div className="wfout wfd-out">
                 <div className="fhead">
