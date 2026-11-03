@@ -2196,6 +2196,12 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       await panel.locator('.agent-row', { hasText: 'Look around' }).click()
       await panel.locator('.agent-feed').getByText('SUB_RESULT').first().waitFor({ timeout: 30_000 })
       const agentInput = panel.getByLabel('Message', { exact: true })
+      // The agent's box sits at the bottom of the panel, level with the session's.
+      const formBottom = async (scope: any) => {
+        const b = await scope.locator('.composer form').first().boundingBox()
+        return b.y + b.height
+      }
+      expect(Math.abs((await formBottom(panel)) - (await formBottom(page.locator('.main'))))).toBeLessThanOrEqual(4)
       await checkBox(panel, agentInput, true)
       await agentInput.fill('/e2e-sk')
       await agentInput.press('Enter')
