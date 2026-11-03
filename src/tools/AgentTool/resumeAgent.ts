@@ -500,10 +500,10 @@ async function startResume({
         shouldNotifyOwner: inline ? () => false : undefined,
         onRunSettled: releaseSlot,
         priorToolUses: countToolUses(transcript.messages),
-        resume: nextPrompt => resumeAgentBackground({
+        resume: (nextPrompt, promptIsMeta = true) => resumeAgentBackground({
           agentId,
           prompt: nextPrompt,
-          promptIsMeta: true,
+          promptIsMeta,
           toolUseContext,
           canUseTool,
           invokingRequestId,

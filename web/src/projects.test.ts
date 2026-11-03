@@ -68,7 +68,7 @@ describe('project tasks', () => {
     state = reduce(state, sys('task_notification', { task_id: 'b', status: 'killed' }))
 
     expect(state.taskNotes).toEqual([
-      { taskId: 'a', status: 'completed', afterId: 'm1', n: 1 },
+      { taskId: 'a', status: 'completed', afterId: 'm1', n: 1, durationMs: 95_000 },
       { taskId: 'b', status: 'killed', afterId: 'm2', n: 1 },
     ])
     expect(taskNoteText(state.taskNotes[0]!, state.tasks.a)).toEqual({ key: 'taskFinishedNote', vars: { title: 'Alpha', time: '1m35s' } })
@@ -130,6 +130,22 @@ describe('project tasks', () => {
       ['completed', 'm2', 2],
     ])
     expect(taskNoteText(loaded.taskNotes[1]!, undefined).vars.time).toBe('1m35s')
+
+    // A resumed session replays only the endings since it restarted; a new ending still shows.
+    const usage = (ms: number) => ({ total_tokens: 1, tool_uses: 0, duration_ms: ms })
+    let restarted = reduce(initialState, assistant('m1', [{ type: 'text', text: 'Go.' }]))
+    restarted = reduce(restarted, notification('u1', 'failed', 10))
+    restarted = reduce(restarted, assistant('m2', [{ type: 'text', text: 'Retrying.' }]))
+    restarted = reduce(restarted, notification('u2', 'completed', 95_000))
+    for (const line of [resumed, sys('task_notification', { task_id: 'a', status: 'completed', usage: usage(95_000), uuid: 'n2' })]) restarted = reduce(restarted, line)
+    restarted = reduce(restarted, sys('task_started', { task_id: 'a', description: 'Alpha', task_type: 'local_agent', spawn_depth: 1, uuid: 's3' }))
+    restarted = reduce(restarted, assistant('m3', [{ type: 'text', text: 'Again.' }]))
+    restarted = reduce(restarted, sys('task_notification', { task_id: 'a', status: 'completed', usage: usage(150_000), uuid: 'n3' }))
+    expect(restarted.taskNotes.map(n => [n.status, n.afterId])).toEqual([
+      ['failed', 'm1'],
+      ['completed', 'm2'],
+      ['completed', 'm3'],
+    ])
   })
 
   it('notes no ending while an agent only waits on its own background work', () => {

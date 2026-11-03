@@ -682,7 +682,7 @@ export function channelMessage(text: string, id: string): Extract<Item, { kind: 
   }
 }
 
-/** A task ended; `n` counts its endings (a resumed task can end again), `durationMs` is from the transcript. */
+/** A task ended; `n` counts its endings (a resumed task can end again), `durationMs` is that run's own time. */
 export type TaskNote = { taskId: string; status: string; afterId?: string; n: number; durationMs?: number }
 
 /**
@@ -697,14 +697,18 @@ function addNote(state: ChatState, source: 'sys' | 'log', key: string, note: Omi
   if (state.noteKeys.includes(prefix + key)) return {}
   const n = state.noteKeys.filter(k => k.startsWith(prefix)).length + 1
   const noteKeys = [...state.noteKeys, prefix + key]
-  if (state.taskNotes.some(x => x.taskId === note.taskId && x.n === n)) return { noteKeys }
+  // A resumed session replays only the endings since it restarted, so its count
+  // starts over; the duration both sides carry tells the same ending apart.
+  const same = (x: TaskNote) => x.durationMs !== undefined && note.durationMs !== undefined ? x.durationMs === note.durationMs : x.n === n
+  if (state.taskNotes.some(x => x.taskId === note.taskId && same(x))) return { noteKeys }
   return { noteKeys, taskNotes: [...state.taskNotes, { ...note, n, afterId: state.items.at(-1)?.id }] }
 }
 
 function noteEnded(state: ChatState, tasks: Tasks, raw: Json): Partial<ChatState> {
   const task = typeof raw.task_id === 'string' ? tasks[raw.task_id] : undefined
   if (raw.subtype !== 'task_notification' || !task || !isFinished(task)) return {}
-  return addNote(state, 'sys', str(raw.uuid) ?? task.status, { taskId: task.id, status: task.status })
+  const duration = isObj(raw.usage) ? raw.usage.duration_ms : undefined
+  return addNote(state, 'sys', str(raw.uuid) ?? task.status, { taskId: task.id, status: task.status, ...(typeof duration === 'number' && duration > 0 && { durationMs: duration }) })
 }
 
 const NOTIFICATION = /^<task-notification>[\s\S]*<\/task-notification>$/

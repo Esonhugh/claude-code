@@ -809,7 +809,7 @@ export async function runAsyncAgentLifecycle({
   onRunSettled?: () => void
   /** Tool calls of the runs before this one, so a resumed agent reports its whole count. */
   priorToolUses?: number
-  resume?: (prompt: string) => Promise<unknown>
+  resume?: (prompt: string, promptIsMeta?: boolean) => Promise<unknown>
   shouldNotifyOwner?: () => boolean
   getWorktreeResult: () => Promise<{
     worktreePath?: string
