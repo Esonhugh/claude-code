@@ -70,7 +70,7 @@ h1, h2, h3 { text-wrap: balance; margin: 0 }
 .wl-box { position: relative }
 .welcome #wl-slash { top: calc(100% + 6px); bottom: auto; z-index: 8 }
 .welcome .wl-plus { top: calc(100% + 4px); bottom: auto; left: 0; right: auto }
-.welcome .wl-models { left: auto; right: 0; width: 220px }
+.welcome .wl-models { left: auto; right: 0; width: min(340px, calc(100vw - 32px)) }
 .welcome .wl-models > button { grid-template-columns: minmax(0, 1fr) } .welcome .wl-models > button > small { grid-column: 1 }
 .welcome .wl-modes { left: auto; right: 0; width: 300px; max-height: none } .welcome .wl-modes > button { grid-template-columns: 16px minmax(0, 1fr) } .welcome .wl-modes > button > small { grid-column: 2 }
 .wl-recent { margin-top: 18px; display: flex; flex-direction: column; gap: 8px }
@@ -596,6 +596,16 @@ body.hist #goal-wrap + .footwrap { margin-left: auto }
 .recap .rm { flex: none }
 @media (max-width: 560px) { #goal-label .gl-n { display: none } }
 .footmenu[hidden] { display: none }
+/* A long model list scrolls; rows keep their height and the effort row stays in view at the bottom. */
+.footmenu > *, .wl-pick > * { flex-shrink: 0 }
+.mm-more { display: flex !important; gap: 6px; align-items: center }
+.wl-pick .seg button { display: block; padding: 4px 8px; border-radius: 0; text-align: center; color: var(--muted) }
+.wl-pick .seg button[aria-checked="true"] { background: var(--accent); color: #fff }
+.wl-pick .mh { font-size: 11px; color: var(--muted); padding: 4px 8px 2px; text-transform: uppercase; letter-spacing: .06em }
+.mm-effort .seg { display: flex; flex-wrap: wrap } .mm-effort .seg button { flex: 1 0 auto; border-top: 1px solid var(--line); margin-top: -1px }
+/* Room for four models, More models and the effort row before the list scrolls. */
+.pop:has(.mm-effort) { max-height: min(440px, calc(100vh - 120px)) }
+.mm-effort { position: sticky; bottom: -6px; margin: 0 -6px -6px; padding: 2px 6px 6px; background: var(--surface); border-top: 1px solid var(--line) }
 .footmenu > button { border: 0; background: transparent; text-align: left; padding: 6px 8px; border-radius: 6px; font: inherit; font-size: 13px; color: var(--fg); display: flex; gap: 8px; align-items: center; cursor: pointer }
 .footmenu > button:hover, .footmenu > button[aria-checked="true"] { background: var(--sunken) }
 .footmenu .mh { font-size: 11px; color: var(--muted); padding: 4px 8px 2px; text-transform: uppercase; letter-spacing: .06em }

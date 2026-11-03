@@ -19,6 +19,7 @@ import {
   type Project,
   type ProjectTask,
   type Usage,
+  type Daybreak,
   type WebSettings,
 } from './api'
 import { buildTeam } from './agents'
@@ -217,6 +218,14 @@ export function App() {
       ? knownModels.models
       : []
   const uiName = (webSettings ? webSettings.uiName : env.uiName) || DEFAULT_UI_NAME
+  // /daybreak's access program applies to the ChatGPT (Codex) sign-in only, not an OpenAI API key.
+  const daybreak =
+    account.account?.kind === 'chatgpt' && webSettings
+      ? {
+          value: webSettings.daybreak ?? 'off',
+          onChange: (value: Daybreak) => void patchSettings({ daybreak: value }).then(setWebSettings, () => {}),
+        }
+      : undefined
   const previewing = !!preview && preview.sessionId === view
   const since = useTurnStart(chat?.busy, view)
 
@@ -1007,6 +1016,7 @@ export function App() {
       tempRoot={info.tempRoot}
       models={models}
       commands={knownCommands}
+      daybreak={daybreak}
       draft={drafts[''] ?? ''}
       setDraft={v => setDrafts(d => ({ ...d, '': v }))}
       files={attachments[''] ?? []}
@@ -1189,6 +1199,7 @@ export function App() {
                           models={models}
                           onModel={model => view && changeModel(view, model)}
                           onEffort={effort => view && changeEffort(view, effort)}
+                          daybreak={daybreak}
                           close={close}
                         />
                       )}

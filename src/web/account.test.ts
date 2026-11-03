@@ -29,6 +29,7 @@ function fakeBackend() {
         agentSummary: true,
         promptSuggestions: true,
       },
+      daybreak: 'off',
     } as WebSettings,
     submitted: [] as string[],
     cancelled: 0,
@@ -87,8 +88,9 @@ function fakeBackend() {
       state.stored = {}
     },
     readSettings: async () => structuredClone(state.settings),
-    writeSettings: async ({ uiName, features }) => {
+    writeSettings: async ({ uiName, features, daybreak }) => {
       if (uiName !== undefined) state.settings.uiName = uiName
+      if (daybreak !== undefined) state.settings.daybreak = daybreak
       Object.assign(state.settings.features, features)
     },
     usage: async () => ({ rate_limits: null }),
@@ -295,6 +297,9 @@ describe('settings endpoints', () => {
     expect((await call('/api/settings', 'PATCH', { uiName: 'x'.repeat(33) })).status).toBe(400)
     expect((await call('/api/settings', 'PATCH', { features: { apiKeyHelper: true } })).status).toBe(400)
     expect((await call('/api/settings', 'PATCH', { features: { autoCompact: 'yes' } })).status).toBe(400)
+    expect((await call('/api/settings', 'PATCH', { daybreak: 'red' })).status).toBe(200)
+    expect(state.settings.daybreak).toBe('red')
+    expect((await call('/api/settings', 'PATCH', { daybreak: 'green' })).status).toBe(400)
   })
 })
 
