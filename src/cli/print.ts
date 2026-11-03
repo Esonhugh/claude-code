@@ -386,6 +386,7 @@ import {
   getMainThreadAgentType,
   getAllowedChannels,
   setAllowedChannels,
+  setHasDevChannels,
   type ChannelEntry,
 } from 'src/bootstrap/state.js'
 import { runWithWorkload, WORKLOAD_CRON } from 'src/utils/workloadContext.js'
@@ -1969,17 +1970,31 @@ function runHeadlessStreaming(
       // actually pass the allowlist. Not a security boundary (the
       // handler re-runs the full gate); just avoids dead buttons.
       let capabilities: { experimental?: Record<string, unknown> } | undefined
+      // Fork: devChannel marks a channel server only the allowlist keeps out
+      // (channel_enable with dev: true can load it); channelActive says the
+      // gate registers it in this session.
+      let devChannel: true | undefined
+      let channelActive: boolean | undefined
       if (
         (feature('KAIROS') || feature('KAIROS_CHANNELS')) &&
         connection.type === 'connected' &&
         connection.capabilities.experimental
       ) {
         const exp = { ...connection.capabilities.experimental }
+        if (exp['claude/channel']) {
+          channelActive =
+            gateChannelServer(
+              connection.name,
+              connection.capabilities,
+              connection.config.pluginSource,
+            ).action === 'register'
+        }
         if (
           exp['claude/channel'] &&
           (!isChannelsEnabled() ||
             !isChannelAllowlisted(connection.config.pluginSource))
         ) {
+          if (isChannelsEnabled()) devChannel = true
           delete exp['claude/channel']
         }
         if (Object.keys(exp).length > 0) {
@@ -1998,6 +2013,8 @@ function runHeadlessStreaming(
         transport: connection.config.type ?? 'stdio',
         tools: serverTools,
         capabilities,
+        devChannel,
+        channelActive,
       }
     })
   }
@@ -4325,6 +4342,9 @@ function runHeadlessStreaming(
             message.request_id,
             // @ts-ignore - recovered code
             message.request.serverName,
+            // Fork: claude web loads a development channel after its own warning.
+            // @ts-ignore - recovered code
+            message.request.dev === true,
             // Pool spread matches mcp_status — all three client sources.
             [
               ...currentAppState.mcp.clients,
@@ -6143,6 +6163,7 @@ function handleSetPermissionMode(
 function handleChannelEnable(
   requestId: string,
   serverName: string,
+  dev: boolean,
   connectionPool: readonly MCPServerConnection[],
   output: Stream<StdoutMessage>,
 ): void {
@@ -6167,7 +6188,9 @@ function handleChannelEnable(
 
   const pluginSource = connection.config.pluginSource
   const parsed = pluginSource ? parsePluginIdentifier(pluginSource) : undefined
-  if (!parsed?.marketplace) {
+  // A development channel may be a plain MCP server, as with
+  // --dangerously-load-development-channels server:<name>.
+  if (!parsed?.marketplace && !dev) {
     // No pluginSource or @-less source — can never pass the {plugin,
     // marketplace}-keyed allowlist. Short-circuit with the same reason the
     // gate would produce.
@@ -6176,20 +6199,22 @@ function handleChannelEnable(
     )
   }
 
-  const entry: ChannelEntry = {
-    kind: 'plugin',
-    name: parsed.name,
-    marketplace: parsed.marketplace,
-  }
-  // Idempotency: don't double-append on repeat enable.
+  const entry: ChannelEntry = parsed?.marketplace
+    ? { kind: 'plugin', name: parsed.name, marketplace: parsed.marketplace }
+    : { kind: 'server', name: serverName }
+  if (dev) entry.dev = true
   const prior = getAllowedChannels()
-  const already = prior.some(
-    e =>
-      e.kind === 'plugin' &&
-      e.name === entry.name &&
-      e.marketplace === entry.marketplace,
-  )
+  const same = (e: ChannelEntry) =>
+    e.kind === entry.kind &&
+    e.name === entry.name &&
+    (e.kind === 'server' ||
+      (entry.kind === 'plugin' && e.marketplace === entry.marketplace))
+  // Idempotency: don't double-append on repeat enable; a dev enable upgrades
+  // an entry that only came from --channels.
+  const already = prior.find(same)
   if (!already) setAllowedChannels([...prior, entry])
+  else if (dev && !already.dev)
+    setAllowedChannels(prior.map(e => (e === already ? entry : e)))
 
   const gate = gateChannelServer(
     serverName,
@@ -6197,13 +6222,15 @@ function handleChannelEnable(
     pluginSource,
   )
   if (gate.action === 'skip') {
-    // Rollback — only remove the entry we appended.
-    if (!already) setAllowedChannels(prior)
+    // Rollback to the entries before this request.
+    setAllowedChannels(prior)
     return respondError(gate.reason)
   }
+  if (dev) setHasDevChannels(true)
 
-  const pluginId =
-    `${entry.name}@${entry.marketplace}` as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS
+  const pluginId = (
+    entry.kind === 'plugin' ? `${entry.name}@${entry.marketplace}` : undefined
+  ) as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS | undefined
   logMCPDebug(serverName, 'Channel notifications registered')
   logEvent('tengu_mcp_channel_enable', { plugin: pluginId })
 
@@ -6223,8 +6250,8 @@ function handleChannelEnable(
         content_length: content.length,
         meta_key_count: Object.keys(meta ?? {}).length,
         entry_kind:
-          'plugin' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-        is_dev: false,
+          entry.kind as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+        is_dev: dev,
         plugin: pluginId,
       })
       enqueue({

@@ -1,6 +1,10 @@
 {
 "en": [
 [
+"仅用于本地开发 channel。不要用它运行从网上下载的 channel：它发来的消息会直接进入对话。",
+"For local channel development only. Do not use this to run channels you downloaded off the internet: their messages go straight into the conversation."
+],
+[
 "用 ChatGPT 账号登录后，这里会列出你在 ChatGPT 里连好的应用；API key 用不了。",
 "After you sign in with ChatGPT, the apps you connected in ChatGPT show up here; API keys can't use them."
 ],
@@ -11,6 +15,10 @@
 [
 "工具名，例如 Bash 或 Write|Edit；留空匹配全部",
 "Tool name, e.g. Bash or Write|Edit; empty matches all"
+],
+[
+"不在允许列表上，只能作为开发版 channel 在本会话启用",
+"Not on the approved channels list; can be enabled for this session as a development channel"
 ],
 [
 "打开一个运行中的会话，才能查看和管理 ChatGPT 应用。",
@@ -85,6 +93,10 @@
 "Skills reloaded"
 ],
 [
+"开发版 channel",
+"Development channel"
+],
+[
 "已停用全部 hooks",
 "All hooks disabled"
 ],
@@ -99,6 +111,10 @@
 [
 "SQLite 全文索引",
 "SQLite full-text index"
+],
+[
+"我是在本地开发，启用",
+"I am using this for local development"
 ],
 [
 "ChatGPT 账号",
