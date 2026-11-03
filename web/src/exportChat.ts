@@ -34,6 +34,8 @@ export function chatMarkdown(
       continue
     } else if (item.kind === 'teammate') {
       parts.push(`## @${oneLine(item.from)}`, item.text)
+    } else if (item.kind === 'channel') {
+      parts.push(`## ← ${oneLine(item.source)}${item.user ? ` · ${oneLine(item.user)}` : ''}`, item.text)
     } else {
       if (previous !== 'assistant') {
         const label = modelLabel(item.model ?? fallbackModel)

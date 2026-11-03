@@ -571,6 +571,17 @@ export function Message({
       </div>
     )
   }
+  if (item.kind === 'channel') {
+    // Someone outside wrote this through a channel; shown as plain text.
+    return (
+      <div className="msg channel">
+        <span className="who">
+          <span className="chan-badge">{item.source}</span> {item.user}
+        </span>
+        <div className="bubble">{item.text}</div>
+      </div>
+    )
+  }
   if (item.kind === 'local') {
     return (
       <div className={`msg local${item.isError ? ' err' : ''}`}>
