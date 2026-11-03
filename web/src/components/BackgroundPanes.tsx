@@ -107,26 +107,87 @@ export function TerminalsPane({
   onStop: (id: string) => void
 }) {
   const list = groups.terminals
-  const [openId, setOpenId] = useSelected(list)
+  // Each terminal is a drawer. One that is running when it first shows up
+  // starts open, so several terminals the model drives can be watched at once.
+  const [open, setOpen] = useState<Set<string>>(() => new Set())
+  const seen = useRef(new Set<string>())
+  useEffect(() => {
+    const fresh = list.filter(task => !seen.current.has(task.id))
+    if (!fresh.length) return
+    for (const task of fresh) seen.current.add(task.id)
+    const running = fresh.filter(task => isRunning(task, details[task.id]))
+    if (running.length) setOpen(prev => new Set([...prev, ...running.map(task => task.id)]))
+  }, [list, details])
+
+  if (!list.length) return <p className="note">{t('noTerminals')}</p>
+
+  const toggle = (id: string) =>
+    setOpen(prev => {
+      const next = new Set(prev)
+      if (!next.delete(id)) next.add(id)
+      return next
+    })
+  return (
+    <div className="tree">
+      {list.map(task => (
+        <TerminalDrawer
+          key={task.id}
+          t={t}
+          tasks={tasks}
+          task={task}
+          detail={details[task.id]}
+          screen={screens[task.id]}
+          open={open.has(task.id)}
+          onToggle={() => toggle(task.id)}
+          refreshScreen={refreshScreen}
+          request={request}
+          onStop={onStop}
+        />
+      ))}
+    </div>
+  )
+}
+
+function TerminalDrawer({
+  t,
+  tasks,
+  task,
+  detail,
+  screen,
+  open,
+  onToggle,
+  refreshScreen,
+  request,
+  onStop,
+}: {
+  t: T
+  tasks: Tasks
+  task: AgentTask
+  detail?: TaskDetail
+  screen?: Screen
+  open: boolean
+  onToggle: () => void
+  refreshScreen: (taskId: string) => void
+  request: HostRequest
+  onStop: (id: string) => void
+}) {
   const [input, setInput] = useState('')
   const [error, setError] = useState<string>()
-  const open = list.find(task => task.id === openId)
-  const running = open ? isRunning(open, details[open.id]) : false
+  const status = statusOf(task, detail)
+  const running = isRunning(task, detail)
 
   useEffect(() => {
-    if (!openId) return
-    refreshScreen(openId)
+    if (!open) return
+    refreshScreen(task.id)
     if (!running) return
-    const timer = setInterval(() => refreshScreen(openId), POLL_MS)
+    const timer = setInterval(() => refreshScreen(task.id), POLL_MS)
     return () => clearInterval(timer)
-  }, [openId, running, refreshScreen])
-
-  if (!list.length || !open) return <p className="note">{t('noTerminals')}</p>
+  }, [open, running, task.id, refreshScreen])
 
   const send = (keys: { text?: string; key?: string; enter?: boolean }) => {
     setError(undefined)
-    request({ subtype: 'send_terminal_input', task_id: open.id, ...keys }).then(
-      () => refreshScreen(open.id),
+    request({ subtype: 'send_terminal_input', task_id: task.id, ...keys }).then(
+      () => refreshScreen(task.id),
       e => setError(e instanceof Error ? e.message : String(e)),
     )
   }
@@ -135,76 +196,85 @@ export function TerminalsPane({
     send(input ? { text: input, enter: true } : { enter: true })
     setInput('')
   }
-  const screen = screens[open.id]
+  const meta = [
+    t('termOpened', { by: startedBy(t, tasks, detail) }),
+    detail?.cols && detail.rows && `${detail.cols}×${detail.rows}`,
+    detail?.exitCode !== undefined && `exit ${detail.exitCode}`,
+  ]
   return (
-    <>
-      <div className="tree">
-        {list.map(task => {
-          const detail = details[task.id]
-          const status = statusOf(task, detail)
-          const meta = [
-            t('termOpened', { by: startedBy(t, tasks, detail) }),
-            detail?.cols && detail.rows && `${detail.cols}×${detail.rows}`,
-            detail?.exitCode !== undefined && `exit ${detail.exitCode}`,
-          ]
-          return (
-            <button
-              className="node"
-              type="button"
-              key={task.id}
-              style={task.id === open.id ? selectedStyle : undefined}
-              onClick={() => setOpenId(task.id)}
-            >
-              <span className="lead">
-                <span className={`dot ${dotClass(status)}`} />
-              </span>
-              <span className="name mono">{detail?.command ?? task.description}</span>
-              <span className={`badge ${dotClass(status)}`}>{status}</span>
-              <span className="meta2">{meta.filter(Boolean).join(' · ')}</span>
-            </button>
-          )
-        })}
-      </div>
-      <pre className="screen" aria-label={t('termScreen')}>
-        {screen &&
-          screenTail(screen).map((line, row) => (
-            <span key={row}>
-              {row > 0 && '\n'}
-              {line.map((span, i) =>
-                spanClass(span) ? (
-                  <span key={i} className={spanClass(span)}>
-                    {span.text}
-                  </span>
-                ) : (
-                  span.text
-                ),
-              )}
-            </span>
-          ))}
-      </pre>
-      {running && (
-        <form className="term-input" onSubmit={submit}>
-          <input
-            value={input}
-            onChange={e => setInput(e.target.value)}
-            placeholder={t('termInput')}
-            aria-label={t('termInput')}
-            className="mono"
-          />
-          <button className="btn" type="button" onClick={() => send({ key: 'CTRL_C' })}>
-            Ctrl+C
-          </button>
-        </form>
-      )}
-      {error && <p className="note">{error}</p>}
-      <div className="btns">
+    <div className={`term${open ? ' open' : ''}`}>
+      <div
+        className="node termrow"
+        role="button"
+        tabIndex={0}
+        aria-expanded={open}
+        onClick={onToggle}
+        onKeyDown={e => {
+          if ((e.key === 'Enter' || e.key === ' ') && e.target === e.currentTarget) {
+            e.preventDefault()
+            onToggle()
+          }
+        }}
+      >
+        <span className="lead">
+          <span className={`dot ${dotClass(status)}`} />
+        </span>
+        <span className="name mono">
+          <span className="caret">{open ? '▾' : '▸'}</span>
+          {detail?.command ?? task.description}
+        </span>
+        <span className={`badge ${dotClass(status)}`}>{status}</span>
         {running && (
-          <button className="btn" type="button" onClick={() => onStop(open.id)}>
+          <button
+            className="btn"
+            type="button"
+            onClick={e => {
+              e.stopPropagation()
+              onStop(task.id)
+            }}
+          >
             {t('stop')}
           </button>
         )}
+        <span className="meta2">{meta.filter(Boolean).join(' · ')}</span>
       </div>
-    </>
+      {open && (
+        <div className="termbody">
+          <pre className="screen" aria-label={t('termScreen')}>
+            {screen &&
+              screenTail(screen).map((line, row) => (
+                <span key={row}>
+                  {row > 0 && '\n'}
+                  {line.map((span, i) =>
+                    spanClass(span) ? (
+                      <span key={i} className={spanClass(span)}>
+                        {span.text}
+                      </span>
+                    ) : (
+                      span.text
+                    ),
+                  )}
+                </span>
+              ))}
+          </pre>
+          {running && (
+            <form className="term-input" onSubmit={submit}>
+              <input
+                value={input}
+                onChange={e => setInput(e.target.value)}
+                placeholder={t('termInput')}
+                aria-label={t('termInput')}
+                className="mono"
+              />
+              <button className="btn" type="button" onClick={() => send({ key: 'CTRL_C' })}>
+                Ctrl+C
+              </button>
+            </form>
+          )}
+          {error && <p className="note">{error}</p>}
+        </div>
+      )}
+    </div>
   )
 }
 

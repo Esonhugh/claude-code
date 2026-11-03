@@ -425,6 +425,20 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
           blocks = [{ type: 'text', text: `Dev server: ${dev} and this UI: ${own}` }]
         } else if (lastBlocks.some(b => b.type === 'tool_result')) {
           blocks = [{ type: 'text', text: 'WEB_DONE' }]
+        } else if (lastText.includes('OPEN_TERMINAL_TWO')) {
+          blocks = [{
+            type: 'tool_use',
+            id: 'toolu_terminal_two',
+            name: 'Terminal',
+            input: {
+              action: 'new-session',
+              command: 'bash',
+              args: ['--norc', '--noprofile', '-c', "printf 'SECOND_MARK\\n'; exec cat"],
+              cols: 80,
+              rows: 12,
+            },
+          }]
+          stop = 'tool_use'
         } else if (lastText.includes('OPEN_TERMINAL')) {
           // A colored line, then cat echoes whatever is typed.
           blocks = [{
@@ -1591,32 +1605,58 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       await page.getByText('WEB_DONE').waitFor({ timeout: 30_000 })
       const panel = page.locator('aside.side')
       await panel.getByRole('tab', { name: /^Terminals/ }).click()
-      const row = panel.locator('.tree .node', { hasText: 'bash --norc' })
+      // Each terminal is a drawer: its row toggles the screen, Stop sits on the row.
+      const first = panel.locator('.term').nth(0)
+      const row = first.locator('.termrow')
       await row.waitFor({ timeout: 15_000 })
+      expect(await row.textContent()).toContain('bash --norc')
       expect(await row.locator('.badge').textContent()).toBe('running')
       expect(await row.locator('.meta2').textContent()).toBe('Main session opened · 80×12')
       // The server sends styled spans; the page only maps them to classes.
-      const screen = panel.getByLabel('Terminal screen')
+      const screen = first.getByLabel('Terminal screen')
       await screen.locator('.f31', { hasText: 'RED_MARK' }).waitFor({ timeout: 15_000 })
       expect(await screen.textContent()).toContain('RED_MARK ready')
 
-      const typed = panel.getByLabel('Type into the terminal, Enter to submit')
+      const typed = first.getByLabel('Type into the terminal, Enter to submit')
       await typed.fill('hello-from-web')
       await typed.press('Enter')
       // The tty echoes the line and cat prints it back.
       await page.waitForFunction(
-        () => (document.querySelector('.screen')?.textContent ?? '').split('hello-from-web').length === 3,
+        () => (document.querySelector('.term .screen')?.textContent ?? '').split('hello-from-web').length === 3,
         undefined,
         { timeout: 15_000 },
       )
-      await panel.getByRole('button', { name: 'Stop', exact: true }).click()
+
+      // A second terminal opens next to the first; both screens show at once.
+      await input.fill('please OPEN_TERMINAL_TWO')
+      await input.press('Enter')
+      await dialog.getByRole('option', { name: /Allow once/ }).click()
+      await page.getByText('WEB_DONE').nth(1).waitFor({ timeout: 30_000 })
+      const second = panel.locator('.term').nth(1)
+      await second.getByLabel('Terminal screen').getByText('SECOND_MARK').waitFor({ timeout: 15_000 })
+      expect(await panel.locator('.term.open').count()).toBe(2)
+      expect(await screen.textContent()).toContain('hello-from-web')
+
+      await row.click()
+      await screen.waitFor({ state: 'detached' })
+      expect(await row.getAttribute('aria-expanded')).toBe('false')
+      await row.click()
+      await screen.locator('.f31', { hasText: 'RED_MARK' }).waitFor({ timeout: 15_000 })
+
+      await row.getByRole('button', { name: 'Stop', exact: true }).click()
       await row.locator('.badge.killed').waitFor({ timeout: 15_000 })
       await typed.waitFor({ state: 'detached' })
+      await row.getByRole('button', { name: 'Stop', exact: true }).waitFor({ state: 'detached' })
+      // The stopped terminal keeps its last screen; the other one still runs.
+      expect(await screen.textContent()).toContain('RED_MARK ready')
+      expect(await second.locator('.termrow .badge').textContent()).toBe('running')
+      await second.locator('.termrow').getByRole('button', { name: 'Stop', exact: true }).click()
+      await second.locator('.termrow .badge.killed').waitFor({ timeout: 15_000 })
 
       await input.fill('please BG_SHELL')
       await input.press('Enter')
       // echo and sleep are read-only, so this one runs without asking.
-      await page.getByText('WEB_DONE').nth(1).waitFor({ timeout: 30_000 })
+      await page.getByText('WEB_DONE').nth(2).waitFor({ timeout: 30_000 })
       const bgTab = panel.getByRole('tab', { name: /^Background Tasks/ })
       await bgTab.click()
       const bgRow = panel.locator('.bgrow', { hasText: `echo ${BG_MARK}; sleep 300` })
