@@ -181,7 +181,7 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
   // The Long workers wait here on their first request until the test has sent them a message.
   const longGates: Record<string, () => void> = {}
   const longHeld: Record<string, Promise<void>> = {}
-  for (const name of ['LONG_A', 'LONG_B']) longHeld[name] = new Promise<void>(resolve => (longGates[name] = resolve))
+  for (const name of ['LONG_A', 'LONG_B', 'SLASH']) longHeld[name] = new Promise<void>(resolve => (longGates[name] = resolve))
   const agent = (description: string, prompt: string) => ({
     type: 'tool_use',
     id: `toolu_${description.toLowerCase()}`,
@@ -290,6 +290,17 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
           } else {
             await longHeld[name]
             blocks = [{ type: 'tool_use', id: `toolu_${name.toLowerCase()}_read`, name: 'Read', input: { file_path: join(workspace, 'slow.txt') } }]
+            stop = 'tool_use'
+          }
+        } else if (coordinator && lastText.includes('DISPATCH_SLASH')) {
+          blocks = [agent('SlashA', 'WORKER_SLASH run')]
+          stop = 'tool_use'
+        } else if (!coordinator && allText.includes('WORKER_SLASH')) {
+          if (lastBlocks.some(b => b.type === 'tool_result')) {
+            blocks = [{ type: 'text', text: 'SLASH_OUT' }]
+          } else {
+            await longHeld.SLASH
+            blocks = [{ type: 'tool_use', id: 'toolu_slash_read', name: 'Read', input: { file_path: join(workspace, 'slow.txt') } }]
             stop = 'tool_use'
           }
         } else if (coordinator && lastText.includes('DISPATCH_MULTI')) {
@@ -2541,6 +2552,83 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       await cardOf('LongB').click()
       await showing(side.getByText('LONG_B_SAW_NOTE').waitFor({ timeout: 60_000 }), side)
       await showing(side.locator('.msg', { hasText: 'COORD_NOTE for B' }).first().waitFor({ timeout: 15_000 }), side)
+      expect(errors).toEqual([])
+      await page.evaluate(async () => {
+        for (const s of (await (await fetch('/api/sessions')).json()) as { id: string }[]) {
+          await fetch(`/api/sessions/${s.id}`, { method: 'DELETE' })
+        }
+      })
+    } finally {
+      await browser.close()
+    }
+  }, 240_000)
+
+  it('opens the / palette in the coordinator and a running task box, mid-turn and after a reload', async () => {
+    const playwrightPath = Bun.spawnSync(['node', '-p', "require.resolve('playwright')"])
+      .stdout.toString()
+      .trim()
+    const { chromium } = await import(playwrightPath)
+    const browser = await chromium.launch()
+    const shots = process.env.CLAUDE_WEB_SHOTS
+    try {
+      let page = await (await browser.newContext({ locale: 'en-US', viewport: { width: 1440, height: 900 } })).newPage()
+      const errors: string[] = []
+      page.on('pageerror', (e: Error) => errors.push(e.message))
+      writeFileSync(join(workspace, 'slow.txt'), 'slow\n')
+      await page.goto(signInUrl)
+      await page.locator('.wl-hi').waitFor()
+      await page.getByRole('button', { name: 'New project', exact: true }).click()
+      const dialog = page.locator('.dialog')
+      await dialog.locator('#pj-name').fill('Slash project')
+      await dialog.locator('#pj-path').fill(workspace)
+      await dialog.getByRole('button', { name: 'Create project' }).click()
+      await page.locator('#projview .pv-head b', { hasText: 'Slash project' }).waitFor({ timeout: 30_000 })
+      const chat = page.locator('.pv-chat')
+      const side = page.locator('.pv-side')
+      const check = async (scope: any, skillOnly: boolean, shot: string) => {
+        const input = scope.getByLabel('Message', { exact: true })
+        await input.fill('/')
+        const palette = scope.getByRole('listbox', { name: 'Completions' })
+        try {
+          await showing(palette.getByRole('option', { name: /^\/e2e-skill/ }).waitFor({ timeout: 10_000 }), scope)
+          if (!skillOnly) await palette.getByRole('option', { name: /^\/context/ }).waitFor({ timeout: 10_000 })
+        } finally {
+          if (shots) await page.screenshot({ path: join(shots, `${shot}.png`) })
+        }
+        await input.fill('')
+      }
+      await check(chat, false, '1-coordinator-idle')
+      await chat.getByLabel('Message', { exact: true }).fill('please DISPATCH_SLASH')
+      await chat.getByLabel('Message', { exact: true }).press('Enter')
+      const card = side.locator('.pjlist .pjcard', { has: page.locator('.tt', { hasText: /^SlashA$/ }) })
+      await card.locator('.pjbadge.running').waitFor({ timeout: 60_000 })
+      await check(chat, false, '2-coordinator-midturn')
+      await card.click()
+      await check(side, true, '3-task-midturn')
+      // A page opened while the task still runs.
+      await page.reload()
+      await card.locator('.pjbadge.running').waitFor({ timeout: 60_000 })
+      await check(chat, false, '4-coordinator-reloaded')
+      await card.click()
+      await check(side, true, '5-task-reloaded')
+      // A second tab: the coordinator is attached to the first one.
+      const other = await page.context().newPage()
+      await other.goto(signInUrl)
+      await other.locator('.wl-hi').waitFor()
+      await other.locator('.sidebar, nav, aside').getByText('Slash project', { exact: true }).first().click()
+      const otherCard = other.locator('.pv-side .pjlist .pjcard', { has: other.locator('.tt', { hasText: /^SlashA$/ }) })
+      await otherCard.locator('.pjbadge.running').waitFor({ timeout: 60_000 })
+      const swap = page
+      page = other
+      try {
+        await otherCard.click()
+        await check(other.locator('.pv-side'), true, '7-task-other-tab')
+      } finally {
+        page = swap
+        await other.close()
+      }
+      longGates.SLASH!()
+      await side.getByText('SLASH_OUT').waitFor({ timeout: 60_000 })
       expect(errors).toEqual([])
       await page.evaluate(async () => {
         for (const s of (await (await fetch('/api/sessions')).json()) as { id: string }[]) {
