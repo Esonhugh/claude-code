@@ -3,6 +3,7 @@
 // over the task map folded from the task_* events.
 
 import { type AgentTask, isFinished, type Tasks } from './agents'
+import type { Item } from './protocol'
 
 type Json = Record<string, unknown>
 
@@ -112,6 +113,32 @@ export function groupTasks(tasks: Tasks, details: Details): Groups {
     } else if (task.type === 'local_bash' || task.type === 'dream') groups.background.push(task)
   }
   return groups
+}
+
+export type Pane = 'workflow' | 'terminals' | 'monitor' | 'bg'
+
+/**
+ * The on-demand panes this session has used: a task of that kind (live or
+ * ended), or the tool call that starts one in the history, so a reloaded
+ * session keeps them.
+ */
+export function usedPanes(tasks: Tasks, items: Item[], groups: Groups): Pane[] {
+  const used = new Set<Pane>()
+  if (Object.values(tasks).some(task => task.type === 'local_workflow')) used.add('workflow')
+  if (groups.terminals.length) used.add('terminals')
+  if (groups.monitors.length) used.add('monitor')
+  if (groups.background.length) used.add('bg')
+  for (const item of items) {
+    if (item.kind !== 'assistant') continue
+    for (const block of item.blocks) {
+      if (block?.kind !== 'tool') continue
+      if (block.name === 'Workflow') used.add('workflow')
+      else if (block.name === 'Terminal') used.add('terminals')
+      else if (block.name === 'Monitor') used.add('monitor')
+      else if (block.name === 'Bash' && /"run_in_background":true/.test(block.input)) used.add('bg')
+    }
+  }
+  return (['workflow', 'terminals', 'monitor', 'bg'] as const).filter(pane => used.has(pane))
 }
 
 /** HH:MM:SS of an event, in local time. */
