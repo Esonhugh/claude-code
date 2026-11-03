@@ -70,6 +70,8 @@ function plainText(node: Nodes): string {
   return ''
 }
 
+const inner = (html: string | undefined) => (html === undefined ? undefined : { __html: html })
+
 export function CodeBlock({
   code,
   lang,
@@ -79,21 +81,20 @@ export function CodeBlock({
   lang: string | null | undefined
   streaming: boolean
 }) {
-  const [html, setHtml] = useState(() => (streaming ? undefined : cachedHighlight(code, lang)))
+  // Held as the `{ __html }` object itself: React 19 rewrites innerHTML whenever that object is new,
+  // which would drop a selection in the code on every render.
+  const [html, setHtml] = useState(() => inner(streaming ? undefined : cachedHighlight(code, lang)))
   const [copied, setCopied] = useState(false)
-  // React re-applies a new `__html` object on every render, which replaces the nodes and drops
-  // any selection in them (the preview's Comment button rerenders this on mouseup).
-  const inner = useMemo(() => (html ? { __html: html } : undefined), [html])
   useEffect(() => {
     if (streaming) return
     const hit = cachedHighlight(code, lang)
     if (hit !== undefined) {
-      setHtml(hit)
+      setHtml(prev => (prev?.__html === hit ? prev : inner(hit)))
       return
     }
     let live = true
     highlight(code, lang).then(
-      out => live && setHtml(out),
+      out => live && setHtml(inner(out)),
       () => live && setHtml(undefined),
     )
     return () => {
@@ -123,11 +124,11 @@ export function CodeBlock({
           {copied ? '✓' : '⧉'}
         </button>
       </div>
-      {inner ? (
+      {html ? (
         <div
           className="codeblock-body"
           // shiki escapes the code; the markup is its own spans.
-          dangerouslySetInnerHTML={inner}
+          dangerouslySetInnerHTML={html}
         />
       ) : (
         <pre className="codeblock-body">
@@ -142,7 +143,7 @@ let mermaidReady: Promise<typeof import('mermaid').default> | undefined
 
 function Mermaid({ code, streaming }: { code: string; streaming: boolean }) {
   const id = useId().replace(/[^a-zA-Z0-9]/g, '')
-  const [svg, setSvg] = useState<string>()
+  const [svg, setSvg] = useState<{ __html: string }>()
   const [failed, setFailed] = useState(false)
   useEffect(() => {
     if (streaming) return
@@ -160,7 +161,7 @@ function Mermaid({ code, streaming }: { code: string; streaming: boolean }) {
     mermaidReady
       .then(mermaid => mermaid.render(`mermaid-${id}`, code))
       .then(
-        result => live && setSvg(result.svg),
+        result => live && setSvg({ __html: result.svg }),
         () => live && setFailed(true),
       )
     return () => {
@@ -169,7 +170,7 @@ function Mermaid({ code, streaming }: { code: string; streaming: boolean }) {
   }, [code, id, streaming])
   if (svg && !failed) {
     // Rendered with securityLevel 'strict', which sanitizes labels.
-    return <div className="mermaid" dangerouslySetInnerHTML={{ __html: svg }} />
+    return <div className="mermaid" dangerouslySetInnerHTML={svg} />
   }
   return <CodeBlock code={code} lang="mermaid" streaming />
 }
@@ -177,7 +178,7 @@ function Mermaid({ code, streaming }: { code: string; streaming: boolean }) {
 let katexReady: Promise<typeof import('katex').default> | undefined
 
 function MathNode({ tex, display }: { tex: string; display: boolean }) {
-  const [html, setHtml] = useState<string>()
+  const [html, setHtml] = useState<{ __html: string }>()
   useEffect(() => {
     let live = true
     katexReady ??= Promise.all([
@@ -186,14 +187,14 @@ function MathNode({ tex, display }: { tex: string; display: boolean }) {
     ]).then(([mod]) => mod.default)
     katexReady.then(katex => {
       if (!live) return
-      setHtml(
-        katex.renderToString(tex, {
+      setHtml({
+        __html: katex.renderToString(tex, {
           displayMode: display,
           throwOnError: false,
           trust: false,
           strict: 'ignore',
         }),
-      )
+      })
     })
     return () => {
       live = false
@@ -202,7 +203,7 @@ function MathNode({ tex, display }: { tex: string; display: boolean }) {
   const Tag = display ? 'div' : 'span'
   if (!html) return <Tag className="math-src">{tex}</Tag>
   // KaTeX output with trust: false (no \href, \url or raw HTML commands).
-  return <Tag className={display ? 'math-block' : undefined} dangerouslySetInnerHTML={{ __html: html }} />
+  return <Tag className={display ? 'math-block' : undefined} dangerouslySetInnerHTML={html} />
 }
 
 function renderChildren(node: Parents, ctx: Ctx): ReactNode[] {

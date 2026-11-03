@@ -28,7 +28,7 @@ function Kv({ rows }: { rows: [string, ReactNode][] }) {
   )
 }
 
-/** The whole session id (what `claude --resume` takes) with a copy button. */
+/** The whole session id (what `claude --resume` takes) or messaging address, with a copy button. */
 export function SessionIdValue({ id, t }: { id: string; t: T }) {
   const [copied, setCopied] = useState(false)
   const copy = () => {
@@ -71,16 +71,27 @@ const CONNECTION_LABELS = new Set([
   'mTLS client key',
 ])
 
-/** Base URL, proxy and the other connection rows of a `get_status` answer. */
-export function connectionRows(status: Json | undefined): [string, string][] {
+/** The labelled text rows of a `get_status` answer. */
+function statusRows(status: Json | undefined): [string, string][] {
   const sections = Array.isArray(status?.sections) ? status.sections.filter(isObj) : []
   return sections.flatMap(section =>
     (Array.isArray(section.rows) ? section.rows.filter(isObj) : []).flatMap(row =>
-      typeof row.label === 'string' && CONNECTION_LABELS.has(row.label) && typeof row.value === 'string'
+      typeof row.label === 'string' && typeof row.value === 'string'
         ? [[row.label, row.value] as [string, string]]
         : [],
     ),
   )
+}
+
+/** Base URL, proxy and the other connection rows of a `get_status` answer. */
+export function connectionRows(status: Json | undefined): [string, string][] {
+  return statusRows(status).filter(([label]) => CONNECTION_LABELS.has(label))
+}
+
+/** The session's `uds:` messaging address (what SendMessage takes), when it has a socket. */
+export function peerAddress(status: Json | undefined): string | undefined {
+  const value = statusRows(status).find(([label]) => label === 'Peer address')?.[1]
+  return value?.startsWith('uds:') ? value : undefined
 }
 
 function useStatusData(
@@ -257,6 +268,8 @@ function StatusPane({
   onCompact?: () => void
 }) {
   const data = useStatusData(sessionId, chat.mode === 'live', chat.busy, request)
+  // The socket lives only as long as the session process.
+  const peer = chat.mode === 'live' ? peerAddress(data.status) : undefined
   const rounds = chat.items.filter(i => i.kind === 'user').length
   const compactions = chat.items.filter(i => i.kind === 'compact').length
   const context = chat.context
@@ -352,6 +365,7 @@ function StatusPane({
             [t('nameLabel'), title],
             ['ID', <SessionIdValue id={sessionId} t={t} />],
             [t('workDir'), <span className="mono">{tilde(chat.cwd ?? chat.workDir ?? '')}</span>],
+            ...(peer ? [[t('peerAddressLabel'), <SessionIdValue id={peer} t={t} />] as [string, ReactNode]] : []),
             [t('roundsLabel'), roundsText],
             ...(chat.startedAt !== undefined ? [[t('startedLabel'), startedText(chat.startedAt, t)] as [string, ReactNode]] : []),
             ...(context ? [[t('autoCompactLabel'), t(context.autoCompact ? 'on' : 'off')] as [string, ReactNode]] : []),

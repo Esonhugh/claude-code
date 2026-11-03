@@ -319,7 +319,8 @@ function Selectable({ lines, source, children }: { lines?: boolean; source?: str
         const el = root.current
         const sel = window.getSelection()
         const range = sel && !sel.isCollapsed && sel.rangeCount ? sel.getRangeAt(0) : undefined
-        const quote = range?.toString() ?? ''
+        // The selection's text, unlike the range's, breaks lines between blocks (a heading and its paragraph).
+        const quote = range ? sel!.toString() : ''
         if (!el || !range || !quote.trim() || !el.contains(range.commonAncestorContainer)) {
           pin.offer(undefined)
           return
@@ -633,18 +634,17 @@ function DocxView({ url, t }: { url: string; t: T }) {
   const { value, error } = useLoad(async () => {
     const [res, mammoth, p] = await Promise.all([fetchOk(url), import('mammoth'), purify()])
     const out = await mammoth.convertToHtml({ arrayBuffer: await res.arrayBuffer() })
-    return p.sanitize(out.value)
+    // The `{ __html }` object stays the same across renders, so React leaves the page (and a selection) alone.
+    return { __html: p.sanitize(out.value) }
   }, [url])
-  // A stable object, so a rerender keeps the nodes and the reader's selection in them.
-  const inner = useMemo(() => (value === undefined ? undefined : { __html: value }), [value])
   if (error) throw error
-  if (!inner) return <div className="preview-note">{t('loading')}</div>
+  if (value === undefined) return <div className="preview-note">{t('loading')}</div>
   return (
     <Selectable>
       <div
         className="docx-page"
         // DOMPurify-sanitized output of mammoth.
-        dangerouslySetInnerHTML={inner}
+        dangerouslySetInnerHTML={value}
       />
     </Selectable>
   )

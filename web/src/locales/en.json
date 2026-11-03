@@ -156,6 +156,7 @@
   "nameLabel": "Name",
   "statusLabel": "Status",
   "workDir": "Working directory",
+  "peerAddressLabel": "Messaging address",
   "modelGroup": "Model",
   "permissionModeLabel": "Permission mode",
   "contextGroup": "Context",
