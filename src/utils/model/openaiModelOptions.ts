@@ -58,6 +58,9 @@ type OpenAIModel = {
   description?: unknown
   visibility?: unknown
   supported_in_api?: unknown
+  max_input_tokens?: unknown
+  context_window?: unknown
+  context_length?: unknown
 }
 
 type CodexModel = {
@@ -93,6 +96,8 @@ type GatewayModel = {
   name?: string
   description?: string
   visibility?: string
+  /** The input window the gateway reports for the model. */
+  max_input_tokens?: number
 }
 
 type GatewayModelCache = {
@@ -256,6 +261,9 @@ function readGatewayModelCache(): GatewayModelCache | null {
           ...(typeof model.visibility === 'string'
             ? { visibility: model.visibility }
             : {}),
+          ...(isTokenCount(model.max_input_tokens)
+            ? { max_input_tokens: model.max_input_tokens }
+            : {}),
         })),
     }
   } catch {
@@ -264,14 +272,36 @@ function readGatewayModelCache(): GatewayModelCache | null {
   }
 }
 
-export function getGatewayModelOptions(): ModelOption[] {
+function isTokenCount(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0
+}
+
+/** The cached gateway list, when it was written for this gateway and credential. */
+function readCurrentGatewayModels(): GatewayModel[] {
   if (!isGatewayModelDiscoveryEnabled()) return []
   const credential = getGatewayCredential()
   if (!credential) return []
   const cache = readGatewayModelCache()
   // A cache written for another gateway or credential says nothing about this one.
   if (!cache || cache.cacheKey !== getGatewayModelCacheKey(credential)) return []
-  return cache.models.map(model => {
+  return cache.models
+}
+
+// Read once per process (context sizing runs on every turn); a new fetch resets it.
+let gatewayWindows: Map<string, number> | undefined
+
+/** The input window a discovered gateway model reports, if the gateway listed one. */
+export function getGatewayModelContextWindow(model: string): number | undefined {
+  gatewayWindows ??= new Map(
+    readCurrentGatewayModels()
+      .filter(entry => entry.max_input_tokens)
+      .map(entry => [entry.id.toLowerCase(), entry.max_input_tokens!]),
+  )
+  return gatewayWindows.get(model.toLowerCase())
+}
+
+export function getGatewayModelOptions(): ModelOption[] {
+  return readCurrentGatewayModels().map(model => {
     const label = model.display_name || model.name || model.id
     const hasDescription = Boolean(model.description)
     return {
@@ -333,19 +363,24 @@ export async function fetchGatewayModels(): Promise<void> {
     const models: GatewayModel[] = response.data.data
       .filter(model => typeof model.id === 'string' && model.id.length > 0)
       .filter(model => model.supported_in_api !== false)
-      .map(model => ({
-        id: model.id as string,
-        ...(typeof model.display_name === 'string'
-          ? { display_name: model.display_name }
-          : {}),
-        ...(typeof model.name === 'string' ? { name: model.name } : {}),
-        ...(typeof model.description === 'string'
-          ? { description: model.description }
-          : {}),
-        ...(typeof model.visibility === 'string'
-          ? { visibility: model.visibility }
-          : {}),
-      }))
+      .map(model => {
+        // Anthropic lists max_input_tokens; OpenRouter-style gateways context_length.
+        const window = model.max_input_tokens ?? model.context_window ?? model.context_length
+        return {
+          id: model.id as string,
+          ...(typeof model.display_name === 'string'
+            ? { display_name: model.display_name }
+            : {}),
+          ...(typeof model.name === 'string' ? { name: model.name } : {}),
+          ...(typeof model.description === 'string'
+            ? { description: model.description }
+            : {}),
+          ...(typeof model.visibility === 'string'
+            ? { visibility: model.visibility }
+            : {}),
+          ...(isTokenCount(window) ? { max_input_tokens: window } : {}),
+        }
+      })
     writeGatewayModelCache({ cacheKey, fetchedAt: Date.now(), models })
     logForDebugging(`[Gateway discovery] Cached ${models.length} models`)
   } catch (error) {
@@ -356,6 +391,7 @@ export async function fetchGatewayModels(): Promise<void> {
 }
 
 function writeGatewayModelCache(cache: GatewayModelCache): void {
+  gatewayWindows = undefined
   const path = CACHE_PATHS.gatewayModels()
   try {
     mkdirSync(dirname(path), { recursive: true })
