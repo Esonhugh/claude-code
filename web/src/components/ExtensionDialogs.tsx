@@ -236,6 +236,8 @@ export function ChannelsBody({ z, flash, control }: ExtProps) {
         return next
       })
       flash(errorText(err))
+      // The row shows why its server failed to start, not that it would start on enable.
+      setServers(await mcpStatus(control).catch(() => servers))
     }
   }
   const setDefault = async (c: ChannelPlugin) => {

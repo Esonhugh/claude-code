@@ -995,8 +995,10 @@ export function reduce(state: ChatState, raw: unknown): ChatState {
       if (!failed) return next
       const all = Array.isArray(raw.errors) ? raw.errors.filter(e => typeof e === 'string') : []
       // QueryEngine prefixes errors with an internal `[ede_diagnostic]` line; an interrupted turn has nothing else.
+      // One stopped before its prompt was admitted has no line at all, only the abort reason.
       const shown = all.filter(e => !e.startsWith('[ede_diagnostic]'))
-      if (all.length && !shown.length && !str(raw.result)) {
+      const aborted = raw.terminal_reason === 'aborted_streaming' || raw.terminal_reason === 'aborted_tools'
+      if ((all.length || aborted) && !shown.length && !str(raw.result)) {
         return { ...next, items: [...next.items, { kind: 'note', id: `interrupted-${next.items.length}`, text: '', key: 'interrupted' }] }
       }
       const text = str(raw.result) || shown.join('\n') || String(raw.subtype)
