@@ -1336,9 +1336,9 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       expect(await input.getAttribute('placeholder')).toBe('Tell the coordinator what to do')
       await input.fill('please DISPATCH_TWO')
       await input.press('Enter')
-      // Both tasks: one-line cards in the middle, cards in the right column, then their notices.
-      await page.locator('.pv-chat .pjcard.mini', { hasText: 'Task two' }).waitFor({ timeout: 60_000 })
-      expect(await page.locator('.pv-chat .pjcard.mini').count()).toBe(2)
+      // Both tasks: inline "Handed to" links in the middle, cards in the right column, then their notices.
+      await page.locator('.pv-chat .tl-chip', { hasText: 'Task two' }).waitFor({ timeout: 60_000 })
+      expect(await page.locator('.pv-chat .tl-chip').count()).toBe(2)
       await page.locator('.pjlist .pjcard', { hasText: 'Task one' }).waitFor({ timeout: 60_000 })
       await page.locator('.pjlist .pjcard', { hasText: 'Task two' }).waitFor()
       await page.locator('.pv-chat .pj-note', { hasText: 'Task "Task one" finished' }).waitFor({ timeout: 60_000 })

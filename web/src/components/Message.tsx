@@ -14,7 +14,7 @@ import type { MessageKey } from '../i18n'
 import { Markdown } from '../markdown/Markdown'
 import type { Block, Decision, Item, ModelOption } from '../protocol'
 import type { Source } from '../sources'
-import { stripAnsi, toolSummary } from '../tools'
+import { stripAnsi, toolMessage, toolSummary } from '../tools'
 import { firstPreviewUrl, WebPreviewContext } from '../webPreview'
 
 /** `claude-opus-5-5` → `Opus 5.5`; anything else is shown as is. */
@@ -249,6 +249,7 @@ function ToolCard({ block, t }: { block: Extract<Block, { kind: 'tool' }>; t: T 
   const task = agents.byToolUse?.get(block.id)
   const done = block.result !== undefined
   const diff = block.isError ? undefined : toolDiff(block.name, block.input, block.meta)
+  const message = toolMessage(block.name, block.input)
   const decision = chat.decisions?.[block.id]
   const card = (
     <details className={`toolcard${block.isError ? ' bad' : ''}`} open={diff && !diff.created ? true : undefined}>
@@ -311,6 +312,11 @@ function ToolCard({ block, t }: { block: Extract<Block, { kind: 'tool' }>; t: T 
       </summary>
       {diff ? (
         <DiffBody diff={diff} path={toolFilePath(block.name, block.input)} t={t} />
+      ) : message ? (
+        <div className="tbody">
+          <Markdown filesBase={files.base} text={message} />
+          {done && <div className="tlabel">{stripAnsi(block.result!)}</div>}
+        </div>
       ) : (
         <div className="tbody">
           <div className="tlabel">{t('toolInput')}</div>
@@ -332,6 +338,13 @@ function ToolCard({ block, t }: { block: Extract<Block, { kind: 'tool' }>; t: T 
       <div className="ask-ref done">{decisionText(decision, t)}</div>
     </>
   )
+}
+
+/** A worker's report to its caller (`SubagentHandback`), unless it was refused. */
+function handbackReport(block: Block | undefined): string | undefined {
+  if (block?.kind !== 'tool' || block.name !== 'SubagentHandback' || block.isError) return undefined
+  if (block.result?.includes('"success":false')) return undefined
+  return toolMessage(block.name, block.input)
 }
 
 /** How a teammate protocol message reads; plain messages have no label. */
@@ -589,6 +602,7 @@ export function Message({
     i => cards.has(i),
     i => {
       const block = item.blocks[i]
+      if (handbackReport(block) !== undefined) return true
       return block?.kind === 'tool' && !block.isError && toolDiff(block.name, block.input, block.meta) !== undefined
     },
   )
@@ -607,6 +621,18 @@ export function Message({
           </summary>
           <div className="tbody">{block.text}</div>
         </details>
+      )
+    }
+    const report = handbackReport(block)
+    if (report !== undefined && block.kind === 'tool') {
+      return (
+        <div className="report" key={i}>
+          <div className="rh">
+            {block.result === undefined ? <span className="spin" aria-hidden="true" /> : <span className="ok">✓</span>}
+            {t('handbackReport')}
+          </div>
+          <Markdown filesBase={files.base} text={report} />
+        </div>
       )
     }
     return block.kind === 'tool' ? <ToolCard key={i} block={block} t={t} /> : null

@@ -53,7 +53,6 @@ function TaskCard({
   task,
   summary,
   meta,
-  mini,
   current,
   onOpen,
   onMenu,
@@ -62,7 +61,6 @@ function TaskCard({
   task: Pick<ProjectTask, 'id' | 'title' | 'state'>
   summary: string
   meta: string
-  mini?: boolean
   current: boolean
   onOpen: () => void
   onMenu?: (e: MouseEvent) => void
@@ -71,7 +69,7 @@ function TaskCard({
   return (
     <button
       type="button"
-      className={`pjcard${mini ? ' mini' : ''}`}
+      className="pjcard"
       aria-current={current}
       data-task={task.id}
       onClick={onOpen}
@@ -83,6 +81,44 @@ function TaskCard({
       <span className="sm">{summary}</span>
       <span className="mt">{meta}</span>
     </button>
+  )
+}
+
+/** A dispatched task in the coordinator's chat: an inline link with a hover card of its state and latest activity. */
+function TaskLink({
+  t,
+  task,
+  meta,
+  activity,
+  current,
+  onOpen,
+  onMenu,
+}: {
+  t: T
+  task: Pick<ProjectTask, 'id' | 'title' | 'state'>
+  meta: string
+  activity: string
+  current: boolean
+  onOpen?: () => void
+  onMenu?: (e: MouseEvent) => void
+}) {
+  const state = task.state
+  return (
+    <span className="tasklink">
+      <span className="g">↳</span>
+      {t('handedTo')}
+      <button type="button" className={`tl-chip ${state}`} aria-current={current} data-task={task.id} onClick={onOpen} onContextMenu={onMenu}>
+        {state === 'running' ? <span className="spin" aria-hidden="true" /> : <span className={`dot ${state === 'done' ? '' : state}`} />}
+        <span className="tt">{task.title}</span>
+      </button>
+      <span className="tl-card" role="tooltip">
+        <span className="tl-row">
+          <span className={`pjbadge ${state}`}>{t(`taskState_${state}`)}</span>
+          {meta && <span className="mono">{meta}</span>}
+        </span>
+        {activity && <span className="tl-act">{activity}</span>}
+      </span>
+    </span>
   )
 }
 
@@ -543,26 +579,37 @@ export function ProjectView({
     }
   })
 
-  const card = (task: ProjectTask, mini?: boolean) => (
+  const card = (task: ProjectTask) => (
     <TaskCard
       key={task.id}
       t={t}
       task={task}
       summary={summaryOf(task)}
       meta={metaOf(task)}
-      mini={mini}
       current={task.id === openId}
       onOpen={() => openTask(task.id)}
       onMenu={e => openMenu(e, task)}
     />
   )
-  // An Agent call is its task's card; before the task is known it is drawn from the call itself.
+  // An Agent call reads "Handed to <task>" in the chat; before the task is known it is drawn from the call itself.
   const taskCard = (block: Extract<Block, { kind: 'tool' }>) => {
     if (block.name !== 'Agent') return undefined
     const task = byToolUse.get(block.id)
-    if (task) return card(task, true)
-    const pending = { id: block.id, title: inputs.get(block.id)?.description ?? '', state: 'running' as const }
-    return <TaskCard t={t} task={pending} summary="" meta="" mini current={false} onOpen={() => {}} />
+    if (!task) {
+      const pending = { id: block.id, title: inputs.get(block.id)?.description ?? '', state: 'running' as const }
+      return <TaskLink t={t} task={pending} meta="" activity="" current={false} />
+    }
+    return (
+      <TaskLink
+        t={t}
+        task={task}
+        meta={metaOf(task)}
+        activity={summaryOf(task)}
+        current={task.id === openId}
+        onOpen={() => openTask(task.id)}
+        onMenu={e => openMenu(e, task)}
+      />
+    )
   }
 
   const seg = (
