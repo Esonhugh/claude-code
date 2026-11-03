@@ -203,6 +203,48 @@ describe('channels', () => {
     await ext.setDefaultChannel(configDir, 'a@b', false)
     expect(ext.readDefaultChannels(configDir)).toEqual([])
   })
+
+  it('lists approved channel plugins that declare no channels, like the official telegram', async () => {
+    const market = join(root, 'channel-market')
+    const plugin = (name: string, manifest: object) => {
+      mkdirSync(join(market, 'plugins', name, '.claude-plugin'), { recursive: true })
+      writeFileSync(join(market, 'plugins', name, '.claude-plugin', 'plugin.json'), JSON.stringify({ name, version: '1.0.0', ...manifest }))
+      writeFileSync(join(market, 'plugins', name, '.mcp.json'), JSON.stringify({ mcpServers: { [name]: { command: 'true' } } }))
+    }
+    plugin('telegram', {})
+    plugin('notes', {})
+    plugin('pager', { channels: [{ server: 'pager', displayName: 'Pager' }] })
+    mkdirSync(join(market, '.claude-plugin'), { recursive: true })
+    writeFileSync(
+      join(market, '.claude-plugin', 'marketplace.json'),
+      JSON.stringify({
+        name: 'claude-plugins-official',
+        owner: { name: 't' },
+        plugins: ['telegram', 'notes', 'pager'].map(name => ({ name, source: `./plugins/${name}` })),
+      }),
+    )
+    const pluginsDir = join(configDir, 'plugins')
+    mkdirSync(pluginsDir, { recursive: true })
+    writeFileSync(
+      join(pluginsDir, 'known_marketplaces.json'),
+      JSON.stringify({
+        'claude-plugins-official': { source: { source: 'directory', path: market }, installLocation: market, lastUpdated: '2026-11-03T00:00:00.000Z' },
+      }),
+    )
+    try {
+      for (const name of ['telegram', 'notes', 'pager']) await ext.pluginAction('install', `${name}@claude-plugins-official`)
+      const channels = await ext.listChannels(configDir)
+      expect(channels.map(c => [c.plugin, c.server, c.displayName]).sort()).toEqual([
+        ['pager@claude-plugins-official', 'plugin:pager:pager', 'Pager'],
+        ['telegram@claude-plugins-official', 'plugin:telegram:telegram', 'telegram'],
+      ])
+      const { discover } = await ext.listPlugins()
+      expect(discover.filter(p => p.channel).map(p => p.name).sort()).toEqual(['telegram'])
+    } finally {
+      for (const name of ['telegram', 'notes', 'pager']) await ext.pluginAction('uninstall', `${name}@claude-plugins-official`).catch(() => {})
+      rmSync(join(pluginsDir, 'known_marketplaces.json'))
+    }
+  })
 })
 
 describe('/api/ext endpoints', () => {

@@ -19,6 +19,7 @@ import { scanMemoryFiles } from '../memdir/memoryScan.js'
 import { getAutoMemPath, isAutoMemoryEnabled } from '../memdir/paths.js'
 import type { HookCommand, HookMatcher } from '../schemas/hooks.js'
 import { fetchOpenAIActivity } from '../services/api/usage.js'
+import { isChannelAllowlisted } from '../services/mcp/channelAllowlist.js'
 import {
   installPluginOp,
   setPluginEnabledOp,
@@ -43,6 +44,7 @@ import {
 import { ESONHUGH_MARKETPLACE_NAME } from '../utils/plugins/esonhughMarketplace.js'
 import { OFFICIAL_MARKETPLACE_NAME } from '../utils/plugins/officialMarketplace.js'
 import { parseMarketplaceInput } from '../utils/plugins/parseMarketplaceInput.js'
+import { loadPluginMcpServers } from '../utils/plugins/mcpPluginIntegration.js'
 import { loadAllPlugins } from '../utils/plugins/pluginLoader.js'
 import { getPluginStorageId } from '../utils/plugins/pluginOptionsStorage.js'
 import type { EditableSettingSource } from '../utils/settings/constants.js'
@@ -246,7 +248,7 @@ export async function listPlugins() {
         marketplace: m.name,
         description: entry.description ?? '',
         installed: installedIds.has(id),
-        channel: Array.isArray(record.channels) && record.channels.length > 0,
+        channel: (Array.isArray(record.channels) && record.channels.length > 0) || isChannelAllowlisted(id),
       }
     }),
   )
@@ -342,13 +344,27 @@ export function readDefaultChannels(configDir: string): string[] {
   }
 }
 
+/**
+ * Channel plugins: those that declare `channels`, and the approved ones (the
+ * official telegram/discord/imessage/fakechat declare none), whose every MCP
+ * server is a channel.
+ */
 export async function listChannels(configDir: string) {
   const defaults = new Set(readDefaultChannels(configDir))
-  return (await allPlugins())
-    .filter(p => !p.isBuiltin && (p.manifest.channels?.length ?? 0) > 0)
-    .flatMap(p => {
+  const plugins = (await allPlugins()).filter(p => !p.isBuiltin)
+  const rows = await Promise.all(
+    plugins.map(async p => {
       const id = getPluginStorageId(p)
-      return (p.manifest.channels ?? []).map(channel => ({
+      const declared = p.manifest.channels ?? []
+      const channels = declared.length
+        ? declared
+        : isChannelAllowlisted(id)
+          ? Object.keys(p.mcpServers ?? (await loadPluginMcpServers(p)) ?? {}).map(server => ({
+              server,
+              displayName: undefined,
+            }))
+          : []
+      return channels.map(channel => ({
         name: channel.server,
         displayName: channel.displayName ?? channel.server,
         plugin: id,
@@ -357,7 +373,9 @@ export async function listChannels(configDir: string) {
         pluginEnabled: p.enabled !== false,
         def: defaults.has(`plugin:${id}`),
       }))
-    })
+    }),
+  )
+  return rows.flat()
 }
 
 export async function setDefaultChannel(configDir: string, plugin: string, on: boolean): Promise<void> {

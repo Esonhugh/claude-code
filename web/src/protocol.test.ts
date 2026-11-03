@@ -51,6 +51,14 @@ describe('reduce', () => {
       message: { role: 'user', content: '<channel source="plugin:fakechat:fakechat" chat_id="1" user="a &amp; b">\n<b>hi</b> & "you"\n</channel>' },
     })
     expect(state.items.at(-1)).toEqual({ kind: 'channel', id: 'c1', source: 'fakechat', user: 'a & b', text: '<b>hi</b> & "you"' })
+    // The engine escapes a closing tag inside the text (`<\\/channel>`); the page shows what was sent.
+    state = reduce(state, {
+      type: 'user',
+      isReplay: true,
+      uuid: 'c2',
+      message: { role: 'user', content: '<channel source="plugin:fakechat:fakechat">\nsee <\\/channel> and ＜\\/ Channel>\n</channel>' },
+    })
+    expect(state.items.at(-1)).toMatchObject({ kind: 'channel', text: 'see </channel> and ＜/ Channel>' })
     // A prompt that only mentions the tag is the person's own message.
     state = reduce(state, { type: 'user', isReplay: true, uuid: 'u2', message: { role: 'user', content: 'what does <channel source="x"> mean?' } })
     expect(state.items.at(-1)).toMatchObject({ kind: 'user', text: 'what does <channel source="x"> mean?' })

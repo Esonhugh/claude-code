@@ -113,14 +113,27 @@ import type {
   ScopedMcpServerConfig,
 } from 'src/services/mcp/types.js'
 import {
+  CHANNEL_PERMISSION_METHOD,
+  CHANNEL_PERMISSION_REQUEST_METHOD,
   ChannelMessageNotificationSchema,
+  ChannelPermissionNotificationSchema,
+  type ChannelPermissionRequestParams,
   gateChannelServer,
   wrapChannelMessage,
   findChannelEntry,
 } from 'src/services/mcp/channelNotification.js'
 import {
+  createChannelPermissionCallbacks,
+  filterPermissionRelayClients,
+  isChannelPermissionRelayEnabled,
+  sanitizePermissionText,
+  shortRequestId,
+  truncateForPreview,
+} from 'src/services/mcp/channelPermissions.js'
+import {
   isChannelAllowlisted,
   isChannelsEnabled,
+  isDeferredChannelServer,
 } from 'src/services/mcp/channelAllowlist.js'
 import { parsePluginIdentifier } from 'src/utils/plugins/pluginIdentifier.js'
 import { fromArray } from 'src/utils/generators.js'
@@ -1908,6 +1921,56 @@ function runHeadlessStreaming(
     return getMcpConfigByName(serverName) ?? active?.config ?? null
   }
 
+  // Reconnects a server and puts its client, tools, commands and resources in
+  // appState so the next turn sees them (mcp_toggle, channel_enable).
+  async function connectServerIntoAppState(
+    serverName: string,
+    config: ScopedMcpServerConfig,
+  ): Promise<MCPServerConnection> {
+    // @ts-ignore - recovered code
+    const result = await reconnectMcpServerImpl(serverName, config)
+    // @ts-ignore - recovered code
+    const prefix = getMcpPrefix(serverName)
+    setAppState(prev => ({
+      ...prev,
+      mcp: {
+        ...prev.mcp,
+        clients: prev.mcp.clients.map(c =>
+          c.name === serverName ? result.client : c,
+        ),
+        tools: [
+          ...reject(prev.mcp.tools, t => t.name?.startsWith(prefix)),
+          ...result.tools,
+        ],
+        commands: [
+          ...reject(prev.mcp.commands, c =>
+            // @ts-ignore - recovered code
+            commandBelongsToServer(c, serverName),
+          ),
+          ...result.commands,
+        ],
+        resources:
+          result.resources && result.resources.length > 0
+            // @ts-ignore - recovered code
+            ? { ...prev.mcp.resources, [serverName]: result.resources }
+            : omit(prev.mcp.resources, serverName),
+      },
+    }))
+    if (result.client.type === 'connected') {
+      registerElicitationHandlers([result.client])
+      reregisterChannelHandlerAfterReconnect(result.client)
+    }
+    return result.client
+  }
+
+  if (feature('KAIROS') || feature('KAIROS_CHANNELS')) {
+    structuredIO.channelPermissionRelay = request =>
+      relayChannelPermission(
+        [...getAppState().mcp.clients, ...sdkClients, ...dynamicMcpState.clients],
+        request,
+      )
+  }
+
   // Build McpServerStatus[] for control responses. Shared by mcp_status and
   // reload_plugins handlers. Reads closure state: sdkClients, dynamicMcpState.
   function buildMcpServerStatuses(): McpServerStatus[] {
@@ -2017,6 +2080,12 @@ function runHeadlessStreaming(
         capabilities,
         devChannel,
         channelActive,
+        // Fork: an approved channel plugin's server that starts on channel_enable.
+        ...(connection.type === 'disabled' &&
+          (feature('KAIROS') || feature('KAIROS_CHANNELS')) &&
+          isDeferredChannelServer(connection.name) && {
+            channelDeferred: true,
+          }),
       }
     })
   }
@@ -4322,66 +4391,72 @@ function runHeadlessStreaming(
             // Enabling: persist + reconnect
             // @ts-ignore - recovered code
             setMcpServerEnabled(serverName, true)
-            // @ts-ignore - recovered code
-            const result = await reconnectMcpServerImpl(serverName, config)
-            // Update appState.mcp with the new client, tools, commands, and resources
-            // This ensures the LLM sees updated tools after enabling the server
-            // @ts-ignore - recovered code
-            const prefix = getMcpPrefix(serverName)
-            setAppState(prev => ({
-              ...prev,
-              mcp: {
-                ...prev.mcp,
-                clients: prev.mcp.clients.map(c =>
-                  c.name === serverName ? result.client : c,
-                ),
-                tools: [
-                  ...reject(prev.mcp.tools, t => t.name?.startsWith(prefix)),
-                  ...result.tools,
-                ],
-                commands: [
-                  ...reject(prev.mcp.commands, c =>
-                    // @ts-ignore - recovered code
-                    commandBelongsToServer(c, serverName),
-                  ),
-                  ...result.commands,
-                ],
-                resources:
-                  result.resources && result.resources.length > 0
-                    // @ts-ignore - recovered code
-                    ? { ...prev.mcp.resources, [serverName]: result.resources }
-                    : omit(prev.mcp.resources, serverName),
-              },
-            }))
-            if (result.client.type === 'connected') {
-              registerElicitationHandlers([result.client])
-              reregisterChannelHandlerAfterReconnect(result.client)
+            const client = await connectServerIntoAppState(serverName, config)
+            if (client.type === 'connected') {
               sendControlResponseSuccess(message)
             } else {
               const errorMessage =
-                result.client.type === 'failed'
-                  ? (result.client.error ?? 'Connection failed')
-                  : `Server status: ${result.client.type}`
+                client.type === 'failed'
+                  ? (client.error ?? 'Connection failed')
+                  : `Server status: ${client.type}`
               sendControlResponseError(message, errorMessage)
             }
           }
         } else if (message.request.subtype === 'channel_enable') {
-          const currentAppState = getAppState()
-          handleChannelEnable(
-            message.request_id,
-            // @ts-ignore - recovered code
-            message.request.serverName,
-            // Fork: claude web loads a development channel after its own warning.
-            // @ts-ignore - recovered code
-            message.request.dev === true,
-            // Pool spread matches mcp_status — all three client sources.
-            [
-              ...currentAppState.mcp.clients,
-              ...sdkClients,
-              ...dynamicMcpState.clients,
-            ],
-            output,
-          )
+          // @ts-ignore - recovered code
+          const serverName = message.request.serverName as string
+          // Fork: claude web loads a development channel after its own warning.
+          // @ts-ignore - recovered code
+          const dev = message.request.dev === true
+          // Fork: an approved channel plugin's server waits until a session
+          // lists it (isDeferredChannelServer); list it, then start it.
+          const config = getControlMcpServerConfig(serverName)
+          const plugin = config?.pluginSource
+            ? parsePluginIdentifier(config.pluginSource)
+            : undefined
+          let startError: string | undefined
+          if (
+            (feature('KAIROS') || feature('KAIROS_CHANNELS')) &&
+            config &&
+            plugin?.marketplace &&
+            isDeferredChannelServer(serverName)
+          ) {
+            const prior = getAllowedChannels()
+            setAllowedChannels([
+              ...prior,
+              {
+                kind: 'plugin',
+                name: plugin.name,
+                marketplace: plugin.marketplace,
+                ...(dev && { dev: true }),
+              },
+            ])
+            const client = await connectServerIntoAppState(serverName, config)
+            if (client.type !== 'connected') {
+              setAllowedChannels(prior)
+              startError =
+                client.type === 'failed'
+                  ? (client.error ?? 'Connection failed')
+                  : `Server status: ${client.type}`
+            }
+          }
+          if (startError) {
+            sendControlResponseError(message, startError)
+          } else {
+            const currentAppState = getAppState()
+            handleChannelEnable(
+              message.request_id,
+              serverName,
+              dev,
+              // Pool spread matches mcp_status — all three client sources.
+              [
+                ...currentAppState.mcp.clients,
+                ...sdkClients,
+                ...dynamicMcpState.clients,
+              ],
+              output,
+            )
+          }
         } else if (message.request.subtype === 'mcp_authenticate') {
           const serverName = message.request.serverName as string
           const currentAppState = getAppState()
@@ -6181,14 +6256,8 @@ function handleSetPermissionMode(
  * handler that enqueues channel messages at priority:'next' — drainCommandQueue
  * picks them up between turns.
  *
- * Intentionally does NOT register the claude/channel/permission handler that
- * useManageMCPConnections sets up for interactive mode. That handler resolves
- * a pending dialog inside handleInteractivePermission — but print.ts never
- * calls handleInteractivePermission. When SDK permission lands on 'ask', it
- * goes to the consumer's canUseTool callback over stdio; there is no CLI-side
- * dialog for a remote "yes tbxkq" to resolve. If an IDE wants channel-relayed
- * tool approval, that's IDE-side plumbing against its own pending-map. (Also
- * interactive relay can be disabled with the local opt-out.)
+ * Fork: also registers the claude/channel/permission handler, so a channel's
+ * answer races the SDK host's can_use_tool prompt (relayChannelPermission).
  */
 function handleChannelEnable(
   requestId: string,
@@ -6297,6 +6366,8 @@ function handleChannelEnable(
     },
   )
 
+  registerChannelPermissionHandler(connection)
+
   output.enqueue({
     type: 'control_response',
     response: {
@@ -6304,6 +6375,99 @@ function handleChannelEnable(
       request_id: requestId,
       response: undefined,
     },
+  })
+}
+
+// Fork: pending channel permission prompts of this headless session.
+const channelPermissionCallbacks = createChannelPermissionCallbacks()
+
+/** A relaying channel's {request_id, behavior} answers a pending prompt. */
+function registerChannelPermissionHandler(
+  connection: MCPServerConnection & { type: 'connected' },
+): void {
+  if (
+    !isChannelPermissionRelayEnabled() ||
+    !connection.capabilities?.experimental?.['claude/channel/permission']
+  ) {
+    return
+  }
+  connection.client.setNotificationHandler(
+    CHANNEL_PERMISSION_METHOD,
+    { params: ChannelPermissionNotificationSchema().shape.params },
+    async ({ request_id, behavior }) => {
+      const resolved = channelPermissionCallbacks.resolve(
+        request_id,
+        behavior,
+        connection.name,
+      )
+      logMCPDebug(
+        connection.name,
+        `notifications/claude/channel/permission: ${request_id} → ${behavior} (${resolved ? 'matched pending' : 'no pending entry — stale or unknown ID'})`,
+      )
+    },
+  )
+}
+
+/**
+ * Fork: sends a permission prompt to the admitted channels that relay
+ * approvals, as interactiveHandler does in the REPL. Resolves with the first
+ * channel answer; never resolves once `signal` aborts.
+ */
+function relayChannelPermission(
+  clients: readonly MCPServerConnection[],
+  {
+    tool,
+    input,
+    toolUseContext,
+    toolUseID,
+    signal,
+  }: Parameters<NonNullable<StructuredIO['channelPermissionRelay']>>[0],
+): Promise<{ behavior: 'allow' | 'deny'; fromServer: string }> | undefined {
+  if (!isChannelPermissionRelayEnabled()) return undefined
+  const targets = filterPermissionRelayClients(
+    clients,
+    client =>
+      gateChannelServer(
+        client.name,
+        client.capabilities,
+        client.config.pluginSource,
+      ).action === 'register',
+  )
+  if (targets.length === 0) return undefined
+  const requestId = shortRequestId(toolUseID)
+  return new Promise(resolve => {
+    const unsubscribe = channelPermissionCallbacks.onResponse(
+      requestId,
+      response => {
+        signal.removeEventListener('abort', unsubscribe)
+        resolve(response)
+      },
+    )
+    signal.addEventListener('abort', unsubscribe, { once: true })
+    void (async () => {
+      const description = await tool.description(input as never, {
+        isNonInteractiveSession: true,
+        toolPermissionContext:
+          toolUseContext.getAppState().toolPermissionContext,
+        tools: toolUseContext.options.tools,
+      })
+      const params: ChannelPermissionRequestParams = {
+        request_id: requestId,
+        tool_name: tool.name,
+        description: sanitizePermissionText(description),
+        input_preview: truncateForPreview(input),
+      }
+      for (const client of targets) {
+        void client.client
+          .notification({ method: CHANNEL_PERMISSION_REQUEST_METHOD, params })
+          .catch(e =>
+            logMCPDebug(
+              client.name,
+              `Channel permission_request failed: ${errorMessage(e)}`,
+            ),
+          )
+      }
+    })().catch(e => logMCPDebug('channels', `permission relay: ${errorMessage(e)}`))
   })
 }
 
@@ -6383,6 +6547,7 @@ function reregisterChannelHandlerAfterReconnect(
       })
     },
   )
+  registerChannelPermissionHandler(connection)
 }
 
 /**

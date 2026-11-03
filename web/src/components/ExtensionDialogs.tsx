@@ -16,6 +16,8 @@ type McpServer = {
   devChannel?: boolean
   /** The channel is registered in this session. */
   channelActive?: boolean
+  /** An approved channel plugin's server: it starts when the channel is enabled for this session. */
+  channelDeferred?: boolean
 }
 
 const MCP_STATUS: Record<string, [string, string]> = {
@@ -135,14 +137,14 @@ export function McpBody({ z, flash, control }: ExtProps) {
     <div>
       {servers.map(x => {
         const st = busy[x.name] ? 'connecting' : x.status
-        const [cls, label] = MCP_STATUS[st] ?? ['idle', st]
+        const [cls, label] = x.channelDeferred ? ['idle', '启用 channel 后启动'] : (MCP_STATUS[st] ?? ['idle', st])
         const tools = x.tools?.length ?? 0
         return (
           <div className="xrow" key={x.name}>
             <div>
               <b className="mono">{x.source === 'plugin' ? x.name.split(':').at(-1) : x.name}</b>{' '}
               <span className="note">{x.transport ?? 'stdio'}</span>
-              {(isChannel(x) || x.devChannel) && (
+              {(isChannel(x) || x.devChannel || x.channelDeferred) && (
                 <>
                   {' '}
                   <span className="tag src-upload">
@@ -173,7 +175,7 @@ export function McpBody({ z, flash, control }: ExtProps) {
                   {z('重连')}
                 </button>
               )}
-              {st === 'disabled' && (
+              {st === 'disabled' && !x.channelDeferred && (
                 <button
                   className="btn"
                   type="button"
@@ -226,6 +228,7 @@ export function ChannelsBody({ z, flash, control }: ExtProps) {
       await control({ subtype: 'channel_enable', serverName: server, ...(dev && { dev: true }) })
       setEnabled(e => ({ ...e, [server]: 'active' }))
       flash(z(`已在本会话启用 ${name}`))
+      setServers(await mcpStatus(control).catch(() => servers))
     } catch (err) {
       setEnabled(e => {
         const next = { ...e }
@@ -262,7 +265,8 @@ export function ChannelsBody({ z, flash, control }: ExtProps) {
   const row = (key: string, name: string, from: string, server: McpServer | undefined, c?: ChannelPlugin) => {
     const connected = server?.status === 'connected'
     const dev = !!server?.devChannel
-    const st = enabled[key] ?? (server?.channelActive ? 'active' : connected ? 'available' : 'off')
+    const st =
+      enabled[key] ?? (server?.channelActive ? 'active' : connected || server?.channelDeferred ? 'available' : 'off')
     const perm = canRelayApproval(server)
     const sub =
       st === 'active'
@@ -273,8 +277,12 @@ export function ChannelsBody({ z, flash, control }: ExtProps) {
           ? z('插件已停用')
           : !control
             ? z('打开一个运行中的会话后才能在本会话启用')
-            : !connected
-              ? z('MCP 服务器未连接')
+            : server?.channelDeferred
+              ? z('启用后才在本会话启动它的 MCP 服务器')
+              : !connected
+                ? server?.status === 'failed' && server.error
+                  ? server.error
+                  : z('MCP 服务器未连接')
               : dev
                 ? z('不在允许列表上，只能作为开发版 channel 在本会话启用')
                 : perm

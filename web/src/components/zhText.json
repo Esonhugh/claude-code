@@ -1,6 +1,14 @@
 {
 "en": [
 [
+"启用后才在本会话启动它的 MCP 服务器",
+"Its MCP server starts in this session once enabled"
+],
+[
+"启用 channel 后启动",
+"Starts with the channel"
+],
+[
 "ChatGPT 账号的 token 活动，不是剩余额度",
 "ChatGPT account token activity, not remaining quota"
 ],

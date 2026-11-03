@@ -160,6 +160,18 @@ export class StructuredIO {
   private onControlRequestSent?: (request: SDKControlRequest) => void
   private onControlRequestResolved?: (requestId: string) => void
   private readonly pendingPermissionRechecks = new Set<() => void>()
+  /**
+   * Fork: forwards a permission prompt to channel servers that relay
+   * approvals (as interactiveHandler does in the REPL). Its answer races the
+   * SDK host's; undefined when no channel relays this prompt.
+   */
+  channelPermissionRelay?: (request: {
+    tool: Tool
+    input: Record<string, unknown>
+    toolUseContext: ToolUseContext
+    toolUseID: string
+    signal: AbortSignal
+  }) => Promise<{ behavior: 'allow' | 'deny'; fromServer: string }> | undefined
 
   // sendRequest() and print.ts both enqueue here; the drain loop is the
   // only writer. Prevents control_request from overtaking queued stream_events.
@@ -620,6 +632,7 @@ export class StructuredIO {
 
       // AbortController used to cancel the SDK request if a hook decides first
       const hookAbortController = new AbortController()
+      const channelAbortController = new AbortController()
       const parentSignal = toolUseContext.abortController.signal
       let recheck: (() => void) | undefined
       // Forward parent abort to our local controller
@@ -698,12 +711,28 @@ export class StructuredIO {
           this.pendingPermissionRechecks.add(recheck)
         }
 
-        // Race: hook completion vs SDK prompt response vs recheck.
+        const channelPromise = (
+          requiresExplicitUserApproval(mainPermissionResult.decisionReason) ||
+          tool.requiresUserInteraction?.()
+            ? undefined
+            : this.channelPermissionRelay?.({
+                tool,
+                input,
+                toolUseContext,
+                toolUseID,
+                signal: channelAbortController.signal,
+              })
+        )?.then(response => ({ source: 'channel' as const, response }))
+        const answers = channelPromise
+          ? [sdkPromise, recheckPromise, channelPromise]
+          : [sdkPromise, recheckPromise]
+
+        // Race: hook completion vs SDK prompt response vs recheck vs channel.
         // The hook promise always resolves (never rejects), returning
         // undefined if no hook made a decision.
         let winner = hookPromise
-          ? await Promise.race([hookPromise, sdkPromise, recheckPromise])
-          : await Promise.race([sdkPromise, recheckPromise])
+          ? await Promise.race([hookPromise, ...answers])
+          : await Promise.race(answers)
 
         if (winner.source === 'hook') {
           if (winner.decision) {
@@ -714,13 +743,31 @@ export class StructuredIO {
             return winner.decision
           }
           // Hook passed through (no decision) — wait for the SDK prompt
-          winner = await Promise.race([sdkPromise, recheckPromise])
+          winner = await Promise.race(answers)
         }
 
         if (winner.source === 'recheck') {
           sdkPromise.catch(() => {})
           hookAbortController.abort()
           return winner.decision
+        }
+
+        if (winner.source === 'channel') {
+          sdkPromise.catch(() => {})
+          hookAbortController.abort()
+          const { behavior, fromServer } = winner.response
+          return permissionPromptToolResultToPermissionDecision(
+            behavior === 'allow'
+              ? { behavior, updatedInput: input, toolUseID }
+              : {
+                  behavior,
+                  message: `Denied via channel ${fromServer}`,
+                  toolUseID,
+                },
+            tool,
+            input,
+            toolUseContext,
+          )
         }
 
         // SDK prompt responded first — use its result (hook still running
@@ -747,6 +794,7 @@ export class StructuredIO {
         )
       } finally {
         if (recheck) this.pendingPermissionRechecks.delete(recheck)
+        channelAbortController.abort()
         // Only transition back to 'running' if no other permission prompts
         // are pending (concurrent tool execution can have multiple in-flight).
         if (this.getPendingPermissionRequests().length === 0) {
