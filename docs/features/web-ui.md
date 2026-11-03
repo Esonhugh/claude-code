@@ -82,7 +82,7 @@ Sessions start in ~/.claude/web/workspace and run with your local credentials an
 
 ## 左侧栏
 
-从上到下：品牌、`+ 新会话`、搜索，MCP / Channels / Skills / 插件 / 记忆 / Hooks / Mods 七个入口（数字是数量，点开是对应的管理弹窗），然后是 **置顶**、**项目**、**临时对话**、**最近目录**（按目录分组，最近改过的目录在前）。插件弹窗的市场列表里 Esonhugh-Marketplace 排第一；用 ChatGPT 账号登录（OpenAI 模式）时多一个“ChatGPT 应用”页签，可以逐个开关 Codex 应用。每段标题可以折叠。每行一行标题；没有标题的会话显示最后一条消息，再没有就显示 session id。正在运行的会话前面有绿点，未读的加粗并带蓝点。
+从上到下：品牌、`+ 新会话`、搜索，MCP / Channels / Skills / 插件 / 记忆 / Hooks / Mods 七个入口（数字是数量，点开是对应的管理弹窗），然后是 **置顶**、**项目**、**临时对话**、**最近目录**（按目录分组，最近改过的目录在前）。插件弹窗的市场列表里 Esonhugh-Marketplace 排第一（`claude web` 首次启动时和终端一样自动安装它，`CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL=1` 关闭）；用 ChatGPT 账号登录（OpenAI 模式）时多一个“ChatGPT 应用”页签，可以逐个开关 Codex 应用。每段标题可以折叠。每行一行标题；没有标题的会话显示最后一条消息，再没有就显示 session id。正在运行的会话前面有绿点，未读的加粗并带蓝点。
 
 鼠标停在一行上会出现提示卡片：标题、最近修改、目录、状态、改动的文件数、ID（拿不到的字段不显示）。鼠标可以移进卡片，选中里面的文字复制。行右侧的按钮置顶 / 取消置顶。
 
