@@ -1363,7 +1363,7 @@ export function App() {
         }}
         onDrop={(e: DragEvent) => {
           setDragging(false)
-          if (!e.dataTransfer.files.length || chat?.mode === 'elsewhere') return
+          if (e.defaultPrevented || !e.dataTransfer.files.length || chat?.mode === 'elsewhere') return
           e.preventDefault()
           setFiles([...files, ...e.dataTransfer.files])
         }}

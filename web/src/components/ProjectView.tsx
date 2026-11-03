@@ -841,7 +841,7 @@ export function ProjectView({
           if (e.dataTransfer.types.includes('Files')) e.preventDefault()
         }}
         onDrop={(e: DragEvent) => {
-          if (!e.dataTransfer.files.length) return
+          if (e.defaultPrevented || !e.dataTransfer.files.length) return
           e.preventDefault()
           setFiles([...files, ...e.dataTransfer.files])
         }}
