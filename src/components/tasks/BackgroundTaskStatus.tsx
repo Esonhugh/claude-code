@@ -9,7 +9,6 @@ import {
   type TaskState,
 } from 'src/tasks/types.js'
 import { Box, Text } from '../../ink.js'
-import { isAnt } from 'src/utils/userType.js'
 
 
 type Props = {
@@ -31,7 +30,7 @@ export function BackgroundTaskStatus({
           isBackgroundTask(t) &&
           t.type !== 'in_process_teammate' &&
           t.type !== 'local_workflow' &&
-          !(isAnt() && isPanelAgentTask(t)),
+          !isPanelAgentTask(t),
       ),
     [tasks],
   )
