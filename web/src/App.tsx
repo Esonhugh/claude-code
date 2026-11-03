@@ -866,6 +866,17 @@ export function App() {
     await run
   }
 
+  /** A comment pinned on the file preview goes out as its own message; the draft stays. */
+  const sendComment = async (id: string, text: string) => {
+    const current = stateRef.current.chats[id]
+    if (!current || current.mode === 'elsewhere') return
+    if (current.mode !== 'live' && !(await resume(id))) return
+    stickToBottom.current = true
+    const uuid = newUuid()
+    dispatch({ type: 'chat', id, action: { type: stateRef.current.chats[id]?.busy ? 'queue' : 'user', text, uuid } })
+    send(id, userMessage(text, undefined, uuid))
+  }
+
   const startChat = async (trust = false) => {
     const text = (drafts[''] ?? '').trim()
     const pending = attachments[''] ?? []
@@ -1591,6 +1602,7 @@ export function App() {
                 onClose={closePreview}
                 files={chatFiles}
                 onOpen={openFile}
+                onComment={signedOut ? undefined : text => void sendComment(preview.sessionId, text)}
               />
             )}
           </WebPreviewContext.Provider>

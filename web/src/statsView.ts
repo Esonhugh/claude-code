@@ -19,6 +19,15 @@ export function fmtK(k: number): string {
   return `${Math.round(k)}k`
 }
 
+/** A raw token count: 458k, 2.8B. */
+export function fmtTokens(n: number | null): string {
+  if (n === null || !Number.isFinite(n) || n < 0) return '—'
+  if (n >= 1e9) return `${Number((n / 1e9).toFixed(1))}B`
+  if (n >= 1e6) return `${Number((n / 1e6).toFixed(1))}M`
+  if (n >= 1e3) return `${Math.round(n / 1e3)}k`
+  return String(n)
+}
+
 export function fmtDuration(ms: number): string {
   const m = Math.round(ms / 60_000)
   return m >= 60 ? `${Math.floor(m / 60)}h${pad(m % 60)}m` : `${m}m`

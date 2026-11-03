@@ -4,6 +4,7 @@ import {
   dayPart,
   fmtDuration,
   fmtK,
+  fmtTokens,
   heatDays,
   heatLevels,
   hourShares,
@@ -38,6 +39,10 @@ describe('statsView', () => {
     expect(fmtK(1500)).toBe('1.5M')
     expect(fmtK(0.5)).toBe('0.5k')
     expect(fmtK(0)).toBe('0k')
+    expect(fmtTokens(52_700_361_041)).toBe('52.7B')
+    expect(fmtTokens(2_806_437_392)).toBe('2.8B')
+    expect(fmtTokens(458_716)).toBe('459k')
+    expect(fmtTokens(null)).toBe('—')
     expect(fmtDuration(stats.longestSessionMs)).toBe('2h14m')
     expect(fmtDuration(5 * 60_000)).toBe('5m')
     expect(dayPart(15)).toBe('下午')

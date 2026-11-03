@@ -18,6 +18,7 @@ import { HOOK_EVENTS } from '../entrypoints/sdk/coreTypes.js'
 import { scanMemoryFiles } from '../memdir/memoryScan.js'
 import { getAutoMemPath, isAutoMemoryEnabled } from '../memdir/paths.js'
 import type { HookCommand, HookMatcher } from '../schemas/hooks.js'
+import { fetchOpenAIActivity } from '../services/api/usage.js'
 import {
   installPluginOp,
   setPluginEnabledOp,
@@ -26,7 +27,9 @@ import {
 } from '../services/plugins/pluginOperations.js'
 import type { LoadedPlugin } from '../types/plugin.js'
 import { clearMemoryFileCaches, getMemoryFiles } from '../utils/claudemd.js'
+import { logForDebugging } from '../utils/debug.js'
 import { getClaudeConfigHomeDir } from '../utils/envUtils.js'
+import { errorMessage } from '../utils/errors.js'
 import { renderModelName } from '../utils/model/model.js'
 import { clearAllCaches } from '../utils/plugins/cacheUtils.js'
 import {
@@ -686,7 +689,14 @@ export async function setModEnabled(id: string, on: boolean): Promise<{ message:
 // ---- stats (as /stats) ----
 
 export async function loadStats() {
-  const stats = await aggregateClaudeCodeStats()
+  // The ChatGPT account's Codex activity, as the OpenAI tab of /stats; null when not signed in with ChatGPT.
+  const [stats, codex] = await Promise.all([
+    aggregateClaudeCodeStats(),
+    fetchOpenAIActivity().catch(error => {
+      logForDebugging(`stats: ChatGPT activity unavailable: ${errorMessage(error)}`, { level: 'warn' })
+      return null
+    }),
+  ])
   const names = new Map<string, string>()
   const name = (id: string) => {
     if (!names.has(id)) names.set(id, renderModelName(id))
@@ -710,5 +720,13 @@ export async function loadStats() {
     longestSessionMs: stats.longestSession?.duration ?? 0,
     hours: Array.from({ length: 24 }, (_, h) => stats.hourCounts?.[h] ?? 0),
     totalSessions: stats.totalSessions,
+    codex: codex && {
+      lifetimeTokens: codex.lifetime_tokens ?? null,
+      peakDailyTokens: codex.peak_daily_tokens ?? null,
+      currentStreakDays: codex.current_streak_days ?? null,
+      longestStreakDays: codex.longest_streak_days ?? null,
+      longestTurnSec: codex.longest_running_turn_sec ?? null,
+      daily: (codex.daily_usage_buckets ?? []).map(b => ({ date: b.start_date, tokens: b.tokens })),
+    },
   }
 }

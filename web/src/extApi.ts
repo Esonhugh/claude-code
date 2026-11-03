@@ -118,6 +118,15 @@ export type Stats = {
   longestSessionMs: number
   hours: number[]
   totalSessions: number
+  /** The ChatGPT account's Codex activity (`wham/profiles/me`); null when not signed in with ChatGPT. */
+  codex?: {
+    lifetimeTokens: number | null
+    peakDailyTokens: number | null
+    currentStreakDays: number | null
+    longestStreakDays: number | null
+    longestTurnSec: number | null
+    daily: { date: string; tokens: number }[]
+  } | null
 }
 
 const enc = encodeURIComponent

@@ -924,6 +924,13 @@ a.btn { text-decoration: none; color: var(--fg); display: inline-block }
 .pdf { background: var(--sunken); border-radius: 8px; padding: 14px; display: flex; flex-direction: column; gap: 10px; align-items: center }
 .pdf-page { max-width: 100%; box-shadow: 0 1px 4px rgba(0,0,0,.18); background: #fff }
 .pdf-page canvas { display: block; max-width: 100% }
+.pinnable { position: relative; cursor: crosshair }
+.pinnable > img { display: block; width: 100% }
+.cpin { position: absolute; z-index: 2; width: 22px; height: 22px; margin: -22px 0 0 -2px; display: grid; place-items: center; border-radius: 11px 11px 11px 2px; background: var(--accent); color: var(--surface); font-size: 11px; font-weight: 600; box-shadow: 0 1px 4px rgba(0,0,0,.3); cursor: default; font-variant-numeric: tabular-nums }
+.cpin.sent { opacity: .85 }
+.cpin-box { position: absolute; z-index: 3; margin: 6px; width: min(280px, 80vw); display: flex; flex-direction: column; gap: 6px; padding: 8px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); box-shadow: 0 6px 20px rgba(0,0,0,.18); cursor: auto }
+.cpin-box textarea { font: inherit; font-size: 13px; resize: vertical; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--fg); padding: 6px 8px }
+.cpin-box .btns { display: flex; gap: 6px; justify-content: flex-end }
 .pdf .pager { position: sticky; top: -16px; z-index: 1; align-self: stretch; background: var(--sunken); padding: 6px 0 }
 .sheet { overflow: auto; border: 1px solid var(--line); border-radius: 8px }
 .sheet table { border-collapse: collapse; font-size: 12px; font-variant-numeric: tabular-nums; min-width: 100% }
