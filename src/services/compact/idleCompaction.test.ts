@@ -4,6 +4,7 @@ import {
   getIdleCompactionMinTokens,
   getIdleCompactionSkipReason,
 } from './idleCompaction.js'
+import { setPromptCache1hEligible } from '../../bootstrap/state.js'
 
 const keys = [
   'CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS',
@@ -18,6 +19,7 @@ afterEach(() => {
     if (saved[key] === undefined) delete process.env[key]
     else process.env[key] = saved[key]
   }
+  setPromptCache1hEligible(null)
 })
 
 describe('idle compaction', () => {
@@ -34,6 +36,8 @@ describe('idle compaction', () => {
 
   test('fires at 54 minutes only when the main thread uses the one-hour cache', () => {
     delete process.env.ENABLE_PROMPT_CACHING_1H
+    // Not a subscriber, whatever credential the machine running the test has.
+    setPromptCache1hEligible(false)
     expect(getIdleCompactionDelayMs('repl_main_thread')).toBeNull()
     process.env.ENABLE_PROMPT_CACHING_1H = '1'
     expect(getIdleCompactionDelayMs('repl_main_thread')).toBe(54 * 60_000)
