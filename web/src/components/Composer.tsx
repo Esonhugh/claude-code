@@ -1,5 +1,6 @@
 import {
   type ClipboardEvent,
+  type DragEvent,
   type FormEvent,
   type KeyboardEvent,
   type ReactNode,
@@ -672,9 +673,20 @@ export function InputBox({
     e.preventDefault()
     onSend()
   }
+  // Files dropped on the box attach to it; a page area that also takes drops sees `defaultPrevented`.
+  const drop = {
+    onDragOver: (e: DragEvent) => {
+      if (!disabled && e.dataTransfer.types.includes('Files')) e.preventDefault()
+    },
+    onDrop: (e: DragEvent) => {
+      if (disabled || !e.dataTransfer.files.length) return
+      e.preventDefault()
+      setFiles([...files, ...e.dataTransfer.files])
+    },
+  }
   if (start) {
     return (
-      <form className="wl-box" onSubmit={submit}>
+      <form className="wl-box" onSubmit={submit} {...drop}>
         <Attachments t={t} files={files} setFiles={setFiles} />
         {palette}
         {textarea}
@@ -688,7 +700,7 @@ export function InputBox({
     )
   }
   return (
-    <form onSubmit={submit}>
+    <form onSubmit={submit} {...drop}>
       {palette}
       {plusMenu}
       <Attachments t={t} files={files} setFiles={setFiles} />

@@ -2158,7 +2158,23 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
           await page.waitForTimeout(300)
         }
         expect(await mode()).toBe(start)
+        // A file dropped on the box attaches once; so does one picked with Upload file.
+        await input.evaluate((el: HTMLElement) => {
+          const data = new DataTransfer()
+          data.items.add(new File(['dropped'], 'dropped.txt', { type: 'text/plain' }))
+          el.closest('form')!.dispatchEvent(new DragEvent('drop', { dataTransfer: data, bubbles: true, cancelable: true }))
+        })
+        await scope.locator('.attachment', { hasText: 'dropped.txt' }).waitFor({ timeout: 5_000 })
+        await page.waitForTimeout(200)
+        expect(await scope.locator('.attachment').count()).toBe(1)
+        await scope.getByRole('button', { name: 'Remove dropped.txt' }).click()
+        await scope.locator('input[type=file][aria-label="Upload file"]').setInputFiles({ name: 'picked.txt', mimeType: 'text/plain', buffer: Buffer.from('picked') })
+        await scope.locator('.attachment', { hasText: 'picked.txt' }).waitFor({ timeout: 5_000 })
+        await scope.getByRole('button', { name: 'Remove picked.txt' }).click()
+        expect(await scope.locator('.attachment').count()).toBe(0)
       }
+      const attach = (scope: any, name: string) =>
+        scope.locator('input[type=file][aria-label="Upload file"]').setInputFiles({ name, mimeType: 'text/plain', buffer: Buffer.from(name) })
 
       // A plain chat, and the background agent it starts, in the side panel.
       const input = page.locator('.main').getByLabel('Message', { exact: true })
@@ -2179,12 +2195,15 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       await agentInput.press('Enter')
       expect(await agentInput.inputValue()).toBe('/e2e-skill ')
       await agentInput.pressSequentially('go')
+      await attach(panel, 'for-agent.txt')
+      await panel.locator('.attachment', { hasText: 'for-agent.txt' }).waitFor()
       await agentInput.press('Enter')
       await panel.locator('.agent-feed .msg.user', { hasText: '/e2e-skill go' }).waitFor({ timeout: 60_000 })
       await panel.locator('.agent-feed .msg.assistant', { hasText: 'SKILL_REACHED' }).waitFor({ timeout: 60_000 })
       // ↑ brings back what was sent to this agent.
       await agentInput.press('ArrowUp')
-      expect(await agentInput.inputValue()).toBe('/e2e-skill go')
+      expect((await agentInput.inputValue()).startsWith('/e2e-skill go')).toBe(true)
+      expect(promptsSeen.some(p => p.includes('/e2e-skill go') && p.includes('for-agent.txt'))).toBe(true)
       await agentInput.fill('')
 
       // A project: the coordinator's box and a dispatched task's box.
@@ -2206,11 +2225,14 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       const taskInput = side.getByLabel('Message', { exact: true })
       await checkBox(side.locator('.composer'), taskInput, true)
       await taskInput.fill('/e2e-skill go')
+      await attach(side.locator('.composer'), 'for-task.txt')
+      await side.locator('.attachment', { hasText: 'for-task.txt' }).waitFor()
       await taskInput.press('Enter')
       await side.locator('.msg.user', { hasText: '/e2e-skill go' }).waitFor({ timeout: 60_000 })
       await side.locator('.msg', { hasText: 'SKILL_REACHED' }).waitFor({ timeout: 60_000 })
       await taskInput.press('ArrowUp')
-      expect(await taskInput.inputValue()).toBe('/e2e-skill go')
+      expect((await taskInput.inputValue()).startsWith('/e2e-skill go')).toBe(true)
+      expect(promptsSeen.some(p => p.includes('/e2e-skill go') && p.includes('for-task.txt'))).toBe(true)
       expect(errors).toEqual([])
       await page.evaluate(async () => {
         for (const s of (await (await fetch('/api/sessions')).json()) as { id: string }[]) {
