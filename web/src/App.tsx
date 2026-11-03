@@ -752,7 +752,7 @@ export function App() {
 
   // A chat's messages go out one at a time, in the order typed, even while an earlier one uploads.
   const chatSends = useRef<Promise<void>>(Promise.resolve())
-  const sendInChat = async () => {
+  const sendInChat = async (now = false) => {
     const id = state.view
     const text = draft.trim()
     const pending = files
@@ -813,7 +813,8 @@ export function App() {
       if (chat.notice) dispatch({ type: 'chat', id, action: { type: 'local', patch: { notice: undefined } } })
       const uuid = newUuid()
       dispatch({ type: 'chat', id, action: { type: chat.busy ? 'queue' : 'user', ...content, uuid } })
-      send(id, userMessage(content.text, content.images, uuid))
+      // 'now' interrupts the running turn and runs first, like the TUI's ctrl+enter.
+      send(id, { ...userMessage(content.text, content.images, uuid), ...(now && { priority: 'now' }) })
     })
     chatSends.current = run.catch(() => {})
     await run
@@ -1017,6 +1018,29 @@ export function App() {
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   })
+
+  /** ctrl+enter on an empty box or "Send now": queued messages interrupt the turn and run now. */
+  const sendQueuedNow = (id: string) => {
+    for (const q of stateRef.current.chats[id]?.queued ?? []) {
+      void requestAsync(id, REQUEST_PREFIX.cancelQueued, { subtype: 'cancel_async_message', message_uuid: q.id }).then(
+        r => {
+          // Not cancelled: the model already read it.
+          if (r.cancelled !== true) return
+          // A uuid the engine has seen is dropped as a duplicate, so it goes again under a new one.
+          const uuid = newUuid()
+          dispatch({ type: 'chat', id, action: { type: 'requeue', from: q.id, to: uuid } })
+          send(id, { ...userMessage(q.text, q.images, uuid), priority: 'now' })
+        },
+        () => {},
+      )
+    }
+  }
+  const sendNowInChat = () => {
+    const id = stateRef.current.view
+    if (!id) return
+    if (draft.trim() || files.length) void sendInChat(true)
+    else sendQueuedNow(id)
+  }
 
   /** Interrupts the turn; like the TUI, messages still queued go back into the input box. */
   const stop = (id: string) => {
@@ -1352,6 +1376,14 @@ export function App() {
             {chat.queued.map(item => (
               <Message key={item.id} item={item} t={t} streaming={false} queued />
             ))}
+            {chat.queued.length > 0 && view && (
+              <div className="queued-now">
+                <button type="button" onClick={() => sendQueuedNow(view)}>
+                  {t('sendNow')}
+                </button>
+                <span className="sub">{t('sendNowHint')}</span>
+              </div>
+            )}
             {chat.approvals.map(a => (
               <div className="ask-ref" key={a.requestId}>
                 <span className="spin" aria-hidden="true" />
@@ -1404,6 +1436,7 @@ export function App() {
               draft={draft}
               setDraft={setDraft}
               onSend={() => void sendInChat()}
+              onSendNow={sendNowInChat}
               onStop={() => view && stop(view)}
               onFocus={() => view && chat.mode === 'readonly' && void resume(view)}
               files={files}

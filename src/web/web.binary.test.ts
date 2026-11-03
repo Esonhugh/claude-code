@@ -405,6 +405,10 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
           blocks = [{ type: 'text', text: 'FOLLOWUP_DONE' }]
         } else if (lastText.includes('SUBTASK_BG')) {
           blocks = [{ type: 'text', text: 'SUB_RESULT' }]
+        } else if (lastText.includes('HOLD_TURN')) {
+          // A long turn that only an interrupt ends early.
+          await new Promise(r => setTimeout(r, 25_000))
+          blocks = [{ type: 'text', text: 'HELD_DONE' }]
         } else if (lastText.includes('SPAWNBG')) {
           blocks = [
             {
@@ -2415,6 +2419,56 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       await browser.close()
     }
   }, 240_000)
+
+  it('sends queued messages now, interrupting the turn, from the button and with ctrl+enter', async () => {
+    const playwrightPath = Bun.spawnSync(['node', '-p', "require.resolve('playwright')"])
+      .stdout.toString()
+      .trim()
+    const { chromium } = await import(playwrightPath)
+    const browser = await chromium.launch()
+    try {
+      const page = await (await browser.newContext({ locale: 'en-US' })).newPage()
+      const errors: string[] = []
+      page.on('pageerror', (e: Error) => errors.push(e.message))
+      await page.goto(signInUrl)
+      await page.locator('.wl-hi').waitFor()
+      await page.getByLabel('Message', { exact: true }).fill('HOLD_TURN one')
+      await page.getByLabel('Message', { exact: true }).press('Enter')
+      const input = page.locator('.main').getByLabel('Message', { exact: true })
+      await input.waitFor({ timeout: 30_000 })
+      const seen = (mark: string) => promptsSeen.some(p => p.includes(mark))
+      for (let i = 0; i < 100 && !seen('HOLD_TURN one'); i++) await Bun.sleep(100)
+      // Typed during the turn, it waits as queued; "Send now" runs it without waiting for the turn.
+      await input.fill('NOW_QUEUED')
+      await input.press('Enter')
+      const queued = page.locator('.main .msg.user.queued', { hasText: 'NOW_QUEUED' })
+      await queued.waitFor({ timeout: 10_000 })
+      const started = Date.now()
+      await page.locator('.queued-now').getByRole('button', { name: 'Send now' }).click()
+      await queued.waitFor({ state: 'detached', timeout: 15_000 })
+      await page.locator('.main .msg.user:not(.queued)', { hasText: 'NOW_QUEUED' }).waitFor()
+      for (let i = 0; i < 100 && !seen('NOW_QUEUED'); i++) await Bun.sleep(100)
+      expect(seen('NOW_QUEUED')).toBe(true)
+      expect(Date.now() - started).toBeLessThan(15_000)
+      expect(await page.locator('.main .msg', { hasText: 'HELD_DONE' }).count()).toBe(0)
+      await page.locator('.main .composer .send').waitFor()
+
+      // ctrl+enter with text does the same in one step.
+      for (let i = 0; i < 100 && (await page.locator('.main .status-line, .main .stop').count()) > 0; i++) await Bun.sleep(100)
+      await input.fill('HOLD_TURN two')
+      await input.press('Enter')
+      for (let i = 0; i < 100 && !seen('HOLD_TURN two'); i++) await Bun.sleep(100)
+      await input.fill('NOW_CTRL')
+      await input.press('Control+Enter')
+      for (let i = 0; i < 150 && !seen('NOW_CTRL'); i++) await Bun.sleep(100)
+      expect(seen('NOW_CTRL')).toBe(true)
+      await page.locator('.main .msg.user:not(.queued)', { hasText: 'NOW_CTRL' }).waitFor({ timeout: 15_000 })
+      expect(await page.locator('.main .msg', { hasText: 'HELD_DONE' }).count()).toBe(0)
+      expect(errors).toEqual([])
+    } finally {
+      await browser.close()
+    }
+  })
 
   it('shares the ↑ history with the CLI: its prompts come back, and what the page sends is added', async () => {
     const playwrightPath = Bun.spawnSync(['node', '-p', "require.resolve('playwright')"])

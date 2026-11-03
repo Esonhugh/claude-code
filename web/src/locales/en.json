@@ -1,6 +1,8 @@
 {
   "you": "You",
   "queuedMessage": "You · queued",
+  "sendNow": "Send now",
+  "sendNowHint": "ctrl+enter · interrupts the current turn",
   "send": "Send",
   "stop": "Stop",
   "allow": "Allow",

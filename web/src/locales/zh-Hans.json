@@ -1,6 +1,8 @@
 {
   "you": "你",
   "queuedMessage": "你 · 排队中",
+  "sendNow": "立刻发送",
+  "sendNowHint": "ctrl+enter · 打断当前回合",
   "send": "发送",
   "stop": "停止",
   "allow": "允许",
