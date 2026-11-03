@@ -1234,6 +1234,8 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       await dialog.getByRole('option', { name: /Allow once/ }).click()
       await page.getByText('WEB_DONE').waitFor({ timeout: 30_000 })
       expect(readFileSync(join(workspace, 'edit.txt'), 'utf8')).toBe('alpha\ngamma\n')
+      // Read then Edit fold into one steps row; open it to see the cards.
+      await page.locator('.steps > summary', { hasText: '2 steps' }).click()
       // The answer stays where the request was, and the card shows the diff.
       expect(await page.locator('.ask-ref.done').textContent()).toBe('Allowed once')
       const card = page.locator('.toolcard', { has: page.locator('.tname', { hasText: 'Edit' }) })

@@ -28,7 +28,7 @@ import { type AgentsView, agentTasks } from './components/Agents'
 import { AskDock, ContextChip, GoalMenu, InputBox, ModeButton, ModelMenu, modelButtonLabel, Pins } from './components/Composer'
 import { AppDialog, type Palette, type Theme } from './components/Dialogs'
 import type { ContextUsage } from './components/Settings'
-import { AgentsContext, ChatContext, continuesTurn, FilesContext, Message, TeamBar } from './components/Message'
+import { AgentsContext, ChatContext, FilesContext, joinTurns, Message, TeamBar } from './components/Message'
 import { Preview } from './components/Preview'
 import { ProjectDialog } from './components/ProjectDialog'
 import { ProjectView } from './components/ProjectView'
@@ -1153,16 +1153,15 @@ export function App() {
                 </button>
               </div>
             )}
-            {chat.items.map((item, i) => (
+            {joinTurns(chat.items).map(({ item, ids }) => (
               <Message
                 key={item.id}
                 item={item}
-                continued={continuesTurn(chat.items, i)}
                 t={t}
                 fallbackModel={chat.model}
                 models={models}
-                streaming={chat.busy && item.id === chat.streamingId}
-                sources={sourcesById.get(item.id)}
+                streaming={chat.busy && ids.includes(chat.streamingId ?? '')}
+                sources={ids.map(id => sourcesById.get(id)).find(Boolean)}
               />
             ))}
             {chat.queued.map(item => (

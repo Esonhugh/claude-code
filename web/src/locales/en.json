@@ -235,6 +235,7 @@
   "usageTab": "Usage",
   "featuresTab": "Features",
   "thoughtFor": "Thought for {n}s",
+  "nSteps": "{n} steps",
   "thinkingNow": "Thinking…",
   "newFile": "new file",
   "viewInFiles": "View in Files",

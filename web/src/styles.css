@@ -86,7 +86,7 @@ h1, h2, h3 { text-wrap: balance; margin: 0 }
 .chip { display: inline-flex; align-items: center; gap: 6px; padding: 2px 9px; border: 1px solid var(--line); border-radius: 999px; background: var(--surface); white-space: nowrap }
 .teambar { display: flex; align-items: center; gap: 8px; padding: 6px 20px; border-bottom: 1px solid var(--line); background: var(--surface); font-size: 12.5px; flex-wrap: wrap }
 .avatar { width: 22px; height: 22px; border-radius: 50%; display: inline-grid; place-items: center; font-size: 11px; font-weight: 600; color: #fff; border: 0; padding: 0 }
-.feed { flex: 1; overflow: auto; padding: 20px; display: flex; flex-direction: column; --gap: 18px; gap: var(--gap) }
+.feed { flex: 1; overflow: auto; padding: 20px; display: flex; flex-direction: column; gap: 18px }
 .msg { max-width: var(--col); width: 100%; margin: 0 auto; display: flex; flex-direction: column; gap: 8px; min-width: 0 }
 /* Claude's side reads as one side of a conversation: left-aligned, the right edge kept clear. */
 .msg.assistant { padding-right: clamp(0px, 12%, 120px) }
@@ -95,8 +95,6 @@ h1, h2, h3 { text-wrap: balance; margin: 0 }
 .msg.user.queued .bubble { opacity: .6; background: transparent; border: 1px dashed var(--line) }
 .msg .who { font-size: 11.5px; color: var(--muted) }
 .msg .who .wm { opacity: .8 }
-/* The next API message of the same turn sits under the first one's header, at the in-message gap. */
-.msg.assistant.cont { margin-top: calc(8px - var(--gap, 8px)) }
 .md p { margin: 0 0 8px } .md ul { margin: 0 0 8px; padding-left: 20px }
 .md table { border-collapse: collapse; font-size: 13px; width: 100% }
 .md th, .md td { border-bottom: 1px solid var(--line); padding: 6px 8px; text-align: left; font-variant-numeric: tabular-nums }
@@ -342,11 +340,16 @@ h1, h2, h3 { text-wrap: balance; margin: 0 }
 /* thinking, tool calls, spinner */
 .think { color: var(--muted); font-size: 13px }
 .think[open] { border-left: 2px solid var(--line); padding-left: 10px }
-.think summary { cursor: pointer; list-style: none; display: inline-flex; gap: 6px; align-items: center; user-select: none }
-.think summary::-webkit-details-marker { display: none }
-.think summary::after { content: "›"; transition: transform .15s }
-.think[open] summary::after { transform: rotate(90deg) }
-.think .tbody { margin-top: 6px; white-space: pre-wrap; font-style: italic; line-height: 1.6 }
+.think > summary { cursor: pointer; list-style: none; display: inline-flex; gap: 6px; align-items: center; user-select: none }
+.think > summary::-webkit-details-marker { display: none }
+.think > summary::after { content: "›"; transition: transform .15s }
+.think[open] > summary::after { transform: rotate(90deg) }
+.think > .tbody { margin-top: 6px; white-space: pre-wrap; font-style: italic; line-height: 1.6 }
+/* A turn's thinking and tool calls folded into one row, like claude.ai. */
+.steps > summary { flex-wrap: wrap }
+.steps > summary .sd::before { content: "·"; margin-right: 6px }
+.steps > summary .sd.bad { color: var(--bad) }
+.steps .stepsbody { margin-top: 8px; display: flex; flex-direction: column; gap: 8px; color: var(--fg); font-size: 14px }
 .shimmer { background: linear-gradient(90deg, var(--muted) 0%, var(--muted) 40%, var(--fg) 50%, var(--muted) 60%, var(--muted) 100%); background-size: 250% 100%; -webkit-background-clip: text; background-clip: text; color: transparent }
 @media (prefers-reduced-motion: no-preference) { .shimmer { animation: shimmer 1.8s linear infinite } }
 @keyframes shimmer { from { background-position: 100% 0 } to { background-position: -150% 0 } }
@@ -874,7 +877,7 @@ a.btn { text-decoration: none; color: var(--fg); display: inline-block }
 @media print {
   :root { --bg: #fff; --surface: #fff; --fg: #000; --muted: #555; --line: #ddd; --sunken: #f4f4f4; --accent-soft: #f2f2f2; color-scheme: light }
   html, body, #root, .app, .main, .feed { display: block; height: auto; overflow: visible }
-  .app > :not(.main), .main > :not(.feed), .feed .older-sentinel, .chipbtn, .think { display: none !important }
+  .app > :not(.main), .main > :not(.feed), .feed .older-sentinel, .chipbtn, .think:not(.steps) { display: none !important }
   .msg { max-width: none }
   pre { max-height: none !important; overflow: visible }
   .toolcard, .sources { break-inside: avoid }
@@ -898,7 +901,7 @@ body.proj .main, body.proj .side, body.proj .artview, body.proj #panel-btn { dis
 .projview.wide { grid-template-columns: minmax(0, 1fr) }
 .projview.wide .pv-chat { display: none }
 .pv-chat { display: flex; flex-direction: column; min-width: 0; min-height: 0; position: relative }
-.pv-chat .feed { padding: 16px 18px; --gap: 14px }
+.pv-chat .feed { padding: 16px 18px; gap: 14px }
 .pv-chat .composer { padding: 6px 18px 12px }
 .pv-head { display: flex; align-items: center; gap: 8px; padding: 0 12px 0 18px; height: 44px; border-bottom: 1px solid var(--line); font-size: 12.5px; color: var(--muted); min-width: 0; flex: none }
 .pv-head b { color: var(--fg); font-size: 13.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0 }
@@ -913,7 +916,7 @@ body.proj .main, body.proj .side, body.proj .artview, body.proj #panel-btn { dis
 .pv-crumb button { border: 0; background: transparent; padding: 0; font: inherit; font-weight: 600; color: var(--fg); cursor: pointer; white-space: nowrap }
 .pv-crumb span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--muted); min-width: 0 }
 .pv-side { display: flex; flex-direction: column; min-width: 0; min-height: 0; border-left: 1px solid var(--line); background: var(--surface); position: relative }
-.pv-side .feed { padding: 16px 24px; --gap: 14px }
+.pv-side .feed { padding: 16px 24px; gap: 14px }
 .pv-side .composer { background: var(--surface); padding: 6px 24px 12px }
 .pv-drag { position: absolute; left: -4px; top: 0; bottom: 0; width: 8px; cursor: col-resize; z-index: 3 }
 .pv-drag:hover, .pv-drag.on, .pv-drag:focus-visible { background: color-mix(in srgb, var(--accent) 25%, transparent) }
@@ -927,8 +930,9 @@ body.proj .main, body.proj .side, body.proj .artview, body.proj #panel-btn { dis
 .pjbadge.running { background: var(--ok-soft); color: var(--ok) } .pjbadge.blocked { background: var(--warn-soft); color: var(--warn) }
 .pjbadge.review { background: var(--accent-soft); color: var(--accent) } .pjbadge.stopped { background: var(--bad-soft); color: var(--bad) }
 .dot.blocked { background: var(--warn) } .dot.review { background: var(--accent) } .dot.stopped { background: var(--bad) }
-.pjcards { display: flex; flex-direction: column; gap: 6px }
-.pjcard.mini { grid-template-columns: 10px auto minmax(0, 1fr) auto; padding: 7px 12px; column-gap: 8px }
+.pjcards { display: flex; flex-direction: column; gap: 4px }
+.pjcard.mini { grid-template-columns: 8px auto minmax(0, 1fr) auto; padding: 4px 10px; column-gap: 8px; width: fit-content; max-width: 100%; font-size: 13px; border: 0; border-left: 2px solid var(--line); border-radius: 0 6px 6px 0; background: var(--sunken) }
+.pjcard.mini:hover, .pjcard.mini[aria-current="true"] { border-left-color: var(--accent); box-shadow: none }
 .pjcard.mini .sm { grid-column: 3; grid-row: 1 } .pjcard.mini .tt { max-width: 100% } .pjcard.mini .mt { display: none } .pjcard.mini .pjbadge { grid-column: 4 }
 .pj-note { max-width: var(--col); width: 100%; margin: 0 auto; font-size: 12.5px; color: var(--muted); display: flex; gap: 8px }
 .pj-note .g { font-family: var(--f-mono); color: var(--accent) }
