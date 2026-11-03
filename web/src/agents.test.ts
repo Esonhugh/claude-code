@@ -2,6 +2,7 @@ import { describe, expect, it } from 'bun:test'
 import {
   buildTeam,
   currentPhase,
+  runningPhases,
   groupTasks,
   reduceTasks,
   type Tasks,
@@ -131,6 +132,9 @@ describe('agent tasks', () => {
     expect(currentPhase([phase(0, 'completed'), phase(1, 'running'), phase(2, 'running'), phase(3, 'pending')])).toBe(2)
     expect(currentPhase([phase(0, 'completed'), phase(1, 'pending')])).toBe(1)
     expect(currentPhase([phase(0, 'completed'), phase(1, 'completed')])).toBe(1)
+    expect(runningPhases([phase(0, 'completed'), phase(1, 'running'), phase(2, 'running'), phase(3, 'pending')])).toEqual([1, 2])
+    expect(runningPhases([phase(0, 'completed'), phase(1, 'pending')])).toEqual([1])
+    expect(runningPhases([])).toEqual([])
   })
 })
 

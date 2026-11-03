@@ -816,6 +816,7 @@ a.btn { text-decoration: none; color: var(--fg); display: inline-block }
 .transcript .msg { max-width: none }
 .agent-pane { display: flex; flex-direction: column; gap: 10px; min-height: 0 }
 .wfcur .dot { flex: none }
+.wfnow + .wfcur { margin-top: 14px }
 .wfnow .wcard { cursor: pointer }
 .lanes .lane h3 small { font-weight: 400; color: var(--muted) }
 .team-timeline { display: flex; flex-direction: column; gap: 8px; margin: 0; padding: 0; list-style: none; font-size: 13px }

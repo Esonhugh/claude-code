@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useMemo, useState } from 'react'
+import { Fragment, type ReactNode, useEffect, useMemo, useState } from 'react'
 import {
   type AgentTask,
   buildTeam,
@@ -9,6 +9,7 @@ import {
   groupTasks,
   isFinished,
   parentId,
+  runningPhases,
   type Tasks,
   taskName,
   type Team,
@@ -700,7 +701,7 @@ function WorkflowLanes({
   return (
     <div className="lanes wfd-lanes">
       {phases.map((phase, i) => (
-        <div key={phase.index} className={`lane${i === current ? ' cur' : ''}`}>
+        <div key={phase.index} className={`lane${i === current || phase.status === 'running' ? ' cur' : ''}`}>
           <h3>
             <span className={`dot ${dotClass(phase.status)}`} />
             {i + 1}. {phase.label} · {phase.agents.filter(a => a.status === 'completed').length}/
@@ -726,9 +727,20 @@ function WorkflowLanes({
   )
 }
 
-function PhaseLine({ phases, task, t, onExpand }: { phases: WorkflowPhase[]; task: AgentTask; t: T; onExpand?: () => void }) {
-  const i = currentPhase(phases)
-  const phase = phases[i]
+function PhaseLine({
+  phases,
+  index,
+  task,
+  t,
+  onExpand,
+}: {
+  phases: WorkflowPhase[]
+  index: number
+  task: AgentTask
+  t: T
+  onExpand?: () => void
+}) {
+  const phase = phases[index]
   if (!phase) {
     return (
       <div className="wfcur">
@@ -738,12 +750,11 @@ function PhaseLine({ phases, task, t, onExpand }: { phases: WorkflowPhase[]; tas
       </div>
     )
   }
-  // Pipelined phases overlap: agents of an earlier phase may still run.
-  const running = phases.flatMap(p => p.agents).filter(a => a.status === 'running').map(a => a.label)
+  const running = phase.agents.filter(a => a.status === 'running').map(a => a.label)
   return (
     <div className="wfcur">
       <span className={`dot ${dotClass(phase.status)}`} />
-      <b>{t('workflowPhase', { n: String(i + 1), total: String(phases.length), name: phase.label })}</b>
+      <b>{t('workflowPhase', { n: String(index + 1), total: String(phases.length), name: phase.label })}</b>
       <span className="note">
         {t('phaseDone', {
           done: String(phase.agents.filter(a => a.status === 'completed').length),
@@ -788,11 +799,8 @@ export function WorkflowTab({
   const allAgents = phases.flatMap(p => p.agents)
   const done = allAgents.filter(a => a.status === 'completed').length
   const currentIndex = currentPhase(phases)
-  const current = phases[currentIndex]
-  // The current phase's agents, plus those of other phases still running.
-  const nowAgents = phases.flatMap((p, i) =>
-    i === currentIndex ? p.agents : p.agents.filter(a => a.status === 'running'),
-  )
+  // Pipelined phases overlap: each running phase gets its own heading and cards.
+  const lines = runningPhases(phases)
   const agentTask = agentLabel ? workflowAgent(tasks, task, agentLabel) : undefined
   return (
     <>
@@ -812,30 +820,40 @@ export function WorkflowTab({
           </button>
         )}
       </div>
-      <PhaseLine phases={phases} task={task} t={t} onExpand={phases.length ? () => setExpanded(true) : undefined} />
       {allAgents.length > 0 && (
         <div className="bar">
           <i style={{ width: `${Math.round((done / allAgents.length) * 100)}%` }} />
         </div>
       )}
-      {current && (
-        <div className="wfnow">
-          {nowAgents.map(agent => (
-            <button
-              type="button"
-              key={agent.label}
-              className="wcard"
-              aria-pressed={agentLabel === agent.label}
-              onClick={() => setAgentLabel(agent.label)}
-            >
-              <b>{agent.label}</b>
-              <span>
-                <span className={`dot ${dotClass(agent.status)}`} /> {agent.status}
-              </span>
-            </button>
-          ))}
-        </div>
-      )}
+      {(lines.length ? lines : [currentIndex]).map((i, n) => (
+        <Fragment key={i}>
+          <PhaseLine
+            phases={phases}
+            index={i}
+            task={task}
+            t={t}
+            onExpand={n === 0 && phases.length ? () => setExpanded(true) : undefined}
+          />
+          {phases[i] && (
+            <div className="wfnow">
+              {phases[i].agents.map(agent => (
+                <button
+                  type="button"
+                  key={agent.label}
+                  className="wcard"
+                  aria-pressed={agentLabel === agent.label}
+                  onClick={() => setAgentLabel(agent.label)}
+                >
+                  <b>{agent.label}</b>
+                  <span>
+                    <span className={`dot ${dotClass(agent.status)}`} /> {agent.status}
+                  </span>
+                </button>
+              ))}
+            </div>
+          )}
+        </Fragment>
+      ))}
       {task.summary && <div className="card">{task.summary}</div>}
       {agentLabel && (
         <div className="wfout">
@@ -872,7 +890,9 @@ export function WorkflowTab({
             <div className="bar">
               <i style={{ width: `${allAgents.length ? Math.round((done / allAgents.length) * 100) : 0}%` }} />
             </div>
-            <PhaseLine phases={phases} task={task} t={t} />
+            {(lines.length ? lines : [currentIndex]).map(i => (
+              <PhaseLine key={i} phases={phases} index={i} task={task} t={t} />
+            ))}
             <WorkflowLanes
               phases={phases}
               onOpenAgent={label => {
