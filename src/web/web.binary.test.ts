@@ -1056,6 +1056,11 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       await team.getByText('0 working · 2 idle').waitFor({ timeout: 60_000 })
       await page.locator('.msg.teammate', { hasText: 'alice' }).first().waitFor()
       await page.getByText('LEAD_SAW_MEMBER').first().waitFor({ timeout: 30_000 })
+      // A teammate's report is not the user's prompt: the untitled row keeps the last one typed.
+      await page.waitForTimeout(1_000)
+      const rowTitles = async () =>
+        ((await page.evaluate(async () => (await fetch('/api/sidebar?limit=20')).json())) as { sessions: { title: string }[] }).sessions.map(x => x.title)
+      expect(await rowTitles()).toContain('please MAKE_TEAM now')
       await team.locator('.agent-row', { hasText: 'Messages' }).click()
       await panel.locator('.team-timeline li', { hasText: 'ALICE_DONE' }).waitFor()
       await panel.getByRole('button', { name: 'Back' }).click()
@@ -1074,6 +1079,9 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       await input.press('Enter')
       await page.locator('.feed').getByText('Hello from the fake model').last().waitFor({ timeout: 30_000 })
       expect(await team.locator('.member-stopped').count()).toBe(0)
+
+      // The row follows the turn once the CLI has written it (it writes up to 100 ms after the result).
+      await page.locator('.session-row', { hasText: 'hello after the team' }).waitFor({ timeout: 30_000 })
 
       // A reload rebuilds the panel from what the server replays.
       await page.reload()
