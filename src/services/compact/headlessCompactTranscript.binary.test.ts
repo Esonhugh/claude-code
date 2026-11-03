@@ -70,8 +70,11 @@ describe.skipIf(!binary)('compaction in a stream-json session (built binary)', (
     const reader = (async () => {
       const decoder = new TextDecoder()
       let buf = ''
-      for await (const chunk of proc.stdout as ReadableStream<Uint8Array>) {
-        buf += decoder.decode(chunk)
+      const stdout = proc.stdout.getReader()
+      for (;;) {
+        const { done, value } = await stdout.read()
+        if (done) break
+        buf += decoder.decode(value)
         let i
         while ((i = buf.indexOf('\n')) >= 0) {
           const line = buf.slice(0, i)

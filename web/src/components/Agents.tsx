@@ -1,5 +1,6 @@
 import { Fragment, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
+  agentOutput,
   type AgentTask,
   buildTeam,
   canChat,
@@ -383,6 +384,7 @@ export function AgentView({
   name,
   onSend,
   input,
+  embedded,
   t,
 }: {
   sessionId: string
@@ -392,6 +394,8 @@ export function AgentView({
   name?: string
   onSend?: (text: string, pick: AgentPick) => Promise<void>
   input?: AgentInput
+  /** Inside a Workflow pane whose header already names the agent: no task card, no read-only note. */
+  embedded?: boolean
   t: T
 }) {
   const [messages, setMessages] = useState<unknown[]>()
@@ -472,7 +476,7 @@ export function AgentView({
   const stoppedTeammate = teammate && isFinished(task)
   return (
     <div className="agent-pane">
-      {task && (
+      {task && !embedded && (
         <div className="card">
           <span className="sub">
             {[task.subagentType ?? task.type, task.description, taskMeta(task)].filter(Boolean).join(' · ')}
@@ -529,7 +533,7 @@ export function AgentView({
           />
         </div>
       ) : (
-        <p className="note">{t('agentReadonly')}</p>
+        !embedded && <p className="note">{t('agentReadonly')}</p>
       )}
     </div>
   )
@@ -724,37 +728,52 @@ export function AgentsTab({
 
 function WorkflowLanes({
   phases,
+  picked,
   onOpenAgent,
+  t,
 }: {
   phases: WorkflowPhase[]
+  picked?: string
   onOpenAgent: (label: string) => void
+  t: T
 }) {
   const current = currentPhase(phases)
   return (
-    <div className="lanes wfd-lanes">
-      {phases.map((phase, i) => (
-        <div key={phase.index} className={`lane${i === current || phaseActive(phase) ? ' cur' : ''}`}>
-          <h3>
-            <span className={`dot ${dotClass(phase.status)}`} />
-            {i + 1}. {phase.label} · {phase.agents.filter(a => a.status === 'completed').length}/
-            {phase.agents.length}
-          </h3>
-          {phase.message && <p>{phase.message}</p>}
-          {phase.agents.map(agent => (
-            <button type="button" key={agent.label} className="wcard" onClick={() => onOpenAgent(agent.label)}>
-              <b>{agent.label}</b>
-              <span>
-                <span className={`dot ${dotClass(agent.status)}`} /> {agent.status}
+    <div className="kanban">
+      {phases.map((phase, i) => {
+        const running = phase.agents.filter(a => a.status === 'running').length
+        return (
+          <section key={phase.index} className={`kcol${i === current || phaseActive(phase) ? ' cur' : ''}`}>
+            <header>
+              <span className={`dot ${dotClass(phase.status)}`} />
+              <b>
+                {i + 1}. {phase.label}
+              </b>
+              {running > 0 && <span className="note">{t('nRunning', { n: String(running) })}</span>}
+              <span className="count">
+                {phase.agents.filter(a => a.status === 'completed').length}/{phase.agents.length}
               </span>
-            </button>
-          ))}
-          {i < phases.length - 1 && (
-            <span className="arrow" aria-hidden="true">
-              →
-            </span>
-          )}
-        </div>
-      ))}
+            </header>
+            {phase.message && <p>{phase.message}</p>}
+            <div className="kcards">
+              {phase.agents.map(agent => (
+                <button
+                  type="button"
+                  key={agent.label}
+                  className="wcard"
+                  aria-pressed={picked === agent.label}
+                  onClick={() => onOpenAgent(agent.label)}
+                >
+                  <b>{agent.label}</b>
+                  <span>
+                    <span className={`dot ${dotClass(agent.status)}`} /> {agent.status}
+                  </span>
+                </button>
+              ))}
+            </div>
+          </section>
+        )
+      })}
     </div>
   )
 }
@@ -764,11 +783,16 @@ function PhaseLine({
   index,
   task,
   t,
+  open,
+  onToggle,
 }: {
   phases: WorkflowPhase[]
   index: number
   task: AgentTask
   t: T
+  /** Given, the line is a drawer header that opens and closes the phase's cards. */
+  open?: boolean
+  onToggle?: () => void
 }) {
   const phase = phases[index]
   if (!phase) {
@@ -782,8 +806,8 @@ function PhaseLine({
   }
   // The cards show which agents run; the heading only counts them.
   const running = phase.agents.filter(a => a.status === 'running').length
-  return (
-    <div className="wfcur">
+  const body = (
+    <>
       <span className={`dot ${dotClass(phase.status)}`} />
       <b>{t('workflowPhase', { n: String(index + 1), total: String(phases.length), name: phase.label })}</b>
       <span className="note">
@@ -793,7 +817,56 @@ function PhaseLine({
         })}
         {running > 0 && ` · ${t('nRunning', { n: String(running) })}`}
       </span>
-    </div>
+    </>
+  )
+  return onToggle ? (
+    <button type="button" className="wfcur wfdrawer" aria-expanded={open} onClick={onToggle}>
+      {body}
+    </button>
+  ) : (
+    <div className="wfcur">{body}</div>
+  )
+}
+
+/** An agent's full output (structured output, else its last reply) in a dialog, with Copy. */
+function AgentOutputDialog({ sessionId, agentId, label, t, onClose }: { sessionId: string; agentId: string; label: string; t: T; onClose: () => void }) {
+  const [output, setOutput] = useState<ReturnType<typeof agentOutput> | null>(null)
+  const [copied, setCopied] = useState(false)
+  useEffect(() => {
+    let live = true
+    loadAgentTranscript(sessionId, agentId).then(
+      page => live && setOutput(agentOutput(page.messages)),
+      () => live && setOutput(undefined),
+    )
+    return () => {
+      live = false
+    }
+  }, [sessionId, agentId])
+  const copy = () => {
+    if (!output) return
+    void navigator.clipboard?.writeText(output.text).then(() => {
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1500)
+    })
+  }
+  return (
+    <Dialog t={t} xl title={<span className="mono">{label}</span>} onClose={onClose}>
+      <div className="wfresult">
+        <div className="fhead">
+          <span className="note">{output?.structured ? 'Structured output' : t('agentOutput')}</span>
+          <button className="btn" type="button" disabled={!output} onClick={copy}>
+            {t(copied ? 'copied' : 'copy')}
+          </button>
+        </div>
+        {output === null ? (
+          <p className="note">{t('loading')}</p>
+        ) : output ? (
+          <pre className="mono">{output.text}</pre>
+        ) : (
+          <p className="note">{t('agentNoTranscript')}</p>
+        )}
+      </div>
+    </Dialog>
   )
 }
 
@@ -818,18 +891,26 @@ export function WorkflowTab({
     .sort((a, b) => b.seq - a.seq)
   const [expanded, setExpanded] = useState(false)
   const [agentLabel, setAgentLabel] = useState<string>()
+  // Drawers the user opened or closed; the rest follow the phase (running ones open).
+  const [toggled, setToggled] = useState<Map<number, boolean>>(() => new Map())
+  const [showOutput, setShowOutput] = useState(false)
   const task = (selectedId && tasks[selectedId]) || workflows[0]
-  useEffect(() => setAgentLabel(undefined), [task?.id])
+  useEffect(() => {
+    setAgentLabel(undefined)
+    setToggled(new Map())
+  }, [task?.id])
   if (!task) return <p className="note">{t('noWorkflow')}</p>
   const phases = workflowPhases(tasks, task)
   const allAgents = phases.flatMap(p => p.agents)
   const done = allAgents.filter(a => a.status === 'completed').length
   const currentIndex = currentPhase(phases)
-  // Pipelined phases overlap: each running phase gets its own heading and cards.
+  // Every phase is a drawer; running ones (pipelined phases overlap) start open, else the current one.
   const lines = runningPhases(phases)
+  const isOpen = (i: number) => toggled.get(i) ?? lines.includes(i)
   const agentTask = agentLabel ? workflowAgent(tasks, task, agentLabel) : undefined
+  const toggle = (i: number) => setToggled(prev => new Map(prev).set(i, !isOpen(i)))
   return (
-    <>
+    <div className={`wftab${agentLabel ? ' split' : ''}`}>
       <div className="crumb">
         {workflows.length > 1 ? (
           workflows.map(w => {
@@ -863,48 +944,66 @@ export function WorkflowTab({
           <i style={{ width: `${Math.round((done / allAgents.length) * 100)}%` }} />
         </div>
       )}
-      {(lines.length ? lines : [currentIndex]).map(i => (
-        <Fragment key={i}>
-          <PhaseLine phases={phases} index={i} task={task} t={t} />
-          {phases[i] && (
-            <div className="wfnow">
-              {phases[i].agents.map(agent => (
-                <button
-                  type="button"
-                  key={agent.label}
-                  className="wcard"
-                  aria-pressed={agentLabel === agent.label}
-                  onClick={() => setAgentLabel(agent.label)}
-                >
-                  <b>{agent.label}</b>
-                  <span>
-                    <span className={`dot ${dotClass(agent.status)}`} /> {agent.status}
-                  </span>
-                </button>
-              ))}
-            </div>
-          )}
-        </Fragment>
-      ))}
-      {task.summary && <div className="card">{task.summary}</div>}
       {agentLabel && (
         <div className="wfout">
           <div className="fhead">
             <b className="mono">{agentLabel}</b>
             {agentTask && <span className="note">{taskMeta(agentTask)}</span>}
+            {agentTask && (
+              <button className="btn" type="button" onClick={() => setShowOutput(true)}>
+                {t('expand')}
+              </button>
+            )}
           </div>
           <AgentView
             key={agentTask?.id ?? agentLabel}
             sessionId={sessionId}
             agentId={agentTask?.id ?? agentLabel}
             task={agentTask}
+            embedded
             t={t}
           />
         </div>
       )}
+      <div className="wflist">
+        {phases.length === 0 && <PhaseLine phases={phases} index={currentIndex} task={task} t={t} />}
+        {phases.map((phase, i) => (
+          <Fragment key={phase.index}>
+            <PhaseLine phases={phases} index={i} task={task} t={t} open={isOpen(i)} onToggle={() => toggle(i)} />
+            {isOpen(i) && phase.agents.length > 0 && (
+              <div className="wfnow">
+                {phase.agents.map(agent => (
+                  <button
+                    type="button"
+                    key={agent.label}
+                    className="wcard"
+                    aria-pressed={agentLabel === agent.label}
+                    onClick={() => setAgentLabel(agent.label)}
+                  >
+                    <b>{agent.label}</b>
+                    <span>
+                      <span className={`dot ${dotClass(agent.status)}`} /> {agent.status}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </Fragment>
+        ))}
+        {task.summary && <div className="card">{task.summary}</div>}
+      </div>
+      {showOutput && agentLabel && agentTask && (
+        <AgentOutputDialog
+          sessionId={sessionId}
+          agentId={agentTask.id}
+          label={agentLabel}
+          t={t}
+          onClose={() => setShowOutput(false)}
+        />
+      )}
       {expanded && (
         <Dialog t={t} xl title="Workflow" onClose={() => setExpanded(false)}>
-          <div className="wfdlg">
+          <div className={`wfdlg${agentLabel ? ' split' : ''}`}>
             <div className="wfd-head">
               <b>{taskName(task)}</b>
               {task.description && <span>{task.description}</span>}
@@ -922,19 +1021,26 @@ export function WorkflowTab({
             <div className="bar">
               <i style={{ width: `${allAgents.length ? Math.round((done / allAgents.length) * 100) : 0}%` }} />
             </div>
-            {(lines.length ? lines : [currentIndex]).map(i => (
-              <PhaseLine key={i} phases={phases} index={i} task={task} t={t} />
-            ))}
-            <WorkflowLanes
-              phases={phases}
-              onOpenAgent={label => {
-                setExpanded(false)
-                setAgentLabel(label)
-              }}
-            />
+            <WorkflowLanes phases={phases} picked={agentLabel} onOpenAgent={setAgentLabel} t={t} />
+            {agentLabel && (
+              <div className="wfout wfd-out">
+                <div className="fhead">
+                  <b className="mono">{agentLabel}</b>
+                  {agentTask && <span className="note">{taskMeta(agentTask)}</span>}
+                </div>
+                <AgentView
+                  key={agentTask?.id ?? agentLabel}
+                  sessionId={sessionId}
+                  agentId={agentTask?.id ?? agentLabel}
+                  task={agentTask}
+                  embedded
+                  t={t}
+                />
+              </div>
+            )}
           </div>
         </Dialog>
       )}
-    </>
+    </div>
   )
 }

@@ -160,7 +160,8 @@ export function reduceTasks(tasks: Tasks, raw: unknown): Tasks {
     }
     case 'task_notification':
       return put({
-        status: str(raw.status),
+        // A parked agent (waiting on its own background work) has not ended.
+        status: raw.waiting === true ? undefined : str(raw.status),
         summary: str(raw.summary),
         outputFile: str(raw.output_file) || undefined,
         toolUseId: str(raw.tool_use_id),
@@ -294,6 +295,22 @@ export function workflowPhases(tasks: Tasks, workflow: AgentTask): WorkflowPhase
       a.status === 'running' && !workflowAgent(tasks, workflow, a.label) ? { ...a, status: 'queued' } : a,
     ),
   }))
+}
+
+/**
+ * What an agent handed back: the input of its last StructuredOutput call
+ * (workflow agents with a schema), else the text of its last reply.
+ */
+export function agentOutput(messages: unknown[]): { text: string; structured: boolean } | undefined {
+  let text: string | undefined
+  for (const m of [...messages].reverse()) {
+    if (!isObj(m) || m.type !== 'assistant' || !isObj(m.message) || !Array.isArray(m.message.content)) continue
+    const blocks = m.message.content.filter(isObj)
+    const call = blocks.findLast(b => b.type === 'tool_use' && b.name === 'StructuredOutput')
+    if (call) return { text: JSON.stringify(call.input, null, 2), structured: true }
+    text ??= blocks.filter(b => b.type === 'text' && typeof b.text === 'string').map(b => b.text).join('\n') || undefined
+  }
+  return text === undefined ? undefined : { text, structured: false }
 }
 
 /** A teammate color name, or nothing when it is not a plain CSS color word. */

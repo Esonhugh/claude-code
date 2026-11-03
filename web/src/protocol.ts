@@ -53,6 +53,10 @@ export type Item =
   | { kind: 'teammate'; id: string; from: string; color?: string; summary?: string; text: string }
   /** A message a channel (an MCP server such as Telegram) pushed in: `<channel source="…" user="…">`. */
   | { kind: 'channel'; id: string; source: string; user?: string; text: string }
+  /** A message another Claude session sent this one (`<cross-session-message>`). */
+  | { kind: 'peer'; id: string; from: string; text: string }
+  /** A one-line event the TUI shows in the transcript: a hook outcome, a scheduled task firing, a mod's log line. */
+  | { kind: 'event'; id: string; key: MessageKey; vars: Record<string, string>; tone?: 'error' | 'warn' }
 
 export type Approval = {
   requestId: string
@@ -179,6 +183,8 @@ export type ChatState = {
   queued: Extract<Item, { kind: 'user' }>[]
   /** The prompts the session's /rewind lists (`rewind_points`), oldest first; only these offer Rewind. */
   rewindPoints?: string[]
+  /** The API request failed and is retried (`api_retry`); cleared when a reply starts or the turn ends. */
+  retry?: { attempt: number; max: number; delayMs: number; at: number; status?: number }
 }
 
 export const initialState: ChatState = {
@@ -599,6 +605,59 @@ export function teammateMessages(
 // The whole text must be one wrapper, so a prompt that merely mentions the tag stays the person's own.
 const CHANNEL_MESSAGE = /^<channel\s+source="([^"]+)"([^>]*)>\n?([\s\S]*?)\n?<\/channel>\s*$/
 
+// The transcript keeps the lines the model reads around it ("Another Claude session sent a message:").
+const PEER_MESSAGE = /^(?:[^<\n]*\n)?<cross-session-message([^>]*)>\n?([\s\S]*?)\n?<\/cross-session-message>/
+
+/** A message from a peer session, named by its `from-name` (or address). */
+export function peerMessage(text: string, id: string): Extract<Item, { kind: 'peer' }> | undefined {
+  const m = PEER_MESSAGE.exec(text.trim())
+  if (!m) return undefined
+  const attr = (name: string) => new RegExp(`\\b${name}="([^"]*)"`).exec(m[1] ?? '')?.[1]
+  return { kind: 'peer', id, from: unescapeAttr(attr('from-name') ?? attr('from') ?? '?'), text: m[2] ?? '' }
+}
+
+/**
+ * A hook outcome the TUI shows as a line: a block (exit code 2, or a JSON
+ * `decision: block` / `permissionDecision: deny`), a failure, or a hook's
+ * `systemMessage`. Stop hooks have their own summary there, so none here.
+ */
+export function hookEvent(raw: Json, id: string): Extract<Item, { kind: 'event' }> | undefined {
+  const event = str(raw.hook_event) ?? ''
+  if (event === 'Stop' || event === 'SubagentStop') return undefined
+  // A PreToolUse block is the tool's error result; its card shows the line (see hookBlock).
+  const toolBlock = event === 'PreToolUse'
+  const hook = str(raw.hook_name) ?? event
+  const detail = (text: string | undefined) => text?.trim().split('\n')[0]?.slice(0, 300) ?? ''
+  const blocked = (reason: string | undefined) => {
+    const why = detail(reason)
+    return { kind: 'event' as const, id, key: why ? ('hookBlockedWhy' as const) : ('hookBlocked' as const), vars: { hook, why }, tone: 'error' as const }
+  }
+  if (raw.exit_code === 2) return toolBlock ? undefined : blocked(str(raw.stderr) || str(raw.stdout))
+  if (raw.outcome === 'error') return { kind: 'event', id, key: 'hookError', vars: { hook }, tone: 'error' }
+  if (raw.outcome !== 'success') return undefined
+  let json: Json = {}
+  try {
+    const out = (str(raw.stdout) ?? '').trim()
+    const parsed: unknown = out.startsWith('{') ? JSON.parse(out) : undefined
+    if (isObj(parsed)) json = parsed
+  } catch {
+    return undefined
+  }
+  const specific = isObj(json.hookSpecificOutput) ? json.hookSpecificOutput : {}
+  if (json.decision === 'block' || specific.permissionDecision === 'deny') {
+    return toolBlock ? undefined : blocked(str(json.reason) ?? str(specific.permissionDecisionReason))
+  }
+  if (json.continue === false) return { kind: 'event', id, key: 'hookStopped', vars: { hook, why: detail(str(json.stopReason)) }, tone: 'warn' }
+  const says = detail(str(json.systemMessage))
+  return says ? { kind: 'event', id, key: 'hookSays', vars: { hook, why: says } } : undefined
+}
+
+/** A tool call a PreToolUse hook blocked: its error result is `PreToolUse:Bash hook error: [command]: reason`. */
+export function hookBlock(result: string): { hook: string; why: string } | undefined {
+  const m = /^(PreToolUse:\S+) hook error: (?:\[[^\]\n]*\]: )?(.*)/.exec(result.trim())
+  return m ? { hook: m[1]!, why: m[2]!.trim().slice(0, 300) } : undefined
+}
+
 const unescapeAttr = (value: string) =>
   value.replace(/&(quot|apos|lt|gt|amp);/g, (_, name: string) => ({ quot: '"', apos: "'", lt: '<', gt: '>', amp: '&' })[name]!)
 
@@ -650,7 +709,7 @@ function noteFromLog(state: ChatState, text: string, uuid: string): Partial<Chat
   const tag = (name: string) => new RegExp(`<${name}>([^<]*)</${name}>`).exec(text)?.[1]?.trim()
   const taskId = tag('task-id')
   const status = tag('status')
-  if (!taskId || !status) return {}
+  if (!taskId || !status || tag('summary')?.endsWith('is waiting on its own background work')) return {}
   const duration = Number(tag('duration_ms'))
   return addNote(state, 'log', uuid, { taskId, status, ...(Number.isFinite(duration) && duration > 0 && { durationMs: duration }) })
 }
@@ -665,8 +724,37 @@ export function reduce(state: ChatState, raw: unknown): ChatState {
     return state.queued.reduce((s, q) => addUserMessage(s, q.text, q.images, q.id), ended)
   }
 
+  if (state.retry && (raw.type === 'stream_event' || raw.type === 'assistant' || raw.type === 'result')) {
+    state = { ...state, retry: undefined }
+  }
   switch (raw.type) {
     case 'system':
+      if (raw.subtype === 'api_retry') {
+        return {
+          ...state,
+          retry: {
+            attempt: typeof raw.attempt === 'number' ? raw.attempt : 1,
+            max: typeof raw.max_retries === 'number' ? raw.max_retries : 0,
+            delayMs: typeof raw.retry_delay_ms === 'number' ? raw.retry_delay_ms : 0,
+            at: Date.now(),
+            ...(typeof raw.error_status === 'number' && { status: raw.error_status }),
+          },
+        }
+      }
+      if (raw.subtype === 'hook_response' || raw.subtype === 'hook_notice') {
+        const id = str(raw.uuid) ?? `hook-${state.items.length}`
+        const item = state.items.some(i => i.id === id) ? undefined : hookEvent(raw, id)
+        return item ? { ...state, items: [...state.items, item] } : state
+      }
+      if (raw.subtype === 'scheduled_task_fire' || raw.subtype === 'ui_log') {
+        const id = str(raw.uuid) ?? `event-${state.items.length}`
+        if (state.items.some(i => i.id === id)) return state
+        const item: Item =
+          raw.subtype === 'ui_log'
+            ? { kind: 'event', id, key: 'modLog', vars: { plugin: str(raw.plugin) ?? '', text: str(raw.text) ?? '' } }
+            : { kind: 'event', id, key: 'cronFired', vars: { time: new Date(str(raw.timestamp) ?? Date.now()).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) } }
+        return { ...state, items: [...state.items, item] }
+      }
       if (raw.subtype === 'compact_boundary') {
         const meta = isObj(raw.compact_metadata) ? raw.compact_metadata : {}
         const id = str(raw.uuid) ?? `compact-${state.items.length}`
@@ -819,6 +907,7 @@ export function reduce(state: ChatState, raw: unknown): ChatState {
         const itemId = uuid ?? `user-${next.items.length}`
         const fromTeammates = teammateMessages(text, itemId)
         const fromChannel = channelMessage(text, itemId)
+        const fromPeer = peerMessage(text, itemId)
         const local = localCommandOutput(text)
         const command = commandInput(text)
         const notified = noteFromLog(next, text, itemId)
@@ -830,8 +919,12 @@ export function reduce(state: ChatState, raw: unknown): ChatState {
           next = { ...next, items: [...next.items, ...fromTeammates] }
         } else if (fromChannel) {
           next = { ...next, items: [...next.items, fromChannel] }
+        } else if (fromPeer) {
+          next = { ...next, items: [...next.items, fromPeer] }
         } else if (local) {
           if (local.text) next = addLocal(next, { kind: 'local', id: itemId, ...local })
+        } else if (raw.isSynthetic === true) {
+          // System-injected (a cron prompt): the TUI does not show it as typed.
         } else if (command !== undefined) {
           // A reloaded transcript has the `/compact` after its mark; the mark stands for it.
           const marked = /^\/compact(\s|$)/.test(command) && next.items.at(-1)?.kind === 'compact'

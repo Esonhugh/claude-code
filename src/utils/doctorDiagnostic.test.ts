@@ -1,5 +1,9 @@
 import { afterEach, describe, expect, test } from 'bun:test'
+import { join } from 'path'
+import { saveGlobalConfig } from './config.js'
+import { checkInstall } from './nativeInstaller/installer.js'
 import {
+  detectConfigurationIssues,
   detectManagedSandboxIgnoredWarnings,
   getCurrentInstallationType,
 } from './doctorDiagnostic.js'
@@ -46,6 +50,50 @@ describe('getCurrentInstallationType', () => {
     })
 
     await expect(getCurrentInstallationType()).resolves.toBe('npm-global')
+  })
+})
+
+describe('standalone binary vs managed native install', () => {
+  const mismatch = "Running native installation but config install method is 'global'"
+  const pathWarning = 'Native installation exists but ~/.local/bin is not in your PATH'
+  const dataHome = '/tmp/doctor-test-data'
+  const savedXdgDataHome = process.env.XDG_DATA_HOME
+  const savedPath = process.env.PATH
+
+  afterEach(() => {
+    if (savedXdgDataHome === undefined) delete process.env.XDG_DATA_HOME
+    else process.env.XDG_DATA_HOME = savedXdgDataHome
+    process.env.PATH = savedPath
+    saveGlobalConfig(current => ({ ...current, installMethod: undefined }))
+  })
+
+  function runBundled(execPath: string) {
+    process.env.XDG_DATA_HOME = dataHome
+    process.env.PATH = '/usr/bin:/bin'
+    process.argv = ['bun', '/$bunfs/root/claude']
+    Object.defineProperty(process, 'execPath', {
+      value: execPath,
+      configurable: true,
+    })
+    saveGlobalConfig(current => ({ ...current, installMethod: 'global' }))
+  }
+
+  test('a standalone binary gets no native install warnings', async () => {
+    runBundled('/home/me/src/claude-code/built-claude')
+
+    const issues = (await detectConfigurationIssues('native')).map(w => w.issue)
+    expect(issues).not.toContain(mismatch)
+    expect(issues).not.toContain(pathWarning)
+    expect(await checkInstall()).toEqual([])
+  })
+
+  test('the managed native install still gets them', async () => {
+    runBundled(join(dataHome, 'claude', 'versions', '2.1.296'))
+
+    const issues = (await detectConfigurationIssues('native')).map(w => w.issue)
+    expect(issues).toContain(mismatch)
+    expect(issues).toContain(pathWarning)
+    expect((await checkInstall()).map(m => m.type)).toContain('path')
   })
 })
 

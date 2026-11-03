@@ -387,6 +387,7 @@ h1, h2, h3 { text-wrap: balance; margin: 0 }
 .status-line { display: flex; gap: 8px; align-items: center; color: var(--muted); font-size: 13px; max-width: var(--col); width: 100%; margin: 0 auto }
 .status-line .glyph { color: #d97757; font-family: var(--f-mono); width: 14px; text-align: center }
 .status-line .verb { font-weight: 500 }
+.status-line .retry { color: var(--warn) }
 .status-line button { border: 1px solid var(--line); background: var(--surface); border-radius: 6px; padding: 1px 8px; font-size: 12px; color: var(--muted) }
 
 /* dialogs */
@@ -824,6 +825,37 @@ a.btn { text-decoration: none; color: var(--fg); display: inline-block }
 .pane > .agent-pane > .agent-feed { flex: 1; overflow: auto; min-height: 0 }
 .wfcur .dot { flex: none }
 .wfnow + .wfcur { margin-top: 14px }
+.wfcur + .wfcur { margin-top: 8px }
+/* Workflow tab: phase drawers on top, the picked agent's output fills the rest. */
+.wftab { display: flex; flex-direction: column; gap: 10px; flex: 1; min-height: 0 }
+.wflist { display: flex; flex-direction: column; gap: 10px; flex: none }
+.wftab.split .wflist { flex: 0 1 auto; max-height: 45%; overflow: auto; padding-right: 2px }
+.wftab .wfnow { margin-top: 0 }
+.wftab > .wfout { flex: 1; min-height: 0; margin-top: 0 }
+.wftab > .wfout .agent-pane { flex: 1 }
+.wftab > .wfout .agent-feed { flex: 1; overflow: auto; min-height: 0 }
+.wfd-out { height: min(40vh, 360px); flex: none; margin-top: 0; position: sticky; bottom: 0; background: var(--surface); box-shadow: 0 -8px 16px -12px rgba(0,0,0,.25) }
+/* With an agent open, the lanes scroll on their own so its output stays in view at the bottom. */
+/* The Expand dialog's board: one fixed-width column per phase, side by side, like a GitHub project board. */
+.kanban { display: flex; gap: 12px; overflow-x: auto; align-items: flex-start; padding-bottom: 6px }
+.kcol { flex: 0 0 272px; display: flex; flex-direction: column; gap: 8px; max-height: 56vh; padding: 8px; background: var(--sunken); border: 1px solid var(--line); border-radius: 10px }
+.kcol.cur { border-color: var(--accent) }
+.kcol header { display: flex; align-items: center; gap: 6px; padding: 2px 4px; font-size: 13px }
+.kcol header b { font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
+.kcol header .note { font-size: 11.5px; white-space: nowrap }
+.kcol header .count { margin-left: auto; font-size: 11.5px; color: var(--muted); background: var(--surface); border: 1px solid var(--line); border-radius: 999px; padding: 0 7px; font-variant-numeric: tabular-nums }
+.kcol p { margin: 0; padding: 0 4px; font-size: 11.5px; color: var(--muted) }
+.kcards { display: flex; flex-direction: column; gap: 6px; overflow: auto; min-height: 0 }
+.kcards .wcard { background: var(--surface); padding: 8px 10px; cursor: pointer }
+/* With an agent open, the columns get shorter so its output stays in view at the bottom. */
+.wfdlg.split .kcol { max-height: 30vh }
+.wfd-out .agent-pane { flex: 1; min-height: 0 }
+.wfd-out .agent-feed { flex: 1; overflow: auto; min-height: 0 }
+.wfresult { display: flex; flex-direction: column; gap: 8px; min-width: 0 }
+.wfresult pre { margin: 0; padding: 10px; background: var(--sunken); border-radius: 8px; font-size: 12px; white-space: pre-wrap; word-break: break-word; max-height: 60vh; overflow: auto }
+.wfdrawer { width: 100%; background: var(--surface); font: inherit; color: inherit; text-align: left; cursor: pointer }
+.wfdrawer::before { content: "›"; color: var(--muted); display: inline-block; width: 8px; transition: transform .15s }
+.wfdrawer[aria-expanded="true"]::before { transform: rotate(90deg) }
 .crumb .wfacts { margin-left: auto; display: flex; gap: 6px }
 .crumb .wfacts .btn { padding: 3px 10px; border: 1px solid var(--line); background: var(--surface); color: var(--fg); font-size: 12.5px }
 .crumb .wfacts .btn.danger { background: var(--bad); border-color: var(--bad); color: var(--surface) }
@@ -972,6 +1004,11 @@ body.proj .main, body.proj .side, body.proj .artview, body.proj #panel-btn { dis
 .tl-card .tl-act { overflow-wrap: anywhere }
 .pj-note { max-width: var(--col); width: 100%; margin: 0 auto; font-size: 12.5px; color: var(--muted); display: flex; gap: 8px }
 .pj-note .g { font-family: var(--f-mono); color: var(--accent) }
+.event-line.error { color: var(--bad) }
+.event-line.warn { color: var(--warn) }
+.event-line > span:last-child { overflow-wrap: anywhere }
+.agent-note button { border: 0; background: none; padding: 0; font: inherit; color: inherit; cursor: pointer; text-align: left }
+.agent-note button:hover { color: var(--fg); text-decoration: underline }
 .pjlist { padding: 16px 24px; display: flex; flex-direction: column; gap: 6px; overflow: auto; flex: 1; min-height: 0 }
 .pjlist .grp-h { margin: 10px 2px 2px } .pjlist .grp-h:first-child { margin-top: 0 }
 .pjcheck { border: 1px solid var(--line); border-radius: 10px; padding: 10px 14px; display: flex; flex-direction: column; gap: 4px; font-size: 13px; max-width: var(--col); width: 100%; margin: 0 auto }

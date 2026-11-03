@@ -52,6 +52,7 @@ import { getTaskOutputPath } from '../../utils/task/diskOutput.js'
 import { getParentSessionId } from '../../utils/teammate.js'
 import { reconstructForSubagentResume } from '../../utils/toolResultStorage.js'
 import {
+  countToolUses,
   resolveAgentTools,
   runAsyncAgentLifecycle,
 } from './agentToolUtils.js'
@@ -498,6 +499,7 @@ async function startResume({
         rootSetAppState,
         shouldNotifyOwner: inline ? () => false : undefined,
         onRunSettled: releaseSlot,
+        priorToolUses: countToolUses(transcript.messages),
         resume: nextPrompt => resumeAgentBackground({
           agentId,
           prompt: nextPrompt,

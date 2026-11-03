@@ -7,6 +7,7 @@ import {
   addUserMessage,
   answerApproval,
   currentTodos,
+  hookBlock,
   type Item,
   rewindTo,
   startRecap,
@@ -723,6 +724,62 @@ describe('i18n', () => {
 })
 
 describe('interrupts and session info', () => {
+  it('shows hook outcomes, peer messages, scheduled tasks and mod log lines as the TUI does', () => {
+    const hook = (rest: Record<string, unknown>) => ({ type: 'system', subtype: 'hook_response', hook_id: 'h', hook_name: 'PreToolUse:Bash', hook_event: 'PreToolUse', output: '', stdout: '', stderr: '', outcome: 'success', ...rest })
+    let state = reduce(initialState, hook({ uuid: 'h1', hook_event: 'UserPromptSubmit', hook_name: 'UserPromptSubmit', exit_code: 2, outcome: 'error', stderr: 'no secrets\nmore' }))
+    // A PreToolUse block is the tool's error result; the tool card shows it.
+    state = reduce(state, hook({ uuid: 'h0', exit_code: 2, outcome: 'error', stderr: 'rm is not allowed' }))
+    state = reduce(state, hook({ uuid: 'h2', exit_code: 1, outcome: 'error' }))
+    state = reduce(state, hook({ uuid: 'h3', hook_event: 'PostToolUse', hook_name: 'PostToolUse:Bash', stdout: JSON.stringify({ decision: 'block', reason: 'no network' }) }))
+    state = reduce(state, hook({ uuid: 'h4', stdout: JSON.stringify({ systemMessage: 'lint ran' }) }))
+    // Quiet successes and Stop hooks (the TUI sums those up elsewhere) add nothing.
+    state = reduce(state, hook({ uuid: 'h5', exit_code: 0 }))
+    state = reduce(state, hook({ uuid: 'h6', hook_event: 'Stop', hook_name: 'Stop', exit_code: 2, outcome: 'error' }))
+    state = reduce(state, { type: 'system', subtype: 'scheduled_task_fire', uuid: 'c1' })
+    state = reduce(state, { type: 'system', subtype: 'ui_log', plugin: 'agents-md', text: 'loaded 2 files', uuid: 'l1' })
+    state = reduce(state, {
+      type: 'user',
+      isReplay: true,
+      isSynthetic: true,
+      uuid: 'p1',
+      message: { role: 'user', content: '<cross-session-message from="uds:/tmp/a.sock" from-name="reviewer">\nlooks good\n</cross-session-message>' },
+    })
+    // As a reloaded transcript keeps it, with the line the model reads first.
+    state = reduce(state, {
+      type: 'user',
+      isReplay: true,
+      uuid: 'p3',
+      message: { role: 'user', content: 'Another Claude session sent a message:\n<cross-session-message from="uds:/tmp/b.sock" from-name="ws" from-mode="prompting">\nmerged\n</cross-session-message>\nThis came from another Claude session.' },
+    })
+    // A cron prompt is meta: not shown as something the user typed.
+    state = reduce(state, { type: 'user', isReplay: true, isSynthetic: true, uuid: 'p2', message: { role: 'user', content: 'check the build' } })
+    expect(state.items.map(i => (i.kind === 'event' ? [i.key, i.vars.why ?? i.vars.text ?? '', i.tone ?? ''] : [i.kind, i.kind === 'peer' ? `${i.from}:${i.text}` : '']))).toEqual([
+      ['hookBlockedWhy', 'no secrets', 'error'],
+      ['hookError', '', 'error'],
+      ['hookBlockedWhy', 'no network', 'error'],
+      ['hookSays', 'lint ran', ''],
+      ['cronFired', '', ''],
+      ['modLog', 'loaded 2 files', ''],
+      ['peer', 'reviewer:looks good'],
+      ['peer', 'ws:merged'],
+    ])
+    // A reloaded firing keeps the time it fired, not the time of the reload.
+    const at = '2026-11-03T14:05:00.000Z'
+    const fired = reduce(initialState, { type: 'system', subtype: 'scheduled_task_fire', uuid: 'c2', timestamp: at }).items[0]
+    expect(fired?.kind === 'event' && fired.vars.time).toBe(new Date(at).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }))
+    expect(hookBlock('PreToolUse:Bash hook error: [/x/guard.sh]: rm is not allowed\n')).toEqual({ hook: 'PreToolUse:Bash', why: 'rm is not allowed' })
+    expect(hookBlock('PreToolUse:Write hook error: Blocked by hook')).toEqual({ hook: 'PreToolUse:Write', why: 'Blocked by hook' })
+    expect(hookBlock('Exit code 1')).toBeUndefined()
+  })
+
+  it('shows an API retry until the next reply starts', () => {
+    const busy = { ...initialState, busy: true }
+    const retrying = reduce(busy, { type: 'system', subtype: 'api_retry', attempt: 2, max_retries: 10, retry_delay_ms: 5000, error_status: 529, error: 'overloaded', uuid: 'r1' })
+    expect(retrying.retry).toMatchObject({ attempt: 2, max: 10, delayMs: 5000, status: 529 })
+    expect(reduce(retrying, { type: 'stream_event', event: { type: 'message_start', message: { id: 'm1', model: 'x' } } }).retry).toBeUndefined()
+    expect(reduce(retrying, { type: 'result', subtype: 'success' }).retry).toBeUndefined()
+  })
+
   it('marks a stopped turn as interrupted, not with its internal diagnostic', () => {
     const busy = { ...initialState, busy: true }
     const stopped = reduce(busy, {

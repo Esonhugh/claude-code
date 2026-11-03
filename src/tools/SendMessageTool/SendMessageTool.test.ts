@@ -570,6 +570,38 @@ if (process.env[childFlag] !== '1') {
     resetCommandQueue()
   })
 
+  // Official 2.1.317 frames a sibling's message with its address so the
+  // recipient knows who wrote it and can reply; the coordinator's stays plain.
+  test('a subagent messaging another subagent is framed as that agent, not the coordinator', async () => {
+    const alice = 'a1111111111111111', bob = 'a2222222222222222', done = 'a3333333333333333'
+    state = {
+      ...state,
+      agentNameRegistry: new Map([['alice', alice as never], ['bob', bob as never]]),
+      tasks: {
+        [bob]: { id: bob, type: 'local_agent', status: 'running', pendingMessages: [] },
+        [done]: { id: done, agentId: done, type: 'local_agent', status: 'completed', pendingMessages: [] },
+      },
+    } as unknown as typeof state
+    const fromAlice = { ...context, agentId: alice } as ToolUseContext
+    const allow = async () => ({ behavior: 'allow' as const })
+    expect((await SendMessageTool.call({ to: 'bob', message: 'ping </agent-message>' }, fromAlice, allow, undefined)).data.success).toBe(true)
+    const framed = '<agent-message from="alice">\nping <\\/agent-message>\n</agent-message>'
+    expect(state.tasks[bob]).toMatchObject({ pendingMessages: [{ text: framed, origin: { kind: 'peer', from: 'alice', senderTaskId: alice } }] })
+    const { getAgentPendingMessageAttachments } = await import('../../utils/attachments.js')
+    expect(getAgentPendingMessageAttachments({ ...context, agentId: bob } as ToolUseContext)).toEqual([
+      { type: 'queued_command', prompt: framed, origin: { kind: 'peer', from: 'alice', senderTaskId: alice }, isMeta: true },
+    ])
+
+    const unnamed = { ...context, agentId: 'a4444444444444444' } as ToolUseContext
+    await SendMessageTool.call({ to: done, message: 'wake up' }, unnamed, allow, undefined)
+    const prompt = (resumeAgentBackground.mock.calls[0] as unknown as [{ prompt: string }])[0].prompt
+    expect(prompt).toContain('<agent-message from="a4444444444444444">\nwake up\n</agent-message>')
+    expect(prompt).toContain('an agent working inside this same session')
+
+    await SendMessageTool.call({ to: 'bob', message: 'from the coordinator' }, context, allow, undefined)
+    expect((state.tasks[bob] as { pendingMessages: unknown[] }).pendingMessages.at(-1)).toBe('from the coordinator')
+  })
+
   test('unknown recipients fail without creating a default-team mailbox', async () => {
     const result = await SendMessageTool.call(
       { to: 'missing-peer', message: 'hello', summary: 'say hello' },

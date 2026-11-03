@@ -14,7 +14,7 @@ import { logForDebugging } from '../utils/debug.js'
 import { enqueuePendingNotification } from '../utils/messageQueueManager.js'
 import { enqueueInboundMessage } from '../utils/inboundMessageQueue.js'
 import { logError } from '../utils/log.js'
-import { createScheduledTaskFireMessage } from '../utils/messages.js'
+import { createScheduledTaskFireMessage, formatCronFireTime } from '../utils/messages.js'
 import { WORKLOAD_CRON } from '../utils/workloadContext.js'
 
 type Props = {
@@ -132,16 +132,4 @@ export function useScheduledTasks({
     // stable refs from useSyncExternalStore; setMessages is a stable useCallback.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [assistantMode, enabled])
-}
-
-function formatCronFireTime(d: Date): string {
-  return d
-    .toLocaleString('en-US', {
-      month: 'short',
-      day: 'numeric',
-      hour: 'numeric',
-      minute: '2-digit',
-    })
-    .replace(/,? at |, /, ' ')
-    .replace(/ ([AP]M)/, (_, ampm) => ampm.toLowerCase())
 }

@@ -43,21 +43,38 @@ type ContentBlock = { type?: string; text?: string }
 
 const LOCAL_COMMAND = /^<(command-name|command-message|local-command-stdout|local-command-stderr)>/
 
+/** Hook outcomes the TUI shows as a line; the page reads them as it reads a live `hook_response`. */
+const HOOK_NOTICES = new Set(['hook_blocking_error', 'hook_non_blocking_error', 'hook_stopped_continuation', 'hook_system_message'])
+
+function hookNotice(m: Record<string, unknown>): Record<string, unknown> {
+  const a = m.attachment as { type: string; hookName?: string; hookEvent?: string; blockingError?: { blockingError?: string }; message?: string; content?: string }
+  const outcome =
+    a.type === 'hook_blocking_error'
+      ? { exit_code: 2, stderr: a.blockingError?.blockingError ?? '' }
+      : a.type === 'hook_non_blocking_error'
+        ? { outcome: 'error' }
+        : { outcome: 'success', stdout: JSON.stringify(a.type === 'hook_stopped_continuation' ? { continue: false, stopReason: a.message } : { systemMessage: a.content }) }
+  return { type: 'system', subtype: 'hook_notice', uuid: m.uuid, hook_name: a.hookName, hook_event: a.hookEvent, ...outcome }
+}
+
 function isVisible(message: Record<string, unknown>): boolean {
   if (message.type === 'assistant') return true
   // The compaction divider and the summary under it.
   if (message.type === 'system') {
-    return message.subtype === 'compact_boundary' || (message.subtype === 'local_command' && typeof message.content === 'string')
+    return message.subtype === 'compact_boundary' || message.subtype === 'scheduled_task_fire' || (message.subtype === 'local_command' && typeof message.content === 'string')
   }
   if (message.type === 'user' && message.isCompactSummary) return true
   if (message.type === 'attachment') {
     const attachment = message.attachment as { type?: string; commandMode?: string } | undefined
     // A message the user sent mid-turn, fed to the model between tool calls.
-    if (attachment?.type === 'queued_command') return (attachment.commandMode ?? 'prompt') === 'prompt'
-    return attachment?.type === 'goal_status'
+    // A task ending the model read mid-turn: the page notes it where it happened.
+    if (attachment?.type === 'queued_command') return ['prompt', 'task-notification'].includes(attachment.commandMode ?? 'prompt')
+    return attachment?.type === 'goal_status' || HOOK_NOTICES.has(attachment?.type ?? '')
   }
   // A channel message is meta to the model; the person sees it, as in the TUI.
   if (message.type === 'user' && (message.origin as { kind?: unknown } | undefined)?.kind === 'channel') return true
+  // So is a message another Claude session sent (`<cross-session-message>`).
+  if (message.type === 'user' && (message.origin as { kind?: unknown } | undefined)?.kind === 'peer') return true
   if (message.type !== 'user' || message.isMeta) {
     return false
   }
@@ -173,6 +190,7 @@ function toStreamJson(
         // `/name` and its `<local-command-stdout>`, as the live stream replays them.
         return { type: 'user', uuid: m.uuid, timestamp: m.timestamp, parent_tool_use_id: null, isReplay: true, message: { role: 'user', content: m.content } }
       }
+      if (m.type === 'system' && m.subtype === 'scheduled_task_fire') return { type: 'system', subtype: 'scheduled_task_fire', uuid: m.uuid, timestamp: m.timestamp }
       if (m.type === 'system') {
         const meta = (m.compactMetadata ?? {}) as { trigger?: unknown; preTokens?: unknown; postTokens?: unknown }
         return {
@@ -184,11 +202,15 @@ function toStreamJson(
         }
       }
       if (m.type === 'attachment') {
-        const attachment = m.attachment as { type?: string; prompt?: unknown; source_uuid?: string }
+        const attachment = m.attachment as { type?: string; prompt?: unknown; source_uuid?: string; isMeta?: boolean; workload?: string }
         if (attachment.type === 'queued_command') {
+          const uuid = attachment.source_uuid ?? m.uuid
+          // A scheduled task the model read mid-turn: the line the TUI shows, not its prompt.
+          if (attachment.workload === 'cron') return { type: 'system', subtype: 'scheduled_task_fire', uuid, timestamp: m.timestamp }
           // As the live stream replays it: the uuid the page sent it with.
-          return { type: 'user', uuid: attachment.source_uuid ?? m.uuid, timestamp: m.timestamp, parent_tool_use_id: null, isReplay: true, message: { role: 'user', content: attachment.prompt } }
+          return { type: 'user', uuid, timestamp: m.timestamp, parent_tool_use_id: null, isReplay: true, message: { role: 'user', content: attachment.prompt }, ...(attachment.isMeta === true && { isSynthetic: true }) }
         }
+        if (HOOK_NOTICES.has(attachment.type ?? '')) return hookNotice(m)
         return { type: 'system', subtype: 'goal_state_changed', uuid: m.uuid, goal: m.attachment }
       }
       return {

@@ -246,13 +246,79 @@ describe('web history', () => {
     )
     const messages = (await readTranscript(ID, undefined, 50))!.messages
     expect(messages.at(-1)).toMatchObject({ type: 'assistant' })
-    expect(messages.at(-2)).toMatchObject({
+    expect(messages.at(-3)).toMatchObject({
       type: 'user',
       isReplay: true,
       uuid: 'c0000000-0000-4000-8000-000000000001',
       message: { role: 'user', content: [{ type: 'text', text: 'also check B' }] },
     })
-    expect(JSON.stringify(messages)).not.toContain('task-notification')
+    // A task ending the model read mid-turn: the page notes it there.
+    expect(messages.at(-2)).toMatchObject({ type: 'user', isReplay: true, uuid: 'a0000000-0000-4000-8000-000000000021', message: { content: '<task-notification>x</task-notification>' } })
+  })
+
+  it('shows the hook outcomes the TUI shows, shaped like a live hook_response', async () => {
+    const file = join(root, 'config', 'projects', sanitizePath(join(root, 'project')), `${ID}.jsonl`)
+    const cwd = join(root, 'project')
+    const at = (n: number, attachment: Record<string, unknown>) =>
+      line({ type: 'attachment', uuid: `a0000000-0000-4000-8000-0000000000${n}`, parentUuid: n === 30 ? 'a0000000-0000-4000-8000-000000000005' : `a0000000-0000-4000-8000-0000000000${n - 1}`, cwd, attachment })
+    writeFileSync(
+      file,
+      readFileSync(file, 'utf8') +
+        [
+          at(30, { type: 'hook_blocking_error', hookName: 'PreToolUse:Bash', hookEvent: 'PreToolUse', toolUseID: 't', blockingError: { blockingError: '[guard.sh]: no rm', command: 'guard.sh' } }),
+          at(31, { type: 'hook_success', hookName: 'PostToolUse:Bash', hookEvent: 'PostToolUse', toolUseID: 't', content: '' }),
+          at(32, { type: 'hook_system_message', hookName: 'PostToolUse:Bash', hookEvent: 'PostToolUse', toolUseID: 't', content: 'lint ran' }),
+          line({ type: 'assistant', uuid: 'a0000000-0000-4000-8000-000000000033', parentUuid: 'a0000000-0000-4000-8000-000000000032', cwd, message: { id: 'm10', role: 'assistant', content: [{ type: 'text', text: 'blocked' }] } }),
+        ].join('\n') +
+        '\n',
+    )
+    const messages = (await readTranscript(ID, undefined, 50))!.messages.slice(-3, -1)
+    expect(messages).toEqual([
+      { type: 'system', subtype: 'hook_notice', uuid: 'a0000000-0000-4000-8000-000000000030', hook_name: 'PreToolUse:Bash', hook_event: 'PreToolUse', exit_code: 2, stderr: '[guard.sh]: no rm' },
+      { type: 'system', subtype: 'hook_notice', uuid: 'a0000000-0000-4000-8000-000000000032', hook_name: 'PostToolUse:Bash', hook_event: 'PostToolUse', outcome: 'success', stdout: '{"systemMessage":"lint ran"}' },
+    ])
+  })
+
+  it('shows a message another Claude session sent, which the model reads as meta', async () => {
+    const file = join(root, 'config', 'projects', sanitizePath(join(root, 'project')), `${ID}.jsonl`)
+    const cwd = join(root, 'project')
+    const text = 'Another Claude session sent a message:\n<cross-session-message from="uds:/tmp/b.sock" from-name="ws">\nmerged\n</cross-session-message>'
+    writeFileSync(
+      file,
+      readFileSync(file, 'utf8') +
+        [
+          line({ type: 'user', isMeta: true, origin: { kind: 'peer', from: 'uds:/tmp/b.sock', name: 'ws' }, uuid: 'a0000000-0000-4000-8000-000000000040', parentUuid: 'a0000000-0000-4000-8000-000000000005', cwd, message: { role: 'user', content: text } }),
+          line({ type: 'user', isMeta: true, uuid: 'a0000000-0000-4000-8000-000000000041', parentUuid: 'a0000000-0000-4000-8000-000000000040', cwd, message: { role: 'user', content: 'CRONPROMPT check' } }),
+          line({ type: 'assistant', uuid: 'a0000000-0000-4000-8000-000000000042', parentUuid: 'a0000000-0000-4000-8000-000000000041', cwd, message: { id: 'm11', role: 'assistant', content: [{ type: 'text', text: 'ok' }] } }),
+        ].join('\n') +
+        '\n',
+    )
+    const messages = (await readTranscript(ID, undefined, 50))!.messages.slice(-2)
+    expect(messages[0]).toMatchObject({ type: 'user', isReplay: true, uuid: 'a0000000-0000-4000-8000-000000000040', message: { content: text } })
+    expect(messages[1]).toMatchObject({ type: 'assistant' })
+  })
+
+  it('shows a scheduled task firing where it fired, between turns and mid-turn, never its prompt', async () => {
+    const file = join(root, 'config', 'projects', sanitizePath(join(root, 'project')), `${ID}.jsonl`)
+    const cwd = join(root, 'project')
+    const u = (n: number) => `a0000000-0000-4000-8000-0000000002${String(n).padStart(2, '0')}`
+    writeFileSync(
+      file,
+      readFileSync(file, 'utf8') +
+        [
+          line({ type: 'system', subtype: 'scheduled_task_fire', content: 'Running scheduled task (Nov 3 2:00 PM)', isMeta: false, uuid: u(1), parentUuid: 'a0000000-0000-4000-8000-000000000005', cwd, timestamp: '2026-11-03T14:00:00.000Z' }),
+          line({ type: 'user', isMeta: true, uuid: u(2), parentUuid: u(1), cwd, message: { role: 'user', content: 'CRONPROMPT check' } }),
+          line({ type: 'attachment', uuid: u(3), parentUuid: u(2), cwd, timestamp: '2026-11-03T14:01:00.000Z', attachment: { type: 'queued_command', prompt: 'CRONPROMPT again', source_uuid: u(9), commandMode: 'prompt', isMeta: true, workload: 'cron' } }),
+          line({ type: 'attachment', uuid: u(4), parentUuid: u(3), cwd, attachment: { type: 'queued_command', prompt: '[Cross-session delivery notice] x', source_uuid: u(8), commandMode: 'prompt', isMeta: true } }),
+          line({ type: 'assistant', uuid: u(5), parentUuid: u(4), cwd, message: { id: 'm20', role: 'assistant', content: [{ type: 'text', text: 'ok' }] } }),
+        ].join('\n') +
+        '\n',
+    )
+    const messages = (await readTranscript(ID, undefined, 50))!.messages.slice(-4)
+    expect(messages[0]).toEqual({ type: 'system', subtype: 'scheduled_task_fire', uuid: u(1), timestamp: '2026-11-03T14:00:00.000Z' })
+    expect(messages[1]).toEqual({ type: 'system', subtype: 'scheduled_task_fire', uuid: u(9), timestamp: '2026-11-03T14:01:00.000Z' })
+    expect(messages[2]).toMatchObject({ type: 'user', uuid: u(8), isReplay: true, isSynthetic: true })
+    expect(messages[3]).toMatchObject({ type: 'assistant' })
   })
 
   it('keeps the history before a compaction, in the order it was written', async () => {
