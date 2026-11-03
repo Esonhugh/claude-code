@@ -323,6 +323,7 @@
   "apiPriceLabel": "API-equivalent cost",
   "apiDurationLabel": "API time",
   "quota5hLabel": "5-hour limit",
+  "quotaWeekLabel": "Weekly limit",
   "quotaValue": "{pct}% · resets {time}",
   "instructionsLabel": "Instruction files",
   "memoryLabel": "Memory",

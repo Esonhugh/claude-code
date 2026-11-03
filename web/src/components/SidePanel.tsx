@@ -1,5 +1,6 @@
 import { type ReactNode, useEffect, useMemo, useState } from 'react'
 import { type AgentTask, isFinished } from '../agents'
+import { getUsage } from '../api'
 import { type Groups, type Pane, usedPanes } from '../background'
 import { sessionFiles, tilde } from '../files'
 import type { ModelOption, Todo } from '../protocol'
@@ -90,6 +91,18 @@ function useStatusData(
 ): StatusData {
   const [data, setData] = useState<StatusData>({})
   useEffect(() => setData({}), [sessionId])
+  // A session that is not running has no process to ask; its plan limits are this machine's.
+  useEffect(() => {
+    if (live) return
+    let current = true
+    getUsage().then(
+      body => current && setData(d => ({ ...d, usage: { subscription_type: body.subscription_type, rate_limits: body.rate_limits } as Json })),
+      () => {},
+    )
+    return () => {
+      current = false
+    }
+  }, [sessionId, live])
   useEffect(() => {
     if (!live || busy || !request) return
     let current = true
@@ -129,7 +142,7 @@ function startedText(at: number, t: T): string {
     : `${date.toLocaleDateString()} ${time}`
 }
 
-function usageRows(t: T, chat: SessionChat, usage: Json | undefined): { rows: [string, ReactNode][]; cost?: string } {
+export function usageRows(t: T, chat: SessionChat, usage: Json | undefined): { rows: [string, ReactNode][]; cost?: string } {
   const session = isObj(usage?.session) ? usage.session : undefined
   const models = isObj(session?.model_usage) ? Object.values(session.model_usage).filter(isObj) : []
   const total = (key: string) => shortTokens(models.reduce((n, m) => n + num(m[key]), 0))
@@ -144,6 +157,8 @@ function usageRows(t: T, chat: SessionChat, usage: Json | undefined): { rows: [s
       : streamed?.utilization !== undefined
         ? { pct: streamed.utilization * 100, resets: (streamed.resetsAt ?? NaN) * 1000 }
         : undefined
+  const sevenDay = isObj(limits?.seven_day) ? limits.seven_day : undefined
+  const weekResets = typeof sevenDay?.resets_at === 'string' ? Date.parse(sevenDay.resets_at) : NaN
   const costText = cost === undefined ? undefined : `$${cost.toFixed(2)}`
   const rows: [string, ReactNode][] = [
     ...(models.length
@@ -166,6 +181,19 @@ function usageRows(t: T, chat: SessionChat, usage: Json | undefined): { rows: [s
             t('quotaValue', {
               pct: String(Math.round(quota.pct)),
               time: Number.isFinite(quota.resets) ? new Date(quota.resets).toTimeString().slice(0, 5) : '—',
+            }),
+          ] as [string, ReactNode],
+        ]
+      : []),
+    ...(typeof sevenDay?.utilization === 'number'
+      ? [
+          [
+            t('quotaWeekLabel'),
+            t('quotaValue', {
+              pct: String(Math.round(sevenDay.utilization)),
+              time: Number.isFinite(weekResets)
+                ? new Date(weekResets).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false })
+                : '—',
             }),
           ] as [string, ReactNode],
         ]

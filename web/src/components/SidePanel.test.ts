@@ -105,3 +105,19 @@ describe('Status compact button', () => {
     expect(await render(80, true)).toMatch(/<button[^>]*disabled[^>]*>compactNow/)
   })
 })
+
+describe('usageRows', () => {
+  it('shows the weekly limit next to the 5-hour one', async () => {
+    const { usageRows } = await import('./SidePanel')
+    const { initialState } = await import('../protocol')
+    const chat = { ...initialState, mode: 'readonly' } as never
+    const { rows } = usageRows(((key: string) => key) as T, chat, {
+      subscription_type: 'plus',
+      rate_limits: {
+        five_hour: { utilization: 2, resets_at: '2026-11-03T17:44:56.000Z' },
+        seven_day: { utilization: 94, resets_at: '2026-11-04T15:58:17.000Z' },
+      },
+    })
+    expect(rows.map(([label]) => label)).toEqual(expect.arrayContaining(['quota5hLabel', 'quotaWeekLabel']))
+  })
+})
