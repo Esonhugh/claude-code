@@ -2205,6 +2205,26 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       expect((await agentInput.inputValue()).startsWith('/e2e-skill go')).toBe(true)
       expect(promptsSeen.some(p => p.includes('/e2e-skill go') && p.includes('for-agent.txt'))).toBe(true)
       await agentInput.fill('')
+      // Signed out, the agent's box is disabled and says why, like the session's own.
+      await page.route('**/api/account', async (route: any) => {
+        const res = await route.fetch()
+        await route.fulfill({ response: res, json: { ...(await res.json()), kind: null } })
+      })
+      await page.reload()
+      // Newest first: an earlier test started a session with the same prompt.
+      await page.locator('.session-row', { hasText: 'please SPAWNBG an agent' }).first().click()
+      await panel.getByRole('tab', { name: /^Agents/ }).click()
+      const ended = panel.getByRole('button', { name: /Ended/ })
+      await ended.waitFor({ timeout: 30_000 })
+      if ((await ended.getAttribute('aria-expanded')) === 'false') await ended.click()
+      await panel.locator('.agent-row', { hasText: 'Look around' }).click()
+      await agentInput.waitFor()
+      expect(await input.getAttribute('placeholder')).toBe('Sign in to send messages')
+      expect(await agentInput.getAttribute('placeholder')).toBe('Sign in to send messages')
+      expect(await agentInput.isDisabled()).toBe(true)
+      await page.unroute('**/api/account')
+      await page.reload()
+      await page.locator('.wl-hi, .main').first().waitFor()
 
       // A project: the coordinator's box and a dispatched task's box.
       await page.getByRole('button', { name: 'New project', exact: true }).click()
@@ -2233,6 +2253,7 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       await taskInput.press('ArrowUp')
       expect((await taskInput.inputValue()).startsWith('/e2e-skill go')).toBe(true)
       expect(promptsSeen.some(p => p.includes('/e2e-skill go') && p.includes('for-task.txt'))).toBe(true)
+
       expect(errors).toEqual([])
       await page.evaluate(async () => {
         for (const s of (await (await fetch('/api/sessions')).json()) as { id: string }[]) {
