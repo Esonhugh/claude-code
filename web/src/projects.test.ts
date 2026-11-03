@@ -12,7 +12,7 @@ import {
   withApprovals,
   workerItems,
 } from './projects'
-import { type Approval, initialState, reduce } from './protocol'
+import { type Approval, type Item, initialState, reduce } from './protocol'
 
 const sys = (subtype: string, rest: Record<string, unknown>) => ({ type: 'system', subtype, session_id: 's', uuid: 'u', ...rest })
 
@@ -78,6 +78,13 @@ describe('project tasks', () => {
     const byItem = notesByItem(state.taskNotes, state.items)
     expect(byItem.get('m1')?.map(n => n.taskId)).toEqual(['a'])
     expect(notesByItem([{ taskId: 'z', status: 'completed', afterId: 'gone', n: 1 }], state.items).get('')).toHaveLength(1)
+  })
+
+  it('reads the description of an Agent call whose input is still streaming', () => {
+    const item = (input: string) => ({ kind: 'assistant', id: 'm1', blocks: [{ kind: 'tool', id: 'toolu_s', name: 'Agent', input }] }) as unknown as Item
+    expect(agentInputs([item('{"description": "Create \\"hello\\" file", "prompt": "Wr')]).get('toolu_s')).toEqual({ description: 'Create "hello" file' })
+    // Not whole yet: nothing to show.
+    expect(agentInputs([item('{"description": "Creat')]).get('toolu_s')).toBeUndefined()
   })
 
   it('finds whom a SendMessage call addressed, by agent id or by the name its Agent call gave it', () => {

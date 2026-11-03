@@ -87,7 +87,9 @@ export function agentInputs(items: Item[]): Map<string, AgentInput> {
           ...(typeof input.name === 'string' && { name: input.name }),
         })
       } catch {
-        // Still streaming: the input is not whole yet.
+        // Still streaming: name the task as soon as its whole description has arrived.
+        const description = /^\s*\{\s*"description"\s*:\s*("(?:[^"\\]|\\.)*")/.exec(block.input)?.[1]
+        if (description) inputs.set(block.id, { description: JSON.parse(description) as string })
       }
     }
   }
