@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSy
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { sanitizePath } from '../utils/sessionStoragePortable.js'
-import { findAgentIssuers, listHistory, readAgentTranscript, readSnippet, readTranscript, renameSession, snippetText } from './history.js'
+import { findAgentIssuers, forkSession, listHistory, readAgentTranscript, readSnippet, readTranscript, renameSession, snippetText } from './history.js'
 
 const ID = '11111111-2222-4333-8444-555555555555'
 let root = ''
@@ -189,6 +189,37 @@ describe('web history', () => {
     expect(JSON.stringify(messages[4])).not.toContain('whole file')
   })
 
+  it('gives a thinking entry the time since the entry before it, like the live stream measures', async () => {
+    const file = join(root, 'config', 'projects', sanitizePath(join(root, 'project')), `${ID}.jsonl`)
+    const cwd = join(root, 'project')
+    writeFileSync(
+      file,
+      readFileSync(file, 'utf8') +
+        [
+          line({
+            type: 'assistant',
+            uuid: 'a0000000-0000-4000-8000-000000000013',
+            parentUuid: 'a0000000-0000-4000-8000-000000000005',
+            cwd,
+            timestamp: '2026-11-02T00:00:07.000Z',
+            message: { id: 'msg_t', role: 'assistant', model: 'claude-opus-5-5', content: [{ type: 'thinking', thinking: 'hm', signature: 's' }] },
+          }),
+          line({
+            type: 'assistant',
+            uuid: 'a0000000-0000-4000-8000-000000000014',
+            parentUuid: 'a0000000-0000-4000-8000-000000000013',
+            cwd,
+            timestamp: '2026-11-02T00:00:08.000Z',
+            message: { id: 'msg_t', role: 'assistant', model: 'claude-opus-5-5', content: [{ type: 'text', text: 'answer' }] },
+          }),
+        ].join('\n') +
+        '\n',
+    )
+    const messages = (await readTranscript(ID, undefined, 50))!.messages.slice(-2)
+    expect(messages[0]).toMatchObject({ thinking_ms: 7000 })
+    expect(messages[1]).not.toHaveProperty('thinking_ms')
+  })
+
   it('shows a message sent mid-turn where the model read it, under the uuid the page sent', async () => {
     const file = join(root, 'config', 'projects', sanitizePath(join(root, 'project')), `${ID}.jsonl`)
     const cwd = join(root, 'project')
@@ -292,6 +323,18 @@ describe('web history', () => {
   it('reads the first assistant text as the snippet of a recent card', async () => {
     expect(await readSnippet(ID)).toBe('first answer')
     expect(await readSnippet('99999999-2222-4333-8444-555555555555')).toBeUndefined()
+  })
+
+  it('forks a session at a reply into a new session that ends there', async () => {
+    const forkId = await forkSession(ID, 'msg_1')
+    expect(forkId).toMatch(/^[0-9a-f-]{36}$/)
+    const page = (await readTranscript(forkId!, undefined, 50))!
+    const texts = page.messages.map(m => JSON.stringify((m.message as { content?: unknown } | undefined)?.content ?? ''))
+    expect(texts.some(t => t.includes('first answer'))).toBe(true)
+    expect(texts.some(t => t.includes('second question'))).toBe(false)
+    // The original is untouched.
+    expect(JSON.stringify((await readTranscript(ID, undefined, 50))!.messages)).toContain('second question')
+    expect(await forkSession(ID, 'msg_missing')).toBeUndefined()
   })
 
   it('renames by appending a custom title', async () => {

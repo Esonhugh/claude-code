@@ -32,6 +32,7 @@ import {
   readAgentTranscript,
   readSnippet,
   readTranscript,
+  forkSession,
   renameSession,
   SESSION_ID,
 } from './history.js'
@@ -199,6 +200,7 @@ const AGENT_MESSAGES_PATH = /^\/api\/history\/([^/]+)\/agents\/([^/]+)\/messages
 const AGENT_ISSUERS_PATH = /^\/api\/history\/([^/]+)\/agent-issuers$/
 const FILES_PATH = /^\/api\/files\/([^/]+)(\/pdf|\/list)?$/
 const SNIPPET_PATH = /^\/api\/history\/([^/]+)\/snippet$/
+const FORK_PATH = /^\/api\/history\/([^/]+)\/fork$/
 const PROJECT_PATH = /^\/api\/projects\/([^/]+)(?:\/(coordinator|tasks)(?:\/([^/]+)(?:\/(transcript|review))?)?)?$/
 const EFFORT = /^[a-z]{1,20}$/
 
@@ -981,6 +983,18 @@ export function startWebServer(
       if (!SESSION_ID.test(id)) return errorResponse(400, 'Invalid session id')
       const snippet = await readSnippet(id)
       return snippet === undefined ? errorResponse(404, 'Session not found') : Response.json({ snippet })
+    }
+    // `{ message_id }` → `{ session_id }`: a new session with the conversation up to that reply.
+    const forkMatch = FORK_PATH.exec(pathname)
+    if (forkMatch && req.method === 'POST') {
+      const id = decodeURIComponent(forkMatch[1]!)
+      const body = (await readJson(req)) as { message_id?: unknown } | undefined
+      const messageId = body?.message_id
+      if (!SESSION_ID.test(id) || typeof messageId !== 'string' || !/^[\w-]{1,128}$/.test(messageId)) {
+        return errorResponse(400, 'Invalid id')
+      }
+      const forkId = await forkSession(id, messageId)
+      return forkId ? Response.json({ session_id: forkId }) : errorResponse(404, 'Message not found')
     }
     const historyMatch = HISTORY_PATH.exec(pathname)
     if (historyMatch && req.method === 'PATCH') {

@@ -1277,7 +1277,7 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       await page.getByText('WEB_DONE').waitFor({ timeout: 30_000 })
       expect(readFileSync(join(workspace, 'edit.txt'), 'utf8')).toBe('alpha\ngamma\n')
       // The answer stays where the request was, and the card shows the diff.
-      expect(await page.locator('.ask-ref.done').textContent()).toBe('Allowed once')
+      expect(await page.locator('.toolcard .tdec').textContent()).toBe('Allowed once')
       const card = page.locator('.toolcard', { has: page.locator('.tname', { hasText: 'Edit' }) })
       expect(await card.locator('.tcmd').textContent()).toBe('edit.txt')
       expect(await card.locator('.dl.del span').textContent()).toBe('beta')

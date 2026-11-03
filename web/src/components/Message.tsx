@@ -92,6 +92,12 @@ export const ChatContext = createContext<{
     ask: (id: string | undefined) => void
     go: (id: string, files: boolean) => void
   }
+  /** The actions under a reply, by the turn's first message id. */
+  turn?: {
+    retry: (id: string) => void
+    fork: (id: string) => void
+    rewind: (id: string) => void
+  }
 }>({})
 
 /** Lets an Agent tool card show its task and open it in the Agents tab. */
@@ -285,6 +291,7 @@ function ToolCard({ block, t }: { block: Extract<Block, { kind: 'tool' }>; t: T 
               {isFinished(task) ? task.status : (formatDuration(task.durationMs) ?? task.status)}
             </button>
           )}
+          {decision && <span className="tdec">{decisionText(decision, t)}</span>}
           {webUrl && (
             <button
               type="button"
@@ -331,13 +338,7 @@ function ToolCard({ block, t }: { block: Extract<Block, { kind: 'tool' }>; t: T 
       )}
     </details>
   )
-  if (!decision) return card
-  return (
-    <>
-      {card}
-      <div className="ask-ref done">{decisionText(decision, t)}</div>
-    </>
-  )
+  return card
 }
 
 /** A worker's report to its caller (`SubagentHandback`), unless it was refused. */
@@ -394,6 +395,31 @@ export function TeamBar({
       <span className="note">{t('teamNote')}</span>
     </div>
   )
+}
+
+const READ_TOOLS = new Set(['Read', 'NotebookRead'])
+const SEARCH_TOOLS = new Set(['Grep', 'Glob', 'LS', 'ToolSearch'])
+const SHELL_TOOLS = new Set(['Bash', 'PowerShell'])
+const WEB_TOOLS = new Set(['WebSearch', 'WebFetch'])
+
+/** What a folded run of tool calls did, in words: "Read 3 files", "Ran bun test". */
+export function stepActions(tools: Extract<Block, { kind: 'tool' }>[], t: T): string[] {
+  const count = (set: Set<string>) => tools.filter(b => set.has(b.name))
+  const files = new Set(count(READ_TOOLS).map(b => toolSummary(b.name, b.input)))
+  const shell = count(SHELL_TOOLS)
+  const edits = new Set(count(FILE_TOOLS).filter(b => !READ_TOOLS.has(b.name)).map(b => toolSummary(b.name, b.input)))
+  const known = new Set([...READ_TOOLS, ...SEARCH_TOOLS, ...SHELL_TOOLS, ...WEB_TOOLS, ...FILE_TOOLS])
+  const other = [...new Set(tools.filter(b => !known.has(b.name)).map(b => b.name))]
+  const command = shell.length === 1 ? toolSummary(shell[0]!.name, shell[0]!.input) : ''
+  return [
+    files.size ? t('stepsRead', { n: String(files.size) }) : '',
+    count(SEARCH_TOOLS).length ? t('stepsSearched', { n: String(count(SEARCH_TOOLS).length) }) : '',
+    shell.length === 1 ? t('stepsRanOne', { cmd: command.length > 48 ? `${command.slice(0, 47)}…` : command }) : '',
+    shell.length > 1 ? t('stepsRan', { n: String(shell.length) }) : '',
+    edits.size ? t('stepsEdited', { n: String(edits.size) }) : '',
+    count(WEB_TOOLS).length ? t('stepsWeb', { n: String(count(WEB_TOOLS).length) }) : '',
+    other.join(', '),
+  ].filter(Boolean)
 }
 
 const seconds = (ms: number) => Math.max(1, Math.round(ms / 1000))
@@ -467,7 +493,8 @@ export function Message({
   queued?: boolean
 }) {
   const files = useContext(FilesContext)
-  const { rewind } = useContext(ChatContext)
+  const { rewind, turn } = useContext(ChatContext)
+  const [copied, setCopied] = useState(false)
   if (item.kind === 'user') {
     const asking = rewind?.target === item.id
     return (
@@ -673,18 +700,51 @@ export function Message({
         const tools = run.flatMap(b => (b.kind === 'tool' ? [b] : []))
         const thought = run.reduce((ms, b) => ms + (b.kind === 'thinking' ? (b.ms ?? 0) : 0), 0)
         const failed = tools.filter(b => b.isError).length
+        const summaryParts = (ms: number, calls: typeof tools, n: number) => {
+          const parts = [ms > 0 ? t('thoughtFor', { n: String(seconds(ms)) }) : '', ...stepActions(calls, t)].filter(Boolean)
+          return parts.length ? parts : [t('nSteps', { n: String(n) })]
+        }
         return (
           <details key={`s${first}${live ? '-live' : ''}`} className="think steps" open={live || undefined}>
             <summary className={live ? 'shimmer' : undefined}>
-              {t('nSteps', { n: String(run.length) })}
-              {thought > 0 && <span className="sd">{t('thoughtFor', { n: String(seconds(thought)) })}</span>}
-              {tools.length > 0 && <span className="sd mono">{[...new Set(tools.map(b => b.name))].join(', ')}</span>}
-              {failed > 0 && <span className="sd bad">✗ {failed}</span>}
+              <span className={`sdot ${live ? 'run' : failed ? 'bad' : 'ok'}`} aria-hidden="true" />
+              {summaryParts(thought, tools, run.length)
+                .map((part, k) => (
+                  <span key={k} className="sd">
+                    {part}
+                  </span>
+                ))}
+              {failed > 0 && <span className="sd bad">{t('nFailed', { n: String(failed) })}</span>}
             </summary>
             <div className="stepsbody">{segment.at.map(step)}</div>
           </details>
         )
       })}
+      {turn && !streaming && (
+        <div className="msg-acts">
+          <button
+            type="button"
+            onClick={() => {
+              const text = item.blocks.flatMap(b => (b?.kind === 'text' ? [b.text] : [])).join('\n\n')
+              void navigator.clipboard?.writeText(text).then(() => {
+                setCopied(true)
+                setTimeout(() => setCopied(false), 1500)
+              })
+            }}
+          >
+            {copied ? t('copied') : t('copy')}
+          </button>
+          <button type="button" onClick={() => turn.retry(item.id)}>
+            {t('retry')}
+          </button>
+          <button type="button" onClick={() => turn.fork(item.id)}>
+            {t('forkHere')}
+          </button>
+          <button type="button" onClick={() => turn.rewind(item.id)}>
+            {t('rewind')}
+          </button>
+        </div>
+      )}
       {sources && sources.length > 0 && (
         <div className="sources">
           <div>{t('sources')}</div>

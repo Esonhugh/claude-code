@@ -2,6 +2,7 @@ import { type CSSProperties, type DragEvent, type ReactNode, useCallback, useEff
 import {
   type AuthProvider,
   createSession,
+  forkSession,
   getInfo,
   getSettings as getWebSettings,
   getUsage,
@@ -368,9 +369,17 @@ export function App() {
     }
   }, [refreshHistory])
 
+  // Messages that arrived while the reader was scrolled up, for the "↓ N new messages" button.
+  const [newBelow, setNewBelow] = useState(0)
+  const shownTurns = useRef<{ view?: string | null; n: number }>({ n: 0 })
   useEffect(() => {
     const feed = feedRef.current
     if (feed && stickToBottom.current) feed.scrollTop = feed.scrollHeight
+    const n = chat?.items.length ?? 0
+    const seen = shownTurns.current
+    if (seen.view === view && n > seen.n && !stickToBottom.current) setNewBelow(k => k + n - seen.n)
+    if (seen.view !== view || stickToBottom.current) setNewBelow(0)
+    shownTurns.current = { view, n }
   }, [chat?.items, chat?.approvals, view])
   // An earlier page lands above the reader; keep what they were looking at in place.
   const fromBottom = useRef<number>(undefined)
@@ -769,10 +778,10 @@ export function App() {
   })
 
   /** Drops a prompt and everything after it (`rewind_conversation`), optionally restoring files first. */
-  const rewindChat = async (id: string, userId: string, withFiles: boolean) => {
+  const rewindChat = async (id: string, userId: string, withFiles: boolean): Promise<boolean> => {
     setRewindTarget(undefined)
     const current = stateRef.current.chats[id]
-    if (!current || (current.mode !== 'live' && !(await resume(id)))) return
+    if (!current || (current.mode !== 'live' && !(await resume(id)))) return false
     const lastSeen = stateRef.current.chats[id]?.items.findLast(i => i.kind === 'user')?.id
     try {
       let restored = 0
@@ -790,9 +799,42 @@ export function App() {
       dispatch({ type: 'chat', id, action: { type: 'rewound', userId, note } })
       setDrafts(d => ({ ...d, [id]: typeof result.prefillText === 'string' ? result.prefillText : '' }))
       setTimeout(() => document.querySelector<HTMLTextAreaElement>('.cbox textarea')?.focus())
+      return true
     } catch (err) {
       const error = err instanceof Error ? err.message : String(err)
       dispatch({ type: 'chat', id, action: { type: 'local', patch: { notice: t('rewindFailed', { error }) } } })
+      return false
+    }
+  }
+
+  /** The prompt a reply answered and the reply's last API message id, by the reply's first id. */
+  const turnOf = (id: string, firstId: string) => {
+    const items = stateRef.current.chats[id]?.items ?? []
+    const turn = joinTurns(items).find(x => x.item.id === firstId)
+    const at = items.findIndex(i => i.id === firstId)
+    const user = items.slice(0, at).findLast(i => i.kind === 'user')
+    return { user: user?.kind === 'user' ? user : undefined, last: turn?.ids.at(-1) }
+  }
+
+  /** Asks the same prompt again: rewinds to it, then sends it. */
+  const retryTurn = async (id: string, firstId: string) => {
+    const { user } = turnOf(id, firstId)
+    if (!user || !(await rewindChat(id, user.id, false))) return
+    setDrafts(d => ({ ...d, [id]: '' }))
+    await sendPrompt(id, user.text)
+  }
+
+  /** Opens a new session holding the conversation up to this reply. */
+  const forkTurn = async (id: string, firstId: string) => {
+    const { last } = turnOf(id, firstId)
+    if (!last) return
+    try {
+      const { session_id: forkId } = await forkSession(id, last)
+      await refreshHistory()
+      await openSession(stateRef.current.history.find(h => h.id === forkId) ?? { ...stateRef.current.history.find(h => h.id === id)!, id: forkId })
+    } catch (err) {
+      const error = err instanceof Error ? err.message : String(err)
+      dispatch({ type: 'chat', id, action: { type: 'local', patch: { notice: t('forkFailed', { error }) } } })
     }
   }
 
@@ -991,7 +1033,9 @@ export function App() {
       ? t('elapsedRunning', { time: formatElapsed(Date.now() - since) })
       : t(
           chat.mode === 'live'
-            ? 'statusLive'
+            ? chat.busy
+              ? 'statusLive'
+              : 'statusReady'
             : chat.mode === 'elsewhere'
               ? 'statusElsewhere'
               : chat.mode === 'connecting'
@@ -1024,6 +1068,17 @@ export function App() {
               },
               ask: setRewindTarget,
               go: (id: string, withFiles: boolean) => void rewindChat(view, id, withFiles),
+            }
+          : undefined,
+      turn:
+        view && chat && !chat.busy && chat.mode !== 'elsewhere'
+          ? {
+              retry: (firstId: string) => void retryTurn(view, firstId),
+              fork: (firstId: string) => void forkTurn(view, firstId),
+              rewind: (firstId: string) => {
+                const { user } = turnOf(view, firstId)
+                if (user) setRewindTarget(user.id)
+              },
             }
           : undefined,
     }),
@@ -1138,7 +1193,10 @@ export function App() {
             className="feed"
             ref={feedRef}
             aria-busy={chat.busy}
-            onScroll={e => (stickToBottom.current = followScroll(e.currentTarget, stickToBottom.current, feedTop))}
+            onScroll={e => {
+              stickToBottom.current = followScroll(e.currentTarget, stickToBottom.current, feedTop)
+              if (stickToBottom.current && newBelow) setNewBelow(0)
+            }}
           >
             {chat.start > 0 && (
               <div className="older-sentinel">
@@ -1175,6 +1233,20 @@ export function App() {
               </div>
             ))}
             {chat.busy && since !== undefined && <StatusLine t={t} since={since} onStop={() => view && stop(view)} />}
+            {newBelow > 0 && (
+              <button
+                type="button"
+                className="new-below"
+                onClick={() => {
+                  const feed = feedRef.current
+                  stickToBottom.current = true
+                  setNewBelow(0)
+                  feed?.scrollTo({ top: feed.scrollHeight, behavior: 'smooth' })
+                }}
+              >
+                ↓ {t('newMessages', { n: String(newBelow) })}
+              </button>
+            )}
           </div>
           <div className="composer">
             {chat.mode === 'elsewhere' && (
