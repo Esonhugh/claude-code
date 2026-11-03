@@ -41,14 +41,15 @@ async function fetchOk(url: string, init?: RequestInit): Promise<Response> {
   return res
 }
 
-/** The first megabyte as text; `truncated` when the file is longer. */
-async function fetchText(url: string): Promise<{ text: string; truncated: boolean }> {
+/** The first megabyte and `lines` lines as text, or the whole file without `lines`; `truncated` when the file is longer. */
+async function fetchText(url: string, lines?: number): Promise<{ text: string; truncated: boolean }> {
+  if (lines === undefined) return { text: await (await fetchOk(url)).text(), truncated: false }
   const res = await fetchOk(url, { headers: { Range: `bytes=0-${TEXT_BYTES - 1}` } })
   const total = Number(res.headers.get('content-range')?.split('/')[1] ?? 0)
   const text = await res.text()
-  const lines = text.split('\n')
-  return lines.length > TEXT_LINES
-    ? { text: lines.slice(0, TEXT_LINES).join('\n'), truncated: true }
+  const split = text.split('\n')
+  return split.length > lines
+    ? { text: split.slice(0, lines).join('\n'), truncated: true }
     : { text, truncated: res.status === 206 && total > TEXT_BYTES }
 }
 
@@ -539,7 +540,15 @@ function cellText(value: Cell): string {
   return ''
 }
 
-function Table({ rows, note, sheet }: { rows: string[][]; note?: string; sheet?: string }) {
+function ShowAll({ onClick, t }: { onClick: () => void; t: T }) {
+  return (
+    <button type="button" className="preview-more" onClick={onClick}>
+      {t('showAll')}
+    </button>
+  )
+}
+
+function Table({ rows, sheet }: { rows: string[][]; sheet?: string }) {
   const pin = useContext(PinContext)
   const sent = new Map(
     pin?.sent.flatMap(p => (p.anchor.kind === 'cell' && p.anchor.sheet === sheet ? [[p.anchor.ref, p.text]] : [])),
@@ -576,13 +585,13 @@ function Table({ rows, note, sheet }: { rows: string[][]; note?: string; sheet?:
           ))}
         </tbody>
       </table>
-      {note && <div className="preview-note">{note}</div>}
     </div>
   )
 }
 
 function XlsxView({ url, t }: { url: string; t: T }) {
   const [sheet, setSheet] = useState(0)
+  const [all, setAll] = useState(false)
   const { value: book, error } = useLoad(async () => {
     const [res, ExcelJS] = await Promise.all([fetchOk(url), import('exceljs')])
     const wb = new ExcelJS.Workbook()
@@ -594,12 +603,12 @@ function XlsxView({ url, t }: { url: string; t: T }) {
     if (!ws) return undefined
     const rows: string[][] = []
     ws.eachRow({ includeEmpty: true }, row => {
-      if (rows.length >= SHEET_ROWS) return
+      if (!all && rows.length >= SHEET_ROWS) return
       const values = Array.isArray(row.values) ? row.values.slice(1) : []
       rows.push(values.map(v => cellText(v as Cell)))
     })
     return { rows, total: ws.rowCount }
-  }, [book, sheet])
+  }, [book, sheet, all])
   if (error) throw error
   if (!book || !table) return <div className="preview-note">{t('loading')}</div>
   return (
@@ -611,21 +620,17 @@ function XlsxView({ url, t }: { url: string; t: T }) {
             role="tab"
             key={ws.id}
             aria-selected={i === sheet}
-            onClick={() => setSheet(i)}
+            onClick={() => {
+              setSheet(i)
+              setAll(false)
+            }}
           >
             {ws.name}
           </button>
         ))}
       </div>
-      <Table
-        rows={table.rows}
-        sheet={book.worksheets[sheet]?.name}
-        note={
-          table.total > table.rows.length
-            ? t('rowsShown', { shown: String(table.rows.length), total: String(table.total) })
-            : undefined
-        }
-      />
+      <Table rows={table.rows} sheet={book.worksheets[sheet]?.name} />
+      {table.total > table.rows.length && <ShowAll onClick={() => setAll(true)} t={t} />}
     </>
   )
 }
@@ -654,18 +659,21 @@ function TextView({
   url,
   render,
   t,
+  lines = TEXT_LINES,
 }: {
   url: string
   render: (text: string) => ReactNode
   t: T
+  lines?: number
 }) {
-  const { value, error } = useLoad(() => fetchText(url), [url])
+  const [all, setAll] = useState(false)
+  const { value, error } = useLoad(() => fetchText(url, all ? undefined : lines), [url, all, lines])
   if (error) throw error
   if (!value) return <div className="preview-note">{t('loading')}</div>
   return (
     <>
       {render(value.text)}
-      {value.truncated && <div className="preview-note">{t('previewTruncated')}</div>}
+      {value.truncated && <ShowAll onClick={() => setAll(true)} t={t} />}
     </>
   )
 }
@@ -742,14 +750,10 @@ function Body({
         <TextView
           url={url}
           t={t}
-          render={text => {
-            const { rows, truncated } = parseCsv(
-              text,
-              extension(path) === 'tsv' ? '\t' : ',',
-              SHEET_ROWS,
-            )
-            return <Table rows={rows} note={truncated ? t('previewTruncated') : undefined} />
-          }}
+          lines={SHEET_ROWS}
+          render={text => (
+            <Table rows={parseCsv(text, extension(path) === 'tsv' ? '\t' : ',', Infinity).rows} />
+          )}
         />
       )
     case 'text':

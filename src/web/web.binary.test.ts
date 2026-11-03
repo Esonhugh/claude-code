@@ -821,6 +821,8 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       sample('letter.docx', await tinyDocx('DOCX_BODY')),
       sample('slides.pdf', tinyPdf(['PAGE_ONE', 'PAGE_TWO'])),
       sample('memo.rtf', '{\\rtf1\\ansi RTF_BODY\\par}'),
+      sample('long.log', `${Array.from({ length: 2500 }, (_, i) => `line ${i}`).join('\n')}\nLONG_LAST_LINE`),
+      sample('long.csv', `${Array.from({ length: 600 }, (_, i) => `r${i},${i}`).join('\n')}\nCSV_LAST_ROW,1`),
     ]
     const notes = join(home, 'notes.txt')
     writeFileSync(notes, 'first line\nNOTES_BODY\nlast line')
@@ -868,6 +870,14 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       await preview.getByText('NOTES_BODY').waitFor()
       await open('readme.md')
       await preview.locator('.markdown h3', { hasText: 'MD_HEADING' }).waitFor()
+      // A long file shows its start and a "Show all" button that loads the rest in place.
+      for (const [name, last] of [['long.log', 'LONG_LAST_LINE'], ['long.csv', 'CSV_LAST_ROW']]) {
+        await open(name)
+        await preview.getByRole('button', { name: 'Show all', exact: true }).click()
+        await showing(preview.locator('.preview-body').getByText(last).last().waitFor(), preview)
+        expect(await preview.getByRole('button', { name: 'Show all', exact: true }).count()).toBe(0)
+        expect(await preview.locator('.preview-body').getByText(/download/i).count()).toBe(0)
+      }
       await open('table.csv')
       await preview.locator('.sheet td', { hasText: 'x, y' }).waitFor()
       await open('page.html')
