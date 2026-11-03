@@ -35,6 +35,10 @@ type Session = SessionInfo & {
   restartWith?: SpawnSessionOptions
   /** Lines written while the process is being replaced. */
   queued?: string[]
+  /** When a channel was last turned on (`--channels` at spawn, or channel_enable). */
+  channelSince?: number
+  /** channel_enable requests waiting for their response. */
+  channelRequests?: Set<string>
 }
 
 /** Sees every stream-json line of every session (claude web keeps a project's tasks from them). */
@@ -73,6 +77,26 @@ function closed(child: ChildProcess): Promise<void> {
 
 /** Keeps a task's lines in order, with only its latest progress snapshot. */
 /** Keeps a `can_use_tool` request until it is answered (`control_response`) or cancelled. */
+/** A channel_enable request (from the client) and its success (from the child) turn a channel on. */
+function recordChannelLine(session: Session, line: string): void {
+  let msg: { type?: string; request_id?: unknown; response?: { subtype?: unknown; request_id?: unknown } }
+  try {
+    msg = JSON.parse(line)
+  } catch {
+    return
+  }
+  if (msg.type === 'control_request' && typeof msg.request_id === 'string') {
+    ;(session.channelRequests ??= new Set()).add(msg.request_id)
+  } else if (
+    msg.type === 'control_response' &&
+    typeof msg.response?.request_id === 'string' &&
+    session.channelRequests?.delete(msg.response.request_id) &&
+    msg.response.subtype === 'success'
+  ) {
+    session.channelSince = Date.now()
+  }
+}
+
 function recordAsk(asks: Map<string, string>, line: string): void {
   let msg: { type?: string; request_id?: unknown; request?: { subtype?: unknown }; response?: { request_id?: unknown } }
   try {
@@ -235,6 +259,7 @@ export class SessionManager {
       exited: closed(child),
       spawnOptions,
       busy: false,
+      ...(channels?.length && { channelSince: Date.now() }),
     }
     this.sessions.set(id, session)
     this.wire(session, child)
@@ -311,6 +336,7 @@ export class SessionManager {
         session.init = recordInit(session.init, line)
       }
       if (line.includes('"can_use_tool"') || line.includes('"control_cancel_request"')) recordAsk(session.asks, line)
+      if (session.channelRequests?.size && line.includes('"type":"control_response"')) recordChannelLine(session, line)
       if (line.includes('"subtype":"session_state_changed"') && session.process === child) {
         this.trackTurn(session, line)
       }
@@ -416,6 +442,7 @@ export class SessionManager {
     for (const line of lines) {
       if (line.includes('"type":"user"')) session.busy = true
       if (line.includes('"type":"control_response"')) recordAsk(session.asks, line)
+      if (line.includes('"subtype":"channel_enable"')) recordChannelLine(session, line)
       this.observer?.line?.(id, line, 'client')
       stdin.write(line + '\n')
     }
@@ -448,6 +475,11 @@ export class SessionManager {
     session.idleTimer = setTimeout(() => {
       // A detached coordinator keeps its workers running until its turn ends.
       if (session.busy && session.spawnOptions.env?.CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS) {
+        return this.startIdleTimer(session)
+      }
+      // The session that last turned a channel on holds the bot (a newer
+      // channel server replaces an older one's poller); it keeps listening.
+      if (session.channelSince && ![...this.sessions.values()].some(s => (s.channelSince ?? 0) > session.channelSince!)) {
         return this.startIdleTimer(session)
       }
       this.logger?.info(`session ${session.id} idle timeout`)

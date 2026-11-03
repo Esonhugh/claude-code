@@ -330,3 +330,40 @@ describe('SessionManager approvals', () => {
     }
   })
 })
+
+// Answers channel_enable like the engine does.
+const CHANNEL_CHILD = `
+require('readline').createInterface({ input: process.stdin }).on('line', line => {
+  const m = JSON.parse(line)
+  if (m.request?.subtype === 'channel_enable')
+    process.stdout.write(JSON.stringify({ type: 'control_response', response: { subtype: 'success', request_id: m.request_id } }) + '\\n')
+})
+`
+
+describe('SessionManager idle timeout with channels', () => {
+  it('keeps the session that last turned a channel on, so the bot stays reachable', async () => {
+    const manager = new SessionManager(
+      { spawn: opts => spawn(process.execPath, ['-e', CHANNEL_CHILD], { cwd: opts.cwd, stdio: ['pipe', 'pipe', 'pipe'] }) },
+      { idleTimeoutMs: 50 },
+    )
+    const gone = async (id: string) => {
+      for (let i = 0; i < 100 && manager.get(id); i++) await Bun.sleep(20)
+      return !manager.get(id)
+    }
+    try {
+      const plain = manager.create({ cwd: '/' })
+      const a = manager.create({ cwd: '/', channels: ['plugin:telegram@claude-plugins-official'] })
+      expect(await gone(plain.id)).toBe(true)
+      expect(manager.get(a.id)).toBeDefined()
+
+      // Enabling a channel in another session moves the bot there.
+      const b = manager.create({ cwd: '/' })
+      manager.write(b.id, JSON.stringify({ type: 'control_request', request_id: 'ch-1', request: { subtype: 'channel_enable', serverName: 'plugin:telegram:telegram' } }) + '\n')
+      expect(await gone(a.id)).toBe(true)
+      await Bun.sleep(200)
+      expect(manager.get(b.id)).toBeDefined()
+    } finally {
+      await manager.destroyAll()
+    }
+  })
+})
