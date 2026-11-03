@@ -445,7 +445,7 @@ function isDirectory(path: string): boolean {
  * `/?token=` URL once. `/api` and the WebSocket additionally require the
  * request to come from this server's own origin.
  *
- *   GET    /api/info                    → { workspace, preview_origins, temp_root, home }
+ *   GET    /api/info                    → { workspace, preview_origins, temp_root, home, version }
  *   GET    /api/sessions                → running sessions
  *   POST   /api/sessions                → { session_id, work_dir } (new or resume);
  *                                          409 { needs_trust } for an untrusted folder
@@ -644,6 +644,32 @@ export function startWebServer(
     },
   })
 
+  /**
+   * The worker's transcript with the messages the user sent it while it ran,
+   * each before the first message written after it was sent. They were sent
+   * after the page had what came before, so the page's paging stays in step.
+   */
+  function withQueued(messages: Record<string, unknown>[], queued: { id: number; ts: number; text: string }[]): Record<string, unknown>[] {
+    if (!queued.length) return messages
+    const out: Record<string, unknown>[] = []
+    let q = 0
+    const user = (m: { id: number; ts: number; text: string }) => ({
+      type: 'user',
+      uuid: `queued-${m.id}`,
+      timestamp: new Date(m.ts).toISOString(),
+      parent_tool_use_id: null,
+      isReplay: true,
+      message: { role: 'user', content: m.text },
+    })
+    for (const message of messages) {
+      const at = typeof message.timestamp === 'string' ? Date.parse(message.timestamp) : NaN
+      while (q < queued.length && Number.isFinite(at) && queued[q]!.ts <= at) out.push(user(queued[q++]!))
+      out.push(message)
+    }
+    while (q < queued.length) out.push(user(queued[q++]!))
+    return out
+  }
+
   /** A task with its tokens read from the worker's transcript while its progress has none yet. */
   async function taskJson(task: Task): Promise<Task> {
     if (task.tokens || (task.state !== 'running' && task.state !== 'blocked')) return task
@@ -745,7 +771,7 @@ export function startWebServer(
     if (action === 'transcript' && req.method === 'GET') {
       const url = new URL(req.url)
       const page = await readAgentTranscript(task.session_id, task.agent_id)
-      const messages = page?.messages ?? []
+      const messages = withQueued(page?.messages ?? [], tasks().queuedMessages(task.id))
       const after = intParam(url, 'after', 0, Number.MAX_SAFE_INTEGER)
       // A transcript shorter than what the page has was rewritten: send it whole.
       const from = after > messages.length ? 0 : after
@@ -773,7 +799,8 @@ export function startWebServer(
       })
       coordinators.set(session.id, project.id)
       if (session.id !== previous) projects().update(project.id, { coordinator_session_id: session.id })
-      return Response.json({ session_id: session.id, work_dir: session.workDir })
+      // `fresh`: a new coordinator, with no transcript to load yet.
+      return Response.json({ session_id: session.id, work_dir: session.workDir, ...(!resume && { fresh: true }) })
     } catch (err) {
       if (err instanceof SessionManagerError) return errorResponse(err.status, err.message)
       throw err
@@ -842,6 +869,7 @@ export function startWebServer(
         preview_origins: previewOrigins,
         temp_root: tempRoot,
         home: homedir(),
+        version: MACRO.VERSION,
       })
     }
     if (pathname === '/api/sessions' && req.method === 'POST') {

@@ -24,6 +24,8 @@ type Session = SessionInfo & {
   taskLines?: Map<string, string[]>
   /** Unanswered `can_use_tool` requests by request id, for a client that attaches later. */
   asks: Map<string, string>
+  /** The latest `system/init` (permission mode kept current), for a client that attaches later (replayTasks only). */
+  init?: string
   idleTimer?: ReturnType<typeof setTimeout>
   exited: Promise<void>
   spawnOptions: SpawnSessionOptions
@@ -84,6 +86,26 @@ function recordAsk(asks: Map<string, string>, line: string): void {
     asks.delete(msg.request_id)
   } else if (msg.type === 'control_response' && typeof msg.response?.request_id === 'string') {
     asks.delete(msg.response.request_id)
+  }
+}
+
+/** The init line to replay: a new init replaces it, a mode change (`system/status`) is folded into it. */
+function recordInit(init: string | undefined, line: string): string | undefined {
+  const isInit = line.includes('"subtype":"init"')
+  if (!isInit && !(init && line.includes('"subtype":"status"') && line.includes('"permissionMode"'))) return init
+  let msg: { type?: unknown; subtype?: unknown; permissionMode?: unknown }
+  try {
+    msg = JSON.parse(line)
+  } catch {
+    return init
+  }
+  if (msg.type !== 'system') return init
+  if (msg.subtype === 'init') return line
+  if (msg.subtype !== 'status' || typeof msg.permissionMode !== 'string' || !init) return init
+  try {
+    return JSON.stringify({ ...JSON.parse(init), permissionMode: msg.permissionMode })
+  } catch {
+    return init
   }
 }
 
@@ -284,7 +306,10 @@ export class SessionManager {
     const id = session.id
     createInterface({ input: child.stdout! }).on('line', line => {
       if (!line.trim()) return
-      if (session.taskLines) recordTaskLine(session.taskLines, line)
+      if (session.taskLines) {
+        recordTaskLine(session.taskLines, line)
+        session.init = recordInit(session.init, line)
+      }
       if (line.includes('"can_use_tool"') || line.includes('"control_cancel_request"')) recordAsk(session.asks, line)
       if (line.includes('"subtype":"session_state_changed"') && session.process === child) {
         this.trackTurn(session, line)
@@ -355,6 +380,8 @@ export class SessionManager {
     clearTimeout(session.idleTimer)
     session.socket = socket
     session.status = 'running'
+    // A page that attaches after the first one has not seen the session's init (tools, skills, version).
+    if (session.init && !session.pending.includes(session.init)) socket.send(session.init + '\n')
     // Pending lines may repeat some of these; task events fold idempotently.
     for (const lines of session.taskLines?.values() ?? []) {
       for (const line of lines) socket.send(line + '\n')

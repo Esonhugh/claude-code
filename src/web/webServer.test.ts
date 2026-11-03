@@ -16,13 +16,16 @@ import {
   type WebServerConfig,
 } from './webServer.js'
 
+;(globalThis as unknown as { MACRO: { VERSION: string } }).MACRO = { VERSION: '9.9.9-test' }
+
 const TOKEN = 'web-test-token'
 
 // Stands in for `claude -p` stream-json: a user message is answered with a
 // result naming the text and the child's cwd. With session state events on,
 // the turn is bracketed by running/idle, and a "hold" turn never ends.
 // "dispatch" starts worker a1 and finishes it; "start" starts worker a2,
-// which is killed with the child, as `claude -p` does; control requests succeed.
+// which is killed with the child, as `claude -p` does; control requests succeed,
+// and a message to a task is queued.
 const FAKE_CHILD = `
 const out = m => process.stdout.write(JSON.stringify(m) + '\\n')
 const states = !!process.env.CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS
@@ -40,7 +43,8 @@ process.stdin.on('data', chunk => {
     const msg = JSON.parse(buf.slice(0, i))
     buf = buf.slice(i + 1)
     if (msg.type === 'control_request') {
-      out({ type: 'control_response', response: { subtype: 'success', request_id: msg.request_id, response: {} } })
+      const response = msg.request.subtype === 'send_task_message' ? { delivery: 'queued' } : {}
+      out({ type: 'control_response', response: { subtype: 'success', request_id: msg.request_id, response } })
     }
     if (msg.type === 'user') {
       const text = msg.message.content[0].text
@@ -302,6 +306,7 @@ describe('claude web server', () => {
       preview_origins: [],
       temp_root: join(r.configDir, 'web', 'temp'),
       home: homedir(),
+      version: '9.9.9-test',
     })
   })
 
@@ -685,10 +690,11 @@ describe('claude web server', () => {
     const open = async () => {
       const res = await fetch(`${r.base}/api/projects/${id}/coordinator`, { method: 'POST', headers })
       expect(res.status).toBe(200)
-      return (await res.json()) as { session_id: string; work_dir: string }
+      return (await res.json()) as { session_id: string; work_dir: string; fresh?: boolean }
     }
     const first = await open()
     expect(first.work_dir).toBe(r.workspace)
+    expect(first.fresh).toBe(true)
     expect(r.spawned).toHaveLength(1)
     const spawnedWith = r.spawned[0]!
     expect(spawnedWith.resume).toBeUndefined()
@@ -702,7 +708,9 @@ describe('claude web server', () => {
     })
 
     // Still running: the same session, no new child.
-    expect((await open()).session_id).toBe(first.session_id)
+    const again = await open()
+    expect(again.session_id).toBe(first.session_id)
+    expect(again.fresh).toBeUndefined()
     expect(r.spawned).toHaveLength(1)
     const listed = (await (await fetch(`${r.base}/api/projects`, { headers })).json()) as { coordinator_session_id: string; running: boolean }[]
     expect(listed[0]).toMatchObject({ coordinator_session_id: first.session_id, running: true })
@@ -815,6 +823,13 @@ describe('claude web server', () => {
     expect(await (await api('/tasks/a1/transcript?after=0')).json()).toEqual({ messages: [], next: 0, reset: false, tokens: 0 })
     expect((await api('/tasks/a1/review')).status).toBe(405)
     expect(await (await api('/tasks/a1/review', { method: 'POST' })).json()).toMatchObject({ state: 'done' })
+
+    // A message queued to the task shows in its transcript, which does not record it.
+    send({ type: 'control_request', request_id: 'web-msg-1', request: { subtype: 'send_task_message', task_id: 'a1', text: 'also this' } })
+    await waitFor(async () => ((await (await api('/tasks/a1/transcript?after=0')).json()) as { messages: unknown[] }).messages.length === 1)
+    expect(((await (await api('/tasks/a1/transcript?after=0')).json()) as { messages: unknown[] }).messages).toMatchObject([
+      { type: 'user', isReplay: true, message: { role: 'user', content: 'also this' } },
+    ])
 
     // The coordinator's model and effort are kept once it accepts them, and a restart keeps them.
     send({ type: 'control_request', request_id: 'web-model-1', request: { subtype: 'set_model', model: 'sonnet' } })
