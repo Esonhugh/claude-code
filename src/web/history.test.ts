@@ -256,6 +256,29 @@ describe('web history', () => {
     expect(messages.at(-2)).toMatchObject({ type: 'user', isReplay: true, uuid: 'a0000000-0000-4000-8000-000000000021', message: { content: '<task-notification>x</task-notification>' } })
   })
 
+  it('shows the hook outcomes the TUI shows, shaped like a live hook_response', async () => {
+    const file = join(root, 'config', 'projects', sanitizePath(join(root, 'project')), `${ID}.jsonl`)
+    const cwd = join(root, 'project')
+    const at = (n: number, attachment: Record<string, unknown>) =>
+      line({ type: 'attachment', uuid: `a0000000-0000-4000-8000-0000000000${n}`, parentUuid: n === 30 ? 'a0000000-0000-4000-8000-000000000005' : `a0000000-0000-4000-8000-0000000000${n - 1}`, cwd, attachment })
+    writeFileSync(
+      file,
+      readFileSync(file, 'utf8') +
+        [
+          at(30, { type: 'hook_blocking_error', hookName: 'PreToolUse:Bash', hookEvent: 'PreToolUse', toolUseID: 't', blockingError: { blockingError: '[guard.sh]: no rm', command: 'guard.sh' } }),
+          at(31, { type: 'hook_success', hookName: 'PostToolUse:Bash', hookEvent: 'PostToolUse', toolUseID: 't', content: '' }),
+          at(32, { type: 'hook_system_message', hookName: 'PostToolUse:Bash', hookEvent: 'PostToolUse', toolUseID: 't', content: 'lint ran' }),
+          line({ type: 'assistant', uuid: 'a0000000-0000-4000-8000-000000000033', parentUuid: 'a0000000-0000-4000-8000-000000000032', cwd, message: { id: 'm10', role: 'assistant', content: [{ type: 'text', text: 'blocked' }] } }),
+        ].join('\n') +
+        '\n',
+    )
+    const messages = (await readTranscript(ID, undefined, 50))!.messages.slice(-3, -1)
+    expect(messages).toEqual([
+      { type: 'system', subtype: 'hook_notice', uuid: 'a0000000-0000-4000-8000-000000000030', hook_name: 'PreToolUse:Bash', hook_event: 'PreToolUse', exit_code: 2, stderr: '[guard.sh]: no rm' },
+      { type: 'system', subtype: 'hook_notice', uuid: 'a0000000-0000-4000-8000-000000000032', hook_name: 'PostToolUse:Bash', hook_event: 'PostToolUse', outcome: 'success', stdout: '{"systemMessage":"lint ran"}' },
+    ])
+  })
+
   it('keeps the history before a compaction, in the order it was written', async () => {
     const file = join(root, 'config', 'projects', sanitizePath(join(root, 'project')), `${ID}.jsonl`)
     const cwd = join(root, 'project')

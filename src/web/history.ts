@@ -43,6 +43,20 @@ type ContentBlock = { type?: string; text?: string }
 
 const LOCAL_COMMAND = /^<(command-name|command-message|local-command-stdout|local-command-stderr)>/
 
+/** Hook outcomes the TUI shows as a line; the page reads them as it reads a live `hook_response`. */
+const HOOK_NOTICES = new Set(['hook_blocking_error', 'hook_non_blocking_error', 'hook_stopped_continuation', 'hook_system_message'])
+
+function hookNotice(m: Record<string, unknown>): Record<string, unknown> {
+  const a = m.attachment as { type: string; hookName?: string; hookEvent?: string; blockingError?: { blockingError?: string }; message?: string; content?: string }
+  const outcome =
+    a.type === 'hook_blocking_error'
+      ? { exit_code: 2, stderr: a.blockingError?.blockingError ?? '' }
+      : a.type === 'hook_non_blocking_error'
+        ? { outcome: 'error' }
+        : { outcome: 'success', stdout: JSON.stringify(a.type === 'hook_stopped_continuation' ? { continue: false, stopReason: a.message } : { systemMessage: a.content }) }
+  return { type: 'system', subtype: 'hook_notice', uuid: m.uuid, hook_name: a.hookName, hook_event: a.hookEvent, ...outcome }
+}
+
 function isVisible(message: Record<string, unknown>): boolean {
   if (message.type === 'assistant') return true
   // The compaction divider and the summary under it.
@@ -55,7 +69,7 @@ function isVisible(message: Record<string, unknown>): boolean {
     // A message the user sent mid-turn, fed to the model between tool calls.
     // A task ending the model read mid-turn: the page notes it where it happened.
     if (attachment?.type === 'queued_command') return ['prompt', 'task-notification'].includes(attachment.commandMode ?? 'prompt')
-    return attachment?.type === 'goal_status'
+    return attachment?.type === 'goal_status' || HOOK_NOTICES.has(attachment?.type ?? '')
   }
   // A channel message is meta to the model; the person sees it, as in the TUI.
   if (message.type === 'user' && (message.origin as { kind?: unknown } | undefined)?.kind === 'channel') return true
@@ -190,6 +204,7 @@ function toStreamJson(
           // As the live stream replays it: the uuid the page sent it with.
           return { type: 'user', uuid: attachment.source_uuid ?? m.uuid, timestamp: m.timestamp, parent_tool_use_id: null, isReplay: true, message: { role: 'user', content: attachment.prompt } }
         }
+        if (HOOK_NOTICES.has(attachment.type ?? '')) return hookNotice(m)
         return { type: 'system', subtype: 'goal_state_changed', uuid: m.uuid, goal: m.attachment }
       }
       return {
