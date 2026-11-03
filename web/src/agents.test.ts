@@ -63,6 +63,15 @@ describe('agent tasks', () => {
     expect(groupTasks(tasks)).toMatchObject({ running: [], finished: [tasks.a1!] })
   })
 
+  it('keeps the name the agent started with when a progress summary arrives', () => {
+    let tasks = reduceTasks({}, sys('task_started', { task_id: 'a1', description: 'Waiter', subagent_type: 'general-purpose' }))
+    // An agent summary reports its activity as the progress description.
+    tasks = reduceTasks(tasks, sys('task_progress', { task_id: 'a1', description: 'Running sleep 60', summary: 'Running sleep 60', usage: { total_tokens: 1, tool_uses: 1, duration_ms: 1 } }))
+    expect(tasks.a1).toMatchObject({ description: 'Waiter', summary: 'Running sleep 60' })
+    // A page that attaches late may see progress first; that still names the row.
+    expect(reduceTasks({}, sys('task_progress', { task_id: 'b1', description: 'Late' })).b1!.description).toBe('Late')
+  })
+
   it('builds workflow phases from the progress snapshot', () => {
     const tasks = reduceTasks(
       reduceTasks({}, sys('task_started', { task_id: 'w1', description: 'Plan', task_type: 'local_workflow', workflow_name: 'spec' })),
