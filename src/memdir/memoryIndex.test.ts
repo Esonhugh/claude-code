@@ -112,6 +112,27 @@ describe('searchMemory', () => {
     expect((await search('中文')).map(h => h.path)).toEqual([join(memDir, 'lang.md')])
   })
 
+  test('keeps short words when the query also has long ones, ranking chunks with more words first', async () => {
+    expect((await search('unrelatedword 中文')).map(h => h.path)).toEqual([join(memDir, 'lang.md')])
+    // Short Latin words and single characters next to long words would match nearly everything.
+    expect(await search('unrelatedword a 的')).toEqual([])
+    expect((await search('binary 中文 原文')).map(h => h.path)).toEqual([
+      join(memDir, 'lang.md'),
+      join(memDir, 'build.md'),
+    ])
+  })
+
+  test('snippets show the matched word with its surrounding text', async () => {
+    const path = join(memDir, 'long.md')
+    writeFileSync(path, 'filler '.repeat(100) + 'the DB lock is per process')
+    const [hit] = await search('DB')
+    const [ftsHit] = await search('process')
+    rmSync(path)
+    expect(hit?.path).toBe(path)
+    expect(hit?.snippet).toContain('[DB] lock')
+    expect(ftsHit?.snippet).toContain('filler filler filler filler the DB lock is per [process]')
+  })
+
   test('matches Chinese queries written without spaces by their trigrams', async () => {
     expect((await search('回覆要使用中文嗎')).map(h => h.path)).toEqual([join(memDir, 'lang.md')])
   })
@@ -200,6 +221,9 @@ describe('searchMemory', () => {
     ])
     expect(await find('What does this project do?')).toEqual([])
     expect((await find('我應該使用中文回覆嗎？')).map(h => h.path)).toEqual([join(memDir, 'lang.md')])
+    // Two-character Chinese words, alone or inside a sentence, recall too.
+    expect((await find('原文 代碼')).map(h => h.path)).toEqual([join(memDir, 'lang.md')])
+    expect((await find('原文和代碼怎麼辦')).map(h => h.path)).toEqual([join(memDir, 'lang.md')])
     rmSync(join(memDir, 'MEMORY.md'))
   })
 })

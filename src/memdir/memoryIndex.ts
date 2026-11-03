@@ -251,16 +251,22 @@ const CJK_CHAR = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]/u
 /**
  * Chinese and Japanese write words without spaces, so a whole sentence would
  * be one phrase that never matches. Split such runs into overlapping
- * trigrams; any of them may match, and bm25 ranks chunks sharing more first.
+ * two-character pieces (most words are two characters) and trigrams; any of
+ * them may match, and chunks sharing more of them rank first.
  */
 function splitCjk(word: string): string[] {
   return (word.match(CJK_OR_OTHER) ?? []).flatMap(part => {
     const chars = [...part]
-    if (!CJK_CHAR.test(part) || chars.length <= MIN_TRIGRAM_CHARS) return [part]
-    return Array.from({ length: chars.length - MIN_TRIGRAM_CHARS + 1 }, (_, i) =>
-      chars.slice(i, i + MIN_TRIGRAM_CHARS).join(''),
-    )
+    if (!CJK_CHAR.test(part) || chars.length <= 2) return [part]
+    const grams = (n: number) => Array.from({ length: chars.length - n + 1 }, (_, i) => chars.slice(i, i + n).join(''))
+    return [...grams(2), ...grams(MIN_TRIGRAM_CHARS)]
   })
+}
+
+/** Long enough for trigram, or a two-character CJK word. */
+function isDistinctive(word: string): boolean {
+  const length = [...word].length
+  return length >= MIN_TRIGRAM_CHARS || (length === 2 && hasCjk(word))
 }
 
 /** True when a prompt has CJK text, which carries several words without spaces. */
@@ -287,27 +293,58 @@ export async function searchMemory(params: {
   if (words.length === 0) return []
   const paths = files.map(f => f.path)
   if (paths.length === 0) return []
-  const inPaths = `path IN (${paths.map(() => '?').join(',')})`
+  const rows = rankChunks(index, paths, words, params.limit, true)
+  return rows.map(({ body, ...hit }) => ({ ...hit, snippet: snippetAround(body ?? '', words) }))
+}
 
-  // Any word may match; bm25 ranks chunks matching more of them first.
-  // Short words only filter when there is no word long enough for trigram.
-  const long = words.filter(w => [...w].length >= MIN_TRIGRAM_CHARS)
-  const args: (string | number)[] = [...paths]
-  let match: string
+type ChunkRow = { path: string; kind: MemorySearchHit['kind']; line: number; body: string | null }
+
+/**
+ * Chunks in `paths` holding any of `words`, those holding more of the words
+ * first, then by bm25. trigram MATCH serves words of three or more
+ * characters; shorter ones (most Chinese words) fall back to LIKE.
+ */
+function rankChunks(index: Database, paths: string[], query: string[], limit: number, withBody: boolean): ChunkRow[] {
+  const long = query.filter(w => [...w].length >= MIN_TRIGRAM_CHARS)
+  // Next to long words, short Latin words and single characters match nearly everything.
+  const words = long.length > 0 ? query.filter(isDistinctive) : query
+  const short = words.filter(w => [...w].length < MIN_TRIGRAM_CHARS)
+  const args: (string | number)[] = []
+  let fts = 'SELECT NULL AS id, NULL AS rank'
   if (long.length > 0) {
-    match = 'chunks MATCH ?'
+    fts = 'SELECT rowid AS id, bm25(chunks) AS rank FROM chunks WHERE chunks MATCH ?'
     // Quoted phrases keep FTS5 operators in user text literal.
     args.push(long.map(w => `"${w.replaceAll('"', '""')}"`).join(' OR '))
-  } else {
-    match = `(${words.map(() => "body LIKE ? ESCAPE '\\'").join(' OR ')})`
-    for (const w of words) args.push(`%${w.replace(/[\\%_]/g, c => `\\${c}`)}%`)
   }
-  const order = long.length > 0 ? 'ORDER BY bm25(chunks)' : 'ORDER BY rowid DESC'
-  const snippet = long.length > 0 ? "snippet(chunks, 0, '[', ']', '…', 24)" : 'substr(body, 1, 200)'
-  args.push(params.limit)
+  args.push(...paths)
+  const any = [...(long.length > 0 ? ['m.id IS NOT NULL'] : []), ...short.map(() => "c.body LIKE ? ESCAPE '\\'")]
+  for (const w of short) args.push(`%${w.replace(/[\\%_]/g, c => `\\${c}`)}%`)
+  const covered = words.map(() => '(instr(lower(c.body), lower(?)) > 0)').join(' + ')
+  args.push(...words, limit)
   return index
-    .query(`SELECT path, kind, line, ${snippet} AS snippet FROM chunks WHERE ${inPaths} AND ${match} ${order} LIMIT ?`)
-    .all(...args) as MemorySearchHit[]
+    .query(
+      // MATERIALIZED runs MATCH once; a flattened subquery re-runs it for every row.
+      `WITH m AS MATERIALIZED (${fts})
+       SELECT c.path, c.kind, c.line, ${withBody ? 'c.body' : 'NULL'} AS body
+       FROM chunks c LEFT JOIN m ON m.id = c.rowid
+       WHERE c.path IN (${paths.map(() => '?').join(',')}) AND (${any.join(' OR ')})
+       ORDER BY ${covered} DESC, m.rank, c.rowid DESC LIMIT ?`,
+    )
+    .all(...args) as ChunkRow[]
+}
+
+/**
+ * A window of `body` around the first query word it contains, the word in
+ * brackets. FTS5 snippet() counts trigram tokens, which leaves ~24 characters.
+ */
+function snippetAround(body: string, words: string[]): string {
+  const lower = body.toLowerCase()
+  const word = words.find(w => lower.includes(w.toLowerCase()))
+  if (!word) return body.slice(0, 200)
+  const at = lower.indexOf(word.toLowerCase())
+  const end = at + word.length
+  const start = Math.max(0, at - 80)
+  return `${start > 0 ? '…' : ''}${body.slice(start, at)}[${body.slice(at, end)}]${body.slice(end, end + 100)}${end + 100 < body.length ? '…' : ''}`
 }
 
 // Words too common in prompts or memory frontmatter to signal relevance.
@@ -318,7 +355,8 @@ const RECALL_STOPWORDS = new Set(
     'can could should would will shall may might must does did doing done just also only very more most ' +
     'some any all each every our ours its let get got use using used make made want need please ' +
     'tell show give know think say said like one two new now out off again still been being ' +
-    'name description metadata type project user feedback reference memory memories answer short sentence'
+    'name description metadata type project user feedback reference memory memories answer short sentence ' +
+    '什麼 什么 怎麼 怎么 為什 为什 是不 不是 可以 一下 我們 我们 你們 你们 這個 这个 那個 那个 沒有 没有 有沒 有没'
   ).split(' '),
 )
 
@@ -338,7 +376,7 @@ export async function findMemoryFilesForPrompt(params: {
         .toLowerCase()
         .split(/[^\p{L}\p{N}_-]+/u)
         .flatMap(splitCjk)
-        .filter(w => [...w].length >= MIN_TRIGRAM_CHARS && !RECALL_STOPWORDS.has(w)),
+        .filter(w => isDistinctive(w) && !RECALL_STOPWORDS.has(w)),
     ),
   ]
   if (words.length === 0) return []
@@ -350,11 +388,7 @@ export async function findMemoryFilesForPrompt(params: {
     .map(f => f.path)
     .filter(p => basename(p) !== 'MEMORY.md' && !params.exclude.has(p))
   if (paths.length === 0) return []
-  const rows = index
-    .query(
-      `SELECT path FROM chunks WHERE path IN (${paths.map(() => '?').join(',')}) AND chunks MATCH ? ORDER BY bm25(chunks) LIMIT ?`,
-    )
-    .all(...paths, words.map(w => `"${w.replaceAll('"', '""')}"`).join(' OR '), params.limit) as { path: string }[]
+  const rows = rankChunks(index, paths, words, params.limit, false)
   const known = new Map(
     (index.query('SELECT path, mtime FROM files').all() as { path: string; mtime: number }[]).map(r => [r.path, r.mtime]),
   )
