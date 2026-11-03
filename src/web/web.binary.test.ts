@@ -896,7 +896,7 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       await preview.locator('.cpin.sent', { hasText: '1' }).waitFor()
       await page.locator('.msg.user', { hasText: 'PIN_NOTE' }).waitFor()
       for (let i = 0; i < 300 && promptsSeen.length === commentsBefore; i++) await Bun.sleep(100)
-      expect(promptsSeen.slice(commentsBefore).join('\n')).toContain('Comment on `' + files[3] + '` (pinned at 25% from the left, 75% from the top): PIN_NOTE')
+      expect(promptsSeen.slice(commentsBefore).join('\n')).toContain(JSON.stringify('Comment on `' + files[3] + '` (pinned at 25% from the left, 75% from the top): PIN_NOTE').slice(1, -1))
       expect(await input.inputValue()).toBe('')
       await open('book.xlsx')
       await preview.getByRole('tab', { name: 'Second' }).click()
