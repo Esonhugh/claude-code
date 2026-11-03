@@ -661,6 +661,9 @@ export function hookBlock(result: string): { hook: string; why: string } | undef
 const unescapeAttr = (value: string) =>
   value.replace(/&(quot|apos|lt|gt|amp);/g, (_, name: string) => ({ quot: '"', apos: "'", lt: '<', gt: '>', amp: '&' })[name]!)
 
+// The engine's escape of a closing tag inside the text: an opening bracket (or lookalike) gets a backslash.
+const ESCAPED_CLOSE = /([<\uFF1C\uFE64\u2329\u27E8\u3008\u2039\u02C2\u1438\u276C\u276E\u2770\u29FC\u226E\u227A\u22D6])\\(?=[^A-Za-z0-9_-]*[/\uFF0F\u2215\u2044][^A-Za-z0-9_-]*channel)/giu
+
 /** A channel message, with the server's leaf name (`plugin:telegram:telegram` → `telegram`) as its source. */
 export function channelMessage(text: string, id: string): Extract<Item, { kind: 'channel' }> | undefined {
   const m = CHANNEL_MESSAGE.exec(text)
@@ -672,7 +675,7 @@ export function channelMessage(text: string, id: string): Extract<Item, { kind: 
     id,
     source: source.slice(source.lastIndexOf(':') + 1),
     ...(user !== undefined && { user: unescapeAttr(user) }),
-    text: m[3] ?? '',
+    text: (m[3] ?? '').replace(ESCAPED_CLOSE, '$1'),
   }
 }
 
