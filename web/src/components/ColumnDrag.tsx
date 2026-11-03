@@ -10,6 +10,19 @@ export function clampColumn(side: 'left' | 'right', px: number, viewport: number
 }
 
 /**
+ * The saved widths as CSS variables, capped by the window: a width dragged on a
+ * wide window must not squeeze the conversation after the window gets narrower.
+ */
+export function columnVars(columns: Columns): Record<string, string> {
+  return {
+    ...(columns.left && { '--left-w': `min(${columns.left}px, calc(100vw - 700px))` }),
+    ...(columns.right && {
+      '--right-w': `max(280px, min(${columns.right}px, calc(100vw - var(--left-w, 220px) - 420px)))`,
+    }),
+  }
+}
+
+/**
  * The splitter on the left or right edge of the conversation: drag it, or focus it and use ← →;
  * a double click goes back to the default width.
  */

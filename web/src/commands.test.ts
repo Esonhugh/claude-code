@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test'
-import { filterCommands, moveSelection, nativeCommand, paletteQuery, recallPrompt, type SlashCommand } from './commands'
+import { filterCommands, moveSelection, nativeCommand, paletteQuery, recallPrompt, type SlashCommand, typedInFull } from './commands'
 
 const cmd = (name: string, aliases?: string[]): SlashCommand => ({
   name,
@@ -86,6 +86,7 @@ describe('nativeCommand', () => {
   it('maps bare commands with a page panel and leaves the rest to the session', () => {
     expect(nativeCommand('/stats')).toEqual({ dialog: 'stats' })
     expect(nativeCommand(' /usage ')).toEqual({ dialog: 'settings', tab: 'usage' })
+    expect(nativeCommand('/cost')).toEqual({ dialog: 'settings', tab: 'usage' })
     expect(nativeCommand('/plugin')).toEqual({ dialog: 'plugins' })
     expect(nativeCommand('/keybindings')).toEqual({ dialog: 'keys' })
     expect(nativeCommand('/model')).toEqual({ menu: 'model' })
@@ -95,5 +96,17 @@ describe('nativeCommand', () => {
     expect(nativeCommand('/compact')).toBeUndefined()
     expect(nativeCommand('stats')).toBeUndefined()
     expect(nativeCommand('/constructor')).toBeUndefined()
+  })
+})
+
+describe('typedInFull', () => {
+  it('is true for the name, an alias, or a page command, so Enter sends instead of completing', () => {
+    const usage = cmd('usage', ['cost', 'stats'])
+    expect(typedInFull('/usage', usage)).toBe(true)
+    expect(typedInFull('/stats', usage)).toBe(true)
+    expect(typedInFull('/cost', usage)).toBe(true)
+    expect(typedInFull('/theme', cmd('themes'))).toBe(true)
+    expect(typedInFull('/us', usage)).toBe(false)
+    expect(typedInFull('/sta', usage)).toBe(false)
   })
 })
