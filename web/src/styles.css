@@ -820,6 +820,9 @@ a.btn { text-decoration: none; color: var(--fg); display: inline-block }
 .pane > .agent-pane > .agent-feed { flex: 1; overflow: auto; min-height: 0 }
 .wfcur .dot { flex: none }
 .wfnow + .wfcur { margin-top: 14px }
+.crumb .wfacts { margin-left: auto; display: flex; gap: 6px }
+.crumb .wfacts .btn { padding: 3px 10px; border: 1px solid var(--line); background: var(--surface); color: var(--fg); font-size: 12.5px }
+.crumb .wfacts .btn.danger { background: var(--bad); border-color: var(--bad); color: var(--surface) }
 .wfnow .wcard { cursor: pointer }
 .lanes .lane h3 small { font-weight: 400; color: var(--muted) }
 .team-timeline { display: flex; flex-direction: column; gap: 8px; margin: 0; padding: 0; list-style: none; font-size: 13px }

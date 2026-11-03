@@ -828,16 +828,18 @@ export function WorkflowTab({
         ) : (
           <span>workflow {taskName(task)}</span>
         )}
-        {phases.length > 0 && (
-          <button type="button" onClick={() => setExpanded(true)}>
-            {t('expand')}
-          </button>
-        )}
-        {!isFinished(task) && (
-          <button type="button" onClick={() => onStop(task.id)}>
-            {t('stopWorkflow')}
-          </button>
-        )}
+        <span className="wfacts">
+          {phases.length > 0 && (
+            <button className="btn" type="button" onClick={() => setExpanded(true)}>
+              {t('expand')}
+            </button>
+          )}
+          {!isFinished(task) && (
+            <button className="btn danger" type="button" onClick={() => onStop(task.id)}>
+              {t('stopWorkflow')}
+            </button>
+          )}
+        </span>
       </div>
       {allAgents.length > 0 && (
         <div className="bar">
@@ -895,7 +897,7 @@ export function WorkflowTab({
                   .join(' · ')}
               </span>
               {!isFinished(task) && (
-                <button className="btn" type="button" onClick={() => onStop(task.id)}>
+                <button className="btn danger" type="button" onClick={() => onStop(task.id)}>
                   {t('stopWorkflow')}
                 </button>
               )}
