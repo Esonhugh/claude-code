@@ -556,6 +556,7 @@ button.chip { cursor: pointer; font: inherit; color: inherit }
 .status-top { display: flex; flex-direction: column; gap: 8px; padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface) }
 .st-state { display: flex; align-items: center; gap: 8px; font-size: 14px } .st-state small { margin-left: auto; color: var(--muted); font-size: 12px }
 .st-model { font-size: 13px; color: var(--muted) }
+.st-compact { display: flex; align-items: center; gap: 8px; flex-wrap: wrap } .st-compact .btn { margin-left: auto }
 .sgroup { border-top: 1px solid var(--line); padding-top: 8px }
 .sgroup > summary { list-style: none; cursor: pointer; display: flex; align-items: baseline; gap: 8px; font-size: 13px; font-weight: 600; user-select: none }
 .sgroup > summary::-webkit-details-marker { display: none }

@@ -50,8 +50,37 @@ type Json = Record<string, unknown>
 const isObj = (v: unknown): v is Json => typeof v === 'object' && v !== null && !Array.isArray(v)
 const num = (v: unknown) => (typeof v === 'number' ? v : 0)
 
-/** What Status asks the session for: `get_usage`, `get_memory_dialog` and `get_sandbox_dialog`. */
-type StatusData = { usage?: Json; memory?: Json; sandbox?: Json }
+/** What Status asks the session for: `get_usage`, `get_memory_dialog`, `get_sandbox_dialog` and `get_status`. */
+type StatusData = { usage?: Json; memory?: Json; sandbox?: Json; status?: Json }
+
+/** The CLI /status rows that say where requests go; the rest of /status already has its own Status rows. */
+const CONNECTION_LABELS = new Set([
+  'Anthropic base URL',
+  'OpenAI base URL',
+  'Bedrock base URL',
+  'Vertex base URL',
+  'Microsoft Foundry base URL',
+  'AWS region',
+  'GCP project',
+  'Default region',
+  'Microsoft Foundry resource',
+  'Proxy',
+  'Additional CA cert(s)',
+  'mTLS client cert',
+  'mTLS client key',
+])
+
+/** Base URL, proxy and the other connection rows of a `get_status` answer. */
+export function connectionRows(status: Json | undefined): [string, string][] {
+  const sections = Array.isArray(status?.sections) ? status.sections.filter(isObj) : []
+  return sections.flatMap(section =>
+    (Array.isArray(section.rows) ? section.rows.filter(isObj) : []).flatMap(row =>
+      typeof row.label === 'string' && CONNECTION_LABELS.has(row.label) && typeof row.value === 'string'
+        ? [[row.label, row.value] as [string, string]]
+        : [],
+    ),
+  )
+}
 
 function useStatusData(
   sessionId: string,
@@ -76,6 +105,18 @@ function useStatusData(
       current = false
     }
   }, [sessionId, live, busy, request])
+  // Connection settings are fixed for the life of the session process, so one read is enough.
+  useEffect(() => {
+    if (!live || !request) return
+    let current = true
+    request({ subtype: 'get_status' }).then(
+      body => current && setData(d => ({ ...d, status: body })),
+      () => {},
+    )
+    return () => {
+      current = false
+    }
+  }, [sessionId, live, request])
   return data
 }
 
@@ -148,6 +189,9 @@ export function accountText(t: T, env: SessionChat['env']): string | undefined {
   return `API key · ${source}`
 }
 
+/** Status offers `/compact` by itself once the context is this full. */
+export const SUGGEST_COMPACT_PERCENT = 60
+
 /** A Status section that folds; `summary` stays visible when folded. */
 function Section({ title, summary, open, children }: { title: string; summary?: string; open?: boolean; children: ReactNode }) {
   return (
@@ -171,6 +215,7 @@ function StatusPane({
   todos,
   request,
   groups,
+  onCompact,
 }: {
   t: T
   chat: SessionChat
@@ -181,6 +226,7 @@ function StatusPane({
   todos: Todo[]
   request?: (body: Json) => Promise<Json>
   groups: Groups
+  onCompact?: () => void
 }) {
   const data = useStatusData(sessionId, chat.mode === 'live', chat.busy, request)
   const rounds = chat.items.filter(i => i.kind === 'user').length
@@ -197,6 +243,7 @@ function StatusPane({
   const { terminals, monitors } = groups
   const running = runningCount(agents) + runningCount(terminals) + runningCount(monitors)
   const pct = chat.contextPercent === undefined ? undefined : Math.round(chat.contextPercent)
+  const suggestCompact = !!onCompact && pct !== undefined && pct >= SUGGEST_COMPACT_PERCENT
   const account = accountText(t, env)
   const mcp = env.mcpServers
   const roundsText = `${t('roundsValue', { n: String(rounds) })}${compactions ? t('compactedTimes', { n: String(compactions) }) : ''}`
@@ -224,12 +271,21 @@ function StatusPane({
           <div className="bar">
             <i style={{ width: `${Math.min(100, pct ?? 0)}%` }} />
           </div>
-          {context && (
-            <small>
-              {context.autoCompact && context.threshold !== undefined
-                ? compactHint(t, context.total, context.threshold, shortTokens)
-                : `${t('autoCompactLabel')} ${t('off')}`}
-            </small>
+          {(context || suggestCompact) && (
+            <div className="st-compact">
+              {context && (
+                <small>
+                  {context.autoCompact && context.threshold !== undefined
+                    ? compactHint(t, context.total, context.threshold, shortTokens)
+                    : `${t('autoCompactLabel')} ${t('off')}`}
+                </small>
+              )}
+              {suggestCompact && (
+                <button type="button" className="btn" disabled={chat.busy} onClick={onCompact}>
+                  {t('compactNow')}
+                </button>
+              )}
+            </div>
           )}
         </div>
       </div>
@@ -279,6 +335,9 @@ function StatusPane({
           rows={[
             ...(env.version ? [[t('versionLabel'), <span className="mono">{env.version}</span>] as [string, ReactNode]] : []),
             ...(account ? [[t('accountLabel'), account] as [string, ReactNode]] : []),
+            ...connectionRows(data.status).map(
+              ([label, value]) => [label, <span className="mono">{value}</span>] as [string, ReactNode],
+            ),
             ...(mcp
               ? [
                   [
@@ -381,6 +440,7 @@ export function SidePanel({
   agentInput,
   onRequest,
   onStatusRequest,
+  onCompact,
   todos = [],
   onClose,
 }: {
@@ -405,6 +465,8 @@ export function SidePanel({
   agentInput: AgentInput
   /** A control request to the session; Status reads usage, memory and sandbox with it. */
   onStatusRequest?: HostRequest
+  /** Sends `/compact`; Status shows the button once the context passes SUGGEST_COMPACT_PERCENT. */
+  onCompact?: () => void
   todos?: Todo[]
   onRequest: HostRequest
   onClose: () => void
@@ -459,6 +521,7 @@ export function SidePanel({
             todos={todos}
             request={onStatusRequest}
             groups={bg.groups}
+            onCompact={onCompact}
           />
         )}
         {tab === 'files' && <FilesPane t={t} chat={chat} current={currentFile} onOpen={onOpenFile} />}
