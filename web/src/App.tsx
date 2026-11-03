@@ -749,7 +749,12 @@ export function App() {
         setAttachments(a => ({ ...a, [id]: [] }))
         setAgentTargets(x => ({ ...x, [id]: undefined }))
         const delivery = await sendToTask(id, target.id, [text, mentions.join(' ')].filter(Boolean).join('\n\n'))
-        dispatch({ type: 'chat', id, action: { type: 'local', patch: { notice: `@${target.name}: ${delivery}` } } })
+        const notice = `@${target.name}: ${delivery}`
+        dispatch({ type: 'chat', id, action: { type: 'local', patch: { notice } } })
+        // A delivery receipt, not an error: it goes away on its own.
+        setTimeout(() => {
+          if (stateRef.current.chats[id]?.notice === notice) dispatch({ type: 'chat', id, action: { type: 'local', patch: { notice: undefined } } })
+        }, 4000)
       } catch (err) {
         dispatch({ type: 'chat', id, action: { type: 'local', patch: { notice: err instanceof Error ? err.message : String(err) } } })
       }
@@ -772,6 +777,7 @@ export function App() {
     setDrafts(d => ({ ...d, [id]: '' }))
     setAttachments(a => ({ ...a, [id]: [] }))
     stickToBottom.current = true
+    if (chat.notice) dispatch({ type: 'chat', id, action: { type: 'local', patch: { notice: undefined } } })
     const uuid = newUuid()
     dispatch({ type: 'chat', id, action: { type: chat.busy ? 'queue' : 'user', ...content, uuid } })
     send(id, userMessage(content.text, content.images, uuid))

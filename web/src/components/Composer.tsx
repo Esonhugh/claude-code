@@ -361,6 +361,10 @@ export function InputBox({
   const [selected, setSelected] = useState(0)
   // Esc closes the palette for this exact draft; typing reopens it.
   const [dismissed, setDismissed] = useState<string>()
+  // Once the draft moves on, the same text typed again later opens the palette again.
+  useEffect(() => {
+    if (dismissed !== undefined && draft !== dismissed) setDismissed(undefined)
+  }, [draft, dismissed])
   // The `@query` before the caret, and the files it matches.
   const [mention, setMention] = useState<{ start: number; end: number; query: string }>()
   const [fileHits, setFileHits] = useState<{ query: string; files: string[] }>()

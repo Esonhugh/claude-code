@@ -155,9 +155,9 @@ describe('agent tasks', () => {
     expect(nested.children.get('p1')!.map(t => t.id)).toEqual(['c1'])
     expect(nested.children.has('w1')).toBe(false)
     expect(workflowAgent(tasks, tasks.w1!, 'gather-a')?.id).toBe('wa')
-    // A running agent reports its current activity as the description; it is still found.
+    // A running agent reports its current activity as the description; the name it started with stays (#631), so it is still found.
     tasks = reduceTasks(tasks, sys('task_progress', { task_id: 'wa', tool_use_id: 'toolu_wf', description: 'Running wait', usage: { total_tokens: 1, tool_uses: 1, duration_ms: 1 } }))
-    expect(tasks.wa!.description).toBe('Running wait')
+    expect(tasks.wa!.description).toBe('spec: gather-a')
     expect(workflowAgent(tasks, tasks.w1!, 'gather-a')?.id).toBe('wa')
   })
 
