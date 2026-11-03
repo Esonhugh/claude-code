@@ -30,7 +30,9 @@ export function chatMarkdown(
       parts.push(`## ${labels.you}`, item.text)
     } else if (item.kind === 'error' || item.kind === 'local' || item.kind === 'recap' || item.kind === 'note') {
       parts.push(`> ${oneLine(item.text, 500)}`)
-    } else if (item.kind === 'compact' || item.kind === 'goal') {
+    } else if (item.kind === 'peer') {
+      parts.push(`## ← ${oneLine(item.from)}`, item.text)
+    } else if (item.kind === 'compact' || item.kind === 'goal' || item.kind === 'event') {
       continue
     } else if (item.kind === 'teammate') {
       parts.push(`## @${oneLine(item.from)}`, item.text)

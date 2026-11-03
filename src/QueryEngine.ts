@@ -1358,6 +1358,9 @@ export class QueryEngine {
               uuid: message.attachment.source_uuid || message.uuid,
               timestamp: message.timestamp,
               isReplay: true,
+              // System-injected (a peer message, a cron prompt): not something the user typed.
+              // @ts-ignore - recovered code
+              ...(message.attachment.isMeta && { isSynthetic: true }),
             } as SDKUserMessageReplay
           }
           break

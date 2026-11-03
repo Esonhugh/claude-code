@@ -2324,6 +2324,22 @@ function runHeadlessStreaming(
             }
           }
 
+          // QueryEngine acks only user-authored prompts; echo a peer session's message so replay
+          // consumers (claude web) show it, as the REPL does.
+          if (options.replayUserMessages && command.isMeta && command.origin?.kind === 'peer') {
+            for (const c of batch) {
+              output.enqueue({
+                type: 'user',
+                message: { role: 'user', content: c.value },
+                session_id: getSessionId(),
+                parent_tool_use_id: null,
+                uuid: c.uuid ?? randomUUID(),
+                isReplay: true,
+                isSynthetic: true,
+              } satisfies SDKUserMessageReplay)
+            }
+          }
+
           // Combine all MCP clients. appState.mcp is populated incrementally
           // per-server by main.tsx (mirrors useManageMCPConnections). Reading
           // fresh per-command means late-connecting servers are visible on the
@@ -3223,6 +3239,10 @@ function runHeadlessStreaming(
     cronScheduler = cronSchedulerModule.createCronScheduler({
       onFire: prompt => {
         if (inputClosed) return
+        // The REPL's "Running scheduled task" line; the prompt itself is meta.
+        if (options.outputFormat === 'stream-json') {
+          output.enqueue({ type: 'system', subtype: 'scheduled_task_fire', uuid: randomUUID(), session_id: getSessionId() })
+        }
         void enqueueInboundMessage({
           mode: 'prompt',
           value: prompt,

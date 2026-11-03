@@ -12,7 +12,7 @@ import { type DiffRow, toolDiff } from '../diff'
 import { baseName, splitMentions, tilde } from '../files'
 import type { MessageKey } from '../i18n'
 import { Markdown } from '../markdown/Markdown'
-import type { Block, Decision, Item, ModelOption } from '../protocol'
+import { type Block, type Decision, hookBlock, type Item, type ModelOption } from '../protocol'
 import type { Source } from '../sources'
 import { stripAnsi, toolMessage, toolSummary } from '../tools'
 import { firstPreviewUrl, WebPreviewContext } from '../webPreview'
@@ -385,7 +385,18 @@ function ToolCard({ block, t }: { block: Extract<Block, { kind: 'tool' }>; t: T 
       )}
     </details>
   )
-  return card
+  const blocked = block.isError && block.result ? hookBlock(block.result) : undefined
+  if (!blocked) return card
+  // As the TUI's line under the tool call; the tool result is all a reloaded transcript keeps of it.
+  return (
+    <>
+      {card}
+      <div className="pj-note event-line error tool-hook">
+        <span className="g">⚑</span>
+        <span>{t(blocked.why ? 'hookBlockedWhy' : 'hookBlocked', blocked)}</span>
+      </div>
+    </>
+  )
 }
 
 /** A worker's report to its caller (`SubagentHandback`), unless it was refused. */
@@ -679,6 +690,25 @@ function MessageView({
           <span className="chan-badge">{item.source}</span> {item.user}
         </span>
         <div className="bubble">{item.text}</div>
+      </div>
+    )
+  }
+  if (item.kind === 'peer') {
+    // Another Claude session wrote this; shown as plain text, like a channel message.
+    return (
+      <div className="msg channel">
+        <span className="who">
+          <span className="chan-badge">{t('peerBadge')}</span> {item.from}
+        </span>
+        <div className="bubble">{item.text}</div>
+      </div>
+    )
+  }
+  if (item.kind === 'event') {
+    return (
+      <div className={`pj-note event-line${item.tone ? ` ${item.tone}` : ''}`}>
+        <span className="g">{item.key === 'cronFired' ? '⏲' : item.key === 'modLog' ? '◆' : '⚑'}</span>
+        <span>{t(item.key, item.vars)}</span>
       </div>
     )
   }

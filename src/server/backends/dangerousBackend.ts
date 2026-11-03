@@ -38,6 +38,8 @@ export class DangerousBackend {
       addDirs?: string[]
       /** Echo queued prompts, such as teammate messages (`--replay-user-messages`). */
       replayUserMessages?: boolean
+      /** Hook outcomes (`--include-hook-events`), for a hook that blocked or failed. */
+      includeHookEvents?: boolean
       /** Keep file checkpoints so rewind_files can restore them, as the REPL does. */
       fileCheckpointing?: boolean
     } = {},
@@ -90,6 +92,7 @@ export class DangerousBackend {
           : []),
         ...(this.options.addDirs ?? []).flatMap(dir => ['--add-dir', dir]),
         ...(this.options.replayUserMessages ? ['--replay-user-messages'] : []),
+        ...(this.options.includeHookEvents ? ['--include-hook-events'] : []),
       ],
       { cwd, env, stdio: ['pipe', 'pipe', 'pipe'] },
     )

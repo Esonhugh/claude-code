@@ -189,6 +189,8 @@ export async function runWebCommand(opts: WebCommandOptions): Promise<void> {
       addDirs: [uploadsDir],
       // Teammate messages to the lead reach the page only as replayed prompts.
       replayUserMessages: true,
+      // The page shows a hook that blocked a tool or failed, as the TUI does.
+      includeHookEvents: true,
       // The page's "restore files" rewind needs checkpoints; the /config toggle still turns them off.
       fileCheckpointing: getGlobalConfig().fileCheckpointingEnabled !== false,
     }),
