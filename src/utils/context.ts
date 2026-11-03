@@ -10,6 +10,7 @@ import { getFirstPartyModelCacheKey } from './model/firstPartyModelCacheKey.js'
 import { CANONICAL_MODEL_IDS } from './model/configs.js'
 import { firstPartyNameToCanonical, getCanonicalName } from './model/model.js'
 import { getModelCapability } from './model/modelCapabilities.js'
+import { getGatewayModelContextWindow } from './model/openaiModelOptions.js'
 import { isAnt } from 'src/utils/userType.js'
 
 
@@ -228,6 +229,13 @@ export function getContextWindowForModel(
   // [1m] is a client-side opt-in, not permission to exceed an API input limit.
   if (has1mContext(model)) {
     return isOpenAI1MModel(model) ? 922_000 : 1_000_000
+  }
+
+  const gatewayWindow = getGatewayModelContextWindow(model)
+  if (gatewayWindow && gatewayWindow >= 100_000) {
+    return gatewayWindow > MODEL_CONTEXT_WINDOW_DEFAULT && is1mContextDisabled()
+      ? MODEL_CONTEXT_WINDOW_DEFAULT
+      : gatewayWindow
   }
 
   const cap = getModelCapability(model)
