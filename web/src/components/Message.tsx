@@ -393,6 +393,7 @@ export function Message({
   role,
   who = 'Claude',
   taskCard,
+  queued,
 }: {
   item: Item
   t: T
@@ -406,6 +407,8 @@ export function Message({
   who?: string
   /** A project draws its Agent calls as one-line task cards, grouped after the text. */
   taskCard?: (block: Extract<Block, { kind: 'tool' }>) => ReactNode
+  /** Sent during a running turn and not yet seen by the model. */
+  queued?: boolean
 }) {
   const files = useContext(FilesContext)
   const { rewind } = useContext(ChatContext)
@@ -430,13 +433,13 @@ export function Message({
             </span>
           </div>
         )}
-        <div className="msg user">
-          {rewind && (
+        <div className={queued ? 'msg user queued' : 'msg user'}>
+          {rewind && !queued && (
             <button type="button" className="rw-btn" title={t('rewindTitle')} onClick={() => rewind.ask(item.id)}>
               {t('rewind')}
             </button>
           )}
-          <span className="who">{t('you')}</span>
+          <span className="who">{queued ? t('queuedMessage') : t('you')}</span>
           <div className="bubble">
             {item.images?.map((src, i) => (
               <img key={i} className="bubble-image" src={src} alt="" />

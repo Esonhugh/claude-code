@@ -189,6 +189,30 @@ describe('web history', () => {
     expect(JSON.stringify(messages[4])).not.toContain('whole file')
   })
 
+  it('shows a message sent mid-turn where the model read it, under the uuid the page sent', async () => {
+    const file = join(root, 'config', 'projects', sanitizePath(join(root, 'project')), `${ID}.jsonl`)
+    const cwd = join(root, 'project')
+    writeFileSync(
+      file,
+      readFileSync(file, 'utf8') +
+        [
+          line({ type: 'attachment', uuid: 'a0000000-0000-4000-8000-000000000020', parentUuid: 'a0000000-0000-4000-8000-000000000005', cwd, attachment: { type: 'queued_command', prompt: [{ type: 'text', text: 'also check B' }], source_uuid: 'c0000000-0000-4000-8000-000000000001', commandMode: 'prompt' } }),
+          line({ type: 'attachment', uuid: 'a0000000-0000-4000-8000-000000000021', parentUuid: 'a0000000-0000-4000-8000-000000000020', cwd, attachment: { type: 'queued_command', prompt: '<task-notification>x</task-notification>', commandMode: 'task-notification' } }),
+          line({ type: 'assistant', uuid: 'a0000000-0000-4000-8000-000000000022', parentUuid: 'a0000000-0000-4000-8000-000000000021', cwd, message: { id: 'm9', role: 'assistant', content: [{ type: 'text', text: 'checked B' }] } }),
+        ].join('\n') +
+        '\n',
+    )
+    const messages = (await readTranscript(ID, undefined, 50))!.messages
+    expect(messages.at(-1)).toMatchObject({ type: 'assistant' })
+    expect(messages.at(-2)).toMatchObject({
+      type: 'user',
+      isReplay: true,
+      uuid: 'c0000000-0000-4000-8000-000000000001',
+      message: { role: 'user', content: [{ type: 'text', text: 'also check B' }] },
+    })
+    expect(JSON.stringify(messages)).not.toContain('task-notification')
+  })
+
   it('keeps the history before a compaction, in the order it was written', async () => {
     const file = join(root, 'config', 'projects', sanitizePath(join(root, 'project')), `${ID}.jsonl`)
     const cwd = join(root, 'project')

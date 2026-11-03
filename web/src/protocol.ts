@@ -169,6 +169,8 @@ export type ChatState = {
   recapPending?: { away?: number }
   /** When the first message of this chat was sent (ms). */
   startedAt?: number
+  /** Sent while a turn ran; each moves into `items` once the model reads it. */
+  queued: Extract<Item, { kind: 'user' }>[]
 }
 
 export const initialState: ChatState = {
@@ -184,6 +186,7 @@ export const initialState: ChatState = {
   rateLimits: {},
   taskNotes: [],
   noteKeys: [],
+  queued: [],
 }
 
 type Json = Record<string, unknown>
@@ -365,6 +368,15 @@ export function addUserMessage(
     goal = { condition: arg, status: 'active', iterations: 0, setAt: Date.now(), checks: [] }
   }
   return { ...state, busy: true, startedAt: state.startedAt ?? Date.now(), items, goal }
+}
+
+/**
+ * A message sent while a turn runs. The engine queues it and feeds it to the
+ * model between tool calls, or runs it as the next turn; its echo (same uuid)
+ * moves it into the chat.
+ */
+export function queueUserMessage(state: ChatState, text: string, uuid: string, images?: string[]): ChatState {
+  return { ...state, queued: [...state.queued, { kind: 'user', id: uuid, text, ...(images?.length && { images }) }] }
 }
 
 /** The rules an "always allow" answer adds, as `Bash(npm test:*)`. */
@@ -615,6 +627,11 @@ export function reduce(state: ChatState, raw: unknown): ChatState {
   if (!isObj(raw)) return state
   // Subagent traffic (parent_tool_use_id set) belongs to the Agents panel.
   if (raw.parent_tool_use_id) return state
+  // What the turn did not take runs as the next turn; its echo comes only after that turn's first reply.
+  if (raw.type === 'result' && state.queued.length) {
+    const ended = reduce({ ...state, queued: [] }, raw)
+    return state.queued.reduce((s, q) => addUserMessage(s, q.text, q.images, q.id), ended)
+  }
 
   switch (raw.type) {
     case 'system':
@@ -750,6 +767,12 @@ export function reduce(state: ChatState, raw: unknown): ChatState {
           ...next,
           items: next.items.map(i => (i === compact ? { ...compact, summary: contentText(message.content) } : i)),
         }
+      }
+      const queued = uuid === undefined ? undefined : state.queued.find(q => q.id === uuid)
+      if (raw.isReplay === true && queued) {
+        // Fed to the model between tool calls.
+        const rest = { ...next, queued: next.queued.filter(q => q !== queued) }
+        return addUserMessage(rest, queued.text, queued.images, queued.id)
       }
       if (raw.isReplay === true && !echo) {
         const at = typeof raw.timestamp === 'string' ? Date.parse(raw.timestamp) : NaN
