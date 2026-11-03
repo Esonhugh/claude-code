@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test'
 import { localFileSrc } from './markdown/safeUrl'
-import { homeRelative, mentionPath, parseCsv, previewKind, sessionFiles, splitMentions } from './files'
+import { dataUrlFile, homeRelative, mentionPath, parseCsv, previewKind, sessionFiles, splitMentions } from './files'
 import { userMessage } from './protocol'
 
 describe('files', () => {
@@ -86,5 +86,15 @@ describe('homeRelative', () => {
     expect(homeRelative('/home/meg/x', '/home/me')).toBe('/home/meg/x')
     expect(homeRelative('/tmp/x', undefined)).toBe('/tmp/x')
     expect(homeRelative('/tmp/x', '/')).toBe('/tmp/x')
+  })
+})
+
+describe('dataUrlFile', () => {
+  it('turns an inline image back into a file of the same type and bytes', async () => {
+    const file = dataUrlFile('data:image/png;base64,iVBORw0K', 'image-1')!
+    expect(file.type).toBe('image/png')
+    expect(file.name).toBe('image-1.png')
+    expect([...new Uint8Array(await file.arrayBuffer())]).toEqual([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a])
+    expect(dataUrlFile('https://x/a.png', 'a')).toBeUndefined()
   })
 })

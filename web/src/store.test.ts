@@ -116,3 +116,17 @@ describe('appReducer', () => {
     expect(state.history.map(h => h.id)).toEqual(['disk'])
   })
 })
+
+describe('queued messages on stop', () => {
+  it('drops them so the interrupted turn does not carry them into the next one', () => {
+    let state = appReducer(initialAppState, { type: 'created', id: 's', workDir: '/w', title: 't', start: { mode: 'default' } })
+    const chat = (action: Parameters<typeof appReducer>[1] & { type: 'chat' }) => (state = appReducer(state, action))
+    chat({ type: 'chat', id: 's', action: { type: 'user', text: 'first', uuid: 'u1' } })
+    chat({ type: 'chat', id: 's', action: { type: 'queue', text: 'second', uuid: 'u2' } })
+    chat({ type: 'chat', id: 's', action: { type: 'unqueue' } })
+    chat({ type: 'chat', id: 's', action: { type: 'message', raw: { type: 'result', subtype: 'error_during_execution', is_error: true, errors: [] } } })
+    expect(state.chats.s!.queued).toEqual([])
+    expect(state.chats.s!.busy).toBe(false)
+    expect(state.chats.s!.items.filter(i => i.kind === 'user').map(i => i.id)).toEqual(['u1'])
+  })
+})

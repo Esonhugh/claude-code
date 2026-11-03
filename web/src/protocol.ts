@@ -925,6 +925,7 @@ export const REQUEST_PREFIX = {
   effort: 'web-effort-',
   status: 'web-status-',
   rewind: 'web-rewind-',
+  cancelQueued: 'web-cancel-queued-',
   /** The sidebar dialogs' requests (mcp_status, reload_plugins…). */
   ext: 'web-ext-',
   background: 'web-bg-',
