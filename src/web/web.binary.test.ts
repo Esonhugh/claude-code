@@ -2226,6 +2226,7 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       await page.reload()
       await page.locator('.wl-hi, .main').first().waitFor()
 
+
       // A project: the coordinator's box and a dispatched task's box.
       await page.getByRole('button', { name: 'New project', exact: true }).click()
       const dialog = page.locator('.dialog')
@@ -2323,6 +2324,65 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       await browser.close()
     }
   }, 240_000)
+
+  it('shares the ↑ history with the CLI: its prompts come back, and what the page sends is added', async () => {
+    const playwrightPath = Bun.spawnSync(['node', '-p', "require.resolve('playwright')"])
+      .stdout.toString()
+      .trim()
+    const { chromium } = await import(playwrightPath)
+    const browser = await chromium.launch()
+    try {
+      const page = await (await browser.newContext({ locale: 'en-US' })).newPage()
+      const errors: string[] = []
+      page.on('pageerror', (e: Error) => errors.push(e.message))
+      const historyFile = join(home, '.claude', 'history.jsonl')
+      const project = realpathSync(workspace).normalize('NFC')
+      // A prompt typed in the CLI in this folder, and one in another folder.
+      const cliEntry = (display: string, dir: string) =>
+        `${JSON.stringify({ display, pastedContents: {}, timestamp: Date.now(), project: dir, sessionId: 'cli-session' })}\n`
+      writeFileSync(historyFile, (existsSync(historyFile) ? readFileSync(historyFile, 'utf8') : '') + cliEntry('OTHER_DIR_PROMPT', home) + cliEntry('CLI_PROMPT_MARK', project))
+      await page.goto(signInUrl)
+      await page.locator('.wl-hi').waitFor()
+      const input = page.getByLabel('Message', { exact: true })
+      await input.click()
+      await page.waitForTimeout(500)
+      await input.press('ArrowUp')
+      expect(await input.inputValue()).toBe('CLI_PROMPT_MARK')
+      await input.press('ArrowDown')
+      expect(await input.inputValue()).toBe('')
+
+      await input.fill('WEB_HIST_MARK hi')
+      await input.press('Enter')
+      await page.locator('.feed').getByText('Hello from the fake model').first().waitFor({ timeout: 30_000 })
+      const added = async () =>
+        readFileSync(historyFile, 'utf8')
+          .split('\n')
+          .filter(Boolean)
+          .map(l => JSON.parse(l) as { display: string; project: string; sessionId?: string })
+          .find(e => e.display === 'WEB_HIST_MARK hi')
+      for (let i = 0; i < 50 && !(await added()); i++) await Bun.sleep(100)
+      expect(await added()).toMatchObject({ project })
+      // In the chat: its own prompt first, then the folder's history; never another folder's.
+      const chatInput = page.locator('.main').getByLabel('Message', { exact: true })
+      await chatInput.click()
+      await chatInput.press('ArrowUp')
+      expect(await chatInput.inputValue()).toBe('WEB_HIST_MARK hi')
+      await chatInput.press('ArrowUp')
+      expect(await chatInput.inputValue()).toBe('CLI_PROMPT_MARK')
+      for (let i = 0; i < 100; i++) {
+        await chatInput.press('ArrowUp')
+        expect(await chatInput.inputValue()).not.toBe('OTHER_DIR_PROMPT')
+      }
+      expect(errors).toEqual([])
+      await page.evaluate(async () => {
+        for (const s of (await (await fetch('/api/sessions')).json()) as { id: string }[]) {
+          await fetch(`/api/sessions/${s.id}`, { method: 'DELETE' })
+        }
+      })
+    } finally {
+      await browser.close()
+    }
+  }, 120_000)
 
   it('moves a session into a project, which lists and opens it, also after a reload', async () => {
     const playwrightPath = Bun.spawnSync(['node', '-p', "require.resolve('playwright')"])

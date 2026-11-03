@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test'
-import { agentCommands, filterCommands, moveSelection, nativeCommand, paletteQuery, recallPrompt, type SlashCommand, typedInFull } from './commands'
+import { agentCommands, filterCommands, recallList, moveSelection, nativeCommand, paletteQuery, recallPrompt, type SlashCommand, typedInFull } from './commands'
 
 const cmd = (name: string, aliases?: string[]): SlashCommand => ({
   name,
@@ -60,6 +60,15 @@ describe('agentCommands', () => {
   it('keeps only skills: an agent gets the text as typed, so local commands do nothing there', () => {
     expect(agentCommands(commands, ['simplify', 'missing']).map(c => c.name)).toEqual(['simplify'])
     expect(agentCommands(commands, [])).toEqual([])
+  })
+})
+
+describe('recallList', () => {
+  it("walks this box's prompts first, then the folder's history, each once", () => {
+    const list = recallList(['a', 'b'], ['b', 'cli one', 'a', 'cli two'])
+    expect(list).toEqual(['cli two', 'cli one', 'a', 'b'])
+    expect(recallPrompt(list, -1, 1)!.text).toBe('b')
+    expect(recallPrompt(list, 1, 1)!.text).toBe('cli one')
   })
 })
 

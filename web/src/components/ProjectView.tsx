@@ -622,7 +622,8 @@ export function ProjectView({
     </button>
   )
   const wideButton = ib(t(wide ? 'restorePane' : 'expandPane'), wide ? '⤡' : '⤢', () => setWide(!wide), true, true)
-  const tools = { ...chatTools(chat, listFiles, prompts, onMode), mode: { mode, plan: chat.env.planMode, onMode } }
+  const history = useMemo(() => ({ cwd: project.cwd, sessionId: project.coordinator_session_id ?? undefined }), [project.cwd, project.coordinator_session_id])
+  const tools = { ...chatTools(chat, listFiles, prompts, history, onMode), mode: { mode, plan: chat.env.planMode, onMode } }
 
   // ---- the splitter between the columns: drag it, or focus it and use ← →. ----
   const clampWidth = (px: number) => {
