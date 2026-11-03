@@ -1,7 +1,10 @@
 import {
   Component,
+  createContext,
   type ReactNode,
+  useContext,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -108,7 +111,127 @@ function SvgImage({ url, name }: { url: string; name: string }) {
     [value],
   )
   if (error) throw error
-  return value ? <img className="preview-image" src={value} alt={name} /> : null
+  return value ? (
+    <Pinnable>
+      <img className="preview-image" src={value} alt={name} />
+    </Pinnable>
+  ) : null
+}
+
+/** A spot on the file: fractions of the width and height, and the PDF page. */
+export type Spot = { x: number; y: number; page?: number }
+type Pin = Spot & { text: string }
+
+const pct = (n: number) => Math.round(n * 100)
+
+/** The message a pinned comment sends, in the shape claude.ai uses. */
+export function pinComment(path: string, pin: Pin): string {
+  const page = pin.page ? `page ${pin.page}, ` : ''
+  return `Comment on \`${path}\` (${page}pinned at ${pct(pin.x)}% from the left, ${pct(pin.y)}% from the top): ${pin.text.trim()}`
+}
+
+const PinContext = createContext<
+  | {
+      pins: Pin[]
+      draft?: Spot
+      place: (spot: Spot) => void
+      cancel: () => void
+      submit: (text: string) => void
+      t: T
+    }
+  | undefined
+>(undefined)
+
+function CommentBox({ spot }: { spot: Spot }) {
+  const pin = useContext(PinContext)!
+  const [text, setText] = useState('')
+  const [shift, setShift] = useState(0)
+  const box = useRef<HTMLFormElement>(null)
+  // Opens below the pin, nudged sideways to stay inside the viewer, and scrolled into view.
+  useLayoutEffect(() => {
+    const el = box.current
+    const view = el?.closest('.preview-body')?.getBoundingClientRect()
+    if (!el || !view) return
+    const r = el.getBoundingClientRect()
+    setShift(Math.max(view.left + 8 - r.left, Math.min(0, view.right - 8 - r.right)))
+    el.scrollIntoView({ block: 'nearest', inline: 'nearest' })
+  }, [])
+  const send = () => text.trim() && pin.submit(text)
+  return (
+    <form
+      ref={box}
+      className="cpin-box"
+      style={{ left: `${spot.x * 100}%`, top: `${spot.y * 100}%`, transform: `translateX(${shift}px)` }}
+      onClick={e => e.stopPropagation()}
+      onSubmit={e => {
+        e.preventDefault()
+        send()
+      }}
+    >
+      <textarea
+        autoFocus
+        rows={3}
+        aria-label={pin.t('pinComment')}
+        placeholder={pin.t('pinPlaceholder')}
+        value={text}
+        onChange={e => setText(e.target.value)}
+        onKeyDown={e => {
+          if (e.key === 'Escape') {
+            // Only the box closes, not the preview.
+            e.nativeEvent.stopPropagation()
+            pin.cancel()
+          } else if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+            e.preventDefault()
+            send()
+          }
+        }}
+      />
+      <span className="btns">
+        <button type="button" className="btn" onClick={pin.cancel}>
+          {pin.t('cancel')}
+        </button>
+        <button type="submit" className="btn primary" disabled={!text.trim()}>
+          {pin.t('send')}
+        </button>
+      </span>
+    </form>
+  )
+}
+
+/** Wraps a viewer so a click drops a pin there; sent pins stay as numbered marks. */
+function Pinnable({ page, children }: { page?: number; children: ReactNode }) {
+  const pin = useContext(PinContext)
+  if (!pin) return <>{children}</>
+  const at = (s: Spot) => ({ left: `${s.x * 100}%`, top: `${s.y * 100}%` })
+  return (
+    <div
+      className="pinnable"
+      title={pin.draft ? undefined : pin.t('pinHint')}
+      onClick={e => {
+        const r = e.currentTarget.getBoundingClientRect()
+        if (!r.width || !r.height) return
+        const clamp = (n: number) => Math.min(1, Math.max(0, n))
+        pin.place({ x: clamp((e.clientX - r.left) / r.width), y: clamp((e.clientY - r.top) / r.height), page })
+      }}
+    >
+      {children}
+      {pin.pins.map((p, i) =>
+        p.page === page ? (
+          <span key={i} className="cpin sent" style={at(p)} title={p.text} onClick={e => e.stopPropagation()}>
+            {i + 1}
+          </span>
+        ) : null,
+      )}
+      {pin.draft && pin.draft.page === page && (
+        <>
+          <span className="cpin" style={at(pin.draft)}>
+            {pin.pins.length + 1}
+          </span>
+          <CommentBox key={`${pin.draft.x},${pin.draft.y}`} spot={pin.draft} />
+        </>
+      )}
+    </div>
+  )
 }
 
 type PdfDoc = import('pdfjs-dist').PDFDocumentProxy
@@ -175,7 +298,9 @@ function PdfPage({ doc, n, width, aspect }: { doc: PdfDoc; n: number; width: num
 
   return (
     <div className="pdf-page" ref={box} data-page={n} style={drawn ? undefined : { width, height: width * aspect }}>
-      <canvas ref={canvas} hidden={!drawn} />
+      <Pinnable page={n}>
+        <canvas ref={canvas} hidden={!drawn} />
+      </Pinnable>
     </div>
   )
 }
@@ -427,7 +552,11 @@ function Body({
   const name = baseName(path)
   switch (previewKind(path)) {
     case 'image':
-      return <img className="preview-image" src={url} alt={name} />
+      return (
+        <Pinnable>
+          <img className="preview-image" src={url} alt={name} />
+        </Pinnable>
+      )
     case 'svg':
       return <SvgImage url={url} name={name} />
     case 'pdf':
@@ -520,6 +649,7 @@ export function Preview({
   onClose,
   files = [],
   onOpen,
+  onComment,
 }: {
   sessionId: string
   path: string
@@ -528,7 +658,33 @@ export function Preview({
   /** The chat's files (Files tab order), stepped through with ‹ › and ←/→. */
   files?: SessionFile[]
   onOpen?: (path: string) => void
+  /** Sends a pinned comment as a chat message; without it nothing can be pinned. */
+  onComment?: (text: string) => void
 }) {
+  const [pins, setPins] = useState<Pin[]>([])
+  const [draft, setDraft] = useState<Spot>()
+  useEffect(() => {
+    setPins([])
+    setDraft(undefined)
+  }, [path])
+  const pinValue = useMemo(
+    () =>
+      onComment && {
+        pins,
+        draft,
+        place: setDraft,
+        cancel: () => setDraft(undefined),
+        submit: (text: string) => {
+          if (!draft) return
+          const pin = { ...draft, text }
+          onComment(pinComment(path, pin))
+          setPins(list => [...list, pin])
+          setDraft(undefined)
+        },
+        t,
+      },
+    [onComment, pins, draft, path, t],
+  )
   const [htmlWidth, setHtmlWidth] = useState<number>()
   const isHtml = previewKind(path) === 'html'
   const nav = onOpen ? fileNeighbors(files, path) : undefined
@@ -613,7 +769,9 @@ export function Preview({
       </div>
       <div className="artbody preview-body">
         <Boundary key={path} fallback={error => <ErrorNote error={error} t={t} />}>
-          <Body sessionId={sessionId} path={path} t={t} htmlWidth={htmlWidth} />
+          <PinContext.Provider value={pinValue || undefined}>
+            <Body sessionId={sessionId} path={path} t={t} htmlWidth={htmlWidth} />
+          </PinContext.Provider>
         </Boundary>
       </div>
     </aside>

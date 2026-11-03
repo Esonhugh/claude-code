@@ -816,7 +816,7 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       sample('readme.md', '## MD_HEADING\n\ntext'),
       sample('table.csv', 'col1,col2\n"x, y",2\n'),
       sample('page.html', '<h1>HTML_BODY</h1><script>parent.__xss=4</script>'),
-      sample('chart.svg', '<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><script>parent.__xss=5</script><rect width="10" height="10"/></svg>'),
+      sample('chart.svg', '<svg xmlns="http://www.w3.org/2000/svg" width="200" height="100"><script>parent.__xss=5</script><rect width="200" height="100"/></svg>'),
       sample('book.xlsx', new Uint8Array(await book.xlsx.writeBuffer())),
       sample('letter.docx', await tinyDocx('DOCX_BODY')),
       sample('slides.pdf', tinyPdf(['PAGE_ONE', 'PAGE_TWO'])),
@@ -877,6 +877,23 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       await page.frameLocator('iframe.preview-frame').getByText('HTML_BODY').waitFor()
       await open('chart.svg')
       await preview.locator('img[src^="blob:"]').waitFor()
+      // A click on the image pins a comment; Enter sends it as its own message (#709).
+      const commentsBefore = promptsSeen.length
+      const shape = (await preview.locator('.pinnable').boundingBox())!
+      const spot = { position: { x: shape.width / 4, y: (shape.height * 3) / 4 } }
+      await preview.locator('.pinnable').click(spot)
+      await preview.getByLabel('Comment', { exact: true }).fill('PIN_NOTE')
+      await page.keyboard.press('Escape')
+      expect(await preview.locator('.cpin-box').count()).toBe(0)
+      await preview.locator('.preview-name', { hasText: 'chart.svg' }).waitFor()
+      await preview.locator('.pinnable').click(spot)
+      await preview.getByLabel('Comment', { exact: true }).fill('PIN_NOTE')
+      await preview.getByLabel('Comment', { exact: true }).press('Enter')
+      await preview.locator('.cpin.sent', { hasText: '1' }).waitFor()
+      await page.locator('.msg.user', { hasText: 'PIN_NOTE' }).waitFor()
+      for (let i = 0; i < 300 && promptsSeen.length === commentsBefore; i++) await Bun.sleep(100)
+      expect(promptsSeen.slice(commentsBefore).join('\n')).toContain('Comment on `' + files[3] + '` (pinned at 25% from the left, 75% from the top): PIN_NOTE')
+      expect(await input.inputValue()).toBe('')
       await open('book.xlsx')
       await preview.getByRole('tab', { name: 'Second' }).click()
       await preview.getByText('SECOND_SHEET_CELL').waitFor({ timeout: 30_000 })
