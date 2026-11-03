@@ -750,6 +750,8 @@ export function App() {
     return true
   }
 
+  // A chat's messages go out one at a time, in the order typed, even while an earlier one uploads.
+  const chatSends = useRef<Promise<void>>(Promise.resolve())
   const sendInChat = async () => {
     const id = state.view
     const text = draft.trim()
@@ -762,43 +764,59 @@ export function App() {
       await sendPrompt(id, text, {})
       return
     }
-    if (chat.mode !== 'live' && !(await resume(id))) return
     const target = agentTargets[id]
-    if (target && chat.tasks[target.id]) {
-      try {
-        const mentions = await Promise.all(pending.map(async f => mentionPath((await uploadFile(id, f)).path)))
-        setDrafts(d => ({ ...d, [id]: '' }))
-        setAttachments(a => ({ ...a, [id]: [] }))
-        setAgentTargets(x => ({ ...x, [id]: undefined }))
-        await sendToTask(id, target.id, [text, mentions.join(' ')].filter(Boolean).join('\n\n'))
-        // The message shows in the agent's own conversation.
-        agentsValue.open(target.id)
-      } catch (err) {
-        dispatch({ type: 'chat', id, action: { type: 'local', patch: { notice: err instanceof Error ? err.message : String(err) } } })
-      }
-      return
-    }
-    let content: { text: string; images: string[] }
-    try {
-      content = await prepareContent(id, text, pending)
-    } catch (err) {
-      dispatch({
-        type: 'chat',
-        id,
-        action: {
-          type: 'local',
-          patch: { notice: t('uploadFailed', { error: err instanceof Error ? err.message : String(err) }) },
-        },
-      })
-      return
-    }
     setDrafts(d => ({ ...d, [id]: '' }))
     setAttachments(a => ({ ...a, [id]: [] }))
-    stickToBottom.current = true
-    if (chat.notice) dispatch({ type: 'chat', id, action: { type: 'local', patch: { notice: undefined } } })
-    const uuid = newUuid()
-    dispatch({ type: 'chat', id, action: { type: chat.busy ? 'queue' : 'user', ...content, uuid } })
-    send(id, userMessage(content.text, content.images, uuid))
+    if (target) setAgentTargets(x => ({ ...x, [id]: undefined }))
+    // A message that could not go out returns to an empty box.
+    const restore = () => {
+      setDrafts(d => (d[id] ? d : { ...d, [id]: text }))
+      setAttachments(a => (a[id]?.length ? a : { ...a, [id]: pending }))
+      if (target) setAgentTargets(x => (x[id] ? x : { ...x, [id]: target }))
+    }
+    const run = chatSends.current.then(async () => {
+      if (chat.mode !== 'live' && !(await resume(id))) return restore()
+      if (target && chat.tasks[target.id]) {
+        let mentions: string[]
+        try {
+          mentions = await Promise.all(pending.map(async f => mentionPath((await uploadFile(id, f)).path)))
+        } catch (err) {
+          restore()
+          dispatch({ type: 'chat', id, action: { type: 'local', patch: { notice: err instanceof Error ? err.message : String(err) } } })
+          return
+        }
+        try {
+          await sendToTask(id, target.id, [text, mentions.join(' ')].filter(Boolean).join('\n\n'))
+          // The message shows in the agent's own conversation.
+          agentsValue.open(target.id)
+        } catch (err) {
+          dispatch({ type: 'chat', id, action: { type: 'local', patch: { notice: err instanceof Error ? err.message : String(err) } } })
+        }
+        return
+      }
+      let content: { text: string; images: string[] }
+      try {
+        content = await prepareContent(id, text, pending)
+      } catch (err) {
+        restore()
+        dispatch({
+          type: 'chat',
+          id,
+          action: {
+            type: 'local',
+            patch: { notice: t('uploadFailed', { error: err instanceof Error ? err.message : String(err) }) },
+          },
+        })
+        return
+      }
+      stickToBottom.current = true
+      if (chat.notice) dispatch({ type: 'chat', id, action: { type: 'local', patch: { notice: undefined } } })
+      const uuid = newUuid()
+      dispatch({ type: 'chat', id, action: { type: chat.busy ? 'queue' : 'user', ...content, uuid } })
+      send(id, userMessage(content.text, content.images, uuid))
+    })
+    chatSends.current = run.catch(() => {})
+    await run
   }
 
   const startChat = async (trust = false) => {

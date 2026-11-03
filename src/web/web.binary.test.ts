@@ -2295,6 +2295,23 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       await page.unroute('**/api/account')
       await page.reload()
       await page.locator('.wl-hi, .main').first().waitFor()
+      await page.locator('.session-row', { hasText: 'please SPAWNBG an agent' }).first().click()
+      await input.waitFor()
+      // The session's own box: a slow upload keeps two messages in order and sends the file once.
+      await page.route(/\/api\/files\/[^?]+\?name=slow-main/, async (route: any) => {
+        await new Promise(r => setTimeout(r, 800))
+        await route.continue()
+      })
+      await attach(page.locator('.main .composer'), 'slow-main.txt')
+      await page.locator('.main .attachment', { hasText: 'slow-main.txt' }).waitFor()
+      await input.fill('MAIN_FIRST')
+      await input.press('Enter')
+      await input.fill('MAIN_SECOND')
+      await input.press('Enter')
+      await page.locator('.main .msg.user', { hasText: 'MAIN_SECOND' }).waitFor({ timeout: 30_000 })
+      const mainSent = await page.locator('.main .msg.user').filter({ hasText: /MAIN_FIRST|MAIN_SECOND/ }).allInnerTexts()
+      expect(mainSent.map(x => (x.includes('MAIN_SECOND') ? 'second' : 'first'))).toEqual(['first', 'second'])
+      expect(promptsSeen.some(p => p.includes('slow-main (1).txt'))).toBe(false)
 
 
       // A project: the coordinator's box and a dispatched task's box.

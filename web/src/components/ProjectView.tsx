@@ -702,32 +702,56 @@ export function ProjectView({
     setKeptWidth(clampWidth(current + (e.key === 'ArrowLeft' ? -24 : 24)))
   }
 
-  const deliver = async (task: ProjectTask, text: string, pending: File[], clear: () => void) => {
-    const mentions = await Promise.all(pending.map(async f => mentionPath((await uploadFile(uploadTo, f)).path)))
+  const boxRef = useRef({ draft, files })
+  boxRef.current = { draft, files }
+  // Messages go out one at a time, in the order typed, even while an earlier one uploads.
+  const delivering = useRef<Promise<unknown>>(Promise.resolve())
+  const deliver = (task: ProjectTask, text: string, pending: File[], clear: () => void, restore: () => void) => {
     clear()
     const pick = isLive(task) ? {} : (picks[task.id] ?? {})
-    const message = [text, mentions.join(' ')].filter(Boolean).join('\n\n')
-    const id = `sent-${Date.now()}-${Math.random()}`
-    setSentTo(s => ({ ...s, [task.id]: [...(s[task.id] ?? []), { id, text: message }] }))
-    try {
-      await onSendTask(task.id, message, pick)
-    } catch (err) {
-      dropSent([id])
-      throw err
-    }
-    setFollowUntil(Date.now() + 30_000)
-    setRefresh(r => r + 1)
+    const run = delivering.current.catch(() => {}).then(async () => {
+      let mentions: string[]
+      try {
+        mentions = await Promise.all(pending.map(async f => mentionPath((await uploadFile(uploadTo, f)).path)))
+      } catch (err) {
+        restore()
+        throw err
+      }
+      const message = [text, mentions.join(' ')].filter(Boolean).join('\n\n')
+      const id = `sent-${Date.now()}-${Math.random()}`
+      setSentTo(s => ({ ...s, [task.id]: [...(s[task.id] ?? []), { id, text: message }] }))
+      try {
+        await onSendTask(task.id, message, pick)
+      } catch (err) {
+        dropSent([id])
+        throw err
+      }
+      setFollowUntil(Date.now() + 30_000)
+      setRefresh(r => r + 1)
+    })
+    delivering.current = run
+    return run
   }
   const sendTask = async (task: ProjectTask) => {
     const text = (taskDrafts[task.id] ?? '').trim()
     const pending = taskFiles[task.id] ?? []
     if ((!text && !pending.length) || !canMessage(task)) return
     try {
-      await deliver(task, text, pending, () => {
-        setTaskDrafts(d => ({ ...d, [task.id]: '' }))
-        setTaskFiles(f => ({ ...f, [task.id]: [] }))
-        setTaskNotice(undefined)
-      })
+      await deliver(
+        task,
+        text,
+        pending,
+        () => {
+          setTaskDrafts(d => ({ ...d, [task.id]: '' }))
+          setTaskFiles(f => ({ ...f, [task.id]: [] }))
+          setTaskNotice(undefined)
+        },
+        () => {
+          // A failed upload gives the message back to an empty box.
+          setTaskDrafts(d => ({ ...d, [task.id]: d[task.id] || text }))
+          setTaskFiles(f => ({ ...f, [task.id]: f[task.id]?.length ? f[task.id]! : pending }))
+        },
+      )
     } catch (err) {
       setTaskNotice(err instanceof Error ? err.message : String(err))
     }
@@ -736,13 +760,25 @@ export function ProjectView({
   const target = toTask && tasks.find(x => x.id === toTask.id && canMessage(x))
   const sendToTarget = async (task: ProjectTask) => {
     const text = draft.trim()
-    if (!text && !files.length) return
+    const pending = files
+    const sentTo = toTask
+    if (!text && !pending.length) return
     try {
-      await deliver(task, text, files, () => {
-        setDraft('')
-        setFiles([])
-        setToTask(undefined)
-      })
+      await deliver(
+        task,
+        text,
+        pending,
+        () => {
+          setDraft('')
+          setFiles([])
+          setToTask(undefined)
+        },
+        () => {
+          if (!boxRef.current.draft) setDraft(text)
+          if (!boxRef.current.files.length) setFiles(pending)
+          setToTask(x => x ?? sentTo)
+        },
+      )
       openTask(task.id)
     } catch (err) {
       say(err instanceof Error ? err.message : String(err))
