@@ -704,6 +704,8 @@ describe('claude web server', () => {
     expect(spawnedWith.env).toEqual({
       CLAUDE_CODE_COORDINATOR_MODE: '1',
       CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: '1',
+      CLAUDE_CODE_ENABLE_TASKS: '0',
+      CLAUDE_CODE_ENABLE_TODO_TOOLS: '1',
       CLAUDE_CODE_SUBAGENT_MODEL: 'haiku',
     })
 

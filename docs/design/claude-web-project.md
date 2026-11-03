@@ -200,10 +200,10 @@ CREATE TABLE folders (path TEXT PRIMARY KEY, last_touched INTEGER NOT NULL);  --
 - 发消息和停止走 WebSocket 上的 control request，没有 `.../message`、`.../stop` REST 接口（第 6 节）。
 - 停止的语义：只有 `stop_task` 和 TaskStop 记为用户停止；服务重启、协调者退出另记原因，任务卡片提示“发消息可继续”。
 - 任务数和等你处理数来自 SQLite，不再依赖打开协调者会话。
+- 任务对话的进度清单来自 worker 的 TodoWrite：后台 worker 在 todo v2 下没有 Task* 工具，新模型默认也不给 todo 工具，所以协调者子进程带 `CLAUDE_CODE_ENABLE_TASKS=0`、`CLAUDE_CODE_ENABLE_TODO_TOOLS=1`（只影响 web 项目）。
 - 运行中任务的耗时从 `started_at` 往上数；`task_progress` 只在 worker 用工具时才来，tokens 在没有进度时取 worker transcript 里最近一次请求的用量。
 
 已知缺口：
 
-- 任务对话里没有进度清单（第 2 节的设计）：后台 worker 在 todo v2 下拿不到 TodoWrite / TaskCreate。
 - 待定问题 1（并行上限）没做。
 - macOS 上 API key 存进登录钥匙串，web e2e 在 macOS 跳过账号用例；Windows 跳过服务重启用例（没有 SIGTERM）。
