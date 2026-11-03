@@ -1,6 +1,30 @@
 {
 "en": [
 [
+"ChatGPT 账号的 token 活动，不是剩余额度",
+"ChatGPT account token activity, not remaining quota"
+],
+[
+"Codex 账号活动",
+"Codex account activity"
+],
+[
+"每日 tokens",
+"Daily tokens"
+],
+[
+"累计 tokens",
+"Lifetime tokens"
+],
+[
+"单日峰值",
+"Peak day"
+],
+[
+"最长回合",
+"Longest turn"
+],
+[
 "仅用于本地开发 channel。不要用它运行从网上下载的 channel：它发来的消息会直接进入对话。",
 "For local channel development only. Do not use this to run channels you downloaded off the internet: their messages go straight into the conversation."
 ],

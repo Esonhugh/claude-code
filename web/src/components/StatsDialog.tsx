@@ -6,6 +6,7 @@ import {
   dLabel,
   fmtDuration,
   fmtK,
+  fmtTokens,
   heatDays,
   heatLevels,
   hourShares,
@@ -105,8 +106,48 @@ export function StatsBody({ z: zText }: { z: Z }) {
   const hovered = hover && pts[hover.i]
   const heatDay = heatTip && heat[heatTip.i]
 
+  const codex = stats.codex
+  const codexDays = codex?.daily.slice(-30) ?? []
+  const codexMax = Math.max(1, ...codexDays.map(d => d.tokens))
+  const codexPeak = codexDays.reduce<(typeof codexDays)[number] | undefined>((a, d) => (!a || d.tokens > a.tokens ? d : a), undefined)
+
   return (
     <div>
+      {codex && (
+        <div className="usegroup">
+          <h4>
+            {z('Codex 账号活动')} <small>{z('ChatGPT 账号的 token 活动，不是剩余额度')}</small>
+          </h4>
+          <div className="mgrid">
+            {tile('累计 tokens', fmtTokens(codex.lifetimeTokens), '')}
+            {tile('单日峰值', fmtTokens(codex.peakDailyTokens), '')}
+            {tile(
+              '连续使用',
+              codex.currentStreakDays === null ? '—' : z(`${codex.currentStreakDays} 天`),
+              codex.longestStreakDays === null ? '' : z(`最长 ${codex.longestStreakDays} 天`),
+            )}
+            {tile('最长回合', codex.longestTurnSec === null ? '—' : fmtDuration(codex.longestTurnSec * 1000), '')}
+          </div>
+          {codexDays.length > 0 && (
+            <>
+              <h4>
+                {z('每日 tokens')} <small>{codexPeak && `${codexPeak.date} · ${fmtTokens(codexPeak.tokens)}`}</small>
+              </h4>
+              <svg viewBox={`0 0 ${W} 80`} role="img" aria-label={z('每日 tokens')}>
+                {codexDays.map((d, i) => {
+                  const h = (d.tokens / codexMax) * 72
+                  const w = W / codexDays.length
+                  return (
+                    <rect key={d.date} x={i * w + 1} y={80 - h} width={Math.max(1, w - 2)} height={h} fill={SERIES_COLORS[0]}>
+                      <title>{`${d.date} · ${fmtTokens(d.tokens)}`}</title>
+                    </rect>
+                  )
+                })}
+              </svg>
+            </>
+          )}
+        </div>
+      )}
       <div className="usegroup">
         <div className="seg" role="radiogroup" aria-label={z('时间范围')} style={{ alignSelf: 'flex-start' }}>
           {(
