@@ -81,6 +81,9 @@ export function CodeBlock({
 }) {
   const [html, setHtml] = useState(() => (streaming ? undefined : cachedHighlight(code, lang)))
   const [copied, setCopied] = useState(false)
+  // React re-applies a new `__html` object on every render, which replaces the nodes and drops
+  // any selection in them (the preview's Comment button rerenders this on mouseup).
+  const inner = useMemo(() => (html ? { __html: html } : undefined), [html])
   useEffect(() => {
     if (streaming) return
     const hit = cachedHighlight(code, lang)
@@ -120,11 +123,11 @@ export function CodeBlock({
           {copied ? '✓' : '⧉'}
         </button>
       </div>
-      {html ? (
+      {inner ? (
         <div
           className="codeblock-body"
           // shiki escapes the code; the markup is its own spans.
-          dangerouslySetInnerHTML={{ __html: html }}
+          dangerouslySetInnerHTML={inner}
         />
       ) : (
         <pre className="codeblock-body">

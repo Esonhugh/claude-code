@@ -942,7 +942,8 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       expect(await comment('QUOTE_NOTE')).toContain('readme.md` (line 1, on \\"MD_HEADING\\"): QUOTE_NOTE')
       await open('page.html')
       await preview.getByRole('radio', { name: 'Source' }).click()
-      await preview.locator('.codeblock').waitFor()
+      // Highlighting replaces the plain code once it loads, which would drop a selection made before.
+      await preview.locator('div.codeblock-body').waitFor()
       await select('HTML_BODY')
       expect(await comment('SOURCE_NOTE')).toContain('page.html` (line 1): SOURCE_NOTE')
       await open('table.csv')

@@ -635,14 +635,16 @@ function DocxView({ url, t }: { url: string; t: T }) {
     const out = await mammoth.convertToHtml({ arrayBuffer: await res.arrayBuffer() })
     return p.sanitize(out.value)
   }, [url])
+  // A stable object, so a rerender keeps the nodes and the reader's selection in them.
+  const inner = useMemo(() => (value === undefined ? undefined : { __html: value }), [value])
   if (error) throw error
-  if (value === undefined) return <div className="preview-note">{t('loading')}</div>
+  if (!inner) return <div className="preview-note">{t('loading')}</div>
   return (
     <Selectable>
       <div
         className="docx-page"
         // DOMPurify-sanitized output of mammoth.
-        dangerouslySetInnerHTML={{ __html: value }}
+        dangerouslySetInnerHTML={inner}
       />
     </Selectable>
   )
