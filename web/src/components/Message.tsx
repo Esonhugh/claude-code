@@ -405,17 +405,22 @@ export function joinTurns(items: Item[], splitAfter?: (id: string) => boolean): 
 
 /**
  * How a turn's blocks are drawn: text as is, a run of two or more thinking and
- * tool blocks folded into one steps row, and adjacent task cards together.
+ * tool blocks folded into one steps row, adjacent task cards together, and a
+ * block that must stay in sight (a file edit) on its own.
  */
 export type Segment = { kind: 'text' | 'step' | 'steps' | 'cards'; at: number[] }
 
-export function turnSegments(blocks: (Block | undefined)[], isCard: (index: number) => boolean): Segment[] {
+export function turnSegments(
+  blocks: (Block | undefined)[],
+  isCard: (index: number) => boolean,
+  keepShown: (index: number) => boolean = () => false,
+): Segment[] {
   const out: Segment[] = []
   blocks.forEach((block, i) => {
     if (!block) return
-    const kind = block.kind === 'text' ? 'text' : isCard(i) ? 'cards' : 'steps'
+    const kind = block.kind === 'text' ? 'text' : isCard(i) ? 'cards' : keepShown(i) ? 'step' : 'steps'
     const last = out.at(-1)
-    if (kind !== 'text' && last?.kind === kind) last.at.push(i)
+    if ((kind === 'cards' || kind === 'steps') && last?.kind === kind) last.at.push(i)
     else out.push({ kind, at: [i] })
   })
   return out.map(s => (s.kind === 'steps' && s.at.length === 1 ? { ...s, kind: 'step' } : s))
@@ -578,7 +583,15 @@ export function Message({
       if (card) cards.set(i, card)
     })
   }
-  const segments = turnSegments(item.blocks, i => cards.has(i))
+  // File changes stay in sight, outside the folded steps.
+  const segments = turnSegments(
+    item.blocks,
+    i => cards.has(i),
+    i => {
+      const block = item.blocks[i]
+      return block?.kind === 'tool' && !block.isError && toolDiff(block.name, block.input, block.meta) !== undefined
+    },
+  )
   const step = (i: number) => {
     const block = item.blocks[i]!
     if (block.kind === 'thinking') {

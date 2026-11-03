@@ -73,4 +73,14 @@ describe('one header per turn', () => {
       { kind: 'text', at: [8] },
     ])
   })
+
+  it('keeps a file edit out of the folded steps', () => {
+    const blocks = [think, tool('read', 'Read'), tool('edit', 'Edit'), think, tool('ls'), text('done')]
+    expect(turnSegments(blocks, () => false, i => i === 2)).toEqual([
+      { kind: 'steps', at: [0, 1] },
+      { kind: 'step', at: [2] },
+      { kind: 'steps', at: [3, 4] },
+      { kind: 'text', at: [5] },
+    ])
+  })
 })

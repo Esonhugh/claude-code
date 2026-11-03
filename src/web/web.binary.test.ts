@@ -556,13 +556,13 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       page.on('pageerror', e => errors.push(e.message))
       await page.goto(signInUrl)
 
-      // The chat from the previous test is listed under the workspace group.
-      const row = page.locator('.session-row', { hasText: 'hi there' })
+      // The chat from the previous test is listed under the workspace group, named by its last prompt.
+      const row = page.locator('.session-row', { hasText: 'show MARKDOWN' })
       await row.waitFor({ timeout: 15_000 })
       expect(await page.locator('.proj-t b').first().textContent()).toBe('workspace')
       await row.locator('.session-title').click()
       await page.locator('.feed').getByText('Hello from the fake model').waitFor()
-      await page.getByText('show MARKDOWN').waitFor()
+      await page.locator('.feed').getByText('show MARKDOWN').waitFor()
       // Still running with no tab attached, so this tab picks it up.
       await page.locator('.status-live').waitFor({ timeout: 15_000 })
 
@@ -947,7 +947,7 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       await page.waitForTimeout(200)
       expect(await palette.getByRole('option', { name: /^\/color/ }).count()).toBe(0)
 
-      // `cost` is an alias of `usage`, a local command: no model call.
+      // `cost` is an alias of `usage`, which opens the page's own Usage settings: no model call.
       await input.fill('/cos')
       const usage = palette.getByRole('option', { name: /^\/usage/ })
       await usage.waitFor()
@@ -957,8 +957,11 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       await palette.waitFor({ state: 'detached' })
       const before = promptsSeen.length
       await input.press('Enter')
-      await page.getByText('Total cost:').waitFor({ timeout: 30_000 })
+      const settings = page.locator('.dialog', { hasText: 'Usage' })
+      await settings.getByText('Cost $0.00').first().waitFor({ timeout: 30_000 })
       expect(promptsSeen.length).toBe(before)
+      await page.keyboard.press('Escape')
+      await settings.waitFor({ state: 'detached' })
 
       // Mouse: click a row to complete it.
       await input.fill('/cont')
@@ -1044,7 +1047,8 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
 
       // A reload rebuilds the panel from what the server replays.
       await page.reload()
-      await page.locator('.session-row', { hasText: 'RUN_WF' }).locator('.session-title').click()
+      // An untitled row shows the last prompt.
+      await page.locator('.session-row', { hasText: 'hello after the team' }).locator('.session-title').click()
       await page.locator('.status-live').waitFor({ timeout: 30_000 })
       await agentsTab.click()
       await team.locator('.agent-row', { hasText: 'alice' }).waitFor({ timeout: 30_000 })
@@ -1234,8 +1238,6 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       await dialog.getByRole('option', { name: /Allow once/ }).click()
       await page.getByText('WEB_DONE').waitFor({ timeout: 30_000 })
       expect(readFileSync(join(workspace, 'edit.txt'), 'utf8')).toBe('alpha\ngamma\n')
-      // Read then Edit fold into one steps row; open it to see the cards.
-      await page.locator('.steps > summary', { hasText: '2 steps' }).click()
       // The answer stays where the request was, and the card shows the diff.
       expect(await page.locator('.ask-ref.done').textContent()).toBe('Allowed once')
       const card = page.locator('.toolcard', { has: page.locator('.tname', { hasText: 'Edit' }) })
@@ -1322,7 +1324,8 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       await dialog.locator('#pj-name').fill('E2E project')
       await dialog.locator('#pj-path').fill(workspace)
       await dialog.locator('#pj-instr').fill('PROJECT_RULES_MARK')
-      await dialog.getByRole('radio', { name: 'Haiku 5.5' }).click()
+      await dialog.locator('.pj-model').click()
+      await page.getByRole('menuitemradio', { name: /^Haiku/ }).click()
       await dialog.getByRole('button', { name: 'Create project' }).click()
       await page.locator('#projview .pv-head b', { hasText: 'E2E project' }).waitFor({ timeout: 30_000 })
       await page.waitForFunction(() => document.body.classList.contains('proj'))
@@ -1442,10 +1445,8 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       page.on('pageerror', e => errors.push(e.message))
       await page.goto(signInUrl)
       await page.locator('.wl-hi').waitFor()
-      // Counts beside Memory and Mods, like the prototype's `4` and `3/4`.
-      const memoryCount = await page.locator('.snav button', { hasText: 'Memory' }).locator('.cnt').textContent({ timeout: 15_000 })
-      expect(memoryCount).toMatch(/^\d+$/)
-      expect(await page.locator('.snav button', { hasText: 'Mods' }).locator('.cnt').textContent()).toMatch(/^\d+\/\d+$/)
+      // The resource menu has no counts (#588).
+      expect(await page.locator('.snav .cnt').count()).toBe(0)
       // The side panel tabs scroll inside their row; the page never scrolls sideways.
       const noPageScroll = () => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)
       await page.locator('.session-row').first().locator('.session-title').click()
@@ -1513,7 +1514,6 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       await page.locator('.snav button', { hasText: 'Memory' }).click()
       const userMemory = dialog.locator('#memlist button', { hasText: 'User instructions' })
       await userMemory.waitFor({ timeout: 15_000 })
-      expect(String(await dialog.locator('#memlist [data-mem]').count())).toBe(memoryCount!)
       await userMemory.click()
       await dialog.locator('.memview', { hasText: 'E2E_MEMORY_MARKER' }).waitFor()
       await dialog.locator('#mem-q').fill('E2E_MEMORY')
