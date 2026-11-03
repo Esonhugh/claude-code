@@ -4,12 +4,13 @@ import { realpathSync, statSync } from 'fs'
 import { resolve } from 'path'
 import { addCwdToAdditionalWorkingDirectories } from '../commands/cd/cd.js'
 import type { AppState } from '../state/AppState.js'
-import type { Message, UserMessage } from '../types/message.js'
+import type { Message } from '../types/message.js'
 import { isPathTrusted, savePathTrusted } from '../utils/config.js'
 import { prepareConversationRewind } from '../utils/conversationRewind.js'
 import { getCwd } from '../utils/cwd.js'
 import { changeSessionCwd } from '../utils/cwdChange.js'
 import { textForResubmit } from '../utils/messages.js'
+import { selectableUserMessagesFilter } from '../components/MessageSelector.js'
 import { expandTilde } from '../utils/path.js'
 
 type SetAppState = (f: (prev: AppState) => AppState) => void
@@ -66,6 +67,14 @@ export function handleSetCwd(
 const REWIND_REFUSED = { rewound: false, prefillText: null, precedingAssistantUuid: null } as const
 
 /**
+ * Fork-only: the uuids /rewind would list (oldest first), so a host offers
+ * rewind exactly where rewind_conversation accepts it.
+ */
+export function handleRewindPoints(host: { messages: readonly Message[] }) {
+  return { uuids: host.messages.filter(selectableUserMessagesFilter).map(m => m.uuid) }
+}
+
+/**
  * Drops the target user message and everything after it, like picking it in
  * /rewind. prefillText is what the REPL would put back in the prompt.
  * last_seen_user_message_uuid must name the newest prompt.
@@ -78,9 +87,7 @@ export function handleRewindConversation(
   if (typeof uuid !== 'string') return { error: 'rewind_conversation: target_message_uuid must be a string' }
   if (host.busy) return { ...REWIND_REFUSED, error: 'turn running', reason: 'turn_running' }
   if (host.queued) return { ...REWIND_REFUSED, error: 'commands queued', reason: 'commands_queued' }
-  const prompts = host.messages.filter(
-    (m): m is UserMessage => m.type === 'user' && !m.isMeta && textForResubmit(m) !== null,
-  )
+  const prompts = host.messages.filter(selectableUserMessagesFilter)
   // The host names the newest prompt it has shown, so a rewind never drops a
   // turn the user has not seen.
   const lastSeen = request.last_seen_user_message_uuid
