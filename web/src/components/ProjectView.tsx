@@ -438,6 +438,7 @@ export function ProjectView({
 
   // Task rows and the replayed task events land after the chat and grow its cards; follow them while the user is at the bottom.
   const atBottom = useRef(true)
+  const feedTop = useRef(0)
   useEffect(() => {
     const feed = feedRef.current
     if (feed) feed.scrollTop = feed.scrollHeight
@@ -800,8 +801,11 @@ export function ProjectView({
           ref={feedRef}
           aria-busy={chat.busy}
           onScroll={e => {
+            // As in the chat feed: only scrolling up unsticks; the event can land after more output rendered.
             const el = e.currentTarget
-            atBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40
+            if (el.scrollHeight - el.scrollTop - el.clientHeight < 40) atBottom.current = true
+            else if (el.scrollTop < feedTop.current) atBottom.current = false
+            feedTop.current = el.scrollTop
           }}
         >
           {feed}

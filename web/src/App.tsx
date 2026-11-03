@@ -176,6 +176,7 @@ export function App() {
   const searchRef = useRef<HTMLInputElement>(null)
   const menuRef = useRef<HTMLButtonElement>(null)
   const stickToBottom = useRef(true)
+  const feedTop = useRef(0)
   const stateRef = useRef(state)
   stateRef.current = state
 
@@ -1093,8 +1094,12 @@ export function App() {
             ref={feedRef}
             aria-busy={chat.busy}
             onScroll={e => {
+              // Scroll events arrive a frame late, after more of the reply may have rendered; only
+              // scrolling up (the reader's own move) unsticks, reaching the bottom sticks again.
               const el = e.currentTarget
-              stickToBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40
+              if (el.scrollHeight - el.scrollTop - el.clientHeight < 40) stickToBottom.current = true
+              else if (el.scrollTop < feedTop.current) stickToBottom.current = false
+              feedTop.current = el.scrollTop
             }}
           >
             {chat.start > 0 && (
