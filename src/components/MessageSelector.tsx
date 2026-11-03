@@ -64,7 +64,6 @@ import { count } from '../utils/array.js'
 import { formatRelativeTimeAgo, truncate } from '../utils/format.js'
 import type { Theme } from '../utils/theme.js'
 import { Divider } from './design-system/Divider.js'
-import { isAnt } from 'src/utils/userType.js'
 
 
 type RestoreOption =
@@ -195,14 +194,12 @@ export function MessageSelector({
       ...summarizeInputProps,
       onChange: setSummarizeFromFeedback,
     })
-    if (isAnt()) {
-      baseOptions.push({
-        value: 'summarize_up_to',
-        label: 'Summarize up to here',
-        ...summarizeInputProps,
-        onChange: setSummarizeUpToFeedback,
-      })
-    }
+    baseOptions.push({
+      value: 'summarize_up_to',
+      label: 'Summarize up to here',
+      ...summarizeInputProps,
+      onChange: setSummarizeUpToFeedback,
+    })
 
     baseOptions.push({ value: 'nevermind', label: 'Never mind' })
     return baseOptions
@@ -641,7 +638,7 @@ function getRestoreOptionConversationText(option: RestoreOption): string {
       return 'Preceding messages will be summarized. This and subsequent messages will remain unchanged — you will stay at the end of the conversation.'
     case 'both':
     case 'conversation':
-      return 'The conversation will be forked.'
+      return 'This message and everything after it will be removed.'
     case 'code':
     case 'nevermind':
       return 'The conversation will be unchanged.'
