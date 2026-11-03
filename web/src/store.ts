@@ -230,7 +230,8 @@ export function groupSidebar(
   const needle = filter.trim().toLowerCase()
   const isTemp = (cwd: string) =>
     !!tempRoot && (cwd === tempRoot || cwd.startsWith(`${tempRoot}/`) || cwd.startsWith(`${tempRoot}\\`))
-  const listed = entries.filter(e => !e.projectId && (!e.archived || needle)).sort(newestFirst)
+  // Archived sessions and sessions moved into a project show only in a search.
+  const listed = entries.filter(e => needle || (!e.projectId && !e.archived)).sort(newestFirst)
   const match = (e: HistoryEntry) => !needle || `${e.title}${e.cwd ?? ''}`.toLowerCase().includes(needle)
   const groups = new Map<string, HistoryEntry[]>()
   const temporary: HistoryEntry[] = []
@@ -247,7 +248,7 @@ export function groupSidebar(
       cwd,
       name: cwd.split(/[\\/]/).filter(Boolean).at(-1) ?? cwd,
       lastChange: Math.max(folders[cwd] ?? 0, ...list.map(e => e.lastModified)),
-      count: list.filter(e => !e.archived).length,
+      count: list.filter(e => !e.archived && !e.projectId).length,
       entries: list.filter(e => !e.pinnedAt && match(e)),
     }))
     .sort((a, b) => b.lastChange - a.lastChange)

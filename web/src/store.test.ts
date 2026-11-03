@@ -47,7 +47,7 @@ describe('groupSidebar', () => {
     expect(groups.pinned.map(e => e.id)).toEqual(['b', 'a'])
   })
 
-  it('hides archived sessions unless searching, and sessions moved into a project', () => {
+  it('hides archived sessions and sessions moved into a project unless searching', () => {
     const entries = [
       { id: 'a', title: 'Alpha', cwd: '/w', lastModified: 1, archived: true },
       { id: 'b', title: 'Beta', cwd: '/w', lastModified: 2, projectId: 'p1' },
@@ -55,6 +55,8 @@ describe('groupSidebar', () => {
     ]
     expect(groupSidebar(entries).folders[0]!.entries.map(e => e.id)).toEqual(['c'])
     expect(groupSidebar(entries, { filter: 'alp' }).folders[0]!.entries.map(e => e.id)).toEqual(['a'])
+    // A moved session belongs to its project; search still finds it.
+    expect(groupSidebar(entries, { filter: 'bet' }).folders[0]!.entries.map(e => e.id)).toEqual(['b'])
   })
 })
 

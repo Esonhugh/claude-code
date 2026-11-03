@@ -437,6 +437,8 @@
   "groupRunning": "Running",
   "groupEnded": "Ended",
   "noTasks": "No tasks yet.",
+  "taskMovedGroup": "Moved-in sessions",
+  "taskMovedIn": "Moved in from a session",
   "taskState_running": "Running",
   "taskState_blocked": "Needs approval",
   "taskState_review": "Review",

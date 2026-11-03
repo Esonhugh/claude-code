@@ -2212,6 +2212,8 @@ function runHeadlessStreaming(
     // QueryEngine-owned command receipts can enqueue again while turn.complete is settling.
     // Keep draining them even after stdin closes; their hooks must finish before output closes.
     if (peek(cmd => cmd.agentId === undefined && cmd.commandRunReceipt !== undefined)) void run()
+    // A stopped agent notifies once its abort settles, which can be after run() stopped waiting for it.
+    if (!inputClosed && peek(cmd => cmd.agentId === undefined && cmd.mode === 'task-notification')) void run()
     if (abortController && getCommandsByMaxPriority('now').length > 0) {
       abortController.abort('interrupt')
     }

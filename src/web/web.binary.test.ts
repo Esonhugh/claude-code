@@ -1600,6 +1600,18 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       const errors: string[] = []
       page.on('pageerror', (e: Error) => errors.push(e.message))
       writeFileSync(join(workspace, 'slow.txt'), 'slow\n')
+      // Session sockets pass through; while refuseStop is set, the next stop_task is answered with an error.
+      let refuseStop = false
+      await page.routeWebSocket(/\/api\/sessions\/[^/]+\/ws$/, (ws: any) => {
+        const server = ws.connectToServer()
+        ws.onMessage((raw: string) => {
+          if (!refuseStop || !String(raw).includes('"subtype":"stop_task"')) return server.send(raw)
+          const msg = JSON.parse(String(raw)) as { request_id?: string }
+          refuseStop = false
+          ws.send(JSON.stringify({ type: 'control_response', response: { subtype: 'error', request_id: msg.request_id, error: 'STOP_REFUSED' } }) + '\n')
+        })
+        server.onMessage((raw: string) => ws.send(raw))
+      })
       await page.goto(signInUrl)
       await page.locator('.wl-hi').waitFor()
       await context.grantPermissions(['clipboard-read', 'clipboard-write'], { origin: new URL(page.url()).origin })
@@ -1701,6 +1713,13 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       await taskInput.press('Enter')
       await flash.getByText('Queued; the agent reads it at its next step.').waitFor({ timeout: 30_000 })
       await backToList()
+      // A refused stop says so, and the task keeps running.
+      refuseStop = true
+      await cardOf('Slow').click({ button: 'right' })
+      await menu.waitFor()
+      await page.keyboard.press('s')
+      await flash.getByText('STOP_REFUSED').waitFor({ timeout: 30_000 })
+      expect(await cardOf('Slow').locator('.pjbadge.stopped').count()).toBe(0)
       await cardOf('Slow').click({ button: 'right' })
       await menu.waitFor()
       await page.keyboard.press('s')
@@ -2049,6 +2068,67 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
   }, 120_000)
 
   // Windows has no SIGTERM: kill() ends the process before it can remove the lock.
+  it('moves a session into a project, which lists and opens it, also after a reload', async () => {
+    const playwrightPath = Bun.spawnSync(['node', '-p', "require.resolve('playwright')"])
+      .stdout.toString()
+      .trim()
+    const { chromium } = await import(playwrightPath)
+    const browser = await chromium.launch()
+    try {
+      const page = await (await browser.newContext({ locale: 'en-US', viewport: { width: 1440, height: 900 } })).newPage()
+      const errors: string[] = []
+      page.on('pageerror', (e: Error) => errors.push(e.message))
+      await page.goto(signInUrl)
+      await page.locator('.wl-hi').waitFor()
+      await page.getByRole('button', { name: 'New project', exact: true }).click()
+      const dialog = page.locator('.dialog')
+      await dialog.locator('#pj-name').fill('Move target')
+      await dialog.locator('#pj-path').fill(workspace)
+      await dialog.getByRole('button', { name: 'Create project' }).click()
+      await page.locator('#projview .pv-head b', { hasText: 'Move target' }).waitFor({ timeout: 30_000 })
+
+      await page.getByRole('button', { name: 'New session' }).first().click()
+      const input = page.getByLabel('Message', { exact: true })
+      await input.fill('MOVE_ME please')
+      await input.press('Enter')
+      await page.locator('.feed').getByText('Hello from the fake model').waitFor({ timeout: 30_000 })
+      // A new session is listed under its id until the list reloads with the prompt as its title.
+      await page.reload()
+      const title = 'MOVE_ME'
+      const row = page.locator('#sessions .history .sess', { hasText: title })
+      await showing(row.waitFor({ timeout: 15_000 }), page.locator('#sessions'))
+
+      // Move it from the right-click menu's submenu: it leaves the lists, search still finds it.
+      await row.click({ button: 'right' })
+      await page.locator('.ctxmenu').getByRole('menuitem', { name: /Move to project/ }).click()
+      await page.locator('.ctxmenu').getByRole('button', { name: 'Move target' }).click()
+      await row.waitFor({ state: 'detached', timeout: 15_000 })
+      await page.getByLabel('Search sessions').fill(title)
+      await row.waitFor({ timeout: 15_000 })
+      await page.getByLabel('Search sessions').fill('')
+
+      // The project lists it and opens it as the chat it is, also after a reload.
+      for (const reload of [false, true]) {
+        if (reload) await page.reload()
+        await page.locator('.pjrow', { hasText: 'Move target' }).click()
+        const moved = page.locator('.pv-side .pjlist .pjcard', { hasText: title })
+        await showing(moved.waitFor({ timeout: 30_000 }), page.locator('.pv-side'))
+        expect(await moved.locator('.sm').textContent()).toBe('Moved in from a session')
+        await moved.click()
+        await page.locator('.feed').getByText('Hello from the fake model').waitFor({ timeout: 30_000 })
+        expect(await page.locator('#projview').isVisible()).toBe(false)
+      }
+      expect(errors).toEqual([])
+      await page.evaluate(async () => {
+        for (const s of (await (await fetch('/api/sessions')).json()) as { id: string }[]) {
+          await fetch(`/api/sessions/${s.id}`, { method: 'DELETE' })
+        }
+      })
+    } finally {
+      await browser.close()
+    }
+  }, 120_000)
+
   it.skipIf(process.platform === 'win32')('shuts down on SIGTERM and removes the lock', async () => {
     web.kill('SIGTERM')
     expect(await web.exited).toBe(143)

@@ -30,7 +30,7 @@ import {
   workerItems,
 } from '../projects'
 import { type Approval, type ApprovalChoice, type Block, currentTodos, initialState, type ModelOption, reduce, type TaskNote } from '../protocol'
-import type { SessionChat } from '../store'
+import type { HistoryEntry, SessionChat } from '../store'
 import { AskDock, InputBox, ModeButton, ModelMenu, modelButtonLabel } from './Composer'
 import { Dialog } from './Dialog'
 import { Message, modelName } from './Message'
@@ -316,6 +316,8 @@ export function ProjectView({
   onSendTask,
   onTasks,
   uploadTo,
+  moved,
+  onOpenSession,
 }: {
   t: T
   project: Project
@@ -337,13 +339,17 @@ export function ProjectView({
   onEffort: (effort: string) => void
   onAnswer: (approval: Approval, choice: ApprovalChoice) => void
   onSettings: () => void
-  onStopTask: (taskId: string) => void
+  /** Rejects when the coordinator is gone or refuses the stop. */
+  onStopTask: (taskId: string) => Promise<unknown>
   /** Resolves with the delivery (`queued`, `resumed`…); an ended task resumes on `model` and `effort`. */
   onSendTask: (taskId: string, text: string, pick: { model?: string; effort?: string }) => Promise<string>
   /** The task rows as last fetched, for the sidebar's counts. */
   onTasks: (rows: ProjectTask[]) => void
   /** The coordinator's session id: task attachments are uploaded there. */
   uploadTo: string
+  /** Sessions moved into this project from the sidebar; they open as the chats they are. */
+  moved: HistoryEntry[]
+  onOpenSession: (entry: HistoryEntry) => void
 }) {
   const [show, setShow] = useState<Show>('chat')
   const [wide, setWide] = useState(false)
@@ -449,6 +455,7 @@ export function ProjectView({
     clearTimeout(flashTimer.current)
     flashTimer.current = setTimeout(() => setFlash(undefined), 2200)
   }
+  const stopTask = (id: string) => onStopTask(id).catch((err: unknown) => say(err instanceof Error ? err.message : String(err)))
   const openTask = (id: string) => {
     setMenu(null)
     setOpenId(id)
@@ -478,7 +485,7 @@ export function ProjectView({
     setMenu(null)
     if (action === 'open') openTask(task.id)
     else if (action === 'done' && task.state === 'review') void markDone(task)
-    else if (action === 'stop' && isLive(task)) onStopTask(task.id)
+    else if (action === 'stop' && isLive(task)) void stopTask(task.id)
     else if (action === 'copy') void copyBrief(task)
   }
   useLayoutEffect(() => {
@@ -642,7 +649,7 @@ export function ProjectView({
             {t('pvTasks')}
           </button>
           <span>
-            {t('taskCount', { n: String(tasks.length) })}
+            {t('taskCount', { n: String(tasks.length + moved.length) })}
             {running > 0 && t('taskRunningCount', { n: String(running) })}
           </span>
         </div>
@@ -652,19 +659,32 @@ export function ProjectView({
         {wideButton}
       </div>
       <div className="pjlist">
-        {tasks.length ? (
-          TASK_GROUPS.map(group => {
-            const list = tasks.filter(x => group.states.includes(x.state))
-            return list.length ? (
-              <Fragment key={group.key}>
-                <div className="grp-h">{t(group.key)}</div>
-                {list.map(x => card(x))}
-              </Fragment>
-            ) : null
-          })
-        ) : (
-          <p className="note">{t('noTasks')}</p>
+        {TASK_GROUPS.map(group => {
+          const list = tasks.filter(x => group.states.includes(x.state))
+          return list.length ? (
+            <Fragment key={group.key}>
+              <div className="grp-h">{t(group.key)}</div>
+              {list.map(x => card(x))}
+            </Fragment>
+          ) : null
+        })}
+        {moved.length > 0 && (
+          <>
+            <div className="grp-h">{t('taskMovedGroup')}</div>
+            {moved.map(entry => (
+              <TaskCard
+                key={entry.id}
+                t={t}
+                task={{ id: entry.id, title: entry.title, state: 'done' }}
+                summary={t('taskMovedIn')}
+                meta={tilde(entry.cwd ?? '')}
+                current={false}
+                onOpen={() => onOpenSession(entry)}
+              />
+            ))}
+          </>
         )}
+        {!tasks.length && !moved.length && <p className="note">{t('noTasks')}</p>}
       </div>
     </>
   )
@@ -682,7 +702,7 @@ export function ProjectView({
       <span className="sp" />
       {seg}
       {ib(t('markDone'), '✓', () => void markDone(task), task.state === 'review')}
-      {ib(t('stop'), '■', () => onStopTask(task.id), isLive(task))}
+      {ib(t('stop'), '■', () => void stopTask(task.id), isLive(task))}
       {wideButton}
       {ib(t('close'), '✕', () => setOpenId(undefined))}
     </div>

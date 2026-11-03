@@ -156,6 +156,7 @@
 - 项目、任务与侧栏标记存在 `~/.claude/web/projects.sqlite`（`bun:sqlite`，`PRAGMA user_version` 迁移 1–3），侧栏项目行的任务数与等你处理数从库里读；给已结束的任务发消息即带上下文恢复（`send_task_message` 新增 `model` 与 `effort`，进程里已经没有的 agent 从 transcript 恢复，服务重启后同样可以），协调者重启或重开后保留模型与思考强度；服务启动、停止或结束协调者时仍在运行的任务标为已停止并注明原因，只有 `stop_task` 与 TaskStop 记为用户停止（#549、#550）。
 - 交互与无障碍：弹窗内 Tab 循环，Esc 只关闭最上层的菜单或弹窗并把焦点还给触发按钮，窄屏 `Ctrl+K` 先打开抽屉；1100px 以下左侧栏、760px 以下右侧面板变成抽屉，项目视图在窄屏切换“对话 / 任务”，390px 下导出菜单不再被裁剪；刷新或重连后显示的模型取 `get_settings` 的 `applied.model`，Windows 下工具卡片路径同样显示为相对路径；协调者的 `result` 不再清掉 worker 的待审批，刷新后未答的审批会重发（#536、#550、#551）。
 - 登录状态与 `claude auth status` 一致：宿主管理的 token 文件、`ANTHROPIC_AUTH_TOKEN`、apiKeyHelper、Bedrock、Vertex 与 Foundry 都算已登录，不再显示未登录并禁用输入框；新会话还没有消息时上传文件的预览不再返回 500；服务端未捕获的异常只返回纯 JSON 500，不再返回带源码与路径的 Bun 调试页；输入框上方的待办在两项之间显示“下一项：…”（与 CLI 的 `Next:` 一致），全部完成才显示“全部完成”（#552）。
+- 项目页停止任务时等待 `stop_task` 的 control response，被拒绝时在同一提示条显示错误；被停止的 worker 在协调者已空闲后才送达的完成通知也会唤起协调者（`src/cli/print.ts`），任务卡片不再停在运行中；Windows web e2e 偶发的 `ERR_NO_BUFFER_SPACE` 按用例统计了 TCP 连接（Linux 每例 web 端口 TIME_WAIT 6–8、API 连接最多约 200，Windows 每例共 61–240），排除了页面与测试的连接泄漏；移至项目的会话列在项目任务列表的“移入的会话”分组里（标“从会话移入”，点开是原对话，刷新后仍在），侧栏搜索仍能找到它。
 
 #### 文档
 
@@ -164,7 +165,7 @@
 #### 已知缺口
 
 - `src/services/compact/autoCompact.contextWindow.test.ts` 与 `idleCompaction.test.ts` 的部分用例依赖本机环境变量与凭证，在云容器中失败，改动前后一致，不影响运行时行为。
-- `claude web`：任务对话里没有待办清单（后台 worker 在 todo v2 下拿不到 TodoWrite/TaskCreate）；移至项目的会话从列表移走，但项目视图还不显示；不列 Cron 任务与本机 UDS 会话，工具卡片不显示耗时；macOS 的 web e2e 跳过账号用例（API key 存进登录钥匙串，临时 HOME 隔离不了）。
+- `claude web`：任务对话里没有待办清单（后台 worker 在 todo v2 下拿不到 TodoWrite/TaskCreate）；不列 Cron 任务与本机 UDS 会话，工具卡片不显示耗时；macOS 的 web e2e 跳过账号用例（API key 存进登录钥匙串，临时 HOME 隔离不了）；Windows web e2e 偶发的 `ERR_NO_BUFFER_SPACE` 根因未定（失败前一步是装 WFP 过滤器的 Sandbox e2e）。
 - 后台 Workflow 的结果行在完成后显示 “Completed …”，官方保持 “/workflows to view dynamic workflow runs”；两者渲染逻辑相同，差异来自 task 保留时长。#79（工作区 MCP 审批存储、插件仓库分级）与 #366 的 `display: "updates"`/`clear_thinking`、`/stats` 界面移植留到后续版本。
 
 ### 测试覆盖

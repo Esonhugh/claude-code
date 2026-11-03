@@ -1201,7 +1201,7 @@ export function App() {
             onEffort={effort => changeEffort(view, effort)}
             onAnswer={(approval, choice) => answer(view, approval, choice)}
             onSettings={() => setProjectDialog(project)}
-            onStopTask={taskId => stopTask(view, taskId)}
+            onStopTask={taskId => requestAsync(view, REQUEST_PREFIX.stopTask, { subtype: 'stop_task', task_id: taskId })}
             onSendTask={async (taskId, text, pick) => {
               // A coordinator that stopped (or a server that restarted) is resumed first.
               if (chat.mode !== 'live' && !(await resume(view))) throw new Error(t('statusIdle'))
@@ -1209,6 +1209,8 @@ export function App() {
             }}
             onTasks={rows => countTasks(project.id, rows)}
             uploadTo={view}
+            moved={state.history.filter(h => h.projectId === project.id)}
+            onOpenSession={entry => void openSession(entry)}
           />,
         )}
       <main
