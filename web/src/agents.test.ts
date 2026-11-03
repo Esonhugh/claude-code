@@ -7,6 +7,7 @@ import {
   reduceTasks,
   type Tasks,
   unresolvedIssuers,
+  agentOutput,
   workflowAgent,
   workflowPhases,
 } from './agents'
@@ -159,6 +160,19 @@ describe('agent tasks', () => {
     tasks = reduceTasks(tasks, sys('task_progress', { task_id: 'wa', tool_use_id: 'toolu_wf', description: 'Running wait', usage: { total_tokens: 1, tool_uses: 1, duration_ms: 1 } }))
     expect(tasks.wa!.description).toBe('spec: gather-a')
     expect(workflowAgent(tasks, tasks.w1!, 'gather-a')?.id).toBe('wa')
+  })
+
+  it("an agent's output is its structured output, else its last reply", () => {
+    const say = (...content: Record<string, unknown>[]) => ({ type: 'assistant', message: { content } })
+    expect(agentOutput([])).toBeUndefined()
+    expect(agentOutput([say({ type: 'text', text: 'first' }), { type: 'user' }, say({ type: 'text', text: 'last' })])).toEqual({ text: 'last', structured: false })
+    expect(
+      agentOutput([
+        say({ type: 'tool_use', name: 'StructuredOutput', input: { claims: ['a'] } }),
+        { type: 'user' },
+        say({ type: 'text', text: 'Done.' }),
+      ]),
+    ).toEqual({ text: '{\n  "claims": [\n    "a"\n  ]\n}', structured: true })
   })
 
   it('a workflow agent listed as running before its task starts is queued', () => {
