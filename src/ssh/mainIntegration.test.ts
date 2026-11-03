@@ -841,7 +841,7 @@ test('requires the managed SSH capability for direct shell control', () => {
 })
 
 test('serializes direct shell commands with model turns and records their history', () => {
-  assert.match(printSource, /if \(running \|\| shellCommandRunning\)/)
+  assert.match(printSource, /if \(running \|\| shellCommandRunning \|\| isShuttingDown\(\)\)/)
   assert.match(
     printSource,
     /else if \(running\) \{[\s\S]{0,180}sendControlResponseError\(message, 'A model turn is already running'\)/,
