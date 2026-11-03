@@ -33,6 +33,8 @@
   "uploadFailed": "上传失败：{error}",
   "preview": "预览",
   "openNewTab": "新标签页",
+  "htmlSource": "源码",
+  "chatImage": "图片 {n}",
   "pinComment": "评论",
   "pinPlaceholder": "给 Claude 留个评论…",
   "pinHint": "点击任意位置钉一条评论",

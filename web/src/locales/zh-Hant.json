@@ -33,6 +33,8 @@
   "uploadFailed": "上傳失敗：{error}",
   "preview": "預覽",
   "openNewTab": "新標籤頁",
+  "htmlSource": "原始碼",
+  "chatImage": "圖片 {n}",
   "pinComment": "評論",
   "pinPlaceholder": "給 Claude 留個評論…",
   "pinHint": "點擊任意位置釘一條評論",

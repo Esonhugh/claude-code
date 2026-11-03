@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test'
 import type { Block, Item, ModelOption } from '../protocol'
-import { joinTurns, modelName, relativeTo, stepActions, turnSegments } from './Message'
+import { imageTarget, joinTurns, modelName, relativeTo, stepActions, turnSegments } from './Message'
 
 const models: ModelOption[] = [
   {
@@ -124,5 +124,15 @@ describe('handback report', () => {
     expect(render(false)).toContain('All done.')
     expect(render(false)).not.toContain('class="spin"')
     expect(render(true)).toContain('class="spin"')
+  })
+})
+
+describe('imageTarget', () => {
+  it('names the image and the start of its message, with mentions as file names', () => {
+    expect(imageTarget('Fix   this\n@/a/b/readme.md and @"/x y/z.png"', 1)).toBe(
+      'image 2 of my message "Fix this readme.md and z.png"',
+    )
+    expect(imageTarget('', 0)).toBe('image 1 of my message')
+    expect(imageTarget('x'.repeat(50), 0)).toBe(`image 1 of my message "${'x'.repeat(40)}…"`)
   })
 })

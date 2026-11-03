@@ -33,6 +33,8 @@
   "uploadFailed": "Upload failed: {error}",
   "preview": "Preview",
   "openNewTab": "New tab",
+  "htmlSource": "Source",
+  "chatImage": "Image {n}",
   "pinComment": "Comment",
   "pinPlaceholder": "Add a comment for Claude…",
   "pinHint": "Click to pin a comment",
