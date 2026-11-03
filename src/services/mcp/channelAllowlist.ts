@@ -16,6 +16,7 @@
  */
 
 import { z } from 'zod/v4'
+import { getAllowedChannels } from '../../bootstrap/state.js'
 import { lazySchema } from '../../utils/lazySchema.js'
 import { isEnvTruthy } from '../../utils/envUtils.js'
 import { parsePluginIdentifier } from '../../utils/plugins/pluginIdentifier.js'
@@ -91,4 +92,22 @@ export function isChannelAllowlisted(
     getSettingsForSource('policySettings')?.allowedChannelPlugins,
   )
   return entries.some(e => e.plugin === name && e.marketplace === marketplace)
+}
+
+/**
+ * Fork: an approved channel plugin's server (`plugin:<name>:<server>`) starts
+ * only in a session that listed the plugin (--channels or channel_enable).
+ * A bot token allows one poller, so the server of every other session
+ * (claude web runs many) would take the bot from the session using it.
+ */
+export function isDeferredChannelServer(serverName: string): boolean {
+  const [kind, plugin] = serverName.split(':')
+  if (kind !== 'plugin' || !plugin || !isChannelsEnabled()) return false
+  const { entries } = getEffectiveChannelAllowlist(
+    getSettingsForSource('policySettings')?.allowedChannelPlugins,
+  )
+  if (!entries.some(e => e.plugin === plugin)) return false
+  return !getAllowedChannels().some(
+    c => c.kind === 'plugin' && c.name === plugin,
+  )
 }
