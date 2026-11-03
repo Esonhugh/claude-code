@@ -41,6 +41,20 @@ describe('reduce', () => {
     expect(state.busy).toBe(true)
   })
 
+  it('shows a channel message as who sent it and from where, not as the raw tag', () => {
+    let state = addUserMessage(initialState, 'hi', [], 'u1')
+    state = reduce(state, {
+      type: 'user',
+      isReplay: true,
+      uuid: 'c1',
+      message: { role: 'user', content: '<channel source="plugin:fakechat:fakechat" chat_id="1" user="a &amp; b">\n<b>hi</b> & "you"\n</channel>' },
+    })
+    expect(state.items.at(-1)).toEqual({ kind: 'channel', id: 'c1', source: 'fakechat', user: 'a & b', text: '<b>hi</b> & "you"' })
+    // A prompt that only mentions the tag is the person's own message.
+    state = reduce(state, { type: 'user', isReplay: true, uuid: 'u2', message: { role: 'user', content: 'what does <channel source="x"> mean?' } })
+    expect(state.items.at(-1)).toMatchObject({ kind: 'user', text: 'what does <channel source="x"> mean?' })
+  })
+
   it('runs a queued message the turn did not take as the next turn', () => {
     let state = addUserMessage(initialState, 'first', [], 'u1')
     state = queueUserMessage(state, 'later', 'u2')

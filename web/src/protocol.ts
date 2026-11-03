@@ -51,6 +51,8 @@ export type Item =
   | { kind: 'local'; id: string; text: string; isError?: boolean }
   /** A message a teammate sent the lead (`<teammate-message>`). */
   | { kind: 'teammate'; id: string; from: string; color?: string; summary?: string; text: string }
+  /** A message a channel (an MCP server such as Telegram) pushed in: `<channel source="…" user="…">`. */
+  | { kind: 'channel'; id: string; source: string; user?: string; text: string }
 
 export type Approval = {
   requestId: string
@@ -585,6 +587,27 @@ export function teammateMessages(
   }))
 }
 
+// The whole text must be one wrapper, so a prompt that merely mentions the tag stays the person's own.
+const CHANNEL_MESSAGE = /^<channel\s+source="([^"]+)"([^>]*)>\n?([\s\S]*?)\n?<\/channel>\s*$/
+
+const unescapeAttr = (value: string) =>
+  value.replace(/&(quot|apos|lt|gt|amp);/g, (_, name: string) => ({ quot: '"', apos: "'", lt: '<', gt: '>', amp: '&' })[name]!)
+
+/** A channel message, with the server's leaf name (`plugin:telegram:telegram` → `telegram`) as its source. */
+export function channelMessage(text: string, id: string): Extract<Item, { kind: 'channel' }> | undefined {
+  const m = CHANNEL_MESSAGE.exec(text)
+  if (!m) return undefined
+  const source = unescapeAttr(m[1]!)
+  const user = /\buser="([^"]+)"/.exec(m[2] ?? '')?.[1]
+  return {
+    kind: 'channel',
+    id,
+    source: source.slice(source.lastIndexOf(':') + 1),
+    ...(user !== undefined && { user: unescapeAttr(user) }),
+    text: m[3] ?? '',
+  }
+}
+
 /** A task ended; `n` counts its endings (a resumed task can end again), `durationMs` is from the transcript. */
 export type TaskNote = { taskId: string; status: string; afterId?: string; n: number; durationMs?: number }
 
@@ -786,6 +809,7 @@ export function reduce(state: ChatState, raw: unknown): ChatState {
           .filter((u): u is string => !!u)
         const itemId = uuid ?? `user-${next.items.length}`
         const fromTeammates = teammateMessages(text, itemId)
+        const fromChannel = channelMessage(text, itemId)
         const local = localCommandOutput(text)
         const command = commandInput(text)
         const notified = noteFromLog(next, text, itemId)
@@ -795,6 +819,8 @@ export function reduce(state: ChatState, raw: unknown): ChatState {
           next = { ...next, items: [...next.items, { kind: 'note', id: itemId, text: '', key: 'interrupted' }] }
         } else if (fromTeammates.length) {
           next = { ...next, items: [...next.items, ...fromTeammates] }
+        } else if (fromChannel) {
+          next = { ...next, items: [...next.items, fromChannel] }
         } else if (local) {
           if (local.text) next = addLocal(next, { kind: 'local', id: itemId, ...local })
         } else if (command !== undefined) {

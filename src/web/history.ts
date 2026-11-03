@@ -54,6 +54,8 @@ function isVisible(message: Record<string, unknown>): boolean {
     if (attachment?.type === 'queued_command') return (attachment.commandMode ?? 'prompt') === 'prompt'
     return attachment?.type === 'goal_status'
   }
+  // A channel message is meta to the model; the person sees it, as in the TUI.
+  if (message.type === 'user' && (message.origin as { kind?: unknown } | undefined)?.kind === 'channel') return true
   if (message.type !== 'user' || message.isMeta) {
     return false
   }

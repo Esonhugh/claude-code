@@ -61,6 +61,22 @@ describe('groupSidebar', () => {
 })
 
 describe('appReducer', () => {
+  it('draws a frame of stream deltas as if they came one by one', () => {
+    const ev = (event: Record<string, unknown>) => ({ type: 'stream_event', event })
+    const raws = [
+      ev({ type: 'message_start', message: { id: 'm1', model: 'claude-opus-5-5' } }),
+      ev({ type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } }),
+      ev({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'Hel' } }),
+      ev({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'lo' } }),
+    ]
+    let start = appReducer(initialAppState, { type: 'mode', id: 's1', mode: 'live' })
+    start = appReducer(start, { type: 'chat', id: 's1', action: { type: 'user', text: 'hi' } })
+    const oneByOne = raws.reduce((st, raw) => appReducer(st, { type: 'chat', id: 's1', action: { type: 'message', raw } }), start)
+    const batched = appReducer(start, { type: 'chat', id: 's1', action: { type: 'messages', raws } })
+    expect(batched.chats.s1).toEqual(oneByOne.chats.s1)
+    expect(JSON.stringify(batched.chats.s1!.items)).toContain('Hello')
+  })
+
   it('loads a transcript read-only and prepends earlier pages without duplicates', () => {
     let state = appReducer(initialAppState, { type: 'view', id: 's1' })
     state = appReducer(state, { type: 'mode', id: 's1', mode: 'readonly' })

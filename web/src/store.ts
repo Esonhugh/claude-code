@@ -46,6 +46,7 @@ export type AppState = {
 
 export type ChatAction =
   | { type: 'message'; raw: unknown }
+  | { type: 'messages'; raws: unknown[] }
   | { type: 'user'; text: string; images?: string[]; uuid?: string }
   | { type: 'queue'; text: string; images?: string[]; uuid: string }
   /** Stop: queued messages go back to the input instead of running next. */
@@ -98,6 +99,8 @@ function reduceChat(state: ChatState, action: ChatAction): ChatState {
   switch (action.type) {
     case 'message':
       return reduce(state, action.raw)
+    case 'messages':
+      return action.raws.reduce(reduce, state)
     case 'user':
       return addUserMessage(state, action.text, action.images, action.uuid)
     case 'queue':

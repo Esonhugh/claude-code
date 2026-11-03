@@ -161,6 +161,25 @@ const snipProjection = feature('HISTORY_SNIP')
   : null
 /* eslint-enable @typescript-eslint/no-require-imports */
 
+/** Replays of the channel messages a turn reads; the model sees them as meta prompts. */
+export function channelReplays(messages: readonly Message[]): SDKUserMessageReplay[] {
+  return messages.flatMap(msg =>
+    msg.type === 'user' && msg.isMeta && msg.origin?.kind === 'channel'
+      ? [
+          {
+            type: 'user',
+            message: msg.message,
+            session_id: getSessionId(),
+            parent_tool_use_id: null,
+            uuid: msg.uuid,
+            timestamp: msg.timestamp,
+            isReplay: true,
+          } as SDKUserMessageReplay,
+        ]
+      : [],
+  )
+}
+
 /**
  * Like 2.1.311, permission_denials also lists calls a hook refused; those
  * never reach canUseTool, so they are read from the refused tool result.
@@ -890,6 +909,10 @@ export class QueryEngine {
 
     // Record when system message is yielded for headless latency tracking
     headlessProfilerCheckpoint('system_message_yielded')
+
+    // A channel message is meta to the model, but a client that asked for
+    // replays shows it, as the TUI does; before the reply, where it was read.
+    if (replayUserMessages) yield* channelReplays(messagesFromUserInput)
 
     // Like official 2.1.311, every result carries the fast mode state and,
     // when fast mode is unavailable, why.

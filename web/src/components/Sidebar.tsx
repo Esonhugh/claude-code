@@ -23,12 +23,10 @@ export type SidebarProject = Project & { tasks?: number; tasksRunning?: number; 
 
 export type DialogKind =
   | 'mcp'
-  | 'channels'
   | 'skills'
   | 'plugins'
   | 'memory'
   | 'hooks'
-  | 'mods'
   | 'settings'
   | 'stats'
   | 'keys'
@@ -517,12 +515,10 @@ export function Sidebar({
 
   const snav: { kind: DialogKind; ico: string; label: string }[] = [
     { kind: 'mcp', ico: '⌁', label: 'MCP' },
-    { kind: 'channels', ico: '⇆', label: 'Channels' },
     { kind: 'skills', ico: '/', label: 'Skills' },
     { kind: 'plugins', ico: '⧉', label: t('plugins') },
     { kind: 'memory', ico: 'M', label: t('memory') },
     { kind: 'hooks', ico: '↯', label: 'Hooks' },
-    { kind: 'mods', ico: '◇', label: 'Mods' },
   ]
   const empty = !pins.length && !tempRows.length && !dirs.length && !projectRows.length
 

@@ -88,6 +88,16 @@ async function getHighlighter(): Promise<HighlighterCore> {
   return highlighter
 }
 
+// Switching back to a session redraws its code blocks; highlighted ones come from here at once.
+const CACHE_SIZE = 500
+const cache = new Map<string, string>()
+
+/** The HTML `highlight` already made for this code, if any. */
+export function cachedHighlight(code: string, lang: string | null | undefined): string | undefined {
+  const id = resolveLang(lang)
+  return id ? cache.get(`${id}\n${code}`) : undefined
+}
+
 /** Highlighted HTML (shiki escapes the code), or undefined for unknown languages. */
 export async function highlight(
   code: string,
@@ -95,6 +105,9 @@ export async function highlight(
 ): Promise<string | undefined> {
   const id = resolveLang(lang)
   if (!id) return undefined
+  const key = `${id}\n${code}`
+  const hit = cache.get(key)
+  if (hit !== undefined) return hit
   const hl = await getHighlighter()
   if (!loaded.has(id)) {
     loaded.set(
@@ -105,8 +118,11 @@ export async function highlight(
     )
   }
   await loaded.get(id)
-  return hl.codeToHtml(code, {
+  const html = hl.codeToHtml(code, {
     lang: id,
     themes: { light: 'github-light', dark: 'github-dark' },
   })
+  if (cache.size >= CACHE_SIZE) cache.delete(cache.keys().next().value!)
+  cache.set(key, html)
+  return html
 }

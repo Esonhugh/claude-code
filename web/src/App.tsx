@@ -130,7 +130,7 @@ function useTurnStart(busy: boolean | undefined, view: string | null): number | 
 export function App() {
   const [state, dispatch] = useReducer(appReducer, initialAppState)
   const [lang, setLangState] = useState<Lang>(initialLang)
-  const [theme, setThemeState] = useState<Theme>(() => readStored(THEME_KEY, 'light'))
+  const [theme, setThemeState] = useState<Theme>(() => readStored(THEME_KEY, 'system'))
   const [palette, setPaletteState] = useState<Palette>(() => readStored(PALETTE_KEY, 'clay'))
   const [columns, setColumnsState] = useState<Columns>(() => readStored(COLUMNS_KEY, {}))
   const setColumns = (next: Columns) => {
@@ -376,12 +376,27 @@ export function App() {
   const shownTurns = useRef<{ view?: string | null; n: number }>({ n: 0 })
   useEffect(() => {
     const feed = feedRef.current
-    if (feed && stickToBottom.current) feed.scrollTop = feed.scrollHeight
     const n = chat?.items.length ?? 0
     const seen = shownTurns.current
     if (seen.view === view && n > seen.n && !stickToBottom.current) setNewBelow(k => k + n - seen.n)
     if (seen.view !== view || stickToBottom.current) setNewBelow(0)
     shownTurns.current = { view, n }
+    if (!feed || !stickToBottom.current) return
+    feed.scrollTop = feed.scrollHeight
+    // Replies off screen are laid out only when scrolled to (content-visibility), so the
+    // ones landed on take their real height in a later frame; follow until the height
+    // holds for two frames (a frame lays them out after its rAF callbacks).
+    let height = feed.scrollHeight
+    let same = 0
+    let frames = 0
+    let frame = requestAnimationFrame(function settle() {
+      if (!stickToBottom.current) return
+      feed.scrollTop = feed.scrollHeight
+      same = feed.scrollHeight === height ? same + 1 : 0
+      height = feed.scrollHeight
+      if (same < 2 && ++frames < 20) frame = requestAnimationFrame(settle)
+    })
+    return () => cancelAnimationFrame(frame)
   }, [chat?.items, chat?.approvals, view])
   // An earlier page lands above the reader; keep what they were looking at in place.
   const fromBottom = useRef<number>(undefined)
@@ -486,7 +501,25 @@ export function App() {
   const getSettings = (id: string) => request(id, REQUEST_PREFIX.settings, { subtype: 'get_settings' })
 
   const attach = async (id: string): Promise<void> => {
+    // Stream deltas come many times a frame; they are drawn once per frame.
+    // Anything else draws the deltas before it first, so the order holds.
+    let deltas: unknown[] = []
+    let frame = 0
+    const flush = () => {
+      cancelAnimationFrame(frame)
+      frame = 0
+      if (!deltas.length) return
+      const raws = deltas
+      deltas = []
+      dispatch({ type: 'chat', id, action: { type: 'messages', raws } })
+    }
     const socket = await openSessionSocket(id, raw => {
+      if ((raw as { type?: string }).type === 'stream_event') {
+        deltas.push(raw)
+        frame ||= requestAnimationFrame(flush)
+        return
+      }
+      flush()
       const msg = raw as { type?: string; response?: Record<string, unknown> }
       const requestId = msg.type === 'control_response' ? msg.response?.request_id : undefined
       const pending = typeof requestId === 'string' && pendingRequests.current.get(requestId)
@@ -506,6 +539,7 @@ export function App() {
       }
     })
     socket.addEventListener('close', () => {
+      flush()
       if (sockets.current.get(id) !== socket) return
       sockets.current.delete(id)
       dispatch({ type: 'mode', id, mode: 'readonly' })
@@ -1083,34 +1117,40 @@ export function App() {
     detail: task.status,
     tag: t('agentTag'),
   }))
+  // Every message reads this context, so it changes only when what it offers does, not on each streamed delta.
+  const latest = useRef({ items: chatItems, rewindChat, retryTurn, forkTurn, turnOf })
+  latest.current = { items: chatItems, rewindChat, retryTurn, forkTurn, turnOf }
+  const canRewind = !!view && !!chat && !chat.busy && chat.mode !== 'elsewhere'
+  const decisions = chat?.decisions
   const chatValue = useMemo(
     () => ({
-      decisions: chat?.decisions,
+      decisions,
       rewind:
-        view && chat && !chat.busy && chat.mode !== 'elsewhere'
+        view && canRewind
           ? {
               target: rewindTarget,
               turnsAfter: (id: string) => {
-                const index = chat.items.findIndex(i => i.id === id)
-                return chat.items.slice(index).filter(i => i.kind === 'user').length
+                const items = latest.current.items ?? []
+                const index = items.findIndex(i => i.id === id)
+                return items.slice(index).filter(i => i.kind === 'user').length
               },
               ask: setRewindTarget,
-              go: (id: string, withFiles: boolean) => void rewindChat(view, id, withFiles),
+              go: (id: string, withFiles: boolean) => void latest.current.rewindChat(view, id, withFiles),
             }
           : undefined,
       turn:
-        view && chat && !chat.busy && chat.mode !== 'elsewhere'
+        view && canRewind
           ? {
-              retry: (firstId: string) => void retryTurn(view, firstId),
-              fork: (firstId: string) => void forkTurn(view, firstId),
+              retry: (firstId: string) => void latest.current.retryTurn(view, firstId),
+              fork: (firstId: string) => void latest.current.forkTurn(view, firstId),
               rewind: (firstId: string) => {
-                const { user } = turnOf(view, firstId)
+                const { user } = latest.current.turnOf(view, firstId)
                 if (user) setRewindTarget(user.id)
               },
             }
           : undefined,
     }),
-    [chat, view, rewindTarget],
+    [decisions, canRewind, view, rewindTarget],
   )
 
   const withChat = (node: ReactNode) => (

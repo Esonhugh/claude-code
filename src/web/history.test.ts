@@ -42,6 +42,15 @@ beforeEach(() => {
       message: { id: 'msg_e', role: 'assistant', model: '<synthetic>', content: [{ type: 'text', text: 'API Error: 500' }] },
     }),
     line({ type: 'user', uuid: 'a0000000-0000-4000-8000-000000000005', parentUuid: 'a0000000-0000-4000-8000-000000000007', cwd, message: { role: 'user', content: [{ type: 'text', text: 'second question' }] } }),
+    line({
+      type: 'user',
+      uuid: 'a0000000-0000-4000-8000-000000000008',
+      parentUuid: 'a0000000-0000-4000-8000-000000000005',
+      cwd,
+      isMeta: true,
+      origin: { kind: 'channel', server: 'plugin:fakechat:fakechat' },
+      message: { role: 'user', content: '<channel source="plugin:fakechat:fakechat" user="alice">\nhello from chat\n</channel>' },
+    }),
   ]
   writeFileSync(join(dir, `${ID}.jsonl`), entries.join('\n') + '\n')
   const agentDir = join(dir, ID, 'subagents', 'workflows', 'run1')
@@ -133,19 +142,21 @@ describe('web history', () => {
   it('returns visible messages as stream-json and pages backwards', async () => {
     const page = await readTranscript(ID, undefined, 10)
     expect(page?.cwd).toBe(join(root, 'project'))
-    expect(page?.total).toBe(6)
-    expect(page?.messages.map(m => m.type)).toEqual(['user', 'assistant', 'user', 'user', 'assistant', 'user'])
+    expect(page?.total).toBe(7)
+    expect(page?.messages.map(m => m.type)).toEqual(['user', 'assistant', 'user', 'user', 'assistant', 'user', 'user'])
     expect(page?.messages[0]).toMatchObject({ isReplay: true, parent_tool_use_id: null })
     expect(JSON.stringify(page?.messages)).not.toContain('hidden meta')
     // Slash commands and their output stay, for the page to show as command lines.
     expect(page?.messages[2]).toMatchObject({ message: { content: '<command-name>/clear</command-name>' } })
     expect(page?.messages[3]).toMatchObject({ message: { content: '<local-command-stdout>cleared</local-command-stdout>' } })
     expect(page?.messages[4]).toMatchObject({ isApiErrorMessage: true })
+    // A channel message is meta to the model but the person sees it, as the TUI does.
+    expect(page?.messages[6]).toMatchObject({ isReplay: true, message: { content: expect.stringContaining('hello from chat') } })
 
     const last = await readTranscript(ID, undefined, 1)
-    expect(last).toMatchObject({ start: 5, total: 6 })
-    const earlier = await readTranscript(ID, 5, 5)
-    expect(earlier?.start).toBe(0)
+    expect(last).toMatchObject({ start: 6, total: 7 })
+    const earlier = await readTranscript(ID, 6, 5)
+    expect(earlier?.start).toBe(1)
     expect(earlier?.messages).toHaveLength(5)
   })
 
