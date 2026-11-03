@@ -25,12 +25,37 @@ export function workerModelChoices(models: ModelOption[], current: string | null
   return current && !choices.some(c => c.value === current) ? [...choices, { value: current, label: current }] : choices
 }
 
+/**
+ * The task default menu: its model rows before "More models", how many that hides, and the effort
+ * row (null is inherit). Inherit means the coordinator's model, so that model stays listed and its
+ * effort levels are offered.
+ */
+export function taskDefaultMenu(
+  models: ModelOption[],
+  workerModel: string | null,
+  workerEffort: string | null,
+  inheritModel: string | undefined,
+  expanded: boolean,
+): { shown: { value: string | null; label: string }[]; hidden: number; efforts: (string | null)[] } {
+  const choices = workerModelChoices(models, workerModel)
+  const listed = models.filter(m => m.value !== 'default')
+  const picked = workerModel ?? inheritModel
+  const shownValues = new Set(shownModels(listed, picked, expanded).map(m => m.value))
+  const shown = choices.filter(c => c.value === null || !listed.length || shownValues.has(c.value) || c.value === workerModel)
+  return {
+    shown,
+    hidden: choices.length - shown.length,
+    efforts: [null, ...effortChoices(picked, models, workerEffort ?? undefined)],
+  }
+}
+
 /** New project (no `project`) or its settings: the prototype's `pjForm`. */
 export function ProjectDialog({
   t,
   project,
   workspace,
   models,
+  inheritModel,
   onSaved,
   onClose,
 }: {
@@ -38,6 +63,8 @@ export function ProjectDialog({
   project?: Project
   workspace?: string
   models: ModelOption[]
+  /** The coordinator's model, which "inherit" means: its row stays listed and its effort levels are offered. */
+  inheritModel?: string
   onSaved: (project: Project) => void
   onClose: () => void
 }) {
@@ -48,9 +75,7 @@ export function ProjectDialog({
   const choices = workerModelChoices(models, workerModel)
   const [workerEffort, setWorkerEffort] = useState<string | null>(project?.worker_effort ?? null)
   const [moreModels, setMoreModels] = useState(false)
-  const listedModels = models.filter(m => m.value !== 'default')
-  const shownValues = new Set(shownModels(listedModels, workerModel ?? undefined, moreModels).map(m => m.value))
-  const shownChoices = choices.filter(c => c.value === null || !listedModels.length || shownValues.has(c.value) || c.value === workerModel)
+  const menu = taskDefaultMenu(models, workerModel, workerEffort, inheritModel, moreModels)
   const [trustDir, setTrustDir] = useState<string>()
   const [error, setError] = useState<string>()
   const [busy, setBusy] = useState(false)
@@ -146,7 +171,7 @@ export function ProjectDialog({
           >
             {close => (
               <>
-                {shownChoices.map(m => (
+                {menu.shown.map(m => (
                 <button
                   type="button"
                   role="menuitemradio"
@@ -160,15 +185,15 @@ export function ProjectDialog({
                   {m.label || t('inheritModel')}
                 </button>
                 ))}
-                {shownChoices.length < choices.length && (
+                {menu.hidden > 0 && (
                   <button type="button" className="mm-more" onClick={() => setMoreModels(true)}>
-                    {t('moreModels', { n: String(choices.length - shownChoices.length) })} <span aria-hidden="true">›</span>
+                    {t('moreModels', { n: String(menu.hidden) })} <span aria-hidden="true">›</span>
                   </button>
                 )}
                 <div className="mm-effort">
                   <div className="mh">{t('effort')}</div>
                   <div className="seg" role="radiogroup" aria-label={t('effort')}>
-                    {[null, ...effortChoices(workerModel ?? undefined, models, workerEffort ?? undefined)].map(level => (
+                    {menu.efforts.map(level => (
                       <button
                         type="button"
                         role="radio"

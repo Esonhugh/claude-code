@@ -189,6 +189,7 @@ function TaskPane({
   meta,
   pick,
   onPick,
+  daybreak,
   sent,
   dropSent,
   onSend,
@@ -214,6 +215,7 @@ function TaskPane({
   meta: string
   pick: { model?: string; effort?: string }
   onPick: (pick: { model?: string; effort?: string }) => void
+  daybreak?: ComposerTools['model']['daybreak']
   /** What the user sent this task, shown at once until its conversation has it. */
   sent: SentMessage[]
   dropSent: (ids: string[]) => void
@@ -320,10 +322,11 @@ function TaskPane({
               model: pick.model ?? model,
               effort,
               models,
-              heading: live ? t('taskModelLocked') : t('taskModelNext'),
-              locked: live,
+              // A running worker keeps its model and effort for this run; the pick applies when it resumes.
+              heading: live ? t('taskModelAfterRun') : t('taskModelNext'),
               onModel: value => onPick({ ...pick, model: value }),
               onEffort: level => onPick({ ...pick, effort: level }),
+              daybreak,
             },
           }}
         />
@@ -367,6 +370,7 @@ export function ProjectView({
   moved,
   onOpenSession,
   onLoadEarlier,
+  daybreak,
 }: {
   t: T
   project: Project
@@ -401,6 +405,8 @@ export function ProjectView({
   onOpenSession: (entry: HistoryEntry) => void
   /** Prepends the transcript page before `chat.start`. */
   onLoadEarlier?: () => void
+  /** The Daybreak access program (account-wide), offered under a ChatGPT sign-in. */
+  daybreak?: ComposerTools['model']['daybreak']
 }) {
   const [show, setShow] = useState<Show>('chat')
   const [wide, setWide] = useState(false)
@@ -1006,7 +1012,7 @@ export function ProjectView({
             tools={{
               ...tools,
               prompts,
-              model: { model: chatModel, effort: chatEffort, models, onModel, onEffort },
+              model: { model: chatModel, effort: chatEffort, models, onModel, onEffort, daybreak },
             }}
           />
         </div>
@@ -1044,6 +1050,7 @@ export function ProjectView({
             meta={metaOf(open)}
             pick={picks[open.id] ?? {}}
             onPick={pick => setPicks(p => ({ ...p, [open.id]: pick }))}
+            daybreak={daybreak}
             sent={sentTo[open.id] ?? []}
             dropSent={dropSent}
             onSend={() => void sendTask(open)}

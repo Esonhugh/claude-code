@@ -530,6 +530,7 @@
   "taskPhEnded": "Message this task; it resumes with its context",
   "taskModelNext": "Model · applies from the next message",
   "taskModelLocked": "A running task keeps its model",
+  "taskModelAfterRun": "Model · applies when the task resumes after this run",
   "taskBoardTitle": "Task board",
   "taskStoppedRestart": "Stopped by a server restart; send a message to continue",
   "taskStoppedExited": "Stopped when the coordinator exited; send a message to continue",
