@@ -14,6 +14,8 @@
 - 管多个会话：置顶、按目录分组、悬停看详情、右键重命名 / 封存 / 删除。
 - 分派一批任务：建一个“项目”，让协调者把活拆给多个 worker 并行做，见 [Claude Web 项目](web-projects.md)。
 
+想先看一遍实际界面，见按操作顺序截图的 [Claude Web 界面导览](web-ui-tour.md)。
+
 ## 什么时候用
 
 - 回复里有表格、公式、图，或者要对照着看文档。
@@ -48,15 +50,17 @@ Sessions start in ~/.claude/web/workspace and run with your local credentials an
 
 | 类型 | 预览方式 |
 | --- | --- |
-| 文本、代码、Markdown | 高亮的代码或渲染后的 Markdown；大文件只显示开头 1 MB / 2000 行 |
-| CSV、XLSX | 表格，XLSX 可以切工作表（前 500 行） |
+| 文本、代码、Markdown | 高亮的代码或渲染后的 Markdown；大文件先显示开头 1 MB / 2000 行，末尾的“显示全部”原地加载整个文件 |
+| CSV、XLSX | 表格，XLSX 可以切工作表；先显示前 500 行，“显示全部”加载其余行 |
 | DOCX | 正文 |
-| PDF | 翻页，`←` `→` 换页 |
+| PDF | 所有页连续上下滚动 |
 | HTML、SVG | HTML 在无权限的 sandbox iframe 里显示，可切桌面 / 平板 / 手机宽度；SVG 清理后按图片显示；脚本都不执行 |
 | 图片 | 原图 |
 | PPT(X)、DOC、RTF、ODT、XLS、ODS | 本机装了 LibreOffice（`soffice`）时转成 PDF 再预览，否则提示下载 |
 
-预览栏可以在新标签页打开或下载，`Esc` 关闭。
+预览栏顶部的 `‹` `›` 在这段对话里出现过的文件之间切换，也可以在新标签页打开或下载，`Esc` 关闭。
+
+**评论文件。** 在图片、SVG、PDF 或转换后的 Office 文件上点一下，放下一个编号标记并写评论，`Enter` 发送；评论作为一条消息发给 Claude，写明文件、页码和标记位置（“pinned at 67% from the left, 55% from the top”）。文本和代码里选中几行后点“评论”，消息写明行号；渲染后的 Markdown、Word 引用选中的文字；表格可以评论单个单元格；HTML 预览多一个“源码”视图，同样能按行评论。对话里的图片点开后也能放标记。
 
 ![文件预览](images/web-ui-preview.png)
 
@@ -74,7 +78,7 @@ Sessions start in ~/.claude/web/workspace and run with your local credentials an
 
 ![账号与认证](images/web-ui-account.png)
 
-**第 9 步：设置和统计。** “设置”有三个页签：常规（界面语言、界面名称、外观、配色、工作目录、访问地址、局域网访问状态）、用量（本会话和订阅额度）、功能开关（自动压缩、Git 指引、记忆提取、agent 摘要、提示建议，写入用户设置）。界面语言、外观和配色只存在这个浏览器里，默认是浅色外观加 Clay 配色。“统计”按 7 天 / 30 天 / 全部汇总最常用模型、输出 tokens、会话数、连续使用天数，下面是按模型的每日 tokens 曲线和活跃热力图（悬停看当天数字）。
+**第 9 步：设置和统计。** “设置”有三个页签：常规（界面语言、界面名称、外观、配色、工作目录、访问地址、局域网访问状态）、用量（本会话和订阅额度）、功能开关（自动压缩、Git 指引、记忆提取、agent 摘要、提示建议，写入用户设置）。界面语言、外观和配色只存在这个浏览器里，外观默认跟随系统的浅色 / 深色，配色默认 Clay。“统计”按 7 天 / 30 天 / 全部汇总最常用模型、输出 tokens、会话数、连续使用天数，下面是按模型的每日 tokens 曲线和活跃热力图（悬停看当天数字）。
 
 ![设置](images/web-ui-settings.png)
 
@@ -82,7 +86,7 @@ Sessions start in ~/.claude/web/workspace and run with your local credentials an
 
 ## 左侧栏
 
-从上到下：品牌、`+ 新会话`、搜索，MCP / Channels / Skills / 插件 / 记忆 / Hooks / Mods 七个入口（数字是数量，点开是对应的管理弹窗），然后是 **置顶**、**项目**、**临时对话**、**最近目录**（按目录分组，最近改过的目录在前）。插件弹窗的市场列表里 Esonhugh-Marketplace 排第一（`claude web` 首次启动时和终端一样自动安装它，`CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL=1` 关闭）；用 ChatGPT 账号登录（OpenAI 模式）时多一个“ChatGPT 应用”页签，可以逐个开关 Codex 应用。每段标题可以折叠。每行一行标题；没有标题的会话显示最后一条消息，再没有就显示 session id。正在运行的会话前面有绿点，未读的加粗并带蓝点。
+从上到下：品牌、`+ 新会话`、搜索，MCP / Skills / 插件 / 记忆 / Hooks 五个入口（点开是对应的管理弹窗；Channels 是 MCP 弹窗里的页签，Mods 是 Hooks 弹窗里的页签），然后是 **置顶**、**项目**、**临时对话**、**最近目录**（按目录分组，最近改过的目录在前）。插件弹窗的市场列表里 Esonhugh-Marketplace 排第一（`claude web` 首次启动时和终端一样自动安装它，`CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL=1` 关闭）；用 ChatGPT 账号登录（OpenAI 模式）时多一个“ChatGPT 应用”页签，可以逐个开关 Codex 应用。Channels 页签可以给当前会话开启开发频道（本地开发中的 channel 插件或 MCP server），会先显示一次本地开发警告，再点一次才开启。每段标题可以折叠。每行一行标题；没有标题的会话显示最后一条消息，再没有就显示 session id。正在运行的会话前面有绿点，未读的加粗并带蓝点。
 
 鼠标停在一行上会出现提示卡片：标题、最近修改、目录、状态、改动的文件数、ID（拿不到的字段不显示）。鼠标可以移进卡片，选中里面的文字复制。行右侧的按钮置顶 / 取消置顶。
 
@@ -108,13 +112,15 @@ Sessions start in ~/.claude/web/workspace and run with your local credentials an
 
 ## 右侧面板
 
+Status、Files、Agents 一直在；Workflow、Terminals、Monitor、Background Tasks 在这个会话用过对应工具后才出现（重新打开的历史会话按记录里的工具调用判断）。
+
 | 页签 | 内容 |
 | --- | --- |
-| Status | 会话名称、ID、状态、工作目录、轮次；模型、思考强度、权限模式、自动压缩；上下文占用；本会话 tokens、费用；目标与待办；后台 agent / 终端 / Monitor 数和待确认请求；版本、账号、MCP、Hooks 等环境信息 |
+| Status | 顶部是状态、模型、思考强度、权限模式和上下文占用，用到 60% 时旁边直接给出“立即 /compact”；下面的分段可以折叠：本会话用量（tokens、缓存、费用）、后台（agent / 终端 / Monitor 数和待确认请求）、目标与待办、会话（名称、完整 ID 和 `uds:` 消息地址，都带复制按钮；工作目录、轮次）、环境（版本、账号、同一目录里正在运行的其他会话和它们的消息地址、API Base URL、代理、MCP、记忆、沙箱、Hooks）。ChatGPT 账号即使会话没在运行也显示 5 小时和每周额度 |
 | Files | 这个会话读写和上传过的文件，点开预览 |
 | Agents | subagent、workflow、team 成员的树，见第 7 步 |
-| Workflow | 当前 workflow 的阶段和每个阶段的 agent，“展开”按阶段分列显示全部 agent |
-| Terminals | Terminal 工具开的终端，彩色屏幕每秒刷新；下面的输入框回车把一行发进终端，Ctrl+C 按钮发中断，也可以停止 |
+| Workflow | 上方是所选 agent 的输出，下方每个阶段一个抽屉，列出这个阶段的 agent 卡片；结构化输出在弹窗里看；“展开”打开大弹窗，阶段排成看板列，点卡片在下方看它的输出；“停止 workflow”是红色按钮 |
+| Terminals | Terminal 工具开的终端，每个终端是一个抽屉，可以同时展开几个；彩色屏幕每秒刷新，下面的输入框回车把一行发进终端，Ctrl+C 按钮发中断，行上的“停止”结束它 |
 | Monitor | Monitor 任务和最近的事件 |
 | Background Tasks | 后台 shell、终端、Monitor 等任务的命令、状态、时长和最后一行输出，可以停止 |
 
@@ -130,11 +136,12 @@ Sessions start in ~/.claude/web/workspace and run with your local credentials an
 
 | 位置 | 按键 | 作用 |
 | --- | --- | --- |
-| 输入框 | `Enter` / `Shift+Enter` | 发送 / 换行 |
+| 输入框 | `Enter` / `Shift+Enter` | 发送 / 换行；回合进行中按 `Enter` 也能发，消息先标“排队中”，模型在工具调用之间读到 |
+| 输入框 | `Ctrl+Enter` | 回合进行中立即发送：中断当前回合（运行中的 shell 转到后台，不会被结束）并马上处理这条和已排队的消息，等同排队消息下方的“立刻发送” |
 | 输入框 | `Shift+Tab` | 切换权限模式 |
-| 输入框 | `/`、`@` | 命令和 skill 补全、引用工作区文件；`↑` `↓` 选择，`Enter` 或 `Tab` 补全，`Esc` 关闭 |
-| 输入框 | 空输入框里 `↑` / `↓` | 调出之前发过的消息 |
-| 对话 | `Esc` | 回合进行中时中断 |
+| 输入框 | `/`、`@` | 命令和 skill 补全；`@` 列出可以直接发消息的任务和 agent、ChatGPT 登录时的 Codex 应用（`@codex-app:<name>`）和工作区文件；`↑` `↓` 选择，`Enter` 或 `Tab` 补全，`Esc` 关闭 |
+| 输入框 | 空输入框里 `↑` / `↓` | 调出之前发过的消息，再往前是终端里在同一目录输入过的（与 CLI 共用 `~/.claude/history.jsonl`） |
+| 对话 | `Esc` | 回合进行中时中断；排队中的消息连同图片放回输入框 |
 | 审批 | `1`–`3`、`↑` `↓` + `Enter`、`Esc` | 直接选一项、移动后确认、拒绝 |
 | 页面 | `Ctrl+K` | 搜索历史会话（窄屏时先打开左侧抽屉） |
 | 页面 | `Ctrl+Shift+O` | 新会话 |
@@ -148,7 +155,8 @@ Sessions start in ~/.claude/web/workspace and run with your local credentials an
 
 | 操作 | 作用 |
 | --- | --- |
-| 用户消息上的“↶ 回退” | 回退到这条消息之前（只回退对话，或连文件改动一起还原），原消息放回输入框 |
+| 用户消息上的“↶ 回退” | 回退到这条消息之前（只回退对话，或连文件改动一起还原，并显示还原了几个文件），原消息放回输入框；只出现在引擎能回退的消息上（本地命令、回合中途发的消息和压缩前的消息没有） |
+| 回复下方的 复制 / 重试 / 从这里分支 / 回退 | 复制这条回复；重发上一条提示（带原来的图片）；从这里分出一个新会话；回退到这条回复对应的提示之前 |
 | 顶栏“上下文” | 上下文分类明细和自动压缩阈值，可以立即 `/compact` |
 | 顶栏“导出” | 把当前对话存成 Markdown，或用浏览器打印成 PDF |
 | 输入框下方左边 / 右边 | 权限模式菜单 / 模型和思考强度菜单 |
@@ -157,6 +165,8 @@ Sessions start in ~/.claude/web/workspace and run with your local credentials an
 | 输入框左边“+” | 上传文件、添加图片、使用 skill、引用工作区文件 |
 
 ## 实际输出
+
+一轮里的思考和工具调用折叠成一行“步骤”（改文件的卡片不折叠，diff 照常显示），点开看每一步。对话里还会插入一行行事件：hook 拦截、其他会话发来的消息、Channel 消息（带来源标记）、定时任务触发、mod 日志、后台命令或 workflow 结束、API 重试状态、agent 交回结果或退出；Claude 用 SendMessage 发给任务时显示为“发送给 <任务>”。这些行刷新页面后都还在。
 
 每轮回答下面列出这一轮读过的网页来源（WebSearch、WebFetch 和 deep-research workflow 引用的链接，只保留 http / https）。`/compact` 和 `/recap` 在对话里折叠成一行。TodoWrite 或 TaskCreate / TaskUpdate 建的待办固定在输入框上方，显示“待办 1/2”和正在做的那一项；两项之间显示“下一项：…”，全部做完才显示“全部完成”。
 
@@ -216,7 +226,7 @@ Ctrl+C 或 SIGTERM 会停止服务、结束所有会话并删除 `~/.claude/web.
 
 ## 已知限制
 
-- 工具卡片不显示耗时（stream-json 里没有这个字段）；本机其他会话（UDS peers）不列出。
+- 工具卡片不显示耗时（stream-json 里没有这个字段）。
 - Terminals 不列 Cron 任务；主会话开的终端显示“主会话”。
 - 设置的用量页没有首 token 延迟和重试次数。
 - macOS 上 API key 存进登录钥匙串，所以 e2e 在 macOS 上跳过账号用例。
