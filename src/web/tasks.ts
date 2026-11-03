@@ -337,7 +337,10 @@ export class TaskStore {
         if (!task) return
         const status = str(msg.status)
         const summary = str(msg.summary) || null
-        if (status === 'completed') {
+        if (status === 'completed' && msg.waiting === true) {
+          // An interim notice: the worker parked on its own background work and resumes when it reports.
+          this.patch(task, { duration_ms: ran(task, now), ...metered })
+        } else if (status === 'completed') {
           this.patch(task, { duration_ms: ran(task, now), ...metered, state: 'review', summary, approval_id: null, finished_at: now, reviewed_at: null })
           this.event(id, 'finished', { status })
         } else if (status === 'failed' || status === 'stopped' || status === 'killed') {

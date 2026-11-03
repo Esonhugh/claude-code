@@ -339,6 +339,8 @@ export async function resumeAgentBackground({
       ...resumedMessages,
       createUserMessage({ content: prompt, isMeta: promptIsMeta || undefined }),
     ],
+    // Already in the agent's transcript file: only the new turn is appended.
+    recordedUuids: new Set(transcript.messages.map(message => message.uuid)),
     // The waking context belongs to the caller; keep this agent's own depth.
     toolUseContext: {
       ...workerContext,
