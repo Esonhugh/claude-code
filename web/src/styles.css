@@ -745,14 +745,14 @@ a.btn { text-decoration: none; color: var(--fg); display: inline-block }
 .history .sess small, .history .sess .act { display: none }
 .srow { position: relative; display: grid }
 .srow .pin-b { position: absolute; right: 4px; top: 50%; transform: translateY(-50%); border: 0; background: var(--sunken); color: var(--muted); border-radius: 5px; width: 22px; height: 20px; font-size: 11px; cursor: pointer; display: none; padding: 0 }
-.srow:hover .pin-b, .pin-b:focus-visible { display: block } .srow .pin-b:hover { color: var(--fg) }
+.srow:hover .pin-b, .pin-b:focus-visible { display: block } .srow:hover > .sess { padding-right: 30px } .srow .pin-b:hover { color: var(--fg) }
 .history .proj-t { padding: 4px 6px; grid-template-columns: 12px minmax(0, 1fr) auto } .history .proj-t small { display: none } .history .proj-t .caret, .history .proj-t .cnt { grid-row: 1 } .history .proj-t b { font-size: 12.5px }
 .history .proj { margin-top: 0 } .history .proj .sess { margin-left: 14px }
 .pjrow .t .pjico { color: var(--muted); font-family: var(--f-mono); margin-right: 6px }
 .pjn { grid-column: 2; font-size: 11px; padding: 0 7px; border-radius: 999px; background: var(--warn-soft); color: var(--warn); font-variant-numeric: tabular-nums }
 .sbtip { pointer-events: auto; user-select: text; cursor: text; position: fixed; z-index: 40; min-width: 170px; max-width: 280px; gap: 3px; font-size: 12px }
 .sbtip i.mono { font-size: 11px; overflow-wrap: anywhere } .sbtip span { align-items: baseline } .history .sess .t.untitled { color: var(--muted) } .history .sess .t.sid { font-size: 11.5px; color: var(--muted) }
-.sbtip b { font-weight: 500; font-size: 13px; overflow-wrap: anywhere } .sbtip span { justify-content: flex-start; color: var(--muted) } .sbtip span i { font-style: normal; color: var(--fg) }
+.sbtip b { font-weight: 500; font-size: 13px; overflow-wrap: anywhere } .sbtip span { justify-content: flex-start; color: var(--muted) } .sbtip span em { font-style: normal; flex: none; white-space: nowrap } .sbtip span i { display: block; min-width: 0; font-style: normal; color: var(--fg); overflow-wrap: anywhere }
 .ctxmenu { position: fixed; left: 0; top: 0; right: auto; bottom: auto; z-index: 45; width: 200px; padding: 6px; display: flex; flex-direction: column; gap: 1px; max-height: none }
 .ctxmenu .mi kbd { margin-left: auto; font-family: var(--f-mono); font-size: 11px; color: var(--muted) }
 .ctxmenu .mi .chev { margin-left: auto; color: var(--muted) }
