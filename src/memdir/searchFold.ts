@@ -86,7 +86,17 @@ const SIMPLIFIED =
 
 let table: Map<string, string> | undefined
 
-export function foldHanzi(text: string): string {
+/**
+ * Text as memory search compares it: traditional Chinese as simplified and
+ * Latin letters without diacritics (ÉCOLE → ECOLE). Every character maps to
+ * one character, so offsets in the result are offsets in the original.
+ */
+export function foldForSearch(text: string): string {
   table ??= new Map([...TRADITIONAL].map((c, i) => [c, SIMPLIFIED[i]!]))
-  return text.replace(/[\u3400-\u9fff\uf900-\ufaff]/g, c => table!.get(c) ?? c)
+  return text
+    .replace(/[\u3400-\u9fff\uf900-\ufaff]/g, c => table!.get(c) ?? c)
+    .replace(/[\u00c0-\u024f\u1e00-\u1eff]/g, c => {
+      const base = c.normalize('NFD').replace(/\p{M}/gu, '')
+      return base.length === 1 ? base : c
+    })
 }

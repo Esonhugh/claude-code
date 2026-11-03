@@ -13,7 +13,7 @@ import { basename, dirname, join, resolve, sep } from 'path'
 import { getOriginalCwd, getSessionId } from '../bootstrap/state.js'
 import { getClaudeConfigHomeDir } from '../utils/envUtils.js'
 import { getProjectDir, getProjectsDir } from '../utils/sessionStorage.js'
-import { foldHanzi } from './foldHanzi.js'
+import { foldForSearch } from './searchFold.js'
 import { getAutoMemPath, type SqliteMemoryScope } from './paths.js'
 
 export type MemoryScope = SqliteMemoryScope
@@ -23,7 +23,10 @@ export type MemorySearchHit = {
   kind: 'memory' | 'transcript'
   /** Transcript line number (1-based); 0 for memory files. */
   line: number
+  /** Text around the match, the matched word in [ and ]. */
   snippet: string
+  /** Where the bracketed match sits in `snippet`, brackets included; absent without one. */
+  match?: [number, number]
 }
 
 export type MemoryIndexStatus = {
@@ -40,7 +43,7 @@ type Listing = { files: SourceFile[]; dirs: { dir: string; recursive: boolean }[
 type FileRow = { path: string; mtime: number; size: number; lines: number }
 
 // Bump when the tables or tokenizer change; an older index is dropped and rebuilt.
-const SCHEMA_VERSION = '2'
+const SCHEMA_VERSION = '3'
 // A transcript message longer than this is indexed by its head only.
 const MAX_CHUNK_CHARS = 4000
 // trigram needs at least three characters per term.
@@ -221,8 +224,8 @@ async function refresh(index: Database, files: SourceFile[]): Promise<void> {
         index.run('DELETE FROM chunks WHERE path = ?', [file.path])
       }
       for (const chunk of chunks) {
-        // body is searched in simplified script; text keeps the original for snippets.
-        const folded = foldHanzi(chunk.body)
+        // body is searched folded (simplified script, no accents); text keeps the original for snippets.
+        const folded = foldForSearch(chunk.body)
         insert.run(folded, folded === chunk.body ? null : chunk.body, file.path, file.kind, file.project, chunk.line)
       }
       index.run('INSERT OR REPLACE INTO files (path, mtime, size, lines) VALUES (?, ?, ?, ?)', [
@@ -283,7 +286,7 @@ export function hasCjk(text: string): boolean {
 }
 
 function terms(query: string): string[] {
-  return [...new Set(foldHanzi(query).split(/\s+/).filter(Boolean).flatMap(splitCjk))]
+  return [...new Set(foldForSearch(query).split(/\s+/).filter(Boolean).flatMap(splitCjk))]
 }
 
 export async function searchMemory(params: {
@@ -302,7 +305,7 @@ export async function searchMemory(params: {
   const paths = files.map(f => f.path)
   if (paths.length === 0) return []
   const rows = rankChunks(index, paths, words, params.limit, true)
-  return rows.map(({ body, text, ...hit }) => ({ ...hit, snippet: snippetAround(body ?? '', text ?? body ?? '', words) }))
+  return rows.map(({ body, text, ...hit }) => ({ ...hit, ...snippetAround(body ?? '', text ?? body ?? '', words) }))
 }
 
 type ChunkRow = { path: string; kind: MemorySearchHit['kind']; line: number; body: string | null; text: string | null }
@@ -349,14 +352,18 @@ function rankChunks(index: Database, paths: string[], query: string[], limit: nu
  * trigram tokens, which leaves ~24 characters. Folding keeps lengths, so an
  * offset in `body` is the same offset in `text`.
  */
-function snippetAround(body: string, text: string, words: string[]): string {
+function snippetAround(body: string, text: string, words: string[]): Pick<MemorySearchHit, 'snippet' | 'match'> {
   const lower = body.toLowerCase()
   const word = words.find(w => lower.includes(w.toLowerCase()))
-  if (!word) return text.slice(0, 200)
+  if (!word) return { snippet: text.slice(0, 200) }
   const at = lower.indexOf(word.toLowerCase())
   const end = at + word.length
   const start = Math.max(0, at - 80)
-  return `${start > 0 ? '…' : ''}${text.slice(start, at)}[${text.slice(at, end)}]${text.slice(end, end + 100)}${end + 100 < text.length ? '…' : ''}`
+  const before = `${start > 0 ? '…' : ''}${text.slice(start, at)}`
+  return {
+    snippet: `${before}[${text.slice(at, end)}]${text.slice(end, end + 100)}${end + 100 < text.length ? '…' : ''}`,
+    match: [before.length, before.length + end - at + 2],
+  }
 }
 
 // Words too common in prompts or memory frontmatter to signal relevance.
@@ -384,7 +391,7 @@ export async function findMemoryFilesForPrompt(params: {
 }): Promise<{ path: string; mtimeMs: number }[]> {
   const words = [
     ...new Set(
-      foldHanzi(params.prompt)
+      foldForSearch(params.prompt)
         .toLowerCase()
         .split(/[^\p{L}\p{N}_-]+/u)
         .flatMap(splitCjk)

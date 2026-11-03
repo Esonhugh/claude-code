@@ -161,6 +161,17 @@ describe('searchMemory', () => {
     expect(found.map(h => h.path)).toEqual([join(memDir, 'lang.md')])
   })
 
+  test('ignores accents and gives the match offset in the snippet', async () => {
+    const path = join(memDir, 'accent.md')
+    writeFileSync(path, '- [link](x.md) Meet at the ÉCOLE café')
+    const results = [await search('ecole'), await search('Café'), await search('unrelatedword cafe')]
+    rmSync(path)
+    for (const [hit] of results) expect(hit?.path).toBe(path)
+    const [hit] = results[0]!
+    expect(hit?.snippet).toBe('- [link](x.md) Meet at the [ÉCOLE] café')
+    expect(hit?.snippet.slice(...hit!.match!)).toBe('[ÉCOLE]')
+  })
+
   test('matches Chinese queries written without spaces by their trigrams', async () => {
     expect((await search('回覆要使用中文嗎')).map(h => h.path)).toEqual([join(memDir, 'lang.md')])
   })
