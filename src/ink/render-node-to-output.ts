@@ -1168,6 +1168,15 @@ function renderNodeToOutput(
             // disable prevScreen here so the partial-row child re-renders at
             // correct bounds instead of blitting a clipped (truncated) old
             // rect.
+            // Clip to the viewport inside the padding, like the fast path:
+            // a child straddling the top edge must not paint into paddingTop.
+            const viewportTop = Math.floor((y1 ?? y) + padTop)
+            output.clip({
+              x1: undefined,
+              x2: undefined,
+              y1: viewportTop,
+              y2: viewportTop + innerHeight,
+            })
             renderScrolledChildren(
               content,
               output,
@@ -1179,6 +1188,7 @@ function renderNodeToOutput(
               scrollTop + innerHeight,
               boxBackgroundColor,
             )
+            output.unclip()
           }
           nodeCache.set(content, {
             x: contentX,
