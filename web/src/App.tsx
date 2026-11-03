@@ -23,10 +23,10 @@ import {
   type Daybreak,
   type WebSettings,
 } from './api'
-import { buildTeam, isFinished } from './agents'
+import { buildTeam, canChat, isFinished, taskName } from './agents'
 import { AccountCard, ApiKeyDialog, LoginGate, useAccount } from './components/Account'
 import { type AgentsView, agentTasks } from './components/Agents'
-import { AskDock, ChatComposer, chatTools, ContextChip, GoalMenu, Pins } from './components/Composer'
+import { AskDock, ChatComposer, chatTools, ContextChip, GoalMenu, type MentionTarget, Pins } from './components/Composer'
 import { AppDialog, type Palette, type Theme } from './components/Dialogs'
 import type { ContextUsage } from './components/Settings'
 import { AgentsContext, ChatContext, FilesContext, joinTurns, Message, TeamBar } from './components/Message'
@@ -138,6 +138,8 @@ export function App() {
     writeStored(COLUMNS_KEY, next)
   }
   const [drafts, setDrafts] = useState<Record<string, string>>({})
+  // Per session: the agent its box's next message goes to, picked with `@`.
+  const [agentTargets, setAgentTargets] = useState<Record<string, MentionTarget | undefined>>({})
   const [attachments, setAttachments] = useState<Record<string, File[]>>({})
   const [preview, setPreview] = useState<
     { sessionId: string; path: string } | { sessionId: string; url: string }
@@ -699,6 +701,20 @@ export function App() {
       return
     }
     if (chat.mode !== 'live' && !(await resume(id))) return
+    const target = agentTargets[id]
+    if (target && chat.tasks[target.id]) {
+      try {
+        const mentions = await Promise.all(pending.map(async f => mentionPath((await uploadFile(id, f)).path)))
+        setDrafts(d => ({ ...d, [id]: '' }))
+        setAttachments(a => ({ ...a, [id]: [] }))
+        setAgentTargets(x => ({ ...x, [id]: undefined }))
+        const delivery = await sendToTask(id, target.id, [text, mentions.join(' ')].filter(Boolean).join('\n\n'))
+        dispatch({ type: 'chat', id, action: { type: 'local', patch: { notice: `@${target.name}: ${delivery}` } } })
+      } catch (err) {
+        dispatch({ type: 'chat', id, action: { type: 'local', patch: { notice: err instanceof Error ? err.message : String(err) } } })
+      }
+      return
+    }
     let content: { text: string; images: string[] }
     try {
       content = await prepareContent(id, text, pending)
@@ -1055,6 +1071,12 @@ export function App() {
   )
   const todos = useMemo(() => currentTodos(chatItems ?? []), [chatItems])
   const team = useMemo(() => (chat ? buildTeam(chat.tasks, chat.items) : undefined), [chat])
+  const agentMentions: MentionTarget[] = chatAgents.filter(canChat).map(task => ({
+    id: task.id,
+    name: team?.members.find(m => m.task.id === task.id)?.name ?? (task.description || taskName(task)),
+    detail: task.status,
+    tag: t('agentTag'),
+  }))
   const chatValue = useMemo(
     () => ({
       decisions: chat?.decisions,
@@ -1282,6 +1304,9 @@ export function App() {
               onFocus={() => view && chat.mode === 'readonly' && void resume(view)}
               files={files}
               setFiles={setFiles}
+              targets={agentMentions}
+              target={view && chat.tasks[agentTargets[view]?.id ?? ''] ? agentTargets[view] : undefined}
+              onTarget={x => view && setAgentTargets(a => ({ ...a, [view]: x }))}
               tools={{
                 ...chatTools(chat, listFiles, prompts, mode => view && changeMode(view, mode)),
                 model: {
