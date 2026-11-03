@@ -199,6 +199,7 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
           ANTHROPIC_API_KEY: 'sk-fake',
           ANTHROPIC_BASE_URL: `http://127.0.0.1:${api.port}`,
           CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
+          CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL: '1',
           DISABLE_AUTOUPDATER: '1',
           CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: '1',
           CLAUDE_CODE_ENABLE_TODO_TOOLS: '1',
@@ -2173,6 +2174,7 @@ describe.skipIf(!binary || process.platform === 'darwin')('claude web account (b
         // Not a descriptor: keeps a host's token file (/home/claude/.claude/remote) from signing this server in.
         CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR: 'none',
         CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
+        CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL: '1',
         DISABLE_AUTOUPDATER: '1',
       },
       stdout: 'pipe',
