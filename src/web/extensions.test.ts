@@ -155,6 +155,41 @@ describe('memory', () => {
     ext.setMemoryToggle('autoMemory', true)
     ext.setMemoryToggle('sqlite', false)
   })
+
+  it('searches memory and sessions apart, one row per session, across Chinese scripts', async () => {
+    const prevOverride = process.env.CLAUDE_COWORK_MEMORY_PATH_OVERRIDE
+    const prevDisable = process.env.CLAUDE_CODE_DISABLE_AUTO_MEMORY
+    process.env.CLAUDE_COWORK_MEMORY_PATH_OVERRIDE = join(root, 'memory')
+    // Cloud containers turn auto memory off by default.
+    process.env.CLAUDE_CODE_DISABLE_AUTO_MEMORY = '0'
+    const { getAutoMemPath } = await import('../memdir/paths.js')
+    const { getProjectDir } = await import('../utils/sessionStorage.js')
+    getAutoMemPath.cache.clear?.()
+    mkdirSync(getAutoMemPath(), { recursive: true })
+    writeFileSync(join(getAutoMemPath(), 'flow.md'), '---\nname: flow\n---\n發布流程：先合併到 dev。')
+    const projectDir = getProjectDir(workspace)
+    mkdirSync(projectDir, { recursive: true })
+    const line = (i: number) => JSON.stringify({ type: 'user', message: { role: 'user', content: `发布 发布 note ${i}` } })
+    writeFileSync(join(projectDir, 'old.jsonl'), Array.from({ length: 60 }, (_, i) => line(i)).join('\n') + '\n')
+    ext.setMemoryToggle('sqlite', true)
+    resetSettingsCache()
+    try {
+      const flow = (await ext.listMemory()).files.find(f => f.title === 'flow')
+      const found = await ext.searchMemoryIndex('发布', 'all')
+      expect(found.memory.map(m => m.id)).toEqual([flow!.id])
+      expect(found.memory[0]?.snippet).toContain('[發布]')
+      expect(found.sessions).toHaveLength(1)
+      expect(found.sessions[0]?.session).toBe('old')
+    } finally {
+      ext.setMemoryToggle('sqlite', false)
+      resetSettingsCache()
+      if (prevOverride === undefined) delete process.env.CLAUDE_COWORK_MEMORY_PATH_OVERRIDE
+      else process.env.CLAUDE_COWORK_MEMORY_PATH_OVERRIDE = prevOverride
+      if (prevDisable === undefined) delete process.env.CLAUDE_CODE_DISABLE_AUTO_MEMORY
+      else process.env.CLAUDE_CODE_DISABLE_AUTO_MEMORY = prevDisable
+      getAutoMemPath.cache.clear?.()
+    }
+  })
 })
 
 describe('channels', () => {

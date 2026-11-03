@@ -439,18 +439,22 @@ export async function searchMemoryIndex(query: string, scope: 'all' | 'memory' |
   const q = query.trim().slice(0, 200)
   if (q.length < 2 || !sqliteEnabled() || typeof Bun === 'undefined') return { memory: [], sessions: [] }
   const { searchMemory } = await import('../memdir/memoryIndex.js')
-  const scopes = scope === 'memory' ? (['user', 'project'] as const) : scope === 'session' ? (['session'] as const) : (['user', 'project', 'session'] as const)
-  const hits = await searchMemory({ query: q, scopes, limit: 40 })
+  // Separate searches, so transcript chunks cannot take every slot from memory files.
+  const [memoryHits, sessionHits] = await Promise.all([
+    scope === 'session' ? [] : searchMemory({ query: q, scopes: ['user', 'project'], limit: 40 }),
+    scope === 'memory' ? [] : searchMemory({ query: q, scopes: ['session'], limit: 40 }),
+  ])
   const entries = await memoryEntries()
   const byPath = new Map(entries.map(e => [resolve(e.path), e.id]))
   return {
-    memory: hits.flatMap(h => {
+    memory: memoryHits.flatMap(h => {
       const id = h.kind === 'memory' ? byPath.get(resolve(h.path)) : undefined
       return id ? [{ id, snippet: h.snippet }] : []
     }),
-    sessions: hits
-      .filter(h => h.kind === 'transcript')
-      .map(h => ({ session: basename(h.path, '.jsonl'), snippet: h.snippet })),
+    // One row per session, with its best match: every row opens the same session.
+    sessions: sessionHits
+      .map(h => ({ session: basename(h.path, '.jsonl'), snippet: h.snippet }))
+      .filter((h, i, all) => all.findIndex(o => o.session === h.session) === i),
   }
 }
 
