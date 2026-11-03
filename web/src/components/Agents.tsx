@@ -471,6 +471,7 @@ export function AgentView({
             agent
             busy={false}
             disabled={stoppedTeammate}
+            signedOut={input.signedOut}
             draft={draft}
             setDraft={setDraft}
             onSend={() => void send()}
@@ -510,6 +511,8 @@ export type AgentInput = {
   model: string | undefined
   effort: string | undefined
   models: ComposerTools['model']['models']
+  /** Signed out: the box is disabled and says why, like the session's own. */
+  signedOut?: boolean
 }
 
 export type AgentsView =

@@ -1468,6 +1468,7 @@ export function App() {
             model: chat.model,
             effort: chat.effort,
             models,
+            signedOut,
           }}
           onRequest={body => requestAsync(view, REQUEST_PREFIX.background, body)}
           onClose={() => setSheetOpen(false)}
