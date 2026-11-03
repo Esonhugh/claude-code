@@ -123,12 +123,72 @@ const pdfjs = () =>
     return lib
   }))
 
+/** The page being read: the last one whose top has passed a third of the way down the view. */
+export function readingPage(tops: number[], viewTop: number, viewHeight: number): number {
+  const line = viewTop + viewHeight / 3
+  let page = 1
+  tops.forEach((top, i) => {
+    if (top <= line) page = i + 1
+  })
+  return page
+}
+
+/** One page, drawn when it comes near the view; until then a blank of the first page's shape. */
+function PdfPage({ doc, n, width, aspect }: { doc: PdfDoc; n: number; width: number; aspect: number }) {
+  const box = useRef<HTMLDivElement>(null)
+  const canvas = useRef<HTMLCanvasElement>(null)
+  const [near, setNear] = useState(false)
+  const [drawn, setDrawn] = useState(false)
+
+  useEffect(() => {
+    const el = box.current
+    if (!el || near) return
+    const seen = new IntersectionObserver(entries => {
+      if (entries.some(e => e.isIntersecting)) setNear(true)
+    }, { root: el.closest('.preview-body'), rootMargin: '800px 0px' })
+    seen.observe(el)
+    return () => seen.disconnect()
+  }, [near])
+
+  useEffect(() => {
+    if (!near || !width) return
+    let task: { cancel: () => void } | undefined
+    let live = true
+    void doc.getPage(n).then(p => {
+      const el = canvas.current
+      if (!live || !el) return
+      const base = p.getViewport({ scale: 1 })
+      const ratio = window.devicePixelRatio || 1
+      const viewport = p.getViewport({ scale: (width / base.width) * ratio })
+      el.width = viewport.width
+      el.height = viewport.height
+      el.style.width = `${viewport.width / ratio}px`
+      const render = p.render({ canvas: el, viewport })
+      task = render
+      render.promise.then(() => live && setDrawn(true), () => {})
+    })
+    return () => {
+      live = false
+      task?.cancel()
+    }
+  }, [doc, n, width, near])
+
+  return (
+    <div className="pdf-page" ref={box} data-page={n} style={drawn ? undefined : { width, height: width * aspect }}>
+      <canvas ref={canvas} hidden={!drawn} />
+    </div>
+  )
+}
+
+/** Every page in one column that scrolls up and down; the pager shows and jumps to the page being read. */
 function PdfView({ url, t }: { url: string; t: T }) {
   const [doc, setDoc] = useState<PdfDoc>()
   const [error, setError] = useState<unknown>()
+  const [aspect, setAspect] = useState(1.414)
+  const [width, setWidth] = useState(0)
   const [page, setPage] = useState(1)
   const [input, setInput] = useState('1')
-  const canvas = useRef<HTMLCanvasElement>(null)
+  const root = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     let live = true
@@ -142,7 +202,14 @@ function PdfView({ url, t }: { url: string; t: T }) {
         const task = lib.getDocument({ url })
         destroy = () => task.destroy()
         task.promise.then(
-          d => live && setDoc(d),
+          d => {
+            if (!live) return
+            void d.getPage(1).then(p => {
+              const v = p.getViewport({ scale: 1 })
+              if (live) setAspect(v.height / v.width)
+            })
+            setDoc(d)
+          },
           (err: unknown) => live && setError(err),
         )
       },
@@ -154,54 +221,43 @@ function PdfView({ url, t }: { url: string; t: T }) {
     }
   }, [url])
 
+  // Page width follows the panel; the page number follows the scroll.
   useEffect(() => {
-    setInput(String(page))
-    if (!doc || !canvas.current) return
-    let task: { cancel: () => void } | undefined
-    let live = true
-    void doc.getPage(page).then(p => {
-      const el = canvas.current
-      if (!live || !el) return
-      const width = el.parentElement?.clientWidth ?? 800
-      const base = p.getViewport({ scale: 1 })
-      const ratio = window.devicePixelRatio || 1
-      const viewport = p.getViewport({ scale: (width / base.width) * ratio })
-      el.width = viewport.width
-      el.height = viewport.height
-      el.style.width = `${viewport.width / ratio}px`
-      const render = p.render({ canvas: el, viewport })
-      task = render
-      render.promise.catch(() => {})
-    })
+    const el = root.current
+    if (!doc || !el) return
+    const scroller = el.closest('.preview-body') ?? el
+    const measure = () => {
+      const cs = getComputedStyle(el)
+      setWidth(Math.max(0, el.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight)))
+    }
+    const onScroll = () => {
+      const view = scroller.getBoundingClientRect()
+      const tops = [...el.querySelectorAll('.pdf-page')].map(p => p.getBoundingClientRect().top)
+      setPage(readingPage(tops, view.top, view.height))
+    }
+    measure()
+    const sized = new ResizeObserver(measure)
+    sized.observe(el)
+    scroller.addEventListener('scroll', onScroll, { passive: true })
     return () => {
-      live = false
-      task?.cancel()
+      sized.disconnect()
+      scroller.removeEventListener('scroll', onScroll)
     }
-  }, [doc, page])
-
-  useEffect(() => {
-    if (!doc) return
-    const onKey = (e: KeyboardEvent) => {
-      if ((e.target as HTMLElement | null)?.closest('input, textarea, select')) return
-      if (e.key === 'ArrowRight') setPage(p => Math.min(doc.numPages, p + 1))
-      if (e.key === 'ArrowLeft') setPage(p => Math.max(1, p - 1))
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
   }, [doc])
+
+  useEffect(() => setInput(String(page)), [page])
+
+  const go = (n: number) => {
+    root.current?.querySelector(`[data-page="${n}"]`)?.scrollIntoView({ block: 'start' })
+    setPage(n)
+  }
 
   if (error) throw error
   if (!doc) return <div className="preview-note">{t('loading')}</div>
   return (
-    <div className="pdf">
+    <div className="pdf" ref={root}>
       <div className="pager">
-        <button
-          type="button"
-          className="ghost"
-          aria-label={t('prevPage')}
-          disabled={page <= 1}
-          onClick={() => setPage(p => p - 1)}
-        >
+        <button type="button" className="ghost" aria-label={t('prevPage')} disabled={page <= 1} onClick={() => go(page - 1)}>
           ‹
         </button>
         <input
@@ -211,7 +267,7 @@ function PdfView({ url, t }: { url: string; t: T }) {
           onKeyDown={e => {
             if (e.key !== 'Enter') return
             const n = Number(input)
-            if (Number.isInteger(n) && n >= 1 && n <= doc.numPages) setPage(n)
+            if (Number.isInteger(n) && n >= 1 && n <= doc.numPages) go(n)
             else setInput(String(page))
           }}
         />
@@ -221,14 +277,14 @@ function PdfView({ url, t }: { url: string; t: T }) {
           className="ghost"
           aria-label={t('nextPage')}
           disabled={page >= doc.numPages}
-          onClick={() => setPage(p => p + 1)}
+          onClick={() => go(page + 1)}
         >
           ›
         </button>
       </div>
-      <div className="pdf-page">
-        <canvas ref={canvas} />
-      </div>
+      {Array.from({ length: doc.numPages }, (_, i) => (
+        <PdfPage key={i + 1} doc={doc} n={i + 1} width={width} aspect={aspect} />
+      ))}
     </div>
   )
 }
@@ -481,8 +537,7 @@ export function Preview({
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose()
-      // ←/→ turn PDF pages; elsewhere they step through the files.
-      if (e.altKey || e.ctrlKey || e.metaKey || e.shiftKey || previewKind(path) === 'pdf') return
+      if (e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return
       const target = e.target as HTMLElement | null
       if (target?.closest('input, textarea, select, [contenteditable="true"]')) return
       const to = e.key === 'ArrowLeft' ? prev : e.key === 'ArrowRight' ? next : undefined
@@ -493,7 +548,7 @@ export function Preview({
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [onClose, onOpen, path, prev, next])
+  }, [onClose, onOpen, prev, next])
   return (
     <aside className="preview" aria-label={t('preview')}>
       <div className="arthead preview-bar">

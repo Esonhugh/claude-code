@@ -70,6 +70,16 @@ export type SidebarData = {
 
 export const loadSidebar = (limit: number) => getJson<SidebarData>(`/api/sidebar?limit=${limit}`)
 
+/** Where a box's prompts go in the CLI's ↑ history: the folder, and the session when there is one. */
+export type HistoryScope = { cwd: string; sessionId?: string }
+
+/** The folder's ↑ history, newest first: what was typed here and in the CLI. */
+export const loadPromptHistory = (cwd: string) =>
+  getJson<{ prompts: string[] }>(`/api/prompt-history?cwd=${encodeURIComponent(cwd)}`).then(r => r.prompts)
+
+export const recordPrompt = (scope: HistoryScope, text: string) =>
+  sendJson('/api/prompt-history', 'POST', { cwd: scope.cwd, session_id: scope.sessionId, text })
+
 export type SessionMetaPatch = {
   title?: string | null
   pinned?: boolean
@@ -203,6 +213,10 @@ async function sendJson(path: string, method: string, body?: unknown): Promise<u
   if (!res.ok) throw new Error(await errorText(res))
   return res.status === 200 ? res.json() : undefined
 }
+
+/** A new session with the conversation up to the reply `messageId` (`/branch`). */
+export const forkSession = (id: string, messageId: string) =>
+  sendJson(`/api/history/${encodeURIComponent(id)}/fork`, 'POST', { message_id: messageId }) as Promise<{ session_id: string }>
 
 export const getAccount = () => getJson<Account>('/api/account')
 

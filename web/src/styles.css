@@ -306,6 +306,10 @@ h1, h2, h3 { text-wrap: balance; margin: 0 }
 .cbox textarea { border: 0; background: transparent; padding: 5px 2px; height: 30px; line-height: 20px; max-height: 160px; display: block }
 .cbox textarea:focus-visible { outline: none }
 .cbox:focus-within { border-color: var(--accent) }
+.to-chip { flex: none; align-self: flex-end; display: inline-flex; align-items: center; gap: 2px; max-width: 40%; height: 26px; margin-bottom: 2px; padding: 0 4px 0 8px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); font-size: 12.5px; font-weight: 500; white-space: nowrap }
+.to-chip span { overflow: hidden; text-overflow: ellipsis }
+.to-chip button { border: 0; background: transparent; color: inherit; padding: 0 4px; font-size: 14px; line-height: 1; cursor: pointer; opacity: .7 }
+.to-chip button:hover { opacity: 1 }
 .plus { width: 28px; height: 28px; border-radius: 8px; border: 0; background: transparent; color: var(--muted); font-size: 20px; font-weight: 300; line-height: 1; flex: none; display: grid; place-items: center; padding: 0; cursor: pointer }
 .plus:hover, .plus[aria-expanded="true"] { background: var(--sunken); color: var(--fg) }
 .send { width: 30px; height: 30px; border-radius: 999px; border: 0; background: var(--accent); color: var(--surface); flex: none; display: grid; place-items: center; padding: 0; cursor: pointer }
@@ -344,8 +348,17 @@ h1, h2, h3 { text-wrap: balance; margin: 0 }
 .think > .tbody { margin-top: 6px; white-space: pre-wrap; font-style: italic; line-height: 1.6 }
 /* A turn's thinking and tool calls folded into one row, like claude.ai. */
 .steps > summary { flex-wrap: wrap }
-.steps > summary .sd::before { content: "·"; margin-right: 6px }
+.steps > summary .sd + .sd::before { content: "·"; margin-right: 6px }
+.steps > summary .sdot { width: 7px; height: 7px; border-radius: 50%; flex: none; background: var(--ok) }
+.steps > summary .sdot.bad { background: var(--bad) }
+.steps > summary .sdot.run { background: var(--accent) }
+.toolcard .tdec { font-size: 11.5px; color: var(--muted); white-space: nowrap }
 .steps > summary .sd.bad { color: var(--bad) }
+.new-below { position: sticky; bottom: 10px; align-self: center; z-index: 5; border: 1px solid var(--line); background: var(--surface); color: var(--fg); border-radius: 999px; padding: 5px 14px; font: inherit; font-size: 12.5px; cursor: pointer; box-shadow: 0 4px 14px rgb(0 0 0 / .1) }
+.msg-acts { display: flex; gap: 2px; margin-top: -2px; opacity: 0; transition: opacity .15s }
+.msg.assistant:hover .msg-acts, .msg-acts:focus-within { opacity: 1 }
+.msg-acts button { border: 0; background: none; color: var(--muted); font: inherit; font-size: 12px; padding: 3px 7px; border-radius: 6px; cursor: pointer }
+.msg-acts button:hover { background: var(--sunken); color: var(--fg) }
 .report { border: 1px solid var(--line); border-left: 3px solid var(--ok); border-radius: 0 10px 10px 0; background: var(--surface); padding: 10px 14px }
 .report .rh { display: flex; gap: 6px; align-items: center; font-size: 12px; color: var(--muted); margin-bottom: 6px }
 .report .rh .ok { color: var(--ok) }
@@ -696,7 +709,6 @@ body.hist #goal-wrap + .footwrap { margin-left: auto }
 .askdock .afoot { font-size: 11.5px; color: var(--muted); display: flex; gap: 10px; flex-wrap: wrap }
 .askdock select { font: inherit; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--fg); max-width: 280px }
 .ask-ref { display: flex; gap: 8px; align-items: center; font-size: 13px; color: var(--muted); border: 1px dashed var(--line); border-radius: 8px; padding: 7px 10px }
-.ask-ref.done .spin { display: none }
 
 /* ---------- fonts: IBM Plex, latin only (OFL, web/src/fonts/OFL.txt); CJK falls back to the system fonts in --f-ui ---------- */
 @font-face { font-family: "IBM Plex Sans"; font-style: normal; font-weight: 400; font-display: swap; src: url(./fonts/ibm-plex-sans-latin-400-normal.woff2) format("woff2"); unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD }
@@ -783,7 +795,6 @@ a.btn { text-decoration: none; color: var(--fg); display: inline-block }
 .askdock .tsum { font-family: var(--f-mono); font-size: 12.5px; background: var(--sunken); border-radius: 8px; padding: 8px 10px; overflow-x: auto; white-space: pre }
 .askdock details summary { cursor: pointer; font-size: 12px; color: var(--muted) }
 .askdock details pre { margin: 6px 0 0; font-size: 12px; background: var(--sunken); border-radius: 8px; padding: 8px 10px; overflow: auto; max-height: 200px }
-.ask-ref.done { border-style: solid }
 .status-line .verb { white-space: nowrap }
 .pop .opt b small { font-weight: 400; color: var(--muted) }
 .footmenu .seg { margin: 2px 8px 4px }
@@ -805,6 +816,7 @@ a.btn { text-decoration: none; color: var(--fg); display: inline-block }
 .transcript .msg { max-width: none }
 .agent-pane { display: flex; flex-direction: column; gap: 10px; min-height: 0 }
 .wfcur .dot { flex: none }
+.wfnow + .wfcur { margin-top: 14px }
 .wfnow .wcard { cursor: pointer }
 .lanes .lane h3 small { font-weight: 400; color: var(--muted) }
 .team-timeline { display: flex; flex-direction: column; gap: 8px; margin: 0; padding: 0; list-style: none; font-size: 13px }
@@ -868,7 +880,9 @@ a.btn { text-decoration: none; color: var(--fg); display: inline-block }
 .pager button { border: 1px solid var(--line); background: var(--surface); padding: 2px 8px; min-width: 28px; border-radius: 6px }
 .pager input { width: 42px; font: inherit; text-align: center; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--fg); padding: 2px 4px }
 .pdf { background: var(--sunken); border-radius: 8px; padding: 14px; display: flex; flex-direction: column; gap: 10px; align-items: center }
-.pdf-page canvas { display: block; max-width: 100%; box-shadow: 0 1px 4px rgba(0,0,0,.18); background: #fff }
+.pdf-page { max-width: 100%; box-shadow: 0 1px 4px rgba(0,0,0,.18); background: #fff }
+.pdf-page canvas { display: block; max-width: 100% }
+.pdf .pager { position: sticky; top: -16px; z-index: 1; align-self: stretch; background: var(--sunken); padding: 6px 0 }
 .sheet { overflow: auto; border: 1px solid var(--line); border-radius: 8px }
 .sheet table { border-collapse: collapse; font-size: 12px; font-variant-numeric: tabular-nums; min-width: 100% }
 .sheet th, .sheet td { border: 1px solid var(--line); padding: 3px 8px; white-space: nowrap; text-align: left }

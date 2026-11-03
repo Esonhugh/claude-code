@@ -1045,6 +1045,12 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       await lanes.locator('.wcard', { hasText: 'write-b' }).click()
       await panel.getByText('B_OUT').waitFor({ timeout: 30_000 })
       await panel.getByText('Workflow agents are read-only.').waitFor()
+      // Picking another agent swaps the conversation below.
+      await panel.getByRole('button', { name: 'Expand' }).click()
+      await lanes.locator('.wcard', { hasText: 'gather-a' }).click()
+      await panel.locator('.wfout .fhead', { hasText: 'gather-a' }).waitFor()
+      await panel.locator('.wfout').getByText('A_OUT').waitFor({ timeout: 30_000 })
+      expect(await panel.locator('.wfout').getByText('B_OUT').count()).toBe(0)
       await agentsTab.click()
 
       await input.fill('please MAKE_TEAM now')
@@ -1056,6 +1062,11 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       await team.getByText('0 working · 2 idle').waitFor({ timeout: 60_000 })
       await page.locator('.msg.teammate', { hasText: 'alice' }).first().waitFor()
       await page.getByText('LEAD_SAW_MEMBER').first().waitFor({ timeout: 30_000 })
+      // A teammate's report is not the user's prompt: the untitled row keeps the last one typed.
+      await page.waitForTimeout(1_000)
+      const rowTitles = async () =>
+        ((await page.evaluate(async () => (await fetch('/api/sidebar?limit=20')).json())) as { sessions: { title: string }[] }).sessions.map(x => x.title)
+      expect(await rowTitles()).toContain('please MAKE_TEAM now')
       await team.locator('.agent-row', { hasText: 'Messages' }).click()
       await panel.locator('.team-timeline li', { hasText: 'ALICE_DONE' }).waitFor()
       await panel.getByRole('button', { name: 'Back' }).click()
@@ -1074,6 +1085,9 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       await input.press('Enter')
       await page.locator('.feed').getByText('Hello from the fake model').last().waitFor({ timeout: 30_000 })
       expect(await team.locator('.member-stopped').count()).toBe(0)
+
+      // The row follows the turn once the CLI has written it (it writes up to 100 ms after the result).
+      await page.locator('.session-row', { hasText: 'hello after the team' }).waitFor({ timeout: 30_000 })
 
       // A reload rebuilds the panel from what the server replays.
       await page.reload()
@@ -1269,7 +1283,7 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       await page.getByText('WEB_DONE').waitFor({ timeout: 30_000 })
       expect(readFileSync(join(workspace, 'edit.txt'), 'utf8')).toBe('alpha\ngamma\n')
       // The answer stays where the request was, and the card shows the diff.
-      expect(await page.locator('.ask-ref.done').textContent()).toBe('Allowed once')
+      expect(await page.locator('.toolcard .tdec').textContent()).toBe('Allowed once')
       const card = page.locator('.toolcard', { has: page.locator('.tname', { hasText: 'Edit' }) })
       expect(await card.locator('.tcmd').textContent()).toBe('edit.txt')
       expect(await card.locator('.dl.del span').textContent()).toBe('beta')
@@ -2150,7 +2164,23 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
           await page.waitForTimeout(300)
         }
         expect(await mode()).toBe(start)
+        // A file dropped on the box attaches once; so does one picked with Upload file.
+        await input.evaluate((el: HTMLElement) => {
+          const data = new DataTransfer()
+          data.items.add(new File(['dropped'], 'dropped.txt', { type: 'text/plain' }))
+          el.closest('form')!.dispatchEvent(new DragEvent('drop', { dataTransfer: data, bubbles: true, cancelable: true }))
+        })
+        await scope.locator('.attachment', { hasText: 'dropped.txt' }).waitFor({ timeout: 5_000 })
+        await page.waitForTimeout(200)
+        expect(await scope.locator('.attachment').count()).toBe(1)
+        await scope.getByRole('button', { name: 'Remove dropped.txt' }).click()
+        await scope.locator('input[type=file][aria-label="Upload file"]').setInputFiles({ name: 'picked.txt', mimeType: 'text/plain', buffer: Buffer.from('picked') })
+        await scope.locator('.attachment', { hasText: 'picked.txt' }).waitFor({ timeout: 5_000 })
+        await scope.getByRole('button', { name: 'Remove picked.txt' }).click()
+        expect(await scope.locator('.attachment').count()).toBe(0)
       }
+      const attach = (scope: any, name: string) =>
+        scope.locator('input[type=file][aria-label="Upload file"]').setInputFiles({ name, mimeType: 'text/plain', buffer: Buffer.from(name) })
 
       // A plain chat, and the background agent it starts, in the side panel.
       const input = page.locator('.main').getByLabel('Message', { exact: true })
@@ -2171,13 +2201,37 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       await agentInput.press('Enter')
       expect(await agentInput.inputValue()).toBe('/e2e-skill ')
       await agentInput.pressSequentially('go')
+      await attach(panel, 'for-agent.txt')
+      await panel.locator('.attachment', { hasText: 'for-agent.txt' }).waitFor()
       await agentInput.press('Enter')
       await panel.locator('.agent-feed .msg.user', { hasText: '/e2e-skill go' }).waitFor({ timeout: 60_000 })
       await panel.locator('.agent-feed .msg.assistant', { hasText: 'SKILL_REACHED' }).waitFor({ timeout: 60_000 })
       // ↑ brings back what was sent to this agent.
       await agentInput.press('ArrowUp')
-      expect(await agentInput.inputValue()).toBe('/e2e-skill go')
+      expect((await agentInput.inputValue()).startsWith('/e2e-skill go')).toBe(true)
+      expect(promptsSeen.some(p => p.includes('/e2e-skill go') && p.includes('for-agent.txt'))).toBe(true)
       await agentInput.fill('')
+      // Signed out, the agent's box is disabled and says why, like the session's own.
+      await page.route('**/api/account', async (route: any) => {
+        const res = await route.fetch()
+        await route.fulfill({ response: res, json: { ...(await res.json()), kind: null } })
+      })
+      await page.reload()
+      // Newest first: an earlier test started a session with the same prompt.
+      await page.locator('.session-row', { hasText: 'please SPAWNBG an agent' }).first().click()
+      await panel.getByRole('tab', { name: /^Agents/ }).click()
+      const ended = panel.getByRole('button', { name: /Ended/ })
+      await ended.waitFor({ timeout: 30_000 })
+      if ((await ended.getAttribute('aria-expanded')) === 'false') await ended.click()
+      await panel.locator('.agent-row', { hasText: 'Look around' }).click()
+      await agentInput.waitFor()
+      expect(await input.getAttribute('placeholder')).toBe('Sign in to send messages')
+      expect(await agentInput.getAttribute('placeholder')).toBe('Sign in to send messages')
+      expect(await agentInput.isDisabled()).toBe(true)
+      await page.unroute('**/api/account')
+      await page.reload()
+      await page.locator('.wl-hi, .main').first().waitFor()
+
 
       // A project: the coordinator's box and a dispatched task's box.
       await page.getByRole('button', { name: 'New project', exact: true }).click()
@@ -2198,11 +2252,15 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       const taskInput = side.getByLabel('Message', { exact: true })
       await checkBox(side.locator('.composer'), taskInput, true)
       await taskInput.fill('/e2e-skill go')
+      await attach(side.locator('.composer'), 'for-task.txt')
+      await side.locator('.attachment', { hasText: 'for-task.txt' }).waitFor()
       await taskInput.press('Enter')
       await side.locator('.msg.user', { hasText: '/e2e-skill go' }).waitFor({ timeout: 60_000 })
       await side.locator('.msg', { hasText: 'SKILL_REACHED' }).waitFor({ timeout: 60_000 })
       await taskInput.press('ArrowUp')
-      expect(await taskInput.inputValue()).toBe('/e2e-skill go')
+      expect((await taskInput.inputValue()).startsWith('/e2e-skill go')).toBe(true)
+      expect(promptsSeen.some(p => p.includes('/e2e-skill go') && p.includes('for-task.txt'))).toBe(true)
+
       expect(errors).toEqual([])
       await page.evaluate(async () => {
         for (const s of (await (await fetch('/api/sessions')).json()) as { id: string }[]) {
@@ -2272,6 +2330,65 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       await browser.close()
     }
   }, 240_000)
+
+  it('shares the ↑ history with the CLI: its prompts come back, and what the page sends is added', async () => {
+    const playwrightPath = Bun.spawnSync(['node', '-p', "require.resolve('playwright')"])
+      .stdout.toString()
+      .trim()
+    const { chromium } = await import(playwrightPath)
+    const browser = await chromium.launch()
+    try {
+      const page = await (await browser.newContext({ locale: 'en-US' })).newPage()
+      const errors: string[] = []
+      page.on('pageerror', (e: Error) => errors.push(e.message))
+      const historyFile = join(home, '.claude', 'history.jsonl')
+      const project = realpathSync(workspace).normalize('NFC')
+      // A prompt typed in the CLI in this folder, and one in another folder.
+      const cliEntry = (display: string, dir: string) =>
+        `${JSON.stringify({ display, pastedContents: {}, timestamp: Date.now(), project: dir, sessionId: 'cli-session' })}\n`
+      writeFileSync(historyFile, (existsSync(historyFile) ? readFileSync(historyFile, 'utf8') : '') + cliEntry('OTHER_DIR_PROMPT', home) + cliEntry('CLI_PROMPT_MARK', project))
+      await page.goto(signInUrl)
+      await page.locator('.wl-hi').waitFor()
+      const input = page.getByLabel('Message', { exact: true })
+      await input.click()
+      await page.waitForTimeout(500)
+      await input.press('ArrowUp')
+      expect(await input.inputValue()).toBe('CLI_PROMPT_MARK')
+      await input.press('ArrowDown')
+      expect(await input.inputValue()).toBe('')
+
+      await input.fill('WEB_HIST_MARK hi')
+      await input.press('Enter')
+      await page.locator('.feed').getByText('Hello from the fake model').first().waitFor({ timeout: 30_000 })
+      const added = async () =>
+        readFileSync(historyFile, 'utf8')
+          .split('\n')
+          .filter(Boolean)
+          .map(l => JSON.parse(l) as { display: string; project: string; sessionId?: string })
+          .find(e => e.display === 'WEB_HIST_MARK hi')
+      for (let i = 0; i < 50 && !(await added()); i++) await Bun.sleep(100)
+      expect(await added()).toMatchObject({ project })
+      // In the chat: its own prompt first, then the folder's history; never another folder's.
+      const chatInput = page.locator('.main').getByLabel('Message', { exact: true })
+      await chatInput.click()
+      await chatInput.press('ArrowUp')
+      expect(await chatInput.inputValue()).toBe('WEB_HIST_MARK hi')
+      await chatInput.press('ArrowUp')
+      expect(await chatInput.inputValue()).toBe('CLI_PROMPT_MARK')
+      for (let i = 0; i < 100; i++) {
+        await chatInput.press('ArrowUp')
+        expect(await chatInput.inputValue()).not.toBe('OTHER_DIR_PROMPT')
+      }
+      expect(errors).toEqual([])
+      await page.evaluate(async () => {
+        for (const s of (await (await fetch('/api/sessions')).json()) as { id: string }[]) {
+          await fetch(`/api/sessions/${s.id}`, { method: 'DELETE' })
+        }
+      })
+    } finally {
+      await browser.close()
+    }
+  }, 120_000)
 
   it('moves a session into a project, which lists and opens it, also after a reload', async () => {
     const playwrightPath = Bun.spawnSync(['node', '-p', "require.resolve('playwright')"])

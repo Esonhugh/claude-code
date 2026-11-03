@@ -20,7 +20,10 @@ describe('accountText', () => {
 
 describe('session id', () => {
   it('shows the whole id, so selecting or copying it gives a value claude --resume accepts', async () => {
-    const { createElement } = await import('react')
+    const react = await import('react')
+    const { createElement } = react
+    // Run from the repo root, bun compiles the page's JSX with the root tsconfig's classic runtime.
+    ;(globalThis as { React?: unknown }).React ??= react
     const { renderToStaticMarkup } = await import('react-dom/server')
     const { SessionIdValue } = await import('./SidePanel')
     const id = '1189c0de-0000-4000-8000-00000000a690'

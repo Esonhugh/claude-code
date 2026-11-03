@@ -721,10 +721,13 @@ export function reduce(state: ChatState, raw: unknown): ChatState {
       const message = isObj(raw.message) ? raw.message : {}
       const id = str(message.id) ?? `assistant-${state.items.length}`
       const content = Array.isArray(message.content) ? message.content : []
+      // A reloaded transcript gives thinking time as `thinking_ms` (src/web/history.ts).
+      const thinkingMs = typeof raw.thinking_ms === 'number' ? raw.thinking_ms : undefined
       const blocks = content
         .filter(isObj)
         .map(blockFromContent)
         .filter((b): b is Block => b !== undefined)
+        .map(b => (b.kind === 'thinking' && thinkingMs !== undefined ? { ...b, ms: thinkingMs } : b))
       // `<synthetic>` messages come from the CLI, not the model: API errors
       // and local command output.
       if (message.model === SYNTHETIC_MODEL) {

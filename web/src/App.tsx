@@ -2,6 +2,7 @@ import { type CSSProperties, type DragEvent, type ReactNode, useCallback, useEff
 import {
   type AuthProvider,
   createSession,
+  forkSession,
   getInfo,
   getSettings as getWebSettings,
   getUsage,
@@ -22,10 +23,10 @@ import {
   type Daybreak,
   type WebSettings,
 } from './api'
-import { buildTeam, isFinished } from './agents'
+import { buildTeam, canChat, isFinished, taskName } from './agents'
 import { AccountCard, ApiKeyDialog, LoginGate, useAccount } from './components/Account'
 import { type AgentsView, agentTasks } from './components/Agents'
-import { AskDock, ChatComposer, chatTools, ContextChip, GoalMenu, Pins } from './components/Composer'
+import { AskDock, ChatComposer, chatTools, ContextChip, GoalMenu, type MentionTarget, Pins } from './components/Composer'
 import { AppDialog, type Palette, type Theme } from './components/Dialogs'
 import type { ContextUsage } from './components/Settings'
 import { AgentsContext, ChatContext, FilesContext, joinTurns, Message, TeamBar } from './components/Message'
@@ -137,6 +138,8 @@ export function App() {
     writeStored(COLUMNS_KEY, next)
   }
   const [drafts, setDrafts] = useState<Record<string, string>>({})
+  // Per session: the agent its box's next message goes to, picked with `@`.
+  const [agentTargets, setAgentTargets] = useState<Record<string, MentionTarget | undefined>>({})
   const [attachments, setAttachments] = useState<Record<string, File[]>>({})
   const [preview, setPreview] = useState<
     { sessionId: string; path: string } | { sessionId: string; url: string }
@@ -368,8 +371,16 @@ export function App() {
     }
   }, [refreshHistory])
 
+  // Messages that arrived while the reader was scrolled up, for the "↓ N new messages" button.
+  const [newBelow, setNewBelow] = useState(0)
+  const shownTurns = useRef<{ view?: string | null; n: number }>({ n: 0 })
   useEffect(() => {
     const feed = feedRef.current
+    const n = chat?.items.length ?? 0
+    const seen = shownTurns.current
+    if (seen.view === view && n > seen.n && !stickToBottom.current) setNewBelow(k => k + n - seen.n)
+    if (seen.view !== view || stickToBottom.current) setNewBelow(0)
+    shownTurns.current = { view, n }
     if (!feed || !stickToBottom.current) return
     feed.scrollTop = feed.scrollHeight
     // Replies off screen are laid out only when scrolled to (content-visibility), so the
@@ -724,6 +735,20 @@ export function App() {
       return
     }
     if (chat.mode !== 'live' && !(await resume(id))) return
+    const target = agentTargets[id]
+    if (target && chat.tasks[target.id]) {
+      try {
+        const mentions = await Promise.all(pending.map(async f => mentionPath((await uploadFile(id, f)).path)))
+        setDrafts(d => ({ ...d, [id]: '' }))
+        setAttachments(a => ({ ...a, [id]: [] }))
+        setAgentTargets(x => ({ ...x, [id]: undefined }))
+        const delivery = await sendToTask(id, target.id, [text, mentions.join(' ')].filter(Boolean).join('\n\n'))
+        dispatch({ type: 'chat', id, action: { type: 'local', patch: { notice: `@${target.name}: ${delivery}` } } })
+      } catch (err) {
+        dispatch({ type: 'chat', id, action: { type: 'local', patch: { notice: err instanceof Error ? err.message : String(err) } } })
+      }
+      return
+    }
     let content: { text: string; images: string[] }
     try {
       content = await prepareContent(id, text, pending)
@@ -803,10 +828,10 @@ export function App() {
   })
 
   /** Drops a prompt and everything after it (`rewind_conversation`), optionally restoring files first. */
-  const rewindChat = async (id: string, userId: string, withFiles: boolean) => {
+  const rewindChat = async (id: string, userId: string, withFiles: boolean): Promise<boolean> => {
     setRewindTarget(undefined)
     const current = stateRef.current.chats[id]
-    if (!current || (current.mode !== 'live' && !(await resume(id)))) return
+    if (!current || (current.mode !== 'live' && !(await resume(id)))) return false
     const lastSeen = stateRef.current.chats[id]?.items.findLast(i => i.kind === 'user')?.id
     try {
       let restored = 0
@@ -824,9 +849,42 @@ export function App() {
       dispatch({ type: 'chat', id, action: { type: 'rewound', userId, note } })
       setDrafts(d => ({ ...d, [id]: typeof result.prefillText === 'string' ? result.prefillText : '' }))
       setTimeout(() => document.querySelector<HTMLTextAreaElement>('.cbox textarea')?.focus())
+      return true
     } catch (err) {
       const error = err instanceof Error ? err.message : String(err)
       dispatch({ type: 'chat', id, action: { type: 'local', patch: { notice: t('rewindFailed', { error }) } } })
+      return false
+    }
+  }
+
+  /** The prompt a reply answered and the reply's last API message id, by the reply's first id. */
+  const turnOf = (id: string, firstId: string) => {
+    const items = stateRef.current.chats[id]?.items ?? []
+    const turn = joinTurns(items).find(x => x.item.id === firstId)
+    const at = items.findIndex(i => i.id === firstId)
+    const user = items.slice(0, at).findLast(i => i.kind === 'user')
+    return { user: user?.kind === 'user' ? user : undefined, last: turn?.ids.at(-1) }
+  }
+
+  /** Asks the same prompt again: rewinds to it, then sends it. */
+  const retryTurn = async (id: string, firstId: string) => {
+    const { user } = turnOf(id, firstId)
+    if (!user || !(await rewindChat(id, user.id, false))) return
+    setDrafts(d => ({ ...d, [id]: '' }))
+    await sendPrompt(id, user.text)
+  }
+
+  /** Opens a new session holding the conversation up to this reply. */
+  const forkTurn = async (id: string, firstId: string) => {
+    const { last } = turnOf(id, firstId)
+    if (!last) return
+    try {
+      const { session_id: forkId } = await forkSession(id, last)
+      await refreshHistory()
+      await openSession(stateRef.current.history.find(h => h.id === forkId) ?? { ...stateRef.current.history.find(h => h.id === id)!, id: forkId })
+    } catch (err) {
+      const error = err instanceof Error ? err.message : String(err)
+      dispatch({ type: 'chat', id, action: { type: 'local', patch: { notice: t('forkFailed', { error }) } } })
     }
   }
 
@@ -1025,7 +1083,9 @@ export function App() {
       ? t('elapsedRunning', { time: formatElapsed(Date.now() - since) })
       : t(
           chat.mode === 'live'
-            ? 'statusLive'
+            ? chat.busy
+              ? 'statusLive'
+              : 'statusReady'
             : chat.mode === 'elsewhere'
               ? 'statusElsewhere'
               : chat.mode === 'connecting'
@@ -1044,10 +1104,22 @@ export function App() {
     [chatItems],
   )
   const todos = useMemo(() => currentTodos(chatItems ?? []), [chatItems])
+  // The session's folder for the shared ↑ history; a temporary chat has none.
+  const historyDir = chat?.workDir ?? chat?.cwd
+  const historyScope = useMemo(
+    () => (view && historyDir && !(info.tempRoot && historyDir.startsWith(info.tempRoot)) ? { cwd: historyDir, sessionId: view } : undefined),
+    [view, historyDir, info.tempRoot],
+  )
   const team = useMemo(() => (chat ? buildTeam(chat.tasks, chat.items) : undefined), [chat])
+  const agentMentions: MentionTarget[] = chatAgents.filter(canChat).map(task => ({
+    id: task.id,
+    name: team?.members.find(m => m.task.id === task.id)?.name ?? (task.description || taskName(task)),
+    detail: task.status,
+    tag: t('agentTag'),
+  }))
   // Every message reads this context, so it changes only when what it offers does, not on each streamed delta.
-  const latest = useRef({ items: chatItems, rewindChat })
-  latest.current = { items: chatItems, rewindChat }
+  const latest = useRef({ items: chatItems, rewindChat, retryTurn, forkTurn, turnOf })
+  latest.current = { items: chatItems, rewindChat, retryTurn, forkTurn, turnOf }
   const canRewind = !!view && !!chat && !chat.busy && chat.mode !== 'elsewhere'
   const decisions = chat?.decisions
   const chatValue = useMemo(
@@ -1064,6 +1136,17 @@ export function App() {
               },
               ask: setRewindTarget,
               go: (id: string, withFiles: boolean) => void latest.current.rewindChat(view, id, withFiles),
+            }
+          : undefined,
+      turn:
+        view && canRewind
+          ? {
+              retry: (firstId: string) => void latest.current.retryTurn(view, firstId),
+              fork: (firstId: string) => void latest.current.forkTurn(view, firstId),
+              rewind: (firstId: string) => {
+                const { user } = latest.current.turnOf(view, firstId)
+                if (user) setRewindTarget(user.id)
+              },
             }
           : undefined,
     }),
@@ -1178,7 +1261,10 @@ export function App() {
             className="feed"
             ref={feedRef}
             aria-busy={chat.busy}
-            onScroll={e => (stickToBottom.current = followScroll(e.currentTarget, stickToBottom.current, feedTop))}
+            onScroll={e => {
+              stickToBottom.current = followScroll(e.currentTarget, stickToBottom.current, feedTop)
+              if (stickToBottom.current && newBelow) setNewBelow(0)
+            }}
           >
             {chat.start > 0 && (
               <div className="older-sentinel">
@@ -1215,6 +1301,20 @@ export function App() {
               </div>
             ))}
             {chat.busy && since !== undefined && <StatusLine t={t} since={since} onStop={() => view && stop(view)} />}
+            {newBelow > 0 && (
+              <button
+                type="button"
+                className="new-below"
+                onClick={() => {
+                  const feed = feedRef.current
+                  stickToBottom.current = true
+                  setNewBelow(0)
+                  feed?.scrollTo({ top: feed.scrollHeight, behavior: 'smooth' })
+                }}
+              >
+                ↓ {t('newMessages', { n: String(newBelow) })}
+              </button>
+            )}
           </div>
           <div className="composer">
             {chat.mode === 'elsewhere' && (
@@ -1250,8 +1350,11 @@ export function App() {
               onFocus={() => view && chat.mode === 'readonly' && void resume(view)}
               files={files}
               setFiles={setFiles}
+              targets={agentMentions}
+              target={view && chat.tasks[agentTargets[view]?.id ?? ''] ? agentTargets[view] : undefined}
+              onTarget={x => view && setAgentTargets(a => ({ ...a, [view]: x }))}
               tools={{
-                ...chatTools(chat, listFiles, prompts, mode => view && changeMode(view, mode)),
+                ...chatTools(chat, listFiles, prompts, historyScope, mode => view && changeMode(view, mode)),
                 model: {
                   model: chat.model,
                   effort: chat.effort,
@@ -1403,7 +1506,7 @@ export function App() {
         }}
         onDrop={(e: DragEvent) => {
           setDragging(false)
-          if (!e.dataTransfer.files.length || chat?.mode === 'elsewhere') return
+          if (e.defaultPrevented || !e.dataTransfer.files.length || chat?.mode === 'elsewhere') return
           e.preventDefault()
           setFiles([...files, ...e.dataTransfer.files])
         }}
@@ -1432,10 +1535,11 @@ export function App() {
           todos={todos}
           onSendTask={(taskId, text, pick) => sendToTask(view, taskId, text, pick)}
           agentInput={{
-            tools: chatTools(chat, listFiles, [], mode => changeMode(view, mode)),
+            tools: chatTools(chat, listFiles, [], historyScope, mode => changeMode(view, mode)),
             model: chat.model,
             effort: chat.effort,
             models,
+            signedOut,
           }}
           onRequest={body => requestAsync(view, REQUEST_PREFIX.background, body)}
           onClose={() => setSheetOpen(false)}

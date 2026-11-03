@@ -112,6 +112,55 @@ describe('searchMemory', () => {
     expect((await search('中文')).map(h => h.path)).toEqual([join(memDir, 'lang.md')])
   })
 
+  test('keeps short words when the query also has long ones, ranking chunks with more words first', async () => {
+    expect((await search('unrelatedword 中文')).map(h => h.path)).toEqual([join(memDir, 'lang.md')])
+    // Short Latin words and single characters next to long words would match nearly everything.
+    expect(await search('unrelatedword a 的')).toEqual([])
+    expect((await search('binary 中文 原文')).map(h => h.path)).toEqual([
+      join(memDir, 'lang.md'),
+      join(memDir, 'build.md'),
+    ])
+  })
+
+  test('snippets show the matched word with its surrounding text', async () => {
+    const path = join(memDir, 'long.md')
+    writeFileSync(path, 'filler '.repeat(100) + 'the DB lock is per process')
+    const [hit] = await search('DB')
+    const [ftsHit] = await search('process')
+    rmSync(path)
+    expect(hit?.path).toBe(path)
+    expect(hit?.snippet).toContain('[DB] lock')
+    expect(ftsHit?.snippet).toContain('filler filler filler filler the DB lock is per [process]')
+  })
+
+  test('simplified and traditional Chinese find each other, snippets keep the original', async () => {
+    const [hit] = await search('代码')
+    expect(hit?.path).toBe(join(memDir, 'lang.md'))
+    expect(hit?.snippet).toContain('[代碼]')
+    const path = join(memDir, 'simplified.md')
+    writeFileSync(path, '记忆系统使用 SQLite 索引')
+    const hits = await search('記憶系統')
+    rmSync(path)
+    expect(hits.map(h => h.path)).toEqual([path])
+    expect(hits[0]?.snippet).toContain('[记忆]系统')
+  })
+
+  test('splits Korean like Chinese, so particles and short words still match', async () => {
+    const path = join(memDir, 'ko.md')
+    writeFileSync(path, '배포 전에 검색 기능을 테스트한다')
+    const results = [await search('unrelatedword 검색'), await search('검색을')]
+    rmSync(path)
+    for (const hits of results) expect(hits.map(h => h.path)).toEqual([path])
+  })
+
+  test('bounds the SQL for a very long query', async () => {
+    // Thousands of distinct bigrams and trigrams once split.
+    const long = '代碼保持原文' + Array.from({ length: 2000 }, (_, i) => String.fromCharCode(0x4e00 + i)).join('')
+    expect((await search(long)).map(h => h.path)).toEqual([join(memDir, 'lang.md')])
+    const found = await findMemoryFilesForPrompt({ prompt: long, scopes: ['project'], exclude: new Set(), limit: 3 })
+    expect(found.map(h => h.path)).toEqual([join(memDir, 'lang.md')])
+  })
+
   test('matches Chinese queries written without spaces by their trigrams', async () => {
     expect((await search('回覆要使用中文嗎')).map(h => h.path)).toEqual([join(memDir, 'lang.md')])
   })
@@ -200,6 +249,10 @@ describe('searchMemory', () => {
     ])
     expect(await find('What does this project do?')).toEqual([])
     expect((await find('我應該使用中文回覆嗎？')).map(h => h.path)).toEqual([join(memDir, 'lang.md')])
+    // Two-character Chinese words, alone or inside a sentence, recall too.
+    expect((await find('原文 代碼')).map(h => h.path)).toEqual([join(memDir, 'lang.md')])
+    expect((await find('原文和代碼怎麼辦')).map(h => h.path)).toEqual([join(memDir, 'lang.md')])
+    expect((await find('代码要保持原文吗')).map(h => h.path)).toEqual([join(memDir, 'lang.md')])
     rmSync(join(memDir, 'MEMORY.md'))
   })
 })

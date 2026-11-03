@@ -2,6 +2,7 @@ import { describe, expect, it } from 'bun:test'
 import {
   buildTeam,
   currentPhase,
+  runningPhases,
   groupTasks,
   reduceTasks,
   type Tasks,
@@ -120,6 +121,20 @@ describe('agent tasks', () => {
     expect(nested.children.get('p1')!.map(t => t.id)).toEqual(['c1'])
     expect(nested.children.has('w1')).toBe(false)
     expect(workflowAgent(tasks, tasks.w1!, 'gather-a')?.id).toBe('wa')
+    // A running agent reports its current activity as the description; it is still found.
+    tasks = reduceTasks(tasks, sys('task_progress', { task_id: 'wa', tool_use_id: 'toolu_wf', description: 'Running wait', usage: { total_tokens: 1, tool_uses: 1, duration_ms: 1 } }))
+    expect(tasks.wa!.description).toBe('Running wait')
+    expect(workflowAgent(tasks, tasks.w1!, 'gather-a')?.id).toBe('wa')
+  })
+
+  it('the current phase is the latest one running, so pipelined phases move it on', () => {
+    const phase = (index: number, status: string) => ({ index, label: `p${index}`, status, agents: [] })
+    expect(currentPhase([phase(0, 'completed'), phase(1, 'running'), phase(2, 'running'), phase(3, 'pending')])).toBe(2)
+    expect(currentPhase([phase(0, 'completed'), phase(1, 'pending')])).toBe(1)
+    expect(currentPhase([phase(0, 'completed'), phase(1, 'completed')])).toBe(1)
+    expect(runningPhases([phase(0, 'completed'), phase(1, 'running'), phase(2, 'running'), phase(3, 'pending')])).toEqual([1, 2])
+    expect(runningPhases([phase(0, 'completed'), phase(1, 'pending')])).toEqual([1])
+    expect(runningPhases([])).toEqual([])
   })
 })
 

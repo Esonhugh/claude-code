@@ -1,16 +1,19 @@
 import {
   type ClipboardEvent,
+  type DragEvent,
   type FormEvent,
   type KeyboardEvent,
   type ReactNode,
+  useCallback,
   useEffect,
   useLayoutEffect,
   useId,
+  useMemo,
   useRef,
   useState,
 } from 'react'
-import { agentCommands, filterCommands, moveSelection, paletteQuery, recallPrompt, type SlashCommand, typedInFull } from '../commands'
-import type { Daybreak } from '../api'
+import { agentCommands, filterCommands, moveSelection, paletteQuery, recallList, recallPrompt, type SlashCommand, typedInFull } from '../commands'
+import { type Daybreak, type HistoryScope, loadPromptHistory, recordPrompt } from '../api'
 import { formatBytes, mentionPath } from '../files'
 import { type Approval, type ApprovalChoice, approvalRules, type ContextUsage, type Goal, type ModelOption, type Todo } from '../protocol'
 import { toolSummary } from '../tools'
@@ -306,7 +309,11 @@ export function InputBox({
   crow,
   listFiles,
   prompts = [],
+  history,
   placeholder,
+  targets,
+  target,
+  onTarget,
 }: {
   t: T
   start?: boolean
@@ -331,8 +338,14 @@ export function InputBox({
   listFiles?: (query: string) => Promise<string[]>
   /** Prompts sent in this chat, oldest first, for ↑ / ↓. */
   prompts?: string[]
+  /** The folder's ↑ history (shared with the CLI): ↑ goes on into it, and what is sent here is added. */
+  history?: HistoryScope
   /** Replaces the chat placeholder (a project's coordinator and task boxes). */
   placeholder?: string
+  /** Tasks or agents an `@` can address; the picked one gets the message instead of this chat. */
+  targets?: MentionTarget[]
+  target?: MentionTarget
+  onTarget?: (target: MentionTarget | undefined) => void
 }) {
   const picker = useRef<HTMLInputElement>(null)
   const imagePicker = useRef<HTMLInputElement>(null)
@@ -349,11 +362,24 @@ export function InputBox({
   const [mention, setMention] = useState<{ start: number; end: number; query: string }>()
   const [fileHits, setFileHits] = useState<{ query: string; files: string[] }>()
   const [recall, setRecall] = useState<{ index: number; text: string }>()
+  const [shared, setShared] = useState<string[]>([])
+  const recallable = useMemo(() => recallList(prompts, shared), [prompts, shared])
+  const historyCwd = history?.cwd
+  const loadShared = useCallback(() => {
+    if (historyCwd) loadPromptHistory(historyCwd).then(setShared, () => {})
+  }, [historyCwd])
+  useEffect(() => {
+    setShared([])
+    loadShared()
+  }, [loadShared])
   const query = dismissed === draft ? undefined : paletteQuery(draft)
   const fileMatches =
     mention && dismissed !== draft && fileHits?.query === mention.query ? fileHits.files : []
+  const targetMatches = mention && dismissed !== draft && targets && onTarget ? matchTargets(targets, mention.query) : []
+  const mentionCount = targetMatches.length + fileMatches.length
   const matches = query === undefined ? [] : filterCommands(commands, query, hiddenCommands)
-  const listLength = fileMatches.length || matches.length
+  const listLength = mentionCount || matches.length
+  const mentions = Boolean(listFiles || targets?.length)
   const active = Math.min(selected, listLength - 1)
   useEffect(() => {
     if (!mention || !listFiles) return
@@ -384,6 +410,16 @@ export function InputBox({
     setSelected(0)
     requestAnimationFrame(() => box.current?.setSelectionRange(caret, caret))
   }
+  const pickTarget = (picked: MentionTarget) => {
+    if (!mention) return
+    setDraft(`${draft.slice(0, mention.start)}${draft.slice(mention.end).replace(/^ /, '')}`)
+    setMention(undefined)
+    setSelected(0)
+    onTarget?.(picked)
+    requestAnimationFrame(() => box.current?.setSelectionRange(mention.start, mention.start))
+  }
+  const pickMention = (i: number) =>
+    i < targetMatches.length ? pickTarget(targetMatches[i]!) : pickFile(fileMatches[i - targetMatches.length]!)
   useEffect(() => {
     if (active >= 0) {
       document.getElementById(`${paletteId}-${active}`)?.scrollIntoView({ block: 'nearest' })
@@ -423,6 +459,15 @@ export function InputBox({
     seen.observe(el)
     return () => seen.disconnect()
   }, [draft, start])
+  // Typed prompts join the folder's history, as the CLI adds each prompt it submits.
+  const sendNow = () => {
+    const text = draft.trim()
+    if (history && text && !disabled) {
+      recordPrompt(history, text).then(loadShared, () => {})
+      setShared(s => [text, ...s.filter(p => p !== text)])
+    }
+    onSend()
+  }
   const pick = (command: SlashCommand) => {
     setDraft(`/${command.name} `)
     setSelected(0)
@@ -434,15 +479,15 @@ export function InputBox({
     setFiles([...files, ...pasted])
   }
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (fileMatches.length && !e.nativeEvent.isComposing) {
+    if (mentionCount && !e.nativeEvent.isComposing) {
       if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
         e.preventDefault()
-        setSelected(moveSelection(active, e.key === 'ArrowDown' ? 1 : -1, fileMatches.length))
+        setSelected(moveSelection(active, e.key === 'ArrowDown' ? 1 : -1, mentionCount))
         return
       }
       if ((e.key === 'Enter' || e.key === 'Tab') && !e.shiftKey) {
         e.preventDefault()
-        pickFile(fileMatches[active]!)
+        pickMention(active)
         return
       }
       if (e.key === 'Escape') {
@@ -454,7 +499,7 @@ export function InputBox({
     // ↑ on an empty input (or on a recalled prompt left as it was) walks back through the sent prompts.
     const recalling = recall !== undefined && recall.index >= 0 && draft === recall.text
     if ((e.key === 'ArrowUp' || (e.key === 'ArrowDown' && recalling)) && (draft === '' || recalling) && !matches.length) {
-      const next = recallPrompt(prompts, recalling ? recall.index : -1, e.key === 'ArrowUp' ? 1 : -1)
+      const next = recallPrompt(recallable, recalling ? recall.index : -1, e.key === 'ArrowUp' ? 1 : -1)
       if (next) {
         e.preventDefault()
         setRecall(next)
@@ -486,6 +531,11 @@ export function InputBox({
         return
       }
     }
+    if (e.key === 'Backspace' && target && box.current?.selectionEnd === 0) {
+      e.preventDefault()
+      onTarget?.(undefined)
+      return
+    }
     if (e.key === 'Tab' && e.shiftKey && onShiftTab) {
       e.preventDefault()
       onShiftTab()
@@ -493,31 +543,54 @@ export function InputBox({
     }
     if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
       e.preventDefault()
-      onSend()
+      sendNow()
     }
     if (e.key === 'Escape' && busy) onStop()
   }
   const skillSet = new Set(skills)
-  const palette = fileMatches.length > 0 ? (
+  const palette = mentionCount > 0 ? (
     <div className="pop" id={paletteId} role="listbox" aria-label={t('completions')}>
-      {!mention?.query && <div className="sec">{t('workspaceFiles')}</div>}
-      {fileMatches.map((path, i) => (
+      {targetMatches.length > 0 && <div className="sec">{t('mentionTargets')}</div>}
+      {targetMatches.map((x, i) => (
         <button
           type="button"
-          key={path}
+          key={x.id}
           id={`${paletteId}-${i}`}
           className="opt"
           role="option"
           aria-selected={i === active}
           onMouseDown={e => e.preventDefault()}
           onMouseEnter={() => setSelected(i)}
-          onClick={() => pickFile(path)}
+          onClick={() => pickTarget(x)}
         >
-          <b title={`@${path}`}>@{path}</b>
-          <span>{path.includes('/') ? path.slice(0, path.lastIndexOf('/') + 1) : './'}</span>
-          <em>{t('fileTag')}</em>
+          <b title={x.name}>@{x.name}</b>
+          <span>{x.detail}</span>
+          <em>{x.tag}</em>
         </button>
       ))}
+      {fileMatches.length > 0 && (targetMatches.length > 0 || !mention?.query) && (
+        <div className="sec">{t('workspaceFiles')}</div>
+      )}
+      {fileMatches.map((path, f) => {
+        const i = f + targetMatches.length
+        return (
+          <button
+            type="button"
+            key={path}
+            id={`${paletteId}-${i}`}
+            className="opt"
+            role="option"
+            aria-selected={i === active}
+            onMouseDown={e => e.preventDefault()}
+            onMouseEnter={() => setSelected(i)}
+            onClick={() => pickFile(path)}
+          >
+            <b title={`@${path}`}>@{path}</b>
+            <span>{path.includes('/') ? path.slice(0, path.lastIndexOf('/') + 1) : './'}</span>
+            <em>{t('fileTag')}</em>
+          </button>
+        )
+      })}
     </div>
   ) : matches.length > 0 && (
     <div className="pop" id={paletteId} role="listbox" aria-label={t('completions')}>
@@ -604,7 +677,15 @@ export function InputBox({
     <textarea
       ref={box}
       value={draft}
-      placeholder={signedOut ? t('signInToSend') : start ? t('startPlaceholder') : (placeholder ?? chatPlaceholder)}
+      placeholder={
+        signedOut
+          ? t('signInToSend')
+          : start
+            ? t('startPlaceholder')
+            : target
+              ? t('messageTarget', { name: target.name })
+              : (placeholder ?? chatPlaceholder)
+      }
       aria-label={t('message')}
       disabled={disabled}
       role="combobox"
@@ -615,9 +696,9 @@ export function InputBox({
       onChange={e => {
         setDraft(e.target.value)
         setSelected(0)
-        if (listFiles) findMention(e.target)
+        if (mentions) findMention(e.target)
       }}
-      onClick={e => listFiles && findMention(e.currentTarget)}
+      onClick={e => mentions && findMention(e.currentTarget)}
       onKeyDown={onKeyDown}
       onPaste={onPaste}
       onFocus={onFocus}
@@ -670,11 +751,22 @@ export function InputBox({
   )
   const submit = (e: FormEvent) => {
     e.preventDefault()
-    onSend()
+    sendNow()
+  }
+  // Files dropped on the box attach to it; a page area that also takes drops sees `defaultPrevented`.
+  const drop = {
+    onDragOver: (e: DragEvent) => {
+      if (!disabled && e.dataTransfer.types.includes('Files')) e.preventDefault()
+    },
+    onDrop: (e: DragEvent) => {
+      if (disabled || !e.dataTransfer.files.length) return
+      e.preventDefault()
+      setFiles([...files, ...e.dataTransfer.files])
+    },
   }
   if (start) {
     return (
-      <form className="wl-box" onSubmit={submit}>
+      <form className="wl-box" onSubmit={submit} {...drop}>
         <Attachments t={t} files={files} setFiles={setFiles} />
         {palette}
         {textarea}
@@ -688,12 +780,20 @@ export function InputBox({
     )
   }
   return (
-    <form onSubmit={submit}>
+    <form onSubmit={submit} {...drop}>
       {palette}
       {plusMenu}
       <Attachments t={t} files={files} setFiles={setFiles} />
       <div className="cbox">
         {inputs}
+        {target && (
+          <span className="to-chip" title={target.name}>
+            <span>@{target.name}</span>
+            <button type="button" aria-label={t('clearTarget')} onClick={() => onTarget?.(undefined)}>
+              ×
+            </button>
+          </span>
+        )}
         {textarea}
         {send}
       </div>
@@ -703,6 +803,16 @@ export function InputBox({
       </div>
     </form>
   )
+}
+
+/** A task or agent the composer's `@` can address. */
+export type MentionTarget = { id: string; name: string; detail: string; tag: string }
+
+/** Targets whose name or detail holds the query, name matches first. */
+export function matchTargets(targets: MentionTarget[], query: string): MentionTarget[] {
+  const q = query.toLowerCase()
+  const inName = targets.filter(x => x.name.toLowerCase().includes(q))
+  return [...inName, ...targets.filter(x => !inName.includes(x) && x.detail.toLowerCase().includes(q))]
 }
 
 /** Permission mode on the left of the composer row. */
@@ -715,6 +825,8 @@ export type ComposerTools = {
   listFiles: (query: string) => Promise<string[]>
   /** Prompts already sent to this target, oldest first, for ↑ / ↓. */
   prompts: string[]
+  /** The folder's ↑ history, shared with the CLI; undefined where there is none (a temporary chat). */
+  history: HistoryScope | undefined
   mode: { mode: string; plan?: boolean; onMode: (mode: string) => void }
   model: {
     model: string | undefined
@@ -733,6 +845,7 @@ export function chatTools(
   chat: { commands: SlashCommand[]; terminalCommands: string[]; permissionMode?: string; env: { skills?: string[]; planMode?: boolean } },
   listFiles: (query: string) => Promise<string[]>,
   prompts: string[],
+  history: HistoryScope | undefined,
   onMode: (mode: string) => void,
 ): Omit<ComposerTools, 'model'> {
   return {
@@ -741,6 +854,7 @@ export function chatTools(
     skills: chat.env.skills ?? [],
     listFiles,
     prompts,
+    history,
     mode: { mode: chat.permissionMode ?? 'default', plan: chat.env.planMode, onMode },
   }
 }
@@ -756,7 +870,7 @@ export function ChatComposer({
   agent,
   extra,
   ...box
-}: Omit<Parameters<typeof InputBox>[0], 'start' | 'commands' | 'hiddenCommands' | 'skills' | 'listFiles' | 'prompts' | 'onShiftTab' | 'crow'> & {
+}: Omit<Parameters<typeof InputBox>[0], 'start' | 'commands' | 'hiddenCommands' | 'skills' | 'listFiles' | 'prompts' | 'history' | 'onShiftTab' | 'crow'> & {
   tools: ComposerTools
   agent?: boolean
   /** More buttons in the row, after the mode button (the chat's goal). */
@@ -771,6 +885,7 @@ export function ChatComposer({
       skills={tools.skills}
       listFiles={tools.listFiles}
       prompts={tools.prompts}
+      history={tools.history}
       onShiftTab={() => mode.onMode(nextMode(mode.mode, mode.plan))}
       crow={
         <>

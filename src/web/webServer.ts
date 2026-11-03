@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, realpathSync, statSync } from 'fs'
 import { homedir } from 'os'
 import { basename, extname, isAbsolute, join, resolve } from 'path'
 import { z } from 'zod/v4'
+import { addToHistory, getTimestampedHistory } from '../history.js'
 import { PERMISSION_MODES } from '../types/permissions.js'
 import { lazySchema } from '../utils/lazySchema.js'
 import { getModelInfos } from '../utils/model/modelInfos.js'
@@ -32,6 +33,7 @@ import {
   readAgentTranscript,
   readSnippet,
   readTranscript,
+  forkSession,
   renameSession,
   SESSION_ID,
 } from './history.js'
@@ -153,6 +155,15 @@ const createSessionBodySchema = lazySchema(() =>
   }),
 )
 
+// A prompt the page sent, kept in the CLI's ↑ history (`history.jsonl`) under its folder.
+const promptHistoryBodySchema = lazySchema(() =>
+  z.object({
+    cwd: z.string().min(1),
+    session_id: z.string().regex(SESSION_ID).optional(),
+    text: z.string().trim().min(1).max(100_000),
+  }),
+)
+
 const MODEL = /^[A-Za-z0-9][\w.:[\]/@-]{0,127}$/
 
 const projectFieldsSchema = lazySchema(() =>
@@ -199,6 +210,7 @@ const AGENT_MESSAGES_PATH = /^\/api\/history\/([^/]+)\/agents\/([^/]+)\/messages
 const AGENT_ISSUERS_PATH = /^\/api\/history\/([^/]+)\/agent-issuers$/
 const FILES_PATH = /^\/api\/files\/([^/]+)(\/pdf|\/list)?$/
 const SNIPPET_PATH = /^\/api\/history\/([^/]+)\/snippet$/
+const FORK_PATH = /^\/api\/history\/([^/]+)\/fork$/
 const PROJECT_PATH = /^\/api\/projects\/([^/]+)(?:\/(coordinator|tasks)(?:\/([^/]+)(?:\/(transcript|review))?)?)?$/
 const EFFORT = /^[a-z]{1,20}$/
 
@@ -459,6 +471,8 @@ function isDirectory(path: string): boolean {
  *   DELETE /api/sessions/:id?transcript=1 → stop it and delete its transcript
  *   PATCH  /api/sessions/:id/meta       → pin, unread, rename, archive, move to project
  *   GET    /api/sidebar?limit=          → sessions with their marks, folders' last change
+ *   GET    /api/prompt-history?cwd=     → { prompts } the folder's ↑ history, newest first (the CLI's too)
+ *   POST   /api/prompt-history          → add a prompt the page sent to that history
  *   GET    /api/history                 → transcripts on disk, newest first
  *   GET    /api/history/:id/messages    → a page of one transcript
  *   PATCH  /api/history/:id             → rename (custom title)
@@ -925,6 +939,20 @@ export function startWebServer(
         })),
       )
     }
+    if (pathname === '/api/prompt-history' && req.method === 'GET') {
+      const project = normalizeProjectDir(url.searchParams.get('cwd') ?? '')
+      if (!project) return errorResponse(400, 'Invalid folder')
+      const prompts: string[] = []
+      for await (const entry of getTimestampedHistory(project.normalize('NFC'))) prompts.push(entry.display)
+      return Response.json({ prompts })
+    }
+    if (pathname === '/api/prompt-history' && req.method === 'POST') {
+      const parsed = promptHistoryBodySchema().safeParse(await readJson(req))
+      const project = parsed.success ? normalizeProjectDir(parsed.data.cwd) : undefined
+      if (!parsed.success || !project) return errorResponse(400, 'Invalid request')
+      addToHistory(parsed.data.text, { project: project.normalize('NFC'), sessionId: parsed.data.session_id ?? '' })
+      return Response.json({})
+    }
     if (pathname === '/api/sidebar' && req.method === 'GET') {
       return Response.json(await loadSidebar(db(), intParam(url, 'limit', 200, 2000) || 200))
     }
@@ -981,6 +1009,18 @@ export function startWebServer(
       if (!SESSION_ID.test(id)) return errorResponse(400, 'Invalid session id')
       const snippet = await readSnippet(id)
       return snippet === undefined ? errorResponse(404, 'Session not found') : Response.json({ snippet })
+    }
+    // `{ message_id }` → `{ session_id }`: a new session with the conversation up to that reply.
+    const forkMatch = FORK_PATH.exec(pathname)
+    if (forkMatch && req.method === 'POST') {
+      const id = decodeURIComponent(forkMatch[1]!)
+      const body = (await readJson(req)) as { message_id?: unknown } | undefined
+      const messageId = body?.message_id
+      if (!SESSION_ID.test(id) || typeof messageId !== 'string' || !/^[\w-]{1,128}$/.test(messageId)) {
+        return errorResponse(400, 'Invalid id')
+      }
+      const forkId = await forkSession(id, messageId)
+      return forkId ? Response.json({ session_id: forkId }) : errorResponse(404, 'Message not found')
     }
     const historyMatch = HISTORY_PATH.exec(pathname)
     if (historyMatch && req.method === 'PATCH') {
