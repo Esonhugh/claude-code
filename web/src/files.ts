@@ -239,6 +239,16 @@ export function sessionFiles(items: Item[]): SessionFile[] {
   return [...found].reverse().map(([path, source]) => ({ path, source }))
 }
 
+/** Where the previewed file sits among the chat's files; undefined when there is nothing to step to. */
+export function fileNeighbors(
+  files: SessionFile[],
+  path: string,
+): { index: number; total: number; prev?: string; next?: string } | undefined {
+  const index = files.findIndex(f => f.path === path)
+  if (index === -1 || files.length < 2) return undefined
+  return { index, total: files.length, prev: files[index - 1]?.path, next: files[index + 1]?.path }
+}
+
 /** `/home/me/papers` → `~/papers`, like the prototype; other paths as they are. */
 export function homeRelative(path: string, home: string | undefined): string {
   if (!home || home === '/') return path

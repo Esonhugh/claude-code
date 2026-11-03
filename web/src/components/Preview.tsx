@@ -9,10 +9,12 @@ import {
 import {
   baseName,
   extension,
+  fileNeighbors,
   filesBase,
   fileUrl,
   parseCsv,
   previewKind,
+  type SessionFile,
 } from '../files'
 import type { MessageKey } from '../i18n'
 import { CodeBlock, Markdown } from '../markdown/Markdown'
@@ -460,21 +462,38 @@ export function Preview({
   path,
   t,
   onClose,
+  files = [],
+  onOpen,
 }: {
   sessionId: string
   path: string
   t: T
   onClose: () => void
+  /** The chat's files (Files tab order), stepped through with ‹ › and ←/→. */
+  files?: SessionFile[]
+  onOpen?: (path: string) => void
 }) {
   const [htmlWidth, setHtmlWidth] = useState<number>()
   const isHtml = previewKind(path) === 'html'
+  const nav = onOpen ? fileNeighbors(files, path) : undefined
+  const prev = nav?.prev
+  const next = nav?.next
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose()
+      // ←/→ turn PDF pages; elsewhere they step through the files.
+      if (e.altKey || e.ctrlKey || e.metaKey || e.shiftKey || previewKind(path) === 'pdf') return
+      const target = e.target as HTMLElement | null
+      if (target?.closest('input, textarea, select, [contenteditable="true"]')) return
+      const to = e.key === 'ArrowLeft' ? prev : e.key === 'ArrowRight' ? next : undefined
+      if (to && onOpen) {
+        e.preventDefault()
+        onOpen(to)
+      }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [onClose])
+  }, [onClose, onOpen, path, prev, next])
   return (
     <aside className="preview" aria-label={t('preview')}>
       <div className="arthead preview-bar">
@@ -498,6 +517,31 @@ export function Preview({
                 {t(w.key)}
               </button>
             ))}
+          </span>
+        )}
+        {nav && onOpen && (
+          <span className="grp file-nav">
+            <button
+              type="button"
+              aria-label={t('prevFile')}
+              title={prev ? `${t('prevFile')}: ${baseName(prev)} (←)` : t('prevFile')}
+              disabled={!prev}
+              onClick={() => prev && onOpen(prev)}
+            >
+              ‹
+            </button>
+            <span className="nav">
+              {nav.index + 1}/{nav.total}
+            </span>
+            <button
+              type="button"
+              aria-label={t('nextFile')}
+              title={next ? `${t('nextFile')}: ${baseName(next)} (→)` : t('nextFile')}
+              disabled={!next}
+              onClick={() => next && onOpen(next)}
+            >
+              ›
+            </button>
           </span>
         )}
         <span className="grp" style={{ marginLeft: 'auto' }}>
