@@ -67,7 +67,7 @@ export function processQueueIfReady({
 
   // Slash commands and bash-mode commands are processed individually.
   // Bash commands need per-command error isolation, exit codes, and progress UI.
-  if (isSlashCommand(next) || next.mode === 'bash') {
+  if (isSlashCommand(next) || next.mode === 'bash' || next.runsAlone) {
     const cmd = dequeue(isMainThread)!
     void executeInput([cmd])
     return { processed: true }
@@ -80,6 +80,7 @@ export function processQueueIfReady({
     cmd =>
       isMainThread(cmd) &&
       !isSlashCommand(cmd) &&
+      !cmd.runsAlone &&
       cmd.mode === targetMode &&
       (cmd.priority ?? 'next') === targetPriority,
   )
