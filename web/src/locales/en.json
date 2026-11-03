@@ -229,7 +229,6 @@
   "endedGroup": "Ended",
   "escInterrupt": "esc interrupt",
   "phaseDone": "{done}/{total} done",
-  "runningNow": " · running {names}",
   "statusKilled": "Shut down",
   "renameLabel": "Rename",
   "sidebarLabel": "Sidebar",

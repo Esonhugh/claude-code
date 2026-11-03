@@ -91,6 +91,16 @@ function withoutUndefined<T extends object>(o: T): Partial<T> {
   return Object.fromEntries(Object.entries(o).filter(([, v]) => v !== undefined)) as Partial<T>
 }
 
+/** An ended workflow sends no last snapshot, so what was still running ends with it. */
+function settleWorkflow(task: AgentTask): AgentTask {
+  if (task.type !== 'local_workflow' || !isFinished(task) || !task.phases) return task
+  const end = (status: string) => (status === 'running' ? task.status : status)
+  return {
+    ...task,
+    phases: task.phases.map(p => ({ ...p, status: end(p.status), agents: p.agents.map(a => ({ ...a, status: end(a.status) })) })),
+  }
+}
+
 /** Folds one stream-json message into the task map; other messages pass through. */
 export function reduceTasks(tasks: Tasks, raw: unknown): Tasks {
   if (!isObj(raw) || raw.type !== 'system') return tasks
@@ -106,7 +116,7 @@ export function reduceTasks(tasks: Tasks, raw: unknown): Tasks {
       depth: 0,
       seq: Object.keys(tasks).length,
     }
-    return { ...tasks, [id]: { ...base, ...withoutUndefined(patch) } }
+    return { ...tasks, [id]: settleWorkflow({ ...base, ...withoutUndefined(patch) }) }
   }
   switch (raw.subtype) {
     case 'task_started':
@@ -273,6 +283,19 @@ export function workflowAgent(tasks: Tasks, workflow: AgentTask, label: string):
   )
 }
 
+/**
+ * A workflow's phases as shown: the runtime lists an agent as running while it
+ * still waits for a concurrency slot, before its task starts; that one is queued.
+ */
+export function workflowPhases(tasks: Tasks, workflow: AgentTask): WorkflowPhase[] {
+  return (workflow.phases ?? []).map(p => ({
+    ...p,
+    agents: p.agents.map(a =>
+      a.status === 'running' && !workflowAgent(tasks, workflow, a.label) ? { ...a, status: 'queued' } : a,
+    ),
+  }))
+}
+
 /** A teammate color name, or nothing when it is not a plain CSS color word. */
 export function teamColor(color: string | undefined): string | undefined {
   return color && /^[a-z]{1,20}$/i.test(color) ? color : undefined
@@ -403,15 +426,20 @@ export function formatTokens(n: number | undefined): string | undefined {
   return n < 1000 ? `${n} tok` : `${(n / 1000).toFixed(n < 10_000 ? 1 : 0)}k tok`
 }
 
+/** A phase still at work: running, or failed by one agent while others still run or wait. */
+export function phaseActive(phase: WorkflowPhase): boolean {
+  return phase.status === 'running' || phase.agents.some(a => a.status === 'running' || a.status === 'queued')
+}
+
 /** Indexes of the phases running now (pipelined phases overlap), or just the current one. */
 export function runningPhases(phases: WorkflowPhase[]): number[] {
-  const running = phases.flatMap((p, i) => (p.status === 'running' ? [i] : []))
+  const running = phases.flatMap((p, i) => (phaseActive(p) ? [i] : []))
   return running.length || !phases.length ? running : [currentPhase(phases)]
 }
 
 /** Index of the phase a workflow is in: the latest running (pipelined phases overlap), else the first pending, else the last. */
 export function currentPhase(phases: WorkflowPhase[]): number {
-  const running = phases.findLastIndex(p => p.status === 'running')
+  const running = phases.findLastIndex(phaseActive)
   if (running !== -1) return running
   const i = phases.findIndex(p => p.status === 'pending')
   return i === -1 ? phases.length - 1 : i

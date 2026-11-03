@@ -8,6 +8,7 @@ import {
   type Tasks,
   unresolvedIssuers,
   workflowAgent,
+  workflowPhases,
 } from './agents'
 import { addUserMessage, initialState, reduce } from './protocol'
 
@@ -96,6 +97,30 @@ describe('agent tasks', () => {
     expect(currentPhase(phases)).toBe(1)
   })
 
+  it('a stopped workflow ends the phases and agents that were still running', () => {
+    let tasks = reduceTasks({}, sys('task_started', { task_id: 'w1', description: 'Plan', task_type: 'local_workflow' }))
+    tasks = reduceTasks(
+      tasks,
+      sys('task_progress', {
+        task_id: 'w1',
+        description: 'Plan',
+        usage: { total_tokens: 0, tool_uses: 0, duration_ms: 0 },
+        workflow_progress: [
+          { type: 'phase', index: 0, label: 'gather', status: 'completed' },
+          { type: 'agent', index: 0, phaseIndex: 0, label: 'ag1', status: 'completed' },
+          { type: 'phase', index: 1, label: 'write', status: 'running' },
+          { type: 'agent', index: 0, phaseIndex: 1, label: 'ag2', status: 'running' },
+          { type: 'agent', index: 1, phaseIndex: 1, label: 'ag3', status: 'pending' },
+        ],
+      }),
+    )
+    tasks = reduceTasks(tasks, sys('task_notification', { task_id: 'w1', status: 'stopped' }))
+    expect(tasks.w1!.phases!.map(p => [p.status, p.agents.map(a => a.status)])).toEqual([
+      ['completed', ['completed']],
+      ['stopped', ['stopped', 'pending']],
+    ])
+  })
+
   it('marks tasks missing from a background snapshot as ended and adds new ones', () => {
     let tasks = reduceTasks({}, sys('task_started', { task_id: 'a1', description: 'x' }))
     tasks = reduceTasks(tasks, sys('background_tasks_changed', { tasks: [{ task_id: 'b2', task_type: 'local_bash', description: 'npm test' }] }))
@@ -136,6 +161,26 @@ describe('agent tasks', () => {
     expect(workflowAgent(tasks, tasks.w1!, 'gather-a')?.id).toBe('wa')
   })
 
+  it('a workflow agent listed as running before its task starts is queued', () => {
+    let tasks = reduceTasks({}, sys('task_started', { task_id: 'w1', task_type: 'local_workflow', tool_use_id: 'toolu_wf', description: 'Plan' }))
+    tasks = reduceTasks(tasks, sys('task_started', { task_id: 'wa', task_type: 'local_agent', tool_use_id: 'toolu_wf', description: 'spec: a' }))
+    tasks = reduceTasks(
+      tasks,
+      sys('task_progress', {
+        task_id: 'w1',
+        description: 'Plan',
+        usage: { total_tokens: 0, tool_uses: 0, duration_ms: 0 },
+        workflow_progress: [
+          { type: 'phase', index: 0, label: 'p', status: 'running' },
+          { type: 'agent', index: 0, phaseIndex: 0, label: 'a', status: 'running' },
+          { type: 'agent', index: 1, phaseIndex: 0, label: 'b', status: 'running' },
+          { type: 'agent', index: 2, phaseIndex: 0, label: 'c', status: 'completed' },
+        ],
+      }),
+    )
+    expect(workflowPhases(tasks, tasks.w1!)[0]!.agents.map(a => a.status)).toEqual(['running', 'queued', 'completed'])
+  })
+
   it('the current phase is the latest one running, so pipelined phases move it on', () => {
     const phase = (index: number, status: string) => ({ index, label: `p${index}`, status, agents: [] })
     expect(currentPhase([phase(0, 'completed'), phase(1, 'running'), phase(2, 'running'), phase(3, 'pending')])).toBe(2)
@@ -144,6 +189,10 @@ describe('agent tasks', () => {
     expect(runningPhases([phase(0, 'completed'), phase(1, 'running'), phase(2, 'running'), phase(3, 'pending')])).toEqual([1, 2])
     expect(runningPhases([phase(0, 'completed'), phase(1, 'pending')])).toEqual([1])
     expect(runningPhases([])).toEqual([])
+    // One failed agent fails the phase, but its other agents still run.
+    const failedButBusy = { ...phase(1, 'failed'), agents: [{ label: 'a', status: 'failed' }, { label: 'b', status: 'running' }] }
+    expect(currentPhase([phase(0, 'completed'), failedButBusy, phase(2, 'pending')])).toBe(1)
+    expect(runningPhases([phase(0, 'completed'), failedButBusy, phase(2, 'pending')])).toEqual([1])
   })
 })
 
