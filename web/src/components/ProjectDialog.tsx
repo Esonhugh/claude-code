@@ -160,6 +160,7 @@ export function ProjectDialog({
           </div>
           <FootMenu
             right
+            fixed
             label={t('workerModel')}
             buttonClass="pj-model"
             button={

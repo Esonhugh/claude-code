@@ -1522,6 +1522,34 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       // The session's own side panel is hidden in a project.
       expect(await page.locator('.side').isVisible()).toBe(false)
 
+      // On a short screen the settings dialog's task default menu is not clipped by the dialog body
+      // (#731): every row can be clicked, and a model and effort picked and the menu closed.
+      await page.setViewportSize({ width: 1280, height: 400 })
+      await page.getByRole('button', { name: 'Project settings' }).click()
+      const settings = page.locator('.dialog')
+      await settings.locator('.pj-model').click()
+      const taskMenu = settings.locator('[role=menu]')
+      const unreachable = await taskMenu.evaluate(menu => {
+        menu.scrollTop = 0
+        const box = menu.getBoundingClientRect()
+        if (box.top < 0 || box.bottom > innerHeight) return [`menu ${box.top}..${box.bottom} of ${innerHeight}`]
+        return [...menu.querySelectorAll<HTMLElement>('button[role=menuitemradio]')].flatMap(row => {
+          row.scrollIntoView({ block: 'nearest' })
+          const r = row.getBoundingClientRect()
+          const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2)
+          return hit && row.contains(hit) ? [] : [row.textContent ?? '']
+        })
+      })
+      expect(unreachable).toEqual([])
+      await taskMenu.getByRole('menuitemradio', { name: /^Opus/ }).click()
+      await settings.locator('.pj-model').click()
+      await taskMenu.getByRole('radio', { name: 'high', exact: true }).click()
+      await page.keyboard.press('Escape')
+      expect(await taskMenu.count()).toBe(0)
+      expect(await settings.locator('.pj-model').textContent()).toMatch(/^Opus.* · high/)
+      await settings.getByRole('button', { name: 'Close', exact: true }).click()
+      await page.setViewportSize({ width: 1280, height: 720 })
+
       const input = page.locator('.pv-chat').getByLabel('Message', { exact: true })
       expect(await input.getAttribute('placeholder')).toBe('Tell the coordinator what to do')
       await input.fill('please DISPATCH_TWO')

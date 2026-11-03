@@ -640,7 +640,7 @@ body.hist #goal-wrap + .footwrap { margin-left: auto }
 .wl-pick .seg button { display: block; padding: 4px 8px; border-radius: 0; text-align: center; color: var(--muted) }
 .wl-pick .seg button[aria-checked="true"] { background: var(--accent); color: #fff }
 .wl-pick .mh { font-size: 11px; color: var(--muted); padding: 4px 8px 2px; text-transform: uppercase; letter-spacing: .06em }
-.mm-effort .seg { display: flex; flex-wrap: wrap } .mm-effort .seg button { flex: 1 0 auto; border-top: 1px solid var(--line); margin-top: -1px }
+.mm-effort .seg { display: flex; flex-wrap: wrap } .mm-effort .seg button { flex: 1 0 auto; border-top: 1px solid var(--line); margin-top: -1px; white-space: nowrap }
 /* Room for four models, More models and the effort row before the list scrolls. */
 .pop:has(.mm-effort) { max-height: min(440px, calc(100vh - 120px)) }
 .mm-effort { position: sticky; bottom: -6px; margin: 0 -6px -6px; padding: 2px 6px 6px; background: var(--surface); border-top: 1px solid var(--line) }
