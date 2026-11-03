@@ -86,7 +86,7 @@ describe('Status compact button', () => {
         setWorkflowId: () => {},
         onOpenFile: () => {},
         onStopTask: () => {},
-        onSendTask: async () => '',
+        onSendTask: async () => {},
         agentInput: { tools: {} as never, models: [] } as never,
         onRequest: async () => ({}),
         onCompact: () => {},

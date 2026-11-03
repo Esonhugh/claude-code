@@ -1,4 +1,4 @@
-import { Fragment, type ReactNode, useEffect, useMemo, useState } from 'react'
+import { Fragment, type ReactNode, useCallback, useEffect, useMemo, useState } from 'react'
 import {
   type AgentTask,
   buildTeam,
@@ -26,7 +26,7 @@ import { mentionPath, uploadFile } from '../files'
 import { initialState, type Item, reduce } from '../protocol'
 import { ChatComposer, type ComposerTools } from './Composer'
 import { Dialog } from './Dialog'
-import { joinTurns, Message, TeamDot, teamEventLabel } from './Message'
+import { AgentConversation, joinTurns, Message, type SentMessage, TeamDot, teamEventLabel, useUnread } from './Message'
 import type { T } from './ui'
 
 const COLLAPSED_KEY = 'claude-web-agents-collapsed'
@@ -390,7 +390,7 @@ export function AgentView({
   task?: AgentTask
   /** Shown in the input's placeholder; defaults to the task's name. */
   name?: string
-  onSend?: (text: string, pick: AgentPick) => Promise<string>
+  onSend?: (text: string, pick: AgentPick) => Promise<void>
   input?: AgentInput
   t: T
 }) {
@@ -430,29 +430,26 @@ export function AgentView({
   }, [sessionId, agentId, tick, poll])
   const items = useMemo(() => (messages ?? []).reduce(reduce, initialState).items, [messages])
   const prompts = useMemo(() => items.flatMap(i => (i.kind === 'user' && i.text ? [i.text] : [])), [items])
-  // Where the transcript stood when the delivery note was set: the note goes once
-  // the agent has the message and answers it.
-  const [noteFrom, setNoteFrom] = useState<number>()
-  useEffect(() => {
-    if (noteFrom === undefined) return
-    const read = items.slice(noteFrom).findIndex(i => i.kind === 'user')
-    if (read >= 0 && items.slice(noteFrom + read).some(i => i.kind === 'assistant')) {
-      setNote(undefined)
-      setNoteFrom(undefined)
-    }
-  }, [items, noteFrom])
+  // What the user sent shows at once, until the agent's conversation has it.
+  const [sent, setSent] = useState<SentMessage[]>([])
+  const dropSent = useCallback((ids: string[]) => setSent(s => s.filter(m => !ids.includes(m.id))), [])
+  const unread = useUnread(items, sent, dropSent)
   const send = async () => {
     const text = draft.trim()
     if ((!text && !files.length) || !onSend) return
+    const id = `sent-${Date.now()}-${Math.random()}`
     try {
       const mentions = await Promise.all(files.map(async f => mentionPath((await uploadFile(sessionId, f)).path)))
+      const message = [text, mentions.join(' ')].filter(Boolean).join('\n\n')
       setDraft('')
       setFiles([])
-      setNote(await onSend([text, mentions.join(' ')].filter(Boolean).join('\n\n'), running ? {} : pick))
-      setNoteFrom(items.length)
+      setNote(undefined)
+      setSent(s => [...s, { id, text: message }])
+      await onSend(message, running ? {} : pick)
+      setPoll(n => n + 1)
       setFollowUntil(Date.now() + 30_000)
     } catch (err) {
-      setNoteFrom(undefined)
+      setSent(s => s.filter(m => m.id !== id))
       setNote(err instanceof Error ? err.message : String(err))
     }
   }
@@ -467,16 +464,21 @@ export function AgentView({
           </span>
         </div>
       )}
+      <AgentConversation>
       <div className="transcript agent-feed">
         {failed && !messages && <p className="note">{t('agentNoTranscript')}</p>}
         {!failed && !messages && <p className="note">{t('loading')}</p>}
         {joinTurns(items).map(({ item }) => (
           <Message key={item.id} item={item} t={t} streaming={false} />
         ))}
+        {unread.map(m => (
+          <Message key={m.id} item={{ kind: 'user', id: m.id, text: m.text }} t={t} streaming={false} />
+        ))}
         {task?.outputFile && isFinished(task) && task.summary && <div className="card">{task.summary}</div>}
       </div>
+      </AgentConversation>
       {note && (
-        <div className="delivery" role="status">
+        <div className="delivery no" role="status">
           {note}
         </div>
       )}
@@ -582,7 +584,7 @@ export function AgentsTab({
   setView: (view: AgentsView) => void
   onWorkflow: (taskId: string) => void
   onStop: (taskId: string) => void
-  onSend: (taskId: string, text: string, pick: AgentPick) => Promise<string>
+  onSend: (taskId: string, text: string, pick: AgentPick) => Promise<void>
   input: AgentInput
   t: T
 }) {

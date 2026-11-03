@@ -6,6 +6,7 @@ import {
   type MouseEvent,
   type PointerEvent,
   type ReactNode,
+  useCallback,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -33,7 +34,7 @@ import { type Approval, type ApprovalChoice, type Block, currentTodos, initialSt
 import type { HistoryEntry, SessionChat } from '../store'
 import { AskDock, ChatComposer, chatTools, type ComposerTools, type MentionTarget } from './Composer'
 import { Dialog } from './Dialog'
-import { joinTurns, Message, modelName } from './Message'
+import { AgentConversation, joinTurns, Message, modelName, type SentMessage, useUnread } from './Message'
 import { WORKER_MODELS } from './ProjectDialog'
 import { followScroll, readStored, type T, writeStored } from './ui'
 
@@ -180,6 +181,8 @@ function TaskPane({
   meta,
   pick,
   onPick,
+  sent,
+  dropSent,
   onSend,
   onAnswer,
 }: {
@@ -203,6 +206,9 @@ function TaskPane({
   meta: string
   pick: { model?: string; effort?: string }
   onPick: (pick: { model?: string; effort?: string }) => void
+  /** What the user sent this task, shown at once until its conversation has it. */
+  sent: SentMessage[]
+  dropSent: (ids: string[]) => void
   onSend: () => void
   onAnswer: (approval: Approval, choice: ApprovalChoice) => void
 }) {
@@ -211,13 +217,14 @@ function TaskPane({
   const shown = useMemo(() => workerItems(items, task.brief), [items, task.brief])
   const todos = useMemo(() => currentTodos(items), [items])
   const prompts = useMemo(() => items.flatMap(i => (i.kind === 'user' && i.text ? [i.text] : [])), [items])
+  const unread = useUnread(items, sent, dropSent)
   const feedRef = useRef<HTMLDivElement>(null)
   const atBottom = useRef(true)
   const feedTop = useRef(0)
   useEffect(() => {
     const feed = feedRef.current
     if (feed && atBottom.current) feed.scrollTop = feed.scrollHeight
-  }, [shown.length, task.state])
+  }, [shown.length, unread.length, task.state])
   const live = isLive(task)
   const open = canMessage(task)
   const approval = approvals[0]
@@ -251,9 +258,14 @@ function TaskPane({
             <div className="pjbrief">{task.brief}</div>
           </div>
         )}
-        {joinTurns(shown).map(({ item }) => (
-          <Message key={item.id} item={item} t={t} who="worker" fallbackModel={model} models={models} streaming={false} />
-        ))}
+        <AgentConversation>
+          {joinTurns(shown).map(({ item }) => (
+            <Message key={item.id} item={item} t={t} who="worker" fallbackModel={model} models={models} streaming={false} />
+          ))}
+          {unread.map(m => (
+            <Message key={m.id} item={{ kind: 'user', id: m.id, text: m.text }} t={t} streaming={false} />
+          ))}
+        </AgentConversation>
         {task.state === 'running' && (
           <div className="status-line">
             <span className="glyph">✻</span>
@@ -371,7 +383,7 @@ export function ProjectView({
   /** Rejects when the coordinator is gone or refuses the stop. */
   onStopTask: (taskId: string) => Promise<unknown>
   /** Resolves with the delivery (`queued`, `resumed`…); an ended task resumes on `model` and `effort`. */
-  onSendTask: (taskId: string, text: string, pick: { model?: string; effort?: string }) => Promise<string>
+  onSendTask: (taskId: string, text: string, pick: { model?: string; effort?: string }) => Promise<void>
   /** The task rows as last fetched, for the sidebar's counts. */
   onTasks: (rows: ProjectTask[]) => void
   /** The coordinator's session id: task attachments are uploaded there. */
@@ -392,6 +404,12 @@ export function ProjectView({
   const [now, setNow] = useState(() => Date.now())
   const [taskDrafts, setTaskDrafts] = useState<Record<string, string>>({})
   const [taskFiles, setTaskFiles] = useState<Record<string, File[]>>({})
+  const [sentTo, setSentTo] = useState<Record<string, SentMessage[]>>({})
+  const dropSent = useCallback(
+    (ids: string[]) =>
+      setSentTo(s => Object.fromEntries(Object.entries(s).map(([task, sent]) => [task, sent.filter(m => !ids.includes(m.id))]))),
+    [],
+  )
   const [picks, setPicks] = useState<Record<string, { model?: string; effort?: string }>>({})
   const [taskNotice, setTaskNotice] = useState<string>()
   // The task the coordinator box's next message goes to, picked with `@`.
@@ -663,7 +681,15 @@ export function ProjectView({
     const mentions = await Promise.all(pending.map(async f => mentionPath((await uploadFile(uploadTo, f)).path)))
     clear()
     const pick = isLive(task) ? {} : (picks[task.id] ?? {})
-    say(await onSendTask(task.id, [text, mentions.join(' ')].filter(Boolean).join('\n\n'), pick))
+    const message = [text, mentions.join(' ')].filter(Boolean).join('\n\n')
+    const id = `sent-${Date.now()}-${Math.random()}`
+    setSentTo(s => ({ ...s, [task.id]: [...(s[task.id] ?? []), { id, text: message }] }))
+    try {
+      await onSendTask(task.id, message, pick)
+    } catch (err) {
+      dropSent([id])
+      throw err
+    }
     setFollowUntil(Date.now() + 30_000)
     setRefresh(r => r + 1)
   }
@@ -993,6 +1019,8 @@ export function ProjectView({
             meta={metaOf(open)}
             pick={picks[open.id] ?? {}}
             onPick={pick => setPicks(p => ({ ...p, [open.id]: pick }))}
+            sent={sentTo[open.id] ?? []}
+            dropSent={dropSent}
             onSend={() => void sendTask(open)}
             onAnswer={onAnswer}
           />

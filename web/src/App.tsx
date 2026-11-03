@@ -41,7 +41,7 @@ import { FootMenu, followScroll, formatElapsed, readStored, type T, writeStored 
 import { WebPreview } from './components/WebPreview'
 import { chatMarkdown, exportFileName } from './exportChat'
 import { dataUrlFile, filesBase, IMAGE_TYPES, mentionPath, readAsDataUrl, sessionFiles, setHome, tilde, uploadFile } from './files'
-import { initialLang, type Lang, type MessageKey, saveLang, translate } from './i18n'
+import { initialLang, type Lang, saveLang, translate } from './i18n'
 import {
   type Approval,
   type ApprovalChoice,
@@ -489,17 +489,13 @@ export function App() {
     taskId: string,
     text: string,
     pick: { model?: string; effort?: string } = {},
-  ): Promise<string> => {
-    const body = await requestAsync(id, REQUEST_PREFIX.taskMessage, {
+  ): Promise<void> => {
+    await requestAsync(id, REQUEST_PREFIX.taskMessage, {
       subtype: 'send_task_message',
       task_id: taskId,
       text,
       ...pick,
     })
-    const delivery = String(body.delivery ?? '')
-    return delivery === 'queued' || delivery === 'injected' || delivery === 'resumed'
-      ? t(`delivery_${delivery}` as MessageKey)
-      : delivery
   }
 
   const getSettings = (id: string) => request(id, REQUEST_PREFIX.settings, { subtype: 'get_settings' })
@@ -748,13 +744,9 @@ export function App() {
         setDrafts(d => ({ ...d, [id]: '' }))
         setAttachments(a => ({ ...a, [id]: [] }))
         setAgentTargets(x => ({ ...x, [id]: undefined }))
-        const delivery = await sendToTask(id, target.id, [text, mentions.join(' ')].filter(Boolean).join('\n\n'))
-        const notice = `@${target.name}: ${delivery}`
-        dispatch({ type: 'chat', id, action: { type: 'local', patch: { notice } } })
-        // A delivery receipt, not an error: it goes away on its own.
-        setTimeout(() => {
-          if (stateRef.current.chats[id]?.notice === notice) dispatch({ type: 'chat', id, action: { type: 'local', patch: { notice: undefined } } })
-        }, 4000)
+        await sendToTask(id, target.id, [text, mentions.join(' ')].filter(Boolean).join('\n\n'))
+        // The message shows in the agent's own conversation.
+        agentsValue.open(target.id)
       } catch (err) {
         dispatch({ type: 'chat', id, action: { type: 'local', patch: { notice: err instanceof Error ? err.message : String(err) } } })
       }

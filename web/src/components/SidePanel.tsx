@@ -460,7 +460,7 @@ export function SidePanel({
   setWorkflowId: (id: string | undefined) => void
   onOpenFile: (path: string) => void
   onStopTask: (id: string) => void
-  onSendTask: (id: string, text: string, pick: AgentPick) => Promise<string>
+  onSendTask: (id: string, text: string, pick: AgentPick) => Promise<void>
   /** The palette, files, mode and model an agent's input box shares with the session's. */
   agentInput: AgentInput
   /** A control request to the session; Status reads usage, memory and sandbox with it. */
