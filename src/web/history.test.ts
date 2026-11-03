@@ -279,6 +279,25 @@ describe('web history', () => {
     ])
   })
 
+  it('shows a message another Claude session sent, which the model reads as meta', async () => {
+    const file = join(root, 'config', 'projects', sanitizePath(join(root, 'project')), `${ID}.jsonl`)
+    const cwd = join(root, 'project')
+    const text = 'Another Claude session sent a message:\n<cross-session-message from="uds:/tmp/b.sock" from-name="ws">\nmerged\n</cross-session-message>'
+    writeFileSync(
+      file,
+      readFileSync(file, 'utf8') +
+        [
+          line({ type: 'user', isMeta: true, origin: { kind: 'peer', from: 'uds:/tmp/b.sock', name: 'ws' }, uuid: 'a0000000-0000-4000-8000-000000000040', parentUuid: 'a0000000-0000-4000-8000-000000000005', cwd, message: { role: 'user', content: text } }),
+          line({ type: 'user', isMeta: true, uuid: 'a0000000-0000-4000-8000-000000000041', parentUuid: 'a0000000-0000-4000-8000-000000000040', cwd, message: { role: 'user', content: 'CRONPROMPT check' } }),
+          line({ type: 'assistant', uuid: 'a0000000-0000-4000-8000-000000000042', parentUuid: 'a0000000-0000-4000-8000-000000000041', cwd, message: { id: 'm11', role: 'assistant', content: [{ type: 'text', text: 'ok' }] } }),
+        ].join('\n') +
+        '\n',
+    )
+    const messages = (await readTranscript(ID, undefined, 50))!.messages.slice(-2)
+    expect(messages[0]).toMatchObject({ type: 'user', isReplay: true, uuid: 'a0000000-0000-4000-8000-000000000040', message: { content: text } })
+    expect(messages[1]).toMatchObject({ type: 'assistant' })
+  })
+
   it('keeps the history before a compaction, in the order it was written', async () => {
     const file = join(root, 'config', 'projects', sanitizePath(join(root, 'project')), `${ID}.jsonl`)
     const cwd = join(root, 'project')
