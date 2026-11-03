@@ -40,6 +40,8 @@ const MIGRATIONS: string[][] = [
   ],
   // P3: the coordinators' tasks, and the coordinator's own model and effort.
   TASK_MIGRATION,
+  // What earlier runs of a resumed task took, so its time adds up across runs.
+  ['ALTER TABLE tasks ADD COLUMN prior_ms INTEGER NOT NULL DEFAULT 0'],
 ]
 
 export type Project = {

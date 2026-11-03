@@ -124,7 +124,7 @@ describe('project tasks', () => {
     expect(taskMeta(task, 'Opus 5.5', 30_000)).toBe('Opus 5.5 · 41s · 6.8k tok · WebFetch')
     // No progress yet: the clock since the run started.
     expect(taskElapsed(row({ duration_ms: 0 }), 96_000)).toBe(95_000)
-    expect(taskMeta(row({ duration_ms: 0, tokens: 0 }), undefined, 96_000)).toBe('1m35s · 0.0k tok · WebFetch')
+    expect(taskMeta(row({ duration_ms: 0, tokens: 0 }), undefined, 96_000)).toBe('1m35s · WebFetch')
     expect(taskMeta(row({ state: 'review' }), undefined, 999_000)).toBe('41s · 6.8k tok')
   })
 
