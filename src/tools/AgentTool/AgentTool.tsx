@@ -1385,12 +1385,12 @@ export const AgentTool = buildTool({
       return { worktreePath, worktreeBranch }
     }
 
-    const resumeOwner = async (nextPrompt: string) => {
+    const resumeOwner = async (nextPrompt: string, promptIsMeta = true) => {
       const { resumeAgentBackground } = await import('./resumeAgent.js')
       return resumeAgentBackground({
         agentId: earlyAgentId,
         prompt: nextPrompt,
-        promptIsMeta: true,
+        promptIsMeta,
         toolUseContext,
         canUseTool,
         invokingRequestId: parentMessage?.requestId,
