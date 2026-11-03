@@ -31,7 +31,7 @@ import {
 } from '../projects'
 import { type Approval, type ApprovalChoice, type Block, currentTodos, initialState, type ModelOption, reduce, type TaskNote } from '../protocol'
 import type { HistoryEntry, SessionChat } from '../store'
-import { AskDock, ChatComposer, chatTools, type ComposerTools } from './Composer'
+import { AskDock, ChatComposer, chatTools, type ComposerTools, type MentionTarget } from './Composer'
 import { Dialog } from './Dialog'
 import { joinTurns, Message, modelName } from './Message'
 import { WORKER_MODELS } from './ProjectDialog'
@@ -394,6 +394,8 @@ export function ProjectView({
   const [taskFiles, setTaskFiles] = useState<Record<string, File[]>>({})
   const [picks, setPicks] = useState<Record<string, { model?: string; effort?: string }>>({})
   const [taskNotice, setTaskNotice] = useState<string>()
+  // The task the coordinator box's next message goes to, picked with `@`.
+  const [toTask, setToTask] = useState<MentionTarget>()
   const [followUntil, setFollowUntil] = useState(0)
   const [menu, setMenu] = useState<TaskMenu | null>(null)
   const [flash, setFlash] = useState<string>()
@@ -656,21 +658,42 @@ export function ProjectView({
     setKeptWidth(clampWidth(current + (e.key === 'ArrowLeft' ? -24 : 24)))
   }
 
+  const deliver = async (task: ProjectTask, text: string, pending: File[], clear: () => void) => {
+    const mentions = await Promise.all(pending.map(async f => mentionPath((await uploadFile(uploadTo, f)).path)))
+    clear()
+    const pick = isLive(task) ? {} : (picks[task.id] ?? {})
+    say(await onSendTask(task.id, [text, mentions.join(' ')].filter(Boolean).join('\n\n'), pick))
+    setFollowUntil(Date.now() + 30_000)
+    setRefresh(r => r + 1)
+  }
   const sendTask = async (task: ProjectTask) => {
     const text = (taskDrafts[task.id] ?? '').trim()
     const pending = taskFiles[task.id] ?? []
     if ((!text && !pending.length) || !canMessage(task)) return
     try {
-      const mentions = await Promise.all(pending.map(async f => mentionPath((await uploadFile(uploadTo, f)).path)))
-      setTaskDrafts(d => ({ ...d, [task.id]: '' }))
-      setTaskFiles(f => ({ ...f, [task.id]: [] }))
-      setTaskNotice(undefined)
-      const pick = isLive(task) ? {} : (picks[task.id] ?? {})
-      say(await onSendTask(task.id, [text, mentions.join(' ')].filter(Boolean).join('\n\n'), pick))
-      setFollowUntil(Date.now() + 30_000)
-      setRefresh(r => r + 1)
+      await deliver(task, text, pending, () => {
+        setTaskDrafts(d => ({ ...d, [task.id]: '' }))
+        setTaskFiles(f => ({ ...f, [task.id]: [] }))
+        setTaskNotice(undefined)
+      })
     } catch (err) {
       setTaskNotice(err instanceof Error ? err.message : String(err))
+    }
+  }
+  const targets = tasks.filter(canMessage).map(x => ({ id: x.id, name: x.title, detail: t(`taskState_${x.state}`), tag: t('targetTag') }))
+  const target = toTask && tasks.find(x => x.id === toTask.id && canMessage(x))
+  const sendToTarget = async (task: ProjectTask) => {
+    const text = draft.trim()
+    if (!text && !files.length) return
+    try {
+      await deliver(task, text, files, () => {
+        setDraft('')
+        setFiles([])
+        setToTask(undefined)
+      })
+      openTask(task.id)
+    } catch (err) {
+      say(err instanceof Error ? err.message : String(err))
     }
   }
 
@@ -913,6 +936,10 @@ export function ProjectView({
             draft={draft}
             setDraft={setDraft}
             onSend={() => {
+              if (target) {
+                void sendToTarget(target)
+                return
+              }
               atBottom.current = true
               onSend()
             }}
@@ -921,6 +948,9 @@ export function ProjectView({
             files={files}
             setFiles={setFiles}
             placeholder={t('coordinatorPlaceholder')}
+            targets={targets}
+            target={target && toTask}
+            onTarget={setToTask}
             tools={{
               ...tools,
               prompts,

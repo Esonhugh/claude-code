@@ -306,6 +306,10 @@ h1, h2, h3 { text-wrap: balance; margin: 0 }
 .cbox textarea { border: 0; background: transparent; padding: 5px 2px; height: 30px; line-height: 20px; max-height: 160px; display: block }
 .cbox textarea:focus-visible { outline: none }
 .cbox:focus-within { border-color: var(--accent) }
+.to-chip { flex: none; align-self: flex-end; display: inline-flex; align-items: center; gap: 2px; max-width: 40%; height: 26px; margin-bottom: 2px; padding: 0 4px 0 8px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); font-size: 12.5px; font-weight: 500; white-space: nowrap }
+.to-chip span { overflow: hidden; text-overflow: ellipsis }
+.to-chip button { border: 0; background: transparent; color: inherit; padding: 0 4px; font-size: 14px; line-height: 1; cursor: pointer; opacity: .7 }
+.to-chip button:hover { opacity: 1 }
 .plus { width: 28px; height: 28px; border-radius: 8px; border: 0; background: transparent; color: var(--muted); font-size: 20px; font-weight: 300; line-height: 1; flex: none; display: grid; place-items: center; padding: 0; cursor: pointer }
 .plus:hover, .plus[aria-expanded="true"] { background: var(--sunken); color: var(--fg) }
 .send { width: 30px; height: 30px; border-radius: 999px; border: 0; background: var(--accent); color: var(--surface); flex: none; display: grid; place-items: center; padding: 0; cursor: pointer }

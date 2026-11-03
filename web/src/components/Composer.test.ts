@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test'
 import { translate } from '../i18n'
-import { effortChoices, pinText, shownModels } from './Composer'
+import { effortChoices, matchTargets, pinText, shownModels } from './Composer'
 import { nextMode, offeredModes, type T } from './ui'
 
 const t: T = (key, vars) => translate('en', key, vars)
@@ -48,5 +48,18 @@ describe('shownModels', () => {
     expect(shownModels(models, 'kimi', false).map(m => m.value)).toEqual(['default', 'opus', 'fable', 'sonnet', 'kimi'])
     expect(shownModels(models, 'opus', true)).toHaveLength(7)
     expect(shownModels(models.slice(0, 5), undefined, false)).toHaveLength(5)
+  })
+})
+
+describe('matchTargets', () => {
+  const tasks = [
+    { id: 'a', name: 'Fix Safari export', detail: 'Running', tag: 'task' },
+    { id: 'b', name: 'Write docs', detail: 'Safari notes', tag: 'task' },
+    { id: 'c', name: 'Release', detail: 'Done', tag: 'task' },
+  ]
+  it('lists every target for a bare @, and name matches before detail matches', () => {
+    expect(matchTargets(tasks, '').map(x => x.id)).toEqual(['a', 'b', 'c'])
+    expect(matchTargets(tasks, 'safari').map(x => x.id)).toEqual(['a', 'b'])
+    expect(matchTargets(tasks, 'zzz')).toEqual([])
   })
 })
