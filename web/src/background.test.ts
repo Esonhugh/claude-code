@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import type { AgentTask, Tasks } from './agents'
-import { groupTasks, mergeDetails, parseScreen, screenTail, spanClass, statusOf } from './background'
+import { groupTasks, mergeDetails, parseScreen, screenTail, spanClass, statusOf, usedPanes } from './background'
+import type { Item } from './protocol'
 
 const task = (id: string, type: string, seq: number, status = 'running'): AgentTask => ({
   id,
@@ -65,5 +66,25 @@ describe('background panes data', () => {
     expect(statusOf(task('x', 'local_bash', 0, 'running'), { id: 'x', status: 'killed' })).toBe('killed')
     expect(statusOf(task('x', 'local_bash', 0, 'completed'), { id: 'x', status: 'running' })).toBe('completed')
     expect(statusOf(task('x', 'local_bash', 0, 'running'))).toBe('running')
+  })
+
+  test('usedPanes lists only the panes a task or a history tool call has used', () => {
+    const none = groupTasks({}, {})
+    expect(usedPanes({}, [], none)).toEqual([])
+    const tool = (name: string, input: unknown): Item => ({
+      kind: 'assistant',
+      id: name,
+      blocks: [{ kind: 'tool', id: name, name, input: JSON.stringify(input) }],
+    }) as Item
+    const items = [
+      tool('Workflow', { script: 'x' }),
+      tool('Bash', { command: 'ls' }),
+      { kind: 'user', id: 'u', text: 'hi' } as Item,
+    ]
+    expect(usedPanes({}, items, none)).toEqual(['workflow'])
+    expect(usedPanes({}, [tool('Bash', { command: 'sleep 9', run_in_background: true }), tool('Monitor', {}), tool('Terminal', {})], none))
+      .toEqual(['terminals', 'monitor', 'bg'])
+    const tasks: Tasks = { w: task('w', 'local_workflow', 1, 'completed'), t: task('t', 'interactive_terminal', 2) }
+    expect(usedPanes(tasks, [], groupTasks(tasks, {}))).toEqual(['workflow', 'terminals'])
   })
 })

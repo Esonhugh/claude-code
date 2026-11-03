@@ -106,3 +106,23 @@ describe('stepActions', () => {
     expect(stepActions([call('Bash', { command: 'a' }), call('Bash', { command: 'b' })], t as never)).toEqual(['stepsRan:2'])
   })
 })
+
+describe('handback report', () => {
+  it('spins only while the turn streams: a saved report has no result yet still finished', async () => {
+    const react = await import('react')
+    ;(globalThis as { React?: unknown }).React ??= react
+    const { renderToStaticMarkup } = await import('react-dom/server')
+    const { Message } = await import('./Message')
+    const item: Item = {
+      kind: 'assistant',
+      id: 'a1',
+      streamed: false,
+      blocks: [{ kind: 'tool', id: 't1', name: 'SubagentHandback', input: JSON.stringify({ message: 'All done.' }) }],
+    }
+    const render = (streaming: boolean) =>
+      renderToStaticMarkup(react.createElement(Message, { item, t: ((key: string) => key) as never, streaming }))
+    expect(render(false)).toContain('All done.')
+    expect(render(false)).not.toContain('class="spin"')
+    expect(render(true)).toContain('class="spin"')
+  })
+})

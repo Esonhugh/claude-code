@@ -137,16 +137,19 @@ const window = (limit: RateLimit | null | undefined) =>
 
 // ChatGPT reports its windows as primary/secondary; dev maps them onto
 // seven_day/seven_day_sonnet for the Usage tab, so place them by length.
-function chatGPTRateLimits(utilization: Utilization) {
+export function chatGPTRateLimits(utilization: Utilization) {
   const windows = [utilization.seven_day, utilization.seven_day_sonnet].filter(
     (w): w is RateLimit => !!w,
   )
-  const byMinutes = (minutes: number) =>
-    window(windows.find(w => w.window_minutes === minutes))
+  const fiveHour = windows.find(w => w.window_minutes === 300)
+  const sevenDay = windows.find(w => w.window_minutes === 7 * 24 * 60)
   return {
-    five_hour: byMinutes(300),
-    seven_day: byMinutes(7 * 24 * 60),
-    model_scoped: (utilization.chatgpt_limits ?? []).map(row => ({
+    five_hour: window(fiveHour),
+    seven_day: window(sevenDay),
+    // chatgpt_limits repeats the two windows placed above; keep only the rest.
+    model_scoped: (utilization.chatgpt_limits ?? []).filter(
+      row => row.limit !== fiveHour && row.limit !== sevenDay,
+    ).map(row => ({
       display_name: row.title,
       utilization: row.limit.utilization,
       resets_at: row.limit.resets_at,

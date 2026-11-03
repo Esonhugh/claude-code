@@ -2,7 +2,8 @@ import type { SetAppState } from '../Task.js'
 import { createUserMessage } from '../utils/messages.js'
 import { injectUserMessageToTeammate } from './InProcessTeammateTask/InProcessTeammateTask.js'
 import { isInProcessTeammateTask } from './InProcessTeammateTask/types.js'
-import { appendMessageToLocalAgent, isLocalAgentTask, queuePendingMessage } from './LocalAgentTask/LocalAgentTask.js'
+import { updateTaskState } from '../utils/task/framework.js'
+import { appendMessageToLocalAgent, isLocalAgentTask, type LocalAgentTaskState, queuePendingMessage } from './LocalAgentTask/LocalAgentTask.js'
 
 /**
  * Routes a user message typed into an agent or teammate (REPL agent view,
@@ -20,8 +21,9 @@ export function deliverTaskMessage(
       throw new Error(`agent ${task.id} was stopped by the user`)
     }
     appendMessageToLocalAgent(task.id, createUserMessage({ content: text }), setAppState)
+    updateTaskState<LocalAgentTaskState>(task.id, setAppState, t => ({ ...t, userMessages: [...(t.userMessages ?? []), text] }))
     if (task.status !== 'running') return 'resume'
-    queuePendingMessage(task.id, text, setAppState)
+    queuePendingMessage(task.id, { text, fromUser: true }, setAppState)
     return 'queued'
   }
   if (isInProcessTeammateTask(task)) {

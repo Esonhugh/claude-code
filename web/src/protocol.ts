@@ -177,6 +177,8 @@ export type ChatState = {
   startedAt?: number
   /** Sent while a turn ran; each moves into `items` once the model reads it. */
   queued: Extract<Item, { kind: 'user' }>[]
+  /** The prompts the session's /rewind lists (`rewind_points`), oldest first; only these offer Rewind. */
+  rewindPoints?: string[]
 }
 
 export const initialState: ChatState = {
@@ -516,9 +518,12 @@ export function contextUsage(body: Json): ContextUsage | undefined {
 export function rewindTo(state: ChatState, userId: string, note: string): ChatState {
   const index = state.items.findIndex(i => i.id === userId)
   if (index === -1) return state
+  const point = state.rewindPoints?.indexOf(userId) ?? -1
   return {
     ...state,
     items: [...state.items.slice(0, index), { kind: 'note', id: `note-${userId}`, text: note }],
+    notice: undefined,
+    ...(point !== -1 && { rewindPoints: state.rewindPoints!.slice(0, point) }),
   }
 }
 
@@ -958,6 +963,7 @@ export const REQUEST_PREFIX = {
   effort: 'web-effort-',
   status: 'web-status-',
   rewind: 'web-rewind-',
+  rewindPoints: 'web-rwpoints-',
   cancelQueued: 'web-cancel-queued-',
   /** The sidebar dialogs' requests (mcp_status, reload_plugins…). */
   ext: 'web-ext-',
@@ -1116,6 +1122,9 @@ function reduceControlResponse(state: ChatState, raw: Json): ChatState {
     return typeof body.percentUsed === 'number'
       ? { ...state, contextPercent: body.percentUsed }
       : state
+  }
+  if (id.startsWith(REQUEST_PREFIX.rewindPoints)) {
+    return { ...state, rewindPoints: Array.isArray(body.uuids) ? body.uuids.filter(u => typeof u === 'string') : [] }
   }
   if (id.startsWith(REQUEST_PREFIX.apps)) {
     const apps = Array.isArray(body.apps) ? body.apps.filter(isObj) : []

@@ -1,6 +1,7 @@
 import { type ReactNode, useEffect, useMemo, useState } from 'react'
 import { type AgentTask, isFinished } from '../agents'
-import type { Groups } from '../background'
+import { getUsage } from '../api'
+import { type Groups, type Pane, usedPanes } from '../background'
 import { sessionFiles, tilde } from '../files'
 import type { ModelOption, Todo } from '../protocol'
 import type { SessionChat } from '../store'
@@ -90,6 +91,18 @@ function useStatusData(
 ): StatusData {
   const [data, setData] = useState<StatusData>({})
   useEffect(() => setData({}), [sessionId])
+  // A session that is not running has no process to ask; its plan limits are this machine's.
+  useEffect(() => {
+    if (live) return
+    let current = true
+    getUsage().then(
+      body => current && setData(d => ({ ...d, usage: { subscription_type: body.subscription_type, rate_limits: body.rate_limits } as Json })),
+      () => {},
+    )
+    return () => {
+      current = false
+    }
+  }, [sessionId, live])
   useEffect(() => {
     if (!live || busy || !request) return
     let current = true
@@ -129,7 +142,7 @@ function startedText(at: number, t: T): string {
     : `${date.toLocaleDateString()} ${time}`
 }
 
-function usageRows(t: T, chat: SessionChat, usage: Json | undefined): { rows: [string, ReactNode][]; cost?: string } {
+export function usageRows(t: T, chat: SessionChat, usage: Json | undefined): { rows: [string, ReactNode][]; cost?: string } {
   const session = isObj(usage?.session) ? usage.session : undefined
   const models = isObj(session?.model_usage) ? Object.values(session.model_usage).filter(isObj) : []
   const total = (key: string) => shortTokens(models.reduce((n, m) => n + num(m[key]), 0))
@@ -144,6 +157,8 @@ function usageRows(t: T, chat: SessionChat, usage: Json | undefined): { rows: [s
       : streamed?.utilization !== undefined
         ? { pct: streamed.utilization * 100, resets: (streamed.resetsAt ?? NaN) * 1000 }
         : undefined
+  const sevenDay = isObj(limits?.seven_day) ? limits.seven_day : undefined
+  const weekResets = typeof sevenDay?.resets_at === 'string' ? Date.parse(sevenDay.resets_at) : NaN
   const costText = cost === undefined ? undefined : `$${cost.toFixed(2)}`
   const rows: [string, ReactNode][] = [
     ...(models.length
@@ -166,6 +181,19 @@ function usageRows(t: T, chat: SessionChat, usage: Json | undefined): { rows: [s
             t('quotaValue', {
               pct: String(Math.round(quota.pct)),
               time: Number.isFinite(quota.resets) ? new Date(quota.resets).toTimeString().slice(0, 5) : '—',
+            }),
+          ] as [string, ReactNode],
+        ]
+      : []),
+    ...(typeof sevenDay?.utilization === 'number'
+      ? [
+          [
+            t('quotaWeekLabel'),
+            t('quotaValue', {
+              pct: String(Math.round(sevenDay.utilization)),
+              time: Number.isFinite(weekResets)
+                ? new Date(weekResets).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false })
+                : '—',
             }),
           ] as [string, ReactNode],
         ]
@@ -418,7 +446,10 @@ function FilesPane({
   )
 }
 
-/** The right column: Status, Files, Agents, Workflow, Terminals, Monitor, Background Tasks. */
+/**
+ * The right column: Status, Files and Agents always; Workflow, Terminals,
+ * Monitor and Background Tasks once the session has used them (or one is open).
+ */
 export function SidePanel({
   t,
   open,
@@ -460,7 +491,7 @@ export function SidePanel({
   setWorkflowId: (id: string | undefined) => void
   onOpenFile: (path: string) => void
   onStopTask: (id: string) => void
-  onSendTask: (id: string, text: string, pick: AgentPick) => Promise<string>
+  onSendTask: (id: string, text: string, pick: AgentPick) => Promise<void>
   /** The palette, files, mode and model an agent's input box shares with the session's. */
   agentInput: AgentInput
   /** A control request to the session; Status reads usage, memory and sandbox with it. */
@@ -475,15 +506,18 @@ export function SidePanel({
   const agents = Object.keys(agentTasks(chat.tasks)).length
   const bg = useBackground(sessionId, chat.tasks, ['terminals', 'monitor', 'bg'].includes(tab), onRequest)
   const { terminals, monitors, background } = bg.groups
-  const tabs: { id: SideTab; label: string; count?: number }[] = [
-    { id: 'status', label: 'Status' },
-    { id: 'files', label: 'Files', count: files },
-    { id: 'agents', label: 'Agents', count: agents },
-    { id: 'workflow', label: 'Workflow' },
-    { id: 'terminals', label: 'Terminals', count: terminals.length },
-    { id: 'monitor', label: 'Monitor', count: monitors.length },
-    { id: 'bg', label: 'Background Tasks', count: background.length },
-  ]
+  const used = useMemo(() => usedPanes(chat.tasks, chat.items, bg.groups), [chat.tasks, chat.items, bg.groups])
+  const tabs = (
+    [
+      { id: 'status', label: 'Status' },
+      { id: 'files', label: 'Files', count: files },
+      { id: 'agents', label: 'Agents', count: agents },
+      { id: 'workflow', label: 'Workflow' },
+      { id: 'terminals', label: 'Terminals', count: terminals.length },
+      { id: 'monitor', label: 'Monitor', count: monitors.length },
+      { id: 'bg', label: 'Background Tasks', count: background.length },
+    ] satisfies { id: SideTab; label: string; count?: number }[]
+  ).filter(x => ['status', 'files', 'agents', tab].includes(x.id) || used.includes(x.id as Pane))
   return (
     <aside className={`side${open ? ' open' : ''}`} aria-label={t('sidebarLabel')}>
       <div className="sheet-head">

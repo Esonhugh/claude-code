@@ -258,8 +258,12 @@ export type LocalAgentTaskState = TaskStateBase & {
   lastReportedTokenCount: number
   // Whether the task has been backgrounded (false = foreground running, true = backgrounded)
   isBackgrounded: boolean
-  // Messages queued mid-turn via SendMessage, drained at tool-round boundaries
-  pendingMessages: string[]
+  // Messages queued mid-turn via SendMessage (strings) or typed by the user
+  // into this agent (fromUser), drained at tool-round boundaries
+  pendingMessages: PendingMessage[]
+  // Typed by the user straight into this agent since its last notification;
+  // the notification tells the parent, which never saw them.
+  userMessages?: string[]
   // UI is holding this task: blocks eviction, enables stream-append, triggers
   // disk bootstrap. Set by enterTeammateView. Separate from viewingAgentTaskId
   // (which is "what am I LOOKING at") — retain is "what am I HOLDING."
@@ -315,9 +319,13 @@ export function isCompletedBackgroundAgent(t: unknown): t is LocalAgentTaskState
     t.isBackgrounded && (t.keepaliveReasons?.size ?? 0) === 0
 }
 
+export type PendingMessage = string | { text: string; fromUser: true }
+
+export const pendingMessageText = (msg: PendingMessage): string => (typeof msg === 'string' ? msg : msg.text)
+
 export function queuePendingMessage(
   taskId: string,
-  msg: string,
+  msg: PendingMessage,
   setAppState: (f: (prev: AppState) => AppState) => void,
 ): void {
   updateTaskState<LocalAgentTaskState>(taskId, setAppState, task => ({
@@ -347,7 +355,7 @@ export function drainPendingMessages(
   taskId: string,
   getAppState: () => AppState,
   setAppState: (f: (prev: AppState) => AppState) => void,
-): string[] {
+): PendingMessage[] {
   const task = getAppState().tasks[taskId]
   if (!isLocalAgentTask(task) || task.pendingMessages.length === 0) {
     return []
@@ -407,6 +415,7 @@ export function enqueueAgentNotification({
   let shouldEnqueue = false
   let routedAgentId: AgentId | undefined
   let stoppedBy = ''
+  let userMessages: string[] | undefined
   setAppState(prev => {
     const task = prev.tasks[taskId]
     if (!isLocalAgentTask(task) || task.notified || notificationsInFlight.has(taskId)) {
@@ -414,6 +423,7 @@ export function enqueueAgentNotification({
     }
 
     shouldEnqueue = true
+    userMessages = task.userMessages
     stoppedBy = task.stoppedByUser ? ' by user' : task.stoppedByParent ? ' by Claude' : ''
     if (task.ownerAgentId) {
       const parentTask = prev.tasks[task.ownerAgentId]
@@ -422,7 +432,7 @@ export function enqueueAgentNotification({
       }
     }
 
-    return prev
+    return userMessages ? { ...prev, tasks: { ...prev.tasks, [taskId]: { ...task, userMessages: undefined } } } : prev
   })
 
   if (!shouldEnqueue) return
@@ -452,6 +462,9 @@ export function enqueueAgentNotification({
     ? '\n<note>This agent stopped with background work of its own still running. It may resume on its own when that work completes or reports, and the same task-id notifies again if it does; the result below may be interim.</note>'
     : '\n<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>'
   const resultSection = finalMessage ? `\n<result>${truncatedResult}</result>` : ''
+  const userSection = userMessages?.length
+    ? `\n<user-messages>Your user typed these messages straight into this agent. They are the user's own words, not yours and not the agent's; you had not seen them:\n${userMessages.map(text => `- ${escapeXml(text)}`).join('\n')}\n</user-messages>`
+    : ''
   const usageSection = usage
     ? `\n<usage><subagent_tokens>${usage.totalTokens}</subagent_tokens><tool_uses>${usage.toolUses}</tool_uses><duration_ms>${usage.durationMs}</duration_ms></usage>`
     : ''
@@ -463,7 +476,7 @@ export function enqueueAgentNotification({
 <${TASK_ID_TAG}>${escapeXml(taskId)}</${TASK_ID_TAG}>${toolUseIdLine}
 <${OUTPUT_FILE_TAG}>${escapeXml(outputPath)}</${OUTPUT_FILE_TAG}>
 <${STATUS_TAG}>${status}</${STATUS_TAG}>
-<${SUMMARY_TAG}>${summary}</${SUMMARY_TAG}>${noteSection}${resultSection}${usageSection}${worktreeSection}
+<${SUMMARY_TAG}>${summary}</${SUMMARY_TAG}>${noteSection}${userSection}${resultSection}${usageSection}${worktreeSection}
 </${TASK_NOTIFICATION_TAG}>`
 
   // Like official 2.1.311, SDK consumers get task_notification as the agent
@@ -476,6 +489,7 @@ export function enqueueAgentNotification({
         ? finalMessage
         : summaryText,
     outputFile: outputPath,
+    waiting,
     usage: usage && {
       total_tokens: usage.totalTokens,
       tool_uses: usage.toolUses,

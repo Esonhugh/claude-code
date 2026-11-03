@@ -14,6 +14,7 @@ import { createServerLogger } from '../server/serverLog.js'
 import { SessionManager } from '../server/sessionManager.js'
 import { registerCleanup } from '../utils/cleanupRegistry.js'
 import { shouldRejectRootBypassPermissions } from '../setup.js'
+import { getGlobalConfig } from '../utils/config.js'
 import { getClaudeConfigHomeDir } from '../utils/envUtils.js'
 import { execFileNoThrowWithCwd } from '../utils/execFileNoThrow.js'
 import { fetchBootstrapData } from '../services/api/bootstrap.js'
@@ -188,6 +189,8 @@ export async function runWebCommand(opts: WebCommandOptions): Promise<void> {
       addDirs: [uploadsDir],
       // Teammate messages to the lead reach the page only as replayed prompts.
       replayUserMessages: true,
+      // The page's "restore files" rewind needs checkpoints; the /config toggle still turns them off.
+      fileCheckpointing: getGlobalConfig().fileCheckpointingEnabled !== false,
     }),
     {
       idleTimeoutMs: Number(opts.idleTimeout ?? 600_000),

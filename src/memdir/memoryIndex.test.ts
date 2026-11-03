@@ -266,4 +266,16 @@ describe('searchMemory', () => {
     expect((await find('代码要保持原文吗')).map(h => h.path)).toEqual([join(memDir, 'lang.md')])
     rmSync(join(memDir, 'MEMORY.md'))
   })
+
+  test('recalls nothing for words that only match inside other words or in most memory files', async () => {
+    const notes = Array.from({ length: 6 }, (_, i) => join(memDir, `note-${i}.md`))
+    notes.forEach((path, i) => writeFileSync(path, `Raise the runtime timeout for gateway step ${i}.`))
+    const find = (prompt: string) =>
+      findMemoryFilesForPrompt({ prompt, scopes: ['project'], exclude: new Set(), limit: 5 })
+    const results = [await find('what time is it now'), await find('the gateway is slow'), await find('gateway binary')]
+    notes.forEach(path => rmSync(path))
+    expect(results[0]).toEqual([])
+    expect(results[1]).toEqual([])
+    expect(results[2]!.map(h => h.path)).toEqual([join(memDir, 'build.md')])
+  })
 })

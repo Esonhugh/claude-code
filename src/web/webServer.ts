@@ -624,8 +624,40 @@ export function startWebServer(
   const coordinators = new Map<string, string>()
   // The coordinator's own set_model / effort requests in flight, kept once it accepts them.
   const settingRequests = new Map<string, { projectId: string; patch: Pick<Project, 'coordinator_model'> | Pick<Project, 'coordinator_effort'> }>()
+  // Messages the page sent a session's agent that wait in its queue, shown in the
+  // agent's conversation from the moment they are sent (`withQueued`).
+  const agentSends = new Map<string, { taskId: string; text: string }>()
+  const agentQueued = new Map<string, { id: number; ts: number; text: string }[]>()
+  let agentQueuedId = 0
+  const watchAgentSend = (sessionId: string, line: string, from: 'child' | 'client') => {
+    if (from === 'client') {
+      if (!line.includes('"send_task_message"')) return
+      const msg = parseLine(line)
+      const request = (msg?.request ?? {}) as Record<string, unknown>
+      if (
+        msg?.type === 'control_request' &&
+        request.subtype === 'send_task_message' &&
+        typeof msg.request_id === 'string' &&
+        typeof request.task_id === 'string' &&
+        typeof request.text === 'string'
+      ) {
+        agentSends.set(`${sessionId}:${msg.request_id}`, { taskId: request.task_id, text: request.text })
+      }
+      return
+    }
+    if (!agentSends.size || !line.includes('"control_response"')) return
+    const response = parseLine(line)?.response as { request_id?: unknown; subtype?: unknown; response?: { delivery?: unknown } } | undefined
+    const key = `${sessionId}:${String(response?.request_id)}`
+    const sent = agentSends.get(key)
+    if (!sent) return
+    agentSends.delete(key)
+    if (response!.subtype !== 'success' || response!.response?.delivery !== 'queued') return
+    const queued = agentQueued.get(`${sessionId}:${sent.taskId}`) ?? []
+    agentQueued.set(`${sessionId}:${sent.taskId}`, [...queued, { id: ++agentQueuedId, ts: Date.now(), text: sent.text }])
+  }
   sessionManager.observe({
     line(sessionId, line, from) {
+      watchAgentSend(sessionId, line, from)
       const projectId = coordinators.get(sessionId)
       if (!projectId) return
       if (from === 'child') {
@@ -657,6 +689,11 @@ export function startWebServer(
       }
     },
     exit(sessionId) {
+      for (const key of [...agentSends.keys(), ...agentQueued.keys()]) {
+        if (!key.startsWith(`${sessionId}:`)) continue
+        agentSends.delete(key)
+        agentQueued.delete(key)
+      }
       const projectId = coordinators.get(sessionId)
       if (!projectId) return
       coordinators.delete(sessionId)
@@ -992,7 +1029,9 @@ export function startWebServer(
         return errorResponse(400, 'Invalid id')
       }
       const page = await readAgentTranscript(id, agentId)
-      return page ? Response.json(page) : errorResponse(404, 'Agent not found')
+      return page
+        ? Response.json({ messages: withQueued(page.messages, agentQueued.get(`${id}:${agentId}`) ?? []) })
+        : errorResponse(404, 'Agent not found')
     }
     const issuersMatch = AGENT_ISSUERS_PATH.exec(pathname)
     if (issuersMatch && req.method === 'GET') {

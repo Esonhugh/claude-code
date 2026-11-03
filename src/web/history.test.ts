@@ -299,10 +299,13 @@ describe('web history', () => {
       u(5),
       u(6),
     ])
+    // A resumed session's /rewind starts after the boundary: the first question is gone, the summary and stdout are no prompts.
+    expect(page.rewindPoints).toEqual([u(4), u(6)])
     // An earlier page still reaches the first question.
     const earlier = (await readTranscript(ID, 7, 7))!
     expect(earlier.start).toBe(0)
     expect(JSON.stringify(earlier.messages)).toContain('first question')
+    expect(earlier.rewindPoints).toBeUndefined()
 
     // An auto-compact before the reply to u(7): the reply hangs off the kept u(7), not the summary.
     writeFileSync(
