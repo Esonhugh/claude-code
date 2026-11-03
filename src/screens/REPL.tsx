@@ -3663,7 +3663,7 @@ export function REPL({
     void mrOnTurnComplete(messagesRef.current, true)
   }
 
-  // Function to handle queued command when canceling a permission request
+  // Esc with nothing to cancel pulls queued commands back into the input
   const handleQueuedCommandOnCancel = useCallback(() => {
     const result = popAllEditable(inputValue, 0)
     if (!result) return
@@ -6176,13 +6176,25 @@ export function REPL({
   const handleRestoreMessage = useCallback(
     async (message: UserMessage) => {
       setImmediate(
-        (restore, message) => restore(message),
+        (restore, message) => {
+          restore(message)
+          if (!isFullscreenEnvEnabled()) setRewindRepaint(n => n + 1)
+        },
         restoreMessageSync,
         message,
       )
     },
     [restoreMessageSync],
   )
+
+  // Main screen: the rows a rewind removes start above the viewport, and the
+  // frame diff can only erase from the bottom, so the prompt would float over
+  // blank rows. Repaint the viewport once the shorter transcript is committed.
+  const [rewindRepaint, setRewindRepaint] = useState(0)
+  useEffect(() => {
+    if (rewindRepaint === 0) return
+    inkInstances.get(process.stdout)?.forceRedraw()
+  }, [rewindRepaint])
 
   // Not memoized — hook stores caps via ref, reads latest closure at dispatch.
   // 24-char prefix: deriveUUID preserves first 24, renderable uuid prefix-matches raw source.
@@ -7219,7 +7231,9 @@ export function REPL({
       <PermissionRequest
         key={toolUseConfirmQueue[0]?.toolUseID}
         onDone={() => setToolUseConfirmQueue(([_, ...tail]) => tail)}
-        onReject={handleQueuedCommandOnCancel}
+        // Like official: prompts queued before a rejected permission stay
+        // queued and run next, the same as after Esc mid-stream.
+        onReject={() => {}}
         toolUseConfirm={toolUseConfirmQueue[0]!}
         toolUseContext={getToolUseContext(
           messages,

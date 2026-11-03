@@ -26,9 +26,15 @@
  */
 import { createSignal } from './signal.js'
 
+const DRAIN_TIMEOUT_MS = 3000
+
 export class QueryGuard {
   private _status: 'idle' | 'dispatching' | 'running' = 'idle'
   private _generation = 0
+  // Generation force-ended while running whose finally has not called end()
+  // yet. Its generator can still yield (e.g. the interrupt marker), so the
+  // queue waits for it instead of starting a turn that would interleave.
+  private _draining: number | null = null
   private _changed = createSignal()
 
   /**
@@ -72,6 +78,10 @@ export class QueryGuard {
    * newer query has started (stale finally block from a cancelled query).
    */
   end(generation: number): boolean {
+    if (this._draining === generation) {
+      this._draining = null
+      this._notify()
+    }
     if (this._generation !== generation) return false
     if (this._status !== 'running') return false
     this._status = 'idle'
@@ -87,6 +97,16 @@ export class QueryGuard {
    */
   forceEnd(): void {
     if (this._status === 'idle') return
+    if (this._status === 'running') {
+      const draining = this._generation
+      this._draining = draining
+      // A query that ignores the abort must not hold the queue forever.
+      setTimeout(() => {
+        if (this._draining !== draining) return
+        this._draining = null
+        this._notify()
+      }, DRAIN_TIMEOUT_MS).unref?.()
+    }
     this._status = 'idle'
     ++this._generation
     this._notify()
@@ -98,6 +118,11 @@ export class QueryGuard {
    */
   get isActive(): boolean {
     return this._status !== 'idle'
+  }
+
+  /** A force-ended query has not reached its finally yet. */
+  get isDraining(): boolean {
+    return this._draining !== null
   }
 
   get isDispatching(): boolean {
@@ -117,6 +142,10 @@ export class QueryGuard {
   /** Snapshot for useSyncExternalStore. Returns `isActive`. */
   getSnapshot = (): boolean => {
     return this._status !== 'idle'
+  }
+
+  getDrainingSnapshot = (): boolean => {
+    return this._draining !== null
   }
 
   private _notify(): void {
