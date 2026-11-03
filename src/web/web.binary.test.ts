@@ -815,7 +815,7 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
     const files = [
       sample('readme.md', '## MD_HEADING\n\ntext'),
       sample('table.csv', 'col1,col2\n"x, y",2\n'),
-      sample('page.html', '<h1>HTML_BODY</h1><script>parent.__xss=4</script>'),
+      sample('page.html', '<h1>HTML_BODY</h1>\n<p>second</p>\n<script>parent.__xss=4</script>'),
       sample('chart.svg', '<svg xmlns="http://www.w3.org/2000/svg" width="200" height="100"><script>parent.__xss=5</script><rect width="200" height="100"/></svg>'),
       sample('book.xlsx', new Uint8Array(await book.xlsx.writeBuffer())),
       sample('letter.docx', await tinyDocx('DOCX_BODY')),
@@ -933,14 +933,46 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       await preview.getByText('NOTES_BODY').waitFor()
       await select('NOTES_BODY')
       expect(await comment('LINE_NOTE')).toContain('(line 2): LINE_NOTE')
+      // A real mouse drag across lines names the range: from the start of one text to the end of another.
+      const textBox = (text: string) =>
+        page.evaluate((text: string) => {
+          const root = document.querySelector('.preview .selectable')!
+          const walk = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
+          for (let n = walk.nextNode(); n; n = walk.nextNode()) {
+            const at = n.textContent!.indexOf(text)
+            if (at < 0) continue
+            const range = document.createRange()
+            range.setStart(n, at)
+            range.setEnd(n, at + text.length)
+            const r = range.getBoundingClientRect()
+            return { x: r.x, y: r.y, width: r.width, height: r.height }
+          }
+          throw new Error(`no ${text}`)
+        }, text)
+      const drag = async (from: string, to: string) => {
+        await preview.locator('.selectable', { hasText: to }).waitFor()
+        const a = await textBox(from)
+        const b = await textBox(to)
+        await page.mouse.move(a.x + 1, a.y + a.height / 2)
+        await page.mouse.down()
+        await page.mouse.move(b.x + b.width - 1, b.y + b.height / 2, { steps: 8 })
+        await page.mouse.up()
+        await preview.locator('.cpin-offer').click()
+      }
+      await drag('first', 'last line')
+      expect(await comment('RANGE_NOTE')).toContain('(lines 1-3): RANGE_NOTE')
       await open('readme.md')
       await select('MD_HEADING')
       expect(await comment('QUOTE_NOTE')).toContain('readme.md` (line 1, on \\"MD_HEADING\\"): QUOTE_NOTE')
+      await drag('MD_HEADING', 'text')
+      expect(await comment('MD_RANGE_NOTE')).toContain('readme.md` (line 1, on \\"MD_HEADING text\\"): MD_RANGE_NOTE')
       await open('page.html')
       await preview.getByRole('radio', { name: 'Source' }).click()
       await preview.locator('.codeblock').waitFor()
       await select('HTML_BODY')
       expect(await comment('SOURCE_NOTE')).toContain('page.html` (line 1): SOURCE_NOTE')
+      await drag('second', 'script')
+      expect(await comment('SOURCE_RANGE_NOTE')).toContain('page.html` (lines 2-3): SOURCE_RANGE_NOTE')
       await open('table.csv')
       await preview.locator('.sheet td', { hasText: 'x, y' }).click()
       expect(await comment('CELL_NOTE')).toContain('table.csv` (cell A2): CELL_NOTE')
@@ -954,6 +986,8 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       await preview.getByText('SECOND_SHEET_CELL').waitFor({ timeout: 30_000 })
       await open('letter.docx')
       await preview.locator('.docx-page', { hasText: 'DOCX_BODY' }).waitFor({ timeout: 30_000 })
+      await drag('DOCX_BODY', 'DOCX_BODY')
+      expect(await comment('DOCX_NOTE')).toContain('letter.docx` (on \\"DOCX_BODY\\"): DOCX_NOTE')
       await open('slides.pdf')
       await preview.locator('.page-count', { hasText: '/ 2' }).waitFor({ timeout: 30_000 })
       await preview.getByRole('button', { name: 'Next page' }).click()
