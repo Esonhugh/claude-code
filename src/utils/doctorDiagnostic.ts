@@ -1,7 +1,7 @@
 import { execa } from 'execa'
 import { readFile, realpath } from 'fs/promises'
 import { homedir } from 'os'
-import { delimiter, join, posix, win32 } from 'path'
+import { delimiter, isAbsolute, join, posix, relative, win32 } from 'path'
 import { checkGlobalInstallPermissions } from './autoUpdater.js'
 import { isInBundledMode } from './bundledMode.js'
 import {
@@ -50,6 +50,7 @@ import {
 } from './shellConfig.js'
 import { jsonParse } from './slowOperations.js'
 import { which } from './which.js'
+import { getXDGDataHome } from './xdg.js'
 
 export type InstallationType =
   | 'npm-global'
@@ -326,7 +327,7 @@ async function detectMultipleInstallations(): Promise<
   return installations
 }
 
-async function detectConfigurationIssues(
+export async function detectConfigurationIssues(
   type: InstallationType,
 ): Promise<Array<{ issue: string; fix: string }>> {
   const warnings: Array<{ issue: string; fix: string }> = []
@@ -451,7 +452,22 @@ async function detectConfigurationIssues(
       })
     }
 
+    // installMethod tracks the managed install. A bundled binary run from
+    // elsewhere (a local build such as ./built-claude, or a copied release
+    // binary) is not that install, so its config is not stale.
+    let runningManagedNative = false
     if (type === 'native' && config.installMethod !== 'native') {
+      const versionsDir = join(getXDGDataHome(), 'claude', 'versions')
+      const realExecPath = await realpath(process.execPath).catch(
+        () => process.execPath,
+      )
+      runningManagedNative = [process.execPath, realExecPath].some(p => {
+        const rel = relative(versionsDir, p)
+        return rel !== '' && !rel.startsWith('..') && !isAbsolute(rel)
+      })
+    }
+
+    if (runningManagedNative) {
       warnings.push({
         issue: `Running native installation but config install method is '${config.installMethod ?? 'not set'}'`,
         fix: 'Run `claude install` to update configuration',

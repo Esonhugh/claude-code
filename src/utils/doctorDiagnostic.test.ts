@@ -1,5 +1,8 @@
 import { afterEach, describe, expect, test } from 'bun:test'
+import { join } from 'path'
+import { saveGlobalConfig } from './config.js'
 import {
+  detectConfigurationIssues,
   detectManagedSandboxIgnoredWarnings,
   getCurrentInstallationType,
 } from './doctorDiagnostic.js'
@@ -46,6 +49,42 @@ describe('getCurrentInstallationType', () => {
     })
 
     await expect(getCurrentInstallationType()).resolves.toBe('npm-global')
+  })
+})
+
+describe('detectConfigurationIssues install method mismatch', () => {
+  const mismatch = "Running native installation but config install method is 'global'"
+  const savedXdgDataHome = process.env.XDG_DATA_HOME
+
+  afterEach(() => {
+    if (savedXdgDataHome === undefined) delete process.env.XDG_DATA_HOME
+    else process.env.XDG_DATA_HOME = savedXdgDataHome
+    saveGlobalConfig(current => ({ ...current, installMethod: undefined }))
+  })
+
+  function setExecPath(execPath: string) {
+    Object.defineProperty(process, 'execPath', {
+      value: execPath,
+      configurable: true,
+    })
+  }
+
+  test('ignores a standalone binary outside the native install directory', async () => {
+    process.env.XDG_DATA_HOME = '/tmp/doctor-test-data'
+    saveGlobalConfig(current => ({ ...current, installMethod: 'global' }))
+    setExecPath('/home/me/src/claude-code/built-claude')
+
+    const issues = (await detectConfigurationIssues('native')).map(w => w.issue)
+    expect(issues).not.toContain(mismatch)
+  })
+
+  test('warns when the managed native install runs with a stale install method', async () => {
+    process.env.XDG_DATA_HOME = '/tmp/doctor-test-data'
+    saveGlobalConfig(current => ({ ...current, installMethod: 'global' }))
+    setExecPath(join('/tmp/doctor-test-data', 'claude', 'versions', '2.1.296'))
+
+    const issues = (await detectConfigurationIssues('native')).map(w => w.issue)
+    expect(issues).toContain(mismatch)
   })
 })
 
