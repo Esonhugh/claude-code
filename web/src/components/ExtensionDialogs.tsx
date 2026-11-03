@@ -5,6 +5,8 @@ import { type Control, errorText, type ExtProps, Switch } from './extShared'
 type McpServer = {
   name: string
   status: string
+  /** Why a failed server failed (the engine includes the tail of a stdio server's stderr). */
+  error?: string
   transport?: string
   source?: string
   scope?: string
@@ -152,6 +154,7 @@ export function McpBody({ z, flash, control }: ExtProps) {
                 {mcpFrom(z, x)}
                 {tools > 0 && z(` · ${tools} 个工具`)}
               </small>
+              {st === 'failed' && x.error && <small className="err">{x.error}</small>}
             </div>
             <div className="acts">
               <span className={`badge ${cls}`}>{z(label)}</span>

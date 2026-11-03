@@ -49,6 +49,27 @@ if (process.env[childFlag] !== '1') {
       expect(await connectToServer(name,config)).toBe(first)
     } finally { await clearServerCache(name,config);rmSync(root,{recursive:true,force:true}) }
   })
+  test('a stdio server that exits during initialize reports the tail of its stderr', async () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(),'cc-mcp-stderr-')))
+    const file = join(root,'server.mjs')
+    const config: import('./types.js').ScopedMcpServerConfig = {type:'stdio',command:process.execPath,args:[file],scope:'dynamic'}
+    const name = 'stderr-' + root.split('/').at(-1)
+    // Like the telegram channel plugin without a token: noise, then the reason, then exit 1.
+    writeFileSync(file,`
+      process.stderr.write('installing deps\\n' + 'x'.repeat(2000) + '\\n\\ntelegram channel: TELEGRAM_BOT_TOKEN required\\n  set in ~/.claude/channels/telegram/.env\\n')
+      setTimeout(() => process.exit(1), 50)
+    `)
+    try {
+      const result = await connectToServer(name,config)
+      expect(result.type).toBe('failed')
+      const error = result.type === 'failed' ? result.error ?? '' : ''
+      expect(error).toStartWith('Connection closed: ')
+      expect(error).toContain('telegram channel: TELEGRAM_BOT_TOKEN required\n  set in ~/.claude/channels/telegram/.env')
+      expect(error).not.toContain('installing deps')
+      expect(error.length).toBeLessThan(700)
+    } finally { await clearServerCache(name,config);rmSync(root,{recursive:true,force:true}) }
+  })
+
   test('ordinary errors keep text that happens to resemble an MCP wrapper', async () => {
     const { Client } = await import('@modelcontextprotocol/client')
     const message = 'MCP error -32000: application-owned text'

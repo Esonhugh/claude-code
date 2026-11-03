@@ -532,6 +532,7 @@ button.chip { cursor: pointer; font: inherit; color: inherit }
 .xrow:last-child { border-bottom: 0 }
 .xrow b { font-weight: 500 } .xrow small { color: var(--muted); font-size: 12px; display: block }
 .xrow small.clamp { overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
+.xrow small.err { color: var(--bad); white-space: pre-wrap; overflow-wrap: anywhere; margin-top: 2px }
 .xrow .tags { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 4px }
 .xrow .tag { font-size: 11px; padding: 0 7px; border-radius: 999px; background: var(--sunken); color: var(--muted) }
 .xrow .acts { display: flex; gap: 6px; align-items: center }
