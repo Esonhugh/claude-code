@@ -10,6 +10,10 @@ type McpServer = {
   scope?: string
   tools?: unknown[]
   capabilities?: { experimental?: Record<string, unknown> }
+  /** A channel server only the allowlist keeps out: it loads as a development channel. */
+  devChannel?: boolean
+  /** The channel is registered in this session. */
+  channelActive?: boolean
 }
 
 const MCP_STATUS: Record<string, [string, string]> = {
@@ -136,10 +140,12 @@ export function McpBody({ z, flash, control }: ExtProps) {
             <div>
               <b className="mono">{x.source === 'plugin' ? x.name.split(':').at(-1) : x.name}</b>{' '}
               <span className="note">{x.transport ?? 'stdio'}</span>
-              {isChannel(x) && (
+              {(isChannel(x) || x.devChannel) && (
                 <>
                   {' '}
-                  <span className="tag src-upload">{z(canRelayApproval(x) ? 'channel · 可转发审批' : 'channel')}</span>
+                  <span className="tag src-upload">
+                    {z(x.devChannel ? '开发版 channel' : canRelayApproval(x) ? 'channel · 可转发审批' : 'channel')}
+                  </span>
                 </>
               )}
               <small>
@@ -190,6 +196,7 @@ export function ChannelsBody({ z, flash, control }: ExtProps) {
   const [market, setMarket] = useState<MarketPlugin[]>([])
   const [servers, setServers] = useState<McpServer[]>([])
   const [enabled, setEnabled] = useState<Partial<Record<string, 'enabling' | 'active'>>>({})
+  const [confirmDev, setConfirmDev] = useState<string>()
   const [installing, setInstalling] = useState<string>()
   const [error, setError] = useState<string>()
   const load = async () => {
@@ -208,17 +215,18 @@ export function ChannelsBody({ z, flash, control }: ExtProps) {
   if (error) return <p className="note">{error}</p>
   if (!channels) return <p className="note">{z('加载中…')}</p>
 
-  const enable = async (c: ChannelPlugin) => {
+  const enable = async (server: string, name: string, dev: boolean) => {
     if (!control) return
-    setEnabled(e => ({ ...e, [c.server]: 'enabling' }))
+    setConfirmDev(undefined)
+    setEnabled(e => ({ ...e, [server]: 'enabling' }))
     try {
-      await control({ subtype: 'channel_enable', serverName: c.server })
-      setEnabled(e => ({ ...e, [c.server]: 'active' }))
-      flash(z(`已在本会话启用 ${c.name}`))
+      await control({ subtype: 'channel_enable', serverName: server, ...(dev && { dev: true }) })
+      setEnabled(e => ({ ...e, [server]: 'active' }))
+      flash(z(`已在本会话启用 ${name}`))
     } catch (err) {
       setEnabled(e => {
         const next = { ...e }
-        delete next[c.server]
+        delete next[server]
         return next
       })
       flash(errorText(err))
@@ -247,55 +255,89 @@ export function ChannelsBody({ z, flash, control }: ExtProps) {
       setInstalling(undefined)
     }
   }
-  return (
-    <>
-      {channels.map(c => {
-        const server = servers.find(s => s.name === c.server)
-        const connected = server?.status === 'connected'
-        const st = enabled[c.server] ?? (connected && c.def ? 'active' : connected ? 'available' : 'off')
-        const perm = canRelayApproval(server)
-        const sub =
-          st === 'active'
-            ? perm
-              ? z('可以远程批准权限请求')
-              : ''
-            : !c.pluginEnabled
-              ? z('插件已停用')
-              : !control
-                ? z('打开一个运行中的会话后才能在本会话启用')
-                : !connected
-                  ? z('MCP 服务器未连接')
-                  : perm
-                    ? z('声明了审批能力，启用后权限请求也会推送过去')
-                    : ''
-        return (
-          <div className="xrow" key={c.server}>
-            <div>
-              <b className="mono">{c.name}</b> <span className="note mono">{c.plugin}</span>
-              <small>{sub}</small>
-            </div>
-            <div className="acts">
-              {st === 'active' ? (
-                <span className="badge completed">{z('本会话已启用')}</span>
-              ) : st === 'enabling' ? (
-                <span className="badge idle">{z('启用中…')}</span>
-              ) : (
-                <span className="badge idle">{z('未启用')}</span>
-              )}
-              {st === 'available' && (
-                <button className="btn" type="button" data-ch-on={c.name} onClick={() => void enable(c)}>
-                  {z('在本会话启用')}
-                </button>
-              )}
-              <label className="note" style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-                <Switch on={c.def} label={z('新会话默认启用')} onToggle={() => void setDefault(c)} />
-                {z('新会话默认')}
-              </label>
+  // A channel row: an installed channel plugin, or a plain MCP server that loads only as a development channel.
+  const row = (key: string, name: string, from: string, server: McpServer | undefined, c?: ChannelPlugin) => {
+    const connected = server?.status === 'connected'
+    const dev = !!server?.devChannel
+    const st = enabled[key] ?? (server?.channelActive ? 'active' : connected ? 'available' : 'off')
+    const perm = canRelayApproval(server)
+    const sub =
+      st === 'active'
+        ? perm
+          ? z('可以远程批准权限请求')
+          : ''
+        : c && !c.pluginEnabled
+          ? z('插件已停用')
+          : !control
+            ? z('打开一个运行中的会话后才能在本会话启用')
+            : !connected
+              ? z('MCP 服务器未连接')
+              : dev
+                ? z('不在允许列表上，只能作为开发版 channel 在本会话启用')
+                : perm
+                  ? z('声明了审批能力，启用后权限请求也会推送过去')
+                  : ''
+    return (
+      <div className="xrow" key={key} style={confirmDev === key ? { flexWrap: 'wrap' } : undefined}>
+        <div>
+          <b className="mono">{name}</b> <span className="note mono">{from}</span>
+          {dev && (
+            <>
+              {' '}
+              <span className="tag src-upload">{z('开发版 channel')}</span>
+            </>
+          )}
+          <small>{sub}</small>
+        </div>
+        <div className="acts">
+          {st === 'active' ? (
+            <span className="badge completed">{z('本会话已启用')}</span>
+          ) : st === 'enabling' ? (
+            <span className="badge idle">{z('启用中…')}</span>
+          ) : (
+            <span className="badge idle">{z('未启用')}</span>
+          )}
+          {st === 'available' && confirmDev !== key && (
+            <button
+              className="btn"
+              type="button"
+              data-ch-on={name}
+              onClick={() => (dev ? setConfirmDev(key) : void enable(key, name, false))}
+            >
+              {z('在本会话启用')}
+            </button>
+          )}
+          {c && !dev && (
+            <label className="note" style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+              <Switch on={c.def} label={z('新会话默认启用')} onToggle={() => void setDefault(c)} />
+              {z('新会话默认')}
+            </label>
+          )}
+        </div>
+        {confirmDev === key && (
+          <div className="rw-confirm" role="alertdialog" data-ch-dev-confirm={name}>
+            <b>{z('开发版 channel')}</b>
+            <span>{z('仅用于本地开发 channel。不要用它运行从网上下载的 channel：它发来的消息会直接进入对话。')}</span>
+            <div className="btns">
+              <button className="btn" type="button" data-ch-dev-accept={name} onClick={() => void enable(key, name, true)}>
+                {z('我是在本地开发，启用')}
+              </button>
+              <button className="btn" type="button" onClick={() => setConfirmDev(undefined)}>
+                {z('取消')}
+              </button>
             </div>
           </div>
-        )
-      })}
-      {!channels.length && <p className="note">{z('还没有安装提供 channel 的插件。')}</p>}
+        )}
+      </div>
+    )
+  }
+  const pluginServers = new Set(channels.map(c => c.server))
+  const devServers = servers.filter(s => s.devChannel && !pluginServers.has(s.name))
+  return (
+    <>
+      {channels.map(c => row(c.server, c.name, c.plugin, servers.find(s => s.name === c.server), c))}
+      {devServers.map(s => row(s.name, s.source === 'plugin' ? (s.name.split(':').at(-1) ?? s.name) : s.name, mcpFrom(z, s), s))}
+      {!channels.length && !devServers.length && <p className="note">{z('还没有安装提供 channel 的插件。')}</p>}
       {market.length > 0 && (
         <div className="grp-h" style={{ marginTop: 10 }}>
           {z('添加 channel')}
