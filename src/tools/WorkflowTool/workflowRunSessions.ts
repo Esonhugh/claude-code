@@ -1,4 +1,4 @@
-import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises'
+import { mkdir, readdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { basename, dirname, join, resolve } from 'node:path'
 import { getSessionId } from '../../bootstrap/state.js'
 import type { WorkflowAgentResult } from '../../tasks/LocalWorkflowTask/LocalWorkflowTask.js'
@@ -215,7 +215,10 @@ async function mutateWorkflowRunSession(
       updated = mutation(latest, sessionDir)
       if (!updated || updated === latest) return
       await mkdir(dirname(recordPath), { recursive: true })
-      await writeFile(recordPath, `${JSON.stringify(workflowRunRecord(updated), null, 2)}\n`)
+      // Readers outside the lock (locateWorkflowRunSessionDir) must see the old or the new record, never half.
+      const tmpPath = `${recordPath}.${process.pid}.tmp`
+      await writeFile(tmpPath, `${JSON.stringify(workflowRunRecord(updated), null, 2)}\n`)
+      await rename(tmpPath, recordPath)
     } finally {
       await release?.()
     }

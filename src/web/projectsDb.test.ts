@@ -96,6 +96,8 @@ describe('coordinatorSpawn', () => {
     expect(spawn.env).toEqual({
       CLAUDE_CODE_COORDINATOR_MODE: '1',
       CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: '1',
+      CLAUDE_CODE_ENABLE_TASKS: '0',
+      CLAUDE_CODE_ENABLE_TODO_TOOLS: '1',
       CLAUDE_CODE_SUBAGENT_MODEL: 'sonnet',
     })
   })
@@ -103,6 +105,11 @@ describe('coordinatorSpawn', () => {
   it('leaves out empty instructions and an inherited model', () => {
     const spawn = coordinatorSpawn({ instructions: ' ', worker_model: null })
     expect(spawn.appendSystemPrompt).toBeUndefined()
-    expect(spawn.env).toEqual({ CLAUDE_CODE_COORDINATOR_MODE: '1', CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: '1' })
+    expect(spawn.env).toEqual({
+      CLAUDE_CODE_COORDINATOR_MODE: '1',
+      CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: '1',
+      CLAUDE_CODE_ENABLE_TASKS: '0',
+      CLAUDE_CODE_ENABLE_TODO_TOOLS: '1',
+    })
   })
 })
