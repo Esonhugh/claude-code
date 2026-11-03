@@ -695,9 +695,12 @@ export function ProjectView({
   const history = useMemo(() => ({ cwd: project.cwd, sessionId: project.coordinator_session_id ?? undefined }), [project.cwd, project.coordinator_session_id])
   // A page that is not attached to the coordinator (open in another tab) never gets its
   // command list, yet its task boxes still send; they offer the enabled skills instead.
-  const enabledSkills = useEnabledSkills(chat.commands.length === 0)
+  // Its skill names come only with the first turn's init, so until then the same list stands in.
+  const enabledSkills = useEnabledSkills(chat.commands.length === 0 || !chat.env.skills)
   const palette = chat.commands.length
-    ? chat
+    ? chat.env.skills
+      ? chat
+      : { ...chat, env: { ...chat.env, skills: enabledSkills.map(s => s.name) } }
     : { ...chat, commands: mergeSkills([], enabledSkills), env: { ...chat.env, skills: enabledSkills.map(s => s.name) } }
   const tools = { ...chatTools(palette, listFiles, prompts, history, onMode), mode: { mode, plan: chat.env.planMode, onMode } }
 

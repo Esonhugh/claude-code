@@ -42,6 +42,16 @@ describe('reduce', () => {
     expect(state.busy).toBe(true)
   })
 
+  it('does not repeat a reply the transcript already gave when a reopened page gets it again', () => {
+    // Written while no tab was attached: on disk (the loaded history) and in the lines held for the next tab.
+    const thinking = { type: 'assistant', uuid: 'a1', message: { id: 'm1', role: 'assistant', content: [{ type: 'thinking', thinking: '' }] } }
+    const text = { type: 'assistant', uuid: 'a2', message: { id: 'm1', role: 'assistant', content: [{ type: 'text', text: 'PARIS' }] } }
+    let state = fold([thinking, text])
+    state = [thinking, text].reduce(reduce, state)
+    const reply = state.items.at(-1)
+    expect(reply?.kind === 'assistant' && reply.blocks.map(b => b.kind)).toEqual(['thinking', 'text'])
+  })
+
   it('shows a channel message as who sent it and from where, not as the raw tag', () => {
     let state = addUserMessage(initialState, 'hi', [], 'u1')
     state = reduce(state, {
@@ -759,6 +769,13 @@ describe('interrupts and session info', () => {
       uuid: 'p3',
       message: { role: 'user', content: 'Another Claude session sent a message:\n<cross-session-message from="uds:/tmp/b.sock" from-name="ws" from-mode="prompting">\nmerged\n</cross-session-message>\nThis came from another Claude session.' },
     })
+    // A sibling worker's SendMessage, as the receiving worker's transcript has it.
+    state = reduce(state, {
+      type: 'user',
+      isReplay: true,
+      uuid: 'p4',
+      message: { role: 'user', content: 'Another Claude session sent a message:\n<agent-message from="a16415e97117c9160">\nPONG-FROM-BOB\n</agent-message>\n\nThat "other Claude session" is an agent working inside this same session.' },
+    })
     // A cron prompt is meta: not shown as something the user typed.
     state = reduce(state, { type: 'user', isReplay: true, isSynthetic: true, uuid: 'p2', message: { role: 'user', content: 'check the build' } })
     expect(state.items.map(i => (i.kind === 'event' ? [i.key, i.vars.why ?? i.vars.text ?? '', i.tone ?? ''] : [i.kind, i.kind === 'peer' ? `${i.from}:${i.text}` : '']))).toEqual([
@@ -770,6 +787,7 @@ describe('interrupts and session info', () => {
       ['modLog', 'loaded 2 files', ''],
       ['peer', 'reviewer:looks good'],
       ['peer', 'ws:merged'],
+      ['peer', 'a16415e97117c9160:PONG-FROM-BOB'],
     ])
     // A reloaded firing keeps the time it fired, not the time of the reload.
     const at = '2026-11-03T14:05:00.000Z'

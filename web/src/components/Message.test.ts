@@ -26,6 +26,11 @@ describe('modelName', () => {
     expect(modelName('default', models)).toBe('Default (recommended)')
   })
 
+  it('keeps the display name when the description is a sentence that starts with it', () => {
+    const codex: ModelOption[] = [{ value: 'gpt-6.1-terra', displayName: 'GPT-6.1 Terra', description: 'GPT-6.1 Terra Codex model.' }]
+    expect(modelName('gpt-6.1-terra', codex)).toBe('GPT-6.1 Terra')
+  })
+
   it('falls back to a readable label without a models list', () => {
     expect(modelName('claude-sonnet-5-5', [])).toBe('Sonnet 5.5')
     expect(modelName(undefined, models)).toBeUndefined()
