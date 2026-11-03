@@ -146,7 +146,7 @@ describe('reduce', () => {
     const state = fold([
       { type: 'assistant', thinking_ms: 4200, message: { id: 'm3', content: [{ type: 'thinking', thinking: 'hmm' }] } },
     ])
-    expect(state.items[0]).toMatchObject({ blocks: [{ kind: 'thinking', text: 'hmm', ms: 4200 }] })
+    expect(state.items.find(i => i.kind === 'assistant')).toMatchObject({ blocks: [{ kind: 'thinking', text: 'hmm', ms: 4200 }] })
   })
 
   it('shows a failed result as an error', () => {
