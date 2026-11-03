@@ -744,6 +744,13 @@ describe('interrupts and session info', () => {
       uuid: 'p1',
       message: { role: 'user', content: '<cross-session-message from="uds:/tmp/a.sock" from-name="reviewer">\nlooks good\n</cross-session-message>' },
     })
+    // As a reloaded transcript keeps it, with the line the model reads first.
+    state = reduce(state, {
+      type: 'user',
+      isReplay: true,
+      uuid: 'p3',
+      message: { role: 'user', content: 'Another Claude session sent a message:\n<cross-session-message from="uds:/tmp/b.sock" from-name="ws" from-mode="prompting">\nmerged\n</cross-session-message>\nThis came from another Claude session.' },
+    })
     // A cron prompt is meta: not shown as something the user typed.
     state = reduce(state, { type: 'user', isReplay: true, isSynthetic: true, uuid: 'p2', message: { role: 'user', content: 'check the build' } })
     expect(state.items.map(i => (i.kind === 'event' ? [i.key, i.vars.why ?? i.vars.text ?? '', i.tone ?? ''] : [i.kind, i.kind === 'peer' ? `${i.from}:${i.text}` : '']))).toEqual([
@@ -754,6 +761,7 @@ describe('interrupts and session info', () => {
       ['cronFired', '', ''],
       ['modLog', 'loaded 2 files', ''],
       ['peer', 'reviewer:looks good'],
+      ['peer', 'ws:merged'],
     ])
     expect(hookBlock('PreToolUse:Bash hook error: [/x/guard.sh]: rm is not allowed\n')).toEqual({ hook: 'PreToolUse:Bash', why: 'rm is not allowed' })
     expect(hookBlock('PreToolUse:Write hook error: Blocked by hook')).toEqual({ hook: 'PreToolUse:Write', why: 'Blocked by hook' })
