@@ -815,6 +815,9 @@ a.btn { text-decoration: none; color: var(--fg); display: inline-block }
 .group-h button { border: 0; background: transparent; color: inherit; font: inherit; letter-spacing: inherit; text-transform: inherit; padding: 0; cursor: pointer }
 .transcript .msg { max-width: none }
 .agent-pane { display: flex; flex-direction: column; gap: 10px; min-height: 0 }
+/* An agent's chat fills the panel, so its box sits at the bottom like the session's. */
+.pane > .agent-pane { flex: 1 }
+.pane > .agent-pane > .agent-feed { flex: 1; overflow: auto; min-height: 0 }
 .wfcur .dot { flex: none }
 .wfnow + .wfcur { margin-top: 14px }
 .wfnow .wcard { cursor: pointer }
