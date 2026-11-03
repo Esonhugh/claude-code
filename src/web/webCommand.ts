@@ -16,6 +16,7 @@ import { registerCleanup } from '../utils/cleanupRegistry.js'
 import { shouldRejectRootBypassPermissions } from '../setup.js'
 import { getClaudeConfigHomeDir } from '../utils/envUtils.js'
 import { execFileNoThrowWithCwd } from '../utils/execFileNoThrow.js'
+import { fetchBootstrapData } from '../services/api/bootstrap.js'
 import { createWebSecrets } from './auth.js'
 import { lanInterfaceAddresses, resolveBindHost } from './network.js'
 import {
@@ -217,6 +218,10 @@ export async function runWebCommand(opts: WebCommandOptions): Promise<void> {
   } catch (err) {
     fail(`Could not start the web server: ${(err as Error).message}`)
   }
+
+  // Sessions snapshot their model list when they start; warming the gateway /
+  // bootstrap model caches here gives the first session the discovered models.
+  void fetchBootstrapData()
 
   const scheme = tls ? 'https' : 'http'
   const primaryHost = bind.host === '0.0.0.0' ? '127.0.0.1' : bind.host

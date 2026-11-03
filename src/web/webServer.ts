@@ -5,6 +5,8 @@ import { basename, extname, isAbsolute, join, resolve } from 'path'
 import { z } from 'zod/v4'
 import { PERMISSION_MODES } from '../types/permissions.js'
 import { lazySchema } from '../utils/lazySchema.js'
+import { getModelInfos } from '../utils/model/modelInfos.js'
+import { ensureModelStringsInitialized } from '../utils/model/modelStrings.js'
 import type { ServerLogger } from '../server/serverLog.js'
 import {
   type SessionManager,
@@ -446,6 +448,7 @@ function isDirectory(path: string): boolean {
  * request to come from this server's own origin.
  *
  *   GET    /api/info                    → { workspace, preview_origins, temp_root, home, version }
+ *   GET    /api/models                  → { models } the model picker lists before any session runs
  *   GET    /api/sessions                → running sessions
  *   POST   /api/sessions                → { session_id, work_dir } (new or resume);
  *                                          409 { needs_trust } for an untrusted folder
@@ -872,6 +875,10 @@ export function startWebServer(
         home: homedir(),
         version: MACRO.VERSION,
       })
+    }
+    if (pathname === '/api/models' && req.method === 'GET') {
+      await ensureModelStringsInitialized()
+      return Response.json({ models: getModelInfos() })
     }
     if (pathname === '/api/folder-files' && req.method === 'GET') {
       // The start page's `@` search, before a session exists: only folders a session may already use.

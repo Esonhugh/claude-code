@@ -9,7 +9,7 @@ import {
   useRef,
   useState,
 } from 'react'
-import { filterCommands, moveSelection, paletteQuery, recallPrompt, type SlashCommand } from '../commands'
+import { filterCommands, moveSelection, paletteQuery, recallPrompt, type SlashCommand, typedInFull } from '../commands'
 import { formatBytes, mentionPath } from '../files'
 import { type Approval, type ApprovalChoice, approvalRules, type ContextUsage, type Goal, type ModelOption, type Todo } from '../protocol'
 import { toolSummary } from '../tools'
@@ -417,7 +417,7 @@ export function InputBox({
         pick(command)
         return
       }
-      if (e.key === 'Enter' && !e.shiftKey && draft !== `/${command.name}`) {
+      if (e.key === 'Enter' && !e.shiftKey && !typedInFull(draft, command)) {
         e.preventDefault()
         pick(command)
         return

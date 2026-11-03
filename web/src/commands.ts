@@ -70,6 +70,7 @@ const NATIVE_COMMANDS: Record<
   settings: { dialog: 'settings' },
   theme: { dialog: 'settings' },
   usage: { dialog: 'settings', tab: 'usage' },
+  cost: { dialog: 'settings', tab: 'usage' },
   mcp: { dialog: 'mcp' },
   hooks: { dialog: 'hooks' },
   plugin: { dialog: 'plugins' },
@@ -83,4 +84,9 @@ const NATIVE_COMMANDS: Record<
 export function nativeCommand(text: string) {
   const match = /^\/([a-z-]+)$/.exec(text.trim())
   return match && Object.hasOwn(NATIVE_COMMANDS, match[1]!) ? NATIVE_COMMANDS[match[1]!] : undefined
+}
+
+/** The draft is `command` typed out (its name or an alias) or a page command, so Enter sends it rather than completing. */
+export function typedInFull(draft: string, command: SlashCommand): boolean {
+  return [command.name, ...(command.aliases ?? [])].some(n => draft === `/${n}`) || !!nativeCommand(draft)
 }

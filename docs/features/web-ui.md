@@ -153,7 +153,7 @@ Sessions start in ~/.claude/web/workspace and run with your local credentials an
 | 顶栏“导出” | 把当前对话存成 Markdown，或用浏览器打印成 PDF |
 | 输入框下方左边 / 右边 | 权限模式菜单 / 模型和思考强度菜单 |
 | 左中、中右两栏之间 | 拖动，或聚焦后按 `←` `→`，调整左栏 / 右栏宽度，双击恢复默认；刷新后保留 |
-| 输入 `/model` `/effort` `/stats` `/usage` `/config` `/theme` `/mcp` `/hooks` `/plugins` `/memory` `/skills` `/keybindings` | 不发给模型，直接打开页面里对应的菜单或弹窗 |
+| 输入 `/model` `/effort` `/stats` `/usage` `/cost` `/config` `/theme` `/mcp` `/hooks` `/plugins` `/memory` `/skills` `/keybindings` | 不发给模型，直接打开页面里对应的菜单或弹窗 |
 | 输入框左边“+” | 上传文件、添加图片、使用 skill、引用工作区文件 |
 
 ## 实际输出

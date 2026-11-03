@@ -234,7 +234,6 @@ import {
 import {
   getFastModeDisabledReason,
   isFastModeEnabled,
-  isFastModeSupportedByModel,
   getFastModeState,
 } from 'src/utils/fastMode.js'
 import {
@@ -364,21 +363,13 @@ import {
   modelDisplayString,
   parseUserSpecifiedModel,
 } from 'src/utils/model/model.js'
-import { getModelOptions } from 'src/utils/model/modelOptions.js'
+import { getModelInfos } from 'src/utils/model/modelInfos.js'
 import { getModHttpServices } from '../services/mods/hostOperations.js'
 import {
-  getSupportedEffortLevelsForModel,
-  modelSupportsEffort,
   parseEffortValue,
   resolveAppliedEffort,
   toPersistableEffort,
 } from 'src/utils/effort.js'
-import {
-  modelSupportsAdaptiveThinking,
-  requiresAlwaysOnAdaptiveThinking,
-  rejectsDisabledThinking,
-} from 'src/utils/thinking.js'
-import { modelSupportsAutoMode } from 'src/utils/betas.js'
 import { validateModel } from 'src/utils/model/validateModel.js'
 import { ensureModelStringsInitialized } from 'src/utils/model/modelStrings.js'
 import {
@@ -1466,37 +1457,7 @@ function runHeadlessStreaming(
     })
   }
 
-  const modelOptions = getModelOptions()
-  const modelInfos = modelOptions.map(option => {
-    const modelId = option.value === null ? 'default' : option.value
-    const resolvedModel =
-      modelId === 'default'
-        ? getDefaultMainLoopModel()
-        : parseUserSpecifiedModel(modelId)
-    const hasEffort = modelSupportsEffort(resolvedModel)
-    const hasAdaptiveThinking = modelSupportsAdaptiveThinking(resolvedModel)
-    const hasFastMode = isFastModeSupportedByModel(option.value)
-    const hasAutoMode = modelSupportsAutoMode(resolvedModel)
-    return {
-      value: modelId,
-      resolvedModel,
-      displayName: option.label,
-      description: option.description,
-      ...(hasEffort && {
-        supportsEffort: true,
-        supportedEffortLevels: [
-          ...getSupportedEffortLevelsForModel(resolvedModel),
-        ],
-      }),
-      ...(hasAdaptiveThinking && { supportsAdaptiveThinking: true }),
-      ...(hasFastMode && { supportsFastMode: true }),
-      ...(hasAutoMode && { supportsAutoMode: true }),
-      // Off maps to adaptive thinking on these models.
-      supportsThinkingOff:
-        !requiresAlwaysOnAdaptiveThinking(resolvedModel) &&
-        !rejectsDisabledThinking(resolvedModel),
-    }
-  })
+  const modelInfos = getModelInfos()
   let activeUserSpecifiedModel = options.userSpecifiedModel
   // set_max_thinking_tokens: null resets to the spawn-time config; the
   // session display mode starts from --thinking-display (or its default).

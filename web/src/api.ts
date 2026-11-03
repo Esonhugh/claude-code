@@ -1,3 +1,5 @@
+import { type ModelOption, parseModels } from './protocol'
+
 export type CreatedSession = { session_id: string; work_dir: string }
 
 async function errorText(res: Response): Promise<string> {
@@ -130,6 +132,10 @@ export const listFolderFiles = (cwd: string, query: string) =>
   getJson<{ files: string[] }>(`/api/folder-files?cwd=${encodeURIComponent(cwd)}&q=${encodeURIComponent(query)}`).then(
     r => r.files,
   )
+
+/** The models this server's sessions offer, for the pickers before any session has started. */
+export const loadModels = (): Promise<ModelOption[]> =>
+  getJson<{ models?: unknown }>('/api/models').then(r => parseModels(r.models))
 
 /** The first assistant text of a transcript, for the start page's recent cards. */
 export const loadSnippet = (sessionId: string) =>

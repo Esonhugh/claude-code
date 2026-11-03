@@ -97,6 +97,25 @@ export type ModelOption = {
   effortLevels?: string[]
 }
 
+/** The SDK `ModelInfo` list (initialize `models`, `/api/models`) as the picker's options. */
+export function parseModels(raw: unknown): ModelOption[] {
+  return (Array.isArray(raw)
+    ? raw.filter(isObj).map(m => ({
+        value: str(m.value) ?? '',
+        displayName: str(m.displayName) ?? str(m.value) ?? '',
+        ...withoutUndefined({
+          resolvedModel: str(m.resolvedModel),
+          description: str(m.description),
+          effortLevels:
+            m.supportsEffort === true && Array.isArray(m.supportedEffortLevels)
+              ? m.supportedEffortLevels.filter(l => typeof l === 'string')
+              : undefined,
+        }),
+      }))
+    : []
+  ).filter(m => m.value)
+}
+
 export type Hook = { event: string; matcher: string; command: string; timeout?: number }
 
 /** What the session reports about itself and its machine (init, initialize, get_settings). */
@@ -984,20 +1003,6 @@ function reduceControlResponse(state: ChatState, raw: Json): ChatState {
   }
   const body = isObj(response.response) ? response.response : {}
   if (id.startsWith(REQUEST_PREFIX.initialize)) {
-    const models = Array.isArray(body.models)
-      ? body.models.filter(isObj).map(m => ({
-          value: str(m.value) ?? '',
-          displayName: str(m.displayName) ?? str(m.value) ?? '',
-          ...withoutUndefined({
-            resolvedModel: str(m.resolvedModel),
-            description: str(m.description),
-            effortLevels:
-              m.supportsEffort === true && Array.isArray(m.supportedEffortLevels)
-                ? m.supportedEffortLevels.filter(l => typeof l === 'string')
-                : undefined,
-          }),
-        }))
-      : []
     const commands = Array.isArray(body.commands)
       ? body.commands.filter(isObj).map(c => ({
           name: str(c.name) ?? '',
@@ -1011,7 +1016,7 @@ function reduceControlResponse(state: ChatState, raw: Json): ChatState {
     const account = isObj(body.account) ? body.account : undefined
     return {
       ...state,
-      models: models.filter(m => m.value),
+      models: parseModels(body.models),
       commands: commands.filter(c => c.name),
       env: {
         ...state.env,
