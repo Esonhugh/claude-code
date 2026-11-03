@@ -194,6 +194,9 @@ function TaskPane({
   dropSent,
   onSend,
   onAnswer,
+  targets,
+  picked,
+  onTarget,
 }: {
   t: T
   project: Project
@@ -221,6 +224,10 @@ function TaskPane({
   dropSent: (ids: string[]) => void
   onSend: () => void
   onAnswer: (approval: Approval, choice: ApprovalChoice) => void
+  /** The coordinator and the other tasks this box's `@` can address. */
+  targets: MentionTarget[]
+  picked: MentionTarget[]
+  onTarget: (picked: MentionTarget[]) => void
 }) {
   const messages = useWorkerTranscript(project.id, task, followUntil)
   const items = useMemo(() => messages.reduce(reduce, initialState).items, [messages])
@@ -315,6 +322,9 @@ function TaskPane({
           files={files}
           setFiles={setFiles}
           placeholder={t(!open ? 'taskPhStopped' : live ? 'taskPhRunning' : 'taskPhEnded')}
+          targets={targets}
+          picked={picked}
+          onTarget={onTarget}
           tools={{
             ...tools,
             prompts,
@@ -336,6 +346,9 @@ function TaskPane({
 }
 
 type TaskMenu = { task: ProjectTask; x: number; y: number }
+
+/** The `@` target id of the project's coordinator (task ids are agent ids). */
+const COORDINATOR = 'coordinator'
 
 /**
  * A project: its coordinator conversation in the middle, the tasks it
@@ -365,6 +378,7 @@ export function ProjectView({
   onSettings,
   onStopTask,
   onSendTask,
+  onSendCoordinator,
   onTasks,
   uploadTo,
   moved,
@@ -396,6 +410,8 @@ export function ProjectView({
   onStopTask: (taskId: string) => Promise<unknown>
   /** Resolves with the delivery (`queued`, `resumed`…); an ended task resumes on `model` and `effort`. */
   onSendTask: (taskId: string, text: string, pick: { model?: string; effort?: string }) => Promise<void>
+  /** Sends a prompt to the coordinator, for a task box that `@`s it. */
+  onSendCoordinator: (text: string) => Promise<void>
   /** The task rows as last fetched, for the sidebar's counts. */
   onTasks: (rows: ProjectTask[]) => void
   /** The coordinator's session id: task attachments are uploaded there. */
@@ -418,6 +434,8 @@ export function ProjectView({
   const [now, setNow] = useState(() => Date.now())
   const [taskDrafts, setTaskDrafts] = useState<Record<string, string>>({})
   const [taskFiles, setTaskFiles] = useState<Record<string, File[]>>({})
+  // Who each task box's next message goes to, picked with `@`: the coordinator or other tasks.
+  const [taskTo, setTaskTo] = useState<Record<string, MentionTarget[]>>({})
   const [sentTo, setSentTo] = useState<Record<string, SentMessage[]>>({})
   const dropSent = useCallback(
     (ids: string[]) =>
@@ -426,8 +444,8 @@ export function ProjectView({
   )
   const [picks, setPicks] = useState<Record<string, { model?: string; effort?: string }>>({})
   const [taskNotice, setTaskNotice] = useState<string>()
-  // The task the coordinator box's next message goes to, picked with `@`.
-  const [toTask, setToTask] = useState<MentionTarget>()
+  // The tasks the coordinator box's next message goes to, picked with `@`.
+  const [toTasks, setToTasks] = useState<MentionTarget[]>([])
   const [followUntil, setFollowUntil] = useState(0)
   const [menu, setMenu] = useState<TaskMenu | null>(null)
   const [flash, setFlash] = useState<string>()
@@ -742,53 +760,75 @@ export function ProjectView({
     const text = (taskDrafts[task.id] ?? '').trim()
     const pending = taskFiles[task.id] ?? []
     if ((!text && !pending.length) || !canMessage(task)) return
+    const to = pickedFor(task)
+    const clear = () => {
+      setTaskDrafts(d => ({ ...d, [task.id]: '' }))
+      setTaskFiles(f => ({ ...f, [task.id]: [] }))
+      setTaskTo(x => ({ ...x, [task.id]: [] }))
+      setTaskNotice(undefined)
+    }
+    const restore = () => {
+      // A failed upload gives the message back to an empty box.
+      setTaskDrafts(d => ({ ...d, [task.id]: d[task.id] || text }))
+      setTaskFiles(f => ({ ...f, [task.id]: f[task.id]?.length ? f[task.id]! : pending }))
+      setTaskTo(x => ({ ...x, [task.id]: x[task.id]?.length ? x[task.id]! : to }))
+    }
     try {
-      await deliver(
-        task,
-        text,
-        pending,
-        () => {
-          setTaskDrafts(d => ({ ...d, [task.id]: '' }))
-          setTaskFiles(f => ({ ...f, [task.id]: [] }))
-          setTaskNotice(undefined)
-        },
-        () => {
-          // A failed upload gives the message back to an empty box.
-          setTaskDrafts(d => ({ ...d, [task.id]: d[task.id] || text }))
-          setTaskFiles(f => ({ ...f, [task.id]: f[task.id]?.length ? f[task.id]! : pending }))
-        },
-      )
+      // No pick: the task's own box messages the task.
+      if (!to.length) {
+        await deliver(task, text, pending, clear, restore)
+        return
+      }
+      clear()
+      for (const x of to) {
+        if (x.id === COORDINATOR) {
+          const mentions = await Promise.all(pending.map(async f => mentionPath((await uploadFile(uploadTo, f)).path)))
+          await onSendCoordinator([text, mentions.join(' ')].filter(Boolean).join('\n\n'))
+          continue
+        }
+        const other = tasks.find(row => row.id === x.id)
+        if (other) await deliver(other, text, pending, () => {}, () => {})
+      }
     } catch (err) {
       setTaskNotice(err instanceof Error ? err.message : String(err))
     }
   }
+  /** The coordinator and the other messageable tasks, as `@` targets for a task's box. */
+  const targetsFor = (task: ProjectTask): MentionTarget[] => [
+    { id: COORDINATOR, name: t('coordinatorName'), detail: t('coordinatorDetail'), tag: t('coordinatorTag') },
+    ...tasks
+      .filter(x => x.id !== task.id && canMessage(x))
+      .map(x => ({ id: x.id, name: x.title, detail: t(`taskState_${x.state}`), tag: t('targetTag') })),
+  ]
+  const pickedFor = (task: ProjectTask): MentionTarget[] => {
+    const live = new Set(targetsFor(task).map(x => x.id))
+    return (taskTo[task.id] ?? []).filter(x => live.has(x.id))
+  }
   const targets = tasks.filter(canMessage).map(x => ({ id: x.id, name: x.title, detail: t(`taskState_${x.state}`), tag: t('targetTag') }))
-  const target = toTask && tasks.find(x => x.id === toTask.id && canMessage(x))
-  const sendToTarget = async (task: ProjectTask) => {
+  // Only picks that are still messageable; a task that ended drops off the row.
+  const picked = toTasks.filter(x => tasks.some(task => task.id === x.id && canMessage(task)))
+  const sendToTargets = async (to: ProjectTask[]) => {
     const text = draft.trim()
     const pending = files
-    const sentTo = toTask
+    const sentTo = toTasks
     if (!text && !pending.length) return
-    try {
-      await deliver(
-        task,
-        text,
-        pending,
-        () => {
-          setDraft('')
-          setFiles([])
-          setToTask(undefined)
-        },
-        () => {
-          if (!boxRef.current.draft) setDraft(text)
-          if (!boxRef.current.files.length) setFiles(pending)
-          setToTask(x => x ?? sentTo)
-        },
-      )
-      openTask(task.id)
-    } catch (err) {
-      say(err instanceof Error ? err.message : String(err))
+    setDraft('')
+    setFiles([])
+    setToTasks([])
+    const restore = () => {
+      if (!boxRef.current.draft) setDraft(text)
+      if (!boxRef.current.files.length) setFiles(pending)
+      setToTasks(x => (x.length ? x : sentTo))
     }
+    // The same message to every pick, in the order picked.
+    for (const task of to) {
+      try {
+        await deliver(task, text, pending, () => {}, restore)
+      } catch (err) {
+        say(err instanceof Error ? err.message : String(err))
+      }
+    }
+    if (to[0]) openTask(to[0].id)
   }
 
   const coordinatorApprovals = chat.approvals.filter(a => !a.agentId)
@@ -1030,8 +1070,8 @@ export function ProjectView({
             draft={draft}
             setDraft={setDraft}
             onSend={() => {
-              if (target) {
-                void sendToTarget(target)
+              if (picked.length) {
+                void sendToTargets(picked.map(x => tasks.find(task => task.id === x.id)!))
                 return
               }
               atBottom.current = true
@@ -1043,8 +1083,8 @@ export function ProjectView({
             setFiles={setFiles}
             placeholder={t('coordinatorPlaceholder')}
             targets={targets}
-            target={target && toTask}
-            onTarget={setToTask}
+            picked={picked}
+            onTarget={setToTasks}
             tools={{
               ...tools,
               prompts,
@@ -1091,6 +1131,9 @@ export function ProjectView({
             dropSent={dropSent}
             onSend={() => void sendTask(open)}
             onAnswer={onAnswer}
+            targets={targetsFor(open)}
+            picked={pickedFor(open)}
+            onTarget={x => setTaskTo(to => ({ ...to, [open.id]: x }))}
           />
         ) : (
           sideList

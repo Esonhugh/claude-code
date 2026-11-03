@@ -152,8 +152,8 @@ export function App() {
     writeStored(COLUMNS_KEY, next)
   }
   const [drafts, setDrafts] = useState<Record<string, string>>({})
-  // Per session: the agent its box's next message goes to, picked with `@`.
-  const [agentTargets, setAgentTargets] = useState<Record<string, MentionTarget | undefined>>({})
+  // Per session: the agents its box's next message goes to, picked with `@`.
+  const [agentTargets, setAgentTargets] = useState<Record<string, MentionTarget[]>>({})
   const [attachments, setAttachments] = useState<Record<string, File[]>>({})
   const [preview, setPreview] = useState<
     | { sessionId: string; path: string; image?: { src: string; target: string } }
@@ -815,19 +815,19 @@ export function App() {
       await sendPrompt(id, text, {})
       return
     }
-    const target = agentTargets[id]
+    const picked = (agentTargets[id] ?? []).filter(x => chat.tasks[x.id])
     setDrafts(d => ({ ...d, [id]: '' }))
     setAttachments(a => ({ ...a, [id]: [] }))
-    if (target) setAgentTargets(x => ({ ...x, [id]: undefined }))
+    if (picked.length) setAgentTargets(x => ({ ...x, [id]: [] }))
     // A message that could not go out returns to an empty box.
     const restore = () => {
       setDrafts(d => (d[id] ? d : { ...d, [id]: text }))
       setAttachments(a => (a[id]?.length ? a : { ...a, [id]: pending }))
-      if (target) setAgentTargets(x => (x[id] ? x : { ...x, [id]: target }))
+      if (picked.length) setAgentTargets(x => (x[id]?.length ? x : { ...x, [id]: picked }))
     }
     const run = chatSends.current.then(async () => {
       if (chat.mode !== 'live' && !(await resume(id))) return restore()
-      if (target && chat.tasks[target.id]) {
+      if (picked.length) {
         let mentions: string[]
         try {
           mentions = await Promise.all(pending.map(async f => mentionPath((await uploadFile(id, f)).path)))
@@ -837,9 +837,11 @@ export function App() {
           return
         }
         try {
-          await sendToTask(id, target.id, [text, mentions.join(' ')].filter(Boolean).join('\n\n'))
+          // The same message to every picked agent, files uploaded once.
+          const message = [text, mentions.join(' ')].filter(Boolean).join('\n\n')
+          for (const x of picked) await sendToTask(id, x.id, message)
           // The message shows in the agent's own conversation.
-          agentsValue.open(target.id)
+          agentsValue.open(picked[0]!.id)
         } catch (err) {
           dispatch({ type: 'chat', id, action: { type: 'local', patch: { notice: err instanceof Error ? err.message : String(err) } } })
         }
@@ -1507,7 +1509,7 @@ export function App() {
               files={files}
               setFiles={setFiles}
               targets={agentMentions}
-              target={view && chat.tasks[agentTargets[view]?.id ?? ''] ? agentTargets[view] : undefined}
+              picked={view ? (agentTargets[view] ?? []).filter(x => chat.tasks[x.id]) : []}
               onTarget={x => view && setAgentTargets(a => ({ ...a, [view]: x }))}
               tools={{
                 ...chatTools(chat, listFiles, prompts, historyScope, mode => view && changeMode(view, mode)),
@@ -1645,6 +1647,7 @@ export function App() {
               if (chat.mode !== 'live' && !(await resume(view))) throw new Error(t('statusIdle'))
               return sendToTask(view, taskId, text, pick)
             }}
+            onSendCoordinator={text => sendPrompt(view, text)}
             onTasks={rows => countTasks(project.id, rows)}
             uploadTo={view}
             moved={state.history.filter(h => h.projectId === project.id)}

@@ -292,6 +292,14 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
             blocks = [{ type: 'tool_use', id: `toolu_${name.toLowerCase()}_read`, name: 'Read', input: { file_path: join(workspace, 'slow.txt') } }]
             stop = 'tool_use'
           }
+        } else if (coordinator && lastText.includes('DISPATCH_MULTI')) {
+          blocks = [agent('MultiA', 'WORKER_MULTI_A run'), agent('MultiB', 'WORKER_MULTI_B run')]
+          stop = 'tool_use'
+        } else if (!coordinator && /WORKER_MULTI_[AB]/.test(allText)) {
+          const name = allText.includes('WORKER_MULTI_A') ? 'MULTI_A' : 'MULTI_B'
+          blocks = [{ type: 'text', text: lastText.includes('MULTI_NOTE') ? `${name}_SAW_NOTE` : `${name}_OUT` }]
+        } else if (coordinator && lastText.includes('TASK_NOTE')) {
+          blocks = [{ type: 'text', text: 'COORD_SAW_TASK_NOTE' }]
         } else if (coordinator && lastText.includes('DISPATCH_SKILLCHK')) {
           blocks = [agent('Skillchk', 'WORKER_SKILLCHK say hi')]
           stop = 'tool_use'
@@ -2588,7 +2596,77 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
     } finally {
       await browser.close()
     }
-  })
+  }, 240_000)
+
+  it('@s several tasks at once from the coordinator box, and a task box @s the coordinator', async () => {
+    const playwrightPath = Bun.spawnSync(['node', '-p', "require.resolve('playwright')"])
+      .stdout.toString()
+      .trim()
+    const { chromium } = await import(playwrightPath)
+    const browser = await chromium.launch()
+    try {
+      const page = await (await browser.newContext({ locale: 'en-US', viewport: { width: 1440, height: 900 } })).newPage()
+      const errors: string[] = []
+      page.on('pageerror', (e: Error) => errors.push(e.message))
+      await page.goto(signInUrl)
+      await page.locator('.wl-hi').waitFor()
+      await page.getByRole('button', { name: 'New project', exact: true }).click()
+      const dialog = page.locator('.dialog')
+      await dialog.locator('#pj-name').fill('Multi project')
+      await dialog.locator('#pj-path').fill(workspace)
+      await dialog.getByRole('button', { name: 'Create project' }).click()
+      try {
+        await page.locator('#projview .pv-head b', { hasText: 'Multi project' }).waitFor({ timeout: 30_000 })
+      } catch (e) {
+        await page.screenshot({ path: '/tmp/claude-0/multi-fail.png' })
+        throw new Error(`page errors: ${errors.join(' | ')}`)
+        throw e
+      }
+      const chat = page.locator('.pv-chat')
+      const chatInput = chat.getByLabel('Message', { exact: true })
+      await chatInput.fill('please DISPATCH_MULTI')
+      await chatInput.press('Enter')
+      const side = page.locator('.pv-side')
+      const cardOf = (title: string) => side.locator('.pjlist .pjcard', { has: page.locator('.tt', { hasText: new RegExp(`^${title}$`) }) })
+      await cardOf('MultiA').waitFor({ timeout: 60_000 })
+      await cardOf('MultiB').waitFor({ timeout: 60_000 })
+
+      // Two @ picks make two chips; a picked target drops out of the menu.
+      await chatInput.fill('@MultiA')
+      await chat.getByRole('option', { name: /MultiA/ }).first().click()
+      await chatInput.fill('@Multi')
+      expect(await chat.getByRole('option', { name: /MultiA/ }).count()).toBe(0)
+      await chat.getByRole('option', { name: /MultiB/ }).first().click()
+      expect(await chat.locator('.to-chip').count()).toBe(2)
+      await chatInput.fill('MULTI_NOTE for both')
+      await chatInput.press('Enter')
+      // Both picks got it; the chips are gone.
+      expect(await chat.locator('.to-chip').count()).toBe(0)
+      await showing(side.getByText('MULTI_A_SAW_NOTE').waitFor({ timeout: 60_000 }), side)
+      await side.locator('.pv-crumb button').click()
+      await cardOf('MultiB').click()
+      await showing(side.locator('.msg.user', { hasText: 'MULTI_NOTE for both' }).first().waitFor({ timeout: 30_000 }), side)
+      await showing(side.getByText('MULTI_B_SAW_NOTE').waitFor({ timeout: 60_000 }), side)
+
+      // A task box @s the coordinator: its message goes to the coordinator's chat.
+      const taskInput = side.getByLabel('Message', { exact: true })
+      await taskInput.fill('@Coord')
+      await side.getByRole('option', { name: /Coordinator/ }).first().click()
+      expect(await side.locator('.to-chip').count()).toBe(1)
+      await taskInput.fill('TASK_NOTE from MultiB')
+      await taskInput.press('Enter')
+      await chat.locator('.msg.user', { hasText: 'TASK_NOTE from MultiB' }).first().waitFor({ timeout: 30_000 })
+      await chat.getByText('COORD_SAW_TASK_NOTE').waitFor({ timeout: 60_000 })
+      expect(errors).toEqual([])
+      await page.evaluate(async () => {
+        for (const s of (await (await fetch('/api/sessions')).json()) as { id: string }[]) {
+          await fetch(`/api/sessions/${s.id}`, { method: 'DELETE' })
+        }
+      })
+    } finally {
+      await browser.close()
+    }
+  }, 240_000)
 
   it('shares the ↑ history with the CLI: its prompts come back, and what the page sends is added', async () => {
     const playwrightPath = Bun.spawnSync(['node', '-p', "require.resolve('playwright')"])
