@@ -169,7 +169,6 @@
   "read": "读取",
   "edited": "修改",
   "written": "生成",
-  "mcpTitle": "MCP 服务器",
   "connected": "已连接",
   "needsAuth": "需要登录",
   "connectFailedBadge": "连接失败",

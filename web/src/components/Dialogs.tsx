@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { type ReactNode, useEffect, useRef, useState } from 'react'
 import type { Lang } from '../i18n'
 import { Dialog } from './Dialog'
 import { ChannelsBody, McpBody, ModsBody, PluginsBody } from './ExtensionDialogs'
@@ -62,14 +62,29 @@ function KeysBody({ t }: { t: T }) {
   )
 }
 
+/** One dialog for related lists: Channels are MCP servers, Mods hook into the same events as hooks. */
+function Tabbed({ tabs }: { tabs: [string, ReactNode][] }) {
+  const [tab, setTab] = useState(0)
+  return (
+    <>
+      <div className="settabs">
+        {tabs.map(([label], i) => (
+          <button type="button" key={label} data-dtab={label} aria-pressed={i === tab} onClick={() => setTab(i)}>
+            {label}
+          </button>
+        ))}
+      </div>
+      {tabs[tab]![1]}
+    </>
+  )
+}
+
 const TITLES: Record<DialogKind, (t: T) => string> = {
-  mcp: t => t('mcpTitle'),
-  channels: () => 'Channels',
+  mcp: () => 'MCP',
   skills: () => 'Skills',
   plugins: t => t('plugins'),
   memory: t => t('memory'),
   hooks: () => 'Hooks',
-  mods: () => 'Mods',
   settings: t => t('settings'),
   stats: t => t('statsLabel'),
   keys: t => t('shortcuts'),
@@ -112,13 +127,25 @@ export function AppDialog({
   return (
     <>
       <Dialog t={t} title={TITLES[kind](t)} onClose={onClose}>
-        {kind === 'mcp' && <McpBody {...props} />}
-        {kind === 'channels' && <ChannelsBody {...props} />}
+        {kind === 'mcp' && (
+          <Tabbed
+            tabs={[
+              [props.z('MCP 服务器'), <McpBody {...props} />],
+              ['Channels', <ChannelsBody {...props} />],
+            ]}
+          />
+        )}
         {kind === 'skills' && <SkillsBody {...props} onUse={onUseSkill} />}
         {kind === 'plugins' && <PluginsBody {...props} openai={settings.account?.provider === 'openai'} />}
         {kind === 'memory' && <MemoryBody {...props} onOpenSession={onOpenSession} />}
-        {kind === 'hooks' && <HooksBody {...props} />}
-        {kind === 'mods' && <ModsBody {...props} />}
+        {kind === 'hooks' && (
+          <Tabbed
+            tabs={[
+              ['Hooks', <HooksBody {...props} />],
+              ['Mods', <ModsBody {...props} />],
+            ]}
+          />
+        )}
         {kind === 'stats' && <StatsBody z={props.z} />}
         {kind === 'settings' && <SettingsBody t={t} {...settings} />}
         {kind === 'keys' && <KeysBody t={t} />}

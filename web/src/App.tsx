@@ -129,7 +129,7 @@ function useTurnStart(busy: boolean | undefined, view: string | null): number | 
 export function App() {
   const [state, dispatch] = useReducer(appReducer, initialAppState)
   const [lang, setLangState] = useState<Lang>(initialLang)
-  const [theme, setThemeState] = useState<Theme>(() => readStored(THEME_KEY, 'light'))
+  const [theme, setThemeState] = useState<Theme>(() => readStored(THEME_KEY, 'system'))
   const [palette, setPaletteState] = useState<Palette>(() => readStored(PALETTE_KEY, 'clay'))
   const [columns, setColumnsState] = useState<Columns>(() => readStored(COLUMNS_KEY, {}))
   const setColumns = (next: Columns) => {
