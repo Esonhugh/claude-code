@@ -45,6 +45,8 @@ const SCHEMA_VERSION = '2'
 const MAX_CHUNK_CHARS = 4000
 // trigram needs at least three characters per term.
 const MIN_TRIGRAM_CHARS = 3
+// A long pasted prompt is searched by its first words only.
+const MAX_QUERY_WORDS = 200
 
 let db: Database | undefined
 let dbPath: string | undefined
@@ -250,8 +252,9 @@ function prune(index: Database, { files, dirs }: Listing): void {
   }
 }
 
-const CJK_OR_OTHER = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]+|[^\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]+/gu
-const CJK_CHAR = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]/u
+// Korean spaces words but attaches particles, so it splits like Chinese and Japanese.
+const CJK_OR_OTHER = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]+|[^\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]+/gu
+const CJK_CHAR = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u
 
 /**
  * Chinese and Japanese write words without spaces, so a whole sentence would
@@ -310,9 +313,11 @@ type ChunkRow = { path: string; kind: MemorySearchHit['kind']; line: number; bod
  * characters; shorter ones (most Chinese words) fall back to LIKE.
  */
 function rankChunks(index: Database, paths: string[], query: string[], limit: number, withBody: boolean): ChunkRow[] {
-  const long = query.filter(w => [...w].length >= MIN_TRIGRAM_CHARS)
   // Next to long words, short Latin words and single characters match nearly everything.
-  const words = long.length > 0 ? query.filter(isDistinctive) : query
+  const usable = query.some(w => [...w].length >= MIN_TRIGRAM_CHARS) ? query.filter(isDistinctive) : query
+  // Each word adds to the SQL expression, which SQLite caps at depth 1000.
+  const words = usable.slice(0, MAX_QUERY_WORDS)
+  const long = words.filter(w => [...w].length >= MIN_TRIGRAM_CHARS)
   const short = words.filter(w => [...w].length < MIN_TRIGRAM_CHARS)
   const args: (string | number)[] = []
   let fts = 'SELECT NULL AS id, NULL AS rank'

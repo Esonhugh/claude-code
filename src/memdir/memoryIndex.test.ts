@@ -145,6 +145,22 @@ describe('searchMemory', () => {
     expect(hits[0]?.snippet).toContain('[记忆]系统')
   })
 
+  test('splits Korean like Chinese, so particles and short words still match', async () => {
+    const path = join(memDir, 'ko.md')
+    writeFileSync(path, '배포 전에 검색 기능을 테스트한다')
+    const results = [await search('unrelatedword 검색'), await search('검색을')]
+    rmSync(path)
+    for (const hits of results) expect(hits.map(h => h.path)).toEqual([path])
+  })
+
+  test('bounds the SQL for a very long query', async () => {
+    // Thousands of distinct bigrams and trigrams once split.
+    const long = '代碼保持原文' + Array.from({ length: 2000 }, (_, i) => String.fromCharCode(0x4e00 + i)).join('')
+    expect((await search(long)).map(h => h.path)).toEqual([join(memDir, 'lang.md')])
+    const found = await findMemoryFilesForPrompt({ prompt: long, scopes: ['project'], exclude: new Set(), limit: 3 })
+    expect(found.map(h => h.path)).toEqual([join(memDir, 'lang.md')])
+  })
+
   test('matches Chinese queries written without spaces by their trigrams', async () => {
     expect((await search('回覆要使用中文嗎')).map(h => h.path)).toEqual([join(memDir, 'lang.md')])
   })
