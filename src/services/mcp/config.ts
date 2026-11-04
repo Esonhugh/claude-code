@@ -1675,6 +1675,8 @@ export function isMcpServerDisabled(name: string): boolean {
   ) {
     return true
   }
+  const sessionOverride = getSettingsForSource('flagSettings')?.sessionMcpServers?.[name]
+  if (sessionOverride !== undefined) return !sessionOverride
   const projectConfig = getCurrentProjectConfig()
   if (isDefaultDisabledBuiltin(name)) {
     const enabledServers = projectConfig.enabledMcpServers || []
