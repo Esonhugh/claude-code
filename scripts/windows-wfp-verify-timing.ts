@@ -9,13 +9,15 @@ import path from 'node:path'
 const bin = path.resolve(process.argv[2] ?? '')
 const srtWin = path.resolve('node_modules/@anthropic-ai/sandbox-runtime/vendor/srt-win/x64/srt-win.exe')
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-wfp-timing-'))
-const env = { ...process.env, CLAUDE_CONFIG_DIR: root }
+fs.writeFileSync(path.join(root, 'settings.json'), JSON.stringify({ sandbox: { enabled: true } }))
+fs.writeFileSync(path.join(root, '.claude.json'), JSON.stringify({ hasCompletedOnboarding: true }))
+const env = { ...process.env, CLAUDE_CONFIG_DIR: root, ANTHROPIC_API_KEY: 'sk-fake' }
 
 const profiles = () => fs.readdirSync('C:\\Users').filter(n => /sandbox/i.test(n))
 console.log(`profiles before install: ${JSON.stringify(profiles())}`)
 let t = Date.now()
 const install = spawnSync(bin, ['sandbox', 'install'], { env, encoding: 'utf8' })
-console.log(`install ${Date.now() - t}ms exit=${install.status} ${install.stdout.trim()}`)
+console.log(`install ${Date.now() - t}ms exit=${install.status} ${install.stdout.trim()} ${install.stderr.trim()}`)
 console.log(`profiles after install: ${JSON.stringify(profiles())}`)
 
 for (let i = 1; i <= 4; i++) {
