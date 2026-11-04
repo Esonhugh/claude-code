@@ -53,14 +53,24 @@ jobs:
           sandbox-exec -f /tmp/no-trustd.sb /usr/bin/curl -sS -o /dev/null -w 'no-trustd %{http_code}\n' https://example.com || true
           printf '(version 1)\n(allow default)\n' > /tmp/all.sb
           sandbox-exec -f /tmp/all.sb /usr/bin/curl -sS -o /dev/null -w 'allow-all %{http_code}\n' https://example.com || true
-          for svc in com.apple.trustd com.apple.trustd.agent com.apple.SecurityServer com.apple.securityd.xpc com.apple.ocspd "com.apple.trustd com.apple.trustd.agent"; do
+          for svc in "com.apple.trustd com.apple.trustd.agent com.apple.SecurityServer com.apple.securityd.xpc" "com.apple.trustd com.apple.trustd.agent com.apple.SecurityServer" "com.apple.trustd com.apple.trustd.agent com.apple.securityd.xpc"; do
             { echo '(version 1)'; echo '(allow default)'; for n in $svc; do echo "(deny mach-lookup (global-name \"$n\"))"; done; } > /tmp/deny.sb
             sandbox-exec -f /tmp/deny.sb /usr/bin/curl -sS -o /dev/null -w "deny[$svc] %{http_code}\n" https://example.com 2>&1 | tail -1
-            sandbox-exec -f /tmp/deny.sb /usr/bin/curl -sS -o /dev/null -w "deny[$svc] google %{http_code}\n" https://www.google.com 2>&1 | tail -1
           done
-          { echo '(version 1)'; echo '(allow default)'; echo '(deny mach-lookup)'; } > /tmp/deny-all-mach.sb
-          sandbox-exec -f /tmp/deny-all-mach.sb /usr/bin/curl -sS -o /dev/null -w "deny-all-mach %{http_code}\n" https://example.com 2>&1 | tail -1
-          sandbox-exec -f /tmp/deny-all-mach.sb /usr/bin/curl -sS -o /dev/null -w "deny-all-mach google %{http_code}\n" https://www.google.com 2>&1 | tail -1
+          { echo '(version 1)'; echo '(allow default)'; echo '(deny mach-lookup)'; echo '(allow mach-lookup (global-name "com.apple.trustd") (global-name "com.apple.trustd.agent"))'; } > /tmp/only-trustd.sb
+          sandbox-exec -f /tmp/only-trustd.sb /usr/bin/curl -sS -o /dev/null -w "only-trustd %{http_code}\n" https://example.com 2>&1 | tail -1
+          { echo '(version 1)'; echo '(allow default)'; echo '(deny mach-lookup)'; echo '(allow mach-lookup (global-name "com.apple.SecurityServer") (global-name "com.apple.securityd.xpc"))'; } > /tmp/only-secd.sb
+          sandbox-exec -f /tmp/only-secd.sb /usr/bin/curl -sS -o /dev/null -w "only-securityd %{http_code}\n" https://example.com 2>&1 | tail -1
+          { echo '(version 1)'; echo '(allow default)'; echo '(deny mach-lookup)'; echo '(allow mach-lookup (global-name "com.apple.trustd.agent"))'; } > /tmp/only-agent.sb
+          sandbox-exec -f /tmp/only-agent.sb /usr/bin/curl -sS -o /dev/null -w "only-trustd.agent %{http_code}\n" https://example.com 2>&1 | tail -1
+          { echo '(version 1)'; echo '(allow default)'; echo '(deny mach-lookup)'; echo '(allow mach-lookup (global-name "com.apple.trustd"))'; } > /tmp/only-sys.sb
+          sandbox-exec -f /tmp/only-sys.sb /usr/bin/curl -sS -o /dev/null -w "only-trustd(system) %{http_code}\n" https://example.com 2>&1 | tail -1
+          security find-certificate -a -p /System/Library/Keychains/SystemRootCertificates.keychain > /tmp/roots.pem; grep -c BEGIN /tmp/roots.pem
+          CURL_CA_BUNDLE=/tmp/roots.pem sandbox-exec -f /tmp/deny-all-mach.sb /usr/bin/curl -sS -o /dev/null -w "deny-all-mach+roots.pem %{http_code}\n" https://example.com 2>&1 | tail -1
+          SSL_CERT_FILE=/tmp/roots.pem sandbox-exec -f /tmp/deny-all-mach.sb /usr/bin/curl -sS -o /dev/null -w "deny-all-mach+SSL_CERT_FILE %{http_code}\n" https://example.com 2>&1 | tail -1
+          SSL_CERT_FILE=/tmp/roots.pem sandbox-exec -f /tmp/deny-all-mach.sb /usr/bin/python3 -c "import urllib.request;print('python', urllib.request.urlopen('https://example.com').status)" 2>&1 | tail -1
+          sandbox-exec -f /tmp/deny-all-mach.sb /usr/bin/git ls-remote https://github.com/actions/checkout HEAD 2>&1 | tail -1
+          sandbox-exec -f /tmp/deny-all-mach.sb /usr/bin/python3 -c "import urllib.request;print('python-noenv', urllib.request.urlopen('https://example.com').status)" 2>&1 | tail -1
           echo | openssl s_client -connect example.com:443 -servername example.com -CAfile /etc/ssl/cert.pem 2>&1 | grep -E 'Verify return|depth' 
           grep -c 'BEGIN CERT' /etc/ssl/cert.pem; grep -n 'AAA Certificate Services\|SSL.com TLS ECC Root CA 2022' /etc/ssl/cert.pem | head
           for h in www.apple.com www.google.com api.anthropic.com registry.npmjs.org pypi.org; do
