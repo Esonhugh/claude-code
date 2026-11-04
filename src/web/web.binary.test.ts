@@ -1088,7 +1088,7 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       await agentInput.fill('FOLLOWUP_MSG now')
       await agentInput.press('Enter')
       await panel.locator('.agent-feed .msg.user', { hasText: 'FOLLOWUP_MSG now' }).waitFor({ timeout: 5_000 })
-      await panel.getByText('FOLLOWUP_DONE').waitFor({ timeout: 60_000 })
+      await panel.locator('.agent-feed').getByText('FOLLOWUP_DONE').first().waitFor({ timeout: 60_000 })
 
       // Back to the tree, then away to another tab.
       await panel.getByRole('button', { name: 'Back' }).click()
