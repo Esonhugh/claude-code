@@ -39,6 +39,27 @@ jobs:
           bun run build
           bun run package:binary
 
+      - name: DIAG example.com TLS (temporary, #753)
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        run: |
+          set -x
+          sw_vers; which -a curl; /usr/bin/curl -V
+          /usr/bin/curl -sS -o /dev/null -w '%{http_code}\n' https://example.com || true
+          /usr/bin/curl -sS --cacert /etc/ssl/cert.pem -o /dev/null -w '%{http_code}\n' https://example.com || true
+          CURL_SSL_BACKEND=securetransport /usr/bin/curl -sS -o /dev/null -w '%{http_code}\n' https://example.com || true
+          echo | openssl s_client -connect example.com:443 -servername example.com -showcerts 2>&1 | grep -E '^ *[0-9] s:|^ *i:|Verify return|NotAfter|v:NotBefore' || true
+          printf '(version 1)\n(allow default)\n(deny mach-lookup (global-name "com.apple.trustd.agent"))\n' > /tmp/no-trustd.sb
+          sandbox-exec -f /tmp/no-trustd.sb /usr/bin/curl -sS -o /dev/null -w 'no-trustd %{http_code}\n' https://example.com || true
+          printf '(version 1)\n(allow default)\n' > /tmp/all.sb
+          sandbox-exec -f /tmp/all.sb /usr/bin/curl -sS -o /dev/null -w 'allow-all %{http_code}\n' https://example.com || true
+          for h in www.apple.com www.google.com api.anthropic.com registry.npmjs.org pypi.org; do
+            sandbox-exec -f /tmp/no-trustd.sb /usr/bin/curl -sS -o /dev/null -w "no-trustd $h %{http_code}\n" https://$h || true
+          done
+          sed 's/strictAllowlist: true }/strictAllowlist: true }, enableWeakerNetworkIsolation: true/' scripts/macos-sandbox-e2e.ts > scripts/macos-sandbox-e2e-weak.ts
+          grep -n enableWeakerNetworkIsolation scripts/macos-sandbox-e2e-weak.ts
+          bun scripts/macos-sandbox-e2e-weak.ts dist/release/claude-code-v*-darwin-arm64 | grep -E 'example.com|check' || true
+
       - name: Sandbox e2e
         run: bun scripts/macos-sandbox-e2e.ts dist/release/claude-code-v*-darwin-arm64
 
