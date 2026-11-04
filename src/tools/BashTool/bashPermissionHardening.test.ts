@@ -355,6 +355,30 @@ if (process.env[childFlag] !== '1') {
     )
   })
 
+  test('a compound command with several output redirects asks in default mode', async () => {
+    for (const command of [
+      'echo ok > notes.txt && echo ok > /opt/sbdemo/outside.txt',
+      'echo ok > notes.txt; echo ok > /etc/cc-hardening-x',
+      'echo a > a.txt && echo b > b.txt',
+    ]) {
+      await expectBehavior(command, 'default', {}, 'ask')
+      await expectBehavior(command, 'default', { allow: ['Bash(echo:*)'] }, 'ask')
+    }
+    const outside = await decide(
+      'echo ok > notes.txt && echo ok > /opt/sbdemo/outside.txt',
+      'default',
+    )
+    expect(outside.behavior === 'ask' && outside.blockedPath).toBe(
+      '/opt/sbdemo/outside.txt',
+    )
+    await expectBehavior(
+      'echo a > a.txt && echo b > secret.txt',
+      'default',
+      { deny: ['Edit(./secret.txt)'] },
+      'deny',
+    )
+  })
+
   test('commands that read a variable they set are never auto-allowed', async () => {
     const allow = ['Bash(echo:*)', 'Bash(git status:*)']
     for (const command of [
