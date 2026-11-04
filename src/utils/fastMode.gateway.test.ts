@@ -20,6 +20,9 @@ test('fast mode prefetch does not send a gateway API key to api.anthropic.com', 
     delete process.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC
     delete process.env.CLAUDE_CODE_DISABLE_FAST_MODE
     delete process.env.CLAUDE_CODE_USE_OPENAI
+    // Hide a CCR-injected OAuth token when the test runs inside CCR.
+    const { setOauthTokenFromFd } = await import('../bootstrap/state.js')
+    setOauthTokenFromFd(null)
     const { prefetchFastModeStatus } = await import('./fastMode.js')
     await prefetchFastModeStatus()
     assert.deepEqual(calls, [])

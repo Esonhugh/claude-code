@@ -16,6 +16,7 @@ import {
   handleOAuth401Error,
   hasProfileScope,
 } from './auth.js'
+import { getOAuthTokenFromFileDescriptor } from './authFileDescriptor.js'
 import { isInBundledMode } from './bundledMode.js'
 import { getGlobalConfig, saveGlobalConfig } from './config.js'
 import { logForDebugging } from './debug.js'
@@ -36,6 +37,7 @@ import {
   getSettingsForSource,
   updateSettingsForSource,
 } from './settings/settings.js'
+import { getSessionIngressAuthToken } from './sessionIngressAuth.js'
 import { createSignal } from './signal.js'
 import { isAnt as getIsAnt } from 'src/utils/userType.js'
 
@@ -428,6 +430,19 @@ async function fetchFastModeStatus(
   return response.data
 }
 
+// The CCR-injected token is recorded as user:inference only, but it carries
+// user:ccr_inference, which the endpoint accepts in a CCR session (as in
+// official 2.1.318). Other inference-only tokens get a 403 there.
+function canFetchWithOAuth(): boolean {
+  const accessToken = getClaudeAIOAuthTokens()?.accessToken
+  if (!accessToken) return false
+  if (hasProfileScope()) return true
+  return (
+    getOAuthTokenFromFileDescriptor() === accessToken &&
+    getSessionIngressAuthToken() !== null
+  )
+}
+
 const PREFETCH_MIN_INTERVAL_MS = 30_000
 let lastPrefetchAt = 0
 let inflightPrefetch: Promise<void> | null = null
@@ -476,8 +491,7 @@ export async function prefetchFastModeStatus(): Promise<void> {
   // Resolve orgStatus from cache and bail before burning the throttle window.
   // API key auth is unaffected.
   const apiKey = getAnthropicApiKey()
-  const hasUsableOAuth =
-    getClaudeAIOAuthTokens()?.accessToken && hasProfileScope()
+  const hasUsableOAuth = canFetchWithOAuth()
   // An API key for a custom ANTHROPIC_BASE_URL belongs to that gateway and
   // must not be sent to api.anthropic.com.
   if (!hasUsableOAuth && !isFirstPartyAnthropicBaseUrl()) {
@@ -504,7 +518,7 @@ export async function prefetchFastModeStatus(): Promise<void> {
   const fetchWithCurrentAuth = async (): Promise<FastModeResponse> => {
     const currentTokens = getClaudeAIOAuthTokens()
     const auth =
-      currentTokens?.accessToken && hasProfileScope()
+      currentTokens?.accessToken && canFetchWithOAuth()
         ? { accessToken: currentTokens.accessToken }
         : apiKey
           ? { apiKey }
