@@ -53,15 +53,15 @@ jobs:
           sandbox-exec -f /tmp/no-trustd.sb /usr/bin/curl -sS -o /dev/null -w 'no-trustd %{http_code}\n' https://example.com || true
           printf '(version 1)\n(allow default)\n' > /tmp/all.sb
           sandbox-exec -f /tmp/all.sb /usr/bin/curl -sS -o /dev/null -w 'allow-all %{http_code}\n' https://example.com || true
+          echo '== direct chain'; /usr/bin/curl -sk -w '%{certs}' -o /dev/null https://example.com | grep -E '^(Subject|Issuer):'
+          for f in -4 -6; do /usr/bin/curl $f -sS -o /dev/null -w "direct $f %{http_code} %{remote_ip}\n" https://example.com || true; /usr/bin/curl $f -sk -w '%{certs}' -o /dev/null https://example.com | grep -E '^(Subject|Issuer):'; done
+          dig +short example.com A; dig +short example.com AAAA
           for h in www.apple.com www.google.com api.anthropic.com registry.npmjs.org pypi.org; do
             sandbox-exec -f /tmp/no-trustd.sb /usr/bin/curl -sS -o /dev/null -w "no-trustd $h %{http_code}\n" https://$h || true
           done
           cat > /tmp/diag.sh <<'SH'
-          env | grep -iE 'proxy|ssl|_ca|cert|sandbox|tmpdir' | sed 's/:[^:@]*@/:***@/'
-          ls -l /etc/ssl/cert.pem /private/etc/ssl/cert.pem; head -c 60 /etc/ssl/cert.pem; echo
-          curl -v -o /dev/null https://example.com 2>&1 | grep -E 'CAfile|CApath|issuer|subject|SSL|proxy|Proxy|CONNECT|Connected|HTTP/' | head -30
-          curl -sS --cacert /etc/ssl/cert.pem -o /dev/null -w 'cacert %{http_code}\n' https://example.com
-          echo | openssl s_client -proxy "${HTTPS_PROXY#http://}" -connect example.com:443 -servername example.com -showcerts 2>&1 | grep -E '^ *[0-9] s:|^ *i:|Verify return' 
+          echo "== sandbox chain"; curl -sk -w '%{certs}' -o /dev/null https://example.com | grep -E '^(Subject|Issuer):' 
+          for h in www.apple.com www.google.com registry.npmjs.org pypi.org api.anthropic.com; do curl -sS -o /dev/null -w "sandbox $h %{http_code}\n" https://$h 2>&1 | tail -1; done
           SH
           sed -i '' "s#bash('curl -sS -o /dev/null -w \"%{http_code}\" https://example.com')#bash('bash /tmp/diag.sh')#" scripts/macos-sandbox-e2e.ts
           grep -n diag.sh scripts/macos-sandbox-e2e.ts
