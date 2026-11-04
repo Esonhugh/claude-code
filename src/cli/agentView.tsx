@@ -209,7 +209,7 @@ function DispatchDefaults({ dispatch }: { dispatch: Dispatch }): React.ReactNode
   return parts.map((part, i) => <React.Fragment key={i}>{part} · </React.Fragment>)
 }
 
-function AgentView({
+export function AgentView({
   cwd,
   dispatch,
   initialFocus,
@@ -222,7 +222,7 @@ function AgentView({
   cameFrom: string | undefined
   onAction: (action: Action) => void
 }): React.ReactNode {
-  const { columns } = useTerminalSize()
+  const { columns, rows: terminalRows } = useTerminalSize()
   const [rows, setRows] = useState<Row[] | null>(null)
   const [focusId, setFocusId] = useState(initialFocus)
   const [input, setInput] = useState('')
@@ -384,10 +384,39 @@ function AgentView({
   else if (!focused) hint = 'enter to create · ? for shortcuts · esc to quit'
   else hint = `${focused.job.id === cameFrom ? 'enter to return' : 'enter to open'} · space to reply · ctrl+x to delete · ? for shortcuts`
 
+  // One element per terminal line, so the list can be cut to the rows left
+  // over without Yoga squeezing lines on top of each other.
+  const listLines: React.ReactNode[] = []
+  let focusLine = 0
   let lastGroup: Group | null = null
+  for (const row of list) {
+    if (row.group !== lastGroup) {
+      if (lastGroup !== null) listLines.push(<Text key={`${row.group}-gap`}> </Text>)
+      listLines.push(<Text key={row.group} dimColor>{GROUP_TITLES[row.group]}</Text>)
+      lastGroup = row.group
+    }
+    if (row === focused) focusLine = listLines.length
+    listLines.push(
+      <AgentRow
+        key={row.job.id}
+        row={row}
+        detail={detailFor(row)}
+        nameWidth={nameWidth}
+        width={columns}
+        selected={row === focused}
+      />,
+    )
+  }
+  // Logo (3), counts (1), the gaps above the list and the input (2), the
+  // input box, the notice and the hint or help lines.
+  const footerRows = (reply && focused ? 5 : 3) + (notice ? 1 : 0) + (helpOpen ? 2 : 1)
+  const listRoom = Math.max(1, terminalRows - 6 - footerRows)
+  const firstLine = Math.max(0, Math.min(focusLine - listRoom + 1, listLines.length - listRoom))
   return (
-    <Box flexDirection="column" width={columns}>
-      <Box flexDirection="row" gap={2} alignItems="center">
+    // The alt screen has no scrollback: anything taller than the terminal
+    // corrupts the redraw, so only the session list gives up rows.
+    <Box flexDirection="column" width={columns} height={terminalRows} overflow="hidden">
+      <Box flexDirection="row" gap={2} alignItems="center" flexShrink={0}>
         <Clawd />
         <Box flexDirection="column">
           <Text>
@@ -401,40 +430,21 @@ function AgentView({
           </Text>
         </Box>
       </Box>
-      <Box paddingLeft={11}>
+      <Box paddingLeft={11} flexShrink={0}>
         <Text dimColor>
           {counts.needs} awaiting input · {counts.working} working · {counts.completed} completed
         </Text>
       </Box>
-      <Box flexDirection="column" marginTop={1}>
+      <Box flexDirection="column" marginTop={1} flexShrink={0}>
         {rows !== null && list.length === 0 && (
           <Text dimColor>
             A different way to work with Claude: hand off a bigger task than you would chat through, and Claude
             organizes it in the sections above so you know when it needs you.
           </Text>
         )}
-        {list.map(row => {
-          const header = row.group !== lastGroup ? GROUP_TITLES[row.group] : null
-          lastGroup = row.group
-          return (
-            <React.Fragment key={row.job.id}>
-              {header && (
-                <Box marginTop={header === GROUP_TITLES[list[0]!.group] ? 0 : 1}>
-                  <Text dimColor>{header}</Text>
-                </Box>
-              )}
-              <AgentRow
-                row={row}
-                detail={detailFor(row)}
-                nameWidth={nameWidth}
-                width={columns}
-                selected={row === focused}
-              />
-            </React.Fragment>
-          )
-        })}
+        {listLines.slice(firstLine, firstLine + listRoom)}
       </Box>
-      <Box marginTop={1} flexDirection="column">
+      <Box marginTop={1} flexDirection="column" flexShrink={0}>
         {reply && focused ? (
           <Box borderStyle="round" flexDirection="column" paddingX={1}>
             <Text wrap="truncate-end">{focused.detail}</Text>
