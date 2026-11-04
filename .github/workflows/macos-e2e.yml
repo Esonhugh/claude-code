@@ -65,6 +65,9 @@ jobs:
           sandbox-exec -f /tmp/only-agent.sb /usr/bin/curl -sS -o /dev/null -w "only-trustd.agent %{http_code}\n" https://example.com 2>&1 | tail -1
           { echo '(version 1)'; echo '(allow default)'; echo '(deny mach-lookup)'; echo '(allow mach-lookup (global-name "com.apple.trustd"))'; } > /tmp/only-sys.sb
           sandbox-exec -f /tmp/only-sys.sb /usr/bin/curl -sS -o /dev/null -w "only-trustd(system) %{http_code}\n" https://example.com 2>&1 | tail -1
+          { echo '(version 1)'; echo '(allow default)'; echo '(deny mach-lookup (with report))'; } > /tmp/deny-all-mach.sb
+          sandbox-exec -f /tmp/deny-all-mach.sb /usr/bin/curl -sS -o /dev/null -w "deny-all-mach %{http_code}\n" https://example.com 2>&1 | tail -1
+          sleep 2; log show --last 1m --style compact --predicate 'eventMessage CONTAINS "mach-lookup" AND eventMessage CONTAINS "curl"' 2>/dev/null | grep -o 'deny([0-9]*) mach-lookup [^ ]*' | sort | uniq -c
           security find-certificate -a -p /System/Library/Keychains/SystemRootCertificates.keychain > /tmp/roots.pem; grep -c BEGIN /tmp/roots.pem
           CURL_CA_BUNDLE=/tmp/roots.pem sandbox-exec -f /tmp/deny-all-mach.sb /usr/bin/curl -sS -o /dev/null -w "deny-all-mach+roots.pem %{http_code}\n" https://example.com 2>&1 | tail -1
           SSL_CERT_FILE=/tmp/roots.pem sandbox-exec -f /tmp/deny-all-mach.sb /usr/bin/curl -sS -o /dev/null -w "deny-all-mach+SSL_CERT_FILE %{http_code}\n" https://example.com 2>&1 | tail -1
