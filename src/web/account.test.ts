@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'bun:test'
-import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { createServerLogger } from '../server/serverLog.js'
@@ -7,6 +7,7 @@ import { SessionManager } from '../server/sessionManager.js'
 import type { AccountBackend, AccountStatus, AuthProvider, WebSettings } from './account.js'
 import { isValidBaseUrl } from './account.js'
 import { setOauthTokenFromFd } from '../bootstrap/state.js'
+import { getGlobalConfig } from '../utils/config.js'
 import { keyTail, localAccountBackend } from './accountBackend.js'
 import { startWebServer } from './webServer.js'
 
@@ -345,6 +346,7 @@ describe('local account status', () => {
     'OPENAI_API_KEY',
     'OPENAI_AUTH_TOKEN',
   ]
+  // Under NODE_ENV=test an active Anthropic key does not show in status; parked ones do.
   const prior = Object.fromEntries(NAMES.map(n => [n, process.env[n]]))
   const clean = () => {
     for (const n of NAMES) delete process.env[n]
@@ -424,5 +426,60 @@ describe('local account status', () => {
     expect((await backend.status()).oauth).toEqual([])
     await expect(backend.useOAuth('anthropic')).rejects.toThrow('No saved sign-in')
     expect(process.env.CLAUDE_CODE_USE_OPENAI).toBe('1')
+  })
+
+  it('keeps the sign-in or key it switches away from, and switches back without a new login', async () => {
+    clean()
+    process.env.CLAUDE_CODE_USE_OPENAI = '1'
+    const home = process.env.HOME!
+    const configDir = process.env.CLAUDE_CONFIG_DIR!
+    const chatgpt = { auth_mode: 'chatgpt', tokens: { access_token: 'chatgpt-access-test', refresh_token: 'chatgpt-refresh-test' } }
+    mkdirSync(join(home, '.codex'), { recursive: true })
+    writeFileSync(join(home, '.codex', 'auth.json'), JSON.stringify(chatgpt))
+    writeFileSync(
+      join(configDir, '.credentials.json'),
+      JSON.stringify({
+        claudeAiOauth: { accessToken: 'claude-access-test', refreshToken: 'claude-refresh-test', expiresAt: Date.now() + 3_600_000, scopes: ['user:inference', 'user:profile'] },
+      }),
+    )
+    const claudeStored = () => JSON.parse(readFileSync(join(configDir, '.credentials.json'), 'utf8')).claudeAiOauth?.accessToken
+    const codex = () => (existsSync(join(home, '.codex', 'auth.json')) ? JSON.parse(readFileSync(join(home, '.codex', 'auth.json'), 'utf8')) : undefined)
+    const backend = localAccountBackend()
+    const view = async () => {
+      process.env.CLAUDE_CODE_USE_OPENAI = '1'
+      const s = await backend.status()
+      return { oauth: s.oauth, keys: s.keys.filter(k => k.source).map(k => k.provider) }
+    }
+
+    // Claude sign-in → new Anthropic key: the sign-in is parked, not deleted.
+    await backend.useApiKey('anthropic', 'sk-ant-api03-firstkey0123456789')
+    expect(claudeStored()).toBeUndefined()
+    expect(getGlobalConfig().primaryApiKey).toBeDefined()
+    expect((await view()).oauth).toEqual(['anthropic', 'openai'])
+
+    // Back to the Claude sign-in: same tokens, key parked.
+    await backend.useOAuth('anthropic')
+    expect(claudeStored()).toBe('claude-access-test')
+    expect(getGlobalConfig().primaryApiKey).toBeUndefined()
+    expect(await view()).toEqual({ oauth: ['anthropic', 'openai'], keys: ['anthropic'] })
+
+    // And to the saved key again without typing it.
+    await backend.useApiKey('anthropic', undefined)
+    expect(claudeStored()).toBeUndefined()
+    expect(getGlobalConfig().primaryApiKey).toBeDefined()
+
+    // ChatGPT sign-in → OpenAI key → ChatGPT → saved key.
+    await backend.useApiKey('openai', 'sk-proj-firstkey0123456789')
+    expect(codex()).toEqual({ OPENAI_API_KEY: 'sk-proj-firstkey0123456789' })
+    expect((await view()).oauth).toEqual(['anthropic', 'openai'])
+    await backend.useOAuth('openai')
+    expect(codex()).toEqual(chatgpt)
+    await backend.useApiKey('openai', undefined)
+    expect(codex()).toEqual({ OPENAI_API_KEY: 'sk-proj-firstkey0123456789' })
+
+    // Signing out drops only the active one.
+    await backend.logout()
+    expect(codex()).toBeUndefined()
+    expect((await view()).oauth).toEqual(['anthropic', 'openai'])
   })
 })
