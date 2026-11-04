@@ -2874,10 +2874,13 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       await input.fill('MOVE_ME please')
       await input.press('Enter')
       await page.locator('.feed').getByText('Hello from the fake model').waitFor({ timeout: 30_000 })
-      // A new session is listed under its id until the list reloads with the prompt as its title.
-      await page.reload()
+      // A new session is listed under its id until the CLI has written the turn (up to 100 ms
+      // after its result) and the list reloads with the prompt as its title; a reload before
+      // that write lists it by id until the next refresh.
       const title = 'MOVE_ME'
       const row = page.locator('#sessions .history .sess', { hasText: title })
+      await showing(row.waitFor({ timeout: 15_000 }), page.locator('#sessions'))
+      await page.reload()
       await showing(row.waitFor({ timeout: 15_000 }), page.locator('#sessions'))
 
       // Move it from the right-click menu's submenu: it leaves the lists, search still finds it.
