@@ -70,6 +70,26 @@ if (process.env[childFlag] !== '1') {
     } finally { await clearServerCache(name,config);rmSync(root,{recursive:true,force:true}) }
   })
 
+  test('a Bun crash reports the error line, not the trailing stack frame and Bun version banner', async () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(),'cc-mcp-bun-crash-')))
+    const file = join(root,'server.mjs')
+    const config: import('./types.js').ScopedMcpServerConfig = {type:'stdio',command:process.execPath,args:[file],scope:'dynamic'}
+    const name = 'bun-crash-' + root.split('/').at(-1)
+    // What fakechat prints when port 8787 is taken: code frame, error, stack paragraph, then the banner.
+    writeFileSync(file,`
+      process.stderr.write('150 | Bun.serve({\\n      ^\\nerror: Failed to start server. Is port 8787 in use?\\n syscall: "listen",\\n   errno: 0,\\n    code: "EADDRINUSE"\\n\\n      at /plugins/fakechat/server.ts:150:5\\n\\nBun v1.4.4 (macOS arm64)\\n')
+      setTimeout(() => process.exit(1), 50)
+    `)
+    try {
+      const result = await connectToServer(name,config)
+      const error = result.type === 'failed' ? result.error ?? '' : ''
+      expect(error).toStartWith('Connection closed: error: Failed to start server. Is port 8787 in use?')
+      expect(error).toContain('code: "EADDRINUSE"')
+      expect(error).not.toContain('Bun v1.4.4')
+      expect(error).not.toContain('server.ts:150:5')
+    } finally { await clearServerCache(name,config);rmSync(root,{recursive:true,force:true}) }
+  })
+
   test('ordinary errors keep text that happens to resemble an MCP wrapper', async () => {
     const { Client } = await import('@modelcontextprotocol/client')
     const message = 'MCP error -32000: application-owned text'

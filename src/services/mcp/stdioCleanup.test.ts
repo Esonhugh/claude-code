@@ -76,4 +76,54 @@ if (process.env[childFlag] !== '1') {
       rmSync(root,{recursive:true,force:true})
     }
   },10_000)
+
+  // fakechat and telegram start through `bun run ... start`, which does not pass
+  // signals on: killing it alone orphaned the real server, which kept port 8787.
+  test('a server started through a wrapper process is killed with the wrapper', async () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(),'cc-mcp-stdio-wrapper-')))
+    const server = join(root,'server.mjs')
+    const wrapper = join(root,'wrapper.mjs')
+    const pidFile = join(root,'pid')
+    writeFileSync(server,`
+      import { writeFileSync } from 'node:fs'
+      writeFileSync(${JSON.stringify(pidFile)}, String(process.pid))
+      setInterval(()=>{},1000)
+      let buffer = ''
+      process.stdin.on('data',chunk => {
+        buffer += chunk
+        let end
+        while ((end = buffer.indexOf('\\n')) >= 0) {
+          const message = JSON.parse(buffer.slice(0,end))
+          buffer = buffer.slice(end + 1)
+          if (message.method === 'initialize') {
+            process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:message.id,result:{protocolVersion:message.params.protocolVersion,capabilities:{},serverInfo:{name:'wrapped',version:'1'}}})+'\\n')
+          } else if (message.id !== undefined) {
+            process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:message.id,error:{code:-32601,message:'Method not found'}})+'\\n')
+          }
+        }
+      })
+    `)
+    writeFileSync(wrapper,`
+      import { spawn } from 'node:child_process'
+      process.on('SIGINT',()=>{})
+      spawn(process.execPath,[${JSON.stringify(server)}],{stdio:'inherit'})
+    `)
+    const config = {type:'stdio',command:process.execPath,args:[wrapper],scope:'dynamic'} as import('./types.js').ScopedMcpServerConfig
+    const name = 'wrapped-' + root.split('/').at(-1)
+    let pid: number | undefined
+    try {
+      const connection = await connectToServer(name,config)
+      expect(connection.type).toBe('connected')
+      if (connection.type !== 'connected') throw new Error('expected connected')
+      pid = Number(readFileSync(pidFile,'utf8'))
+      await connection.cleanup()
+      const deadline = Date.now() + 1500
+      while (alive(pid) && Date.now() < deadline) await Bun.sleep(25)
+      expect(alive(pid)).toBe(false)
+    } finally {
+      if (pid && alive(pid)) process.kill(pid,'SIGKILL')
+      await clearServerCache(name,config)
+      rmSync(root,{recursive:true,force:true})
+    }
+  },10_000)
 }
