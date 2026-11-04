@@ -220,6 +220,36 @@ if (process.env[childFlag] !== '1') {
       for (const mock of mocks) mock.mockRestore()
     }
   })
+  test('a channel server a plugin reload added is listed off, then starts in the session when turned on', async () => {
+    const config: ScopedMcpServerConfig = { type: 'stdio', command: 'fakechat', args: [], scope: 'dynamic' }
+    const name = 'plugin:fakechat:fakechat'
+    let off = true
+    const refresh = await import('../utils/plugins/refresh.js')
+    const pluginLoader = await import('../utils/plugins/pluginLoader.js')
+    const mocks = [
+      spyOn(refresh, 'refreshActivePlugins').mockResolvedValue({ agentDefinitions: { allAgents: [], activeAgents: [] } } as never),
+      spyOn(pluginLoader, 'loadAllPluginsCacheOnly').mockResolvedValue({ enabled: [], disabled: [], errors: [] }),
+      spyOn(mcpConfig, 'getAllMcpConfigs').mockResolvedValue({ servers: { [name]: config }, errors: [] } as never),
+      spyOn(mcpConfig, 'isMcpServerDisabled').mockImplementation(n => n === name && off),
+      spyOn(mcpConfig, 'setMcpServerEnabled').mockImplementation(() => { off = false }),
+      spyOn(mcpClient, 'connectToServer').mockImplementation(async () => { throw new Error('reload must not start it') }),
+      spyOn(mcpClient, 'reconnectMcpServerImpl').mockImplementation(async (n, c) => ({ client: connected(n, c), tools: [], commands: [] })),
+    ]
+    try {
+      const { responses } = await runControls(getDefaultAppState(), [
+        { subtype: 'reload_plugins' },
+        { subtype: 'mcp_status' },
+        { subtype: 'mcp_toggle', serverName: name, enabled: true },
+        { subtype: 'mcp_status' },
+      ])
+      expect(responses.map(r => r.subtype)).toEqual(['success', 'success', 'success', 'success'])
+      const status = (i: number) => (responses[i]!.subtype === 'success' ? (responses[i] as { response: { mcpServers: { name: string; status: string }[] } }).response.mcpServers : [])
+      expect(status(1)).toEqual([expect.objectContaining({ name, status: 'disabled' })])
+      expect(status(3)).toEqual([expect.objectContaining({ name, status: 'connected' })])
+    } finally {
+      for (const mock of mocks) mock.mockRestore()
+    }
+  })
   test('mcp_call runs a connected server tool without a model turn', async () => {
     const config: ScopedMcpServerConfig = { type: 'http', url: 'http://127.0.0.1:9/mcp', scope: 'dynamic' }
     const calls: unknown[] = []
