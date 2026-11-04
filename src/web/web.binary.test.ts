@@ -2931,8 +2931,19 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       const title = 'MOVE_ME'
       const row = page.locator('#sessions .history .sess', { hasText: title })
       await showing(row.waitFor({ timeout: 15_000 }), page.locator('#sessions'))
+      // The reload reopens the session from the address. Its first read answers as a transcript
+      // the CLI has not written yet would; the page reads again and shows the reply (#781).
+      let lagged = false
+      await page.route('**/api/history/*/messages*', async (route: { fulfill: (r: object) => Promise<void>; continue: () => Promise<void> }) => {
+        if (lagged) return route.continue()
+        lagged = true
+        await route.fulfill({ status: 404, contentType: 'application/json', body: JSON.stringify({ error: 'Session not found' }) })
+      })
       await page.reload()
       await showing(row.waitFor({ timeout: 15_000 }), page.locator('#sessions'))
+      await showing(page.locator('.feed').getByText('Hello from the fake model').waitFor({ timeout: 15_000 }), page.locator('.main'))
+      expect(lagged).toBe(true)
+      await page.unrouteAll()
 
       // Move it from the right-click menu's submenu: it leaves the lists, search still finds it.
       await row.click({ button: 'right' })

@@ -658,19 +658,28 @@ export function App() {
     dispatch({ type: 'view', id: entry.id })
     if (stateRef.current.chats[entry.id]) return
     dispatch({ type: 'mode', id: entry.id, mode: 'readonly' })
-    try {
-      await loadInto(entry.id)
-    } catch (err) {
-      dispatch({
-        type: 'chat',
-        id: entry.id,
-        action: { type: 'error', text: err instanceof Error ? err.message : String(err) },
-      })
-      return
+    const findLive = async () => (await listRunning().catch(() => [])).find(r => r.id === entry.id)
+    for (let wait = 200; ; wait *= 2) {
+      try {
+        await loadInto(entry.id)
+        break
+      } catch (err) {
+        // A running session's turn reaches its transcript up to 100 ms after the reply, so a
+        // reload right after one can find nothing yet; read again before giving up.
+        if (wait <= 1600 && (await findLive())) {
+          await new Promise(resolve => setTimeout(resolve, wait))
+          continue
+        }
+        dispatch({
+          type: 'chat',
+          id: entry.id,
+          action: { type: 'error', text: err instanceof Error ? err.message : String(err) },
+        })
+        return
+      }
     }
     // A session still running with no tab attached is picked up directly.
-    const running = await listRunning().catch(() => [])
-    const live = running.find(r => r.id === entry.id)
+    const live = await findLive()
     if (live?.attached) dispatch({ type: 'mode', id: entry.id, mode: 'elsewhere' })
     else if (live) await attach(entry.id).catch(() => {})
   }
