@@ -36,15 +36,15 @@ Sessions start in ~/.claude/web/workspace and run with your local credentials an
 
 **第 2 步：开始对话。** 起始页是一个大输入框，下面左边选工作目录（默认 `~/.claude/web/workspace`，也可以选临时目录（排在最前）、最近用过的目录或手填路径），右边选权限模式和模型。还没有会话时输入 `/` 也列出命令和已启用的 skill，`@` 搜索所选目录里的文件。下方列出这个目录最近的 3 个会话。第一条消息发出时才启动会话进程；在默认工作目录以外的目录第一次开会话时，页面会先问你是否信任这个目录。
 
-![起始页](images/web-ui-start.png)
+![起始页](images/web-tour-start.png)
 
 **第 3 步：确认工具调用。** 需要你确认的工具调用从输入框上方弹出，写明 Claude 想运行什么命令、在哪个目录。按 `1`–`3` 直接选，或者 `↑` `↓` 加 `Enter`；`Esc` 拒绝。选“拒绝，并告诉 Claude 怎么做”后光标回到输入框，下一句话就是给它的说明。确认结果会留在对话里（例如“已允许一次”）。
 
-![审批](images/web-ui-approval.png)
+![审批](images/web-tour-approval.png)
 
 **第 4 步：看过程和结果。** 每次工具调用是一张卡片：Read、Bash 显示路径或命令，Edit / Write 显示 diff 和增删行数，点文件路径在右侧预览这个文件。回复按 Markdown 增量渲染，代码块带复制按钮。顶栏是运行状态、工作目录、上下文占用（点开看明细，可以立即 `/compact`）和“导出”。右侧 Status 页签汇总这个会话的模型、权限模式、上下文、用量、目标与待办和后台任务数。
 
-![对话、工具卡片和 diff](images/web-ui-chat.png)
+![对话、工具卡片和 diff](images/web-tour-chat.png)
 
 **第 5 步：预览文件。** 点“+”上传文件、添加图片，或者直接拖进页面、粘贴截图（单个文件不超过 50 MB，每个会话共 500 MB；5 MB 以内的图片直接作为图片发给模型）。输入 `@` 按路径搜索工作区文件并引用。消息里的文件、工具卡片里的路径都能点开预览：
 
@@ -72,7 +72,7 @@ Sessions start in ~/.claude/web/workspace and run with your local credentials an
 
 ![Agents 页签](images/web-ui-agents.png)
 
-![和 agent 对话](images/web-ui-agent-chat.png)
+![和 agent 对话](images/web-tour-agents.png)
 
 **第 8 步：账号和认证。** 左下角是账号卡片（订阅账号显示名字和套餐，API key 显示“API User”）。点开依次是 认证 ›、设置、统计、快捷键、退出登录。“认证”子菜单在 Anthropic OAuth（Claude 账号）、OpenAI OAuth（ChatGPT 账号）、Anthropic API key、OpenAI API key 之间切换，打勾的是当前使用的；API key 行点“编辑”打开对话框，填 key 和可选的 Base URL（只接受 http / https），按“保存并使用”。key 和 TUI `/login` 存在同一个地方，页面上只显示末 4 位和主机名。是否已登录和 `claude auth status` 的判断一致（宿主管理的 token、`ANTHROPIC_AUTH_TOKEN`、apiKeyHelper、Bedrock、Vertex、Foundry 都算）。没有登录时对话区显示登录卡片：点按钮在新标签页登录，打不开时复制链接登录，再把授权码粘贴回来。
 
