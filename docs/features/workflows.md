@@ -63,7 +63,7 @@
 ```text
 ● Dynamic workflow "review two areas, then summarize" completed
 
-● FAKE_DONE
+● 两个方面都看完了，汇总已写好。
 
   ? for shortcuts · ↓ to manage
     ◯ repo-review  review two areas, then summarize                                done  3/3 agents  25s · ↓ 45 tokens
