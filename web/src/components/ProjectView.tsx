@@ -119,7 +119,7 @@ function TaskLink({
       {t(sent ? 'sentTo' : 'handedTo')}
       <button type="button" className={`tl-chip ${state}`} aria-current={current} data-task={task.id} onClick={onOpen} onContextMenu={onMenu}>
         {state === 'running' ? <span className="spin" aria-hidden="true" /> : <span className={`dot ${state === 'done' ? '' : state}`} />}
-        <span className="tt">{task.title}</span>
+        <span className="tt">@{task.title}</span>
       </button>
       <span className="tl-card" role="tooltip">
         <span className="tl-row">
