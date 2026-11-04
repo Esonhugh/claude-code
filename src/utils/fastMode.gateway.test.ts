@@ -8,6 +8,13 @@ import axios from 'axios'
 
 test('fast mode prefetch does not send a gateway API key to api.anthropic.com', async () => {
   const saved = { ...process.env }
+  // Hide a CCR-injected OAuth token when the test runs inside CCR, and put it
+  // back afterwards for the tests that run after this one in the same process.
+  const { setOauthTokenFromFd } = await import('../bootstrap/state.js')
+  const { getOAuthTokenFromFileDescriptor } = await import(
+    './authFileDescriptor.js'
+  )
+  const fdToken = getOAuthTokenFromFileDescriptor()
   const calls: string[] = []
   const originalGet = axios.get
   axios.get = (async (url: string) => {
@@ -20,8 +27,6 @@ test('fast mode prefetch does not send a gateway API key to api.anthropic.com', 
     delete process.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC
     delete process.env.CLAUDE_CODE_DISABLE_FAST_MODE
     delete process.env.CLAUDE_CODE_USE_OPENAI
-    // Hide a CCR-injected OAuth token when the test runs inside CCR.
-    const { setOauthTokenFromFd } = await import('../bootstrap/state.js')
     setOauthTokenFromFd(null)
     const { prefetchFastModeStatus } = await import('./fastMode.js')
     await prefetchFastModeStatus()
@@ -29,5 +34,6 @@ test('fast mode prefetch does not send a gateway API key to api.anthropic.com', 
   } finally {
     axios.get = originalGet
     process.env = saved
+    setOauthTokenFromFd(fdToken)
   }
 })

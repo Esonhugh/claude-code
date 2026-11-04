@@ -520,7 +520,7 @@ export function clearCommandPrefixCaches(): void {
   getCommandSubcommandPrefix.cache.clear()
 }
 
-const COMMAND_LIST_SEPARATORS = new Set<ControlOperator>([
+const COMMAND_LIST_SEPARATORS = new Set<ControlOperator['op']>([
   '&&',
   '||',
   ';',
@@ -528,7 +528,7 @@ const COMMAND_LIST_SEPARATORS = new Set<ControlOperator>([
   '|',
 ])
 
-const ALL_SUPPORTED_CONTROL_OPERATORS = new Set<ControlOperator>([
+const ALL_SUPPORTED_CONTROL_OPERATORS = new Set<ControlOperator['op']>([
   ...COMMAND_LIST_SEPARATORS,
   '>&',
   '>',
