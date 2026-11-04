@@ -92,13 +92,14 @@ function TaskCard({
 }
 
 /** A dispatched task in the coordinator's chat: an inline link with a hover card of its state and latest activity. */
-function TaskLink({
+export function TaskLink({
   t,
   task,
   meta,
   activity,
   current,
   sent,
+  starting,
   onOpen,
   onMenu,
 }: {
@@ -109,6 +110,8 @@ function TaskLink({
   current: boolean
   /** A message sent to the task: the line reads "Sent to" and its card shows the message. */
   sent?: boolean
+  /** The Agent call has not named its task yet: the title is a placeholder, not an @ mention. */
+  starting?: boolean
   onOpen?: () => void
   onMenu?: (e: MouseEvent) => void
 }) {
@@ -119,7 +122,7 @@ function TaskLink({
       {t(sent ? 'sentTo' : 'handedTo')}
       <button type="button" className={`tl-chip ${state}`} aria-current={current} data-task={task.id} onClick={onOpen} onContextMenu={onMenu}>
         {state === 'running' ? <span className="spin" aria-hidden="true" /> : <span className={`dot ${state === 'done' ? '' : state}`} />}
-        <span className="tt">@{task.title}</span>
+        <span className="tt">{starting ? '' : '@'}{task.title}</span>
       </button>
       <span className="tl-card" role="tooltip">
         <span className="tl-row">
@@ -653,8 +656,9 @@ export function ProjectView({
     if (block.name !== 'Agent') return undefined
     const task = byToolUse.get(block.id)
     if (!task) {
-      const pending = { id: block.id, title: inputs.get(block.id)?.description || t('statusConnecting'), state: 'running' as const }
-      return <TaskLink t={t} task={pending} meta="" activity="" current={false} />
+      const title = inputs.get(block.id)?.description
+      const pending = { id: block.id, title: title || t('statusConnecting'), state: 'running' as const }
+      return <TaskLink t={t} task={pending} starting={!title} meta="" activity="" current={false} />
     }
     return (
       <TaskLink
