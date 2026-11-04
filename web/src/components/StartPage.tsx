@@ -201,6 +201,7 @@ export function StartPage({
         <div className="wl-bar">
           <FootMenu
             menuClass="pop wl-pick"
+            fixed
             button={
               <>
                 <span className="mono">{options.temporary ? '◌' : '⌂'}</span>{' '}
@@ -276,7 +277,7 @@ export function StartPage({
             )}
           </FootMenu>
           <span style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-            <FootMenu menuClass="pop wl-pick wl-modes" right button={modeOf(options.mode).label}>
+            <FootMenu menuClass="pop wl-pick wl-modes" right fixed button={modeOf(options.mode).label}>
               {close => (
                 <ModeItems
                   t={t}
@@ -290,6 +291,7 @@ export function StartPage({
             {models.length > 0 && (
               <FootMenu
                 menuClass="pop wl-pick wl-models"
+                fixed
                 label={t('model')}
                 right
                 button={modelButtonLabel(options.model ?? 'default', options.effort, models, t)}

@@ -489,6 +489,14 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
           touch('made.txt')
         } else if (lastText.includes('DENYME')) {
           touch('denied.txt')
+        } else if (lastText.includes('LONG_LAYOUT')) {
+          blocks = [{
+            type: 'tool_use',
+            id: 'toolu_long_layout',
+            name: 'Bash',
+            input: { command: `mkdir -p ${'a-long-directory-segment/'.repeat(14)}LONG_TAIL`, description: 'Make a deep folder' },
+          }]
+          stop = 'tool_use'
         } else if (lastText.includes('MARKDOWN')) {
           blocks = [{ type: 'text', text: MARKDOWN_REPLY }]
         }
@@ -1568,6 +1576,28 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       // Both tasks: inline "Handed to" links in the middle, cards in the right column, then their notices.
       await page.locator('.pv-chat .tl-chip', { hasText: 'Task two' }).waitFor({ timeout: 60_000 })
       expect(await page.locator('.pv-chat .tl-chip').count()).toBe(2)
+      // A long task title truncates in its chip; the "Handed to" label beside it keeps one line (#757).
+      const handed = await page.locator('.pv-chat .tasklink').first().evaluate((link: HTMLElement) => {
+        const title = link.querySelector('.tt')!
+        const was = title.textContent
+        title.textContent = `@${'Investigate the extremely long-named flaky test '.repeat(4)}`
+        const oneLine = link.getBoundingClientRect().height <= link.querySelector('.tl-chip')!.getBoundingClientRect().height + 1
+        title.textContent = was
+        return oneLine
+      })
+      expect(handed).toBe(true)
+      // A long project name truncates; the settings button at the header's end stays clickable (#757).
+      const gearHit = await page.locator('.pv-chat .pv-head').evaluate((head: HTMLElement) => {
+        const name = head.querySelector('b')!
+        const was = name.textContent
+        name.textContent = 'Quarterly payments reconciliation and nightly integration test triage project'
+        const gear = head.querySelector<HTMLElement>('button[aria-label="Project settings"]')!
+        const r = gear.getBoundingClientRect()
+        const hit = gear.contains(document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2))
+        name.textContent = was
+        return hit
+      })
+      expect(gearHit).toBe(true)
       await page.locator('.pjlist .pjcard', { hasText: 'Task one' }).waitFor({ timeout: 60_000 })
       await page.locator('.pjlist .pjcard', { hasText: 'Task two' }).waitFor()
       await page.locator('.pv-chat .pj-note', { hasText: 'Task "Task one" finished' }).waitFor({ timeout: 60_000 })
@@ -2002,6 +2032,17 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       await page.keyboard.press('o')
       await page.locator('.dialog').waitFor({ state: 'detached' })
       expect(await side.locator('.pv-crumb').textContent()).toContain('Quick')
+      // A long task title truncates in the crumb: the task's buttons stay on screen (#757).
+      const crumbFits = await side.locator('.pv-head').evaluate((head: HTMLElement) => {
+        const crumb = head.querySelector('.pv-crumb')!
+        const title = crumb.lastElementChild!
+        const was = title.textContent
+        title.textContent = 'Investigate the extremely long-named flaky integration test failure in the payments pipeline'.repeat(2)
+        const fits = document.documentElement.scrollWidth <= innerWidth && head.lastElementChild!.getBoundingClientRect().right <= innerWidth
+        title.textContent = was
+        return fits
+      })
+      expect(crumbFits).toBe(true)
       await backToList()
 
       // The splitter: ← narrows the chat by 24px, a drag sets it, and the width survives a reload.
@@ -2910,6 +2951,78 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       await browser.close()
     }
   }, 120_000)
+
+  it('keeps long paths, commands, tabs and menus inside a short window (#757)', async () => {
+    const playwrightPath = Bun.spawnSync(['node', '-p', "require.resolve('playwright')"])
+      .stdout.toString()
+      .trim()
+    const { chromium } = await import(playwrightPath)
+    const browser = await chromium.launch()
+    try {
+      const page = await (await browser.newContext({ locale: 'en-US', viewport: { width: 1280, height: 560 } })).newPage()
+      const errors: string[] = []
+      page.on('pageerror', (e: Error) => errors.push(e.message))
+      await page.goto(signInUrl)
+      await page.locator('.wl-hi').waitFor()
+
+      // The start page's model picker opens on the side with room, and its rows stay in the window.
+      await page.getByRole('button', { name: 'Model' }).click()
+      const picker = page.locator('.wl-models')
+      const pickerBox = await picker.evaluate((menu: HTMLElement) => {
+        const r = menu.getBoundingClientRect()
+        return { top: r.top, bottom: r.bottom, height: innerHeight }
+      })
+      expect(pickerBox.top).toBeGreaterThanOrEqual(0)
+      expect(pickerBox.bottom).toBeLessThanOrEqual(pickerBox.height)
+      await page.keyboard.press('Escape')
+
+      const input = page.getByLabel('Message', { exact: true })
+      await input.fill('please LONG_LAYOUT')
+      await input.press('Enter')
+      const dialog = page.getByRole('dialog')
+      await dialog.getByText('Claude wants to run a command').waitFor({ timeout: 30_000 })
+      // The whole command is readable before it is approved: it wraps instead of running off the side.
+      const command = dialog.locator('code').first()
+      expect(await command.textContent()).toContain('LONG_TAIL')
+      expect(await command.evaluate((el: HTMLElement) => el.scrollWidth <= el.clientWidth + 1)).toBe(true)
+
+      // A long folder truncates in the header, which keeps one row.
+      const meta = page.locator('.meta')
+      const header = await meta.evaluate((bar: HTMLElement) => {
+        const chip = bar.querySelector<HTMLElement>('.chip.mono')!
+        chip.textContent = `~/${'a-really-long-directory-name/'.repeat(12)}claude-code`
+        const shown = Array.from(bar.children).map(c => (c as HTMLElement).getBoundingClientRect()).filter(r => r.width > 0)
+        const rows = new Set(shown.map(r => Math.round(r.top + r.height / 2)))
+        const c = chip.getBoundingClientRect()
+        return { rows: rows.size, chipInside: c.right <= bar.getBoundingClientRect().right + 1, ellipsis: getComputedStyle(chip).textOverflow }
+      })
+      expect(header).toEqual({ rows: 1, chipInside: true, ellipsis: 'ellipsis' })
+      await dialog.getByRole('option', { name: /Deny and tell Claude/ }).click()
+      await page.getByText('WEB_DONE').first().waitFor({ timeout: 30_000 })
+
+      // Every side panel tab stays in view on a narrow panel: the row wraps instead of hiding tabs.
+      const tabs = page.locator('aside.side .tabs')
+      const hidden = await tabs.evaluate((row: HTMLElement) => {
+        for (const name of ['Workflow', 'Terminals', 'Monitor', 'Background Tasks']) {
+          const extra = document.createElement('button')
+          extra.setAttribute('role', 'tab')
+          extra.textContent = name
+          row.append(extra)
+        }
+        const box = row.getBoundingClientRect()
+        return Array.from(row.querySelectorAll<HTMLElement>('[role=tab]'))
+          .filter(tab => {
+            const r = tab.getBoundingClientRect()
+            return r.left < box.left - 1 || r.right > box.right + 1
+          })
+          .map(tab => tab.textContent)
+      })
+      expect(hidden).toEqual([])
+      expect(errors).toEqual([])
+    } finally {
+      await browser.close()
+    }
+  }, 90_000)
 
   it.skipIf(process.platform === 'win32')('shuts down on SIGTERM and removes the lock', async () => {
     web.kill('SIGTERM')
