@@ -17,6 +17,7 @@ import {
   stopJob,
   writeFrame,
 } from '../daemon/protocol.js'
+import { checkHasTrustDialogAccepted } from '../utils/config.js'
 import { execFileNoThrowWithCwd } from '../utils/execFileNoThrow.js'
 import { gitExe } from '../utils/git.js'
 import { plural } from '../utils/stringUtils.js'
@@ -118,6 +119,13 @@ export async function handleBgFlag(
   const { flags, resume } = splitBgArgs(argv, prompt)
   if (flags.includes('-p') || flags.includes('--print')) {
     fail('--bg starts an interactive session in the background; it cannot be combined with -p/--print.')
+  }
+  // Nobody is at the background terminal to answer the trust prompt, so the
+  // session would wait on it forever.
+  if (!checkHasTrustDialogAccepted()) {
+    fail(
+      `Workspace not trusted. Run \`claude\` in ${process.cwd()} once and accept the trust prompt, then retry.`,
+    )
   }
   try {
     const job = await spawnBackgroundSession({

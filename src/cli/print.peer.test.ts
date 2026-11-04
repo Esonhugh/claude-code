@@ -509,6 +509,7 @@ if (process.env[childFlag] !== '1') {
 
   test('QueryEngine ends a turn interrupted before its prompt is admitted with a result, not a throw', async () => {
     const abortController = new AbortController()
+    // eslint-disable-next-line require-yield -- The turn is aborted before the query streams anything.
     const queryMock = spyOn(queryModule, 'query').mockImplementation(async function* () {
       return { reason: 'completed' }
     })
@@ -523,6 +524,7 @@ if (process.env[childFlag] !== '1') {
       spyOn(plugins, 'loadAllPluginsCacheOnly').mockResolvedValue({ enabled: [], disabled: [], errors: [] }),
       spyOn(fileHistory, 'fileHistoryEnabled').mockReturnValue(false),
       spyOn(storage, 'recordTranscript').mockResolvedValue(undefined),
+      // eslint-disable-next-line require-yield -- The hook only aborts the turn; it emits no results.
       spyOn(hooks, 'executeUserPromptSubmitHooks').mockImplementation(async function* () {
         abortController.abort()
       }),
