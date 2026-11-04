@@ -2979,7 +2979,7 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       await page.locator('.wl-hi').waitFor()
 
       // The start page's model picker opens on the side with room, and its rows stay in the window.
-      await page.getByRole('button', { name: 'Model' }).click()
+      await page.getByRole('button', { name: 'Model', exact: true }).click()
       const picker = page.locator('.wl-models')
       const pickerBox = await picker.evaluate((menu: HTMLElement) => {
         const r = menu.getBoundingClientRect()
