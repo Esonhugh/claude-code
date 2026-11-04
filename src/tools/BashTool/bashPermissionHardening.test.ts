@@ -35,6 +35,7 @@ if (process.env[childFlag] !== '1') {
             env: {
               ...env,
               [childFlag]: '1',
+              CLAUDE_CODE_BASH_HARDENING_PARSER: parserFeature ?? 'legacy',
               HOME: home,
               CLAUDE_CONFIG_DIR: home,
               ANTHROPIC_API_KEY: 'test-only-not-a-real-key',
@@ -429,6 +430,49 @@ if (process.env[childFlag] !== '1') {
     } finally {
       enabled.mockRestore()
       unsandboxedAllowed.mockRestore()
+    }
+  })
+
+  test('sandbox auto-allow runs environment variables and substitutions but not loop or function code', async () => {
+    const { SandboxManager } =
+      await import('../../utils/sandbox/sandbox-adapter.js')
+    const mocks = [
+      spyOn(SandboxManager, 'isSandboxingEnabled').mockReturnValue(true),
+      spyOn(SandboxManager, 'isAutoAllowBashIfSandboxedEnabled').mockReturnValue(true),
+    ]
+    try {
+      for (const command of [
+        'echo $HOME',
+        'echo "DEMO_TOKEN=[$DEMO_TOKEN]"',
+        'echo ${DEMO_TOKEN}',
+        'cat <<EOF\nx\nEOF',
+        'echo {a,b}',
+        'echo $(id -u)',
+        'echo `id -u`',
+        'echo <(true)',
+        "echo $'a\\tb'",
+      ]) {
+        await expectBehavior(command, 'default', {}, 'allow')
+      }
+      // Without the syntax tree every sandboxed command runs; these need it.
+      const asks =
+        process.env.CLAUDE_CODE_BASH_HARDENING_PARSER === 'TREE_SITTER_BASH'
+          ? [
+              'for f in a b; do echo $f; done',
+              'X=$(id -u); echo $X',
+              'f() { echo a; }; f',
+              'case a in a) echo a;; esac',
+              'eval echo hi',
+              '$CMD x',
+              'cat <<EOF\n$(id -u)\nEOF',
+            ]
+          : []
+      for (const command of asks) {
+        await expectBehavior(command, 'default', {}, 'ask')
+      }
+      await expectBehavior('echo $(rm -rf x)', 'default', { deny: ['Bash(rm:*)'] }, 'deny')
+    } finally {
+      mocks.forEach(mock => mock.mockRestore())
     }
   })
 
