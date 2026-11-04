@@ -53,9 +53,16 @@ jobs:
           sandbox-exec -f /tmp/no-trustd.sb /usr/bin/curl -sS -o /dev/null -w 'no-trustd %{http_code}\n' https://example.com || true
           printf '(version 1)\n(allow default)\n' > /tmp/all.sb
           sandbox-exec -f /tmp/all.sb /usr/bin/curl -sS -o /dev/null -w 'allow-all %{http_code}\n' https://example.com || true
-          echo '== direct chain'; /usr/bin/curl -sk -w '%{certs}' -o /dev/null https://example.com | grep -E '^(Subject|Issuer):'
-          for f in -4 -6; do /usr/bin/curl $f -sS -o /dev/null -w "direct $f %{http_code} %{remote_ip}\n" https://example.com || true; /usr/bin/curl $f -sk -w '%{certs}' -o /dev/null https://example.com | grep -E '^(Subject|Issuer):'; done
-          dig +short example.com A; dig +short example.com AAAA
+          for svc in com.apple.trustd com.apple.trustd.agent com.apple.SecurityServer com.apple.securityd.xpc com.apple.ocspd "com.apple.trustd com.apple.trustd.agent"; do
+            { echo '(version 1)'; echo '(allow default)'; for n in $svc; do echo "(deny mach-lookup (global-name \"$n\"))"; done; } > /tmp/deny.sb
+            sandbox-exec -f /tmp/deny.sb /usr/bin/curl -sS -o /dev/null -w "deny[$svc] %{http_code}\n" https://example.com 2>&1 | tail -1
+            sandbox-exec -f /tmp/deny.sb /usr/bin/curl -sS -o /dev/null -w "deny[$svc] google %{http_code}\n" https://www.google.com 2>&1 | tail -1
+          done
+          { echo '(version 1)'; echo '(allow default)'; echo '(deny mach-lookup)'; } > /tmp/deny-all-mach.sb
+          sandbox-exec -f /tmp/deny-all-mach.sb /usr/bin/curl -sS -o /dev/null -w "deny-all-mach %{http_code}\n" https://example.com 2>&1 | tail -1
+          sandbox-exec -f /tmp/deny-all-mach.sb /usr/bin/curl -sS -o /dev/null -w "deny-all-mach google %{http_code}\n" https://www.google.com 2>&1 | tail -1
+          echo | openssl s_client -connect example.com:443 -servername example.com -CAfile /etc/ssl/cert.pem 2>&1 | grep -E 'Verify return|depth' 
+          grep -c 'BEGIN CERT' /etc/ssl/cert.pem; grep -n 'AAA Certificate Services\|SSL.com TLS ECC Root CA 2022' /etc/ssl/cert.pem | head
           for h in www.apple.com www.google.com api.anthropic.com registry.npmjs.org pypi.org; do
             sandbox-exec -f /tmp/no-trustd.sb /usr/bin/curl -sS -o /dev/null -w "no-trustd $h %{http_code}\n" https://$h || true
           done
