@@ -2,6 +2,7 @@ import type { Database } from 'bun:sqlite'
 import { randomUUID } from 'crypto'
 import { mkdirSync } from 'fs'
 import { dirname } from 'path'
+import { SESSION_CONFIG_MIGRATION } from './sessionConfig.js'
 import { TASK_MIGRATION } from './tasks.js'
 
 /**
@@ -44,6 +45,8 @@ const MIGRATIONS: string[][] = [
   ['ALTER TABLE tasks ADD COLUMN prior_ms INTEGER NOT NULL DEFAULT 0'],
   // The task default effort, next to the task default model.
   ['ALTER TABLE projects ADD COLUMN worker_effort TEXT'],
+  // Per-session plugins/MCP/channels/hooks and the profiles they can start from (#796).
+  SESSION_CONFIG_MIGRATION,
 ]
 
 export type Project = {

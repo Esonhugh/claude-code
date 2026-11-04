@@ -37,8 +37,25 @@ type Session = SessionInfo & {
   queued?: string[]
   /** When a channel was last turned on (`--channels` at spawn, or channel_enable). */
   channelSince?: number
-  /** channel_enable requests waiting for their response. */
-  channelRequests?: Set<string>
+  /** channel_enable requests waiting for their response, with their channel key. */
+  channelRequests?: Map<string, string>
+  /** Channels this process listens on (channelKey) → when they were turned on. */
+  channels: Map<string, number>
+  /** The server's own control requests (`request`) waiting for their response. */
+  ownRequests?: Map<string, (response: Record<string, unknown>) => void>
+}
+
+/**
+ * One key per channel, from a `--channels` entry (`plugin:<name>@<marketplace>`)
+ * or a channel_enable server name (`plugin:<name>:<server>`, or a plain MCP server).
+ */
+export function channelKey(entry: string): string {
+  const plugin = /^plugin:([^:@]+)[:@]/.exec(entry)
+  return plugin ? `plugin:${plugin[1]}` : entry
+}
+
+function spawnChannels(channels: string[] | undefined, at: number): Map<string, number> {
+  return new Map((channels ?? []).map(entry => [channelKey(entry), at]))
 }
 
 /** Sees every stream-json line of every session (claude web keeps a project's tasks from them). */
@@ -79,22 +96,43 @@ function closed(child: ChildProcess): Promise<void> {
 /** Keeps a `can_use_tool` request until it is answered (`control_response`) or cancelled. */
 /** A channel_enable request (from the client) and its success (from the child) turn a channel on. */
 function recordChannelLine(session: Session, line: string): void {
-  let msg: { type?: string; request_id?: unknown; response?: { subtype?: unknown; request_id?: unknown } }
+  let msg: {
+    type?: string
+    request_id?: unknown
+    request?: { serverName?: unknown }
+    response?: { subtype?: unknown; request_id?: unknown }
+  }
   try {
     msg = JSON.parse(line)
   } catch {
     return
   }
-  if (msg.type === 'control_request' && typeof msg.request_id === 'string') {
-    ;(session.channelRequests ??= new Set()).add(msg.request_id)
-  } else if (
-    msg.type === 'control_response' &&
-    typeof msg.response?.request_id === 'string' &&
-    session.channelRequests?.delete(msg.response.request_id) &&
-    msg.response.subtype === 'success'
-  ) {
+  if (msg.type === 'control_request' && typeof msg.request_id === 'string' && typeof msg.request?.serverName === 'string') {
+    ;(session.channelRequests ??= new Map()).set(msg.request_id, channelKey(msg.request.serverName))
+  } else if (msg.type === 'control_response' && typeof msg.response?.request_id === 'string') {
+    const key = session.channelRequests?.get(msg.response.request_id)
+    if (key === undefined) return
+    session.channelRequests!.delete(msg.response.request_id)
+    if (msg.response.subtype !== 'success') return
     session.channelSince = Date.now()
+    session.channels.set(key, session.channelSince)
   }
+}
+
+/** Resolves a response to one of the server's own requests; such a line is not relayed. */
+function takeOwnResponse(session: Session, line: string): boolean {
+  let response: Record<string, unknown> | undefined
+  try {
+    response = (JSON.parse(line) as { response?: Record<string, unknown> }).response
+  } catch {
+    return false
+  }
+  const id = typeof response?.request_id === 'string' ? response.request_id : undefined
+  const resolve = id === undefined ? undefined : session.ownRequests?.get(id)
+  if (!resolve) return false
+  session.ownRequests!.delete(id!)
+  resolve(response!)
+  return true
 }
 
 function recordAsk(asks: Map<string, string>, line: string): void {
@@ -203,6 +241,7 @@ export class SessionManager {
     resume,
     sessionKey,
     channels,
+    settings,
     coordinator,
   }: {
     cwd: string
@@ -214,6 +253,8 @@ export class SessionManager {
     sessionKey?: string
     /** `--channels` entries for the new session's process. */
     channels?: string[]
+    /** `--settings` JSON: the session's own plugins, MCP servers and hooks. */
+    settings?: string
     /** Prompt flags and environment of a project's coordinator. */
     coordinator?: CoordinatorOptions
   }): SessionInfo {
@@ -242,9 +283,11 @@ export class SessionManager {
       ...(effort && { effort }),
       ...(resume && { resume: true }),
       ...(channels?.length && { channels }),
+      ...(settings && { settings }),
       ...coordinator,
     }
     const child = this.backend.spawn(spawnOptions)
+    const now = Date.now()
     const session: Session = {
       id,
       status: 'detached',
@@ -259,7 +302,8 @@ export class SessionManager {
       exited: closed(child),
       spawnOptions,
       busy: false,
-      ...(channels?.length && { channelSince: Date.now() }),
+      ...(channels?.length && { channelSince: now }),
+      channels: spawnChannels(channels, now),
     }
     this.sessions.set(id, session)
     this.wire(session, child)
@@ -278,15 +322,21 @@ export class SessionManager {
    */
   restart(
     id: string,
-    options: Pick<SpawnSessionOptions, 'permissionMode' | 'model' | 'effort'> & { coordinator: CoordinatorOptions },
+    options: Pick<SpawnSessionOptions, 'permissionMode' | 'model' | 'effort'> & {
+      coordinator?: CoordinatorOptions
+      /** New `--channels` and `--settings` (a changed session config); kept when left out. */
+      flags?: Pick<SpawnSessionOptions, 'channels' | 'settings'>
+    },
   ): 'restarted' | 'pending' | undefined {
     const session = this.sessions.get(id)
     if (!session || session.status === 'stopping') return undefined
-    const { sessionId, cwd, channels } = session.spawnOptions
+    const { sessionId, cwd } = session.spawnOptions
+    const { channels, settings } = options.flags ?? session.spawnOptions
     session.restartWith = {
       sessionId,
       cwd,
-      ...(channels && { channels }),
+      ...(channels?.length && { channels }),
+      ...(settings && { settings }),
       ...(options.permissionMode && { permissionMode: options.permissionMode }),
       ...(options.model && { model: options.model }),
       ...(options.effort && { effort: options.effort }),
@@ -322,6 +372,11 @@ export class SessionManager {
     session.spawnOptions = options
     session.busy = false
     session.asks.clear()
+    session.channelRequests = undefined
+    session.channels = spawnChannels(options.channels, Date.now())
+    if (options.channels?.length) session.channelSince = Date.now()
+    for (const resolve of session.ownRequests?.values() ?? []) resolve({ subtype: 'error', error: 'session restarted' })
+    session.ownRequests = undefined
     this.wire(session, child)
     this.write(session.id, queued.join('\n'))
     if (session.restartWith && !session.busy) void this.respawn(session)
@@ -337,8 +392,18 @@ export class SessionManager {
       }
       if (line.includes('"can_use_tool"') || line.includes('"control_cancel_request"')) recordAsk(session.asks, line)
       if (session.channelRequests?.size && line.includes('"type":"control_response"')) recordChannelLine(session, line)
+      if (session.ownRequests?.size && line.includes('"type":"control_response"') && takeOwnResponse(session, line)) return
       if (line.includes('"subtype":"session_state_changed"') && session.process === child) {
         this.trackTurn(session, line)
+      } else if (
+        // Without session state events (any session but a coordinator), a result ends the turn.
+        session.busy &&
+        session.process === child &&
+        !session.spawnOptions.env?.CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS &&
+        line.startsWith('{"type":"result"')
+      ) {
+        session.busy = false
+        if (session.restartWith && !session.queued) void this.respawn(session)
       }
       this.observer?.line?.(id, line, 'child')
       if (session.socket) {
@@ -393,6 +458,59 @@ export class SessionManager {
 
   get(id: string): SessionInfo | undefined {
     return this.sessions.get(id)
+  }
+
+  /** The session's current `--channels`/`--settings`, and the model and mode from its latest init. */
+  current(id: string): (Pick<SpawnSessionOptions, 'channels' | 'settings' | 'model' | 'permissionMode' | 'effort'>) | undefined {
+    const session = this.sessions.get(id)
+    if (!session) return undefined
+    const { channels, settings, model, permissionMode, effort } = session.spawnOptions
+    let init: { model?: unknown; permissionMode?: unknown } = {}
+    try {
+      init = session.init ? JSON.parse(session.init) : {}
+    } catch {
+      // A broken init line: keep the spawn options.
+    }
+    return {
+      channels,
+      settings,
+      model: typeof init.model === 'string' ? init.model : model,
+      permissionMode: typeof init.permissionMode === 'string' ? init.permissionMode : permissionMode,
+      effort,
+    }
+  }
+
+  /** Live sessions listening on a channel (see channelKey), oldest first. */
+  channelSessions(key: string): { id: string; since: number }[] {
+    return [...this.sessions.values()]
+      .flatMap(s => {
+        const since = s.channels.get(key)
+        return since === undefined || s.status === 'stopping' ? [] : [{ id: s.id, since }]
+      })
+      .sort((a, b) => a.since - b.since)
+  }
+
+  /**
+   * Sends the session's process a control request of the server's own (not
+   * the page's); its response is not relayed. Resolves undefined on timeout.
+   */
+  request(id: string, request: Record<string, unknown>, timeoutMs = 3000): Promise<Record<string, unknown> | undefined> {
+    const session = this.sessions.get(id)
+    const stdin = session?.process.stdin
+    if (!session || session.queued || !stdin || stdin.destroyed) return Promise.resolve(undefined)
+    const requestId = `web-server-${randomUUID()}`
+    return new Promise(resolve => {
+      const timer = setTimeout(() => {
+        session.ownRequests?.delete(requestId)
+        resolve(undefined)
+      }, timeoutMs)
+      timer.unref?.()
+      ;(session.ownRequests ??= new Map()).set(requestId, response => {
+        clearTimeout(timer)
+        resolve(response)
+      })
+      stdin.write(JSON.stringify({ type: 'control_request', request_id: requestId, request }) + '\n')
+    })
   }
 
   canAttach(id: string): boolean {
