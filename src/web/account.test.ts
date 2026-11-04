@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'bun:test'
-import { mkdtempSync, realpathSync } from 'fs'
+import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { createServerLogger } from '../server/serverLog.js'
@@ -20,6 +20,7 @@ function fakeBackend() {
     base: { anthropic: '', openai: '' } as Record<AuthProvider, string>,
     provider: 'anthropic' as AuthProvider,
     kind: null as AccountStatus['kind'],
+    oauth: [] as AuthProvider[],
     settings: {
       uiName: '',
       features: {
@@ -45,6 +46,7 @@ function fakeBackend() {
         base_url: state.base[provider],
         ...(state.stored[provider] && { source: 'stored', tail: keyTail(state.stored[provider]!) }),
       })),
+      oauth: state.oauth,
     }),
     useApiKey: async (provider, key) => {
       if (key) state.stored[provider] = key
@@ -78,6 +80,10 @@ function fakeBackend() {
           state.cancelled++
         },
       }
+    },
+    useOAuth: async provider => {
+      state.provider = provider
+      state.kind = provider === 'openai' ? 'chatgpt' : 'claude'
     },
     removeApiKey: async provider => {
       delete state.stored[provider]
@@ -262,6 +268,18 @@ describe('account endpoints', () => {
     expect((await call('/api/account/oauth', 'POST', { provider: 'gemini' })).status).toBe(400)
   })
 
+  it('switches to a saved OAuth sign-in without a new login, and refuses when there is none', async () => {
+    const { call, state } = await start()
+    expect((await call('/api/account/oauth/use', 'POST', { provider: 'openai' })).status).toBe(400)
+    expect(state.kind).toBeNull()
+    state.oauth = ['openai']
+    const res = await call('/api/account/oauth/use', 'POST', { provider: 'openai' })
+    expect(res.status).toBe(200)
+    expect(((await res.json()) as AccountStatus).kind).toBe('chatgpt')
+    expect(state.finish).toBeUndefined()
+    expect((await call('/api/account/oauth/use', 'POST', { provider: 'gemini' })).status).toBe(400)
+  })
+
   it('logs out', async () => {
     const { call, state } = await start()
     state.kind = 'claude'
@@ -323,10 +341,14 @@ describe('local account status', () => {
     'CLAUDE_CODE_USE_OPENAI',
     'CLAUDE_CODE_REMOTE',
     'CLAUDE_CODE_ENTRYPOINT',
+    'HOME',
+    'OPENAI_API_KEY',
+    'OPENAI_AUTH_TOKEN',
   ]
   const prior = Object.fromEntries(NAMES.map(n => [n, process.env[n]]))
   const clean = () => {
     for (const n of NAMES) delete process.env[n]
+    process.env.HOME = realpathSync(mkdtempSync(join(tmpdir(), 'web-acct-home-')))
     process.env.CLAUDE_CONFIG_DIR = realpathSync(mkdtempSync(join(tmpdir(), 'web-acct-status-')))
     setOauthTokenFromFd(null)
   }
@@ -355,5 +377,52 @@ describe('local account status', () => {
     clean()
     process.env.CLAUDE_CODE_USE_BEDROCK = '1'
     expect(await status()).toMatchObject({ kind: 'apikey', source: 'bedrock' })
+  })
+
+  // Status reads run on the OpenAI side: under NODE_ENV=test the Anthropic OAuth
+  // status path demands an env credential.
+  it('lists saved OAuth sign-ins and switches between them without a new login', async () => {
+    clean()
+    process.env.CLAUDE_CODE_USE_OPENAI = '1'
+    const backend = localAccountBackend()
+    expect((await backend.status()).oauth).toEqual([])
+    mkdirSync(join(process.env.HOME!, '.codex'), { recursive: true })
+    writeFileSync(
+      join(process.env.HOME!, '.codex', 'auth.json'),
+      JSON.stringify({ auth_mode: 'chatgpt', tokens: { access_token: 'chatgpt-access-test', refresh_token: 'chatgpt-refresh-test' } }),
+    )
+    writeFileSync(
+      join(process.env.CLAUDE_CONFIG_DIR!, '.credentials.json'),
+      JSON.stringify({
+        claudeAiOauth: {
+          accessToken: 'claude-access-test',
+          refreshToken: 'claude-refresh-test',
+          expiresAt: Date.now() + 3_600_000,
+          scopes: ['user:inference', 'user:profile'],
+        },
+      }),
+    )
+    expect((await backend.status()).oauth).toEqual(['anthropic', 'openai'])
+    process.env.ANTHROPIC_API_KEY = 'sk-ant-env-key-test-0123456789'
+    await backend.useOAuth('anthropic')
+    expect(process.env.CLAUDE_CODE_USE_OPENAI).toBeUndefined()
+    expect(process.env.ANTHROPIC_API_KEY).toBeUndefined()
+    process.env.OPENAI_API_KEY = 'sk-proj-env-key-test-0123456789'
+    await backend.useOAuth('openai')
+    expect(process.env.OPENAI_API_KEY).toBeUndefined()
+    expect(await backend.status()).toMatchObject({ kind: 'chatgpt', provider: 'openai' })
+  })
+
+  it('does not offer an expired Claude sign-in that cannot refresh', async () => {
+    clean()
+    process.env.CLAUDE_CODE_USE_OPENAI = '1'
+    writeFileSync(
+      join(process.env.CLAUDE_CONFIG_DIR!, '.credentials.json'),
+      JSON.stringify({ claudeAiOauth: { accessToken: 'claude-access-test', refreshToken: null, expiresAt: Date.now() - 1000, scopes: ['user:inference'] } }),
+    )
+    const backend = localAccountBackend()
+    expect((await backend.status()).oauth).toEqual([])
+    await expect(backend.useOAuth('anthropic')).rejects.toThrow('No saved sign-in')
+    expect(process.env.CLAUDE_CODE_USE_OPENAI).toBe('1')
   })
 })

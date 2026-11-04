@@ -21,6 +21,8 @@ export type AccountStatus = {
   plan?: string
   source?: string
   keys: KeyInfo[]
+  /** Providers with a saved OAuth sign-in that can be switched to without a new login. */
+  oauth: AuthProvider[]
 }
 
 export const FEATURE_KEYS = [
@@ -64,6 +66,8 @@ export type AccountBackend = {
   /** '' removes the override. */
   setBaseUrl: (provider: AuthProvider, url: string) => Promise<void>
   startOAuth: (provider: AuthProvider) => OAuthFlow
+  /** Makes `provider`'s saved OAuth sign-in the auth for new sessions; throws when there is none. */
+  useOAuth: (provider: AuthProvider) => Promise<void>
   logout: () => Promise<void>
   readSettings: () => Promise<WebSettings>
   writeSettings: (
@@ -142,6 +146,7 @@ const messageOf = (err: unknown) => (err instanceof Error ? err.message : String
  *   DELETE /api/account/api-key       { provider }
  *   POST   /api/account/oauth         { provider } → { url, manual_url }
  *   POST   /api/account/oauth/code    { code }  (manual fallback)
+ *   POST   /api/account/oauth/use     { provider }  switch to the saved sign-in
  *   DELETE /api/account/oauth         cancel the pending login
  *   POST   /api/account/logout
  *   GET    /api/settings              → { uiName, features, daybreak, allow_local_network }
@@ -232,6 +237,21 @@ export function createAccountApi(
       const parsed = oauthBodySchema().safeParse(await readJson(req))
       if (!parsed.success) return errorResponse(400, 'Invalid provider')
       return startOAuth(parsed.data.provider)
+    }
+    if (pathname === '/api/account/oauth/use' && method === 'POST') {
+      const parsed = oauthBodySchema().safeParse(await readJson(req))
+      if (!parsed.success) return errorResponse(400, 'Invalid provider')
+      if (!(await backend.status()).oauth.includes(parsed.data.provider)) {
+        return errorResponse(400, 'No saved sign-in for this provider')
+      }
+      try {
+        cancelPending()
+        await backend.useOAuth(parsed.data.provider)
+        lastError = undefined
+      } catch (err) {
+        return errorResponse(500, messageOf(err))
+      }
+      return account()
     }
     if (pathname === '/api/account/oauth' && method === 'DELETE') {
       cancelPending()

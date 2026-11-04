@@ -10,6 +10,7 @@ import {
   startOAuth,
   submitOAuthCode,
   useSavedKey,
+  useSavedOAuth,
 } from '../api'
 import { Dialog } from './Dialog'
 import type { T } from './ui'
@@ -89,8 +90,17 @@ export function useAccount(t: T) {
   return {
     account,
     flash,
-    /** Opens the tab synchronously (popup blockers), then points it at the login page. */
+    /**
+     * A saved sign-in is switched to directly; otherwise the tab opens synchronously
+     * (popup blockers), then is pointed at the login page.
+     */
     login: (provider: AuthProvider) => {
+      if (account?.oauth.includes(provider)) {
+        return void run(
+          () => useSavedOAuth(provider),
+          t('switchedTo', { name: `${PROVIDER_NAME[provider]} OAuth` }),
+        )
+      }
       const tab = window.open('', '_blank')
       void run(async () => {
         try {

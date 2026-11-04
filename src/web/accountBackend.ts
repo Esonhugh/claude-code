@@ -1,6 +1,7 @@
 import { rm } from 'fs/promises'
 import { installOAuthTokens } from '../cli/handlers/auth.js'
 import { performLogout } from '../commands/logout/logout.js'
+import { isOAuthTokenExpired } from '../services/oauth/client.js'
 import { OAuthService } from '../services/oauth/index.js'
 import { loginOpenAIWithOAuth } from '../services/openai-oauth/client.js'
 import { getOpenAIAuthPath, saveOpenAIApiKey } from '../services/openai-oauth/storage.js'
@@ -99,14 +100,24 @@ function keyInfo(provider: AuthProvider, found: { key: string | null; source: st
   }
 }
 
+/** Providers whose OAuth sign-in is stored and still usable (unexpired, or refreshable). */
+function savedOAuth(): AuthProvider[] {
+  const saved: AuthProvider[] = []
+  const claude = getClaudeAIOAuthTokens()
+  if (claude?.accessToken && (claude.refreshToken || !isOAuthTokenExpired(claude.expiresAt))) saved.push('anthropic')
+  if (getChatGPTOAuthInfo()) saved.push('openai')
+  return saved
+}
+
 async function status(): Promise<AccountStatus> {
   clearAuthCaches()
   const anthropic = anthropicKey()
   const openai = openaiKey()
   const keys = [keyInfo('anthropic', anthropic), keyInfo('openai', openai)]
+  const oauth = savedOAuth()
   if (getAPIProvider() === 'openai') {
     const chatgpt = getChatGPTOAuthInfo()
-    if (openai) return { kind: 'apikey', provider: 'openai', source: openai.source, keys }
+    if (openai) return { kind: 'apikey', provider: 'openai', source: openai.source, keys, oauth }
     if (chatgpt) {
       return {
         kind: 'chatgpt',
@@ -114,12 +125,13 @@ async function status(): Promise<AccountStatus> {
         name: chatgpt.accountName ?? chatgpt.email,
         plan: chatgpt.planDisplayName ? `ChatGPT ${chatgpt.planDisplayName}` : 'ChatGPT',
         keys,
+        oauth,
       }
     }
-    return { kind: null, provider: 'openai', keys }
+    return { kind: null, provider: 'openai', keys, oauth }
   }
   if (anthropic?.source === 'ANTHROPIC_API_KEY') {
-    return { kind: 'apikey', provider: 'anthropic', source: anthropic.source, keys }
+    return { kind: 'apikey', provider: 'anthropic', source: anthropic.source, keys, oauth }
   }
   const token = getAuthTokenSource()
   if (OAUTH_SOURCES.has(token.source)) {
@@ -130,13 +142,14 @@ async function status(): Promise<AccountStatus> {
       name: account?.displayName ?? account?.emailAddress,
       plan: getSubscriptionName(),
       keys,
+      oauth,
     }
   }
-  if (anthropic) return { kind: 'apikey', provider: 'anthropic', source: anthropic.source, keys }
+  if (anthropic) return { kind: 'apikey', provider: 'anthropic', source: anthropic.source, keys, oauth }
   // The rest of what `claude auth status` counts as logged in: ANTHROPIC_AUTH_TOKEN, an apiKeyHelper, a cloud provider.
-  if (token.hasToken) return { kind: 'apikey', provider: 'anthropic', source: token.source, keys }
-  if (isUsing3PServices()) return { kind: 'apikey', provider: 'anthropic', source: getAPIProvider(), keys }
-  return { kind: null, provider: 'anthropic', keys }
+  if (token.hasToken) return { kind: 'apikey', provider: 'anthropic', source: token.source, keys, oauth }
+  if (isUsing3PServices()) return { kind: 'apikey', provider: 'anthropic', source: getAPIProvider(), keys, oauth }
+  return { kind: null, provider: 'anthropic', keys, oauth }
 }
 
 async function useApiKey(provider: AuthProvider, key: string | undefined): Promise<void> {
@@ -226,6 +239,14 @@ function startOAuth(provider: AuthProvider): OAuthFlow {
   }
 }
 
+async function useOAuth(provider: AuthProvider): Promise<void> {
+  if (!savedOAuth().includes(provider)) throw new Error('No saved sign-in for this provider')
+  // Same end state as finishing a new login for `provider`.
+  dropEnvCredentials(provider)
+  useProvider(provider)
+  clearAuthCaches()
+}
+
 async function logout(): Promise<void> {
   const provider: AuthProvider = getAPIProvider() === 'openai' ? 'openai' : 'anthropic'
   if (provider === 'openai') await rm(getOpenAIAuthPath(), { force: true })
@@ -278,6 +299,7 @@ export function localAccountBackend(): AccountBackend {
     removeApiKey: removeStoredApiKey,
     setBaseUrl,
     startOAuth,
+    useOAuth,
     logout,
     readSettings,
     writeSettings,
