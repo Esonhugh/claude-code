@@ -4427,6 +4427,8 @@ function runHeadlessStreaming(
             ? parsePluginIdentifier(config.pluginSource)
             : undefined
           let startError: string | undefined
+          // Set when this request started the server, so a refusal stops it again.
+          let started: { prior: ChannelEntry[]; config: ScopedMcpServerConfig } | undefined
           if (
             (feature('KAIROS') || feature('KAIROS_CHANNELS')) &&
             config &&
@@ -4450,13 +4452,15 @@ function runHeadlessStreaming(
                 client.type === 'failed'
                   ? (client.error ?? 'Connection failed')
                   : `Server status: ${client.type}`
+            } else {
+              started = { prior, config }
             }
           }
           if (startError) {
             sendControlResponseError(message, startError)
           } else {
             const currentAppState = getAppState()
-            handleChannelEnable(
+            const enabled = handleChannelEnable(
               message.request_id,
               serverName,
               dev,
@@ -4468,6 +4472,29 @@ function runHeadlessStreaming(
               ],
               output,
             )
+            // Refused by the gate (e.g. channelsEnabled off): leave the server
+            // off as before, or it would hold the bot without delivering.
+            if (!enabled && started) {
+              setAllowedChannels(started.prior)
+              await clearServerCache(serverName, started.config)
+              const disabled = { name: serverName, type: 'disabled' as const, config: started.config }
+              const prefix = getMcpPrefix(serverName)
+              setAppState(prev => ({
+                ...prev,
+                mcp: {
+                  ...prev.mcp,
+                  clients: prev.mcp.clients.map(c => (c.name === serverName ? disabled : c)),
+                  tools: reject(prev.mcp.tools, t => t.name?.startsWith(prefix)),
+                  commands: reject(prev.mcp.commands, c => commandBelongsToServer(c, serverName)),
+                  resources: omit(prev.mcp.resources, serverName),
+                },
+              }))
+              dynamicMcpState = {
+                ...dynamicMcpState,
+                clients: dynamicMcpState.clients.map(c => (c.name === serverName ? disabled : c)),
+                tools: dynamicMcpState.tools.filter(t => !t.name?.startsWith(prefix)),
+              }
+            }
           }
         } else if (message.request.subtype === 'mcp_authenticate') {
           const serverName = message.request.serverName as string
@@ -6277,12 +6304,14 @@ function handleChannelEnable(
   dev: boolean,
   connectionPool: readonly MCPServerConnection[],
   output: Stream<StdoutMessage>,
-): void {
-  const respondError = (error: string) =>
+): boolean {
+  const respondError = (error: string) => {
     output.enqueue({
       type: 'control_response',
       response: { subtype: 'error', request_id: requestId, error },
     })
+    return false
+  }
 
   if (!(feature('KAIROS') || feature('KAIROS_CHANNELS'))) {
     return respondError('channels feature not available in this build')
@@ -6388,6 +6417,7 @@ function handleChannelEnable(
       response: undefined,
     },
   })
+  return true
 }
 
 // Fork: pending channel permission prompts of this headless session.
