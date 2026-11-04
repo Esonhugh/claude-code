@@ -59,11 +59,11 @@ exit 0
 
 ## 用 `/hooks` 查看已登记的 hook
 
-`/hooks` 列出每个事件和数量（只读；要修改请编辑 settings.json 或直接让 Claude 改）：
+`/hooks` 按事件列出每个 hook，标出来源（如 `[User]`）、matcher 和类型（只读；要修改请编辑 settings.json 或直接让 Claude 改）：
 
 ![/hooks 列表](images/hooks-menu.png)
 
-选中事件、再选 matcher，能看到这个事件的退出码约定和具体命令来自哪个配置文件：
+选中一个 hook 按 Enter，能看到它的事件、matcher、来自哪个配置文件和完整命令：
 
 ![/hooks 详情](images/hooks-detail.png)
 
@@ -145,4 +145,4 @@ exit 0
 
 ## 说明
 
-画面来自实际运行，模型回复由测试用假 API 生成（`FAKE_DONE`，提示词里的 `DO<<…>>` 是让假 API 调用工具的指令）。
+画面来自实际运行，模型回复由测试用假 API 按脚本生成。

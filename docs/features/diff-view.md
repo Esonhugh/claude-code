@@ -56,7 +56,7 @@ Claude 改了一堆文件之后，你想知道它到底动了哪些地方。`/di
 
 ## 效果
 
-以下画面均为 160×42 tmux 中实拍：仓库默认分支 `master`，当前在 `feature/health`（比 master 多一个提交改了 `src/util.ts`）；会话开始前已手动改了 `README.md`；第 1 轮 Claude 编辑 `server.ts` 并新建 `tests/server.test.ts`、`dist/app.min.js`，第 2 轮再改 `server.ts`。左侧对话里的 `DO<<…>>` 是测试用假 API 的脚本指令；文本画面中的临时目录已替换为 `/home/user/demo1`。
+以下画面均为 160×42 tmux 中实拍：仓库默认分支 `master`，当前在 `feature/health`（比 master 多一个提交改了 `src/util.ts`）；会话开始前已手动改了 `README.md`；第 1 轮 Claude 编辑 `server.ts` 并新建 `tests/server.test.ts`、`dist/app.min.js`，第 2 轮再改 `server.ts`。文本画面中的临时目录已替换为 `/home/user/demo1`。
 
 ### 默认：本会话的变更
 
@@ -145,14 +145,14 @@ src/util.ts                                                         +1
 
 ### 按轮次回看（`source:`）
 
-`source: Current ▾` 下拉框列出每一轮的快照 `T1`、`T2`…，选中后只看那一轮 Claude 改了什么，标题下显示该轮提示的开头：
+`source: Current ▾` 是下拉框，点开后在同一行列出每一轮的快照（`Current  T2  T1`），选中某一轮后只看那一轮 Claude 改了什么，标题下显示该轮提示的开头：
 
 ![按轮次查看](images/diff-view-turn.png)
 
 ```text
                                                                      ✕
 3 files changed +10                                       source: T1 ▾
-Turn 1 "add a health endpoint DO<<Rea…"
+Turn 1 "add a health endpoint"
 
 /home/user/demo1/server.ts                                          +4
 /home/user/demo1/tests/server.test.ts                               +4
