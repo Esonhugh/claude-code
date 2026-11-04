@@ -6428,6 +6428,7 @@ function relayChannelPermission(
   const targets = filterPermissionRelayClients(
     clients,
     client =>
+      client.type === 'connected' &&
       gateChannelServer(
         client.name,
         client.capabilities,

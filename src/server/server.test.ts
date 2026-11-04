@@ -347,7 +347,9 @@ describe('SessionManager idle timeout with channels', () => {
       { idleTimeoutMs: 50 },
     )
     const gone = async (id: string) => {
-      for (let i = 0; i < 100 && manager.get(id); i++) await Bun.sleep(20)
+      // The channel moves once b's child answers; a cold `bun -e` child can
+      // take seconds to start under parallel test load.
+      for (let i = 0; i < 500 && manager.get(id); i++) await Bun.sleep(20)
       return !manager.get(id)
     }
     try {

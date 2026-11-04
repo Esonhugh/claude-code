@@ -1540,11 +1540,11 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       const settings = page.locator('.dialog')
       await settings.locator('.pj-model').click()
       const taskMenu = settings.locator('[role=menu]')
-      const unreachable = await taskMenu.evaluate(menu => {
+      const unreachable = await taskMenu.evaluate((menu: HTMLElement) => {
         menu.scrollTop = 0
         const box = menu.getBoundingClientRect()
         if (box.top < 0 || box.bottom > innerHeight) return [`menu ${box.top}..${box.bottom} of ${innerHeight}`]
-        return [...menu.querySelectorAll<HTMLElement>('button[role=menuitemradio]')].flatMap(row => {
+        return Array.from(menu.querySelectorAll<HTMLElement>('button[role=menuitemradio]')).flatMap(row => {
           row.scrollIntoView({ block: 'nearest' })
           const r = row.getBoundingClientRect()
           const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2)
