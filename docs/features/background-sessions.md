@@ -59,9 +59,9 @@ backgrounded · 387c1190
            0 awaiting input · 3 working · 1 completed
 
 Working
- ✻ write-changelog  FAKE_DONE                                                                             33s
+ ✻ write-changelog  CHANGELOG 已更新。                                                                    33s
  ✻ run-migrations   starting…                                                                             36s
- ✻ clean-build      FAKE_DONE                                                                             39s
+ ✻ clean-build      build 已清理。                                                                        39s
 
 Completed
  ∙ old-spike        stopped                                                                               45s

@@ -36,8 +36,8 @@ for await (const message of run) {
 system init model=claude-opus-5-5
 assistant tool_use Bash {"command":"ls","description":"list files"}
 tool_result "api\nbuild\nnotes.md\nt.txt\ntodo.md\nu.txt\nv.txt\nweb"
-assistant text FAKE_DONE
-result success $0.0003 FAKE_DONE
+assistant text 完成。
+result success $0.0003 完成。
 ```
 
 消息依次是：会话初始化（`system/init`）→ Claude 决定调用工具（`assistant` 里的 `tool_use`）→ 工具结果（`user` 里的 `tool_result`）→ Claude 的回复 → 最终 `result`（含费用）。
@@ -85,12 +85,12 @@ CLAUDE_FORK_BIN=/path/to/built-claude bun openai-provider.mjs
 ```text
 $ bun openai-provider.mjs          # OPENAI_BASE_URL 指向假 Responses API
 init model=gpt-5.6-sol
-result success FAKE_OPENAI_DONE
+result success 完成。
 # 假 API 收到的请求：{"model":"gpt-5.6-sol","access_programs":{"cyber":"daybreak_blue"}}
 
 $ python3 openai_provider.py       # 同上，Python SDK
 init model=gpt-5.6-sol
-result success FAKE_OPENAI_DONE
+result success 完成。
 
 $ bun fork-settings.mjs
 tools SearchMemory,Workflow        # 去掉 settings 时只有 Workflow
@@ -98,7 +98,7 @@ tools SearchMemory,Workflow        # 去掉 settings 时只有 Workflow
 $ bun mods-plugin.mjs
 plugins hello-mod,agents-md
 tool_result "<tool_use_error>hello-mod: .env files are off limits</tool_use_error>"
-result success FAKE_DONE           # 不加载 Mod 时，Read 会返回 .env 的内容
+result success 完成。             # 不加载 Mod 时，Read 会返回 .env 的内容
 ```
 
 用 `extraArgs: { name: 'sdk-worker' }` 启动后，`~/.claude/sessions/<pid>.json` 里有 `"name":"sdk-worker"`、`"entrypoint":"sdk-ts"`，同机其他会话可以按这个名字给它发消息。
@@ -117,7 +117,7 @@ stdin 里除了用户消息，还可以发**控制请求**（`control_request`�
 {"request_id": "r1", "subtype": "success", "keys": ["capabilities", "commands", "agents", "output_style", "available_output_styles", "models", "account", "pid"]}
 {"request_id": "r2", "subtype": "success", "keys": ["skills"]}
 {"request_id": "r3", "subtype": "error", "error": "Cannot set permission mode: must be one of acceptEdits, auto, bypassPermissions, default, dontAsk, plan"}
-result success FAKE_DONE
+result success 完成。
 ```
 
 想让工具权限请求交给你的程序决定（SDK 的 `canUseTool`），加 `--permission-prompt-tool stdio`。
