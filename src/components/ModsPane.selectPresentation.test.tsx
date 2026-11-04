@@ -12,6 +12,7 @@ import useStdin from '../ink/hooks/use-stdin.js'
 import {getTheme} from '../utils/theme.js'
 import {resetSettingsCache} from '../utils/settings/settingsCache.js'
 import type {ModUiPane} from '../services/mods/ui.js'
+import {nodeCache} from '../ink/node-cache.js'
 import {ModsPane, validateModRenderTree} from './ModsPane.js'
 
 const envKeys=['HOME','CLAUDE_CONFIG_DIR','XDG_CONFIG_HOME','XDG_CACHE_HOME','XDG_STATE_HOME',
@@ -42,7 +43,7 @@ async function mount(initial:Record<string,unknown>={},respond:(value?:string)=>
  await until(()=>texts(dom()).some(node=>contents(node).includes('Rich:')))
  const find=(text:string)=>texts(dom()).find(node=>contents(node)===text)
  const raw=async(value:string,count=1)=>{const before=completed;reorder();stdin.push(value);await until(()=>completed===before+count)}
- return {dom,find,raw,events,dispose:()=>instance.unmount(),redraw:async(next:Record<string,unknown>)=>{props={...props,...next};pane={...pane,drawing:pane.drawing!+1,revision:pane.revision+1};instance.rerender(<ThemeProvider>{draw()}</ThemeProvider>);await until(()=>texts(dom()).some(node=>contents(node).includes('Rich:')))}}
+ return {stdin,stdout,dom,find,raw,events,dispose:()=>instance.unmount(),redraw:async(next:Record<string,unknown>)=>{props={...props,...next};pane={...pane,drawing:pane.drawing!+1,revision:pane.revision+1};instance.rerender(<ThemeProvider>{draw()}</ThemeProvider>);await until(()=>texts(dom()).some(node=>contents(node).includes('Rich:')))}}
 }
 test('Select opens on focus with official label, eight rows and remaining count',async()=>{
  const h=await mount()
@@ -52,6 +53,21 @@ function top(node:DOMElement|undefined):number{let y=0;for(let n:DOMElement|unde
 test('Select opened inside a one-row header lists its options across the header line',async()=>{
  const h=await mount({},undefined,false,true)
  try{await until(()=>h.find(' ▴')!==undefined);const header=top(h.find(' ▴'));expect(top(h.find('Zero'))).toBe(header);expect(h.find('Zero')?.textStyles?.inverse).toBe(true);expect(h.find('  Zero')).toBeUndefined();expect(top(h.find('  Beta'))).toBe(header);expect(h.find('  … 4 more')).toBeDefined();await h.raw('\u001b[B');await until(()=>h.find('  Beta')?.textStyles?.inverse===true)}finally{h.dispose()}
+})
+for(const oneRow of [true,false])test('Select picks a clicked option from the open list: '+(oneRow?'header line':'rows'),async()=>{
+ const h=await mount({},undefined,false,oneRow)
+ try{
+  await until(()=>h.find(' ▴')!==undefined)
+  ;(instances.get(h.stdout as never) as unknown as {setAltScreenActive(a:boolean,b:boolean):void}).setAltScreenActive(true,true)
+  const rect=nodeCache.get(h.find('  Beta')!.parentNode as DOMElement)!
+  h.stdin.push(`\u001b[<0;${rect.x+3};${rect.y+1}M`);h.stdin.push(`\u001b[<0;${rect.x+3};${rect.y+1}m`)
+  await until(()=>h.events.length===1&&h.find(' ▾')!==undefined)
+  expect(h.events).toEqual([{kind:'select',value:'v1'}])
+  let node=h.find(' ▾') as DOMElement|undefined;while(node&&!nodeCache.has(node))node=node.parentNode as DOMElement|undefined
+  const header=nodeCache.get(node!)!
+  h.stdin.push(`\u001b[<0;${header.x+1};${header.y+1}M`);h.stdin.push(`\u001b[<0;${header.x+1};${header.y+1}m`)
+  await until(()=>h.find(' ▴')!==undefined)
+ }finally{h.dispose()}
 })
 test('Select arrows move highlight without changing the picked header; Enter picks and closes',async()=>{
  const h=await mount()

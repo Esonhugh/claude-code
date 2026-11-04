@@ -2901,6 +2901,13 @@ function ModSelect({
       }
     }
   }
+  const pick = (event: ClickEvent, at: number) => {
+    event.stopImmediatePropagation()
+    if (event.isWindowActivation || !openRef.current) return
+    indexRef.current = at
+    setHighlight(at)
+    select()
+  }
   const option = options.find(option => option.value === picked)
   const first = Math.max(0, index - 7)
   const shown = open ? options.slice(first, first + 8) : []
@@ -2930,15 +2937,36 @@ function ModSelect({
       onBlur={() => { setFocused(false); changeOpen(false) }}
       onKeyDown={handle}
     >
-      <Text wrap="truncate-end">
-        <Text bold={focused}>{props.label === undefined ? '' : `${String(props.label)}: `}</Text>
-        {cramped
-          ? shown.map((option, offset) => <Text key={option.value} inverse={first + offset === index}>{offset === 0 ? '' : '  '}{option.label ?? option.value}</Text>)
-          : option === undefined ? <Text dimColor>none</Text> : <Text inverse={focused && !open}>{option.label ?? option.value}</Text>}
-        {cramped && hidden > 0 && <Text dimColor>  … {hidden} more</Text>}
-        <Text dimColor>{open ? ' ▴' : ' ▾'}</Text>
-      </Text>
-      {!cramped && shown.map((option, offset) => <Text key={option.value} inverse={first + offset === index} wrap="truncate-end">  {option.label ?? option.value}</Text>)}
+      {cramped ? (
+        <Box flexDirection="row" overflow="hidden">
+          <Text bold={focused}>{props.label === undefined ? '' : `${String(props.label)}: `}</Text>
+          {shown.map((option, offset) => (
+            <Box key={option.value} flexShrink={0} onClick={event => pick(event, first + offset)}>
+              <Text inverse={first + offset === index}>{offset === 0 ? '' : '  '}{option.label ?? option.value}</Text>
+            </Box>
+          ))}
+          {hidden > 0 && <Text dimColor>  … {hidden} more</Text>}
+          <Text dimColor> ▴</Text>
+        </Box>
+      ) : (
+        // Focus opens the list; a click on an already focused, closed Select reopens it.
+        <Box onClick={event => {
+          if (openRef.current || event.isWindowActivation) return
+          event.stopImmediatePropagation()
+          changeOpen(true)
+        }}>
+          <Text wrap="truncate-end">
+            <Text bold={focused}>{props.label === undefined ? '' : `${String(props.label)}: `}</Text>
+            {option === undefined ? <Text dimColor>none</Text> : <Text inverse={focused && !open}>{option.label ?? option.value}</Text>}
+            <Text dimColor>{open ? ' ▴' : ' ▾'}</Text>
+          </Text>
+        </Box>
+      )}
+      {!cramped && shown.map((option, offset) => (
+        <Box key={option.value} onClick={event => pick(event, first + offset)}>
+          <Text inverse={first + offset === index} wrap="truncate-end">  {option.label ?? option.value}</Text>
+        </Box>
+      ))}
       {!cramped && hidden > 0 && <Text dimColor>  … {hidden} more</Text>}
     </Box>
   )
