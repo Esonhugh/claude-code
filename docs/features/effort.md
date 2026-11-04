@@ -27,7 +27,7 @@ Effort 是推理强度：同一个模型，effort 越高，回答前思考得越
 
 ![/effort 命令](images/effort-command.png)
 
-- `/effort` 不带参数：显示当前档位；
+- `/effort` 不带参数：打开调节条，`←` `→` 选档位，`Tab` 开关 Ultracode，`Enter` 保存，`s` 只用于本会话；
 - `/effort auto`（或 `unset`）：清除保存的值，回到模型默认。
 
 **3. 启动时指定。** `claude --effort ultracode`。欢迎画面会写出实际发给 API 的档位（`ultracode` 显示为 `xhigh`）：

@@ -54,7 +54,7 @@ Claude 每轮可能调用很多工具，画面很长。`/focus` 打开后，每�
 
 对话越长越贵，到一定长度会自动压缩（把早期内容总结成摘要）。`/autocompact` 设置这个长度：
 
-![/autocompact](images/session-commands-autocompact.png)
+![/autocompact](images/compaction-dialog.png)
 
 - 不带参数打开对话框：`←` `→` 调整，`Enter` 应用；
 - 直接带值：`/autocompact 500k`、`/autocompact 200000`，或简写 `/autocompact 200`（范围 100k 到 1M）；

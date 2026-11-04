@@ -2831,6 +2831,11 @@ async function checkBashCommandPermission(
       return permissionResult?.behavior === 'allow'
     })
   ) {
+    // AST subcommand texts drop their redirects, so they can all allow while
+    // the whole command still writes where it needs approval.
+    if (pathResult.behavior === 'ask' && !pathResult.bashAllowRuleOverridable) {
+      return pathResult
+    }
     // Keep subcommandResults as PermissionResult for decisionReason
     return {
       behavior: 'allow',
