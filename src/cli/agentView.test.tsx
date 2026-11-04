@@ -65,6 +65,12 @@ test('the session list stays inside a short terminal and keeps the focused row i
     const end = Date.now() + 3000
     while (!check() && Date.now() < end) await new Promise(resolve => setTimeout(resolve, 20))
   }
+  // useInput's handler is refreshed in a passive effect, so a key sent right
+  // after a frame can reach the previous render's handler.
+  const press = async (key: string) => {
+    await new Promise(resolve => setTimeout(resolve, 300))
+    stdin.push(key)
+  }
   const shown = (name: string) => painted().filter(line => new RegExp(`[!✻∙] ${name} `).test(line)).length
   try {
     await settle(() => shown('alpha') === 1)
@@ -76,16 +82,13 @@ test('the session list stays inside a short terminal and keeps the focused row i
       expect(lines.some(line => line.includes('describe a task') || line.includes('reply'))).toBe(true)
     }
     check('alpha')
-    stdin.push(' ')
+    await press(' ')
     await settle(() => painted().some(line => line.includes('❯ reply')))
     check('alpha')
-    stdin.push('\u001b')
+    await press('\u001b')
     await settle(() => painted().some(line => line.includes('describe a task')))
     check('alpha')
-    for (let i = 0; i < names.length; i++) {
-      stdin.push('\u001b[B')
-      await new Promise(resolve => setTimeout(resolve, 30))
-    }
+    for (let i = 0; i < names.length; i++) await press('\u001b[B')
     await settle(() => shown('hotel') === 1)
     check('hotel')
   } finally {
