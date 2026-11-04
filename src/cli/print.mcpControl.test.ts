@@ -13,7 +13,7 @@ if (process.env[childFlag] !== '1') {
     const env = Object.fromEntries(Object.entries(process.env).filter(([key]) =>
       !/^(?:ANTHROPIC_|OPENAI_|CLAUDE_CODE_OAUTH_|CLAUDE_CODE_API_KEY_|CLAUDE_CODE_MESSAGING_|CLAUDE_CODE_USE_|CLAUDE_CODE_REMOTE)/.test(key)))
     try {
-      const child = Bun.spawn([process.execPath, 'test', import.meta.path], {
+      const child = Bun.spawn([process.execPath, 'test', '--feature=KAIROS_CHANNELS', import.meta.path], {
         cwd: join(import.meta.dir, '../..'),
         env: { ...env, [childFlag]: '1', HOME: home, CLAUDE_CONFIG_DIR: home,
           ANTHROPIC_API_KEY: 'test-only-not-a-real-key', DISABLE_TELEMETRY: '1', CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1' },
@@ -246,6 +246,32 @@ if (process.env[childFlag] !== '1') {
       const status = (i: number) => (responses[i]!.subtype === 'success' ? (responses[i] as unknown as { response: { mcpServers: { name: string; status: string }[] } }).response.mcpServers : [])
       expect(status(1)).toEqual([expect.objectContaining({ name, status: 'disabled' })])
       expect(status(3)).toEqual([expect.objectContaining({ name, status: 'connected' })])
+    } finally {
+      for (const mock of mocks) mock.mockRestore()
+    }
+  })
+  test('channel_enable stops the channel server it started when the gate refuses it', async () => {
+    const name = 'plugin:fakechat:fakechat'
+    const config: ScopedMcpServerConfig = { type: 'stdio', command: 'fakechat', args: [], scope: 'dynamic', pluginSource: 'fakechat@standin' }
+    const initial = getDefaultAppState()
+    initial.mcp.clients = [{ name, type: 'disabled', config }]
+    const allowlist = await import('../services/mcp/channelAllowlist.js')
+    const stopped: string[] = []
+    const mocks = [
+      spyOn(allowlist, 'isDeferredChannelServer').mockImplementation(n => n === name),
+      // No claude/channel capability, so gateChannelServer refuses the server.
+      spyOn(mcpClient, 'reconnectMcpServerImpl').mockImplementation(async (n, c) => ({ client: connected(n, c), tools: [], commands: [] })),
+      spyOn(mcpClient, 'clearServerCache').mockImplementation(async n => { stopped.push(n) }),
+    ]
+    try {
+      const { responses } = await runControls(initial, [
+        { subtype: 'channel_enable', serverName: name },
+        { subtype: 'mcp_status' },
+      ])
+      expect(responses[0]).toMatchObject({ subtype: 'error', error: expect.stringContaining('claude/channel') })
+      expect(stopped).toEqual([name])
+      const servers = responses[1]!.subtype === 'success' ? (responses[1] as unknown as { response: { mcpServers: { name: string; status: string }[] } }).response.mcpServers : []
+      expect(servers).toEqual([expect.objectContaining({ name, status: 'disabled' })])
     } finally {
       for (const mock of mocks) mock.mockRestore()
     }

@@ -18,7 +18,6 @@ import type { ServerCapabilities } from '@modelcontextprotocol/client'
 import { z } from 'zod/v4'
 import { type ChannelEntry, getAllowedChannels } from '../../bootstrap/state.js'
 import { CHANNEL_TAG } from '../../constants/xml.js'
-import { getSubscriptionType } from '../../utils/auth.js'
 import { lazySchema } from '../../utils/lazySchema.js'
 import { parsePluginIdentifier } from '../../utils/plugins/pluginIdentifier.js'
 import { getSettingsForSource } from '../../utils/settings/settings.js'
@@ -109,17 +108,14 @@ export function wrapChannelMessage(
 }
 
 /**
- * Managed installations require explicit opt-in for every provider. Team and
- * Enterprise subscriptions also require opt-in when policy is absent.
+ * Fork: channels stay available unless the org's managed settings turn them
+ * off (`channelsEnabled: false`). Official also blocks them on Team/Enterprise
+ * plans and managed installs that never set `channelsEnabled: true`.
  */
 export function isChannelPolicyBlocked(
   policy: { channelsEnabled?: boolean } | null | undefined,
-  sub: ReturnType<typeof getSubscriptionType>,
 ): boolean {
-  return (
-    (policy != null || sub === 'team' || sub === 'enterprise') &&
-    policy?.channelsEnabled !== true
-  )
+  return policy?.channelsEnabled === false
 }
 
 export type ChannelGateResult =
@@ -196,15 +192,12 @@ export function gateChannelServer(
     }
   }
 
-  // Team subscriptions and installations with managed settings need opt-in.
-  const sub = getSubscriptionType()
   const policy = getSettingsForSource('policySettings')
-  if (isChannelPolicyBlocked(policy, sub)) {
+  if (isChannelPolicyBlocked(policy)) {
     return {
       action: 'skip',
       kind: 'policy',
-      reason:
-        'channels not enabled by org policy (set channelsEnabled: true in managed settings)',
+      reason: 'channels turned off by org policy (channelsEnabled: false in managed settings)',
     }
   }
 
