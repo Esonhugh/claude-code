@@ -74,10 +74,11 @@ jobs:
             exit 1
           fi
 
-  # The single check the shards report under.
+  # The single check the shards report under; skipped, not failed, when a newer
+  # push cancels the run.
   unit-tests:
     needs: unit-tests-shard
-    if: ${{ always() }}
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     steps:
       - run: test "${{ needs.unit-tests-shard.result }}" = success
