@@ -1956,6 +1956,19 @@ function runHeadlessStreaming(
             : omit(prev.mcp.resources, serverName),
       },
     }))
+    // A server a plugin reload added lives in dynamicMcpState only.
+    if (dynamicMcpState.clients.some(c => c.name === serverName)) {
+      dynamicMcpState = {
+        ...dynamicMcpState,
+        clients: dynamicMcpState.clients.map(c =>
+          c.name === serverName ? result.client : c,
+        ),
+        tools: [
+          ...dynamicMcpState.tools.filter(t => !t.name?.startsWith(prefix)),
+          ...result.tools,
+        ],
+      }
+    }
     if (result.client.type === 'connected') {
       registerElicitationHandlers([result.client])
       reregisterChannelHandlerAfterReconnect(result.client)
@@ -2185,8 +2198,6 @@ function runHeadlessStreaming(
     const supportedConfigs: Record<string, McpServerConfigForProcessTransport> =
       {}
     for (const [name, config] of Object.entries(newConfigs)) {
-      // Disabled, or a channel plugin this session has not enabled: startup leaves it off, so does a reload.
-      if (isMcpServerDisabled(name)) continue
       const type = config.type
       if (
         type === undefined ||
@@ -7288,6 +7299,14 @@ export async function reconcileMcpServers(
     // SDK servers are managed by the SDK process, not the CLI.
     // Just track them without trying to connect.
     if (config.type === 'sdk') {
+      added.push(name)
+      continue
+    }
+
+    // Disabled, or a channel plugin this session has not enabled: listed like
+    // at startup, so it can be turned on later, but not started.
+    if (isMcpServerDisabled(name)) {
+      newClients.push({ name, type: 'disabled', config: scopedConfig })
       added.push(name)
       continue
     }
