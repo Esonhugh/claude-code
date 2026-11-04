@@ -33,6 +33,7 @@ release-check:
 	bun run check:changelog $(VERSION)
 	bun run test:changelog
 	bun ./scripts/check-readme-test-paths.mjs
+	bun run build:web
 	bunx tsc --noEmit --pretty false
 	$(MAKE) check-mods-control-types
 	bun run lint

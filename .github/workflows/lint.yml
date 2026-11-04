@@ -28,4 +28,7 @@ jobs:
         if: ${{ !cancelled() }}
         env:
           NODE_OPTIONS: --max-old-space-size=8192
-        run: bunx tsc --noEmit --pretty false
+        # src/web/assets.ts imports the generated web/dist/assets.json.
+        run: |
+          bun run build:web
+          bunx tsc --noEmit --pretty false
