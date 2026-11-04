@@ -693,7 +693,7 @@ export function startWebServer(
     const parsed = sessionConfigBodySchema().safeParse(await readJson(req))
     if (!parsed.success) return errorResponse(400, 'Invalid request')
     if (parsed.data.profile_id && !sessionConfigs().profile(parsed.data.profile_id)) return errorResponse(400, 'Unknown profile')
-    sessionConfigs().set(id, parsed.data)
+    sessionConfigs().set(id, { profile_id: parsed.data.profile_id ?? null, config: parsed.data.config })
     return Response.json({ restart: applySessionConfig(id) ?? null, effective: sessionConfigs().effective(id) })
   }
 
