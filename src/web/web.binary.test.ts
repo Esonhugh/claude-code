@@ -1088,7 +1088,7 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       await agentInput.fill('FOLLOWUP_MSG now')
       await agentInput.press('Enter')
       await panel.locator('.agent-feed .msg.user', { hasText: 'FOLLOWUP_MSG now' }).waitFor({ timeout: 5_000 })
-      await panel.getByText('FOLLOWUP_DONE').waitFor({ timeout: 60_000 })
+      await panel.locator('.agent-feed').getByText('FOLLOWUP_DONE').first().waitFor({ timeout: 60_000 })
 
       // Back to the tree, then away to another tab.
       await panel.getByRole('button', { name: 'Back' }).click()
@@ -3071,6 +3071,63 @@ describe.skipIf(!binary || process.platform === 'darwin')('claude web account (b
       expect(await startInput.getAttribute('placeholder')).toBe('Sign in to send messages')
       expect(await page.getByRole('button', { name: 'Start', exact: true }).isDisabled()).toBe(true)
       expect(errors).toEqual([])
+    } finally {
+      await browser.close()
+    }
+  }, 90_000)
+
+  it('keeps the login-waiting card and its sign-in link inside the viewport', async () => {
+    const playwrightPath = Bun.spawnSync(['node', '-p', "require.resolve('playwright')"]).stdout.toString().trim()
+    const { chromium } = await import(playwrightPath)
+    const browser = await chromium.launch()
+    try {
+      for (const provider of ['anthropic', 'openai'])
+        for (const [width, height] of [
+          [1280, 800],
+          [390, 844],
+        ]) {
+          const page = await (await browser.newContext({ locale: 'en-US', viewport: { width, height } })).newPage()
+          await page.goto(signInUrl)
+          await page.waitForSelector('#acct-btn', { state: 'attached' })
+          const started = await page.evaluate(
+            (p: string) =>
+              fetch('/api/account/oauth', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ provider: p }),
+              }).then(r => r.status),
+            provider,
+          )
+          expect(started).toBe(200)
+          try {
+            await page.reload()
+            await page.waitForSelector('#gate .glink')
+            const box = await page.evaluate(() => {
+              const rect = (s: string) => document.querySelector(s)!.getBoundingClientRect()
+              const gate = rect('#gate')
+              const link = rect('#gate .glink')
+              const input = rect('.wl-box')
+              return {
+                vw: innerWidth,
+                scrollX: document.documentElement.scrollWidth > innerWidth,
+                gate: [gate.left, gate.right],
+                link: [link.left, link.right],
+                input: [input.left, input.right],
+              }
+            })
+            const at = `${provider} ${width}px: ${JSON.stringify(box)}`
+            expect(box.scrollX, at).toBe(false)
+            expect(box.gate[0], at).toBeGreaterThanOrEqual(0)
+            expect(box.gate[1], at).toBeLessThanOrEqual(box.vw)
+            expect(box.link[1], at).toBeLessThanOrEqual(box.gate[1])
+            // Same column as the message box under it.
+            expect(Math.abs(box.gate[0] - box.input[0]), at).toBeLessThanOrEqual(1)
+            expect(Math.abs(box.gate[1] - box.input[1]), at).toBeLessThanOrEqual(1)
+          } finally {
+            await page.evaluate(() => fetch('/api/account/oauth', { method: 'DELETE' }))
+            await page.context().close()
+          }
+        }
     } finally {
       await browser.close()
     }

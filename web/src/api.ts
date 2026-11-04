@@ -207,6 +207,8 @@ export type Account = {
   source?: string
   /** `source` is set when the provider has a key configured. */
   keys: { provider: AuthProvider; base_url: string; source?: string; tail?: string }[]
+  /** Providers with a saved OAuth sign-in the page can switch to without a new login. */
+  oauth: AuthProvider[]
   pending?: { provider: AuthProvider; url: string; manual_url: string }
   error?: string
 }
@@ -239,6 +241,10 @@ export const useSavedKey = (provider: AuthProvider) =>
 
 export const startOAuth = (provider: AuthProvider) =>
   sendJson('/api/account/oauth', 'POST', { provider }) as Promise<{ url: string; manual_url: string }>
+
+/** Switches to the provider's saved OAuth sign-in. */
+export const useSavedOAuth = (provider: AuthProvider) =>
+  sendJson('/api/account/oauth/use', 'POST', { provider }) as Promise<Account>
 
 export const submitOAuthCode = (code: string) => sendJson('/api/account/oauth/code', 'POST', { code })
 
