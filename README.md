@@ -1,7 +1,7 @@
 # Unofficial Claude Code
 
 
-https://github.com/user-attachments/assets/7299b965-da57-45c4-899a-0a1685ae4bdf
+https://github.com/user-attachments/assets/064b525d-945d-462b-a7c3-a2ea4fdf5288
 
 
 基于 Claude Code 分发产物恢复的非官方 TypeScript/TSX 源码工作区，并持续维护本地 CLI、Agent、Workflow、OpenAI/Codex 兼容和调试能力。

@@ -1,6 +1,6 @@
 # README 宣传视频
 
-[宣传视频](https://github.com/user-attachments/assets/7299b965-da57-45c4-899a-0a1685ae4bdf)（1920×1080，30fps，约 77 秒，带音乐和音效）由本目录的 Remotion 项目生成，作为 GitHub 附件上传后嵌入仓库根目录 README。视频不入库；附件上限 10 MB，压缩参数见下方。
+[宣传视频](https://github.com/user-attachments/assets/064b525d-945d-462b-a7c3-a2ea4fdf5288)（1920×1080，30fps，约 77 秒，带音乐和音效）由本目录的 Remotion 项目生成，作为 GitHub 附件上传后嵌入仓库根目录 README。视频不入库；附件上限 10 MB，压缩参数见下方。
 
 ## 结构
 
