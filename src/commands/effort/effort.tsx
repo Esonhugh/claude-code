@@ -2,6 +2,7 @@ import * as React from 'react'
 import { Dialog } from '../../components/design-system/Dialog.js'
 import { Box, Text, useInput } from '../../ink.js'
 import { useMainLoopModel } from '../../hooks/useMainLoopModel.js'
+import { useTerminalSize } from '../../hooks/useTerminalSize.js'
 import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
   logEvent,
@@ -20,6 +21,8 @@ import {
   isEffortLevel,
   toPersistableEffort,
 } from '../../utils/effort.js'
+import { GATEWAY_EFFORT_LEVELS } from '../../utils/model/modelInfos.js'
+import { getGatewayModelOptions } from '../../utils/model/openaiModelOptions.js'
 import { getAPIProvider } from '../../utils/model/providers.js'
 import { updateSettingsForSource } from '../../utils/settings/settings.js'
 
@@ -158,8 +161,7 @@ function ShowCurrentEffort({
   return null
 }
 
-// 2.1.311 slider geometry: gaps between labels, and a 14-column minimum.
-const LABEL_GAPS = [5, 5, 5, 6]
+// 2.1.311 slider geometry: 5-column gaps (6 before max), and a 14-column minimum.
 const MIN_SLIDER_WIDTH = 14
 const LEVEL_COLORS: Partial<Record<string, keyof Theme>> = {
   low: 'warning',
@@ -178,23 +180,31 @@ function EffortPicker({
   const effortValue = useAppState(s => s.effortValue)
   const model = useMainLoopModel()
   const setAppState = useSetAppState()
-  const levels = getSupportedEffortLevelsForModel(model).filter(
-    level => level !== 'minimal' || getAPIProvider() === 'openai',
-  )
-  const [index, setIndex] = React.useState(() =>
-    Math.max(
-      0,
-      (levels as readonly string[]).indexOf(
-        getDisplayedEffortLevel(model, effortValue),
-      ),
-    ),
-  )
+  const [levels, initialIndex] = React.useMemo(() => {
+    const base: readonly string[] = getGatewayModelOptions().some(
+      option => option.value === model,
+    )
+      ? GATEWAY_EFFORT_LEVELS
+      : getSupportedEffortLevelsForModel(model).filter(
+          level => level !== 'minimal' || getAPIProvider() === 'openai',
+        )
+    // A configured level (settings or CLAUDE_CODE_EFFORT_LEVEL) is sent as-is
+    // even when the model allowlist lacks it, so the slider shows and marks it.
+    const applied = resolveAppliedEffort(model, effortValue)
+    const current =
+      typeof applied === 'string' ? applied : getDisplayedEffortLevel(model, effortValue)
+    const shown = base.includes(current)
+      ? base
+      : EFFORT_LEVELS.filter(level => base.includes(level) || level === current)
+    return [shown, Math.max(0, shown.indexOf(current))] as const
+  }, [model, effortValue])
+  const [index, setIndex] = React.useState(initialIndex)
   const ultracodeAvailable = levels.includes('xhigh')
   const [ultracode, setUltracode] = React.useState(effortValue === 'ultracode')
 
   const finish = (sessionOnly: boolean) => {
     const result = setEffortValue(
-      ultracode ? 'ultracode' : levels[index]!,
+      ultracode ? 'ultracode' : (levels[index] as EffortValue),
       sessionOnly,
     )
     if (result.effortUpdate) {
@@ -212,7 +222,16 @@ function EffortPicker({
     else if (key.tab && ultracodeAvailable) setUltracode(on => !on)
   })
 
-  const gaps = levels.slice(1).map((_, i) => LABEL_GAPS[i] ?? 5)
+  // Labels plus the 5/6-column gaps; terminals too narrow for that get 2-column gaps.
+  const { columns } = useTerminalSize()
+  const available = columns - 4
+  const labelsWidth = levels.join('').length
+  const wide =
+    labelsWidth + 5 * (levels.length - 1) + (levels.includes('max') ? 1 : 0) <=
+    available
+  const gaps = levels
+    .slice(1)
+    .map(level => (!wide ? 2 : level === 'max' ? 6 : 5))
   const labelStarts = levels.map((_, i) =>
     levels
       .slice(0, i)
@@ -225,6 +244,9 @@ function EffortPicker({
   // The marker sits under the middle of the selected label.
   const marker =
     labelStarts[index]! + Math.floor((levels[index]!.length - 1) / 2)
+  // "Ultracode  off" plus its 6-column margin goes under the slider when it
+  // would not fit beside it.
+  const ultracodeBelow = width + 6 + 14 > available
   return (
     <Dialog
       title="Effort"
@@ -236,7 +258,12 @@ function EffortPicker({
         </Text>
       )}
     >
-      <Box flexDirection="row" justifyContent="center" width="100%">
+      <Box
+        flexDirection={ultracodeBelow ? 'column' : 'row'}
+        justifyContent="center"
+        alignItems={ultracodeBelow ? 'center' : undefined}
+        width="100%"
+      >
         <Box flexDirection="column" width={width}>
           <Box justifyContent="space-between">
             <Text>Faster</Text>
@@ -263,7 +290,11 @@ function EffortPicker({
           </Text>
         </Box>
         {ultracodeAvailable && (
-          <Box flexDirection="column" marginLeft={6} marginTop={1}>
+          <Box
+            flexDirection="column"
+            marginLeft={ultracodeBelow ? 0 : 6}
+            marginTop={1}
+          >
             <Text>
               Ultracode{'  '}<Text bold>{ultracode ? 'on' : 'off'}</Text>
             </Text>

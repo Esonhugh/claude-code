@@ -642,7 +642,7 @@ export function useManageMCPConnections(
                     gate.kind === 'disabled'
                       ? 'Channels disabled by CLAUDE_CODE_DISABLE_CHANNELS'
                       : gate.kind === 'policy'
-                          ? 'Channels are not enabled for your org · have an administrator set channelsEnabled: true in managed settings'
+                          ? 'Channels are turned off for your org · managed settings set channelsEnabled: false'
                           : gate.reason
                   addNotification({
                     key: `channels-blocked-${gate.kind}`,

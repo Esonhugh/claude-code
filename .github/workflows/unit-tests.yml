@@ -5,11 +5,27 @@ name: Unit tests
 on:
   workflow_dispatch:
   pull_request:
+    paths-ignore:
+      - 'docs/**'
+      - 'README.md'
+      - 'CHANGELOG.md'
+      - 'CLAUDE.md'
+      - 'CLAUDE-workflow.md'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  unit-tests:
+  # Split across runners by file index: on one runner this took ~18 min.
+  unit-tests-shard:
+    name: unit-tests (${{ matrix.shard }}/4)
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
     steps:
       - uses: actions/checkout@v4
 
@@ -19,9 +35,6 @@ jobs:
       - name: Refresh the Git index
         run: git update-index -q --refresh
 
-      - name: Install ripgrep
-        run: sudo apt-get update && sudo apt-get install -y ripgrep
-
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
@@ -30,6 +43,12 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
+      # The rg the binary embeds, on PATH; saves an apt-get update per shard.
+      - name: Put ripgrep on PATH
+        run: |
+          echo "$PWD/node_modules/@vscode/ripgrep-linux-x64/bin" >> "$GITHUB_PATH"
+          "$PWD/node_modules/@vscode/ripgrep-linux-x64/bin/rg" --version
+
       - name: Run unit tests
         # bun test sets NODE_ENV=test, where a missing Claude credential is an
         # error; tests that need no credential or OAuth set up their own.
@@ -37,8 +56,9 @@ jobs:
           ANTHROPIC_API_KEY: sk-ant-test-placeholder
         run: |
           mkdir -p "$RUNNER_TEMP/unit"
-          git ls-files 'src/**/*.test.ts' 'src/**/*.test.tsx' \
+          git ls-files 'src/**/*.test.ts' 'src/**/*.test.tsx' 'web/src/**/*.test.ts' \
             | grep -vxF -e src/utils/permissions/permissions.networkLists.test.ts -e src/utils/sandbox/sandbox-adapter.test.ts \
+            | awk -v n=4 -v i=${{ matrix.shard }} 'NR % n == i - 1' \
             > "$RUNNER_TEMP/unit/files.txt"
           export LOGS="$RUNNER_TEMP/unit"
           xargs -P 4 -I{} sh -c 'log="$LOGS/$(echo "$1" | tr / _).log"; bun test --timeout 60000 "$1" >"$log" 2>&1 || echo "$1" >>"$LOGS/failed.txt"' _ {} \
@@ -53,3 +73,47 @@ jobs:
             echo "Failed files:"; cat "$LOGS/failed.txt"
             exit 1
           fi
+
+  # The single check the shards report under.
+  unit-tests:
+    needs: unit-tests-shard
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    steps:
+      - run: test "${{ needs.unit-tests-shard.result }}" = success
+
+  # src/web/web.binary.test.ts drives the built binary's `claude web` from
+  # Chromium; it is skipped above, where CLAUDE_WEB_BINARY is unset.
+  web-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      # A 0.0.0-dev build is refused by the minimum-version check.
+      CLAUDE_CODE_VERSION: 2.1.296
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Install ripgrep
+        run: sudo apt-get update && sudo apt-get install -y ripgrep
+
+      # Playwright is not a project dependency; it is added for this job only.
+      - name: Install Playwright Chromium
+        run: |
+          bun add --no-save playwright@1.63.0
+          bunx playwright install --with-deps chromium
+
+      - name: Build binary
+        run: |
+          bun run build
+          bun run package:binary
+
+      - name: Web e2e
+        run: CLAUDE_WEB_BINARY="$(ls "$PWD"/dist/release/claude-code-v*-linux-x64 | head -n 1)" bun test --timeout 300000 src/web/web.binary.test.ts

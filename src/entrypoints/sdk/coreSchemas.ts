@@ -2023,6 +2023,17 @@ export const SDKUILogMessageSchema = lazySchema(() =>
   }),
 )
 
+export const SDKScheduledTaskFireMessageSchema = lazySchema(() =>
+  z
+    .object({
+      type: z.literal('system'),
+      subtype: z.literal('scheduled_task_fire'),
+      uuid: UUIDPlaceholder(),
+      session_id: z.string(),
+    })
+    .describe('Fork-only. A scheduled task (cron) fired; its prompt follows as a turn, as the REPL\'s "Running scheduled task" line.'),
+)
+
 export const SDKPartialAssistantMessageSchema = lazySchema(() =>
   z.object({
     type: z.literal('stream_event'),
@@ -2287,6 +2298,7 @@ export const SDKTaskNotificationMessageSchema = lazySchema(() =>
         duration_ms: z.number(),
       })
       .optional(),
+    waiting: z.boolean().optional().describe('Fork-only. The agent stopped with its own background work still running and resumes when that work reports; the task is not over.'),
     uuid: UUIDPlaceholder(),
     session_id: z.string(),
   }),
@@ -2363,7 +2375,7 @@ export const SDKSessionStateChangedMessageSchema = lazySchema(() =>
       session_id: z.string(),
     })
     .describe(
-      "Mirrors notifySessionStateChanged. 'idle' fires after heldBackResult flushes and the bg-agent do-while exits — authoritative turn-over signal.",
+      "Mirrors notifySessionStateChanged. 'idle' fires after the bg-agent do-while exits — authoritative turn-over signal.",
     ),
 )
 
@@ -2548,6 +2560,7 @@ export const SDKMessageSchema = lazySchema(() =>
     SDKResultMessageSchema(),
     SDKSystemMessageSchema(),
     SDKUILogMessageSchema(),
+    SDKScheduledTaskFireMessageSchema(),
     SDKUIInvalidateMessageSchema(),
     SDKUIPanesMessageSchema(),
     SDKUIScrollMessageSchema(),

@@ -31,13 +31,12 @@ import { collapseTeammateShutdowns } from '../utils/collapseTeammateShutdowns.js
 import { getGlobalConfig } from '../utils/config.js'
 import { isEnvTruthy } from '../utils/envUtils.js'
 import { applyFocusView } from '../utils/focusView.js'
-import { isFullscreenEnvEnabled } from '../utils/fullscreen.js'
 import { applyGrouping } from '../utils/groupToolUses.js'
 import {
   buildMessageLookups,
   createAssistantMessage,
   deriveUUID,
-  getMessagesAfterCompactBoundary,
+  getMessagesForCompactDisplay,
   getToolUseID,
   getToolUseIDs,
   hasUnresolvedHooksFromLookup,
@@ -438,7 +437,10 @@ const MessagesImpl = ({
   )
 
   const normalizedMessages = useMemo(
-    () => normalizeMessages(messages).filter(isNotEmptyMessage),
+    () =>
+      normalizeMessages(getMessagesForCompactDisplay(messages)).filter(
+        isNotEmptyMessage,
+      ),
     [messages],
   )
 
@@ -572,24 +574,11 @@ const MessagesImpl = ({
   const focusLoading = focusView && isLoading
   const { collapsed, lookups, hasTruncatedMessages, hiddenMessageCount } =
     useMemo(() => {
-      // In fullscreen mode the alt buffer has no native scrollback, so the
-      // compact-boundary filter just hides history the ScrollBox could
-      // otherwise scroll to. Main-screen mode keeps the filter — pre-compact
-      // rows live above the viewport in native scrollback there, and
-      // re-rendering them triggers full resets.
-      // includeSnipped: UI rendering keeps snipped messages for scrollback
-      // (this PR's core goal — full history in UI, filter only for the model).
-      // Also avoids a UUID mismatch: normalizeMessages derives new UUIDs, so
-      // projectSnippedView's check against original removedUuids would fail.
-      const compactAwareMessages =
-        verbose || isFullscreenEnvEnabled()
-          ? normalizedMessages
-          : getMessagesAfterCompactBoundary(normalizedMessages, {
-              includeSnipped: true,
-            })
-
+      // Pre-compact history stays on screen in both modes, like official:
+      // main-screen rows already sit in native scrollback (dropping them would
+      // force a full reset that wipes it), and fullscreen has no scrollback.
       const messagesToShowNotTruncated = reorderMessagesInUI(
-        compactAwareMessages
+        normalizedMessages
           .filter(
             (msg): msg is Exclude<NormalizedMessage, ProgressMessageType> =>
               msg.type !== 'progress',

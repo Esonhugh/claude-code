@@ -10,6 +10,8 @@ import { getEmptyToolPermissionContext, type ToolUseContext } from '../../Tool.j
 import type { CanUseToolFn } from '../../hooks/useCanUseTool.js'
 import type { AppState } from '../../state/AppStateStore.js'
 import type { AssistantMessage } from '../../types/message.js'
+import { killShellTasksForAgent } from '../../tasks/LocalShellTask/killShellTasks.js'
+import type { AgentId } from '../../types/ids.js'
 import { runCleanupFunctions } from '../../utils/cleanupRegistry.js'
 import { FileStateCache } from '../../utils/fileStateCache.js'
 import { hasPermissionsToUseTool } from '../../utils/permissions/permissions.js'
@@ -27,7 +29,9 @@ import { capturePaneActionSchema } from './actionSchemas.js'
 import {
   applyTerminalKeystrokes,
   getTerminalManager,
+  getTerminalScreen,
   refreshTerminalTaskPreview,
+  sendTerminalInputFromHost,
   TerminalTool,
   resetTerminalManagerForTesting,
   terminalTaskRegistry,
@@ -588,6 +592,41 @@ test('uses the shared task state setter and routes subagent notifications', asyn
   )
 })
 
+test('an exiting subagent closes the panes it opened, like its background shells', async () => {
+  let rootState: TestAppState = {
+    toolPermissionContext: { mode: 'default' } as AppState['toolPermissionContext'],
+    tasks: {},
+  }
+  const agentId = 'a00000000000000aa' as ToolUseContext['agentId']
+  const context = createContext({
+    agentId,
+    setAppState: _updater => {},
+    setAppStateForTasks: updater => {
+      rootState = updater(rootState as AppState) as TestAppState
+    },
+    getAppState: () => rootState as AppState,
+  })
+  const driver = new FakePtyDriver()
+  const manager = new PtySessionManager({ driver })
+  resetTerminalManagerForTesting(manager)
+  const opened = await TerminalTool.call(
+    { action: 'new-session', cwd: process.cwd(), cols: 80, rows: 24 },
+    context,
+    allowPermission,
+    TEST_ASSISTANT_MESSAGE,
+  )
+  const target = String((opened.data as { target: string }).target)
+
+  killShellTasksForAgent(
+    agentId as AgentId,
+    () => rootState as AppState,
+    context.setAppStateForTasks!,
+  )
+  await new Promise(resolve => setTimeout(resolve, 20))
+
+  assert.deepEqual(driver.killedSignals, [{ sessionId: target, signal: 'SIGTERM' }])
+})
+
 test('records the resolved default shell in task state for new-session', async () => {
   const context = createContext()
   const result = await TerminalTool.call(
@@ -882,6 +921,63 @@ test('the permission dialog description names the whole submitted line', async (
     {} as never,
   )
   assert.equal(description, 'Runs: rm -rf build')
+})
+
+test('the task keeps the command the tool was asked to run, not the spawned argv', async () => {
+  const context = createContext()
+  const tasks = () => Object.values(context.getAppState().tasks) as TerminalTask[]
+  await TerminalTool.call(
+    { action: 'new-session', command: 'python', args: ['retrieval_eval.py', '--split', 'dev'], cwd: process.cwd() },
+    context,
+    allowPermission,
+    TEST_ASSISTANT_MESSAGE,
+  )
+  await TerminalTool.call(
+    { action: 'new-session', command: 'bash', args: ['-c', 'echo a b'], cwd: process.cwd() },
+    context,
+    allowPermission,
+    TEST_ASSISTANT_MESSAGE,
+  )
+  await TerminalTool.call({ action: 'new-session', cwd: process.cwd() }, context, allowPermission, TEST_ASSISTANT_MESSAGE)
+  const [python, bash, shell] = tasks()
+  assert.equal(python?.requestedCommand, 'python retrieval_eval.py --split dev')
+  assert.equal(bash?.requestedCommand, "bash -c 'echo a b'")
+  // No command: the default shell, named without its resolved path or login args.
+  const resolved = resolveTerminalCommand({ cwd: process.cwd() }).command
+  assert.equal(shell?.requestedCommand, resolved.split('/').at(-1))
+  assert.equal(shell?.command, resolved)
+})
+
+test('host input reaches the PTY, shows on the colored screen and joins the pending line', async () => {
+  const context = createContext()
+  const opened = await TerminalTool.call(
+    { action: 'new-session', cwd: process.cwd(), cols: 40, rows: 4 },
+    context,
+    allowPermission,
+    TEST_ASSISTANT_MESSAGE,
+  )
+  const target = String((opened.data as { target: string }).target)
+  // The fake driver echoes what is written, like a shell with echo on.
+  await sendTerminalInputFromHost(target, { text: 'A \x1b[31mred\x1b[0m \x1b[1;94mB' }, context.setAppState)
+  assert.deepEqual(getTerminalScreen(target), {
+    cols: 40,
+    rows: 4,
+    lines: [[{ text: 'A ' }, { text: 'red', fg: 31 }, { text: ' ' }, { text: 'B', fg: 94, bold: true }], [], [], []],
+  })
+  const task = Object.values(context.getAppState().tasks).find(
+    (value): value is TerminalTask => value.type === 'interactive_terminal' && value.sessionId === target,
+  )
+  assert.match(task?.preview ?? '', /A red B/)
+
+  resetTerminalManagerForTesting(createFakeTerminalManager())
+  const session = await openPermissionSession({ mode: 'default' })
+  await sendTerminalInputFromHost(session.target, { text: 'rm -rf ' }, context.setAppState)
+  const description = await TerminalTool.description(
+    { action: 'send-keys', target: session.target, text: 'build', enter: true },
+    {} as never,
+  )
+  assert.equal(description, 'Runs: rm -rf build')
+  assert.equal(getTerminalScreen('term-nosuch'), undefined)
 })
 
 test('refreshes task preview on display-message for large terminal redraw output', async () => {

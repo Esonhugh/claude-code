@@ -614,6 +614,19 @@ export function createSyntheticUserCaveatMessage(): UserMessage {
 /**
  * Formats the command-input breadcrumb the model sees when a slash command runs.
  */
+// Like official's localCommandOutput marker: the input row of a local command
+// (/context, /cost, …) is not a prompt, so the rewind list skips it. Runtime
+// only, so a resumed session lists it again, as in official.
+const LOCAL_COMMAND_INPUT = Symbol('localCommandInput')
+
+export function markLocalCommandInput(message: UserMessage): UserMessage {
+  return Object.assign(message, { [LOCAL_COMMAND_INPUT]: true })
+}
+
+export function isLocalCommandInput(message: Message): boolean {
+  return LOCAL_COMMAND_INPUT in message
+}
+
 export function formatCommandInputTags(
   commandName: string,
   args: string,
@@ -4735,6 +4748,18 @@ export function createBridgeStatusMessage(
   }
 }
 
+export function formatCronFireTime(d: Date): string {
+  return d
+    .toLocaleString('en-US', {
+      month: 'short',
+      day: 'numeric',
+      hour: 'numeric',
+      minute: '2-digit',
+    })
+    .replace(/,? at |, /, ' ')
+    .replace(/ ([AP]M)/, (_, ampm) => ampm.toLowerCase())
+}
+
 export function createScheduledTaskFireMessage(
   content: string,
 ): SystemScheduledTaskFireMessage {
@@ -4983,6 +5008,23 @@ export function findLastCompactBoundaryIndex<
     }
   }
   return -1 // No boundary found
+}
+
+/**
+ * The REPL keeps pre-compact messages on screen after a live compaction, like
+ * official. The boundary then sits under its own history and the kept tail
+ * repeats messages already shown above it, so drop both from the display. A
+ * leading boundary (resume, or older history trimmed) stays as the marker.
+ */
+export function getMessagesForCompactDisplay(messages: Message[]): Message[] {
+  const last = findLastCompactBoundaryIndex(messages)
+  if (last <= 0) return messages
+  const shownBefore = new Set(messages.slice(0, last).map(m => m.uuid))
+  return messages.filter(
+    (m, i) =>
+      i === 0 ||
+      (!isCompactBoundaryMessage(m) && (i < last || !shownBefore.has(m.uuid))),
+  )
 }
 
 /**

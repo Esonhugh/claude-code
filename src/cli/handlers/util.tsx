@@ -16,6 +16,7 @@ import { MCPConnectionManager } from '../../services/mcp/MCPConnectionManager.js
 import { AppStateProvider } from '../../state/AppState.js'
 import { onChangeAppState } from '../../state/onChangeAppState.js'
 import { isAnthropicAuthEnabled } from '../../utils/auth.js'
+import { getBaseRenderOptions } from '../../utils/renderOptions.js'
 
 export async function setupTokenHandler(root: Root): Promise<void> {
   logEvent('tengu_setup_token_command', {})
@@ -78,6 +79,16 @@ function DoctorWithPlugins({
 
 export async function doctorHandler(root: Root): Promise<void> {
   logEvent('tengu_doctor_command', {})
+
+  // The diagnostics screen waits for a key. Without a terminal to read it
+  // from, Ink cannot enter raw mode and the command would never finish.
+  if (!process.stdin.isTTY && !getBaseRenderOptions(false).stdin) {
+    root.unmount()
+    process.stderr.write(
+      'claude doctor needs an interactive terminal. Run it from a terminal, or run /doctor in a session.\n',
+    )
+    process.exit(1)
+  }
 
   await new Promise<void>(resolve => {
     root.render(

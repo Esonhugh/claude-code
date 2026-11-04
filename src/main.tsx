@@ -205,6 +205,8 @@ import { initBuiltinPlugins } from './plugins/bundled/index.js'
 /* eslint-enable @typescript-eslint/no-require-imports */
 import { checkQuotaStatus } from './services/claudeAiLimits.js'
 import {
+  clearFetchToolsCache,
+  fetchToolsForClient,
   getMcpToolsCommandsAndResources,
   prefetchAllMcpResources,
 } from './services/mcp/client.js'
@@ -4159,6 +4161,35 @@ async function run(): Promise<CommanderCommand> {
           }))
           return getMcpToolsCommandsAndResources(
             ({ client, tools, commands }) => {
+              // Like useManageMCPConnections: refetch this server's tools on
+              // tools/list_changed so later requests in the same run see them.
+              if (client.type === 'connected' && client.capabilities?.tools?.listChanged) {
+                client.client.setNotificationHandler(
+                  'notifications/tools/list_changed',
+                  async () => {
+                    try {
+                      clearFetchToolsCache(client.name)
+                      const newTools = await fetchToolsForClient(client)
+                      headlessStore.setState(prev => ({
+                        ...prev,
+                        mcp: {
+                          ...prev.mcp,
+                          tools: [
+                            ...prev.mcp.tools.filter(
+                              t => t.mcpInfo?.serverName !== client.name,
+                            ),
+                            ...newTools,
+                          ],
+                        },
+                      }))
+                    } catch (err) {
+                      logForDebugging(
+                        `[MCP] ${client.name} tools/list_changed refresh failed: ${err}`,
+                      )
+                    }
+                  },
+                )
+              }
               headlessStore.setState(prev => ({
                 ...prev,
                 mcp: {
@@ -6081,6 +6112,56 @@ async function run(): Promise<CommanderCommand> {
             server.stop(true)
             await sessionManager.destroyAll()
           })
+        },
+      )
+  }
+
+  // claude web
+  if (feature('WEB_UI')) {
+    program
+      .command('web')
+      .description('Open a local web UI for chatting with Claude')
+      .option('--port <number>', 'HTTP port (0 = random)', '0')
+      .option(
+        '--host <string>',
+        'Bind address: loopback, or a local network address with --dangerously-allow-local-network (default: 127.0.0.1)',
+      )
+      .option(
+        '--dangerously-allow-local-network',
+        'Listen on all interfaces and accept connections from local network addresses (the sign-in token is still required)',
+      )
+      .option('--trusted-host <host...>', 'Extra Host header values to accept')
+      .option('--tls-cert <file>', 'TLS certificate (PEM); serve https')
+      .option('--tls-key <file>', 'TLS private key (PEM); use with --tls-cert')
+      .option(
+        '--preview-origin <url...>',
+        'Extra http(s) origins whose pages the preview panel may show in a frame, e.g. http://dev.internal:8080',
+      )
+      .option(
+        '--workspace <dir>',
+        'Working directory for new sessions (default: ~/.claude/web/workspace)',
+      )
+      .option('--no-open', 'Print the URL without opening a browser')
+      .option(
+        '--idle-timeout <ms>',
+        'Idle timeout for sessions with no open tab in ms (0 = never expire)',
+        '600000',
+      )
+      .option(
+        '--max-sessions <n>',
+        'Maximum concurrent sessions (0 = unlimited)',
+        '8',
+      )
+      .action(
+        async opts => {
+          // Same as `claude server`: give Ctrl+C back to the terminal.
+          stopCapturingEarlyInput()
+          if (process.stdin.isTTY) {
+            process.stdin.setRawMode(false)
+          }
+          process.stdin.pause()
+          const { runWebCommand } = await import('./web/webCommand.js')
+          await runWebCommand(opts)
         },
       )
   }

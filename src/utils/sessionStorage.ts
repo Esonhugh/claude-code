@@ -972,7 +972,8 @@ class Project {
     }
   }
 
-  async flush(): Promise<void> {
+  /** Writes the queued entries now, without waiting for other tracked writes. */
+  async drainQueued(): Promise<void> {
     // Cancel pending timer
     if (this.flushTimer) {
       clearTimeout(this.flushTimer)
@@ -984,6 +985,10 @@ class Project {
     }
     // Drain anything remaining in the queues
     await this.drainWriteQueue()
+  }
+
+  async flush(): Promise<void> {
+    await this.drainQueued()
 
     // Wait for non-queue tracked operations (e.g. removeMessageByUuid)
     if (this.pendingWriteCount === 0) {
@@ -2207,7 +2212,7 @@ function applySnipRemovals(messages: Map<UUID, TranscriptMessage>): void {
  * Replaces the `[...values].filter(pred).sort((a,b) => Date(b)-Date(a))[0]` pattern
  * which is O(n log n) + 2n Date allocations.
  */
-function findLatestMessage<T extends { timestamp: string }>(
+export function findLatestMessage<T extends { timestamp: string }>(
   messages: Iterable<T>,
   predicate: (m: T) => boolean,
 ): T | undefined {
@@ -2255,7 +2260,20 @@ export function buildConversationChain(
       : undefined
   }
   transcript.reverse()
-  return recoverOrphanedParallelToolResults(messages, transcript, seen)
+  const chain = recoverOrphanedParallelToolResults(messages, transcript, seen)
+  // Leaves are user/assistant messages, so the walk drops the last turn's
+  // duration row; official keeps it on resume.
+  for (const m of messages.values()) {
+    if (
+      m.parentUuid === leafMessage.uuid &&
+      m.type === 'system' &&
+      m.subtype === 'turn_duration'
+    ) {
+      chain.push(m)
+      break
+    }
+  }
+  return chain
 }
 
 /**
@@ -3701,7 +3719,12 @@ function walkChainBeforeParse(buf: Buffer): Buffer {
  */
 export async function loadTranscriptFile(
   filePath: string,
-  opts?: { keepAllLeaves?: boolean; buffer?: Buffer },
+  opts?: {
+    keepAllLeaves?: boolean
+    buffer?: Buffer
+    /** Keep every message before the last compact boundary, unrelinked, for display (the web history view). */
+    keepPreCompact?: boolean
+  },
 ): Promise<{
   messages: Map<UUID, TranscriptMessage>
   summaries: Map<UUID, string>
@@ -3788,7 +3811,7 @@ export async function loadTranscriptFile(
     let buf: Buffer | null = opts?.buffer ?? null
     let metadataLines: string[] | null = null
     let hasPreservedSegment = opts?.buffer !== undefined
-    if (buf === null && !isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_PRECOMPACT_SKIP)) {
+    if (buf === null && !opts?.keepPreCompact && !isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_PRECOMPACT_SKIP)) {
       const { size } = await stat(filePath)
       if (size > SKIP_PRECOMPACT_THRESHOLD) {
         const scan = await readTranscriptForLoad(filePath, size)
@@ -3826,6 +3849,7 @@ export async function loadTranscriptFile(
     // not run).
     if (
       !opts?.keepAllLeaves &&
+      !opts?.keepPreCompact &&
       !hasPreservedSegment &&
       !isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_PRECOMPACT_SKIP) &&
       buf.length > SKIP_PRECOMPACT_THRESHOLD
@@ -3972,7 +3996,7 @@ export async function loadTranscriptFile(
     // File doesn't exist or can't be read
   }
 
-  applyPreservedSegmentRelinks(messages)
+  if (!opts?.keepPreCompact) applyPreservedSegmentRelinks(messages)
   applySnipRemovals(messages)
 
   // Compute leaf UUIDs once at load time
@@ -4121,6 +4145,10 @@ async function loadSessionFile(sessionId: UUID): Promise<{
  */
 const getSessionMessages = memoize(
   async (sessionId: UUID): Promise<Set<UUID>> => {
+    // Reloaded after a compaction while writes may still be queued: read them
+    // back too, or the next recordTranscript writes those messages again.
+    // Not flush(): a tracked insertMessageChain waits on this set.
+    await getProject().drainQueued()
     const { messages } = await loadSessionFile(sessionId)
     return new Set(messages.keys())
   },

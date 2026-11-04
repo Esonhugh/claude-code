@@ -473,6 +473,23 @@ describe('peer IPC runtime', () => {
     expect(peer.frames.map(f => [f.orig_msg_id, f.status])).toEqual([[denied, 'held'], [denied, 'denied'], [approved, 'held'], [approved, 'delivered']])
   })
 
+  test('a headless session refuses a message it would hold, since no one there can approve it', async () => {
+    await writeFile(join(root, 'config/settings.json'), '{}')
+    resetSettingsCache()
+    await startUdsMessaging(socketPath, { permissionMode: 'default', headless: true })
+    const peer = await peerInbox('bypass.sock')
+    const from = formatPeerAddress(peer.path)
+    const id = randomUUID()
+    await sendRaw(socketPath, [JSON.stringify({
+      msgV: 1, msg_id: id, type: 'user', from,
+      message: { role: 'user', content: formatPeerMessage('from bypass', { from, fromMode: 'bypass' }) },
+    }) + '\n'])
+    expect(getHeldPeerMessageCount()).toBe(0)
+    expect(getCommandQueue()).toHaveLength(0)
+    await until(() => peer.frames.length >= 1)
+    expect(peer.frames.map(f => [f.orig_msg_id, f.status, f.status_detail])).toEqual([[id, 'expired', 'refused']])
+  })
+
   test('delivery receipts become one debounced notice for the sender and its model', async () => {
     await startUdsMessaging(socketPath, { isExplicit: true })
     const peer = await peerInbox('target.sock')

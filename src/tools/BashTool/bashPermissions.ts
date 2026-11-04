@@ -14,6 +14,7 @@ import {
   checkSemantics,
   nodeTypeId,
   type ParseForSecurityResult,
+  parseForSandboxFromAst,
   parseForSecurityFromAst,
   type Redirect,
   type SimpleCommand,
@@ -1576,6 +1577,43 @@ function checkSemanticsDeny(
 }
 
 /**
+ * A too-complex command still runs without asking when the sandbox contains
+ * it and the only unknowns are values (environment variables, nested command
+ * output), not the shape of the code. Deny rules apply to every command found,
+ * nested ones included; an ask rule on any of them keeps the ask.
+ */
+function checkSandboxedTooComplex(
+  input: z.infer<typeof BashTool.inputSchema>,
+  toolPermissionContext: ToolPermissionContext,
+  root: Parameters<typeof parseForSandboxFromAst>[1],
+): PermissionResult | null {
+  if (
+    !SandboxManager.isSandboxingEnabled() ||
+    !SandboxManager.isAutoAllowBashIfSandboxedEnabled() ||
+    !shouldUseSandbox(input)
+  ) {
+    return null
+  }
+  const parsed = parseForSandboxFromAst(input.command, root)
+  if (parsed.kind !== 'simple' || !checkSemantics(parsed.commands).ok) {
+    return null
+  }
+  const deny = checkSemanticsDeny(input, toolPermissionContext, parsed.commands)
+  if (deny !== null) return deny
+  const asked = parsed.commands.some(
+    cmd =>
+      matchingRulesForInput(
+        { ...input, command: cmd.text },
+        toolPermissionContext,
+        'prefix',
+      ).matchingAskRules[0] !== undefined,
+  )
+  if (asked) return null
+  const result = checkSandboxAutoAllow(input, toolPermissionContext)
+  return result.behavior === 'passthrough' ? null : result
+}
+
+/**
  * Builds the pending classifier check metadata if classifier is enabled and has allow descriptions.
  * Returns undefined if classifier is disabled, in auto mode, or no allow descriptions exist.
  */
@@ -2061,8 +2099,10 @@ async function checkBashCommandPermission(
     // (command substitution, expansion, control flow, parser differential).
     // Respect exact-match deny/ask/allow, then prefix/wildcard deny. Only
     // fall through to ask if no deny matched — don't downgrade deny to ask.
-    const earlyExit = checkEarlyExitDeny(input, appState.toolPermissionContext)
-    if (earlyExit !== null) return earlyExit
+    const earlyExit =
+      checkEarlyExitDeny(input, appState.toolPermissionContext) ??
+      (astRoot && checkSandboxedTooComplex(input, appState.toolPermissionContext, astRoot))
+    if (earlyExit) return earlyExit
     const decisionReason: PermissionDecisionReason = {
       type: 'other' as const,
       reason: astResult.reason,
@@ -2791,6 +2831,11 @@ async function checkBashCommandPermission(
       return permissionResult?.behavior === 'allow'
     })
   ) {
+    // AST subcommand texts drop their redirects, so they can all allow while
+    // the whole command still writes where it needs approval.
+    if (pathResult.behavior === 'ask' && !pathResult.bashAllowRuleOverridable) {
+      return pathResult
+    }
     // Keep subcommandResults as PermissionResult for decisionReason
     return {
       behavior: 'allow',

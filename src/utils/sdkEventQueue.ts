@@ -93,9 +93,9 @@ type TaskNotificationSdkEvent = {
 // Mirrors notifySessionStateChanged. The CCR bridge already receives this
 // via its own listener; SDK consumers (scmuxd, VS Code) need the same signal
 // to know when the main turn's generator is idle vs actively producing.
-// The 'idle' transition fires AFTER heldBackResult flushes and the bg-agent
-// do-while loop exits — so SDK consumers can trust it as the authoritative
-// "turn is over" signal even when result was withheld for background agents.
+// The 'idle' transition fires AFTER the bg-agent do-while loop exits — so SDK
+// consumers can trust it as the authoritative "turn is over" signal even when
+// background agents outlived the turn's result.
 type SessionStateChangedEvent = {
   type: 'system'
   subtype: 'session_state_changed'
@@ -191,6 +191,7 @@ export function emitTaskTerminatedSdk(
     summary?: string
     outputFile?: string
     usage?: { total_tokens: number; tool_uses: number; duration_ms: number }
+    waiting?: boolean
   },
 ): void {
   enqueueSdkEvent({
@@ -202,5 +203,6 @@ export function emitTaskTerminatedSdk(
     output_file: opts?.outputFile ?? '',
     summary: opts?.summary ?? '',
     usage: opts?.usage,
+    ...(opts?.waiting && { waiting: true }),
   })
 }

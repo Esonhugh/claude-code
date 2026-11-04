@@ -9,6 +9,7 @@ import { MonitorTool } from '../MonitorTool/MonitorTool.js'
 import { SCHEDULE_WAKEUP_TOOL_NAME } from '../ScheduleWakeupTool/prompt.js'
 import { SEND_MESSAGE_TOOL_NAME } from '../SendMessageTool/constants.js'
 import { TASK_STOP_TOOL_NAME } from '../TaskStopTool/prompt.js'
+import { TERMINAL_TOOL_NAME } from '../TerminalTool/prompt.js'
 import { filterToolsForAgent } from './agentToolUtils.js'
 
 // Official 2.1.311 gives every subagent kind Monitor, SendMessage and TaskStop.
@@ -29,5 +30,9 @@ for (const isAsync of [false, true]) {
 
 // Official 2.1.311 keeps ScheduleWakeup (the /loop pacer) on the main thread only.
 assert.equal(ALL_AGENT_DISALLOWED_TOOLS.has(SCHEDULE_WAKEUP_TOOL_NAME), true)
+
+// Fork-only Terminal: background subagents get it too, so a subagent asked to
+// drive a terminal does not fall back to a skill after ToolSearch finds nothing.
+assert.equal(ASYNC_AGENT_ALLOWED_TOOLS.has(TERMINAL_TOOL_NAME), true)
 
 console.log('agentToolUtils.officialTools.test.ts passed')

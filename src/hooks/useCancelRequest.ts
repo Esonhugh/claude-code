@@ -43,7 +43,8 @@ type CancelRequestHandlerProps = {
     f: (toolUseConfirmQueue: ToolUseConfirm[]) => ToolUseConfirm[],
   ) => void
   onCancel: () => void
-  onAgentsKilled: () => void
+  /** `passiveNotice` reaches the model with the next prompt instead of starting a turn. */
+  onAgentsKilled: (passiveNotice?: string) => void
   isMessageSelectorVisible: boolean
   screen: Screen
   abortSignal?: AbortSignal
@@ -84,6 +85,7 @@ export function CancelRequestHandler(props: CancelRequestHandlerProps): null {
   const { addNotification, removeNotification } = useNotifications()
   const lastKillAgentsPressRef = useRef<number>(0)
   const viewSelectionMode = useAppState(s => s.viewSelectionMode)
+  const hasLiveAgents = useAppState(s => Object.values(s.tasks).some(isLiveLocalAgentTask))
 
   const handleCancel = useCallback(() => {
     const cancelProps = {
@@ -159,9 +161,12 @@ export function CancelRequestHandler(props: CancelRequestHandlerProps): null {
   // returns to main thread. Otherwise just handleCancel. Must NOT claim
   // ctrl+c when main is idle at the prompt — that blocks the copy-selection
   // handler and double-press-to-exit from ever seeing the keypress.
+  // Like official, ctrl+c at an idle empty prompt first stops running
+  // background agents; once none are left, double-press exits.
+  const canStopAgents = !canCancelRunningTask && hasLiveAgents && !inputValue
   const isCtrlCActive =
     isContextActive &&
-    (canCancelRunningTask || hasQueuedCommands || isViewingTeammate)
+    (canCancelRunningTask || hasQueuedCommands || isViewingTeammate || canStopAgents)
 
   useKeybinding('chat:cancel', handleCancel, {
     context: 'Chat',
@@ -171,7 +176,7 @@ export function CancelRequestHandler(props: CancelRequestHandlerProps): null {
   // Shared kill path: stop all agents, suppress per-agent notifications,
   // emit SDK events, enqueue a single aggregate model-facing notification.
   // Returns true if anything was killed.
-  const killAllAgentsAndNotify = useCallback((): boolean => {
+  const killAllAgentsAndNotify = useCallback(({ passive = false }: { passive?: boolean } = {}): boolean => {
     const killed = killAllRunningAgentTasks(store.getState().tasks, setAppState)
     if (killed.length === 0) return false
     const descriptions: string[] = []
@@ -187,6 +192,10 @@ export function CancelRequestHandler(props: CancelRequestHandlerProps): null {
       descriptions.length === 1
         ? `Background agent "${descriptions[0]}" was stopped by the user.`
         : `${descriptions.length} background agents were stopped by the user: ${descriptions.map(d => `"${d}"`).join(', ')}.`
+    if (passive) {
+      onAgentsKilled(summary)
+      return true
+    }
     enqueuePendingNotification({ value: summary, mode: 'task-notification' })
     onAgentsKilled()
     return true
@@ -202,8 +211,15 @@ export function CancelRequestHandler(props: CancelRequestHandlerProps): null {
     }
     if (canCancelRunningTask || hasQueuedCommands) {
       handleCancel()
+    } else if (canStopAgents) {
+      logEvent('tengu_cancel', {
+        source:
+          'kill_agents' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+      })
+      killAllAgentsAndNotify({ passive: true })
     }
   }, [
+    canStopAgents,
     isViewingTeammate,
     killAllAgentsAndNotify,
     setAppState,

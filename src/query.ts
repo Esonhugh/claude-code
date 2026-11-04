@@ -1089,7 +1089,10 @@ async function* queryLoop(
       !(
         reactiveCompact?.isReactiveCompactEnabled() && isAutoCompactEnabled()
       ) &&
-      !collapseOwnsIt
+      !collapseOwnsIt &&
+      // Esc during autocompact leaves the context over the limit; that is an
+      // interruption, not a prompt-too-long.
+      !toolUseContext.abortController.signal.aborted
     ) {
       const { isAtBlockingLimit } = calculateTokenWarningState(
         tokenCountWithEstimation(

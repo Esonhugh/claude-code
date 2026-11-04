@@ -27,6 +27,10 @@ export type TerminalTaskState = TaskStateBase & {
   sessionId: string
   command: string
   args: string[]
+  // What the tool was asked to run (input command and args), for display;
+  // `command` and `args` are what was spawned, after shell resolution and
+  // any sandbox wrapper.
+  requestedCommand?: string
   cwd: string
   cols: number
   rows: number

@@ -113,14 +113,27 @@ import type {
   ScopedMcpServerConfig,
 } from 'src/services/mcp/types.js'
 import {
+  CHANNEL_PERMISSION_METHOD,
+  CHANNEL_PERMISSION_REQUEST_METHOD,
   ChannelMessageNotificationSchema,
+  ChannelPermissionNotificationSchema,
+  type ChannelPermissionRequestParams,
   gateChannelServer,
   wrapChannelMessage,
   findChannelEntry,
 } from 'src/services/mcp/channelNotification.js'
 import {
+  createChannelPermissionCallbacks,
+  filterPermissionRelayClients,
+  isChannelPermissionRelayEnabled,
+  sanitizePermissionText,
+  shortRequestId,
+  truncateForPreview,
+} from 'src/services/mcp/channelPermissions.js'
+import {
   isChannelAllowlisted,
   isChannelsEnabled,
+  isDeferredChannelServer,
 } from 'src/services/mcp/channelAllowlist.js'
 import { parsePluginIdentifier } from 'src/utils/plugins/pluginIdentifier.js'
 import { fromArray } from 'src/utils/generators.js'
@@ -234,7 +247,6 @@ import {
 import {
   getFastModeDisabledReason,
   isFastModeEnabled,
-  isFastModeSupportedByModel,
   getFastModeState,
 } from 'src/utils/fastMode.js'
 import {
@@ -291,6 +303,7 @@ import {
   recordTranscript,
   searchSessionsByCustomTitle,
   getSessionIdFromLog,
+  getAgentTranscriptPath,
 } from 'src/utils/sessionStorage.js'
 import { incrementPromptCount } from 'src/utils/commitAttribution.js'
 import feedbackCommand, { feedbackDisabledReason } from '../commands/feedback/index.js'
@@ -330,6 +343,7 @@ import { normalizeNameForMCP } from 'src/services/mcp/normalization.js'
 import {
   commandBelongsToServer,
   filterToolsByServer,
+  isMcpTool,
 } from 'src/services/mcp/utils.js'
 import { setupVscodeSdkMcp } from 'src/services/mcp/vscodeSdkMcp.js'
 import { getAllMcpConfigs } from 'src/services/mcp/config.js'
@@ -343,7 +357,9 @@ import {
 } from 'src/utils/messages/mappers.js'
 import {
   createModelSwitchBreadcrumbs,
+  createScheduledTaskFireMessage,
   createUserMessage,
+  formatCronFireTime,
 } from 'src/utils/messages.js'
 import {
   checkModelSwitch,
@@ -362,21 +378,13 @@ import {
   modelDisplayString,
   parseUserSpecifiedModel,
 } from 'src/utils/model/model.js'
-import { getModelOptions } from 'src/utils/model/modelOptions.js'
+import { getModelInfos } from 'src/utils/model/modelInfos.js'
 import { getModHttpServices } from '../services/mods/hostOperations.js'
 import {
-  getSupportedEffortLevelsForModel,
-  modelSupportsEffort,
   parseEffortValue,
   resolveAppliedEffort,
   toPersistableEffort,
 } from 'src/utils/effort.js'
-import {
-  modelSupportsAdaptiveThinking,
-  requiresAlwaysOnAdaptiveThinking,
-  rejectsDisabledThinking,
-} from 'src/utils/thinking.js'
-import { modelSupportsAutoMode } from 'src/utils/betas.js'
 import { validateModel } from 'src/utils/model/validateModel.js'
 import { ensureModelStringsInitialized } from 'src/utils/model/modelStrings.js'
 import {
@@ -393,6 +401,7 @@ import {
   getMainThreadAgentType,
   getAllowedChannels,
   setAllowedChannels,
+  setHasDevChannels,
   type ChannelEntry,
 } from 'src/bootstrap/state.js'
 import { runWithWorkload, WORKLOAD_CRON } from 'src/utils/workloadContext.js'
@@ -430,7 +439,8 @@ import {
   startQueryProfile,
   logQueryProfileReport,
 } from 'src/utils/queryProfiler.js'
-import { asSessionId } from 'src/types/ids.js'
+import { asAgentId, asSessionId } from 'src/types/ids.js'
+import { existsSync } from 'fs'
 import { jsonStringify } from '../utils/slowOperations.js'
 import { skillChangeDetector } from '../utils/skills/skillChangeDetector.js'
 import { getCommands, clearCommandsCache } from '../commands.js'
@@ -462,6 +472,8 @@ import { isBackgroundTask } from '../tasks/types.js'
 import { StopTaskError, stopTask } from '../tasks/stopTask.js'
 import { deliverTaskMessage } from '../tasks/deliverTaskMessage.js'
 import { isMainSessionTask } from '../tasks/LocalMainSessionTask.js'
+import { isTerminalTask } from '../tasks/TerminalTask.js'
+import { hostTerminalInputSchema } from '../tools/TerminalTool/actionSchemas.js'
 import { isTerminalTaskStatus } from '../taskStatus.js'
 import { drainSdkOutput, getTaskRunId } from '../utils/sdkEventQueue.js'
 import { initializeGrowthBook } from '../services/analytics/growthbook.js'
@@ -1077,6 +1089,8 @@ export async function runHeadless(
   const needsFullArray = options.outputFormat === 'json' && options.verbose
   const messages: SDKMessage[] = []
   let lastMessage: SDKMessage | undefined
+  // A background agent's notification turn adds its own result after the first one.
+  const resultTexts: string[] = []
   // Streamlined mode transforms messages when CLAUDE_CODE_STREAMLINED_OUTPUT=true and using stream-json
   // Build flag gates this out of external builds; env var is the runtime opt-in for ant builds
   const transformToStreamlined =
@@ -1164,6 +1178,9 @@ export async function runHeadless(
       if (needsFullArray) {
         messages.push(message)
       }
+      if (message.type === 'result' && message.subtype === 'success') {
+        resultTexts.push(message.result)
+      }
       lastMessage = message
     }
   }
@@ -1192,13 +1209,11 @@ export async function runHeadless(
         throw new Error('No messages returned')
       }
       switch (lastMessage.subtype) {
-        case 'success':
-          writeToStdout(
-            lastMessage.result.endsWith('\n')
-              ? lastMessage.result
-              : lastMessage.result + '\n',
-          )
+        case 'success': {
+          const text = resultTexts.join('\n\n')
+          writeToStdout(text.endsWith('\n') ? text : text + '\n')
           break
+        }
         case 'error_during_execution':
           writeToStdout(`Execution error`)
           break
@@ -1278,7 +1293,6 @@ function runHeadlessStreaming(
     | undefined
   let inputClosed = false
   let shutdownPromptInjected = false
-  let heldBackResult: StdoutMessage | null = null
   let abortController: AbortController | undefined
   let shellAbortController: AbortController | undefined
   let shellCommandRunning = false
@@ -1353,23 +1367,10 @@ function runHeadlessStreaming(
       promptId: PromptVariant
       generationRequestId: string | null
     } | null
-    pendingSuggestion: {
-      type: 'prompt_suggestion'
-      suggestion: string
-      uuid: UUID
-      session_id: string
-    } | null
-    pendingLastEmittedEntry: {
-      text: string
-      promptId: PromptVariant
-      generationRequestId: string | null
-    } | null
   } = {
     abortController: null,
     inflightPromise: null,
     lastEmitted: null,
-    pendingSuggestion: null,
-    pendingLastEmittedEntry: null,
   }
 
   // Set up AWS auth status listener if enabled
@@ -1472,37 +1473,7 @@ function runHeadlessStreaming(
     })
   }
 
-  const modelOptions = getModelOptions()
-  const modelInfos = modelOptions.map(option => {
-    const modelId = option.value === null ? 'default' : option.value
-    const resolvedModel =
-      modelId === 'default'
-        ? getDefaultMainLoopModel()
-        : parseUserSpecifiedModel(modelId)
-    const hasEffort = modelSupportsEffort(resolvedModel)
-    const hasAdaptiveThinking = modelSupportsAdaptiveThinking(resolvedModel)
-    const hasFastMode = isFastModeSupportedByModel(option.value)
-    const hasAutoMode = modelSupportsAutoMode(resolvedModel)
-    return {
-      value: modelId,
-      resolvedModel,
-      displayName: option.label,
-      description: option.description,
-      ...(hasEffort && {
-        supportsEffort: true,
-        supportedEffortLevels: [
-          ...getSupportedEffortLevelsForModel(resolvedModel),
-        ],
-      }),
-      ...(hasAdaptiveThinking && { supportsAdaptiveThinking: true }),
-      ...(hasFastMode && { supportsFastMode: true }),
-      ...(hasAutoMode && { supportsAutoMode: true }),
-      // Off maps to adaptive thinking on these models.
-      supportsThinkingOff:
-        !requiresAlwaysOnAdaptiveThinking(resolvedModel) &&
-        !rejectsDisabledThinking(resolvedModel),
-    }
-  })
+  const modelInfos = getModelInfos()
   let activeUserSpecifiedModel = options.userSpecifiedModel
   // set_max_thinking_tokens: null resets to the spawn-time config; the
   // session display mode starts from --thinking-display (or its default).
@@ -1799,9 +1770,11 @@ function runHeadlessStreaming(
       appState.toolPermissionContext,
       appState.mcp.tools,
     )
+    // `tools` holds the MCP tools seen at startup; take MCP tools from
+    // appState instead so tools/list_changed and reconnects replace them.
     let allTools = uniqBy(
       mergeAndFilterTools(
-        [...tools, ...sdkTools, ...dynamicMcpState.tools],
+        [...tools.filter(tool => !isMcpTool(tool)), ...sdkTools, ...dynamicMcpState.tools],
         assembledTools,
         appState.toolPermissionContext.mode,
       ),
@@ -1948,6 +1921,69 @@ function runHeadlessStreaming(
     return getMcpConfigByName(serverName) ?? active?.config ?? null
   }
 
+  // Reconnects a server and puts its client, tools, commands and resources in
+  // appState so the next turn sees them (mcp_toggle, channel_enable).
+  async function connectServerIntoAppState(
+    serverName: string,
+    config: ScopedMcpServerConfig,
+  ): Promise<MCPServerConnection> {
+    // @ts-ignore - recovered code
+    const result = await reconnectMcpServerImpl(serverName, config)
+    // @ts-ignore - recovered code
+    const prefix = getMcpPrefix(serverName)
+    setAppState(prev => ({
+      ...prev,
+      mcp: {
+        ...prev.mcp,
+        clients: prev.mcp.clients.map(c =>
+          c.name === serverName ? result.client : c,
+        ),
+        tools: [
+          ...reject(prev.mcp.tools, t => t.name?.startsWith(prefix)),
+          ...result.tools,
+        ],
+        commands: [
+          ...reject(prev.mcp.commands, c =>
+            // @ts-ignore - recovered code
+            commandBelongsToServer(c, serverName),
+          ),
+          ...result.commands,
+        ],
+        resources:
+          result.resources && result.resources.length > 0
+            // @ts-ignore - recovered code
+            ? { ...prev.mcp.resources, [serverName]: result.resources }
+            : omit(prev.mcp.resources, serverName),
+      },
+    }))
+    // A server a plugin reload added lives in dynamicMcpState only.
+    if (dynamicMcpState.clients.some(c => c.name === serverName)) {
+      dynamicMcpState = {
+        ...dynamicMcpState,
+        clients: dynamicMcpState.clients.map(c =>
+          c.name === serverName ? result.client : c,
+        ),
+        tools: [
+          ...dynamicMcpState.tools.filter(t => !t.name?.startsWith(prefix)),
+          ...result.tools,
+        ],
+      }
+    }
+    if (result.client.type === 'connected') {
+      registerElicitationHandlers([result.client])
+      reregisterChannelHandlerAfterReconnect(result.client)
+    }
+    return result.client
+  }
+
+  if (feature('KAIROS') || feature('KAIROS_CHANNELS')) {
+    structuredIO.channelPermissionRelay = request =>
+      relayChannelPermission(
+        [...getAppState().mcp.clients, ...sdkClients, ...dynamicMcpState.clients],
+        request,
+      )
+  }
+
   // Build McpServerStatus[] for control responses. Shared by mcp_status and
   // reload_plugins handlers. Reads closure state: sdkClients, dynamicMcpState.
   function buildMcpServerStatuses(): McpServerStatus[] {
@@ -2012,17 +2048,31 @@ function runHeadlessStreaming(
       // actually pass the allowlist. Not a security boundary (the
       // handler re-runs the full gate); just avoids dead buttons.
       let capabilities: { experimental?: Record<string, unknown> } | undefined
+      // Fork: devChannel marks a channel server only the allowlist keeps out
+      // (channel_enable with dev: true can load it); channelActive says the
+      // gate registers it in this session.
+      let devChannel: true | undefined
+      let channelActive: boolean | undefined
       if (
         (feature('KAIROS') || feature('KAIROS_CHANNELS')) &&
         connection.type === 'connected' &&
         connection.capabilities.experimental
       ) {
         const exp = { ...connection.capabilities.experimental }
+        if (exp['claude/channel']) {
+          channelActive =
+            gateChannelServer(
+              connection.name,
+              connection.capabilities,
+              connection.config.pluginSource,
+            ).action === 'register'
+        }
         if (
           exp['claude/channel'] &&
           (!isChannelsEnabled() ||
             !isChannelAllowlisted(connection.config.pluginSource))
         ) {
+          if (isChannelsEnabled()) devChannel = true
           delete exp['claude/channel']
         }
         if (Object.keys(exp).length > 0) {
@@ -2041,6 +2091,13 @@ function runHeadlessStreaming(
         transport: connection.config.type ?? 'stdio',
         tools: serverTools,
         capabilities,
+        devChannel,
+        channelActive,
+        // Fork: an approved channel plugin's server that starts on channel_enable.
+        ...((feature('KAIROS') || feature('KAIROS_CHANNELS'))
+          ? connection.type === 'disabled' &&
+            isDeferredChannelServer(connection.name) && { channelDeferred: true }
+          : {}),
       }
     })
   }
@@ -2208,6 +2265,8 @@ function runHeadlessStreaming(
     // QueryEngine-owned command receipts can enqueue again while turn.complete is settling.
     // Keep draining them even after stdin closes; their hooks must finish before output closes.
     if (peek(cmd => cmd.agentId === undefined && cmd.commandRunReceipt !== undefined)) void run()
+    // A stopped agent notifies once its abort settles, which can be after run() stopped waiting for it.
+    if (!inputClosed && peek(cmd => cmd.agentId === undefined && cmd.mode === 'task-notification')) void run()
     if (abortController && getCommandsByMaxPriority('now').length > 0) {
       abortController.abort('interrupt')
     }
@@ -2224,7 +2283,7 @@ function runHeadlessStreaming(
   })
 
   const run = async () => {
-    if (running || shellCommandRunning) {
+    if (running || shellCommandRunning || isShuttingDown()) {
       return
     }
 
@@ -2293,32 +2352,10 @@ function runHeadlessStreaming(
       // Drains the queue, batching consecutive prompt-mode commands into one
       // ask() call so messages that queued up during a long turn coalesce
       // into a single follow-up turn instead of N separate turns.
-      const flushHeldBackResult = () => {
-        if (!heldBackResult) return
-        output.enqueue(heldBackResult)
-        heldBackResult = null
-        if (suggestionState.pendingSuggestion) {
-          output.enqueue(suggestionState.pendingSuggestion)
-          // Now that the suggestion is actually delivered, record it for acceptance tracking
-          if (suggestionState.pendingLastEmittedEntry) {
-            suggestionState.lastEmitted = {
-              ...suggestionState.pendingLastEmittedEntry,
-              emittedAt: Date.now(),
-            }
-            suggestionState.pendingLastEmittedEntry = null
-          }
-          suggestionState.pendingSuggestion = null
-        }
-      }
-      const hasRunningBackgroundAgents = () =>
-        getRunningTasks(getAppState()).some(
-          t =>
-            (t.type === 'local_agent' || t.type === 'local_workflow') &&
-            isBackgroundTask(t),
-        )
-
       const drainCommandQueue = async () => {
-        while ((command = dequeue(isMainThread))) {
+        // Like official, shutdown (SIGTERM/SIGINT) never starts another model turn,
+        // e.g. for the notification of a worker the shutdown itself stopped.
+        while (!isShuttingDown() && (command = dequeue(isMainThread))) {
           // Keep stdin controls responsive while queued turns wait for model validation.
           await pendingModelSwitches
           streamState.refresh()
@@ -2367,6 +2404,22 @@ function runHeadlessStreaming(
                   isReplay: true,
                 } satisfies SDKUserMessageReplay)
               }
+            }
+          }
+
+          // QueryEngine acks only user-authored prompts; echo a peer session's message so replay
+          // consumers (claude web) show it, as the REPL does.
+          if (options.replayUserMessages && command.isMeta && command.origin?.kind === 'peer') {
+            for (const c of batch) {
+              output.enqueue({
+                type: 'user',
+                message: { role: 'user', content: c.value },
+                session_id: getSessionId(),
+                parent_tool_use_id: null,
+                uuid: c.uuid ?? randomUUID(),
+                isReplay: true,
+                isSynthetic: true,
+              } satisfies SDKUserMessageReplay)
             }
           }
 
@@ -2480,13 +2533,14 @@ function runHeadlessStreaming(
                 uuid: randomUUID(),
               })
             }
-            // Like official, the turn held back for this agent gets its result
-            // before the notification's own turn starts.
-            if (!hasRunningBackgroundAgents()) flushHeldBackResult()
             // No continue -- fall through to ask() so the model processes the result
           }
 
           const input = command.value
+          // The REPL's "Running scheduled task" line, kept in the transcript with this turn.
+          if (command.workload === WORKLOAD_CRON) {
+            mutableMessages.push(createScheduledTaskFireMessage(`Running scheduled task (${formatCronFireTime(new Date())})`))
+          }
 
           if (structuredIO instanceof RemoteIO && command.mode === 'prompt') {
             logEvent('tengu_bridge_message_received', {
@@ -2497,8 +2551,6 @@ function runHeadlessStreaming(
           // Abort any in-flight suggestion generation and track acceptance
           suggestionState.abortController?.abort()
           suggestionState.abortController = null
-          suggestionState.pendingSuggestion = null
-          suggestionState.pendingLastEmittedEntry = null
           if (suggestionState.lastEmitted) {
             if (command.mode === 'prompt') {
               // SDK user messages enqueue ContentBlockParam[], not a plain string
@@ -2573,6 +2625,7 @@ function runHeadlessStreaming(
               skipAttachments: cmd.skipAttachments,
               cwd: cwd(),
               tools: allTools,
+              refreshTools: () => buildAllTools(getAppState()),
               verbose: options.verbose,
               mcpClients: allMcpClients,
               thinkingConfig: options.thinkingConfig,
@@ -2639,14 +2692,8 @@ function runHeadlessStreaming(
                   output.enqueue(event)
                 }
 
-                // Hold-back: don't emit result while background agents are running
-                if (hasRunningBackgroundAgents()) {
-                  flushHeldBackResult()
-                  heldBackResult = message
-                } else {
-                  flushHeldBackResult()
-                  output.enqueue(message)
-                }
+                // Like official, a turn's result is not held back for background agents.
+                output.enqueue(message)
               } else {
                 // Flush SDK events (task_started, task_progress) so background
                 // agent progress is streamed in real-time, not batched until result.
@@ -2739,22 +2786,8 @@ function runHeadlessStreaming(
                     promptId: result.promptId,
                     generationRequestId: result.generationRequestId,
                   }
-                  // Defer emission if the result is being held for background agents,
-                  // so that prompt_suggestion always arrives after result.
-                  // Only set lastEmitted when the suggestion is actually delivered
-                  // to the consumer; deferred suggestions may be discarded before
-                  // delivery if a new command arrives first.
-                  if (heldBackResult) {
-                    suggestionState.pendingSuggestion = suggestionMsg
-                    suggestionState.pendingLastEmittedEntry = {
-                      text: lastEmittedEntry.text,
-                      promptId: lastEmittedEntry.promptId,
-                      generationRequestId: lastEmittedEntry.generationRequestId,
-                    }
-                  } else {
-                    suggestionState.lastEmitted = lastEmittedEntry
-                    output.enqueue(suggestionMsg)
-                  }
+                  suggestionState.lastEmitted = lastEmittedEntry
+                  output.enqueue(suggestionMsg)
                 } catch (error) {
                   if (
                     error instanceof Error &&
@@ -2815,7 +2848,7 @@ function runHeadlessStreaming(
             t => isBackgroundTask(t) && t.type !== 'in_process_teammate',
           )
           const hasMainThreadQueued = peek(isMainThread) !== undefined
-          if (hasRunningBg || hasMainThreadQueued) {
+          if (!isShuttingDown() && (hasRunningBg || hasMainThreadQueued)) {
             waitingForAgents = true
             if (!hasMainThreadQueued) {
               runPhase = 'waiting_for_agents'
@@ -2826,8 +2859,6 @@ function runHeadlessStreaming(
           }
         }
       } while (waitingForAgents)
-
-      flushHeldBackResult()
     } catch (error) {
       // Emit error result message before shutting down
       // Write directly to structuredIO to ensure immediate delivery
@@ -2990,11 +3021,21 @@ function runHeadlessStreaming(
               .join('\n\n')
 
             // Enqueue and process
-            enqueue({
-              mode: 'prompt',
-              value: formatPeerPrompt(formatted),
-              uuid: randomUUID(),
-            })
+            const prompt = formatPeerPrompt(formatted)
+            const uuid = randomUUID()
+            enqueue({ mode: 'prompt', value: prompt, uuid })
+            // QueryEngine acks only user-authored prompts, so echo this one
+            // here or replay consumers never see what teammates sent.
+            if (options.replayUserMessages) {
+              output.enqueue({
+                type: 'user',
+                message: { role: 'user', content: prompt },
+                session_id: getSessionId(),
+                parent_tool_use_id: null,
+                uuid,
+                isReplay: true,
+              } satisfies SDKUserMessageReplay)
+            }
             void run()
             return // run() will come back here after processing
           }
@@ -3285,6 +3326,10 @@ function runHeadlessStreaming(
     cronScheduler = cronSchedulerModule.createCronScheduler({
       onFire: prompt => {
         if (inputClosed) return
+        // The REPL's "Running scheduled task" line; the prompt itself is meta.
+        if (options.outputFormat === 'stream-json') {
+          output.enqueue({ type: 'system', subtype: 'scheduled_task_fire', uuid: randomUUID(), session_id: getSessionId() })
+        }
         void enqueueInboundMessage({
           mode: 'prompt',
           value: prompt,
@@ -3444,7 +3489,6 @@ function runHeadlessStreaming(
           suggestionState.abortController?.abort()
           suggestionState.abortController = null
           suggestionState.lastEmitted = null
-          suggestionState.pendingSuggestion = null
           // Snapshot synchronously with the abort, before the next turn drains
           // these messages. The drain installs its controller without yielding
           // after dequeueing, so no unarmed batch is held outside this queue.
@@ -3468,7 +3512,6 @@ function runHeadlessStreaming(
           suggestionState.abortController?.abort()
           suggestionState.abortController = null
           suggestionState.lastEmitted = null
-          suggestionState.pendingSuggestion = null
           managedSSHControl.shutdown()
     await remoteUIControl.dispose()
           sendControlResponseSuccess(message)
@@ -3845,6 +3888,9 @@ function runHeadlessStreaming(
               result.error ?? 'Unexpected error',
             )
           }
+        } else if (message.request.subtype === 'rewind_points') {
+          const { handleRewindPoints } = await import('./sessionControlRequests.js')
+          sendControlResponseSuccess(message, handleRewindPoints({ messages: mutableMessages }))
         } else if (message.request.subtype === 'set_cwd' || message.request.subtype === 'rewind_conversation') {
           const { handleSetCwd, handleRewindConversation } = await import('./sessionControlRequests.js')
           const result = message.request.subtype === 'set_cwd'
@@ -4357,63 +4403,99 @@ function runHeadlessStreaming(
             // Enabling: persist + reconnect
             // @ts-ignore - recovered code
             setMcpServerEnabled(serverName, true)
-            // @ts-ignore - recovered code
-            const result = await reconnectMcpServerImpl(serverName, config)
-            // Update appState.mcp with the new client, tools, commands, and resources
-            // This ensures the LLM sees updated tools after enabling the server
-            // @ts-ignore - recovered code
-            const prefix = getMcpPrefix(serverName)
-            setAppState(prev => ({
-              ...prev,
-              mcp: {
-                ...prev.mcp,
-                clients: prev.mcp.clients.map(c =>
-                  c.name === serverName ? result.client : c,
-                ),
-                tools: [
-                  ...reject(prev.mcp.tools, t => t.name?.startsWith(prefix)),
-                  ...result.tools,
-                ],
-                commands: [
-                  ...reject(prev.mcp.commands, c =>
-                    // @ts-ignore - recovered code
-                    commandBelongsToServer(c, serverName),
-                  ),
-                  ...result.commands,
-                ],
-                resources:
-                  result.resources && result.resources.length > 0
-                    // @ts-ignore - recovered code
-                    ? { ...prev.mcp.resources, [serverName]: result.resources }
-                    : omit(prev.mcp.resources, serverName),
-              },
-            }))
-            if (result.client.type === 'connected') {
-              registerElicitationHandlers([result.client])
-              reregisterChannelHandlerAfterReconnect(result.client)
+            const client = await connectServerIntoAppState(serverName, config)
+            if (client.type === 'connected') {
               sendControlResponseSuccess(message)
             } else {
               const errorMessage =
-                result.client.type === 'failed'
-                  ? (result.client.error ?? 'Connection failed')
-                  : `Server status: ${result.client.type}`
+                client.type === 'failed'
+                  ? (client.error ?? 'Connection failed')
+                  : `Server status: ${client.type}`
               sendControlResponseError(message, errorMessage)
             }
           }
         } else if (message.request.subtype === 'channel_enable') {
-          const currentAppState = getAppState()
-          handleChannelEnable(
-            message.request_id,
-            // @ts-ignore - recovered code
-            message.request.serverName,
-            // Pool spread matches mcp_status — all three client sources.
-            [
-              ...currentAppState.mcp.clients,
-              ...sdkClients,
-              ...dynamicMcpState.clients,
-            ],
-            output,
-          )
+          // @ts-ignore - recovered code
+          const serverName = message.request.serverName as string
+          // Fork: claude web loads a development channel after its own warning.
+          // @ts-ignore - recovered code
+          const dev = message.request.dev === true
+          // Fork: an approved channel plugin's server waits until a session
+          // lists it (isDeferredChannelServer); list it, then start it.
+          const config = getControlMcpServerConfig(serverName)
+          const plugin = config?.pluginSource
+            ? parsePluginIdentifier(config.pluginSource)
+            : undefined
+          let startError: string | undefined
+          // Set when this request started the server, so a refusal stops it again.
+          let started: { prior: ChannelEntry[]; config: ScopedMcpServerConfig } | undefined
+          if (
+            (feature('KAIROS') || feature('KAIROS_CHANNELS')) &&
+            config &&
+            plugin?.marketplace &&
+            isDeferredChannelServer(serverName)
+          ) {
+            const prior = getAllowedChannels()
+            setAllowedChannels([
+              ...prior,
+              {
+                kind: 'plugin',
+                name: plugin.name,
+                marketplace: plugin.marketplace,
+                ...(dev && { dev: true }),
+              },
+            ])
+            const client = await connectServerIntoAppState(serverName, config)
+            if (client.type !== 'connected') {
+              setAllowedChannels(prior)
+              startError =
+                client.type === 'failed'
+                  ? (client.error ?? 'Connection failed')
+                  : `Server status: ${client.type}`
+            } else {
+              started = { prior, config }
+            }
+          }
+          if (startError) {
+            sendControlResponseError(message, startError)
+          } else {
+            const currentAppState = getAppState()
+            const enabled = handleChannelEnable(
+              message.request_id,
+              serverName,
+              dev,
+              // Pool spread matches mcp_status — all three client sources.
+              [
+                ...currentAppState.mcp.clients,
+                ...sdkClients,
+                ...dynamicMcpState.clients,
+              ],
+              output,
+            )
+            // Refused by the gate (e.g. channelsEnabled off): leave the server
+            // off as before, or it would hold the bot without delivering.
+            if (!enabled && started) {
+              setAllowedChannels(started.prior)
+              await clearServerCache(serverName, started.config)
+              const disabled = { name: serverName, type: 'disabled' as const, config: started.config }
+              const prefix = getMcpPrefix(serverName)
+              setAppState(prev => ({
+                ...prev,
+                mcp: {
+                  ...prev.mcp,
+                  clients: prev.mcp.clients.map(c => (c.name === serverName ? disabled : c)),
+                  tools: reject(prev.mcp.tools, t => t.name?.startsWith(prefix)),
+                  commands: reject(prev.mcp.commands, c => commandBelongsToServer(c, serverName)),
+                  resources: omit(prev.mcp.resources, serverName),
+                },
+              }))
+              dynamicMcpState = {
+                ...dynamicMcpState,
+                clients: dynamicMcpState.clients.map(c => (c.name === serverName ? disabled : c)),
+                tools: dynamicMcpState.tools.filter(t => !t.name?.startsWith(prefix)),
+              }
+            }
+          }
         } else if (message.request.subtype === 'mcp_authenticate') {
           const serverName = message.request.serverName as string
           const currentAppState = getAppState()
@@ -4916,7 +4998,8 @@ function runHeadlessStreaming(
           message.request.subtype === 'get_hooks_listing' ||
           message.request.subtype === 'list_permission_rules' ||
           message.request.subtype === 'get_workspace_diff' ||
-          message.request.subtype === 'get_task_output'
+          message.request.subtype === 'get_task_output' ||
+          message.request.subtype === 'get_background_tasks'
         ) {
           // Answered off the input loop: /usage and /status fetch from the
           // network, git and the file index may be slow.
@@ -4924,6 +5007,7 @@ function runHeadlessStreaming(
             subtype: string
             query?: unknown
             task_id?: unknown
+            format?: unknown
           }
           void import('./hostControlRequests.js')
             .then((host): Promise<object> | object => {
@@ -4962,7 +5046,12 @@ function runHeadlessStreaming(
                   if (typeof request.task_id !== 'string') {
                     throw new Error('get_task_output: task_id must be a string')
                   }
-                  return host.buildTaskOutputResponse(getAppState(), request.task_id)
+                  if (request.format !== undefined && request.format !== 'screen') {
+                    throw new Error('get_task_output: format must be "screen" when given')
+                  }
+                  return host.buildTaskOutputResponse(getAppState(), request.task_id, request.format as 'screen' | undefined)
+                case 'get_background_tasks':
+                  return host.buildBackgroundTasksResponse(getAppState())
                 default:
                   return host.buildExportConversationResponse(
                     mutableMessages,
@@ -5087,22 +5176,95 @@ function runHeadlessStreaming(
               }
             }
           }
+        } else if (message.request.subtype === 'send_terminal_input') {
+          // Fork-only: the host's user typing into a Terminal tool session.
+          const parsed = hostTerminalInputSchema.safeParse(message.request)
+          const task = parsed.success ? getAppState().tasks[parsed.data.task_id] : undefined
+          if (!parsed.success) {
+            sendControlResponseError(
+              message,
+              'send_terminal_input: task_id must be a non-empty string, with text (at most 4096 characters), a key, or enter: true',
+            )
+          } else if (!isTerminalTask(task) || task.status !== 'running') {
+            sendControlResponseError(message, 'send_terminal_input: no running terminal with that task_id')
+          } else {
+            const { text, key, enter } = parsed.data
+            void import('../tools/TerminalTool/TerminalTool.js')
+              .then(terminal => terminal.sendTerminalInputFromHost(task.sessionId, { text, key, enter }, setAppState))
+              .then(
+                () => sendControlResponseSuccess(message, {}),
+                error => sendControlResponseError(message, errorMessage(error)),
+              )
+          }
+        } else if (message.request.subtype === 'codex_apps') {
+          // Fork-only: the /plugin Codex apps list, for hosts without the Ink UI.
+          const [{ getCodexAppsEligibility }, { buildCodexAppPluginProjections }, { getDisabledCodexAppConnectorIds }] =
+            await Promise.all([
+              import('../services/apps/auth.js'),
+              import('../services/apps/pluginProjection.js'),
+              import('../services/apps/preferences.js'),
+            ])
+          const eligibility = getCodexAppsEligibility()
+          const disabled = getDisabledCodexAppConnectorIds()
+          sendControlResponseSuccess(message, {
+            eligible: eligibility.eligible,
+            ...('reason' in eligibility && { reason: eligibility.reason }),
+            apps: eligibility.eligible
+              ? buildCodexAppPluginProjections(getAppState().mcp.tools).map(app => ({
+                  connectorId: app.connectorId,
+                  name: app.displayName,
+                  mentionName: app.mentionName,
+                  ...(app.description && { description: app.description }),
+                  tools: app.toolNames.length,
+                  enabled: !disabled.has(app.connectorId),
+                }))
+              : [],
+          })
+        } else if (message.request.subtype === 'set_codex_app_enabled') {
+          const { connector_id: connectorId, enabled } = message.request
+          if (typeof connectorId !== 'string' || !connectorId.trim() || typeof enabled !== 'boolean') {
+            sendControlResponseError(message, 'set_codex_app_enabled: connector_id and enabled are required')
+          } else {
+            try {
+              const { setCodexAppEnabled, refreshCodexAppToolExposure } = await import('../services/apps/preferences.js')
+              setCodexAppEnabled(connectorId, enabled)
+              setAppState(prev => ({ ...prev, mcp: { ...prev.mcp, tools: refreshCodexAppToolExposure(prev.mcp.tools) } }))
+              sendControlResponseSuccess(message, {})
+            } catch (error) {
+              sendControlResponseError(message, errorMessage(error))
+            }
+          }
         } else if (message.request.subtype === 'send_task_message') {
           // Fork-only: typing into a viewed agent (REPL onAgentSubmit) for
           // hosts without the Ink UI.
-          const { task_id: taskId, text } = message.request
+          const { task_id: taskId, text, model, effort } = message.request
           if (typeof taskId !== 'string' || typeof text !== 'string' || !text.trim()) {
             sendControlResponseError(message, 'send_task_message: task_id and text must be non-empty strings')
           } else {
             const task = getAppState().tasks[taskId]
+            // An agent from before a restart is gone from AppState; its transcript can still resume it.
+            const fromTranscript =
+              task === undefined &&
+              /^[\w-]{1,100}$/.test(taskId) &&
+              existsSync(getAgentTranscriptPath(asAgentId(taskId)))
             try {
-              const delivery = deliverTaskMessage(isMainSessionTask(task) ? undefined : task, text, setAppState)
+              const delivery = fromTranscript
+                ? 'resume'
+                : deliverTaskMessage(isMainSessionTask(task) ? undefined : task, text, setAppState)
               if (delivery !== 'resume') {
                 sendControlResponseSuccess(message, { delivery })
               } else {
                 void import('../tools/AgentTool/resumeAgent.js')
                   .then(({ resumeAgentBackground }) =>
-                    resumeAgentBackground({ agentId: taskId, prompt: text, toolUseContext: getModToolContext(), canUseTool }),
+                    resumeAgentBackground({
+                      agentId: taskId,
+                      prompt: text,
+                      fromUser: true,
+                      toolUseContext: getModToolContext(),
+                      canUseTool,
+                      ...(typeof model === 'string' && model && { model }),
+                      ...(typeof effort === 'string' && effort && { effort }),
+                    }),
                   )
                   .then(
                     () => sendControlResponseSuccess(message, { delivery: 'resumed' }),
@@ -6133,26 +6295,23 @@ function handleSetPermissionMode(
  * handler that enqueues channel messages at priority:'next' — drainCommandQueue
  * picks them up between turns.
  *
- * Intentionally does NOT register the claude/channel/permission handler that
- * useManageMCPConnections sets up for interactive mode. That handler resolves
- * a pending dialog inside handleInteractivePermission — but print.ts never
- * calls handleInteractivePermission. When SDK permission lands on 'ask', it
- * goes to the consumer's canUseTool callback over stdio; there is no CLI-side
- * dialog for a remote "yes tbxkq" to resolve. If an IDE wants channel-relayed
- * tool approval, that's IDE-side plumbing against its own pending-map. (Also
- * interactive relay can be disabled with the local opt-out.)
+ * Fork: also registers the claude/channel/permission handler, so a channel's
+ * answer races the SDK host's can_use_tool prompt (relayChannelPermission).
  */
 function handleChannelEnable(
   requestId: string,
   serverName: string,
+  dev: boolean,
   connectionPool: readonly MCPServerConnection[],
   output: Stream<StdoutMessage>,
-): void {
-  const respondError = (error: string) =>
+): boolean {
+  const respondError = (error: string) => {
     output.enqueue({
       type: 'control_response',
       response: { subtype: 'error', request_id: requestId, error },
     })
+    return false
+  }
 
   if (!(feature('KAIROS') || feature('KAIROS_CHANNELS'))) {
     return respondError('channels feature not available in this build')
@@ -6169,7 +6328,9 @@ function handleChannelEnable(
 
   const pluginSource = connection.config.pluginSource
   const parsed = pluginSource ? parsePluginIdentifier(pluginSource) : undefined
-  if (!parsed?.marketplace) {
+  // A development channel may be a plain MCP server, as with
+  // --dangerously-load-development-channels server:<name>.
+  if (!parsed?.marketplace && !dev) {
     // No pluginSource or @-less source — can never pass the {plugin,
     // marketplace}-keyed allowlist. Short-circuit with the same reason the
     // gate would produce.
@@ -6178,20 +6339,22 @@ function handleChannelEnable(
     )
   }
 
-  const entry: ChannelEntry = {
-    kind: 'plugin',
-    name: parsed.name,
-    marketplace: parsed.marketplace,
-  }
-  // Idempotency: don't double-append on repeat enable.
+  const entry: ChannelEntry = parsed?.marketplace
+    ? { kind: 'plugin', name: parsed.name, marketplace: parsed.marketplace }
+    : { kind: 'server', name: serverName }
+  if (dev) entry.dev = true
   const prior = getAllowedChannels()
-  const already = prior.some(
-    e =>
-      e.kind === 'plugin' &&
-      e.name === entry.name &&
-      e.marketplace === entry.marketplace,
-  )
+  const same = (e: ChannelEntry) =>
+    e.kind === entry.kind &&
+    e.name === entry.name &&
+    (e.kind === 'server' ||
+      (entry.kind === 'plugin' && e.marketplace === entry.marketplace))
+  // Idempotency: don't double-append on repeat enable; a dev enable upgrades
+  // an entry that only came from --channels.
+  const already = prior.find(same)
   if (!already) setAllowedChannels([...prior, entry])
+  else if (dev && !already.dev)
+    setAllowedChannels(prior.map(e => (e === already ? entry : e)))
 
   const gate = gateChannelServer(
     serverName,
@@ -6199,13 +6362,15 @@ function handleChannelEnable(
     pluginSource,
   )
   if (gate.action === 'skip') {
-    // Rollback — only remove the entry we appended.
-    if (!already) setAllowedChannels(prior)
+    // Rollback to the entries before this request.
+    setAllowedChannels(prior)
     return respondError(gate.reason)
   }
+  if (dev) setHasDevChannels(true)
 
-  const pluginId =
-    `${entry.name}@${entry.marketplace}` as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS
+  const pluginId = (
+    entry.kind === 'plugin' ? `${entry.name}@${entry.marketplace}` : undefined
+  ) as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS | undefined
   logMCPDebug(serverName, 'Channel notifications registered')
   logEvent('tengu_mcp_channel_enable', { plugin: pluginId })
 
@@ -6225,8 +6390,8 @@ function handleChannelEnable(
         content_length: content.length,
         meta_key_count: Object.keys(meta ?? {}).length,
         entry_kind:
-          'plugin' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-        is_dev: false,
+          entry.kind as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+        is_dev: dev,
         plugin: pluginId,
       })
       enqueue({
@@ -6242,6 +6407,8 @@ function handleChannelEnable(
     },
   )
 
+  registerChannelPermissionHandler(connection)
+
   output.enqueue({
     type: 'control_response',
     response: {
@@ -6249,6 +6416,101 @@ function handleChannelEnable(
       request_id: requestId,
       response: undefined,
     },
+  })
+  return true
+}
+
+// Fork: pending channel permission prompts of this headless session.
+const channelPermissionCallbacks = createChannelPermissionCallbacks()
+
+/** A relaying channel's {request_id, behavior} answers a pending prompt. */
+function registerChannelPermissionHandler(
+  connection: MCPServerConnection & { type: 'connected' },
+): void {
+  if (
+    !isChannelPermissionRelayEnabled() ||
+    !connection.capabilities?.experimental?.['claude/channel/permission']
+  ) {
+    return
+  }
+  connection.client.setNotificationHandler(
+    CHANNEL_PERMISSION_METHOD,
+    { params: ChannelPermissionNotificationSchema().shape.params },
+    async ({ request_id, behavior }) => {
+      const resolved = channelPermissionCallbacks.resolve(
+        request_id,
+        behavior,
+        connection.name,
+      )
+      logMCPDebug(
+        connection.name,
+        `notifications/claude/channel/permission: ${request_id} → ${behavior} (${resolved ? 'matched pending' : 'no pending entry — stale or unknown ID'})`,
+      )
+    },
+  )
+}
+
+/**
+ * Fork: sends a permission prompt to the admitted channels that relay
+ * approvals, as interactiveHandler does in the REPL. Resolves with the first
+ * channel answer; never resolves once `signal` aborts.
+ */
+function relayChannelPermission(
+  clients: readonly MCPServerConnection[],
+  {
+    tool,
+    input,
+    toolUseContext,
+    toolUseID,
+    signal,
+  }: Parameters<NonNullable<StructuredIO['channelPermissionRelay']>>[0],
+): Promise<{ behavior: 'allow' | 'deny'; fromServer: string }> | undefined {
+  if (!isChannelPermissionRelayEnabled()) return undefined
+  const targets = filterPermissionRelayClients(
+    clients,
+    client =>
+      client.type === 'connected' &&
+      gateChannelServer(
+        client.name,
+        client.capabilities,
+        client.config.pluginSource,
+      ).action === 'register',
+  )
+  if (targets.length === 0) return undefined
+  const requestId = shortRequestId(toolUseID)
+  return new Promise(resolve => {
+    const unsubscribe = channelPermissionCallbacks.onResponse(
+      requestId,
+      response => {
+        signal.removeEventListener('abort', unsubscribe)
+        resolve(response)
+      },
+    )
+    signal.addEventListener('abort', unsubscribe, { once: true })
+    void (async () => {
+      const description = await tool.description(input as never, {
+        isNonInteractiveSession: true,
+        toolPermissionContext:
+          toolUseContext.getAppState().toolPermissionContext,
+        tools: toolUseContext.options.tools,
+      })
+      const params: ChannelPermissionRequestParams = {
+        request_id: requestId,
+        tool_name: tool.name,
+        description: sanitizePermissionText(description),
+        input_preview: truncateForPreview(input),
+      }
+      for (const client of targets) {
+        void client.client
+          .notification({ method: CHANNEL_PERMISSION_REQUEST_METHOD, params })
+          .catch(e =>
+            logMCPDebug(
+              client.name,
+              `Channel permission_request failed: ${errorMessage(e)}`,
+            ),
+          )
+      }
+    })().catch(e => logMCPDebug('channels', `permission relay: ${errorMessage(e)}`))
   })
 }
 
@@ -6328,6 +6590,7 @@ function reregisterChannelHandlerAfterReconnect(
       })
     },
   )
+  registerChannelPermissionHandler(connection)
 }
 
 /**
@@ -7066,6 +7329,14 @@ export async function reconcileMcpServers(
     // SDK servers are managed by the SDK process, not the CLI.
     // Just track them without trying to connect.
     if (config.type === 'sdk') {
+      added.push(name)
+      continue
+    }
+
+    // Disabled, or a channel plugin this session has not enabled: listed like
+    // at startup, so it can be turned on later, but not started.
+    if (isMcpServerDisabled(name)) {
+      newClients.push({ name, type: 'disabled', config: scopedConfig })
       added.push(name)
       continue
     }

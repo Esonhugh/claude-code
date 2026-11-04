@@ -4,11 +4,21 @@ name: macOS e2e
 on:
   workflow_dispatch:
   pull_request:
+    paths-ignore:
+      - 'docs/**'
+      - 'README.md'
+      - 'CHANGELOG.md'
+      - 'CLAUDE.md'
+      - 'CLAUDE-workflow.md'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   macos-e2e:
     runs-on: macos-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     env:
       # A 0.0.0-dev build is refused by the minimum-version check.
       CLAUDE_CODE_VERSION: 2.1.295
@@ -41,6 +51,14 @@ jobs:
 
       - name: Sandbox e2e
         run: bun scripts/macos-sandbox-e2e.ts dist/release/claude-code-v*-darwin-arm64
+
+      # Playwright is not a project dependency; it is added for this step only.
+      - name: Web e2e
+        if: ${{ !cancelled() }}
+        run: |
+          bun add --no-save playwright@1.63.0
+          bunx playwright install chromium
+          CLAUDE_WEB_BINARY="$(ls "$PWD"/dist/release/claude-code-v*-darwin-arm64 | head -n 1)" bun test --timeout 300000 src/web/web.binary.test.ts
 
       # For comparison only: its failures do not fail the job.
       - name: Download official

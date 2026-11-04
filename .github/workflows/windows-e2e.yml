@@ -4,6 +4,16 @@ name: Windows e2e
 on:
   workflow_dispatch:
   pull_request:
+    paths-ignore:
+      - 'docs/**'
+      - 'README.md'
+      - 'CHANGELOG.md'
+      - 'CLAUDE.md'
+      - 'CLAUDE-workflow.md'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   windows-e2e:
@@ -31,7 +41,18 @@ jobs:
           bun run build
           bun run package:binary
 
+      # Runs before the sandbox steps, which install WFP filters on the runner.
+      # Playwright is not a project dependency; it is added for this step only.
+      - name: Web e2e
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          bun add --no-save playwright@1.63.0
+          bunx playwright install chromium
+          CLAUDE_WEB_BINARY="$(cygpath -m "$(ls "$PWD"/dist/release/claude-code-v*-win32-x64.exe | head -n 1)")" bun test --timeout 300000 src/web/web.binary.test.ts
+
       - name: Sandbox e2e
+        if: ${{ !cancelled() }}
         shell: bash
         run: bun scripts/windows-sandbox-e2e.ts dist/release/claude-code-v*-win32-x64.exe
 
@@ -45,24 +66,16 @@ jobs:
         shell: bash
         run: bun scripts/windows-sessions-e2e.ts dist/release/claude-code-v*-win32-x64.exe
 
-      - name: Upload binary
-        if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: fork-win32-x64
-          path: dist/release/claude-code-v*-win32-x64.exe
-          retention-days: 1
-
   # The official binary runs the same scripts on a clean runner (its sandbox
   # install would conflict with the fork's), for comparison only: its failures
   # (fork-only tools, Direct Connect) do not fail the job. The fork's sandbox
-  # e2e then runs on top of the official install.
+  # e2e then runs on top of the official install. It builds the fork itself so
+  # it runs alongside windows-e2e instead of after it.
   official:
-    needs: windows-e2e
-    if: ${{ !cancelled() }}
     runs-on: windows-latest
     timeout-minutes: 30
     env:
+      CLAUDE_CODE_VERSION: 2.1.294
       OFFICIAL_CLAUDE_VERSION: 2.1.303
     steps:
       - uses: actions/checkout@v4
@@ -71,6 +84,14 @@ jobs:
         uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.2
+
+      # Before the official sandbox install, which adds WFP filters.
+      - name: Build fork binary
+        shell: bash
+        run: |
+          bun install --frozen-lockfile
+          bun run build
+          bun run package:binary
 
       - name: Download official
         shell: bash
@@ -99,15 +120,8 @@ jobs:
         shell: bash
         run: bun scripts/windows-sessions-e2e.ts official/claude.exe
 
-      - name: Download fork binary
-        if: ${{ !cancelled() }}
-        uses: actions/download-artifact@v4
-        with:
-          name: fork-win32-x64
-          path: fork
-
       - name: Fork sandbox e2e after the official install
         if: ${{ !cancelled() }}
         continue-on-error: true
         shell: bash
-        run: bun scripts/windows-sandbox-e2e.ts fork/claude-code-v*-win32-x64.exe
+        run: bun scripts/windows-sandbox-e2e.ts dist/release/claude-code-v*-win32-x64.exe

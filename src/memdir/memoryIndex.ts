@@ -13,6 +13,7 @@ import { basename, dirname, join, resolve, sep } from 'path'
 import { getOriginalCwd, getSessionId } from '../bootstrap/state.js'
 import { getClaudeConfigHomeDir } from '../utils/envUtils.js'
 import { getProjectDir, getProjectsDir } from '../utils/sessionStorage.js'
+import { foldForSearch } from './searchFold.js'
 import { getAutoMemPath, type SqliteMemoryScope } from './paths.js'
 
 export type MemoryScope = SqliteMemoryScope
@@ -22,7 +23,10 @@ export type MemorySearchHit = {
   kind: 'memory' | 'transcript'
   /** Transcript line number (1-based); 0 for memory files. */
   line: number
+  /** Text around the match, the matched word in [ and ]. */
   snippet: string
+  /** Where the bracketed match sits in `snippet`, brackets included; absent without one. */
+  match?: [number, number]
 }
 
 export type MemoryIndexStatus = {
@@ -39,11 +43,13 @@ type Listing = { files: SourceFile[]; dirs: { dir: string; recursive: boolean }[
 type FileRow = { path: string; mtime: number; size: number; lines: number }
 
 // Bump when the tables or tokenizer change; an older index is dropped and rebuilt.
-const SCHEMA_VERSION = '1'
+const SCHEMA_VERSION = '3'
 // A transcript message longer than this is indexed by its head only.
 const MAX_CHUNK_CHARS = 4000
 // trigram needs at least three characters per term.
 const MIN_TRIGRAM_CHARS = 3
+// A long pasted prompt is searched by its first words only.
+const MAX_QUERY_WORDS = 200
 
 let db: Database | undefined
 let dbPath: string | undefined
@@ -73,7 +79,7 @@ function openIndex(): Database {
   }
   index.run('CREATE TABLE IF NOT EXISTS files (path TEXT PRIMARY KEY, mtime REAL, size INTEGER, lines INTEGER)')
   index.run(
-    "CREATE VIRTUAL TABLE IF NOT EXISTS chunks USING fts5(body, path UNINDEXED, kind UNINDEXED, project UNINDEXED, line UNINDEXED, tokenize = 'trigram')",
+    "CREATE VIRTUAL TABLE IF NOT EXISTS chunks USING fts5(body, text UNINDEXED, path UNINDEXED, kind UNINDEXED, project UNINDEXED, line UNINDEXED, tokenize = 'trigram')",
   )
   db = index
   return index
@@ -176,7 +182,7 @@ async function refresh(index: Database, files: SourceFile[]): Promise<void> {
   const known = new Map(
     (index.query('SELECT path, mtime, size, lines FROM files').all() as FileRow[]).map(row => [row.path, row]),
   )
-  const insert = index.prepare('INSERT INTO chunks (body, path, kind, project, line) VALUES (?, ?, ?, ?, ?)')
+  const insert = index.prepare('INSERT INTO chunks (body, text, path, kind, project, line) VALUES (?, ?, ?, ?, ?, ?)')
   for (const file of files) {
     let info
     try {
@@ -217,7 +223,11 @@ async function refresh(index: Database, files: SourceFile[]): Promise<void> {
       } else {
         index.run('DELETE FROM chunks WHERE path = ?', [file.path])
       }
-      for (const chunk of chunks) insert.run(chunk.body, file.path, file.kind, file.project, chunk.line)
+      for (const chunk of chunks) {
+        // body is searched folded (simplified script, no accents); text keeps the original for snippets.
+        const folded = foldForSearch(chunk.body)
+        insert.run(folded, folded === chunk.body ? null : chunk.body, file.path, file.kind, file.project, chunk.line)
+      }
       index.run('INSERT OR REPLACE INTO files (path, mtime, size, lines) VALUES (?, ?, ?, ?)', [
         file.path,
         size === info.size ? info.mtimeMs : 0,
@@ -245,22 +255,29 @@ function prune(index: Database, { files, dirs }: Listing): void {
   }
 }
 
-const CJK_OR_OTHER = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]+|[^\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]+/gu
-const CJK_CHAR = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]/u
+// Korean spaces words but attaches particles, so it splits like Chinese and Japanese.
+const CJK_OR_OTHER = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]+|[^\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]+/gu
+const CJK_CHAR = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u
 
 /**
  * Chinese and Japanese write words without spaces, so a whole sentence would
  * be one phrase that never matches. Split such runs into overlapping
- * trigrams; any of them may match, and bm25 ranks chunks sharing more first.
+ * two-character pieces (most words are two characters) and trigrams; any of
+ * them may match, and chunks sharing more of them rank first.
  */
 function splitCjk(word: string): string[] {
   return (word.match(CJK_OR_OTHER) ?? []).flatMap(part => {
     const chars = [...part]
-    if (!CJK_CHAR.test(part) || chars.length <= MIN_TRIGRAM_CHARS) return [part]
-    return Array.from({ length: chars.length - MIN_TRIGRAM_CHARS + 1 }, (_, i) =>
-      chars.slice(i, i + MIN_TRIGRAM_CHARS).join(''),
-    )
+    if (!CJK_CHAR.test(part) || chars.length <= 2) return [part]
+    const grams = (n: number) => Array.from({ length: chars.length - n + 1 }, (_, i) => chars.slice(i, i + n).join(''))
+    return [...grams(2), ...grams(MIN_TRIGRAM_CHARS)]
   })
+}
+
+/** Long enough for trigram, or a two-character CJK word. */
+function isDistinctive(word: string): boolean {
+  const length = [...word].length
+  return length >= MIN_TRIGRAM_CHARS || (length === 2 && hasCjk(word))
 }
 
 /** True when a prompt has CJK text, which carries several words without spaces. */
@@ -269,7 +286,7 @@ export function hasCjk(text: string): boolean {
 }
 
 function terms(query: string): string[] {
-  return [...new Set(query.split(/\s+/).filter(Boolean).flatMap(splitCjk))]
+  return [...new Set(foldForSearch(query).split(/\s+/).filter(Boolean).flatMap(splitCjk))]
 }
 
 export async function searchMemory(params: {
@@ -287,30 +304,72 @@ export async function searchMemory(params: {
   if (words.length === 0) return []
   const paths = files.map(f => f.path)
   if (paths.length === 0) return []
-  const inPaths = `path IN (${paths.map(() => '?').join(',')})`
+  const rows = rankChunks(index, paths, words, params.limit, true)
+  return rows.map(({ body, text, ...hit }) => ({ ...hit, ...snippetAround(body ?? '', text ?? body ?? '', words) }))
+}
 
-  // Any word may match; bm25 ranks chunks matching more of them first.
-  // Short words only filter when there is no word long enough for trigram.
+type ChunkRow = { path: string; kind: MemorySearchHit['kind']; line: number; body: string | null; text: string | null }
+
+/**
+ * Chunks in `paths` holding any of `words`, those holding more of the words
+ * first, then by bm25. trigram MATCH serves words of three or more
+ * characters; shorter ones (most Chinese words) fall back to LIKE.
+ */
+function rankChunks(index: Database, paths: string[], query: string[], limit: number, withBody: boolean): ChunkRow[] {
+  // Next to long words, short Latin words and single characters match nearly everything.
+  const usable = query.some(w => [...w].length >= MIN_TRIGRAM_CHARS) ? query.filter(isDistinctive) : query
+  // Each word adds to the SQL expression, which SQLite caps at depth 1000.
+  const words = usable.slice(0, MAX_QUERY_WORDS)
   const long = words.filter(w => [...w].length >= MIN_TRIGRAM_CHARS)
-  const args: (string | number)[] = [...paths]
-  let match: string
+  const short = words.filter(w => [...w].length < MIN_TRIGRAM_CHARS)
+  const args: (string | number)[] = []
+  let fts = 'SELECT NULL AS id, NULL AS rank'
   if (long.length > 0) {
-    match = 'chunks MATCH ?'
+    fts = 'SELECT rowid AS id, bm25(chunks) AS rank FROM chunks WHERE chunks MATCH ?'
     // Quoted phrases keep FTS5 operators in user text literal.
     args.push(long.map(w => `"${w.replaceAll('"', '""')}"`).join(' OR '))
-  } else {
-    match = `(${words.map(() => "body LIKE ? ESCAPE '\\'").join(' OR ')})`
-    for (const w of words) args.push(`%${w.replace(/[\\%_]/g, c => `\\${c}`)}%`)
   }
-  const order = long.length > 0 ? 'ORDER BY bm25(chunks)' : 'ORDER BY rowid DESC'
-  const snippet = long.length > 0 ? "snippet(chunks, 0, '[', ']', '…', 24)" : 'substr(body, 1, 200)'
-  args.push(params.limit)
+  args.push(...paths)
+  const any = [...(long.length > 0 ? ['m.id IS NOT NULL'] : []), ...short.map(() => "c.body LIKE ? ESCAPE '\\'")]
+  for (const w of short) args.push(`%${w.replace(/[\\%_]/g, c => `\\${c}`)}%`)
+  const covered = words.map(() => '(instr(lower(c.body), lower(?)) > 0)').join(' + ')
+  args.push(...words, limit)
   return index
-    .query(`SELECT path, kind, line, ${snippet} AS snippet FROM chunks WHERE ${inPaths} AND ${match} ${order} LIMIT ?`)
-    .all(...args) as MemorySearchHit[]
+    .query(
+      // MATERIALIZED runs MATCH once; a flattened subquery re-runs it for every row.
+      `WITH m AS MATERIALIZED (${fts})
+       SELECT c.path, c.kind, c.line, ${withBody ? 'c.body, c.text' : 'NULL AS body, NULL AS text'}
+       FROM chunks c LEFT JOIN m ON m.id = c.rowid
+       WHERE c.path IN (${paths.map(() => '?').join(',')}) AND (${any.join(' OR ')})
+       ORDER BY ${covered} DESC, m.rank, c.rowid DESC LIMIT ?`,
+    )
+    .all(...args) as ChunkRow[]
+}
+
+/**
+ * A window of the original `text` around the first query word that the
+ * searched `body` contains, the word in brackets. FTS5 snippet() counts
+ * trigram tokens, which leaves ~24 characters. Folding keeps lengths, so an
+ * offset in `body` is the same offset in `text`.
+ */
+function snippetAround(body: string, text: string, words: string[]): Pick<MemorySearchHit, 'snippet' | 'match'> {
+  const lower = body.toLowerCase()
+  const word = words.find(w => lower.includes(w.toLowerCase()))
+  if (!word) return { snippet: text.slice(0, 200) }
+  const at = lower.indexOf(word.toLowerCase())
+  const end = at + word.length
+  const start = Math.max(0, at - 80)
+  const before = `${start > 0 ? '…' : ''}${text.slice(start, at)}`
+  return {
+    snippet: `${before}[${text.slice(at, end)}]${text.slice(end, end + 100)}${end + 100 < text.length ? '…' : ''}`,
+    match: [before.length, before.length + end - at + 2],
+  }
 }
 
 // Words too common in prompts or memory frontmatter to signal relevance.
+/** Chunks read per prompt to count which memory files hold each word. */
+const MAX_RECALL_CHUNKS = 2000
+
 const RECALL_STOPWORDS = new Set(
   (
     'the and for are but not you your yours was were has have had what when where which who whom why how ' +
@@ -318,13 +377,29 @@ const RECALL_STOPWORDS = new Set(
     'can could should would will shall may might must does did doing done just also only very more most ' +
     'some any all each every our ours its let get got use using used make made want need please ' +
     'tell show give know think say said like one two new now out off again still been being ' +
-    'name description metadata type project user feedback reference memory memories answer short sentence'
+    'time times thanks thank good great fine okay sure yes look looks seem seems right ' +
+    'name description metadata type project user feedback reference memory memories answer short sentence ' +
+    '什麼 什么 怎麼 怎么 為什 为什 是不 不是 可以 一下 我們 我们 你們 你们 這個 这个 那個 那个 沒有 没有 有沒 有没'
   ).split(' '),
 )
 
+/** A word in more memory files than this carries no signal for recall. */
+function commonWordFiles(fileCount: number): number {
+  return Math.max(3, fileCount / 3)
+}
+
+/** Latin words must match whole, so `time` does not recall `runtime`; CJK pieces have no word boundaries. */
+function wordMatcher(word: string): (body: string) => boolean {
+  if (hasCjk(word)) return body => body.includes(word)
+  // Prompt words hold only letters, digits, `_` and `-`, none of them special here.
+  const pattern = new RegExp(`(?<![\\p{L}\\p{N}_])${word}(?![\\p{L}\\p{N}_])`, 'u')
+  return body => pattern.test(body)
+}
+
 /**
  * Memory files that match a user prompt, best first, for automatic recall:
- * no model call, only distinctive prompt words, memory files only.
+ * no model call, only distinctive prompt words, memory files only. A file
+ * needs a whole-word match on a word that few memory files share.
  */
 export async function findMemoryFilesForPrompt(params: {
   prompt: string
@@ -334,11 +409,11 @@ export async function findMemoryFilesForPrompt(params: {
 }): Promise<{ path: string; mtimeMs: number }[]> {
   const words = [
     ...new Set(
-      params.prompt
+      foldForSearch(params.prompt)
         .toLowerCase()
         .split(/[^\p{L}\p{N}_-]+/u)
         .flatMap(splitCjk)
-        .filter(w => [...w].length >= MIN_TRIGRAM_CHARS && !RECALL_STOPWORDS.has(w)),
+        .filter(w => isDistinctive(w) && !RECALL_STOPWORDS.has(w)),
     ),
   ]
   if (words.length === 0) return []
@@ -346,19 +421,31 @@ export async function findMemoryFilesForPrompt(params: {
   const listing = await listSources(params.scopes.filter(s => s !== 'session'))
   await refresh(index, listing.files)
   prune(index, listing)
-  const paths = listing.files
-    .map(f => f.path)
-    .filter(p => basename(p) !== 'MEMORY.md' && !params.exclude.has(p))
+  const paths = listing.files.map(f => f.path).filter(p => basename(p) !== 'MEMORY.md')
   if (paths.length === 0) return []
-  const rows = index
-    .query(
-      `SELECT path FROM chunks WHERE path IN (${paths.map(() => '?').join(',')}) AND chunks MATCH ? ORDER BY bm25(chunks) LIMIT ?`,
-    )
-    .all(...paths, words.map(w => `"${w.replaceAll('"', '""')}"`).join(' OR '), params.limit) as { path: string }[]
+  const matchers = words.map(wordMatcher)
+  const matched = new Map<string, Set<number>>()
+  for (const row of rankChunks(index, paths, words, MAX_RECALL_CHUNKS, true)) {
+    const body = row.body!.toLowerCase()
+    const found = matched.get(row.path) ?? new Set<number>()
+    matchers.forEach((match, i) => {
+      if (match(body)) found.add(i)
+    })
+    matched.set(row.path, found)
+  }
+  const fileCounts = words.map((_, i) => [...matched.values()].filter(found => found.has(i)).length)
+  const rare = (i: number) => fileCounts[i]! <= commonWordFiles(paths.length)
   const known = new Map(
     (index.query('SELECT path, mtime FROM files').all() as { path: string; mtime: number }[]).map(r => [r.path, r.mtime]),
   )
-  return rows.map(r => ({ path: r.path, mtimeMs: known.get(r.path) ?? 0 }))
+  // Map order is rankChunks order, so ties keep the bm25 ranking.
+  return [...matched]
+    .filter(([path]) => !params.exclude.has(path))
+    .map(([path, found]) => ({ path, score: [...found].filter(rare).length }))
+    .filter(r => r.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, params.limit)
+    .map(r => ({ path: r.path, mtimeMs: known.get(r.path) ?? 0 }))
 }
 
 /**

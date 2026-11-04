@@ -155,7 +155,12 @@ export default function createRenderer(
           : prevScreen,
     })
 
-    const renderedScreen = output.get()
+    let renderedScreen = output.get()
+    if (output.skippedBlitRows) {
+      output.reset(width, height, screen)
+      renderNodeToOutput(node, output, { prevScreen: undefined })
+      renderedScreen = output.get()
+    }
 
     // Drain continuation: render cleared scrollbox.dirty, so next frame's
     // root blit would skip the subtree. markDirty walks ancestors so the

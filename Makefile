@@ -33,6 +33,7 @@ release-check:
 	bun run check:changelog $(VERSION)
 	bun run test:changelog
 	bun ./scripts/check-readme-test-paths.mjs
+	bun run build:web
 	bunx tsc --noEmit --pretty false
 	$(MAKE) check-mods-control-types
 	bun run lint
@@ -42,6 +43,7 @@ release-check:
 	node "$$dir/build/dist/cli.js" --version | grep -F "$(VERSION) (Claude Code)" && \
 	node "$$dir/build/dist/cli.js" --help >/dev/null; \
 	status=$$?; rm -rf "$$dir"; exit $$status
+	bun ./scripts/check-web-size.mjs
 	git diff --check
 
 check-mods-control-types:

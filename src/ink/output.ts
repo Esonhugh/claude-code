@@ -181,6 +181,10 @@ export default class Output {
 
   private readonly operations: Operation[] = []
   readonly terminalImages: PlacedTerminalImage[] = []
+  // Set by get() when an absolute node's old rect kept rows out of a blit.
+  // Those rows hold whatever was under the overlay, so the frame must be
+  // rendered again without blit.
+  skippedBlitRows = false
 
   private charCache: Map<string, ClusteredChar[]> = new Map()
 
@@ -208,6 +212,7 @@ export default class Output {
     this.screen = screen
     this.operations.length = 0
     this.terminalImages.length = 0
+    this.skippedBlitRows = false
     resetScreen(screen, width, height)
     if (this.charCache.size > 16384) this.charCache.clear()
   }
@@ -431,6 +436,7 @@ export default class Output {
                   startX >= r.x &&
                   maxX <= r.x + r.width,
               )
+            if (excluded) this.skippedBlitRows = true
             if (excluded || row === maxY) {
               if (row > rowStart) {
                 blitRegion(screen, src, startX, rowStart, maxX, row)

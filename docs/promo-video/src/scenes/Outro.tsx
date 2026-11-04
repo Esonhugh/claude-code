@@ -6,7 +6,7 @@ import { clamp, theme } from "../theme";
 const lines = [
   { prompt: true, text: "bun add --global @esonhugh/claude-code" },
   { prompt: true, text: "claude --version" },
-  { prompt: false, text: "2.1.294 (Claude Code)" },
+  { prompt: false, text: "2.1.296 (Claude Code)" },
 ];
 
 export const Outro: React.FC = () => {

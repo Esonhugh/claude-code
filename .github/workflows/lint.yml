@@ -1,15 +1,25 @@
 name: Lint
 
-# Runs the same eslint step as `make release-check` so lint errors are caught
-# before they reach dev.
+# Runs the same eslint and tsc steps as `make release-check` so lint and type
+# errors are caught before they reach dev.
 on:
   workflow_dispatch:
   pull_request:
+    paths-ignore:
+      - 'docs/**'
+      - 'README.md'
+      - 'CHANGELOG.md'
+      - 'CLAUDE.md'
+      - 'CLAUDE-workflow.md'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   lint:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
@@ -23,3 +33,12 @@ jobs:
 
       - name: Lint
         run: bun run lint
+
+      - name: Typecheck
+        if: ${{ !cancelled() }}
+        env:
+          NODE_OPTIONS: --max-old-space-size=8192
+        # src/web/assets.ts imports the generated web/dist/assets.json.
+        run: |
+          bun run build:web
+          bunx tsc --noEmit --pretty false

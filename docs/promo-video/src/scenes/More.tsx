@@ -10,6 +10,8 @@ const items = [
   { name: "SSH Remote", desc: "在远程机器干活，凭据不离开本机", shot: "ssh-remote-run.png" },
   { name: "Direct Connect", desc: "claude server + cc:// 远程连接", shot: "direct-connect-done.png" },
   { name: "Channels", desc: "Telegram / Discord 推消息进会话", shot: "channels-message.png" },
+  { name: "手机上看", desc: "claude web 窄屏自动收起侧栏", shot: "web-ui-phone.png" },
+  { name: "回退", desc: "退回任意一条消息，文件改动一起还原", shot: "web-tour-rewind.png" },
   { name: "自主 Goal", desc: "做到才算完，没达成就继续", shot: "goal-achieved.png" },
   { name: "Effort 档位", desc: "想多深，你说了算", shot: "effort-picker.png" },
   { name: "插件市场", desc: "一键装命令、skill、hook、MCP", shot: "plugins-marketplace-discover.png" },

@@ -6,9 +6,9 @@ import type { AppState } from '../state/AppState.js'
 import { getDefaultAppState } from '../state/AppStateStore.js'
 import type { Message } from '../types/message.js'
 import { getCwd } from '../utils/cwd.js'
-import { createAssistantMessage, createUserMessage } from '../utils/messages.js'
+import { createAssistantMessage, createUserMessage, markLocalCommandInput } from '../utils/messages.js'
 import { setCwd } from '../utils/Shell.js'
-import { handleRewindConversation, handleSetCwd } from './sessionControlRequests.js'
+import { handleRewindConversation, handleRewindPoints, handleSetCwd } from './sessionControlRequests.js'
 
 function store() {
   let state: AppState = getDefaultAppState()
@@ -90,4 +90,20 @@ test('rewind_conversation drops the target turn and hands back its text', () => 
 
   expect(handleRewindConversation({ target_message_uuid: first.uuid, last_seen_user_message_uuid: first.uuid }, host)).toMatchObject({ rewound: true, prefillText: 'first question', precedingAssistantUuid: null })
   expect(messages).toEqual([])
+})
+
+test('rewind points are what /rewind lists, and the last of them is the newest prompt', () => {
+  const first = createUserMessage({ content: 'first question' })
+  const image = createUserMessage({ content: [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AA==' } }] })
+  const command = markLocalCommandInput(createUserMessage({ content: '<command-name>/context</command-name>' }))
+  const stdout = createUserMessage({ content: '<local-command-stdout>Context</local-command-stdout>' })
+  const notification = createUserMessage({ content: '<task-notification>done</task-notification>' })
+  const summary = createUserMessage({ content: 'Summary.', isCompactSummary: true })
+  const messages: Message[] = [summary, first, createAssistantMessage({ content: 'a' }), image, createAssistantMessage({ content: 'b' }), command, stdout, notification]
+  expect(handleRewindPoints({ messages })).toEqual({ uuids: [first.uuid, image.uuid] })
+
+  // A local command or a notification after the newest prompt no longer makes every rewind stale.
+  const host = { messages, busy: false, queued: false, setAppState: store().setAppState }
+  expect(handleRewindConversation({ target_message_uuid: first.uuid, last_seen_user_message_uuid: image.uuid }, host)).toMatchObject({ rewound: true, prefillText: 'first question' })
+  expect(messages).toEqual([summary])
 })

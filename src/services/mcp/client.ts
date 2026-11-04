@@ -151,6 +151,7 @@ import {
 } from '../apps/trust.js'
 import { clearKeychainCache } from '../../utils/secureStorage/macOsKeychainHelpers.js'
 import { sleep } from '../../utils/sleep.js'
+import { execFileNoThrowWithCwd } from '../../utils/execFileNoThrow.js'
 import {
   ClaudeAuthProvider,
   hasMcpDiscoveryButNoToken,
@@ -158,6 +159,7 @@ import {
 } from './auth.js'
 import { markClaudeAiMcpConnected } from './claudeai.js'
 import { getAllMcpConfigs, isMcpServerDisabled } from './config.js'
+import { isChannelAllowlisted } from './channelAllowlist.js'
 import { getMcpServerHeaders } from './headersHelper.js'
 import { SdkControlClientTransport } from './SdkControlTransport.js'
 import type {
@@ -603,6 +605,42 @@ const STDIO_NEGOTIATION_PROBE_TIMEOUT_MS = 3000
  * legacy initialize handshake. MCP_PROTOCOL_NEGOTIATION=legacy opts out,
  * =auto skips the per-transport flags and the server denylist.
  */
+/**
+ * The last stderr paragraph, minus stack frames and the "Bun v1.4.4 (macOS arm64)"
+ * or "Node.js v22" banner a crashing runtime prints last; from the error line on.
+ */
+export function stderrFailureReason(stderr: string): string {
+  const lines = stderr
+    .split(/\r?\n/)
+    .filter(line => !/^\s+at\s/.test(line) && !/^(Bun|Node\.js) v\d\S*( \(.*\))?$/.test(line.trim()))
+  const paragraph = lines.join('\n').trim().split(/\n\s*\n/).at(-1) ?? ''
+  const errorLine = paragraph.split('\n').findLastIndex(line => /^(error|\w*Error)\b/.test(line))
+  return (errorLine > 0 ? paragraph.split('\n').slice(errorLine).join('\n') : paragraph).slice(-500)
+}
+
+async function listDescendantPids(rootPid: number): Promise<number[]> {
+  if (process.platform === 'win32') return []
+  const listing = await execFileNoThrowWithCwd(
+    'ps',
+    ['-A', '-o', 'pid=', '-o', 'ppid='],
+    { cwd: '/', timeout: 500 },
+  )
+  const children = new Map<number, number[]>()
+  for (const line of listing.stdout.split('\n')) {
+    const match = /^\s*(\d+)\s+(\d+)\s*$/.exec(line)
+    if (!match) continue
+    const parent = Number(match[2])
+    children.set(parent, [...(children.get(parent) ?? []), Number(match[1])])
+  }
+  const found: number[] = []
+  for (let i = -1; i < found.length; i++) {
+    for (const pid of children.get(i < 0 ? rootPid : found[i]!) ?? []) {
+      if (pid !== process.pid && !found.includes(pid)) found.push(pid)
+    }
+  }
+  return found
+}
+
 export function getMcpVersionNegotiation(
   transport: McpNegotiationTransport,
   serverRef?: ScopedMcpServerConfig,
@@ -652,6 +690,11 @@ export function getMcpVersionNegotiation(
     logForDebugging(
       'MCP era negotiation denylist matched; the legacy handshake applies',
     )
+    return { mode: 'legacy' }
+  }
+  // Fork: the stdio probe runs a sibling server process that an approved channel
+  // plugin (fakechat, telegram) outlives, keeping its port or bot poll from the real one.
+  if (transport === 'stdio' && isChannelAllowlisted(serverRef?.pluginSource)) {
     return { mode: 'legacy' }
   }
   return auto
@@ -1545,6 +1588,12 @@ export const connectToServer = memoize(
             bareElicitation: true,
           })
         }
+        // "Connection closed" alone hides why a stdio server died (e.g. a
+        // missing token); carry the last stderr lines into the status error.
+        const reason = stderrOutput && stderrFailureReason(stderrOutput)
+        if (reason && error instanceof Error) {
+          error.message = `${error.message}: ${reason}`
+        }
         throw error
       }
 
@@ -1817,11 +1866,24 @@ export const connectToServer = memoize(
             const childPid = stdioTransport.pid
 
             if (childPid) {
+              // Launchers like `bun run` (fakechat, telegram) do not pass signals on, so
+              // signal the processes they started too, as Ctrl+C reaches a whole job.
+              const descendants = await listDescendantPids(childPid)
+              const signalDescendants = (signal: NodeJS.Signals) => {
+                for (const pid of descendants) {
+                  try {
+                    process.kill(pid, signal)
+                  } catch {
+                    // Already exited
+                  }
+                }
+              }
               logMCPDebug(name, 'Sending SIGINT to MCP server process')
 
               // First try SIGINT (like Ctrl+C)
               try {
                 process.kill(childPid, 'SIGINT')
+                signalDescendants('SIGINT')
               } catch (error) {
                 logMCPDebug(name, `Error sending SIGINT: ${error}`)
                 return
@@ -1876,6 +1938,7 @@ export const connectToServer = memoize(
                       )
                       try {
                         process.kill(childPid, 'SIGTERM')
+                        signalDescendants('SIGTERM')
                       } catch (termError) {
                         logMCPDebug(name, `Error sending SIGTERM: ${termError}`)
                         resolved = true
@@ -1907,6 +1970,7 @@ export const connectToServer = memoize(
                         )
                         try {
                           process.kill(childPid, 'SIGKILL')
+                          signalDescendants('SIGKILL')
                         } catch (killError) {
                           logMCPDebug(
                             name,

@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, test } from 'bun:test'
+import { afterEach, beforeEach, expect, mock, test } from 'bun:test'
 import { mkdtemp, realpath, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -12,6 +12,13 @@ import { AppStoreContext, getDefaultAppState } from '../state/AppState.js'
 import { createStore } from '../state/store.js'
 import { resetSettingsCache } from '../utils/settings/settingsCache.js'
 import PromptInput from './PromptInput/PromptInput.js'
+
+// The real wrapper detects the install type (a few hundred ms of probes),
+// then mounts an updater that runs `npm view` and reads MACRO, which bun test
+// does not define. Its throw blanks the whole notification column through
+// SentryErrorBoundary, so the /effort footer vanished whenever detection
+// finished mid-test (#783).
+mock.module('./AutoUpdaterWrapper.js', () => ({ AutoUpdaterWrapper: () => null }))
 
 const envKeys = [
   'HOME',

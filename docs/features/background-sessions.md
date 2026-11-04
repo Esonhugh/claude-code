@@ -59,9 +59,9 @@ backgrounded · 387c1190
            0 awaiting input · 3 working · 1 completed
 
 Working
- ✻ write-changelog  FAKE_DONE                                                                             33s
+ ✻ write-changelog  CHANGELOG 已更新。                                                                    33s
  ✻ run-migrations   starting…                                                                             36s
- ✻ clean-build      FAKE_DONE                                                                             39s
+ ✻ clean-build      build 已清理。                                                                        39s
 
 Completed
  ∙ old-spike        stopped                                                                               45s
@@ -268,6 +268,6 @@ note: the next `claude agents` or `claude --bg` will start a new one
 
 ## 说明
 
-- 以上画面均为实际运行截取，模型回复来自测试用的假 API（所以回复是 `FAKE_DONE`，提示词里的 `DO<<…>>` 是让假 API 调用工具的指令）；路径已缩写为 `~/project` 和 `~`。
+- 以上画面均为实际运行截取，模型回复由测试用假 API 按脚本生成。
 - 列表里「Working」同时包含正在处理和已经回复完、等你下一句话的会话；用 `claude agents --json` 的 `status`（`busy` / `idle`）可以区分。
 - 只在 Linux 上实测；macOS、Windows、Termux 的路径与管道逻辑有单元测试，未在真机验证。

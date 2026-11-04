@@ -1,9 +1,10 @@
+import { parseEffortValue } from '../../utils/effort.js'
 import { promises as fsp } from 'fs'
 import { getSdkAgentProgressSummariesEnabled } from '../../bootstrap/state.js'
 import { getCommands } from '../../commands.js'
 import { getProjectRoot } from '../../bootstrap/state.js'
 import { isLocalAgentTask } from '../../tasks/LocalAgentTask/LocalAgentTask.js'
-import { markAgentsNotified } from '../../tasks/LocalAgentTask/LocalAgentTask.js'
+import { markAgentsNotified, queuePendingMessage } from '../../tasks/LocalAgentTask/LocalAgentTask.js'
 import { isEnvTruthy } from '../../utils/envUtils.js'
 import { AgentStoppedByUserError } from '../../utils/agentCancellation.js'
 import { hashSubagentHandbackSections, type SubagentHandback } from '../../utils/subagentHandback.js'
@@ -51,6 +52,7 @@ import { getTaskOutputPath } from '../../utils/task/diskOutput.js'
 import { getParentSessionId } from '../../utils/teammate.js'
 import { reconstructForSubagentResume } from '../../utils/toolResultStorage.js'
 import {
+  countToolUses,
   resolveAgentTools,
   runAsyncAgentLifecycle,
 } from './agentToolUtils.js'
@@ -72,7 +74,49 @@ export type ResumeAgentResult = {
   outputFile: string
   inlineHandback?: SubagentHandback
 }
-export async function resumeAgentBackground({
+type ResumeAgentParams = {
+  agentId: string
+  prompt: string
+  toolUseContext: ToolUseContext
+  canUseTool: CanUseToolFn
+  invokingRequestId?: string
+  promptIsMeta?: boolean
+  /** The prompt was typed into the agent by the user (not sent by its owner). */
+  fromUser?: boolean
+  getWorktreeResult?: () => Promise<{worktreePath?: string; worktreeBranch?: string}>
+  delivery?: 'notification' | 'reply'
+  /** Run the resumed agent on this model instead of the one it started with. */
+  model?: string
+  effort?: string
+}
+
+// Resumes still starting (reading the transcript, before the task is running), by agent.
+const startingResumes = new Map<string, Promise<ResumeAgentResult>>()
+
+export async function resumeAgentBackground(params: ResumeAgentParams): Promise<ResumeAgentResult> {
+  const { agentId, prompt, toolUseContext, fromUser } = params
+  // A second message while a resume is still starting would read the same
+  // transcript and run a parallel branch; it is queued to that run instead.
+  const starting = startingResumes.get(agentId)
+  if (starting) {
+    const started = await starting.catch(() => undefined)
+    const live = toolUseContext.getAppState().tasks[agentId]
+    if (started && isLocalAgentTask(live) && live.status === 'running') {
+      queuePendingMessage(agentId, fromUser ? { text: prompt, fromUser: true } : prompt, toolUseContext.setAppStateForTasks ?? toolUseContext.setAppState)
+      logForDebugging(`[AgentResume] queued agent=${agentId} behind a starting resume`)
+      return started
+    }
+  }
+  const run = startResume(params)
+  startingResumes.set(agentId, run)
+  try {
+    return await run
+  } finally {
+    if (startingResumes.get(agentId) === run) startingResumes.delete(agentId)
+  }
+}
+
+async function startResume({
   agentId,
   prompt,
   toolUseContext,
@@ -81,16 +125,9 @@ export async function resumeAgentBackground({
   promptIsMeta,
   getWorktreeResult,
   delivery = 'notification',
-}: {
-  agentId: string
-  prompt: string
-  toolUseContext: ToolUseContext
-  canUseTool: CanUseToolFn
-  invokingRequestId?: string
-  promptIsMeta?: boolean
-  getWorktreeResult?: () => Promise<{worktreePath?: string; worktreeBranch?: string}>
-  delivery?: 'notification' | 'reply'
-}): Promise<ResumeAgentResult> {
+  model: modelOverride,
+  effort: effortOverride,
+}: ResumeAgentParams): Promise<ResumeAgentResult> {
   const refuseUserStop = () => {
     const task = toolUseContext.getAppState().tasks[agentId]
     if (isLocalAgentTask(task) && task.stoppedByUser) {
@@ -202,8 +239,11 @@ export async function resumeAgentBackground({
     selectedAgent = GENERAL_PURPOSE_AGENT
   }
 
-  if (scope?.effort !== undefined) selectedAgent = { ...selectedAgent, effort: scope.effort }
+  const requestedEffort = parseEffortValue(effortOverride)
+  if (requestedEffort !== undefined) selectedAgent = { ...selectedAgent, effort: requestedEffort }
+  else if (scope?.effort !== undefined) selectedAgent = { ...selectedAgent, effort: scope.effort }
   else if (meta?.effort !== undefined) selectedAgent = { ...selectedAgent, effort: meta.effort }
+  const agentModel = modelOverride ?? meta?.model
   const uiDescription = meta?.description ?? '(resumed)'
 
   let forkParentSystemPrompt: SystemPrompt | undefined
@@ -293,7 +333,7 @@ export async function resumeAgentBackground({
   }) : getAgentModel(
     getAgentDefinitionModel(selectedAgent, toolUseContext.options.mainLoopModel),
     toolUseContext.options.mainLoopModel,
-    meta?.model,
+    agentModel,
     permissionMode,
   )
 
@@ -303,7 +343,7 @@ export async function resumeAgentBackground({
     prompt,
     description: uiDescription,
     subagentType: selectedAgent.agentType,
-    model: meta?.model,
+    model: agentModel,
     permissionMode,
     fork: isResumedFork,
   })
@@ -330,6 +370,8 @@ export async function resumeAgentBackground({
       ...resumedMessages,
       createUserMessage({ content: prompt, isMeta: promptIsMeta || undefined }),
     ],
+    // Already in the agent's transcript file: only the new turn is appended.
+    recordedUuids: new Set(transcript.messages.map(message => message.uuid)),
     // The waking context belongs to the caller; keep this agent's own depth.
     toolUseContext: {
       ...workerContext,
@@ -348,7 +390,7 @@ export async function resumeAgentBackground({
       selectedAgent.agentType,
       isBuiltInAgent(selectedAgent),
     ),
-    model: meta?.model,
+    model: agentModel,
     ...(isResumedFork && { resolvedModel: resolvedAgentModel }),
     // Fork resume: pass parent's system prompt (cache-identical prefix).
     // Non-fork: undefined → runAgent recomputes under wrapWithCwd so
@@ -457,10 +499,11 @@ export async function resumeAgentBackground({
         rootSetAppState,
         shouldNotifyOwner: inline ? () => false : undefined,
         onRunSettled: releaseSlot,
-        resume: nextPrompt => resumeAgentBackground({
+        priorToolUses: countToolUses(transcript.messages),
+        resume: (nextPrompt, promptIsMeta = true) => resumeAgentBackground({
           agentId,
           prompt: nextPrompt,
-          promptIsMeta: true,
+          promptIsMeta,
           toolUseContext,
           canUseTool,
           invokingRequestId,

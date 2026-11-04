@@ -633,3 +633,29 @@ describe('compactConversation direct streaming fallback API errors', () => {
     expect(JSON.stringify(result.summaryMessages)).toContain('first plain')
   })
 })
+
+describe('compaction canceled with Esc', () => {
+  test('does not report an error notification', async () => {
+    streamAssistantMessages = []
+    const messages = [
+      userTextMessage('00000000-0000-4000-8000-000000000041', 'compact me'),
+    ]
+    const context = createCompactTestContext()
+    const notifications: Array<{ key: string }> = []
+    context.addNotification = (notification) => {
+      notifications.push(notification as { key: string })
+    }
+    context.abortController.abort()
+    await expect(
+      compactConversation(
+        messages,
+        context,
+        createCacheSafeParams(context, messages),
+        false,
+      ),
+    ).rejects.toThrow()
+    expect(notifications.map(n => n.key)).not.toContain(
+      'error-compacting-conversation',
+    )
+  })
+})

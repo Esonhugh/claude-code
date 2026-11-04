@@ -507,6 +507,53 @@ if (process.env[childFlag] !== '1') {
     }
   })
 
+  test('QueryEngine ends a turn interrupted before its prompt is admitted with a result, not a throw', async () => {
+    const abortController = new AbortController()
+    // eslint-disable-next-line require-yield -- The turn is aborted before the query streams anything.
+    const queryMock = spyOn(queryModule, 'query').mockImplementation(async function* () {
+      return { reason: 'completed' }
+    })
+    const mocks = [
+      queryMock,
+      spyOn(contextModule, 'fetchSystemPromptParts').mockResolvedValue({
+        defaultSystemPrompt: [],
+        userContext: {},
+        systemContext: {},
+      }),
+      spyOn(commandModule, 'getSlashCommandToolSkills').mockResolvedValue([]),
+      spyOn(plugins, 'loadAllPluginsCacheOnly').mockResolvedValue({ enabled: [], disabled: [], errors: [] }),
+      spyOn(fileHistory, 'fileHistoryEnabled').mockReturnValue(false),
+      spyOn(storage, 'recordTranscript').mockResolvedValue(undefined),
+      // eslint-disable-next-line require-yield -- The hook only aborts the turn; it emits no results.
+      spyOn(hooks, 'executeUserPromptSubmitHooks').mockImplementation(async function* () {
+        abortController.abort()
+      }),
+      spyOn(attachments, 'getAttachmentMessages').mockImplementation(async function* () {}),
+    ]
+    try {
+      let state = getDefaultAppState()
+      const engine = new QueryEngine({
+        cwd: process.cwd(), tools: [], commands: [], mcpClients: [], agents: [],
+        canUseTool: async () => ({ behavior: 'allow', updatedInput: {} }),
+        getAppState: () => state,
+        setAppState: update => { state = update(state) },
+        readFileCache: createFileStateCacheWithSizeLimit(10),
+        userSpecifiedModel: 'claude-sonnet-4-6',
+        thinkingConfig: { type: 'disabled' },
+        abortController,
+      })
+      const results: unknown[] = []
+      for await (const message of engine.submitMessage('interrupted at once'))
+        if (message.type === 'result') results.push(message)
+      expect(results).toEqual([
+        expect.objectContaining({ subtype: 'error_during_execution', terminal_reason: 'aborted_streaming', errors: [] }),
+      ])
+      expect(queryMock).not.toHaveBeenCalled()
+    } finally {
+      for (const mock of mocks) mock.mockRestore()
+    }
+  })
+
   test('AppStateProvider keeps peer permissions live and releases its subscription on unmount', async () => {
     const { render } = await import('../ink.js')
     const { AppStateProvider, useAppStateStore } =

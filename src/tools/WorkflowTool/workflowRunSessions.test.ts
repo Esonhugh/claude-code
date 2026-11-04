@@ -546,6 +546,45 @@ assert.deepEqual(
   pathAliasEvents.map(event => event.message).sort(),
 )
 
+// Readers outside the lock (locating a run's session dir) must never see a half-written record.
+const tornReadRoot = await mkdtemp(join(tmpdir(), 'workflow-torn-read-'))
+const tornReadSession = await startWorkflowRunSession({
+  cwd: tornReadRoot,
+  taskId: 'w-torn-read',
+  workflowRunId: 'wf_torn_read',
+  plan: {
+    name: 'torn-read-workflow',
+    description: 'torn read workflow',
+    defaults: { maxConcurrency: 1, maxAgents: 1, maxRetries: 0, fanout: 1, concurrency: 1, review: 'none', execution: 'agent' },
+    phases: [],
+    totalAgents: 1,
+  },
+})
+const tornReadPath = join(workflowSessionDir(tornReadRoot), 'workflows', 'wf_torn_read.json')
+const tornReader = spawn(process.execPath, ['-e', `
+  const { readFileSync, existsSync } = require('node:fs')
+  const torn = []
+  while (!existsSync(process.argv.at(-1) + '.done')) {
+    const text = readFileSync(process.argv.at(-1), 'utf8')
+    try { JSON.parse(text) } catch { torn.push(text.length) }
+  }
+  process.stdout.write(JSON.stringify(torn))
+`, tornReadPath], { stdio: ['ignore', 'pipe', 'inherit'] })
+let tornReadOut = ''
+tornReader.stdout.on('data', chunk => { tornReadOut += String(chunk) })
+const tornReaderExit = new Promise(resolve => tornReader.on('exit', resolve))
+for (let round = 0; round < 10; round++) {
+  await Promise.all(Array.from({ length: 20 }, (_, eventIndex) => appendWorkflowRunEvent({
+    cwd: tornReadRoot,
+    session: tornReadSession,
+    event: { type: 'workflow_log', workflowRunId: 'wf_torn_read', message: `torn ${round}:${eventIndex}`, timestamp: 1783399711780 + eventIndex },
+  })))
+}
+await writeFile(`${tornReadPath}.done`, '')
+await tornReaderExit
+const tornReads = JSON.parse(tornReadOut) as number[]
+assert.deepEqual(tornReads, [])
+
 const crossProcessRoot = await mkdtemp(join(tmpdir(), 'workflow-cross-process-'))
 const crossProcessRunId = 'wf_cross_process'
 await startWorkflowRunSession({

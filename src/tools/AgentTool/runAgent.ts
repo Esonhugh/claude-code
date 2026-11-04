@@ -58,7 +58,7 @@ import type {
   ToolUseSummaryMessage,
   UserMessage,
 } from '../../types/message.js'
-import { createAttachmentMessage } from '../../utils/attachments.js'
+import { createAttachmentMessage, getDeferredToolsDeltaAttachment } from '../../utils/attachments.js'
 import { isClaudeInChromeMCPServer } from '../../utils/claudeInChrome/common.js'
 import { AbortError } from '../../utils/errors.js'
 import { getDisplayPath } from '../../utils/file.js'
@@ -1073,6 +1073,18 @@ export async function* runAgent({
     }
   }
   const allTools = handbackContract ? [...mergedTools, SubagentHandbackTool] : mergedTools
+  // A fresh agent learns its deferred tools before its first request, as official does;
+  // otherwise the first announcement comes only after its first tool results.
+  if (contentReplacementState === undefined && !recordedUuids?.size) {
+    for (const attachment of getDeferredToolsDeltaAttachment(allTools, resolvedAgentModel, initialMessages, {
+      callSite: 'attachments_subagent',
+      querySource,
+    })) {
+      const message = createAttachmentMessage(attachment)
+      initialMessages.push(message)
+      yield message
+    }
+  }
 
   const canonicalModel = getCanonicalName(resolvedAgentModel)
   const inheritThinking =
@@ -1294,6 +1306,17 @@ export async function* runAgent({
           )
           yield message
           break
+        }
+        // A message sent to the running agent (by the user or with SendMessage),
+        // fed in between tool calls: kept in its transcript so a viewer shows it
+        // and a resume still has it.
+        // @ts-ignore - recovered code
+        if (message.attachment.type === 'queued_command') {
+          await recordSidechainTranscript([message], agentId, lastRecordedUuid).catch(err =>
+            logForDebugging(`Failed to record sidechain transcript: ${err}`),
+          )
+          recordedUuids?.add(message.uuid)
+          lastRecordedUuid = message.uuid
         }
         yield message
         continue

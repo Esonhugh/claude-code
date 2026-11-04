@@ -674,7 +674,7 @@ function PromptInput({
           isBackgroundTask(t) &&
           t.type !== 'in_process_teammate' &&
           t.type !== 'local_workflow' &&
-          !(isAnt() && isPanelAgentTask(t)),
+          !isPanelAgentTask(t),
       ),
     [tasks],
   )

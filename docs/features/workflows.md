@@ -63,7 +63,7 @@
 ```text
 ● Dynamic workflow "review two areas, then summarize" completed
 
-● FAKE_DONE
+● 两个方面都看完了，汇总已写好。
 
   ? for shortcuts · ↓ to manage
     ◯ repo-review  review two areas, then summarize                                done  3/3 agents  25s · ↓ 45 tokens
@@ -157,4 +157,4 @@ return await agent('Summarize the findings', { label: 'summary' })
 
 ## 说明
 
-画面来自实际运行，模型回复由测试用假 API 生成（`FAKE_DONE`；脚本里 Agent 提示中的 `DO<<…>>` 是让假 API 调用工具、制造耗时的指令）。
+画面来自实际运行，模型回复由测试用假 API 按脚本生成（其中一个 Agent 被设定为跑久一点，以便演示进行中的状态）。

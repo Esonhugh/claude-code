@@ -101,7 +101,7 @@
 ❯ /compact
   ⎿  Compacted (ctrl+o to see full summary)
 ❯ after compact
-● FAKE_OK
+● 好的。
 ```
 
 假服务记录到压缩请求带了 `compaction_trigger`，压缩后下一条请求只剩压缩内容加新消息。不设 `compact.mode` 时，同样的 `/compact` 发的是普通的写摘要请求。

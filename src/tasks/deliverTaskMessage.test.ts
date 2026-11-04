@@ -21,7 +21,8 @@ const teammate = (id: string, status: string) =>
 test('running agent: shown in its transcript and queued', () => {
   const s = setup({ a: agent('a', { status: 'running' }) })
   expect(deliverTaskMessage(s.get('a'), 'hi', s.setAppState)).toBe('queued')
-  expect(s.get('a').pendingMessages).toEqual(['hi'])
+  // Typed by the user, not sent by the parent: the agent must not see it as a coordinator message.
+  expect(s.get('a').pendingMessages).toEqual([{ text: 'hi', fromUser: true }])
   expect(s.get('a').messages).toHaveLength(1)
 })
 
@@ -44,4 +45,16 @@ test('teammates: running gets the message, stopped refuses', () => {
   expect(s.get('t1').pendingUserMessages).toEqual(['hi'])
   expect(() => deliverTaskMessage(s.get('t2'), 'hi', s.setAppState)).toThrow('teammate has stopped; message was not sent')
   expect(() => deliverTaskMessage(undefined, 'hi', s.setAppState)).toThrow('no agent or teammate task')
+})
+
+test('a running agent sees a typed message as the user\'s and a parent message as the coordinator\'s', async () => {
+  const { getAgentPendingMessageAttachments } = await import('../utils/attachments.js')
+  const s = setup({ a: agent('a', { status: 'running', pendingMessages: ['from parent'] }) })
+  deliverTaskMessage(s.get('a'), 'from user', s.setAppState)
+  let state = { tasks: { a: s.get('a') } } as unknown as AppState
+  const context = { agentId: 'a', getAppState: () => state, setAppState: (f: (p: AppState) => AppState) => { state = f(state) } }
+  expect(getAgentPendingMessageAttachments(context as never)).toEqual([
+    { type: 'queued_command', prompt: 'from parent', origin: { kind: 'coordinator' }, isMeta: true },
+    { type: 'queued_command', prompt: 'from user', origin: { kind: 'human' } },
+  ])
 })

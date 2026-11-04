@@ -447,6 +447,46 @@ describe('query autocompact failures', () => {
     }
   })
 
+  test('an autocompact interrupted by the user does not surface Prompt is too long', async () => {
+    const previousBlockingLimit = process.env.CLAUDE_CODE_BLOCKING_LIMIT_OVERRIDE
+    process.env.CLAUDE_CODE_BLOCKING_LIMIT_OVERRIDE = '1'
+    const toolUseContext = createToolUseContext()
+
+    try {
+      const { events, terminal } = await drainQuery({
+        messages: [userMessage('enough text to exceed the test blocking limit')],
+        systemPrompt: asSystemPrompt([]),
+        userContext: {},
+        systemContext: {},
+        canUseTool: async () => ({ behavior: 'allow', updatedInput: {} }),
+        toolUseContext,
+        querySource: 'repl_main_thread' as QuerySource,
+        deps: {
+          uuid: () => '00000000-0000-4000-8000-000000000101',
+          microcompact: async messages => ({ messages }),
+          autocompact: async () => {
+            // Esc while the summary request is in flight.
+            toolUseContext.abortController.abort('user-cancel')
+            return { wasCompacted: false, consecutiveFailures: 1 }
+          },
+          callModel: async function* () {},
+        },
+      })
+
+      const texts = events
+        .filter((event): event is AssistantMessage => event.type === 'assistant')
+        .map(assistantText)
+      expect(texts.join('\n')).not.toContain('Prompt is too long')
+      expect(terminal).not.toEqual({ reason: 'blocking_limit' })
+    } finally {
+      if (previousBlockingLimit === undefined) {
+        delete process.env.CLAUDE_CODE_BLOCKING_LIMIT_OVERRIDE
+      } else {
+        process.env.CLAUDE_CODE_BLOCKING_LIMIT_OVERRIDE = previousBlockingLimit
+      }
+    }
+  })
+
   test('autoCompactIfNeeded returns typed failure message and preserves failure count on catch', async () => {
     const envKeys = ['CLAUDE_CODE_AUTO_COMPACT_WINDOW', 'DISABLE_COMPACT', 'DISABLE_AUTO_COMPACT'] as const
     const savedEnvironment = envKeys.map(key => process.env[key])

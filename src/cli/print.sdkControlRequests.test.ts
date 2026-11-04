@@ -102,7 +102,7 @@ if (process.env[childFlag] !== '1') {
     ], store)
     expect(queued.response).toEqual({ delivery: 'queued' })
     const tasks = store.getState().tasks as Record<string, any>
-    expect(tasks.a1.pendingMessages).toEqual(['also check the appendix'])
+    expect(tasks.a1.pendingMessages).toEqual([{ text: 'also check the appendix', fromUser: true }])
     expect(tasks.a1.messages).toHaveLength(1)
     expect(stopped).toMatchObject({ subtype: 'error', error: 'send_task_message: agent a2 was stopped by the user' })
     expect(injected.response).toEqual({ delivery: 'injected' })
@@ -111,6 +111,56 @@ if (process.env[childFlag] !== '1') {
     expect(unknown).toMatchObject({ subtype: 'error', error: 'send_task_message: no agent or teammate task' })
     expect(empty).toMatchObject({ subtype: 'error', error: 'send_task_message: task_id and text must be non-empty strings' })
     expect(screen.response).toEqual({ output: '$ echo hi\nhi', total_bytes: 12, truncated: false })
+  })
+
+  test('fork terminal requests: screen format, background task listing and send_terminal_input validation', async () => {
+    const { createMonitorEventStream } = await import('../tools/MonitorTool/monitorEvents.js')
+    const events = createMonitorEventStream({ taskRef: { id: 'm1' }, description: 'watch', killTask: () => false, now: () => 1000, notify: () => {} })
+    events.onData('epoch 1 done\n')
+    events.flush()
+    const base = { description: 'd', startTime: 0, outputFile: '/dev/null', outputOffset: 0, notified: false }
+    const shell = { completionStatusSentInAttachment: false, shellCommand: null, lastReportedTotalLines: 0, isBackgrounded: true }
+    const initial = getDefaultAppState()
+    const store = createStore({
+      ...initial,
+      tasks: {
+        term1: { ...base, id: 'term1', type: 'interactive_terminal', status: 'running', sessionId: 'term-9', command: '/usr/bin/python3', args: ['-q'], requestedCommand: 'python3 -q', cwd: '/', cols: 80, rows: 24, preview: '>>> 1+1\n\n2', closed: false, agentId: 'a1' },
+        term2: { ...base, id: 'term2', type: 'interactive_terminal', status: 'completed', endTime: 5000, sessionId: 'term-8', command: 'bash', args: [], cwd: '/', cols: 80, rows: 24, preview: '', closed: true, exitCode: 0 },
+        b1: { ...base, ...shell, id: 'b1', type: 'local_bash', status: 'running', command: 'sleep 300', kind: 'bash' },
+        m1: { ...base, ...shell, id: 'm1', type: 'local_bash', status: 'killed', endTime: 2000, command: 'tail -f log', description: 'watch', kind: 'monitor', result: { code: 143, interrupted: true } },
+        a1: { ...base, id: 'a1', type: 'local_agent', status: 'running', agentId: 'a1', prompt: 'p', messages: [], pendingMessages: [] },
+      } as unknown as typeof initial.tasks,
+    }, onChangeAppState)
+    const [screen, badFormat, listing, noTask, emptyInput, badKey, longText, notTerminal, ended] = await run([
+      { subtype: 'get_task_output', task_id: 'term1', format: 'screen' },
+      { subtype: 'get_task_output', task_id: 'term1', format: 'ansi' },
+      { subtype: 'get_background_tasks' },
+      { subtype: 'send_terminal_input', text: 'x' },
+      { subtype: 'send_terminal_input', task_id: 'term1', text: '' },
+      { subtype: 'send_terminal_input', task_id: 'term1', key: 'F1' },
+      { subtype: 'send_terminal_input', task_id: 'term1', text: 'x'.repeat(4097) },
+      { subtype: 'send_terminal_input', task_id: 'b1', text: 'x' },
+      { subtype: 'send_terminal_input', task_id: 'term2', enter: true },
+    ], store)
+    // No PTY session behind it: the plain preview lines stand in for the screen.
+    expect(screen.response).toEqual({
+      output: '>>> 1+1\n\n2',
+      total_bytes: 10,
+      truncated: false,
+      screen: { cols: 80, rows: 24, lines: [[{ text: '>>> 1+1' }], [], [{ text: '2' }]] },
+    })
+    expect(badFormat).toMatchObject({ subtype: 'error', error: 'get_task_output: format must be "screen" when given' })
+    const byId = Object.fromEntries((listing.response.tasks as { task_id: string }[]).map(t => [t.task_id, t]))
+    expect(Object.keys(byId).sort()).toEqual(['b1', 'm1', 'term1', 'term2'])
+    expect(byId.term1).toMatchObject({ task_type: 'interactive_terminal', command: 'python3 -q', cols: 80, rows: 24, agent_id: 'a1', status: 'running' })
+    expect(byId.term2).toMatchObject({ command: 'bash', exit_code: 0, duration_ms: 5000 })
+    expect(byId.b1).toMatchObject({ task_type: 'local_bash', kind: 'bash', command: 'sleep 300', tail: '' })
+    expect(byId.m1).toMatchObject({ kind: 'monitor', exit_code: 143, duration_ms: 2000, events: [{ time: 1000, text: 'epoch 1 done' }] })
+    const shape = 'send_terminal_input: task_id must be a non-empty string, with text (at most 4096 characters), a key, or enter: true'
+    for (const bad of [noTask, emptyInput, badKey, longText]) expect(bad).toMatchObject({ subtype: 'error', error: shape })
+    for (const bad of [notTerminal, ended]) {
+      expect(bad).toMatchObject({ subtype: 'error', error: 'send_terminal_input: no running terminal with that task_id' })
+    }
   })
 
   test('reload_skills and reload_output_styles answer instead of Unsupported', async () => {

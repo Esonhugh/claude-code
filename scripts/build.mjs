@@ -90,6 +90,7 @@ export function getEnabledFeatures(value = process.env.CLAUDE_CODE_RECOVER_FEATU
     'EXTRACT_MEMORIES',
     'AWAY_SUMMARY',
     'DIRECT_CONNECT',
+    'WEB_UI',
     'BG_SESSIONS',
     'DAEMON',
     'COORDINATOR_MODE',
@@ -293,9 +294,26 @@ export function prepareBuildDirectory(value) {
   return outputDir;
 }
 
+// A compiled binary embeds the Bun that built it. Bun 1.3.x cannot link the
+// built-in Mods' module graph in node:vm (agents-md fails to load), so a
+// binary is only built with at least the Bun that packageManager pins.
+export function assertSupportedBunVersion(version) {
+  const minimum = packageJson.packageManager.replace(/^bun@/, '');
+  const parse = value => (/^(\d+)\.(\d+)\.(\d+)/.exec(value) ?? []).slice(1).map(Number);
+  const [have, need] = [parse(version), parse(minimum)];
+  const index = have.findIndex((part, i) => part !== need[i]);
+  if (have.length !== 3 || (index >= 0 && have[index] < need[index])) {
+    throw new Error(`Bun ${minimum} or newer is required to build the binary, found ${version}. Run bun upgrade and rebuild.`);
+  }
+}
+
 export async function buildCli({ outputDir, embedSharpNative: embeddedSharp = embedSharpNative } = {}) {
   const distDir = path.join(outputDir ?? projectDir, 'dist');
   await fs.promises.mkdir(distDir, { recursive: true });
+  if (enabledFeatures.has('WEB_UI')) {
+    const { buildWeb } = await import('./build-web.mjs');
+    await buildWeb();
+  }
 
   await build({
   absWorkingDir: projectDir,

@@ -85,6 +85,8 @@ export async function stopTask(
     killAsyncAgent(taskId, setAppState, 'user')
     // Ensure the SDK acknowledgment follows durable cancellation.
     await readAgentMetadata(asAgentId(taskId))
+  } else if (isLocalAgentTask(task)) {
+    killAsyncAgent(taskId, setAppState, 'parent')
   } else {
     await taskImpl.kill(taskId, setAppState)
   }

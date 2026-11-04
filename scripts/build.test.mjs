@@ -14,6 +14,7 @@ import { fileURLToPath, URL } from 'node:url';
 import { runInNewContext } from 'node:vm';
 import { transformSync } from 'esbuild';
 import {
+  assertSupportedBunVersion,
   copyRuntimeAssets,
   getEnabledFeatures,
   macroValues,
@@ -24,6 +25,14 @@ import imageProcessor, {
   sharp,
 } from './shims/image-processor-napi.js';
 
+// Bun 1.3.x node:vm cannot link the built-in agents-md Mod; refuse to build with it.
+assert.throws(() => assertSupportedBunVersion('1.3.13'), /Bun 1\.4\.2 or newer is required to build the binary, found 1\.3\.13/);
+assert.throws(() => assertSupportedBunVersion('1.4.1'), /found 1\.4\.1/);
+assert.throws(() => assertSupportedBunVersion('not-a-version'), /found not-a-version/);
+for (const version of ['1.4.2', '1.4.4', '1.4.4-canary.20261102.1', '1.10.0', '2.0.0']) {
+  assert.doesNotThrow(() => assertSupportedBunVersion(version));
+}
+
 assert.equal(getEnabledFeatures('').has('AGENT_TRIGGERS'), true);
 assert.equal(getEnabledFeatures('').has('MCP_SKILLS'), true);
 assert.equal(getEnabledFeatures('').has('SSH_REMOTE'), true);
@@ -31,6 +40,7 @@ assert.equal(getEnabledFeatures('').has('TRANSCRIPT_CLASSIFIER'), true);
 assert.equal(getEnabledFeatures('').has('EXTRACT_MEMORIES'), true);
 assert.equal(getEnabledFeatures('').has('AWAY_SUMMARY'), true);
 assert.equal(getEnabledFeatures('').has('DIRECT_CONNECT'), true);
+assert.equal(getEnabledFeatures('').has('WEB_UI'), true);
 assert.equal(getEnabledFeatures('').has('BG_SESSIONS'), true);
 assert.equal(getEnabledFeatures('').has('DAEMON'), true);
 assert.equal(getEnabledFeatures('').has('COORDINATOR_MODE'), true);

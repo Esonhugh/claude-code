@@ -10,7 +10,7 @@
 
 ## 默认是什么样
 
-不做任何设置时，`/feedback` 这个命令不存在，输入后显示 `Unknown skill: feedback`：
+不做任何设置时，`/feedback` 这个命令不存在，输入后显示 `Unknown command: /feedback`：
 
 ![默认关闭](images/telemetry-feedback-off.png)
 

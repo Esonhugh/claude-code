@@ -213,10 +213,11 @@ try {
       data: {
         data: options?.headers?.['anthropic-version']
           ? [
-              { id: 'anthropic/claude-gateway', name: 'Claude Gateway' },
+              { id: 'anthropic/claude-gateway', name: 'Claude Gateway', max_input_tokens: 1_000_000 },
               {
                 id: 'openai/gpt-router',
                 name: 'GPT Router',
+                context_length: 262_144,
                 visibility: 'hide',
                 description: 'Internal gateway route',
               },
@@ -330,6 +331,13 @@ try {
     'Bearer custom-gateway-token',
   )
   assert.deepEqual(requests[0]!.params, { limit: 1000 })
+  // The window the gateway reports, under either field name; none for unlisted ids.
+  assert.equal(openAIModelOptions.getGatewayModelContextWindow('anthropic/claude-gateway'), 1_000_000)
+  assert.equal(openAIModelOptions.getGatewayModelContextWindow('openai/gpt-router'), 262_144)
+  assert.equal(openAIModelOptions.getGatewayModelContextWindow('other-model'), undefined)
+  const { getContextWindowForModel } = await import('../context.js')
+  assert.equal(getContextWindowForModel('openai/gpt-router'), 262_144)
+  assert.equal(getContextWindowForModel('other-model'), 200_000)
   assert.deepEqual(openAIModelOptions.getGatewayModelOptions(), [
     {
       value: 'anthropic/claude-gateway',

@@ -230,3 +230,157 @@ describe('claude server', () => {
     expect(manager.get(id)).toBeUndefined()
   })
 })
+
+// Prints a few task events on its first stdin line, then waits.
+const TASK_CHILD = `
+const out = m => process.stdout.write(JSON.stringify(m) + '\\n')
+process.stdin.once('data', () => {
+  out({ type: 'system', subtype: 'init', permissionMode: 'default', skills: ['s1'] })
+  out({ type: 'system', subtype: 'task_started', task_id: 'a1', task_type: 'local_agent' })
+  out({ type: 'system', subtype: 'task_progress', task_id: 'a1', summary: 'first' })
+  out({ type: 'assistant', message: { id: 'm1', content: [] } })
+  out({ type: 'system', subtype: 'task_progress', task_id: 'a1', summary: 'second' })
+  out({ type: 'system', subtype: 'task_notification', task_id: 'a1', status: 'completed' })
+  out({ type: 'system', subtype: 'task_started', task_id: 'w1', task_type: 'local_workflow' })
+  out({ type: 'system', subtype: 'status', status: null, permissionMode: 'plan' })
+})
+setInterval(() => {}, 1000)
+`
+
+describe('SessionManager task replay', () => {
+  async function reattach(replayTasks: boolean) {
+    const manager = new SessionManager(
+      {
+        spawn: opts =>
+          spawn(process.execPath, ['-e', TASK_CHILD], {
+            cwd: opts.cwd,
+            stdio: ['pipe', 'pipe', 'pipe'],
+          }),
+      },
+      { replayTasks },
+    )
+    const socket = () => {
+      const lines: Record<string, unknown>[] = []
+      return { lines, send: (data: string) => lines.push(JSON.parse(data)), close: () => {} }
+    }
+    try {
+      const { id } = manager.create({ cwd: '/' })
+      const first = socket()
+      manager.attach(id, first)
+      manager.write(id, '{"type":"user"}\n')
+      for (let i = 0; i < 100 && first.lines.length < 8; i++) await Bun.sleep(20)
+      expect(first.lines).toHaveLength(8)
+      manager.detach(id, first)
+      const second = socket()
+      manager.attach(id, second)
+      return second.lines
+    } finally {
+      await manager.destroyAll()
+    }
+  }
+
+  it('replays the init and the task events a reattaching client missed', async () => {
+    const lines = await reattach(true)
+    // The init first, with the permission mode as it is now.
+    expect(lines[0]).toMatchObject({ subtype: 'init', skills: ['s1'], permissionMode: 'plan' })
+    expect(lines.slice(1).map(l => [l.task_id, l.subtype, l.summary])).toEqual([
+      ['a1', 'task_started', undefined],
+      ['a1', 'task_progress', 'second'],
+      ['a1', 'task_notification', undefined],
+      ['w1', 'task_started', undefined],
+    ])
+  })
+
+  it('replays nothing unless asked to', async () => {
+    expect(await reattach(false)).toEqual([])
+  })
+})
+
+describe('SessionManager approvals', () => {
+  it('replays an unanswered permission request to a reattaching client, once', async () => {
+    const manager = new SessionManager({
+      spawn: opts => spawn(process.execPath, ['-e', FAKE_CHILD], { cwd: opts.cwd, stdio: ['pipe', 'pipe', 'pipe'] }),
+    })
+    const socket = () => {
+      const lines: Record<string, unknown>[] = []
+      return { lines, send: (data: string) => lines.push(JSON.parse(data)), close: () => {} }
+    }
+    const kinds = (lines: Record<string, unknown>[]) => lines.map(l => [l.type, l.request_id])
+    try {
+      const { id } = manager.create({ cwd: '/' })
+      const first = socket()
+      manager.attach(id, first)
+      manager.write(id, '{"type":"user"}\n')
+      for (let i = 0; i < 100 && !first.lines.length; i++) await Bun.sleep(20)
+      expect(kinds(first.lines)).toEqual([['control_request', 'perm-1']])
+      manager.detach(id, first)
+      const second = socket()
+      manager.attach(id, second)
+      expect(kinds(second.lines)).toEqual([['control_request', 'perm-1']])
+
+      manager.write(id, JSON.stringify({ type: 'control_response', response: { subtype: 'success', request_id: 'perm-1', response: { behavior: 'allow' } } }) + '\n')
+      for (let i = 0; i < 100 && second.lines.length < 2; i++) await Bun.sleep(20)
+      expect(second.lines.at(-1)?.type).toBe('result')
+      manager.detach(id, second)
+      const third = socket()
+      manager.attach(id, third)
+      expect(third.lines).toEqual([])
+    } finally {
+      await manager.destroyAll()
+    }
+  })
+})
+
+// Answers channel_enable like the engine does.
+const CHANNEL_CHILD = `
+require('readline').createInterface({ input: process.stdin }).on('line', line => {
+  const m = JSON.parse(line)
+  if (m.request?.subtype === 'channel_enable')
+    process.stdout.write(JSON.stringify({ type: 'control_response', response: { subtype: 'success', request_id: m.request_id } }) + '\\n')
+})
+`
+
+describe('SessionManager idle timeout with channels', () => {
+  it('keeps the session that last turned a channel on, so the bot stays reachable', async () => {
+    const manager = new SessionManager(
+      { spawn: opts => spawn(process.execPath, ['-e', CHANNEL_CHILD], { cwd: opts.cwd, stdio: ['pipe', 'pipe', 'pipe'] }) },
+      { idleTimeoutMs: 50 },
+    )
+    const gone = async (id: string) => {
+      for (let i = 0; i < 100 && manager.get(id); i++) await Bun.sleep(20)
+      return !manager.get(id)
+    }
+    try {
+      const plain = manager.create({ cwd: '/' })
+      const a = manager.create({ cwd: '/', channels: ['plugin:telegram@claude-plugins-official'] })
+      expect(await gone(plain.id)).toBe(true)
+      expect(manager.get(a.id)).toBeDefined()
+
+      // Enabling a channel in another session moves the bot there.
+      const b = manager.create({ cwd: '/' })
+      manager.write(b.id, JSON.stringify({ type: 'control_request', request_id: 'ch-1', request: { subtype: 'channel_enable', serverName: 'plugin:telegram:telegram' } }) + '\n')
+      expect(await gone(a.id)).toBe(true)
+      await Bun.sleep(200)
+      expect(manager.get(b.id)).toBeDefined()
+    } finally {
+      await manager.destroyAll()
+    }
+  })
+
+  it('keeps a session while its channel_enable is unanswered', async () => {
+    // The child answers well after the idle timeout, like a cold engine start.
+    const slow = CHANNEL_CHILD.replace('process.stdout.write(', 'setTimeout(() => process.stdout.write(').replace("+ '\\n')", "+ '\\n'), 400)")
+    const manager = new SessionManager(
+      { spawn: opts => spawn(process.execPath, ['-e', slow], { cwd: opts.cwd, stdio: ['pipe', 'pipe', 'pipe'] }) },
+      { idleTimeoutMs: 50 },
+    )
+    try {
+      const a = manager.create({ cwd: '/' })
+      manager.write(a.id, JSON.stringify({ type: 'control_request', request_id: 'ch-1', request: { subtype: 'channel_enable', serverName: 'plugin:telegram:telegram' } }) + '\n')
+      await Bun.sleep(1000)
+      expect(manager.get(a.id)).toBeDefined()
+    } finally {
+      await manager.destroyAll()
+    }
+  })
+})

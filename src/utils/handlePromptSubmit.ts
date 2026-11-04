@@ -357,6 +357,13 @@ export async function handlePromptSubmit(
       enqueue(cmd)
       return
     }
+    // Submitted while a local command such as /compact runs: like official,
+    // it becomes its own turn once that command ends, read against the
+    // messages as they are then.
+    if (queryGuard.isDispatching) {
+      enqueue({ ...cmd, runsAlone: true })
+      return
+    }
     let committed = false
     const admittedMessages = new Set<Message>()
     const admit = (result: ProcessUserInputBaseResult) => {

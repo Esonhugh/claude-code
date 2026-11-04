@@ -43,6 +43,7 @@ import {
   logEvent,
 } from '../analytics/index.js'
 import { withCodexAppsToolSet } from '../apps/toolSet.js'
+import { isDeferredChannelServer } from './channelAllowlist.js'
 import { fetchClaudeAIMcpConfigsIfEligible } from './claudeai.js'
 import { expandEnvVarsInString } from './envExpansion.js'
 import {
@@ -1668,6 +1669,12 @@ function isDefaultDisabledBuiltin(name: string): boolean {
  * @returns true if the server is disabled
  */
 export function isMcpServerDisabled(name: string): boolean {
+  if (
+    (feature('KAIROS') || feature('KAIROS_CHANNELS')) &&
+    isDeferredChannelServer(name)
+  ) {
+    return true
+  }
   const projectConfig = getCurrentProjectConfig()
   if (isDefaultDisabledBuiltin(name)) {
     const enabledServers = projectConfig.enabledMcpServers || []

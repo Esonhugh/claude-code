@@ -464,6 +464,14 @@ export function buildAPIProviderProperties(): Property[] {
         value: 'GCP auth skipped',
       })
     }
+  } else if (apiProvider === 'openai') {
+    const openAIBaseUrl = process.env.OPENAI_BASE_URL
+    if (openAIBaseUrl) {
+      properties.push({
+        label: 'OpenAI base URL',
+        value: openAIBaseUrl,
+      })
+    }
   } else if (apiProvider === 'foundry') {
     const foundryBaseUrl = process.env.ANTHROPIC_FOUNDRY_BASE_URL
     if (foundryBaseUrl) {

@@ -2,7 +2,7 @@ import { expect, test } from 'bun:test'
 import { readFileSync } from 'node:fs'
 import ts from 'typescript'
 import { count } from '../utils/array.js'
-import { createAssistantMessage, createUserMessage, createTurnDurationMessage, normalizeMessagesForAPI } from '../utils/messages.js'
+import { createAssistantMessage, createUserMessage, createTurnDurationMessage, getMessagesAfterCompactBoundary, isCompactBoundaryMessage, normalizeMessagesForAPI } from '../utils/messages.js'
 import { isLoggableMessage } from '../utils/sessionStorage.js'
 import { projectModSessionMessages } from '../services/mods/sessionMessages.js'
 import type { Message } from '../types/message.js'
@@ -20,15 +20,20 @@ visit(file)
 if (matches.length !== 1) throw new Error('Expected the unique REPL turn-end duration declaration')
 const statement = matches[0]!.parent.parent
 if (!ts.isVariableStatement(statement) || !ts.isBlock(statement.parent)) throw new Error('Duration declaration must live in the turn-end block')
-const index = statement.parent.statements.indexOf(statement)
-const guard = statement.parent.statements[index + 1]
-if (!guard || !ts.isIfStatement(guard)) throw new Error('Expected the turn checkpoint guard immediately after its duration calculation')
-const js = ts.transpileModule(statement.getText(file) + '\n' + guard.getText(file), {
+const siblings = statement.parent.statements
+const index = siblings.indexOf(statement)
+// The guard may be preceded by its own condition declarations (e.g. endedByPermissionReject).
+let guardIndex = index + 1
+while (guardIndex < siblings.length && ts.isVariableStatement(siblings[guardIndex]!)) guardIndex++
+const guard = siblings[guardIndex]
+if (!guard || !ts.isIfStatement(guard)) throw new Error('Expected the turn checkpoint guard right after its duration calculation')
+const checkpointText = siblings.slice(index, guardIndex + 1).map(s => s.getText(file)).join('\n')
+const js = ts.transpileModule(checkpointText, {
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None },
 }).outputText
 const checkpoint = new Function('scope', `with (scope) { ${js} }`)
 
-function run(options: { durationMs: number; didQuery?: boolean; aborted?: boolean; proactive?: boolean; budget?: { tokens: number; limit: number; nudges: number }; swarmRunning?: boolean; deferredStart?: number; tasks?: Record<string, unknown>; waitStart?: number }) {
+function run(options: { durationMs: number; didQuery?: boolean; aborted?: boolean; abortReason?: string; proactive?: boolean; budget?: { tokens: number; limit: number; nudges: number }; swarmRunning?: boolean; deferredStart?: number; tasks?: Record<string, unknown>; waitStart?: number }) {
   const initial: Message[] = [createUserMessage({ content: 'request' }), createAssistantMessage({ content: 'reply' })]
   const messages = [...initial]
   const swarmStartTimeRef: { current: number | null } = { current: options.deferredStart ?? null }
@@ -37,7 +42,7 @@ function run(options: { durationMs: number; didQuery?: boolean; aborted?: boolea
   checkpoint({
     Date: { now: () => 100_000 },
     loadingStartTimeRef: { current: 100_000 - options.durationMs }, totalPausedMsRef: { current: 0 },
-    abortController: { signal: { aborted: options.aborted ?? false } },
+    abortController: { signal: { aborted: options.aborted ?? false, reason: 'abortReason' in options ? options.abortReason : options.aborted ? 'user-cancel' : undefined } },
     didQuery: options.didQuery ?? true, proactiveActive: options.proactive ?? false, budgetInfo: options.budget,
     getAllInProcessTeammateTasks: () => options.swarmRunning ? [{ status: 'running' }] : [],
     store: { getState: () => ({ tasks: options.tasks ?? {} }) }, swarmStartTimeRef, swarmBudgetInfoRef,
@@ -64,6 +69,10 @@ test('292 short budget turns retain the checkpoint budget fields', () => {
 
 test.each([undefined, { tokens: 4, limit: 3, nudges: 1 }])('292 canceled turns do not append a checkpoint (budget=%p)', budget => {
   expect(run({ durationMs: 45_000, aborted: true, budget }).messages).toHaveLength(2)
+})
+
+test('a turn ended by a permission rejection (abort without a reason) still records its checkpoint', () => {
+  expect(run({ durationMs: 45_000, aborted: true, abortReason: undefined }).messages).toHaveLength(3)
 })
 
 test.each([undefined, { tokens: 4, limit: 3, nudges: 1 }])('automatic loop turns keep the existing no-checkpoint rule (budget=%p)', budget => {
@@ -110,7 +119,7 @@ if (!callback || !ts.isArrowFunction(callback) || !ts.isBlock(callback.body)) th
 const runBlock = callback.body.statements.find(ts.isTryStatement)
 const didQuery = callback.body.statements.find(s => ts.isVariableStatement(s) && s.declarationList.declarations.some(d => d.name.getText(file) === 'didQuery'))
 if (!runBlock || !didQuery) throw new Error('Expected actual-query admission guard')
-const admittedJS = ts.transpileModule(`${didQuery.getText(file)}; try ${runBlock.tryBlock.getText(file)} finally { ${statement.getText(file)}; ${guard.getText(file)} }`, {
+const admittedJS = ts.transpileModule(`${didQuery.getText(file)}; try ${runBlock.tryBlock.getText(file)} finally { ${checkpointText} }`, {
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None },
 }).outputText
 const admittedCheckpoint = new Function('scope', `with (scope) { return (async () => { ${admittedJS} })() }`)
@@ -131,7 +140,7 @@ test.each([
     swarmStartTimeRef: { current: null }, swarmBudgetInfoRef: { current: undefined },
     backgroundWaitStartTimeRef: { current: null }, turnDurationAfterBackgroundWait, getCommandQueue: () => [],
     count, isLoggableMessage, createTurnDurationMessage, logForDebugging: (value: string) => logs.push(value),
-    resetTimingRefs: () => {}, newMessages: [], responseLengthRef: { current: 0 }, feature: () => false,
+    resetTimingRefs: () => {}, newMessages: [], isCompactBoundaryMessage, getMessagesAfterCompactBoundary, responseLengthRef: { current: 0 }, feature: () => false,
     apiMetricsRef: { current: [] }, setStreamingToolUses: () => {}, setStreamingText: () => {},
     messagesRef: { current: messages }, input: 'request', mrOnBeforeQuery: async () => {},
     onBeforeQueryCallback: async () => proceed, onQueryImpl: async () => { calls++ },

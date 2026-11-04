@@ -159,8 +159,9 @@ export type TimestampedHistoryEntry = {
  * newest first, with timestamps. Paste contents are resolved lazily via
  * `resolve()` — the picker only reads display+timestamp for the list.
  */
-export async function* getTimestampedHistory(): AsyncGenerator<TimestampedHistoryEntry> {
-  const currentProject = getProjectRoot()
+export async function* getTimestampedHistory(
+  currentProject = getProjectRoot(),
+): AsyncGenerator<TimestampedHistoryEntry> {
   const seen = new Set<string>()
 
   for await (const entry of makeLogEntryReader()) {
@@ -352,8 +353,12 @@ async function flushPromptHistory(retries: number): Promise<void> {
   }
 }
 
+/** Where an entry belongs: another process's session (`claude web` records what its page sent). */
+export type HistoryTarget = { project: string; sessionId: string }
+
 async function addToPromptHistory(
   command: HistoryEntry | string,
+  target?: HistoryTarget,
 ): Promise<void> {
   const entry =
     typeof command === 'string'
@@ -398,8 +403,8 @@ async function addToPromptHistory(
     ...entry,
     pastedContents: storedPastedContents,
     timestamp: Date.now(),
-    project: getProjectRoot(),
-    sessionId: getSessionId(),
+    project: target?.project ?? getProjectRoot(),
+    sessionId: target?.sessionId ?? getSessionId(),
   }
 
   pendingEntries.push(logEntry)
@@ -408,7 +413,7 @@ async function addToPromptHistory(
   void currentFlushPromise
 }
 
-export function addToHistory(command: HistoryEntry | string): void {
+export function addToHistory(command: HistoryEntry | string, target?: HistoryTarget): void {
   // Skip history when running in a tmux session spawned by Claude Code's Tungsten tool.
   // This prevents verification/test sessions from polluting the user's real command history.
   if (isEnvTruthy(process.env.CLAUDE_CODE_SKIP_PROMPT_HISTORY)) {
@@ -430,7 +435,7 @@ export function addToHistory(command: HistoryEntry | string): void {
     })
   }
 
-  void addToPromptHistory(command)
+  void addToPromptHistory(command, target)
 }
 
 export function clearPendingHistoryEntries(): void {

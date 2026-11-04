@@ -13,6 +13,18 @@ import { jsonStringify } from '../slowOperations.js'
 
 export type { ParseEntry } from 'shell-quote'
 
+// shell-quote >= 1.9.0 also escapes `~` in bare words, so `~/x` in a command we
+// rebuild would no longer expand. Keep the 1.8.x output: a bare word has no
+// other backslashes, because any `\` in the input forces a quoted form.
+function quoteWords(args: string[]): string {
+  return args
+    .map(arg => {
+      const quoted = shellQuoteQuote([arg])
+      return /^['"]/.test(quoted) ? quoted : quoted.replaceAll('\\~', '~')
+    })
+    .join(' ')
+}
+
 export type ShellParseResult =
   | { success: true; tokens: ParseEntry[] }
   | { success: false; error: string }
@@ -81,7 +93,7 @@ export function tryQuoteShellArgs(args: unknown[]): ShellQuoteResult {
       )
     })
 
-    const quoted = shellQuoteQuote(validated)
+    const quoted = quoteWords(validated)
     return { success: true, quoted }
   } catch (error) {
     if (error instanceof Error) {
@@ -291,7 +303,7 @@ export function quote(args: ReadonlyArray<unknown>): string {
       return jsonStringify(arg)
     })
 
-    return shellQuoteQuote(stringArgs)
+    return quoteWords(stringArgs)
   } catch (error) {
     // SECURITY: Never use JSON.stringify as a fallback for shell quoting.
     // JSON.stringify uses double quotes which don't prevent shell command execution.

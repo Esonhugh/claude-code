@@ -3663,7 +3663,7 @@ export function REPL({
     void mrOnTurnComplete(messagesRef.current, true)
   }
 
-  // Function to handle queued command when canceling a permission request
+  // Esc with nothing to cancel pulls queued commands back into the input
   const handleQueuedCommandOnCancel = useCallback(() => {
     const result = popAllEditable(inputValue, 0)
     if (!result) return
@@ -3686,8 +3686,14 @@ export function REPL({
   const cancelRequestProps = {
     setToolUseConfirmQueue,
     onCancel,
-    onAgentsKilled: () =>
-      setMessages(prev => [...prev, createAgentsKilledMessage()]),
+    onAgentsKilled: (passiveNotice?: string) =>
+      setMessages(prev => [
+        ...prev,
+        createAgentsKilledMessage(),
+        ...(passiveNotice
+          ? [createUserMessage({ content: passiveNotice, isMeta: true, origin: { kind: 'task-notification' } })]
+          : []),
+      ]),
     isMessageSelectorVisible: isMessageSelectorVisible || !!showBashesDialog,
     screen,
     abortSignal:
@@ -4409,7 +4415,8 @@ export function REPL({
       const result = await call('', context)
       if (result.type !== 'compact' || controller.signal.aborted) return
       resetMicrocompactState()
-      setMessages(() => [
+      setMessages(old => [
+        ...getMessagesAfterCompactBoundary(old, { includeSnipped: true }),
         ...buildPostCompactMessages(result.compactionResult),
         createSystemMessage(IDLE_COMPACTION_NOTICE, 'info'),
       ])
@@ -4450,23 +4457,19 @@ export function REPL({
             }
           }
           if (isCompactBoundaryMessage(newMessage)) {
-            // Fullscreen: keep pre-compact messages for scrollback. query.ts
-            // slices at the boundary for API calls, Messages.tsx skips the
-            // boundary filter in fullscreen, and useLogMessages treats this
-            // as an incremental append (first uuid unchanged). Cap at one
-            // compact-interval of scrollback — normalizeMessages/applyGrouping
-            // are O(n) per render, so drop everything before the previous
-            // boundary to keep n bounded across multi-day sessions.
-            if (isFullscreenEnvEnabled()) {
-              setMessages(old => [
-                ...getMessagesAfterCompactBoundary(old, {
-                  includeSnipped: true,
-                }),
-                newMessage,
-              ])
-            } else {
-              setMessages(() => [newMessage])
-            }
+            // Keep pre-compact messages on screen in both modes, like
+            // official. query.ts slices at the boundary for API calls,
+            // Messages.tsx hides the boundary and the repeated kept tail, and
+            // useLogMessages treats this as an incremental append (first uuid
+            // unchanged). Cap at one compact-interval of history —
+            // normalizeMessages/applyGrouping are O(n) per render, so drop
+            // everything before the previous boundary to keep n bounded.
+            setMessages(old => [
+              ...getMessagesAfterCompactBoundary(old, {
+                includeSnipped: true,
+              }),
+              newMessage,
+            ])
             // Bump conversationId so Messages.tsx row keys change and
             // stale memoized rows remount with post-compact content.
             setConversationId(randomUUID())
@@ -4970,7 +4973,14 @@ export function REPL({
         // isLoading is derived from queryGuard — tryStart() above already
         // transitioned dispatching→running, so no setter call needed here.
         resetTimingRefs()
-        setMessages(oldMessages => [...oldMessages, ...newMessages])
+        setMessages(oldMessages => [
+          // A typed /compact keeps one compact-interval of history, like the
+          // auto-compact path in onQueryEvent.
+          ...(newMessages.some(isCompactBoundaryMessage)
+            ? getMessagesAfterCompactBoundary(oldMessages, { includeSnipped: true })
+            : oldMessages),
+          ...newMessages,
+        ])
         responseLengthRef.current = 0
         if (feature('TOKEN_BUDGET')) {
           const parsedBudget = input ? parseTokenBudget(input) : null
@@ -5085,9 +5095,15 @@ export function REPL({
           // Skip non-query/aborted/loop turns; defer while swarm teammates are running.
           const turnDurationMs =
             Date.now() - loadingStartTimeRef.current - totalPausedMsRef.current
+          // Like official, a turn ended by a permission rejection (abort()
+          // without a reason) still gets its row; Esc ('user-cancel') and
+          // send-now ('interrupt') abort with a string reason and do not.
+          const endedByPermissionReject =
+            abortController.signal.aborted &&
+            typeof abortController.signal.reason !== 'string'
           if (
             didQuery &&
-            !abortController.signal.aborted &&
+            (!abortController.signal.aborted || endedByPermissionReject) &&
             !proactiveActive
           ) {
             logForDebugging(`[turn-duration] completed elapsedMs=${turnDurationMs}`)
@@ -5967,6 +5983,7 @@ export function REPL({
         void resumeAgentBackground({
           agentId: task.id,
           prompt: input,
+          fromUser: true,
           toolUseContext: getToolUseContext(
             messagesRef.current,
             [],
@@ -6166,13 +6183,25 @@ export function REPL({
   const handleRestoreMessage = useCallback(
     async (message: UserMessage) => {
       setImmediate(
-        (restore, message) => restore(message),
+        (restore, message) => {
+          restore(message)
+          if (!isFullscreenEnvEnabled()) setRewindRepaint(n => n + 1)
+        },
         restoreMessageSync,
         message,
       )
     },
     [restoreMessageSync],
   )
+
+  // Main screen: the rows a rewind removes start above the viewport, and the
+  // frame diff can only erase from the bottom, so the prompt would float over
+  // blank rows. Repaint the viewport once the shorter transcript is committed.
+  const [rewindRepaint, setRewindRepaint] = useState(0)
+  useEffect(() => {
+    if (rewindRepaint === 0) return
+    inkInstances.get(process.stdout)?.forceRedraw()
+  }, [rewindRepaint])
 
   // Not memoized — hook stores caps via ref, reads latest closure at dispatch.
   // 24-char prefix: deriveUUID preserves first 24, renderable uuid prefix-matches raw source.
@@ -7209,7 +7238,9 @@ export function REPL({
       <PermissionRequest
         key={toolUseConfirmQueue[0]?.toolUseID}
         onDone={() => setToolUseConfirmQueue(([_, ...tail]) => tail)}
-        onReject={handleQueuedCommandOnCancel}
+        // Like official: prompts queued before a rejected permission stay
+        // queued and run next, the same as after Esc mid-stream.
+        onReject={() => {}}
         toolUseConfirm={toolUseConfirmQueue[0]!}
         toolUseContext={getToolUseContext(
           messages,

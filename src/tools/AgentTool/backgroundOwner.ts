@@ -1,6 +1,7 @@
 import type { ToolUseContext } from '../../Tool.js'
 import {
   drainPendingMessages,
+  pendingMessageText,
   enqueueAgentNotification,
   isLocalAgentTask,
   type LocalAgentTaskState,
@@ -30,7 +31,7 @@ export function parkAgentForChildren({
 }: {
   taskId: string
   toolUseContext: ToolUseContext
-  resume?: (prompt: string) => Promise<unknown>
+  resume?: (prompt: string, promptIsMeta?: boolean) => Promise<unknown>
   getWorktreeResult: () => Promise<{ worktreePath?: string; worktreeBranch?: string }>
 }): boolean {
   if (!resume) return false
@@ -168,9 +169,11 @@ export function parkAgentForChildren({
     logForDebugging(`[AgentLifecycle] owner_wake agent_id=${taskId} notifications=${commands.length} messages=${stranded.length}`)
     try {
       await resume([
-        ...stranded,
+        ...stranded.map(pendingMessageText),
         ...commands.map(command => typeof command.value === 'string' ? command.value : ''),
-      ].join('\n\n'))
+      ].join('\n\n'),
+      // Text the user typed into the agent stays theirs: shown in its transcript, not meta.
+      !stranded.some(message => typeof message !== 'string' && 'fromUser' in message))
     } catch (error) {
       const message = errorMessage(error)
       updateTaskState<LocalAgentTaskState>(taskId, set, current => ({

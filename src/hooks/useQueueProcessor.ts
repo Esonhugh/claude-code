@@ -37,6 +37,13 @@ export function useQueueProcessor({
     queryGuard.getSnapshot,
   )
 
+  // A cancelled query still finishing (Esc) would append its interrupt marker
+  // after the queued prompts, so wait for it.
+  const isCancelledQueryDraining = useSyncExternalStore(
+    queryGuard.subscribe,
+    queryGuard.getDrainingSnapshot,
+  )
+
   // Subscribe to the unified command queue via useSyncExternalStore.
   // This guarantees re-render when the store changes, bypassing
   // React context propagation delays that cause missed notifications in Ink.
@@ -47,6 +54,7 @@ export function useQueueProcessor({
 
   useEffect(() => {
     if (isQueryActive) return
+    if (isCancelledQueryDraining) return
     if (hasActiveLocalJsxUI) return
     if (queueSnapshot.length === 0) return
 
@@ -61,6 +69,7 @@ export function useQueueProcessor({
   }, [
     queueSnapshot,
     isQueryActive,
+    isCancelledQueryDraining,
     executeQueuedInput,
     hasActiveLocalJsxUI,
     queryGuard,

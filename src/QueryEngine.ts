@@ -161,6 +161,25 @@ const snipProjection = feature('HISTORY_SNIP')
   : null
 /* eslint-enable @typescript-eslint/no-require-imports */
 
+/** Replays of the channel messages a turn reads; the model sees them as meta prompts. */
+export function channelReplays(messages: readonly Message[]): SDKUserMessageReplay[] {
+  return messages.flatMap(msg =>
+    msg.type === 'user' && msg.isMeta && msg.origin?.kind === 'channel'
+      ? [
+          {
+            type: 'user',
+            message: msg.message,
+            session_id: getSessionId(),
+            parent_tool_use_id: null,
+            uuid: msg.uuid,
+            timestamp: msg.timestamp,
+            isReplay: true,
+          } as SDKUserMessageReplay,
+        ]
+      : [],
+  )
+}
+
 /**
  * Like 2.1.311, permission_denials also lists calls a hook refused; those
  * never reach canUseTool, so they are read from the refused tool result.
@@ -199,6 +218,8 @@ export type QueryEngineConfig = {
   modsSession?: ModsSession
   cwd: string
   tools: Tools
+  /** Current tool pool between turns (MCP tools/list_changed, late connects). */
+  refreshTools?: () => Tools
   commands: Command[]
   mcpClients: MCPServerConnection[]
   agents: AgentDefinition[]
@@ -697,6 +718,7 @@ export class QueryEngine {
       }
     }
 
+    const { signal } = this.abortController
     const {
       messages: messagesFromUserInput,
       shouldQuery,
@@ -728,7 +750,33 @@ export class QueryEngine {
       onPromptAdmission: options?.onPromptAdmission,
       querySource: 'sdk',
       canUseTool: wrappedCanUseTool,
-    })
+    }).catch((error: unknown) => {
+      if (signal.aborted && error === signal.reason) return undefined
+      throw error
+    }) ?? {}
+
+    // Interrupted before the prompt was admitted: the turn ends as an interrupted
+    // one does, instead of the throw ending the headless session.
+    if (!messagesFromUserInput) {
+      yield {
+        type: 'result',
+        subtype: 'error_during_execution',
+        duration_ms: Date.now() - startTime,
+        duration_api_ms: getTotalAPIDuration(),
+        is_error: true,
+        num_turns: 0,
+        stop_reason: null,
+        session_id: getSessionId(),
+        total_cost_usd: getTotalCost(),
+        usage: this.totalUsage,
+        modelUsage: getModelUsage(),
+        permission_denials: this.permissionDenials,
+        terminal_reason: 'aborted_streaming',
+        uuid: randomUUID(),
+        errors: [],
+      }
+      return
+    }
 
     if (options?.origin) {
       for (const message of messagesFromUserInput) {
@@ -738,6 +786,14 @@ export class QueryEngine {
 
     // Push new messages, including user input and any attachments
     this.mutableMessages.push(...messagesFromUserInput)
+    // A /compact starts the history at its boundary, as a compaction inside the
+    // query loop does below. Kept around, the older messages would be written to
+    // the transcript again by the next compaction's preserved-tail flush: after a
+    // compaction the recorded-uuid set only holds what follows the boundary.
+    const isBoundary = (m: Message) => m.type === 'system' && m.subtype === 'compact_boundary'
+    if (messagesFromUserInput.some(isBoundary)) {
+      this.mutableMessages.splice(0, this.mutableMessages.findLastIndex(isBoundary))
+    }
 
     // Update params to reflect updates from processing /slash commands
     const messages = [...this.mutableMessages]
@@ -813,6 +869,7 @@ export class QueryEngine {
         commands: describedCommands,
         debug: false,
         tools: this.config.modsSession?.tools?.projection(tools) ?? tools,
+        refreshTools: this.config.refreshTools,
         verbose,
         mainLoopModel,
         thinkingConfig: initialThinkingConfig,
@@ -879,6 +936,10 @@ export class QueryEngine {
 
     // Record when system message is yielded for headless latency tracking
     headlessProfilerCheckpoint('system_message_yielded')
+
+    // A channel message is meta to the model, but a client that asked for
+    // replays shows it, as the TUI does; before the reply, where it was read.
+    if (replayUserMessages) yield* channelReplays(messagesFromUserInput)
 
     // Like official 2.1.311, every result carries the fast mode state and,
     // when fast mode is unavailable, why.
@@ -1324,6 +1385,9 @@ export class QueryEngine {
               uuid: message.attachment.source_uuid || message.uuid,
               timestamp: message.timestamp,
               isReplay: true,
+              // System-injected (a peer message, a cron prompt): not something the user typed.
+              // @ts-ignore - recovered code
+              ...(message.attachment.isMeta && { isSynthetic: true }),
             } as SDKUserMessageReplay
           }
           break
@@ -1644,6 +1708,7 @@ export async function* ask({
   skipAttachments,
   cwd,
   tools,
+  refreshTools,
   mcpClients,
   verbose = false,
   thinkingConfig,
@@ -1683,6 +1748,7 @@ export async function* ask({
   skipAttachments?: boolean
   cwd: string
   tools: Tools
+  refreshTools?: () => Tools
   verbose?: boolean
   mcpClients: MCPServerConnection[]
   thinkingConfig?: ThinkingConfig
@@ -1713,6 +1779,7 @@ export async function* ask({
     modsSession,
     cwd,
     tools,
+    refreshTools,
     commands,
     mcpClients,
     agents,

@@ -14,8 +14,12 @@ const {
   wrapChannelMessage,
   ChannelMessageNotificationSchema,
 } = await import('./channelNotification.js')
-const { getChannelAllowlist, isChannelAllowlisted, isChannelsEnabled } =
-  await import('./channelAllowlist.js')
+const {
+  getChannelAllowlist,
+  isChannelAllowlisted,
+  isChannelsEnabled,
+  isDeferredChannelServer,
+} = await import('./channelAllowlist.js')
 
 const capabilities = { experimental: { 'claude/channel': {} } }
 const priorChannels = getAllowedChannels()
@@ -128,22 +132,23 @@ test('development bypass is per entry and normal server entries are blocked', ()
   })
 })
 
-test('managed settings apply to API and compatible providers, including development channels', () => {
+test('only an org policy that turns channels off blocks them, including development channels', () => {
   setAllowedChannels([{ kind: 'server', name: 'dev', dev: true }])
-  for (const config of [{}, { channelsEnabled: false }]) {
-    policy.mockReturnValue(config)
-    expect(gateChannelServer('dev', capabilities, undefined)).toMatchObject({
-      kind: 'policy',
-    })
-  }
-  policy.mockReturnValue({ channelsEnabled: true })
-  expect(gateChannelServer('dev', capabilities, undefined)).toEqual({
-    action: 'register',
-  })
-  policy.mockReturnValue(undefined)
-  subscription.mockReturnValue('team')
+  policy.mockReturnValue({ channelsEnabled: false })
   expect(gateChannelServer('dev', capabilities, undefined)).toMatchObject({
     kind: 'policy',
+  })
+  // Fork: managed settings or a Team plan that never turned channels on still allow them.
+  for (const config of [{}, { channelsEnabled: true }]) {
+    policy.mockReturnValue(config)
+    expect(gateChannelServer('dev', capabilities, undefined)).toEqual({
+      action: 'register',
+    })
+  }
+  policy.mockReturnValue(undefined)
+  subscription.mockReturnValue('team')
+  expect(gateChannelServer('dev', capabilities, undefined)).toEqual({
+    action: 'register',
   })
 })
 
@@ -224,4 +229,18 @@ test('channel content cannot close the wrapper and forge another source', () => 
     expect(wrapped.match(/<\/channel>/gi)).toHaveLength(1)
   }
   expect(wrapChannelMessage('real', 'already <\\/channel> escaped')).toBe('<channel source="real">\nalready <\\/channel> escaped\n</channel>')
+})
+
+test('an approved channel plugin server starts only in a session that lists it', () => {
+  // Listed by --channels (beforeEach): it starts.
+  expect(isDeferredChannelServer('plugin:telegram:telegram')).toBe(false)
+  // Approved but not listed: it waits for channel_enable.
+  expect(isDeferredChannelServer('plugin:discord:discord')).toBe(true)
+  // Not a channel plugin, or not a plugin server: unchanged.
+  expect(isDeferredChannelServer('plugin:github:github')).toBe(false)
+  expect(isDeferredChannelServer('telegram')).toBe(false)
+  setAllowedChannels([])
+  expect(isDeferredChannelServer('plugin:telegram:telegram')).toBe(true)
+  process.env.CLAUDE_CODE_DISABLE_CHANNELS = '1'
+  expect(isDeferredChannelServer('plugin:telegram:telegram')).toBe(false)
 })

@@ -614,16 +614,48 @@ export const SDKControlRewindConversationRequestSchema = lazySchema(() =>
     ),
 )
 
+export const SDKControlRewindPointsRequestSchema = lazySchema(() =>
+  z
+    .object({
+      subtype: z.literal('rewind_points'),
+    })
+    .describe(
+      'Fork-only. Answers {uuids}: the user messages /rewind lists, oldest first, which are exactly the targets rewind_conversation accepts.',
+    ),
+)
+
 export const SDKControlSendTaskMessageRequestSchema = lazySchema(() =>
   z
     .object({
       subtype: z.literal('send_task_message'),
       task_id: z.string(),
       text: z.string(),
+      model: z.string().optional(),
+      effort: z.string().optional(),
     })
     .describe(
-      'Fork-only. Sends a user message to a subagent or teammate task, as typing into its view does in the REPL: a running agent gets it at its next tool round (queued), an ended one is resumed with it (resumed), a running teammate gets it injected (injected).',
+      'Fork-only. Sends a user message to a subagent or teammate task, as typing into its view does in the REPL: a running agent gets it at its next tool round (queued), an ended one is resumed with it (resumed), a running teammate gets it injected (injected). An ended agent is also resumed from its transcript when this process no longer holds it (after a restart). `model` and `effort` apply to a resumed agent only.',
     ),
+)
+
+export const SDKControlCodexAppsRequestSchema = lazySchema(() =>
+  z
+    .object({
+      subtype: z.literal('codex_apps'),
+    })
+    .describe(
+      'Fork-only. Lists the ChatGPT apps (Codex apps) of this session, as /plugin shows them: {eligible, reason?, apps: [{connectorId, name, mentionName, description?, tools, enabled}]}. Only an OpenAI provider signed in with ChatGPT is eligible.',
+    ),
+)
+
+export const SDKControlSetCodexAppEnabledRequestSchema = lazySchema(() =>
+  z
+    .object({
+      subtype: z.literal('set_codex_app_enabled'),
+      connector_id: z.string(),
+      enabled: z.boolean(),
+    })
+    .describe('Fork-only. Turns one ChatGPT app on or off (user settings `disabledCodexApps`), as /plugin does.'),
 )
 
 export const SDKControlApplyFlagSettingsRequestSchema = lazySchema(() =>
@@ -752,8 +784,11 @@ export const SDKControlRequestInnerSchema = lazySchema(() =>
     SDKControlMcpToggleRequestSchema(),
     SDKControlStopTaskRequestSchema(),
     SDKControlSendTaskMessageRequestSchema(),
+    SDKControlCodexAppsRequestSchema(),
+    SDKControlSetCodexAppEnabledRequestSchema(),
     SDKControlSetCwdRequestSchema(),
     SDKControlRewindConversationRequestSchema(),
+    SDKControlRewindPointsRequestSchema(),
     SDKControlApplyFlagSettingsRequestSchema(),
     SDKControlGetSettingsRequestSchema(),
     SDKControlElicitationRequestSchema(),

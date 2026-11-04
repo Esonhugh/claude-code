@@ -1054,6 +1054,10 @@ function validateOutputRedirections(
       },
     }
   }
+  // Check every target: a later one may hit a deny rule or leave the
+  // working directories, and that decides the prompt.
+  let insideAsk: PermissionResult | undefined
+  let outsideAsk: PermissionResult | undefined
   for (const { target } of redirections) {
     // /dev/null is always safe - it discards output
     if (target === '/dev/null') {
@@ -1094,7 +1098,7 @@ function validateOutputRedirections(
         }
       }
 
-      return {
+      const ask: PermissionResult = {
         behavior: 'ask',
         message,
         blockedPath: resolvedPath,
@@ -1107,8 +1111,12 @@ function validateOutputRedirections(
           },
         ],
       }
+      if (isInWorkingDir === true && decisionReason === undefined) insideAsk ??= ask
+      else outsideAsk ??= ask
     }
   }
+  const ask = outsideAsk ?? insideAsk
+  if (ask) return ask
 
   return {
     behavior: 'passthrough',

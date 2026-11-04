@@ -2,7 +2,7 @@
 
 每个功能一个文件：先用白话说明它是什么、什么时候用，再分步演示怎么用（附终端截图或实际输出），最后是配置、按键和已知问题。部分文件末尾保留了从原 README 迁入的详细参考。
 
-效果画面来自 dev 分支重新构建的 `./built-claude`（`make build`），在 110×36 的 tmux pane 中实际运行后用 `tmux capture-pane` 截取。模型请求打到本地脚本化的假 Messages API（回复固定为 `FAKE_DONE`，提示词里的 `DO<<Tool|{json}>>` 让它发出对应工具调用），因此画面中的模型回复不代表真实模型输出；临时目录路径已缩写为 `~/work` 与 `~`，并去掉了与功能无关的安装提示行。
+效果画面来自 dev 分支重新构建的 `./built-claude`（`make build`），在 110×36 的 tmux pane 中实际运行后用 `tmux capture-pane` 截取。模型请求打到本地脚本化的假 Messages API（按提示词返回预先写好的回复和工具调用），因此画面中的模型回复不代表真实模型输出；演示用的家目录是 `~`，项目目录是 `~/sc`。
 
 | 领域 | 功能 | 说明 |
 | --- | --- | --- |
@@ -34,7 +34,9 @@
 |  | [快捷键与 Vim 模式](keybindings-vim.md) | 自己改快捷键、回合中途排队或立即插话、在输入框里用 Vim 的选择和括号跳转 |
 |  | [自定义 UI / Branding 与 Status line](branding.md) | 改界面上显示的产品名、换掉 Logo 的 ASCII 图，用自己的脚本定制底部状态栏 |
 |  | [/diff 视图](diff-view.md) | 全屏右侧 diff 面板：会话 / 未提交 / 分支三种基准、按轮次回看、把单个文件 diff 附到下一条提示 |
-|  | [Claude Web（设计中）](web-ui.md) | 计划中的 `claude web`：在浏览器里用类似 ChatGPT 的界面对话，预览 PDF / Office 文档，看 agents、workflow 和终端；目前是设计稿和可交互原型，尚未实现 |
+|  | [Claude Web](web-ui.md) | `claude web` 在浏览器里用 Claude Code：公式、Mermaid、代码和 diff 按网页渲染，上传并预览 PDF / Office 文档、在图片和代码上直接评论，回合中途插话或立刻打断，右侧面板看状态、agent、终端抽屉、workflow 看板和后台任务，网页里切换 OAuth / API key；默认只监听本机，局域网访问需显式开启 |
+|  | [Claude Web 界面导览](web-ui-tour.md) | 按一次真实操作的顺序一步一张截图：改代码、确认命令、Status、后台 agent、`@` 发消息、排队插话、终端、workflow、文件评论、项目与任务看板、深色外观 |
+|  | [Claude Web 项目](web-projects.md) | 在 `claude web` 里建项目：协调者把活拆成任务派给多个 worker 并行做，右侧看每个任务的过程、批准、发消息、停止和审阅；项目和任务存在本机 SQLite，重启后能接着聊 |
 |  | [调试日志](debugging.md) | 遇到问题时打开详细日志，看清楚 Claude Code 在后台做了什么、请求发到了哪 |
 |  | [遥测与反馈](telemetry.md) | 默认不向 Anthropic 发送使用数据，`/feedback` 也随之隐藏；需要时一个环境变量打开 |
 | 远程执行 | [Direct Connect](direct-connect.md) | 在一台机器上 `claude server`，在另一处用 `claude cc://...` 连过去：工具在 server 上执行，界面和权限确认在你这边 |

@@ -411,8 +411,19 @@ function getModelOptionsBase(fastMode = false): ModelOption[] {
   const gatewayOptions = getGatewayModelOptions()
   if (gatewayOptions.length === 0) return options
   const combined = [...options]
+  // A gateway that also serves a built-in model (`claude-opus-5-5` behind `opus`) adds no second row.
+  const aliases: Record<string, () => string> = {
+    opus: getDefaultOpusModel,
+    sonnet: getDefaultSonnetModel,
+    haiku: getDefaultHaikuModel,
+    fable: getDefaultFableModel,
+  }
+  const served = new Set(
+    options.flatMap(o => (o.value === null ? [] : [o.value, aliases[o.value]?.() ?? o.value])),
+  )
   for (const option of gatewayOptions) {
-    if (!combined.some(existing => existing.value === option.value)) {
+    if (option.value !== null && !served.has(option.value)) {
+      served.add(option.value)
       combined.push(option)
     }
   }

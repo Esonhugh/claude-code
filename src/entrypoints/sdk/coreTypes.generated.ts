@@ -370,6 +370,12 @@ export type SDKUILogMessage = {
   uuid: string
   session_id: string
 }
+export type SDKScheduledTaskFireMessage = {
+  type: 'system'
+  subtype: 'scheduled_task_fire'
+  uuid: string
+  session_id: string
+}
 export type SDKPartialAssistantMessage = {
   type: 'stream_event'
   event: unknown
@@ -716,6 +722,7 @@ export type SDKMessage =
   | SDKResultMessage
   | SDKSystemMessage
   | SDKUILogMessage
+  | SDKScheduledTaskFireMessage
   | SDKPartialAssistantMessage
   | SDKThinkingTokensMessage
   | SDKPermissionDeniedMessage

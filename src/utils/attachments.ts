@@ -588,6 +588,8 @@ export type Attachment =
       isMeta?: boolean
       /** A task notification drained in the same batch as a human prompt. */
       inHumanTurn?: boolean
+      /** Carried from QueuedCommand.workload; 'cron' marks a scheduled task firing. */
+      workload?: string
     }
   | {
       type: 'output_style'
@@ -1157,6 +1159,7 @@ export async function getQueuedCommandAttachments(
         commandMode: _.mode,
         origin: _.origin,
         isMeta: _.isMeta,
+        ...(_.workload && { workload: _.workload }),
         ...(hasHumanPrompt &&
           _.mode === 'task-notification' && { inHumanTurn: true }),
       }
@@ -1175,12 +1178,14 @@ export function getAgentPendingMessageAttachments(
     toolUseContext.setAppStateForTasks ?? toolUseContext.setAppState,
   )
   // @ts-ignore - recovered code
-  return drained.map(msg => ({
-    type: 'queued_command' as const,
-    prompt: msg,
-    origin: { kind: 'coordinator' as const },
-    isMeta: true,
-  }))
+  // A message the user typed into this agent is the user's, not the coordinator's.
+  return drained.map(msg =>
+    typeof msg === 'string'
+      ? { type: 'queued_command' as const, prompt: msg, origin: { kind: 'coordinator' as const }, isMeta: true }
+      : 'origin' in msg
+        ? { type: 'queued_command' as const, prompt: msg.text, origin: msg.origin, isMeta: true }
+        : { type: 'queued_command' as const, prompt: msg.text, origin: { kind: 'human' as const } },
+  )
 }
 
 async function buildImageContentBlocks(
@@ -2694,6 +2699,22 @@ export function startRelevantMemoryPrefetch(
 
   const lastUserMessage = messages.findLast(m => m.type === 'user' && !m.isMeta)
   if (!lastUserMessage) {
+    return undefined
+  }
+
+  // SQLite recall runs on a session's first prompt only; later turns search
+  // with SearchMemory. A compact summary is not a prompt, so recall resumes after /compact.
+  if (
+    isSqliteMemoryEnabled() &&
+    messages.some(
+      m =>
+        m !== lastUserMessage &&
+        m.type === 'user' &&
+        !m.isMeta &&
+        !m.isCompactSummary &&
+        !hasToolResultContent(m.message.content),
+    )
+  ) {
     return undefined
   }
 

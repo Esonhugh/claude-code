@@ -49,6 +49,15 @@ export function addPendingClear(
   }
 }
 
+/**
+ * A dirty absolute node poisons prevScreen the same way: its clear makes the
+ * blits under it skip whole rows, which left the covered content blank (the
+ * "N new messages" pill row lost the transcript text beside it).
+ */
+export function markAbsoluteNodeDirty(): void {
+  absoluteNodeRemoved = true
+}
+
 export function consumeAbsoluteRemovedFlag(): boolean {
   const had = absoluteNodeRemoved
   absoluteNodeRemoved = false
