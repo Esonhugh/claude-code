@@ -479,6 +479,8 @@ export class SessionManager {
       }
       // The session that last turned a channel on holds the bot (a newer
       // channel server replaces an older one's poller); it keeps listening.
+      // One still turning a channel on is about to take the bot over.
+      if (session.channelRequests?.size) return this.startIdleTimer(session)
       if (session.channelSince && ![...this.sessions.values()].some(s => (s.channelSince ?? 0) > session.channelSince!)) {
         return this.startIdleTimer(session)
       }

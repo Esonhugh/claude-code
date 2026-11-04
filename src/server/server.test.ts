@@ -347,9 +347,7 @@ describe('SessionManager idle timeout with channels', () => {
       { idleTimeoutMs: 50 },
     )
     const gone = async (id: string) => {
-      // The channel moves once b's child answers; a cold `bun -e` child can
-      // take seconds to start under parallel test load.
-      for (let i = 0; i < 500 && manager.get(id); i++) await Bun.sleep(20)
+      for (let i = 0; i < 100 && manager.get(id); i++) await Bun.sleep(20)
       return !manager.get(id)
     }
     try {
@@ -364,6 +362,23 @@ describe('SessionManager idle timeout with channels', () => {
       expect(await gone(a.id)).toBe(true)
       await Bun.sleep(200)
       expect(manager.get(b.id)).toBeDefined()
+    } finally {
+      await manager.destroyAll()
+    }
+  })
+
+  it('keeps a session while its channel_enable is unanswered', async () => {
+    // The child answers well after the idle timeout, like a cold engine start.
+    const slow = CHANNEL_CHILD.replace('process.stdout.write(', 'setTimeout(() => process.stdout.write(').replace("+ '\\n')", "+ '\\n'), 400)")
+    const manager = new SessionManager(
+      { spawn: opts => spawn(process.execPath, ['-e', slow], { cwd: opts.cwd, stdio: ['pipe', 'pipe', 'pipe'] }) },
+      { idleTimeoutMs: 50 },
+    )
+    try {
+      const a = manager.create({ cwd: '/' })
+      manager.write(a.id, JSON.stringify({ type: 'control_request', request_id: 'ch-1', request: { subtype: 'channel_enable', serverName: 'plugin:telegram:telegram' } }) + '\n')
+      await Bun.sleep(1000)
+      expect(manager.get(a.id)).toBeDefined()
     } finally {
       await manager.destroyAll()
     }
