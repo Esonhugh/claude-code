@@ -465,6 +465,28 @@ export function parseForSecurityFromAst(
   return walkProgram(root)
 }
 
+/**
+ * Like parseForSecurityFromAst, for a command that will run in the sandbox.
+ * The sandbox bounds what a value from the environment or a nested command
+ * can reach, so those become placeholders instead of too-complex. Code whose
+ * shape still can't be checked (loops reading their own variables, functions,
+ * case, eval, a command name that is itself a value) stays too-complex.
+ */
+export function parseForSandboxFromAst(
+  cmd: string,
+  root: Node | typeof PARSE_ABORTED,
+): ParseForSecurityResult {
+  sandboxLenient = true
+  try {
+    return parseForSecurityFromAst(cmd, root)
+  } finally {
+    sandboxLenient = false
+  }
+}
+
+// Set by parseForSandboxFromAst while it runs.
+let sandboxLenient = false
+
 function walkProgram(root: Node): ParseForSecurityResult {
   // ERROR-node check folded into collectCommands — any unhandled node type
   // (including ERROR) falls through to tooComplex() in the default branch.
@@ -1287,6 +1309,11 @@ function walkHeredocRedirect(node: Node): ParseForSecurityResult | null {
       (startText.startsWith('"') && startText.endsWith('"')) ||
       startText.startsWith('\\'))
 
+  // In the sandbox an unquoted body may expand variables, but a nested
+  // command in it would run unseen (tree-sitter misses backticks there).
+  if (!isQuoted && sandboxLenient && !/`|\$\(/.test(body?.text ?? '')) {
+    return null
+  }
   if (!isQuoted) {
     return {
       kind: 'too-complex',
@@ -1373,11 +1400,16 @@ function walkCommand(
         break
       }
       case 'command_name': {
+        // The command name must be known even in the sandbox: deny rules and
+        // the semantic checks match on it.
+        const lenient = sandboxLenient
+        sandboxLenient = false
         const arg = walkArgument(
           child.children[0] ?? child,
           innerCommands,
           varScope,
         )
+        sandboxLenient = lenient
         if (typeof arg !== 'string') return arg
         argv.push(arg)
         break
@@ -1387,7 +1419,12 @@ function walkCommand(
       case 'raw_string':
       case 'string':
       case 'concatenation':
-      case 'arithmetic_expansion': {
+      case 'arithmetic_expansion':
+      case 'expansion':
+      case 'command_substitution':
+      case 'process_substitution':
+      case 'brace_expression':
+      case 'ansi_c_string': {
         const arg = walkArgument(child, innerCommands, varScope)
         if (typeof arg !== 'string') return arg
         argv.push(arg)
@@ -1497,7 +1534,13 @@ function collectCommandSubstitution(
   // command_substitution children: `$(` or `` ` ``, inner statement(s), `)`
   for (const child of csNode.children) {
     if (!child) continue
-    if (child.type === '$(' || child.type === '`' || child.type === ')') {
+    if (
+      child.type === '$(' ||
+      child.type === '`' ||
+      child.type === ')' ||
+      child.type === '<(' ||
+      child.type === '>('
+    ) {
       continue
     }
     const err = collectCommands(child, innerCommands, innerScope)
@@ -1529,7 +1572,7 @@ function walkArgument(
       // `\;`. (Deny-rule matching on .text already worked via downstream
       // splitCommand_DEPRECATED unescaping — see walkCommand comment.) `\<whitespace>`
       // is already rejected by BACKSLASH_WHITESPACE_RE.
-      if (BRACE_EXPANSION_RE.test(node.text)) {
+      if (BRACE_EXPANSION_RE.test(node.text) && !sandboxLenient) {
         return {
           kind: 'too-complex',
           reason: 'Word contains brace expansion syntax',
@@ -1562,7 +1605,7 @@ function walkArgument(
       return walkString(node, innerCommands, varScope)
 
     case 'concatenation': {
-      if (BRACE_EXPANSION_RE.test(node.text)) {
+      if (BRACE_EXPANSION_RE.test(node.text) && !sandboxLenient) {
         return {
           kind: 'too-complex',
           reason: 'Brace expansion',
@@ -1597,7 +1640,26 @@ function walkArgument(
     // argument which might be a path or flag. `rm $(foo)` or `rm $(foo)bar`
     // would hide the real path behind the placeholder. Only $() inside a
     // `string` node (walkString) is extracted, since the output is embedded
-    // in a longer string rather than BEING the argument.
+    // in a longer string rather than BEING the argument. The sandbox bounds
+    // that path, so there the inner commands are extracted instead.
+    case 'command_substitution':
+    case 'process_substitution': {
+      if (!sandboxLenient) return tooComplex(node)
+      const err = collectCommandSubstitution(node, innerCommands, varScope)
+      if (err) return err
+      return CMDSUB_PLACEHOLDER
+    }
+
+    case 'expansion':
+      if (!sandboxLenient || !isPlainEnvExpansion(node, varScope)) {
+        return tooComplex(node)
+      }
+      return VAR_PLACEHOLDER
+
+    case 'brace_expression':
+    case 'ansi_c_string':
+      if (!sandboxLenient) return tooComplex(node)
+      return node.text
 
     default:
       return tooComplex(node)
@@ -1737,8 +1799,14 @@ function walkString(
         sawLiteralContent = true
         break
       }
+      case 'expansion':
+        if (!sandboxLenient || !isPlainEnvExpansion(child, varScope)) {
+          return tooComplex(child)
+        }
+        result += VAR_PLACEHOLDER
+        sawDynamicPlaceholder = true
+        break
       default:
-        // expansion (${...}) inside "..."
         return tooComplex(child)
     }
   }
@@ -1747,7 +1815,7 @@ function walkString(
   // placeholder — which bypasses downstream path validation (validatePath
   // resolves placeholders as relative filenames within cwd). Only allow
   // placeholders embedded alongside literal content (`"prefix: $(cmd)"`).
-  if (sawDynamicPlaceholder && !sawLiteralContent) {
+  if (sawDynamicPlaceholder && !sawLiteralContent && !sandboxLenient) {
     return tooComplex(node)
   }
   // SECURITY: tree-sitter-bash quirk — a double-quoted string containing
@@ -2122,7 +2190,23 @@ function resolveSimpleExpansion(
       return VAR_PLACEHOLDER
     }
   }
+  if (sandboxLenient) return VAR_PLACEHOLDER
   return tooComplex(node)
+}
+
+/** `${NAME}` with no operator, naming a variable this command never set. */
+function isPlainEnvExpansion(
+  node: Node,
+  varScope: Map<string, string>,
+): boolean {
+  const name = node.children.find(c => c?.type === 'variable_name')?.text
+  return (
+    name !== undefined &&
+    !varScope.has(name) &&
+    node.children.every(
+      c => c?.type === '${' || c?.type === '}' || c?.type === 'variable_name',
+    )
+  )
 }
 
 /**

@@ -138,7 +138,8 @@ describe('TaskStore', () => {
     client({ type: 'control_request', request_id: 'm2', request: { subtype: 'send_task_message', task_id: 'a1', text: 'x', model: 'opus' } })
     child({ type: 'control_response', response: { subtype: 'error', request_id: 'm2', error: 'no' } })
     expect(store.get(project.id, 'a1')).toMatchObject({ state: 'review', model: 'sonnet' })
-    expect(store.queuedMessages('a1')).toEqual([])
+    // Only the resuming message is kept, from when it was sent, until the transcript has it.
+    expect(store.queuedMessages('a1')).toEqual([{ id: expect.any(Number), ts: 1000, text: 'more' }])
   })
 
   it('records how long a task ran when it stops without a usage report', () => {

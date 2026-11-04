@@ -626,9 +626,11 @@ export function startWebServer(
   const coordinators = new Map<string, string>()
   // The coordinator's own set_model / effort requests in flight, kept once it accepts them.
   const settingRequests = new Map<string, { projectId: string; patch: Pick<Project, 'coordinator_model'> | Pick<Project, 'coordinator_effort'> }>()
-  // Messages the page sent a session's agent that wait in its queue, shown in the
-  // agent's conversation from the moment they are sent (`withQueued`).
-  const agentSends = new Map<string, { taskId: string; text: string }>()
+  // Messages the page sent a session's agent, queued to it or resuming it, shown in
+  // the agent's conversation from the moment they are sent until its transcript
+  // has them (`withQueued`). A resumed agent writes its prompt up to 100 ms later,
+  // so without it a message queued right after would show above that prompt.
+  const agentSends = new Map<string, { taskId: string; text: string; ts: number }>()
   const agentQueued = new Map<string, { id: number; ts: number; text: string }[]>()
   let agentQueuedId = 0
   const watchAgentSend = (sessionId: string, line: string, from: 'child' | 'client') => {
@@ -643,7 +645,7 @@ export function startWebServer(
         typeof request.task_id === 'string' &&
         typeof request.text === 'string'
       ) {
-        agentSends.set(`${sessionId}:${msg.request_id}`, { taskId: request.task_id, text: request.text })
+        agentSends.set(`${sessionId}:${msg.request_id}`, { taskId: request.task_id, text: request.text, ts: Date.now() })
       }
       return
     }
@@ -653,9 +655,10 @@ export function startWebServer(
     const sent = agentSends.get(key)
     if (!sent) return
     agentSends.delete(key)
-    if (response!.subtype !== 'success' || response!.response?.delivery !== 'queued') return
+    const delivery = response!.response?.delivery
+    if (response!.subtype !== 'success' || (delivery !== 'queued' && delivery !== 'resumed')) return
     const queued = agentQueued.get(`${sessionId}:${sent.taskId}`) ?? []
-    agentQueued.set(`${sessionId}:${sent.taskId}`, [...queued, { id: ++agentQueuedId, ts: Date.now(), text: sent.text }])
+    agentQueued.set(`${sessionId}:${sent.taskId}`, [...queued, { id: ++agentQueuedId, ts: sent.ts, text: sent.text }])
   }
   sessionManager.observe({
     line(sessionId, line, from) {

@@ -25,7 +25,7 @@ const TOKEN = 'web-test-token'
 // the turn is bracketed by running/idle, and a "hold" turn never ends.
 // "dispatch" starts worker a1 and finishes it; "start" starts worker a2,
 // which is killed with the child, as `claude -p` does; control requests succeed,
-// and a message to a task is queued.
+// and a message to a task is queued (one starting with RESUME resumes it).
 const FAKE_CHILD = `
 const out = m => process.stdout.write(JSON.stringify(m) + '\\n')
 const states = !!process.env.CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS
@@ -43,7 +43,7 @@ process.stdin.on('data', chunk => {
     const msg = JSON.parse(buf.slice(0, i))
     buf = buf.slice(i + 1)
     if (msg.type === 'control_request') {
-      const response = msg.request.subtype === 'send_task_message' ? { delivery: 'queued' } : {}
+      const response = msg.request.subtype === 'send_task_message' ? { delivery: msg.request.text.startsWith('RESUME') ? 'resumed' : 'queued' } : {}
       out({ type: 'control_response', response: { subtype: 'success', request_id: msg.request_id, response } })
     }
     if (msg.type === 'user') {
@@ -836,6 +836,12 @@ describe('claude web server', () => {
     expect(((await (await api('/tasks/a1/transcript?after=0')).json()) as { messages: unknown[] }).messages).toMatchObject([
       { type: 'user', isReplay: true, message: { role: 'user', content: 'also this' } },
     ])
+    // One that resumes the task shows too, until its transcript has it, so one queued after it stays below it.
+    send({ type: 'control_request', request_id: 'web-msg-2', request: { subtype: 'send_task_message', task_id: 'a1', text: 'RESUME first' } })
+    send({ type: 'control_request', request_id: 'web-msg-3', request: { subtype: 'send_task_message', task_id: 'a1', text: 'then this' } })
+    await waitFor(async () => ((await (await api('/tasks/a1/transcript?after=0')).json()) as { messages: unknown[] }).messages.length >= 2)
+    await new Promise(resolve => setTimeout(resolve, 100))
+    expect(((await (await api('/tasks/a1/transcript?after=0')).json()) as { messages: { message: { content: string } }[] }).messages.map(m => m.message.content)).toEqual(['also this', 'RESUME first', 'then this'])
 
     // The coordinator's model and effort are kept once it accepts them, and a restart keeps them.
     send({ type: 'control_request', request_id: 'web-model-1', request: { subtype: 'set_model', model: 'sonnet' } })

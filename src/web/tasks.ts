@@ -120,7 +120,7 @@ const LIVE: TaskState[] = ['running', 'blocked']
  */
 export class TaskStore {
   /** send_task_message request id → the task and the model and effort it asked for. */
-  private messages = new Map<string, { taskId: string; text?: string; model?: string; effort?: string }>()
+  private messages = new Map<string, { taskId: string; sentAt: number; text?: string; model?: string; effort?: string }>()
   /** Tasks the page (`stop_task`) or the coordinator (TaskStop) asked to stop; any other stop is its process going away. */
   private stopAsked = new Set<string>()
 
@@ -141,13 +141,13 @@ export class TaskStore {
     return this.db.query('SELECT * FROM task_events WHERE task_id = ? ORDER BY id').all(taskId) as TaskEvent[]
   }
 
-  /** Messages the user sent the task while it ran, which its transcript does not hold: when and what. */
+  /** Messages the user sent the task, which its transcript may not hold yet: when they were sent and what. */
   queuedMessages(taskId: string): { id: number; ts: number; text: string }[] {
     return this.events(taskId).flatMap(e => {
       if (e.kind !== 'message' || !e.payload) return []
       const payload = parseLine(e.payload)
-      const text = payload?.delivery === 'queued' ? str(payload.text) : undefined
-      return text ? [{ id: e.id, ts: e.ts, text }] : []
+      const text = payload?.delivery === 'queued' || payload?.delivery === 'resumed' ? str(payload.text) : undefined
+      return text ? [{ id: e.id, ts: typeof payload?.sent_at === 'number' ? payload.sent_at : e.ts, text }] : []
     })
   }
 
@@ -227,8 +227,10 @@ export class TaskStore {
       const task = this.get(projectId, sent.taskId)
       if (!task || response.subtype !== 'success') return
       const delivery = str(isObj(response.response) ? response.response.delivery : undefined)
-      // A queued message reaches the worker as an attachment its transcript does not keep, so the text is kept here.
-      this.event(task.id, 'message', { delivery, ...(delivery === 'queued' && sent.text && { text: sent.text }) })
+      // Kept until the worker's transcript has it: a queued message reaches the worker as an attachment its
+      // transcript does not keep, and a resumed one writes its prompt up to 100 ms later.
+      const shown = (delivery === 'queued' || delivery === 'resumed') && sent.text
+      this.event(task.id, 'message', { delivery, ...(shown && { text: sent.text, sent_at: sent.sentAt }) })
       if (delivery !== 'resumed') return
       // Resuming a task this process still holds starts no `task_started`.
       this.patch(task, {
@@ -261,7 +263,7 @@ export class TaskStore {
     }
     if (msg?.type !== 'control_request' || request.subtype !== 'send_task_message' || !requestId || !taskId) return
     if (!this.get(projectId, taskId)) return
-    this.messages.set(requestId, { taskId, text: str(request.text), model: str(request.model), effort: str(request.effort) })
+    this.messages.set(requestId, { taskId, sentAt: this.now(), text: str(request.text), model: str(request.model), effort: str(request.effort) })
   }
 
   private answered(projectId: string, requestId: string): void {
