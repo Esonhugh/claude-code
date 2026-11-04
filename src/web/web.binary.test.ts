@@ -2925,9 +2925,9 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       await input.fill('MOVE_ME please')
       await input.press('Enter')
       await page.locator('.feed').getByText('Hello from the fake model').waitFor({ timeout: 30_000 })
-      // A new session is listed under its id until the CLI has written the turn (up to 100 ms
-      // after its result) and the list reloads with the prompt as its title; a reload before
-      // that write lists it by id until the next refresh.
+      // Before the reload the row shows the prompt this tab sent. The CLI writes the turn up to
+      // 100 ms after its result, so the reloaded page may first list the session by its id; it
+      // looks again until the title is there (#781).
       const title = 'MOVE_ME'
       const row = page.locator('#sessions .history .sess', { hasText: title })
       await showing(row.waitFor({ timeout: 15_000 }), page.locator('#sessions'))

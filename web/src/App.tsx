@@ -397,12 +397,19 @@ export function App() {
 
   const historyLimit = useRef(HISTORY_PAGE)
   const [sidebarLoaded, setSidebarLoaded] = useState(false)
+  const untitledRetries = useRef(0)
   const refreshHistory = useCallback(async (more = false) => {
     if (more) historyLimit.current += HISTORY_PAGE
     try {
       const [data, running] = await Promise.all([loadSidebar(historyLimit.current), listRunning()])
       dispatch({ type: 'history', entries: data.sessions, folders: data.folders, more: data.more })
       dispatch({ type: 'running', ids: running.map(r => r.id) })
+      // A running session listed by its id has no turn in its transcript yet. A page that is not
+      // attached to it (e.g. reloaded just after its reply) gets no result to refresh on, so look
+      // again a few times, backing off, until the CLI has written the turn.
+      const untitled = data.sessions.some(s => s.label === 'id' && running.some(r => r.id === s.id))
+      if (!untitled) untitledRetries.current = 0
+      else if (untitledRetries.current < 5) setTimeout(() => void refreshHistory(), 500 * 2 ** untitledRetries.current++)
       setProjects(await listProjects())
       setSidebarLoaded(true)
     } catch {
