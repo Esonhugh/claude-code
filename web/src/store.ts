@@ -29,7 +29,7 @@ export type SessionChat = ChatState & {
 
 export type HistoryEntry = HistoryItem
 
-export type StartOptions = { cwd?: string; mode: string; model?: string; temporary?: boolean; effort?: string }
+export type StartOptions = { cwd?: string; mode: string; model?: string; temporary?: boolean; effort?: string; profile?: string }
 
 export type AppState = {
   /** Session shown in the main area; null is the new-chat start page. */

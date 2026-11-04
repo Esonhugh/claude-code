@@ -91,6 +91,8 @@
   "searchSessions": "搜尋會話",
   "extensions": "擴充套件",
   "plugins": "外掛",
+  "sessionConfig": "會話配置",
+  "noProfile": "不用模版",
   "memory": "記憶",
   "settings": "設定",
   "shortcuts": "快捷鍵",

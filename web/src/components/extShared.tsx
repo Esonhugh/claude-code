@@ -10,6 +10,9 @@ export type ExtProps = {
   /** The prototype's bottom toast. */
   flash: (text: string) => void
   control?: Control
+  /** The session on screen. */
+  sessionId?: string
+  titleOf?: (id: string) => string
 }
 
 export function Switch({

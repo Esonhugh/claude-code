@@ -86,7 +86,20 @@ Sessions start in ~/.claude/web/workspace and run with your local credentials an
 
 ## 左侧栏
 
-从上到下：品牌、`+ 新会话`、搜索，MCP / Skills / 插件 / 记忆 / Hooks 五个入口（点开是对应的管理弹窗；Channels 是 MCP 弹窗里的页签，Mods 是 Hooks 弹窗里的页签），然后是 **置顶**、**项目**、**临时对话**、**最近目录**（按目录分组，最近改过的目录在前）。插件弹窗的市场列表里 Esonhugh-Marketplace 排第一（`claude web` 首次启动时和终端一样自动安装它，`CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL=1` 关闭）；用 ChatGPT 账号登录（OpenAI 模式）时多一个“ChatGPT 应用”页签，可以逐个开关 Codex 应用。Channels 页签可以给当前会话开启开发频道（本地开发中的 channel 插件或 MCP server），会先显示一次本地开发警告，再点一次才开启。每段标题可以折叠。每行一行标题；没有标题的会话显示最后一条消息，再没有就显示 session id。正在运行的会话前面有绿点，未读的加粗并带蓝点。
+从上到下：品牌、`+ 新会话`、搜索，MCP / Skills / 插件 / 记忆 / Hooks / 会话配置六个入口（点开是对应的管理弹窗；Channels 是 MCP 弹窗里的页签，Mods 是 Hooks 弹窗里的页签），然后是 **置顶**、**项目**、**临时对话**、**最近目录**（按目录分组，最近改过的目录在前）。插件弹窗的市场列表里 Esonhugh-Marketplace 排第一（`claude web` 首次启动时和终端一样自动安装它，`CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL=1` 关闭）；用 ChatGPT 账号登录（OpenAI 模式）时多一个“ChatGPT 应用”页签，可以逐个开关 Codex 应用。Channels 页签可以给当前会话开启开发频道（本地开发中的 channel 插件或 MCP server），会先显示一次本地开发警告，再点一次才开启。每段标题可以折叠。每行一行标题；没有标题的会话显示最后一条消息，再没有就显示 session id。正在运行的会话前面有绿点，未读的加粗并带蓝点。
+
+### 会话配置与模版
+
+每个会话是一个独立的 `claude -p` 进程。“会话配置”弹窗决定这个进程启动时带哪些插件、mods、MCP 服务器、channels，以及是否停用 hooks：
+
+- **本会话** 页签：先选一个模版，再逐项调整（每项可选“跟随 / 开 / 关”）。保存后会话用 `--resume` 重启；有回合在跑时，等这一轮结束再重启。
+- **模版** 页签：新建、编辑、删除模版。改模版会让用它的运行中会话重启；删模版后，这些会话只保留自己单独调整的项。
+- 开始页的模版菜单给新会话选模版。没选模版时行为和以前一样：channels 用“新会话默认”。
+- 项目协调者也是会话，打开协调者后同样在这里配置。
+
+落到进程上的是：插件和 mods 写进 `--settings` 的 `enabledPlugins`，MCP 服务器写进 `sessionMcpServers`（只从 `--settings` 读取，不会写回 `~/.claude.json`），停用 hooks 是 `disableAllHooks`（mods 也是 hooks，会一起停用），channels 是 `--channels`。托管策略仍然优先。配置和模版存在 `~/.claude/web/projects.sqlite`，服务重启后恢复的会话照旧使用。hooks 只能整体停用，不能逐条开关。
+
+Channels 页签的每行会写出 **收消息的会话**：一个 channel 同一时间只有一个进程能收（fakechat 占着 8787 端口，telegram 只认最新的轮询），这里列出的是服务器已连上、且最晚启用它的那个会话；另外启用了但收不到的会话也会计数显示。
 
 鼠标停在一行上会出现提示卡片：标题、最近修改、目录、状态、改动的文件数、ID（拿不到的字段不显示）。鼠标可以移进卡片，选中里面的文字复制。行右侧的按钮置顶 / 取消置顶。
 

@@ -5,6 +5,7 @@ import { ChannelsBody, McpBody, ModsBody, PluginsBody } from './ExtensionDialogs
 import type { Control, ExtProps } from './extShared'
 import { HooksBody } from './HooksDialog'
 import { MemoryBody } from './MemoryDialog'
+import { SessionConfigBody } from './SessionConfigDialog'
 import { SettingsBody } from './Settings'
 import type { DialogKind } from './Sidebar'
 import { SkillsBody } from './SkillsDialog'
@@ -85,6 +86,7 @@ const TITLES: Record<DialogKind, (t: T) => string> = {
   plugins: t => t('plugins'),
   memory: t => t('memory'),
   hooks: () => 'Hooks',
+  session: t => t('sessionConfig'),
   settings: t => t('settings'),
   stats: t => t('statsLabel'),
   keys: t => t('shortcuts'),
@@ -96,6 +98,8 @@ export function AppDialog({
   t,
   lang,
   control,
+  sessionId,
+  titleOf,
   onClose,
   onUseSkill,
   onOpenSession,
@@ -106,6 +110,10 @@ export function AppDialog({
   lang: Lang
   /** Control requests to the session on screen, when it is running. */
   control?: Control
+  /** The session on screen. */
+  sessionId?: string
+  /** A session's title, for the Channels rows that name their receiving session. */
+  titleOf: (id: string) => string
   onClose: () => void
   onUseSkill: (name: string) => void
   onOpenSession: (id: string) => void
@@ -118,6 +126,8 @@ export function AppDialog({
     z: text => zh(lang, text),
     lang,
     control,
+    sessionId,
+    titleOf,
     flash: text => {
       setFlashText(text)
       clearTimeout(timer.current)
@@ -146,6 +156,7 @@ export function AppDialog({
             ]}
           />
         )}
+        {kind === 'session' && <SessionConfigBody {...props} />}
         {kind === 'stats' && <StatsBody z={props.z} />}
         {kind === 'settings' && <SettingsBody t={t} {...settings} />}
         {kind === 'keys' && <KeysBody t={t} />}

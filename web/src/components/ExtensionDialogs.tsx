@@ -195,8 +195,22 @@ export function McpBody({ z, flash, control }: ExtProps) {
   )
 }
 
+/** Which session gets a channel's messages: one process holds the bot or port, the others get none. */
+function Receiver({ z, c, sessionId, titleOf }: { z: ExtProps['z']; c: ChannelPlugin; sessionId?: string; titleOf?: (id: string) => string }) {
+  const sessions = c.sessions ?? []
+  if (!sessions.length) return null
+  const name = (id: string) => (id === sessionId ? z('本会话') : (titleOf?.(id) ?? id.slice(0, 8)))
+  const others = sessions.filter(s => s.id !== c.receiver).length
+  return (
+    <small data-ch-receiver={c.name}>
+      {c.receiver ? `${z('收消息的会话：')}${name(c.receiver)}` : z('启用它的会话都没有连上它的服务器，消息没人收')}
+      {c.receiver && others > 0 && ` · ${z('另外启用了但收不到的会话：')}${others}`}
+    </small>
+  )
+}
+
 /** Channels: plugin MCP servers that push messages in; enable for this session or by default (`--channels`). */
-export function ChannelsBody({ z, flash, control }: ExtProps) {
+export function ChannelsBody({ z, flash, control, sessionId, titleOf }: ExtProps) {
   const [channels, setChannels] = useState<ChannelPlugin[]>()
   const [market, setMarket] = useState<MarketPlugin[]>([])
   const [servers, setServers] = useState<McpServer[]>([])
@@ -301,6 +315,7 @@ export function ChannelsBody({ z, flash, control }: ExtProps) {
             </>
           )}
           <small>{sub}</small>
+          {c && <Receiver z={z} c={c} sessionId={sessionId} titleOf={titleOf} />}
         </div>
         <div className="acts">
           {st === 'active' ? (
