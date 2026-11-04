@@ -5,6 +5,7 @@ import type { Tool } from '../Tool.js'
 import { render } from '../ink.js'
 import { AppStoreContext, getDefaultAppState } from '../state/AppState.js'
 import { createStore } from '../state/store.js'
+import * as shellCompletion from '../utils/bash/shellCompletion.js'
 import * as settings from '../utils/settings/settings.js'
 import * as files from './fileSuggestions.js'
 import { useTypeahead } from './useTypeahead.js'
@@ -127,3 +128,74 @@ test.each(['@codex-app:', '@'])(
     }
   },
 )
+
+test('Tab in bash mode runs shell completion with no suggestions shown', async () => {
+  const completionSpy = spyOn(
+    shellCompletion,
+    'getShellCompletions',
+  ).mockResolvedValue([
+    {
+      id: './qt-demo/',
+      displayText: './qt-demo/',
+      metadata: { completionType: 'file', inputSnapshot: 'ls ./qt-de' },
+    },
+  ])
+  const stdin = new Input()
+  const changes: string[] = []
+  let instance: Awaited<ReturnType<typeof render>> | undefined
+  try {
+    const store = createStore(getDefaultAppState())
+    const input = 'ls ./qt-de'
+
+    function Probe() {
+      const [suggestionsState, setSuggestionsState] = useState<
+        Props['suggestionsState']
+      >({
+        suggestions: [],
+        selectedSuggestion: -1,
+      })
+      useTypeahead({
+        input,
+        cursorOffset: input.length,
+        mode: 'bash',
+        commands: [],
+        agents: [],
+        suggestionsState,
+        setSuggestionsState,
+        onInputChange: value => changes.push(value),
+        onSubmit: () => {},
+        setCursorOffset: () => {},
+        markAccepted: () => {},
+      })
+      return null
+    }
+
+    instance = await render(
+      <AppStoreContext value={store}>
+        <Probe />
+      </AppStoreContext>,
+      {
+        stdin: stdin as unknown as NodeJS.ReadStream,
+        stdout: new Output() as unknown as NodeJS.WriteStream,
+        patchConsole: false,
+        exitOnCtrlC: false,
+      },
+    )
+    stdin.push('\t')
+    const deadline = Date.now() + 2000
+    while (changes.length === 0 && Date.now() < deadline) {
+      await new Promise(resolve => setTimeout(resolve, 10))
+    }
+
+    expect(completionSpy).toHaveBeenCalledTimes(1)
+    expect(completionSpy.mock.calls[0]?.slice(0, 2)).toEqual([
+      input,
+      input.length,
+    ])
+    expect(changes).toEqual(['ls ./qt-demo/'])
+  } finally {
+    instance?.unmount()
+    instance?.cleanup()
+    completionSpy.mockRestore()
+  }
+})

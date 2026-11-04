@@ -1,3 +1,4 @@
+import { homedir } from 'node:os'
 import type { SuggestionItem } from 'src/components/PromptInput/PromptInputFooterSuggestions.js'
 import {
   type ParseEntry,
@@ -202,10 +203,18 @@ async function getCompletionsForShell(
     timeout: SHELL_COMPLETION_TIMEOUT_MS,
   })
   const result = await shellCommand.result
+  // The shell expands a leading ~ in its output; keep the form the user typed.
+  const home = process.env.HOME || homedir()
+  const keepTilde = prefix.startsWith('~/') && home !== ''
   return result.stdout
     .split('\n')
     .filter((line: string) => line.trim())
     .slice(0, MAX_SHELL_COMPLETIONS)
+    .map((line: string) =>
+      keepTilde && line.startsWith(home + '/')
+        ? '~' + line.slice(home.length)
+        : line,
+    )
     .map((text: string) => ({
       id: text,
       displayText: text,
