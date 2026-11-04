@@ -15,8 +15,8 @@ const chapters: Omit<ChapterProps, "index">[] = [
     question: "只能用 Claude 模型？",
     answer: "GPT、Codex、自建网关，都行。",
     shots: [
-      { kind: "image", file: "openai-provider-model.png", width: 959, height: 374, focus: { x: 118, y: 30, w: 280, h: 26 }, label: "GPT 模型直接驱动", wiki: "Openai-Provider" },
-      { kind: "image", file: "model-discovery-picker.png", width: 959, height: 465, focus: { x: 30, y: 340, w: 370, h: 40 }, label: "网关模型自动出现", wiki: "Model-Discovery" },
+      { kind: "image", file: "openai-provider-model.png", width: 960, height: 444, focus: { x: 10, y: 258, w: 650, h: 76 }, label: "GPT 模型直接驱动", wiki: "Openai-Provider" },
+      { kind: "image", file: "model-discovery-picker.png", width: 960, height: 499, focus: { x: 10, y: 368, w: 660, h: 56 }, label: "网关模型自动出现", wiki: "Model-Discovery" },
     ],
   },
   {
@@ -40,8 +40,17 @@ const chapters: Omit<ChapterProps, "index">[] = [
         label: "一句话组队，并行干活",
         wiki: "Agent-Teams",
       },
-      { kind: "image", file: "workflows-panel.png", width: 1026, height: 319, focus: { x: 25, y: 195, w: 980, h: 80 }, label: "分阶段调度多个 Agent", wiki: "Workflows" },
-      { kind: "image", file: "background-sessions-view.png", width: 959, height: 374, focus: { x: 10, y: 105, w: 930, h: 165 }, label: "谁在等你，一眼看到", wiki: "Background-Sessions" },
+      { kind: "image", file: "workflows-panel.png", width: 960, height: 462, focus: { x: 5, y: 125, w: 935, h: 118 }, label: "分阶段调度多个 Agent", wiki: "Workflows" },
+      { kind: "image", file: "background-sessions-view.png", width: 960, height: 351, focus: { x: 0, y: 92, w: 955, h: 168 }, label: "谁在等你，一眼看到", wiki: "Background-Sessions" },
+    ],
+  },
+  {
+    question: "离开终端就没法用？",
+    answer: "浏览器里，派活给一群 Claude。",
+    shots: [
+      { kind: "image", file: "web-tour-chat.png", width: 1440, height: 900, focus: { x: 235, y: 200, w: 690, h: 300 }, label: "claude web：diff、工具卡片一目了然", wiki: "Web-Ui" },
+      { kind: "image", file: "web-tour-project.png", width: 1440, height: 900, focus: { x: 230, y: 160, w: 1190, h: 180 }, label: "Project 模式：协调者派活", wiki: "Web-Projects" },
+      { kind: "image", file: "web-tour-project-board.png", width: 1440, height: 900, focus: { x: 165, y: 385, w: 1110, h: 175 }, label: "任务看板：哪个在等你拍板", wiki: "Web-Projects" },
     ],
   },
   {
@@ -64,23 +73,23 @@ const chapters: Omit<ChapterProps, "index">[] = [
         label: "危险操作，当场拦下",
         wiki: "Auto-Mode",
       },
-      { kind: "image", file: "sandbox-run.png", width: 959, height: 574, focus: { x: 15, y: 180, w: 610, h: 55 }, label: "沙箱外写入直接失败", wiki: "Sandbox" },
+      { kind: "image", file: "sandbox-run.png", width: 960, height: 518, focus: { x: 15, y: 185, w: 610, h: 55 }, label: "沙箱外写入直接失败", wiki: "Sandbox" },
     ],
   },
   {
     question: "想按自己的方式改？",
     answer: "一个文件，改造整个界面。",
     shots: [
-      { kind: "image", file: "mods-hold-pane.png", width: 1380, height: 356, focus: { x: 762, y: 30, w: 600, h: 135 }, label: "Mod 接管危险命令确认", wiki: "Mods" },
-      { kind: "image", file: "diff-view-session.png", width: 1380, height: 792, focus: { x: 762, y: 170, w: 600, h: 225 }, label: "/diff 面板，改动一目了然", wiki: "Diff-View" },
+      { kind: "image", file: "mods-hold-pane.png", width: 1396, height: 555, focus: { x: 775, y: 15, w: 230, h: 135 }, label: "Mod 接管危险命令确认", wiki: "Mods" },
+      { kind: "image", file: "diff-view-session.png", width: 1396, height: 776, focus: { x: 772, y: 130, w: 620, h: 265 }, label: "/diff 面板，改动一目了然", wiki: "Diff-View" },
     ],
   },
   {
     question: "想换成自己的样子？",
     answer: "名字、Logo、状态栏，全都能换。",
     shots: [
-      { kind: "image", file: "branding-default.png", after: "branding-custom.png", width: 959, height: 210, focus: { x: 15, y: 8, w: 340, h: 70 }, label: "名字和 Logo，一行配置就换", wiki: "Branding" },
-      { kind: "image", file: "branding-custom.png", width: 959, height: 210, focus: { x: 30, y: 176, w: 240, h: 26 }, label: "状态栏跑你自己的脚本", wiki: "Branding" },
+      { kind: "image", file: "branding-default.png", after: "branding-custom.png", width: 960, height: 185, focus: { x: 0, y: 2, w: 330, h: 60 }, label: "名字和 Logo，一行配置就换", wiki: "Branding" },
+      { kind: "image", file: "branding-custom.png", width: 960, height: 204, focus: { x: 20, y: 165, w: 250, h: 22 }, label: "状态栏跑你自己的脚本", wiki: "Branding" },
     ],
   },
 ];

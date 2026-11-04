@@ -4,7 +4,7 @@ import { SimStep, TerminalSim, TuiColor } from "../TerminalSim";
 import { clamp, theme } from "../theme";
 
 export type Focus = { x: number; y: number; w: number; h: number };
-// `after` is a same-size screenshot revealed by a sweep once the camera has locked on (before/after).
+// `after` is a same-width screenshot (top-aligned, may be taller) revealed by a sweep once the camera has locked on (before/after).
 type ImageShot = { kind: "image"; file: string; after?: string; width: number; height: number; focus: Focus; label: string; wiki: string };
 type SimShot = { kind: "sim"; steps: SimStep[]; footer: { text: string; color: TuiColor }; labelAt: number; label: string; wiki: string };
 export type ChapterShot = ImageShot | SimShot;
@@ -92,7 +92,7 @@ const Shot: React.FC<ImageShot> = ({ file, after, width, height, focus, label, w
               left,
               top,
               width: width * k,
-              height: height * k,
+              height: i === 1 ? "auto" : height * k,
               borderRadius: 12,
               boxShadow: "0 40px 140px rgba(0,0,0,0.8)",
               imageRendering: k > 2 ? "pixelated" : "auto",
