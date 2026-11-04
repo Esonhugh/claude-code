@@ -158,4 +158,4 @@ Review $ARGUMENTS and report concrete findings.
 
 ## 说明
 
-画面来自实际运行，模型回复由测试用假 API 生成（`FAKE_DONE`；提示词里的 `DO<<…>>` 是让假 API 调用工具的指令，`__delay` 用来让子代理跑久一点）。
+画面来自实际运行，模型回复由测试用假 API 按脚本生成（子代理被设定为跑久一点，以便演示后台状态）。

@@ -104,7 +104,7 @@ claude --channels plugin:telegram@claude-plugins-official
 ## 说明
 
 - 本 fork 不要求 Anthropic 账号登录或灰度资格，API Key 和第三方 provider 下也能用；这属于本项目扩展。
-- 画面来自实际运行（全屏渲染，110×36），模型回复由测试用假 API 生成（`FAKE_DONE`；消息里的 `DO<<…>>` 是让假 API 调用工具的指令）。
+- 画面来自实际运行（110×36），模型回复由测试用假 API 按脚本生成。
 
 ## 详细说明
 

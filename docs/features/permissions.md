@@ -168,4 +168,4 @@ Permission to use Bash has been denied. ...
 
 ## 说明
 
-画面来自实际运行，模型回复由测试用假 API 生成（`FAKE_DONE`，提示词里的 `DO<<…>>` 是让假 API 调用工具的指令）。
+画面来自实际运行，模型回复由测试用假 API 按脚本生成。
