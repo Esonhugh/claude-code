@@ -18,7 +18,6 @@ import {
 } from '../../services/mcp/channelAllowlist.js'
 import { isChannelPolicyBlocked } from '../../services/mcp/channelNotification.js'
 import { getMcpConfigsByScope } from '../../services/mcp/config.js'
-import { getSubscriptionType } from '../../utils/auth.js'
 import { loadInstalledPluginsV2 } from '../../utils/plugins/installedPluginsManager.js'
 import { getSettingsForSource } from '../../utils/settings/settings.js'
 
@@ -41,7 +40,6 @@ export function ChannelsNotice(): React.ReactNode {
           unmatched: [] as Unmatched[],
         }
       const l = ch.map(formatEntry).join(', ')
-      const sub = getSubscriptionType()
       const policy = getSettingsForSource('policySettings')
       const allowlist = getEffectiveChannelAllowlist(
         policy?.allowedChannelPlugins,
@@ -49,7 +47,7 @@ export function ChannelsNotice(): React.ReactNode {
       return {
         channels: ch,
         disabled: !isChannelsEnabled(),
-        policyBlocked: isChannelPolicyBlocked(policy, sub),
+        policyBlocked: isChannelPolicyBlocked(policy),
         list: l,
         unmatched: findUnmatched(ch, allowlist),
       }
@@ -86,8 +84,8 @@ export function ChannelsNotice(): React.ReactNode {
         </Text>
         <Text dimColor>Inbound messages will be silently dropped</Text>
         <Text dimColor>
-          Have an administrator set channelsEnabled: true in managed settings to
-          enable
+          Managed settings set channelsEnabled: false; an administrator can
+          remove it to enable
         </Text>
         {unmatched.map(u => (
           <Text key={`${formatEntry(u.entry)}:${u.why}`} color="warning">
