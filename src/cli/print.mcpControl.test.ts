@@ -243,7 +243,7 @@ if (process.env[childFlag] !== '1') {
         { subtype: 'mcp_status' },
       ])
       expect(responses.map(r => r.subtype)).toEqual(['success', 'success', 'success', 'success'])
-      const status = (i: number) => (responses[i]!.subtype === 'success' ? (responses[i] as { response: { mcpServers: { name: string; status: string }[] } }).response.mcpServers : [])
+      const status = (i: number) => (responses[i]!.subtype === 'success' ? (responses[i] as unknown as { response: { mcpServers: { name: string; status: string }[] } }).response.mcpServers : [])
       expect(status(1)).toEqual([expect.objectContaining({ name, status: 'disabled' })])
       expect(status(3)).toEqual([expect.objectContaining({ name, status: 'connected' })])
     } finally {
