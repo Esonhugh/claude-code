@@ -855,7 +855,7 @@ export function ProjectView({
         {running + blocked > 0 || chat.busy ? (
           <>
             <span className="dot running" />
-            {t('coordinating')}
+            <span className="cl">{t('coordinating')}</span>
           </>
         ) : (
           t('coordinatorIdle')
