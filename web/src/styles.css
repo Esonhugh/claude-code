@@ -272,9 +272,9 @@ h1, h2, h3 { text-wrap: balance; margin: 0 }
 .keyform .err { color: var(--bad); font-size: 12px } .keyform .err:empty { display: none }
 .keyform .btns { display: flex; gap: 8px; justify-content: flex-end }
 #ui-name-input { width: 150px; border: 1px solid var(--line); border-radius: 8px; padding: 5px 8px; background: var(--bg); color: var(--fg) }
-.gate { max-width: var(--col); margin: 0 auto 10px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); padding: 14px; display: flex; flex-direction: column; gap: 10px }
+.gate { max-width: var(--col); width: 100%; margin: 0 auto 10px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); padding: 14px; display: flex; flex-direction: column; gap: 10px }
 .gate .gopts { display: flex; gap: 8px; flex-wrap: wrap } .gate .gopts .btn { flex: 1 1 160px; justify-content: center }
-.composer .gate .gmanual { display: flex; flex-direction: row; align-items: center; gap: 6px; max-width: none; margin: 0 }
+.gate .gmanual { display: flex; flex-direction: row; align-items: center; gap: 6px; max-width: none; margin: 0 }
 .gate .glink { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--accent) } .gate .gmanual input { flex: 1; min-width: 0; border: 1px solid var(--line); border-radius: 8px; padding: 6px 9px; background: var(--bg); color: var(--fg); font: inherit; font-size: 12.5px }
 .modtree .mbox { display: flex; gap: 8px } .modtree .mbox.col { flex-direction: column } .modtree .mbox.wrap { flex-wrap: wrap }
 .modtree .mbox > * { min-width: 0 } .modtree .mbox.col > * { max-width: 100% }
@@ -708,7 +708,8 @@ body.hist #goal-wrap + .footwrap { margin-left: auto }
 .pin .pbody .ck { color: var(--muted) } .pin .pbody .ck b { color: var(--fg); font-weight: 500 }
 .todo-i { display: flex; gap: 8px } .todo-i span:first-child { width: 14px; flex: none; text-align: center }
 .todo-i.completed { color: var(--muted) } .todo-i.completed span + span { text-decoration: line-through } .todo-i.in_progress { font-weight: 600 }
-.flash { position: fixed; z-index: 60; left: 50%; bottom: 24px; transform: translateX(-50%); background: var(--fg); color: var(--bg); border-radius: 999px; padding: 7px 14px; font-size: 12.5px; box-shadow: 0 6px 20px rgba(0,0,0,.25); max-width: calc(100vw - 32px) }
+/* In the phone drawer (transformed) `fixed` is relative to the drawer: 50vw still centers on the screen. */
+.flash { position: fixed; z-index: 60; left: 50vw; bottom: 24px; transform: translateX(-50%); background: var(--fg); color: var(--bg); border-radius: 16px; padding: 7px 14px; font-size: 12.5px; box-shadow: 0 6px 20px rgba(0,0,0,.25); width: max-content; max-width: calc(100vw - 32px) }
 .askdock { max-width: var(--col); margin: 0 auto 10px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); box-shadow: 0 -6px 28px rgba(0,0,0,.18); padding: 12px 14px; display: flex; flex-direction: column; gap: 8px }
 .askdock[hidden] { display: none }
 .askdock .ahead { display: flex; gap: 8px; align-items: baseline; justify-content: space-between }
