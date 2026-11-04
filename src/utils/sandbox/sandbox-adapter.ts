@@ -27,7 +27,7 @@ import {
 import { checkLinuxDependencies } from '@anthropic-ai/sandbox-runtime/dist/sandbox/linux-sandbox-utils.js'
 import { execFileSync } from 'child_process'
 import { existsSync, mkdirSync, realpathSync, rmSync, statSync } from 'fs'
-import { readFile } from 'fs/promises'
+import { readFile, writeFile } from 'fs/promises'
 import { memoize } from 'lodash-es'
 import { userInfo } from 'os'
 import {
@@ -53,6 +53,8 @@ import {
   extractEmbeddedBinary,
   readableEmbeddedSource,
 } from '../embeddedRipgrep.js'
+import { quote } from '../bash/shellQuote.js'
+import { execFileNoThrow } from '../execFileNoThrow.js'
 import { expandPath } from '../path.js'
 import { getPlatform, type Platform } from '../platform.js'
 import { settingsChangeDetector } from '../settings/changeDetector.js'
@@ -1285,6 +1287,36 @@ function getExcludedCommands(): string[] {
 }
 
 /**
+ * macOS: /etc/ssl/cert.pem is a stale OpenBSD bundle. Apple's curl falls back to
+ * the keychain through com.apple.TrustEvaluationAgent, which Seatbelt blocks, so
+ * sandboxed curl rejects sites with newer roots (e.g. example.com since
+ * 2026-11). Export the keychain's roots and admin-trusted CAs once and point
+ * CURL_CA_BUNDLE and SSL_CERT_FILE at them, unless the user set either.
+ */
+const exportMacosTrustBundle = memoize(async (dir: string): Promise<string | undefined> => {
+  const { stdout, code } = await execFileNoThrow('/usr/bin/security', [
+    'find-certificate',
+    '-a',
+    '-p',
+    '/System/Library/Keychains/SystemRootCertificates.keychain',
+    '/Library/Keychains/System.keychain',
+  ])
+  if (code !== 0 || !stdout.includes('BEGIN CERTIFICATE')) return undefined
+  const path = posix.join(dir, 'macos-trust-bundle.pem')
+  mkdirSync(dir, { recursive: true })
+  await writeFile(path, stdout, { mode: 0o644 })
+  return path
+})
+
+export async function withMacosTrustBundle(wrapped: string, dir: string): Promise<string> {
+  if (getPlatform() !== 'macos' || process.env.CURL_CA_BUNDLE || process.env.SSL_CERT_FILE) return wrapped
+  const bundle = await exportMacosTrustBundle(dir)
+  if (!bundle) return wrapped
+  const q = quote([bundle])
+  return `CURL_CA_BUNDLE=${q} SSL_CERT_FILE=${q} ${wrapped}`
+}
+
+/**
  * Wrap command with sandbox, optionally specifying the shell to use
  */
 async function wrapWithSandbox(
@@ -1309,13 +1341,16 @@ async function wrapWithSandbox(
     process.env.CLAUDE_CODE_TMPDIR || '/tmp',
     getClaudeTempDirName(),
   )
-  return BaseSandboxManager.wrapWithSandbox(
+  const wrapped = await BaseSandboxManager.wrapWithSandbox(
     command,
     binShell,
     customConfig,
     abortSignal,
     options,
   )
+  return wrapped === command
+    ? wrapped
+    : withMacosTrustBundle(wrapped, process.env.CLAUDE_TMPDIR)
 }
 
 /**

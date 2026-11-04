@@ -39,22 +39,6 @@ jobs:
           bun run build
           bun run package:binary
 
-      - name: DIAG example.com TLS (temporary, #753)
-        if: ${{ !cancelled() }}
-        continue-on-error: true
-        run: |
-          set -x
-          { echo '(version 1)'; echo '(allow default)'; echo '(deny mach-lookup (global-name "com.apple.TrustEvaluationAgent"))'; } > /tmp/no-tea.sb
-          sandbox-exec -f /tmp/no-tea.sb /usr/bin/curl -sS -o /dev/null -w "no-TEA %{http_code}\n" https://example.com 2>&1 | tail -1
-          sandbox-exec -f /tmp/no-tea.sb /usr/bin/curl -sS -o /dev/null -w "no-TEA google %{http_code}\n" https://www.google.com 2>&1 | tail -1
-          security find-certificate -a -p /System/Library/Keychains/SystemRootCertificates.keychain > /tmp/roots.pem
-          CURL_CA_BUNDLE=/tmp/roots.pem sandbox-exec -f /tmp/no-tea.sb /usr/bin/curl -sS -o /dev/null -w "no-TEA+bundle %{http_code}\n" https://example.com 2>&1 | tail -1
-          sed "s/strictAllowlist: true }/strictAllowlist: true, allowMachLookup: ['com.apple.TrustEvaluationAgent'] }/" scripts/macos-sandbox-e2e.ts > scripts/e2e-tea.ts
-          grep -n allowMachLookup scripts/e2e-tea.ts
-          bun scripts/e2e-tea.ts dist/release/claude-code-v*-darwin-arm64 2>&1 | grep -A1 'example.com' | head -4 || true
-          CURL_CA_BUNDLE=/tmp/roots.pem bun scripts/macos-sandbox-e2e.ts dist/release/claude-code-v*-darwin-arm64 2>&1 | grep -A1 'example.com' | head -4 || true
-          rm -f scripts/e2e-tea.ts
-
       - name: Sandbox e2e
         run: bun scripts/macos-sandbox-e2e.ts dist/release/claude-code-v*-darwin-arm64
 
