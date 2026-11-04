@@ -83,13 +83,13 @@ claude --channels plugin:telegram@claude-plugins-official
 
 - **批准名单**：`--channels` 只接受名单里的插件，并核对插件确实来自声明的 marketplace。拿不到远程名单时，默认批准 `claude-plugins-official` 的 `telegram`、`discord`、`imessage`、`fakechat`。
 - **只在 `.mcp.json` 里配一个 server 不会开启推送**，必须用上面的参数点名。
-- **公司管理的安装**（有 managed settings，或 Team / Enterprise 订阅）：管理员必须设置 `channelsEnabled: true`；`allowedChannelPlugins` 会替换默认名单，空数组表示禁止所有普通插件。项目和个人设置不能覆盖。
+- **公司管理的安装**（有 managed settings，或 Team / Enterprise 订阅）：组织没开 `channelsEnabled` 也能用频道（官方要求 `true`）；只有管理员设置 `channelsEnabled: false` 才关闭。`allowedChannelPlugins` 会替换默认名单，空数组表示禁止所有普通插件。项目和个人设置不能覆盖。
 
 ## 设置
 
 | 配置项 | 写法 | 说明 |
 | --- | --- | --- |
-| `channelsEnabled` | `true`（托管设置） | 托管环境里开启频道 |
+| `channelsEnabled` | `false`（托管设置） | 托管环境里关闭频道；不设置时频道可用 |
 | `allowedChannelPlugins` | 插件数组（托管设置） | 替换默认批准名单 |
 | `CLAUDE_CODE_DISABLE_CHANNELS` | `1` | 关闭全部频道 |
 | `CLAUDE_CODE_DISABLE_CHANNEL_PERMISSION_RELAY` | `1` | 保留消息推送，只关闭远程审批 |
@@ -126,7 +126,7 @@ claude --dangerously-load-development-channels server:webhook
 
 自定义 MCP server 使用 `server:<name>`，自定义插件使用 `plugin:<name>@<marketplace>`，均通过开发参数逐项确认；开发豁免只跳过对应条目的插件白名单，不跳过来源检查或组织策略。开发参数只支持交互模式，在 `-p` / Agent SDK 中不会授权；普通 `--channels` 和 SDK `channel_enable` 支持非交互模式。
 
-存在 managed settings 或使用 Anthropic Team/Enterprise 时，管理员须设置 `channelsEnabled: true`。managed settings 中的 `allowedChannelPlugins` 替换默认名单，包括 API Key / 兼容 provider；空数组阻止普通插件，关闭 `channelsEnabled` 同时阻止开发频道。项目和用户 settings 不能覆盖管理员设置。
+存在 managed settings 或使用 Anthropic Team/Enterprise 时，不需要设置 `channelsEnabled: true`（与官方不同）；管理员设置 `channelsEnabled: false` 才会关闭频道。managed settings 中的 `allowedChannelPlugins` 替换默认名单，包括 API Key / 兼容 provider；空数组阻止普通插件，关闭 `channelsEnabled` 同时阻止开发频道。项目和用户 settings 不能覆盖管理员设置。
 
 协议沿用 [Channels reference](https://code.claude.com/docs/en/channels-reference)：服务器声明 `experimental['claude/channel']: {}`，发送 `notifications/claude/channel`，参数为字符串 `content` 和可选字符串字典 `meta`。消息通过队列进入下一轮，SDK 空闲时也会开始处理；启动参数选择的已连接频道无需首条用户输入即可监听。`source` 由实际连接名决定，非法元数据键和伪造 `source` 被忽略。双向频道通过标准 MCP reply tool 回发；发送方身份认证与配对名单由频道服务器实现。
 
