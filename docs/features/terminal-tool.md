@@ -14,11 +14,11 @@ Terminal 工具给 Claude 一个**一直开着的终端**（PTY）：它可以�
 
 ![启动前确认](images/terminal-tool-approve.png)
 
-**2. 终端在后台运行。** 回合结束时显示 `1 Terminal still running`，底部多出 `1 Terminal · ↓ to manage`：
+**2. 终端在后台运行。** 回合结束时显示 `1 Terminal still running`，底部多出 `1 Terminal` 和 `↓ to manage`：
 
 ![后台运行中](images/terminal-tool-running.png)
 
-**3. Claude 往终端里输入。** 每次按回车提交一行时，这一整行也会按 Bash 规则检查；不想每行都问，可选第 2 项，本项目内不再询问 Terminal：
+**3. Claude 往终端里输入。** 每次按回车提交一行时，这一整行也会按 Bash 规则检查。Terminal 只提供单次批准，没有「不再询问」选项，因为一条放行整个 Terminal 的规则会让之后的每条命令都不再检查：
 
 ![输入一行](images/terminal-tool-sendkeys.png)
 
@@ -75,4 +75,4 @@ Terminal 工具给 Claude 一个**一直开着的终端**（PTY）：它可以�
 
 ## 说明
 
-画面来自实际运行（全屏渲染，110×44），模型回复由测试用假 API 生成（`FAKE_DONE`；提示词里的 `DO<<…>>` 是让假 API 调用工具的指令）。
+画面来自实际运行（110×36），模型回复由测试用假 API 按脚本生成。
