@@ -2464,6 +2464,14 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
         await new Promise(r => setTimeout(r, 800))
         await route.continue()
       })
+      // Every read of the agent's conversation from here on has the first message above the second.
+      const agentReads: string[][] = []
+      page.on('response', async (r: any) => {
+        if (!/\/agents\/[^/]+\/messages$/.test(new URL(r.url()).pathname)) return
+        const body = await r.json().catch(() => null)
+        const texts = ((body?.messages ?? []) as any[]).filter(m => m.type === 'user').map(m => JSON.stringify(m.message?.content))
+        agentReads.push(texts.filter(x => /\/e2e-skill go|AND_ONE_MORE/.test(x)).map(x => (x.includes('AND_ONE_MORE') ? 'second' : 'first')))
+      })
       await agentInput.fill('/e2e-sk')
       await agentInput.press('Enter')
       expect(await agentInput.inputValue()).toBe('/e2e-skill ')
@@ -2477,6 +2485,8 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       const sentBubbles = panel.locator('.agent-feed .msg.user').filter({ hasText: /\/e2e-skill go|AND_ONE_MORE/ })
       await panel.locator('.agent-feed .msg.user', { hasText: 'AND_ONE_MORE' }).waitFor({ timeout: 5_000 })
       expect((await sentBubbles.allInnerTexts()).map(x => (x.includes('AND_ONE_MORE') ? 'second' : 'first'))).toEqual(['first', 'second'])
+      for (const end = Date.now() + 15_000; !agentReads.some(r => r.length === 2) && Date.now() < end; ) await page.waitForTimeout(100)
+      expect(agentReads.filter(r => r.includes('second') && r[0] !== 'first')).toEqual([])
       expect(await panel.locator('.delivery').count()).toBe(0)
       expect(await panel.locator('.agent-feed .rw-btn').count()).toBe(0)
       await panel.locator('.agent-feed .msg.assistant', { hasText: 'SKILL_REACHED' }).waitFor({ timeout: 60_000 })
