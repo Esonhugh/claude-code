@@ -5,6 +5,16 @@ name: Lint
 on:
   workflow_dispatch:
   pull_request:
+    paths-ignore:
+      - 'docs/**'
+      - 'README.md'
+      - 'CHANGELOG.md'
+      - 'CLAUDE.md'
+      - 'CLAUDE-workflow.md'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   lint:
