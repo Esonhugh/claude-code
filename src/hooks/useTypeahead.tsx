@@ -1997,6 +1997,13 @@ export function useTypeahead({
         acceptSuggestionText(suggestionText)
         return
       }
+      // The Autocomplete keybinding is inactive without suggestions, so
+      // bash-mode shell completion has to start here.
+      if (mode === 'bash' && enableFileCompletions && input.trim() !== '') {
+        e.preventDefault()
+        void handleTab()
+        return
+      }
       // Remind user about thinking toggle shortcut if empty input
       if (input.trim() === '') {
         e.preventDefault()
