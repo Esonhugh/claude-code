@@ -12,7 +12,9 @@ if (!process.env[childKey]) {
     async scenario => {
       const root = mkdtempSync(join(tmpdir(), 'permission-mode-record-'))
       try {
-        const child = Bun.spawn([process.execPath, 'test', import.meta.path], {
+        // The child's own test runs under bun's 5 s default otherwise; its imports alone can take
+        // that long on a loaded runner.
+        const child = Bun.spawn([process.execPath, 'test', '--timeout', '30000', import.meta.path], {
           cwd: root,
           env: {
             PATH: process.env.PATH,

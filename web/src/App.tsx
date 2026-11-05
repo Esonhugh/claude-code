@@ -670,10 +670,25 @@ export function App() {
     })
   }
 
-  const openSession = async (entry: HistoryEntry) => {
+  // A reload reopens the session or project in the address while a click on its row may open
+  // it too: both opens would attach, and the server refuses the second socket, which then ends
+  // the first one's view. Overlapping opens of one target share the first.
+  const opening = useRef(new Map<string, Promise<void>>())
+  const openOnce = (key: string, open: () => Promise<void>) => {
+    const pending = opening.current.get(key)
+    if (pending) return pending
+    const run = open().finally(() => opening.current.delete(key))
+    opening.current.set(key, run)
+    return run
+  }
+
+  const openSession = (entry: HistoryEntry): Promise<void> => {
     setProjectId(undefined)
     stickToBottom.current = true
     dispatch({ type: 'view', id: entry.id })
+    return openOnce(`s:${entry.id}`, () => loadSession(entry))
+  }
+  const loadSession = async (entry: HistoryEntry) => {
     if (stateRef.current.chats[entry.id]) return
     dispatch({ type: 'mode', id: entry.id, mode: 'readonly' })
     const findLive = async () => (await listRunning().catch(() => [])).find(r => r.id === entry.id)
@@ -711,11 +726,14 @@ export function App() {
   }
 
   /** Shows a project: starts or resumes its coordinator and attaches to it. */
-  const openProject = async (p: Project) => {
+  const openProject = (p: Project): Promise<void> => {
     setSidebarOpen(false)
     setPreview(undefined)
     setStartError(undefined)
     setProjectId(p.id)
+    return openOnce(`p:${p.id}`, () => connectProject(p))
+  }
+  const connectProject = async (p: Project) => {
     try {
       const created = await openCoordinator(p.id)
       const id = created.session_id
@@ -780,7 +798,13 @@ export function App() {
   const resume = async (id: string): Promise<boolean> => {
     const current = stateRef.current.chats[id]
     if (!current || current.mode === 'live') return true
-    if (current.mode === 'connecting' || current.mode === 'elsewhere') return false
+    // A project or session opened a moment ago shows its box while it still attaches: a message
+    // sent then waits for that instead of being turned away.
+    if (current.mode === 'connecting') {
+      await Promise.all([...opening.current.values()])
+      return sockets.current.has(id)
+    }
+    if (current.mode === 'elsewhere') return false
     dispatch({ type: 'mode', id, mode: 'connecting' })
     try {
       const running = await listRunning()

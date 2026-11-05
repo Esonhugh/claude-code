@@ -1603,7 +1603,8 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       await page.locator('.pv-chat .pj-note', { hasText: 'Task "Task one" finished' }).waitFor({ timeout: 60_000 })
       await page.locator('.pv-chat .pj-note', { hasText: 'Task "Task two" finished' }).waitFor({ timeout: 60_000 })
       await page.locator('.pv-chat').getByText('COORD_SAW_RESULT').first().waitFor({ timeout: 60_000 })
-      expect(await page.locator('.pjlist .grp-h').first().textContent()).toBe('Needs you')
+      // The task list refreshes on its own schedule, after the chat shows the notices.
+      await page.waitForFunction(() => document.querySelector('.pjlist .grp-h')?.textContent === 'Needs you', undefined, { timeout: 30_000 })
 
       // The `-p` child really ran on the coordinator prompt, with the project instructions appended.
       expect(coordinatorSeen.length).toBeGreaterThan(0)
@@ -1944,9 +1945,16 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       expect(await side.locator('.pjbrief').textContent()).toBe('WORKER_ASK create asked.txt')
       await side.locator('.askdock').getByText('Claude wants to run a command').waitFor({ timeout: 30_000 })
       expect(await side.locator('.askdock code').textContent()).toContain('touch asked.txt')
-      // A page opened later still gets the unanswered request.
+      // A page opened later still gets the unanswered request. The reload reopens the project from
+      // the address while reopen() clicks its row; a slow session list makes the two opens overlap,
+      // and they must still attach one socket (#823).
+      await page.route('**/api/sessions', async (route: any) => {
+        await new Promise(resolve => setTimeout(resolve, 500))
+        await route.continue().catch(() => {})
+      })
       await page.reload()
       await reopen()
+      await page.unroute('**/api/sessions')
       await cardOf('Ask').click()
       await side.locator('.askdock').getByText('Claude wants to run a command').waitFor({ timeout: 30_000 })
       expect(await side.locator('.askdock').count()).toBe(1)
@@ -2405,21 +2413,22 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
         await palette.getByRole('option', { name: /slow\.txt/ }).waitFor({ timeout: 10_000 })
         await input.fill('')
         await scope.getByRole('button', { name: 'Model' }).waitFor({ timeout: 5_000 })
-        // Shift+Tab cycles the permission mode, back to where it started.
+        // Shift+Tab cycles the permission mode, back to where it started. A live session shows
+        // the new mode once it confirms it, so each press waits for that before the next one.
         const mode = () => scope.locator('.perm').getAttribute('data-mode')
         const start = await mode()
         await input.focus()
-        await page.keyboard.press('Shift+Tab')
-        await page.waitForFunction(
-          ([sel, was]: [string, string]) => document.querySelector(sel)?.getAttribute('data-mode') !== was,
-          [agent ? '.pv-side .perm, aside.side .perm' : '.composer .perm', start],
-          { timeout: 10_000 },
-        )
-        for (let i = 0; i < 6 && (await mode()) !== start; i++) {
+        let now = start
+        for (let i = 0; i < 6 && (i === 0 || now !== start); i++) {
           await page.keyboard.press('Shift+Tab')
-          await page.waitForTimeout(300)
+          await page.waitForFunction(
+            ([sel, was]: [string, string]) => document.querySelector(sel)?.getAttribute('data-mode') !== was,
+            [agent ? '.pv-side .perm, aside.side .perm' : '.composer .perm', now],
+            { timeout: 10_000 },
+          )
+          now = await mode()
         }
-        expect(await mode()).toBe(start)
+        expect(now).toBe(start)
         // A file dropped on the box attaches once; so does one picked with Upload file.
         await input.evaluate((el: HTMLElement) => {
           const data = new DataTransfer()
@@ -2785,6 +2794,12 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       const dialog = page.locator('.dialog')
       await dialog.locator('#pj-name').fill('Multi project')
       await dialog.locator('#pj-path').fill(workspace)
+      // A slow session list keeps the new coordinator connecting while the first message is
+      // sent: it goes out once the coordinator attaches (#823).
+      await page.route('**/api/sessions', async (route: any) => {
+        await new Promise(resolve => setTimeout(resolve, 800))
+        await route.continue().catch(() => {})
+      })
       await dialog.getByRole('button', { name: 'Create project' }).click()
       try {
         await page.locator('#projview .pv-head b', { hasText: 'Multi project' }).waitFor({ timeout: 30_000 })
@@ -2797,6 +2812,7 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       const chatInput = chat.getByLabel('Message', { exact: true })
       await chatInput.fill('please DISPATCH_MULTI')
       await chatInput.press('Enter')
+      await page.unroute('**/api/sessions')
       const side = page.locator('.pv-side')
       const cardOf = (title: string) => side.locator('.pjlist .pjcard', { has: page.locator('.tt', { hasText: new RegExp(`^${title}$`) }) })
       await cardOf('MultiA').waitFor({ timeout: 60_000 })
