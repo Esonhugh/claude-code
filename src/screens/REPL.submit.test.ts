@@ -1539,8 +1539,13 @@ test('plain submit while a turn runs queues without interrupting it', async () =
   expect(h.queued.map((command: any) => command.value)).toEqual(['later'])
 })
 
-test('send-now with an empty prompt interrupts only when a prompt is queued', async () => {
-  for (const [queue, aborted] of [[[], false], [[{ mode: 'prompt', value: 'waiting' }], true]] as const) {
+test('send-now with an empty prompt interrupts only when a user prompt or bash command is queued', async () => {
+  for (const [queue, aborted] of [
+    [[], false],
+    [[{ mode: 'task-notification', value: 'done' }], false],
+    [[{ mode: 'prompt', value: 'waiting' }], true],
+    [[{ mode: 'bash', value: 'pwd' }], true],
+  ] as const) {
     const h = harness({ input: '' })
     const controller = new AbortController()
     h.scope.abortController = controller

@@ -5420,7 +5420,7 @@ export function REPL({
         if (
           options?.sendNow &&
           queryGuard.isActive &&
-          getCommandQueue().some(command => command.mode === 'prompt')
+          getCommandQueue().some(command => command.mode === 'prompt' || command.mode === 'bash')
         ) {
           abortControllerRef.current?.abort('interrupt')
         }
