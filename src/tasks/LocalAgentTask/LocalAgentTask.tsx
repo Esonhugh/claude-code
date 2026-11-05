@@ -1080,4 +1080,8 @@ export function unregisterAgentForeground(
 
   // Call cleanup outside of the state updater (avoid side effects in updater)
   cleanupFn?.()
+  // Background children it owned route their notifications to it while it
+  // is live; nothing drains them once it is gone, so hand them to the main
+  // thread (the kill/fail paths do the same).
+  rerouteOwnedNotifications(taskId)
 }

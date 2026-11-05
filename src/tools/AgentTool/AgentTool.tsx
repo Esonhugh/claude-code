@@ -2303,12 +2303,11 @@ export const AgentTool = buildTool({
               }
             }
 
-            // Clean up scoped skills so they don't accumulate in the global map
-            clearInvokedSkillsForAgent(syncAgentId)
-
-            // Clean up dumpState entry for this agent to prevent unbounded growth
-            // Skip if backgrounded — the backgrounded agent's finally handles cleanup
+            // Clean up scoped skills and the dumpState entry so they don't
+            // accumulate. Skip if backgrounded — the backgrounded agent's
+            // finally handles cleanup, and it still needs its skills.
             if (!wasBackgrounded) {
+              clearInvokedSkillsForAgent(syncAgentId)
               clearDumpState(syncAgentId)
             }
 
