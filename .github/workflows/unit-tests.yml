@@ -63,8 +63,11 @@ jobs:
           export LOGS="$RUNNER_TEMP/unit"
           xargs -P 4 -I{} sh -c 'log="$LOGS/$(echo "$1" | tr / _).log"; s=$(date +%s.%N); bun test --timeout 60000 "$1" >"$log" 2>&1 || echo "$1" >>"$LOGS/failed.txt"; printf "%.1f\t%s\n" "$(echo "$(date +%s.%N) $s" | awk "{print \$1 - \$2}")" "$1" >>"$LOGS/times.tsv"' _ {} \
             < "$RUNNER_TEMP/unit/files.txt"
-          echo "$(wc -l < "$RUNNER_TEMP/unit/files.txt") test files; slowest:"
-          sort -rn "$LOGS/times.tsv" | head -n 10
+          echo "$(wc -l < "$RUNNER_TEMP/unit/files.txt") test files"
+          # The lines .github/unit-test-times.tsv is made of.
+          echo "::group::test times"
+          sort -rn "$LOGS/times.tsv"
+          echo "::endgroup::"
           if [ -s "$LOGS/failed.txt" ]; then
             while read -r f; do
               echo "::group::FAIL $f"
@@ -74,16 +77,6 @@ jobs:
             echo "Failed files:"; cat "$LOGS/failed.txt"
             exit 1
           fi
-
-      # Refresh .github/unit-test-times.tsv from the four artifacts when the
-      # shards drift apart.
-      - name: Upload test times
-        if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: unit-test-times-${{ matrix.shard }}
-          path: ${{ runner.temp }}/unit/times.tsv
-          retention-days: 14
 
   # The single check the shards report under; skipped, not failed, when a newer
   # push cancels the run.

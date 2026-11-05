@@ -1,6 +1,7 @@
 // Prints shard <index> of <count> of the test files on stdin, balanced by the
 // per-file seconds in .github/unit-test-times.tsv (files not listed weigh the
-// median), longest first so the slow files never start last.
+// median), longest first so the slow files never start last. Refresh the file
+// from the "test times" group of the four unit-tests shard logs.
 //   git ls-files ... | bun scripts/split-unit-tests.mjs <index> <count>
 import fs from 'node:fs';
 import process from 'node:process';
