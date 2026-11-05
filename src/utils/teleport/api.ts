@@ -10,6 +10,7 @@ import { errorMessage, toError } from '../errors.js'
 import { lazySchema } from '../lazySchema.js'
 import { logError } from '../log.js'
 import { sleep } from '../sleep.js'
+import { getClaudeCodeUserAgent } from '../userAgent.js'
 import { jsonStringify } from '../slowOperations.js'
 
 // Retry configuration for teleport API requests
@@ -275,6 +276,7 @@ export async function fetchCodeSessionsFromSessionsAPI(): Promise<
  */
 export function getOAuthHeaders(accessToken: string): Record<string, string> {
   return {
+    'User-Agent': getClaudeCodeUserAgent(),
     Authorization: `Bearer ${accessToken}`,
     'Content-Type': 'application/json',
     'anthropic-version': '2023-06-01',
