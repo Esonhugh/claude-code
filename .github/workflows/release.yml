@@ -10,6 +10,11 @@ on:
         description: 'Release tag to build, for example v2.1.89'
         required: true
         type: string
+      dry_run:
+        description: 'Build and check only: no GitHub Release, no npm publish'
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -99,36 +104,10 @@ jobs:
       - name: Test ripgrep packaging logic
         run: bun run test:ripgrep
 
-  create-release:
-    name: Create GitHub Release
-    needs:
-      - validate-tag
-      - source-checks
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repository metadata
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Create or reset release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ needs.validate-tag.outputs.tag }}
-          CHECKOUT_REF: ${{ needs.validate-tag.outputs.checkout_ref }}
-        run: |
-          gh release view "$TAG" >/dev/null 2>&1 && gh release delete "$TAG" --yes --cleanup-tag=false || true
-          gh release create "$TAG" \
-            --target "$CHECKOUT_REF" \
-            --title "$TAG" \
-            --notes "Build in progress for $TAG."
-
+  # Runs alongside source-checks; nothing is released until both pass.
   build:
     name: Build ${{ matrix.os }}
-    needs:
-      - validate-tag
-      - source-checks
-      - create-release
+    needs: validate-tag
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -253,19 +232,97 @@ jobs:
           "$ARTIFACT" --help
           node ./scripts/verify-bundled-image-runtime.mjs "$ARTIFACT"
 
-      - name: Upload binary to release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ needs.validate-tag.outputs.tag }}
+      - name: Upload binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: binaries-${{ matrix.os }}
+          path: dist/release/*
+          if-no-files-found: error
+          retention-days: 7
+
+  # Everything a release needs except publishing, so a dry run checks it too.
+  package:
+    name: Checksums and npm package
+    needs:
+      - validate-tag
+      - source-checks
+      - build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.validate-tag.outputs.checkout_ref }}
+
+      - name: Download binaries
+        uses: actions/download-artifact@v4
+        with:
+          pattern: binaries-*
+          path: artifacts
+          merge-multiple: true
+
+      - name: Generate checksums
         shell: bash
-        run: gh release upload "$TAG" dist/release/* --clobber
+        env:
+          VERSION: ${{ needs.validate-tag.outputs.version }}
+        run: |
+          cd artifacts
+          expected=(
+            "claude-code-v${VERSION}-darwin-arm64"
+            "claude-code-v${VERSION}-linux-arm64"
+            "claude-code-v${VERSION}-linux-arm64-musl"
+            "claude-code-v${VERSION}-linux-x64"
+            "claude-code-v${VERSION}-linux-x64-baseline"
+            "claude-code-v${VERSION}-linux-x64-musl"
+            "claude-code-v${VERSION}-win32-x64.exe"
+          )
+          for artifact in "${expected[@]}"; do
+            test -f "$artifact" || {
+              echo "Missing release artifact: $artifact" >&2
+              exit 1
+            }
+          done
+          sha256sum "${expected[@]}" > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+
+      - name: Prepare binary-only npm package
+        env:
+          CLAUDE_CODE_VERSION: ${{ needs.validate-tag.outputs.version }}
+        run: bun ./scripts/prepare-npm-package.mjs artifacts dist/npm
+
+      - name: Verify npm package wrapper
+        shell: bash
+        run: |
+          PLATFORM="$(bun -e 'console.log(process.platform)')"
+          ARCH="$(bun -e 'console.log(process.arch)')"
+          mkdir -p dist/npm/main/node_modules/@esonhugh
+          ln -s "../../../${PLATFORM}-${ARCH}" "dist/npm/main/node_modules/@esonhugh/claude-code-${PLATFORM}-${ARCH}"
+          node ./dist/npm/main/bin/claude.js --version
+          node ./dist/npm/main/bin/claude.js --help
+
+      - name: Upload binaries and checksums
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-payload
+          path: artifacts
+          retention-days: 7
 
   release:
     name: Publish GitHub Release and npm package
     needs:
       - validate-tag
-      - source-checks
-      - build
+      - package
+    if: ${{ !inputs.dry_run }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -300,37 +357,11 @@ jobs:
             exit 1
           fi
 
-      - name: Download release binaries
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ needs.validate-tag.outputs.tag }}
-        run: |
-          mkdir -p artifacts
-          gh release download "$TAG" --dir artifacts --pattern 'claude-code-*'
-
-      - name: Generate checksums
-        shell: bash
-        env:
-          VERSION: ${{ needs.validate-tag.outputs.version }}
-        run: |
-          cd artifacts
-          expected=(
-            "claude-code-v${VERSION}-darwin-arm64"
-            "claude-code-v${VERSION}-linux-arm64"
-            "claude-code-v${VERSION}-linux-arm64-musl"
-            "claude-code-v${VERSION}-linux-x64"
-            "claude-code-v${VERSION}-linux-x64-baseline"
-            "claude-code-v${VERSION}-linux-x64-musl"
-            "claude-code-v${VERSION}-win32-x64.exe"
-          )
-          for artifact in "${expected[@]}"; do
-            test -f "$artifact" || {
-              echo "Missing release artifact: $artifact" >&2
-              exit 1
-            }
-          done
-          sha256sum "${expected[@]}" > SHA256SUMS.txt
-          cat SHA256SUMS.txt
+      - name: Download binaries and checksums
+        uses: actions/download-artifact@v4
+        with:
+          name: release-payload
+          path: artifacts
 
       # npm trusted publishing (OIDC) needs npm 11.5.1+, bundled with Node 24.
       - name: Setup Node.js
@@ -348,15 +379,18 @@ jobs:
           CLAUDE_CODE_VERSION: ${{ needs.validate-tag.outputs.version }}
         run: bun ./scripts/prepare-npm-package.mjs artifacts dist/npm
 
-      - name: Verify npm package wrapper
-        shell: bash
+      - name: Create or reset release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.validate-tag.outputs.tag }}
+          CHECKOUT_REF: ${{ needs.validate-tag.outputs.checkout_ref }}
         run: |
-          PLATFORM="$(bun -e 'console.log(process.platform)')"
-          ARCH="$(bun -e 'console.log(process.arch)')"
-          mkdir -p dist/npm/main/node_modules/@esonhugh
-          ln -s "../../../${PLATFORM}-${ARCH}" "dist/npm/main/node_modules/@esonhugh/claude-code-${PLATFORM}-${ARCH}"
-          node ./dist/npm/main/bin/claude.js --version
-          node ./dist/npm/main/bin/claude.js --help
+          gh release view "$TAG" >/dev/null 2>&1 && gh release delete "$TAG" --yes --cleanup-tag=false || true
+          gh release create "$TAG" \
+            --target "$CHECKOUT_REF" \
+            --title "$TAG" \
+            --notes "Publishing $TAG."
+          gh release upload "$TAG" artifacts/* --clobber
 
       - name: Publish npm packages
         run: |
@@ -402,10 +436,9 @@ jobs:
           Verify downloads with SHA256SUMS.txt.
           EOF
 
-      - name: Publish release notes and checksums
+      - name: Publish release notes
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.validate-tag.outputs.tag }}
         run: |
-          gh release upload "$TAG" artifacts/SHA256SUMS.txt --clobber
           gh release edit "$TAG" --title "$TAG" --notes-file release-notes.md
