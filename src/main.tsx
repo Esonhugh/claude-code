@@ -5637,7 +5637,8 @@ async function run(): Promise<CommanderCommand> {
             ? hookMessages
             : undefined
 
-        await prefetchChatGPTUtilization()?.catch(() => null)
+        // Not awaited: the logo shows the token's plan until the usage reply lands.
+        void prefetchChatGPTUtilization()?.catch(() => null)
         await launchRepl(
           root,
           { getFpsMetrics, stats, initialState },

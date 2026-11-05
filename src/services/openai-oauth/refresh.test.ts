@@ -99,6 +99,29 @@ try {
   assert.equal(await checkAndRefreshOpenAITokenIfNeeded({ homeDir }), false)
   assert.equal(requests.length, 0)
 
+  // Startup prefetch and the first request may both refresh: one rotation only.
+  await saveOpenAIAuth(
+    {
+      auth_mode: 'chatgpt',
+      tokens: {
+        access_token: jwtWithExp(nowSeconds + 60),
+        refresh_token: 'concurrent-refresh-token',
+      },
+      last_refresh: '2026-01-01T00:00:00.000Z',
+    },
+    { homeDir },
+  )
+  requests.length = 0
+  assert.deepEqual(
+    await Promise.all([
+      checkAndRefreshOpenAITokenIfNeeded({ homeDir }),
+      checkAndRefreshOpenAITokenIfNeeded({ homeDir }),
+    ]),
+    [true, true],
+  )
+  assert.equal(requests.length, 1)
+  requests.length = 0
+
   await saveOpenAIApiKey('sk-test-api-key', { homeDir })
   assert.equal(await checkAndRefreshOpenAITokenIfNeeded({ homeDir }), false)
   assert.equal(requests.length, 0)

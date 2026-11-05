@@ -54,10 +54,30 @@ async function readOpenAIAuth(homeDir?: string): Promise<OpenAIAuthFile | null> 
   }
 }
 
-export async function checkAndRefreshOpenAITokenIfNeeded({
+const refreshes = new Map<string, Promise<boolean>>()
+
+// Concurrent callers share one refresh: a second request with the same
+// refresh token would race the rotation and can be rejected.
+export function checkAndRefreshOpenAITokenIfNeeded(
+  options: RefreshOptions = {},
+): Promise<boolean> {
+  const key = getOpenAIAuthPath(options.homeDir)
+  const running = refreshes.get(key)
+  if (running && !options.force) return running
+  const refresh = (running ?? Promise.resolve(false))
+    .catch(() => false)
+    .then(() => refreshOpenAIToken(options))
+    .finally(() => {
+      if (refreshes.get(key) === refresh) refreshes.delete(key)
+    })
+  refreshes.set(key, refresh)
+  return refresh
+}
+
+async function refreshOpenAIToken({
   homeDir,
   force = false,
-}: RefreshOptions = {}): Promise<boolean> {
+}: RefreshOptions): Promise<boolean> {
   const auth = await readOpenAIAuth(homeDir)
   if (
     !auth ||
