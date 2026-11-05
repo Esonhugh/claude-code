@@ -1141,6 +1141,12 @@ async function execCommandHook(
     // bash `read -r line` returns exit 1 (EOF before delimiter) — the
     // variable IS populated but `if read -r line; then ...` skips the
     // branch. See gh-30509 / CC-161.
+    // A hook that exits without reading stdin closes the pipe; without a
+    // listener the EPIPE surfaces as an uncaughtException (the sync path
+    // below handles the same case).
+    child.stdin.on('error', (err: Error) => {
+      logForDebugging(`Hook stdin write failed (${hookId}): ${err.message}`)
+    })
     child.stdin.write(jsonInput + '\n', 'utf8')
     child.stdin.end()
     stdinWritten = true
@@ -2328,7 +2334,13 @@ async function* executeHooks({
       : undefined
     for (const [i, { hook }] of matchingHooks.entries()) {
       if (hook.type === 'callback') {
-        await hook.callback(hookInput, toolUseID, signal, i, context)
+        try {
+          await hook.callback(hookInput, toolUseID, signal, i, context)
+        } catch (error) {
+          logForDebugging(
+            `Callback hook ${i} for ${hookInput.hook_event_name} failed: ${errorMessage(error)}`,
+          )
+        }
       }
     }
     const totalDurationMs = Date.now() - batchStartTime
