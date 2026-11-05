@@ -1042,14 +1042,23 @@ export async function runInProcessTeammate(
     undefined,
     description,
   )
-  let currentPrompt = wrappedInitialPrompt
   let shouldExit = false
 
-  // Try to claim an available task immediately so the UI can show activity
-  // from the very start. The idle loop handles claiming for subsequent tasks.
   // The leader's tasks live under the team name (sessionTeam.ts moves them
   // there), the same list getTaskListId() resolves for teammates.
-  await tryClaimNextTask(identity.teamName, identity.agentName)
+  const taskListId =
+    process.env.CLAUDE_CODE_TASK_LIST_ID || identity.teamName
+  // Try to claim an available task immediately so the UI can show activity
+  // from the very start. The idle loop handles claiming for subsequent tasks.
+  // A claimed task is now owned and in_progress, so it must be part of the
+  // first turn rather than left for the idle loop to skip over.
+  const startupTaskPrompt = await tryClaimNextTask(
+    taskListId,
+    identity.agentName,
+  )
+  let currentPrompt = startupTaskPrompt
+    ? `${wrappedInitialPrompt}\n\n${startupTaskPrompt}`
+    : wrappedInitialPrompt
 
   const finishModConversation = toolUseContext.mods?.trackConversation({
     agentId: identity.resumableAgentId ?? identity.agentId, sessionId: identity.parentSessionId, messages: () => allMessages, persistent: true,
@@ -1112,7 +1121,7 @@ export async function runInProcessTeammate(
         ...task,
         messages: appendCappedMessage(
           task.messages,
-          createUserMessage({ content: wrappedInitialPrompt }),
+          createUserMessage({ content: currentPrompt }),
         ),
       }),
       setAppState,
@@ -1489,7 +1498,7 @@ export async function runInProcessTeammate(
         taskId,
         toolUseContext.getAppState,
         setAppState,
-        identity.teamName,
+        taskListId,
       )
 
       switch (waitResult.type) {

@@ -25,7 +25,7 @@ export async function runCleanupFunctions(): Promise<void> {
   // One failing cleanup must not skip the others or the session flush that
   // follows in gracefulShutdown.
   const results = await Promise.allSettled(
-    Array.from(cleanupFunctions).map(fn => fn()),
+    Array.from(cleanupFunctions).map(async fn => fn()),
   )
   for (const result of results) {
     if (result.status === 'rejected') {
