@@ -4,6 +4,7 @@
 // scripted Bash and Terminal calls through `claude -p` against a fake API.
 import { spawnSync } from 'node:child_process'
 import fs from 'node:fs'
+import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
 import { clean, inheritedEnv, report, runSteps, startFakeApi, type Step } from './windows-e2e-api.js'
@@ -57,6 +58,19 @@ const env = {
 
 const install = spawnSync(bin, ['sandbox', 'install'], { env, encoding: 'utf8' })
 console.log(`sandbox install: exit=${install.status} ${install.stdout}${install.stderr}`)
+// The sandbox user's first logon creates its Windows profile: 16-25 s on an
+// idle runner, 75 ms-1 s afterwards (#791). The session's WFP check allows
+// 30 s, which a loaded runner can exceed, so create the profile here first.
+const srtWin = path.resolve('node_modules/@anthropic-ai/sandbox-runtime/vendor/srt-win/x64/srt-win.exe')
+if (fs.existsSync(srtWin)) {
+  const listener = net.createServer().listen(0, '127.0.0.1')
+  await new Promise(resolve => listener.once('listening', resolve))
+  const target = `127.0.0.1:${(listener.address() as net.AddressInfo).port}`
+  const started = Date.now()
+  const warm = spawnSync(srtWin, ['wfp', 'verify', '--target', target], { encoding: 'utf8', timeout: 120_000 })
+  listener.close()
+  console.log(`sandbox profile warm-up: ${Date.now() - started}ms exit=${warm.status} ${warm.stdout.trim()}`)
+}
 const status = spawnSync(bin, ['sandbox', 'status'], { cwd: project, env, encoding: 'utf8' })
 console.log(`sandbox status: ${status.stdout}${status.stderr}`)
 
