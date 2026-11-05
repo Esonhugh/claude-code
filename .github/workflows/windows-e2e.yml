@@ -39,11 +39,19 @@ jobs:
           BUN_INSTALL_CACHE_DIR: ${{ runner.temp }}/bun-cache
         run: bun install --frozen-lockfile
 
+      # React Compiler output of unchanged files (scripts/build.mjs); a
+      # push to dev seeds it for every PR (build-cache.yml).
+      - name: Restore build cache
+        uses: actions/cache@v4
+        with:
+          path: node_modules/.cache/claude-build-transform
+          key: build-transform-${{ runner.os }}-${{ runner.arch }}-${{ github.sha }}
+          restore-keys: build-transform-${{ runner.os }}-${{ runner.arch }}-
+
+      # package:binary runs the build itself.
       - name: Build binary
         shell: bash
-        run: |
-          bun run build
-          bun run package:binary
+        run: bun run package:binary
 
       - name: Sandbox e2e
         if: ${{ !cancelled() }}
@@ -82,11 +90,18 @@ jobs:
           BUN_INSTALL_CACHE_DIR: ${{ runner.temp }}/bun-cache
         run: bun install --frozen-lockfile
 
+      # React Compiler output of unchanged files (scripts/build.mjs); a
+      # push to dev seeds it for every PR (build-cache.yml).
+      - name: Restore build cache
+        uses: actions/cache/restore@v4
+        with:
+          path: node_modules/.cache/claude-build-transform
+          key: build-transform-${{ runner.os }}-${{ runner.arch }}-${{ github.sha }}
+          restore-keys: build-transform-${{ runner.os }}-${{ runner.arch }}-
+
       - name: Build binary
         shell: bash
-        run: |
-          bun run build
-          bun run package:binary
+        run: bun run package:binary
 
       # Playwright is not a project dependency; it is added for this step only.
       - name: Web e2e
@@ -115,17 +130,26 @@ jobs:
         with:
           bun-version: 1.4.2
 
-      # Before the official sandbox install, which adds WFP filters.
-      - name: Build fork binary
-        shell: bash
+      - name: Install dependencies
         # The default cache is on C:, the checkout on D:, so bun copies every
         # file instead of hard-linking it.
         env:
           BUN_INSTALL_CACHE_DIR: ${{ runner.temp }}/bun-cache
-        run: |
-          bun install --frozen-lockfile
-          bun run build
-          bun run package:binary
+        run: bun install --frozen-lockfile
+
+      # React Compiler output of unchanged files (scripts/build.mjs); a
+      # push to dev seeds it for every PR (build-cache.yml).
+      - name: Restore build cache
+        uses: actions/cache/restore@v4
+        with:
+          path: node_modules/.cache/claude-build-transform
+          key: build-transform-${{ runner.os }}-${{ runner.arch }}-${{ github.sha }}
+          restore-keys: build-transform-${{ runner.os }}-${{ runner.arch }}-
+
+      # Before the official sandbox install, which adds WFP filters.
+      - name: Build fork binary
+        shell: bash
+        run: bun run package:binary
 
       - name: Download official
         shell: bash

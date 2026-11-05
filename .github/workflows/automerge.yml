@@ -1,0 +1,67 @@
+name: Automerge
+
+# A PR into dev labelled `automerge` is merged once every other workflow run on
+# its head commit has passed. It never touches master. A failed run stops it;
+# after a re-run passes, remove and re-add the label.
+on:
+  pull_request:
+    types: [labeled, opened, reopened, synchronize]
+    branches: [dev]
+
+permissions:
+  actions: write
+  contents: write
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  automerge:
+    if: >-
+      contains(github.event.pull_request.labels.*.name, 'automerge') &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      PR: ${{ github.event.pull_request.number }}
+      SHA: ${{ github.event.pull_request.head.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github/scripts
+
+      - name: Wait for the other workflows on the head commit
+        run: |
+          while :; do
+            runs="$(gh api "repos/$GH_REPO/actions/runs?head_sha=$SHA&event=pull_request&per_page=100" \
+              --jq '[.workflow_runs[] | select(.name != "Automerge")]')"
+            total="$(jq length <<<"$runs")"
+            pending="$(jq '[.[] | select(.status != "completed")] | length' <<<"$runs")"
+            bad="$(jq -r '[.[] | select(.status == "completed" and (.conclusion | IN("success", "skipped", "neutral") | not)) | "\(.name): \(.conclusion)"] | join(", ")' <<<"$runs")"
+            echo "$total runs, $pending pending${bad:+, failed: $bad}"
+            if [ -n "$bad" ]; then
+              echo "::error::not merging: $bad"
+              exit 1
+            fi
+            if [ "$total" -gt 0 ] && [ "$pending" -eq 0 ]; then
+              break
+            fi
+            sleep 30
+          done
+
+      - name: Merge into dev
+        run: |
+          title="$(gh pr view "$PR" --json title --jq .title)"
+          gh pr merge "$PR" --merge --match-head-commit "$SHA" --subject "Merge PR #$PR: $title"
+
+      # Neither runs on its own: a merge made with GITHUB_TOKEN starts no workflow.
+      - name: Close linked issues
+        run: .github/scripts/close-linked-issues.sh "$PR"
+
+      - name: Seed the build cache for dev
+        run: gh workflow run build-cache.yml --ref dev

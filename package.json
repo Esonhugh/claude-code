@@ -28,6 +28,7 @@
     "test:ripgrep": "bun test src/utils/ripgrepConfig.test.ts src/utils/embeddedRipgrep.test.ts",
     "check:changelog": "bun ./scripts/check-changelog.mjs",
     "test:changelog": "bun test src/utils/changelog.test.ts src/utils/releaseNotes.test.ts",
+    "check:changed": "bun ./scripts/check-changed.mjs",
     "lint": "eslint --quiet \"src/**/*.{ts,tsx}\" \"types/**/*.d.ts\" \"scripts/**/*.mjs\"",
     "lint:fix": "eslint --fix \"src/**/*.{ts,tsx}\" \"types/**/*.d.ts\" \"scripts/**/*.mjs\"",
     "audit:missing": "node ./scripts/audit-missing.mjs",

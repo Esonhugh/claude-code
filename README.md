@@ -121,6 +121,12 @@ bun ./dist/cli.js --help
 
 ## 开发约定
 
+推送前先跑快速检查（只 lint/typecheck 并测试相对 `origin/dev` 改动的文件，CI 很少再因此失败）：
+
+```bash
+bun run check:changed
+```
+
 修改 TypeScript 后至少运行：
 
 ```bash

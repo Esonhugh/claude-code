@@ -57,13 +57,22 @@ jobs:
           dist/search-tools/*-darwin-arm64/ugrep --version
           dist/search-tools/*-darwin-arm64/bfs --version
 
+      # React Compiler output of unchanged files (scripts/build.mjs); a
+      # push to dev seeds it for every PR (build-cache.yml).
+      - name: Restore build cache
+        if: github.event_name != 'push'
+        uses: actions/cache@v4
+        with:
+          path: node_modules/.cache/claude-build-transform
+          key: build-transform-${{ runner.os }}-${{ runner.arch }}-${{ github.sha }}
+          restore-keys: build-transform-${{ runner.os }}-${{ runner.arch }}-
+
+      # package:binary runs the build itself.
       - name: Build binary
         if: github.event_name != 'push'
         env:
           CLAUDE_CODE_REQUIRE_SEARCH_TOOLS: '1'
-        run: |
-          bun run build
-          bun run package:binary
+        run: bun run package:binary
 
       - name: Sandbox e2e
         if: github.event_name != 'push'
