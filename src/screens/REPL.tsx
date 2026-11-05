@@ -7013,6 +7013,18 @@ export function REPL({
   // Auto-exit viewing mode when teammate completes or errors
   useTeammateViewAutoExit()
 
+  // When viewing an agent, never fall through to leader — empty until
+  // bootstrap/stream fills. Closes the see-leader-type-agent footgun.
+  const viewedAgentMessages = viewedAgentTask?.messages
+  const viewedPendingMessages =
+    viewedAgentTask && isLocalAgentTask(viewedAgentTask) ? viewedAgentTask.pendingMessages : undefined
+  // A running agent's unread user messages show after its transcript until it reads them.
+  const viewedAgentDisplayMessages = useMemo(() => {
+    const queued = viewedAgentTask && isLocalAgentTask(viewedAgentTask) ? queuedUserMessages(viewedAgentTask) : []
+    return queued.length > 0 ? [...(viewedAgentMessages ?? []), ...queued] : (viewedAgentMessages ?? [])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [viewedAgentMessages, viewedPendingMessages])
+
   if (screen === 'transcript') {
     // Virtual scroll replaces the 30-message cap: everything is scrollable
     // and memory is bounded by the viewport. Without it, wrapping transcript
@@ -7211,17 +7223,6 @@ export function REPL({
   // jitter gap where the spinner is gone but the answer hasn't appeared yet.
   // Only reducedMotion users keep the deferred path during loading.
   const usesSyncMessages = showStreamingText || !isLoading
-  // When viewing an agent, never fall through to leader — empty until
-  // bootstrap/stream fills. Closes the see-leader-type-agent footgun.
-  const viewedAgentMessages = viewedAgentTask?.messages
-  const viewedPendingMessages =
-    viewedAgentTask && isLocalAgentTask(viewedAgentTask) ? viewedAgentTask.pendingMessages : undefined
-  // A running agent's unread user messages show after its transcript until it reads them.
-  const viewedAgentDisplayMessages = useMemo(() => {
-    const queued = viewedAgentTask && isLocalAgentTask(viewedAgentTask) ? queuedUserMessages(viewedAgentTask) : []
-    return queued.length > 0 ? [...(viewedAgentMessages ?? []), ...queued] : (viewedAgentMessages ?? [])
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [viewedAgentMessages, viewedPendingMessages])
   const displayedMessages = viewedAgentTask
     ? viewedAgentDisplayMessages
     : usesSyncMessages
