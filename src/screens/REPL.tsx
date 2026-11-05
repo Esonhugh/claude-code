@@ -117,7 +117,7 @@ import {
   isLocalAgentTask,
   type LocalAgentTaskState,
 } from '../tasks/LocalAgentTask/LocalAgentTask.js'
-import { deliverTaskMessage } from '../tasks/deliverTaskMessage.js'
+import { deliverTaskMessage, queuedUserMessages } from '../tasks/deliverTaskMessage.js'
 import { capitalize } from '../utils/stringUtils.js'
 import {
   registerLeaderToolUseConfirmQueue,
@@ -7213,8 +7213,17 @@ export function REPL({
   const usesSyncMessages = showStreamingText || !isLoading
   // When viewing an agent, never fall through to leader — empty until
   // bootstrap/stream fills. Closes the see-leader-type-agent footgun.
+  const viewedAgentMessages = viewedAgentTask?.messages
+  const viewedPendingMessages =
+    viewedAgentTask && isLocalAgentTask(viewedAgentTask) ? viewedAgentTask.pendingMessages : undefined
+  // A running agent's unread user messages show after its transcript until it reads them.
+  const viewedAgentDisplayMessages = useMemo(() => {
+    const queued = viewedAgentTask && isLocalAgentTask(viewedAgentTask) ? queuedUserMessages(viewedAgentTask) : []
+    return queued.length > 0 ? [...(viewedAgentMessages ?? []), ...queued] : (viewedAgentMessages ?? [])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [viewedAgentMessages, viewedPendingMessages])
   const displayedMessages = viewedAgentTask
-    ? (viewedAgentTask.messages ?? [])
+    ? viewedAgentDisplayMessages
     : usesSyncMessages
       ? messages
       : deferredMessages
