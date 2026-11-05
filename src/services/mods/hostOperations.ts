@@ -467,6 +467,8 @@ export function createModHostOperations({
           response = await httpFetch(location.href, {
             method,
             headers, body, redirect: 'manual', signal: requestSignal,
+            // Bun's fetch extension: the request goes over this Unix socket.
+            ...(init.socketPath !== undefined && { unix: init.socketPath }),
           })
           const next = response.headers.get('location')
           if (!REDIRECT_STATUSES.includes(response.status) || next === null) break

@@ -15,8 +15,11 @@ beforeEach(() => {
 })
 
 afterEach(() => {
-  process.env.HOME = savedEnv.HOME
-  process.env.SHELL = savedEnv.SHELL
+  for (const key of ['HOME', 'SHELL'] as const) {
+    const value = savedEnv[key]
+    if (value === undefined) delete process.env[key]
+    else process.env[key] = value
+  }
   rmSync(home, { recursive: true, force: true })
 })
 

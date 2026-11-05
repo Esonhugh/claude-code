@@ -295,6 +295,13 @@ function forceExit(exitCode: number): never {
   return undefined as never
 }
 
+let printSigintOwner = false
+
+/** print.ts calls this once its own SIGINT handler is registered. */
+export function claimPrintSigint(): void {
+  printSigintOwner = true
+}
+
 /**
  * Set up global signal handlers for graceful shutdown
  */
@@ -320,10 +327,9 @@ export const setupGracefulShutdown = memoize(() => {
   process.on('SIGINT', () => {
     // In print mode, print.ts registers its own SIGINT handler that aborts
     // the in-flight query and calls gracefulShutdown(0); skip here to
-    // avoid racing with it. Only check print mode — other non-interactive
-    // sessions (--sdk-url, --init-only, non-TTY) don't register their own
-    // SIGINT handler and need gracefulShutdown to run.
-    if (process.argv.includes('-p') || process.argv.includes('--print')) {
+    // avoid racing with it. Until it has (MCP connects, plugin loads and
+    // the like can take a while) Ctrl+C must still end the process.
+    if (printSigintOwner) {
       return
     }
     logForDiagnosticsNoPII('info', 'shutdown_signal', { signal: 'SIGINT' })

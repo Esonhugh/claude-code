@@ -151,6 +151,7 @@ import { registerHookEventHandler } from 'src/utils/hooks/hookEvents.js'
 import { executeFilePersistence } from 'src/utils/filePersistence/filePersistence.js'
 import { finalizePendingAsyncHooks } from 'src/utils/hooks/AsyncHookRegistry.js'
 import {
+  claimPrintSigint,
   gracefulShutdown,
   gracefulShutdownSync,
   isShuttingDown,
@@ -457,6 +458,7 @@ import { loadAllPluginsCacheOnly } from '../utils/plugins/pluginLoader.js'
 import {
   isTeamLead,
   hasActiveInProcessTeammates,
+  hasOtherTeammates,
   hasWorkingInProcessTeammates,
   waitForTeammatesToBecomeIdle,
 } from '../utils/teammate.js'
@@ -1310,6 +1312,7 @@ function runHeadlessStreaming(
     void gracefulShutdown(0)
   }
   process.on('SIGINT', sigintHandler)
+  claimPrintSigint()
 
   // Dump run()'s state at SIGTERM so a stuck session's healthsweep can name
   // the do/while(waitingForAgents) poll without reading the transcript.
@@ -2951,10 +2954,11 @@ function runHeadlessStreaming(
         while (true) {
           // Check if teammates are still active
           const refreshedState = getAppState()
+          // The leader lists itself in teammates (sessionTeam.ts), so count
+          // only the others; otherwise this loop never ends.
           const hasActiveTeammates =
             hasActiveInProcessTeammates(refreshedState) ||
-            (refreshedState.teamContext &&
-              Object.keys(refreshedState.teamContext.teammates).length > 0)
+            hasOtherTeammates(refreshedState.teamContext)
 
           if (!hasActiveTeammates) {
             logForDebugging(
@@ -3074,9 +3078,9 @@ function runHeadlessStreaming(
         // Re-fetch state after potential wait
         const refreshedAppState = getAppState()
         const refreshedTeamContext = refreshedAppState.teamContext
-        const hasTeamMembersNotCleanedUp =
-          refreshedTeamContext &&
-          Object.keys(refreshedTeamContext.teammates).length > 0
+        const hasTeamMembersNotCleanedUp = hasOtherTeammates(
+          refreshedTeamContext,
+        )
 
         return (
           hasTeamMembersNotCleanedUp ||

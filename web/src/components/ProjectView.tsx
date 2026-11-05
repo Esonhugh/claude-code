@@ -834,6 +834,9 @@ export function ProjectView({
       if (!boxRef.current.files.length) setFiles(pending)
       setToTasks(x => (x.length ? x : sentTo))
     }
+    // The first pick opens now: opening it after the deliveries would land on top of wherever
+    // the user has navigated while a slow send was still in flight.
+    if (to[0]) openTask(to[0].id)
     // The same message to every pick, in the order picked.
     for (const task of to) {
       try {
@@ -842,7 +845,6 @@ export function ProjectView({
         say(err instanceof Error ? err.message : String(err))
       }
     }
-    if (to[0]) openTask(to[0].id)
   }
 
   const coordinatorApprovals = chat.approvals.filter(a => !a.agentId)

@@ -32,7 +32,17 @@ export async function ensureSessionTeam(
 
   const teamName = getSessionTeamName()
   const leadAgentId = formatAgentId(TEAM_LEAD_NAME, teamName)
-  if (!(await readTeamFileAsync(teamName))) {
+  const previous = await readTeamFileAsync(teamName)
+  if (previous) {
+    // A resumed session reuses its team file. In-process teammates died with
+    // the old process, so drop them before they get messages or name clashes.
+    const members = previous.members.filter(
+      m => m.agentId === leadAgentId || m.backendType !== 'in-process',
+    )
+    if (members.length !== previous.members.length) {
+      await writeTeamFileAsync(teamName, { ...previous, members })
+    }
+  } else {
     const teamFile: TeamFile = {
       name: teamName,
       createdAt: Date.now(),

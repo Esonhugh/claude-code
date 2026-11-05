@@ -1063,6 +1063,7 @@ export function unregisterAgentForeground(
   backgroundSignalResolvers.delete(taskId)
 
   let cleanupFn: (() => void) | undefined
+  let wasRemoved = false
 
   setAppState(prev => {
     const task = prev.tasks[taskId]
@@ -1073,6 +1074,7 @@ export function unregisterAgentForeground(
 
     // Capture cleanup function to call outside of updater
     cleanupFn = task.unregisterCleanup
+    wasRemoved = true
 
     const { [taskId]: removed, ...rest } = prev.tasks
     return { ...prev, tasks: rest }
@@ -1080,4 +1082,9 @@ export function unregisterAgentForeground(
 
   // Call cleanup outside of the state updater (avoid side effects in updater)
   cleanupFn?.()
+  // Background children it owned route their notifications to it while it
+  // is live; nothing drains them once it is gone, so hand them to the main
+  // thread (the kill/fail paths do the same). A task that was backgrounded
+  // instead keeps running and keeps its own notifications.
+  if (wasRemoved) rerouteOwnedNotifications(taskId)
 }
