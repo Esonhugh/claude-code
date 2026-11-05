@@ -86,7 +86,7 @@ if (process.env[childFlag] !== '1') {
       tasks: {
         a1: { ...base, id: 'a1', type: 'local_agent', status: 'running', agentId: 'a1', prompt: 'p', messages: [], pendingMessages: [] },
         a2: { ...base, id: 'a2', type: 'local_agent', status: 'killed', agentId: 'a2', prompt: 'p', messages: [], pendingMessages: [], stoppedByUser: true },
-        t1: { ...base, id: 't1', type: 'in_process_teammate', status: 'running', messages: [], pendingUserMessages: [] },
+        t1: { ...base, id: 't1', type: 'in_process_teammate', status: 'running', identity: { agentId: 'alice@team', resumableAgentId: 'aalice-1' }, messages: [], pendingUserMessages: [] },
         t2: { ...base, id: 't2', type: 'in_process_teammate', status: 'completed', messages: [], pendingUserMessages: [] },
         term1: { ...base, id: 'term1', type: 'interactive_terminal', status: 'running', sessionId: 's', command: 'bash', args: [], cwd: '/', cols: 80, rows: 24, preview: '$ echo hi\nhi', closed: false },
       } as unknown as typeof initial.tasks,
@@ -103,9 +103,11 @@ if (process.env[childFlag] !== '1') {
     expect(queued.response).toEqual({ delivery: 'queued' })
     const tasks = store.getState().tasks as Record<string, any>
     expect(tasks.a1.pendingMessages).toEqual([{ text: 'also check the appendix', fromUser: true }])
-    expect(tasks.a1.messages).toHaveLength(1)
+    // Shown in its view from the queue until the agent reads it (#825).
+    expect(tasks.a1.messages).toHaveLength(0)
     expect(stopped).toMatchObject({ subtype: 'error', error: 'send_task_message: agent a2 was stopped by the user' })
-    expect(injected.response).toEqual({ delivery: 'injected' })
+    // A teammate's transcript is named by its agent id, which the web server keys sends by (#826).
+    expect(injected.response).toEqual({ delivery: 'injected', agent_id: 'aalice-1' })
     expect(tasks.t1.pendingUserMessages).toEqual(['hello teammate'])
     expect(teammateGone).toMatchObject({ subtype: 'error', error: 'send_task_message: teammate has stopped; message was not sent' })
     expect(unknown).toMatchObject({ subtype: 'error', error: 'send_task_message: no agent or teammate task' })

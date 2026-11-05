@@ -25,7 +25,8 @@ const TOKEN = 'web-test-token'
 // the turn is bracketed by running/idle, and a "hold" turn never ends.
 // "dispatch" starts worker a1 and finishes it; "start" starts worker a2,
 // which is killed with the child, as `claude -p` does; control requests succeed,
-// and a message to a task is queued (one starting with RESUME resumes it).
+// and a message to a task is queued (one starting with RESUME resumes it, one
+// starting with INJECT goes to a teammate's next turn and names its transcript).
 const FAKE_CHILD = `
 const out = m => process.stdout.write(JSON.stringify(m) + '\\n')
 const states = !!process.env.CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS
@@ -43,7 +44,8 @@ process.stdin.on('data', chunk => {
     const msg = JSON.parse(buf.slice(0, i))
     buf = buf.slice(i + 1)
     if (msg.type === 'control_request') {
-      const response = msg.request.subtype === 'send_task_message' ? { delivery: msg.request.text.startsWith('RESUME') ? 'resumed' : 'queued' } : {}
+      const delivery = msg.request.text?.startsWith('RESUME') ? 'resumed' : msg.request.text?.startsWith('INJECT') ? 'injected' : 'queued'
+      const response = msg.request.subtype === 'send_task_message' ? { delivery, ...(delivery === 'injected' && { agent_id: 'tm1-transcript' }) } : {}
       out({ type: 'control_response', response: { subtype: 'success', request_id: msg.request_id, response } })
     }
     if (msg.type === 'user') {
@@ -788,6 +790,38 @@ describe('claude web server', () => {
     await waitFor(resultSeen('last'))
     expect(ws.readyState).toBe(WebSocket.OPEN)
     ws.close()
+  })
+
+  it('shows a message sent to a busy teammate in its conversation until the teammate records it', async () => {
+    const r = start()
+    const prior = process.env.CLAUDE_CONFIG_DIR
+    process.env.CLAUDE_CONFIG_DIR = r.configDir
+    try {
+      const cookie = await signIn(r)
+      const headers = { cookie, origin: r.origin }
+      const created = await fetch(`${r.base}/api/sessions`, { method: 'POST', headers, body: '{}' })
+      const { session_id: id } = (await created.json()) as { session_id: string }
+      const dir = join(r.configDir, 'projects', r.workspace.replace(/[^a-zA-Z0-9]/g, '-'))
+      mkdirSync(join(dir, id, 'subagents'), { recursive: true })
+      const first = { type: 'user', sessionId: id, cwd: r.workspace, uuid: 'a0000000-0000-4000-8000-000000000001', message: { role: 'user', content: 'hello there' } }
+      writeFileSync(join(dir, `${id}.jsonl`), JSON.stringify(first) + '\n')
+      const prompt = { type: 'user', sessionId: id, cwd: r.workspace, isSidechain: true, agentId: 'tm1-transcript', uuid: 'a0000000-0000-4000-8000-000000000002', timestamp: new Date(0).toISOString(), message: { role: 'user', content: 'review it' } }
+      writeFileSync(join(dir, id, 'subagents', 'agent-tm1-transcript.jsonl'), JSON.stringify(prompt) + '\n')
+      const ws = new WebSocket(`${r.base.replace('http', 'ws')}/api/sessions/${id}/ws`, { headers } as unknown as string[])
+      await new Promise(resolve => (ws.onopen = resolve))
+      const answered = new Promise(resolve => (ws.onmessage = e => String(e.data).includes('control_response') && resolve(undefined)))
+      ws.send(JSON.stringify({ type: 'control_request', request_id: 'web-msg-t', request: { subtype: 'send_task_message', task_id: 'tm1', text: 'INJECT note' } }) + '\n')
+      await answered
+      await Bun.sleep(50)
+      const texts = async () =>
+        ((await (await fetch(`${r.base}/api/history/${id}/agents/tm1-transcript/messages`, { headers })).json()) as { messages: { message: { content: unknown } }[] }).messages.map(m => m.message.content)
+      // The page that sent it may be gone (another agent opened): the server still shows it.
+      expect(await texts()).toEqual(['review it', 'INJECT note'])
+      ws.close()
+    } finally {
+      if (prior === undefined) delete process.env.CLAUDE_CONFIG_DIR
+      else process.env.CLAUDE_CONFIG_DIR = prior
+    }
   })
 
   it('keeps the coordinator\'s tasks, model and effort in the database', async () => {

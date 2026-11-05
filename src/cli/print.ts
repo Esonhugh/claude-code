@@ -473,6 +473,7 @@ import { getRunningTasks } from '../utils/task/framework.js'
 import { isBackgroundTask } from '../tasks/types.js'
 import { StopTaskError, stopTask } from '../tasks/stopTask.js'
 import { deliverTaskMessage } from '../tasks/deliverTaskMessage.js'
+import { isInProcessTeammateTask } from '../tasks/InProcessTeammateTask/types.js'
 import { isMainSessionTask } from '../tasks/LocalMainSessionTask.js'
 import { isTerminalTask } from '../tasks/TerminalTask.js'
 import { hostTerminalInputSchema } from '../tools/TerminalTool/actionSchemas.js'
@@ -5256,7 +5257,9 @@ function runHeadlessStreaming(
                 ? 'resume'
                 : deliverTaskMessage(isMainSessionTask(task) ? undefined : task, text, setAppState)
               if (delivery !== 'resume') {
-                sendControlResponseSuccess(message, { delivery })
+                // A teammate's transcript is named by its own agent id, not its task id.
+                const agentId = isInProcessTeammateTask(task) ? (task.identity.resumableAgentId ?? task.identity.agentId) : undefined
+                sendControlResponseSuccess(message, { delivery, ...(agentId && { agent_id: agentId }) })
               } else {
                 void import('../tools/AgentTool/resumeAgent.js')
                   .then(({ resumeAgentBackground }) =>

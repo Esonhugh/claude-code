@@ -20,9 +20,13 @@ export function deliverTaskMessage(
     if (task.status !== 'running' && task.stoppedByUser) {
       throw new Error(`agent ${task.id} was stopped by the user`)
     }
-    appendMessageToLocalAgent(task.id, createUserMessage({ content: text }), setAppState)
     updateTaskState<LocalAgentTaskState>(task.id, setAppState, t => ({ ...t, userMessages: [...(t.userMessages ?? []), text] }))
-    if (task.status !== 'running') return 'resume'
+    if (task.status !== 'running') {
+      appendMessageToLocalAgent(task.id, createUserMessage({ content: text }), setAppState)
+      return 'resume'
+    }
+    // Not appended to task.messages: switching the view away drops those, and the
+    // agent records its own copy when it reads the queue. queuedUserMessages shows it until then.
     queuePendingMessage(task.id, { text, fromUser: true }, setAppState)
     return 'queued'
   }
@@ -31,4 +35,11 @@ export function deliverTaskMessage(
     throw new Error('teammate has stopped; message was not sent')
   }
   throw new Error('no agent or teammate task')
+}
+
+/** The user's messages a running agent has not read yet, for its transcript view. */
+export function queuedUserMessages(task: LocalAgentTaskState): ReturnType<typeof createUserMessage>[] {
+  return task.pendingMessages.flatMap(msg =>
+    typeof msg === 'object' && 'fromUser' in msg ? [createUserMessage({ content: msg.text })] : [],
+  )
 }
