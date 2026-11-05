@@ -199,3 +199,69 @@ test('Tab in bash mode runs shell completion with no suggestions shown', async (
     completionSpy.mockRestore()
   }
 })
+
+test('Tab in bash mode of a remote session does not run local shell completion', async () => {
+  const completionSpy = spyOn(
+    shellCompletion,
+    'getShellCompletions',
+  ).mockResolvedValue([
+    {
+      id: './qt-demo/',
+      displayText: './qt-demo/',
+      metadata: { completionType: 'file', inputSnapshot: 'ls ./qt-de' },
+    },
+  ])
+  const stdin = new Input()
+  const changes: string[] = []
+  let instance: Awaited<ReturnType<typeof render>> | undefined
+  try {
+    const store = createStore(getDefaultAppState())
+    const input = 'ls ./qt-de'
+
+    function Probe() {
+      const [suggestionsState, setSuggestionsState] = useState<
+        Props['suggestionsState']
+      >({
+        suggestions: [],
+        selectedSuggestion: -1,
+      })
+      useTypeahead({
+        input,
+        cursorOffset: input.length,
+        mode: 'bash',
+        commands: [],
+        agents: [],
+        suggestionsState,
+        setSuggestionsState,
+        onInputChange: value => changes.push(value),
+        onSubmit: () => {},
+        setCursorOffset: () => {},
+        markAccepted: () => {},
+        enableLocalIOCompletions: false,
+        remoteFileSuggestionProvider: async () => ({ items: [], incomplete: false }),
+      })
+      return null
+    }
+
+    instance = await render(
+      <AppStoreContext value={store}>
+        <Probe />
+      </AppStoreContext>,
+      {
+        stdin: stdin as unknown as NodeJS.ReadStream,
+        stdout: new Output() as unknown as NodeJS.WriteStream,
+        patchConsole: false,
+        exitOnCtrlC: false,
+      },
+    )
+    stdin.push('\t')
+    await new Promise(resolve => setTimeout(resolve, 300))
+
+    expect(completionSpy).not.toHaveBeenCalled()
+    expect(changes).toEqual([])
+  } finally {
+    instance?.unmount()
+    instance?.cleanup()
+    completionSpy.mockRestore()
+  }
+})
