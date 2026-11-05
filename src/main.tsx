@@ -1138,9 +1138,14 @@ export async function main() {
   const isNonInteractive =
     hasPrintFlag || hasInitOnlyFlag || hasSdkUrl || !process.stdout.isTTY
 
-  // Stop capturing early input for non-interactive modes
+  // Stop capturing early input for non-interactive modes. cli.tsx put a TTY
+  // stdin into raw mode (ISIG off); nothing reads it from here on, so give the
+  // terminal back its Ctrl+C.
   if (isNonInteractive) {
     stopCapturingEarlyInput()
+    if (process.stdin.isTTY) {
+      process.stdin.setRawMode(false)
+    }
   }
 
   // Set simplified tracking fields
@@ -4328,7 +4333,9 @@ async function run(): Promise<CommanderCommand> {
         profileCheckpoint('before_print_import')
         const { runHeadless } = await import('src/cli/print.js')
         profileCheckpoint('after_print_import')
-        void runHeadless(
+        // uncaughtException/unhandledRejection only log (gracefulShutdown.ts),
+        // so an escaped throw here would hang or exit 0 without a word.
+        runHeadless(
           inputPrompt,
           () => headlessStore.getState(),
           headlessStore.setState,
@@ -4372,7 +4379,10 @@ async function run(): Promise<CommanderCommand> {
             sessionStartHooksPromise,
             modsSession,
           },
-        )
+        ).catch((error: unknown) => {
+          process.stderr.write(`${errorMessage(error)}\n`)
+          gracefulShutdownSync(1)
+        })
         return
       }
 

@@ -1,3 +1,4 @@
+import { logForDebugging } from './debug.js'
 /**
  * Global registry for cleanup functions that should run during graceful shutdown.
  * This module is separate from gracefulShutdown.ts to avoid circular dependencies.
@@ -21,5 +22,14 @@ export function registerCleanup(cleanupFn: () => Promise<void>): () => void {
  * Used internally by gracefulShutdown.
  */
 export async function runCleanupFunctions(): Promise<void> {
-  await Promise.all(Array.from(cleanupFunctions).map(fn => fn()))
+  // One failing cleanup must not skip the others or the session flush that
+  // follows in gracefulShutdown.
+  const results = await Promise.allSettled(
+    Array.from(cleanupFunctions).map(fn => fn()),
+  )
+  for (const result of results) {
+    if (result.status === 'rejected') {
+      logForDebugging(`Cleanup function failed: ${result.reason}`)
+    }
+  }
 }
