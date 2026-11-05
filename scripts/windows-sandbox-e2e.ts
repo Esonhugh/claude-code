@@ -56,11 +56,13 @@ const env = {
   CLAUDE_CODE_NANKEEN_KESTREL: '1',
 }
 
+const installStarted = Date.now()
 const install = spawnSync(bin, ['sandbox', 'install'], { env, encoding: 'utf8' })
-console.log(`sandbox install: exit=${install.status} ${install.stdout}${install.stderr}`)
+console.log(`sandbox install: ${Date.now() - installStarted}ms exit=${install.status} ${install.stdout}${install.stderr}`)
 // The sandbox user's first logon creates its Windows profile: 16-25 s on an
 // idle runner, 75 ms-1 s afterwards (#791). The session's WFP check allows
-// 30 s, which a loaded runner can exceed, so create the profile here first.
+// 30 s, which a loaded runner can exceed. The fork's install already makes
+// that logon; official's does not, so create the profile here too.
 const srtWin = path.resolve('node_modules/@anthropic-ai/sandbox-runtime/vendor/srt-win/x64/srt-win.exe')
 if (fs.existsSync(srtWin)) {
   const listener = net.createServer().listen(0, '127.0.0.1')

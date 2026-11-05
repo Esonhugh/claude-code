@@ -7,8 +7,12 @@
 import {
   installWindowsSandboxAsync,
   resolveSrtWin,
+  type SrtWinSpawn,
 } from '@anthropic-ai/sandbox-runtime'
+import { spawn } from 'node:child_process'
+import { createServer } from 'node:net'
 import { z } from 'zod/v4'
+import { logForDebugging } from '../../utils/debug.js'
 import { errorMessage } from '../../utils/errors.js'
 import { safeParseJSON } from '../../utils/json.js'
 import { getPlatform } from '../../utils/platform.js'
@@ -38,6 +42,33 @@ function unavailableReason(): string | undefined {
 }
 
 /**
+ * The sandbox user's first logon creates its Windows profile, which took
+ * 16-25 s on CI runners. Sessions make that first logon inside a WFP check
+ * that allows 30 s, so make it here, once, with more room (#791).
+ */
+export async function warmWindowsSandboxProfile(
+  srtWin: SrtWinSpawn,
+  timeoutMs = 120_000,
+): Promise<number | null> {
+  const listener = createServer()
+  await new Promise<void>(resolve => listener.listen(0, '127.0.0.1', resolve))
+  const { port } = listener.address() as { port: number }
+  try {
+    return await new Promise<number | null>(resolve => {
+      const child = spawn(
+        srtWin.exe,
+        [...srtWin.prependArgs, 'wfp', 'verify', '--target', `127.0.0.1:${port}`],
+        { windowsHide: true, stdio: 'ignore', timeout: timeoutMs },
+      )
+      child.once('error', () => resolve(null))
+      child.once('close', code => resolve(code))
+    })
+  } finally {
+    listener.close()
+  }
+}
+
+/**
  * Provisions the sandbox user and its network filters (one UAC
  * prompt). Prints `{status, message}` and exits 0 only when status is "ok".
  */
@@ -54,9 +85,10 @@ export async function sandboxInstallHandler(): Promise<void> {
     }
   } else {
     try {
+      const srtWin = resolveSrtWin({ path: getSrtWinPath()! })
       const installed = await installWindowsSandboxAsync({
         sandboxUser: WINDOWS_SANDBOX_USER,
-        srtWin: resolveSrtWin({ path: getSrtWinPath()! }),
+        srtWin,
       })
       // A non-elevated caller cannot read the filters back ("cannot-read").
       result = installed.cancelled
@@ -69,6 +101,10 @@ export async function sandboxInstallHandler(): Promise<void> {
               status: 'error',
               message: `The install did not finish: ${jsonStringify(installed)}`,
             }
+      if (result.status === 'ok') {
+        const code = await warmWindowsSandboxProfile(srtWin)
+        logForDebugging(`[Sandbox Windows] profile warm-up wfp verify exit=${code}`)
+      }
     } catch (error) {
       result = { status: 'error', message: errorMessage(error) }
     }
