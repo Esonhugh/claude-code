@@ -122,7 +122,10 @@ import {
   createPermissionRequest,
   sendPermissionRequestViaMailbox,
 } from './permissionSync.js'
-import { leaderModeReachesTeammates } from './teamHelpers.js'
+import {
+  leaderModeReachesTeammates,
+  removeMemberByAgentId,
+} from './teamHelpers.js'
 import { TEAMMATE_SYSTEM_PROMPT_ADDENDUM } from './teammatePromptAddendum.js'
 import { isAnt } from 'src/utils/userType.js'
 
@@ -995,56 +998,9 @@ export async function runInProcessTeammate(
     invocationEmitted: false,
   }
 
-  // Build system prompt based on systemPromptMode
+  // The system prompt is built inside the try below so a failure marks the
+  // task failed instead of leaving it running forever.
   let teammateSystemPrompt: SystemPrompt
-  if (systemPromptMode === 'replace' && systemPrompt) {
-    teammateSystemPrompt = asSystemPrompt([systemPrompt])
-  } else {
-    const fullSystemPromptParts = await getSystemPrompt(
-      toolUseContext.options.tools,
-      toolUseContext.options.mainLoopModel,
-      undefined,
-      toolUseContext.options.mcpClients,
-    )
-
-    const systemPromptParts = [TEAMMATE_SYSTEM_PROMPT_ADDENDUM]
-
-    // If a specialized agent definition is provided, append its prompt.
-    if (agentDefinition) {
-      const agentPrompt = isBuiltInAgent(agentDefinition)
-        ? agentDefinition.getSystemPrompt({ toolUseContext })
-        : agentDefinition.getSystemPrompt()
-      if (agentPrompt) {
-        systemPromptParts.push(`\n# Custom Agent Instructions\n${agentPrompt}`)
-      }
-
-      // Log agent memory loaded event for in-process teammates
-      if (agentDefinition.memory) {
-        logEvent('tengu_agent_memory_loaded', {
-          ...(isAnt()
-            ? {
-                agent_type:
-                  agentDefinition.agentType as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-              }
-            : {}),
-          scope:
-            agentDefinition.memory as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-          source:
-            'in-process-teammate' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-        })
-      }
-    }
-
-    // Append mode: add provided system prompt after default
-    if (systemPromptMode === 'append' && systemPrompt) {
-      systemPromptParts.push(systemPrompt)
-    }
-
-    teammateSystemPrompt = joinSystemPrompt(
-      concatSystemPrompts(fullSystemPromptParts, systemPromptParts),
-      '\n',
-    )
-  }
 
   // Resolve agent definition - use full system prompt with teammate addendum.
   // The effective permission mode is read from task state before each turn.
@@ -1094,15 +1050,64 @@ export async function runInProcessTeammate(
 
   // Try to claim an available task immediately so the UI can show activity
   // from the very start. The idle loop handles claiming for subsequent tasks.
-  // Use parentSessionId as the task list ID since the leader creates tasks
-  // under its session ID, not the team name.
-  await tryClaimNextTask(identity.parentSessionId, identity.agentName)
+  // The leader's tasks live under the team name (sessionTeam.ts moves them
+  // there), the same list getTaskListId() resolves for teammates.
+  await tryClaimNextTask(identity.teamName, identity.agentName)
 
   const finishModConversation = toolUseContext.mods?.trackConversation({
     agentId: identity.resumableAgentId ?? identity.agentId, sessionId: identity.parentSessionId, messages: () => allMessages, persistent: true,
   })
 
   try {
+    if (systemPromptMode === 'replace' && systemPrompt) {
+      teammateSystemPrompt = asSystemPrompt([systemPrompt])
+    } else {
+      const fullSystemPromptParts = await getSystemPrompt(
+        toolUseContext.options.tools,
+        toolUseContext.options.mainLoopModel,
+        undefined,
+        toolUseContext.options.mcpClients,
+      )
+
+      const systemPromptParts = [TEAMMATE_SYSTEM_PROMPT_ADDENDUM]
+
+      // If a specialized agent definition is provided, append its prompt.
+      if (agentDefinition) {
+        const agentPrompt = isBuiltInAgent(agentDefinition)
+          ? agentDefinition.getSystemPrompt({ toolUseContext })
+          : agentDefinition.getSystemPrompt()
+        if (agentPrompt) {
+          systemPromptParts.push(`\n# Custom Agent Instructions\n${agentPrompt}`)
+        }
+
+        // Log agent memory loaded event for in-process teammates
+        if (agentDefinition.memory) {
+          logEvent('tengu_agent_memory_loaded', {
+            ...(isAnt()
+              ? {
+                  agent_type:
+                    agentDefinition.agentType as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+                }
+              : {}),
+            scope:
+              agentDefinition.memory as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+            source:
+              'in-process-teammate' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+          })
+        }
+      }
+
+      // Append mode: add provided system prompt after default
+      if (systemPromptMode === 'append' && systemPrompt) {
+        systemPromptParts.push(systemPrompt)
+      }
+
+      teammateSystemPrompt = joinSystemPrompt(
+        concatSystemPrompts(fullSystemPromptParts, systemPromptParts),
+        '\n',
+      )
+    }
+
     // Add initial prompt to task.messages for display (wrapped with XML)
     updateTaskState(
       taskId,
@@ -1487,7 +1492,7 @@ export async function runInProcessTeammate(
         taskId,
         toolUseContext.getAppState,
         setAppState,
-        identity.parentSessionId,
+        identity.teamName,
       )
 
       switch (waitResult.type) {
@@ -1660,6 +1665,14 @@ export async function runInProcessTeammate(
         summary: identity.agentId,
       })
     }
+    // Leave the team like the kill path does, so the leader stops addressing
+    // a teammate whose loop is gone.
+    setAppState(prev => {
+      if (!prev.teamContext?.teammates[identity.agentId]) return prev
+      const { [identity.agentId]: _, ...teammates } = prev.teamContext.teammates
+      return { ...prev, teamContext: { ...prev.teamContext, teammates } }
+    })
+    void removeMemberByAgentId(identity.teamName, identity.agentId)
 
     // Send idle notification with failure via file-based mailbox
     await sendIdleNotification(

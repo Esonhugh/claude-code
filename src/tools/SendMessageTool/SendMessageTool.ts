@@ -346,6 +346,18 @@ async function handleShutdownApproval(
   requestId: string,
   context: ToolUseContext,
 ): Promise<{ data: ResponseOutput }> {
+  // Only a teammate shuts itself down; from the leader (or a plain subagent)
+  // the fallback below would exit the whole process.
+  if (!isTeammate()) {
+    return {
+      data: {
+        success: false,
+        message:
+          'Only a teammate can approve its own shutdown; the leader sends shutdown_request instead.',
+        request_id: requestId,
+      },
+    }
+  }
   const teamName = getTeamName()
   const agentId = getAgentId()
   const agentName = getAgentName() || 'teammate'
