@@ -151,7 +151,8 @@ export function createModEnvironmentHost({
   const barriers = new Map<number, { resolve(): void; reject(error: Error): void }>()
   const progress = new Set<() => void>()
   const modelCalls = new Map<string, AbortController>()
-  const activeCalls = new Map<number, { environment: number; invocation: number; idle?: boolean }>()
+  // Keyed by environment and call: each environment numbers its calls from 1.
+  const activeCalls = new Map<string, { environment: number; invocation: number; idle?: boolean }>()
   function changed() {
     epoch++
     for (const resolve of progress) resolve()
@@ -615,7 +616,7 @@ export function createModEnvironmentHost({
     const fn = functions.get(message.handle)
     const kind = message.args[0]
     const idle = fn && timerWaits.has(fn.call) && kind?.type === 'value' && (kind.value === 'after' || kind.value === 'every')
-    activeCalls.set(message.call, { environment: message.environment, invocation: message.invocation, idle })
+    activeCalls.set(`${message.environment}:${message.call}`, { environment: message.environment, invocation: message.invocation, idle })
     const response: Extract<ModWorkerRequest, { type: 'host-result' }> = { type: 'host-result', environment: message.environment, call: message.call, invocation: message.invocation, ...(message.callback && {callback:true}) }
     let releaseModelCall: (() => void) | undefined
     try {
@@ -682,7 +683,7 @@ export function createModEnvironmentHost({
       }
     } catch (error) { response.error = errorMessage(error, 'Module trace snapshot failed') }
     releaseModelCall?.()
-    activeCalls.delete(message.call)
+    activeCalls.delete(`${message.environment}:${message.call}`)
     changed()
     if (!dead && environments.has(message.environment)) {
       try { worker.postMessage(response) } catch (error) { fail(new Error(errorMessage(error, 'Mods Worker response failed'))) }
