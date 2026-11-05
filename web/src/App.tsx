@@ -181,7 +181,7 @@ export function App() {
   // The project shown in place of the chat; its coordinator is `state.view`.
   const [projectId, setProjectId] = useState<string>()
   const [projectDialog, setProjectDialog] = useState<'new' | Project>()
-  const pendingRequests = useRef(new Map<string, (response: Record<string, unknown>) => void>())
+  const pendingRequests = useRef(new Map<string, { id: string; settle: (response: Record<string, unknown>) => void }>())
   // The last session's models, with the provider they came from: another provider's list is stale.
   const [knownModels, setKnownModels] = useState<{ provider?: string; models: ModelOption[] }>(() => {
     const stored = readStored<unknown>(MODELS_KEY, [])
@@ -397,7 +397,7 @@ export function App() {
 
   const historyLimit = useRef(HISTORY_PAGE)
   const [sidebarLoaded, setSidebarLoaded] = useState(false)
-  const untitledRetries = useRef(0)
+  const untitledRetries = useRef({ ids: '', count: 0 })
   const refreshHistory = useCallback(async (more = false) => {
     if (more) historyLimit.current += HISTORY_PAGE
     try {
@@ -406,10 +406,18 @@ export function App() {
       dispatch({ type: 'running', ids: running.map(r => r.id) })
       // A running session listed by its id has no turn in its transcript yet. A page that is not
       // attached to it (e.g. reloaded just after its reply) gets no result to refresh on, so look
-      // again a few times, backing off, until the CLI has written the turn.
-      const untitled = data.sessions.some(s => s.label === 'id' && running.some(r => r.id === s.id))
-      if (!untitled) untitledRetries.current = 0
-      else if (untitledRetries.current < 5) setTimeout(() => void refreshHistory(), 500 * 2 ** untitledRetries.current++)
+      // again a few times, backing off, until the CLI has written the turn. The retries are per
+      // set of such sessions: a worker that only ever receives peer prompts stays listed by its
+      // id for its whole run and must not use them up for the next reload.
+      const untitled = data.sessions
+        .filter(s => s.label === 'id' && running.some(r => r.id === s.id))
+        .map(s => s.id)
+        .sort()
+        .join(',')
+      if (untitled !== untitledRetries.current.ids) untitledRetries.current = { ids: untitled, count: 0 }
+      if (untitled && untitledRetries.current.count < 5) {
+        setTimeout(() => void refreshHistory(), 500 * 2 ** untitledRetries.current.count++)
+      }
       setProjects(await listProjects())
       setSidebarLoaded(true)
     } catch {
@@ -545,9 +553,12 @@ export function App() {
         return
       }
       const requestId = request(id, prefix, body)
-      pendingRequests.current.set(requestId, response => {
-        if (response.subtype === 'error') reject(new Error(String(response.error ?? 'error')))
-        else resolve((response.response ?? {}) as Record<string, unknown>)
+      pendingRequests.current.set(requestId, {
+        id,
+        settle: response => {
+          if (response.subtype === 'error') reject(new Error(String(response.error ?? 'error')))
+          else resolve((response.response ?? {}) as Record<string, unknown>)
+        },
       })
     })
 
@@ -606,7 +617,7 @@ export function App() {
       const pending = typeof requestId === 'string' && pendingRequests.current.get(requestId)
       if (pending) {
         pendingRequests.current.delete(requestId as string)
-        pending(msg.response!)
+        pending.settle(msg.response!)
       }
       dispatch({ type: 'chat', id, action: { type: 'message', raw } })
       const reply = unsupportedControlResponse(raw)
@@ -625,6 +636,12 @@ export function App() {
       flush()
       if (sockets.current.get(id) !== socket) return
       sockets.current.delete(id)
+      // Nothing will answer the requests still in flight on this socket.
+      for (const [requestId, pending] of pendingRequests.current) {
+        if (pending.id !== id) continue
+        pendingRequests.current.delete(requestId)
+        pending.settle({ subtype: 'error', error: t('sessionEnded') })
+      }
       dispatch({ type: 'mode', id, mode: 'readonly' })
       dispatch({ type: 'chat', id, action: { type: 'error', text: t('sessionEnded') } })
       void refreshHistory()
@@ -665,10 +682,18 @@ export function App() {
         break
       } catch (err) {
         // A running session's turn reaches its transcript up to 100 ms after the reply, so a
-        // reload right after one can find nothing yet; read again before giving up.
-        if (wait <= 1600 && (await findLive())) {
-          await new Promise(resolve => setTimeout(resolve, wait))
-          continue
+        // reload right after one can find nothing yet; read again before giving up. Any other
+        // error (a failed read, the server gone) is shown at once.
+        const notWrittenYet = err instanceof Error && err.message === 'Session not found'
+        if (notWrittenYet && (await findLive())) {
+          if (wait <= 1600) {
+            await new Promise(resolve => setTimeout(resolve, wait))
+            continue
+          }
+          // Still running with nothing to read (a worker fed only peer prompts never writes a
+          // visible turn): open it empty and attach below rather than report it missing.
+          dispatch({ type: 'loaded', id: entry.id, messages: [], start: 0 })
+          break
         }
         dispatch({
           type: 'chat',
@@ -881,7 +906,9 @@ export function App() {
       stickToBottom.current = true
       if (chat.notice) dispatch({ type: 'chat', id, action: { type: 'local', patch: { notice: undefined } } })
       const uuid = newUuid()
-      dispatch({ type: 'chat', id, action: { type: chat.busy ? 'queue' : 'user', ...content, uuid } })
+      // The turn may have started or ended while the content was prepared: read busy now.
+      const busy = stateRef.current.chats[id]?.busy ?? chat.busy
+      dispatch({ type: 'chat', id, action: { type: busy ? 'queue' : 'user', ...content, uuid } })
       // 'now' interrupts the running turn and runs first, like the TUI's ctrl+enter.
       send(id, { ...userMessage(content.text, content.images, uuid), ...(now && { priority: 'now' }) })
     })
@@ -907,6 +934,7 @@ export function App() {
     if (!pending.length && openNative(text, '')) return
     const { cwd, mode, model, temporary, effort } = state.start
     setTrustDir(undefined)
+    let createdId: string | undefined
     try {
       const created = await createSession({
         ...(temporary ? { temporary: true } : cwd && { cwd, ...(trust && { trust }) }),
@@ -914,6 +942,7 @@ export function App() {
         ...(model && { model }),
       })
       const id = created.session_id
+      createdId = id
       const content = await prepareContent(id, text, pending)
       setDrafts(d => ({ ...d, '': '' }))
       setAttachments(a => ({ ...a, '': [] }))
@@ -933,6 +962,11 @@ export function App() {
     } catch (err) {
       if (err instanceof NeedsTrustError) setTrustDir(err.directory)
       else setStartError(t('connectFailed', { error: err instanceof Error ? err.message : String(err) }))
+      // The session was created but its socket never opened: a chat left 'connecting' can be
+      // neither sent to nor resumed, so let the user resume it from read-only.
+      if (createdId && stateRef.current.chats[createdId]?.mode === 'connecting') {
+        dispatch({ type: 'mode', id: createdId, mode: 'readonly' })
+      }
     }
   }
 
