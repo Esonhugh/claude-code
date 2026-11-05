@@ -63,5 +63,8 @@ jobs:
       - name: Close linked issues
         run: .github/scripts/close-linked-issues.sh "$PR"
 
+      # A dispatch needs the workflow on the default branch (master), so this
+      # starts working after the next release.
       - name: Seed the build cache for dev
+        continue-on-error: true
         run: gh workflow run build-cache.yml --ref dev
