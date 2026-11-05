@@ -717,6 +717,7 @@ export function createModEnvironmentHost({
     servingTimeout?.unref?.()
     if (callers !== undefined) servedCalls.set(id, { callee: environment, callers })
     const streamAbort = new AbortController()
+    const pulls = new Set<number>()
     const unloaded = () => streamAbort.abort(new Error('Module environment unloaded'))
     const cleanup = () => {
       retained = false
@@ -740,9 +741,20 @@ export function createModEnvironmentHost({
       if (streaming && retained) {
         // The opening RPC is already settled; the watchdog must cover the
         // retained stream's pulls as well, including a guest-only pending wait.
+        // Like official, abandon only this invocation; a wedged Worker is the heartbeat's call.
         overrun ??= setTimeout(() => {
           logForDebugging(`[Mods:turn.step] abort overrun plugin=${state.declaration.name} invocation=${id}`)
-          fail(new Error('Mods Worker did not settle an aborted invocation'))
+          const error = new Error('Mods Worker did not settle an aborted invocation')
+          for (const pull of pulls) {
+            const pending = requests.get(pull)
+            if (!pending) continue
+            rememberSettlement(pull, pending)
+            requests.delete(pull)
+            pending.reject(error)
+          }
+          pulls.clear()
+          if (requests.size === 0) stopHeartbeat()
+          cleanup()
         }, 5000)
         overrun.unref?.()
       }
@@ -807,6 +819,7 @@ export function createModEnvironmentHost({
         state.cleanups.add(unloaded)
         let pendingPull: Promise<Result> | undefined
         return createModHookStream(async (method, value) => {
+          let pull: number | undefined
           try {
             stateFor(environment)
             const interrupted = method === 'return' ? pendingPull : undefined
@@ -826,15 +839,20 @@ export function createModEnvironmentHost({
                 return { done: true, value }
               }
             }
+            pull = ++nextRequest
+            pulls.add(pull)
             const responsePromise = request({ type:'stream-pull', environment, invocation:id, method,
-              value:encode(environment, value instanceof Error ? {message:value.message, name:value.name} : value) })
+              value:encode(environment, value instanceof Error ? {message:value.message, name:value.name} : value) }, pull)
             if (method !== 'return') pendingPull = responsePromise
             const response = await responsePromise
             const item = decode(environment, response.value!) as IteratorResult<unknown, unknown>
             if (item.done) cleanup()
             return item
           } catch (error) { cleanup(); throw error }
-          finally { if (method !== 'return') pendingPull = undefined }
+          finally {
+            if (pull !== undefined) pulls.delete(pull)
+            if (method !== 'return') pendingPull = undefined
+          }
         }, streamAbort.signal)
       }
       return result.value ? decode(environment, result.value) : undefined
