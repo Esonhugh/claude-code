@@ -25,12 +25,6 @@ jobs:
       # The official build the fork is compared with.
       OFFICIAL_CLAUDE_VERSION: 2.1.303
     steps:
-      # Real-time scanning of every file bun writes makes install and build
-      # several times slower than on Linux.
-      - name: Turn off Defender real-time scanning
-        shell: pwsh
-        run: Set-MpPreference -DisableRealtimeMonitoring $true
-
       - uses: actions/checkout@v4
 
       - name: Setup Bun
@@ -39,6 +33,10 @@ jobs:
           bun-version: 1.4.2
 
       - name: Install dependencies
+        # The default cache is on C:, the checkout on D:, so bun copies every
+        # file instead of hard-linking it.
+        env:
+          BUN_INSTALL_CACHE_DIR: ${{ runner.temp }}/bun-cache
         run: bun install --frozen-lockfile
 
       - name: Build binary
@@ -70,12 +68,6 @@ jobs:
     env:
       CLAUDE_CODE_VERSION: 2.1.294
     steps:
-      # Real-time scanning of every file bun writes makes install and build
-      # several times slower than on Linux.
-      - name: Turn off Defender real-time scanning
-        shell: pwsh
-        run: Set-MpPreference -DisableRealtimeMonitoring $true
-
       - uses: actions/checkout@v4
 
       - name: Setup Bun
@@ -84,6 +76,10 @@ jobs:
           bun-version: 1.4.2
 
       - name: Install dependencies
+        # The default cache is on C:, the checkout on D:, so bun copies every
+        # file instead of hard-linking it.
+        env:
+          BUN_INSTALL_CACHE_DIR: ${{ runner.temp }}/bun-cache
         run: bun install --frozen-lockfile
 
       - name: Build binary
@@ -112,12 +108,6 @@ jobs:
       CLAUDE_CODE_VERSION: 2.1.294
       OFFICIAL_CLAUDE_VERSION: 2.1.303
     steps:
-      # Real-time scanning of every file bun writes makes install and build
-      # several times slower than on Linux.
-      - name: Turn off Defender real-time scanning
-        shell: pwsh
-        run: Set-MpPreference -DisableRealtimeMonitoring $true
-
       - uses: actions/checkout@v4
 
       - name: Setup Bun
@@ -128,6 +118,10 @@ jobs:
       # Before the official sandbox install, which adds WFP filters.
       - name: Build fork binary
         shell: bash
+        # The default cache is on C:, the checkout on D:, so bun copies every
+        # file instead of hard-linking it.
+        env:
+          BUN_INSTALL_CACHE_DIR: ${{ runner.temp }}/bun-cache
         run: |
           bun install --frozen-lockfile
           bun run build
