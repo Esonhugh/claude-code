@@ -90,6 +90,7 @@ const tokenRequests: Record<string, unknown>[] = []
 let rejectIncompatibleEffort = false
 let streamNotFound = false
 let nonStreamingThinkingTokens: number | undefined
+let nonStreamingOmitsUsage = false
 let streamInterrupted = false
 let overflowRequest = 0
 let overloadedModel: string | undefined
@@ -185,6 +186,9 @@ const client = new Anthropic({
       stop_reason: null,
       stop_sequence: null,
       usage: modsReplyUsage ? {...modsReplyUsage,output_tokens:0} : { input_tokens: 1, output_tokens: 1 },
+    }
+    if (!request.stream && nonStreamingOmitsUsage) {
+      return Response.json({ ...message, content: [{ type: 'text', text: 'OK' }], stop_reason: 'end_turn', usage: undefined })
     }
     if (!request.stream) {
       return Response.json({
@@ -369,6 +373,7 @@ afterEach(() => {
   rejectIncompatibleEffort = false
   streamNotFound = false
   nonStreamingThinkingTokens = undefined
+  nonStreamingOmitsUsage = false
   streamInterrupted = false
   overflowRequest = 0
   overloadedModel = undefined
@@ -885,6 +890,15 @@ test('Mods completion omits unsupported effort and preserves default side-query 
   expect(requests).toHaveLength(2)
   expect(requests[0]).not.toHaveProperty('output_config')
   expect(requests[1]).not.toHaveProperty('output_config')
+})
+
+test('model validation accepts a gateway reply that omits usage', async () => {
+  nonStreamingOmitsUsage = true
+  const {validateModel}=await import('../../utils/model/validateModel.js')
+  const {sideQuery}=await import('../../utils/sideQuery.js')
+  const reply=await sideQuery({model:'my-gateway-model',messages:[{role:'user',content:'test'}],querySource:'model_validation'})
+  expect(reply.usage).toBeUndefined()
+  expect(await validateModel('my-gateway-model')).toEqual({valid:true})
 })
 
 test('side-query effort preserves structured output configuration', async () => {
