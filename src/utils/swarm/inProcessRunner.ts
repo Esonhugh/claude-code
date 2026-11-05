@@ -122,10 +122,7 @@ import {
   createPermissionRequest,
   sendPermissionRequestViaMailbox,
 } from './permissionSync.js'
-import {
-  leaderModeReachesTeammates,
-  removeMemberByAgentId,
-} from './teamHelpers.js'
+import { leaderModeReachesTeammates } from './teamHelpers.js'
 import { TEAMMATE_SYSTEM_PROMPT_ADDENDUM } from './teammatePromptAddendum.js'
 import { isAnt } from 'src/utils/userType.js'
 
@@ -1665,15 +1662,6 @@ export async function runInProcessTeammate(
         summary: identity.agentId,
       })
     }
-    // Leave the team like the kill path does, so the leader stops addressing
-    // a teammate whose loop is gone.
-    setAppState(prev => {
-      if (!prev.teamContext?.teammates[identity.agentId]) return prev
-      const { [identity.agentId]: _, ...teammates } = prev.teamContext.teammates
-      return { ...prev, teamContext: { ...prev.teamContext, teammates } }
-    })
-    void removeMemberByAgentId(identity.teamName, identity.agentId)
-
     // Send idle notification with failure via file-based mailbox
     await sendIdleNotification(
       identity.agentName,
