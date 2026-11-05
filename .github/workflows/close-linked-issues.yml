@@ -1,0 +1,28 @@
+name: Close linked issues
+
+# GitHub closes "Fixes #n" issues only when a PR merges into the default branch
+# (master); fix PRs merge into dev. A merge by automerge.yml starts no workflow
+# (GITHUB_TOKEN), so that workflow runs the same script itself.
+on:
+  pull_request:
+    types: [closed]
+    branches: [dev]
+
+permissions:
+  issues: write
+  pull-requests: read
+
+jobs:
+  close:
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github/scripts
+
+      - name: Close issues the PR says it fixes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: .github/scripts/close-linked-issues.sh ${{ github.event.pull_request.number }}
