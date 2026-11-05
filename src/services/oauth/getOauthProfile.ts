@@ -4,6 +4,7 @@ import type { OAuthProfileResponse } from 'src/services/oauth/types.js'
 import { getAnthropicApiKey } from 'src/utils/auth.js'
 import { getGlobalConfig } from 'src/utils/config.js'
 import { logError } from 'src/utils/log.js'
+import { getClaudeCodeUserAgent } from 'src/utils/userAgent.js'
 export async function getOauthProfileFromApiKey(): Promise<
   OAuthProfileResponse | undefined
 > {
@@ -41,8 +42,10 @@ export async function getOauthProfileFromOauthToken(
   try {
     const response = await axios.get<OAuthProfileResponse>(endpoint, {
       headers: {
+        'User-Agent': getClaudeCodeUserAgent(),
         Authorization: `Bearer ${accessToken}`,
         'Content-Type': 'application/json',
+        'Cache-Control': 'no-cache',
       },
       timeout: 10000,
     })
