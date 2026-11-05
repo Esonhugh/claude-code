@@ -25,6 +25,12 @@ jobs:
       # The official build the fork is compared with.
       OFFICIAL_CLAUDE_VERSION: 2.1.303
     steps:
+      # Real-time scanning of every file bun writes makes install and build
+      # several times slower than on Linux.
+      - name: Turn off Defender real-time scanning
+        shell: pwsh
+        run: Set-MpPreference -DisableRealtimeMonitoring $true
+
       - uses: actions/checkout@v4
 
       - name: Setup Bun
@@ -41,16 +47,6 @@ jobs:
           bun run build
           bun run package:binary
 
-      # Runs before the sandbox steps, which install WFP filters on the runner.
-      # Playwright is not a project dependency; it is added for this step only.
-      - name: Web e2e
-        if: ${{ !cancelled() }}
-        shell: bash
-        run: |
-          bun add --no-save playwright@1.63.0
-          bunx playwright install chromium
-          CLAUDE_WEB_BINARY="$(cygpath -m "$(ls "$PWD"/dist/release/claude-code-v*-win32-x64.exe | head -n 1)")" bun test --timeout 300000 src/web/web.binary.test.ts
-
       - name: Sandbox e2e
         if: ${{ !cancelled() }}
         shell: bash
@@ -66,6 +62,44 @@ jobs:
         shell: bash
         run: bun scripts/windows-sessions-e2e.ts dist/release/claude-code-v*-win32-x64.exe
 
+  # On its own runner, without the WFP filters the sandbox steps install, and
+  # alongside windows-e2e instead of before its sandbox steps.
+  web-e2e:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      CLAUDE_CODE_VERSION: 2.1.294
+    steps:
+      # Real-time scanning of every file bun writes makes install and build
+      # several times slower than on Linux.
+      - name: Turn off Defender real-time scanning
+        shell: pwsh
+        run: Set-MpPreference -DisableRealtimeMonitoring $true
+
+      - uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Build binary
+        shell: bash
+        run: |
+          bun run build
+          bun run package:binary
+
+      # Playwright is not a project dependency; it is added for this step only.
+      - name: Web e2e
+        shell: bash
+        run: |
+          bun add --no-save playwright@1.63.0
+          bunx playwright install chromium
+          CLAUDE_WEB_BINARY="$(cygpath -m "$(ls "$PWD"/dist/release/claude-code-v*-win32-x64.exe | head -n 1)")" bun test --timeout 300000 src/web/web.binary.test.ts
+
   # The official binary runs the same scripts on a clean runner (its sandbox
   # install would conflict with the fork's), for comparison only: its failures
   # (fork-only tools, Direct Connect) do not fail the job. The fork's sandbox
@@ -78,6 +112,12 @@ jobs:
       CLAUDE_CODE_VERSION: 2.1.294
       OFFICIAL_CLAUDE_VERSION: 2.1.303
     steps:
+      # Real-time scanning of every file bun writes makes install and build
+      # several times slower than on Linux.
+      - name: Turn off Defender real-time scanning
+        shell: pwsh
+        run: Set-MpPreference -DisableRealtimeMonitoring $true
+
       - uses: actions/checkout@v4
 
       - name: Setup Bun
