@@ -1833,6 +1833,22 @@ describe('http.fetch body cap and redirects (official 2.1.303)', () => {
     expect(hops).toBe(6)
   })
 
+  test('a Unix-socket request follows same-origin redirects over the socket and refuses other origins', async () => {
+    const requests: { url: string; unix?: string }[] = []
+    const operations = fetchWith(async (url, init) => {
+      requests.push({ url, unix: (init as { unix?: string }).unix })
+      if (url === 'http://docker/start') return new Response(null, { status: 302, headers: { location: '/end' } })
+      if (url === 'http://docker/end') return new Response(null, { status: 302, headers: { location: 'https://evil.test/leak' } })
+      return new Response('leaked')
+    })
+    await expect(operations.http.fetch('http://docker/start', { socketPath: '/var/run/docker.sock' }))
+      .rejects.toThrow('redirect to https://evil.test/leak refused: a request over a Unix socket stays on http://docker')
+    expect(requests).toEqual([
+      { url: 'http://docker/start', unix: '/var/run/docker.sock' },
+      { url: 'http://docker/end', unix: '/var/run/docker.sock' },
+    ])
+  })
+
   test('returns a redirect without a location as is', async () => {
     const result = await fetchWith(async () => new Response('', { status: 301 })).http.fetch('https://a.test/x')
     expect(result.status).toBe(301)
