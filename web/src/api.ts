@@ -11,6 +11,16 @@ async function errorText(res: Response): Promise<string> {
   }
 }
 
+/** A failed request, with the status the server answered. */
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message)
+  }
+}
+
 /** The folder needs the trust confirmation the TUI asks for before a session may start there. */
 export class NeedsTrustError extends Error {
   constructor(readonly directory: string) {
@@ -42,7 +52,7 @@ export async function createSession(body: {
 
 async function getJson<T>(path: string): Promise<T> {
   const res = await fetch(path)
-  if (!res.ok) throw new Error(await errorText(res))
+  if (!res.ok) throw new ApiError(await errorText(res), res.status)
   return (await res.json()) as T
 }
 

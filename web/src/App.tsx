@@ -12,6 +12,7 @@ import {
   loadSidebar,
   loadModels,
   loadTranscript,
+  ApiError,
   NeedsTrustError,
   openCoordinator,
   openSessionSocket,
@@ -684,7 +685,7 @@ export function App() {
         // A running session's turn reaches its transcript up to 100 ms after the reply, so a
         // reload right after one can find nothing yet; read again before giving up. Any other
         // error (a failed read, the server gone) is shown at once.
-        const notWrittenYet = err instanceof Error && err.message === 'Session not found'
+        const notWrittenYet = err instanceof ApiError && err.status === 404
         if (notWrittenYet && (await findLive())) {
           if (wait <= 1600) {
             await new Promise(resolve => setTimeout(resolve, wait))
