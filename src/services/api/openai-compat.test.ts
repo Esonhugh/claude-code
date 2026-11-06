@@ -1233,10 +1233,15 @@ try {
       'data: {"type":"response.completed","response":{"usage":{"input_tokens":100,"input_tokens_details":{"cached_tokens":60,"cache_write_tokens":15},"output_tokens":7}}}\n\n',
       {
         status: 200,
-        headers: { 'Content-Type': 'text/event-stream' },
+        headers: {
+          'Content-Type': 'text/event-stream',
+          'x-codex-primary-used-percent': '34',
+          'x-codex-turn-state': 'opaque',
+          'set-cookie': 'a=b',
+        },
       },
     )) as unknown as typeof fetch
-  const { data: cacheStream } = await cacheClient.beta.messages
+  const { data: cacheStream, response: cacheStreamResponse } = await cacheClient.beta.messages
     .create({
       model: 'gpt-5.5',
       max_tokens: 16,
@@ -1244,6 +1249,10 @@ try {
       stream: true,
     })
     .withResponse()
+  // Only the rate-limit headers reach claude.ts (#947).
+  const passedHeaders: string[] = []
+  cacheStreamResponse.headers.forEach((_value: string, name: string) => passedHeaders.push(name))
+  assert.deepEqual(passedHeaders, ['x-codex-primary-used-percent'])
   const cacheEvents: any[] = []
   for await (const event of cacheStream as unknown as AsyncIterable<any>) {
     cacheEvents.push(event)

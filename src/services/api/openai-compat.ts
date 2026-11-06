@@ -335,6 +335,8 @@ class ResponsesSSEStream implements AsyncIterable<BetaRawMessageStreamEvent> {
   private resolve: (() => void) | null = null
   private done = false
   private error: Error | null = null
+  /** The response's `x-codex-*` headers (rate-limit windows), for withResponse(). */
+  rateLimitHeaders = new Headers()
 
   constructor(
     readonly controller: AbortController,
@@ -698,6 +700,11 @@ async function connectSSE(
       turnScope,
       webSocketFactory,
     )
+    resp.headers.forEach((value, name) => {
+      if (name.toLowerCase().startsWith('x-codex-') && name.toLowerCase() !== 'x-codex-turn-state') {
+        stream.rateLimitHeaders.set(name, value)
+      }
+    })
 
     // Process SSE stream
     const reader = resp.body?.getReader()
@@ -1326,7 +1333,7 @@ export function createOpenAICompatClient(options: {
         return {
           then: (resolve: any, reject: any) => promise.then(resolve, reject),
           catch: (reject: any) => promise.catch(reject),
-          withResponse: () => promise.then(data => ({ data, response: new Response(), request_id: `req_${Date.now()}` })),
+          withResponse: () => promise.then(data => ({ data, response: new Response(null, { headers: data.rateLimitHeaders }), request_id: `req_${Date.now()}` })),
         }
       }
 
