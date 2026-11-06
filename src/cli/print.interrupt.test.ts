@@ -63,6 +63,7 @@ if (process.env[childFlag] !== '1') {
   const toolPool = await import('../tools.js')
   const storage = await import('../utils/sessionStorage.js')
   const { SandboxManager } = await import('../utils/sandbox/sandbox-adapter.js')
+  const cleanup = await import('../utils/cleanupRegistry.js')
 
   test.each(['idle', 'busy'] as const)('interrupt receipt snapshots surviving %s input before draining', async phase => {
     const started = Promise.withResolvers<void>()
@@ -171,6 +172,53 @@ if (process.env[childFlag] !== '1') {
       } as Parameters<typeof runHeadless>[7])
       expect(results[0]?.queued_turn_count).toBe(1)
       expect(results.at(-1)?.queued_turn_count).toBe(0)
+    } finally {
+      queue.resetCommandQueue()
+      for (const mock of mocks) mock.mockRestore()
+    }
+  })
+
+  // External SIGINT mid-tool: the abort ends the shell itself, so shutdown has
+  // no live shell to wait for and used to exit before the result was written.
+  test('external SIGINT during a turn writes its result before cleanup finishes', async () => {
+    const stdout: string[] = []
+    const cleanedUp = Promise.withResolvers<string>()
+    const mocks = [
+      spyOn(grove, 'isQualifiedForGrove').mockResolvedValue(false),
+      spyOn(growthbook, 'initializeGrowthBook').mockResolvedValue(undefined),
+      spyOn(env, 'isBareMode').mockReturnValue(true),
+      spyOn(shutdown, 'gracefulShutdownSync').mockImplementation(() => {}),
+      spyOn(shutdown, 'gracefulShutdown').mockImplementation(async () => {
+        await cleanup.runCleanupFunctions()
+        cleanedUp.resolve(stdout.join(''))
+      }),
+      spyOn(processUtils, 'registerProcessOutputErrorHandlers').mockImplementation(() => {}),
+      spyOn(processUtils, 'writeToStdout').mockImplementation(text => { stdout.push(text) }),
+      spyOn(stdoutGuard, 'installStreamJsonStdoutGuard').mockImplementation(() => () => {}),
+      spyOn(modelStrings, 'ensureModelStringsInitialized').mockResolvedValue(undefined),
+      spyOn(toolPool, 'assembleToolPool').mockReturnValue([]),
+      spyOn(SandboxManager, 'getSandboxUnavailableReason').mockReturnValue(undefined),
+      spyOn(SandboxManager, 'isSandboxingEnabled').mockReturnValue(false),
+      spyOn(storage, 'recordQueueOperation').mockResolvedValue(undefined),
+      spyOn(engine, 'ask').mockImplementation(async function* (args) {
+        setTimeout(() => process.emit('SIGINT'), 10)
+        await new Promise(resolve => args.abortController.signal.addEventListener('abort', resolve))
+        // The killed tool's result and the turn's end take a moment.
+        await new Promise(resolve => setTimeout(resolve, 50))
+        yield {type:'result',subtype:'error_during_execution',is_error:true,errors:[]} as unknown as import('../entrypoints/agentSdkTypes.js').SDKMessage
+      }),
+    ]
+    async function* input() {
+      yield JSON.stringify({type:'user',message:{role:'user',content:'LONG TOOL'}}) + '\n'
+    }
+    // Earlier runs in this process left their own SIGINT handlers behind.
+    process.removeAllListeners('SIGINT')
+    let state = getDefaultAppState()
+    try {
+      void runHeadless(input(), () => state, updater => { state = updater(state) }, [], [], {}, [], {
+        outputFormat:'text',sessionStartHooksPromise:Promise.resolve([]),
+      } as Parameters<typeof runHeadless>[7])
+      expect(await cleanedUp.promise).toBe('Execution error')
     } finally {
       queue.resetCommandQueue()
       for (const mock of mocks) mock.mockRestore()
