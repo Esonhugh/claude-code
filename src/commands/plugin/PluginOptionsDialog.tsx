@@ -1,7 +1,14 @@
 import figures from 'figures'
-import React, { useCallback, useEffect, useRef, useState } from 'react'
+import React, {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from 'react'
 import { Select } from '../../components/CustomSelect/select.js'
 import { Dialog } from '../../components/design-system/Dialog.js'
+import { useTabHeaderFocus } from '../../components/design-system/Tabs.js'
 import { stringWidth } from '../../ink/stringWidth.js'
 // eslint-disable-next-line custom-rules/prefer-use-keybindings -- raw text input for config dialog
 import { Box, Text, useInput } from '../../ink.js'
@@ -94,6 +101,14 @@ export function PluginOptionsDialog({
     },
     [configSchema, initialValues],
   )
+
+  // Inside /plugin's tabs, Tab means next field: take focus from the tab row
+  // while the form is open.
+  const { blurHeader, focusHeader } = useTabHeaderFocus()
+  useLayoutEffect(() => {
+    blurHeader()
+    return focusHeader
+  }, [blurHeader, focusHeader])
 
   const [currentFieldIndex, setCurrentFieldIndex] = useState(0)
   const [validationError, setValidationError] = useState('')
