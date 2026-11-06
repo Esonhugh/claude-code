@@ -49,6 +49,7 @@ export function isHookEqual(
       return (
         b.type === 'command' &&
         a.command === b.command &&
+        JSON.stringify(a.args ?? null) === JSON.stringify(b.args ?? null) &&
         (a.shell ?? DEFAULT_HOOK_SHELL) === (b.shell ?? DEFAULT_HOOK_SHELL) &&
         sameIf(a, b)
       )
