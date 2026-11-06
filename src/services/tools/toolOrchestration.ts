@@ -119,12 +119,6 @@ function partitionToolCalls(
   toolUseMessages: ToolUseBlock[],
   toolUseContext: ToolUseContext,
 ): Batch[] {
-  if (toolUseContext.modsSnapshot?.hasHooks('tool.call')) {
-    return toolUseMessages.map(block => ({
-      isConcurrencySafe: false,
-      blocks: [block],
-    }))
-  }
   return toolUseMessages.reduce((acc: Batch[], toolUse) => {
     const tool = findToolByName(toolUseContext.options.tools, toolUse.name)
     const parsedInput = tool?.inputSchema.safeParse(toolUse.input)
