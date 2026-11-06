@@ -6,8 +6,10 @@ import type { LoadedPlugin } from '../../types/plugin.js'
 import {
   resolveForeignModStateDeclarations,
   validatePluginContents,
+  validateMarketplaceManifest,
   validatePluginManifest,
 } from './validatePlugin.js'
+import { PluginMarketplaceSchema } from './schemas.js'
 
 const evidenceRoot = tmpdir()
 
@@ -182,6 +184,35 @@ describe('hooks module author validation', () => {
     expect(hooks.notes?.some(note => /not checked.*other\.value/.test(note))).toBe(true)
   })
 
+  test('uses types/index.d.ts as the contract when plugin.json names no types', async () => {
+    const root = await pluginRoot()
+    await mkdir(join(root, 'hooks'))
+    await mkdir(join(root, 'types'))
+    await writeFile(join(root, '.claude-plugin', 'plugin.json'), JSON.stringify({ name: 'rg' }))
+    await writeFile(join(root, 'types', 'index.d.ts'), `declare module 'claude-code' { interface PluginState { rg: { n: number } } }`)
+    await writeFile(join(root, 'hooks', 'hooks.json'), JSON.stringify({ modules: ['./register.ts'] }))
+    await writeFile(join(root, 'hooks', 'register.ts'), `export function register(on) { on('session.start', async ($) => { await $.state.set({plugin:'rg', key:'n'}, 1); }); }`)
+    const manifest = await validatePluginManifest(join(root, '.claude-plugin', 'plugin.json'))
+    expect(manifest.success).toBe(true)
+    expect(manifest.notes).toEqual(['types ./types/index.d.ts declares state: rg.n'])
+    const hooks = (await validatePluginContents(root)).find(result => result.fileType === 'hooks')!
+    expect(hooks.errors).toEqual([])
+    expect(hooks.success).toBe(true)
+  })
+
+  test('reads a foreign default types/index.d.ts and skips plugins without one', async () => {
+    const foreign = await pluginRoot()
+    const bare = await pluginRoot()
+    await mkdir(join(foreign, 'types'))
+    await writeFile(join(foreign, 'types', 'index.d.ts'), `declare module 'claude-code' { interface PluginState { other: { value: string } } }`)
+    const resolved = await resolveForeignModStateDeclarations([
+      loadedPlugin(foreign, 'other'),
+      loadedPlugin(bare, 'bare'),
+    ], 'owner')
+    expect(resolved.warning).toBeUndefined()
+    expect(resolved.declarations?.flatMap(({ plugin, keys }) => keys.map(key => `${plugin}.${key}`))).toEqual(['other.value'])
+  })
+
   test('checks matched and missing foreign state against a complete contract context', async () => {
     const owner = await pluginRoot()
     const foreign = await pluginRoot()
@@ -258,4 +289,64 @@ describe('hooks module author validation', () => {
     expect(unavailable.declarations).toBeUndefined()
     expect(unavailable.warning).toMatch(/broken.*missing\.d\.ts.*unchecked/i)
   })
+})
+
+describe('official 2.1.318 manifest fields', () => {
+  test('accepts marketplace $schema, description, renames and entry displayName', async () => {
+    const root = await pluginRoot()
+    await writeFile(join(root, '.claude-plugin', 'marketplace.json'), JSON.stringify({
+      $schema: 'https://anthropic.com/claude-code/marketplace.schema.json',
+      name: 'market',
+      version: '1.0.0',
+      description: 'A marketplace',
+      owner: { name: 'owner' },
+      renames: { 'old-name': 'tool', gone: null },
+      plugins: [{ name: 'tool', displayName: 'Tool', source: './tool' }],
+    }))
+    const result = await validateMarketplaceManifest(join(root, '.claude-plugin', 'marketplace.json'))
+    expect(result.errors).toEqual([])
+  })
+
+  test('warns instead of failing on a plugin source this build cannot install', async () => {
+    const root = await pluginRoot()
+    await writeFile(join(root, '.claude-plugin', 'marketplace.json'), JSON.stringify({
+      name: 'market',
+      owner: { name: 'owner' },
+      plugins: [{ name: 'xcode', source: { source: 'command', command: 'xcrun agent plugin path', mode: 'link' } }],
+    }))
+    const result = await validateMarketplaceManifest(join(root, '.claude-plugin', 'marketplace.json'))
+    expect(result.errors).toEqual([])
+    expect(result.warnings.map(w => w.path)).toContain('plugins[0].source')
+  })
+
+  test('accepts plugin.json displayName and icon', async () => {
+    const root = await pluginRoot()
+    await writeFile(join(root, '.claude-plugin', 'plugin.json'), JSON.stringify({ name: 'tool', displayName: 'Tool', icon: './icon.png' }))
+    const result = await validatePluginManifest(join(root, '.claude-plugin', 'plugin.json'))
+    expect(result.errors).toEqual([])
+  })
+
+  test('frontmatter the runtime loader recovers is not reported as unparseable', async () => {
+    const root = await pluginRoot()
+    await writeFile(join(root, '.claude-plugin', 'plugin.json'), JSON.stringify({ name: 'tool' }))
+    await mkdir(join(root, 'commands'))
+    await writeFile(join(root, 'commands', 'go.md'), '---\ndescription: Start here: say what you want\nargument-hint: [system] [--source <path>]\n---\nbody\n')
+    const results = await validatePluginContents(root)
+    expect(results.flatMap(r => r.errors)).toEqual([])
+  })
+})
+
+test('a marketplace with an entry of an unknown source type still loads its other plugins', () => {
+  const marketplace = PluginMarketplaceSchema().parse({
+    name: 'market',
+    owner: { name: 'owner' },
+    plugins: [
+      { name: 'xcode', source: { source: 'command', command: 'xcrun agent plugin path', mode: 'link' } },
+      { name: 'tool', source: { source: 'github', repo: 'owner/tool' } },
+    ],
+  })
+  expect(marketplace.plugins.map(p => p.source)).toEqual([
+    { source: 'unsupported', sourceType: 'command' },
+    { source: 'github', repo: 'owner/tool' },
+  ])
 })
