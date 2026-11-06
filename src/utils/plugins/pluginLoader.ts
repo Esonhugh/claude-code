@@ -1006,6 +1006,10 @@ export async function cachePlugin(
           break
         case 'pip':
           throw new Error('Python package plugins are not yet supported')
+        case 'unsupported':
+          throw new Error(
+            `Plugin source type "${source.sourceType}" is not supported by this version of Claude Code`,
+          )
         default:
           throw new Error(`Unsupported plugin source type`)
       }

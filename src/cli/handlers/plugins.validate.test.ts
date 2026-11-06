@@ -377,3 +377,17 @@ test('prints file loading errors separately and pluralizes summary nouns', () =>
   })
   expect(lines.join('')).toBe(`\none.test.ts:\n(fail) the file did not load\nSyntaxError: broken\n\ntwo.test.ts:\n\n 0 pass\n 1 fail\nRan 0 tests across 2 files. [1.50s]\n`)
 })
+
+test('a folder with both marketplace.json and plugin.json validates the plugin and its contents too', async () => {
+  const root = await pluginRoot('both')
+  await writeFile(join(root, '.claude-plugin', 'marketplace.json'), JSON.stringify({
+    name: 'm', owner: { name: 'x' }, description: 'd', plugins: [{ name: 'both', source: './' }],
+  }))
+  await mkdir(join(root, 'hooks'))
+  await writeFile(join(root, 'hooks', 'hooks.json'), JSON.stringify({ hooks: { Stop: 'not-an-array' } }))
+  const output = await runValidate(root)
+  expect(output).toContain('Validating marketplace manifest')
+  expect(output).toContain('Validating plugin manifest')
+  expect(output).toContain('Validating hooks')
+  expect(output).toContain('Validation failed')
+})

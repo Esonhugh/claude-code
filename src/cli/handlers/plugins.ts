@@ -5,7 +5,7 @@
 /* eslint-disable custom-rules/no-process-exit -- CLI subcommand handlers intentionally exit */
 import figures from 'figures'
 import { readFile } from 'node:fs/promises'
-import { basename, dirname, relative } from 'path'
+import { basename, dirname, join, relative } from 'path'
 import { setUseCoworkPlugins } from '../../bootstrap/state.js'
 import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
@@ -25,6 +25,7 @@ import {
 import { getPluginErrorMessage } from '../../types/plugin.js'
 import { isInBundledMode } from '../../utils/bundledMode.js'
 import { errorMessage } from '../../utils/errors.js'
+import { pathExists } from '../../utils/file.js'
 import { logError } from '../../utils/log.js'
 import { clearAllCaches } from '../../utils/plugins/cacheUtils.js'
 import { getInstallCounts } from '../../utils/plugins/installCounts.js'
@@ -64,6 +65,7 @@ import {
   type ValidationResult,
   validateManifest,
   validatePluginContents,
+  validatePluginManifest,
 } from '../../utils/plugins/validatePlugin.js'
 import { jsonParse, jsonStringify } from '../../utils/slowOperations.js'
 import { plural } from '../../utils/stringUtils.js'
@@ -128,13 +130,26 @@ export async function pluginValidateHandler(
     console.log(`Validating ${result.fileType} manifest: ${result.filePath}\n`)
     printValidationResult(result)
 
+    // A plugin folder may also hold the marketplace that lists it. Validate
+    // the plugin itself too, as official does.
+    let pluginResult = result.fileType === 'plugin' ? result : undefined
+    if (result.fileType === 'marketplace') {
+      const siblingPath = join(dirname(result.filePath), 'plugin.json')
+      if (await pathExists(siblingPath)) {
+        pluginResult = await validatePluginManifest(siblingPath)
+        // biome-ignore lint/suspicious/noConsole:: intentional console output
+        console.log(`Validating plugin manifest: ${pluginResult.filePath}\n`)
+        printValidationResult(pluginResult)
+      }
+    }
+
     // If this is a plugin manifest located inside a .claude-plugin directory,
     // also validate the plugin's content files (skills, agents, commands,
     // hooks). Works whether the user passed a directory or the plugin.json
     // path directly.
     let contentResults: ValidationResult[] = []
-    if (result.fileType === 'plugin') {
-      const manifestDir = dirname(result.filePath)
+    if (pluginResult) {
+      const manifestDir = dirname(pluginResult.filePath)
       if (basename(manifestDir) === '.claude-plugin') {
         let foreignDeclarations: Awaited<ReturnType<typeof resolveForeignModStateDeclarations>>['declarations']
         let foreignWarning: string | undefined
@@ -147,7 +162,7 @@ export async function pluginValidateHandler(
             const details = context.errors.map(error => `${error.source}: ${getPluginErrorMessage(error)}`).join('; ')
             foreignWarning = `${cachedPlugins ? 'Cached plugin' : 'Plugin contract'} context has ${context.errors.length} loader ${plural(context.errors.length, 'error')}${context.complete ? '' : ' and is incomplete'}; foreign state references were left unchecked.${details ? ` ${details}` : ''}`
           } else {
-            const manifest = jsonParse(await readFile(result.filePath, 'utf8')) as { name?: unknown }
+            const manifest = jsonParse(await readFile(pluginResult.filePath, 'utf8')) as { name?: unknown }
             if (typeof manifest.name === 'string') {
               const resolved = await resolveForeignModStateDeclarations(
                 context.enabled,
@@ -179,9 +194,13 @@ export async function pluginValidateHandler(
       }
     }
 
-    const allSuccess = result.success && contentResults.every(r => r.success)
+    const allSuccess =
+      result.success &&
+      (pluginResult?.success ?? true) &&
+      contentResults.every(r => r.success)
     const hasWarnings =
       result.warnings.length > 0 ||
+      (pluginResult?.warnings.length ?? 0) > 0 ||
       contentResults.some(r => r.warnings.length > 0)
 
     if (allSuccess) {

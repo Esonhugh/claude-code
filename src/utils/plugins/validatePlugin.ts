@@ -10,7 +10,10 @@ import {
 } from '../../services/mods/typeContract.js'
 import type { LoadedPlugin } from '../../types/plugin.js'
 import { errorMessage, getErrnoCode, isENOENT } from '../errors.js'
-import { FRONTMATTER_REGEX } from '../frontmatterParser.js'
+import {
+  FRONTMATTER_REGEX,
+  quoteProblematicValues,
+} from '../frontmatterParser.js'
 import { jsonParse } from '../slowOperations.js'
 import { parseYaml } from '../yaml.js'
 import {
@@ -18,6 +21,7 @@ import {
   PluginManifestSchema,
   PluginMarketplaceEntrySchema,
   PluginMarketplaceSchema,
+  isUnsupportedPluginSource,
 } from './schemas.js'
 
 /**
@@ -508,6 +512,12 @@ export async function validateMarketplaceManifest(
     // Check each plugin entry
     if (marketplace.plugins) {
       marketplace.plugins.forEach((plugin, i) => {
+        if (isUnsupportedPluginSource(plugin.source)) {
+          warnings.push({
+            path: `plugins[${i}].source`,
+            message: `Source type "${plugin.source.sourceType}" is not supported by this version of Claude Code; "${plugin.name}" cannot be installed here, but the rest of the marketplace loads.`,
+          })
+        }
         // Check for duplicate plugin names
         const duplicates = marketplace.plugins.filter(
           p => p.name === plugin.name,
@@ -570,7 +580,7 @@ export async function validateMarketplaceManifest(
     }
 
     // Warn if no description in metadata
-    if (!marketplace.metadata?.description) {
+    if (!marketplace.metadata?.description && !marketplace.description) {
       warnings.push({
         path: 'metadata.description',
         message:
@@ -617,13 +627,31 @@ function validateComponentFile(
 
   const frontmatterText = match[1] || ''
   let parsed: unknown
+  let parseError: unknown
   try {
     parsed = parseYaml(frontmatterText)
   } catch (e) {
+    parseError = e
+    // The runtime loader retries with special characters quoted; report
+    // what it actually does instead of a load failure that never happens.
+    try {
+      parsed = parseYaml(quoteProblematicValues(frontmatterText))
+      warnings.push({
+        path: 'frontmatter',
+        message:
+          `YAML frontmatter is not valid YAML (${errorMessage(e)}). It loads ` +
+          `only because Claude Code quotes values with special characters; ` +
+          `quote them yourself to be safe.`,
+      })
+    } catch {
+      parsed = undefined
+    }
+  }
+  if (parseError !== undefined && parsed === undefined) {
     errors.push({
       path: 'frontmatter',
       message:
-        `YAML frontmatter failed to parse: ${errorMessage(e)}. ` +
+        `YAML frontmatter failed to parse: ${errorMessage(parseError)}. ` +
         `At runtime this ${fileType} loads with empty metadata (all frontmatter ` +
         `fields silently dropped).`,
     })
