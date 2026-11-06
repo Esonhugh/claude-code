@@ -1261,6 +1261,10 @@ async function* queryLoop(
                 canUseTool,
                 toolUseContext,
               )
+              // Only what streamed before the fallback is orphaned; the fallback
+              // result and any stream events after it (a turn.step mod closes
+              // its message) must not tombstone it again.
+              streamingFallbackOccured = false
             }
             // Backfill tool_use inputs on a cloned message before yield so
             // SDK stream output and transcript serialization see legacy/derived
