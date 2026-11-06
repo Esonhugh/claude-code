@@ -3,7 +3,12 @@ import { writeFileSync } from 'fs'
 import { wrapSpawn } from './ShellCommand.js'
 import { TaskOutput } from './task/TaskOutput.js'
 
-const child = spawn('bash', ['-c', 'sleep 600 & echo $!; wait'], {
+// own-group: the grandchild leads its own session (like `timeout` or `setsid`),
+// so the group kill misses it and only tree-kill reaches it.
+const script = process.argv[3] === 'own-group'
+  ? "setsid bash -c 'echo $$; exec sleep 600' & wait"
+  : 'sleep 600 & echo $!; wait'
+const child = spawn('bash', ['-c', script], {
   detached: true,
   stdio: ['ignore', 'pipe', 'ignore'],
 })

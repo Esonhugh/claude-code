@@ -477,6 +477,7 @@ import {
   capIdleResultsInDrain,
 } from '../utils/teammateMailbox.js'
 import { handleTeammateShutdownApproved } from '../utils/swarm/teammateShutdown.js'
+import { registerLeaderHeadlessCanUseTool } from '../utils/swarm/leaderPermissionBridge.js'
 import { getRunningTasks } from '../utils/task/framework.js'
 import { isBackgroundTask } from '../tasks/types.js'
 import { StopTaskError, stopTask } from '../tasks/stopTask.js'
@@ -1071,6 +1072,7 @@ export async function runHeadless(
     () => getAppState().mcp.tools,
     onPermissionPrompt,
   )
+  registerLeaderHeadlessCanUseTool(canUseTool)
   // tool.check names the host as the decider of core's ask when its program answers asks.
   setModToolCheckPermissionHost(effectivePermissionPromptToolName !== undefined)
   if (options.permissionPromptToolName) {
