@@ -357,7 +357,9 @@ describe('compactConversation remote compaction lifecycle', () => {
       id: 'cmp_1',
       encrypted_content: 'opaque-state',
     })
-    expect(result.summaryMessages).toEqual([])
+    // Mods' session.compact needs a row to see; the API drops it (claude.ts).
+    expect(result.summaryMessages).toHaveLength(1)
+    expect(result.summaryMessages[0]?.isCompactSummary).toBe(true)
     expect(result.postCompactTokenCount).toBe(125)
     expect(result.compactionUsage?.cache_read_input_tokens).toBe(20)
     expect(context.readFileState.size).toBe(0)
@@ -486,6 +488,13 @@ describe('compactConversationCodexStyle OpenAI integration', () => {
       } as SystemCompactBoundaryMessage
       const messages: Message[] = [
         previousBoundary,
+        {
+          ...userTextMessage(
+            '00000000-0000-4000-8000-000000000023',
+            '[OpenAI remote compaction]',
+          ),
+          isCompactSummary: true,
+        } as Message,
         userTextMessage(
           '00000000-0000-4000-8000-000000000021',
           'continue after compaction',

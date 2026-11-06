@@ -783,21 +783,21 @@ export async function compactConversation(
     }
 
     const transcriptPath = getTranscriptPath()
-    const summaryMessages: UserMessage[] = remoteResult
-      ? []
-      : [
-          createUserMessage({
-            content:
-              // With a kept tail official always asks to resume directly.
-              getCompactUserSummaryMessage(
-                summary,
-                suppressFollowUpQuestions || messagesToKeep.length > 0,
-                transcriptPath,
-              ) + (messagesToKeep.length > 0 ? `\n\n${KEPT_TAIL_NOTE}` : ''),
-            isCompactSummary: true,
-            isVisibleInTranscriptOnly: true,
-          }),
-        ]
+    // A remote compaction still gets a summary row so the transcript and mods
+    // see one; the API layer drops it in favour of the opaque item.
+    const summaryMessages: UserMessage[] = [
+      createUserMessage({
+        content:
+          // With a kept tail official always asks to resume directly.
+          getCompactUserSummaryMessage(
+            summary,
+            suppressFollowUpQuestions || messagesToKeep.length > 0,
+            transcriptPath,
+          ) + (messagesToKeep.length > 0 ? `\n\n${KEPT_TAIL_NOTE}` : ''),
+        isCompactSummary: true,
+        isVisibleInTranscriptOnly: true,
+      }),
+    ]
 
     // Previously "postCompactTokenCount" — renamed because this is the
     // compact API call's total usage (input_tokens ≈ preCompactTokenCount),
@@ -817,7 +817,7 @@ export async function compactConversation(
     const truePostCompactTokenCount = roughTokenCountEstimationForMessages([
       boundaryMarker,
       // @ts-ignore - recovered code
-      ...summaryMessages,
+      ...(remoteResult ? [] : summaryMessages),
       // @ts-ignore - recovered code
       ...messagesToKeep,
       // @ts-ignore - recovered code

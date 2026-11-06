@@ -906,6 +906,32 @@ test('Mods completion omits unsupported effort and preserves default side-query 
   expect(requests[1]).not.toHaveProperty('output_config')
 })
 
+test('OpenAI remote compaction sends the opaque item instead of its summary row', async () => {
+  process.env.CLAUDE_CODE_USE_OPENAI = '1'
+  const { createCompactBoundaryMessage } = await import('../../utils/messages.js')
+  const boundary = createCompactBoundaryMessage('manual', 100)
+  boundary.openAICompaction = { type: 'compaction', id: 'cmp_1', encrypted_content: 'opaque' }
+  for await (const _ of queryModelWithStreaming({
+    messages: [
+      boundary,
+      createUserMessage({ content: 'REMOTE_SUMMARY_ROW', isCompactSummary: true, isVisibleInTranscriptOnly: true }),
+      createUserMessage({ content: 'after compaction' }),
+    ],
+    systemPrompt: asSystemPrompt(['policy']),
+    thinkingConfig: { type: 'disabled' }, tools: [], signal: new AbortController().signal,
+    options: {
+      model: 'claude-sonnet-4-6', querySource: 'repl_main_thread',
+      agents: [], mcpTools: [], hasAppendSystemPrompt: false,
+      isNonInteractiveSession: true, enablePromptCaching: false,
+      getToolPermissionContext: async () => getEmptyToolPermissionContext(),
+    },
+  })) void _
+  const request = requests.at(-1) as unknown as Record<string, unknown>
+  expect(request.openai_compaction).toEqual(boundary.openAICompaction)
+  expect(JSON.stringify(request.messages)).toContain('after compaction')
+  expect(JSON.stringify(request.messages)).not.toContain('REMOTE_SUMMARY_ROW')
+})
+
 test('model validation accepts a gateway reply that omits usage', async () => {
   nonStreamingOmitsUsage = true
   const {validateModel}=await import('../../utils/model/validateModel.js')

@@ -345,7 +345,11 @@ export async function compactConversationCodexStyle(
                   (message): message is Extract<
                     Message,
                     { type: 'user' | 'assistant' }
-                  > => message.type === 'user' || message.type === 'assistant',
+                  > =>
+                    message.type === 'assistant' ||
+                    (message.type === 'user' &&
+                      // The previous compaction item stands in for its summary row.
+                      !(previousOpenAICompaction && message.isCompactSummary)),
                 )
                 .map(message => message.message),
               system: systemInstructions,

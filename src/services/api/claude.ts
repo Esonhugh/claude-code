@@ -1567,12 +1567,16 @@ async function* queryModelRequest(
       options.agentId,
     )
   }
-  let messagesForAPI = normalizeMessagesForAPI(schemaMessages, filteredTools)
-  if (openAICompaction) {
-    messagesForAPI = messagesForAPI.filter(
-      message => message.type !== 'user' || !message.isCompactSummary,
-    )
-  }
+  // Drop the remote compaction's summary row before normalization merges it
+  // into neighbouring user messages; the opaque item replaces it.
+  let messagesForAPI = normalizeMessagesForAPI(
+    openAICompaction
+      ? schemaMessages.filter(
+          message => message.type !== 'user' || !message.isCompactSummary,
+        )
+      : schemaMessages,
+    filteredTools,
+  )
   queryCheckpoint('query_message_normalization_end')
 
   // Model-specific post-processing: strip tool-search-specific fields if the
