@@ -302,8 +302,8 @@ function StatusPane({
   const memories = Array.isArray(data.memory?.memories) ? data.memory.memories.filter(m => isObj(m) && m.name !== 'MEMORY.md').length : 0
   const env = chat.env
   const agents = Object.values(agentTasks(chat.tasks))
-  const { terminals, monitors } = groups
-  const running = runningCount(agents) + runningCount(terminals) + runningCount(monitors)
+  const { terminals, monitors, background } = groups
+  const running = runningCount(agents) + runningCount(terminals) + runningCount(monitors) + runningCount(background)
   const pct = chat.contextPercent === undefined ? undefined : Math.round(chat.contextPercent)
   const suggestCompact = !!onCompact && pct !== undefined && pct >= SUGGEST_COMPACT_PERCENT
   const account = accountText(t, env)
@@ -362,6 +362,7 @@ function StatusPane({
             ['Agents', `${t('nRunning', { n: String(runningCount(agents)) })} / ${agents.length}`],
             ['Terminals', `${t('nRunning', { n: String(runningCount(terminals)) })} / ${terminals.length}`],
             ['Monitor', `${t('nRunning', { n: String(runningCount(monitors)) })} / ${monitors.length}`],
+            ['Background Tasks', `${t('nRunning', { n: String(runningCount(background)) })} / ${background.length}`],
             [
               t('pendingLabel'),
               chat.approvals.length ? t('nRequests', { n: String(chat.approvals.length) }) : t('none'),

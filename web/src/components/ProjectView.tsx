@@ -655,6 +655,8 @@ export function ProjectView({
     }
     if (block.name !== 'Agent') return undefined
     const task = byToolUse.get(block.id)
+    // A call that failed started no task: it shows as the failed tool call it is.
+    if (!task && block.isError) return undefined
     if (!task) {
       const title = inputs.get(block.id)?.description
       const pending = { id: block.id, title: title || t('statusConnecting'), state: 'running' as const }

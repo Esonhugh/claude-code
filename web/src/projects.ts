@@ -3,7 +3,7 @@
 // tasks table; the page adds what only it knows yet (a pending approval) and
 // the running clock.
 
-import type { AgentTask } from './agents'
+import { type AgentTask, formatTokens } from './agents'
 import type { ProjectTask } from './api'
 import type { MessageKey } from './i18n'
 import type { Approval, Item, TaskNote } from './protocol'
@@ -52,7 +52,7 @@ export function taskMeta(task: ProjectTask, model: string | undefined, now: numb
   return [
     model,
     formatTaskTime(taskElapsed(task, now)),
-    task.tokens > 0 ? `${(task.tokens / 1000).toFixed(1)}k tok` : undefined,
+    task.tokens > 0 ? formatTokens(task.tokens) : undefined,
     task.state === 'running' ? task.last_tool : undefined,
   ]
     .filter(Boolean)

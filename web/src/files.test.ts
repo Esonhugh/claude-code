@@ -10,6 +10,7 @@ describe('files', () => {
       id,
       name,
       input: JSON.stringify({ file_path: path }),
+      result: 'ok',
     })
     const files = sessionFiles([
       { kind: 'user', id: 'u1', text: 'see @"/h/.claude/web/uploads/s1/notes.txt" and @/w/a.md' },
@@ -26,6 +27,29 @@ describe('files', () => {
       { path: '/w/a.md', source: 'read' },
       { path: '/h/.claude/web/uploads/s1/notes.txt', source: 'upload' },
     ])
+  })
+
+  it('lists an edit only once it applied, not while it awaits approval or after it failed', () => {
+    const edit = (id: string, path: string, done?: { result: string; isError?: boolean }) => ({
+      kind: 'tool' as const,
+      id,
+      name: 'Edit',
+      input: JSON.stringify({ file_path: path }),
+      ...done,
+    })
+    const files = sessionFiles([
+      {
+        kind: 'assistant',
+        id: 'a1',
+        streamed: false,
+        blocks: [
+          edit('t1', '/w/pending.ts'),
+          edit('t2', '/w/denied.ts', { result: 'The user doesn\'t want to proceed', isError: true }),
+          edit('t3', '/w/done.ts', { result: 'updated' }),
+        ],
+      },
+    ])
+    expect(files).toEqual([{ path: '/w/done.ts', source: 'edited' }])
   })
 
   it('steps through the chat\'s files from the one on preview, stopping at either end', () => {

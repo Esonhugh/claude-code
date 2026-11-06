@@ -227,6 +227,8 @@ export function sessionFiles(items: Item[]): SessionFile[] {
     for (const block of item.blocks) {
       const source = block?.kind === 'tool' ? TOOL_SOURCE[block.name] : undefined
       if (!source || block?.kind !== 'tool') continue
+      // An edit awaiting approval, denied or failed has not changed the file.
+      if (source !== 'read' && (block.result === undefined || block.isError)) continue
       try {
         const input = JSON.parse(block.input) as { file_path?: unknown; notebook_path?: unknown }
         const path = input.file_path ?? input.notebook_path
