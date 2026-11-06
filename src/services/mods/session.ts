@@ -349,7 +349,9 @@ export function createModsSession(options: ModsSessionOptions) {
     const text = `[Mods] ${event.plugin} (${event.stage}): ${event.message}`
       .replace(/[\r\n]/g, ' ')
       .replaceAll(String.fromCharCode(27), ' ')
-    process.stderr.write(text + '\n')
+    // Raw stderr is overdrawn by the interactive TUI, which shows the diagnostic itself.
+    if (services.uiDiagnostic) services.uiDiagnostic(event.plugin, `${event.stage}: ${event.message}`.replace(/[\r\n]/g, ' '))
+    else process.stderr.write(text + '\n')
     const fault = event.workerFault
     logForDebugging(text + (fault ? ` workerFault=${JSON.stringify({
       cause: fault.cause, workerAgeMs: fault.workerAgeMs, pendingRequests: fault.pendingRequests,
@@ -919,7 +921,12 @@ export function createModsSession(options: ModsSessionOptions) {
       if (hostServices) {
         const { configRows, ...rest } = hostServices
         if (configRows) builtinConfigRows = configRows
+        const firstDiagnosticHost = !services.uiDiagnostic && rest.uiDiagnostic
         Object.assign(services, rest)
+        // Diagnostics from before the TUI bound (module load) went to stderr under the startup screen.
+        if (firstDiagnosticHost) {
+          for (const shown of diagnostics) if (shown.type === 'generic-error') firstDiagnosticHost(shown.plugin ?? 'host', shown.error)
+        }
       }
       if (updateState) setAppState = updateState
       const changed =

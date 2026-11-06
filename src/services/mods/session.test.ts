@@ -1682,6 +1682,18 @@ describe('Mods CLI session host', () => {
     }
   })
 
+  test('shows diagnostics through the interactive host instead of raw stderr (#847)', async () => {
+    const declaration = await plugin(`export function register(on) { throw Error('register refused'); }`)
+    const writes: string[] = []
+    const stderr = spyOn(process.stderr, 'write').mockImplementation(value => { writes.push(String(value)); return true })
+    cleanups.push(() => { stderr.mockRestore() })
+    const shown: string[] = []
+    const host = session({loadPlugins:async () => [declaration]})
+    await host.bind(binding, undefined, {uiDiagnostic:(plugin, text) => { shown.push(`${plugin}: ${text}`) }})
+    expect(shown.some(line => line.includes('register refused'))).toBe(true)
+    expect(writes.join('')).not.toContain('register refused')
+  })
+
   test('tier-only settings changes reseat live modules and policy presence suppresses user ordering', async () => {
     const make = async (name: string) => ({
       ...await plugin(`export function register(on) { on('tool.call', async ($, e, next) => { const result=await next(e); return {result:['${name}', ...result.result]}; }); }`),
