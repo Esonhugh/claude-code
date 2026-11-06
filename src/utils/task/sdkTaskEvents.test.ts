@@ -126,3 +126,18 @@ test('a finished subagent sends task_notification, with its result text, before 
   expect(events[0]).toMatchObject({ task_id: 'a1', tool_use_id: 'toolu_1', status: 'completed', summary: 'FAKE_DONE' })
   expect(events[1]).toMatchObject({ tasks: [] })
 })
+
+// Like official 2.1.318: a subagent launched from inside another agent names
+// that agent's task; one launched by the main thread or an untracked launcher
+// carries no parent_task_id.
+test('a nested agent reports its launching agent as parent_task_id', () => {
+  registerTask(agentTask, setAppState)
+  registerTask({ ...agentTask, id: 'a2', spawnDepth: 2, ownerAgentId: 'a1' } as unknown as TaskState, setAppState)
+  registerTask({ ...agentTask, id: 'a3', ownerAgentId: 'teammate-x' } as unknown as TaskState, setAppState)
+  const started = events().filter(e => e.subtype === 'task_started') as { task_id: string; parent_task_id?: string }[]
+  expect(started.map(e => [e.task_id, e.parent_task_id])).toEqual([
+    ['a1', undefined],
+    ['a2', 'a1'],
+    ['a3', undefined],
+  ])
+})

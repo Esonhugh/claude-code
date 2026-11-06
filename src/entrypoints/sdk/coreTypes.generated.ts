@@ -546,6 +546,7 @@ export type SDKTaskStartedMessage = {
   subagent_type?: string
   is_backgrounded?: boolean
   spawn_depth?: number
+  parent_task_id?: string
   task_type?: string
   workflow_name?: string
   prompt?: string

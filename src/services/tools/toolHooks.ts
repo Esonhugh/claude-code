@@ -37,6 +37,7 @@ import {
   getPreToolHookBlockingMessage,
 } from '../../utils/hooks.js'
 import { logError } from '../../utils/log.js'
+import { isAbortError } from '../../utils/errors.js'
 import {
   getRuleBehaviorDescription,
   requiresExplicitUserApproval,
@@ -635,7 +636,8 @@ export async function* runPostToolUseHooks<Input extends AnyObject, Output>(
       }
     }
   } catch (error) {
-    logError(error)
+    // An interrupt aborts the hooks too; that is not a hook failure.
+    if (!isAbortError(error)) logError(error)
   }
 }
 
@@ -808,7 +810,7 @@ export async function* runPostToolUseFailureHooks<Input extends AnyObject>(
       }
     }
   } catch (outerError) {
-    logError(outerError)
+    if (!isAbortError(outerError)) logError(outerError)
   }
 }
 

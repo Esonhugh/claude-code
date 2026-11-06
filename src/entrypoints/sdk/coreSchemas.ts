@@ -2315,6 +2315,10 @@ export const SDKTaskStartedMessageSchema = lazySchema(() =>
     subagent_type: z.string().optional(),
     is_backgrounded: z.boolean().optional(),
     spawn_depth: z.number().int().optional(),
+    parent_task_id: z
+      .string()
+      .optional()
+      .describe('task_id of the subagent task whose agent launched this one; absent when launched by the main thread.'),
     task_type: z.string().optional(),
     workflow_name: z
       .string()

@@ -117,6 +117,10 @@ class StreamWrapper {
 // reach the transcript before the process exits.
 const liveCommands = new Set<ShellCommandImpl>()
 
+export function hasLiveShellCommands(): boolean {
+  return liveCommands.size > 0
+}
+
 export async function waitForLiveShellResults(): Promise<void> {
   await Promise.allSettled([...liveCommands].map(command => command.result))
 }
