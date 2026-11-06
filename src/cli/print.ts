@@ -542,6 +542,11 @@ The user cannot receive your response until the team is completely shut down.
 
 Shut down your team and prepare your final response for the user.`
 
+// Results runHeadless has written to stdout. A SIGINT that aborts a running
+// turn waits (bounded) for the next one, so the aborted turn's result is not
+// lost to the exit.
+let headlessResultsWritten = 0
+
 // Track message UUIDs received during the current session runtime
 const MAX_RECEIVED_UUIDS = 10_000
 const receivedMessageUuids = new Set<UUID>()
@@ -1152,6 +1157,9 @@ export async function runHeadless(
     } else if (options.outputFormat === 'stream-json' && options.verbose) {
       await structuredIO.write(message)
     }
+    if (message.type === 'result' && options.outputFormat === 'stream-json') {
+      headlessResultsWritten++
+    }
     // Should not be getting control messages or stream events in non-stream mode.
     // Also filter out streamlined types since they're only produced by the transformer.
     // SDK-only system events are excluded so lastMessage stays at the result
@@ -1246,6 +1254,7 @@ export async function runHeadless(
           )
       }
   }
+  headlessResultsWritten++
 
   // Log headless latency metrics for the final turn
   logHeadlessProfilerTurn()
@@ -1310,6 +1319,9 @@ function runHeadlessStreaming(
     | undefined
   let inputClosed = false
   let shutdownPromptInjected = false
+  // While the team-lead inbox poll runs, it owns the end of input: it asks the
+  // lead to shut the team down instead of finishing output under teammates.
+  let teamPollActive = false
   let abortController: AbortController | undefined
   let shellAbortController: AbortController | undefined
   let shellCommandRunning = false
@@ -1323,6 +1335,14 @@ function runHeadlessStreaming(
     logForDiagnosticsNoPII('info', 'shutdown_signal', { signal: 'SIGINT' })
     if (abortController && !abortController.signal.aborted) {
       abortController.abort()
+    }
+    if (running) {
+      const written = headlessResultsWritten
+      registerCleanup(async () => {
+        for (let t = 0; t < 1000 && headlessResultsWritten === written; t += 20) {
+          await sleep(20)
+        }
+      })
     }
     void gracefulShutdown(0)
   }
@@ -3021,6 +3041,7 @@ function runHeadlessStreaming(
         // Keep polling until the team is shut down
         const POLL_INTERVAL_MS = 500
 
+        teamPollActive = true
         while (true) {
           // Check if teammates are still active
           const refreshedState = getAppState()
@@ -3110,6 +3131,7 @@ function runHeadlessStreaming(
                 isReplay: true,
               } satisfies SDKUserMessageReplay)
             }
+            teamPollActive = false
             void run()
             return // run() will come back here after processing
           }
@@ -3126,6 +3148,7 @@ function runHeadlessStreaming(
               value: SHUTDOWN_TEAM_PROMPT,
               uuid: randomUUID(),
             })
+            teamPollActive = false
             void run()
             return // run() will come back here after processing
           }
@@ -3133,6 +3156,7 @@ function runHeadlessStreaming(
           // Wait and check again
           await sleep(POLL_INTERVAL_MS)
         }
+        teamPollActive = false
       }
     }
 
@@ -5773,7 +5797,7 @@ function runHeadlessStreaming(
     await remoteUIControl.dispose()
     shellAbortController?.abort('session-closed')
     cronScheduler?.stop()
-    if (!running && !shellCommandRunning) {
+    if (!running && !shellCommandRunning && !teamPollActive) {
       // If a push-suggestion is in-flight, wait for it to emit before closing
       // the output stream (5 s safety timeout to prevent hanging).
       if (suggestionState.inflightPromise) {
