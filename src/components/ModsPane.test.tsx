@@ -3355,6 +3355,19 @@ describe('ModsPane input repair', () => {
         onInteract={async () => {}} onClose={async () => {}} onScroll={async () => {}}
       /></>
       const instance = await render(draw(), { stdout: stdout as never, stdin: stdin as never, patchConsole: false, exitOnCtrlC: false })
+      // The redraw lands on a timer after the reply, which can outlast settle() under load.
+      const expectFocused = async (file: string) => {
+        const deadline = Date.now() + 2000
+        let target: DOMElement | undefined
+        do {
+          await new Promise(resolve => setTimeout(resolve, 5))
+          target = elements(stdout, true).find(({ node, text }) =>
+            node.nodeName === 'ink-text' && text === `[ ${file} ]`,
+          )?.node.parentNode
+        } while ((!target || getFocusManager(target).activeElement !== target) && Date.now() < deadline)
+        expect(target).toBeDefined()
+        expect(getFocusManager(target!).activeElement === target).toBe(true)
+      }
       try {
         await settle()
         requests.length = 0
@@ -3374,16 +3387,7 @@ describe('ModsPane input repair', () => {
           } else {
             for (const file of expected) {
               stdin.push(key)
-              const deadline = Date.now() + 2000
-              let target: DOMElement | undefined
-              do {
-                await new Promise(resolve => setTimeout(resolve, 5))
-                target = elements(stdout, true).find(({ node, text }) =>
-                  node.nodeName === 'ink-text' && text === `[ ${file} ]`,
-                )?.node.parentNode
-              } while ((!target || getFocusManager(target).activeElement !== target) && Date.now() < deadline)
-              expect(target).toBeDefined()
-              expect(getFocusManager(target!).activeElement === target).toBe(true)
+              await expectFocused(file)
             }
           }
           expect(requests.splice(0)).toEqual(expected)
@@ -3391,18 +3395,14 @@ describe('ModsPane input repair', () => {
           const target = renderedElement(stdout, `[ ${files[selected]} ]`, 'ink-text').parentNode!
           expect(getFocusManager(target).activeElement).toBe(target)
           stdin.push(key)
-          await settle()
           const wrapped = files[direction === 'down' ? 11 : 4]!
+          await expectFocused(wrapped)
           expect(requests.splice(0)).toEqual([wrapped])
           expect(files[selected]).toBe(wrapped)
-          const wrappedTarget = renderedElement(stdout, `[ ${wrapped} ]`, 'ink-text').parentNode!
-          expect(getFocusManager(wrappedTarget).activeElement).toBe(wrappedTarget)
           if (direction === 'down') {
             selected = 15; start = 11; focusedElement = files[selected]; drawing++
             instance.rerender(<ThemeProvider>{draw()}</ThemeProvider>)
-            await settle()
-            const restored = renderedElement(stdout, `[ ${files[selected]} ]`, 'ink-text').parentNode!
-            expect(getFocusManager(restored).activeElement).toBe(restored)
+            await expectFocused(files[selected]!)
           }
         }
       } finally {
