@@ -12,6 +12,94 @@
 - `## 2.1.88 base` 是唯一基线条目，固定放在文件末尾，不作为 release note。
 - `bun run check:changelog` 是格式规范的可执行门禁；发布时还会校验 tag 版本与最新发布条目一致。
 
+## 2026-11-06 - v2.1.297 - hooks exec-form 命令注入修复、ctrl+Enter 低延迟发送、LSP plugin 自动启用与 command plugin 来源、claude web 输入框重做与引用回复、Teams 与 headless 退出修复
+
+### 版本状态
+
+- 发布候选：`dev` 合并到 `master` 后打 tag `v2.1.297`。本条目汇总 `v2.1.296` tag（master `7afd831`）之后至 PR #905 的全部变更，来自 11-05 与 11-06 两次全面测试；`Makefile VERSION`、README 与构建文档的发布版本同步为 `2.1.297`，`package.json` 保持 `0.0.0-dev`。版本号与官方版本号无对应关系（本轮对照基线为官方 2.1.318）。
+
+### 关联提交
+
+- PR 合并提交（`git log --first-parent 7afd831..dev`）：#812 11-05 全面测试 23 项修复（Agent、Teams、启动退出、hooks 权限、Mods、Web、Prompt）；#815 PR CI 关键路径缩短、没拿到 runner 的 job 自动重跑、release 并行构建；#795、#820 Windows 沙箱用户 profile；#818 第一轮修复的复现测试、web 404 判断与 Mods Unix socket 重定向；#822、#824 构建缓存、e2e 去重构建、单测分片平衡、合并时自动关 issue 与 automerge；#827 给忙碌的 agent/teammate 发的消息切换视图后仍可见；#829 OAuth User-Agent/stainless 同步官方 2.1.318、Codex 客户端 0.166.0；#831 网关回复缺 `usage` 时 `/model` 校验崩溃；#832 网页一次只接一条 socket；#834、#841 ctrl+Enter 立即发送；#836 Ctrl+O 崩溃；#839 Mods 流式中断超时、ChatGPT 启动不等用量查询；#843 `query.promptCompose` 单测隔离；#863 Web UI 8 项修复；#866 会话标题请求与 Rewind 列表；#874 SDK/headless；#875 `-p`/SDK `--agent`；#876 hooks exec-form 与 async 输出；#877 plugin marketplace 与 validate；#878 plugin 的 workflows 目录；#880 社区 mod 加载兼容与 hook 错误显示；#881 channel reply 工具；#883 网页立即发送；#884 恢复并行工具调用；#887 spinner；#888 网页 Teams 待办；#891 LSP 工具与 command plugin 来源；#893、#903 选择器 Tab 后的按键；#895 网页输入框；#897 Mods Worker 崩溃警告；#899 网页引用回复；#901 网页本地打开；#905 预览旁对话区可拖动宽度。
+- 对应 issue：#791、#798、#799、#800、#801、#802、#803、#804、#805、#806、#807、#808、#809、#810、#811、#813、#814、#816、#817、#819、#821、#823、#825、#826、#830、#833、#835、#837、#838、#840、#842、#844、#845、#846、#847、#848、#849、#850、#851、#852、#853、#854、#855、#856、#857、#858、#859、#860、#861、#862、#864、#865、#867、#868、#869、#870、#871、#872、#873、#879、#882、#885、#886、#889、#890、#892、#894、#896、#898、#900、#904。
+
+### 变更内容
+
+#### 需要用户处理的行为变化
+
+- 带 `args` 的 command hook（官方 2.1.318 的 exec 形式）直接以参数启动 `command`，不经过 shell。此前 `args` 被丢弃，`sh` 把 hook 的 stdin JSON 当脚本执行：hook 不运行，prompt 或工具输入里的 `$(...)` 会被执行（安全修复，#850）。
+- 安装了提供语言服务器的 plugin 时 LSP 工具自动启用，不再需要 `ENABLE_LSP_TOOL`（#889）。
+- 支持官方的 `command` plugin 来源：`plugin install`/`plugin update` 先显示要执行的指令，交互时问 y/N，非交互需加 `-y/--yes`；指令变更后再次询问；与官方不同，只在 update 时重跑指令，不在每次启动时后台重跑（#890）。
+- ctrl+Enter 按官方的低延迟发送：每 200ms 决定如何把排队的输入送给模型，运行中的前台 Bash/agent 移到后台、输入在下一个工具边界加入，只在模型输出文字时打断回合并保留已输出的部分；排队的 bash 与斜杠命令仍打断回合（#840、#833）。
+- Mods 声明 `tool.call` hook 时恢复并行工具调用，并发只取决于工具的 `isConcurrencySafe`，与官方 2.1.318 一致（#868）。
+- 会话标题请求遵守 `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`，失败只重试一次（#864）。
+
+#### 安全
+
+- hooks exec-form 命令注入（#850，见上）。
+- Mods `http.fetch` 经 Unix socket 时拒绝跨源重定向，同源跳转照常跟随（#816）。
+
+#### Agent 与 Teams
+
+- headless leader 在 teammate 全部离开后退出；teammate 从 team 任务列表认领任务，启动时认领的任务会被执行；失败时离开 team，被停止的 teammate 保留成员资格以便恢复（#798、#799、#800、#801、#802）。
+- 异步 subagent 的 `TaskStop` 能找到根任务；已结束的前台 agent 的子通知改投主线程，仍在运行的后台 agent 不受影响（#803、#804）。
+- `-p`/SDK 的 `--agent` 应用该 agent 的 `tools`、`disallowedTools` 与 `Agent(type)` 限制（#867）。
+- 给运行中的 agent 或 teammate 输入的消息切换视图后仍然可见（#825、#826）。
+- Rewind 列表不再列出“背景 agent 已停止”通知（#865）。
+
+#### 启动、退出与 SDK/headless
+
+- 不带 `-p` 的非交互运行恢复终端模式，`-p` 启动期间 Ctrl+C 有效；headless 中逃逸的错误打印并以 1 退出，不再挂起或静默退出 0；一个 cleanup 失败不再跳过其余 cleanup 与会话落盘；OpenAI provider 不再预连 `api.anthropic.com`（#805、#806、#807）。
+- `-p`/SDK 只在确有 shell 运行时才等待 shell 结果，退出比官方更快；中断工具时不再在 `result.errors` 泄露 abort 堆栈，也不再列入 `permission_denials`；`--json-schema` 撞上 Stop hook 上限时 result 不再为空；前台与嵌套 agent 的 task 事件（`task_updated`、`parent_task_id`）与官方一致（#869–#873）。
+- 网关回复缺少 `usage` 时 `/model` 校验不再崩溃（#830）。
+- OAuth 路径的 User-Agent 与 stainless 版本同步官方 2.1.318，`/api/oauth/*` 补 User-Agent；Codex 客户端版本 0.166.0。
+- ChatGPT 登录启动时不再等用量查询（#838）。
+
+#### TUI
+
+- spinner 从回合开始就显示用时与 token 数，与官方一致（#886）。
+- Ctrl+O 切换 transcript 不再报 “Rendered fewer hooks” 崩溃（#835）。
+- bash 模式 Tab 补全只在本地执行的会话中生效（#811）。
+- 选择器 Tab 前进期间输入的按键留给下一个字段；plugin 选项 ↓ 后立刻 Tab 不再用旧选项（#892）。
+
+#### hooks、权限与 plugins
+
+- async hook 的 stdin EPIPE 被处理，回调 hook 的错误相互隔离，plan 文件只匹配本会话的文件（#808）。
+- async hook 完成后报告真实输出，不再显示 “Output truncated (0KB total)”（#852）。
+- 能加载带新来源类型的官方 marketplace；`plugin validate` 在 `plugin.json` 未写 `types` 时使用 `types/index.d.ts`，不再误报（#851、#853）。
+- plugin 的 `workflows/` 目录按 `plugin:name` 加载（#854）。
+
+#### Mods 与 channels
+
+- loader 接受官方可加载的社区 mod 写法：matcher 简写 `{ command }`、helper 参数 `$`、module graph 上限 4096 文件、`var` 声明与条件式 `let` 函数、循环或函数计算出的 matcher；72 个社区 mod 的 validate 由 39 个通过变为全部通过（#844、#845、#846、#849、#879）。
+- Mod hook 失败显示在 TUI transcript，不再写 raw stderr（#847）；一个 Worker 崩溃不再刷出连锁警告（#896）。
+- 流式中断时 generator 不结束只放弃该次调用，Worker 保留（#837）；environment `activeCalls` 按环境与调用区分，`http.fetch` 透传 `socketPath`（#809）。
+- 本会话监听的 channel 的 reply 工具不再藏在 ToolSearch 后面（#848）。
+
+#### claude web
+
+- 输入框参照 dsh web 重做：`+`、模式、模型与发送收进同一张卡片，窄屏只保留模式图标，菜单在手机上不出屏（#894）。
+- 选中消息或其中一段可引用回复，以 Markdown `> ` 引用块发送；会话、项目协调者、项目任务与子代理对话都支持（#898）。
+- cwd 标签打开会话目录，文件预览可“本地打开”和“打开所在目录”，只对本机浏览器开放，服务端只允许会话内路径（#900）。
+- 文件预览旁的对话区可拖动调整宽度，输入框控制行不再换行（#904）。
+- 立即发送与 TUI 一致：运行中的 Bash 转到后台，消息随工具结果送出（#882）。
+- Agent Teams 待办与 Status 读共享任务列表，teammate 完成的任务不再停在 0/N（#885）。
+- 默认权限模式显示为 “manual mode on”；审批框发送后立即接管按键；Files 只列出已应用的编辑；工具错误去掉 `<tool_use_error>` 包装；最近卡片摘要裁到三行；协调者 Agent 调用失败显示为失败的工具；小 token 数格式化；Status 统计运行中的后台任务（#855–#862）。
+- 打开并接入运行中的未命名会话、关闭时结束挂起请求、接入失败后恢复；多选 @ 时先打开第一个；一次只接一条 socket，连接中发送的消息不丢失；404 按状态码判断（#810、#813、#817、#823）。
+
+#### 构建与 CI
+
+- 构建按源文件缓存 React Compiler 输出，`make build` 第二次起约 25 s；e2e 每个 job 只构建一次，单测按实测耗时分 5 片；合并进 `dev` 时自动关闭关联 issue，`automerge` 标签在 CI 全绿后自动合并；PR 模板与 `bun run check:changed`（#821）。
+- PR 关键路径缩短，没拿到 runner 的 job 自动重跑，release 与源码检查并行构建（#814）。
+- `claude sandbox install` 在 Windows 上创建沙箱用户的 profile，首次会话不再因 30 s 的 WFP 检查超时失败（#791、#819）。
+
+### 测试覆盖
+
+- 11-05 全面测试（PR #812、#818）与 11-06 全面测试按子系统分六条线并行：TUI、Mods 与 channels、SDK/headless、Agent/Teams、plugins/hooks、claude web；每条线第一轮发现的问题都开 issue 并修复，第二、三轮在合并后的 `dev` 上用重建的 binary 复测，均无新问题。报告在项目共享目录 `regression/*-1106/report.md`。
+- TUI：tmux 驱动，与官方 2.1.318 对照，第三轮 35/35 通过。Mods：72/72 社区 mod validate、repro mod、band/pane/status/toast 与 fakechat 频道插件。SDK/headless：TS SDK 0.3.318 33/34（剩余 1 个是 harness 超时，官方相同）、Python SDK 0.2.178 8/8、CLI 参数矩阵 57 例无差异。Agent/Teams：14/14。plugins/hooks：第三方 plugin 16/16，192 个 `plugin validate` 与官方只差 4 个保留名规则。claude web：e2e 28/28，真实模型的项目并行 worker 与 Teams 待办。
+- 项目回归项：外部 SIGINT 时 SessionEnd hook 执行、`CI=true` 无凭证 `claude -p` 报错退出、team shutdown 后成员从 `config.json` 移除，均在重建的 binary 上通过。
+- PR CI：单测 5 片、lint 与 tsc、Linux 沙箱、官方对照、Linux/macOS/Windows e2e 与 web e2e；`dev` 最后一次合并（#905）全部通过。
+
 ## 2026-10-30 - v2.1.296 - Agent 生命周期与 Teams 修复、内嵌 bfs/ugrep 搜索、coordinator 模式、/hooks /theme /config 对齐官方 2.1.311、权限模式转换修复、claude web 本地网页界面与项目模式
 
 ### 版本状态

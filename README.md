@@ -33,7 +33,7 @@ https://github.com/user-attachments/assets/064b525d-945d-462b-a7c3-a2ea4fdf5288
 - JavaScript 构建产物：`dist/cli.js`
 - 本地 binary：`built-claude`
 
-当前发布版本为 `2.1.296`；发布历史、具体变更和验收边界统一记录在 [`CHANGELOG.md`](CHANGELOG.md)。
+当前发布版本为 `2.1.297`；发布历史、具体变更和验收边界统一记录在 [`CHANGELOG.md`](CHANGELOG.md)。
 
 ## 安装与运行
 
