@@ -118,6 +118,9 @@ import {
   type LocalAgentTaskState,
 } from '../tasks/LocalAgentTask/LocalAgentTask.js'
 import { deliverTaskMessage, queuedUserMessages } from '../tasks/deliverTaskMessage.js'
+import { backgroundTaskForToolUse } from '../tasks/LocalShellTask/LocalShellTask.js'
+import { isLocalShellTask } from '../tasks/LocalShellTask/guards.js'
+import { createSendNow, isSendNowCommand, isSendNowPrompt } from '../utils/sendNow.js'
 import { capitalize } from '../utils/stringUtils.js'
 import {
   registerLeaderToolUseConfirmQueue,
@@ -2453,6 +2456,48 @@ export function REPL({
 
   const hasInterruptibleToolInProgressRef = useRef(false)
 
+  // ctrl+enter on a queued typed prompt (official's low-latency submit): move a
+  // running shell/agent to the background so the prompt joins at the next tool
+  // boundary, wait out dialogs and compaction, and cut the turn only when the
+  // model is writing or a tool cannot move.
+  const inProgressToolUseIDsRef = useRef(inProgressToolUseIDs)
+  inProgressToolUseIDsRef.current = inProgressToolUseIDs
+  const sendNowHeldByDialogRef = useRef(false)
+  sendNowHeldByDialogRef.current =
+    toolUseConfirmQueue.length > 0 || sandboxPermissionRequestQueue.length > 0 ||
+    promptQueue.length > 0 || elicitation.queue.length > 0
+  const compactingRef = useRef(false)
+  const sendNow = useMemo(() => createSendNow({
+    hasPrompt: () => getCommandQueue().some(isSendNowPrompt),
+    readEvidence: () => {
+      const running = inProgressToolUseIDsRef.current
+      const movableToolUseIds = isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS)
+        ? []
+        : Object.values(store.getState().tasks).flatMap(task =>
+            (isLocalShellTask(task) || isLocalAgentTask(task)) && task.status === 'running' &&
+            !task.isBackgrounded && task.agentId === undefined &&
+            task.toolUseId !== undefined && running.has(task.toolUseId)
+              ? [task.toolUseId]
+              : [])
+      return {
+        turnActive: queryGuard.isActive && abortControllerRef.current?.signal.aborted === false,
+        heldByDialog: sendNowHeldByDialogRef.current,
+        compacting: compactingRef.current,
+        runningToolUseIds: running,
+        movableToolUseIds,
+        sampling: ['requesting', 'responding', 'thinking'].includes(streamModeRef.current),
+      }
+    },
+    moveToBackground: toolUseIds => toolUseIds.filter(id =>
+      backgroundTaskForToolUse(id, store.getState, setAppState)),
+    interrupt: () => abortControllerRef.current?.abort('interrupt'),
+    schedule: (run, ms) => {
+      const timer = setTimeout(run, ms)
+      return () => clearTimeout(timer)
+    },
+  }), [store, setAppState, queryGuard])
+  useEffect(() => sendNow.dispose, [sendNow])
+
   const [pastedContents, setPastedContentsState] = useState<
     Record<number, PastedContent>
   >({})
@@ -4224,9 +4269,11 @@ export function REPL({
               )
               break
             case 'compact_start':
+              compactingRef.current = true
               setSpinnerMessage('Compacting conversation')
               break
             case 'compact_end':
+              compactingRef.current = false
               setSpinnerMessage(null)
               setSpinnerColor(null)
               setSpinnerShimmerColor(null)
@@ -5417,12 +5464,11 @@ export function REPL({
       }
 
       if (!input.trim()) {
-        if (
-          options?.sendNow &&
-          queryGuard.isActive &&
-          getCommandQueue().some(command => command.mode === 'prompt' || command.mode === 'bash')
-        ) {
-          abortControllerRef.current?.abort('interrupt')
+        if (options?.sendNow && queryGuard.isActive) {
+          const queue = getCommandQueue()
+          // Bash and slash commands run only after the turn, so cut it for them.
+          if (queue.some(isSendNowCommand)) abortControllerRef.current?.abort('interrupt')
+          else if (queue.some(isSendNowPrompt)) sendNow.request()
         }
         return
       }
@@ -5859,6 +5905,11 @@ export function REPL({
       // The managed remote child owns SessionStart hooks and attachments.
       if (!isRemoteExecutionSession) await awaitPendingHooks().catch(restoreOnError)
 
+      // A typed prompt joins the running turn through send-now's delivery check;
+      // bash and slash commands only run after the turn, so they cut it.
+      const sendNowWhileBusy = queryGuard.isActive
+      const sendNowCutsTurn = options?.sendNow === true &&
+        (submittedInputMode !== 'prompt' || input.trim().startsWith('/'))
       await handlePromptSubmit({
         onInputRun: beginModSelectionRun,
         input,
@@ -5897,10 +5948,10 @@ export function REPL({
         // handlePromptSubmit only uses it for debug log + telemetry event.
         streamMode: streamModeRef.current,
         hasInterruptibleToolInProgress:
-          options?.sendNow === true ||
-          hasInterruptibleToolInProgressRef.current,
+          sendNowCutsTurn || hasInterruptibleToolInProgressRef.current,
         skipLocalContext: isRemoteExecutionSession,
       }).catch(restoreOnError)
+      if (options?.sendNow && !sendNowCutsTurn && sendNowWhileBusy) sendNow.request()
 
       restoreStash()
     },
@@ -5940,6 +5991,7 @@ export function REPL({
       awaitMods,
       beginModSelectionRun,
       repinScroll,
+      sendNow,
     ],
   )
 
