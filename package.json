@@ -75,6 +75,7 @@
     "webcrack": "^2.16.0"
   },
   "dependencies": {
+    "@aiden0z/pptx-renderer": "1.4.0",
     "@alcalzone/ansi-tokenize": "^0.3.0",
     "@anthropic-ai/bedrock-sdk": "^0.26.4",
     "@anthropic-ai/claude-agent-sdk": "^0.2.89",

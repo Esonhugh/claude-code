@@ -655,6 +655,79 @@ function DocxView({ url, t }: { url: string; t: T }) {
   )
 }
 
+/** Links a slide may keep: absolute web and mail ones (a deck can name any URL, `javascript:` included). */
+export function safeSlideLink(href: string): boolean {
+  try {
+    return ['http:', 'https:', 'mailto:'].includes(new URL(href).protocol)
+  } catch {
+    return false
+  }
+}
+
+/** Slides drawn in the browser, for a .pptx the server has no soffice to convert (#909). */
+function SlidesView({ url, t }: { url: string; t: T }) {
+  const box = useRef<HTMLDivElement>(null)
+  const [ready, setReady] = useState(false)
+  const [error, setError] = useState<unknown>()
+  useEffect(() => {
+    const el = box.current
+    if (!el) return
+    let live = true
+    let viewer: { destroy: () => void } | undefined
+    setReady(false)
+    setError(undefined)
+    Promise.all([fetchOk(url), import('@aiden0z/pptx-renderer')])
+      .then(async ([res, lib]) => {
+        const data = await res.arrayBuffer()
+        if (!live) return
+        const opened = await lib.PptxViewer.open(data, el, {
+          zipLimits: lib.RECOMMENDED_ZIP_LIMITS,
+          // Nothing is fetched on the deck's behalf, and no PDF.js comes from a CDN.
+          externalMedia: 'block',
+          pdfjs: false,
+          scrollContainer: el.closest<HTMLElement>('.preview-body') ?? undefined,
+          onSlideRendered: (_, slide) => {
+            for (const a of slide.querySelectorAll('a[href]')) {
+              if (!safeSlideLink(a.getAttribute('href') ?? '')) a.removeAttribute('href')
+            }
+          },
+        })
+        if (live) {
+          viewer = opened
+          setReady(true)
+        } else opened.destroy()
+      })
+      .catch((err: unknown) => live && setError(err))
+    return () => {
+      live = false
+      viewer?.destroy()
+    }
+  }, [url])
+  if (error) throw error
+  return (
+    <>
+      {!ready && <div className="preview-note">{t('loading')}</div>}
+      <div className="slides" ref={box} />
+    </>
+  )
+}
+
+/** A .pptx: the soffice PDF when the server can convert it, otherwise the slides drawn here. */
+function PptxView({ sessionId, path, t }: { sessionId: string; path: string; t: T }) {
+  const pdf = fileUrl(sessionId, path, { pdf: true })
+  const { value: converted, error } = useLoad(async () => {
+    // A one-byte GET: a HEAD would be turned away for carrying no Origin.
+    const res = await fetch(pdf, { headers: { Range: 'bytes=0-0' } })
+    void res.body?.cancel()
+    if (res.status === 501) return false
+    if (!res.ok) throw new HttpError(res.status)
+    return true
+  }, [pdf])
+  if (error) throw error
+  if (converted === undefined) return <div className="preview-note">{t('loading')}</div>
+  return converted ? <PdfView url={pdf} t={t} /> : <SlidesView url={fileUrl(sessionId, path)} t={t} />
+}
+
 function TextView({
   url,
   render,
@@ -712,7 +785,11 @@ function Body({
     case 'pdf':
       return <PdfView url={url} t={t} />
     case 'office':
-      return <PdfView url={fileUrl(sessionId, path, { pdf: true })} t={t} />
+      return extension(path) === 'pptx' ? (
+        <PptxView sessionId={sessionId} path={path} t={t} />
+      ) : (
+        <PdfView url={fileUrl(sessionId, path, { pdf: true })} t={t} />
+      )
     case 'xlsx':
       return <XlsxView url={url} t={t} />
     case 'docx':
