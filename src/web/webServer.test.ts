@@ -913,6 +913,62 @@ describe('claude web server', () => {
 })
 
 describe('GET /api/peers', () => {
+  it('starts a session with its profile and own entries, and restarts it when they change', async () => {
+    const r = start()
+    const cookie = await signIn(r)
+    const headers = { cookie, origin: r.origin }
+    const json = async (path: string, method = 'GET', body?: object) => {
+      const res = await fetch(`${r.base}/api${path}`, { method, headers, ...(body && { body: JSON.stringify(body) }) })
+      return { status: res.status, body: res.status === 204 ? undefined : await res.json() }
+    }
+    const waitFor = async (check: () => boolean) => {
+      for (let i = 0; i < 200 && !check(); i++) await Bun.sleep(10)
+      expect(check()).toBe(true)
+    }
+    // Without a config a session gets the new-session default channels, as before.
+    mkdirSync(join(r.configDir, 'web'), { recursive: true })
+    writeFileSync(join(r.configDir, 'web', 'channels.json'), JSON.stringify({ channels: ['plugin:telegram@m'] }))
+    await json('/sessions', 'POST', {})
+    expect(r.spawned[0]).toMatchObject({ channels: ['plugin:telegram@m'] })
+    expect(r.spawned[0]!.settings).toBeUndefined()
+
+    expect((await json('/profiles', 'POST', { name: 'x', config: { channels: ['--x'] } })).status).toBe(400)
+    const profile = (await json('/profiles', 'POST', { name: 'fakechat', config: { channels: ['plugin:fakechat@m'], mcp: { db: false } } }))
+      .body as { id: string }
+    expect((await json('/profiles')).body).toMatchObject([{ id: profile.id, name: 'fakechat' }])
+    const created = (await json('/sessions', 'POST', { profile_id: profile.id, config: { plugins: { 'mod@m': false } } })).body as {
+      session_id: string
+    }
+    expect(r.spawned[1]!.channels).toEqual(['plugin:fakechat@m'])
+    expect(JSON.parse(r.spawned[1]!.settings!)).toEqual({ enabledPlugins: { 'mod@m': false }, sessionMcpServers: { db: false } })
+    expect((await json(`/sessions/${created.session_id}/config`)).body).toEqual({
+      profile_id: profile.id,
+      config: { plugins: { 'mod@m': false } },
+      effective: { plugins: { 'mod@m': false }, mcp: { db: false }, channels: ['plugin:fakechat@m'] },
+    })
+
+    // Its own entries change: the process restarts with --resume and the new flags.
+    const put = await json(`/sessions/${created.session_id}/config`, 'PUT', { profile_id: profile.id, config: { hooks: false } })
+    expect(put.body).toMatchObject({ restart: 'restarted' })
+    await waitFor(() => r.spawned.length === 3)
+    expect(r.spawned[2]).toMatchObject({ sessionId: created.session_id, resume: true, channels: ['plugin:fakechat@m'] })
+    expect(JSON.parse(r.spawned[2]!.settings!)).toEqual({ sessionMcpServers: { db: false }, disableAllHooks: true })
+    // The same config again changes nothing.
+    expect((await json(`/sessions/${created.session_id}/config`, 'PUT', { profile_id: profile.id, config: { hooks: false } })).body).toMatchObject({
+      restart: 'unchanged',
+    })
+
+    // Editing the profile restarts the sessions that use it; deleting it leaves their own entries.
+    await json(`/profiles/${profile.id}`, 'PUT', { name: 'none', config: { channels: [] } })
+    await waitFor(() => r.spawned.length === 4)
+    expect(r.spawned[3]!.channels).toBeUndefined()
+    expect((await json(`/profiles/${profile.id}`, 'DELETE')).status).toBe(204)
+    await waitFor(() => r.spawned.length === 5)
+    expect(r.spawned[4]!.channels).toEqual(['plugin:telegram@m'])
+    expect((await json(`/sessions/${created.session_id}/config`)).body).toMatchObject({ profile_id: null, config: { hooks: false } })
+    expect((await json(`/sessions/${created.session_id}/config`, 'PUT', { profile_id: profile.id, config: {} })).status).toBe(400)
+  })
+
   it('lists live sessions with a messaging socket in that folder only', async () => {
     const r = start()
     const cookie = await signIn(r)

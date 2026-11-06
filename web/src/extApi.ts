@@ -1,7 +1,7 @@
 // Client for /api/ext (src/web/extensions.ts): the sidebar dialogs' data.
 
-async function call<T>(method: string, path: string, body?: unknown): Promise<T> {
-  const res = await fetch(`/api/ext/${path}`, {
+async function call<T>(method: string, path: string, body?: unknown, base = '/api/ext/'): Promise<T> {
+  const res = await fetch(`${base}${path}`, {
     method,
     ...(body !== undefined && {
       headers: { 'Content-Type': 'application/json' },
@@ -59,7 +59,21 @@ export type ChannelPlugin = {
   server: string
   pluginEnabled: boolean
   def: boolean
+  /** Live sessions listening on it; `connected` when its server there is up. */
+  sessions?: { id: string; connected: boolean }[]
+  /** The session that gets its messages: the newest one whose server is connected. */
+  receiver?: string | null
 }
+
+/** What one session loads on top of the global settings (src/web/sessionConfig.ts). */
+export type SessionConfig = {
+  plugins?: Record<string, boolean>
+  mcp?: Record<string, boolean>
+  channels?: string[]
+  hooks?: false
+}
+
+export type Profile = { id: string; name: string; config: SessionConfig }
 
 export type MemoryFile = {
   id: string
@@ -160,4 +174,26 @@ export const ext = {
   modSource: (id: string) => call<{ source: string }>('GET', `mods/${enc(id)}/source`),
   saveModSource: (id: string, source: string) => call<void>('PUT', `mods/${enc(id)}/source`, { source }),
   stats: () => call<Stats>('GET', 'stats'),
+}
+
+export const sessionConfig = {
+  profiles: () => call<Profile[]>('GET', 'profiles', undefined, '/api/'),
+  createProfile: (name: string, config: SessionConfig) => call<Profile>('POST', 'profiles', { name, config }, '/api/'),
+  saveProfile: (id: string, name: string, config: SessionConfig) =>
+    call<Profile>('PUT', `profiles/${enc(id)}`, { name, config }, '/api/'),
+  deleteProfile: (id: string) => call<void>('DELETE', `profiles/${enc(id)}`, undefined, '/api/'),
+  get: (sessionId: string) =>
+    call<{ profile_id: string | null; config: SessionConfig; effective: SessionConfig }>(
+      'GET',
+      `sessions/${enc(sessionId)}/config`,
+      undefined,
+      '/api/',
+    ),
+  set: (sessionId: string, profile_id: string | null, config: SessionConfig) =>
+    call<{ restart: 'restarted' | 'pending' | 'unchanged' | null }>(
+      'PUT',
+      `sessions/${enc(sessionId)}/config`,
+      { profile_id, config },
+      '/api/',
+    ),
 }

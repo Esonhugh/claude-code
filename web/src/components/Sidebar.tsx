@@ -28,6 +28,7 @@ export type DialogKind =
   | 'plugins'
   | 'memory'
   | 'hooks'
+  | 'session'
   | 'settings'
   | 'stats'
   | 'keys'
@@ -528,6 +529,7 @@ export function Sidebar({
     { kind: 'plugins', ico: '⧉', label: t('plugins') },
     { kind: 'memory', ico: 'M', label: t('memory') },
     { kind: 'hooks', ico: '↯', label: 'Hooks' },
+    { kind: 'session', ico: '◫', label: t('sessionConfig') },
   ]
   const empty = !pins.length && !tempRows.length && !dirs.length && !projectRows.length
 

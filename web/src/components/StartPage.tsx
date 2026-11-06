@@ -83,6 +83,7 @@ export function StartPage({
   history,
   tempRoot,
   models,
+  profiles,
   commands,
   daybreak,
   draft,
@@ -108,6 +109,8 @@ export function StartPage({
   history: HistoryEntry[]
   tempRoot?: string
   models: ModelOption[]
+  /** Session config profiles a new session can start from. */
+  profiles: { id: string; name: string }[]
   /** The last session's `/` commands; the start page has no session to ask. */
   commands: SlashCommand[]
   daybreak?: { value: string; onChange: (value: Daybreak) => void }
@@ -288,6 +291,36 @@ export function StartPage({
                 />
               )}
             </FootMenu>
+            {profiles.length > 0 && (
+              <FootMenu
+                menuClass="pop wl-pick wl-modes"
+                fixed
+                right
+                label={t('sessionConfig')}
+                buttonProps={{ 'data-start-profile': '' }}
+                button={profiles.find(p => p.id === options.profile)?.name ?? t('noProfile')}
+              >
+                {close => (
+                  <>
+                    {[{ id: '', name: t('noProfile') }, ...profiles].map(p => (
+                      <button
+                        type="button"
+                        role="menuitemradio"
+                        key={p.id}
+                        aria-checked={(options.profile ?? '') === p.id}
+                        onClick={() => {
+                          setOptions({ profile: p.id || undefined })
+                          close()
+                        }}
+                      >
+                        <span className="mono">◫</span>
+                        <span>{p.name}</span>
+                      </button>
+                    ))}
+                  </>
+                )}
+              </FootMenu>
+            )}
             {models.length > 0 && (
               <FootMenu
                 menuClass="pop wl-pick wl-models"

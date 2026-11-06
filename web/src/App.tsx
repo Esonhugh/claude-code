@@ -62,6 +62,7 @@ import {
 import { agentInputs, messageTarget, notesByItem, taskNoteText } from './projects'
 import { turnSources } from './sources'
 import { appReducer, type HistoryEntry, initialAppState, type SessionChat } from './store'
+import { type Profile, sessionConfig } from './extApi'
 import { nativeCommand, type SlashCommand } from './commands'
 import { previewTarget, WebPreviewContext } from './webPreview'
 
@@ -177,6 +178,12 @@ export function App() {
   const [keyDialog, setKeyDialog] = useState<AuthProvider>()
   const [webSettings, setWebSettings] = useState<WebSettings>()
   const [projects, setProjects] = useState<Project[]>([])
+  // Session config profiles for the start page's picker; reread when a dialog closes.
+  const [profiles, setProfiles] = useState<Profile[]>([])
+  useEffect(() => {
+    if (dialog) return
+    sessionConfig.profiles().then(setProfiles, () => {})
+  }, [dialog])
   const projectsRef = useRef(projects)
   projectsRef.current = projects
   // The project shown in place of the chat; its coordinator is `state.view`.
@@ -957,7 +964,7 @@ export function App() {
     const pending = attachments[''] ?? []
     if (!text && !pending.length) return
     if (!pending.length && openNative(text, '')) return
-    const { cwd, mode, model, temporary, effort } = state.start
+    const { cwd, mode, model, temporary, effort, profile } = state.start
     setTrustDir(undefined)
     let createdId: string | undefined
     try {
@@ -965,6 +972,7 @@ export function App() {
         ...(temporary ? { temporary: true } : cwd && { cwd, ...(trust && { trust }) }),
         ...(mode !== 'default' && { permission_mode: mode }),
         ...(model && { model }),
+        ...(profile && profiles.some(p => p.id === profile) && { profile_id: profile }),
       })
       const id = created.session_id
       createdId = id
@@ -1393,6 +1401,7 @@ export function App() {
       history={state.history.filter(h => !h.archived && !h.projectId)}
       tempRoot={info.tempRoot}
       models={models}
+      profiles={profiles}
       commands={knownCommands}
       daybreak={daybreak}
       draft={drafts[''] ?? ''}
@@ -1793,6 +1802,8 @@ export function App() {
           t={t}
           lang={lang}
           control={control}
+          sessionId={view ?? undefined}
+          titleOf={id => state.history.find(h => h.id === id)?.title ?? id.slice(0, 8)}
           onClose={() => {
             setDialog(undefined)
             setSettingsTab(undefined)

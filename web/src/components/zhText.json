@@ -1,6 +1,126 @@
 {
 "en": [
 [
+"mods 也是 hooks，会一起停用",
+"Mods are hooks too and stop with them"
+],
+[
+"会话先用模版，再叠加下面单独调整的项",
+"The session starts from the profile, then the entries adjusted below"
+],
+[
+"保存并应用",
+"Save and apply"
+],
+[
+"保存模版",
+"Save profile"
+],
+[
+"另外启用了但收不到的会话：",
+"other sessions with it on that get nothing: "
+],
+[
+"启用它的会话都没有连上它的服务器，消息没人收",
+"No session with it on has its server connected; nobody gets its messages"
+],
+[
+"在这个会话停用全部 hooks",
+"Disable all hooks in this session"
+],
+[
+"存为模版",
+"Save as profile"
+],
+[
+"已保存，下次打开会话时生效",
+"Saved; applies the next time the session starts"
+],
+[
+"已保存，会话正在用新配置重启",
+"Saved; the session is restarting with the new config"
+],
+[
+"已保存，当前回合结束后会话会用新配置重启",
+"Saved; the session restarts with the new config when this turn ends"
+],
+[
+"打开一个会话后才能配置它。",
+"Open a session to configure it."
+],
+[
+"打开一个运行中的会话后才能列出 MCP 服务器。",
+"Open a running session to list its MCP servers."
+],
+[
+"收消息的会话：",
+"Receiving session: "
+],
+[
+"模版已保存，使用它的运行中会话会重启",
+"Profile saved; running sessions using it restart"
+],
+[
+"没有带 hook 模块的插件。",
+"No plugin has a hook module."
+],
+[
+"自定义后，只有选中的 channel 会在这个会话启动它的 MCP 服务器",
+"When customized, only the selected channels start their MCP server in this session"
+],
+[
+"跟随新会话默认",
+"Follows the new-session default"
+],
+[
+"自定义 channels",
+"Customize channels"
+],
+[
+"跟随（关）",
+"Follow (off)"
+],
+[
+"跟随（开）",
+"Follow (on)"
+],
+[
+"还没有模版。",
+"No profiles yet."
+],
+[
+"模版名称",
+"Profile name"
+],
+[
+"编辑模版",
+"Edit profile"
+],
+[
+"新建模版",
+"New profile"
+],
+[
+"跟随模版",
+"Follows the profile"
+],
+[
+"不用模版",
+"No profile"
+],
+[
+"新模版",
+"New profile"
+],
+[
+"自定义",
+"Custom"
+],
+[
+"模版",
+"Profile"
+],
+[
 "启用后才在本会话启动它的 MCP 服务器",
 "Its MCP server starts in this session once enabled"
 ],
@@ -1399,5 +1519,5 @@
 "頁"
 ]
 ],
-"chars": "项項对對结結长長时時写寫现現占佔条條标標户戶装裝发發续續范範还還围圍跃躍开開并並个個审審忆憶转轉检檢声聲设設没沒历歷记記场場应應这這运運动動关關号號闭閉话話刚剛间間载載钟鍾请請编編侧側败敗连連权權辑輯签籤随隨较較页頁认認峰峯准準远遠会會输輸临臨内內删刪后後评評里裏启啓过過读讀务務账賬录錄"
+"chars": "项項对對结結长長时時写寫现現占佔条條标標户戶装裝发發续續范範还還围圍跃躍开開并並个個审審忆憶转轉检檢声聲设設没沒历歷记記场場应應这這运運动動关關号號闭閉话話刚剛间間载載钟鍾请請编編侧側败敗连連权權辑輯签籤随隨较較页頁认認峰峯准準远遠会會输輸临臨内內删刪后後评評里裏启啓过過读讀务務账賬录錄单單选選调調为為带帶块塊叠疊义義当當称稱"
 }

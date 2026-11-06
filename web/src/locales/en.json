@@ -91,6 +91,8 @@
   "searchSessions": "Search sessions",
   "extensions": "Extensions",
   "plugins": "Plugins",
+  "sessionConfig": "Session config",
+  "noProfile": "No profile",
   "memory": "Memory",
   "settings": "Settings",
   "shortcuts": "Shortcuts",

@@ -91,6 +91,8 @@
   "searchSessions": "搜索会话",
   "extensions": "扩展",
   "plugins": "插件",
+  "sessionConfig": "会话配置",
+  "noProfile": "不用模版",
   "memory": "记忆",
   "settings": "设置",
   "shortcuts": "快捷键",

@@ -10,6 +10,7 @@ import { getModelInfos } from '../utils/model/modelInfos.js'
 import { ensureModelStringsInitialized } from '../utils/model/modelStrings.js'
 import type { ServerLogger } from '../server/serverLog.js'
 import {
+  channelKey,
   type SessionManager,
   SessionManagerError,
 } from '../server/sessionManager.js'
@@ -43,6 +44,7 @@ import { type AccountBackend, createAccountApi } from './account.js'
 import { coordinatorSpawn } from './coordinator.js'
 import { deleteSessionMeta, openProjectsDb, patchSessionMeta, type Project, ProjectStore } from './projectsDb.js'
 import { deleteTranscript, loadSidebar } from './sidebar.js'
+import { mergeConfig, type SessionConfig, SessionConfigStore, sessionConfigSchema, spawnFlags } from './sessionConfig.js'
 import { parseLine, type Task, TaskStore, transcriptTokens } from './tasks.js'
 import * as ext from './extensions.js'
 import { isAllowedPeer, lanHostNames } from './network.js'
@@ -154,7 +156,16 @@ const createSessionBodySchema = lazySchema(() =>
       .string()
       .regex(/^[A-Za-z0-9][\w.:[\]/@-]{0,127}$/)
       .optional(),
+    // The session's plugins, MCP servers, channels and hooks (#796).
+    profile_id: z.string().regex(SESSION_ID).nullable().optional(),
+    config: sessionConfigSchema().optional(),
   }),
+)
+const sessionConfigBodySchema = lazySchema(() =>
+  z.object({ profile_id: z.string().regex(SESSION_ID).nullable(), config: sessionConfigSchema() }),
+)
+const profileBodySchema = lazySchema(() =>
+  z.object({ name: z.string().trim().min(1).max(100), config: sessionConfigSchema() }),
 )
 
 // A prompt the page sent, kept in the CLI's ↑ history (`history.jsonl`) under its folder.
@@ -206,6 +217,8 @@ export function normalizeProjectDir(input: string, home = homedir()): string | u
 const WS_PATH = /^\/api\/sessions\/([^/]+)\/ws$/
 const SESSION_PATH = /^\/api\/sessions\/([^/]+)$/
 const SESSION_META_PATH = /^\/api\/sessions\/([^/]+)\/meta$/
+const SESSION_CONFIG_PATH = /^\/api\/sessions\/([^/]+)\/config$/
+const PROFILE_PATH = /^\/api\/profiles(?:\/([^/]+))?$/
 const HISTORY_PATH = /^\/api\/history\/([^/]+)$/
 const HISTORY_MESSAGES_PATH = /^\/api\/history\/([^/]+)\/messages$/
 const AGENT_MESSAGES_PATH = /^\/api\/history\/([^/]+)\/agents\/([^/]+)\/messages$/
@@ -611,6 +624,104 @@ export function startWebServer(
   const tasks = () => (db(), taskStore!)
   let projectStore: ProjectStore | undefined
   const projects = () => (projectStore ??= new ProjectStore(db()))
+  let configStore: SessionConfigStore | undefined
+  const sessionConfigs = () => (configStore ??= new SessionConfigStore(db()))
+  const configDir = config.configDir ?? getClaudeConfigHomeDir()
+  /** `--channels` and `--settings` for a session's process from its effective config. */
+  const flagsOf = (effective: SessionConfig) => spawnFlags(effective, ext.readDefaultChannels(configDir))
+
+  /** Restarts a running session with its saved config, keeping its model, mode and coordinator flags. */
+  function applySessionConfig(sessionId: string): 'restarted' | 'pending' | 'unchanged' | undefined {
+    const current = sessionManager.current(sessionId)
+    if (!current) return undefined
+    const flags = flagsOf(sessionConfigs().effective(sessionId))
+    if (flags.settings === current.settings && flags.channels.join('\n') === (current.channels ?? []).join('\n')) {
+      return 'unchanged'
+    }
+    const projectId = coordinators.get(sessionId)
+    const project = projectId ? projects().get(projectId) : undefined
+    return sessionManager.restart(sessionId, {
+      ...(current.permissionMode && { permissionMode: current.permissionMode }),
+      ...(current.model && { model: current.model }),
+      ...(current.effort && { effort: current.effort }),
+      ...(project && { coordinator: coordinatorSpawn(project) }),
+      flags,
+    })
+  }
+
+  /**
+   *   GET    /api/profiles          → profiles, by name
+   *   POST   /api/profiles          → {name, config}: a new profile
+   *   PUT    /api/profiles/:id      → {name, config}; running sessions using it restart
+   *   DELETE /api/profiles/:id      → its sessions keep only their own entries
+   */
+  async function handleProfiles(req: Request, rawId: string | undefined): Promise<Response> {
+    if (rawId === undefined) {
+      if (req.method === 'GET') return Response.json(sessionConfigs().profiles())
+      if (req.method !== 'POST') return errorResponse(405, 'Method not allowed')
+      const parsed = profileBodySchema().safeParse(await readJson(req))
+      if (!parsed.success) return errorResponse(400, 'Invalid request')
+      return Response.json(sessionConfigs().saveProfile(undefined, parsed.data.name, parsed.data.config), { status: 201 })
+    }
+    const id = decodeURIComponent(rawId)
+    if (!SESSION_ID.test(id) || !sessionConfigs().profile(id)) return errorResponse(404, 'Profile not found')
+    const users = sessionConfigs().sessionsWith(id)
+    if (req.method === 'PUT') {
+      const parsed = profileBodySchema().safeParse(await readJson(req))
+      if (!parsed.success) return errorResponse(400, 'Invalid request')
+      const profile = sessionConfigs().saveProfile(id, parsed.data.name, parsed.data.config)
+      for (const sessionId of users) applySessionConfig(sessionId)
+      return Response.json(profile)
+    }
+    if (req.method === 'DELETE') {
+      sessionConfigs().deleteProfile(id)
+      for (const sessionId of users) applySessionConfig(sessionId)
+      return new Response(null, { status: 204 })
+    }
+    return errorResponse(405, 'Method not allowed')
+  }
+
+  /**
+   *   GET /api/sessions/:id/config → {profile_id, config, effective}
+   *   PUT /api/sessions/:id/config {profile_id, config} → {restart}: a running session restarts with --resume
+   */
+  async function handleSessionConfig(req: Request, id: string): Promise<Response> {
+    if (req.method === 'GET') {
+      return Response.json({ ...sessionConfigs().get(id), effective: sessionConfigs().effective(id) })
+    }
+    if (req.method !== 'PUT') return errorResponse(405, 'Method not allowed')
+    const parsed = sessionConfigBodySchema().safeParse(await readJson(req))
+    if (!parsed.success) return errorResponse(400, 'Invalid request')
+    if (parsed.data.profile_id && !sessionConfigs().profile(parsed.data.profile_id)) return errorResponse(400, 'Unknown profile')
+    sessionConfigs().set(id, { profile_id: parsed.data.profile_id ?? null, config: parsed.data.config })
+    return Response.json({ restart: applySessionConfig(id) ?? null, effective: sessionConfigs().effective(id) })
+  }
+
+  /** Each channel's live sessions; the receiver is the newest one whose channel server is connected. */
+  async function channelsWithSessions() {
+    const rows = await ext.listChannels(configDir)
+    const status = new Map<string, Promise<{ name?: unknown; status?: unknown }[]>>()
+    const serversOf = (sessionId: string) => {
+      let servers = status.get(sessionId)
+      if (!servers) {
+        servers = sessionManager
+          .request(sessionId, { subtype: 'mcp_status' })
+          .then(r => ((r?.response as { mcpServers?: unknown } | undefined)?.mcpServers as { name?: unknown; status?: unknown }[]) ?? [])
+        status.set(sessionId, servers)
+      }
+      return servers
+    }
+    return Promise.all(
+      rows.map(async row => {
+        const listening = sessionManager.channelSessions(channelKey(row.server))
+        const connected = await Promise.all(
+          listening.map(async s => (await serversOf(s.id)).some(x => x.name === row.server && x.status === 'connected')),
+        )
+        const receiver = listening.filter((_, i) => connected[i]).at(-1)?.id ?? null
+        return { ...row, sessions: listening.map((s, i) => ({ id: s.id, connected: connected[i] })), receiver }
+      }),
+    )
+  }
   const projectJson = (p: Project, counts = tasks().counts()) => {
     const count = counts.get(p.id)
     return {
@@ -877,7 +988,7 @@ export function startWebServer(
         ...(project.coordinator_model && { model: project.coordinator_model }),
         ...(project.coordinator_effort && { effort: project.coordinator_effort }),
         resume,
-        channels: ext.readDefaultChannels(config.configDir ?? getClaudeConfigHomeDir()),
+        ...(resume ? flagsOf(sessionConfigs().effective(resume)) : { channels: ext.readDefaultChannels(configDir) }),
         coordinator: coordinatorSpawn(project),
       })
       coordinators.set(session.id, project.id)
@@ -901,7 +1012,10 @@ export function startWebServer(
     if (!parsed.success) {
       return errorResponse(400, `Invalid request: ${parsed.error.message}`)
     }
-    const { cwd, temporary, resume, permission_mode: permissionMode, model, trust } = parsed.data
+    const { cwd, temporary, resume, permission_mode: permissionMode, model, trust, profile_id: profileId, config: own } = parsed.data
+    if (profileId && !sessionConfigs().profile(profileId)) return errorResponse(400, 'Unknown profile')
+    // A resumed session keeps its saved config unless the request names one.
+    const chosen = profileId !== undefined || own !== undefined ? { profile_id: profileId ?? null, config: own ?? {} } : undefined
     let workDir = config.workspace
     if (temporary && !cwd && !resume) {
       mkdirSync(tempRoot, { recursive: true })
@@ -926,8 +1040,15 @@ export function startWebServer(
         permissionMode,
         model,
         resume,
-        channels: ext.readDefaultChannels(config.configDir ?? getClaudeConfigHomeDir()),
+        ...flagsOf(
+          chosen
+            ? mergeConfig(chosen.profile_id ? (sessionConfigs().profile(chosen.profile_id)?.config ?? {}) : {}, chosen.config)
+            : resume
+              ? sessionConfigs().effective(resume)
+              : {},
+        ),
       })
+      if (chosen) sessionConfigs().set(session.id, chosen)
       return Response.json({
         session_id: session.id,
         work_dir: session.workDir,
@@ -1097,6 +1218,17 @@ export function startWebServer(
         ? new Response(null, { status: 204 })
         : errorResponse(404, 'Session not found')
     }
+    const profileMatch = PROFILE_PATH.exec(pathname)
+    if (profileMatch) return handleProfiles(req, profileMatch[1])
+    const configMatch = SESSION_CONFIG_PATH.exec(pathname)
+    if (configMatch) {
+      const id = decodeURIComponent(configMatch[1]!)
+      if (!SESSION_ID.test(id)) return errorResponse(400, 'Invalid session id')
+      return handleSessionConfig(req, id)
+    }
+    if (pathname === '/api/ext/channels' && req.method === 'GET') {
+      return Response.json(await channelsWithSessions())
+    }
     if (pathname === '/api/projects' || pathname.startsWith('/api/projects/')) {
       return handleProjects(req, pathname)
     }
@@ -1135,6 +1267,7 @@ export function startWebServer(
         await sessionManager.destroy(id)
         if (!(await deleteTranscript(id))) return errorResponse(404, 'Session not found')
         deleteSessionMeta(db(), id)
+        sessionConfigs().set(id, { profile_id: null, config: {} })
         return new Response(null, { status: 204 })
       }
       const found = await sessionManager.destroy(id)

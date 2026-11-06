@@ -36,6 +36,8 @@ export async function createSession(body: {
   temporary?: boolean
   /** The user accepted the trust confirmation for `cwd`. */
   trust?: boolean
+  /** The session config profile it starts with. */
+  profile_id?: string
 }): Promise<CreatedSession> {
   const res = await fetch('/api/sessions', {
     method: 'POST',

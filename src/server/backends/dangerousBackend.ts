@@ -12,6 +12,8 @@ export type SpawnSessionOptions = {
   resume?: boolean
   /** `plugin:<name>@<marketplace>` entries passed as `--channels`. */
   channels?: string[]
+  /** `--settings` JSON (claude web's per-session plugins, MCP servers and hooks). */
+  settings?: string
   /** `--system-prompt` / `--append-system-prompt` (a project's coordinator). */
   systemPrompt?: string
   appendSystemPrompt?: string
@@ -53,6 +55,7 @@ export class DangerousBackend {
     effort,
     resume,
     channels,
+    settings,
     systemPrompt,
     appendSystemPrompt,
     env: extraEnv,
@@ -82,6 +85,7 @@ export class DangerousBackend {
         ...(model ? ['--model', model] : []),
         ...(effort ? ['--effort', effort] : []),
         ...(channels?.length ? ['--channels', ...channels] : []),
+        ...(settings ? ['--settings', settings] : []),
         ...(systemPrompt ? ['--system-prompt', systemPrompt] : []),
         ...(appendSystemPrompt ? ['--append-system-prompt', appendSystemPrompt] : []),
         ...(this.options.includePartialMessages

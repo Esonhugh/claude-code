@@ -20,11 +20,11 @@ describe('projects database', () => {
   it('migrates once and keeps rows across reopen', () => {
     const path = join(mkdtempSync(join(tmpdir(), 'web-pdb-')), 'web', 'projects.sqlite')
     const db = openProjectsDb(path)
-    expect((db.query('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(5)
+    expect((db.query('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(6)
     const created = new ProjectStore(db).create(input)
     db.close()
     const again = openProjectsDb(path)
-    expect((again.query('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(5)
+    expect((again.query('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(6)
     expect(new ProjectStore(again).get(created.id)).toEqual(created)
     again.close()
   })

@@ -466,6 +466,13 @@ export const SettingsSchema = lazySchema(() =>
         .array(z.string())
         .optional()
         .describe('List of rejected MCP servers from .mcp.json'),
+      // Fork: claude web's per-session MCP on/off, passed with --settings.
+      sessionMcpServers: z
+        .record(z.string(), z.boolean())
+        .optional()
+        .describe(
+          'MCP server name to on/off for this session only. Read only from --settings (flag settings); overrides disabledMcpServers.',
+        ),
       // Enterprise allowlist of MCP servers
       allowedMcpServers: z
         .array(AllowedMcpServerEntrySchema())

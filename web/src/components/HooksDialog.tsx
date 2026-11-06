@@ -32,7 +32,7 @@ function sourceTag(z: ExtProps['z'], h: HookRow): string {
 }
 
 /** A popover in place of the prototype's native <select>. */
-function Pick<V extends string>({
+export function Pick<V extends string>({
   id,
   value,
   options,
