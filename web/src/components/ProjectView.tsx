@@ -20,6 +20,7 @@ import {
   agentInputs,
   messageTarget,
   canMessage,
+  coordinatorApprovals,
   isLive,
   notesByItem,
   TASK_GROUPS,
@@ -881,8 +882,8 @@ export function ProjectView({
     }
   }
 
-  const coordinatorApprovals = chat.approvals.filter(a => !a.agentId)
-  const approval = coordinatorApprovals[0]
+  const ownApprovals = coordinatorApprovals(tasks, chat.approvals)
+  const approval = ownApprovals[0]
   const head = (
     <div className="pv-head">
       {menuButton}
@@ -1109,7 +1110,7 @@ export function ProjectView({
           {approval && (
             <AskDock
               approval={approval}
-              more={coordinatorApprovals.length - 1}
+              more={ownApprovals.length - 1}
               cwd={chat.cwd ?? chat.workDir}
               t={t}
               onAnswer={choice => onAnswer(approval, choice)}

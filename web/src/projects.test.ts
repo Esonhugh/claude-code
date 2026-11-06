@@ -3,6 +3,7 @@ import type { ProjectTask } from './api'
 import {
   agentInputs,
   canMessage,
+  coordinatorApprovals,
   messageTarget,
   notesByItem,
   taskElapsed,
@@ -198,6 +199,12 @@ describe('project tasks', () => {
     expect(canMessage(row({ state: 'stopped', stop_reason: 'user' }))).toBe(false)
     expect(canMessage(row({ state: 'stopped', stop_reason: 'restart' }))).toBe(true)
     expect(canMessage(row({ state: 'done' }))).toBe(true)
+  })
+
+  it('leaves a teammate\'s approval, which no task answers, to the coordinator', () => {
+    const ask = (agentId?: string): Approval => ({ requestId: agentId ?? 'own', toolName: 'Bash', input: {}, suggestions: [], ...(agentId && { agentId }) })
+    const approvals = [ask(), ask('a'), ask('alice@session-1')]
+    expect(coordinatorApprovals([row({})], approvals).map(a => a.requestId)).toEqual(['own', 'alice@session-1'])
   })
 
   it('drops the worker\'s first prompt, which the task shows as its brief', () => {
