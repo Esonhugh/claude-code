@@ -759,6 +759,7 @@ body { margin: 0 }
 .meta .sp { flex: 1 }
 .meta > :not(.chip.mono):not(.sp) { flex: none }
 .meta > .chip.mono, .pv-head .chip.mono { display: block; flex: 0 100 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
+.meta > .chip.cwd:hover { border-color: var(--accent) }
 .meta .menu-btn, .meta .panel-btn { padding: 2px 9px }
 .welcome .menu-btn { position: absolute; top: 12px; left: 16px }
 .notice { max-width: var(--col); margin: 0 auto 8px; font-size: 12.5px; padding: 6px 10px; border-radius: 8px; background: var(--warn-soft); color: var(--warn) }

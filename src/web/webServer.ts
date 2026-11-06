@@ -1,7 +1,8 @@
 import type { Database } from 'bun:sqlite'
+import { spawn } from 'child_process'
 import { mkdirSync, mkdtempSync, realpathSync, statSync } from 'fs'
 import { homedir } from 'os'
-import { basename, extname, isAbsolute, join, resolve } from 'path'
+import { basename, dirname, extname, isAbsolute, join, relative, resolve } from 'path'
 import { z } from 'zod/v4'
 import { addToHistory, getTimestampedHistory } from '../history.js'
 import { PERMISSION_MODES } from '../types/permissions.js'
@@ -45,7 +46,7 @@ import { deleteSessionMeta, openProjectsDb, patchSessionMeta, type Project, Proj
 import { deleteTranscript, loadSidebar } from './sidebar.js'
 import { parseLine, type Task, TaskStore, transcriptTokens } from './tasks.js'
 import * as ext from './extensions.js'
-import { isAllowedPeer, lanHostNames } from './network.js'
+import { addressKind, isAllowedPeer, lanHostNames } from './network.js'
 import {
   allowedHosts,
   checkToken,
@@ -83,6 +84,8 @@ export type WebServerConfig = {
   account?: AccountBackend
   /** Defaults to `<configDir>/web/projects.sqlite`; tests pass `:memory:`. */
   projectsDb?: string
+  /** Opens a file or folder with the OS default app; resolves to an error message. Tests pass a fake. */
+  openLocal?: (path: string) => Promise<string | undefined>
 }
 
 type SocketData = { sessionId: string }
@@ -139,6 +142,10 @@ const SECURITY_HEADERS = {
   'Cross-Origin-Opener-Policy': 'same-origin',
   'Cache-Control': 'no-store',
 }
+
+const openBodySchema = lazySchema(() =>
+  z.object({ path: z.string().max(4096).optional(), reveal: z.boolean().optional() }),
+)
 
 const createSessionBodySchema = lazySchema(() =>
   z.object({
@@ -205,6 +212,7 @@ export function normalizeProjectDir(input: string, home = homedir()): string | u
 
 const WS_PATH = /^\/api\/sessions\/([^/]+)\/ws$/
 const SESSION_PATH = /^\/api\/sessions\/([^/]+)$/
+const OPEN_PATH = /^\/api\/sessions\/([^/]+)\/open$/
 const SESSION_META_PATH = /^\/api\/sessions\/([^/]+)\/meta$/
 const HISTORY_PATH = /^\/api\/history\/([^/]+)$/
 const HISTORY_MESSAGES_PATH = /^\/api\/history\/([^/]+)\/messages$/
@@ -447,6 +455,38 @@ function realOr(path: string): string {
   } catch {
     return path
   }
+}
+
+/**
+ * Opens `path` with the OS default app (a folder in the file manager) on this machine.
+ * Resolves to an error message, or undefined once the opener exited cleanly or is still
+ * running after a moment: some openers stay in the foreground until the window closes.
+ */
+export function openLocal(path: string): Promise<string | undefined> {
+  const win = process.platform === 'win32'
+  const command = win ? 'explorer' : process.platform === 'darwin' ? 'open' : 'xdg-open'
+  return new Promise(done => {
+    let child: ReturnType<typeof spawn>
+    try {
+      child = spawn(command, [path], { detached: true, stdio: 'ignore', windowsHide: true })
+    } catch (err) {
+      done(`${command}: ${err instanceof Error ? err.message : String(err)}`)
+      return
+    }
+    const timer = setTimeout(() => {
+      child.unref()
+      done(undefined)
+    }, 3000)
+    child.once('error', err => {
+      clearTimeout(timer)
+      done(`${command}: ${err.message}`)
+    })
+    child.once('exit', code => {
+      clearTimeout(timer)
+      // explorer.exe exits 1 even when it opened the window.
+      done(code === 0 || win ? undefined : `${command} exited with code ${code}`)
+    })
+  })
 }
 
 function isDirectory(path: string): boolean {
@@ -944,6 +984,7 @@ export function startWebServer(
     req: Request,
     url: URL,
     srv: { upgrade: (req: Request, opts: { data: SocketData }) => boolean },
+    local: boolean,
   ): Promise<Response | undefined> {
     const { pathname } = url
     if (pathname === '/api/info' && req.method === 'GET') {
@@ -953,6 +994,8 @@ export function startWebServer(
         temp_root: tempRoot,
         home: homedir(),
         version: MACRO.VERSION,
+        // The browser runs on this machine, so it may open files there.
+        local,
       })
     }
     if (pathname === '/api/models' && req.method === 'GET') {
@@ -1028,6 +1071,35 @@ export function startWebServer(
       const projectId = parsed.data.project_id
       if (projectId && projects().get(projectId)?.archived_at !== null) return errorResponse(400, 'Unknown project')
       return Response.json(patchSessionMeta(db(), id, parsed.data))
+    }
+    const openMatch = OPEN_PATH.exec(pathname)
+    if (openMatch && req.method === 'POST') {
+      // The opener runs on this machine, so only a browser on it may ask.
+      if (!local) return errorResponse(403, 'Only a browser on the machine running claude web can open local files')
+      const id = decodeURIComponent(openMatch[1]!)
+      if (!SESSION_ID.test(id)) return errorResponse(400, 'Invalid session id')
+      const parsed = openBodySchema().safeParse((await readJson(req)) ?? {})
+      if (!parsed.success) return errorResponse(400, 'Invalid request')
+      const { path, reveal } = parsed.data
+      const cwd = await sessionCwd(id)
+      if (!cwd) return errorResponse(404, 'Session not found')
+      let target = realOr(cwd)
+      if (path && !isAbsolute(path)) return errorResponse(400, 'Not an absolute path')
+      if (path && isDirectory(path)) {
+        // A folder: the session's own or one inside it (a worktree).
+        const dir = realOr(path)
+        const rel = relative(target, dir)
+        if (rel.startsWith('..') || isAbsolute(rel)) return errorResponse(403, 'Only the session folder can be opened')
+        target = dir
+      } else if (path) {
+        // A file the session may show in its preview, or the folder holding it.
+        const file = await sessionFile(id, path)
+        if (!file) return errorResponse(404, 'File not found')
+        target = reveal ? dirname(file) : file
+      }
+      if (!path && !isDirectory(target)) return errorResponse(404, 'Folder not found')
+      const error = await (config.openLocal ?? openLocal)(target)
+      return error ? errorResponse(500, error) : new Response(null, { status: 204 })
     }
     if (pathname === '/api/history' && req.method === 'GET') {
       return Response.json(
@@ -1208,7 +1280,7 @@ export function startWebServer(
         }
 
         if (isApi) {
-          const res = await handleApi(req, url, srv)
+          const res = await handleApi(req, url, srv, addressKind(peer!) === 'loopback')
           return res && withHeaders(res)
         }
         if (req.method !== 'GET' && req.method !== 'HEAD') {

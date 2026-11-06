@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from 'bun:test'
 import { spawn } from 'child_process'
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from 'fs'
 import { homedir, hostname, networkInterfaces, tmpdir } from 'os'
-import { join } from 'path'
+import { delimiter, join } from 'path'
 import type { SpawnSessionOptions } from '../server/backends/dangerousBackend.js'
 import { createServerLogger } from '../server/serverLog.js'
 import { SessionManager } from '../server/sessionManager.js'
@@ -10,6 +10,7 @@ import { addressKind } from './network.js'
 import {
   contentSecurityPolicy,
   normalizeProjectDir,
+  openLocal,
   parsePreviewOrigin,
   startWebServer,
   type WebAsset,
@@ -308,6 +309,7 @@ describe('claude web server', () => {
       preview_origins: [],
       temp_root: join(r.configDir, 'web', 'temp'),
       home: homedir(),
+      local: true,
       version: '9.9.9-test',
     })
     const models = (await (await fetch(`${r.base}/api/models`, { headers: { cookie } })).json()) as {
@@ -909,6 +911,89 @@ describe('claude web server', () => {
     const again = start({ configDir: r.configDir })
     const res = await fetch(`${again.base}/api/projects/${id}/tasks/a2`, { headers: { cookie: await signIn(again), origin: again.origin } })
     expect(await res.json()).toMatchObject({ state: 'stopped', stop_reason: 'restart' })
+  })
+})
+
+describe('POST /api/sessions/:id/open', () => {
+  const session = async (r: Running, cookie: string) => {
+    const created = await fetch(`${r.base}/api/sessions`, { method: 'POST', headers: { cookie, origin: r.origin }, body: '{}' })
+    return ((await created.json()) as { session_id: string }).session_id
+  }
+
+  it('opens the session folder, a folder inside it, or a file the session may show', async () => {
+    const opened: string[] = []
+    const r = start({ openLocal: async path => void opened.push(path) })
+    const cookie = await signIn(r)
+    const id = await session(r, cookie)
+    mkdirSync(join(r.workspace, 'sub'))
+    writeFileSync(join(r.workspace, 'sub', 'a.py'), 'x')
+    writeFileSync(join(r.workspace, '.env'), 'SECRET=1')
+    const outside = realpathSync(mkdtempSync(join(tmpdir(), 'web-outside-')))
+    writeFileSync(join(outside, 'b.txt'), 'x')
+    symlinkSync(outside, join(r.workspace, 'escape'))
+    const open = (body?: unknown, sid = id) =>
+      fetch(`${r.base}/api/sessions/${sid}/open`, {
+        method: 'POST',
+        headers: { cookie, origin: r.origin },
+        ...(body !== undefined && { body: JSON.stringify(body) }),
+      })
+    expect((await open()).status).toBe(204)
+    expect((await open({ path: join(r.workspace, 'sub') })).status).toBe(204)
+    expect((await open({ path: join(r.workspace, 'sub', 'a.py') })).status).toBe(204)
+    expect((await open({ path: join(r.workspace, 'sub', 'a.py'), reveal: true })).status).toBe(204)
+    expect(opened).toEqual([r.workspace, join(r.workspace, 'sub'), join(r.workspace, 'sub', 'a.py'), join(r.workspace, 'sub')])
+    expect((await open({ path: outside })).status).toBe(403)
+    expect((await open({ path: join(r.workspace, 'escape') })).status).toBe(403)
+    expect((await open({ path: join(r.workspace, '..') })).status).toBe(403)
+    expect((await open({ path: join(outside, 'b.txt') })).status).toBe(404)
+    expect((await open({ path: join(r.workspace, 'escape', 'b.txt'), reveal: true })).status).toBe(404)
+    expect((await open({ path: join(r.workspace, '.env') })).status).toBe(404)
+    expect((await open({ path: 'sub' })).status).toBe(400)
+    expect((await open({ path: 1 })).status).toBe(400)
+    expect((await open({ path: join(r.workspace, 'missing') })).status).toBe(404)
+    expect((await open(undefined, '00000000-0000-4000-8000-000000000000')).status).toBe(404)
+    expect(opened).toHaveLength(4)
+    expect(((await (await fetch(`${r.base}/api/info`, { headers: { cookie } })).json()) as { local: boolean }).local).toBe(true)
+  })
+
+  it('answers the opener failure as an error, not a crash', async () => {
+    const r = start({ openLocal: async () => 'xdg-open exited with code 3' })
+    const cookie = await signIn(r)
+    const id = await session(r, cookie)
+    const res = await fetch(`${r.base}/api/sessions/${id}/open`, { method: 'POST', headers: { cookie, origin: r.origin } })
+    expect(res.status).toBe(500)
+    expect(((await res.json()) as { error: string }).error).toBe('xdg-open exited with code 3')
+  })
+})
+
+describe.skipIf(process.platform !== 'linux')('openLocal', () => {
+  const withOpener = async (script: string | undefined, run: (log: string) => Promise<void>) => {
+    const bin = mkdtempSync(join(tmpdir(), 'web-opener-'))
+    const log = join(bin, 'log')
+    if (script) writeFileSync(join(bin, 'xdg-open'), `#!/bin/sh\n${script.replace('$LOG', log)}\n`, { mode: 0o755 })
+    const prev = process.env.PATH
+    process.env.PATH = script ? `${bin}${delimiter}${prev}` : bin
+    try {
+      await run(log)
+    } finally {
+      process.env.PATH = prev
+    }
+  }
+
+  it('runs xdg-open with the folder', async () => {
+    await withOpener('printf "%s" "$1" > $LOG', async log => {
+      expect(await openLocal('/tmp/a b')).toBeUndefined()
+      expect(await Bun.file(log).text()).toBe('/tmp/a b')
+    })
+  })
+
+  it('reports a failing or missing opener', async () => {
+    await withOpener('exit 3', async () => {
+      expect(await openLocal('/tmp')).toBe('xdg-open exited with code 3')
+    })
+    await withOpener(undefined, async () => {
+      expect(await openLocal('/tmp')).toMatch(/^xdg-open: /)
+    })
   })
 })
 
