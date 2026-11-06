@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test'
-import { compactHint, followScroll, type T } from './ui'
+import { compactHint, followScroll, modeOf, type T } from './ui'
 
 describe('followScroll', () => {
   const at = (scrollTop: number) => ({ scrollHeight: 2000, clientHeight: 500, scrollTop })
@@ -30,5 +30,12 @@ describe('compactHint', () => {
 
   it('says the point is passed when the conversation is over the threshold', () => {
     expect(compactHint(t, 241_000, 167_000, fmt)).toBe('compactDue')
+  })
+})
+
+describe('modeOf', () => {
+  it('names the default mode as the TUI footer does', () => {
+    expect(modeOf('default').label).toBe('manual mode on')
+    expect(modeOf(undefined).label).toBe('manual mode on')
   })
 })
