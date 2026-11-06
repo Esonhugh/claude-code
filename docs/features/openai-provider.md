@@ -147,6 +147,7 @@ OpenAI 给网络安全类工作提供了单独的访问档位（Daybreak）。�
 | `OPENAI_BASE_URL` | URL | 兼容网关地址 |
 | `ANTHROPIC_DEFAULT_OPUS_MODEL` / `_SONNET_MODEL` / `_HAIKU_MODEL` | 模型名 | 别名映射 |
 | `daybreak`（settings.json） | `blue` / `red` / `off` | 网络安全访问档位，见上文；`/daybreak` 会写入用户设置 |
+| `openaiModel`（settings.json） | 模型名 | OpenAI provider 下 `/model` 保存的默认模型。不写进 `model`，因为官方 Claude Code 也读 `model`，会把 gpt 模型名发给 Anthropic。没有 `openaiModel` 时仍读 `model`（`opus`、`sonnet` 等别名会映射到 OpenAI 模型）；旧版写在 `model` 里的 gpt 模型名启动时会移过来 |
 
 ## 说明
 

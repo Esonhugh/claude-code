@@ -454,6 +454,7 @@ import { migrateBypassPermissionsAcceptedToSettings } from './migrations/migrate
 import { migrateEnableAllProjectMcpServersToSettings } from './migrations/migrateEnableAllProjectMcpServersToSettings.js'
 import { migrateFennecToOpus } from './migrations/migrateFennecToOpus.js'
 import { migrateReplBridgeEnabledToRemoteControlAtStartup } from './migrations/migrateReplBridgeEnabledToRemoteControlAtStartup.js'
+import { migrateOpenAIModelToOwnSetting } from './migrations/migrateOpenAIModelToOwnSetting.js'
 import { resetAutoModeOptInForDefaultOffer } from './migrations/resetAutoModeOptInForDefaultOffer.js'
 import { resetProToOpusDefault } from './migrations/resetProToOpusDefault.js'
 import { createRemoteSessionConfig } from './remote/RemoteSessionManager.js'
@@ -648,7 +649,7 @@ async function logStartupTelemetry(): Promise<void> {
 }
 
 // Bump this when adding a new sync migration so existing users re-run the set.
-const CURRENT_MIGRATION_VERSION = 12
+const CURRENT_MIGRATION_VERSION = 13
 function runMigrations(): void {
   if (getGlobalConfig().migrationVersion !== CURRENT_MIGRATION_VERSION) {
     migrateAutoUpdatesToSettings()
@@ -656,6 +657,7 @@ function runMigrations(): void {
     migrateEnableAllProjectMcpServersToSettings()
     resetProToOpusDefault()
     migrateReplBridgeEnabledToRemoteControlAtStartup()
+    migrateOpenAIModelToOwnSetting()
     if (feature('TRANSCRIPT_CLASSIFIER')) {
       resetAutoModeOptInForDefaultOffer()
     }

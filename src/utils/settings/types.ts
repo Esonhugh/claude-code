@@ -389,6 +389,12 @@ export const SettingsSchema = lazySchema(() =>
         .string()
         .optional()
         .describe('Override the default model used by Claude Code'),
+      openaiModel: z
+        .string()
+        .optional()
+        .describe(
+          'Default model when CLAUDE_CODE_USE_OPENAI is set. Kept apart from model, which official Claude Code also reads',
+        ),
       fallbackModel: z
         .array(z.string())
         .optional()

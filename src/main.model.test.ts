@@ -60,7 +60,7 @@ describe('startup model precedence', () => {
       'migrateSonnet1mToSonnet45', 'migrateLegacyOpusToCurrent',
       'migrateSonnet45ToSonnet46', 'migrateOpusToOpus1m',
       'migrateReplBridgeEnabledToRemoteControlAtStartup', 'resetAutoModeOptInForDefaultOffer',
-      'migrateFennecToOpus',
+      'migrateFennecToOpus', 'migrateOpenAIModelToOwnSetting',
     ]
     const rewriteNames = new Set([
       'migrateSonnet1mToSonnet45', 'migrateLegacyOpusToCurrent',
@@ -71,7 +71,7 @@ describe('startup model precedence', () => {
       ...migrationNames, `${migrations}\nrunMigrations()`,
     )
     expect(() => execute(
-      12, () => ({ migrationVersion: 0 }), () => {}, () => false, () => false,
+      13, () => ({ migrationVersion: 0 }), () => {}, () => false, () => false,
       ...migrationNames.map(name => rewriteNames.has(name) ? rewrite : () => {}),
     )).not.toThrow()
   })

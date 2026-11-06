@@ -4,7 +4,7 @@ import { getAPIProvider } from './providers.js'
 import type { ModelSetting } from './model.js'
 
 let modelOverride: ModelSetting | undefined
-let settings: { model?: string; availableModels?: string[] } = {}
+let settings: { model?: string; openaiModel?: string; availableModels?: string[] } = {}
 let modelOverrides: Record<string, string> = {}
 let servedDefault: { model: string; orgConfigured: boolean } | undefined
 
@@ -251,6 +251,16 @@ describe('provider defaults and explicit model selection', () => {
     modelOverride = null
     expect(getUserSpecifiedModelSetting()).toBeNull()
     expect(getMainLoopModel()).toBe('claude-opus-5-5')
+  })
+
+  test('OpenAI provider reads its own saved model; Anthropic ignores it', () => {
+    settings.model = 'sonnet'
+    settings.openaiModel = 'gpt-5.6-terra'
+    expect(getUserSpecifiedModelSetting()).toBe('sonnet')
+    process.env.CLAUDE_CODE_USE_OPENAI = '1'
+    expect(getUserSpecifiedModelSetting()).toBe('gpt-5.6-terra')
+    delete settings.openaiModel
+    expect(getMainLoopModel()).toBe('gpt-5.6-terra')
   })
 
   test('explicit GPT model on Anthropic protocol stays explicit', () => {
