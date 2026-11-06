@@ -3627,6 +3627,7 @@ function runHeadlessStreaming(
             agents,
             getAppState,
             () => remoteUIControl.capabilities(),
+            options.modsSession && (list => options.modsSession!.commands.describe(list)),
           )
 
           // Enable prompt suggestions in AppState when SDK consumer opts in.
@@ -6034,6 +6035,7 @@ async function handleInitializeRequest(
   agents: AgentDefinition[],
   getAppState: () => AppState,
   getCapabilities: () => Promise<string[]>,
+  describeCommands?: (commands: Command[]) => Promise<Command[]>,
 ): Promise<void> {
   if (!initialized) {
     // Apply systemPrompt/appendSystemPrompt from stdin to avoid ARG_MAX limits
@@ -6132,7 +6134,8 @@ async function handleInitializeRequest(
   const initResponse: SDKControlInitializeResponse = {
     ...(pluginsApplied === undefined ? {} : { plugins_applied: pluginsApplied }),
     ...(capabilities.length ? { capabilities } : {}),
-    commands: toSdkSlashCommands(commands),
+    // Mods' own commands join the list once they have loaded, as official 2.1.318 lists them.
+    commands: toSdkSlashCommands(describeCommands ? await describeCommands(commands) : commands),
     agents: [...agents]
       .sort((a, b) => a.agentType.localeCompare(b.agentType))
       .map(agent => ({

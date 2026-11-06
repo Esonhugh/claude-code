@@ -1,5 +1,6 @@
 import {
   type ClipboardEvent,
+  type CSSProperties,
   type DragEvent,
   type FormEvent,
   type KeyboardEvent,
@@ -15,7 +16,8 @@ import {
 import { agentCommands, filterCommands, moveSelection, paletteQuery, recallList, recallPrompt, type SlashCommand, typedInFull } from '../commands'
 import { type Daybreak, type HistoryScope, loadPromptHistory, recordPrompt } from '../api'
 import { formatBytes, mentionPath } from '../files'
-import { type Approval, type ApprovalChoice, approvalRules, type CodexAppMention, type ContextUsage, type Goal, type ModelOption, type Todo } from '../protocol'
+import { type Approval, type ApprovalChoice, approvalRules, type CodexAppMention, type ContextUsage, type Goal, type ModelOption, type PromptDecoration, type Todo } from '../protocol'
+import { modColor } from './Mods'
 import { toolSummary } from '../tools'
 import { modelName, modelOption } from './Message'
 import { FootMenu, modeOf, nextMode, offeredModes, SendIcon, type T } from './ui'
@@ -325,6 +327,7 @@ export function InputBox({
   onTarget,
   quote,
   onQuote,
+  decorations,
 }: {
   t: T
   start?: boolean
@@ -365,6 +368,8 @@ export function InputBox({
   /** Text from the conversation this message replies to; sent ahead of the draft as a blockquote. */
   quote?: string
   onQuote?: (quote: string | undefined) => void
+  /** How Mods mark the draft (`prompt.edit` decorations), drawn under the text. */
+  decorations?: PromptDecoration[]
 }) {
   const picker = useRef<HTMLInputElement>(null)
   const imagePicker = useRef<HTMLInputElement>(null)
@@ -769,8 +774,31 @@ export function InputBox({
       onKeyDown={onKeyDown}
       onPaste={onPaste}
       onFocus={onFocus}
+      onScroll={e => {
+        if (mirror.current) mirror.current.scrollTop = e.currentTarget.scrollTop
+      }}
       autoFocus={start}
     />
+  )
+  const mirror = useRef<HTMLDivElement>(null)
+  const marked = decorations?.length ? (
+    <div className="cdeco">
+      <div className="cdeco-mirror" ref={mirror} aria-hidden="true">
+        {decoratedRuns(draft, decorations).map((run, i) =>
+          run.mark ? (
+            <span key={i} style={decorationStyle(run.mark)}>
+              {run.text}
+            </span>
+          ) : (
+            run.text
+          ),
+        )}
+        {'\n'}
+      </div>
+      {textarea}
+    </div>
+  ) : (
+    textarea
   )
   const inputs = (
     <>
@@ -889,7 +917,7 @@ export function InputBox({
               ))}
             </span>
           )}
-          {textarea}
+          {marked}
         </div>
         <div className="crow">
           {plus}
@@ -905,6 +933,33 @@ export function InputBox({
 export type MentionTarget = { id: string; name: string; detail: string; tag: string }
 
 /** Targets whose name or detail holds the query, name matches first. */
+/** The draft cut where Mods' decorations start and end; overlapping ones: the later wins. */
+export function decoratedRuns(text: string, decorations: PromptDecoration[]): { text: string; mark?: PromptDecoration }[] {
+  const marks: (PromptDecoration | undefined)[] = Array.from({ length: text.length })
+  for (const d of decorations) {
+    for (let i = Math.max(0, d.start); i < Math.min(text.length, d.end); i++) marks[i] = d
+  }
+  const runs: { text: string; mark?: PromptDecoration }[] = []
+  for (let i = 0; i < text.length; i++) {
+    const last = runs.at(-1)
+    if (last && last.mark === marks[i]) last.text += text[i]
+    else runs.push({ text: text[i]!, ...(marks[i] && { mark: marks[i] }) })
+  }
+  return runs
+}
+
+/** Only what keeps the text where the box draws it: a background and lines, no weight or slant. */
+function decorationStyle(d: PromptDecoration): CSSProperties {
+  const color = modColor(d.color)
+  const lines = [d.underline && 'underline', d.strikethrough && 'line-through'].filter(Boolean).join(' ')
+  return {
+    background: modColor(d.backgroundColor) ?? (color && !lines ? `color-mix(in srgb, ${color} 22%, transparent)` : undefined),
+    textDecorationLine: lines || undefined,
+    textDecorationColor: lines ? (color ?? 'currentColor') : undefined,
+    opacity: d.dimColor ? 0.5 : undefined,
+  }
+}
+
 export function matchTargets(targets: MentionTarget[], query: string): MentionTarget[] {
   const q = query.toLowerCase()
   const inName = targets.filter(x => x.name.toLowerCase().includes(q))

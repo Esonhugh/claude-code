@@ -42,6 +42,7 @@ if (process.env[childFlag] !== '1') {
   test.each(['available', 'absent', 'untrusted', 'disabled'] as const)('initialize advertises only an available UI runtime: %s', async mode => {
     const root = mkdtempSync(join(tmpdir(), 'cc-capability-plugin-'))
     writeFileSync(join(root, 'register.ts'), `export function register(on) {
+      on('session.start', async ($,e,next) => { await $.command.register({name:'probe-cmd',description:'Probe command'}); return next(e) });
       on('ui.render', {component:'ToolUse',surface:'desktop'}, ($,e) => $.ui.resolve(e).Button({
         key:'run',label:'Run',onPress:() => $.ui.log('CAPABILITY_PRESSED')
       }));
@@ -111,6 +112,8 @@ if (process.env[childFlag] !== '1') {
       // Advertise the protocol only when this connection can execute its UI controls.
       if (mode === 'available') {
         expect(init.response?.capabilities).toEqual(['ui_surface_v1'])
+        // Official 2.1.318 lists a Mod's own commands in the initialize answer.
+        expect(init.response?.commands).toContainEqual(expect.objectContaining({name:'probe-cmd',description:'Probe command'}))
         expect(values.get('attach')).toEqual({subtype:'success',request_id:id('attach'),response:{surfaces:['desktop']}})
         // Official 2.1.292 native: element attributes are in tree.props; handles are connection-local.
         expect(values.get('render')).toEqual({subtype:'success',request_id:id('render'),response:{

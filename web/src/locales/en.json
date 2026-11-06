@@ -563,5 +563,7 @@
   "modsNone": "No Mod has opened a pane in this session.",
   "modOpenCanvas": "Open on canvas",
   "modOnCanvas": "Shown on the canvas.",
-  "modPaneClosed": "The Mod closed this pane."
+  "modPaneClosed": "The Mod closed this pane.",
+  "modSuggestions": "Suggestions from Mods",
+  "modSuggestTake": "Use this suggestion"
 }

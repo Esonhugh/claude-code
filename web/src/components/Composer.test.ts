@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test'
 import { translate } from '../i18n'
-import { effortChoices, matchApps, matchTargets, modelButtonLabel, pinText, shownModels } from './Composer'
+import { decoratedRuns, effortChoices, matchApps, matchTargets, modelButtonLabel, pinText, shownModels } from './Composer'
 import { nextMode, offeredModes, type T } from './ui'
 
 const t: T = (key, vars) => translate('en', key, vars)
@@ -84,5 +84,18 @@ describe('matchApps', () => {
     expect(matchApps(apps, '').map(x => x.mention)).toEqual(['gmail', 'google_drive'])
     expect(matchApps(apps, 'drive').map(x => x.mention)).toEqual(['google_drive'])
     expect(matchApps(apps, 'codex-app:gm').map(x => x.mention)).toEqual(['gmail'])
+  })
+})
+
+describe('decoratedRuns', () => {
+  it('cuts the draft where Mods mark it, the later mark winning an overlap', () => {
+    const a = { start: 0, end: 4, color: 'red' }
+    const b = { start: 2, end: 6, underline: true }
+    expect(decoratedRuns('#123 fix', [a, b])).toEqual([
+      { text: '#1', mark: a },
+      { text: '23 f', mark: b },
+      { text: 'ix' },
+    ])
+    expect(decoratedRuns('ab', [{ start: -3, end: 99 }])).toEqual([{ text: 'ab', mark: { start: -3, end: 99 } }])
   })
 })
