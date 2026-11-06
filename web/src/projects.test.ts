@@ -184,6 +184,8 @@ describe('project tasks', () => {
     expect(taskElapsed(row({ duration_ms: 0 }), 96_000)).toBe(95_000)
     expect(taskMeta(row({ duration_ms: 0, tokens: 0 }), undefined, 96_000)).toBe('1m35s · WebFetch')
     expect(taskMeta(row({ state: 'review' }), undefined, 999_000)).toBe('41s · 6.8k tok')
+    expect(taskMeta(row({ state: 'review', tokens: 15 }), undefined, 999_000)).toBe('41s · 15 tok')
+    expect(taskMeta(row({ state: 'review', tokens: 42_000 }), undefined, 999_000)).toBe('41s · 42k tok')
   })
 
   it('blocks a task whose worker asks here, picks its model and keeps a user-stopped task stopped', () => {
