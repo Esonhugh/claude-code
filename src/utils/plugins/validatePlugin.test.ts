@@ -184,6 +184,35 @@ describe('hooks module author validation', () => {
     expect(hooks.notes?.some(note => /not checked.*other\.value/.test(note))).toBe(true)
   })
 
+  test('uses types/index.d.ts as the contract when plugin.json names no types', async () => {
+    const root = await pluginRoot()
+    await mkdir(join(root, 'hooks'))
+    await mkdir(join(root, 'types'))
+    await writeFile(join(root, '.claude-plugin', 'plugin.json'), JSON.stringify({ name: 'rg' }))
+    await writeFile(join(root, 'types', 'index.d.ts'), `declare module 'claude-code' { interface PluginState { rg: { n: number } } }`)
+    await writeFile(join(root, 'hooks', 'hooks.json'), JSON.stringify({ modules: ['./register.ts'] }))
+    await writeFile(join(root, 'hooks', 'register.ts'), `export function register(on) { on('session.start', async ($) => { await $.state.set({plugin:'rg', key:'n'}, 1); }); }`)
+    const manifest = await validatePluginManifest(join(root, '.claude-plugin', 'plugin.json'))
+    expect(manifest.success).toBe(true)
+    expect(manifest.notes).toEqual(['types ./types/index.d.ts declares state: rg.n'])
+    const hooks = (await validatePluginContents(root)).find(result => result.fileType === 'hooks')!
+    expect(hooks.errors).toEqual([])
+    expect(hooks.success).toBe(true)
+  })
+
+  test('reads a foreign default types/index.d.ts and skips plugins without one', async () => {
+    const foreign = await pluginRoot()
+    const bare = await pluginRoot()
+    await mkdir(join(foreign, 'types'))
+    await writeFile(join(foreign, 'types', 'index.d.ts'), `declare module 'claude-code' { interface PluginState { other: { value: string } } }`)
+    const resolved = await resolveForeignModStateDeclarations([
+      loadedPlugin(foreign, 'other'),
+      loadedPlugin(bare, 'bare'),
+    ], 'owner')
+    expect(resolved.warning).toBeUndefined()
+    expect(resolved.declarations?.flatMap(({ plugin, keys }) => keys.map(key => `${plugin}.${key}`))).toEqual(['other.value'])
+  })
+
   test('checks matched and missing foreign state against a complete contract context', async () => {
     const owner = await pluginRoot()
     const foreign = await pluginRoot()
