@@ -362,7 +362,7 @@ function StatusPane({
             ['Agents', `${t('nRunning', { n: String(runningCount(agents)) })} / ${agents.length}`],
             ['Terminals', `${t('nRunning', { n: String(runningCount(terminals)) })} / ${terminals.length}`],
             ['Monitor', `${t('nRunning', { n: String(runningCount(monitors)) })} / ${monitors.length}`],
-            ['Background Tasks', `${t('nRunning', { n: String(runningCount(background)) })} / ${background.length}`],
+            ['Background', `${t('nRunning', { n: String(runningCount(background)) })} / ${background.length}`],
             [
               t('pendingLabel'),
               chat.approvals.length ? t('nRequests', { n: String(chat.approvals.length) }) : t('none'),
