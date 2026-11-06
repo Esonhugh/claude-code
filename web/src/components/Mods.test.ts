@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test'
-import { modColor, modStyle, safeModLink } from './Mods'
+import { closeCanvasTab, modColor, modStyle, safeModLink } from './Mods'
 
 describe('Mods drawing', () => {
   it('takes terminal colour names, hex and rgb, and drops anything else', () => {
@@ -34,5 +34,17 @@ describe('Mods drawing', () => {
     expect(safeModLink('mailto:a@b.c')).toBe(true)
     expect(safeModLink('javascript:alert(1)')).toBe(false)
     expect(safeModLink('/relative')).toBe(false)
+  })
+})
+
+describe('Mods canvas tabs', () => {
+  it('closing the file tab keeps the Mod tabs and shows the last one, dropping the file (#934)', () => {
+    expect(closeCanvasTab(['cal', 'notes'], true, 'file')).toEqual({ mods: ['cal', 'notes'], keepFile: false, show: { mod: 'notes' } })
+    expect(closeCanvasTab([], true, 'file')).toEqual({ mods: [], keepFile: false, show: undefined })
+  })
+  it('closing a Mod tab falls back to the previous Mod tab, then the file', () => {
+    expect(closeCanvasTab(['cal', 'notes'], true, { mod: 'notes' })).toEqual({ mods: ['cal'], keepFile: true, show: { mod: 'cal' } })
+    expect(closeCanvasTab(['cal'], true, { mod: 'cal' })).toEqual({ mods: [], keepFile: true, show: 'file' })
+    expect(closeCanvasTab(['cal'], false, { mod: 'cal' })).toEqual({ mods: [], keepFile: false, show: undefined })
   })
 })

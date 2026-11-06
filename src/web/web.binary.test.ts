@@ -679,11 +679,11 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       await rename.press('Enter')
       await page.locator('.session-row', { hasText: 'Renamed chat' }).waitFor()
 
-      // Typing resumes the transcript in its own folder with its history.
+      // Typing resumes the transcript in its own folder with its history. Enter right after the
+      // click goes out once the session is up, not back into the box (#936).
       const before = promptsSeen.length
       const input = page.getByLabel('Message', { exact: true })
       await input.click()
-      await page.locator('.status-live').waitFor({ timeout: 30_000 })
       await input.fill('hello again')
       await input.press('Enter')
       await page.locator('.feed').getByText('Hello from the fake model').nth(1).waitFor({ timeout: 30_000 })

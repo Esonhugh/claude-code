@@ -22,6 +22,11 @@ type T = (key: MessageKey, vars?: Record<string, string>) => string
 /** This page's place in the Mods remote UI protocol: one desktop client per session. */
 export const MOD_SURFACE = 'desktop'
 export const MOD_CLIENT = 'web'
+/**
+ * The viewport `ui_attach` sends. `isFullscreen` marks a client that seats panes itself (the Mods
+ * tab, the canvas): without it, the first drawing's viewport makes the session stop placing panes.
+ */
+export const MOD_LAYOUT = { columns: 80, rows: 24, isFullscreen: false }
 
 type Handler = { plugin: string; handle: number }
 type Node =
@@ -453,6 +458,21 @@ export function ModToasts({ toasts }: { toasts: ModToast[] }) {
       ))}
     </div>
   )
+}
+
+/**
+ * The canvas after one of its tabs closes: the Mod tabs left, whether the file tab stays,
+ * and what shows next (the last Mod tab, else the file, else nothing).
+ */
+export function closeCanvasTab(
+  mods: string[],
+  hasFile: boolean,
+  closing: { mod: string } | 'file',
+): { mods: string[]; keepFile: boolean; show?: { mod: string } | 'file' } {
+  const left = closing === 'file' ? mods : mods.filter(id => id !== closing.mod)
+  const keepFile = hasFile && closing !== 'file'
+  const last = left[left.length - 1]
+  return { mods: left, keepFile, show: last !== undefined ? { mod: last } : keepFile ? 'file' : undefined }
 }
 
 /** A Mod's pane on the canvas, the column a file preview takes. */
