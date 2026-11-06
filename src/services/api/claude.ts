@@ -10,6 +10,7 @@ import type {
   BetaRawMessageStreamEvent,
   BetaRequestDocumentBlock,
   BetaStopReason,
+  BetaTextBlock,
   BetaToolChoiceAuto,
   BetaToolChoiceTool,
   BetaToolResultBlockParam,
@@ -2120,6 +2121,7 @@ async function* queryModelRequest(
   let ttftMs = 0
   let partialMessage: BetaMessage | undefined = undefined
   const contentBlocks: (BetaContentBlock | ConnectorTextBlock)[] = []
+  const stoppedBlockIndexes = new Set<number>()
   let usage: NonNullableUsage = EMPTY_USAGE
   let costUSD = 0
   let stopReason: BetaStopReason | null = null
@@ -2220,6 +2222,7 @@ async function* queryModelRequest(
     ttftMs = 0
     partialMessage = undefined
     contentBlocks.length = 0
+    stoppedBlockIndexes.clear()
     usage = EMPTY_USAGE
     stopReason = null
     isAdvisorInProgress = false
@@ -2547,6 +2550,7 @@ async function* queryModelRequest(
               })
               throw new Error('Message not found')
             }
+            stoppedBlockIndexes.add(part.index)
             const m: AssistantMessage = {
               message: {
                 ...partialMessage,
@@ -2807,6 +2811,29 @@ async function* queryModelRequest(
         })
       }
 
+      // Send-now cuts the reply to deliver a queued message. Like official,
+      // keep the text the model already wrote so the next request carries it.
+      const partialText = signal.aborted && signal.reason === 'interrupt' && partialMessage
+        ? contentBlocks.filter((block, index): block is BetaTextBlock =>
+            !stoppedBlockIndexes.has(index) && block?.type === 'text' && block.text.trim() !== '')
+        : []
+      if (partialMessage && partialText.length > 0) {
+        const m: AssistantMessage = {
+          message: {
+            ...partialMessage,
+            content: partialText.map(block => ({ type: 'text' as const, text: block.text })),
+          },
+          requestId: streamRequestId ?? undefined,
+          type: 'assistant',
+          uuid: randomUUID(),
+          timestamp: new Date().toISOString(),
+          requestedModel: options.model,
+          ...(advisorModel && { advisorModel }),
+        }
+        newMessages.push(m)
+        yield m
+      }
+
       // A provider that is not the Anthropic SDK (OpenAI compat) rejects an aborted request
       // with the signal's reason, not APIUserAbortError: it is still the user's abort, not a
       // reason to retry without streaming (whose own retry then logs the abort as an error).
@@ -2823,6 +2850,7 @@ async function* queryModelRequest(
           logForDebugging(
             `Streaming aborted by user: ${errorMessage(streamingError)}`,
           )
+
           if (isAdvisorInProgress) {
             logEvent('tengu_advisor_tool_interrupted', {
               model:

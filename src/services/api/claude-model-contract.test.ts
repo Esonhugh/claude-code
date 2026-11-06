@@ -92,6 +92,7 @@ let streamNotFound = false
 let nonStreamingThinkingTokens: number | undefined
 let nonStreamingOmitsUsage = false
 let streamInterrupted = false
+let streamHangsAfterText = false
 let overflowRequest = 0
 let overloadedModel: string | undefined
 let overloadedModels: string[] = []
@@ -223,6 +224,18 @@ const client = new Anthropic({
       },
       { type: 'message_stop' },
     ]
+    if (streamHangsAfterText) {
+      // Text has started streaming and the model is still writing when the user aborts.
+      const encoder = new TextEncoder()
+      return new Response(new ReadableStream({
+        start(controller) {
+          for (const event of events.slice(0, 3)) {
+            controller.enqueue(encoder.encode(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`))
+          }
+          init?.signal?.addEventListener('abort', () => controller.error(init.signal!.reason), { once: true })
+        },
+      }), { headers: { 'content-type': 'text/event-stream', 'request-id': 'req_test' } })
+    }
     // HTTP creation succeeds; the real SDK raises this error only during iteration.
     const transportEvents = streamInterrupted
       ? [...events.slice(0, 3), {
@@ -375,6 +388,7 @@ afterEach(() => {
   nonStreamingThinkingTokens = undefined
   nonStreamingOmitsUsage = false
   streamInterrupted = false
+  streamHangsAfterText = false
   overflowRequest = 0
   overloadedModel = undefined
   overloadedModels = []
@@ -1796,6 +1810,34 @@ test('prompt.compose refreshes after a partial SSE error before nonstream fallba
   }
   expect(tokenRequests).toEqual([])
   expect(unexpectedIO).toEqual([])
+})
+
+test.each([
+  ['interrupt', [{ type: 'text', text: 'OK' }]],
+  ['user-cancel', undefined],
+] as const)('an abort with reason %s while text streams keeps the partial reply: %p', async (reason, kept) => {
+  streamHangsAfterText = true
+  const controller = new AbortController()
+  const assistants: unknown[] = []
+  for await (const event of queryModelWithStreaming({
+    messages: [createUserMessage({ content: 'write a long answer' })],
+    systemPrompt: asSystemPrompt(['SYSTEM']),
+    thinkingConfig: { type: 'disabled' }, tools: [], signal: controller.signal,
+    options: {
+      model: 'claude-sonnet-4-6', querySource: 'repl_main_thread',
+      agents: [], mcpTools: [], hasAppendSystemPrompt: false,
+      isNonInteractiveSession: true, enablePromptCaching: true,
+      getToolPermissionContext: async () => getEmptyToolPermissionContext(),
+    },
+  })) {
+    const e = event as { type: string; event?: { type: string } }
+    if (e.type === 'stream_event' && e.event?.type === 'content_block_delta') controller.abort(reason)
+    if (e.type === 'assistant') assistants.push(event)
+  }
+  expect(assistants).toEqual(kept === undefined ? [] : [
+    expect.objectContaining({ message: expect.objectContaining({ content: kept }) }),
+  ])
+  expect(requests).toHaveLength(1)
 })
 
 test('prompt.compose follows real query 529 threshold through FallbackTriggeredError to the fallback model', async () => {
