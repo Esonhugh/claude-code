@@ -11,6 +11,8 @@ import {
   type Item,
   rewindTo,
   startRecap,
+  taskListTodos,
+  usesTaskList,
   initialState,
   permissionResponse,
   queueUserMessage,
@@ -707,6 +709,28 @@ describe('conversation extras', () => {
       { content: 'Read', status: 'completed', activeForm: 'Reading' },
       { content: 'Write', status: 'in_progress', activeForm: 'Writing' },
     ])
+  })
+
+  it('reads the shared task list teammates update, in id order', () => {
+    expect(
+      taskListTodos({
+        tasks: [
+          { id: '10', subject: 'Ten', status: 'pending' },
+          { id: '2', subject: 'bob: owls', status: 'completed', activeForm: 'Sharing' },
+          { id: '1', subject: 'alice: octopuses', status: 'completed' },
+          'junk',
+        ],
+      }),
+    ).toEqual([
+      { content: 'alice: octopuses', status: 'completed' },
+      { content: 'bob: owls', status: 'completed', activeForm: 'Sharing' },
+      { content: 'Ten', status: 'pending' },
+    ])
+    expect(taskListTodos({})).toBeUndefined()
+    const create: Item = { kind: 'assistant', id: 'a1', streamed: false, blocks: [{ kind: 'tool', id: 't1', name: 'TaskCreate', input: '{}' }] }
+    const todo: Item = { kind: 'assistant', id: 'a2', streamed: false, blocks: [{ kind: 'tool', id: 't2', name: 'TodoWrite', input: '{}' }] }
+    expect(usesTaskList([todo, create])).toBe(true)
+    expect(usesTaskList([todo])).toBe(false)
   })
 
   it('drops a rewound prompt and what followed, leaving a note', () => {
