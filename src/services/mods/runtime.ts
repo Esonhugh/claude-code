@@ -3048,7 +3048,10 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
         event, input, hooks: hooksFor(snapshot, table, options.only, options.drawing, options.skipOwner, callerChain)
           .filter(hook => !['ui.fault', 'ui.message'].includes(event) || !options.only || hook.plugin === options.only.declaration.name)
           // Only managed and built-in tiers hook the session's identity.
-          .filter(hook => event !== 'session.identity' || hook.tier !== 'user'), core,
+          .filter(hook => event !== 'session.identity' || hook.tier !== 'user'),
+        // state.* cores are the hook's own reads and writes; everything else is
+        // host work (a tool, a subagent) that must not inherit the hook's snapshot.
+        core: event.startsWith('state.') ? core : (value, coreSignal) => state.outside(() => core(value, coreSignal)),
         signal: combined.signal, origin, callerChain,
         ...(event === 'prompt.edit' ? {budgetMs: promptEditBudgetMs} : {}),
         reportDirectCoreFailure: options.reportDirectCoreFailure,
