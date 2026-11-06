@@ -131,6 +131,11 @@ export function quotePrompt(quote: string, text: string): string {
   return `${lines.join('\n')}\n\n${text}`
 }
 
+/** What a box sends: a slash command goes out as typed, anything else carries the quote it replies to. */
+export function replyPrompt(quote: string | undefined, text: string): string {
+  return quote && !text.startsWith('/') ? quotePrompt(quote, text) : text
+}
+
 /** A prompt that opens with a blockquote: the quoted text and what follows it. */
 export function splitQuote(text: string): { quote?: string; rest: string } {
   const m = /^((?:>[^\n]*\n)+)\n([\s\S]*)$/.exec(text)
@@ -884,7 +889,7 @@ function MessageView({
           </details>
         )
       })}
-      {turn && !streaming && (
+      {(turn || quote) && !streaming && (
         <div className="msg-acts">
           <button
             type="button"
@@ -906,15 +911,17 @@ function MessageView({
               {t('reply')}
             </button>
           )}
-          {turn.hasPrompt(item.id) && (
+          {turn?.hasPrompt(item.id) && (
             <button type="button" onClick={() => turn.retry(item.id)}>
               {t('retry')}
             </button>
           )}
-          <button type="button" onClick={() => turn.fork(item.id)}>
-            {t('forkHere')}
-          </button>
-          {turn.hasPrompt(item.id) && (
+          {turn && (
+            <button type="button" onClick={() => turn.fork(item.id)}>
+              {t('forkHere')}
+            </button>
+          )}
+          {turn?.hasPrompt(item.id) && (
             <button type="button" onClick={() => turn.rewind(item.id)}>
               {t('rewind')}
             </button>
@@ -964,14 +971,14 @@ export function QuoteOnSelect({ t, feed, onQuote }: { t: T; feed: RefObject<HTML
         setAt({ x: rect.left + rect.width / 2, y: Math.max(rect.top, box.top), text })
       })
     }
-    const root = feed.current
+    // Any scroll moves the selection: the feed itself or a panel around it.
     document.addEventListener('selectionchange', place)
-    root?.addEventListener('scroll', place)
+    window.addEventListener('scroll', place, true)
     window.addEventListener('resize', place)
     return () => {
       cancelAnimationFrame(frame)
       document.removeEventListener('selectionchange', place)
-      root?.removeEventListener('scroll', place)
+      window.removeEventListener('scroll', place, true)
       window.removeEventListener('resize', place)
     }
   }, [feed])

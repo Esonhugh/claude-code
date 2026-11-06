@@ -30,7 +30,7 @@ import { type AgentsView, agentTasks } from './components/Agents'
 import { AskDock, ChatComposer, chatTools, ContextChip, GoalMenu, type MentionTarget, Pins } from './components/Composer'
 import { AppDialog, type Palette, type Theme } from './components/Dialogs'
 import type { ContextUsage } from './components/Settings'
-import { AgentsContext, ChatContext, FilesContext, joinTurns, Message, QuoteContext, QuoteOnSelect, quotePrompt, TeamBar } from './components/Message'
+import { AgentsContext, ChatContext, FilesContext, joinTurns, Message, QuoteContext, QuoteOnSelect, replyPrompt, TeamBar } from './components/Message'
 import { Preview } from './components/Preview'
 import { ProjectDialog } from './components/ProjectDialog'
 import { ProjectView } from './components/ProjectView'
@@ -230,14 +230,14 @@ export function App() {
   const files = attachments[draftKey] ?? []
   const setFiles = (next: File[]) => setAttachments(a => ({ ...a, [draftKey]: next }))
   const quote = quotes[draftKey]
-  const setQuote = (text: string | undefined) =>
-    setQuotes(q => {
-      const { [draftKey]: _, ...rest } = q
-      return text ? { ...rest, [draftKey]: text } : rest
-    })
-  const quoteInChat = useCallback((text: string) => {
+  // Stable, so the messages that offer Reply do not draw again on every render.
+  const quoteInChat = useCallback((text: string | undefined) => {
     const id = stateRef.current.view
-    if (id && text.trim()) setQuotes(q => ({ ...q, [id]: text.trim() }))
+    if (!id) return
+    setQuotes(q => {
+      const { [id]: _, ...rest } = q
+      return text?.trim() ? { ...rest, [id]: text.trim() } : rest
+    })
   }, [])
   // The server's own version until a session reports one (the start page has no session).
   const shownEnv = chat && Object.keys(chat.env).length ? chat.env : knownEnv
@@ -896,9 +896,8 @@ export function App() {
       return
     }
     const picked = (agentTargets[id] ?? []).filter(x => chat.tasks[x.id])
-    // A slash command goes out as typed; anything else carries the quote it replies to.
     const replyTo = text.startsWith('/') ? undefined : quotes[id]
-    const prompt = replyTo ? quotePrompt(replyTo, text) : text
+    const prompt = replyPrompt(replyTo, text)
     setDrafts(d => ({ ...d, [id]: '' }))
     setAttachments(a => ({ ...a, [id]: [] }))
     if (replyTo) setQuotes(({ [id]: _, ...rest }) => rest)
@@ -1618,7 +1617,7 @@ export function App() {
               onSend={() => void sendInChat()}
               onSendNow={sendNowInChat}
               quote={quote}
-              onQuote={setQuote}
+              onQuote={quoteInChat}
               onStop={() => view && stop(view)}
               onFocus={() => view && chat.mode === 'readonly' && void resume(view)}
               files={files}
@@ -1749,6 +1748,8 @@ export function App() {
             onSend={() => void sendInChat()}
             onStop={() => stop(view)}
             onFocus={() => chat.mode === 'readonly' && void resume(view)}
+            quote={quote}
+            onQuote={quoteInChat}
             listFiles={listFiles}
             prompts={prompts}
             onMode={mode => void changeProjectMode(project, view, mode)}
