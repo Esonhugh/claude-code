@@ -13,6 +13,7 @@ import { feature } from 'bun:bundle'
 import type { ContentBlockParam } from '@anthropic-ai/sdk/resources/messages.mjs'
 import { getSystemPrompt } from '../../constants/prompts.js'
 import { TEAMMATE_MESSAGE_TAG } from '../../constants/xml.js'
+import { isCoordinatorMode } from '../../coordinator/coordinatorMode.js'
 import type { CanUseToolFn } from '../../hooks/useCanUseTool.js'
 import {
   processMailboxPermissionResponse,
@@ -31,7 +32,8 @@ import {
 } from '../../services/compact/compact.js'
 import { resetMicrocompactState } from '../../services/compact/microCompact.js'
 import type { AppState } from '../../state/AppState.js'
-import type { Tool, ToolPermissionContext, ToolUseContext } from '../../Tool.js'
+import type { Tool, ToolPermissionContext, ToolUseContext, Tools } from '../../Tool.js'
+import { assembleToolPool } from '../../tools.js'
 import { appendTeammateMessage } from '../../tasks/InProcessTeammateTask/InProcessTeammateTask.js'
 import type {
   InProcessTeammateTaskState,
@@ -980,7 +982,6 @@ export async function runInProcessTeammate(
     description,
     agentDefinition,
     teammateContext,
-    toolUseContext,
     abortController,
     model,
     systemPrompt,
@@ -989,6 +990,10 @@ export async function runInProcessTeammate(
     allowPermissionPrompts,
     invokingRequestId,
   } = config
+  const toolUseContext: ToolUseContext = {
+    ...config.toolUseContext,
+    options: { ...config.toolUseContext.options, tools: getTeammateBaseTools(config.toolUseContext) },
+  }
   const { setAppState } = toolUseContext
 
   logForDebugging(
@@ -1707,6 +1712,16 @@ export async function runInProcessTeammate(
   } finally {
     finishModConversation?.()
   }
+}
+
+/**
+ * The tools a teammate starts from. A coordinator keeps only its orchestration
+ * tools, so its teammates get the pool its workers get.
+ */
+export function getTeammateBaseTools(context: Pick<ToolUseContext, 'options' | 'getAppState'>): Tools {
+  if (!isCoordinatorMode()) return context.options.tools
+  const { toolPermissionContext, mcp } = context.getAppState()
+  return assembleToolPool(toolPermissionContext, mcp.tools)
 }
 
 /**
