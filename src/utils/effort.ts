@@ -1,6 +1,6 @@
 // biome-ignore-all assist/source/organizeImports: ANT-ONLY import markers must not be reordered
 import { isUltrathinkEnabled } from './thinking.js'
-import { getInitialSettings } from './settings/settings.js'
+import { getInitialSettings, getSettingsForSource } from './settings/settings.js'
 import type { SettingsJson } from './settings/types.js'
 import { getCanonicalName, getMainLoopModel } from './model/model.js'
 import { isProSubscriber, isMaxSubscriber, isTeamSubscriber } from './auth.js'
@@ -206,9 +206,8 @@ function effortModelKey(model: string): string {
 }
 
 /**
- * The effort saved for `model`. Official Claude Code keeps it per model under
- * modelSettings.<model>.effortLevel and no longer reads the top-level
- * effortLevel for current models; that one stays the fallback here.
+ * The effort saved for `model`, as official Claude Code keeps it: per model
+ * under modelSettings.<model>.effortLevel.
  */
 export function getSavedEffort(
   settings: SettingsJson | null | undefined,
@@ -216,11 +215,11 @@ export function getSavedEffort(
 ): EffortLevel | undefined {
   const key = effortModelKey(model)
   const byModel = settings?.modelSettings ?? {}
-  const perModel =
+  return toPersistableEffort(
     byModel[key]?.effortLevel ??
-    Object.entries(byModel).find(([name]) => effortModelKey(name) === key)?.[1]
-      ?.effortLevel
-  return toPersistableEffort(perModel ?? settings?.effortLevel)
+      Object.entries(byModel).find(([name]) => effortModelKey(name) === key)?.[1]
+        ?.effortLevel,
+  )
 }
 
 /** Saves `level` (undefined clears it) as `model`'s effort, where official /effort does. */
@@ -234,7 +233,14 @@ export function savedEffortPatch(
 export function getInitialEffortSetting(
   model: string = getMainLoopModel(),
 ): EffortLevel | undefined {
-  return getSavedEffort(getInitialSettings(), model)
+  // The user file's top-level effortLevel is not read (official ignores it
+  // too); project, local, managed and flag settings may still set one.
+  const topLevel = (
+    ['flagSettings', 'policySettings', 'localSettings', 'projectSettings'] as const
+  )
+    .map(source => getSettingsForSource(source)?.effortLevel)
+    .find(level => level !== undefined)
+  return getSavedEffort(getInitialSettings(), model) ?? toPersistableEffort(topLevel)
 }
 
 /**
