@@ -877,8 +877,17 @@ export function App() {
     patchProject(p.id, { permission_mode: mode }).catch(() => {})
   }
 
+  // A resume under way per session: a send right after the focus prewarm waits for it.
+  const resuming = useRef(new Map<string, Promise<boolean>>())
   /** Starts the process for a read-only transcript (prewarm on focus). */
-  const resume = async (id: string): Promise<boolean> => {
+  const resume = (id: string): Promise<boolean> => {
+    const running = resuming.current.get(id)
+    if (running) return running
+    const run = resumeOnce(id).finally(() => resuming.current.delete(id))
+    resuming.current.set(id, run)
+    return run
+  }
+  const resumeOnce = async (id: string): Promise<boolean> => {
     const current = stateRef.current.chats[id]
     if (!current || current.mode === 'live') return true
     // A project or session opened a moment ago shows its box while it still attaches: a message
