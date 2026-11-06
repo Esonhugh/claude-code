@@ -1116,7 +1116,14 @@ export class QueryEngine {
     async function* trackTerminal<T>(
       loop: AsyncGenerator<T, { reason: TerminalReason } | undefined>,
     ): AsyncGenerator<T> {
-      terminal = yield* loop
+      try {
+        terminal = yield* loop
+      } catch (error) {
+        // Mods hooks (e.g. prompt.context) reject with the signal reason when the
+        // turn is aborted before its first request; that turn ends interrupted.
+        if (!signal.aborted || error !== signal.reason) throw error
+        terminal = { reason: 'aborted_streaming' }
+      }
     }
     // Official 2.1.311: result ttft_ms is the time to the first assistant
     // message, api_error_status the status of a trailing API error message.
