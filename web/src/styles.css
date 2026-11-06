@@ -329,6 +329,9 @@ h1, h2, h3 { text-wrap: balance; margin: 0 }
 .crow > .plus:hover, .crow > .plus[aria-expanded="true"] { background: var(--line) }
 .crow .footbtn { height: 28px; padding: 0 8px; border-radius: 8px; font-size: 13px; font-weight: 500 }
 .crow .footbtn::after { content: ''; width: 5px; height: 5px; margin: -3px 0 0 2px; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; transform: rotate(45deg); opacity: .55 }
+/* The row's menus open over the whole card, so on a phone a menu never starts mid-row and runs off screen. */
+.cbox { position: relative }
+.crow > .footwrap { position: static }
 .crow > .send { width: 32px; height: 32px; margin-left: auto }
 .crow > .footwrap.right + .send { margin-left: 4px }
 .hint { font-size: 11.5px; color: var(--muted); padding: 4px 4px 0 }
