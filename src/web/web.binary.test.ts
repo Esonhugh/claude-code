@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'bun:test'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, utimesSync, writeFileSync } from 'fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
-import { join, sep } from 'path'
+import { delimiter, dirname, join, parse, sep } from 'path'
 
 // End-to-end check of a built binary: `claude web` serving the embedded page,
 // a real `claude -p` session against a scripted Messages API, driven from
@@ -173,6 +173,8 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
   const coordinatorSeen: [string, string][] = []
   let home = ''
   let workspace = ''
+  // The stand-in for open / explorer / xdg-open: each run appends its arguments here.
+  let openerLog = ''
   // The model of each request a resumed Quick task makes.
   const resumedModels: string[] = []
   // The Slow and Hang workers wait on this until the suite ends.
@@ -196,7 +198,8 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       {
         cwd: home,
         env: {
-          PATH: process.env.PATH ?? '/usr/bin:/bin',
+          PATH: `${dirname(openerLog)}${delimiter}${process.env.PATH ?? '/usr/bin:/bin'}`,
+          CLAUDE_E2E_OPENER_LOG: openerLog,
           HOME: home,
           ...windowsHome(home),
           IS_SANDBOX: '1',
@@ -519,8 +522,24 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       '---\nname: e2e-skill\ndescription: E2E sample skill\n---\n\nE2E_SKILL_BODY\n',
     )
     writeFileSync(join(home, '.claude', 'CLAUDE.md'), '# Notes\n\nE2E_MEMORY_MARKER\n')
+    // A compiled stand-in, so Windows finds it as explorer.exe; it exits 1 there like explorer does.
+    const openerDir = mkdtempSync(join(tmpdir(), 'web-bin-opener-'))
+    openerLog = join(openerDir, 'opened.log')
+    writeFileSync(
+      join(openerDir, 'opener.ts'),
+      [
+        "import { appendFileSync, existsSync, readFileSync } from 'fs'",
+        'const log = process.env.CLAUDE_E2E_OPENER_LOG!',
+        "appendFileSync(log, JSON.stringify(process.argv.slice(2)) + '\\n')",
+        "const forced = log + '.exit'",
+        "process.exit(existsSync(forced) ? Number(readFileSync(forced, 'utf8')) : process.platform === 'win32' ? 1 : 0)",
+      ].join('\n'),
+    )
+    const openerName = { win32: 'explorer.exe', darwin: 'open' }[process.platform as string] ?? 'xdg-open'
+    const compiled = Bun.spawnSync([process.execPath, 'build', '--compile', join(openerDir, 'opener.ts'), '--outfile', join(openerDir, openerName)])
+    if (compiled.exitCode !== 0) throw new Error(`opener stub: ${compiled.stderr.toString()}`)
     await startWeb()
-  }, 30_000)
+  }, 90_000)
 
   afterAll(() => {
     releaseWorkers()
@@ -3061,6 +3080,82 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       })
       expect(hidden).toEqual([])
       expect(errors).toEqual([])
+    } finally {
+      await browser.close()
+    }
+  }, 90_000)
+
+  it('opens the session folder and a previewed file with the OS opener (#900)', async () => {
+    const folder = join(workspace, 'open-e2e')
+    mkdirSync(folder)
+    const file = join(folder, 'target.txt')
+    writeFileSync(file, 'OPEN_TARGET_BODY')
+    // Windows paths compare without case; the server reports real paths.
+    const norm = (p: string) => (process.platform === 'win32' ? realpathSync.native(p).toLowerCase() : realpathSync(p))
+    const opened = () =>
+      existsSync(openerLog)
+        ? readFileSync(openerLog, 'utf8').trim().split('\n').filter(Boolean).map(l => (JSON.parse(l) as string[]).map(norm))
+        : []
+    const waitOpened = async (n: number) => {
+      for (let i = 0; i < 100 && opened().length < n; i++) await Bun.sleep(100)
+      expect(opened().length).toBe(n)
+      return opened().at(-1)
+    }
+    const start = opened().length
+    const playwrightPath = Bun.spawnSync(['node', '-p', "require.resolve('playwright')"]).stdout.toString().trim()
+    const { chromium } = await import(playwrightPath)
+    const browser = await chromium.launch()
+    try {
+      const page = await (await browser.newContext({ locale: 'en-US' })).newPage()
+      await page.goto(signInUrl)
+      await page.locator('.wl-hi').waitFor()
+      const input = page.getByLabel('Message', { exact: true })
+      await input.fill(`OPEN_LOCAL @${file}`)
+      await input.press('Enter')
+      await page.locator('.feed').getByText('Hello from the fake model').waitFor({ timeout: 30_000 })
+
+      // The cwd chip in the header opens the session folder.
+      const chip = page.locator('.meta .chip.cwd')
+      expect(await chip.getAttribute('title')).toContain('Open in the file manager')
+      const [request] = await Promise.all([page.waitForRequest(r => r.url().endsWith('/open')), chip.click()])
+      expect(await waitOpened(start + 1)).toEqual([norm(workspace)])
+
+      // The preview opens the file, and the folder holding it.
+      await page.locator('.file-chip', { hasText: 'target.txt' }).click()
+      const preview = page.locator('.preview')
+      await preview.getByText('OPEN_TARGET_BODY').waitFor()
+      await preview.getByRole('button', { name: 'Open locally' }).click()
+      expect(await waitOpened(start + 2)).toEqual([norm(file)])
+      await preview.getByRole('button', { name: 'Show in folder' }).click()
+      expect(await waitOpened(start + 3)).toEqual([norm(folder)])
+      // explorer.exe exits 1 after opening the window: still no error.
+      await Bun.sleep(300)
+      expect(await page.locator('.composer .notice').count()).toBe(0)
+
+      if (process.platform !== 'win32') {
+        writeFileSync(`${openerLog}.exit`, '3')
+        try {
+          await chip.click()
+          await page.locator('.composer .notice', { hasText: 'exited with code 3' }).waitFor()
+        } finally {
+          rmSync(`${openerLog}.exit`)
+        }
+      }
+
+      // Nothing outside the session folder, also on another drive, reaches the opener.
+      const ask = (path: string) =>
+        page.evaluate(
+          ({ url, path }: { url: string; path: string }) =>
+            fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ path }) }).then(r => r.status),
+          { url: request.url(), path },
+        )
+      expect(await ask(home)).toBe(403)
+      expect(await ask(join(workspace, '..'))).toBe(403)
+      const otherDrive = parse(process.cwd()).root
+      if (process.platform === 'win32' && otherDrive.toLowerCase() !== parse(workspace).root.toLowerCase()) {
+        expect(await ask(otherDrive)).toBe(403)
+      }
+      expect(opened().length).toBe(start + (process.platform === 'win32' ? 3 : 4))
     } finally {
       await browser.close()
     }
