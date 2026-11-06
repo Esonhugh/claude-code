@@ -529,6 +529,43 @@ try {
     },
   ])
 
+  // Read of a PDF adds its pages as a document block in a meta user message.
+  requests.length = 0
+  await client.beta.messages.create({
+    model: 'gpt-5.5',
+    max_tokens: 16,
+    messages: [
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'document',
+            source: { type: 'base64', media_type: 'application/pdf', data: 'JVBERi0=' },
+          },
+          {
+            type: 'document',
+            title: 'notes.txt',
+            source: { type: 'text', media_type: 'text/plain', data: 'plain notes' },
+          },
+        ],
+      },
+    ],
+  } as any)
+  assert.deepEqual(requests[0]!.body.input, [
+    {
+      type: 'message',
+      role: 'user',
+      content: [
+        {
+          type: 'input_file',
+          filename: 'document.pdf',
+          file_data: 'data:application/pdf;base64,JVBERi0=',
+        },
+        { type: 'input_text', text: 'plain notes' },
+      ],
+    },
+  ])
+
   for (const withImage of [false, true]) {
     requests.length = 0
     await client.beta.messages.create({

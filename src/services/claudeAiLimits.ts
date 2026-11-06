@@ -5,6 +5,7 @@ import { getIsNonInteractiveSession } from '../bootstrap/state.js'
 import { getOpenAIAuthInfo, isClaudeAISubscriber } from '../utils/auth.js'
 import { getModelBetas } from '../utils/betas.js'
 import { getGlobalConfig, saveGlobalConfig } from '../utils/config.js'
+import type { HttpResponseError } from '../utils/errors.js'
 import { logError } from '../utils/log.js'
 import { getSmallFastModel } from '../utils/model/model.js'
 import { getAPIProvider } from '../utils/model/providers.js'
@@ -524,8 +525,18 @@ export function extractQuotaStatusFromHeaders(
   } else emitUsageChange()
 }
 
-export function extractQuotaStatusFromError(error: APIError): void {
+export function extractQuotaStatusFromError(
+  error: APIError | HttpResponseError,
+): void {
+  if (getAPIProvider() === 'openai') {
+    // A Codex usage-limit 429 carries the same x-codex-* window headers.
+    if (error.status === 429 && error.headers) {
+      extractQuotaStatusFromHeaders(error.headers)
+    }
+    return
+  }
   if (
+    !(error instanceof APIError) ||
     !shouldProcessRateLimits(isClaudeAISubscriber()) ||
     error.status !== 429
   ) {

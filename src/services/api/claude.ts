@@ -79,7 +79,7 @@ import {
   resolveAppliedEffort,
 } from '../../utils/effort.js'
 import { isEnvDefinedFalsy, isEnvTruthy } from '../../utils/envUtils.js'
-import { errorMessage } from '../../utils/errors.js'
+import { errorMessage, HttpResponseError } from '../../utils/errors.js'
 import { computeFingerprintFromMessages } from '../../utils/fingerprint.js'
 import { captureAPIRequest, logError } from '../../utils/log.js'
 import {
@@ -3133,7 +3133,7 @@ async function* queryModelRequest(
           errorModel = fallbackError.retryContext.model
         }
 
-        if (error instanceof APIError) {
+        if (error instanceof APIError || error instanceof HttpResponseError) {
           extractQuotaStatusFromError(error)
         }
 
@@ -3196,7 +3196,7 @@ async function* queryModelRequest(
       }
 
       // Extract quota status from error headers if it's a rate limit error
-      if (error instanceof APIError) {
+      if (error instanceof APIError || error instanceof HttpResponseError) {
         extractQuotaStatusFromError(error)
       }
 
