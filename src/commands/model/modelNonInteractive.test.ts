@@ -10,7 +10,8 @@ test('/model in -p switches for this session only and never touches saved settin
   const context = { messages: [], setAppState: (f: (s: object) => object) => updates.push(f({})) }
   const result = (await call('haiku', context as never)) as { value: string }
   expect(result.value).toMatch(/^Set model to `.+` for this session only$/)
-  expect(updates).toEqual([])
+  // Only the session's effort follows the model (its saved level, here none).
+  expect(updates).toEqual([{ effortValue: undefined }])
   expect(getMainLoopModelOverride()).toContain('haiku')
 })
 

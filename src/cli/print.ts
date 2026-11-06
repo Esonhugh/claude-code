@@ -388,6 +388,7 @@ import {
 import { getModelInfos } from 'src/utils/model/modelInfos.js'
 import { getModHttpServices } from '../services/mods/hostOperations.js'
 import {
+  getEffortForModel,
   parseEffortValue,
   resolveAppliedEffort,
   savedEffortPatch,
@@ -3864,6 +3865,7 @@ function runHeadlessStreaming(
             const model = requestedModel === 'default' ? getDefaultMainLoopModel() : requestedModel
             activeUserSpecifiedModel = model
             setMainLoopModelOverride(model)
+            setAppState(prev => ({ ...prev, effortValue: getEffortForModel(model) }))
             streamState.refresh()
             notifySessionMetadataChanged({ model })
             injectModelSwitchBreadcrumbs(requestedModel, model)

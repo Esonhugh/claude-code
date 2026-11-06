@@ -18,6 +18,8 @@ import {
   convertEffortValueToLevel,
   type EffortLevel,
   getDefaultEffortForModel,
+  getEffortForModel,
+  getInitialEffortSetting,
   modelSupportsEffort,
   modelSupportsMaxEffort,
   getSavedEffort,
@@ -168,12 +170,19 @@ export function ModelPicker({
   const handleFocus = useCallback(
     (value: string) => {
       setFocusedValue(value)
-      if (!hasToggledEffort && effortValue === undefined) {
+      if (!hasToggledEffort) {
+        // Like official, show the level saved for the focused model.
+        const model = resolveOptionModel(value)
+        const saved = model ? getInitialEffortSetting(model) : undefined
         const option = selectOptions.find(opt => opt.value === value)
-        setEffort(getDefaultEffortLevelForOption(value, option))
+        setEffort(
+          saved !== undefined
+            ? (toPersistableEffort(saved) ?? convertEffortValueToLevel(saved))
+            : getDefaultEffortLevelForOption(value, option),
+        )
       }
     },
-    [effortValue, hasToggledEffort, selectOptions],
+    [hasToggledEffort, selectOptions],
   )
 
   const handleVisibleRangeChange = useCallback(
@@ -243,7 +252,11 @@ export function ModelPicker({
       if (persistable !== undefined) {
         updateSettingsForSource('userSettings', savedEffortPatch(persistable, pickedModel))
       }
-      setAppState(prev => ({ ...prev, effortValue: effortLevel }))
+      // --effort and the web's effort menu still hold unless changed here.
+      const sessionEffort = hasToggledEffort
+        ? effortLevel
+        : getEffortForModel(value === NO_PREFERENCE ? null : value)
+      setAppState(prev => ({ ...prev, effortValue: sessionEffort }))
     }
 
     const selectedModel = resolveOptionModel(value)

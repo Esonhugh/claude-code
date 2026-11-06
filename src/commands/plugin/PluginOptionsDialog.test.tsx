@@ -48,6 +48,7 @@ const choice = {
   ],
 }
 const { PluginOptionsDialog } = await import('./PluginOptionsDialog.js')
+const { Tab, Tabs } = await import('../../components/design-system/Tabs.js')
 
 class Output extends Writable {
   columns = 100
@@ -99,8 +100,18 @@ function Keys({ children }: { children: React.ReactNode }) {
     </KeybindingProvider>
   )
 }
+// Like Configure options in /plugin: the dialog opens after the tabs mounted.
+function OpensLater({ children }: { children: React.ReactNode }) {
+  const [open, setOpen] = React.useState(false)
+  useEffect(() => {
+    const timer = setTimeout(() => setOpen(true), 20)
+    return () => clearTimeout(timer)
+  }, [])
+  return open ? children : null
+}
 async function mountDialog(
   props: Partial<React.ComponentProps<typeof PluginOptionsDialog>> = {},
+  wrap: (dialog: React.ReactNode) => React.ReactNode = dialog => dialog,
 ) {
   const stdout = new Output()
   const stdin = new Input()
@@ -115,14 +126,16 @@ async function mountDialog(
   }
   const instance = await render(
     <Keys>
-      <PluginOptionsDialog
-        title="Configure agents-md"
-        subtitle="Plugin options"
-        configSchema={schema}
-        onSave={onSave}
-        onCancel={onCancel}
-        {...props}
-      />
+      {wrap(
+        <PluginOptionsDialog
+          title="Configure agents-md"
+          subtitle="Plugin options"
+          configSchema={schema}
+          onSave={onSave}
+          onCancel={onCancel}
+          {...props}
+        />,
+      )}
       <Ready />
     </Keys>,
     {
@@ -250,6 +263,46 @@ describe('plugin option configuration', () => {
       await view.input('hello')
       await view.input('\r')
       expect(view.text()).not.toContain('test-secret-never-render')
+      await view.input('\r')
+      await view.called(view.onSave)
+      expect(view.onSave).toHaveBeenCalledWith({
+        instructionFiles: choice.default,
+        note: 'hello',
+      })
+    } finally {
+      view.close()
+    }
+  })
+
+  test('Tab moves to the next field inside the /plugin tabs instead of switching tabs', async () => {
+    const onTabChange = mock(() => {})
+    const view = await mountDialog(
+      {
+        configSchema: {
+          ...schema,
+          note: { type: 'string', title: 'Note', description: '' },
+        },
+      },
+      dialog => (
+        <Tabs title="Plugins" selectedTab="installed" onTabChange={onTabChange}>
+          {[
+            <Tab key="installed" id="installed" title="Installed">
+              <OpensLater>{dialog}</OpensLater>
+            </Tab>,
+            <Tab key="marketplaces" id="marketplaces" title="Marketplaces">
+              <></>
+            </Tab>,
+          ]}
+        </Tabs>
+      ),
+    )
+    try {
+      const deadline = Date.now() + 10_000
+      while (!view.text().includes('Project instructions') && Date.now() < deadline)
+        await new Promise(resolve => setTimeout(resolve, 10))
+      await view.input('\t')
+      expect(onTabChange).not.toHaveBeenCalled()
+      await view.input('hello')
       await view.input('\r')
       await view.called(view.onSave)
       expect(view.onSave).toHaveBeenCalledWith({
