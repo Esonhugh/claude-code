@@ -36,7 +36,7 @@ export class WorkflowPrefixStagger {
     if (existing === undefined) {
       warming = newWarmingEntry()
       this.entries.set(key, warming)
-    } else if (existing.state === 'warming' && options.capMs > 0) {
+    } else if (existing.state === 'warming' && options.capMs > 0 && !options.signal?.aborted) {
       const waitStart = this.now()
       await waitForLeader(existing.ready, options.capMs, options.signal)
       waitedMs = Math.max(0, this.now() - waitStart)
@@ -89,7 +89,6 @@ function newWarmingEntry(): WarmingEntry {
 }
 
 function waitForLeader(ready: Promise<void>, capMs: number, signal?: AbortSignal): Promise<void> {
-  if (signal?.aborted) return Promise.resolve()
   const timer = new AbortController()
   const onAbort = () => timer.abort()
   signal?.addEventListener('abort', onAbort, { once: true })
