@@ -3316,6 +3316,14 @@ function runHeadlessStreaming(
         uuid: randomUUID(), session_id: getSessionId(),
       })
     },
+    // A Mod hook that failed: the TUI draws it as a warning row; a stream-json client (the web page)
+    // gets it as a transcript line, and the log keeps it on stderr.
+    ...(options.outputFormat === 'stream-json' && {
+      uiDiagnostic: (plugin: string, text: string) => {
+        process.stderr.write(`[Mods] ${plugin}: ${text}\n`)
+        output.enqueue({ type: 'system', subtype: 'ui_log', plugin, text, uuid: randomUUID(), session_id: getSessionId() })
+      },
+    }),
     // Official 2.1.318 hands toasts and the status entry to the SDK client as system messages.
     uiToast: (plugin, text, timeoutMs) => {
       if (options.outputFormat !== 'stream-json') return logForDebugging(`[${plugin}] $.ui.toast: ${text}`)
@@ -4147,9 +4155,16 @@ function runHeadlessStreaming(
               logError(pluginsR.reason)
             }
 
+            // Mods' own commands, as initialize lists them; a mod switched on or off here changes them.
+            const describedCommands = options.modsSession
+              ? await options.modsSession.commands.describe(currentCommands).catch(error => {
+                  logError(error)
+                  return currentCommands
+                })
+              : currentCommands
             sendControlResponseSuccess(message, {
               // @ts-ignore - recovered code
-              commands: toSdkSlashCommands(currentCommands),
+              commands: toSdkSlashCommands(describedCommands),
               agents: currentAgents.map(a => ({
                 name: a.agentType,
                 description: a.whenToUse,

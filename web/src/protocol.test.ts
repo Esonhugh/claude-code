@@ -464,6 +464,23 @@ describe('reduce', () => {
     expect(state.terminalCommands).toEqual(['color'])
   })
 
+  it('replaces the slash commands with those a plugins reload answers (#974)', () => {
+    const ok = (request_id: string, response: Record<string, unknown>) => ({
+      type: 'control_response',
+      response: { subtype: 'success', request_id, response },
+    })
+    const state = fold([
+      ok('web-init-1', { commands: [{ name: 'r5pane', description: 'Open', argumentHint: '' }] }),
+      ok('web-ext-2', { servers: [] }),
+      ok('web-ext-3', {
+        commands: [{ name: 'latecmd', description: 'Late mod command', argumentHint: '' }],
+        agents: [],
+        plugins: [{ name: 'r5late', path: '/p' }],
+      }),
+    ])
+    expect(state.commands).toEqual([{ name: 'latecmd', description: 'Late mod command', argumentHint: '' }])
+  })
+
   it('answers control requests the page does not handle with an error', () => {
     expect(
       unsupportedControlResponse({
