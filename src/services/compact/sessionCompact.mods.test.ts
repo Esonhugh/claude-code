@@ -218,6 +218,27 @@ test('Codex auto compact receives rewritten messages and instructions under the 
   expect(diagnostics).toEqual([])
 })
 
+function remoteResult(): compact.CompactionResult {
+  const boundaryMarker=createCompactBoundaryMessage('auto',190000) as any
+  boundaryMarker.openAICompaction={type:'compaction',id:'cmp_1',encrypted_content:'opaque'}
+  return { boundaryMarker,summaryMessages:[createUserMessage({content:'[OpenAI remote compaction]',isCompactSummary:true,isVisibleInTranscriptOnly:true})],messagesToKeep:[],attachments:[],hookResults:[],preCompactTokenCount:190000,postCompactTokenCount:20 }
+}
+
+test.each([
+  ['passthrough', 'next(e)'],
+  ['rewrite', "next(e).then(r=>({...r,messages:[...r.messages,{role:'user',text:'mod note',toolUses:[]}]}))"],
+])('OpenAI remote compaction survives a %s session.compact hook', async (_name, expression) => {
+  await register(`export function register(on) {on('session.compact',($,e,next)=>${expression});}`)
+  spyOn(mode,'getCompactMode').mockReturnValue('codex')
+  const stub=spyOn(codex,'compactConversationCodexStyle').mockImplementation(async () => remoteResult())
+  restores.push(()=>stub.mockRestore())
+  const ctx=context()
+  const result=await autoCompactIfNeeded(ctx.messages,ctx,params(ctx),'repl_main_thread')
+  expect(result.wasCompacted).toBe(true)
+  expect((result.compactionResult!.boundaryMarker as any).openAICompaction).toEqual({type:'compaction',id:'cmp_1',encrypted_content:'opaque'})
+  expect(diagnostics).toEqual([])
+})
+
 test.each(['manual','auto'] as const)('%s next passthrough preserves the complete session-memory result', async trigger => {
   await register(`export function register(on) {on('session.compact',($,e,next)=>next(e));}`)
   const ctx=context()
