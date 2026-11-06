@@ -1042,7 +1042,18 @@ export function AskDock({
   const options = approvalOptions(approval, t)
   const [sel, setSel] = useState(0)
   const titleId = useId()
-  useEffect(() => setSel(0), [approval.requestId])
+  const dockRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    setSel(0)
+    // Just after sending, focus is still in the empty input box, where these keys would type or interrupt instead.
+    const active = document.activeElement
+    if (!(active instanceof HTMLTextAreaElement) || active.value.trim()) return
+    dockRef.current?.querySelector<HTMLButtonElement>('.opt2')?.focus()
+    // Once answered, typing goes back to the input box.
+    return () => {
+      if (!document.activeElement || document.activeElement === document.body) active.focus()
+    }
+  }, [approval.requestId])
   useEffect(() => {
     const onKey = (e: globalThis.KeyboardEvent) => {
       const target = e.target as HTMLElement | null
@@ -1067,7 +1078,7 @@ export function AskDock({
   }, [options, sel, onAnswer])
   const summary = toolSummary(approval.toolName, JSON.stringify(approval.input))
   return (
-    <div className="askdock" role="dialog" aria-labelledby={titleId}>
+    <div className="askdock" role="dialog" aria-labelledby={titleId} ref={dockRef}>
       <div className="ahead">
         <b id={titleId}>
           {approval.toolName === 'Bash'
