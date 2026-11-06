@@ -3,9 +3,11 @@ import {
   getInlinePlugins,
   getInlinePluginsNoMcp,
   setAdditionalDirectoriesForClaudeMd,
+  setInlinePlugins,
+  setInlinePluginsNoMcp,
 } from '../bootstrap/state.js'
 import { setModToolCheckPermissionHost } from '../services/tools/toolHooks.js'
-import { getInitializePluginsApplied } from '../entrypoints/sdk/launchInitialize.js'
+import { getInitializePluginsApplied, joinReloadAddPlugins } from '../entrypoints/sdk/launchInitialize.js'
 import { createSdkStreamState } from './streamState.js'
 import { createModCommandQueue } from '../services/mods/commandRunQueue.js'
 import { createModMcpConnections } from '../services/mods/mcpConnect.js'
@@ -4046,7 +4048,30 @@ function runHeadlessStreaming(
             void updateSdkMcp()
           }
         } else if (message.request.subtype === 'reload_plugins') {
+          // Puts the plugin folders back when a reload that added some fails.
+          let restoreAddedPlugins: (() => void) | undefined
           try {
+            const addPlugins = message.request.add_plugins
+            if (addPlugins !== undefined && addPlugins !== null && !(Array.isArray(addPlugins) && addPlugins.length === 0)) {
+              const before = { pluginDirs: getInlinePlugins(), pluginDirsNoMcp: getInlinePluginsNoMcp() }
+              const joined = joinReloadAddPlugins(addPlugins, before, {
+                offMachine: isEnvTruthy(process.env.CLAUDE_CODE_REMOTE) || getIsRemoteMode(),
+                sideloadDisabled: areSideloadFlagsDisabled(),
+              })
+              if (joined.kind === 'refused') throw new Error(joined.message)
+              const apply = (dirs: typeof before) => {
+                setInlinePlugins(dirs.pluginDirs)
+                setInlinePluginsNoMcp(dirs.pluginDirsNoMcp)
+                // --plugin-dir code runs outside the sandbox, so its folders are write-denied.
+                if (SandboxManager.isSandboxingEnabled()) SandboxManager.refreshConfig()
+              }
+              restoreAddedPlugins = () => apply(before)
+              try {
+                apply(joined)
+              } catch (error) {
+                throw new Error(`reload_plugins add_plugins: ${errorMessage(error)}`)
+              }
+            }
             if (
               feature('DOWNLOAD_USER_SETTINGS') &&
               (isEnvTruthy(process.env.CLAUDE_CODE_REMOTE) || getIsRemoteMode())
@@ -4060,6 +4085,7 @@ function runHeadlessStreaming(
             }
 
             const r = await refreshActivePlugins(setAppState)
+            restoreAddedPlugins = undefined
 
             const sdkAgents = currentAgents.filter(
               a => a.source === 'flagSettings',
@@ -4089,6 +4115,7 @@ function runHeadlessStreaming(
                 name: p.name,
                 path: p.path,
                 source: p.source,
+                ...(typeof p.manifest.version === 'string' ? { version: p.manifest.version } : {}),
               }))
             } else {
               logError(pluginsR.reason)
@@ -4107,6 +4134,7 @@ function runHeadlessStreaming(
               error_count: r.error_count,
             } satisfies SDKControlReloadPluginsResponse)
           } catch (error) {
+            restoreAddedPlugins?.()
             sendControlResponseError(message, errorMessage(error))
           }
         } else if (message.request.subtype === 'reload_skills') {

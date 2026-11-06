@@ -267,6 +267,7 @@ export type SDKControlMcpSetServersResponse = McpSetServersResult
 
 export type SDKControlReloadPluginsRequest = {
   subtype: 'reload_plugins'
+  add_plugins?: Array<{ type: 'local'; path: string; skipMcpDiscovery?: boolean }>
 }
 
 export type SDKControlReloadPluginsResponse = {
