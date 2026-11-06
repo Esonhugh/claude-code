@@ -331,7 +331,7 @@ h1, h2, h3 { text-wrap: balance; margin: 0 }
 .send:disabled, .cbox:has(textarea:placeholder-shown) .send, .wl-box:has(textarea:placeholder-shown) .send { background: var(--sunken); color: var(--muted) }
 .crow > .plus { border-radius: 999px; background: var(--sunken); color: var(--fg); font-size: 18px }
 .crow > .plus:hover, .crow > .plus[aria-expanded="true"] { background: var(--line) }
-.crow .footbtn { height: 28px; padding: 0 8px; border-radius: 8px; font-size: 13px; font-weight: 500 }
+.crow .footbtn { height: 28px; padding: 0 8px; border-radius: 8px; font-size: 13px; font-weight: 500; white-space: nowrap }
 .crow .footbtn::after { content: ''; width: 5px; height: 5px; margin: -3px 0 0 2px; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; transform: rotate(45deg); opacity: .55 }
 /* The row's menus open over the whole card, so on a phone a menu never starts mid-row and runs off screen. */
 .cbox { position: relative }
@@ -446,7 +446,7 @@ mark { background: var(--warn-soft); color: inherit; border-radius: 2px; padding
 
 
 /* artifact view: the file takes the middle, the conversation moves to the right, the side panel steps aside */
-body.art .app { grid-template-columns: var(--left-w, 220px) minmax(0, 1fr) clamp(340px, 30vw, 460px) } body.art .side { display: none !important }
+body.art .app { grid-template-columns: var(--left-w, 220px) minmax(0, 1fr) var(--chat-w, clamp(340px, 30vw, 460px)) } body.art .side { display: none !important }
 .artview { display: flex; flex-direction: column; min-width: 0; min-height: 0; border-right: 1px solid var(--line); background: var(--bg) }
 .arthead { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; padding: 8px 12px; border-bottom: 1px solid var(--line); background: var(--surface) }
 .arthead .kind { font-size: 11px; border: 1px solid var(--line); border-radius: 4px; padding: 0 5px; color: var(--muted) }
@@ -478,8 +478,9 @@ body.hist .main.asking > * { opacity: 1 }
 .col-drag { position: fixed; top: 0; bottom: 0; width: 8px; cursor: col-resize; z-index: 8; touch-action: none }
 .col-drag.left { left: calc(var(--left-w, 220px) - 4px) }
 .col-drag.right { right: calc(var(--right-w, clamp(300px, 28vw, 420px)) - 4px) }
+.col-drag.chat { right: calc(var(--chat-w, clamp(340px, 30vw, 460px)) - 4px) }
 .col-drag:hover, .col-drag.on, .col-drag:focus-visible { background: color-mix(in srgb, var(--accent) 25%, transparent); outline: 0 }
-body.nosess .col-drag.right, body.art .col-drag.right { display: none }
+body.nosess .col-drag.right, body.art .col-drag.right, body:not(.art) .col-drag.chat { display: none }
 @media (max-width: 1100px) { .col-drag { display: none } }
 @media (max-width: 600px) { .memgrid { grid-template-columns: minmax(0, 1fr) } }
 .panel-btn, .sheet-head { display: none }
@@ -525,7 +526,10 @@ button.chip { cursor: pointer; font: inherit; color: inherit }
 .ctxlegend { display: grid; grid-template-columns: auto 1fr auto; gap: 4px 8px; align-items: center; color: var(--muted) }
 .ctxlegend .sw { width: 9px; height: 9px; border-radius: 2px }
 .ctxlegend .mono { color: var(--fg); text-align: right }
-.crow { display: flex; gap: 6px; padding: 0; align-items: center; justify-content: flex-start; flex-wrap: wrap; container-type: inline-size }
+.crow { display: flex; gap: 6px; padding: 0; align-items: center; justify-content: flex-start; container-type: inline-size }
+/* A long model name shortens with an ellipsis instead of pushing the row onto a second line. */
+.crow > .footwrap.right { min-width: 0 } .crow > .footwrap.right > .footbtn { max-width: 100% }
+.crow .footbtn .ml { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
 /* A narrow card keeps one row: the mode chip drops to its mark, as dsh web's chips go icon-only. */
 @container (max-width: 420px) { .crow .footbtn.perm > span:not(.pmark) { display: none } }
 .crow .hint { flex: 1 1 260px; min-width: 0 }

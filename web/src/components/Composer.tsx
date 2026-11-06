@@ -998,7 +998,7 @@ export function ChatComposer({
           <ModeButton t={box.t} mode={mode.mode} plan={mode.plan} onMode={mode.onMode} />
           {extra}
           {model.models.length > 0 && (
-            <FootMenu right label={box.t('model')} button={modelButtonLabel(model.model, model.effort, model.models, box.t)}>
+            <FootMenu right label={box.t('model')} button={<span className="ml">{modelButtonLabel(model.model, model.effort, model.models, box.t)}</span>}>
               {close => <ModelMenu t={box.t} {...model} close={close} />}
             </FootMenu>
           )}
