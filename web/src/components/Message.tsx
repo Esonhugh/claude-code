@@ -16,6 +16,7 @@ import { type Block, type Decision, hookBlock, type Item, type ModelOption } fro
 import type { Source } from '../sources'
 import { stripAnsi, toolMessage, toolSummary } from '../tools'
 import { firstPreviewUrl, WebPreviewContext } from '../webPreview'
+import { ModSite } from './Mods'
 
 /** `claude-opus-5-5` → `Opus 5.5`; anything else is shown as is. */
 export function modelLabel(model: string | undefined): string | undefined {
@@ -223,6 +224,14 @@ function UserText({ text: full }: { text: string }) {
   )
 }
 
+function parsedInput(text: string): unknown {
+  try {
+    return JSON.parse(text)
+  } catch {
+    return text
+  }
+}
+
 function prettyJson(text: string): string {
   try {
     return JSON.stringify(JSON.parse(text), null, 2)
@@ -323,6 +332,10 @@ export function decisionText(decision: Decision, t: T): string {
 
 type T = (key: MessageKey, vars?: Record<string, string>) => string
 
+function resultProps(block: Extract<Block, { kind: 'tool' }>) {
+  return { tool_use_id: block.id, tool: block.name, output: block.result ?? '', isErrored: block.isError === true, isExpanded: true }
+}
+
 function ToolCard({ block, t }: { block: Extract<Block, { kind: 'tool' }>; t: T }) {
   const files = useContext(FilesContext)
   const agents = useContext(AgentsContext)
@@ -410,17 +423,25 @@ function ToolCard({ block, t }: { block: Extract<Block, { kind: 'tool' }>; t: T 
       ) : message ? (
         <div className="tbody">
           <Markdown filesBase={files.base} text={message} />
-          {done && <div className="tlabel">{stripAnsi(block.result!)}</div>}
+          {done && (
+            <ModSite component="ToolResult" id={block.id} props={resultProps(block)}>
+              {p => <div className="tlabel">{stripAnsi(String(p.output))}</div>}
+            </ModSite>
+          )}
         </div>
       ) : (
         <div className="tbody">
           <div className="tlabel">{t('toolInput')}</div>
           <pre className="tin">{prettyJson(block.input)}</pre>
           {done && (
-            <>
-              <div className="tlabel">{t('toolOutput')}</div>
-              <pre className="tout">{stripAnsi(block.result!)}</pre>
-            </>
+            <ModSite component="ToolResult" id={block.id} props={resultProps(block)}>
+              {p => (
+                <>
+                  <div className="tlabel">{t('toolOutput')}</div>
+                  <pre className="tout">{stripAnsi(String(p.output))}</pre>
+                </>
+              )}
+            </ModSite>
           )}
         </div>
       )}
@@ -642,32 +663,41 @@ function MessageView({
             </span>
           </div>
         )}
-        <div className={queued ? 'msg user queued' : 'msg user'}>
-          {rewind?.points.has(item.id) && !queued && (
-            <button type="button" className="rw-btn" title={t('rewindTitle')} onClick={() => rewind.ask(item.id)}>
-              {t('rewind')}
-            </button>
-          )}
-          <span className="who">{queued ? t('queuedMessage') : t('you')}</span>
-          <div className="bubble">
-            {item.images?.map((src, i) =>
-              files.openImage ? (
-                <button
-                  type="button"
-                  key={i}
-                  className="bubble-image-open"
-                  title={t('preview')}
-                  onClick={() => files.openImage?.(src, i + 1, imageTarget(item.text, i))}
-                >
-                  <img className="bubble-image" src={src} alt="" />
+        <ModSite
+          component="UserMessage"
+          id={item.id}
+          off={queued}
+          props={{ text: item.text, origin: { kind: 'composer' }, isExpanded: true }}
+        >
+          {p => (
+            <div className={queued ? 'msg user queued' : 'msg user'}>
+              {rewind?.points.has(item.id) && !queued && (
+                <button type="button" className="rw-btn" title={t('rewindTitle')} onClick={() => rewind.ask(item.id)}>
+                  {t('rewind')}
                 </button>
-              ) : (
-                <img key={i} className="bubble-image" src={src} alt="" />
-              ),
-            )}
-            <UserText text={item.text} />
-          </div>
-        </div>
+              )}
+              <span className="who">{queued ? t('queuedMessage') : t('you')}</span>
+              <div className="bubble">
+                {item.images?.map((src, i) =>
+                  files.openImage ? (
+                    <button
+                      type="button"
+                      key={i}
+                      className="bubble-image-open"
+                      title={t('preview')}
+                      onClick={() => files.openImage?.(src, i + 1, imageTarget(item.text, i))}
+                    >
+                      <img className="bubble-image" src={src} alt="" />
+                    </button>
+                  ) : (
+                    <img key={i} className="bubble-image" src={src} alt="" />
+                  ),
+                )}
+                <UserText text={String(p.text)} />
+              </div>
+            </div>
+          )}
+        </ModSite>
       </>
     )
   }
@@ -707,9 +737,13 @@ function MessageView({
   }
   if (item.kind === 'note') {
     return (
-      <div className="note" style={{ textAlign: 'center' }}>
-        {item.key ? t(item.key) : item.text}
-      </div>
+      <ModSite component="InfoNotice" id={item.id} props={{ text: item.key ? t(item.key) : item.text, command: null }}>
+        {p => (
+          <div className="note" style={{ textAlign: 'center' }}>
+            {String(p.text)}
+          </div>
+        )}
+      </ModSite>
     )
   }
   if (item.kind === 'goal') {
@@ -768,12 +802,20 @@ function MessageView({
   }
   if (item.kind === 'local') {
     return (
-      <div className={`msg local${item.isError ? ' err' : ''}`}>
-        <span className="rm" aria-hidden="true">
-          ⎿
-        </span>
-        <span className="md">{stripAnsi(item.text)}</span>
-      </div>
+      <ModSite
+        component="CommandOutput"
+        id={item.id}
+        props={{ command: item.command ?? '', args: item.args ?? '', text: item.text, isErrored: item.isError === true }}
+      >
+        {p => (
+          <div className={`msg local${item.isError ? ' err' : ''}`}>
+            <span className="rm" aria-hidden="true">
+              ⎿
+            </span>
+            <span className="md">{stripAnsi(String(p.text))}</span>
+          </div>
+        )}
+      </ModSite>
     )
   }
   if (item.kind === 'error') {
@@ -801,6 +843,7 @@ function MessageView({
       return block?.kind === 'tool' && !block.isError && toolDiff(block.name, block.input, block.meta) !== undefined
     },
   )
+  const firstText = item.blocks.findIndex(b => b?.kind === 'text')
   const step = (i: number) => {
     const block = item.blocks[i]!
     if (block.kind === 'thinking') {
@@ -831,7 +874,26 @@ function MessageView({
         </div>
       )
     }
-    return block.kind === 'tool' ? <ToolCard key={i} block={block} t={t} /> : null
+    if (block.kind !== 'tool') return null
+    return (
+      <ModSite
+        key={i}
+        component="ToolUse"
+        id={block.id}
+        props={{
+          tool_use_id: block.id,
+          tool: block.name,
+          input: parsedInput(block.input),
+          isRunning: block.result === undefined && streaming,
+          isErrored: block.isError === true,
+          isInterrupted: block.result === undefined && !streaming,
+          isExpanded: false,
+          ...(block.result !== undefined && { output: block.result }),
+        }}
+      >
+        {() => <ToolCard block={block} t={t} />}
+      </ModSite>
+    )
   }
   return (
     <div className="msg assistant">
@@ -844,13 +906,17 @@ function MessageView({
         const first = segment.at[0]!
         if (segment.kind === 'text') {
           const block = item.blocks[first] as Extract<Block, { kind: 'text' }>
+          const live = streaming && first === item.blocks.length - 1
           return (
-            <Markdown
+            <ModSite
               key={first}
-              filesBase={files.base}
-              text={block.text}
-              streaming={streaming && first === item.blocks.length - 1}
-            />
+              component="AssistantMessage"
+              id={`${item.id}:${first}`}
+              off={live}
+              props={{ text: block.text, isFirstOfReply: first === firstText }}
+            >
+              {p => <Markdown filesBase={files.base} text={String(p.text)} streaming={live} />}
+            </ModSite>
           )
         }
         if (segment.kind === 'cards') {
@@ -874,19 +940,32 @@ function MessageView({
           return parts.length ? parts : [t('nSteps', { n: String(n) })]
         }
         return (
-          <details key={`s${first}${live ? '-live' : ''}`} className="think steps" open={live || undefined}>
-            <summary className={live ? 'shimmer' : undefined}>
-              <span className={`sdot ${live ? 'run' : failed ? 'bad' : 'ok'}`} aria-hidden="true" />
-              {summaryParts(thought, tools, run.length)
-                .map((part, k) => (
-                  <span key={k} className="sd">
-                    {part}
-                  </span>
-                ))}
-              {failed > 0 && <span className="sd bad">{t('nFailed', { n: String(failed) })}</span>}
-            </summary>
-            <div className="stepsbody">{segment.at.map(step)}</div>
-          </details>
+          <ModSite
+            key={`s${first}${live ? '-live' : ''}`}
+            component="ToolGroup"
+            id={`${item.id}:s${first}`}
+            props={{
+              calls: tools.map(b => ({ tool_use_id: b.id, tool: b.name, input: parsedInput(b.input), isErrored: b.isError === true })),
+              isActive: live,
+              isExpanded: false,
+            }}
+          >
+            {() => (
+              <details className="think steps" open={live || undefined}>
+                <summary className={live ? 'shimmer' : undefined}>
+                  <span className={`sdot ${live ? 'run' : failed ? 'bad' : 'ok'}`} aria-hidden="true" />
+                  {summaryParts(thought, tools, run.length)
+                    .map((part, k) => (
+                      <span key={k} className="sd">
+                        {part}
+                      </span>
+                    ))}
+                  {failed > 0 && <span className="sd bad">{t('nFailed', { n: String(failed) })}</span>}
+                </summary>
+                <div className="stepsbody">{segment.at.map(step)}</div>
+              </details>
+            )}
+          </ModSite>
         )
       })}
       {(turn || quote) && !streaming && (
