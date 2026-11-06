@@ -32,7 +32,10 @@ export type ExecResult = {
 }
 
 export type ShellCommand = {
-  background: (backgroundTaskId: string) => boolean
+  background: (
+    backgroundTaskId: string,
+    options?: { skipSpill?: boolean },
+  ) => boolean
   result: Promise<ExecResult>
   kill: () => void
   status: 'running' | 'backgrounded' | 'completed' | 'killed'
@@ -373,7 +376,7 @@ class ShellCommandImpl implements ShellCommand {
     this.#doKill()
   }
 
-  background(taskId: string): boolean {
+  background(taskId: string, options?: { skipSpill?: boolean }): boolean {
     if (this.#status === 'running') {
       this.#backgroundTaskId = taskId
       this.#status = 'backgrounded'
@@ -383,7 +386,7 @@ class ShellCommandImpl implements ShellCommand {
         // The foreground timeout is gone, so watch file size to prevent
         // a stuck append loop from filling the disk (768GB incident).
         this.#startSizeWatchdog()
-      } else {
+      } else if (!options?.skipSpill) {
         // Pipe mode: spill the in-memory buffer so readers can find it on disk.
         this.taskOutput.spillToDisk()
       }

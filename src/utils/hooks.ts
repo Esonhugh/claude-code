@@ -269,8 +269,10 @@ function executeInBackground({
     return true
   }
 
-  // TaskOutput on the ShellCommand accumulates data — no stream listeners needed
-  if (!shellCommand.background(processId)) {
+  // TaskOutput on the ShellCommand accumulates data — no stream listeners needed.
+  // Keep it in memory: after a spill getStdout() returns only a truncation
+  // notice, and the registry would parse that instead of the hook's JSON.
+  if (!shellCommand.background(processId, { skipSpill: true })) {
     return false
   }
 
@@ -954,6 +956,7 @@ async function execCommandHook(
   // entered value containing the literal text ${CLAUDE_PLUGIN_ROOT} is treated
   // as opaque — not re-interpreted as a template.
   let command = hook.command
+  let args = hook.args
   let pluginOpts: ReturnType<typeof loadPluginOptions> | undefined
   if (pluginRoot) {
     // Plugin directory gone (orphan GC race, concurrent session deleted it):
@@ -976,15 +979,21 @@ async function execCommandHook(
     // form .replace() so paths containing $ aren't mangled by $-pattern
     // interpretation (rare but possible: \\server\c$\plugin).
     const rootPath = toHookPath(pluginRoot)
-    command = command.replace(/\$\{CLAUDE_PLUGIN_ROOT\}/g, () => rootPath)
-    if (pluginId) {
-      const dataPath = toHookPath(getPluginDataDir(pluginId))
-      command = command.replace(/\$\{CLAUDE_PLUGIN_DATA\}/g, () => dataPath)
+    const dataPath = pluginId
+      ? toHookPath(getPluginDataDir(pluginId))
+      : undefined
+    const substitute = (value: string) => {
+      const withRoot = value.replace(/\$\{CLAUDE_PLUGIN_ROOT\}/g, () => rootPath)
+      return dataPath === undefined
+        ? withRoot
+        : withRoot.replace(/\$\{CLAUDE_PLUGIN_DATA\}/g, () => dataPath)
     }
+    command = substitute(command)
+    args = args?.map(substitute)
     if (pluginId) {
       pluginOpts = loadPluginOptions(pluginId)
       // A substituted value would be re-parsed by the shell (official 2.1.207).
-      if (/\$\{user_config\.[^}]*\}/.test(command))
+      if (!args && /\$\{user_config\.[^}]*\}/.test(command))
         throw new Error(
           `Hook from plugin ${pluginId} references \${user_config.*} in a shell-form command. The substituted value would be re-parsed by the shell. Read $CLAUDE_PLUGIN_OPTION_<KEY> from the hook's environment instead. Command: ${hook.command}`,
         )
@@ -994,7 +1003,12 @@ async function execCommandHook(
   // On Windows (bash only), auto-prepend `bash` for .sh scripts so they
   // execute instead of opening in the default file handler. PowerShell
   // runs .ps1 files natively — no prepend needed.
-  if (isWindows && !isPowerShell && command.trim().match(/\.sh(\s|$|")/)) {
+  if (
+    !args &&
+    isWindows &&
+    !isPowerShell &&
+    command.trim().match(/\.sh(\s|$|")/)
+  ) {
     if (!command.trim().startsWith('bash ')) {
       command = `bash ${command}`
     }
@@ -1093,7 +1107,16 @@ async function execCommandHook(
   // startup, which will exit first. Relaxing that is phase 1 of the
   // design's implementation order (separate PR).
   let child: ChildProcessWithoutNullStreams
-  if (shellType === 'powershell') {
+  if (args) {
+    // Exec form: no shell parses the command or its arguments, so the hook's
+    // stdin JSON and substituted paths can never be run as shell code.
+    child = spawn(command, args, {
+      env: envVars,
+      cwd: safeCwd,
+      shell: false,
+      windowsHide: true,
+    }) as ChildProcessWithoutNullStreams
+  } else if (shellType === 'powershell') {
     const pwshPath = await getCachedPowerShellPath()
     if (!pwshPath) {
       throw new Error(
@@ -1189,6 +1212,7 @@ async function execCommandHook(
         stderr: string
         output: string
         status: number
+        backgrounded?: boolean
       }) => void)
     | null = null
   const childIsAsyncPromise = new Promise<{
@@ -1197,6 +1221,7 @@ async function execCommandHook(
     output: string
     status: number
     aborted?: boolean
+    backgrounded?: boolean
   }>(resolve => {
     asyncResolve = resolve
   })
@@ -1286,11 +1311,14 @@ async function execCommandHook(
           })
           if (backgrounded) {
             shellCommandTransferred = true
+            // The registry reports the finished hook; the caller must not
+            // also parse this partial output as the hook's result.
             asyncResolve?.({
               stdout,
               stderr,
               output,
               status: 0,
+              backgrounded: true,
             })
           }
         } else if (isAsyncHookJSONOutput(parsed) && forceSyncExecution) {
@@ -1947,7 +1975,7 @@ export async function getMatchingHooks(
           .map(m => [
             hookDedupKey(
               m,
-              `${m.hook.shell ?? DEFAULT_HOOK_SHELL}\0${m.hook.command}\0${getIfCondition(m.hook)}`,
+              `${m.hook.shell ?? DEFAULT_HOOK_SHELL}\0${m.hook.command}\0${JSON.stringify(m.hook.args ?? null)}\0${getIfCondition(m.hook)}`,
             ),
             m,
           ]),
