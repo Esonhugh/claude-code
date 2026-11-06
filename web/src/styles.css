@@ -306,15 +306,17 @@ h1, h2, h3 { text-wrap: balance; margin: 0 }
 
 /* composer extras */
 .composer form { flex-direction: column; align-items: stretch; position: relative }
-.cbox { display: flex; gap: 8px; align-items: flex-end; border: 1px solid var(--line); border-radius: 16px; background: var(--surface); padding: 8px 8px 8px 12px; box-shadow: 0 1px 3px rgba(0,0,0,.06) }
+/* One card like dsh web's composer: the text on top, then its controls and send inside the same card. */
+.cbox { display: flex; flex-direction: column; gap: 6px; border: 1px solid var(--line); border-radius: 22px; background: var(--surface); padding: 8px 8px 6px; box-shadow: 0 2px 12px rgba(0,0,0,.06) }
+.cin { display: flex; gap: 8px; align-items: flex-end; padding: 0 6px; min-width: 0 }
 .cbox.drag { border-color: var(--accent); background: var(--accent-soft) }
-.cbox textarea { border: 0; background: transparent; padding: 5px 2px; height: 30px; line-height: 20px; max-height: 160px; display: block }
+.cbox textarea { border: 0; background: transparent; padding: 4px 2px; height: 32px; line-height: 22px; max-height: 176px; display: block; caret-color: var(--accent) }
 .cbox textarea:focus-visible { outline: none }
-.cbox:focus-within { border-color: var(--accent) }
+.cbox:focus-within { border-color: color-mix(in srgb, var(--accent) 45%, var(--line)) }
 .to-chips { flex: none; align-self: flex-end; display: flex; flex-wrap: wrap; gap: 4px; max-width: 50%; margin-bottom: 2px }
 /* Two or more picks take their own row above the text, which keeps the full width. */
-.cbox:has(.to-chip + .to-chip) { flex-wrap: wrap }
-.cbox .to-chips:has(.to-chip + .to-chip) { flex-basis: 100%; max-width: 100%; align-self: auto }
+.cin:has(.to-chip + .to-chip) { flex-wrap: wrap }
+.cin .to-chips:has(.to-chip + .to-chip) { flex-basis: 100%; max-width: 100%; align-self: auto }
 .to-chip { flex: none; max-width: 100%; display: inline-flex; align-items: center; gap: 2px; height: 26px; padding: 0 4px 0 8px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); font-size: 12.5px; font-weight: 500; white-space: nowrap }
 .to-chip span { overflow: hidden; text-overflow: ellipsis }
 .to-chip button { border: 0; background: transparent; color: inherit; padding: 0 4px; font-size: 14px; line-height: 1; cursor: pointer; opacity: .7 }
@@ -323,7 +325,12 @@ h1, h2, h3 { text-wrap: balance; margin: 0 }
 .plus:hover, .plus[aria-expanded="true"] { background: var(--sunken); color: var(--fg) }
 .send { width: 30px; height: 30px; border-radius: 999px; border: 0; background: var(--accent); color: var(--surface); flex: none; display: grid; place-items: center; padding: 0; cursor: pointer }
 .send:disabled, .cbox:has(textarea:placeholder-shown) .send, .wl-box:has(textarea:placeholder-shown) .send { background: var(--sunken); color: var(--muted) }
-.crow > .plus { margin-left: -2px }
+.crow > .plus { border-radius: 999px; background: var(--sunken); color: var(--fg); font-size: 18px }
+.crow > .plus:hover, .crow > .plus[aria-expanded="true"] { background: var(--line) }
+.crow .footbtn { height: 28px; padding: 0 8px; border-radius: 8px; font-size: 13px; font-weight: 500 }
+.crow .footbtn::after { content: ''; width: 5px; height: 5px; margin: -3px 0 0 2px; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; transform: rotate(45deg); opacity: .55 }
+.crow > .send { width: 32px; height: 32px; margin-left: auto }
+.crow > .footwrap.right + .send { margin-left: 4px }
 .hint { font-size: 11.5px; color: var(--muted); padding: 4px 4px 0 }
 .attachments { display: flex; gap: 6px; flex-wrap: wrap; padding-bottom: 6px }
 .attachments:empty { display: none }
@@ -507,7 +514,9 @@ button.chip { cursor: pointer; font: inherit; color: inherit }
 .ctxlegend { display: grid; grid-template-columns: auto 1fr auto; gap: 4px 8px; align-items: center; color: var(--muted) }
 .ctxlegend .sw { width: 9px; height: 9px; border-radius: 2px }
 .ctxlegend .mono { color: var(--fg); text-align: right }
-.crow { display: flex; gap: 4px; padding: 0 2px; align-items: center; justify-content: flex-start; flex-wrap: wrap }
+.crow { display: flex; gap: 6px; padding: 0; align-items: center; justify-content: flex-start; flex-wrap: wrap; container-type: inline-size }
+/* A narrow card keeps one row: the mode chip drops to its mark, as dsh web's chips go icon-only. */
+@container (max-width: 420px) { .crow .footbtn.perm > span:not(.pmark) { display: none } }
 .crow .hint { flex: 1 1 260px; min-width: 0 }
 .opts { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; margin-left: auto }
 .opt { display: inline-flex; align-items: center; gap: 4px; height: 26px; box-sizing: border-box; font-size: 12px; line-height: 1; color: var(--muted); border: 1px solid var(--line); border-radius: 999px; padding: 0 8px 0 10px; background: var(--bg) }
