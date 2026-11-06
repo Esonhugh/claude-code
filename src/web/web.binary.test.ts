@@ -233,7 +233,7 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
         if (!new URL(req.url).pathname.endsWith('/messages')) {
           return Response.json({})
         }
-        type Block = { type: string }
+        type Block = { type: string; tool_use_id?: string; content?: unknown }
         const body = (await req.json()) as {
           model?: string
           system?: string | { text?: string }[]
@@ -386,10 +386,12 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
           stop = 'tool_use'
         } else if (lastText.includes('toolu_task_b')) {
           // Plan with the task tools: finish the first task, start the second.
-          const ids = [...lastText.matchAll(/Task #(\d+) created/g)].map(m => m[1])
+          // Concurrent tools report in completion order, so match each id to its call.
+          const id = (toolId: string) =>
+            /Task #(\d+) created/.exec(String(lastBlocks.find(b => b.tool_use_id === toolId)?.content))?.[1]
           blocks = [
-            { type: 'tool_use', id: 'toolu_task_c', name: 'TaskUpdate', input: { taskId: ids[0], status: 'completed' } },
-            { type: 'tool_use', id: 'toolu_task_d', name: 'TaskUpdate', input: { taskId: ids[1], status: 'in_progress' } },
+            { type: 'tool_use', id: 'toolu_task_c', name: 'TaskUpdate', input: { taskId: id('toolu_task_a'), status: 'completed' } },
+            { type: 'tool_use', id: 'toolu_task_d', name: 'TaskUpdate', input: { taskId: id('toolu_task_b'), status: 'in_progress' } },
           ]
           stop = 'tool_use'
         } else if (lastText.includes('TODOS')) {

@@ -1248,7 +1248,7 @@ describe('classic events at existing tool hook boundaries', () => {
             let modifiers = 0
             Object.assign(f.tool, {
               inputSchema:z.object({value:z.string()}),outputSchema:z.object({value:z.string()}),
-              maxResultSizeChars:Infinity,isConcurrencySafe:() => true,
+              maxResultSizeChars:Infinity,isConcurrencySafe:() => false,
               call:async (input:{value:string}) => {calls.push(input.value); return {data:input,contextModifier:(ctx:ToolUseContext) => {modifiers++;return ctx}}},
               mapToolResultToToolResultBlockParam:(data:{value:string},id:string) => ({type:'tool_result',tool_use_id:id,content:data.value}),
             })
