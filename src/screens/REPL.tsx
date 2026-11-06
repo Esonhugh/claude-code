@@ -2566,26 +2566,31 @@ export function REPL({
     }
   }, [])
 
-  // Streaming text display: set state directly per delta (Ink's 16ms render
-  // throttle batches rapid updates). Cleared on message arrival (messages.ts)
-  // so displayedMessages switches from deferredMessages to messages atomically.
-  const [streamingText, setStreamingText] = useState<string | null>(null)
+  // Streaming text display. The full text lives in a ref; state holds only
+  // the complete lines, so REPL re-renders once per streamed line instead of
+  // once per delta. Cleared on message arrival (messages.ts) so
+  // displayedMessages switches from deferredMessages to messages atomically.
+  const streamingTextRef = useRef<string | null>(null)
+  const [streamingLines, setStreamingLines] = useState<string | null>(null)
   const reducedMotion =
     useAppState(s => s.settings.prefersReducedMotion) ?? false
   const showStreamingText = !reducedMotion && !hasCursorUpViewportYankBug()
   const onStreamingText = useCallback(
-    (f: (current: string | null) => string | null) => setStreamingText(f),
+    (f: (current: string | null) => string | null) => {
+      const text = f(streamingTextRef.current)
+      streamingTextRef.current = text
+      // Hide the in-progress source line so text streams line-by-line, not
+      // char-by-char. lastIndexOf returns -1 when no newline, giving '' → null.
+      setStreamingLines(
+        text ? text.substring(0, text.lastIndexOf('\n') + 1) || null : null,
+      )
+    },
     [],
   )
 
-  // Hide the in-progress source line so text streams line-by-line, not
-  // char-by-char. lastIndexOf returns -1 when no newline, giving '' → null.
   // Guard on showStreamingText so toggling reducedMotion mid-stream
   // immediately hides the streaming preview.
-  const visibleStreamingText =
-    streamingText && showStreamingText
-      ? streamingText.substring(0, streamingText.lastIndexOf('\n') + 1) || null
-      : null
+  const visibleStreamingText = showStreamingText ? streamingLines : null
 
   // Remote session hook - manages WebSocket connection and message handling for --remote mode
   const remoteSession = useRemoteSession({
@@ -2783,7 +2788,7 @@ export function REPL({
     setUserInputOnProcessing(undefined)
     responseLengthRef.current = 0
     apiMetricsRef.current = []
-    setStreamingText(null)
+    onStreamingText(() => null)
     setStreamingToolUses([])
     setSpinnerMessage(null)
     setSpinnerColor(null)
@@ -2794,7 +2799,7 @@ export function REPL({
     // turn's commands — clear after each turn to avoid accumulating
     // Promise chains for unconsumed checks (denied/aborted paths).
     clearSpeculativeChecks()
-  }, [pickNewSpinnerTip])
+  }, [pickNewSpinnerTip, onStreamingText])
 
   // Session backgrounding — hook is below, after getToolUseContext
 
@@ -3683,10 +3688,11 @@ export function REPL({
     // generated before pressing Esc. Pushed before resetLoadingState clears
     // streamingText, and before query.ts yields the async interrupt marker,
     // giving final order [user, partial-assistant, [Request interrupted by user]].
-    if (streamingText?.trim()) {
+    const partialText = streamingTextRef.current
+    if (partialText?.trim()) {
       setMessages(prev => [
         ...prev,
-        createAssistantMessage({ content: streamingText }),
+        createAssistantMessage({ content: partialText }),
       ])
     }
 
@@ -5059,7 +5065,7 @@ export function REPL({
         }
         apiMetricsRef.current = []
         setStreamingToolUses([])
-        setStreamingText(null)
+        onStreamingText(() => null)
 
         // messagesRef is updated synchronously by the setMessages wrapper
         // above, so it already includes newMessages from the append at the
