@@ -464,7 +464,11 @@ import {
   deleteDirectConnectSession,
   DirectConnectError,
 } from './server/createDirectConnectSession.js'
-import { initializeLspServerManager } from './services/lsp/manager.js'
+import {
+  initializeLspServerManager,
+  waitForInitialization as waitForLspInitialization,
+} from './services/lsp/manager.js'
+import { LSPTool } from './tools/LSPTool/LSPTool.js'
 import { shouldEnablePromptSuggestion } from './services/PromptSuggestion/promptSuggestion.js'
 import {
   type AppState,
@@ -4329,6 +4333,22 @@ async function run(): Promise<CommanderCommand> {
           }
         }
 
+        // Plugin language servers finish loading after `tools` was built;
+        // loading is config parsing only (servers start on first use).
+        if (
+          !tools.some(tool => tool.name === LSPTool.name) &&
+          !(
+            feature('COORDINATOR_MODE') &&
+            coordinatorModeModule?.isCoordinatorMode()
+          )
+        ) {
+          await waitForLspInitialization()
+          const lsp = getTools(toolPermissionContext).find(
+            tool => tool.name === LSPTool.name,
+          )
+          if (lsp) tools = [...tools, lsp]
+        }
+
         logSessionTelemetry()
         profileCheckpoint('before_print_import')
         const { runHeadless } = await import('src/cli/print.js')
@@ -6486,9 +6506,16 @@ async function run(): Promise<CommanderCommand> {
       'Installation scope: user, project, or local',
       'user',
     )
+    .option(
+      '-y, --yes',
+      'Accept the displayed marketplace-declared command of a command plugin source (it must be confirmed; pass -y when not interactive)',
+    )
     .addOption(coworkOption())
     .action(
-      async (plugin: string, options: { scope?: string; cowork?: boolean }) => {
+      async (
+        plugin: string,
+        options: { scope?: string; cowork?: boolean; yes?: boolean },
+      ) => {
         const { pluginInstallHandler } = await import(
           './cli/handlers/plugins.js'
         )
@@ -6574,9 +6601,16 @@ async function run(): Promise<CommanderCommand> {
       '-s, --scope <scope>',
       `Installation scope: ${VALID_UPDATE_SCOPES.join(', ')} (default: user)`,
     )
+    .option(
+      '-y, --yes',
+      'Accept the displayed marketplace-declared command of a command plugin source (it must be confirmed; pass -y when not interactive)',
+    )
     .addOption(coworkOption())
     .action(
-      async (plugin: string, options: { scope?: string; cowork?: boolean }) => {
+      async (
+        plugin: string,
+        options: { scope?: string; cowork?: boolean; yes?: boolean },
+      ) => {
         const { pluginUpdateHandler } = await import(
           './cli/handlers/plugins.js'
         )

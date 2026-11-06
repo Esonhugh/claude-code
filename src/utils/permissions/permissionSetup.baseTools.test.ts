@@ -56,3 +56,18 @@ test('base tools offer ReportFindings like 2.1.311', async () => {
   )
   expect(block.content).toBe('2 findings reported.')
 })
+
+test('base tools offer LSP without ENABLE_LSP_TOOL; it is enabled only once a language server is configured', async () => {
+  const prev = process.env.ENABLE_LSP_TOOL
+  delete process.env.ENABLE_LSP_TOOL
+  try {
+    const lsp = getAllBaseTools().find(tool => tool.name === 'LSP')
+    expect(lsp).toBeDefined()
+    const { _resetLspManagerForTesting } = await import('../../services/lsp/manager.js')
+    _resetLspManagerForTesting()
+    expect(lsp!.isEnabled()).toBe(false)
+  } finally {
+    if (prev === undefined) delete process.env.ENABLE_LSP_TOOL
+    else process.env.ENABLE_LSP_TOOL = prev
+  }
+})

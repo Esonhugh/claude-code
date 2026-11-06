@@ -312,7 +312,7 @@ describe('official 2.1.318 manifest fields', () => {
     await writeFile(join(root, '.claude-plugin', 'marketplace.json'), JSON.stringify({
       name: 'market',
       owner: { name: 'owner' },
-      plugins: [{ name: 'xcode', source: { source: 'command', command: 'xcrun agent plugin path', mode: 'link' } }],
+      plugins: [{ name: 'packed', source: { source: 'archive', url: 'https://example.com/p.zip' } }],
     }))
     const result = await validateMarketplaceManifest(join(root, '.claude-plugin', 'marketplace.json'))
     expect(result.errors).toEqual([])
@@ -341,12 +341,14 @@ test('a marketplace with an entry of an unknown source type still loads its othe
     name: 'market',
     owner: { name: 'owner' },
     plugins: [
+      { name: 'packed', source: { source: 'archive', url: 'https://example.com/p.zip' } },
       { name: 'xcode', source: { source: 'command', command: 'xcrun agent plugin path', mode: 'link' } },
       { name: 'tool', source: { source: 'github', repo: 'owner/tool' } },
     ],
   })
   expect(marketplace.plugins.map(p => p.source)).toEqual([
-    { source: 'unsupported', sourceType: 'command' },
+    { source: 'unsupported', sourceType: 'archive' },
+    { source: 'command', command: 'xcrun agent plugin path', mode: 'link' },
     { source: 'github', repo: 'owner/tool' },
   ])
 })

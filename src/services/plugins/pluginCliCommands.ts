@@ -7,12 +7,16 @@
  * For the core operations (without CLI side effects), see pluginOperations.ts
  */
 import figures from 'figures'
+import { createInterface } from 'readline/promises'
 import { errorMessage } from '../../utils/errors.js'
 import { gracefulShutdown } from '../../utils/gracefulShutdown.js'
 import { logError } from '../../utils/log.js'
 import { getManagedPluginNames } from '../../utils/plugins/managedPlugins.js'
 import { parsePluginIdentifier } from '../../utils/plugins/pluginIdentifier.js'
-import type { PluginScope } from '../../utils/plugins/schemas.js'
+import type {
+  CommandPluginSource,
+  PluginScope,
+} from '../../utils/plugins/schemas.js'
 import { writeToStdout } from '../../utils/process.js'
 import {
   buildPluginTelemetryFields,
@@ -96,6 +100,36 @@ function handlePluginCommandError(
 }
 
 /**
+ * Show a `command` plugin source and ask the user to accept running it.
+ */
+async function confirmCommandSourceInTerminal(
+  pluginId: string,
+  source: CommandPluginSource,
+  yes: boolean,
+): Promise<boolean> {
+  const { name, marketplace } = parsePluginIdentifier(pluginId)
+  writeToStdout(
+    `"${name}" is installed by running a command from marketplace "${marketplace}" on this machine:\n  ${source.command}\n  (${source.mode === 'link' ? 'mode "link": its output directory is used in place (linked, not copied)' : 'mode "copy": its output directory is copied into the plugin cache'})\n`,
+  )
+  if (yes) return true
+  if (!process.stdin.isTTY) {
+    writeToStdout(
+      'Not an interactive terminal, so the command was only displayed, not accepted. Re-run in a terminal to confirm it, or pass -y/--yes to accept the command shown above.\n',
+    )
+    return false
+  }
+  const rl = createInterface({ input: process.stdin, output: process.stdout })
+  try {
+    const answer = await rl.question('Run this command? [y/N] ')
+    return /^y(es)?$/i.test(answer.trim())
+  } catch {
+    return false
+  } finally {
+    rl.close()
+  }
+}
+
+/**
  * CLI command: Install a plugin non-interactively
  * @param plugin Plugin identifier (name or plugin@marketplace)
  * @param scope Installation scope: user, project, or local (defaults to 'user')
@@ -103,12 +137,16 @@ function handlePluginCommandError(
 export async function installPlugin(
   plugin: string,
   scope: InstallableScope = 'user',
+  { yes = false }: { yes?: boolean } = {},
 ): Promise<void> {
   try {
     // biome-ignore lint/suspicious/noConsole:: intentional console output
     console.log(`Installing plugin "${plugin}"...`)
 
-    const result = await installPluginOp(plugin, scope)
+    const result = await installPluginOp(plugin, scope, {
+      confirmCommandSource: (id, source) =>
+        confirmCommandSourceInTerminal(id, source, yes),
+    })
 
     if (!result.success) {
       throw new Error(result.message)
@@ -300,13 +338,17 @@ export async function disableAllPlugins(): Promise<void> {
 export async function updatePluginCli(
   plugin: string,
   scope: PluginScope,
+  { yes = false }: { yes?: boolean } = {},
 ): Promise<void> {
   try {
     writeToStdout(
       `Checking for updates for plugin "${plugin}" at ${scope} scope…\n`,
     )
 
-    const result = await updatePluginOp(plugin, scope)
+    const result = await updatePluginOp(plugin, scope, {
+      confirmCommandSource: (id, source) =>
+        confirmCommandSourceInTerminal(id, source, yes),
+    })
 
     if (!result.success) {
       throw new Error(result.message)

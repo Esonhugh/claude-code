@@ -416,6 +416,10 @@ import {
 import { applyMessageDisplayHooks } from '../utils/hooks/messageDisplay.js'
 import { type IDESelection, useIdeSelection } from '../hooks/useIdeSelection.js'
 import { getTools, assembleToolPool } from '../tools.js'
+import {
+  isLspConnected,
+  subscribeLspInitialization,
+} from '../services/lsp/manager.js'
 import type { AgentDefinition } from '../tools/AgentTool/loadAgentsDir.js'
 import { resolveAgentTools } from '../tools/AgentTool/agentToolUtils.js'
 import { resumeAgentBackground } from '../tools/AgentTool/resumeAgent.js'
@@ -1222,6 +1226,12 @@ export function REPL({
   // the model emits plain text the brief filter hides.
   const isBriefOnly = useAppState(s => s.isBriefOnly)
   const focusView = useAppState(s => s.briefTranscript)
+  // LSPTool.isEnabled() turns true once plugin language servers are loaded,
+  // which finishes after the first render.
+  const lspConnected = React.useSyncExternalStore(
+    subscribeLspInitialization,
+    isLspConnected,
+  )
 
   const localTools = useMemo(
     () => (isRemoteExecutionSession ? [] : getTools(toolPermissionContext)),
@@ -1230,6 +1240,7 @@ export function REPL({
       toolPermissionContext,
       proactiveActive,
       isBriefOnly,
+      lspConnected,
     ],
   )
 

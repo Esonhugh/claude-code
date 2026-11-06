@@ -38,6 +38,7 @@ import {
 } from '../../utils/plugins/marketplaceManager.js'
 import { ESONHUGH_MARKETPLACE_NAME } from '../../utils/plugins/esonhughMarketplace.js'
 import { installPluginFromMarketplace } from '../../utils/plugins/pluginInstallationHelpers.js'
+import { CommandSourceNotice } from './CommandSourceNotice.js'
 import { isMarketplaceAutoUpdate } from '../../utils/plugins/schemas.js'
 import { isPluginBlockedByPolicy } from '../../utils/plugins/pluginPolicy.js'
 import { plural } from '../../utils/stringUtils.js'
@@ -472,6 +473,8 @@ export function BrowseMarketplace({
       entry: plugin.entry,
       marketplaceName: plugin.marketplaceName,
       scope,
+      // The details view shows a command source before offering install.
+      commandSourceReviewed: true,
     })
 
     if (result.success === true) {
@@ -911,6 +914,8 @@ export function BrowseMarketplace({
               </>
             )}
         </Box>
+
+        <CommandSourceNotice entry={selectedPlugin.entry} />
 
         <PluginTrustWarning />
 
