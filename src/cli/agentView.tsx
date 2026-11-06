@@ -14,7 +14,7 @@ import { useTerminalSize } from '../hooks/useTerminalSize.js'
 import { stringWidth } from '../ink/stringWidth.js'
 import { AlternateScreen } from '../ink/components/AlternateScreen.js'
 import { Box, createRoot, Text, useInput } from '../ink.js'
-import { getDisplayedEffortLevel } from '../utils/effort.js'
+import { getDisplayedEffortLevel, getSavedEffort } from '../utils/effort.js'
 import { truncate } from '../utils/format.js'
 import { getMainLoopModel, parseUserSpecifiedModel, renderModelSetting } from '../utils/model/model.js'
 import {
@@ -423,7 +423,7 @@ export function AgentView({
             <Text bold>{getConfiguredUiName(settings)}</Text> <Text dimColor>v{MACRO.VERSION}</Text>
           </Text>
           <Text dimColor>
-            New sessions: {renderModelSetting(model)} · {dispatch.effort ?? getDisplayedEffortLevel(model, settings.effortLevel)} effort
+            New sessions: {renderModelSetting(model)} · {dispatch.effort ?? getDisplayedEffortLevel(model, getSavedEffort(settings, model))} effort
           </Text>
           <Text dimColor wrap="truncate-start">
             {cwd ?? process.cwd()}

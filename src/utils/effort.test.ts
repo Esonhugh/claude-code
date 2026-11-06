@@ -4,10 +4,23 @@ import assert from 'node:assert/strict'
 import {
   getDefaultEffortForModel,
   getEffortValueDescription,
+  getSavedEffort,
   isEffortLevel,
   parseEffortValue,
+  savedEffortPatch,
   toPersistableEffort,
 } from './effort.js'
+
+// Official 2.1.318 keeps effort per model; the top-level value is the fallback.
+assert.equal(
+  getSavedEffort({ effortLevel: 'low', modelSettings: { 'claude-opus-5-5': { effortLevel: 'xhigh' } } }, 'claude-opus-5-5[1m]'),
+  'xhigh',
+)
+assert.equal(getSavedEffort({ effortLevel: 'low', modelSettings: { 'claude-opus-5-5': { effortLevel: 'xhigh' } } }, 'claude-fable-5-1'), 'low')
+assert.equal(getSavedEffort({ modelSettings: { 'claude-fable-5-1': { autoCompactWindow: 'auto' } } }, 'claude-fable-5-1'), undefined)
+assert.deepEqual(savedEffortPatch('high', 'claude-fable-5-1[1m]'), {
+  modelSettings: { 'claude-fable-5-1': { effortLevel: 'high' } },
+})
 
 assert.equal(isEffortLevel('minimal'), true)
 assert.equal(parseEffortValue('minimal'), 'minimal')

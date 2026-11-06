@@ -60,7 +60,7 @@ describe('startup model precedence', () => {
       'migrateSonnet1mToSonnet45', 'migrateLegacyOpusToCurrent',
       'migrateSonnet45ToSonnet46', 'migrateOpusToOpus1m',
       'migrateReplBridgeEnabledToRemoteControlAtStartup', 'resetAutoModeOptInForDefaultOffer',
-      'migrateFennecToOpus', 'migrateOpenAIModelToOwnSetting',
+      'migrateFennecToOpus', 'migrateOpenAIModelToOwnSetting', 'syncUiPrefsFromUserSettings',
     ]
     const rewriteNames = new Set([
       'migrateSonnet1mToSonnet45', 'migrateLegacyOpusToCurrent',

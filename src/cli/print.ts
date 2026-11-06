@@ -390,6 +390,7 @@ import { getModHttpServices } from '../services/mods/hostOperations.js'
 import {
   parseEffortValue,
   resolveAppliedEffort,
+  savedEffortPatch,
   toPersistableEffort,
 } from 'src/utils/effort.js'
 import { validateModel } from 'src/utils/model/validateModel.js'
@@ -4187,7 +4188,11 @@ function runHeadlessStreaming(
               continue
             }
             const source = request.source as 'localSettings' | 'userSettings'
-            const result = updateSettingsForSource(source, { [allowedKey]: effort ?? value })
+            // Like official, /effort's level is saved for the current model.
+            const result = updateSettingsForSource(
+              source,
+              effort ? savedEffortPatch(effort) : { [allowedKey]: value },
+            )
             if (result.error) {
               sendControlResponseError(message, `update_settings: ${result.error.message}`)
             } else {

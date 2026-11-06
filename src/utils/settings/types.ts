@@ -9,6 +9,7 @@ import {
 } from '../permissions/PermissionMode.js'
 import { MarketplaceSourceSchema } from '../plugins/schemas.js'
 import { CLAUDE_CODE_SETTINGS_SCHEMA_URL } from './constants.js'
+import { EDITOR_MODES, NOTIFICATION_CHANNELS } from '../configConstants.js'
 import { PermissionRuleSchema } from './permissionValidation.js'
 
 // Re-export hook schemas and types from centralized location for backward compatibility
@@ -287,6 +288,11 @@ export const SettingsSchema = lazySchema(() =>
                 .describe(
                   'Auto-compact window for this model, in tokens (100000 to 1000000), or "auto" for the window tuned for the model. Within one settings file it replaces the top-level autoCompactWindow for the model. /autocompact saves here. The canonical model name as key also matches its dated, [1m], Bedrock and Vertex spellings.',
                 ),
+              effortLevel: z
+                .enum(['minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra', 'ultracode'])
+                .optional()
+                .catch(undefined)
+                .describe('Effort level for this model. /effort and /model save here, as official Claude Code does; it wins over the top-level effortLevel.'),
             })
             .passthrough(),
         )
@@ -749,6 +755,24 @@ export const SettingsSchema = lazySchema(() =>
         .optional()
         .catch(undefined)
         .describe('Default transcript view mode on startup'),
+      // /config preferences official Claude Code keeps here; mirrored with
+      // ~/.claude.json by src/utils/settings/uiPrefs.ts.
+      theme: z.string().optional().catch(undefined).describe('Color theme (/theme)'),
+      editorMode: z.enum(EDITOR_MODES).optional().catch(undefined).describe('Prompt editor key bindings'),
+      preferredNotifChannel: z
+        .enum(NOTIFICATION_CHANNELS)
+        .optional()
+        .catch(undefined)
+        .describe('How to send desktop notifications'),
+      verbose: z.boolean().optional().catch(undefined).describe('Show full tool output'),
+      autoCompactEnabled: z.boolean().optional().catch(undefined).describe('Compact the conversation automatically near the context limit'),
+      fileCheckpointingEnabled: z.boolean().optional().catch(undefined).describe('Snapshot files before edits so /rewind can restore them'),
+      showTurnDuration: z.boolean().optional().catch(undefined).describe('Show the duration after each assistant turn'),
+      terminalProgressBarEnabled: z.boolean().optional().catch(undefined).describe('Emit OSC 9;4 progress sequences during long operations'),
+      todoFeatureEnabled: z.boolean().optional().catch(undefined).describe('Enable the todo / task tracking panel'),
+      inputNeededNotifEnabled: z.boolean().optional().catch(undefined).describe('Notify when Claude needs input'),
+      agentPushNotifEnabled: z.boolean().optional().catch(undefined).describe('Push notifications from background agents'),
+      remoteControlAtStartup: z.boolean().optional().catch(undefined).describe('Start Remote Control with each session'),
       language: z
         .string()
         .optional()

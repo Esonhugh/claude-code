@@ -11,6 +11,7 @@ import {
   convertEffortValueToLevel,
   getDefaultEffortForModel,
   getOpusDefaultEffortConfig,
+  savedEffortPatch,
   toPersistableEffort,
 } from '../utils/effort.js'
 import { parseUserSpecifiedModel } from '../utils/model/model.js'
@@ -60,9 +61,10 @@ export function EffortCallout({ model, onDone }: Props): React.ReactNode {
   const handleSelect = useCallback(
     (value: EffortLevel): void => {
       const effortLevel = value === defaultLevel ? undefined : value
-      updateSettingsForSource('userSettings', {
-        effortLevel: toPersistableEffort(effortLevel),
-      })
+      updateSettingsForSource(
+        'userSettings',
+        savedEffortPatch(toPersistableEffort(effortLevel), model),
+      )
       onDoneRef.current(value)
     },
     [defaultLevel],

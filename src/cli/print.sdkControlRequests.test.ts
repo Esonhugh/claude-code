@@ -212,7 +212,8 @@ if (process.env[childFlag] !== '1') {
     ])
     expect(responses.map(r => r.subtype)).toEqual(['success', 'error', 'error', 'error', 'error'])
     const saved = JSON.parse(readFileSync(join(process.env.CLAUDE_CONFIG_DIR!, 'settings.json'), 'utf-8'))
-    expect(saved).toEqual({ effortLevel: 'low' })
+    // Like official 2.1.318, the level is saved for the session's current model.
+    expect(saved).toEqual({ modelSettings: { 'claude-opus-5-5': { effortLevel: 'low' } } })
   })
 
   // Official 2.1.303 treats stopping a task that is gone or already finished as done.
