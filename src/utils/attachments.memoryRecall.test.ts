@@ -73,3 +73,15 @@ test('sqlite memory recalls on the first prompt of a session only', async () => 
   const summary = createUserMessage({ content: 'Summary of the conversation', isCompactSummary: true })
   expect(await recalled([summary, later])).toBe(1)
 })
+
+test('a channel message turn after the first prompt does not recall again', async () => {
+  const first = createUserMessage({ content: 'how do I build the binary', origin: { kind: 'human' } })
+  const channel = createUserMessage({
+    content: '<channel source="fakechat">\nanother build question here\n</channel>',
+    isMeta: true,
+    origin: { kind: 'channel', server: 'fakechat' },
+  })
+  expect(await recalled([first, channel])).toBe(0)
+  // A channel message before the first typed prompt does not use up the recall.
+  expect(await recalled([channel, first])).toBe(1)
+})
