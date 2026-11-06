@@ -12,6 +12,7 @@ import { isProSubscriber, isMaxSubscriber, isTeamSubscriber } from './auth.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from 'src/services/analytics/growthbook.js'
 import { getAPIProvider } from './model/providers.js'
 import { get3PModelCapabilityOverride } from './model/modelSupportOverrides.js'
+import { getOpenAICatalogEffort } from './model/openaiModelOptions.js'
 import { isEnvTruthy } from './envUtils.js'
 import { isAnt } from 'src/utils/userType.js'
 
@@ -136,6 +137,10 @@ export function getSupportedEffortLevelsForModel(
 ): readonly ConfiguredEffortLevel[] {
   if (getAPIProvider() === 'openai') {
     if (!modelSupportsEffort(model)) return []
+    const catalog = getOpenAICatalogEffort(model)
+    if (catalog?.effortOptions) {
+      return catalog.effortOptions.flatMap(level => (level === 'ultracode' ? [] : [level]))
+    }
     return [
       'none',
       'minimal',
@@ -478,6 +483,12 @@ export function getDefaultEffortForModel(
   // IMPORTANT: Do not change the default effort level without notifying
   // the model launch DRI and research. Default effort is a sensitive setting
   // that can greatly affect model quality and bashing.
+
+  // ChatGPT: the account's catalog default, which Codex sends explicitly.
+  if (getAPIProvider() === 'openai') {
+    const catalogDefault = getOpenAICatalogEffort(model)?.defaultEffort
+    if (catalogDefault) return catalogDefault
+  }
 
   const normalizedModel = model.toLowerCase()
   // Official 2.1.311 model catalog: default_effort medium for the 5.5 models.

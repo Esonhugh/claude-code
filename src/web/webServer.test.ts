@@ -314,8 +314,24 @@ describe('claude web server', () => {
     })
     const models = (await (await fetch(`${r.base}/api/models`, { headers: { cookie } })).json()) as {
       models: { value: string }[]
+      model: string
     }
     expect(models.models.map(m => m.value)).toContain('default')
+    expect(typeof models.model).toBe('string')
+    // `model` follows the saved setting as it changes (#946).
+    const prior = process.env.CLAUDE_CONFIG_DIR
+    process.env.CLAUDE_CONFIG_DIR = r.configDir
+    try {
+      const saved = async (model: string) => {
+        writeFileSync(join(r.configDir, 'settings.json'), JSON.stringify({ model }))
+        return ((await (await fetch(`${r.base}/api/models`, { headers: { cookie } })).json()) as { model: string }).model
+      }
+      expect(await saved('claude-haiku-4-5')).toBe('claude-haiku-4-5')
+      expect(await saved('claude-sonnet-4-6')).toBe('claude-sonnet-4-6')
+    } finally {
+      if (prior === undefined) delete process.env.CLAUDE_CONFIG_DIR
+      else process.env.CLAUDE_CONFIG_DIR = prior
+    }
   })
 
   it('keeps sidebar marks and deletes transcripts behind the cookie and origin checks', async () => {

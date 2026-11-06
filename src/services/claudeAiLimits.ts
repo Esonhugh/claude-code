@@ -2,11 +2,12 @@ import { APIError } from '@anthropic-ai/sdk'
 import type { MessageParam } from '@anthropic-ai/sdk/resources/index.mjs'
 import isEqual from 'lodash-es/isEqual.js'
 import { getIsNonInteractiveSession } from '../bootstrap/state.js'
-import { isClaudeAISubscriber } from '../utils/auth.js'
+import { getOpenAIAuthInfo, isClaudeAISubscriber } from '../utils/auth.js'
 import { getModelBetas } from '../utils/betas.js'
 import { getGlobalConfig, saveGlobalConfig } from '../utils/config.js'
 import { logError } from '../utils/log.js'
 import { getSmallFastModel } from '../utils/model/model.js'
+import { getAPIProvider } from '../utils/model/providers.js'
 import { isEssentialTrafficOnly } from '../utils/privacyLevel.js'
 import type { AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS } from './analytics/index.js'
 import { logEvent } from './analytics/index.js'
@@ -162,6 +163,23 @@ let rawUtilization: RawUtilization = {}
 
 export function getRawUtilization(): RawUtilization {
   return rawUtilization
+}
+
+/**
+ * A ChatGPT sign-in's windows from Codex response headers: `primary` is the
+ * 5-hour window and `secondary` the weekly one, by their `window-minutes`.
+ */
+function extractCodexRawUtilization(headers: globalThis.Headers): RawUtilization {
+  const result: RawUtilization = {}
+  for (const name of ['primary', 'secondary']) {
+    const used = Number(headers.get(`x-codex-${name}-used-percent`) ?? NaN)
+    const reset = Number(headers.get(`x-codex-${name}-reset-at`) ?? NaN)
+    const minutes = Number(headers.get(`x-codex-${name}-window-minutes`) ?? NaN)
+    if (!Number.isFinite(used) || !Number.isFinite(reset)) continue
+    const key = minutes === 300 ? 'five_hour' : minutes === 10080 ? 'seven_day' : undefined
+    if (key) result[key] = { utilization: used / 100, resets_at: reset }
+  }
+  return result
 }
 
 function extractRawUtilization(headers: globalThis.Headers): RawUtilization {
@@ -467,6 +485,15 @@ function cacheExtraUsageDisabledReason(headers: globalThis.Headers): void {
 export function extractQuotaStatusFromHeaders(
   headers: globalThis.Headers,
 ): void {
+  if (getAPIProvider() === 'openai' && getOpenAIAuthInfo()?.isChatGPT) {
+    const codex = extractCodexRawUtilization(headers)
+    if (Object.keys(codex).length > 0) {
+      rawUtilization = codex
+      emitUsageChange()
+    }
+    return
+  }
+
   // Check if we need to process rate limits
   const isSubscriber = isClaudeAISubscriber()
 

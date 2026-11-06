@@ -43,6 +43,19 @@ test('a default model missing from the provider list is added and marked current
   expect(result.slice(1)).toEqual(options)
 })
 
+test('the added default row carries the default model catalog effort levels (#945)', () => {
+  const options = [
+    { value: 'gpt-6.1-sol', label: 'GPT-6.1-Sol', description: '', effortOptions: ['low', 'medium', 'max'] as EffortLevel[], defaultEffort: 'low' as const },
+  ]
+  expect(withCurrentModelOption(options, null, 'gpt-6.1-sol')[0]).toEqual({
+    value: null,
+    label: 'Default (gpt-6.1-sol)',
+    description: 'Current model',
+    effortOptions: ['low', 'medium', 'max'],
+    defaultEffort: 'low',
+  })
+})
+
 test('a listed default or a list with its own default row is left alone', () => {
   const withDefault = [{ value: null, label: 'Default (recommended)', description: '' }]
   expect(withCurrentModelOption(withDefault, null, 'claude-opus-5-5')).toBe(withDefault)

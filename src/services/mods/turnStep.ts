@@ -8,7 +8,8 @@ function validUsage(usage: unknown): boolean {
 }
 export function validateTurnStepInput(value: ModInput): void {
   if (typeof value.model !== 'string' || !value.model || (value.effort !== undefined &&
-    !['low', 'medium', 'high', 'xhigh', 'max'].includes(value.effort as string) && !(typeof value.effort === 'number' && Number.isFinite(value.effort))))
+    // Official's five levels plus the fork's own (none/minimal/ultra), which resolveAppliedEffort hands the hook.
+    !['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'].includes(value.effort as string) && !(typeof value.effort === 'number' && Number.isFinite(value.effort))))
     throw new Error('Invalid turn.step model or effort')
 }
 export function validateTurnStepChunk(chunk: unknown): asserts chunk is ModTurnStepChunk {

@@ -571,9 +571,14 @@ export function App() {
 
   // The server's own list, so a new browser or the first session already has the discovered models.
   const provider = account.account?.provider
+  // Asked again on each return to the start page: a session may have saved another model.
+  const [startModel, setStartModel] = useState<string>()
+  const onStartPage = state.view === null
   useEffect(() => {
+    if (!onStartPage) return
     loadModels().then(
-      models => {
+      ({ models, model }) => {
+        setStartModel(model)
         if (!models.length) return
         const known = { provider, models }
         setKnownModels(known)
@@ -581,7 +586,7 @@ export function App() {
       },
       () => {},
     )
-  }, [provider])
+  }, [provider, onStartPage])
   useEffect(() => {
     if (chat?.models.length) {
       const known = { provider: account.account?.provider, models: chat.models }
@@ -1636,6 +1641,7 @@ export function App() {
       history={state.history.filter(h => !h.archived && !h.projectId)}
       tempRoot={info.tempRoot}
       models={models}
+      defaultModel={startModel}
       commands={knownCommands}
       daybreak={daybreak}
       draft={drafts[''] ?? ''}

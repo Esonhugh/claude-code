@@ -17,6 +17,7 @@ import { checkHasTrustDialogAccepted, getGlobalConfig } from '../config.js'
 import { logForDebugging } from '../debug.js'
 import { isEnvDefinedFalsy } from '../envUtils.js'
 import { getClaudeCodeUserAgent } from '../userAgent.js'
+import type { EffortLevel } from '../effort.js'
 import type { ModelOption } from './modelOptions.js'
 import { getAPIProvider, isFirstPartyAnthropicBaseUrl } from './providers.js'
 export { getFirstPartyModelCacheKey } from './firstPartyModelCacheKey.js'
@@ -71,6 +72,29 @@ type CodexModel = {
   description?: unknown
   visibility?: unknown
   supported_in_api?: unknown
+  default_reasoning_level?: unknown
+  supported_reasoning_levels?: unknown
+}
+
+const CODEX_EFFORT_LEVELS = new Set<EffortLevel>(['minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'])
+
+const isCodexEffortLevel = (value: unknown): value is EffortLevel =>
+  typeof value === 'string' && CODEX_EFFORT_LEVELS.has(value as EffortLevel)
+
+/** The reasoning levels a /codex/models row offers and its default, as the picker's effort metadata. */
+function getCodexEffortMetadata(model: CodexModel): Pick<ModelOption, 'effortOptions' | 'defaultEffort'> {
+  const levels = Array.isArray(model.supported_reasoning_levels)
+    ? model.supported_reasoning_levels
+        .map(level => (level && typeof level === 'object' ? (level as { effort?: unknown }).effort : undefined))
+        .filter(isCodexEffortLevel)
+    : []
+  if (levels.length === 0) return {}
+  return {
+    effortOptions: levels,
+    ...(isCodexEffortLevel(model.default_reasoning_level) && levels.includes(model.default_reasoning_level)
+      ? { defaultEffort: model.default_reasoning_level }
+      : {}),
+  }
 }
 
 type ModelDiscoveryRequest = {
@@ -157,6 +181,15 @@ export function getOpenAIServedDefaultModel(): string | undefined {
     return undefined
   }
   return first.value
+}
+
+/** The cached ChatGPT /codex/models row for `model`, when the account's catalog describes its effort levels. */
+export function getOpenAICatalogEffort(model: string): Pick<ModelOption, 'effortOptions' | 'defaultEffort'> | undefined {
+  if (!getOpenAIAuthInfo()?.isChatGPT) return undefined
+  const config = getGlobalConfig()
+  if (config.additionalModelOptionsCacheKey !== getModelDiscoveryCacheKey()) return undefined
+  const option = config.additionalModelOptionsCache?.find(o => o.value === model)
+  return option?.effortOptions?.length ? option : undefined
 }
 
 /**
@@ -527,6 +560,7 @@ export function parseOpenAIModelOptions(
           description: isHidden
             ? `Hidden by OpenAI; API support is enabled.${hasDescription ? ` ${description}` : ''}`
             : description,
+          ...getCodexEffortMetadata(model),
         }
       })
   }

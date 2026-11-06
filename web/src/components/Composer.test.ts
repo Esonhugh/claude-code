@@ -36,6 +36,14 @@ describe('modelButtonLabel', () => {
     expect(modelButtonLabel(undefined, undefined, openai, t)).toBe('GPT-6.1-Sol')
     expect(modelButtonLabel('default', 'high', openai, t)).toBe('GPT-6.1-Sol · high')
   })
+  it('names the saved model a session started without a pick runs (#946)', () => {
+    const openai = [{ value: 'gpt-6.1-sol', displayName: 'GPT-6.1-Sol' }, { value: 'gpt-6-luna', displayName: 'GPT-6-Luna', resolvedModel: 'gpt-6-luna' }]
+    expect(modelButtonLabel('default', undefined, openai, t, 'gpt-6-luna')).toBe('GPT-6-Luna')
+    const claude = [{ value: 'default', displayName: 'Default', resolvedModel: 'claude-opus-5-5' }, { value: 'sonnet', displayName: 'Sonnet 5.5', resolvedModel: 'claude-sonnet-5-5' }]
+    expect(modelButtonLabel('default', undefined, claude, t, 'claude-sonnet-5-5')).toBe('Sonnet 5.5')
+    // An explicit pick still wins.
+    expect(modelButtonLabel('gpt-6.1-sol', undefined, openai, t, 'gpt-6-luna')).toBe('GPT-6.1-Sol')
+  })
 })
 
 describe('effortChoices', () => {

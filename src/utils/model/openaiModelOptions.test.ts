@@ -171,6 +171,47 @@ try {
     additionalModelOptionsCacheKey: chatgptDiscoveryKey,
   }))
   assert.equal(getDefaultMainLoopModelSetting(), 'gpt-newest')
+
+  // ChatGPT effort levels and default come from the catalog row, like Codex (#945).
+  const { getDefaultEffortForModel, getSupportedEffortLevelsForModel } = await import('../effort.js')
+  const reasoningModels = openAIModelOptions.parseOpenAIModelOptions({
+    models: [
+      {
+        slug: 'gpt-reasoning',
+        display_name: 'GPT Reasoning',
+        default_reasoning_level: 'low',
+        supported_reasoning_levels: [
+          { effort: 'low' },
+          { effort: 'medium' },
+          { effort: 'max' },
+          { effort: 'ultra' },
+          { effort: 'bogus' },
+        ],
+      },
+    ],
+  })
+  assert.deepEqual(reasoningModels, [
+    {
+      value: 'gpt-reasoning',
+      label: 'GPT Reasoning',
+      description: 'OpenAI model',
+      effortOptions: ['low', 'medium', 'max', 'ultra'],
+      defaultEffort: 'low',
+    },
+  ])
+  saveGlobalConfig(current => ({
+    ...current,
+    additionalModelOptionsCache: [...reasoningModels, ...chatgptModels],
+  }))
+  assert.deepEqual(getSupportedEffortLevelsForModel('gpt-reasoning'), ['low', 'medium', 'max', 'ultra'])
+  assert.equal(getDefaultEffortForModel('gpt-reasoning'), 'low')
+  // A row without reasoning levels keeps the static list and no default.
+  assert.equal(getSupportedEffortLevelsForModel('gpt-older').includes('none'), true)
+  assert.equal(getDefaultEffortForModel('gpt-older'), undefined)
+  saveGlobalConfig(current => ({
+    ...current,
+    additionalModelOptionsCache: chatgptModels,
+  }))
   saveGlobalConfig(current => ({
     ...current,
     additionalModelOptionsCache: chatgptModels.slice(2),
