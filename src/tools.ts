@@ -230,7 +230,7 @@ export function getAllBaseTools(
     ...(OverflowTestTool ? [OverflowTestTool] : []),
     ...(CtxInspectTool ? [CtxInspectTool] : []),
     ...(TerminalCaptureTool ? [TerminalCaptureTool] : []),
-    ...(isEnvTruthy(process.env.ENABLE_LSP_TOOL) ? [LSPTool] : []),
+    LSPTool,
     ...(isWorktreeModeEnabled() ? [EnterWorktreeTool, ExitWorktreeTool] : []),
     getSendMessageTool(),
     ...(ListAgentsTool ? [ListAgentsTool] : []),

@@ -65,9 +65,11 @@ import { deletePluginOptions } from '../../utils/plugins/pluginOptionsStorage.js
 import { getPluginEditableScopes } from '../../utils/plugins/pluginStartupCheck.js'
 import { calculatePluginVersion } from '../../utils/plugins/pluginVersioning.js'
 import type {
+  CommandPluginSource,
   PluginMarketplaceEntry,
   PluginScope,
 } from '../../utils/plugins/schemas.js'
+import { commandSourceConsentKey, isCommandPluginSource } from '../../utils/plugins/commandSource.js'
 import {
   getSettingsForSource,
   updateSettingsForSource,
@@ -340,9 +342,19 @@ export function getPluginInstallationFromV2(pluginId: string): {
  * @param scope Installation scope: user, project, or local (defaults to 'user')
  * @returns Result indicating success/failure
  */
+type CommandSourceConfirmation = {
+  // Shows a `command` source to the user and returns whether they accept
+  // running it. Callers that cannot show it leave this out.
+  confirmCommandSource?: (
+    pluginId: string,
+    source: CommandPluginSource,
+  ) => Promise<boolean>
+}
+
 export async function installPluginOp(
   plugin: string,
   scope: InstallableScope = 'user',
+  { confirmCommandSource }: CommandSourceConfirmation = {},
 ): Promise<PluginOperationResult> {
   assertInstallableScope(scope)
 
@@ -393,11 +405,23 @@ export async function installPluginOp(
   const entry = foundPlugin
   const pluginId = `${entry.name}@${foundMarketplace}`
 
+  let commandSourceReviewed = false
+  if (isCommandPluginSource(entry.source) && confirmCommandSource) {
+    commandSourceReviewed = await confirmCommandSource(pluginId, entry.source)
+    if (!commandSourceReviewed) {
+      return {
+        success: false,
+        message: `${pluginId} is installed by running a command on this machine (\`${commandSourceConsentKey(entry.source)}\`) that was not accepted, so it was not run.`,
+      }
+    }
+  }
+
   const result = await installResolvedPlugin({
     pluginId,
     entry,
     scope,
     marketplaceInstallLocation,
+    commandSourceReviewed,
   })
 
   if (!result.ok) {
@@ -903,6 +927,8 @@ export async function disableAllPluginsOp(): Promise<PluginOperationResult> {
 export async function updatePluginOp(
   plugin: string,
   scope: PluginScope,
+  // Without a confirmation, only the command recorded at install is re-run.
+  { confirmCommandSource }: CommandSourceConfirmation = {},
 ): Promise<PluginUpdateResult> {
   // Parse the plugin identifier to get the full plugin ID
   const { name: pluginName, marketplace: marketplaceName } =
@@ -952,7 +978,25 @@ export async function updatePluginOp(
     }
   }
 
+  let commandSourceConsent = installation.sourceCommand
+  if (
+    isCommandPluginSource(entry.source) &&
+    commandSourceConsentKey(entry.source) !== commandSourceConsent &&
+    confirmCommandSource
+  ) {
+    if (!(await confirmCommandSource(pluginId, entry.source))) {
+      return {
+        success: false,
+        message: `${pluginId}'s marketplace now installs it by running \`${commandSourceConsentKey(entry.source)}\`, which was not accepted, so it was not run.`,
+        pluginId,
+        scope,
+      }
+    }
+    commandSourceConsent = commandSourceConsentKey(entry.source)
+  }
+
   return performPluginUpdate({
+    commandSourceConsent,
     pluginId,
     pluginName,
     entry,
@@ -975,14 +1019,16 @@ async function performPluginUpdate({
   installation,
   scope,
   projectPath,
+  commandSourceConsent,
 }: {
   pluginId: string
   pluginName: string
   entry: PluginMarketplaceEntry
   marketplaceInstallLocation: string
-  installation: { version?: string; installPath: string }
+  installation: { version?: string; installPath: string; sourceCommand?: string }
   scope: PluginScope
   projectPath: string | undefined
+  commandSourceConsent: string | undefined
 }): Promise<PluginUpdateResult> {
   const fs = getFsImplementation()
   const oldVersion = installation.version
@@ -997,6 +1043,8 @@ async function performPluginUpdate({
     // Remote plugin: download to temp directory first
     const cacheResult = await cachePlugin(entry.source, {
       manifest: { name: entry.name },
+      commandSourceConsent,
+      pluginId,
     })
     sourcePath = cacheResult.path
     shouldCleanupSource = true
@@ -1011,7 +1059,7 @@ async function performPluginUpdate({
       entry.source,
       cacheResult.manifest,
       cacheResult.path,
-      entry.version,
+      entry.version ?? cacheResult.contentVersion,
       cacheResult.gitCommitSha,
     )
   } else {
@@ -1116,6 +1164,22 @@ async function performPluginUpdate({
           entry,
         )
       }
+      // A newly accepted command must be recorded even when its output is
+      // unchanged, or the next update asks for it again.
+      if (
+        isCommandPluginSource(entry.source) &&
+        commandSourceConsent !== installation.sourceCommand
+      ) {
+        updateInstallationPathOnDisk(
+          pluginId,
+          scope,
+          projectPath,
+          installation.installPath,
+          newVersion,
+          undefined,
+          commandSourceConsent,
+        )
+      }
       return {
         success: true,
         message: `${pluginName} is already at the latest version (${newVersion}).`,
@@ -1149,6 +1213,9 @@ async function performPluginUpdate({
       versionedPath,
       newVersion,
       gitCommitSha,
+      isCommandPluginSource(entry.source)
+        ? commandSourceConsentKey(entry.source)
+        : undefined,
     )
 
     if (oldVersionPath && oldVersionPath !== versionedPath) {

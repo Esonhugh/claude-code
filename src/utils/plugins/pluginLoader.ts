@@ -141,6 +141,7 @@ import { getPluginSeedDirs, getPluginsDirectory } from './pluginDirectories.js'
 import { parsePluginIdentifier } from './pluginIdentifier.js'
 import { validatePathWithinBase } from './pluginInstallationHelpers.js'
 import { calculatePluginVersion } from './pluginVersioning.js'
+import { installFromCommand } from './commandSource.js'
 import {
   type CommandMetadata,
   PluginHooksSchema,
@@ -943,6 +944,9 @@ export function generateTemporaryCacheNameForPlugin(
       case 'git-subdir':
         prefix = 'subdir'
         break
+      case 'command':
+        prefix = 'command'
+        break
       default:
         prefix = 'unknown'
     }
@@ -960,8 +964,17 @@ export async function cachePlugin(
     manifest?: PluginManifest
     // The installer publishes this owned copy directly to its version path.
     keepTemporary?: boolean
+    // For a `command` source: the command the user reviewed (see
+    // commandSourceConsentKey) and the plugin it is for, for the refusal text.
+    commandSourceConsent?: string
+    pluginId?: string
   },
-): Promise<{ path: string; manifest: PluginManifest; gitCommitSha?: string }> {
+): Promise<{
+  path: string
+  manifest: PluginManifest
+  gitCommitSha?: string
+  contentVersion?: string
+}> {
   const cachePath = getPluginCachePath()
 
   await getFsImplementation().mkdir(cachePath)
@@ -971,6 +984,7 @@ export async function cachePlugin(
 
   let shouldCleanup = false
   let gitCommitSha: string | undefined
+  let contentVersion: string | undefined
 
   try {
     logForDebugging(
@@ -1006,6 +1020,13 @@ export async function cachePlugin(
           break
         case 'pip':
           throw new Error('Python package plugins are not yet supported')
+        case 'command':
+          ;({ contentVersion } = await installFromCommand(source, tempPath, {
+            consent: options?.commandSourceConsent,
+            pluginId: options?.pluginId ?? options?.manifest?.name ?? 'This plugin',
+            copyDir,
+          }))
+          break
         case 'unsupported':
           throw new Error(
             `Plugin source type "${source.sourceType}" is not supported by this version of Claude Code`,
@@ -1118,7 +1139,12 @@ export async function cachePlugin(
     }
 
     if (options?.keepTemporary) {
-      return { path: tempPath, manifest, ...(gitCommitSha && { gitCommitSha }) }
+      return {
+        path: tempPath,
+        manifest,
+        ...(gitCommitSha && { gitCommitSha }),
+        ...(contentVersion && { contentVersion }),
+      }
     }
 
     const finalName = manifest.name.replace(/[^a-zA-Z0-9-_]/g, '-')
@@ -1139,6 +1165,7 @@ export async function cachePlugin(
       path: finalPath,
       manifest,
       ...(gitCommitSha && { gitCommitSha }),
+      ...(contentVersion && { contentVersion }),
     }
   } catch (error) {
     if (shouldCleanup && (await pathExists(tempPath))) {
@@ -2260,6 +2287,7 @@ async function loadPluginsFromMarketplaces({
             enabledValue === true || Array.isArray(enabledValue),
             errors,
             installEntry?.version,
+            installEntry?.sourceCommand,
           )
     }),
   )
@@ -2444,6 +2472,8 @@ async function loadPluginFromMarketplaceEntry(
   enabled: boolean,
   errorsOut: PluginError[],
   installedVersion?: string,
+  // A `command` source re-runs only the command recorded at install.
+  installedSourceCommand?: string,
 ): Promise<LoadedPlugin | null> {
   logForDebugging(
     `Loading plugin ${entry.name} from source: ${jsonStringify(entry.source)}`,
@@ -2582,6 +2612,8 @@ async function loadPluginFromMarketplaceEntry(
           // Download to temp location, then copy to versioned cache
           const cached = await cachePlugin(entry.source, {
             manifest: { name: entry.name },
+            commandSourceConsent: installedSourceCommand,
+            pluginId,
           })
 
           // If the pre-clone version was deterministic (source.sha /
@@ -2600,7 +2632,7 @@ async function loadPluginFromMarketplaceEntry(
                   entry.source,
                   cached.manifest,
                   cached.path,
-                  installedVersion ?? entry.version,
+                  installedVersion ?? entry.version ?? cached.contentVersion,
                   cached.gitCommitSha,
                 )
 
