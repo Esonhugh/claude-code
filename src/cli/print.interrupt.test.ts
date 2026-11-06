@@ -178,6 +178,57 @@ if (process.env[childFlag] !== '1') {
     }
   })
 
+  // An SDK string prompt closes stdin after the first result. With teammates
+  // alive the lead must still be asked to shut the team down, like -p text.
+  test('input closing while the team-lead poll waits runs the team shutdown turn', async () => {
+    const prompts: unknown[] = []
+    const firstResult = Promise.withResolvers<void>()
+    const mocks = [
+      spyOn(grove, 'isQualifiedForGrove').mockResolvedValue(false),
+      spyOn(growthbook, 'initializeGrowthBook').mockResolvedValue(undefined),
+      spyOn(env, 'isBareMode').mockReturnValue(true),
+      spyOn(shutdown, 'gracefulShutdownSync').mockImplementation(() => {}),
+      spyOn(processUtils, 'registerProcessOutputErrorHandlers').mockImplementation(() => {}),
+      spyOn(stdoutGuard, 'installStreamJsonStdoutGuard').mockImplementation(() => () => {}),
+      spyOn(modelStrings, 'ensureModelStringsInitialized').mockResolvedValue(undefined),
+      spyOn(toolPool, 'assembleToolPool').mockReturnValue([]),
+      spyOn(SandboxManager, 'getSandboxUnavailableReason').mockReturnValue(undefined),
+      spyOn(SandboxManager, 'isSandboxingEnabled').mockReturnValue(false),
+      spyOn(storage, 'recordQueueOperation').mockResolvedValue(undefined),
+      spyOn(StructuredIO.prototype, 'write').mockImplementation(async message => {
+        if (message.type === 'result') firstResult.resolve()
+      }),
+      spyOn(engine, 'ask').mockImplementation(async function* (args) {
+        prompts.push(args.prompt)
+        // The shutdown turn: the lead shuts its team down.
+        if (prompts.length === 2) state = { ...state, teamContext: undefined }
+        yield {type:'result',subtype:'success',is_error:false,result:'done'} as import('../entrypoints/agentSdkTypes.js').SDKMessage
+      }),
+    ]
+    let state: import('../state/AppStateStore.js').AppState = {
+      ...getDefaultAppState(),
+      teamContext: {
+        teamName: 'r5', teamFilePath: '/nonexistent/config.json', leadAgentId: 'team-lead@r5',
+        teammates: { 'alice@r5': { name: 'alice', tmuxSessionName: '', tmuxPaneId: 'in-process', cwd: process.cwd(), spawnedAt: 0 } },
+      },
+    }
+    async function* input() {
+      yield JSON.stringify({type:'user',message:{role:'user',content:'SPAWN'}}) + '\n'
+      await firstResult.promise
+      await new Promise(resolve => setTimeout(resolve, 100))
+    }
+    try {
+      await runHeadless(input(), () => state, updater => { state = updater(state) }, [], [], {}, [], {
+        outputFormat:'stream-json',verbose:true,sessionStartHooksPromise:Promise.resolve([]),
+      } as Parameters<typeof runHeadless>[7])
+      expect(prompts).toHaveLength(2)
+      expect(String(prompts[1])).toContain('shut down your team')
+    } finally {
+      queue.resetCommandQueue()
+      for (const mock of mocks) mock.mockRestore()
+    }
+  })
+
   // External SIGINT mid-tool: the abort ends the shell itself, so shutdown has
   // no live shell to wait for and used to exit before the result was written.
   test('external SIGINT during a turn writes its result before cleanup finishes', async () => {

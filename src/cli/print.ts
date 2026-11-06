@@ -1319,6 +1319,9 @@ function runHeadlessStreaming(
     | undefined
   let inputClosed = false
   let shutdownPromptInjected = false
+  // While the team-lead inbox poll runs, it owns the end of input: it asks the
+  // lead to shut the team down instead of finishing output under teammates.
+  let teamPollActive = false
   let abortController: AbortController | undefined
   let shellAbortController: AbortController | undefined
   let shellCommandRunning = false
@@ -3038,6 +3041,7 @@ function runHeadlessStreaming(
         // Keep polling until the team is shut down
         const POLL_INTERVAL_MS = 500
 
+        teamPollActive = true
         while (true) {
           // Check if teammates are still active
           const refreshedState = getAppState()
@@ -3127,6 +3131,7 @@ function runHeadlessStreaming(
                 isReplay: true,
               } satisfies SDKUserMessageReplay)
             }
+            teamPollActive = false
             void run()
             return // run() will come back here after processing
           }
@@ -3143,6 +3148,7 @@ function runHeadlessStreaming(
               value: SHUTDOWN_TEAM_PROMPT,
               uuid: randomUUID(),
             })
+            teamPollActive = false
             void run()
             return // run() will come back here after processing
           }
@@ -3150,6 +3156,7 @@ function runHeadlessStreaming(
           // Wait and check again
           await sleep(POLL_INTERVAL_MS)
         }
+        teamPollActive = false
       }
     }
 
@@ -5790,7 +5797,7 @@ function runHeadlessStreaming(
     await remoteUIControl.dispose()
     shellAbortController?.abort('session-closed')
     cronScheduler?.stop()
-    if (!running && !shellCommandRunning) {
+    if (!running && !shellCommandRunning && !teamPollActive) {
       // If a push-suggestion is in-flight, wait for it to emit before closing
       // the output stream (5 s safety timeout to prevent hanging).
       if (suggestionState.inflightPromise) {
