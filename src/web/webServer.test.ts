@@ -446,6 +446,21 @@ describe('claude web server', () => {
     )
   })
 
+  it("serves the Mods client frame under its own sandbox policy", async () => {
+    const r = start()
+    expect((await fetch(`${r.base}/mods-frame`)).status).toBe(401)
+    const cookie = await signIn(r)
+    const frame = await fetch(`${r.base}/mods-frame`, { headers: { cookie } })
+    expect(frame.status).toBe(200)
+    const csp = frame.headers.get('content-security-policy') ?? ''
+    expect(csp).toContain('sandbox allow-scripts')
+    expect(csp).toContain("connect-src 'none'")
+    expect(csp).not.toContain('unsafe-eval')
+    const script = (await frame.text()).match(/<script>([\s\S]*)<\/script>/)![1]!
+    const hash = new Bun.CryptoHasher('sha256').update(script).digest('base64')
+    expect(csp).toContain(`script-src 'sha256-${hash}' blob:`)
+  })
+
   it('serves an upload while the session transcript has no messages yet', async () => {
     const r = start()
     const prior = process.env.CLAUDE_CONFIG_DIR
@@ -1056,13 +1071,13 @@ describe('contentSecurityPolicy', () => {
     const loopback =
       'http://localhost:* https://localhost:* http://127.0.0.1:* https://127.0.0.1:*'
     expect(contentSecurityPolicy()).toBe(
-      `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; frame-src blob: ${loopback}; worker-src 'self' blob:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'`,
+      `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; frame-src 'self' blob: ${loopback}; worker-src 'self' blob:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'`,
     )
     expect(
       contentSecurityPolicy(['http://dev.internal:8080', 'https://grafana.lan'])
         .split('; ')
         .find(d => d.startsWith('frame-src ')),
-    ).toBe(`frame-src blob: ${loopback} http://dev.internal:8080 https://grafana.lan`)
+    ).toBe(`frame-src 'self' blob: ${loopback} http://dev.internal:8080 https://grafana.lan`)
   })
 })
 

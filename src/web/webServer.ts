@@ -7,6 +7,7 @@ import { z } from 'zod/v4'
 import { addToHistory, getTimestampedHistory } from '../history.js'
 import { PERMISSION_MODES } from '../types/permissions.js'
 import { lazySchema } from '../utils/lazySchema.js'
+import { MODS_FRAME_CSP, MODS_FRAME_HTML, MODS_FRAME_PATH } from './modsFrame.js'
 import { getModelInfos } from '../utils/model/modelInfos.js'
 import { ensureModelStringsInitialized } from '../utils/model/modelStrings.js'
 import type { ServerLogger } from '../server/serverLog.js'
@@ -105,7 +106,7 @@ export function contentSecurityPolicy(previewOrigins: string[] = []): string {
     "img-src 'self' data: blob:",
     "font-src 'self' data:",
     "connect-src 'self'",
-    ['frame-src blob:', ...LOOPBACK_FRAME_SOURCES, ...previewOrigins].join(' '),
+    ["frame-src 'self' blob:", ...LOOPBACK_FRAME_SOURCES, ...previewOrigins].join(' '),
     "worker-src 'self' blob:",
     "object-src 'none'",
     "base-uri 'none'",
@@ -1285,6 +1286,12 @@ export function startWebServer(
         }
         if (req.method !== 'GET' && req.method !== 'HEAD') {
           return withHeaders(errorResponse(405, 'Method not allowed'))
+        }
+        if (pathname === MODS_FRAME_PATH) {
+          const res = new Response(MODS_FRAME_HTML, { headers: { 'Content-Type': 'text/html; charset=utf-8' } })
+          for (const [key, value] of Object.entries(SECURITY_HEADERS)) res.headers.set(key, value)
+          res.headers.set('Content-Security-Policy', MODS_FRAME_CSP)
+          return res
         }
         const asset = assets.get(pathname) ?? assets.get('/index.html')
         if (!asset) return withHeaders(errorResponse(404, 'Not found'))

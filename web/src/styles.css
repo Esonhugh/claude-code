@@ -1149,6 +1149,10 @@ body.proj .main, body.proj .side, body.proj .artview, body.proj #panel-btn { dis
 /* A page row as Mods draw it: their tree, with the page's row where it says. */
 .mod-site { min-width: 0; overflow-wrap: anywhere }
 .mod-site .mod-btn { font-size: 12px }
+.mod-frame { display: none }
+.mod-client { min-width: 0; overflow: hidden; border-radius: 4px; outline: none }
+.mod-client:focus-visible { box-shadow: 0 0 0 1px var(--accent, #0969da) }
+.mod-client .mod-btn { flex-shrink: 0; white-space: nowrap }
 .mod-foot { display: flex; gap: 12px; justify-content: space-between; padding: 4px 6px 0; color: var(--muted); font-size: 12px }
 .mod-foot:empty { display: none }
 /* Mods' marks on the draft: a copy of the text under the transparent box, lined up with it. */
