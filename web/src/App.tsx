@@ -1672,6 +1672,7 @@ export function App() {
       {chat && view && !inProject && (
         <ColumnDrag side="right" label={t('resizePanel')} columns={columns} onChange={setColumns} />
       )}
+      {previewing && !inProject && <ColumnDrag side="chat" label={t('resizeChat')} columns={columns} onChange={setColumns} />}
       <Sidebar
         t={t}
         lang={lang}

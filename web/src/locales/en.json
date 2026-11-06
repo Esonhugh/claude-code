@@ -202,6 +202,7 @@
   "palette": "Palette",
   "paletteHint": "Each has light and dark variants",
   "resizeSessions": "Drag to resize the session list",
+  "resizeChat": "Drag to resize the conversation",
   "resizePanel": "Drag to resize the side panel",
   "paletteDefault": "Blue",
   "paletteClay": "Clay",

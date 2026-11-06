@@ -202,6 +202,7 @@
   "palette": "配色",
   "paletteHint": "淺色和深色各有一套",
   "resizeSessions": "拖動調整會話欄寬度",
+  "resizeChat": "拖動調整對話欄寬度",
   "resizePanel": "拖動調整右側面板寬度",
   "paletteDefault": "藍",
   "paletteClay": "陶土",

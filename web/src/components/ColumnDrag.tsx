@@ -1,11 +1,13 @@
 import type { KeyboardEvent, PointerEvent } from 'react'
 
-export type Columns = { left?: number; right?: number }
+/** `chat`: the conversation's width while a file preview takes the middle. */
+export type Columns = { left?: number; right?: number; chat?: number }
+type Side = keyof Columns
 
 /** Keeps the dragged column inside sane bounds and the conversation at least 420px wide. */
-export function clampColumn(side: 'left' | 'right', px: number, viewport: number, other: number): number {
-  const max = side === 'left' ? 420 : 720
-  const min = side === 'left' ? 180 : 280
+export function clampColumn(side: Side, px: number, viewport: number, other: number): number {
+  const max = side === 'left' ? 420 : side === 'right' ? 720 : 900
+  const min = side === 'left' ? 180 : side === 'right' ? 280 : 340
   return Math.round(Math.max(min, Math.min(max, viewport - other - 420, px)))
 }
 
@@ -18,6 +20,9 @@ export function columnVars(columns: Columns): Record<string, string> {
     ...(columns.left && { '--left-w': `min(${columns.left}px, calc(100vw - 700px))` }),
     ...(columns.right && {
       '--right-w': `max(280px, min(${columns.right}px, calc(100vw - var(--left-w, 220px) - 420px)))`,
+    }),
+    ...(columns.chat && {
+      '--chat-w': `max(340px, min(${columns.chat}px, calc(100vw - var(--left-w, 220px) - 420px)))`,
     }),
   }
 }
@@ -32,17 +37,21 @@ export function ColumnDrag({
   columns,
   onChange,
 }: {
-  side: 'left' | 'right'
+  side: Side
   label: string
   columns: Columns
   onChange: (next: Columns) => void
 }) {
+  const selector = { left: '.sessions', right: '.side', chat: '.main' }
   const current = () => {
-    const el = document.querySelector<HTMLElement>(side === 'left' ? '.sessions' : '.side')
+    const el = document.querySelector<HTMLElement>(selector[side])
     return el?.getBoundingClientRect().width ?? 0
   }
+  // The column on the other edge: with a preview open that is the conversation, not the side panel.
   const otherWidth = () => {
-    const el = document.querySelector<HTMLElement>(side === 'left' ? '.side' : '.sessions')
+    const el = document.querySelector<HTMLElement>(
+      side !== 'left' ? '.sessions' : document.body.classList.contains('art') ? '.main' : '.side',
+    )
     return el && getComputedStyle(el).display !== 'none' ? el.getBoundingClientRect().width : 0
   }
   const set = (px: number) => onChange({ ...columns, [side]: clampColumn(side, px, window.innerWidth, otherWidth()) })
