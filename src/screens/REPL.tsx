@@ -363,6 +363,7 @@ import {
   generateSessionTitle,
   isTitleSourceMessage,
 } from '../utils/sessionTitle.js'
+import { isEssentialTrafficOnly } from '../utils/privacyLevel.js'
 import {
   BASH_INPUT_TAG,
   COMMAND_MESSAGE_TAG,
@@ -952,6 +953,7 @@ function TranscriptSearchBar({
 const TITLE_ANIMATION_FRAMES = ['⠂', '⠐']
 const TITLE_STATIC_PREFIX = '✳'
 const TITLE_ANIMATION_INTERVAL_MS = 960
+const MAX_TITLE_ATTEMPTS = 2
 
 /**
  * Sets the terminal tab title, with an animated prefix glyph while a query
@@ -1755,6 +1757,10 @@ export function REPL({
   // on resume (initialMessages present) so we don't re-title a resumed
   // session from mid-conversation context.
   const haikuTitleAttemptedRef = useRef((initialMessages?.length ?? 0) > 0)
+  // Failed title requests are retried on the next turn, but only once like
+  // official, so a gateway that ignores structured output isn't billed for an
+  // extra main-model call on every turn.
+  const haikuTitleFailuresRef = useRef(0)
   // /clear starts a new session; its first prompt gets a title of its own.
   const haikuTitleSessionRef = useRef(getSessionId())
   const agentTitle = mainThreadAgentDefinition?.agentType
@@ -4653,10 +4659,12 @@ export function REPL({
       if (haikuTitleSessionRef.current !== getSessionId()) {
         haikuTitleSessionRef.current = getSessionId()
         haikuTitleAttemptedRef.current = false
+        haikuTitleFailuresRef.current = 0
         setHaikuTitle(undefined)
       }
       if (
         !titleDisabled &&
+        !isEssentialTrafficOnly() &&
         !sessionTitle &&
         !agentTitle &&
         !haikuTitleAttemptedRef.current
@@ -4682,7 +4690,8 @@ export function REPL({
           void generateSessionTitle(text, new AbortController().signal).then(
             title => {
               if (!title) {
-                haikuTitleAttemptedRef.current = false
+                haikuTitleAttemptedRef.current =
+                  ++haikuTitleFailuresRef.current >= MAX_TITLE_ATTEMPTS
                 return
               }
               // Official 2.1.311 also persists the title so /resume and
@@ -4692,7 +4701,8 @@ export function REPL({
               saveAiGeneratedTitle(titleSessionId, title)
             },
             () => {
-              haikuTitleAttemptedRef.current = false
+              haikuTitleAttemptedRef.current =
+                ++haikuTitleFailuresRef.current >= MAX_TITLE_ATTEMPTS
             },
           )
         }
