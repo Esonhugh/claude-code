@@ -30,7 +30,7 @@ import { type AgentsView, agentTasks } from './components/Agents'
 import { AskDock, ChatComposer, chatTools, ContextChip, GoalMenu, type MentionTarget, Pins } from './components/Composer'
 import { AppDialog, type Palette, type Theme } from './components/Dialogs'
 import type { ContextUsage } from './components/Settings'
-import { AgentsContext, ChatContext, FilesContext, joinTurns, Message, TeamBar } from './components/Message'
+import { AgentsContext, ChatContext, FilesContext, joinTurns, Message, QuoteContext, QuoteOnSelect, quotePrompt, TeamBar } from './components/Message'
 import { Preview } from './components/Preview'
 import { ProjectDialog } from './components/ProjectDialog'
 import { ProjectView } from './components/ProjectView'
@@ -156,6 +156,7 @@ export function App() {
     writeStored(COLUMNS_KEY, next)
   }
   const [drafts, setDrafts] = useState<Record<string, string>>({})
+  const [quotes, setQuotes] = useState<Record<string, string>>({})
   // Per session: the agents its box's next message goes to, picked with `@`.
   const [agentTargets, setAgentTargets] = useState<Record<string, MentionTarget[]>>({})
   const [attachments, setAttachments] = useState<Record<string, File[]>>({})
@@ -228,6 +229,16 @@ export function App() {
   const setDraft = (value: string) => setDrafts(d => ({ ...d, [draftKey]: value }))
   const files = attachments[draftKey] ?? []
   const setFiles = (next: File[]) => setAttachments(a => ({ ...a, [draftKey]: next }))
+  const quote = quotes[draftKey]
+  const setQuote = (text: string | undefined) =>
+    setQuotes(q => {
+      const { [draftKey]: _, ...rest } = q
+      return text ? { ...rest, [draftKey]: text } : rest
+    })
+  const quoteInChat = useCallback((text: string) => {
+    const id = stateRef.current.view
+    if (id && text.trim()) setQuotes(q => ({ ...q, [id]: text.trim() }))
+  }, [])
   // The server's own version until a session reports one (the start page has no session).
   const shownEnv = chat && Object.keys(chat.env).length ? chat.env : knownEnv
   const env: SessionEnv = useMemo(
@@ -885,11 +896,16 @@ export function App() {
       return
     }
     const picked = (agentTargets[id] ?? []).filter(x => chat.tasks[x.id])
+    // A slash command goes out as typed; anything else carries the quote it replies to.
+    const replyTo = text.startsWith('/') ? undefined : quotes[id]
+    const prompt = replyTo ? quotePrompt(replyTo, text) : text
     setDrafts(d => ({ ...d, [id]: '' }))
     setAttachments(a => ({ ...a, [id]: [] }))
+    if (replyTo) setQuotes(({ [id]: _, ...rest }) => rest)
     if (picked.length) setAgentTargets(x => ({ ...x, [id]: [] }))
     // A message that could not go out returns to an empty box.
     const restore = () => {
+      if (replyTo) setQuotes(q => (q[id] ? q : { ...q, [id]: replyTo }))
       setDrafts(d => (d[id] ? d : { ...d, [id]: text }))
       setAttachments(a => (a[id]?.length ? a : { ...a, [id]: pending }))
       if (picked.length) setAgentTargets(x => (x[id]?.length ? x : { ...x, [id]: picked }))
@@ -907,7 +923,7 @@ export function App() {
         }
         try {
           // The same message to every picked agent, files uploaded once.
-          const message = [text, mentions.join(' ')].filter(Boolean).join('\n\n')
+          const message = [prompt, mentions.join(' ')].filter(Boolean).join('\n\n')
           for (const x of picked) await sendToTask(id, x.id, message)
           // The message shows in the agent's own conversation.
           agentsValue.open(picked[0]!.id)
@@ -918,7 +934,7 @@ export function App() {
       }
       let content: { text: string; images: string[] }
       try {
-        content = await prepareContent(id, text, pending)
+        content = await prepareContent(id, prompt, pending)
       } catch (err) {
         restore()
         dispatch({
@@ -1496,6 +1512,8 @@ export function App() {
             </button>
           </div>
           {team && <TeamBar t={t} team={team} name={teamName(chat.items)} onOpen={agentsValue.open} />}
+          <QuoteOnSelect t={t} feed={feedRef} onQuote={quoteInChat} />
+          <QuoteContext.Provider value={quoteInChat}>
           <div
             className="feed"
             ref={feedRef}
@@ -1567,6 +1585,7 @@ export function App() {
               </button>
             )}
           </div>
+          </QuoteContext.Provider>
           <div className="composer">
             {chat.mode === 'elsewhere' && (
               <div className="notice" role="status">
@@ -1598,6 +1617,8 @@ export function App() {
               setDraft={setDraft}
               onSend={() => void sendInChat()}
               onSendNow={sendNowInChat}
+              quote={quote}
+              onQuote={setQuote}
               onStop={() => view && stop(view)}
               onFocus={() => view && chat.mode === 'readonly' && void resume(view)}
               files={files}
