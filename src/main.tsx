@@ -113,7 +113,7 @@ import {
 import { seedEarlyInput, stopCapturingEarlyInput } from './utils/earlyInput.js'
 import {
   EFFORT_LEVELS,
-  getInitialEffortSetting,
+  getStartupEffort,
   parseEffortValue,
 } from './utils/effort.js'
 import {
@@ -4095,7 +4095,7 @@ async function run(): Promise<CommanderCommand> {
           },
           toolPermissionContext,
           effortValue:
-            parseEffortValue(options.effort) ?? getInitialEffortSetting(),
+            getStartupEffort(options.effort),
           ...(isFastModeEnabled() && {
             fastMode: getInitialFastModeSetting(effectiveModel ?? null),
           }),
@@ -4609,7 +4609,7 @@ async function run(): Promise<CommanderCommand> {
           ? { message: createUserMessage({ content: String(inputPrompt) }) }
           : null,
         effortValue:
-          parseEffortValue(options.effort) ?? getInitialEffortSetting(),
+          getStartupEffort(options.effort),
         activeOverlays: new Set<string>(),
         fastMode: getInitialFastModeSetting(resolvedInitialModel),
         ...(isAdvisorEnabled() && advisorModel && { advisorModel }),

@@ -2,7 +2,12 @@
 import { isUltrathinkEnabled } from './thinking.js'
 import { getInitialSettings, getSettingsForSource } from './settings/settings.js'
 import type { SettingsJson } from './settings/types.js'
-import { getCanonicalName, getMainLoopModel } from './model/model.js'
+import {
+  getCanonicalName,
+  getDefaultMainLoopModel,
+  getMainLoopModel,
+  parseUserSpecifiedModel,
+} from './model/model.js'
 import { isProSubscriber, isMaxSubscriber, isTeamSubscriber } from './auth.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from 'src/services/analytics/growthbook.js'
 import { getAPIProvider } from './model/providers.js'
@@ -228,6 +233,31 @@ export function savedEffortPatch(
   model: string = getMainLoopModel(),
 ): SettingsJson {
   return { modelSettings: { [effortModelKey(model)]: { effortLevel: level } } }
+}
+
+// --effort from the command line: it holds across /model switches.
+let cliEffort: EffortValue | undefined
+
+/** The session's starting effort: --effort, else the level saved for the model. */
+export function getStartupEffort(flag: unknown): EffortValue | undefined {
+  cliEffort = parseEffortValue(flag)
+  return cliEffort ?? getInitialEffortSetting()
+}
+
+/**
+ * The effort a switch to `model` (null: the default model) lands on, as in
+ * official Claude Code: --effort or a flag-settings effortLevel (the web's
+ * effort menu), else the level saved for that model, else undefined (the
+ * model's own default).
+ */
+export function getEffortForModel(model: string | null): EffortValue | undefined {
+  return (
+    cliEffort ??
+    parseEffortValue(getSettingsForSource('flagSettings')?.effortLevel) ??
+    getInitialEffortSetting(
+      model === null ? getDefaultMainLoopModel() : parseUserSpecifiedModel(model),
+    )
+  )
 }
 
 export function getInitialEffortSetting(
