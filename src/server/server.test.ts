@@ -296,6 +296,45 @@ describe('SessionManager task replay', () => {
   })
 })
 
+// Sets, replaces and clears Mod status entries on its first stdin line, then waits.
+const STATUS_CHILD = `
+const out = m => process.stdout.write(JSON.stringify(m) + '\\n')
+process.stdin.once('data', () => {
+  out({ type: 'system', subtype: 'ui_status', plugin: 'a', text: 'one' })
+  out({ type: 'system', subtype: 'ui_status', plugin: 'b', text: 'gone soon' })
+  out({ type: 'system', subtype: 'ui_status', plugin: 'a', text: 'two' })
+  out({ type: 'system', subtype: 'ui_status', plugin: 'b', text: null })
+})
+setInterval(() => {}, 1000)
+`
+
+describe('SessionManager Mod status replay', () => {
+  it('replays each plugin\'s standing status entry to a reattaching client (#933)', async () => {
+    const manager = new SessionManager(
+      { spawn: opts => spawn(process.execPath, ['-e', STATUS_CHILD], { cwd: opts.cwd, stdio: ['pipe', 'pipe', 'pipe'] }) },
+      { replayTasks: true },
+    )
+    const socket = () => {
+      const lines: Record<string, unknown>[] = []
+      return { lines, send: (data: string) => lines.push(JSON.parse(data)), close: () => {} }
+    }
+    try {
+      const { id } = manager.create({ cwd: '/' })
+      const first = socket()
+      manager.attach(id, first)
+      manager.write(id, '{"type":"user"}\n')
+      for (let i = 0; i < 100 && first.lines.length < 4; i++) await Bun.sleep(20)
+      expect(first.lines).toHaveLength(4)
+      manager.detach(id, first)
+      const second = socket()
+      manager.attach(id, second)
+      expect(second.lines).toEqual([expect.objectContaining({ subtype: 'ui_status', plugin: 'a', text: 'two' })])
+    } finally {
+      await manager.destroyAll()
+    }
+  })
+})
+
 describe('SessionManager approvals', () => {
   it('replays an unanswered permission request to a reattaching client, once', async () => {
     const manager = new SessionManager({

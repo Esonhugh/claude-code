@@ -32,7 +32,7 @@ import { AskDock, ChatComposer, chatTools, ContextChip, GoalMenu, type MentionTa
 import { AppDialog, type Palette, type Theme } from './components/Dialogs'
 import type { ContextUsage } from './components/Settings'
 import { AgentsContext, ChatContext, FilesContext, joinTurns, Message, QuoteContext, QuoteOnSelect, replyPrompt, TeamBar } from './components/Message'
-import { MOD_CLIENT, MOD_SURFACE, ModCanvas, ModSite, ModSitesProvider, ModToasts, ModView } from './components/Mods'
+import { closeCanvasTab, MOD_CLIENT, MOD_LAYOUT, MOD_SURFACE, ModCanvas, ModSite, ModSitesProvider, ModToasts, ModView } from './components/Mods'
 import { Preview } from './components/Preview'
 import { ProjectDialog } from './components/ProjectDialog'
 import { ProjectView } from './components/ProjectView'
@@ -340,7 +340,6 @@ export function App() {
       label: t('preview'),
     }
   }, [view, info.previewOrigins, t])
-  const closePreview = useCallback(() => setPreview(undefined), [])
   useEffect(() => {
     if (preview && !('mod' in preview)) setCanvasFile(f => ({ ...f, [preview.sessionId]: preview }))
   }, [preview])
@@ -353,11 +352,12 @@ export function App() {
     },
     [view],
   )
-  const closeModCanvas = (sessionId: string, id: string) => {
-    const left = (canvasMods[sessionId] ?? []).filter(x => x !== id)
-    setCanvasMods(m => ({ ...m, [sessionId]: left }))
+  const closeCanvas = (sessionId: string, closing: { mod: string } | 'file') => {
     const file = canvasFile[sessionId]
-    setPreview(left.length ? { sessionId, mod: left[left.length - 1]! } : file)
+    const next = closeCanvasTab(canvasMods[sessionId] ?? [], !!file, closing)
+    setCanvasMods(m => ({ ...m, [sessionId]: next.mods }))
+    if (!next.keepFile) setCanvasFile(({ [sessionId]: _, ...rest }) => rest)
+    setPreview(next.show === 'file' ? file : next.show && { sessionId, mod: next.show.mod })
   }
   const tasks = chat?.tasks
   // The names Agent calls gave their agents, as a string so streaming does not rebuild the context.
@@ -725,7 +725,13 @@ export function App() {
     dispatch({ type: 'mode', id, mode: 'live' })
     request(id, REQUEST_PREFIX.initialize, { subtype: 'initialize' })
     // This page draws Mods' panes, band and toasts (the session refuses when it runs no Mods).
-    request(id, REQUEST_PREFIX.mods, { subtype: 'ui_attach', surface: MOD_SURFACE, client_id: MOD_CLIENT, answers: MOD_ANSWERS })
+    request(id, REQUEST_PREFIX.mods, {
+      subtype: 'ui_attach',
+      surface: MOD_SURFACE,
+      client_id: MOD_CLIENT,
+      viewport: MOD_LAYOUT,
+      answers: MOD_ANSWERS,
+    })
     request(id, REQUEST_PREFIX.mods, { subtype: 'ui_panes', client_id: MOD_CLIENT })
     request(id, REQUEST_PREFIX.rewindPoints, { subtype: 'rewind_points' })
     getSettings(id)
@@ -871,8 +877,17 @@ export function App() {
     patchProject(p.id, { permission_mode: mode }).catch(() => {})
   }
 
+  // A resume under way per session: a send right after the focus prewarm waits for it.
+  const resuming = useRef(new Map<string, Promise<boolean>>())
   /** Starts the process for a read-only transcript (prewarm on focus). */
-  const resume = async (id: string): Promise<boolean> => {
+  const resume = (id: string): Promise<boolean> => {
+    const running = resuming.current.get(id)
+    if (running) return running
+    const run = resumeOnce(id).finally(() => resuming.current.delete(id))
+    resuming.current.set(id, run)
+    return run
+  }
+  const resumeOnce = async (id: string): Promise<boolean> => {
     const current = stateRef.current.chats[id]
     if (!current || current.mode === 'live') return true
     // A project or session opened a moment ago shows its box while it still attaches: a message
@@ -2013,16 +2028,16 @@ export function App() {
                 mods={chat?.mods}
                 request={modsRequest}
                 t={t}
-                onClose={() => closeModCanvas(preview.sessionId, preview.mod)}
+                onClose={() => closeCanvas(preview.sessionId, { mod: preview.mod })}
               />
             ) : 'url' in preview ? (
-              <WebPreview url={preview.url} t={t} onClose={closePreview} />
+              <WebPreview url={preview.url} t={t} onClose={() => closeCanvas(preview.sessionId, 'file')} />
             ) : (
               <Preview
                 sessionId={preview.sessionId}
                 path={preview.path}
                 t={t}
-                onClose={closePreview}
+                onClose={() => closeCanvas(preview.sessionId, 'file')}
                 files={chatFiles}
                 onOpen={openFile}
                 onOpenLocal={info.local ? reveal => openOnMachine(preview.sessionId, preview.path, reveal) : undefined}

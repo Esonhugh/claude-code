@@ -1,5 +1,5 @@
 import { expect, spyOn, test } from 'bun:test'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { StdoutMessage } from '../entrypoints/sdk/controlTypes.js'
@@ -8,11 +8,21 @@ const childFlag = 'CLAUDE_CODE_SDK_CONTROL_REQUESTS_TEST_CHILD'
 if (process.env[childFlag] !== '1') {
   test('newer Agent SDK control requests (isolated)', async () => {
     const home = mkdtempSync(join(tmpdir(), 'cc-sdk-control-'))
+    // A small repo of its own: in this checkout, get_workspace_diff's git calls
+    // (--no-optional-locks never saves a refresh) rehash every stat-dirty file,
+    // which under load outlasts the child's 5s per-test timeout.
+    const work = mkdtempSync(join(tmpdir(), 'cc-sdk-control-work-'))
+    const git = (...args: string[]) => Bun.spawnSync(['git', '-c', 'user.name=t', '-c', 'user.email=t@t', ...args], { cwd: work })
+    writeFileSync(join(work, 'package.json'), '{ "name": "fixture" }\n')
+    git('init', '-q')
+    git('add', 'package.json')
+    git('commit', '-qm', 'fixture')
+    writeFileSync(join(work, 'package.json'), '{ "name": "fixture", "private": true }\n')
     const env = Object.fromEntries(Object.entries(process.env).filter(([key]) =>
       !/^(?:ANTHROPIC_|OPENAI_|CLAUDE_CODE_OAUTH_|CLAUDE_CODE_API_KEY_|CLAUDE_CODE_MESSAGING_|CLAUDE_CODE_USE_|CLAUDE_CODE_REMOTE)/.test(key)))
     try {
       const child = Bun.spawn([process.execPath, 'test', '--feature=UDS_INBOX', '--feature=KAIROS_CHANNELS', import.meta.path], {
-        cwd: join(import.meta.dir, '../..'),
+        cwd: work,
         env: { ...env, [childFlag]: '1', HOME: home, CLAUDE_CONFIG_DIR: home,
           ANTHROPIC_API_KEY: 'test-only-not-a-real-key', DISABLE_TELEMETRY: '1', CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1' },
         stdout: 'pipe', stderr: 'pipe',
@@ -22,6 +32,7 @@ if (process.env[childFlag] !== '1') {
       console.log(`${stdout}\n${stderr}`.match(/\d+ pass[\s\S]*?Ran [^\n]+/)?.[0])
     } finally {
       rmSync(home, { recursive: true, force: true })
+      rmSync(work, { recursive: true, force: true })
     }
   }, 60_000)
 } else {
@@ -348,7 +359,7 @@ if (process.env[childFlag] !== '1') {
     expect(rules.response.state).toMatchObject({ workspaceDirectories: [], originalCwd: expect.any(String), managedOnly: false })
     expect(Array.isArray(rules.response.state.rules)).toBe(true)
     expect(diff.subtype).toBe('success')
-    expect(diff.response).toHaveProperty('diff')
+    expect(diff.response.diff.perFileStats).toMatchObject([{ path: 'package.json', added: 1, removed: 1 }])
     expect(taskOut).toMatchObject({ subtype: 'error', error: 'get_task_output: no shell or Monitor task with that task_id in this session' })
     expect(endedTask.response).toEqual({ output: '', total_bytes: 0, truncated: false })
     expect(bgAll.response).toEqual({})
