@@ -1136,6 +1136,24 @@ export function currentTodos(items: Item[]): Todo[] {
   return todos.map(t => ({ content: t.content, status: t.status, ...(t.activeForm && { activeForm: t.activeForm }) }))
 }
 
+/** Whether the session plans with the shared task list (TaskCreate), which others can change. */
+export function usesTaskList(items: Item[]): boolean {
+  return items.some(item => item.kind === 'assistant' && item.blocks.some(block => block.kind === 'tool' && block.name === 'TaskCreate'))
+}
+
+/** The `get_task_list` reply as todos, in task id order; undefined when it is not one. */
+export function taskListTodos(body: unknown): Todo[] | undefined {
+  if (!isObj(body) || !Array.isArray(body.tasks)) return undefined
+  return body.tasks
+    .filter(isObj)
+    .sort((a, b) => Number(a.id) - Number(b.id))
+    .map(t => ({
+      content: str(t.subject) ?? '',
+      status: str(t.status) ?? 'pending',
+      ...(str(t.activeForm) && { activeForm: str(t.activeForm) }),
+    }))
+}
+
 /** The team the lead created (TeamCreate `team_name`), if any. */
 export function teamName(items: Item[]): string | undefined {
   for (const item of items) {

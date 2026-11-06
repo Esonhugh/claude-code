@@ -55,9 +55,12 @@ import {
   type SessionEnv,
   type TaskNote,
   type ChatState,
+  taskListTodos,
   teamName,
+  type Todo,
   unsupportedControlResponse,
   userMessage,
+  usesTaskList,
 } from './protocol'
 import { agentInputs, messageTarget, notesByItem, taskNoteText } from './projects'
 import { turnSources } from './sources'
@@ -1324,7 +1327,23 @@ export function App() {
     () => (chatItems ?? []).flatMap(i => (i.kind === 'user' && i.text ? [i.text] : [])),
     [chatItems],
   )
-  const todos = useMemo(() => currentTodos(chatItems ?? []), [chatItems])
+  // Teammates and workers update the shared task list outside this transcript, so a live session reads it back.
+  const [taskList, setTaskList] = useState<{ view: string; todos: Todo[] }>()
+  const planned = useMemo(() => usesTaskList(chatItems ?? []), [chatItems])
+  const itemCount = chatItems?.length ?? 0
+  useEffect(() => {
+    if (!view || !planned || !live) return
+    let current = true
+    statusRequest({ subtype: 'get_task_list' }).then(body => {
+      const todos = taskListTodos(body)
+      if (current && todos?.length) setTaskList({ view, todos })
+    }, () => {})
+    return () => {
+      current = false
+    }
+  }, [view, planned, live, itemCount, chat?.busy, statusRequest])
+  const derivedTodos = useMemo(() => currentTodos(chatItems ?? []), [chatItems])
+  const todos = taskList?.view === view ? taskList.todos : derivedTodos
   // The session's folder for the shared ↑ history; a temporary chat has none.
   const historyDir = chat?.workDir ?? chat?.cwd
   const historyScope = useMemo(

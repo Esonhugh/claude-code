@@ -5066,7 +5066,8 @@ function runHeadlessStreaming(
           message.request.subtype === 'list_permission_rules' ||
           message.request.subtype === 'get_workspace_diff' ||
           message.request.subtype === 'get_task_output' ||
-          message.request.subtype === 'get_background_tasks'
+          message.request.subtype === 'get_background_tasks' ||
+          message.request.subtype === 'get_task_list'
         ) {
           // Answered off the input loop: /usage and /status fetch from the
           // network, git and the file index may be slow.
@@ -5119,6 +5120,8 @@ function runHeadlessStreaming(
                   return host.buildTaskOutputResponse(getAppState(), request.task_id, request.format as 'screen' | undefined)
                 case 'get_background_tasks':
                   return host.buildBackgroundTasksResponse(getAppState())
+                case 'get_task_list':
+                  return host.buildTaskListResponse()
                 default:
                   return host.buildExportConversationResponse(
                     mutableMessages,

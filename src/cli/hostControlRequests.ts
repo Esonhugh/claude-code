@@ -40,6 +40,7 @@ import { estimateSkillFrontmatterTokens } from '../skills/loadSkillsDir.js'
 import type { AppState } from '../state/AppState.js'
 import { isLocalShellTask } from '../tasks/LocalShellTask/guards.js'
 import { isTerminalTask } from '../tasks/TerminalTask.js'
+import { getTaskListId, listTasks } from '../utils/tasks.js'
 import { getAgentMemoryDir } from '../tools/AgentTool/agentMemory.js'
 import { getMonitorEvents } from '../tools/MonitorTool/monitorEvents.js'
 import { getTerminalScreen } from '../tools/TerminalTool/TerminalTool.js'
@@ -696,4 +697,20 @@ export async function buildBackgroundTasksResponse(appState: AppState, now = Dat
     }),
   )
   return { tasks: tasks.filter(task => task !== undefined) }
+}
+
+/**
+ * Fork-only `get_task_list`: the shared task list (TaskCreate / TaskUpdate),
+ * which teammates and workers change outside the lead's transcript.
+ */
+export async function buildTaskListResponse() {
+  const tasks = await listTasks(getTaskListId())
+  return {
+    tasks: tasks.map(task => ({
+      id: task.id,
+      subject: task.subject,
+      status: task.status,
+      ...(task.activeForm && { activeForm: task.activeForm }),
+    })),
+  }
 }
