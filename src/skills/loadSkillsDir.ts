@@ -153,7 +153,7 @@ type SkillWithPath = {
  * Parse and validate hooks from frontmatter.
  * Returns undefined if hooks are not defined or invalid.
  */
-function parseHooksFromFrontmatter(
+export function parseHooksFromFrontmatter(
   frontmatter: FrontmatterData,
   skillName: string,
 ): HooksSettings | undefined {
