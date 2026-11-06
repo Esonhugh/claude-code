@@ -73,9 +73,16 @@ const abortedEntry = abortStagger.enter('k', { capMs: 5000, signal: controller.s
 await tick()
 controller.abort()
 assert.ok((await abortedEntry).waitedMs < 1000)
-const preAborted = await abortStagger.enter('k', { capMs: 5000, signal: AbortSignal.abort() })
-assert.equal(preAborted.waitedMs, 0)
 abortLeader.done()
+
+// A pre-aborted signal skips the wait, so no time is measured even when the clock moves.
+let ticking = 0
+const tickingStagger = new WorkflowPrefixStagger(() => ticking++)
+const tickingLeader = await tickingStagger.enter('k', { capMs: 5000 })
+const preAborted = await tickingStagger.enter('k', { capMs: 5000, signal: AbortSignal.abort() })
+assert.equal(preAborted.leader, false)
+assert.equal(preAborted.waitedMs, 0)
+tickingLeader.done()
 
 // Different keys do not wait on each other; clear() releases everyone.
 const keyStagger = new WorkflowPrefixStagger()
