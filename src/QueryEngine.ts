@@ -190,7 +190,15 @@ export function toolDenialsIn(
   recorded: ReadonlySet<string>,
 ): SDKPermissionDenial[] {
   const kind = message.toolDenialKind
-  if (!kind || kind === 'interrupted' || kind === 'cancelled') return []
+  // user-rejected denials are recorded by the canUseTool wrapper; one that
+  // reaches here is an interrupted call (the streaming executor's reject).
+  if (
+    !kind ||
+    kind === 'interrupted' ||
+    kind === 'cancelled' ||
+    kind === 'user-rejected'
+  )
+    return []
   const content = message.message.content
   if (!Array.isArray(content)) return []
   const denials: SDKPermissionDenial[] = []

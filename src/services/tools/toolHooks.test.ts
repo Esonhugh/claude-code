@@ -1741,3 +1741,21 @@ test('TeammateIdle carries the teammate agent_id and agent_type', async () => {
   await Array.fromAsync(executeTeammateIdleHooks('mate1', 'session-1', 'default', undefined, undefined, { agentId: 'amate1-1', agentType: 'mate1' }))
   expect(seen.map(i => [i.teammate_name, i.agent_id, i.agent_type])).toEqual([['mate1', 'amate1-1', 'mate1']])
 })
+
+// An interrupted tool (SIGINT / SDK interrupt) aborts the turn while the
+// failure hooks run; that abort is not an error for the SDK result's errors[].
+test('aborted Post/PostToolUseFailure hooks do not log the abort as an error', async () => {
+  const { getInMemoryErrors } = await import('../../utils/log.js')
+  const before = getInMemoryErrors().length
+  for (const run of [
+    (f: ReturnType<typeof fixture>) =>
+      runPostToolUseFailureHooks(f.context, f.tool, 'id', 'message', {}, 'failed', true, undefined, undefined, undefined),
+    (f: ReturnType<typeof fixture>) =>
+      runPostToolUseHooks(f.context, f.tool, 'id', 'message', {}, 'old', undefined, undefined, undefined),
+  ]) {
+    const f = fixture(async (e, next) => next(e))
+    f.context.abortController.abort()
+    await Array.fromAsync(run(f))
+  }
+  expect(getInMemoryErrors().slice(before).map(e => e.error)).toEqual([])
+})
