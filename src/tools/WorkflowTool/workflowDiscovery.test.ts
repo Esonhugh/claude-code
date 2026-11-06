@@ -161,3 +161,22 @@ assert.match(userOnlyWorkflow?.path ?? '', /\.claude\/workflows\/user-only\.json
 assert.equal(precedenceDiscovery.invalid.length, 0)
 
 console.log('workflowDiscovery.test.ts passed')
+
+// A plugin's workflows/ dir loads namespaced by the plugin name (official 2.1.318).
+const pluginCwd = await mkdtemp(join(tmpdir(), 'workflow-discovery-plugin-cwd-'))
+const pluginPath = await mkdtemp(join(tmpdir(), 'workflow-discovery-plugin-'))
+await mkdir(join(pluginPath, 'workflows'))
+await writeFile(
+  join(pluginPath, 'workflows', 'scan.js'),
+  `export const meta = { name: 'scan', description: 'Scan the code.' }
+await agent('scan')
+`,
+)
+const pluginDiscovery = await discoverWorkflowSpecs(pluginCwd, undefined, {
+  plugins: [{ name: 'claude-security', path: pluginPath }],
+})
+assert.deepEqual(pluginDiscovery.invalid, [])
+assert.equal(
+  pluginDiscovery.valid.some(workflow => workflow.commandName === 'claude-security:scan'),
+  true,
+)
