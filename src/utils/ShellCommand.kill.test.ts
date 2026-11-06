@@ -31,3 +31,19 @@ test.skipIf(process.platform === 'win32')(
     expect(alive).toBe(false)
   },
 )
+
+test.skipIf(process.platform === 'win32')(
+  'kill() reaches a descendant in its own process group before the process exits',
+  async () => {
+    const pidFile = join(mkdtempSync(join(tmpdir(), 'shell-kill-')), 'pid')
+    spawnSync(process.execPath, [join(import.meta.dir, 'ShellCommand.kill.fixture.ts'), pidFile, 'own-group'], {
+      stdio: 'ignore',
+    })
+    const pid = Number(readFileSync(pidFile, 'utf8'))
+    expect(pid).toBeGreaterThan(0)
+    for (let i = 0; i < 30 && isAlive(pid); i++) await new Promise(r => setTimeout(r, 100))
+    const alive = isAlive(pid)
+    if (alive) process.kill(pid, 'SIGKILL')
+    expect(alive).toBe(false)
+  },
+)

@@ -1,4 +1,4 @@
-import type { ChildProcess } from 'child_process'
+import { type ChildProcess, spawnSync } from 'child_process'
 import { stat } from 'fs/promises'
 import type { Readable } from 'stream'
 import treeKill from 'tree-kill'
@@ -361,10 +361,32 @@ class ShellCommandImpl implements ShellCommand {
       // exits before it signals anyone. Detached shells lead their own group,
       // so signal it synchronously first (ESRCH when not detached).
       if (process.platform !== 'win32') {
+        // Descendants that lead their own group (`timeout`, `setsid`) escape
+        // the group kill and are reparented once the shell dies, so collect
+        // the tree before killing anything.
+        const parents = new Map<number, number[]>()
+        const ps = spawnSync('ps', ['-A', '-o', 'pid=', '-o', 'ppid='], { encoding: 'utf8', timeout: 1000 })
+        for (const line of (ps.stdout ?? '').split('\n')) {
+          const [child, parent] = line.trim().split(/\s+/).map(Number)
+          if (child && parent) parents.set(parent, [...(parents.get(parent) ?? []), child])
+        }
+        const tree: number[] = []
+        for (let queue = [pid]; queue.length > 0; ) {
+          const next = parents.get(queue.shift()!) ?? []
+          tree.push(...next)
+          queue.push(...next)
+        }
         try {
           process.kill(-pid, 'SIGKILL')
         } catch {
           // Not a group leader (ESRCH): tree-kill below covers it.
+        }
+        for (const descendant of tree) {
+          try {
+            process.kill(descendant, 'SIGKILL')
+          } catch {
+            // Already gone.
+          }
         }
       }
       treeKill(pid, 'SIGKILL')
