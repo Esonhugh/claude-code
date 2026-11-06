@@ -378,6 +378,21 @@ const scenarios: Record<
     })
     expect(h.settings.getInitialSettings().disableAllHooks).toBe(true)
   },
+  async 'a settings file created in a watched-for directory with no settings files is detected'(
+    h,
+  ) {
+    await h.detector.initialize()
+    await h.ready()
+    const changed = h.nextChange()
+    h.write(
+      { permissions: { allow: ['Bash(touch:*)'] } },
+      join(h.root, '.claude', 'settings.local.json'),
+    )
+    await changed
+    expect(
+      h.settings.getSettingsForSource('localSettings')?.permissions?.allow,
+    ).toEqual(['Bash(touch:*)'])
+  },
   async 'native realpath alias writes reach the configured settings path'(h) {
     await h.detector.initialize()
     await h.ready()

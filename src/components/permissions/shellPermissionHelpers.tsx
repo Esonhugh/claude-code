@@ -101,7 +101,12 @@ export function generateShellSuggestionsLabel(
 
   // Extract paths from Read rules (keep separate from directories)
   const readPaths = readRules
-    .map(r => r.ruleContent?.replace('/**', '') || '')
+    .map(r =>
+      (r.ruleContent ?? '')
+        .replace(/\/\*\*$/, '')
+        .replace(/^\.\//, '')
+        .replace(/^\/\//, '/'),
+    )
     .filter(p => p)
 
   // Extract shell command prefixes, optionally transforming for display
