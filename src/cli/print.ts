@@ -4123,9 +4123,16 @@ function runHeadlessStreaming(
               logError(pluginsR.reason)
             }
 
+            // Mods' own commands, as initialize lists them; a mod switched on or off here changes them.
+            const describedCommands = options.modsSession
+              ? await options.modsSession.commands.describe(currentCommands).catch(error => {
+                  logError(error)
+                  return currentCommands
+                })
+              : currentCommands
             sendControlResponseSuccess(message, {
               // @ts-ignore - recovered code
-              commands: toSdkSlashCommands(currentCommands),
+              commands: toSdkSlashCommands(describedCommands),
               agents: currentAgents.map(a => ({
                 name: a.agentType,
                 description: a.whenToUse,

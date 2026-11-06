@@ -1277,6 +1277,20 @@ function hooksFrom(raw: unknown): Hook[] {
   )
 }
 
+function parseCommands(list: unknown[]): SlashCommand[] {
+  return list
+    .filter(isObj)
+    .map(c => ({
+      name: str(c.name) ?? '',
+      description: str(c.description) ?? '',
+      argumentHint: str(c.argumentHint) ?? '',
+      ...(Array.isArray(c.aliases) && {
+        aliases: c.aliases.filter(a => typeof a === 'string'),
+      }),
+    }))
+    .filter(c => c.name)
+}
+
 function reduceControlResponse(state: ChatState, raw: Json): ChatState {
   const response = isObj(raw.response) ? raw.response : {}
   const id = str(response.request_id) ?? ''
@@ -1298,22 +1312,17 @@ function reduceControlResponse(state: ChatState, raw: Json): ChatState {
   if (id.startsWith(REQUEST_PREFIX.mods) && Array.isArray(body.surfaces) && !state.mods.attached) {
     return { ...state, mods: { ...state.mods, attached: true } }
   }
+  // A plugins dialog's reload_plugins answers with the session's commands now, a Mod switched on or off included.
+  if (id.startsWith(REQUEST_PREFIX.ext) && Array.isArray(body.commands) && Array.isArray(body.plugins)) {
+    return { ...state, commands: parseCommands(body.commands) }
+  }
   if (id.startsWith(REQUEST_PREFIX.initialize)) {
-    const commands = Array.isArray(body.commands)
-      ? body.commands.filter(isObj).map(c => ({
-          name: str(c.name) ?? '',
-          description: str(c.description) ?? '',
-          argumentHint: str(c.argumentHint) ?? '',
-          ...(Array.isArray(c.aliases) && {
-            aliases: c.aliases.filter(a => typeof a === 'string'),
-          }),
-        }))
-      : []
+    const commands = Array.isArray(body.commands) ? parseCommands(body.commands) : []
     const account = isObj(body.account) ? body.account : undefined
     return {
       ...state,
       models: parseModels(body.models),
-      commands: commands.filter(c => c.name),
+      commands,
       env: {
         ...state.env,
         ...withoutUndefined({
