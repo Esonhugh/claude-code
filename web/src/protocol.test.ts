@@ -145,6 +145,22 @@ describe('reduce', () => {
     })
   })
 
+  it('shows a failed tool call\'s error without the <tool_use_error> wrapper, like the TUI', () => {
+    const state = fold([
+      { type: 'assistant', message: { id: 'm1', content: [{ type: 'tool_use', id: 't1', name: 'TodoWrite', input: {} }] } },
+      {
+        type: 'user',
+        message: {
+          role: 'user',
+          content: [{ type: 'tool_result', tool_use_id: 't1', is_error: true, content: '<tool_use_error>Error: No such tool available: TodoWrite</tool_use_error>' }],
+        },
+      },
+    ])
+    expect(state.items.at(-1)).toMatchObject({
+      blocks: [{ kind: 'tool', id: 't1', result: 'Error: No such tool available: TodoWrite', isError: true }],
+    })
+  })
+
   it('builds messages without partial events and ignores subagent traffic', () => {
     const state = fold([
       {

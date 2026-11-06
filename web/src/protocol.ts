@@ -973,9 +973,12 @@ export function reduce(state: ChatState, raw: unknown): ChatState {
         if (!isObj(part) || part.type !== 'tool_result') continue
         const toolId = str(part.tool_use_id)
         if (!toolId) continue
+        const text = toolResultText(part.content)
+        // The engine wraps a failed call's message in `<tool_use_error>`; the TUI shows only what is inside.
+        const unwrapped = part.is_error === true ? /^<tool_use_error>([\s\S]*)<\/tool_use_error>$/.exec(text.trim())?.[1] : undefined
         next = mapTool(next, toolId, b => ({
           ...b,
-          result: toolResultText(part.content),
+          result: unwrapped ?? text,
           isError: part.is_error === true,
           ...(meta && { meta }),
         }))
