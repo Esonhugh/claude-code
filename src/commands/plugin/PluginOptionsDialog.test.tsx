@@ -253,6 +253,29 @@ describe('plugin option configuration', () => {
     }
   })
 
+  test('keys typed in the same chunk as Tab on a picker go to the next field', async () => {
+    const view = await mountDialog({
+      configSchema: {
+        ...schema,
+        note: { type: 'string', title: 'Note', description: '' },
+        last: { type: 'string', title: 'Last', description: '' },
+      },
+      initialValues: { instructionFiles: 'claude-md' },
+    })
+    try {
+      await view.input('\u001b[B\thelo\u007flo')
+      await view.input('\r')
+      await view.input('\r')
+      expect(view.onSave).toHaveBeenCalledWith({
+        instructionFiles: choice.default,
+        note: 'hello',
+        last: '',
+      })
+    } finally {
+      view.close()
+    }
+  })
+
   test('Escape cancels the picker without saving', async () => {
     const view = await mountDialog()
     try {

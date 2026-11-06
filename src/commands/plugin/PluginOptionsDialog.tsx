@@ -107,6 +107,10 @@ export function PluginOptionsDialog({
   // render, so Tab on a picker waits for it (see advancePending below).
   const focusedChoiceRef = useRef(currentInput)
   const [advancePending, setAdvancePending] = useState(false)
+  // Keys that arrive while that advance is pending belong to the next field,
+  // but every handler still sees the picker until it renders: hold them here.
+  const advancingRef = useRef(false)
+  const typedAheadRef = useRef('')
 
   const currentField = fields[currentFieldIndex]
   const fieldSchema = currentField ? configSchema[currentField] : null
@@ -118,9 +122,10 @@ export function PluginOptionsDialog({
   useKeybinding('confirm:no', onCancel, { context: 'Settings' })
 
   // Enter to save current field and move to next, or save all if last
+  // Returns whether the dialog moved on (next field or save).
   const handleConfirm = useCallback(
-    (selected = currentInput) => {
-      if (!currentField || !fieldSchema) return
+    (selected = currentInput): boolean => {
+      if (!currentField || !fieldSchema) return false
 
       const submitted = buildFinalValues(
         [currentField],
@@ -138,7 +143,7 @@ export function PluginOptionsDialog({
       )
       if (!validation.valid) {
         setValidationError(validation.errors.join('; '))
-        return
+        return false
       }
       setValidationError('')
       const newValues = { ...values, [currentField]: selected }
@@ -154,6 +159,7 @@ export function PluginOptionsDialog({
         const nextKey = fields[currentFieldIndex + 1]
         setCurrentInput(nextKey ? initialFor(nextKey) : '')
       }
+      return true
     },
     [
       currentField,
@@ -173,8 +179,12 @@ export function PluginOptionsDialog({
     {
       'confirm:nextField': () => {
         if (currentFieldIndex >= fields.length - 1) return
-        if (choices !== undefined) setAdvancePending(true)
-        else handleConfirm()
+        if (choices === undefined) {
+          handleConfirm()
+          return
+        }
+        advancingRef.current = true
+        setAdvancePending(true)
       },
     },
     { context: 'Confirmation' },
@@ -184,16 +194,37 @@ export function PluginOptionsDialog({
   useEffect(() => {
     if (!advancePending) return
     setAdvancePending(false)
-    handleConfirm(focusedChoiceRef.current)
+    if (!handleConfirm(focusedChoiceRef.current)) {
+      advancingRef.current = false
+      typedAheadRef.current = ''
+    }
   }, [advancePending, handleConfirm])
 
-  useKeybinding('confirm:yes', handleConfirm, {
+  // The next field has rendered: hand it the keys typed while advancing.
+  useEffect(() => {
+    if (!advancingRef.current) return
+    advancingRef.current = false
+    const text = typedAheadRef.current
+    typedAheadRef.current = ''
+    if (choices === undefined && text) setCurrentInput(prev => prev + text)
+    // Only a field change should hand over typed-ahead keys.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentFieldIndex])
+
+  useKeybinding('confirm:yes', () => { handleConfirm() }, {
     context: 'Confirmation',
     isActive: choices === undefined,
   })
 
   // Character input handling (backspace, typing)
   useInput((char, key) => {
+    if (advancingRef.current) {
+      if (key.backspace || key.delete)
+        typedAheadRef.current = typedAheadRef.current.slice(0, -1)
+      else if (char && !key.ctrl && !key.meta && !key.tab && !key.return)
+        typedAheadRef.current += char
+      return
+    }
     if (choices !== undefined) return
     // Backspace
     if (key.backspace || key.delete) {
@@ -244,7 +275,10 @@ export function PluginOptionsDialog({
                 focusedChoiceRef.current = value
                 setCurrentInput(value)
               }}
-              onChange={handleConfirm}
+              onChange={value => {
+                // Enter while a Tab is still applying would confirm twice.
+                if (!advancingRef.current) handleConfirm(value)
+              }}
               onCancel={onCancel}
             />
           ) : (
