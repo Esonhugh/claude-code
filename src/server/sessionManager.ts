@@ -33,6 +33,8 @@ type Session = SessionInfo & {
   spawnOptions: SpawnSessionOptions
   /** A turn is in progress (set by a written user message, cleared by `session_state_changed` idle). */
   busy: boolean
+  /** A turn has started, so the transcript exists for `--resume`. */
+  ran?: boolean
   /** Options for a restart waiting on the current turn to end. */
   restartWith?: SpawnSessionOptions
   /** Lines written while the process is being replaced. */
@@ -306,7 +308,7 @@ export class SessionManager {
       ...(options.model && { model: options.model }),
       ...(options.effort && { effort: options.effort }),
       ...options.coordinator,
-      resume: true,
+      ...((session.spawnOptions.resume || session.ran) && { resume: true }),
     }
     if (session.busy || session.queued) return 'pending'
     void this.respawn(session)
@@ -397,6 +399,7 @@ export class SessionManager {
     }
     if (typeof state !== 'string') return
     session.busy = state !== 'idle'
+    if (session.busy) session.ran = true
     if (!session.busy && session.restartWith && !session.queued) void this.respawn(session)
   }
 

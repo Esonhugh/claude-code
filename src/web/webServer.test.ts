@@ -797,6 +797,13 @@ describe('claude web server', () => {
     }
     const resultSeen = (text: string) => () => lines.some(l => l.result === `${text} in ${r.workspace}`)
 
+    // No turn yet, so no transcript to resume: it starts again under the same id.
+    expect((await patch({ instructions: 'FIRST' })).status).toBe(200)
+    await waitFor(() => r.spawned.length === 2)
+    expect(r.spawned[1]).toMatchObject({ sessionId, appendSystemPrompt: 'FIRST' })
+    expect(r.spawned[1]!.resume).toBeUndefined()
+    r.spawned.shift()
+
     // A turn is running: the restart waits for it.
     say('hold')
     await waitFor(() => lines.some(l => l.state === 'running'))
