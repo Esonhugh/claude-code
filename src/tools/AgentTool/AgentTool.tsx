@@ -2282,18 +2282,34 @@ export const AgentTool = buildTool({
               // NOT trigger the print.ts XML task_notification parser or the LLM loop.
               if (!wasBackgrounded) {
                 const progress = getProgressUpdate(syncTracker)
+                const status = syncAgentError
+                  ? 'failed'
+                  : wasAborted
+                    ? 'stopped'
+                    : 'completed'
+                // Like official 2.1.318, a foreground agent's end also arrives
+                // as task_updated, and a finished agent's summary is its result.
+                enqueueSdkEvent({
+                  type: 'system',
+                  subtype: 'task_updated',
+                  task_id: foregroundTaskId,
+                  patch: {
+                    status: status === 'stopped' ? 'killed' : status,
+                    end_time: Date.now(),
+                    ...(syncAgentError && { error: syncAgentError.message }),
+                  },
+                })
                 enqueueSdkEvent({
                   type: 'system',
                   subtype: 'task_notification',
                   task_id: foregroundTaskId,
                   tool_use_id: toolUseContext.toolUseId,
-                  status: syncAgentError
-                    ? 'failed'
-                    : wasAborted
-                      ? 'stopped'
-                      : 'completed',
+                  status,
                   output_file: '',
-                  summary: description,
+                  summary:
+                    (status === 'completed' &&
+                      extractPartialResult(agentMessages)) ||
+                    description,
                   usage: {
                     total_tokens: progress.tokenCount,
                     tool_uses: progress.toolUseCount,
