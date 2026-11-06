@@ -89,17 +89,24 @@ export const MCPTool = buildTool({
     return isOutputLineTruncated(
       typeof output === 'string'
         ? output
-        : (output
-            ?.filter(block => block.type === 'text')
-            .map(block => block.text)
-            .join('\n') ?? ''),
+        : Array.isArray(output)
+          ? output
+              .filter(block => block.type === 'text')
+              .map(block => block.text)
+              .join('\n')
+          : '',
     )
   },
   mapToolResultToToolResultBlockParam(content, toolUseID) {
     return {
       tool_use_id: toolUseID,
       type: 'tool_result',
-      content,
+      // A PostToolUse hook may replace MCP output with any JSON value; the API
+      // only accepts a string or content blocks, so send other values as JSON.
+      content:
+        typeof content === 'string' || Array.isArray(content)
+          ? content
+          : JSON.stringify(content),
     }
   },
 } satisfies ToolDef<InputSchema, Output>)
