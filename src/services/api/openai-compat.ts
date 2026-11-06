@@ -13,6 +13,7 @@ import { createHmac, randomBytes, randomUUID } from 'crypto'
 import WebSocket from 'ws'
 import type {
   BetaImageBlockParam,
+  BetaRequestDocumentBlock,
   BetaRawMessageStreamEvent,
   BetaToolUnion,
   BetaMessageParam,
@@ -98,6 +99,8 @@ export function restoreOriginalId(fcId: string): string {
 type OpenAIResponsesInputContent =
   | { type: 'input_text'; text: string }
   | { type: 'input_image'; image_url: string; detail: 'high' }
+  | { type: 'input_file'; filename: string; file_data: string }
+  | { type: 'input_file'; file_url: string }
 
 function anthropicImageToResponsesInput(
   block: BetaImageBlockParam,
@@ -118,6 +121,24 @@ function anthropicImageToResponsesInput(
   }
   throw new Error(
     `OpenAI Responses does not support image source type "${block.source.type}"`,
+  )
+}
+
+function anthropicDocumentToResponsesInput(
+  block: BetaRequestDocumentBlock,
+): OpenAIResponsesInputContent {
+  const source = block.source
+  if (source.type === 'base64') {
+    return {
+      type: 'input_file',
+      filename: block.title || 'document.pdf',
+      file_data: `data:${source.media_type};base64,${source.data}`,
+    }
+  }
+  if (source.type === 'url') return { type: 'input_file', file_url: source.url }
+  if (source.type === 'text') return { type: 'input_text', text: source.data }
+  throw new Error(
+    `OpenAI Responses does not support document source type "${source.type}"`,
   )
 }
 
@@ -166,6 +187,8 @@ function anthropicMessagesToResponsesInput(
             parts.push({ type: 'input_text', text: block.text })
           } else if (block.type === 'image') {
             parts.push(anthropicImageToResponsesInput(block))
+          } else if (block.type === 'document') {
+            parts.push(anthropicDocumentToResponsesInput(block))
           } else if (block.type === 'tool_result') {
             const b = block as any
             const output = anthropicToolResultToResponsesOutput(b.content)
