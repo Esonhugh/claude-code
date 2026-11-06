@@ -85,6 +85,16 @@ test('loads an async generator and transforms chunks while retaining the final r
   expect(events).toEqual([])
 })
 
+test.each(['none', 'minimal', 'ultra'])('the host effort %s passes a pass-through hook to the model (#950)', async effort => {
+  const {value,events}=await fixture(`export function register(on) { on('turn.step',async function* ($,e,next) { return yield* next(e); }); }`)
+  const seen: unknown[] = []
+  const source=value.stream('turn.step',{...input,effort},async function* (next: ModInput) { seen.push(next.effort); yield* []; return result })
+  expect(await Array.fromAsync(source)).toEqual([])
+  expect(await source.result).toEqual(result)
+  expect(seen).toEqual([effort])
+  expect(events).toEqual([])
+})
+
 test.each([
   `yield {kind:'text',index:0,text:42};`,
   `yield {kind:'engine',ref:-1};`,
