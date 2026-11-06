@@ -348,7 +348,7 @@ export type SDKSystemMessage = {
   terminal_slash_commands?: string[]
   output_style: string
   skills: string[]
-  plugins: Array<{ name: string; path: string; source?: string }>
+  plugins: Array<{ name: string; path: string; source?: string; version?: string }>
   capabilities?: string[]
   fast_mode_state?: FastModeState
   fast_mode_disabled_reason?: FastModeDisabledReason

@@ -1984,6 +1984,12 @@ export const SDKSystemMessageSchema = lazySchema(() =>
           .describe(
             '@internal Plugin source identifier in "name\\@marketplace" format. Sentinels: "name\\@inline" for --plugin-dir, "name\\@builtin" for built-in plugins.',
           ),
+        version: z
+          .string()
+          .optional()
+          .describe(
+            "The plugin's version as declared in its plugin.json manifest, emitted verbatim. Omitted when the manifest declares no version.",
+          ),
       }),
     ),
     capabilities: z
