@@ -261,7 +261,8 @@ describe('reduce', () => {
     ])
     expect(state.items.slice(1)).toEqual([
       { kind: 'user', id: 'u1', text: '/model sonnet' },
-      { kind: 'local', id: 'u2', text: 'Set model to Sonnet 5.5' },
+      // Named by the command typed just before it, as Mods' CommandOutput sees it.
+      { kind: 'local', id: 'u2', text: 'Set model to Sonnet 5.5', command: 'model', args: 'sonnet' },
       { kind: 'local', id: 'u3', text: 'Unknown model', isError: true },
       { kind: 'local', id: 'a4', text: 'Total cost: $0.00' },
     ])

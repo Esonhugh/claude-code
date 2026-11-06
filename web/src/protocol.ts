@@ -50,7 +50,7 @@ export type Item =
     }
   | { kind: 'error'; id: string; text: string }
   /** Output of a local slash command (`/model`, `/usage`), shown as a muted system line. */
-  | { kind: 'local'; id: string; text: string; isError?: boolean }
+  | { kind: 'local'; id: string; text: string; isError?: boolean; command?: string; args?: string }
   /** A message a teammate sent the lead (`<teammate-message>`). */
   | { kind: 'teammate'; id: string; from: string; color?: string; summary?: string; text: string }
   /** A message a channel (an MCP server such as Telegram) pushed in: `<channel source="…" user="…">`. */
@@ -520,7 +520,10 @@ function addLocal(state: ChatState, item: Extract<Item, { kind: 'local' }>): Cha
   }
   // "Compacted" after a compaction: the mark already says so.
   if (!item.isError && last?.kind === 'compact') return { ...state, recapPending: undefined }
-  return { ...state, recapPending: undefined, items: [...state.items, item] }
+  // The slash command typed just before names the output, as Mods see it (`command`, no slash).
+  const typedCommand = last?.kind === 'user' ? /^\/([\w:-]+)(?:\s+([\s\S]*))?$/.exec(last.text.trim()) : null
+  const named = typedCommand ? { ...item, command: typedCommand[1], args: typedCommand[2] ?? '' } : item
+  return { ...state, recapPending: undefined, items: [...state.items, named] }
 }
 
 function reduceGoal(state: ChatState, raw: Json): ChatState {

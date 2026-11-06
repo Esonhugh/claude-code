@@ -1144,4 +1144,10 @@ body.proj .main, body.proj .side, body.proj .artview, body.proj #panel-btn { dis
 .canvas-tabs button[aria-selected="true"] { border-color: var(--line); background: var(--bg); color: var(--fg); margin-bottom: -1px }
 .mod-toasts { position: fixed; right: 16px; bottom: 16px; z-index: 40; display: flex; flex-direction: column; gap: 6px; align-items: flex-end; max-width: min(360px, calc(100vw - 32px)) }
 .mod-toast { text-align: left; padding: 8px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); color: var(--fg); box-shadow: 0 6px 20px rgba(0,0,0,.18); font-size: 13px }
-:root[data-theme="dark"] .mod-view { --mod-black: #c9d1d9; --mod-red: #ff7b72; --mod-green: #3fb950; --mod-yellow: #d29922; --mod-blue: #58a6ff; --mod-magenta: #d2a8ff; --mod-cyan: #39c5cf; --mod-white: #f0f6fc; --mod-gray: #8b949e; --mod-grey: #8b949e }
+:root[data-theme="dark"] :is(.mod-view, .mod-site, .mod-foot) { --mod-black: #c9d1d9; --mod-red: #ff7b72; --mod-green: #3fb950; --mod-yellow: #d29922; --mod-blue: #58a6ff; --mod-magenta: #d2a8ff; --mod-cyan: #39c5cf; --mod-white: #f0f6fc; --mod-gray: #8b949e; --mod-grey: #8b949e }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) :is(.mod-view, .mod-site, .mod-foot) { --mod-black: #c9d1d9; --mod-red: #ff7b72; --mod-green: #3fb950; --mod-yellow: #d29922; --mod-blue: #58a6ff; --mod-magenta: #d2a8ff; --mod-cyan: #39c5cf; --mod-white: #f0f6fc; --mod-gray: #8b949e; --mod-grey: #8b949e } }
+/* A page row as Mods draw it: their tree, with the page's row where it says. */
+.mod-site { min-width: 0; overflow-wrap: anywhere }
+.mod-site .mod-btn { font-size: 12px }
+.mod-foot { display: flex; gap: 12px; justify-content: space-between; padding: 4px 6px 0; color: var(--muted); font-size: 12px }
+.mod-foot:empty { display: none }

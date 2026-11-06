@@ -32,7 +32,7 @@ import { AskDock, ChatComposer, chatTools, ContextChip, GoalMenu, type MentionTa
 import { AppDialog, type Palette, type Theme } from './components/Dialogs'
 import type { ContextUsage } from './components/Settings'
 import { AgentsContext, ChatContext, FilesContext, joinTurns, Message, QuoteContext, QuoteOnSelect, replyPrompt, TeamBar } from './components/Message'
-import { MOD_CLIENT, MOD_SURFACE, ModCanvas, ModToasts, ModView } from './components/Mods'
+import { MOD_CLIENT, MOD_SURFACE, ModCanvas, ModSite, ModSitesProvider, ModToasts, ModView } from './components/Mods'
 import { Preview } from './components/Preview'
 import { ProjectDialog } from './components/ProjectDialog'
 import { ProjectView } from './components/ProjectView'
@@ -117,28 +117,39 @@ function StatusLine({ t, since, retry, onStop }: { t: T; since: number; retry?: 
     const id = setInterval(() => setTick(n => n + 1), 120)
     return () => clearInterval(id)
   }, [])
+  const spinner = useMemo(() => ({ word: verb, message: null, suffix: '…', mode: 'responding' }), [verb])
   return (
-    <div className="status-line" role="status">
-      <span className="glyph">{GLYPHS[tick % GLYPHS.length]}</span>
-      <span className="verb shimmer">{verb}…</span>
-      <span className="mono">{formatElapsed(Date.now() - since)}</span>
-      {retry && (
-        // As the TUI's spinner row: the request failed and is tried again.
-        <span className="retry">
-          {t('apiRetry', {
-            status: retry.status ? ` ${retry.status}` : '',
-            s: String(Math.ceil(Math.max(0, retry.delayMs - (Date.now() - retry.at)) / 1000)),
-            n: String(retry.attempt),
-            max: String(retry.max),
-          })}
-        </span>
+    <ModSite component="Spinner" id="main" props={spinner}>
+      {p => (
+        <div className="status-line" role="status">
+          <span className="glyph">{GLYPHS[tick % GLYPHS.length]}</span>
+          <span className="verb shimmer">
+            {String(p.message ?? p.word)}
+            {String(p.suffix)}
+          </span>
+          <span className="mono">{formatElapsed(Date.now() - since)}</span>
+          {retry && (
+            // As the TUI's spinner row: the request failed and is tried again.
+            <span className="retry">
+              {t('apiRetry', {
+                status: retry.status ? ` ${retry.status}` : '',
+                s: String(Math.ceil(Math.max(0, retry.delayMs - (Date.now() - retry.at)) / 1000)),
+                n: String(retry.attempt),
+                max: String(retry.max),
+              })}
+            </span>
+          )}
+          <button type="button" onClick={onStop}>
+            {t('escInterrupt')}
+          </button>
+        </div>
       )}
-      <button type="button" onClick={onStop}>
-        {t('escInterrupt')}
-      </button>
-    </div>
+    </ModSite>
   )
 }
+
+/** The page draws no session mode labels of its own (the TUI's `focus`, `memory paused`). */
+const NO_MODES = { modes: [] }
 
 /** Seconds since the current turn started; ticks while busy. */
 function useTurnStart(busy: boolean | undefined, view: string | null): number | undefined {
@@ -1488,7 +1499,7 @@ export function App() {
     />
   ) : (
     withChat(
-        <>
+        <ModSitesProvider on={live} request={modsRequest} mods={chat.mods} box={feedRef} t={t}>
           <div className="meta">
             {menuButton}
             <span className={`chip status status-${chat.mode}`} role="status">
@@ -1651,13 +1662,25 @@ export function App() {
             )}
             <LoginGate t={t} api={account} onKeyDialog={setKeyDialog} />
             {approval && view && (
-              <AskDock
-                approval={approval}
-                more={chat.approvals.length - 1}
-                cwd={chat.cwd ?? chat.workDir}
-                t={t}
-                onAnswer={choice => answer(view, approval, choice)}
-              />
+              <ModSite
+                component="AskUserQuestion"
+                id={approval.toolUseId ?? approval.requestId}
+                off={approval.toolName !== 'AskUserQuestion'}
+                props={{
+                  tool: approval.toolName,
+                  questions: Array.isArray(approval.input.questions) ? approval.input.questions : [],
+                }}
+              >
+                {() => (
+                  <AskDock
+                    approval={approval}
+                    more={chat.approvals.length - 1}
+                    cwd={chat.cwd ?? chat.workDir}
+                    t={t}
+                    onAnswer={choice => answer(view, approval, choice)}
+                  />
+                )}
+              </ModSite>
             )}
             <Pins t={t} todos={todos} />
             {live && view && (
@@ -1704,8 +1727,16 @@ export function App() {
               }}
               extra={chat.goal && <GoalMenu t={t} goal={chat.goal} onClear={() => view && void sendPrompt(view, '/goal clear')} />}
             />
+            <div className="mod-foot">
+              <ModSite component="SessionMode" id="main" props={NO_MODES}>
+                {p => (Array.isArray(p.modes) && p.modes.length ? <span>{p.modes.join(' & ')}</span> : null)}
+              </ModSite>
+              <ModSite component="PromptHint" id="main" props={{ isDraft: draft.trim() !== '', isWorking: !!chat.busy, hint: '' }}>
+                {p => (p.hint || p.tail ? <span>{[p.hint, p.tail].filter(Boolean).join(' ')}</span> : null)}
+              </ModSite>
+            </div>
           </div>
-        </>,
+        </ModSitesProvider>,
     )
   )
 

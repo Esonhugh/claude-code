@@ -1,4 +1,16 @@
-import { type CSSProperties, type ReactNode, type RefObject, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import {
+  createContext,
+  type CSSProperties,
+  type ReactNode,
+  type RefObject,
+  useCallback,
+  useContext,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react'
 import type { MessageKey } from '../i18n'
 import { CodeBlock, Markdown } from '../markdown/Markdown'
 import type { ModPane, ModsState, ModToast } from '../protocol'
@@ -177,11 +189,11 @@ function ModSelect({ node, act }: { node: Extract<Node, object>; act: Act }) {
 }
 
 /** One element of a Mod's drawing, as the wire tree describes it. */
-export function ModNode({ node, act, t }: { node: Node; act: Act; t: T }): ReactNode {
+export function ModNode({ node, act, t, slot }: { node: Node; act: Act; t: T; slot?: ReactNode }): ReactNode {
   if (typeof node === 'string') return node
   if (!node || typeof node !== 'object') return null
   const p = node.props ?? {}
-  const kids = (node.children ?? []).map((c, i) => <ModNode key={i} node={c} act={act} t={t} />)
+  const kids = (node.children ?? []).map((c, i) => <ModNode key={i} node={c} act={act} t={t} slot={slot} />)
   switch (node.type) {
     case 'Box':
     case 'div':
@@ -247,8 +259,10 @@ export function ModNode({ node, act, t }: { node: Node; act: Act; t: T }): React
       ) : null
     case 'Client':
       return <span className="mod-note">{t('modClientView')}</span>
+    case 'engine':
+      // Where the page's own drawing of the row goes (`await next(e)` in the hook).
+      return slot ?? null
     default:
-      // `engine`: the session's own drawing, which this page has nothing more for.
       return null
   }
 }
@@ -256,7 +270,7 @@ export function ModNode({ node, act, t }: { node: Node; act: Act; t: T }): React
 type Grid = { columns: number; rows: number }
 
 /** The cells a box holds, measured in the page's monospace font, as a terminal would count them. */
-function useGrid(box: RefObject<HTMLElement | null>, rows?: number): Grid | undefined {
+export function useGrid(box: RefObject<HTMLElement | null>, rows?: number): Grid | undefined {
   const [grid, setGrid] = useState<Grid>()
   useLayoutEffect(() => {
     const el = box.current
@@ -471,5 +485,135 @@ export function ModCanvas({
         )}
       </div>
     </aside>
+  )
+}
+
+type Sites = {
+  request: HostRequest
+  seq: ModsState['seq']
+  viewport?: Grid
+  t: T
+  /** Per component: whether any Mod hooks it; absent until the first row asks. */
+  hooked: Record<string, boolean>
+  /** True for the one row that may ask first, so a long transcript sends one probe a component. */
+  claim: (component: string) => boolean
+  learn: (component: string, hooked: boolean) => void
+}
+
+const ModSitesContext = createContext<Sites | undefined>(undefined)
+
+/**
+ * Lets the rows inside ask the session for Mods' drawings of them. Which components
+ * any Mod hooks is learnt from the first answer each and forgotten when the hooks change.
+ */
+export function ModSitesProvider({
+  on,
+  request,
+  mods,
+  box,
+  t,
+  children,
+}: {
+  /** False while the session is not running here: rows are the page's own. */
+  on: boolean
+  request: HostRequest
+  mods: ModsState
+  /** The transcript, whose width Mods are told as `viewport`. */
+  box: RefObject<HTMLElement | null>
+  t: T
+  children: ReactNode
+}) {
+  const viewport = useGrid(box)
+  const [hooked, setHooked] = useState<Record<string, boolean>>({})
+  const asking = useRef(new Set<string>())
+  const all = mods.seq['*'] ?? 0
+  useEffect(() => {
+    asking.current.clear()
+    setHooked({})
+  }, [all, request, on])
+  const claim = useCallback((component: string) => {
+    if (asking.current.has(component)) return false
+    asking.current.add(component)
+    return true
+  }, [])
+  const learn = useCallback((component: string, on: boolean) => {
+    asking.current.add(component)
+    setHooked(h => (h[component] === on ? h : { ...h, [component]: on }))
+  }, [])
+  const value = useMemo(
+    () => (on ? { request, seq: mods.seq, viewport, t, hooked, claim, learn } : undefined),
+    [on, request, mods.seq, viewport, t, hooked, claim, learn],
+  )
+  return <ModSitesContext.Provider value={value}>{children}</ModSitesContext.Provider>
+}
+
+type Drawn = { tree: Node; props: Record<string, unknown>; key: string }
+
+/**
+ * One of the page's own rows (a message, a tool card, the spinner) as Mods draw it:
+ * the page's row where the tree holds `engine`, drawn from the props the hooks passed on.
+ * With no Mod on the component, or `off` (a reply still streaming), the page's row alone.
+ */
+export function ModSite({
+  component,
+  id,
+  props,
+  off,
+  children,
+}: {
+  component: string
+  id: string
+  props: Record<string, unknown>
+  off?: boolean
+  children: (props: Record<string, unknown>) => ReactNode
+}) {
+  const sites = useContext(ModSitesContext)
+  const known = sites?.hooked[component]
+  const key = JSON.stringify(props)
+  const seq = sites?.seq[`${component}:${id}`] ?? 0
+  const [drawn, setDrawn] = useState<Drawn>()
+  useEffect(() => {
+    if (!sites || off || known === false) return
+    if (known === undefined && !sites.claim(component)) return
+    let live = true
+    const ask = () =>
+      sites
+        .request({
+          subtype: 'ui_render',
+          surface: MOD_SURFACE,
+          client_id: MOD_CLIENT,
+          component,
+          instance_id: id,
+          props: JSON.parse(key) as Record<string, unknown>,
+          ...(sites.viewport ? { viewport: sites.viewport } : {}),
+        })
+        .then(
+          res => {
+            sites.learn(component, res.hooked === true)
+            if (!live) return
+            const tree = res.tree as Node | undefined
+            const own = !tree || (typeof tree === 'object' && tree.type === 'engine' && (tree as { ref?: unknown }).ref === 0)
+            setDrawn(own ? undefined : { tree: tree!, props: (res.props as Record<string, unknown>) ?? {}, key })
+          },
+          () => {
+            // No Mods session here (or it refused the props): the page's row stands.
+            sites.learn(component, false)
+          },
+        )
+    // The first row asks at once; later changes (a growing tool output) settle first.
+    const timer = known === undefined ? (void ask(), 0) : window.setTimeout(ask, 150)
+    return () => {
+      live = false
+      clearTimeout(timer)
+    }
+  }, [sites, component, id, key, seq, off, known])
+  if (!sites || off || known === false || !drawn) return children(props)
+  const act: Act = body => {
+    void sites.request({ surface: MOD_SURFACE, client_id: MOD_CLIENT, component, instance_id: id, ...body }).catch(() => {})
+  }
+  return (
+    <div className="mod-site">
+      <ModNode node={drawn.tree} act={act} t={sites.t} slot={children(drawn.key === key ? { ...props, ...drawn.props } : props)} />
+    </div>
   )
 }
