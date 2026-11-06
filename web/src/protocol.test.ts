@@ -479,6 +479,14 @@ describe('reduce', () => {
         request: { subtype: 'can_use_tool' },
       }),
     ).toBeUndefined()
+    // Mods' questions about the prompt box are the page's to answer.
+    expect(
+      unsupportedControlResponse({
+        type: 'control_request',
+        request_id: 'm1',
+        request: { subtype: 'ui_prompt_fill', text: 'x', mode: 'replace' },
+      }),
+    ).toBeUndefined()
   })
 })
 
@@ -923,5 +931,13 @@ describe('mods panes answer', () => {
       response: { subtype: 'success', request_id: 'web-mods-3', response: { panes: [{ id: 'p', title: 'P', plugin: 'x' }], shown_id: 'p' } },
     })
     expect(state.mods.panes).toEqual([{ id: 'p', title: 'P', plugin: 'x' }])
+  })
+  it('notes that the session took the page as a Mods client', () => {
+    expect(initialState.mods.attached).toBeUndefined()
+    const state = reduce(initialState, {
+      type: 'control_response',
+      response: { subtype: 'success', request_id: 'web-mods-1', response: { surfaces: ['desktop'] } },
+    })
+    expect(state.mods.attached).toBe(true)
   })
 })

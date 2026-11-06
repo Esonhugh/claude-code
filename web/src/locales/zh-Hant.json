@@ -563,5 +563,7 @@
   "modsNone": "這個會話裡還沒有 Mod 開啟面板。",
   "modOpenCanvas": "在畫布開啟",
   "modOnCanvas": "已在畫布中顯示。",
-  "modPaneClosed": "Mod 已關閉這個面板。"
+  "modPaneClosed": "Mod 已關閉這個面板。",
+  "modSuggestions": "Mod 的補全建議",
+  "modSuggestTake": "使用這條建議"
 }

@@ -201,7 +201,24 @@ export type ModsState = {
   toasts: ModToast[]
   /** Bumped per `component:instance_id` when the session says that drawing changed; `*` bumps them all. */
   seq: Record<string, number>
+  /** The session runs Mods and took this page as a client (`ui_attach` answered). */
+  attached?: boolean
 }
+
+export type PromptDecoration = {
+  start: number
+  end: number
+  color?: string
+  backgroundColor?: string
+  bold?: boolean
+  italic?: boolean
+  underline?: boolean
+  strikethrough?: boolean
+  dimColor?: boolean
+}
+
+/** What a session may ask this page about its prompt box, the clipboard and the selection. */
+export const MOD_ANSWERS = ['ui_copy', 'ui_prompt_read', 'ui_prompt_fill', 'ui_prompt_suggest', 'ui_read_selection'] as const
 
 export const initialMods: ModsState = { panes: [], status: {}, toasts: [], seq: {} }
 
@@ -1278,6 +1295,9 @@ function reduceControlResponse(state: ChatState, raw: Json): ChatState {
   if (id.startsWith(REQUEST_PREFIX.mods) && Array.isArray(body.panes)) {
     return { ...state, mods: reduceModsMessage(state.mods, { ...body, subtype: 'ui_panes' }) ?? state.mods }
   }
+  if (id.startsWith(REQUEST_PREFIX.mods) && Array.isArray(body.surfaces) && !state.mods.attached) {
+    return { ...state, mods: { ...state.mods, attached: true } }
+  }
   if (id.startsWith(REQUEST_PREFIX.initialize)) {
     const commands = Array.isArray(body.commands)
       ? body.commands.filter(isObj).map(c => ({
@@ -1365,6 +1385,7 @@ export function unsupportedControlResponse(raw: unknown): Json | undefined {
   const request = isObj(raw.request) ? raw.request : {}
   const requestId = str(raw.request_id)
   if (!requestId || request.subtype === 'can_use_tool') return undefined
+  if ((MOD_ANSWERS as readonly unknown[]).includes(request.subtype)) return undefined
   return {
     type: 'control_response',
     response: {

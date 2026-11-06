@@ -50,8 +50,10 @@ import {
   type ApprovalChoice,
   controlRequest,
   currentTodos,
+  MOD_ANSWERS,
   type ModelOption,
   type ModPane,
+  type PromptDecoration,
   newUuid,
   permissionResponse,
   REQUEST_PREFIX,
@@ -147,6 +149,9 @@ function StatusLine({ t, since, retry, onStop }: { t: T; since: number; retry?: 
     </ModSite>
   )
 }
+
+/** A typeahead row a Mod offered (`prompt.autocomplete`). */
+type ModRow = { text: string; label?: string; description?: string }
 
 /** The page draws no session mode labels of its own (the TUI's `focus`, `memory paused`). */
 const NO_MODES = { modes: [] }
@@ -249,6 +254,18 @@ export function App() {
   const files = attachments[draftKey] ?? []
   const setFiles = (next: File[]) => setAttachments(a => ({ ...a, [draftKey]: next }))
   const quote = quotes[draftKey]
+  // What Mods did to a session's prompt box: a dim suggestion, marks on the text, typeahead rows.
+  const [modPrompt, setModPrompt] = useState<
+    Record<string, { suggestion?: string; decorations?: PromptDecoration[]; rows?: ModRow[]; start?: number; end?: number }>
+  >({})
+  const draftsRef = useRef(drafts)
+  draftsRef.current = drafts
+  // The value the person typed last, so the edit the draft makes next is told to Mods as theirs.
+  const typed = useRef<string | undefined>(undefined)
+  const setDraftByPerson = (value: string) => {
+    typed.current = value
+    setDraft(value)
+  }
   // Stable, so the messages that offer Reply do not draw again on every render.
   const quoteInChat = useCallback((text: string | undefined) => {
     const id = stateRef.current.view
@@ -674,6 +691,12 @@ export function App() {
       dispatch({ type: 'chat', id, action: { type: 'message', raw } })
       const reply = unsupportedControlResponse(raw)
       if (reply) socket.send(JSON.stringify(reply) + '\n')
+      const ask = raw as { type?: string; request_id?: unknown; request?: Record<string, unknown> }
+      if (ask.type === 'control_request' && typeof ask.request_id === 'string' && (MOD_ANSWERS as readonly unknown[]).includes(ask.request?.subtype)) {
+        void modAnswer.current(id, ask.request!).then(response =>
+          socket.send(JSON.stringify({ type: 'control_response', response: { subtype: 'success', request_id: ask.request_id, response } }) + '\n'),
+        )
+      }
       if (typeof requestId === 'string' && requestId.startsWith(REQUEST_PREFIX.effort)) getSettings(id)
       if ((raw as { type?: string }).type === 'result') {
         request(id, REQUEST_PREFIX.context, { subtype: 'get_context_usage' })
@@ -702,7 +725,7 @@ export function App() {
     dispatch({ type: 'mode', id, mode: 'live' })
     request(id, REQUEST_PREFIX.initialize, { subtype: 'initialize' })
     // This page draws Mods' panes, band and toasts (the session refuses when it runs no Mods).
-    request(id, REQUEST_PREFIX.mods, { subtype: 'ui_attach', surface: MOD_SURFACE, client_id: MOD_CLIENT })
+    request(id, REQUEST_PREFIX.mods, { subtype: 'ui_attach', surface: MOD_SURFACE, client_id: MOD_CLIENT, answers: MOD_ANSWERS })
     request(id, REQUEST_PREFIX.mods, { subtype: 'ui_panes', client_id: MOD_CLIENT })
     request(id, REQUEST_PREFIX.rewindPoints, { subtype: 'rewind_points' })
     getSettings(id)
@@ -1391,6 +1414,124 @@ export function App() {
       view ? requestAsync(view, REQUEST_PREFIX.mods, body) : Promise.reject(new Error(t('statusIdle'))),
     [view, t],
   )
+  // A session's Mods ask about the prompt box, the clipboard and the selection (official 2.1.316 answers).
+  const modAnswer = useRef<(id: string, request: Record<string, unknown>) => Promise<Record<string, unknown>>>(
+    async () => ({}),
+  )
+  modAnswer.current = async (id, request) => {
+    const text = draftsRef.current[id] ?? ''
+    const box = id === view ? document.querySelector<HTMLTextAreaElement>('.composer textarea') : null
+    const cursor = Math.min(box?.selectionStart ?? text.length, text.length)
+    switch (request.subtype) {
+      case 'ui_prompt_read':
+        return { text, cursor }
+      case 'ui_prompt_fill': {
+        const fill = String(request.text ?? '')
+        const next =
+          request.mode === 'append' ? text + fill : request.mode === 'insert' ? text.slice(0, cursor) + fill + text.slice(cursor) : fill
+        setDrafts(d => ({ ...d, [id]: next }))
+        const decorations = Array.isArray(request.decorations) ? (request.decorations as PromptDecoration[]) : undefined
+        setModPrompt(m => ({ ...m, [id]: { ...m[id], decorations, suggestion: undefined } }))
+        return { filled: true }
+      }
+      case 'ui_prompt_suggest': {
+        // As the terminal: only an empty box shows one (drawn once the turn is over).
+        if (text.trim()) return { shown: false }
+        const suggestion = String(request.text ?? '')
+        setModPrompt(m => ({ ...m, [id]: { ...m[id], suggestion: suggestion || undefined } }))
+        return { shown: suggestion !== '' }
+      }
+      case 'ui_copy': {
+        const copied = await navigator.clipboard?.writeText(String(request.text ?? '')).then(
+          () => true,
+          () => false,
+        )
+        return { copied: copied === true }
+      }
+      case 'ui_read_selection':
+        return selection.current ? { text: selection.current } : {}
+    }
+    return {}
+  }
+  // What the person selected last on the page, kept while they type a command into the box, as the
+  // terminal keeps it until they select again or dismiss it.
+  const selection = useRef('')
+  useEffect(() => {
+    const seen = () => {
+      const text = window.getSelection()?.toString() ?? ''
+      const active = document.activeElement
+      // Typing in a box moves the caret, not the selection the person made on the page.
+      if (!text && (active instanceof HTMLTextAreaElement || active instanceof HTMLInputElement)) return
+      selection.current = text
+    }
+    document.addEventListener('selectionchange', seen)
+    return () => document.removeEventListener('selectionchange', seen)
+  }, [])
+  const modsAttached = live && chat?.mods.attached === true
+  const lastEdit = useRef(0)
+  // Each change of the draft goes to Mods (`prompt.edit`): theirs may rewrite it or mark it, and
+  // `prompt.autocomplete` offers rows for the word being typed.
+  useEffect(() => {
+    if (!view || !modsAttached) return
+    const person = typed.current === draft
+    typed.current = undefined
+    const mine = ++lastEdit.current
+    const at = () => {
+      const box = document.querySelector<HTMLTextAreaElement>('.composer textarea')
+      return Math.min(box?.selectionStart ?? draft.length, draft.length)
+    }
+    const send = () => {
+      const cursor = at()
+      const route = { surface: MOD_SURFACE, client_id: MOD_CLIENT }
+      modsRequest({ subtype: 'ui_prompt_edit', ...route, text: draft, cursor, by: person ? 'person' : 'app' }).then(
+        res => {
+          if (mine !== lastEdit.current || res.superseded) return
+          const decorations = Array.isArray(res.decorations) && res.decorations.length ? (res.decorations as PromptDecoration[]) : undefined
+          // The page's own change (a Mod's rewrite or fill coming back) keeps the marks it came with.
+          if (person || decorations || !draft) setModPrompt(m => ({ ...m, [view]: { ...m[view], decorations } }))
+          if (typeof res.text === 'string' && res.text !== draft) {
+            setDrafts(d => (d[view] === draft ? { ...d, [view]: res.text as string } : d))
+            const caret = typeof res.cursor === 'number' ? res.cursor : res.text.length
+            requestAnimationFrame(() => document.querySelector<HTMLTextAreaElement>('.composer textarea')?.setSelectionRange(caret, caret))
+          }
+        },
+        () => {},
+      )
+      if (!person) return
+      modsRequest({ subtype: 'ui_prompt_autocomplete', ...route, text: draft, cursor }).then(
+        res => {
+          if (mine !== lastEdit.current || res.superseded) return
+          const rows = Array.isArray(res.suggestions) ? (res.suggestions as ModRow[]).filter(r => typeof r?.text === 'string') : []
+          const start = typeof res.start === 'number' ? res.start : cursor
+          setModPrompt(m => ({ ...m, [view]: { ...m[view], rows: rows.length ? rows : undefined, start, end: cursor } }))
+        },
+        () => {},
+      )
+    }
+    if (!person) {
+      if (!draft) setModPrompt(m => (m[view]?.rows ? { ...m, [view]: { ...m[view], rows: undefined } } : m))
+      send()
+      return
+    }
+    const timer = setTimeout(send, 80)
+    return () => clearTimeout(timer)
+  }, [draft, view, modsAttached, modsRequest])
+  const modBox = view ? modPrompt[view] : undefined
+  const takeModRow = (row: ModRow) => {
+    if (!view) return
+    const box = document.querySelector<HTMLTextAreaElement>('.composer textarea')
+    // The rows are for the token the edit that asked for them ended in.
+    const cursor = Math.min(modBox?.end ?? draft.length, draft.length)
+    const from = Math.min(modBox?.start ?? cursor, cursor)
+    const next = draft.slice(0, from) + row.text + draft.slice(cursor)
+    setModPrompt(m => ({ ...m, [view]: { ...m[view], rows: undefined } }))
+    setDraftByPerson(next)
+    const caret = from + row.text.length
+    requestAnimationFrame(() => {
+      box?.focus()
+      box?.setSelectionRange(caret, caret)
+    })
+  }
   const prompts = useMemo(
     () => (chatItems ?? []).flatMap(i => (i.kind === 'user' && i.text ? [i.text] : [])),
     [chatItems],
@@ -1499,7 +1640,7 @@ export function App() {
     />
   ) : (
     withChat(
-        <ModSitesProvider on={live} request={modsRequest} mods={chat.mods} box={feedRef} t={t}>
+        <ModSitesProvider on={modsAttached} request={modsRequest} mods={chat.mods} box={feedRef} t={t}>
           <div className="meta">
             {menuButton}
             <span className={`chip status status-${chat.mode}`} role="status">
@@ -1696,13 +1837,39 @@ export function App() {
               />
             )}
             <ModToasts toasts={chat.mods.toasts} />
+            {modBox?.rows && draft && (
+              <div className="mod-complete" role="listbox" aria-label={t('modSuggestions')}>
+                {modBox.rows.map(row => (
+                  <button key={row.text} type="button" role="option" aria-selected={false} className="btn" onClick={() => takeModRow(row)}>
+                    {row.label ?? row.text}
+                    {row.description && <small>{row.description}</small>}
+                  </button>
+                ))}
+              </div>
+            )}
+            {modBox?.suggestion && !draft.trim() && !chat.busy && (
+              <div className="mod-suggest">
+                <button
+                  type="button"
+                  className="btn"
+                  title={t('modSuggestTake')}
+                  onClick={() => {
+                    setModPrompt(m => ({ ...m, [view!]: { ...m[view!], suggestion: undefined } }))
+                    setDraftByPerson(modBox.suggestion!)
+                  }}
+                >
+                  {modBox.suggestion}
+                </button>
+              </div>
+            )}
             <ChatComposer
               t={t}
               busy={chat.busy}
               disabled={chat.mode === 'elsewhere'}
               signedOut={signedOut}
               draft={draft}
-              setDraft={setDraft}
+              setDraft={setDraftByPerson}
+              decorations={modBox?.decorations}
               onSend={() => void sendInChat()}
               onSendNow={sendNowInChat}
               quote={quote}

@@ -563,5 +563,7 @@
   "modsNone": "这个会话里还没有 Mod 打开面板。",
   "modOpenCanvas": "在画布打开",
   "modOnCanvas": "已在画布中显示。",
-  "modPaneClosed": "Mod 已关闭这个面板。"
+  "modPaneClosed": "Mod 已关闭这个面板。",
+  "modSuggestions": "Mod 的补全建议",
+  "modSuggestTake": "使用这条建议"
 }
