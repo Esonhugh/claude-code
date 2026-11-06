@@ -122,6 +122,19 @@ export function subscribePluginOptionsChange(listener: () => void): () => void {
   return () => { optionChangeListeners.delete(listener) }
 }
 
+// Plugins whose configure dialog is open right after install or enable: their
+// missing options are not an error yet. Closing the dialog re-checks them.
+const pendingOptionFlows = new Set<string>()
+
+export function setPluginOptionsPending(pluginId: string, pending: boolean): void {
+  if (pending) pendingOptionFlows.add(pluginId)
+  else if (pendingOptionFlows.delete(pluginId)) for (const listener of optionChangeListeners) listener()
+}
+
+export function isPluginOptionsPending(pluginId: string): boolean {
+  return pendingOptionFlows.has(pluginId)
+}
+
 /**
  * Save option values, splitting by `schema[key].sensitive`. Non-sensitive go
  * to userSettings; sensitive go to secureStorage. Writes are skipped if nothing

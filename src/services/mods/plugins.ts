@@ -3,7 +3,7 @@ import { logForDebugging } from '../../utils/debug.js'
 import type { LoadedPlugin } from '../../types/plugin.js'
 import { markBuiltinModInput } from '../../plugins/builtinPlugins.js'
 import { validateUserConfig } from '../../utils/plugins/mcpbHandler.js'
-import { getPluginStorageId, loadPluginSecrets, resolvePluginOptions } from '../../utils/plugins/pluginOptionsStorage.js'
+import { getPluginStorageId, isPluginOptionsPending, loadPluginSecrets, resolvePluginOptions } from '../../utils/plugins/pluginOptionsStorage.js'
 import type { SettingsJson } from '../../utils/settings/types.js'
 import type { ModDiagnostic, ModPluginInput } from './runtime.js'
 import {dependencyMatchesPlugin, qualifyDependency} from '../../utils/plugins/dependencyResolver.js'
@@ -225,7 +225,7 @@ export function prepareModPlugins(
 
     const prepared = prepareOptions(plugin, storageId, settings)
     if (prepared.error) {
-      errors.push(prepared.error)
+      if (!isPluginOptionsPending(storageId)) errors.push(prepared.error)
       continue
     }
 
