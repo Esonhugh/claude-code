@@ -17,6 +17,12 @@ export function withApprovals(rows: ProjectTask[], approvals: Approval[]): Proje
   return rows.map(row => (asking.has(row.id) && row.state === 'running' ? { ...row, state: 'blocked' } : row))
 }
 
+/** Approvals the coordinator answers: its own, and its teammates', which are not tasks. */
+export function coordinatorApprovals(rows: ProjectTask[], approvals: Approval[]): Approval[] {
+  const tasks = new Set(rows.map(row => row.id))
+  return approvals.filter(a => !a.agentId || !tasks.has(a.agentId))
+}
+
 export const isLive = (task: ProjectTask) => task.state === 'running' || task.state === 'blocked'
 
 /** A task the user stopped stays stopped; any other can be messaged (an ended one resumes). */
