@@ -437,11 +437,14 @@ export function withCurrentModelOption(
 ): ModelOption[] {
   if (initial === null) {
     if (options.some(option => option.value === null)) return options
+    const served = options.find(option => option.value === defaultModel)
     return [
       {
         value: null,
         label: `Default (${modelDisplayString(defaultModel)})`,
         description: 'Current model',
+        ...(served?.effortOptions && { effortOptions: served.effortOptions }),
+        ...(served?.defaultEffort && { defaultEffort: served.defaultEffort }),
       },
       ...options,
     ]

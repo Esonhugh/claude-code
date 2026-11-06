@@ -1458,7 +1458,7 @@ try {
     output_config: { effort: 'ultra' },
   } as any)
 
-  assert.deepEqual(requests[0]!.body.reasoning, { effort: 'ultra' })
+  assert.deepEqual(requests[0]!.body.reasoning, { effort: 'xhigh' })
 
   const {
     EFFORT_LEVELS,
@@ -1488,7 +1488,7 @@ try {
     output_config: { effort: appliedUltra },
   } as any)
 
-  assert.deepEqual(requests[0]!.body.reasoning, { effort: 'ultra' })
+  assert.deepEqual(requests[0]!.body.reasoning, { effort: 'xhigh' })
   if (originalUseOpenAI === undefined) delete process.env.CLAUDE_CODE_USE_OPENAI
   else process.env.CLAUDE_CODE_USE_OPENAI = originalUseOpenAI
 

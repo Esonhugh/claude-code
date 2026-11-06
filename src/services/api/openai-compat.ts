@@ -272,7 +272,6 @@ function anthropicEffortToOpenAIReasoning(effort: unknown): {
     | 'high'
     | 'xhigh'
     | 'max'
-    | 'ultra'
 } | undefined {
   if (
     effort === 'none' ||
@@ -281,12 +280,12 @@ function anthropicEffortToOpenAIReasoning(effort: unknown): {
     effort === 'medium' ||
     effort === 'high' ||
     effort === 'xhigh' ||
-    effort === 'max' ||
-    effort === 'ultra'
+    effort === 'max'
   ) {
     return { effort }
   }
-  if (effort === 'ultracode' || typeof effort === 'number') {
+  // The Responses API rejects 'ultra'; Codex sends xhigh for it and delegates client-side.
+  if (effort === 'ultra' || effort === 'ultracode' || typeof effort === 'number') {
     return { effort: 'xhigh' }
   }
   return undefined
