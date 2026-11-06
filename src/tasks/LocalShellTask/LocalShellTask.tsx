@@ -510,6 +510,37 @@ export function backgroundAll(
   }
 }
 
+const backgroundRequestHandlers = new Map<string, () => void>()
+
+/**
+ * Lets a running foreground command that has no registered task (headless
+ * runs never call registerForeground) be moved to the background by its
+ * tool_use id. Returns the unregister function.
+ */
+export function onBackgroundRequest(
+  toolUseId: string,
+  handler: () => void,
+): () => void {
+  backgroundRequestHandlers.set(toolUseId, handler)
+  return () => {
+    if (backgroundRequestHandlers.get(toolUseId) === handler) {
+      backgroundRequestHandlers.delete(toolUseId)
+    }
+  }
+}
+
+export function hasBackgroundRequestHandler(toolUseId: string): boolean {
+  return backgroundRequestHandlers.has(toolUseId)
+}
+
+export function requestBackgroundForToolUse(toolUseId: string): boolean {
+  const handler = backgroundRequestHandlers.get(toolUseId)
+  if (!handler) return false
+  backgroundRequestHandlers.delete(toolUseId)
+  handler()
+  return true
+}
+
 /**
  * Background the one foreground task a tool_use block started (the
  * background_tasks control request with tool_use_id). Returns whether a
