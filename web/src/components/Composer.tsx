@@ -294,7 +294,7 @@ function usePlaceholder(t: T): string {
 /**
  * The input box shared by the chat and the start page: textarea, `/` palette,
  * attachments, `+` menu and the send (or stop) button. `start` draws the
- * prototype's `.wl-box`, otherwise `.cbox` with its `.crow` below.
+ * prototype's `.wl-box`, otherwise `.cbox`: the text, then its `.crow` of controls and send.
  */
 export function InputBox({
   t,
@@ -845,28 +845,30 @@ export function InputBox({
       <Attachments t={t} files={files} setFiles={setFiles} />
       <div className="cbox">
         {inputs}
-        {picked.length > 0 && (
-          <span className="to-chips">
-            {picked.map(x => (
-              <span className="to-chip" key={x.id} title={x.name}>
-                <span>@{x.name}</span>
-                <button
-                  type="button"
-                  aria-label={t('clearTarget')}
-                  onClick={() => onTarget?.(picked.filter(p => p.id !== x.id))}
-                >
-                  ×
-                </button>
-              </span>
-            ))}
-          </span>
-        )}
-        {textarea}
-        {send}
-      </div>
-      <div className="crow">
-        {plus}
-        {crow}
+        <div className="cin">
+          {picked.length > 0 && (
+            <span className="to-chips">
+              {picked.map(x => (
+                <span className="to-chip" key={x.id} title={x.name}>
+                  <span>@{x.name}</span>
+                  <button
+                    type="button"
+                    aria-label={t('clearTarget')}
+                    onClick={() => onTarget?.(picked.filter(p => p.id !== x.id))}
+                  >
+                    ×
+                  </button>
+                </span>
+              ))}
+            </span>
+          )}
+          {textarea}
+        </div>
+        <div className="crow">
+          {plus}
+          {crow}
+          {send}
+        </div>
       </div>
     </form>
   )
