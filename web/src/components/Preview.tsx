@@ -3,6 +3,7 @@ import {
   createContext,
   type CSSProperties,
   type ReactNode,
+  type RefObject,
   useContext,
   useEffect,
   useLayoutEffect,
@@ -126,8 +127,8 @@ export type Anchor =
   | { kind: 'spot'; x: number; y: number; page?: number }
   /** Selected lines of a text or code view, from 1. */
   | { kind: 'lines'; from: number; to: number }
-  /** Selected text of a rendered document; `line` when the source has it exactly once. */
-  | { kind: 'quote'; quote: string; line?: number }
+  /** Selected text of a rendered document; `line` when the source has it exactly once, `page` on a PDF page or slide. */
+  | { kind: 'quote'; quote: string; line?: number; page?: number }
   /** A table cell, `B3` as a spreadsheet names it. */
   | { kind: 'cell'; ref: string; sheet?: string }
 type Sent = { anchor: Anchor; text: string }
@@ -150,7 +151,7 @@ export function commentText(target: string, anchor: Anchor, text: string): strin
     case 'quote': {
       const flat = anchor.quote.replace(/\s+/g, ' ').trim()
       const quote = flat.length > QUOTE_CHARS ? `${flat.slice(0, QUOTE_CHARS)}…` : flat
-      where = `${anchor.line ? `line ${anchor.line}, ` : ''}on "${quote}"`
+      where = `${anchor.page ? `page ${anchor.page}, ` : ''}${anchor.line ? `line ${anchor.line}, ` : ''}on "${quote}"`
       break
     }
     case 'cell':
@@ -263,42 +264,59 @@ function CommentBox({
   )
 }
 
-/** Wraps an image or PDF page so a click drops a pin there; sent pins stay as numbered marks. */
-function Pinnable({ page, children }: { page?: number; children: ReactNode }) {
+const pinAt = (s: { x: number; y: number }) => ({ left: `${s.x * 100}%`, top: `${s.y * 100}%` })
+
+/** The spot a click on `box` points at, or nothing when the click ends a text selection. */
+function spotIn(box: Element, e: { clientX: number; clientY: number }, page?: number): Anchor | undefined {
+  if (window.getSelection()?.isCollapsed === false) return undefined
+  const r = box.getBoundingClientRect()
+  if (!r.width || !r.height) return undefined
+  const clamp = (n: number) => Math.min(1, Math.max(0, n))
+  return { kind: 'spot', x: clamp((e.clientX - r.left) / r.width), y: clamp((e.clientY - r.top) / r.height), page }
+}
+
+/** The numbered marks of sent pins on one page (or image), and the pin being written. */
+function PinMarks({ page }: { page?: number }) {
   const pin = useContext(PinContext)
-  if (!pin) return <>{children}</>
-  const at = (s: { x: number; y: number }) => ({ left: `${s.x * 100}%`, top: `${s.y * 100}%` })
+  if (!pin) return null
   const spots = pin.sent.flatMap(p => (p.anchor.kind === 'spot' ? [{ ...p.anchor, text: p.text }] : []))
   const draft = pin.draft?.anchor.kind === 'spot' && pin.draft.anchor.page === page ? pin.draft.anchor : undefined
   return (
-    <div
-      className="pinnable"
-      title={pin.draft ? undefined : pin.t('pinHint')}
-      onClick={e => {
-        const r = e.currentTarget.getBoundingClientRect()
-        if (!r.width || !r.height) return
-        const clamp = (n: number) => Math.min(1, Math.max(0, n))
-        pin.place({
-          anchor: { kind: 'spot', x: clamp((e.clientX - r.left) / r.width), y: clamp((e.clientY - r.top) / r.height), page },
-        })
-      }}
-    >
-      {children}
+    <>
       {spots.map((p, i) =>
         p.page === page ? (
-          <span key={i} className="cpin sent" style={at(p)} title={p.text} onClick={e => e.stopPropagation()}>
+          <span key={i} className="cpin sent" style={pinAt(p)} title={p.text} onClick={e => e.stopPropagation()}>
             {i + 1}
           </span>
         ) : null,
       )}
       {draft && (
         <>
-          <span className="cpin" style={at(draft)}>
+          <span className="cpin" style={pinAt(draft)}>
             {spots.length + 1}
           </span>
-          <CommentBox key={`${draft.x},${draft.y}`} style={at(draft)} t={pin.t} onSubmit={pin.submit} onCancel={pin.cancel} />
+          <CommentBox key={`${draft.x},${draft.y}`} style={pinAt(draft)} t={pin.t} onSubmit={pin.submit} onCancel={pin.cancel} />
         </>
       )}
+    </>
+  )
+}
+
+/** Wraps an image or PDF page so a click drops a pin there; sent pins stay as numbered marks. */
+function Pinnable({ page, children }: { page?: number; children: ReactNode }) {
+  const pin = useContext(PinContext)
+  if (!pin) return <>{children}</>
+  return (
+    <div
+      className="pinnable"
+      title={pin.draft ? undefined : pin.t('pinHint')}
+      onClick={e => {
+        const anchor = spotIn(e.currentTarget, e, page)
+        if (anchor) pin.place({ anchor })
+      }}
+    >
+      {children}
+      <PinMarks page={page} />
     </div>
   )
 }
@@ -308,7 +326,18 @@ function Pinnable({ page, children }: { page?: number; children: ReactNode }) {
  * view), so the selection's offset counts lines; otherwise the selection is quoted, with the
  * line from `source` when it is found there once.
  */
-function Selectable({ lines, source, children }: { lines?: boolean; source?: string; children: ReactNode }) {
+function Selectable({
+  lines,
+  source,
+  pageOf,
+  children,
+}: {
+  lines?: boolean
+  source?: string
+  /** The PDF page or slide a node is on. */
+  pageOf?: (node: Node) => number | undefined
+  children: ReactNode
+}) {
   const pin = useContext(PinContext)
   const root = useRef<HTMLDivElement>(null)
   if (!pin) return <>{children}</>
@@ -335,7 +364,12 @@ function Selectable({ lines, source, children }: { lines?: boolean; source?: str
           const from = before.toString().split('\n').length
           anchor = { kind: 'lines', from, to: from + quote.replace(/\n+$/, '').split('\n').length - 1 }
         } else {
-          anchor = { kind: 'quote', quote, line: source === undefined ? undefined : quoteLine(source, quote) }
+          anchor = {
+            kind: 'quote',
+            quote,
+            line: source === undefined ? undefined : quoteLine(source, quote),
+            page: pageOf?.(range.startContainer),
+          }
         }
         const rects = range.getClientRects()
         const at = below(el, rects[rects.length - 1] ?? range.getBoundingClientRect())
@@ -369,10 +403,20 @@ export function readingPage(tops: number[], viewTop: number, viewHeight: number)
   return page
 }
 
+/** The PDF page or slide (counted from 1) a node is on. */
+function pageOf(node: Node): number | undefined {
+  const el = node instanceof Element ? node : node.parentElement
+  const pdf = el?.closest<HTMLElement>('[data-page]')
+  if (pdf) return Number(pdf.dataset.page)
+  const slide = el?.closest<HTMLElement>('[data-slide-index]')
+  return slide ? Number(slide.dataset.slideIndex) + 1 : undefined
+}
+
 /** One page, drawn when it comes near the view; until then a blank of the first page's shape. */
 function PdfPage({ doc, n, width, aspect }: { doc: PdfDoc; n: number; width: number; aspect: number }) {
   const box = useRef<HTMLDivElement>(null)
   const canvas = useRef<HTMLCanvasElement>(null)
+  const text = useRef<HTMLDivElement>(null)
   const [near, setNear] = useState(false)
   const [drawn, setDrawn] = useState(false)
 
@@ -389,8 +433,9 @@ function PdfPage({ doc, n, width, aspect }: { doc: PdfDoc; n: number; width: num
   useEffect(() => {
     if (!near || !width) return
     let task: { cancel: () => void } | undefined
+    let words: { cancel: () => void } | undefined
     let live = true
-    void doc.getPage(n).then(p => {
+    void Promise.all([doc.getPage(n), pdfjs()]).then(([p, lib]) => {
       const el = canvas.current
       if (!live || !el) return
       const base = p.getViewport({ scale: 1 })
@@ -402,10 +447,20 @@ function PdfPage({ doc, n, width, aspect }: { doc: PdfDoc; n: number; width: num
       const render = p.render({ canvas: el, viewport })
       task = render
       render.promise.then(() => live && setDrawn(true), () => {})
+      // Invisible text over the canvas, so a passage can be selected and commented on.
+      const layer = text.current
+      if (!layer) return
+      const css = p.getViewport({ scale: width / base.width })
+      layer.replaceChildren()
+      layer.style.setProperty('--total-scale-factor', String(css.scale))
+      const textLayer = new lib.TextLayer({ textContentSource: p.streamTextContent(), container: layer, viewport: css })
+      words = textLayer
+      textLayer.render().catch(() => {})
     })
     return () => {
       live = false
       task?.cancel()
+      words?.cancel()
     }
   }, [doc, n, width, near])
 
@@ -413,6 +468,7 @@ function PdfPage({ doc, n, width, aspect }: { doc: PdfDoc; n: number; width: num
     <div className="pdf-page" ref={box} data-page={n} style={drawn ? undefined : { width, height: width * aspect }}>
       <Pinnable page={n}>
         <canvas ref={canvas} hidden={!drawn} />
+        <div className="textLayer" ref={text} hidden={!drawn} />
       </Pinnable>
     </div>
   )
@@ -493,37 +549,45 @@ function PdfView({ url, t }: { url: string; t: T }) {
   if (error) throw error
   if (!doc) return <div className="preview-note">{t('loading')}</div>
   return (
-    <div className="pdf" ref={root}>
-      <div className="pager">
-        <button type="button" className="ghost" aria-label={t('prevPage')} disabled={page <= 1} onClick={() => go(page - 1)}>
-          ‹
-        </button>
-        <input
-          aria-label={t('page')}
-          value={input}
-          onChange={e => setInput(e.target.value)}
-          onKeyDown={e => {
-            if (e.key !== 'Enter') return
-            const n = Number(input)
-            if (Number.isInteger(n) && n >= 1 && n <= doc.numPages) go(n)
-            else setInput(String(page))
-          }}
-        />
-        <span className="page-count">/ {doc.numPages}</span>
-        <button
-          type="button"
-          className="ghost"
-          aria-label={t('nextPage')}
-          disabled={page >= doc.numPages}
-          onClick={() => go(page + 1)}
-        >
-          ›
-        </button>
+    <Selectable pageOf={pageOf}>
+      <div className="pdf" ref={root}>
+        <div className="pager">
+          <button
+            type="button"
+            className="ghost"
+            aria-label={t('prevPage')}
+            disabled={page <= 1}
+            onClick={() => go(page - 1)}
+          >
+            ‹
+          </button>
+          <input
+            aria-label={t('page')}
+            value={input}
+            onChange={e => setInput(e.target.value)}
+            onKeyDown={e => {
+              if (e.key !== 'Enter') return
+              const n = Number(input)
+              if (Number.isInteger(n) && n >= 1 && n <= doc.numPages) go(n)
+              else setInput(String(page))
+            }}
+          />
+          <span className="page-count">/ {doc.numPages}</span>
+          <button
+            type="button"
+            className="ghost"
+            aria-label={t('nextPage')}
+            disabled={page >= doc.numPages}
+            onClick={() => go(page + 1)}
+          >
+            ›
+          </button>
+        </div>
+        {Array.from({ length: doc.numPages }, (_, i) => (
+          <PdfPage key={i + 1} doc={doc} n={i + 1} width={width} aspect={aspect} />
+        ))}
       </div>
-      {Array.from({ length: doc.numPages }, (_, i) => (
-        <PdfPage key={i + 1} doc={doc} n={i + 1} width={width} aspect={aspect} />
-      ))}
-    </div>
+    </Selectable>
   )
 }
 
@@ -666,8 +730,11 @@ export function safeSlideLink(href: string): boolean {
 
 /** Slides drawn in the browser, for a .pptx the server has no soffice to convert (#909). */
 function SlidesView({ url, t }: { url: string; t: T }) {
+  const pin = useContext(PinContext)
   const box = useRef<HTMLDivElement>(null)
   const [ready, setReady] = useState(false)
+  // Bumped as slides mount, so the pins over them are placed again.
+  const [, setMounted] = useState(0)
   const [error, setError] = useState<unknown>()
   useEffect(() => {
     const el = box.current
@@ -690,7 +757,9 @@ function SlidesView({ url, t }: { url: string; t: T }) {
             for (const a of slide.querySelectorAll('a[href]')) {
               if (!safeSlideLink(a.getAttribute('href') ?? '')) a.removeAttribute('href')
             }
+            setMounted(n => n + 1)
           },
+          onSlideUnmounted: () => setMounted(n => n + 1),
         })
         if (live) {
           viewer = opened
@@ -707,9 +776,60 @@ function SlidesView({ url, t }: { url: string; t: T }) {
   return (
     <>
       {!ready && <div className="preview-note">{t('loading')}</div>}
-      <div className="slides" ref={box} />
+      <Selectable pageOf={pageOf}>
+        <div
+          className={pin ? 'slides-pins pinning' : 'slides-pins'}
+          title={pin && !pin.draft ? pin.t('pinHint') : undefined}
+          onClick={e => {
+            const target = e.target as Element
+            const slide = target.closest<HTMLElement>('[data-slide-index]')
+            const frame = slide?.firstElementChild
+            if (!pin || !slide || !frame || target.closest('a[href], .cpin, .cpin-box')) return
+            const anchor = spotIn(frame, e, Number(slide.dataset.slideIndex) + 1)
+            if (anchor) pin.place({ anchor })
+          }}
+        >
+          <div className="slides" ref={box} />
+          <SlidePins box={box} />
+        </div>
+      </Selectable>
     </>
   )
+}
+
+/** Pin marks laid over the slides that have them; the renderer owns the slides' own DOM. */
+function SlidePins({ box }: { box: RefObject<HTMLDivElement | null> }) {
+  const pin = useContext(PinContext)
+  const [, setSize] = useState(0)
+  useEffect(() => {
+    const el = box.current
+    if (!el) return
+    const sized = new ResizeObserver(() => setSize(n => n + 1))
+    sized.observe(el)
+    return () => sized.disconnect()
+  }, [box])
+  const el = box.current
+  const host = el?.parentElement?.getBoundingClientRect()
+  if (!pin || !el || !host) return null
+  const pages = new Set(
+    [...pin.sent, ...(pin.draft ? [pin.draft] : [])].flatMap(p =>
+      p.anchor.kind === 'spot' && p.anchor.page ? [p.anchor.page] : [],
+    ),
+  )
+  return [...pages].map(page => {
+    const frame = el.querySelector(`[data-slide-index="${page - 1}"] > div`)
+    if (!frame) return null
+    const r = frame.getBoundingClientRect()
+    return (
+      <div
+        key={page}
+        className="slide-pins"
+        style={{ left: r.left - host.left, top: r.top - host.top, width: r.width, height: r.height }}
+      >
+        <PinMarks page={page} />
+      </div>
+    )
+  })
 }
 
 /** A .pptx: the soffice PDF when the server can convert it, otherwise the slides drawn here. */

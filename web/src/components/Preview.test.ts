@@ -32,6 +32,11 @@ describe('comments', () => {
     const long = commentText('`r.md`', { kind: 'quote', quote: 'a'.repeat(200) }, 'x')
     expect(long).toContain(`on "${'a'.repeat(120)}…"`)
   })
+  it('names the page of text selected on a PDF page or a slide', () => {
+    expect(commentText('`d.pptx`', { kind: 'quote', quote: 'Q3 revenue', page: 7 }, 'x')).toBe(
+      'Comment on `d.pptx` (page 7, on "Q3 revenue"): x',
+    )
+  })
   it('names a cell and its sheet', () => {
     expect(commentText('`b.xlsx`', { kind: 'cell', ref: 'B3', sheet: 'Q1' }, 'x')).toBe(
       'Comment on `b.xlsx` (sheet "Q1", cell B3): x',

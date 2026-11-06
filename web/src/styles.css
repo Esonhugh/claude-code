@@ -954,7 +954,6 @@ a.btn { text-decoration: none; color: var(--fg); display: inline-block }
 .preview-name { flex: 1 1 200px; min-width: 0; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
 .preview-body { position: relative; flex: 1; overflow: auto; padding: 16px; display: flex; flex-direction: column; gap: 10px; min-height: 0 }
 .preview-note { color: var(--muted); font-size: 12.5px }
-.slides { width: 100% }
 .preview-more { align-self: flex-start; border: 1px solid var(--line); background: var(--surface); padding: 3px 9px; font-size: 12.5px; border-radius: 6px; font-weight: 500; color: var(--fg) }
 .preview-image { max-width: 100%; height: auto }
 .preview-frame { display: block; width: 100%; flex: 1; min-height: 480px; margin: 0 auto; border: 1px solid var(--line); border-radius: 8px; background: #fff; transition: width .2s }
@@ -970,6 +969,20 @@ a.btn { text-decoration: none; color: var(--fg); display: inline-block }
 .cpin { position: absolute; z-index: 2; width: 22px; height: 22px; margin: -11px 0 0 -11px; box-sizing: border-box; border: 2px solid var(--surface); display: grid; place-items: center; border-radius: 50%; background: var(--accent); color: var(--surface); font-size: 11px; font-weight: 600; box-shadow: 0 1px 4px rgba(0,0,0,.3); cursor: default; font-variant-numeric: tabular-nums }
 .cpin.sent { opacity: .85 }
 .pinnable .cpin-box { margin-top: 16px }
+.slides-pins { position: relative; width: 100% }
+.slides-pins.pinning [data-slide-index] { cursor: crosshair }
+.slide-pins { position: absolute; pointer-events: none }
+.slide-pins > * { pointer-events: auto }
+.slide-pins .cpin-box { margin-top: 16px }
+/* pdf.js text layer: invisible text over the canvas, for selecting (rules from pdfjs-dist/web/pdf_viewer.css). */
+.pdf-page .textLayer { position: absolute; inset: 0; overflow: clip; line-height: 1; text-align: initial; transform-origin: 0 0; z-index: 1; --scale-round-x: 1px; --scale-round-y: 1px; --min-font-size: 1; --text-scale-factor: calc(var(--total-scale-factor) * var(--min-font-size)); --min-font-size-inv: calc(1 / var(--min-font-size)) }
+.pdf-page .textLayer :is(span, br) { color: transparent; position: absolute; white-space: pre; cursor: text; transform-origin: 0% 0% }
+.pdf-page .textLayer > :not(.markedContent), .pdf-page .textLayer .markedContent span:not(.markedContent) { z-index: 1; --font-height: 0; font-size: calc(var(--text-scale-factor) * var(--font-height)); --scale-x: 1; --rotate: 0deg; transform: rotate(var(--rotate)) scaleX(var(--scale-x)) scale(var(--min-font-size-inv)) }
+.pdf-page .textLayer .markedContent { display: contents }
+.pdf-page .textLayer ::selection { background: color-mix(in srgb, AccentColor, transparent 50%); color: transparent }
+.pdf-page .textLayer br::selection { background: transparent }
+.pdf-page .textLayer .endOfContent { display: block; position: absolute; inset: 100% 0 0; z-index: 0; cursor: default; user-select: none }
+.pdf-page .textLayer.selecting .endOfContent { top: 0 }
 .cpin-box { position: absolute; z-index: 3; margin: 6px; width: min(280px, 80vw); display: flex; flex-direction: column; gap: 6px; padding: 8px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); box-shadow: 0 6px 20px rgba(0,0,0,.18); cursor: auto }
 .cpin-box textarea { font: inherit; font-size: 13px; resize: vertical; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--fg); padding: 6px 8px }
 .cpin-box .btns { display: flex; gap: 6px; justify-content: flex-end }
