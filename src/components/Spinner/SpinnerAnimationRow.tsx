@@ -13,7 +13,8 @@ import { useStalledAnimation } from './useStalledAnimation.js'
 
 const SEP_WIDTH = stringWidth(' · ')
 const THINKING_BARE_WIDTH = stringWidth('thinking')
-const SHOW_TOKENS_AFTER_MS = 30_000
+// Official 2.1.318 shows "(0s · ↓ 2 tokens)" from the start of a turn.
+const SHOW_TOKENS_AFTER_MS = 0
 
 export type SpinnerAnimationRowProps = {
   // Animation inputs
