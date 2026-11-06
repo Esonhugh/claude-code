@@ -63,6 +63,7 @@ import {
   isBuiltInAgent,
   parseAgentsFromJson,
 } from 'src/tools/AgentTool/loadAgentsDir.js'
+import { resolveAgentTools } from 'src/tools/AgentTool/agentToolUtils.js'
 import type { Message, NormalizedUserMessage } from 'src/types/message.js'
 import type { QueuedCommand } from 'src/types/textInputTypes.js'
 import {
@@ -1766,6 +1767,13 @@ function runHeadlessStreaming(
     configs: {},
   }
 
+  const resolveMainThreadAgentTools = (availableTools: Tools) => {
+    const agentType = getMainThreadAgentType()
+    const agent = agentType
+      ? currentAgents.find(a => a.agentType === agentType)
+      : undefined
+    return agent ? resolveAgentTools(agent, availableTools, false, true) : undefined
+  }
   // Shared tool assembly for ask() and the get_context_usage control request.
   // Closes over the mutable sdkTools/dynamicMcpState bindings so both call
   // sites see late-connecting servers.
@@ -1784,6 +1792,10 @@ function runHeadlessStreaming(
       ),
       'name',
     )
+    // --agent / SDK `agent`: the main thread gets the agent's tools and
+    // disallowedTools, like the interactive REPL.
+    const mainThreadAgentTools = resolveMainThreadAgentTools(allTools)
+    if (mainThreadAgentTools) allTools = mainThreadAgentTools.resolvedTools
     if (options.permissionPromptToolName) {
       allTools = allTools.filter(
         tool => !toolMatchesName(tool, options.permissionPromptToolName!),
@@ -2673,6 +2685,7 @@ function runHeadlessStreaming(
                   'elicitationId' in params ? params.elicitationId : undefined,
                 ),
               agents: options.modsSession?.runtime?.agents.projection({ activeAgents: currentAgents, allAgents: currentAgents }).activeAgents ?? currentAgents,
+              allowedAgentTypes: resolveMainThreadAgentTools(allTools)?.allowedAgentTypes,
               orphanedPermission: cmd.orphanedPermission,
               setSDKStatus: (status, compact) => {
                 output.enqueue({
