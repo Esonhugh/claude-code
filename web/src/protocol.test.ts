@@ -893,3 +893,34 @@ describe('interrupts and session info', () => {
     expect(state.env.plugins?.map(p => p.name)).toEqual(['mine'])
   })
 })
+
+describe('mods', () => {
+  it('keeps panes, redraw marks, toasts and status entries from the session', () => {
+    const sys = (raw: Record<string, unknown>) => ({ type: 'system', session_id: 's', ...raw })
+    let state = [
+      sys({ subtype: 'ui_panes', panes: [{ id: 'counter', title: 'Counter', plugin: 'webtest', columns: 40 }, { title: 'no id' }], shown_id: 'counter' }),
+      sys({ subtype: 'ui_invalidate', event: 'ui.render', instances: [{ surface: 'desktop', component: 'Pane', instance_id: 'counter' }] }),
+      sys({ subtype: 'ui_invalidate', event: 'ui.render' }),
+      sys({ subtype: 'ui_toast', uuid: 't1', plugin: 'webtest', text: 'count is 1', timeout_ms: 2000 }),
+      sys({ subtype: 'ui_status', plugin: 'webtest', text: 'typed hi' }),
+    ].reduce(reduce, initialState)
+    expect(state.mods.panes).toEqual([{ id: 'counter', title: 'Counter', plugin: 'webtest', columns: 40 }])
+    expect(state.mods.shownId).toBe('counter')
+    expect(state.mods.seq).toEqual({ 'Pane:counter': 1, '*': 1 })
+    expect(state.mods.toasts.map(t => [t.text, t.timeoutMs])).toEqual([['count is 1', 2000]])
+    expect(state.mods.status).toEqual({ webtest: 'typed hi' })
+    expect(state.items).toEqual([])
+    state = reduce(state, sys({ subtype: 'ui_status', plugin: 'webtest', text: null }))
+    expect(state.mods.status).toEqual({})
+  })
+})
+
+describe('mods panes answer', () => {
+  it('takes the panes a ui_panes request answers', () => {
+    const state = reduce(initialState, {
+      type: 'control_response',
+      response: { subtype: 'success', request_id: 'web-mods-3', response: { panes: [{ id: 'p', title: 'P', plugin: 'x' }], shown_id: 'p' } },
+    })
+    expect(state.mods.panes).toEqual([{ id: 'p', title: 'P', plugin: 'x' }])
+  })
+})

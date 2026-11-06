@@ -1161,6 +1161,8 @@ export async function runHeadless(
         message.type === 'system' &&
         (message.subtype === 'session_state_changed' ||
           message.subtype === 'ui_log' ||
+          message.subtype === 'ui_toast' ||
+          message.subtype === 'ui_status' ||
           message.subtype === 'ui_invalidate' ||
           message.subtype === 'ui_panes' ||
           message.subtype === 'ui_scroll' ||
@@ -3283,6 +3285,15 @@ function runHeadlessStreaming(
         type: 'system', subtype: 'ui_log', plugin, text,
         uuid: randomUUID(), session_id: getSessionId(),
       })
+    },
+    // Official 2.1.318 hands toasts and the status entry to the SDK client as system messages.
+    uiToast: (plugin, text, timeoutMs) => {
+      if (options.outputFormat !== 'stream-json') return logForDebugging(`[${plugin}] $.ui.toast: ${text}`)
+      output.enqueue({ type: 'system', subtype: 'ui_toast', plugin, text, timeout_ms: timeoutMs, uuid: randomUUID(), session_id: getSessionId() })
+    },
+    uiStatus: (plugin, text) => {
+      if (options.outputFormat !== 'stream-json') return logForDebugging(`[${plugin}] $.ui.status: ${text ?? '(cleared)'}`)
+      output.enqueue({ type: 'system', subtype: 'ui_status', plugin, text: text ?? null, uuid: randomUUID(), session_id: getSessionId() })
     },
     // No terminal draws here: the person's Notification hooks alone run.
     uiNotify: async notification => {

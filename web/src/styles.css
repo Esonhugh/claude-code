@@ -1116,3 +1116,32 @@ body.proj .main, body.proj .side, body.proj .artview, body.proj #panel-btn { dis
 .termrow .meta2 { grid-column: 2 / -1 }
 .termrow .name .caret { display: inline-block; width: auto; margin: 0 6px 0 0; font-size: 10px }
 .termbody { display: flex; flex-direction: column; gap: 6px }
+
+/* Mods (remote UI): panes in the side panel or on the canvas, the band above the composer, toasts. */
+.mod-view { font-family: var(--f-mono); font-size: 12.5px; line-height: 1.45; min-width: 0; overflow-wrap: anywhere }
+.mod-view .btn, .mod-view input { font-family: inherit; font-size: 12.5px }
+.mod-cell-probe { position: absolute; visibility: hidden; white-space: pre; font: inherit }
+.mod-note { color: var(--muted); font-size: 12px }
+.mod-plugin { color: var(--muted); font-size: 11px }
+.mod-btn { padding: 1px 8px }
+.mod-input { display: flex; gap: 6px; align-items: center; min-width: 0 }
+.mod-input input { flex: 1; min-width: 0; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--fg); padding: 2px 6px }
+.mod-select { display: flex; flex-wrap: wrap; gap: 4px; align-items: center }
+.mod-select .btn.on { border-color: var(--accent); color: var(--accent); background: var(--accent-soft) }
+.mod-label { color: var(--muted) }
+.mod-svg { max-width: 100% }
+.mods-tab { display: flex; flex-direction: column; gap: 12px }
+.mod-status { display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface) }
+.mod-pane { border: 1px solid var(--line); border-radius: 8px; background: var(--surface); overflow: hidden }
+.mod-pane > header { display: flex; gap: 8px; align-items: center; padding: 6px 10px; border-bottom: 1px solid var(--line) }
+.mod-pane > header b { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px }
+.mod-pane > header .btn { padding: 2px 8px; font-size: 12px }
+.mod-pane > .mod-view, .mod-pane > .note { padding: 8px 10px }
+.mod-band:not(:empty) { margin: 0 0 6px; padding: 6px 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface) }
+.mod-canvas-view { flex: 1; min-height: 0 }
+.canvas-tabs { display: flex; gap: 2px; padding: 6px 10px 0; border-bottom: 1px solid var(--line); background: var(--surface); overflow-x: auto }
+.canvas-tabs button { border: 1px solid transparent; border-bottom: 0; background: none; padding: 4px 10px; font-size: 12.5px; border-radius: 6px 6px 0 0; color: var(--muted); white-space: nowrap }
+.canvas-tabs button[aria-selected="true"] { border-color: var(--line); background: var(--bg); color: var(--fg); margin-bottom: -1px }
+.mod-toasts { position: fixed; right: 16px; bottom: 16px; z-index: 40; display: flex; flex-direction: column; gap: 6px; align-items: flex-end; max-width: min(360px, calc(100vw - 32px)) }
+.mod-toast { text-align: left; padding: 8px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); color: var(--fg); box-shadow: 0 6px 20px rgba(0,0,0,.18); font-size: 13px }
+:root[data-theme="dark"] .mod-view { --mod-black: #c9d1d9; --mod-red: #ff7b72; --mod-green: #3fb950; --mod-yellow: #d29922; --mod-blue: #58a6ff; --mod-magenta: #d2a8ff; --mod-cyan: #39c5cf; --mod-white: #f0f6fc; --mod-gray: #8b949e; --mod-grey: #8b949e }

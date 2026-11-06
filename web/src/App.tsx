@@ -32,6 +32,7 @@ import { AskDock, ChatComposer, chatTools, ContextChip, GoalMenu, type MentionTa
 import { AppDialog, type Palette, type Theme } from './components/Dialogs'
 import type { ContextUsage } from './components/Settings'
 import { AgentsContext, ChatContext, FilesContext, joinTurns, Message, QuoteContext, QuoteOnSelect, replyPrompt, TeamBar } from './components/Message'
+import { MOD_CLIENT, MOD_SURFACE, ModCanvas, ModToasts, ModView } from './components/Mods'
 import { Preview } from './components/Preview'
 import { ProjectDialog } from './components/ProjectDialog'
 import { ProjectView } from './components/ProjectView'
@@ -42,7 +43,7 @@ import { ColumnDrag, type Columns, columnVars } from './components/ColumnDrag'
 import { FootMenu, followScroll, formatElapsed, readStored, type T, writeStored } from './components/ui'
 import { WebPreview } from './components/WebPreview'
 import { chatMarkdown, exportFileName } from './exportChat'
-import { dataUrlFile, filesBase, IMAGE_TYPES, mentionPath, readAsDataUrl, sessionFiles, setHome, tilde, uploadFile } from './files'
+import { baseName, dataUrlFile, filesBase, IMAGE_TYPES, mentionPath, readAsDataUrl, sessionFiles, setHome, tilde, uploadFile } from './files'
 import { initialLang, type Lang, saveLang, translate } from './i18n'
 import {
   type Approval,
@@ -50,6 +51,7 @@ import {
   controlRequest,
   currentTodos,
   type ModelOption,
+  type ModPane,
   newUuid,
   permissionResponse,
   REQUEST_PREFIX,
@@ -70,6 +72,11 @@ import { nativeCommand, type SlashCommand } from './commands'
 import { previewTarget, WebPreviewContext } from './webPreview'
 
 const HISTORY_PAGE = 200
+/** What the middle column shows: a file or chat image, a web page, or a Mod's pane. */
+type Canvas =
+  | { sessionId: string; path: string; image?: { src: string; target: string } }
+  | { sessionId: string; url: string }
+  | { sessionId: string; mod: string }
 const MODELS_KEY = 'claude-web-models'
 const COMMANDS_KEY = 'claude-web-commands'
 const COLUMNS_KEY = 'claude-web-columns'
@@ -161,10 +168,10 @@ export function App() {
   // Per session: the agents its box's next message goes to, picked with `@`.
   const [agentTargets, setAgentTargets] = useState<Record<string, MentionTarget[]>>({})
   const [attachments, setAttachments] = useState<Record<string, File[]>>({})
-  const [preview, setPreview] = useState<
-    | { sessionId: string; path: string; image?: { src: string; target: string } }
-    | { sessionId: string; url: string }
-  >()
+  const [preview, setPreview] = useState<Canvas>()
+  // Per session: the Mod panes put on the canvas (tabs beside the file shown there), and that file.
+  const [canvasMods, setCanvasMods] = useState<Record<string, string[]>>({})
+  const [canvasFile, setCanvasFile] = useState<Record<string, Exclude<Canvas, { mod: string }>>>({})
   const [info, setInfo] = useState<{ workspace?: string; tempRoot?: string; previewOrigins: string[]; version?: string; local?: boolean }>({
     previewOrigins: [],
   })
@@ -306,6 +313,24 @@ export function App() {
     }
   }, [view, info.previewOrigins, t])
   const closePreview = useCallback(() => setPreview(undefined), [])
+  useEffect(() => {
+    if (preview && !('mod' in preview)) setCanvasFile(f => ({ ...f, [preview.sessionId]: preview }))
+  }, [preview])
+  const openModCanvas = useCallback(
+    (pane: ModPane) => {
+      if (!view) return
+      setCanvasMods(m => ({ ...m, [view]: [...(m[view] ?? []).filter(id => id !== pane.id), pane.id] }))
+      setPreview({ sessionId: view, mod: pane.id })
+      setSheetOpen(false)
+    },
+    [view],
+  )
+  const closeModCanvas = (sessionId: string, id: string) => {
+    const left = (canvasMods[sessionId] ?? []).filter(x => x !== id)
+    setCanvasMods(m => ({ ...m, [sessionId]: left }))
+    const file = canvasFile[sessionId]
+    setPreview(left.length ? { sessionId, mod: left[left.length - 1]! } : file)
+  }
   const tasks = chat?.tasks
   // The names Agent calls gave their agents, as a string so streaming does not rebuild the context.
   const agentNames = useMemo(
@@ -665,6 +690,9 @@ export function App() {
     sockets.current.set(id, socket)
     dispatch({ type: 'mode', id, mode: 'live' })
     request(id, REQUEST_PREFIX.initialize, { subtype: 'initialize' })
+    // This page draws Mods' panes, band and toasts (the session refuses when it runs no Mods).
+    request(id, REQUEST_PREFIX.mods, { subtype: 'ui_attach', surface: MOD_SURFACE, client_id: MOD_CLIENT })
+    request(id, REQUEST_PREFIX.mods, { subtype: 'ui_panes', client_id: MOD_CLIENT })
     request(id, REQUEST_PREFIX.rewindPoints, { subtype: 'rewind_points' })
     getSettings(id)
     request(id, REQUEST_PREFIX.apps, { subtype: 'codex_apps' })
@@ -1347,6 +1375,11 @@ export function App() {
     (body: Record<string, unknown>) => (view ? requestAsync(view, REQUEST_PREFIX.status, body) : Promise.resolve({})),
     [view],
   )
+  const modsRequest = useCallback(
+    (body: Record<string, unknown>) =>
+      view ? requestAsync(view, REQUEST_PREFIX.mods, body) : Promise.reject(new Error(t('statusIdle'))),
+    [view, t],
+  )
   const prompts = useMemo(
     () => (chatItems ?? []).flatMap(i => (i.kind === 'user' && i.text ? [i.text] : [])),
     [chatItems],
@@ -1627,6 +1660,19 @@ export function App() {
               />
             )}
             <Pins t={t} todos={todos} />
+            {live && view && (
+              <ModView
+                key={view}
+                request={modsRequest}
+                component="AbovePrompt"
+                instanceId="main"
+                mods={chat.mods}
+                t={t}
+                rows={6}
+                className="mod-band"
+              />
+            )}
+            <ModToasts toasts={chat.mods.toasts} />
             <ChatComposer
               t={t}
               busy={chat.busy}
@@ -1734,7 +1780,44 @@ export function App() {
       {previewing && preview && (
         <section className="artview" aria-label={t('artifact')}>
           <WebPreviewContext.Provider value={webPreviewValue}>
-            {'url' in preview ? (
+            {view && (canvasMods[view]?.length ?? 0) > 0 && (
+              <div className="canvas-tabs" role="tablist">
+                {canvasFile[view] && (
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={!('mod' in preview)}
+                    onClick={() => setPreview(canvasFile[view])}
+                  >
+                    {'url' in canvasFile[view]! ? t('preview') : baseName(canvasFile[view]!.path)}
+                  </button>
+                )}
+                {canvasMods[view]!.map(id => {
+                  const pane = chat?.mods.panes.find(p => p.id === id)
+                  return (
+                    <button
+                      type="button"
+                      role="tab"
+                      key={id}
+                      aria-selected={'mod' in preview && preview.mod === id}
+                      onClick={() => setPreview({ sessionId: view, mod: id })}
+                    >
+                      {pane?.title ?? id}
+                    </button>
+                  )
+                })}
+              </div>
+            )}
+            {'mod' in preview ? (
+              <ModCanvas
+                pane={chat?.mods.panes.find(p => p.id === preview.mod)}
+                id={preview.mod}
+                mods={chat?.mods}
+                request={modsRequest}
+                t={t}
+                onClose={() => closeModCanvas(preview.sessionId, preview.mod)}
+              />
+            ) : 'url' in preview ? (
               <WebPreview url={preview.url} t={t} onClose={closePreview} />
             ) : (
               <Preview
@@ -1825,6 +1908,9 @@ export function App() {
           models={models}
           statusText={statusText}
           currentFile={preview && 'path' in preview ? preview.path : undefined}
+          onModsRequest={modsRequest}
+          onModCanvas={openModCanvas}
+          canvasMod={previewing && preview && 'mod' in preview ? preview.mod : undefined}
           agentsView={agentsView}
           setAgentsView={setAgentsView}
           workflowId={workflowId}
