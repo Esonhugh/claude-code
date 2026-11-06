@@ -15,6 +15,7 @@ import type { MessageKey } from '../i18n'
 import { CodeBlock, Markdown } from '../markdown/Markdown'
 import type { ModPane, ModsState, ModToast } from '../protocol'
 import type { HostRequest } from './BackgroundPanes'
+import { ModClient, ModClientSite } from './ModClient'
 
 type T = (key: MessageKey, vars?: Record<string, string>) => string
 
@@ -263,7 +264,7 @@ export function ModNode({ node, act, t, slot }: { node: Node; act: Act; t: T; sl
         />
       ) : null
     case 'Client':
-      return <span className="mod-note">{t('modClientView')}</span>
+      return <ModClient node={node} t={t} />
     case 'engine':
       // Where the page's own drawing of the row goes (`await next(e)` in the hook).
       return slot ?? null
@@ -339,6 +340,7 @@ export function ModView({
   const grid = useGrid(box, rows)
   const [tree, setTree] = useState<Node | null>()
   const [error, setError] = useState<string>()
+  const [hashes, setHashes] = useState<Record<string, string>>()
   const seq = (mods.seq[`${component}:${instanceId}`] ?? 0) + (mods.seq['*'] ?? 0)
   const latest = useRef(0)
   useEffect(() => {
@@ -357,6 +359,8 @@ export function ModView({
         if (mine !== latest.current) return
         setError(undefined)
         const next = (res.tree ?? null) as Node | null
+        const modules = res.client_modules as Record<string, string> | undefined
+        setHashes(h => (JSON.stringify(h) === JSON.stringify(modules) ? h : modules))
         setTree(next)
         onEmpty?.(!next || (typeof next === 'object' && next.type === 'engine'))
       },
@@ -375,7 +379,11 @@ export function ModView({
   return (
     <div ref={box} className={`mod-view ${className ?? ''}`}>
       {error && component === 'Pane' && <div className="mod-note">{error}</div>}
-      {tree && <ModNode node={tree} act={act} t={t} />}
+      {tree && (
+        <ModClientSite.Provider value={{ request, component, instanceId, hashes }}>
+          <ModNode node={tree} act={act} t={t} />
+        </ModClientSite.Provider>
+      )}
       {tree === undefined && !error && component === 'Pane' && <div className="mod-note">{t('loading')}</div>}
     </div>
   )
@@ -567,7 +575,7 @@ export function ModSitesProvider({
   return <ModSitesContext.Provider value={value}>{children}</ModSitesContext.Provider>
 }
 
-type Drawn = { tree: Node; props: Record<string, unknown>; key: string }
+type Drawn = { tree: Node; props: Record<string, unknown>; key: string; hashes?: Record<string, string> }
 
 /**
  * One of the page's own rows (a message, a tool card, the spinner) as Mods draw it:
@@ -613,7 +621,7 @@ export function ModSite({
             if (!live) return
             const tree = res.tree as Node | undefined
             const own = !tree || (typeof tree === 'object' && tree.type === 'engine' && (tree as { ref?: unknown }).ref === 0)
-            setDrawn(own ? undefined : { tree: tree!, props: (res.props as Record<string, unknown>) ?? {}, key })
+            setDrawn(own ? undefined : { tree: tree!, props: (res.props as Record<string, unknown>) ?? {}, key, hashes: res.client_modules as Record<string, string> | undefined })
           },
           () => {
             // No Mods session here (or it refused the props): the page's row stands.
@@ -633,7 +641,9 @@ export function ModSite({
   }
   return (
     <div className="mod-site">
-      <ModNode node={drawn.tree} act={act} t={sites.t} slot={children(drawn.key === key ? { ...props, ...drawn.props } : props)} />
+      <ModClientSite.Provider value={{ request: sites.request, component, instanceId: id, hashes: drawn.hashes }}>
+        <ModNode node={drawn.tree} act={act} t={sites.t} slot={children(drawn.key === key ? { ...props, ...drawn.props } : props)} />
+      </ModClientSite.Provider>
     </div>
   )
 }
