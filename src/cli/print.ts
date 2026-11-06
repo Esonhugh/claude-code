@@ -313,7 +313,12 @@ import { isAnalyticsDisabled } from '../services/analytics/config.js'
 import {
   backgroundAll,
   backgroundTaskForToolUse,
+  hasBackgroundRequestHandler,
+  requestBackgroundForToolUse,
 } from '../tasks/LocalShellTask/LocalShellTask.js'
+import { isLocalShellTask } from '../tasks/LocalShellTask/guards.js'
+import { isLocalAgentTask } from '../tasks/LocalAgentTask/LocalAgentTask.js'
+import { createSendNow, isSendNowPrompt } from '../utils/sendNow.js'
 import {
   setupSdkMcpClients,
   connectToServer,
@@ -2276,6 +2281,35 @@ function runHeadlessStreaming(
         }
       : undefined
 
+  // ctrl+enter from claude web, like the TUI's send-now (src/screens/REPL.tsx): a typed
+  // 'now' prompt moves a running foreground shell/agent to the background and joins the
+  // turn at its next tool boundary, waits out a permission prompt, and cuts the turn only
+  // when the model is writing or a tool cannot move. Tool ids come from the turn's messages.
+  const sendNowRunningToolUseIds = new Set<string>()
+  const sendNow = createSendNow({
+    hasPrompt: () => getCommandsByMaxPriority('now').some(isSendNowPrompt),
+    readEvidence: () => ({
+      turnActive: running && abortController?.signal.aborted === false,
+      heldByDialog: structuredIO.getPendingPermissionRequests().length > 0,
+      compacting: false,
+      runningToolUseIds: sendNowRunningToolUseIds,
+      movableToolUseIds: isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS)
+        ? []
+        : [...sendNowRunningToolUseIds].filter(id =>
+            hasBackgroundRequestHandler(id) ||
+            Object.values(getAppState().tasks).some(task =>
+              (isLocalShellTask(task) || isLocalAgentTask(task)) && task.status === 'running' &&
+              !task.isBackgrounded && task.agentId === undefined && task.toolUseId === id)),
+      sampling: sendNowRunningToolUseIds.size === 0,
+    }),
+    moveToBackground: toolUseIds => toolUseIds.filter(id =>
+      backgroundTaskForToolUse(id, getAppState, setAppState) || requestBackgroundForToolUse(id)),
+    interrupt: () => abortController?.abort('interrupt'),
+    schedule: (run, ms) => {
+      const timer = setTimeout(run, ms)
+      return () => clearTimeout(timer)
+    },
+  })
   // Interrupt urgent input and wake idle SDK sessions for channel messages.
   const unsubscribeCommandQueue = subscribeToCommandQueue(() => {
     // QueryEngine-owned command receipts can enqueue again while turn.complete is settling.
@@ -2283,8 +2317,11 @@ function runHeadlessStreaming(
     if (peek(cmd => cmd.agentId === undefined && cmd.commandRunReceipt !== undefined)) void run()
     // A stopped agent notifies once its abort settles, which can be after run() stopped waiting for it.
     if (!inputClosed && peek(cmd => cmd.agentId === undefined && cmd.mode === 'task-notification')) void run()
-    if (abortController && getCommandsByMaxPriority('now').length > 0) {
-      abortController.abort('interrupt')
+    const urgent = getCommandsByMaxPriority('now')
+    if (abortController && urgent.length > 0) {
+      // Bash and slash commands run only after the turn, so they still cut it.
+      if (urgent.every(isSendNowPrompt)) sendNow.request()
+      else abortController.abort('interrupt')
     }
     if (
       (feature('KAIROS') || feature('KAIROS_CHANNELS')) &&
@@ -2295,6 +2332,7 @@ function runHeadlessStreaming(
     }
   })
   const unregisterCommandQueueCleanup = registerCleanup(async () => {
+    sendNow.dispose()
     unsubscribeCommandQueue()
   })
 
@@ -2703,6 +2741,15 @@ function runHeadlessStreaming(
               // while blocked on permission requests.
               forwardMessagesToBridge()
 
+              if (message.type === 'assistant' || message.type === 'user') {
+                const content = (message.message as { content?: unknown }).content
+                const blocks = message.parent_tool_use_id === null && Array.isArray(content) ? content as ContentBlockParam[] : []
+                for (const block of blocks) {
+                  if (block.type === 'tool_use') sendNowRunningToolUseIds.add(block.id)
+                  else if (block.type === 'tool_result') sendNowRunningToolUseIds.delete(block.tool_use_id)
+                }
+              }
+
               if (message.type === 'result') {
                 // Flush pending SDK events so they appear before result on the stream.
                 for (const event of drainSdkOutput()) {
@@ -2726,6 +2773,7 @@ function runHeadlessStreaming(
             for (const queued of batch.slice(1)) queued.promptSubmitReceipt?.admit({drop:FAILED_PROMPT_BATCH_DROP})
             throw error
           } finally {
+            sendNowRunningToolUseIds.clear()
             if (!promptAdmitted) cmd.promptSubmitReceipt?.admit({drop:UNSUBMITTED_PROMPT_DROP})
           }
 
@@ -3123,6 +3171,7 @@ function runHeadlessStreaming(
         await finalizePendingAsyncHooks()
         unsubscribeSkillChanges()
         unsubscribeAuthStatus?.()
+        sendNow.dispose()
         unsubscribeCommandQueue()
         unregisterCommandQueueCleanup()
         statusListeners.delete(rateLimitListener)
@@ -5685,6 +5734,7 @@ function runHeadlessStreaming(
       await finalizePendingAsyncHooks()
       unsubscribeSkillChanges()
       unsubscribeAuthStatus?.()
+      sendNow.dispose()
       unsubscribeCommandQueue()
       unregisterCommandQueueCleanup()
       statusListeners.delete(rateLimitListener)

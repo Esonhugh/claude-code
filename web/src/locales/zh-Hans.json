@@ -2,7 +2,7 @@
   "you": "你",
   "queuedMessage": "你 · 排队中",
   "sendNow": "立刻发送",
-  "sendNowHint": "ctrl+enter · 打断当前回合",
+  "sendNowHint": "ctrl+enter · 不等这一轮结束",
   "send": "发送",
   "stop": "停止",
   "allow": "允许",

@@ -2,7 +2,7 @@
   "you": "You",
   "queuedMessage": "You · queued",
   "sendNow": "Send now",
-  "sendNowHint": "ctrl+enter · interrupts the current turn",
+  "sendNowHint": "ctrl+enter · without waiting for the turn to end",
   "send": "Send",
   "stop": "Stop",
   "allow": "Allow",
