@@ -96,10 +96,22 @@ export function PluginOptionsDialog({
   )
 
   const [currentFieldIndex, setCurrentFieldIndex] = useState(0)
-  const [values, setValues] = useState<Record<string, string>>({})
   const [validationError, setValidationError] = useState('')
-  const [currentInput, setCurrentInput] = useState(() =>
+  const [currentInput, setCurrentInputState] = useState(() =>
     fields[0] ? initialFor(fields[0]) : '',
+  )
+  // Input handlers sync to a render in effects, so a key can reach one from
+  // before the latest field change or typed text: confirm reads these refs.
+  const fieldIndexRef = useRef(0)
+  const valuesRef = useRef<Record<string, string>>({})
+  const currentInputRef = useRef(currentInput)
+  const setCurrentInput = useCallback(
+    (next: string | ((prev: string) => string)) => {
+      currentInputRef.current =
+        typeof next === 'function' ? next(currentInputRef.current) : next
+      setCurrentInputState(currentInputRef.current)
+    },
+    [],
   )
 
   // The picker reports its focused choice from an effect, after the render
@@ -111,6 +123,7 @@ export function PluginOptionsDialog({
   // but every handler still sees the picker until it renders: hold them here.
   const advancingRef = useRef(false)
   const typedAheadRef = useRef('')
+  const confirmAheadRef = useRef(false)
 
   const currentField = fields[currentFieldIndex]
   const fieldSchema = currentField ? configSchema[currentField] : null
@@ -124,49 +137,48 @@ export function PluginOptionsDialog({
   // Enter to save current field and move to next, or save all if last
   // Returns whether the dialog moved on (next field or save).
   const handleConfirm = useCallback(
-    (selected = currentInput): boolean => {
-      if (!currentField || !fieldSchema) return false
+    (selected = currentInputRef.current): boolean => {
+      const index = fieldIndexRef.current
+      const field = fields[index]
+      const schema = field ? configSchema[field] : null
+      if (!field || !schema) return false
 
       const submitted = buildFinalValues(
-        [currentField],
-        { [currentField]: selected },
+        [field],
+        { [field]: selected },
         configSchema,
         initialValues,
       )
       const preserved =
-        fieldSchema.sensitive && initialValues?.[currentField] !== undefined
-          ? { [currentField]: initialValues[currentField] }
+        schema.sensitive && initialValues?.[field] !== undefined
+          ? { [field]: initialValues[field] }
           : {}
       const validation = validateUserConfig(
         { ...preserved, ...submitted },
-        { [currentField]: fieldSchema },
+        { [field]: schema },
       )
       if (!validation.valid) {
         setValidationError(validation.errors.join('; '))
         return false
       }
       setValidationError('')
-      const newValues = { ...values, [currentField]: selected }
+      const newValues = { ...valuesRef.current, [field]: selected }
 
-      if (currentFieldIndex === fields.length - 1) {
+      if (index === fields.length - 1) {
         onSave(
           buildFinalValues(fields, newValues, configSchema, initialValues),
         )
       } else {
         // Move to next field
-        setValues(newValues)
-        setCurrentFieldIndex(prev => prev + 1)
-        const nextKey = fields[currentFieldIndex + 1]
+        valuesRef.current = newValues
+        fieldIndexRef.current = index + 1
+        setCurrentFieldIndex(index + 1)
+        const nextKey = fields[index + 1]
         setCurrentInput(nextKey ? initialFor(nextKey) : '')
       }
       return true
     },
     [
-      currentField,
-      fieldSchema,
-      values,
-      currentInput,
-      currentFieldIndex,
       fields,
       configSchema,
       onSave,
@@ -197,6 +209,7 @@ export function PluginOptionsDialog({
     if (!handleConfirm(focusedChoiceRef.current)) {
       advancingRef.current = false
       typedAheadRef.current = ''
+      confirmAheadRef.current = false
     }
   }, [advancePending, handleConfirm])
 
@@ -205,8 +218,11 @@ export function PluginOptionsDialog({
     if (!advancingRef.current) return
     advancingRef.current = false
     const text = typedAheadRef.current
+    const confirm = confirmAheadRef.current
     typedAheadRef.current = ''
+    confirmAheadRef.current = false
     if (choices === undefined && text) setCurrentInput(prev => prev + text)
+    if (confirm) handleConfirm()
     // Only a field change should hand over typed-ahead keys.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentFieldIndex])
@@ -219,7 +235,10 @@ export function PluginOptionsDialog({
   // Character input handling (backspace, typing)
   useInput((char, key) => {
     if (advancingRef.current) {
-      if (key.backspace || key.delete)
+      // Keys after a typed-ahead Enter would belong to a later field.
+      if (confirmAheadRef.current) return
+      if (key.return) confirmAheadRef.current = true
+      else if (key.backspace || key.delete)
         typedAheadRef.current = typedAheadRef.current.slice(0, -1)
       else if (char && !key.ctrl && !key.meta && !key.tab && !key.return)
         typedAheadRef.current += char
@@ -276,8 +295,9 @@ export function PluginOptionsDialog({
                 setCurrentInput(value)
               }}
               onChange={value => {
-                // Enter while a Tab is still applying would confirm twice.
-                if (!advancingRef.current) handleConfirm(value)
+                // Enter while a Tab is still applying confirms the next field.
+                if (advancingRef.current) confirmAheadRef.current = true
+                else handleConfirm(value)
               }}
               onCancel={onCancel}
             />

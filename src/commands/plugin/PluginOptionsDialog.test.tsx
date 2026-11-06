@@ -143,6 +143,12 @@ async function mountDialog(
       // Ink buffers a lone Escape for NORMAL_TIMEOUT (50ms).
       await new Promise(resolve => setTimeout(resolve, 80))
     },
+    // Under load the last key can still be in flight after input()'s pause.
+    async called(fn: typeof onSave) {
+      const deadline = Date.now() + 10_000
+      while (fn.mock.calls.length === 0 && Date.now() < deadline)
+        await new Promise(resolve => setTimeout(resolve, 10))
+    },
     close() {
       instance.unmount()
       instance.cleanup()
@@ -209,6 +215,7 @@ describe('plugin option configuration', () => {
       try {
         await view.input('unlisted')
         await view.input('\r')
+        await view.called(view.onSave)
         expect(view.onSave).toHaveBeenCalledTimes(1)
         expect(view.onSave).toHaveBeenCalledWith({
           instructionFiles: expected,
@@ -244,6 +251,7 @@ describe('plugin option configuration', () => {
       await view.input('\r')
       expect(view.text()).not.toContain('test-secret-never-render')
       await view.input('\r')
+      await view.called(view.onSave)
       expect(view.onSave).toHaveBeenCalledWith({
         instructionFiles: choice.default,
         note: 'hello',
@@ -266,6 +274,30 @@ describe('plugin option configuration', () => {
       await view.input('\u001b[B\thelo\u007flo')
       await view.input('\r')
       await view.input('\r')
+      await view.called(view.onSave)
+      expect(view.onSave).toHaveBeenCalledWith({
+        instructionFiles: choice.default,
+        note: 'hello',
+        last: '',
+      })
+    } finally {
+      view.close()
+    }
+  })
+
+  test('an Enter typed in the same chunk as Tab on a picker confirms the next field', async () => {
+    const view = await mountDialog({
+      configSchema: {
+        ...schema,
+        note: { type: 'string', title: 'Note', description: '' },
+        last: { type: 'string', title: 'Last', description: '' },
+      },
+      initialValues: { instructionFiles: 'claude-md' },
+    })
+    try {
+      await view.input('\u001b[B\thello\r')
+      await view.input('\r')
+      await view.called(view.onSave)
       expect(view.onSave).toHaveBeenCalledWith({
         instructionFiles: choice.default,
         note: 'hello',
@@ -280,6 +312,7 @@ describe('plugin option configuration', () => {
     const view = await mountDialog()
     try {
       await view.input('\u001b')
+      await view.called(view.onCancel)
       expect(view.onCancel).toHaveBeenCalledTimes(1)
       expect(view.onSave).not.toHaveBeenCalled()
     } finally {
@@ -304,6 +337,7 @@ describe('plugin option configuration', () => {
       expect(view.text()).toContain('Attempts is required but not provided')
       await view.input('3')
       await view.input('\r')
+      await view.called(view.onSave)
       expect(view.onSave).toHaveBeenCalledWith({ attempts: 3 })
     } finally {
       view.close()
