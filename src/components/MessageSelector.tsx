@@ -921,6 +921,11 @@ export function selectableUserMessagesFilter(
   if (isLocalCommandInput(message)) {
     return false
   }
+  // Plain-text system events (e.g. "Background agent … was stopped by the
+  // user.") carry no <task-notification> tag, only this origin.
+  if (message.origin?.kind === 'task-notification') {
+    return false
+  }
 
   const content = message.message.content
   const lastBlock =
