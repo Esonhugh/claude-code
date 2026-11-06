@@ -167,9 +167,15 @@ export const listFolderFiles = (cwd: string, query: string) =>
     r => r.files,
   )
 
-/** The models this server's sessions offer, for the pickers before any session has started. */
-export const loadModels = (): Promise<ModelOption[]> =>
-  getJson<{ models?: unknown }>('/api/models').then(r => parseModels(r.models))
+/**
+ * The models this server's sessions offer, for the pickers before any session has started, and
+ * the model a session started without a pick runs (the saved model setting, else the default).
+ */
+export const loadModels = (): Promise<{ models: ModelOption[]; model?: string }> =>
+  getJson<{ models?: unknown; model?: unknown }>('/api/models').then(r => ({
+    models: parseModels(r.models),
+    ...(typeof r.model === 'string' && r.model ? { model: r.model } : {}),
+  }))
 
 /** The first assistant text of a transcript, for the start page's recent cards. */
 export const loadSnippet = (sessionId: string) =>

@@ -31,12 +31,14 @@ export function modelButtonLabel(
   effort: string | undefined,
   models: ModelOption[],
   t: T,
+  runs?: string,
 ): string {
-  // `default` is named by the model it resolves to, like the prototype's `Opus 5.5 · high`.
-  // A list without a default row (a ChatGPT sign-in) runs its first model.
+  // `default` is named by the model it resolves to, like the prototype's `Opus 5.5 · high`:
+  // `runs` when the server said (a saved model), else the default row's, else a list without a
+  // default row (a ChatGPT sign-in) runs its first model.
   const resolved =
     !model || model === 'default'
-      ? (models.find(m => m.value === 'default')?.resolvedModel ?? (models.some(m => m.value === 'default') ? model : models[0]?.value) ?? model)
+      ? (runs ?? models.find(m => m.value === 'default')?.resolvedModel ?? (models.some(m => m.value === 'default') ? model : models[0]?.value) ?? model)
       : model
   const name = modelName(resolved, models) ?? t('model')
   return effort ? `${name} · ${effort}` : name

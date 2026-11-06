@@ -8,7 +8,9 @@ import { addToHistory, getTimestampedHistory } from '../history.js'
 import { PERMISSION_MODES } from '../types/permissions.js'
 import { lazySchema } from '../utils/lazySchema.js'
 import { MODS_FRAME_CSP, MODS_FRAME_HTML, MODS_FRAME_PATH } from './modsFrame.js'
+import { getMainLoopModel } from '../utils/model/model.js'
 import { getModelInfos } from '../utils/model/modelInfos.js'
+import { resetSettingsCache } from '../utils/settings/settingsCache.js'
 import { ensureModelStringsInitialized } from '../utils/model/modelStrings.js'
 import type { ServerLogger } from '../server/serverLog.js'
 import {
@@ -505,7 +507,7 @@ function isDirectory(path: string): boolean {
  * request to come from this server's own origin.
  *
  *   GET    /api/info                    → { workspace, preview_origins, temp_root, home, version }
- *   GET    /api/models                  → { models } the model picker lists before any session runs
+ *   GET    /api/models                  → { models, model } the model picker lists before any session runs, and the model one started without a pick runs
  *   GET    /api/sessions                → running sessions
  *   POST   /api/sessions                → { session_id, work_dir } (new or resume);
  *                                          409 { needs_trust } for an untrusted folder
@@ -1001,7 +1003,10 @@ export function startWebServer(
     }
     if (pathname === '/api/models' && req.method === 'GET') {
       await ensureModelStringsInitialized()
-      return Response.json({ models: getModelInfos() })
+      // `model`: what a session started without a pick runs (the saved model, else the default),
+      // read fresh because a session or the TUI may have saved another model since.
+      resetSettingsCache()
+      return Response.json({ models: getModelInfos(), model: getMainLoopModel() })
     }
     if (pathname === '/api/folder-files' && req.method === 'GET') {
       // The start page's `@` search, before a session exists: only folders a session may already use.
