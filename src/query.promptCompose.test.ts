@@ -21,6 +21,8 @@ const testEnvKeys = [
   'HOME', 'CLAUDE_CONFIG_DIR', 'XDG_CONFIG_HOME', 'XDG_CACHE_HOME', 'XDG_STATE_HOME',
   'ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN',
   'CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR', 'CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR',
+  // A cloud (CCR) host sets this; it turns auto memory off and hides memory_static.
+  'CLAUDE_CODE_REMOTE',
 ]
 let testConfigRoot: string | undefined
 let savedTestEnvironment: (string | undefined)[] = []
@@ -36,6 +38,7 @@ beforeEach(async () => {
   delete process.env.CLAUDE_CODE_OAUTH_TOKEN
   delete process.env.CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR
   delete process.env.CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR
+  delete process.env.CLAUDE_CODE_REMOTE
   resetSettingsCache()
   getAutoMemPath.cache.clear?.()
 })
