@@ -115,6 +115,7 @@ import { unregisterAgent as unregisterPerfettoAgent } from '../telemetry/perfett
 import { createContentReplacementState, type ContentReplacementState } from '../toolResultStorage.js'
 import { TEAM_LEAD_NAME, TEAMMATE_SHUTDOWN_APPROVED } from './constants.js'
 import {
+  getLeaderHeadlessCanUseTool,
   getLeaderSetToolPermissionContext,
   getLeaderToolUseConfirmQueue,
 } from './leaderPermissionBridge.js'
@@ -143,7 +144,7 @@ const PERMISSION_POLL_INTERVAL_MS = 500
  * sends a permission request to the leader's inbox, waits for the response
  * in the teammate's own mailbox.
  */
-function createInProcessCanUseTool(
+export function createInProcessCanUseTool(
   identity: TeammateIdentity,
   abortController: AbortController,
   onPermissionWaitMs?: (waitMs: number) => void,
@@ -196,6 +197,20 @@ function createInProcessCanUseTool(
     // Check if aborted before showing UI
     if (abortController.signal.aborted) {
       return { behavior: 'ask', message: SUBAGENT_REJECT_MESSAGE }
+    }
+
+    const headlessCanUseTool = getLeaderToolUseConfirmQueue()
+      ? null
+      : getLeaderHeadlessCanUseTool()
+    if (headlessCanUseTool) {
+      return headlessCanUseTool(
+        tool,
+        input,
+        toolUseContext,
+        assistantMessage,
+        toolUseID,
+        result,
+      )
     }
 
     const appState = toolUseContext.getAppState()
