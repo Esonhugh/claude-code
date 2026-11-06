@@ -2023,6 +2023,33 @@ export const SDKUILogMessageSchema = lazySchema(() =>
   }),
 )
 
+export const SDKUIToastMessageSchema = lazySchema(() =>
+  z
+    .object({
+      type: z.literal('system'),
+      subtype: z.literal('ui_toast'),
+      plugin: z.string(),
+      text: z.string(),
+      timeout_ms: z.number(),
+      uuid: UUIDPlaceholder(),
+      session_id: z.string(),
+    })
+    .describe('A Mod toast ($.ui.toast) for the client to show (official 2.1.318).'),
+)
+
+export const SDKUIStatusMessageSchema = lazySchema(() =>
+  z
+    .object({
+      type: z.literal('system'),
+      subtype: z.literal('ui_status'),
+      plugin: z.string(),
+      text: z.string().nullable(),
+      uuid: UUIDPlaceholder(),
+      session_id: z.string(),
+    })
+    .describe("A Mod's status line entry ($.ui.status); null clears it (official 2.1.318)."),
+)
+
 export const SDKScheduledTaskFireMessageSchema = lazySchema(() =>
   z
     .object({
@@ -2564,6 +2591,8 @@ export const SDKMessageSchema = lazySchema(() =>
     SDKResultMessageSchema(),
     SDKSystemMessageSchema(),
     SDKUILogMessageSchema(),
+    SDKUIToastMessageSchema(),
+    SDKUIStatusMessageSchema(),
     SDKScheduledTaskFireMessageSchema(),
     SDKUIInvalidateMessageSchema(),
     SDKUIPanesMessageSchema(),

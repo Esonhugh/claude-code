@@ -3,15 +3,16 @@ import { type AgentTask, isFinished } from '../agents'
 import { getPeers, getUsage, type Peer } from '../api'
 import { type Groups, type Pane, usedPanes } from '../background'
 import { sessionFiles, tilde } from '../files'
-import type { ModelOption, Todo } from '../protocol'
+import type { ModelOption, ModPane, Todo } from '../protocol'
 import type { SessionChat } from '../store'
 import { type AgentInput, type AgentPick, AgentsTab, type AgentsView, agentTasks, WorkflowTab } from './Agents'
 import { BackgroundPane, type HostRequest, MonitorPane, TerminalsPane, useBackground } from './BackgroundPanes'
 import { shortTokens } from './Composer'
+import { ModsTab } from './Mods'
 import { modelName } from './Message'
 import { compactHint, formatElapsed, modeOf, type T } from './ui'
 
-export type SideTab = 'status' | 'files' | 'agents' | 'workflow' | 'terminals' | 'monitor' | 'bg'
+export type SideTab = 'status' | 'files' | 'agents' | 'workflow' | 'terminals' | 'monitor' | 'bg' | 'mods'
 
 const runningCount = (tasks: AgentTask[]) => tasks.filter(task => !isFinished(task)).length
 
@@ -530,6 +531,9 @@ export function SidePanel({
   onStatusRequest,
   onCompact,
   todos = [],
+  onModsRequest,
+  onModCanvas,
+  canvasMod,
   onClose,
 }: {
   t: T
@@ -557,6 +561,11 @@ export function SidePanel({
   onCompact?: () => void
   todos?: Todo[]
   onRequest: HostRequest
+  /** The Mods remote UI requests (render, press…) of this session. */
+  onModsRequest: HostRequest
+  onModCanvas: (pane: ModPane) => void
+  /** The pane shown on the canvas now, drawn there instead of here. */
+  canvasMod?: string
   onClose: () => void
 }) {
   const files = useMemo(() => sessionFiles(chat.items).length, [chat.items])
@@ -573,8 +582,14 @@ export function SidePanel({
       { id: 'terminals', label: 'Terminals', count: terminals.length },
       { id: 'monitor', label: 'Monitor', count: monitors.length },
       { id: 'bg', label: 'Background Tasks', count: background.length },
+      { id: 'mods', label: 'Mods', count: chat.mods.panes.length },
     ] satisfies { id: SideTab; label: string; count?: number }[]
-  ).filter(x => ['status', 'files', 'agents', tab].includes(x.id) || used.includes(x.id as Pane))
+  ).filter(
+    x =>
+      ['status', 'files', 'agents', tab].includes(x.id) ||
+      used.includes(x.id as Pane) ||
+      (x.id === 'mods' && (chat.mods.panes.length > 0 || Object.keys(chat.mods.status).length > 0)),
+  )
   return (
     <aside className={`side${open ? ' open' : ''}`} aria-label={t('sidebarLabel')}>
       <div className="sheet-head">
@@ -658,6 +673,9 @@ export function SidePanel({
         )}
         {tab === 'monitor' && (
           <MonitorPane t={t} tasks={chat.tasks} groups={bg.groups} details={bg.details} onStop={onStopTask} />
+        )}
+        {tab === 'mods' && (
+          <ModsTab mods={chat.mods} request={onModsRequest} t={t} canvasId={canvasMod} onCanvas={onModCanvas} />
         )}
         {tab === 'bg' && (
           <BackgroundPane t={t} tasks={chat.tasks} groups={bg.groups} details={bg.details} onStop={onStopTask} />

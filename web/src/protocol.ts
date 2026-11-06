@@ -187,6 +187,70 @@ export type ChatState = {
   rewindPoints?: string[]
   /** The API request failed and is retried (`api_retry`); cleared when a reply starts or the turn ends. */
   retry?: { attempt: number; max: number; delayMs: number; at: number; status?: number }
+  mods: ModsState
+}
+
+export type ModPane = { id: string; title: string; plugin: string; rows?: number; columns?: number }
+export type ModToast = { id: string; plugin: string; text: string; timeoutMs: number; at: number }
+/** What Mods draw for this page (the remote UI protocol, surface `desktop`). */
+export type ModsState = {
+  panes: ModPane[]
+  shownId?: string
+  /** Each plugin's status entry. */
+  status: Record<string, string>
+  toasts: ModToast[]
+  /** Bumped per `component:instance_id` when the session says that drawing changed; `*` bumps them all. */
+  seq: Record<string, number>
+}
+
+export const initialMods: ModsState = { panes: [], status: {}, toasts: [], seq: {} }
+
+const MAX_TOASTS = 20
+
+function reduceModsMessage(mods: ModsState, raw: Json): ModsState | undefined {
+  switch (raw.subtype) {
+    case 'ui_panes': {
+      const panes = (Array.isArray(raw.panes) ? raw.panes : []).filter(isObj).flatMap(p => {
+        const id = str(p.id)
+        if (!id) return []
+        return [{
+          id,
+          title: str(p.title) ?? id,
+          plugin: str(p.plugin) ?? '',
+          ...(typeof p.rows === 'number' && { rows: p.rows }),
+          ...(typeof p.columns === 'number' && { columns: p.columns }),
+        }]
+      })
+      return { ...mods, panes, shownId: str(raw.shown_id) }
+    }
+    case 'ui_invalidate': {
+      const instances = Array.isArray(raw.instances) ? raw.instances.filter(isObj) : undefined
+      const keys = instances ? instances.map(i => `${str(i.component)}:${str(i.instance_id)}`) : ['*']
+      const seq = { ...mods.seq }
+      for (const key of keys) seq[key] = (seq[key] ?? 0) + 1
+      return { ...mods, seq }
+    }
+    case 'ui_toast': {
+      const text = str(raw.text)
+      if (!text) return mods
+      const toast = {
+        id: str(raw.uuid) ?? `toast-${Date.now()}-${mods.toasts.length}`,
+        plugin: str(raw.plugin) ?? '',
+        text,
+        timeoutMs: typeof raw.timeout_ms === 'number' ? raw.timeout_ms : 4000,
+        at: Date.now(),
+      }
+      return { ...mods, toasts: [...mods.toasts, toast].slice(-MAX_TOASTS) }
+    }
+    case 'ui_status': {
+      const plugin = str(raw.plugin)
+      if (!plugin) return mods
+      const { [plugin]: _, ...rest } = mods.status
+      const text = str(raw.text)
+      return { ...mods, status: text ? { ...rest, [plugin]: text } : rest }
+    }
+  }
+  return undefined
 }
 
 export const initialState: ChatState = {
@@ -203,6 +267,7 @@ export const initialState: ChatState = {
   taskNotes: [],
   noteKeys: [],
   queued: [],
+  mods: initialMods,
 }
 
 type Json = Record<string, unknown>
@@ -737,6 +802,10 @@ export function reduce(state: ChatState, raw: unknown): ChatState {
   if (state.retry && (raw.type === 'stream_event' || raw.type === 'assistant' || raw.type === 'result')) {
     state = { ...state, retry: undefined }
   }
+  if (raw.type === 'system') {
+    const mods = reduceModsMessage(state.mods, raw)
+    if (mods) return { ...state, mods }
+  }
   switch (raw.type) {
     case 'system':
       if (raw.subtype === 'api_retry') {
@@ -1079,6 +1148,8 @@ export const REQUEST_PREFIX = {
   rewind: 'web-rewind-',
   rewindPoints: 'web-rwpoints-',
   cancelQueued: 'web-cancel-queued-',
+  /** The Mods remote UI: attach, render, press, input, select. */
+  mods: 'web-mods-',
   /** The sidebar dialogs' requests (mcp_status, reload_plugins…). */
   ext: 'web-ext-',
   background: 'web-bg-',
@@ -1200,6 +1271,10 @@ function reduceControlResponse(state: ChatState, raw: Json): ChatState {
     return state
   }
   const body = isObj(response.response) ? response.response : {}
+  // The panes a page that attached late (a reload) asked for.
+  if (id.startsWith(REQUEST_PREFIX.mods) && Array.isArray(body.panes)) {
+    return { ...state, mods: reduceModsMessage(state.mods, { ...body, subtype: 'ui_panes' }) ?? state.mods }
+  }
   if (id.startsWith(REQUEST_PREFIX.initialize)) {
     const commands = Array.isArray(body.commands)
       ? body.commands.filter(isObj).map(c => ({

@@ -558,5 +558,10 @@
   "compactIn": "再用約 {n} tokens 自動壓縮",
   "compactDue": "已過自動壓縮點，下一輪前壓縮",
   "keyFromEnv": "API key（環境變數）",
-  "keyFromLogin": "API key（/login 儲存）"
+  "keyFromLogin": "API key（/login 儲存）",
+  "modClientView": "（這個 Mod 自帶的介面暫時不能在網頁裡顯示。）",
+  "modsNone": "這個會話裡還沒有 Mod 開啟面板。",
+  "modOpenCanvas": "在畫布開啟",
+  "modOnCanvas": "已在畫布中顯示。",
+  "modPaneClosed": "Mod 已關閉這個面板。"
 }

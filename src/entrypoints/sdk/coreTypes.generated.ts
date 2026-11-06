@@ -370,6 +370,23 @@ export type SDKUILogMessage = {
   uuid: string
   session_id: string
 }
+export type SDKUIToastMessage = {
+  type: 'system'
+  subtype: 'ui_toast'
+  plugin: string
+  text: string
+  timeout_ms: number
+  uuid: string
+  session_id: string
+}
+export type SDKUIStatusMessage = {
+  type: 'system'
+  subtype: 'ui_status'
+  plugin: string
+  text: string | null
+  uuid: string
+  session_id: string
+}
 export type SDKScheduledTaskFireMessage = {
   type: 'system'
   subtype: 'scheduled_task_fire'
@@ -723,6 +740,8 @@ export type SDKMessage =
   | SDKResultMessage
   | SDKSystemMessage
   | SDKUILogMessage
+  | SDKUIToastMessage
+  | SDKUIStatusMessage
   | SDKScheduledTaskFireMessage
   | SDKPartialAssistantMessage
   | SDKThinkingTokensMessage

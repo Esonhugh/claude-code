@@ -558,5 +558,10 @@
   "compactIn": "再用约 {n} tokens 自动压缩",
   "compactDue": "已过自动压缩点，下一轮前压缩",
   "keyFromEnv": "API key（环境变量）",
-  "keyFromLogin": "API key（/login 保存）"
+  "keyFromLogin": "API key（/login 保存）",
+  "modClientView": "（这个 Mod 自带的界面暂时不能在网页里显示。）",
+  "modsNone": "这个会话里还没有 Mod 打开面板。",
+  "modOpenCanvas": "在画布打开",
+  "modOnCanvas": "已在画布中显示。",
+  "modPaneClosed": "Mod 已关闭这个面板。"
 }
