@@ -809,6 +809,7 @@ export function Preview({
   onClose,
   files = [],
   onOpen,
+  onOpenLocal,
   onComment,
   image,
 }: {
@@ -820,6 +821,8 @@ export function Preview({
   /** The chat's files (Files tab order), stepped through with ‹ › and ←/→. */
   files?: SessionFile[]
   onOpen?: (path: string) => void
+  /** Opens the file (or with `reveal` its folder) on the machine running `claude web`. */
+  onOpenLocal?: (reveal: boolean) => void
   /** Sends a comment as a chat message; without it nothing can be commented on. */
   onComment?: (text: string) => void
   /** An image from a chat message, shown in place of a file; `target` names it in comments. */
@@ -936,6 +939,16 @@ export function Preview({
         <span className="grp" style={{ marginLeft: 'auto' }}>
           {!image && (
             <>
+              {onOpenLocal && (
+                <>
+                  <button type="button" className="btn" title={t('openLocalTip')} onClick={() => onOpenLocal(false)}>
+                    {t('openLocal')}
+                  </button>
+                  <button type="button" className="btn" title={t('revealLocalTip')} onClick={() => onOpenLocal(true)}>
+                    {t('revealLocal')}
+                  </button>
+                </>
+              )}
               <a className="btn" href={fileUrl(sessionId, path)} target="_blank" rel="noopener">
                 {t('openNewTab')}
               </a>

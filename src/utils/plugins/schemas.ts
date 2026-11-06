@@ -1118,7 +1118,7 @@ export const gitSha = lazySchema(() =>
 
 /**
  * A marketplace entry source this build cannot install (e.g. official
- * 2.1.318's `command` or `archive`). Parsed into this placeholder so one such
+ * 2.1.318's `archive`). Parsed into this placeholder so one such
  * entry does not make the whole marketplace unloadable; installing it fails.
  */
 export const UNSUPPORTED_PLUGIN_SOURCE = 'unsupported'
@@ -1133,6 +1133,7 @@ const INSTALLABLE_PLUGIN_SOURCE_TYPES = new Set([
   'url',
   'github',
   'git-subdir',
+  'command',
   UNSUPPORTED_PLUGIN_SOURCE,
 ])
 
@@ -1253,6 +1254,37 @@ export const PluginSourceSchema = lazySchema(() =>
       .describe(
         'Plugin located in a subdirectory of a larger repository (monorepo). ' +
           'Only the specified subdirectory is materialized; the rest of the repo is not downloaded.',
+      ),
+    z
+      .object({
+        source: z.literal('command'),
+        command: z
+          .string()
+          .min(1)
+          .max(500)
+          .refine(command => !/[^\x20-\x7E]| {4,}/.test(command), {
+            message:
+              'command must be printable ASCII (letters, digits, punctuation, single spaces) with no runs of 4 or more spaces',
+          })
+          .describe(
+            'Shell command that prints the absolute path of the plugin directory on stdout (exactly one line) and exits 0. Runs through the platform shell from the home directory, only after the user reviews it at install or update.',
+          ),
+        timeout: z
+          .number()
+          .int()
+          .positive()
+          .max(3600)
+          .optional()
+          .describe('Seconds to wait for the command (default: 60)'),
+        mode: z
+          .enum(['copy', 'link'])
+          .optional()
+          .describe(
+            'copy (default): the printed directory is copied into the plugin cache. link: the cache entry links to the printed directory in place, which must then stay valid (macOS/Linux).',
+          ),
+      })
+      .describe(
+        'Plugin directory produced by a locally installed tool (e.g. an IDE that renders its plugin for the current SDK).',
       ),
     // TODO (future work) gist
     // TODO (future work) single file?
@@ -1844,6 +1876,7 @@ export type MarketplaceSource = z.infer<
 >
 export type PluginAuthor = z.infer<ReturnType<typeof PluginAuthorSchema>>
 export type PluginSource = z.infer<ReturnType<typeof PluginSourceSchema>>
+export type CommandPluginSource = Extract<PluginSource, { source: 'command' }>
 export type PluginManifest = z.infer<ReturnType<typeof PluginManifestSchema>>
 export type PluginManifestChannel = NonNullable<
   PluginManifest['channels']

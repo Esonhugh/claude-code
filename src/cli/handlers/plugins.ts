@@ -809,7 +809,7 @@ export async function marketplaceUpdateHandler(
 // plugin install (lines 5690–5721)
 export async function pluginInstallHandler(
   plugin: string,
-  options: { scope?: string; cowork?: boolean },
+  options: { scope?: string; cowork?: boolean; yes?: boolean },
 ): Promise<void> {
   if (options.cowork) setUseCoworkPlugins(true)
   const scope = options.scope || 'user'
@@ -839,7 +839,9 @@ export async function pluginInstallHandler(
     scope: scope as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
   })
 
-  await installPlugin(plugin, scope as 'user' | 'project' | 'local')
+  await installPlugin(plugin, scope as 'user' | 'project' | 'local', {
+    yes: options.yes,
+  })
 }
 
 // plugin uninstall (lines 5738–5769)
@@ -987,7 +989,7 @@ export async function pluginDisableHandler(
 // plugin update (lines 5918–5948)
 export async function pluginUpdateHandler(
   plugin: string,
-  options: { scope?: string; cowork?: boolean },
+  options: { scope?: string; cowork?: boolean; yes?: boolean },
 ): Promise<void> {
   if (options.cowork) setUseCoworkPlugins(true)
   const { name, marketplace } = parsePluginIdentifier(plugin)
@@ -1016,5 +1018,5 @@ export async function pluginUpdateHandler(
     cliError('--cowork can only be used with user scope')
   }
 
-  await updatePluginCli(plugin, scope)
+  await updatePluginCli(plugin, scope, { yes: options.yes })
 }

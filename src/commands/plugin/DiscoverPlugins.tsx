@@ -42,6 +42,7 @@ import {
   findPluginOptionsTarget,
   PluginOptionsFlow,
 } from './PluginOptionsFlow.js'
+import { CommandSourceNotice } from './CommandSourceNotice.js'
 import { PluginTrustWarning } from './PluginTrustWarning.js'
 import {
   buildPluginDetailsMenuOptions,
@@ -385,6 +386,8 @@ export function DiscoverPlugins({
       entry: plugin.entry,
       marketplaceName: plugin.marketplaceName,
       scope,
+      // The details view shows a command source before offering install.
+      commandSourceReviewed: true,
     })
 
     if (result.success === true) {
@@ -686,6 +689,8 @@ export function DiscoverPlugins({
             </Box>
           )}
         </Box>
+
+        <CommandSourceNotice entry={selectedPlugin.entry} />
 
         <PluginTrustWarning />
 

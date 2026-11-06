@@ -20,7 +20,7 @@ const LSP_POLL_INTERVAL_MS = 5000
  *
  * Also adds errors to appState.plugins.errors for /doctor display.
  *
- * Only active when ENABLE_LSP_TOOL is set.
+ * Only reports anything when a plugin provides LSP servers.
  */
 export function useLspInitializationNotification(): void {
   const { addNotification } = useNotifications()

@@ -40,6 +40,17 @@ let initializationGeneration = 0
 let initializationPromise: Promise<void> | undefined
 
 /**
+ * Notified when an initialization settles, so tool lists computed before it
+ * (LSPTool.isEnabled) can be recomputed.
+ */
+const settledListeners = new Set<() => void>()
+
+export function subscribeLspInitialization(listener: () => void): () => void {
+  settledListeners.add(listener)
+  return () => settledListeners.delete(listener)
+}
+
+/**
  * Test-only sync reset. shutdownLspServerManager() is async and tears down
  * real connections; this only clears the module-scope singleton state so
  * reinitializeLspServerManager() early-returns on 'not-started' in downstream
@@ -189,6 +200,7 @@ export function initializeLspServerManager(): void {
         if (lspManagerInstance) {
           registerLSPNotificationHandlers(lspManagerInstance)
         }
+        for (const listener of settledListeners) listener()
       }
     })
     .catch((error: unknown) => {

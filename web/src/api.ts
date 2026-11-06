@@ -111,6 +111,13 @@ export const patchSessionMeta = (id: string, patch: SessionMetaPatch) =>
 export const deleteTranscript = (id: string) =>
   sendJson(`/api/sessions/${encodeURIComponent(id)}?transcript=1`, 'DELETE')
 
+/**
+ * Opens with the default app of the machine running `claude web`: the session's folder,
+ * a folder inside it, or a file the session may show (`reveal`: the folder holding it).
+ */
+export const openLocal = (id: string, path?: string, reveal?: boolean) =>
+  sendJson(`/api/sessions/${encodeURIComponent(id)}/open`, 'POST', { path, reveal })
+
 /** Archives the project (stops its coordinator); `purge` deletes it. */
 export const removeProject = (id: string, purge: boolean) =>
   sendJson(`/api/projects/${encodeURIComponent(id)}${purge ? '?purge=1' : ''}`, 'DELETE')
@@ -146,7 +153,7 @@ export const listRunning = () =>
   getJson<{ id: string; work_dir: string; attached: boolean }[]>('/api/sessions')
 
 export const getInfo = () =>
-  getJson<{ workspace: string; preview_origins?: string[]; temp_root?: string; home?: string; version?: string }>('/api/info')
+  getJson<{ workspace: string; preview_origins?: string[]; temp_root?: string; home?: string; version?: string; local?: boolean }>('/api/info')
 
 /** Files under the session's working directory matching an `@` query, relative to it. */
 export const listWorkspaceFiles = (sessionId: string, query: string) =>
