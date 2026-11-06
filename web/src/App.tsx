@@ -10,6 +10,7 @@ import {
   listRunning,
   listWorkspaceFiles,
   loadSidebar,
+  openLocal,
   loadModels,
   loadTranscript,
   ApiError,
@@ -163,7 +164,7 @@ export function App() {
     | { sessionId: string; path: string; image?: { src: string; target: string } }
     | { sessionId: string; url: string }
   >()
-  const [info, setInfo] = useState<{ workspace?: string; tempRoot?: string; previewOrigins: string[]; version?: string }>({
+  const [info, setInfo] = useState<{ workspace?: string; tempRoot?: string; previewOrigins: string[]; version?: string; local?: boolean }>({
     previewOrigins: [],
   })
   const [dragging, setDragging] = useState(false)
@@ -454,7 +455,7 @@ export function App() {
     getInfo().then(
       res => {
         setHome(res.home)
-        setInfo({ workspace: res.workspace, tempRoot: res.temp_root, previewOrigins: res.preview_origins ?? [], version: res.version })
+        setInfo({ workspace: res.workspace, tempRoot: res.temp_root, previewOrigins: res.preview_origins ?? [], version: res.version, local: res.local })
       },
       () => {},
     )
@@ -1075,6 +1076,14 @@ export function App() {
     await sendPrompt(id, user.text, undefined, user.images)
   }
 
+  /** Opens on the machine running `claude web`; a failure shows as the chat notice. */
+  const openOnMachine = (id: string, path?: string, reveal?: boolean) => {
+    openLocal(id, path, reveal).catch((err: unknown) => {
+      const error = err instanceof Error ? err.message : String(err)
+      dispatch({ type: 'chat', id, action: { type: 'local', patch: { notice: t('openLocalFailed', { error }) } } })
+    })
+  }
+
   /** Opens a new session holding the conversation up to this reply. */
   const forkTurn = async (id: string, firstId: string) => {
     const { last } = turnOf(id, firstId)
@@ -1438,9 +1447,20 @@ export function App() {
               <span className={`dot ${chat.busy ? 'running' : chat.mode === 'live' ? 'completed' : 'idle'}`} />
               {statusText}
             </span>
-            <span className="chip mono" title={chatCwd}>
-              {tilde(chatCwd ?? '')}
-            </span>
+            {info.local ? (
+              <button
+                type="button"
+                className="chip mono cwd"
+                title={t('openFolder', { path: chatCwd ?? '' })}
+                onClick={() => view && openOnMachine(view, chatCwd)}
+              >
+                {tilde(chatCwd ?? '')}
+              </button>
+            ) : (
+              <span className="chip mono" title={chatCwd}>
+                {tilde(chatCwd ?? '')}
+              </span>
+            )}
             {chat.contextPercent !== undefined && (
               <ContextChip
                 t={t}
@@ -1703,6 +1723,7 @@ export function App() {
                 onClose={closePreview}
                 files={chatFiles}
                 onOpen={openFile}
+                onOpenLocal={info.local ? reveal => openOnMachine(preview.sessionId, preview.path, reveal) : undefined}
                 image={preview.image}
                 onComment={signedOut ? undefined : text => void sendComment(preview.sessionId, text)}
               />
