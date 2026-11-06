@@ -26,7 +26,9 @@ try {
 
   const authModule = await import('../../utils/auth.js')
   const { getGlobalConfig, saveGlobalConfig } = await import('../../utils/config.js')
-  const { fetchBootstrapData } = await import('./bootstrap.js')
+  const { fetchBootstrapData, onOpenAIModelOptionsRefresh } = await import('./bootstrap.js')
+  let modelOptionsRefreshes = 0
+  onOpenAIModelOptionsRefresh(() => modelOptionsRefreshes++)
   const originalClientDataCache = getGlobalConfig().clientDataCache
   const originalAutoCompactWindowsCache =
     getGlobalConfig().autoCompactWindowsCache
@@ -98,6 +100,8 @@ try {
     getGlobalConfig().additionalModelOptionsCacheKey,
     'openai:chatgpt:account-123',
   )
+  // A fresh install learns the account default model here; the REPL re-resolves it.
+  assert.equal(modelOptionsRefreshes, 1)
   assert.deepEqual(getGlobalConfig().clientDataCache, {
     preserved: 'client-data',
   })
@@ -146,6 +150,7 @@ try {
       description: 'Keep on discovery failure',
     },
   ])
+  assert.equal(modelOptionsRefreshes, 1)
 
   axios.get = (async () => ({ data: {} })) as typeof axios.get
   await fetchBootstrapData()

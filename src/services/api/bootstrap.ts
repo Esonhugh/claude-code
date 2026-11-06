@@ -24,7 +24,17 @@ import {
 } from '../../utils/model/providers.js'
 import { fetchServedModelCatalog } from '../../utils/model/servedModelCatalog.js'
 import { isEssentialTrafficOnly } from '../../utils/privacyLevel.js'
+import { createSignal } from '../../utils/signal.js'
 import { getClaudeCodeUserAgent } from '../../utils/userAgent.js'
+
+const openAIModelOptionsRefreshed = createSignal()
+
+/**
+ * Fires after OpenAI model discovery replaces the cached model list. The
+ * account default model (and its default effort) come from that list, so
+ * components that resolved them before discovery finished re-resolve.
+ */
+export const onOpenAIModelOptionsRefresh = openAIModelOptionsRefreshed.subscribe
 
 const bootstrapResponseSchema = lazySchema(() =>
   z.object({
@@ -194,6 +204,7 @@ async function fetchOpenAIModelOptions(): Promise<void> {
       additionalModelOptionsCache: discovery.options,
       additionalModelOptionsCacheKey,
     }))
+    openAIModelOptionsRefreshed.emit()
   } catch (error) {
     logError(error)
   }
