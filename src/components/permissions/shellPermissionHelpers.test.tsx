@@ -23,3 +23,11 @@ test('like 2.1.311, the directory label names the full path and drops an over-lo
   expect(three).toContain('Yes, and always allow access to /a, /b, and /c from this project')
   expect(generateShellSuggestionsLabel(dirs(['/' + 'x'.repeat(170)]), 'Bash')).toBeNull()
 })
+
+test('a Read rule for an absolute path is labeled with a single leading slash', async () => {
+  const read: PermissionUpdate[] = [
+    { type: 'addRules', rules: [{ toolName: 'Read', ruleContent: '//tmp/**' }], behavior: 'allow', destination: 'session' },
+  ]
+  const label = await renderToString(<>{generateShellSuggestionsLabel(read, 'Bash')}</>, 200)
+  expect(label).toContain('Yes, allow reading from /tmp from this project')
+})
