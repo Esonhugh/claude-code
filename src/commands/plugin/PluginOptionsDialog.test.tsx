@@ -238,8 +238,8 @@ describe('plugin option configuration', () => {
       },
     })
     try {
-      await view.input('\u001b[B')
-      await view.input('\t')
+      // One chunk: a fast ↓ then Tab must still carry the focused choice.
+      await view.input('\u001b[B\t')
       await view.input('hello')
       await view.input('\r')
       expect(view.text()).not.toContain('test-secret-never-render')

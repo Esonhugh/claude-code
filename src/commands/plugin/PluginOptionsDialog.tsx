@@ -1,5 +1,5 @@
 import figures from 'figures'
-import React, { useCallback, useState } from 'react'
+import React, { useCallback, useEffect, useRef, useState } from 'react'
 import { Select } from '../../components/CustomSelect/select.js'
 import { Dialog } from '../../components/design-system/Dialog.js'
 import { stringWidth } from '../../ink/stringWidth.js'
@@ -102,6 +102,12 @@ export function PluginOptionsDialog({
     fields[0] ? initialFor(fields[0]) : '',
   )
 
+  // The picker reports its focused choice from an effect, after the render
+  // that applied the key. A ↓ and Tab read in one chunk run before that
+  // render, so Tab on a picker waits for it (see advancePending below).
+  const focusedChoiceRef = useRef(currentInput)
+  const [advancePending, setAdvancePending] = useState(false)
+
   const currentField = fields[currentFieldIndex]
   const fieldSchema = currentField ? configSchema[currentField] : null
   const choices =
@@ -166,11 +172,21 @@ export function PluginOptionsDialog({
   useKeybindings(
     {
       'confirm:nextField': () => {
-        if (currentFieldIndex < fields.length - 1) handleConfirm()
+        if (currentFieldIndex >= fields.length - 1) return
+        if (choices !== undefined) setAdvancePending(true)
+        else handleConfirm()
       },
     },
     { context: 'Confirmation' },
   )
+  // Runs after the picker's own effects in the same commit, so the ref holds
+  // the choice it now shows.
+  useEffect(() => {
+    if (!advancePending) return
+    setAdvancePending(false)
+    handleConfirm(focusedChoiceRef.current)
+  }, [advancePending, handleConfirm])
+
   useKeybinding('confirm:yes', handleConfirm, {
     context: 'Confirmation',
     isActive: choices === undefined,
@@ -224,7 +240,10 @@ export function PluginOptionsDialog({
               options={choices.map(value => ({ label: value, value }))}
               defaultValue={currentInput}
               defaultFocusValue={currentInput}
-              onFocus={setCurrentInput}
+              onFocus={value => {
+                focusedChoiceRef.current = value
+                setCurrentInput(value)
+              }}
               onChange={handleConfirm}
               onCancel={onCancel}
             />
