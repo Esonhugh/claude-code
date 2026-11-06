@@ -1,4 +1,7 @@
 import { expect, test } from 'bun:test'
+import { mkdtempSync } from 'fs'
+import { tmpdir } from 'os'
+import { join } from 'path'
 
 const modules = {
   bootstrap: new URL('../../bootstrap/state.ts', import.meta.url).href,
@@ -22,7 +25,7 @@ for (const name of ['Bash','Read','Edit','SendMessage']) assert.ok(names.include
 
 test("a coordinator's teammate gets the worker tool pool, not the coordinator's", async () => {
   const child = Bun.spawn([process.execPath, '--feature', 'COORDINATOR_MODE', '--no-env-file', '--eval', source], {
-    env: { PATH: process.env.PATH, HOME: process.env.HOME, NODE_ENV: 'test', CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: '1', COORD_MODULES: JSON.stringify(modules) },
+    env: { PATH: process.env.PATH, HOME: mkdtempSync(join(tmpdir(), 'coord-tools-')), ANTHROPIC_API_KEY: 'sk-ant-test', NODE_ENV: 'test', CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: '1', COORD_MODULES: JSON.stringify(modules) },
     stdout: 'pipe',
     stderr: 'pipe',
   })
