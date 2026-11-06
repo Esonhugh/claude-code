@@ -934,7 +934,7 @@ export function App() {
       // The turn may have started or ended while the content was prepared: read busy now.
       const busy = stateRef.current.chats[id]?.busy ?? chat.busy
       dispatch({ type: 'chat', id, action: { type: busy ? 'queue' : 'user', ...content, uuid } })
-      // 'now' interrupts the running turn and runs first, like the TUI's ctrl+enter.
+      // 'now' gets in front of the model without waiting for the turn, like the TUI's ctrl+enter.
       send(id, { ...userMessage(content.text, content.images, uuid), ...(now && { priority: 'now' }) })
     })
     chatSends.current = run.catch(() => {})
