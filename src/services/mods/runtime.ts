@@ -170,6 +170,8 @@ export type ModHostServices = ModRequestServices & ModHttpServices & {
   uiSelection?(): ModUiSelection | undefined | Promise<ModUiSelection | undefined>
   uiCopy?(input: ModUiCopyArgs & {surface: ModRenderSurface}, plugin: string, signal: AbortSignal): Promise<ModUiCopyResult>
   uiLog?(plugin: string, text: string, to: 'transcript' | 'debug'): void
+  /** Shows a Mod diagnostic where the person reads the session (the interactive transcript). */
+  uiDiagnostic?(plugin: string, text: string): void
   /** Keeps a plugin's own row (door `note`) in the main conversation. */
   appendMessage?(row: { message: SessionAppendMessage; uuid: string }): void | Promise<void>
   /** Runs queued input while the host is idle; QueryEngine calls it for input it queued after its turn ended. */

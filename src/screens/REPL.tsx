@@ -2266,6 +2266,7 @@ export function REPL({
       if (to === 'transcript') setMessages(previous => [...previous, createSystemMessage(`${plugin}: ${text}`, 'notice')])
     },
     appendMessage: row => setMessages(previous => [...previous, sessionAppendEngineMessage(row)]),
+    uiDiagnostic: (plugin, text) => setMessages(previous => [...previous, createSystemMessage(`${plugin}: ${text}`, 'warning')]),
     uiToast: (plugin, text, timeoutMs) => addNotification({
       key: `mods-toast:${plugin}`, text, timeoutMs, priority: 'medium',
     }),

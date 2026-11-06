@@ -193,12 +193,18 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
           if (result && (result.binding.role !== value.binding.role ||
             result.members.join('.') !== value.members.join('.') ||
             result.binding.fn?.node !== value.binding.fn?.node || result.binding.fn?.scope !== value.binding.fn?.scope)) {
-            if (!collecting) fail(path, 'mixed capability/helper assignments to a let capture are unsupported')
+            if (!collecting && (result.binding.role || value.binding.role)) fail(path, 'mixed capability/helper assignments to a let capture are unsupported')
+            unknown = true
           }
           result ??= value
         }
       }
-      if (result && unknown && !collecting) fail(path, 'unknown assignment source for a capability/helper let capture is unsupported')
+      // A capability capture must stay traceable; a let holding several helpers (or none) is
+      // only unresolved, so passing a capability to it still fails as an unknown helper.
+      if (result && unknown && !collecting) {
+        if (result.binding.role) fail(path, 'unknown assignment source for a capability/helper let capture is unsupported')
+        return { binding, members: [] }
+      }
       return result ?? { binding, members: [] }
     }
     if (binding.alias) return resolveValue(binding.alias.node, binding.alias.scope, next, trail)
@@ -335,7 +341,7 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
       if (node.type === 'VariableDeclaration') {
         for (const item of node.declarations) {
           bind(item.id, bindings)
-          if (item.id.type === 'Identifier' && node.kind === 'let') {
+          if (item.id.type === 'Identifier' && (node.kind === 'let' || node.kind === 'var')) {
             const binding: Binding = { writes: new Map() }
             bindings.set(item.id.name, binding)
           }
@@ -377,6 +383,8 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
     return inner
   }
 
+  // Official accepts matchers computed at registration (a loop variable, a call); the Worker
+  // reports the actual registration, so such parts are scanned as ordinary expressions.
   function matcher(node: Node, scope: Scope, nested = false, resolving = new Set<Binding>()) {
     if (node.type === 'Literal') {
       if (node.bigint !== undefined || (node.regex === undefined && node.value !== null && !['string', 'boolean', 'number'].includes(typeof node.value))) {
@@ -389,7 +397,11 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
       const binding = lookup(node.name, scope)
       if (binding?.imported || binding?.namespace) return
       const initializer = binding?.alias
-      if (!binding || !initializer || resolving.has(binding)) fail(path, 'matcher identifiers must reference imported or declared static constants')
+      if (binding && resolving.has(binding)) fail(path, 'matcher identifiers must reference imported or declared static constants')
+      if (!binding || !initializer) {
+        visit(node, scope)
+        return
+      }
       const next = new Set(resolving)
       next.add(binding)
       matcher(initializer.node, initializer.scope, true, next)
@@ -398,7 +410,7 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
     if (node.type === 'MemberExpression') {
       if (node.computed || node.optional || node.object.type !== 'Identifier' || !(lookup(node.object.name, scope)?.imported || lookup(node.object.name, scope)?.namespace) ||
         node.property.type !== 'Identifier' || reserved.has(node.property.name)) {
-        fail(path, 'matcher members must reference static imported constants')
+        visit(node, scope)
       }
       return
     }
@@ -409,7 +421,11 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
       }
       return
     }
-    if (node.type !== 'ObjectExpression') fail(path, 'matcher must reference static constants/data')
+    if (isFunction(node)) fail(path, 'matcher must reference static constants/data')
+    if (node.type !== 'ObjectExpression') {
+      visit(node, scope)
+      return
+    }
     const keys = new Set<string>()
     for (const property of node.properties) {
       if (property.type === 'SpreadElement') {
@@ -417,7 +433,7 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
         continue
       }
       const key = property.key?.name ?? property.key?.value
-      if (property.type !== 'Property' || property.computed || property.method || property.kind !== 'init' || property.shorthand ||
+      if (property.type !== 'Property' || property.computed || property.method || property.kind !== 'init' ||
         typeof key !== 'string' || reserved.has(key) || keys.has(key)) {
         fail(path, 'matcher supports only unique static fields')
       }
@@ -525,6 +541,7 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
         if ((roles[i] && param.type !== 'Identifier') || (roles.slice(i).some(Boolean) && param.type === 'RestElement')) fail(path, 'capability parameters must be simple identifiers (no destructuring/defaults/rest)')
         bind(param, bindings)
         if (roles[i]) bindings.set(param.name, { role: roles[i]!.role, members: roles[i]!.members })
+        else if (roles.length && param.type === 'Identifier') bindings.set(param.name, { role: null })
       }
       return [...scope, bindings]
     })
@@ -652,11 +669,10 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
       case 'ImportDeclaration': case 'ExportAllDeclaration': return
       case 'ExportNamedDeclaration': visit(node.declaration, scope, event); return
       case 'VariableDeclaration':
-        if (node.kind === 'var') fail(path, 'var declarations are unsupported; use let/const lexical bindings')
         for (const item of node.declarations) {
           visitPattern(item.id, scope, event)
-          if (node.kind === 'let' && item.init) captureWrite(item.id, item.init, item, scope)
-          const alias = ['const', 'let'].includes(node.kind) && item.id.type === 'Identifier' && item.init && capabilityValue(item.init, scope)
+          if ((node.kind === 'let' || node.kind === 'var') && item.init) captureWrite(item.id, item.init, item, scope)
+          const alias = ['const', 'let', 'var'].includes(node.kind) && item.id.type === 'Identifier' && item.init && capabilityValue(item.init, scope)
           if (alias && ['engine', 'beneath', 'next'].includes(alias.role)) {
             if ((alias.role === 'next' && !['', 'to', 'is'].includes(alias.members.join('.'))) ||
               (alias.role !== 'next' && alias.members.length > 2)) visit(item.init, scope, event)
@@ -785,7 +801,11 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
             if (stateOperation === 'update') state.writes.set(key, reference)
           }
           if (access) {
-            if (!collecting && !['engine', 'beneath'].includes(roleOf(node.arguments[0], scope) ?? ''))
+            // A helper's own parameter has no role until a call site passes the engine; that visit checks it.
+            const first = node.arguments[0]
+            const firstBinding = first?.type === 'Identifier' ? lookup(first.name, scope) : undefined
+            const isUnspecializedParameter = firstBinding !== undefined && Object.keys(firstBinding).length === 0
+            if (!collecting && !isUnspecializedParameter && !['engine', 'beneath'].includes(roleOf(first, scope) ?? ''))
               fail(path, 'state helper requires the engine as its first argument')
             recordCall('state.get')
             if (stateOperation === 'update') recordCall('state.set')
@@ -1111,7 +1131,7 @@ export async function loadModDeclaration(input: {
     if (!within(rootReal, actual)) fail(path, 'realpath is outside plugin root')
     if (!esmModuleExtensions.includes(extname(path))) fail(path, 'only TS/JS ESM files are supported')
     if (!(await stat(actual)).isFile()) fail(path, 'module must be a regular file')
-    if (seen.size >= 512) fail(root, 'module graph exceeds 512 files')
+    if (seen.size >= 4096) fail(root, 'module graph exceeds 4096 files')
     seen.add(path)
     const file = await open(actual, 'r')
     let source: string
