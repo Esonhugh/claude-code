@@ -222,6 +222,19 @@ export function toolDenialsIn(
   return denials
 }
 
+/**
+ * The message the turn's result is read from. Stop hooks append progress,
+ * attachments and meta feedback after the assistant reply; a turn that ends
+ * on the consecutive Stop-hook block cap ends on that meta feedback, which
+ * would make the result text blank. Assistant replies and real user
+ * messages (tool results) are the terminal states isResultSuccessful knows.
+ */
+export function resultMessageOf(messages: readonly Message[]): Message | undefined {
+  return messages.findLast(
+    m => m.type === 'assistant' || (m.type === 'user' && !m.isMeta),
+  )
+}
+
 export type QueryEngineConfig = {
   modsSession?: ModsSession
   cwd: string
@@ -1574,9 +1587,7 @@ export class QueryEngine {
     // return '' and -p mode emit a blank line. Allowlist to assistant|user:
     // isResultSuccessful handles both (user with all tool_result blocks is a
     // valid successful terminal state).
-    const result = messages.findLast(
-      m => m.type === 'assistant' || m.type === 'user',
-    )
+    const result = resultMessageOf(messages)
     // Capture for the error_during_execution diagnostic — isResultSuccessful
     // is a type predicate (message is Message), so inside the false branch
     // `result` narrows to never and these accesses don't typecheck.
