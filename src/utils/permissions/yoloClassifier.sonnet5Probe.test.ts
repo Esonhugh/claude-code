@@ -8,7 +8,7 @@ import type { ToolPermissionContext, ToolUseContext } from '../../Tool.js'
 // an answer confirms it for the session, and only a failed first call (other than a 401) demotes
 // it. The probe is per session, so each scenario runs in its own TRANSCRIPT_CLASSIFIER child.
 const childFlag = 'CLAUDE_CODE_SONNET5_PROBE_TEST_CHILD'
-const scenarios = ['first call fails', 'first call answers', 'first call is unauthorized', 'haiku main model'] as const
+const scenarios = ['first call fails', 'first call answers', 'first call is unauthorized', 'haiku main model', 'gateway reply without usage'] as const
 
 if (process.env[childFlag] === undefined) {
   for (const scenario of scenarios) {
@@ -46,6 +46,7 @@ if (process.env[childFlag] === undefined) {
   // Drive the real classifier through its model call; Sonnet 5 throws while `sonnet5Failure` is set.
   const requests: string[] = []
   let sonnet5Failure: Error | undefined
+  let omitUsage = false
   mock.module('../sideQuery.js', () => ({
     sideQuery: async (options: { model: string }) => {
       requests.push(options.model)
@@ -53,7 +54,9 @@ if (process.env[childFlag] === undefined) {
       return {
         id: 'msg_classifier', type: 'message', role: 'assistant', model: options.model,
         content: [{ type: 'text', text: '<block>no</block>' }], stop_reason: 'end_turn', stop_sequence: null,
-        usage: { input_tokens: 1, output_tokens: 1, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
+        ...(!omitUsage && {
+          usage: { input_tokens: 1, output_tokens: 1, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
+        }),
       }
     },
   }))
@@ -122,6 +125,13 @@ if (process.env[childFlag] === undefined) {
 
       sonnet5Failure = undefined
       expect((await check('after-401')).models.every(model => model === 'claude-sonnet-5')).toBe(true)
+    })
+  }
+
+  if (scenario === 'gateway reply without usage') {
+    test('a third-party gateway reply without usage still classifies', async () => {
+      omitUsage = true
+      expect((await check('no-usage')).behavior).toBe('allow')
     })
   }
 

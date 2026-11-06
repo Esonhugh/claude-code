@@ -20,7 +20,9 @@ import {
   getDefaultEffortForModel,
   modelSupportsEffort,
   modelSupportsMaxEffort,
+  getSavedEffort,
   resolvePickerEffortPersistence,
+  savedEffortPatch,
   toPersistableEffort,
 } from '../utils/effort.js'
 import {
@@ -230,15 +232,16 @@ export function ModelPicker({
       // global ~/.claude/settings.json), and NOT AppState.effortValue (which
       // includes session-ephemeral sources like --effort CLI flag).
       // See resolvePickerEffortPersistence JSDoc.
+      const pickedModel = resolveOptionModel(value) ?? getDefaultMainLoopModel()
       const effortLevel = resolvePickerEffortPersistence(
         effort,
         getDefaultEffortLevelForOption(value, selectOptions.find(opt => opt.value === value)),
-        getSettingsForSource('userSettings')?.effortLevel,
+        getSavedEffort(getSettingsForSource('userSettings'), pickedModel),
         hasToggledEffort,
       )
       const persistable = toPersistableEffort(effortLevel)
       if (persistable !== undefined) {
-        updateSettingsForSource('userSettings', { effortLevel: persistable })
+        updateSettingsForSource('userSettings', savedEffortPatch(persistable, pickedModel))
       }
       setAppState(prev => ({ ...prev, effortValue: effortLevel }))
     }

@@ -19,6 +19,7 @@ import {
   getEffortValueDescription,
   getSupportedEffortLevelsForModel,
   isEffortLevel,
+  savedEffortPatch,
   toPersistableEffort,
 } from '../../utils/effort.js'
 import { GATEWAY_EFFORT_LEVELS } from '../../utils/model/modelInfos.js'
@@ -42,9 +43,10 @@ function setEffortValue(
 ): EffortCommandResult {
   const persistable = sessionOnly ? undefined : toPersistableEffort(effortValue)
   if (persistable !== undefined) {
-    const result = updateSettingsForSource('userSettings', {
-      effortLevel: persistable,
-    })
+    const result = updateSettingsForSource(
+      'userSettings',
+      savedEffortPatch(persistable),
+    )
     if (result.error) {
       return {
         message: `Failed to set effort level: ${result.error.message}`,
@@ -108,6 +110,7 @@ export function showCurrentEffort(
 function unsetEffortLevel(): EffortCommandResult {
   const result = updateSettingsForSource('userSettings', {
     effortLevel: undefined,
+    ...savedEffortPatch(undefined),
   })
   if (result.error) {
     return {
