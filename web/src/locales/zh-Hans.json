@@ -15,6 +15,8 @@
   "permissionMode": "权限模式",
   "model": "模型",
   "moreModels": "更多模型（{n}）",
+  "reply": "回复",
+  "removeQuote": "移除引用",
   "copy": "复制",
   "agentOutput": "输出",
   "copied": "已复制",

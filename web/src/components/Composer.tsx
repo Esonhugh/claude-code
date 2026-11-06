@@ -323,6 +323,8 @@ export function InputBox({
   targets,
   picked = [],
   onTarget,
+  quote,
+  onQuote,
 }: {
   t: T
   start?: boolean
@@ -360,6 +362,9 @@ export function InputBox({
   /** The picked recipients, in the order they were picked. */
   picked?: MentionTarget[]
   onTarget?: (picked: MentionTarget[]) => void
+  /** Text from the conversation this message replies to; sent ahead of the draft as a blockquote. */
+  quote?: string
+  onQuote?: (quote: string | undefined) => void
 }) {
   const picker = useRef<HTMLInputElement>(null)
   const imagePicker = useRef<HTMLInputElement>(null)
@@ -494,6 +499,9 @@ export function InputBox({
     seen.observe(el)
     return () => seen.disconnect()
   }, [draft, start])
+  useEffect(() => {
+    if (quote) box.current?.focus()
+  }, [quote])
   // Typed prompts join the folder's history, as the CLI adds each prompt it submits.
   const sendNow = (now = false) => {
     const text = draft.trim()
@@ -845,6 +853,25 @@ export function InputBox({
       <Attachments t={t} files={files} setFiles={setFiles} />
       <div className="cbox">
         {inputs}
+        {quote && (
+          <div className="cquote">
+            <span className="cquote-text" title={quote}>
+              {quote}
+            </span>
+            <button
+              type="button"
+              className="x"
+              aria-label={t('removeQuote')}
+              title={t('removeQuote')}
+              onClick={() => {
+                onQuote?.(undefined)
+                box.current?.focus()
+              }}
+            >
+              ×
+            </button>
+          </div>
+        )}
         <div className="cin">
           {picked.length > 0 && (
             <span className="to-chips">

@@ -1,4 +1,4 @@
-import { createContext, Fragment, memo, type ReactNode, useContext, useEffect, useMemo, useRef, useState } from 'react'
+import { createContext, Fragment, memo, type ReactNode, type RefObject, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import {
   type AgentTask,
   type Team,
@@ -122,6 +122,27 @@ export const ChatContext = createContext<{
   }
 }>({})
 
+/** Puts text into the chat's composer as a quote to reply to; only the session's own feed offers it. */
+export const QuoteContext = createContext<((text: string) => void) | undefined>(undefined)
+
+/** The prompt for a reply: the quote as a Markdown blockquote, then what was typed. */
+export function quotePrompt(quote: string, text: string): string {
+  const lines = quote.trim().split(/\r?\n/).map(line => (line ? `> ${line}` : '>'))
+  return `${lines.join('\n')}\n\n${text}`
+}
+
+/** What a box sends: a slash command goes out as typed, anything else carries the quote it replies to. */
+export function replyPrompt(quote: string | undefined, text: string): string {
+  return quote && !text.startsWith('/') ? quotePrompt(quote, text) : text
+}
+
+/** A prompt that opens with a blockquote: the quoted text and what follows it. */
+export function splitQuote(text: string): { quote?: string; rest: string } {
+  const m = /^((?:>[^\n]*\n)+)\n([\s\S]*)$/.exec(text)
+  if (!m || !m[2]!.trim()) return { rest: text }
+  return { quote: m[1]!.replace(/^> ?/gm, '').trimEnd(), rest: m[2]! }
+}
+
 /** A subagent's or worker's own conversation: the session's rewind and turn actions are not its own. */
 export function AgentConversation({ children }: { children: ReactNode }) {
   const { decisions } = useContext(ChatContext)
@@ -177,10 +198,12 @@ function toolFilePath(name: string, input: string): string | undefined {
   }
 }
 
-function UserText({ text }: { text: string }) {
+function UserText({ text: full }: { text: string }) {
   const files = useContext(FilesContext)
+  const { quote, rest: text } = splitQuote(full)
   return (
     <>
+      {quote !== undefined && <span className="uquote">{quote}</span>}
       {splitMentions(text).map((seg, i) =>
         'path' in seg ? (
           <button
@@ -596,6 +619,7 @@ function MessageView({
 }) {
   const files = useContext(FilesContext)
   const { rewind, turn } = useContext(ChatContext)
+  const quote = useContext(QuoteContext)
   const [copied, setCopied] = useState(false)
   if (item.kind === 'user') {
     const asking = rewind?.target === item.id
@@ -865,7 +889,7 @@ function MessageView({
           </details>
         )
       })}
-      {turn && !streaming && (
+      {(turn || quote) && !streaming && (
         <div className="msg-acts">
           <button
             type="button"
@@ -879,15 +903,25 @@ function MessageView({
           >
             {copied ? t('copied') : t('copy')}
           </button>
-          {turn.hasPrompt(item.id) && (
+          {quote && (
+            <button
+              type="button"
+              onClick={() => quote(item.blocks.flatMap(b => (b?.kind === 'text' ? [b.text] : [])).join('\n\n'))}
+            >
+              {t('reply')}
+            </button>
+          )}
+          {turn?.hasPrompt(item.id) && (
             <button type="button" onClick={() => turn.retry(item.id)}>
               {t('retry')}
             </button>
           )}
-          <button type="button" onClick={() => turn.fork(item.id)}>
-            {t('forkHere')}
-          </button>
-          {turn.hasPrompt(item.id) && (
+          {turn && (
+            <button type="button" onClick={() => turn.fork(item.id)}>
+              {t('forkHere')}
+            </button>
+          )}
+          {turn?.hasPrompt(item.id) && (
             <button type="button" onClick={() => turn.rewind(item.id)}>
               {t('rewind')}
             </button>
@@ -909,5 +943,60 @@ function MessageView({
         </div>
       )}
     </div>
+  )
+}
+
+/**
+ * A Reply button over text selected in a message of the feed (as Claude.ai
+ * does): the selection becomes the composer's quote.
+ */
+export function QuoteOnSelect({ t, feed, onQuote }: { t: T; feed: RefObject<HTMLElement | null>; onQuote: (text: string) => void }) {
+  const [at, setAt] = useState<{ x: number; y: number; text: string }>()
+  useEffect(() => {
+    let frame = 0
+    const place = () => {
+      cancelAnimationFrame(frame)
+      frame = requestAnimationFrame(() => {
+        const sel = document.getSelection()
+        const root = feed.current
+        const text = sel?.toString().trim()
+        if (!sel || !root || sel.isCollapsed || !text || !sel.rangeCount) return setAt(undefined)
+        const msgOf = (node: Node | null) =>
+          (node instanceof Element ? node : node?.parentElement)?.closest('.msg.assistant, .msg.user:not(.queued)')
+        const msg = msgOf(sel.anchorNode)
+        if (!msg || !root.contains(msg) || msgOf(sel.focusNode) !== msg) return setAt(undefined)
+        const rect = sel.getRangeAt(0).getBoundingClientRect()
+        const box = root.getBoundingClientRect()
+        if (rect.bottom < box.top || rect.top > box.bottom) return setAt(undefined)
+        setAt({ x: rect.left + rect.width / 2, y: Math.max(rect.top, box.top), text })
+      })
+    }
+    // Any scroll moves the selection: the feed itself or a panel around it.
+    document.addEventListener('selectionchange', place)
+    window.addEventListener('scroll', place, true)
+    window.addEventListener('resize', place)
+    return () => {
+      cancelAnimationFrame(frame)
+      document.removeEventListener('selectionchange', place)
+      window.removeEventListener('scroll', place, true)
+      window.removeEventListener('resize', place)
+    }
+  }, [feed])
+  if (!at) return null
+  return (
+    <button
+      type="button"
+      className="quote-pop"
+      style={{ left: Math.min(Math.max(at.x, 48), window.innerWidth - 48), top: at.y }}
+      // Keep the selection while the button is pressed.
+      onMouseDown={e => e.preventDefault()}
+      onClick={() => {
+        onQuote(at.text)
+        document.getSelection()?.removeAllRanges()
+        setAt(undefined)
+      }}
+    >
+      {t('reply')}
+    </button>
   )
 }
