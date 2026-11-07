@@ -1079,6 +1079,7 @@ export function App() {
         workDir: created.work_dir,
         title: (text || pending[0]!.name).split('\n')[0]!.slice(0, 80),
         start: state.start,
+        runs: startModel,
       })
       await attach(id)
       if (effort) changeEffort(id, effort)

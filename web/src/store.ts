@@ -80,7 +80,15 @@ export type AppAction =
       rewindPoints?: string[]
     }
   | { type: 'mode'; id: string; mode: ChatMode }
-  | { type: 'created'; id: string; workDir: string; title: string; start: StartOptions }
+  | {
+      type: 'created'
+      id: string
+      workDir: string
+      title: string
+      start: StartOptions
+      /** The model the server runs when `start` picks none (`/api/models` `model`), shown until the session's init. */
+      runs?: string
+    }
   | {
       type: 'history'
       entries: HistoryEntry[]
@@ -197,7 +205,7 @@ export function appReducer(state: AppState, action: AppAction): AppState {
             ...emptyChat('connecting'),
             workDir: action.workDir,
             permissionMode: action.start.mode,
-            model: action.start.model,
+            model: action.start.model ?? action.runs,
           },
         },
         running: { ...state.running, [action.id]: true },
