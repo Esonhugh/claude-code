@@ -370,6 +370,47 @@ describe('SessionManager approvals', () => {
   })
 })
 
+describe('SessionManager exit', () => {
+  it('closes the socket with the exit code and the last stderr line when the process fails', async () => {
+    const child = `process.stderr.write('starting\\n--dangerously-skip-permissions cannot be used with root/sudo privileges for security reasons\\n'); process.exit(1)`
+    const manager = new SessionManager({
+      spawn: opts => spawn(process.execPath, ['-e', child], { cwd: opts.cwd, stdio: ['pipe', 'pipe', 'pipe'] }),
+    })
+    const closes: [number?, string?][] = []
+    const { id } = manager.create({ cwd: '/' })
+    manager.attach(id, { send: () => {}, close: (code, reason) => closes.push([code, reason]) })
+    for (let i = 0; i < 100 && !closes.length; i++) await Bun.sleep(20)
+    expect(closes).toEqual([
+      [1011, '--dangerously-skip-permissions cannot be used with root/sudo privileges for security reasons (exit 1)'],
+    ])
+  })
+
+  it('fits a long stderr line into a WebSocket close reason', async () => {
+    const child = `process.stderr.write('é'.repeat(200) + '\\n'); process.exit(3)`
+    const manager = new SessionManager({
+      spawn: opts => spawn(process.execPath, ['-e', child], { cwd: opts.cwd, stdio: ['pipe', 'pipe', 'pipe'] }),
+    })
+    const closes: [number?, string?][] = []
+    const { id } = manager.create({ cwd: '/' })
+    manager.attach(id, { send: () => {}, close: (code, reason) => closes.push([code, reason]) })
+    for (let i = 0; i < 100 && !closes.length; i++) await Bun.sleep(20)
+    const reason = closes[0]![1]!
+    expect(Buffer.byteLength(reason)).toBeLessThanOrEqual(123)
+    expect(reason).toEndWith('… (exit 3)')
+  })
+
+  it('names the exit code when the process printed nothing', async () => {
+    const manager = new SessionManager({
+      spawn: opts => spawn(process.execPath, ['-e', 'process.exit(2)'], { cwd: opts.cwd, stdio: ['pipe', 'pipe', 'pipe'] }),
+    })
+    const closes: [number?, string?][] = []
+    const { id } = manager.create({ cwd: '/' })
+    manager.attach(id, { send: () => {}, close: (code, reason) => closes.push([code, reason]) })
+    for (let i = 0; i < 100 && !closes.length; i++) await Bun.sleep(20)
+    expect(closes).toEqual([[1011, 'exit 2']])
+  })
+})
+
 // Answers channel_enable like the engine does.
 const CHANNEL_CHILD = `
 require('readline').createInterface({ input: process.stdin }).on('line', line => {

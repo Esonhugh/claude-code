@@ -11,6 +11,7 @@
   "toolInput": "輸入",
   "toolOutput": "輸出",
   "sessionEnded": "對話已結束。",
+  "sessionEndedReason": "對話已結束：{reason}",
   "connectFailed": "無法啟動對話：{error}",
   "permissionMode": "權限模式",
   "model": "模型",

@@ -712,18 +712,20 @@ export function App() {
         setTimeout(() => void refreshHistory(), 500)
       }
     })
-    socket.addEventListener('close', () => {
+    socket.addEventListener('close', event => {
       flush()
       if (sockets.current.get(id) !== socket) return
       sockets.current.delete(id)
+      // 1011: the session process failed; the reason carries its exit code and last stderr line.
+      const ended = event.code === 1011 && event.reason ? t('sessionEndedReason', { reason: event.reason }) : t('sessionEnded')
       // Nothing will answer the requests still in flight on this socket.
       for (const [requestId, pending] of pendingRequests.current) {
         if (pending.id !== id) continue
         pendingRequests.current.delete(requestId)
-        pending.settle({ subtype: 'error', error: t('sessionEnded') })
+        pending.settle({ subtype: 'error', error: ended })
       }
       dispatch({ type: 'mode', id, mode: 'readonly' })
-      dispatch({ type: 'chat', id, action: { type: 'error', text: t('sessionEnded') } })
+      dispatch({ type: 'chat', id, action: { type: 'error', text: ended } })
       void refreshHistory()
     })
     sockets.current.set(id, socket)
