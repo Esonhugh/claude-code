@@ -76,7 +76,7 @@ CLAUDE_CODE_USE_OPENAI=1 OPENAI_BASE_URL=https://gateway.example/api OPENAI_API_
 - 上下文窗口按账号模型目录（`/codex/models`）里的 `context_window` 取，和 Codex 一致：例如 `gpt-6.1-sol` 500k、`gpt-6-luna` 与 `gpt-5.6-sol` 272k；模型名加 `[1m]` 时用目录的 `max_context_window`（目前 872k），且不会超过它。目录里没有的模型和 API key / 网关用户保持内置值。`/autocompact`（`/context-window`）的档位按这个上限截断，见 [自动压缩窗口](compaction.md)。
 - `/model`、`/effort` 和网页的思考强度菜单只列目录给该模型的 effort 档位，并显示、发送目录默认值；`ultra` 发送为 `xhigh`。
 - 状态栏与 `/usage` 的 5 小时、每周额度来自响应里的 `x-codex-*` 头；用完额度时显示 `You've hit your ChatGPT usage limit · resets <时间>`，而不是原始 429。
-- `ToolSearch` 加载的延迟工具（MCP、Codex Apps 等）以 Responses 原生的 `tool_search_call` / `tool_search_output` 放在对话里找到它的位置（压缩后放在输入开头），顶层 `tools` 整个会话保持不变，加载工具后提示缓存不再整体失效。其他 Responses 端点（API key、兼容网关）仍把加载的工具加进 `tools`。缓存命中与官方 Codex、pi 的对比见 [缓存基准](../research/cache-benchmark-20261107.md)。
+- `ToolSearch` 加载的延迟工具（MCP、Codex Apps 等）以 Responses 原生的 `tool_search_call` / `tool_search_output` 放在对话里找到它的位置（压缩后放在输入开头），顶层 `tools` 整个会话保持不变，加载工具后提示缓存不再整体失效。其他 Responses 端点（API key、兼容网关）仍把加载的工具加进 `tools`。缓存命中与官方 Codex、pi 的对比见 [缓存基准](cache-benchmark.md)。
 - 请求 `chatgpt.com/backend-api/codex` 时以 Codex CLI 的身份发送版本号（`client_version` 参数和 `version` header，目前为 `0.166.0`，与 Codex CLI 0.166.0 一致），不发送 Claude Code 自己的版本号。跟进新版 Codex 只需改 `src/services/openai-oauth/client.ts` 的 `OPENAI_CODEX_CLIENT_VERSION`。
 
 ## 命令在 OpenAI 下的行为

@@ -1,8 +1,24 @@
-# 缓存命中与用户体验基准（2026-11-07）
+# 缓存命中与用户体验基准
 
-对象：本仓库 `dev` `17abdd1`（2.1.297）分别用 Claude OAuth 与 ChatGPT OAuth；官方 Claude Code 2.1.319；Codex CLI 0.167.0；pi 1.5.0（`@earendil-works/pi-coding-agent`，只测 ChatGPT）。共 301 次真实 run，每个模型请求经 MITM 记录代理取 usage、TTFT 与请求体大小，所有 CLI 直连官方端点。完整报告、harness 与逐 run 数据在项目共享目录 `regression/cache-bench-1107/`。
+> 英文名：`cache-benchmark` · 领域：上下文与记忆 · [返回功能索引](README.md)
 
-## 结论
+## 这是什么
+
+同一批任务分别用本 fork（Claude 账号、ChatGPT 账号）、官方 Claude Code、Codex CLI 和 pi 跑一遍，比较提示缓存命中率、token 用量、启动速度和卡顿。本页数据测于 2026-11-07，与其他功能文档不同，全部是真实模型请求，不是假 API。
+
+## 测试后的修复
+
+基准发现的两个 ChatGPT 侧问题已经修复，下文表格保留修复前的原始数据：
+
+- **ChatGPT `-p` 启动慢**：首个请求要等 Codex Apps 列出 431 个工具（约 2.3 秒）。现在 App 在后台连接，修复验证时 `-p` 启动到首个请求从约 3.2 秒降到约 0.78 秒；第一轮就要用 App 时，`ToolSearch` 最多等 5 秒（[#1022](https://github.com/Esonhugh/claude-code/issues/1022)，PR [#1026](https://github.com/Esonhugh/claude-code/pull/1026)）。见 [Codex Apps](codex-apps.md)。
+- **ToolSearch 让缓存整体失效**：ChatGPT 下每加载一个延迟工具都改动顶层 `tools`，下一个请求缓存命中为 0。现在加载的工具以 `tool_search_call` / `tool_search_output` 放进对话，`tools` 整个会话不变，同一场景 7 个请求命中由 0/7 变为 7/7（[#1023](https://github.com/Esonhugh/claude-code/issues/1023)，PR [#1027](https://github.com/Esonhugh/claude-code/pull/1027)）。见 [OpenAI provider](openai-provider.md)。
+- **WebSocket 不启用**：下文结论里 WebSocket 掉线率 5.5% → 2.8% 的小样本没有复现。扩大到 10 组对照后 WebSocket 6.3%、SSE 4.1%，Bun 下继续只用 SSE。剩余约 3–4% 的随机缓存掉线来自 OpenAI 后端路由，客户端无法修正（结论记在 [#1023](https://github.com/Esonhugh/claude-code/issues/1023)）。
+
+## 测试对象
+
+本仓库 `dev` `17abdd1`（2.1.297）分别用 Claude OAuth 与 ChatGPT OAuth；官方 Claude Code 2.1.319；Codex CLI 0.167.0；pi 1.5.0（`@earendil-works/pi-coding-agent`，只测 ChatGPT）。共 301 次真实 run，每个模型请求经 MITM 记录代理取 usage、TTFT 与请求体大小，所有 CLI 直连官方端点。完整报告、harness 与逐 run 数据在项目共享目录 `regression/cache-bench-1107/`。
+
+## 结论（修复前）
 
 - Claude 侧与官方持平：CLI 命中率 87.9% 对 86.5%，平均总 token 76.2k 对 81.2k，首个 prompt 15.5k 对 17.3k，TTFT 相同；会话内缓存失效 0 次；`--continue` 续接首请求两边都是 98% 命中，`/compact` 前后一致。
 - 官方 TUI 首个 prompt 是本仓库的 2 倍（33k 对 17k），6 轮交互总 token 427k 对 258k。官方请求体更小（服务器端 thread 续接只送增量），计费 token 不受影响，维持现状。
