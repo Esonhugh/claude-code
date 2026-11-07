@@ -14,6 +14,11 @@
 ![每任务 token 与缓存命中率的散点](images/cache-benchmark/tokens-vs-hit-light.png#gh-light-mode-only)
 ![每任务 token 与缓存命中率的散点](images/cache-benchmark/tokens-vs-hit-dark.png#gh-dark-mode-only)
 
+![每任务 API 等价花费与缓存命中率的散点](images/cache-benchmark/cost-vs-hit-light.png#gh-light-mode-only)
+![每任务 API 等价花费与缓存命中率的散点](images/cache-benchmark/cost-vs-hit-dark.png#gh-dark-mode-only)
+
+可切换横轴、悬停查看明细的[交互版散点图](https://claude.ai/artifact/5c7HFWBN11ZAVcFHConfbm)。
+
 | CLI | 命中率（33 次） | 平均总 token | API 等价花费 / 任务 | TUI 6 轮总 token | `-p` 启动到首个请求 |
 | --- | --- | --- | --- | --- | --- |
 | 本仓库（Claude 账号） | 87.1% | 72.7k | $0.078 | 235k | 0.82s |
