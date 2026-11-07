@@ -105,8 +105,8 @@ export const ApplyPatchTool = buildTool({
     delete next.patch
     return { input: next, resultNote: 'Note: `patch` was read as `input`.' }
   },
-  // Hooks on apply_patch itself and permission hooks see the whole patch;
-  // give them the first touched file and every touched file in file_paths.
+  // Permission hooks see the whole patch; give them the first touched file
+  // and every touched file in file_paths.
   backfillObservableInput(input) {
     if (typeof input.input !== 'string') return
     let paths: string[]
