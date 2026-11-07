@@ -208,10 +208,38 @@ try {
   // A row without reasoning levels keeps the static list and no default.
   assert.equal(getSupportedEffortLevelsForModel('gpt-older').includes('none'), true)
   assert.equal(getDefaultEffortForModel('gpt-older'), undefined)
+  // ChatGPT context windows come from the catalog row; [1m] opts into its max.
+  const { getContextWindowForModel } = await import('../context.js')
+  const windowModels = openAIModelOptions.parseOpenAIModelOptions({
+    models: [
+      { slug: 'gpt-6.1-sol', context_window: 500_000, max_context_window: 872_000 },
+      { slug: 'gpt-5.6-sol', context_window: 272_000, max_context_window: 872_000 },
+      { slug: 'gpt-capped', context_window: 900_000, max_context_window: 400_000 },
+    ],
+  })
+  assert.deepEqual(
+    windowModels.map(({ value, contextWindow, maxContextWindow }) => ({ value, contextWindow, maxContextWindow })),
+    [
+      { value: 'gpt-6.1-sol', contextWindow: 500_000, maxContextWindow: 872_000 },
+      { value: 'gpt-5.6-sol', contextWindow: 272_000, maxContextWindow: 872_000 },
+      { value: 'gpt-capped', contextWindow: 900_000, maxContextWindow: 400_000 },
+    ],
+  )
+  saveGlobalConfig(current => ({
+    ...current,
+    additionalModelOptionsCache: [...windowModels, ...chatgptModels],
+  }))
+  assert.equal(getContextWindowForModel('gpt-6.1-sol'), 500_000)
+  assert.equal(getContextWindowForModel('gpt-5.6-sol'), 272_000)
+  assert.equal(getContextWindowForModel('gpt-5.6-sol[1m]'), 872_000)
+  assert.equal(getContextWindowForModel('gpt-capped'), 400_000)
+  // Without a catalog row the built-in values stay.
+  assert.equal(getContextWindowForModel('gpt-older'), 200_000)
   saveGlobalConfig(current => ({
     ...current,
     additionalModelOptionsCache: chatgptModels,
   }))
+  assert.equal(getContextWindowForModel('gpt-5.6-sol'), 922_000)
   saveGlobalConfig(current => ({
     ...current,
     additionalModelOptionsCache: chatgptModels.slice(2),
@@ -376,7 +404,6 @@ try {
   assert.equal(openAIModelOptions.getGatewayModelContextWindow('anthropic/claude-gateway'), 1_000_000)
   assert.equal(openAIModelOptions.getGatewayModelContextWindow('openai/gpt-router'), 262_144)
   assert.equal(openAIModelOptions.getGatewayModelContextWindow('other-model'), undefined)
-  const { getContextWindowForModel } = await import('../context.js')
   assert.equal(getContextWindowForModel('openai/gpt-router'), 262_144)
   assert.equal(getContextWindowForModel('other-model'), 200_000)
   assert.deepEqual(openAIModelOptions.getGatewayModelOptions(), [

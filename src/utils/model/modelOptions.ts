@@ -51,6 +51,9 @@ export type ModelOption = {
   disabled?: boolean
   effortOptions?: EffortLevel[]
   defaultEffort?: EffortLevel
+  /** ChatGPT catalog input window; maxContextWindow is the ceiling a [1m] opt-in may use. */
+  contextWindow?: number
+  maxContextWindow?: number
 }
 
 export function getDefaultOptionForUser(fastMode = false): ModelOption {
