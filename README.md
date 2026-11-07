@@ -96,6 +96,7 @@ bun ./dist/cli.js --help
 | 上下文与记忆 | [记忆：auto memory 与 SQLite FTS5 检索](docs/features/memory.md) | Claude 把跨会话有用的事（项目约定、你的偏好）记到文件里，下次自动带上；可改成 SQLite 全文检索，按需查找 |
 |  | [自动压缩窗口](docs/features/compaction.md) | 对话太长时把早期内容压成摘要；`/autocompact`（`/context-window`）在 128k / 200k / 272k / 500k / 1M 档位里选上下文窗口（按模型分别保存，网页模型菜单也有），`CLAUDE_CODE_MAX_CONTEXT_TOKENS` 强制指定窗口，`/compact` 手动压缩；可换成保留最近原文的 Codex 式压缩（`compact.mode: "codex"`） |
 |  | [Prompt context 与 Tool search](docs/features/prompt-context.md) | 让每次请求更省 token：提示词分层利于缓存，MCP 工具用到时才加载，大量同类工具只发一行汇总 |
+|  | [缓存命中与用户体验基准](docs/features/cache-benchmark.md) | 本 fork 与官方 Claude Code、Codex、pi 跑同一批任务：缓存命中率、token、启动速度与卡顿对比，以及之后的修复 |
 |  | [用量、成本与状态](docs/features/usage-and-cost.md) | `/usage` 看本次会话花了多少钱、用了多少 token；`/stats` 看长期使用习惯；恢复会话后成本继续累计 |
 | 界面与交互 | [会话命令](docs/features/session-commands.md) | 本 fork 新增或补齐的斜杠命令：`/recap` 回顾、`/cd` 换目录、`/focus` 精简显示、`/autocompact` 调压缩时机、`/usage` 用量等 |
 |  | [自主 Goal](docs/features/goal.md) | 给 Claude 一个「做到才算完」的条件（如「所有测试通过」），每轮结束时自动检查，没达成就继续干 |
@@ -171,7 +172,7 @@ make build
 
 - [`docs/design/ssh-local-ui-coherence.md`](docs/design/ssh-local-ui-coherence.md) — SSH transcript、远端补全、settings/Auth 边界与交互一致性设计。
 - [`docs/research/prompt-context-optimization.md`](docs/research/prompt-context-optimization.md) — Prompt context 构成、精简结果、测量方法与剩余风险。
-- [`docs/research/cache-benchmark-20261107.md`](docs/research/cache-benchmark-20261107.md) — Claude OAuth、ChatGPT OAuth 与官方 Claude Code、Codex、pi 的缓存命中、token、启动与卡顿对比（2026-11-07）。
+- [`docs/features/cache-benchmark.md`](docs/features/cache-benchmark.md) — Claude OAuth、ChatGPT OAuth 与官方 Claude Code、Codex、pi 的缓存命中、token、启动与卡顿对比（2026-11-07）。
 - [`docs/research/claude-mods.md`](docs/research/claude-mods.md) — Mods 契约、生命周期、官方证据与本地兼容性边界。
 - [`mods-test.md`](mods-test.md) — Mods 收口测试方案、验收结果与证据索引。
 - [`docs/design/workflow-runtime-parity.md`](docs/design/workflow-runtime-parity.md) — Workflow runtime parity 的行为和证据边界。
