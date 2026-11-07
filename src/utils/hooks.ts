@@ -140,6 +140,7 @@ import {
   permissionRuleValueFromString,
 } from './permissions/permissionRuleParser.js'
 import { logError } from './log.js'
+import { appliedPatchHookSteps, type PatchHookStep, plannedPatchHookSteps } from '../tools/ApplyPatchTool/plan.js'
 import { APPLY_PATCH_TOOL_NAME } from '../tools/ApplyPatchTool/prompt.js'
 import { FILE_EDIT_TOOL_NAME } from '../tools/FileEditTool/constants.js'
 import { FILE_WRITE_TOOL_NAME } from '../tools/FileWriteTool/prompt.js'
@@ -1544,23 +1545,17 @@ const EXACT_LIST_MATCHER_EVENTS = new Set<string>([
   'DirectoryAdded',
 ])
 
-const TOOL_HOOK_EVENTS = new Set<string>([
-  'PreToolUse',
-  'PostToolUse',
-  'PostToolUseFailure',
-  'PermissionRequest',
-  'PermissionDenied',
-])
+// apply_patch asks once for the whole patch, so permission hooks and `if`
+// conditions written for Edit/Write apply to that one request. Tool-use
+// hooks for Edit/Write instead run once per file (executePatchFileHooks).
+const PERMISSION_HOOK_EVENTS = new Set<string>(['PermissionRequest', 'PermissionDenied'])
 
-// apply_patch does Edit's and Write's work on the OpenAI path, so tool hooks
-// and `if` conditions written for those tools apply to it too. A hook still
-// runs once per tool call, even when its matcher names several of them.
 const TOOL_HOOK_ALIASES: Record<string, readonly string[]> = {
   [APPLY_PATCH_TOOL_NAME]: [FILE_EDIT_TOOL_NAME, FILE_WRITE_TOOL_NAME],
 }
 
 function toolHookNames(toolName: string, hookEvent: string): readonly string[] {
-  const aliases = TOOL_HOOK_EVENTS.has(hookEvent) ? TOOL_HOOK_ALIASES[toolName] : undefined
+  const aliases = PERMISSION_HOOK_EVENTS.has(hookEvent) ? TOOL_HOOK_ALIASES[toolName] : undefined
   return aliases ? [toolName, ...aliases] : [toolName]
 }
 
@@ -1833,6 +1828,7 @@ export async function getMatchingHooks(
   hookInput: HookInput,
   tools?: Tools,
   sourceScope: HookSourceScope = 'all',
+  excludeMatchQuery?: string,
 ): Promise<MatchedHook[]> {
   try {
     const hookMatchers = getHooksConfig(
@@ -1925,8 +1921,14 @@ export async function getMatchingHooks(
       matchQuery !== undefined
         ? hookMatchers.filter(
             matcher =>
-              !matcher.matcher ||
-              matchesPattern(matchQuery, matcher.matcher, hookEvent),
+              excludeMatchQuery !== undefined
+                ? // Only hooks that name this query and not the excluded one.
+                  !!matcher.matcher &&
+                  matcher.matcher !== '*' &&
+                  matchesPattern(matchQuery, matcher.matcher, hookEvent) &&
+                  !matchesPattern(excludeMatchQuery, matcher.matcher, hookEvent)
+                : !matcher.matcher ||
+                  matchesPattern(matchQuery, matcher.matcher, hookEvent),
           )
         : hookMatchers
 
@@ -2297,10 +2299,12 @@ async function* executeHooks({
   requestPrompt,
   toolInputSummary,
   sourceScope,
+  excludeMatchQuery,
 }: {
   hookInput: HookInput
   toolUseID: string
   matchQuery?: string
+  excludeMatchQuery?: string
   signal?: AbortSignal
   timeoutMs?: number
   toolUseContext?: ToolUseContext
@@ -2346,6 +2350,7 @@ async function* executeHooks({
     hookInput,
     toolUseContext?.options?.tools,
     sourceScope,
+    excludeMatchQuery,
   )
   if (matchingHooks.length === 0) {
     return
@@ -3864,6 +3869,38 @@ async function executeHooksOutsideREPL({
 }
 
 /**
+ * apply_patch does Edit's and Write's work on the OpenAI path. After its own
+ * hooks, hooks written for Edit or Write run once per file, as for the Edit or
+ * Write call that would make that file's change. Hooks that already ran for
+ * apply_patch (no matcher, `*`, or a matcher that names it) do not run again.
+ * A per-file hook can block, deny or ask, but cannot allow the whole patch or
+ * rewrite its input or output.
+ */
+async function* executePatchFileHooks(
+  hookInput: PreToolUseHookInput | PostToolUseHookInput | PostToolUseFailureHookInput,
+  steps: PatchHookStep[],
+  options: Omit<Parameters<typeof executeHooks>[0], 'hookInput' | 'matchQuery' | 'excludeMatchQuery'>,
+): AsyncGenerator<AggregatedHookResult> {
+  for (const step of steps) {
+    const fileHookInput = {
+      ...hookInput,
+      tool_name: step.toolName,
+      tool_input: step.input,
+      ...(hookInput.hook_event_name === 'PostToolUse' && { tool_response: step.response }),
+    } as HookInput
+    for await (const result of executeHooks({
+      ...options,
+      hookInput: fileHookInput,
+      matchQuery: step.toolName,
+      excludeMatchQuery: APPLY_PATCH_TOOL_NAME,
+    })) {
+      const { updatedInput: _input, updatedToolOutput: _output, updatedMCPToolOutput: _mcpOutput, ...rest } = result
+      yield rest.permissionBehavior === 'allow' ? { ...rest, permissionBehavior: undefined } : rest
+    }
+  }
+}
+
+/**
  * Execute pre-tool hooks if configured
  * @param toolName The name of the tool (e.g., 'Write', 'Edit', 'Bash')
  * @param toolUseID The ID of the tool use
@@ -3907,17 +3944,14 @@ export async function* executePreToolHooks<ToolInput>(
     tool_use_id: toolUseID,
   }
 
-  yield* executeHooks({
-    sourceScope,
-    hookInput,
-    toolUseID,
-    matchQuery: toolName,
-    signal,
-    timeoutMs,
-    toolUseContext,
-    requestPrompt,
-    toolInputSummary,
-  })
+  const options = { sourceScope, toolUseID, signal, timeoutMs, toolUseContext, requestPrompt, toolInputSummary }
+  yield* executeHooks({ ...options, hookInput, matchQuery: toolName })
+  if (toolName === APPLY_PATCH_TOOL_NAME) {
+    const patch = (toolInput as { input?: unknown }).input
+    if (typeof patch === 'string') {
+      yield* executePatchFileHooks(hookInput, plannedPatchHookSteps(patch), options)
+    }
+  }
 }
 
 /**
@@ -3954,15 +3988,11 @@ export async function* executePostToolHooks<ToolInput, ToolResponse>(
     duration_ms: durationMs,
   }
 
-  yield* executeHooks({
-    sourceScope,
-    hookInput,
-    toolUseID,
-    matchQuery: toolName,
-    signal,
-    timeoutMs,
-    toolUseContext,
-  })
+  const options = { sourceScope, toolUseID, signal, timeoutMs, toolUseContext }
+  yield* executeHooks({ ...options, hookInput, matchQuery: toolName })
+  if (toolName === APPLY_PATCH_TOOL_NAME) {
+    yield* executePatchFileHooks(hookInput, appliedPatchHookSteps(toolResponse), options)
+  }
 }
 
 /**
@@ -4008,15 +4038,14 @@ export async function* executePostToolUseFailureHooks<ToolInput>(
     duration_ms: durationMs,
   }
 
-  yield* executeHooks({
-    sourceScope,
-    hookInput,
-    toolUseID,
-    matchQuery: toolName,
-    signal,
-    timeoutMs,
-    toolUseContext,
-  })
+  const options = { sourceScope, toolUseID, signal, timeoutMs, toolUseContext }
+  yield* executeHooks({ ...options, hookInput, matchQuery: toolName })
+  if (toolName === APPLY_PATCH_TOOL_NAME) {
+    const patch = (toolInput as { input?: unknown }).input
+    if (typeof patch === 'string') {
+      yield* executePatchFileHooks(hookInput, plannedPatchHookSteps(patch), options)
+    }
+  }
 }
 
 /**
