@@ -6,21 +6,23 @@
 
 ## 缓存命中 / Cache hit
 
-本 fork 与官方 Claude Code、Codex、pi、opencode 跑同一批真实任务（办公、研究、编码、运维、Lean 证明，每类一短一长，每格 3 次，2026-11-07）。命中率 = 缓存读 ÷ 全部输入，按 token 加权。
+本 fork 与官方 Claude Code、Codex、opencode、pi 跑同一批真实任务（办公、研究、编码、运维、Lean 证明，每类一短一长，每格 3 次，2026-11-07）。命中率 = 缓存读 ÷ 全部输入，按 token 加权。
 
-| CLI | 修复前命中率 | 修复后命中率 | 平均总 token | `-p` 启动到首个请求 |
+![CLI 模式命中率：每个 CLI 33 次 run 的平均值与分布](images/cache-benchmark/hit-rate-overall-light.png#gh-light-mode-only)
+![CLI 模式命中率：每个 CLI 33 次 run 的平均值与分布](images/cache-benchmark/hit-rate-overall-dark.png#gh-dark-mode-only)
+
+| CLI | 命中率（33 次） | 平均总 token | TUI 6 轮总 token | `-p` 启动到首个请求 |
 | --- | --- | --- | --- | --- |
-| 本仓库（ChatGPT 账号） | 83.8% | 85.3% | 75.9k | 3.11s → 0.66s |
-| Codex CLI 0.167.0 | — | 88.8% | 80.3k | 2.21s |
-| opencode 1.19.5（ChatGPT） | — | 89.2% | 81.5k | — |
-| pi 1.5.0（ChatGPT） | — | 84.0% | 36.5k | 0.89s |
-| 本仓库（Claude 账号） | 87.9% | 87.1% | 72.7k | 0.66s |
-| 官方 Claude Code 2.1.319 | 86.5% | 87.3% | 81.0k | — |
+| 本仓库（Claude 账号） | 87.1% | 72.7k | 235k | 0.82s |
+| 官方 Claude Code 2.1.319 | 87.3% | 81.0k | 640k | 0.89s |
+| 本仓库（ChatGPT 账号） | 85.3% | 75.9k | 310k | 0.71s |
+| Codex CLI 0.167.0 | 88.8% | 80.3k | 267k | 2.59s |
+| opencode 1.19.5 | 89.2% | 81.5k | — | — |
+| pi 1.5.0 | 84.0% | 36.5k | 80k | 0.83s |
 
-- 修复前：ChatGPT 一栏是同时段成对跑的修复前 binary（`17abdd1`），Claude 两栏是上午的第一次基准（每格 2 次，任务组不同）。
-- `ToolSearch` 加载工具后的下一个请求：修复后 7/7 命中，修复前 6/7 为 0（[#1023](https://github.com/Esonhugh/claude-code/issues/1023)）。
-- 剩余差距在短任务（本仓库 82.9% 对 Codex 89.7%，长任务 86.5% 对 88.3%）：Codex 的系统提示在服务器端，新会话第一个请求未缓存的部分更少。
-- 详细表格、交互 / SDK / Web 模式和测试方法见 [缓存命中与用户体验基准](cache-benchmark.md)。
+- Claude 侧与官方持平，总 token 少 10%；TUI 多轮交互官方用量是本仓库的 2.7 倍。
+- ChatGPT 侧与 Codex 的差距只在短任务（82.9% 对 89.7%，长任务 86.5% 对 88.3%）：Codex 的系统提示在服务器端，新会话第一个请求未缓存的部分更少。
+- 测试设计、完整指标、多代理、长时间闲置、稳定性与启动数据见 [缓存命中与用户体验基准](cache-benchmark.md)。
 
 ## 功能列表
 
@@ -48,7 +50,7 @@
 | 上下文与记忆 | [记忆：auto memory 与 SQLite FTS5 检索](memory.md) | Claude 把跨会话有用的事（项目约定、你的偏好）记到文件里，下次自动带上；可改成 SQLite 全文检索，按需查找 |
 |  | [自动压缩窗口](compaction.md) | 对话太长时把早期内容压成摘要；`/autocompact` 决定多长时压缩（按模型分别保存），`/compact` 手动压缩；可换成保留最近原文的 Codex 式压缩（`compact.mode: "codex"`） |
 |  | [Prompt context 与 Tool search](prompt-context.md) | 让每次请求更省 token：提示词分层利于缓存，MCP 工具用到时才加载，大量同类工具只发一行汇总 |
-|  | [缓存命中与用户体验基准](cache-benchmark.md) | 本 fork 与官方 Claude Code、Codex、pi 跑同一批任务：缓存命中率、token、启动速度与卡顿对比，以及之后的修复 |
+|  | [缓存命中与用户体验基准](cache-benchmark.md) | 本 fork 与官方 Claude Code、Codex、opencode、pi 跑同一批真实任务：缓存命中率、token、启动速度与稳定性（附图表） |
 |  | [用量、成本与状态](usage-and-cost.md) | `/usage` 看本次会话花了多少钱、用了多少 token；`/stats` 看长期使用习惯；恢复会话后成本继续累计 |
 | 界面与交互 | [会话命令](session-commands.md) | 本 fork 新增或补齐的斜杠命令：`/recap` 回顾、`/cd` 换目录、`/focus` 精简显示、`/autocompact` 调压缩时机、`/usage` 用量等 |
 |  | [自主 Goal](goal.md) | 给 Claude 一个「做到才算完」的条件（如「所有测试通过」），每轮结束时自动检查，没达成就继续干 |
