@@ -32,7 +32,7 @@ import { AskDock, ChatComposer, chatTools, ContextChip, GoalMenu, type MentionTa
 import { AppDialog, type Palette, type Theme } from './components/Dialogs'
 import type { ContextUsage } from './components/Settings'
 import { AgentsContext, ChatContext, FilesContext, joinTurns, Message, QuoteContext, QuoteOnSelect, replyPrompt, TeamBar } from './components/Message'
-import { closeCanvasTab, MOD_CLIENT, MOD_LAYOUT, MOD_SURFACE, ModCanvas, ModSite, ModSitesProvider, ModToasts, ModView } from './components/Mods'
+import { canvasTabMods, closeCanvasTab, MOD_CLIENT, MOD_LAYOUT, MOD_SURFACE, ModCanvas, ModSite, ModSitesProvider, ModToasts, ModView } from './components/Mods'
 import { Preview } from './components/Preview'
 import { ProjectDialog } from './components/ProjectDialog'
 import { ProjectView } from './components/ProjectView'
@@ -2027,16 +2027,20 @@ export function App() {
                 })}
               </div>
             )}
-            {'mod' in preview ? (
-              <ModCanvas
-                pane={chat?.mods.panes.find(p => p.id === preview.mod)}
-                id={preview.mod}
-                mods={chat?.mods}
-                request={modsRequest}
-                t={t}
-                onClose={() => closeCanvas(preview.sessionId, { mod: preview.mod })}
-              />
-            ) : 'url' in preview ? (
+            {/* Mod tabs stay mounted while another tab shows, so their Client keeps its state. */}
+            {canvasTabMods(canvasMods[preview.sessionId], preview).map(id => (
+              <div key={id} style={{ display: 'mod' in preview && preview.mod === id ? 'contents' : 'none' }}>
+                <ModCanvas
+                  pane={chat?.mods.panes.find(p => p.id === id)}
+                  id={id}
+                  mods={chat?.mods}
+                  request={modsRequest}
+                  t={t}
+                  onClose={() => closeCanvas(preview.sessionId, { mod: id })}
+                />
+              </div>
+            ))}
+            {'mod' in preview ? null : 'url' in preview ? (
               <WebPreview url={preview.url} t={t} onClose={() => closeCanvas(preview.sessionId, 'file')} />
             ) : (
               <Preview
