@@ -1,0 +1,24 @@
+{
+  "id": "doc",
+  "type": "office",
+  "length": "short",
+  "requires": [],
+  "grade": [
+    {
+      "type": "regex",
+      "file": "README.md",
+      "pattern": "\\|"
+    },
+    {
+      "type": "regex",
+      "file": "README.md",
+      "pattern": "quick start",
+      "flags": "i"
+    },
+    {
+      "type": "regex",
+      "file": "README.md",
+      "pattern": "```toml"
+    }
+  ]
+}

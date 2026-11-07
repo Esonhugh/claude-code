@@ -1,0 +1,1 @@
+Implement slugify() in slugify.py: lowercase, strip accents (é -> e), replace any run of non-alphanumeric characters with a single "-", trim leading/trailing "-", and cap the result at 60 characters without leaving a trailing "-". Add 5 doctest examples in the docstring and run `python3 -m doctest slugify.py` to confirm they pass. Keep it short.

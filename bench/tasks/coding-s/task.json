@@ -1,0 +1,16 @@
+{
+  "id": "coding-s",
+  "type": "coding",
+  "length": "short",
+  "requires": [],
+  "grade": [
+    {
+      "type": "cmd",
+      "run": "python3 -m doctest slugify.py"
+    },
+    {
+      "type": "cmd",
+      "run": "python3 -c \"from slugify import slugify as s; assert s('  Héllo, Wörld!! ')=='hello-world'; assert len(s('a b '*40))<=60 and not s('a b '*40).endswith('-')\""
+    }
+  ]
+}

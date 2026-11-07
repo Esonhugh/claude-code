@@ -1,0 +1,29 @@
+{
+  "id": "research-l",
+  "type": "research",
+  "length": "long",
+  "requires": [],
+  "grade": [
+    {
+      "type": "regex",
+      "file": "REPORT.md",
+      "pattern": "TOP_GROWTH:[*`\\s]*sync",
+      "flags": "i"
+    },
+    {
+      "type": "regex",
+      "file": "REPORT.md",
+      "pattern": "\\b39(\\.0)?\\b"
+    },
+    {
+      "type": "regex",
+      "file": "REPORT.md",
+      "pattern": "\\b29(\\.0)?\\b"
+    },
+    {
+      "type": "regex",
+      "file": "REPORT.md",
+      "pattern": "\\b73(\\.0)?\\b"
+    }
+  ]
+}

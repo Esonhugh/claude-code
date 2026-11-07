@@ -1,0 +1,17 @@
+{
+  "id": "ssh-l",
+  "type": "troubleshoot",
+  "length": "long",
+  "requires": [
+    "docker"
+  ],
+  "lab": {
+    "kind": "ssh",
+    "variant": "l"
+  },
+  "grade": [
+    {
+      "type": "lab"
+    }
+  ]
+}

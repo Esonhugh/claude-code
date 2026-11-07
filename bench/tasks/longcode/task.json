@@ -1,0 +1,16 @@
+{
+  "id": "longcode",
+  "type": "coding",
+  "length": "long",
+  "requires": [],
+  "grade": [
+    {
+      "type": "cmd",
+      "run": "out=$(python3 -m pytest -q -p no:cacheprovider 2>&1); rc=$?; n=$(printf \"%s\" \"$out\" | grep -o \"[0-9]* passed\" | head -1 | cut -d\" \" -f1); [ \"$rc\" = 0 ] && [ \"${n:-0}\" -ge 30 ]"
+    },
+    {
+      "type": "exists",
+      "path": "docs/DESIGN.md"
+    }
+  ]
+}

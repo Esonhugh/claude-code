@@ -1,0 +1,20 @@
+{
+  "id": "ops-s",
+  "type": "ops",
+  "length": "short",
+  "requires": [],
+  "grade": [
+    {
+      "type": "regex",
+      "file": "FIX.md",
+      "pattern": "journal",
+      "flags": "i"
+    },
+    {
+      "type": "regex",
+      "file": "FIX.md",
+      "pattern": "vacuum",
+      "flags": "i"
+    }
+  ]
+}

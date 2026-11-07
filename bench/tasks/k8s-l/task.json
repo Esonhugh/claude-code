@@ -1,0 +1,17 @@
+{
+  "id": "k8s-l",
+  "type": "troubleshoot",
+  "length": "long",
+  "requires": [
+    "k3s"
+  ],
+  "lab": {
+    "kind": "k8s",
+    "variant": "l"
+  },
+  "grade": [
+    {
+      "type": "lab"
+    }
+  ]
+}

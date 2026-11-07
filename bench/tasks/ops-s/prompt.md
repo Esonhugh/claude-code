@@ -1,0 +1,1 @@
+The root disk alert fired. Using df.txt and du.txt, write FIX.md with: the cause in one sentence, the exact safe commands to free space now (journald vacuum etc.), and one config change to stop it recurring. Keep it under 25 lines.
