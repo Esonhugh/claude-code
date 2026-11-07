@@ -566,6 +566,60 @@ try {
     },
   ])
 
+  // SDK users can send content-source documents and search results.
+  requests.length = 0
+  await client.beta.messages.create({
+    model: 'gpt-5.5',
+    max_tokens: 16,
+    messages: [
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'document',
+            source: {
+              type: 'content',
+              content: [
+                { type: 'text', text: 'The secret animal is WOMBAT.' },
+                { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'aW1hZ2U=' } },
+              ],
+            },
+          },
+          { type: 'document', source: { type: 'content', content: 'plain content' } },
+          {
+            type: 'search_result',
+            title: 'Zoo',
+            source: 'https://zoo.test',
+            content: [{ type: 'text', text: 'Otters live here.' }],
+          },
+          {
+            type: 'tool_result',
+            tool_use_id: 'toolu_sr',
+            content: [{
+              type: 'search_result',
+              title: 'Park',
+              source: 'https://park.test',
+              content: [{ type: 'text', text: 'Koalas sleep.' }],
+            }],
+          },
+        ],
+      },
+    ],
+  } as any)
+  assert.deepEqual(requests[0]!.body.input, [
+    { type: 'function_call_output', call_id: 'fc_sr', output: 'Park\nhttps://park.test\nKoalas sleep.' },
+    {
+      type: 'message',
+      role: 'user',
+      content: [
+        { type: 'input_text', text: 'The secret animal is WOMBAT.' },
+        { type: 'input_image', image_url: 'data:image/png;base64,aW1hZ2U=', detail: 'high' },
+        { type: 'input_text', text: 'plain content' },
+        { type: 'input_text', text: 'Zoo\nhttps://zoo.test\nOtters live here.' },
+      ],
+    },
+  ])
+
   for (const withImage of [false, true]) {
     requests.length = 0
     await client.beta.messages.create({

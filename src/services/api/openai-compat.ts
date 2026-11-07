@@ -126,20 +126,41 @@ function anthropicImageToResponsesInput(
 
 function anthropicDocumentToResponsesInput(
   block: BetaRequestDocumentBlock,
-): OpenAIResponsesInputContent {
+): OpenAIResponsesInputContent[] {
   const source = block.source
   if (source.type === 'base64') {
-    return {
+    return [{
       type: 'input_file',
       filename: block.title || 'document.pdf',
       file_data: `data:${source.media_type};base64,${source.data}`,
-    }
+    }]
   }
-  if (source.type === 'url') return { type: 'input_file', file_url: source.url }
-  if (source.type === 'text') return { type: 'input_text', text: source.data }
+  if (source.type === 'url') return [{ type: 'input_file', file_url: source.url }]
+  if (source.type === 'text') return [{ type: 'input_text', text: source.data }]
+  if (source.type === 'content') {
+    if (typeof source.content === 'string') {
+      return [{ type: 'input_text', text: source.content }]
+    }
+    return source.content.flatMap<OpenAIResponsesInputContent>(item =>
+      item.type === 'text'
+        ? [{ type: 'input_text', text: item.text }]
+        : item.type === 'image'
+          ? [anthropicImageToResponsesInput(item)]
+          : [],
+    )
+  }
   throw new Error(
-    `OpenAI Responses does not support document source type "${source.type}"`,
+    `OpenAI Responses does not support document source type "${(source as { type: string }).type}"`,
   )
+}
+
+/** Responses has no search result block; the model gets its title, source and text. */
+function searchResultToText(block: {
+  title: string
+  source: string
+  content: Array<{ text: string }>
+}): string {
+  return [block.title, block.source, ...block.content.map(item => item.text)].join('\n')
 }
 
 function anthropicToolResultToResponsesOutput(
@@ -151,7 +172,9 @@ function anthropicToolResultToResponsesOutput(
   const blocks = content.map(item =>
     item?.type === 'tool_reference' && typeof item.tool_name === 'string'
       ? { type: 'text', text: `Tool available: ${item.tool_name}\n` }
-      : item,
+      : item?.type === 'search_result'
+        ? { type: 'text', text: searchResultToText(item) }
+        : item,
   )
   if (!blocks.some(item => item?.type === 'image')) {
     return blocks.map(item => item?.text || '').join('')
@@ -188,7 +211,9 @@ function anthropicMessagesToResponsesInput(
           } else if (block.type === 'image') {
             parts.push(anthropicImageToResponsesInput(block))
           } else if (block.type === 'document') {
-            parts.push(anthropicDocumentToResponsesInput(block))
+            parts.push(...anthropicDocumentToResponsesInput(block))
+          } else if (block.type === 'search_result') {
+            parts.push({ type: 'input_text', text: searchResultToText(block) })
           } else if (block.type === 'tool_result') {
             const b = block as any
             const output = anthropicToolResultToResponsesOutput(b.content)
