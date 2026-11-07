@@ -65,6 +65,7 @@ if (process.env[childFlag] !== '1') {
   const { SandboxManager } = await import('../utils/sandbox/sandbox-adapter.js')
   const cleanup = await import('../utils/cleanupRegistry.js')
   const teammateUtils = await import('../utils/teammate.js')
+  const mailbox = await import('../utils/teammateMailbox.js')
 
   test.each(['idle', 'busy'] as const)('interrupt receipt snapshots surviving %s input before draining', async phase => {
     const started = Promise.withResolvers<void>()
@@ -224,6 +225,67 @@ if (process.env[childFlag] !== '1') {
       } as Parameters<typeof runHeadless>[7])
       expect(prompts).toHaveLength(2)
       expect(String(prompts[1])).toContain('shut down your team')
+    } finally {
+      queue.resetCommandQueue()
+      for (const mock of mocks) mock.mockRestore()
+    }
+  })
+
+  // While teammates still work, the lead waits for their reports instead of
+  // being told to shut the team down mid-task (it would poll blind for them).
+  test('input closing while teammates still work waits for their messages before the shutdown turn', async () => {
+    const prompts: unknown[] = []
+    const firstResult = Promise.withResolvers<void>()
+    let working = true
+    let delivered = false
+    const mocks = [
+      spyOn(grove, 'isQualifiedForGrove').mockResolvedValue(false),
+      spyOn(growthbook, 'initializeGrowthBook').mockResolvedValue(undefined),
+      spyOn(env, 'isBareMode').mockReturnValue(true),
+      spyOn(shutdown, 'gracefulShutdownSync').mockImplementation(() => {}),
+      spyOn(processUtils, 'registerProcessOutputErrorHandlers').mockImplementation(() => {}),
+      spyOn(stdoutGuard, 'installStreamJsonStdoutGuard').mockImplementation(() => () => {}),
+      spyOn(modelStrings, 'ensureModelStringsInitialized').mockResolvedValue(undefined),
+      spyOn(toolPool, 'assembleToolPool').mockReturnValue([]),
+      spyOn(SandboxManager, 'getSandboxUnavailableReason').mockReturnValue(undefined),
+      spyOn(SandboxManager, 'isSandboxingEnabled').mockReturnValue(false),
+      spyOn(storage, 'recordQueueOperation').mockResolvedValue(undefined),
+      spyOn(teammateUtils, 'hasWorkingInProcessTeammates').mockImplementation(() => working),
+      spyOn(mailbox, 'markMessagesAsRead').mockResolvedValue(undefined),
+      spyOn(mailbox, 'readUnreadMessages').mockImplementation(async () => {
+        if (working || delivered) return []
+        delivered = true
+        return [{ from: 'alice', text: 'alice: fixed dates.py', timestamp: new Date().toISOString(), read: false }]
+      }),
+      spyOn(StructuredIO.prototype, 'write').mockImplementation(async message => {
+        if (message.type === 'result') firstResult.resolve()
+      }),
+      spyOn(engine, 'ask').mockImplementation(async function* (args) {
+        prompts.push(args.prompt)
+        if (prompts.length === 1) setTimeout(() => { working = false }, 1500)
+        // The report turn: the lead shuts its team down.
+        if (prompts.length === 2) state = { ...state, teamContext: undefined }
+        yield {type:'result',subtype:'success',is_error:false,result:'done'} as import('../entrypoints/agentSdkTypes.js').SDKMessage
+      }),
+    ]
+    let state: import('../state/AppStateStore.js').AppState = {
+      ...getDefaultAppState(),
+      teamContext: {
+        teamName: 'r6', teamFilePath: '/nonexistent/config.json', leadAgentId: 'team-lead@r6',
+        teammates: { 'alice@r6': { name: 'alice', tmuxSessionName: '', tmuxPaneId: 'in-process', cwd: process.cwd(), spawnedAt: 0 } },
+      },
+    }
+    async function* input() {
+      yield JSON.stringify({type:'user',message:{role:'user',content:'SPAWN'}}) + '\n'
+      await firstResult.promise
+    }
+    try {
+      await runHeadless(input(), () => state, updater => { state = updater(state) }, [], [], {}, [], {
+        outputFormat:'stream-json',verbose:true,sessionStartHooksPromise:Promise.resolve([]),
+      } as Parameters<typeof runHeadless>[7])
+      expect(prompts).toHaveLength(2)
+      expect(String(prompts[1])).toContain('alice: fixed dates.py')
+      expect(String(prompts[1])).not.toContain('shut down your team')
     } finally {
       queue.resetCommandQueue()
       for (const mock of mocks) mock.mockRestore()

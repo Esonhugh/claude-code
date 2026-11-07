@@ -535,10 +535,9 @@ const SHUTDOWN_TEAM_PROMPT = `<system-reminder>
 You are running in non-interactive mode and cannot return a response to the user until your team is shut down.
 
 You MUST shut down your team before preparing your final response:
-1. Use requestShutdown to ask each team member to shut down gracefully
-2. Wait for shutdown approvals
-3. Use the cleanup operation to clean up the team
-4. Only then provide your final response to the user
+1. Use SendMessage with a shutdown_request to ask each team member to shut down gracefully
+2. Wait for shutdown approvals (the team is cleaned up automatically)
+3. Only then provide your final response to the user
 
 The user cannot receive your response until the team is completely shut down.
 </system-reminder>
@@ -3175,8 +3174,15 @@ function runHeadlessStreaming(
           }
 
           // No messages - check if we need to prompt for shutdown
-          // If input is closed and teammates are active, inject shutdown prompt once
-          if (inputClosed && !shutdownPromptInjected) {
+          // If input is closed and teammates are active, inject shutdown prompt once.
+          // Wait while any teammate still works: their reports arrive here as a
+          // normal lead turn, and a lead told to shut down mid-task cannot see
+          // them until its turn ends, so it polls blind.
+          if (
+            inputClosed &&
+            !shutdownPromptInjected &&
+            !hasWorkingInProcessTeammates(refreshedState)
+          ) {
             shutdownPromptInjected = true
             logForDebugging(
               '[print.ts] Input closed with active teammates, injecting shutdown prompt',
