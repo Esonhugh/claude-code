@@ -99,6 +99,35 @@ pi 与 opencode 另用 Claude API key 跑了一组 `claude-sonnet-5-5`（见第 
 
 ## 结果
 
+### 0. token 与命中率总览
+
+横轴是每任务平均总 token（对数轴，越左越省），纵轴是按 token 加权的缓存命中率（越高越好），左上角最好。只看命中率会奖励把大段前缀放进缓存的做法，只看 token 又看不出缓存帮了多少，两项放在一起才能看出谁在「少用」和「多复用」上都占优。两种模型的价格表不同，所以横轴用 token，不用花费；API 等价花费见第 1 节表格。
+
+颜色区分 CLI，形状区分账号类型：实心圆 = Claude 订阅（OAuth），菱形 = ChatGPT 订阅（OAuth），空心圆 = Claude API key。Claude 订阅与 API key 都用 `claude-sonnet-5-5`，ChatGPT 订阅用 `gpt-6.1-sol`。每个大点 = 11 题 × 3 次；oh-my-pi 为 9 题（无 Lean），dsh ChatGPT 账号 32 次（1 次 WebSocket 断线未计入）。
+
+![每任务 token 与缓存命中率：7 个 CLI 共 12 个账号组合的散点，含 6 类任务的分项点、Pareto 前沿与更优区域](images/cache-benchmark/tokens-vs-hit-light.png#gh-light-mode-only)
+![每任务 token 与缓存命中率：7 个 CLI 共 12 个账号组合的散点，含 6 类任务的分项点、Pareto 前沿与更优区域](images/cache-benchmark/tokens-vs-hit-dark.png#gh-dark-mode-only)
+
+- 前沿上的 6 个点：pi（Claude API）21k / 73.4%、pi（ChatGPT）37k / 84.0%、dsh（Claude API）69k / 88.7%、Codex 80k / 88.8%、opencode（ChatGPT）82k / 89.2%、oh-my-pi（Claude API）103k / 91.6%。
+- 更优区域（token 不高于中位数 81k 且命中率不低于中位数 87.3%）里是 dsh（Claude API）、Codex 和官方。本仓库 Claude 账号 73k / 87.1% 在区域边缘，与官方相差 0.2 个百分点，在噪声范围内。
+- pi 的提示只有约 2.7k，token 最少但新内容占比大，命中率最低；opencode 在 Claude API key 下 92k / 79.2%，两项都落后于同模型的其他 CLI。
+
+![按任务类型：每类一个面板的 token 与命中率散点](images/cache-benchmark/tokens-vs-hit-by-type-light.png#gh-light-mode-only)
+![按任务类型：每类一个面板的 token 与命中率散点](images/cache-benchmark/tokens-vs-hit-by-type-dark.png#gh-dark-mode-only)
+
+- 同一 CLI 在不同任务类型之间的位置变化，大于同一类型里 CLI 之间的差距。
+- Claude 订阅（本仓库、官方）在研究、运维、Lean 三类处于前沿或贴近前沿；编码类两者都是 81%，低于 ChatGPT 订阅的 83–91%。
+- 排障（ssh / Kubernetes 4 题）：oh-my-pi（Claude API）91k / 92.2% 命中最高；本仓库 Claude 95k / 89.9% 与官方 99k / 90.0% 持平；本仓库 ChatGPT 76k / 79.5%，低于 Codex 127k / 90.0%。
+- Claude API key 的 opencode 在研究、编码、运维、Lean 四类比同模型的 Claude 订阅低 9–18 个百分点；办公类命中率接近，但 token 是 205k。pi 在每一类都是 token 最少的点。
+
+![交互、多代理与长闲置场景：每个场景一个面板的 token 与命中率散点](images/cache-benchmark/tokens-vs-hit-scenarios-light.png#gh-light-mode-only)
+![交互、多代理与长闲置场景：每个场景一个面板的 token 与命中率散点](images/cache-benchmark/tokens-vs-hit-scenarios-dark.png#gh-dark-mode-only)
+
+- 6 轮交互：前沿是 pi（Claude API）60k / 90.4%、opencode（Claude API）176k / 90.4%、本仓库 Claude TUI 235k / 94.8%、官方 640k / 97.3%。官方命中率最高，但 token 是本仓库的 2.7 倍。Web 只有本仓库有，其他 CLI 没有 Web 界面。
+- SDK 4 轮：本仓库 Claude 133k / 92.1% 在前沿上，官方 155k / 92.5%。
+- 多代理：同一任务从单代理到 3 个 subagent，Codex 356k / 95.1%、dsh（Claude API）178k / 93.6%、oh-my-pi（Claude API）230k / 90.1% 命中最高；本仓库两个账号 subagent 在 80–81%。Agent Teams 只有本仓库与官方有：本仓库 Claude 337k / 89.8%、ChatGPT 498k / 82.6%。pi 没有 subagent。
+- 长时间闲置：ChatGPT 侧缓存没有过期，opencode 358k / 94.8%、Codex 361k / 92.7%、本仓库 331k / 91.6%；Claude 侧本仓库与官方写 1 小时缓存，65 分钟后过期，306k / 81.8% 与 349k / 85.9%；pi 与 opencode 在 Claude 侧写 5 分钟缓存，闲置 15 分钟以上就过期，73.0% 与 76.6%。
+
 ### 1. 总体命中率
 
 ![CLI 模式命中率：每个 CLI 33 次 run 的平均值与分布](images/cache-benchmark/hit-rate-overall-light.png#gh-light-mode-only)
