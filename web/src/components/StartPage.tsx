@@ -83,6 +83,7 @@ export function StartPage({
   history,
   tempRoot,
   models,
+  defaultModel,
   commands,
   daybreak,
   draft,
@@ -108,6 +109,8 @@ export function StartPage({
   history: HistoryEntry[]
   tempRoot?: string
   models: ModelOption[]
+  /** The model a session started without a pick runs (the saved model setting, else the default). */
+  defaultModel?: string
   /** The last session's `/` commands; the start page has no session to ask. */
   commands: SlashCommand[]
   daybreak?: { value: string; onChange: (value: Daybreak) => void }
@@ -294,7 +297,7 @@ export function StartPage({
                 fixed
                 label={t('model')}
                 right
-                button={modelButtonLabel(options.model ?? 'default', options.effort, models, t)}
+                button={modelButtonLabel(options.model ?? 'default', options.effort, models, t, defaultModel)}
               >
                 {close => (
                   <ModelMenu
@@ -304,6 +307,7 @@ export function StartPage({
                     models={models}
                     onModel={model => setOptions({ model })}
                     onEffort={effort => setOptions({ effort })}
+                    contextWindow={{ value: options.contextWindow, onChange: contextWindow => setOptions({ contextWindow }) }}
                     daybreak={daybreak}
                     close={close}
                   />

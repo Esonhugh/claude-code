@@ -13,6 +13,7 @@ const originalBaseUrl = process.env.ANTHROPIC_BASE_URL
 const originalOAuthToken = process.env.CLAUDE_CODE_OAUTH_TOKEN
 const originalApiKey = process.env.ANTHROPIC_API_KEY
 const originalCustomHeaders = process.env.ANTHROPIC_CUSTOM_HEADERS
+const originalEntrypoint = process.env.CLAUDE_CODE_ENTRYPOINT
 
 function resetProviderEnv(): void {
   delete process.env.CLAUDE_CODE_USE_OPENAI
@@ -98,6 +99,7 @@ try {
 
   resetProviderEnv()
   process.env.CLAUDE_CODE_OAUTH_TOKEN = 'test-oauth-token'
+  delete process.env.CLAUDE_CODE_ENTRYPOINT
   // An API key in the environment would outrank the OAuth token.
   delete process.env.ANTHROPIC_API_KEY
   const authModule = await import('../../utils/auth.js')
@@ -128,11 +130,11 @@ try {
     messages: [{ role: 'user', content: 'test' }],
   })
   const oauthHeaders = oauthRequests[0]!.headers
-  assert.equal(oauthHeaders.get('user-agent'), 'claude-cli/2.1.280 (external, cli)')
+  assert.equal(oauthHeaders.get('user-agent'), 'claude-cli/2.1.318 (external, cli)')
   assert.equal(oauthHeaders.get('x-stainless-lang'), 'js')
-  assert.equal(oauthHeaders.get('x-stainless-package-version'), '0.112.1')
+  assert.equal(oauthHeaders.get('x-stainless-package-version'), '0.128.0')
   assert.equal(oauthHeaders.get('x-stainless-runtime'), 'node')
-  assert.equal(oauthHeaders.get('x-stainless-runtime-version'), 'v26.3.0')
+  assert.equal(oauthHeaders.get('x-stainless-runtime-version'), 'v26.12.1')
   assert.equal(oauthHeaders.get('x-stainless-retry-count'), '0')
   assert.equal(oauthHeaders.get('x-stainless-timeout'), '600')
   assert.equal(oauthHeaders.get('authorization'), 'Bearer test-oauth-token')
@@ -178,8 +180,8 @@ try {
   })
   const apiKeyHeaders = apiKeyRequests[0]!.headers
   assert.equal(apiKeyHeaders.get('x-api-key'), 'test-api-key')
-  assert.notEqual(apiKeyHeaders.get('user-agent'), 'claude-cli/2.1.280 (external, cli)')
-  assert.notEqual(apiKeyHeaders.get('x-stainless-package-version'), '0.112.1')
+  assert.notEqual(apiKeyHeaders.get('user-agent'), 'claude-cli/2.1.318 (external, cli)')
+  assert.notEqual(apiKeyHeaders.get('x-stainless-package-version'), '0.128.0')
 } finally {
   resetProviderEnv()
   if (originalOpenAI === undefined) delete process.env.CLAUDE_CODE_USE_OPENAI
@@ -198,6 +200,8 @@ try {
   else process.env.ANTHROPIC_API_KEY = originalApiKey
   if (originalCustomHeaders === undefined) delete process.env.ANTHROPIC_CUSTOM_HEADERS
   else process.env.ANTHROPIC_CUSTOM_HEADERS = originalCustomHeaders
+  if (originalEntrypoint === undefined) delete process.env.CLAUDE_CODE_ENTRYPOINT
+  else process.env.CLAUDE_CODE_ENTRYPOINT = originalEntrypoint
   const authModule = await import('../../utils/auth.js')
   authModule.getClaudeAIOAuthTokens.cache.clear?.()
 }

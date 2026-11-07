@@ -23,6 +23,7 @@ import {
 } from '../utils/sessionState.js'
 import { savePermissionMode } from '../utils/sessionStorage.js'
 import { updateSettingsForSource } from '../utils/settings/settings.js'
+import { getAPIProvider } from '../utils/model/providers.js'
 import type { AppState } from './AppStateStore.js'
 import { isAnt } from 'src/utils/userType.js'
 import { isTerminalTaskStatus } from '../taskStatus.js'
@@ -67,6 +68,12 @@ function listSdkBackgroundTasks(state: AppState) {
       ...(task.type === 'local_agent' ? { subagent_type: task.agentType } : {}),
       description: task.description,
     }))
+}
+
+// Official Claude Code reads the same `model` key, so an OpenAI model id saved
+// there would be sent to Anthropic. The OpenAI provider keeps its own key.
+function savedModelKey(): 'model' | 'openaiModel' {
+  return getAPIProvider() === 'openai' ? 'openaiModel' : 'model'
 }
 
 export function onChangeAppState({
@@ -145,7 +152,7 @@ export function onChangeAppState({
     newState.mainLoopModel === null
   ) {
     // Remove from settings
-    updateSettingsForSource('userSettings', { model: undefined })
+    updateSettingsForSource('userSettings', { [savedModelKey()]: undefined })
     setMainLoopModelOverride(null)
   }
 
@@ -155,7 +162,9 @@ export function onChangeAppState({
     newState.mainLoopModel !== null
   ) {
     // Save to settings
-    updateSettingsForSource('userSettings', { model: newState.mainLoopModel })
+    updateSettingsForSource('userSettings', {
+      [savedModelKey()]: newState.mainLoopModel,
+    })
     setMainLoopModelOverride(newState.mainLoopModel)
   }
 

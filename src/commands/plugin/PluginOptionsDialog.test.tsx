@@ -48,6 +48,7 @@ const choice = {
   ],
 }
 const { PluginOptionsDialog } = await import('./PluginOptionsDialog.js')
+const { Tab, Tabs } = await import('../../components/design-system/Tabs.js')
 
 class Output extends Writable {
   columns = 100
@@ -99,8 +100,18 @@ function Keys({ children }: { children: React.ReactNode }) {
     </KeybindingProvider>
   )
 }
+// Like Configure options in /plugin: the dialog opens after the tabs mounted.
+function OpensLater({ children }: { children: React.ReactNode }) {
+  const [open, setOpen] = React.useState(false)
+  useEffect(() => {
+    const timer = setTimeout(() => setOpen(true), 20)
+    return () => clearTimeout(timer)
+  }, [])
+  return open ? children : null
+}
 async function mountDialog(
   props: Partial<React.ComponentProps<typeof PluginOptionsDialog>> = {},
+  wrap: (dialog: React.ReactNode) => React.ReactNode = dialog => dialog,
 ) {
   const stdout = new Output()
   const stdin = new Input()
@@ -115,14 +126,16 @@ async function mountDialog(
   }
   const instance = await render(
     <Keys>
-      <PluginOptionsDialog
-        title="Configure agents-md"
-        subtitle="Plugin options"
-        configSchema={schema}
-        onSave={onSave}
-        onCancel={onCancel}
-        {...props}
-      />
+      {wrap(
+        <PluginOptionsDialog
+          title="Configure agents-md"
+          subtitle="Plugin options"
+          configSchema={schema}
+          onSave={onSave}
+          onCancel={onCancel}
+          {...props}
+        />,
+      )}
       <Ready />
     </Keys>,
     {
@@ -142,6 +155,12 @@ async function mountDialog(
       stdin.push(value)
       // Ink buffers a lone Escape for NORMAL_TIMEOUT (50ms).
       await new Promise(resolve => setTimeout(resolve, 80))
+    },
+    // Under load the last key can still be in flight after input()'s pause.
+    async called(fn: typeof onSave) {
+      const deadline = Date.now() + 10_000
+      while (fn.mock.calls.length === 0 && Date.now() < deadline)
+        await new Promise(resolve => setTimeout(resolve, 10))
     },
     close() {
       instance.unmount()
@@ -209,6 +228,7 @@ describe('plugin option configuration', () => {
       try {
         await view.input('unlisted')
         await view.input('\r')
+        await view.called(view.onSave)
         expect(view.onSave).toHaveBeenCalledTimes(1)
         expect(view.onSave).toHaveBeenCalledWith({
           instructionFiles: expected,
@@ -238,15 +258,103 @@ describe('plugin option configuration', () => {
       },
     })
     try {
-      await view.input('\u001b[B')
-      await view.input('\t')
+      // One chunk: a fast ↓ then Tab must still carry the focused choice.
+      await view.input('\u001b[B\t')
       await view.input('hello')
       await view.input('\r')
       expect(view.text()).not.toContain('test-secret-never-render')
       await view.input('\r')
+      await view.called(view.onSave)
       expect(view.onSave).toHaveBeenCalledWith({
         instructionFiles: choice.default,
         note: 'hello',
+      })
+    } finally {
+      view.close()
+    }
+  })
+
+  test('Tab moves to the next field inside the /plugin tabs instead of switching tabs', async () => {
+    const onTabChange = mock(() => {})
+    const view = await mountDialog(
+      {
+        configSchema: {
+          ...schema,
+          note: { type: 'string', title: 'Note', description: '' },
+        },
+      },
+      dialog => (
+        <Tabs title="Plugins" selectedTab="installed" onTabChange={onTabChange}>
+          {[
+            <Tab key="installed" id="installed" title="Installed">
+              <OpensLater>{dialog}</OpensLater>
+            </Tab>,
+            <Tab key="marketplaces" id="marketplaces" title="Marketplaces">
+              <></>
+            </Tab>,
+          ]}
+        </Tabs>
+      ),
+    )
+    try {
+      const deadline = Date.now() + 10_000
+      while (!view.text().includes('Project instructions') && Date.now() < deadline)
+        await new Promise(resolve => setTimeout(resolve, 10))
+      await view.input('\t')
+      expect(onTabChange).not.toHaveBeenCalled()
+      await view.input('hello')
+      await view.input('\r')
+      await view.called(view.onSave)
+      expect(view.onSave).toHaveBeenCalledWith({
+        instructionFiles: choice.default,
+        note: 'hello',
+      })
+    } finally {
+      view.close()
+    }
+  })
+
+  test('keys typed in the same chunk as Tab on a picker go to the next field', async () => {
+    const view = await mountDialog({
+      configSchema: {
+        ...schema,
+        note: { type: 'string', title: 'Note', description: '' },
+        last: { type: 'string', title: 'Last', description: '' },
+      },
+      initialValues: { instructionFiles: 'claude-md' },
+    })
+    try {
+      await view.input('\u001b[B\thelo\u007flo')
+      await view.input('\r')
+      await view.input('\r')
+      await view.called(view.onSave)
+      expect(view.onSave).toHaveBeenCalledWith({
+        instructionFiles: choice.default,
+        note: 'hello',
+        last: '',
+      })
+    } finally {
+      view.close()
+    }
+  })
+
+  test('an Enter typed in the same chunk as Tab on a picker confirms the next field', async () => {
+    const view = await mountDialog({
+      configSchema: {
+        ...schema,
+        note: { type: 'string', title: 'Note', description: '' },
+        last: { type: 'string', title: 'Last', description: '' },
+      },
+      initialValues: { instructionFiles: 'claude-md' },
+    })
+    try {
+      await view.input('\u001b[B\thello\r')
+      await view.input('\r')
+      await view.called(view.onSave)
+      expect(view.onSave).toHaveBeenCalledWith({
+        instructionFiles: choice.default,
+        note: 'hello',
+        last: '',
       })
     } finally {
       view.close()
@@ -257,6 +365,7 @@ describe('plugin option configuration', () => {
     const view = await mountDialog()
     try {
       await view.input('\u001b')
+      await view.called(view.onCancel)
       expect(view.onCancel).toHaveBeenCalledTimes(1)
       expect(view.onSave).not.toHaveBeenCalled()
     } finally {
@@ -281,6 +390,7 @@ describe('plugin option configuration', () => {
       expect(view.text()).toContain('Attempts is required but not provided')
       await view.input('3')
       await view.input('\r')
+      await view.called(view.onSave)
       expect(view.onSave).toHaveBeenCalledWith({ attempts: 3 })
     } finally {
       view.close()

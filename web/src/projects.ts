@@ -3,7 +3,7 @@
 // tasks table; the page adds what only it knows yet (a pending approval) and
 // the running clock.
 
-import type { AgentTask } from './agents'
+import { type AgentTask, formatTokens } from './agents'
 import type { ProjectTask } from './api'
 import type { MessageKey } from './i18n'
 import type { Approval, Item, TaskNote } from './protocol'
@@ -15,6 +15,12 @@ export type TaskState = ProjectTask['state']
 export function withApprovals(rows: ProjectTask[], approvals: Approval[]): ProjectTask[] {
   const asking = new Set(approvals.flatMap(a => (a.agentId ? [a.agentId] : [])))
   return rows.map(row => (asking.has(row.id) && row.state === 'running' ? { ...row, state: 'blocked' } : row))
+}
+
+/** Approvals the coordinator answers: its own, and its teammates', which are not tasks. */
+export function coordinatorApprovals(rows: ProjectTask[], approvals: Approval[]): Approval[] {
+  const tasks = new Set(rows.map(row => row.id))
+  return approvals.filter(a => !a.agentId || !tasks.has(a.agentId))
 }
 
 export const isLive = (task: ProjectTask) => task.state === 'running' || task.state === 'blocked'
@@ -52,7 +58,7 @@ export function taskMeta(task: ProjectTask, model: string | undefined, now: numb
   return [
     model,
     formatTaskTime(taskElapsed(task, now)),
-    task.tokens > 0 ? `${(task.tokens / 1000).toFixed(1)}k tok` : undefined,
+    task.tokens > 0 ? formatTokens(task.tokens) : undefined,
     task.state === 'running' ? task.last_tool : undefined,
   ]
     .filter(Boolean)

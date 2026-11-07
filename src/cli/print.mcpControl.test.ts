@@ -79,7 +79,7 @@ if (process.env[childFlag] !== '1') {
     expect(sdk.newSdkState.tools).toEqual([])
   })
 
-  async function runControls(initial: AppState, requests: Record<string, unknown>[]) {
+  async function runControls(initial: AppState, requests: Record<string, unknown>[], extra: Record<string, unknown> = {}) {
     const store = createStore(initial, onChangeAppState)
     const frames: StdoutMessage[] = []
     const receipts = new Map<string, ReturnType<typeof Promise.withResolvers<void>>>()
@@ -111,6 +111,7 @@ if (process.env[childFlag] !== '1') {
       await runHeadless(input(), store.getState, store.setState, [], [], {}, [], {
         outputFormat: 'stream-json', verbose: true, userSpecifiedModel: 'claude-sonnet-4-6',
         sessionStartHooksPromise: Promise.resolve([]),
+        ...extra,
       } as Parameters<typeof runHeadless>[7])
     } finally {
       for (const mock of mocks) mock.mockRestore()
@@ -216,6 +217,27 @@ if (process.env[childFlag] !== '1') {
       const { responses } = await runControls(getDefaultAppState(), [{ subtype: 'reload_plugins' }])
       expect(responses.map(r => r.subtype)).toEqual(['success'])
       expect(started).toEqual(['helper'])
+    } finally {
+      for (const mock of mocks) mock.mockRestore()
+    }
+  })
+  test('reload_plugins answers with the Mods\' own commands, as initialize does (#974)', async () => {
+    const refresh = await import('../utils/plugins/refresh.js')
+    const pluginLoader = await import('../utils/plugins/pluginLoader.js')
+    const mocks = [
+      spyOn(refresh, 'refreshActivePlugins').mockResolvedValue({ agentDefinitions: { allAgents: [], activeAgents: [] } } as never),
+      spyOn(pluginLoader, 'loadAllPluginsCacheOnly').mockResolvedValue({ enabled: [], disabled: [], errors: [] }),
+      spyOn(mcpConfig, 'getAllMcpConfigs').mockResolvedValue({ servers: {}, errors: [] } as never),
+    ]
+    const modCommand = { type: 'prompt', name: 'latecmd', description: 'Late mod command', progressMessage: '', contentLength: 0, source: 'plugin', getPromptForCommand: async () => [] }
+    const modsSession = {
+      bind: () => undefined,
+      commands: { describe: async (list: unknown[]) => [...list, modCommand] },
+    }
+    try {
+      const { responses } = await runControls(getDefaultAppState(), [{ subtype: 'reload_plugins' }], { modsSession })
+      const names = (responses[0] as unknown as { response: { commands: { name: string }[] } }).response.commands.map(c => c.name)
+      expect(names).toContain('latecmd')
     } finally {
       for (const mock of mocks) mock.mockRestore()
     }

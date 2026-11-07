@@ -1,5 +1,5 @@
 import { expect, spyOn, test } from 'bun:test'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { StdoutMessage } from '../entrypoints/sdk/controlTypes.js'
@@ -8,11 +8,21 @@ const childFlag = 'CLAUDE_CODE_SDK_CONTROL_REQUESTS_TEST_CHILD'
 if (process.env[childFlag] !== '1') {
   test('newer Agent SDK control requests (isolated)', async () => {
     const home = mkdtempSync(join(tmpdir(), 'cc-sdk-control-'))
+    // A small repo of its own: in this checkout, get_workspace_diff's git calls
+    // (--no-optional-locks never saves a refresh) rehash every stat-dirty file,
+    // which under load outlasts the child's 5s per-test timeout.
+    const work = mkdtempSync(join(tmpdir(), 'cc-sdk-control-work-'))
+    const git = (...args: string[]) => Bun.spawnSync(['git', '-c', 'user.name=t', '-c', 'user.email=t@t', ...args], { cwd: work })
+    writeFileSync(join(work, 'package.json'), '{ "name": "fixture" }\n')
+    git('init', '-q')
+    git('add', 'package.json')
+    git('commit', '-qm', 'fixture')
+    writeFileSync(join(work, 'package.json'), '{ "name": "fixture", "private": true }\n')
     const env = Object.fromEntries(Object.entries(process.env).filter(([key]) =>
       !/^(?:ANTHROPIC_|OPENAI_|CLAUDE_CODE_OAUTH_|CLAUDE_CODE_API_KEY_|CLAUDE_CODE_MESSAGING_|CLAUDE_CODE_USE_|CLAUDE_CODE_REMOTE)/.test(key)))
     try {
       const child = Bun.spawn([process.execPath, 'test', '--feature=UDS_INBOX', '--feature=KAIROS_CHANNELS', import.meta.path], {
-        cwd: join(import.meta.dir, '../..'),
+        cwd: work,
         env: { ...env, [childFlag]: '1', HOME: home, CLAUDE_CONFIG_DIR: home,
           ANTHROPIC_API_KEY: 'test-only-not-a-real-key', DISABLE_TELEMETRY: '1', CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1' },
         stdout: 'pipe', stderr: 'pipe',
@@ -22,6 +32,7 @@ if (process.env[childFlag] !== '1') {
       console.log(`${stdout}\n${stderr}`.match(/\d+ pass[\s\S]*?Ran [^\n]+/)?.[0])
     } finally {
       rmSync(home, { recursive: true, force: true })
+      rmSync(work, { recursive: true, force: true })
     }
   }, 60_000)
 } else {
@@ -86,7 +97,7 @@ if (process.env[childFlag] !== '1') {
       tasks: {
         a1: { ...base, id: 'a1', type: 'local_agent', status: 'running', agentId: 'a1', prompt: 'p', messages: [], pendingMessages: [] },
         a2: { ...base, id: 'a2', type: 'local_agent', status: 'killed', agentId: 'a2', prompt: 'p', messages: [], pendingMessages: [], stoppedByUser: true },
-        t1: { ...base, id: 't1', type: 'in_process_teammate', status: 'running', messages: [], pendingUserMessages: [] },
+        t1: { ...base, id: 't1', type: 'in_process_teammate', status: 'running', identity: { agentId: 'alice@team', resumableAgentId: 'aalice-1' }, messages: [], pendingUserMessages: [] },
         t2: { ...base, id: 't2', type: 'in_process_teammate', status: 'completed', messages: [], pendingUserMessages: [] },
         term1: { ...base, id: 'term1', type: 'interactive_terminal', status: 'running', sessionId: 's', command: 'bash', args: [], cwd: '/', cols: 80, rows: 24, preview: '$ echo hi\nhi', closed: false },
       } as unknown as typeof initial.tasks,
@@ -103,9 +114,11 @@ if (process.env[childFlag] !== '1') {
     expect(queued.response).toEqual({ delivery: 'queued' })
     const tasks = store.getState().tasks as Record<string, any>
     expect(tasks.a1.pendingMessages).toEqual([{ text: 'also check the appendix', fromUser: true }])
-    expect(tasks.a1.messages).toHaveLength(1)
+    // Shown in its view from the queue until the agent reads it (#825).
+    expect(tasks.a1.messages).toHaveLength(0)
     expect(stopped).toMatchObject({ subtype: 'error', error: 'send_task_message: agent a2 was stopped by the user' })
-    expect(injected.response).toEqual({ delivery: 'injected' })
+    // A teammate's transcript is named by its agent id, which the web server keys sends by (#826).
+    expect(injected.response).toEqual({ delivery: 'injected', agent_id: 'aalice-1' })
     expect(tasks.t1.pendingUserMessages).toEqual(['hello teammate'])
     expect(teammateGone).toMatchObject({ subtype: 'error', error: 'send_task_message: teammate has stopped; message was not sent' })
     expect(unknown).toMatchObject({ subtype: 'error', error: 'send_task_message: no agent or teammate task' })
@@ -210,7 +223,8 @@ if (process.env[childFlag] !== '1') {
     ])
     expect(responses.map(r => r.subtype)).toEqual(['success', 'error', 'error', 'error', 'error'])
     const saved = JSON.parse(readFileSync(join(process.env.CLAUDE_CONFIG_DIR!, 'settings.json'), 'utf-8'))
-    expect(saved).toEqual({ effortLevel: 'low' })
+    // Like official 2.1.318, the level is saved for the session's current model.
+    expect(saved).toEqual({ modelSettings: { 'claude-opus-5-5': { effortLevel: 'low' } } })
   })
 
   // Official 2.1.303 treats stopping a task that is gone or already finished as done.
@@ -345,7 +359,7 @@ if (process.env[childFlag] !== '1') {
     expect(rules.response.state).toMatchObject({ workspaceDirectories: [], originalCwd: expect.any(String), managedOnly: false })
     expect(Array.isArray(rules.response.state.rules)).toBe(true)
     expect(diff.subtype).toBe('success')
-    expect(diff.response).toHaveProperty('diff')
+    expect(diff.response.diff.perFileStats).toMatchObject([{ path: 'package.json', added: 1, removed: 1 }])
     expect(taskOut).toMatchObject({ subtype: 'error', error: 'get_task_output: no shell or Monitor task with that task_id in this session' })
     expect(endedTask.response).toEqual({ output: '', total_bytes: 0, truncated: false })
     expect(bgAll.response).toEqual({})

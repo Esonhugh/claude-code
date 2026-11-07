@@ -228,7 +228,7 @@ async function getWatchTargets(): Promise<{
 }> {
   // Map from directory to all potential settings files in that directory
   const dirToSettingsFiles = new Map<string, Set<string>>()
-  const dirsWithExistingFiles = new Set<string>()
+  const watchedDirs = new Set<string>()
 
   for (const source of SETTING_SOURCES) {
     // Skip flagSettings - they're provided via CLI and won't change during the session.
@@ -251,21 +251,23 @@ async function getWatchTargets(): Promise<{
     }
     dirToSettingsFiles.get(dir)!.add(path)
 
-    // Check if file exists - only watch directories that have at least one existing file
+    // Watch every existing settings directory, even one with no settings file
+    // yet, so a file created mid-session (e.g. .claude/settings.local.json) is
+    // picked up.
     try {
-      const stats = await stat(path)
-      if (stats.isFile()) {
-        dirsWithExistingFiles.add(dir)
+      const stats = await stat(dir)
+      if (stats.isDirectory()) {
+        watchedDirs.add(dir)
       }
     } catch {
-      // File doesn't exist, that's fine
+      // Directory doesn't exist, that's fine
     }
   }
 
   // For watched directories, include ALL potential settings file paths
   // This ensures files created after init are also detected
   const settingsFiles = new Set<string>()
-  for (const dir of dirsWithExistingFiles) {
+  for (const dir of watchedDirs) {
     const filesInDir = dirToSettingsFiles.get(dir)
     if (filesInDir) {
       for (const file of filesInDir) {
@@ -283,14 +285,14 @@ async function getWatchTargets(): Promise<{
   try {
     const stats = await stat(managedDropIn)
     if (stats.isDirectory()) {
-      dirsWithExistingFiles.add(managedDropIn)
+      watchedDirs.add(managedDropIn)
       dropInDir = managedDropIn
     }
   } catch {
     // Drop-in directory doesn't exist, that's fine
   }
 
-  return { dirs: [...dirsWithExistingFiles], settingsFiles, dropInDir }
+  return { dirs: [...watchedDirs], settingsFiles, dropInDir }
 }
 
 function settingSourceToConfigChangeSource(

@@ -170,6 +170,8 @@ export type ModHostServices = ModRequestServices & ModHttpServices & {
   uiSelection?(): ModUiSelection | undefined | Promise<ModUiSelection | undefined>
   uiCopy?(input: ModUiCopyArgs & {surface: ModRenderSurface}, plugin: string, signal: AbortSignal): Promise<ModUiCopyResult>
   uiLog?(plugin: string, text: string, to: 'transcript' | 'debug'): void
+  /** Shows a Mod diagnostic where the person reads the session (the interactive transcript). */
+  uiDiagnostic?(plugin: string, text: string): void
   /** Keeps a plugin's own row (door `note`) in the main conversation. */
   appendMessage?(row: { message: SessionAppendMessage; uuid: string }): void | Promise<void>
   /** Runs queued input while the host is idle; QueryEngine calls it for input it queued after its turn ended. */
@@ -3046,7 +3048,10 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
         event, input, hooks: hooksFor(snapshot, table, options.only, options.drawing, options.skipOwner, callerChain)
           .filter(hook => !['ui.fault', 'ui.message'].includes(event) || !options.only || hook.plugin === options.only.declaration.name)
           // Only managed and built-in tiers hook the session's identity.
-          .filter(hook => event !== 'session.identity' || hook.tier !== 'user'), core,
+          .filter(hook => event !== 'session.identity' || hook.tier !== 'user'),
+        // state.* cores are the hook's own reads and writes; everything else is
+        // host work (a tool, a subagent) that must not inherit the hook's snapshot.
+        core: event.startsWith('state.') ? core : (value, coreSignal) => state.outside(() => core(value, coreSignal)),
         signal: combined.signal, origin, callerChain,
         ...(event === 'prompt.edit' ? {budgetMs: promptEditBudgetMs} : {}),
         reportDirectCoreFailure: options.reportDirectCoreFailure,

@@ -48,6 +48,34 @@ test('ensureSessionTeam creates session-<id> with the leader and keeps session t
   expect(existsSync(getTasksDir(sessionId))).toBe(false)
 })
 
+test('ensureSessionTeam drops the previous run\'s in-process members on resume (#802)', async () => {
+  const teamName = getSessionTeamName()
+  const previous = await readTeamFileAsync(teamName)
+  if (!previous) throw new Error('team file missing')
+  const member = (name: string, backendType: 'in-process' | 'tmux') => ({
+    agentId: `${name}@${teamName}`,
+    name,
+    agentType: 'general-purpose',
+    joinedAt: 1,
+    tmuxPaneId: name,
+    cwd: '/work',
+    subscriptions: [],
+    backendType,
+  })
+  const { writeTeamFileAsync } = await import('./teamHelpers.js')
+  await writeTeamFileAsync(teamName, {
+    ...previous,
+    members: [...previous.members, member('ghost', 'in-process'), member('pane', 'tmux')],
+  })
+
+  const { getAppState, setAppState } = fakeState()
+  expect(await ensureSessionTeam(getAppState, setAppState)).toBe(teamName)
+
+  const teamFile = await readTeamFileAsync(teamName)
+  expect(teamFile?.members.map(m => m.name)).toEqual(['team-lead', 'pane'])
+  expect(teamFile?.members[0]?.backendType).toBe('in-process')
+})
+
 test('ensureSessionTeam keeps a team the leader already has', async () => {
   const { getAppState, setAppState } = fakeState()
   setAppState(prev => ({

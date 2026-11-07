@@ -1,6 +1,7 @@
 import { setMainLoopModelOverride } from '../../bootstrap/state.js'
 import { COMMON_HELP_ARGS, COMMON_INFO_ARGS } from '../../constants/xml.js'
 import type { LocalCommandCall } from '../../types/command.js'
+import { getEffortForModel } from '../../utils/effort.js'
 import { MODEL_ALIASES } from '../../utils/model/aliases.js'
 import {
   getDefaultMainLoopModel,
@@ -65,6 +66,7 @@ export const call: LocalCommandCall = async (args, context) => {
   // saved default (official 2.1.311).
   const model = requested ?? getDefaultMainLoopModel()
   setMainLoopModelOverride(model)
+  context.setAppState(prev => ({ ...prev, effortValue: getEffortForModel(model) }))
   notifySessionMetadataChanged({ model })
   return {
     type: 'text',

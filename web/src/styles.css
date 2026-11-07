@@ -80,7 +80,8 @@ h1, h2, h3 { text-wrap: balance; margin: 0 }
 .wl-cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px }
 .wl-card { border: 1px solid var(--line); border-radius: 10px; background: var(--surface); padding: 10px 12px; text-align: left; font: inherit; color: var(--fg); cursor: pointer; display: flex; flex-direction: column; gap: 6px; min-width: 0 }
 .wl-card:hover { border-color: var(--accent) }
-.wl-card .sn { overflow-wrap: anywhere; font-size: 12px; color: var(--muted); display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; background: var(--sunken); border-radius: 6px; padding: 6px 8px; min-height: 56px }
+/* Three lines exactly: the bottom gap is a border, so overflow clips a fourth line instead of showing it in the padding. */
+.wl-card .sn { overflow-wrap: anywhere; font-size: 12px; line-height: 1.55; color: var(--muted); display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; background: var(--sunken); border-radius: 6px; padding: 6px 8px 0; border-bottom: 6px solid transparent; height: calc(3 * 1.55em + 12px) }
 .wl-card b { font-weight: 500; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap } .wl-card small { color: var(--muted); font-size: 11.5px }
 @media (max-width: 760px) { .wl-cards { grid-template-columns: minmax(0, 1fr) } .wl-hi { font-size: 22px } .wl-card .sn { display: none } .wl-hi { flex-direction: column; gap: 8px } }
 .meta { display: flex; gap: 8px; align-items: center; padding: 8px 20px; border-bottom: 1px solid var(--line); flex-wrap: nowrap; font-size: 12.5px; color: var(--muted) }
@@ -305,15 +306,21 @@ h1, h2, h3 { text-wrap: balance; margin: 0 }
 
 /* composer extras */
 .composer form { flex-direction: column; align-items: stretch; position: relative }
-.cbox { display: flex; gap: 8px; align-items: flex-end; border: 1px solid var(--line); border-radius: 16px; background: var(--surface); padding: 8px 8px 8px 12px; box-shadow: 0 1px 3px rgba(0,0,0,.06) }
+/* One card like dsh web's composer: the text on top, then its controls and send inside the same card. */
+.cbox { display: flex; flex-direction: column; gap: 6px; border: 1px solid var(--line); border-radius: 22px; background: var(--surface); padding: 8px 8px 6px; box-shadow: 0 2px 12px rgba(0,0,0,.06) }
+.cquote { display: flex; align-items: flex-start; gap: 6px; margin: 0 2px; padding: 6px 6px 6px 10px; border-left: 3px solid color-mix(in srgb, var(--accent) 55%, var(--line)); border-radius: 8px; background: var(--sunken); font-size: 12.5px; color: var(--muted) }
+.cquote-text { flex: 1; min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden }
+.cquote .x { flex: none; border: 0; background: transparent; color: inherit; padding: 0 4px; font-size: 15px; line-height: 1; cursor: pointer; opacity: .7 }
+.cquote .x:hover { opacity: 1; color: var(--fg) }
+.cin { display: flex; gap: 8px; align-items: flex-end; padding: 0 6px; min-width: 0 }
 .cbox.drag { border-color: var(--accent); background: var(--accent-soft) }
-.cbox textarea { border: 0; background: transparent; padding: 5px 2px; height: 30px; line-height: 20px; max-height: 160px; display: block }
+.cbox textarea { border: 0; background: transparent; padding: 4px 2px; height: 32px; line-height: 22px; max-height: 176px; display: block; caret-color: var(--accent) }
 .cbox textarea:focus-visible { outline: none }
-.cbox:focus-within { border-color: var(--accent) }
+.cbox:focus-within { border-color: color-mix(in srgb, var(--accent) 45%, var(--line)) }
 .to-chips { flex: none; align-self: flex-end; display: flex; flex-wrap: wrap; gap: 4px; max-width: 50%; margin-bottom: 2px }
 /* Two or more picks take their own row above the text, which keeps the full width. */
-.cbox:has(.to-chip + .to-chip) { flex-wrap: wrap }
-.cbox .to-chips:has(.to-chip + .to-chip) { flex-basis: 100%; max-width: 100%; align-self: auto }
+.cin:has(.to-chip + .to-chip) { flex-wrap: wrap }
+.cin .to-chips:has(.to-chip + .to-chip) { flex-basis: 100%; max-width: 100%; align-self: auto }
 .to-chip { flex: none; max-width: 100%; display: inline-flex; align-items: center; gap: 2px; height: 26px; padding: 0 4px 0 8px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); font-size: 12.5px; font-weight: 500; white-space: nowrap }
 .to-chip span { overflow: hidden; text-overflow: ellipsis }
 .to-chip button { border: 0; background: transparent; color: inherit; padding: 0 4px; font-size: 14px; line-height: 1; cursor: pointer; opacity: .7 }
@@ -322,7 +329,15 @@ h1, h2, h3 { text-wrap: balance; margin: 0 }
 .plus:hover, .plus[aria-expanded="true"] { background: var(--sunken); color: var(--fg) }
 .send { width: 30px; height: 30px; border-radius: 999px; border: 0; background: var(--accent); color: var(--surface); flex: none; display: grid; place-items: center; padding: 0; cursor: pointer }
 .send:disabled, .cbox:has(textarea:placeholder-shown) .send, .wl-box:has(textarea:placeholder-shown) .send { background: var(--sunken); color: var(--muted) }
-.crow > .plus { margin-left: -2px }
+.crow > .plus { border-radius: 999px; background: var(--sunken); color: var(--fg); font-size: 18px }
+.crow > .plus:hover, .crow > .plus[aria-expanded="true"] { background: var(--line) }
+.crow .footbtn { height: 28px; padding: 0 8px; border-radius: 8px; font-size: 13px; font-weight: 500; white-space: nowrap }
+.crow .footbtn::after { content: ''; width: 5px; height: 5px; margin: -3px 0 0 2px; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; transform: rotate(45deg); opacity: .55 }
+/* The row's menus open over the whole card, so on a phone a menu never starts mid-row and runs off screen. */
+.cbox { position: relative }
+.crow > .footwrap { position: static }
+.crow > .send { width: 32px; height: 32px; margin-left: auto }
+.crow > .footwrap.right + .send { margin-left: 4px }
 .hint { font-size: 11.5px; color: var(--muted); padding: 4px 4px 0 }
 .attachments { display: flex; gap: 6px; flex-wrap: wrap; padding-bottom: 6px }
 .attachments:empty { display: none }
@@ -363,6 +378,10 @@ h1, h2, h3 { text-wrap: balance; margin: 0 }
 .toolcard .tdec { font-size: 11.5px; color: var(--muted); white-space: nowrap }
 .steps > summary .sd.bad { color: var(--bad) }
 .new-below { position: sticky; bottom: 10px; align-self: center; z-index: 5; border: 1px solid var(--line); background: var(--surface); color: var(--fg); border-radius: 999px; padding: 5px 14px; font: inherit; font-size: 12.5px; cursor: pointer; box-shadow: 0 4px 14px rgb(0 0 0 / .1) }
+.uquote { margin-bottom: 6px; padding-left: 9px; border-left: 3px solid color-mix(in srgb, var(--accent) 55%, var(--line)); color: var(--muted); font-size: 12.5px; white-space: pre-wrap; display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden }
+.quote-pop { position: fixed; z-index: 30; transform: translate(-50%, calc(-100% - 6px)); border: 1px solid var(--line); background: var(--surface); color: var(--fg); font: inherit; font-size: 12.5px; font-weight: 500; padding: 4px 11px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,.12); cursor: pointer }
+.quote-pop::before { content: '↩ '; color: var(--muted) }
+.quote-pop:hover { background: var(--sunken) }
 .msg-acts { display: flex; gap: 2px; margin-top: -2px; opacity: 0; transition: opacity .15s }
 .msg.assistant:hover .msg-acts, .msg-acts:focus-within { opacity: 1 }
 .msg-acts button { border: 0; background: none; color: var(--muted); font: inherit; font-size: 12px; padding: 3px 7px; border-radius: 6px; cursor: pointer }
@@ -427,7 +446,7 @@ mark { background: var(--warn-soft); color: inherit; border-radius: 2px; padding
 
 
 /* artifact view: the file takes the middle, the conversation moves to the right, the side panel steps aside */
-body.art .app { grid-template-columns: var(--left-w, 220px) minmax(0, 1fr) clamp(340px, 30vw, 460px) } body.art .side { display: none !important }
+body.art .app { grid-template-columns: var(--left-w, 220px) minmax(0, 1fr) var(--chat-w, clamp(340px, 30vw, 460px)) } body.art .side { display: none !important }
 .artview { display: flex; flex-direction: column; min-width: 0; min-height: 0; border-right: 1px solid var(--line); background: var(--bg) }
 .arthead { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; padding: 8px 12px; border-bottom: 1px solid var(--line); background: var(--surface) }
 .arthead .kind { font-size: 11px; border: 1px solid var(--line); border-radius: 4px; padding: 0 5px; color: var(--muted) }
@@ -459,8 +478,9 @@ body.hist .main.asking > * { opacity: 1 }
 .col-drag { position: fixed; top: 0; bottom: 0; width: 8px; cursor: col-resize; z-index: 8; touch-action: none }
 .col-drag.left { left: calc(var(--left-w, 220px) - 4px) }
 .col-drag.right { right: calc(var(--right-w, clamp(300px, 28vw, 420px)) - 4px) }
+.col-drag.chat { right: calc(var(--chat-w, clamp(340px, 30vw, 460px)) - 4px) }
 .col-drag:hover, .col-drag.on, .col-drag:focus-visible { background: color-mix(in srgb, var(--accent) 25%, transparent); outline: 0 }
-body.nosess .col-drag.right, body.art .col-drag.right { display: none }
+body.nosess .col-drag.right, body.art .col-drag.right, body:not(.art) .col-drag.chat { display: none }
 @media (max-width: 1100px) { .col-drag { display: none } }
 @media (max-width: 600px) { .memgrid { grid-template-columns: minmax(0, 1fr) } }
 .panel-btn, .sheet-head { display: none }
@@ -506,7 +526,12 @@ button.chip { cursor: pointer; font: inherit; color: inherit }
 .ctxlegend { display: grid; grid-template-columns: auto 1fr auto; gap: 4px 8px; align-items: center; color: var(--muted) }
 .ctxlegend .sw { width: 9px; height: 9px; border-radius: 2px }
 .ctxlegend .mono { color: var(--fg); text-align: right }
-.crow { display: flex; gap: 4px; padding: 0 2px; align-items: center; justify-content: flex-start; flex-wrap: wrap }
+.crow { display: flex; gap: 6px; padding: 0; align-items: center; justify-content: flex-start; container-type: inline-size }
+/* A long model name shortens with an ellipsis instead of pushing the row onto a second line. */
+.crow > .footwrap.right { min-width: 0 } .crow > .footwrap.right > .footbtn { max-width: 100% }
+.crow .footbtn .ml { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
+/* A narrow card keeps one row: the mode chip drops to its mark, as dsh web's chips go icon-only. */
+@container (max-width: 420px) { .crow .footbtn.perm > span:not(.pmark) { display: none } }
 .crow .hint { flex: 1 1 260px; min-width: 0 }
 .opts { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; margin-left: auto }
 .opt { display: inline-flex; align-items: center; gap: 4px; height: 26px; box-sizing: border-box; font-size: 12px; line-height: 1; color: var(--muted); border: 1px solid var(--line); border-radius: 999px; padding: 0 8px 0 10px; background: var(--bg) }
@@ -738,6 +763,7 @@ body { margin: 0 }
 .meta .sp { flex: 1 }
 .meta > :not(.chip.mono):not(.sp) { flex: none }
 .meta > .chip.mono, .pv-head .chip.mono { display: block; flex: 0 100 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
+.meta > .chip.cwd:hover { border-color: var(--accent) }
 .meta .menu-btn, .meta .panel-btn { padding: 2px 9px }
 .welcome .menu-btn { position: absolute; top: 12px; left: 16px }
 .notice { max-width: var(--col); margin: 0 auto 8px; font-size: 12.5px; padding: 6px 10px; border-radius: 8px; background: var(--warn-soft); color: var(--warn) }
@@ -943,6 +969,20 @@ a.btn { text-decoration: none; color: var(--fg); display: inline-block }
 .cpin { position: absolute; z-index: 2; width: 22px; height: 22px; margin: -11px 0 0 -11px; box-sizing: border-box; border: 2px solid var(--surface); display: grid; place-items: center; border-radius: 50%; background: var(--accent); color: var(--surface); font-size: 11px; font-weight: 600; box-shadow: 0 1px 4px rgba(0,0,0,.3); cursor: default; font-variant-numeric: tabular-nums }
 .cpin.sent { opacity: .85 }
 .pinnable .cpin-box { margin-top: 16px }
+.slides-pins { position: relative; width: 100% }
+.slides-pins.pinning [data-slide-index] { cursor: crosshair }
+.slide-pins { position: absolute; pointer-events: none }
+.slide-pins > * { pointer-events: auto }
+.slide-pins .cpin-box { margin-top: 16px }
+/* pdf.js text layer: invisible text over the canvas, for selecting (rules from pdfjs-dist/web/pdf_viewer.css). */
+.pdf-page .textLayer { position: absolute; inset: 0; overflow: clip; line-height: 1; text-align: initial; transform-origin: 0 0; z-index: 1; --scale-round-x: 1px; --scale-round-y: 1px; --min-font-size: 1; --text-scale-factor: calc(var(--total-scale-factor) * var(--min-font-size)); --min-font-size-inv: calc(1 / var(--min-font-size)) }
+.pdf-page .textLayer :is(span, br) { color: transparent; position: absolute; white-space: pre; cursor: text; transform-origin: 0% 0% }
+.pdf-page .textLayer > :not(.markedContent), .pdf-page .textLayer .markedContent span:not(.markedContent) { z-index: 1; --font-height: 0; font-size: calc(var(--text-scale-factor) * var(--font-height)); --scale-x: 1; --rotate: 0deg; transform: rotate(var(--rotate)) scaleX(var(--scale-x)) scale(var(--min-font-size-inv)) }
+.pdf-page .textLayer .markedContent { display: contents }
+.pdf-page .textLayer ::selection { background: color-mix(in srgb, AccentColor, transparent 50%); color: transparent }
+.pdf-page .textLayer br::selection { background: transparent }
+.pdf-page .textLayer .endOfContent { display: block; position: absolute; inset: 100% 0 0; z-index: 0; cursor: default; user-select: none }
+.pdf-page .textLayer.selecting .endOfContent { top: 0 }
 .cpin-box { position: absolute; z-index: 3; margin: 6px; width: min(280px, 80vw); display: flex; flex-direction: column; gap: 6px; padding: 8px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); box-shadow: 0 6px 20px rgba(0,0,0,.18); cursor: auto }
 .cpin-box textarea { font: inherit; font-size: 13px; resize: vertical; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--fg); padding: 6px 8px }
 .cpin-box .btns { display: flex; gap: 6px; justify-content: flex-end }
@@ -1076,3 +1116,51 @@ body.proj .main, body.proj .side, body.proj .artview, body.proj #panel-btn { dis
 .termrow .meta2 { grid-column: 2 / -1 }
 .termrow .name .caret { display: inline-block; width: auto; margin: 0 6px 0 0; font-size: 10px }
 .termbody { display: flex; flex-direction: column; gap: 6px }
+
+/* Mods (remote UI): panes in the side panel or on the canvas, the band above the composer, toasts. */
+.mod-view { font-family: var(--f-mono); font-size: 12.5px; line-height: 1.45; min-width: 0; overflow-wrap: anywhere }
+.mod-view .btn, .mod-view input { font-family: inherit; font-size: 12.5px }
+.mod-cell-probe { position: absolute; visibility: hidden; white-space: pre; font: inherit }
+.mod-note { color: var(--muted); font-size: 12px }
+.mod-plugin { color: var(--muted); font-size: 11px }
+.mod-btn { padding: 1px 8px; white-space: nowrap; flex-shrink: 0 }
+.mod-input { display: flex; gap: 6px; align-items: center; min-width: 0 }
+.mod-input input { flex: 1; min-width: 0; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--fg); padding: 2px 6px }
+.mod-select { display: flex; flex-wrap: wrap; gap: 4px; align-items: center }
+.mod-select .btn.on { border-color: var(--accent); color: var(--accent); background: var(--accent-soft) }
+.mod-label { color: var(--muted) }
+.mod-svg { max-width: 100% }
+.mods-tab { display: flex; flex-direction: column; gap: 12px }
+.mod-status { display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface) }
+.mod-pane { border: 1px solid var(--line); border-radius: 8px; background: var(--surface); overflow: hidden }
+.mod-pane > header { display: flex; gap: 8px; align-items: center; padding: 6px 10px; border-bottom: 1px solid var(--line) }
+.mod-pane > header b { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px }
+.mod-pane > header .btn { padding: 2px 8px; font-size: 12px }
+.mod-pane > .mod-view, .mod-pane > .note { padding: 8px 10px }
+.mod-band:not(:empty) { margin: 0 0 6px; padding: 6px 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface) }
+.mod-canvas-view { flex: 1; min-height: 0 }
+.canvas-tabs { display: flex; gap: 2px; padding: 6px 10px 0; border-bottom: 1px solid var(--line); background: var(--surface); overflow-x: auto }
+.canvas-tabs button { border: 1px solid transparent; border-bottom: 0; background: none; padding: 4px 10px; font-size: 12.5px; border-radius: 6px 6px 0 0; color: var(--muted); white-space: nowrap }
+.canvas-tabs button[aria-selected="true"] { border-color: var(--line); background: var(--bg); color: var(--fg); margin-bottom: -1px }
+/* Above the input box of the chat they belong to, so they never cover its send button. */
+.composer:has(> .mod-toasts) { position: relative }
+.mod-toasts { position: absolute; right: 20px; bottom: 100%; margin-bottom: 8px; z-index: 40; display: flex; flex-direction: column; gap: 6px; align-items: flex-end; max-width: min(360px, calc(100vw - 32px)) }
+.mod-toast { text-align: left; padding: 8px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); color: var(--fg); box-shadow: 0 6px 20px rgba(0,0,0,.18); font-size: 13px }
+:root[data-theme="dark"] :is(.mod-view, .mod-site, .mod-foot) { --mod-black: #c9d1d9; --mod-red: #ff7b72; --mod-green: #3fb950; --mod-yellow: #d29922; --mod-blue: #58a6ff; --mod-magenta: #d2a8ff; --mod-cyan: #39c5cf; --mod-white: #f0f6fc; --mod-gray: #8b949e; --mod-grey: #8b949e }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) :is(.mod-view, .mod-site, .mod-foot) { --mod-black: #c9d1d9; --mod-red: #ff7b72; --mod-green: #3fb950; --mod-yellow: #d29922; --mod-blue: #58a6ff; --mod-magenta: #d2a8ff; --mod-cyan: #39c5cf; --mod-white: #f0f6fc; --mod-gray: #8b949e; --mod-grey: #8b949e } }
+/* A page row as Mods draw it: their tree, with the page's row where it says. */
+.mod-site { min-width: 0; overflow-wrap: anywhere }
+.mod-site .mod-btn { font-size: 12px }
+.mod-frame { display: none }
+.mod-client { min-width: 0; overflow: hidden; border-radius: 4px; outline: none }
+.mod-client:focus-visible { box-shadow: 0 0 0 1px var(--accent, #0969da) }
+.mod-client .mod-btn { flex-shrink: 0; white-space: nowrap }
+.mod-foot { display: flex; gap: 12px; justify-content: space-between; padding: 4px 6px 0; color: var(--muted); font-size: 12px }
+.mod-foot:empty { display: none }
+/* Mods' marks on the draft: a copy of the text under the transparent box, lined up with it. */
+.cdeco { position: relative; flex: 1; min-width: 0; display: flex }
+.cdeco > textarea { flex: 1; position: relative }
+.cdeco-mirror { position: absolute; inset: 0; padding: 4px 2px; line-height: 22px; font: inherit; white-space: pre-wrap; overflow-wrap: break-word; color: transparent; overflow: hidden; pointer-events: none }
+.mod-suggest, .mod-complete { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 0 0 6px; font-size: 12.5px; color: var(--muted) }
+.mod-suggest .btn, .mod-complete .btn { padding: 2px 10px; font-size: 12.5px }
+.mod-complete .btn small { color: var(--muted); margin-left: 6px }

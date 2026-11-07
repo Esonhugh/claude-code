@@ -11,6 +11,8 @@ import {
   type Item,
   rewindTo,
   startRecap,
+  taskListTodos,
+  usesTaskList,
   initialState,
   permissionResponse,
   queueUserMessage,
@@ -145,6 +147,22 @@ describe('reduce', () => {
     })
   })
 
+  it('shows a failed tool call\'s error without the <tool_use_error> wrapper, like the TUI', () => {
+    const state = fold([
+      { type: 'assistant', message: { id: 'm1', content: [{ type: 'tool_use', id: 't1', name: 'TodoWrite', input: {} }] } },
+      {
+        type: 'user',
+        message: {
+          role: 'user',
+          content: [{ type: 'tool_result', tool_use_id: 't1', is_error: true, content: '<tool_use_error>Error: No such tool available: TodoWrite</tool_use_error>' }],
+        },
+      },
+    ])
+    expect(state.items.at(-1)).toMatchObject({
+      blocks: [{ kind: 'tool', id: 't1', result: 'Error: No such tool available: TodoWrite', isError: true }],
+    })
+  })
+
   it('builds messages without partial events and ignores subagent traffic', () => {
     const state = fold([
       {
@@ -243,7 +261,8 @@ describe('reduce', () => {
     ])
     expect(state.items.slice(1)).toEqual([
       { kind: 'user', id: 'u1', text: '/model sonnet' },
-      { kind: 'local', id: 'u2', text: 'Set model to Sonnet 5.5' },
+      // Named by the command typed just before it, as Mods' CommandOutput sees it.
+      { kind: 'local', id: 'u2', text: 'Set model to Sonnet 5.5', command: 'model', args: 'sonnet' },
       { kind: 'local', id: 'u3', text: 'Unknown model', isError: true },
       { kind: 'local', id: 'a4', text: 'Total cost: $0.00' },
     ])
@@ -445,6 +464,23 @@ describe('reduce', () => {
     expect(state.terminalCommands).toEqual(['color'])
   })
 
+  it('replaces the slash commands with those a plugins reload answers (#974)', () => {
+    const ok = (request_id: string, response: Record<string, unknown>) => ({
+      type: 'control_response',
+      response: { subtype: 'success', request_id, response },
+    })
+    const state = fold([
+      ok('web-init-1', { commands: [{ name: 'r5pane', description: 'Open', argumentHint: '' }] }),
+      ok('web-ext-2', { servers: [] }),
+      ok('web-ext-3', {
+        commands: [{ name: 'latecmd', description: 'Late mod command', argumentHint: '' }],
+        agents: [],
+        plugins: [{ name: 'r5late', path: '/p' }],
+      }),
+    ])
+    expect(state.commands).toEqual([{ name: 'latecmd', description: 'Late mod command', argumentHint: '' }])
+  })
+
   it('answers control requests the page does not handle with an error', () => {
     expect(
       unsupportedControlResponse({
@@ -458,6 +494,14 @@ describe('reduce', () => {
         type: 'control_request',
         request_id: 'r1',
         request: { subtype: 'can_use_tool' },
+      }),
+    ).toBeUndefined()
+    // Mods' questions about the prompt box are the page's to answer.
+    expect(
+      unsupportedControlResponse({
+        type: 'control_request',
+        request_id: 'm1',
+        request: { subtype: 'ui_prompt_fill', text: 'x', mode: 'replace' },
       }),
     ).toBeUndefined()
   })
@@ -693,6 +737,28 @@ describe('conversation extras', () => {
     ])
   })
 
+  it('reads the shared task list teammates update, in id order', () => {
+    expect(
+      taskListTodos({
+        tasks: [
+          { id: '10', subject: 'Ten', status: 'pending' },
+          { id: '2', subject: 'bob: owls', status: 'completed', activeForm: 'Sharing' },
+          { id: '1', subject: 'alice: octopuses', status: 'completed' },
+          'junk',
+        ],
+      }),
+    ).toEqual([
+      { content: 'alice: octopuses', status: 'completed' },
+      { content: 'bob: owls', status: 'completed', activeForm: 'Sharing' },
+      { content: 'Ten', status: 'pending' },
+    ])
+    expect(taskListTodos({})).toBeUndefined()
+    const create: Item = { kind: 'assistant', id: 'a1', streamed: false, blocks: [{ kind: 'tool', id: 't1', name: 'TaskCreate', input: '{}' }] }
+    const todo: Item = { kind: 'assistant', id: 'a2', streamed: false, blocks: [{ kind: 'tool', id: 't2', name: 'TodoWrite', input: '{}' }] }
+    expect(usesTaskList([todo, create])).toBe(true)
+    expect(usesTaskList([todo])).toBe(false)
+  })
+
   it('drops a rewound prompt and what followed, leaving a note', () => {
     const state = fold([{ type: 'assistant', message: { id: 'm1', content: [{ type: 'text', text: 'a' }] } }])
     const next = addUserMessage(state, 'again', undefined, 'u2')
@@ -851,5 +917,44 @@ describe('interrupts and session info', () => {
       ],
     })
     expect(state.env.plugins?.map(p => p.name)).toEqual(['mine'])
+  })
+})
+
+describe('mods', () => {
+  it('keeps panes, redraw marks, toasts and status entries from the session', () => {
+    const sys = (raw: Record<string, unknown>) => ({ type: 'system', session_id: 's', ...raw })
+    let state = [
+      sys({ subtype: 'ui_panes', panes: [{ id: 'counter', title: 'Counter', plugin: 'webtest', columns: 40 }, { title: 'no id' }], shown_id: 'counter' }),
+      sys({ subtype: 'ui_invalidate', event: 'ui.render', instances: [{ surface: 'desktop', component: 'Pane', instance_id: 'counter' }] }),
+      sys({ subtype: 'ui_invalidate', event: 'ui.render' }),
+      sys({ subtype: 'ui_toast', uuid: 't1', plugin: 'webtest', text: 'count is 1', timeout_ms: 2000 }),
+      sys({ subtype: 'ui_status', plugin: 'webtest', text: 'typed hi' }),
+    ].reduce(reduce, initialState)
+    expect(state.mods.panes).toEqual([{ id: 'counter', title: 'Counter', plugin: 'webtest', columns: 40 }])
+    expect(state.mods.shownId).toBe('counter')
+    expect(state.mods.seq).toEqual({ 'Pane:counter': 1, '*': 1 })
+    expect(state.mods.toasts.map(t => [t.text, t.timeoutMs])).toEqual([['count is 1', 2000]])
+    expect(state.mods.status).toEqual({ webtest: 'typed hi' })
+    expect(state.items).toEqual([])
+    state = reduce(state, sys({ subtype: 'ui_status', plugin: 'webtest', text: null }))
+    expect(state.mods.status).toEqual({})
+  })
+})
+
+describe('mods panes answer', () => {
+  it('takes the panes a ui_panes request answers', () => {
+    const state = reduce(initialState, {
+      type: 'control_response',
+      response: { subtype: 'success', request_id: 'web-mods-3', response: { panes: [{ id: 'p', title: 'P', plugin: 'x' }], shown_id: 'p' } },
+    })
+    expect(state.mods.panes).toEqual([{ id: 'p', title: 'P', plugin: 'x' }])
+  })
+  it('notes that the session took the page as a Mods client', () => {
+    expect(initialState.mods.attached).toBeUndefined()
+    const state = reduce(initialState, {
+      type: 'control_response',
+      response: { subtype: 'success', request_id: 'web-mods-1', response: { surfaces: ['desktop'] } },
+    })
+    expect(state.mods.attached).toBe(true)
   })
 })

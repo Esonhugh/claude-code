@@ -140,6 +140,10 @@ import {
   permissionRuleValueFromString,
 } from './permissions/permissionRuleParser.js'
 import { logError } from './log.js'
+import { appliedPatchHookSteps, type PatchHookStep, plannedPatchHookSteps } from '../tools/ApplyPatchTool/plan.js'
+import { APPLY_PATCH_TOOL_NAME } from '../tools/ApplyPatchTool/prompt.js'
+import { FILE_EDIT_TOOL_NAME } from '../tools/FileEditTool/constants.js'
+import { FILE_WRITE_TOOL_NAME } from '../tools/FileWriteTool/prompt.js'
 import { createCombinedAbortSignal } from './combinedAbortSignal.js'
 import type { PermissionResult } from './permissions/PermissionResult.js'
 import { registerPendingAsyncHook } from './hooks/AsyncHookRegistry.js'
@@ -269,8 +273,10 @@ function executeInBackground({
     return true
   }
 
-  // TaskOutput on the ShellCommand accumulates data — no stream listeners needed
-  if (!shellCommand.background(processId)) {
+  // TaskOutput on the ShellCommand accumulates data — no stream listeners needed.
+  // Keep it in memory: after a spill getStdout() returns only a truncation
+  // notice, and the registry would parse that instead of the hook's JSON.
+  if (!shellCommand.background(processId, { skipSpill: true })) {
     return false
   }
 
@@ -954,6 +960,7 @@ async function execCommandHook(
   // entered value containing the literal text ${CLAUDE_PLUGIN_ROOT} is treated
   // as opaque — not re-interpreted as a template.
   let command = hook.command
+  let args = hook.args
   let pluginOpts: ReturnType<typeof loadPluginOptions> | undefined
   if (pluginRoot) {
     // Plugin directory gone (orphan GC race, concurrent session deleted it):
@@ -976,15 +983,21 @@ async function execCommandHook(
     // form .replace() so paths containing $ aren't mangled by $-pattern
     // interpretation (rare but possible: \\server\c$\plugin).
     const rootPath = toHookPath(pluginRoot)
-    command = command.replace(/\$\{CLAUDE_PLUGIN_ROOT\}/g, () => rootPath)
-    if (pluginId) {
-      const dataPath = toHookPath(getPluginDataDir(pluginId))
-      command = command.replace(/\$\{CLAUDE_PLUGIN_DATA\}/g, () => dataPath)
+    const dataPath = pluginId
+      ? toHookPath(getPluginDataDir(pluginId))
+      : undefined
+    const substitute = (value: string) => {
+      const withRoot = value.replace(/\$\{CLAUDE_PLUGIN_ROOT\}/g, () => rootPath)
+      return dataPath === undefined
+        ? withRoot
+        : withRoot.replace(/\$\{CLAUDE_PLUGIN_DATA\}/g, () => dataPath)
     }
+    command = substitute(command)
+    args = args?.map(substitute)
     if (pluginId) {
       pluginOpts = loadPluginOptions(pluginId)
       // A substituted value would be re-parsed by the shell (official 2.1.207).
-      if (/\$\{user_config\.[^}]*\}/.test(command))
+      if (!args && /\$\{user_config\.[^}]*\}/.test(command))
         throw new Error(
           `Hook from plugin ${pluginId} references \${user_config.*} in a shell-form command. The substituted value would be re-parsed by the shell. Read $CLAUDE_PLUGIN_OPTION_<KEY> from the hook's environment instead. Command: ${hook.command}`,
         )
@@ -994,7 +1007,12 @@ async function execCommandHook(
   // On Windows (bash only), auto-prepend `bash` for .sh scripts so they
   // execute instead of opening in the default file handler. PowerShell
   // runs .ps1 files natively — no prepend needed.
-  if (isWindows && !isPowerShell && command.trim().match(/\.sh(\s|$|")/)) {
+  if (
+    !args &&
+    isWindows &&
+    !isPowerShell &&
+    command.trim().match(/\.sh(\s|$|")/)
+  ) {
     if (!command.trim().startsWith('bash ')) {
       command = `bash ${command}`
     }
@@ -1093,7 +1111,16 @@ async function execCommandHook(
   // startup, which will exit first. Relaxing that is phase 1 of the
   // design's implementation order (separate PR).
   let child: ChildProcessWithoutNullStreams
-  if (shellType === 'powershell') {
+  if (args) {
+    // Exec form: no shell parses the command or its arguments, so the hook's
+    // stdin JSON and substituted paths can never be run as shell code.
+    child = spawn(command, args, {
+      env: envVars,
+      cwd: safeCwd,
+      shell: false,
+      windowsHide: true,
+    }) as ChildProcessWithoutNullStreams
+  } else if (shellType === 'powershell') {
     const pwshPath = await getCachedPowerShellPath()
     if (!pwshPath) {
       throw new Error(
@@ -1141,6 +1168,12 @@ async function execCommandHook(
     // bash `read -r line` returns exit 1 (EOF before delimiter) — the
     // variable IS populated but `if read -r line; then ...` skips the
     // branch. See gh-30509 / CC-161.
+    // A hook that exits without reading stdin closes the pipe; without a
+    // listener the EPIPE surfaces as an uncaughtException (the sync path
+    // below handles the same case).
+    child.stdin.on('error', (err: Error) => {
+      logForDebugging(`Hook stdin write failed (${hookId}): ${err.message}`)
+    })
     child.stdin.write(jsonInput + '\n', 'utf8')
     child.stdin.end()
     stdinWritten = true
@@ -1183,6 +1216,7 @@ async function execCommandHook(
         stderr: string
         output: string
         status: number
+        backgrounded?: boolean
       }) => void)
     | null = null
   const childIsAsyncPromise = new Promise<{
@@ -1191,6 +1225,7 @@ async function execCommandHook(
     output: string
     status: number
     aborted?: boolean
+    backgrounded?: boolean
   }>(resolve => {
     asyncResolve = resolve
   })
@@ -1280,11 +1315,14 @@ async function execCommandHook(
           })
           if (backgrounded) {
             shellCommandTransferred = true
+            // The registry reports the finished hook; the caller must not
+            // also parse this partial output as the hook's result.
             asyncResolve?.({
               stdout,
               stderr,
               output,
               status: 0,
+              backgrounded: true,
             })
           }
         } else if (isAsyncHookJSONOutput(parsed) && forceSyncExecution) {
@@ -1507,6 +1545,20 @@ const EXACT_LIST_MATCHER_EVENTS = new Set<string>([
   'DirectoryAdded',
 ])
 
+// apply_patch asks once for the whole patch, so permission hooks and `if`
+// conditions written for Edit/Write apply to that one request. Tool-use
+// hooks run once per file as Edit/Write instead (executePatchFileHooks).
+const PERMISSION_HOOK_EVENTS = new Set<string>(['PermissionRequest', 'PermissionDenied'])
+
+const TOOL_HOOK_ALIASES: Record<string, readonly string[]> = {
+  [APPLY_PATCH_TOOL_NAME]: [FILE_EDIT_TOOL_NAME, FILE_WRITE_TOOL_NAME],
+}
+
+function toolHookNames(toolName: string, hookEvent: string): readonly string[] {
+  const aliases = PERMISSION_HOOK_EVENTS.has(hookEvent) ? TOOL_HOOK_ALIASES[toolName] : undefined
+  return aliases ? [toolName, ...aliases] : [toolName]
+}
+
 function matchesPattern(
   matchQuery: string,
   matcher: string,
@@ -1515,6 +1567,7 @@ function matchesPattern(
   if (!matcher || matcher === '*') {
     return true
   }
+  const names = toolHookNames(matchQuery, hookEvent)
   // A plain identifier or a list of them is an exact match, not a regex.
   const listSyntax = EXACT_LIST_MATCHER_EVENTS.has(hookEvent)
   if ((listSyntax ? /^[a-zA-Z0-9_|, -]+$/ : /^[a-zA-Z0-9_|]+$/).test(matcher)) {
@@ -1522,22 +1575,16 @@ function matchesPattern(
       .split(listSyntax ? /[|,]/ : '|')
       .map(p => p.trim())
       .filter(Boolean)
-      .some(p => matchQuery === normalizeLegacyToolName(p))
+      .some(p => names.includes(normalizeLegacyToolName(p)))
   }
 
   // Otherwise treat as regex
   try {
     const regex = new RegExp(matcher)
-    if (regex.test(matchQuery)) {
-      return true
-    }
     // Also test against legacy names so patterns like "^Task$" still match
-    for (const legacyName of getLegacyToolNames(matchQuery)) {
-      if (regex.test(legacyName)) {
-        return true
-      }
-    }
-    return false
+    return names.some(
+      name => regex.test(name) || getLegacyToolNames(name).some(legacyName => regex.test(legacyName)),
+    )
   } catch {
     // If the regex is invalid, log error and return false
     logForDebugging(`Invalid regex pattern in hook matcher: ${matcher}`)
@@ -1567,7 +1614,13 @@ async function prepareIfConditionMatcher(
 
   const toolName = normalizeLegacyToolName(hookInput.tool_name)
   const tool = tools && findToolByName(tools, hookInput.tool_name)
-  const input = tool?.inputSchema.safeParse(hookInput.tool_input)
+  const parsed = tool?.inputSchema.safeParse(hookInput.tool_input)
+  // Fields a tool backfills for hooks (apply_patch's file_path) are extra
+  // keys to a strict schema; the model's own input is still valid.
+  const input =
+    parsed && !parsed.success && parsed.error.issues.every(issue => issue.code === 'unrecognized_keys')
+      ? { success: true as const, data: hookInput.tool_input as never }
+      : parsed
   const patternMatcher =
     input?.success && tool?.preparePermissionMatcher
       ? await tool.preparePermissionMatcher(input.data)
@@ -1575,7 +1628,7 @@ async function prepareIfConditionMatcher(
 
   return ifCondition => {
     const parsed = permissionRuleValueFromString(ifCondition)
-    if (normalizeLegacyToolName(parsed.toolName) !== toolName) {
+    if (!toolHookNames(toolName, hookInput.hook_event_name).includes(normalizeLegacyToolName(parsed.toolName))) {
       return false
     }
     if (!parsed.ruleContent) {
@@ -1941,7 +1994,7 @@ export async function getMatchingHooks(
           .map(m => [
             hookDedupKey(
               m,
-              `${m.hook.shell ?? DEFAULT_HOOK_SHELL}\0${m.hook.command}\0${getIfCondition(m.hook)}`,
+              `${m.hook.shell ?? DEFAULT_HOOK_SHELL}\0${m.hook.command}\0${JSON.stringify(m.hook.args ?? null)}\0${getIfCondition(m.hook)}`,
             ),
             m,
           ]),
@@ -2328,7 +2381,13 @@ async function* executeHooks({
       : undefined
     for (const [i, { hook }] of matchingHooks.entries()) {
       if (hook.type === 'callback') {
-        await hook.callback(hookInput, toolUseID, signal, i, context)
+        try {
+          await hook.callback(hookInput, toolUseID, signal, i, context)
+        } catch (error) {
+          logForDebugging(
+            `Callback hook ${i} for ${hookInput.hook_event_name} failed: ${errorMessage(error)}`,
+          )
+        }
       }
     }
     const totalDurationMs = Date.now() - batchStartTime
@@ -3800,6 +3859,36 @@ async function executeHooksOutsideREPL({
 }
 
 /**
+ * apply_patch does Edit's and Write's work on the OpenAI path, so tool-use
+ * hooks see it only as the Edit or Write call that would make each file's
+ * change, one run per file; there is no apply_patch event. A per-file hook can
+ * block, deny or ask, but cannot allow the whole patch or rewrite its input
+ * or output.
+ */
+async function* executePatchFileHooks(
+  hookInput: PreToolUseHookInput | PostToolUseHookInput | PostToolUseFailureHookInput,
+  steps: PatchHookStep[],
+  options: Omit<Parameters<typeof executeHooks>[0], 'hookInput' | 'matchQuery'>,
+): AsyncGenerator<AggregatedHookResult> {
+  for (const step of steps) {
+    const fileHookInput = {
+      ...hookInput,
+      tool_name: step.toolName,
+      tool_input: step.input,
+      ...(hookInput.hook_event_name === 'PostToolUse' && { tool_response: step.response }),
+    } as HookInput
+    for await (const result of executeHooks({
+      ...options,
+      hookInput: fileHookInput,
+      matchQuery: step.toolName,
+    })) {
+      const { updatedInput: _input, updatedToolOutput: _output, updatedMCPToolOutput: _mcpOutput, ...rest } = result
+      yield rest.permissionBehavior === 'allow' ? { ...rest, permissionBehavior: undefined } : rest
+    }
+  }
+}
+
+/**
  * Execute pre-tool hooks if configured
  * @param toolName The name of the tool (e.g., 'Write', 'Edit', 'Bash')
  * @param toolUseID The ID of the tool use
@@ -3843,17 +3932,13 @@ export async function* executePreToolHooks<ToolInput>(
     tool_use_id: toolUseID,
   }
 
-  yield* executeHooks({
-    sourceScope,
-    hookInput,
-    toolUseID,
-    matchQuery: toolName,
-    signal,
-    timeoutMs,
-    toolUseContext,
-    requestPrompt,
-    toolInputSummary,
-  })
+  const options = { sourceScope, toolUseID, signal, timeoutMs, toolUseContext, requestPrompt, toolInputSummary }
+  if (toolName === APPLY_PATCH_TOOL_NAME) {
+    const patch = (toolInput as { input?: unknown }).input
+    yield* executePatchFileHooks(hookInput, typeof patch === 'string' ? plannedPatchHookSteps(patch) : [], options)
+    return
+  }
+  yield* executeHooks({ ...options, hookInput, matchQuery: toolName })
 }
 
 /**
@@ -3890,15 +3975,12 @@ export async function* executePostToolHooks<ToolInput, ToolResponse>(
     duration_ms: durationMs,
   }
 
-  yield* executeHooks({
-    sourceScope,
-    hookInput,
-    toolUseID,
-    matchQuery: toolName,
-    signal,
-    timeoutMs,
-    toolUseContext,
-  })
+  const options = { sourceScope, toolUseID, signal, timeoutMs, toolUseContext }
+  if (toolName === APPLY_PATCH_TOOL_NAME) {
+    yield* executePatchFileHooks(hookInput, appliedPatchHookSteps(toolResponse), options)
+    return
+  }
+  yield* executeHooks({ ...options, hookInput, matchQuery: toolName })
 }
 
 /**
@@ -3944,15 +4026,13 @@ export async function* executePostToolUseFailureHooks<ToolInput>(
     duration_ms: durationMs,
   }
 
-  yield* executeHooks({
-    sourceScope,
-    hookInput,
-    toolUseID,
-    matchQuery: toolName,
-    signal,
-    timeoutMs,
-    toolUseContext,
-  })
+  const options = { sourceScope, toolUseID, signal, timeoutMs, toolUseContext }
+  if (toolName === APPLY_PATCH_TOOL_NAME) {
+    const patch = (toolInput as { input?: unknown }).input
+    yield* executePatchFileHooks(hookInput, typeof patch === 'string' ? plannedPatchHookSteps(patch) : [], options)
+    return
+  }
+  yield* executeHooks({ ...options, hookInput, matchQuery: toolName })
 }
 
 /**
@@ -4422,7 +4502,7 @@ export async function* executeUserPromptExpansionHooks(
  * @returns Async generator that yields progress messages and hook results
  */
 export async function* executeSessionStartHooks(
-  source: 'startup' | 'resume' | 'clear' | 'compact',
+  source: 'startup' | 'resume' | 'clear' | 'compact' | 'fork',
   sessionId?: string,
   agentType?: string,
   model?: string,

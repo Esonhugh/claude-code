@@ -190,7 +190,15 @@ export function toolDenialsIn(
   recorded: ReadonlySet<string>,
 ): SDKPermissionDenial[] {
   const kind = message.toolDenialKind
-  if (!kind || kind === 'interrupted' || kind === 'cancelled') return []
+  // user-rejected denials are recorded by the canUseTool wrapper; one that
+  // reaches here is an interrupted call (the streaming executor's reject).
+  if (
+    !kind ||
+    kind === 'interrupted' ||
+    kind === 'cancelled' ||
+    kind === 'user-rejected'
+  )
+    return []
   const content = message.message.content
   if (!Array.isArray(content)) return []
   const denials: SDKPermissionDenial[] = []
@@ -214,6 +222,19 @@ export function toolDenialsIn(
   return denials
 }
 
+/**
+ * The message the turn's result is read from. Stop hooks append progress,
+ * attachments and meta feedback after the assistant reply; a turn that ends
+ * on the consecutive Stop-hook block cap ends on that meta feedback, which
+ * would make the result text blank. Assistant replies and real user
+ * messages (tool results) are the terminal states isResultSuccessful knows.
+ */
+export function resultMessageOf(messages: readonly Message[]): Message | undefined {
+  return messages.findLast(
+    m => m.type === 'assistant' || (m.type === 'user' && !m.isMeta),
+  )
+}
+
 export type QueryEngineConfig = {
   modsSession?: ModsSession
   cwd: string
@@ -223,6 +244,8 @@ export type QueryEngineConfig = {
   commands: Command[]
   mcpClients: MCPServerConnection[]
   agents: AgentDefinition[]
+  /** Agent types the main thread may spawn (`--agent` with `Agent(type, ...)`). */
+  allowedAgentTypes?: string[]
   canUseTool: CanUseToolFn
   getAppState: () => AppState
   setAppState: (f: (prev: AppState) => AppState) => void
@@ -409,6 +432,7 @@ export class QueryEngine {
       replayUserMessages = false,
       includePartialMessages = false,
       agents = [],
+      allowedAgentTypes,
       setSDKStatus,
       orphanedPermission,
     } = this.config
@@ -550,7 +574,7 @@ export class QueryEngine {
         isNonInteractiveSession: true,
         customSystemPrompt,
         appendSystemPrompt,
-        agentDefinitions: this.config.modsSession?.runtime?.agents.projection({ activeAgents: agents, allAgents: agents }) ?? { activeAgents: agents, allAgents: agents },
+        agentDefinitions: { ...(this.config.modsSession?.runtime?.agents.projection({ activeAgents: agents, allAgents: agents }) ?? { activeAgents: agents, allAgents: agents }), allowedAgentTypes },
         theme: resolveThemeSetting(getGlobalConfig().theme),
         maxBudgetUsd,
       },
@@ -700,7 +724,7 @@ export class QueryEngine {
           ...processUserInputContext.options,
           commands: await this.config.modsSession.commands.describe(commands),
           tools: this.config.modsSession.tools?.projection(tools) ?? tools,
-          agentDefinitions: this.config.modsSession.runtime?.agents.projection({ activeAgents: agents, allAgents: agents }) ?? { activeAgents: agents, allAgents: agents },
+          agentDefinitions: { ...(this.config.modsSession.runtime?.agents.projection({ activeAgents: agents, allAgents: agents }) ?? { activeAgents: agents, allAgents: agents }), allowedAgentTypes },
         },
       }
     }
@@ -880,7 +904,7 @@ export class QueryEngine {
         customSystemPrompt,
         appendSystemPrompt,
         theme: resolveThemeSetting(getGlobalConfig().theme),
-        agentDefinitions: this.config.modsSession?.runtime?.agents.projection({ activeAgents: agents, allAgents: agents }) ?? { activeAgents: agents, allAgents: agents },
+        agentDefinitions: { ...(this.config.modsSession?.runtime?.agents.projection({ activeAgents: agents, allAgents: agents }) ?? { activeAgents: agents, allAgents: agents }), allowedAgentTypes },
         maxBudgetUsd,
       },
       getAppState,
@@ -1092,7 +1116,14 @@ export class QueryEngine {
     async function* trackTerminal<T>(
       loop: AsyncGenerator<T, { reason: TerminalReason } | undefined>,
     ): AsyncGenerator<T> {
-      terminal = yield* loop
+      try {
+        terminal = yield* loop
+      } catch (error) {
+        // Mods hooks (e.g. prompt.context) reject with the signal reason when the
+        // turn is aborted before its first request; that turn ends interrupted.
+        if (!signal.aborted || error !== signal.reason) throw error
+        terminal = { reason: 'aborted_streaming' }
+      }
     }
     // Official 2.1.311: result ttft_ms is the time to the first assistant
     // message, api_error_status the status of a trailing API error message.
@@ -1566,9 +1597,7 @@ export class QueryEngine {
     // return '' and -p mode emit a blank line. Allowlist to assistant|user:
     // isResultSuccessful handles both (user with all tool_result blocks is a
     // valid successful terminal state).
-    const result = messages.findLast(
-      m => m.type === 'assistant' || m.type === 'user',
-    )
+    const result = resultMessageOf(messages)
     // Capture for the error_during_execution diagnostic — isResultSuccessful
     // is a type predicate (message is Message), so inside the false branch
     // `result` narrows to never and these accesses don't typecheck.
@@ -1731,6 +1760,7 @@ export async function* ask({
   includePartialMessages = false,
   handleElicitation,
   agents = [],
+  allowedAgentTypes,
   setSDKStatus,
   orphanedPermission,
   modsSession,
@@ -1771,6 +1801,7 @@ export async function* ask({
   includePartialMessages?: boolean
   handleElicitation?: ToolUseContext['handleElicitation']
   agents?: AgentDefinition[]
+  allowedAgentTypes?: string[]
   setSDKStatus?: ToolUseContext['setSDKStatus']
   orphanedPermission?: OrphanedPermission
 }): AsyncGenerator<SDKMessage, void, unknown> {
@@ -1783,6 +1814,7 @@ export async function* ask({
     commands,
     mcpClients,
     agents,
+    allowedAgentTypes,
     canUseTool,
     getAppState,
     setAppState,

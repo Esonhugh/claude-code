@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test'
 import { translate } from '../i18n'
-import { effortChoices, matchApps, matchTargets, modelButtonLabel, pinText, shownModels } from './Composer'
+import { contextWindowChoices, decoratedRuns, effortChoices, formatWindow, matchApps, matchTargets, modelButtonLabel, pinText, shownModels } from './Composer'
 import { nextMode, offeredModes, type T } from './ui'
 
 const t: T = (key, vars) => translate('en', key, vars)
@@ -35,6 +35,14 @@ describe('modelButtonLabel', () => {
     const openai = [{ value: 'gpt-6.1-sol', displayName: 'GPT-6.1-Sol' }, { value: 'gpt-6-astra', displayName: 'GPT-6-Astra' }]
     expect(modelButtonLabel(undefined, undefined, openai, t)).toBe('GPT-6.1-Sol')
     expect(modelButtonLabel('default', 'high', openai, t)).toBe('GPT-6.1-Sol · high')
+  })
+  it('names the saved model a session started without a pick runs (#946)', () => {
+    const openai = [{ value: 'gpt-6.1-sol', displayName: 'GPT-6.1-Sol' }, { value: 'gpt-6-luna', displayName: 'GPT-6-Luna', resolvedModel: 'gpt-6-luna' }]
+    expect(modelButtonLabel('default', undefined, openai, t, 'gpt-6-luna')).toBe('GPT-6-Luna')
+    const claude = [{ value: 'default', displayName: 'Default', resolvedModel: 'claude-opus-5-5' }, { value: 'sonnet', displayName: 'Sonnet 5.5', resolvedModel: 'claude-sonnet-5-5' }]
+    expect(modelButtonLabel('default', undefined, claude, t, 'claude-sonnet-5-5')).toBe('Sonnet 5.5')
+    // An explicit pick still wins.
+    expect(modelButtonLabel('gpt-6.1-sol', undefined, openai, t, 'gpt-6-luna')).toBe('GPT-6.1-Sol')
   })
 })
 
@@ -84,5 +92,38 @@ describe('matchApps', () => {
     expect(matchApps(apps, '').map(x => x.mention)).toEqual(['gmail', 'google_drive'])
     expect(matchApps(apps, 'drive').map(x => x.mention)).toEqual(['google_drive'])
     expect(matchApps(apps, 'codex-app:gm').map(x => x.mention)).toEqual(['gmail'])
+  })
+})
+
+describe('decoratedRuns', () => {
+  it('cuts the draft where Mods mark it, the later mark winning an overlap', () => {
+    const a = { start: 0, end: 4, color: 'red' }
+    const b = { start: 2, end: 6, underline: true }
+    expect(decoratedRuns('#123 fix', [a, b])).toEqual([
+      { text: '#1', mark: a },
+      { text: '23 f', mark: b },
+      { text: 'ix' },
+    ])
+    expect(decoratedRuns('ab', [{ start: -3, end: 99 }])).toEqual([{ text: 'ab', mark: { start: -3, end: 99 } }])
+  })
+})
+
+describe('context window choices', () => {
+  const models = [
+    { value: 'default', displayName: 'Default', contextWindowTiers: [128_000, 200_000, 272_000, 500_000, 1_000_000] },
+    { value: 'gpt-5.5', displayName: 'GPT', contextWindowTiers: [128_000, 200_000, 272_000] },
+    { value: 'small', displayName: 'Small' },
+  ]
+  it('offers auto, then the model tiers', () => {
+    expect(contextWindowChoices('gpt-5.5', models, null)).toEqual([null, 128_000, 200_000, 272_000])
+    expect(contextWindowChoices(undefined, models, undefined)).toEqual([null, 128_000, 200_000, 272_000, 500_000, 1_000_000])
+    expect(contextWindowChoices('small', models, null)).toEqual([])
+  })
+  it('keeps a configured window that is not a tier, and shows one above the maximum as the maximum', () => {
+    expect(contextWindowChoices('gpt-5.5', models, 150_000)).toEqual([null, 128_000, 150_000, 200_000, 272_000])
+    expect(contextWindowChoices('gpt-5.5', models, 1_000_000)).toEqual([null, 128_000, 200_000, 272_000])
+  })
+  it('labels windows like the TUI', () => {
+    expect([128_000, 272_000, 872_000, 1_000_000].map(formatWindow)).toEqual(['128k', '272k', '872k', '1M'])
   })
 })

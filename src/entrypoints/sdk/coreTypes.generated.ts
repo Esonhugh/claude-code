@@ -144,7 +144,7 @@ export type PermissionDeniedHookInput = BaseHookInput & { hook_event_name: 'Perm
 export type NotificationHookInput = BaseHookInput & { hook_event_name: 'Notification'; message: string; title?: string; notification_type: string }
 export type UserPromptSubmitHookInput = BaseHookInput & { hook_event_name: 'UserPromptSubmit'; prompt: string; session_title?: string }
 export type UserPromptExpansionHookInput = BaseHookInput & { hook_event_name: 'UserPromptExpansion'; expansion_type: 'slash_command' | 'mcp_prompt'; command_name: string; command_args: string; command_source?: string; prompt: string }
-export type SessionStartHookInput = BaseHookInput & { hook_event_name: 'SessionStart'; source: 'startup' | 'resume' | 'clear' | 'compact'; agent_type?: string; model?: string }
+export type SessionStartHookInput = BaseHookInput & { hook_event_name: 'SessionStart'; source: 'startup' | 'resume' | 'clear' | 'compact' | 'fork'; agent_type?: string; model?: string }
 export type SessionEndHookInput = BaseHookInput & { hook_event_name: 'SessionEnd'; reason: ExitReason }
 export type StopHookBackgroundTask = { id: string; type: string; status: string; description: string; command?: string; agent_type?: string; name?: string }
 export type StopHookSessionCron = { id: string; schedule: string; recurring: boolean; prompt: string }
@@ -218,7 +218,7 @@ export type PromptResponse = { prompt_response: string; selected: string }
 // Skill/Command Types
 export type SlashCommand = { name: string; description: string; argumentHint: string; aliases?: string[]; builtin?: boolean }
 export type AgentInfo = { name: string; description: string; model?: string }
-export type ModelInfo = { value: string; resolvedModel?: string; displayName: string; description: string; supportsEffort?: boolean; supportedEffortLevels?: ('none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra')[]; supportsAdaptiveThinking?: boolean; supportsFastMode?: boolean; supportsAutoMode?: boolean; supportsThinkingOff?: boolean }
+export type ModelInfo = { value: string; resolvedModel?: string; displayName: string; description: string; supportsEffort?: boolean; supportedEffortLevels?: ('none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra')[]; supportsAdaptiveThinking?: boolean; supportsFastMode?: boolean; supportsAutoMode?: boolean; supportsThinkingOff?: boolean; contextWindowTiers?: number[] }
 export type AccountInfo = { email?: string; organization?: string; subscriptionType?: string; tokenSource?: string; apiKeySource?: string; apiProvider?: 'firstParty' | 'bedrock' | 'vertex' | 'foundry' | 'openai' }
 
 // Agent Definition
@@ -348,7 +348,7 @@ export type SDKSystemMessage = {
   terminal_slash_commands?: string[]
   output_style: string
   skills: string[]
-  plugins: Array<{ name: string; path: string; source?: string }>
+  plugins: Array<{ name: string; path: string; source?: string; version?: string }>
   capabilities?: string[]
   fast_mode_state?: FastModeState
   fast_mode_disabled_reason?: FastModeDisabledReason
@@ -367,6 +367,23 @@ export type SDKUILogMessage = {
   subtype: 'ui_log'
   plugin: string
   text: string
+  uuid: string
+  session_id: string
+}
+export type SDKUIToastMessage = {
+  type: 'system'
+  subtype: 'ui_toast'
+  plugin: string
+  text: string
+  timeout_ms: number
+  uuid: string
+  session_id: string
+}
+export type SDKUIStatusMessage = {
+  type: 'system'
+  subtype: 'ui_status'
+  plugin: string
+  text: string | null
   uuid: string
   session_id: string
 }
@@ -546,6 +563,7 @@ export type SDKTaskStartedMessage = {
   subagent_type?: string
   is_backgrounded?: boolean
   spawn_depth?: number
+  parent_task_id?: string
   task_type?: string
   workflow_name?: string
   prompt?: string
@@ -722,6 +740,8 @@ export type SDKMessage =
   | SDKResultMessage
   | SDKSystemMessage
   | SDKUILogMessage
+  | SDKUIToastMessage
+  | SDKUIStatusMessage
   | SDKScheduledTaskFireMessage
   | SDKPartialAssistantMessage
   | SDKThinkingTokensMessage

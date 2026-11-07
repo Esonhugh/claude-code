@@ -534,6 +534,12 @@ export const SDKControlReloadPluginsRequestSchema = lazySchema(() =>
   z
     .object({
       subtype: z.literal('reload_plugins'),
+      add_plugins: z
+        .array(SDKLocalPluginSchema())
+        .optional()
+        .describe(
+          'Plugins to load as well, each joining the session as one more --plugin-dir (--plugin-dir-no-mcp with skipMcpDiscovery). Paths must be absolute. Plugins already loaded stay. A failed reload adds none of them.',
+        ),
     })
     .describe(
       'Reloads plugins from disk and returns the refreshed session components.',
@@ -550,6 +556,7 @@ export const SDKControlReloadPluginsResponseSchema = lazySchema(() =>
           name: z.string(),
           path: z.string(),
           source: z.string().optional(),
+          version: z.string().optional(),
         }),
       ),
       mcpServers: z.array(McpServerStatusSchema()),
@@ -716,6 +723,11 @@ export const SDKControlGetSettingsResponseSchema = lazySchema(() =>
               'ultra',
             ])
             .nullable(),
+          autoCompactWindow: z
+            .number()
+            .nullable()
+            .optional()
+            .describe('Configured context window for the model; null is auto'),
         })
         .optional()
         .describe(

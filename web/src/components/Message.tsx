@@ -1,4 +1,4 @@
-import { createContext, Fragment, memo, type ReactNode, useContext, useEffect, useMemo, useRef, useState } from 'react'
+import { createContext, Fragment, memo, type ReactNode, type RefObject, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import {
   type AgentTask,
   type Team,
@@ -16,6 +16,7 @@ import { type Block, type Decision, hookBlock, type Item, type ModelOption } fro
 import type { Source } from '../sources'
 import { stripAnsi, toolMessage, toolSummary } from '../tools'
 import { firstPreviewUrl, WebPreviewContext } from '../webPreview'
+import { ModSite } from './Mods'
 
 /** `claude-opus-5-5` → `Opus 5.5`; anything else is shown as is. */
 export function modelLabel(model: string | undefined): string | undefined {
@@ -122,6 +123,27 @@ export const ChatContext = createContext<{
   }
 }>({})
 
+/** Puts text into the chat's composer as a quote to reply to; only the session's own feed offers it. */
+export const QuoteContext = createContext<((text: string) => void) | undefined>(undefined)
+
+/** The prompt for a reply: the quote as a Markdown blockquote, then what was typed. */
+export function quotePrompt(quote: string, text: string): string {
+  const lines = quote.trim().split(/\r?\n/).map(line => (line ? `> ${line}` : '>'))
+  return `${lines.join('\n')}\n\n${text}`
+}
+
+/** What a box sends: a slash command goes out as typed, anything else carries the quote it replies to. */
+export function replyPrompt(quote: string | undefined, text: string): string {
+  return quote && !text.startsWith('/') ? quotePrompt(quote, text) : text
+}
+
+/** A prompt that opens with a blockquote: the quoted text and what follows it. */
+export function splitQuote(text: string): { quote?: string; rest: string } {
+  const m = /^((?:>[^\n]*\n)+)\n([\s\S]*)$/.exec(text)
+  if (!m || !m[2]!.trim()) return { rest: text }
+  return { quote: m[1]!.replace(/^> ?/gm, '').trimEnd(), rest: m[2]! }
+}
+
 /** A subagent's or worker's own conversation: the session's rewind and turn actions are not its own. */
 export function AgentConversation({ children }: { children: ReactNode }) {
   const { decisions } = useContext(ChatContext)
@@ -177,10 +199,12 @@ function toolFilePath(name: string, input: string): string | undefined {
   }
 }
 
-function UserText({ text }: { text: string }) {
+function UserText({ text: full }: { text: string }) {
   const files = useContext(FilesContext)
+  const { quote, rest: text } = splitQuote(full)
   return (
     <>
+      {quote !== undefined && <span className="uquote">{quote}</span>}
       {splitMentions(text).map((seg, i) =>
         'path' in seg ? (
           <button
@@ -198,6 +222,14 @@ function UserText({ text }: { text: string }) {
       )}
     </>
   )
+}
+
+function parsedInput(text: string): unknown {
+  try {
+    return JSON.parse(text)
+  } catch {
+    return text
+  }
 }
 
 function prettyJson(text: string): string {
@@ -300,6 +332,10 @@ export function decisionText(decision: Decision, t: T): string {
 
 type T = (key: MessageKey, vars?: Record<string, string>) => string
 
+function resultProps(block: Extract<Block, { kind: 'tool' }>) {
+  return { tool_use_id: block.id, tool: block.name, output: block.result ?? '', isErrored: block.isError === true, isExpanded: true }
+}
+
 function ToolCard({ block, t }: { block: Extract<Block, { kind: 'tool' }>; t: T }) {
   const files = useContext(FilesContext)
   const agents = useContext(AgentsContext)
@@ -387,17 +423,25 @@ function ToolCard({ block, t }: { block: Extract<Block, { kind: 'tool' }>; t: T 
       ) : message ? (
         <div className="tbody">
           <Markdown filesBase={files.base} text={message} />
-          {done && <div className="tlabel">{stripAnsi(block.result!)}</div>}
+          {done && (
+            <ModSite component="ToolResult" id={block.id} props={resultProps(block)}>
+              {p => <div className="tlabel">{stripAnsi(String(p.output))}</div>}
+            </ModSite>
+          )}
         </div>
       ) : (
         <div className="tbody">
           <div className="tlabel">{t('toolInput')}</div>
           <pre className="tin">{prettyJson(block.input)}</pre>
           {done && (
-            <>
-              <div className="tlabel">{t('toolOutput')}</div>
-              <pre className="tout">{stripAnsi(block.result!)}</pre>
-            </>
+            <ModSite component="ToolResult" id={block.id} props={resultProps(block)}>
+              {p => (
+                <>
+                  <div className="tlabel">{t('toolOutput')}</div>
+                  <pre className="tout">{stripAnsi(String(p.output))}</pre>
+                </>
+              )}
+            </ModSite>
           )}
         </div>
       )}
@@ -596,6 +640,7 @@ function MessageView({
 }) {
   const files = useContext(FilesContext)
   const { rewind, turn } = useContext(ChatContext)
+  const quote = useContext(QuoteContext)
   const [copied, setCopied] = useState(false)
   if (item.kind === 'user') {
     const asking = rewind?.target === item.id
@@ -618,32 +663,41 @@ function MessageView({
             </span>
           </div>
         )}
-        <div className={queued ? 'msg user queued' : 'msg user'}>
-          {rewind?.points.has(item.id) && !queued && (
-            <button type="button" className="rw-btn" title={t('rewindTitle')} onClick={() => rewind.ask(item.id)}>
-              {t('rewind')}
-            </button>
-          )}
-          <span className="who">{queued ? t('queuedMessage') : t('you')}</span>
-          <div className="bubble">
-            {item.images?.map((src, i) =>
-              files.openImage ? (
-                <button
-                  type="button"
-                  key={i}
-                  className="bubble-image-open"
-                  title={t('preview')}
-                  onClick={() => files.openImage?.(src, i + 1, imageTarget(item.text, i))}
-                >
-                  <img className="bubble-image" src={src} alt="" />
+        <ModSite
+          component="UserMessage"
+          id={item.id}
+          off={queued}
+          props={{ text: item.text, origin: { kind: 'composer' }, isExpanded: true }}
+        >
+          {p => (
+            <div className={queued ? 'msg user queued' : 'msg user'}>
+              {rewind?.points.has(item.id) && !queued && (
+                <button type="button" className="rw-btn" title={t('rewindTitle')} onClick={() => rewind.ask(item.id)}>
+                  {t('rewind')}
                 </button>
-              ) : (
-                <img key={i} className="bubble-image" src={src} alt="" />
-              ),
-            )}
-            <UserText text={item.text} />
-          </div>
-        </div>
+              )}
+              <span className="who">{queued ? t('queuedMessage') : t('you')}</span>
+              <div className="bubble">
+                {item.images?.map((src, i) =>
+                  files.openImage ? (
+                    <button
+                      type="button"
+                      key={i}
+                      className="bubble-image-open"
+                      title={t('preview')}
+                      onClick={() => files.openImage?.(src, i + 1, imageTarget(item.text, i))}
+                    >
+                      <img className="bubble-image" src={src} alt="" />
+                    </button>
+                  ) : (
+                    <img key={i} className="bubble-image" src={src} alt="" />
+                  ),
+                )}
+                <UserText text={String(p.text)} />
+              </div>
+            </div>
+          )}
+        </ModSite>
       </>
     )
   }
@@ -683,9 +737,13 @@ function MessageView({
   }
   if (item.kind === 'note') {
     return (
-      <div className="note" style={{ textAlign: 'center' }}>
-        {item.key ? t(item.key) : item.text}
-      </div>
+      <ModSite component="InfoNotice" id={item.id} props={{ text: item.key ? t(item.key) : item.text, command: null }}>
+        {p => (
+          <div className="note" style={{ textAlign: 'center' }}>
+            {String(p.text)}
+          </div>
+        )}
+      </ModSite>
     )
   }
   if (item.kind === 'goal') {
@@ -744,12 +802,20 @@ function MessageView({
   }
   if (item.kind === 'local') {
     return (
-      <div className={`msg local${item.isError ? ' err' : ''}`}>
-        <span className="rm" aria-hidden="true">
-          ⎿
-        </span>
-        <span className="md">{stripAnsi(item.text)}</span>
-      </div>
+      <ModSite
+        component="CommandOutput"
+        id={item.id}
+        props={{ command: item.command ?? '', args: item.args ?? '', text: item.text, isErrored: item.isError === true }}
+      >
+        {p => (
+          <div className={`msg local${item.isError ? ' err' : ''}`}>
+            <span className="rm" aria-hidden="true">
+              ⎿
+            </span>
+            <span className="md">{stripAnsi(String(p.text))}</span>
+          </div>
+        )}
+      </ModSite>
     )
   }
   if (item.kind === 'error') {
@@ -777,6 +843,7 @@ function MessageView({
       return block?.kind === 'tool' && !block.isError && toolDiff(block.name, block.input, block.meta) !== undefined
     },
   )
+  const firstText = item.blocks.findIndex(b => b?.kind === 'text')
   const step = (i: number) => {
     const block = item.blocks[i]!
     if (block.kind === 'thinking') {
@@ -807,7 +874,26 @@ function MessageView({
         </div>
       )
     }
-    return block.kind === 'tool' ? <ToolCard key={i} block={block} t={t} /> : null
+    if (block.kind !== 'tool') return null
+    return (
+      <ModSite
+        key={i}
+        component="ToolUse"
+        id={block.id}
+        props={{
+          tool_use_id: block.id,
+          tool: block.name,
+          input: parsedInput(block.input),
+          isRunning: block.result === undefined && streaming,
+          isErrored: block.isError === true,
+          isInterrupted: block.result === undefined && !streaming,
+          isExpanded: false,
+          ...(block.result !== undefined && { output: block.result }),
+        }}
+      >
+        {() => <ToolCard block={block} t={t} />}
+      </ModSite>
+    )
   }
   return (
     <div className="msg assistant">
@@ -820,13 +906,17 @@ function MessageView({
         const first = segment.at[0]!
         if (segment.kind === 'text') {
           const block = item.blocks[first] as Extract<Block, { kind: 'text' }>
+          const live = streaming && first === item.blocks.length - 1
           return (
-            <Markdown
+            <ModSite
               key={first}
-              filesBase={files.base}
-              text={block.text}
-              streaming={streaming && first === item.blocks.length - 1}
-            />
+              component="AssistantMessage"
+              id={`${item.id}:${first}`}
+              off={live}
+              props={{ text: block.text, isFirstOfReply: first === firstText }}
+            >
+              {p => <Markdown filesBase={files.base} text={String(p.text)} streaming={live} />}
+            </ModSite>
           )
         }
         if (segment.kind === 'cards') {
@@ -850,22 +940,35 @@ function MessageView({
           return parts.length ? parts : [t('nSteps', { n: String(n) })]
         }
         return (
-          <details key={`s${first}${live ? '-live' : ''}`} className="think steps" open={live || undefined}>
-            <summary className={live ? 'shimmer' : undefined}>
-              <span className={`sdot ${live ? 'run' : failed ? 'bad' : 'ok'}`} aria-hidden="true" />
-              {summaryParts(thought, tools, run.length)
-                .map((part, k) => (
-                  <span key={k} className="sd">
-                    {part}
-                  </span>
-                ))}
-              {failed > 0 && <span className="sd bad">{t('nFailed', { n: String(failed) })}</span>}
-            </summary>
-            <div className="stepsbody">{segment.at.map(step)}</div>
-          </details>
+          <ModSite
+            key={`s${first}${live ? '-live' : ''}`}
+            component="ToolGroup"
+            id={`${item.id}:s${first}`}
+            props={{
+              calls: tools.map(b => ({ tool_use_id: b.id, tool: b.name, input: parsedInput(b.input), isErrored: b.isError === true })),
+              isActive: live,
+              isExpanded: false,
+            }}
+          >
+            {() => (
+              <details className="think steps" open={live || undefined}>
+                <summary className={live ? 'shimmer' : undefined}>
+                  <span className={`sdot ${live ? 'run' : failed ? 'bad' : 'ok'}`} aria-hidden="true" />
+                  {summaryParts(thought, tools, run.length)
+                    .map((part, k) => (
+                      <span key={k} className="sd">
+                        {part}
+                      </span>
+                    ))}
+                  {failed > 0 && <span className="sd bad">{t('nFailed', { n: String(failed) })}</span>}
+                </summary>
+                <div className="stepsbody">{segment.at.map(step)}</div>
+              </details>
+            )}
+          </ModSite>
         )
       })}
-      {turn && !streaming && (
+      {(turn || quote) && !streaming && (
         <div className="msg-acts">
           <button
             type="button"
@@ -879,15 +982,25 @@ function MessageView({
           >
             {copied ? t('copied') : t('copy')}
           </button>
-          {turn.hasPrompt(item.id) && (
+          {quote && (
+            <button
+              type="button"
+              onClick={() => quote(item.blocks.flatMap(b => (b?.kind === 'text' ? [b.text] : [])).join('\n\n'))}
+            >
+              {t('reply')}
+            </button>
+          )}
+          {turn?.hasPrompt(item.id) && (
             <button type="button" onClick={() => turn.retry(item.id)}>
               {t('retry')}
             </button>
           )}
-          <button type="button" onClick={() => turn.fork(item.id)}>
-            {t('forkHere')}
-          </button>
-          {turn.hasPrompt(item.id) && (
+          {turn && (
+            <button type="button" onClick={() => turn.fork(item.id)}>
+              {t('forkHere')}
+            </button>
+          )}
+          {turn?.hasPrompt(item.id) && (
             <button type="button" onClick={() => turn.rewind(item.id)}>
               {t('rewind')}
             </button>
@@ -909,5 +1022,60 @@ function MessageView({
         </div>
       )}
     </div>
+  )
+}
+
+/**
+ * A Reply button over text selected in a message of the feed (as Claude.ai
+ * does): the selection becomes the composer's quote.
+ */
+export function QuoteOnSelect({ t, feed, onQuote }: { t: T; feed: RefObject<HTMLElement | null>; onQuote: (text: string) => void }) {
+  const [at, setAt] = useState<{ x: number; y: number; text: string }>()
+  useEffect(() => {
+    let frame = 0
+    const place = () => {
+      cancelAnimationFrame(frame)
+      frame = requestAnimationFrame(() => {
+        const sel = document.getSelection()
+        const root = feed.current
+        const text = sel?.toString().trim()
+        if (!sel || !root || sel.isCollapsed || !text || !sel.rangeCount) return setAt(undefined)
+        const msgOf = (node: Node | null) =>
+          (node instanceof Element ? node : node?.parentElement)?.closest('.msg.assistant, .msg.user:not(.queued)')
+        const msg = msgOf(sel.anchorNode)
+        if (!msg || !root.contains(msg) || msgOf(sel.focusNode) !== msg) return setAt(undefined)
+        const rect = sel.getRangeAt(0).getBoundingClientRect()
+        const box = root.getBoundingClientRect()
+        if (rect.bottom < box.top || rect.top > box.bottom) return setAt(undefined)
+        setAt({ x: rect.left + rect.width / 2, y: Math.max(rect.top, box.top), text })
+      })
+    }
+    // Any scroll moves the selection: the feed itself or a panel around it.
+    document.addEventListener('selectionchange', place)
+    window.addEventListener('scroll', place, true)
+    window.addEventListener('resize', place)
+    return () => {
+      cancelAnimationFrame(frame)
+      document.removeEventListener('selectionchange', place)
+      window.removeEventListener('scroll', place, true)
+      window.removeEventListener('resize', place)
+    }
+  }, [feed])
+  if (!at) return null
+  return (
+    <button
+      type="button"
+      className="quote-pop"
+      style={{ left: Math.min(Math.max(at.x, 48), window.innerWidth - 48), top: at.y }}
+      // Keep the selection while the button is pressed.
+      onMouseDown={e => e.preventDefault()}
+      onClick={() => {
+        onQuote(at.text)
+        document.getSelection()?.removeAllRanges()
+        setAt(undefined)
+      }}
+    >
+      {t('reply')}
+    </button>
   )
 }

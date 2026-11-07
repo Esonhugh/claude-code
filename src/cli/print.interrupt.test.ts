@@ -63,6 +63,9 @@ if (process.env[childFlag] !== '1') {
   const toolPool = await import('../tools.js')
   const storage = await import('../utils/sessionStorage.js')
   const { SandboxManager } = await import('../utils/sandbox/sandbox-adapter.js')
+  const cleanup = await import('../utils/cleanupRegistry.js')
+  const teammateUtils = await import('../utils/teammate.js')
+  const mailbox = await import('../utils/teammateMailbox.js')
 
   test.each(['idle', 'busy'] as const)('interrupt receipt snapshots surviving %s input before draining', async phase => {
     const started = Promise.withResolvers<void>()
@@ -171,6 +174,221 @@ if (process.env[childFlag] !== '1') {
       } as Parameters<typeof runHeadless>[7])
       expect(results[0]?.queued_turn_count).toBe(1)
       expect(results.at(-1)?.queued_turn_count).toBe(0)
+    } finally {
+      queue.resetCommandQueue()
+      for (const mock of mocks) mock.mockRestore()
+    }
+  })
+
+  // An SDK string prompt closes stdin after the first result. With teammates
+  // alive the lead must still be asked to shut the team down, like -p text.
+  test('input closing while the team-lead poll waits runs the team shutdown turn', async () => {
+    const prompts: unknown[] = []
+    const firstResult = Promise.withResolvers<void>()
+    const mocks = [
+      spyOn(grove, 'isQualifiedForGrove').mockResolvedValue(false),
+      spyOn(growthbook, 'initializeGrowthBook').mockResolvedValue(undefined),
+      spyOn(env, 'isBareMode').mockReturnValue(true),
+      spyOn(shutdown, 'gracefulShutdownSync').mockImplementation(() => {}),
+      spyOn(processUtils, 'registerProcessOutputErrorHandlers').mockImplementation(() => {}),
+      spyOn(stdoutGuard, 'installStreamJsonStdoutGuard').mockImplementation(() => () => {}),
+      spyOn(modelStrings, 'ensureModelStringsInitialized').mockResolvedValue(undefined),
+      spyOn(toolPool, 'assembleToolPool').mockReturnValue([]),
+      spyOn(SandboxManager, 'getSandboxUnavailableReason').mockReturnValue(undefined),
+      spyOn(SandboxManager, 'isSandboxingEnabled').mockReturnValue(false),
+      spyOn(storage, 'recordQueueOperation').mockResolvedValue(undefined),
+      spyOn(StructuredIO.prototype, 'write').mockImplementation(async message => {
+        if (message.type === 'result') firstResult.resolve()
+      }),
+      spyOn(engine, 'ask').mockImplementation(async function* (args) {
+        prompts.push(args.prompt)
+        // The shutdown turn: the lead shuts its team down.
+        if (prompts.length === 2) state = { ...state, teamContext: undefined }
+        yield {type:'result',subtype:'success',is_error:false,result:'done'} as import('../entrypoints/agentSdkTypes.js').SDKMessage
+      }),
+    ]
+    let state: import('../state/AppStateStore.js').AppState = {
+      ...getDefaultAppState(),
+      teamContext: {
+        teamName: 'r5', teamFilePath: '/nonexistent/config.json', leadAgentId: 'team-lead@r5',
+        teammates: { 'alice@r5': { name: 'alice', tmuxSessionName: '', tmuxPaneId: 'in-process', cwd: process.cwd(), spawnedAt: 0 } },
+      },
+    }
+    async function* input() {
+      yield JSON.stringify({type:'user',message:{role:'user',content:'SPAWN'}}) + '\n'
+      await firstResult.promise
+      await new Promise(resolve => setTimeout(resolve, 100))
+    }
+    try {
+      await runHeadless(input(), () => state, updater => { state = updater(state) }, [], [], {}, [], {
+        outputFormat:'stream-json',verbose:true,sessionStartHooksPromise:Promise.resolve([]),
+      } as Parameters<typeof runHeadless>[7])
+      expect(prompts).toHaveLength(2)
+      expect(String(prompts[1])).toContain('shut down your team')
+    } finally {
+      queue.resetCommandQueue()
+      for (const mock of mocks) mock.mockRestore()
+    }
+  })
+
+  // While teammates still work, the lead waits for their reports instead of
+  // being told to shut the team down mid-task (it would poll blind for them).
+  test('input closing while teammates still work waits for their messages before the shutdown turn', async () => {
+    const prompts: unknown[] = []
+    const firstResult = Promise.withResolvers<void>()
+    let working = true
+    let delivered = false
+    const mocks = [
+      spyOn(grove, 'isQualifiedForGrove').mockResolvedValue(false),
+      spyOn(growthbook, 'initializeGrowthBook').mockResolvedValue(undefined),
+      spyOn(env, 'isBareMode').mockReturnValue(true),
+      spyOn(shutdown, 'gracefulShutdownSync').mockImplementation(() => {}),
+      spyOn(processUtils, 'registerProcessOutputErrorHandlers').mockImplementation(() => {}),
+      spyOn(stdoutGuard, 'installStreamJsonStdoutGuard').mockImplementation(() => () => {}),
+      spyOn(modelStrings, 'ensureModelStringsInitialized').mockResolvedValue(undefined),
+      spyOn(toolPool, 'assembleToolPool').mockReturnValue([]),
+      spyOn(SandboxManager, 'getSandboxUnavailableReason').mockReturnValue(undefined),
+      spyOn(SandboxManager, 'isSandboxingEnabled').mockReturnValue(false),
+      spyOn(storage, 'recordQueueOperation').mockResolvedValue(undefined),
+      spyOn(teammateUtils, 'hasWorkingInProcessTeammates').mockImplementation(() => working),
+      spyOn(mailbox, 'markMessagesAsRead').mockResolvedValue(undefined),
+      spyOn(mailbox, 'readUnreadMessages').mockImplementation(async () => {
+        if (working || delivered) return []
+        delivered = true
+        return [{ from: 'alice', text: 'alice: fixed dates.py', timestamp: new Date().toISOString(), read: false }]
+      }),
+      spyOn(StructuredIO.prototype, 'write').mockImplementation(async message => {
+        if (message.type === 'result') firstResult.resolve()
+      }),
+      spyOn(engine, 'ask').mockImplementation(async function* (args) {
+        prompts.push(args.prompt)
+        if (prompts.length === 1) setTimeout(() => { working = false }, 1500)
+        // The report turn: the lead shuts its team down.
+        if (prompts.length === 2) state = { ...state, teamContext: undefined }
+        yield {type:'result',subtype:'success',is_error:false,result:'done'} as import('../entrypoints/agentSdkTypes.js').SDKMessage
+      }),
+    ]
+    let state: import('../state/AppStateStore.js').AppState = {
+      ...getDefaultAppState(),
+      teamContext: {
+        teamName: 'r6', teamFilePath: '/nonexistent/config.json', leadAgentId: 'team-lead@r6',
+        teammates: { 'alice@r6': { name: 'alice', tmuxSessionName: '', tmuxPaneId: 'in-process', cwd: process.cwd(), spawnedAt: 0 } },
+      },
+    }
+    async function* input() {
+      yield JSON.stringify({type:'user',message:{role:'user',content:'SPAWN'}}) + '\n'
+      await firstResult.promise
+    }
+    try {
+      await runHeadless(input(), () => state, updater => { state = updater(state) }, [], [], {}, [], {
+        outputFormat:'stream-json',verbose:true,sessionStartHooksPromise:Promise.resolve([]),
+      } as Parameters<typeof runHeadless>[7])
+      expect(prompts).toHaveLength(2)
+      expect(String(prompts[1])).toContain('alice: fixed dates.py')
+      expect(String(prompts[1])).not.toContain('shut down your team')
+    } finally {
+      queue.resetCommandQueue()
+      for (const mock of mocks) mock.mockRestore()
+    }
+  })
+
+  // A lead model that ignores the shutdown request must not hang -p forever.
+  test('teammates left after the shutdown turn are stopped once the team is quiet', async () => {
+    const prompts: unknown[] = []
+    const firstResult = Promise.withResolvers<void>()
+    const stderr: string[] = []
+    const mocks = [
+      spyOn(grove, 'isQualifiedForGrove').mockResolvedValue(false),
+      spyOn(growthbook, 'initializeGrowthBook').mockResolvedValue(undefined),
+      spyOn(env, 'isBareMode').mockReturnValue(true),
+      spyOn(shutdown, 'gracefulShutdownSync').mockImplementation(() => {}),
+      spyOn(processUtils, 'registerProcessOutputErrorHandlers').mockImplementation(() => {}),
+      spyOn(stdoutGuard, 'installStreamJsonStdoutGuard').mockImplementation(() => () => {}),
+      spyOn(modelStrings, 'ensureModelStringsInitialized').mockResolvedValue(undefined),
+      spyOn(toolPool, 'assembleToolPool').mockReturnValue([]),
+      spyOn(SandboxManager, 'getSandboxUnavailableReason').mockReturnValue(undefined),
+      spyOn(SandboxManager, 'isSandboxingEnabled').mockReturnValue(false),
+      spyOn(storage, 'recordQueueOperation').mockResolvedValue(undefined),
+      spyOn(teammateUtils, 'getTeamShutdownGraceMs').mockReturnValue(50),
+      spyOn(process.stderr, 'write').mockImplementation(chunk => { stderr.push(String(chunk)); return true }),
+      spyOn(StructuredIO.prototype, 'write').mockImplementation(async message => {
+        if (message.type === 'result') firstResult.resolve()
+      }),
+      spyOn(engine, 'ask').mockImplementation(async function* (args) {
+        prompts.push(args.prompt)
+        // The lead never shuts its team down.
+        yield {type:'result',subtype:'success',is_error:false,result:'done'} as import('../entrypoints/agentSdkTypes.js').SDKMessage
+      }),
+    ]
+    let state: import('../state/AppStateStore.js').AppState = {
+      ...getDefaultAppState(),
+      teamContext: {
+        teamName: 'r3', teamFilePath: '/nonexistent/config.json', leadAgentId: 'team-lead@r3',
+        teammates: { 'alice@r3': { name: 'alice', tmuxSessionName: '', tmuxPaneId: 'in-process', cwd: process.cwd(), spawnedAt: 0 } },
+      },
+    }
+    async function* input() {
+      yield JSON.stringify({type:'user',message:{role:'user',content:'SPAWN'}}) + '\n'
+      await firstResult.promise
+    }
+    try {
+      await Promise.race([
+        runHeadless(input(), () => state, updater => { state = updater(state) }, [], [], {}, [], {
+          outputFormat:'stream-json',verbose:true,sessionStartHooksPromise:Promise.resolve([]),
+        } as Parameters<typeof runHeadless>[7]),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('runHeadless hung')), 5000)),
+      ])
+      expect(prompts).toHaveLength(2)
+      expect(String(prompts[1])).toContain('shut down your team')
+      expect(Object.keys(state.teamContext?.teammates ?? {})).not.toContain('alice@r3')
+      expect(stderr.join('')).toContain('did not shut down')
+    } finally {
+      queue.resetCommandQueue()
+      for (const mock of mocks) mock.mockRestore()
+    }
+  })
+
+  // External SIGINT mid-tool: the abort ends the shell itself, so shutdown has
+  // no live shell to wait for and used to exit before the result was written.
+  test('external SIGINT during a turn writes its result before cleanup finishes', async () => {
+    const stdout: string[] = []
+    const cleanedUp = Promise.withResolvers<string>()
+    const mocks = [
+      spyOn(grove, 'isQualifiedForGrove').mockResolvedValue(false),
+      spyOn(growthbook, 'initializeGrowthBook').mockResolvedValue(undefined),
+      spyOn(env, 'isBareMode').mockReturnValue(true),
+      spyOn(shutdown, 'gracefulShutdownSync').mockImplementation(() => {}),
+      spyOn(shutdown, 'gracefulShutdown').mockImplementation(async () => {
+        await cleanup.runCleanupFunctions()
+        cleanedUp.resolve(stdout.join(''))
+      }),
+      spyOn(processUtils, 'registerProcessOutputErrorHandlers').mockImplementation(() => {}),
+      spyOn(processUtils, 'writeToStdout').mockImplementation(text => { stdout.push(text) }),
+      spyOn(stdoutGuard, 'installStreamJsonStdoutGuard').mockImplementation(() => () => {}),
+      spyOn(modelStrings, 'ensureModelStringsInitialized').mockResolvedValue(undefined),
+      spyOn(toolPool, 'assembleToolPool').mockReturnValue([]),
+      spyOn(SandboxManager, 'getSandboxUnavailableReason').mockReturnValue(undefined),
+      spyOn(SandboxManager, 'isSandboxingEnabled').mockReturnValue(false),
+      spyOn(storage, 'recordQueueOperation').mockResolvedValue(undefined),
+      spyOn(engine, 'ask').mockImplementation(async function* (args) {
+        setTimeout(() => process.emit('SIGINT'), 10)
+        await new Promise(resolve => args.abortController.signal.addEventListener('abort', resolve))
+        // The killed tool's result and the turn's end take a moment.
+        await new Promise(resolve => setTimeout(resolve, 50))
+        yield {type:'result',subtype:'error_during_execution',is_error:true,errors:[]} as unknown as import('../entrypoints/agentSdkTypes.js').SDKMessage
+      }),
+    ]
+    async function* input() {
+      yield JSON.stringify({type:'user',message:{role:'user',content:'LONG TOOL'}}) + '\n'
+    }
+    // Earlier runs in this process left their own SIGINT handlers behind.
+    process.removeAllListeners('SIGINT')
+    let state = getDefaultAppState()
+    try {
+      void runHeadless(input(), () => state, updater => { state = updater(state) }, [], [], {}, [], {
+        outputFormat:'text',sessionStartHooksPromise:Promise.resolve([]),
+      } as Parameters<typeof runHeadless>[7])
+      expect(await cleanedUp.promise).toBe('Execution error')
     } finally {
       queue.resetCommandQueue()
       for (const mock of mocks) mock.mockRestore()

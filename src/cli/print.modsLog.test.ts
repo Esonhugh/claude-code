@@ -125,14 +125,70 @@ if (process.env[childFlag] !== '1') {
         expect(logs.some(line => line.includes('UI log is unavailable'))).toBe(false)
         const uiLogs = writes.filter((message: any) => message.type === 'system' && message.subtype === 'ui_log')
         if (format === 'stream-json') {
-          expect(uiLogs).toEqual(['LOG-START','LOG-LIVE'].map(text => ({
+          // The dropped call's diagnostic is a transcript line too, as the TUI's warning row (#975).
+          expect(uiLogs).toEqual(['LOG-START','LOG-LIVE','async: $.ui.log dropped: ui.log to must be transcript or debug'].map(text => ({
             type:'system',subtype:'ui_log',plugin:'headless-logger',text,
             uuid:expect.any(String),session_id:expect.any(String),
           })))
-          expect(new Set(uiLogs.map((message: any) => message.uuid)).size).toBe(2)
+          expect(new Set(uiLogs.map((message: any) => message.uuid)).size).toBe(3)
         } else expect(uiLogs).toEqual([])
         expect(JSON.stringify(writes.filter(message => !uiLogs.includes(message)))).not.toContain('LOG-')
         expect(JSON.stringify(writes)).toContain('MODEL-DONE')
+      } finally {
+        await mods.dispose()
+        dequeueAllMatching(() => true)
+        for (const mock of mocks) mock.mockRestore()
+        rmSync(root,{recursive:true,force:true})
+      }
+    })
+  }
+
+  for (const format of ['text', 'stream-json'] as const) {
+    test(`${format}: a Mod hook that throws reaches the client as a transcript line in stream-json (#975)`, async () => {
+      const root = mkdtempSync(join(tmpdir(), 'print-diag-plugin-'))
+      const path = join(root, 'thrower')
+      mkdirSync(path)
+      writeFileSync(join(path, 'register.ts'), `export function register(on) {
+        on('command.run', () => { throw new Error('DIAG-BOOM') });
+      }`)
+      const mods = createModsSession({isTrusted:true,
+        getSettings:() => ({userSettings:null,flagSettings:null,policySettings:null,hookPolicy:{managedOnly:false,allDisabled:false}}),
+        loadPlugins:async () => [{name:'thrower',manifest:{name:'thrower'},path,source:'thrower@inline',repository:'thrower@inline',enabled:true,
+          hookModules:[{configPath:join(path,'hooks.json'),paths:['./register.ts']}]}],
+      })
+      let state = getDefaultAppState()
+      const writes: unknown[] = [], stderr: string[] = []
+      const mocks = [
+        spyOn(grove,'isQualifiedForGrove').mockResolvedValue(false),
+        spyOn(growthbook,'initializeGrowthBook').mockResolvedValue(undefined),
+        spyOn(env,'isBareMode').mockReturnValue(true),
+        spyOn(shutdown,'gracefulShutdownSync').mockImplementation(() => {}),
+        spyOn(processUtils,'registerProcessOutputErrorHandlers').mockImplementation(() => {}),
+        spyOn(processUtils,'writeToStdout').mockImplementation(text => {writes.push(text)}),
+        spyOn(process.stderr,'write').mockImplementation(((text: string) => {stderr.push(String(text)); return true}) as typeof process.stderr.write),
+        spyOn(stdoutGuard,'installStreamJsonStdoutGuard').mockImplementation(() => () => {}),
+        spyOn(modelStrings,'ensureModelStringsInitialized').mockResolvedValue(undefined),
+        spyOn(tools,'assembleToolPool').mockReturnValue([]),
+        spyOn(SandboxManager,'getSandboxUnavailableReason').mockReturnValue(undefined),
+        spyOn(SandboxManager,'isSandboxingEnabled').mockReturnValue(false),
+        spyOn(storage,'recordQueueOperation').mockResolvedValue(undefined),
+        spyOn(StructuredIO.prototype,'write').mockImplementation(async message => {writes.push(message)}),
+        spyOn(engine,'ask').mockImplementation(async function*() {
+          await mods.refresh()
+          await mods.runtime!.dispatch('command.run',{command:'probe'},async () => ({text:'unhandled'})).catch(() => {})
+          await mods.runtime!.settle()
+          yield {type:'result',subtype:'success',is_error:false,result:'MODEL-DONE'} as import('../entrypoints/agentSdkTypes.js').SDKMessage
+        }),
+      ]
+      try {
+        await runHeadless('probe',() => state,update => {state=update(state)},[],[],{},[],{
+          outputFormat:format,verbose:true,modsSession:mods,sessionStartHooksPromise:Promise.resolve([]),
+        } as Parameters<typeof runHeadless>[7])
+        const lines = writes.filter((message: any) => message.type === 'system' && message.subtype === 'ui_log')
+        if (format === 'stream-json') {
+          expect(lines).toEqual([expect.objectContaining({plugin:'thrower',text:expect.stringContaining('command.run: DIAG-BOOM')})])
+        } else expect(lines).toEqual([])
+        expect(stderr.join('')).toContain('DIAG-BOOM')
       } finally {
         await mods.dispose()
         dequeueAllMatching(() => true)

@@ -587,7 +587,7 @@ export const SessionStartHookInputSchema = lazySchema(() =>
   BaseHookInputSchema().and(
     z.object({
       hook_event_name: z.literal('SessionStart'),
-      source: z.enum(['startup', 'resume', 'clear', 'compact']),
+      source: z.enum(['startup', 'resume', 'clear', 'compact', 'fork']),
       agent_type: z.string().optional(),
       model: z.string().optional(),
       seconds_since_last_response: z.number().optional(),
@@ -1461,6 +1461,12 @@ export const ModelInfoSchema = lazySchema(() =>
         .boolean()
         .optional()
         .describe('Whether thinking can be turned off for this model'),
+      contextWindowTiers: z
+        .array(z.number())
+        .optional()
+        .describe(
+          'Context windows the picker offers for this model, smallest first; the last is the model maximum',
+        ),
     })
     .describe('Information about an available model.'),
 )
@@ -1984,6 +1990,12 @@ export const SDKSystemMessageSchema = lazySchema(() =>
           .describe(
             '@internal Plugin source identifier in "name\\@marketplace" format. Sentinels: "name\\@inline" for --plugin-dir, "name\\@builtin" for built-in plugins.',
           ),
+        version: z
+          .string()
+          .optional()
+          .describe(
+            "The plugin's version as declared in its plugin.json manifest, emitted verbatim. Omitted when the manifest declares no version.",
+          ),
       }),
     ),
     capabilities: z
@@ -2021,6 +2033,33 @@ export const SDKUILogMessageSchema = lazySchema(() =>
     uuid: UUIDPlaceholder(),
     session_id: z.string(),
   }),
+)
+
+export const SDKUIToastMessageSchema = lazySchema(() =>
+  z
+    .object({
+      type: z.literal('system'),
+      subtype: z.literal('ui_toast'),
+      plugin: z.string(),
+      text: z.string(),
+      timeout_ms: z.number(),
+      uuid: UUIDPlaceholder(),
+      session_id: z.string(),
+    })
+    .describe('A Mod toast ($.ui.toast) for the client to show (official 2.1.318).'),
+)
+
+export const SDKUIStatusMessageSchema = lazySchema(() =>
+  z
+    .object({
+      type: z.literal('system'),
+      subtype: z.literal('ui_status'),
+      plugin: z.string(),
+      text: z.string().nullable(),
+      uuid: UUIDPlaceholder(),
+      session_id: z.string(),
+    })
+    .describe("A Mod's status line entry ($.ui.status); null clears it (official 2.1.318)."),
 )
 
 export const SDKScheduledTaskFireMessageSchema = lazySchema(() =>
@@ -2315,6 +2354,10 @@ export const SDKTaskStartedMessageSchema = lazySchema(() =>
     subagent_type: z.string().optional(),
     is_backgrounded: z.boolean().optional(),
     spawn_depth: z.number().int().optional(),
+    parent_task_id: z
+      .string()
+      .optional()
+      .describe('task_id of the subagent task whose agent launched this one; absent when launched by the main thread.'),
     task_type: z.string().optional(),
     workflow_name: z
       .string()
@@ -2560,6 +2603,8 @@ export const SDKMessageSchema = lazySchema(() =>
     SDKResultMessageSchema(),
     SDKSystemMessageSchema(),
     SDKUILogMessageSchema(),
+    SDKUIToastMessageSchema(),
+    SDKUIStatusMessageSchema(),
     SDKScheduledTaskFireMessageSchema(),
     SDKUIInvalidateMessageSchema(),
     SDKUIPanesMessageSchema(),

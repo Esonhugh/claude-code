@@ -376,6 +376,7 @@ async function handleSpawnSplitPane(
     allowedTools: permissions,
     model,
     effort: input.effort,
+    toolPermissionContext: appState.toolPermissionContext,
   })
 
   const flagsStr = inheritedFlags ? ` ${inheritedFlags}` : ''
@@ -591,6 +592,7 @@ async function handleSpawnSeparateWindow(
     allowedTools: permissions,
     model,
     effort: input.effort,
+    toolPermissionContext: appState.toolPermissionContext,
   })
 
   const flagsStr = inheritedFlags ? ` ${inheritedFlags}` : ''

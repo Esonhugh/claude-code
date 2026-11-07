@@ -1,4 +1,4 @@
-import { resolve } from 'path'
+import { isAbsolute, resolve } from 'path'
 import { z } from 'zod'
 import { SDKLocalPluginSchema } from './controlSchemas.js'
 
@@ -110,4 +110,35 @@ export function getInitializePluginsApplied(
   const regular = new Set(pluginDirs.map(path => resolve(cwd, path)))
   const noMcp = new Set(pluginDirsNoMcp.map(path => resolve(cwd, path)))
   return parsed.data.every(plugin => (plugin.skipMcpDiscovery ? noMcp : regular).has(resolve(cwd, plugin.path)))
+}
+
+export type ReloadAddPlugins =
+  | { kind: 'refused'; message: string }
+  | { kind: 'joined'; pluginDirs: string[]; pluginDirsNoMcp: string[] }
+
+/** reload_plugins add_plugins (official 2.1.319): each entry joins the session as one
+ * more --plugin-dir (--plugin-dir-no-mcp with skipMcpDiscovery). Returns the full
+ * dir lists to apply; folders already loaded stay and are not added twice. */
+export function joinReloadAddPlugins(
+  addPlugins: unknown,
+  current: { pluginDirs: readonly string[]; pluginDirsNoMcp: readonly string[] },
+  { offMachine, sideloadDisabled }: { offMachine: boolean; sideloadDisabled: boolean },
+  cwd = process.cwd(),
+): ReloadAddPlugins {
+  if (offMachine) return { kind: 'refused', message: 'reload_plugins add_plugins is not available on this connection' }
+  if (sideloadDisabled) return { kind: 'refused', message: 'reload_plugins add_plugins is disabled by managed settings (disableSideloadFlags)' }
+  const parsed = z.array(SDKLocalPluginSchema()).safeParse(addPlugins)
+  if (!parsed.success || parsed.data.some(plugin => !isAbsolute(plugin.path))) {
+    return { kind: 'refused', message: 'reload_plugins add_plugins must be a list of { type: "local", path } entries with absolute paths' }
+  }
+  const loaded = new Set([...current.pluginDirs, ...current.pluginDirsNoMcp].map(path => resolve(cwd, path)))
+  const pluginDirs = [...current.pluginDirs]
+  const pluginDirsNoMcp = [...current.pluginDirsNoMcp]
+  for (const plugin of parsed.data) {
+    const path = resolve(plugin.path)
+    if (loaded.has(path)) continue
+    loaded.add(path)
+    ;(plugin.skipMcpDiscovery ? pluginDirsNoMcp : pluginDirs).push(path)
+  }
+  return { kind: 'joined', pluginDirs, pluginDirsNoMcp }
 }

@@ -141,7 +141,7 @@ test.each([
     backgroundWaitStartTimeRef: { current: null }, turnDurationAfterBackgroundWait, getCommandQueue: () => [],
     count, isLoggableMessage, createTurnDurationMessage, logForDebugging: (value: string) => logs.push(value),
     resetTimingRefs: () => {}, newMessages: [], isCompactBoundaryMessage, getMessagesAfterCompactBoundary, responseLengthRef: { current: 0 }, feature: () => false,
-    apiMetricsRef: { current: [] }, setStreamingToolUses: () => {}, setStreamingText: () => {},
+    apiMetricsRef: { current: [] }, setStreamingToolUses: () => {}, onStreamingText: () => {},
     messagesRef: { current: messages }, input: 'request', mrOnBeforeQuery: async () => {},
     onBeforeQueryCallback: async () => proceed, onQueryImpl: async () => { calls++ },
     shouldQuery, additionalAllowedTools: [], mainLoopModelParam: 'model', effort: undefined, publicTurn: undefined,

@@ -17,15 +17,15 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # Split across runners by file index: on one runner this took ~18 min.
+  # Split across runners by measured time: on one runner this took ~18 min.
   unit-tests-shard:
-    name: unit-tests (${{ matrix.shard }}/4)
+    name: unit-tests (${{ matrix.shard }}/5)
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4]
+        shard: [1, 2, 3, 4, 5]
     steps:
       - uses: actions/checkout@v4
 
@@ -58,12 +58,16 @@ jobs:
           mkdir -p "$RUNNER_TEMP/unit"
           git ls-files 'src/**/*.test.ts' 'src/**/*.test.tsx' 'web/src/**/*.test.ts' \
             | grep -vxF -e src/utils/permissions/permissions.networkLists.test.ts -e src/utils/sandbox/sandbox-adapter.test.ts \
-            | awk -v n=4 -v i=${{ matrix.shard }} 'NR % n == i - 1' \
+            | bun scripts/split-unit-tests.mjs ${{ matrix.shard }} 5 \
             > "$RUNNER_TEMP/unit/files.txt"
           export LOGS="$RUNNER_TEMP/unit"
-          xargs -P 4 -I{} sh -c 'log="$LOGS/$(echo "$1" | tr / _).log"; bun test --timeout 60000 "$1" >"$log" 2>&1 || echo "$1" >>"$LOGS/failed.txt"' _ {} \
+          xargs -P 4 -I{} sh -c 'log="$LOGS/$(echo "$1" | tr / _).log"; s=$(date +%s.%N); bun test --timeout 60000 "$1" >"$log" 2>&1 || echo "$1" >>"$LOGS/failed.txt"; printf "%.1f\t%s\n" "$(echo "$(date +%s.%N) $s" | awk "{print \$1 - \$2}")" "$1" >>"$LOGS/times.tsv"' _ {} \
             < "$RUNNER_TEMP/unit/files.txt"
           echo "$(wc -l < "$RUNNER_TEMP/unit/files.txt") test files"
+          # The lines .github/unit-test-times.tsv is made of.
+          echo "::group::test times"
+          sort -rn "$LOGS/times.tsv"
+          echo "::endgroup::"
           if [ -s "$LOGS/failed.txt" ]; then
             while read -r f; do
               echo "::group::FAIL $f"
@@ -102,8 +106,8 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
-      - name: Install ripgrep
-        run: sudo apt-get update && sudo apt-get install -y ripgrep
+      - name: Put ripgrep on PATH
+        run: echo "$PWD/node_modules/@vscode/ripgrep-linux-x64/bin" >> "$GITHUB_PATH"
 
       # Playwright is not a project dependency; it is added for this job only.
       - name: Install Playwright Chromium
@@ -111,10 +115,18 @@ jobs:
           bun add --no-save playwright@1.63.0
           bunx playwright install --with-deps chromium
 
+      # React Compiler output of unchanged files (scripts/build.mjs); a
+      # push to dev seeds it for every PR (build-cache.yml).
+      - name: Restore build cache
+        uses: actions/cache@v4
+        with:
+          path: node_modules/.cache/claude-build-transform
+          key: build-transform-${{ runner.os }}-${{ runner.arch }}-${{ github.sha }}
+          restore-keys: build-transform-${{ runner.os }}-${{ runner.arch }}-
+
+      # package:binary runs the build itself.
       - name: Build binary
-        run: |
-          bun run build
-          bun run package:binary
+        run: bun run package:binary
 
       - name: Web e2e
         run: CLAUDE_WEB_BINARY="$(ls "$PWD"/dist/release/claude-code-v*-linux-x64 | head -n 1)" bun test --timeout 300000 src/web/web.binary.test.ts

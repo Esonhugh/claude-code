@@ -5,12 +5,13 @@ import { join } from 'node:path'
 import * as api from '../../services/api/claude.js'
 import type { ToolUseContext } from '../../Tool.js'
 import { resetSettingsCache } from '../../utils/settings/settingsCache.js'
-import { stepAutoCompactWindow } from './autocompact.js'
+import { contextWindowChoices } from './autocompact.js'
 import {
   applyAutoCompactWindow,
   call,
   describeAutoCompactWindow,
 } from './autocompact-noninteractive.js'
+import { getContextWindowTiers } from '../../utils/context.js'
 
 const envKeys = [
   'HOME',
@@ -18,6 +19,7 @@ const envKeys = [
   'CLAUDE_CODE_AUTO_COMPACT_WINDOW',
   'DISABLE_COMPACT',
   'DISABLE_AUTO_COMPACT',
+  'CLAUDE_CODE_MAX_CONTEXT_TOKENS',
 ] as const
 let root: string
 let saved: (string | undefined)[]
@@ -130,10 +132,21 @@ test('the non-interactive command shows the window without arguments', async () 
   )
 })
 
-test('the dialog stepper wraps through auto', () => {
-  expect(stepAutoCompactWindow(0, 1)).toBe(100_000)
-  expect(stepAutoCompactWindow(0, -1)).toBe(1_000_000)
-  expect(stepAutoCompactWindow(100_000, 1)).toBe(200_000)
-  expect(stepAutoCompactWindow(100_000, -1)).toBe(0)
-  expect(stepAutoCompactWindow(1_000_000, 1)).toBe(0)
+test('tiers stop at the model maximum', () => {
+  expect(getContextWindowTiers('claude-opus-5-5')).toEqual([128_000, 200_000, 272_000, 500_000, 1_000_000])
+  expect(getContextWindowTiers('claude-haiku-5-5')).toEqual([128_000, 200_000, 272_000, 500_000, 1_000_000])
+  expect(getContextWindowTiers('claude-haiku-4-5-20251001')).toEqual([128_000, 200_000])
+  expect(getContextWindowTiers('claude-sonnet-4-6[1M]')).toEqual([128_000, 200_000, 272_000, 500_000, 1_000_000])
+  process.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS = '262144'
+  expect(getContextWindowTiers('claude-opus-5-5')).toEqual([128_000, 200_000, 262_144])
+  process.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS = '50000'
+  expect(getContextWindowTiers('claude-opus-5-5')).toEqual([])
+})
+
+test('slider stops keep a saved window that is not a tier', () => {
+  const tiers = [200_000, 272_000]
+  expect(contextWindowChoices(tiers, undefined)).toEqual({ choices: [0, 200_000, 272_000], index: 0 })
+  expect(contextWindowChoices(tiers, 272_000)).toEqual({ choices: [0, 200_000, 272_000], index: 2 })
+  expect(contextWindowChoices(tiers, 150_000)).toEqual({ choices: [0, 150_000, 200_000, 272_000], index: 1 })
+  expect(contextWindowChoices(tiers, 1_000_000)).toEqual({ choices: [0, 200_000, 272_000], index: 2 })
 })

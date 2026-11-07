@@ -13,7 +13,8 @@ afterEach(async () => {
   }
 })
 
-async function author(source: string) {
+// The child's own start-up takes ~2.5 s, on top of the case's timeoutMs.
+async function author(source: string, watchdogMs = 15000) {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'author-contract-')))
   fixtures.push(root)
   await mkdir(join(root, '.claude-plugin')); await mkdir(join(root, 'hooks')); await mkdir(join(root, 'home'))
@@ -28,7 +29,7 @@ async function author(source: string) {
       ANTHROPIC_API_KEY: 'mods-test-unused', CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1', DISABLE_AUTOUPDATER: '1', DISABLE_TELEMETRY: '1', DISABLE_ERROR_REPORTING: '1' },
     stdin: 'ignore', stdout: 'pipe', stderr: 'pipe',
   })
-  const watchdog = setTimeout(() => child.kill(), 15000)
+  const watchdog = setTimeout(() => child.kill(), watchdogMs)
   try {
     const [stdout, stderr, status] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited])
     await writeFile(join(root, 'stdout.log'), stdout); await writeFile(join(root, 'stderr.log'), stderr)
@@ -37,8 +38,8 @@ async function author(source: string) {
     return { root, status, stderr, result: JSON.parse(line!.slice('__CLAUDE_PLUGIN_TEST_RESULT__'.length)) as { tests: { name: string; failure?: string }[]; loadFailure?: string } }
   } finally { clearTimeout(watchdog) }
 }
-async function passes(source: string) {
-  const response = await author(source)
+async function passes(source: string, watchdogMs?: number) {
+  const response = await author(source, watchdogMs)
   expect(response.stderr).toBe('')
   expect(response.status, JSON.stringify(response.result)).toBe(0)
   expect(response.result.loadFailure).toBeUndefined()
@@ -207,8 +208,8 @@ test('an actual timed out host hook enters the catch grace with timeout metadata
       expect(next.error).toEqual({kind:'timeout',budget:1000});expect(next.called).toBe(false);return {value:'timed recovery'};
     });
     expect(await $.env.get({name:'timeout'})).toEqual({value:'timed recovery'});
-  });`)
-}, 20000)
+  });`, 25000)
+}, 30000)
 
 test('stream catch undefined resumes the real lower generator instead of synthesizing an empty completion', async () => {
   await passes(`test('stream absent catch',async($,on)=>{

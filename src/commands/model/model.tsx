@@ -13,7 +13,7 @@ import type { LocalJSXCommandContext } from '../../commands.js'
 import { Text } from '../../ink.js'
 import { useAppState, useSetAppState } from '../../state/AppState.js'
 import type { LocalJSXCommandCall } from '../../types/command.js'
-import type { EffortLevel } from '../../utils/effort.js'
+import { type EffortLevel, getEffortForModel } from '../../utils/effort.js'
 import { isBilledAsExtraUsage } from '../../utils/extraUsage.js'
 import {
   clearFastModeCooldown,
@@ -367,6 +367,7 @@ function SetModelAndClose({
         ...prev,
         mainLoopModel: modelValue,
         mainLoopModelForSession: null,
+        effortValue: getEffortForModel(modelValue),
       }))
       let message = `Set model to ${chalk.bold(renderModelLabel(modelValue))} and saved as your default for new sessions`
 

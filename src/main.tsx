@@ -34,6 +34,8 @@ import chalk from 'chalk'
 import { readFileSync, realpathSync, statSync } from 'fs'
 import mapValues from 'lodash-es/mapValues.js'
 import pickBy from 'lodash-es/pickBy.js'
+import { withCodexAppsToolSet } from './services/apps/toolSet.js'
+import { isHostOwnedCodexAppsConfig } from './services/apps/trust.js'
 import uniqBy from 'lodash-es/uniqBy.js'
 import React from 'react'
 import { getOauthConfig } from './constants/oauth.js'
@@ -55,7 +57,10 @@ import {
   initializeGrowthBook,
   refreshGrowthBookAfterAuthChange,
 } from './services/analytics/growthbook.js'
-import { fetchBootstrapData } from './services/api/bootstrap.js'
+import {
+  fetchBootstrapData,
+  waitForOpenAIModelCatalog,
+} from './services/api/bootstrap.js'
 import { prefetchChatGPTUtilization } from './services/api/usage.js'
 import {
   type DownloadResult,
@@ -113,7 +118,7 @@ import {
 import { seedEarlyInput, stopCapturingEarlyInput } from './utils/earlyInput.js'
 import {
   EFFORT_LEVELS,
-  getInitialEffortSetting,
+  getStartupEffort,
   parseEffortValue,
 } from './utils/effort.js'
 import {
@@ -424,7 +429,9 @@ import {
   setSessionFallbackModels,
   setInlinePlugins,
   setInlinePluginsNoMcp,
+  setInlineMcpConfigs,
   setInlinePluginUrls,
+  setStrictMcpConfig,
   setIsInteractive,
   setPrintOutputFormat,
   setKairosActive,
@@ -454,6 +461,8 @@ import { migrateBypassPermissionsAcceptedToSettings } from './migrations/migrate
 import { migrateEnableAllProjectMcpServersToSettings } from './migrations/migrateEnableAllProjectMcpServersToSettings.js'
 import { migrateFennecToOpus } from './migrations/migrateFennecToOpus.js'
 import { migrateReplBridgeEnabledToRemoteControlAtStartup } from './migrations/migrateReplBridgeEnabledToRemoteControlAtStartup.js'
+import { migrateOpenAIModelToOwnSetting } from './migrations/migrateOpenAIModelToOwnSetting.js'
+import { syncUiPrefsFromUserSettings } from './utils/settings/uiPrefs.js'
 import { resetAutoModeOptInForDefaultOffer } from './migrations/resetAutoModeOptInForDefaultOffer.js'
 import { resetProToOpusDefault } from './migrations/resetProToOpusDefault.js'
 import { createRemoteSessionConfig } from './remote/RemoteSessionManager.js'
@@ -464,7 +473,11 @@ import {
   deleteDirectConnectSession,
   DirectConnectError,
 } from './server/createDirectConnectSession.js'
-import { initializeLspServerManager } from './services/lsp/manager.js'
+import {
+  initializeLspServerManager,
+  waitForInitialization as waitForLspInitialization,
+} from './services/lsp/manager.js'
+import { LSPTool } from './tools/LSPTool/LSPTool.js'
 import { shouldEnablePromptSuggestion } from './services/PromptSuggestion/promptSuggestion.js'
 import {
   type AppState,
@@ -644,14 +657,17 @@ async function logStartupTelemetry(): Promise<void> {
 }
 
 // Bump this when adding a new sync migration so existing users re-run the set.
-const CURRENT_MIGRATION_VERSION = 12
+const CURRENT_MIGRATION_VERSION = 13
 function runMigrations(): void {
+  // Not versioned: official Claude Code may have changed these since the last run.
+  syncUiPrefsFromUserSettings()
   if (getGlobalConfig().migrationVersion !== CURRENT_MIGRATION_VERSION) {
     migrateAutoUpdatesToSettings()
     migrateBypassPermissionsAcceptedToSettings()
     migrateEnableAllProjectMcpServersToSettings()
     resetProToOpusDefault()
     migrateReplBridgeEnabledToRemoteControlAtStartup()
+    migrateOpenAIModelToOwnSetting()
     if (feature('TRANSCRIPT_CLASSIFIER')) {
       resetAutoModeOptInForDefaultOffer()
     }
@@ -1138,9 +1154,14 @@ export async function main() {
   const isNonInteractive =
     hasPrintFlag || hasInitOnlyFlag || hasSdkUrl || !process.stdout.isTTY
 
-  // Stop capturing early input for non-interactive modes
+  // Stop capturing early input for non-interactive modes. cli.tsx put a TTY
+  // stdin into raw mode (ISIG off); nothing reads it from here on, so give the
+  // terminal back its Ctrl+C.
   if (isNonInteractive) {
     stopCapturingEarlyInput()
+    if (process.stdin.isTTY) {
+      process.stdin.setRawMode(false)
+    }
   }
 
   // Set simplified tracking fields
@@ -2454,6 +2475,11 @@ async function run(): Promise<CommanderCommand> {
         const processedConfigs = mcpConfig
           .map(config => config.trim())
           .filter(config => config.length > 0)
+        setInlineMcpConfigs(
+          processedConfigs.map(config =>
+            config.startsWith('{') ? config : resolve(config),
+          ),
+        )
 
         let allConfigs: Record<string, McpServerConfig> = {}
         const allErrors: ValidationError[] = []
@@ -2662,6 +2688,7 @@ async function run(): Promise<CommanderCommand> {
 
       // Extract strict MCP config flag
       const strictMcpConfig = options.strictMcpConfig || false
+      setStrictMcpConfig(strictMcpConfig)
 
       // Check if enterprise MCP configuration exists. When it does, only allow dynamic MCP
       // configs that contain special server types (sdk)
@@ -4081,7 +4108,7 @@ async function run(): Promise<CommanderCommand> {
           },
           toolPermissionContext,
           effortValue:
-            parseEffortValue(options.effort) ?? getInitialEffortSetting(),
+            getStartupEffort(options.effort),
           ...(isFastModeEnabled() && {
             fastMode: getInitialFastModeSetting(effectiveModel ?? null),
           }),
@@ -4142,7 +4169,6 @@ async function run(): Promise<CommanderCommand> {
         const connectMcpBatch = (
           configs: Record<string, ScopedMcpServerConfig>,
           label: string,
-          includeCodexApps = true,
         ): Promise<void> => {
           if (Object.keys(configs).length === 0) return Promise.resolve()
           headlessStore.setState(prev => ({
@@ -4205,7 +4231,7 @@ async function run(): Promise<CommanderCommand> {
               }))
             },
             configs,
-            { includeCodexApps },
+            { includeCodexApps: false },
           ).catch(err =>
             logForDebugging(`[MCP] ${label} connect error: ${err}`),
           )
@@ -4218,8 +4244,23 @@ async function run(): Promise<CommanderCommand> {
         // (processBatched with Promise.all). claude.ai is awaited too — its
         // fetch was kicked off early (line ~2558) so only residual time blocks
         // here. --bare skips claude.ai entirely for perf-sensitive scripts.
+        // The host-owned Codex Apps ToolSet (ChatGPT sign-in) lists hundreds of
+        // deferred tools over the network; the first request never needs
+        // them, so connect it in the background like late claude.ai
+        // connectors. ToolSearch reports it as pending until it settles, and
+        // refreshTools picks its tools up on the next query iteration.
+        const codexAppsMcpConfigs = pickBy(
+          Object.keys(regularMcpConfigs).length > 0
+            ? withCodexAppsToolSet(regularMcpConfigs)
+            : regularMcpConfigs,
+          isHostOwnedCodexAppsConfig,
+        )
+        void connectMcpBatch(codexAppsMcpConfigs, 'codexApps')
         profileCheckpoint('before_connectMcp')
-        await connectMcpBatch(regularMcpConfigs, 'regular')
+        await connectMcpBatch(
+          pickBy(regularMcpConfigs, (_, name) => !(name in codexAppsMcpConfigs)),
+          'regular',
+        )
         profileCheckpoint('after_connectMcp')
         // Dedup: suppress plugin MCP servers that duplicate a claude.ai
         // connector (connector wins), then connect claude.ai servers.
@@ -4286,7 +4327,7 @@ async function run(): Promise<CommanderCommand> {
             claudeaiConfigs,
             nonPluginConfigs,
           )
-          return connectMcpBatch(dedupedClaudeAi, 'claudeai', false)
+          return connectMcpBatch(dedupedClaudeAi, 'claudeai')
         })
         let claudeaiTimer: ReturnType<typeof setTimeout> | undefined
         const claudeaiTimedOut = await Promise.race([
@@ -4306,6 +4347,7 @@ async function run(): Promise<CommanderCommand> {
           )
         }
         profileCheckpoint('after_connectMcp_claudeai')
+        await waitForOpenAIModelCatalog()
 
         // In headless mode, start deferred prefetches immediately (no user typing delay)
         // --bare / SIMPLE: startDeferredPrefetches early-returns internally.
@@ -4324,11 +4366,29 @@ async function run(): Promise<CommanderCommand> {
           }
         }
 
+        // Plugin language servers finish loading after `tools` was built;
+        // loading is config parsing only (servers start on first use).
+        if (
+          !tools.some(tool => tool.name === LSPTool.name) &&
+          !(
+            feature('COORDINATOR_MODE') &&
+            coordinatorModeModule?.isCoordinatorMode()
+          )
+        ) {
+          await waitForLspInitialization()
+          const lsp = getTools(toolPermissionContext).find(
+            tool => tool.name === LSPTool.name,
+          )
+          if (lsp) tools = [...tools, lsp]
+        }
+
         logSessionTelemetry()
         profileCheckpoint('before_print_import')
         const { runHeadless } = await import('src/cli/print.js')
         profileCheckpoint('after_print_import')
-        void runHeadless(
+        // uncaughtException/unhandledRejection only log (gracefulShutdown.ts),
+        // so an escaped throw here would hang or exit 0 without a word.
+        runHeadless(
           inputPrompt,
           () => headlessStore.getState(),
           headlessStore.setState,
@@ -4372,7 +4432,10 @@ async function run(): Promise<CommanderCommand> {
             sessionStartHooksPromise,
             modsSession,
           },
-        )
+        ).catch((error: unknown) => {
+          process.stderr.write(`${errorMessage(error)}\n`)
+          gracefulShutdownSync(1)
+        })
         return
       }
 
@@ -4574,7 +4637,7 @@ async function run(): Promise<CommanderCommand> {
           ? { message: createUserMessage({ content: String(inputPrompt) }) }
           : null,
         effortValue:
-          parseEffortValue(options.effort) ?? getInitialEffortSetting(),
+          getStartupEffort(options.effort),
         activeOverlays: new Set<string>(),
         fastMode: getInitialFastModeSetting(resolvedInitialModel),
         ...(isAdvisorEnabled() && advisorModel && { advisorModel }),
@@ -4679,6 +4742,7 @@ async function run(): Promise<CommanderCommand> {
           const result = await loadConversationForResume(
             undefined /* sessionId */,
             undefined /* sourceFile */,
+            !!options.forkSession,
           )
           if (!result) {
             logEvent('tengu_continue', {
@@ -5339,6 +5403,7 @@ async function run(): Promise<CommanderCommand> {
                 const result = await loadConversationForResume(
                   logOption,
                   undefined,
+                  true,
                 )
                 if (result) {
                   processedResume = await processResumedConversation(
@@ -5396,6 +5461,7 @@ async function run(): Promise<CommanderCommand> {
                   const result = await loadConversationForResume(
                     logOption,
                     undefined /* sourceFile */,
+                    !!options.forkSession,
                   )
                   if (result) {
                     processedResume = await processResumedConversation(
@@ -5454,6 +5520,7 @@ async function run(): Promise<CommanderCommand> {
             const result = await loadConversationForResume(
               matchedLog ?? sessionId,
               undefined,
+              !!options.forkSession,
             )
 
             if (!result) {
@@ -5627,7 +5694,8 @@ async function run(): Promise<CommanderCommand> {
             ? hookMessages
             : undefined
 
-        await prefetchChatGPTUtilization()?.catch(() => null)
+        // Not awaited: the logo shows the token's plan until the usage reply lands.
+        void prefetchChatGPTUtilization()?.catch(() => null)
         await launchRepl(
           root,
           { getFpsMetrics, stats, initialState },
@@ -6475,9 +6543,16 @@ async function run(): Promise<CommanderCommand> {
       'Installation scope: user, project, or local',
       'user',
     )
+    .option(
+      '-y, --yes',
+      'Accept the displayed marketplace-declared command of a command plugin source (it must be confirmed; pass -y when not interactive)',
+    )
     .addOption(coworkOption())
     .action(
-      async (plugin: string, options: { scope?: string; cowork?: boolean }) => {
+      async (
+        plugin: string,
+        options: { scope?: string; cowork?: boolean; yes?: boolean },
+      ) => {
         const { pluginInstallHandler } = await import(
           './cli/handlers/plugins.js'
         )
@@ -6563,9 +6638,16 @@ async function run(): Promise<CommanderCommand> {
       '-s, --scope <scope>',
       `Installation scope: ${VALID_UPDATE_SCOPES.join(', ')} (default: user)`,
     )
+    .option(
+      '-y, --yes',
+      'Accept the displayed marketplace-declared command of a command plugin source (it must be confirmed; pass -y when not interactive)',
+    )
     .addOption(coworkOption())
     .action(
-      async (plugin: string, options: { scope?: string; cowork?: boolean }) => {
+      async (
+        plugin: string,
+        options: { scope?: string; cowork?: boolean; yes?: boolean },
+      ) => {
         const { pluginUpdateHandler } = await import(
           './cli/handlers/plugins.js'
         )

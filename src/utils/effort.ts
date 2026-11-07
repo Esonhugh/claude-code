@@ -1,10 +1,18 @@
 // biome-ignore-all assist/source/organizeImports: ANT-ONLY import markers must not be reordered
 import { isUltrathinkEnabled } from './thinking.js'
-import { getInitialSettings } from './settings/settings.js'
+import { getInitialSettings, getSettingsForSource } from './settings/settings.js'
+import type { SettingsJson } from './settings/types.js'
+import {
+  getCanonicalName,
+  getDefaultMainLoopModel,
+  getMainLoopModel,
+  parseUserSpecifiedModel,
+} from './model/model.js'
 import { isProSubscriber, isMaxSubscriber, isTeamSubscriber } from './auth.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from 'src/services/analytics/growthbook.js'
 import { getAPIProvider } from './model/providers.js'
 import { get3PModelCapabilityOverride } from './model/modelSupportOverrides.js'
+import { getOpenAICatalogEffort } from './model/openaiModelOptions.js'
 import { isEnvTruthy } from './envUtils.js'
 import { isAnt } from 'src/utils/userType.js'
 
@@ -129,6 +137,10 @@ export function getSupportedEffortLevelsForModel(
 ): readonly ConfiguredEffortLevel[] {
   if (getAPIProvider() === 'openai') {
     if (!modelSupportsEffort(model)) return []
+    const catalog = getOpenAICatalogEffort(model)
+    if (catalog?.effortOptions) {
+      return catalog.effortOptions.flatMap(level => (level === 'ultracode' ? [] : [level]))
+    }
     return [
       'none',
       'minimal',
@@ -198,8 +210,72 @@ export function toPersistableEffort(
   return undefined
 }
 
-export function getInitialEffortSetting(): EffortLevel | undefined {
-  return toPersistableEffort(getInitialSettings().effortLevel)
+/** Settings key for per-model values: canonical name without the [1m] suffix. */
+function effortModelKey(model: string): string {
+  return getCanonicalName(model).replace(/\[1m\]$/i, '')
+}
+
+/**
+ * The effort saved for `model`, as official Claude Code keeps it: per model
+ * under modelSettings.<model>.effortLevel.
+ */
+export function getSavedEffort(
+  settings: SettingsJson | null | undefined,
+  model: string,
+): EffortLevel | undefined {
+  const key = effortModelKey(model)
+  const byModel = settings?.modelSettings ?? {}
+  return toPersistableEffort(
+    byModel[key]?.effortLevel ??
+      Object.entries(byModel).find(([name]) => effortModelKey(name) === key)?.[1]
+        ?.effortLevel,
+  )
+}
+
+/** Saves `level` (undefined clears it) as `model`'s effort, where official /effort does. */
+export function savedEffortPatch(
+  level: EffortLevel | undefined,
+  model: string = getMainLoopModel(),
+): SettingsJson {
+  return { modelSettings: { [effortModelKey(model)]: { effortLevel: level } } }
+}
+
+// --effort from the command line: it holds across /model switches.
+let cliEffort: EffortValue | undefined
+
+/** The session's starting effort: --effort, else the level saved for the model. */
+export function getStartupEffort(flag: unknown): EffortValue | undefined {
+  cliEffort = parseEffortValue(flag)
+  return cliEffort ?? getInitialEffortSetting()
+}
+
+/**
+ * The effort a switch to `model` (null: the default model) lands on, as in
+ * official Claude Code: --effort or a flag-settings effortLevel (the web's
+ * effort menu), else the level saved for that model, else undefined (the
+ * model's own default).
+ */
+export function getEffortForModel(model: string | null): EffortValue | undefined {
+  return (
+    cliEffort ??
+    parseEffortValue(getSettingsForSource('flagSettings')?.effortLevel) ??
+    getInitialEffortSetting(
+      model === null ? getDefaultMainLoopModel() : parseUserSpecifiedModel(model),
+    )
+  )
+}
+
+export function getInitialEffortSetting(
+  model: string = getMainLoopModel(),
+): EffortLevel | undefined {
+  // The user file's top-level effortLevel is not read (official ignores it
+  // too); project, local, managed and flag settings may still set one.
+  const topLevel = (
+    ['flagSettings', 'policySettings', 'localSettings', 'projectSettings'] as const
+  )
+    .map(source => getSettingsForSource(source)?.effortLevel)
+    .find(level => level !== undefined)
+  return getSavedEffort(getInitialSettings(), model) ?? toPersistableEffort(topLevel)
 }
 
 /**
@@ -407,6 +483,12 @@ export function getDefaultEffortForModel(
   // IMPORTANT: Do not change the default effort level without notifying
   // the model launch DRI and research. Default effort is a sensitive setting
   // that can greatly affect model quality and bashing.
+
+  // ChatGPT: the account's catalog default, which Codex sends explicitly.
+  if (getAPIProvider() === 'openai') {
+    const catalogDefault = getOpenAICatalogEffort(model)?.defaultEffort
+    if (catalogDefault) return catalogDefault
+  }
 
   const normalizedModel = model.toLowerCase()
   // Official 2.1.311 model catalog: default_effort medium for the 5.5 models.

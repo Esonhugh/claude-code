@@ -635,8 +635,16 @@ export function ManagePlugins({
       setConfigNeeded(null)
     } else if (
       typeof viewState === 'object' &&
-      (viewState.type === 'plugin-options' ||
-        viewState.type === 'configuring-options')
+      viewState.type === 'configuring-options'
+    ) {
+      // Configure options on an installed plugin: nothing changed (official
+      // 2.1.319 says the same).
+      setViewState('plugin-list')
+      setSelectedPlugin(null)
+      setResult('Configuration cancelled.')
+    } else if (
+      typeof viewState === 'object' &&
+      viewState.type === 'plugin-options'
     ) {
       // Cancel mid-sequence — plugin is already enabled, just bail to list.
       // User can configure later via the Configure options menu if they want.

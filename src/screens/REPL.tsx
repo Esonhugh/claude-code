@@ -103,6 +103,7 @@ import { formatTokens, truncateToWidth } from '../utils/format.js'
 import { consumeEarlyInput } from '../utils/earlyInput.js'
 
 import { setMemberActive } from '../utils/swarm/teamHelpers.js'
+import { notifyLeaderOfFailedTurn } from '../utils/swarm/teammateInit.js'
 import {
   isSwarmWorker,
   generateSandboxRequestId,
@@ -117,7 +118,10 @@ import {
   isLocalAgentTask,
   type LocalAgentTaskState,
 } from '../tasks/LocalAgentTask/LocalAgentTask.js'
-import { deliverTaskMessage } from '../tasks/deliverTaskMessage.js'
+import { deliverTaskMessage, queuedUserMessages } from '../tasks/deliverTaskMessage.js'
+import { backgroundTaskForToolUse } from '../tasks/LocalShellTask/LocalShellTask.js'
+import { isLocalShellTask } from '../tasks/LocalShellTask/guards.js'
+import { createSendNow, isSendNowCommand, isSendNowPrompt } from '../utils/sendNow.js'
 import { capitalize } from '../utils/stringUtils.js'
 import {
   registerLeaderToolUseConfirmQueue,
@@ -360,6 +364,7 @@ import {
   generateSessionTitle,
   isTitleSourceMessage,
 } from '../utils/sessionTitle.js'
+import { isEssentialTrafficOnly } from '../utils/privacyLevel.js'
 import {
   BASH_INPUT_TAG,
   COMMAND_MESSAGE_TAG,
@@ -412,6 +417,10 @@ import {
 import { applyMessageDisplayHooks } from '../utils/hooks/messageDisplay.js'
 import { type IDESelection, useIdeSelection } from '../hooks/useIdeSelection.js'
 import { getTools, assembleToolPool } from '../tools.js'
+import {
+  isLspConnected,
+  subscribeLspInitialization,
+} from '../services/lsp/manager.js'
 import type { AgentDefinition } from '../tools/AgentTool/loadAgentsDir.js'
 import { resolveAgentTools } from '../tools/AgentTool/agentToolUtils.js'
 import { resumeAgentBackground } from '../tools/AgentTool/resumeAgent.js'
@@ -949,6 +958,7 @@ function TranscriptSearchBar({
 const TITLE_ANIMATION_FRAMES = ['⠂', '⠐']
 const TITLE_STATIC_PREFIX = '✳'
 const TITLE_ANIMATION_INTERVAL_MS = 960
+const MAX_TITLE_ATTEMPTS = 2
 
 /**
  * Sets the terminal tab title, with an animated prefix glyph while a query
@@ -1217,6 +1227,12 @@ export function REPL({
   // the model emits plain text the brief filter hides.
   const isBriefOnly = useAppState(s => s.isBriefOnly)
   const focusView = useAppState(s => s.briefTranscript)
+  // LSPTool.isEnabled() turns true once plugin language servers are loaded,
+  // which finishes after the first render.
+  const lspConnected = React.useSyncExternalStore(
+    subscribeLspInitialization,
+    isLspConnected,
+  )
 
   const localTools = useMemo(
     () => (isRemoteExecutionSession ? [] : getTools(toolPermissionContext)),
@@ -1225,6 +1241,7 @@ export function REPL({
       toolPermissionContext,
       proactiveActive,
       isBriefOnly,
+      lspConnected,
     ],
   )
 
@@ -1752,6 +1769,10 @@ export function REPL({
   // on resume (initialMessages present) so we don't re-title a resumed
   // session from mid-conversation context.
   const haikuTitleAttemptedRef = useRef((initialMessages?.length ?? 0) > 0)
+  // Failed title requests are retried on the next turn, but only once like
+  // official, so a gateway that ignores structured output isn't billed for an
+  // extra main-model call on every turn.
+  const haikuTitleFailuresRef = useRef(0)
   // /clear starts a new session; its first prompt gets a title of its own.
   const haikuTitleSessionRef = useRef(getSessionId())
   const agentTitle = mainThreadAgentDefinition?.agentType
@@ -2257,6 +2278,7 @@ export function REPL({
       if (to === 'transcript') setMessages(previous => [...previous, createSystemMessage(`${plugin}: ${text}`, 'notice')])
     },
     appendMessage: row => setMessages(previous => [...previous, sessionAppendEngineMessage(row)]),
+    uiDiagnostic: (plugin, text) => setMessages(previous => [...previous, createSystemMessage(`${plugin}: ${text}`, 'warning')]),
     uiToast: (plugin, text, timeoutMs) => addNotification({
       key: `mods-toast:${plugin}`, text, timeoutMs, priority: 'medium',
     }),
@@ -2453,6 +2475,48 @@ export function REPL({
 
   const hasInterruptibleToolInProgressRef = useRef(false)
 
+  // ctrl+enter on a queued typed prompt (official's low-latency submit): move a
+  // running shell/agent to the background so the prompt joins at the next tool
+  // boundary, wait out dialogs and compaction, and cut the turn only when the
+  // model is writing or a tool cannot move.
+  const inProgressToolUseIDsRef = useRef(inProgressToolUseIDs)
+  inProgressToolUseIDsRef.current = inProgressToolUseIDs
+  const sendNowHeldByDialogRef = useRef(false)
+  sendNowHeldByDialogRef.current =
+    toolUseConfirmQueue.length > 0 || sandboxPermissionRequestQueue.length > 0 ||
+    promptQueue.length > 0 || elicitation.queue.length > 0
+  const compactingRef = useRef(false)
+  const sendNow = useMemo(() => createSendNow({
+    hasPrompt: () => getCommandQueue().some(isSendNowPrompt),
+    readEvidence: () => {
+      const running = inProgressToolUseIDsRef.current
+      const movableToolUseIds = isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS)
+        ? []
+        : Object.values(store.getState().tasks).flatMap(task =>
+            (isLocalShellTask(task) || isLocalAgentTask(task)) && task.status === 'running' &&
+            !task.isBackgrounded && task.agentId === undefined &&
+            task.toolUseId !== undefined && running.has(task.toolUseId)
+              ? [task.toolUseId]
+              : [])
+      return {
+        turnActive: queryGuard.isActive && abortControllerRef.current?.signal.aborted === false,
+        heldByDialog: sendNowHeldByDialogRef.current,
+        compacting: compactingRef.current,
+        runningToolUseIds: running,
+        movableToolUseIds,
+        sampling: ['requesting', 'responding', 'thinking'].includes(streamModeRef.current),
+      }
+    },
+    moveToBackground: toolUseIds => toolUseIds.filter(id =>
+      backgroundTaskForToolUse(id, store.getState, setAppState)),
+    interrupt: () => abortControllerRef.current?.abort('interrupt'),
+    schedule: (run, ms) => {
+      const timer = setTimeout(run, ms)
+      return () => clearTimeout(timer)
+    },
+  }), [store, setAppState, queryGuard])
+  useEffect(() => sendNow.dispose, [sendNow])
+
   const [pastedContents, setPastedContentsState] = useState<
     Record<number, PastedContent>
   >({})
@@ -2503,26 +2567,31 @@ export function REPL({
     }
   }, [])
 
-  // Streaming text display: set state directly per delta (Ink's 16ms render
-  // throttle batches rapid updates). Cleared on message arrival (messages.ts)
-  // so displayedMessages switches from deferredMessages to messages atomically.
-  const [streamingText, setStreamingText] = useState<string | null>(null)
+  // Streaming text display. The full text lives in a ref; state holds only
+  // the complete lines, so REPL re-renders once per streamed line instead of
+  // once per delta. Cleared on message arrival (messages.ts) so
+  // displayedMessages switches from deferredMessages to messages atomically.
+  const streamingTextRef = useRef<string | null>(null)
+  const [streamingLines, setStreamingLines] = useState<string | null>(null)
   const reducedMotion =
     useAppState(s => s.settings.prefersReducedMotion) ?? false
   const showStreamingText = !reducedMotion && !hasCursorUpViewportYankBug()
   const onStreamingText = useCallback(
-    (f: (current: string | null) => string | null) => setStreamingText(f),
+    (f: (current: string | null) => string | null) => {
+      const text = f(streamingTextRef.current)
+      streamingTextRef.current = text
+      // Hide the in-progress source line so text streams line-by-line, not
+      // char-by-char. lastIndexOf returns -1 when no newline, giving '' → null.
+      setStreamingLines(
+        text ? text.substring(0, text.lastIndexOf('\n') + 1) || null : null,
+      )
+    },
     [],
   )
 
-  // Hide the in-progress source line so text streams line-by-line, not
-  // char-by-char. lastIndexOf returns -1 when no newline, giving '' → null.
   // Guard on showStreamingText so toggling reducedMotion mid-stream
   // immediately hides the streaming preview.
-  const visibleStreamingText =
-    streamingText && showStreamingText
-      ? streamingText.substring(0, streamingText.lastIndexOf('\n') + 1) || null
-      : null
+  const visibleStreamingText = showStreamingText ? streamingLines : null
 
   // Remote session hook - manages WebSocket connection and message handling for --remote mode
   const remoteSession = useRemoteSession({
@@ -2720,7 +2789,7 @@ export function REPL({
     setUserInputOnProcessing(undefined)
     responseLengthRef.current = 0
     apiMetricsRef.current = []
-    setStreamingText(null)
+    onStreamingText(() => null)
     setStreamingToolUses([])
     setSpinnerMessage(null)
     setSpinnerColor(null)
@@ -2731,7 +2800,7 @@ export function REPL({
     // turn's commands — clear after each turn to avoid accumulating
     // Promise chains for unconsumed checks (denied/aborted paths).
     clearSpeculativeChecks()
-  }, [pickNewSpinnerTip])
+  }, [pickNewSpinnerTip, onStreamingText])
 
   // Session backgrounding — hook is below, after getToolUseContext
 
@@ -3039,13 +3108,16 @@ export function REPL({
           timeoutMs: sessionEndTimeoutMs,
         })
 
-        // Process session start hooks for resume
-        const hookMessages = await processSessionStartHooks('resume', {
-          sessionId,
-          agentType: mainThreadAgentDefinition?.agentType,
-          model: mainLoopModel,
-          resumedMessages: messages,
-        })
+        // Process session start hooks for resume (/branch reports 'fork')
+        const hookMessages = await processSessionStartHooks(
+          entrypoint === 'fork' ? 'fork' : 'resume',
+          {
+            sessionId,
+            agentType: mainThreadAgentDefinition?.agentType,
+            model: mainLoopModel,
+            resumedMessages: messages,
+          },
+        )
 
         // Append hook messages to the conversation
         messages.push(...hookMessages)
@@ -3620,10 +3692,11 @@ export function REPL({
     // generated before pressing Esc. Pushed before resetLoadingState clears
     // streamingText, and before query.ts yields the async interrupt marker,
     // giving final order [user, partial-assistant, [Request interrupted by user]].
-    if (streamingText?.trim()) {
+    const partialText = streamingTextRef.current
+    if (partialText?.trim()) {
       setMessages(prev => [
         ...prev,
-        createAssistantMessage({ content: streamingText }),
+        createAssistantMessage({ content: partialText }),
       ])
     }
 
@@ -4224,9 +4297,11 @@ export function REPL({
               )
               break
             case 'compact_start':
+              compactingRef.current = true
               setSpinnerMessage('Compacting conversation')
               break
             case 'compact_end':
+              compactingRef.current = false
               setSpinnerMessage(null)
               setSpinnerColor(null)
               setSpinnerShimmerColor(null)
@@ -4606,10 +4681,12 @@ export function REPL({
       if (haikuTitleSessionRef.current !== getSessionId()) {
         haikuTitleSessionRef.current = getSessionId()
         haikuTitleAttemptedRef.current = false
+        haikuTitleFailuresRef.current = 0
         setHaikuTitle(undefined)
       }
       if (
         !titleDisabled &&
+        !isEssentialTrafficOnly() &&
         !sessionTitle &&
         !agentTitle &&
         !haikuTitleAttemptedRef.current
@@ -4635,7 +4712,8 @@ export function REPL({
           void generateSessionTitle(text, new AbortController().signal).then(
             title => {
               if (!title) {
-                haikuTitleAttemptedRef.current = false
+                haikuTitleAttemptedRef.current =
+                  ++haikuTitleFailuresRef.current >= MAX_TITLE_ATTEMPTS
                 return
               }
               // Official 2.1.311 also persists the title so /resume and
@@ -4645,7 +4723,8 @@ export function REPL({
               saveAiGeneratedTitle(titleSessionId, title)
             },
             () => {
-              haikuTitleAttemptedRef.current = false
+              haikuTitleAttemptedRef.current =
+                ++haikuTitleFailuresRef.current >= MAX_TITLE_ATTEMPTS
             },
           )
         }
@@ -4826,7 +4905,10 @@ export function REPL({
         }
         onQueryEvent(event)
       }
-
+      void notifyLeaderOfFailedTurn(
+        messagesRef.current,
+        abortController.signal.aborted,
+      )
 
       if (feature('BUDDY')) {
         void fireCompanionObserver(messagesRef.current, reaction =>
@@ -4990,7 +5072,7 @@ export function REPL({
         }
         apiMetricsRef.current = []
         setStreamingToolUses([])
-        setStreamingText(null)
+        onStreamingText(() => null)
 
         // messagesRef is updated synchronously by the setMessages wrapper
         // above, so it already includes newMessages from the append at the
@@ -5417,12 +5499,11 @@ export function REPL({
       }
 
       if (!input.trim()) {
-        if (
-          options?.sendNow &&
-          queryGuard.isActive &&
-          getCommandQueue().some(command => command.mode === 'prompt')
-        ) {
-          abortControllerRef.current?.abort('interrupt')
+        if (options?.sendNow && queryGuard.isActive) {
+          const queue = getCommandQueue()
+          // Bash and slash commands run only after the turn, so cut it for them.
+          if (queue.some(isSendNowCommand)) abortControllerRef.current?.abort('interrupt')
+          else if (queue.some(isSendNowPrompt)) sendNow.request()
         }
         return
       }
@@ -5859,6 +5940,11 @@ export function REPL({
       // The managed remote child owns SessionStart hooks and attachments.
       if (!isRemoteExecutionSession) await awaitPendingHooks().catch(restoreOnError)
 
+      // A typed prompt joins the running turn through send-now's delivery check;
+      // bash and slash commands only run after the turn, so they cut it.
+      const sendNowWhileBusy = queryGuard.isActive
+      const sendNowCutsTurn = options?.sendNow === true &&
+        (submittedInputMode !== 'prompt' || input.trim().startsWith('/'))
       await handlePromptSubmit({
         onInputRun: beginModSelectionRun,
         input,
@@ -5897,10 +5983,10 @@ export function REPL({
         // handlePromptSubmit only uses it for debug log + telemetry event.
         streamMode: streamModeRef.current,
         hasInterruptibleToolInProgress:
-          options?.sendNow === true ||
-          hasInterruptibleToolInProgressRef.current,
+          sendNowCutsTurn || hasInterruptibleToolInProgressRef.current,
         skipLocalContext: isRemoteExecutionSession,
       }).catch(restoreOnError)
+      if (options?.sendNow && !sendNowCutsTurn && sendNowWhileBusy) sendNow.request()
 
       restoreStash()
     },
@@ -5940,6 +6026,7 @@ export function REPL({
       awaitMods,
       beginModSelectionRun,
       repinScroll,
+      sendNow,
     ],
   )
 
@@ -7013,6 +7100,18 @@ export function REPL({
   // Auto-exit viewing mode when teammate completes or errors
   useTeammateViewAutoExit()
 
+  // When viewing an agent, never fall through to leader — empty until
+  // bootstrap/stream fills. Closes the see-leader-type-agent footgun.
+  const viewedAgentMessages = viewedAgentTask?.messages
+  const viewedPendingMessages =
+    viewedAgentTask && isLocalAgentTask(viewedAgentTask) ? viewedAgentTask.pendingMessages : undefined
+  // A running agent's unread user messages show after its transcript until it reads them.
+  const viewedAgentDisplayMessages = useMemo(() => {
+    const queued = viewedAgentTask && isLocalAgentTask(viewedAgentTask) ? queuedUserMessages(viewedAgentTask) : []
+    return queued.length > 0 ? [...(viewedAgentMessages ?? []), ...queued] : (viewedAgentMessages ?? [])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [viewedAgentMessages, viewedPendingMessages])
+
   if (screen === 'transcript') {
     // Virtual scroll replaces the 30-message cap: everything is scrollable
     // and memory is bounded by the viewport. Without it, wrapping transcript
@@ -7211,10 +7310,8 @@ export function REPL({
   // jitter gap where the spinner is gone but the answer hasn't appeared yet.
   // Only reducedMotion users keep the deferred path during loading.
   const usesSyncMessages = showStreamingText || !isLoading
-  // When viewing an agent, never fall through to leader — empty until
-  // bootstrap/stream fills. Closes the see-leader-type-agent footgun.
   const displayedMessages = viewedAgentTask
-    ? (viewedAgentTask.messages ?? [])
+    ? viewedAgentDisplayMessages
     : usesSyncMessages
       ? messages
       : deferredMessages

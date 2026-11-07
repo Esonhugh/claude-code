@@ -46,7 +46,7 @@ export function SendIcon() {
  * language, like the prototype. Only the one-line descriptions translate.
  */
 export const MODES: { key: string; mark: string; label: string; desc: MessageKey }[] = [
-  { key: 'default', mark: '○', label: 'default mode', desc: 'modeDescDefault' },
+  { key: 'default', mark: '○', label: 'manual mode on', desc: 'modeDescDefault' },
   { key: 'acceptEdits', mark: '⏵⏵', label: 'accept edits on', desc: 'modeDescAcceptEdits' },
   { key: 'plan', mark: '⏸', label: 'plan mode on', desc: 'modeDescPlan' },
   { key: 'auto', mark: '⏵⏵', label: 'auto mode on', desc: 'modeDescAuto' },

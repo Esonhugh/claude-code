@@ -3,6 +3,7 @@ import type { ProjectTask } from './api'
 import {
   agentInputs,
   canMessage,
+  coordinatorApprovals,
   messageTarget,
   notesByItem,
   taskElapsed,
@@ -184,6 +185,8 @@ describe('project tasks', () => {
     expect(taskElapsed(row({ duration_ms: 0 }), 96_000)).toBe(95_000)
     expect(taskMeta(row({ duration_ms: 0, tokens: 0 }), undefined, 96_000)).toBe('1m35s · WebFetch')
     expect(taskMeta(row({ state: 'review' }), undefined, 999_000)).toBe('41s · 6.8k tok')
+    expect(taskMeta(row({ state: 'review', tokens: 15 }), undefined, 999_000)).toBe('41s · 15 tok')
+    expect(taskMeta(row({ state: 'review', tokens: 42_000 }), undefined, 999_000)).toBe('41s · 42k tok')
   })
 
   it('blocks a task whose worker asks here, picks its model and keeps a user-stopped task stopped', () => {
@@ -196,6 +199,12 @@ describe('project tasks', () => {
     expect(canMessage(row({ state: 'stopped', stop_reason: 'user' }))).toBe(false)
     expect(canMessage(row({ state: 'stopped', stop_reason: 'restart' }))).toBe(true)
     expect(canMessage(row({ state: 'done' }))).toBe(true)
+  })
+
+  it('leaves a teammate\'s approval, which no task answers, to the coordinator', () => {
+    const ask = (agentId?: string): Approval => ({ requestId: agentId ?? 'own', toolName: 'Bash', input: {}, suggestions: [], ...(agentId && { agentId }) })
+    const approvals = [ask(), ask('a'), ask('alice@session-1')]
+    expect(coordinatorApprovals([row({})], approvals).map(a => a.requestId)).toEqual(['own', 'alice@session-1'])
   })
 
   it('drops the worker\'s first prompt, which the task shows as its brief', () => {

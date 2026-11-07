@@ -112,6 +112,8 @@ describe('Status compact button', () => {
         onSendTask: async () => {},
         agentInput: { tools: {} as never, models: [] } as never,
         onRequest: async () => ({}),
+        onModsRequest: async () => ({}),
+        onModCanvas: () => {},
         onCompact: () => {},
         onClose: () => {},
       }),

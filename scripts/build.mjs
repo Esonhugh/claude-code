@@ -2,6 +2,7 @@ import { transformAsync } from '@babel/core';
 import syntaxTypescript from '@babel/plugin-syntax-typescript';
 import reactCompiler from 'babel-plugin-react-compiler';
 import { build } from 'esbuild';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -105,6 +106,31 @@ export function getEnabledFeatures(value = process.env.CLAUDE_CODE_RECOVER_FEATU
 const enabledFeatures = getEnabledFeatures();
 const embedSharpNative = process.env.CLAUDE_CODE_EMBEDDED_SHARP === '1';
 
+// React Compiler output per source file, keyed by its input, path and the
+// compiler setup; most of a build is this transform. CLAUDE_CODE_BUILD_CACHE=0
+// turns it off.
+const transformCacheDir =
+  process.env.CLAUDE_CODE_BUILD_CACHE === '0'
+    ? null
+    : path.join(nodeModulesDir, '.cache', 'claude-build-transform');
+const transformCacheSalt = [
+  fs.readFileSync(fileURLToPath(import.meta.url), 'utf8'),
+  ...['@babel/core', '@babel/plugin-syntax-typescript', 'babel-plugin-react-compiler'].map(
+    name => fs.readFileSync(path.join(nodeModulesDir, name, 'package.json'), 'utf8'),
+  ),
+].join('\0');
+const usedCacheFiles = new Set();
+
+// Keeps the cache to this tree's files, so a saved CI cache does not grow.
+async function pruneTransformCache() {
+  if (!transformCacheDir || !fs.existsSync(transformCacheDir)) return;
+  for (const name of await fs.promises.readdir(transformCacheDir)) {
+    if (!usedCacheFiles.has(name)) {
+      await fs.promises.rm(path.join(transformCacheDir, name), { force: true });
+    }
+  }
+}
+
 function firstExisting(baseDir, candidates) {
   for (const candidate of candidates) {
     const fullPath = path.join(baseDir, candidate);
@@ -173,6 +199,24 @@ const recoveryResolver = embedSharpNative => ({
         (ext === '.tsx' || ext === '.ts') &&
         args.path.startsWith(path.join(projectDir, 'src'))
       ) {
+        const cacheFile =
+          transformCacheDir &&
+          path.join(
+            transformCacheDir,
+            createHash('sha256')
+              .update(transformCacheSalt)
+              .update('\0' + args.path + '\0')
+              .update(contents)
+              .digest('hex') + '.js',
+          );
+        if (cacheFile) {
+          usedCacheFiles.add(path.basename(cacheFile));
+          try {
+            return { contents: await fs.promises.readFile(cacheFile, 'utf8'), loader };
+          } catch (error) {
+            if (error.code !== 'ENOENT') throw error;
+          }
+        }
         // The official build memoizes components with React Compiler; without
         // it every REPL state change re-renders the whole Ink tree.
         const result = await transformAsync(contents, {
@@ -195,6 +239,12 @@ const recoveryResolver = embedSharpNative => ({
             ],
           ],
         });
+        if (cacheFile) {
+          await fs.promises.mkdir(transformCacheDir, { recursive: true });
+          const tmp = `${cacheFile}.${process.pid}.tmp`;
+          await fs.promises.writeFile(tmp, result.code);
+          await fs.promises.rename(tmp, cacheFile);
+        }
         return { contents: result.code, loader };
       }
 
@@ -335,6 +385,7 @@ const require = __createRequire(import.meta.url);`,
   sourcemap: true,
     target: 'node20',
   });
+  await pruneTransformCache();
 
   await build({
     absWorkingDir: projectDir,

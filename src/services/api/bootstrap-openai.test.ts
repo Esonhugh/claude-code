@@ -26,7 +26,11 @@ try {
 
   const authModule = await import('../../utils/auth.js')
   const { getGlobalConfig, saveGlobalConfig } = await import('../../utils/config.js')
-  const { fetchBootstrapData } = await import('./bootstrap.js')
+  const { fetchBootstrapData, onOpenAIModelOptionsRefresh, waitForOpenAIModelCatalog } =
+    await import('./bootstrap.js')
+  const { getOpenAIServedDefaultModel } = await import('../../utils/model/openaiModelOptions.js')
+  let modelOptionsRefreshes = 0
+  onOpenAIModelOptionsRefresh(() => modelOptionsRefreshes++)
   const originalClientDataCache = getGlobalConfig().clientDataCache
   const originalAutoCompactWindowsCache =
     getGlobalConfig().autoCompactWindowsCache
@@ -98,12 +102,67 @@ try {
     getGlobalConfig().additionalModelOptionsCacheKey,
     'openai:chatgpt:account-123',
   )
+  // A fresh install learns the account default model here; the REPL re-resolves it.
+  assert.equal(modelOptionsRefreshes, 1)
   assert.deepEqual(getGlobalConfig().clientDataCache, {
     preserved: 'client-data',
   })
   assert.deepEqual(getGlobalConfig().autoCompactWindowsCache, {
     preserved: 321_000,
   })
+
+  // Print mode on a first run: the first request waits for the account catalog
+  // (default model, effort, context window) instead of racing discovery and
+  // sending the builtin fallbacks.
+  saveGlobalConfig(current => ({
+    ...current,
+    additionalModelOptionsCache: undefined,
+    additionalModelOptionsCacheKey: undefined,
+  }))
+  const fixtureGet = axios.get
+  const refreshesBefore = modelOptionsRefreshes
+  axios.get = (async (...args: Parameters<typeof axios.get>) => {
+    await new Promise(resolve => setTimeout(resolve, 200))
+    return fixtureGet(...args)
+  }) as typeof axios.get
+  void fetchBootstrapData()
+  assert.equal(getOpenAIServedDefaultModel(), undefined)
+  await waitForOpenAIModelCatalog()
+  assert.equal(getOpenAIServedDefaultModel(), 'gpt-bootstrap')
+  axios.get = fixtureGet
+
+  // With the catalog cached it does not wait at all.
+  let fetched = false
+  axios.get = (async () => {
+    fetched = true
+    return new Promise(() => {})
+  }) as typeof axios.get
+  void fetchBootstrapData()
+  const started = Date.now()
+  await waitForOpenAIModelCatalog()
+  assert.ok(Date.now() - started < 50)
+  assert.ok(fetched)
+
+  // A cached catalog whose first row is hidden has no served default model but
+  // still describes effort and context windows: no wait either.
+  saveGlobalConfig(current => ({
+    ...current,
+    additionalModelOptionsCache: [
+      { value: 'gpt-hidden', label: 'GPT Hidden (Hidden)', description: 'OpenAI model' },
+    ],
+  }))
+  void fetchBootstrapData()
+  const hiddenStarted = Date.now()
+  await waitForOpenAIModelCatalog(1000)
+  assert.ok(Date.now() - hiddenStarted < 50)
+  axios.get = fixtureGet
+  saveGlobalConfig(current => ({
+    ...current,
+    additionalModelOptionsCache: [
+      { value: 'gpt-bootstrap', label: 'GPT Bootstrap', description: 'OpenAI model' },
+    ],
+  }))
+  modelOptionsRefreshes = refreshesBefore
 
   requests.length = 0
   delete process.env.CLAUDE_CODE_USE_OPENAI
@@ -146,6 +205,7 @@ try {
       description: 'Keep on discovery failure',
     },
   ])
+  assert.equal(modelOptionsRefreshes, 1)
 
   axios.get = (async () => ({ data: {} })) as typeof axios.get
   await fetchBootstrapData()

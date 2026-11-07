@@ -20,6 +20,7 @@ import {
   agentInputs,
   messageTarget,
   canMessage,
+  coordinatorApprovals,
   isLive,
   notesByItem,
   TASK_GROUPS,
@@ -36,7 +37,7 @@ import type { HistoryEntry, SessionChat } from '../store'
 import { toolMessage } from '../tools'
 import { AskDock, ChatComposer, chatTools, type ComposerTools, type MentionTarget } from './Composer'
 import { Dialog } from './Dialog'
-import { AgentConversation, joinTurns, Message, modelName, type SentMessage, useUnread } from './Message'
+import { AgentConversation, joinTurns, Message, modelName, QuoteContext, QuoteOnSelect, replyPrompt, type SentMessage, useUnread } from './Message'
 import { WORKER_MODELS } from './ProjectDialog'
 import { mergeSkills, useEnabledSkills } from './StartPage'
 import { followScroll, readStored, type T, writeStored } from './ui'
@@ -201,6 +202,8 @@ function TaskPane({
   targets,
   picked,
   onTarget,
+  quote,
+  onQuote,
 }: {
   t: T
   project: Project
@@ -232,7 +235,11 @@ function TaskPane({
   targets: MentionTarget[]
   picked: MentionTarget[]
   onTarget: (picked: MentionTarget[]) => void
+  /** What this box's next message replies to. */
+  quote?: string
+  onQuote: (taskId: string, quote: string | undefined) => void
 }) {
+  const quoteHere = useCallback((quote: string | undefined) => onQuote(task.id, quote), [onQuote, task.id])
   const messages = useWorkerTranscript(project.id, task, followUntil)
   const items = useMemo(() => messages.reduce(reduce, initialState).items, [messages])
   const shown = useMemo(() => workerItems(items, task.brief), [items, task.brief])
@@ -253,6 +260,8 @@ function TaskPane({
   return (
     <>
       {head}
+      <QuoteOnSelect t={t} feed={feedRef} onQuote={quoteHere} />
+      <QuoteContext.Provider value={quoteHere}>
       <div className="feed" ref={feedRef} onScroll={e => (atBottom.current = followScroll(e.currentTarget, atBottom.current, feedTop))}>
         <div className="pjcheck">
           <b>{task.title}</b>
@@ -295,6 +304,7 @@ function TaskPane({
           </div>
         )}
       </div>
+      </QuoteContext.Provider>
       <div className="composer">
         {notice && (
           <div className="notice" role="status">
@@ -329,6 +339,8 @@ function TaskPane({
           targets={targets}
           picked={picked}
           onTarget={onTarget}
+          quote={quote}
+          onQuote={quoteHere}
           tools={{
             ...tools,
             prompts,
@@ -373,11 +385,14 @@ export function ProjectView({
   onSend,
   onStop,
   onFocus,
+  quote,
+  onQuote,
   listFiles,
   prompts,
   onMode,
   onModel,
   onEffort,
+  onContextWindow,
   onAnswer,
   onSettings,
   onStopTask,
@@ -403,11 +418,15 @@ export function ProjectView({
   onSend: () => void
   onStop: () => void
   onFocus: () => void
+  /** What the coordinator box's next message replies to; `onSend` sends it with the draft. */
+  quote?: string
+  onQuote: (quote: string | undefined) => void
   listFiles: (query: string) => Promise<string[]>
   prompts: string[]
   onMode: (mode: string) => void
   onModel: (model: string) => void
   onEffort: (effort: string) => void
+  onContextWindow: (tokens: number | null) => void
   onAnswer: (approval: Approval, choice: ApprovalChoice) => void
   onSettings: () => void
   /** Rejects when the coordinator is gone or refuses the stop. */
@@ -437,6 +456,15 @@ export function ProjectView({
   const [refresh, setRefresh] = useState(0)
   const [now, setNow] = useState(() => Date.now())
   const [taskDrafts, setTaskDrafts] = useState<Record<string, string>>({})
+  const [taskQuotes, setTaskQuotes] = useState<Record<string, string>>({})
+  const setTaskQuote = useCallback(
+    (id: string, quote: string | undefined) =>
+      setTaskQuotes(q => {
+        const { [id]: _, ...rest } = q
+        return quote?.trim() ? { ...rest, [id]: quote.trim() } : rest
+      }),
+    [],
+  )
   const [taskFiles, setTaskFiles] = useState<Record<string, File[]>>({})
   // Who each task box's next message goes to, picked with `@`: the coordinator or other tasks.
   const [taskTo, setTaskTo] = useState<Record<string, MentionTarget[]>>({})
@@ -655,6 +683,8 @@ export function ProjectView({
     }
     if (block.name !== 'Agent') return undefined
     const task = byToolUse.get(block.id)
+    // A call that failed started no task: it shows as the failed tool call it is.
+    if (!task && block.isError) return undefined
     if (!task) {
       const title = inputs.get(block.id)?.description
       const pending = { id: block.id, title: title || t('statusConnecting'), state: 'running' as const }
@@ -771,19 +801,23 @@ export function ProjectView({
     return run
   }
   const sendTask = async (task: ProjectTask) => {
-    const text = (taskDrafts[task.id] ?? '').trim()
+    const typed = (taskDrafts[task.id] ?? '').trim()
     const pending = taskFiles[task.id] ?? []
-    if ((!text && !pending.length) || !canMessage(task)) return
+    if ((!typed && !pending.length) || !canMessage(task)) return
+    const quote = taskQuotes[task.id]
+    const text = replyPrompt(quote, typed)
     const to = pickedFor(task)
     const clear = () => {
       setTaskDrafts(d => ({ ...d, [task.id]: '' }))
+      setTaskQuote(task.id, undefined)
       setTaskFiles(f => ({ ...f, [task.id]: [] }))
       setTaskTo(x => ({ ...x, [task.id]: [] }))
       setTaskNotice(undefined)
     }
     const restore = () => {
       // A failed upload gives the message back to an empty box.
-      setTaskDrafts(d => ({ ...d, [task.id]: d[task.id] || text }))
+      setTaskDrafts(d => ({ ...d, [task.id]: d[task.id] || typed }))
+      if (quote) setTaskQuotes(q => (q[task.id] ? q : { ...q, [task.id]: quote }))
       setTaskFiles(f => ({ ...f, [task.id]: f[task.id]?.length ? f[task.id]! : pending }))
       setTaskTo(x => ({ ...x, [task.id]: x[task.id]?.length ? x[task.id]! : to }))
     }
@@ -822,18 +856,24 @@ export function ProjectView({
   // Only picks that are still messageable; a task that ended drops off the row.
   const picked = toTasks.filter(x => tasks.some(task => task.id === x.id && canMessage(task)))
   const sendToTargets = async (to: ProjectTask[]) => {
-    const text = draft.trim()
+    const typed = draft.trim()
     const pending = files
     const sentTo = toTasks
-    if (!text && !pending.length) return
+    if (!typed && !pending.length) return
+    const text = replyPrompt(quote, typed)
     setDraft('')
     setFiles([])
     setToTasks([])
+    onQuote(undefined)
     const restore = () => {
-      if (!boxRef.current.draft) setDraft(text)
+      if (!boxRef.current.draft) setDraft(typed)
+      if (quote) onQuote(quote)
       if (!boxRef.current.files.length) setFiles(pending)
       setToTasks(x => (x.length ? x : sentTo))
     }
+    // The first pick opens now: opening it after the deliveries would land on top of wherever
+    // the user has navigated while a slow send was still in flight.
+    if (to[0]) openTask(to[0].id)
     // The same message to every pick, in the order picked.
     for (const task of to) {
       try {
@@ -842,11 +882,10 @@ export function ProjectView({
         say(err instanceof Error ? err.message : String(err))
       }
     }
-    if (to[0]) openTask(to[0].id)
   }
 
-  const coordinatorApprovals = chat.approvals.filter(a => !a.agentId)
-  const approval = coordinatorApprovals[0]
+  const ownApprovals = coordinatorApprovals(tasks, chat.approvals)
+  const approval = ownApprovals[0]
   const head = (
     <div className="pv-head">
       {menuButton}
@@ -1018,6 +1057,8 @@ export function ProjectView({
         }}
       >
         {head}
+        <QuoteOnSelect t={t} feed={feedRef} onQuote={onQuote} />
+        <QuoteContext.Provider value={onQuote}>
         <div
           className="feed"
           ref={feedRef}
@@ -1056,6 +1097,7 @@ export function ProjectView({
             </div>
           )}
         </div>
+        </QuoteContext.Provider>
         <div className="composer">
           {chat.mode === 'elsewhere' && (
             <div className="notice" role="status">
@@ -1070,7 +1112,7 @@ export function ProjectView({
           {approval && (
             <AskDock
               approval={approval}
-              more={coordinatorApprovals.length - 1}
+              more={ownApprovals.length - 1}
               cwd={chat.cwd ?? chat.workDir}
               t={t}
               onAnswer={choice => onAnswer(approval, choice)}
@@ -1093,6 +1135,8 @@ export function ProjectView({
             }}
             onStop={onStop}
             onFocus={onFocus}
+            quote={quote}
+            onQuote={onQuote}
             files={files}
             setFiles={setFiles}
             placeholder={t('coordinatorPlaceholder')}
@@ -1102,7 +1146,15 @@ export function ProjectView({
             tools={{
               ...tools,
               prompts,
-              model: { model: chatModel, effort: chatEffort, models, onModel, onEffort, daybreak },
+              model: {
+                model: chatModel,
+                effort: chatEffort,
+                models,
+                onModel,
+                onEffort,
+                daybreak,
+                contextWindow: { value: chat.contextWindow, onChange: onContextWindow },
+              },
             }}
           />
         </div>
@@ -1148,6 +1200,8 @@ export function ProjectView({
             targets={targetsFor(open)}
             picked={pickedFor(open)}
             onTarget={x => setTaskTo(to => ({ ...to, [open.id]: x }))}
+            quote={taskQuotes[open.id]}
+            onQuote={setTaskQuote}
           />
         ) : (
           sideList

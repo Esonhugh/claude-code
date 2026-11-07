@@ -467,6 +467,8 @@ export function createModHostOperations({
           response = await httpFetch(location.href, {
             method,
             headers, body, redirect: 'manual', signal: requestSignal,
+            // Bun's fetch extension: the request goes over this Unix socket.
+            ...(init.socketPath !== undefined && { unix: init.socketPath }),
           })
           const next = response.headers.get('location')
           if (!REDIRECT_STATUSES.includes(response.status) || next === null) break
@@ -477,6 +479,9 @@ export function createModHostOperations({
           location = new URL(next, location)
           if (location.protocol !== 'http:' && location.protocol !== 'https:')
             throw new Error(`http.fetch: redirect to ${location.href} refused: takes an http or https URL`)
+          // Every hop goes over the same socket, so another origin's URL would still reach this peer.
+          if (init.socketPath !== undefined && location.origin !== previousOrigin)
+            throw new Error(`http.fetch: redirect to ${location.href} refused: a request over a Unix socket stays on ${previousOrigin}`)
           if (response.status === 303 || ([301, 302].includes(response.status) && method === 'POST')) {
             method = 'GET'
             body = undefined

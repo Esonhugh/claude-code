@@ -38,3 +38,16 @@ test('a 429 without quota headers carries no quota limits', () => {
   expect(message.error).toBe('rate_limit')
   expect(message.quotaLimits).toBeUndefined()
 })
+
+test('a ChatGPT usage-limit 429 says when it resets instead of the raw body', async () => {
+  const { HttpResponseError } = await import('../../utils/errors.js')
+  const body = '{"error":{"type":"usage_limit_reached","message":"The usage limit has been reached","plan_type":"plus","resets_at":1900000000,"resets_in_seconds":1800}}'
+  const message = getAssistantMessageFromError(
+    new HttpResponseError(429, `OpenAI API 429: ${body}`, new Headers()),
+    'gpt-6.1-sol',
+  )
+  expect(message.error).toBe('rate_limit')
+  const text = (message.message.content[0] as { text: string }).text
+  expect(text).toMatch(/^You've hit your ChatGPT usage limit · resets /)
+  expect(text).not.toContain('usage_limit_reached')
+})

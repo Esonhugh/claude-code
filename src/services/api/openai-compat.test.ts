@@ -529,6 +529,97 @@ try {
     },
   ])
 
+  // Read of a PDF adds its pages as a document block in a meta user message.
+  requests.length = 0
+  await client.beta.messages.create({
+    model: 'gpt-5.5',
+    max_tokens: 16,
+    messages: [
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'document',
+            source: { type: 'base64', media_type: 'application/pdf', data: 'JVBERi0=' },
+          },
+          {
+            type: 'document',
+            title: 'notes.txt',
+            source: { type: 'text', media_type: 'text/plain', data: 'plain notes' },
+          },
+        ],
+      },
+    ],
+  } as any)
+  assert.deepEqual(requests[0]!.body.input, [
+    {
+      type: 'message',
+      role: 'user',
+      content: [
+        {
+          type: 'input_file',
+          filename: 'document.pdf',
+          file_data: 'data:application/pdf;base64,JVBERi0=',
+        },
+        { type: 'input_text', text: 'plain notes' },
+      ],
+    },
+  ])
+
+  // SDK users can send content-source documents and search results.
+  requests.length = 0
+  await client.beta.messages.create({
+    model: 'gpt-5.5',
+    max_tokens: 16,
+    messages: [
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'document',
+            source: {
+              type: 'content',
+              content: [
+                { type: 'text', text: 'The secret animal is WOMBAT.' },
+                { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'aW1hZ2U=' } },
+              ],
+            },
+          },
+          { type: 'document', source: { type: 'content', content: 'plain content' } },
+          {
+            type: 'search_result',
+            title: 'Zoo',
+            source: 'https://zoo.test',
+            content: [{ type: 'text', text: 'Otters live here.' }],
+          },
+          {
+            type: 'tool_result',
+            tool_use_id: 'toolu_sr',
+            content: [{
+              type: 'search_result',
+              title: 'Park',
+              source: 'https://park.test',
+              content: [{ type: 'text', text: 'Koalas sleep.' }],
+            }],
+          },
+        ],
+      },
+    ],
+  } as any)
+  assert.deepEqual(requests[0]!.body.input, [
+    { type: 'function_call_output', call_id: 'fc_sr', output: 'Park\nhttps://park.test\nKoalas sleep.' },
+    {
+      type: 'message',
+      role: 'user',
+      content: [
+        { type: 'input_text', text: 'The secret animal is WOMBAT.' },
+        { type: 'input_image', image_url: 'data:image/png;base64,aW1hZ2U=', detail: 'high' },
+        { type: 'input_text', text: 'plain content' },
+        { type: 'input_text', text: 'Zoo\nhttps://zoo.test\nOtters live here.' },
+      ],
+    },
+  ])
+
   for (const withImage of [false, true]) {
     requests.length = 0
     await client.beta.messages.create({
@@ -613,10 +704,73 @@ try {
       ],
     },
   ])
+
+  // #1023: ChatGPT keeps `tools` stable; discovered deferred tools travel as
+  // client tool_search_output items at the point ToolSearch found them.
+  const deferredTool = (name: string) => ({
+    name,
+    description: `${name} tool`,
+    input_schema: { type: 'object', properties: {} },
+    defer_loading: true,
+  })
+  const toolSearchTurn = [
+    { role: 'user', content: 'start' },
+    {
+      role: 'assistant',
+      content: [{ type: 'tool_use', id: 'toolu_ts', name: 'ToolSearch', input: { query: 'select:SendMessage' } }],
+    },
+    {
+      role: 'user',
+      content: [{
+        type: 'tool_result',
+        tool_use_id: 'toolu_ts',
+        content: [{ type: 'tool_reference', tool_name: 'SendMessage' }],
+      }],
+    },
+  ]
+  requests.length = 0
+  await oauthClient.beta.messages.create({
+    model: 'gpt-5.5',
+    max_tokens: 16,
+    tools: [
+      { name: 'Read', description: 'Read', input_schema: { type: 'object', properties: {} } },
+      deferredTool('SendMessage'),
+      deferredTool('CronList'),
+      deferredTool('DeferredToolPlaceholder'),
+    ],
+    messages: toolSearchTurn,
+  } as any)
+  assert.deepEqual(requests[0]!.body.tools.map((tool: any) => tool.name), ['Read'])
+  const searchItems = requests[0]!.body.input
+  assert.deepEqual(searchItems.map((item: any) => item.type), [
+    'tool_search_call', 'tool_search_output',
+    'message', 'function_call', 'function_call_output',
+    'tool_search_call', 'tool_search_output',
+  ])
+  assert.deepEqual(searchItems[1].tools.map((tool: any) => tool.name), ['CronList'])
+  assert.equal(searchItems[6].call_id, searchItems[5].call_id)
+  assert.equal(searchItems[6].execution, 'client')
+  assert.deepEqual(searchItems[6].tools, [{
+    type: 'function',
+    name: 'SendMessage',
+    description: 'SendMessage tool',
+    parameters: { type: 'object', properties: {} },
+    strict: false,
+  }])
+
   getOpenAIAuthInfo.cache.set(undefined, {
     accessToken: 'sk-test-api-key',
     isChatGPT: false,
   })
+  requests.length = 0
+  await client.beta.messages.create({
+    model: 'gpt-5.5',
+    max_tokens: 16,
+    tools: [deferredTool('SendMessage')],
+    messages: toolSearchTurn,
+  } as any)
+  assert.deepEqual(requests[0]!.body.tools.map((tool: any) => tool.name), ['SendMessage'])
+  assert.ok(!requests[0]!.body.input.some((item: any) => item.type === 'tool_search_output'))
 
   requests.length = 0
   await client.beta.messages.create({
@@ -1233,10 +1387,15 @@ try {
       'data: {"type":"response.completed","response":{"usage":{"input_tokens":100,"input_tokens_details":{"cached_tokens":60,"cache_write_tokens":15},"output_tokens":7}}}\n\n',
       {
         status: 200,
-        headers: { 'Content-Type': 'text/event-stream' },
+        headers: {
+          'Content-Type': 'text/event-stream',
+          'x-codex-primary-used-percent': '34',
+          'x-codex-turn-state': 'opaque',
+          'set-cookie': 'a=b',
+        },
       },
     )) as unknown as typeof fetch
-  const { data: cacheStream } = await cacheClient.beta.messages
+  const { data: cacheStream, response: cacheStreamResponse } = await cacheClient.beta.messages
     .create({
       model: 'gpt-5.5',
       max_tokens: 16,
@@ -1244,6 +1403,10 @@ try {
       stream: true,
     })
     .withResponse()
+  // Only the rate-limit headers reach claude.ts (#947).
+  const passedHeaders: string[] = []
+  cacheStreamResponse.headers.forEach((_value: string, name: string) => passedHeaders.push(name))
+  assert.deepEqual(passedHeaders, ['x-codex-primary-used-percent'])
   const cacheEvents: any[] = []
   for await (const event of cacheStream as unknown as AsyncIterable<any>) {
     cacheEvents.push(event)
@@ -1458,7 +1621,7 @@ try {
     output_config: { effort: 'ultra' },
   } as any)
 
-  assert.deepEqual(requests[0]!.body.reasoning, { effort: 'ultra' })
+  assert.deepEqual(requests[0]!.body.reasoning, { effort: 'xhigh' })
 
   const {
     EFFORT_LEVELS,
@@ -1488,7 +1651,7 @@ try {
     output_config: { effort: appliedUltra },
   } as any)
 
-  assert.deepEqual(requests[0]!.body.reasoning, { effort: 'ultra' })
+  assert.deepEqual(requests[0]!.body.reasoning, { effort: 'xhigh' })
   if (originalUseOpenAI === undefined) delete process.env.CLAUDE_CODE_USE_OPENAI
   else process.env.CLAUDE_CODE_USE_OPENAI = originalUseOpenAI
 

@@ -2704,15 +2704,20 @@ export function startRelevantMemoryPrefetch(
 
   // SQLite recall runs on a session's first prompt only; later turns search
   // with SearchMemory. A compact summary is not a prompt, so recall resumes after /compact.
+  // A later turn started by a channel message, peer or task notification is
+  // meta, so lastUserMessage is still the old typed prompt: do not recall again.
+  const lastUserIndex = messages.lastIndexOf(lastUserMessage)
   if (
     isSqliteMemoryEnabled() &&
     messages.some(
-      m =>
+      (m, i) =>
         m !== lastUserMessage &&
         m.type === 'user' &&
-        !m.isMeta &&
         !m.isCompactSummary &&
-        !hasToolResultContent(m.message.content),
+        ((!m.isMeta && !hasToolResultContent(m.message.content)) ||
+          (m.origin !== undefined &&
+            m.origin.kind !== 'human' &&
+            i > lastUserIndex)),
     )
   ) {
     return undefined

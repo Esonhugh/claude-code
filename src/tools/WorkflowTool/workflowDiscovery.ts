@@ -9,6 +9,7 @@ import type { WorkflowArgs, WorkflowDryRunPlan, WorkflowSpec } from './workflowS
 import { loadWorkflowScriptSpec } from './workflowDsl.js'
 import { getBundledWorkflowSpecs } from './bundled/index.js'
 import { validateWorkflowSpec } from './validateWorkflowSpec.js'
+import { loadAllPluginsCacheOnly } from '../../utils/plugins/pluginLoader.js'
 
 export type DiscoveredWorkflowSpec = {
   commandName: string
@@ -31,6 +32,8 @@ const PROJECT_WORKFLOW_DIRS = [join('docs', 'workflows'), join('.claude', 'workf
 
 type WorkflowDiscoveryOptions = {
   home?: string
+  // Enabled plugins whose workflows/ dir is searched; defaults to the loader's.
+  plugins?: Array<{ name: string; path: string }>
 }
 
 async function pathExists(path: string): Promise<boolean> {
@@ -105,14 +108,22 @@ async function loadWorkflowFile(
 async function workflowSearchDirs(
   cwd: string,
   options: WorkflowDiscoveryOptions,
-): Promise<string[]> {
+): Promise<Array<{ dir: string; namespace?: string }>> {
   // Safe mode keeps bundled workflows only.
   if (isSafeMode()) return []
-  const dirs = [resolve(options.home ?? homedir(), '.claude', 'workflows')]
+  const dirs: Array<{ dir: string; namespace?: string }> = [
+    { dir: resolve(options.home ?? homedir(), '.claude', 'workflows') },
+  ]
   for (const root of await findWorkflowRoots(getProjectConfigRoot() ?? cwd)) {
     for (const relativeDir of PROJECT_WORKFLOW_DIRS) {
-      dirs.push(resolve(root, relativeDir))
+      dirs.push({ dir: resolve(root, relativeDir) })
     }
+  }
+  // A plugin's workflows/ dir loads as `plugin:name`, like official 2.1.318.
+  const plugins =
+    options.plugins ?? (await loadAllPluginsCacheOnly()).enabled
+  for (const plugin of plugins) {
+    dirs.push({ dir: join(plugin.path, 'workflows'), namespace: plugin.name })
   }
   return dirs
 }
@@ -162,7 +173,7 @@ export async function discoverWorkflowSpecs(
   }
 
   const searchedDirs = new Set<string>()
-  for (const dir of await workflowSearchDirs(cwd, options)) {
+  for (const { dir, namespace } of await workflowSearchDirs(cwd, options)) {
     if (searchedDirs.has(dir)) continue
     searchedDirs.add(dir)
 
@@ -182,7 +193,8 @@ export async function discoverWorkflowSpecs(
       try {
         const spec = await loadWorkflowFile(filePath, args)
         const plan = validateWorkflowSpec(spec)
-        const commandName = workflowNameToCommandName(plan.name, filePath)
+        const baseName = workflowNameToCommandName(plan.name, filePath)
+        const commandName = namespace ? `${namespace}:${baseName}` : baseName
         workflowsByCommandName.set(commandName, {
           commandName,
           path: filePath,

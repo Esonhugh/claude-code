@@ -25,6 +25,7 @@ import {
   type PluginOptionSchema,
   type PluginOptionValues,
   savePluginOptions,
+  setPluginOptionsPending,
 } from '../../utils/plugins/pluginOptionsStorage.js'
 import { PluginOptionsDialog } from './PluginOptionsDialog.js'
 
@@ -119,6 +120,14 @@ export function PluginOptionsFlow({
   })
 
   const [index, setIndex] = React.useState(0)
+
+  // The plugin is already enabled; until this dialog closes its missing
+  // options are not reported as a load error.
+  React.useEffect(() => {
+    if (steps.length === 0) return
+    setPluginOptionsPending(pluginId, true)
+    return () => setPluginOptionsPending(pluginId, false)
+  }, [pluginId, steps.length])
 
   // Latest-ref: lets the effect close over the current onDone without
   // re-running when the parent re-renders.

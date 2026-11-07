@@ -22,6 +22,8 @@ type Session = SessionInfo & {
   pending: string[]
   /** Each task's `system/task_*` lines, for a client that attaches later. */
   taskLines?: Map<string, string[]>
+  /** Each Mod plugin's standing `system/ui_status` line, for a client that attaches later (replayTasks only). */
+  modStatus?: Map<string, string>
   /** Unanswered `can_use_tool` requests by request id, for a client that attaches later. */
   asks: Map<string, string>
   /** The latest `system/init` (permission mode kept current), for a client that attaches later (replayTasks only). */
@@ -31,6 +33,8 @@ type Session = SessionInfo & {
   spawnOptions: SpawnSessionOptions
   /** A turn is in progress (set by a written user message, cleared by `session_state_changed` idle). */
   busy: boolean
+  /** A turn has started, so the transcript exists for `--resume`. */
+  ran?: boolean
   /** Options for a restart waiting on the current turn to end. */
   restartWith?: SpawnSessionOptions
   /** Lines written while the process is being replaced. */
@@ -131,6 +135,19 @@ function recordInit(init: string | undefined, line: string): string | undefined 
   } catch {
     return init
   }
+}
+
+function recordModStatus(modStatus: Map<string, string>, line: string): void {
+  if (!line.includes('"subtype":"ui_status"')) return
+  let msg: { type?: unknown; subtype?: unknown; plugin?: unknown; text?: unknown }
+  try {
+    msg = JSON.parse(line)
+  } catch {
+    return
+  }
+  if (msg.type !== 'system' || msg.subtype !== 'ui_status' || typeof msg.plugin !== 'string') return
+  if (typeof msg.text === 'string' && msg.text) modStatus.set(msg.plugin, line)
+  else modStatus.delete(msg.plugin)
 }
 
 function recordTaskLine(taskLines: Map<string, string[]>, line: string): void {
@@ -255,7 +272,7 @@ export class SessionManager {
       socket: null,
       pending: [],
       asks: new Map(),
-      ...(this.replayTasks && { taskLines: new Map() }),
+      ...(this.replayTasks && { taskLines: new Map(), modStatus: new Map() }),
       exited: closed(child),
       spawnOptions,
       busy: false,
@@ -291,7 +308,7 @@ export class SessionManager {
       ...(options.model && { model: options.model }),
       ...(options.effort && { effort: options.effort }),
       ...options.coordinator,
-      resume: true,
+      ...((session.spawnOptions.resume || session.ran) && { resume: true }),
     }
     if (session.busy || session.queued) return 'pending'
     void this.respawn(session)
@@ -333,6 +350,7 @@ export class SessionManager {
       if (!line.trim()) return
       if (session.taskLines) {
         recordTaskLine(session.taskLines, line)
+        if (session.modStatus) recordModStatus(session.modStatus, line)
         session.init = recordInit(session.init, line)
       }
       if (line.includes('"can_use_tool"') || line.includes('"control_cancel_request"')) recordAsk(session.asks, line)
@@ -381,6 +399,7 @@ export class SessionManager {
     }
     if (typeof state !== 'string') return
     session.busy = state !== 'idle'
+    if (session.busy) session.ran = true
     if (!session.busy && session.restartWith && !session.queued) void this.respawn(session)
   }
 
@@ -411,6 +430,9 @@ export class SessionManager {
     // Pending lines may repeat some of these; task events fold idempotently.
     for (const lines of session.taskLines?.values() ?? []) {
       for (const line of lines) socket.send(line + '\n')
+    }
+    for (const line of session.modStatus?.values() ?? []) {
+      if (!session.pending.includes(line)) socket.send(line + '\n')
     }
     for (const line of session.asks.values()) {
       if (!session.pending.includes(line)) socket.send(line + '\n')

@@ -4,6 +4,7 @@ import { formatDeferredToolLines, isDeferredTool } from './prompt.js'
 import { AskUserQuestionTool } from '../AskUserQuestionTool/AskUserQuestionTool.js'
 import { SendMessageTool } from '../SendMessageTool/SendMessageTool.js'
 import { createTeammateContext, runWithTeammateContext } from '../../utils/teammateContext.js'
+import { getAllowedChannels, setAllowedChannels } from '../../bootstrap/state.js'
 
 function tools(...names: string[]): Tool[] {
   return names.map(name => ({ name }) as Tool)
@@ -18,6 +19,22 @@ test('Mods placement overrides MCP/alwaysLoad defaults but cannot defer ToolSear
   expect(isDeferredTool(eager)).toBe(false)
   expect(isDeferredTool(eager, true)).toBe(true)
   expect(isDeferredTool({ name: 'ToolSearch' } as Tool, true)).toBe(false)
+})
+
+test('loads the tools of a channel this session listens to up front (#848)', () => {
+  const reply = { name: 'mcp__plugin_fakechat_fakechat__reply', isMcp: true, mcpInfo: { serverName: 'plugin:fakechat:fakechat', toolName: 'reply' } } as Tool
+  const other = { name: 'mcp__corp__lookup', isMcp: true, mcpInfo: { serverName: 'corp', toolName: 'lookup' } } as Tool
+  const before = getAllowedChannels()
+  try {
+    setAllowedChannels([])
+    expect(isDeferredTool(reply)).toBe(true)
+    setAllowedChannels([{ kind: 'plugin', name: 'fakechat', marketplace: 'claude-plugins-official' }])
+    expect(isDeferredTool(reply)).toBe(false)
+    expect(isDeferredTool(other)).toBe(true)
+    expect(isDeferredTool(reply, true)).toBe(true)
+  } finally {
+    setAllowedChannels(before)
+  }
 })
 
 test('official 2.1.311 up-front tools: SendMessage for teammates, AskUserQuestion always', () => {

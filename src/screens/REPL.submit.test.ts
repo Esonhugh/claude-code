@@ -11,6 +11,7 @@ import memoize from 'lodash-es/memoize.js'
 import { readFileSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import { logForDebugging } from '../utils/debug.js'
+import { isSendNowCommand, isSendNowPrompt } from '../utils/sendNow.js'
 import { copyModCallerChain } from '../services/mods/callerChain.js'
 import ts from 'typescript'
 import * as React from 'react'
@@ -1111,6 +1112,8 @@ function harness({ active = true, gap = 'mods', input = 'submitted', mode = 'pro
     onBeforeQuery: undefined, canUseTool: undefined, addNotification: noop, setMessages: noop,
     streamModeRef: { current: undefined }, hasInterruptibleToolInProgressRef: { current: false },
     isFullscreenEnvEnabled: () => true,
+    isSendNowCommand, isSendNowPrompt, sendNowRequests: 0,
+    sendNow: { request: () => { scope.sendNowRequests++ } },
   }
   const submit = makeSubmit(scope)
   scope.onSubmitRef = { current: submit }
@@ -1516,16 +1519,29 @@ test('admission failure never overwrites the running abort controller or a newer
   expect(h.guard.isActive).toBe(true)
 })
 
-test('send-now interrupts the running turn and queues the prompt to run next', async () => {
+test('send-now queues a typed prompt and hands delivery to the send-now check instead of cutting the turn', async () => {
   const h = harness()
   const controller = new AbortController()
   h.scope.abortController = controller
   const pending = h.submit('right now', h.helpers, undefined, { sendNow: true })
   h.release()
   await pending
-  expect(controller.signal.aborted).toBe(true)
-  expect(controller.signal.reason).toBe('interrupt')
+  expect(controller.signal.aborted).toBe(false)
+  expect(h.scope.sendNowRequests).toBe(1)
   expect(h.queued.map((command: any) => command.value)).toEqual(['right now'])
+})
+
+test('send-now with a bash or slash draft cuts the running turn and queues it to run next', async () => {
+  for (const [input, mode] of [['pwd', 'bash'], ['/cost', 'prompt']] as const) {
+    const h = harness({ input, mode })
+    const controller = new AbortController()
+    h.scope.abortController = controller
+    const pending = h.submit(input, h.helpers, undefined, { sendNow: true })
+    h.release()
+    await pending
+    expect(controller.signal.reason).toBe('interrupt')
+    expect(h.scope.sendNowRequests).toBe(0)
+  }
 })
 
 test('plain submit while a turn runs queues without interrupting it', async () => {
@@ -1539,14 +1555,23 @@ test('plain submit while a turn runs queues without interrupting it', async () =
   expect(h.queued.map((command: any) => command.value)).toEqual(['later'])
 })
 
-test('send-now with an empty prompt interrupts only when a prompt is queued', async () => {
-  for (const [queue, aborted] of [[[], false], [[{ mode: 'prompt', value: 'waiting' }], true]] as const) {
+test('send-now with an empty prompt cuts the turn for a queued command and checks delivery for a queued prompt', async () => {
+  const human = { origin: { kind: 'human' } }
+  for (const [queue, aborted, requested] of [
+    [[], false, 0],
+    [[{ mode: 'task-notification', value: 'done' }], false, 0],
+    [[{ mode: 'prompt', value: 'tick', isMeta: true }], false, 0],
+    [[{ mode: 'prompt', value: 'waiting', ...human }], false, 1],
+    [[{ mode: 'bash', value: 'pwd', ...human }], true, 0],
+    [[{ mode: 'prompt', value: '/cost', ...human }], true, 0],
+  ] as const) {
     const h = harness({ input: '' })
     const controller = new AbortController()
     h.scope.abortController = controller
     h.scope.getCommandQueue = () => queue
     await h.submit('', h.helpers, undefined, { sendNow: true })
     expect(controller.signal.aborted).toBe(aborted)
+    expect(h.scope.sendNowRequests).toBe(requested)
   }
 })
 
@@ -2876,6 +2901,8 @@ test('query refresh reloads raw REPL context with live overlays and instruction 
       additionalWorkingDirectories: new Map(),
     },
     queryCheckpoint: noop,
+    notifyLeaderOfFailedTurn: noop,
+    messagesRef: { current: [] },
     checkAndDisableBypassPermissionsIfNeeded: noop,
     setAppState: noop,
     getSystemPrompt: async () => 'system prompt',

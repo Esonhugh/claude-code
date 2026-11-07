@@ -152,6 +152,11 @@ export function createModState({
       return scopes.getStore() ? callback() : scopes.run({ generation, values }, callback)
     },
 
+    /** Host work below a hook (a tool, a subagent) reads live state, not that hook's snapshot. */
+    outside<T>(callback: () => T): T {
+      return scopes.exit(callback)
+    },
+
     async render<T>(instance: string, callback: () => T | Promise<T>): Promise<T> {
       const render = { instance, reads: new Map<string, number>() }
       renderGenerations.set(instance, render)

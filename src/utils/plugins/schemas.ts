@@ -301,6 +301,14 @@ const PluginManifestMetadataSchema = lazySchema(() =>
       .describe(
         'Unique identifier for the plugin, used for namespacing (prefer kebab-case)',
       ),
+    displayName: z
+      .string()
+      .optional()
+      .describe('Human-readable plugin name shown in place of `name`'),
+    icon: z
+      .string()
+      .optional()
+      .describe('Path to a square PNG or JPEG icon, relative to the plugin root'),
     version: z
       .string()
       .optional()
@@ -1109,6 +1117,43 @@ export const gitSha = lazySchema(() =>
 )
 
 /**
+ * A marketplace entry source this build cannot install (e.g. official
+ * 2.1.318's `archive`). Parsed into this placeholder so one such
+ * entry does not make the whole marketplace unloadable; installing it fails.
+ */
+export const UNSUPPORTED_PLUGIN_SOURCE = 'unsupported'
+export type UnsupportedPluginSource = {
+  source: typeof UNSUPPORTED_PLUGIN_SOURCE
+  sourceType: string
+}
+
+const INSTALLABLE_PLUGIN_SOURCE_TYPES = new Set([
+  'npm',
+  'pip',
+  'url',
+  'github',
+  'git-subdir',
+  'command',
+  UNSUPPORTED_PLUGIN_SOURCE,
+])
+
+function toUnsupportedPluginSource(value: {
+  source: string
+}): UnsupportedPluginSource {
+  return { source: UNSUPPORTED_PLUGIN_SOURCE, sourceType: value.source }
+}
+
+export function isUnsupportedPluginSource(
+  source: unknown,
+): source is UnsupportedPluginSource {
+  return (
+    typeof source === 'object' &&
+    source !== null &&
+    (source as { source?: unknown }).source === UNSUPPORTED_PLUGIN_SOURCE
+  )
+}
+
+/**
  * Schema for plugin source locations
  *
  * Defines various ways to reference and install plugins including
@@ -1210,10 +1255,50 @@ export const PluginSourceSchema = lazySchema(() =>
         'Plugin located in a subdirectory of a larger repository (monorepo). ' +
           'Only the specified subdirectory is materialized; the rest of the repo is not downloaded.',
       ),
+    z
+      .object({
+        source: z.literal('command'),
+        command: z
+          .string()
+          .min(1)
+          .max(500)
+          .refine(command => !/[^\x20-\x7E]| {4,}/.test(command), {
+            message:
+              'command must be printable ASCII (letters, digits, punctuation, single spaces) with no runs of 4 or more spaces',
+          })
+          .describe(
+            'Shell command that prints the absolute path of the plugin directory on stdout (exactly one line) and exits 0. Runs through the platform shell from the home directory, only after the user reviews it at install or update.',
+          ),
+        timeout: z
+          .number()
+          .int()
+          .positive()
+          .max(3600)
+          .optional()
+          .describe('Seconds to wait for the command (default: 60)'),
+        mode: z
+          .enum(['copy', 'link'])
+          .optional()
+          .describe(
+            'copy (default): the printed directory is copied into the plugin cache. link: the cache entry links to the printed directory in place, which must then stay valid (macOS/Linux).',
+          ),
+      })
+      .describe(
+        'Plugin directory produced by a locally installed tool (e.g. an IDE that renders its plugin for the current SDK).',
+      ),
     // TODO (future work) gist
     // TODO (future work) single file?
+    z
+      .object({
+        source: z.literal(UNSUPPORTED_PLUGIN_SOURCE),
+        sourceType: z.string(),
+      })
+      .describe(
+        'Placeholder for a source type this build cannot install; not for authoring',
+      ),
   ]),
 )
+
 
 /**
  * Narrow plugin entry for settings-sourced marketplaces.
@@ -1318,7 +1403,19 @@ export const PluginMarketplaceEntrySchema = lazySchema(() =>
             'Plugin name cannot contain spaces. Use kebab-case (e.g., "my-plugin")',
         })
         .describe('Unique identifier matching the plugin name'),
-      source: PluginSourceSchema().describe('Where to fetch the plugin from'),
+      source: z
+        .union([
+          PluginSourceSchema(),
+          // A source type this build does not know (not a malformed known one).
+          z
+            .looseObject({
+              source: z
+                .string()
+                .refine(type => !INSTALLABLE_PLUGIN_SOURCE_TYPES.has(type)),
+            })
+            .transform(value => toUnsupportedPluginSource(value)),
+        ])
+        .describe('Where to fetch the plugin from'),
       category: z
         .string()
         .optional()
@@ -1347,7 +1444,13 @@ export const PluginMarketplaceEntrySchema = lazySchema(() =>
  */
 export const PluginMarketplaceSchema = lazySchema(() =>
   z.object({
+    $schema: z
+      .string()
+      .optional()
+      .describe('JSON Schema reference for editors; ignored at load time'),
     name: MarketplaceNameSchema(),
+    version: z.string().optional().describe('Marketplace manifest version'),
+    description: z.string().optional().describe('Marketplace description'),
     owner: PluginAuthorSchema().describe(
       'Marketplace maintainer or curator information',
     ),
@@ -1376,6 +1479,13 @@ export const PluginMarketplaceSchema = lazySchema(() =>
       .optional()
       .describe(
         "Marketplace names whose plugins may be auto-installed as dependencies. Only the root marketplace's allowlist applies \u2014 no transitive trust.",
+      ),
+    renames: z
+      .record(z.string(), z.string().nullable())
+      .optional()
+      .catch(undefined)
+      .describe(
+        'Append-only map of old plugin name to current name (or null when removed). Accepted for compatibility; this build does not follow it.',
       ),
   }),
 )
@@ -1766,6 +1876,7 @@ export type MarketplaceSource = z.infer<
 >
 export type PluginAuthor = z.infer<ReturnType<typeof PluginAuthorSchema>>
 export type PluginSource = z.infer<ReturnType<typeof PluginSourceSchema>>
+export type CommandPluginSource = Extract<PluginSource, { source: 'command' }>
 export type PluginManifest = z.infer<ReturnType<typeof PluginManifestSchema>>
 export type PluginManifestChannel = NonNullable<
   PluginManifest['channels']

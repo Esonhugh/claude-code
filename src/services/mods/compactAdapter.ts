@@ -169,6 +169,12 @@ export async function runModSessionCompact(
     if (original) return { compactionResult: original.result }
     const messagesToKeep = restore(result.messages)
     const boundary = createCompactBoundaryMessage(trigger, result.tokensBefore ?? 0, messages.at(-1)?.uuid)
+    // An OpenAI remote compaction lives in its boundary; keep it while the mod keeps its summary row.
+    const remote = results.findLast(item => item.result.summaryMessages.some(summary => messagesToKeep.includes(summary)))?.result.boundaryMarker
+    if (remote?.subtype === 'compact_boundary' && remote.openAICompaction) {
+      boundary.openAICompaction = remote.openAICompaction
+      boundary.compactMetadata = { ...boundary.compactMetadata, remoteV2: true }
+    }
     return { compactionResult: {
       boundaryMarker: annotateBoundaryWithPreservedSegment(boundary, boundary.uuid, messagesToKeep),
       summaryMessages: [], messagesToKeep, attachments: [], hookResults: [],

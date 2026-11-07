@@ -1,7 +1,8 @@
-import { expect, test } from 'bun:test'
+import { expect, spyOn, test } from 'bun:test'
 
 import { getDefaultAppState, type AppState } from '../../state/AppState.js'
 import type { ToolUseContext } from '../../Tool.js'
+import * as stopTaskModule from '../../tasks/stopTask.js'
 import { TaskStopTool } from './TaskStopTool.js'
 
 function contextFor(agentId: string | undefined): ToolUseContext {
@@ -51,5 +52,34 @@ test('a teammate can be addressed by the agent id or name the spawn result repor
   const context = { getAppState: () => state } as unknown as ToolUseContext
   for (const task_id of ['mate1@life', 'mate1']) {
     expect(await TaskStopTool.validateInput!({ task_id }, context)).toEqual({ result: true })
+  }
+})
+
+test('an async subagent stops its task through the root task store, not its no-op setAppState', async () => {
+  const stop = spyOn(stopTaskModule, 'stopTask').mockResolvedValue({
+    taskId: 'balpha',
+    taskType: 'local_bash',
+    command: 'sleep 100',
+  } as Awaited<ReturnType<typeof stopTaskModule.stopTask>>)
+  const rootState = getDefaultAppState()
+  const getAppStateForTasks = () => rootState
+  const setAppStateForTasks = () => {}
+  const context = {
+    agentId: 'aalpha',
+    getAppState: () => rootState,
+    setAppState: () => {},
+    getAppStateForTasks,
+    setAppStateForTasks,
+    abortController: new AbortController(),
+  } as unknown as ToolUseContext
+  try {
+    await TaskStopTool.call({ task_id: 'balpha' }, context)
+    expect(stop).toHaveBeenCalledTimes(1)
+    expect(stop.mock.calls[0]?.[1]).toEqual({
+      getAppState: getAppStateForTasks,
+      setAppState: setAppStateForTasks,
+    })
+  } finally {
+    stop.mockRestore()
   }
 })

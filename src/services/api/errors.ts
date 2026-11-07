@@ -37,7 +37,7 @@ import {
   PDF_TARGET_RAW_SIZE,
 } from '../../constants/apiLimits.js'
 import { isEnvTruthy } from '../../utils/envUtils.js'
-import { formatFileSize } from '../../utils/format.js'
+import { formatFileSize, formatResetTime } from '../../utils/format.js'
 import { ImageResizeError } from '../../utils/imageResizer.js'
 import { ImageSizeError } from '../../utils/imageValidation.js'
 import {
@@ -478,6 +478,21 @@ function formatAssistantMessageFromError(
   ) {
     return createAssistantAPIErrorMessage({
       content: CUSTOM_OFF_SWITCH_MESSAGE,
+      error: 'rate_limit',
+    })
+  }
+
+  if (
+    error instanceof HttpResponseError &&
+    error.status === 429 &&
+    error.message.includes('usage_limit_reached')
+  ) {
+    const resetsAt = Number(error.message.match(/"resets_at"\s*:\s*(\d+)/)?.[1])
+    const reset = Number.isFinite(resetsAt)
+      ? ` · resets ${formatResetTime(resetsAt, true)}`
+      : ''
+    return createAssistantAPIErrorMessage({
+      content: `You've hit your ChatGPT usage limit${reset}`,
       error: 'rate_limit',
     })
   }

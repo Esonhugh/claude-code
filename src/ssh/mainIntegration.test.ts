@@ -868,7 +868,10 @@ test('serializes direct shell commands with model turns and records their histor
     printSource,
     /shellCommandRunning = false[\s\S]{0,700}void run\(\)/,
   )
-  assert.match(printSource, /if \(!running && !shellCommandRunning\)/)
+  assert.match(
+    printSource,
+    /if \(!running && !shellCommandRunning && !teamPollActive\)/,
+  )
   assert.match(
     printSource,
     /else if \(inputClosed\) \{[\s\S]{0,240}await finishOutput\(\)/,

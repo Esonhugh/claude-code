@@ -24,10 +24,12 @@ make build
 
 ```text
 $ ./built-claude --version
-2.1.296 (Claude Code)
+2.1.297 (Claude Code)
 ```
 
 产物是编译成 bytecode 的单文件，启动很快（`--version` 约 65 ms）；ripgrep 打包在里面，运行时自动解出。
+
+构建会把每个源文件的 React Compiler 转换结果缓存在 `node_modules/.cache/claude-build-transform`（按文件内容、路径和编译器版本命中），第二次起只转换改过的文件：本机 `make build` 由约 60 s 降到约 25 s，产物与不用缓存时逐字节相同。设 `CLAUDE_CODE_BUILD_CACHE=0` 可关闭。
 
 **3. 本地试用：**
 
@@ -59,6 +61,7 @@ make download-claude CLAUDE_VERSION=2.1.303    # 产出 ./official-claude（已�
 | `make download-claude` | 下载官方 CLI 做对照（`CLAUDE_VERSION=` 指定版本） |
 | `make release-check` | 发布前检查：版本号、CHANGELOG、类型检查、lint、构建产物能跑 `--version` / `--help` |
 | `bun test <文件>` | 跑单个测试文件 |
+| `bun run check:changed [base]` | 推送前快速检查：对相对 `origin/dev`（或 `base`）改动的文件跑 eslint、增量 tsc 和对应的单元测试 |
 
 `CHANGELOG.md` 会被打进 binary，改了它要重新构建。
 

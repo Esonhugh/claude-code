@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'bun:test'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, utimesSync, writeFileSync } from 'fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
-import { join, sep } from 'path'
+import { delimiter, dirname, join, parse, sep } from 'path'
 
 // End-to-end check of a built binary: `claude web` serving the embedded page,
 // a real `claude -p` session against a scripted Messages API, driven from
@@ -173,6 +173,8 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
   const coordinatorSeen: [string, string][] = []
   let home = ''
   let workspace = ''
+  // The stand-in for open / explorer / xdg-open: each run appends its arguments here.
+  let openerLog = ''
   // The model of each request a resumed Quick task makes.
   const resumedModels: string[] = []
   // The Slow and Hang workers wait on this until the suite ends.
@@ -196,7 +198,8 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       {
         cwd: home,
         env: {
-          PATH: process.env.PATH ?? '/usr/bin:/bin',
+          PATH: `${dirname(openerLog)}${delimiter}${process.env.PATH ?? '/usr/bin:/bin'}`,
+          CLAUDE_E2E_OPENER_LOG: openerLog,
           HOME: home,
           ...windowsHome(home),
           IS_SANDBOX: '1',
@@ -233,7 +236,7 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
         if (!new URL(req.url).pathname.endsWith('/messages')) {
           return Response.json({})
         }
-        type Block = { type: string }
+        type Block = { type: string; tool_use_id?: string; content?: unknown }
         const body = (await req.json()) as {
           model?: string
           system?: string | { text?: string }[]
@@ -386,10 +389,12 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
           stop = 'tool_use'
         } else if (lastText.includes('toolu_task_b')) {
           // Plan with the task tools: finish the first task, start the second.
-          const ids = [...lastText.matchAll(/Task #(\d+) created/g)].map(m => m[1])
+          // Concurrent tools report in completion order, so match each id to its call.
+          const id = (toolId: string) =>
+            /Task #(\d+) created/.exec(String(lastBlocks.find(b => b.tool_use_id === toolId)?.content))?.[1]
           blocks = [
-            { type: 'tool_use', id: 'toolu_task_c', name: 'TaskUpdate', input: { taskId: ids[0], status: 'completed' } },
-            { type: 'tool_use', id: 'toolu_task_d', name: 'TaskUpdate', input: { taskId: ids[1], status: 'in_progress' } },
+            { type: 'tool_use', id: 'toolu_task_c', name: 'TaskUpdate', input: { taskId: id('toolu_task_a'), status: 'completed' } },
+            { type: 'tool_use', id: 'toolu_task_d', name: 'TaskUpdate', input: { taskId: id('toolu_task_b'), status: 'in_progress' } },
           ]
           stop = 'tool_use'
         } else if (lastText.includes('TODOS')) {
@@ -517,8 +522,24 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       '---\nname: e2e-skill\ndescription: E2E sample skill\n---\n\nE2E_SKILL_BODY\n',
     )
     writeFileSync(join(home, '.claude', 'CLAUDE.md'), '# Notes\n\nE2E_MEMORY_MARKER\n')
+    // A compiled stand-in, so Windows finds it as explorer.exe; it exits 1 there like explorer does.
+    const openerDir = mkdtempSync(join(tmpdir(), 'web-bin-opener-'))
+    openerLog = join(openerDir, 'opened.log')
+    writeFileSync(
+      join(openerDir, 'opener.ts'),
+      [
+        "import { appendFileSync, existsSync, readFileSync } from 'fs'",
+        'const log = process.env.CLAUDE_E2E_OPENER_LOG!',
+        "appendFileSync(log, JSON.stringify(process.argv.slice(2)) + '\\n')",
+        "const forced = log + '.exit'",
+        "process.exit(existsSync(forced) ? Number(readFileSync(forced, 'utf8')) : process.platform === 'win32' ? 1 : 0)",
+      ].join('\n'),
+    )
+    const openerName = { win32: 'explorer.exe', darwin: 'open' }[process.platform as string] ?? 'xdg-open'
+    const compiled = Bun.spawnSync([process.execPath, 'build', '--compile', join(openerDir, 'opener.ts'), '--outfile', join(openerDir, openerName)])
+    if (compiled.exitCode !== 0) throw new Error(`opener stub: ${compiled.stderr.toString()}`)
     await startWeb()
-  }, 30_000)
+  }, 90_000)
 
   afterAll(() => {
     releaseWorkers()
@@ -658,11 +679,11 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       await rename.press('Enter')
       await page.locator('.session-row', { hasText: 'Renamed chat' }).waitFor()
 
-      // Typing resumes the transcript in its own folder with its history.
+      // Typing resumes the transcript in its own folder with its history. Enter right after the
+      // click goes out once the session is up, not back into the box (#936).
       const before = promptsSeen.length
       const input = page.getByLabel('Message', { exact: true })
       await input.click()
-      await page.locator('.status-live').waitFor({ timeout: 30_000 })
       await input.fill('hello again')
       await input.press('Enter')
       await page.locator('.feed').getByText('Hello from the fake model').nth(1).waitFor({ timeout: 30_000 })
@@ -1603,7 +1624,8 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       await page.locator('.pv-chat .pj-note', { hasText: 'Task "Task one" finished' }).waitFor({ timeout: 60_000 })
       await page.locator('.pv-chat .pj-note', { hasText: 'Task "Task two" finished' }).waitFor({ timeout: 60_000 })
       await page.locator('.pv-chat').getByText('COORD_SAW_RESULT').first().waitFor({ timeout: 60_000 })
-      expect(await page.locator('.pjlist .grp-h').first().textContent()).toBe('Needs you')
+      // The task list refreshes on its own schedule, after the chat shows the notices.
+      await page.waitForFunction(() => document.querySelector('.pjlist .grp-h')?.textContent === 'Needs you', undefined, { timeout: 30_000 })
 
       // The `-p` child really ran on the coordinator prompt, with the project instructions appended.
       expect(coordinatorSeen.length).toBeGreaterThan(0)
@@ -1944,9 +1966,16 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       expect(await side.locator('.pjbrief').textContent()).toBe('WORKER_ASK create asked.txt')
       await side.locator('.askdock').getByText('Claude wants to run a command').waitFor({ timeout: 30_000 })
       expect(await side.locator('.askdock code').textContent()).toContain('touch asked.txt')
-      // A page opened later still gets the unanswered request.
+      // A page opened later still gets the unanswered request. The reload reopens the project from
+      // the address while reopen() clicks its row; a slow session list makes the two opens overlap,
+      // and they must still attach one socket (#823).
+      await page.route('**/api/sessions', async (route: any) => {
+        await new Promise(resolve => setTimeout(resolve, 500))
+        await route.continue().catch(() => {})
+      })
       await page.reload()
       await reopen()
+      await page.unroute('**/api/sessions')
       await cardOf('Ask').click()
       await side.locator('.askdock').getByText('Claude wants to run a command').waitFor({ timeout: 30_000 })
       expect(await side.locator('.askdock').count()).toBe(1)
@@ -1993,7 +2022,7 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       await page.getByRole('menuitemradio', { name: /^Sonnet/ }).click()
       expect(await side.getByRole('button', { name: 'Model' }).textContent()).toMatch(/^Sonnet/)
       await taskInput.press('Enter')
-      await side.locator('.msg.user', { hasText: 'QUICK_MORE' }).waitFor({ timeout: 15_000 })
+      await showing(side.locator('.msg.user', { hasText: 'QUICK_MORE' }).waitFor({ timeout: 15_000 }), side)
       await side.getByText('QUICK_AGAIN').waitFor({ timeout: 60_000 })
       expect(resumedModels.some(m => m.includes('sonnet'))).toBe(true)
       expect((await tasksOf()).find(x => x.title === 'Quick')!.model).toContain('sonnet')
@@ -2405,21 +2434,22 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
         await palette.getByRole('option', { name: /slow\.txt/ }).waitFor({ timeout: 10_000 })
         await input.fill('')
         await scope.getByRole('button', { name: 'Model' }).waitFor({ timeout: 5_000 })
-        // Shift+Tab cycles the permission mode, back to where it started.
+        // Shift+Tab cycles the permission mode, back to where it started. A live session shows
+        // the new mode once it confirms it, so each press waits for that before the next one.
         const mode = () => scope.locator('.perm').getAttribute('data-mode')
         const start = await mode()
         await input.focus()
-        await page.keyboard.press('Shift+Tab')
-        await page.waitForFunction(
-          ([sel, was]: [string, string]) => document.querySelector(sel)?.getAttribute('data-mode') !== was,
-          [agent ? '.pv-side .perm, aside.side .perm' : '.composer .perm', start],
-          { timeout: 10_000 },
-        )
-        for (let i = 0; i < 6 && (await mode()) !== start; i++) {
+        let now = start
+        for (let i = 0; i < 6 && (i === 0 || now !== start); i++) {
           await page.keyboard.press('Shift+Tab')
-          await page.waitForTimeout(300)
+          await page.waitForFunction(
+            ([sel, was]: [string, string]) => document.querySelector(sel)?.getAttribute('data-mode') !== was,
+            [agent ? '.pv-side .perm, aside.side .perm' : '.composer .perm', now],
+            { timeout: 10_000 },
+          )
+          now = await mode()
         }
-        expect(await mode()).toBe(start)
+        expect(now).toBe(start)
         // A file dropped on the box attaches once; so does one picked with Upload file.
         await input.evaluate((el: HTMLElement) => {
           const data = new DataTransfer()
@@ -2552,7 +2582,7 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       await chatInput.press('Enter')
       const side = page.locator('.pv-side')
       const card = side.locator('.pjlist .pjcard', { has: page.locator('.tt', { hasText: /^Skillchk$/ }) })
-      await card.locator('.pjbadge.review').waitFor({ timeout: 60_000 })
+      await showing(card.locator('.pjbadge.review').waitFor({ timeout: 60_000 }), page.locator('#projview'))
       await checkBox(page.locator('.pv-chat .composer'), chatInput, false)
       await card.click()
       await side.getByText('SKILLCHK_OUT').waitFor({ timeout: 30_000 })
@@ -2785,6 +2815,12 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       const dialog = page.locator('.dialog')
       await dialog.locator('#pj-name').fill('Multi project')
       await dialog.locator('#pj-path').fill(workspace)
+      // A slow session list keeps the new coordinator connecting while the first message is
+      // sent: it goes out once the coordinator attaches (#823).
+      await page.route('**/api/sessions', async (route: any) => {
+        await new Promise(resolve => setTimeout(resolve, 800))
+        await route.continue().catch(() => {})
+      })
       await dialog.getByRole('button', { name: 'Create project' }).click()
       try {
         await page.locator('#projview .pv-head b', { hasText: 'Multi project' }).waitFor({ timeout: 30_000 })
@@ -2797,6 +2833,7 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       const chatInput = chat.getByLabel('Message', { exact: true })
       await chatInput.fill('please DISPATCH_MULTI')
       await chatInput.press('Enter')
+      await page.unroute('**/api/sessions')
       const side = page.locator('.pv-side')
       const cardOf = (title: string) => side.locator('.pjlist .pjcard', { has: page.locator('.tt', { hasText: new RegExp(`^${title}$`) }) })
       await cardOf('MultiA').waitFor({ timeout: 60_000 })
@@ -3043,6 +3080,82 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       })
       expect(hidden).toEqual([])
       expect(errors).toEqual([])
+    } finally {
+      await browser.close()
+    }
+  }, 90_000)
+
+  it('opens the session folder and a previewed file with the OS opener (#900)', async () => {
+    const folder = join(workspace, 'open-e2e')
+    mkdirSync(folder)
+    const file = join(folder, 'target.txt')
+    writeFileSync(file, 'OPEN_TARGET_BODY')
+    // Windows paths compare without case; the server reports real paths.
+    const norm = (p: string) => (process.platform === 'win32' ? realpathSync.native(p).toLowerCase() : realpathSync(p))
+    const opened = () =>
+      existsSync(openerLog)
+        ? readFileSync(openerLog, 'utf8').trim().split('\n').filter(Boolean).map(l => (JSON.parse(l) as string[]).map(norm))
+        : []
+    const waitOpened = async (n: number) => {
+      for (let i = 0; i < 100 && opened().length < n; i++) await Bun.sleep(100)
+      expect(opened().length).toBe(n)
+      return opened().at(-1)
+    }
+    const start = opened().length
+    const playwrightPath = Bun.spawnSync(['node', '-p', "require.resolve('playwright')"]).stdout.toString().trim()
+    const { chromium } = await import(playwrightPath)
+    const browser = await chromium.launch()
+    try {
+      const page = await (await browser.newContext({ locale: 'en-US' })).newPage()
+      await page.goto(signInUrl)
+      await page.locator('.wl-hi').waitFor()
+      const input = page.getByLabel('Message', { exact: true })
+      await input.fill(`OPEN_LOCAL @${file}`)
+      await input.press('Enter')
+      await page.locator('.feed').getByText('Hello from the fake model').waitFor({ timeout: 30_000 })
+
+      // The cwd chip in the header opens the session folder.
+      const chip = page.locator('.meta .chip.cwd')
+      expect(await chip.getAttribute('title')).toContain('Open in the file manager')
+      const [request] = await Promise.all([page.waitForRequest(r => r.url().endsWith('/open')), chip.click()])
+      expect(await waitOpened(start + 1)).toEqual([norm(workspace)])
+
+      // The preview opens the file, and the folder holding it.
+      await page.locator('.file-chip', { hasText: 'target.txt' }).click()
+      const preview = page.locator('.preview')
+      await preview.getByText('OPEN_TARGET_BODY').waitFor()
+      await preview.getByRole('button', { name: 'Open locally' }).click()
+      expect(await waitOpened(start + 2)).toEqual([norm(file)])
+      await preview.getByRole('button', { name: 'Show in folder' }).click()
+      expect(await waitOpened(start + 3)).toEqual([norm(folder)])
+      // explorer.exe exits 1 after opening the window: still no error.
+      await Bun.sleep(300)
+      expect(await page.locator('.composer .notice').count()).toBe(0)
+
+      if (process.platform !== 'win32') {
+        writeFileSync(`${openerLog}.exit`, '3')
+        try {
+          await chip.click()
+          await page.locator('.composer .notice', { hasText: 'exited with code 3' }).waitFor()
+        } finally {
+          rmSync(`${openerLog}.exit`)
+        }
+      }
+
+      // Nothing outside the session folder, also on another drive, reaches the opener.
+      const ask = (path: string) =>
+        page.evaluate(
+          ({ url, path }: { url: string; path: string }) =>
+            fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ path }) }).then(r => r.status),
+          { url: request.url(), path },
+        )
+      expect(await ask(home)).toBe(403)
+      expect(await ask(join(workspace, '..'))).toBe(403)
+      const otherDrive = parse(process.cwd()).root
+      if (process.platform === 'win32' && otherDrive.toLowerCase() !== parse(workspace).root.toLowerCase()) {
+        expect(await ask(otherDrive)).toBe(403)
+      }
+      expect(opened().length).toBe(start + (process.platform === 'win32' ? 3 : 4))
     } finally {
       await browser.close()
     }

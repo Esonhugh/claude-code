@@ -63,6 +63,7 @@ export function deriveFirstPrompt(
 async function createFork(
   customTitle?: string,
   extraMessages: Message[] = [],
+  currentMessages?: readonly Message[],
 ): Promise<{
   sessionId: UUID
   startedAt: number
@@ -97,10 +98,16 @@ async function createFork(
   const entries = parseJSONL<Entry>(transcriptContent)
 
   // Filter to only main conversation messages (exclude sidechains and non-message entries)
-  const mainConversationEntries = entries.filter(
+  const transcriptMessages = entries.filter(
     (entry): entry is TranscriptMessage =>
       isTranscriptMessage(entry) && !entry.isSidechain,
   )
+  // The file still holds messages a /rewind removed; like 2.1.319, keep only
+  // the conversation on screen, in its order.
+  const byUuid = new Map(transcriptMessages.map(entry => [entry.uuid, entry]))
+  const mainConversationEntries = currentMessages
+    ? currentMessages.flatMap(message => byUuid.get(message.uuid) ?? [])
+    : transcriptMessages
 
   // Content-replacement entries for the original session. These record which
   // tool_result blocks were replaced with previews by the per-message budget.
@@ -259,7 +266,8 @@ export async function call(
 
 /** Branch the conversation and resume into the branch; false on failure. */
 export async function branchAndResume(
-  context: Pick<LocalJSXCommandContext, 'resume'>,
+  context: Pick<LocalJSXCommandContext, 'resume'> &
+    Partial<Pick<LocalJSXCommandContext, 'messages'>>,
   onDone: LocalJSXCommandOnDone,
   {
     customTitle,
@@ -276,7 +284,7 @@ export async function branchAndResume(
       serializedMessages,
       contentReplacementRecords,
       startedAt,
-    } = await createFork(customTitle, extraMessages)
+    } = await createFork(customTitle, extraMessages, context.messages)
 
     // Build LogOption for resume
     const now = new Date()

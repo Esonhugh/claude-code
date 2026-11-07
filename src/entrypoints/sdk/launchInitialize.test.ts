@@ -17,7 +17,7 @@ test('initialize response schema retains plugins_applied', () => {
 })
 
 import { afterEach } from 'bun:test'
-import { captureLaunchInitialize, getInitializePluginsApplied } from './launchInitialize.js'
+import { captureLaunchInitialize, getInitializePluginsApplied, joinReloadAddPlugins } from './launchInitialize.js'
 import type { SDKControlInitializeRequest, SDKControlInitializeResponse } from './controlTypes.js'
 import { getSideloadStartupError } from '../../utils/plugins/sideloadPolicy.js'
 import { resetSettingsCache, setCachedSettingsForSource } from '../../utils/settings/settingsCache.js'
@@ -115,4 +115,29 @@ test('managed policy refuses initialize plugins in official flag order', () => {
   expect(getSideloadStartupError({}, [], {}, 0)).toBeUndefined()
   setCachedSettingsForSource('policySettings', { disableSideloadFlags: false })
   expect(getSideloadStartupError({}, [], {}, 1)).toBeUndefined()
+})
+
+// Official 2.1.319 reload_plugins add_plugins: SDK 0.3.318 sends it; the fork ignored it.
+test('reload add_plugins joins absolute folders once, keeping loaded ones', () => {
+  const current = { pluginDirs: ['./cli'], pluginDirsNoMcp: [] }
+  const open = { offMachine: false, sideloadDisabled: false }
+  expect(joinReloadAddPlugins([
+    { type: 'local', path: '/abs/a' },
+    { type: 'local', path: '/abs/b', skipMcpDiscovery: true },
+    { type: 'local', path: '/abs/a/' },
+    { type: 'local', path: '/cwd/cli' },
+  ], current, open, '/cwd')).toEqual({ kind: 'joined', pluginDirs: ['./cli', '/abs/a'], pluginDirsNoMcp: ['/abs/b'] })
+  expect(current).toEqual({ pluginDirs: ['./cli'], pluginDirsNoMcp: [] })
+})
+
+test('reload add_plugins refuses relative or malformed entries, policy, and off-machine connections', () => {
+  const current = { pluginDirs: [], pluginDirsNoMcp: [] }
+  const open = { offMachine: false, sideloadDisabled: false }
+  const invalid = 'reload_plugins add_plugins must be a list of { type: "local", path } entries with absolute paths'
+  expect(joinReloadAddPlugins([{ type: 'local', path: './rel' }], current, open)).toEqual({ kind: 'refused', message: invalid })
+  expect(joinReloadAddPlugins([{ path: '/abs' }], current, open)).toEqual({ kind: 'refused', message: invalid })
+  expect(joinReloadAddPlugins('/abs', current, open)).toEqual({ kind: 'refused', message: invalid })
+  expect(joinReloadAddPlugins([{ type: 'local', path: '/abs' }], current, { ...open, sideloadDisabled: true }).kind).toBe('refused')
+  expect(joinReloadAddPlugins([{ type: 'local', path: '/abs' }], current, { offMachine: true, sideloadDisabled: true }))
+    .toEqual({ kind: 'refused', message: 'reload_plugins add_plugins is not available on this connection' })
 })

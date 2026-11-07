@@ -10,6 +10,7 @@ import type {
   BetaRawMessageStreamEvent,
   BetaRequestDocumentBlock,
   BetaStopReason,
+  BetaTextBlock,
   BetaToolChoiceAuto,
   BetaToolChoiceTool,
   BetaToolResultBlockParam,
@@ -78,7 +79,7 @@ import {
   resolveAppliedEffort,
 } from '../../utils/effort.js'
 import { isEnvDefinedFalsy, isEnvTruthy } from '../../utils/envUtils.js'
-import { errorMessage } from '../../utils/errors.js'
+import { errorMessage, HttpResponseError } from '../../utils/errors.js'
 import { computeFingerprintFromMessages } from '../../utils/fingerprint.js'
 import { captureAPIRequest, logError } from '../../utils/log.js'
 import {
@@ -1566,12 +1567,16 @@ async function* queryModelRequest(
       options.agentId,
     )
   }
-  let messagesForAPI = normalizeMessagesForAPI(schemaMessages, filteredTools)
-  if (openAICompaction) {
-    messagesForAPI = messagesForAPI.filter(
-      message => message.type !== 'user' || !message.isCompactSummary,
-    )
-  }
+  // Drop the remote compaction's summary row before normalization merges it
+  // into neighbouring user messages; the opaque item replaces it.
+  let messagesForAPI = normalizeMessagesForAPI(
+    openAICompaction
+      ? schemaMessages.filter(
+          message => message.type !== 'user' || !message.isCompactSummary,
+        )
+      : schemaMessages,
+    filteredTools,
+  )
   queryCheckpoint('query_message_normalization_end')
 
   // Model-specific post-processing: strip tool-search-specific fields if the
@@ -2120,6 +2125,7 @@ async function* queryModelRequest(
   let ttftMs = 0
   let partialMessage: BetaMessage | undefined = undefined
   const contentBlocks: (BetaContentBlock | ConnectorTextBlock)[] = []
+  const stoppedBlockIndexes = new Set<number>()
   let usage: NonNullableUsage = EMPTY_USAGE
   let costUSD = 0
   let stopReason: BetaStopReason | null = null
@@ -2220,6 +2226,7 @@ async function* queryModelRequest(
     ttftMs = 0
     partialMessage = undefined
     contentBlocks.length = 0
+    stoppedBlockIndexes.clear()
     usage = EMPTY_USAGE
     stopReason = null
     isAdvisorInProgress = false
@@ -2547,6 +2554,7 @@ async function* queryModelRequest(
               })
               throw new Error('Message not found')
             }
+            stoppedBlockIndexes.add(part.index)
             const m: AssistantMessage = {
               message: {
                 ...partialMessage,
@@ -2807,6 +2815,29 @@ async function* queryModelRequest(
         })
       }
 
+      // Send-now cuts the reply to deliver a queued message. Like official,
+      // keep the text the model already wrote so the next request carries it.
+      const partialText = signal.aborted && signal.reason === 'interrupt' && partialMessage
+        ? contentBlocks.filter((block, index): block is BetaTextBlock =>
+            !stoppedBlockIndexes.has(index) && block?.type === 'text' && block.text.trim() !== '')
+        : []
+      if (partialMessage && partialText.length > 0) {
+        const m: AssistantMessage = {
+          message: {
+            ...partialMessage,
+            content: partialText.map(block => ({ type: 'text' as const, text: block.text })),
+          },
+          requestId: streamRequestId ?? undefined,
+          type: 'assistant',
+          uuid: randomUUID(),
+          timestamp: new Date().toISOString(),
+          requestedModel: options.model,
+          ...(advisorModel && { advisorModel }),
+        }
+        newMessages.push(m)
+        yield m
+      }
+
       // A provider that is not the Anthropic SDK (OpenAI compat) rejects an aborted request
       // with the signal's reason, not APIUserAbortError: it is still the user's abort, not a
       // reason to retry without streaming (whose own retry then logs the abort as an error).
@@ -2823,6 +2854,7 @@ async function* queryModelRequest(
           logForDebugging(
             `Streaming aborted by user: ${errorMessage(streamingError)}`,
           )
+
           if (isAdvisorInProgress) {
             logEvent('tengu_advisor_tool_interrupted', {
               model:
@@ -2842,6 +2874,23 @@ async function* queryModelRequest(
           // Throw a more specific error for timeout
           throw new APIConnectionTimeoutError({ message: 'Request timed out' })
         }
+      }
+
+      // A tool_use that already streamed may already be running (streaming tool
+      // execution), and a non-streaming retry would return it again and run it a
+      // second time. Like official, keep the partial response and say it was cut.
+      if (newMessages.some(m => m.message.content.some(block => block.type === 'tool_use'))) {
+        logForDebugging(
+          `Stream error after ${newMessages.length} block(s) yielded, finalizing partial response: ${errorMessage(streamingError)}`,
+          { level: 'warn' },
+        )
+        stopReason = 'tool_use'
+        for (const m of newMessages) m.message.stop_reason = stopReason
+        yield createAssistantAPIErrorMessage({
+          content: `${API_ERROR_MESSAGE_PREFIX}: Connection lost mid-response. The response above may be incomplete.`,
+          error: 'server_error',
+        })
+        return
       }
 
       // When the flag is enabled, skip the non-streaming fallback and let the
@@ -3101,7 +3150,7 @@ async function* queryModelRequest(
           errorModel = fallbackError.retryContext.model
         }
 
-        if (error instanceof APIError) {
+        if (error instanceof APIError || error instanceof HttpResponseError) {
           extractQuotaStatusFromError(error)
         }
 
@@ -3164,7 +3213,7 @@ async function* queryModelRequest(
       }
 
       // Extract quota status from error headers if it's a rate limit error
-      if (error instanceof APIError) {
+      if (error instanceof APIError || error instanceof HttpResponseError) {
         extractQuotaStatusFromError(error)
       }
 
