@@ -103,12 +103,21 @@ pi 与 opencode 另用 Claude API key 跑了一组 `claude-sonnet-5-5`（见第 
 
 横轴是每任务平均总 token（对数轴，越左越省），纵轴是按 token 加权的缓存命中率（越高越好），左上角最好。只看命中率会奖励把大段前缀放进缓存的做法，只看 token 又看不出缓存帮了多少，两项放在一起才能看出谁在「少用」和「多复用」上都占优。两种模型的价格表不同，所以横轴用 token，不用花费；Claude 侧的 API 等价花费见第 1 节表格。
 
+颜色区分 CLI，形状区分账号类型：实心圆 = Claude 订阅（OAuth），菱形 = ChatGPT 订阅（OAuth），空心圆 = Claude API key。Claude 订阅与 API key 都用 `claude-sonnet-5-5`，ChatGPT 订阅用 `gpt-6.1-sol`。
+
 ![每任务 token 与缓存命中率：8 个 CLI × 账号的散点，含 5 类任务的分项点、Pareto 前沿与更优区域](images/cache-benchmark/tokens-vs-hit-light.png#gh-light-mode-only)
 ![每任务 token 与缓存命中率：8 个 CLI × 账号的散点，含 5 类任务的分项点、Pareto 前沿与更优区域](images/cache-benchmark/tokens-vs-hit-dark.png#gh-dark-mode-only)
 
 - 前沿上的 5 个点：pi（Claude）21k / 73.4%、pi（ChatGPT）37k / 84.0%、本仓库（Claude）73k / 87.1%、Codex 80k / 88.8%、opencode（ChatGPT）82k / 89.2%。
 - 更优区域（token 不高于中位数且命中率不低于中位数）里是本仓库 Claude 账号、本仓库 ChatGPT 账号（在边界上）和 Codex；官方 81k / 87.3% 被 Codex 在两项上同时略微超过，但差距都在噪声范围内。
 - pi 的提示只有约 2.7k，token 最少但新内容占比大，命中率最低；opencode 在 Claude 模型下 92k / 79.2%，两项都落后于同模型的本仓库与官方。
+
+![按任务类型：每类一个面板的 token 与命中率散点](images/cache-benchmark/tokens-vs-hit-by-type-light.png#gh-light-mode-only)
+![按任务类型：每类一个面板的 token 与命中率散点](images/cache-benchmark/tokens-vs-hit-by-type-dark.png#gh-dark-mode-only)
+
+- 同一 CLI 在不同任务类型之间的位置变化，大于同一类型里 CLI 之间的差距。
+- Claude 订阅（本仓库、官方）在研究、运维、Lean 三类处于前沿或贴近前沿；编码类两者都是 81%，低于 ChatGPT 订阅的 83–91%。
+- Claude API key 的 opencode 在研究、编码、运维、Lean 四类比同模型的 Claude 订阅低 9–18 个百分点；办公类命中率接近，但 token 是 205k。pi 在每一类都是 token 最少的点。
 
 ![交互、多代理与长闲置场景：每个场景一个面板的 token 与命中率散点](images/cache-benchmark/tokens-vs-hit-scenarios-light.png#gh-light-mode-only)
 ![交互、多代理与长闲置场景：每个场景一个面板的 token 与命中率散点](images/cache-benchmark/tokens-vs-hit-scenarios-dark.png#gh-dark-mode-only)
