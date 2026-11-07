@@ -4502,7 +4502,7 @@ export async function* executeUserPromptExpansionHooks(
  * @returns Async generator that yields progress messages and hook results
  */
 export async function* executeSessionStartHooks(
-  source: 'startup' | 'resume' | 'clear' | 'compact',
+  source: 'startup' | 'resume' | 'clear' | 'compact' | 'fork',
   sessionId?: string,
   agentType?: string,
   model?: string,

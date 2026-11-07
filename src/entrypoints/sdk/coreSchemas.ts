@@ -587,7 +587,7 @@ export const SessionStartHookInputSchema = lazySchema(() =>
   BaseHookInputSchema().and(
     z.object({
       hook_event_name: z.literal('SessionStart'),
-      source: z.enum(['startup', 'resume', 'clear', 'compact']),
+      source: z.enum(['startup', 'resume', 'clear', 'compact', 'fork']),
       agent_type: z.string().optional(),
       model: z.string().optional(),
       seconds_since_last_response: z.number().optional(),

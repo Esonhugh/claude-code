@@ -292,6 +292,8 @@ export function useGrid(box: RefObject<HTMLElement | null>, rows?: number): Grid
     let timer = 0
     const measure = () => {
       const r = el.getBoundingClientRect()
+      // A hidden canvas tab measures 0 wide: keep the last grid rather than shrink its Client.
+      if (!r.width && !r.height) return
       const next = {
         columns: Math.max(10, Math.floor(r.width / cw)),
         rows: rows ?? Math.max(4, Math.floor((r.height || window.innerHeight * 0.6) / ch)),
@@ -473,6 +475,12 @@ export function closeCanvasTab(
   const keepFile = hasFile && closing !== 'file'
   const last = left[left.length - 1]
   return { mods: left, keepFile, show: last !== undefined ? { mod: last } : keepFile ? 'file' : undefined }
+}
+
+/** The Mod tabs to keep mounted on the canvas: its tabs, plus the one shown if it is not among them. */
+export function canvasTabMods(mods: string[] | undefined, shown: { mod: string } | object): string[] {
+  const list = mods ?? []
+  return 'mod' in shown && !list.includes(shown.mod) ? [...list, shown.mod] : list
 }
 
 /** A Mod's pane on the canvas, the column a file preview takes. */

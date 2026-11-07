@@ -64,6 +64,7 @@
 
 #### hooks、权限与 plugins
 
+- `--fork-session`（TUI、`-p`/SDK）与 `/branch` 触发的 SessionStart hook 的 `source` 改为 `fork`，`session_id` 为新会话，matcher 可写 `fork`，与官方 2.1.319 一致（#1009）。
 - async hook 的 stdin EPIPE 被处理，回调 hook 的错误相互隔离，plan 文件只匹配本会话的文件（#808）。
 - async hook 完成后报告真实输出，不再显示 “Output truncated (0KB total)”（#852）。
 - 能加载带新来源类型的官方 marketplace；`plugin validate` 在 `plugin.json` 未写 `types` 时使用 `types/index.d.ts`，不再误报（#851、#853）。
@@ -71,6 +72,7 @@
 
 #### Mods 与 channels
 
+- `memory.extraction: everyTurns` 不再从频道消息开启的回合提取 memory，下一个输入回合的提取范围也从最后一个频道回合之后开始（#1008）。
 - loader 接受官方可加载的社区 mod 写法：matcher 简写 `{ command }`、helper 参数 `$`、module graph 上限 4096 文件、`var` 声明与条件式 `let` 函数、循环或函数计算出的 matcher；72 个社区 mod 的 validate 由 39 个通过变为全部通过（#844、#845、#846、#849、#879）。
 - Mod hook 失败显示在 TUI transcript，不再写 raw stderr（#847）；一个 Worker 崩溃不再刷出连锁警告（#896）。
 - 流式中断时 generator 不结束只放弃该次调用，Worker 保留（#837）；environment `activeCalls` 按环境与调用区分，`http.fetch` 透传 `socketPath`（#809）。
@@ -78,6 +80,7 @@
 
 #### claude web
 
+- 中间栏在 Mod 画布分页、文件预览之间切换时，Mod 的 Client 保持运行，展开状态和未提交的输入不再重置（#1010）。
 - 输入框参照 dsh web 重做：`+`、模式、模型与发送收进同一张卡片，窄屏只保留模式图标，菜单在手机上不出屏（#894）。
 - 选中消息或其中一段可引用回复，以 Markdown `> ` 引用块发送；会话、项目协调者、项目任务与子代理对话都支持（#898）。
 - cwd 标签打开会话目录，文件预览可“本地打开”和“打开所在目录”，只对本机浏览器开放，服务端只允许会话内路径（#900）。

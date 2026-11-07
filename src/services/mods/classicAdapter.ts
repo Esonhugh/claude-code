@@ -107,7 +107,7 @@ function validateInput(event: ClassicEvent, input: unknown): void {
     throw new TypeError(`classic.${event} requires boolean stop_hook_active`)
   if (
     event === 'SessionStart' &&
-    !['startup', 'resume', 'clear', 'compact'].includes(value.source as string)
+    !['startup', 'resume', 'clear', 'compact', 'fork'].includes(value.source as string)
   )
     throw new TypeError('classic.SessionStart requires a valid source')
   if (

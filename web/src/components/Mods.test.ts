@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test'
-import { closeCanvasTab, modColor, modStyle, safeModLink } from './Mods'
+import { canvasTabMods, closeCanvasTab, modColor, modStyle, safeModLink } from './Mods'
 
 describe('Mods drawing', () => {
   it('takes terminal colour names, hex and rgb, and drops anything else', () => {
@@ -46,5 +46,10 @@ describe('Mods canvas tabs', () => {
     expect(closeCanvasTab(['cal', 'notes'], true, { mod: 'notes' })).toEqual({ mods: ['cal'], keepFile: true, show: { mod: 'cal' } })
     expect(closeCanvasTab(['cal'], true, { mod: 'cal' })).toEqual({ mods: [], keepFile: true, show: 'file' })
     expect(closeCanvasTab(['cal'], false, { mod: 'cal' })).toEqual({ mods: [], keepFile: false, show: undefined })
+  })
+  it('keeps every Mod tab of the canvas mounted, including the one shown', () => {
+    expect(canvasTabMods(['cal', 'notes'], { path: 'a.md' })).toEqual(['cal', 'notes'])
+    expect(canvasTabMods(['cal'], { mod: 'cal' })).toEqual(['cal'])
+    expect(canvasTabMods(undefined, { mod: 'notes' })).toEqual(['notes'])
   })
 })
