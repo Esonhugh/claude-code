@@ -132,6 +132,19 @@ test('context and discovered capability overrides retain precedence', () => {
   expect(getContextWindowForModel('claude-opus-5[1m]')).toBe(123456)
 })
 
+test('CLAUDE_CODE_MAX_CONTEXT_TOKENS forces the window for every user and provider', () => {
+  ant.mockReturnValue(false)
+  process.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS = '500000'
+  expect(getContextWindowForModel('claude-sonnet-4-5')).toBe(500_000)
+  expect(getContextWindowForModel('gpt-6.1-sol')).toBe(500_000)
+  expect(getContextWindowForModel('gpt-5.6-sol')).toBe(500_000)
+  process.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS = '300000'
+  expect(resolveContextWindow('claude-sonnet-5')).toEqual({ window: 300_000, source: 'model-default' })
+  expect(resolveContextWindow('claude-sonnet-5', 150_000).window).toBe(150_000)
+  process.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS = 'abc'
+  expect(getContextWindowForModel('custom-model')).toBe(200_000)
+})
+
 test('unknown and legacy models keep their existing limits', () => {
   expect(getContextWindowForModel('custom-model')).toBe(200_000)
   expect(getModelMaxOutputTokens('custom-model')).toEqual({

@@ -208,23 +208,19 @@ export function modelSupports1M(model: string): boolean {
   )
 }
 
+// CLAUDE_CODE_MAX_CONTEXT_TOKENS forces the window for every provider, ahead of
+// 1M detection, the model catalog and tuned compaction defaults.
+function forcedContextWindow(): number | undefined {
+  const override = parseInt(process.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS ?? '', 10)
+  return override > 0 ? override : undefined
+}
+
 export function getContextWindowForModel(
   model: string,
   betas?: string[],
 ): number {
-  // Allow override via environment variable (ant-only)
-  // This takes precedence over all other context window resolution, including 1M detection,
-  // so users can cap the effective context window for local decisions (auto-compact, etc.)
-  // while still using a 1M-capable endpoint.
-  if (
-    isAnt() &&
-    process.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS
-  ) {
-    const override = parseInt(process.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS, 10)
-    if (!isNaN(override) && override > 0) {
-      return override
-    }
-  }
+  const forced = forcedContextWindow()
+  if (forced !== undefined) return forced
 
   // [1m] is a client-side opt-in, not permission to exceed an API input limit.
   if (has1mContext(model)) {
@@ -299,6 +295,10 @@ export function resolveContextWindow(
 
   if (settingsWindow !== undefined) {
     return { window: Math.min(modelWindow, settingsWindow), source: 'settings' }
+  }
+
+  if (forcedContextWindow() !== undefined) {
+    return { window: modelWindow, source: 'model-default' }
   }
 
   const canonical = getCanonicalName(model)
