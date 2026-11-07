@@ -57,7 +57,10 @@ import {
   initializeGrowthBook,
   refreshGrowthBookAfterAuthChange,
 } from './services/analytics/growthbook.js'
-import { fetchBootstrapData } from './services/api/bootstrap.js'
+import {
+  fetchBootstrapData,
+  waitForOpenAIDefaultModel,
+} from './services/api/bootstrap.js'
 import { prefetchChatGPTUtilization } from './services/api/usage.js'
 import {
   type DownloadResult,
@@ -4344,6 +4347,9 @@ async function run(): Promise<CommanderCommand> {
           )
         }
         profileCheckpoint('after_connectMcp_claudeai')
+        if (getUserSpecifiedModelSetting() === undefined) {
+          await waitForOpenAIDefaultModel()
+        }
 
         // In headless mode, start deferred prefetches immediately (no user typing delay)
         // --bare / SIMPLE: startDeferredPrefetches early-returns internally.
