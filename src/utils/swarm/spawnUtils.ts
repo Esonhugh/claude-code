@@ -5,10 +5,13 @@
 import {
   getChromeFlagOverride,
   getFlagSettingsPath,
+  getInlineMcpConfigs,
   getInlinePlugins,
+  getInlinePluginsNoMcp,
   getInlinePluginUrls,
   getMainLoopModelOverride,
   getSessionBypassPermissionsMode,
+  getStrictMcpConfig,
 } from '../../bootstrap/state.js'
 import { quote } from '../bash/shellQuote.js'
 import type { EffortValue } from '../effort.js'
@@ -85,6 +88,17 @@ export function buildInheritedCliFlags(options?: {
   }
   for (const pluginUrl of getInlinePluginUrls()) {
     flags.push(`--plugin-url ${quote([pluginUrl])}`)
+  }
+  for (const pluginDir of getInlinePluginsNoMcp()) {
+    flags.push(`--plugin-dir-no-mcp ${quote([pluginDir])}`)
+  }
+
+  // Pane teammates are separate processes: give them the leader's MCP servers.
+  for (const config of getInlineMcpConfigs()) {
+    flags.push(`--mcp-config ${quote([config])}`)
+  }
+  if (getStrictMcpConfig()) {
+    flags.push('--strict-mcp-config')
   }
 
   // Propagate --teammate-mode so tmux teammates use the same mode as leader

@@ -424,7 +424,9 @@ import {
   setSessionFallbackModels,
   setInlinePlugins,
   setInlinePluginsNoMcp,
+  setInlineMcpConfigs,
   setInlinePluginUrls,
+  setStrictMcpConfig,
   setIsInteractive,
   setPrintOutputFormat,
   setKairosActive,
@@ -2468,6 +2470,11 @@ async function run(): Promise<CommanderCommand> {
         const processedConfigs = mcpConfig
           .map(config => config.trim())
           .filter(config => config.length > 0)
+        setInlineMcpConfigs(
+          processedConfigs.map(config =>
+            config.startsWith('{') ? config : resolve(config),
+          ),
+        )
 
         let allConfigs: Record<string, McpServerConfig> = {}
         const allErrors: ValidationError[] = []
@@ -2676,6 +2683,7 @@ async function run(): Promise<CommanderCommand> {
 
       // Extract strict MCP config flag
       const strictMcpConfig = options.strictMcpConfig || false
+      setStrictMcpConfig(strictMcpConfig)
 
       // Check if enterprise MCP configuration exists. When it does, only allow dynamic MCP
       // configs that contain special server types (sdk)
