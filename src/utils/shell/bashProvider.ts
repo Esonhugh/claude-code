@@ -23,7 +23,6 @@ import {
 } from '../tmuxSocket.js'
 import { windowsPathToPosixPath } from '../windowsPaths.js'
 import type { ShellProvider } from './shellProvider.js'
-import { isAnt } from 'src/utils/userType.js'
 
 
 /**
@@ -218,10 +217,7 @@ export async function createBashShellProvider(
       //
       // See tmuxSocket.ts for the full isolation architecture documentation.
       const commandUsesTmux = command.includes('tmux')
-      if (
-        isAnt() &&
-        (hasTmuxToolBeenUsed() || commandUsesTmux)
-      ) {
+      if (hasTmuxToolBeenUsed() || commandUsesTmux) {
         await ensureSocketInitialized()
       }
       const claudeTmuxEnv = getClaudeTmuxEnv()

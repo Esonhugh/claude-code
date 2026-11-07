@@ -473,7 +473,7 @@ function formatError(error: unknown): ErrorOutput {
 
 export const TerminalTool: Tool<InputSchema, Output> = buildTool({
   name: TERMINAL_TOOL_NAME,
-  searchHint: 'persistent terminal PTY sessions, interactive shell, REPL and TUI',
+  searchHint: 'persistent terminal PTY sessions like tmux, interactive shell, REPL, TUI and ssh',
   shouldDefer: true,
   maxResultSizeChars: 100_000,
   async description(input) {

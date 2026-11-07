@@ -294,3 +294,37 @@ test('Bun PTY driver bounds queued output and clears runtime session on close', 
   driver.dispose?.(sessionId)
   assert.throws(() => driver.status(sessionId), /Unknown PTY session/)
 })
+
+test('Bun PTY driver does not hand the outer tmux TMUX/TMUX_PANE to the session', async () => {
+  const driver = createBunPtyDriver()
+  const sessionId = 'term_outer_tmux'
+  const saved = { TMUX: process.env.TMUX, TMUX_PANE: process.env.TMUX_PANE }
+  process.env.TMUX = '/tmp/tmux-0/default,1,0'
+  process.env.TMUX_PANE = '%0'
+  try {
+    driver.open({
+      command: 'bash',
+      args: ['--noprofile', '--norc'],
+      cwd: process.cwd(),
+      cols: 80,
+      rows: 24,
+      sessionId,
+    })
+  } finally {
+    for (const [key, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[key]
+      else process.env[key] = value
+    }
+  }
+
+  let output = ''
+  driver.write(sessionId, 'echo "T=[${TMUX-unset}] P=[${TMUX_PANE-unset}]"\r')
+  await waitFor(() => {
+    const chunk = driver.write(sessionId, '')
+    if (chunk?.text) output += chunk.text
+    return /T=\[[^$]*\] P=\[[^$]*\]/.test(output)
+  })
+
+  assert.match(output, /T=\[unset\] P=\[unset\]/)
+  driver.close(sessionId)
+})
