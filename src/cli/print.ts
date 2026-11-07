@@ -469,9 +469,11 @@ import {
   isTeamLead,
   hasActiveInProcessTeammates,
   hasOtherTeammates,
+  getTeamShutdownGraceMs,
   hasWorkingInProcessTeammates,
   waitForTeammatesToBecomeIdle,
 } from '../utils/teammate.js'
+import { killInProcessTeammate } from '../utils/swarm/spawnInProcess.js'
 import {
   readUnreadMessages,
   markMessagesAsRead,
@@ -1319,6 +1321,8 @@ function runHeadlessStreaming(
     | undefined
   let inputClosed = false
   let shutdownPromptInjected = false
+  // Set once the shutdown turn left the team quiet; reset by any team activity.
+  let teamQuietSince: number | undefined
   // While the team-lead inbox poll runs, it owns the end of input: it asks the
   // lead to shut the team down instead of finishing output under teammates.
   let teamPollActive = false
@@ -3062,6 +3066,39 @@ function runHeadlessStreaming(
             agentName,
             refreshedState.teamContext?.teamName,
           )
+
+          // The model was asked to shut its team down and the team has gone
+          // quiet: stop the rest so input end never hangs (-p in CI).
+          if (
+            shutdownPromptInjected &&
+            unread.length === 0 &&
+            !hasWorkingInProcessTeammates(refreshedState)
+          ) {
+            teamQuietSince ??= Date.now()
+            if (Date.now() - teamQuietSince >= getTeamShutdownGraceMs()) {
+              process.stderr.write(
+                'Team members did not shut down after the shutdown request; stopping them.\n',
+              )
+              for (const [taskId, task] of Object.entries(refreshedState.tasks)) {
+                if (task.type === 'in_process_teammate' && task.status === 'running') {
+                  killInProcessTeammate(taskId, setAppState)
+                }
+              }
+              const team = getAppState().teamContext
+              for (const [teammateId, teammate] of Object.entries(team?.teammates ?? {})) {
+                if (teammateId === team!.leadAgentId) continue
+                await handleTeammateShutdownApproved({
+                  teamName: team!.teamName,
+                  teammateId,
+                  teammateName: teammate.name,
+                  setAppState,
+                })
+              }
+              break
+            }
+          } else {
+            teamQuietSince = undefined
+          }
 
           if (unread.length > 0) {
             logForDebugging(
