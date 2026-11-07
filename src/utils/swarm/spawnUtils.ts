@@ -17,6 +17,7 @@ import { quote } from '../bash/shellQuote.js'
 import type { EffortValue } from '../effort.js'
 import { isInBundledMode } from '../bundledMode.js'
 import type { PermissionMode } from '../permissions/PermissionMode.js'
+import type { ToolPermissionContext } from '../../Tool.js'
 import { getTeammateModeFromSnapshot } from './backends/teammateModeSnapshot.js'
 import { TEAMMATE_COMMAND_ENV_VAR } from './constants.js'
 
@@ -46,6 +47,10 @@ export function buildInheritedCliFlags(options?: {
   allowedTools?: string[]
   model?: string
   effort?: EffortValue
+  toolPermissionContext?: Pick<
+    ToolPermissionContext,
+    'alwaysAllowRules' | 'alwaysDenyRules'
+  >
 }): string {
   const flags: string[] = []
   const { planModeRequired, permissionMode, allowedTools } = options || {}
@@ -62,8 +67,20 @@ export function buildInheritedCliFlags(options?: {
     flags.push('--dangerously-skip-permissions')
   }
 
-  if (allowedTools?.length) {
-    flags.push(`--allowedTools ${quote([allowedTools.join(',')])}`)
+  // Pane teammates are separate processes: replay the leader's CLI rules.
+  const allowRules = [
+    ...new Set([
+      ...(allowedTools ?? []),
+      ...(options?.toolPermissionContext?.alwaysAllowRules.cliArg ?? []),
+    ]),
+  ]
+  if (allowRules.length) {
+    flags.push(`--allowedTools ${quote([allowRules.join(',')])}`)
+  }
+  const denyRules =
+    options?.toolPermissionContext?.alwaysDenyRules.cliArg ?? []
+  if (denyRules.length) {
+    flags.push(`--disallowedTools ${quote([denyRules.join(',')])}`)
   }
 
   // Spawn callers supply the resolved snapshot, replacing the parent override.

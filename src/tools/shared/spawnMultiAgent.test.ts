@@ -840,3 +840,17 @@ test('buildInheritedCliFlags forwards --mcp-config, --strict-mcp-config and --pl
   }
   expect(buildInheritedCliFlags()).not.toMatch(/mcp/)
 })
+
+// #996: pane teammates get the lead's CLI allow and deny rules (official 2.1.319).
+test('buildInheritedCliFlags replays the lead\'s --allowedTools and --disallowedTools', () => {
+  const toolPermissionContext = {
+    ...getEmptyToolPermissionContext(),
+    alwaysAllowRules: { cliArg: ['mcp__osrv__*', 'Bash(git log, git status)'], userSettings: ['Read'] },
+    alwaysDenyRules: { cliArg: ['WebFetch'] },
+  }
+  const flags = buildInheritedCliFlags({ allowedTools: ['Edit'], toolPermissionContext })
+  expect(flags).toContain(`--allowedTools ${quote(['Edit,mcp__osrv__*,Bash(git log, git status)'])}`)
+  expect(flags).toContain(`--disallowedTools ${quote(['WebFetch'])}`)
+  expect(flags).not.toContain('Read')
+  expect(buildInheritedCliFlags({ toolPermissionContext: getEmptyToolPermissionContext() })).not.toMatch(/allowedTools|disallowedTools/)
+})
