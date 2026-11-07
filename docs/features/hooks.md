@@ -117,6 +117,8 @@ exit 0
 
 只包含字母、数字、`_`、`-`、空格、`|`、`,` 的 matcher 按**精确名字列表**匹配，所以 `brave-search` 这类带连字号的名字不会被当成正则。想用通配必须写成正则（例如 `.*`）。
 
+OpenAI provider 的 `apply_patch` 工具在 `PreToolUse` / `PostToolUse` / `PostToolUseFailure` 里按文件拆成 Edit / Write 事件，已有的 `Edit|Write` hook 照常生效，见 [apply_patch 工具](openai-provider.md#apply_patch-工具)。
+
 ## 有哪些事件
 
 | 事件 | 什么时候 | 常见用途 |
@@ -124,7 +126,7 @@ exit 0
 | `PreToolUse` / `PostToolUse` / `PostToolUseFailure` | 工具执行前 / 成功后 / 失败后 | 拦截、审计、格式化 |
 | `PermissionRequest` / `PermissionDenied` | 弹权限确认时 / 自动模式拒绝后 | 自动审批、记录；`-p` 下也会触发 |
 | `UserPromptSubmit` | 你发出消息后、处理前（在 skill 和自定义命令展开之前） | 过滤、补充上下文 |
-| `SessionStart` / `SessionEnd` / `Setup` | 会话开始 / 结束 / 初始化 | 注入上下文；SessionStart 可返回 `sessionTitle`、`reloadSkills` |
+| `SessionStart` / `SessionEnd` / `Setup` | 会话开始 / 结束 / 初始化 | 注入上下文；SessionStart 可返回 `sessionTitle`、`reloadSkills`；`--fork-session` 与 `/branch` 触发时 `source` 为 `fork`（matcher 可写 `fork`） |
 | `Stop` / `StopFailure` / `SubagentStart` / `SubagentStop` | Claude 准备结束回答 / 子 Agent 开始与结束 | 检查是否真的做完；可返回 `additionalContext` 让它继续 |
 | `PreCompact` / `PostCompact` | 压缩上下文前 / 后 | PreCompact 可阻止压缩 |
 | `PreModelSwitch` / `PostModelSwitch` | 切换模型前 / 后 | 限制可用模型 |
