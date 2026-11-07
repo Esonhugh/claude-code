@@ -392,6 +392,7 @@ export function ProjectView({
   onMode,
   onModel,
   onEffort,
+  onContextWindow,
   onAnswer,
   onSettings,
   onStopTask,
@@ -425,6 +426,7 @@ export function ProjectView({
   onMode: (mode: string) => void
   onModel: (model: string) => void
   onEffort: (effort: string) => void
+  onContextWindow: (tokens: number | null) => void
   onAnswer: (approval: Approval, choice: ApprovalChoice) => void
   onSettings: () => void
   /** Rejects when the coordinator is gone or refuses the stop. */
@@ -1144,7 +1146,15 @@ export function ProjectView({
             tools={{
               ...tools,
               prompts,
-              model: { model: chatModel, effort: chatEffort, models, onModel, onEffort, daybreak },
+              model: {
+                model: chatModel,
+                effort: chatEffort,
+                models,
+                onModel,
+                onEffort,
+                daybreak,
+                contextWindow: { value: chat.contextWindow, onChange: onContextWindow },
+              },
             }}
           />
         </div>

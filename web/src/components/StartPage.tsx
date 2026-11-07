@@ -307,6 +307,7 @@ export function StartPage({
                     models={models}
                     onModel={model => setOptions({ model })}
                     onEffort={effort => setOptions({ effort })}
+                    contextWindow={{ value: options.contextWindow, onChange: contextWindow => setOptions({ contextWindow }) }}
                     daybreak={daybreak}
                     close={close}
                   />
