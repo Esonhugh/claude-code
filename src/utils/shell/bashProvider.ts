@@ -3,7 +3,6 @@ import { access } from 'fs/promises'
 import { tmpdir as osTmpdir } from 'os'
 import { join as nativeJoin } from 'path'
 import { join as posixJoin } from 'path/posix'
-import { rearrangePipeCommand } from '../bash/bashPipeCommand.js'
 import { createAndSaveSnapshot } from '../bash/ShellSnapshot.js'
 import { formatShellPrefixCommand } from '../bash/shellPrefix.js'
 import { quote } from '../bash/shellQuote.js'
@@ -138,7 +137,7 @@ export async function createBashShellProvider(
       // See anthropics/claude-code#4928.
       const normalizedCommand = rewriteWindowsNullRedirect(command)
       const addStdinRedirect = shouldAddStdinRedirect(normalizedCommand)
-      let quotedCommand = quoteShellCommand(normalizedCommand, addStdinRedirect)
+      const quotedCommand = quoteShellCommand(normalizedCommand, addStdinRedirect)
 
       // Debug logging for heredoc/multiline commands to trace trailer handling
       // Only log when commit attribution is enabled to avoid noise
@@ -152,17 +151,6 @@ export async function createBashShellProvider(
         logForDebugging(
           `Shell: Quoted command (first 500 chars):\n${quotedCommand.slice(0, 500)}`,
         )
-      }
-
-      // Special handling for pipes: move stdin redirect after first command
-      // This ensures the redirect applies to the first command, not to eval itself.
-      // Without this, `eval 'rg foo | wc -l' \< /dev/null` becomes
-      // `rg foo | wc -l < /dev/null` — wc reads /dev/null and outputs 0, and
-      // rg (with no path arg) waits on the open spawn stdin pipe forever.
-      // Applies to sandbox mode too: sandbox wraps the assembled commandString,
-      // not the raw command (since PR #9189).
-      if (normalizedCommand.includes('|') && addStdinRedirect) {
-        quotedCommand = rearrangePipeCommand(normalizedCommand)
       }
 
       const commandParts: string[] = []

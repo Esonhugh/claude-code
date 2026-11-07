@@ -93,6 +93,7 @@ let nonStreamingThinkingTokens: number | undefined
 let nonStreamingOmitsUsage = false
 let streamInterrupted = false
 let streamHangsAfterText = false
+let streamCutAfterToolUse = false
 let overflowRequest = 0
 let overloadedModel: string | undefined
 let overloadedModels: string[] = []
@@ -237,7 +238,18 @@ const client = new Anthropic({
       }), { headers: { 'content-type': 'text/event-stream', 'request-id': 'req_test' } })
     }
     // HTTP creation succeeds; the real SDK raises this error only during iteration.
-    const transportEvents = streamInterrupted
+    const transportEvents = streamCutAfterToolUse
+      ? [events[0], {
+          type: 'content_block_start', index: 0,
+          content_block: { type: 'tool_use', id: 'toolu_cut', name: 'Bash', input: {} },
+        }, {
+          type: 'content_block_delta', index: 0,
+          delta: { type: 'input_json_delta', partial_json: '{"command":"echo once"}' },
+        }, { type: 'content_block_stop', index: 0 }, {
+          type: 'error',
+          error: { type: 'api_error', message: 'controlled cut after tool_use' },
+        }]
+      : streamInterrupted
       ? [...events.slice(0, 3), {
           type: 'error',
           error: { type: 'api_error', message: 'controlled mid-stream interruption' },
@@ -389,6 +401,7 @@ afterEach(() => {
   nonStreamingOmitsUsage = false
   streamInterrupted = false
   streamHangsAfterText = false
+  streamCutAfterToolUse = false
   overflowRequest = 0
   overloadedModel = undefined
   overloadedModels = []
@@ -1836,6 +1849,31 @@ test('prompt.compose refreshes after a partial SSE error before nonstream fallba
   }
   expect(tokenRequests).toEqual([])
   expect(unexpectedIO).toEqual([])
+})
+
+test('a stream cut after a tool_use keeps it instead of re-requesting it without streaming', async () => {
+  streamCutAfterToolUse = true
+  let fallbackCalls = 0
+  const assistants: Array<{ isApiErrorMessage?: boolean; message: { content: unknown; stop_reason: unknown } }> = []
+  for await (const event of queryModelWithStreaming({
+    messages: [createUserMessage({ content: 'run it' })],
+    systemPrompt: asSystemPrompt(['SYSTEM']),
+    thinkingConfig: { type: 'disabled' }, tools: [], signal: new AbortController().signal,
+    options: {
+      model: 'claude-sonnet-4-6', querySource: 'repl_main_thread',
+      agents: [], mcpTools: [], hasAppendSystemPrompt: false,
+      isNonInteractiveSession: true, enablePromptCaching: true,
+      getToolPermissionContext: async () => getEmptyToolPermissionContext(),
+      onStreamingFallback: () => { fallbackCalls++ },
+    },
+  })) if ((event as { type: string }).type === 'assistant') assistants.push(event as (typeof assistants)[number])
+  expect(fallbackCalls).toBe(0)
+  expect(requests).toHaveLength(1)
+  expect(assistants).toHaveLength(2)
+  expect(assistants[0]!.message.content).toEqual([expect.objectContaining({ type: 'tool_use', id: 'toolu_cut' })])
+  expect(assistants[0]!.message.stop_reason).toBe('tool_use')
+  expect(assistants[1]!.isApiErrorMessage).toBe(true)
+  expect(JSON.stringify(assistants[1]!.message.content)).toContain('Connection lost mid-response')
 })
 
 test.each([
