@@ -111,6 +111,35 @@ function countModelVisibleMessagesSince(
   return n
 }
 
+/** A user message that opens a turn: a typed prompt, or a channel, peer or task-notification message. */
+function startsTurn(message: Message): boolean {
+  if (message.type !== 'user') return false
+  const content = message.message.content
+  if (Array.isArray(content) && content.some(b => b.type === 'tool_result')) {
+    return false
+  }
+  return !message.isMeta || message.origin !== undefined
+}
+
+/**
+ * Turns started by a channel message carry external content, so everyTurns
+ * extraction leaves them out: returns the uuid the window must start after
+ * (the end of the last channel turn), or null when the latest turn is one.
+ */
+export function afterLastChannelTurn(
+  messages: Message[],
+): string | undefined | null {
+  let after: string | undefined
+  let inChannelTurn = false
+  messages.forEach((message, i) => {
+    if (!startsTurn(message)) return
+    if (inChannelTurn) after = messages[i - 1]?.uuid
+    inChannelTurn =
+      message.type === 'user' && message.origin?.kind === 'channel'
+  })
+  return inChannelTurn ? null : after
+}
+
 /**
  * Returns true if any assistant message after the cursor UUID contains a
  * Write/Edit tool_use block targeting an auto-memory path.
@@ -361,15 +390,25 @@ export function initExtractMemories(): void {
   }): Promise<void> {
     const { messages } = context
     const memoryDir = getAutoMemPath()
-    const newMessageCount = countModelVisibleMessagesSince(
-      messages,
-      lastMemoryMessageUuid,
-    )
+
+    // everyTurns: channel turns are not extracted; the window starts after the last one.
+    let since = lastMemoryMessageUuid
+    if (typeof getExtractionInterval() === 'number') {
+      const after = afterLastChannelTurn(messages)
+      if (after === null) {
+        logForDebugging('[extractMemories] skipping — turn started by a channel message')
+        return
+      }
+      const at = (uuid: string | undefined) =>
+        messages.findIndex(m => m.uuid === uuid)
+      if (after !== undefined && at(after) > at(since)) since = after
+    }
+    const newMessageCount = countModelVisibleMessagesSince(messages, since)
 
     // Mutual exclusion: when the main agent wrote memories, skip the
     // forked agent and advance the cursor past this range so the next
     // extraction only considers messages after the main agent's write.
-    if (hasMemoryWritesSince(messages, lastMemoryMessageUuid)) {
+    if (hasMemoryWritesSince(messages, since)) {
       logForDebugging(
         '[extractMemories] skipping — conversation already wrote to memory files',
       )
