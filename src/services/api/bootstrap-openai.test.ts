@@ -26,7 +26,9 @@ try {
 
   const authModule = await import('../../utils/auth.js')
   const { getGlobalConfig, saveGlobalConfig } = await import('../../utils/config.js')
-  const { fetchBootstrapData, onOpenAIModelOptionsRefresh } = await import('./bootstrap.js')
+  const { fetchBootstrapData, onOpenAIModelOptionsRefresh, waitForOpenAIDefaultModel } =
+    await import('./bootstrap.js')
+  const { getOpenAIServedDefaultModel } = await import('../../utils/model/openaiModelOptions.js')
   let modelOptionsRefreshes = 0
   onOpenAIModelOptionsRefresh(() => modelOptionsRefreshes++)
   const originalClientDataCache = getGlobalConfig().clientDataCache
@@ -108,6 +110,39 @@ try {
   assert.deepEqual(getGlobalConfig().autoCompactWindowsCache, {
     preserved: 321_000,
   })
+
+  // Print mode on a first run: the first request waits for the account default
+  // model instead of racing discovery and sending the builtin fallback.
+  saveGlobalConfig(current => ({
+    ...current,
+    additionalModelOptionsCache: undefined,
+    additionalModelOptionsCacheKey: undefined,
+  }))
+  const fixtureGet = axios.get
+  const refreshesBefore = modelOptionsRefreshes
+  axios.get = (async (...args: Parameters<typeof axios.get>) => {
+    await new Promise(resolve => setTimeout(resolve, 200))
+    return fixtureGet(...args)
+  }) as typeof axios.get
+  void fetchBootstrapData()
+  assert.equal(getOpenAIServedDefaultModel(), undefined)
+  await waitForOpenAIDefaultModel()
+  assert.equal(getOpenAIServedDefaultModel(), 'gpt-bootstrap')
+  axios.get = fixtureGet
+
+  // With the catalog cached it does not wait at all.
+  let fetched = false
+  axios.get = (async () => {
+    fetched = true
+    return new Promise(() => {})
+  }) as typeof axios.get
+  void fetchBootstrapData()
+  const started = Date.now()
+  await waitForOpenAIDefaultModel()
+  assert.ok(Date.now() - started < 50)
+  assert.ok(fetched)
+  axios.get = fixtureGet
+  modelOptionsRefreshes = refreshesBefore
 
   requests.length = 0
   delete process.env.CLAUDE_CODE_USE_OPENAI
