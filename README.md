@@ -74,7 +74,7 @@ bun ./dist/cli.js --help
 
 | 领域 | 功能 | 说明 |
 | --- | --- | --- |
-| 模型与 Provider | [OpenAI / Codex provider](docs/features/openai-provider.md) | 把 Claude Code 的模型换成 OpenAI（GPT / Codex）：用 ChatGPT 账号登录或 API key，工具、界面、命令照常使用；多一个 Codex 式的 `apply_patch` 工具，一次改多个文件；上下文窗口与 effort 档位跟随账号的模型目录 |
+| 模型与 Provider | [OpenAI / Codex provider](docs/features/openai-provider.md) | 把 Claude Code 的模型换成 OpenAI（GPT / Codex）：用 ChatGPT 账号登录或 API key，工具、界面、命令照常使用；多一个 Codex 式的 `apply_patch` 工具，一次改多个文件；上下文窗口与 effort 档位跟随账号的模型目录；ToolSearch 按需加载工具不会让提示缓存失效 |
 |  | [OpenAI 网络安全档位（Daybreak）](docs/features/openai-provider.md#网络安全访问档位daybreak) | OpenAI provider 下用 `/daybreak blue\|red\|off` 切换 OpenAI 的网络安全访问档位，请求自动带上 `access_programs` |
 |  | [模型自动发现与 Gateway](docs/features/model-discovery.md) | 走自己的 API 网关或 OpenAI 兼容服务时，自动把网关提供的模型列进 `/model`，不用手打模型名 |
 |  | [请求韧性：重试、回退模型与默认模型](docs/features/request-resilience.md) | API 过载或断线时自动重试；主模型一直过载就换备用模型；可以让无人值守任务一直等到额度恢复 |
