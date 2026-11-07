@@ -17,7 +17,7 @@
 
 ![/context](images/compaction-context.png)
 
-**2. 调整压缩窗口：** `/autocompact` 打开对话框，`←` `→` 调整，`Enter` 应用；也可以直接 `/autocompact 200k`：
+**2. 调整压缩窗口：** `/autocompact`（别名 `/context-window`）打开档位滑块，`←` `→` 在 `auto` 和各档位之间切换，`Enter` 应用；也可以直接 `/autocompact 200k`：
 
 ![/autocompact 对话框](images/compaction-dialog.png)
 
@@ -26,7 +26,11 @@
   ⎿  Auto-compact window for Opus 5.5 set to 200k tokens
 ```
 
-可写 `500k`、`200000` 或简写 `200`（范围 100k 到 1M，并且不超过模型本身的上限）；`/autocompact auto`（或 `reset`）恢复推荐值。设置按模型分别保存，换模型后各用各的。
+滑块的档位是 128k、200k、272k、500k、1M 中小于模型上限的那些，最后一档是模型上限本身（例如 262k 或 OpenAI `[1m]` 的 872k）；之前保存过的非档位值（如 150k）会保留自己的一档。命令参数可写 `500k`、`200000` 或简写 `200`（范围 100k 到 1M，并且不超过模型本身的上限）；`/autocompact auto`（或 `reset`）恢复推荐值。设置保存在用户设置的 `modelSettings.<模型>.autoCompactWindow`，换模型后各用各的。
+
+`claude web` 会话页、起始页和项目协调者对话的模型菜单里有一行「上下文窗口」，列出同样的档位，只对当前会话生效（和思考强度菜单一样以会话级设置下发，`get_settings` 的 `applied.autoCompactWindow` 会报告它）。
+
+触发点 = 窗口 − 20k（摘要输出）− 13k（固定缓冲）。模型上限来自内置表；Claude 官方 API 用户还会读取 `models.list` 的 `max_input_tokens`，但只用于内置表里没有的模型，`[1m]`/`[1M]` 后缀开启 1M 的规则不变。Haiku 5.5 的上限是 1M。
 
 **3. 手动压缩：** `/compact` 后面可以加一句要求，告诉摘要要保留什么：
 

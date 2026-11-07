@@ -61,14 +61,17 @@ Claude 调用 Agent 工具时可以按次指定 `effort`，例如让搜索类子
 
 | 方式 | 写法 | 作用范围 |
 | --- | --- | --- |
-| settings `effortLevel` | `minimal` … `ultracode` | 持久默认值；`/model`、`/effort` 会写这里 |
+| settings `modelSettings.<模型>.effortLevel` | `minimal` … `ultracode` | 按模型保存的持久默认值，与官方相同；`/model`、`/effort`、SDK `update_settings` 写当前模型这一项，换模型时载入新模型的值 |
+| 顶层 `effortLevel` | 同上 | 只在项目、本地、managed 与 flag 设置里有效；用户设置里的顶层值不再读取（与官方相同），`/effort auto` 会顺便清掉它 |
 | `--effort <档位>` | 也可用 `none` | 当前会话 |
 | `/effort <档位>` | 另有 `none`、`auto` / `unset` | 当前会话并保存 |
 | 环境变量 `CLAUDE_CODE_EFFORT_LEVEL` | 档位；`auto` / `unset` 表示请求里不带 effort | 最高优先级，覆盖以上所有 |
 
 ```json
-{ "effortLevel": "high" }
+{ "modelSettings": { "claude-opus-5-5": { "effortLevel": "high" } } }
 ```
+
+从旧版本升级时，如果原来只在用户设置里写了顶层 `effortLevel`，运行一次 `/effort <档位>` 就会按当前模型重新保存。用 ChatGPT 账号登录 OpenAI provider 时，可选档位和默认值来自账号的模型目录。
 
 ## 和官方的区别
 
