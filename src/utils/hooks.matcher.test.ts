@@ -155,14 +155,14 @@ describe('apply_patch runs Edit and Write hooks once per file', () => {
     return dir
   }
 
-  test('each file runs the Edit or Write hooks as its own call; patch-wide hooks run once', async () => {
+  test('each file runs the hooks as its own Edit or Write call; there is no apply_patch event', async () => {
     const dir = tempDir()
     const seen: string[] = []
     registerHookCallbacks({
       PreToolUse: [
         recordingHook('Edit', seen),
         recordingHook('Write', seen),
-        recordingHook('Edit|apply_patch', seen),
+        recordingHook('apply_patch', seen),
         recordingHook('*', seen),
         recordingHook(undefined, seen),
         recordingHook('Bash', seen),
@@ -183,16 +183,13 @@ describe('apply_patch runs Edit and Write hooks once per file', () => {
     for await (const _ of executePreToolHooks('apply_patch', 'id', { input }, ctx)) {
       // drain
     }
+    const perFile = ['Edit a.py', 'Write b.env', 'Write new.txt', 'Edit old.txt', 'Edit gone.txt']
     expect(seen.sort()).toEqual(
       [
-        '* apply_patch ',
-        '- apply_patch ',
-        'Edit|apply_patch apply_patch ',
-        'Edit Edit a.py',
-        'Write Write b.env',
-        'Write Write new.txt',
-        'Edit Edit old.txt',
-        'Edit Edit gone.txt',
+        ...perFile.map(call => `* ${call}`),
+        ...perFile.map(call => `- ${call}`),
+        ...perFile.filter(call => call.startsWith('Edit')).map(call => `Edit ${call}`),
+        ...perFile.filter(call => call.startsWith('Write')).map(call => `Write ${call}`),
       ].sort(),
     )
   })
@@ -263,9 +260,4 @@ describe('apply_patch runs Edit and Write hooks once per file', () => {
     ])
   })
 
-  test('Edit matchers no longer match apply_patch itself', async () => {
-    expect(await toolMatches('Edit|Write', 'apply_patch')).toBe(false)
-    clearRegisteredHooks()
-    expect(await toolMatches('apply_patch', 'apply_patch')).toBe(true)
-  })
 })
