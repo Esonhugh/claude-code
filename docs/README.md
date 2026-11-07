@@ -17,6 +17,7 @@
 | 目录 | 内容 | 维护方式 |
 | --- | --- | --- |
 | [`features/`](features/README.md) | 每项功能的作用、配置、可选值与终端效果 | 功能行为变化时同步更新 |
+| [`articles/`](articles/) | 介绍与上手文章（[繁中](articles/why-this-fork.zh-TW.md) / [English](articles/why-this-fork.en.md)） | 引用的数据随功能文档与基准更新 |
 | [`guides/`](guides/) | 面向使用者和开发者的操作指南 | 随当前实现持续更新 |
 | [`architecture/`](architecture/) | 已实现系统的结构、调用链和源码索引 | 代码结构变化时同步更新 |
 | [`research/`](research/) | 二进制分析、兼容性对比和实验结论 | 保留证据边界与分析日期 |
