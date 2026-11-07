@@ -2,7 +2,7 @@
 
 > 英文名：`cache-benchmark` · 领域：上下文与记忆 · [返回功能索引](README.md)
 
-本 fork（Claude 账号与 ChatGPT 账号两条路径）与官方 Claude Code、Codex CLI、opencode、pi、oh-my-pi、dsh 跑同一批真实任务，比较提示缓存命中率、token 用量、API 等价花费、多代理开销、长时间闲置后的缓存、启动速度和稳定性。全部是真实模型请求，不使用假 API。数据采集于 2026-11-07，共 765 次 run，每格至少 3 次。
+本 fork（Claude 账号与 ChatGPT 账号两条路径）与官方 Claude Code、Codex CLI、opencode、pi、oh-my-pi、dsh 跑同一批真实任务，比较提示缓存命中率、token 用量、API 等价花费、多代理开销、长时间闲置后的缓存、启动速度和稳定性。全部是真实模型请求，不使用假 API。数据采集于 2026-11-07，共 789 次 run，每格至少 3 次。
 
 ## 摘要
 
@@ -104,12 +104,12 @@ pi 与 opencode 另用 Claude API key 跑了一组 `claude-sonnet-5-5`（见第 
 
 横轴是每任务平均总 token（对数轴，越左越省），纵轴是按 token 加权的缓存命中率（越高越好），左上角最好。只看命中率会奖励把大段前缀放进缓存的做法，只看 token 又看不出缓存帮了多少，两项放在一起才能看出谁在「少用」和「多复用」上都占优。第二张图把横轴换成 API 等价花费，把缓存读、缓存写和输出的不同价格算进去。[交互版](https://claude.ai/artifact/5c7HFWBN11ZAVcFHConfbm)可切换横轴，悬停查看每个点的明细。
 
-颜色区分 CLI，形状区分账号类型：实心圆 = Claude 订阅（OAuth），菱形 = ChatGPT 订阅（OAuth），空心圆 = Claude API key。Claude 订阅与 API key 都用 `claude-sonnet-5-5`，ChatGPT 订阅用 `gpt-6.1-sol`。每个大点 = 11 题 × 3 次；oh-my-pi 为 9 题（无 Lean），dsh ChatGPT 账号 32 次（1 次 WebSocket 断线未计入）。
+颜色区分 CLI，形状区分账号类型：实心圆 = Claude 订阅（OAuth），菱形 = ChatGPT 订阅（OAuth），空心圆 = Claude API key。Claude 订阅与 API key 都用 `claude-sonnet-5-5`，ChatGPT 订阅用 `gpt-6.1-sol`。每个大点 = 11 题 × 3 次；dsh ChatGPT 账号 32 次（1 次 WebSocket 断线未计入）。
 
 ![每任务 token 与缓存命中率：7 个 CLI 共 12 个账号组合的散点，含 6 类任务的分项点、Pareto 前沿与更优区域](images/cache-benchmark/tokens-vs-hit-light.png#gh-light-mode-only)
 ![每任务 token 与缓存命中率：7 个 CLI 共 12 个账号组合的散点，含 6 类任务的分项点、Pareto 前沿与更优区域](images/cache-benchmark/tokens-vs-hit-dark.png#gh-dark-mode-only)
 
-- 前沿上的 6 个点：pi（Claude API）21k / 73.4%、pi（ChatGPT）37k / 84.0%、dsh（Claude API）69k / 88.7%、Codex 80k / 88.8%、opencode（ChatGPT）82k / 89.2%、oh-my-pi（Claude API）103k / 91.6%。
+- 前沿上的 6 个点：pi（Claude API）21k / 73.4%、pi（ChatGPT）37k / 84.0%、dsh（Claude API）69k / 88.7%、Codex 80k / 88.8%、opencode（ChatGPT）82k / 89.2%、oh-my-pi（Claude API）101k / 92.0%。
 - 更优区域（token 不高于中位数 81k 且命中率不低于中位数 87.3%）里是 dsh（Claude API）、Codex 和官方。本仓库 Claude 账号 73k / 87.1% 在区域边缘，与官方相差 0.2 个百分点，在噪声范围内。
 - pi 的提示只有约 2.7k，token 最少但新内容占比大，命中率最低；opencode 在 Claude API key 下 92k / 79.2%，两项都落后于同模型的其他 CLI。
 
@@ -123,7 +123,7 @@ pi 与 opencode 另用 Claude API key 跑了一组 `claude-sonnet-5-5`（见第 
 | 本仓库 | Claude 订阅 | `claude-sonnet-5-5` | medium（默认） | 72.7k | 87.1% | $0.078 |
 | 官方 Claude Code 2.1.319 | Claude 订阅 | `claude-sonnet-5-5` | medium（默认） | 81.0k | 87.3% | $0.088 |
 | dsh 0.2.2-rc.1 | Claude API key | `claude-sonnet-5-5` | low（默认） | 69.2k | 88.7% | $0.083 |
-| oh-my-pi 18.18.0¹ | Claude API key | `claude-sonnet-5-5` | high（默认） | 102.8k | 91.6% | $0.099 |
+| oh-my-pi 18.18.0 | Claude API key | `claude-sonnet-5-5` | high（默认） | 100.8k | 92.0% | $0.091 |
 | opencode 1.19.5 | Claude API key | `claude-sonnet-5-5` | adaptive（默认） | 92.0k | 79.2% | $0.119 |
 | pi 1.5.0 | Claude API key | `claude-sonnet-5-5` | low（默认） | 21.4k | 73.4% | $0.045 |
 | 本仓库 | ChatGPT 订阅 | `gpt-6.1-sol` | low（账号默认） | 75.9k | 85.3% | $0.050 |
@@ -131,13 +131,13 @@ pi 与 opencode 另用 Claude API key 跑了一组 `claude-sonnet-5-5`（见第 
 | opencode 1.19.5 | ChatGPT 订阅 | `gpt-6.1-sol` | low（默认） | 81.5k | 89.2% | $0.059 |
 | pi 1.5.0 | ChatGPT 订阅 | `gpt-6.1-sol` | medium（默认） | 36.5k | 84.0% | $0.041 |
 | dsh 0.2.2-rc.1 | ChatGPT 订阅 | `gpt-6.1-sol` | 未记录（pi-ai 默认） | 134.2k | 89.9% | $0.073 |
-| oh-my-pi 18.18.0¹ | ChatGPT 订阅 | `gpt-6.1-sol` | high（默认） | 112.2k | 88.0% | $0.087 |
+| oh-my-pi 18.18.0 | ChatGPT 订阅 | `gpt-6.1-sol` | high（默认） | 104.5k | 88.0% | $0.079 |
 
-¹ 9 题（无 Lean）。effort 取代理日志里请求实际携带的值；dsh 的 ChatGPT 请求没有带 effort 字段。dsh ChatGPT 账号只计成功的 32 次 run；第 11 节的平均把失败那次（约 5k token）也算进 33 次，所以那里是 130.2k / 89.8%。
+effort 取代理日志里请求实际携带的值；dsh 的 ChatGPT 请求没有带 effort 字段。dsh ChatGPT 账号只计成功的 32 次 run；第 11 节的平均把失败那次（约 5k token）也算进 33 次，所以那里是 130.2k / 89.8%。
 
-- Claude 侧本仓库 $0.078，比官方 $0.088 低 12%，也低于 dsh $0.083、oh-my-pi $0.099、opencode $0.119；只有 pi $0.045 更低，因为它的提示只有约 2.7k、effort low。
-- ChatGPT 侧缓存读只收输入价的 1/20，各 CLI 差距被压小：pi $0.041、Codex $0.047、本仓库 $0.050、opencode $0.059、dsh $0.073、oh-my-pi $0.087。本仓库比 Codex 贵 6%，差在新会话第一个请求的未缓存部分（6.3k 对 2.7k）。
-- 前沿：pi（ChatGPT）$0.041 / 84.0%、Codex $0.047 / 88.8%、opencode（ChatGPT）$0.059 / 89.2%、dsh（ChatGPT）$0.073 / 89.9%、oh-my-pi（Claude API）$0.099 / 91.6%。更优区域（花费不高于中位数 $0.075 且命中率不低于中位数 87.7%）里是 Codex、opencode 与 dsh 的 ChatGPT 账号；Claude 侧的点都在中位数右边，是两种模型价目不同造成的。
+- Claude 侧本仓库 $0.078，比官方 $0.088 低 12%，也低于 dsh $0.083、oh-my-pi $0.091、opencode $0.119；只有 pi $0.045 更低，因为它的提示只有约 2.7k、effort low。
+- ChatGPT 侧缓存读只收输入价的 1/20，各 CLI 差距被压小：pi $0.041、Codex $0.047、本仓库 $0.050、opencode $0.059、dsh $0.073、oh-my-pi $0.079。本仓库比 Codex 贵 6%，差在新会话第一个请求的未缓存部分（6.3k 对 2.7k）。
+- 前沿：pi（ChatGPT）$0.041 / 84.0%、Codex $0.047 / 88.8%、opencode（ChatGPT）$0.059 / 89.2%、dsh（ChatGPT）$0.073 / 89.9%、oh-my-pi（Claude API）$0.091 / 92.0%。更优区域（花费不高于中位数 $0.075 且命中率不低于中位数 87.7%）里是 Codex、opencode 与 dsh 的 ChatGPT 账号；Claude 侧的点都在中位数右边，是两种模型价目不同造成的。
 
 ![按任务类型：每类一个面板的 token 与命中率散点](images/cache-benchmark/tokens-vs-hit-by-type-light.png#gh-light-mode-only)
 ![按任务类型：每类一个面板的 token 与命中率散点](images/cache-benchmark/tokens-vs-hit-by-type-dark.png#gh-dark-mode-only)
@@ -346,20 +346,20 @@ Codex 与 opencode 用各自的子代理工具（Codex `spawn_agent`，0.167.0 �
 
 ### 9. oh-my-pi（功能更多的 pi 分支）
 
-oh-my-pi 18.18.0（`omp`）在 pi 的基础上多了 glob、grep、eval、task（子代理）、wait、todo 等工具，共 10 个（关闭 web_search），默认 effort high。它和 pi 1.5.0 同一时段交错跑 9 题（办公 / 研究 / 编码 / 运维，长短各半，不含 Lean）× 3 次，两种账号各一组，108 次全部通过。表中本仓库与其他 CLI 取主矩阵同 9 题的数据。
+oh-my-pi 18.18.0（`omp`）在 pi 的基础上多了 glob、grep、eval、task（子代理）、wait、todo 等工具，共 10 个（关闭 web_search），默认 effort high。它和 pi 1.5.0 同一时段交错跑主矩阵的 11 题 × 3 次，两种账号各一组，132 次全部通过。表中本仓库、官方与 Codex 取第 1 节的主矩阵数据（另一时段）。
 
 | CLI | 账号 | 命中率（单次范围） | 平均总 token（单次范围） | 输出 | 首个 prompt | 平均用时 | 请求数 | API 等价花费 / 任务 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| oh-my-pi 18.18.0 | Claude API key | 91.6%（84–97） | 102.8k（37–550k） | 6.1k | 11.9k | 46s | 5.3 | $0.099 |
-| pi 1.5.0（同时段） | Claude API key | 68.4%（33–83） | 20.7k（9–57k） | 3.5k | 2.7k | 25s | 3.9 | $0.051 |
-| 本仓库 | Claude 账号 | 86.2%（49–91） | 71.4k（32–149k） | 3.3k | 15.5k | 27s | 3.9 | $0.082 |
-| 官方 Claude Code 2.1.319 | Claude 账号 | 86.2%（77–92） | 77.6k（36–145k） | 3.9k | 17.2k | 31s | 3.8 | $0.092 |
-| oh-my-pi 18.18.0 | ChatGPT 账号 | 88.0%（49–97） | 112.2k（31–445k） | 5.2k | 6.9k | 131s | 8.9 | $0.087 |
-| pi 1.5.0（同时段） | ChatGPT 账号 | 81.9%（28–95） | 39.7k（5–121k） | 2.8k | 1.4k | 76s | 8.1 | $0.044 |
-| 本仓库 | ChatGPT 账号 | 85.8%（50–93） | 75.6k（44–151k） | 2.5k | 10.4k | 66s | 5.4 | $0.052 |
-| Codex CLI 0.167.0 | ChatGPT 账号 | 89.1%（81–96） | 85.3k（62–165k） | 2.6k | 15.0k | 66s | 4.9 | $0.051 |
+| oh-my-pi 18.18.0 | Claude API key | 92.0%（74–97） | 100.8k（37–550k） | 5.4k | 11.9k | 42s | 5.5 | $0.091 |
+| pi 1.5.0（同时段） | Claude API key | 69.5%（33–83） | 19.6k（9–57k） | 3.1k | 2.7k | 23s | 3.8 | $0.046 |
+| 本仓库 | Claude 账号 | 87.1%（49–93） | 72.7k（32–149k） | 3.0k | 15.5k | 26s | 4.0 | $0.078 |
+| 官方 Claude Code 2.1.319 | Claude 账号 | 87.3%（77–94） | 81.0k（36–159k） | 3.5k | 17.1k | 30s | 4.0 | $0.088 |
+| oh-my-pi 18.18.0 | ChatGPT 账号 | 88.0%（49–97） | 104.5k（31–445k） | 4.6k | 6.9k | 117s | 8.7 | $0.079 |
+| pi 1.5.0（同时段） | ChatGPT 账号 | 81.1%（28–95） | 35.4k（5–121k） | 2.5k | 1.4k | 69s | 7.8 | $0.040 |
+| 本仓库 | ChatGPT 账号 | 85.3%（50–93） | 75.9k（44–151k） | 2.2k | 10.4k | 61s | 5.6 | $0.050 |
+| Codex CLI 0.167.0 | ChatGPT 账号 | 88.8%（79–96） | 80.3k（39–165k） | 2.2k | 14.6k | 59s | 4.8 | $0.047 |
 
-- 前缀从 pi 的 2.7k 变成 11.9k，加上默认 effort high，oh-my-pi 的 token 是同时段 pi 的 2.8–5.0 倍、本仓库的 1.4–1.5 倍；固定前缀占比大，所以命中率反而最高。按 API 价它比 pi 贵约一倍，比本仓库贵 20%（Claude）到 67%（ChatGPT）。
+- 前缀从 pi 的 2.7k 变成 11.9k，加上默认 effort high，oh-my-pi 的 token 是同时段 pi 的 3.0–5.1 倍、本仓库的约 1.4 倍；固定前缀占比大，所以命中率反而最高。按 API 价它比 pi 贵约一倍，比本仓库贵 17%（Claude）到 58%（ChatGPT）。
 - 3 个子代理（与第 5 节同题）：Claude 侧 40.1k → 230.0k（5.7×），ChatGPT 侧 65.5k → 196.2k（3.0×）。
 - oh-my-pi 在 Anthropic 侧用服务器端对话续接，第二个请求起只发增量；usage 仍完整计入缓存读。Claude 侧它写 5 分钟缓存。
 
