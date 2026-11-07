@@ -2,7 +2,7 @@
 
 > 英文名：`cache-benchmark` · 领域：上下文与记忆 · [返回功能索引](README.md)
 
-本 fork（Claude 账号与 ChatGPT 账号两条路径）与官方 Claude Code、Codex CLI、opencode、pi、oh-my-pi 跑同一批真实任务，比较提示缓存命中率、token 用量、API 等价花费、多代理开销、长时间闲置后的缓存、启动速度和稳定性。全部是真实模型请求，不使用假 API。数据采集于 2026-11-07，共 654 次 run，每格至少 3 次。
+本 fork（Claude 账号与 ChatGPT 账号两条路径）与官方 Claude Code、Codex CLI、opencode、pi、oh-my-pi、dsh 跑同一批真实任务，比较提示缓存命中率、token 用量、API 等价花费、多代理开销、长时间闲置后的缓存、启动速度和稳定性。全部是真实模型请求，不使用假 API。数据采集于 2026-11-07，共 765 次 run，每格至少 3 次。
 
 ## 摘要
 
@@ -41,8 +41,9 @@
 | opencode | 1.19.5 | ChatGPT OAuth · `gpt-6.1-sol` | 默认 |
 | pi | 1.5.0（`@earendil-works/pi-coding-agent`） | ChatGPT OAuth · `gpt-6.1-sol` | 默认 |
 | oh-my-pi（`omp`） | 18.18.0（`@oh-my-pi/pi-coding-agent`） | ChatGPT OAuth · `gpt-6.1-sol` / Claude API key · `claude-sonnet-5-5` | 默认 high |
+| dsh（DeepSeek Harness） | 0.2.2-rc.1（`@deepseek-ai/dsh`，headless） | ChatGPT OAuth · `gpt-6.1-sol` / Claude API key · `claude-sonnet-5-5` | 默认（Claude 侧 low） |
 
-pi 与 opencode 另用 Claude API key 跑了一组 `claude-sonnet-5-5`（见第 1、4–6 节）；表中未注明时 pi、opencode 均指 ChatGPT 账号。oh-my-pi 只出现在第 9 节，ssh / k8s 运维排障题见第 10 节。
+pi 与 opencode 另用 Claude API key 跑了一组 `claude-sonnet-5-5`（见第 1、4–6 节）；表中未注明时 pi、opencode 均指 ChatGPT 账号。oh-my-pi 只出现在第 9 节，ssh / k8s 运维排障题见第 10 节，dsh 只出现在第 11 节。
 
 `453b1c6` 与 `990cc05` 的代码相同（之间只有文档提交）。办公 / 编码 / 运维的 CLI 矩阵用 `5c5ce9e`，它与 `990cc05` 的差别只在没有模型目录缓存的首次启动；本基准每个 HOME 都预置了目录缓存，两者结果可合并。
 
@@ -346,6 +347,26 @@ oh-my-pi 18.18.0（`omp`）在 pi 的基础上多了 glob、grep、eval、task�
 - ChatGPT 侧本仓库 79.5%、Codex 90.0%，差距集中在短题（`ssh-s` 64.5% 对 91.7%）：短题只有 3–4 个请求，新会话第一个请求未缓存部分占比大，与主矩阵短任务的结构性差距相同。本仓库 token 比 Codex 少 40%。
 - 这组题全部通过，只能区分成本与缓存，区分不了能力。
 
+### 11. dsh（DeepSeek Harness）
+
+dsh 0.2.2-rc.1 用 headless 模式（`dsh --profile headless --json`），模型经它内置的 pi-ai 路由，关闭网页工具后共 22 个工具（含 `subagent`、`subagent_fork`、`workflow`、goal 与后台任务工具），系统提示约 2.3k 字符。11 题 × 3 次，两种账号各一组；Claude 侧与 pi 1.5.0 同一时段交错，ChatGPT 侧单独顺序运行。dsh 每个会话还用主模型发一个生成标题的小请求，计入总量，不计入首个 prompt。其他行取主矩阵与第 1 节同 11 题的数据。
+
+| CLI | 账号 | 成功 | 命中率（单次范围） | 平均总 token（单次范围） | 输出 | 首个 prompt | 平均用时 | 请求数 | API 等价花费 / 任务 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| dsh 0.2.2-rc.1 | Claude API key | 33/33 | 88.7%（79–95） | 69.2k（26–365k） | 5.4k | 8.1k | 39s | 6.1 | $0.083 |
+| pi 1.5.0（同时段） | Claude API key | 33/33 | 77.0%（33–89） | 26.0k（9–84k） | 3.2k | 2.7k | 25s | 4.6 | $0.049 |
+| 本仓库 | Claude 账号 | 33/33 | 87.1%（49–93） | 72.7k（32–149k） | 3.0k | 15.5k | 26s | 4.0 | $0.078 |
+| 官方 Claude Code 2.1.319 | Claude 账号 | 33/33 | 87.3%（77–94） | 81.0k（36–159k） | 3.5k | 17.1k | 30s | 4.0 | $0.088 |
+| dsh 0.2.2-rc.1 | ChatGPT 账号 | 32/33 | 89.8%（0–96） | 130.2k（5–723k） | 3.4k | 4.1k | 72s | 15.3 | — |
+| 本仓库 | ChatGPT 账号 | 33/33 | 85.3%（50–93） | 75.9k（44–151k） | 2.2k | 10.4k | 61s | 5.6 | — |
+| Codex CLI 0.167.0 | ChatGPT 账号 | 33/33 | 88.8%（79–96） | 80.3k（39–165k） | 2.2k | 14.6k | 59s | 4.8 | — |
+
+- dsh 首个 prompt 比本仓库小一半（Claude 侧 8.1k 对 15.5k），短任务因此省 token；但请求数多（ChatGPT 侧 15.3 对 5.6），长任务 ChatGPT 侧平均 220.8k，是本仓库的 2.3 倍，`doc-l`、`longcode` 单次最高 723k。
+- 唯一失败：ChatGPT 侧一次第一个请求遇到 `WebSocket closed 1006`，dsh 不重试直接结束。
+- 3 个子代理（与第 5 节同题，每次确认开出 3 个 `subagent`）：Claude 侧 28.9k → 178.0k（6.2×），ChatGPT 侧 60.1k → 236.3k（3.9×）；每个子代理带完整工具与系统提示。
+- ChatGPT 侧会话中途失效按同一口径计 16 次，主要是第二个请求紧跟第一个（约 2 秒内）还读不到刚写入的缓存，以及模型自行开出的子代理首个请求；Claude 侧 0 次。
+- ChatGPT 路由下 dsh 输出最终结果后进程不退出（pi-ai 的 WebSocket 连接缓存约 5 分钟），每次都由 harness 结束，用时按最终结果计。
+
 ## 局限
 
 - 任务成功率几乎全部 100%，题组对成功率没有区分度；各 CLI 的差别体现在 token、用时和稳定性。
@@ -358,6 +379,6 @@ oh-my-pi 18.18.0（`omp`）在 pi 的基础上多了 glob、grep、eval、task�
 完整报告、逐 run 汇总、逐请求原始日志与 harness 在项目共享目录：
 
 - `regression/cache-bench-1107-post/`：CLI 矩阵、TUI / SDK / Web（`report.md`、`results.json`、`raw/`、`harness/`）。
-- `regression/cache-bench-1107-current/`：多代理、长闲置、启动与资源占用（`raw/sub/`、`raw/team/`、`raw/gap/`、`raw/b6/`、`harness/`）；pi 与 opencode 的 Claude 侧 CLI 矩阵在 `claude-api/`；各 CLI × 账号的补齐格与 API 等价花费在 `chatgpt-api/`（`results.json` 汇总全部逐 run 数据）；oh-my-pi 在 `oh-my-pi/`；ssh / k8s 运维排障在 `ops-troubleshoot/`。
+- `regression/cache-bench-1107-current/`：多代理、长闲置、启动与资源占用（`raw/sub/`、`raw/team/`、`raw/gap/`、`raw/b6/`、`harness/`）；pi 与 opencode 的 Claude 侧 CLI 矩阵在 `claude-api/`；各 CLI × 账号的补齐格与 API 等价花费在 `chatgpt-api/`（`results.json` 汇总全部逐 run 数据）；oh-my-pi 在 `oh-my-pi/`；dsh 在 `dsh/`；ssh / k8s 运维排障在 `ops-troubleshoot/`。
 
 原始日志按 `raw/<场景>/<任务>/<CLI>-<轮次>/` 存放，只追加不覆盖，不含凭证。本页图表由上述数据直接生成，脚本在 `regression/cache-bench-1107-post/charts/`。
