@@ -4,6 +4,7 @@ import { AgentTool } from './tools/AgentTool/AgentTool.js'
 import { SkillTool } from './tools/SkillTool/SkillTool.js'
 import { BashTool } from './tools/BashTool/BashTool.js'
 import { TerminalTool } from './tools/TerminalTool/TerminalTool.js'
+import { ApplyPatchTool } from './tools/ApplyPatchTool/ApplyPatchTool.js'
 import { FileEditTool } from './tools/FileEditTool/FileEditTool.js'
 import { FileReadTool } from './tools/FileReadTool/FileReadTool.js'
 import { FileWriteTool } from './tools/FileWriteTool/FileWriteTool.js'
@@ -209,6 +210,7 @@ export function getAllBaseTools(
     FileReadTool,
     FileEditTool,
     FileWriteTool,
+    ApplyPatchTool,
     NotebookEditTool,
     WebFetchTool,
     TodoWriteTool,
