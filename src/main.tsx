@@ -34,6 +34,8 @@ import chalk from 'chalk'
 import { readFileSync, realpathSync, statSync } from 'fs'
 import mapValues from 'lodash-es/mapValues.js'
 import pickBy from 'lodash-es/pickBy.js'
+import { withCodexAppsToolSet } from './services/apps/toolSet.js'
+import { isHostOwnedCodexAppsConfig } from './services/apps/trust.js'
 import uniqBy from 'lodash-es/uniqBy.js'
 import React from 'react'
 import { getOauthConfig } from './constants/oauth.js'
@@ -4164,7 +4166,6 @@ async function run(): Promise<CommanderCommand> {
         const connectMcpBatch = (
           configs: Record<string, ScopedMcpServerConfig>,
           label: string,
-          includeCodexApps = true,
         ): Promise<void> => {
           if (Object.keys(configs).length === 0) return Promise.resolve()
           headlessStore.setState(prev => ({
@@ -4227,7 +4228,7 @@ async function run(): Promise<CommanderCommand> {
               }))
             },
             configs,
-            { includeCodexApps },
+            { includeCodexApps: false },
           ).catch(err =>
             logForDebugging(`[MCP] ${label} connect error: ${err}`),
           )
@@ -4240,8 +4241,23 @@ async function run(): Promise<CommanderCommand> {
         // (processBatched with Promise.all). claude.ai is awaited too — its
         // fetch was kicked off early (line ~2558) so only residual time blocks
         // here. --bare skips claude.ai entirely for perf-sensitive scripts.
+        // The host-owned Codex Apps ToolSet (ChatGPT sign-in) lists hundreds of
+        // deferred tools over the network; the first request never needs
+        // them, so connect it in the background like late claude.ai
+        // connectors. ToolSearch reports it as pending until it settles, and
+        // refreshTools picks its tools up on the next query iteration.
+        const codexAppsMcpConfigs = pickBy(
+          Object.keys(regularMcpConfigs).length > 0
+            ? withCodexAppsToolSet(regularMcpConfigs)
+            : regularMcpConfigs,
+          isHostOwnedCodexAppsConfig,
+        )
+        void connectMcpBatch(codexAppsMcpConfigs, 'codexApps')
         profileCheckpoint('before_connectMcp')
-        await connectMcpBatch(regularMcpConfigs, 'regular')
+        await connectMcpBatch(
+          pickBy(regularMcpConfigs, (_, name) => !(name in codexAppsMcpConfigs)),
+          'regular',
+        )
         profileCheckpoint('after_connectMcp')
         // Dedup: suppress plugin MCP servers that duplicate a claude.ai
         // connector (connector wins), then connect claude.ai servers.
@@ -4308,7 +4324,7 @@ async function run(): Promise<CommanderCommand> {
             claudeaiConfigs,
             nonPluginConfigs,
           )
-          return connectMcpBatch(dedupedClaudeAi, 'claudeai', false)
+          return connectMcpBatch(dedupedClaudeAi, 'claudeai')
         })
         let claudeaiTimer: ReturnType<typeof setTimeout> | undefined
         const claudeaiTimedOut = await Promise.race([
