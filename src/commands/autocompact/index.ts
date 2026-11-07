@@ -4,7 +4,8 @@ import type { Command } from '../../commands.js'
 export const autocompact: Command = {
   type: 'local-jsx',
   name: 'autocompact',
-  description: 'Set how full the context gets before auto-summarizing',
+  aliases: ['context-window'],
+  description: 'Set the context window: how full the context gets before auto-summarizing',
   immediate: true,
   isEnabled: () => !getIsNonInteractiveSession(),
   argumentHint: '[auto|<tokens>]',
@@ -14,6 +15,7 @@ export const autocompact: Command = {
 export const autocompactNonInteractive: Command = {
   type: 'local',
   name: 'autocompact',
+  aliases: ['context-window'],
   supportsNonInteractive: true,
   description: 'Configure the auto-compact window size',
   get isHidden() {

@@ -723,6 +723,11 @@ export const SDKControlGetSettingsResponseSchema = lazySchema(() =>
               'ultra',
             ])
             .nullable(),
+          autoCompactWindow: z
+            .number()
+            .nullable()
+            .optional()
+            .describe('Configured context window for the model; null is auto'),
         })
         .optional()
         .describe(

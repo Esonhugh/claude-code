@@ -396,6 +396,7 @@ import {
   savedEffortPatch,
   toPersistableEffort,
 } from 'src/utils/effort.js'
+import { getConfiguredAutoCompactWindow } from 'src/services/compact/autoCompact.js'
 import { validateModel } from 'src/utils/model/validateModel.js'
 import { ensureModelStringsInitialized } from 'src/utils/model/modelStrings.js'
 import {
@@ -5305,6 +5306,7 @@ function runHeadlessStreaming(
               model,
               // Numeric effort (ant-only) → null; SDK schema is string-level only.
               effort: typeof effort === 'string' ? effort : null,
+              autoCompactWindow: getConfiguredAutoCompactWindow(model) ?? null,
             },
           })
         } else if (message.request.subtype === 'stop_task') {

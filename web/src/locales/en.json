@@ -137,6 +137,7 @@
   "commandTag": "Command",
   "skillTag": "skill",
   "effort": "Effort",
+  "contextWindow": "Context window",
   "modeDescDefault": "Asks before every edit and command",
   "modeDescAcceptEdits": "Accepts file edits automatically",
   "modeDescPlan": "Read-only, plan first",

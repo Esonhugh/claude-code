@@ -103,6 +103,8 @@ export type ModelOption = {
   resolvedModel?: string
   description?: string
   effortLevels?: string[]
+  /** Context windows the picker offers, smallest first; the last is the model maximum. */
+  contextWindowTiers?: number[]
 }
 
 /** The SDK `ModelInfo` list (initialize `models`, `/api/models`) as the picker's options. */
@@ -118,6 +120,9 @@ export function parseModels(raw: unknown): ModelOption[] {
             m.supportsEffort === true && Array.isArray(m.supportedEffortLevels)
               ? m.supportedEffortLevels.filter(l => typeof l === 'string')
               : undefined,
+          contextWindowTiers: Array.isArray(m.contextWindowTiers)
+            ? m.contextWindowTiers.filter(n => typeof n === 'number' && Number.isFinite(n))
+            : undefined,
         }),
       }))
     : []
@@ -158,6 +163,8 @@ export type ChatState = {
   costUsd?: number
   /** Effort level the session applies (get_settings `applied.effort`). */
   effort?: string
+  /** The session's configured context window (get_settings `applied.autoCompactWindow`); null is auto. */
+  contextWindow?: number | null
   env: SessionEnv
   /** Error from the last control request the user triggered (mode, model). */
   notice?: string
@@ -1347,6 +1354,10 @@ function reduceControlResponse(state: ChatState, raw: Json): ChatState {
       // A reattached page is sent the session's first init; `applied` has the model in use now.
       model: str(applied.model) ?? state.model,
       effort: str(applied.effort) ?? state.effort,
+      contextWindow:
+        typeof applied.autoCompactWindow === 'number' || applied.autoCompactWindow === null
+          ? applied.autoCompactWindow
+          : state.contextWindow,
       env: {
         ...state.env,
         uiName: str(effective.uiName),
@@ -1383,7 +1394,7 @@ function reduceControlResponse(state: ChatState, raw: Json): ChatState {
 
 export function setLocal(
   state: ChatState,
-  patch: Partial<Pick<ChatState, 'permissionMode' | 'model' | 'notice' | 'effort'>>,
+  patch: Partial<Pick<ChatState, 'permissionMode' | 'model' | 'notice' | 'effort' | 'contextWindow'>>,
 ): ChatState {
   return { ...state, ...patch }
 }

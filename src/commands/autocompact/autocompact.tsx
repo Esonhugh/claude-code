@@ -9,28 +9,32 @@ import { isAutoCompactEnabled } from '../../services/compact/autoCompact.js'
 import type { LocalJSXCommandCall, LocalJSXCommandOnDone } from '../../types/command.js'
 import { formatTokens } from '../../utils/format.js'
 import {
-  AUTO_COMPACT_WINDOW_MAX,
-  AUTO_COMPACT_WINDOW_MIN,
-} from '../../utils/frontmatterParser.js'
-import {
   applyAutoCompactWindow,
   getAutoCompactWindowState,
   isAboveAutoWindow,
 } from './autocompact-noninteractive.js'
+import { getContextWindowTiers } from '../../utils/context.js'
 
-const STEP = 100_000
-// 0 stands for "auto" in the stepper.
+// 0 stands for "auto" in the slider.
 const AUTO = 0
 
-/** Official stepper: auto ↔ 100k … 1M in 100k steps, wrapping through auto. */
-export function stepAutoCompactWindow(current: number, direction: 1 | -1): number {
-  if (current === AUTO) {
-    return direction > 0 ? AUTO_COMPACT_WINDOW_MIN : AUTO_COMPACT_WINDOW_MAX
+/**
+ * Slider stops: auto, then the model's tiers. A saved window that is not a
+ * tier (e.g. 150k) gets its own stop; one above the model's maximum selects
+ * the maximum, which is what it resolves to.
+ */
+export function contextWindowChoices(
+  tiers: number[],
+  configured: number | undefined,
+): { choices: number[]; index: number } {
+  const choices = [AUTO, ...tiers]
+  if (configured === undefined) return { choices, index: 0 }
+  const selected = Math.min(configured, tiers.at(-1) ?? configured)
+  if (!choices.includes(selected)) {
+    choices.push(selected)
+    choices.sort((a, b) => a - b)
   }
-  const next = current + direction * STEP
-  return next < AUTO_COMPACT_WINDOW_MIN || next > AUTO_COMPACT_WINDOW_MAX
-    ? AUTO
-    : next
+  return { choices, index: choices.indexOf(selected) }
 }
 
 function AutoCompactDialog({
@@ -42,25 +46,22 @@ function AutoCompactDialog({
 }): React.ReactNode {
   const state = React.useMemo(() => getAutoCompactWindowState(model), [model])
   const envLocked = state.source === 'env'
-  const [value, setValue] = React.useState(() =>
-    state.source === 'settings'
-      ? Math.min(
-          AUTO_COMPACT_WINDOW_MAX,
-          Math.max(
-            AUTO_COMPACT_WINDOW_MIN,
-            Math.round(state.configured / STEP) * STEP,
-          ),
-        )
-      : AUTO,
+  const { choices, index: initialIndex } = React.useMemo(
+    () =>
+      contextWindowChoices(
+        getContextWindowTiers(model),
+        state.source === 'settings' ? state.configured : undefined,
+      ),
+    [model, state],
   )
-  const [touched, setTouched] = React.useState(false)
+  const [index, setIndex] = React.useState(initialIndex)
   const done = React.useRef(false)
   const unchanged = `Auto-compact window for ${state.modelName} unchanged: ${state.label}`
+  const value = choices[index]!
 
   const adjust = (direction: 1 | -1): void => {
     if (envLocked) return
-    setTouched(true)
-    setValue(current => stepAutoCompactWindow(current, direction))
+    setIndex(i => Math.min(choices.length - 1, Math.max(0, i + direction)))
   }
   const finish = (message: string): void => {
     if (done.current) return
@@ -68,7 +69,7 @@ function AutoCompactDialog({
     onDone(message)
   }
   const apply = (): void => {
-    if (!touched) {
+    if (envLocked || index === initialIndex) {
       finish(unchanged)
       return
     }
@@ -91,13 +92,21 @@ function AutoCompactDialog({
     { context: 'Tabs' },
   )
 
-  const valueLabel = value === AUTO ? 'auto' : `${formatTokens(value)} tokens`
+  const labels = choices.map(choice =>
+    choice === AUTO ? 'auto' : formatTokens(choice),
+  )
+  const gap = 4
+  const starts = labels.map((_, i) =>
+    labels.slice(0, i).reduce((sum, label) => sum + label.length + gap, 0),
+  )
+  const width = starts.at(-1)! + labels.at(-1)!.length
+  const marker = starts[index]! + Math.floor((labels[index]!.length - 1) / 2)
   const showUsageWarning =
-    value !== AUTO && isAboveAutoWindow(model, touched ? value : state.configured)
+    value !== AUTO && isAboveAutoWindow(model, value)
 
   return (
     <Dialog
-      title="Auto-compact window"
+      title="Context window"
       subtitle={`Current setting for ${state.modelName}: ${state.label}`}
       onCancel={() => finish(unchanged)}
       inputGuide={() => (
@@ -113,22 +122,11 @@ function AutoCompactDialog({
       <Box flexDirection="column" gap={1}>
         <Text>
           {
-            "This command configures when auto-compaction happens. The actual threshold is the minimum of this setting and your model's maximum context window."
+            "The conversation is auto-compacted before it outgrows this window. A smaller window keeps every request cheaper; it never exceeds the model's maximum."
           }
-        </Text>
-        <Text>
-          The auto setting picks a window tuned for your model and is{' '}
-          <Text bold>strongly recommended</Text> for the best cost and
-          performance. You can override it below.
         </Text>
         {!isAutoCompactEnabled() && (
           <Text color="warning">Auto-compact is currently disabled (see /config)</Text>
-        )}
-        {showUsageWarning && (
-          <Text color="warning">
-            Overriding auto may result in high token usage, especially when
-            resuming long sessions.
-          </Text>
         )}
         {envLocked ? (
           <Text color="warning">
@@ -136,12 +134,37 @@ function AutoCompactDialog({
             it to change this setting here.
           </Text>
         ) : (
-          <Box>
-            <Text>Select auto-compact window: </Text>
-            <Text bold color="suggestion">
-              {valueLabel}
+          <Box flexDirection="column" width={Math.max(width, 24)}>
+            <Box justifyContent="space-between">
+              <Text>Cheaper</Text>
+              <Text>More context</Text>
+            </Box>
+            <Text>
+              <Text dimColor>{'─'.repeat(marker)}</Text>
+              <Text bold>▲</Text>
+              <Text dimColor>{'─'.repeat(Math.max(width, 24) - marker - 1)}</Text>
+            </Text>
+            <Text>
+              {labels.map((label, i) => (
+                <React.Fragment key={label}>
+                  {i > 0 && ' '.repeat(gap)}
+                  {i === index ? (
+                    <Text bold color="suggestion">
+                      {label}
+                    </Text>
+                  ) : (
+                    <Text dimColor>{label}</Text>
+                  )}
+                </React.Fragment>
+              ))}
             </Text>
           </Box>
+        )}
+        {showUsageWarning && (
+          <Text color="warning">
+            Overriding auto may result in high token usage, especially when
+            resuming long sessions.
+          </Text>
         )}
       </Box>
     </Dialog>

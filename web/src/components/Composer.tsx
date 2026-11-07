@@ -67,6 +67,28 @@ export function effortChoices(model: string | undefined, models: ModelOption[], 
 }
 
 /**
+ * The context-window stops for `model`: auto (null), then its tiers, plus a configured window that is
+ * not a tier; a window above the model maximum shows as the maximum, which is what it resolves to.
+ */
+export function contextWindowChoices(
+  model: string | undefined,
+  models: ModelOption[],
+  value: number | null | undefined,
+): (number | null)[] {
+  const tiers = (modelOption(model, models) ?? models.find(m => m.value === 'default'))?.contextWindowTiers ?? []
+  if (tiers.length === 0) return []
+  if (typeof value === 'number' && value < tiers.at(-1)! && !tiers.includes(value)) {
+    return [null, ...[...tiers, value].sort((a, b) => a - b)]
+  }
+  return [null, ...tiers]
+}
+
+/** 272000 → "272k", 1000000 → "1M". */
+export function formatWindow(tokens: number): string {
+  return tokens >= 1_000_000 ? `${+(tokens / 1_000_000).toFixed(2)}M` : `${Math.round(tokens / 1000)}k`
+}
+
+/**
  * The model rows shown before "More models": the first four plus the current one. A list with
  * only one more row than that shows it rather than a "More models" row.
  */
@@ -86,6 +108,7 @@ export function ModelMenu({
   heading,
   locked = false,
   daybreak,
+  contextWindow,
 }: {
   t: T
   model: string | undefined
@@ -100,8 +123,16 @@ export function ModelMenu({
   locked?: boolean
   /** The Daybreak access program, offered under a ChatGPT sign-in. */
   daybreak?: { value: string; onChange: (value: Daybreak) => void }
+  /** The session's context window (null is auto), from the model's tiers. */
+  contextWindow?: { value: number | null | undefined; onChange: (value: number | null) => void }
 }) {
   const current = modelOption(model, models)
+  const tiers = contextWindowChoices(model, models, contextWindow?.value)
+  const maxWindow = tiers.at(-1)
+  const selectedWindow =
+    typeof contextWindow?.value === 'number' && typeof maxWindow === 'number'
+      ? Math.min(contextWindow.value, maxWindow)
+      : null
   const levels = effortChoices(model, models, effort)
   const [expanded, setExpanded] = useState(false)
   const shown = shownModels(models, current?.value, expanded)
@@ -146,6 +177,25 @@ export function ModelMenu({
               </button>
             ))}
           </div>
+          {contextWindow && tiers.length > 1 && (
+            <>
+              <div className="mh">{t('contextWindow')}</div>
+              <div className="seg" role="radiogroup" aria-label={t('contextWindow')}>
+                {tiers.map(tier => (
+                  <button
+                    type="button"
+                    role="radio"
+                    key={tier ?? 'auto'}
+                    disabled={locked}
+                    aria-checked={selectedWindow === tier}
+                    onClick={() => contextWindow.onChange(tier)}
+                  >
+                    {tier === null ? 'auto' : formatWindow(tier)}
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
           {daybreak && (
             <>
               <div className="mh">Daybreak</div>
@@ -998,6 +1048,7 @@ export type ComposerTools = {
     heading?: string
     locked?: boolean
     daybreak?: { value: string; onChange: (value: Daybreak) => void }
+    contextWindow?: { value: number | null | undefined; onChange: (value: number | null) => void }
   }
 }
 
