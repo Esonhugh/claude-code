@@ -10,7 +10,7 @@ import { getFirstPartyModelCacheKey } from './model/firstPartyModelCacheKey.js'
 import { CANONICAL_MODEL_IDS } from './model/configs.js'
 import { firstPartyNameToCanonical, getCanonicalName } from './model/model.js'
 import { getModelCapability } from './model/modelCapabilities.js'
-import { getGatewayModelContextWindow } from './model/openaiModelOptions.js'
+import { getGatewayModelContextWindow, getOpenAICatalogContextWindow } from './model/openaiModelOptions.js'
 import { isAnt } from 'src/utils/userType.js'
 
 
@@ -225,6 +225,9 @@ export function getContextWindowForModel(
       return override
     }
   }
+
+  const catalogWindow = getOpenAICatalogContextWindow(is1mContextDisabled() ? model.replace(/\[1m\]$/i, '') : model)
+  if (catalogWindow) return catalogWindow
 
   // [1m] is a client-side opt-in, not permission to exceed an API input limit.
   if (has1mContext(model)) {

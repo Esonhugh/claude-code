@@ -74,6 +74,8 @@ type CodexModel = {
   supported_in_api?: unknown
   default_reasoning_level?: unknown
   supported_reasoning_levels?: unknown
+  context_window?: unknown
+  max_context_window?: unknown
 }
 
 const CODEX_EFFORT_LEVELS = new Set<EffortLevel>(['minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'])
@@ -190,6 +192,23 @@ export function getOpenAICatalogEffort(model: string): Pick<ModelOption, 'effort
   if (config.additionalModelOptionsCacheKey !== getModelDiscoveryCacheKey()) return undefined
   const option = config.additionalModelOptionsCache?.find(o => o.value === model)
   return option?.effortOptions?.length ? option : undefined
+}
+
+/**
+ * The cached ChatGPT /codex/models input window for `model`, like Codex:
+ * context_window by default, max_context_window for a [1m] opt-in, never above
+ * max_context_window.
+ */
+export function getOpenAICatalogContextWindow(model: string): number | undefined {
+  if (!getOpenAIAuthInfo()?.isChatGPT) return undefined
+  const config = getGlobalConfig()
+  if (config.additionalModelOptionsCacheKey !== getModelDiscoveryCacheKey()) return undefined
+  const optIn = /\[1m\]$/i.test(model)
+  const slug = model.replace(/\[1m\]$/i, '')
+  const option = config.additionalModelOptionsCache?.find(o => o.value === slug)
+  const window = optIn ? (option?.maxContextWindow ?? option?.contextWindow) : option?.contextWindow
+  if (window === undefined) return undefined
+  return option?.maxContextWindow === undefined ? window : Math.min(window, option.maxContextWindow)
 }
 
 /**
@@ -561,6 +580,8 @@ export function parseOpenAIModelOptions(
             ? `Hidden by OpenAI; API support is enabled.${hasDescription ? ` ${description}` : ''}`
             : description,
           ...getCodexEffortMetadata(model),
+          ...(isTokenCount(model.context_window) ? { contextWindow: model.context_window } : {}),
+          ...(isTokenCount(model.max_context_window) ? { maxContextWindow: model.max_context_window } : {}),
         }
       })
   }
