@@ -339,6 +339,9 @@ function fixture() {
       normalizeLegacyToolName: (name: string) => name,
       getLegacyToolNames: () => [],
     },
+    '../tools/ApplyPatchTool/prompt.js': { APPLY_PATCH_TOOL_NAME: 'apply_patch' },
+    '../tools/FileEditTool/constants.js': { FILE_EDIT_TOOL_NAME: 'Edit' },
+    '../tools/FileWriteTool/prompt.js': { FILE_WRITE_TOOL_NAME: 'Write' },
     './log.js': {
       logError: (error: Error) => {
         throw error

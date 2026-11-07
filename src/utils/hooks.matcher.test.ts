@@ -116,3 +116,57 @@ describe('an empty match value only reaches matcher-less hooks (official 2.1.275
     expect(hooks).toHaveLength(1)
   })
 })
+
+describe('apply_patch reaches hooks written for Edit and Write', () => {
+  test('Edit and Write matchers, exact or regex, fire for apply_patch; others do not', async () => {
+    for (const matcher of ['Edit', 'Write', 'Edit|Write', 'Edit,Bash', '^(Edit|Write)$', 'apply_patch']) {
+      clearRegisteredHooks()
+      expect(await toolMatches(matcher, 'apply_patch')).toBe(true)
+    }
+    clearRegisteredHooks()
+    expect(await toolMatches('Bash', 'apply_patch')).toBe(false)
+    clearRegisteredHooks()
+    expect(await toolMatches('apply_patch', 'Edit')).toBe(false)
+  })
+
+  test('a hook that matches both names runs once', async () => {
+    register('PreToolUse', 'Edit|apply_patch')
+    const hooks = await getMatchingHooks(undefined, 'session', 'PreToolUse', {
+      session_id: 'session',
+      transcript_path: '',
+      cwd: '/',
+      hook_event_name: 'PreToolUse',
+      tool_name: 'apply_patch',
+      tool_input: {},
+      tool_use_id: 'id',
+    } as never)
+    expect(hooks.length).toBe(1)
+  })
+
+  test('Edit(...) if conditions match any file the patch touches', async () => {
+    const { ApplyPatchTool } = await import('../tools/ApplyPatchTool/ApplyPatchTool.js')
+    setCachedSettingsForSource('localSettings', {
+      hooks: {
+        PreToolUse: [
+          { matcher: 'Edit', hooks: [{ type: 'command', command: 'true', if: 'Edit(/tmp/x/*.env)' }] },
+          { matcher: 'Edit', hooks: [{ type: 'command', command: 'false', if: 'Edit(/tmp/x/*.md)' }] },
+        ],
+      },
+    } as never)
+    resetHooksConfigSnapshot()
+    const input = '*** Begin Patch\n*** Update File: /tmp/x/a.py\n-a\n+b\n*** Add File: /tmp/x/b.env\n+K=v\n*** End Patch'
+    const hookInput = {
+      session_id: 'session',
+      transcript_path: '',
+      cwd: '/',
+      hook_event_name: 'PreToolUse',
+      tool_name: 'apply_patch',
+      tool_input: { input },
+      tool_use_id: 'id',
+    }
+    ApplyPatchTool.backfillObservableInput!(hookInput.tool_input)
+    expect(hookInput.tool_input).toMatchObject({ file_path: '/tmp/x/a.py', file_paths: ['/tmp/x/a.py', '/tmp/x/b.env'] })
+    const hooks = await getMatchingHooks(undefined, 'session', 'PreToolUse', hookInput as never, [ApplyPatchTool])
+    expect(hooks.map(h => (h.hook as { command?: string }).command)).toEqual(['true'])
+  })
+})
