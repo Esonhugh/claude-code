@@ -15,6 +15,11 @@ import { TEAMMATE_MESSAGE_TAG } from '../constants/xml.js'
 import { PermissionModeSchema } from '../entrypoints/sdk/coreSchemas.js'
 import { SEND_MESSAGE_TOOL_NAME } from '../tools/SendMessageTool/constants.js'
 import type { Message } from '../types/message.js'
+import {
+  INTERRUPT_MESSAGE,
+  INTERRUPT_MESSAGE_FOR_TOOL_USE,
+  NO_RESPONSE_REQUESTED,
+} from './messages.js'
 import { generateRequestId } from './agentId.js'
 import { count } from './array.js'
 import { logForDebugging } from './debug.js'
@@ -1313,6 +1318,35 @@ export function getLastPeerDmSummary(messages: Message[]): string | undefined {
   return undefined
 }
 
+function getCurrentTurn(messages: Message[]): Message[] {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i] && isWakeBoundary(messages[i]!)) return messages.slice(i + 1)
+  }
+  return messages
+}
+
+/**
+ * The error text when the teammate's turn since it last woke up ended on an
+ * API error (quota, 400, auth…); undefined otherwise. Official 2.1.319 sends it
+ * to the leader as a failed idle notification.
+ */
+export function getTurnFailureReason(messages: Message[]): string | undefined {
+  const last = getCurrentTurn(messages).findLast(msg => msg.type === 'assistant')
+  if (last?.type !== 'assistant' || !last.isApiErrorMessage) return undefined
+  const text = last.message.content
+    .flatMap(block => (block.type === 'text' ? [block.text] : []))
+    .join('\n')
+    .trim()
+  if (
+    text === INTERRUPT_MESSAGE ||
+    text === INTERRUPT_MESSAGE_FOR_TOOL_USE ||
+    text === NO_RESPONSE_REQUESTED
+  ) {
+    return undefined
+  }
+  return text || 'API error'
+}
+
 function isWakeBoundary(msg: Message): boolean {
   return (
     msg.type === 'user' &&
@@ -1328,14 +1362,7 @@ function isWakeBoundary(msg: Message): boolean {
  * the leader with a successful SendMessage after that reply.
  */
 export function getIdleResult(messages: Message[]): string | undefined {
-  let start = 0
-  for (let i = messages.length - 1; i >= 0; i--) {
-    if (messages[i] && isWakeBoundary(messages[i]!)) {
-      start = i + 1
-      break
-    }
-  }
-  const turn = messages.slice(start)
+  const turn = getCurrentTurn(messages)
 
   const okResults = new Map<string, boolean>()
   for (const msg of turn) {

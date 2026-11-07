@@ -105,6 +105,7 @@ import { runWithTeammateContext } from '../teammateContext.js'
 import {
   createIdleNotification,
   getIdleResult,
+  getTurnFailureReason,
   getLastPeerDmSummary,
   isPermissionResponse,
   isShutdownRequest,
@@ -1491,13 +1492,21 @@ export async function runInProcessTeammate(
 
       // Only send idle notification on transition to idle (not if already idle)
       if (!wasAlreadyIdle) {
+        const failureReason = workWasAborted
+          ? undefined
+          : getTurnFailureReason(allMessages)
         await sendIdleNotification(
           identity.agentName,
           identity.color,
           identity.teamName,
           {
-            idleReason: workWasAborted ? 'interrupted' : 'available',
+            idleReason: workWasAborted
+              ? 'interrupted'
+              : failureReason !== undefined
+                ? 'failed'
+                : 'available',
             summary: getLastPeerDmSummary(allMessages),
+            failureReason,
             result: workWasAborted ? undefined : getIdleResult(allMessages),
           },
         )

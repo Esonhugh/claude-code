@@ -103,6 +103,7 @@ import { formatTokens, truncateToWidth } from '../utils/format.js'
 import { consumeEarlyInput } from '../utils/earlyInput.js'
 
 import { setMemberActive } from '../utils/swarm/teamHelpers.js'
+import { notifyLeaderOfFailedTurn } from '../utils/swarm/teammateInit.js'
 import {
   isSwarmWorker,
   generateSandboxRequestId,
@@ -4901,7 +4902,10 @@ export function REPL({
         }
         onQueryEvent(event)
       }
-
+      void notifyLeaderOfFailedTurn(
+        messagesRef.current,
+        abortController.signal.aborted,
+      )
 
       if (feature('BUDDY')) {
         void fireCompanionObserver(messagesRef.current, reaction =>

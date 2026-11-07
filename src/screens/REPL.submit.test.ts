@@ -2901,6 +2901,8 @@ test('query refresh reloads raw REPL context with live overlays and instruction 
       additionalWorkingDirectories: new Map(),
     },
     queryCheckpoint: noop,
+    notifyLeaderOfFailedTurn: noop,
+    messagesRef: { current: [] },
     checkAndDisableBypassPermissionsIfNeeded: noop,
     setAppState: noop,
     getSystemPrompt: async () => 'system prompt',
