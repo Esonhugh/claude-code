@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test'
 import { translate } from '../i18n'
-import { decoratedRuns, effortChoices, matchApps, matchTargets, modelButtonLabel, pinText, shownModels } from './Composer'
+import { contextWindowChoices, decoratedRuns, effortChoices, formatWindow, matchApps, matchTargets, modelButtonLabel, pinText, shownModels } from './Composer'
 import { nextMode, offeredModes, type T } from './ui'
 
 const t: T = (key, vars) => translate('en', key, vars)
@@ -105,5 +105,25 @@ describe('decoratedRuns', () => {
       { text: 'ix' },
     ])
     expect(decoratedRuns('ab', [{ start: -3, end: 99 }])).toEqual([{ text: 'ab', mark: { start: -3, end: 99 } }])
+  })
+})
+
+describe('context window choices', () => {
+  const models = [
+    { value: 'default', displayName: 'Default', contextWindowTiers: [128_000, 200_000, 272_000, 500_000, 1_000_000] },
+    { value: 'gpt-5.5', displayName: 'GPT', contextWindowTiers: [128_000, 200_000, 272_000] },
+    { value: 'small', displayName: 'Small' },
+  ]
+  it('offers auto, then the model tiers', () => {
+    expect(contextWindowChoices('gpt-5.5', models, null)).toEqual([null, 128_000, 200_000, 272_000])
+    expect(contextWindowChoices(undefined, models, undefined)).toEqual([null, 128_000, 200_000, 272_000, 500_000, 1_000_000])
+    expect(contextWindowChoices('small', models, null)).toEqual([])
+  })
+  it('keeps a configured window that is not a tier, and shows one above the maximum as the maximum', () => {
+    expect(contextWindowChoices('gpt-5.5', models, 150_000)).toEqual([null, 128_000, 150_000, 200_000, 272_000])
+    expect(contextWindowChoices('gpt-5.5', models, 1_000_000)).toEqual([null, 128_000, 200_000, 272_000])
+  })
+  it('labels windows like the TUI', () => {
+    expect([128_000, 272_000, 872_000, 1_000_000].map(formatWindow)).toEqual(['128k', '272k', '872k', '1M'])
   })
 })

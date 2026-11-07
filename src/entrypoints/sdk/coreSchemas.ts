@@ -1461,6 +1461,12 @@ export const ModelInfoSchema = lazySchema(() =>
         .boolean()
         .optional()
         .describe('Whether thinking can be turned off for this model'),
+      contextWindowTiers: z
+        .array(z.number())
+        .optional()
+        .describe(
+          'Context windows the picker offers for this model, smallest first; the last is the model maximum',
+        ),
     })
     .describe('Information about an available model.'),
 )

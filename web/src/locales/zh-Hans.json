@@ -137,6 +137,7 @@
   "commandTag": "命令",
   "skillTag": "skill",
   "effort": "思考强度",
+  "contextWindow": "上下文窗口",
   "modeDescDefault": "每次编辑和命令都询问",
   "modeDescAcceptEdits": "自动接受文件编辑",
   "modeDescPlan": "只读，先出方案",

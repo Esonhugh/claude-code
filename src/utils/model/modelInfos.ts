@@ -10,6 +10,7 @@ import {
 import { getDefaultMainLoopModel, parseUserSpecifiedModel } from './model.js'
 import { getModelOptions } from './modelOptions.js'
 import { getGatewayModelOptions } from './openaiModelOptions.js'
+import { getContextWindowTiers } from '../context.js'
 
 // The effortLevel setting's levels (ultracode is a mode, not a level): a gateway passes the value
 // through to its model, so its discovered models offer them all instead of the Claude allowlist.
@@ -29,6 +30,7 @@ export function getModelInfos(): ModelInfo[] {
     const hasAdaptiveThinking = modelSupportsAdaptiveThinking(resolvedModel)
     const hasFastMode = isFastModeSupportedByModel(option.value)
     const hasAutoMode = modelSupportsAutoMode(resolvedModel)
+    const contextWindowTiers = getContextWindowTiers(resolvedModel)
     return {
       value: modelId,
       resolvedModel,
@@ -47,6 +49,7 @@ export function getModelInfos(): ModelInfo[] {
       supportsThinkingOff:
         !requiresAlwaysOnAdaptiveThinking(resolvedModel) &&
         !rejectsDisabledThinking(resolvedModel),
+      ...(contextWindowTiers.length > 0 && { contextWindowTiers }),
     }
   })
 }

@@ -146,6 +146,15 @@ function experimentCompactionWindow(model: string): number | undefined {
   return parseCompactionWindow(value)
 }
 
+/**
+ * models.list limits. Non-ant users take them only for models the client does
+ * not know, so the [1m] opt-in and the 1M-disable rules below still apply.
+ */
+function getDeclaredModelCapability(model: string) {
+  if (!isAnt() && recognizedModels.has(getCanonicalName(model))) return undefined
+  return getModelCapability(model)
+}
+
 // Conservative fallback for models without known limits.
 export const MODEL_CONTEXT_WINDOW_DEFAULT = 200_000
 
@@ -201,6 +210,7 @@ export function modelSupports1M(model: string): boolean {
     canonical === 'claude-mythos-preview' ||
     canonical.startsWith('claude-opus-5') ||
     canonical.startsWith('claude-sonnet-5') ||
+    canonical === 'claude-haiku-5-5' ||
     canonical.includes('claude-sonnet-4') ||
     canonical.includes('opus-4-6') ||
     canonical.includes('opus-4-7') ||
@@ -237,7 +247,7 @@ export function getContextWindowForModel(
       : gatewayWindow
   }
 
-  const cap = getModelCapability(model)
+  const cap = getDeclaredModelCapability(model)
   if (cap?.max_input_tokens && cap.max_input_tokens >= 100_000) {
     if (
       cap.max_input_tokens > MODEL_CONTEXT_WINDOW_DEFAULT &&
@@ -255,6 +265,7 @@ export function getContextWindowForModel(
     canonical === 'claude-mythos-preview' ||
     canonical.startsWith('claude-opus-5') ||
     canonical.startsWith('claude-sonnet-5') ||
+    canonical === 'claude-haiku-5-5' ||
     canonical === 'claude-opus-4-7' ||
     canonical === 'claude-opus-4-8'
   ) {
@@ -280,6 +291,21 @@ export function getContextWindowForModel(
     }
   }
   return MODEL_CONTEXT_WINDOW_DEFAULT
+}
+
+const CONTEXT_WINDOW_TIERS = [128_000, 200_000, 272_000, 500_000, 1_000_000]
+
+/**
+ * The context-window picker's stops for this model: the tiers below the
+ * model's maximum, then the maximum itself (262k, 872k, 1M, ...).
+ */
+export function getContextWindowTiers(model: string): number[] {
+  const max = Math.min(
+    getContextWindowForModel(model, getSdkBetas()),
+    MAX_COMPACTION_WINDOW,
+  )
+  if (max < MIN_COMPACTION_WINDOW) return []
+  return [...CONTEXT_WINDOW_TIERS.filter(tier => tier < max), max]
 }
 
 export function resolveContextWindow(
@@ -356,7 +382,7 @@ export function resolveContextWindow(
 
   // Official wE: an explicit 1M opt-in, believed capability, or unresolved
   // application inference profile must not trigger unknown-model protection.
-  const declaredWindow = getModelCapability(model)?.max_input_tokens
+  const declaredWindow = getDeclaredModelCapability(model)?.max_input_tokens
   const hasDeclaredWindow = declaredWindow !== undefined && declaredWindow === modelWindow
   const optedIn = has1mContext(model) ||
     (getSdkBetas()?.includes(CONTEXT_1M_BETA_HEADER) && modelSupports1M(model))
@@ -502,7 +528,7 @@ export function getModelMaxOutputTokens(model: string): {
     upperLimit = MAX_OUTPUT_TOKENS_UPPER_LIMIT
   }
 
-  const cap = getModelCapability(model)
+  const cap = getDeclaredModelCapability(model)
   if (cap?.max_tokens && cap.max_tokens >= 4_096) {
     upperLimit = cap.max_tokens
     defaultTokens = Math.min(defaultTokens, upperLimit)

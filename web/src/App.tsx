@@ -1343,6 +1343,19 @@ export function App() {
     }
   }
 
+  /** A session-only override, like effort; null goes back to auto. */
+  function changeContextWindow(id: string, tokens: number | null) {
+    dispatch({ type: 'chat', id, action: { type: 'local', patch: { contextWindow: tokens, notice: undefined } } })
+    if (!sockets.current.has(id)) return
+    void requestAsync(id, REQUEST_PREFIX.effort, {
+      subtype: 'apply_flag_settings',
+      settings: { autoCompactWindow: tokens ?? 'auto' },
+    }).then(
+      () => request(id, REQUEST_PREFIX.context, { subtype: 'get_context_usage' }),
+      () => undefined, // The failed response shows as the chat's notice.
+    )
+  }
+
   function newChat({ cwd, temporary = false }: { cwd?: string; temporary?: boolean } = {}) {
     setProjectId(undefined)
     setStartError(undefined)
@@ -1911,6 +1924,7 @@ export function App() {
                   onModel: model => view && changeModel(view, model),
                   onEffort: effort => view && changeEffort(view, effort),
                   daybreak,
+                  contextWindow: { value: chat.contextWindow, onChange: tokens => view && changeContextWindow(view, tokens) },
                 },
               }}
               extra={chat.goal && <GoalMenu t={t} goal={chat.goal} onClear={() => view && void sendPrompt(view, '/goal clear')} />}
