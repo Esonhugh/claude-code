@@ -1058,7 +1058,7 @@ export function App() {
     const pending = attachments[''] ?? []
     if (!text && !pending.length) return
     if (!pending.length && openNative(text, '')) return
-    const { cwd, mode, model, temporary, effort } = state.start
+    const { cwd, mode, model, temporary, effort, contextWindow } = state.start
     setTrustDir(undefined)
     let createdId: string | undefined
     try {
@@ -1082,6 +1082,7 @@ export function App() {
       })
       await attach(id)
       if (effort) changeEffort(id, effort)
+      if (contextWindow !== undefined) changeContextWindow(id, contextWindow)
       const uuid = newUuid()
       dispatch({ type: 'chat', id, action: { type: 'user', ...content, uuid } })
       send(id, userMessage(content.text, content.images, uuid))
@@ -2097,6 +2098,7 @@ export function App() {
             onMode={mode => void changeProjectMode(project, view, mode)}
             onModel={model => changeModel(view, model)}
             onEffort={effort => changeEffort(view, effort)}
+            onContextWindow={tokens => changeContextWindow(view, tokens)}
             onAnswer={(approval, choice) => answer(view, approval, choice)}
             onSettings={() => setProjectDialog(project)}
             onStopTask={taskId => requestAsync(view, REQUEST_PREFIX.stopTask, { subtype: 'stop_task', task_id: taskId })}
