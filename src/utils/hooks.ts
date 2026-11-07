@@ -140,6 +140,9 @@ import {
   permissionRuleValueFromString,
 } from './permissions/permissionRuleParser.js'
 import { logError } from './log.js'
+import { APPLY_PATCH_TOOL_NAME } from '../tools/ApplyPatchTool/prompt.js'
+import { FILE_EDIT_TOOL_NAME } from '../tools/FileEditTool/constants.js'
+import { FILE_WRITE_TOOL_NAME } from '../tools/FileWriteTool/prompt.js'
 import { createCombinedAbortSignal } from './combinedAbortSignal.js'
 import type { PermissionResult } from './permissions/PermissionResult.js'
 import { registerPendingAsyncHook } from './hooks/AsyncHookRegistry.js'
@@ -1541,6 +1544,26 @@ const EXACT_LIST_MATCHER_EVENTS = new Set<string>([
   'DirectoryAdded',
 ])
 
+const TOOL_HOOK_EVENTS = new Set<string>([
+  'PreToolUse',
+  'PostToolUse',
+  'PostToolUseFailure',
+  'PermissionRequest',
+  'PermissionDenied',
+])
+
+// apply_patch does Edit's and Write's work on the OpenAI path, so tool hooks
+// and `if` conditions written for those tools apply to it too. A hook still
+// runs once per tool call, even when its matcher names several of them.
+const TOOL_HOOK_ALIASES: Record<string, readonly string[]> = {
+  [APPLY_PATCH_TOOL_NAME]: [FILE_EDIT_TOOL_NAME, FILE_WRITE_TOOL_NAME],
+}
+
+function toolHookNames(toolName: string, hookEvent: string): readonly string[] {
+  const aliases = TOOL_HOOK_EVENTS.has(hookEvent) ? TOOL_HOOK_ALIASES[toolName] : undefined
+  return aliases ? [toolName, ...aliases] : [toolName]
+}
+
 function matchesPattern(
   matchQuery: string,
   matcher: string,
@@ -1549,6 +1572,7 @@ function matchesPattern(
   if (!matcher || matcher === '*') {
     return true
   }
+  const names = toolHookNames(matchQuery, hookEvent)
   // A plain identifier or a list of them is an exact match, not a regex.
   const listSyntax = EXACT_LIST_MATCHER_EVENTS.has(hookEvent)
   if ((listSyntax ? /^[a-zA-Z0-9_|, -]+$/ : /^[a-zA-Z0-9_|]+$/).test(matcher)) {
@@ -1556,22 +1580,16 @@ function matchesPattern(
       .split(listSyntax ? /[|,]/ : '|')
       .map(p => p.trim())
       .filter(Boolean)
-      .some(p => matchQuery === normalizeLegacyToolName(p))
+      .some(p => names.includes(normalizeLegacyToolName(p)))
   }
 
   // Otherwise treat as regex
   try {
     const regex = new RegExp(matcher)
-    if (regex.test(matchQuery)) {
-      return true
-    }
     // Also test against legacy names so patterns like "^Task$" still match
-    for (const legacyName of getLegacyToolNames(matchQuery)) {
-      if (regex.test(legacyName)) {
-        return true
-      }
-    }
-    return false
+    return names.some(
+      name => regex.test(name) || getLegacyToolNames(name).some(legacyName => regex.test(legacyName)),
+    )
   } catch {
     // If the regex is invalid, log error and return false
     logForDebugging(`Invalid regex pattern in hook matcher: ${matcher}`)
@@ -1601,7 +1619,13 @@ async function prepareIfConditionMatcher(
 
   const toolName = normalizeLegacyToolName(hookInput.tool_name)
   const tool = tools && findToolByName(tools, hookInput.tool_name)
-  const input = tool?.inputSchema.safeParse(hookInput.tool_input)
+  const parsed = tool?.inputSchema.safeParse(hookInput.tool_input)
+  // Fields a tool backfills for hooks (apply_patch's file_path) are extra
+  // keys to a strict schema; the model's own input is still valid.
+  const input =
+    parsed && !parsed.success && parsed.error.issues.every(issue => issue.code === 'unrecognized_keys')
+      ? { success: true as const, data: hookInput.tool_input as never }
+      : parsed
   const patternMatcher =
     input?.success && tool?.preparePermissionMatcher
       ? await tool.preparePermissionMatcher(input.data)
@@ -1609,7 +1633,7 @@ async function prepareIfConditionMatcher(
 
   return ifCondition => {
     const parsed = permissionRuleValueFromString(ifCondition)
-    if (normalizeLegacyToolName(parsed.toolName) !== toolName) {
+    if (!toolHookNames(toolName, hookInput.hook_event_name).includes(normalizeLegacyToolName(parsed.toolName))) {
       return false
     }
     if (!parsed.ruleContent) {

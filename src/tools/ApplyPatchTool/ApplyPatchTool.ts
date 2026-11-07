@@ -23,6 +23,7 @@ import { getAPIProvider } from '../../utils/model/providers.js'
 import { expandPath } from '../../utils/path.js'
 import { checkWritePermissionForTool, matchingRuleForInput } from '../../utils/permissions/filesystem.js'
 import type { PermissionDecision } from '../../utils/permissions/PermissionResult.js'
+import { matchWildcardPattern } from '../../utils/permissions/shellRuleMatching.js'
 import { validateInputForSettingsFileEdit } from '../../utils/settings/validateEditTool.js'
 import { FileEditTool } from '../FileEditTool/FileEditTool.js'
 import { applyChunks, PatchParseError, parsePatch, type PatchOperation } from './parser.js'
@@ -172,6 +173,28 @@ export const ApplyPatchTool = buildTool({
     next.input = next.patch
     delete next.patch
     return { input: next, resultNote: 'Note: `patch` was read as `input`.' }
+  },
+  // Hooks and `if` conditions written for Edit/Write read file_path; give
+  // them the first touched file and every touched file in file_paths.
+  backfillObservableInput(input) {
+    if (typeof input.input !== 'string') return
+    let paths: string[]
+    try {
+      paths = touchedPaths(input.input)
+    } catch {
+      return
+    }
+    input.file_path = paths[0]
+    input.file_paths = paths
+  },
+  async preparePermissionMatcher({ input }) {
+    let paths: string[] = []
+    try {
+      paths = touchedPaths(input)
+    } catch {
+      // An unparsable patch touches no files, so no pattern matches it.
+    }
+    return pattern => paths.some(p => matchWildcardPattern(pattern, p))
   },
   toAutoClassifierInput(input) {
     return input.input
