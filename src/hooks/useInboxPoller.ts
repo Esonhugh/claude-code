@@ -11,7 +11,7 @@ import {
   useAppStateStore,
   useSetAppState,
 } from '../state/AppState.js'
-import { findToolByName, type ToolPermissionContext } from '../Tool.js'
+import { findToolByName, type Tool, type ToolPermissionContext } from '../Tool.js'
 import { getAllBaseTools } from '../tools.js'
 import type { PermissionMode, PermissionUpdate } from '../types/permissions.js'
 import { logForDebugging } from '../utils/debug.js'
@@ -117,6 +117,17 @@ const INBOX_POLL_INTERVAL_MS = 1000
 
 // The lead reads teammate messages as peer input, framed like official 2.1.311
 // so a teammate's words never pass for the user's (no escalation, no laundering).
+/** The tool a worker asks permission for: a built-in tool or one of the lead's MCP tools. */
+export function findWorkerPermissionTool(
+  appState: Pick<AppState, 'mcp'>,
+  toolName: string,
+): Tool | undefined {
+  return (
+    findToolByName(getAllBaseTools(), toolName) ??
+    findToolByName(appState.mcp.tools, toolName)
+  )
+}
+
 export function frameForLead(formatted: string): string {
   return isTeammate() ? formatted : formatPeerPrompt(formatted)
 }
@@ -272,10 +283,24 @@ export function useInboxPoller({
           // Route through the standard ToolUseConfirmQueue so tmux workers
           // get the same tool-specific UI (BashPermissionRequest, FileEditToolDiff, etc.)
           // as in-process teammates.
-          const tool = findToolByName(getAllBaseTools(), parsed.tool_name)
+          const tool = findWorkerPermissionTool(
+            currentAppState,
+            parsed.tool_name,
+          )
           if (!tool) {
+            // Answer instead of dropping it, or the worker waits forever.
             logForDebugging(
-              `[InboxPoller] Unknown tool ${parsed.tool_name}, skipping permission request`,
+              `[InboxPoller] Unknown tool ${parsed.tool_name}, rejecting permission request`,
+            )
+            void sendPermissionResponseViaMailbox(
+              parsed.agent_id,
+              {
+                decision: 'rejected',
+                resolvedBy: 'leader',
+                feedback: `The team lead has no tool named ${parsed.tool_name}.`,
+              },
+              parsed.request_id,
+              teamName,
             )
             continue
           }

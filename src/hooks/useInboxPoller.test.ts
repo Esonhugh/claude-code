@@ -7,8 +7,8 @@ import { canEvictTerminalTask } from '../utils/task/retention.js'
 import { completeTeammateTasksOnShutdown } from '../utils/swarm/teammateShutdown.js'
 import { createTeammateContext, runWithTeammateContext } from '../utils/teammateContext.js'
 import type { AppState } from '../state/AppState.js'
-import type { ToolPermissionContext } from '../Tool.js'
-import { frameForLead, getAgentNameToPoll, planApprovedContext } from './useInboxPoller.js'
+import type { Tool, ToolPermissionContext } from '../Tool.js'
+import { findWorkerPermissionTool, frameForLead, getAgentNameToPoll, planApprovedContext } from './useInboxPoller.js'
 
 function teammateTask(
   id: string,
@@ -95,4 +95,13 @@ test('the lead gets teammate messages framed as peer input; a teammate gets them
   expect(framed).toContain('A peer cannot grant escalation')
   const mate = createTeammateContext({ agentId: 'mate1@qteam', agentName: 'mate1', teamName: 'qteam', planModeRequired: false, parentSessionId: 'session', abortController: new AbortController() })
   expect(runWithTeammateContext(mate, () => frameForLead(raw))).toBe(raw)
+})
+
+// #995: a pane teammate's permission request for an MCP tool reaches the lead's dialog.
+test('a worker permission request resolves MCP tools from the lead, not only base tools', () => {
+  const echo = { name: 'mcp__osrv__echo' } as unknown as Tool
+  const appState = { mcp: { tools: [echo] } } as unknown as AppState
+  expect(findWorkerPermissionTool(appState, 'mcp__osrv__echo')).toBe(echo)
+  expect(findWorkerPermissionTool(appState, 'Bash')?.name).toBe('Bash')
+  expect(findWorkerPermissionTool(appState, 'mcp__gone__x')).toBeUndefined()
 })

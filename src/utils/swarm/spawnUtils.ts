@@ -5,15 +5,19 @@
 import {
   getChromeFlagOverride,
   getFlagSettingsPath,
+  getInlineMcpConfigs,
   getInlinePlugins,
+  getInlinePluginsNoMcp,
   getInlinePluginUrls,
   getMainLoopModelOverride,
   getSessionBypassPermissionsMode,
+  getStrictMcpConfig,
 } from '../../bootstrap/state.js'
 import { quote } from '../bash/shellQuote.js'
 import type { EffortValue } from '../effort.js'
 import { isInBundledMode } from '../bundledMode.js'
 import type { PermissionMode } from '../permissions/PermissionMode.js'
+import type { ToolPermissionContext } from '../../Tool.js'
 import { getTeammateModeFromSnapshot } from './backends/teammateModeSnapshot.js'
 import { TEAMMATE_COMMAND_ENV_VAR } from './constants.js'
 
@@ -43,6 +47,10 @@ export function buildInheritedCliFlags(options?: {
   allowedTools?: string[]
   model?: string
   effort?: EffortValue
+  toolPermissionContext?: Pick<
+    ToolPermissionContext,
+    'alwaysAllowRules' | 'alwaysDenyRules'
+  >
 }): string {
   const flags: string[] = []
   const { planModeRequired, permissionMode, allowedTools } = options || {}
@@ -59,8 +67,20 @@ export function buildInheritedCliFlags(options?: {
     flags.push('--dangerously-skip-permissions')
   }
 
-  if (allowedTools?.length) {
-    flags.push(`--allowedTools ${quote([allowedTools.join(',')])}`)
+  // Pane teammates are separate processes: replay the leader's CLI rules.
+  const allowRules = [
+    ...new Set([
+      ...(allowedTools ?? []),
+      ...(options?.toolPermissionContext?.alwaysAllowRules.cliArg ?? []),
+    ]),
+  ]
+  if (allowRules.length) {
+    flags.push(`--allowedTools ${quote([allowRules.join(',')])}`)
+  }
+  const denyRules =
+    options?.toolPermissionContext?.alwaysDenyRules.cliArg ?? []
+  if (denyRules.length) {
+    flags.push(`--disallowedTools ${quote([denyRules.join(',')])}`)
   }
 
   // Spawn callers supply the resolved snapshot, replacing the parent override.
@@ -85,6 +105,17 @@ export function buildInheritedCliFlags(options?: {
   }
   for (const pluginUrl of getInlinePluginUrls()) {
     flags.push(`--plugin-url ${quote([pluginUrl])}`)
+  }
+  for (const pluginDir of getInlinePluginsNoMcp()) {
+    flags.push(`--plugin-dir-no-mcp ${quote([pluginDir])}`)
+  }
+
+  // Pane teammates are separate processes: give them the leader's MCP servers.
+  for (const config of getInlineMcpConfigs()) {
+    flags.push(`--mcp-config ${quote([config])}`)
+  }
+  if (getStrictMcpConfig()) {
+    flags.push('--strict-mcp-config')
   }
 
   // Propagate --teammate-mode so tmux teammates use the same mode as leader

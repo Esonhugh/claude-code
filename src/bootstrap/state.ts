@@ -143,6 +143,8 @@ type State = {
   inlinePluginsNoMcp: Array<string>
   // Session-only plugin .zip URLs from --plugin-url flag
   inlinePluginUrls: Array<string>
+  inlineMcpConfigs: Array<string>
+  strictMcpConfig: boolean
   // Explicit --chrome / --no-chrome flag value (undefined = not set on CLI)
   chromeFlagOverride: boolean | undefined
   // Use cowork_plugins directory instead of plugins (--cowork flag or env var)
@@ -384,6 +386,8 @@ function getInitialState(): State {
     inlinePlugins: [],
     inlinePluginsNoMcp: [],
     inlinePluginUrls: [],
+    inlineMcpConfigs: [],
+    strictMcpConfig: false,
     // Explicit --chrome / --no-chrome flag value (undefined = not set on CLI)
     chromeFlagOverride: undefined,
     // Use cowork_plugins directory instead of plugins
@@ -1430,6 +1434,23 @@ export function setInlinePluginUrls(urls: Array<string>): void {
 
 export function getInlinePluginUrls(): Array<string> {
   return STATE.inlinePluginUrls
+}
+
+/** --mcp-config values (file paths made absolute), replayed for pane teammates. */
+export function setInlineMcpConfigs(configs: Array<string>): void {
+  STATE.inlineMcpConfigs = configs
+}
+
+export function getInlineMcpConfigs(): Array<string> {
+  return STATE.inlineMcpConfigs
+}
+
+export function setStrictMcpConfig(strict: boolean): void {
+  STATE.strictMcpConfig = strict
+}
+
+export function getStrictMcpConfig(): boolean {
+  return STATE.strictMcpConfig
 }
 
 export function setChromeFlagOverride(value: boolean | undefined): void {

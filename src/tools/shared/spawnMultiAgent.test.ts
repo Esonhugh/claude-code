@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { getEmptyToolPermissionContext, type ToolUseContext } from '../../Tool.js'
 import { getDefaultAppState } from '../../state/AppStateStore.js'
-import { setInlinePluginUrls, setMainLoopModelOverride, setSessionBypassPermissionsMode } from '../../bootstrap/state.js'
+import { setInlineMcpConfigs, setInlinePluginsNoMcp, setInlinePluginUrls, setMainLoopModelOverride, setSessionBypassPermissionsMode, setStrictMcpConfig } from '../../bootstrap/state.js'
 import { handlePlanApprovalResponse } from '../../utils/inProcessTeammateHelpers.js'
 import { getInboxPath } from '../../utils/teammateMailbox.js'
 import { buildInheritedCliFlags } from '../../utils/swarm/spawnUtils.js'
@@ -820,3 +820,37 @@ async function isolatedAssertions() {
 
   console.log('spawnMultiAgent.test.ts passed')
 }
+
+// #988: pane teammates start with the leader's --mcp-config servers (official 2.1.319).
+test('buildInheritedCliFlags forwards --mcp-config, --strict-mcp-config and --plugin-dir-no-mcp', () => {
+  const json = '{"mcpServers":{"osrv":{"command":"node","args":["s b.mjs"]}}}'
+  setInlineMcpConfigs(['/tmp/a b/mcp.json', json])
+  setStrictMcpConfig(true)
+  setInlinePluginsNoMcp(['/tmp/plug'])
+  try {
+    const flags = buildInheritedCliFlags()
+    expect(flags).toContain(`--mcp-config ${quote(['/tmp/a b/mcp.json'])}`)
+    expect(flags).toContain(`--mcp-config ${quote([json])}`)
+    expect(flags).toContain('--strict-mcp-config')
+    expect(flags).toContain(`--plugin-dir-no-mcp ${quote(['/tmp/plug'])}`)
+  } finally {
+    setInlineMcpConfigs([])
+    setStrictMcpConfig(false)
+    setInlinePluginsNoMcp([])
+  }
+  expect(buildInheritedCliFlags()).not.toMatch(/mcp/)
+})
+
+// #996: pane teammates get the lead's CLI allow and deny rules (official 2.1.319).
+test('buildInheritedCliFlags replays the lead\'s --allowedTools and --disallowedTools', () => {
+  const toolPermissionContext = {
+    ...getEmptyToolPermissionContext(),
+    alwaysAllowRules: { cliArg: ['mcp__osrv__*', 'Bash(git log, git status)'], userSettings: ['Read'] },
+    alwaysDenyRules: { cliArg: ['WebFetch'] },
+  }
+  const flags = buildInheritedCliFlags({ allowedTools: ['Edit'], toolPermissionContext })
+  expect(flags).toContain(`--allowedTools ${quote(['Edit,mcp__osrv__*,Bash(git log, git status)'])}`)
+  expect(flags).toContain(`--disallowedTools ${quote(['WebFetch'])}`)
+  expect(flags).not.toContain('Read')
+  expect(buildInheritedCliFlags({ toolPermissionContext: getEmptyToolPermissionContext() })).not.toMatch(/allowedTools|disallowedTools/)
+})
