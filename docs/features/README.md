@@ -4,6 +4,26 @@
 
 效果画面来自 dev 分支重新构建的 `./built-claude`（`make build`），在 110×36 的 tmux pane 中实际运行后用 `tmux capture-pane` 截取。模型请求打到本地脚本化的假 Messages API（按提示词返回预先写好的回复和工具调用），因此画面中的模型回复不代表真实模型输出；演示用的家目录是 `~`，项目目录是 `~/sc`。
 
+## 缓存命中 / Cache hit
+
+本 fork 与官方 Claude Code、Codex、pi、opencode 跑同一批真实任务（办公、研究、编码、运维、Lean 证明，每类一短一长，每格 3 次，2026-11-07）。命中率 = 缓存读 ÷ 全部输入，按 token 加权。
+
+| CLI | 修复前命中率 | 修复后命中率 | 平均总 token | `-p` 启动到首个请求 |
+| --- | --- | --- | --- | --- |
+| 本仓库（ChatGPT 账号） | 83.8% | 85.3% | 75.9k | 3.11s → 0.66s |
+| Codex CLI 0.167.0 | — | 88.8% | 80.3k | 2.21s |
+| opencode 1.19.5（ChatGPT） | — | 89.2% | 81.5k | — |
+| pi 1.5.0（ChatGPT） | — | 84.0% | 36.5k | 0.89s |
+| 本仓库（Claude 账号） | 87.9% | 87.1% | 72.7k | 0.66s |
+| 官方 Claude Code 2.1.319 | 86.5% | 87.3% | 81.0k | — |
+
+- 修复前：ChatGPT 一栏是同时段成对跑的修复前 binary（`17abdd1`），Claude 两栏是上午的第一次基准（每格 2 次，任务组不同）。
+- `ToolSearch` 加载工具后的下一个请求：修复后 7/7 命中，修复前 6/7 为 0（[#1023](https://github.com/Esonhugh/claude-code/issues/1023)）。
+- 剩余差距在短任务（本仓库 82.9% 对 Codex 89.7%，长任务 86.5% 对 88.3%）：Codex 的系统提示在服务器端，新会话第一个请求未缓存的部分更少。
+- 详细表格、交互 / SDK / Web 模式和测试方法见 [缓存命中与用户体验基准](cache-benchmark.md)。
+
+## 功能列表
+
 | 领域 | 功能 | 说明 |
 | --- | --- | --- |
 | 模型与 Provider | [OpenAI / Codex provider](openai-provider.md) | 把 Claude Code 的模型换成 OpenAI（GPT / Codex）：用 ChatGPT 账号登录或 API key，工具、界面、命令照常使用 |
