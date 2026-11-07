@@ -152,6 +152,7 @@
 - TUI：tmux 驱动，与官方 2.1.318 对照，第三轮 35/35 通过。Mods：72/72 社区 mod validate、repro mod、band/pane/status/toast 与 fakechat 频道插件。SDK/headless：TS SDK 0.3.318 33/34（剩余 1 个是 harness 超时，官方相同）、Python SDK 0.2.178 8/8、CLI 参数矩阵 57 例无差异。Agent/Teams：14/14。plugins/hooks：第三方 plugin 16/16，192 个 `plugin validate` 与官方只差 4 个保留名规则。claude web：e2e 28/28，真实模型的项目并行 worker 与 Teams 待办。
 - 项目回归项：外部 SIGINT 时 SessionEnd hook 执行、`CI=true` 无凭证 `claude -p` 报错退出、team shutdown 后成员从 `config.json` 移除，均在重建的 binary 上通过。
 - 11-06 至 11-07 按子系统交叉组合做了 Round 2–6 回归（长会话 × Mods、OpenAI × web/TUI/Mods、Teams × 权限 × 退出、MCP × hooks、channels × memory、files × resume × providers、TUI × Bash × 网关、teams × OpenAI × MCP × hooks），每个修复都用重建的 binary 实测并与官方 2.1.319 对照；OpenAI 路径的 `apply_patch`、ChatGPT 上下文窗口与上下文档位用真实 ChatGPT 登录与容器 OAuth 验证。报告在项目共享目录 `regression/round{2..6}-1106/`、`regression/context-window-tiers/`。
+- 11-07 缓存命中与用户体验基准（`dev` `17abdd1`，301 次真实 run，对照官方 2.1.319、Codex 0.167.0、pi 1.5.0）：Claude 侧命中率 87.9% 对官方 86.5%、总 token 少 6%、会话内缓存失效 0 次，续接与压缩前后一致；ChatGPT 侧命中率 81.9%（Codex 93.0%，差距在新会话首请求），总 token 与 Codex 相当（2.7 小时会话 367k 对 344k）。结果见 `docs/research/cache-benchmark-20261107.md`。
 - PR CI：单测 5 片、lint 与 tsc、Linux 沙箱、官方对照、Linux/macOS/Windows e2e 与 web e2e；之后合入 `dev` 的 PR（至 #1019）都在 CI 全绿后由 `automerge` 合并。
 
 ## 2026-10-30 - v2.1.296 - Agent 生命周期与 Teams 修复、内嵌 bfs/ugrep 搜索、coordinator 模式、/hooks /theme /config 对齐官方 2.1.311、权限模式转换修复、claude web 本地网页界面与项目模式
