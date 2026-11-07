@@ -171,6 +171,7 @@ make build
 
 - [`docs/design/ssh-local-ui-coherence.md`](docs/design/ssh-local-ui-coherence.md) — SSH transcript、远端补全、settings/Auth 边界与交互一致性设计。
 - [`docs/research/prompt-context-optimization.md`](docs/research/prompt-context-optimization.md) — Prompt context 构成、精简结果、测量方法与剩余风险。
+- [`docs/research/cache-benchmark-20261107.md`](docs/research/cache-benchmark-20261107.md) — Claude OAuth、ChatGPT OAuth 与官方 Claude Code、Codex、pi 的缓存命中、token、启动与卡顿对比（2026-11-07）。
 - [`docs/research/claude-mods.md`](docs/research/claude-mods.md) — Mods 契约、生命周期、官方证据与本地兼容性边界。
 - [`mods-test.md`](mods-test.md) — Mods 收口测试方案、验收结果与证据索引。
 - [`docs/design/workflow-runtime-parity.md`](docs/design/workflow-runtime-parity.md) — Workflow runtime parity 的行为和证据边界。
