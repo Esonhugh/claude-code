@@ -18,7 +18,6 @@ import {
   fetchModelDiscoveryResult,
   getFirstPartyModelCacheKey,
   getModelDiscoveryCacheKey,
-  getOpenAIServedDefaultModel,
 } from '../../utils/model/openaiModelOptions.js'
 import {
   getAPIProvider,
@@ -180,23 +179,20 @@ async function waitForServedCatalogStartup(refresh: Promise<unknown>): Promise<v
   }
 }
 
-/**
- * OpenAI has no bootstrap endpoint: model discovery is the only source, and it
- * owns the keyed `additionalModelOptionsCache` slot. A failed or stale-identity
- * discovery keeps the previous cache.
- */
 let openAIModelOptionsFetch: Promise<void> | undefined
 
 /**
- * Print mode sends its first request right away. On a first run with a
- * ChatGPT sign-in the account default model is not cached yet, so wait
- * briefly for discovery rather than send the builtin fallback model.
+ * Print mode sends its first request right away. The ChatGPT account's default
+ * model, effort levels and context windows all come from its /codex/models
+ * catalog, so until one is cached for this account wait briefly for discovery
+ * rather than send the builtin fallbacks.
  */
-export async function waitForOpenAIDefaultModel(timeoutMs = 3000): Promise<void> {
+export async function waitForOpenAIModelCatalog(timeoutMs = 3000): Promise<void> {
   if (
     !openAIModelOptionsFetch ||
     !getOpenAIAuthInfo()?.isChatGPT ||
-    getOpenAIServedDefaultModel() !== undefined
+    getGlobalConfig().additionalModelOptionsCacheKey ===
+      getModelDiscoveryCacheKey()
   ) {
     return
   }
@@ -214,6 +210,11 @@ export async function waitForOpenAIDefaultModel(timeoutMs = 3000): Promise<void>
   }
 }
 
+/**
+ * OpenAI has no bootstrap endpoint: model discovery is the only source, and it
+ * owns the keyed `additionalModelOptionsCache` slot. A failed or stale-identity
+ * discovery keeps the previous cache.
+ */
 async function fetchOpenAIModelOptions(): Promise<void> {
   try {
     const discovery = await fetchModelDiscoveryResult()

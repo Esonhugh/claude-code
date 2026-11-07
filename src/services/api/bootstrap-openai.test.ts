@@ -26,7 +26,7 @@ try {
 
   const authModule = await import('../../utils/auth.js')
   const { getGlobalConfig, saveGlobalConfig } = await import('../../utils/config.js')
-  const { fetchBootstrapData, onOpenAIModelOptionsRefresh, waitForOpenAIDefaultModel } =
+  const { fetchBootstrapData, onOpenAIModelOptionsRefresh, waitForOpenAIModelCatalog } =
     await import('./bootstrap.js')
   const { getOpenAIServedDefaultModel } = await import('../../utils/model/openaiModelOptions.js')
   let modelOptionsRefreshes = 0
@@ -111,8 +111,9 @@ try {
     preserved: 321_000,
   })
 
-  // Print mode on a first run: the first request waits for the account default
-  // model instead of racing discovery and sending the builtin fallback.
+  // Print mode on a first run: the first request waits for the account catalog
+  // (default model, effort, context window) instead of racing discovery and
+  // sending the builtin fallbacks.
   saveGlobalConfig(current => ({
     ...current,
     additionalModelOptionsCache: undefined,
@@ -126,7 +127,7 @@ try {
   }) as typeof axios.get
   void fetchBootstrapData()
   assert.equal(getOpenAIServedDefaultModel(), undefined)
-  await waitForOpenAIDefaultModel()
+  await waitForOpenAIModelCatalog()
   assert.equal(getOpenAIServedDefaultModel(), 'gpt-bootstrap')
   axios.get = fixtureGet
 
@@ -138,10 +139,29 @@ try {
   }) as typeof axios.get
   void fetchBootstrapData()
   const started = Date.now()
-  await waitForOpenAIDefaultModel()
+  await waitForOpenAIModelCatalog()
   assert.ok(Date.now() - started < 50)
   assert.ok(fetched)
+
+  // A cached catalog whose first row is hidden has no served default model but
+  // still describes effort and context windows: no wait either.
+  saveGlobalConfig(current => ({
+    ...current,
+    additionalModelOptionsCache: [
+      { value: 'gpt-hidden', label: 'GPT Hidden (Hidden)', description: 'OpenAI model' },
+    ],
+  }))
+  void fetchBootstrapData()
+  const hiddenStarted = Date.now()
+  await waitForOpenAIModelCatalog(1000)
+  assert.ok(Date.now() - hiddenStarted < 50)
   axios.get = fixtureGet
+  saveGlobalConfig(current => ({
+    ...current,
+    additionalModelOptionsCache: [
+      { value: 'gpt-bootstrap', label: 'GPT Bootstrap', description: 'OpenAI model' },
+    ],
+  }))
   modelOptionsRefreshes = refreshesBefore
 
   requests.length = 0
