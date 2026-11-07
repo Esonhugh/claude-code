@@ -110,7 +110,7 @@ pi 与 opencode 另用 Claude API key 跑了一组 `claude-sonnet-5-5`（见第 
 ![每任务 token 与缓存命中率：7 个 CLI 共 12 个账号组合的散点，含 6 类任务的分项点、Pareto 前沿与更优区域](images/cache-benchmark/tokens-vs-hit-dark.png#gh-dark-mode-only)
 
 - 前沿上的 6 个点：pi（Claude API）21k / 73.4%、pi（ChatGPT）37k / 84.0%、dsh（Claude API）69k / 88.7%、Codex 80k / 88.8%、opencode（ChatGPT）82k / 89.2%、oh-my-pi（Claude API）101k / 92.0%。
-- 更优区域（token 不高于中位数 81k 且命中率不低于中位数 87.3%）里是 dsh（Claude API）、Codex 和官方。本仓库 Claude 账号 73k / 87.1% 在区域边缘，与官方相差 0.2 个百分点，在噪声范围内。
+- 更优区域（token 不高于中位数 80.7k 且命中率不低于中位数 87.6%）里是 dsh（Claude API）和 Codex。本仓库 Claude 账号 73k / 87.1% 与官方 81k / 87.3% 都在区域边缘，二者命中率相差 0.2 个百分点，在噪声范围内。
 - pi 的提示只有约 2.7k，token 最少但新内容占比大，命中率最低；opencode 在 Claude API key 下 92k / 79.2%，两项都落后于同模型的其他 CLI。
 
 ![每任务 API 等价花费与缓存命中率：12 个 CLI × 账号组合的散点，含 6 类任务的分项点、Pareto 前沿与更优区域](images/cache-benchmark/cost-vs-hit-light.png#gh-light-mode-only)
@@ -137,7 +137,7 @@ effort 取代理日志里请求实际携带的值；dsh 的 ChatGPT 请求没有
 
 - Claude 侧本仓库 $0.078，比官方 $0.088 低 12%，也低于 dsh $0.083、oh-my-pi $0.091、opencode $0.119；只有 pi $0.045 更低，因为它的提示只有约 2.7k、effort low。
 - ChatGPT 侧缓存读只收输入价的 1/20，各 CLI 差距被压小：pi $0.041、Codex $0.047、本仓库 $0.050、opencode $0.059、dsh $0.073、oh-my-pi $0.079。本仓库比 Codex 贵 6%，差在新会话第一个请求的未缓存部分（6.3k 对 2.7k）。
-- 前沿：pi（ChatGPT）$0.041 / 84.0%、Codex $0.047 / 88.8%、opencode（ChatGPT）$0.059 / 89.2%、dsh（ChatGPT）$0.073 / 89.9%、oh-my-pi（Claude API）$0.091 / 92.0%。更优区域（花费不高于中位数 $0.075 且命中率不低于中位数 87.7%）里是 Codex、opencode 与 dsh 的 ChatGPT 账号；Claude 侧的点都在中位数右边，是两种模型价目不同造成的。
+- 前沿：pi（ChatGPT）$0.041 / 84.0%、Codex $0.047 / 88.8%、opencode（ChatGPT）$0.059 / 89.2%、dsh（ChatGPT）$0.073 / 89.9%、oh-my-pi（Claude API）$0.091 / 92.0%。更优区域（花费不高于中位数 $0.075 且命中率不低于中位数 87.6%）里是 Codex、opencode 与 dsh 的 ChatGPT 账号；Claude 侧的点都在中位数右边，是两种模型价目不同造成的。
 
 ![按任务类型：每类一个面板的 token 与命中率散点](images/cache-benchmark/tokens-vs-hit-by-type-light.png#gh-light-mode-only)
 ![按任务类型：每类一个面板的 token 与命中率散点](images/cache-benchmark/tokens-vs-hit-by-type-dark.png#gh-dark-mode-only)
