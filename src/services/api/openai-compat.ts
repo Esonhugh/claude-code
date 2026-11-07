@@ -31,6 +31,7 @@ import type { OpenAITurnScope } from './openai-turn-scope.js'
 import { normalizeModelStringForAPI } from '../../utils/model/model.js'
 import { getInitialSettings } from '../../utils/settings/settings.js'
 import { HttpResponseError } from '../../utils/errors.js'
+import { DEFERRED_TOOL_PLACEHOLDER } from '../../utils/toolSearch.js'
 
 // --- Auth config ---
 
@@ -192,11 +193,38 @@ function anthropicToolResultToResponsesOutput(
   })
 }
 
+function toolSearchOutputItems(callId: string, tools: any[]): any[] {
+  return [
+    {
+      type: 'tool_search_call',
+      call_id: callId,
+      execution: 'client',
+      status: 'completed',
+      arguments: { query: `select:${tools.map(tool => tool.name).join(',')}` },
+    },
+    {
+      type: 'tool_search_output',
+      call_id: callId,
+      execution: 'client',
+      status: 'completed',
+      tools,
+    },
+  ]
+}
+
+/**
+ * `deferredTools` (ChatGPT only) carries the converted defer_loading tools.
+ * Their schemas go into the input as client tool_search_output items where
+ * ToolSearch discovered them, instead of into `tools`: changing `tools`
+ * mid-session invalidates the whole prompt cache (#1023).
+ */
 function anthropicMessagesToResponsesInput(
   messages: BetaMessageParam[],
   _system?: string | Array<{ type: string; text?: string }>,
+  deferredTools?: Map<string, any>,
 ): any[] {
   const input: any[] = []
+  const pendingDeferred = new Map(deferredTools)
   // system is passed separately as `instructions`, not in input
 
   for (const msg of messages) {
@@ -217,7 +245,19 @@ function anthropicMessagesToResponsesInput(
           } else if (block.type === 'tool_result') {
             const b = block as any
             const output = anthropicToolResultToResponsesOutput(b.content)
-            input.push({ type: 'function_call_output', call_id: ensureFcId(b.tool_use_id || 'unknown'), output })
+            const callId = ensureFcId(b.tool_use_id || 'unknown')
+            input.push({ type: 'function_call_output', call_id: callId, output })
+            const discovered = Array.isArray(b.content)
+              ? b.content.flatMap((item: any) => {
+                  const tool = item?.type === 'tool_reference' && pendingDeferred.get(item.tool_name)
+                  if (!tool) return []
+                  pendingDeferred.delete(item.tool_name)
+                  return [tool]
+                })
+              : []
+            if (discovered.length > 0) {
+              input.push(...toolSearchOutputItems(`ts_${callId}`, discovered))
+            }
           }
         }
       }
@@ -248,12 +288,21 @@ function anthropicMessagesToResponsesInput(
       }
     }
   }
+  // Discovered before a compaction: their tool_reference is gone from history.
+  pendingDeferred.delete(DEFERRED_TOOL_PLACEHOLDER.name)
+  if (pendingDeferred.size > 0) {
+    input.unshift(...toolSearchOutputItems('ts_restored', [...pendingDeferred.values()]))
+  }
   return input
 }
 
-function anthropicToolsToResponsesTools(tools?: BetaToolUnion[]): any[] | undefined {
+function anthropicToolsToResponsesTools(
+  tools?: BetaToolUnion[],
+  { keepDeferred = true }: { keepDeferred?: boolean } = {},
+): any[] | undefined {
   if (!tools || tools.length === 0) return undefined
   return tools.flatMap<any>((tool: any) => {
+    if (!keepDeferred && tool.defer_loading === true) return []
     if (
       tool.type === 'web_search_20250305' ||
       tool.type === 'web_search_20260209'
@@ -1315,14 +1364,29 @@ export function createOpenAICompatClient(options: {
     },
     create(params: any, requestOptions?: { signal?: AbortSignal }): any {
       const model = normalizeModelStringForAPI(params.model)
-      const input = anthropicMessagesToResponsesInput(params.messages, params.system)
+      // Verified on the ChatGPT backend only; other Responses endpoints keep
+      // deferred tools in `tools`.
+      const deferredTools = auth.isChatGPT
+        ? new Map(
+            (anthropicToolsToResponsesTools(
+              (params.tools ?? []).filter((tool: any) => tool.defer_loading === true),
+            ) ?? []).map(tool => [tool.name, tool]),
+          )
+        : undefined
+      const input = anthropicMessagesToResponsesInput(
+        params.messages,
+        params.system,
+        deferredTools,
+      )
       if (
         params.openai_compaction?.type === 'compaction' &&
         typeof params.openai_compaction.encrypted_content === 'string'
       ) {
         input.unshift(params.openai_compaction)
       }
-      const tools = anthropicToolsToResponsesTools(params.tools)
+      const tools = anthropicToolsToResponsesTools(params.tools, {
+        keepDeferred: !auth.isChatGPT,
+      })
       const toolChoice = anthropicToolChoiceToResponsesToolChoice(
         params.tool_choice,
         tools,
