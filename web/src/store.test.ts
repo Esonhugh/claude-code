@@ -115,6 +115,13 @@ describe('appReducer', () => {
     expect(state.chats.new!.permissionMode).toBe('acceptEdits')
   })
 
+  it('names the model a session started without a pick runs until its init says', () => {
+    const created = (start: { mode: 'default'; model?: string }) =>
+      appReducer(initialAppState, { type: 'created', id: 's', workDir: '/w', title: 't', start, runs: 'claude-sonnet-5-5' }).chats.s!.model
+    expect(created({ mode: 'default' })).toBe('claude-sonnet-5-5')
+    expect(created({ mode: 'default', model: 'opus' })).toBe('opus')
+  })
+
   it('keeps tab-created sessions the disk listing does not have yet', () => {
     let state = appReducer(initialAppState, {
       type: 'created', id: 'fresh', workDir: '/w', title: 'Fresh', start: { mode: 'default' },
