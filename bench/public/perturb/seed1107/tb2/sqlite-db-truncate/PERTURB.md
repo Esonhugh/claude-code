@@ -1,0 +1,5 @@
+- db moved /app/trunc.db -> /srv/recovery/inventory.db
+- every `testwordNN` renamed in-place to `kiwitermMM` (same byte length, MM = seeded permutation of NN), so word->value pairs differ from the public answer
+- output /app/recover.json -> /srv/recovery/rows.json, keys word/value -> label/amount
+- instruction reworded
+- solution/solve.sh: public reference solution with the same renames, used only for the oracle check

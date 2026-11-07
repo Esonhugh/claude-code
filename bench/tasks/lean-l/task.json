@@ -1,0 +1,14 @@
+{
+  "id": "lean-l",
+  "type": "lean",
+  "length": "long",
+  "requires": [
+    "lean"
+  ],
+  "grade": [
+    {
+      "type": "lean",
+      "file": "Theorems.lean"
+    }
+  ]
+}

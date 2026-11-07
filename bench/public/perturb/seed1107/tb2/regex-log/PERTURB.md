@@ -1,0 +1,6 @@
+- date format YYYY-MM-DD -> DD/MM/YYYY in instruction and all test lines/answers
+- output path /app/regex.txt -> /srv/logscan/date_rule.re
+- instruction reworded; example code removed
+- test lines shuffled (seeded), expected answers reordered to match
+- solution/solve.sh: public reference solution with the same renames, used only for the oracle check
+- oracle note: the public reference regex is not line-anchored and only passes the original line order; the seed1107 oracle uses a line-anchored regex

@@ -1,0 +1,30 @@
+{
+  "id": "doc-l",
+  "type": "office",
+  "length": "long",
+  "requires": [],
+  "grade": [
+    {
+      "type": "exists",
+      "path": "docs/API.md"
+    },
+    {
+      "type": "exists",
+      "path": "docs/GUIDE.md"
+    },
+    {
+      "type": "exists",
+      "path": "docs/EXAMPLES.md"
+    },
+    {
+      "type": "cmd",
+      "run": "n=0; for e in examples/*.py; do [ -f \"$e\" ] || continue; PYTHONPATH=. timeout 30 python3 \"$e\" >/dev/null || exit 1; n=$((n+1)); done; [ \"$n\" -ge 3 ]"
+    },
+    {
+      "type": "regex",
+      "file": "docs/GUIDE.md",
+      "pattern": "thread",
+      "flags": "i"
+    }
+  ]
+}

@@ -1,0 +1,2 @@
+- wording only: instruction rewritten and reordered; paths, build commands and tests unchanged (layout is baked into the image)
+- solution/solve.sh: public reference solution with the same renames, used only for the oracle check

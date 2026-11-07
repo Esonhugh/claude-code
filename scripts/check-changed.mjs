@@ -29,20 +29,20 @@ const changed = [
 
 // The CI lint and unit-test globs (see unit-tests.yml for the sandbox pair).
 const lintable = changed.filter(file =>
-  /^(src\/.*\.tsx?|types\/.*\.d\.ts|scripts\/.*\.mjs)$/.test(file),
+  /^(src\/.*\.tsx?|types\/.*\.d\.ts|scripts\/.*\.mjs|bench\/.*\.ts)$/.test(file),
 );
 const sandboxOnly = new Set([
   'src/utils/permissions/permissions.networkLists.test.ts',
   'src/utils/sandbox/sandbox-adapter.test.ts',
 ]);
 const isUnitTest = file =>
-  /^(src\/.*\.test\.tsx?|web\/src\/.*\.test\.ts)$/.test(file) && !sandboxOnly.has(file);
-const allTests = git(['ls-files', 'src/**/*.test.ts', 'src/**/*.test.tsx', 'web/src/**/*.test.ts']);
+  /^(src\/.*\.test\.tsx?|web\/src\/.*\.test\.ts|bench\/.*\.test\.ts)$/.test(file) && !sandboxOnly.has(file);
+const allTests = git(['ls-files', 'src/**/*.test.ts', 'src/**/*.test.tsx', 'web/src/**/*.test.ts', 'bench/**/*.test.ts']);
 
 // A changed foo.ts runs foo.test.ts and foo.*.test.ts beside it.
 const tests = new Set(changed.filter(isUnitTest));
 for (const file of changed) {
-  const match = file.match(/^((?:src|web\/src)\/.*)\.tsx?$/);
+  const match = file.match(/^((?:src|web\/src|bench)\/.*)\.tsx?$/);
   if (!match || file.includes('.test.')) continue;
   for (const test of allTests) {
     if (test.startsWith(`${match[1]}.`) && isUnitTest(test)) {

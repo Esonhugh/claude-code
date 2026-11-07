@@ -1,0 +1,5 @@
+31G  /var/log/journal
+6.1G /var/lib/docker/overlay2
+3.2G /usr
+1.1G /home/deploy/.cache
+410M /opt/app

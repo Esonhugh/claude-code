@@ -56,7 +56,7 @@ jobs:
           ANTHROPIC_API_KEY: sk-ant-test-placeholder
         run: |
           mkdir -p "$RUNNER_TEMP/unit"
-          git ls-files 'src/**/*.test.ts' 'src/**/*.test.tsx' 'web/src/**/*.test.ts' \
+          git ls-files 'src/**/*.test.ts' 'src/**/*.test.tsx' 'web/src/**/*.test.ts' 'bench/**/*.test.ts' \
             | grep -vxF -e src/utils/permissions/permissions.networkLists.test.ts -e src/utils/sandbox/sandbox-adapter.test.ts \
             | bun scripts/split-unit-tests.mjs ${{ matrix.shard }} 5 \
             > "$RUNNER_TEMP/unit/files.txt"

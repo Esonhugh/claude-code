@@ -1,0 +1,1 @@
+Read the vendor quotes in quotes/ and our usage in USAGE.md. Work out the total 36-month cost for each vendor, show the calculation, and recommend the cheapest. Write the result to ANSWER.md, ending with a line "CHEAPEST: <vendor name>".

@@ -1,0 +1,16 @@
+{
+  "id": "coding",
+  "type": "coding",
+  "length": "long",
+  "requires": [],
+  "grade": [
+    {
+      "type": "cmd",
+      "run": "python3 -m unittest -q 2>&1 || python3 -m pytest -q -p no:cacheprovider"
+    },
+    {
+      "type": "exists",
+      "path": "cli.py"
+    }
+  ]
+}

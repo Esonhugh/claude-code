@@ -431,6 +431,8 @@ dsh 0.2.2-rc.1 用 headless 模式（`dsh --profile headless --json`），模型
 
 ## 数据与复现
 
+重跑用仓库里的 [Agent 基准测试套件](agent-bench.md)（`bun bench/cli.ts`），任务、计价和图表与本页一致。以下是 2026-11-07 这一轮的原始数据。
+
 完整报告、逐 run 汇总、逐请求原始日志与 harness 在项目共享目录：
 
 - `regression/cache-bench-1107-post/`：CLI 矩阵、TUI / SDK / Web（`report.md`、`results.json`、`raw/`、`harness/`）。
