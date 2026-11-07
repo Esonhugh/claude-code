@@ -11,6 +11,7 @@
   "toolInput": "Input",
   "toolOutput": "Output",
   "sessionEnded": "The session ended.",
+  "sessionEndedReason": "The session ended: {reason}",
   "connectFailed": "Could not start a session: {error}",
   "permissionMode": "Permission mode",
   "model": "Model",

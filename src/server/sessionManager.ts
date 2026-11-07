@@ -73,6 +73,22 @@ export class SessionManagerError extends Error {
   }
 }
 
+/** WebSocket close reasons are limited to 123 UTF-8 bytes. */
+const MAX_CLOSE_REASON_BYTES = 123
+
+/** Why a session process ended, e.g. `<last stderr line> (exit 1)`, for the client's close reason. */
+function exitReason(code: number | null, signal: NodeJS.Signals | null, stderr: string | undefined): string {
+  const status = signal ?? `exit ${code ?? 'unknown'}`
+  if (!stderr) return status
+  const suffix = ` (${status})`
+  let text = stderr
+  if (Buffer.byteLength(text + suffix) > MAX_CLOSE_REASON_BYTES) {
+    while (Buffer.byteLength(text + '…' + suffix) > MAX_CLOSE_REASON_BYTES) text = [...text].slice(0, -1).join('')
+    text += '…'
+  }
+  return text + suffix
+}
+
 function closed(child: ChildProcess): Promise<void> {
   return new Promise(resolve => {
     child.once('close', () => resolve())
@@ -366,8 +382,10 @@ export class SessionManager {
       session.pending.push(line)
       if (session.pending.length > MAX_PENDING_LINES) session.pending.shift()
     })
+    let lastStderr: string | undefined
     createInterface({ input: child.stderr! }).on('line', line => {
       this.logger?.warn(`session ${id} stderr: ${line}`)
+      if (line.trim()) lastStderr = line.trim()
     })
     // Writes after the child exits fail with EPIPE; exit is handled below.
     child.stdin!.on('error', () => {})
@@ -385,8 +403,11 @@ export class SessionManager {
       )
       if (session.process !== child || session.queued) return
       this.observer?.exit?.(id)
-      const clean = code === 0 || session.status === 'stopping'
-      this.remove(session, clean ? 1000 : 1011, 'session process exited')
+      if (code === 0 || session.status === 'stopping') {
+        this.remove(session, 1000, 'session process exited')
+        return
+      }
+      this.remove(session, 1011, exitReason(code, signal, lastStderr))
     })
   }
 
