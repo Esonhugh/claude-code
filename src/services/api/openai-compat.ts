@@ -31,7 +31,7 @@ import type { OpenAITurnScope } from './openai-turn-scope.js'
 import { normalizeModelStringForAPI } from '../../utils/model/model.js'
 import { getInitialSettings } from '../../utils/settings/settings.js'
 import { HttpResponseError } from '../../utils/errors.js'
-import { DEFERRED_TOOL_PLACEHOLDER } from '../../utils/toolSearch.js'
+import { DEFERRED_TOOL_PLACEHOLDER_NAME } from '../../tools/ToolSearchTool/constants.js'
 
 // --- Auth config ---
 
@@ -289,7 +289,7 @@ function anthropicMessagesToResponsesInput(
     }
   }
   // Discovered before a compaction: their tool_reference is gone from history.
-  pendingDeferred.delete(DEFERRED_TOOL_PLACEHOLDER.name)
+  pendingDeferred.delete(DEFERRED_TOOL_PLACEHOLDER_NAME)
   if (pendingDeferred.size > 0) {
     input.unshift(...toolSearchOutputItems('ts_restored', [...pendingDeferred.values()]))
   }
