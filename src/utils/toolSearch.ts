@@ -26,6 +26,7 @@ import {
   isDeferredTool,
   TOOL_SEARCH_TOOL_NAME,
 } from '../tools/ToolSearchTool/prompt.js'
+import { DEFERRED_TOOL_PLACEHOLDER_NAME } from '../tools/ToolSearchTool/constants.js'
 import type { Message } from '../types/message.js'
 import {
   countToolDefinitionTokens,
@@ -314,7 +315,7 @@ export function isToolSearchEnabledOptimistic(): boolean {
  * (also defer_loading) leave the cached prompt prefix intact.
  */
 export const DEFERRED_TOOL_PLACEHOLDER = {
-  name: 'DeferredToolPlaceholder',
+  name: DEFERRED_TOOL_PLACEHOLDER_NAME,
   description:
     'Reserved placeholder that keeps deferred tool loading active; never call this tool.',
   input_schema: { type: 'object' as const, properties: {} },
