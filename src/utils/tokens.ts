@@ -236,7 +236,9 @@ export function tokenCountWithEstimation(
   while (i >= 0) {
     const message = messages[i]
     const usage = message ? getTokenUsage(message) : undefined
-    if (message && usage) {
+    // A gateway that omits usage leaves a zero record; anchoring on it would
+    // count everything before it as 0 tokens and autocompact would never fire.
+    if (message && usage && getTokenCountFromUsage(usage) > 0) {
       // Walk back past any earlier sibling records split from the same API
       // response (same message.id) so interleaved tool_results between them
       // are included in the estimation slice.
