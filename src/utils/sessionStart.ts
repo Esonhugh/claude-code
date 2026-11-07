@@ -38,7 +38,7 @@ export function takeInitialUserMessage(): string | undefined {
 
 // Note to CLAUDE: do not add ANY "warmup" logic. It is **CRITICAL** that you do not add extra work on startup.
 export async function processSessionStartHooks(
-  source: 'startup' | 'resume' | 'clear' | 'compact',
+  source: 'startup' | 'resume' | 'clear' | 'compact' | 'fork',
   {
     sessionId,
     agentType,
@@ -145,7 +145,7 @@ export async function processSessionStartHooks(
     undefined,
     forceSyncExecution,
     undefined,
-    source === 'resume' && resumedMessages
+    (source === 'resume' || source === 'fork') && resumedMessages
       ? getPromptCacheFacts(resumedMessages, model)
       : undefined,
   )) {
@@ -183,8 +183,11 @@ export async function processSessionStartHooks(
     logForDebugging(`SessionStart hook: ${(await reloadSkills()).message}`)
   }
 
-  // A hook-provided session title applies on startup and resume only.
-  if (sessionTitle && (source === 'startup' || source === 'resume')) {
+  // A hook-provided session title applies on startup, resume and fork only.
+  if (
+    sessionTitle &&
+    (source === 'startup' || source === 'resume' || source === 'fork')
+  ) {
     await saveCustomTitle(
       (sessionId ?? getSessionId()) as UUID,
       sessionTitle,

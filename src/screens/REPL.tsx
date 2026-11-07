@@ -3108,13 +3108,16 @@ export function REPL({
           timeoutMs: sessionEndTimeoutMs,
         })
 
-        // Process session start hooks for resume
-        const hookMessages = await processSessionStartHooks('resume', {
-          sessionId,
-          agentType: mainThreadAgentDefinition?.agentType,
-          model: mainLoopModel,
-          resumedMessages: messages,
-        })
+        // Process session start hooks for resume (/branch reports 'fork')
+        const hookMessages = await processSessionStartHooks(
+          entrypoint === 'fork' ? 'fork' : 'resume',
+          {
+            sessionId,
+            agentType: mainThreadAgentDefinition?.agentType,
+            model: mainLoopModel,
+            resumedMessages: messages,
+          },
+        )
 
         // Append hook messages to the conversation
         messages.push(...hookMessages)

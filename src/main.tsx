@@ -4722,6 +4722,7 @@ async function run(): Promise<CommanderCommand> {
           const result = await loadConversationForResume(
             undefined /* sessionId */,
             undefined /* sourceFile */,
+            !!options.forkSession,
           )
           if (!result) {
             logEvent('tengu_continue', {
@@ -5382,6 +5383,7 @@ async function run(): Promise<CommanderCommand> {
                 const result = await loadConversationForResume(
                   logOption,
                   undefined,
+                  true,
                 )
                 if (result) {
                   processedResume = await processResumedConversation(
@@ -5439,6 +5441,7 @@ async function run(): Promise<CommanderCommand> {
                   const result = await loadConversationForResume(
                     logOption,
                     undefined /* sourceFile */,
+                    !!options.forkSession,
                   )
                   if (result) {
                     processedResume = await processResumedConversation(
@@ -5497,6 +5500,7 @@ async function run(): Promise<CommanderCommand> {
             const result = await loadConversationForResume(
               matchedLog ?? sessionId,
               undefined,
+              !!options.forkSession,
             )
 
             if (!result) {
