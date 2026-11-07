@@ -157,6 +157,7 @@
 - 项目回归项：外部 SIGINT 时 SessionEnd hook 执行、`CI=true` 无凭证 `claude -p` 报错退出、team shutdown 后成员从 `config.json` 移除，均在重建的 binary 上通过。
 - 11-06 至 11-07 按子系统交叉组合做了 Round 2–6 回归（长会话 × Mods、OpenAI × web/TUI/Mods、Teams × 权限 × 退出、MCP × hooks、channels × memory、files × resume × providers、TUI × Bash × 网关、teams × OpenAI × MCP × hooks），每个修复都用重建的 binary 实测并与官方 2.1.319 对照；OpenAI 路径的 `apply_patch`、ChatGPT 上下文窗口与上下文档位用真实 ChatGPT 登录与容器 OAuth 验证。报告在项目共享目录 `regression/round{2..6}-1106/`、`regression/context-window-tiers/`。
 - 11-07 缓存命中与用户体验基准（`dev` `17abdd1`，301 次真实 run，对照官方 2.1.319、Codex 0.167.0、pi 1.5.0）：Claude 侧命中率 87.9% 对官方 86.5%、总 token 少 6%、会话内缓存失效 0 次，续接与压缩前后一致；ChatGPT 侧命中率 81.9%（Codex 93.0%，差距在新会话首请求），总 token 与 Codex 相当（2.7 小时会话 367k 对 344k）。结果见 `docs/features/cache-benchmark.md`（Wiki 页 Cache-Benchmark）；基准中发现的两个 ChatGPT 侧问题已在 #1026、#1027 修复，见上文 OpenAI provider。
+- 11-07 修复后重跑（346 次真实 run，每格 3 次，新增 opencode 1.19.5 与 Lean 证明、研究题，同时段对照修复前 `17abdd1`）：ChatGPT 侧命中率 85.3%（修复前 83.8%，Codex 88.8%，opencode 89.2%，pi 84.0%），差距集中在短任务；`ToolSearch` 加载后下一个请求 7/7 命中（修复前 1/7）；ChatGPT `-p` 启动到首个请求 0.66s（修复前 3.11s）；Claude 侧命中率 87.1% 对官方 87.3%、总 token 少 10%。重跑中发现的新安装首次 `-p` 用后备模型问题由 #1033、#1035 修复。结果见 Wiki 首页「缓存命中 / Cache hit」与 Cache-Benchmark 页。
 - PR CI：单测 5 片、lint 与 tsc、Linux 沙箱、官方对照、Linux/macOS/Windows e2e 与 web e2e；之后合入 `dev` 的代码 PR（至 #1027）都在 CI 全绿后由 `automerge` 合并，纯文档 PR（#1021、#1025）直接合并。
 
 ## 2026-10-30 - v2.1.296 - Agent 生命周期与 Teams 修复、内嵌 bfs/ugrep 搜索、coordinator 模式、/hooks /theme /config 对齐官方 2.1.311、权限模式转换修复、claude web 本地网页界面与项目模式
