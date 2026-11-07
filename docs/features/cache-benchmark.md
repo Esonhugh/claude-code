@@ -346,7 +346,7 @@ Codex 与 opencode 用各自的子代理工具（Codex `spawn_agent`，0.167.0 �
 
 ### 9. oh-my-pi（功能更多的 pi 分支）
 
-oh-my-pi 18.18.0（`omp`）在 pi 的基础上多了 glob、grep、eval、task（子代理）、wait、todo 等工具，共 10 个（关闭 web_search），默认 effort high。它和 pi 1.5.0 同一时段交错跑主矩阵的 11 题 × 3 次，两种账号各一组，132 次全部通过。表中本仓库、官方与 Codex 取第 1 节的主矩阵数据（另一时段）。
+oh-my-pi 18.18.0（`omp`）在 pi 的基础上多了 glob、grep、eval、task（子代理）、wait、todo 等工具，共 10 个（关闭 web_search），默认 effort high。它和 pi 1.5.0 同一时段交错跑全部 11 题 × 3 次，两种账号各一组，132 次全部通过（Lean 两题稍后补跑）。表中本仓库与其他 CLI 取主矩阵同 11 题的数据。
 
 | CLI | 账号 | 命中率（单次范围） | 平均总 token（单次范围） | 输出 | 首个 prompt | 平均用时 | 请求数 | API 等价花费 / 任务 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -359,7 +359,8 @@ oh-my-pi 18.18.0（`omp`）在 pi 的基础上多了 glob、grep、eval、task�
 | 本仓库 | ChatGPT 账号 | 85.3%（50–93） | 75.9k（44–151k） | 2.2k | 10.4k | 61s | 5.6 | $0.050 |
 | Codex CLI 0.167.0 | ChatGPT 账号 | 88.8%（79–96） | 80.3k（39–165k） | 2.2k | 14.6k | 59s | 4.8 | $0.047 |
 
-- 前缀从 pi 的 2.7k 变成 11.9k，加上默认 effort high，oh-my-pi 的 token 是同时段 pi 的 3.0–5.1 倍、本仓库的约 1.4 倍；固定前缀占比大，所以命中率反而最高。按 API 价它比 pi 贵约一倍，比本仓库贵 17%（Claude）到 58%（ChatGPT）。
+- 前缀从 pi 的 2.7k 变成 11.9k，加上默认 effort high，oh-my-pi 的 token 是同时段 pi 的 3.0–5.1 倍、本仓库的 1.4 倍；固定前缀占比大，所以命中率反而最高。按 API 价它约是 pi 的 2 倍，比本仓库贵 17%（Claude）到 58%（ChatGPT）。
+- Lean 两题：Claude 侧 lean-s 46.8k / 88%、lean-l 137.1k / 96%；ChatGPT 侧 lean-s 49.6k / 87%、lean-l 90.4k / 88%。
 - 3 个子代理（与第 5 节同题）：Claude 侧 40.1k → 230.0k（5.7×），ChatGPT 侧 65.5k → 196.2k（3.0×）。
 - oh-my-pi 在 Anthropic 侧用服务器端对话续接，第二个请求起只发增量；usage 仍完整计入缓存读。Claude 侧它写 5 分钟缓存。
 
