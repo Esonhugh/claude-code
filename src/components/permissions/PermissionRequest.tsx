@@ -9,6 +9,7 @@ import { AskUserQuestionTool } from '../../tools/AskUserQuestionTool/AskUserQues
 import { BashTool } from '../../tools/BashTool/BashTool.js'
 import { FileEditTool } from '../../tools/FileEditTool/FileEditTool.js'
 import { FileReadTool } from '../../tools/FileReadTool/FileReadTool.js'
+import { ApplyPatchTool } from '../../tools/ApplyPatchTool/ApplyPatchTool.js'
 import { FileWriteTool } from '../../tools/FileWriteTool/FileWriteTool.js'
 import { GlobTool } from '../../tools/GlobTool/GlobTool.js'
 import { GrepTool } from '../../tools/GrepTool/GrepTool.js'
@@ -22,6 +23,7 @@ import { AskUserQuestionPermissionRequest } from './AskUserQuestionPermissionReq
 import { BashPermissionRequest } from './BashPermissionRequest/BashPermissionRequest.js'
 import { EnterPlanModePermissionRequest } from './EnterPlanModePermissionRequest/EnterPlanModePermissionRequest.js'
 import { ExitPlanModePermissionRequest } from './ExitPlanModePermissionRequest/ExitPlanModePermissionRequest.js'
+import { ApplyPatchPermissionRequest } from './ApplyPatchPermissionRequest.js'
 import { FallbackPermissionRequest } from './FallbackPermissionRequest.js'
 import { FileEditPermissionRequest } from './FileEditPermissionRequest/FileEditPermissionRequest.js'
 import { FilesystemPermissionRequest } from './FilesystemPermissionRequest/FilesystemPermissionRequest.js'
@@ -78,6 +80,8 @@ function permissionComponentForTool(
       return FileEditPermissionRequest
     case FileWriteTool:
       return FileWritePermissionRequest
+    case ApplyPatchTool:
+      return ApplyPatchPermissionRequest
     case BashTool:
       return BashPermissionRequest
     case PowerShellTool:

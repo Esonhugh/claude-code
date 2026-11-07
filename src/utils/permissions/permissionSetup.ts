@@ -65,6 +65,7 @@ import { BASH_TOOL_NAME } from '../../tools/BashTool/toolName.js'
 import { POWERSHELL_TOOL_NAME } from '../../tools/PowerShellTool/toolName.js'
 import { TERMINAL_TOOL_NAME } from '../../tools/TerminalTool/prompt.js'
 import { FILE_EDIT_TOOL_NAME } from '../../tools/FileEditTool/constants.js'
+import { APPLY_PATCH_TOOL_NAME } from '../../tools/ApplyPatchTool/prompt.js'
 import { FILE_WRITE_TOOL_NAME } from '../../tools/FileWriteTool/prompt.js'
 import { NOTEBOOK_EDIT_TOOL_NAME } from '../../tools/NotebookEditTool/constants.js'
 import { MONITOR_TOOL_NAME } from '../../tools/MonitorTool/prompt.js'
@@ -359,6 +360,7 @@ export function getAutoModeDenialRuleToolName(tool: {
     return undefined
   }
   return tool.name === FILE_WRITE_TOOL_NAME ||
+    tool.name === APPLY_PATCH_TOOL_NAME ||
     tool.name === NOTEBOOK_EDIT_TOOL_NAME
     ? FILE_EDIT_TOOL_NAME
     : tool.name
