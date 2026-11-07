@@ -2876,6 +2876,23 @@ async function* queryModelRequest(
         }
       }
 
+      // A tool_use that already streamed may already be running (streaming tool
+      // execution), and a non-streaming retry would return it again and run it a
+      // second time. Like official, keep the partial response and say it was cut.
+      if (newMessages.some(m => m.message.content.some(block => block.type === 'tool_use'))) {
+        logForDebugging(
+          `Stream error after ${newMessages.length} block(s) yielded, finalizing partial response: ${errorMessage(streamingError)}`,
+          { level: 'warn' },
+        )
+        stopReason = 'tool_use'
+        for (const m of newMessages) m.message.stop_reason = stopReason
+        yield createAssistantAPIErrorMessage({
+          content: `${API_ERROR_MESSAGE_PREFIX}: Connection lost mid-response. The response above may be incomplete.`,
+          error: 'server_error',
+        })
+        return
+      }
+
       // When the flag is enabled, skip the non-streaming fallback and let the
       // error propagate to withRetry. The mid-stream fallback causes double tool
       // execution when streaming tool execution is active: the partial stream
