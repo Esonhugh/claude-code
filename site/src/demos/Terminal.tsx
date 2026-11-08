@@ -12,6 +12,7 @@ export const tui = {
   error: 'rgb(255,107,128)',
   suggestion: 'rgb(177,185,249)',
   openai: 'rgb(95,214,193)',
+  warning: 'rgb(255,193,7)',
   userMessageBackground: 'rgb(55,55,55)',
 }
 const SPINNER = ['·', '✢', '*', '✶', '✻', '✽']
@@ -27,6 +28,7 @@ export type SimStep =
   | { at: number; type: 'result'; text: string; color?: TuiColor }
   | { at: number; type: 'line'; text: string; color?: TuiColor }
   | { at: number; type: 'done'; verb: (typeof TURN_COMPLETION_VERBS)[number]; seconds: number }
+  | { at: number; type: 'box'; title: string; lines: string[]; actions: string[]; color: TuiColor }
 
 export const Terminal: React.FC<{ title: string; steps: SimStep[]; footer: { text: string; color: TuiColor }; accent: string }> = ({
   title,
@@ -119,6 +121,16 @@ const SimLine: React.FC<{ step: SimStep; frame: number }> = ({ step, frame }) =>
       )
     case 'line':
       return <div style={{ ...appear, marginTop: 8, color: tui[step.color ?? 'text'] }}>{step.text}</div>
+    case 'box':
+      return (
+        <div style={{ ...appear, marginTop: 10, border: `2px solid ${tui[step.color]}`, borderRadius: 6, padding: '6px 14px' }}>
+          <div style={{ color: tui[step.color], fontWeight: 700 }}>⚠ {step.title}</div>
+          {step.lines.map((l, i) => (
+            <div key={i} style={{ color: i === 0 ? tui.text : tui.inactive }}>{l}</div>
+          ))}
+          <div style={{ fontWeight: 700 }}>{step.actions.map(a => `[ ${a} ]`).join('  ')}</div>
+        </div>
+      )
     case 'done':
       return (
         <div style={{ ...appear, marginTop: 8, color: tui.inactive }}>

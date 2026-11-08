@@ -16,14 +16,59 @@
   <p class="scroll-cue">$ scroll to continue</p>
 </div></div>
 
-<section id="accounts"><div class="wrap">
-  <p class="prompt">$ <b>claude</b> --help accounts</p>
-  <h2 class="en">Same tools, either account</h2>
-  <h2 class="zh">同一套工具，換帳號就好</h2>
-  <p class="en">Sign in with a Claude account, a ChatGPT account (browser OAuth or device code over SSH), or an API key. Tools, UI and slash commands stay the same. The ChatGPT path adds a Codex-style <code>apply_patch</code>, Codex Apps from your ChatGPT connections, and the <code>/daybreak</code> cyber access tier.</p>
-  <p class="zh">用 Claude 帳號、ChatGPT 帳號（瀏覽器 OAuth，或 SSH 上用 device code）或 API key 登入都行，工具、介面、斜線指令完全一樣。走 ChatGPT 時還多了 Codex 式 <code>apply_patch</code>、ChatGPT 裡已連好的 Codex Apps，以及 <code>/daybreak</code> 網路安全存取檔位。</p>
-  <div class="demo" data-demo="accounts"></div>
-  <p class="demo-cap"><span class="en">Animated replay of the same task on both accounts. On ChatGPT the edit goes through the Codex-style Patch tool.</span><span class="zh">同一個任務在兩種帳號上的動畫重播。走 ChatGPT 時，改檔用的是 Codex 式 Patch 工具。</span></p>
+<section id="tour"><div class="tour">
+  <div class="tour-stage"><div class="demo" data-demo="tour" data-scene="accounts"></div>
+  <p class="demo-cap"><span class="en">Illustrative replays; scroll to switch.</span><span class="zh">示意重播；往下捲動切換。</span></p></div>
+  <div class="tour-steps">
+    <div class="tour-step" data-step="accounts">
+      <p class="prompt">$ <b>claude</b> --help accounts</p>
+      <h2 class="en">Same tools, either account</h2>
+      <h2 class="zh">同一套工具，換帳號就好</h2>
+      <p class="en">Sign in with a Claude account, a ChatGPT account (browser OAuth or device code over SSH), or an API key. Tools, UI and slash commands stay the same. The ChatGPT path adds a Codex-style <code>apply_patch</code> (shown as Patch), Codex Apps from your ChatGPT connections, and the <code>/daybreak</code> cyber access tier.</p>
+      <p class="zh">用 Claude 帳號、ChatGPT 帳號（瀏覽器 OAuth，或 SSH 上用 device code）或 API key 登入都行，工具、介面、斜線指令完全一樣。走 ChatGPT 時還多了 Codex 式 <code>apply_patch</code>（畫面上顯示為 Patch）、ChatGPT 裡已連好的 Codex Apps，以及 <code>/daybreak</code> 網路安全存取檔位。</p>
+      <a href="docs/openai-provider.html"><span class="en">Read the docs</span><span class="zh">看文件</span> →</a>
+    </div>
+    <div class="tour-step" data-step="goal">
+      <p class="prompt">$ <b>claude</b> /goal all tests pass</p>
+      <h2 class="en">Keep going until it is done</h2>
+      <h2 class="zh">做到才算完</h2>
+      <p class="en">Give a finish condition. At the end of every turn a separate model call reads the transcript and decides whether it holds; if not, Claude is told what is missing and continues. It stops after 9 misses in a row so it cannot loop forever.</p>
+      <p class="zh">給一個完成條件。每輪結束時另一次模型呼叫讀對話紀錄判斷是否達成，沒達成就告訴 Claude 還差什麼、繼續做；連續 9 次沒達成會強制停下，不會無限循環。</p>
+      <a href="docs/goal.html"><span class="en">Read the docs</span><span class="zh">看文件</span> →</a>
+    </div>
+    <div class="tour-step" data-step="teams">
+      <p class="prompt">$ <b>claude</b> --agent-teams</p>
+      <h2 class="en">A team that stays online</h2>
+      <h2 class="zh">常駐的團隊</h2>
+      <p class="en">Ask for a team and name the members. Each teammate is a full Claude session that stays online, messages the others with SendMessage and shares one task list. You can switch to any teammate and watch it work.</p>
+      <p class="zh">要求組隊並替成員取名。每位隊友都是常駐的完整 Claude 會話，用 SendMessage 互傳訊息、共用一份任務清單；你可以切到任一隊友看它工作。</p>
+      <a href="docs/agent-teams.html"><span class="en">Read the docs</span><span class="zh">看文件</span> →</a>
+    </div>
+    <div class="tour-step" data-step="tmux">
+      <p class="prompt">$ <b>claude</b> Tmux</p>
+      <h2 class="en">A terminal Claude can drive</h2>
+      <h2 class="zh">Claude 能操作的終端</h2>
+      <p class="en">The Tmux tool gives Claude a persistent interactive terminal: start a REPL, send keys, press Ctrl+C, read the screen. It runs on its own socket, isolated from your tmux server, and inside the Bash sandbox when that is on.</p>
+      <p class="zh">Tmux 工具給 Claude 一個可持續互動的終端：開 REPL、送按鍵、按 Ctrl+C、讀畫面。它用自己的 socket，與你的 tmux 隔離；開了 Bash 沙箱時也在沙箱裡跑。</p>
+      <a href="docs/terminal-tool.html"><span class="en">Read the docs</span><span class="zh">看文件</span> →</a>
+    </div>
+    <div class="tour-step" data-step="mods">
+      <p class="prompt">$ <b>claude</b> --plugin-dir ./blast-radius</p>
+      <h2 class="en">Mods change the harness itself</h2>
+      <h2 class="zh">Mods 改造工具本身</h2>
+      <p class="en">A Mod is one JS/TS file that can register commands, hold or rewrite tool calls and draw UI in the terminal and in <code>claude web</code>. The Blast Radius example holds risky commands and shows what they would delete before you choose Proceed or Cancel.</p>
+      <p class="zh">Mod 是一個 JS/TS 檔，能註冊指令、暫停或改寫工具呼叫，在終端和 <code>claude web</code> 畫介面。Blast Radius 範例會先攔住危險指令，列出會刪掉什麼，再讓你選 Proceed 或 Cancel。</p>
+      <a href="docs/mods.html"><span class="en">Read the docs</span><span class="zh">看文件</span> →</a>
+    </div>
+    <div class="tour-step" data-step="context">
+      <p class="prompt">$ <b>claude</b> /context-window 200k</p>
+      <h2 class="en">Pick your context window</h2>
+      <h2 class="zh">自己選上下文窗口</h2>
+      <p class="en">Choose 128k, 200k, 272k, 500k or 1M per model, or let it follow the account catalog. <code>/context</code> shows where the tokens go; memory can switch to SQLite FTS5 search so it is looked up only when needed.</p>
+      <p class="zh">每個模型可以選 128k、200k、272k、500k 或 1M，或跟隨帳號的模型目錄。<code>/context</code> 看 token 用在哪；記憶可改用 SQLite FTS5 全文檢索，需要時才查。</p>
+      <a href="docs/compaction.html"><span class="en">Read the docs</span><span class="zh">看文件</span> →</a>
+    </div>
+  </div>
 </div></section>
 
 <section id="features"><div class="wrap">

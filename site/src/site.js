@@ -34,6 +34,21 @@
     wide.addEventListener('change', sync);
   }
 
+  // Scroll tour: the step crossing the middle of the viewport picks the animation scene.
+  var stage = document.querySelector('[data-demo="tour"]');
+  var steps = document.querySelectorAll('.tour-step');
+  if (stage && steps.length && 'IntersectionObserver' in window) {
+    var activate = function (step) {
+      steps.forEach(function (s) { s.classList.toggle('is-active', s === step); });
+      if (stage.dataset.scene !== step.dataset.step) stage.dataset.scene = step.dataset.step;
+    };
+    activate(steps[0]);
+    var io = new IntersectionObserver(function (entries) {
+      entries.forEach(function (e) { if (e.isIntersecting) activate(e.target); });
+    }, { rootMargin: '-45% 0px -45% 0px' });
+    steps.forEach(function (s) { io.observe(s); });
+  }
+
   var cmd = document.getElementById('cmd');
   if (cmd) {
     document.querySelectorAll('.install [role=tab]').forEach(function (t) {

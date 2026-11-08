@@ -202,3 +202,22 @@ rect.viz-hit[fill="transparent"]:hover, rect.viz-hit[fill="transparent"]:focus-v
 .viz-legend { display: flex; gap: 16px; flex-wrap: wrap; font-size: 12.5px; color: var(--viz-ink2); margin-bottom: 8px; }
 .viz-legend i { display: inline-block; width: 12px; height: 12px; border-radius: 3px; margin-right: 6px; vertical-align: -1px; }
 .scatter-frame { width: 100%; height: 1400px; border: 1px solid var(--line); border-radius: 10px; margin-top: 20px; background: var(--viz-surface); }
+
+/* scroll tour: sticky animation on the left, steps on the right */
+#tour { padding-block: 24px; }
+.tour { max-width: 1200px; margin: 0 auto; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr); gap: 48px; }
+.tour-stage { position: sticky; top: calc(env(safe-area-inset-top, 0px) + 84px); align-self: start; }
+.tour-stage .demo { margin-top: 0; }
+.tour-step { min-height: 72vh; display: flex; flex-direction: column; justify-content: center; opacity: .38; transition: opacity .25s; }
+.tour-step.is-active { opacity: 1; }
+.tour-step p { max-width: 52ch; }
+@media (prefers-reduced-motion: reduce) { .tour-step { transition: none; } }
+@media (max-width: 860px) {
+  .tour { grid-template-columns: minmax(0, 1fr); gap: 0; }
+  .tour-stage { top: calc(env(safe-area-inset-top, 0px) + 56px); z-index: 2; background: var(--bg); padding-block: 8px; }
+  .tour-step { min-height: 60vh; justify-content: flex-start; padding-top: 24px; }
+}
+@media (max-width: 860px) {
+  header.top { position: static; }
+  .tour-stage { top: env(safe-area-inset-top, 0px); }
+}
