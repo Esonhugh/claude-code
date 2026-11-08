@@ -1,0 +1,21 @@
+# Plan A picks (2026-11-08 02:00 UTC), from calibration: oracle passes, fork 1 run (org key) result in brackets
+tb2 polyglot-rust-c            # fork 0
+tb2 polyglot-c-py              # fork 0
+tb2 custom-memory-heap-crash   # fork 2/3 (prototype)
+tb2 mailman                    # fork 1, 567k tokens, 291 s
+tb2 make-mips-interpreter      # fork 1, 349k, 207 s
+tb2 write-compressor           # fork 1, 156k
+tb2 configure-git-webserver    # fork 1, 132k (ops)
+tb2 merge-diff-arc-agi-task    # fork 1, 136k
+swebenchpro instance_flipt-io__flipt-492cc0b158200089dceede3b1aba0ed28df3fb1d          # fork 0
+swebenchpro instance_navidrome__navidrome-69e0a266f48bae24a11312e9efbe495a337e4c84     # fork 0
+swebenchpro instance_element-hq__element-web-1077729a19c0ce902e713cf6fab42c91fb7907f1-vnan  # fork 0
+swebenchpro instance_nodebb__nodebb-8168c6c40707478f71b8af60300830fe554c778c-vf2cf3cbd463b7ad942381f1c6d077626485a1e9e  # fork 0
+swebenchpro instance_ansible__ansible-e40889e7112ae00a21a2c74312b330e67a766cc0-v1055803c3a812189a1133297f7f5468579283f86  # fork 1, 1.19M
+swebenchpro instance_internetarchive__openlibrary-30bc73a1395fba2300087c7f307e54bb5372b60a-v76304ecdb3a5954fcf13feb710e8c40fcf24b73c  # fork 1, 289k
+swebenchpro instance_internetarchive__openlibrary-89e4b4431fe7506c365a6f6eb6f6d048d04c044c-v08d8e8889ec945ab821fb156c04c7d2e2810debb  # fork 1, 104k (replaces flipt-d966: its grading became flaky, original oracle fails 1 of 2)
+swebenchpro instance_future-architect__vuls-17ae386d1e185ba742eea4668ca77642e22b54c4   # fork 1, 142k
+spreadsheetbench-verified 56953   # fork 0
+spreadsheetbench-verified 3911    # fork 1
+spreadsheetbench-verified 290-27  # fork 1
+spreadsheetbench-verified 472-15  # fork 1

@@ -138,15 +138,27 @@ Codex 预热 WebSocket 的极小请求（提示不足 10 token）不计。
 
 ```bash
 export BENCH_TB2_ROOT=~/src/terminal-bench-2      # 上游任务源码，不进仓库
-bun bench/cli.ts public --suite tb2 --task regex-log --cells oracle --reps 1 --variant seed1107 --raw ~/bench-raw/public --smoke
-bun bench/cli.ts public --suite tb2 --task regex-log --cells fork-claude-key --reps 3 --variant seed1107 --raw ~/bench-raw/public
+export BENCH_HARBOR_ROOT=~/src/harbor-datasets    # SWE-bench Pro、SpreadsheetBench 等
+bun bench/cli.ts public --picks bench/public/picks-A.txt --cells oracle --reps 1 --variant seed1108 --raw ~/bench-raw/public
+bun bench/cli.ts public --picks bench/public/picks-A.txt --cells fork-claude-key --reps 3 --variant seed1108 --raw ~/bench-raw/public
 ```
+
+`--picks` 按清单逐题执行（也可以用 `--suite` 加 `--task` 只跑一题）。一次只跑一题：容器共用主机网络，绑端口的任务（如 nginx 8080）并行会冲突。SWE-bench Pro 每题跑完后删除镜像并清理构建缓存（镜像 2–5 GB）。
 
 - 任务在自己的镜像里运行（`--network host`），本 fork 二进制复制进容器，模型请求同样经过主机上的记录代理。容器内可用的格：`fork-claude`、`fork-claude-key`、`fork-openai`、`oracle`（参考解）。
 - 镜像拉取 / 构建带退避（Docker Hub 每 IP 每小时约 100 次）；镜像设了 ENTRYPOINT 时用 `--entrypoint sleep` 启动；`prelude.sh` 把系统 CA 换成代理 CA，并让 apt / apk 走 https；SWE-bench Pro 先跑 `gitscrub.sh` 删除全部 ref 和不可达对象，让 agent 无法从 git 历史里读到上游修复。
 - 指令通过 stdin 传给 `claude -p`：`--disallowedTools` 是可变参数，会把后面的 prompt 吞掉。
-- **防污染**：每个导入的公开题都有带种子的扰动变体——改写措辞与格式，改名称、路径、端口、输出格式，重新生成输入和答案并同步改评分脚本，难度不变；每题的改动写在 `PERTURB.md`。变体必须先让参考解（`--cells oracle`）通过才能使用。`bun bench/cli.ts perturb --seed N --out DIR` 从上游源码重新生成。
-- 目前收录 Terminal-Bench 2.0 的 4 题（`regex-log`、`sqlite-db-truncate`、`cancel-async-tasks`、`custom-memory-heap-crash`，种子 `seed1107`）。`custom-memory-heap-crash` 的路径和库都烧在镜像里，只改了措辞。
+- **防污染**：每个导入的公开题都有带种子的扰动变体——改写措辞与格式，改名称、路径、端口、输出格式，重新生成输入和答案并同步改评分脚本，难度不变；每题的改动写在 `PERTURB.md`。变体必须先让参考解（`--cells oracle`）通过才能使用。`bun bench/cli.ts perturb --seed 1108 --out <目录>` 从上游源码重新生成，输出布局与 `bench/public/perturb/seed1108/` 相同（`<suite>/<task>/`）。
+- SWE-bench Pro 在 agent 运行前先把完整 git 历史打包存到容器外（`git bundle create --all`），再删除容器内的历史；评分前把它取回（`git fetch "+refs/*:refs/restore/*"`），因为 `test.sh` 要从修复提交里检出标准测试，否则连参考解也会失败。
+- `prelude.sh` 总是把代理 CA 写到 `/etc/ssl/certs/ca-certificates.crt`，并给 apt 设 `Acquire::https::CaInfo`，没有 ca-certificates 包的镜像也能装软件。
+- **当前题组（方案 A，`bench/public/picks-A.txt`，种子 `seed1108`）**：校准后挑出的 20 题，参考解在全部 20 个扰动变体上都通过。
+  - Terminal-Bench 2.0 8 题：`polyglot-rust-c`、`polyglot-c-py`、`custom-memory-heap-crash`、`mailman`、`make-mips-interpreter`、`write-compressor`、`configure-git-webserver`、`merge-diff-arc-agi-task`。
+  - SWE-bench Pro 8 题：flipt、navidrome、element-web、NodeBB、ansible、openlibrary ×2、vuls 各一题（完整实例名见清单）。
+  - SpreadsheetBench Verified 4 题：`56953`、`3911`、`290-27`、`472-15`。
+  - 校准时本 fork（Claude API key，1 次）在其中 7 题失败，题组对完成率有区分度。
+  - 生成器是 `bench/public/perturb/mkperturb2.py`，输出确定：同一种子重跑结果逐字节相同。
+- `seed1107` 是原型的 4 题 TB2（`regex-log`、`sqlite-db-truncate`、`cancel-async-tasks`、`custom-memory-heap-crash`），由 `mkperturb.py` 生成。`custom-memory-heap-crash` 的路径和库都烧在镜像里，两个种子都只改了措辞。
+- 不收录 `vulnerable-secret`、`break-filter-js-from-html`：API 按使用政策拒答，测不出 CLI 的差别。
 
 ## 原始记录的布局
 
@@ -169,4 +181,3 @@ bun bench/cli.ts public --suite tb2 --task regex-log --cells fork-claude-key --r
 
 - 本机的 Claude 登录由平台托管时（云端容器），凭证文件里没有 OAuth token，`fork-claude` / `official` 的请求由平台在直连 `api.anthropic.com` 时鉴权；`BENCH_DIRECT_HOSTS` 控制代理对哪些主机直连（默认 `api.anthropic.com`）。
 - dsh 走 ChatGPT 时输出最终结果后进程还要挂约 5 分钟；runner 看到最终事件 3 秒后结束它，用时按最终事件计。
-- 公开基准的完整任务清单仍在校准，选定后放进 `bench/public/perturb/`。

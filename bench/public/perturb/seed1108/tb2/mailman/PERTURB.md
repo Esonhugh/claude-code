@@ -1,0 +1,3 @@
+- list name reading-group -> astro-circle in instruction, tests and solution
+- instruction rewritten and reordered
+- seed 1108; oracle = public reference solution with the same edits
