@@ -164,6 +164,7 @@ bun bench/cli.ts public --picks bench/public/picks-A.txt --cells fork-claude-key
   - SpreadsheetBench Verified 4 题：`56953`、`3911`、`290-27`、`472-15`。
   - 校准时本 fork（Claude API key，1 次）在其中 7 题失败，题组对完成率有区分度。
   - 生成器是 `bench/public/perturb/mkperturb2.py`，输出确定：同一种子重跑结果逐字节相同。
+  - `seed1108r2`：`polyglot-rust-c`、`polyglot-c-py`、SpreadsheetBench `56953` 的修订版（`REV=2 mkperturb2.py`），这 3 题用它代替 `seed1108`。第一版把难度改低了：polyglot 的改写指令写出了测试才检查的「目录里只能有源文件」，56953 的改写前言暗示答案区填静态值即可。15 格 × 3 次的通过率是改写 42/45、22/45、37/45，原版只有 7/45、5/45、4/45。修订版保留原题措辭，只改数列、路径和文件名，参考解全部通过。
 - `seed1107` 是原型的 4 题 TB2（`regex-log`、`sqlite-db-truncate`、`cancel-async-tasks`、`custom-memory-heap-crash`），由 `mkperturb.py` 生成。`custom-memory-heap-crash` 的路径和库都烧在镜像里，两个种子都只改了措辞。
 - 不收录 `vulnerable-secret`、`break-filter-js-from-html`：API 按使用政策拒答，测不出 CLI 的差别。
 

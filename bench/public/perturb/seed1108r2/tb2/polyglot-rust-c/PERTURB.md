@@ -1,0 +1,4 @@
+- sequence Fibonacci -> g(n)=g(n-1)+2g(n-2), new test values
+- path /app/polyglot/main.rs -> /app/twin/seq.rs, binaries main/cmain -> seq/cseq
+- instruction keeps the original wording (rev 2: rev 1 stated the hidden one-file test rule)
+- seed 1108; oracle = public reference solution with the same edits

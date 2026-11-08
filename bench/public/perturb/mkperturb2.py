@@ -3,6 +3,10 @@
 import sys, os, re, shutil, random, json
 TB2, HD, OUT, SEED = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4])
 rnd = random.Random(SEED)
+# REV=2 (seed1108r2): keep the original instruction wording where the first revision made tasks easier
+# (polyglot instructions stated the hidden "only the source file" test rule; the SpreadsheetBench preamble
+# hinted that static values in the answer range are enough). Pass rates: polyglot-rust-c 42/45 vs 7/45 original.
+REV = int(os.environ.get('REV', '1'))
 
 def src(suite, t): return f'{TB2}/{t}' if suite == 'tb2' else f'{HD}/{suite}/{t}'
 def start(suite, t):
@@ -37,14 +41,24 @@ sub_all(d, [('/app/polyglot/main.rs', '/app/twin/seq.rs'), ('/app/polyglot/cmain
             ('/app/polyglot', '/app/twin'), ('["main.rs"]', '["seq.rs"]'), ('only main.rs', 'only seq.rs'),
             ('test_cases = [(0, "1"), (1, "1"), (2, "2"), (10, "89"), (42, "433494437")]', 'test_cases = ' + repr([(n, str(v)) for n, v in cases]))], only=['tests'])
 sub_all(d, [('mkdir -p polyglot', 'mkdir -p /app/twin'), ('polyglot/main.rs', '/app/twin/seq.rs'), ('a += b;', 'a += 2 * b;')], only=['solution'])
-w(f'{d}/instruction.md', '''I need one source file, `/app/twin/seq.rs`, that is valid both as Rust and as C++. Both of these must work:
+if REV >= 2: w(f'{d}/instruction.md', '''Write me a single file in /app/twin/seq.rs which is a polyglot, that is, I can run
+
+`rustc /app/twin/seq.rs && /app/twin/seq N`
+or
+`g++ -x c++ /app/twin/seq.rs -o /app/twin/cseq && /app/twin/cseq N`.
+
+Both of these should print to stdout the kth term of the sequence g(0) = 1, g(1) = 1, g(n) = g(n-1) + 2*g(n-2), etc.
+
+I'm using rustc 1.75.0 and g++ 13.2.0.
+''')
+else: w(f'{d}/instruction.md', '''I need one source file, `/app/twin/seq.rs`, that is valid both as Rust and as C++. Both of these must work:
 
     rustc /app/twin/seq.rs -o /app/twin/seq && /app/twin/seq N
     g++ -x c++ /app/twin/seq.rs -o /app/twin/cseq && /app/twin/cseq N
 
 Each binary prints g(N) on stdout, where g(0) = 1, g(1) = 1 and g(n) = g(n-1) + 2*g(n-2) for n >= 2 (so 1, 1, 3, 5, 11, ...). N is small enough that the result fits in a signed 32-bit integer. `/app/twin/` must contain only `seq.rs` before compiling. Toolchain: rustc 1.75.0, g++ 13.2.0.
 ''')
-note(d, ['sequence Fibonacci -> g(n)=g(n-1)+2g(n-2), new test values', 'path /app/polyglot/main.rs -> /app/twin/seq.rs, binaries main/cmain -> seq/cseq', 'instruction rewritten'])
+note(d, ['sequence Fibonacci -> g(n)=g(n-1)+2g(n-2), new test values', 'path /app/polyglot/main.rs -> /app/twin/seq.rs, binaries main/cmain -> seq/cseq', 'instruction rewritten' if REV < 2 else 'instruction keeps the original wording (rev 2: rev 1 stated the hidden one-file test rule)'])
 
 t = 'polyglot-c-py'; d = start('tb2', t)
 L = [2, 1]
@@ -54,14 +68,24 @@ sub_all(d, [('/app/polyglot/main.py.c', '/app/pair/twin.py.c'), ('/app/polyglot/
             ('["main.py.c"]', '["twin.py.c"]'), ('only main.py.c', 'only twin.py.c'),
             ('test_cases = [(42, "267914296"), (10, "55"), (0, "0")]', 'test_cases = ' + repr([(n, str(v)) for n, v in cases]))], only=['tests'])
 sub_all(d, [('mkdir -p polyglot', 'mkdir -p /app/pair'), ('polyglot/main.py.c', '/app/pair/twin.py.c'), ('a, b = 0, 1', 'a, b = 2, 1'), ('unsigned long long a = 0, b = 1', 'unsigned long long a = 2, b = 1')], only=['solution'])
-w(f'{d}/instruction.md', '''Please write a single file `/app/pair/twin.py.c` that works both as a Python 3 script and as a C program:
+if REV >= 2: w(f'{d}/instruction.md', '''Write me a single file in /app/pair/twin.py.c which is a polyglot, that is, I can run
+
+`python3 /app/pair/twin.py.c N`
+or
+`gcc /app/pair/twin.py.c -o /app/pair/ctwin && /app/pair/ctwin N`
+
+Both of these should print to stdout the kth Lucas number, L(0) = 2, L(1) = 1, etc.
+
+I'm using python3 3.12.3 and gcc 13.2.0.
+''')
+else: w(f'{d}/instruction.md', '''Please write a single file `/app/pair/twin.py.c` that works both as a Python 3 script and as a C program:
 
     python3 /app/pair/twin.py.c N
     gcc /app/pair/twin.py.c -o /app/pair/ctwin && /app/pair/ctwin N
 
 Both must print the N-th Lucas number to stdout: L(0) = 2, L(1) = 1, L(n) = L(n-1) + L(n-2). Keep `/app/pair/` containing only `twin.py.c`. Versions: Python 3.12.3, gcc 13.2.0.
 ''')
-note(d, ['sequence Fibonacci -> Lucas numbers, new test values', 'path /app/polyglot/main.py.c -> /app/pair/twin.py.c, binary cmain -> ctwin', 'instruction rewritten'])
+note(d, ['sequence Fibonacci -> Lucas numbers, new test values', 'path /app/polyglot/main.py.c -> /app/pair/twin.py.c, binary cmain -> ctwin', 'instruction rewritten' if REV < 2 else 'instruction keeps the original wording (rev 2: rev 1 stated the hidden one-file test rule)'])
 
 t = 'mailman'; d = start('tb2', t)
 sub_all(d, [('reading-group', 'astro-circle')])
@@ -171,9 +195,9 @@ for line in open(f'{os.path.dirname(OUT)}/../picks-A.txt'):
     sub_all(d, [('/app/output', '/data/results'), ('/app/spreadsheets', '/data/sheets')])
     s = open(f'{d}/instruction.md').read()
     head = s[:s.index('### instruction')]
-    s = s.replace(head, 'Solve the spreadsheet task below with Python (openpyxl and pandas are installed). Write the result workbook to the given output path; only cells inside the answer range are graded. "Cell-Level" means only the listed cells matter, "Sheet-Level" means the whole range is compared.\n\n')
-    s = s.replace('You should generate Python code for the final solution of the question.', '')
+    if REV < 2: s = s.replace(head, 'Solve the spreadsheet task below with Python (openpyxl and pandas are installed). Write the result workbook to the given output path; only cells inside the answer range are graded. "Cell-Level" means only the listed cells matter, "Sheet-Level" means the whole range is compared.\n\n')
+    if REV < 2: s = s.replace('You should generate Python code for the final solution of the question.', '')
     w(f'{d}/instruction.md', s)
     w(f'{d}/setup.sh', 'set -e\nmkdir -p /data/sheets /data/results\nmv /app/spreadsheets/* /data/sheets/\nrmdir /app/spreadsheets /app/output 2>/dev/null || true\n')
-    note(d, ['input dir /app/spreadsheets -> /data/sheets, output dir /app/output -> /data/results (instruction, evaluate.py, test.sh, solution)', 'generic preamble rewritten', 'cell values and answers unchanged (answers are fixed workbooks)'])
+    note(d, ['input dir /app/spreadsheets -> /data/sheets, output dir /app/output -> /data/results (instruction, evaluate.py, test.sh, solution)', 'generic preamble rewritten' if REV < 2 else 'original preamble kept (rev 2: the rev 1 preamble hinted that static values are enough)', 'cell values and answers unchanged (answers are fixed workbooks)'])
 print('ok')

@@ -3,6 +3,7 @@
 // The task runs in its own image; the agent's model traffic goes through the
 // same logging proxy on the host (containers use --network host).
 import { spawnSync } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import { binFor, type Cell, CELLS, type Credentials, getCell, SUB_CELLS, secretValues } from './clis'
@@ -108,6 +109,14 @@ function ensureImage(t: HarborTask, log: string): string {
   throw new Error(`image unavailable: ${image}`)
 }
 
+// Unique per run: SWE-bench Pro task ids are ~110 characters, and a name cut to Docker's limit dropped
+// cell / variant / rep, so parallel runs of one task shared a container (each `docker rm -f` killed the other).
+export function containerName(t: HarborTask, cellId: string, variant: string, rep: number): string {
+  const id = `${t.suite}-${t.task}-${cellId}-${variant}-${rep}`
+  const hash = createHash('sha256').update(id).digest('hex').slice(0, 12)
+  return `bench-${t.task.slice(0, 40)}-${cellId}-${hash}`.toLowerCase().replace(/[^a-z0-9_.-]/g, '-')
+}
+
 export type HarborOptions = { rawRoot: string; workRoot: string; proxyPort: number; creds: Credentials; smoke?: boolean }
 
 export async function runHarbor(t: HarborTask, cellId: string, rep: number, opts: HarborOptions): Promise<RunResult | { reward: string }> {
@@ -135,7 +144,7 @@ async function harborExecute(t: HarborTask, cellId: string, rep: number, opts: H
   const agentTimeout = Number(tomlValue(toml, 'agent', 'timeout_sec') ?? 1800)
   const verifyTimeout = Number(tomlValue(toml, 'verifier', 'timeout_sec') ?? 1800)
   const image = ensureImage(t, path.join(raw, 'build.log'))
-  const name = `bench-${t.suite}-${t.task}-${cellId}-${variant}-${rep}`.toLowerCase().replace(/[^a-z0-9_.-]/g, '-').slice(0, 120)
+  const name = containerName(t, cellId, variant, rep)
   docker(['rm', '-f', name])
   const mount = tools ? ['-v', `${tools}:${tools}:ro`] : []
   if (docker(['run', '-d', '--network', 'host', ...mount, '--entrypoint', 'sleep', '--name', name, image, 'infinity']).status !== 0) throw new Error('docker run failed')
