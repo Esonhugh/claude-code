@@ -197,7 +197,10 @@ writeFileSync(
     base: '../',
     title: 'How we test · esonhugh/claude-code',
     description: 'Benchmark method and results: cache hit rate, tokens and cost per task across seven coding agents on Claude and ChatGPT accounts.',
-    main: read(join(SITE, 'src/benchmark.html')),
+    main:
+      read(join(SITE, 'src/benchmark.html')) +
+      `\n<script>window.BENCH = ${JSON.stringify(JSON.parse(read(join(SITE, 'src/benchmark/charts-data.json')))).replaceAll('</', '<\\/')}</script>`,
+    scripts: ['assets/charts.js'],
   }),
 )
 const scatterData = JSON.stringify(JSON.parse(read(join(SITE, 'src/benchmark/scatter-data.json'))))
@@ -223,6 +226,7 @@ ${read(join(SITE, 'src/benchmark/scatter-body.html')).replace('__DATA__', () => 
 
 cpSync(join(SITE, 'src/style.css'), join(OUT, 'assets/style.css'))
 cpSync(join(SITE, 'src/site.js'), join(OUT, 'assets/site.js'))
+cpSync(join(SITE, 'src/benchmark/charts.js'), join(OUT, 'assets/charts.js'))
 const built = await Bun.build({
   entrypoints: [join(SITE, 'src/demos/main.tsx')],
   outdir: join(OUT, 'assets'),

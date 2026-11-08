@@ -53,11 +53,24 @@
   <h2 class="zh">結果</h2>
   <p class="en">Hit rate is cache reads divided by all input tokens (uncached + cache read + cache write), weighted by tokens. Up and to the left is better: fewer tokens per task, more of them served from cache.</p>
   <p class="zh">命中率 = 快取讀 ÷（未快取輸入 + 快取讀 + 快取寫），按 token 加權。越往左上越好：每個任務用的 token 更少，且更多來自快取。</p>
-  <div class="figure">
-    <img class="light-only" src="../docs/images/cache-benchmark/tokens-vs-hit-light.png" alt="Tokens per task against cache hit rate for every CLI and account" loading="lazy">
-    <img class="dark-only" src="../docs/images/cache-benchmark/tokens-vs-hit-dark.png" alt="Tokens per task against cache hit rate for every CLI and account" loading="lazy">
+  <div class="viz" id="viz-overall">
+    <h3><span class="en">Cache hit rate per CLI</span><span class="zh">各 CLI 的快取命中率</span></h3>
+    <p class="viz-sub"><span class="en">Dot = token-weighted mean over 33 runs, line = single-run range. Hover or focus a row for tokens and cost.</span><span class="zh">圓點 = 33 次的 token 加權平均，線 = 單次範圍。滑過或聚焦一行可看 token 與花費。</span></p>
+    <div class="viz-plot"></div>
   </div>
-  <a class="btn" href="scatter.html"><span class="en">Interactive chart: hover any point, switch to cost</span><span class="zh">互動圖表：滑過看明細、切換成花費</span></a>
+  <div class="viz" id="viz-tasks">
+    <h3><span class="en">Hit rate by task</span><span class="zh">各任務的命中率</span></h3>
+    <p class="viz-sub"><span class="en">Mean of 3 runs per cell; hover a cell for tokens and time. Darker = higher.</span><span class="zh">每格 3 次平均；滑過看 token 與用時。顏色越深越高。</span></p>
+    <div class="viz-plot"></div>
+  </div>
+  <div class="viz" id="viz-tui">
+    <h3><span class="en">Interactive TUI, 6 turns: total tokens</span><span class="zh">互動 TUI 6 輪：總 token</span></h3>
+    <p class="viz-sub"><span class="en">Same 6-turn conversation driven through tmux, 3 runs each. Fewer is better.</span><span class="zh">同一組 6 輪對話用 tmux 驅動，各 3 次。越少越好。</span></p>
+    <div class="viz-plot"></div>
+  </div>
+  <h3 style="margin-top:36px"><span class="en">Tokens vs hit rate, every CLI and account</span><span class="zh">token 與命中率：所有 CLI 與帳號</span></h3>
+  <p class="muted"><span class="en">Switch the x-axis between tokens and cost, filter by task type, hover any point. Chart labels are in Chinese.</span><span class="zh">可切換橫軸為 token 或花費、按任務類型篩選、滑過任一點看明細。</span> <a href="scatter.html"><span class="en">Open full page</span><span class="zh">開新頁</span></a></p>
+  <iframe class="scatter-frame" id="scatter-frame" src="scatter.html" title="Tokens vs cache hit scatter" loading="lazy"></iframe>
   <div class="tablewrap"><table>
     <thead><tr><th><span class="en">CLI · account</span><span class="zh">CLI · 帳號</span></th><th><span class="en">Cache hit</span><span class="zh">命中率</span></th><th><span class="en">Tokens / task</span><span class="zh">token / 任務</span></th><th><span class="en">$ / task</span><span class="zh">$ / 任務</span></th><th><span class="en">TUI 6 turns</span><span class="zh">TUI 6 輪</span></th><th><span class="en">Start → 1st request</span><span class="zh">啟動到首個請求</span></th></tr></thead>
     <tbody>
@@ -89,10 +102,18 @@
       <tr><td><span class="en">3 subagents / 3-member team</span><span class="zh">3 個 subagent / 3 人團隊</span></td><td style="text-align:left">2.8× / 6.0× <span class="muted"><span class="en">(official 3.7×)</span><span class="zh">（官方 3.7×）</span></span></td><td style="text-align:left">3.8× / 8.5×</td></tr>
     </tbody>
   </table></div>
-  <div class="figure">
-    <img class="light-only" src="../docs/images/cache-benchmark/long-idle-light.png" alt="Cache hit rate of the first request after each idle gap" loading="lazy">
-    <img class="dark-only" src="../docs/images/cache-benchmark/long-idle-dark.png" alt="Cache hit rate of the first request after each idle gap" loading="lazy">
+  <div class="viz" id="viz-idle">
+    <h3><span class="en">First request of each turn after idling</span><span class="zh">每輪閒置後第一個請求的命中率</span></h3>
+    <p class="viz-sub"><span class="en">One 7-turn session over 2.7 hours; the column header shows the idle gap before that turn. Claude's 1-hour cache expires after 65 minutes; pi and opencode write only a 5-minute cache on Claude.</span><span class="zh">同一會話 7 輪、約 2.7 小時；欄標題是該輪之前閒置的分鐘數。Claude 的 1 小時快取在閒置 65 分鐘後過期；pi 與 opencode 在 Claude 側只寫 5 分鐘快取。</span></p>
+    <div class="viz-plot"></div>
   </div>
+  <div class="viz" id="viz-multi">
+    <h3><span class="en">Multi-agent cost: total tokens for one 3-module bug fix</span><span class="zh">多代理成本：修 3 個模組 bug 的總 token</span></h3>
+    <p class="viz-sub"><span class="en">Label = multiple of the same CLI's single-agent run. Faded bar: official 2.1.319 did not actually form a team in -p.</span><span class="zh">標籤 = 相對同一 CLI 單代理的倍數。淡色：官方 2.1.319 在 -p 下沒有真正組隊。</span></p>
+    <div class="viz-legend"></div>
+    <div class="viz-plot"></div>
+  </div>
+  <p class="foot"><span class="en">Every value is also in the tables of the</span><span class="zh">所有數值也列在</span> <a href="../docs/cache-benchmark.html"><span class="en">full report</span><span class="zh">完整報告</span></a><span class="zh">的表格裡</span>.</p>
 </div></section>
 
 <section id="public"><div class="wrap">
