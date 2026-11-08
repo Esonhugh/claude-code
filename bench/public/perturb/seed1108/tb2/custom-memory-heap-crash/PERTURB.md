@@ -1,0 +1,2 @@
+- wording only (same text as seed1107): paths, libs and tests are baked into the image
+- seed 1108; oracle = public reference solution with the same edits

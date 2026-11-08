@@ -1,0 +1,3 @@
+- entry file vm.js -> mipsvm.js in instruction, tests and solution
+- instruction rewritten
+- seed 1108; oracle = public reference solution with the same edits

@@ -1,0 +1,4 @@
+- sequence Fibonacci -> g(n)=g(n-1)+2g(n-2), new test values
+- path /app/polyglot/main.rs -> /app/twin/seq.rs, binaries main/cmain -> seq/cseq
+- instruction rewritten
+- seed 1108; oracle = public reference solution with the same edits

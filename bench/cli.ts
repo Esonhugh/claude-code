@@ -8,7 +8,7 @@ import path from 'node:path'
 import { parseArgs } from 'node:util'
 import { scatterSvg } from './lib/chart'
 import { CELLS, type Cell, credentialsFromEnv, selectCells } from './lib/clis'
-import { generateVariants, harborTask, IN_CONTAINER_CELLS, runHarbor } from './lib/harbor'
+import { generateVariants, harborTask, IN_CONTAINER_CELLS, readPicks, removeImage, runHarbor } from './lib/harbor'
 import { PRICES, PRICES_AS_OF, summarize, type CellSummary } from './lib/metrics'
 import { makePlan } from './lib/plan'
 import { cliVersion, collectResults, runDir, runOne } from './lib/run'
@@ -21,7 +21,7 @@ const USAGE = `usage: bun bench/cli.ts <command> [options]
   run     --cells a,b --tasks ... --reps 3 --seed 1 --raw DIR [--work DIR] [--port 9600] [--timeout 1800] [--smoke]
   analyze --raw DIR [--by type]          per-run results.json + per-cell summary
   chart   --raw DIR --out DIR [--png]    tokens-vs-hit and cost-vs-hit scatter (light + dark SVG)
-  public  --suite tb2 --task NAME --cells fork-claude-key,oracle --reps 3 --raw DIR [--variant seed1107] [--smoke]
+  public  (--suite tb2 --task NAME | --picks bench/public/picks-A.txt) --cells fork-claude-key,oracle --reps 3 --raw DIR [--variant seed1108] [--smoke]
   perturb --seed N --out DIR             regenerate perturbed public variants (needs BENCH_TB2_ROOT)
 
 Credentials come only from the environment: CLAUDE_CODE_ORG_KEY (Claude API key cells),
@@ -45,6 +45,7 @@ const { positionals, values: o } = parseArgs({
     suite: { type: 'string', default: 'tb2' },
     task: { type: 'string' },
     variant: { type: 'string' },
+    picks: { type: 'string' },
   },
 })
 
@@ -158,18 +159,25 @@ async function main() {
     }
     case 'public': {
       const raw = need(o.raw, '--raw')
-      if (!o.task) throw new Error('--task is required')
+      if (!o.task && !o.picks) throw new Error('--task or --picks is required')
+      if (Number(o.reps) < 3 && !o.smoke && o.cells !== 'oracle') throw new Error('need at least 3 runs per cell; use --smoke for a quick check')
       const creds = credentialsFromEnv()
-      const t = harborTask(o.suite!, o.task, o.variant)
-      for (let rep = 1; rep <= Number(o.reps); rep++) {
-        for (const cell of o.cells!.split(',')) {
-          try {
-            const r = await runHarbor(t, cell, rep, { rawRoot: raw, workRoot: work, proxyPort: port, creds, smoke: o.smoke })
-            console.log(`${o.suite}/${o.task}${o.variant ? ` (${o.variant})` : ''} ${cell} rep ${rep}: ${'reward' in r ? `reward=${r.reward}` : `${r.ok ? 'pass' : 'FAIL'} tokens=${r.totalTokens}`}`)
-          } catch (e) {
-            console.log(`${o.task} ${cell} rep ${rep}: infra failure: ${(e as Error).message}`)
+      // One task at a time: containers share the host network (ports collide) and SWE-bench Pro images fill the disk.
+      const picks = o.picks ? readPicks(path.resolve(o.picks)) : [{ suite: o.suite!, task: o.task! }]
+      for (const pick of picks) {
+        const t = harborTask(pick.suite, pick.task, o.variant)
+        for (let rep = 1; rep <= Number(o.reps); rep++) {
+          for (const cell of o.cells!.split(',')) {
+            const label = `${pick.suite}/${pick.task}${o.variant ? ` (${o.variant})` : ''} ${cell} rep ${rep}`
+            try {
+              const r = await runHarbor(t, cell, rep, { rawRoot: raw, workRoot: work, proxyPort: port, creds, smoke: o.smoke })
+              console.log(`${label}: ${'reward' in r ? `reward=${r.reward}` : `${r.ok ? 'pass' : 'FAIL'} tokens=${r.totalTokens}`}`)
+            } catch (e) {
+              console.log(`${label}: ${(e as Error).message.startsWith('exists:') ? 'skip (already recorded)' : `infra failure: ${(e as Error).message}`}`)
+            }
           }
         }
+        if (pick.suite === 'swebenchpro') removeImage(t)
       }
       return
     }

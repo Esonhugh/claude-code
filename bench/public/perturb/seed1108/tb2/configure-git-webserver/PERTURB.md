@@ -1,0 +1,3 @@
+- repo path /git/server -> /srv/repos/site, port 8080 -> 8181, file hello.html -> status.html, content "hello world" -> "site is live" (instruction, verify.sh, solution)
+- instruction rewritten
+- seed 1108; oracle = public reference solution with the same edits
