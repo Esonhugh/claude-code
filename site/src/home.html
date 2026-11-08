@@ -1,0 +1,127 @@
+<main id="top">
+<div class="hero"><div class="wrap">
+  <h1 class="en">One CLI.<br><span class="c">Claude</span> or <span class="g">ChatGPT</span>.</h1>
+  <h1 class="zh">一個 CLI，<br><span class="c">Claude</span> 或 <span class="g">ChatGPT</span> 帳號都能用。</h1>
+  <p class="lede en">An unofficial fork of Claude Code that keeps every tool, permission, hook and skill, then adds OpenAI models, a browser UI, Mods and real Agent Teams, with a shorter system prompt than the official build.</p>
+  <p class="lede zh">Claude Code 的非官方分支：保留全部工具、權限、hooks 與 skills，再加上 OpenAI 模型、瀏覽器介面、Mods 與真正組隊的 Agent Teams，系統提示還比官方版短。</p>
+
+  <div class="install">
+    <div class="tabs" role="tablist" aria-label="Install method">
+      <button type="button" role="tab" id="tab-bun" aria-selected="true" data-cmd="bun add --global @esonhugh/claude-code">bun</button>
+      <button type="button" role="tab" id="tab-src" aria-selected="false" data-cmd="git clone https://github.com/Esonhugh/claude-code && cd claude-code && bun install && make build">source</button>
+    </div>
+    <div class="cmd"><pre><span class="p">$ </span><span id="cmd">bun add --global @esonhugh/claude-code</span></pre><button type="button" class="copy" id="copy">Copy</button></div>
+    <div class="note"><span class="en">Linux x64 / arm64, macOS arm64, Windows x64. Then run <code>claude</code>.</span><span class="zh">支援 Linux x64 / arm64、macOS arm64、Windows x64。裝完執行 <code>claude</code>。</span></div>
+  </div>
+  <p class="scroll-cue">$ scroll to continue</p>
+</div></div>
+
+<section id="accounts"><div class="wrap">
+  <p class="prompt">$ <b>claude</b> --help accounts</p>
+  <h2 class="en">Same tools, either account</h2>
+  <h2 class="zh">同一套工具，換帳號就好</h2>
+  <p class="en">Sign in with a Claude account, a ChatGPT account (browser OAuth or device code over SSH), or an API key. Tools, UI and slash commands stay the same. The ChatGPT path adds a Codex-style <code>apply_patch</code>, Codex Apps from your ChatGPT connections, and the <code>/daybreak</code> cyber access tier.</p>
+  <p class="zh">用 Claude 帳號、ChatGPT 帳號（瀏覽器 OAuth，或 SSH 上用 device code）或 API key 登入都行，工具、介面、斜線指令完全一樣。走 ChatGPT 時還多了 Codex 式 <code>apply_patch</code>、ChatGPT 裡已連好的 Codex Apps，以及 <code>/daybreak</code> 網路安全存取檔位。</p>
+  <div class="demo" data-demo="accounts"></div>
+  <p class="demo-cap"><span class="en">Animated replay of the same task on both accounts. On ChatGPT the edit goes through the Codex-style Patch tool.</span><span class="zh">同一個任務在兩種帳號上的動畫重播。走 ChatGPT 時，改檔用的是 Codex 式 Patch 工具。</span></p>
+</div></section>
+
+<section id="features"><div class="wrap">
+  <p class="prompt">$ <b>claude</b> --list-features</p>
+  <h2 class="en">What the fork adds</h2>
+  <h2 class="zh">這個分支多了什麼</h2>
+  <ul class="feat">
+    <li><b>claude web</b><span class="en">Claude Code in your browser: rendered math, Mermaid and diffs, PDF and Office previews, comments on files, interject or stop mid-turn.</span><span class="zh">在瀏覽器裡用 Claude Code：公式、Mermaid、diff 直接渲染，預覽 PDF 與 Office，在檔案上留言，回合中途插話或立刻停止。</span></li>
+    <li><b>Projects</b><span class="en">A coordinator splits work into tasks and runs several workers in parallel; you approve, message or review each one.</span><span class="zh">協調者把工作拆成任務，交給多個 worker 並行；每個任務都能批准、發訊息、審閱。</span></li>
+    <li><b>Mods</b><span class="en">One JS/TS file adds commands, rewrites tool calls, and draws bands and side panels in the terminal and the web UI.</span><span class="zh">一個 JS/TS 檔就能加指令、改寫工具呼叫，在終端與網頁介面畫狀態條和側邊面板。</span></li>
+    <li><b>Agent Teams</b><span class="en">A lead and teammates that stay online, message each other with SendMessage and share one task list.</span><span class="zh">負責人帶隊友，每位隊友都是常駐的完整會話，用 SendMessage 互傳訊息、共用任務清單。</span></li>
+    <li><b>Dynamic Workflow</b><span class="en">Claude writes an orchestration script that runs sub-agents in phases and in parallel; watch it in /workflows.</span><span class="zh">讓 Claude 寫編排腳本，分階段並行調度子 agent，用 /workflows 看進度。</span></li>
+    <li><b>Tmux tool</b><span class="en">A persistent interactive terminal for REPLs, TUIs and Ctrl+C, isolated from your own tmux server.</span><span class="zh">可持續互動的終端：開 REPL、操作 TUI、按 Ctrl+C，與你自己的 tmux 隔離。</span></li>
+    <li><b>/goal</b><span class="en">Give a finish condition such as "all tests pass"; Claude checks it each turn and keeps going until it holds.</span><span class="zh">給一個完成條件，例如「所有測試通過」，每輪結束自動檢查，沒達成就繼續。</span></li>
+    <li><b>Context tiers</b><span class="en"><code>/context-window</code> picks 128k to 1M per model; memory can switch to SQLite FTS5 lookup.</span><span class="zh"><code>/context-window</code> 按模型選 128k 到 1M；記憶可改用 SQLite FTS5 全文檢索。</span></li>
+    <li><b>Private by default</b><span class="en">No telemetry to Anthropic unless you turn it on; project settings cannot turn it on for you.</span><span class="zh">預設不向 Anthropic 傳送遙測；專案設定也無法替你打開。</span></li>
+  </ul>
+  <a class="btn" href="docs/"><span class="en">All {{featureCount}} feature docs</span><span class="zh">全部 {{featureCount}} 份功能文件</span></a>
+</div></section>
+
+<section id="web"><div class="wrap">
+  <p class="prompt">$ <b>claude web</b> --no-open</p>
+  <h2 class="en">A browser UI that stays on your machine</h2>
+  <h2 class="zh">瀏覽器介面，資料留在本機</h2>
+  <p class="en">The web UI talks to your local <code>claude</code>. It listens on localhost only; the one-time token in the URL becomes a cookie and leaves the address bar. LAN access needs an explicit <code>--dangerously-allow-local-network</code>.</p>
+  <p class="zh">網頁介面連的是你本機的 <code>claude</code>，只監聽 localhost；網址裡的一次性 token 換成 cookie 後就從網址列移除。要讓區網存取必須明確加上 <code>--dangerously-allow-local-network</code>。</p>
+  <div class="code"><span class="k">$</span> claude web                 <span class="k"># local only, opens the browser</span>
+<span class="k">$</span> claude web --no-open       <span class="k"># over SSH: print the URL only</span></div>
+  <div class="demo" data-demo="web"></div>
+  <p class="demo-cap"><span class="en">Simulated session with the real UI labels: read, edit with a diff, approve a command, check the result.</span><span class="zh">用真實介面文字模擬的一次會話：讀檔、改檔看 diff、批准命令、看結果。</span></p>
+  <a class="btn" href="docs/web-ui-tour.html"><span class="en">Take the screenshot tour</span><span class="zh">看截圖導覽</span></a>
+</div></section>
+
+<section id="mods"><div class="wrap">
+  <p class="prompt">$ <b>claude</b> --plugin-dir ./hello-mod</p>
+  <h2 class="en">Change the harness, not your habits</h2>
+  <h2 class="zh">改造工具本身，不必改習慣</h2>
+  <p class="en">A Mod is a plugin with a hooks module. It can register slash commands, intercept tool calls, and render UI that shows in both the terminal and <code>claude web</code>. The repo ships examples: Token Weather draws a context-usage band; Blast Radius shows what a risky command would touch before it runs.</p>
+  <p class="zh">Mod 就是帶 hooks 模組的插件：註冊斜線指令、攔截工具呼叫、畫出同時出現在終端與 <code>claude web</code> 的介面。repo 內附範例：Token Weather 在輸入框上方畫上下文用量條，Blast Radius 在危險指令執行前列出它會影響什麼。</p>
+  <div class="code">hello-mod/
+├── .claude-plugin/plugin.json
+└── hooks/
+    ├── hooks.json        <span class="k">{ "modules": ["./register.ts"] }</span>
+    └── register.ts       <span class="k">registers /hello and a tool interceptor</span>
+
+<span class="k">$</span> claude plugin validate ./hello-mod   <span class="k"># static scan, runs no code</span>
+<span class="k">$</span> claude plugin test ./hello-mod</div>
+</div></section>
+
+<section id="benchmark"><div class="wrap">
+  <p class="prompt">$ <b>bun</b> bench/cli.ts --report</p>
+  <h2 class="en">Fewer tokens, same cache hits</h2>
+  <h2 class="zh">token 更少，快取命中率不變</h2>
+  <p class="en">Same tasks (office, research, coding, ops, Lean proofs), same model, fresh HOME per run, at least 3 runs per cell, every request logged through a recording proxy. Hit rate is cache reads divided by all input, weighted by tokens.</p>
+  <p class="zh">同一批任務（辦公、研究、程式、維運、Lean 證明）、同一模型、每次全新 HOME、每格至少 3 次，所有請求經記錄代理留存。命中率 = 快取讀取 ÷ 全部輸入，按 token 加權。</p>
+  <div class="tablewrap"><table>
+    <thead><tr><th><span class="en">CLI · account</span><span class="zh">CLI · 帳號</span></th><th><span class="en">Cache hit</span><span class="zh">命中率</span></th><th><span class="en">Tokens / task</span><span class="zh">token / 任務</span></th><th><span class="en">$ / task</span><span class="zh">$ / 任務</span></th><th><span class="en">Passed</span><span class="zh">通過</span></th></tr></thead>
+    <tbody>
+      <tr><td class="us"><span class="sw" style="background:var(--claude)"></span>This fork · Claude</td><td class="us">87.1%</td><td class="us">72.7k</td><td class="us">$0.078</td><td>33/33</td></tr>
+      <tr><td><span class="sw" style="background:var(--claude);opacity:.4"></span>Official Claude Code</td><td>87.3%</td><td>81.0k</td><td>$0.088</td><td>33/33</td></tr>
+      <tr><td class="us"><span class="sw" style="background:var(--gpt)"></span>This fork · ChatGPT</td><td class="us">85.3%</td><td class="us">75.9k</td><td class="us">$0.050</td><td>33/33</td></tr>
+      <tr><td><span class="sw" style="background:var(--gpt);opacity:.4"></span>Codex CLI</td><td>88.8%</td><td>80.3k</td><td>$0.047</td><td>33/33</td></tr>
+      <tr><td><span class="sw" style="background:var(--gpt);opacity:.4"></span>opencode</td><td>89.2%</td><td>81.5k</td><td>$0.059</td><td>33/33</td></tr>
+      <tr><td><span class="sw" style="background:var(--gpt);opacity:.4"></span>pi</td><td>84.0%</td><td>36.5k</td><td>$0.041</td><td>33/33</td></tr>
+    </tbody>
+  </table></div>
+  <p class="foot"><span class="en">Collected 2026-11-07. Claude side: claude-sonnet-5-5, medium effort. ChatGPT side: gpt-6.1-sol, low effort. Cost uses public API prices for both.</span><span class="zh">採集於 2026-11-07。Claude 側 claude-sonnet-5-5、medium effort；ChatGPT 側 gpt-6.1-sol、low effort。花費按兩家公開 API 價換算。</span></p>
+  <a class="btn" href="benchmark/"><span class="en">How we test, and all results</span><span class="zh">測試方法與完整結果</span></a>
+</div></section>
+
+<section id="limits"><div class="wrap">
+  <p class="prompt">$ <b>cat</b> KNOWN_LIMITS</p>
+  <h2 class="en">What it does not do well</h2>
+  <h2 class="zh">目前做得不好的地方</h2>
+  <ul class="limits en">
+    <li>It is unofficial. The source was recovered from Claude Code's published artifacts and is not endorsed by Anthropic.</li>
+    <li>On ChatGPT, short tasks hit the cache less than Codex (82.9% vs 89.7%) because Codex keeps its system prompt on the server.</li>
+    <li>After a long idle, the first request of a new session hits 0% here and 67% on official, whose static prefix is shared by all users.</li>
+    <li>A 3-member Agent Team costs 6.0× a single agent on Claude and 8.5× on ChatGPT. Teams are off by default.</li>
+    <li>No macOS x64 binary.</li>
+  </ul>
+  <ul class="limits zh">
+    <li>非官方。原始碼從 Claude Code 公開發佈物還原，未獲 Anthropic 背書。</li>
+    <li>ChatGPT 帳號的短任務命中率低於 Codex（82.9% 對 89.7%），因為 Codex 的系統提示放在伺服器端。</li>
+    <li>長時間閒置後，新會話第一個請求本分支命中 0%，官方 67%（官方靜態前綴由所有使用者共享）。</li>
+    <li>3 人 Agent Team 在 Claude 帳號是單 agent 的 6.0 倍，ChatGPT 帳號 8.5 倍；Teams 預設關閉。</li>
+    <li>沒有 macOS x64 版本。</li>
+  </ul>
+</div></section>
+
+<section id="docs"><div class="wrap">
+  <p class="prompt">$ <b>ls</b> docs/</p>
+  <h2 class="en">Read more</h2>
+  <h2 class="zh">延伸閱讀</h2>
+  <div class="cards">
+    <a href="https://github.com/Esonhugh/claude-code/blob/dev/docs/articles/why-this-fork.en.md"><b class="en">Why this fork</b><b class="zh">為什麼用這個分支</b><span class="en">The long introduction, with setup for both accounts.</span><span class="zh">完整介紹，含兩種帳號的設定步驟。</span></a>
+    <a href="docs/"><b class="en">Feature docs</b><b class="zh">功能文件</b><span class="en">Every feature, its settings and what it looks like.</span><span class="zh">每項功能的作用、設定與畫面。</span></a>
+    <a href="https://github.com/Esonhugh/claude-code/issues"><b>Issues</b><span class="en">Report a bug or ask for a feature.</span><span class="zh">回報問題或提出功能需求。</span></a>
+  </div>
+</div></section>
+</main>

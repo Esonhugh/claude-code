@@ -1,0 +1,23 @@
+{
+  "name": "site",
+  "private": true,
+  "description": "Project website published to GitHub Pages",
+  "type": "module",
+  "scripts": {
+    "build": "bun build.ts",
+    "preview": "bun build.ts --serve",
+    "check": "tsc -p ."
+  },
+  "dependencies": {
+    "@remotion/player": "4.0.538",
+    "marked": "17.0.5",
+    "react": "19.2.3",
+    "react-dom": "19.2.3",
+    "remotion": "4.0.538"
+  },
+  "devDependencies": {
+    "@types/react": "19.2.7",
+    "@types/react-dom": "19.2.3",
+    "typescript": "5.9.3"
+  }
+}
