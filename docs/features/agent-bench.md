@@ -145,7 +145,14 @@ bun bench/cli.ts public --picks bench/public/picks-A.txt --cells fork-claude-key
 
 `--picks` 按清单逐题执行（也可以用 `--suite` 加 `--task` 只跑一题）。一次只跑一题：容器共用主机网络，绑端口的任务（如 nginx 8080）并行会冲突。SWE-bench Pro 每题跑完后删除镜像并清理构建缓存（镜像 2–5 GB）。
 
-- 任务在自己的镜像里运行（`--network host`），本 fork 二进制复制进容器，模型请求同样经过主机上的记录代理。容器内可用的格：`fork-claude`、`fork-claude-key`、`fork-openai`、`oracle`（参考解）。
+- 任务在自己的镜像里运行（`--network host`），模型请求同样经过主机上的记录代理。所有格都能在容器里跑，另有 `oracle`（参考解）：
+  - 本 fork 和官方的二进制复制进容器（`/usr/local/bin/claude`）。
+  - 第三方 CLI 不复制进镜像：`BENCH_TOOLS_DIR` 目录放它们的包、自带的 node / bun 和每个产品一个启动脚本 `bin/<product>`（脚本里用绝对路径），只读挂载到容器里同一路径。镜像的 PATH 不变，任务环境不会多出 node 或 bun。
+  - 每个格照常在主机上写全新 HOME，复制到容器的 `/root` 后删掉主机副本；凭证类环境变量只按名字传给 `docker exec`。
+  - 跑完只结束 agent 自己的进程（按 `/proc` 里的命令行匹配，精简镜像没有 `pkill`），agent 启动的服务留着给测试用。
+  - dsh 用 `DSH_PERMISSION_MODE=danger-full-access`（和其他格的免确认模式对齐；默认沙箱只允许写当前目录），并重新打开 headless 关掉的凭证存储，ChatGPT 登录才读得到。
+- 多 agent 格：`fork-claude-key-sub`、`official-key-sub`、`fork-openai-sub`，同一 CLI 和账号，prompt 末尾要求并行启动 subagent 处理独立部分。
+- `--rep N` 只跑第 N 轮，多个进程各用自己的 `--port` 可以并行跑同一个矩阵（绑主机端口的任务除外）。
 - 镜像拉取 / 构建带退避（Docker Hub 每 IP 每小时约 100 次）；镜像设了 ENTRYPOINT 时用 `--entrypoint sleep` 启动；`prelude.sh` 把系统 CA 换成代理 CA，并让 apt / apk 走 https；SWE-bench Pro 先跑 `gitscrub.sh` 删除全部 ref 和不可达对象，让 agent 无法从 git 历史里读到上游修复。
 - 指令通过 stdin 传给 `claude -p`：`--disallowedTools` 是可变参数，会把后面的 prompt 吞掉。
 - **防污染**：每个导入的公开题都有带种子的扰动变体——改写措辞与格式，改名称、路径、端口、输出格式，重新生成输入和答案并同步改评分脚本，难度不变；每题的改动写在 `PERTURB.md`。变体必须先让参考解（`--cells oracle`）通过才能使用。`bun bench/cli.ts perturb --seed 1108 --out <目录>` 从上游源码重新生成，输出布局与 `bench/public/perturb/seed1108/` 相同（`<suite>/<task>/`）。

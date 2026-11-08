@@ -51,7 +51,7 @@ function copyTree(src: string, dst: string, skip: (rel: string) => boolean = () 
 
 // exitAfter: some CLIs keep running after their final event (dsh on the ChatGPT
 // route holds its WebSocket ~5 min). Once that marker is in stdout, the run is over.
-function runAgent(argv: string[], env: Record<string, string>, cwd: string, stdin: string | undefined, out: string, err: string, timeoutSec: number, exitAfter?: string) {
+export function runAgent(argv: string[], env: Record<string, string>, cwd: string, stdin: string | undefined, out: string, err: string, timeoutSec: number, exitAfter?: string) {
   return new Promise<{ rc: number | null; endedAt?: number }>(resolve => {
     let endedAt: number | undefined
     const child = spawn(argv[0], argv.slice(1), {
