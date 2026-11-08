@@ -142,23 +142,8 @@
 </div></section>
 
 <section id="limits"><div class="wrap">
-  <p class="prompt">$ <b>cat</b> KNOWN_LIMITS</p>
-  <h2 class="en">What it does not do well</h2>
-  <h2 class="zh">目前做得不好的地方</h2>
-  <ul class="limits en">
-    <li>It is unofficial. The source was recovered from Claude Code's published artifacts and is not endorsed by Anthropic.</li>
-    <li>On ChatGPT, short tasks hit the cache less than Codex (82.9% vs 89.7%) because Codex keeps its system prompt on the server.</li>
-    <li>After a long idle, the first request of a new session hits 0% here and 67% on official, whose static prefix is shared by all users.</li>
-    <li>A 3-member Agent Team costs 6.0× a single agent on Claude and 8.5× on ChatGPT. Teams are off by default.</li>
-    <li>No macOS x64 binary.</li>
-  </ul>
-  <ul class="limits zh">
-    <li>非官方。原始碼從 Claude Code 公開發佈物還原，未獲 Anthropic 背書。</li>
-    <li>ChatGPT 帳號的短任務命中率低於 Codex（82.9% 對 89.7%），因為 Codex 的系統提示放在伺服器端。</li>
-    <li>長時間閒置後，新會話第一個請求本分支命中 0%，官方 67%（官方靜態前綴由所有使用者共享）。</li>
-    <li>3 人 Agent Team 在 Claude 帳號是單 agent 的 6.0 倍，ChatGPT 帳號 8.5 倍；Teams 預設關閉。</li>
-    <li>沒有 macOS x64 版本。</li>
-  </ul>
+  <h2 class="en">Unofficial build</h2>
+  <h2 class="zh">非官方版本</h2>
 </div></section>
 
 <section id="docs"><div class="wrap">

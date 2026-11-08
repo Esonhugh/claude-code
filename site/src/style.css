@@ -105,9 +105,6 @@ td.us { font-weight: 600; }
 .sw { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; vertical-align: 1px; }
 .foot { font-size: 13px; color: var(--muted); margin-top: 10px; }
 
-ul.limits { padding: 0; list-style: none; margin: 16px 0 0; display: grid; gap: 10px; max-width: 70ch; }
-ul.limits li { padding-left: 22px; position: relative; }
-ul.limits li::before { content: "−"; position: absolute; left: 0; font-family: var(--mono); color: var(--muted); }
 
 .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; margin-top: 20px; }
 .cards a { display: block; padding: 18px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); color: var(--fg); text-decoration: none; }
