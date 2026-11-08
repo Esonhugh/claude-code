@@ -1,5 +1,5 @@
-import { interpolate, Sequence, useCurrentFrame } from 'remotion'
-import { clamp, type SimStep, Terminal, tui } from './Terminal'
+import { interpolate, Sequence, useCurrentFrame } from './clock'
+import { type SimStep, Terminal, tui } from './Terminal'
 import type { Lang } from './i18n'
 
 // The same task on both accounts: the Claude side edits with Edit, the ChatGPT side with apply_patch (shown as Patch).
@@ -30,7 +30,7 @@ const Side: React.FC<{ lang: Lang; side: 'claude' | 'gpt' }> = ({ lang, side }) 
   const accent = side === 'claude' ? tui.claude : tui.openai
   const label = side === 'claude' ? (lang === 'en' ? 'Claude account' : 'Claude 帳號') : lang === 'en' ? 'ChatGPT account' : 'ChatGPT 帳號'
   return (
-    <div style={{ position: 'absolute', inset: 0, opacity: interpolate(f, [0, 8, HALF - 8, HALF], [0, 1, 1, 0], clamp) }}>
+    <div style={{ position: 'absolute', inset: 0, opacity: interpolate(f, [0, 8, HALF - 8, HALF], [0, 1, 1, 0]) }}>
       <Terminal
         title="claude — ~/projects/search-demo"
         steps={steps(lang, side)}
@@ -43,13 +43,13 @@ const Side: React.FC<{ lang: Lang; side: 'claude' | 'gpt' }> = ({ lang, side }) 
       <div
         style={{
           position: 'absolute',
-          right: 64,
-          top: 56,
-          padding: '6px 14px',
-          borderRadius: 20,
+          right: 12,
+          top: 42,
+          padding: '2px 10px',
+          borderRadius: 12,
           background: accent,
           color: '#111',
-          font: '600 20px "IBM Plex Sans", "Noto Sans TC", sans-serif',
+          font: '600 12px "IBM Plex Sans", "Noto Sans TC", sans-serif',
         }}
       >
         {label}
@@ -59,7 +59,7 @@ const Side: React.FC<{ lang: Lang; side: 'claude' | 'gpt' }> = ({ lang, side }) 
 }
 
 export const AccountsDemo: React.FC<{ lang: Lang }> = ({ lang }) => (
-  <div style={{ position: 'absolute', inset: 0, background: '#0e0f12' }}>
+  <div style={{ position: 'absolute', inset: 0 }}>
     <Sequence durationInFrames={HALF}>
       <Side lang={lang} side="claude" />
     </Sequence>

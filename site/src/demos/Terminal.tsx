@@ -1,4 +1,4 @@
-import { interpolate, useCurrentFrame } from 'remotion'
+import { interpolate, useCurrentFrame } from './clock'
 import { TURN_COMPLETION_VERBS } from '../../../src/constants/turnCompletionVerbs'
 
 // Dark theme colors from src/utils/theme.ts and spinner glyphs from src/components/Spinner/utils.ts.
@@ -17,7 +17,6 @@ export const tui = {
 }
 const SPINNER = ['·', '✢', '*', '✶', '✻', '✽']
 const SPINNER_CYCLE = [...SPINNER, ...[...SPINNER].reverse()]
-export const clamp = { extrapolateLeft: 'clamp', extrapolateRight: 'clamp' } as const
 export const MONO = '"IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace'
 
 export type TuiColor = keyof typeof tui
@@ -42,35 +41,33 @@ export const Terminal: React.FC<{ title: string; steps: SimStep[]; footer: { tex
     <div
       style={{
         position: 'absolute',
-        inset: 40,
-        borderRadius: 16,
+        inset: 0,
         overflow: 'hidden',
         background: 'rgb(24,24,24)',
-        border: `2px solid ${accent}55`,
         fontFamily: MONO,
-        fontSize: 24,
+        fontSize: 13.5,
         lineHeight: 1.55,
         color: tui.text,
         display: 'flex',
         flexDirection: 'column',
       }}
     >
-      <div style={{ height: 40, display: 'flex', alignItems: 'center', gap: 10, padding: '0 18px', background: '#262523', flex: 'none' }}>
+      <div style={{ height: 32, display: 'flex', alignItems: 'center', gap: 7, padding: '0 12px', background: '#262523', borderBottom: `2px solid ${accent}`, flex: 'none' }}>
         {['#ff5f57', '#febc2e', '#28c840'].map(c => (
-          <div key={c} style={{ width: 13, height: 13, borderRadius: 7, background: c }} />
+          <div key={c} style={{ width: 10, height: 10, borderRadius: 5, background: c }} />
         ))}
-        <span style={{ marginLeft: 14, fontSize: 18, color: tui.inactive }}>{title}</span>
+        <span style={{ marginLeft: 8, fontSize: 12, color: tui.inactive }}>{title}</span>
       </div>
-      <div style={{ padding: '22px 32px', flex: 1, overflow: 'hidden' }}>
+      <div style={{ padding: '14px 18px', flex: 1, overflow: 'hidden' }}>
         {visible.map((s, i) => (
           <SimLine key={i} step={s} frame={frame} />
         ))}
       </div>
-      <div style={{ borderTop: `2px solid ${tui.subtle}`, padding: '8px 32px', flex: 'none' }}>
+      <div style={{ borderTop: `1px solid ${tui.subtle}`, padding: '6px 18px', flex: 'none' }}>
         <span style={{ color: tui.inactive }}>❯ </span>
         <span style={{ opacity: Math.floor(frame / 15) % 2 === 0 ? 1 : 0 }}>▋</span>
       </div>
-      <div style={{ borderTop: `2px solid ${tui.subtle}`, padding: '6px 32px 12px', fontSize: 19, color: tui[footer.color], flex: 'none' }}>
+      <div style={{ borderTop: `1px solid ${tui.subtle}`, padding: '4px 18px 8px', fontSize: 12, color: tui[footer.color], flex: 'none' }}>
         {footer.text}
       </div>
     </div>
@@ -79,12 +76,12 @@ export const Terminal: React.FC<{ title: string; steps: SimStep[]; footer: { tex
 
 const SimLine: React.FC<{ step: SimStep; frame: number }> = ({ step, frame }) => {
   const local = frame - step.at
-  const appear = { opacity: interpolate(local, [0, 4], [0, 1], clamp), translate: `${interpolate(local, [0, 6], [-16, 0], clamp)}px 0px` }
+  const appear = { opacity: interpolate(local, [0, 4], [0, 1]), translate: `${interpolate(local, [0, 6], [-8, 0])}px 0px` }
   switch (step.type) {
     case 'prompt': {
-      const shown = step.text.slice(0, Math.round(interpolate(local, [0, 20], [0, step.text.length], clamp)))
+      const shown = step.text.slice(0, Math.round(interpolate(local, [0, 20], [0, step.text.length])))
       return (
-        <div style={{ margin: '0 0 12px', padding: '2px 10px', background: tui.userMessageBackground, display: 'inline-block' }}>
+        <div style={{ margin: '0 0 8px', padding: '1px 8px', background: tui.userMessageBackground, display: 'inline-block' }}>
           <span style={{ color: tui.inactive }}>❯ </span>
           {shown}
         </div>
@@ -94,7 +91,7 @@ const SimLine: React.FC<{ step: SimStep; frame: number }> = ({ step, frame }) =>
       const glyph = SPINNER_CYCLE[Math.floor(frame / 3) % SPINNER_CYCLE.length]
       const sweep = (frame * 0.6) % (step.verb.length + 6)
       return (
-        <div style={{ color: tui.claude, marginTop: 8 }}>
+        <div style={{ color: tui.claude, marginTop: 5 }}>
           {glyph}{' '}
           {[...`${step.verb}…`].map((c, i) => (
             <span key={i} style={{ color: Math.abs(i - sweep) < 2 ? tui.claudeShimmer : tui.claude }}>
@@ -107,23 +104,23 @@ const SimLine: React.FC<{ step: SimStep; frame: number }> = ({ step, frame }) =>
     }
     case 'tool':
       return (
-        <div style={{ ...appear, marginTop: 8 }}>
+        <div style={{ ...appear, marginTop: 5 }}>
           <span style={{ color: tui[step.color ?? 'success'] }}>● </span>
           <b>{step.name}</b>({step.args})
         </div>
       )
     case 'result':
       return (
-        <div style={{ ...appear, paddingLeft: 28, color: tui[step.color ?? 'inactive'] }}>
+        <div style={{ ...appear, paddingLeft: 18, color: tui[step.color ?? 'inactive'] }}>
           ⎿{'  '}
           {step.text}
         </div>
       )
     case 'line':
-      return <div style={{ ...appear, marginTop: 8, color: tui[step.color ?? 'text'] }}>{step.text}</div>
+      return <div style={{ ...appear, marginTop: 5, color: tui[step.color ?? 'text'] }}>{step.text}</div>
     case 'box':
       return (
-        <div style={{ ...appear, marginTop: 10, border: `2px solid ${tui[step.color]}`, borderRadius: 6, padding: '6px 14px' }}>
+        <div style={{ ...appear, marginTop: 6, border: `1px solid ${tui[step.color]}`, borderRadius: 4, padding: '4px 10px' }}>
           <div style={{ color: tui[step.color], fontWeight: 700 }}>⚠ {step.title}</div>
           {step.lines.map((l, i) => (
             <div key={i} style={{ color: i === 0 ? tui.text : tui.inactive }}>{l}</div>
@@ -133,7 +130,7 @@ const SimLine: React.FC<{ step: SimStep; frame: number }> = ({ step, frame }) =>
       )
     case 'done':
       return (
-        <div style={{ ...appear, marginTop: 8, color: tui.inactive }}>
+        <div style={{ ...appear, marginTop: 5, color: tui.inactive }}>
           ✻ {step.verb} for {step.seconds}s
         </div>
       )

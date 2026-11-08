@@ -7,7 +7,7 @@
 | 首页 `index.html` | `src/home.html` |
 | 功能文档 `docs/*.html` | `docs/features/*.md` 直接渲染（与 Wiki 同源），侧栏分组取自 `docs/features/README.md` 的「领域」列 |
 | 基准测试 `benchmark/` | `src/benchmark.html`；交互散点图 `benchmark/scatter.html` 由 `src/benchmark/scatter-*.html` + `scatter-data.json` 拼成 |
-| 动画演示 | `src/demos/`：Remotion 合成，用 `@remotion/player` 在页面里实时播放，不产出视频文件；界面文字直接取自 `web/src/locales`，终端完成动词取自 `src/constants/turnCompletionVerbs.ts` |
+| 动画演示 | `src/demos/`：纯 DOM 渲染的终端和网页动画，由 `src/demos/clock.tsx` 的帧时钟（requestAnimationFrame）驱动，离开视口时暂停；界面文字直接取自 `web/src/locales`，终端完成动词取自 `src/constants/turnCompletionVerbs.ts` |
 | 网页介面试玩 | `web-demo/`：用 `web/vite.demo.config.ts` 构建真实的 `web/` 前端，入口 `web/demo.html` 先载入 `web/src/demo/mock.ts`，由它接管 `fetch(/api/*)` 和会话 WebSocket，按脚本回应；需要仓库根目录先 `bun install` |
 
 ## 构建与预览
