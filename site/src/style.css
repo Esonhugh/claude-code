@@ -75,6 +75,7 @@ section > .wrap > p { max-width: 66ch; color: var(--fg); }
 .muted { color: var(--muted); }
 .btn { display: inline-block; font: 500 14px var(--mono); padding: 9px 16px; border: 1px solid var(--fg); color: var(--fg); border-radius: 6px; text-decoration: none; margin-top: 8px; }
 .btn:hover { background: var(--fg); color: var(--bg); }
+.btn.ghost { border-color: var(--line, currentColor); margin-left: 8px; opacity: .8; }
 
 /* account switcher terminal */
 .dual { margin-top: 24px; background: var(--term); color: var(--term-fg); border-radius: 10px; overflow: hidden; }

@@ -7,7 +7,7 @@ on:
     paths:
       - 'site/**'
       - 'docs/features/**'
-      - 'web/src/locales/**'
+      - 'web/**'
       - 'src/constants/turnCompletionVerbs.ts'
       - '.github/workflows/pages.yml'
   workflow_dispatch:
@@ -31,6 +31,11 @@ jobs:
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+
+      - name: Install repository dependencies (web demo)
+        run: bun install --frozen-lockfile
 
       - name: Install site dependencies
         working-directory: site

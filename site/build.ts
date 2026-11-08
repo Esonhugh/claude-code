@@ -4,7 +4,7 @@
 //   benchmark/          test method and results (src/benchmark.html) + the interactive scatter
 //   assets/             shared CSS/JS and the Remotion demo bundle
 // `bun build.ts --serve` also serves dist on http://localhost:4173.
-import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { join, posix } from 'node:path'
 import { Marked, type Tokens } from 'marked'
 
@@ -53,6 +53,7 @@ ${bootLang}
   <nav class="links" aria-label="Main">
     <a href="${base}docs/"><span class="en">Docs</span><span class="zh">文件</span></a>
     <a href="${base}benchmark/"><span class="en">Benchmark</span><span class="zh">基準測試</span></a>
+    <a href="${base}web-demo/"><span class="en">Live demo</span><span class="zh">試玩</span></a>
     <a href="${BLOB}/CHANGELOG.md"><span class="en">Changelog</span><span class="zh">變更紀錄</span></a>
     <a href="https://github.com/Esonhugh/claude-code">GitHub</a>
     <a href="https://www.npmjs.com/package/@esonhugh/claude-code">npm</a>
@@ -239,6 +240,14 @@ if (!built.success) {
   for (const log of built.logs) console.error(log)
   process.exit(1)
 }
+// The live web demo: the real web/ app with web/src/demo/mock.ts standing in for the server.
+const vite = Bun.spawnSync(['bun', 'x', 'vite', 'build', '-c', 'web/vite.demo.config.ts', '--logLevel', 'warn'], {
+  cwd: REPO,
+  stdout: 'inherit',
+  stderr: 'inherit',
+})
+if (vite.exitCode !== 0) process.exit(vite.exitCode ?? 1)
+renameSync(join(OUT, 'web-demo/demo.html'), join(OUT, 'web-demo/index.html'))
 writeFileSync(join(OUT, '.nojekyll'), '')
 
 const count = (dir: string): number =>
