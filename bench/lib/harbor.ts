@@ -5,10 +5,10 @@
 import { spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
-import { binFor, type Credentials, getCell, secretValues } from './clis'
+import { binFor, type Cell, CELLS, type Credentials, getCell, SUB_CELLS, secretValues } from './clis'
 import { analyzeRun, type RunMeta, type RunResult } from './metrics'
 import { ensureMitm, startProxy } from './mitm'
-import { readRequests } from './run'
+import { readRequests, runAgent } from './run'
 import { scrubSecrets } from './secrets'
 import { BENCH_ROOT } from './tasks'
 
@@ -39,7 +39,21 @@ export function removeImage(t: HarborTask) {
 }
 
 export const PUBLIC_DIR = path.join(BENCH_ROOT, 'public')
-export const IN_CONTAINER_CELLS = ['fork-claude', 'fork-claude-key', 'fork-openai', 'oracle']
+export const IN_CONTAINER_CELLS = [...CELLS, ...SUB_CELLS].map(c => c.id).concat('oracle')
+
+// Third-party CLIs are not copied into task images: BENCH_TOOLS_DIR holds their packages, a node / bun
+// runtime and one launcher per product (bin/<product>, absolute paths inside), mounted read-only at the
+// same path. The agent's PATH is left as the image has it, so the task environment does not gain node or bun.
+function toolsDir(cell: Cell): string | undefined {
+  if (cell.product === 'fork' || cell.product === 'official') return undefined
+  const dir = process.env.BENCH_TOOLS_DIR
+  if (!dir || !fs.existsSync(path.join(dir, 'bin', cell.product))) throw new Error(`set BENCH_TOOLS_DIR (needs bin/${cell.product}) to run ${cell.id} in task containers`)
+  return path.resolve(dir)
+}
+
+// Stops the agent's own processes after a run, leaving services it started (tests may need them).
+// Read from stdin so this script's own command line does not match.
+const KILL_AGENT = `for p in /proc/[0-9]*; do c=$(tr '\\0' ' ' < $p/cmdline 2>/dev/null); case "$c" in *"claude -p"*|*BENCHTOOLS*) kill -9 \${p#/proc/} 2>/dev/null;; esac; done; true`
 
 export type HarborTask = { suite: string; task: string; dir: string; variantDir?: string }
 
@@ -97,7 +111,6 @@ function ensureImage(t: HarborTask, log: string): string {
 export type HarborOptions = { rawRoot: string; workRoot: string; proxyPort: number; creds: Credentials; smoke?: boolean }
 
 export async function runHarbor(t: HarborTask, cellId: string, rep: number, opts: HarborOptions): Promise<RunResult | { reward: string }> {
-  if (!IN_CONTAINER_CELLS.includes(cellId)) throw new Error(`cell ${cellId} cannot run inside task containers; use one of ${IN_CONTAINER_CELLS.join(', ')}`)
   const variant = t.variantDir ? path.basename(path.dirname(path.dirname(t.variantDir))) : ''
   const raw = path.join(opts.rawRoot, t.suite, t.task, `${cellId}${variant ? `-${variant}` : ''}`, `rep-${rep}`)
   if (fs.existsSync(raw)) throw new Error(`exists: ${raw} (raw results are append-only)`)
@@ -114,7 +127,9 @@ export async function runHarbor(t: HarborTask, cellId: string, rep: number, opts
 }
 
 async function harborExecute(t: HarborTask, cellId: string, rep: number, opts: HarborOptions, raw: string, variant: string): Promise<RunResult | { reward: string }> {
-  if (cellId !== 'oracle' && getCell(cellId).side === 'claude-key' && !opts.creds.orgKey) throw new Error('missing credential: CLAUDE_CODE_ORG_KEY')
+  const cell = cellId === 'oracle' ? undefined : getCell(cellId)
+  if (cell?.side === 'claude-key' && !opts.creds.orgKey) throw new Error('missing credential: CLAUDE_CODE_ORG_KEY')
+  const tools = cell && toolsDir(cell)
   const src = t.variantDir ?? t.dir
   const toml = fs.readFileSync(path.join(t.dir, 'task.toml'), 'utf8')
   const agentTimeout = Number(tomlValue(toml, 'agent', 'timeout_sec') ?? 1800)
@@ -122,7 +137,8 @@ async function harborExecute(t: HarborTask, cellId: string, rep: number, opts: H
   const image = ensureImage(t, path.join(raw, 'build.log'))
   const name = `bench-${t.suite}-${t.task}-${cellId}-${variant}-${rep}`.toLowerCase().replace(/[^a-z0-9_.-]/g, '-').slice(0, 120)
   docker(['rm', '-f', name])
-  if (docker(['run', '-d', '--network', 'host', '--entrypoint', 'sleep', '--name', name, image, 'infinity']).status !== 0) throw new Error('docker run failed')
+  const mount = tools ? ['-v', `${tools}:${tools}:ro`] : []
+  if (docker(['run', '-d', '--network', 'host', ...mount, '--entrypoint', 'sleep', '--name', name, image, 'infinity']).status !== 0) throw new Error('docker run failed')
   const mitm = ensureMitm(path.join(opts.workRoot, 'mitm'))
   try {
     const wd = docker(['inspect', '-f', '{{.Config.WorkingDir}}', name]).stdout.trim() || '/app'
@@ -149,41 +165,60 @@ async function harborExecute(t: HarborTask, cellId: string, rep: number, opts: H
 
     const proxyUrl = `http://127.0.0.1:${opts.proxyPort}`
     const agentEnv = ['-e', `HTTPS_PROXY=${proxyUrl}`, '-e', `https_proxy=${proxyUrl}`, '-e', 'NO_PROXY=127.0.0.1,localhost', '-e', 'NODE_EXTRA_CA_CERTS=/etc/bench-ca.crt', '-e', 'SSL_CERT_FILE=/etc/bench-ca.crt', '-e', 'IS_SANDBOX=1']
+    const prompt = fs.readFileSync(path.join(src, 'instruction.md'), 'utf8')
     let argv: string[]
-    if (cellId === 'oracle') {
+    let stdin: string | undefined
+    let exitAfter: string | undefined
+    let cliVersion: string | undefined
+    // Values that must not appear on a command line: passed by name, docker reads them from the spawn env.
+    const secretEnv: Record<string, string> = {}
+    if (!cell) {
       docker(['cp', `${path.join(src, 'solution')}/.`, `${name}:/solution/`])
       argv = ['bash', '/solution/solve.sh']
     } else {
-      const cell = getCell(cellId)
-      docker(['cp', binFor('fork'), `${name}:/usr/local/bin/claude`])
-      docker(['exec', name, 'mkdir', '-p', '/root/.claude', '/root/.codex'])
-      const put = (file: string, data: string) => docker(['exec', '-i', name, 'sh', '-c', `umask 077; cat > ${file}`], { input: data })
-      put('/root/.claude.json', JSON.stringify({ hasCompletedOnboarding: true, bypassPermissionsModeAccepted: true, projects: { [wd]: { hasTrustDialogAccepted: true } } }))
-      put('/root/.claude/settings.json', JSON.stringify({ skipDangerousModePermissionPrompt: true, permissions: { defaultMode: 'bypassPermissions' } }))
-      if (cell.side === 'claude') put('/root/.claude/.credentials.json', fs.readFileSync(opts.creds.claudeCredentialsFile!, 'utf8'))
-      if (cell.side === 'chatgpt') {
-        put('/root/.codex/auth.json', fs.readFileSync(opts.creds.codexAuthFile!, 'utf8'))
-        agentEnv.push('-e', 'CLAUDE_CODE_USE_OPENAI=1', '-e', 'CODEX_HOME=/root/.codex')
+      // The cell writes its fresh HOME on the host; it is copied to /root and the host copy removed.
+      const home = fs.mkdtempSync(path.join(opts.workRoot, 'home-'))
+      try {
+        cell.setupHome({ home, workspace: wd, proxyPort: opts.proxyPort, prompt, creds: opts.creds })
+        docker(['cp', `${home}/.`, `${name}:/root/`])
+      } finally {
+        fs.rmSync(home, { recursive: true, force: true })
       }
-      // name only: docker reads the value from this process's environment
-      if (cell.side === 'claude-key') agentEnv.push('-e', 'ANTHROPIC_API_KEY')
-      argv = ['claude', '-p', '--model', cell.model, '--output-format', 'stream-json', '--verbose', '--disallowedTools', 'WebSearch,WebFetch']
+      let bin = tools ? path.join(tools, 'bin', cell.product) : 'claude'
+      if (!tools) docker(['cp', binFor(cell.product), `${name}:/usr/local/bin/claude`])
+      cliVersion = docker(['exec', name, bin, '--version']).stdout.trim().split('\n')[0] || undefined
+      const launch = cell.launch(bin, { home: '/root', workspace: wd, proxyPort: opts.proxyPort, prompt, creds: opts.creds })
+      const secrets = secretValues(opts.creds)
+      for (const [k, v] of Object.entries(launch.env)) {
+        if (secrets.includes(v)) {
+          secretEnv[k] = v
+          agentEnv.push('-e', k)
+        } else agentEnv.push('-e', `${k}=${v}`)
+      }
+      argv = launch.argv
+      stdin = launch.stdin
+      exitAfter = launch.exitAfter
+      bin = argv[0]
     }
 
     const proxy = await startProxy(opts.proxyPort, path.join(raw, 'requests.jsonl'), mitm.dir)
     const t0 = Date.now() / 1000
-    const a = spawnSync('docker', ['exec', '-i', '-w', wd, ...agentEnv, name, ...argv], {
-      input: fs.readFileSync(path.join(src, 'instruction.md'), 'utf8'),
-      env: { ...process.env, ANTHROPIC_API_KEY: opts.creds.orgKey ?? '' },
-      timeout: agentTimeout * 1000,
-      maxBuffer: 256 << 20,
-    })
-    const t1 = Date.now() / 1000
+    const a = await runAgent(
+      ['docker', 'exec', ...(stdin === undefined ? [] : ['-i']), '-w', wd, ...agentEnv, name, ...argv],
+      { ...(process.env as Record<string, string>), ...secretEnv },
+      opts.workRoot,
+      stdin,
+      path.join(raw, 'agent.jsonl'),
+      path.join(raw, 'agent.err'),
+      agentTimeout,
+      exitAfter,
+    )
+    const t1 = a.endedAt ?? Date.now() / 1000
+    docker(['exec', '-i', name, 'sh'], { input: KILL_AGENT.replace('BENCHTOOLS', tools ?? '/nonexistent-bench-tools') })
+    await new Promise(r => setTimeout(r, 1000))
     proxy.kill()
-    fs.writeFileSync(path.join(raw, 'agent.jsonl'), a.stdout ?? '')
-    fs.writeFileSync(path.join(raw, 'agent.err'), a.stderr ?? '')
 
-    docker(['exec', name, 'sh', '-c', 'pkill -f "[c]laude -p" 2>/dev/null; rm -rf /solution /root/.claude/.credentials.json /root/.codex/auth.json; mkdir -p /tests /logs/verifier; rm -f /logs/verifier/reward.txt'])
+    docker(['exec', name, 'sh', '-c', 'rm -rf /solution /root/.claude/.credentials.json /root/.codex /root/.pi /root/.omp /root/.dsh /root/.local/share/opencode; mkdir -p /tests /logs/verifier; rm -f /logs/verifier/reward.txt'])
     docker(['cp', `${path.join(src, 'tests')}/.`, `${name}:/tests/`])
     if (fs.existsSync(bundle)) {
       docker(['cp', bundle, `${name}:/tmp/full.bundle`])
@@ -197,16 +232,17 @@ async function harborExecute(t: HarborTask, cellId: string, rep: number, opts: H
 
     const meta: RunMeta & { suite: string; variant: string; reward: string; scrubbed?: string[] } = {
       cell: cellId,
-      product: 'fork',
-      side: cellId === 'oracle' ? 'none' : getCell(cellId).side,
+      product: cell?.product ?? 'fork',
+      side: cell?.side ?? 'none',
       task: t.task,
       type: 'public',
       length: 'long',
       rep,
-      model: cellId === 'oracle' ? '' : getCell(cellId).model,
+      model: cell?.model ?? '',
+      cliVersion,
       t0,
       t1,
-      rc: a.status,
+      rc: a.rc,
       ok: Number(reward) >= 1,
       suite: t.suite,
       variant,

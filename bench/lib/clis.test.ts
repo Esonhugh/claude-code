@@ -3,7 +3,7 @@ import { Database } from 'bun:sqlite'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { binFor, CELLS, credentialsFromEnv, jwtExpiryMs, secretValues } from './clis'
+import { binFor, CELLS, credentialsFromEnv, getCell, jwtExpiryMs, SUB_CELLS, secretValues } from './clis'
 
 const KEY = 'sk-ant-test-placeholder-0000000000'
 const b64 = (o: object) => Buffer.from(JSON.stringify(o)).toString('base64url')
@@ -65,6 +65,38 @@ describe('cells', () => {
     db.close()
     expect(row.provider).toBe('openai-codex')
     expect(JSON.parse(row.data).expires).toBe(2000000000 * 1000)
+    fs.rmSync(dir, { recursive: true })
+  })
+
+  test('Codex login copy has a fresh last_refresh, so Codex never rotates the shared refresh token', () => {
+    const { dir, creds } = fixture()
+    const home = path.join(dir, 'h')
+    getCell('codex').setupHome({ home, workspace: dir, proxyPort: 1, prompt: '', creds })
+    const auth = JSON.parse(fs.readFileSync(path.join(home, '.codex/auth.json'), 'utf8'))
+    expect(Date.now() - Date.parse(auth.last_refresh)).toBeLessThan(60_000)
+    expect(auth.tokens.refresh_token).toBe('refresh-placeholder-0000000000')
+    fs.rmSync(dir, { recursive: true })
+  })
+
+  test('dsh: credential store on (headless turns it off), no permission prompts', () => {
+    const { dir, creds } = fixture()
+    const home = path.join(dir, 'h')
+    const cell = getCell('dsh-openai')
+    cell.setupHome({ home, workspace: dir, proxyPort: 1, prompt: '', creds })
+    expect(fs.readFileSync(path.join(home, 'dsh-patch.yml'), 'utf8')).toContain('- id: credentials\n  disabled: false')
+    expect(cell.launch('/bin/dsh', { home, workspace: dir, proxyPort: 1, prompt: 'x', creds }).env.DSH_PERMISSION_MODE).toBe('danger-full-access')
+    fs.rmSync(dir, { recursive: true })
+  })
+
+  test('subagent cells keep their base cell and only extend the prompt', () => {
+    const { dir, creds } = fixture()
+    for (const sub of SUB_CELLS) {
+      const base = getCell(sub.id.replace(/-sub$/, ''))
+      expect([sub.product, sub.side, sub.model]).toEqual([base.product, base.side, base.model])
+      const l = sub.launch('/bin/cli', { home: dir, workspace: dir, proxyPort: 1, prompt: 'Do the task.', creds })
+      expect(l.stdin).toStartWith('Do the task.')
+      expect(l.stdin).toContain('subagents in parallel')
+    }
     fs.rmSync(dir, { recursive: true })
   })
 })

@@ -21,7 +21,8 @@ const USAGE = `usage: bun bench/cli.ts <command> [options]
   run     --cells a,b --tasks ... --reps 3 --seed 1 --raw DIR [--work DIR] [--port 9600] [--timeout 1800] [--smoke]
   analyze --raw DIR [--by type]          per-run results.json + per-cell summary
   chart   --raw DIR --out DIR [--png]    tokens-vs-hit and cost-vs-hit scatter (light + dark SVG)
-  public  (--suite tb2 --task NAME | --picks bench/public/picks-A.txt) --cells fork-claude-key,oracle --reps 3 --raw DIR [--variant seed1108] [--smoke]
+  public  (--suite tb2 --task NAME | --picks bench/public/picks-A.txt) --cells fork-claude-key,oracle --reps 3 --raw DIR [--variant seed1108] [--rep N] [--port 9600] [--smoke]
+          --rep N runs only round N, so several processes (each on its own --port) can share a matrix
   perturb --seed N --out DIR             regenerate perturbed public variants (needs BENCH_TB2_ROOT)
 
 Credentials come only from the environment: CLAUDE_CODE_ORG_KEY (Claude API key cells),
@@ -46,6 +47,7 @@ const { positionals, values: o } = parseArgs({
     task: { type: 'string' },
     variant: { type: 'string' },
     picks: { type: 'string' },
+    rep: { type: 'string' },
   },
 })
 
@@ -166,7 +168,8 @@ async function main() {
       const picks = o.picks ? readPicks(path.resolve(o.picks)) : [{ suite: o.suite!, task: o.task! }]
       for (const pick of picks) {
         const t = harborTask(pick.suite, pick.task, o.variant)
-        for (let rep = 1; rep <= Number(o.reps); rep++) {
+        const reps = o.rep ? [Number(o.rep)] : Array.from({ length: Number(o.reps) }, (_, i) => i + 1)
+        for (const rep of reps) {
           for (const cell of o.cells!.split(',')) {
             const label = `${pick.suite}/${pick.task}${o.variant ? ` (${o.variant})` : ''} ${cell} rep ${rep}`
             try {

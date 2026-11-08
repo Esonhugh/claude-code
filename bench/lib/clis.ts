@@ -97,8 +97,10 @@ function claudeHome(ctx: RunContext, side: Side) {
   if (side === 'chatgpt') codexHome(ctx)
 }
 
+// last_refresh = now: Codex refreshes a login whose last refresh is ~8 days old, which would rotate the shared refresh token.
 function codexHome(ctx: RunContext) {
-  write(path.join(ctx.home, '.codex', 'auth.json'), fs.readFileSync(need(ctx.creds.codexAuthFile, 'Codex auth file'), 'utf8'))
+  const auth = JSON.parse(fs.readFileSync(need(ctx.creds.codexAuthFile, 'Codex auth file'), 'utf8'))
+  write(path.join(ctx.home, '.codex', 'auth.json'), JSON.stringify({ ...auth, last_refresh: new Date().toISOString() }))
 }
 
 const keyEnv = (ctx: RunContext) => ({ ANTHROPIC_API_KEY: need(ctx.creds.orgKey, 'CLAUDE_CODE_ORG_KEY') })
@@ -209,6 +211,11 @@ function dshCell(side: 'claude-key' | 'chatgpt'): Cell {
     `    model: ${model}`,
     '- id: tool-web',
     '  disabled: true',
+    // headless disables the credential store; the ChatGPT login is read from it
+    '- id: credentials',
+    '  disabled: false',
+    '- id: authorization',
+    '  disabled: false',
     '',
   ].join('\n')
   return {
@@ -240,7 +247,8 @@ function dshCell(side: 'claude-key' | 'chatgpt'): Cell {
     },
     launch: (bin, ctx) => ({
       argv: [bin, '--profile', 'headless', '--patch', path.join(ctx.home, 'dsh-patch.yml'), '--json', ctx.prompt],
-      env: side === 'claude-key' ? keyEnv(ctx) : {},
+      // the other cells run without permission prompts too; dsh's default sandbox only writes inside the cwd
+      env: { ...(side === 'claude-key' ? keyEnv(ctx) : {}), DSH_PERMISSION_MODE: 'danger-full-access' },
       ...(side === 'chatgpt' ? { exitAfter: '"type":"final"' } : {}),
     }),
   }
@@ -273,9 +281,14 @@ export const CELLS: Cell[] = [
   dshCell('claude-key'),
 ]
 
+// Multi-agent cells: same CLI and account, the prompt asks for parallel subagents.
+const SUB_SUFFIX = '\n\nUse the Agent tool to launch subagents in parallel for independent parts of this task (at least two), then check the combined result yourself before you finish.'
+const subCell = (base: Cell): Cell => ({ ...base, id: `${base.id}-sub`, launch: (bin, ctx) => base.launch(bin, { ...ctx, prompt: ctx.prompt + SUB_SUFFIX }) })
+export const SUB_CELLS: Cell[] = ['fork-claude-key', 'official-key', 'fork-openai'].map(id => subCell(CELLS.find(c => c.id === id)!))
+
 export function getCell(id: string): Cell {
-  const c = CELLS.find(x => x.id === id)
-  if (!c) throw new Error(`unknown cell ${id}; known: ${CELLS.map(x => x.id).join(', ')}`)
+  const c = CELLS.find(x => x.id === id) ?? SUB_CELLS.find(x => x.id === id)
+  if (!c) throw new Error(`unknown cell ${id}; known: ${[...CELLS, ...SUB_CELLS].map(x => x.id).join(', ')}`)
   return c
 }
 
