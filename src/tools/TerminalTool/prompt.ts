@@ -1,4 +1,5 @@
-export const TERMINAL_TOOL_NAME = 'Terminal'
+export const TERMINAL_TOOL_NAME = 'Tmux'
+export const LEGACY_TERMINAL_TOOL_NAME = 'Terminal'
 
 export const DESCRIPTION =
   'Open and control a persistent terminal session'

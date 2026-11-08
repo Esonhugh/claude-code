@@ -133,7 +133,7 @@ export function usedPanes(tasks: Tasks, items: Item[], groups: Groups): Pane[] {
     for (const block of item.blocks) {
       if (block?.kind !== 'tool') continue
       if (block.name === 'Workflow') used.add('workflow')
-      else if (block.name === 'Terminal') used.add('terminals')
+      else if (block.name === 'Tmux' || block.name === 'Terminal') used.add('terminals')
       else if (block.name === 'Monitor') used.add('monitor')
       else if (block.name === 'Bash' && /"run_in_background":true/.test(block.input)) used.add('bg')
     }

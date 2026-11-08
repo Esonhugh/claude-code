@@ -319,7 +319,7 @@ function isDangerousClassifierPermission(
   if (toolName === 'Monitor') return true
   // Terminal types arbitrary input into a PTY shell, so like Tmux an allow
   // rule would skip the classifier for any command.
-  if (toolName === TERMINAL_TOOL_NAME) return true
+  if (normalizeLegacyToolName(toolName) === TERMINAL_TOOL_NAME) return true
   // autoMode.classifyAllShell suspends every shell allow rule in auto mode.
   if (
     (toolName === BASH_TOOL_NAME || toolName === POWERSHELL_TOOL_NAME) &&

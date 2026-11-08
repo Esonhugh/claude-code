@@ -190,7 +190,8 @@ if (process.env[childFlag] !== '1') {
       alwaysAllowRules: { userSettings: ['Monitor(tail -f app.log)', 'Terminal', 'Read(/tmp/**)'] },
     }))
     expect(stripped.alwaysAllowRules.userSettings).toEqual(['Read(/tmp/**)'])
-    expect(stripped.strippedDangerousRules?.userSettings).toEqual(['Monitor(tail -f app.log)', 'Terminal'])
+    // The legacy Terminal rule is stashed under the tool's current name, Tmux.
+    expect(stripped.strippedDangerousRules?.userSettings).toEqual(['Monitor(tail -f app.log)', 'Tmux'])
   })
 
   test('claude auto-mode reset removes only the autoMode section from user settings', async () => {

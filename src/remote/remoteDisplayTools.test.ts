@@ -19,7 +19,7 @@ describe('remote display tools', () => {
     ['TaskUpdate', { taskId: '1', status: 'in_progress' }],
     ['TeamCreate', { team_name: 'reviewers' }],
     ['TeamDelete', {}],
-    ['Terminal', { action: 'list-panes' }],
+    ['Tmux', { action: 'list-panes' }],
     ['Workflow', { name: 'research' }],
     ['Write', { file_path: '/tmp/a', content: 'value' }],
   ])('uses the %s renderer without enabling local execution', (name, input) => {

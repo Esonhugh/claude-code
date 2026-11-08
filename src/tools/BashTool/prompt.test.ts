@@ -41,7 +41,7 @@ afterEach(() => {
 
 describe('BashTool prompt', () => {
   test('points interactive and tmux work at the Terminal tool', () => {
-    expect(getSimplePrompt()).toMatch(/use the Terminal tool, not tmux/)
+    expect(getSimplePrompt()).toMatch(/use the Tmux tool, not the tmux or screen commands in Bash/)
   })
 
   test('has a short Git section only when git instructions are turned on', () => {
