@@ -45,7 +45,7 @@ export const Terminal: React.FC<{ title: string; steps: SimStep[]; footer: { tex
         overflow: 'hidden',
         background: 'rgb(24,24,24)',
         fontFamily: MONO,
-        fontSize: 13.5,
+        fontSize: 'var(--term-size, 13.5px)',
         lineHeight: 1.55,
         color: tui.text,
         display: 'flex',

@@ -204,9 +204,11 @@ rect.viz-hit[fill="transparent"]:hover, rect.viz-hit[fill="transparent"]:focus-v
 /* scroll tour: sticky animation on the left, steps on the right */
 #tour { padding-block: 24px; }
 .tour { max-width: 1200px; margin: 0 auto; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr); gap: 48px; }
-.tour-stage { position: sticky; top: calc(env(safe-area-inset-top, 0px) + 84px); align-self: start; }
-.tour-stage .demo { margin-top: 0; aspect-ratio: auto; height: min(460px, calc(100vh - 160px)); }
-.tour-step { min-height: 72vh; display: flex; flex-direction: column; justify-content: center; opacity: .38; transition: opacity .25s; }
+.tour { --stage-h: min(380px, calc(100vh - 150px)); }
+/* The stage is centred in the area below the sticky header, level with the active step, which the scroll observer picks at mid-viewport. */
+.tour-stage { position: sticky; top: max(64px, calc(50vh + 26px - var(--stage-h) / 2)); align-self: start; }
+.tour-stage .demo { margin-top: 0; aspect-ratio: auto; height: var(--stage-h); }
+.tour-step { min-height: 64vh; display: flex; flex-direction: column; justify-content: center; opacity: .38; transition: opacity .25s; }
 .tour-step.is-active { opacity: 1; }
 .tour-step p { max-width: 52ch; }
 @media (prefers-reduced-motion: reduce) { .tour-step { transition: none; } }
@@ -219,4 +221,16 @@ rect.viz-hit[fill="transparent"]:hover, rect.viz-hit[fill="transparent"]:focus-v
 @media (max-width: 860px) {
   header.top { position: static; }
   .tour-stage { top: env(safe-area-inset-top, 0px); }
+}
+
+/* wide screens: wider columns, larger terminal text */
+@media (min-width: 1400px) {
+  body { font-size: 17px; }
+  .wrap { max-width: 1080px; }
+  .tour { max-width: 1360px; gap: 64px; --stage-h: min(440px, calc(100vh - 150px)); --term-size: 15px; }
+}
+@media (min-width: 1800px) {
+  .wrap { max-width: 1240px; }
+  .tour { max-width: 1600px; gap: 80px; --stage-h: min(520px, calc(100vh - 150px)); --term-size: 16.5px; }
+  .tour-step p { font-size: 18px; }
 }
