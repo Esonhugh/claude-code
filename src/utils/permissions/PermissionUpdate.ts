@@ -215,8 +215,13 @@ export function applyPermissionUpdate(
       // Filter out the rules to be removed
       const existingRules = context[ruleKind][update.destination] || []
       const rulesToRemove = new Set(ruleStrings)
+      // Compare canonical forms so a rule saved under a legacy tool name
+      // (e.g. Terminal for Tmux) is removed too.
       const filteredRules = existingRules.filter(
-        rule => !rulesToRemove.has(rule),
+        rule =>
+          !rulesToRemove.has(
+            permissionRuleValueToString(permissionRuleValueFromString(rule)),
+          ),
       )
 
       return {

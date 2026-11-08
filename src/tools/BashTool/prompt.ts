@@ -181,7 +181,7 @@ export function getSimplePrompt(): string {
       ? ['`run_in_background` runs the command detached and notifies you when it exits. No `&` needed; do not poll it.']
       : []),
     `Chain dependent commands with '&&' or ';' in one ${BASH_TOOL_NAME} call; multiline scripts are fine.`,
-    `For interactive programs (REPLs, TUIs, ssh, prompts) use the ${TERMINAL_TOOL_NAME} tool, not tmux or screen. It is this environment's tmux (new-session, send-keys, capture-pane), so use it also when asked to work in tmux.`,
+    `For interactive programs (REPLs, TUIs, ssh, prompts) use the ${TERMINAL_TOOL_NAME} tool, not the tmux or screen commands in Bash, also when asked to work in tmux.`,
     monitor
       ? 'Do not sleep between commands or retry failures in a sleep loop. Leading `sleep` commands are blocked: to wait for a condition, use Monitor with an until-loop (`until <check>; do sleep 2; done`).'
       : 'Do not sleep between commands or retry failures in a sleep loop; poll with a check command instead.',

@@ -42,6 +42,7 @@ import { forwardResizeIntoSandbox, wrapNewSessionForSandbox } from './sandbox.js
 import {
   DESCRIPTION,
   PROMPT,
+  LEGACY_TERMINAL_TOOL_NAME,
   TERMINAL_TOOL_NAME,
 } from './prompt.js'
 import {
@@ -473,6 +474,9 @@ function formatError(error: unknown): ErrorOutput {
 
 export const TerminalTool: Tool<InputSchema, Output> = buildTool({
   name: TERMINAL_TOOL_NAME,
+  // Renamed from Terminal so models asked to use tmux pick this tool;
+  // the old name still resolves for transcripts and SDK users.
+  aliases: [LEGACY_TERMINAL_TOOL_NAME],
   searchHint: 'persistent terminal PTY sessions like tmux, interactive shell, REPL, TUI and ssh',
   shouldDefer: true,
   maxResultSizeChars: 100_000,
