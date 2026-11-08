@@ -74,7 +74,7 @@ const scripts: Record<Exclude<Scene, 'accounts'>, (lang: Lang) => SimStep[]> = {
 export const TourDemo: React.FC<{ lang: Lang; scene: Scene }> = ({ lang, scene }) => {
   if (scene === 'accounts') return <AccountsDemo lang={lang} />
   return (
-    <div style={{ position: 'absolute', inset: 0, background: '#0e0f12' }}>
+    <div style={{ position: 'absolute', inset: 0 }}>
       <Terminal
         title="claude — ~/projects/search-demo"
         steps={scripts[scene](lang)}

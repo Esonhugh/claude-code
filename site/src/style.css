@@ -127,7 +127,7 @@ footer a { color: var(--muted); }
 :root[data-theme="dark"] .light-only { display: none; }
 
 /* demo players */
-.demo { margin-top: 24px; border-radius: 10px; overflow: hidden; border: 1px solid var(--line); background: var(--term); aspect-ratio: 16 / 9; }
+.demo { position: relative; margin-top: 24px; border-radius: 10px; overflow: hidden; border: 1px solid var(--line); background: rgb(24,24,24); aspect-ratio: 16 / 9; }
 .demo-cap { font-size: 13px; color: var(--muted); margin-top: 8px; }
 
 /* docs layout */
@@ -205,7 +205,7 @@ rect.viz-hit[fill="transparent"]:hover, rect.viz-hit[fill="transparent"]:focus-v
 #tour { padding-block: 24px; }
 .tour { max-width: 1200px; margin: 0 auto; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr); gap: 48px; }
 .tour-stage { position: sticky; top: calc(env(safe-area-inset-top, 0px) + 84px); align-self: start; }
-.tour-stage .demo { margin-top: 0; }
+.tour-stage .demo { margin-top: 0; aspect-ratio: auto; height: min(460px, calc(100vh - 160px)); }
 .tour-step { min-height: 72vh; display: flex; flex-direction: column; justify-content: center; opacity: .38; transition: opacity .25s; }
 .tour-step.is-active { opacity: 1; }
 .tour-step p { max-width: 52ch; }
@@ -214,6 +214,7 @@ rect.viz-hit[fill="transparent"]:hover, rect.viz-hit[fill="transparent"]:focus-v
   .tour { grid-template-columns: minmax(0, 1fr); gap: 0; }
   .tour-stage { top: calc(env(safe-area-inset-top, 0px) + 56px); z-index: 2; background: var(--bg); padding-block: 8px; }
   .tour-step { min-height: 60vh; justify-content: flex-start; padding-top: 24px; }
+  .tour-stage .demo { height: 300px; }
 }
 @media (max-width: 860px) {
   header.top { position: static; }

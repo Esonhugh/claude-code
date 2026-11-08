@@ -1,5 +1,5 @@
-import { interpolate, useCurrentFrame } from 'remotion'
-import { clamp, MONO } from './Terminal'
+import { interpolate, useCurrentFrame } from './clock'
+import { MONO } from './Terminal'
 import { type Lang, ui } from './i18n'
 
 // A scripted claude web session, laid out after docs/features/images/web-tour-chat.png.
@@ -69,8 +69,8 @@ const T = {
 }
 
 const fade = (f: number, at: number) => ({
-  opacity: interpolate(f, [at, at + 6], [0, 1], clamp),
-  translate: `0px ${interpolate(f, [at, at + 8], [10, 0], clamp)}px`,
+  opacity: interpolate(f, [at, at + 6], [0, 1]),
+  translate: `0px ${interpolate(f, [at, at + 8], [10, 0])}px`,
 })
 
 const Spinner: React.FC<{ frame: number }> = ({ frame }) => (
@@ -110,12 +110,12 @@ export const WebDemo: React.FC<{ lang: Lang }> = ({ lang }) => {
   const f = useCurrentFrame()
   const t = copy[lang]
   const running = f >= T.send && f < T.ready
-  const typed = t.prompt.slice(0, Math.round(interpolate(f, [T.type, T.send - 10], [0, t.prompt.length], clamp)))
-  const diffOpen = interpolate(f, [T.edit, T.edit + 18], [0, 1], { ...clamp })
-  const askIn = interpolate(f, [T.ask, T.ask + 10, T.click + 4, T.click + 12], [0, 1, 1, 0], clamp)
-  const ctx = interpolate(f, [T.send, T.ready], [8, 64], clamp)
-  const cursorX = interpolate(f, [T.cursor, T.click - 6], [1020, 520], { ...clamp })
-  const cursorY = interpolate(f, [T.cursor, T.click - 6], [700, 548], { ...clamp })
+  const typed = t.prompt.slice(0, Math.round(interpolate(f, [T.type, T.send - 10], [0, t.prompt.length])))
+  const diffOpen = interpolate(f, [T.edit, T.edit + 18], [0, 1])
+  const askIn = interpolate(f, [T.ask, T.ask + 10, T.click + 4, T.click + 12], [0, 1, 1, 0])
+  const ctx = interpolate(f, [T.send, T.ready], [8, 64])
+  const cursorX = interpolate(f, [T.cursor, T.click - 6], [1020, 520])
+  const cursorY = interpolate(f, [T.cursor, T.click - 6], [700, 548])
   const pressed = f >= T.click && f < T.click + 5
   const elapsed = Math.max(1, Math.floor((Math.min(f, T.ready) - T.send) / 30))
 

@@ -1,16 +1,18 @@
-import { Player } from '@remotion/player'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
-import { ACCOUNTS_DEMO_FRAMES, AccountsDemo } from './AccountsDemo'
-import { type Scene, SCENES, TOUR_FRAMES, TourDemo } from './TourDemo'
+import { AccountsDemo } from './AccountsDemo'
+import { FPS, FrameContext } from './clock'
 import type { Lang } from './i18n'
+import { type Scene, SCENES, TOUR_FRAMES, TourDemo } from './TourDemo'
 import { WEB_DEMO_FRAMES, WebDemo } from './WebDemo'
 
+// The web demo is drawn on a 1280×720 canvas and scaled to fit; the terminals render at page size.
 const DEMOS = {
-  web: { component: WebDemo, frames: WEB_DEMO_FRAMES },
-  accounts: { component: AccountsDemo, frames: ACCOUNTS_DEMO_FRAMES },
-  tour: { component: TourDemo, frames: TOUR_FRAMES },
+  web: { component: WebDemo, frames: WEB_DEMO_FRAMES, canvas: { width: 1280, height: 720 } },
+  accounts: { component: AccountsDemo, frames: TOUR_FRAMES, canvas: null },
+  tour: { component: TourDemo, frames: TOUR_FRAMES, canvas: null },
 } as const
+const FADE_MS = 180
 
 const currentLang = (): Lang => (document.documentElement.dataset.lang === 'zh' ? 'zh' : 'en')
 
@@ -37,30 +39,83 @@ function useScene(el: HTMLElement): Scene {
   return scene
 }
 
+// Advances the frame while the demo is on screen, and starts over when `restart` changes.
+function useFrame(el: HTMLElement, frames: number, restart: string): number {
+  const still = matchMedia('(prefers-reduced-motion: reduce)').matches
+  const [frame, setFrame] = useState(still ? frames - 1 : 0)
+  const start = useRef(0)
+  useEffect(() => {
+    if (still) return
+    let raf = 0
+    let visible = false
+    let pausedAt = 0
+    start.current = performance.now()
+    setFrame(0)
+    const tick = (now: number) => {
+      setFrame(Math.floor(((now - start.current) / 1000) * FPS) % frames)
+      raf = requestAnimationFrame(tick)
+    }
+    const observer = new IntersectionObserver(([entry]) => {
+      if (entry.isIntersecting === visible) return
+      visible = entry.isIntersecting
+      if (visible) {
+        start.current += performance.now() - pausedAt
+        raf = requestAnimationFrame(tick)
+      } else {
+        pausedAt = performance.now()
+        cancelAnimationFrame(raf)
+      }
+    })
+    pausedAt = performance.now()
+    observer.observe(el)
+    return () => {
+      observer.disconnect()
+      cancelAnimationFrame(raf)
+    }
+  }, [el, frames, restart, still])
+  return frame
+}
+
 const Demo: React.FC<{ name: keyof typeof DEMOS; el: HTMLElement }> = ({ name, el }) => {
   const lang = useLang()
-  const scene = useScene(el)
-  const { component, frames } = DEMOS[name]
-  const still = matchMedia('(prefers-reduced-motion: reduce)').matches
+  const target = useScene(el)
+  const { frames, canvas } = DEMOS[name]
+  const Component = DEMOS[name].component as React.FC<{ lang: Lang; scene: Scene }>
+  // Scene changes fade out, swap and fade back in, so scrolling never cuts mid-frame.
+  const [scene, setScene] = useState(target)
+  const [shown, setShown] = useState(true)
+  useEffect(() => {
+    if (target === scene) return
+    setShown(false)
+    const t = setTimeout(() => {
+      setScene(target)
+      setShown(true)
+    }, FADE_MS)
+    return () => clearTimeout(t)
+  }, [target, scene])
+  const frame = useFrame(el, frames, name === 'tour' ? scene : name)
+  const [scale, setScale] = useState(1)
+  useEffect(() => {
+    if (!canvas) return
+    const observer = new ResizeObserver(([entry]) => setScale(entry.contentRect.width / canvas.width))
+    observer.observe(el)
+    return () => observer.disconnect()
+  }, [el, canvas])
+  const body = (
+    <FrameContext.Provider value={frame}>
+      <Component lang={lang} scene={scene} />
+    </FrameContext.Provider>
+  )
   return (
-    <Player
-      key={name === 'tour' ? scene : undefined}
-      component={component as React.ComponentType<{ lang: Lang; scene: Scene }>}
-      inputProps={{ lang, scene }}
-      durationInFrames={frames}
-      fps={30}
-      compositionWidth={1280}
-      compositionHeight={720}
-      style={{ width: '100%', aspectRatio: '16 / 9' }}
-      autoPlay={!still}
-      initialFrame={still ? frames - 1 : 0}
-      loop
-      initiallyMuted
-      showVolumeControls={false}
-      controls
-      clickToPlay
-      acknowledgeRemotionLicense
-    />
+    <div style={{ position: 'absolute', inset: 0, opacity: shown ? 1 : 0, transition: `opacity ${FADE_MS}ms ease` }}>
+      {canvas ? (
+        <div style={{ position: 'absolute', left: 0, top: 0, width: canvas.width, height: canvas.height, transform: `scale(${scale})`, transformOrigin: '0 0' }}>
+          {body}
+        </div>
+      ) : (
+        body
+      )}
+    </div>
   )
 }
 

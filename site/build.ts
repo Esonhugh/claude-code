@@ -2,7 +2,7 @@
 //   index.html          landing page (src/home.html)
 //   docs/*.html         docs/features rendered with a sidebar; README.md becomes docs/index.html
 //   benchmark/          test method and results (src/benchmark.html) + the interactive scatter
-//   assets/             shared CSS/JS and the Remotion demo bundle
+//   assets/             shared CSS/JS and the demo animation bundle
 // `bun build.ts --serve` also serves dist on http://localhost:4173.
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { join, posix } from 'node:path'
