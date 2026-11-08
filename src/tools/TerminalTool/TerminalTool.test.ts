@@ -1478,3 +1478,8 @@ test('new-session runs inside the sandbox when sandboxing is enabled', async () 
     mock.restoreAll()
   }
 })
+
+test('Terminal is offered for work the model would otherwise do with tmux', async () => {
+  assert.match(TerminalTool.searchHint ?? '', /tmux/)
+  assert.match(await TerminalTool.prompt({} as never), /instead of tmux/i)
+})

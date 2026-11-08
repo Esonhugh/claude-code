@@ -40,6 +40,10 @@ afterEach(() => {
 })
 
 describe('BashTool prompt', () => {
+  test('points interactive and tmux work at the Terminal tool', () => {
+    expect(getSimplePrompt()).toMatch(/use the Terminal tool, not tmux/)
+  })
+
   test('has a short Git section only when git instructions are turned on', () => {
     attribution = { commit: '', pr: '' }
     delete process.env.CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS

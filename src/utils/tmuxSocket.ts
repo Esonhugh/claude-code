@@ -279,7 +279,11 @@ async function doInitialize(): Promise<void> {
   // /run/WSL/383_interop — init's own socket, which listens but doesn't handle
   // interop. /run/WSL/1_interop is a stable symlink WSL maintains to the real
   // handler; pin the server to it so interop survives the spawning wsl.exe.
+  // -f /dev/null: the user's tmux.conf (base-index, plugins, hooks) must not
+  // change how Claude's server behaves.
   const result = await execTmux([
+    '-f',
+    '/dev/null',
     '-L',
     socket,
     'new-session',

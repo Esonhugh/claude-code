@@ -37,10 +37,13 @@ export function createBunPtyDriver(): PtyDriver & {
       } as Pick<BunPtySession, 'outputQueue' | 'status'> &
         Partial<Pick<BunPtySession, 'proc' | 'terminal' | 'pendingSignal'>>
 
+      // A Terminal session is not a pane of the user's tmux: without this,
+      // tmux run inside it would attach to the outer session's server.
+      const { TMUX: _tmux, TMUX_PANE: _tmuxPane, ...inheritedEnv } = process.env
       const proc = Bun.spawn([options.command, ...options.args], {
         cwd: options.cwd,
         env: {
-          ...process.env,
+          ...inheritedEnv,
           ...(options.env ?? {}),
         },
         terminal: {
