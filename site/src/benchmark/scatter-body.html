@@ -1,0 +1,126 @@
+<div class="wrap">
+  <header>
+    <h1>每任务 token、花费与缓存命中率</h1>
+    <p class="lede">本仓库、官方 Claude Code 2.1.319、Codex CLI 0.167.0、opencode 1.19.5、pi 1.5.0、oh-my-pi 18.18.0、dsh 0.2.2-rc.1 跑同一批真实任务（2026-11-07）。越靠左上越好：用更少的 token（或花费），拿到更高的缓存命中。上方按钮可把横轴切换为 token 或 API 等价花费（美元）。颜色 = CLI，形状 = 账号类型（实心圆 Claude 订阅、菱形 ChatGPT 订阅、空心圆 Claude API key）。把鼠标移到点上（手机上点一下）查看明细，点图例可隐藏。</p>
+  </header>
+  <div class="controls" role="group" aria-label="视图">
+    <div class="seg" id="views"></div>
+    <span class="sep" aria-hidden="true"></span>
+    <div class="seg" id="panels"></div>
+    <span class="sep" aria-hidden="true"></span>
+    <div class="seg" id="metric" aria-label="横轴"></div>
+  </div>
+  <section class="card" aria-label="散点图">
+    <div class="legend" id="legend"></div>
+    <div class="legend" id="auths" aria-label="账号类型"></div>
+    <div class="chartbox" id="box"><svg id="chart" role="img" aria-labelledby="chartTitle"><title id="chartTitle">token 与命中率散点图</title></svg><div class="tip" id="tip" hidden></div></div>
+    <p class="note" id="note"></p>
+  </section>
+  <section class="card tablebox" aria-label="数据表"><table id="table"></table></section>
+  <p class="note">命中率 = 缓存读 ÷（未缓存输入 + 缓存读 + 缓存写），按 token 加权。模型：Claude 订阅与 Claude API key 都用 claude-sonnet-5-5，ChatGPT 订阅用 gpt-6.1-sol；effort 用各 CLI 默认值（见表格）。花费按公开 API 价换算（美元 / 百万 token）：gpt-6.1-sol 输入 2、缓存读 0.10、输出 10；claude-sonnet-5-5 输入 2、缓存读 0.20、5 分钟缓存写 2.50、1 小时缓存写 4、输出 10。本仓库与官方写 1 小时缓存，其他 CLI 写 5 分钟缓存。ChatGPT 订阅与 Claude 订阅本身是包月，实际不按此计费，这里换算只为横向比较。两种模型价格不同，跨模型只比较相对位置。pi 与 opencode 的 Claude 侧用 API key 在另一时段运行。官方 2.1.319 在 -p 下没有真正组成团队（带名字的 Agent 变成后台 subagent），标 * 的点仅作参考。</p>
+</div>
+<script>
+const DATA = __DATA__;
+const PNAME={fork:'本仓库',official:'官方 Claude Code 2.1.319',codex:'Codex CLI 0.167.0',opencode:'opencode 1.19.5',pi:'pi 1.5.0',omp:'oh-my-pi 18.18.0',dsh:'dsh 0.2.2-rc.1'};
+const SHORT={fork:'本仓库',official:'官方',codex:'Codex',opencode:'opencode',pi:'pi',omp:'omp',dsh:'dsh'};
+const SIDE={claude:'Claude',openai:'ChatGPT'};
+const PROD=['fork','official','codex','opencode','pi','omp','dsh'];
+const AUTH=d=>d.cli.endsWith('-claude')&&d.prod!=='fork'?'Claude API key':(d.side==='claude'?'Claude 订阅':'ChatGPT 订阅');
+const AUTHS=['Claude 订阅','ChatGPT 订阅','Claude API key'];const hiddenAuth=new Set();
+const VIEWS=[['overall','总览',['全部 11 题']],['type','按任务类型',['全部类型','办公','研究','编码','运维','排障','Lean']],['scen','交互与多代理',['TUI 6 轮','SDK 4 轮','多代理','闲置 2.7 小时']]];
+const NOTES={
+ overall:'每个点 = 11 题 × 3 次（33 次 run）的平均；dsh ChatGPT 为 32 次（1 次 WebSocket 断线未计入）。浅蓝区域 = 横轴（token 或花费）不高于中位数且命中率不低于中位数；虚线 = Pareto 前沿（没有其他点在两项上同时更好）。',
+ type:'每个点 = 该类型全部任务 × 3 次。排障 = ssh / Kubernetes 真实环境排障 4 题。选「全部类型」时用标签区分类型；选单一类型时画该类型的 Pareto 前沿。',
+ 'TUI 6 轮':'同一组 6 轮对话，TUI 用 tmux 驱动，Web 用 Playwright。Web 点只有本仓库：其他 CLI 没有 Web 界面。前沿只算 TUI。',
+ 'SDK 4 轮':'SDK 模式 4 轮长短结合，各 3 次。',
+ '多代理':'同一任务（3 个模块各一个 bug）：单代理、3 个 subagent、Agent Teams 3 人，各 3 次。连线按 单代理 → subagent → Teams 连接同一 CLI。pi 没有 subagent；Teams 只有本仓库与官方有。',
+ '闲置 2.7 小时':'7 轮编码，轮间闲置 0 / 4 / 15 / 65 / 4 / 65 / 4 分钟，各 3 次。本仓库与官方写 1 小时缓存，65 分钟后过期；pi 与 opencode 在 Claude 侧写 5 分钟缓存，闲置 15 分钟以上就过期。'};
+let view='overall', panel='全部 11 题', metric='tokens'; const hidden=new Set();
+const X=d=>metric==='cost'?d.cost:d.tokens, fx=v=>metric==='cost'?'$'+(v<0.1?v.toFixed(3):v.toFixed(2)):v.toFixed(1)+'k';
+try{const s=JSON.parse(localStorage.getItem('cbs-state')||'{}'); if(s.view){view=s.view;panel=s.panel} if(s.metric)metric=s.metric}catch(e){}
+const css=n=>getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const $=id=>document.getElementById(id);
+function chip(label,on,fn){const b=document.createElement('button');b.className='chip';b.textContent=label;b.setAttribute('aria-pressed',on);b.onclick=fn;return b}
+function controls(){
+  const v=$('views'); v.replaceChildren(...VIEWS.map(([k,l,ps])=>chip(l,k===view,()=>{view=k;panel=ps[0];render()})));
+  const ps=VIEWS.find(x=>x[0]===view)[2]; const p=$('panels'); p.replaceChildren(...(ps.length>1?ps.map(x=>chip(x,x===panel,()=>{panel=x;render()})):[]));
+  p.previousElementSibling.hidden=ps.length<2;
+  $('metric').replaceChildren(...[['tokens','横轴：token'],['cost','横轴：花费 USD']].map(([k,l])=>chip(l,k===metric,()=>{metric=k;render()})));
+  const lg=$('legend'); lg.replaceChildren();
+  PROD.forEach(k=>{const b=document.createElement('button');b.className='leg';b.setAttribute('aria-pressed',!hidden.has(k));
+    b.innerHTML=`<span class="dot" style="background:var(--c-${k})"></span>${PNAME[k]}`;b.onclick=()=>{hidden.has(k)?hidden.delete(k):hidden.add(k);render()};lg.append(b)});
+  const a=$('auths'); a.replaceChildren(...AUTHS.map(k=>{const b=document.createElement('button');b.className='leg';b.setAttribute('aria-pressed',!hiddenAuth.has(k));
+    const ic=k==='Claude API key'?'<circle cx="6" cy="6" r="4.5" fill="none" stroke="var(--muted)" stroke-width="2"/>':(k==='Claude 订阅'?'<circle cx="6" cy="6" r="5" fill="var(--muted)"/>':'<path d="M6 0L12 6L6 12L0 6Z" fill="var(--muted)"/>');
+    b.innerHTML=`<svg width="12" height="12" style="min-width:0">${ic}</svg>${k}`;b.onclick=()=>{hiddenAuth.has(k)?hiddenAuth.delete(k):hiddenAuth.add(k);render()};return b}));
+}
+function pts(){
+  let r=DATA.filter(d=>d.view===view && !hidden.has(d.prod) && !hiddenAuth.has(AUTH(d)));
+  if(view==='type' && panel!=='全部类型') r=r.filter(d=>d.panel===panel);
+  if(view==='scen') r=r.filter(d=>d.panel===panel);
+  return r;
+}
+function name(d){let s=SHORT[d.prod]+' · '+(AUTH(d)==='Claude API key'?'Claude API':SIDE[d.side]); if(d.prod==='official') s='官方'; if(view==='type'&&panel==='全部类型') s+=' · '+d.panel; if(d.label) s+=(view==='scen'&&panel==='多代理'?' ':' ')+d.label; return s}
+function pareto(a){const s=[...a].sort((x,y)=>X(x)-X(y)||y.hit-x.hit);const f=[];let b=-1;for(const p of s){if(p.hit>b){f.push(p);b=p.hit}}return f}
+const tw=(s,z)=>[...s].reduce((a,c)=>a+(c.charCodeAt(0)>0x2e80?z:z*.58),0);
+function place(items,boxes,B,z){const out=[];for(const it of items){const w=tw(it.t,z),h=z+2;let best=null;
+  for(const r of [9,14,20,27,36,46]){for(const ang of [0,180,-35,35,-145,145,-90,90,-60,60,-120,120]){const a=ang*Math.PI/180,px=it.x+r*Math.cos(a),py=it.y+r*Math.sin(a);
+    const x0=Math.abs(ang)===90?px-w/2:(ang>-95&&ang<95?px:px-w),y0=py-h/2,R=[x0,y0,x0+w,y0+h];
+    if(R[0]<B[0]||R[2]>B[2]||R[1]<B[1]||R[3]>B[3])continue; if(boxes.some(b=>!(R[2]<b[0]||R[0]>b[2]||R[3]<b[1]||R[1]>b[3])))continue; best={R,lead:r>=27};break}if(best)break}
+  if(!best)continue; boxes.push([best.R[0]-2,best.R[1]-1,best.R[2]+2,best.R[3]+1]); out.push({...it,...best})}return out}
+const segBoxes=xy=>{const o=[];for(let i=1;i<xy.length;i++){const [ax,ay]=xy[i-1],[bx,by]=xy[i],n=Math.max(1,Math.hypot(bx-ax,by-ay)/4|0);for(let k=0;k<=n;k++){const x=ax+(bx-ax)*k/n,y=ay+(by-ay)*k/n;o.push([x-3,y-3,x+3,y+3])}}return o};
+const NS='http://www.w3.org/2000/svg';
+function el(t,a,txt){const e=document.createElementNS(NS,t);for(const k in a)e.setAttribute(k,a[k]);if(txt!=null)e.textContent=txt;return e}
+function render(){
+  try{localStorage.setItem('cbs-state',JSON.stringify({view,panel,metric}))}catch(e){}
+  controls(); const P=pts(); const svg=$('chart'); [...svg.querySelectorAll(':scope > :not(title)')].forEach(n=>n.remove());
+  const W=Math.max(300,Math.round($('box').clientWidth||900)),narrow=W<600,H=narrow?Math.round(W*1.05):520,m={l:narrow?44:62,r:narrow?10:24,t:16,b:52}; svg.setAttribute('viewBox',`0 0 ${W} ${H}`); svg.setAttribute('height',H);
+  const all=DATA.filter(d=>d.view===view&&(view!=='scen'||d.panel===panel));
+  const tmin=Math.min(...all.map(X)),tmax=Math.max(...all.map(X)),hmin=Math.min(...all.map(d=>d.hit));
+  const xlo=tmin/1.35,xhi=tmax*1.35,ylo=Math.max(0,Math.floor((hmin-3)/5)*5),yhi=100;
+  const sx=v=>m.l+(Math.log10(v)-Math.log10(xlo))/(Math.log10(xhi)-Math.log10(xlo))*(W-m.l-m.r), sy=v=>H-m.b-(v-ylo)/(yhi-ylo)*(H-m.t-m.b);
+  const g=el('g');svg.append(g);
+  let front=[]; if(view==='overall'||(view==='type'&&panel!=='全部类型')||(view==='scen'&&panel!=='多代理')) front=pareto(P.filter(d=>d.label!=='Web'));
+  if(view==='overall'&&P.length>2){const xs=P.map(X).sort((a,b)=>a-b),ys=P.map(d=>d.hit).sort((a,b)=>a-b);const mx=xs[xs.length>>1],my=ys[(ys.length>>1)-1];
+    g.append(el('rect',{x:m.l,y:m.t,width:sx(mx)-m.l,height:sy(my)-m.t,fill:'var(--zone)'}));}
+  let lastX=-99; for(const v of metric==='cost'?[0.005,0.01,0.02,0.03,0.05,0.1,0.2,0.3,0.5,1,2]:[5,10,20,30,50,100,200,300,500,1000]) if(v>=xlo&&v<=xhi&&sx(v)-lastX>=40){lastX=sx(v);g.append(el('line',{x1:sx(v),x2:sx(v),y1:m.t,y2:H-m.b,stroke:'var(--grid)'}));g.append(el('text',{x:sx(v),y:H-m.b+18,'text-anchor':'middle','font-size':12,fill:'var(--muted)'},metric==='cost'?'$'+v:v+'k'))}
+  for(let v=ylo;v<=yhi;v+=5){g.append(el('line',{x1:m.l,x2:W-m.r,y1:sy(v),y2:sy(v),stroke:'var(--grid)'}));g.append(el('text',{x:m.l-8,y:sy(v)+4,'text-anchor':'end','font-size':12,fill:'var(--muted)'},v+'%'))}
+  g.append(el('line',{x1:m.l,x2:W-m.r,y1:H-m.b,y2:H-m.b,stroke:'var(--axis)'}));
+  g.append(el('text',{x:(m.l+W-m.r)/2,y:H-10,'text-anchor':'middle','font-size':13,fill:'var(--ink2)'},metric==='cost'?(narrow?'每次 run 花费（美元，对数轴）':'平均每次 run API 等价花费（美元，对数轴，越左越省）'):(narrow?'每次 run 总 token（对数轴）':'平均每次 run 总 token（对数轴，越左越省）')));
+  if(!narrow) g.append(el('text',{x:16,y:(m.t+H-m.b)/2,'text-anchor':'middle','font-size':13,fill:'var(--ink2)',transform:`rotate(-90 12 ${(m.t+H-m.b)/2})`,x:12},'缓存命中率（越高越好）'));
+  let obst=[];
+  if(front.length>1){const xy=front.map(d=>[sx(X(d)),sy(d.hit)]);g.append(el('polyline',{points:xy.map(p=>p.join(',')).join(' '),fill:'none',stroke:'var(--ink2)','stroke-width':1.5,'stroke-dasharray':'2 4','stroke-linecap':'round'}));obst=segBoxes(xy)}
+  if(view==='scen'&&panel==='多代理') for(const k of [...new Set(P.map(d=>d.cli))]){const q=P.filter(d=>d.cli===k);if(q.length<2)continue;const xy=q.map(d=>[sx(X(d)),sy(d.hit)]);
+    g.append(el('polyline',{points:xy.map(p=>p.join(',')).join(' '),fill:'none',stroke:`var(--c-${q[0].prod})`,'stroke-width':1.5,'stroke-opacity':.6}));obst=obst.concat(segBoxes(xy))}
+  const fs=new Set(front); const many=P.length>16, r=many?5:(narrow?6:7), lz=narrow?11:12.5;
+  P.forEach(d=>obst.push([sx(X(d))-r-2,sy(d.hit)-r-2,sx(X(d))+r+2,sy(d.hit)+r+2]));
+  const marks=el('g');svg.append(marks);
+  for(const d of P){const x=sx(X(d)),y=sy(d.hit),c=`var(--c-${d.prod})`;let s;
+    if(AUTH(d)==='Claude API key') s=el('circle',{cx:x,cy:y,r:r-1,fill:'var(--surface)',stroke:c,'stroke-width':2.5,class:'pt'});
+    else if(d.side==='claude') s=el('circle',{cx:x,cy:y,r,fill:c,stroke:'var(--surface)','stroke-width':2,class:'pt'});
+    else {const q=r*1.3;s=el('path',{d:`M${x},${y-q}L${x+q},${y}L${x},${y+q}L${x-q},${y}Z`,fill:c,stroke:'var(--surface)','stroke-width':2,'stroke-linejoin':'round',class:'pt'})}
+    marks.append(s);
+    const hit=el('circle',{cx:x,cy:y,r:16,fill:'transparent',tabindex:0,'aria-label':`${name(d)}：${d.tokens.toFixed(1)}k token，$${d.cost.toFixed(3)}，命中率 ${d.hit.toFixed(1)}%`});
+    hit.style.cursor='pointer'; const show=()=>tip(d,x,y,W,H); hit.addEventListener('mouseenter',show);hit.addEventListener('focus',show);hit.addEventListener('click',show);
+    hit.addEventListener('mouseleave',()=>$('tip').hidden=true);hit.addEventListener('blur',()=>$('tip').hidden=true); marks.append(hit)}
+  if(!many){const items=[...P].sort((a,b)=>b.hit-a.hit).map(d=>({x:sx(X(d)),y:sy(d.hit),t:name(d),b:fs.has(d)}));
+    const lab=el('g');svg.insertBefore(lab,marks);
+    for(const p of place(items,obst,[m.l,m.t,W-m.r,H-m.b],lz)){
+      if(p.lead){const cx=Math.min(Math.max(p.x,p.R[0]),p.R[2]),cy=Math.min(Math.max(p.y,p.R[1]),p.R[3]);lab.append(el('line',{x1:p.x,y1:p.y,x2:cx,y2:cy,stroke:'var(--axis)'}))}
+      lab.append(el('text',{x:p.R[0],y:p.R[3]-3,'font-size':lz,'font-weight':p.b?600:400,fill:p.b?'var(--ink)':'var(--ink2)',stroke:'var(--surface)','stroke-width':3,'paint-order':'stroke','stroke-linejoin':'round'},p.t))}}
+  $('note').textContent=NOTES[view]||NOTES[panel]||'';
+  table(P,fs);
+}
+const f0=v=>v==null?'—':Math.round(v).toLocaleString('en-US');
+function tip(d,x,y,W,H){const t=$('tip'),box=$('box'),svg=$('chart');const k=svg.clientWidth/W;
+  t.innerHTML=`<b>${PNAME[d.prod]} · ${AUTH(d)}</b><div style="color:var(--muted)">${d.panel}${d.label?' · '+d.label:''} · ${d.n} 次 run</div><div style="color:var(--muted)">${d.model} · effort ${d.effort}</div><dl>
+  <dt>平均总 token</dt><dd>${d.tokens.toFixed(1)}k</dd><dt>API 等价花费</dt><dd>$${d.cost.toFixed(4)}</dd><dt>缓存命中率</dt><dd>${d.hit.toFixed(1)}%</dd>
+  ${d.cache_read!=null?`<dt>缓存读</dt><dd>${f0(d.cache_read)}</dd><dt>缓存写</dt><dd>${f0(d.cache_write)}</dd><dt>未缓存输入</dt><dd>${f0(d.input)}</dd><dt>输出</dt><dd>${f0(d.output)}</dd><dt>平均 TTFT</dt><dd>${(d.ttft/1000).toFixed(2)}s</dd><dt>平均用时</dt><dd>${d.duration}s</dd>`:''}
+  <dt>请求数</dt><dd>${d.requests}</dd></dl>`;
+  t.hidden=false; let L=x*k+14-box.scrollLeft, T=y*k-10; if(L+t.offsetWidth>box.clientWidth) L=x*k-14-t.offsetWidth-box.scrollLeft; if(T+t.offsetHeight>box.clientHeight) T=box.clientHeight-t.offsetHeight-4;
+  t.style.left=Math.max(0,L)+'px'; t.style.top=Math.max(0,T)+'px'}
+function table(P,fs){const h=['CLI · 账号','模型 · effort','场景','总 token','花费 USD','命中率','run','缓存读','缓存写','未缓存输入','输出','请求数','TTFT'];
+  const ord=['单代理','3 subagent','Teams','Teams*'], rows=[...P].sort(panel==='多代理'&&view==='scen'?(a,b)=>a.cli.localeCompare(b.cli)||ord.indexOf(a.label)-ord.indexOf(b.label):(a,b)=>b.hit-a.hit).map(d=>`<tr><td class="${fs.has(d)?'front':''}"><span class="dot" style="background:var(--c-${d.prod});margin-right:6px"></span>${PNAME[d.prod]}<div style="color:var(--muted);font-size:12px;padding-left:16px">${AUTH(d)}</div></td><td>${d.model}<div style="color:var(--muted);font-size:12px">${d.effort}</div></td><td>${d.label?(d.label==='TUI'||d.label==='SDK'||d.label==='闲置'?d.panel:d.label):d.panel}</td><td>${d.tokens.toFixed(1)}k</td><td>$${d.cost.toFixed(3)}</td><td>${d.hit.toFixed(1)}%</td><td>${d.n}</td><td>${f0(d.cache_read)}</td><td>${f0(d.cache_write)}</td><td>${f0(d.input)}</td><td>${f0(d.output)}</td><td>${d.requests}</td><td>${d.ttft?(d.ttft/1000).toFixed(2)+'s':'—'}</td></tr>`).join('');
+  $('table').innerHTML=`<thead><tr>${h.map(x=>`<th>${x}</th>`).join('')}</tr></thead><tbody>${rows}</tbody>`}
+render();
+let rz;addEventListener('resize',()=>{clearTimeout(rz);rz=setTimeout(render,120)});
+</script>

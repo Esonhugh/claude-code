@@ -1,0 +1,161 @@
+<main id="top">
+<div class="hero"><div class="wrap">
+  <p class="prompt">$ <b>bun</b> bench/cli.ts analyze --raw ~/bench-raw/2026-11-07</p>
+  <h1 class="en">How we test</h1>
+  <h1 class="zh">我們怎麼測</h1>
+  <p class="lede en">Every number on this site comes from real model requests: the same tasks, run by this fork and six other coding agents, on a Claude account and on a ChatGPT account. The harness lives in the repo as <code>bench/</code>, so anyone can rerun it.</p>
+  <p class="lede zh">網站上的每個數字都來自真實模型請求：本分支和另外六個 coding agent，在 Claude 帳號與 ChatGPT 帳號上跑同一批任務。測試套件就放在 repo 的 <code>bench/</code>，任何人都能重跑。</p>
+  <div class="stats">
+    <div class="stat"><b>789</b><span class="en">runs, collected 2026-11-07</span><span class="zh">次 run，2026-11-07 採集</span></div>
+    <div class="stat"><b>7</b><span class="en">CLIs on the same tasks</span><span class="zh">個 CLI 跑同一批任務</span></div>
+    <div class="stat"><b>≥ 3</b><span class="en">runs per task per CLI</span><span class="zh">每格每題至少幾次</span></div>
+    <div class="stat"><b>0</b><span class="en">mocked API calls</span><span class="zh">次假 API 請求</span></div>
+  </div>
+</div></div>
+
+<section id="method"><div class="wrap">
+  <p class="prompt">$ <b>cat</b> bench/lib/run.ts</p>
+  <h2 class="en">What one run does</h2>
+  <h2 class="zh">一次 run 做了什麼</h2>
+  <ol class="steps en">
+    <li>Copy the task's starting files into a fresh workspace and create a fresh, empty HOME with only that CLI's login.</li>
+    <li>Start a local recording proxy. Every model request goes through it; it logs usage, model, effort, request size and time to first token, never headers or bodies.</li>
+    <li>Run the CLI with the same prompt and the same model as every other cell. Web search and fetch are turned off for every CLI.</li>
+    <li>Grade automatically: run the tests, compile the Lean proof, check the report's key lines, or run the lab's own check script.</li>
+    <li>Append the raw record. Records are never overwritten; a run that hit an infrastructure fault moves to <code>_infra-failed/</code> and does not count.</li>
+  </ol>
+  <ol class="steps zh">
+    <li>把任務的初始檔案複製到全新工作區，建立一個全新、空白的 HOME，只放這個 CLI 的登入資訊。</li>
+    <li>啟動本機記錄代理。所有模型請求都經過它，記下用量、模型、effort、請求大小、首 token 時間，不記請求標頭和內容。</li>
+    <li>用和其他格相同的提示與模型執行 CLI。所有 CLI 都關閉網頁搜尋與抓取。</li>
+    <li>自動評分：跑測試、編譯 Lean 證明、核對報告關鍵行，或執行排障環境自己的驗收腳本。</li>
+    <li>追加原始紀錄，從不覆蓋；遇到環境故障的 run 移到 <code>_infra-failed/</code>，不計入結果。</li>
+  </ol>
+  <p class="en">Rounds are interleaved: round r runs every (task, CLI) pair once, in an order shuffled by seed, so no CLI is always first (cold cache) or always last. The harness refuses to run fewer than 3 repetitions.</p>
+  <p class="zh">各輪交錯執行：第 r 輪把每個（任務, CLI）各跑一次，順序按種子打亂，沒有 CLI 永遠第一個（冷快取）或永遠最後。少於 3 次時套件直接拒絕執行。</p>
+
+  <div class="tablewrap"><table class="wrap-cells">
+    <thead><tr><th><span class="en">Type</span><span class="zh">類型</span></th><th style="text-align:left"><span class="en">Tasks</span><span class="zh">任務</span></th><th style="text-align:left"><span class="en">Graded by</span><span class="zh">評分方式</span></th></tr></thead>
+    <tbody>
+      <tr><td><span class="en">Office</span><span class="zh">辦公</span></td><td style="text-align:left"><span class="en">tidy a README; write three docs with runnable examples</span><span class="zh">整理 README；讀原始碼寫三份附可執行範例的文件</span></td><td style="text-align:left"><span class="en">file content, examples run</span><span class="zh">檔案內容、範例可執行</span></td></tr>
+      <tr><td><span class="en">Research</span><span class="zh">研究</span></td><td style="text-align:left"><span class="en">compare 3 quotes over 36 months; analyse 900 tickets</span><span class="zh">比較 3 份報價的 36 個月成本；分析 900 張工單</span></td><td style="text-align:left"><span class="en">key result lines, medians</span><span class="zh">關鍵結論行、中位數</span></td></tr>
+      <tr><td><span class="en">Coding</span><span class="zh">程式</span></td><td style="text-align:left"><span class="en">slugify; fix 4 bugs + CLI; an expression language from scratch</span><span class="zh">slugify；修 4 個 bug 加 CLI；從零寫表達式語言</span></td><td style="text-align:left"><span class="en">unit tests (≥ 30 for the long one)</span><span class="zh">單元測試（長題 ≥ 30 個）</span></td></tr>
+      <tr><td><span class="en">Ops</span><span class="zh">維運</span></td><td style="text-align:left"><span class="en">disk alert; logs + config + script + incident report</span><span class="zh">磁碟告警；日誌、設定、腳本與事故報告</span></td><td style="text-align:left"><span class="en">fix notes, config check, <code>sh -n</code></span><span class="zh">修復說明、設定檢查、<code>sh -n</code></span></td></tr>
+      <tr><td><span class="en">Troubleshoot</span><span class="zh">排障</span></td><td style="text-align:left"><span class="en">real sshd container and a k3s namespace with planted faults</span><span class="zh">真實 sshd 容器與 k3s 命名空間，預先埋好故障</span></td><td style="text-align:left"><span class="en">lab check; side doors fail the run</span><span class="zh">環境驗收；走旁路即判失敗</span></td></tr>
+      <tr><td>Lean 4</td><td style="text-align:left"><span class="en">sums, list reversal, n² ≤ 2ⁿ, logic puzzles</span><span class="zh">求和、列表反轉、n² ≤ 2ⁿ、邏輯謎題</span></td><td style="text-align:left"><span class="en">compiles clean; no <code>sorry</code>; statements unchanged</span><span class="zh">編譯無警告；禁用 <code>sorry</code>；定理陳述不得改</span></td></tr>
+    </tbody>
+  </table></div>
+</div></section>
+
+<section id="results"><div class="wrap">
+  <p class="prompt">$ <b>bun</b> bench/cli.ts chart --png</p>
+  <h2 class="en">Results</h2>
+  <h2 class="zh">結果</h2>
+  <p class="en">Hit rate is cache reads divided by all input tokens (uncached + cache read + cache write), weighted by tokens. Up and to the left is better: fewer tokens per task, more of them served from cache.</p>
+  <p class="zh">命中率 = 快取讀 ÷（未快取輸入 + 快取讀 + 快取寫），按 token 加權。越往左上越好：每個任務用的 token 更少，且更多來自快取。</p>
+  <div class="viz" id="viz-overall">
+    <h3><span class="en">Cache hit rate per CLI</span><span class="zh">各 CLI 的快取命中率</span></h3>
+    <p class="viz-sub"><span class="en">Dot = token-weighted mean over 33 runs, line = single-run range. Hover or focus a row for tokens and cost.</span><span class="zh">圓點 = 33 次的 token 加權平均，線 = 單次範圍。滑過或聚焦一行可看 token 與花費。</span></p>
+    <div class="viz-plot"></div>
+  </div>
+  <div class="viz" id="viz-tasks">
+    <h3><span class="en">Hit rate by task</span><span class="zh">各任務的命中率</span></h3>
+    <p class="viz-sub"><span class="en">Mean of 3 runs per cell; hover a cell for tokens and time. Darker = higher.</span><span class="zh">每格 3 次平均；滑過看 token 與用時。顏色越深越高。</span></p>
+    <div class="viz-plot"></div>
+  </div>
+  <div class="viz" id="viz-tui">
+    <h3><span class="en">Interactive TUI, 6 turns: total tokens</span><span class="zh">互動 TUI 6 輪：總 token</span></h3>
+    <p class="viz-sub"><span class="en">Same 6-turn conversation driven through tmux, 3 runs each. Fewer is better.</span><span class="zh">同一組 6 輪對話用 tmux 驅動，各 3 次。越少越好。</span></p>
+    <div class="viz-plot"></div>
+  </div>
+  <h3 style="margin-top:36px"><span class="en">Tokens vs hit rate, every CLI and account</span><span class="zh">token 與命中率：所有 CLI 與帳號</span></h3>
+  <p class="muted"><span class="en">Switch the x-axis between tokens and cost, filter by task type, hover any point. Chart labels are in Chinese.</span><span class="zh">可切換橫軸為 token 或花費、按任務類型篩選、滑過任一點看明細。</span> <a href="scatter.html"><span class="en">Open full page</span><span class="zh">開新頁</span></a></p>
+  <iframe class="scatter-frame" id="scatter-frame" src="scatter.html" title="Tokens vs cache hit scatter" loading="lazy"></iframe>
+  <div class="tablewrap"><table>
+    <thead><tr><th><span class="en">CLI · account</span><span class="zh">CLI · 帳號</span></th><th><span class="en">Cache hit</span><span class="zh">命中率</span></th><th><span class="en">Tokens / task</span><span class="zh">token / 任務</span></th><th><span class="en">$ / task</span><span class="zh">$ / 任務</span></th><th><span class="en">TUI 6 turns</span><span class="zh">TUI 6 輪</span></th><th><span class="en">Start → 1st request</span><span class="zh">啟動到首個請求</span></th></tr></thead>
+    <tbody>
+      <tr><td class="us"><span class="sw" style="background:var(--claude)"></span>This fork · Claude</td><td class="us">87.1%</td><td class="us">72.7k</td><td class="us">$0.078</td><td class="us">235k</td><td class="us">0.82s</td></tr>
+      <tr><td><span class="sw" style="background:var(--claude);opacity:.4"></span>Official Claude Code 2.1.319</td><td>87.3%</td><td>81.0k</td><td>$0.088</td><td>640k</td><td>0.89s</td></tr>
+      <tr><td class="us"><span class="sw" style="background:var(--gpt)"></span>This fork · ChatGPT</td><td class="us">85.3%</td><td class="us">75.9k</td><td class="us">$0.050</td><td class="us">310k</td><td class="us">0.71s</td></tr>
+      <tr><td><span class="sw" style="background:var(--gpt);opacity:.4"></span>Codex CLI 0.167.0</td><td>88.8%</td><td>80.3k</td><td>$0.047</td><td>267k</td><td>2.59s</td></tr>
+      <tr><td><span class="sw" style="background:var(--gpt);opacity:.4"></span>opencode 1.19.5</td><td>89.2%</td><td>81.5k</td><td>$0.059</td><td>170k</td><td>2.81s</td></tr>
+      <tr><td><span class="sw" style="background:var(--gpt);opacity:.4"></span>pi 1.5.0</td><td>84.0%</td><td>36.5k</td><td>$0.041</td><td>80k</td><td>0.83s</td></tr>
+    </tbody>
+  </table></div>
+  <p class="foot"><span class="en">All six rows passed 33/33 tasks, so the differences are in tokens, cost, time and stability. oh-my-pi, dsh and the ssh / Kubernetes troubleshooting runs are in the full report.</span><span class="zh">六行都通過 33/33，差別在 token、花費、時間與穩定性。oh-my-pi、dsh 與 ssh / Kubernetes 排障結果見完整報告。</span></p>
+</div></section>
+
+<section id="providers"><div class="wrap">
+  <p class="prompt">$ <b>diff</b> claude-account chatgpt-account</p>
+  <h2 class="en">Claude account vs ChatGPT account</h2>
+  <h2 class="zh">Claude 帳號與 ChatGPT 帳號的差別</h2>
+  <p class="en">The two sides are separate comparisons: the Claude side uses <code>claude-sonnet-5-5</code> (medium effort), the ChatGPT side uses <code>gpt-6.1-sol</code> (low effort, the account default). Prices differ, so compare positions within a side.</p>
+  <p class="zh">兩側分開比較：Claude 側用 <code>claude-sonnet-5-5</code>（medium effort），ChatGPT 側用 <code>gpt-6.1-sol</code>（low effort，帳號預設）。兩家價格不同，請在同一側內比較位置。</p>
+  <div class="tablewrap"><table class="wrap-cells">
+    <thead><tr><th></th><th style="text-align:left"><span class="en">Claude account</span><span class="zh">Claude 帳號</span></th><th style="text-align:left"><span class="en">ChatGPT account</span><span class="zh">ChatGPT 帳號</span></th></tr></thead>
+    <tbody>
+      <tr><td><span class="en">vs the vendor's own CLI</span><span class="zh">對照原廠 CLI</span></td><td style="text-align:left"><span class="en">Even with official on hit rate (87.1% vs 87.3%), 10% fewer tokens, 11% lower cost</span><span class="zh">命中率與官方持平（87.1% 對 87.3%），token 少 10%，花費低 11%</span></td><td style="text-align:left"><span class="en">3.5 points below Codex, only on short tasks (82.9% vs 89.7%); long tasks 86.5% vs 88.3%</span><span class="zh">比 Codex 低 3.5 個百分點，只在短任務（82.9% 對 89.7%）；長任務 86.5% 對 88.3%</span></td></tr>
+      <tr><td><span class="en">Why</span><span class="zh">原因</span></td><td style="text-align:left"><span class="en">Shorter system prompt: 37.6k characters vs 46.6k</span><span class="zh">系統提示較短：37.6k 字元對 46.6k</span></td><td style="text-align:left"><span class="en">Codex keeps its system prompt on the server, so a new session's first request has less uncached input</span><span class="zh">Codex 的系統提示放在伺服器端，新會話第一個請求未快取的部分更少</span></td></tr>
+      <tr><td><span class="en">Cache price</span><span class="zh">快取價格</span></td><td style="text-align:left"><span class="en">Cache reads cost 1/10 of input; writes cost extra</span><span class="zh">快取讀是輸入價的 1/10，寫入另計</span></td><td style="text-align:left"><span class="en">Cache reads cost 1/20 of input; no write charge</span><span class="zh">快取讀是輸入價的 1/20，寫入不另收</span></td></tr>
+      <tr><td><span class="en">After 65 min idle</span><span class="zh">閒置 65 分鐘後</span></td><td style="text-align:left"><span class="en">1-hour cache has expired; first request about 50% for both fork and official</span><span class="zh">1 小時快取已過期，本分支與官方的第一個請求都約 50%</span></td><td style="text-align:left"><span class="en">Still 97–98%</span><span class="zh">仍有 97–98%</span></td></tr>
+      <tr><td><span class="en">Mid-session cache breaks</span><span class="zh">會話中途快取失效</span></td><td style="text-align:left">0.0%</td><td style="text-align:left"><span class="en">2.7% of requests, from OpenAI backend routing</span><span class="zh">2.7% 的請求，來自 OpenAI 後端路由</span></td></tr>
+      <tr><td><span class="en">3 subagents / 3-member team</span><span class="zh">3 個 subagent / 3 人團隊</span></td><td style="text-align:left">2.8× / 6.0× <span class="muted"><span class="en">(official 3.7×)</span><span class="zh">（官方 3.7×）</span></span></td><td style="text-align:left">3.8× / 8.5×</td></tr>
+    </tbody>
+  </table></div>
+  <div class="viz" id="viz-idle">
+    <h3><span class="en">First request of each turn after idling</span><span class="zh">每輪閒置後第一個請求的命中率</span></h3>
+    <p class="viz-sub"><span class="en">One 7-turn session over 2.7 hours; the column header shows the idle gap before that turn. Claude's 1-hour cache expires after 65 minutes; pi and opencode write only a 5-minute cache on Claude.</span><span class="zh">同一會話 7 輪、約 2.7 小時；欄標題是該輪之前閒置的分鐘數。Claude 的 1 小時快取在閒置 65 分鐘後過期；pi 與 opencode 在 Claude 側只寫 5 分鐘快取。</span></p>
+    <div class="viz-plot"></div>
+  </div>
+  <div class="viz" id="viz-multi">
+    <h3><span class="en">Multi-agent cost: total tokens for one 3-module bug fix</span><span class="zh">多代理成本：修 3 個模組 bug 的總 token</span></h3>
+    <p class="viz-sub"><span class="en">Label = multiple of the same CLI's single-agent run. Faded bar: official 2.1.319 did not actually form a team in -p.</span><span class="zh">標籤 = 相對同一 CLI 單代理的倍數。淡色：官方 2.1.319 在 -p 下沒有真正組隊。</span></p>
+    <div class="viz-legend"></div>
+    <div class="viz-plot"></div>
+  </div>
+  <p class="foot"><span class="en">Every value is also in the tables of the</span><span class="zh">所有數值也列在</span> <a href="../docs/cache-benchmark.html"><span class="en">full report</span><span class="zh">完整報告</span></a><span class="zh">的表格裡</span>.</p>
+</div></section>
+
+<section id="public"><div class="wrap">
+  <p class="prompt">$ <b>bun</b> bench/cli.ts public --picks bench/public/picks-A.txt --variant seed1108</p>
+  <h2 class="en">Public benchmarks, perturbed</h2>
+  <h2 class="zh">公開基準題，加上擾動</h2>
+  <p class="en">Our own tasks are too easy to separate CLIs by success rate, so we also run 20 hard tasks from public suites: Terminal-Bench 2.0 (8), SWE-bench Pro (8) and SpreadsheetBench Verified (4). To keep models from recalling published answers, every task has a seeded variant: reworded instructions, renamed files, paths, ports and output formats, regenerated inputs and answers, with the graders updated to match. A variant is used only after the reference solution passes it; all 20 do. SWE-bench Pro runs with the git history stripped so the upstream fix cannot be read back.</p>
+  <p class="zh">自家任務太容易，各 CLI 幾乎都 100% 通過，分不出完成率，所以另外跑 20 題公開基準難題：Terminal-Bench 2.0 8 題、SWE-bench Pro 8 題、SpreadsheetBench Verified 4 題。為了避免模型背出公開答案，每題都有帶種子的擾動版本：改寫指示，改檔名、路徑、連接埠與輸出格式，重新產生輸入與答案並同步更新評分腳本。參考解通過後才使用，20 題全部通過。SWE-bench Pro 執行時會移除 git 歷史，讀不到上游修復。</p>
+  <div class="pending"><span class="en">Full matrix in progress: every CLI on both accounts, original and perturbed, 3 runs each. Results will appear here when the matrix is complete.</span><span class="zh">完整矩陣執行中：每個 CLI、兩種帳號、原題與擾動題各 3 次。全部跑完後結果會放在這裡。</span></div>
+</div></section>
+
+<section id="cost"><div class="wrap">
+  <p class="prompt">$ <b>cat</b> prices.md</p>
+  <h2 class="en">How cost is counted</h2>
+  <h2 class="zh">花費怎麼算</h2>
+  <p class="en">Subscriptions are billed monthly, so per-task cost is an API-equivalent figure from one public price table (USD per million tokens, 2026-11-07). This fork and official write 1-hour cache; the other CLIs write 5-minute cache.</p>
+  <p class="zh">訂閱是包月計費，所以每任務花費是按同一張公開 API 價目表換算的等價金額（美元 / 百萬 token，2026-11-07）。本分支與官方寫 1 小時快取，其他 CLI 寫 5 分鐘快取。</p>
+  <div class="tablewrap"><table>
+    <thead><tr><th><span class="en">Model</span><span class="zh">模型</span></th><th><span class="en">Input</span><span class="zh">輸入</span></th><th><span class="en">Cache read</span><span class="zh">快取讀</span></th><th><span class="en">5-min write</span><span class="zh">5 分鐘寫</span></th><th><span class="en">1-hour write</span><span class="zh">1 小時寫</span></th><th><span class="en">Output</span><span class="zh">輸出</span></th></tr></thead>
+    <tbody>
+      <tr><td><code>claude-sonnet-5-5</code></td><td>2</td><td>0.20</td><td>2.50</td><td>4</td><td>10</td></tr>
+      <tr><td><code>gpt-6.1-sol</code></td><td>2</td><td>0.10</td><td>—</td><td>—</td><td>10</td></tr>
+    </tbody>
+  </table></div>
+</div></section>
+
+<section id="rerun"><div class="wrap">
+  <p class="prompt">$ <b>make</b> build</p>
+  <h2 class="en">Run it yourself</h2>
+  <h2 class="zh">自己跑一遍</h2>
+  <p class="en">Credentials are read from environment variables only and are scrubbed from raw records.</p>
+  <p class="zh">憑證只從環境變數讀取，並會從原始紀錄中清除。</p>
+  <div class="code">make build
+bun bench/cli.ts list
+bun bench/cli.ts run --cells fork-claude-key,official-key --tasks type:coding \
+  --reps 3 --raw ~/bench-raw/run1
+bun bench/cli.ts analyze --raw ~/bench-raw/run1
+bun bench/cli.ts chart --raw ~/bench-raw/run1 --out ~/bench-charts --png</div>
+  <div class="cards">
+    <a href="../docs/cache-benchmark.html"><b class="en">Full report</b><b class="zh">完整報告</b><span class="en">Every metric, chart and caveat.</span><span class="zh">全部指標、圖表與注意事項。</span></a>
+    <a href="../docs/agent-bench.html"><b class="en">Harness docs</b><b class="zh">測試套件文件</b><span class="en">Tasks, cells, rules and raw record layout.</span><span class="zh">任務、CLI 格、規則與原始紀錄格式。</span></a>
+    <a href="https://github.com/Esonhugh/claude-code/tree/dev/bench"><b>bench/</b><span class="en">The source.</span><span class="zh">原始碼。</span></a>
+  </div>
+</div></section>
+</main>

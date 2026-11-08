@@ -1,0 +1,759 @@
+{
+  "source": "docs/features/cache-benchmark.md, sections 1, 3, 4, 5, 6 (collected 2026-11-07)",
+  "clis": {
+    "fork-claude": {
+      "en": "This fork · Claude",
+      "zh": "本分支 · Claude",
+      "ours": true,
+      "side": "claude",
+      "shortEn": "Fork\nClaude",
+      "shortZh": "本分支\nClaude"
+    },
+    "official": {
+      "en": "Official Claude Code 2.1.319",
+      "zh": "官方 Claude Code 2.1.319",
+      "side": "claude",
+      "shortEn": "Official\n2.1.319",
+      "shortZh": "官方\n2.1.319"
+    },
+    "opencode-claude": {
+      "en": "opencode · Claude API key",
+      "zh": "opencode · Claude API key",
+      "side": "claude",
+      "shortEn": "opencode\nClaude key",
+      "shortZh": "opencode\nClaude key"
+    },
+    "pi-claude": {
+      "en": "pi · Claude API key",
+      "zh": "pi · Claude API key",
+      "side": "claude",
+      "shortEn": "pi\nClaude key",
+      "shortZh": "pi\nClaude key"
+    },
+    "fork-openai": {
+      "en": "This fork · ChatGPT",
+      "zh": "本分支 · ChatGPT",
+      "ours": true,
+      "side": "chatgpt",
+      "shortEn": "Fork\nChatGPT",
+      "shortZh": "本分支\nChatGPT"
+    },
+    "codex": {
+      "en": "Codex CLI 0.167.0",
+      "zh": "Codex CLI 0.167.0",
+      "side": "chatgpt",
+      "shortEn": "Codex\n0.167.0",
+      "shortZh": "Codex\n0.167.0"
+    },
+    "opencode": {
+      "en": "opencode 1.19.5",
+      "zh": "opencode 1.19.5",
+      "side": "chatgpt",
+      "shortEn": "opencode\n1.19.5",
+      "shortZh": "opencode\n1.19.5"
+    },
+    "pi": {
+      "en": "pi 1.5.0",
+      "zh": "pi 1.5.0",
+      "side": "chatgpt",
+      "shortEn": "pi\n1.5.0",
+      "shortZh": "pi\n1.5.0"
+    }
+  },
+  "overall": [
+    {
+      "cli": "fork-claude",
+      "hit": 87.1,
+      "min": 49,
+      "max": 93,
+      "tokens": 72.7,
+      "cost": 0.078,
+      "n": 33
+    },
+    {
+      "cli": "official",
+      "hit": 87.3,
+      "min": 77,
+      "max": 94,
+      "tokens": 81.0,
+      "cost": 0.088,
+      "n": 33
+    },
+    {
+      "cli": "opencode-claude",
+      "hit": 79.2,
+      "min": 59,
+      "max": 89,
+      "tokens": 92.0,
+      "cost": 0.119,
+      "n": 33
+    },
+    {
+      "cli": "pi-claude",
+      "hit": 73.4,
+      "min": 32,
+      "max": 83,
+      "tokens": 21.4,
+      "cost": 0.045,
+      "n": 33
+    },
+    {
+      "cli": "fork-openai",
+      "hit": 85.3,
+      "min": 50,
+      "max": 93,
+      "tokens": 75.9,
+      "cost": 0.05,
+      "n": 33
+    },
+    {
+      "cli": "codex",
+      "hit": 88.8,
+      "min": 79,
+      "max": 96,
+      "tokens": 80.3,
+      "cost": 0.047,
+      "n": 33
+    },
+    {
+      "cli": "opencode",
+      "hit": 89.2,
+      "min": 71,
+      "max": 96,
+      "tokens": 81.5,
+      "cost": 0.059,
+      "n": 33
+    },
+    {
+      "cli": "pi",
+      "hit": 84.0,
+      "min": 37,
+      "max": 95,
+      "tokens": 36.5,
+      "cost": 0.041,
+      "n": 33
+    }
+  ],
+  "tasks": {
+    "clis": [
+      "fork-claude",
+      "official",
+      "fork-openai",
+      "codex",
+      "opencode",
+      "pi"
+    ],
+    "rows": [
+      {
+        "id": "doc",
+        "en": "Office · short",
+        "zh": "辦公・短",
+        "cells": [
+          [
+            87,
+            48.2,
+            11
+          ],
+          [
+            87,
+            53.4,
+            12
+          ],
+          [
+            82,
+            44.0,
+            22
+          ],
+          [
+            89,
+            68.6,
+            31
+          ],
+          [
+            87,
+            22.9,
+            29
+          ],
+          [
+            54,
+            5.0,
+            17
+          ]
+        ]
+      },
+      {
+        "id": "doc-l",
+        "en": "Office · long",
+        "zh": "辦公・長",
+        "cells": [
+          [
+            86,
+            109.3,
+            61
+          ],
+          [
+            84,
+            124.3,
+            86
+          ],
+          [
+            86,
+            104.7,
+            154
+          ],
+          [
+            91,
+            101.5,
+            147
+          ],
+          [
+            91,
+            170.0,
+            293
+          ],
+          [
+            95,
+            113.0,
+            272
+          ]
+        ]
+      },
+      {
+        "id": "research-s",
+        "en": "Research · short",
+        "zh": "研究・短",
+        "cells": [
+          [
+            87,
+            49.5,
+            15
+          ],
+          [
+            87,
+            54.7,
+            15
+          ],
+          [
+            83,
+            49.4,
+            33
+          ],
+          [
+            89,
+            63.2,
+            30
+          ],
+          [
+            84,
+            41.4,
+            50
+          ],
+          [
+            63,
+            10.9,
+            26
+          ]
+        ]
+      },
+      {
+        "id": "research-l",
+        "en": "Research · long",
+        "zh": "研究・長",
+        "cells": [
+          [
+            91,
+            85.8,
+            22
+          ],
+          [
+            91,
+            94.2,
+            22
+          ],
+          [
+            88,
+            59.9,
+            51
+          ],
+          [
+            92,
+            81.8,
+            49
+          ],
+          [
+            90,
+            100.9,
+            95
+          ],
+          [
+            64,
+            12.1,
+            37
+          ]
+        ]
+      },
+      {
+        "id": "coding-s",
+        "en": "Coding · short",
+        "zh": "程式・短",
+        "cells": [
+          [
+            78,
+            43.3,
+            14
+          ],
+          [
+            84,
+            42.2,
+            11
+          ],
+          [
+            85,
+            54.9,
+            23
+          ],
+          [
+            89,
+            61.7,
+            21
+          ],
+          [
+            83,
+            28.1,
+            26
+          ],
+          [
+            57,
+            7.7,
+            19
+          ]
+        ]
+      },
+      {
+        "id": "coding",
+        "en": "Coding · long",
+        "zh": "程式・長",
+        "cells": [
+          [
+            83,
+            53.3,
+            25
+          ],
+          [
+            83,
+            58.8,
+            26
+          ],
+          [
+            89,
+            85.0,
+            72
+          ],
+          [
+            89,
+            91.5,
+            68
+          ],
+          [
+            91,
+            92.0,
+            98
+          ],
+          [
+            73,
+            30.2,
+            77
+          ]
+        ]
+      },
+      {
+        "id": "longcode",
+        "en": "Coding · longest",
+        "zh": "程式・最長",
+        "cells": [
+          [
+            82,
+            76.1,
+            47
+          ],
+          [
+            77,
+            75.8,
+            58
+          ],
+          [
+            91,
+            81.5,
+            139
+          ],
+          [
+            93,
+            93.2,
+            146
+          ],
+          [
+            89,
+            124.4,
+            221
+          ],
+          [
+            88,
+            92.9,
+            194
+          ]
+        ]
+      },
+      {
+        "id": "ops-s",
+        "en": "Ops · short",
+        "zh": "維運・短",
+        "cells": [
+          [
+            87,
+            48.2,
+            15
+          ],
+          [
+            88,
+            59.7,
+            14
+          ],
+          [
+            77,
+            51.2,
+            24
+          ],
+          [
+            91,
+            61.8,
+            22
+          ],
+          [
+            87,
+            22.7,
+            25
+          ],
+          [
+            53,
+            6.7,
+            20
+          ]
+        ]
+      },
+      {
+        "id": "ops",
+        "en": "Ops · long",
+        "zh": "維運・長",
+        "cells": [
+          [
+            89,
+            128.8,
+            35
+          ],
+          [
+            90,
+            135.3,
+            34
+          ],
+          [
+            86,
+            150.0,
+            80
+          ],
+          [
+            83,
+            144.0,
+            75
+          ],
+          [
+            91,
+            226.4,
+            134
+          ],
+          [
+            84,
+            92.7,
+            81
+          ]
+        ]
+      },
+      {
+        "id": "lean-s",
+        "en": "Lean · short",
+        "zh": "Lean・短",
+        "cells": [
+          [
+            91,
+            76.7,
+            17
+          ],
+          [
+            89,
+            59.3,
+            15
+          ],
+          [
+            86,
+            64.3,
+            29
+          ],
+          [
+            91,
+            39.3,
+            21
+          ],
+          [
+            83,
+            26.8,
+            26
+          ],
+          [
+            65,
+            8.4,
+            22
+          ]
+        ]
+      },
+      {
+        "id": "lean-l",
+        "en": "Lean · long",
+        "zh": "Lean・長",
+        "cells": [
+          [
+            90,
+            80.6,
+            26
+          ],
+          [
+            92,
+            133.2,
+            34
+          ],
+          [
+            81,
+            90.2,
+            51
+          ],
+          [
+            85,
+            76.8,
+            39
+          ],
+          [
+            83,
+            40.9,
+            49
+          ],
+          [
+            80,
+            22.2,
+            52
+          ]
+        ]
+      }
+    ]
+  },
+  "tui": [
+    {
+      "cli": "fork-claude",
+      "tokens": 234.8,
+      "hit": 94.8
+    },
+    {
+      "cli": "official",
+      "tokens": 640.2,
+      "hit": 97.3
+    },
+    {
+      "cli": "opencode-claude",
+      "tokens": 176.1,
+      "hit": 90.4
+    },
+    {
+      "cli": "pi-claude",
+      "tokens": 60.0,
+      "hit": 90.4
+    },
+    {
+      "cli": "fork-openai",
+      "tokens": 309.8,
+      "hit": 91.0
+    },
+    {
+      "cli": "codex",
+      "tokens": 266.7,
+      "hit": 93.1
+    },
+    {
+      "cli": "opencode",
+      "tokens": 169.8,
+      "hit": 90.2
+    },
+    {
+      "cli": "pi",
+      "tokens": 80.4,
+      "hit": 83.5
+    }
+  ],
+  "multi": [
+    {
+      "cli": "fork-claude",
+      "single": 55.8,
+      "sub": 156.2,
+      "teams": 337.0
+    },
+    {
+      "cli": "official",
+      "single": 61.5,
+      "sub": 225.8,
+      "teams": 243.8,
+      "teamsNote": true
+    },
+    {
+      "cli": "opencode-claude",
+      "single": 36.9,
+      "sub": 157.1
+    },
+    {
+      "cli": "fork-openai",
+      "single": 58.8,
+      "sub": 223.1,
+      "teams": 497.8
+    },
+    {
+      "cli": "codex",
+      "single": 66.6,
+      "sub": 356.5
+    },
+    {
+      "cli": "opencode",
+      "single": 63.1,
+      "sub": 128.9
+    }
+  ],
+  "idle": {
+    "gaps": [
+      "0",
+      "4",
+      "15",
+      "65",
+      "4",
+      "65",
+      "4"
+    ],
+    "rows": [
+      {
+        "cli": "fork-claude",
+        "first": [
+          0,
+          97,
+          98,
+          50,
+          96,
+          28,
+          99
+        ],
+        "tokens": 306,
+        "cost": 0.35
+      },
+      {
+        "cli": "official",
+        "first": [
+          67,
+          97,
+          98,
+          50,
+          99,
+          39,
+          99
+        ],
+        "tokens": 349,
+        "cost": 0.353
+      },
+      {
+        "cli": "opencode-claude",
+        "first": [
+          0,
+          96,
+          0,
+          0,
+          98,
+          0,
+          99
+        ],
+        "tokens": 370,
+        "cost": 0.388
+      },
+      {
+        "cli": "pi-claude",
+        "first": [
+          52,
+          89,
+          27,
+          14,
+          96,
+          5,
+          99
+        ],
+        "tokens": 100,
+        "cost": 0.142
+      },
+      {
+        "cli": "fork-openai",
+        "first": [
+          35,
+          81,
+          92,
+          98,
+          97,
+          97,
+          99
+        ],
+        "tokens": 331,
+        "cost": 0.132
+      },
+      {
+        "cli": "codex",
+        "first": [
+          82,
+          91,
+          96,
+          94,
+          80,
+          97,
+          99
+        ],
+        "tokens": 361,
+        "cost": 0.142
+      },
+      {
+        "cli": "opencode",
+        "first": [
+          73,
+          97,
+          98,
+          99,
+          98,
+          99,
+          99
+        ],
+        "tokens": 358,
+        "cost": 0.145
+      },
+      {
+        "cli": "pi",
+        "first": [
+          0,
+          31,
+          96,
+          55,
+          97,
+          97,
+          97
+        ],
+        "tokens": 131,
+        "cost": 0.104
+      }
+    ]
+  }
+}
