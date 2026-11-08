@@ -1,6 +1,6 @@
 // A backend-free `claude web` for the project website: `fetch('/api/…')` and the
 // session WebSocket are answered here with canned data, and every prompt gets a
-// scripted turn (read a file, edit it, ask to run a command, report).
+// scripted turn from SCENARIOS (bug fix, feature with todos, parallel agents, /goal).
 // Loaded before the app by src/demo/main.tsx; the real build never imports it.
 
 type Json = Record<string, unknown>
@@ -83,7 +83,7 @@ function route(method: string, url: URL, body: Json): Response {
     return json({ subscription_type: provider === 'anthropic' ? 'max' : 'pro', rate_limits: { five_hour: { utilization: 0.18 }, seven_day: { utilization: 0.41 } } })
   }
   if (p === '/api/projects') return json([])
-  if (p === '/api/peers') return json({ peers: [] })
+  if (p === '/api/peers') return json({ peers: [{ name: 'docs-writer', ref: 'docs-writer', session_id: 'demo-peer-1', pid: 4242, kind: 'interactive', status: 'idle', address: 'uds:/tmp/claude-demo/docs-writer.sock' }] })
   if (p === '/api/prompt-history') return json({ prompts: [] })
   if (/^\/api\/(files\/[^/]+\/list|folder-files)$/.test(p)) {
     const q = (url.searchParams.get('q') ?? '').toLowerCase()
@@ -115,7 +115,16 @@ function extAnswer(path: string): unknown {
   if (path.startsWith('memory/search')) return { memory: [], sessions: [] }
   if (path === 'hooks') return { disabled: false, hooks: [] }
   if (path === 'plugins') return { installed: [], discover: [], marketplaces: [] }
-  if (path === 'channels' || path === 'mods') return []
+  if (path === 'channels')
+    return [
+      { name: 'telegram', displayName: 'Telegram', plugin: 'telegram@claude-plugins-official', server: 'plugin:telegram:telegram', pluginEnabled: true, def: true },
+      { name: 'fakechat', displayName: 'Fakechat', plugin: 'fakechat@claude-plugins-official', server: 'plugin:fakechat:fakechat', pluginEnabled: true, def: false },
+    ]
+  if (path === 'mods')
+    return [
+      { id: 'blast-radius', plugin: 'blast-radius', on: true, description: 'Lists what rm -r would delete and asks before it runs', file: 'mods/blast-radius.ts', editable: true, events: ['PreToolUse'], surfaces: ['toast', 'dialog'] },
+      { id: 'token-meter', plugin: 'token-meter', on: true, description: 'Context and cost in the status line', file: 'mods/token-meter.ts', editable: true, events: ['Stop'], surfaces: ['status'] },
+    ]
   if (path === 'stats')
     return { days: [], tokens: [], streaks: { current: 0, longest: 0 }, longestSessionMs: 0, hours: Array(24).fill(0), totalSessions: 0, codex: null }
   return {}
@@ -131,7 +140,7 @@ function pastTranscript(title: string): unknown[] {
 }
 
 const realFetch = window.fetch.bind(window)
-window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+window.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
   const url = new URL(typeof input === 'string' || input instanceof URL ? input : input.url, location.href)
   if (!url.pathname.includes('/api/')) return realFetch(input, init)
   let body: Json = {}
@@ -140,7 +149,7 @@ window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
   } catch {}
   await new Promise(r => setTimeout(r, 60))
   return route((init?.method ?? 'GET').toUpperCase(), url, body)
-}
+}) as typeof fetch
 
 // ---------- session socket ----------
 
@@ -276,6 +285,7 @@ class DemoSocket extends EventTarget {
       case 'rewind_points':
         return ok({ uuids: [] })
       case 'interrupt':
+        this.epoch += 1
         this.timers.forEach(clearTimeout)
         this.timers = []
         ok()
@@ -286,91 +296,84 @@ class DemoSocket extends EventTarget {
   }
 
   private turns = 0
+  // Bumped by interrupt and close so a running script stops at its next step.
+  private epoch = 0
 
-  private assistant(id: string, content: Json[]) {
-    this.emit({ type: 'assistant', uuid: uid('p'), session_id: this.sessionId, message: { id, role: 'assistant', model: MODELS[provider].model, content } })
+  private wait(ms: number): Promise<void> {
+    const epoch = this.epoch
+    return new Promise((resolve, reject) =>
+      this.later(ms, () => (epoch === this.epoch && this.readyState === 1 ? resolve() : reject(new Error('stopped')))),
+    )
   }
 
-  private toolResult(toolUseId: string, text: string, extra: Json = {}) {
-    this.emit({ type: 'user', uuid: uid('r'), session_id: this.sessionId, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: toolUseId, content: text }] }, ...extra })
+  // One model call, streamed the way the CLI streams it: text and thinking arrive in chunks, tool input in one piece.
+  private async say(blocks: Json[]) {
+    const id = uid('msg')
+    const model = MODELS[provider].model
+    const stream = (event: Json) => this.emit({ type: 'stream_event', session_id: this.sessionId, event })
+    stream({ type: 'message_start', message: { id, role: 'assistant', model, content: [] } })
+    for (const [index, block] of blocks.entries()) {
+      if (block.type === 'text' || block.type === 'thinking') {
+        const key = block.type as 'text' | 'thinking'
+        stream({ type: 'content_block_start', index, content_block: { type: key, [key]: '' } })
+        const full = String(block[key])
+        for (let i = 0; i < full.length; ) {
+          const n = 3 + Math.floor(Math.random() * 6)
+          stream({ type: 'content_block_delta', index, delta: key === 'text' ? { type: 'text_delta', text: full.slice(i, i + n) } : { type: 'thinking_delta', thinking: full.slice(i, i + n) } })
+          i += n
+          await this.wait(key === 'text' ? 22 : 12)
+        }
+      } else {
+        stream({ type: 'content_block_start', index, content_block: { ...block, input: {} } })
+        await this.wait(150)
+        stream({ type: 'content_block_delta', index, delta: { type: 'input_json_delta', partial_json: JSON.stringify(block.input) } })
+      }
+      stream({ type: 'content_block_stop', index })
+      await this.wait(120)
+    }
+    this.emit({ type: 'assistant', uuid: uid('p'), session_id: this.sessionId, message: { id, role: 'assistant', model, content: blocks } })
   }
 
-  // One scripted turn: Read, Edit (with a diff), Bash behind an approval, then a summary.
+  private toolResult(toolUseId: string, text: string, extra: Json = {}, isError = false) {
+    this.emit({
+      type: 'user',
+      uuid: uid('r'),
+      session_id: this.sessionId,
+      message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: toolUseId, content: text, ...(isError && { is_error: true }) }] },
+      ...extra,
+    })
+  }
+
+  private system(subtype: string, fields: Json) {
+    this.emit({ type: 'system', subtype, uuid: uid('s'), session_id: this.sessionId, ...fields })
+  }
+
+  // Asks the page for permission like the CLI does; resolves true when allowed.
+  private ask(toolUseId: string, toolName: string, input: Json, rule: string): Promise<boolean> {
+    return new Promise(resolve => {
+      const requestId = uid('perm')
+      this.pending.set(requestId, response => resolve(((response.response ?? {}) as Json).behavior !== 'deny'))
+      this.emit({
+        type: 'control_request',
+        request_id: requestId,
+        request: { subtype: 'can_use_tool', tool_name: toolName, input, tool_use_id: toolUseId, permission_suggestions: [{ type: 'addRules', rules: [{ toolName, ruleContent: rule }], behavior: 'allow', destination: 'session' }] },
+      })
+    })
+  }
+
   private turn(msg: Json) {
     this.turns += 1
     const text = contentText((msg.message as Json | undefined)?.content)
     this.emit({ type: 'user', uuid: msg.uuid ?? uid('u'), isReplay: true, session_id: this.sessionId, message: { role: 'user', content: text } })
-    const a1 = uid('msg')
-    const read = uid('toolu')
-    const edit = uid('toolu')
-    const bash = uid('toolu')
-    const L = (en: string, z: string) => (zh ? z : en)
-    const usePatch = provider === 'openai'
-    this.later(600, () =>
-      this.assistant(a1, [
-        { type: 'text', text: L(`This is a demo with scripted replies, so I will run the same small task whatever you asked ("${text.slice(0, 60)}"). First, the current implementation.`, `這是腳本化回覆的示範，不管你問什麼（「${text.slice(0, 40)}」）都會跑同一個小任務。先看一下目前的實作。`) },
-        { type: 'tool_use', id: read, name: 'Read', input: { file_path: `${WORK_DIR}/retrieval.py` } },
-      ]),
+    const scenario = pickScenario(text, this.turns)
+    this.epoch += 1
+    SCENARIOS[scenario].run(this, text).then(
+      () => this.finish(SCENARIOS[scenario].title()),
+      () => {},
     )
-    this.later(1300, () => this.toolResult(read, '1\tfrom index import Index\n2\t\n3\tTOP_K = 10\n4\t\n5\t\n6\tdef search(index: Index, query: str):'))
-    this.later(2000, () =>
-      this.assistant(a1, [
-        { type: 'text', text: L('TOP_K is on line 3; raising it to 20.', 'TOP_K 在第 3 行，改成 20。') },
-        usePatch
-          ? { type: 'tool_use', id: edit, name: 'apply_patch', input: { input: '*** Begin Patch\n*** Update File: retrieval.py\n@@\n-TOP_K = 10\n+TOP_K = 20\n*** End Patch' } }
-          : { type: 'tool_use', id: edit, name: 'Edit', input: { file_path: `${WORK_DIR}/retrieval.py`, old_string: 'TOP_K = 10', new_string: 'TOP_K = 20' } },
-      ]),
-    )
-    this.later(2700, () =>
-      this.toolResult(edit, L('The file retrieval.py has been updated.', '已更新 retrieval.py。'), {
-        tool_use_result: {
-          filePath: `${WORK_DIR}/retrieval.py`,
-          structuredPatch: [{ oldStart: 1, oldLines: 6, newStart: 1, newLines: 6, lines: [' from index import Index', ' ', '-TOP_K = 10', '+TOP_K = 20', ' ', ' ', ' def search(index: Index, query: str):'] }],
-        },
-      }),
-    )
-    this.later(3300, () => {
-      this.assistant(a1, [
-        { type: 'text', text: L('Running the tests.', '跑一下測試。') },
-        { type: 'tool_use', id: bash, name: 'Bash', input: { command: 'sh run_tests.sh', description: 'Run the test suite' } },
-      ])
-      const requestId = uid('perm')
-      this.pending.set(requestId, response => this.afterApproval(a1, bash, response))
-      this.emit({
-        type: 'control_request',
-        request_id: requestId,
-        request: { subtype: 'can_use_tool', tool_name: 'Bash', input: { command: 'sh run_tests.sh', description: 'Run the test suite' }, tool_use_id: bash, permission_suggestions: [{ type: 'addRules', rules: [{ toolName: 'Bash', ruleContent: 'sh run_tests.sh' }], behavior: 'allow', destination: 'session' }] },
-      })
-    })
   }
 
-  private afterApproval(a1: string, bash: string, response: Json) {
-    const L = (en: string, z: string) => (zh ? z : en)
-    const body = (response.response ?? {}) as Json
-    if (body.behavior === 'deny') {
-      this.toolResult(bash, L('The user denied this command.', '使用者拒絕了這個命令。'))
-      this.later(500, () => {
-        this.assistant(a1, [{ type: 'text', text: L('OK, I left the tests alone. The edit to retrieval.py is in place.', '好，不跑測試了。retrieval.py 的修改已完成。') }])
-        this.finish()
-      })
-      return
-    }
-    this.later(700, () => this.toolResult(bash, '......\n6 passed in 0.41s'))
-    this.later(1300, () => {
-      this.assistant(a1, [
-        {
-          type: 'text',
-          text: L(
-            'Done. All tests pass.\n\n| Item | Before | After |\n| --- | --- | --- |\n| `TOP_K` | 10 | 20 |\n| Tests | — | 6 passed |\n\nTry the side panel (Status, Files, Agents), the model menu, or **Account → Authentication** to switch to a ChatGPT account.',
-            '改好了，測試全部通過。\n\n| 項目 | 改動前 | 改動後 |\n| --- | --- | --- |\n| `TOP_K` | 10 | 20 |\n| 測試 | — | 6 passed |\n\n可以試試右側面板（Status、Files、Agents）、模型選單，或從帳號選單的 Authentication 切到 ChatGPT 帳號。',
-          ),
-        },
-      ])
-      this.finish()
-    })
-  }
-
-  private finish() {
+  private finish(title: string) {
     this.emit({
       type: 'result',
       subtype: 'success',
@@ -382,10 +385,336 @@ class DemoSocket extends EventTarget {
     })
     const s = created.find(c => c.id === this.sessionId)
     if (s) {
-      s.title = zh ? '檢查 retrieval.py，把 TOP_K 改成 20' : 'Check retrieval.py, set TOP_K to 20'
+      if (this.turns === 1) s.title = title
       s.lastModified = Date.now()
     }
   }
+
+  // The pieces the scenarios below are written in.
+  get api() {
+    return {
+      wait: (ms: number) => this.wait(ms),
+      say: (blocks: Json[]) => this.say(blocks),
+      result: (id: string, text: string, extra?: Json, isError?: boolean) => this.toolResult(id, text, extra, isError),
+      system: (subtype: string, fields: Json) => this.system(subtype, fields),
+      ask: (id: string, tool: string, input: Json, rule: string) => this.ask(id, tool, input, rule),
+      // A message that reaches the session from outside: a channel or another session.
+      inbound: (text: string) => this.emit({ type: 'user', uuid: uid('u'), isReplay: true, session_id: this.sessionId, message: { role: 'user', content: text } }),
+      status: (plugin: string, text: string) => this.system('ui_status', { plugin, text }),
+      toast: (plugin: string, text: string) => this.system('ui_toast', { plugin, text, timeout_ms: 6000 }),
+    }
+  }
+}
+
+// ---------- scripted scenarios ----------
+
+const L = (en: string, z: string) => (zh ? z : en)
+const tool = (name: string, input: Json) => ({ type: 'tool_use', id: uid('toolu'), name, input })
+const patch = (lines: string[], oldStart = 1, type?: string) => ({
+  tool_use_result: { ...(type && { type }), filePath: '', structuredPatch: [{ oldStart, oldLines: lines.filter(l => !l.startsWith('+')).length, newStart: oldStart, newLines: lines.filter(l => !l.startsWith('-')).length, lines }] },
+})
+const editTool = (file: string, oldText: string, newText: string, patchText: string) =>
+  provider === 'openai'
+    ? tool('apply_patch', { input: `*** Begin Patch\n*** Update File: ${file}\n${patchText}\n*** End Patch` })
+    : tool('Edit', { file_path: `${WORK_DIR}/${file}`, old_string: oldText, new_string: newText })
+const NEXT = () =>
+  L(
+    '\n\nSend another message for the next scenario, or start one by name: **fix**, **feature**, **agents**, **/goal**, **channels**, **mods**.',
+    '\n\n再送一則訊息會跑下一個情境，也可以直接點名：**fix**、**feature**、**agents**、**/goal**、**channels**、**mods**。',
+  )
+
+type Api = DemoSocket['api']
+type Scenario = { title: () => string; run: (socket: DemoSocket, text: string) => Promise<void> }
+const ORDER = ['fix', 'feature', 'agents', 'goal', 'channels', 'mods'] as const
+type ScenarioName = (typeof ORDER)[number]
+
+function pickScenario(text: string, turn: number): ScenarioName {
+  const t = text.toLowerCase()
+  if (t.startsWith('/goal') || t.includes('goal') || t.includes('目標')) return 'goal'
+  if (/agent|team|parallel|subagent|代理|團隊|並行|平行/.test(t)) return 'agents'
+  if (/feature|add|build|implement|新增|功能|實作/.test(t)) return 'feature'
+  if (/channel|telegram|message|peer|頻道|訊息|消息/.test(t)) return 'channels'
+  if (/mod|rm |clean|clear|刪|清/.test(t)) return 'mods'
+  if (/fix|bug|修/.test(t)) return 'fix'
+  return ORDER[(turn - 1) % ORDER.length]
+}
+
+const SCENARIOS: Record<ScenarioName, Scenario> = {
+  // Read, edit with a diff, a command behind approval, a summary table.
+  fix: {
+    title: () => L('Fix the result count in retrieval.py', '修正 retrieval.py 的回傳筆數'),
+    run: async socket => {
+      const a: Api = socket.api
+      const read = tool('Read', { file_path: `${WORK_DIR}/retrieval.py` })
+      await a.wait(500)
+      await a.say([{ type: 'text', text: L('Search returns too few results. Let me look at the current implementation.', '搜尋回傳的結果太少，先看一下目前的實作。') }, read])
+      await a.wait(500)
+      a.result(read.id, '1\tfrom index import Index\n2\t\n3\tTOP_K = 10\n4\t\n5\t\n6\tdef search(index: Index, query: str):\n7\t    return index.query(query)[:TOP_K]')
+      const edit = editTool('retrieval.py', 'TOP_K = 10', 'TOP_K = 20', '@@\n-TOP_K = 10\n+TOP_K = 20')
+      await a.wait(400)
+      await a.say([{ type: 'text', text: L('`TOP_K` caps the results at 10 on line 3. Raising it to 20.', '第 3 行的 `TOP_K` 把結果限制在 10 筆，改成 20。') }, edit])
+      await a.wait(500)
+      a.result(edit.id, L('The file retrieval.py has been updated.', '已更新 retrieval.py。'), patch([' from index import Index', ' ', '-TOP_K = 10', '+TOP_K = 20', ' ', ' ']))
+      const input = { command: 'sh run_tests.sh', description: 'Run the test suite' }
+      const bash = tool('Bash', input)
+      await a.wait(400)
+      await a.say([{ type: 'text', text: L('Running the tests.', '跑一下測試。') }, bash])
+      if (!(await a.ask(bash.id, 'Bash', input, 'sh run_tests.sh'))) {
+        a.result(bash.id, L('The user denied this command.', '使用者拒絕了這個命令。'), {}, true)
+        await a.wait(400)
+        await a.say([{ type: 'text', text: L('OK, I left the tests alone. The edit to retrieval.py is in place.', '好，不跑測試了。retrieval.py 的修改已完成。') + NEXT() }])
+        return
+      }
+      await a.wait(900)
+      a.result(bash.id, '......\n6 passed in 0.41s')
+      await a.wait(400)
+      await a.say([
+        {
+          type: 'text',
+          text:
+            L('Done. All tests pass.\n\n| Item | Before | After |\n| --- | --- | --- |\n| `TOP_K` | 10 | 20 |\n| Tests | — | 6 passed |', '改好了，測試全部通過。\n\n| 項目 | 改動前 | 改動後 |\n| --- | --- | --- |\n| `TOP_K` | 10 | 20 |\n| 測試 | — | 6 passed |') +
+            NEXT(),
+        },
+      ])
+    },
+  },
+
+  // Thinking, a todo list, search, a new file and an edit, tests, a summary with code.
+  feature: {
+    title: () => L('Add a --json flag to the search CLI', '幫搜尋 CLI 加上 --json 參數'),
+    run: async socket => {
+      const a: Api = socket.api
+      const todos = (s: string[]) =>
+        tool('TodoWrite', {
+          todos: [
+            { content: L('Find where results are printed', '找出結果輸出的位置'), activeForm: L('Finding the printer', '尋找輸出位置'), status: s[0] },
+            { content: L('Add a JSON formatter', '新增 JSON 格式化'), activeForm: L('Adding the formatter', '新增格式化'), status: s[1] },
+            { content: L('Wire up --json and test it', '接上 --json 並測試'), activeForm: L('Wiring up --json', '接上 --json'), status: s[2] },
+          ],
+        })
+      await a.wait(400)
+      const t1 = todos(['in_progress', 'pending', 'pending'])
+      await a.say([
+        { type: 'thinking', thinking: L('The CLI prints results as text in cli.py. A --json flag needs a formatter that keeps score and path, plus a test. Plan it as three steps.', 'CLI 在 cli.py 用文字印結果。--json 需要一個保留分數和路徑的格式化函式，再加測試。分三步做。') },
+        { type: 'text', text: L('Three steps. Tracking them in the todo list on the right.', '分三步做，進度放在右側的待辦清單。') },
+        t1,
+      ])
+      a.result(t1.id, 'Todos have been modified successfully.')
+      const grep = tool('Grep', { pattern: 'print\\(', path: WORK_DIR, output_mode: 'content' })
+      await a.wait(300)
+      await a.say([grep])
+      await a.wait(500)
+      a.result(grep.id, 'cli.py:18:        print(f"{hit.score:.2f}  {hit.path}")\nscripts/bench.py:9:    print(elapsed)')
+      const write = tool('Write', { file_path: `${WORK_DIR}/format.py`, content: 'import json\n\n\ndef to_json(hits) -> str:\n    return json.dumps([{"path": h.path, "score": round(h.score, 4)} for h in hits], indent=2)\n' })
+      const t2 = todos(['completed', 'in_progress', 'pending'])
+      await a.wait(300)
+      await a.say([{ type: 'text', text: L('Results are printed at cli.py:18. Adding the formatter as its own module.', '結果在 cli.py 第 18 行輸出。格式化放進獨立模組。') }, t2, write])
+      a.result(t2.id, 'Todos have been modified successfully.')
+      await a.wait(500)
+      a.result(
+        write.id,
+        L('File created successfully at: format.py', '已建立 format.py'),
+        patch(['+import json', '+', '+', '+def to_json(hits) -> str:', '+    return json.dumps([{"path": h.path, "score": round(h.score, 4)} for h in hits], indent=2)'], 0, 'create'),
+      )
+      const edit = editTool(
+        'cli.py',
+        '        print(f"{hit.score:.2f}  {hit.path}")',
+        '    if args.json:\n        print(to_json(hits))\n        return\n    for hit in hits:\n        print(f"{hit.score:.2f}  {hit.path}")',
+        '@@\n+    if args.json:\n+        print(to_json(hits))\n+        return',
+      )
+      const t3 = todos(['completed', 'completed', 'in_progress'])
+      await a.wait(300)
+      await a.say([t3, edit])
+      a.result(t3.id, 'Todos have been modified successfully.')
+      await a.wait(500)
+      a.result(
+        edit.id,
+        L('The file cli.py has been updated.', '已更新 cli.py。'),
+        patch(['     hits = search(index, args.query)', '+    if args.json:', '+        print(to_json(hits))', '+        return', '     for hit in hits:', '         print(f"{hit.score:.2f}  {hit.path}")'], 15),
+      )
+      const input = { command: 'python cli.py "vector index" --json | head -8', description: 'Try the new flag' }
+      const bash = tool('Bash', input)
+      await a.wait(300)
+      await a.say([bash])
+      if (!(await a.ask(bash.id, 'Bash', input, 'python cli.py:*'))) {
+        a.result(bash.id, L('The user denied this command.', '使用者拒絕了這個命令。'), {}, true)
+        await a.wait(300)
+        await a.say([{ type: 'text', text: L('Skipped the run. The flag is wired up in cli.py and format.py.', '沒有執行。--json 已經接在 cli.py 和 format.py。') + NEXT() }])
+        return
+      }
+      await a.wait(800)
+      a.result(bash.id, '[\n  {\n    "path": "docs/index.md",\n    "score": 0.9132\n  },\n  {\n    "path": "src/vector.py",')
+      const t4 = todos(['completed', 'completed', 'completed'])
+      await a.wait(300)
+      await a.say([
+        t4,
+        {
+          type: 'text',
+          text:
+            L('`--json` works. Usage:', '`--json` 可以用了，用法：') +
+            '\n\n```sh\npython cli.py "vector index" --json\n```\n\n' +
+            L('- `format.py`: new `to_json()`\n- `cli.py`: prints JSON and returns when `--json` is set', '- `format.py`：新增 `to_json()`\n- `cli.py`：有 `--json` 時輸出 JSON 後返回') +
+            NEXT(),
+        },
+      ])
+      a.result(t4.id, 'Todos have been modified successfully.')
+    },
+  },
+
+  // Three subagents in parallel; the Agents tab follows their progress.
+  agents: {
+    title: () => L('Review the repo with three agents', '用三個 agent 審查專案'),
+    run: async socket => {
+      const a: Api = socket.api
+      const jobs = [
+        { type: 'Explore', desc: L('Map the indexing code', '整理索引相關程式'), tools: ['Glob', 'Read', 'Grep'], out: L('Indexing lives in index.py and vector.py; rebuilds are full, no incremental path.', '索引在 index.py 與 vector.py；每次都全量重建，沒有增量。') },
+        { type: 'general-purpose', desc: L('Find slow tests', '找出慢的測試'), tools: ['Bash', 'Read'], out: L('test_rebuild takes 4.1s of the 5.0s suite; it rebuilds the whole fixture index.', 'test_rebuild 佔整個 5.0 秒中的 4.1 秒，它重建了整個測試索引。') },
+        { type: 'Explore', desc: L('Check docs against the CLI', '核對文件和 CLI'), tools: ['Read', 'Grep'], out: L('README still documents --limit, which the CLI renamed to --top-k.', 'README 還寫著 --limit，CLI 已改名為 --top-k。') },
+      ].map(j => ({ ...j, call: tool('Agent', { subagent_type: j.type, description: j.desc, prompt: j.desc }), task: uid('task') }))
+      await a.wait(400)
+      await a.say([{ type: 'text', text: L('Splitting this into three independent reviews and running them in parallel. Open the **Agents** tab on the right to watch them.', '拆成三個互不相關的審查並行跑。打開右側的 **Agents** 分頁可以看到它們的進度。') }, ...jobs.map(j => j.call)])
+      for (const j of jobs) a.system('task_started', { task_id: j.task, task_type: 'local_agent', description: j.desc, subagent_type: j.type, tool_use_id: j.call.id })
+      for (let step = 0; step < 3; step++) {
+        await a.wait(1100)
+        for (const [i, j] of jobs.entries()) {
+          a.system('task_progress', { task_id: j.task, tool_use_id: j.call.id, last_tool_name: j.tools[(step + i) % j.tools.length], usage: { total_tokens: 4200 * (step + 1) + i * 900, tool_uses: 2 * (step + 1) + i, duration_ms: 1100 * (step + 1) } })
+        }
+      }
+      for (const [i, j] of jobs.entries()) {
+        await a.wait(600)
+        a.system('task_notification', { task_id: j.task, tool_use_id: j.call.id, status: 'completed', summary: j.out, usage: { total_tokens: 15400 + i * 2100, tool_uses: 8 + i, duration_ms: 4200 + i * 600 } })
+        a.result(j.call.id, j.out)
+      }
+      await a.wait(400)
+      await a.say([
+        {
+          type: 'text',
+          text:
+            L(
+              'All three are back.\n\n| Agent | Finding |\n| --- | --- |\n',
+              '三個都回來了。\n\n| Agent | 發現 |\n| --- | --- |\n',
+            ) +
+            jobs.map(j => `| ${j.desc} | ${j.out} |`).join('\n') +
+            L('\n\nThe biggest win is an incremental index rebuild; it would also fix the slow test.', '\n\n最值得做的是增量重建索引，順便能解決慢測試。') +
+            NEXT(),
+        },
+      ])
+    },
+  },
+
+  // /goal: a finish condition checked after every round until it holds.
+  goal: {
+    title: () => L('/goal all tests pass', '/goal 所有測試通過'),
+    run: async socket => {
+      const a: Api = socket.api
+      const condition = L('all tests pass', '所有測試通過')
+      const setAt = Date.now()
+      a.system('goal_state_changed', { goal: { condition, status: 'active', iterations: 0, setAt } })
+      const run1 = tool('Bash', { command: 'bun test', description: 'Run the tests' })
+      await a.wait(400)
+      await a.say([{ type: 'text', text: L(`Goal set: **${condition}**. Checking where we stand.`, `目標已設定：**${condition}**。先看看目前狀況。`) }, run1])
+      await a.wait(900)
+      a.result(run1.id, 'tokenize.test.ts:\n✓ splits on whitespace\n✗ keeps CJK runs together\n  expected ["向量","索引"] got ["向","量","索","引"]\n\n12 pass\n2 fail', {}, true)
+      await a.wait(500)
+      a.system('goal_state_changed', { goal: { condition, status: 'active', iterations: 1, setAt, met: false, reason: L('2 tests still fail in tokenize.test.ts', 'tokenize.test.ts 還有 2 個測試失敗') } })
+      a.system('api_retry', { attempt: 1, max_retries: 10, retry_delay_ms: 1500, error_status: 529 })
+      await a.wait(1800)
+      const read = tool('Read', { file_path: `${WORK_DIR}/tokenize.ts` })
+      await a.say([{ type: 'text', text: L('Not met yet: CJK text is split per character. Looking at the tokenizer.', '還沒達成：中日韓文字被逐字切開。看一下分詞器。') }, read])
+      await a.wait(400)
+      a.result(read.id, '1\texport function tokenize(s: string): string[] {\n2\t  return s.split(/\\s+|(?=[\\u4e00-\\u9fff])/u).filter(Boolean)\n3\t}')
+      const edit = editTool(
+        'tokenize.ts',
+        "  return s.split(/\\s+|(?=[\\u4e00-\\u9fff])/u).filter(Boolean)",
+        "  return s.match(/[\\u4e00-\\u9fff]+|[^\\s\\u4e00-\\u9fff]+/gu) ?? []",
+        "@@\n-  return s.split(/\\s+|(?=[\\u4e00-\\u9fff])/u).filter(Boolean)\n+  return s.match(/[\\u4e00-\\u9fff]+|[^\\s\\u4e00-\\u9fff]+/gu) ?? []",
+      )
+      await a.wait(300)
+      await a.say([{ type: 'text', text: L('The lookahead splits before every CJK character. Matching runs instead.', '正規表達式在每個中文字前都切一刀，改成整段比對。') }, edit])
+      await a.wait(500)
+      a.result(
+        edit.id,
+        L('The file tokenize.ts has been updated.', '已更新 tokenize.ts。'),
+        patch([' export function tokenize(s: string): string[] {', "-  return s.split(/\\s+|(?=[\\u4e00-\\u9fff])/u).filter(Boolean)", "+  return s.match(/[\\u4e00-\\u9fff]+|[^\\s\\u4e00-\\u9fff]+/gu) ?? []", ' }']),
+      )
+      const run2 = tool('Bash', { command: 'bun test', description: 'Run the tests' })
+      await a.wait(300)
+      await a.say([run2])
+      await a.wait(900)
+      a.result(run2.id, '14 pass\n0 fail\nRan 14 tests across 3 files. [0.38s]')
+      await a.wait(400)
+      await a.say([{ type: 'text', text: L('All 14 tests pass.', '14 個測試全部通過。') + NEXT() }])
+      a.system('goal_state_changed', { goal: { condition, status: 'met', iterations: 2, durationMs: Date.now() - setAt } })
+    },
+  },
+
+  // A Telegram message comes in, Claude asks another session and answers on Telegram.
+  channels: {
+    title: () => L('Answer a Telegram question with help from docs-writer', '在 Telegram 回答問題，並請 docs-writer 協助'),
+    run: async socket => {
+      const a: Api = socket.api
+      await a.wait(500)
+      a.inbound(`<channel source="plugin:telegram:telegram" user="alice" chat_id="1001">${L('Is the --top-k flag documented anywhere?', '--top-k 參數有寫在文件裡嗎？')}</channel>`)
+      const send = tool('SendMessage', { to: 'docs-writer', message: L('Does the README cover --top-k? Alice is asking on Telegram.', 'README 有寫到 --top-k 嗎？Alice 在 Telegram 問。') })
+      await a.wait(600)
+      await a.say([{ type: 'text', text: L('A question came in on the **Telegram** channel. The docs-writer session owns the README, so I am asking it directly.', '**Telegram** 頻道來了一個問題。README 由 docs-writer 這個會話負責，直接問它。') }, send])
+      await a.wait(400)
+      a.result(send.id, L('Message sent to docs-writer.', '已傳給 docs-writer。'))
+      await a.wait(1600)
+      a.inbound(`<cross-session-message from-name="docs-writer">${L('Not yet: README still says --limit. I just added a --top-k section and pushed it to docs/cli.md.', '還沒有：README 還寫著 --limit。我剛補了 --top-k 一節，放在 docs/cli.md。')}</cross-session-message>`)
+      const reply = tool('mcp__plugin_telegram_telegram__reply', { chat_id: '1001', text: L('It is now: docs/cli.md has a --top-k section (it replaced --limit).', '現在有了：docs/cli.md 新增了 --top-k 一節（取代原本的 --limit）。') })
+      await a.wait(500)
+      await a.say([reply])
+      await a.wait(400)
+      a.result(reply.id, 'sent (message_id 5521)')
+      await a.wait(300)
+      await a.say([
+        {
+          type: 'text',
+          text:
+            L(
+              'Answered Alice on Telegram. Channels push outside messages into a session; SendMessage and the other session reply between Claude sessions running on this machine.',
+              '已在 Telegram 回覆 Alice。頻道會把外部訊息推進會話；SendMessage 則讓本機上的 Claude 會話互相傳訊。',
+            ) + NEXT(),
+        },
+      ])
+    },
+  },
+
+  // Two mods at work: blast-radius guards rm -r, token-meter writes the status line.
+  mods: {
+    title: () => L('Clear the build directory', '清掉 build 目錄'),
+    run: async socket => {
+      const a: Api = socket.api
+      const input = { command: 'rm -rf build', description: 'Remove build output' }
+      const bash = tool('Bash', input)
+      await a.wait(400)
+      await a.say([{ type: 'text', text: L('Removing the build output.', '刪除建置輸出。') }, bash])
+      await a.wait(300)
+      a.toast('blast-radius', L('rm -r would delete 3 files under build/: a.js, b.js, c.js', 'rm -r 會刪除 build/ 底下 3 個檔案：a.js、b.js、c.js'))
+      a.system('hook_response', { hook_event: 'PreToolUse', hook_name: 'PreToolUse:Bash', outcome: 'success', stdout: JSON.stringify({ systemMessage: L('blast-radius: 3 files under build/', 'blast-radius：build/ 底下 3 個檔案') }) })
+      if (!(await a.ask(bash.id, 'Bash', input, 'rm -rf build'))) {
+        a.result(bash.id, L('The user denied this command.', '使用者拒絕了這個命令。'), {}, true)
+        await a.wait(300)
+        await a.say([{ type: 'text', text: L('Left build/ alone.', 'build/ 沒有動。') + NEXT() }])
+        return
+      }
+      await a.wait(500)
+      a.result(bash.id, '')
+      a.status('token-meter', L('ctx 31k / 1M · $0.21 this session', '上下文 31k / 1M · 本會話 $0.21'))
+      await a.wait(300)
+      await a.say([
+        {
+          type: 'text',
+          text:
+            L(
+              'build/ is gone. Two mods took part: **blast-radius** showed what `rm -r` would delete before you approved it, and **token-meter** keeps context and cost in the status line. Open **Mods** in the sidebar to switch them or edit their source.',
+              'build/ 已刪除。這一輪有兩個 mod 參與：**blast-radius** 在你批准前列出 `rm -r` 會刪掉什麼，**token-meter** 把上下文與花費放在狀態列。打開側欄的 **Mods** 可以開關它們或修改原始碼。',
+            ) + NEXT(),
+        },
+      ])
+    },
+  },
 }
 
 function contentText(content: unknown): string {
@@ -395,3 +724,5 @@ function contentText(content: unknown): string {
 }
 
 ;(window as unknown as { WebSocket: unknown }).WebSocket = DemoSocket
+
+export {}
