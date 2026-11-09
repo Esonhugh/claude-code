@@ -27,11 +27,14 @@
 
 网关拒绝 tool search（返回 400/422）时，会自动去掉 deferred 工具重送一次，所有工具直接内联；重送成功或错误点名 tool search beta 后，本进程后续请求不再使用 tool search（与官方 2.1.311 一致）。想从一开始就避开这次被拒的请求，设置 `ENABLE_TOOL_SEARCH=false`。
 
+网关后面跑的不是 Claude 模型（模型名不含 `claude`/`opus`/`sonnet`/`haiku`/`fable`，例如 `grok-4.7`）且没设置 `ENABLE_TOOL_SEARCH` 时，tool search 默认关闭，所有工具直接内联。只有 Anthropic API 会把 `tool_reference` 展开成工具定义，这类网关展开不了，模型加载工具后只会看到 `Tool loaded.`、拿不到参数。网关确实能展开时，设置 `ENABLE_TOOL_SEARCH=true` 重新打开。
+
 ## 设置
 
 | 配置项 | 写法 | 说明 |
 | --- | --- | --- |
 | `ENABLE_TOOL_SEARCH` | `false` | 关闭 tool search，所有工具内联发送（网关不支持 `defer_loading` 时使用） |
+| `ENABLE_TOOL_SEARCH` | `true` | 网关后的非 Claude 模型也使用 tool search |
 
 ## 说明
 

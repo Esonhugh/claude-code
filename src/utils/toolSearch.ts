@@ -259,6 +259,19 @@ function getUnsupportedToolReferencePatterns(): string[] {
  */
 export function modelSupportsToolReference(model: string): boolean {
   const normalizedModel = model.toLowerCase()
+
+  // Only Anthropic's API expands tool_reference into the tool's schema. A
+  // gateway serving another vendor's model leaves it with "Tool loaded." and
+  // no parameters, so those models get every tool inline unless the user
+  // opts in with ENABLE_TOOL_SEARCH.
+  if (
+    process.env.ENABLE_TOOL_SEARCH === undefined &&
+    getAPIProvider() === 'firstParty' &&
+    !isFirstPartyAnthropicBaseUrl() &&
+    !/claude|opus|sonnet|haiku|fable/.test(normalizedModel)
+  ) {
+    return false
+  }
   const unsupportedPatterns = getUnsupportedToolReferencePatterns()
 
   // Check if model matches any unsupported pattern
