@@ -6,8 +6,11 @@ import type {
 } from './types.js'
 import { DEFAULT_MAX_BUFFERED_CHUNKS } from './types.js'
 
+const MAX_QUEUED_CHARS = 8 * 1024 * 1024
+
 interface BunPtySession {
   outputQueue: Array<Omit<TerminalOutputChunk, 'start' | 'end'>>
+  queuedChars: number
   proc: Bun.Subprocess
   terminal: Bun.Terminal
   status: PtyDriverSessionStatus
@@ -31,10 +34,11 @@ export function createBunPtyDriver(): PtyDriver & {
     open(options: PtyDriverOpenOptions): PtyDriverSessionStatus {
       const session = {
         outputQueue: [],
+        queuedChars: 0,
         status: {
           state: 'running',
         },
-      } as Pick<BunPtySession, 'outputQueue' | 'status'> &
+      } as Pick<BunPtySession, 'outputQueue' | 'queuedChars' | 'status'> &
         Partial<Pick<BunPtySession, 'proc' | 'terminal' | 'pendingSignal'>>
 
       // A Terminal session is not a pane of the user's tmux: without this,
@@ -50,13 +54,22 @@ export function createBunPtyDriver(): PtyDriver & {
           cols: options.cols,
           rows: options.rows,
           data(_terminal, data) {
-            session.outputQueue.push({
-              text: Buffer.from(data).toString('utf8'),
-              stream: 'stdout',
-              timestamp: Date.now(),
-            })
-            while (session.outputQueue.length > DEFAULT_MAX_BUFFERED_CHUNKS) {
-              session.outputQueue.shift()
+            const text = Buffer.from(data).toString('utf8')
+            const queue = session.outputQueue
+            session.queuedChars += text.length
+            // The screen is rebuilt from every byte, so a full queue merges
+            // into its last chunk; dropping chunks would lose the redraws a
+            // full-screen app does not repeat. Only a backlog past
+            // MAX_QUEUED_CHARS sheds the oldest output.
+            if (queue.length < DEFAULT_MAX_BUFFERED_CHUNKS) {
+              queue.push({ text, stream: 'stdout', timestamp: Date.now() })
+            } else {
+              const last = queue[queue.length - 1]!
+              last.text += text
+              last.timestamp = Date.now()
+            }
+            while (queue.length > 1 && session.queuedChars > MAX_QUEUED_CHARS) {
+              session.queuedChars -= queue.shift()!.text.length
             }
           },
         },
@@ -105,7 +118,10 @@ export function createBunPtyDriver(): PtyDriver & {
       if (data) {
         session.terminal.write(data)
       }
-      return session.outputQueue.shift() ?? null
+      const chunk = session.outputQueue.shift()
+      if (!chunk) return null
+      session.queuedChars -= chunk.text.length
+      return chunk
     },
 
     resize(sessionId: string, cols: number, rows: number) {
