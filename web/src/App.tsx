@@ -780,7 +780,7 @@ export function App() {
     return openOnce(`s:${entry.id}`, () => loadSession(entry))
   }
   const loadSession = async (entry: HistoryEntry) => {
-    if (stateRef.current.chats[entry.id]) return
+    if (stateRef.current.chats[entry.id]) return reclaim(entry.id)
     dispatch({ type: 'mode', id: entry.id, mode: 'readonly' })
     const findLive = async () => (await listRunning().catch(() => [])).find(r => r.id === entry.id)
     for (let wait = 200; ; wait *= 2) {
@@ -816,6 +816,24 @@ export function App() {
     else if (live) await attach(entry.id).catch(() => {})
   }
 
+  /** A chat open in another tab: once that tab lets go, this one takes the session (or its transcript). */
+  const reclaim = async (id: string) => {
+    if (stateRef.current.chats[id]?.mode !== 'elsewhere') return
+    const live = (await listRunning().catch(() => undefined))?.find(r => r.id === id)
+    if (live?.attached || stateRef.current.chats[id]?.mode !== 'elsewhere') return
+    if (live) await attach(id).catch(() => {})
+    else dispatch({ type: 'mode', id, mode: 'readonly' })
+  }
+  // Back from the other tab (where it was closed): try again.
+  useEffect(() => {
+    const onFocus = () => {
+      const id = stateRef.current.view
+      if (id && stateRef.current.chats[id]?.mode === 'elsewhere') void openOnce(`s:${id}`, () => reclaim(id))
+    }
+    window.addEventListener('focus', onFocus)
+    return () => window.removeEventListener('focus', onFocus)
+  })
+
   /** Shows a project: starts or resumes its coordinator and attaches to it. */
   const openProject = (p: Project): Promise<void> => {
     setSidebarOpen(false)
@@ -826,6 +844,7 @@ export function App() {
   }
   const connectProject = async (p: Project) => {
     try {
+      const wasRunning = !!p.coordinator_session_id && (await listRunning().catch(() => [])).some(r => r.id === p.coordinator_session_id)
       const created = await openCoordinator(p.id)
       const id = created.session_id
       setProjects(list => list.map(x => (x.id === p.id ? { ...x, coordinator_session_id: id, running: true } : x)))
@@ -839,8 +858,14 @@ export function App() {
       }
       if (sockets.current.has(id)) return
       const running = await listRunning().catch(() => [])
-      if (running.find(r => r.id === id)?.attached) dispatch({ type: 'mode', id, mode: 'elsewhere' })
-      else await attach(id)
+      if (running.find(r => r.id === id)?.attached) {
+        dispatch({ type: 'mode', id, mode: 'elsewhere' })
+        return
+      }
+      // A coordinator just started again begins at auto; the context window it last had goes back to it.
+      const contextWindow = wasRunning ? undefined : stateRef.current.chats[id]?.contextWindow
+      await attach(id)
+      if (typeof contextWindow === 'number') changeContextWindow(id, contextWindow)
     } catch (err) {
       setProjectId(undefined)
       dispatch({ type: 'view', id: null })

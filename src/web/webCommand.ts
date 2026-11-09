@@ -193,6 +193,8 @@ export async function runWebCommand(opts: WebCommandOptions): Promise<void> {
       includeHookEvents: true,
       // The page's "restore files" rewind needs checkpoints; the /config toggle still turns them off.
       fileCheckpointing: getGlobalConfig().fileCheckpointingEnabled !== false,
+      // A reloaded page learns that a turn is still running.
+      emitSessionState: true,
     }),
     {
       idleTimeoutMs: Number(opts.idleTimeout ?? 600_000),
