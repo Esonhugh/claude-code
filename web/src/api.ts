@@ -130,6 +130,16 @@ export type TranscriptPage = {
   cwd?: string
   title?: string
   rewindPoints?: string[]
+  /** What the session last ran with (first page only), for a page that opens it while its process is gone. */
+  settings?: SessionSettings
+}
+
+export type SessionSettings = {
+  model?: string | null
+  effort?: string | null
+  /** null: auto. */
+  context_window?: number | null
+  permission_mode?: string | null
 }
 
 export const loadTranscript = (id: string, before?: number) =>

@@ -6,6 +6,7 @@ import { basename, dirname, extname, isAbsolute, join, relative, resolve } from 
 import { z } from 'zod/v4'
 import { addToHistory, getTimestampedHistory } from '../history.js'
 import { PERMISSION_MODES } from '../types/permissions.js'
+import { getAPIProvider } from '../utils/model/providers.js'
 import { lazySchema } from '../utils/lazySchema.js'
 import { MODS_FRAME_CSP, MODS_FRAME_HTML, MODS_FRAME_PATH } from './modsFrame.js'
 import { getMainLoopModel } from '../utils/model/model.js'
@@ -45,7 +46,16 @@ import {
 } from './history.js'
 import { type AccountBackend, createAccountApi } from './account.js'
 import { coordinatorSpawn } from './coordinator.js'
-import { deleteSessionMeta, openProjectsDb, patchSessionMeta, type Project, ProjectStore } from './projectsDb.js'
+import {
+  deleteSessionMeta,
+  openProjectsDb,
+  patchSessionMeta,
+  patchSessionSettings,
+  type Project,
+  ProjectStore,
+  readSessionSettings,
+  type SessionSettings,
+} from './projectsDb.js'
 import { deleteTranscript, loadSidebar } from './sidebar.js'
 import { parseLine, type Task, TaskStore, transcriptTokens } from './tasks.js'
 import * as ext from './extensions.js'
@@ -708,9 +718,49 @@ export function startWebServer(
     const queued = agentQueued.get(`${sessionId}:${agentId}`) ?? []
     agentQueued.set(`${sessionId}:${agentId}`, [...queued, { id: ++agentQueuedId, ts: sent.ts, text: sent.text }])
   }
+  // Each session's model, effort, context window and permission mode, kept once the session accepts them,
+  // for a page that opens it again after its process is gone. Keyed by `<session id>:<request id>`.
+  const sessionSettingRequests = new Map<string, Partial<Omit<SessionSettings, 'provider'>>>()
+  // The provider each session's process started under (an account switch since does not change it).
+  const sessionProviders = new Map<string, string>()
+  const saveSessionSettings = (sessionId: string, patch: Partial<Omit<SessionSettings, 'provider'>>) =>
+    patchSessionSettings(db(), sessionId, sessionProviders.get(sessionId) ?? getAPIProvider(), patch)
+  const watchSessionSettings = (sessionId: string, line: string, from: 'child' | 'client') => {
+    if (!line.includes('"control_')) return
+    if (from === 'child') {
+      if (!sessionSettingRequests.size || !line.includes('"type":"control_response"')) return
+      const response = parseLine(line)?.response as { request_id?: unknown; subtype?: unknown } | undefined
+      const key = `${sessionId}:${String(response?.request_id)}`
+      const patch = sessionSettingRequests.get(key)
+      if (!patch) return
+      sessionSettingRequests.delete(key)
+      if (response!.subtype === 'success') saveSessionSettings(sessionId, patch)
+      return
+    }
+    if (!line.includes('"type":"control_request"')) return
+    const msg = parseLine(line)
+    const request = (msg?.request ?? {}) as Record<string, unknown>
+    if (typeof msg?.request_id !== 'string') return
+    let patch: Partial<Omit<SessionSettings, 'provider'>> | undefined
+    if (request.subtype === 'set_model' && typeof request.model === 'string') {
+      // A model switch also resets the effort to the new model's own.
+      patch = { model: request.model === 'default' || !MODEL.test(request.model) ? null : request.model, effort: null }
+    } else if (request.subtype === 'set_permission_mode' && (PERMISSION_MODES as readonly unknown[]).includes(request.mode)) {
+      patch = { permission_mode: request.mode as string }
+    } else if (request.subtype === 'apply_flag_settings') {
+      const settings = (request.settings ?? {}) as { effortLevel?: unknown; autoCompactWindow?: unknown }
+      patch = {
+        ...(typeof settings.effortLevel === 'string' && EFFORT.test(settings.effortLevel) && { effort: settings.effortLevel }),
+        ...(typeof settings.autoCompactWindow === 'number' && { context_window: settings.autoCompactWindow }),
+        ...(settings.autoCompactWindow === 'auto' && { context_window: null }),
+      }
+    }
+    if (patch && Object.keys(patch).length) sessionSettingRequests.set(`${sessionId}:${msg.request_id}`, patch)
+  }
   sessionManager.observe({
     line(sessionId, line, from) {
       watchAgentSend(sessionId, line, from)
+      watchSessionSettings(sessionId, line, from)
       const projectId = coordinators.get(sessionId)
       if (!projectId) return
       if (from === 'child') {
@@ -742,10 +792,12 @@ export function startWebServer(
       }
     },
     exit(sessionId) {
-      for (const key of [...agentSends.keys(), ...agentQueued.keys()]) {
+      sessionProviders.delete(sessionId)
+      for (const key of [...agentSends.keys(), ...agentQueued.keys(), ...sessionSettingRequests.keys()]) {
         if (!key.startsWith(`${sessionId}:`)) continue
         agentSends.delete(key)
         agentQueued.delete(key)
+        sessionSettingRequests.delete(key)
       }
       const projectId = coordinators.get(sessionId)
       if (!projectId) return
@@ -966,6 +1018,7 @@ export function startWebServer(
       mkdirSync(workDir, { recursive: true })
     }
     try {
+      const spawned = !resume || !sessionManager.get(resume)
       const session = sessionManager.create({
         cwd: workDir,
         permissionMode,
@@ -974,6 +1027,16 @@ export function startWebServer(
         resume,
         channels: ext.readDefaultChannels(config.configDir ?? getClaudeConfigHomeDir()),
       })
+      if (spawned) {
+        sessionProviders.set(session.id, getAPIProvider())
+        if (model || effort || permissionMode) {
+          saveSessionSettings(session.id, {
+            ...(model && { model }),
+            ...(effort && { effort }),
+            ...(permissionMode && { permission_mode: permissionMode }),
+          })
+        }
+      }
       return Response.json({
         session_id: session.id,
         work_dir: session.workDir,
@@ -1126,7 +1189,11 @@ export function startWebServer(
         ? intParam(url, 'before', 0, Number.MAX_SAFE_INTEGER)
         : undefined
       const page = await readTranscript(id, before, intParam(url, 'limit', 200, 500))
-      return page ? Response.json(page) : errorResponse(404, 'Session not found')
+      if (!page) return errorResponse(404, 'Session not found')
+      // What the session last ran with, for a page that opens it while its process is gone;
+      // picks made under another provider (an account switch since) do not apply.
+      const { provider, ...settings } = (before === undefined && readSessionSettings(db(), id)) || {}
+      return Response.json(provider === getAPIProvider() ? { ...page, settings } : page)
     }
     const agentMatch = AGENT_MESSAGES_PATH.exec(pathname)
     if (agentMatch && req.method === 'GET') {

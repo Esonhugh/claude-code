@@ -757,6 +757,7 @@ export function App() {
       workDir: page.cwd,
       prepend: before !== undefined,
       rewindPoints: page.rewindPoints,
+      settings: page.settings,
     })
   }
 
