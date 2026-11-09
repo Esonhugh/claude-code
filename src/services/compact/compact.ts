@@ -427,19 +427,28 @@ const KEPT_TAIL_NOTE =
  * Like official 2.1.311, full compaction summarizes every API round but the
  * last and keeps that round verbatim. Kept assistant usage is zeroed so the
  * pre-compact context size is not read back as the current one.
+ * keptRounds 0 summarizes everything (official 2.1.319 does that when the
+ * context refilled within 3 turns of the previous compaction).
  */
-export function splitKeptTail(messages: Message[]): {
+export function splitKeptTail(
+  messages: Message[],
+  keptRounds = 1,
+): {
   toSummarize: Message[]
   toKeep: Message[]
 } {
   const groups = groupMessagesByApiRound(
     messages.filter(m => m.type !== 'progress'),
   )
-  const toSummarize = groups.slice(0, -1).flat()
-  if (groups.length < 2 || !toSummarize.some(m => m.type === 'assistant')) {
+  const toSummarize = groups.slice(0, groups.length - keptRounds).flat()
+  if (
+    keptRounds < 1 ||
+    groups.length <= keptRounds ||
+    !toSummarize.some(m => m.type === 'assistant')
+  ) {
     return { toSummarize: messages, toKeep: [] }
   }
-  const toKeep = groups.at(-1)!.map(m =>
+  const toKeep = groups.slice(-keptRounds).flat().map(m =>
     m.type === 'assistant'
       ? {
           ...m,
@@ -457,6 +466,38 @@ export function splitKeptTail(messages: Message[]): {
       : m,
   )
   return { toSummarize, toKeep }
+}
+
+/**
+ * Official 2.1.319: when the summary request itself is too long, keep more
+ * trailing rounds verbatim so less needs summarizing, instead of dropping the
+ * oldest context. Adds rounds until their tokens cover the gap (a fifth of
+ * the summarized rounds when the gap is unknown). Returns null once the rest
+ * would have no assistant reply left to summarize.
+ */
+export function keepMoreRoundsAfterPTL(
+  messages: Message[],
+  keptRounds: number,
+  tokenGap: number | undefined,
+): { keptRounds: number; toSummarize: Message[]; toKeep: Message[] } | null {
+  const groups = groupMessagesByApiRound(
+    messages.filter(m => m.type !== 'progress'),
+  )
+  const summarized = groups.slice(0, groups.length - keptRounds)
+  let step = 0
+  if (tokenGap !== undefined) {
+    let covered = 0
+    for (let i = summarized.length - 1; i > 0 && covered < tokenGap; i--) {
+      // @ts-ignore - recovered code
+      covered += roughTokenCountEstimationForMessages(summarized[i])
+      step++
+    }
+  } else {
+    step = Math.floor(summarized.length * 0.2)
+  }
+  const next = keptRounds + Math.max(1, step)
+  const split = splitKeptTail(messages, next)
+  return split.toKeep.length > 0 ? { keptRounds: next, ...split } : null
 }
 
 /**
@@ -488,6 +529,7 @@ export async function compactConversation(
   remoteCompact?: (
     customInstructions?: string,
   ) => Promise<RemoteCompactionResult | undefined>,
+  keptRounds = 1,
 ): Promise<CompactionResult> {
   const compactStartedAt = Date.now()
   let compactFailure: unknown
@@ -552,7 +594,7 @@ export async function compactConversation(
       const summaryRequest = createUserMessage({
         content: compactPrompt,
       })
-      const split = splitKeptTail(messages)
+      const split = splitKeptTail(messages, keptRounds)
       messagesToSummarize = split.toSummarize
       messagesToKeep = split.toKeep
       let retryCacheSafeParams =
@@ -561,6 +603,7 @@ export async function compactConversation(
           : cacheSafeParams
       let generatedSummary: string | null
       let ptlAttempts = 0
+      let roundLadder = messagesToKeep.length > 0
       for (;;) {
         summaryResponse = await streamCompactSummary({
           messages: messagesToSummarize,
@@ -572,6 +615,36 @@ export async function compactConversation(
         })
         generatedSummary = getAssistantMessageText(summaryResponse)
         if (!generatedSummary?.startsWith(PROMPT_TOO_LONG_ERROR_MESSAGE)) break
+
+        if (roundLadder) {
+          const wider = keepMoreRoundsAfterPTL(
+            messages,
+            keptRounds,
+            getPromptTooLongTokenGap(summaryResponse),
+          )
+          if (wider) {
+            logForDebugging(
+              `compact: summary request too long, keeping ${wider.keptRounds} rounds verbatim`,
+            )
+            keptRounds = wider.keptRounds
+            messagesToSummarize = wider.toSummarize
+            messagesToKeep = wider.toKeep
+            retryCacheSafeParams = {
+              ...cacheSafeParams,
+              forkContextMessages: messagesToSummarize,
+            }
+            continue
+          }
+          // Last resort, as official: back to the last round kept and drop
+          // the oldest context from what is summarized.
+          roundLadder = false
+          ;({ toSummarize: messagesToSummarize, toKeep: messagesToKeep } =
+            splitKeptTail(messages))
+          retryCacheSafeParams = {
+            ...cacheSafeParams,
+            forkContextMessages: messagesToSummarize,
+          }
+        }
 
         // CC-1180: compact request itself hit prompt-too-long. Truncate the
         // oldest API-round groups and retry rather than leaving the user stuck.

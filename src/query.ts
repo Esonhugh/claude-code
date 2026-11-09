@@ -18,6 +18,7 @@ import { getAPIProvider } from './utils/model/providers.js'
 import {
   calculateTokenWarningState,
   isAutoCompactEnabled,
+  AUTOCOMPACT_THRASHING_MESSAGE,
   type AutoCompactTrackingState,
 } from './services/compact/autoCompact.js'
 import { buildPostCompactMessages } from './services/compact/compact.js'
@@ -893,6 +894,8 @@ async function* queryLoop(
       consecutiveFailures,
       compactionFailure,
       skip: compactionSkip,
+      consecutiveRapidRefills,
+      rapidRefillBreakerTripped,
     } = await deps.autocompact(
         projectedMessagesForQuery,
         toolUseContext,
@@ -910,6 +913,14 @@ async function* queryLoop(
         canUseTool,
       )
     queryCheckpoint('query_autocompact_end')
+
+    if (rapidRefillBreakerTripped) {
+      yield createAssistantAPIErrorMessage({
+        content: AUTOCOMPACT_THRASHING_MESSAGE,
+        error: 'invalid_request',
+      })
+      return { reason: 'rapid_refill_breaker' }
+    }
 
     if (compactionResult) {
       const {
@@ -967,6 +978,7 @@ async function* queryLoop(
         turnId: deps.uuid(),
         turnCounter: 0,
         consecutiveFailures: 0,
+        consecutiveRapidRefills,
       }
 
       const postCompactMessages = buildPostCompactMessages(compactionResult)
