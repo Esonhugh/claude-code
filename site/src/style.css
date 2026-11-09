@@ -148,6 +148,7 @@ footer a { color: var(--muted); }
 .prose pre { background: var(--term); color: var(--term-fg); border-radius: 8px; padding: 14px 16px; overflow-x: auto; font: 13px/1.65 var(--mono); }
 .prose pre code { background: none; padding: 0; font-size: inherit; }
 .prose blockquote { margin: 16px 0; padding: 4px 16px; border-left: 3px solid var(--line); color: var(--muted); }
+.pairs td:first-child, .pairs th:first-child { white-space: normal; text-align: left; }
 .prose .tablewrap table td, .prose .tablewrap table th { white-space: normal; text-align: left; min-width: 90px; }
 .prose hr { border: 0; border-top: 1px solid var(--line); margin: 32px 0; }
 .doc-note { font-size: 13px; color: var(--muted); border: 1px dashed var(--line); border-radius: 8px; padding: 8px 12px; margin-bottom: 20px; }

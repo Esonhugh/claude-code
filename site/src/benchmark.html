@@ -122,7 +122,54 @@
   <h2 class="zh">公開基準題，加上擾動</h2>
   <p class="en">Our own tasks are too easy to separate CLIs by success rate, so we also run 20 hard tasks from public suites: Terminal-Bench 2.0 (8), SWE-bench Pro (8) and SpreadsheetBench Verified (4). To keep models from recalling published answers, every task has a seeded variant: reworded instructions, renamed files, paths, ports and output formats, regenerated inputs and answers, with the graders updated to match. A variant is used only after the reference solution passes it; all 20 do. SWE-bench Pro runs with the git history stripped so the upstream fix cannot be read back.</p>
   <p class="zh">自家任務太容易，各 CLI 幾乎都 100% 通過，分不出完成率，所以另外跑 20 題公開基準難題：Terminal-Bench 2.0 8 題、SWE-bench Pro 8 題、SpreadsheetBench Verified 4 題。為了避免模型背出公開答案，每題都有帶種子的擾動版本：改寫指示，改檔名、路徑、連接埠與輸出格式，重新產生輸入與答案並同步更新評分腳本。參考解通過後才使用，20 題全部通過。SWE-bench Pro 執行時會移除 git 歷史，讀不到上游修復。</p>
-  <div class="pending"><span class="en">Full matrix in progress: every CLI on both accounts, original and perturbed, 3 runs each. Results will appear here when the matrix is complete.</span><span class="zh">完整矩陣執行中：每個 CLI、兩種帳號、原題與擾動題各 3 次。全部跑完後結果會放在這裡。</span></div>
+  <p class="en">1,800 runs: 20 tasks × 15 CLI/account cells × original and perturbed × 3 runs, each in the task's own container with a fresh HOME and web search off. Claude side uses <code>claude-sonnet-5-5</code>, ChatGPT side <code>gpt-6.1-sol</code>, each CLI at its own default effort.</p>
+  <p class="zh">共 1,800 次 run：20 題 × 15 個 CLI/帳號格 × 原版與擾動版 × 每格 3 次，每次都在任務自己的容器裡、全新 HOME、關閉 web search。Claude 側用 <code>claude-sonnet-5-5</code>，ChatGPT 側用 <code>gpt-6.1-sol</code>，各 CLI 用自己的預設 effort。</p>
+  <ul class="en">
+    <li><b>The model matters more than the CLI.</b> Claude side passes 61.1% (587/960), ChatGPT side 49.8% (418/840).</li>
+    <li><b>Best cells: dsh 70.8% and opencode 68.3%</b> on Claude, 16–18 points above pi. On ChatGPT only oh-my-pi (59.2%, default effort high) clearly leads.</li>
+    <li><b>This fork vs official: 54.2% vs 61.7%</b>, paired −7.5 ± 4.4 pp, under 2 standard errors. Most of the gap is one task (make-mips-interpreter, 2/6 vs 6/6), with the same failure pi shows.</li>
+    <li><b>This fork vs Codex: 45.0% vs 49.2%</b>, paired −4.2 ± 3.4 pp, also not significant.</li>
+    <li>The fork's longer average time (196 s vs 113 s) came from <code>-p</code> waiting on a background Bash task (#1071), fixed after this run.</li>
+    <li>Perturbed SWE-bench Pro scores 8.3 points lower; TB2 and SpreadsheetBench do not move. That could be recall or harder renamed code, so it is inconclusive.</li>
+  </ul>
+  <ul class="zh">
+    <li><b>模型差距比 CLI 差距大。</b>Claude 側通過 61.1%（587/960），ChatGPT 側 49.8%（418/840）。</li>
+    <li><b>最好的格是 dsh 70.8% 與 opencode 68.3%</b>（Claude 側），比 pi 高 16–18 個百分點。ChatGPT 側只有 oh-my-pi（59.2%，預設 effort high）明顯領先。</li>
+    <li><b>本分支 vs 官方：54.2% vs 61.7%</b>，逐題配對差 −7.5 ± 4.4 pp，不到 2 個標準誤。差距主要來自一題（make-mips-interpreter，2/6 vs 6/6），失敗方式和 pi 相同。</li>
+    <li><b>本分支 vs Codex：45.0% vs 49.2%</b>，配對差 −4.2 ± 3.4 pp，同樣不顯著。</li>
+    <li>本分支平均用時較長（196 秒 vs 113 秒），原因是 <code>-p</code> 會等背景 Bash 任務（#1071），已在這次跑完後修好。</li>
+    <li>SWE-bench Pro 擾動版低 8.3 個百分點，TB2 與 SpreadsheetBench 沒有差別。可能是模型記得原題，也可能是改名後更難，無法判斷。</li>
+  </ul>
+  <div class="viz" id="viz-pub-pass">
+    <h3><span class="en">Pass rate per cell</span><span class="zh">各格通過率</span></h3>
+    <p class="viz-sub"><span class="en">120 runs per cell. Dot = overall; ticks = original and perturbed halves.</span><span class="zh">每格 120 次。圓點是整體，短線是原版與擾動版各自的通過率。</span></p>
+    <div class="viz-plot"></div>
+  </div>
+  <div class="viz" id="viz-pub-scatter">
+    <h3><span class="en">Pass rate vs cost per task</span><span class="zh">通過率 vs 每任務花費</span></h3>
+    <p class="viz-sub"><span class="en">API-equivalent USD per task including cache. Ringed = this fork.</span><span class="zh">每任務 API 等價美元，含快取。外圈 = 本分支。</span></p>
+    <div class="viz-legend"></div>
+    <div class="viz-plot"></div>
+  </div>
+  <div class="viz" id="viz-pub-suites">
+    <h3><span class="en">Pass rate by suite</span><span class="zh">各套件通過率</span></h3>
+    <p class="viz-sub"><span class="en">TB2 and SWE-bench Pro: 48 runs per cell; SpreadsheetBench: 24.</span><span class="zh">TB2 與 SWE-bench Pro 每格 48 次，SpreadsheetBench 24 次。</span></p>
+    <div class="viz-plot"></div>
+  </div>
+  <div class="tablewrap"><table class="pairs">
+    <thead><tr><th><span class="en">Paired comparison (same tasks)</span><span class="zh">逐題配對比較</span></th><th><span class="en">Difference</span><span class="zh">差距</span></th></tr></thead>
+    <tbody>
+      <tr><td><span class="en">This fork vs official (Claude key)</span><span class="zh">本分支 vs 官方（Claude key）</span></td><td>−7.5 ± 4.4 pp</td></tr>
+      <tr><td><span class="en">This fork vs Codex (ChatGPT)</span><span class="zh">本分支 vs Codex（ChatGPT）</span></td><td>−4.2 ± 3.4 pp</td></tr>
+      <tr><td><span class="en">This fork + 3 subagents vs single (Claude)</span><span class="zh">本分支 + 3 個 subagent vs 單代理（Claude）</span></td><td>+4.2 ± 7.5 pp</td></tr>
+      <tr><td><span class="en">Official + 3 subagents vs single</span><span class="zh">官方 + 3 個 subagent vs 單代理</span></td><td>−2.5 ± 4.4 pp</td></tr>
+      <tr><td><span class="en">This fork + 3 subagents vs single (ChatGPT)</span><span class="zh">本分支 + 3 個 subagent vs 單代理（ChatGPT）</span></td><td>+5.8 ± 5.0 pp</td></tr>
+      <tr><td><span class="en">dsh vs pi (Claude)</span><span class="zh">dsh vs pi（Claude）</span></td><td>+18.3 ± 6.2 pp</td></tr>
+      <tr><td><span class="en">opencode vs pi (Claude)</span><span class="zh">opencode vs pi（Claude）</span></td><td>+15.8 ± 5.5 pp</td></tr>
+      <tr><td><span class="en">oh-my-pi vs pi (Claude)</span><span class="zh">oh-my-pi vs pi（Claude）</span></td><td>+11.7 ± 6.5 pp</td></tr>
+    </tbody>
+  </table></div>
+  <p class="foot"><span class="en">± is one standard error of the per-task paired difference. Per-task results, failure notes and the perturbation check are in the</span><span class="zh">± 是逐題配對差的一個標準誤。逐題結果、失敗說明與擾動檢查見</span> <a href="../docs/cache-benchmark.html"><span class="en">full report</span><span class="zh">完整報告</span></a>.</p>
 </div></section>
 
 <section id="cost"><div class="wrap">

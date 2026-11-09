@@ -7,8 +7,8 @@
   var root = document.documentElement;
   var lang = function () { return root.getAttribute('data-lang') === 'zh' ? 'zh' : 'en'; };
   var T = {
-    en: { claude: 'Claude model (claude-sonnet-5-5)', chatgpt: 'ChatGPT model (gpt-6.1-sol)', hit: 'cache hit', range: 'single-run range', tokens: 'tokens / task', cost: '$ / task', runs: 'runs', time: 'time', single: 'Single agent', sub: '3 subagents', teams: 'Agent Teams, 3 members', vsSingle: 'vs single agent', notTeam: 'official did not actually form a team in -p; reference only', round: 'Turn', idle: 'idle before', min: 'min', total: 'total over 2.7 h', first: 'first request hit', tui: 'total tokens, 6 turns' },
-    zh: { claude: 'Claude 模型（claude-sonnet-5-5）', chatgpt: 'ChatGPT 模型（gpt-6.1-sol）', hit: '命中率', range: '單次範圍', tokens: 'token / 任務', cost: '$ / 任務', runs: '次', time: '用時', single: '單代理', sub: '3 個 subagent', teams: 'Agent Teams 3 人', vsSingle: '相對單代理', notTeam: '官方在 -p 下沒有真正組隊，僅供參考', round: '第', idle: '之前閒置', min: '分鐘', total: '2.7 小時總量', first: '第一個請求命中率', tui: '6 輪總 token' },
+    en: { claude: 'Claude model (claude-sonnet-5-5)', chatgpt: 'ChatGPT model (gpt-6.1-sol)', hit: 'cache hit', range: 'single-run range', tokens: 'tokens / task', cost: '$ / task', runs: 'runs', time: 'time', single: 'Single agent', sub: '3 subagents', teams: 'Agent Teams, 3 members', vsSingle: 'vs single agent', notTeam: 'official did not actually form a team in -p; reference only', round: 'Turn', idle: 'idle before', min: 'min', total: 'total over 2.7 h', first: 'first request hit', tui: 'total tokens, 6 turns', pass: 'pass rate', orig: 'original', pert: 'perturbed', ver: 'version', effort: 'effort', dur: 'avg time', tb2: 'Terminal-Bench 2.0', swebenchpro: 'SWE-bench Pro', spread: 'SpreadsheetBench', passed: 'passed', ofRuns: 'runs' },
+    zh: { claude: 'Claude 模型（claude-sonnet-5-5）', chatgpt: 'ChatGPT 模型（gpt-6.1-sol）', hit: '命中率', range: '單次範圍', tokens: 'token / 任務', cost: '$ / 任務', runs: '次', time: '用時', single: '單代理', sub: '3 個 subagent', teams: 'Agent Teams 3 人', vsSingle: '相對單代理', notTeam: '官方在 -p 下沒有真正組隊，僅供參考', round: '第', idle: '之前閒置', min: '分鐘', total: '2.7 小時總量', first: '第一個請求命中率', tui: '6 輪總 token', pass: '通過率', orig: '原版', pert: '擾動版', ver: '版本', effort: 'effort', dur: '平均用時', tb2: 'Terminal-Bench 2.0', swebenchpro: 'SWE-bench Pro', spread: 'SpreadsheetBench', passed: '通過', ofRuns: '次' },
   };
   var t = function (k) { return T[lang()][k]; };
   var name = function (cli) { return D.clis[cli][lang()]; };
@@ -227,7 +227,106 @@
     });
   }
 
-  function renderAll() { overall(); tasks(); idle(); multi(); tui(); }
+  // F. Public benchmarks. P.cells: one row per CLI/account cell, pass rates in %.
+  var P = D.public;
+  var pname = function (c) { return c[lang()]; };
+  function pubRows(c) {
+    return [[c.pass + '%', t('pass') + ' (n=' + c.n + ')'], [c.orig + '% / ' + c.pert + '%', t('orig') + ' / ' + t('pert')], ['$' + c.cost.toFixed(3), t('cost')], [c.tokens + 'k', t('tokens')], [c.hit + '%', t('hit')], [c.dur + 's', t('dur')], [c.version + ' · ' + c.effort, t('ver') + ' · ' + t('effort')]];
+  }
+
+  // Pass rate per cell: dot = all 120 runs, ticks = original and perturbed halves.
+  function pubPass() {
+    var groups = ['claude', 'chatgpt'].map(function (side) { return { side: side, rows: P.cells.filter(function (c) { return c.side === side; }) }; });
+    var stack = narrow(document.getElementById('viz-pub-pass').querySelector('.viz-plot').clientWidth);
+    var rowH = stack ? 40 : 28, head = 26, gap = 14;
+    var h = 30 + groups.reduce(function (s, g) { return s + head + g.rows.length * rowH + gap; }, 0);
+    var c = svgFor('viz-pub-pass', h);
+    var x0 = stack ? 16 : 220, x1 = c.w - 46, lo = 30, hi = 80;
+    var sx = function (v) { return x0 + (v - lo) / (hi - lo) * (x1 - x0); };
+    for (var v = lo; v <= hi; v += 10) {
+      el('line', { x1: sx(v), x2: sx(v), y1: 4, y2: h - 22, stroke: 'var(--viz-grid)' }, c.svg);
+      label(c.svg, sx(v), h - 10, v + '%', { anchor: 'middle', size: 11, fill: 'var(--viz-muted)' });
+    }
+    var y = 8;
+    groups.forEach(function (g) {
+      label(c.svg, 0, y + 12, t(g.side), { weight: 600, size: 12, fill: 'var(--viz-ink2)' });
+      y += head;
+      g.rows.forEach(function (r) {
+        var cy = stack ? y + 28 : y + rowH / 2, col = r.ours ? 'var(--viz-1)' : 'var(--viz-other)';
+        label(c.svg, 2, stack ? y + 10 : cy, pname(r), { fill: r.ours ? 'var(--viz-ink)' : 'var(--viz-ink2)', weight: r.ours ? 600 : 400, size: narrow(c.w) ? 11 : 12.5 });
+        el('line', { x1: sx(Math.min(r.orig, r.pert)), x2: sx(Math.max(r.orig, r.pert)), y1: cy, y2: cy, stroke: col, 'stroke-width': 2, 'stroke-linecap': 'round', opacity: 0.6 }, c.svg);
+        [r.orig, r.pert].forEach(function (v2) { el('line', { x1: sx(v2), x2: sx(v2), y1: cy - 5, y2: cy + 5, stroke: col, 'stroke-width': 2, opacity: 0.6 }, c.svg); });
+        el('circle', { cx: sx(r.pass), cy: cy, r: 6, fill: col, stroke: 'var(--viz-surface)', 'stroke-width': 2 }, c.svg);
+        label(c.svg, sx(Math.max(r.pass, r.orig, r.pert)) + 10, cy, r.pass + '%', { size: 11, fill: 'var(--viz-ink2)' });
+        var hit = el('rect', { x: 0, y: y, width: c.w, height: rowH, fill: 'transparent' }, c.svg);
+        hover(hit, c.card, function () { return pname(r) + ' · ' + t(r.side).split(/[（(]/)[0].trim(); }, function () { return pubRows(r); });
+        y += rowH;
+      });
+      y += gap;
+    });
+  }
+
+  // Pass rate against $/task; color = model side, our cells drawn with a ring.
+  function pubScatter() {
+    var c = svgFor('viz-pub-scatter', narrow(document.getElementById('viz-pub-scatter').querySelector('.viz-plot').clientWidth) ? 320 : 380);
+    var h = +c.svg.getAttribute('height');
+    var x0 = 44, x1 = c.w - 20, y0 = h - 34, y1 = 12, xlo = 0.05, xhi = 0.32, ylo = 40, yhi = 75;
+    var sx = function (v) { return x0 + (v - xlo) / (xhi - xlo) * (x1 - x0); };
+    var sy = function (v) { return y0 - (v - ylo) / (yhi - ylo) * (y0 - y1); };
+    for (var v = ylo; v <= yhi; v += 5) {
+      el('line', { x1: x0, x2: x1, y1: sy(v), y2: sy(v), stroke: 'var(--viz-grid)' }, c.svg);
+      label(c.svg, x0 - 6, sy(v), v + '%', { anchor: 'end', size: 11, fill: 'var(--viz-muted)' });
+    }
+    var step = narrow(c.w) ? 0.1 : 0.05;
+    for (var u = 0.05; u <= xhi + 1e-9; u += step) {
+      el('line', { x1: sx(u), x2: sx(u), y1: y1, y2: y0, stroke: 'var(--viz-grid)' }, c.svg);
+      label(c.svg, sx(u), y0 + 16, '$' + u.toFixed(2), { anchor: 'middle', size: 11, fill: 'var(--viz-muted)' });
+    }
+    label(c.svg, x1, y0 + 28, t('cost'), { anchor: 'end', size: 11, fill: 'var(--viz-muted)' });
+    var color = function (r) { return r.side === 'claude' ? 'var(--viz-2)' : 'var(--viz-3)'; };
+    // Labels go right of the dot, else left, else below, whichever overlaps no earlier label or dot.
+    var boxes = P.cells.map(function (r) { return [sx(r.cost) - 7, sy(r.pass) - 7, sx(r.cost) + 7, sy(r.pass) + 7]; });
+    var free = function (b) { return b[0] >= 0 && b[2] <= c.w && boxes.every(function (o) { return b[2] <= o[0] || b[0] >= o[2] || b[3] <= o[1] || b[1] >= o[3]; }); };
+    P.cells.forEach(function (r) {
+      var cx = sx(r.cost), cy = sy(r.pass);
+      el('circle', { cx: cx, cy: cy, r: r.ours ? 7 : 6, fill: color(r), stroke: r.ours ? 'var(--viz-ink)' : 'var(--viz-surface)', 'stroke-width': 2 }, c.svg);
+      if (!narrow(c.w) || r.ours) {
+        var tw = r.short.length * 6.6;
+        var spots = [[cx + 10, cy - 1, 'start', [cx + 9, cy - 8, cx + 11 + tw, cy + 6]], [cx - 10, cy - 1, 'end', [cx - 11 - tw, cy - 8, cx - 9, cy + 6]], [cx, cy + 17, 'middle', [cx - tw / 2, cy + 9, cx + tw / 2, cy + 23]], [cx, cy - 15, 'middle', [cx - tw / 2, cy - 23, cx + tw / 2, cy - 9]]];
+        var s = spots.filter(function (q) { return free(q[3]); })[0] || spots[0];
+        boxes.push(s[3]);
+        label(c.svg, s[0], s[1], r.short, { anchor: s[2], size: 11, fill: r.ours ? 'var(--viz-ink)' : 'var(--viz-ink2)', weight: r.ours ? 600 : 400 });
+      }
+      var hit = el('circle', { cx: cx, cy: cy, r: 14, fill: 'transparent' }, c.svg);
+      hover(hit, c.card, function () { return pname(r) + ' · ' + (r.side === 'claude' ? 'Claude' : 'ChatGPT'); }, function () { return pubRows(r); });
+    });
+    var legend = c.card.querySelector('.viz-legend');
+    legend.textContent = '';
+    [['claude', 'var(--viz-2)'], ['chatgpt', 'var(--viz-3)']].forEach(function (p) {
+      var item = document.createElement('span');
+      var sw = document.createElement('i'); sw.style.background = p[1]; sw.style.borderRadius = '50%';
+      item.appendChild(sw); item.appendChild(document.createTextNode(t(p[0])));
+      legend.appendChild(item);
+    });
+  }
+
+  // Passes per suite, each cell shaded by its pass rate.
+  function pubSuites() {
+    var keys = ['tb2', 'swebenchpro', 'spreadsheetbench-verified'];
+    var small = narrow(document.getElementById('viz-pub-suites').querySelector('.viz-plot').clientWidth);
+    var full = [t('tb2'), t('swebenchpro'), t('spread')];
+    var cols = (small ? ['TB2', 'SWE-Pro', 'Sheet'] : full).map(function (x, j) { return x + '\n(' + [48, 48, 24][j] + ')'; });
+    heatmap('viz-pub-suites', cols, P.cells.map(function (r) {
+      return { label: (small ? r.short : pname(r)) + (r.side === 'claude' ? ' · Claude' : ' · ChatGPT'), strong: r.ours, values: keys.map(function (k) { return Math.round(r.suites[k].pass / r.suites[k].n * 100); }), raw: r };
+    }), {
+      labelW: small ? 128 : 230,
+      norm: function (v) { return v / 100; },
+      colTitle: function (j) { return full[j]; },
+      tip: function (r, j) { var x = r.raw.suites[keys[j]]; return [[x.pass + ' / ' + x.n, t('passed')], ['$' + x.cost.toFixed(3), t('cost')]]; },
+    });
+  }
+
+  function renderAll() { overall(); tasks(); idle(); multi(); tui(); if (P) { pubPass(); pubScatter(); pubSuites(); } }
   renderAll();
   new MutationObserver(renderAll).observe(root, { attributes: true, attributeFilter: ['data-lang', 'data-theme'] });
   var timer;
