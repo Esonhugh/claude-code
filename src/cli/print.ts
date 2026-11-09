@@ -317,6 +317,7 @@ import {
   backgroundTaskForToolUse,
   hasBackgroundRequestHandler,
   requestBackgroundForToolUse,
+  stopShellTaskAtDeadline,
 } from '../tasks/LocalShellTask/LocalShellTask.js'
 import { isLocalShellTask } from '../tasks/LocalShellTask/guards.js'
 import { isLocalAgentTask } from '../tasks/LocalAgentTask/LocalAgentTask.js'
@@ -485,6 +486,7 @@ import { handleTeammateShutdownApproved } from '../utils/swarm/teammateShutdown.
 import { registerLeaderHeadlessCanUseTool } from '../utils/swarm/leaderPermissionBridge.js'
 import { getRunningTasks } from '../utils/task/framework.js'
 import { isBackgroundTask } from '../tasks/types.js'
+import { formatDuration } from '../utils/format.js'
 import { StopTaskError, stopTask } from '../tasks/stopTask.js'
 import { deliverTaskMessage } from '../tasks/deliverTaskMessage.js'
 import { isInProcessTeammateTask } from '../tasks/InProcessTeammateTask/types.js'
@@ -548,6 +550,15 @@ Shut down your team and prepare your final response for the user.`
 // turn waits (bounded) for the next one, so the aborted turn's result is not
 // lost to the exit.
 let headlessResultsWritten = 0
+
+const PRINT_BG_WAIT_CEILING_MS = 600_000
+
+// 0 waits indefinitely; anything unparsable falls back to the default.
+function getPrintBgWaitCeilingMs(): number {
+  const raw = process.env.CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS
+  const value = raw === undefined || raw.trim() === '' ? NaN : Number(raw)
+  return Number.isFinite(value) && value >= 0 ? value : PRINT_BG_WAIT_CEILING_MS
+}
 
 // Track message UUIDs received during the current session runtime
 const MAX_RECEIVED_UUIDS = 10_000
@@ -1320,6 +1331,9 @@ function runHeadlessStreaming(
     | 'finally_post_flush'
     | undefined
   let inputClosed = false
+  // When the session first sat idle with input closed and background tasks
+  // still running; reset whenever a turn is about to run.
+  let bgWaitIdleSince: number | undefined
   let shutdownPromptInjected = false
   // Set once the shutdown turn left the team quiet; reset by any team activity.
   let teamQuietSince: number | undefined
@@ -2941,14 +2955,40 @@ function runHeadlessStreaming(
         waitingForAgents = false
         {
           const state = getAppState()
-          const hasRunningBg = getRunningTasks(state).some(
+          const runningBg = getRunningTasks(state).filter(
             t => isBackgroundTask(t) && t.type !== 'in_process_teammate',
           )
           const hasMainThreadQueued = peek(isMainThread) !== undefined
-          if (!isShuttingDown() && (hasRunningBg || hasMainThreadQueued)) {
+          if (hasMainThreadQueued || !inputClosed) bgWaitIdleSince = undefined
+          if (!isShuttingDown() && (runningBg.length > 0 || hasMainThreadQueued)) {
             waitingForAgents = true
             if (!hasMainThreadQueued) {
               runPhase = 'waiting_for_agents'
+              // Like official 2.1.319: once input is closed, wait at most the
+              // ceiling for background tasks (e.g. a shell whose daemon keeps
+              // its output pipe open), then stop them. Their notifications
+              // start one more turn, then the session ends.
+              const now = Date.now()
+              if (inputClosed) bgWaitIdleSince ??= now
+              const ceilingMs = getPrintBgWaitCeilingMs()
+              if (bgWaitIdleSince !== undefined && ceilingMs > 0 && now - bgWaitIdleSince >= ceilingMs) {
+                process.stderr.write(
+                  `Background tasks still running ${formatDuration(ceilingMs, { hideTrailingZeros: true })} after the last turn (${runningBg.length}); stopping them. Set CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 to wait indefinitely.\n`,
+                )
+                bgWaitIdleSince = undefined
+                for (const task of runningBg) {
+                  if (isLocalShellTask(task)) {
+                    // The notification reaches the queue asynchronously; wait
+                    // for it so the next pass runs the turn instead of ending.
+                    await stopShellTaskAtDeadline(task, setAppState)
+                  } else {
+                    await stopTask(task.id, { getAppState, setAppState }).catch(error => {
+                      if (!(error instanceof StopTaskError)) logError(toError(error))
+                    })
+                  }
+                }
+                continue
+              }
               // No commands ready yet, wait for tasks to complete
               await sleep(100)
             }
