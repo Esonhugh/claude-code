@@ -111,6 +111,8 @@ Sessions start in ~/.claude/web/workspace and run with your local credentials an
 
 点一个历史会话先只读显示记录，长会话往上滚时加载更早的消息；在输入框里开始输入才在原目录恢复它，之前的上下文照常带上。同一个会话同一时间只能在一个标签页里打开。没有标签页连着的会话空闲 `--idle-timeout` 后结束。
 
+会话选的模型、effort、上下文窗口和权限模式保存在服务端（`projects.sqlite`），刷新页面、新开标签页或会话进程空闲结束后再恢复，都按原来的选择继续；断线期间改的选择会在重新连上后补发。刷新时如果回合还在跑，页面显示到目前为止的输出并继续接收；占着会话的标签页关闭后，被锁住的标签页自动接管。会话进程异常退出时，错误框显示退出码和最后一行 stderr，而不是只写“The session ended.”。
+
 ## 右侧面板
 
 Status、Files、Agents 一直在；Workflow、Terminals、Monitor、Background Tasks 在这个会话用过对应工具后才出现（重新打开的历史会话按记录里的工具调用判断）。

@@ -1,4 +1,4 @@
-# Terminal 工具
+# Tmux 工具（原 Terminal）
 
 > 英文名：`terminal-tool` · 领域：工具 · [返回功能索引](README.md)
 
@@ -55,6 +55,10 @@ Terminal 工具给 Claude 一个**一直开着的终端**（PTY）：它可以�
 - 选「don't ask again for Terminal commands」会在项目 `.claude/settings.local.json` 里写入 `"Tmux"` allow 规则（旧的 `"Terminal"` 规则等同于它）。
 - 开了 [Bash 沙箱](sandbox.md)（`sandbox.enabled`）时，`new-session` 的命令在沙箱里启动，限制和 Bash 一样；命中 `excludedCommands` 或带 `dangerouslyDisableSandbox`（且设置允许）时在沙箱外启动。Linux 上沙箱里的命令仍有自己的 PTY，`Ctrl+C` 和 `resize-pane` 照常可用；终端关闭时清理沙箱。
 - 不管是否在沙箱里，sandbox 的自动放行对 Terminal 都无效，仍按上面的规则确认；[自动模式](auto-mode.md) 下 `Tmux`（或旧名 `Terminal`）的 allow 规则会被暂时搁置，交给分类器判断。
+
+## 不碰你自己的 tmux
+
+Tmux 工具的终端是 Claude 进程内的 PTY，不经过 tmux，也不继承 `TMUX`、`TMUX_PANE`。Bash 里跑的 `tmux` 命令总是连到 Claude 自己的 socket，并以 `-f /dev/null` 启动，不读你的 `tmux.conf`，不会在你正在用的 tmux server 里开窗口或改设置。
 
 ## 操作按键
 
