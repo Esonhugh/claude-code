@@ -303,6 +303,12 @@ describe('claude web server', () => {
       body: JSON.stringify({ resume: '--help' }),
     })
     expect(resume.status).toBe(400)
+    // A resumed session keeps the model and effort the page showed (#1083).
+    const post = (body: unknown) =>
+      fetch(`${r.base}/api/sessions`, { method: 'POST', headers: { cookie, origin: r.origin }, body: JSON.stringify(body) })
+    expect((await post({ resume: '99999999-2222-4333-8444-666666666666', effort: '--max' })).status).toBe(400)
+    expect((await post({ resume: '99999999-2222-4333-8444-666666666666', model: 'gpt-5.6-terra', effort: 'high' })).status).toBe(200)
+    expect(r.spawned.at(-1)).toMatchObject({ resume: true, model: 'gpt-5.6-terra', effort: 'high' })
     const info = await fetch(`${r.base}/api/info`, { headers: { cookie } })
     expect(await info.json()).toEqual({
       workspace: r.workspace,

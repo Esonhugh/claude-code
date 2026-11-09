@@ -1353,7 +1353,8 @@ function reduceControlResponse(state: ChatState, raw: Json): ChatState {
       ...state,
       // A reattached page is sent the session's first init; `applied` has the model in use now.
       model: str(applied.model) ?? state.model,
-      effort: str(applied.effort) ?? state.effort,
+      // null: the session sends no effort (the model's own default), so none is shown.
+      effort: applied.effort === null ? undefined : (str(applied.effort) ?? state.effort),
       contextWindow:
         typeof applied.autoCompactWindow === 'number' || applied.autoCompactWindow === null
           ? applied.autoCompactWindow

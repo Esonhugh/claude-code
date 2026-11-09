@@ -31,7 +31,7 @@ import { type AgentsView, agentTasks } from './components/Agents'
 import { AskDock, ChatComposer, chatTools, ContextChip, GoalMenu, type MentionTarget, Pins } from './components/Composer'
 import { AppDialog, type Palette, type Theme } from './components/Dialogs'
 import type { ContextUsage } from './components/Settings'
-import { AgentsContext, ChatContext, FilesContext, joinTurns, Message, QuoteContext, QuoteOnSelect, replyPrompt, TeamBar } from './components/Message'
+import { AgentsContext, ChatContext, FilesContext, joinTurns, Message, modelOption, QuoteContext, QuoteOnSelect, replyPrompt, TeamBar } from './components/Message'
 import { canvasTabMods, closeCanvasTab, MOD_CLIENT, MOD_LAYOUT, MOD_SURFACE, ModCanvas, ModSite, ModSitesProvider, ModToasts, ModView } from './components/Mods'
 import { Preview } from './components/Preview'
 import { ProjectDialog } from './components/ProjectDialog'
@@ -886,6 +886,10 @@ export function App() {
 
   // A resume under way per session: a send right after the focus prewarm waits for it.
   const resuming = useRef(new Map<string, Promise<boolean>>())
+  // Picks made while a chat has no socket: a process still running hears of them only on resume.
+  const offlinePicks = useRef(new Map<string, { model?: string; effort?: string; contextWindow?: number | null; mode?: string }>())
+  const pickOffline = (id: string, pick: { model?: string; effort?: string; contextWindow?: number | null; mode?: string }) =>
+    offlinePicks.current.set(id, { ...offlinePicks.current.get(id), ...pick })
   /** Starts the process for a read-only transcript (prewarm on focus). */
   const resume = (id: string): Promise<boolean> => {
     const running = resuming.current.get(id)
@@ -906,23 +910,41 @@ export function App() {
     if (current.mode === 'elsewhere') return false
     dispatch({ type: 'mode', id, mode: 'connecting' })
     try {
-      const running = await listRunning()
-      if (running.find(r => r.id === id)?.attached) {
+      const running = (await listRunning()).find(r => r.id === id)
+      if (running?.attached) {
         dispatch({ type: 'mode', id, mode: 'elsewhere' })
         return false
       }
       const entry = stateRef.current.history.find(h => h.id === id)
       // A coordinator restarts through its project, with its prompt and settings.
       const owner = projectsRef.current.find(p => p.coordinator_session_id === id)
+      // The model and effort shown go to a new process, unless they belong to the other provider (an account switch since).
+      const chatProvider = current.env.account?.apiProvider
+      const provider = account.account?.provider
+      const carry = !chatProvider || !provider || (chatProvider === 'openai') === (provider === 'openai')
+      const spawned = !running && !owner
       if (owner) await openCoordinator(owner.id)
       else {
         await createSession({
           resume: id,
           cwd: current.workDir ?? entry?.cwd,
           ...(current.permissionMode && { permission_mode: current.permissionMode }),
+          // The picker's own value (`sonnet`, not its id), so the new process lists no extra row for it.
+          ...(spawned && carry && current.model && { model: modelOption(current.model, current.models)?.value ?? current.model }),
+          ...(spawned && carry && current.effort && { effort: current.effort }),
         })
       }
       await attach(id)
+      const picks = offlinePicks.current.get(id)
+      offlinePicks.current.delete(id)
+      if (!spawned && picks) {
+        if (picks.model) changeModel(id, picks.model)
+        if (picks.effort) changeEffort(id, picks.effort)
+        if (picks.mode && !owner) changeMode(id, picks.mode)
+      }
+      // A new process starts at auto; a running one keeps its own unless a pick was made.
+      const contextWindow = running ? picks?.contextWindow : current.contextWindow
+      if (contextWindow !== undefined && (running || contextWindow !== null)) changeContextWindow(id, contextWindow)
       return true
     } catch (err) {
       dispatch({ type: 'mode', id, mode: 'readonly' })
@@ -1332,25 +1354,30 @@ export function App() {
       request(id, REQUEST_PREFIX.mode, { subtype: 'set_permission_mode', mode })
     } else {
       dispatch({ type: 'chat', id, action: { type: 'local', patch: { permissionMode: mode } } })
+      pickOffline(id, { mode })
     }
   }
 
   const changeModel = (id: string, model: string) => {
     dispatch({ type: 'chat', id, action: { type: 'local', patch: { model, notice: undefined } } })
     if (sockets.current.has(id)) request(id, REQUEST_PREFIX.model, { subtype: 'set_model', model })
+    else pickOffline(id, { model })
   }
 
   function changeEffort(id: string, effort: string) {
     dispatch({ type: 'chat', id, action: { type: 'local', patch: { effort, notice: undefined } } })
     if (sockets.current.has(id)) {
       request(id, REQUEST_PREFIX.effort, { subtype: 'apply_flag_settings', settings: { effortLevel: effort } })
-    }
+    } else pickOffline(id, { effort })
   }
 
   /** A session-only override, like effort; null goes back to auto. */
   function changeContextWindow(id: string, tokens: number | null) {
     dispatch({ type: 'chat', id, action: { type: 'local', patch: { contextWindow: tokens, notice: undefined } } })
-    if (!sockets.current.has(id)) return
+    if (!sockets.current.has(id)) {
+      pickOffline(id, { contextWindow: tokens })
+      return
+    }
     void requestAsync(id, REQUEST_PREFIX.effort, {
       subtype: 'apply_flag_settings',
       settings: { autoCompactWindow: tokens ?? 'auto' },

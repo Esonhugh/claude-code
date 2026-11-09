@@ -164,6 +164,8 @@ const createSessionBodySchema = lazySchema(() =>
       .string()
       .regex(/^[A-Za-z0-9][\w.:[\]/@-]{0,127}$/)
       .optional(),
+    // An effort level, passed to `--effort` (a resumed session keeps the one the page showed).
+    effort: z.string().regex(EFFORT).optional(),
   }),
 )
 
@@ -944,7 +946,7 @@ export function startWebServer(
     if (!parsed.success) {
       return errorResponse(400, `Invalid request: ${parsed.error.message}`)
     }
-    const { cwd, temporary, resume, permission_mode: permissionMode, model, trust } = parsed.data
+    const { cwd, temporary, resume, permission_mode: permissionMode, model, effort, trust } = parsed.data
     let workDir = config.workspace
     if (temporary && !cwd && !resume) {
       mkdirSync(tempRoot, { recursive: true })
@@ -968,6 +970,7 @@ export function startWebServer(
         cwd: workDir,
         permissionMode,
         model,
+        effort,
         resume,
         channels: ext.readDefaultChannels(config.configDir ?? getClaudeConfigHomeDir()),
       })
