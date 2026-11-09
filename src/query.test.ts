@@ -306,6 +306,40 @@ describe('query Stop hook continuation state', () => {
 })
 
 describe('query autocompact failures', () => {
+  test('stops the turn when autocompact keeps refilling (2.1.319 rapid-refill breaker)', async () => {
+    let callModelCalls = 0
+    const { events, terminal } = await drainQuery({
+      messages: [userMessage('hello')],
+      systemPrompt: asSystemPrompt([]),
+      userContext: {},
+      systemContext: {},
+      canUseTool: async () => ({ behavior: 'allow', updatedInput: {} }),
+      toolUseContext: createToolUseContext(),
+      querySource: 'repl_main_thread' as QuerySource,
+      deps: {
+        uuid: () => '00000000-0000-4000-8000-000000000098',
+        microcompact: async messages => ({ messages }),
+        autocompact: async () => ({
+          wasCompacted: false,
+          rapidRefillBreakerTripped: true,
+        }),
+        callModel: async function* () {
+          callModelCalls++
+          yield await Promise.reject(new Error('callModel should not run'))
+        },
+      },
+    })
+    const apiError = events.find(
+      (event): event is AssistantMessage =>
+        event.type === 'assistant' &&
+        'isApiErrorMessage' in event &&
+        event.isApiErrorMessage === true,
+    )
+    expect(callModelCalls).toBe(0)
+    expect(terminal).toEqual({ reason: 'rapid_refill_breaker' })
+    expect(assistantText(apiError!)).toContain('Autocompact is thrashing')
+  })
+
   test('keeps OpenAI usage_limit_reached visible when autocompact fails before blocking-limit preempt', async () => {
     const previousBlockingLimit = process.env.CLAUDE_CODE_BLOCKING_LIMIT_OVERRIDE
     process.env.CLAUDE_CODE_BLOCKING_LIMIT_OVERRIDE = '1'

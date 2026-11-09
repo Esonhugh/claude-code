@@ -1,0 +1,12 @@
+{
+  "id": "compact-recall",
+  "type": "coding",
+  "length": "long",
+  "requires": [],
+  "grade": [
+    {
+      "type": "cmd",
+      "run": "python3 - <<'PY'\nimport json, pathlib, re, subprocess, sys\nexp = json.loads('{\"billing\": {\"limit\": 51833, \"owner\": \"Ana Ruiz\"}, \"catalog\": {\"limit\": 72798, \"owner\": \"Bo Chen\"}, \"dispatch\": {\"limit\": 63200, \"owner\": \"Cyrus Dar\"}, \"ledger\": {\"limit\": 1239, \"owner\": \"Dana Ito\"}, \"metering\": {\"limit\": 22347, \"owner\": \"Eli Moss\"}, \"notify\": {\"limit\": 34216, \"owner\": \"Fay Lund\"}, \"orders\": {\"limit\": 12354, \"owner\": \"Gus Ortiz\"}, \"payouts\": {\"limit\": 80468, \"owner\": \"Hana Sato\"}, \"quota\": {\"limit\": 19365, \"owner\": \"Ivo Petrov\"}, \"refunds\": {\"limit\": 77301, \"owner\": \"Jun Park\"}, \"routing\": {\"limit\": 78621, \"owner\": \"Kai Berg\"}, \"search\": {\"limit\": 31053, \"owner\": \"Lia Novak\"}, \"shipping\": {\"limit\": 27873, \"owner\": \"Max Wolf\"}, \"tax\": {\"limit\": 51002, \"owner\": \"Nia Okafor\"}, \"users\": {\"limit\": 65611, \"owner\": \"Oto Kim\"}, \"webhooks\": {\"limit\": 25294, \"owner\": \"Pia Roth\"}}')\nsrc = \"\".join(p.read_text() for p in pathlib.Path(\"svc\").glob(\"*.py\"))\nassert \"legacy_fetch\" not in src, \"legacy_fetch left\"\nassert \"def fetch_record\" in pathlib.Path(\"svc/core.py\").read_text(), \"fetch_record missing\"\nassert not re.search(r\"BUDGET_LIMIT = \\d\", src), \"BUDGET_LIMIT constant left in a module\"\ncfg = json.loads(pathlib.Path(\"config.json\").read_text())\nbad = [n for n, v in exp.items() if cfg.get(n, {}).get(\"budget_limit\") != v[\"limit\"] or cfg.get(n, {}).get(\"owner\") != v[\"owner\"]]\nassert not bad, f\"wrong config for {bad}\"\nr = subprocess.run([sys.executable, \"-m\", \"unittest\", \"-q\"], capture_output=True, text=True)\nassert r.returncode == 0, r.stderr[-500:]\nPY"
+    }
+  ]
+}

@@ -80,7 +80,7 @@ function need<T>(v: T | undefined, what: string): T {
 }
 
 // Claude Code family (fork and official): onboarding done, workspace trusted, bypass mode.
-function claudeHome(ctx: RunContext, side: Side) {
+function claudeHome(ctx: RunContext, side: Side, settings: Record<string, unknown> = {}) {
   const cfg: Record<string, unknown> = {
     hasCompletedOnboarding: true,
     bypassPermissionsModeAccepted: true,
@@ -91,7 +91,7 @@ function claudeHome(ctx: RunContext, side: Side) {
   write(path.join(ctx.home, '.claude.json'), JSON.stringify(cfg))
   write(
     path.join(ctx.home, '.claude', 'settings.json'),
-    JSON.stringify({ skipDangerousModePermissionPrompt: true, permissions: { defaultMode: 'bypassPermissions' } }),
+    JSON.stringify({ skipDangerousModePermissionPrompt: true, permissions: { defaultMode: 'bypassPermissions' }, ...settings }),
   )
   if (side === 'claude') write(path.join(ctx.home, '.claude', '.credentials.json'), fs.readFileSync(need(ctx.creds.claudeCredentialsFile, 'Claude credentials file'), 'utf8'))
   if (side === 'chatgpt') codexHome(ctx)
@@ -106,19 +106,25 @@ function codexHome(ctx: RunContext) {
 const keyEnv = (ctx: RunContext) => ({ ANTHROPIC_API_KEY: need(ctx.creds.orgKey, 'CLAUDE_CODE_ORG_KEY') })
 
 // Prompt goes on stdin: --disallowedTools is variadic and would swallow a trailing prompt.
-function claudeCell(id: string, product: 'fork' | 'official', side: Side): Cell {
+function claudeCell(
+  id: string,
+  product: 'fork' | 'official',
+  side: Side,
+  variant: { settings?: Record<string, unknown>; env?: Record<string, string> } = {},
+): Cell {
   const model = side === 'chatgpt' ? MODELS.chatgpt : MODELS.claude
   return {
     id,
     product,
     side,
     model,
-    setupHome: ctx => claudeHome(ctx, side),
+    setupHome: ctx => claudeHome(ctx, side, variant.settings),
     launch: (bin, ctx) => ({
       argv: [bin, '-p', '--model', model, '--output-format', 'stream-json', '--verbose', '--disallowedTools', 'WebSearch,WebFetch'],
       env: {
         ...(side === 'claude-key' ? keyEnv(ctx) : {}),
         ...(side === 'chatgpt' ? { CLAUDE_CODE_USE_OPENAI: '1', CODEX_HOME: path.join(ctx.home, '.codex') } : {}),
+        ...variant.env,
       },
       stdin: ctx.prompt,
     }),
@@ -286,9 +292,18 @@ const SUB_SUFFIX = '\n\nUse the Agent tool to launch subagents in parallel for i
 const subCell = (base: Cell): Cell => ({ ...base, id: `${base.id}-sub`, launch: (bin, ctx) => base.launch(bin, { ...ctx, prompt: ctx.prompt + SUB_SUFFIX }) })
 export const SUB_CELLS: Cell[] = ['fork-claude-key', 'official-key', 'fork-openai'].map(id => subCell(CELLS.find(c => c.id === id)!))
 
+// Compaction A/B: a 100k auto-compact window makes long tasks compact; -keep
+// retains ~20k tokens of recent messages verbatim (codex-style retention).
+const AC_ENV = { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '100000' }
+const KEEP_RECENT = { compact: { mode: 'codex', codex: { keepPostCompactAttachments: true } } }
+export const COMPACT_CELLS: Cell[] = [
+  claudeCell('fork-claude-ac', 'fork', 'claude', { env: AC_ENV }),
+  claudeCell('fork-claude-ac-keep', 'fork', 'claude', { env: AC_ENV, settings: KEEP_RECENT }),
+]
+
 export function getCell(id: string): Cell {
-  const c = CELLS.find(x => x.id === id) ?? SUB_CELLS.find(x => x.id === id)
-  if (!c) throw new Error(`unknown cell ${id}; known: ${[...CELLS, ...SUB_CELLS].map(x => x.id).join(', ')}`)
+  const c = CELLS.find(x => x.id === id) ?? SUB_CELLS.find(x => x.id === id) ?? COMPACT_CELLS.find(x => x.id === id)
+  if (!c) throw new Error(`unknown cell ${id}; known: ${[...CELLS, ...SUB_CELLS, ...COMPACT_CELLS].map(x => x.id).join(', ')}`)
   return c
 }
 

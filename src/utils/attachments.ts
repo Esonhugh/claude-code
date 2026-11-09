@@ -2958,11 +2958,29 @@ async function getDynamicSkillAttachments(
 const sentSkillNames = new Map<string, Set<string>>()
 
 // Called when the skill set genuinely changes (plugin reload, skill file
-// change on disk) so new skills get announced. NOT called on compact —
-// post-compact re-injection costs ~4K tokens/event for marginal benefit.
+// change on disk) so new skills get announced.
 export function resetSentSkillNames(): void {
   sentSkillNames.clear()
   suppressNext = false
+}
+
+/**
+ * Compaction summarizes the skill listing away; announce it again like
+ * official 2.1.319, unless a kept message still carries it.
+ */
+export async function getSkillListingAfterCompact(
+  toolUseContext: ToolUseContext,
+  keptMessages: Message[],
+): Promise<Attachment[]> {
+  if (
+    keptMessages.some(
+      m => m.type === 'attachment' && m.attachment.type === 'skill_listing',
+    )
+  ) {
+    return []
+  }
+  sentSkillNames.delete(toolUseContext.agentId ?? '')
+  return getSkillListingAttachments(toolUseContext)
 }
 
 /**
