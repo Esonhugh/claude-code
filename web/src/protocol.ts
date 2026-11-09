@@ -835,6 +835,10 @@ export function reduce(state: ChatState, raw: unknown): ChatState {
   }
   switch (raw.type) {
     case 'system':
+      // A page that attaches mid-turn learns from this that the turn is still running (its result ends it).
+      if (raw.subtype === 'session_state_changed') {
+        return raw.state === 'running' ? { ...state, busy: true } : state
+      }
       if (raw.subtype === 'api_retry') {
         return {
           ...state,

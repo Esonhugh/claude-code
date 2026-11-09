@@ -28,6 +28,10 @@ type Session = SessionInfo & {
   asks: Map<string, string>
   /** The latest `system/init` (permission mode kept current), for a client that attaches later (replayTasks only). */
   init?: string
+  /** A turn is running: from `session_state_changed` running until its `result` (replayTasks only). */
+  turnRunning?: boolean
+  /** The stream events of the reply being streamed, and whether a client was sent each (replayTasks only). */
+  streaming?: { line: string; sent: boolean }[]
   idleTimer?: ReturnType<typeof setTimeout>
   exited: Promise<void>
   spawnOptions: SpawnSessionOptions
@@ -151,6 +155,31 @@ function recordInit(init: string | undefined, line: string): string | undefined 
   } catch {
     return init
   }
+}
+
+const TURN_RUNNING_LINE = JSON.stringify({ type: 'system', subtype: 'session_state_changed', state: 'running' })
+
+/**
+ * Follows the turn and the main reply being streamed, for a client that attaches mid-turn:
+ * the reply's stream events from `message_start` to `message_stop`. Each block restarts at its
+ * `content_block_start`, so a block the transcript already has is rebuilt, not doubled.
+ */
+function recordTurn(session: Session, line: string): void {
+  if (line.startsWith('{"type":"stream_event"')) {
+    if (!line.includes('"parent_tool_use_id":null')) return
+    if (line.includes('"type":"message_start"')) session.streaming = []
+    session.streaming?.push({ line, sent: false })
+    if (line.includes('"type":"message_stop"')) session.streaming = undefined
+    return
+  }
+  if (line.startsWith('{"type":"result"')) {
+    session.turnRunning = false
+    session.streaming = undefined
+    return
+  }
+  if (!line.startsWith('{"type":"system","subtype":"session_state_changed"')) return
+  if (line.includes('"state":"running"')) session.turnRunning = true
+  else if (line.includes('"state":"idle"')) session.turnRunning = false
 }
 
 function recordModStatus(modStatus: Map<string, string>, line: string): void {
@@ -368,6 +397,7 @@ export class SessionManager {
         recordTaskLine(session.taskLines, line)
         if (session.modStatus) recordModStatus(session.modStatus, line)
         session.init = recordInit(session.init, line)
+        recordTurn(session, line)
       }
       if (line.includes('"can_use_tool"') || line.includes('"control_cancel_request"')) recordAsk(session.asks, line)
       if (session.channelRequests?.size && line.includes('"type":"control_response"')) recordChannelLine(session, line)
@@ -377,6 +407,7 @@ export class SessionManager {
       this.observer?.line?.(id, line, 'child')
       if (session.socket) {
         session.socket.send(line + '\n')
+        if (session.streaming?.at(-1)?.line === line) session.streaming.at(-1)!.sent = true
         return
       }
       session.pending.push(line)
@@ -457,6 +488,12 @@ export class SessionManager {
     }
     for (const line of session.asks.values()) {
       if (!session.pending.includes(line)) socket.send(line + '\n')
+    }
+    // Mid-turn: the turn is running, and the reply streamed so far precedes what was held back.
+    if (session.turnRunning) socket.send(TURN_RUNNING_LINE + '\n')
+    for (const entry of session.streaming ?? []) {
+      if (entry.sent) socket.send(entry.line + '\n')
+      entry.sent = true
     }
     for (const line of session.pending.splice(0)) socket.send(line + '\n')
     this.logger?.info(`session ${id} attached`)

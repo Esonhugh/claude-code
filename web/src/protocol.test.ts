@@ -345,6 +345,24 @@ describe('reduce', () => {
     expect(allowed.env.planMode).toBe(true)
   })
 
+  it('is busy when told mid-turn that the turn is running, and rebuilds the replayed reply over the transcript copy', () => {
+    const transcript = fold([{ type: 'assistant', message: { id: 'm1', role: 'assistant', content: [{ type: 'text', text: 'one ' }] } }])
+    const ev = (event: Record<string, unknown>) => ({ type: 'stream_event', event })
+    const state = [
+      { type: 'system', subtype: 'session_state_changed', state: 'running' },
+      ev({ type: 'message_start', message: { id: 'm1' } }),
+      ev({ type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } }),
+      ev({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'one ' } }),
+      ev({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'two' } }),
+    ].reduce(reduce, transcript)
+    expect(state.busy).toBe(true)
+    expect(state.items.filter(i => i.kind === 'assistant')).toHaveLength(1)
+    expect(JSON.stringify(state.items)).toContain('one two')
+    expect(JSON.stringify(state.items)).not.toContain('one one')
+    // idle does not end a turn by itself: its result does.
+    expect(reduce(state, { type: 'system', subtype: 'session_state_changed', state: 'idle' }).busy).toBe(true)
+  })
+
   it('shows no effort once the settings answer says the session sends none', () => {
     // A ChatGPT model with no configured level: the page must not keep showing the effort picked earlier.
     const state = fold([
