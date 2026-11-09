@@ -424,6 +424,8 @@ export async function autoCompactIfNeeded(
   tracking?: AutoCompactTrackingState,
   snipTokensFreed?: number,
   canUseTool: CanUseToolFn = hasPermissionsToUseTool,
+  // The API already rejected the request as too long (reactiveCompact.ts).
+  force = false,
 ): Promise<AutoCompactResult> {
   if (isEnvTruthy(process.env.DISABLE_COMPACT)) {
     return { wasCompacted: false }
@@ -447,6 +449,7 @@ export async function autoCompactIfNeeded(
   const model = toolUseContext.options.mainLoopModel
   const autoCompactWindowCeiling = toolUseContext.options.autoCompactWindow
   const shouldCompact =
+    force ||
     classifierOverflow !== undefined ||
     (await shouldAutoCompact(
       messages,

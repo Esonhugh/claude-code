@@ -96,6 +96,7 @@ export function getEnabledFeatures(value = process.env.CLAUDE_CODE_RECOVER_FEATU
     'DAEMON',
     'COORDINATOR_MODE',
     'TREE_SITTER_BASH',
+    'REACTIVE_COMPACT',
     ...(value ?? '')
       .split(',')
       .map(feature => feature.trim())
