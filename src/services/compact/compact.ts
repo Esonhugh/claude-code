@@ -16,10 +16,8 @@ import type { Tool, ToolUseContext } from '../../Tool.js'
 import { getGoalPromptForState } from '../../commands/goal.js'
 import type { AppState } from '../../state/AppStateStore.js'
 import type { LocalAgentTaskState } from '../../tasks/LocalAgentTask/LocalAgentTask.js'
-import {
-  isTerminalTask,
-  type TerminalTaskState,
-} from '../../tasks/TerminalTask.js'
+// Type-only: a value import closes a module cycle through TerminalTool.
+import type { TerminalTaskState } from '../../tasks/TerminalTask.js'
 import { FileReadTool } from '../../tools/FileReadTool/FileReadTool.js'
 import {
   FILE_READ_TOOL_NAME,
@@ -1770,7 +1768,7 @@ export function createTerminalPaneAttachmentIfNeeded(
 ): AttachmentMessage | null {
   const panes = Object.values(context.getAppState().tasks).filter(
     (task): task is TerminalTaskState =>
-      isTerminalTask(task) &&
+      task.type === 'interactive_terminal' &&
       task.status === 'running' &&
       !task.closed &&
       task.agentId === context.agentId,
