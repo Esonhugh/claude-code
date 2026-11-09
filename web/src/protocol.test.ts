@@ -345,6 +345,22 @@ describe('reduce', () => {
     expect(allowed.env.planMode).toBe(true)
   })
 
+  it('shows no effort once the settings answer says the session sends none', () => {
+    // A ChatGPT model with no configured level: the page must not keep showing the effort picked earlier.
+    const state = fold([
+      { type: 'control_response', response: { subtype: 'success', request_id: 'web-settings-1', response: { effective: {}, applied: { model: 'gpt-5.6-terra', effort: 'high' } } } },
+      { type: 'control_response', response: { subtype: 'success', request_id: 'web-settings-2', response: { effective: {}, applied: { model: 'gpt-5.6-sol', effort: null } } } },
+    ])
+    expect(state.model).toBe('gpt-5.6-sol')
+    expect(state.effort).toBeUndefined()
+    // An answer without `applied.effort` keeps what is shown.
+    const kept = reduce(fold([{ type: 'control_response', response: { subtype: 'success', request_id: 'web-settings-1', response: { effective: {}, applied: { effort: 'low' } } } }]), {
+      type: 'control_response',
+      response: { subtype: 'success', request_id: 'web-settings-2', response: { effective: {}, applied: {} } },
+    })
+    expect(kept.effort).toBe('low')
+  })
+
   it('keeps the enabled ChatGPT apps from the codex_apps answer', () => {
     const state = fold([
       {

@@ -33,6 +33,7 @@ export async function createSession(body: {
   resume?: string
   permission_mode?: string
   model?: string
+  effort?: string
   temporary?: boolean
   /** The user accepted the trust confirmation for `cwd`. */
   trust?: boolean
