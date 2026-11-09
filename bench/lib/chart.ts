@@ -150,6 +150,7 @@ function legend(t: Theme, y: number, products: string[], productNames: Record<st
 
 export type ScatterInput = {
   metric: 'tokens' | 'cost'
+  y?: 'hit' | 'pass' // default 'hit'; 'pass' plots the pass rate (public suites)
   summaries: CellSummary[] // one per cell, group 'all'
   facets?: CellSummary[] // one per cell and task type, drawn as small marks
   productNames?: Record<string, string> // e.g. { codex: 'Codex CLI 0.167.0' }
@@ -157,10 +158,11 @@ export type ScatterInput = {
   notes?: string[]
 }
 
-export function toPoint(s: CellSummary, metric: 'tokens' | 'cost'): Point | null {
+export function toPoint(s: CellSummary, metric: 'tokens' | 'cost', y: 'hit' | 'pass' = 'hit'): Point | null {
   const x = metric === 'cost' ? s.costPerTask?.mean : s.tokensPerTask.mean / 1000
   if (x == null || !(x > 0)) return null
-  return { x, y: s.hitRate * 100, cell: s.cell, product: s.product, side: s.side as Side, label: `${SHORT[s.product] ?? s.product} · ${SIDE_NAME[s.side as Side]}` }
+  const label = `${SHORT[s.product] ?? s.product} · ${SIDE_NAME[s.side as Side]}${s.cell.endsWith('-sub') ? ' · 子代理' : ''}`
+  return { x, y: (y === 'pass' ? s.passRate : s.hitRate) * 100, cell: s.cell, product: s.product, side: s.side as Side, label }
 }
 
 // Every cell states the model and effort it ran with, three cells per line.
@@ -173,8 +175,9 @@ export function modelEffortNotes(summaries: CellSummary[]): string[] {
 
 export function scatterSvg(input: ScatterInput, theme: 'light' | 'dark'): string {
   const t = THEMES[theme]
-  const pts = input.summaries.map(s => toPoint(s, input.metric)).filter((p): p is Point => p !== null)
-  const sub = (input.facets ?? []).map(s => toPoint(s, input.metric)).filter((p): p is Point => p !== null)
+  const yMetric = input.y ?? 'hit'
+  const pts = input.summaries.map(s => toPoint(s, input.metric, yMetric)).filter((p): p is Point => p !== null)
+  const sub = (input.facets ?? []).map(s => toPoint(s, input.metric, yMetric)).filter((p): p is Point => p !== null)
   if (!pts.length) throw new Error('no points to plot')
   const all = [...pts, ...sub]
   const xs = all.map(p => p.x)
@@ -196,7 +199,7 @@ export function scatterSvg(input: ScatterInput, theme: 'light' | 'dark'): string
   const cost = input.metric === 'cost'
   o += p.axes(t, logTicks(xlo, xhi), yt, v => (cost ? `$${v}` : `${v}k`))
   o += text((p.x0 + p.x1) / 2, p.y1 + 34, cost ? '平均每任务 API 等价花费（美元，对数轴，越左越省）' : '平均每任务总 token（对数轴，越左越省）', t.ink2, 12, 'middle')
-  o += text(18, (p.y0 + p.y1) / 2, '缓存命中率（越高越好）', t.ink2, 12, 'middle', 400, `transform="rotate(-90 18 ${f1((p.y0 + p.y1) / 2)})"`)
+  o += text(18, (p.y0 + p.y1) / 2, yMetric === 'pass' ? '通过率（越高越好）' : '缓存命中率（越高越好）', t.ink2, 12, 'middle', 400, `transform="rotate(-90 18 ${f1((p.y0 + p.y1) / 2)})"`)
   for (const q of sub) o += `<g opacity="0.45">${marker(t, p.sx(q.x), p.sy(q.y), q.product, q.side, 3.5)}</g>`
   const front = paretoFront(pts)
   o += `<polyline points="${front.map(q => `${f1(p.sx(q.x))},${f1(p.sy(q.y))}`).join(' ')}" fill="none" stroke="${t.ink2}" stroke-width="1.5" stroke-dasharray="2 4" stroke-linecap="round"/>`

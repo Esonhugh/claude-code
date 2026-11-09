@@ -44,3 +44,11 @@ test('cells without a cost are left out of the cost chart', () => {
   const svg = scatterSvg({ metric: 'cost', summaries: [...cells.slice(0, 3), s('x', 'dsh', 'chatgpt', 1000, 0.5, null)] }, 'light')
   expect(svg).not.toContain('dsh · ChatGPT')
 })
+
+test('pass-rate scatter: y = pass rate, sub-agent cells labelled apart', () => {
+  const pub = [{ ...s('fork-claude-key', 'fork', 'claude-key', 233000, 0.9, 0.146), passRate: 0.542 }, { ...s('fork-claude-key-sub', 'fork', 'claude-key', 252000, 0.87, 0.186), passRate: 0.583 }]
+  const svg = scatterSvg({ metric: 'cost', y: 'pass', summaries: pub }, 'light')
+  expect(svg).toContain('通过率（越高越好）')
+  expect(svg).toContain('本仓库 · Claude API · 子代理')
+  expect(svg).toContain('本仓库 · Claude API<')
+})

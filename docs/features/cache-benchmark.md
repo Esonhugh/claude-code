@@ -2,7 +2,7 @@
 
 > 英文名：`cache-benchmark` · 领域：上下文与记忆 · [返回功能索引](README.md)
 
-本 fork（Claude 账号与 ChatGPT 账号两条路径）与官方 Claude Code、Codex CLI、opencode、pi、oh-my-pi、dsh 跑同一批真实任务，比较提示缓存命中率、token 用量、API 等价花费、多代理开销、长时间闲置后的缓存、启动速度和稳定性。全部是真实模型请求，不使用假 API。数据采集于 2026-11-07，共 789 次 run，每格至少 3 次。
+本 fork（Claude 账号与 ChatGPT 账号两条路径）与官方 Claude Code、Codex CLI、opencode、pi、oh-my-pi、dsh 跑同一批真实任务，比较提示缓存命中率、token 用量、API 等价花费、多代理开销、长时间闲置后的缓存、启动速度和稳定性。全部是真实模型请求，不使用假 API。数据采集于 2026-11-07，共 789 次 run，每格至少 3 次；第 12 节另用 20 道公开基准题（1,800 次 run，2026-11-08 至 11-09）比较通过率。
 
 ## 摘要
 
@@ -423,9 +423,44 @@ dsh 0.2.2-rc.1 用 headless 模式（`dsh --profile headless --json`），模型
 - ChatGPT 侧会话中途失效按同一口径计 16 次，主要是第二个请求紧跟第一个（约 2 秒内）还读不到刚写入的缓存，以及模型自行开出的子代理首个请求；Claude 侧 0 次。
 - ChatGPT 路由下 dsh 输出最终结果后进程不退出（pi-ai 的 WebSocket 连接缓存约 5 分钟），每次都由 harness 结束，用时按最终结果计。
 
+### 12. 公开基准：通过率与花费
+
+上面的题组几乎全部 100% 通过，看不出成功率差别；这一节用公开基准测通过率。题目是 Terminal-Bench 2 ×8、SWE-bench Pro ×8、SpreadsheetBench ×4（共 20 题），15 个 CLI × 账号格，原版和扰动版各跑 3 次，每格 120 次、共 1,800 次 run。全部 run 在任务自己的容器里，每次全新 HOME，关闭 web search。数据采集于 2026-11-08 至 11-09。
+
+![公开基准：每任务 API 等价花费与通过率，15 个 CLI × 账号格的散点，含 3 个套件的分项点与 Pareto 前沿](images/cache-benchmark/public-pass-vs-cost-light.png#gh-light-mode-only)
+![公开基准：每任务 API 等价花费与通过率，15 个 CLI × 账号格的散点，含 3 个套件的分项点与 Pareto 前沿](images/cache-benchmark/public-pass-vs-cost-dark.png#gh-dark-mode-only)
+
+| CLI | 账号 | effort | 通过率 | TB2 / SWE-Pro / Spreadsheet | 平均总 token（单次范围） | 命中率 | API 等价花费 / 任务 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| dsh 0.2.2-rc.1 | Claude API key | low | **70.8%** | 28 / 37 / 20 | 256k（27k–3.0M） | 91.2% | $0.176 |
+| opencode 1.19.5 | Claude API key | adaptive | 68.3% | 28 / 35 / 19 | 312k（26k–3.6M） | 90.9% | $0.206 |
+| oh-my-pi 18.18.0 | Claude API key | high | 64.2% | 22 / 34 / 21 | 386k（30k–5.0M） | 92.0% | $0.233 |
+| 官方 Claude Code 2.1.319 | Claude API key | medium | 61.7% | 27 / 28 / 19 | 221k（36k–2.0M） | 92.2% | $0.132 |
+| 官方 + 子代理 | Claude API key | medium | 59.2% | 27 / 26 / 18 | 307k（37k–1.7M） | 89.4% | $0.207 |
+| 本仓库 + 子代理 | Claude API key | medium | 58.3% | 29 / 22 / 19 | 253k（48k–1.3M） | 86.7% | $0.186 |
+| 本仓库 | Claude API key | medium | 54.2% | 22 / 25 / 18 | 234k（34k–2.1M） | 90.4% | $0.146 |
+| pi 1.5.0 | Claude API key | low | 52.5% | 21 / 24 / 18 | 98k（6k–1.0M） | 85.7% | $0.097 |
+| oh-my-pi 18.18.0 | ChatGPT 账号 | high | **59.2%** | 35 / 18 / 18 | 627k（22k–3.4M） | 93.7% | $0.210 |
+| 本仓库 + 子代理 | ChatGPT 账号 | low | 50.8% | 30 / 13 / 18 | 783k（75k–3.8M） | 90.3% | $0.298 |
+| pi 1.5.0 | ChatGPT 账号 | medium | 50.8% | 28 / 15 / 18 | 145k（7k–844k） | 88.4% | $0.077 |
+| Codex CLI 0.167.0 | ChatGPT 账号 | low | 49.2% | 26 / 15 / 18 | 247k（39k–868k） | 91.2% | $0.094 |
+| dsh 0.2.2-rc.1 | ChatGPT 账号 | low | 48.3% | 25 / 15 / 18 | 534k（0–3.2M） | 93.4% | $0.166 |
+| 本仓库 | ChatGPT 账号 | low | 45.0% | 23 / 13 / 18 | 311k（31k–1.3M） | 90.8% | $0.117 |
+| opencode 1.19.5 | ChatGPT 账号 | low | 45.0% | 24 / 12 / 18 | 343k（21k–1.4M） | 91.6% | $0.131 |
+
+套件列是通过次数，分母分别为 48 / 48 / 24。模型：Claude 侧 `claude-sonnet-5-5`，ChatGPT 侧 `gpt-6.1-sol`；effort 是各 CLI 的默认值，没有统一。「+ 子代理」格在提示末尾要求先并行开至少两个子代理，最后自己检查合并结果。
+
+- **模型差距大于 CLI 差距**：Claude 侧 8 格合计 61.1%，ChatGPT 侧 7 格 49.8%。SWE-bench Pro 上 ChatGPT 侧 7 格都只有 25–38%；openlibrary-89 与 ansible 两题 Claude 侧大多通过，ChatGPT 侧 7 格全部 0/6。
+- **Claude 侧 dsh 与 opencode 最好**，比 pi 高 18.3 ± 6.2 与 15.8 ± 5.5 个百分点（逐题配对差 ± 标准误）。ChatGPT 侧只有 oh-my-pi 明显领先，它默认 effort high。
+- **本仓库对官方 −7.5 ± 4.4 个百分点，对 Codex −4.2 ± 3.4**，都不到 2 个标准误。Claude 侧差距主要在 make-mips-interpreter（2/6 对 6/6），失败方式与 pi 的 4 次失败相同。
+- **子代理**：本仓库 Claude +4.2、ChatGPT +5.8、官方 −2.5 个百分点，花费分别是单代理的 1.27×、2.54×、1.56×；都在噪声范围内。
+- **本仓库 Claude 侧平均用时 196s，官方 113s**：`-p` 在后台 Bash 任务不结束时不退出（mailman 题 6/6），已在 #1071 修复；本轮用的是修复前的构建。
+- **防污染**：每题另跑一份改写过的扰动版（换措辞、名称、路径、端口与期望输出，评分同步更新，oracle 全部通过）。TB2 原版 54.7%、扰动 55.0%，Spreadsheet 相同；SWE-bench Pro 扰动版低 8.3 个百分点（50.3% 对 41.9%，主要是 flipt 12 → 1）。这可能来自模型记得原版，也可能是改名后更难，本设计分不开。
+- **区分度**：20 题里 5 题全格全过或全不过（3 题 Spreadsheet、vuls、navidrome），差别来自其余 15 题。每格 120 次，单格通过率的标准误约 4.5 个百分点。
+
 ## 局限
 
-- 任务成功率几乎全部 100%，题组对成功率没有区分度；各 CLI 的差别体现在 token、用时和稳定性。
+- 第 0–11 节的题组成功率几乎全部 100%，对成功率没有区分度；成功率比较见第 12 节公开基准。
 - 每格 3 次。ChatGPT 侧同一格重跑平均相差 9 个百分点（最大 39），单格差异需超过约 10 个百分点才有意义。
 - Agent Teams 只有 Claude Code 系有；pi 没有子代理功能。Web 场景只有本仓库有。
 - 补跑的格（opencode 多轮场景、Claude 侧 pi / opencode 多轮场景、多代理新格）与早先的格不在同一时段。
@@ -437,6 +472,7 @@ dsh 0.2.2-rc.1 用 headless 模式（`dsh --profile headless --json`），模型
 完整报告、逐 run 汇总、逐请求原始日志与 harness 在项目共享目录：
 
 - `regression/cache-bench-1107-post/`：CLI 矩阵、TUI / SDK / Web（`report.md`、`results.json`、`raw/`、`harness/`）。
+- `regression/public-bench-1108/`：第 12 节公开基准（`report.md`、`summary.json`、`raw/`、`harness/`、`charts/`）；扰动版题目在仓库 `bench/public/perturb/`。
 - `regression/cache-bench-1107-current/`：多代理、长闲置、启动与资源占用（`raw/sub/`、`raw/team/`、`raw/gap/`、`raw/b6/`、`harness/`）；pi 与 opencode 的 Claude 侧 CLI 矩阵在 `claude-api/`；各 CLI × 账号的补齐格与 API 等价花费在 `chatgpt-api/`（`results.json` 汇总全部逐 run 数据）；oh-my-pi 在 `oh-my-pi/`；dsh 在 `dsh/`；ssh / k8s 运维排障在 `ops-troubleshoot/`。
 
 原始日志按 `raw/<场景>/<任务>/<CLI>-<轮次>/` 存放，只追加不覆盖，不含凭证。本页图表由上述数据直接生成，脚本在 `regression/cache-bench-1107-post/charts/`。
