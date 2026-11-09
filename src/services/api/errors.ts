@@ -428,6 +428,14 @@ export function extractUnknownErrorFormat(value: unknown): string | undefined {
   return undefined
 }
 
+// OpenAI Responses and OpenAI-compatible backends (vLLM, OpenRouter, xAI)
+// word a context overflow differently from Anthropic's "prompt is too long".
+function isProviderContextOverflow(message: string): boolean {
+  return /context_length_exceeded|exceeds the context window|maximum (context|prompt) length/i.test(
+    message,
+  )
+}
+
 export function getAssistantMessageFromError(
   ...args: Parameters<typeof formatAssistantMessageFromError>
 ): AssistantMessage {
@@ -597,7 +605,8 @@ function formatAssistantMessageFromError(
   // Use case-insensitive check since Vertex returns "Prompt is too long" (capitalized)
   if (
     error instanceof Error &&
-    error.message.toLowerCase().includes('prompt is too long')
+    (error.message.toLowerCase().includes('prompt is too long') ||
+      isProviderContextOverflow(error.message))
   ) {
     // Content stays generic (UI matches on exact string). The raw error with
     // token counts goes into errorDetails — reactive compact's retry loop
