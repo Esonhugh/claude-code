@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
@@ -327,4 +327,34 @@ test('Bun PTY driver does not hand the outer tmux TMUX/TMUX_PANE to the session'
 
   assert.match(output, /T=\[unset\] P=\[unset\]/)
   driver.close(sessionId)
+})
+
+test('keeps a full-screen app drawn when more updates arrive than the queue holds between reads', async () => {
+  const driver = createBunPtyDriver()
+  const manager = new PtySessionManager({ driver, exitedSessionTtlMs: 60_000 })
+  const updates = DEFAULT_MAX_BUFFERED_CHUNKS + 100
+  const dir = mkdtempSync(join(tmpdir(), 'pty-redraw-'))
+  const done = join(dir, 'done')
+
+  try {
+    const opened = manager.open({
+      command: '/bin/sh',
+      args: [
+        '-c',
+        `printf '\\033[2J\\033[1;1HHEADER_LINE'; i=0; while [ $i -lt ${updates} ]; do i=$((i+1)); printf '\\033[5;1Hcount %s' $i; sleep 0.002; done; : > '${done}'; sleep 30`,
+      ],
+      cwd: process.cwd(),
+      cols: 80,
+      rows: 24,
+    })
+
+    // No reads while the app redraws, like a model busy between capture-pane calls.
+    await waitFor(() => existsSync(done), 20_000)
+    const screen = manager.getRenderedPreview(opened.sessionId)
+    assert.match(screen, new RegExp(`count ${updates}`))
+    assert.match(screen, /HEADER_LINE/)
+    manager.close(opened.sessionId)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
 })

@@ -53,6 +53,39 @@ test('auto tool-search excludes tools pinned inline by Mods before counting sche
   }
 })
 
+test('gateways serving non-Claude models get tools inline, not tool_reference', async () => {
+  const env = {
+    ANTHROPIC_BASE_URL: process.env.ANTHROPIC_BASE_URL,
+    ENABLE_TOOL_SEARCH: process.env.ENABLE_TOOL_SEARCH,
+  }
+  const enabled = (model: string) =>
+    isToolSearchEnabled(
+      model,
+      [...tools, { name: 'ToolSearch' } as Tool],
+      async () => getEmptyToolPermissionContext(),
+      [],
+    )
+  try {
+    delete process.env.ENABLE_TOOL_SEARCH
+    process.env.ANTHROPIC_BASE_URL = 'https://gateway.example'
+    expect(await enabled('grok-4.7')).toBe(false)
+    expect(await enabled('claude-sonnet-5-5')).toBe(true)
+    expect(await enabled('anthropic/claude-opus-5-5')).toBe(true)
+
+    process.env.ENABLE_TOOL_SEARCH = 'true'
+    expect(await enabled('grok-4.7')).toBe(true)
+
+    delete process.env.ENABLE_TOOL_SEARCH
+    delete process.env.ANTHROPIC_BASE_URL
+    expect(await enabled('grok-4.7')).toBe(true)
+  } finally {
+    for (const [key, value] of Object.entries(env)) {
+      if (value === undefined) delete process.env[key]
+      else process.env[key] = value
+    }
+  }
+})
+
 describe('getDeferredToolsDelta', () => {
   test('compresses display lines but retains exact names for delta state', () => {
     const delta = getDeferredToolsDelta(tools, [])
