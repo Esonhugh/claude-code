@@ -44,6 +44,18 @@ const MIGRATIONS: string[][] = [
   ['ALTER TABLE tasks ADD COLUMN prior_ms INTEGER NOT NULL DEFAULT 0'],
   // The task default effort, next to the task default model.
   ['ALTER TABLE projects ADD COLUMN worker_effort TEXT'],
+  // Each session's model, effort, context window and permission mode, for a page that reopens it after its process is gone.
+  [
+    `CREATE TABLE session_settings (
+      session_id TEXT PRIMARY KEY,
+      provider TEXT NOT NULL,
+      model TEXT,
+      effort TEXT,
+      context_window INTEGER,
+      permission_mode TEXT,
+      updated_at INTEGER NOT NULL
+    )`,
+  ],
 ]
 
 export type Project = {
@@ -208,6 +220,7 @@ export function patchSessionMeta(db: Database, id: string, patch: SessionMetaPat
 
 export function deleteSessionMeta(db: Database, id: string): void {
   db.run('DELETE FROM session_meta WHERE session_id = ?', [id])
+  db.run('DELETE FROM session_settings WHERE session_id = ?', [id])
 }
 
 /** Session ids of project coordinators; their transcripts belong to the project, not a folder. */
@@ -230,5 +243,43 @@ export function touchFolders(db: Database, touched: Map<string, number>): void {
   )
   db.transaction(() => {
     for (const [path, at] of touched) upsert.run(path, at)
+  })()
+}
+
+/** What a session runs with, as last set from the page; `provider` is the one the session ran under. */
+export type SessionSettings = {
+  provider: string
+  model: string | null
+  effort: string | null
+  /** null: auto. */
+  context_window: number | null
+  permission_mode: string | null
+}
+
+export function readSessionSettings(db: Database, id: string): SessionSettings | undefined {
+  return (
+    (db
+      .query('SELECT provider, model, effort, context_window, permission_mode FROM session_settings WHERE session_id = ?')
+      .get(id) as SessionSettings | null) ?? undefined
+  )
+}
+
+/** Applies `patch` to a session's row; a row kept under another provider starts over. */
+export function patchSessionSettings(
+  db: Database,
+  id: string,
+  provider: string,
+  patch: Partial<Omit<SessionSettings, 'provider'>>,
+  now = Date.now(),
+): void {
+  db.transaction(() => {
+    const row = readSessionSettings(db, id)
+    const base = row?.provider === provider ? row : { model: null, effort: null, context_window: null, permission_mode: null }
+    const next = { ...base, ...patch }
+    db.run(
+      `INSERT OR REPLACE INTO session_settings (session_id, provider, model, effort, context_window, permission_mode, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [id, provider, next.model, next.effort, next.context_window, next.permission_mode, now],
+    )
   })()
 }

@@ -1,4 +1,4 @@
-import type { HistoryItem } from './api'
+import type { HistoryItem, SessionSettings } from './api'
 import {
   addError,
   addUserMessage,
@@ -78,6 +78,7 @@ export type AppAction =
       workDir?: string
       prepend?: boolean
       rewindPoints?: string[]
+      settings?: SessionSettings
     }
   | { type: 'mode'; id: string; mode: ChatMode }
   | {
@@ -171,7 +172,11 @@ export function appReducer(state: AppState, action: AppAction): AppState {
           [action.id]: {
             ...chat,
             items,
-            model: chat.model ?? folded.model,
+            // Picks this page made win; then what the server kept for the session (a reload, a new tab).
+            model: chat.model ?? action.settings?.model ?? folded.model,
+            effort: chat.effort ?? action.settings?.effort ?? undefined,
+            contextWindow: chat.contextWindow !== undefined ? chat.contextWindow : action.settings?.context_window ?? undefined,
+            permissionMode: chat.permissionMode ?? action.settings?.permission_mode ?? undefined,
             goal: chat.goal ?? folded.goal,
             startedAt: action.prepend ? (folded.startedAt ?? chat.startedAt) : (chat.startedAt ?? folded.startedAt),
             start: action.start,

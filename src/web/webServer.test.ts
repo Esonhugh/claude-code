@@ -838,6 +838,51 @@ describe('claude web server', () => {
     ws.close()
   })
 
+  it('keeps the settings a session accepted for a page that reopens it after its process is gone (#1085)', async () => {
+    const r = start()
+    const prior = process.env.CLAUDE_CONFIG_DIR
+    process.env.CLAUDE_CONFIG_DIR = r.configDir
+    try {
+      const cookie = await signIn(r)
+      const headers = { cookie, origin: r.origin }
+      const created = await fetch(`${r.base}/api/sessions`, { method: 'POST', headers, body: JSON.stringify({ model: 'opus', permission_mode: 'plan' }) })
+      const { session_id: id } = (await created.json()) as { session_id: string }
+      const dir = join(r.configDir, 'projects', r.workspace.replace(/[^a-zA-Z0-9]/g, '-'))
+      mkdirSync(dir, { recursive: true })
+      writeFileSync(join(dir, `${id}.jsonl`), JSON.stringify({ type: 'user', parentUuid: null, isSidechain: false, sessionId: id, cwd: r.workspace, timestamp: new Date(0).toISOString(), uuid: 'a0000000-0000-4000-8000-000000000001', message: { role: 'user', content: 'hi' } }) + '\n')
+      const settings = async (query = '') =>
+        ((await (await fetch(`${r.base}/api/history/${id}/messages${query}`, { headers })).json()) as { settings?: unknown }).settings
+      expect(await settings()).toEqual({ model: 'opus', effort: null, context_window: null, permission_mode: 'plan' })
+      const ws = new WebSocket(`${r.base.replace('http', 'ws')}/api/sessions/${id}/ws`, { headers } as unknown as string[])
+      await new Promise(resolve => (ws.onopen = resolve))
+      const answers = new Set<string>()
+      ws.onmessage = e => {
+        for (const m of String(e.data).matchAll(/"request_id":"([^"]+)"/g)) answers.add(m[1]!)
+      }
+      const ask = async (request_id: string, request: Record<string, unknown>) => {
+        ws.send(JSON.stringify({ type: 'control_request', request_id, request }) + '\n')
+        while (!answers.has(request_id)) await Bun.sleep(5)
+      }
+      await ask('web-model-1', { subtype: 'set_model', model: 'sonnet' })
+      await ask('web-effort-1', { subtype: 'apply_flag_settings', settings: { effortLevel: 'high' } })
+      await ask('web-effort-2', { subtype: 'apply_flag_settings', settings: { autoCompactWindow: 200000 } })
+      await ask('web-mode-1', { subtype: 'set_permission_mode', mode: 'acceptEdits' })
+      ws.close()
+      expect(await settings()).toEqual({ model: 'sonnet', effort: 'high', context_window: 200000, permission_mode: 'acceptEdits' })
+      // Only the first page carries them, and not under another provider.
+      expect(await settings('?before=1')).toBeUndefined()
+      process.env.CLAUDE_CODE_USE_OPENAI = '1'
+      try {
+        expect(await settings()).toBeUndefined()
+      } finally {
+        delete process.env.CLAUDE_CODE_USE_OPENAI
+      }
+    } finally {
+      if (prior === undefined) delete process.env.CLAUDE_CONFIG_DIR
+      else process.env.CLAUDE_CONFIG_DIR = prior
+    }
+  })
+
   it('shows a message sent to a busy teammate in its conversation until the teammate records it', async () => {
     const r = start()
     const prior = process.env.CLAUDE_CONFIG_DIR

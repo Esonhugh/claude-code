@@ -77,6 +77,17 @@ describe('appReducer', () => {
     expect(JSON.stringify(batched.chats.s1!.items)).toContain('Hello')
   })
 
+  it('fills a reopened session from the settings the server kept, under the picks this page made', () => {
+    const settings = { model: 'sonnet', effort: 'high', context_window: 200_000, permission_mode: 'plan' }
+    let state = appReducer(initialAppState, { type: 'mode', id: 's1', mode: 'readonly' })
+    state = appReducer(state, { type: 'loaded', id: 's1', messages: [], start: 0, settings })
+    expect(state.chats.s1).toMatchObject({ model: 'sonnet', effort: 'high', contextWindow: 200_000, permissionMode: 'plan' })
+    let picked = appReducer(initialAppState, { type: 'mode', id: 's2', mode: 'readonly' })
+    picked = appReducer(picked, { type: 'chat', id: 's2', action: { type: 'local', patch: { model: 'haiku', contextWindow: null } } })
+    picked = appReducer(picked, { type: 'loaded', id: 's2', messages: [], start: 0, settings })
+    expect(picked.chats.s2).toMatchObject({ model: 'haiku', effort: 'high', contextWindow: null })
+  })
+
   it('loads a transcript read-only and prepends earlier pages without duplicates', () => {
     let state = appReducer(initialAppState, { type: 'view', id: 's1' })
     state = appReducer(state, { type: 'mode', id: 's1', mode: 'readonly' })
