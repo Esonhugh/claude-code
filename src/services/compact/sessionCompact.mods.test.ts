@@ -498,3 +498,14 @@ test('a failed previous-model summary falls back to the current model', async ()
   expect(result.wasCompacted).toBe(true)
   expect(models).toEqual(['claude-sonnet-4-6[1m]', 'claude-haiku-4-5'])
 })
+
+test('a rewritten compaction keeps the deferred tools loaded before it', async () => {
+  await register(`export function register(on) {on('session.compact',($,e,next)=>next(e).then(r=>({...r,messages:[...r.messages,{role:'user',text:'mod note',toolUses:[]}]})));}`)
+  spyOn(memory,'trySessionMemoryCompaction').mockResolvedValue(coreResult())
+  const ctx=context()
+  ctx.messages=[createUserMessage({content:[{type:'tool_result',tool_use_id:'toolu_ts',content:[{type:'tool_reference',tool_name:'WebFetch'}]}] as any}),...ctx.messages]
+  const result=await autoCompactIfNeeded(ctx.messages,ctx,params(ctx),'repl_main_thread')
+  expect(result.wasCompacted).toBe(true)
+  expect((result.compactionResult!.boundaryMarker as any).compactMetadata.preCompactDiscoveredTools).toEqual(['WebFetch'])
+  expect(diagnostics).toEqual([])
+})
