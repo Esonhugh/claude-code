@@ -1646,7 +1646,12 @@ async function* queryLoop(
           }
         }
       }
-      if ((isWithheld413 || isWithheldMedia) && reactiveCompact) {
+      // Only a PTL the stream withheld (reactive compact enabled) may be
+      // yielded below; otherwise it already reached the caller.
+      const reactiveWithheld413 =
+        isWithheld413 &&
+        (reactiveCompact?.isWithheldPromptTooLong(lastMessage) ?? false)
+      if ((reactiveWithheld413 || isWithheldMedia) && reactiveCompact) {
         const compacted = await reactiveCompact.tryReactiveCompact({
           hasAttempted: hasAttemptedReactiveCompact,
           querySource,

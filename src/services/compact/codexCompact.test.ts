@@ -416,3 +416,58 @@ describe('codex compact post-compact attachments', () => {
     expect(dropped(result)).toBe(1)
   })
 })
+
+describe('codex compact keeps loaded deferred tools', () => {
+  const toolSearchResult = {
+    type: 'user',
+    uuid: '00000000-0000-4000-8000-0000000000d1',
+    timestamp: '2026-06-23T00:00:00.000Z',
+    message: {
+      role: 'user',
+      content: [
+        {
+          type: 'tool_result',
+          tool_use_id: 'toolu_ts',
+          content: [{ type: 'tool_reference', tool_name: 'WebFetch' }],
+        },
+      ],
+    },
+  } as unknown as Message
+  const deferredList = {
+    type: 'attachment',
+    uuid: '00000000-0000-4000-8000-0000000000d2',
+    timestamp: '2026-06-23T00:00:00.000Z',
+    attachment: { type: 'deferred_tools_delta', addedNames: ['WebFetch'], addedLines: ['WebFetch'], removedNames: [] },
+  } as never
+  const result = createCodexStyleCompactionResultFromSummary({
+    originalMessages: [
+      toolSearchResult,
+      userTextMessage('00000000-0000-4000-8000-0000000000d3', 'current task'),
+    ],
+    boundaryMarker: {
+      type: 'system',
+      uuid: '00000000-0000-4000-8000-0000000000d4',
+      timestamp: '2026-06-23T00:00:00.000Z',
+      subtype: 'compact_boundary',
+      isMeta: true,
+      compactMetadata: {},
+      content: 'compact boundary',
+    } as never,
+    summaryMessages: [],
+    attachments: [deferredList],
+    hookResults: [],
+    options: { retainedUserMessageTokens: 1, keepPostCompactAttachments: false },
+  })
+
+  test('carries tools discovered before compaction on the new boundary', () => {
+    expect(
+      (result.boundaryMarker as unknown as {
+        compactMetadata: { preCompactDiscoveredTools?: string[] }
+      }).compactMetadata.preCompactDiscoveredTools,
+    ).toEqual(['WebFetch'])
+  })
+
+  test('keeps the deferred tool list when other attachments are dropped', () => {
+    expect(result.attachments).toEqual([deferredList])
+  })
+})

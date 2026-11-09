@@ -42,6 +42,7 @@ assert.equal(getEnabledFeatures('').has('AWAY_SUMMARY'), true);
 assert.equal(getEnabledFeatures('').has('DIRECT_CONNECT'), true);
 assert.equal(getEnabledFeatures('').has('WEB_UI'), true);
 assert.equal(getEnabledFeatures('').has('BG_SESSIONS'), true);
+assert.equal(getEnabledFeatures('').has('REACTIVE_COMPACT'), true);
 assert.equal(getEnabledFeatures('').has('DAEMON'), true);
 assert.equal(getEnabledFeatures('').has('COORDINATOR_MODE'), true);
 assert.equal(getEnabledFeatures('').has('TREE_SITTER_BASH'), true);
