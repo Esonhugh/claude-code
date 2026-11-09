@@ -16,6 +16,10 @@ import type { Tool, ToolUseContext } from '../../Tool.js'
 import { getGoalPromptForState } from '../../commands/goal.js'
 import type { AppState } from '../../state/AppStateStore.js'
 import type { LocalAgentTaskState } from '../../tasks/LocalAgentTask/LocalAgentTask.js'
+import {
+  isTerminalTask,
+  type TerminalTaskState,
+} from '../../tasks/TerminalTask.js'
 import { FileReadTool } from '../../tools/FileReadTool/FileReadTool.js'
 import {
   FILE_READ_TOOL_NAME,
@@ -38,6 +42,7 @@ import {
   generateFileAttachment,
   getAgentListingDeltaAttachment,
   getDeferredToolsDeltaAttachment,
+  getSkillListingAfterCompact,
   getMcpInstructionsDeltaAttachment,
   getSessionContextAttachments,
 } from '../../utils/attachments.js'
@@ -666,13 +671,6 @@ export async function compactConversation(
     context.readFileState.clear()
     context.loadedNestedMemoryPaths?.clear()
 
-    // Intentionally NOT resetting sentSkillNames: re-injecting the full
-    // skill_listing (~4K tokens) post-compact is pure cache_creation with
-    // marginal benefit. The model still has SkillTool in its schema and
-    // invoked_skills attachment (below) preserves used-skill content. Ants
-    // with EXPERIMENTAL_SKILL_SEARCH already skip re-injection via the
-    // early-return in getSkillListingAttachments.
-
     // Run async attachment generation in parallel
     const [fileAttachments, asyncAgentAttachments] = await Promise.all([
       createPostCompactFileAttachments(
@@ -718,6 +716,10 @@ export async function compactConversation(
     if (goalRestoredMarker) {
       postCompactFileAttachments.push(goalRestoredMarker)
     }
+    const terminalPaneAttachment = createTerminalPaneAttachmentIfNeeded(context)
+    if (terminalPaneAttachment) {
+      postCompactFileAttachments.push(terminalPaneAttachment)
+    }
 
     // Compaction ate prior delta attachments. Re-announce from the current
     // state so the model has tool/instruction context on the first
@@ -736,6 +738,9 @@ export async function compactConversation(
       postCompactFileAttachments.push(createAttachmentMessage(att))
     }
     for (const att of await getAgentListingDeltaAttachment(context, messagesToKeep)) {
+      postCompactFileAttachments.push(createAttachmentMessage(att))
+    }
+    for (const att of await getSkillListingAfterCompact(context, messagesToKeep)) {
       postCompactFileAttachments.push(createAttachmentMessage(att))
     }
     for (const att of getMcpInstructionsDeltaAttachment(
@@ -1129,8 +1134,6 @@ export async function partialCompactConversation(
     const preCompactReadFileState = cacheToObject(context.readFileState)
     context.readFileState.clear()
     context.loadedNestedMemoryPaths?.clear()
-    // Intentionally NOT resetting sentSkillNames — see compactConversation()
-    // for rationale (~4K tokens saved per compact event).
 
     const [fileAttachments, asyncAgentAttachments] = await Promise.all([
       createPostCompactFileAttachments(
@@ -1174,6 +1177,10 @@ export async function partialCompactConversation(
     if (goalRestoredMarker) {
       postCompactFileAttachments.push(goalRestoredMarker)
     }
+    const terminalPaneAttachment = createTerminalPaneAttachmentIfNeeded(context)
+    if (terminalPaneAttachment) {
+      postCompactFileAttachments.push(terminalPaneAttachment)
+    }
 
     // Re-announce only what was in the summarized portion — messagesToKeep
     // is scanned, so anything already announced there is skipped.
@@ -1189,6 +1196,9 @@ export async function partialCompactConversation(
       postCompactFileAttachments.push(createAttachmentMessage(att))
     }
     for (const att of await getAgentListingDeltaAttachment(context, messagesToKeep)) {
+      postCompactFileAttachments.push(createAttachmentMessage(att))
+    }
+    for (const att of await getSkillListingAfterCompact(context, messagesToKeep)) {
       postCompactFileAttachments.push(createAttachmentMessage(att))
     }
     for (const att of getMcpInstructionsDeltaAttachment(
@@ -1748,6 +1758,33 @@ export function createGoalAttachmentIfNeeded(
   return createAttachmentMessage({
     type: 'critical_system_reminder',
     content: `You are still running in /goal mode. The user's active goal is:\n\n${getGoalPromptForState(goalStatus.prompt)}\n\nContinue working autonomously toward this goal. Do not report final success while required work remains, checks are failing, or tracked tasks are still in progress. A /goal StopHook should continue verifying completion.`,
+  })
+}
+
+/**
+ * Names the Tmux panes still open, like task_status does for background
+ * agents: the pane ids were in tool results the summary replaced.
+ */
+export function createTerminalPaneAttachmentIfNeeded(
+  context: Pick<ToolUseContext, 'getAppState' | 'agentId'>,
+): AttachmentMessage | null {
+  const panes = Object.values(context.getAppState().tasks).filter(
+    (task): task is TerminalTaskState =>
+      isTerminalTask(task) &&
+      task.status === 'running' &&
+      !task.closed &&
+      task.agentId === context.agentId,
+  )
+  if (panes.length === 0) return null
+  const list = panes
+    .map(
+      pane =>
+        `${pane.sessionId} (${pane.requestedCommand ?? [pane.command, ...pane.args].join(' ')})`,
+    )
+    .join(', ')
+  return createAttachmentMessage({
+    type: 'critical_system_reminder',
+    content: `Tmux panes still open from before the summary: ${list}. Keep using them by target instead of opening new ones; list-panes shows their state.`,
   })
 }
 
