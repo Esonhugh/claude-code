@@ -64,6 +64,15 @@
 
 实际触发点会比窗口略低，因为要给摘要输出和缓冲留空间。
 
+## 上下文超长与连续压缩
+
+与官方 2.1.319 一致：
+
+- 请求被 API 以 `prompt is too long` 拒绝时（自动压缩开启的情况下），先压缩一次再重试这一回合，不再直接以 `Prompt is too long` 结束。OpenAI 与兼容网关的 `context_length_exceeded`、`exceeds the context window`、`maximum context length` 等错误也按同样方式处理。
+- 写摘要的请求本身太长时，多保留几轮最近的原文、只摘要更早的部分，不再直接丢掉最早的对话。
+- 连续三次压缩、每次都在上一次之后 3 轮内又满了，回合停止并显示 `Autocompact is thrashing`（SDK 的 `terminal_reason` 为 `rapid_refill_breaker`），避免无限压缩烧 token。
+- 压缩后重新列出可用的 skill，并提醒模型还开着的 Tmux 终端；`ToolSearch` 已加载的工具在 Codex 式压缩和 Mod 改写的压缩后同样保留。
+
 ## 空闲压缩（idle compaction）
 
 和官方 2.1.299 一样：主对话用的是 1 小时 prompt cache 时，一轮结束后闲置 54 分钟（cache 过期前），且对话不少于 200k tokens，就先压缩，回来后下一条消息不必按全价重新处理整段对话。压缩后显示 `Compacted while idle, before the prompt cache expired`。
