@@ -20,26 +20,34 @@ export function createWebSecrets(): { token: string; cookieKey: Buffer } {
 
 /**
  * `~/.claude/web/server.json` (0600): the cookie key and the port of the last run, so a
- * restart keeps signed-in tabs (and their addresses) working.
+ * restart keeps signed-in tabs (and their addresses) working. Both expire with the
+ * cookies they sign, `COOKIE_MAX_AGE_S` after the key was made.
  */
-export function readWebState(file: string): { cookieKey?: Buffer; port?: number } {
-  let raw: { cookieKey?: unknown; port?: unknown }
+export function readWebState(file: string, now = Date.now()): { cookieKey?: Buffer; port?: number; createdAt?: number } {
+  let raw: { cookieKey?: unknown; port?: unknown; createdAt?: unknown }
   try {
     raw = JSON.parse(readFileSync(file, 'utf8'))
   } catch {
     return {}
   }
+  const { createdAt, port } = raw
+  if (typeof createdAt !== 'number' || createdAt > now || now - createdAt >= COOKIE_MAX_AGE_S * 1000) return {}
   const cookieKey = typeof raw.cookieKey === 'string' ? Buffer.from(raw.cookieKey, 'base64url') : undefined
-  const port = raw.port
+  if (cookieKey?.length !== 32) return {}
   return {
-    ...(cookieKey?.length === 32 && { cookieKey }),
+    cookieKey,
+    createdAt,
     ...(typeof port === 'number' && Number.isInteger(port) && port > 0 && port <= 65535 && { port }),
   }
 }
 
-export function writeWebState(file: string, state: { cookieKey: Buffer; port: number }): void {
+export function writeWebState(file: string, state: { cookieKey: Buffer; port: number; createdAt: number }): void {
   mkdirSync(dirname(file), { recursive: true })
-  writeFileSync(file, JSON.stringify({ cookieKey: state.cookieKey.toString('base64url'), port: state.port }), { mode: 0o600 })
+  writeFileSync(
+    file,
+    JSON.stringify({ cookieKey: state.cookieKey.toString('base64url'), port: state.port, createdAt: state.createdAt }),
+    { mode: 0o600 },
+  )
   chmodSync(file, 0o600)
 }
 

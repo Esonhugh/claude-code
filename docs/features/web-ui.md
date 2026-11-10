@@ -217,7 +217,7 @@ Ctrl+C 或 SIGTERM 会停止服务、结束所有会话并删除 `~/.claude/web.
 
 ## 安全模型
 
-- **登录**：启动时生成一次性随机 token，`/?token=…` 校验通过后换成 HttpOnly、`SameSite=Strict` 的签名 cookie，再重定向去掉 token。签名密钥和上次的端口存在 `~/.claude/web/server.json`（权限 0600），所以重启 `claude web` 后已登录的标签页继续可用；删掉这个文件就让所有浏览器重新登录。token 每次启动重新生成。没有 cookie 的页面请求返回 401 和“请打开终端里打印的地址”。
+- **登录**：启动时生成一次性随机 token，`/?token=…` 校验通过后换成 HttpOnly、`SameSite=Strict` 的签名 cookie，再重定向去掉 token。签名密钥和上次的端口存在 `~/.claude/web/server.json`（权限 0600），所以重启 `claude web` 后已登录的标签页继续可用；两者和 cookie 一样 7 天后过期，届时重新生成，需要重新登录；删掉这个文件就让所有浏览器重新登录。token 每次启动重新生成。没有 cookie 的页面请求返回 401 和“请打开终端里打印的地址”。
 - **Host 和 Origin**：只接受本机名字（加上 `--trusted-host`，局域网模式下再加本机的局域网地址）作为 Host，防 DNS rebinding；会改状态的请求和所有 WebSocket 握手必须带同源 Origin，`Sec-Fetch-Site: cross-site` 一律拒绝。
 - **来源地址**：任何模式下都只服务 loopback 和局域网来源（RFC 1918、链路本地、CGNAT、IPv6 ULA），其他地址直接 403。
 - **局域网访问**：必须在启动时加 `--dangerously-allow-local-network`，网页里不能打开。局域网里拿到地址的人就能以你的身份在这台机器上跑命令；没有 TLS 时流量（包括 token）是明文。

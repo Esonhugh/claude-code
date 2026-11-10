@@ -240,7 +240,7 @@ export async function runWebCommand(opts: WebCommandOptions): Promise<void> {
     fail(`Could not start the web server: ${(err as Error).message}`)
   }
   try {
-    writeWebState(stateFile, { cookieKey, port: server.port })
+    writeWebState(stateFile, { cookieKey, port: server.port, createdAt: saved.createdAt ?? Date.now() })
   } catch (err) {
     logger.warn(`could not save ${stateFile}: ${(err as Error).message}`)
   }
