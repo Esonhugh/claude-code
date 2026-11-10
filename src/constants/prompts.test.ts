@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from 'bun:test'
 import { readFileSync } from 'fs'
 import type { Tools } from '../Tool.js'
 import { clearSystemPromptSections } from './systemPromptSections.js'
+import { setIsInteractive } from '../bootstrap/state.js'
 import { getSystemPromptSections } from '../utils/systemPromptType.js'
 
 ;(globalThis as typeof globalThis & { MACRO: MacroGlobals }).MACRO = {
@@ -237,5 +238,26 @@ describe('proactive prompt ownership', () => {
 
   test('returns null when proactive is inactive', () => {
     expect(getProactiveSection()).toBeNull()
+  })
+})
+
+describe('environment section', () => {
+  afterEach(() => setIsInteractive(false))
+
+  test('drops the product-surface line, and the /fast hint in headless runs', async () => {
+    process.env.ANTHROPIC_API_KEY = 'sk-test'
+    delete process.env.CLAUDE_CODE_USE_OPENAI
+    const tools = [{ name: 'Bash' }] as unknown as Tools
+
+    setIsInteractive(false)
+    const headless = (await getSystemPrompt(tools, 'claude-sonnet-5-5')).join('\n')
+    expect(headless).not.toContain('Claude Code is available as a CLI')
+    expect(headless).not.toContain('Fast mode for Claude Code')
+
+    clearSystemPromptSections()
+    setIsInteractive(true)
+    const interactive = (await getSystemPrompt(tools, 'claude-sonnet-5-5')).join('\n')
+    expect(interactive).not.toContain('Claude Code is available as a CLI')
+    expect(interactive).toContain('Fast mode for Claude Code')
   })
 })
