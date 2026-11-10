@@ -6189,7 +6189,7 @@ async function run(): Promise<CommanderCommand> {
     program
       .command('web')
       .description('Open a local web UI for chatting with Claude')
-      .option('--port <number>', 'HTTP port (0 = random)', '0')
+      .option('--port <number>', "HTTP port (default: the last run's, else random; 0 = random)")
       .option(
         '--host <string>',
         'Bind address: loopback, or a local network address with --dangerously-allow-local-network (default: 127.0.0.1)',

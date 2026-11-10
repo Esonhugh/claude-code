@@ -1,4 +1,6 @@
 import { createHmac, randomBytes, timingSafeEqual } from 'crypto'
+import { chmodSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
+import { dirname } from 'path'
 
 export const COOKIE_NAME = 'claude_web'
 const COOKIE_MAX_AGE_S = 7 * 24 * 60 * 60
@@ -16,11 +18,36 @@ export function createWebSecrets(): { token: string; cookieKey: Buffer } {
   }
 }
 
+/**
+ * `~/.claude/web/server.json` (0600): the cookie key and the port of the last run, so a
+ * restart keeps signed-in tabs (and their addresses) working.
+ */
+export function readWebState(file: string): { cookieKey?: Buffer; port?: number } {
+  let raw: { cookieKey?: unknown; port?: unknown }
+  try {
+    raw = JSON.parse(readFileSync(file, 'utf8'))
+  } catch {
+    return {}
+  }
+  const cookieKey = typeof raw.cookieKey === 'string' ? Buffer.from(raw.cookieKey, 'base64url') : undefined
+  const port = raw.port
+  return {
+    ...(cookieKey?.length === 32 && { cookieKey }),
+    ...(typeof port === 'number' && Number.isInteger(port) && port > 0 && port <= 65535 && { port }),
+  }
+}
+
+export function writeWebState(file: string, state: { cookieKey: Buffer; port: number }): void {
+  mkdirSync(dirname(file), { recursive: true })
+  writeFileSync(file, JSON.stringify({ cookieKey: state.cookieKey.toString('base64url'), port: state.port }), { mode: 0o600 })
+  chmodSync(file, 0o600)
+}
+
 export function checkToken(expected: string, given: string | null): boolean {
   return given !== null && safeEqual(expected, given)
 }
 
-/** `<expiry>.<hmac>`; the key only lives in this process, so a restart logs browsers out. */
+/** `<expiry>.<hmac>`, signed with the key kept in `server.json`. */
 export function signCookie(key: Buffer, now = Date.now()): string {
   const expiry = String(Math.floor(now / 1000) + COOKIE_MAX_AGE_S)
   const mac = createHmac('sha256', key).update(expiry).digest('base64url')

@@ -19,7 +19,7 @@ import { getClaudeConfigHomeDir } from '../utils/envUtils.js'
 import { execFileNoThrowWithCwd } from '../utils/execFileNoThrow.js'
 import { fetchBootstrapData } from '../services/api/bootstrap.js'
 import { checkAndInstallOfficialMarketplace } from '../utils/plugins/officialMarketplaceStartupCheck.js'
-import { createWebSecrets } from './auth.js'
+import { createWebSecrets, readWebState, writeWebState } from './auth.js'
 import { lanInterfaceAddresses, resolveBindHost } from './network.js'
 import {
   parsePreviewOrigin,
@@ -203,13 +203,16 @@ export async function runWebCommand(opts: WebCommandOptions): Promise<void> {
       replayTasks: true,
     },
   )
-  const { token, cookieKey } = createWebSecrets()
-  let server: ReturnType<typeof startWebServer>
-  try {
-    server = startWebServer(
+  const stateFile = join(getClaudeConfigHomeDir(), 'web', 'server.json')
+  const saved = readWebState(stateFile)
+  const secrets = createWebSecrets()
+  const { token } = secrets
+  const cookieKey = saved.cookieKey ?? secrets.cookieKey
+  const start = (listenPort: number) =>
+    startWebServer(
       {
         host: bind.host,
-        port,
+        port: listenPort,
         token,
         cookieKey,
         workspace,
@@ -223,8 +226,23 @@ export async function runWebCommand(opts: WebCommandOptions): Promise<void> {
       assets,
       logger,
     )
+  let server: ReturnType<typeof startWebServer>
+  try {
+    // Without --port, the last run's port, so open tabs reach the restarted server.
+    const reuse = opts.port === undefined ? saved.port : undefined
+    try {
+      server = start(reuse ?? port)
+    } catch (err) {
+      if (reuse === undefined) throw err
+      server = start(port)
+    }
   } catch (err) {
     fail(`Could not start the web server: ${(err as Error).message}`)
+  }
+  try {
+    writeWebState(stateFile, { cookieKey, port: server.port })
+  } catch (err) {
+    logger.warn(`could not save ${stateFile}: ${(err as Error).message}`)
   }
 
   // Sessions snapshot their model list when they start; warming the gateway /
