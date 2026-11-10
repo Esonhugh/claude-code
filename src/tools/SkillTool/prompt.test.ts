@@ -44,10 +44,10 @@ describe('SkillTool prompt', () => {
     expect(getCharBudget(undefined, 3)).toBe(6_000)
   })
 
-  test('caps each listed description at 1536 characters like 2.1.311', () => {
+  test('caps each listed description at 512 characters', () => {
     const long = { ...command('long'), description: 'x'.repeat(2_000) } as Command
     const line = formatCommandsWithinBudget([long], 1_000_000)
-    expect(line).toBe(`- long: ${'x'.repeat(1_535)}\u2026`)
+    expect(line).toBe(`- long: ${'x'.repeat(511)}\u2026`)
   })
 
   test('keeps invocation boundaries without tutorial examples', async () => {

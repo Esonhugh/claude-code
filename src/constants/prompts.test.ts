@@ -97,6 +97,8 @@ describe('OpenAI full prompt', () => {
     expect(prompt).toContain('make all independent tool calls in parallel')
     expect(prompt).not.toContain('Fast mode for Claude Code')
     expect(prompt).not.toContain('Your responses should be short and concise.')
+    expect(prompt).not.toContain('# Output efficiency')
+    expect(prompt).not.toContain('Be extra concise')
     expect(prompt.length).toBeLessThan(10_500)
   })
 })
