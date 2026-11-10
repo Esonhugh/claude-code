@@ -27,6 +27,8 @@ export type MemorySearchHit = {
   snippet: string
   /** Where the bracketed match sits in `snippet`, brackets included; absent without one. */
   match?: [number, number]
+  /** Memory files: the day the file was last saved (YYYY-MM-DD, UTC). */
+  modified?: string
 }
 
 export type MemoryIndexStatus = {
@@ -53,6 +55,7 @@ const MAX_QUERY_WORDS = 200
 // Files whose changes are written in one transaction: one commit per file made
 // a first build of 10,000 memory files take ~30 s (#1105).
 const REFRESH_BATCH_FILES = 500
+const DAY_MS = 86_400_000
 
 let db: Database | undefined
 let dbPath: string | undefined
@@ -316,14 +319,26 @@ export async function searchMemory(params: {
   const paths = files.map(f => f.path)
   if (paths.length === 0) return []
   const rows = rankChunks(index, paths, words, params.limit, true)
-  return rows.map(({ body, text, ...hit }) => ({ ...hit, ...snippetAround(body ?? '', text ?? body ?? '', words) }))
+  return rows.map(({ body, text, mtime, ...hit }) => ({
+    ...hit,
+    ...snippetAround(body ?? '', text ?? body ?? '', words),
+    ...(hit.kind === 'memory' && mtime ? { modified: new Date(mtime).toISOString().slice(0, 10) } : {}),
+  }))
 }
 
-type ChunkRow = { path: string; kind: MemorySearchHit['kind']; line: number; body: string | null; text: string | null }
+type ChunkRow = {
+  path: string
+  kind: MemorySearchHit['kind']
+  line: number
+  body: string | null
+  text: string | null
+  mtime: number | null
+}
 
 /**
  * Chunks in `paths` holding any of `words`, those holding more of the words
- * first, then by bm25. trigram MATCH serves words of three or more
+ * first, then files saved on a later day (a fact updated over time is often
+ * saved again in a new file, #1106), then by bm25. trigram MATCH serves words of three or more
  * characters; shorter ones (most Chinese words) fall back to LIKE.
  */
 function rankChunks(index: Database, paths: string[], query: string[], limit: number, withBody: boolean): ChunkRow[] {
@@ -349,10 +364,10 @@ function rankChunks(index: Database, paths: string[], query: string[], limit: nu
     .query(
       // MATERIALIZED runs MATCH once; a flattened subquery re-runs it for every row.
       `WITH m AS MATERIALIZED (${fts})
-       SELECT c.path, c.kind, c.line, ${withBody ? 'c.body, c.text' : 'NULL AS body, NULL AS text'}
-       FROM chunks c LEFT JOIN m ON m.id = c.rowid
+       SELECT c.path, c.kind, c.line, ${withBody ? 'c.body, c.text' : 'NULL AS body, NULL AS text'}, f.mtime
+       FROM chunks c LEFT JOIN m ON m.id = c.rowid LEFT JOIN files f ON f.path = c.path
        WHERE c.path IN (${paths.map(() => '?').join(',')}) AND (${any.join(' OR ')})
-       ORDER BY ${covered} DESC, m.rank, c.rowid DESC LIMIT ?`,
+       ORDER BY ${covered} DESC, CAST(f.mtime / ${DAY_MS} AS INTEGER) DESC, m.rank, c.rowid DESC LIMIT ?`,
     )
     .all(...args) as ChunkRow[]
 }
@@ -449,12 +464,14 @@ export async function findMemoryFilesForPrompt(params: {
   const known = new Map(
     (index.query('SELECT path, mtime FROM files').all() as { path: string; mtime: number }[]).map(r => [r.path, r.mtime]),
   )
-  // Map order is rankChunks order, so ties keep the bm25 ranking.
+  const day = (path: string) => Math.floor((known.get(path) ?? 0) / DAY_MS)
+  // Newer days first among equal scores, so an updated fact beats its older
+  // versions (#1106); Map order is rankChunks order, so other ties keep bm25.
   return [...matched]
     .filter(([path]) => !params.exclude.has(path))
     .map(([path, found]) => ({ path, score: [...found].filter(rare).length }))
     .filter(r => r.score > 0)
-    .sort((a, b) => b.score - a.score)
+    .sort((a, b) => b.score - a.score || day(b.path) - day(a.path))
     .slice(0, params.limit)
     .map(r => ({ path: r.path, mtimeMs: known.get(r.path) ?? 0 }))
 }

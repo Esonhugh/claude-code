@@ -267,6 +267,28 @@ describe('searchMemory', () => {
     rmSync(join(memDir, 'MEMORY.md'))
   })
 
+  test('recall and search put newer days first among equally matching memory files', async () => {
+    const days = ['2024-01-05', '2025-06-01', '2024-09-09']
+    const versions = days.map((day, i) => {
+      const path = join(memDir, `oncall-${i}.md`)
+      writeFileSync(path, `On-call for ledger-sync rotated; page @alias-${i} from now on.`)
+      utimesSync(path, new Date(day), new Date(day))
+      return path
+    })
+    const recalled = await findMemoryFilesForPrompt({
+      prompt: 'who is on-call for ledger-sync',
+      scopes: ['project'],
+      exclude: new Set(),
+      limit: 3,
+    })
+    const hits = await search('ledger-sync on-call')
+    versions.forEach(path => rmSync(path))
+    const newestFirst = [versions[1], versions[2], versions[0]]
+    expect(recalled.map(h => h.path)).toEqual(newestFirst)
+    expect(hits.map(h => h.path)).toEqual(newestFirst)
+    expect(hits.map(h => h.modified)).toEqual(['2025-06-01', '2024-09-09', '2024-01-05'])
+  })
+
   test('recalls nothing for words that only match inside other words or in most memory files', async () => {
     const notes = Array.from({ length: 6 }, (_, i) => join(memDir, `note-${i}.md`))
     notes.forEach((path, i) => writeFileSync(path, `Raise the runtime timeout for gateway step ${i}.`))
