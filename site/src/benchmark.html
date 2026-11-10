@@ -147,12 +147,14 @@
     <li><b>They work longer, not with better tools.</b> On those 5 tasks a dsh run averages 15.2 tool calls, 16.3k output tokens and 2.9 test runs; official averages 9.4, 9.9k and 1.9. Time and cost go up about 50%. Over 90% of calls in every CLI are bash; edit tools, LSP feedback, subagents, todo lists and compaction were barely used or never triggered.</li>
     <li><b>dsh vs pi is the clean comparison:</b> same model library, both send effort low, and dsh still leads by 18 points. Its system prompt is one line plus one rule per tool, such as "check the [exit code: N] marker on every bash result; investigate failures before moving on". At low effort it thinks more than this fork does at medium.</li>
     <li><b>opencode likely leads on effort:</b> it sends adaptive thinking with no effort, so the server default (high) applies, while this fork and official send medium.</li>
+    <li><b>A/B check on this fork</b> (4 tasks, 6 runs each, claude-sonnet-5-5): the build before the change passes 8/24; the new prompt alone, still at medium effort, 14/24; the new prompt plus headless effort high, 22/24. The prompt line mostly fixes the two polyglot tasks by removing build outputs; high effort lifts ansible to 6/6. Cost per run goes from $0.18 to $0.36 and time from 63 s to 127 s.</li>
   </ul>
   <ul class="zh">
     <li><b>差距幾乎全在 SWE-bench Pro。</b>TB2 上 dsh、opencode、官方是 58%、58%、56%；SWE-bench Pro 是 77%、73%、58%。在 5 題有區分度的 Pro 題上，dsh 25/30、opencode 23/30、官方 16/30、本分支 13/30。</li>
     <li><b>它們做得更久，而不是工具更好。</b>這 5 題上 dsh 每次 run 平均 15.2 次工具呼叫、輸出 16.3k token、跑 2.9 次測試；官方是 9.4 次、9.9k、1.9 次。用時與花費都多約 50%。各 CLI 九成以上的呼叫都是 bash；編輯工具、LSP 回饋、子代理、待辦清單和壓縮幾乎沒用到或沒觸發。</li>
     <li><b>dsh 對 pi 是最乾淨的比較：</b>同一個模型呼叫庫、都送 effort low，dsh 仍高 18 個百分點。它的系統提示只有一句身分加每個工具一條規則，例如「每次都看 [exit code: N]，失敗先查清楚再往下」。它在 low 下的思考量比本分支在 medium 下還多。</li>
     <li><b>opencode 很可能靠 effort 領先：</b>它只送 adaptive thinking、不帶 effort，伺服器用預設值 high；本分支和官方送 medium。</li>
+    <li><b>本分支的 A/B 驗證</b>（4 題，每格 6 次，claude-sonnet-5-5）：改動前的構建 8/24；只換提示、仍用 medium 是 14/24；提示加上 headless 預設 high 是 22/24。提示那句主要靠清掉建置產物修好兩道 polyglot 題；high effort 把 ansible 提到 6/6。每次 run 花費從 $0.18 漲到 $0.36，用時從 63 秒漲到 127 秒。</li>
   </ul>
   <div class="viz" id="viz-pub-pass">
     <h3><span class="en">Pass rate per cell</span><span class="zh">各格通過率</span></h3>

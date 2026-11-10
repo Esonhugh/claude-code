@@ -465,7 +465,8 @@ dsh 0.2.2-rc.1 用 headless 模式（`dsh --profile headless --json`），模型
 - **工具设计、子代理、压缩不是原因。** 各 CLI 九成以上的调用都是 bash，编辑工具、grep、LSP 几乎没用到；dsh 和 opencode 在 960 次 run 里没有开过子代理、没有用过 todo，也没有触发压缩。
 - **dsh 对 pi 是最干净的对照**：两者用同一个模型调用库、都发 `effort: low`，dsh 仍高 18.3 ± 6.2 个百分点，差别只在系统提示和工具返回。dsh 的提示只有「coding agent」一句加每个工具一条规则（例如「每次看 `[exit code: N]`，失败先查清楚再往下」），在 low 下的思考 token 比本仓库 medium 还多（SWE-Pro 每次 4.8k 对 2.0k）。
 - **opencode 很可能主要靠 effort**：它对 Claude 只发 `thinking: adaptive`、不带 effort，服务端按默认值 high 处理；本仓库和官方发的是 medium。
-- 这只是观察数据，effort、提示、工具在各 CLI 之间同时不同。本仓库据此做了三项改动（#1097）：`-p` 与 SDK 默认 effort 改为 high，系统提示加一句「结束前跑相关测试并修好、清掉自己产生的构建产物」，并去掉「信息够了就行动，不要重新推导」那句。改动前后的 A/B 结果会补在这里。
+- 这只是观察数据，effort、提示、工具在各 CLI 之间同时不同。本仓库据此做了三项改动（#1097）：`-p` 与 SDK 默认 effort 改为 high，系统提示加一句「结束前跑相关测试并修好、清掉自己产生的构建产物」，并去掉「信息够了就行动，不要重新推导」那句。A/B 验证见下一条。
+- **A/B 验证（2026-11-10，4 题 × 每格 6 次，原版与扰动版各 3 次，模型 `claude-sonnet-5-5`）**：只改提示、effort 仍为 medium 时通过 14/24；改动前的构建 8/24；三项全改（提示 + headless 默认 high）22/24。提示那句主要作用在 polyglot 两题（0/12 → 7/12，靠清掉构建产物）；effort high 再把 ansible 从 4/6 提到 6/6、polyglot 提到 12/12。代价是每次 run 的花费从 $0.18 涨到 $0.36、用时从 63s 涨到 127s。题目只有 ansible、polyglot-c-py、polyglot-rust-c、custom-memory-heap-crash 四道，其余 SWE-Pro 题因运行环境限制没跑。
 
 ## 局限
 
