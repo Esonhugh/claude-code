@@ -17,6 +17,8 @@ Effort 是推理强度：同一个模型，effort 越高，回答前思考得越
 
 不同模型支持的档位不同，以 `/model` 里能选到的为准。
 
+非交互运行（`claude -p`、Agent SDK）在支持 effort 的模型上默认用 `high`：公开基准里，完成率高的 CLI 多出来的思考主要花在跑测试和收尾检查上。交互式会话的默认值不变；显式设置（`--effort`、`CLAUDE_CODE_EFFORT_LEVEL`、`modelSettings`）仍然优先。
+
 ## 快速上手
 
 **1. 在 `/model` 里调。** 选模型的同时，用 `←` `→` 调整下方的 effort，`Enter` 确认，保存为以后的默认值：
