@@ -22,15 +22,23 @@ type Session = SessionInfo & {
   pending: string[]
   /** Each task's `system/task_*` lines, for a client that attaches later. */
   taskLines?: Map<string, string[]>
+  /** Each Mod plugin's standing `system/ui_status` line, for a client that attaches later (replayTasks only). */
+  modStatus?: Map<string, string>
   /** Unanswered `can_use_tool` requests by request id, for a client that attaches later. */
   asks: Map<string, string>
   /** The latest `system/init` (permission mode kept current), for a client that attaches later (replayTasks only). */
   init?: string
+  /** A turn is running: from `session_state_changed` running until its `result` (replayTasks only). */
+  turnRunning?: boolean
+  /** The stream events of the reply being streamed, and whether a client was sent each (replayTasks only). */
+  streaming?: { line: string; sent: boolean }[]
   idleTimer?: ReturnType<typeof setTimeout>
   exited: Promise<void>
   spawnOptions: SpawnSessionOptions
   /** A turn is in progress (set by a written user message, cleared by `session_state_changed` idle). */
   busy: boolean
+  /** A turn has started, so the transcript exists for `--resume`. */
+  ran?: boolean
   /** Options for a restart waiting on the current turn to end. */
   restartWith?: SpawnSessionOptions
   /** Lines written while the process is being replaced. */
@@ -67,6 +75,22 @@ export class SessionManagerError extends Error {
     super(message)
     this.name = 'SessionManagerError'
   }
+}
+
+/** WebSocket close reasons are limited to 123 UTF-8 bytes. */
+const MAX_CLOSE_REASON_BYTES = 123
+
+/** Why a session process ended, e.g. `<last stderr line> (exit 1)`, for the client's close reason. */
+function exitReason(code: number | null, signal: NodeJS.Signals | null, stderr: string | undefined): string {
+  const status = signal ?? `exit ${code ?? 'unknown'}`
+  if (!stderr) return status
+  const suffix = ` (${status})`
+  let text = stderr
+  if (Buffer.byteLength(text + suffix) > MAX_CLOSE_REASON_BYTES) {
+    while (Buffer.byteLength(text + '…' + suffix) > MAX_CLOSE_REASON_BYTES) text = [...text].slice(0, -1).join('')
+    text += '…'
+  }
+  return text + suffix
 }
 
 function closed(child: ChildProcess): Promise<void> {
@@ -131,6 +155,44 @@ function recordInit(init: string | undefined, line: string): string | undefined 
   } catch {
     return init
   }
+}
+
+const TURN_RUNNING_LINE = JSON.stringify({ type: 'system', subtype: 'session_state_changed', state: 'running' })
+
+/**
+ * Follows the turn and the main reply being streamed, for a client that attaches mid-turn:
+ * the reply's stream events from `message_start` to `message_stop`. Each block restarts at its
+ * `content_block_start`, so a block the transcript already has is rebuilt, not doubled.
+ */
+function recordTurn(session: Session, line: string): void {
+  if (line.startsWith('{"type":"stream_event"')) {
+    if (!line.includes('"parent_tool_use_id":null')) return
+    if (line.includes('"type":"message_start"')) session.streaming = []
+    session.streaming?.push({ line, sent: false })
+    if (line.includes('"type":"message_stop"')) session.streaming = undefined
+    return
+  }
+  if (line.startsWith('{"type":"result"')) {
+    session.turnRunning = false
+    session.streaming = undefined
+    return
+  }
+  if (!line.startsWith('{"type":"system","subtype":"session_state_changed"')) return
+  if (line.includes('"state":"running"')) session.turnRunning = true
+  else if (line.includes('"state":"idle"')) session.turnRunning = false
+}
+
+function recordModStatus(modStatus: Map<string, string>, line: string): void {
+  if (!line.includes('"subtype":"ui_status"')) return
+  let msg: { type?: unknown; subtype?: unknown; plugin?: unknown; text?: unknown }
+  try {
+    msg = JSON.parse(line)
+  } catch {
+    return
+  }
+  if (msg.type !== 'system' || msg.subtype !== 'ui_status' || typeof msg.plugin !== 'string') return
+  if (typeof msg.text === 'string' && msg.text) modStatus.set(msg.plugin, line)
+  else modStatus.delete(msg.plugin)
 }
 
 function recordTaskLine(taskLines: Map<string, string[]>, line: string): void {
@@ -255,7 +317,7 @@ export class SessionManager {
       socket: null,
       pending: [],
       asks: new Map(),
-      ...(this.replayTasks && { taskLines: new Map() }),
+      ...(this.replayTasks && { taskLines: new Map(), modStatus: new Map() }),
       exited: closed(child),
       spawnOptions,
       busy: false,
@@ -291,7 +353,7 @@ export class SessionManager {
       ...(options.model && { model: options.model }),
       ...(options.effort && { effort: options.effort }),
       ...options.coordinator,
-      resume: true,
+      ...((session.spawnOptions.resume || session.ran) && { resume: true }),
     }
     if (session.busy || session.queued) return 'pending'
     void this.respawn(session)
@@ -333,7 +395,9 @@ export class SessionManager {
       if (!line.trim()) return
       if (session.taskLines) {
         recordTaskLine(session.taskLines, line)
+        if (session.modStatus) recordModStatus(session.modStatus, line)
         session.init = recordInit(session.init, line)
+        recordTurn(session, line)
       }
       if (line.includes('"can_use_tool"') || line.includes('"control_cancel_request"')) recordAsk(session.asks, line)
       if (session.channelRequests?.size && line.includes('"type":"control_response"')) recordChannelLine(session, line)
@@ -343,13 +407,16 @@ export class SessionManager {
       this.observer?.line?.(id, line, 'child')
       if (session.socket) {
         session.socket.send(line + '\n')
+        if (session.streaming?.at(-1)?.line === line) session.streaming.at(-1)!.sent = true
         return
       }
       session.pending.push(line)
       if (session.pending.length > MAX_PENDING_LINES) session.pending.shift()
     })
+    let lastStderr: string | undefined
     createInterface({ input: child.stderr! }).on('line', line => {
       this.logger?.warn(`session ${id} stderr: ${line}`)
+      if (line.trim()) lastStderr = line.trim()
     })
     // Writes after the child exits fail with EPIPE; exit is handled below.
     child.stdin!.on('error', () => {})
@@ -367,8 +434,11 @@ export class SessionManager {
       )
       if (session.process !== child || session.queued) return
       this.observer?.exit?.(id)
-      const clean = code === 0 || session.status === 'stopping'
-      this.remove(session, clean ? 1000 : 1011, 'session process exited')
+      if (code === 0 || session.status === 'stopping') {
+        this.remove(session, 1000, 'session process exited')
+        return
+      }
+      this.remove(session, 1011, exitReason(code, signal, lastStderr))
     })
   }
 
@@ -381,6 +451,7 @@ export class SessionManager {
     }
     if (typeof state !== 'string') return
     session.busy = state !== 'idle'
+    if (session.busy) session.ran = true
     if (!session.busy && session.restartWith && !session.queued) void this.respawn(session)
   }
 
@@ -412,8 +483,17 @@ export class SessionManager {
     for (const lines of session.taskLines?.values() ?? []) {
       for (const line of lines) socket.send(line + '\n')
     }
+    for (const line of session.modStatus?.values() ?? []) {
+      if (!session.pending.includes(line)) socket.send(line + '\n')
+    }
     for (const line of session.asks.values()) {
       if (!session.pending.includes(line)) socket.send(line + '\n')
+    }
+    // Mid-turn: the turn is running, and the reply streamed so far precedes what was held back.
+    if (session.turnRunning) socket.send(TURN_RUNNING_LINE + '\n')
+    for (const entry of session.streaming ?? []) {
+      if (entry.sent) socket.send(entry.line + '\n')
+      entry.sent = true
     }
     for (const line of session.pending.splice(0)) socket.send(line + '\n')
     this.logger?.info(`session ${id} attached`)

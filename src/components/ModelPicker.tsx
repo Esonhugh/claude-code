@@ -18,9 +18,13 @@ import {
   convertEffortValueToLevel,
   type EffortLevel,
   getDefaultEffortForModel,
+  getEffortForModel,
+  getInitialEffortSetting,
   modelSupportsEffort,
   modelSupportsMaxEffort,
+  getSavedEffort,
   resolvePickerEffortPersistence,
+  savedEffortPatch,
   toPersistableEffort,
 } from '../utils/effort.js'
 import {
@@ -166,12 +170,19 @@ export function ModelPicker({
   const handleFocus = useCallback(
     (value: string) => {
       setFocusedValue(value)
-      if (!hasToggledEffort && effortValue === undefined) {
+      if (!hasToggledEffort) {
+        // Like official, show the level saved for the focused model.
+        const model = resolveOptionModel(value)
+        const saved = model ? getInitialEffortSetting(model) : undefined
         const option = selectOptions.find(opt => opt.value === value)
-        setEffort(getDefaultEffortLevelForOption(value, option))
+        setEffort(
+          saved !== undefined
+            ? (toPersistableEffort(saved) ?? convertEffortValueToLevel(saved))
+            : getDefaultEffortLevelForOption(value, option),
+        )
       }
     },
-    [effortValue, hasToggledEffort, selectOptions],
+    [hasToggledEffort, selectOptions],
   )
 
   const handleVisibleRangeChange = useCallback(
@@ -230,17 +241,22 @@ export function ModelPicker({
       // global ~/.claude/settings.json), and NOT AppState.effortValue (which
       // includes session-ephemeral sources like --effort CLI flag).
       // See resolvePickerEffortPersistence JSDoc.
+      const pickedModel = resolveOptionModel(value) ?? getDefaultMainLoopModel()
       const effortLevel = resolvePickerEffortPersistence(
         effort,
         getDefaultEffortLevelForOption(value, selectOptions.find(opt => opt.value === value)),
-        getSettingsForSource('userSettings')?.effortLevel,
+        getSavedEffort(getSettingsForSource('userSettings'), pickedModel),
         hasToggledEffort,
       )
       const persistable = toPersistableEffort(effortLevel)
       if (persistable !== undefined) {
-        updateSettingsForSource('userSettings', { effortLevel: persistable })
+        updateSettingsForSource('userSettings', savedEffortPatch(persistable, pickedModel))
       }
-      setAppState(prev => ({ ...prev, effortValue: effortLevel }))
+      // --effort and the web's effort menu still hold unless changed here.
+      const sessionEffort = hasToggledEffort
+        ? effortLevel
+        : getEffortForModel(value === NO_PREFERENCE ? null : value)
+      setAppState(prev => ({ ...prev, effortValue: sessionEffort }))
     }
 
     const selectedModel = resolveOptionModel(value)
@@ -421,11 +437,14 @@ export function withCurrentModelOption(
 ): ModelOption[] {
   if (initial === null) {
     if (options.some(option => option.value === null)) return options
+    const served = options.find(option => option.value === defaultModel)
     return [
       {
         value: null,
         label: `Default (${modelDisplayString(defaultModel)})`,
         description: 'Current model',
+        ...(served?.effortOptions && { effortOptions: served.effortOptions }),
+        ...(served?.defaultEffort && { defaultEffort: served.defaultEffort }),
       },
       ...options,
     ]

@@ -91,6 +91,7 @@ function fixture() {
   // Commands listed here exit with the given code instead of printing JSON.
   const exits = new Map<string, { code: number; stderr?: string }>()
   const envs = new Map<string, NodeJS.ProcessEnv>()
+  const spawns: { command: string; args: string[]; shell: unknown }[] = []
   const logs: string[] = []
   const state = { sessionHooks: new Map() } as unknown as AppState
   const crons: { id: string; cron: string; prompt: string; recurring?: boolean }[] = []
@@ -229,10 +230,11 @@ function fixture() {
     child_process: {
       spawn: (
         command: string,
-        _args: string[],
-        options: { env: NodeJS.ProcessEnv },
+        args: string[],
+        options: { env: NodeJS.ProcessEnv; shell?: unknown },
       ) => {
         envs.set(command, options.env)
+        spawns.push({ command, args, shell: options.shell })
         const child = Object.assign(new EventEmitter(), {
           pid: ++pid,
           stdin: new PassThrough(),
@@ -337,6 +339,9 @@ function fixture() {
       normalizeLegacyToolName: (name: string) => name,
       getLegacyToolNames: () => [],
     },
+    '../tools/ApplyPatchTool/prompt.js': { APPLY_PATCH_TOOL_NAME: 'apply_patch' },
+    '../tools/FileEditTool/constants.js': { FILE_EDIT_TOOL_NAME: 'Edit' },
+    '../tools/FileWriteTool/prompt.js': { FILE_WRITE_TOOL_NAME: 'Write' },
     './log.js': {
       logError: (error: Error) => {
         throw error
@@ -475,6 +480,7 @@ function fixture() {
     commands,
     exits,
     envs,
+    spawns,
     logs,
     addHook,
     calls,
@@ -765,6 +771,28 @@ describe('source-scoped hook executor', () => {
       'run "$CLAUDE_PLUGIN_OPTION_TOKEN"',
     ])
     expect(f.envs.get('run "$CLAUDE_PLUGIN_OPTION_TOKEN"')?.CLAUDE_PLUGIN_OPTION_TOKEN).toBe('x; touch pwned')
+  })
+
+  test('an exec-form hook spawns command with args and no shell (official 2.1.318)', async () => {
+    const f = fixture()
+    f.registered.PreToolUse = [
+      {
+        matcher: '',
+        pluginRoot: home,
+        pluginName: 'fixture',
+        pluginId: 'fixture@market',
+        hooks: [
+          { type: 'command', command: 'sh', args: ['${CLAUDE_PLUGIN_ROOT}/hook.sh', 'pre-tool-use', '${CLAUDE_PLUGIN_DATA}'] },
+          { type: 'command', command: 'sh', args: ['${CLAUDE_PLUGIN_ROOT}/hook.sh', 'other'] },
+        ],
+      },
+    ]
+    await collect(pre(f))
+    expect(f.spawns).toEqual([
+      { command: 'sh', args: [join(home, 'hook.sh'), 'pre-tool-use', home], shell: false },
+      { command: 'sh', args: [join(home, 'hook.sh'), 'other'], shell: false },
+    ])
+    expect(f.calls.map((call) => typeof call.input.tool_name)).toEqual(['string', 'string'])
   })
 
   test('same plugin root retains last-definition dedup even when display names differ', async () => {

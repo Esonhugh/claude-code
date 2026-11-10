@@ -56,11 +56,12 @@ Sessions start in ~/.claude/web/workspace and run with your local credentials an
 | PDF | 所有页连续上下滚动 |
 | HTML、SVG | HTML 在无权限的 sandbox iframe 里显示，可切桌面 / 平板 / 手机宽度；SVG 清理后按图片显示；脚本都不执行 |
 | 图片 | 原图 |
-| PPT(X)、DOC、RTF、ODT、XLS、ODS | 本机装了 LibreOffice（`soffice`）时转成 PDF 再预览，否则提示下载 |
+| PPTX | 本机装了 LibreOffice（`soffice`）时转成 PDF 再预览；没有时在浏览器里直接画出每一页幻灯片（不加载外部媒体，只保留 http、https、mailto 链接） |
+| PPT、DOC、RTF、ODT、XLS、ODS | 本机装了 LibreOffice（`soffice`）时转成 PDF 再预览，否则提示下载 |
 
 预览栏顶部的 `‹` `›` 在这段对话里出现过的文件之间切换，也可以在新标签页打开或下载，`Esc` 关闭。
 
-**评论文件。** 在图片、SVG、PDF 或转换后的 Office 文件上点一下，放下一个编号标记并写评论，`Enter` 发送；评论作为一条消息发给 Claude，写明文件、页码和标记位置（“pinned at 67% from the left, 55% from the top”）。文本和代码里选中几行后点“评论”，消息写明行号；渲染后的 Markdown、Word 引用选中的文字；表格可以评论单个单元格；HTML 预览多一个“源码”视图，同样能按行评论。对话里的图片点开后也能放标记。
+**评论文件。** 在图片、SVG、PDF、转换后的 Office 文件或浏览器画出的幻灯片上点一下，放下一个编号标记并写评论，`Enter` 发送；评论作为一条消息发给 Claude，写明文件、页码和标记位置（“pinned at 67% from the left, 55% from the top”）。文本和代码里选中几行后点“评论”，消息写明行号；渲染后的 Markdown、Word、PDF 和幻灯片引用选中的文字（PDF 与幻灯片同时写明页码）；表格可以评论单个单元格；HTML 预览多一个“源码”视图，同样能按行评论。对话里的图片点开后也能放标记。
 
 ![文件预览](images/web-ui-preview.png)
 
@@ -110,6 +111,8 @@ Sessions start in ~/.claude/web/workspace and run with your local credentials an
 
 点一个历史会话先只读显示记录，长会话往上滚时加载更早的消息；在输入框里开始输入才在原目录恢复它，之前的上下文照常带上。同一个会话同一时间只能在一个标签页里打开。没有标签页连着的会话空闲 `--idle-timeout` 后结束。
 
+会话选的模型、effort、上下文窗口和权限模式保存在服务端（`projects.sqlite`），刷新页面、新开标签页或会话进程空闲结束后再恢复，都按原来的选择继续；断线期间改的选择会在重新连上后补发。刷新时如果回合还在跑，页面显示到目前为止的输出并继续接收；占着会话的标签页关闭后，被锁住的标签页自动接管。会话进程异常退出时，错误框显示退出码和最后一行 stderr，而不是只写“The session ended.”。网络断开（切换 Wi-Fi、电脑休眠）时页面自动重连还在运行的会话进程，约三分钟内连不上或进程已经结束，就提示断开，发一条消息即可恢复。输入 `/clear`（或 `/reset`、`/new`）会在同一目录开一个新会话，沿用原来的模型、effort 和权限模式；项目协调者里不支持。地址里的会话即使不在侧栏最新 200 条里，刷新后也会重新打开。
+
 ## 右侧面板
 
 Status、Files、Agents 一直在；Workflow、Terminals、Monitor、Background Tasks 在这个会话用过对应工具后才出现（重新打开的历史会话按记录里的工具调用判断）。
@@ -123,6 +126,9 @@ Status、Files、Agents 一直在；Workflow、Terminals、Monitor、Background 
 | Terminals | Terminal 工具开的终端，每个终端是一个抽屉，可以同时展开几个；彩色屏幕每秒刷新，下面的输入框回车把一行发进终端，Ctrl+C 按钮发中断，行上的“停止”结束它 |
 | Monitor | Monitor 任务和最近的事件 |
 | Background Tasks | 后台 shell、终端、Monitor 等任务的命令、状态、时长和最后一行输出，可以停止 |
+| Mods | 启用的 [Mod](mods.md) 写的状态条目和它们打开的每个面板；面板上的“Open on canvas”把它作为一个页签放进中间栏（和文件预览并列，切换页签时 Mod 保留自己的状态） |
+
+Mod 画在终端里的东西在网页里也有对应位置：输入框上方的状态条（band）、输入框上方的 toast、对话里被 `ui.render` hook 改写的消息行、输入框的改写 / 补全 / 装饰，以及 Mod 自己的斜杠命令。Mod 的 Client 代码在独立来源的沙箱 iframe + Worker 里运行，不能联网，不能 `eval`，卡住 2 秒就被停止。
 
 窗口窄于 1100px 时左侧栏收起成抽屉；760px 以下右侧面板也变成抽屉，从顶栏的按钮打开。
 
@@ -196,7 +202,7 @@ claude web [--port <n>] [--host <ip>] [--workspace <dir>] [--no-open]
 
 | 参数 | 默认值 | 作用 |
 | --- | --- | --- |
-| `--port <n>` | `0`（随机） | 监听端口 |
+| `--port <n>` | 上次的端口（第一次随机） | 监听端口；不指定时沿用上次运行的端口，被占用时随机；`0` 表示随机 |
 | `--host <ip>` | `127.0.0.1` | 绑定地址；loopback，或者同时加 `--dangerously-allow-local-network` 时的局域网地址 |
 | `--workspace <dir>` | `~/.claude/web/workspace` | 新会话默认的工作目录 |
 | `--no-open` | 打开浏览器 | 只打印地址（SSH 会话里自动不打开） |
@@ -211,7 +217,7 @@ Ctrl+C 或 SIGTERM 会停止服务、结束所有会话并删除 `~/.claude/web.
 
 ## 安全模型
 
-- **登录**：启动时生成一次性随机 token，`/?token=…` 校验通过后换成 HttpOnly、`SameSite=Strict` 的签名 cookie，再重定向去掉 token。签名密钥只在这个进程的内存里，重启 `claude web` 后要用新地址重新登录。没有 cookie 的页面请求返回 401 和“请打开终端里打印的地址”。
+- **登录**：启动时生成一次性随机 token，`/?token=…` 校验通过后换成 HttpOnly、`SameSite=Strict` 的签名 cookie，再重定向去掉 token。签名密钥和上次的端口存在 `~/.claude/web/server.json`（权限 0600），所以重启 `claude web` 后已登录的标签页继续可用；两者和 cookie 一样 7 天后过期，届时重新生成，需要重新登录；删掉这个文件就让所有浏览器重新登录。token 每次启动重新生成。没有 cookie 的页面请求返回 401 和“请打开终端里打印的地址”。
 - **Host 和 Origin**：只接受本机名字（加上 `--trusted-host`，局域网模式下再加本机的局域网地址）作为 Host，防 DNS rebinding；会改状态的请求和所有 WebSocket 握手必须带同源 Origin，`Sec-Fetch-Site: cross-site` 一律拒绝。
 - **来源地址**：任何模式下都只服务 loopback 和局域网来源（RFC 1918、链路本地、CGNAT、IPv6 ULA），其他地址直接 403。
 - **局域网访问**：必须在启动时加 `--dangerously-allow-local-network`，网页里不能打开。局域网里拿到地址的人就能以你的身份在这台机器上跑命令；没有 TLS 时流量（包括 token）是明文。

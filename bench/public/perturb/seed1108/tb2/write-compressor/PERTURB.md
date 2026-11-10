@@ -1,0 +1,4 @@
+- data.txt: sentences shuffled within paragraphs and paragraphs shuffled (same words, different byte stream), written by setup.sh and used as the expected output
+- output data.comp -> packed.bin
+- instruction rewritten
+- seed 1108; oracle = public reference solution with the same edits

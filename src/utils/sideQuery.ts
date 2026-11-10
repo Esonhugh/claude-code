@@ -259,10 +259,11 @@ export async function sideQuery(opts: SideQueryOptions): Promise<BetaMessage> {
       opts.querySource as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
     model:
       normalizedModel as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-    inputTokens: response.usage.input_tokens,
-    outputTokens: response.usage.output_tokens,
-    cachedInputTokens: response.usage.cache_read_input_tokens ?? 0,
-    uncachedInputTokens: response.usage.cache_creation_input_tokens ?? 0,
+    // Some third-party gateways answer non-streaming requests without usage.
+    inputTokens: response.usage?.input_tokens,
+    outputTokens: response.usage?.output_tokens,
+    cachedInputTokens: response.usage?.cache_read_input_tokens ?? 0,
+    uncachedInputTokens: response.usage?.cache_creation_input_tokens ?? 0,
     durationMsIncludingRetries: now - start,
     timeSinceLastApiCallMs:
       lastCompletion !== null ? now - lastCompletion : undefined,

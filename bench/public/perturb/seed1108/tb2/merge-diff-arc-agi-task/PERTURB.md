@@ -1,0 +1,4 @@
+- repo path /app/repo -> /app/merge-work, branches branch1/branch2 -> trunk-a/side-b (instruction, tests, solution)
+- algo.py / map() kept: the names live inside the provided git bundles
+- instruction rewritten as numbered steps
+- seed 1108; oracle = public reference solution with the same edits

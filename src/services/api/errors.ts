@@ -37,7 +37,7 @@ import {
   PDF_TARGET_RAW_SIZE,
 } from '../../constants/apiLimits.js'
 import { isEnvTruthy } from '../../utils/envUtils.js'
-import { formatFileSize } from '../../utils/format.js'
+import { formatFileSize, formatResetTime } from '../../utils/format.js'
 import { ImageResizeError } from '../../utils/imageResizer.js'
 import { ImageSizeError } from '../../utils/imageValidation.js'
 import {
@@ -428,6 +428,14 @@ export function extractUnknownErrorFormat(value: unknown): string | undefined {
   return undefined
 }
 
+// OpenAI Responses and OpenAI-compatible backends (vLLM, OpenRouter, xAI)
+// word a context overflow differently from Anthropic's "prompt is too long".
+function isProviderContextOverflow(message: string): boolean {
+  return /context_length_exceeded|exceeds the context window|maximum (context|prompt) length/i.test(
+    message,
+  )
+}
+
 export function getAssistantMessageFromError(
   ...args: Parameters<typeof formatAssistantMessageFromError>
 ): AssistantMessage {
@@ -478,6 +486,21 @@ function formatAssistantMessageFromError(
   ) {
     return createAssistantAPIErrorMessage({
       content: CUSTOM_OFF_SWITCH_MESSAGE,
+      error: 'rate_limit',
+    })
+  }
+
+  if (
+    error instanceof HttpResponseError &&
+    error.status === 429 &&
+    error.message.includes('usage_limit_reached')
+  ) {
+    const resetsAt = Number(error.message.match(/"resets_at"\s*:\s*(\d+)/)?.[1])
+    const reset = Number.isFinite(resetsAt)
+      ? ` · resets ${formatResetTime(resetsAt, true)}`
+      : ''
+    return createAssistantAPIErrorMessage({
+      content: `You've hit your ChatGPT usage limit${reset}`,
       error: 'rate_limit',
     })
   }
@@ -582,7 +605,8 @@ function formatAssistantMessageFromError(
   // Use case-insensitive check since Vertex returns "Prompt is too long" (capitalized)
   if (
     error instanceof Error &&
-    error.message.toLowerCase().includes('prompt is too long')
+    (error.message.toLowerCase().includes('prompt is too long') ||
+      isProviderContextOverflow(error.message))
   ) {
     // Content stays generic (UI matches on exact string). The raw error with
     // token counts goes into errorDetails — reactive compact's retry loop

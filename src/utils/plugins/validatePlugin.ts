@@ -10,7 +10,10 @@ import {
 } from '../../services/mods/typeContract.js'
 import type { LoadedPlugin } from '../../types/plugin.js'
 import { errorMessage, getErrnoCode, isENOENT } from '../errors.js'
-import { FRONTMATTER_REGEX } from '../frontmatterParser.js'
+import {
+  FRONTMATTER_REGEX,
+  quoteProblematicValues,
+} from '../frontmatterParser.js'
 import { jsonParse } from '../slowOperations.js'
 import { parseYaml } from '../yaml.js'
 import {
@@ -18,6 +21,7 @@ import {
   PluginManifestSchema,
   PluginMarketplaceEntrySchema,
   PluginMarketplaceSchema,
+  isUnsupportedPluginSource,
 } from './schemas.js'
 
 /**
@@ -50,6 +54,9 @@ function within(root: string, candidate: string): boolean {
   return part !== '..' && !part.startsWith(`..${path.sep}`) && !path.isAbsolute(part)
 }
 
+// Contract used when plugin.json names no `types`, matching the runtime default.
+const DEFAULT_TYPES_PATH = './types/index.d.ts'
+
 async function loadTypeContract(
   pluginRoot: string,
   relativePath: string,
@@ -70,27 +77,30 @@ export async function resolveForeignModStateDeclarations(
 ): Promise<{ declarations: ModStateDeclaration[] | undefined; warning?: string }> {
   const declarations: ModStateDeclaration[] = []
   for (const plugin of plugins) {
-    if (plugin.name === owner || !plugin.manifest.types) continue
+    const explicit = plugin.manifest.types !== undefined
+    if (plugin.name === owner || (!explicit && plugin.isBuiltin)) continue
+    const requested = plugin.manifest.types ?? DEFAULT_TYPES_PATH
     try {
       let contract: ReturnType<typeof parseModTypeContract>
       if (plugin.contractFiles) {
-        const requested = plugin.manifest.types
         const normalized = path.posix.normalize(requested)
         if (path.posix.isAbsolute(requested) || requested.includes('\\') || normalized === '..' || normalized.startsWith('../'))
           throw new Error(`${requested} leaves the plugin root`)
+        if (!explicit && !Object.hasOwn(plugin.contractFiles, normalized)) continue
         if (!Object.hasOwn(plugin.contractFiles, normalized) || normalized.endsWith('/'))
           throw new Error(`${requested} is missing or is not a regular file in the archive`)
         contract = parseModTypeContract(new TextDecoder('utf-8', { fatal: true }).decode(plugin.contractFiles[normalized]))
       } else {
-        contract = await loadTypeContract(plugin.path, plugin.manifest.types)
+        contract = await loadTypeContract(plugin.path, requested)
       }
       declarations.push(
         ...contract.state.filter(declaration => declaration.plugin === plugin.name),
       )
     } catch (error) {
+      if (!explicit && isENOENT(error)) continue
       return {
         declarations: undefined,
-        warning: `Could not load ${plugin.name} types contract ${plugin.manifest.types}: ${errorMessage(error)}. Foreign state references were left unchecked.`,
+        warning: `Could not load ${plugin.name} types contract ${requested}: ${errorMessage(error)}. Foreign state references were left unchecked.`,
       }
     }
   }
@@ -355,11 +365,11 @@ export async function validatePluginManifest(
       })
     }
 
+    const manifestDir = path.dirname(absolutePath)
+    const pluginRoot = path.basename(manifestDir) === '.claude-plugin'
+      ? path.dirname(manifestDir)
+      : manifestDir
     if (manifest.types) {
-      const manifestDir = path.dirname(absolutePath)
-      const pluginRoot = path.basename(manifestDir) === '.claude-plugin'
-        ? path.dirname(manifestDir)
-        : manifestDir
       try {
         const contract = await loadTypeContract(pluginRoot, manifest.types)
         notes.push(
@@ -372,6 +382,17 @@ export async function validatePluginManifest(
         }
       } catch (error) {
         errors.push({ path: 'types', message: errorMessage(error) })
+      }
+    } else if (manifest.types === undefined) {
+      try {
+        const contract = await loadTypeContract(pluginRoot, DEFAULT_TYPES_PATH)
+        if (contract.state.length) {
+          notes.push(
+            `types ${DEFAULT_TYPES_PATH} declares state: ${contract.state.flatMap(({ plugin, keys }) => keys.map(key => `${plugin}.${key}`)).join(', ')}`,
+          )
+        }
+      } catch {
+        // The default contract is optional; official ignores an unreadable one too.
       }
     }
   }
@@ -508,6 +529,12 @@ export async function validateMarketplaceManifest(
     // Check each plugin entry
     if (marketplace.plugins) {
       marketplace.plugins.forEach((plugin, i) => {
+        if (isUnsupportedPluginSource(plugin.source)) {
+          warnings.push({
+            path: `plugins[${i}].source`,
+            message: `Source type "${plugin.source.sourceType}" is not supported by this version of Claude Code; "${plugin.name}" cannot be installed here, but the rest of the marketplace loads.`,
+          })
+        }
         // Check for duplicate plugin names
         const duplicates = marketplace.plugins.filter(
           p => p.name === plugin.name,
@@ -570,7 +597,7 @@ export async function validateMarketplaceManifest(
     }
 
     // Warn if no description in metadata
-    if (!marketplace.metadata?.description) {
+    if (!marketplace.metadata?.description && !marketplace.description) {
       warnings.push({
         path: 'metadata.description',
         message:
@@ -617,13 +644,31 @@ function validateComponentFile(
 
   const frontmatterText = match[1] || ''
   let parsed: unknown
+  let parseError: unknown
   try {
     parsed = parseYaml(frontmatterText)
   } catch (e) {
+    parseError = e
+    // The runtime loader retries with special characters quoted; report
+    // what it actually does instead of a load failure that never happens.
+    try {
+      parsed = parseYaml(quoteProblematicValues(frontmatterText))
+      warnings.push({
+        path: 'frontmatter',
+        message:
+          `YAML frontmatter is not valid YAML (${errorMessage(e)}). It loads ` +
+          `only because Claude Code quotes values with special characters; ` +
+          `quote them yourself to be safe.`,
+      })
+    } catch {
+      parsed = undefined
+    }
+  }
+  if (parseError !== undefined && parsed === undefined) {
     errors.push({
       path: 'frontmatter',
       message:
-        `YAML frontmatter failed to parse: ${errorMessage(e)}. ` +
+        `YAML frontmatter failed to parse: ${errorMessage(parseError)}. ` +
         `At runtime this ${fileType} loads with empty metadata (all frontmatter ` +
         `fields silently dropped).`,
     })
@@ -796,9 +841,7 @@ async function validateHooksJson(
     const manifestPath = path.join(pluginRoot, '.claude-plugin', 'plugin.json')
     const manifest = jsonParse(await readFile(manifestPath, 'utf8')) as Record<string, unknown>
     if (typeof manifest.name === 'string') owner = manifest.name
-    if (typeof manifest.types === 'string') {
-      declared = (await loadTypeContract(pluginRoot, manifest.types)).state
-    }
+    declared = (await loadTypeContract(pluginRoot, typeof manifest.types === 'string' ? manifest.types : DEFAULT_TYPES_PATH)).state
   } catch {
     // Manifest validation reports unreadable or invalid contracts separately.
   }

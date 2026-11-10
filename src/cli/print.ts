@@ -3,9 +3,11 @@ import {
   getInlinePlugins,
   getInlinePluginsNoMcp,
   setAdditionalDirectoriesForClaudeMd,
+  setInlinePlugins,
+  setInlinePluginsNoMcp,
 } from '../bootstrap/state.js'
 import { setModToolCheckPermissionHost } from '../services/tools/toolHooks.js'
-import { getInitializePluginsApplied } from '../entrypoints/sdk/launchInitialize.js'
+import { getInitializePluginsApplied, joinReloadAddPlugins } from '../entrypoints/sdk/launchInitialize.js'
 import { createSdkStreamState } from './streamState.js'
 import { createModCommandQueue } from '../services/mods/commandRunQueue.js'
 import { createModMcpConnections } from '../services/mods/mcpConnect.js'
@@ -63,6 +65,7 @@ import {
   isBuiltInAgent,
   parseAgentsFromJson,
 } from 'src/tools/AgentTool/loadAgentsDir.js'
+import { resolveAgentTools } from 'src/tools/AgentTool/agentToolUtils.js'
 import type { Message, NormalizedUserMessage } from 'src/types/message.js'
 import type { QueuedCommand } from 'src/types/textInputTypes.js'
 import {
@@ -151,6 +154,7 @@ import { registerHookEventHandler } from 'src/utils/hooks/hookEvents.js'
 import { executeFilePersistence } from 'src/utils/filePersistence/filePersistence.js'
 import { finalizePendingAsyncHooks } from 'src/utils/hooks/AsyncHookRegistry.js'
 import {
+  claimPrintSigint,
   gracefulShutdown,
   gracefulShutdownSync,
   isShuttingDown,
@@ -311,7 +315,13 @@ import { isAnalyticsDisabled } from '../services/analytics/config.js'
 import {
   backgroundAll,
   backgroundTaskForToolUse,
+  hasBackgroundRequestHandler,
+  requestBackgroundForToolUse,
+  stopShellTaskAtDeadline,
 } from '../tasks/LocalShellTask/LocalShellTask.js'
+import { isLocalShellTask } from '../tasks/LocalShellTask/guards.js'
+import { isLocalAgentTask } from '../tasks/LocalAgentTask/LocalAgentTask.js'
+import { createSendNow, isSendNowPrompt } from '../utils/sendNow.js'
 import {
   setupSdkMcpClients,
   connectToServer,
@@ -381,10 +391,13 @@ import {
 import { getModelInfos } from 'src/utils/model/modelInfos.js'
 import { getModHttpServices } from '../services/mods/hostOperations.js'
 import {
+  getEffortForModel,
   parseEffortValue,
   resolveAppliedEffort,
+  savedEffortPatch,
   toPersistableEffort,
 } from 'src/utils/effort.js'
+import { getConfiguredAutoCompactWindow } from 'src/services/compact/autoCompact.js'
 import { validateModel } from 'src/utils/model/validateModel.js'
 import { ensureModelStringsInitialized } from 'src/utils/model/modelStrings.js'
 import {
@@ -457,9 +470,12 @@ import { loadAllPluginsCacheOnly } from '../utils/plugins/pluginLoader.js'
 import {
   isTeamLead,
   hasActiveInProcessTeammates,
+  hasOtherTeammates,
+  getTeamShutdownGraceMs,
   hasWorkingInProcessTeammates,
   waitForTeammatesToBecomeIdle,
 } from '../utils/teammate.js'
+import { killInProcessTeammate } from '../utils/swarm/spawnInProcess.js'
 import {
   readUnreadMessages,
   markMessagesAsRead,
@@ -467,10 +483,13 @@ import {
   capIdleResultsInDrain,
 } from '../utils/teammateMailbox.js'
 import { handleTeammateShutdownApproved } from '../utils/swarm/teammateShutdown.js'
+import { registerLeaderHeadlessCanUseTool } from '../utils/swarm/leaderPermissionBridge.js'
 import { getRunningTasks } from '../utils/task/framework.js'
 import { isBackgroundTask } from '../tasks/types.js'
+import { formatDuration } from '../utils/format.js'
 import { StopTaskError, stopTask } from '../tasks/stopTask.js'
 import { deliverTaskMessage } from '../tasks/deliverTaskMessage.js'
+import { isInProcessTeammateTask } from '../tasks/InProcessTeammateTask/types.js'
 import { isMainSessionTask } from '../tasks/LocalMainSessionTask.js'
 import { isTerminalTask } from '../tasks/TerminalTask.js'
 import { hostTerminalInputSchema } from '../tools/TerminalTool/actionSchemas.js'
@@ -518,15 +537,28 @@ const SHUTDOWN_TEAM_PROMPT = `<system-reminder>
 You are running in non-interactive mode and cannot return a response to the user until your team is shut down.
 
 You MUST shut down your team before preparing your final response:
-1. Use requestShutdown to ask each team member to shut down gracefully
-2. Wait for shutdown approvals
-3. Use the cleanup operation to clean up the team
-4. Only then provide your final response to the user
+1. Use SendMessage with a shutdown_request to ask each team member to shut down gracefully
+2. Wait for shutdown approvals (the team is cleaned up automatically)
+3. Only then provide your final response to the user
 
 The user cannot receive your response until the team is completely shut down.
 </system-reminder>
 
 Shut down your team and prepare your final response for the user.`
+
+// Results runHeadless has written to stdout. A SIGINT that aborts a running
+// turn waits (bounded) for the next one, so the aborted turn's result is not
+// lost to the exit.
+let headlessResultsWritten = 0
+
+const PRINT_BG_WAIT_CEILING_MS = 600_000
+
+// 0 waits indefinitely; anything unparsable falls back to the default.
+function getPrintBgWaitCeilingMs(): number {
+  const raw = process.env.CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS
+  const value = raw === undefined || raw.trim() === '' ? NaN : Number(raw)
+  return Number.isFinite(value) && value >= 0 ? value : PRINT_BG_WAIT_CEILING_MS
+}
 
 // Track message UUIDs received during the current session runtime
 const MAX_RECEIVED_UUIDS = 10_000
@@ -1060,6 +1092,7 @@ export async function runHeadless(
     () => getAppState().mcp.tools,
     onPermissionPrompt,
   )
+  registerLeaderHeadlessCanUseTool(canUseTool)
   // tool.check names the host as the decider of core's ask when its program answers asks.
   setModToolCheckPermissionHost(effectivePermissionPromptToolName !== undefined)
   if (options.permissionPromptToolName) {
@@ -1137,6 +1170,9 @@ export async function runHeadless(
     } else if (options.outputFormat === 'stream-json' && options.verbose) {
       await structuredIO.write(message)
     }
+    if (message.type === 'result' && options.outputFormat === 'stream-json') {
+      headlessResultsWritten++
+    }
     // Should not be getting control messages or stream events in non-stream mode.
     // Also filter out streamlined types since they're only produced by the transformer.
     // SDK-only system events are excluded so lastMessage stays at the result
@@ -1152,6 +1188,8 @@ export async function runHeadless(
         message.type === 'system' &&
         (message.subtype === 'session_state_changed' ||
           message.subtype === 'ui_log' ||
+          message.subtype === 'ui_toast' ||
+          message.subtype === 'ui_status' ||
           message.subtype === 'ui_invalidate' ||
           message.subtype === 'ui_panes' ||
           message.subtype === 'ui_scroll' ||
@@ -1229,6 +1267,7 @@ export async function runHeadless(
           )
       }
   }
+  headlessResultsWritten++
 
   // Log headless latency metrics for the final turn
   logHeadlessProfilerTurn()
@@ -1292,7 +1331,15 @@ function runHeadlessStreaming(
     | 'finally_post_flush'
     | undefined
   let inputClosed = false
+  // When the session first sat idle with input closed and background tasks
+  // still running; reset whenever a turn is about to run.
+  let bgWaitIdleSince: number | undefined
   let shutdownPromptInjected = false
+  // Set once the shutdown turn left the team quiet; reset by any team activity.
+  let teamQuietSince: number | undefined
+  // While the team-lead inbox poll runs, it owns the end of input: it asks the
+  // lead to shut the team down instead of finishing output under teammates.
+  let teamPollActive = false
   let abortController: AbortController | undefined
   let shellAbortController: AbortController | undefined
   let shellCommandRunning = false
@@ -1307,9 +1354,18 @@ function runHeadlessStreaming(
     if (abortController && !abortController.signal.aborted) {
       abortController.abort()
     }
+    if (running) {
+      const written = headlessResultsWritten
+      registerCleanup(async () => {
+        for (let t = 0; t < 1000 && headlessResultsWritten === written; t += 20) {
+          await sleep(20)
+        }
+      })
+    }
     void gracefulShutdown(0)
   }
   process.on('SIGINT', sigintHandler)
+  claimPrintSigint()
 
   // Dump run()'s state at SIGTERM so a stuck session's healthsweep can name
   // the do/while(waitingForAgents) poll without reading the transcript.
@@ -1762,6 +1818,13 @@ function runHeadlessStreaming(
     configs: {},
   }
 
+  const resolveMainThreadAgentTools = (availableTools: Tools) => {
+    const agentType = getMainThreadAgentType()
+    const agent = agentType
+      ? currentAgents.find(a => a.agentType === agentType)
+      : undefined
+    return agent ? resolveAgentTools(agent, availableTools, false, true) : undefined
+  }
   // Shared tool assembly for ask() and the get_context_usage control request.
   // Closes over the mutable sdkTools/dynamicMcpState bindings so both call
   // sites see late-connecting servers.
@@ -1780,6 +1843,10 @@ function runHeadlessStreaming(
       ),
       'name',
     )
+    // --agent / SDK `agent`: the main thread gets the agent's tools and
+    // disallowedTools, like the interactive REPL.
+    const mainThreadAgentTools = resolveMainThreadAgentTools(allTools)
+    if (mainThreadAgentTools) allTools = mainThreadAgentTools.resolvedTools
     if (options.permissionPromptToolName) {
       allTools = allTools.filter(
         tool => !toolMatchesName(tool, options.permissionPromptToolName!),
@@ -2260,6 +2327,35 @@ function runHeadlessStreaming(
         }
       : undefined
 
+  // ctrl+enter from claude web, like the TUI's send-now (src/screens/REPL.tsx): a typed
+  // 'now' prompt moves a running foreground shell/agent to the background and joins the
+  // turn at its next tool boundary, waits out a permission prompt, and cuts the turn only
+  // when the model is writing or a tool cannot move. Tool ids come from the turn's messages.
+  const sendNowRunningToolUseIds = new Set<string>()
+  const sendNow = createSendNow({
+    hasPrompt: () => getCommandsByMaxPriority('now').some(isSendNowPrompt),
+    readEvidence: () => ({
+      turnActive: running && abortController?.signal.aborted === false,
+      heldByDialog: structuredIO.getPendingPermissionRequests().length > 0,
+      compacting: false,
+      runningToolUseIds: sendNowRunningToolUseIds,
+      movableToolUseIds: isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS)
+        ? []
+        : [...sendNowRunningToolUseIds].filter(id =>
+            hasBackgroundRequestHandler(id) ||
+            Object.values(getAppState().tasks).some(task =>
+              (isLocalShellTask(task) || isLocalAgentTask(task)) && task.status === 'running' &&
+              !task.isBackgrounded && task.agentId === undefined && task.toolUseId === id)),
+      sampling: sendNowRunningToolUseIds.size === 0,
+    }),
+    moveToBackground: toolUseIds => toolUseIds.filter(id =>
+      backgroundTaskForToolUse(id, getAppState, setAppState) || requestBackgroundForToolUse(id)),
+    interrupt: () => abortController?.abort('interrupt'),
+    schedule: (run, ms) => {
+      const timer = setTimeout(run, ms)
+      return () => clearTimeout(timer)
+    },
+  })
   // Interrupt urgent input and wake idle SDK sessions for channel messages.
   const unsubscribeCommandQueue = subscribeToCommandQueue(() => {
     // QueryEngine-owned command receipts can enqueue again while turn.complete is settling.
@@ -2267,8 +2363,11 @@ function runHeadlessStreaming(
     if (peek(cmd => cmd.agentId === undefined && cmd.commandRunReceipt !== undefined)) void run()
     // A stopped agent notifies once its abort settles, which can be after run() stopped waiting for it.
     if (!inputClosed && peek(cmd => cmd.agentId === undefined && cmd.mode === 'task-notification')) void run()
-    if (abortController && getCommandsByMaxPriority('now').length > 0) {
-      abortController.abort('interrupt')
+    const urgent = getCommandsByMaxPriority('now')
+    if (abortController && urgent.length > 0) {
+      // Bash and slash commands run only after the turn, so they still cut it.
+      if (urgent.every(isSendNowPrompt)) sendNow.request()
+      else abortController.abort('interrupt')
     }
     if (
       (feature('KAIROS') || feature('KAIROS_CHANNELS')) &&
@@ -2279,6 +2378,7 @@ function runHeadlessStreaming(
     }
   })
   const unregisterCommandQueueCleanup = registerCleanup(async () => {
+    sendNow.dispose()
     unsubscribeCommandQueue()
   })
 
@@ -2669,6 +2769,7 @@ function runHeadlessStreaming(
                   'elicitationId' in params ? params.elicitationId : undefined,
                 ),
               agents: options.modsSession?.runtime?.agents.projection({ activeAgents: currentAgents, allAgents: currentAgents }).activeAgents ?? currentAgents,
+              allowedAgentTypes: resolveMainThreadAgentTools(allTools)?.allowedAgentTypes,
               orphanedPermission: cmd.orphanedPermission,
               setSDKStatus: (status, compact) => {
                 output.enqueue({
@@ -2685,6 +2786,15 @@ function runHeadlessStreaming(
               // claude.ai sees progress and the connection stays alive
               // while blocked on permission requests.
               forwardMessagesToBridge()
+
+              if (message.type === 'assistant' || message.type === 'user') {
+                const content = (message.message as { content?: unknown }).content
+                const blocks = message.parent_tool_use_id === null && Array.isArray(content) ? content as ContentBlockParam[] : []
+                for (const block of blocks) {
+                  if (block.type === 'tool_use') sendNowRunningToolUseIds.add(block.id)
+                  else if (block.type === 'tool_result') sendNowRunningToolUseIds.delete(block.tool_use_id)
+                }
+              }
 
               if (message.type === 'result') {
                 // Flush pending SDK events so they appear before result on the stream.
@@ -2709,6 +2819,7 @@ function runHeadlessStreaming(
             for (const queued of batch.slice(1)) queued.promptSubmitReceipt?.admit({drop:FAILED_PROMPT_BATCH_DROP})
             throw error
           } finally {
+            sendNowRunningToolUseIds.clear()
             if (!promptAdmitted) cmd.promptSubmitReceipt?.admit({drop:UNSUBMITTED_PROMPT_DROP})
           }
 
@@ -2844,14 +2955,40 @@ function runHeadlessStreaming(
         waitingForAgents = false
         {
           const state = getAppState()
-          const hasRunningBg = getRunningTasks(state).some(
+          const runningBg = getRunningTasks(state).filter(
             t => isBackgroundTask(t) && t.type !== 'in_process_teammate',
           )
           const hasMainThreadQueued = peek(isMainThread) !== undefined
-          if (!isShuttingDown() && (hasRunningBg || hasMainThreadQueued)) {
+          if (hasMainThreadQueued || !inputClosed) bgWaitIdleSince = undefined
+          if (!isShuttingDown() && (runningBg.length > 0 || hasMainThreadQueued)) {
             waitingForAgents = true
             if (!hasMainThreadQueued) {
               runPhase = 'waiting_for_agents'
+              // Like official 2.1.319: once input is closed, wait at most the
+              // ceiling for background tasks (e.g. a shell whose daemon keeps
+              // its output pipe open), then stop them. Their notifications
+              // start one more turn, then the session ends.
+              const now = Date.now()
+              if (inputClosed) bgWaitIdleSince ??= now
+              const ceilingMs = getPrintBgWaitCeilingMs()
+              if (bgWaitIdleSince !== undefined && ceilingMs > 0 && now - bgWaitIdleSince >= ceilingMs) {
+                process.stderr.write(
+                  `Background tasks still running ${formatDuration(ceilingMs, { hideTrailingZeros: true })} after the last turn (${runningBg.length}); stopping them. Set CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 to wait indefinitely.\n`,
+                )
+                bgWaitIdleSince = undefined
+                for (const task of runningBg) {
+                  if (isLocalShellTask(task)) {
+                    // The notification reaches the queue asynchronously; wait
+                    // for it so the next pass runs the turn instead of ending.
+                    await stopShellTaskAtDeadline(task, setAppState)
+                  } else {
+                    await stopTask(task.id, { getAppState, setAppState }).catch(error => {
+                      if (!(error instanceof StopTaskError)) logError(toError(error))
+                    })
+                  }
+                }
+                continue
+              }
               // No commands ready yet, wait for tasks to complete
               await sleep(100)
             }
@@ -2948,13 +3085,15 @@ function runHeadlessStreaming(
         // Keep polling until the team is shut down
         const POLL_INTERVAL_MS = 500
 
+        teamPollActive = true
         while (true) {
           // Check if teammates are still active
           const refreshedState = getAppState()
+          // The leader lists itself in teammates (sessionTeam.ts), so count
+          // only the others; otherwise this loop never ends.
           const hasActiveTeammates =
             hasActiveInProcessTeammates(refreshedState) ||
-            (refreshedState.teamContext &&
-              Object.keys(refreshedState.teamContext.teammates).length > 0)
+            hasOtherTeammates(refreshedState.teamContext)
 
           if (!hasActiveTeammates) {
             logForDebugging(
@@ -2967,6 +3106,39 @@ function runHeadlessStreaming(
             agentName,
             refreshedState.teamContext?.teamName,
           )
+
+          // The model was asked to shut its team down and the team has gone
+          // quiet: stop the rest so input end never hangs (-p in CI).
+          if (
+            shutdownPromptInjected &&
+            unread.length === 0 &&
+            !hasWorkingInProcessTeammates(refreshedState)
+          ) {
+            teamQuietSince ??= Date.now()
+            if (Date.now() - teamQuietSince >= getTeamShutdownGraceMs()) {
+              process.stderr.write(
+                'Team members did not shut down after the shutdown request; stopping them.\n',
+              )
+              for (const [taskId, task] of Object.entries(refreshedState.tasks)) {
+                if (task.type === 'in_process_teammate' && task.status === 'running') {
+                  killInProcessTeammate(taskId, setAppState)
+                }
+              }
+              const team = getAppState().teamContext
+              for (const [teammateId, teammate] of Object.entries(team?.teammates ?? {})) {
+                if (teammateId === team!.leadAgentId) continue
+                await handleTeammateShutdownApproved({
+                  teamName: team!.teamName,
+                  teammateId,
+                  teammateName: teammate.name,
+                  setAppState,
+                })
+              }
+              break
+            }
+          } else {
+            teamQuietSince = undefined
+          }
 
           if (unread.length > 0) {
             logForDebugging(
@@ -3036,13 +3208,21 @@ function runHeadlessStreaming(
                 isReplay: true,
               } satisfies SDKUserMessageReplay)
             }
+            teamPollActive = false
             void run()
             return // run() will come back here after processing
           }
 
           // No messages - check if we need to prompt for shutdown
-          // If input is closed and teammates are active, inject shutdown prompt once
-          if (inputClosed && !shutdownPromptInjected) {
+          // If input is closed and teammates are active, inject shutdown prompt once.
+          // Wait while any teammate still works: their reports arrive here as a
+          // normal lead turn, and a lead told to shut down mid-task cannot see
+          // them until its turn ends, so it polls blind.
+          if (
+            inputClosed &&
+            !shutdownPromptInjected &&
+            !hasWorkingInProcessTeammates(refreshedState)
+          ) {
             shutdownPromptInjected = true
             logForDebugging(
               '[print.ts] Input closed with active teammates, injecting shutdown prompt',
@@ -3052,6 +3232,7 @@ function runHeadlessStreaming(
               value: SHUTDOWN_TEAM_PROMPT,
               uuid: randomUUID(),
             })
+            teamPollActive = false
             void run()
             return // run() will come back here after processing
           }
@@ -3059,6 +3240,7 @@ function runHeadlessStreaming(
           // Wait and check again
           await sleep(POLL_INTERVAL_MS)
         }
+        teamPollActive = false
       }
     }
 
@@ -3074,9 +3256,9 @@ function runHeadlessStreaming(
         // Re-fetch state after potential wait
         const refreshedAppState = getAppState()
         const refreshedTeamContext = refreshedAppState.teamContext
-        const hasTeamMembersNotCleanedUp =
-          refreshedTeamContext &&
-          Object.keys(refreshedTeamContext.teammates).length > 0
+        const hasTeamMembersNotCleanedUp = hasOtherTeammates(
+          refreshedTeamContext,
+        )
 
         return (
           hasTeamMembersNotCleanedUp ||
@@ -3105,6 +3287,7 @@ function runHeadlessStreaming(
         await finalizePendingAsyncHooks()
         unsubscribeSkillChanges()
         unsubscribeAuthStatus?.()
+        sendNow.dispose()
         unsubscribeCommandQueue()
         unregisterCommandQueueCleanup()
         statusListeners.delete(rateLimitListener)
@@ -3216,6 +3399,23 @@ function runHeadlessStreaming(
         type: 'system', subtype: 'ui_log', plugin, text,
         uuid: randomUUID(), session_id: getSessionId(),
       })
+    },
+    // A Mod hook that failed: the TUI draws it as a warning row; a stream-json client (the web page)
+    // gets it as a transcript line, and the log keeps it on stderr.
+    ...(options.outputFormat === 'stream-json' && {
+      uiDiagnostic: (plugin: string, text: string) => {
+        process.stderr.write(`[Mods] ${plugin}: ${text}\n`)
+        output.enqueue({ type: 'system', subtype: 'ui_log', plugin, text, uuid: randomUUID(), session_id: getSessionId() })
+      },
+    }),
+    // Official 2.1.318 hands toasts and the status entry to the SDK client as system messages.
+    uiToast: (plugin, text, timeoutMs) => {
+      if (options.outputFormat !== 'stream-json') return logForDebugging(`[${plugin}] $.ui.toast: ${text}`)
+      output.enqueue({ type: 'system', subtype: 'ui_toast', plugin, text, timeout_ms: timeoutMs, uuid: randomUUID(), session_id: getSessionId() })
+    },
+    uiStatus: (plugin, text) => {
+      if (options.outputFormat !== 'stream-json') return logForDebugging(`[${plugin}] $.ui.status: ${text ?? '(cleared)'}`)
+      output.enqueue({ type: 'system', subtype: 'ui_status', plugin, text: text ?? null, uuid: randomUUID(), session_id: getSessionId() })
     },
     // No terminal draws here: the person's Notification hooks alone run.
     uiNotify: async notification => {
@@ -3549,6 +3749,7 @@ function runHeadlessStreaming(
             agents,
             getAppState,
             () => remoteUIControl.capabilities(),
+            options.modsSession && (list => options.modsSession!.commands.describe(list)),
           )
 
           // Enable prompt suggestions in AppState when SDK consumer opts in.
@@ -3784,6 +3985,7 @@ function runHeadlessStreaming(
             const model = requestedModel === 'default' ? getDefaultMainLoopModel() : requestedModel
             activeUserSpecifiedModel = model
             setMainLoopModelOverride(model)
+            setAppState(prev => ({ ...prev, effortValue: getEffortForModel(model) }))
             streamState.refresh()
             notifySessionMetadataChanged({ model })
             injectModelSwitchBreadcrumbs(requestedModel, model)
@@ -3964,7 +4166,30 @@ function runHeadlessStreaming(
             void updateSdkMcp()
           }
         } else if (message.request.subtype === 'reload_plugins') {
+          // Puts the plugin folders back when a reload that added some fails.
+          let restoreAddedPlugins: (() => void) | undefined
           try {
+            const addPlugins = message.request.add_plugins
+            if (addPlugins !== undefined && addPlugins !== null && !(Array.isArray(addPlugins) && addPlugins.length === 0)) {
+              const before = { pluginDirs: getInlinePlugins(), pluginDirsNoMcp: getInlinePluginsNoMcp() }
+              const joined = joinReloadAddPlugins(addPlugins, before, {
+                offMachine: isEnvTruthy(process.env.CLAUDE_CODE_REMOTE) || getIsRemoteMode(),
+                sideloadDisabled: areSideloadFlagsDisabled(),
+              })
+              if (joined.kind === 'refused') throw new Error(joined.message)
+              const apply = (dirs: typeof before) => {
+                setInlinePlugins(dirs.pluginDirs)
+                setInlinePluginsNoMcp(dirs.pluginDirsNoMcp)
+                // --plugin-dir code runs outside the sandbox, so its folders are write-denied.
+                if (SandboxManager.isSandboxingEnabled()) SandboxManager.refreshConfig()
+              }
+              restoreAddedPlugins = () => apply(before)
+              try {
+                apply(joined)
+              } catch (error) {
+                throw new Error(`reload_plugins add_plugins: ${errorMessage(error)}`)
+              }
+            }
             if (
               feature('DOWNLOAD_USER_SETTINGS') &&
               (isEnvTruthy(process.env.CLAUDE_CODE_REMOTE) || getIsRemoteMode())
@@ -3978,6 +4203,7 @@ function runHeadlessStreaming(
             }
 
             const r = await refreshActivePlugins(setAppState)
+            restoreAddedPlugins = undefined
 
             const sdkAgents = currentAgents.filter(
               a => a.source === 'flagSettings',
@@ -4007,14 +4233,22 @@ function runHeadlessStreaming(
                 name: p.name,
                 path: p.path,
                 source: p.source,
+                ...(typeof p.manifest.version === 'string' ? { version: p.manifest.version } : {}),
               }))
             } else {
               logError(pluginsR.reason)
             }
 
+            // Mods' own commands, as initialize lists them; a mod switched on or off here changes them.
+            const describedCommands = options.modsSession
+              ? await options.modsSession.commands.describe(currentCommands).catch(error => {
+                  logError(error)
+                  return currentCommands
+                })
+              : currentCommands
             sendControlResponseSuccess(message, {
               // @ts-ignore - recovered code
-              commands: toSdkSlashCommands(currentCommands),
+              commands: toSdkSlashCommands(describedCommands),
               agents: currentAgents.map(a => ({
                 name: a.agentType,
                 description: a.whenToUse,
@@ -4025,6 +4259,7 @@ function runHeadlessStreaming(
               error_count: r.error_count,
             } satisfies SDKControlReloadPluginsResponse)
           } catch (error) {
+            restoreAddedPlugins?.()
             sendControlResponseError(message, errorMessage(error))
           }
         } else if (message.request.subtype === 'reload_skills') {
@@ -4120,7 +4355,11 @@ function runHeadlessStreaming(
               continue
             }
             const source = request.source as 'localSettings' | 'userSettings'
-            const result = updateSettingsForSource(source, { [allowedKey]: effort ?? value })
+            // Like official, /effort's level is saved for the current model.
+            const result = updateSettingsForSource(
+              source,
+              effort ? savedEffortPatch(effort) : { [allowedKey]: value },
+            )
             if (result.error) {
               sendControlResponseError(message, `update_settings: ${result.error.message}`)
             } else {
@@ -4999,7 +5238,8 @@ function runHeadlessStreaming(
           message.request.subtype === 'list_permission_rules' ||
           message.request.subtype === 'get_workspace_diff' ||
           message.request.subtype === 'get_task_output' ||
-          message.request.subtype === 'get_background_tasks'
+          message.request.subtype === 'get_background_tasks' ||
+          message.request.subtype === 'get_task_list'
         ) {
           // Answered off the input loop: /usage and /status fetch from the
           // network, git and the file index may be slow.
@@ -5052,6 +5292,8 @@ function runHeadlessStreaming(
                   return host.buildTaskOutputResponse(getAppState(), request.task_id, request.format as 'screen' | undefined)
                 case 'get_background_tasks':
                   return host.buildBackgroundTasksResponse(getAppState())
+                case 'get_task_list':
+                  return host.buildTaskListResponse()
                 default:
                   return host.buildExportConversationResponse(
                     mutableMessages,
@@ -5147,6 +5389,7 @@ function runHeadlessStreaming(
               model,
               // Numeric effort (ant-only) → null; SDK schema is string-level only.
               effort: typeof effort === 'string' ? effort : null,
+              autoCompactWindow: getConfiguredAutoCompactWindow(model) ?? null,
             },
           })
         } else if (message.request.subtype === 'stop_task') {
@@ -5252,7 +5495,9 @@ function runHeadlessStreaming(
                 ? 'resume'
                 : deliverTaskMessage(isMainSessionTask(task) ? undefined : task, text, setAppState)
               if (delivery !== 'resume') {
-                sendControlResponseSuccess(message, { delivery })
+                // A teammate's transcript is named by its own agent id, not its task id.
+                const agentId = isInProcessTeammateTask(task) ? (task.identity.resumableAgentId ?? task.identity.agentId) : undefined
+                sendControlResponseSuccess(message, { delivery, ...(agentId && { agent_id: agentId }) })
               } else {
                 void import('../tools/AgentTool/resumeAgent.js')
                   .then(({ resumeAgentBackground }) =>
@@ -5652,7 +5897,7 @@ function runHeadlessStreaming(
     await remoteUIControl.dispose()
     shellAbortController?.abort('session-closed')
     cronScheduler?.stop()
-    if (!running && !shellCommandRunning) {
+    if (!running && !shellCommandRunning && !teamPollActive) {
       // If a push-suggestion is in-flight, wait for it to emit before closing
       // the output stream (5 s safety timeout to prevent hanging).
       if (suggestionState.inflightPromise) {
@@ -5665,6 +5910,7 @@ function runHeadlessStreaming(
       await finalizePendingAsyncHooks()
       unsubscribeSkillChanges()
       unsubscribeAuthStatus?.()
+      sendNow.dispose()
       unsubscribeCommandQueue()
       unregisterCommandQueueCleanup()
       statusListeners.delete(rateLimitListener)
@@ -5950,6 +6196,7 @@ async function handleInitializeRequest(
   agents: AgentDefinition[],
   getAppState: () => AppState,
   getCapabilities: () => Promise<string[]>,
+  describeCommands?: (commands: Command[]) => Promise<Command[]>,
 ): Promise<void> {
   if (!initialized) {
     // Apply systemPrompt/appendSystemPrompt from stdin to avoid ARG_MAX limits
@@ -6048,7 +6295,8 @@ async function handleInitializeRequest(
   const initResponse: SDKControlInitializeResponse = {
     ...(pluginsApplied === undefined ? {} : { plugins_applied: pluginsApplied }),
     ...(capabilities.length ? { capabilities } : {}),
-    commands: toSdkSlashCommands(commands),
+    // Mods' own commands join the list once they have loaded, as official 2.1.318 lists them.
+    commands: toSdkSlashCommands(describeCommands ? await describeCommands(commands) : commands),
     agents: [...agents]
       .sort((a, b) => a.agentType.localeCompare(b.agentType))
       .map(agent => ({
@@ -6672,6 +6920,7 @@ async function loadInitialMessages(
       const result = await loadConversationForResume(
         undefined /* sessionId */,
         undefined /* file path */,
+        !!options.forkSession,
       )
       if (result) {
         // Match coordinator mode to the resumed session's mode
@@ -6863,6 +7112,7 @@ async function loadInitialMessages(
       const result = await loadConversationForResume(
         parsedSessionId.sessionId,
         parsedSessionId.jsonlFile || undefined,
+        !!options.forkSession,
       )
 
       // hydrateFromCCRv2InternalEvents writes an empty transcript file for

@@ -1,6 +1,6 @@
 import { expect, test } from 'bun:test'
 import { tokenCountWithEstimation } from '../utils/tokens.js'
-import { createUserMessage } from '../utils/messages.js'
+import { createAssistantMessage, createUserMessage } from '../utils/messages.js'
 import {
   bytesPerTokenForModel,
   roughTokenCountEstimationForMessages,
@@ -28,4 +28,14 @@ test('message estimates use the given bytes per token', () => {
   expect(roughTokenCountEstimationForMessages(messages)).toBe(75)
   expect(roughTokenCountEstimationForMessages(messages, 3)).toBe(100)
   expect(tokenCountWithEstimation(messages, 3)).toBe(100)
+})
+
+test('a zero usage record from a gateway that omits usage is not an anchor', () => {
+  const user = createUserMessage({ content: 'x'.repeat(300) })
+  const reply = createAssistantMessage({ content: 'ok' })
+  reply.message.model = 'claude-opus-5-5'
+  reply.message.usage = { input_tokens: 0, output_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 } as typeof reply.message.usage
+  expect(tokenCountWithEstimation([user, reply], 3)).toBe(roughTokenCountEstimationForMessages([user, reply], 3))
+  reply.message.usage = { input_tokens: 1000, output_tokens: 5, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 } as typeof reply.message.usage
+  expect(tokenCountWithEstimation([user, reply], 3)).toBe(1005)
 })

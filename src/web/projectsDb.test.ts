@@ -8,9 +8,11 @@ import {
   deleteSessionMeta,
   openProjectsDb,
   patchSessionMeta,
+  patchSessionSettings,
   ProjectStore,
   readFolders,
   readSessionMeta,
+  readSessionSettings,
   touchFolders,
 } from './projectsDb.js'
 
@@ -20,13 +22,35 @@ describe('projects database', () => {
   it('migrates once and keeps rows across reopen', () => {
     const path = join(mkdtempSync(join(tmpdir(), 'web-pdb-')), 'web', 'projects.sqlite')
     const db = openProjectsDb(path)
-    expect((db.query('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(5)
+    expect((db.query('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(6)
     const created = new ProjectStore(db).create(input)
     db.close()
     const again = openProjectsDb(path)
-    expect((again.query('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(5)
+    expect((again.query('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(6)
     expect(new ProjectStore(again).get(created.id)).toEqual(created)
     again.close()
+  })
+
+  it('keeps a session\'s settings per provider and drops them with the session', () => {
+    const db = openProjectsDb(':memory:')
+    expect(readSessionSettings(db, 's1')).toBeUndefined()
+    patchSessionSettings(db, 's1', 'anthropic', { model: 'sonnet', permission_mode: 'plan' })
+    patchSessionSettings(db, 's1', 'anthropic', { effort: 'high', context_window: 200_000 })
+    expect(readSessionSettings(db, 's1')).toEqual({
+      provider: 'anthropic',
+      model: 'sonnet',
+      effort: 'high',
+      context_window: 200_000,
+      permission_mode: 'plan',
+    })
+    // Back to auto.
+    patchSessionSettings(db, 's1', 'anthropic', { context_window: null })
+    expect(readSessionSettings(db, 's1')?.context_window).toBeNull()
+    // Another provider's picks do not mix with these.
+    patchSessionSettings(db, 's1', 'openai', { effort: 'low' })
+    expect(readSessionSettings(db, 's1')).toEqual({ provider: 'openai', model: null, effort: 'low', context_window: null, permission_mode: null })
+    deleteSessionMeta(db, 's1')
+    expect(readSessionSettings(db, 's1')).toBeUndefined()
   })
 
   it('creates, updates, lists newest change first and archives', () => {

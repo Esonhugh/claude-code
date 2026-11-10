@@ -28,12 +28,14 @@
     "test:ripgrep": "bun test src/utils/ripgrepConfig.test.ts src/utils/embeddedRipgrep.test.ts",
     "check:changelog": "bun ./scripts/check-changelog.mjs",
     "test:changelog": "bun test src/utils/changelog.test.ts src/utils/releaseNotes.test.ts",
-    "lint": "eslint --quiet \"src/**/*.{ts,tsx}\" \"types/**/*.d.ts\" \"scripts/**/*.mjs\"",
+    "check:changed": "bun ./scripts/check-changed.mjs",
+    "lint": "eslint --quiet \"src/**/*.{ts,tsx}\" \"types/**/*.d.ts\" \"scripts/**/*.mjs\" \"bench/**/*.ts\"",
     "lint:fix": "eslint --fix \"src/**/*.{ts,tsx}\" \"types/**/*.d.ts\" \"scripts/**/*.mjs\"",
     "audit:missing": "node ./scripts/audit-missing.mjs",
     "cli:run": "node ./scripts/run-recovered-cli.mjs",
     "cli:login": "node ./scripts/run-recovered-cli.mjs auth login",
-    "cli:status": "node ./scripts/run-recovered-cli.mjs auth status"
+    "cli:status": "node ./scripts/run-recovered-cli.mjs auth status",
+    "bench": "bun ./bench/cli.ts"
   },
   "devDependencies": {
     "@babel/core": "^7.29.7",
@@ -74,6 +76,7 @@
     "webcrack": "^2.16.0"
   },
   "dependencies": {
+    "@aiden0z/pptx-renderer": "1.4.0",
     "@alcalzone/ansi-tokenize": "^0.3.0",
     "@anthropic-ai/bedrock-sdk": "^0.26.4",
     "@anthropic-ai/claude-agent-sdk": "^0.2.89",

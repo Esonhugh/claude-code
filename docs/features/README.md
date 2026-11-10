@@ -4,6 +4,37 @@
 
 效果画面来自 dev 分支重新构建的 `./built-claude`（`make build`），在 110×36 的 tmux pane 中实际运行后用 `tmux capture-pane` 截取。模型请求打到本地脚本化的假 Messages API（按提示词返回预先写好的回复和工具调用），因此画面中的模型回复不代表真实模型输出；演示用的家目录是 `~`，项目目录是 `~/sc`。
 
+## 缓存命中 / Cache hit
+
+本 fork 与官方 Claude Code、Codex、opencode、pi、oh-my-pi 跑同一批真实任务（办公、研究、编码、运维、Lean 证明，每类一短一长，另有 ssh / Kubernetes 真实环境排障；每格 3 次，2026-11-07）。命中率 = 缓存读 ÷ 全部输入，按 token 加权。
+
+![CLI 模式命中率：每个 CLI 33 次 run 的平均值与分布](images/cache-benchmark/hit-rate-overall-light.png#gh-light-mode-only)
+![CLI 模式命中率：每个 CLI 33 次 run 的平均值与分布](images/cache-benchmark/hit-rate-overall-dark.png#gh-dark-mode-only)
+
+![每任务 token 与缓存命中率的散点](images/cache-benchmark/tokens-vs-hit-light.png#gh-light-mode-only)
+![每任务 token 与缓存命中率的散点](images/cache-benchmark/tokens-vs-hit-dark.png#gh-dark-mode-only)
+
+![每任务 API 等价花费与缓存命中率的散点](images/cache-benchmark/cost-vs-hit-light.png#gh-light-mode-only)
+![每任务 API 等价花费与缓存命中率的散点](images/cache-benchmark/cost-vs-hit-dark.png#gh-dark-mode-only)
+
+可切换横轴、悬停查看明细的[交互版散点图](https://claude.ai/artifact/5c7HFWBN11ZAVcFHConfbm)。
+
+| CLI | 命中率（33 次） | 平均总 token | API 等价花费 / 任务 | TUI 6 轮总 token | `-p` 启动到首个请求 |
+| --- | --- | --- | --- | --- | --- |
+| 本仓库（Claude 账号） | 87.1% | 72.7k | $0.078 | 235k | 0.82s |
+| 官方 Claude Code 2.1.319 | 87.3% | 81.0k | $0.088 | 640k | 0.89s |
+| 本仓库（ChatGPT 账号） | 85.3% | 75.9k | $0.050 | 310k | 0.71s |
+| Codex CLI 0.167.0 | 88.8% | 80.3k | $0.047 | 267k | 2.59s |
+| opencode 1.19.5 | 89.2% | 81.5k | $0.059 | 170k | 2.81s |
+| pi 1.5.0 | 84.0% | 36.5k | $0.041 | 80k | 0.83s |
+
+- Claude 侧与官方持平，总 token 少 10%；TUI 多轮交互官方用量是本仓库的 2.7 倍。
+- ChatGPT 侧与 Codex 的差距只在短任务（82.9% 对 89.7%，长任务 86.5% 对 88.3%）：Codex 的系统提示在服务器端，新会话第一个请求未缓存的部分更少。
+- pi、opencode 在 Claude 侧只写 5 分钟缓存，闲置 15 分钟以上第一个请求就降到 0–27%；本仓库与官方写 1 小时缓存。
+- 测试设计、完整指标、多代理、长时间闲置、oh-my-pi、ssh / k8s 排障、稳定性与启动数据见 [缓存命中与用户体验基准](cache-benchmark.md)。
+
+## 功能列表
+
 | 领域 | 功能 | 说明 |
 | --- | --- | --- |
 | 模型与 Provider | [OpenAI / Codex provider](openai-provider.md) | 把 Claude Code 的模型换成 OpenAI（GPT / Codex）：用 ChatGPT 账号登录或 API key，工具、界面、命令照常使用 |
@@ -21,13 +52,15 @@
 |  | [自动模式（Auto mode）](auto-mode.md) | 不用一条条点确认：由分类器判断每个操作是否安全，安全的直接做，危险的拦下；可以用一句话加自己的规则 |
 |  | [Hooks 事件、匹配与输出校验](hooks.md) | 在 Claude 做某件事之前或之后自动跑你的脚本：拦住危险命令、改完自动格式化、开局注入上下文 |
 |  | [Bash 沙箱](sandbox.md) | 让 Claude 跑的命令只能写项目目录、只能连你允许的域名、读不到你指定的密钥；开了以后命令可以不再逐条确认 |
-| 工具 | [Terminal 工具](terminal-tool.md) | 给 Claude 一个能持续交互的终端：开 REPL、操作 TUI、按 Ctrl+C，跑完自动通知；开了 Bash 沙箱时终端也在沙箱里跑 |
+| 工具 | [Tmux 工具（原 Terminal）](terminal-tool.md) | 给 Claude 一个能持续交互的终端：开 REPL、操作 TUI、按 Ctrl+C，跑完自动通知；开了 Bash 沙箱时终端也在沙箱里跑 |
 |  | [Monitor 工具](monitor-tool.md) | 让 Claude 在后台盯着日志或命令输出，有新内容就自动叫醒它，不用反复 sleep 轮询 |
 |  | [定时任务：Cron、/loop 与 ScheduleWakeup](scheduled-tasks.md) | 让 Claude 按时间自动做事：「每 5 分钟看一下构建」「工作日早上 9 点汇总 PR」；`/loop` 一句话设定 |
 |  | [终端程序状态（OSC 7501）](terminal-status.md) | 支持的终端能在标签页上显示 Claude 正在忙、在等你批准、还是已经做完，不用切回来看 |
 | 上下文与记忆 | [记忆：auto memory 与 SQLite FTS5 检索](memory.md) | Claude 把跨会话有用的事（项目约定、你的偏好）记到文件里，下次自动带上；可改成 SQLite 全文检索，按需查找 |
 |  | [自动压缩窗口](compaction.md) | 对话太长时把早期内容压成摘要；`/autocompact` 决定多长时压缩（按模型分别保存），`/compact` 手动压缩；可换成保留最近原文的 Codex 式压缩（`compact.mode: "codex"`） |
 |  | [Prompt context 与 Tool search](prompt-context.md) | 让每次请求更省 token：提示词分层利于缓存，MCP 工具用到时才加载，大量同类工具只发一行汇总 |
+|  | [缓存命中与用户体验基准](cache-benchmark.md) | 本 fork 与官方 Claude Code、Codex、opencode、pi、oh-my-pi 跑同一批真实任务：缓存命中率、token、API 等价花费、启动速度与稳定性（附图表） |
+|  | [Agent 基准测试套件（bench/）](agent-bench.md) | 仓库里的基准工具：多个 CLI × Claude / ChatGPT 账号跑同一批任务，逐请求记录，算命中率、token、API 等价花费并画散点图；公开基准带防污染扰动 |
 |  | [用量、成本与状态](usage-and-cost.md) | `/usage` 看本次会话花了多少钱、用了多少 token；`/stats` 看长期使用习惯；恢复会话后成本继续累计 |
 | 界面与交互 | [会话命令](session-commands.md) | 本 fork 新增或补齐的斜杠命令：`/recap` 回顾、`/cd` 换目录、`/focus` 精简显示、`/autocompact` 调压缩时机、`/usage` 用量等 |
 |  | [自主 Goal](goal.md) | 给 Claude 一个「做到才算完」的条件（如「所有测试通过」），每轮结束时自动检查，没达成就继续干 |

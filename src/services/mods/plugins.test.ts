@@ -14,7 +14,7 @@ mock.module('../../utils/secureStorage/index.js', () => ({
   getSecureStorage: () => secureStorage,
 }))
 
-const { clearPluginOptionsCache } = await import('../../utils/plugins/pluginOptionsStorage.js')
+const { clearPluginOptionsCache, setPluginOptionsPending } = await import('../../utils/plugins/pluginOptionsStorage.js')
 const { getModPluginOrigin, prepareModPlugins } = await import('./plugins.js')
 import type { PrepareModPluginsSettings } from './plugins.js'
 
@@ -559,6 +559,19 @@ describe('prepareModPlugins', () => {
     expect(invalid.inputs).toEqual([])
     expect(invalid.errors[0]?.message).toBe(
       'Options do not fit plugin.json userConfig: Token must be a string',
+    )
+  })
+
+  test('holds back missing options while their configure dialog is open', () => {
+    const plugin = loadedPlugin({ manifest: { name: 'example', userConfig: {
+      note: { type: 'string', title: 'Note', description: '', required: true },
+    } } })
+    setPluginOptionsPending('example@marketplace', true)
+    try {
+      expect(prepareModPlugins([plugin], settings())).toEqual({ inputs: [], errors: [] })
+    } finally { setPluginOptionsPending('example@marketplace', false) }
+    expect(prepareModPlugins([plugin], settings()).errors[0]?.message).toBe(
+      'Options do not fit plugin.json userConfig: Note is required but not provided',
     )
   })
 

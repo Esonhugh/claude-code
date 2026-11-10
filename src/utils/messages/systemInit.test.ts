@@ -74,3 +74,19 @@ test('lists agents in name order like official', () => {
   }) as SDKSystemMessage
   expect(message.agents).toEqual(['Explore', 'general-purpose', 'Plan', 'statusline-setup'])
 })
+
+// Official 2.1.319 / SDK 0.3.318: init.plugins[].version is the manifest version, verbatim.
+test('lists the manifest version of each plugin when it declares one', () => {
+  const message = buildSystemInitMessage({
+    ...baseInputs,
+    commands: [],
+    plugins: [
+      { name: 'hm', path: '/p/hm', source: 'hm@inline', manifest: { version: '0.1.0' } },
+      { name: 'bare', path: '/p/bare', source: 'bare@inline', manifest: {} },
+    ],
+  }) as SDKSystemMessage & { plugins: unknown[] }
+  expect(message.plugins).toEqual([
+    { name: 'hm', path: '/p/hm', source: 'hm@inline', version: '0.1.0' },
+    { name: 'bare', path: '/p/bare', source: 'bare@inline' },
+  ])
+})

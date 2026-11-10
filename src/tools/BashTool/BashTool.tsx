@@ -32,6 +32,7 @@ import { buildTool, type ToolDef } from '../../Tool.js'
 import {
   backgroundExistingForegroundTask,
   markTaskNotified,
+  onBackgroundRequest,
   registerForeground,
   spawnShellTask,
   unregisterForeground,
@@ -1403,9 +1404,22 @@ async function* runShellCommand({
   const startTime = Date.now()
   let foregroundTaskId: string | undefined = undefined
 
+  // Send-now in headless runs moves the command by tool_use id, since no foreground task is registered there.
+  let wakeInitialWait: (() => void) | undefined
+  const stopBackgroundRequest =
+    toolUseId && !isBackgroundTasksDisabled
+      ? onBackgroundRequest(toolUseId, () => {
+          if (backgroundShellId !== undefined || shellCommand.status !== 'running') return
+          startBackgrounding('tengu_bash_command_send_now_backgrounded', () => wakeInitialWait?.())
+        })
+      : undefined
+
   {
     const initialResult = await Promise.race([
       resultPromise,
+      new Promise<null>(resolve => {
+        wakeInitialWait = () => resolve(null)
+      }),
       new Promise<null>(resolve => {
         const t = setTimeout(
           (r: (v: null) => void) => r(null),
@@ -1417,11 +1431,13 @@ async function* runShellCommand({
     ])
 
     if (initialResult !== null) {
+      stopBackgroundRequest?.()
       shellCommand.cleanup()
       return initialResult
     }
 
     if (backgroundShellId) {
+      stopBackgroundRequest?.()
       return {
         // Like 2.1.311 the output so far is kept when the timeout moves it.
         stdout: timedOut ? await readPartialOutput() : '',
@@ -1557,6 +1573,7 @@ async function* runShellCommand({
       }
     }
   } finally {
+    stopBackgroundRequest?.()
     TaskOutput.stopPolling(shellCommand.taskOutput.taskId)
   }
 }

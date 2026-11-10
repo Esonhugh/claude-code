@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test'
 import type { Block, Item, ModelOption } from '../protocol'
-import { imageTarget, joinTurns, modelName, relativeTo, stepActions, turnSegments } from './Message'
+import { imageTarget, joinTurns, modelName, quotePrompt, relativeTo, splitQuote, stepActions, turnSegments } from './Message'
 
 const models: ModelOption[] = [
   {
@@ -139,5 +139,22 @@ describe('imageTarget', () => {
     )
     expect(imageTarget('', 0)).toBe('image 1 of my message')
     expect(imageTarget('x'.repeat(50), 0)).toBe(`image 1 of my message "${'x'.repeat(40)}…"`)
+  })
+})
+
+describe('reply quotes', () => {
+  it('sends the quote as a blockquote ahead of the typed text', () => {
+    expect(quotePrompt('  first line\n\nsecond  ', 'why?')).toBe('> first line\n>\n> second\n\nwhy?')
+  })
+
+  it('reads the quote back for the user bubble', () => {
+    expect(splitQuote(quotePrompt('a\n\nb', 'why?'))).toEqual({ quote: 'a\n\nb', rest: 'why?' })
+  })
+
+  it('leaves text without a leading quote as it is', () => {
+    expect(splitQuote('plain')).toEqual({ rest: 'plain' })
+    expect(splitQuote('see\n> not leading\n\nx')).toEqual({ rest: 'see\n> not leading\n\nx' })
+    // Only a quote, nothing typed after it: not a reply.
+    expect(splitQuote('> only\n\n')).toEqual({ rest: '> only\n\n' })
   })
 })

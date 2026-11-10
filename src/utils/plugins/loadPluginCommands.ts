@@ -6,6 +6,7 @@ import {
   getInlinePluginsNoMcp,
   getSessionId,
 } from '../../bootstrap/state.js'
+import { parseHooksFromFrontmatter } from '../../skills/loadSkillsDir.js'
 import type { Command } from '../../types/command.js'
 import { getPluginErrorMessage } from '../../types/plugin.js'
 import {
@@ -303,6 +304,7 @@ function createPluginCommand(
         : parseBooleanFrontmatter(userInvocableValue)
 
     const shell = parseShellFrontmatter(frontmatter.shell, commandName)
+    const hooks = parseHooksFromFrontmatter(frontmatter, commandName)
 
     return {
       type: 'prompt',
@@ -331,6 +333,9 @@ function createPluginCommand(
         pluginManifest,
         repository: sourceName,
       },
+      hooks,
+      // Plugin skill hooks run with CLAUDE_PLUGIN_ROOT = the plugin root.
+      skillRoot: (isSkill || config.isSkillMode) && hooks ? pluginPath : undefined,
       skillFile: { path: file.filePath, frontmatter },
       isHidden: !userInvocable,
       progressMessage: isSkill || config.isSkillMode ? 'loading' : 'running',

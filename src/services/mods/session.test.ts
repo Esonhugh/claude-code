@@ -17,7 +17,7 @@ import * as debug from '../../utils/debug.js'
 import { clearPluginOptionsCache, savePluginOptions } from '../../utils/plugins/pluginOptionsStorage.js'
 import type { SettingsJson } from '../../utils/settings/types.js'
 import type { PrepareModPluginsSettings } from './plugins.js'
-import { createModsRuntime, type ModsRuntime } from './runtime.js'
+import { createModsRuntime, type ModDiagnostic, type ModsRuntime } from './runtime.js'
 import { describeModTool } from './toolCatalog.js'
 import { runToolUse } from '../tools/toolExecution.js'
 import { createAssistantMessage } from '../../utils/messages.js'
@@ -1680,6 +1680,41 @@ describe('Mods CLI session host', () => {
       expect(JSON.stringify(events)).not.toContain(value)
       expect(logs.join('\n')).not.toContain(value)
     }
+  })
+
+  test('shows diagnostics through the interactive host instead of raw stderr (#847)', async () => {
+    const declaration = await plugin(`export function register(on) { throw Error('register refused'); }`)
+    const writes: string[] = []
+    const stderr = spyOn(process.stderr, 'write').mockImplementation(value => { writes.push(String(value)); return true })
+    cleanups.push(() => { stderr.mockRestore() })
+    const shown: string[] = []
+    const host = session({loadPlugins:async () => [declaration]})
+    await host.bind(binding, undefined, {uiDiagnostic:(plugin, text) => { shown.push(`${plugin}: ${text}`) }})
+    expect(shown.some(line => line.includes('register refused'))).toBe(true)
+    expect(writes.join('')).not.toContain('register refused')
+  })
+
+  test('one Worker crash does not flood the transcript with cascading diagnostics', async () => {
+    const declaration = await plugin(`export function register(on) {}`)
+    let report: ((event: ModDiagnostic) => void) | undefined
+    const shown: string[] = []
+    const host = session({
+      loadPlugins: async () => [declaration],
+      createRuntime: options => { report = options.onDiagnostic; return createModsRuntime(options) },
+    })
+    await host.bind(binding, undefined, {uiDiagnostic:(plugin, text) => { shown.push(`${plugin}: ${text}`) }})
+    const crash = 'Mods Worker is unresponsive (heartbeat: probe, stack, invoke#216)'
+    report!({plugin:'probe', stage:'worker', message:crash, workerFault:{cause:'heartbeat', workerAgeMs:1, pendingRequests:2, culprit:{environment:1, plugin:'probe', storageId:'probe@inline', evidence:'stack', stage:'unknown'}}})
+    report!({plugin:'probe', stage:'command.run', message:crash})
+    report!({plugin:'probe', stage:'ui.render', message:crash})
+    report!({plugin:'other', stage:'ui.render', message:'Module environment unloaded'})
+    expect(shown).toEqual([])
+    report!({plugin:'engine', stage:'worker', message:'Mods Worker exited', workerFault:{cause:'exit', workerAgeMs:1, pendingRequests:0}})
+    report!({plugin:'probe', stage:'turn.step', message:'Mods Worker did not settle an aborted invocation'})
+    expect(shown).toEqual([
+      'engine: worker: Mods Worker exited',
+      'probe: turn.step: Mods Worker did not settle an aborted invocation',
+    ])
   })
 
   test('tier-only settings changes reseat live modules and policy presence suppresses user ordering', async () => {

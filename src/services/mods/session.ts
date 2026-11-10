@@ -118,6 +118,7 @@ export function createModsSession(options: ModsSessionOptions) {
   let settingsKey: string | undefined
   let diagnostics: PluginError[] = []
   const reported = new Set<string>()
+  let workerDeath: string | undefined
   // Retired activations may still report errors after a token is rotated.
   const diagnosticSecrets = new Set<string>()
   let configPlugins: readonly LoadedPlugin[] = []
@@ -349,7 +350,14 @@ export function createModsSession(options: ModsSessionOptions) {
     const text = `[Mods] ${event.plugin} (${event.stage}): ${event.message}`
       .replace(/[\r\n]/g, ' ')
       .replaceAll(String.fromCharCode(27), ' ')
-    process.stderr.write(text + '\n')
+    if (event.workerFault) workerDeath = event.message
+    // One Worker crash rejects every pending call and environment with the same error;
+    // the runtime already shows "<plugin> was unloaded" for an attributed crash.
+    const cascade = event.message === 'Module environment unloaded' ||
+      (event.message === workerDeath && (!event.workerFault || event.workerFault.culprit !== undefined))
+    // Raw stderr is overdrawn by the interactive TUI, which shows the diagnostic itself.
+    if (services.uiDiagnostic) { if (!cascade) services.uiDiagnostic(event.plugin, `${event.stage}: ${event.message}`.replace(/[\r\n]/g, ' ')) }
+    else process.stderr.write(text + '\n')
     const fault = event.workerFault
     logForDebugging(text + (fault ? ` workerFault=${JSON.stringify({
       cause: fault.cause, workerAgeMs: fault.workerAgeMs, pendingRequests: fault.pendingRequests,
@@ -919,7 +927,12 @@ export function createModsSession(options: ModsSessionOptions) {
       if (hostServices) {
         const { configRows, ...rest } = hostServices
         if (configRows) builtinConfigRows = configRows
+        const firstDiagnosticHost = !services.uiDiagnostic && rest.uiDiagnostic
         Object.assign(services, rest)
+        // Diagnostics from before the TUI bound (module load) went to stderr under the startup screen.
+        if (firstDiagnosticHost) {
+          for (const shown of diagnostics) if (shown.type === 'generic-error') firstDiagnosticHost(shown.plugin ?? 'host', shown.error)
+        }
       }
       if (updateState) setAppState = updateState
       const changed =

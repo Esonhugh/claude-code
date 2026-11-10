@@ -1,0 +1,1340 @@
+{
+ "source": "docs/features/cache-benchmark.md, sections 1, 3, 4, 5, 6 (collected 2026-11-07)",
+ "clis": {
+  "fork-claude": {
+   "en": "This fork · Claude",
+   "zh": "本分支 · Claude",
+   "ours": true,
+   "side": "claude",
+   "shortEn": "Fork\nClaude",
+   "shortZh": "本分支\nClaude"
+  },
+  "official": {
+   "en": "Official Claude Code 2.1.319",
+   "zh": "官方 Claude Code 2.1.319",
+   "side": "claude",
+   "shortEn": "Official\n2.1.319",
+   "shortZh": "官方\n2.1.319"
+  },
+  "opencode-claude": {
+   "en": "opencode · Claude API key",
+   "zh": "opencode · Claude API key",
+   "side": "claude",
+   "shortEn": "opencode\nClaude key",
+   "shortZh": "opencode\nClaude key"
+  },
+  "pi-claude": {
+   "en": "pi · Claude API key",
+   "zh": "pi · Claude API key",
+   "side": "claude",
+   "shortEn": "pi\nClaude key",
+   "shortZh": "pi\nClaude key"
+  },
+  "fork-openai": {
+   "en": "This fork · ChatGPT",
+   "zh": "本分支 · ChatGPT",
+   "ours": true,
+   "side": "chatgpt",
+   "shortEn": "Fork\nChatGPT",
+   "shortZh": "本分支\nChatGPT"
+  },
+  "codex": {
+   "en": "Codex CLI 0.167.0",
+   "zh": "Codex CLI 0.167.0",
+   "side": "chatgpt",
+   "shortEn": "Codex\n0.167.0",
+   "shortZh": "Codex\n0.167.0"
+  },
+  "opencode": {
+   "en": "opencode 1.19.5",
+   "zh": "opencode 1.19.5",
+   "side": "chatgpt",
+   "shortEn": "opencode\n1.19.5",
+   "shortZh": "opencode\n1.19.5"
+  },
+  "pi": {
+   "en": "pi 1.5.0",
+   "zh": "pi 1.5.0",
+   "side": "chatgpt",
+   "shortEn": "pi\n1.5.0",
+   "shortZh": "pi\n1.5.0"
+  }
+ },
+ "overall": [
+  {
+   "cli": "fork-claude",
+   "hit": 87.1,
+   "min": 49,
+   "max": 93,
+   "tokens": 72.7,
+   "cost": 0.078,
+   "n": 33
+  },
+  {
+   "cli": "official",
+   "hit": 87.3,
+   "min": 77,
+   "max": 94,
+   "tokens": 81.0,
+   "cost": 0.088,
+   "n": 33
+  },
+  {
+   "cli": "opencode-claude",
+   "hit": 79.2,
+   "min": 59,
+   "max": 89,
+   "tokens": 92.0,
+   "cost": 0.119,
+   "n": 33
+  },
+  {
+   "cli": "pi-claude",
+   "hit": 73.4,
+   "min": 32,
+   "max": 83,
+   "tokens": 21.4,
+   "cost": 0.045,
+   "n": 33
+  },
+  {
+   "cli": "fork-openai",
+   "hit": 85.3,
+   "min": 50,
+   "max": 93,
+   "tokens": 75.9,
+   "cost": 0.05,
+   "n": 33
+  },
+  {
+   "cli": "codex",
+   "hit": 88.8,
+   "min": 79,
+   "max": 96,
+   "tokens": 80.3,
+   "cost": 0.047,
+   "n": 33
+  },
+  {
+   "cli": "opencode",
+   "hit": 89.2,
+   "min": 71,
+   "max": 96,
+   "tokens": 81.5,
+   "cost": 0.059,
+   "n": 33
+  },
+  {
+   "cli": "pi",
+   "hit": 84.0,
+   "min": 37,
+   "max": 95,
+   "tokens": 36.5,
+   "cost": 0.041,
+   "n": 33
+  }
+ ],
+ "tasks": {
+  "clis": [
+   "fork-claude",
+   "official",
+   "fork-openai",
+   "codex",
+   "opencode",
+   "pi"
+  ],
+  "rows": [
+   {
+    "id": "doc",
+    "en": "Office · short",
+    "zh": "辦公・短",
+    "cells": [
+     [
+      87,
+      48.2,
+      11
+     ],
+     [
+      87,
+      53.4,
+      12
+     ],
+     [
+      82,
+      44.0,
+      22
+     ],
+     [
+      89,
+      68.6,
+      31
+     ],
+     [
+      87,
+      22.9,
+      29
+     ],
+     [
+      54,
+      5.0,
+      17
+     ]
+    ]
+   },
+   {
+    "id": "doc-l",
+    "en": "Office · long",
+    "zh": "辦公・長",
+    "cells": [
+     [
+      86,
+      109.3,
+      61
+     ],
+     [
+      84,
+      124.3,
+      86
+     ],
+     [
+      86,
+      104.7,
+      154
+     ],
+     [
+      91,
+      101.5,
+      147
+     ],
+     [
+      91,
+      170.0,
+      293
+     ],
+     [
+      95,
+      113.0,
+      272
+     ]
+    ]
+   },
+   {
+    "id": "research-s",
+    "en": "Research · short",
+    "zh": "研究・短",
+    "cells": [
+     [
+      87,
+      49.5,
+      15
+     ],
+     [
+      87,
+      54.7,
+      15
+     ],
+     [
+      83,
+      49.4,
+      33
+     ],
+     [
+      89,
+      63.2,
+      30
+     ],
+     [
+      84,
+      41.4,
+      50
+     ],
+     [
+      63,
+      10.9,
+      26
+     ]
+    ]
+   },
+   {
+    "id": "research-l",
+    "en": "Research · long",
+    "zh": "研究・長",
+    "cells": [
+     [
+      91,
+      85.8,
+      22
+     ],
+     [
+      91,
+      94.2,
+      22
+     ],
+     [
+      88,
+      59.9,
+      51
+     ],
+     [
+      92,
+      81.8,
+      49
+     ],
+     [
+      90,
+      100.9,
+      95
+     ],
+     [
+      64,
+      12.1,
+      37
+     ]
+    ]
+   },
+   {
+    "id": "coding-s",
+    "en": "Coding · short",
+    "zh": "程式・短",
+    "cells": [
+     [
+      78,
+      43.3,
+      14
+     ],
+     [
+      84,
+      42.2,
+      11
+     ],
+     [
+      85,
+      54.9,
+      23
+     ],
+     [
+      89,
+      61.7,
+      21
+     ],
+     [
+      83,
+      28.1,
+      26
+     ],
+     [
+      57,
+      7.7,
+      19
+     ]
+    ]
+   },
+   {
+    "id": "coding",
+    "en": "Coding · long",
+    "zh": "程式・長",
+    "cells": [
+     [
+      83,
+      53.3,
+      25
+     ],
+     [
+      83,
+      58.8,
+      26
+     ],
+     [
+      89,
+      85.0,
+      72
+     ],
+     [
+      89,
+      91.5,
+      68
+     ],
+     [
+      91,
+      92.0,
+      98
+     ],
+     [
+      73,
+      30.2,
+      77
+     ]
+    ]
+   },
+   {
+    "id": "longcode",
+    "en": "Coding · longest",
+    "zh": "程式・最長",
+    "cells": [
+     [
+      82,
+      76.1,
+      47
+     ],
+     [
+      77,
+      75.8,
+      58
+     ],
+     [
+      91,
+      81.5,
+      139
+     ],
+     [
+      93,
+      93.2,
+      146
+     ],
+     [
+      89,
+      124.4,
+      221
+     ],
+     [
+      88,
+      92.9,
+      194
+     ]
+    ]
+   },
+   {
+    "id": "ops-s",
+    "en": "Ops · short",
+    "zh": "維運・短",
+    "cells": [
+     [
+      87,
+      48.2,
+      15
+     ],
+     [
+      88,
+      59.7,
+      14
+     ],
+     [
+      77,
+      51.2,
+      24
+     ],
+     [
+      91,
+      61.8,
+      22
+     ],
+     [
+      87,
+      22.7,
+      25
+     ],
+     [
+      53,
+      6.7,
+      20
+     ]
+    ]
+   },
+   {
+    "id": "ops",
+    "en": "Ops · long",
+    "zh": "維運・長",
+    "cells": [
+     [
+      89,
+      128.8,
+      35
+     ],
+     [
+      90,
+      135.3,
+      34
+     ],
+     [
+      86,
+      150.0,
+      80
+     ],
+     [
+      83,
+      144.0,
+      75
+     ],
+     [
+      91,
+      226.4,
+      134
+     ],
+     [
+      84,
+      92.7,
+      81
+     ]
+    ]
+   },
+   {
+    "id": "lean-s",
+    "en": "Lean · short",
+    "zh": "Lean・短",
+    "cells": [
+     [
+      91,
+      76.7,
+      17
+     ],
+     [
+      89,
+      59.3,
+      15
+     ],
+     [
+      86,
+      64.3,
+      29
+     ],
+     [
+      91,
+      39.3,
+      21
+     ],
+     [
+      83,
+      26.8,
+      26
+     ],
+     [
+      65,
+      8.4,
+      22
+     ]
+    ]
+   },
+   {
+    "id": "lean-l",
+    "en": "Lean · long",
+    "zh": "Lean・長",
+    "cells": [
+     [
+      90,
+      80.6,
+      26
+     ],
+     [
+      92,
+      133.2,
+      34
+     ],
+     [
+      81,
+      90.2,
+      51
+     ],
+     [
+      85,
+      76.8,
+      39
+     ],
+     [
+      83,
+      40.9,
+      49
+     ],
+     [
+      80,
+      22.2,
+      52
+     ]
+    ]
+   }
+  ]
+ },
+ "tui": [
+  {
+   "cli": "fork-claude",
+   "tokens": 234.8,
+   "hit": 94.8
+  },
+  {
+   "cli": "official",
+   "tokens": 640.2,
+   "hit": 97.3
+  },
+  {
+   "cli": "opencode-claude",
+   "tokens": 176.1,
+   "hit": 90.4
+  },
+  {
+   "cli": "pi-claude",
+   "tokens": 60.0,
+   "hit": 90.4
+  },
+  {
+   "cli": "fork-openai",
+   "tokens": 309.8,
+   "hit": 91.0
+  },
+  {
+   "cli": "codex",
+   "tokens": 266.7,
+   "hit": 93.1
+  },
+  {
+   "cli": "opencode",
+   "tokens": 169.8,
+   "hit": 90.2
+  },
+  {
+   "cli": "pi",
+   "tokens": 80.4,
+   "hit": 83.5
+  }
+ ],
+ "multi": [
+  {
+   "cli": "fork-claude",
+   "single": 55.8,
+   "sub": 156.2,
+   "teams": 337.0
+  },
+  {
+   "cli": "official",
+   "single": 61.5,
+   "sub": 225.8,
+   "teams": 243.8,
+   "teamsNote": true
+  },
+  {
+   "cli": "opencode-claude",
+   "single": 36.9,
+   "sub": 157.1
+  },
+  {
+   "cli": "fork-openai",
+   "single": 58.8,
+   "sub": 223.1,
+   "teams": 497.8
+  },
+  {
+   "cli": "codex",
+   "single": 66.6,
+   "sub": 356.5
+  },
+  {
+   "cli": "opencode",
+   "single": 63.1,
+   "sub": 128.9
+  }
+ ],
+ "idle": {
+  "gaps": [
+   "0",
+   "4",
+   "15",
+   "65",
+   "4",
+   "65",
+   "4"
+  ],
+  "rows": [
+   {
+    "cli": "fork-claude",
+    "first": [
+     0,
+     97,
+     98,
+     50,
+     96,
+     28,
+     99
+    ],
+    "tokens": 306,
+    "cost": 0.35
+   },
+   {
+    "cli": "official",
+    "first": [
+     67,
+     97,
+     98,
+     50,
+     99,
+     39,
+     99
+    ],
+    "tokens": 349,
+    "cost": 0.353
+   },
+   {
+    "cli": "opencode-claude",
+    "first": [
+     0,
+     96,
+     0,
+     0,
+     98,
+     0,
+     99
+    ],
+    "tokens": 370,
+    "cost": 0.388
+   },
+   {
+    "cli": "pi-claude",
+    "first": [
+     52,
+     89,
+     27,
+     14,
+     96,
+     5,
+     99
+    ],
+    "tokens": 100,
+    "cost": 0.142
+   },
+   {
+    "cli": "fork-openai",
+    "first": [
+     35,
+     81,
+     92,
+     98,
+     97,
+     97,
+     99
+    ],
+    "tokens": 331,
+    "cost": 0.132
+   },
+   {
+    "cli": "codex",
+    "first": [
+     82,
+     91,
+     96,
+     94,
+     80,
+     97,
+     99
+    ],
+    "tokens": 361,
+    "cost": 0.142
+   },
+   {
+    "cli": "opencode",
+    "first": [
+     73,
+     97,
+     98,
+     99,
+     98,
+     99,
+     99
+    ],
+    "tokens": 358,
+    "cost": 0.145
+   },
+   {
+    "cli": "pi",
+    "first": [
+     0,
+     31,
+     96,
+     55,
+     97,
+     97,
+     97
+    ],
+    "tokens": 131,
+    "cost": 0.104
+   }
+  ]
+ },
+ "public": {
+  "source": "regression/public-bench-1108/summary.json (2026-11-09)",
+  "runs": 1800,
+  "cells": [
+   {
+    "id": "dsh-claude",
+    "en": "dsh",
+    "zh": "dsh",
+    "short": "dsh",
+    "side": "claude",
+    "ours": false,
+    "effort": "low",
+    "version": "0.2.2-rc.1",
+    "n": 120,
+    "pass": 70.8,
+    "orig": 75.0,
+    "pert": 66.7,
+    "tokens": 256,
+    "cost": 0.176,
+    "hit": 91.2,
+    "dur": 108,
+    "suites": {
+     "tb2": {
+      "pass": 28,
+      "n": 48,
+      "cost": 0.135
+     },
+     "swebenchpro": {
+      "pass": 37,
+      "n": 48,
+      "cost": 0.282
+     },
+     "spreadsheetbench-verified": {
+      "pass": 20,
+      "n": 24,
+      "cost": 0.047
+     }
+    }
+   },
+   {
+    "id": "opencode-claude",
+    "en": "opencode",
+    "zh": "opencode",
+    "short": "opencode",
+    "side": "claude",
+    "ours": false,
+    "effort": "adaptive",
+    "version": "1.19.5",
+    "n": 120,
+    "pass": 68.3,
+    "orig": 71.7,
+    "pert": 65.0,
+    "tokens": 312,
+    "cost": 0.206,
+    "hit": 90.9,
+    "dur": 119,
+    "suites": {
+     "tb2": {
+      "pass": 28,
+      "n": 48,
+      "cost": 0.178
+     },
+     "swebenchpro": {
+      "pass": 35,
+      "n": 48,
+      "cost": 0.312
+     },
+     "spreadsheetbench-verified": {
+      "pass": 19,
+      "n": 24,
+      "cost": 0.048
+     }
+    }
+   },
+   {
+    "id": "omp-claude",
+    "en": "oh-my-pi",
+    "zh": "oh-my-pi",
+    "short": "omp",
+    "side": "claude",
+    "ours": false,
+    "effort": "high",
+    "version": "omp/18.18.0",
+    "n": 120,
+    "pass": 64.2,
+    "orig": 70.0,
+    "pert": 58.3,
+    "tokens": 386,
+    "cost": 0.233,
+    "hit": 92.0,
+    "dur": 117,
+    "suites": {
+     "tb2": {
+      "pass": 22,
+      "n": 48,
+      "cost": 0.189
+     },
+     "swebenchpro": {
+      "pass": 34,
+      "n": 48,
+      "cost": 0.368
+     },
+     "spreadsheetbench-verified": {
+      "pass": 21,
+      "n": 24,
+      "cost": 0.053
+     }
+    }
+   },
+   {
+    "id": "official-key",
+    "en": "Official 2.1.319",
+    "zh": "官方 2.1.319",
+    "short": "official",
+    "side": "claude",
+    "ours": false,
+    "effort": "medium",
+    "version": "2.1.319 (Claude Code)",
+    "n": 120,
+    "pass": 61.7,
+    "orig": 65.0,
+    "pert": 58.3,
+    "tokens": 221,
+    "cost": 0.132,
+    "hit": 92.2,
+    "dur": 113,
+    "suites": {
+     "tb2": {
+      "pass": 27,
+      "n": 48,
+      "cost": 0.122
+     },
+     "swebenchpro": {
+      "pass": 28,
+      "n": 48,
+      "cost": 0.189
+     },
+     "spreadsheetbench-verified": {
+      "pass": 19,
+      "n": 24,
+      "cost": 0.04
+     }
+    }
+   },
+   {
+    "id": "official-key-sub",
+    "en": "Official + 3 subagents",
+    "zh": "官方 + 3 個 subagent",
+    "short": "official+sub",
+    "side": "claude",
+    "ours": false,
+    "effort": "medium",
+    "version": "2.1.319 (Claude Code)",
+    "n": 120,
+    "pass": 59.2,
+    "orig": 61.7,
+    "pert": 56.7,
+    "tokens": 307,
+    "cost": 0.207,
+    "hit": 89.4,
+    "dur": 112,
+    "suites": {
+     "tb2": {
+      "pass": 27,
+      "n": 48,
+      "cost": 0.236
+     },
+     "swebenchpro": {
+      "pass": 26,
+      "n": 48,
+      "cost": 0.245
+     },
+     "spreadsheetbench-verified": {
+      "pass": 18,
+      "n": 24,
+      "cost": 0.073
+     }
+    }
+   },
+   {
+    "id": "fork-claude-key-sub",
+    "en": "This fork + 3 subagents",
+    "zh": "本分支 + 3 個 subagent",
+    "short": "fork+sub",
+    "side": "claude",
+    "ours": true,
+    "effort": "medium",
+    "version": "2.1.297 (Claude Code)",
+    "n": 120,
+    "pass": 58.3,
+    "orig": 58.3,
+    "pert": 58.3,
+    "tokens": 253,
+    "cost": 0.186,
+    "hit": 86.7,
+    "dur": 142,
+    "suites": {
+     "tb2": {
+      "pass": 29,
+      "n": 48,
+      "cost": 0.211
+     },
+     "swebenchpro": {
+      "pass": 22,
+      "n": 48,
+      "cost": 0.23
+     },
+     "spreadsheetbench-verified": {
+      "pass": 19,
+      "n": 24,
+      "cost": 0.048
+     }
+    }
+   },
+   {
+    "id": "fork-claude-key",
+    "en": "This fork",
+    "zh": "本分支",
+    "short": "fork",
+    "side": "claude",
+    "ours": true,
+    "effort": "medium",
+    "version": "2.1.297 (Claude Code)",
+    "n": 120,
+    "pass": 54.2,
+    "orig": 60.0,
+    "pert": 48.3,
+    "tokens": 234,
+    "cost": 0.146,
+    "hit": 90.4,
+    "dur": 196,
+    "suites": {
+     "tb2": {
+      "pass": 22,
+      "n": 48,
+      "cost": 0.137
+     },
+     "swebenchpro": {
+      "pass": 25,
+      "n": 48,
+      "cost": 0.207
+     },
+     "spreadsheetbench-verified": {
+      "pass": 18,
+      "n": 24,
+      "cost": 0.044
+     }
+    }
+   },
+   {
+    "id": "pi-claude",
+    "en": "pi",
+    "zh": "pi",
+    "short": "pi",
+    "side": "claude",
+    "ours": false,
+    "effort": "low",
+    "version": "1.5.0",
+    "n": 120,
+    "pass": 52.5,
+    "orig": 61.7,
+    "pert": 43.3,
+    "tokens": 98,
+    "cost": 0.097,
+    "hit": 85.7,
+    "dur": 83,
+    "suites": {
+     "tb2": {
+      "pass": 21,
+      "n": 48,
+      "cost": 0.086
+     },
+     "swebenchpro": {
+      "pass": 24,
+      "n": 48,
+      "cost": 0.144
+     },
+     "spreadsheetbench-verified": {
+      "pass": 18,
+      "n": 24,
+      "cost": 0.026
+     }
+    }
+   },
+   {
+    "id": "omp-openai",
+    "en": "oh-my-pi",
+    "zh": "oh-my-pi",
+    "short": "omp",
+    "side": "chatgpt",
+    "ours": false,
+    "effort": "high",
+    "version": "omp/18.18.0",
+    "n": 120,
+    "pass": 59.2,
+    "orig": 56.7,
+    "pert": 61.7,
+    "tokens": 627,
+    "cost": 0.21,
+    "hit": 93.7,
+    "dur": 225,
+    "suites": {
+     "tb2": {
+      "pass": 35,
+      "n": 48,
+      "cost": 0.174
+     },
+     "swebenchpro": {
+      "pass": 18,
+      "n": 48,
+      "cost": 0.331
+     },
+     "spreadsheetbench-verified": {
+      "pass": 18,
+      "n": 24,
+      "cost": 0.041
+     }
+    }
+   },
+   {
+    "id": "fork-openai-sub",
+    "en": "This fork + 3 subagents",
+    "zh": "本分支 + 3 個 subagent",
+    "short": "fork+sub",
+    "side": "chatgpt",
+    "ours": true,
+    "effort": "low",
+    "version": "2.1.297 (Claude Code)",
+    "n": 120,
+    "pass": 50.8,
+    "orig": 50.0,
+    "pert": 51.7,
+    "tokens": 783,
+    "cost": 0.298,
+    "hit": 90.3,
+    "dur": 171,
+    "suites": {
+     "tb2": {
+      "pass": 30,
+      "n": 48,
+      "cost": 0.286
+     },
+     "swebenchpro": {
+      "pass": 13,
+      "n": 48,
+      "cost": 0.401
+     },
+     "spreadsheetbench-verified": {
+      "pass": 18,
+      "n": 24,
+      "cost": 0.115
+     }
+    }
+   },
+   {
+    "id": "pi-openai",
+    "en": "pi",
+    "zh": "pi",
+    "short": "pi",
+    "side": "chatgpt",
+    "ours": false,
+    "effort": "medium",
+    "version": "1.5.0",
+    "n": 120,
+    "pass": 50.8,
+    "orig": 50.0,
+    "pert": 51.7,
+    "tokens": 145,
+    "cost": 0.077,
+    "hit": 88.4,
+    "dur": 129,
+    "suites": {
+     "tb2": {
+      "pass": 28,
+      "n": 48,
+      "cost": 0.066
+     },
+     "swebenchpro": {
+      "pass": 15,
+      "n": 48,
+      "cost": 0.117
+     },
+     "spreadsheetbench-verified": {
+      "pass": 18,
+      "n": 24,
+      "cost": 0.017
+     }
+    }
+   },
+   {
+    "id": "codex",
+    "en": "Codex CLI 0.167.0",
+    "zh": "Codex CLI 0.167.0",
+    "short": "codex",
+    "side": "chatgpt",
+    "ours": false,
+    "effort": "low",
+    "version": "0.167.0",
+    "n": 120,
+    "pass": 49.2,
+    "orig": 50.0,
+    "pert": 48.3,
+    "tokens": 247,
+    "cost": 0.094,
+    "hit": 91.2,
+    "dur": 97,
+    "suites": {
+     "tb2": {
+      "pass": 26,
+      "n": 48,
+      "cost": 0.091
+     },
+     "swebenchpro": {
+      "pass": 15,
+      "n": 48,
+      "cost": 0.132
+     },
+     "spreadsheetbench-verified": {
+      "pass": 18,
+      "n": 24,
+      "cost": 0.024
+     }
+    }
+   },
+   {
+    "id": "dsh-openai",
+    "en": "dsh",
+    "zh": "dsh",
+    "short": "dsh",
+    "side": "chatgpt",
+    "ours": false,
+    "effort": "low",
+    "version": "0.2.2-rc.1",
+    "n": 120,
+    "pass": 48.3,
+    "orig": 46.7,
+    "pert": 50.0,
+    "tokens": 534,
+    "cost": 0.166,
+    "hit": 93.4,
+    "dur": 141,
+    "suites": {
+     "tb2": {
+      "pass": 25,
+      "n": 48,
+      "cost": 0.135
+     },
+     "swebenchpro": {
+      "pass": 15,
+      "n": 48,
+      "cost": 0.27
+     },
+     "spreadsheetbench-verified": {
+      "pass": 18,
+      "n": 24,
+      "cost": 0.02
+     }
+    }
+   },
+   {
+    "id": "fork-openai",
+    "en": "This fork",
+    "zh": "本分支",
+    "short": "fork",
+    "side": "chatgpt",
+    "ours": true,
+    "effort": "low",
+    "version": "2.1.297 (Claude Code)",
+    "n": 120,
+    "pass": 45.0,
+    "orig": 43.3,
+    "pert": 46.7,
+    "tokens": 311,
+    "cost": 0.117,
+    "hit": 90.8,
+    "dur": 131,
+    "suites": {
+     "tb2": {
+      "pass": 23,
+      "n": 48,
+      "cost": 0.099
+     },
+     "swebenchpro": {
+      "pass": 13,
+      "n": 48,
+      "cost": 0.18
+     },
+     "spreadsheetbench-verified": {
+      "pass": 18,
+      "n": 24,
+      "cost": 0.028
+     }
+    }
+   },
+   {
+    "id": "opencode-openai",
+    "en": "opencode",
+    "zh": "opencode",
+    "short": "opencode",
+    "side": "chatgpt",
+    "ours": false,
+    "effort": "low",
+    "version": "1.19.5",
+    "n": 120,
+    "pass": 45.0,
+    "orig": 41.7,
+    "pert": 48.3,
+    "tokens": 343,
+    "cost": 0.131,
+    "hit": 91.6,
+    "dur": 189,
+    "suites": {
+     "tb2": {
+      "pass": 24,
+      "n": 48,
+      "cost": 0.119
+     },
+     "swebenchpro": {
+      "pass": 12,
+      "n": 48,
+      "cost": 0.193
+     },
+     "spreadsheetbench-verified": {
+      "pass": 18,
+      "n": 24,
+      "cost": 0.029
+     }
+    }
+   }
+  ],
+  "paired": [
+   [
+    "fork-claude-key",
+    "official-key",
+    -7.5,
+    4.4
+   ],
+   [
+    "fork-openai",
+    "codex",
+    -4.2,
+    3.4
+   ],
+   [
+    "fork-claude-key-sub",
+    "fork-claude-key",
+    4.2,
+    7.5
+   ],
+   [
+    "official-key-sub",
+    "official-key",
+    -2.5,
+    4.4
+   ],
+   [
+    "fork-openai-sub",
+    "fork-openai",
+    5.8,
+    5.0
+   ],
+   [
+    "dsh-claude",
+    "pi-claude",
+    18.3,
+    6.2
+   ],
+   [
+    "opencode-claude",
+    "pi-claude",
+    15.8,
+    5.5
+   ],
+   [
+    "omp-claude",
+    "pi-claude",
+    11.7,
+    6.5
+   ]
+  ]
+ }
+}

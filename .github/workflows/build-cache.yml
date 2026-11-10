@@ -1,0 +1,50 @@
+name: Build cache
+
+# A PR can only restore caches saved on its own ref or its base branch, so each
+# push to dev saves the React Compiler output of its tree (scripts/build.mjs)
+# for the e2e builds of every PR into dev. automerge.yml dispatches it after a
+# merge, since a push made with GITHUB_TOKEN starts no workflow.
+on:
+  workflow_dispatch:
+  push:
+    branches: [dev]
+    paths:
+      - 'src/**'
+      - 'scripts/build.mjs'
+      - 'bun.lock'
+      - '.github/workflows/build-cache.yml'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-cache:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+
+      - name: Install dependencies
+        env:
+          BUN_INSTALL_CACHE_DIR: ${{ runner.temp }}/bun-cache
+        run: bun install --frozen-lockfile
+
+      - name: Restore build cache
+        uses: actions/cache@v4
+        with:
+          path: node_modules/.cache/claude-build-transform
+          key: build-transform-${{ runner.os }}-${{ runner.arch }}-${{ github.sha }}
+          restore-keys: build-transform-${{ runner.os }}-${{ runner.arch }}-
+
+      - name: Build
+        run: bun run build

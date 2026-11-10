@@ -23,6 +23,7 @@ const maxOutput = spyOn(api, 'getMaxOutputTokensForModel').mockReturnValue(4096)
 const config = await import('../../utils/config.js')
 const globalConfig = spyOn(config, 'getGlobalConfig').mockReturnValue({ autoCompactEnabled: true } as ReturnType<typeof config.getGlobalConfig>)
 const {
+  countRapidRefills,
   getEffectiveContextWindowSize,
   getAutoCompactThreshold,
   getAutoCompactState,
@@ -183,4 +184,15 @@ test('--autocompact wins over configured settings, and auto drops them', async (
     setCliAutoCompactWindow(undefined)
   }
   expect(getConfiguredAutoCompactWindow('custom-model')).toBe(150_000)
+})
+
+test('counts compactions that came within 3 turns of the previous one (2.1.319)', () => {
+  expect(countRapidRefills(undefined)).toBe(0)
+  expect(countRapidRefills({ compacted: true, turnId: 't', turnCounter: 2 })).toBe(1)
+  expect(
+    countRapidRefills({ compacted: true, turnId: 't', turnCounter: 1, consecutiveRapidRefills: 2 }),
+  ).toBe(3)
+  expect(
+    countRapidRefills({ compacted: true, turnId: 't', turnCounter: 3, consecutiveRapidRefills: 2 }),
+  ).toBe(0)
 })

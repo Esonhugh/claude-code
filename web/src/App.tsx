@@ -10,8 +10,10 @@ import {
   listRunning,
   listWorkspaceFiles,
   loadSidebar,
+  openLocal,
   loadModels,
   loadTranscript,
+  ApiError,
   NeedsTrustError,
   openCoordinator,
   openSessionSocket,
@@ -29,7 +31,8 @@ import { type AgentsView, agentTasks } from './components/Agents'
 import { AskDock, ChatComposer, chatTools, ContextChip, GoalMenu, type MentionTarget, Pins } from './components/Composer'
 import { AppDialog, type Palette, type Theme } from './components/Dialogs'
 import type { ContextUsage } from './components/Settings'
-import { AgentsContext, ChatContext, FilesContext, joinTurns, Message, TeamBar } from './components/Message'
+import { AgentsContext, ChatContext, FilesContext, joinTurns, Message, modelOption, QuoteContext, QuoteOnSelect, replyPrompt, TeamBar } from './components/Message'
+import { canvasTabMods, closeCanvasTab, MOD_CLIENT, MOD_LAYOUT, MOD_SURFACE, ModCanvas, ModSite, ModSitesProvider, ModToasts, ModView } from './components/Mods'
 import { Preview } from './components/Preview'
 import { ProjectDialog } from './components/ProjectDialog'
 import { ProjectView } from './components/ProjectView'
@@ -40,23 +43,30 @@ import { ColumnDrag, type Columns, columnVars } from './components/ColumnDrag'
 import { FootMenu, followScroll, formatElapsed, readStored, type T, writeStored } from './components/ui'
 import { WebPreview } from './components/WebPreview'
 import { chatMarkdown, exportFileName } from './exportChat'
-import { dataUrlFile, filesBase, IMAGE_TYPES, mentionPath, readAsDataUrl, sessionFiles, setHome, tilde, uploadFile } from './files'
+import { baseName, dataUrlFile, filesBase, IMAGE_TYPES, mentionPath, readAsDataUrl, sessionFiles, setHome, tilde, uploadFile } from './files'
 import { initialLang, type Lang, saveLang, translate } from './i18n'
 import {
   type Approval,
   type ApprovalChoice,
   controlRequest,
   currentTodos,
+  MOD_ANSWERS,
   type ModelOption,
+  type ModPane,
+  type PromptDecoration,
   newUuid,
   permissionResponse,
   REQUEST_PREFIX,
   type SessionEnv,
   type TaskNote,
   type ChatState,
+  taskListTodos,
   teamName,
+  type Todo,
   unsupportedControlResponse,
+  isConnectionDrop,
   userMessage,
+  usesTaskList,
 } from './protocol'
 import { agentInputs, messageTarget, notesByItem, taskNoteText } from './projects'
 import { turnSources } from './sources'
@@ -65,6 +75,13 @@ import { nativeCommand, type SlashCommand } from './commands'
 import { previewTarget, WebPreviewContext } from './webPreview'
 
 const HISTORY_PAGE = 200
+// About three minutes in all: longer than the server's 120 s WebSocket ping timeout.
+const RECONNECT_WAITS = [500, 1000, 2000, 4000, 8000, 15000, 30000, 30000, 30000, 30000, 30000]
+/** What the middle column shows: a file or chat image, a web page, or a Mod's pane. */
+type Canvas =
+  | { sessionId: string; path: string; image?: { src: string; target: string } }
+  | { sessionId: string; url: string }
+  | { sessionId: string; mod: string }
 const MODELS_KEY = 'claude-web-models'
 const COMMANDS_KEY = 'claude-web-commands'
 const COLUMNS_KEY = 'claude-web-columns'
@@ -105,28 +122,42 @@ function StatusLine({ t, since, retry, onStop }: { t: T; since: number; retry?: 
     const id = setInterval(() => setTick(n => n + 1), 120)
     return () => clearInterval(id)
   }, [])
+  const spinner = useMemo(() => ({ word: verb, message: null, suffix: '…', mode: 'responding' }), [verb])
   return (
-    <div className="status-line" role="status">
-      <span className="glyph">{GLYPHS[tick % GLYPHS.length]}</span>
-      <span className="verb shimmer">{verb}…</span>
-      <span className="mono">{formatElapsed(Date.now() - since)}</span>
-      {retry && (
-        // As the TUI's spinner row: the request failed and is tried again.
-        <span className="retry">
-          {t('apiRetry', {
-            status: retry.status ? ` ${retry.status}` : '',
-            s: String(Math.ceil(Math.max(0, retry.delayMs - (Date.now() - retry.at)) / 1000)),
-            n: String(retry.attempt),
-            max: String(retry.max),
-          })}
-        </span>
+    <ModSite component="Spinner" id="main" props={spinner}>
+      {p => (
+        <div className="status-line" role="status">
+          <span className="glyph">{GLYPHS[tick % GLYPHS.length]}</span>
+          <span className="verb shimmer">
+            {String(p.message ?? p.word)}
+            {String(p.suffix)}
+          </span>
+          <span className="mono">{formatElapsed(Date.now() - since)}</span>
+          {retry && (
+            // As the TUI's spinner row: the request failed and is tried again.
+            <span className="retry">
+              {t('apiRetry', {
+                status: retry.status ? ` ${retry.status}` : '',
+                s: String(Math.ceil(Math.max(0, retry.delayMs - (Date.now() - retry.at)) / 1000)),
+                n: String(retry.attempt),
+                max: String(retry.max),
+              })}
+            </span>
+          )}
+          <button type="button" onClick={onStop}>
+            {t('escInterrupt')}
+          </button>
+        </div>
       )}
-      <button type="button" onClick={onStop}>
-        {t('escInterrupt')}
-      </button>
-    </div>
+    </ModSite>
   )
 }
+
+/** A typeahead row a Mod offered (`prompt.autocomplete`). */
+type ModRow = { text: string; label?: string; description?: string }
+
+/** The page draws no session mode labels of its own (the TUI's `focus`, `memory paused`). */
+const NO_MODES = { modes: [] }
 
 /** Seconds since the current turn started; ticks while busy. */
 function useTurnStart(busy: boolean | undefined, view: string | null): number | undefined {
@@ -152,14 +183,15 @@ export function App() {
     writeStored(COLUMNS_KEY, next)
   }
   const [drafts, setDrafts] = useState<Record<string, string>>({})
+  const [quotes, setQuotes] = useState<Record<string, string>>({})
   // Per session: the agents its box's next message goes to, picked with `@`.
   const [agentTargets, setAgentTargets] = useState<Record<string, MentionTarget[]>>({})
   const [attachments, setAttachments] = useState<Record<string, File[]>>({})
-  const [preview, setPreview] = useState<
-    | { sessionId: string; path: string; image?: { src: string; target: string } }
-    | { sessionId: string; url: string }
-  >()
-  const [info, setInfo] = useState<{ workspace?: string; tempRoot?: string; previewOrigins: string[]; version?: string }>({
+  const [preview, setPreview] = useState<Canvas>()
+  // Per session: the Mod panes put on the canvas (tabs beside the file shown there), and that file.
+  const [canvasMods, setCanvasMods] = useState<Record<string, string[]>>({})
+  const [canvasFile, setCanvasFile] = useState<Record<string, Exclude<Canvas, { mod: string }>>>({})
+  const [info, setInfo] = useState<{ workspace?: string; tempRoot?: string; previewOrigins: string[]; version?: string; local?: boolean }>({
     previewOrigins: [],
   })
   const [dragging, setDragging] = useState(false)
@@ -181,7 +213,7 @@ export function App() {
   // The project shown in place of the chat; its coordinator is `state.view`.
   const [projectId, setProjectId] = useState<string>()
   const [projectDialog, setProjectDialog] = useState<'new' | Project>()
-  const pendingRequests = useRef(new Map<string, (response: Record<string, unknown>) => void>())
+  const pendingRequests = useRef(new Map<string, { id: string; settle: (response: Record<string, unknown>) => void }>())
   // The last session's models, with the provider they came from: another provider's list is stale.
   const [knownModels, setKnownModels] = useState<{ provider?: string; models: ModelOption[] }>(() => {
     const stored = readStored<unknown>(MODELS_KEY, [])
@@ -224,6 +256,28 @@ export function App() {
   const setDraft = (value: string) => setDrafts(d => ({ ...d, [draftKey]: value }))
   const files = attachments[draftKey] ?? []
   const setFiles = (next: File[]) => setAttachments(a => ({ ...a, [draftKey]: next }))
+  const quote = quotes[draftKey]
+  // What Mods did to a session's prompt box: a dim suggestion, marks on the text, typeahead rows.
+  const [modPrompt, setModPrompt] = useState<
+    Record<string, { suggestion?: string; decorations?: PromptDecoration[]; rows?: ModRow[]; start?: number; end?: number }>
+  >({})
+  const draftsRef = useRef(drafts)
+  draftsRef.current = drafts
+  // The value the person typed last, so the edit the draft makes next is told to Mods as theirs.
+  const typed = useRef<string | undefined>(undefined)
+  const setDraftByPerson = (value: string) => {
+    typed.current = value
+    setDraft(value)
+  }
+  // Stable, so the messages that offer Reply do not draw again on every render.
+  const quoteInChat = useCallback((text: string | undefined) => {
+    const id = stateRef.current.view
+    if (!id) return
+    setQuotes(q => {
+      const { [id]: _, ...rest } = q
+      return text?.trim() ? { ...rest, [id]: text.trim() } : rest
+    })
+  }, [])
   // The server's own version until a session reports one (the start page has no session).
   const shownEnv = chat && Object.keys(chat.env).length ? chat.env : knownEnv
   const env: SessionEnv = useMemo(
@@ -289,7 +343,25 @@ export function App() {
       label: t('preview'),
     }
   }, [view, info.previewOrigins, t])
-  const closePreview = useCallback(() => setPreview(undefined), [])
+  useEffect(() => {
+    if (preview && !('mod' in preview)) setCanvasFile(f => ({ ...f, [preview.sessionId]: preview }))
+  }, [preview])
+  const openModCanvas = useCallback(
+    (pane: ModPane) => {
+      if (!view) return
+      setCanvasMods(m => ({ ...m, [view]: [...(m[view] ?? []).filter(id => id !== pane.id), pane.id] }))
+      setPreview({ sessionId: view, mod: pane.id })
+      setSheetOpen(false)
+    },
+    [view],
+  )
+  const closeCanvas = (sessionId: string, closing: { mod: string } | 'file') => {
+    const file = canvasFile[sessionId]
+    const next = closeCanvasTab(canvasMods[sessionId] ?? [], !!file, closing)
+    setCanvasMods(m => ({ ...m, [sessionId]: next.mods }))
+    if (!next.keepFile) setCanvasFile(({ [sessionId]: _, ...rest }) => rest)
+    setPreview(next.show === 'file' ? file : next.show && { sessionId, mod: next.show.mod })
+  }
   const tasks = chat?.tasks
   // The names Agent calls gave their agents, as a string so streaming does not rebuild the context.
   const agentNames = useMemo(
@@ -397,7 +469,7 @@ export function App() {
 
   const historyLimit = useRef(HISTORY_PAGE)
   const [sidebarLoaded, setSidebarLoaded] = useState(false)
-  const untitledRetries = useRef(0)
+  const untitledRetries = useRef({ ids: '', count: 0 })
   const refreshHistory = useCallback(async (more = false) => {
     if (more) historyLimit.current += HISTORY_PAGE
     try {
@@ -406,10 +478,18 @@ export function App() {
       dispatch({ type: 'running', ids: running.map(r => r.id) })
       // A running session listed by its id has no turn in its transcript yet. A page that is not
       // attached to it (e.g. reloaded just after its reply) gets no result to refresh on, so look
-      // again a few times, backing off, until the CLI has written the turn.
-      const untitled = data.sessions.some(s => s.label === 'id' && running.some(r => r.id === s.id))
-      if (!untitled) untitledRetries.current = 0
-      else if (untitledRetries.current < 5) setTimeout(() => void refreshHistory(), 500 * 2 ** untitledRetries.current++)
+      // again a few times, backing off, until the CLI has written the turn. The retries are per
+      // set of such sessions: a worker that only ever receives peer prompts stays listed by its
+      // id for its whole run and must not use them up for the next reload.
+      const untitled = data.sessions
+        .filter(s => s.label === 'id' && running.some(r => r.id === s.id))
+        .map(s => s.id)
+        .sort()
+        .join(',')
+      if (untitled !== untitledRetries.current.ids) untitledRetries.current = { ids: untitled, count: 0 }
+      if (untitled && untitledRetries.current.count < 5) {
+        setTimeout(() => void refreshHistory(), 500 * 2 ** untitledRetries.current.count++)
+      }
       setProjects(await listProjects())
       setSidebarLoaded(true)
     } catch {
@@ -442,7 +522,7 @@ export function App() {
     getInfo().then(
       res => {
         setHome(res.home)
-        setInfo({ workspace: res.workspace, tempRoot: res.temp_root, previewOrigins: res.preview_origins ?? [], version: res.version })
+        setInfo({ workspace: res.workspace, tempRoot: res.temp_root, previewOrigins: res.preview_origins ?? [], version: res.version, local: res.local })
       },
       () => {},
     )
@@ -494,9 +574,14 @@ export function App() {
 
   // The server's own list, so a new browser or the first session already has the discovered models.
   const provider = account.account?.provider
+  // Asked again on each return to the start page: a session may have saved another model.
+  const [startModel, setStartModel] = useState<string>()
+  const onStartPage = state.view === null
   useEffect(() => {
+    if (!onStartPage) return
     loadModels().then(
-      models => {
+      ({ models, model }) => {
+        setStartModel(model)
         if (!models.length) return
         const known = { provider, models }
         setKnownModels(known)
@@ -504,7 +589,7 @@ export function App() {
       },
       () => {},
     )
-  }, [provider])
+  }, [provider, onStartPage])
   useEffect(() => {
     if (chat?.models.length) {
       const known = { provider: account.account?.provider, models: chat.models }
@@ -545,9 +630,12 @@ export function App() {
         return
       }
       const requestId = request(id, prefix, body)
-      pendingRequests.current.set(requestId, response => {
-        if (response.subtype === 'error') reject(new Error(String(response.error ?? 'error')))
-        else resolve((response.response ?? {}) as Record<string, unknown>)
+      pendingRequests.current.set(requestId, {
+        id,
+        settle: response => {
+          if (response.subtype === 'error') reject(new Error(String(response.error ?? 'error')))
+          else resolve((response.response ?? {}) as Record<string, unknown>)
+        },
       })
     })
 
@@ -606,11 +694,17 @@ export function App() {
       const pending = typeof requestId === 'string' && pendingRequests.current.get(requestId)
       if (pending) {
         pendingRequests.current.delete(requestId as string)
-        pending(msg.response!)
+        pending.settle(msg.response!)
       }
       dispatch({ type: 'chat', id, action: { type: 'message', raw } })
       const reply = unsupportedControlResponse(raw)
       if (reply) socket.send(JSON.stringify(reply) + '\n')
+      const ask = raw as { type?: string; request_id?: unknown; request?: Record<string, unknown> }
+      if (ask.type === 'control_request' && typeof ask.request_id === 'string' && (MOD_ANSWERS as readonly unknown[]).includes(ask.request?.subtype)) {
+        void modAnswer.current(id, ask.request!).then(response =>
+          socket.send(JSON.stringify({ type: 'control_response', response: { subtype: 'success', request_id: ask.request_id, response } }) + '\n'),
+        )
+      }
       if (typeof requestId === 'string' && requestId.startsWith(REQUEST_PREFIX.effort)) getSettings(id)
       if ((raw as { type?: string }).type === 'result') {
         request(id, REQUEST_PREFIX.context, { subtype: 'get_context_usage' })
@@ -621,22 +715,70 @@ export function App() {
         setTimeout(() => void refreshHistory(), 500)
       }
     })
-    socket.addEventListener('close', () => {
+    socket.addEventListener('close', event => {
       flush()
       if (sockets.current.get(id) !== socket) return
       sockets.current.delete(id)
+      // 1011: the session process failed; the reason carries its exit code and last stderr line.
+      const ended = event.code === 1011 && event.reason ? t('sessionEndedReason', { reason: event.reason }) : t('sessionEnded')
+      // Nothing will answer the requests still in flight on this socket.
+      for (const [requestId, pending] of pendingRequests.current) {
+        if (pending.id !== id) continue
+        pendingRequests.current.delete(requestId)
+        pending.settle({ subtype: 'error', error: ended })
+      }
+      if (isConnectionDrop(event.code)) {
+        void openOnce(`r:${id}`, () => reconnect(id))
+        return
+      }
       dispatch({ type: 'mode', id, mode: 'readonly' })
-      dispatch({ type: 'chat', id, action: { type: 'error', text: t('sessionEnded') } })
+      dispatch({ type: 'chat', id, action: { type: 'error', text: ended } })
       void refreshHistory()
     })
     sockets.current.set(id, socket)
     dispatch({ type: 'mode', id, mode: 'live' })
     request(id, REQUEST_PREFIX.initialize, { subtype: 'initialize' })
+    // This page draws Mods' panes, band and toasts (the session refuses when it runs no Mods).
+    request(id, REQUEST_PREFIX.mods, {
+      subtype: 'ui_attach',
+      surface: MOD_SURFACE,
+      client_id: MOD_CLIENT,
+      viewport: MOD_LAYOUT,
+      answers: MOD_ANSWERS,
+    })
+    request(id, REQUEST_PREFIX.mods, { subtype: 'ui_panes', client_id: MOD_CLIENT })
     request(id, REQUEST_PREFIX.rewindPoints, { subtype: 'rewind_points' })
     getSettings(id)
     request(id, REQUEST_PREFIX.apps, { subtype: 'codex_apps' })
     // A session picked up mid-life has had turns already; a new one has nothing to count yet.
     if (stateRef.current.chats[id]?.items.length) request(id, REQUEST_PREFIX.context, { subtype: 'get_context_usage' })
+  }
+
+  /**
+   * The connection dropped while the session may still run: attach again, waiting while the
+   * server still counts the dead socket as attached (it notices within its ping timeout).
+   */
+  const reconnect = async (id: string) => {
+    dispatch({ type: 'mode', id, mode: 'connecting' })
+    for (const wait of RECONNECT_WAITS) {
+      await new Promise(resolve => setTimeout(resolve, wait))
+      if (sockets.current.has(id) || !stateRef.current.chats[id]) return
+      const running = await listRunning().catch(() => undefined)
+      if (!running) continue
+      const live = running.find(r => r.id === id)
+      if (!live) break
+      if (live.attached) continue
+      try {
+        await attach(id)
+        return
+      } catch {
+        // Taken by another tab or gone in the meantime: look again.
+      }
+    }
+    // Not running any more, or unreachable: a send resumes it.
+    dispatch({ type: 'mode', id, mode: 'readonly' })
+    dispatch({ type: 'chat', id, action: { type: 'local', patch: { notice: t('sessionDisconnected') } } })
+    void refreshHistory()
   }
 
   const loadInto = async (id: string, before?: number) => {
@@ -649,14 +791,30 @@ export function App() {
       workDir: page.cwd,
       prepend: before !== undefined,
       rewindPoints: page.rewindPoints,
+      settings: page.settings,
     })
   }
 
-  const openSession = async (entry: HistoryEntry) => {
+  // A reload reopens the session or project in the address while a click on its row may open
+  // it too: both opens would attach, and the server refuses the second socket, which then ends
+  // the first one's view. Overlapping opens of one target share the first.
+  const opening = useRef(new Map<string, Promise<void>>())
+  const openOnce = (key: string, open: () => Promise<void>) => {
+    const pending = opening.current.get(key)
+    if (pending) return pending
+    const run = open().finally(() => opening.current.delete(key))
+    opening.current.set(key, run)
+    return run
+  }
+
+  const openSession = (entry: HistoryEntry): Promise<void> => {
     setProjectId(undefined)
     stickToBottom.current = true
     dispatch({ type: 'view', id: entry.id })
-    if (stateRef.current.chats[entry.id]) return
+    return openOnce(`s:${entry.id}`, () => loadSession(entry))
+  }
+  const loadSession = async (entry: HistoryEntry) => {
+    if (stateRef.current.chats[entry.id]) return reclaim(entry.id)
     dispatch({ type: 'mode', id: entry.id, mode: 'readonly' })
     const findLive = async () => (await listRunning().catch(() => [])).find(r => r.id === entry.id)
     for (let wait = 200; ; wait *= 2) {
@@ -665,10 +823,18 @@ export function App() {
         break
       } catch (err) {
         // A running session's turn reaches its transcript up to 100 ms after the reply, so a
-        // reload right after one can find nothing yet; read again before giving up.
-        if (wait <= 1600 && (await findLive())) {
-          await new Promise(resolve => setTimeout(resolve, wait))
-          continue
+        // reload right after one can find nothing yet; read again before giving up. Any other
+        // error (a failed read, the server gone) is shown at once.
+        const notWrittenYet = err instanceof ApiError && err.status === 404
+        if (notWrittenYet && (await findLive())) {
+          if (wait <= 1600) {
+            await new Promise(resolve => setTimeout(resolve, wait))
+            continue
+          }
+          // Still running with nothing to read (a worker fed only peer prompts never writes a
+          // visible turn): open it empty and attach below rather than report it missing.
+          dispatch({ type: 'loaded', id: entry.id, messages: [], start: 0 })
+          break
         }
         dispatch({
           type: 'chat',
@@ -684,13 +850,35 @@ export function App() {
     else if (live) await attach(entry.id).catch(() => {})
   }
 
+  /** A chat open in another tab: once that tab lets go, this one takes the session (or its transcript). */
+  const reclaim = async (id: string) => {
+    if (stateRef.current.chats[id]?.mode !== 'elsewhere') return
+    const live = (await listRunning().catch(() => undefined))?.find(r => r.id === id)
+    if (live?.attached || stateRef.current.chats[id]?.mode !== 'elsewhere') return
+    if (live) await attach(id).catch(() => {})
+    else dispatch({ type: 'mode', id, mode: 'readonly' })
+  }
+  // Back from the other tab (where it was closed): try again.
+  useEffect(() => {
+    const onFocus = () => {
+      const id = stateRef.current.view
+      if (id && stateRef.current.chats[id]?.mode === 'elsewhere') void openOnce(`s:${id}`, () => reclaim(id))
+    }
+    window.addEventListener('focus', onFocus)
+    return () => window.removeEventListener('focus', onFocus)
+  })
+
   /** Shows a project: starts or resumes its coordinator and attaches to it. */
-  const openProject = async (p: Project) => {
+  const openProject = (p: Project): Promise<void> => {
     setSidebarOpen(false)
     setPreview(undefined)
     setStartError(undefined)
     setProjectId(p.id)
+    return openOnce(`p:${p.id}`, () => connectProject(p))
+  }
+  const connectProject = async (p: Project) => {
     try {
+      const wasRunning = !!p.coordinator_session_id && (await listRunning().catch(() => [])).some(r => r.id === p.coordinator_session_id)
       const created = await openCoordinator(p.id)
       const id = created.session_id
       setProjects(list => list.map(x => (x.id === p.id ? { ...x, coordinator_session_id: id, running: true } : x)))
@@ -704,8 +892,14 @@ export function App() {
       }
       if (sockets.current.has(id)) return
       const running = await listRunning().catch(() => [])
-      if (running.find(r => r.id === id)?.attached) dispatch({ type: 'mode', id, mode: 'elsewhere' })
-      else await attach(id)
+      if (running.find(r => r.id === id)?.attached) {
+        dispatch({ type: 'mode', id, mode: 'elsewhere' })
+        return
+      }
+      // A coordinator just started again begins at auto; the context window it last had goes back to it.
+      const contextWindow = wasRunning ? undefined : stateRef.current.chats[id]?.contextWindow
+      await attach(id)
+      if (typeof contextWindow === 'number') changeContextWindow(id, contextWindow)
     } catch (err) {
       setProjectId(undefined)
       dispatch({ type: 'view', id: null })
@@ -730,6 +924,13 @@ export function App() {
     const entry = kind === 's' ? state.history.find(h => h.id === id) : undefined
     if (p) void openProject(p)
     else if (entry) void openSession(entry)
+    // Older than the sidebar's first page: open it if its transcript is still there.
+    else if (kind === 's') {
+      void loadTranscript(id).then(
+        page => openSession({ id, title: page.title ?? id, cwd: page.cwd, lastModified: 0 }),
+        () => history.replaceState(null, '', location.pathname + location.search),
+      )
+    }
     // Gone (deleted, archived): the start page, without the stale address.
     else history.replaceState(null, '', location.pathname + location.search)
   }, [sidebarLoaded])
@@ -750,30 +951,67 @@ export function App() {
     patchProject(p.id, { permission_mode: mode }).catch(() => {})
   }
 
+  // A resume under way per session: a send right after the focus prewarm waits for it.
+  const resuming = useRef(new Map<string, Promise<boolean>>())
+  // Picks made while a chat has no socket: a process still running hears of them only on resume.
+  const offlinePicks = useRef(new Map<string, { model?: string; effort?: string; contextWindow?: number | null; mode?: string }>())
+  const pickOffline = (id: string, pick: { model?: string; effort?: string; contextWindow?: number | null; mode?: string }) =>
+    offlinePicks.current.set(id, { ...offlinePicks.current.get(id), ...pick })
   /** Starts the process for a read-only transcript (prewarm on focus). */
-  const resume = async (id: string): Promise<boolean> => {
+  const resume = (id: string): Promise<boolean> => {
+    const running = resuming.current.get(id)
+    if (running) return running
+    const run = resumeOnce(id).finally(() => resuming.current.delete(id))
+    resuming.current.set(id, run)
+    return run
+  }
+  const resumeOnce = async (id: string): Promise<boolean> => {
     const current = stateRef.current.chats[id]
     if (!current || current.mode === 'live') return true
-    if (current.mode === 'connecting' || current.mode === 'elsewhere') return false
+    // A project or session opened a moment ago shows its box while it still attaches: a message
+    // sent then waits for that instead of being turned away.
+    if (current.mode === 'connecting') {
+      await Promise.all([...opening.current.values()])
+      return sockets.current.has(id)
+    }
+    if (current.mode === 'elsewhere') return false
     dispatch({ type: 'mode', id, mode: 'connecting' })
     try {
-      const running = await listRunning()
-      if (running.find(r => r.id === id)?.attached) {
+      const running = (await listRunning()).find(r => r.id === id)
+      if (running?.attached) {
         dispatch({ type: 'mode', id, mode: 'elsewhere' })
         return false
       }
       const entry = stateRef.current.history.find(h => h.id === id)
       // A coordinator restarts through its project, with its prompt and settings.
       const owner = projectsRef.current.find(p => p.coordinator_session_id === id)
+      // The model and effort shown go to a new process, unless they belong to the other provider (an account switch since).
+      const chatProvider = current.env.account?.apiProvider
+      const provider = account.account?.provider
+      const carry = !chatProvider || !provider || (chatProvider === 'openai') === (provider === 'openai')
+      const spawned = !running && !owner
       if (owner) await openCoordinator(owner.id)
       else {
         await createSession({
           resume: id,
           cwd: current.workDir ?? entry?.cwd,
           ...(current.permissionMode && { permission_mode: current.permissionMode }),
+          // The picker's own value (`sonnet`, not its id), so the new process lists no extra row for it.
+          ...(spawned && carry && current.model && { model: modelOption(current.model, current.models)?.value ?? current.model }),
+          ...(spawned && carry && current.effort && { effort: current.effort }),
         })
       }
       await attach(id)
+      const picks = offlinePicks.current.get(id)
+      offlinePicks.current.delete(id)
+      if (!spawned && picks) {
+        if (picks.model) changeModel(id, picks.model)
+        if (picks.effort) changeEffort(id, picks.effort)
+        if (picks.mode && !owner) changeMode(id, picks.mode)
+      }
+      // A new process starts at auto; a running one keeps its own unless a pick was made.
+      const contextWindow = running ? picks?.contextWindow : current.contextWindow
+      if (contextWindow !== undefined && (running || contextWindow !== null)) changeContextWindow(id, contextWindow)
       return true
     } catch (err) {
       dispatch({ type: 'mode', id, mode: 'readonly' })
@@ -805,6 +1043,25 @@ export function App() {
     const native = nativeCommand(text)
     if (!native) return false
     setDrafts(d => ({ ...d, [key]: '' }))
+    if ('clear' in native) {
+      const current = stateRef.current.chats[key]
+      if (!current) return true
+      if (projectsRef.current.some(p => p.coordinator_session_id === key)) {
+        dispatch({ type: 'chat', id: key, action: { type: 'local', patch: { notice: t('clearInProject') } } })
+        return true
+      }
+      // A new session in this chat's folder, with what it runs, in place of the CLI's in-place /clear.
+      dispatch({
+        type: 'startOptions',
+        patch: {
+          ...(current.permissionMode && { mode: current.permissionMode }),
+          ...(current.model && { model: modelOption(current.model, current.models)?.value ?? current.model }),
+          ...(current.effort && { effort: current.effort }),
+        },
+      })
+      newChat({ cwd: current.workDir })
+      return true
+    }
     if ('menu' in native) {
       // The model menu under the input box (it holds the effort levels too).
       const button = document.querySelector<HTMLElement>(`.main .footbtn[aria-label="${t('model')}"]`)
@@ -832,11 +1089,15 @@ export function App() {
       return
     }
     const picked = (agentTargets[id] ?? []).filter(x => chat.tasks[x.id])
+    const replyTo = text.startsWith('/') ? undefined : quotes[id]
+    const prompt = replyPrompt(replyTo, text)
     setDrafts(d => ({ ...d, [id]: '' }))
     setAttachments(a => ({ ...a, [id]: [] }))
+    if (replyTo) setQuotes(({ [id]: _, ...rest }) => rest)
     if (picked.length) setAgentTargets(x => ({ ...x, [id]: [] }))
     // A message that could not go out returns to an empty box.
     const restore = () => {
+      if (replyTo) setQuotes(q => (q[id] ? q : { ...q, [id]: replyTo }))
       setDrafts(d => (d[id] ? d : { ...d, [id]: text }))
       setAttachments(a => (a[id]?.length ? a : { ...a, [id]: pending }))
       if (picked.length) setAgentTargets(x => (x[id]?.length ? x : { ...x, [id]: picked }))
@@ -854,7 +1115,7 @@ export function App() {
         }
         try {
           // The same message to every picked agent, files uploaded once.
-          const message = [text, mentions.join(' ')].filter(Boolean).join('\n\n')
+          const message = [prompt, mentions.join(' ')].filter(Boolean).join('\n\n')
           for (const x of picked) await sendToTask(id, x.id, message)
           // The message shows in the agent's own conversation.
           agentsValue.open(picked[0]!.id)
@@ -865,7 +1126,7 @@ export function App() {
       }
       let content: { text: string; images: string[] }
       try {
-        content = await prepareContent(id, text, pending)
+        content = await prepareContent(id, prompt, pending)
       } catch (err) {
         restore()
         dispatch({
@@ -881,8 +1142,10 @@ export function App() {
       stickToBottom.current = true
       if (chat.notice) dispatch({ type: 'chat', id, action: { type: 'local', patch: { notice: undefined } } })
       const uuid = newUuid()
-      dispatch({ type: 'chat', id, action: { type: chat.busy ? 'queue' : 'user', ...content, uuid } })
-      // 'now' interrupts the running turn and runs first, like the TUI's ctrl+enter.
+      // The turn may have started or ended while the content was prepared: read busy now.
+      const busy = stateRef.current.chats[id]?.busy ?? chat.busy
+      dispatch({ type: 'chat', id, action: { type: busy ? 'queue' : 'user', ...content, uuid } })
+      // 'now' gets in front of the model without waiting for the turn, like the TUI's ctrl+enter.
       send(id, { ...userMessage(content.text, content.images, uuid), ...(now && { priority: 'now' }) })
     })
     chatSends.current = run.catch(() => {})
@@ -905,8 +1168,9 @@ export function App() {
     const pending = attachments[''] ?? []
     if (!text && !pending.length) return
     if (!pending.length && openNative(text, '')) return
-    const { cwd, mode, model, temporary, effort } = state.start
+    const { cwd, mode, model, temporary, effort, contextWindow } = state.start
     setTrustDir(undefined)
+    let createdId: string | undefined
     try {
       const created = await createSession({
         ...(temporary ? { temporary: true } : cwd && { cwd, ...(trust && { trust }) }),
@@ -914,6 +1178,7 @@ export function App() {
         ...(model && { model }),
       })
       const id = created.session_id
+      createdId = id
       const content = await prepareContent(id, text, pending)
       setDrafts(d => ({ ...d, '': '' }))
       setAttachments(a => ({ ...a, '': [] }))
@@ -924,15 +1189,22 @@ export function App() {
         workDir: created.work_dir,
         title: (text || pending[0]!.name).split('\n')[0]!.slice(0, 80),
         start: state.start,
+        runs: startModel,
       })
       await attach(id)
       if (effort) changeEffort(id, effort)
+      if (contextWindow !== undefined) changeContextWindow(id, contextWindow)
       const uuid = newUuid()
       dispatch({ type: 'chat', id, action: { type: 'user', ...content, uuid } })
       send(id, userMessage(content.text, content.images, uuid))
     } catch (err) {
       if (err instanceof NeedsTrustError) setTrustDir(err.directory)
       else setStartError(t('connectFailed', { error: err instanceof Error ? err.message : String(err) }))
+      // The session was created but its socket never opened: a chat left 'connecting' can be
+      // neither sent to nor resumed, so let the user resume it from read-only.
+      if (createdId && stateRef.current.chats[createdId]?.mode === 'connecting') {
+        dispatch({ type: 'mode', id: createdId, mode: 'readonly' })
+      }
     }
   }
 
@@ -1011,6 +1283,14 @@ export function App() {
     if (!user || !(await rewindChat(id, user.id, false))) return
     setDrafts(d => ({ ...d, [id]: '' }))
     await sendPrompt(id, user.text, undefined, user.images)
+  }
+
+  /** Opens on the machine running `claude web`; a failure shows as the chat notice. */
+  const openOnMachine = (id: string, path?: string, reveal?: boolean) => {
+    openLocal(id, path, reveal).catch((err: unknown) => {
+      const error = err instanceof Error ? err.message : String(err)
+      dispatch({ type: 'chat', id, action: { type: 'local', patch: { notice: t('openLocalFailed', { error }) } } })
+    })
   }
 
   /** Opens a new session holding the conversation up to this reply. */
@@ -1160,19 +1440,37 @@ export function App() {
       request(id, REQUEST_PREFIX.mode, { subtype: 'set_permission_mode', mode })
     } else {
       dispatch({ type: 'chat', id, action: { type: 'local', patch: { permissionMode: mode } } })
+      pickOffline(id, { mode })
     }
   }
 
   const changeModel = (id: string, model: string) => {
     dispatch({ type: 'chat', id, action: { type: 'local', patch: { model, notice: undefined } } })
     if (sockets.current.has(id)) request(id, REQUEST_PREFIX.model, { subtype: 'set_model', model })
+    else pickOffline(id, { model })
   }
 
   function changeEffort(id: string, effort: string) {
     dispatch({ type: 'chat', id, action: { type: 'local', patch: { effort, notice: undefined } } })
     if (sockets.current.has(id)) {
       request(id, REQUEST_PREFIX.effort, { subtype: 'apply_flag_settings', settings: { effortLevel: effort } })
+    } else pickOffline(id, { effort })
+  }
+
+  /** A session-only override, like effort; null goes back to auto. */
+  function changeContextWindow(id: string, tokens: number | null) {
+    dispatch({ type: 'chat', id, action: { type: 'local', patch: { contextWindow: tokens, notice: undefined } } })
+    if (!sockets.current.has(id)) {
+      pickOffline(id, { contextWindow: tokens })
+      return
     }
+    void requestAsync(id, REQUEST_PREFIX.effort, {
+      subtype: 'apply_flag_settings',
+      settings: { autoCompactWindow: tokens ?? 'auto' },
+    }).then(
+      () => request(id, REQUEST_PREFIX.context, { subtype: 'get_context_usage' }),
+      () => undefined, // The failed response shows as the chat's notice.
+    )
   }
 
   function newChat({ cwd, temporary = false }: { cwd?: string; temporary?: boolean } = {}) {
@@ -1261,11 +1559,150 @@ export function App() {
     (body: Record<string, unknown>) => (view ? requestAsync(view, REQUEST_PREFIX.status, body) : Promise.resolve({})),
     [view],
   )
+  const modsRequest = useCallback(
+    (body: Record<string, unknown>) =>
+      view ? requestAsync(view, REQUEST_PREFIX.mods, body) : Promise.reject(new Error(t('statusIdle'))),
+    [view, t],
+  )
+  // A session's Mods ask about the prompt box, the clipboard and the selection (official 2.1.316 answers).
+  const modAnswer = useRef<(id: string, request: Record<string, unknown>) => Promise<Record<string, unknown>>>(
+    async () => ({}),
+  )
+  modAnswer.current = async (id, request) => {
+    const text = draftsRef.current[id] ?? ''
+    const box = id === view ? document.querySelector<HTMLTextAreaElement>('.composer textarea') : null
+    const cursor = Math.min(box?.selectionStart ?? text.length, text.length)
+    switch (request.subtype) {
+      case 'ui_prompt_read':
+        return { text, cursor }
+      case 'ui_prompt_fill': {
+        const fill = String(request.text ?? '')
+        const next =
+          request.mode === 'append' ? text + fill : request.mode === 'insert' ? text.slice(0, cursor) + fill + text.slice(cursor) : fill
+        setDrafts(d => ({ ...d, [id]: next }))
+        const decorations = Array.isArray(request.decorations) ? (request.decorations as PromptDecoration[]) : undefined
+        setModPrompt(m => ({ ...m, [id]: { ...m[id], decorations, suggestion: undefined } }))
+        return { filled: true }
+      }
+      case 'ui_prompt_suggest': {
+        // As the terminal: only an empty box shows one (drawn once the turn is over).
+        if (text.trim()) return { shown: false }
+        const suggestion = String(request.text ?? '')
+        setModPrompt(m => ({ ...m, [id]: { ...m[id], suggestion: suggestion || undefined } }))
+        return { shown: suggestion !== '' }
+      }
+      case 'ui_copy': {
+        const copied = await navigator.clipboard?.writeText(String(request.text ?? '')).then(
+          () => true,
+          () => false,
+        )
+        return { copied: copied === true }
+      }
+      case 'ui_read_selection':
+        return selection.current ? { text: selection.current } : {}
+    }
+    return {}
+  }
+  // What the person selected last on the page, kept while they type a command into the box, as the
+  // terminal keeps it until they select again or dismiss it.
+  const selection = useRef('')
+  useEffect(() => {
+    const seen = () => {
+      const text = window.getSelection()?.toString() ?? ''
+      const active = document.activeElement
+      // Typing in a box moves the caret, not the selection the person made on the page.
+      if (!text && (active instanceof HTMLTextAreaElement || active instanceof HTMLInputElement)) return
+      selection.current = text
+    }
+    document.addEventListener('selectionchange', seen)
+    return () => document.removeEventListener('selectionchange', seen)
+  }, [])
+  const modsAttached = live && chat?.mods.attached === true
+  const lastEdit = useRef(0)
+  // Each change of the draft goes to Mods (`prompt.edit`): theirs may rewrite it or mark it, and
+  // `prompt.autocomplete` offers rows for the word being typed.
+  useEffect(() => {
+    if (!view || !modsAttached) return
+    const person = typed.current === draft
+    typed.current = undefined
+    const mine = ++lastEdit.current
+    const at = () => {
+      const box = document.querySelector<HTMLTextAreaElement>('.composer textarea')
+      return Math.min(box?.selectionStart ?? draft.length, draft.length)
+    }
+    const send = () => {
+      const cursor = at()
+      const route = { surface: MOD_SURFACE, client_id: MOD_CLIENT }
+      modsRequest({ subtype: 'ui_prompt_edit', ...route, text: draft, cursor, by: person ? 'person' : 'app' }).then(
+        res => {
+          if (mine !== lastEdit.current || res.superseded) return
+          const decorations = Array.isArray(res.decorations) && res.decorations.length ? (res.decorations as PromptDecoration[]) : undefined
+          // The page's own change (a Mod's rewrite or fill coming back) keeps the marks it came with.
+          if (person || decorations || !draft) setModPrompt(m => ({ ...m, [view]: { ...m[view], decorations } }))
+          if (typeof res.text === 'string' && res.text !== draft) {
+            setDrafts(d => (d[view] === draft ? { ...d, [view]: res.text as string } : d))
+            const caret = typeof res.cursor === 'number' ? res.cursor : res.text.length
+            requestAnimationFrame(() => document.querySelector<HTMLTextAreaElement>('.composer textarea')?.setSelectionRange(caret, caret))
+          }
+        },
+        () => {},
+      )
+      if (!person) return
+      modsRequest({ subtype: 'ui_prompt_autocomplete', ...route, text: draft, cursor }).then(
+        res => {
+          if (mine !== lastEdit.current || res.superseded) return
+          const rows = Array.isArray(res.suggestions) ? (res.suggestions as ModRow[]).filter(r => typeof r?.text === 'string') : []
+          const start = typeof res.start === 'number' ? res.start : cursor
+          setModPrompt(m => ({ ...m, [view]: { ...m[view], rows: rows.length ? rows : undefined, start, end: cursor } }))
+        },
+        () => {},
+      )
+    }
+    if (!person) {
+      if (!draft) setModPrompt(m => (m[view]?.rows ? { ...m, [view]: { ...m[view], rows: undefined } } : m))
+      send()
+      return
+    }
+    const timer = setTimeout(send, 80)
+    return () => clearTimeout(timer)
+  }, [draft, view, modsAttached, modsRequest])
+  const modBox = view ? modPrompt[view] : undefined
+  const takeModRow = (row: ModRow) => {
+    if (!view) return
+    const box = document.querySelector<HTMLTextAreaElement>('.composer textarea')
+    // The rows are for the token the edit that asked for them ended in.
+    const cursor = Math.min(modBox?.end ?? draft.length, draft.length)
+    const from = Math.min(modBox?.start ?? cursor, cursor)
+    const next = draft.slice(0, from) + row.text + draft.slice(cursor)
+    setModPrompt(m => ({ ...m, [view]: { ...m[view], rows: undefined } }))
+    setDraftByPerson(next)
+    const caret = from + row.text.length
+    requestAnimationFrame(() => {
+      box?.focus()
+      box?.setSelectionRange(caret, caret)
+    })
+  }
   const prompts = useMemo(
     () => (chatItems ?? []).flatMap(i => (i.kind === 'user' && i.text ? [i.text] : [])),
     [chatItems],
   )
-  const todos = useMemo(() => currentTodos(chatItems ?? []), [chatItems])
+  // Teammates and workers update the shared task list outside this transcript, so a live session reads it back.
+  const [taskList, setTaskList] = useState<{ view: string; todos: Todo[] }>()
+  const planned = useMemo(() => usesTaskList(chatItems ?? []), [chatItems])
+  const itemCount = chatItems?.length ?? 0
+  useEffect(() => {
+    if (!view || !planned || !live) return
+    let current = true
+    statusRequest({ subtype: 'get_task_list' }).then(body => {
+      const todos = taskListTodos(body)
+      if (current && todos?.length) setTaskList({ view, todos })
+    }, () => {})
+    return () => {
+      current = false
+    }
+  }, [view, planned, live, itemCount, chat?.busy, statusRequest])
+  const derivedTodos = useMemo(() => currentTodos(chatItems ?? []), [chatItems])
+  const todos = taskList?.view === view ? taskList.todos : derivedTodos
   // The session's folder for the shared ↑ history; a temporary chat has none.
   const historyDir = chat?.workDir ?? chat?.cwd
   const historyScope = useMemo(
@@ -1334,6 +1771,7 @@ export function App() {
       history={state.history.filter(h => !h.archived && !h.projectId)}
       tempRoot={info.tempRoot}
       models={models}
+      defaultModel={startModel}
       commands={knownCommands}
       daybreak={daybreak}
       draft={drafts[''] ?? ''}
@@ -1353,16 +1791,27 @@ export function App() {
     />
   ) : (
     withChat(
-        <>
+        <ModSitesProvider on={modsAttached} request={modsRequest} mods={chat.mods} box={feedRef} t={t}>
           <div className="meta">
             {menuButton}
             <span className={`chip status status-${chat.mode}`} role="status">
               <span className={`dot ${chat.busy ? 'running' : chat.mode === 'live' ? 'completed' : 'idle'}`} />
               {statusText}
             </span>
-            <span className="chip mono" title={chatCwd}>
-              {tilde(chatCwd ?? '')}
-            </span>
+            {info.local ? (
+              <button
+                type="button"
+                className="chip mono cwd"
+                title={t('openFolder', { path: chatCwd ?? '' })}
+                onClick={() => view && openOnMachine(view, chatCwd)}
+              >
+                {tilde(chatCwd ?? '')}
+              </button>
+            ) : (
+              <span className="chip mono" title={chatCwd}>
+                {tilde(chatCwd ?? '')}
+              </span>
+            )}
             {chat.contextPercent !== undefined && (
               <ContextChip
                 t={t}
@@ -1418,6 +1867,8 @@ export function App() {
             </button>
           </div>
           {team && <TeamBar t={t} team={team} name={teamName(chat.items)} onOpen={agentsValue.open} />}
+          <QuoteOnSelect t={t} feed={feedRef} onQuote={quoteInChat} />
+          <QuoteContext.Provider value={quoteInChat}>
           <div
             className="feed"
             ref={feedRef}
@@ -1489,6 +1940,7 @@ export function App() {
               </button>
             )}
           </div>
+          </QuoteContext.Provider>
           <div className="composer">
             {chat.mode === 'elsewhere' && (
               <div className="notice" role="status">
@@ -1502,24 +1954,77 @@ export function App() {
             )}
             <LoginGate t={t} api={account} onKeyDialog={setKeyDialog} />
             {approval && view && (
-              <AskDock
-                approval={approval}
-                more={chat.approvals.length - 1}
-                cwd={chat.cwd ?? chat.workDir}
-                t={t}
-                onAnswer={choice => answer(view, approval, choice)}
-              />
+              <ModSite
+                component="AskUserQuestion"
+                id={approval.toolUseId ?? approval.requestId}
+                off={approval.toolName !== 'AskUserQuestion'}
+                props={{
+                  tool: approval.toolName,
+                  questions: Array.isArray(approval.input.questions) ? approval.input.questions : [],
+                }}
+              >
+                {() => (
+                  <AskDock
+                    approval={approval}
+                    more={chat.approvals.length - 1}
+                    cwd={chat.cwd ?? chat.workDir}
+                    t={t}
+                    onAnswer={choice => answer(view, approval, choice)}
+                  />
+                )}
+              </ModSite>
             )}
             <Pins t={t} todos={todos} />
+            {live && view && (
+              <ModView
+                key={view}
+                request={modsRequest}
+                component="AbovePrompt"
+                instanceId="main"
+                mods={chat.mods}
+                t={t}
+                rows={6}
+                className="mod-band"
+              />
+            )}
+            <ModToasts toasts={chat.mods.toasts} />
+            {modBox?.rows && draft && (
+              <div className="mod-complete" role="listbox" aria-label={t('modSuggestions')}>
+                {modBox.rows.map(row => (
+                  <button key={row.text} type="button" role="option" aria-selected={false} className="btn" onClick={() => takeModRow(row)}>
+                    {row.label ?? row.text}
+                    {row.description && <small>{row.description}</small>}
+                  </button>
+                ))}
+              </div>
+            )}
+            {modBox?.suggestion && !draft.trim() && !chat.busy && (
+              <div className="mod-suggest">
+                <button
+                  type="button"
+                  className="btn"
+                  title={t('modSuggestTake')}
+                  onClick={() => {
+                    setModPrompt(m => ({ ...m, [view!]: { ...m[view!], suggestion: undefined } }))
+                    setDraftByPerson(modBox.suggestion!)
+                  }}
+                >
+                  {modBox.suggestion}
+                </button>
+              </div>
+            )}
             <ChatComposer
               t={t}
               busy={chat.busy}
               disabled={chat.mode === 'elsewhere'}
               signedOut={signedOut}
               draft={draft}
-              setDraft={setDraft}
+              setDraft={setDraftByPerson}
+              decorations={modBox?.decorations}
               onSend={() => void sendInChat()}
               onSendNow={sendNowInChat}
+              quote={quote}
+              onQuote={quoteInChat}
               onStop={() => view && stop(view)}
               onFocus={() => view && chat.mode === 'readonly' && void resume(view)}
               files={files}
@@ -1536,12 +2041,21 @@ export function App() {
                   onModel: model => view && changeModel(view, model),
                   onEffort: effort => view && changeEffort(view, effort),
                   daybreak,
+                  contextWindow: { value: chat.contextWindow, onChange: tokens => view && changeContextWindow(view, tokens) },
                 },
               }}
               extra={chat.goal && <GoalMenu t={t} goal={chat.goal} onClear={() => view && void sendPrompt(view, '/goal clear')} />}
             />
+            <div className="mod-foot">
+              <ModSite component="SessionMode" id="main" props={NO_MODES}>
+                {p => (Array.isArray(p.modes) && p.modes.length ? <span>{p.modes.join(' & ')}</span> : null)}
+              </ModSite>
+              <ModSite component="PromptHint" id="main" props={{ isDraft: draft.trim() !== '', isWorking: !!chat.busy, hint: '' }}>
+                {p => (p.hint || p.tail ? <span>{[p.hint, p.tail].filter(Boolean).join(' ')}</span> : null)}
+              </ModSite>
+            </div>
           </div>
-        </>,
+        </ModSitesProvider>,
     )
   )
 
@@ -1554,6 +2068,7 @@ export function App() {
       {chat && view && !inProject && (
         <ColumnDrag side="right" label={t('resizePanel')} columns={columns} onChange={setColumns} />
       )}
+      {previewing && !inProject && <ColumnDrag side="chat" label={t('resizeChat')} columns={columns} onChange={setColumns} />}
       <Sidebar
         t={t}
         lang={lang}
@@ -1615,16 +2130,58 @@ export function App() {
       {previewing && preview && (
         <section className="artview" aria-label={t('artifact')}>
           <WebPreviewContext.Provider value={webPreviewValue}>
-            {'url' in preview ? (
-              <WebPreview url={preview.url} t={t} onClose={closePreview} />
+            {view && (canvasMods[view]?.length ?? 0) > 0 && (
+              <div className="canvas-tabs" role="tablist">
+                {canvasFile[view] && (
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={!('mod' in preview)}
+                    onClick={() => setPreview(canvasFile[view])}
+                  >
+                    {'url' in canvasFile[view]! ? t('preview') : baseName(canvasFile[view]!.path)}
+                  </button>
+                )}
+                {canvasMods[view]!.map(id => {
+                  const pane = chat?.mods.panes.find(p => p.id === id)
+                  return (
+                    <button
+                      type="button"
+                      role="tab"
+                      key={id}
+                      aria-selected={'mod' in preview && preview.mod === id}
+                      onClick={() => setPreview({ sessionId: view, mod: id })}
+                    >
+                      {pane?.title ?? id}
+                    </button>
+                  )
+                })}
+              </div>
+            )}
+            {/* Mod tabs stay mounted while another tab shows, so their Client keeps its state. */}
+            {canvasTabMods(canvasMods[preview.sessionId], preview).map(id => (
+              <div key={id} style={{ display: 'mod' in preview && preview.mod === id ? 'contents' : 'none' }}>
+                <ModCanvas
+                  pane={chat?.mods.panes.find(p => p.id === id)}
+                  id={id}
+                  mods={chat?.mods}
+                  request={modsRequest}
+                  t={t}
+                  onClose={() => closeCanvas(preview.sessionId, { mod: id })}
+                />
+              </div>
+            ))}
+            {'mod' in preview ? null : 'url' in preview ? (
+              <WebPreview url={preview.url} t={t} onClose={() => closeCanvas(preview.sessionId, 'file')} />
             ) : (
               <Preview
                 sessionId={preview.sessionId}
                 path={preview.path}
                 t={t}
-                onClose={closePreview}
+                onClose={() => closeCanvas(preview.sessionId, 'file')}
                 files={chatFiles}
                 onOpen={openFile}
+                onOpenLocal={info.local ? reveal => openOnMachine(preview.sessionId, preview.path, reveal) : undefined}
                 image={preview.image}
                 onComment={signedOut ? undefined : text => void sendComment(preview.sessionId, text)}
               />
@@ -1650,11 +2207,14 @@ export function App() {
             onSend={() => void sendInChat()}
             onStop={() => stop(view)}
             onFocus={() => chat.mode === 'readonly' && void resume(view)}
+            quote={quote}
+            onQuote={quoteInChat}
             listFiles={listFiles}
             prompts={prompts}
             onMode={mode => void changeProjectMode(project, view, mode)}
             onModel={model => changeModel(view, model)}
             onEffort={effort => changeEffort(view, effort)}
+            onContextWindow={tokens => changeContextWindow(view, tokens)}
             onAnswer={(approval, choice) => answer(view, approval, choice)}
             onSettings={() => setProjectDialog(project)}
             onStopTask={taskId => requestAsync(view, REQUEST_PREFIX.stopTask, { subtype: 'stop_task', task_id: taskId })}
@@ -1703,6 +2263,9 @@ export function App() {
           models={models}
           statusText={statusText}
           currentFile={preview && 'path' in preview ? preview.path : undefined}
+          onModsRequest={modsRequest}
+          onModCanvas={openModCanvas}
+          canvasMod={previewing && preview && 'mod' in preview ? preview.mod : undefined}
           agentsView={agentsView}
           setAgentsView={setAgentsView}
           workflowId={workflowId}

@@ -2,7 +2,7 @@ import { expect, test } from 'bun:test'
 
 import type { AssistantMessage, Message } from '../../types/message.js'
 import { createAssistantMessage, createUserMessage } from '../../utils/messages.js'
-import { splitKeptTail } from './compact.js'
+import { keepMoreRoundsAfterPTL, splitKeptTail } from './compact.js'
 
 function reply(text: string): AssistantMessage {
   const m = createAssistantMessage({ content: text })
@@ -30,4 +30,33 @@ test('nothing is kept when the rest has no assistant reply to summarize', () => 
   expect(splitKeptTail([p1, a1])).toEqual({ toSummarize: [p1, a1], toKeep: [] })
   const only: Message[] = [p1]
   expect(splitKeptTail(only)).toEqual({ toSummarize: only, toKeep: [] })
+})
+
+function rounds(n: number): Message[] {
+  const out: Message[] = [createUserMessage({ content: 'start' })]
+  for (let i = 0; i < n; i++) {
+    out.push(reply(`round ${i} ${'x'.repeat(400)}`))
+    out.push(createUserMessage({ content: `next ${i}` }))
+  }
+  return out
+}
+
+test('keptRounds 0 summarizes everything; 2 keeps the last two rounds (2.1.319)', () => {
+  const msgs = rounds(4)
+  expect(splitKeptTail(msgs, 0)).toEqual({ toSummarize: msgs, toKeep: [] })
+  const { toSummarize, toKeep } = splitKeptTail(msgs, 2)
+  expect(toSummarize).toEqual(msgs.slice(0, 5))
+  expect(toKeep.map(m => m.uuid)).toEqual(msgs.slice(5).map(m => m.uuid))
+})
+
+test('a too-long summary request keeps more rounds instead of dropping old ones (2.1.319)', () => {
+  const msgs = rounds(6)
+  // Unknown gap: a fifth of the summarized rounds, at least one.
+  expect(keepMoreRoundsAfterPTL(msgs, 1, undefined)?.keptRounds).toBe(2)
+  // A gap of about two rounds keeps two more.
+  const wider = keepMoreRoundsAfterPTL(msgs, 1, 150)
+  expect(wider?.keptRounds).toBe(3)
+  expect(wider?.toSummarize).toEqual(msgs.slice(0, 7))
+  // Nothing left to summarize once only the first round remains.
+  expect(keepMoreRoundsAfterPTL(msgs, 5, undefined)).toBeNull()
 })

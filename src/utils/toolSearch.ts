@@ -26,6 +26,7 @@ import {
   isDeferredTool,
   TOOL_SEARCH_TOOL_NAME,
 } from '../tools/ToolSearchTool/prompt.js'
+import { DEFERRED_TOOL_PLACEHOLDER_NAME } from '../tools/ToolSearchTool/constants.js'
 import type { Message } from '../types/message.js'
 import {
   countToolDefinitionTokens,
@@ -258,6 +259,19 @@ function getUnsupportedToolReferencePatterns(): string[] {
  */
 export function modelSupportsToolReference(model: string): boolean {
   const normalizedModel = model.toLowerCase()
+
+  // Only Anthropic's API expands tool_reference into the tool's schema. A
+  // gateway serving another vendor's model leaves it with "Tool loaded." and
+  // no parameters, so those models get every tool inline unless the user
+  // opts in with ENABLE_TOOL_SEARCH.
+  if (
+    process.env.ENABLE_TOOL_SEARCH === undefined &&
+    getAPIProvider() === 'firstParty' &&
+    !isFirstPartyAnthropicBaseUrl() &&
+    !/claude|opus|sonnet|haiku|fable/.test(normalizedModel)
+  ) {
+    return false
+  }
   const unsupportedPatterns = getUnsupportedToolReferencePatterns()
 
   // Check if model matches any unsupported pattern
@@ -314,7 +328,7 @@ export function isToolSearchEnabledOptimistic(): boolean {
  * (also defer_loading) leave the cached prompt prefix intact.
  */
 export const DEFERRED_TOOL_PLACEHOLDER = {
-  name: 'DeferredToolPlaceholder',
+  name: DEFERRED_TOOL_PLACEHOLDER_NAME,
   description:
     'Reserved placeholder that keeps deferred tool loading active; never call this tool.',
   input_schema: { type: 'object' as const, properties: {} },

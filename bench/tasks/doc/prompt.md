@@ -1,0 +1,1 @@
+Rewrite README.md into a clean, well-structured README: a one-line description, Installation, a "Quick start" section, a Markdown table of all CLI options (option, default, description), a configuration section with a ```toml example, and Contributing/License sections. Do not invent features that are not mentioned.

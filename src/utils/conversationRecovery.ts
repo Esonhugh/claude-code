@@ -560,11 +560,14 @@ export async function loadMessagesFromJsonlPath(path: string): Promise<{
  *   Used when --resume receives a .jsonl path (cli/print.ts routes
  *   on suffix), typically for cross-directory resume where the
  *   transcript lives outside the current project dir.
+ * @param forkSession - The conversation continues in a new session
+ *   (--fork-session): SessionStart hooks get source 'fork'.
  * @returns Object containing the deserialized messages and the original log, or null if not found
  */
 export async function loadConversationForResume(
   source: string | LogOption | undefined,
   sourceJsonlFile: string | undefined,
+  forkSession = false,
 ): Promise<{
   messages: Message[]
   turnInterruptionState: TurnInterruptionState
@@ -681,11 +684,14 @@ export async function loadConversationForResume(
     messages = deserialized.messages
     messages.push(...createOrphanedAgentNotices(messages))
 
-    // Process session start hooks for resume
-    const hookMessages = await processSessionStartHooks('resume', {
-      sessionId,
-      resumedMessages: messages,
-    })
+    // --fork-session reports 'fork' with the new session's id, like official.
+    const hookMessages = await processSessionStartHooks(
+      forkSession ? 'fork' : 'resume',
+      {
+        sessionId: forkSession ? undefined : sessionId,
+        resumedMessages: messages,
+      },
+    )
 
     // Append hook messages to the conversation
     messages.push(...hookMessages)

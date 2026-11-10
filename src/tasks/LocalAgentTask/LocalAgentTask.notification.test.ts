@@ -6,10 +6,13 @@ import { getDefaultAppState, type AppState } from '../../state/AppState.js'
 import { getEmptyToolPermissionContext } from '../../Tool.js'
 import * as messageQueue from '../../utils/messageQueueManager.js'
 import {
+  backgroundAgentTask,
   enqueueAgentNotification,
   failAgentTask,
   killAsyncAgent,
+  registerAgentForeground,
   registerAsyncAgent,
+  unregisterAgentForeground,
 } from './LocalAgentTask.js'
 
 const selectedAgent = {
@@ -94,6 +97,39 @@ for (const [label, terminate] of [
     )
   })
 }
+
+test('C1 a foreground owner that moved to the background keeps its child notifications (#804)', async () => {
+  reset()
+  const owner = 'owner-backgrounded'
+  const child = 'child-of-backgrounded'
+  registerAgentForeground({
+    agentId: owner,
+    description: owner,
+    prompt: owner,
+    selectedAgent,
+    setAppState,
+    spawnDepth: 1,
+  })
+  spawn(child, owner)
+  enqueueAgentNotification({
+    taskId: child,
+    description: child,
+    status: 'completed',
+    setAppState,
+    finalMessage: 'child done',
+  })
+  await flush()
+  assert.equal(messageQueue.getCommandQueue()[0]?.agentId, owner)
+
+  assert.equal(backgroundAgentTask(owner, () => state, setAppState), true)
+  // AgentTool's finally block calls this on the backgrounded path too.
+  unregisterAgentForeground(owner, setAppState)
+  await flush()
+
+  assert.ok(state.tasks[owner], 'the backgrounded task stays registered')
+  assert.equal(mainThreadNotifications().length, 0)
+  assert.equal(messageQueue.getCommandQueue()[0]?.agentId, owner)
+})
 
 test('C4 notification text is XML-escaped', async () => {
   reset()

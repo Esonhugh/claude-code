@@ -144,6 +144,8 @@ export type AutoCompactTrackingState = {
   // Used as a circuit breaker to stop retrying when the context is
   // irrecoverably over the limit (e.g., prompt_too_long).
   consecutiveFailures?: number
+  // Compactions in a row that came within RAPID_REFILL_TURNS of the last one.
+  consecutiveRapidRefills?: number
 }
 
 export const AUTOCOMPACT_BUFFER_TOKENS = 13_000
@@ -155,6 +157,21 @@ export const MANUAL_COMPACT_BUFFER_TOKENS = 3_000
 // BQ 2026-03-10: 1,279 sessions had 50+ consecutive failures (up to 3,272)
 // in a single session, wasting ~250K API calls/day globally.
 const MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES = 3
+
+// Official 2.1.319: when the context refills to the threshold within 3 turns
+// of the previous compaction 3 times in a row, compacting again cannot help.
+const RAPID_REFILL_TURNS = 3
+export const AUTOCOMPACT_THRASHING_MESSAGE =
+  'Autocompact is thrashing: the context refilled to the limit within 3 turns of the previous compact, 3 times in a row. A file being read or a tool output is likely too large for the context window. Try reading in smaller chunks, or use /clear to start fresh.'
+
+export function countRapidRefills(
+  tracking: AutoCompactTrackingState | undefined,
+): number {
+  return tracking?.compacted === true &&
+    tracking.turnCounter < RAPID_REFILL_TURNS
+    ? (tracking.consecutiveRapidRefills ?? 0) + 1
+    : 0
+}
 
 export function getAutoCompactThreshold(
   model: string,
@@ -414,6 +431,8 @@ export type AutoCompactResult = {
   consecutiveFailures?: number
   compactionFailure?: AutoCompactFailure
   skip?: string
+  consecutiveRapidRefills?: number
+  rapidRefillBreakerTripped?: boolean
 }
 
 export async function autoCompactIfNeeded(
@@ -424,6 +443,8 @@ export async function autoCompactIfNeeded(
   tracking?: AutoCompactTrackingState,
   snipTokensFreed?: number,
   canUseTool: CanUseToolFn = hasPermissionsToUseTool,
+  // The API already rejected the request as too long (reactiveCompact.ts).
+  force = false,
 ): Promise<AutoCompactResult> {
   if (isEnvTruthy(process.env.DISABLE_COMPACT)) {
     return { wasCompacted: false }
@@ -447,6 +468,7 @@ export async function autoCompactIfNeeded(
   const model = toolUseContext.options.mainLoopModel
   const autoCompactWindowCeiling = toolUseContext.options.autoCompactWindow
   const shouldCompact =
+    force ||
     classifierOverflow !== undefined ||
     (await shouldAutoCompact(
       messages,
@@ -458,6 +480,16 @@ export async function autoCompactIfNeeded(
 
   if (!shouldCompact) {
     return { wasCompacted: false }
+  }
+
+  // A forced (prompt-too-long) compaction is not a threshold refill.
+  const consecutiveRapidRefills = force ? 0 : countRapidRefills(tracking)
+  if (consecutiveRapidRefills >= RAPID_REFILL_TURNS) {
+    logForDebugging(
+      `autocompact: rapid-refill breaker tripped after ${consecutiveRapidRefills} refills within ${RAPID_REFILL_TURNS} turns each`,
+      { level: 'warn' },
+    )
+    return { wasCompacted: false, rapidRefillBreakerTripped: true }
   }
 
   const recompactionInfo: RecompactionInfo = {
@@ -531,6 +563,9 @@ export async function autoCompactIfNeeded(
               instructions,
               true,
               recompactionInfo,
+              undefined,
+              // Refilling fast: summarize everything, keep no round verbatim.
+              consecutiveRapidRefills > 0 ? 0 : 1,
             )
       },
       canUseTool,
@@ -582,6 +617,7 @@ export async function autoCompactIfNeeded(
       compactionResult,
       // Reset failure count on success
       consecutiveFailures: 0,
+      consecutiveRapidRefills,
     }
   } catch (error) {
     const isUserAbort =

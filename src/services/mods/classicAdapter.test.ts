@@ -388,7 +388,7 @@ describe('classic adapter executor boundary', () => {
       f.classic.SessionStart({
         ...base,
         hook_event_name: 'SessionStart',
-        source: 'fork',
+        source: 'restart',
       } as never),
     ).rejects.toThrow('valid source')
     expect(f.calls).toHaveLength(0)

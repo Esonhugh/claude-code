@@ -72,7 +72,7 @@ test.each(fixture.cases)('matches official lean selection and core sections for 
 })
 
 // Official 2.1.311 Qnr/Snn: lean drops Agent/Explore/AskUserQuestion bullets; every prompt ends with
-// context_management + act_dont_rederive and no summarize_tool_results section.
+// context_management + the fork finish_line rule and no summarize_tool_results section.
 test('session guidance and tail sections match official 2.1.311', async () => {
   const tools = [{ name: 'Agent' }, { name: 'AskUserQuestion' }, { name: 'Skill' }] as unknown as Parameters<typeof getSystemPrompt>[0]
   const text = (prompt: string[]) => getSystemPromptSections(prompt)!.map(s => 'text' in s ? s.text ?? '' : '').join('\n\n')
@@ -84,7 +84,8 @@ test('session guidance and tail sections match official 2.1.311', async () => {
     .toMatchObject({ text: "# Session-specific guidance\n - When the user types `/<skill-name>`, invoke it via Skill. Only use skills listed in the user-invocable skills section — don't guess." })
   expect(lean).not.toContain('write down any important information')
   expect(lean).toContain('# Context management\nWhen the conversation grows long, some or all of the current context is summarized;')
-  expect(lean).toContain('When you have enough information to act, act. Do not re-derive facts already established in the conversation, re-litigate a decision the user has already made, or narrate options you will not pursue. If you are weighing a choice, give a recommendation, not an exhaustive survey')
+  expect(lean).not.toContain('When you have enough information to act, act.')
+  expect(lean).toContain('Before you finish a coding task, run the relevant existing tests and fix what fails;')
   const full = text(await getSystemPrompt(tools, 'claude-sonnet-4-6'))
   // Fork mode is on in -p too; like 2.1.311 the fork is named explicitly,
   // since an omitted subagent_type is general-purpose.
@@ -101,9 +102,4 @@ test('session guidance and tail sections match official 2.1.311', async () => {
     expect(noFork).toContain('Use the Agent tool with specialized agents')
     expect(noFork).toContain("For broad codebase exploration or research that'll take more than 3 queries, spawn Agent with subagent_type=Explore. Otherwise use ")
   } finally { delete process.env.CLAUDE_CODE_FORK_SUBAGENT }
-  process.env.CLAUDE_CODE_ACT_DONT_REDERIVE = '0'
-  clearSystemPromptSections()
-  try {
-    expect(text(await getSystemPrompt(tools, 'claude-opus-5-5'))).not.toContain('When you have enough information to act, act.')
-  } finally { delete process.env.CLAUDE_CODE_ACT_DONT_REDERIVE }
 })

@@ -1,0 +1,4 @@
+- input dir /app/spreadsheets -> /data/sheets, output dir /app/output -> /data/results (instruction, evaluate.py, test.sh, solution)
+- original preamble kept (rev 2: the rev 1 preamble hinted that static values are enough)
+- cell values and answers unchanged (answers are fixed workbooks)
+- seed 1108; oracle = public reference solution with the same edits

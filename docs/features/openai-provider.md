@@ -73,7 +73,11 @@ CLAUDE_CODE_USE_OPENAI=1 OPENAI_BASE_URL=https://gateway.example/api OPENAI_API_
 - 启动画面和 `/status` 显示套餐、Codex 用量上限和速率限制重置额度（重置需二次确认）；API key 时只显示 `API Usage Billing`。
 - `/stats` 多一个 OpenAI activity 分页：累计、峰值、连续天数，以及日 / 周 / 累计图表（`v` 切换视图，方向键选日期）。
 - 可以使用 [Codex Apps](codex-apps.md)。
-- 请求 `chatgpt.com/backend-api/codex` 时以 Codex CLI 的身份发送版本号（`client_version` 参数和 `version` header，目前为 `0.164.0`，与 Codex CLI 0.164.0 一致），不发送 Claude Code 自己的版本号。跟进新版 Codex 只需改 `src/services/openai-oauth/client.ts` 的 `OPENAI_CODEX_CLIENT_VERSION`。
+- 上下文窗口按账号模型目录（`/codex/models`）里的 `context_window` 取，和 Codex 一致：例如 `gpt-6.1-sol` 500k、`gpt-6-luna` 与 `gpt-5.6-sol` 272k；模型名加 `[1m]` 时用目录的 `max_context_window`（目前 872k），且不会超过它。目录里没有的模型和 API key / 网关用户保持内置值。`/autocompact`（`/context-window`）的档位按这个上限截断，见 [自动压缩窗口](compaction.md)。
+- `/model`、`/effort` 和网页的思考强度菜单只列目录给该模型的 effort 档位，并显示、发送目录默认值；`ultra` 发送为 `xhigh`。
+- 状态栏与 `/usage` 的 5 小时、每周额度来自响应里的 `x-codex-*` 头；用完额度时显示 `You've hit your ChatGPT usage limit · resets <时间>`，而不是原始 429。
+- `ToolSearch` 加载的延迟工具（MCP、Codex Apps 等）以 Responses 原生的 `tool_search_call` / `tool_search_output` 放在对话里找到它的位置（压缩后放在输入开头），顶层 `tools` 整个会话保持不变，加载工具后提示缓存不再整体失效。其他 Responses 端点（API key、兼容网关）仍把加载的工具加进 `tools`。缓存命中与官方 Codex、pi 的对比见 [缓存基准](cache-benchmark.md)。
+- 请求 `chatgpt.com/backend-api/codex` 时以 Codex CLI 的身份发送版本号（`client_version` 参数和 `version` header，目前为 `0.166.0`，与 Codex CLI 0.166.0 一致），不发送 Claude Code 自己的版本号。跟进新版 Codex 只需改 `src/services/openai-oauth/client.ts` 的 `OPENAI_CODEX_CLIENT_VERSION`。
 
 ## 命令在 OpenAI 下的行为
 
@@ -82,6 +86,17 @@ CLAUDE_CODE_USE_OPENAI=1 OPENAI_BASE_URL=https://gateway.example/api OPENAI_API_
 | `/fast` | 开启优先处理，发送 `service_tier: "priority"`；网关不支持时直接显示服务端错误，再执行一次关闭 |
 | `/compact` | 默认和 Claude 一样由模型写摘要；设置 `compact.mode` 为 `codex` 后改走 OpenAI 服务端压缩，并保留之前的压缩历史，多次压缩不丢上下文，见 [Codex 式压缩](compaction.md#换一种压缩方式codex-式压缩) |
 | `WebSearch` | 使用 OpenAI 服务端搜索，结果和引用转换成和 Claude 一致的格式 |
+| `apply_patch` | 只在 OpenAI provider 下出现的编辑工具，见下文 |
+| `Read` PDF、`@` 提到的 PDF | 以 `input_file` 发给模型；SDK 传入的 `content` 来源 document 与 `search_result` 转成文字 |
+
+## `apply_patch` 工具
+
+GPT 模型训练时用的是 Codex 的 `apply_patch`：一次调用可以改多个文件、多处位置。OpenAI provider 下 Claude Code 额外提供同名工具（参数 `input`，Codex 的补丁格式：`*** Add File` / `*** Update File`（可带 `*** Move to`）/ `*** Delete File`、`@@` 段、`*** End of File`，也接受 heredoc 写法），Claude 路径仍只用 Edit / Write。同一个编码任务，请求数从 13 次降到 7 次（Codex 0.167.0 为 5 次），总 token 从 156k 降到 85k。
+
+- **先校验再写**：整个补丁先对照文件检查（上下文行必须匹配，空白和弯引号的差异按 Codex 的规则容忍），有一段对不上就一个文件都不改。
+- **权限**：补丁涉及的每个路径（包括 Move 的目标）都按 Edit 的权限规则和权限模式检查。确认框显示整个补丁，选项 2 把本会话切到 accept edits。Explore、Plan 与 verification 这类只读 agent 不能用它。
+- **hooks**：`PreToolUse`、`PostToolUse`、`PostToolUseFailure` 按文件拆成等价的 Edit / Write 事件各跑一次（修改 → Edit，新增 → Write，删除 → 把内容改成空的 Edit，移动 → 新路径的 Write 加旧路径的删除 Edit），所以已有的 `Edit|Write` hook 不用改。matcher 写 `apply_patch` 匹配不到这三个事件，`*` 或不写 matcher 的 hook 也按文件运行。按文件的 hook 可以阻止、拒绝或要求确认，阻止任何一个文件就整个补丁不执行；它返回的 allow、`updatedInput` 和输出改写会被忽略。`PermissionRequest` / `PermissionDenied` 对应唯一的确认框，整个补丁只触发一次，`tool_name` 是 `apply_patch`，写 `Edit` 或 `Write` 的 matcher 也会匹配；`tool_input.file_path` 是第一个文件，`tool_input.file_paths` 是全部文件的绝对路径。
+- 文件历史、读取状态、LSP 与 VS Code 通知、设置文件校验和 Edit / Write 相同。
 
 ## 网络安全访问档位（Daybreak）
 
@@ -147,6 +162,7 @@ OpenAI 给网络安全类工作提供了单独的访问档位（Daybreak）。�
 | `OPENAI_BASE_URL` | URL | 兼容网关地址 |
 | `ANTHROPIC_DEFAULT_OPUS_MODEL` / `_SONNET_MODEL` / `_HAIKU_MODEL` | 模型名 | 别名映射 |
 | `daybreak`（settings.json） | `blue` / `red` / `off` | 网络安全访问档位，见上文；`/daybreak` 会写入用户设置 |
+| `openaiModel`（settings.json） | 模型名 | OpenAI provider 下 `/model` 保存的默认模型。不写进 `model`，因为官方 Claude Code 也读 `model`，会把 gpt 模型名发给 Anthropic。没有 `openaiModel` 时仍读 `model`（`opus`、`sonnet` 等别名会映射到 OpenAI 模型）；旧版写在 `model` 里的 gpt 模型名启动时会移过来 |
 
 ## 说明
 

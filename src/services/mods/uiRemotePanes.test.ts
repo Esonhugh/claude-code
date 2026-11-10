@@ -71,6 +71,15 @@ test('remote viewport placement includes false fullscreen, promotes waiting pane
  await f.control.dispose()
 })
 
+test('a placing client stays one after its drawings send a viewport without isFullscreen (web page, #932)',async()=>{
+ const f=await fixture();await f.state()
+ await f.send({subtype:'ui_attach',surface:'desktop',client_id:'web',viewport:{columns:80,rows:24,isFullscreen:false}})
+ expect((await f.send({subtype:'ui_render',surface:'desktop',client_id:'web',component:'AbovePrompt',instance_id:'main',props:{},viewport:{columns:120,rows:6}})).error).toBeUndefined()
+ expect((await f.open({id:'later'})).result).toEqual({isPlaced:true})
+ expect((await f.state()).panes).toEqual([{id:'later',title:'later',plugin:'owner'}])
+ await f.control.dispose()
+})
+
 test('cross-plugin same-id updates keep original attribution and omit replaced manners; peer closes original',async()=>{
  const f=await fixture();await f.state();await f.open({id:'beta',rows:7,holdToasts:true})
  const peer=join(root,'peer.ts');await writeFile(peer,`export function register(on){on('tool.call',{tool:'peer'},async($,e)=>{if(e.input.action==='close')await $.ui.close({id:'beta'});else await $.ui.open({id:'beta',title:'Peer beta'});return {result:await $.ui.panes()}})}`)

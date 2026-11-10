@@ -3874,12 +3874,26 @@ Read the team config to discover your teammates' names. Check the task list peri
           ])
         }
         case 'pdf': {
-          // PDFs are handled via supplementalContent in the tool result
+          // The tool result is only a summary; the Read tool sends the pages as
+          // a separate document block, which the attachment has to add itself.
           return wrapMessagesInSystemReminder([
             createToolUseMessage(FileReadTool.name, {
               file_path: attachment.filename,
             }),
             createToolResultMessage(FileReadTool, fileContent),
+            createUserMessage({
+              content: [
+                {
+                  type: 'document',
+                  source: {
+                    type: 'base64',
+                    media_type: 'application/pdf',
+                    data: fileContent.file.base64,
+                  },
+                },
+              ],
+              isMeta: true,
+            }),
           ])
         }
       }

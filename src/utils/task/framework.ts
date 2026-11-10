@@ -107,8 +107,13 @@ function taskPatch(before: TaskState, after: TaskState) {
  */
 export function registerTask(task: TaskState, setAppState: SetAppState): void {
   let isReplacement = false
+  let parentTaskId: string | undefined
   setAppState(prev => {
     const existing = prev.tasks[task.id]
+    // The launching agent's own task; absent for the main thread or a
+    // launcher without a task of its own (official parent_task_id).
+    const owner = task.type === 'local_agent' ? task.ownerAgentId : undefined
+    parentTaskId = owner && prev.tasks[owner] ? owner : undefined
     // A new task, or a finished one being resumed, opens a new run.
     if (!existing || isTerminalTaskStatus(existing.status)) startTaskRun(task.id)
     if (existing?.type === 'local_agent' && task.type === 'local_agent') existing.unregisterCleanup?.()
@@ -158,6 +163,7 @@ export function registerTask(task: TaskState, setAppState: SetAppState): void {
           spawn_depth: task.spawnDepth,
         }
       : {}),
+    ...(parentTaskId && { parent_task_id: parentTaskId }),
     task_type: task.type,
     workflow_name:
       'workflowName' in task

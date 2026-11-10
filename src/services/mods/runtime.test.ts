@@ -1685,3 +1685,32 @@ describe('Mods lifecycle', () => {
     expect(await value.dispatch('tool.call', input, async () => ({ result: 'core' }))).toEqual({ result: 'core' })
   })
 })
+
+test('host work under a hook does not read that hook\'s state snapshot', async () => {
+  const plugin = await fixture(`const C = {plugin:'fixture',key:'counts'}
+    export function register(on) {
+      on('tool.call', async ($, e, next) => {
+        if (e.tool === 'Peek') return {result:(await $.state.get(C)).value}
+        const {value = {}} = await $.state.get(C)
+        await $.state.set(C, {...value, [e.tool]: (value[e.tool] ?? 0) + 1})
+        return next(e)
+      })
+    }`)
+  const { value, events } = runtime()
+  await value.reconcile([plugin])
+  let release!: () => void
+  const gate = new Promise<void>(resolve => { release = resolve })
+  // An Agent tool call runs the subagent inside its core; the subagent's own
+  // tool calls must see writes made elsewhere meanwhile.
+  const outer = value.dispatch('tool.call', { ...input, tool: 'Agent' }, async () => {
+    await gate
+    await value.dispatch('tool.call', { ...input, tool: 'Sub' }, async () => ({ result: 'ok' }))
+    return { result: 'ok' }
+  })
+  await Bun.sleep(50)
+  await value.dispatch('tool.call', { ...input, tool: 'Main' }, async () => ({ result: 'ok' }))
+  release()
+  await outer
+  expect(await value.dispatch('tool.call', { ...input, tool: 'Peek' }, async () => ({ result: 'ok' }))).toEqual({ result: { Agent: 1, Main: 1, Sub: 1 } })
+  expect(events).toEqual([])
+})

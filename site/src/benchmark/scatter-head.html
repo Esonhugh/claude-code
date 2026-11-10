@@ -1,0 +1,52 @@
+<title>CLI 缓存散点图</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600&family=Noto+Sans+SC:wght@400;600;700&family=IBM+Plex+Mono:wght@400&display=swap">
+<style>
+/* layout: one column, controls row, one chart card, table below */
+:root{
+  --bg:#fcfcfb; --surface:#ffffff; --ink:#0b0b0b; --ink2:#52514e; --muted:#898781; --grid:#e8e7e1; --axis:#c3c2b7; --line:#e1e0d9;
+  --zone:rgba(42,120,214,.08); --chip:#f1f0ec; --chip-on:#0b0b0b; --chip-on-ink:#ffffff;
+  --c-fork:#2a78d6; --c-official:#eb6834; --c-codex:#1baf7a; --c-opencode:#eda100; --c-pi:#e87ba4; --c-omp:#008300; --c-dsh:#6250d6;
+  --sans:'IBM Plex Sans','Noto Sans SC','PingFang SC','Microsoft YaHei',system-ui,sans-serif; --mono:'IBM Plex Mono',ui-monospace,monospace;
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
+  --bg:#1a1a19; --surface:#20201f; --ink:#f0efec; --ink2:#c3c2b7; --muted:#898781; --grid:#2c2c2a; --axis:#383835; --line:#2f2f2d;
+  --zone:rgba(57,135,229,.13); --chip:#2a2a28; --chip-on:#f0efec; --chip-on-ink:#1a1a19;
+  --c-fork:#3987e5; --c-official:#d95926; --c-codex:#199e70; --c-opencode:#c98500; --c-pi:#d55181; --c-omp:#008300; --c-dsh:#9085e9; color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#1a1a19; --surface:#20201f; --ink:#f0efec; --ink2:#c3c2b7; --muted:#898781; --grid:#2c2c2a; --axis:#383835; --line:#2f2f2d;
+  --zone:rgba(57,135,229,.13); --chip:#2a2a28; --chip-on:#f0efec; --chip-on-ink:#1a1a19;
+  --c-fork:#3987e5; --c-official:#d95926; --c-codex:#199e70; --c-opencode:#c98500; --c-pi:#d55181; --c-omp:#008300; --c-dsh:#9085e9; color-scheme:dark}
+body{background:var(--bg);color:var(--ink);font-family:var(--sans);font-size:14px;line-height:1.55}
+.wrap{max-width:980px;margin:0 auto;padding-block:28px 48px;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));display:grid;gap:18px}
+h1{font-size:22px;margin:0;text-wrap:balance;font-weight:700}
+.lede{color:var(--ink2);margin:4px 0 0;max-width:68ch}
+.controls{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.seg{display:flex;flex-wrap:wrap;gap:6px}
+button.chip{font:inherit;font-size:13px;border:0;border-radius:999px;padding:5px 12px;background:var(--chip);color:var(--ink2);cursor:pointer}
+button.chip[aria-pressed="true"]{background:var(--chip-on);color:var(--chip-on-ink)}
+button.chip:focus-visible,button.leg:focus-visible{outline:2px solid var(--c-fork);outline-offset:2px}
+.sep{width:1px;height:20px;background:var(--line);margin:0 4px}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:14px 14px 8px;min-width:0}
+.legend{display:flex;flex-wrap:wrap;gap:4px 14px;font-size:13px;color:var(--ink2);margin-bottom:6px}
+button.leg{font:inherit;background:none;border:0;padding:2px 0;color:inherit;cursor:pointer;display:inline-flex;align-items:center;gap:6px}
+button.leg[aria-pressed="false"]{opacity:.35}
+.dot{width:10px;height:10px;border-radius:50%;display:inline-block}
+.shape{display:inline-flex;align-items:center;gap:6px}
+.chartbox{position:relative}
+#chart{display:block;width:100%;height:auto}
+.legend svg{display:inline-block;flex:none}
+.tip{position:absolute;pointer-events:none;background:var(--surface);border:1px solid var(--axis);border-radius:8px;padding:8px 10px;font-size:12.5px;box-shadow:0 4px 16px rgba(0,0,0,.12);min-width:210px;z-index:2}
+.tip b{font-size:13px}
+.tip dl{display:grid;grid-template-columns:auto auto;gap:1px 14px;margin:6px 0 0}
+.tip dt{color:var(--muted)} .tip dd{margin:0;text-align:right;font-variant-numeric:tabular-nums;font-family:var(--mono);font-size:12px}
+.note{color:var(--muted);font-size:12.5px;margin:6px 2px 4px;max-width:90ch}
+.tablebox{overflow-x:auto}
+table{border-collapse:collapse;width:100%;font-size:13px;font-variant-numeric:tabular-nums}
+th,td{padding:6px 10px;border-bottom:1px solid var(--line);text-align:right;white-space:nowrap}
+th{color:var(--muted);font-weight:600;font-size:12px}
+th:first-child,td:first-child,th:nth-child(2),td:nth-child(2){text-align:left}
+td.front{font-weight:600}
+@media (prefers-reduced-motion:no-preference){circle.pt,path.pt{transition:opacity .15s}}
+</style>

@@ -90,7 +90,10 @@ const tokenRequests: Record<string, unknown>[] = []
 let rejectIncompatibleEffort = false
 let streamNotFound = false
 let nonStreamingThinkingTokens: number | undefined
+let nonStreamingOmitsUsage = false
 let streamInterrupted = false
+let streamHangsAfterText = false
+let streamCutAfterToolUse = false
 let overflowRequest = 0
 let overloadedModel: string | undefined
 let overloadedModels: string[] = []
@@ -186,6 +189,9 @@ const client = new Anthropic({
       stop_sequence: null,
       usage: modsReplyUsage ? {...modsReplyUsage,output_tokens:0} : { input_tokens: 1, output_tokens: 1 },
     }
+    if (!request.stream && nonStreamingOmitsUsage) {
+      return Response.json({ ...message, content: [{ type: 'text', text: 'OK' }], stop_reason: 'end_turn', usage: undefined })
+    }
     if (!request.stream) {
       return Response.json({
         ...message,
@@ -219,8 +225,31 @@ const client = new Anthropic({
       },
       { type: 'message_stop' },
     ]
+    if (streamHangsAfterText) {
+      // Text has started streaming and the model is still writing when the user aborts.
+      const encoder = new TextEncoder()
+      return new Response(new ReadableStream({
+        start(controller) {
+          for (const event of events.slice(0, 3)) {
+            controller.enqueue(encoder.encode(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`))
+          }
+          init?.signal?.addEventListener('abort', () => controller.error(init.signal!.reason), { once: true })
+        },
+      }), { headers: { 'content-type': 'text/event-stream', 'request-id': 'req_test' } })
+    }
     // HTTP creation succeeds; the real SDK raises this error only during iteration.
-    const transportEvents = streamInterrupted
+    const transportEvents = streamCutAfterToolUse
+      ? [events[0], {
+          type: 'content_block_start', index: 0,
+          content_block: { type: 'tool_use', id: 'toolu_cut', name: 'Bash', input: {} },
+        }, {
+          type: 'content_block_delta', index: 0,
+          delta: { type: 'input_json_delta', partial_json: '{"command":"echo once"}' },
+        }, { type: 'content_block_stop', index: 0 }, {
+          type: 'error',
+          error: { type: 'api_error', message: 'controlled cut after tool_use' },
+        }]
+      : streamInterrupted
       ? [...events.slice(0, 3), {
           type: 'error',
           error: { type: 'api_error', message: 'controlled mid-stream interruption' },
@@ -369,7 +398,10 @@ afterEach(() => {
   rejectIncompatibleEffort = false
   streamNotFound = false
   nonStreamingThinkingTokens = undefined
+  nonStreamingOmitsUsage = false
   streamInterrupted = false
+  streamHangsAfterText = false
+  streamCutAfterToolUse = false
   overflowRequest = 0
   overloadedModel = undefined
   overloadedModels = []
@@ -885,6 +917,41 @@ test('Mods completion omits unsupported effort and preserves default side-query 
   expect(requests).toHaveLength(2)
   expect(requests[0]).not.toHaveProperty('output_config')
   expect(requests[1]).not.toHaveProperty('output_config')
+})
+
+test('OpenAI remote compaction sends the opaque item instead of its summary row', async () => {
+  process.env.CLAUDE_CODE_USE_OPENAI = '1'
+  const { createCompactBoundaryMessage } = await import('../../utils/messages.js')
+  const boundary = createCompactBoundaryMessage('manual', 100)
+  boundary.openAICompaction = { type: 'compaction', id: 'cmp_1', encrypted_content: 'opaque' }
+  for await (const _ of queryModelWithStreaming({
+    messages: [
+      boundary,
+      createUserMessage({ content: 'REMOTE_SUMMARY_ROW', isCompactSummary: true, isVisibleInTranscriptOnly: true }),
+      createUserMessage({ content: 'after compaction' }),
+    ],
+    systemPrompt: asSystemPrompt(['policy']),
+    thinkingConfig: { type: 'disabled' }, tools: [], signal: new AbortController().signal,
+    options: {
+      model: 'claude-sonnet-4-6', querySource: 'repl_main_thread',
+      agents: [], mcpTools: [], hasAppendSystemPrompt: false,
+      isNonInteractiveSession: true, enablePromptCaching: false,
+      getToolPermissionContext: async () => getEmptyToolPermissionContext(),
+    },
+  })) void _
+  const request = requests.at(-1) as unknown as Record<string, unknown>
+  expect(request.openai_compaction).toEqual(boundary.openAICompaction)
+  expect(JSON.stringify(request.messages)).toContain('after compaction')
+  expect(JSON.stringify(request.messages)).not.toContain('REMOTE_SUMMARY_ROW')
+})
+
+test('model validation accepts a gateway reply that omits usage', async () => {
+  nonStreamingOmitsUsage = true
+  const {validateModel}=await import('../../utils/model/validateModel.js')
+  const {sideQuery}=await import('../../utils/sideQuery.js')
+  const reply=await sideQuery({model:'my-gateway-model',messages:[{role:'user',content:'test'}],querySource:'model_validation'})
+  expect(reply.usage).toBeUndefined()
+  expect(await validateModel('my-gateway-model')).toEqual({valid:true})
 })
 
 test('side-query effort preserves structured output configuration', async () => {
@@ -1782,6 +1849,59 @@ test('prompt.compose refreshes after a partial SSE error before nonstream fallba
   }
   expect(tokenRequests).toEqual([])
   expect(unexpectedIO).toEqual([])
+})
+
+test('a stream cut after a tool_use keeps it instead of re-requesting it without streaming', async () => {
+  streamCutAfterToolUse = true
+  let fallbackCalls = 0
+  const assistants: Array<{ isApiErrorMessage?: boolean; message: { content: unknown; stop_reason: unknown } }> = []
+  for await (const event of queryModelWithStreaming({
+    messages: [createUserMessage({ content: 'run it' })],
+    systemPrompt: asSystemPrompt(['SYSTEM']),
+    thinkingConfig: { type: 'disabled' }, tools: [], signal: new AbortController().signal,
+    options: {
+      model: 'claude-sonnet-4-6', querySource: 'repl_main_thread',
+      agents: [], mcpTools: [], hasAppendSystemPrompt: false,
+      isNonInteractiveSession: true, enablePromptCaching: true,
+      getToolPermissionContext: async () => getEmptyToolPermissionContext(),
+      onStreamingFallback: () => { fallbackCalls++ },
+    },
+  })) if ((event as { type: string }).type === 'assistant') assistants.push(event as (typeof assistants)[number])
+  expect(fallbackCalls).toBe(0)
+  expect(requests).toHaveLength(1)
+  expect(assistants).toHaveLength(2)
+  expect(assistants[0]!.message.content).toEqual([expect.objectContaining({ type: 'tool_use', id: 'toolu_cut' })])
+  expect(assistants[0]!.message.stop_reason).toBe('tool_use')
+  expect(assistants[1]!.isApiErrorMessage).toBe(true)
+  expect(JSON.stringify(assistants[1]!.message.content)).toContain('Connection lost mid-response')
+})
+
+test.each([
+  ['interrupt', [{ type: 'text', text: 'OK' }]],
+  ['user-cancel', undefined],
+] as const)('an abort with reason %s while text streams keeps the partial reply: %p', async (reason, kept) => {
+  streamHangsAfterText = true
+  const controller = new AbortController()
+  const assistants: unknown[] = []
+  for await (const event of queryModelWithStreaming({
+    messages: [createUserMessage({ content: 'write a long answer' })],
+    systemPrompt: asSystemPrompt(['SYSTEM']),
+    thinkingConfig: { type: 'disabled' }, tools: [], signal: controller.signal,
+    options: {
+      model: 'claude-sonnet-4-6', querySource: 'repl_main_thread',
+      agents: [], mcpTools: [], hasAppendSystemPrompt: false,
+      isNonInteractiveSession: true, enablePromptCaching: true,
+      getToolPermissionContext: async () => getEmptyToolPermissionContext(),
+    },
+  })) {
+    const e = event as { type: string; event?: { type: string } }
+    if (e.type === 'stream_event' && e.event?.type === 'content_block_delta') controller.abort(reason)
+    if (e.type === 'assistant') assistants.push(event)
+  }
+  expect(assistants).toEqual(kept === undefined ? [] : [
+    expect.objectContaining({ message: expect.objectContaining({ content: kept }) }),
+  ])
+  expect(requests).toHaveLength(1)
 })
 
 test('prompt.compose follows real query 529 threshold through FallbackTriggeredError to the fallback model', async () => {

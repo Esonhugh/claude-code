@@ -731,7 +731,7 @@ function DiffStatsText({
   )
 }
 
-function UserMessageOption({
+export function UserMessageOption({
   userMessage,
   color,
   dimColor,
@@ -756,13 +756,14 @@ function UserMessageOption({
   }
 
   const content = userMessage.message.content
-  const lastBlock =
-    typeof content === 'string' ? null : content[content.length - 1]
+  // Pasted images follow the typed text, so the last block may be an image.
+  const lastTextBlock =
+    typeof content === 'string' ? null : content.findLast(isTextBlock)
   const rawMessageText =
     typeof content === 'string'
       ? content.trim()
-      : lastBlock && isTextBlock(lastBlock)
-        ? lastBlock.text.trim()
+      : lastTextBlock
+        ? lastTextBlock.text.trim()
         : '(no prompt)'
 
   // Strip display-unfriendly tags (like <ide_opened_file>) before showing in the list
@@ -919,6 +920,11 @@ export function selectableUserMessagesFilter(
     return false
   }
   if (isLocalCommandInput(message)) {
+    return false
+  }
+  // Plain-text system events (e.g. "Background agent … was stopped by the
+  // user.") carry no <task-notification> tag, only this origin.
+  if (message.origin?.kind === 'task-notification') {
     return false
   }
 

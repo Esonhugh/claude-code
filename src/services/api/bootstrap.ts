@@ -3,6 +3,7 @@ import isEqual from 'lodash-es/isEqual.js'
 import {
   getAnthropicApiKey,
   getClaudeAIOAuthTokens,
+  getOpenAIAuthInfo,
   hasProfileScope,
 } from 'src/utils/auth.js'
 import { z } from 'zod'
@@ -24,7 +25,17 @@ import {
 } from '../../utils/model/providers.js'
 import { fetchServedModelCatalog } from '../../utils/model/servedModelCatalog.js'
 import { isEssentialTrafficOnly } from '../../utils/privacyLevel.js'
+import { createSignal } from '../../utils/signal.js'
 import { getClaudeCodeUserAgent } from '../../utils/userAgent.js'
+
+const openAIModelOptionsRefreshed = createSignal()
+
+/**
+ * Fires after OpenAI model discovery replaces the cached model list. The
+ * account default model (and its default effort) come from that list, so
+ * components that resolved them before discovery finished re-resolve.
+ */
+export const onOpenAIModelOptionsRefresh = openAIModelOptionsRefreshed.subscribe
 
 const bootstrapResponseSchema = lazySchema(() =>
   z.object({
@@ -139,7 +150,8 @@ async function fetchBootstrapAPI(): Promise<BootstrapResult | null> {
  */
 export async function fetchBootstrapData(): Promise<void> {
   if (getAPIProvider() === 'openai') {
-    await fetchOpenAIModelOptions()
+    openAIModelOptionsFetch = fetchOpenAIModelOptions()
+    await openAIModelOptionsFetch
     return
   }
   // Gateway discovery keeps its own on-disk cache, so it is an independent leg
@@ -159,6 +171,37 @@ async function waitForServedCatalogStartup(refresh: Promise<unknown>): Promise<v
       refresh,
       new Promise<void>(resolve => {
         timeout = setTimeout(resolve, 1000)
+        timeout.unref?.()
+      }),
+    ])
+  } finally {
+    if (timeout !== undefined) clearTimeout(timeout)
+  }
+}
+
+let openAIModelOptionsFetch: Promise<void> | undefined
+
+/**
+ * Print mode sends its first request right away. The ChatGPT account's default
+ * model, effort levels and context windows all come from its /codex/models
+ * catalog, so until one is cached for this account wait briefly for discovery
+ * rather than send the builtin fallbacks.
+ */
+export async function waitForOpenAIModelCatalog(timeoutMs = 3000): Promise<void> {
+  if (
+    !openAIModelOptionsFetch ||
+    !getOpenAIAuthInfo()?.isChatGPT ||
+    getGlobalConfig().additionalModelOptionsCacheKey ===
+      getModelDiscoveryCacheKey()
+  ) {
+    return
+  }
+  let timeout: ReturnType<typeof setTimeout> | undefined
+  try {
+    await Promise.race([
+      openAIModelOptionsFetch,
+      new Promise<void>(resolve => {
+        timeout = setTimeout(resolve, timeoutMs)
         timeout.unref?.()
       }),
     ])
@@ -194,6 +237,7 @@ async function fetchOpenAIModelOptions(): Promise<void> {
       additionalModelOptionsCache: discovery.options,
       additionalModelOptionsCacheKey,
     }))
+    openAIModelOptionsRefreshed.emit()
   } catch (error) {
     logError(error)
   }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test'
-import { columnName, commentText, quoteLine, readingPage } from './Preview'
+import { columnName, commentText, quoteLine, readingPage, safeSlideLink } from './Preview'
 
 describe('PDF scrolling', () => {
   it('counts the page whose top has passed a third of the view as the one being read', () => {
@@ -32,6 +32,11 @@ describe('comments', () => {
     const long = commentText('`r.md`', { kind: 'quote', quote: 'a'.repeat(200) }, 'x')
     expect(long).toContain(`on "${'a'.repeat(120)}…"`)
   })
+  it('names the page of text selected on a PDF page or a slide', () => {
+    expect(commentText('`d.pptx`', { kind: 'quote', quote: 'Q3 revenue', page: 7 }, 'x')).toBe(
+      'Comment on `d.pptx` (page 7, on "Q3 revenue"): x',
+    )
+  })
   it('names a cell and its sheet', () => {
     expect(commentText('`b.xlsx`', { kind: 'cell', ref: 'B3', sheet: 'Q1' }, 'x')).toBe(
       'Comment on `b.xlsx` (sheet "Q1", cell B3): x',
@@ -45,5 +50,19 @@ describe('comments', () => {
   })
   it('names columns the way a spreadsheet does', () => {
     expect([0, 1, 25, 26, 27, 701, 702].map(columnName)).toEqual(['A', 'B', 'Z', 'AA', 'AB', 'ZZ', 'AAA'])
+  })
+})
+
+describe('safeSlideLink', () => {
+  it('keeps absolute web and mail links from a deck and drops the rest', () => {
+    expect(safeSlideLink('https://example.com/a')).toBe(true)
+    expect(safeSlideLink('http://example.com')).toBe(true)
+    expect(safeSlideLink('mailto:a@example.com')).toBe(true)
+    expect(safeSlideLink('javascript:alert(1)')).toBe(false)
+    expect(safeSlideLink(' JavaScript:alert(1)')).toBe(false)
+    expect(safeSlideLink('data:text/html,<script>1</script>')).toBe(false)
+    expect(safeSlideLink('file:///etc/passwd')).toBe(false)
+    expect(safeSlideLink('/api/sessions')).toBe(false)
+    expect(safeSlideLink('')).toBe(false)
   })
 })

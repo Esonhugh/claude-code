@@ -1,0 +1,1 @@
+`/app/decomp.c` is a decompressor: it reads compressed bytes on stdin and writes the original on stdout. Produce `/app/packed.bin`, at most 2500 bytes, such that `cat /app/packed.bin | /app/decomp` reproduces `/app/data.txt` byte for byte. How you build `packed.bin` is up to you.

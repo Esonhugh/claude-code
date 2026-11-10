@@ -13,6 +13,7 @@ import { feature } from 'bun:bundle'
 import type { ContentBlockParam } from '@anthropic-ai/sdk/resources/messages.mjs'
 import { getSystemPrompt } from '../../constants/prompts.js'
 import { TEAMMATE_MESSAGE_TAG } from '../../constants/xml.js'
+import { isCoordinatorMode } from '../../coordinator/coordinatorMode.js'
 import type { CanUseToolFn } from '../../hooks/useCanUseTool.js'
 import {
   processMailboxPermissionResponse,
@@ -31,7 +32,8 @@ import {
 } from '../../services/compact/compact.js'
 import { resetMicrocompactState } from '../../services/compact/microCompact.js'
 import type { AppState } from '../../state/AppState.js'
-import type { Tool, ToolPermissionContext, ToolUseContext } from '../../Tool.js'
+import type { Tool, ToolPermissionContext, ToolUseContext, Tools } from '../../Tool.js'
+import { assembleToolPool } from '../../tools.js'
 import { appendTeammateMessage } from '../../tasks/InProcessTeammateTask/InProcessTeammateTask.js'
 import type {
   InProcessTeammateTaskState,
@@ -103,6 +105,7 @@ import { runWithTeammateContext } from '../teammateContext.js'
 import {
   createIdleNotification,
   getIdleResult,
+  getTurnFailureReason,
   getLastPeerDmSummary,
   isPermissionResponse,
   isShutdownRequest,
@@ -115,6 +118,7 @@ import { unregisterAgent as unregisterPerfettoAgent } from '../telemetry/perfett
 import { createContentReplacementState, type ContentReplacementState } from '../toolResultStorage.js'
 import { TEAM_LEAD_NAME, TEAMMATE_SHUTDOWN_APPROVED } from './constants.js'
 import {
+  getLeaderHeadlessCanUseTool,
   getLeaderSetToolPermissionContext,
   getLeaderToolUseConfirmQueue,
 } from './leaderPermissionBridge.js'
@@ -143,7 +147,7 @@ const PERMISSION_POLL_INTERVAL_MS = 500
  * sends a permission request to the leader's inbox, waits for the response
  * in the teammate's own mailbox.
  */
-function createInProcessCanUseTool(
+export function createInProcessCanUseTool(
   identity: TeammateIdentity,
   abortController: AbortController,
   onPermissionWaitMs?: (waitMs: number) => void,
@@ -196,6 +200,20 @@ function createInProcessCanUseTool(
     // Check if aborted before showing UI
     if (abortController.signal.aborted) {
       return { behavior: 'ask', message: SUBAGENT_REJECT_MESSAGE }
+    }
+
+    const headlessCanUseTool = getLeaderToolUseConfirmQueue()
+      ? null
+      : getLeaderHeadlessCanUseTool()
+    if (headlessCanUseTool) {
+      return headlessCanUseTool(
+        tool,
+        input,
+        toolUseContext,
+        assistantMessage,
+        toolUseID,
+        result,
+      )
     }
 
     const appState = toolUseContext.getAppState()
@@ -965,7 +983,6 @@ export async function runInProcessTeammate(
     description,
     agentDefinition,
     teammateContext,
-    toolUseContext,
     abortController,
     model,
     systemPrompt,
@@ -974,6 +991,10 @@ export async function runInProcessTeammate(
     allowPermissionPrompts,
     invokingRequestId,
   } = config
+  const toolUseContext: ToolUseContext = {
+    ...config.toolUseContext,
+    options: { ...config.toolUseContext.options, tools: getTeammateBaseTools(config.toolUseContext) },
+  }
   const { setAppState } = toolUseContext
 
   logForDebugging(
@@ -995,56 +1016,9 @@ export async function runInProcessTeammate(
     invocationEmitted: false,
   }
 
-  // Build system prompt based on systemPromptMode
+  // The system prompt is built inside the try below so a failure marks the
+  // task failed instead of leaving it running forever.
   let teammateSystemPrompt: SystemPrompt
-  if (systemPromptMode === 'replace' && systemPrompt) {
-    teammateSystemPrompt = asSystemPrompt([systemPrompt])
-  } else {
-    const fullSystemPromptParts = await getSystemPrompt(
-      toolUseContext.options.tools,
-      toolUseContext.options.mainLoopModel,
-      undefined,
-      toolUseContext.options.mcpClients,
-    )
-
-    const systemPromptParts = [TEAMMATE_SYSTEM_PROMPT_ADDENDUM]
-
-    // If a specialized agent definition is provided, append its prompt.
-    if (agentDefinition) {
-      const agentPrompt = isBuiltInAgent(agentDefinition)
-        ? agentDefinition.getSystemPrompt({ toolUseContext })
-        : agentDefinition.getSystemPrompt()
-      if (agentPrompt) {
-        systemPromptParts.push(`\n# Custom Agent Instructions\n${agentPrompt}`)
-      }
-
-      // Log agent memory loaded event for in-process teammates
-      if (agentDefinition.memory) {
-        logEvent('tengu_agent_memory_loaded', {
-          ...(isAnt()
-            ? {
-                agent_type:
-                  agentDefinition.agentType as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-              }
-            : {}),
-          scope:
-            agentDefinition.memory as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-          source:
-            'in-process-teammate' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-        })
-      }
-    }
-
-    // Append mode: add provided system prompt after default
-    if (systemPromptMode === 'append' && systemPrompt) {
-      systemPromptParts.push(systemPrompt)
-    }
-
-    teammateSystemPrompt = joinSystemPrompt(
-      concatSystemPrompts(fullSystemPromptParts, systemPromptParts),
-      '\n',
-    )
-  }
 
   // Resolve agent definition - use full system prompt with teammate addendum.
   // The effective permission mode is read from task state before each turn.
@@ -1089,20 +1063,78 @@ export async function runInProcessTeammate(
     undefined,
     description,
   )
-  let currentPrompt = wrappedInitialPrompt
   let shouldExit = false
 
+  // The leader's tasks live under the team name (sessionTeam.ts moves them
+  // there), the same list getTaskListId() resolves for teammates.
+  const taskListId =
+    process.env.CLAUDE_CODE_TASK_LIST_ID || identity.teamName
   // Try to claim an available task immediately so the UI can show activity
   // from the very start. The idle loop handles claiming for subsequent tasks.
-  // Use parentSessionId as the task list ID since the leader creates tasks
-  // under its session ID, not the team name.
-  await tryClaimNextTask(identity.parentSessionId, identity.agentName)
+  // A claimed task is now owned and in_progress, so it must be part of the
+  // first turn rather than left for the idle loop to skip over.
+  const startupTaskPrompt = await tryClaimNextTask(
+    taskListId,
+    identity.agentName,
+  )
+  let currentPrompt = startupTaskPrompt
+    ? `${wrappedInitialPrompt}\n\n${startupTaskPrompt}`
+    : wrappedInitialPrompt
 
   const finishModConversation = toolUseContext.mods?.trackConversation({
     agentId: identity.resumableAgentId ?? identity.agentId, sessionId: identity.parentSessionId, messages: () => allMessages, persistent: true,
   })
 
   try {
+    if (systemPromptMode === 'replace' && systemPrompt) {
+      teammateSystemPrompt = asSystemPrompt([systemPrompt])
+    } else {
+      const fullSystemPromptParts = await getSystemPrompt(
+        toolUseContext.options.tools,
+        toolUseContext.options.mainLoopModel,
+        undefined,
+        toolUseContext.options.mcpClients,
+      )
+
+      const systemPromptParts = [TEAMMATE_SYSTEM_PROMPT_ADDENDUM]
+
+      // If a specialized agent definition is provided, append its prompt.
+      if (agentDefinition) {
+        const agentPrompt = isBuiltInAgent(agentDefinition)
+          ? agentDefinition.getSystemPrompt({ toolUseContext })
+          : agentDefinition.getSystemPrompt()
+        if (agentPrompt) {
+          systemPromptParts.push(`\n# Custom Agent Instructions\n${agentPrompt}`)
+        }
+
+        // Log agent memory loaded event for in-process teammates
+        if (agentDefinition.memory) {
+          logEvent('tengu_agent_memory_loaded', {
+            ...(isAnt()
+              ? {
+                  agent_type:
+                    agentDefinition.agentType as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+                }
+              : {}),
+            scope:
+              agentDefinition.memory as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+            source:
+              'in-process-teammate' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+          })
+        }
+      }
+
+      // Append mode: add provided system prompt after default
+      if (systemPromptMode === 'append' && systemPrompt) {
+        systemPromptParts.push(systemPrompt)
+      }
+
+      teammateSystemPrompt = joinSystemPrompt(
+        concatSystemPrompts(fullSystemPromptParts, systemPromptParts),
+        '\n',
+      )
+    }
+
     // Add initial prompt to task.messages for display (wrapped with XML)
     updateTaskState(
       taskId,
@@ -1110,7 +1142,7 @@ export async function runInProcessTeammate(
         ...task,
         messages: appendCappedMessage(
           task.messages,
-          createUserMessage({ content: wrappedInitialPrompt }),
+          createUserMessage({ content: currentPrompt }),
         ),
       }),
       setAppState,
@@ -1460,13 +1492,21 @@ export async function runInProcessTeammate(
 
       // Only send idle notification on transition to idle (not if already idle)
       if (!wasAlreadyIdle) {
+        const failureReason = workWasAborted
+          ? undefined
+          : getTurnFailureReason(allMessages)
         await sendIdleNotification(
           identity.agentName,
           identity.color,
           identity.teamName,
           {
-            idleReason: workWasAborted ? 'interrupted' : 'available',
+            idleReason: workWasAborted
+              ? 'interrupted'
+              : failureReason !== undefined
+                ? 'failed'
+                : 'available',
             summary: getLastPeerDmSummary(allMessages),
+            failureReason,
             result: workWasAborted ? undefined : getIdleResult(allMessages),
           },
         )
@@ -1487,7 +1527,7 @@ export async function runInProcessTeammate(
         taskId,
         toolUseContext.getAppState,
         setAppState,
-        identity.parentSessionId,
+        taskListId,
       )
 
       switch (waitResult.type) {
@@ -1660,7 +1700,6 @@ export async function runInProcessTeammate(
         summary: identity.agentId,
       })
     }
-
     // Send idle notification with failure via file-based mailbox
     await sendIdleNotification(
       identity.agentName,
@@ -1682,6 +1721,16 @@ export async function runInProcessTeammate(
   } finally {
     finishModConversation?.()
   }
+}
+
+/**
+ * The tools a teammate starts from. A coordinator keeps only its orchestration
+ * tools, so its teammates get the pool its workers get.
+ */
+export function getTeammateBaseTools(context: Pick<ToolUseContext, 'options' | 'getAppState'>): Tools {
+  if (!isCoordinatorMode()) return context.options.tools
+  const { toolPermissionContext, mcp } = context.getAppState()
+  return assembleToolPool(toolPermissionContext, mcp.tools)
 }
 
 /**

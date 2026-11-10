@@ -11,6 +11,16 @@ async function errorText(res: Response): Promise<string> {
   }
 }
 
+/** A failed request, with the status the server answered. */
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message)
+  }
+}
+
 /** The folder needs the trust confirmation the TUI asks for before a session may start there. */
 export class NeedsTrustError extends Error {
   constructor(readonly directory: string) {
@@ -23,6 +33,7 @@ export async function createSession(body: {
   resume?: string
   permission_mode?: string
   model?: string
+  effort?: string
   temporary?: boolean
   /** The user accepted the trust confirmation for `cwd`. */
   trust?: boolean
@@ -42,7 +53,7 @@ export async function createSession(body: {
 
 async function getJson<T>(path: string): Promise<T> {
   const res = await fetch(path)
-  if (!res.ok) throw new Error(await errorText(res))
+  if (!res.ok) throw new ApiError(await errorText(res), res.status)
   return (await res.json()) as T
 }
 
@@ -101,6 +112,13 @@ export const patchSessionMeta = (id: string, patch: SessionMetaPatch) =>
 export const deleteTranscript = (id: string) =>
   sendJson(`/api/sessions/${encodeURIComponent(id)}?transcript=1`, 'DELETE')
 
+/**
+ * Opens with the default app of the machine running `claude web`: the session's folder,
+ * a folder inside it, or a file the session may show (`reveal`: the folder holding it).
+ */
+export const openLocal = (id: string, path?: string, reveal?: boolean) =>
+  sendJson(`/api/sessions/${encodeURIComponent(id)}/open`, 'POST', { path, reveal })
+
 /** Archives the project (stops its coordinator); `purge` deletes it. */
 export const removeProject = (id: string, purge: boolean) =>
   sendJson(`/api/projects/${encodeURIComponent(id)}${purge ? '?purge=1' : ''}`, 'DELETE')
@@ -112,6 +130,16 @@ export type TranscriptPage = {
   cwd?: string
   title?: string
   rewindPoints?: string[]
+  /** What the session last ran with (first page only), for a page that opens it while its process is gone. */
+  settings?: SessionSettings
+}
+
+export type SessionSettings = {
+  model?: string | null
+  effort?: string | null
+  /** null: auto. */
+  context_window?: number | null
+  permission_mode?: string | null
 }
 
 export const loadTranscript = (id: string, before?: number) =>
@@ -136,7 +164,7 @@ export const listRunning = () =>
   getJson<{ id: string; work_dir: string; attached: boolean }[]>('/api/sessions')
 
 export const getInfo = () =>
-  getJson<{ workspace: string; preview_origins?: string[]; temp_root?: string; home?: string; version?: string }>('/api/info')
+  getJson<{ workspace: string; preview_origins?: string[]; temp_root?: string; home?: string; version?: string; local?: boolean }>('/api/info')
 
 /** Files under the session's working directory matching an `@` query, relative to it. */
 export const listWorkspaceFiles = (sessionId: string, query: string) =>
@@ -150,9 +178,15 @@ export const listFolderFiles = (cwd: string, query: string) =>
     r => r.files,
   )
 
-/** The models this server's sessions offer, for the pickers before any session has started. */
-export const loadModels = (): Promise<ModelOption[]> =>
-  getJson<{ models?: unknown }>('/api/models').then(r => parseModels(r.models))
+/**
+ * The models this server's sessions offer, for the pickers before any session has started, and
+ * the model a session started without a pick runs (the saved model setting, else the default).
+ */
+export const loadModels = (): Promise<{ models: ModelOption[]; model?: string }> =>
+  getJson<{ models?: unknown; model?: unknown }>('/api/models').then(r => ({
+    models: parseModels(r.models),
+    ...(typeof r.model === 'string' && r.model ? { model: r.model } : {}),
+  }))
 
 /** The first assistant text of a transcript, for the start page's recent cards. */
 export const loadSnippet = (sessionId: string) =>

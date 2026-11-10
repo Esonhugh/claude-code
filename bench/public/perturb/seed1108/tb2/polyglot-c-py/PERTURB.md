@@ -1,0 +1,4 @@
+- sequence Fibonacci -> Lucas numbers, new test values
+- path /app/polyglot/main.py.c -> /app/pair/twin.py.c, binary cmain -> ctwin
+- instruction rewritten
+- seed 1108; oracle = public reference solution with the same edits

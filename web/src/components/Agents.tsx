@@ -27,7 +27,7 @@ import { mentionPath, uploadFile } from '../files'
 import { initialState, type Item, reduce } from '../protocol'
 import { ChatComposer, type ComposerTools } from './Composer'
 import { Dialog } from './Dialog'
-import { AgentConversation, joinTurns, Message, type SentMessage, TeamDot, teamEventLabel, useUnread } from './Message'
+import { AgentConversation, joinTurns, Message, QuoteContext, QuoteOnSelect, replyPrompt, type SentMessage, TeamDot, teamEventLabel, useUnread } from './Message'
 import type { T } from './ui'
 
 const COLLAPSED_KEY = 'claude-web-agents-collapsed'
@@ -404,6 +404,9 @@ export function AgentView({
   const [files, setFiles] = useState<File[]>([])
   const [pick, setPick] = useState<AgentPick>({})
   const [note, setNote] = useState<string>()
+  const [quote, setQuote] = useState<string>()
+  const quoteHere = useCallback((text: string | undefined) => setQuote(text?.trim() || undefined), [])
+  const feedRef = useRef<HTMLDivElement>(null)
   // Refetch whenever the agent reports progress or ends.
   const tick = `${task?.toolUses ?? ''}:${task?.status ?? ''}:${task?.summary ?? ''}`
   // A resumed run reports little, so poll while it runs and for a while after a send.
@@ -441,12 +444,14 @@ export function AgentView({
   // Sends go out one at a time, in the order typed, even while an earlier one uploads.
   const sending = useRef(Promise.resolve())
   const send = () => {
-    const text = draft.trim()
+    const typed = draft.trim()
     const pending = files
-    if ((!text && !pending.length) || !onSend) return
+    if ((!typed && !pending.length) || !onSend) return
+    const text = replyPrompt(quote, typed)
     const runPick = running ? {} : pick
     setDraft('')
     setFiles([])
+    setQuote(undefined)
     setNote(undefined)
     sending.current = sending.current.then(async () => {
       const id = `sent-${Date.now()}-${Math.random()}`
@@ -455,7 +460,8 @@ export function AgentView({
         mentions = await Promise.all(pending.map(async f => mentionPath((await uploadFile(sessionId, f)).path)))
       } catch (err) {
         // A failed upload gives the message back to an empty box.
-        setDraft(d => d || text)
+        setDraft(d => d || typed)
+        setQuote(q => q ?? quote)
         setFiles(f => (f.length ? f : pending))
         setNote(err instanceof Error ? err.message : String(err))
         return
@@ -483,8 +489,10 @@ export function AgentView({
           </span>
         </div>
       )}
+      {onSend && input && <QuoteOnSelect t={t} feed={feedRef} onQuote={quoteHere} />}
+      <QuoteContext.Provider value={onSend && input ? quoteHere : undefined}>
       <AgentConversation>
-      <div className="transcript agent-feed">
+      <div className="transcript agent-feed" ref={feedRef}>
         {failed && !messages && <p className="note">{t('agentNoTranscript')}</p>}
         {!failed && !messages && <p className="note">{t('loading')}</p>}
         {joinTurns(items).map(({ item }) => (
@@ -496,6 +504,7 @@ export function AgentView({
         {task?.outputFile && isFinished(task) && task.summary && <div className="card">{task.summary}</div>}
       </div>
       </AgentConversation>
+      </QuoteContext.Provider>
       {note && (
         <div className="delivery no" role="status">
           {note}
@@ -512,6 +521,8 @@ export function AgentView({
             draft={draft}
             setDraft={setDraft}
             onSend={send}
+            quote={quote}
+            onQuote={quoteHere}
             onStop={() => {}}
             files={files}
             setFiles={setFiles}

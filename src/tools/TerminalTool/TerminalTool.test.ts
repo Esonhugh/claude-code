@@ -1,3 +1,5 @@
+import { toolMatchesName } from '../../Tool.js'
+import { permissionRuleValueFromString } from '../../utils/permissions/permissionRuleParser.js'
 import assert from 'node:assert/strict'
 import { existsSync, readFileSync, rmSync } from 'node:fs'
 import { mkdtempSync } from 'node:fs'
@@ -39,7 +41,7 @@ import {
 
 test('Terminal is discoverable without loading its schema eagerly', () => {
   assert.equal(isDeferredTool(TerminalTool), true)
-  assert.deepEqual(formatDeferredToolLines([TerminalTool]), ['Terminal'])
+  assert.deepEqual(formatDeferredToolLines([TerminalTool]), ['Tmux'])
   assert.match(TerminalTool.searchHint ?? '', /terminal/i)
 })
 
@@ -121,9 +123,11 @@ beforeEach(() => {
   resetCommandQueue()
 })
 
-test('TerminalTool exposes the Terminal tool name without old alias', () => {
-  assert.equal(TerminalTool.name, 'Terminal')
-  assert.notEqual(TerminalTool.name, 'InteractiveTerminal')
+test('the tool is named Tmux and still answers to Terminal', () => {
+  assert.equal(TerminalTool.name, 'Tmux')
+  assert.equal(toolMatchesName(TerminalTool, 'Terminal'), true)
+  assert.equal(toolMatchesName(TerminalTool, 'InteractiveTerminal'), false)
+  assert.deepEqual(permissionRuleValueFromString('Terminal'), { toolName: 'Tmux' })
 })
 
 test('new-session auto classifier includes executable argv without env values', () => {
@@ -1477,4 +1481,9 @@ test('new-session runs inside the sandbox when sandboxing is enabled', async () 
   } finally {
     mock.restoreAll()
   }
+})
+
+test('Terminal is offered for work the model would otherwise do with tmux', async () => {
+  assert.match(TerminalTool.searchHint ?? '', /tmux/)
+  assert.match(await TerminalTool.prompt({} as never), /instead of tmux/i)
 })

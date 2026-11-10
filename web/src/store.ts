@@ -1,4 +1,4 @@
-import type { HistoryItem } from './api'
+import type { HistoryItem, SessionSettings } from './api'
 import {
   addError,
   addUserMessage,
@@ -29,7 +29,15 @@ export type SessionChat = ChatState & {
 
 export type HistoryEntry = HistoryItem
 
-export type StartOptions = { cwd?: string; mode: string; model?: string; temporary?: boolean; effort?: string }
+export type StartOptions = {
+  cwd?: string
+  mode: string
+  model?: string
+  temporary?: boolean
+  effort?: string
+  /** Applied to the new session like effort; null is auto. */
+  contextWindow?: number | null
+}
 
 export type AppState = {
   /** Session shown in the main area; null is the new-chat start page. */
@@ -70,9 +78,18 @@ export type AppAction =
       workDir?: string
       prepend?: boolean
       rewindPoints?: string[]
+      settings?: SessionSettings
     }
   | { type: 'mode'; id: string; mode: ChatMode }
-  | { type: 'created'; id: string; workDir: string; title: string; start: StartOptions }
+  | {
+      type: 'created'
+      id: string
+      workDir: string
+      title: string
+      start: StartOptions
+      /** The model the server runs when `start` picks none (`/api/models` `model`), shown until the session's init. */
+      runs?: string
+    }
   | {
       type: 'history'
       entries: HistoryEntry[]
@@ -155,7 +172,11 @@ export function appReducer(state: AppState, action: AppAction): AppState {
           [action.id]: {
             ...chat,
             items,
-            model: chat.model ?? folded.model,
+            // Picks this page made win; then what the server kept for the session (a reload, a new tab).
+            model: chat.model ?? action.settings?.model ?? folded.model,
+            effort: chat.effort ?? action.settings?.effort ?? undefined,
+            contextWindow: chat.contextWindow !== undefined ? chat.contextWindow : action.settings?.context_window ?? undefined,
+            permissionMode: chat.permissionMode ?? action.settings?.permission_mode ?? undefined,
             goal: chat.goal ?? folded.goal,
             startedAt: action.prepend ? (folded.startedAt ?? chat.startedAt) : (chat.startedAt ?? folded.startedAt),
             start: action.start,
@@ -189,7 +210,7 @@ export function appReducer(state: AppState, action: AppAction): AppState {
             ...emptyChat('connecting'),
             workDir: action.workDir,
             permissionMode: action.start.mode,
-            model: action.start.model,
+            model: action.start.model ?? action.runs,
           },
         },
         running: { ...state.running, [action.id]: true },

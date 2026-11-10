@@ -14,6 +14,7 @@ process.env.ANTHROPIC_API_KEY = 'test-key'
 const auth = await import('../utils/auth.js')
 const subscriber = spyOn(auth, 'isClaudeAISubscriber').mockReturnValue(true)
 const {
+  extractQuotaStatusFromError,
   extractQuotaStatusFromHeaders,
   getRateLimitDisplayName,
   getRawUtilization,
@@ -42,6 +43,49 @@ test('the overage-included weekly window is read from the 7d_oi headers', () => 
     seven_day: { utilization: 0.4, resets_at: 1760500000 },
     seven_day_overage_included: { utilization: 0.375, resets_at: 1760500000 },
   })
+})
+
+test('a ChatGPT sign-in reads its 5-hour and weekly windows from the Codex headers (#947)', async () => {
+  const prior = process.env.CLAUDE_CODE_USE_OPENAI
+  process.env.CLAUDE_CODE_USE_OPENAI = '1'
+  const chatgpt = spyOn(auth, 'getOpenAIAuthInfo').mockReturnValue({ accessToken: 't', isChatGPT: true })
+  try {
+    extractQuotaStatusFromHeaders(
+      new Headers({
+        'x-codex-primary-used-percent': '34',
+        'x-codex-primary-reset-at': '1794006268',
+        'x-codex-primary-window-minutes': '300',
+        'x-codex-secondary-used-percent': '12.5',
+        'x-codex-secondary-reset-at': '1794448581',
+        'x-codex-secondary-window-minutes': '10080',
+      }),
+    )
+    expect(getRawUtilization()).toEqual({
+      five_hour: { utilization: 0.34, resets_at: 1794006268 },
+      seven_day: { utilization: 0.125, resets_at: 1794448581 },
+    })
+    // A response without the headers keeps the last reading.
+    extractQuotaStatusFromHeaders(new Headers())
+    expect(getRawUtilization().five_hour?.utilization).toBe(0.34)
+    // The usage-limit 429 carries the same headers: the 5-hour window is now full.
+    const { HttpResponseError } = await import('../utils/errors.js')
+    extractQuotaStatusFromError(
+      new HttpResponseError(
+        429,
+        'OpenAI API 429: {"error":{"type":"usage_limit_reached"}}',
+        new Headers({
+          'x-codex-primary-used-percent': '100',
+          'x-codex-primary-reset-at': '1794006268',
+          'x-codex-primary-window-minutes': '300',
+        }),
+      ),
+    )
+    expect(getRawUtilization().five_hour?.utilization).toBe(1)
+  } finally {
+    chatgpt.mockRestore()
+    if (prior === undefined) delete process.env.CLAUDE_CODE_USE_OPENAI
+    else process.env.CLAUDE_CODE_USE_OPENAI = prior
+  }
 })
 
 test('the overage-included weekly limit is named after Fable', () => {

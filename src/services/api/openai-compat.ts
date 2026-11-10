@@ -13,6 +13,7 @@ import { createHmac, randomBytes, randomUUID } from 'crypto'
 import WebSocket from 'ws'
 import type {
   BetaImageBlockParam,
+  BetaRequestDocumentBlock,
   BetaRawMessageStreamEvent,
   BetaToolUnion,
   BetaMessageParam,
@@ -30,6 +31,7 @@ import type { OpenAITurnScope } from './openai-turn-scope.js'
 import { normalizeModelStringForAPI } from '../../utils/model/model.js'
 import { getInitialSettings } from '../../utils/settings/settings.js'
 import { HttpResponseError } from '../../utils/errors.js'
+import { DEFERRED_TOOL_PLACEHOLDER_NAME } from '../../tools/ToolSearchTool/constants.js'
 
 // --- Auth config ---
 
@@ -98,6 +100,8 @@ export function restoreOriginalId(fcId: string): string {
 type OpenAIResponsesInputContent =
   | { type: 'input_text'; text: string }
   | { type: 'input_image'; image_url: string; detail: 'high' }
+  | { type: 'input_file'; filename: string; file_data: string }
+  | { type: 'input_file'; file_url: string }
 
 function anthropicImageToResponsesInput(
   block: BetaImageBlockParam,
@@ -121,6 +125,45 @@ function anthropicImageToResponsesInput(
   )
 }
 
+function anthropicDocumentToResponsesInput(
+  block: BetaRequestDocumentBlock,
+): OpenAIResponsesInputContent[] {
+  const source = block.source
+  if (source.type === 'base64') {
+    return [{
+      type: 'input_file',
+      filename: block.title || 'document.pdf',
+      file_data: `data:${source.media_type};base64,${source.data}`,
+    }]
+  }
+  if (source.type === 'url') return [{ type: 'input_file', file_url: source.url }]
+  if (source.type === 'text') return [{ type: 'input_text', text: source.data }]
+  if (source.type === 'content') {
+    if (typeof source.content === 'string') {
+      return [{ type: 'input_text', text: source.content }]
+    }
+    return source.content.flatMap<OpenAIResponsesInputContent>(item =>
+      item.type === 'text'
+        ? [{ type: 'input_text', text: item.text }]
+        : item.type === 'image'
+          ? [anthropicImageToResponsesInput(item)]
+          : [],
+    )
+  }
+  throw new Error(
+    `OpenAI Responses does not support document source type "${(source as { type: string }).type}"`,
+  )
+}
+
+/** Responses has no search result block; the model gets its title, source and text. */
+function searchResultToText(block: {
+  title: string
+  source: string
+  content: Array<{ text: string }>
+}): string {
+  return [block.title, block.source, ...block.content.map(item => item.text)].join('\n')
+}
+
 function anthropicToolResultToResponsesOutput(
   content: unknown,
 ): string | OpenAIResponsesInputContent[] {
@@ -130,7 +173,9 @@ function anthropicToolResultToResponsesOutput(
   const blocks = content.map(item =>
     item?.type === 'tool_reference' && typeof item.tool_name === 'string'
       ? { type: 'text', text: `Tool available: ${item.tool_name}\n` }
-      : item,
+      : item?.type === 'search_result'
+        ? { type: 'text', text: searchResultToText(item) }
+        : item,
   )
   if (!blocks.some(item => item?.type === 'image')) {
     return blocks.map(item => item?.text || '').join('')
@@ -148,11 +193,38 @@ function anthropicToolResultToResponsesOutput(
   })
 }
 
+function toolSearchOutputItems(callId: string, tools: any[]): any[] {
+  return [
+    {
+      type: 'tool_search_call',
+      call_id: callId,
+      execution: 'client',
+      status: 'completed',
+      arguments: { query: `select:${tools.map(tool => tool.name).join(',')}` },
+    },
+    {
+      type: 'tool_search_output',
+      call_id: callId,
+      execution: 'client',
+      status: 'completed',
+      tools,
+    },
+  ]
+}
+
+/**
+ * `deferredTools` (ChatGPT only) carries the converted defer_loading tools.
+ * Their schemas go into the input as client tool_search_output items where
+ * ToolSearch discovered them, instead of into `tools`: changing `tools`
+ * mid-session invalidates the whole prompt cache (#1023).
+ */
 function anthropicMessagesToResponsesInput(
   messages: BetaMessageParam[],
   _system?: string | Array<{ type: string; text?: string }>,
+  deferredTools?: Map<string, any>,
 ): any[] {
   const input: any[] = []
+  const pendingDeferred = new Map(deferredTools)
   // system is passed separately as `instructions`, not in input
 
   for (const msg of messages) {
@@ -166,10 +238,26 @@ function anthropicMessagesToResponsesInput(
             parts.push({ type: 'input_text', text: block.text })
           } else if (block.type === 'image') {
             parts.push(anthropicImageToResponsesInput(block))
+          } else if (block.type === 'document') {
+            parts.push(...anthropicDocumentToResponsesInput(block))
+          } else if (block.type === 'search_result') {
+            parts.push({ type: 'input_text', text: searchResultToText(block) })
           } else if (block.type === 'tool_result') {
             const b = block as any
             const output = anthropicToolResultToResponsesOutput(b.content)
-            input.push({ type: 'function_call_output', call_id: ensureFcId(b.tool_use_id || 'unknown'), output })
+            const callId = ensureFcId(b.tool_use_id || 'unknown')
+            input.push({ type: 'function_call_output', call_id: callId, output })
+            const discovered = Array.isArray(b.content)
+              ? b.content.flatMap((item: any) => {
+                  const tool = item?.type === 'tool_reference' && pendingDeferred.get(item.tool_name)
+                  if (!tool) return []
+                  pendingDeferred.delete(item.tool_name)
+                  return [tool]
+                })
+              : []
+            if (discovered.length > 0) {
+              input.push(...toolSearchOutputItems(`ts_${callId}`, discovered))
+            }
           }
         }
       }
@@ -200,12 +288,21 @@ function anthropicMessagesToResponsesInput(
       }
     }
   }
+  // Discovered before a compaction: their tool_reference is gone from history.
+  pendingDeferred.delete(DEFERRED_TOOL_PLACEHOLDER_NAME)
+  if (pendingDeferred.size > 0) {
+    input.unshift(...toolSearchOutputItems('ts_restored', [...pendingDeferred.values()]))
+  }
   return input
 }
 
-function anthropicToolsToResponsesTools(tools?: BetaToolUnion[]): any[] | undefined {
+function anthropicToolsToResponsesTools(
+  tools?: BetaToolUnion[],
+  { keepDeferred = true }: { keepDeferred?: boolean } = {},
+): any[] | undefined {
   if (!tools || tools.length === 0) return undefined
   return tools.flatMap<any>((tool: any) => {
+    if (!keepDeferred && tool.defer_loading === true) return []
     if (
       tool.type === 'web_search_20250305' ||
       tool.type === 'web_search_20260209'
@@ -272,7 +369,6 @@ function anthropicEffortToOpenAIReasoning(effort: unknown): {
     | 'high'
     | 'xhigh'
     | 'max'
-    | 'ultra'
 } | undefined {
   if (
     effort === 'none' ||
@@ -281,12 +377,12 @@ function anthropicEffortToOpenAIReasoning(effort: unknown): {
     effort === 'medium' ||
     effort === 'high' ||
     effort === 'xhigh' ||
-    effort === 'max' ||
-    effort === 'ultra'
+    effort === 'max'
   ) {
     return { effort }
   }
-  if (effort === 'ultracode' || typeof effort === 'number') {
+  // The Responses API rejects 'ultra'; Codex sends xhigh for it and delegates client-side.
+  if (effort === 'ultra' || effort === 'ultracode' || typeof effort === 'number') {
     return { effort: 'xhigh' }
   }
   return undefined
@@ -336,6 +432,8 @@ class ResponsesSSEStream implements AsyncIterable<BetaRawMessageStreamEvent> {
   private resolve: (() => void) | null = null
   private done = false
   private error: Error | null = null
+  /** The response's `x-codex-*` headers (rate-limit windows), for withResponse(). */
+  rateLimitHeaders = new Headers()
 
   constructor(
     readonly controller: AbortController,
@@ -699,6 +797,11 @@ async function connectSSE(
       turnScope,
       webSocketFactory,
     )
+    resp.headers.forEach((value, name) => {
+      if (name.toLowerCase().startsWith('x-codex-') && name.toLowerCase() !== 'x-codex-turn-state') {
+        stream.rateLimitHeaders.set(name, value)
+      }
+    })
 
     // Process SSE stream
     const reader = resp.body?.getReader()
@@ -1261,14 +1364,29 @@ export function createOpenAICompatClient(options: {
     },
     create(params: any, requestOptions?: { signal?: AbortSignal }): any {
       const model = normalizeModelStringForAPI(params.model)
-      const input = anthropicMessagesToResponsesInput(params.messages, params.system)
+      // Verified on the ChatGPT backend only; other Responses endpoints keep
+      // deferred tools in `tools`.
+      const deferredTools = auth.isChatGPT
+        ? new Map(
+            (anthropicToolsToResponsesTools(
+              (params.tools ?? []).filter((tool: any) => tool.defer_loading === true),
+            ) ?? []).map(tool => [tool.name, tool]),
+          )
+        : undefined
+      const input = anthropicMessagesToResponsesInput(
+        params.messages,
+        params.system,
+        deferredTools,
+      )
       if (
         params.openai_compaction?.type === 'compaction' &&
         typeof params.openai_compaction.encrypted_content === 'string'
       ) {
         input.unshift(params.openai_compaction)
       }
-      const tools = anthropicToolsToResponsesTools(params.tools)
+      const tools = anthropicToolsToResponsesTools(params.tools, {
+        keepDeferred: !auth.isChatGPT,
+      })
       const toolChoice = anthropicToolChoiceToResponsesToolChoice(
         params.tool_choice,
         tools,
@@ -1327,7 +1445,7 @@ export function createOpenAICompatClient(options: {
         return {
           then: (resolve: any, reject: any) => promise.then(resolve, reject),
           catch: (reject: any) => promise.catch(reject),
-          withResponse: () => promise.then(data => ({ data, response: new Response(), request_id: `req_${Date.now()}` })),
+          withResponse: () => promise.then(data => ({ data, response: new Response(null, { headers: data.rateLimitHeaders }), request_id: `req_${Date.now()}` })),
         }
       }
 

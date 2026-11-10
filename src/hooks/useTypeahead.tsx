@@ -1998,8 +1998,14 @@ export function useTypeahead({
         return
       }
       // The Autocomplete keybinding is inactive without suggestions, so
-      // bash-mode shell completion has to start here.
-      if (mode === 'bash' && enableFileCompletions && input.trim() !== '') {
+      // bash-mode shell completion has to start here. It runs compgen on this
+      // machine, so a remote session (which executes `!` commands remotely)
+      // must not get local paths.
+      if (
+        mode === 'bash' &&
+        enableLocalIOCompletions &&
+        input.trim() !== ''
+      ) {
         e.preventDefault()
         void handleTab()
         return

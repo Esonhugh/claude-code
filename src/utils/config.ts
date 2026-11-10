@@ -30,6 +30,7 @@ import type { MemoryType } from './memory/types.js'
 import { normalizePathForConfigKey } from './path.js'
 import { getEssentialTrafficOnlyReason } from './privacyLevel.js'
 import { getManagedFilePath } from './settings/managedPath.js'
+import { mirrorUiPrefsToUserSettings } from './settings/uiPrefs.js'
 import type { ThemeSetting } from './theme.js'
 import type { WorkflowSizeGuideline } from '../tools/WorkflowTool/workflowFeatureFlags.js'
 
@@ -790,6 +791,7 @@ export function saveGlobalConfig(
   }
 
   let written: GlobalConfig | null = null
+  let before: GlobalConfig | null = null
   try {
     const didWrite = saveConfigWithLock(
       getGlobalClaudeFile(),
@@ -800,6 +802,7 @@ export function saveGlobalConfig(
         if (config === current) {
           return current
         }
+        before = current
         written = {
           ...config,
           projects: removeProjectHistory(current.projects),
@@ -838,6 +841,7 @@ export function saveGlobalConfig(
     if (config === currentConfig) {
       return
     }
+    before = currentConfig
     written = {
       ...config,
       projects: removeProjectHistory(currentConfig.projects),
@@ -845,6 +849,7 @@ export function saveGlobalConfig(
     saveConfig(getGlobalClaudeFile(), written, DEFAULT_GLOBAL_CONFIG)
     writeThroughGlobalConfigCache(written)
   }
+  if (before && written) mirrorUiPrefsToUserSettings(before, written)
 }
 
 // Cache for global config

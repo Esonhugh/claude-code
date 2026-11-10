@@ -123,7 +123,7 @@ const allow = async () => ({ behavior: 'allow' as const })
 
 describe('Mods scheduler admission', () => {
   for (const streaming of [false, true]) {
-    test(`${streaming ? 'streaming' : 'batch'} pins before classification and serializes pinned tool.call hooks`, async () => {
+    test(`${streaming ? 'streaming' : 'batch'} pins once and keeps concurrency with tool.call hooks (official 2.1.318)`, async () => {
       const f = fixture(true)
       const executor = streaming
         ? new StreamingToolExecutor([f.tool], allow, f.context)
@@ -136,14 +136,11 @@ describe('Mods scheduler admission', () => {
           : runTools(f.blocks, [f.assistant], allow, f.context),
       )
       await f.entered[0]!.promise
-      expect(f.captures()).toBe(1)
-      expect(f.classifications()).toBe(0)
-      expect(f.started).toEqual(['0'])
-      expect(f.releases()).toBe(0)
-      f.changeHooks(false)
-      f.gates[0]!.resolve()
       await f.entered[1]!.promise
+      expect(f.captures()).toBe(1)
+      expect(f.started).toEqual(['0', '1'])
       expect(f.releases()).toBe(0)
+      f.gates[0]!.resolve()
       f.gates[1]!.resolve()
       await results
       expect(f.releases()).toBe(1)
@@ -329,6 +326,8 @@ describe('Mods scheduler admission', () => {
 
     test(`${streaming ? 'streaming' : 'batch'} cancellation skips queued effects and releases the pinned snapshot`, async () => {
       const f = fixture(true)
+      // A non-concurrent tool keeps the second call queued behind the first.
+      f.tool.isConcurrencySafe = () => false
       const executor = streaming ? new StreamingToolExecutor([f.tool], allow, f.context) : undefined
       if (executor) for (const block of f.blocks) executor.addTool(block, f.assistant)
       const results = Array.fromAsync(executor

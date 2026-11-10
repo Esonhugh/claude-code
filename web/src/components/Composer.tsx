@@ -1,5 +1,6 @@
 import {
   type ClipboardEvent,
+  type CSSProperties,
   type DragEvent,
   type FormEvent,
   type KeyboardEvent,
@@ -15,7 +16,8 @@ import {
 import { agentCommands, filterCommands, moveSelection, paletteQuery, recallList, recallPrompt, type SlashCommand, typedInFull } from '../commands'
 import { type Daybreak, type HistoryScope, loadPromptHistory, recordPrompt } from '../api'
 import { formatBytes, mentionPath } from '../files'
-import { type Approval, type ApprovalChoice, approvalRules, type CodexAppMention, type ContextUsage, type Goal, type ModelOption, type Todo } from '../protocol'
+import { type Approval, type ApprovalChoice, approvalRules, type CodexAppMention, type ContextUsage, type Goal, type ModelOption, type PromptDecoration, type Todo } from '../protocol'
+import { modColor } from './Mods'
 import { toolSummary } from '../tools'
 import { modelName, modelOption } from './Message'
 import { FootMenu, modeOf, nextMode, offeredModes, SendIcon, type T } from './ui'
@@ -29,12 +31,14 @@ export function modelButtonLabel(
   effort: string | undefined,
   models: ModelOption[],
   t: T,
+  runs?: string,
 ): string {
-  // `default` is named by the model it resolves to, like the prototype's `Opus 5.5 · high`.
-  // A list without a default row (a ChatGPT sign-in) runs its first model.
+  // `default` is named by the model it resolves to, like the prototype's `Opus 5.5 · high`:
+  // `runs` when the server said (a saved model), else the default row's, else a list without a
+  // default row (a ChatGPT sign-in) runs its first model.
   const resolved =
     !model || model === 'default'
-      ? (models.find(m => m.value === 'default')?.resolvedModel ?? (models.some(m => m.value === 'default') ? model : models[0]?.value) ?? model)
+      ? (runs ?? models.find(m => m.value === 'default')?.resolvedModel ?? (models.some(m => m.value === 'default') ? model : models[0]?.value) ?? model)
       : model
   const name = modelName(resolved, models) ?? t('model')
   return effort ? `${name} · ${effort}` : name
@@ -63,6 +67,28 @@ export function effortChoices(model: string | undefined, models: ModelOption[], 
 }
 
 /**
+ * The context-window stops for `model`: auto (null), then its tiers, plus a configured window that is
+ * not a tier; a window above the model maximum shows as the maximum, which is what it resolves to.
+ */
+export function contextWindowChoices(
+  model: string | undefined,
+  models: ModelOption[],
+  value: number | null | undefined,
+): (number | null)[] {
+  const tiers = (modelOption(model, models) ?? models.find(m => m.value === 'default'))?.contextWindowTiers ?? []
+  if (tiers.length === 0) return []
+  if (typeof value === 'number' && value < tiers.at(-1)! && !tiers.includes(value)) {
+    return [null, ...[...tiers, value].sort((a, b) => a - b)]
+  }
+  return [null, ...tiers]
+}
+
+/** 272000 → "272k", 1000000 → "1M". */
+export function formatWindow(tokens: number): string {
+  return tokens >= 1_000_000 ? `${+(tokens / 1_000_000).toFixed(2)}M` : `${Math.round(tokens / 1000)}k`
+}
+
+/**
  * The model rows shown before "More models": the first four plus the current one. A list with
  * only one more row than that shows it rather than a "More models" row.
  */
@@ -82,6 +108,7 @@ export function ModelMenu({
   heading,
   locked = false,
   daybreak,
+  contextWindow,
 }: {
   t: T
   model: string | undefined
@@ -96,8 +123,16 @@ export function ModelMenu({
   locked?: boolean
   /** The Daybreak access program, offered under a ChatGPT sign-in. */
   daybreak?: { value: string; onChange: (value: Daybreak) => void }
+  /** The session's context window (null is auto), from the model's tiers. */
+  contextWindow?: { value: number | null | undefined; onChange: (value: number | null) => void }
 }) {
   const current = modelOption(model, models)
+  const tiers = contextWindowChoices(model, models, contextWindow?.value)
+  const maxWindow = tiers.at(-1)
+  const selectedWindow =
+    typeof contextWindow?.value === 'number' && typeof maxWindow === 'number'
+      ? Math.min(contextWindow.value, maxWindow)
+      : null
   const levels = effortChoices(model, models, effort)
   const [expanded, setExpanded] = useState(false)
   const shown = shownModels(models, current?.value, expanded)
@@ -142,6 +177,25 @@ export function ModelMenu({
               </button>
             ))}
           </div>
+          {contextWindow && tiers.length > 1 && (
+            <>
+              <div className="mh">{t('contextWindow')}</div>
+              <div className="seg" role="radiogroup" aria-label={t('contextWindow')}>
+                {tiers.map(tier => (
+                  <button
+                    type="button"
+                    role="radio"
+                    key={tier ?? 'auto'}
+                    disabled={locked}
+                    aria-checked={selectedWindow === tier}
+                    onClick={() => contextWindow.onChange(tier)}
+                  >
+                    {tier === null ? 'auto' : formatWindow(tier)}
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
           {daybreak && (
             <>
               <div className="mh">Daybreak</div>
@@ -294,7 +348,7 @@ function usePlaceholder(t: T): string {
 /**
  * The input box shared by the chat and the start page: textarea, `/` palette,
  * attachments, `+` menu and the send (or stop) button. `start` draws the
- * prototype's `.wl-box`, otherwise `.cbox` with its `.crow` below.
+ * prototype's `.wl-box`, otherwise `.cbox`: the text, then its `.crow` of controls and send.
  */
 export function InputBox({
   t,
@@ -323,6 +377,9 @@ export function InputBox({
   targets,
   picked = [],
   onTarget,
+  quote,
+  onQuote,
+  decorations,
 }: {
   t: T
   start?: boolean
@@ -360,6 +417,11 @@ export function InputBox({
   /** The picked recipients, in the order they were picked. */
   picked?: MentionTarget[]
   onTarget?: (picked: MentionTarget[]) => void
+  /** Text from the conversation this message replies to; sent ahead of the draft as a blockquote. */
+  quote?: string
+  onQuote?: (quote: string | undefined) => void
+  /** How Mods mark the draft (`prompt.edit` decorations), drawn under the text. */
+  decorations?: PromptDecoration[]
 }) {
   const picker = useRef<HTMLInputElement>(null)
   const imagePicker = useRef<HTMLInputElement>(null)
@@ -494,6 +556,9 @@ export function InputBox({
     seen.observe(el)
     return () => seen.disconnect()
   }, [draft, start])
+  useEffect(() => {
+    if (quote) box.current?.focus()
+  }, [quote])
   // Typed prompts join the folder's history, as the CLI adds each prompt it submits.
   const sendNow = (now = false) => {
     const text = draft.trim()
@@ -761,8 +826,31 @@ export function InputBox({
       onKeyDown={onKeyDown}
       onPaste={onPaste}
       onFocus={onFocus}
+      onScroll={e => {
+        if (mirror.current) mirror.current.scrollTop = e.currentTarget.scrollTop
+      }}
       autoFocus={start}
     />
+  )
+  const mirror = useRef<HTMLDivElement>(null)
+  const marked = decorations?.length ? (
+    <div className="cdeco">
+      <div className="cdeco-mirror" ref={mirror} aria-hidden="true">
+        {decoratedRuns(draft, decorations).map((run, i) =>
+          run.mark ? (
+            <span key={i} style={decorationStyle(run.mark)}>
+              {run.text}
+            </span>
+          ) : (
+            run.text
+          ),
+        )}
+        {'\n'}
+      </div>
+      {textarea}
+    </div>
+  ) : (
+    textarea
   )
   const inputs = (
     <>
@@ -845,28 +933,49 @@ export function InputBox({
       <Attachments t={t} files={files} setFiles={setFiles} />
       <div className="cbox">
         {inputs}
-        {picked.length > 0 && (
-          <span className="to-chips">
-            {picked.map(x => (
-              <span className="to-chip" key={x.id} title={x.name}>
-                <span>@{x.name}</span>
-                <button
-                  type="button"
-                  aria-label={t('clearTarget')}
-                  onClick={() => onTarget?.(picked.filter(p => p.id !== x.id))}
-                >
-                  ×
-                </button>
-              </span>
-            ))}
-          </span>
+        {quote && (
+          <div className="cquote">
+            <span className="cquote-text" title={quote}>
+              {quote}
+            </span>
+            <button
+              type="button"
+              className="x"
+              aria-label={t('removeQuote')}
+              title={t('removeQuote')}
+              onClick={() => {
+                onQuote?.(undefined)
+                box.current?.focus()
+              }}
+            >
+              ×
+            </button>
+          </div>
         )}
-        {textarea}
-        {send}
-      </div>
-      <div className="crow">
-        {plus}
-        {crow}
+        <div className="cin">
+          {picked.length > 0 && (
+            <span className="to-chips">
+              {picked.map(x => (
+                <span className="to-chip" key={x.id} title={x.name}>
+                  <span>@{x.name}</span>
+                  <button
+                    type="button"
+                    aria-label={t('clearTarget')}
+                    onClick={() => onTarget?.(picked.filter(p => p.id !== x.id))}
+                  >
+                    ×
+                  </button>
+                </span>
+              ))}
+            </span>
+          )}
+          {marked}
+        </div>
+        <div className="crow">
+          {plus}
+          {crow}
+          {send}
+        </div>
       </div>
     </form>
   )
@@ -876,6 +985,33 @@ export function InputBox({
 export type MentionTarget = { id: string; name: string; detail: string; tag: string }
 
 /** Targets whose name or detail holds the query, name matches first. */
+/** The draft cut where Mods' decorations start and end; overlapping ones: the later wins. */
+export function decoratedRuns(text: string, decorations: PromptDecoration[]): { text: string; mark?: PromptDecoration }[] {
+  const marks: (PromptDecoration | undefined)[] = Array.from({ length: text.length })
+  for (const d of decorations) {
+    for (let i = Math.max(0, d.start); i < Math.min(text.length, d.end); i++) marks[i] = d
+  }
+  const runs: { text: string; mark?: PromptDecoration }[] = []
+  for (let i = 0; i < text.length; i++) {
+    const last = runs.at(-1)
+    if (last && last.mark === marks[i]) last.text += text[i]
+    else runs.push({ text: text[i]!, ...(marks[i] && { mark: marks[i] }) })
+  }
+  return runs
+}
+
+/** Only what keeps the text where the box draws it: a background and lines, no weight or slant. */
+function decorationStyle(d: PromptDecoration): CSSProperties {
+  const color = modColor(d.color)
+  const lines = [d.underline && 'underline', d.strikethrough && 'line-through'].filter(Boolean).join(' ')
+  return {
+    background: modColor(d.backgroundColor) ?? (color && !lines ? `color-mix(in srgb, ${color} 22%, transparent)` : undefined),
+    textDecorationLine: lines || undefined,
+    textDecorationColor: lines ? (color ?? 'currentColor') : undefined,
+    opacity: d.dimColor ? 0.5 : undefined,
+  }
+}
+
 export function matchTargets(targets: MentionTarget[], query: string): MentionTarget[] {
   const q = query.toLowerCase()
   const inName = targets.filter(x => x.name.toLowerCase().includes(q))
@@ -912,6 +1048,7 @@ export type ComposerTools = {
     heading?: string
     locked?: boolean
     daybreak?: { value: string; onChange: (value: Daybreak) => void }
+    contextWindow?: { value: number | null | undefined; onChange: (value: number | null) => void }
   }
 }
 
@@ -969,7 +1106,7 @@ export function ChatComposer({
           <ModeButton t={box.t} mode={mode.mode} plan={mode.plan} onMode={mode.onMode} />
           {extra}
           {model.models.length > 0 && (
-            <FootMenu right label={box.t('model')} button={modelButtonLabel(model.model, model.effort, model.models, box.t)}>
+            <FootMenu right label={box.t('model')} button={<span className="ml">{modelButtonLabel(model.model, model.effort, model.models, box.t)}</span>}>
               {close => <ModelMenu t={box.t} {...model} close={close} />}
             </FootMenu>
           )}
@@ -1042,7 +1179,18 @@ export function AskDock({
   const options = approvalOptions(approval, t)
   const [sel, setSel] = useState(0)
   const titleId = useId()
-  useEffect(() => setSel(0), [approval.requestId])
+  const dockRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    setSel(0)
+    // Just after sending, focus is still in the empty input box, where these keys would type or interrupt instead.
+    const active = document.activeElement
+    if (!(active instanceof HTMLTextAreaElement) || active.value.trim()) return
+    dockRef.current?.querySelector<HTMLButtonElement>('.opt2')?.focus()
+    // Once answered, typing goes back to the input box.
+    return () => {
+      if (!document.activeElement || document.activeElement === document.body) active.focus()
+    }
+  }, [approval.requestId])
   useEffect(() => {
     const onKey = (e: globalThis.KeyboardEvent) => {
       const target = e.target as HTMLElement | null
@@ -1067,7 +1215,7 @@ export function AskDock({
   }, [options, sel, onAnswer])
   const summary = toolSummary(approval.toolName, JSON.stringify(approval.input))
   return (
-    <div className="askdock" role="dialog" aria-labelledby={titleId}>
+    <div className="askdock" role="dialog" aria-labelledby={titleId} ref={dockRef}>
       <div className="ahead">
         <b id={titleId}>
           {approval.toolName === 'Bash'

@@ -1,4 +1,4 @@
-import type { ChildProcess } from 'child_process'
+import { type ChildProcess, spawnSync } from 'child_process'
 import { stat } from 'fs/promises'
 import type { Readable } from 'stream'
 import treeKill from 'tree-kill'
@@ -32,7 +32,10 @@ export type ExecResult = {
 }
 
 export type ShellCommand = {
-  background: (backgroundTaskId: string) => boolean
+  background: (
+    backgroundTaskId: string,
+    options?: { skipSpill?: boolean },
+  ) => boolean
   result: Promise<ExecResult>
   kill: () => void
   status: 'running' | 'backgrounded' | 'completed' | 'killed'
@@ -116,6 +119,10 @@ class StreamWrapper {
 // Commands still running, so shutdown can wait for their final results to
 // reach the transcript before the process exits.
 const liveCommands = new Set<ShellCommandImpl>()
+
+export function hasLiveShellCommands(): boolean {
+  return liveCommands.size > 0
+}
 
 export async function waitForLiveShellResults(): Promise<void> {
   await Promise.allSettled([...liveCommands].map(command => command.result))
@@ -354,10 +361,32 @@ class ShellCommandImpl implements ShellCommand {
       // exits before it signals anyone. Detached shells lead their own group,
       // so signal it synchronously first (ESRCH when not detached).
       if (process.platform !== 'win32') {
+        // Descendants that lead their own group (`timeout`, `setsid`) escape
+        // the group kill and are reparented once the shell dies, so collect
+        // the tree before killing anything.
+        const parents = new Map<number, number[]>()
+        const ps = spawnSync('ps', ['-A', '-o', 'pid=', '-o', 'ppid='], { encoding: 'utf8', timeout: 1000 })
+        for (const line of (ps.stdout ?? '').split('\n')) {
+          const [child, parent] = line.trim().split(/\s+/).map(Number)
+          if (child && parent) parents.set(parent, [...(parents.get(parent) ?? []), child])
+        }
+        const tree: number[] = []
+        for (let queue = [pid]; queue.length > 0; ) {
+          const next = parents.get(queue.shift()!) ?? []
+          tree.push(...next)
+          queue.push(...next)
+        }
         try {
           process.kill(-pid, 'SIGKILL')
         } catch {
           // Not a group leader (ESRCH): tree-kill below covers it.
+        }
+        for (const descendant of tree) {
+          try {
+            process.kill(descendant, 'SIGKILL')
+          } catch {
+            // Already gone.
+          }
         }
       }
       treeKill(pid, 'SIGKILL')
@@ -369,7 +398,7 @@ class ShellCommandImpl implements ShellCommand {
     this.#doKill()
   }
 
-  background(taskId: string): boolean {
+  background(taskId: string, options?: { skipSpill?: boolean }): boolean {
     if (this.#status === 'running') {
       this.#backgroundTaskId = taskId
       this.#status = 'backgrounded'
@@ -379,7 +408,7 @@ class ShellCommandImpl implements ShellCommand {
         // The foreground timeout is gone, so watch file size to prevent
         // a stuck append loop from filling the disk (768GB incident).
         this.#startSizeWatchdog()
-      } else {
+      } else if (!options?.skipSpill) {
         // Pipe mode: spill the in-memory buffer so readers can find it on disk.
         this.taskOutput.spillToDisk()
       }

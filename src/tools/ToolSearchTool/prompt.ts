@@ -1,5 +1,5 @@
 import { feature } from 'bun:bundle'
-import { isReplBridgeActive } from '../../bootstrap/state.js'
+import { getAllowedChannels, isReplBridgeActive } from '../../bootstrap/state.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../services/analytics/growthbook.js'
 import type { Tool } from '../../Tool.js'
 import { AGENT_TOOL_NAME } from '../AgentTool/constants.js'
@@ -72,8 +72,17 @@ export function isDeferredTool(tool: Tool, override?: boolean): boolean {
   // initial prompt with full schema. Checked first so MCP tools can opt out.
   if (tool.alwaysLoad === true) return false
 
-  // MCP tools are always deferred (workflow-specific)
-  if (tool.isMcp === true) return true
+  // MCP tools are always deferred (workflow-specific), except those of a server
+  // this session listens to as a channel: its reply tool is the only way an
+  // answer reaches the sender, and behind ToolSearch the model answers in the
+  // transcript instead.
+  if (tool.isMcp === true) {
+    if (!tool.mcpInfo) return true
+    type ChannelMod = typeof import('../../services/mcp/channelNotification.js')
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { findChannelEntry } = require('../../services/mcp/channelNotification.js') as ChannelMod
+    return findChannelEntry(tool.mcpInfo.serverName, getAllowedChannels()) === undefined
+  }
 
   // Fork-first experiment: Agent must be available turn 1, not behind ToolSearch.
   // Lazy require: static import of forkSubagent → coordinatorMode creates a cycle

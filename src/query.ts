@@ -18,6 +18,7 @@ import { getAPIProvider } from './utils/model/providers.js'
 import {
   calculateTokenWarningState,
   isAutoCompactEnabled,
+  AUTOCOMPACT_THRASHING_MESSAGE,
   type AutoCompactTrackingState,
 } from './services/compact/autoCompact.js'
 import { buildPostCompactMessages } from './services/compact/compact.js'
@@ -893,6 +894,8 @@ async function* queryLoop(
       consecutiveFailures,
       compactionFailure,
       skip: compactionSkip,
+      consecutiveRapidRefills,
+      rapidRefillBreakerTripped,
     } = await deps.autocompact(
         projectedMessagesForQuery,
         toolUseContext,
@@ -910,6 +913,14 @@ async function* queryLoop(
         canUseTool,
       )
     queryCheckpoint('query_autocompact_end')
+
+    if (rapidRefillBreakerTripped) {
+      yield createAssistantAPIErrorMessage({
+        content: AUTOCOMPACT_THRASHING_MESSAGE,
+        error: 'invalid_request',
+      })
+      return { reason: 'rapid_refill_breaker' }
+    }
 
     if (compactionResult) {
       const {
@@ -967,6 +978,7 @@ async function* queryLoop(
         turnId: deps.uuid(),
         turnCounter: 0,
         consecutiveFailures: 0,
+        consecutiveRapidRefills,
       }
 
       const postCompactMessages = buildPostCompactMessages(compactionResult)
@@ -1261,6 +1273,10 @@ async function* queryLoop(
                 canUseTool,
                 toolUseContext,
               )
+              // Only what streamed before the fallback is orphaned; the fallback
+              // result and any stream events after it (a turn.step mod closes
+              // its message) must not tombstone it again.
+              streamingFallbackOccured = false
             }
             // Backfill tool_use inputs on a cloned message before yield so
             // SDK stream output and transcript serialization see legacy/derived
@@ -1642,7 +1658,12 @@ async function* queryLoop(
           }
         }
       }
-      if ((isWithheld413 || isWithheldMedia) && reactiveCompact) {
+      // Only a PTL the stream withheld (reactive compact enabled) may be
+      // yielded below; otherwise it already reached the caller.
+      const reactiveWithheld413 =
+        isWithheld413 &&
+        (reactiveCompact?.isWithheldPromptTooLong(lastMessage) ?? false)
+      if ((reactiveWithheld413 || isWithheldMedia) && reactiveCompact) {
         const compacted = await reactiveCompact.tryReactiveCompact({
           hasAttempted: hasAttemptedReactiveCompact,
           querySource,

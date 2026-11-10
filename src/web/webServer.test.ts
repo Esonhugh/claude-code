@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from 'bun:test'
 import { spawn } from 'child_process'
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from 'fs'
 import { homedir, hostname, networkInterfaces, tmpdir } from 'os'
-import { join } from 'path'
+import { delimiter, join } from 'path'
 import type { SpawnSessionOptions } from '../server/backends/dangerousBackend.js'
 import { createServerLogger } from '../server/serverLog.js'
 import { SessionManager } from '../server/sessionManager.js'
@@ -10,6 +10,7 @@ import { addressKind } from './network.js'
 import {
   contentSecurityPolicy,
   normalizeProjectDir,
+  openLocal,
   parsePreviewOrigin,
   startWebServer,
   type WebAsset,
@@ -25,7 +26,8 @@ const TOKEN = 'web-test-token'
 // the turn is bracketed by running/idle, and a "hold" turn never ends.
 // "dispatch" starts worker a1 and finishes it; "start" starts worker a2,
 // which is killed with the child, as `claude -p` does; control requests succeed,
-// and a message to a task is queued (one starting with RESUME resumes it).
+// and a message to a task is queued (one starting with RESUME resumes it, one
+// starting with INJECT goes to a teammate's next turn and names its transcript).
 const FAKE_CHILD = `
 const out = m => process.stdout.write(JSON.stringify(m) + '\\n')
 const states = !!process.env.CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS
@@ -43,7 +45,8 @@ process.stdin.on('data', chunk => {
     const msg = JSON.parse(buf.slice(0, i))
     buf = buf.slice(i + 1)
     if (msg.type === 'control_request') {
-      const response = msg.request.subtype === 'send_task_message' ? { delivery: msg.request.text.startsWith('RESUME') ? 'resumed' : 'queued' } : {}
+      const delivery = msg.request.text?.startsWith('RESUME') ? 'resumed' : msg.request.text?.startsWith('INJECT') ? 'injected' : 'queued'
+      const response = msg.request.subtype === 'send_task_message' ? { delivery, ...(delivery === 'injected' && { agent_id: 'tm1-transcript' }) } : {}
       out({ type: 'control_response', response: { subtype: 'success', request_id: msg.request_id, response } })
     }
     if (msg.type === 'user') {
@@ -300,18 +303,41 @@ describe('claude web server', () => {
       body: JSON.stringify({ resume: '--help' }),
     })
     expect(resume.status).toBe(400)
+    // A resumed session keeps the model and effort the page showed (#1083).
+    const post = (body: unknown) =>
+      fetch(`${r.base}/api/sessions`, { method: 'POST', headers: { cookie, origin: r.origin }, body: JSON.stringify(body) })
+    expect((await post({ resume: '99999999-2222-4333-8444-666666666666', effort: '--max' })).status).toBe(400)
+    expect((await post({ resume: '99999999-2222-4333-8444-666666666666', model: 'gpt-5.6-terra', effort: 'high' })).status).toBe(200)
+    expect(r.spawned.at(-1)).toMatchObject({ resume: true, model: 'gpt-5.6-terra', effort: 'high' })
     const info = await fetch(`${r.base}/api/info`, { headers: { cookie } })
     expect(await info.json()).toEqual({
       workspace: r.workspace,
       preview_origins: [],
       temp_root: join(r.configDir, 'web', 'temp'),
       home: homedir(),
+      local: true,
       version: '9.9.9-test',
     })
     const models = (await (await fetch(`${r.base}/api/models`, { headers: { cookie } })).json()) as {
       models: { value: string }[]
+      model: string
     }
     expect(models.models.map(m => m.value)).toContain('default')
+    expect(typeof models.model).toBe('string')
+    // `model` follows the saved setting as it changes (#946).
+    const prior = process.env.CLAUDE_CONFIG_DIR
+    process.env.CLAUDE_CONFIG_DIR = r.configDir
+    try {
+      const saved = async (model: string) => {
+        writeFileSync(join(r.configDir, 'settings.json'), JSON.stringify({ model }))
+        return ((await (await fetch(`${r.base}/api/models`, { headers: { cookie } })).json()) as { model: string }).model
+      }
+      expect(await saved('claude-haiku-4-5')).toBe('claude-haiku-4-5')
+      expect(await saved('claude-sonnet-4-6')).toBe('claude-sonnet-4-6')
+    } finally {
+      if (prior === undefined) delete process.env.CLAUDE_CONFIG_DIR
+      else process.env.CLAUDE_CONFIG_DIR = prior
+    }
   })
 
   it('keeps sidebar marks and deletes transcripts behind the cookie and origin checks', async () => {
@@ -440,6 +466,21 @@ describe('claude web server', () => {
     expect(page.headers.get('content-security-policy')).toBe(
       contentSecurityPolicy(['http://dev.internal:8080']),
     )
+  })
+
+  it("serves the Mods client frame under its own sandbox policy", async () => {
+    const r = start()
+    expect((await fetch(`${r.base}/mods-frame`)).status).toBe(401)
+    const cookie = await signIn(r)
+    const frame = await fetch(`${r.base}/mods-frame`, { headers: { cookie } })
+    expect(frame.status).toBe(200)
+    const csp = frame.headers.get('content-security-policy') ?? ''
+    expect(csp).toContain('sandbox allow-scripts')
+    expect(csp).toContain("connect-src 'none'")
+    expect(csp).not.toContain('unsafe-eval')
+    const script = (await frame.text()).match(/<script>([\s\S]*)<\/script>/)![1]!
+    const hash = new Bun.CryptoHasher('sha256').update(script).digest('base64')
+    expect(csp).toContain(`script-src 'sha256-${hash}' blob:`)
   })
 
   it('serves an upload while the session transcript has no messages yet', async () => {
@@ -762,6 +803,13 @@ describe('claude web server', () => {
     }
     const resultSeen = (text: string) => () => lines.some(l => l.result === `${text} in ${r.workspace}`)
 
+    // No turn yet, so no transcript to resume: it starts again under the same id.
+    expect((await patch({ instructions: 'FIRST' })).status).toBe(200)
+    await waitFor(() => r.spawned.length === 2)
+    expect(r.spawned[1]).toMatchObject({ sessionId, appendSystemPrompt: 'FIRST' })
+    expect(r.spawned[1]!.resume).toBeUndefined()
+    r.spawned.shift()
+
     // A turn is running: the restart waits for it.
     say('hold')
     await waitFor(() => lines.some(l => l.state === 'running'))
@@ -788,6 +836,83 @@ describe('claude web server', () => {
     await waitFor(resultSeen('last'))
     expect(ws.readyState).toBe(WebSocket.OPEN)
     ws.close()
+  })
+
+  it('keeps the settings a session accepted for a page that reopens it after its process is gone (#1085)', async () => {
+    const r = start()
+    const prior = process.env.CLAUDE_CONFIG_DIR
+    process.env.CLAUDE_CONFIG_DIR = r.configDir
+    try {
+      const cookie = await signIn(r)
+      const headers = { cookie, origin: r.origin }
+      const created = await fetch(`${r.base}/api/sessions`, { method: 'POST', headers, body: JSON.stringify({ model: 'opus', permission_mode: 'plan' }) })
+      const { session_id: id } = (await created.json()) as { session_id: string }
+      const dir = join(r.configDir, 'projects', r.workspace.replace(/[^a-zA-Z0-9]/g, '-'))
+      mkdirSync(dir, { recursive: true })
+      writeFileSync(join(dir, `${id}.jsonl`), JSON.stringify({ type: 'user', parentUuid: null, isSidechain: false, sessionId: id, cwd: r.workspace, timestamp: new Date(0).toISOString(), uuid: 'a0000000-0000-4000-8000-000000000001', message: { role: 'user', content: 'hi' } }) + '\n')
+      const settings = async (query = '') =>
+        ((await (await fetch(`${r.base}/api/history/${id}/messages${query}`, { headers })).json()) as { settings?: unknown }).settings
+      expect(await settings()).toEqual({ model: 'opus', effort: null, context_window: null, permission_mode: 'plan' })
+      const ws = new WebSocket(`${r.base.replace('http', 'ws')}/api/sessions/${id}/ws`, { headers } as unknown as string[])
+      await new Promise(resolve => (ws.onopen = resolve))
+      const answers = new Set<string>()
+      ws.onmessage = e => {
+        for (const m of String(e.data).matchAll(/"request_id":"([^"]+)"/g)) answers.add(m[1]!)
+      }
+      const ask = async (request_id: string, request: Record<string, unknown>) => {
+        ws.send(JSON.stringify({ type: 'control_request', request_id, request }) + '\n')
+        while (!answers.has(request_id)) await Bun.sleep(5)
+      }
+      await ask('web-model-1', { subtype: 'set_model', model: 'sonnet' })
+      await ask('web-effort-1', { subtype: 'apply_flag_settings', settings: { effortLevel: 'high' } })
+      await ask('web-effort-2', { subtype: 'apply_flag_settings', settings: { autoCompactWindow: 200000 } })
+      await ask('web-mode-1', { subtype: 'set_permission_mode', mode: 'acceptEdits' })
+      ws.close()
+      expect(await settings()).toEqual({ model: 'sonnet', effort: 'high', context_window: 200000, permission_mode: 'acceptEdits' })
+      // Only the first page carries them, and not under another provider.
+      expect(await settings('?before=1')).toBeUndefined()
+      process.env.CLAUDE_CODE_USE_OPENAI = '1'
+      try {
+        expect(await settings()).toBeUndefined()
+      } finally {
+        delete process.env.CLAUDE_CODE_USE_OPENAI
+      }
+    } finally {
+      if (prior === undefined) delete process.env.CLAUDE_CONFIG_DIR
+      else process.env.CLAUDE_CONFIG_DIR = prior
+    }
+  })
+
+  it('shows a message sent to a busy teammate in its conversation until the teammate records it', async () => {
+    const r = start()
+    const prior = process.env.CLAUDE_CONFIG_DIR
+    process.env.CLAUDE_CONFIG_DIR = r.configDir
+    try {
+      const cookie = await signIn(r)
+      const headers = { cookie, origin: r.origin }
+      const created = await fetch(`${r.base}/api/sessions`, { method: 'POST', headers, body: '{}' })
+      const { session_id: id } = (await created.json()) as { session_id: string }
+      const dir = join(r.configDir, 'projects', r.workspace.replace(/[^a-zA-Z0-9]/g, '-'))
+      mkdirSync(join(dir, id, 'subagents'), { recursive: true })
+      const first = { type: 'user', sessionId: id, cwd: r.workspace, uuid: 'a0000000-0000-4000-8000-000000000001', message: { role: 'user', content: 'hello there' } }
+      writeFileSync(join(dir, `${id}.jsonl`), JSON.stringify(first) + '\n')
+      const prompt = { type: 'user', sessionId: id, cwd: r.workspace, isSidechain: true, agentId: 'tm1-transcript', uuid: 'a0000000-0000-4000-8000-000000000002', timestamp: new Date(0).toISOString(), message: { role: 'user', content: 'review it' } }
+      writeFileSync(join(dir, id, 'subagents', 'agent-tm1-transcript.jsonl'), JSON.stringify(prompt) + '\n')
+      const ws = new WebSocket(`${r.base.replace('http', 'ws')}/api/sessions/${id}/ws`, { headers } as unknown as string[])
+      await new Promise(resolve => (ws.onopen = resolve))
+      const answered = new Promise(resolve => (ws.onmessage = e => String(e.data).includes('control_response') && resolve(undefined)))
+      ws.send(JSON.stringify({ type: 'control_request', request_id: 'web-msg-t', request: { subtype: 'send_task_message', task_id: 'tm1', text: 'INJECT note' } }) + '\n')
+      await answered
+      await Bun.sleep(50)
+      const texts = async () =>
+        ((await (await fetch(`${r.base}/api/history/${id}/agents/tm1-transcript/messages`, { headers })).json()) as { messages: { message: { content: unknown } }[] }).messages.map(m => m.message.content)
+      // The page that sent it may be gone (another agent opened): the server still shows it.
+      expect(await texts()).toEqual(['review it', 'INJECT note'])
+      ws.close()
+    } finally {
+      if (prior === undefined) delete process.env.CLAUDE_CONFIG_DIR
+      else process.env.CLAUDE_CONFIG_DIR = prior
+    }
   })
 
   it('keeps the coordinator\'s tasks, model and effort in the database', async () => {
@@ -878,6 +1003,89 @@ describe('claude web server', () => {
   })
 })
 
+describe('POST /api/sessions/:id/open', () => {
+  const session = async (r: Running, cookie: string) => {
+    const created = await fetch(`${r.base}/api/sessions`, { method: 'POST', headers: { cookie, origin: r.origin }, body: '{}' })
+    return ((await created.json()) as { session_id: string }).session_id
+  }
+
+  it('opens the session folder, a folder inside it, or a file the session may show', async () => {
+    const opened: string[] = []
+    const r = start({ openLocal: async path => void opened.push(path) })
+    const cookie = await signIn(r)
+    const id = await session(r, cookie)
+    mkdirSync(join(r.workspace, 'sub'))
+    writeFileSync(join(r.workspace, 'sub', 'a.py'), 'x')
+    writeFileSync(join(r.workspace, '.env'), 'SECRET=1')
+    const outside = realpathSync(mkdtempSync(join(tmpdir(), 'web-outside-')))
+    writeFileSync(join(outside, 'b.txt'), 'x')
+    symlinkSync(outside, join(r.workspace, 'escape'))
+    const open = (body?: unknown, sid = id) =>
+      fetch(`${r.base}/api/sessions/${sid}/open`, {
+        method: 'POST',
+        headers: { cookie, origin: r.origin },
+        ...(body !== undefined && { body: JSON.stringify(body) }),
+      })
+    expect((await open()).status).toBe(204)
+    expect((await open({ path: join(r.workspace, 'sub') })).status).toBe(204)
+    expect((await open({ path: join(r.workspace, 'sub', 'a.py') })).status).toBe(204)
+    expect((await open({ path: join(r.workspace, 'sub', 'a.py'), reveal: true })).status).toBe(204)
+    expect(opened).toEqual([r.workspace, join(r.workspace, 'sub'), join(r.workspace, 'sub', 'a.py'), join(r.workspace, 'sub')])
+    expect((await open({ path: outside })).status).toBe(403)
+    expect((await open({ path: join(r.workspace, 'escape') })).status).toBe(403)
+    expect((await open({ path: join(r.workspace, '..') })).status).toBe(403)
+    expect((await open({ path: join(outside, 'b.txt') })).status).toBe(404)
+    expect((await open({ path: join(r.workspace, 'escape', 'b.txt'), reveal: true })).status).toBe(404)
+    expect((await open({ path: join(r.workspace, '.env') })).status).toBe(404)
+    expect((await open({ path: 'sub' })).status).toBe(400)
+    expect((await open({ path: 1 })).status).toBe(400)
+    expect((await open({ path: join(r.workspace, 'missing') })).status).toBe(404)
+    expect((await open(undefined, '00000000-0000-4000-8000-000000000000')).status).toBe(404)
+    expect(opened).toHaveLength(4)
+    expect(((await (await fetch(`${r.base}/api/info`, { headers: { cookie } })).json()) as { local: boolean }).local).toBe(true)
+  })
+
+  it('answers the opener failure as an error, not a crash', async () => {
+    const r = start({ openLocal: async () => 'xdg-open exited with code 3' })
+    const cookie = await signIn(r)
+    const id = await session(r, cookie)
+    const res = await fetch(`${r.base}/api/sessions/${id}/open`, { method: 'POST', headers: { cookie, origin: r.origin } })
+    expect(res.status).toBe(500)
+    expect(((await res.json()) as { error: string }).error).toBe('xdg-open exited with code 3')
+  })
+})
+
+describe.skipIf(process.platform !== 'linux')('openLocal', () => {
+  const withOpener = async (script: string | undefined, run: (log: string) => Promise<void>) => {
+    const bin = mkdtempSync(join(tmpdir(), 'web-opener-'))
+    const log = join(bin, 'log')
+    if (script) writeFileSync(join(bin, 'xdg-open'), `#!/bin/sh\n${script.replace('$LOG', log)}\n`, { mode: 0o755 })
+    const prev = process.env.PATH
+    process.env.PATH = script ? `${bin}${delimiter}${prev}` : bin
+    try {
+      await run(log)
+    } finally {
+      process.env.PATH = prev
+    }
+  }
+
+  it('runs xdg-open with the folder', async () => {
+    await withOpener('printf "%s" "$1" > $LOG', async log => {
+      expect(await openLocal('/tmp/a b')).toBeUndefined()
+      expect(await Bun.file(log).text()).toBe('/tmp/a b')
+    })
+  })
+
+  it('reports a failing or missing opener', async () => {
+    await withOpener('exit 3', async () => {
+      expect(await openLocal('/tmp')).toBe('xdg-open exited with code 3')
+    })
+    await withOpener(undefined, async () => {
+      expect(await openLocal('/tmp')).toMatch(/^xdg-open: /)
+    })
+  })
+})
+
 describe('GET /api/peers', () => {
   it('lists live sessions with a messaging socket in that folder only', async () => {
     const r = start()
@@ -937,13 +1145,13 @@ describe('contentSecurityPolicy', () => {
     const loopback =
       'http://localhost:* https://localhost:* http://127.0.0.1:* https://127.0.0.1:*'
     expect(contentSecurityPolicy()).toBe(
-      `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; frame-src blob: ${loopback}; worker-src 'self' blob:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'`,
+      `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; frame-src 'self' blob: ${loopback}; worker-src 'self' blob:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'`,
     )
     expect(
       contentSecurityPolicy(['http://dev.internal:8080', 'https://grafana.lan'])
         .split('; ')
         .find(d => d.startsWith('frame-src ')),
-    ).toBe(`frame-src blob: ${loopback} http://dev.internal:8080 https://grafana.lan`)
+    ).toBe(`frame-src 'self' blob: ${loopback} http://dev.internal:8080 https://grafana.lan`)
   })
 })
 

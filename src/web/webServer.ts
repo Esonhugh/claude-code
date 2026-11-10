@@ -1,12 +1,17 @@
 import type { Database } from 'bun:sqlite'
+import { spawn } from 'child_process'
 import { mkdirSync, mkdtempSync, realpathSync, statSync } from 'fs'
 import { homedir } from 'os'
-import { basename, extname, isAbsolute, join, resolve } from 'path'
+import { basename, dirname, extname, isAbsolute, join, relative, resolve } from 'path'
 import { z } from 'zod/v4'
 import { addToHistory, getTimestampedHistory } from '../history.js'
 import { PERMISSION_MODES } from '../types/permissions.js'
+import { getAPIProvider } from '../utils/model/providers.js'
 import { lazySchema } from '../utils/lazySchema.js'
+import { MODS_FRAME_CSP, MODS_FRAME_HTML, MODS_FRAME_PATH } from './modsFrame.js'
+import { getMainLoopModel } from '../utils/model/model.js'
 import { getModelInfos } from '../utils/model/modelInfos.js'
+import { resetSettingsCache } from '../utils/settings/settingsCache.js'
 import { ensureModelStringsInitialized } from '../utils/model/modelStrings.js'
 import type { ServerLogger } from '../server/serverLog.js'
 import {
@@ -41,11 +46,20 @@ import {
 } from './history.js'
 import { type AccountBackend, createAccountApi } from './account.js'
 import { coordinatorSpawn } from './coordinator.js'
-import { deleteSessionMeta, openProjectsDb, patchSessionMeta, type Project, ProjectStore } from './projectsDb.js'
+import {
+  deleteSessionMeta,
+  openProjectsDb,
+  patchSessionMeta,
+  patchSessionSettings,
+  type Project,
+  ProjectStore,
+  readSessionSettings,
+  type SessionSettings,
+} from './projectsDb.js'
 import { deleteTranscript, loadSidebar } from './sidebar.js'
 import { parseLine, type Task, TaskStore, transcriptTokens } from './tasks.js'
 import * as ext from './extensions.js'
-import { isAllowedPeer, lanHostNames } from './network.js'
+import { addressKind, isAllowedPeer, lanHostNames } from './network.js'
 import {
   allowedHosts,
   checkToken,
@@ -83,6 +97,8 @@ export type WebServerConfig = {
   account?: AccountBackend
   /** Defaults to `<configDir>/web/projects.sqlite`; tests pass `:memory:`. */
   projectsDb?: string
+  /** Opens a file or folder with the OS default app; resolves to an error message. Tests pass a fake. */
+  openLocal?: (path: string) => Promise<string | undefined>
 }
 
 type SocketData = { sessionId: string }
@@ -102,7 +118,7 @@ export function contentSecurityPolicy(previewOrigins: string[] = []): string {
     "img-src 'self' data: blob:",
     "font-src 'self' data:",
     "connect-src 'self'",
-    ['frame-src blob:', ...LOOPBACK_FRAME_SOURCES, ...previewOrigins].join(' '),
+    ["frame-src 'self' blob:", ...LOOPBACK_FRAME_SOURCES, ...previewOrigins].join(' '),
     "worker-src 'self' blob:",
     "object-src 'none'",
     "base-uri 'none'",
@@ -140,6 +156,10 @@ const SECURITY_HEADERS = {
   'Cache-Control': 'no-store',
 }
 
+const openBodySchema = lazySchema(() =>
+  z.object({ path: z.string().max(4096).optional(), reveal: z.boolean().optional() }),
+)
+
 const createSessionBodySchema = lazySchema(() =>
   z.object({
     cwd: z.string().optional(),
@@ -154,6 +174,8 @@ const createSessionBodySchema = lazySchema(() =>
       .string()
       .regex(/^[A-Za-z0-9][\w.:[\]/@-]{0,127}$/)
       .optional(),
+    // An effort level, passed to `--effort` (a resumed session keeps the one the page showed).
+    effort: z.string().regex(EFFORT).optional(),
   }),
 )
 
@@ -205,6 +227,7 @@ export function normalizeProjectDir(input: string, home = homedir()): string | u
 
 const WS_PATH = /^\/api\/sessions\/([^/]+)\/ws$/
 const SESSION_PATH = /^\/api\/sessions\/([^/]+)$/
+const OPEN_PATH = /^\/api\/sessions\/([^/]+)\/open$/
 const SESSION_META_PATH = /^\/api\/sessions\/([^/]+)\/meta$/
 const HISTORY_PATH = /^\/api\/history\/([^/]+)$/
 const HISTORY_MESSAGES_PATH = /^\/api\/history\/([^/]+)\/messages$/
@@ -449,6 +472,38 @@ function realOr(path: string): string {
   }
 }
 
+/**
+ * Opens `path` with the OS default app (a folder in the file manager) on this machine.
+ * Resolves to an error message, or undefined once the opener exited cleanly or is still
+ * running after a moment: some openers stay in the foreground until the window closes.
+ */
+export function openLocal(path: string): Promise<string | undefined> {
+  const win = process.platform === 'win32'
+  const command = win ? 'explorer' : process.platform === 'darwin' ? 'open' : 'xdg-open'
+  return new Promise(done => {
+    let child: ReturnType<typeof spawn>
+    try {
+      child = spawn(command, [path], { detached: true, stdio: 'ignore', windowsHide: true })
+    } catch (err) {
+      done(`${command}: ${err instanceof Error ? err.message : String(err)}`)
+      return
+    }
+    const timer = setTimeout(() => {
+      child.unref()
+      done(undefined)
+    }, 3000)
+    child.once('error', err => {
+      clearTimeout(timer)
+      done(`${command}: ${err.message}`)
+    })
+    child.once('exit', code => {
+      clearTimeout(timer)
+      // explorer.exe exits 1 even when it opened the window.
+      done(code === 0 || win ? undefined : `${command} exited with code ${code}`)
+    })
+  })
+}
+
 function isDirectory(path: string): boolean {
   try {
     return statSync(path).isDirectory()
@@ -464,7 +519,7 @@ function isDirectory(path: string): boolean {
  * request to come from this server's own origin.
  *
  *   GET    /api/info                    → { workspace, preview_origins, temp_root, home, version }
- *   GET    /api/models                  → { models } the model picker lists before any session runs
+ *   GET    /api/models                  → { models, model } the model picker lists before any session runs, and the model one started without a pick runs
  *   GET    /api/sessions                → running sessions
  *   POST   /api/sessions                → { session_id, work_dir } (new or resume);
  *                                          409 { needs_trust } for an untrusted folder
@@ -626,7 +681,8 @@ export function startWebServer(
   const coordinators = new Map<string, string>()
   // The coordinator's own set_model / effort requests in flight, kept once it accepts them.
   const settingRequests = new Map<string, { projectId: string; patch: Pick<Project, 'coordinator_model'> | Pick<Project, 'coordinator_effort'> }>()
-  // Messages the page sent a session's agent, queued to it or resuming it, shown in
+  // Messages the page sent a session's agent or teammate (queued, resuming it, or
+  // injected for a teammate's next turn), shown in
   // the agent's conversation from the moment they are sent until its transcript
   // has them (`withQueued`). A resumed agent writes its prompt up to 100 ms later,
   // so without it a message queued right after would show above that prompt.
@@ -650,19 +706,61 @@ export function startWebServer(
       return
     }
     if (!agentSends.size || !line.includes('"control_response"')) return
-    const response = parseLine(line)?.response as { request_id?: unknown; subtype?: unknown; response?: { delivery?: unknown } } | undefined
+    const response = parseLine(line)?.response as { request_id?: unknown; subtype?: unknown; response?: { delivery?: unknown; agent_id?: unknown } } | undefined
     const key = `${sessionId}:${String(response?.request_id)}`
     const sent = agentSends.get(key)
     if (!sent) return
     agentSends.delete(key)
     const delivery = response!.response?.delivery
-    if (response!.subtype !== 'success' || (delivery !== 'queued' && delivery !== 'resumed')) return
-    const queued = agentQueued.get(`${sessionId}:${sent.taskId}`) ?? []
-    agentQueued.set(`${sessionId}:${sent.taskId}`, [...queued, { id: ++agentQueuedId, ts: sent.ts, text: sent.text }])
+    if (response!.subtype !== 'success' || (delivery !== 'queued' && delivery !== 'resumed' && delivery !== 'injected')) return
+    // A teammate answers with the agent id its transcript is read by.
+    const agentId = typeof response!.response?.agent_id === 'string' ? response!.response.agent_id : sent.taskId
+    const queued = agentQueued.get(`${sessionId}:${agentId}`) ?? []
+    agentQueued.set(`${sessionId}:${agentId}`, [...queued, { id: ++agentQueuedId, ts: sent.ts, text: sent.text }])
+  }
+  // Each session's model, effort, context window and permission mode, kept once the session accepts them,
+  // for a page that opens it again after its process is gone. Keyed by `<session id>:<request id>`.
+  const sessionSettingRequests = new Map<string, Partial<Omit<SessionSettings, 'provider'>>>()
+  // The provider each session's process started under (an account switch since does not change it).
+  const sessionProviders = new Map<string, string>()
+  const saveSessionSettings = (sessionId: string, patch: Partial<Omit<SessionSettings, 'provider'>>) =>
+    patchSessionSettings(db(), sessionId, sessionProviders.get(sessionId) ?? getAPIProvider(), patch)
+  const watchSessionSettings = (sessionId: string, line: string, from: 'child' | 'client') => {
+    if (!line.includes('"control_')) return
+    if (from === 'child') {
+      if (!sessionSettingRequests.size || !line.includes('"type":"control_response"')) return
+      const response = parseLine(line)?.response as { request_id?: unknown; subtype?: unknown } | undefined
+      const key = `${sessionId}:${String(response?.request_id)}`
+      const patch = sessionSettingRequests.get(key)
+      if (!patch) return
+      sessionSettingRequests.delete(key)
+      if (response!.subtype === 'success') saveSessionSettings(sessionId, patch)
+      return
+    }
+    if (!line.includes('"type":"control_request"')) return
+    const msg = parseLine(line)
+    const request = (msg?.request ?? {}) as Record<string, unknown>
+    if (typeof msg?.request_id !== 'string') return
+    let patch: Partial<Omit<SessionSettings, 'provider'>> | undefined
+    if (request.subtype === 'set_model' && typeof request.model === 'string') {
+      // A model switch also resets the effort to the new model's own.
+      patch = { model: request.model === 'default' || !MODEL.test(request.model) ? null : request.model, effort: null }
+    } else if (request.subtype === 'set_permission_mode' && (PERMISSION_MODES as readonly unknown[]).includes(request.mode)) {
+      patch = { permission_mode: request.mode as string }
+    } else if (request.subtype === 'apply_flag_settings') {
+      const settings = (request.settings ?? {}) as { effortLevel?: unknown; autoCompactWindow?: unknown }
+      patch = {
+        ...(typeof settings.effortLevel === 'string' && EFFORT.test(settings.effortLevel) && { effort: settings.effortLevel }),
+        ...(typeof settings.autoCompactWindow === 'number' && { context_window: settings.autoCompactWindow }),
+        ...(settings.autoCompactWindow === 'auto' && { context_window: null }),
+      }
+    }
+    if (patch && Object.keys(patch).length) sessionSettingRequests.set(`${sessionId}:${msg.request_id}`, patch)
   }
   sessionManager.observe({
     line(sessionId, line, from) {
       watchAgentSend(sessionId, line, from)
+      watchSessionSettings(sessionId, line, from)
       const projectId = coordinators.get(sessionId)
       if (!projectId) return
       if (from === 'child') {
@@ -694,10 +792,12 @@ export function startWebServer(
       }
     },
     exit(sessionId) {
-      for (const key of [...agentSends.keys(), ...agentQueued.keys()]) {
+      sessionProviders.delete(sessionId)
+      for (const key of [...agentSends.keys(), ...agentQueued.keys(), ...sessionSettingRequests.keys()]) {
         if (!key.startsWith(`${sessionId}:`)) continue
         agentSends.delete(key)
         agentQueued.delete(key)
+        sessionSettingRequests.delete(key)
       }
       const projectId = coordinators.get(sessionId)
       if (!projectId) return
@@ -898,7 +998,7 @@ export function startWebServer(
     if (!parsed.success) {
       return errorResponse(400, `Invalid request: ${parsed.error.message}`)
     }
-    const { cwd, temporary, resume, permission_mode: permissionMode, model, trust } = parsed.data
+    const { cwd, temporary, resume, permission_mode: permissionMode, model, effort, trust } = parsed.data
     let workDir = config.workspace
     if (temporary && !cwd && !resume) {
       mkdirSync(tempRoot, { recursive: true })
@@ -918,13 +1018,25 @@ export function startWebServer(
       mkdirSync(workDir, { recursive: true })
     }
     try {
+      const spawned = !resume || !sessionManager.get(resume)
       const session = sessionManager.create({
         cwd: workDir,
         permissionMode,
         model,
+        effort,
         resume,
         channels: ext.readDefaultChannels(config.configDir ?? getClaudeConfigHomeDir()),
       })
+      if (spawned) {
+        sessionProviders.set(session.id, getAPIProvider())
+        if (model || effort || permissionMode) {
+          saveSessionSettings(session.id, {
+            ...(model && { model }),
+            ...(effort && { effort }),
+            ...(permissionMode && { permission_mode: permissionMode }),
+          })
+        }
+      }
       return Response.json({
         session_id: session.id,
         work_dir: session.workDir,
@@ -941,6 +1053,7 @@ export function startWebServer(
     req: Request,
     url: URL,
     srv: { upgrade: (req: Request, opts: { data: SocketData }) => boolean },
+    local: boolean,
   ): Promise<Response | undefined> {
     const { pathname } = url
     if (pathname === '/api/info' && req.method === 'GET') {
@@ -950,11 +1063,16 @@ export function startWebServer(
         temp_root: tempRoot,
         home: homedir(),
         version: MACRO.VERSION,
+        // The browser runs on this machine, so it may open files there.
+        local,
       })
     }
     if (pathname === '/api/models' && req.method === 'GET') {
       await ensureModelStringsInitialized()
-      return Response.json({ models: getModelInfos() })
+      // `model`: what a session started without a pick runs (the saved model, else the default),
+      // read fresh because a session or the TUI may have saved another model since.
+      resetSettingsCache()
+      return Response.json({ models: getModelInfos(), model: getMainLoopModel() })
     }
     if (pathname === '/api/folder-files' && req.method === 'GET') {
       // The start page's `@` search, before a session exists: only folders a session may already use.
@@ -1026,6 +1144,35 @@ export function startWebServer(
       if (projectId && projects().get(projectId)?.archived_at !== null) return errorResponse(400, 'Unknown project')
       return Response.json(patchSessionMeta(db(), id, parsed.data))
     }
+    const openMatch = OPEN_PATH.exec(pathname)
+    if (openMatch && req.method === 'POST') {
+      // The opener runs on this machine, so only a browser on it may ask.
+      if (!local) return errorResponse(403, 'Only a browser on the machine running claude web can open local files')
+      const id = decodeURIComponent(openMatch[1]!)
+      if (!SESSION_ID.test(id)) return errorResponse(400, 'Invalid session id')
+      const parsed = openBodySchema().safeParse((await readJson(req)) ?? {})
+      if (!parsed.success) return errorResponse(400, 'Invalid request')
+      const { path, reveal } = parsed.data
+      const cwd = await sessionCwd(id)
+      if (!cwd) return errorResponse(404, 'Session not found')
+      let target = realOr(cwd)
+      if (path && !isAbsolute(path)) return errorResponse(400, 'Not an absolute path')
+      if (path && isDirectory(path)) {
+        // A folder: the session's own or one inside it (a worktree).
+        const dir = realOr(path)
+        const rel = relative(target, dir)
+        if (rel.startsWith('..') || isAbsolute(rel)) return errorResponse(403, 'Only the session folder can be opened')
+        target = dir
+      } else if (path) {
+        // A file the session may show in its preview, or the folder holding it.
+        const file = await sessionFile(id, path)
+        if (!file) return errorResponse(404, 'File not found')
+        target = reveal ? dirname(file) : file
+      }
+      if (!path && !isDirectory(target)) return errorResponse(404, 'Folder not found')
+      const error = await (config.openLocal ?? openLocal)(target)
+      return error ? errorResponse(500, error) : new Response(null, { status: 204 })
+    }
     if (pathname === '/api/history' && req.method === 'GET') {
       return Response.json(
         await listHistory(
@@ -1042,7 +1189,11 @@ export function startWebServer(
         ? intParam(url, 'before', 0, Number.MAX_SAFE_INTEGER)
         : undefined
       const page = await readTranscript(id, before, intParam(url, 'limit', 200, 500))
-      return page ? Response.json(page) : errorResponse(404, 'Session not found')
+      if (!page) return errorResponse(404, 'Session not found')
+      // What the session last ran with, for a page that opens it while its process is gone;
+      // picks made under another provider (an account switch since) do not apply.
+      const { provider, ...settings } = (before === undefined && readSessionSettings(db(), id)) || {}
+      return Response.json(provider === getAPIProvider() ? { ...page, settings } : page)
     }
     const agentMatch = AGENT_MESSAGES_PATH.exec(pathname)
     if (agentMatch && req.method === 'GET') {
@@ -1205,11 +1356,17 @@ export function startWebServer(
         }
 
         if (isApi) {
-          const res = await handleApi(req, url, srv)
+          const res = await handleApi(req, url, srv, addressKind(peer!) === 'loopback')
           return res && withHeaders(res)
         }
         if (req.method !== 'GET' && req.method !== 'HEAD') {
           return withHeaders(errorResponse(405, 'Method not allowed'))
+        }
+        if (pathname === MODS_FRAME_PATH) {
+          const res = new Response(MODS_FRAME_HTML, { headers: { 'Content-Type': 'text/html; charset=utf-8' } })
+          for (const [key, value] of Object.entries(SECURITY_HEADERS)) res.headers.set(key, value)
+          res.headers.set('Content-Security-Policy', MODS_FRAME_CSP)
+          return res
         }
         const asset = assets.get(pathname) ?? assets.get('/index.html')
         if (!asset) return withHeaders(errorResponse(404, 'Not found'))

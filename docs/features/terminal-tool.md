@@ -1,4 +1,4 @@
-# Terminal 工具
+# Tmux 工具（原 Terminal）
 
 > 英文名：`terminal-tool` · 领域：工具 · [返回功能索引](README.md)
 
@@ -7,6 +7,8 @@
 Bash 工具一次只跑一条命令、等它结束就拿结果，遇到需要**来回交互**的程序就没办法了，比如 Python / Node REPL、数据库命令行、`vim`、要你按 `y` 确认的安装脚本。
 
 Terminal 工具给 Claude 一个**一直开着的终端**（PTY）：它可以先启动程序，再一句一句地输入、看屏幕、按特殊键、调整窗口大小，最后关掉。终端在后台运行，你在底部任务栏里随时能看到它的实时画面。
+
+模型看到的工具名是 `Tmux`：用户或 CLAUDE.md 要求「用 tmux」时，模型会直接用它，而不是在 Bash 里跑真正的 tmux。旧名 `Terminal` 仍然有效，旧的权限规则和对话记录不用改。
 
 ## 快速上手：让 Claude 用 Python 算个数
 
@@ -50,9 +52,13 @@ Terminal 工具给 Claude 一个**一直开着的终端**（PTY）：它可以�
 
 - `new-session` 把 `command + args` 当成一条 Bash 命令检查，`send-keys` 在回车提交时把这一整行当成命令检查，所以分几次输入也会命中你的 `Bash(...)` allow / ask / deny 规则；还没按回车的部分只检查 deny 规则。
 - `capture-pane`、`display-message`、`list-panes` 是只读的，直接放行；`resize-pane`、`send-signal`、`kill-pane` 不走 Bash 规则。
-- 选「don't ask again for Terminal commands」会在项目 `.claude/settings.local.json` 里写入 `"Terminal"` allow 规则。
+- 选「don't ask again for Terminal commands」会在项目 `.claude/settings.local.json` 里写入 `"Tmux"` allow 规则（旧的 `"Terminal"` 规则等同于它）。
 - 开了 [Bash 沙箱](sandbox.md)（`sandbox.enabled`）时，`new-session` 的命令在沙箱里启动，限制和 Bash 一样；命中 `excludedCommands` 或带 `dangerouslyDisableSandbox`（且设置允许）时在沙箱外启动。Linux 上沙箱里的命令仍有自己的 PTY，`Ctrl+C` 和 `resize-pane` 照常可用；终端关闭时清理沙箱。
-- 不管是否在沙箱里，sandbox 的自动放行对 Terminal 都无效，仍按上面的规则确认；[自动模式](auto-mode.md) 下 `Terminal` 的 allow 规则会被暂时搁置，交给分类器判断。
+- 不管是否在沙箱里，sandbox 的自动放行对 Terminal 都无效，仍按上面的规则确认；[自动模式](auto-mode.md) 下 `Tmux`（或旧名 `Terminal`）的 allow 规则会被暂时搁置，交给分类器判断。
+
+## 不碰你自己的 tmux
+
+Tmux 工具的终端是 Claude 进程内的 PTY，不经过 tmux，也不继承 `TMUX`、`TMUX_PANE`。Bash 里跑的 `tmux` 命令总是连到 Claude 自己的 socket，并以 `-f /dev/null` 启动，不读你的 `tmux.conf`，不会在你正在用的 tmux server 里开窗口或改设置。
 
 ## 操作按键
 
@@ -66,7 +72,7 @@ Terminal 工具给 Claude 一个**一直开着的终端**（PTY）：它可以�
 
 | 配置项 | 写法 | 说明 |
 | --- | --- | --- |
-| `permissions.allow` | `"Bash(python3:*)"`、`"Terminal"` | 按 Bash 规则放行特定程序，或整体放行 Terminal |
+| `permissions.allow` | `"Bash(python3:*)"`、`"Tmux"` | 按 Bash 规则放行特定程序，或整体放行这个工具 |
 | `permissions.deny` | `"Bash(rm:*)"` 等 | 同样作用于终端里提交的每一行 |
 
 ## 进程结束后

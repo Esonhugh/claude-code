@@ -243,7 +243,11 @@ export function ResumeConversation({
     }
 
     try {
-      const result = await loadConversationForResume(log, undefined)
+      const result = await loadConversationForResume(
+        log,
+        undefined,
+        forkSession,
+      )
       if (!result) {
         throw new Error('Failed to load conversation')
       }

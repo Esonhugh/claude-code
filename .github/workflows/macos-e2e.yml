@@ -10,6 +10,14 @@ on:
       - 'CHANGELOG.md'
       - 'CLAUDE.md'
       - 'CLAUDE-workflow.md'
+  # A PR can only restore caches saved on its own ref or its base branch, so a
+  # push to dev saves the bfs/ugrep build for every PR into dev.
+  push:
+    branches: [dev]
+    paths:
+      - 'scripts/build-search-tools.mjs'
+      - 'scripts/search-tools.mjs'
+      - '.github/workflows/macos-e2e.yml'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -35,6 +43,13 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
+      # build-search-tools.mjs skips the build when the output is present.
+      - name: Restore bfs and ugrep
+        uses: actions/cache@v4
+        with:
+          path: dist/search-tools
+          key: search-tools-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/build-search-tools.mjs', 'scripts/search-tools.mjs') }}
+
       - name: Build bfs and ugrep
         run: |
           brew list pkgconf >/dev/null 2>&1 || brew install pkgconf
@@ -42,19 +57,30 @@ jobs:
           dist/search-tools/*-darwin-arm64/ugrep --version
           dist/search-tools/*-darwin-arm64/bfs --version
 
+      # React Compiler output of unchanged files (scripts/build.mjs); a
+      # push to dev seeds it for every PR (build-cache.yml).
+      - name: Restore build cache
+        if: github.event_name != 'push'
+        uses: actions/cache@v4
+        with:
+          path: node_modules/.cache/claude-build-transform
+          key: build-transform-${{ runner.os }}-${{ runner.arch }}-${{ github.sha }}
+          restore-keys: build-transform-${{ runner.os }}-${{ runner.arch }}-
+
+      # package:binary runs the build itself.
       - name: Build binary
+        if: github.event_name != 'push'
         env:
           CLAUDE_CODE_REQUIRE_SEARCH_TOOLS: '1'
-        run: |
-          bun run build
-          bun run package:binary
+        run: bun run package:binary
 
       - name: Sandbox e2e
+        if: github.event_name != 'push'
         run: bun scripts/macos-sandbox-e2e.ts dist/release/claude-code-v*-darwin-arm64
 
       # Playwright is not a project dependency; it is added for this step only.
       - name: Web e2e
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && github.event_name != 'push' }}
         run: |
           bun add --no-save playwright@1.63.0
           bunx playwright install chromium
@@ -62,7 +88,7 @@ jobs:
 
       # For comparison only: its failures do not fail the job.
       - name: Download official
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && github.event_name != 'push' }}
         run: |
           mkdir -p official
           cd official
@@ -73,6 +99,6 @@ jobs:
           ./claude --version
 
       - name: Official sandbox e2e
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && github.event_name != 'push' }}
         continue-on-error: true
         run: bun scripts/macos-sandbox-e2e.ts official/claude --official

@@ -1,5 +1,6 @@
-import { useEffect, useReducer } from 'react'
+import { useSyncExternalStore } from 'react'
 import { onGrowthBookRefresh } from '../services/analytics/growthbook.js'
+import { onOpenAIModelOptionsRefresh } from '../services/api/bootstrap.js'
 import { useAppState } from '../state/AppState.js'
 import {
   getDefaultMainLoopModelSetting,
@@ -7,28 +8,33 @@ import {
   parseUserSpecifiedModel,
 } from '../utils/model/model.js'
 
+// The model also depends on state outside AppState: parseUserSpecifiedModel
+// reads tengu_ant_model_override (stale disk cache until GrowthBook init
+// completes), and the ChatGPT account default comes from model discovery,
+// which a fresh install only learns after the first render. Reading it as an
+// external store re-resolves it when either refreshes; forcing a re-render is
+// not enough, because the React Compiler memoizes this hook on its AppState
+// inputs.
+function subscribeModelResolution(onChange: () => void): () => void {
+  const unsubscribeGrowthBook = onGrowthBookRefresh(onChange)
+  const unsubscribeModelOptions = onOpenAIModelOptionsRefresh(onChange)
+  return () => {
+    unsubscribeGrowthBook()
+    unsubscribeModelOptions()
+  }
+}
+
 // The value of the selector is a full model name that can be used directly in
 // API calls. Use this over getMainLoopModel() when the component needs to
 // update upon a model config change.
 export function useMainLoopModel(): ModelName {
   const mainLoopModel = useAppState(s => s.mainLoopModel)
   const mainLoopModelForSession = useAppState(s => s.mainLoopModelForSession)
-
-  // parseUserSpecifiedModel reads tengu_ant_model_override via
-  // _CACHED_MAY_BE_STALE (in resolveAntModel). Until GB init completes,
-  // that's the stale disk cache; after, it's the in-memory remoteEval map.
-  // AppState doesn't change when GB init finishes, so we subscribe to the
-  // refresh signal and force a re-render to re-resolve with fresh values.
-  // Without this, the alias resolution is frozen until something else
-  // happens to re-render the component — the API would sample one model
-  // while /model (which also re-resolves) displays another.
-  const [, forceRerender] = useReducer(x => x + 1, 0)
-  useEffect(() => onGrowthBookRefresh(forceRerender), [])
-
-  const model = parseUserSpecifiedModel(
-    mainLoopModelForSession ??
-      mainLoopModel ??
-      getDefaultMainLoopModelSetting(),
+  return useSyncExternalStore(subscribeModelResolution, () =>
+    parseUserSpecifiedModel(
+      mainLoopModelForSession ??
+        mainLoopModel ??
+        getDefaultMainLoopModelSetting(),
+    ),
   )
-  return model
 }

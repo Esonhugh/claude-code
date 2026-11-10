@@ -6,6 +6,7 @@
  */
 
 import type { AppState } from '../../state/AppState.js'
+import type { Message } from '../../types/message.js'
 import { logForDebugging } from '../debug.js'
 import { addFunctionHook } from '../hooks/sessionHooks.js'
 import { applyPermissionUpdate } from '../permissions/PermissionUpdate.js'
@@ -15,9 +16,14 @@ import {
   createIdleNotification,
   getIdleResult,
   getLastPeerDmSummary,
+  getTurnFailureReason,
   writeToMailbox,
 } from '../teammateMailbox.js'
 import { readTeamFile, setMemberActive } from './teamHelpers.js'
+
+let failedTurnTarget:
+  | { teamName: string; agentName: string; leadAgentName: string }
+  | undefined
 
 /**
  * Initializes hooks for a teammate running in a swarm.
@@ -91,6 +97,8 @@ export function initializeTeammateHooks(
     return
   }
 
+  failedTurnTarget = { teamName, agentName, leadAgentName }
+
   logForDebugging(
     `[TeammateInit] Registering Stop hook for teammate ${agentName} to notify leader ${leadAgentName}`,
   )
@@ -127,5 +135,37 @@ export function initializeTeammateHooks(
     {
       timeout: 10000,
     },
+  )
+}
+
+/**
+ * Stop hooks are skipped when a turn ends on an API error, so a pane teammate
+ * reports that turn to its leader here, at REPL turn end, as a failed idle
+ * notification (official 2.1.319).
+ */
+export async function notifyLeaderOfFailedTurn(
+  messages: Message[],
+  aborted: boolean,
+): Promise<void> {
+  if (!failedTurnTarget || aborted) return
+  const failureReason = getTurnFailureReason(messages)
+  if (failureReason === undefined) return
+  const { teamName, agentName, leadAgentName } = failedTurnTarget
+  void setMemberActive(teamName, agentName, false)
+  const notification = createIdleNotification(agentName, {
+    idleReason: 'failed',
+    failureReason,
+    summary: getLastPeerDmSummary(messages),
+    result: getIdleResult(messages),
+  })
+  await writeToMailbox(
+    leadAgentName,
+    {
+      from: agentName,
+      text: jsonStringify(notification),
+      timestamp: new Date().toISOString(),
+      color: getTeammateColor(),
+    },
+    teamName,
   )
 }

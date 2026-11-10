@@ -9,6 +9,7 @@ import type {
 import type { ToolUseContext } from '../../Tool.js'
 import type { CacheSafeParams } from '../../utils/forkedAgent.js'
 import { createCompactBoundaryMessage } from '../../utils/messages.js'
+import { extractDiscoveredToolNames } from '../../utils/toolSearch.js'
 import type {
   CompactionResult,
   RemoteCompactionResult,
@@ -264,23 +265,40 @@ export function createCodexStyleCompactionResultFromSummary(input: {
     truncatedMessages,
     input.options.retainedUserMessageTokens,
   )
+  // The deferred tool list is the only way the model learns what ToolSearch
+  // can load, so it survives even when the other attachments are dropped.
+  const minimalAttachments = input.options.keepPostCompactAttachments
+    ? input.attachments
+    : input.attachments.filter(
+        message => message.attachment.type === 'deferred_tools_delta',
+      )
   const metadata = buildCodexCompactMetadata({
     retainedMessageCount: retained.messages.length,
     retainedApproxTokens: retained.approxTokens,
     truncatedToolResultCount,
-    droppedAttachmentCount: input.options.keepPostCompactAttachments
-      ? 0
-      : input.attachments.length,
+    droppedAttachmentCount: input.attachments.length - minimalAttachments.length,
     retainedUserMessageTokens: input.options.retainedUserMessageTokens,
   })
+  // A new boundary: carry the loaded deferred tools like compact.ts does,
+  // since their tool_reference blocks may be summarized away.
+  const discovered = extractDiscoveredToolNames(input.originalMessages)
+  const boundaryMarker =
+    discovered.size > 0
+      ? ({
+          ...input.boundaryMarker,
+          compactMetadata: {
+            ...((input.boundaryMarker as { compactMetadata?: Record<string, unknown> })
+              .compactMetadata ?? {}),
+            preCompactDiscoveredTools: [...discovered].sort(),
+          },
+        } as SystemMessage)
+      : input.boundaryMarker
 
   return buildCodexStyleCompactionResult({
-    boundaryMarker: input.boundaryMarker,
+    boundaryMarker,
     summaryMessages: input.summaryMessages,
     retainedMessages: retained.messages,
-    minimalAttachments: input.options.keepPostCompactAttachments
-      ? input.attachments
-      : [],
+    minimalAttachments,
     hookResults: input.hookResults,
     preCompactTokenCount: input.preCompactTokenCount,
     postCompactTokenCount: input.postCompactTokenCount,
@@ -345,7 +363,11 @@ export async function compactConversationCodexStyle(
                   (message): message is Extract<
                     Message,
                     { type: 'user' | 'assistant' }
-                  > => message.type === 'user' || message.type === 'assistant',
+                  > =>
+                    message.type === 'assistant' ||
+                    (message.type === 'user' &&
+                      // The previous compaction item stands in for its summary row.
+                      !(previousOpenAICompaction && message.isCompactSummary)),
                 )
                 .map(message => message.message),
               system: systemInstructions,

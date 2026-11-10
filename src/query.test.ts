@@ -4,6 +4,7 @@ import type { QuerySource } from './constants/querySource.js'
 import type { ToolUseContext } from './Tool.js'
 import type { AssistantMessage, Message } from './types/message.js'
 import { query, type QueryParams } from './query.js'
+import type { QueryDeps } from './query/deps.js'
 import { autoCompactIfNeeded, getAutoCompactThreshold } from './services/compact/autoCompact.js'
 import * as config from './utils/config.js'
 import * as tokens from './utils/tokens.js'
@@ -11,7 +12,7 @@ import * as compactMode from './services/compact/compactMode.js'
 import * as sessionMemory from './services/compact/sessionMemoryCompact.js'
 import { asSystemPrompt } from './utils/systemPromptType.js'
 import { createFileStateCacheWithSizeLimit } from './utils/fileStateCache.js'
-import { createAssistantMessage } from './utils/messages.js'
+import { createAssistantAPIErrorMessage, createAssistantMessage } from './utils/messages.js'
 import { getDefaultAppState, type AppState } from './state/AppStateStore.js'
 import {
   registerHookCallbacks,
@@ -305,6 +306,40 @@ describe('query Stop hook continuation state', () => {
 })
 
 describe('query autocompact failures', () => {
+  test('stops the turn when autocompact keeps refilling (2.1.319 rapid-refill breaker)', async () => {
+    let callModelCalls = 0
+    const { events, terminal } = await drainQuery({
+      messages: [userMessage('hello')],
+      systemPrompt: asSystemPrompt([]),
+      userContext: {},
+      systemContext: {},
+      canUseTool: async () => ({ behavior: 'allow', updatedInput: {} }),
+      toolUseContext: createToolUseContext(),
+      querySource: 'repl_main_thread' as QuerySource,
+      deps: {
+        uuid: () => '00000000-0000-4000-8000-000000000098',
+        microcompact: async messages => ({ messages }),
+        autocompact: async () => ({
+          wasCompacted: false,
+          rapidRefillBreakerTripped: true,
+        }),
+        callModel: async function* () {
+          callModelCalls++
+          yield await Promise.reject(new Error('callModel should not run'))
+        },
+      },
+    })
+    const apiError = events.find(
+      (event): event is AssistantMessage =>
+        event.type === 'assistant' &&
+        'isApiErrorMessage' in event &&
+        event.isApiErrorMessage === true,
+    )
+    expect(callModelCalls).toBe(0)
+    expect(terminal).toEqual({ reason: 'rapid_refill_breaker' })
+    expect(assistantText(apiError!)).toContain('Autocompact is thrashing')
+  })
+
   test('keeps OpenAI usage_limit_reached visible when autocompact fails before blocking-limit preempt', async () => {
     const previousBlockingLimit = process.env.CLAUDE_CODE_BLOCKING_LIMIT_OVERRIDE
     process.env.CLAUDE_CODE_BLOCKING_LIMIT_OVERRIDE = '1'
@@ -538,5 +573,52 @@ describe('query autocompact failures', () => {
         else process.env[key] = savedEnvironment[index]
       })
     }
+  })
+})
+
+describe('query streaming fallback tombstones', () => {
+  function runFallback(items: (fallback: () => void) => AsyncGenerator<Message | { type: 'stream_event'; event: { type: string } }>) {
+    return drainQuery({
+      messages: [userMessage('say OK')],
+      systemPrompt: asSystemPrompt([]),
+      userContext: {},
+      systemContext: {},
+      canUseTool: async () => ({ behavior: 'allow', updatedInput: {} }),
+      toolUseContext: createToolUseContext(),
+      querySource: 'repl_main_thread' as QuerySource,
+      deps: {
+        uuid: () => '00000000-0000-4000-8000-000000000099',
+        microcompact: async messages => ({ messages }),
+        autocompact: async messages => ({ messages, wasCompacted: false }),
+        callModel: (request => items(() => request.options.onStreamingFallback?.())) as QueryDeps['callModel'],
+      },
+    })
+  }
+
+  test('the fallback result is not tombstoned by stream events that follow it', async () => {
+    const error = createAssistantAPIErrorMessage({ content: 'API Error: ENOENT' })
+    const { events } = await runFallback(async function* (fallback) {
+      yield { type: 'stream_event', event: { type: 'message_start' } }
+      fallback()
+      yield error
+      // A turn.step mod closes the message it opened after the error item.
+      yield { type: 'stream_event', event: { type: 'message_delta' } }
+      yield { type: 'stream_event', event: { type: 'message_stop' } }
+    })
+    expect(events.filter(event => event.type === 'tombstone')).toEqual([])
+    expect(events).toContain(error)
+  })
+
+  test('messages streamed before the fallback are still tombstoned once', async () => {
+    const partial = createAssistantMessage({ content: 'partial' })
+    const final = createAssistantMessage({ content: 'final' })
+    const { events } = await runFallback(async function* (fallback) {
+      yield partial
+      fallback()
+      yield final
+      yield { type: 'stream_event', event: { type: 'message_stop' } }
+    })
+    const tombstones = events.filter(event => event.type === 'tombstone') as Array<{ message: Message }>
+    expect(tombstones.map(t => t.message)).toEqual([partial])
   })
 })

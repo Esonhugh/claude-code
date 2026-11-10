@@ -296,6 +296,116 @@ describe('SessionManager task replay', () => {
   })
 })
 
+// Sets, replaces and clears Mod status entries on its first stdin line, then waits.
+const STATUS_CHILD = `
+const out = m => process.stdout.write(JSON.stringify(m) + '\\n')
+process.stdin.once('data', () => {
+  out({ type: 'system', subtype: 'ui_status', plugin: 'a', text: 'one' })
+  out({ type: 'system', subtype: 'ui_status', plugin: 'b', text: 'gone soon' })
+  out({ type: 'system', subtype: 'ui_status', plugin: 'a', text: 'two' })
+  out({ type: 'system', subtype: 'ui_status', plugin: 'b', text: null })
+})
+setInterval(() => {}, 1000)
+`
+
+describe('SessionManager Mod status replay', () => {
+  it('replays each plugin\'s standing status entry to a reattaching client (#933)', async () => {
+    const manager = new SessionManager(
+      { spawn: opts => spawn(process.execPath, ['-e', STATUS_CHILD], { cwd: opts.cwd, stdio: ['pipe', 'pipe', 'pipe'] }) },
+      { replayTasks: true },
+    )
+    const socket = () => {
+      const lines: Record<string, unknown>[] = []
+      return { lines, send: (data: string) => lines.push(JSON.parse(data)), close: () => {} }
+    }
+    try {
+      const { id } = manager.create({ cwd: '/' })
+      const first = socket()
+      manager.attach(id, first)
+      manager.write(id, '{"type":"user"}\n')
+      for (let i = 0; i < 100 && first.lines.length < 4; i++) await Bun.sleep(20)
+      expect(first.lines).toHaveLength(4)
+      manager.detach(id, first)
+      const second = socket()
+      manager.attach(id, second)
+      expect(second.lines).toEqual([expect.objectContaining({ subtype: 'ui_status', plugin: 'a', text: 'two' })])
+    } finally {
+      await manager.destroyAll()
+    }
+  })
+})
+
+// A turn that streams part of a reply, waits for a "more" line, then finishes it.
+const MIDTURN_CHILD = `
+const out = m => process.stdout.write(JSON.stringify(m) + '\\n')
+const ev = event => out({ type: 'stream_event', event, session_id: 's', parent_tool_use_id: null })
+let step = 0
+process.stdin.on('data', () => {
+  if (step++ === 0) {
+    out({ type: 'system', subtype: 'session_state_changed', state: 'running' })
+    ev({ type: 'message_start', message: { id: 'm1' } })
+    ev({ type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } })
+    ev({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'one ' } })
+    out({ type: 'stream_event', event: { type: 'message_start', message: { id: 'sub' } }, session_id: 's', parent_tool_use_id: 'toolu_1' })
+    return
+  }
+  ev({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'two' } })
+  if (step === 3) {
+    ev({ type: 'message_stop' })
+    out({ type: 'result', subtype: 'success' })
+    out({ type: 'system', subtype: 'session_state_changed', state: 'idle' })
+  }
+})
+setInterval(() => {}, 1000)
+`
+
+describe('SessionManager mid-turn replay', () => {
+  it('tells a client that attaches mid-turn the turn is running, with the reply streamed so far, once', async () => {
+    const manager = new SessionManager(
+      { spawn: opts => spawn(process.execPath, ['-e', MIDTURN_CHILD], { cwd: opts.cwd, stdio: ['pipe', 'pipe', 'pipe'] }) },
+      { replayTasks: true },
+    )
+    const socket = () => {
+      const lines: Record<string, unknown>[] = []
+      return { lines, send: (data: string) => lines.push(JSON.parse(data)), close: () => {} }
+    }
+    const shown = (lines: Record<string, unknown>[]) =>
+      lines.map(l => {
+        const event = l.event as { type: string; delta?: { text: string }; message?: { id: string } } | undefined
+        return l.type === 'stream_event' ? `${event!.type}${event!.delta ? ':' + event!.delta.text : ''}${event!.message ? ':' + event!.message.id : ''}` : `${l.type}:${l.subtype ?? ''}:${l.state ?? ''}`
+      })
+    try {
+      const { id } = manager.create({ cwd: '/' })
+      const first = socket()
+      manager.attach(id, first)
+      manager.write(id, '{"type":"user"}\n')
+      for (let i = 0; i < 100 && first.lines.length < 5; i++) await Bun.sleep(20)
+      manager.detach(id, first)
+      // Streamed while no page was attached: held back, after what the first page already had.
+      manager.write(id, '{"type":"user"}\n')
+      await Bun.sleep(150)
+      const second = socket()
+      manager.attach(id, second)
+      expect(shown(second.lines)).toEqual([
+        'system:session_state_changed:running',
+        'message_start:m1',
+        'content_block_start',
+        'content_block_delta:one ',
+        'content_block_delta:two',
+      ])
+      manager.detach(id, second)
+      manager.write(id, '{"type":"user"}\n')
+      await Bun.sleep(150)
+      // After the turn ended: nothing of it is replayed again, beyond what was held back.
+      const third = socket()
+      manager.attach(id, third)
+      expect(shown(third.lines)).toEqual(['content_block_delta:two', 'message_stop', 'result:success:', 'system:session_state_changed:idle'])
+    } finally {
+      await manager.destroyAll()
+    }
+  })
+})
+
 describe('SessionManager approvals', () => {
   it('replays an unanswered permission request to a reattaching client, once', async () => {
     const manager = new SessionManager({
@@ -328,6 +438,47 @@ describe('SessionManager approvals', () => {
     } finally {
       await manager.destroyAll()
     }
+  })
+})
+
+describe('SessionManager exit', () => {
+  it('closes the socket with the exit code and the last stderr line when the process fails', async () => {
+    const child = `process.stderr.write('starting\\n--dangerously-skip-permissions cannot be used with root/sudo privileges for security reasons\\n'); process.exit(1)`
+    const manager = new SessionManager({
+      spawn: opts => spawn(process.execPath, ['-e', child], { cwd: opts.cwd, stdio: ['pipe', 'pipe', 'pipe'] }),
+    })
+    const closes: [number?, string?][] = []
+    const { id } = manager.create({ cwd: '/' })
+    manager.attach(id, { send: () => {}, close: (code, reason) => closes.push([code, reason]) })
+    for (let i = 0; i < 100 && !closes.length; i++) await Bun.sleep(20)
+    expect(closes).toEqual([
+      [1011, '--dangerously-skip-permissions cannot be used with root/sudo privileges for security reasons (exit 1)'],
+    ])
+  })
+
+  it('fits a long stderr line into a WebSocket close reason', async () => {
+    const child = `process.stderr.write('é'.repeat(200) + '\\n'); process.exit(3)`
+    const manager = new SessionManager({
+      spawn: opts => spawn(process.execPath, ['-e', child], { cwd: opts.cwd, stdio: ['pipe', 'pipe', 'pipe'] }),
+    })
+    const closes: [number?, string?][] = []
+    const { id } = manager.create({ cwd: '/' })
+    manager.attach(id, { send: () => {}, close: (code, reason) => closes.push([code, reason]) })
+    for (let i = 0; i < 100 && !closes.length; i++) await Bun.sleep(20)
+    const reason = closes[0]![1]!
+    expect(Buffer.byteLength(reason)).toBeLessThanOrEqual(123)
+    expect(reason).toEndWith('… (exit 3)')
+  })
+
+  it('names the exit code when the process printed nothing', async () => {
+    const manager = new SessionManager({
+      spawn: opts => spawn(process.execPath, ['-e', 'process.exit(2)'], { cwd: opts.cwd, stdio: ['pipe', 'pipe', 'pipe'] }),
+    })
+    const closes: [number?, string?][] = []
+    const { id } = manager.create({ cwd: '/' })
+    manager.attach(id, { send: () => {}, close: (code, reason) => closes.push([code, reason]) })
+    for (let i = 0; i < 100 && !closes.length; i++) await Bun.sleep(20)
+    expect(closes).toEqual([[1011, 'exit 2']])
   })
 })
 

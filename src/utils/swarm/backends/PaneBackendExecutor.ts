@@ -133,6 +133,7 @@ export class PaneBackendExecutor implements TeammateExecutor {
         permissionMode:
           config.permissionMode ?? appState.toolPermissionContext.mode,
         allowedTools: config.permissions,
+        toolPermissionContext: appState.toolPermissionContext,
       })
 
       // If teammate has a custom model, add --model flag (or replace inherited one)

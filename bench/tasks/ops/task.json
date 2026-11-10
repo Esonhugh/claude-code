@@ -1,0 +1,25 @@
+{
+  "id": "ops",
+  "type": "ops",
+  "length": "long",
+  "requires": [],
+  "grade": [
+    {
+      "type": "cmd",
+      "run": "python3 bin/check_config.py"
+    },
+    {
+      "type": "exists",
+      "path": "bin/rotate_logs.sh"
+    },
+    {
+      "type": "cmd",
+      "run": "sh -n bin/rotate_logs.sh"
+    },
+    {
+      "type": "regex",
+      "file": "INCIDENT.md",
+      "pattern": "\\S"
+    }
+  ]
+}

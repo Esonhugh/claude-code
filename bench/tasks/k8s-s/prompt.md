@@ -1,0 +1,1 @@
+kubectl is configured for the production cluster, namespace {NS}. The api Deployment never becomes ready. Find the root cause and fix it with kubectl (do not change the container command, the probes or the replica count). Confirm both replicas are Ready, then reply with the root cause in one or two sentences.

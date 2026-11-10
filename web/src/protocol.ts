@@ -50,7 +50,7 @@ export type Item =
     }
   | { kind: 'error'; id: string; text: string }
   /** Output of a local slash command (`/model`, `/usage`), shown as a muted system line. */
-  | { kind: 'local'; id: string; text: string; isError?: boolean }
+  | { kind: 'local'; id: string; text: string; isError?: boolean; command?: string; args?: string }
   /** A message a teammate sent the lead (`<teammate-message>`). */
   | { kind: 'teammate'; id: string; from: string; color?: string; summary?: string; text: string }
   /** A message a channel (an MCP server such as Telegram) pushed in: `<channel source="…" user="…">`. */
@@ -103,6 +103,8 @@ export type ModelOption = {
   resolvedModel?: string
   description?: string
   effortLevels?: string[]
+  /** Context windows the picker offers, smallest first; the last is the model maximum. */
+  contextWindowTiers?: number[]
 }
 
 /** The SDK `ModelInfo` list (initialize `models`, `/api/models`) as the picker's options. */
@@ -118,6 +120,9 @@ export function parseModels(raw: unknown): ModelOption[] {
             m.supportsEffort === true && Array.isArray(m.supportedEffortLevels)
               ? m.supportedEffortLevels.filter(l => typeof l === 'string')
               : undefined,
+          contextWindowTiers: Array.isArray(m.contextWindowTiers)
+            ? m.contextWindowTiers.filter(n => typeof n === 'number' && Number.isFinite(n))
+            : undefined,
         }),
       }))
     : []
@@ -158,6 +163,8 @@ export type ChatState = {
   costUsd?: number
   /** Effort level the session applies (get_settings `applied.effort`). */
   effort?: string
+  /** The session's configured context window (get_settings `applied.autoCompactWindow`); null is auto. */
+  contextWindow?: number | null
   env: SessionEnv
   /** Error from the last control request the user triggered (mode, model). */
   notice?: string
@@ -187,6 +194,87 @@ export type ChatState = {
   rewindPoints?: string[]
   /** The API request failed and is retried (`api_retry`); cleared when a reply starts or the turn ends. */
   retry?: { attempt: number; max: number; delayMs: number; at: number; status?: number }
+  mods: ModsState
+}
+
+export type ModPane = { id: string; title: string; plugin: string; rows?: number; columns?: number }
+export type ModToast = { id: string; plugin: string; text: string; timeoutMs: number; at: number }
+/** What Mods draw for this page (the remote UI protocol, surface `desktop`). */
+export type ModsState = {
+  panes: ModPane[]
+  shownId?: string
+  /** Each plugin's status entry. */
+  status: Record<string, string>
+  toasts: ModToast[]
+  /** Bumped per `component:instance_id` when the session says that drawing changed; `*` bumps them all. */
+  seq: Record<string, number>
+  /** The session runs Mods and took this page as a client (`ui_attach` answered). */
+  attached?: boolean
+}
+
+export type PromptDecoration = {
+  start: number
+  end: number
+  color?: string
+  backgroundColor?: string
+  bold?: boolean
+  italic?: boolean
+  underline?: boolean
+  strikethrough?: boolean
+  dimColor?: boolean
+}
+
+/** What a session may ask this page about its prompt box, the clipboard and the selection. */
+export const MOD_ANSWERS = ['ui_copy', 'ui_prompt_read', 'ui_prompt_fill', 'ui_prompt_suggest', 'ui_read_selection'] as const
+
+export const initialMods: ModsState = { panes: [], status: {}, toasts: [], seq: {} }
+
+const MAX_TOASTS = 20
+
+function reduceModsMessage(mods: ModsState, raw: Json): ModsState | undefined {
+  switch (raw.subtype) {
+    case 'ui_panes': {
+      const panes = (Array.isArray(raw.panes) ? raw.panes : []).filter(isObj).flatMap(p => {
+        const id = str(p.id)
+        if (!id) return []
+        return [{
+          id,
+          title: str(p.title) ?? id,
+          plugin: str(p.plugin) ?? '',
+          ...(typeof p.rows === 'number' && { rows: p.rows }),
+          ...(typeof p.columns === 'number' && { columns: p.columns }),
+        }]
+      })
+      return { ...mods, panes, shownId: str(raw.shown_id) }
+    }
+    case 'ui_invalidate': {
+      const instances = Array.isArray(raw.instances) ? raw.instances.filter(isObj) : undefined
+      const keys = instances ? instances.map(i => `${str(i.component)}:${str(i.instance_id)}`) : ['*']
+      const seq = { ...mods.seq }
+      for (const key of keys) seq[key] = (seq[key] ?? 0) + 1
+      return { ...mods, seq }
+    }
+    case 'ui_toast': {
+      const text = str(raw.text)
+      if (!text) return mods
+      const toast = {
+        id: str(raw.uuid) ?? `toast-${Date.now()}-${mods.toasts.length}`,
+        plugin: str(raw.plugin) ?? '',
+        text,
+        timeoutMs: typeof raw.timeout_ms === 'number' ? raw.timeout_ms : 4000,
+        at: Date.now(),
+      }
+      return { ...mods, toasts: [...mods.toasts, toast].slice(-MAX_TOASTS) }
+    }
+    case 'ui_status': {
+      const plugin = str(raw.plugin)
+      if (!plugin) return mods
+      const { [plugin]: _, ...rest } = mods.status
+      const text = str(raw.text)
+      return { ...mods, status: text ? { ...rest, [plugin]: text } : rest }
+    }
+  }
+  return undefined
 }
 
 export const initialState: ChatState = {
@@ -203,6 +291,7 @@ export const initialState: ChatState = {
   taskNotes: [],
   noteKeys: [],
   queued: [],
+  mods: initialMods,
 }
 
 type Json = Record<string, unknown>
@@ -455,7 +544,10 @@ function addLocal(state: ChatState, item: Extract<Item, { kind: 'local' }>): Cha
   }
   // "Compacted" after a compaction: the mark already says so.
   if (!item.isError && last?.kind === 'compact') return { ...state, recapPending: undefined }
-  return { ...state, recapPending: undefined, items: [...state.items, item] }
+  // The slash command typed just before names the output, as Mods see it (`command`, no slash).
+  const typedCommand = last?.kind === 'user' ? /^\/([\w:-]+)(?:\s+([\s\S]*))?$/.exec(last.text.trim()) : null
+  const named = typedCommand ? { ...item, command: typedCommand[1], args: typedCommand[2] ?? '' } : item
+  return { ...state, recapPending: undefined, items: [...state.items, named] }
 }
 
 function reduceGoal(state: ChatState, raw: Json): ChatState {
@@ -737,8 +829,16 @@ export function reduce(state: ChatState, raw: unknown): ChatState {
   if (state.retry && (raw.type === 'stream_event' || raw.type === 'assistant' || raw.type === 'result')) {
     state = { ...state, retry: undefined }
   }
+  if (raw.type === 'system') {
+    const mods = reduceModsMessage(state.mods, raw)
+    if (mods) return { ...state, mods }
+  }
   switch (raw.type) {
     case 'system':
+      // A page that attaches mid-turn learns from this that the turn is still running (its result ends it).
+      if (raw.subtype === 'session_state_changed') {
+        return raw.state === 'running' ? { ...state, busy: true } : state
+      }
       if (raw.subtype === 'api_retry') {
         return {
           ...state,
@@ -973,9 +1073,12 @@ export function reduce(state: ChatState, raw: unknown): ChatState {
         if (!isObj(part) || part.type !== 'tool_result') continue
         const toolId = str(part.tool_use_id)
         if (!toolId) continue
+        const text = toolResultText(part.content)
+        // The engine wraps a failed call's message in `<tool_use_error>`; the TUI shows only what is inside.
+        const unwrapped = part.is_error === true ? /^<tool_use_error>([\s\S]*)<\/tool_use_error>$/.exec(text.trim())?.[1] : undefined
         next = mapTool(next, toolId, b => ({
           ...b,
-          result: toolResultText(part.content),
+          result: unwrapped ?? text,
           isError: part.is_error === true,
           ...(meta && { meta }),
         }))
@@ -1076,6 +1179,8 @@ export const REQUEST_PREFIX = {
   rewind: 'web-rewind-',
   rewindPoints: 'web-rwpoints-',
   cancelQueued: 'web-cancel-queued-',
+  /** The Mods remote UI: attach, render, press, input, select. */
+  mods: 'web-mods-',
   /** The sidebar dialogs' requests (mcp_status, reload_plugins…). */
   ext: 'web-ext-',
   background: 'web-bg-',
@@ -1133,6 +1238,24 @@ export function currentTodos(items: Item[]): Todo[] {
   return todos.map(t => ({ content: t.content, status: t.status, ...(t.activeForm && { activeForm: t.activeForm }) }))
 }
 
+/** Whether the session plans with the shared task list (TaskCreate), which others can change. */
+export function usesTaskList(items: Item[]): boolean {
+  return items.some(item => item.kind === 'assistant' && item.blocks.some(block => block.kind === 'tool' && block.name === 'TaskCreate'))
+}
+
+/** The `get_task_list` reply as todos, in task id order; undefined when it is not one. */
+export function taskListTodos(body: unknown): Todo[] | undefined {
+  if (!isObj(body) || !Array.isArray(body.tasks)) return undefined
+  return body.tasks
+    .filter(isObj)
+    .sort((a, b) => Number(a.id) - Number(b.id))
+    .map(t => ({
+      content: str(t.subject) ?? '',
+      status: str(t.status) ?? 'pending',
+      ...(str(t.activeForm) && { activeForm: str(t.activeForm) }),
+    }))
+}
+
 /** The team the lead created (TeamCreate `team_name`), if any. */
 export function teamName(items: Item[]): string | undefined {
   for (const item of items) {
@@ -1165,6 +1288,20 @@ function hooksFrom(raw: unknown): Hook[] {
   )
 }
 
+function parseCommands(list: unknown[]): SlashCommand[] {
+  return list
+    .filter(isObj)
+    .map(c => ({
+      name: str(c.name) ?? '',
+      description: str(c.description) ?? '',
+      argumentHint: str(c.argumentHint) ?? '',
+      ...(Array.isArray(c.aliases) && {
+        aliases: c.aliases.filter(a => typeof a === 'string'),
+      }),
+    }))
+    .filter(c => c.name)
+}
+
 function reduceControlResponse(state: ChatState, raw: Json): ChatState {
   const response = isObj(raw.response) ? raw.response : {}
   const id = str(response.request_id) ?? ''
@@ -1179,22 +1316,24 @@ function reduceControlResponse(state: ChatState, raw: Json): ChatState {
     return state
   }
   const body = isObj(response.response) ? response.response : {}
+  // The panes a page that attached late (a reload) asked for.
+  if (id.startsWith(REQUEST_PREFIX.mods) && Array.isArray(body.panes)) {
+    return { ...state, mods: reduceModsMessage(state.mods, { ...body, subtype: 'ui_panes' }) ?? state.mods }
+  }
+  if (id.startsWith(REQUEST_PREFIX.mods) && Array.isArray(body.surfaces) && !state.mods.attached) {
+    return { ...state, mods: { ...state.mods, attached: true } }
+  }
+  // A plugins dialog's reload_plugins answers with the session's commands now, a Mod switched on or off included.
+  if (id.startsWith(REQUEST_PREFIX.ext) && Array.isArray(body.commands) && Array.isArray(body.plugins)) {
+    return { ...state, commands: parseCommands(body.commands) }
+  }
   if (id.startsWith(REQUEST_PREFIX.initialize)) {
-    const commands = Array.isArray(body.commands)
-      ? body.commands.filter(isObj).map(c => ({
-          name: str(c.name) ?? '',
-          description: str(c.description) ?? '',
-          argumentHint: str(c.argumentHint) ?? '',
-          ...(Array.isArray(c.aliases) && {
-            aliases: c.aliases.filter(a => typeof a === 'string'),
-          }),
-        }))
-      : []
+    const commands = Array.isArray(body.commands) ? parseCommands(body.commands) : []
     const account = isObj(body.account) ? body.account : undefined
     return {
       ...state,
       models: parseModels(body.models),
-      commands: commands.filter(c => c.name),
+      commands,
       env: {
         ...state.env,
         ...withoutUndefined({
@@ -1218,7 +1357,12 @@ function reduceControlResponse(state: ChatState, raw: Json): ChatState {
       ...state,
       // A reattached page is sent the session's first init; `applied` has the model in use now.
       model: str(applied.model) ?? state.model,
-      effort: str(applied.effort) ?? state.effort,
+      // null: the session sends no effort (the model's own default), so none is shown.
+      effort: applied.effort === null ? undefined : (str(applied.effort) ?? state.effort),
+      contextWindow:
+        typeof applied.autoCompactWindow === 'number' || applied.autoCompactWindow === null
+          ? applied.autoCompactWindow
+          : state.contextWindow,
       env: {
         ...state.env,
         uiName: str(effective.uiName),
@@ -1255,9 +1399,17 @@ function reduceControlResponse(state: ChatState, raw: Json): ChatState {
 
 export function setLocal(
   state: ChatState,
-  patch: Partial<Pick<ChatState, 'permissionMode' | 'model' | 'notice' | 'effort'>>,
+  patch: Partial<Pick<ChatState, 'permissionMode' | 'model' | 'notice' | 'effort' | 'contextWindow'>>,
 ): ChatState {
   return { ...state, ...patch }
+}
+
+/**
+ * The server ends a session's socket with 1000 (process exited), 1008 (attach refused) or 1011
+ * (process failed); any other close is the connection dropping while the session may still run.
+ */
+export function isConnectionDrop(code: number): boolean {
+  return code !== 1000 && code !== 1008 && code !== 1011
 }
 
 /** Control requests the page cannot answer yet get an error, so the session never waits on them. */
@@ -1266,6 +1418,7 @@ export function unsupportedControlResponse(raw: unknown): Json | undefined {
   const request = isObj(raw.request) ? raw.request : {}
   const requestId = str(raw.request_id)
   if (!requestId || request.subtype === 'can_use_tool') return undefined
+  if ((MOD_ANSWERS as readonly unknown[]).includes(request.subtype)) return undefined
   return {
     type: 'control_response',
     response: {

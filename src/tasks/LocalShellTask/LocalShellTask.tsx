@@ -152,7 +152,8 @@ function enqueueShellNotification(
   toolUseId?: string,
   kind: BashTaskKind = 'bash',
   agentId?: AgentId,
-): void {
+  stoppedAtDeadline = false,
+): void | Promise<void> {
   // Atomically check and set notified flag to prevent duplicate notifications.
   // If the task was already marked as notified (e.g., by TaskStopTool), skip
   // enqueueing to avoid sending redundant messages to the model.
@@ -200,7 +201,7 @@ function enqueueShellNotification(
         summary = `${BACKGROUND_BASH_SUMMARY_PREFIX}"${description}" failed${exitCode !== undefined ? ` with exit code ${exitCode}` : ''}`
         break
       case 'killed':
-        summary = `${BACKGROUND_BASH_SUMMARY_PREFIX}"${description}" was stopped`
+        summary = `${BACKGROUND_BASH_SUMMARY_PREFIX}"${description}" was stopped${stoppedAtDeadline ? ' after reaching its background time limit' : ''}`
         break
     }
   }
@@ -213,15 +214,42 @@ function enqueueShellNotification(
 <${TASK_ID_TAG}>${taskId}</${TASK_ID_TAG}>${toolUseIdLine}
 <${OUTPUT_FILE_TAG}>${outputPath}</${OUTPUT_FILE_TAG}>
 <${STATUS_TAG}>${status}</${STATUS_TAG}>
-<${SUMMARY_TAG}>${escapeXml(summary)}</${SUMMARY_TAG}>
+<${SUMMARY_TAG}>${escapeXml(summary)}</${SUMMARY_TAG}>${stoppedAtDeadline ? `\n${DEADLINE_STOP_GUIDANCE}` : ''}
 </${TASK_NOTIFICATION_TAG}>`
 
-  enqueuePendingNotification({
+  return enqueuePendingNotification({
     value: message,
     mode: 'task-notification',
     priority: feature('MONITOR_TOOL') ? 'next' : 'later',
     agentId,
   })
+}
+
+const DEADLINE_STOP_GUIDANCE =
+  'If the work in progress still needs it, start it again with `run_in_background` and a longer `timeout`. If it already had the longest `timeout` allowed, do not restart it. Either way, report that it was stopped.'
+
+/**
+ * Like official 2.1.319: `-p` stops a shell still running after its background
+ * wait ceiling and tells the model why. Notify first so killTask does not
+ * replace the notification with a bare SDK 'stopped' event.
+ */
+export async function stopShellTaskAtDeadline(
+  task: LocalShellTaskState,
+  setAppState: SetAppState,
+): Promise<void> {
+  const notified = enqueueShellNotification(
+    task.id,
+    task.description,
+    'killed',
+    undefined,
+    setAppState,
+    task.toolUseId,
+    task.kind,
+    task.agentId,
+    true,
+  )
+  killTask(task.id, setAppState)
+  await notified
 }
 
 export const LocalShellTask: Task = {
@@ -508,6 +536,37 @@ export function backgroundAll(
   for (const taskId of foregroundAgentTaskIds) {
     backgroundAgentTask(taskId, getAppState, setAppState)
   }
+}
+
+const backgroundRequestHandlers = new Map<string, () => void>()
+
+/**
+ * Lets a running foreground command that has no registered task (headless
+ * runs never call registerForeground) be moved to the background by its
+ * tool_use id. Returns the unregister function.
+ */
+export function onBackgroundRequest(
+  toolUseId: string,
+  handler: () => void,
+): () => void {
+  backgroundRequestHandlers.set(toolUseId, handler)
+  return () => {
+    if (backgroundRequestHandlers.get(toolUseId) === handler) {
+      backgroundRequestHandlers.delete(toolUseId)
+    }
+  }
+}
+
+export function hasBackgroundRequestHandler(toolUseId: string): boolean {
+  return backgroundRequestHandlers.has(toolUseId)
+}
+
+export function requestBackgroundForToolUse(toolUseId: string): boolean {
+  const handler = backgroundRequestHandlers.get(toolUseId)
+  if (!handler) return false
+  backgroundRequestHandlers.delete(toolUseId)
+  handler()
+  return true
 }
 
 /**

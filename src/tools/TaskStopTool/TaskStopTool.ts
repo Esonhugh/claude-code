@@ -120,7 +120,13 @@ export const TaskStopTool = buildTool({
   renderToolResultMessage,
   async call(
     { task_id, shell_id },
-    { getAppState, setAppState, abortController },
+    {
+      getAppState,
+      setAppState,
+      getAppStateForTasks,
+      setAppStateForTasks,
+      abortController,
+    },
   ) {
     // Support both task_id and shell_id (deprecated KillShell compat)
     const id = task_id ?? shell_id
@@ -128,9 +134,11 @@ export const TaskStopTool = buildTool({
       throw new Error('Missing required parameter: task_id')
     }
 
+    // An async subagent's setAppState is a no-op; the task store accessors
+    // reach the root store so the kill is recorded (as BashTool does).
     const result = await stopTask(id, {
-      getAppState,
-      setAppState,
+      getAppState: getAppStateForTasks ?? getAppState,
+      setAppState: setAppStateForTasks ?? setAppState,
     })
 
     return {

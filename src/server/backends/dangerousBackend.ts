@@ -42,6 +42,8 @@ export class DangerousBackend {
       includeHookEvents?: boolean
       /** Keep file checkpoints so rewind_files can restore them, as the REPL does. */
       fileCheckpointing?: boolean
+      /** Emit `system/session_state_changed`, so a page that attaches mid-turn knows a turn is running. */
+      emitSessionState?: boolean
     } = {},
   ) {}
 
@@ -64,6 +66,7 @@ export class DangerousBackend {
     // Let the child classify itself as a headless (sdk-cli) entrypoint.
     delete env.CLAUDE_CODE_ENTRYPOINT
     if (this.options.fileCheckpointing) env.CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING = '1'
+    if (this.options.emitSessionState) env.CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS = '1'
     return spawn(
       command,
       [

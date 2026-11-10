@@ -68,7 +68,7 @@ test('clearMailbox waits for the inbox lock instead of racing writers', async ()
   expect(await readMailbox('locked', TEAM)).toEqual([])
 })
 
-const { createIdleNotification, getIdleResult } = await import('./teammateMailbox.js')
+const { createIdleNotification, getIdleResult, getTurnFailureReason } = await import('./teammateMailbox.js')
 type Msg = Parameters<typeof getIdleResult>[0][number]
 const user = (content: unknown): Msg => ({ type: 'user', message: { role: 'user', content } }) as unknown as Msg
 const assistant = (...content: unknown[]): Msg => ({ type: 'assistant', message: { role: 'assistant', content } }) as unknown as Msg
@@ -95,6 +95,21 @@ test('getIdleResult is empty when the teammate already reported to the lead afte
   expect(getIdleResult([user('task'), assistant(text('summary')), assistant(sendTo('s1', 'peer')), result('s1')])).toBe('summary')
   // a DM before the final reply does not suppress the reply
   expect(getIdleResult([user('task'), assistant(sendTo('s1', 'team-lead')), result('s1'), assistant(text('final'))])).toBe('final')
+})
+
+// #987: a teammate turn that ends on an API error (ChatGPT quota, 400, auth) is
+// reported to the lead as failed, like official 2.1.319, instead of "available".
+test('getTurnFailureReason reports an API error that ended the current turn', () => {
+  const apiError = (t: string): Msg => ({ ...assistant(text(t)), isApiErrorMessage: true }) as Msg
+  const quota = "You've hit your ChatGPT usage limit · resets 11:13pm (UTC)"
+  expect(getTurnFailureReason([user('task'), apiError(quota)])).toBe(quota)
+  expect(getTurnFailureReason([user('task'), assistant({ type: 'tool_use', id: 't', name: 'Bash', input: {} }), result('t'), apiError('API Error: 400 bad')])).toBe('API Error: 400 bad')
+  expect(getTurnFailureReason([user('task'), assistant(text('done'))])).toBeUndefined()
+  // an error from an earlier turn does not fail the turn after it
+  expect(getTurnFailureReason([user('task'), apiError(quota), user('next'), assistant(text('done'))])).toBeUndefined()
+  // interrupts are not failures
+  expect(getTurnFailureReason([user('task'), apiError('[Request interrupted by user]')])).toBeUndefined()
+  expect(getTurnFailureReason([user('task'), { ...assistant(), isApiErrorMessage: true } as Msg])).toBe('API error')
 })
 
 test('createIdleNotification caps the result like official', () => {

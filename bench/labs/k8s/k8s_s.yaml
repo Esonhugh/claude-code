@@ -1,0 +1,27 @@
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: api-config}
+data: {DB_URL: "postgres://db.internal:5432/orders", LOG_LEVEL: info}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: api, labels: {app: api}}
+spec:
+  replicas: 2
+  selector: {matchLabels: {app: api}}
+  template:
+    metadata: {labels: {app: api}}
+    spec:
+      containers:
+      - name: api
+        image: mirror.gcr.io/library/busybox:1.36
+        imagePullPolicy: IfNotPresent
+        command: ["sh", "-c", "test -n \"$DB_URL\" || { echo 'FATAL: DB_URL is not set' >&2; exit 1; }; echo \"connecting to $DB_URL\"; mkdir -p /www && echo ok > /www/healthz && exec httpd -f -p 8080 -h /www"]
+        env:
+        - name: DB_ULR
+          valueFrom: {configMapKeyRef: {name: api-config, key: DB_URL}}
+        - name: LOG_LEVEL
+          valueFrom: {configMapKeyRef: {name: api-config, key: LOG_LEVEL}}
+        ports: [{containerPort: 8080}]
+        readinessProbe: {httpGet: {path: /healthz, port: 8080}, periodSeconds: 3}
+        resources: {requests: {cpu: 10m, memory: 16Mi}}

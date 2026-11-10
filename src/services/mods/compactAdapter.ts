@@ -5,6 +5,7 @@ import { createToolCatalogForContext } from './toolCatalog.js'
 import { createModToolHost } from './toolHost.js'
 import type { ToolUseContext } from '../../Tool.js'
 import type { Message } from '../../types/message.js'
+import { extractDiscoveredToolNames } from '../../utils/toolSearch.js'
 import {
   createAssistantMessage,
   createCompactBoundaryMessage,
@@ -169,6 +170,15 @@ export async function runModSessionCompact(
     if (original) return { compactionResult: original.result }
     const messagesToKeep = restore(result.messages)
     const boundary = createCompactBoundaryMessage(trigger, result.tokensBefore ?? 0, messages.at(-1)?.uuid)
+    // An OpenAI remote compaction lives in its boundary; keep it while the mod keeps its summary row.
+    const remote = results.findLast(item => item.result.summaryMessages.some(summary => messagesToKeep.includes(summary)))?.result.boundaryMarker
+    if (remote?.subtype === 'compact_boundary' && remote.openAICompaction) {
+      boundary.openAICompaction = remote.openAICompaction
+      boundary.compactMetadata = { ...boundary.compactMetadata, remoteV2: true }
+    }
+    // The rewrite may drop the tool_reference blocks; keep the loaded deferred tools like compact.ts.
+    const discovered = extractDiscoveredToolNames(messages)
+    if (discovered.size > 0) boundary.compactMetadata = { ...boundary.compactMetadata, preCompactDiscoveredTools: [...discovered].sort() }
     return { compactionResult: {
       boundaryMarker: annotateBoundaryWithPreservedSegment(boundary, boundary.uuid, messagesToKeep),
       summaryMessages: [], messagesToKeep, attachments: [], hookResults: [],

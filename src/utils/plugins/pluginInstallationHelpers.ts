@@ -26,6 +26,7 @@ import {
   updateSettingsForSource,
 } from '../settings/settings.js'
 import { buildPluginTelemetryFields } from '../telemetry/pluginTelemetry.js'
+import { commandSourceConsentKey, isCommandPluginSource } from './commandSource.js'
 import { clearAllCaches } from './cacheUtils.js'
 import {
   dependencyMatchesPlugin,
@@ -140,6 +141,8 @@ export async function cacheAndRegisterPlugin(
   scope: PluginScope = 'user',
   projectPath?: string,
   localSourcePath?: string,
+  // The `command` source string the user reviewed for this plugin.
+  commandSourceConsent?: string,
 ): Promise<{ path: string; manifest: PluginManifest }> {
   const installedPlugins = loadInstalledPluginsFromDisk().plugins
   const collision = findPluginFolderCollision([pluginId], installedPlugins)
@@ -153,6 +156,8 @@ export async function cacheAndRegisterPlugin(
   const cached = await cachePlugin(source, {
     manifest: entry,
     keepTemporary: true,
+    commandSourceConsent,
+    pluginId,
   })
   const errors: unknown[] = []
   let finalPath: string | undefined
@@ -165,7 +170,7 @@ export async function cacheAndRegisterPlugin(
       entry.source,
       cached.manifest,
       pathForGitSha,
-      entry.version,
+      entry.version ?? cached.contentVersion,
       cached.gitCommitSha,
     )
     const now = getCurrentTimestamp()
@@ -198,6 +203,9 @@ export async function cacheAndRegisterPlugin(
         lastUpdated: now,
         installPath: finalPath,
         gitCommitSha,
+        ...(isCommandPluginSource(source) && {
+          sourceCommand: commandSourceConsentKey(source),
+        }),
       },
       scope,
       projectPath,
@@ -396,12 +404,17 @@ export async function installResolvedPlugin({
   scope,
   marketplaceInstallLocation,
   collisionSurface = 'cli',
+  commandSourceReviewed = false,
 }: {
   pluginId: string
   entry: PluginMarketplaceEntry
   scope: 'user' | 'project' | 'local'
   marketplaceInstallLocation?: string
   collisionSurface?: 'cli' | 'ui'
+  // The user saw and accepted this plugin's `command` source (explicit CLI
+  // install, or the /plugin details pane that shows it). Covers the root
+  // plugin only: a dependency's command was never shown.
+  commandSourceReviewed?: boolean
 }): Promise<InstallCoreResult> {
   const settingSource = scopeToSettingSource(scope)
 
@@ -535,6 +548,11 @@ export async function installResolvedPlugin({
       scope,
       projectPath,
       member.localSourcePath,
+      commandSourceReviewed &&
+        member.id === pluginId &&
+        isCommandPluginSource(member.entry.source)
+        ? commandSourceConsentKey(member.entry.source)
+        : undefined,
     )
     manifests.set(member.id, manifest)
   }
@@ -670,6 +688,7 @@ export type InstallPluginParams = {
   marketplaceName: string
   scope?: 'user' | 'project' | 'local'
   trigger?: 'hint' | 'user'
+  commandSourceReviewed?: boolean
 }
 
 /**
@@ -683,6 +702,7 @@ export async function installPluginFromMarketplace({
   marketplaceName,
   scope = 'user',
   trigger = 'user',
+  commandSourceReviewed = false,
 }: InstallPluginParams): Promise<InstallPluginResult> {
   try {
     // Look up the marketplace install location for local-source plugins.
@@ -697,6 +717,7 @@ export async function installPluginFromMarketplace({
       scope,
       marketplaceInstallLocation,
       collisionSurface: 'ui',
+      commandSourceReviewed: trigger === 'user' && commandSourceReviewed,
     })
 
     if (!result.ok) {

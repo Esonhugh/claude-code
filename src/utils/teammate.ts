@@ -198,6 +198,27 @@ export function isTeamLead(
 }
 
 /**
+ * How long a headless leader waits, after asking its model to shut the team
+ * down, for any teammate activity before it stops the remaining teammates.
+ */
+export function getTeamShutdownGraceMs(): number {
+  return 15_000
+}
+
+/**
+ * Whether the team has members other than the leader. The leader lists
+ * itself in `teammates`, so a bare `length > 0` never becomes false.
+ */
+export function hasOtherTeammates(
+  teamContext: AppState['teamContext'],
+): boolean {
+  if (!teamContext) return false
+  return Object.keys(teamContext.teammates).some(
+    agentId => agentId !== teamContext.leadAgentId,
+  )
+}
+
+/**
  * Checks if there are any active in-process teammates running.
  * Used by headless/print mode to determine if we should wait for teammates
  * before exiting.

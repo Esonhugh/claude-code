@@ -56,7 +56,7 @@ export type SystemInitInputs = {
   commands: ReadonlyArray<CommandLike>
   agents: ReadonlyArray<{ agentType: string }>
   skills: ReadonlyArray<CommandLike>
-  plugins: ReadonlyArray<{ name: string; path: string; source: string }>
+  plugins: ReadonlyArray<{ name: string; path: string; source: string; manifest?: { version?: unknown } }>
   fastMode: boolean | undefined
   additionalDirectories?: readonly string[]
   capabilities?: readonly string[]
@@ -122,6 +122,7 @@ export function buildSystemInitMessage(inputs: SystemInitInputs): SDKMessage {
       name: plugin.name,
       path: plugin.path,
       source: plugin.source,
+      ...(typeof plugin.manifest?.version === 'string' ? { version: plugin.manifest.version } : {}),
     })),
     uuid: randomUUID(),
   }

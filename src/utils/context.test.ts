@@ -118,18 +118,48 @@ test.each(['gpt-5.6-sol', 'gpt-6-astra', 'gpt-5.6-terra', 'gpt-5.6-luna'])(
 
 test('context and discovered capability overrides retain precedence', () => {
   capability.mockReturnValue({
-    id: 'claude-opus-5',
+    id: 'claude-next-model',
     max_input_tokens: 300_000,
     max_tokens: 16_000,
   })
-  expect(getContextWindowForModel('claude-opus-5')).toBe(300_000)
-  expect(getModelMaxOutputTokens('claude-opus-5')).toEqual({
+  expect(getContextWindowForModel('claude-next-model')).toBe(300_000)
+  expect(getModelMaxOutputTokens('claude-next-model')).toEqual({
     default: 16_000,
     upperLimit: 16_000,
   })
   ant.mockReturnValue(true)
   process.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS = '123456'
   expect(getContextWindowForModel('claude-opus-5[1m]')).toBe(123456)
+})
+
+test('CLAUDE_CODE_MAX_CONTEXT_TOKENS forces the window for every user and provider', () => {
+  ant.mockReturnValue(false)
+  process.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS = '500000'
+  expect(getContextWindowForModel('claude-sonnet-4-5')).toBe(500_000)
+  expect(getContextWindowForModel('gpt-6.1-sol')).toBe(500_000)
+  expect(getContextWindowForModel('gpt-5.6-sol')).toBe(500_000)
+  process.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS = '300000'
+  expect(resolveContextWindow('claude-sonnet-5')).toEqual({ window: 300_000, source: 'model-default' })
+  expect(resolveContextWindow('claude-sonnet-5', 150_000).window).toBe(150_000)
+  process.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS = 'abc'
+  expect(getContextWindowForModel('custom-model')).toBe(200_000)
+})
+
+test('non-ant users take models.list limits only for models the client does not know', () => {
+  capability.mockReturnValue({ id: 'claude-sonnet-4-6', max_input_tokens: 1_000_000, max_tokens: 16_000 })
+  expect(getContextWindowForModel('claude-sonnet-4-6')).toBe(200_000)
+  expect(getModelMaxOutputTokens('claude-sonnet-4-6').upperLimit).toBe(128_000)
+  capability.mockReturnValue({ id: 'claude-new-model', max_input_tokens: 500_000, max_tokens: 16_000 })
+  expect(getContextWindowForModel('claude-new-model')).toBe(500_000)
+  expect(getModelMaxOutputTokens('claude-new-model').upperLimit).toBe(16_000)
+  expect(resolveContextWindow('claude-new-model')).toEqual({ window: 500_000, source: 'auto' })
+})
+
+test('claude-haiku-5-5 has a native 1M window like official', () => {
+  expect(getContextWindowForModel('claude-haiku-5-5')).toBe(1_000_000)
+  expect(modelSupports1M('claude-haiku-5-5')).toBe(true)
+  process.env.CLAUDE_CODE_DISABLE_1M_CONTEXT = '1'
+  expect(getContextWindowForModel('claude-haiku-5-5')).toBe(200_000)
 })
 
 test('unknown and legacy models keep their existing limits', () => {

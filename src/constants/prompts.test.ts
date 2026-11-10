@@ -81,6 +81,25 @@ describe('getUsingYourToolsSection', () => {
   })
 })
 
+describe('OpenAI full prompt', () => {
+  test('stays compact and drops the Claude-only fast mode line', async () => {
+    process.env.CLAUDE_CODE_USE_OPENAI = '1'
+    process.env.CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS = '1'
+
+    const prompt = (await getSystemPrompt(
+      [{ name: 'Bash' }, { name: 'Read' }, { name: 'Edit' }] as unknown as Tools,
+      'gpt-6.1-sol',
+    )).join('\n')
+
+    expect(prompt).toContain('# Doing tasks')
+    expect(prompt).toContain('"methodName"')
+    expect(prompt).toContain('make all independent tool calls in parallel')
+    expect(prompt).not.toContain('Fast mode for Claude Code')
+    expect(prompt).not.toContain('Your responses should be short and concise.')
+    expect(prompt.length).toBeLessThan(10_500)
+  })
+})
+
 describe('git instruction opt-out', () => {
   test('omits git-specific guidance but preserves general action authorization', async () => {
     process.env.CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS = '1'

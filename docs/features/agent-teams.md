@@ -127,6 +127,10 @@
 
 - **权限模式跟随负责人**：负责人处于 bypass、acceptEdits 或 auto 模式时，进程内队友也用同样的模式；否则队友的权限请求会转给负责人确认。
 - **解散**：队友被要求 shutdown 并确认后，会从 `config.json` 的成员名单里移除。
+- **`-p` / SDK 下的权限请求**：队友的权限请求先走 PermissionRequest hook；普通 `-p` 随后拒绝（发出带 `agent_id` 的 `permission_denied`），`--permission-prompt-tool stdio` 时以带 `agent_id` 的 `can_use_tool` 交给宿主（`claude web` 显示在协调者的批准框里）。
+- **`-p` / SDK 退出**：会话结束时负责人会被要求关闭团队；之后 15 秒内没有未读消息、也没有队友在工作，就在 stderr 打印 `Team members did not shut down after the shutdown request; stopping them.`，停止剩下的队友、把它们从 `config.json` 移除并正常退出，不会一直挂着。SDK 用字符串 prompt 时同样等队友汇报完。
+- **失败通知**：队友的回合以 API 错误结束（额度用完、400、认证失败）时，空闲通知是 `idleReason: "failed"` 并带 `failureReason`，负责人不会再反复催它。
+- **tmux / iTerm 分屏队友**继承负责人的 `--mcp-config`、`--strict-mcp-config`、`--plugin-dir-no-mcp`、`--allowedTools` 与 `--disallowedTools`；负责人审批它们的 MCP 工具请求。
 
 ## 任务清单
 

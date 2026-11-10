@@ -9,6 +9,7 @@ const defaultRecoverFeatures = [
   'EXTRACT_MEMORIES',
   'AWAY_SUMMARY',
   'DIRECT_CONNECT',
+  'REACTIVE_COMPACT',
 ];
 
 const enabled = new Set([

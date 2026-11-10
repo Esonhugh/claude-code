@@ -16,6 +16,8 @@ import type { Tool, ToolUseContext } from '../../Tool.js'
 import { getGoalPromptForState } from '../../commands/goal.js'
 import type { AppState } from '../../state/AppStateStore.js'
 import type { LocalAgentTaskState } from '../../tasks/LocalAgentTask/LocalAgentTask.js'
+// Type-only: a value import closes a module cycle through TerminalTool.
+import type { TerminalTaskState } from '../../tasks/TerminalTask.js'
 import { FileReadTool } from '../../tools/FileReadTool/FileReadTool.js'
 import {
   FILE_READ_TOOL_NAME,
@@ -38,6 +40,7 @@ import {
   generateFileAttachment,
   getAgentListingDeltaAttachment,
   getDeferredToolsDeltaAttachment,
+  getSkillListingAfterCompact,
   getMcpInstructionsDeltaAttachment,
   getSessionContextAttachments,
 } from '../../utils/attachments.js'
@@ -424,19 +427,28 @@ const KEPT_TAIL_NOTE =
  * Like official 2.1.311, full compaction summarizes every API round but the
  * last and keeps that round verbatim. Kept assistant usage is zeroed so the
  * pre-compact context size is not read back as the current one.
+ * keptRounds 0 summarizes everything (official 2.1.319 does that when the
+ * context refilled within 3 turns of the previous compaction).
  */
-export function splitKeptTail(messages: Message[]): {
+export function splitKeptTail(
+  messages: Message[],
+  keptRounds = 1,
+): {
   toSummarize: Message[]
   toKeep: Message[]
 } {
   const groups = groupMessagesByApiRound(
     messages.filter(m => m.type !== 'progress'),
   )
-  const toSummarize = groups.slice(0, -1).flat()
-  if (groups.length < 2 || !toSummarize.some(m => m.type === 'assistant')) {
+  const toSummarize = groups.slice(0, groups.length - keptRounds).flat()
+  if (
+    keptRounds < 1 ||
+    groups.length <= keptRounds ||
+    !toSummarize.some(m => m.type === 'assistant')
+  ) {
     return { toSummarize: messages, toKeep: [] }
   }
-  const toKeep = groups.at(-1)!.map(m =>
+  const toKeep = groups.slice(-keptRounds).flat().map(m =>
     m.type === 'assistant'
       ? {
           ...m,
@@ -454,6 +466,38 @@ export function splitKeptTail(messages: Message[]): {
       : m,
   )
   return { toSummarize, toKeep }
+}
+
+/**
+ * Official 2.1.319: when the summary request itself is too long, keep more
+ * trailing rounds verbatim so less needs summarizing, instead of dropping the
+ * oldest context. Adds rounds until their tokens cover the gap (a fifth of
+ * the summarized rounds when the gap is unknown). Returns null once the rest
+ * would have no assistant reply left to summarize.
+ */
+export function keepMoreRoundsAfterPTL(
+  messages: Message[],
+  keptRounds: number,
+  tokenGap: number | undefined,
+): { keptRounds: number; toSummarize: Message[]; toKeep: Message[] } | null {
+  const groups = groupMessagesByApiRound(
+    messages.filter(m => m.type !== 'progress'),
+  )
+  const summarized = groups.slice(0, groups.length - keptRounds)
+  let step = 0
+  if (tokenGap !== undefined) {
+    let covered = 0
+    for (let i = summarized.length - 1; i > 0 && covered < tokenGap; i--) {
+      // @ts-ignore - recovered code
+      covered += roughTokenCountEstimationForMessages(summarized[i])
+      step++
+    }
+  } else {
+    step = Math.floor(summarized.length * 0.2)
+  }
+  const next = keptRounds + Math.max(1, step)
+  const split = splitKeptTail(messages, next)
+  return split.toKeep.length > 0 ? { keptRounds: next, ...split } : null
 }
 
 /**
@@ -485,6 +529,7 @@ export async function compactConversation(
   remoteCompact?: (
     customInstructions?: string,
   ) => Promise<RemoteCompactionResult | undefined>,
+  keptRounds = 1,
 ): Promise<CompactionResult> {
   const compactStartedAt = Date.now()
   let compactFailure: unknown
@@ -549,7 +594,7 @@ export async function compactConversation(
       const summaryRequest = createUserMessage({
         content: compactPrompt,
       })
-      const split = splitKeptTail(messages)
+      const split = splitKeptTail(messages, keptRounds)
       messagesToSummarize = split.toSummarize
       messagesToKeep = split.toKeep
       let retryCacheSafeParams =
@@ -558,6 +603,7 @@ export async function compactConversation(
           : cacheSafeParams
       let generatedSummary: string | null
       let ptlAttempts = 0
+      let roundLadder = messagesToKeep.length > 0
       for (;;) {
         summaryResponse = await streamCompactSummary({
           messages: messagesToSummarize,
@@ -569,6 +615,36 @@ export async function compactConversation(
         })
         generatedSummary = getAssistantMessageText(summaryResponse)
         if (!generatedSummary?.startsWith(PROMPT_TOO_LONG_ERROR_MESSAGE)) break
+
+        if (roundLadder) {
+          const wider = keepMoreRoundsAfterPTL(
+            messages,
+            keptRounds,
+            getPromptTooLongTokenGap(summaryResponse),
+          )
+          if (wider) {
+            logForDebugging(
+              `compact: summary request too long, keeping ${wider.keptRounds} rounds verbatim`,
+            )
+            keptRounds = wider.keptRounds
+            messagesToSummarize = wider.toSummarize
+            messagesToKeep = wider.toKeep
+            retryCacheSafeParams = {
+              ...cacheSafeParams,
+              forkContextMessages: messagesToSummarize,
+            }
+            continue
+          }
+          // Last resort, as official: back to the last round kept and drop
+          // the oldest context from what is summarized.
+          roundLadder = false
+          ;({ toSummarize: messagesToSummarize, toKeep: messagesToKeep } =
+            splitKeptTail(messages))
+          retryCacheSafeParams = {
+            ...cacheSafeParams,
+            forkContextMessages: messagesToSummarize,
+          }
+        }
 
         // CC-1180: compact request itself hit prompt-too-long. Truncate the
         // oldest API-round groups and retry rather than leaving the user stuck.
@@ -666,13 +742,6 @@ export async function compactConversation(
     context.readFileState.clear()
     context.loadedNestedMemoryPaths?.clear()
 
-    // Intentionally NOT resetting sentSkillNames: re-injecting the full
-    // skill_listing (~4K tokens) post-compact is pure cache_creation with
-    // marginal benefit. The model still has SkillTool in its schema and
-    // invoked_skills attachment (below) preserves used-skill content. Ants
-    // with EXPERIMENTAL_SKILL_SEARCH already skip re-injection via the
-    // early-return in getSkillListingAttachments.
-
     // Run async attachment generation in parallel
     const [fileAttachments, asyncAgentAttachments] = await Promise.all([
       createPostCompactFileAttachments(
@@ -718,6 +787,10 @@ export async function compactConversation(
     if (goalRestoredMarker) {
       postCompactFileAttachments.push(goalRestoredMarker)
     }
+    const terminalPaneAttachment = createTerminalPaneAttachmentIfNeeded(context)
+    if (terminalPaneAttachment) {
+      postCompactFileAttachments.push(terminalPaneAttachment)
+    }
 
     // Compaction ate prior delta attachments. Re-announce from the current
     // state so the model has tool/instruction context on the first
@@ -736,6 +809,9 @@ export async function compactConversation(
       postCompactFileAttachments.push(createAttachmentMessage(att))
     }
     for (const att of await getAgentListingDeltaAttachment(context, messagesToKeep)) {
+      postCompactFileAttachments.push(createAttachmentMessage(att))
+    }
+    for (const att of await getSkillListingAfterCompact(context, messagesToKeep)) {
       postCompactFileAttachments.push(createAttachmentMessage(att))
     }
     for (const att of getMcpInstructionsDeltaAttachment(
@@ -783,21 +859,21 @@ export async function compactConversation(
     }
 
     const transcriptPath = getTranscriptPath()
-    const summaryMessages: UserMessage[] = remoteResult
-      ? []
-      : [
-          createUserMessage({
-            content:
-              // With a kept tail official always asks to resume directly.
-              getCompactUserSummaryMessage(
-                summary,
-                suppressFollowUpQuestions || messagesToKeep.length > 0,
-                transcriptPath,
-              ) + (messagesToKeep.length > 0 ? `\n\n${KEPT_TAIL_NOTE}` : ''),
-            isCompactSummary: true,
-            isVisibleInTranscriptOnly: true,
-          }),
-        ]
+    // A remote compaction still gets a summary row so the transcript and mods
+    // see one; the API layer drops it in favour of the opaque item.
+    const summaryMessages: UserMessage[] = [
+      createUserMessage({
+        content:
+          // With a kept tail official always asks to resume directly.
+          getCompactUserSummaryMessage(
+            summary,
+            suppressFollowUpQuestions || messagesToKeep.length > 0,
+            transcriptPath,
+          ) + (messagesToKeep.length > 0 ? `\n\n${KEPT_TAIL_NOTE}` : ''),
+        isCompactSummary: true,
+        isVisibleInTranscriptOnly: true,
+      }),
+    ]
 
     // Previously "postCompactTokenCount" — renamed because this is the
     // compact API call's total usage (input_tokens ≈ preCompactTokenCount),
@@ -817,7 +893,7 @@ export async function compactConversation(
     const truePostCompactTokenCount = roughTokenCountEstimationForMessages([
       boundaryMarker,
       // @ts-ignore - recovered code
-      ...summaryMessages,
+      ...(remoteResult ? [] : summaryMessages),
       // @ts-ignore - recovered code
       ...messagesToKeep,
       // @ts-ignore - recovered code
@@ -1129,8 +1205,6 @@ export async function partialCompactConversation(
     const preCompactReadFileState = cacheToObject(context.readFileState)
     context.readFileState.clear()
     context.loadedNestedMemoryPaths?.clear()
-    // Intentionally NOT resetting sentSkillNames — see compactConversation()
-    // for rationale (~4K tokens saved per compact event).
 
     const [fileAttachments, asyncAgentAttachments] = await Promise.all([
       createPostCompactFileAttachments(
@@ -1174,6 +1248,10 @@ export async function partialCompactConversation(
     if (goalRestoredMarker) {
       postCompactFileAttachments.push(goalRestoredMarker)
     }
+    const terminalPaneAttachment = createTerminalPaneAttachmentIfNeeded(context)
+    if (terminalPaneAttachment) {
+      postCompactFileAttachments.push(terminalPaneAttachment)
+    }
 
     // Re-announce only what was in the summarized portion — messagesToKeep
     // is scanned, so anything already announced there is skipped.
@@ -1189,6 +1267,9 @@ export async function partialCompactConversation(
       postCompactFileAttachments.push(createAttachmentMessage(att))
     }
     for (const att of await getAgentListingDeltaAttachment(context, messagesToKeep)) {
+      postCompactFileAttachments.push(createAttachmentMessage(att))
+    }
+    for (const att of await getSkillListingAfterCompact(context, messagesToKeep)) {
       postCompactFileAttachments.push(createAttachmentMessage(att))
     }
     for (const att of getMcpInstructionsDeltaAttachment(
@@ -1748,6 +1829,33 @@ export function createGoalAttachmentIfNeeded(
   return createAttachmentMessage({
     type: 'critical_system_reminder',
     content: `You are still running in /goal mode. The user's active goal is:\n\n${getGoalPromptForState(goalStatus.prompt)}\n\nContinue working autonomously toward this goal. Do not report final success while required work remains, checks are failing, or tracked tasks are still in progress. A /goal StopHook should continue verifying completion.`,
+  })
+}
+
+/**
+ * Names the Tmux panes still open, like task_status does for background
+ * agents: the pane ids were in tool results the summary replaced.
+ */
+export function createTerminalPaneAttachmentIfNeeded(
+  context: Pick<ToolUseContext, 'getAppState' | 'agentId'>,
+): AttachmentMessage | null {
+  const panes = Object.values(context.getAppState().tasks).filter(
+    (task): task is TerminalTaskState =>
+      task.type === 'interactive_terminal' &&
+      task.status === 'running' &&
+      !task.closed &&
+      task.agentId === context.agentId,
+  )
+  if (panes.length === 0) return null
+  const list = panes
+    .map(
+      pane =>
+        `${pane.sessionId} (${pane.requestedCommand ?? [pane.command, ...pane.args].join(' ')})`,
+    )
+    .join(', ')
+  return createAttachmentMessage({
+    type: 'critical_system_reminder',
+    content: `Tmux panes still open from before the summary: ${list}. Keep using them by target instead of opening new ones; list-panes shows their state.`,
   })
 }
 

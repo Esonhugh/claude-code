@@ -42,6 +42,12 @@ function buildHookSchemas() {
   const BashCommandHookSchema = z.object({
     type: z.literal('command').describe('Shell command hook type'),
     command: z.string().describe('Shell command to execute'),
+    args: z
+      .array(z.string())
+      .optional()
+      .describe(
+        'Argument list for exec form. When present, `command` is resolved as an executable and spawned directly with these arguments, no shell. ${CLAUDE_PLUGIN_ROOT} and ${CLAUDE_PLUGIN_DATA} are substituted per element as plain strings.',
+      ),
     if: IfConditionSchema(),
     shell: z
       .enum(SHELL_TYPES)

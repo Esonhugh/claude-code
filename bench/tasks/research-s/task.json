@@ -1,0 +1,14 @@
+{
+  "id": "research-s",
+  "type": "research",
+  "length": "short",
+  "requires": [],
+  "grade": [
+    {
+      "type": "regex",
+      "file": "ANSWER.md",
+      "pattern": "CHEAPEST:[*`\\s]*BluePeak",
+      "flags": "i"
+    }
+  ]
+}

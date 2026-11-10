@@ -873,6 +873,7 @@ export function updateInstallationPathOnDisk(
   newPath: string,
   newVersion: string,
   gitCommitSha?: string,
+  sourceCommand?: string,
 ): void {
   const diskData = loadInstalledPluginsFromDisk()
   const installations = diskData.plugins[pluginId]
@@ -894,6 +895,9 @@ export function updateInstallationPathOnDisk(
     entry.lastUpdated = new Date().toISOString()
     if (gitCommitSha !== undefined) {
       entry.gitCommitSha = gitCommitSha
+    }
+    if (sourceCommand !== undefined) {
+      entry.sourceCommand = sourceCommand
     }
 
     // Write to single file (V2 format with version=2)
@@ -1212,6 +1216,7 @@ export function addInstalledPlugin(
     installedAt: metadata.installedAt,
     lastUpdated: metadata.lastUpdated,
     gitCommitSha: metadata.gitCommitSha,
+    ...(metadata.sourceCommand && { sourceCommand: metadata.sourceCommand }),
     ...(projectPath && { projectPath }),
   }
 

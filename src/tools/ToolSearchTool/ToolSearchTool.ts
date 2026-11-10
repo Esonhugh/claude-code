@@ -12,7 +12,9 @@ import {
   type ToolDef,
   type Tools,
 } from '../../Tool.js'
+import { CODEX_APPS_SERVER_NAMES } from '../../services/apps/types.js'
 import { logForDebugging } from '../../utils/debug.js'
+import { sleep } from '../../utils/sleep.js'
 import { resolveModToolDescriptions } from '../../utils/api.js'
 import { createModToolHost } from '../../services/mods/toolHost.js'
 import {
@@ -26,6 +28,8 @@ import { isToolSearchEnabledOptimistic } from '../../utils/toolSearch.js'
 import { ENTER_PLAN_MODE_TOOL_NAME } from '../EnterPlanModeTool/constants.js'
 import { EXIT_PLAN_MODE_V2_TOOL_NAME } from '../ExitPlanModeTool/constants.js'
 import { getPrompt, isDeferredTool, TOOL_SEARCH_TOOL_NAME } from './prompt.js'
+
+const CODEX_APPS_SEARCH_WAIT_MS = 5_000
 
 export const inputSchema = lazySchema(() =>
   z.object({
@@ -345,6 +349,20 @@ export const ToolSearchTool = buildTool({
       getAppState,
     } = context
     const { query, max_results = 5 } = input
+    // Codex Apps connect in the background and list hundreds of tools; a
+    // search that starts while they are still pending waits briefly for them.
+    const codexAppsDeadline = Date.now() + CODEX_APPS_SEARCH_WAIT_MS
+    while (
+      getAppState().mcp.clients.some(
+        c =>
+          c.type === 'pending' &&
+          (CODEX_APPS_SERVER_NAMES as readonly string[]).includes(c.name),
+      ) &&
+      Date.now() < codexAppsDeadline &&
+      !context.abortController.signal.aborted
+    ) {
+      await sleep(100, context.abortController.signal)
+    }
     const appState = getAppState()
     const currentTools = options.refreshTools?.() ?? options.tools
     const currentContext = currentTools === options.tools

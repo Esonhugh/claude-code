@@ -1,7 +1,7 @@
 import { expect, test } from 'bun:test'
 import type { AppState } from '../state/AppState.js'
 import { getDefaultAppState } from '../state/AppStateStore.js'
-import { deliverTaskMessage } from './deliverTaskMessage.js'
+import { deliverTaskMessage, queuedUserMessages } from './deliverTaskMessage.js'
 
 const base = { description: 'd', startTime: 0, outputFile: '/dev/null', outputOffset: 0, notified: false }
 
@@ -18,12 +18,12 @@ const agent = (id: string, extra: Record<string, unknown>) =>
 const teammate = (id: string, status: string) =>
   ({ ...base, id, type: 'in_process_teammate', status, messages: [], pendingUserMessages: [] })
 
-test('running agent: shown in its transcript and queued', () => {
+test('running agent: queued, and shown from the queue until the agent reads it', () => {
   const s = setup({ a: agent('a', { status: 'running' }) })
   expect(deliverTaskMessage(s.get('a'), 'hi', s.setAppState)).toBe('queued')
   // Typed by the user, not sent by the parent: the agent must not see it as a coordinator message.
   expect(s.get('a').pendingMessages).toEqual([{ text: 'hi', fromUser: true }])
-  expect(s.get('a').messages).toHaveLength(1)
+  expect(queuedUserMessages(s.get('a')).map(m => m.message.content)).toEqual(['hi'])
 })
 
 test('ended agent: shown in its transcript, caller resumes it', () => {
@@ -57,4 +57,16 @@ test('a running agent sees a typed message as the user\'s and a parent message a
     { type: 'queued_command', prompt: 'from parent', origin: { kind: 'coordinator' }, isMeta: true },
     { type: 'queued_command', prompt: 'from user', origin: { kind: 'human' } },
   ])
+})
+
+test('a message queued for a running agent survives switching the view away and back', async () => {
+  const { enterTeammateView, exitTeammateView } = await import('../state/teammateViewHelpers.js')
+  const s = setup({ a: agent('a', { status: 'running' }) })
+  enterTeammateView('a', s.setAppState)
+  deliverTaskMessage(s.get('a'), 'hi', s.setAppState)
+  // Shown once while queued: the drained copy is what the transcript records.
+  expect(s.get('a').messages).toEqual([])
+  exitTeammateView(s.setAppState)
+  enterTeammateView('a', s.setAppState)
+  expect(queuedUserMessages(s.get('a')).map(m => m.message.content)).toEqual(['hi'])
 })

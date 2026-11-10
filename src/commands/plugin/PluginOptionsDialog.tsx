@@ -1,7 +1,14 @@
 import figures from 'figures'
-import React, { useCallback, useState } from 'react'
+import React, {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from 'react'
 import { Select } from '../../components/CustomSelect/select.js'
 import { Dialog } from '../../components/design-system/Dialog.js'
+import { useTabHeaderFocus } from '../../components/design-system/Tabs.js'
 import { stringWidth } from '../../ink/stringWidth.js'
 // eslint-disable-next-line custom-rules/prefer-use-keybindings -- raw text input for config dialog
 import { Box, Text, useInput } from '../../ink.js'
@@ -95,12 +102,43 @@ export function PluginOptionsDialog({
     [configSchema, initialValues],
   )
 
+  // Inside /plugin's tabs, Tab means next field: take focus from the tab row
+  // while the form is open.
+  const { blurHeader, focusHeader } = useTabHeaderFocus()
+  useLayoutEffect(() => {
+    blurHeader()
+    return focusHeader
+  }, [blurHeader, focusHeader])
+
   const [currentFieldIndex, setCurrentFieldIndex] = useState(0)
-  const [values, setValues] = useState<Record<string, string>>({})
   const [validationError, setValidationError] = useState('')
-  const [currentInput, setCurrentInput] = useState(() =>
+  const [currentInput, setCurrentInputState] = useState(() =>
     fields[0] ? initialFor(fields[0]) : '',
   )
+  // Input handlers sync to a render in effects, so a key can reach one from
+  // before the latest field change or typed text: confirm reads these refs.
+  const fieldIndexRef = useRef(0)
+  const valuesRef = useRef<Record<string, string>>({})
+  const currentInputRef = useRef(currentInput)
+  const setCurrentInput = useCallback(
+    (next: string | ((prev: string) => string)) => {
+      currentInputRef.current =
+        typeof next === 'function' ? next(currentInputRef.current) : next
+      setCurrentInputState(currentInputRef.current)
+    },
+    [],
+  )
+
+  // The picker reports its focused choice from an effect, after the render
+  // that applied the key. A ↓ and Tab read in one chunk run before that
+  // render, so Tab on a picker waits for it (see advancePending below).
+  const focusedChoiceRef = useRef(currentInput)
+  const [advancePending, setAdvancePending] = useState(false)
+  // Keys that arrive while that advance is pending belong to the next field,
+  // but every handler still sees the picker until it renders: hold them here.
+  const advancingRef = useRef(false)
+  const typedAheadRef = useRef('')
+  const confirmAheadRef = useRef(false)
 
   const currentField = fields[currentFieldIndex]
   const fieldSchema = currentField ? configSchema[currentField] : null
@@ -112,49 +150,50 @@ export function PluginOptionsDialog({
   useKeybinding('confirm:no', onCancel, { context: 'Settings' })
 
   // Enter to save current field and move to next, or save all if last
+  // Returns whether the dialog moved on (next field or save).
   const handleConfirm = useCallback(
-    (selected = currentInput) => {
-      if (!currentField || !fieldSchema) return
+    (selected = currentInputRef.current): boolean => {
+      const index = fieldIndexRef.current
+      const field = fields[index]
+      const schema = field ? configSchema[field] : null
+      if (!field || !schema) return false
 
       const submitted = buildFinalValues(
-        [currentField],
-        { [currentField]: selected },
+        [field],
+        { [field]: selected },
         configSchema,
         initialValues,
       )
       const preserved =
-        fieldSchema.sensitive && initialValues?.[currentField] !== undefined
-          ? { [currentField]: initialValues[currentField] }
+        schema.sensitive && initialValues?.[field] !== undefined
+          ? { [field]: initialValues[field] }
           : {}
       const validation = validateUserConfig(
         { ...preserved, ...submitted },
-        { [currentField]: fieldSchema },
+        { [field]: schema },
       )
       if (!validation.valid) {
         setValidationError(validation.errors.join('; '))
-        return
+        return false
       }
       setValidationError('')
-      const newValues = { ...values, [currentField]: selected }
+      const newValues = { ...valuesRef.current, [field]: selected }
 
-      if (currentFieldIndex === fields.length - 1) {
+      if (index === fields.length - 1) {
         onSave(
           buildFinalValues(fields, newValues, configSchema, initialValues),
         )
       } else {
         // Move to next field
-        setValues(newValues)
-        setCurrentFieldIndex(prev => prev + 1)
-        const nextKey = fields[currentFieldIndex + 1]
+        valuesRef.current = newValues
+        fieldIndexRef.current = index + 1
+        setCurrentFieldIndex(index + 1)
+        const nextKey = fields[index + 1]
         setCurrentInput(nextKey ? initialFor(nextKey) : '')
       }
+      return true
     },
     [
-      currentField,
-      fieldSchema,
-      values,
-      currentInput,
-      currentFieldIndex,
       fields,
       configSchema,
       onSave,
@@ -166,18 +205,60 @@ export function PluginOptionsDialog({
   useKeybindings(
     {
       'confirm:nextField': () => {
-        if (currentFieldIndex < fields.length - 1) handleConfirm()
+        if (currentFieldIndex >= fields.length - 1) return
+        if (choices === undefined) {
+          handleConfirm()
+          return
+        }
+        advancingRef.current = true
+        setAdvancePending(true)
       },
     },
     { context: 'Confirmation' },
   )
-  useKeybinding('confirm:yes', handleConfirm, {
+  // Runs after the picker's own effects in the same commit, so the ref holds
+  // the choice it now shows.
+  useEffect(() => {
+    if (!advancePending) return
+    setAdvancePending(false)
+    if (!handleConfirm(focusedChoiceRef.current)) {
+      advancingRef.current = false
+      typedAheadRef.current = ''
+      confirmAheadRef.current = false
+    }
+  }, [advancePending, handleConfirm])
+
+  // The next field has rendered: hand it the keys typed while advancing.
+  useEffect(() => {
+    if (!advancingRef.current) return
+    advancingRef.current = false
+    const text = typedAheadRef.current
+    const confirm = confirmAheadRef.current
+    typedAheadRef.current = ''
+    confirmAheadRef.current = false
+    if (choices === undefined && text) setCurrentInput(prev => prev + text)
+    if (confirm) handleConfirm()
+    // Only a field change should hand over typed-ahead keys.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentFieldIndex])
+
+  useKeybinding('confirm:yes', () => { handleConfirm() }, {
     context: 'Confirmation',
     isActive: choices === undefined,
   })
 
   // Character input handling (backspace, typing)
   useInput((char, key) => {
+    if (advancingRef.current) {
+      // Keys after a typed-ahead Enter would belong to a later field.
+      if (confirmAheadRef.current) return
+      if (key.return) confirmAheadRef.current = true
+      else if (key.backspace || key.delete)
+        typedAheadRef.current = typedAheadRef.current.slice(0, -1)
+      else if (char && !key.ctrl && !key.meta && !key.tab && !key.return)
+        typedAheadRef.current += char
+      return
+    }
     if (choices !== undefined) return
     // Backspace
     if (key.backspace || key.delete) {
@@ -224,8 +305,15 @@ export function PluginOptionsDialog({
               options={choices.map(value => ({ label: value, value }))}
               defaultValue={currentInput}
               defaultFocusValue={currentInput}
-              onFocus={setCurrentInput}
-              onChange={handleConfirm}
+              onFocus={value => {
+                focusedChoiceRef.current = value
+                setCurrentInput(value)
+              }}
+              onChange={value => {
+                // Enter while a Tab is still applying confirms the next field.
+                if (advancingRef.current) confirmAheadRef.current = true
+                else handleConfirm(value)
+              }}
               onCancel={onCancel}
             />
           ) : (

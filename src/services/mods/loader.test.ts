@@ -42,6 +42,38 @@ test('statically admits session.measure and records its Worker registration', as
   ])
 })
 
+test('admits a shorthand matcher field naming a static constant (#844)', async () => {
+  const input = await plugin({
+    'main.ts': `const command = 'shorthand'; export function register(on) {
+      on('command.run', { command }, ($, e) => ({ text: 'ok' }));
+    }`,
+  })
+  const declaration = await loadModDeclaration(input)
+  expect(declaration.events).toEqual(['command.run'])
+  expect(declaration.validation?.registrations).toEqual(['command.run{command=shorthand}'])
+})
+
+test('admits state helpers inside a helper that receives the engine (#845)', async () => {
+  const input = await plugin({
+    'main.ts': `import { atom, read, update } from 'claude-code'
+      const n = atom({ plugin: 'example', key: 'n' }, 0)
+      async function bump($) { await update($, n, v => v + 1); return read($, n) }
+      export function register(on) { on('tool.call', async ($, e, next) => { await bump($); return next(e) }) }`,
+  })
+  const declaration = await loadModDeclaration(input)
+  expect(declaration.calls).toEqual(['state.get', 'state.set'])
+  expect(declaration.state?.writes).toEqual([{ plugin: 'example', key: 'n' }])
+})
+
+test('still rejects a state helper given a non-engine value (#845)', async () => {
+  const input = await plugin({
+    'main.ts': `import { atom, read } from 'claude-code'
+      const n = atom({ plugin: 'example', key: 'n' }, 0)
+      export function register(on) { on('tool.call', async ($, e, next) => { await read(e, n); return next(e) }) }`,
+  })
+  await expect(loadModDeclaration(input)).rejects.toThrow('state helper requires the engine as its first argument')
+})
+
 test('loads Client surface graphs from literal call and JSX modules relative to each declaring file', async () => {
   const input = await plugin({
     'main.ts': `import { render } from './hooks/render.tsx'; export function register(on) {
@@ -384,6 +416,30 @@ test.each([
     export function register(on) {
       on('tool.call', ($, e) => { ${body} });
       on('session.start', ($) => { captured = api => api.clock.now(); });
+    }` })
+  await expect(loadModDeclaration(input)).rejects.toThrow(/assignment|unknown\/dynamic helpers/)
+})
+
+test('admits var declarations and capability-free let helpers with several sources (#849)', async () => {
+  const input = await plugin({
+    'main.ts': `import { twice } from './vendor.js'
+      function pick(k) {
+        let gate
+        gate = k < 1 ? (x) => x < k : undefined
+        if (k > 5) gate = (x) => x > k
+        return gate && gate(twice(3)) ? 'yes' : 'no'
+      }
+      export function register(on) { on('tool.call', ($, e, next) => { pick(1); $.clock.now(); return next(e) }) }`,
+    'vendor.js': `export function twice(x) { var y = x * 2; for (var i = 0; i < 1; i++) y += 0; return y }`,
+  })
+  expect((await loadModDeclaration(input)).calls).toEqual(['clock.now'])
+})
+
+test('still rejects a var capture of the engine reassigned from an unknown source (#849)', async () => {
+  const input = await plugin({ 'main.ts': `var first;
+    export function register(on) {
+      on('tool.call', ($, e, next) => { first = e.other; return next(e) });
+      on('session.start', ($) => { first = $; first.clock.now(); });
     }` })
   await expect(loadModDeclaration(input)).rejects.toThrow(/assignment/)
 })
@@ -972,7 +1028,7 @@ test.each([
   [`on('engine.create', ($, e, next) => next(e)).catch(() => {})`, /engine.create catch/],
   [`on('session.start', ({ clock }, e, next) => clock.now(e))`, /parameters/],
   [`on('session.start', ($, ...args) => args[1].to(args[0], 'core'))`, /parameters/],
-  [`var alias = on`, /var/],
+  [`var alias = on`, /alias/],
 ])('rejects unsupported author syntax: %s', async (body, diagnostic) => {
   const input = await plugin({ 'main.ts': `export function register(on) { ${body} }` })
   await expect(loadModDeclaration(input)).rejects.toThrow(diagnostic)
@@ -1001,9 +1057,12 @@ test.each([
   `export function register(on) { const matcher = getMatcher(); on('tool.call', { tool: matcher }, () => ({})) }`,
   `export function register(on) { let matcher = 'Bash'; on('tool.call', { tool: matcher }, () => ({})) }`,
   `export function register(on) { const matchers = getMatchers(); on('tool.call', { tool: [...matchers] }, () => ({})) }`,
-])('rejects dynamic identifiers and spreads in matcher data: %s', async source => {
+  `export function register(on) { for (const tool of ['Grep', 'Glob']) on('tool.call', { tool }, () => ({})) }`,
+])('admits matcher data computed at registration like official (#879): %s', async source => {
   const input = await plugin({ 'main.ts': source })
-  await expect(loadModDeclaration(input)).rejects.toThrow(/matcher.*constant|static matcher/i)
+  const declaration = await loadModDeclaration(input)
+  expect(declaration.events).toEqual(['tool.call'])
+  expect(declaration.validation?.registrations).toEqual(['tool.call{tool=?}'])
 })
 
 test('scans official matcher forms and pattern registrations without evaluating constants', async () => {
@@ -1266,14 +1325,14 @@ test('enforces 1 MiB per file, 512 modules, and 8 MiB per graph', async () => {
   expect((await loadModDeclaration(oversized)).modules).toHaveLength(1)
 
   const files: Record<string, string> = { 'main.ts': source }
-  for (let i = 0; i < 512; i++) {
+  for (let i = 0; i < 4096; i++) {
     files['main.ts'] += `;import './module-${i}.js'`
     files[`module-${i}.js`] = 'export const value = 1'
   }
   const count = await plugin(files)
-  await expect(loadModDeclaration(count)).rejects.toThrow('512 files')
-  await writeFile(count.entrypoints[0]!, files['main.ts']!.replace(";import './module-511.js'", ''))
-  expect((await loadModDeclaration(count)).modules).toHaveLength(512)
+  await expect(loadModDeclaration(count)).rejects.toThrow('4096 files')
+  await writeFile(count.entrypoints[0]!, files['main.ts']!.replace(";import './module-4095.js'", ''))
+  expect((await loadModDeclaration(count)).modules).toHaveLength(4096)
 
   const large = await plugin({
     'main.ts': source + Array.from({ length: 8 }, (_, i) => `;import './large-${i}.js'`).join(''),

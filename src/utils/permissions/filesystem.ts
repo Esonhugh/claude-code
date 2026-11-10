@@ -304,8 +304,12 @@ function isSessionPlanFile(absolutePath: string): boolean {
   const expectedPrefix = join(getPlansDirectory(), getPlanSlug())
   // SECURITY: Normalize to prevent path traversal bypasses via .. segments
   const normalizedPath = normalize(absolutePath)
+  // Exact names only: `<slug>.md` or `<slug>-agent-<id>.md`, not another
+  // session's `<slug>-other.md`.
   return (
-    normalizedPath.startsWith(expectedPrefix) && normalizedPath.endsWith('.md')
+    normalizedPath === `${expectedPrefix}.md` ||
+    (normalizedPath.startsWith(`${expectedPrefix}-agent-`) &&
+      normalizedPath.endsWith('.md'))
   )
 }
 

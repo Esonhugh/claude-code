@@ -12,6 +12,7 @@
 
 import type { ToolUseConfirm } from '../../components/permissions/PermissionRequest.js'
 import type { ToolPermissionContext } from '../../Tool.js'
+import type { CanUseToolFn } from '../../hooks/useCanUseTool.js'
 
 export type SetToolUseConfirmQueueFn = (
   updater: (prev: ToolUseConfirm[]) => ToolUseConfirm[],
@@ -23,6 +24,7 @@ export type SetToolPermissionContextFn = (
 ) => void
 
 let registeredSetter: SetToolUseConfirmQueueFn | null = null
+let registeredHeadlessCanUseTool: CanUseToolFn | null = null
 let registeredPermissionContextSetter: SetToolPermissionContextFn | null = null
 
 export function registerLeaderToolUseConfirmQueue(
@@ -51,4 +53,17 @@ export function getLeaderSetToolPermissionContext(): SetToolPermissionContextFn 
 
 export function unregisterLeaderSetToolPermissionContext(): void {
   registeredPermissionContextSetter = null
+}
+
+/**
+ * Headless leaders (-p, SDK, web) have no dialog queue. They register the
+ * session's own permission handler so a teammate's ask is answered the same
+ * way as the leader's: denied, PermissionRequest hooks, or the SDK host.
+ */
+export function registerLeaderHeadlessCanUseTool(fn: CanUseToolFn | null): void {
+  registeredHeadlessCanUseTool = fn
+}
+
+export function getLeaderHeadlessCanUseTool(): CanUseToolFn | null {
+  return registeredHeadlessCanUseTool
 }
