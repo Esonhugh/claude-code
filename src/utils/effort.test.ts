@@ -10,6 +10,7 @@ import {
   savedEffortPatch,
   toPersistableEffort,
 } from './effort.js'
+import { setIsInteractive } from '../bootstrap/state.js'
 
 // Official 2.1.318 keeps effort per model; the top-level value is not read.
 assert.equal(
@@ -39,6 +40,7 @@ assert.equal(
   getEffortValueDescription('ultracode'),
   'xhigh + dynamic workflow orchestration',
 )
+setIsInteractive(true)
 assert.equal(getDefaultEffortForModel('claude-opus-5-5'), 'medium')
 assert.equal(getDefaultEffortForModel('claude-fable-5-1'), 'high')
 assert.equal(getDefaultEffortForModel('claude-fable-5'), 'high')
@@ -47,5 +49,12 @@ assert.equal(getDefaultEffortForModel('claude-mythos-5'), 'high')
 assert.equal(getDefaultEffortForModel('claude-mythos-preview'), 'high')
 assert.equal(getDefaultEffortForModel('claude-sonnet-5-5'), 'medium')
 assert.equal(getDefaultEffortForModel('claude-haiku-5-5'), 'medium')
+
+// Headless runs (-p, SDK) default to high on effort-capable models.
+setIsInteractive(false)
+assert.equal(getDefaultEffortForModel('claude-sonnet-5-5'), 'high')
+assert.equal(getDefaultEffortForModel('claude-opus-5-5'), 'high')
+assert.equal(getDefaultEffortForModel('claude-3-5-haiku'), undefined)
+setIsInteractive(true)
 
 console.log('effort.test.ts passed')

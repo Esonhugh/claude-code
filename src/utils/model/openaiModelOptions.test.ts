@@ -5,6 +5,7 @@ import { mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import axios from 'axios'
+import { setIsInteractive } from '../../bootstrap/state.js'
 import { OPENAI_CODEX_CLIENT_VERSION } from '../../services/openai-oauth/client.js'
 
 ;(globalThis as typeof globalThis & { MACRO: MacroGlobals }).MACRO = {
@@ -204,7 +205,11 @@ try {
     additionalModelOptionsCache: [...reasoningModels, ...chatgptModels],
   }))
   assert.deepEqual(getSupportedEffortLevelsForModel('gpt-reasoning'), ['low', 'medium', 'max', 'ultra'])
+  setIsInteractive(true)
   assert.equal(getDefaultEffortForModel('gpt-reasoning'), 'low')
+  setIsInteractive(false)
+  assert.equal(getDefaultEffortForModel('gpt-reasoning'), 'high')
+  setIsInteractive(true)
   // A row without reasoning levels keeps the static list and no default.
   assert.equal(getSupportedEffortLevelsForModel('gpt-older').includes('none'), true)
   assert.equal(getDefaultEffortForModel('gpt-older'), undefined)

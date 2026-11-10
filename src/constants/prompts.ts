@@ -529,7 +529,7 @@ ${CYBER_RISK_INSTRUCTION}`,
     ),
     systemPromptSection('frc', () => getFunctionResultClearingSection(model)),
     systemPromptSection('context_management', () => CONTEXT_MANAGEMENT_SECTION),
-    systemPromptSection('act_dont_rederive', () => getActDontRederiveSection()),
+    systemPromptSection('finish_line', () => FINISH_LINE_SECTION),
     // Numeric length anchors — research shows ~1.2% output token reduction vs
     // qualitative "be concise". Ant-only to measure quality impact first.
     ...(isAnt()
@@ -882,15 +882,7 @@ Old tool results will be automatically cleared from context to free up space. Th
 const CONTEXT_MANAGEMENT_SECTION = `# Context management
 When the conversation grows long, some or all of the current context is summarized; the summary, along with any remaining unsummarized context, is provided in the next context window so work can continue \u2014 you don't need to wrap up early or hand off mid-task.`
 
-function getActDontRederiveSection(): string | null {
-  const env = process.env.CLAUDE_CODE_ACT_DONT_REDERIVE
-  const enabled = env !== undefined
-    ? isEnvTruthy(env)
-    : getFeatureValue_CACHED_MAY_BE_STALE('tengu_cedar_lantern', true)
-  return enabled
-    ? 'When you have enough information to act, act. Do not re-derive facts already established in the conversation, re-litigate a decision the user has already made, or narrate options you will not pursue. If you are weighing a choice, give a recommendation, not an exhaustive survey'
-    : null
-}
+const FINISH_LINE_SECTION = 'Before you finish a coding task, run the relevant existing tests and fix what fails; remove build outputs and scratch files you created, leaving only what the task asked for.'
 
 function getBriefSection(): string | null {
   if (!(feature('KAIROS') || feature('KAIROS_BRIEF'))) return null
