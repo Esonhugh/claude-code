@@ -301,9 +301,19 @@ export const COMPACT_CELLS: Cell[] = [
   claudeCell('fork-claude-ac-keep', 'fork', 'claude', { env: AC_ENV, settings: KEEP_RECENT }),
 ]
 
+// Memory A/B: the fork's SQLite FTS5 recall (SearchMemory) instead of MEMORY.md in context.
+const SQLITE_MEMORY = { memory: { sqlite: { enabled: true } } }
+export const MEMORY_CELLS: Cell[] = [
+  claudeCell('fork-claude-key-sqlite', 'fork', 'claude-key', { settings: SQLITE_MEMORY }),
+  // The fork's -p default effort is high, official's medium: same effort for a like-for-like row.
+  claudeCell('official-key-high', 'official', 'claude-key', { env: { CLAUDE_CODE_EFFORT_LEVEL: 'high' } }),
+  claudeCell('fork-openai-sqlite', 'fork', 'chatgpt', { settings: SQLITE_MEMORY }),
+]
+
 export function getCell(id: string): Cell {
-  const c = CELLS.find(x => x.id === id) ?? SUB_CELLS.find(x => x.id === id) ?? COMPACT_CELLS.find(x => x.id === id)
-  if (!c) throw new Error(`unknown cell ${id}; known: ${[...CELLS, ...SUB_CELLS, ...COMPACT_CELLS].map(x => x.id).join(', ')}`)
+  const extra = [...SUB_CELLS, ...COMPACT_CELLS, ...MEMORY_CELLS]
+  const c = CELLS.find(x => x.id === id) ?? extra.find(x => x.id === id)
+  if (!c) throw new Error(`unknown cell ${id}; known: ${[...CELLS, ...extra].map(x => x.id).join(', ')}`)
   return c
 }
 

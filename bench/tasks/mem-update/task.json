@@ -1,0 +1,12 @@
+{
+  "id": "mem-update",
+  "type": "memory",
+  "length": "long",
+  "requires": [],
+  "sessions": ["s1.md", "s2.md", "s3.md"],
+  "grade": [
+    { "type": "cmd", "run": "python3 -c \"import json; d=json.load(open('RELEASE.json')); assert d['release_manager'].strip().lower()=='wen li', d\"" },
+    { "type": "cmd", "run": "python3 -c \"import json; d=json.load(open('RELEASE.json')); assert d['artifact_bucket'].strip().strip(chr(96)).rstrip('/')=='s3://pkg-beta-us', d\"" },
+    { "type": "cmd", "run": "python3 -c \"import json; d=json.load(open('RELEASE.json')); assert d['release_branch'].strip().strip(chr(96))=='rel/2026', d\"" }
+  ]
+}
