@@ -176,6 +176,13 @@ async function execute(cell: Cell, task: Task, rep: number, opts: RunOptions, ra
   fs.writeFileSync(path.join(raw, 'grade.json'), JSON.stringify(g, null, 1))
   copyTree(ws, path.join(raw, 'workspace'), rel => rel === 'keys' || rel.startsWith('keys/'))
   if (fs.existsSync(autoMemDir(home, ws))) copyTree(autoMemDir(home, ws), path.join(raw, 'memory'))
+  // Session transcripts record what memory recall attached to each prompt.
+  const projectDir = path.dirname(autoMemDir(home, ws))
+  if (fs.existsSync(projectDir))
+    for (const f of fs.readdirSync(projectDir).filter(f => f.endsWith('.jsonl'))) {
+      fs.mkdirSync(path.join(raw, 'transcripts'), { recursive: true })
+      fs.copyFileSync(path.join(projectDir, f), path.join(raw, 'transcripts', f))
+    }
 
   const meta: RunMeta & { labBypass?: number; scrubbed?: string[] } = {
     cell: cell.id,

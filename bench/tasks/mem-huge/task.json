@@ -1,0 +1,32 @@
+{
+  "id": "mem-huge",
+  "type": "memory",
+  "length": "long",
+  "requires": [],
+  "seedMemory": [
+    "../memseed_log.py",
+    "3000"
+  ],
+  "grade": [
+    {
+      "type": "cmd",
+      "run": "python3 -c \"import json; d=json.load(open('answers.json')); assert d['ledger_sync_oncall'].strip()=='@tundra-57', d\""
+    },
+    {
+      "type": "cmd",
+      "run": "python3 -c \"import json; d=json.load(open('answers.json')); assert int(d['geo_resolver_timeout_ms'])==2700, d\""
+    },
+    {
+      "type": "cmd",
+      "run": "python3 -c \"import json; d=json.load(open('answers.json')); assert d['invoice_render_dashboard'].strip()=='DB-68031', d\""
+    },
+    {
+      "type": "cmd",
+      "run": "python3 -c \"import json; d=json.load(open('answers.json')); assert d['quota_gate_region'].strip()=='sa-east-1', d\""
+    },
+    {
+      "type": "cmd",
+      "run": "python3 -c \"import json; d=json.load(open('answers.json')); assert d['token_mint_oncall'].strip()=='@maple-43', d\""
+    }
+  ]
+}
