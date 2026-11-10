@@ -12,6 +12,20 @@
 - `## 2.1.88 base` 是唯一基线条目，固定放在文件末尾，不作为 release note。
 - `bun run check:changelog` 是格式规范的可执行门禁；发布时还会校验 tag 版本与最新发布条目一致。
 
+## 2026-11-10 - 系统提示词精简：环境段、Memory 规则、Output efficiency 与 skill 描述上限
+
+### 变更内容
+
+- 系统提示词环境段去掉 "Claude Code is available as a CLI…" 一行；Fast mode 提示在 `-p`/SDK 会话中不再出现（#1110、#1111）。
+- Memory 段规则改为更短的写法（2,079 → 1,614 字符），规则内容不变，记忆提取 prompt 共用同一组文字（#1112、#1113）。
+- full prompt（OpenAI 路径与非 lean 模型）去掉外部版 `# Output efficiency`（"Be extra concise"）（#1112、#1113）。
+- skill 列表每条描述默认上限由 1536 改为 512 字符，`skillListingMaxDescChars` 仍可覆盖（#1112、#1113）。
+- `-p` 请求体积：Claude 路径 system 5,673 → 5,201、messages 9,199 → 7,191 字符；OpenAI 路径 system 10,312 → 9,305、messages 9,289 → 7,415 字符。skill 触发、记忆基准（9/12 对 9/12）与 ChatGPT 编码题（9/13 对 9/13）与精简前一致。
+
+### 测试覆盖
+
+- `src/constants/prompts.test.ts`（环境段、OpenAI compact 不含 Output efficiency）、`src/memdir/memoryTypes.test.ts`（规则文字与 2.1.311 布局、长度上限）、`src/tools/SkillTool/prompt.test.ts`（512 字符截断）。
+
 ## 2026-11-09 - v2.1.297 - hooks exec-form 命令注入修复、上下文窗口档位、自动压缩超长恢复、OpenAI apply_patch 工具、claude web 的 Mods 界面与会话设置保留、与官方共用设置、ctrl+Enter 低延迟发送、Teams 与 headless 退出修复
 
 ### 版本状态
