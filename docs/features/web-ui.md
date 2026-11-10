@@ -111,7 +111,7 @@ Sessions start in ~/.claude/web/workspace and run with your local credentials an
 
 点一个历史会话先只读显示记录，长会话往上滚时加载更早的消息；在输入框里开始输入才在原目录恢复它，之前的上下文照常带上。同一个会话同一时间只能在一个标签页里打开。没有标签页连着的会话空闲 `--idle-timeout` 后结束。
 
-会话选的模型、effort、上下文窗口和权限模式保存在服务端（`projects.sqlite`），刷新页面、新开标签页或会话进程空闲结束后再恢复，都按原来的选择继续；断线期间改的选择会在重新连上后补发。刷新时如果回合还在跑，页面显示到目前为止的输出并继续接收；占着会话的标签页关闭后，被锁住的标签页自动接管。会话进程异常退出时，错误框显示退出码和最后一行 stderr，而不是只写“The session ended.”。
+会话选的模型、effort、上下文窗口和权限模式保存在服务端（`projects.sqlite`），刷新页面、新开标签页或会话进程空闲结束后再恢复，都按原来的选择继续；断线期间改的选择会在重新连上后补发。刷新时如果回合还在跑，页面显示到目前为止的输出并继续接收；占着会话的标签页关闭后，被锁住的标签页自动接管。会话进程异常退出时，错误框显示退出码和最后一行 stderr，而不是只写“The session ended.”。网络断开（切换 Wi-Fi、电脑休眠）时页面自动重连还在运行的会话进程，约三分钟内连不上或进程已经结束，就提示断开，发一条消息即可恢复。输入 `/clear`（或 `/reset`、`/new`）会在同一目录开一个新会话，沿用原来的模型、effort 和权限模式；项目协调者里不支持。地址里的会话即使不在侧栏最新 200 条里，刷新后也会重新打开。
 
 ## 右侧面板
 
@@ -202,7 +202,7 @@ claude web [--port <n>] [--host <ip>] [--workspace <dir>] [--no-open]
 
 | 参数 | 默认值 | 作用 |
 | --- | --- | --- |
-| `--port <n>` | `0`（随机） | 监听端口 |
+| `--port <n>` | 上次的端口（第一次随机） | 监听端口；不指定时沿用上次运行的端口，被占用时随机；`0` 表示随机 |
 | `--host <ip>` | `127.0.0.1` | 绑定地址；loopback，或者同时加 `--dangerously-allow-local-network` 时的局域网地址 |
 | `--workspace <dir>` | `~/.claude/web/workspace` | 新会话默认的工作目录 |
 | `--no-open` | 打开浏览器 | 只打印地址（SSH 会话里自动不打开） |
@@ -217,7 +217,7 @@ Ctrl+C 或 SIGTERM 会停止服务、结束所有会话并删除 `~/.claude/web.
 
 ## 安全模型
 
-- **登录**：启动时生成一次性随机 token，`/?token=…` 校验通过后换成 HttpOnly、`SameSite=Strict` 的签名 cookie，再重定向去掉 token。签名密钥只在这个进程的内存里，重启 `claude web` 后要用新地址重新登录。没有 cookie 的页面请求返回 401 和“请打开终端里打印的地址”。
+- **登录**：启动时生成一次性随机 token，`/?token=…` 校验通过后换成 HttpOnly、`SameSite=Strict` 的签名 cookie，再重定向去掉 token。签名密钥和上次的端口存在 `~/.claude/web/server.json`（权限 0600），所以重启 `claude web` 后已登录的标签页继续可用；两者和 cookie 一样 7 天后过期，届时重新生成，需要重新登录；删掉这个文件就让所有浏览器重新登录。token 每次启动重新生成。没有 cookie 的页面请求返回 401 和“请打开终端里打印的地址”。
 - **Host 和 Origin**：只接受本机名字（加上 `--trusted-host`，局域网模式下再加本机的局域网地址）作为 Host，防 DNS rebinding；会改状态的请求和所有 WebSocket 握手必须带同源 Origin，`Sec-Fetch-Site: cross-site` 一律拒绝。
 - **来源地址**：任何模式下都只服务 loopback 和局域网来源（RFC 1918、链路本地、CGNAT、IPv6 ULA），其他地址直接 403。
 - **局域网访问**：必须在启动时加 `--dangerously-allow-local-network`，网页里不能打开。局域网里拿到地址的人就能以你的身份在这台机器上跑命令；没有 TLS 时流量（包括 token）是明文。

@@ -4,10 +4,15 @@ import {
   checkToken,
   cookieHeader,
   readCookie,
+  readWebState,
   signCookie,
   untrustedReason,
   verifyCookie,
+  writeWebState,
 } from './auth.js'
+import { mkdtempSync, statSync, writeFileSync } from 'fs'
+import { tmpdir } from 'os'
+import { join } from 'path'
 
 const key = Buffer.alloc(32, 7)
 const hosts = allowedHosts(4000)
@@ -117,5 +122,37 @@ describe('untrustedReason', () => {
     expect(extended.has('other:9')).toBe(true)
     expect(extended.has('[fd00::5]:4000')).toBe(true)
     expect(extended.has('[fe80::1]:7')).toBe(true)
+  })
+})
+
+describe('web state', () => {
+  const now = 1_700_000_000_000
+  const day = 24 * 60 * 60 * 1000
+
+  it('keeps the cookie key and port across restarts, in a file only the owner reads', () => {
+    const file = join(mkdtempSync(join(tmpdir(), 'web-state-')), 'web', 'server.json')
+    expect(readWebState(file, now)).toEqual({})
+    writeWebState(file, { cookieKey: key, port: 4000, createdAt: now })
+    expect(readWebState(file, now + day)).toEqual({ cookieKey: key, port: 4000, createdAt: now })
+    expect(statSync(file).mode & 0o777).toBe(0o600)
+    // A cookie signed before the restart still verifies with the saved key.
+    expect(verifyCookie(readWebState(file, now + day).cookieKey!, signCookie(key, now), now + day)).toBe(true)
+  })
+
+  it('expires with the cookies: after 7 days the key and port are made again', () => {
+    const file = join(mkdtempSync(join(tmpdir(), 'web-state-')), 'server.json')
+    writeWebState(file, { cookieKey: key, port: 4000, createdAt: now })
+    expect(readWebState(file, now + 7 * day - 1).cookieKey).toEqual(key)
+    expect(readWebState(file, now + 7 * day)).toEqual({})
+  })
+
+  it('ignores a malformed file', () => {
+    const file = join(mkdtempSync(join(tmpdir(), 'web-state-')), 'server.json')
+    writeFileSync(file, JSON.stringify({ cookieKey: 'short', port: 70000, createdAt: now }))
+    expect(readWebState(file, now)).toEqual({})
+    writeFileSync(file, JSON.stringify({ cookieKey: key.toString('base64url'), port: 4000 }))
+    expect(readWebState(file, now)).toEqual({})
+    writeFileSync(file, 'not json')
+    expect(readWebState(file, now)).toEqual({})
   })
 })
