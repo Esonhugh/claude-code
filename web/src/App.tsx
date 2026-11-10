@@ -890,6 +890,13 @@ export function App() {
     const entry = kind === 's' ? state.history.find(h => h.id === id) : undefined
     if (p) void openProject(p)
     else if (entry) void openSession(entry)
+    // Older than the sidebar's first page: open it if its transcript is still there.
+    else if (kind === 's') {
+      void loadTranscript(id).then(
+        page => openSession({ id, title: page.title ?? id, cwd: page.cwd, lastModified: 0 }),
+        () => history.replaceState(null, '', location.pathname + location.search),
+      )
+    }
     // Gone (deleted, archived): the start page, without the stale address.
     else history.replaceState(null, '', location.pathname + location.search)
   }, [sidebarLoaded])

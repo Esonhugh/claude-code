@@ -77,7 +77,12 @@ const NATIVE_COMMANDS: Record<
   string,
   | { dialog: 'stats' | 'settings' | 'mcp' | 'hooks' | 'plugins' | 'memory' | 'skills' | 'keys'; tab?: 'general' | 'usage' | 'features' }
   | { menu: 'model' }
+  | { clear: true }
 > = {
+  // The CLI's /clear moves the process to a new session id the page and server would not follow.
+  clear: { clear: true },
+  reset: { clear: true },
+  new: { clear: true },
   model: { menu: 'model' },
   effort: { menu: 'model' },
   stats: { dialog: 'stats' },

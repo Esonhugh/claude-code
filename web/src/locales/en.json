@@ -27,6 +27,7 @@
   "loadMore": "Load more",
   "loadEarlier": "↑ Scroll up to load earlier messages",
   "resumeFailed": "Could not resume: {error}",
+  "clearInProject": "/clear starts a new conversation, which a project's coordinator cannot do here. Open a new session instead.",
   "statusLive": "Running",
   "statusReady": "Ready",
   "statusElsewhere": "Open in another tab",

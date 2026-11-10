@@ -27,6 +27,7 @@
   "loadMore": "加载更多",
   "loadEarlier": "↑ 继续上滑加载更早的消息",
   "resumeFailed": "无法恢复会话：{error}",
+  "clearInProject": "项目协调者无法在此 /clear 开始新对话，请改为新建会话。",
   "statusLive": "运行中",
   "statusReady": "就绪",
   "statusElsewhere": "已在别处打开",
