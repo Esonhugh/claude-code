@@ -1009,6 +1009,25 @@ export function App() {
     const native = nativeCommand(text)
     if (!native) return false
     setDrafts(d => ({ ...d, [key]: '' }))
+    if ('clear' in native) {
+      const current = stateRef.current.chats[key]
+      if (!current) return true
+      if (projectsRef.current.some(p => p.coordinator_session_id === key)) {
+        dispatch({ type: 'chat', id: key, action: { type: 'local', patch: { notice: t('clearInProject') } } })
+        return true
+      }
+      // A new session in this chat's folder, with what it runs, in place of the CLI's in-place /clear.
+      dispatch({
+        type: 'startOptions',
+        patch: {
+          ...(current.permissionMode && { mode: current.permissionMode }),
+          ...(current.model && { model: modelOption(current.model, current.models)?.value ?? current.model }),
+          ...(current.effort && { effort: current.effort }),
+        },
+      })
+      newChat({ cwd: current.workDir })
+      return true
+    }
     if ('menu' in native) {
       // The model menu under the input box (it holds the effort levels too).
       const button = document.querySelector<HTMLElement>(`.main .footbtn[aria-label="${t('model')}"]`)
