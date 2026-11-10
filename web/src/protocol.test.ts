@@ -18,6 +18,7 @@ import {
   queueUserMessage,
   reduce,
   unsupportedControlResponse,
+  isConnectionDrop,
 } from './protocol'
 
 const ev = (event: Record<string, unknown>) => ({ type: 'stream_event', event })
@@ -990,5 +991,15 @@ describe('mods panes answer', () => {
       response: { subtype: 'success', request_id: 'web-mods-1', response: { surfaces: ['desktop'] } },
     })
     expect(state.mods.attached).toBe(true)
+  })
+})
+
+describe('isConnectionDrop', () => {
+  it('is false for the closes the server sends when a session ends, true for a dropped connection', () => {
+    expect(isConnectionDrop(1000)).toBe(false)
+    expect(isConnectionDrop(1008)).toBe(false)
+    expect(isConnectionDrop(1011)).toBe(false)
+    expect(isConnectionDrop(1006)).toBe(true)
+    expect(isConnectionDrop(1001)).toBe(true)
   })
 })

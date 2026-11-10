@@ -12,6 +12,7 @@
   "toolOutput": "輸出",
   "sessionEnded": "對話已結束。",
   "sessionEndedReason": "對話已結束：{reason}",
+  "sessionDisconnected": "與會話的連線已中斷，傳送訊息即可繼續。",
   "connectFailed": "無法啟動對話：{error}",
   "permissionMode": "權限模式",
   "model": "模型",

@@ -12,6 +12,7 @@
   "toolOutput": "输出",
   "sessionEnded": "会话已结束。",
   "sessionEndedReason": "会话已结束：{reason}",
+  "sessionDisconnected": "与会话的连接已断开，发送消息即可继续。",
   "connectFailed": "无法启动会话：{error}",
   "permissionMode": "权限模式",
   "model": "模型",

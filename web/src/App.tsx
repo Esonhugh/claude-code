@@ -64,6 +64,7 @@ import {
   teamName,
   type Todo,
   unsupportedControlResponse,
+  isConnectionDrop,
   userMessage,
   usesTaskList,
 } from './protocol'
@@ -74,6 +75,8 @@ import { nativeCommand, type SlashCommand } from './commands'
 import { previewTarget, WebPreviewContext } from './webPreview'
 
 const HISTORY_PAGE = 200
+// About three minutes in all: longer than the server's 120 s WebSocket ping timeout.
+const RECONNECT_WAITS = [500, 1000, 2000, 4000, 8000, 15000, 30000, 30000, 30000, 30000, 30000]
 /** What the middle column shows: a file or chat image, a web page, or a Mod's pane. */
 type Canvas =
   | { sessionId: string; path: string; image?: { src: string; target: string } }
@@ -724,6 +727,10 @@ export function App() {
         pendingRequests.current.delete(requestId)
         pending.settle({ subtype: 'error', error: ended })
       }
+      if (isConnectionDrop(event.code)) {
+        void openOnce(`r:${id}`, () => reconnect(id))
+        return
+      }
       dispatch({ type: 'mode', id, mode: 'readonly' })
       dispatch({ type: 'chat', id, action: { type: 'error', text: ended } })
       void refreshHistory()
@@ -745,6 +752,33 @@ export function App() {
     request(id, REQUEST_PREFIX.apps, { subtype: 'codex_apps' })
     // A session picked up mid-life has had turns already; a new one has nothing to count yet.
     if (stateRef.current.chats[id]?.items.length) request(id, REQUEST_PREFIX.context, { subtype: 'get_context_usage' })
+  }
+
+  /**
+   * The connection dropped while the session may still run: attach again, waiting while the
+   * server still counts the dead socket as attached (it notices within its ping timeout).
+   */
+  const reconnect = async (id: string) => {
+    dispatch({ type: 'mode', id, mode: 'connecting' })
+    for (const wait of RECONNECT_WAITS) {
+      await new Promise(resolve => setTimeout(resolve, wait))
+      if (sockets.current.has(id) || !stateRef.current.chats[id]) return
+      const running = await listRunning().catch(() => undefined)
+      if (!running) continue
+      const live = running.find(r => r.id === id)
+      if (!live) break
+      if (live.attached) continue
+      try {
+        await attach(id)
+        return
+      } catch {
+        // Taken by another tab or gone in the meantime: look again.
+      }
+    }
+    // Not running any more, or unreachable: a send resumes it.
+    dispatch({ type: 'mode', id, mode: 'readonly' })
+    dispatch({ type: 'chat', id, action: { type: 'local', patch: { notice: t('sessionDisconnected') } } })
+    void refreshHistory()
   }
 
   const loadInto = async (id: string, before?: number) => {

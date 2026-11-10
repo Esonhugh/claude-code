@@ -1404,6 +1404,14 @@ export function setLocal(
   return { ...state, ...patch }
 }
 
+/**
+ * The server ends a session's socket with 1000 (process exited), 1008 (attach refused) or 1011
+ * (process failed); any other close is the connection dropping while the session may still run.
+ */
+export function isConnectionDrop(code: number): boolean {
+  return code !== 1000 && code !== 1008 && code !== 1011
+}
+
 /** Control requests the page cannot answer yet get an error, so the session never waits on them. */
 export function unsupportedControlResponse(raw: unknown): Json | undefined {
   if (!isObj(raw) || raw.type !== 'control_request') return undefined
