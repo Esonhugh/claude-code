@@ -741,10 +741,8 @@ export async function computeSimpleEnvInfo(
     isAnt() && isUndercover()
       ? null
       : `The most recent Claude models are the Claude 5 family. Model IDs — Fable 5.1: '${LATEST_MODEL_IDS.fable}', Opus 5.5: '${LATEST_MODEL_IDS.opus}', Sonnet 5.5: '${LATEST_MODEL_IDS.sonnet}', Haiku 5.5: '${LATEST_MODEL_IDS.haiku}'. When building AI applications, default to the latest and most capable Claude models.`,
-    isAnt() && isUndercover()
-      ? null
-      : `Claude Code is available as a CLI in the terminal, desktop app (Mac/Windows), web app (claude.ai/code), and IDE extensions (VS Code, JetBrains).`,
-    staticOnly || (isAnt() && isUndercover()) || getAPIProvider() === 'openai'
+    // Fork: no product-surface line, and no /fast hint in headless runs where it can't be toggled.
+    staticOnly || (isAnt() && isUndercover()) || getAPIProvider() === 'openai' || getIsNonInteractiveSession()
       ? null
       : `Fast mode for Claude Code uses Claude Opus with faster output (it does not downgrade to a smaller model). It can be toggled with /fast.`,
   ].filter(item => item !== null)
