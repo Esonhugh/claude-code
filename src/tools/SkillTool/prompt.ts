@@ -27,8 +27,9 @@ const DEFAULT_SKILL_BUDGET_FRACTION = 0.01
 const DEFAULT_CONTEXT_WINDOW_TOKENS = 200_000
 
 // Per-entry cap (skillListingMaxDescChars). The listing is for discovery only —
-// the Skill tool loads full content on invoke.
-const DEFAULT_MAX_LISTING_DESC_CHARS = 1536
+// the Skill tool loads full content on invoke. Fork: 512, not official 1536, so a few
+// long bundled descriptions don't outweigh the system prompt.
+const DEFAULT_MAX_LISTING_DESC_CHARS = 512
 
 export function getCharBudget(
   contextWindowTokens?: number,

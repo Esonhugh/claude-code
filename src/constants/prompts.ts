@@ -394,7 +394,8 @@ function getSessionSpecificGuidanceSection(
 }
 
 // @[MODEL LAUNCH]: Remove this section when we launch numbat.
-function getOutputEfficiencySection(): string {
+// Fork: the external "Output efficiency" text ("Be extra concise") is dropped; the content ablation showed no loss without it.
+function getOutputEfficiencySection(): string | null {
   if (isAnt()) {
     return `# Communicating with the user
 When sending user-facing text, you're writing for a person, not logging to a console. Assume users can't see most tool calls or thinking - only your text output. Before your first tool call, briefly state what you're about to do. While working, give short updates at key moments: when you find something load-bearing (a bug, a root cause), when changing direction, when you've made progress without an update.
@@ -407,11 +408,7 @@ What's most important is the reader understanding your output without mental ove
 
 These user-facing text instructions do not apply to code or tool calls.`
   }
-  return `# Output efficiency
-
-IMPORTANT: Go straight to the point. Try the simplest approach first without going in circles. Be extra concise.
-
-Lead with the answer or action, not the reasoning. Skip filler, preamble, and restating what the user said. Explain only what the user needs to understand. Focus text output on decisions that need the user's input, status updates at natural milestones, and errors or blockers that change the plan. If you can say it in one sentence, don't use three. This does not apply to code or tool calls.`
+  return null
 }
 
 function getSimpleToneAndStyleSection(): string {
