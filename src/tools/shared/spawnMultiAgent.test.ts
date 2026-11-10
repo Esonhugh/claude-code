@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { getEmptyToolPermissionContext, type ToolUseContext } from '../../Tool.js'
 import { getDefaultAppState } from '../../state/AppStateStore.js'
-import { setInlineMcpConfigs, setInlinePluginsNoMcp, setInlinePluginUrls, setMainLoopModelOverride, setSessionBypassPermissionsMode, setStrictMcpConfig } from '../../bootstrap/state.js'
+import { setInlineMcpConfigs, setInlinePluginsNoMcp, setInlinePluginUrls, setIsInteractive, setMainLoopModelOverride, setSessionBypassPermissionsMode, setStrictMcpConfig } from '../../bootstrap/state.js'
 import { handlePlanApprovalResponse } from '../../utils/inProcessTeammateHelpers.js'
 import { getInboxPath } from '../../utils/teammateMailbox.js'
 import { buildInheritedCliFlags } from '../../utils/swarm/spawnUtils.js'
@@ -58,6 +58,7 @@ if (process.env[isolatedChild] === '1') {
 }
 
 async function isolatedAssertions() {
+  setIsInteractive(true) // interactive model defaults; headless defaults are covered in effort.test.ts
   const startedInProcessConfigs: InProcessRunnerConfig[] = []
   let useInProcessBackend = true
   let spawnedPaneCommand: string | undefined
