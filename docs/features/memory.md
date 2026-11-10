@@ -45,6 +45,7 @@ Staging deploys go to the fly.io app demo-staging; production is demo-prod.
 - 不再每次注入 `MEMORY.md`；
 - 每次你发消息，自动附上**最相关的 5 个**记忆文件；
 - Claude 需要时用 `SearchMemory` 工具查本地全文索引（SQLite FTS5），还能查本项目以前的对话记录和其他项目的记忆。
+- 同一件事记过多次时，匹配程度相同的记忆按保存日期新的在前（自动附上和 `SearchMemory` 都是），`SearchMemory` 的结果标出每个记忆文件的保存日期，一次最多 25 条。
 
 记忆文件和 `MEMORY.md` 照常维护，随时关掉也不会丢东西。
 

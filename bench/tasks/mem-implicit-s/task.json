@@ -1,0 +1,14 @@
+{
+  "id": "mem-implicit-s",
+  "type": "memory",
+  "length": "short",
+  "requires": [],
+  "sessions": ["s1.md", "s2.md"],
+  "grade": [
+    { "type": "cmd", "run": "python3 -m doctest textutil.py && python3 -c \"from textutil import slug; assert slug('  Hello, World!! ')=='hello-world'\"" },
+    { "type": "cmd", "run": "python3 -c \"import json; d=json.load(open('ci.json')); assert d['package_index'].strip().rstrip('/')=='https://pypi.kestrel.internal/simple', d\"" },
+    { "type": "cmd", "run": "python3 -c \"import json; d=json.load(open('ci.json')); assert d['ci_image'].strip().strip(chr(96))=='kestrel/py:3.11-slim-r4', d\"" },
+    { "type": "cmd", "run": "python3 -c \"import json; d=json.load(open('ci.json')); assert d['signing_key'].strip().upper().replace('0X','0x')=='0xA17C93E5', d\"" },
+    { "type": "cmd", "run": "python3 -c \"import json; d=json.load(open('ci.json')); assert d['maintainer'].strip().lower()=='rui', d\"" }
+  ]
+}

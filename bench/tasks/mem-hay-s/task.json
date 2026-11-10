@@ -1,0 +1,14 @@
+{
+  "id": "mem-hay-s",
+  "type": "memory",
+  "length": "short",
+  "requires": [],
+  "seedMemory": ["../memseed.py", "40"],
+  "grade": [
+    { "type": "cmd", "run": "python3 -c \"import json; d=json.load(open('answers.json')); assert d['ledger_sync_oncall'].strip()=='@lumen-12', d\"" },
+    { "type": "cmd", "run": "python3 -c \"import json; d=json.load(open('answers.json')); assert int(d['geo_resolver_timeout_ms'])==6300, d\"" },
+    { "type": "cmd", "run": "python3 -c \"import json; d=json.load(open('answers.json')); assert d['invoice_render_dashboard'].strip()=='DB-15126', d\"" },
+    { "type": "cmd", "run": "python3 -c \"import json; d=json.load(open('answers.json')); assert d['quota_gate_region'].strip()=='sa-east-1', d\"" },
+    { "type": "cmd", "run": "python3 -c \"import json; d=json.load(open('answers.json')); assert d['token_mint_oncall'].strip()=='@zephyr-52', d\"" }
+  ]
+}

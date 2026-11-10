@@ -5,7 +5,7 @@ import path from 'node:path'
 import { grade, leanKeepsStatements } from './grade'
 import type { Task } from './tasks'
 
-const task = (g: Task['grade']): Task => ({ id: 't', type: 'coding', length: 'short', requires: [], grade: g, dir: '/nonexistent', prompt: '' })
+const task = (g: Task['grade']): Task => ({ id: 't', type: 'coding', length: 'short', requires: [], grade: g, dir: '/nonexistent', prompt: '', sessions: [''] })
 
 describe('grade', () => {
   const ws = fs.mkdtempSync(path.join(os.tmpdir(), 'bench-grade-'))

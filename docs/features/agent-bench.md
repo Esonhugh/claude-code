@@ -50,7 +50,7 @@ bun bench/cli.ts chart --raw ~/bench-raw/2026-11-08 --out ~/bench-charts --png
 
 ### 任务
 
-15 题，6 类，每类至少一短一长：
+23 题，7 类，每类至少一短一长：
 
 | 类型 | 任务 | 评分 |
 | --- | --- | --- |
@@ -60,6 +60,9 @@ bun bench/cli.ts chart --raw ~/bench-raw/2026-11-08 --out ~/bench-charts --png
 | 运维 ops | `ops-s`、`ops` | 修复说明、配置检查脚本、`sh -n` |
 | 排障 troubleshoot | `ssh-s`、`ssh-l`、`k8s-s`、`k8s-l` | 环境验收脚本；agent 走 docker exec 等旁路进入目标机即判失败 |
 | Lean | `lean-s`、`lean-l` | `lean` 编译通过、无 warning，原有陈述一字不改，禁用 `sorry` 等 |
+| 记忆 memory | `mem-recall-s`、`mem-implicit-s`、`mem-update`、`mem-hay-s`、`mem-hay-l`、`mem-huge`、`mem-huge-x` | 后续会话写出的文件里，前面会话给的事实（或预置记忆里的事实）是否正确 |
+
+记忆任务跨会话：`task.json` 的 `"sessions": ["s1.md", "s2.md"]` 让每个提示各起一个新 CLI 进程，依次跑在同一个 HOME 和工作区上；`"seedMemory": ["../memseed.py", "300"]` 在第一次会话前往项目的 auto memory 目录预置 N 条记忆和 `MEMORY.md`；`mem-huge`（3,000 条）、`mem-huge-x`（10,000 条）用 `memseed_log.py` 生成带日期的运维日志，索引行只有日期，目标事实各改过 5 次，要答最新值。每次 run 的最终记忆目录存在原始记录的 `memory/` 下，会话记录（含自动召回附上的记忆）存在 `transcripts/` 下。
 
 `--tasks` 接任务 id、`type:<类型>` 或 `all`。
 
@@ -74,6 +77,9 @@ bun bench/cli.ts chart --raw ~/bench-raw/2026-11-08 --out ~/bench-charts --png
 | `pi-openai` / `pi-claude` | pi | ChatGPT 订阅 / Claude API key |
 | `omp-openai` / `omp-claude` | oh-my-pi | ChatGPT 订阅 / Claude API key |
 | `dsh-openai` / `dsh-claude` | dsh | ChatGPT 订阅 / Claude API key |
+| `fork-claude-key-sqlite` / `fork-openai-sqlite` | 本仓库，`memory.sqlite.enabled: true` | Claude API key / ChatGPT 订阅 |
+| `official-key-high` | 官方 Claude Code，effort high（与本仓库 `-p` 默认一致） | Claude API key |
+| `fork-claude-key-high` / `fork-claude-key-sqlite-high` | 本仓库，effort 固定 high（用于 `-p` 默认 medium 的旧版本） | Claude API key |
 
 模型默认 Claude 侧 `claude-sonnet-5-5`、ChatGPT 侧 `gpt-6.1-sol`（`BENCH_MODEL_CLAUDE`、`BENCH_MODEL_CHATGPT` 可改）。effort 用各 CLI 默认值，实际值从请求里读出，写进每次 run 的结果和图上。
 

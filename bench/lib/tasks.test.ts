@@ -25,6 +25,14 @@ test('every task type has a short and a long task', () => {
   }
 })
 
+test('memory tasks run several sessions in order', () => {
+  const [t] = selectTasks('mem-update')
+  expect(t.sessions).toHaveLength(3)
+  expect(t.prompt).toBe(t.sessions[0])
+  expect(t.sessions[1]).toContain('Wen Li')
+  expect(selectTasks('coding-s')[0].sessions).toHaveLength(1)
+})
+
 test('selection by id or type, and lab placeholders', () => {
   expect(selectTasks('ops').map(t => t.id)).toEqual(['ops'])
   expect(selectTasks('type:ops').map(t => t.id)).toEqual(['ops', 'ops-s'])

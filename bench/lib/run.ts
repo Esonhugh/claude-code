@@ -122,33 +122,43 @@ async function execute(cell: Cell, task: Task, rep: number, opts: RunOptions, ra
   let labCheck: { ok?: boolean } | null = null
   try {
     lab = startLab(task, scratch, opts.proxyPort, cell.id, rep)
-    const prompt = renderPrompt(task, lab?.vars ?? {})
-    const ctx = { home, workspace: ws, proxyPort: opts.proxyPort, prompt, creds: opts.creds }
+    const prompts = task.sessions.map(p => renderPrompt(task, lab?.vars ?? {}, p))
+    const ctx = { home, workspace: ws, proxyPort: opts.proxyPort, prompt: prompts[0], creds: opts.creds }
     cell.setupHome(ctx)
-    const launch = cell.launch(binFor(cell.product), ctx)
-    const proxyUrl = `http://127.0.0.1:${opts.proxyPort}`
-    // A clean environment: nothing from the harness leaks in, credentials only where the cell asks for them.
-    const env: Record<string, string> = {
-      PATH: process.env.BENCH_PATH ?? process.env.PATH ?? '/usr/bin:/bin',
-      HOME: home,
-      TERM: 'xterm-256color',
-      LANG: 'C.UTF-8',
-      HTTPS_PROXY: proxyUrl,
-      https_proxy: proxyUrl,
-      HTTP_PROXY: proxyUrl,
-      NO_PROXY: '127.0.0.1,localhost',
-      no_proxy: '127.0.0.1,localhost',
-      NODE_EXTRA_CA_CERTS: mitm.bundle,
-      SSL_CERT_FILE: mitm.bundle,
-      IS_SANDBOX: '1',
-      ...launch.env,
+    if (task.seedMemory) {
+      const seed = spawnSync('python3', [path.join(task.dir, task.seedMemory[0]), ...task.seedMemory.slice(1), autoMemDir(home, ws)], { encoding: 'utf8', timeout: 60_000 })
+      if (seed.status !== 0) throw new Error(`seed memory failed: ${seed.stderr}`)
     }
+    const proxyUrl = `http://127.0.0.1:${opts.proxyPort}`
     const proxy = await startProxy(opts.proxyPort, path.join(raw, 'requests.jsonl'), mitm.dir)
+    const out = path.join(raw, 'out.jsonl')
     t0 = Date.now() / 1000
     try {
-      const r = await runAgent(launch.argv, env, ws, launch.stdin, path.join(raw, 'out.jsonl'), path.join(raw, 'err.txt'), opts.timeoutSec ?? 1800, launch.exitAfter)
-      rc = r.rc
-      t1 = r.endedAt ?? Date.now() / 1000
+      // Each session is a fresh CLI process on the same HOME and workspace.
+      for (const [i, prompt] of prompts.entries()) {
+        if (prompts.length > 1) fs.appendFileSync(out, `${JSON.stringify({ type: 'bench_session', session: i + 1, t: Date.now() / 1000 })}\n`)
+        const launch = cell.launch(binFor(cell.product), { ...ctx, prompt })
+        // A clean environment: nothing from the harness leaks in, credentials only where the cell asks for them.
+        const env: Record<string, string> = {
+          PATH: process.env.BENCH_PATH ?? process.env.PATH ?? '/usr/bin:/bin',
+          HOME: home,
+          TERM: 'xterm-256color',
+          LANG: 'C.UTF-8',
+          HTTPS_PROXY: proxyUrl,
+          https_proxy: proxyUrl,
+          HTTP_PROXY: proxyUrl,
+          NO_PROXY: '127.0.0.1,localhost',
+          no_proxy: '127.0.0.1,localhost',
+          NODE_EXTRA_CA_CERTS: mitm.bundle,
+          SSL_CERT_FILE: mitm.bundle,
+          IS_SANDBOX: '1',
+          ...launch.env,
+        }
+        const r = await runAgent(launch.argv, env, ws, launch.stdin, out, path.join(raw, 'err.txt'), opts.timeoutSec ?? 1800, launch.exitAfter)
+        rc = r.rc
+        t1 = r.endedAt ?? Date.now() / 1000
+        if (rc !== 0) break
+      }
     } finally {
       t1 = t1 === t0 ? Date.now() / 1000 : t1
       await new Promise(r => setTimeout(r, 1000))
@@ -165,6 +175,14 @@ async function execute(cell: Cell, task: Task, rep: number, opts: RunOptions, ra
   const g = grade(task, { workspace: ws, labCheck, labBypass, leanBin: opts.leanBin })
   fs.writeFileSync(path.join(raw, 'grade.json'), JSON.stringify(g, null, 1))
   copyTree(ws, path.join(raw, 'workspace'), rel => rel === 'keys' || rel.startsWith('keys/'))
+  if (fs.existsSync(autoMemDir(home, ws))) copyTree(autoMemDir(home, ws), path.join(raw, 'memory'))
+  // Session transcripts record what memory recall attached to each prompt.
+  const projectDir = path.dirname(autoMemDir(home, ws))
+  if (fs.existsSync(projectDir))
+    for (const f of fs.readdirSync(projectDir).filter(f => f.endsWith('.jsonl'))) {
+      fs.mkdirSync(path.join(raw, 'transcripts'), { recursive: true })
+      fs.copyFileSync(path.join(projectDir, f), path.join(raw, 'transcripts', f))
+    }
 
   const meta: RunMeta & { labBypass?: number; scrubbed?: string[] } = {
     cell: cell.id,
@@ -189,6 +207,11 @@ async function execute(cell: Cell, task: Task, rep: number, opts: RunOptions, ra
   const result = analyzeRun(meta, readRequests(raw))
   fs.writeFileSync(path.join(raw, 'result.json'), JSON.stringify(result, null, 1))
   return result
+}
+
+// Where Claude Code keeps auto memory for a project that is not a git repo: the cwd, every non-alphanumeric made '-'.
+export function autoMemDir(home: string, workspace: string): string {
+  return path.join(home, '.claude', 'projects', fs.realpathSync(workspace).replace(/[^a-zA-Z0-9]/g, '-'), 'memory')
 }
 
 export function readRequests(raw: string): RequestRecord[] {

@@ -27,6 +27,8 @@ export type MemorySearchHit = {
   snippet: string
   /** Where the bracketed match sits in `snippet`, brackets included; absent without one. */
   match?: [number, number]
+  /** Memory files: the day the file was last saved (YYYY-MM-DD, UTC). */
+  modified?: string
 }
 
 export type MemoryIndexStatus = {
@@ -50,6 +52,10 @@ const MAX_CHUNK_CHARS = 4000
 const MIN_TRIGRAM_CHARS = 3
 // A long pasted prompt is searched by its first words only.
 const MAX_QUERY_WORDS = 200
+// Files whose changes are written in one transaction: one commit per file made
+// a first build of 10,000 memory files take ~30 s (#1105).
+const REFRESH_BATCH_FILES = 500
+const DAY_MS = 86_400_000
 
 let db: Database | undefined
 let dbPath: string | undefined
@@ -183,6 +189,33 @@ async function refresh(index: Database, files: SourceFile[]): Promise<void> {
     (index.query('SELECT path, mtime, size, lines FROM files').all() as FileRow[]).map(row => [row.path, row]),
   )
   const insert = index.prepare('INSERT INTO chunks (body, text, path, kind, project, line) VALUES (?, ?, ?, ?, ?, ?)')
+  type Pending = { file: SourceFile; prev?: FileRow; append: boolean; chunks: { line: number; body: string }[]; mtime: number; size: number; lines: number }
+  let pending: Pending[] = []
+  // IMMEDIATE takes the write lock before the reads below, so a busy DB waits
+  // on busy_timeout instead of failing with SQLITE_BUSY on lock upgrade.
+  const flush = () => {
+    const batch = pending
+    pending = []
+    if (batch.length === 0) return
+    index.transaction(() => {
+      for (const { file, prev, append, chunks, mtime, size, lines } of batch) {
+        if (append) {
+          // Another session, or a concurrent search in this one, may have appended these lines since `known` was read.
+          const current = index.query('SELECT size, lines FROM files WHERE path = ?').get(file.path) as FileRow | null
+          if (current?.size !== prev!.size || current.lines !== prev!.lines) continue
+        } else if (prev) {
+          // path is UNINDEXED, so this scans every chunk: only a file indexed before has rows to drop.
+          index.run('DELETE FROM chunks WHERE path = ?', [file.path])
+        }
+        for (const chunk of chunks) {
+          // body is searched folded (simplified script, no accents); text keeps the original for snippets.
+          const folded = foldForSearch(chunk.body)
+          insert.run(folded, folded === chunk.body ? null : chunk.body, file.path, file.kind, file.project, chunk.line)
+        }
+        index.run('INSERT OR REPLACE INTO files (path, mtime, size, lines) VALUES (?, ?, ?, ?)', [file.path, mtime, size, lines])
+      }
+    }).immediate()
+  }
   for (const file of files) {
     let info
     try {
@@ -213,29 +246,10 @@ async function refresh(index: Database, files: SourceFile[]): Promise<void> {
       lines = (append ? prev.lines : 0) + (complete.match(/\n/g)?.length ?? 0)
       chunks = transcriptChunks(complete, (append ? prev.lines : 0) + 1)
     }
-    // IMMEDIATE takes the write lock before the read below, so a busy DB waits
-    // on busy_timeout instead of failing with SQLITE_BUSY on lock upgrade.
-    index.transaction(() => {
-      if (append) {
-        // Another session, or a concurrent search in this one, may have appended these lines since `known` was read.
-        const current = index.query('SELECT size, lines FROM files WHERE path = ?').get(file.path) as FileRow | null
-        if (current?.size !== prev.size || current.lines !== prev.lines) return
-      } else {
-        index.run('DELETE FROM chunks WHERE path = ?', [file.path])
-      }
-      for (const chunk of chunks) {
-        // body is searched folded (simplified script, no accents); text keeps the original for snippets.
-        const folded = foldForSearch(chunk.body)
-        insert.run(folded, folded === chunk.body ? null : chunk.body, file.path, file.kind, file.project, chunk.line)
-      }
-      index.run('INSERT OR REPLACE INTO files (path, mtime, size, lines) VALUES (?, ?, ?, ?)', [
-        file.path,
-        size === info.size ? info.mtimeMs : 0,
-        size,
-        lines,
-      ])
-    }).immediate()
+    pending.push({ file, prev, append, chunks, mtime: size === info.size ? info.mtimeMs : 0, size, lines })
+    if (pending.length >= REFRESH_BATCH_FILES) flush()
   }
+  flush()
 }
 
 function forget(index: Database, path: string): void {
@@ -305,14 +319,26 @@ export async function searchMemory(params: {
   const paths = files.map(f => f.path)
   if (paths.length === 0) return []
   const rows = rankChunks(index, paths, words, params.limit, true)
-  return rows.map(({ body, text, ...hit }) => ({ ...hit, ...snippetAround(body ?? '', text ?? body ?? '', words) }))
+  return rows.map(({ body, text, mtime, ...hit }) => ({
+    ...hit,
+    ...snippetAround(body ?? '', text ?? body ?? '', words),
+    ...(hit.kind === 'memory' && mtime ? { modified: new Date(mtime).toISOString().slice(0, 10) } : {}),
+  }))
 }
 
-type ChunkRow = { path: string; kind: MemorySearchHit['kind']; line: number; body: string | null; text: string | null }
+type ChunkRow = {
+  path: string
+  kind: MemorySearchHit['kind']
+  line: number
+  body: string | null
+  text: string | null
+  mtime: number | null
+}
 
 /**
  * Chunks in `paths` holding any of `words`, those holding more of the words
- * first, then by bm25. trigram MATCH serves words of three or more
+ * first, then files saved on a later day (a fact updated over time is often
+ * saved again in a new file, #1106), then by bm25. trigram MATCH serves words of three or more
  * characters; shorter ones (most Chinese words) fall back to LIKE.
  */
 function rankChunks(index: Database, paths: string[], query: string[], limit: number, withBody: boolean): ChunkRow[] {
@@ -338,10 +364,10 @@ function rankChunks(index: Database, paths: string[], query: string[], limit: nu
     .query(
       // MATERIALIZED runs MATCH once; a flattened subquery re-runs it for every row.
       `WITH m AS MATERIALIZED (${fts})
-       SELECT c.path, c.kind, c.line, ${withBody ? 'c.body, c.text' : 'NULL AS body, NULL AS text'}
-       FROM chunks c LEFT JOIN m ON m.id = c.rowid
+       SELECT c.path, c.kind, c.line, ${withBody ? 'c.body, c.text' : 'NULL AS body, NULL AS text'}, f.mtime
+       FROM chunks c LEFT JOIN m ON m.id = c.rowid LEFT JOIN files f ON f.path = c.path
        WHERE c.path IN (${paths.map(() => '?').join(',')}) AND (${any.join(' OR ')})
-       ORDER BY ${covered} DESC, m.rank, c.rowid DESC LIMIT ?`,
+       ORDER BY ${covered} DESC, CAST(f.mtime / ${DAY_MS} AS INTEGER) DESC, m.rank, c.rowid DESC LIMIT ?`,
     )
     .all(...args) as ChunkRow[]
 }
@@ -438,12 +464,14 @@ export async function findMemoryFilesForPrompt(params: {
   const known = new Map(
     (index.query('SELECT path, mtime FROM files').all() as { path: string; mtime: number }[]).map(r => [r.path, r.mtime]),
   )
-  // Map order is rankChunks order, so ties keep the bm25 ranking.
+  const day = (path: string) => Math.floor((known.get(path) ?? 0) / DAY_MS)
+  // Newer days first among equal scores, so an updated fact beats its older
+  // versions (#1106); Map order is rankChunks order, so other ties keep bm25.
   return [...matched]
     .filter(([path]) => !params.exclude.has(path))
     .map(([path, found]) => ({ path, score: [...found].filter(rare).length }))
     .filter(r => r.score > 0)
-    .sort((a, b) => b.score - a.score)
+    .sort((a, b) => b.score - a.score || day(b.path) - day(a.path))
     .slice(0, params.limit)
     .map(r => ({ path: r.path, mtimeMs: known.get(r.path) ?? 0 }))
 }
