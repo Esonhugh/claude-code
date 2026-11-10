@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'bun:test'
 import { spawn } from 'child_process'
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'fs'
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 
@@ -180,6 +180,47 @@ describe('memory', () => {
       expect(found.memory[0]?.snippet).toContain('[發布]')
       expect(found.sessions).toHaveLength(1)
       expect(found.sessions[0]?.session).toBe('old')
+    } finally {
+      ext.setMemoryToggle('sqlite', false)
+      resetSettingsCache()
+      if (prevOverride === undefined) delete process.env.CLAUDE_COWORK_MEMORY_PATH_OVERRIDE
+      else process.env.CLAUDE_COWORK_MEMORY_PATH_OVERRIDE = prevOverride
+      if (prevDisable === undefined) delete process.env.CLAUDE_CODE_DISABLE_AUTO_MEMORY
+      else process.env.CLAUDE_CODE_DISABLE_AUTO_MEMORY = prevDisable
+      getAutoMemPath.cache.clear?.()
+    }
+  })
+
+  it('lists and finds every memory file and counts every matching session', async () => {
+    const prevOverride = process.env.CLAUDE_COWORK_MEMORY_PATH_OVERRIDE
+    const prevDisable = process.env.CLAUDE_CODE_DISABLE_AUTO_MEMORY
+    process.env.CLAUDE_COWORK_MEMORY_PATH_OVERRIDE = join(root, 'memory-many')
+    process.env.CLAUDE_CODE_DISABLE_AUTO_MEMORY = '0'
+    const { getAutoMemPath } = await import('../memdir/paths.js')
+    const { getProjectDir } = await import('../utils/sessionStorage.js')
+    getAutoMemPath.cache.clear?.()
+    mkdirSync(getAutoMemPath(), { recursive: true })
+    for (let i = 0; i < 250; i++) {
+      const file = join(getAutoMemPath(), `note_${i}.md`)
+      writeFileSync(file, `---\nname: note ${i}\n---\nservice-${i} dashboard`)
+      // note_0 is the oldest file.
+      utimesSync(file, 1_700_000_000 + i, 1_700_000_000 + i)
+    }
+    const projectDir = getProjectDir(workspace)
+    mkdirSync(projectDir, { recursive: true })
+    const line = (i: number) => JSON.stringify({ type: 'user', message: { role: 'user', content: `pelican step ${i}` } })
+    writeFileSync(join(projectDir, 'long.jsonl'), Array.from({ length: 60 }, (_, i) => line(i)).join('\n') + '\n')
+    for (let s = 0; s < 8; s++) writeFileSync(join(projectDir, `short-${s}.jsonl`), line(s) + '\n')
+    ext.setMemoryToggle('sqlite', true)
+    resetSettingsCache()
+    try {
+      const list = await ext.listMemory()
+      expect(list.files.filter(f => f.kind === 'auto')).toHaveLength(250)
+      const oldest = list.files.find(f => f.title === 'note_0')
+      expect((await ext.searchMemoryIndex('service-0', 'memory')).memory.map(m => m.id)).toContain(oldest!.id)
+      expect(new Set((await ext.searchMemoryIndex('dashboard', 'memory')).memory.map(m => m.id)).size).toBe(250)
+      const sessions = (await ext.searchMemoryIndex('pelican', 'session')).sessions.map(s => s.session)
+      expect(sessions.sort()).toEqual(['long', ...Array.from({ length: 8 }, (_, s) => `short-${s}`)])
     } finally {
       ext.setMemoryToggle('sqlite', false)
       resetSettingsCache()

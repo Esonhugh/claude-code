@@ -307,6 +307,8 @@ export async function searchMemory(params: {
   query: string
   scopes: readonly MemoryScope[]
   limit: number
+  /** Only each file's best chunk, so `limit` counts files instead of chunks. */
+  onePerFile?: boolean
 }): Promise<MemorySearchHit[]> {
   const index = openIndex()
   const listing = await listSources(params.scopes)
@@ -318,7 +320,7 @@ export async function searchMemory(params: {
   if (words.length === 0) return []
   const paths = files.map(f => f.path)
   if (paths.length === 0) return []
-  const rows = rankChunks(index, paths, words, params.limit, true)
+  const rows = rankChunks(index, paths, words, params.limit, true, params.onePerFile)
   return rows.map(({ body, text, mtime, ...hit }) => ({
     ...hit,
     ...snippetAround(body ?? '', text ?? body ?? '', words),
@@ -341,7 +343,14 @@ type ChunkRow = {
  * saved again in a new file, #1106), then by bm25. trigram MATCH serves words of three or more
  * characters; shorter ones (most Chinese words) fall back to LIKE.
  */
-function rankChunks(index: Database, paths: string[], query: string[], limit: number, withBody: boolean): ChunkRow[] {
+function rankChunks(
+  index: Database,
+  paths: string[],
+  query: string[],
+  limit: number,
+  withBody: boolean,
+  onePerFile = false,
+): ChunkRow[] {
   // Next to long words, short Latin words and single characters match nearly everything.
   const usable = query.some(w => [...w].length >= MIN_TRIGRAM_CHARS) ? query.filter(isDistinctive) : query
   // Each word adds to the SQL expression, which SQLite caps at depth 1000.
@@ -355,19 +364,26 @@ function rankChunks(index: Database, paths: string[], query: string[], limit: nu
     // Quoted phrases keep FTS5 operators in user text literal.
     args.push(long.map(w => `"${w.replaceAll('"', '""')}"`).join(' OR '))
   }
-  args.push(...paths)
+  const covered = words.map(() => '(instr(lower(c.body), lower(?)) > 0)').join(' + ')
+  args.push(...words, ...paths)
   const any = [...(long.length > 0 ? ['m.id IS NOT NULL'] : []), ...short.map(() => "c.body LIKE ? ESCAPE '\\'")]
   for (const w of short) args.push(`%${w.replace(/[\\%_]/g, c => `\\${c}`)}%`)
-  const covered = words.map(() => '(instr(lower(c.body), lower(?)) > 0)').join(' + ')
-  args.push(...words, limit)
+  args.push(limit)
+  const order = 'covered DESC, day DESC, rank, id DESC'
   return index
     .query(
       // MATERIALIZED runs MATCH once; a flattened subquery re-runs it for every row.
-      `WITH m AS MATERIALIZED (${fts})
-       SELECT c.path, c.kind, c.line, ${withBody ? 'c.body, c.text' : 'NULL AS body, NULL AS text'}, f.mtime
-       FROM chunks c LEFT JOIN m ON m.id = c.rowid LEFT JOIN files f ON f.path = c.path
-       WHERE c.path IN (${paths.map(() => '?').join(',')}) AND (${any.join(' OR ')})
-       ORDER BY ${covered} DESC, CAST(f.mtime / ${DAY_MS} AS INTEGER) DESC, m.rank, c.rowid DESC LIMIT ?`,
+      `WITH m AS MATERIALIZED (${fts}),
+       r AS (
+         SELECT c.path, c.kind, c.line, ${withBody ? 'c.body, c.text' : 'NULL AS body, NULL AS text'}, f.mtime,
+           ${covered} AS covered, CAST(f.mtime / ${DAY_MS} AS INTEGER) AS day, m.rank AS rank, c.rowid AS id
+         FROM chunks c LEFT JOIN m ON m.id = c.rowid LEFT JOIN files f ON f.path = c.path
+         WHERE c.path IN (${paths.map(() => '?').join(',')}) AND (${any.join(' OR ')})
+       )
+       SELECT path, kind, line, body, text, mtime FROM ${
+         onePerFile ? `(SELECT *, ROW_NUMBER() OVER (PARTITION BY path ORDER BY ${order}) AS n FROM r) WHERE n = 1` : 'r'
+       }
+       ORDER BY ${order} LIMIT ?`,
     )
     .all(...args) as ChunkRow[]
 }

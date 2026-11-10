@@ -24,7 +24,7 @@ const FRONTMATTER_MAX_LINES = 30
 
 /**
  * Scan a memory directory for .md files, read their frontmatter, and return
- * a header list sorted newest-first (capped at MAX_MEMORY_FILES). Shared by
+ * a header list sorted newest-first (capped at `limit`, default MAX_MEMORY_FILES). Shared by
  * findRelevantMemories (query-time recall) and extractMemories (pre-injects
  * the listing so the extraction agent doesn't spend a turn on `ls`).
  *
@@ -36,6 +36,7 @@ const FRONTMATTER_MAX_LINES = 30
 export async function scanMemoryFiles(
   memoryDir: string,
   signal: AbortSignal,
+  limit = MAX_MEMORY_FILES,
 ): Promise<MemoryHeader[]> {
   try {
     const entries = await readdir(memoryDir, { recursive: true })
@@ -78,7 +79,7 @@ export async function scanMemoryFiles(
       )
       .map(r => r.value)
       .sort((a, b) => b.mtimeMs - a.mtimeMs)
-      .slice(0, MAX_MEMORY_FILES)
+      .slice(0, limit)
   } catch {
     return []
   }

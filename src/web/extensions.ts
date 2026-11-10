@@ -418,7 +418,8 @@ async function memoryEntries(): Promise<MemoryEntry[]> {
     entries.push({ id: `f${entries.length}`, kind, title: basename(path), where: tildify(path), path, ...(missing && { missing }) })
   }
   if (isAutoMemoryEnabled()) {
-    const headers = await scanMemoryFiles(getAutoMemPath(), new AbortController().signal)
+    // Every file, not the newest 200 that recall prompts list, so the page can show and search all of them.
+    const headers = await scanMemoryFiles(getAutoMemPath(), new AbortController().signal, Infinity)
     for (const m of headers.sort((a, b) => b.mtimeMs - a.mtimeMs)) {
       entries.push({
         id: `a${entries.length}`,
@@ -461,9 +462,10 @@ export async function searchMemoryIndex(query: string, scope: 'all' | 'memory' |
   if (q.length < 2 || !sqliteEnabled() || typeof Bun === 'undefined') return { memory: [], sessions: [] }
   const { searchMemory } = await import('../memdir/memoryIndex.js')
   // Separate searches, so transcript chunks cannot take every slot from memory files.
+  // One row per file, so a long session cannot fill the slots and hide other sessions.
   const [memoryHits, sessionHits] = await Promise.all([
-    scope === 'session' ? [] : searchMemory({ query: q, scopes: ['user', 'project'], limit: 40 }),
-    scope === 'memory' ? [] : searchMemory({ query: q, scopes: ['session'], limit: 40 }),
+    scope === 'session' ? [] : searchMemory({ query: q, scopes: ['user', 'project'], limit: 1000, onePerFile: true }),
+    scope === 'memory' ? [] : searchMemory({ query: q, scopes: ['session'], limit: 1000, onePerFile: true }),
   ])
   const entries = await memoryEntries()
   const byPath = new Map(entries.map(e => [resolve(e.path), e.id]))
@@ -472,10 +474,7 @@ export async function searchMemoryIndex(query: string, scope: 'all' | 'memory' |
       const id = h.kind === 'memory' ? byPath.get(resolve(h.path)) : undefined
       return id ? [{ id, snippet: h.snippet, match: h.match }] : []
     }),
-    // One row per session, with its best match: every row opens the same session.
-    sessions: sessionHits
-      .map(h => ({ session: basename(h.path, '.jsonl'), snippet: h.snippet, match: h.match }))
-      .filter((h, i, all) => all.findIndex(o => o.session === h.session) === i),
+    sessions: sessionHits.map(h => ({ session: basename(h.path, '.jsonl'), snippet: h.snippet, match: h.match })),
   }
 }
 
