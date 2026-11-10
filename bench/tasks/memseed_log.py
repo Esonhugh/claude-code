@@ -2,7 +2,7 @@
 
 usage: python3 memseed_log.py N MEMORY_DIR      (python3 memseed_log.py N --answers prints the truth)
 
-Deterministic. Index lines carry only the date, never a service name. Each note
+Deterministic. Each file's mtime is its note's day. Index lines carry only the date, never a service name. Each note
 records three changes to random services; a value can change many times, so the
 current value is the one in the newest note (notes are numbered oldest first).
 """
@@ -84,6 +84,9 @@ def main():
         with open(os.path.join(out, fn), 'w') as f:
             f.write(f'---\nname: ops-log-{i:05d}\ndescription: ops log entry from {day}\ntype: project\n---\n\n'
                     f'Ops log, {day}.\n\n' + '\n'.join(f'- {l}' for l in lines) + '\n')
+        # Saved on the note's day, like a memory written then: recall can tell old from new.
+        ts = datetime.datetime(day.year, day.month, day.day, tzinfo=datetime.timezone.utc).timestamp() + i % 86400
+        os.utime(os.path.join(out, fn), (ts, ts))
         index.append(f'- [Ops log {day} #{i}]({fn}) — ops log entry')
     with open(os.path.join(out, 'MEMORY.md'), 'w') as f:
         f.write('\n'.join(index) + '\n')
