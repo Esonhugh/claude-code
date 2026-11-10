@@ -50,6 +50,9 @@ const MAX_CHUNK_CHARS = 4000
 const MIN_TRIGRAM_CHARS = 3
 // A long pasted prompt is searched by its first words only.
 const MAX_QUERY_WORDS = 200
+// Files whose changes are written in one transaction: one commit per file made
+// a first build of 10,000 memory files take ~30 s (#1105).
+const REFRESH_BATCH_FILES = 500
 
 let db: Database | undefined
 let dbPath: string | undefined
@@ -183,6 +186,33 @@ async function refresh(index: Database, files: SourceFile[]): Promise<void> {
     (index.query('SELECT path, mtime, size, lines FROM files').all() as FileRow[]).map(row => [row.path, row]),
   )
   const insert = index.prepare('INSERT INTO chunks (body, text, path, kind, project, line) VALUES (?, ?, ?, ?, ?, ?)')
+  type Pending = { file: SourceFile; prev?: FileRow; append: boolean; chunks: { line: number; body: string }[]; mtime: number; size: number; lines: number }
+  let pending: Pending[] = []
+  // IMMEDIATE takes the write lock before the reads below, so a busy DB waits
+  // on busy_timeout instead of failing with SQLITE_BUSY on lock upgrade.
+  const flush = () => {
+    const batch = pending
+    pending = []
+    if (batch.length === 0) return
+    index.transaction(() => {
+      for (const { file, prev, append, chunks, mtime, size, lines } of batch) {
+        if (append) {
+          // Another session, or a concurrent search in this one, may have appended these lines since `known` was read.
+          const current = index.query('SELECT size, lines FROM files WHERE path = ?').get(file.path) as FileRow | null
+          if (current?.size !== prev!.size || current.lines !== prev!.lines) continue
+        } else if (prev) {
+          // path is UNINDEXED, so this scans every chunk: only a file indexed before has rows to drop.
+          index.run('DELETE FROM chunks WHERE path = ?', [file.path])
+        }
+        for (const chunk of chunks) {
+          // body is searched folded (simplified script, no accents); text keeps the original for snippets.
+          const folded = foldForSearch(chunk.body)
+          insert.run(folded, folded === chunk.body ? null : chunk.body, file.path, file.kind, file.project, chunk.line)
+        }
+        index.run('INSERT OR REPLACE INTO files (path, mtime, size, lines) VALUES (?, ?, ?, ?)', [file.path, mtime, size, lines])
+      }
+    }).immediate()
+  }
   for (const file of files) {
     let info
     try {
@@ -213,29 +243,10 @@ async function refresh(index: Database, files: SourceFile[]): Promise<void> {
       lines = (append ? prev.lines : 0) + (complete.match(/\n/g)?.length ?? 0)
       chunks = transcriptChunks(complete, (append ? prev.lines : 0) + 1)
     }
-    // IMMEDIATE takes the write lock before the read below, so a busy DB waits
-    // on busy_timeout instead of failing with SQLITE_BUSY on lock upgrade.
-    index.transaction(() => {
-      if (append) {
-        // Another session, or a concurrent search in this one, may have appended these lines since `known` was read.
-        const current = index.query('SELECT size, lines FROM files WHERE path = ?').get(file.path) as FileRow | null
-        if (current?.size !== prev.size || current.lines !== prev.lines) return
-      } else {
-        index.run('DELETE FROM chunks WHERE path = ?', [file.path])
-      }
-      for (const chunk of chunks) {
-        // body is searched folded (simplified script, no accents); text keeps the original for snippets.
-        const folded = foldForSearch(chunk.body)
-        insert.run(folded, folded === chunk.body ? null : chunk.body, file.path, file.kind, file.project, chunk.line)
-      }
-      index.run('INSERT OR REPLACE INTO files (path, mtime, size, lines) VALUES (?, ?, ?, ?)', [
-        file.path,
-        size === info.size ? info.mtimeMs : 0,
-        size,
-        lines,
-      ])
-    }).immediate()
+    pending.push({ file, prev, append, chunks, mtime: size === info.size ? info.mtimeMs : 0, size, lines })
+    if (pending.length >= REFRESH_BATCH_FILES) flush()
   }
+  flush()
 }
 
 function forget(index: Database, path: string): void {
