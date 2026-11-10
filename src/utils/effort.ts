@@ -15,6 +15,7 @@ import { get3PModelCapabilityOverride } from './model/modelSupportOverrides.js'
 import { getOpenAICatalogEffort } from './model/openaiModelOptions.js'
 import { isEnvTruthy } from './envUtils.js'
 import { isAnt } from 'src/utils/userType.js'
+import { getIsNonInteractiveSession } from 'src/bootstrap/state.js'
 
 export type EffortLevel =
   | 'minimal'
@@ -483,6 +484,12 @@ export function getDefaultEffortForModel(
   // IMPORTANT: Do not change the default effort level without notifying
   // the model launch DRI and research. Default effort is a sensitive setting
   // that can greatly affect model quality and bashing.
+
+  // Fork: headless runs (-p, SDK) default to high; on the public bench the
+  // extra effort went into running tests and verifying before finishing.
+  if (getIsNonInteractiveSession() && modelSupportsEffort(model)) {
+    return 'high'
+  }
 
   // ChatGPT: the account's catalog default, which Codex sends explicitly.
   if (getAPIProvider() === 'openai') {

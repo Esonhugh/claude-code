@@ -172,7 +172,7 @@ if (process.env[childFlag] !== '1') {
         outputFormat: 'stream-json', verbose: true, userSpecifiedModel: 'claude-sonnet-4-6',
         sessionStartHooksPromise: Promise.resolve([]),
       } as Parameters<typeof runHeadless>[7])
-      expect(calls).toEqual([{model: requested, effort: 'medium'}])
+      expect(calls).toEqual([{model: requested, effort: 'high'}])
       expect(frames.filter(frame => frame.type === 'control_response').map(frame => frame.response))
         .toEqual([{subtype: 'success', request_id: 'ordered-model', response: {model: requested}}])
     } finally {
