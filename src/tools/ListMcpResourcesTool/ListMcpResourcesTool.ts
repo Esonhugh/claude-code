@@ -3,10 +3,11 @@ import {
   ensureConnectedClient,
   fetchResourcesForClient,
 } from '../../services/mcp/client.js'
+import { isMcpAppResource } from '../../services/mcp/mcpApps.js'
 import { buildTool, type ToolDef } from '../../Tool.js'
 import { errorMessage } from '../../utils/errors.js'
 import { lazySchema } from '../../utils/lazySchema.js'
-import { logMCPError } from '../../utils/log.js'
+import { logMCPDebug, logMCPError } from '../../utils/log.js'
 import { jsonStringify } from '../../utils/slowOperations.js'
 import { isOutputLineTruncated } from '../../utils/terminal.js'
 import { DESCRIPTION, LIST_MCP_RESOURCES_TOOL_NAME, PROMPT } from './prompt.js'
@@ -86,7 +87,16 @@ export const ListMcpResourcesTool = buildTool({
         if (client.type !== 'connected') return []
         try {
           const fresh = await ensureConnectedClient(client)
-          return await fetchResourcesForClient(fresh)
+          const resources = await fetchResourcesForClient(fresh)
+          // MCP Apps pages are for a host to render; the model can still read one by URI.
+          const listed = resources.filter(resource => !isMcpAppResource(resource))
+          if (listed.length < resources.length) {
+            logMCPDebug(
+              client.name,
+              `${resources.length - listed.length} MCP Apps UI resource(s) left out of ${LIST_MCP_RESOURCES_TOOL_NAME}'s list for the model`,
+            )
+          }
+          return listed
         } catch (error) {
           // One server's reconnect failure shouldn't sink the whole result.
           logMCPError(client.name, errorMessage(error))

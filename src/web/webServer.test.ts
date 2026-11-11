@@ -483,6 +483,19 @@ describe('claude web server', () => {
     expect(csp).toContain(`script-src 'sha256-${hash}' blob:`)
   })
 
+  it('serves the MCP App frame sandboxed, away from the web API', async () => {
+    const r = start()
+    expect((await fetch(`${r.base}/mcp-app-frame`)).status).toBe(401)
+    const cookie = await signIn(r)
+    const frame = await fetch(`${r.base}/mcp-app-frame`, { headers: { cookie } })
+    expect(frame.status).toBe(200)
+    const csp = frame.headers.get('content-security-policy') ?? ''
+    expect(csp).toContain('sandbox allow-scripts allow-forms')
+    expect(csp).not.toContain('allow-same-origin')
+    expect(csp).not.toContain("'self'")
+    expect(await frame.text()).toContain("e.source !== parent")
+  })
+
   it('serves an upload while the session transcript has no messages yet', async () => {
     const r = start()
     const prior = process.env.CLAUDE_CONFIG_DIR

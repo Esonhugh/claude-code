@@ -1747,8 +1747,9 @@ export function App() {
               },
             }
           : undefined,
+      control,
     }),
-    [decisions, canRewind, view, rewindTarget, rewindPoints],
+    [decisions, canRewind, view, rewindTarget, rewindPoints, control],
   )
 
   const withChat = (node: ReactNode) => (

@@ -571,6 +571,21 @@ describe('conversation extras', () => {
     expect(JSON.stringify(state)).not.toContain('big')
   })
 
+  it('keeps an MCP tool result for the MCP App that renders it', () => {
+    const state = fold([
+      { type: 'assistant', message: { id: 'm1', content: [{ type: 'tool_use', id: 't1', name: 'mcp__srv__show', input: {} }] } },
+      {
+        type: 'user',
+        tool_use_result: { content: [{ type: 'text', text: '42' }], structuredContent: { value: 42 }, _meta: { k: 1 } },
+        message: { content: [{ type: 'tool_result', tool_use_id: 't1', content: '42' }] },
+      },
+    ])
+    expect((state.items[1] as { blocks: unknown[] }).blocks[0]).toMatchObject({
+      result: '42',
+      mcp: { content: [{ type: 'text', text: '42' }], structuredContent: { value: 42 }, _meta: { k: 1 } },
+    })
+  })
+
   it('marks a compaction and puts its summary under it instead of a bubble', () => {
     const state = fold([
       { type: 'system', subtype: 'compact_boundary', uuid: 'c1', timestamp: '2026-11-02T10:42:00Z', compact_metadata: { trigger: 'auto', pre_tokens: 186000, post_tokens: 12000 } },

@@ -366,7 +366,7 @@ export function assembleToolPool(
   const builtInTools = getTools(permissionContext)
 
   // Filter out MCP tools that are in the deny list
-  const enabledMcpTools = filterEnabledCodexAppTools(mcpTools)
+  const enabledMcpTools = modelVisibleMcpTools(mcpTools)
   const allowedMcpTools = filterToolsByDenyRules(
     enabledMcpTools,
     permissionContext,
@@ -406,5 +406,12 @@ export function getMergedTools(
   mcpTools: Tools,
 ): Tools {
   const builtInTools = getTools(permissionContext)
-  return [...builtInTools, ...filterEnabledCodexAppTools(mcpTools)]
+  return [...builtInTools, ...modelVisibleMcpTools(mcpTools)]
+}
+
+/** MCP tools the model may see: enabled Codex apps, minus MCP Apps tools for the app only. */
+function modelVisibleMcpTools(mcpTools: Tools): Tools {
+  return filterEnabledCodexAppTools(mcpTools).filter(
+    tool => tool.mcpInfo?.hiddenFromModel !== true,
+  )
 }

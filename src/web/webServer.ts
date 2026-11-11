@@ -8,6 +8,7 @@ import { addToHistory, getTimestampedHistory } from '../history.js'
 import { PERMISSION_MODES } from '../types/permissions.js'
 import { getAPIProvider } from '../utils/model/providers.js'
 import { lazySchema } from '../utils/lazySchema.js'
+import { MCP_APP_FRAME_CSP, MCP_APP_FRAME_HTML, MCP_APP_FRAME_PATH } from './mcpAppFrame.js'
 import { MODS_FRAME_CSP, MODS_FRAME_HTML, MODS_FRAME_PATH } from './modsFrame.js'
 import { getMainLoopModel } from '../utils/model/model.js'
 import { getModelInfos } from '../utils/model/modelInfos.js'
@@ -1366,6 +1367,12 @@ export function startWebServer(
           const res = new Response(MODS_FRAME_HTML, { headers: { 'Content-Type': 'text/html; charset=utf-8' } })
           for (const [key, value] of Object.entries(SECURITY_HEADERS)) res.headers.set(key, value)
           res.headers.set('Content-Security-Policy', MODS_FRAME_CSP)
+          return res
+        }
+        if (pathname === MCP_APP_FRAME_PATH) {
+          const res = new Response(MCP_APP_FRAME_HTML, { headers: { 'Content-Type': 'text/html; charset=utf-8' } })
+          for (const [key, value] of Object.entries(SECURITY_HEADERS)) res.headers.set(key, value)
+          res.headers.set('Content-Security-Policy', MCP_APP_FRAME_CSP)
           return res
         }
         const asset = assets.get(pathname) ?? assets.get('/index.html')

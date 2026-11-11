@@ -32,10 +32,12 @@ export function sdkCompatToolName(name: string): string {
 }
 
 // Control-protocol features print.ts implements (interrupt replies carry
-// still_queued; mcp_read_resource reads ui:// resources).
+// still_queued; mcp_read_resource reads ui:// resources; mcp_status tools carry
+// their MCP Apps `_meta`).
 export const SDK_INIT_CAPABILITIES = [
   'interrupt_receipt_v1',
   'mcp_read_resource_v1',
+  'mcp_tool_ui_meta_v1',
 ] as const
 
 type CommandLike = {

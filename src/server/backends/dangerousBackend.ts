@@ -44,6 +44,8 @@ export class DangerousBackend {
       fileCheckpointing?: boolean
       /** Emit `system/session_state_changed`, so a page that attaches mid-turn knows a turn is running. */
       emitSessionState?: boolean
+      /** The client renders MCP Apps, so the child offers MCP servers the UI extension. */
+      mcpAppsHost?: boolean
     } = {},
   ) {}
 
@@ -67,6 +69,7 @@ export class DangerousBackend {
     delete env.CLAUDE_CODE_ENTRYPOINT
     if (this.options.fileCheckpointing) env.CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING = '1'
     if (this.options.emitSessionState) env.CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS = '1'
+    if (this.options.mcpAppsHost) env.CLAUDE_CODE_MCP_APPS_HOST = '1'
     return spawn(
       command,
       [

@@ -2107,6 +2107,7 @@ function runHeadlessStreaming(
                 destructive: tool.isDestructive?.({}) || undefined,
                 openWorld: tool.isOpenWorld?.({}) || undefined,
               },
+              ...(tool.mcpInfo?.uiMeta && { _meta: tool.mcpInfo.uiMeta }),
             }))
           : undefined
       // Capabilities passthrough with allowlist pre-filter. The IDE reads

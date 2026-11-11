@@ -19,7 +19,11 @@ export type Block =
       isError?: boolean
       /** The file edit part of `tool_use_result` (Edit, Write): its structured patch. */
       meta?: { type?: string; structuredPatch?: unknown[] }
+      /** An MCP tool's own result (`tool_use_result`), for an MCP App that renders it. */
+      mcp?: McpToolResult
     }
+
+export type McpToolResult = { content?: unknown[]; structuredContent?: unknown; _meta?: Record<string, unknown> }
 
 export type Item =
   | { kind: 'user'; id: string; text: string; images?: string[] }
@@ -1069,6 +1073,14 @@ export function reduce(state: ChatState, raw: unknown): ChatState {
               ...(Array.isArray(result.structuredPatch) && { structuredPatch: result.structuredPatch }),
             }
           : undefined
+      const mcp: McpToolResult | undefined =
+        result && (result.structuredContent !== undefined || isObj(result._meta))
+          ? {
+              ...(Array.isArray(result.content) && { content: result.content }),
+              ...(result.structuredContent !== undefined && { structuredContent: result.structuredContent }),
+              ...(isObj(result._meta) && { _meta: result._meta }),
+            }
+          : undefined
       for (const part of content) {
         if (!isObj(part) || part.type !== 'tool_result') continue
         const toolId = str(part.tool_use_id)
@@ -1081,6 +1093,7 @@ export function reduce(state: ChatState, raw: unknown): ChatState {
           result: unwrapped ?? text,
           isError: part.is_error === true,
           ...(meta && { meta }),
+          ...(mcp && b.name.startsWith('mcp__') && { mcp }),
         }))
       }
       return next

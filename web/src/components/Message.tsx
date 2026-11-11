@@ -16,6 +16,8 @@ import { type Block, type Decision, hookBlock, type Item, type ModelOption } fro
 import type { Source } from '../sources'
 import { stripAnsi, toolMessage, toolSummary } from '../tools'
 import { firstPreviewUrl, WebPreviewContext } from '../webPreview'
+import type { Control } from './extShared'
+import { McpApp } from './McpApp'
 import { ModSite } from './Mods'
 
 /** `claude-opus-5-5` → `Opus 5.5`; anything else is shown as is. */
@@ -121,6 +123,8 @@ export const ChatContext = createContext<{
     fork: (id: string) => void
     rewind: (id: string) => void
   }
+  /** Control requests to the live session (MCP Apps read their resource and call tools with it). */
+  control?: Control
 }>({})
 
 /** Puts text into the chat's composer as a quote to reply to; only the session's own feed offers it. */
@@ -447,8 +451,9 @@ function ToolCard({ block, t }: { block: Extract<Block, { kind: 'tool' }>; t: T 
       )}
     </details>
   )
+  const app = block.name.startsWith('mcp__') && chat.control ? <McpApp block={block} control={chat.control} t={t} /> : null
   const blocked = block.isError && block.result ? hookBlock(block.result) : undefined
-  if (!blocked) return card
+  if (!blocked) return app ? <>{card}{app}</> : card
   // As the TUI's line under the tool call; the tool result is all a reloaded transcript keeps of it.
   return (
     <>

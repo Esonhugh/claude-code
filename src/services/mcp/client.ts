@@ -160,6 +160,11 @@ import {
 import { markClaudeAiMcpConnected } from './claudeai.js'
 import { getAllMcpConfigs, isMcpServerDisabled } from './config.js'
 import { isChannelAllowlisted } from './channelAllowlist.js'
+import {
+  isToolHiddenFromModel,
+  mcpAppsClientExtensions,
+  toolUiMeta,
+} from './mcpApps.js'
 import { getMcpServerHeaders } from './headersHelper.js'
 import { SdkControlClientTransport } from './SdkControlTransport.js'
 import type {
@@ -704,7 +709,12 @@ function getMcpClientCapabilities(
   serverRef: ScopedMcpServerConfig,
   bareElicitation: boolean,
 ) {
-  const capabilities = { roots: { listChanged: true }, elicitation: {} }
+  const extensions = mcpAppsClientExtensions()
+  const capabilities = {
+    roots: { listChanged: true },
+    elicitation: {},
+    ...(extensions && { extensions }),
+  }
   const type = serverRef.type
   if (
     bareElicitation ||
@@ -2349,6 +2359,7 @@ export const fetchToolsForClient = memoizeWithLRU(
             : undefined
           const fullyQualifiedName =
             appsNames?.name ?? buildMcpToolName(client.name, tool.name)
+          const uiMeta = toolUiMeta(tool._meta)
           return {
             ...MCPTool,
             // In skip-prefix mode, use the original name for model invocation so MCP tools
@@ -2364,6 +2375,8 @@ export const fetchToolsForClient = memoizeWithLRU(
               ...(appsNames && {
                 permissionToolName: appsNames.permissionToolName,
               }),
+              ...(uiMeta && { uiMeta }),
+              ...(isToolHiddenFromModel(tool._meta) && { hiddenFromModel: true }),
             },
             ...(connectorInfo && { connectorInfo }),
             isMcp: true,
