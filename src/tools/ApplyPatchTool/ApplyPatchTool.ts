@@ -18,12 +18,15 @@ import { getFsImplementation } from '../../utils/fsOperations.js'
 import { lazySchema } from '../../utils/lazySchema.js'
 import { logError } from '../../utils/log.js'
 import { getAPIProvider } from '../../utils/model/providers.js'
+import { expandPath } from '../../utils/path.js'
 import { checkWritePermissionForTool, matchingRuleForInput } from '../../utils/permissions/filesystem.js'
 import type { PermissionDecision } from '../../utils/permissions/PermissionResult.js'
+import { createPermissionRequestMessage, getAskRuleForTool, getDenyRuleForTool, toolAlwaysAllowedRule } from '../../utils/permissions/permissions.js'
 import { matchWildcardPattern } from '../../utils/permissions/shellRuleMatching.js'
 import { validateInputForSettingsFileEdit } from '../../utils/settings/validateEditTool.js'
 import { FileEditTool } from '../FileEditTool/FileEditTool.js'
-import { PatchParseError, parsePatch } from './parser.js'
+import { FileWriteTool } from '../FileWriteTool/FileWriteTool.js'
+import { type PatchOperation, PatchParseError, parsePatch } from './parser.js'
 import { type PatchPlan, planPatch, touchedPaths } from './plan.js'
 import { APPLY_PATCH_DESCRIPTION, APPLY_PATCH_TOOL_NAME } from './prompt.js'
 import { getToolUseSummary, renderToolResultMessage, renderToolUseMessage, userFacingName } from './UI.js'
@@ -77,6 +80,11 @@ function notifyEditors(absolutePath: string, original: string | null, updated: s
     }
   }
   notifyVscodeFileUpdated(absolutePath, original, updated)
+}
+
+function isRuleOrSafetyAsk(decision: PermissionDecision): boolean {
+  const reason = decision.decisionReason
+  return reason?.type === 'safetyCheck' || (reason?.type === 'rule' && reason.rule.ruleBehavior === 'ask')
 }
 
 export const ApplyPatchTool = buildTool({
@@ -145,24 +153,48 @@ export const ApplyPatchTool = buildTool({
     return ''
   },
   async checkPermissions(input, context): Promise<PermissionDecision> {
-    let paths: string[]
+    let ops: PatchOperation[]
     try {
-      paths = touchedPaths(input.input)
+      ops = parsePatch(input.input)
     } catch {
       // validateInput reports the parse error.
       return { behavior: 'allow', updatedInput: input }
     }
     const permissionContext = context.getAppState().toolPermissionContext
-    // Each file goes through the same rules, modes and safety checks as Edit.
-    for (const file_path of paths) {
-      const decision = checkWritePermissionForTool(
-        FileEditTool,
-        { file_path, old_string: '', new_string: '' },
-        permissionContext,
-      )
-      if (decision.behavior !== 'allow') return decision
-    }
-    return { behavior: 'allow', updatedInput: input }
+    // Each file goes through the same rules, modes and safety checks as the
+    // tool Claude would use for it: Write for a new file, Edit otherwise. That
+    // includes whole-tool rules such as a bare `Edit` allow, which the
+    // permission pipeline only matches against apply_patch's own name.
+    const files = ops.flatMap(op => [
+      { file_path: expandPath(op.path), tool: op.type === 'add' ? FileWriteTool : FileEditTool },
+      ...(op.type === 'update' && op.movePath ? [{ file_path: expandPath(op.movePath), tool: FileWriteTool }] : []),
+    ])
+    // Decide every file before answering, so a deny on a later file wins over
+    // an ask on an earlier one, as it would across separate Edit/Write calls.
+    const decisions = files.map(({ file_path, tool }): PermissionDecision => {
+      const denyRule = getDenyRuleForTool(permissionContext, tool)
+      if (denyRule) {
+        return { behavior: 'deny', decisionReason: { type: 'rule', rule: denyRule }, message: `Permission to use ${tool.name} has been denied.` }
+      }
+      const decision = checkWritePermissionForTool(FileEditTool, { file_path, old_string: '', new_string: '' }, permissionContext)
+      if (decision.behavior === 'deny') return decision
+      const askRule = getAskRuleForTool(permissionContext, tool)
+      if (askRule) {
+        return { behavior: 'ask', decisionReason: { type: 'rule', rule: askRule }, message: createPermissionRequestMessage(APPLY_PATCH_TOOL_NAME) }
+      }
+      if (decision.behavior !== 'ask' || isRuleOrSafetyAsk(decision)) return decision
+      const wholeToolAllow = toolAlwaysAllowedRule(permissionContext, tool)
+      return wholeToolAllow ? { behavior: 'allow', updatedInput: input, decisionReason: { type: 'rule', rule: wholeToolAllow } } : decision
+    })
+    const asks = decisions.filter(d => d.behavior === 'ask')
+    const answer =
+      decisions.find(d => d.behavior === 'deny') ??
+      asks.find(d => d.decisionReason?.type === 'rule') ??
+      asks.find(isRuleOrSafetyAsk) ??
+      asks[0] ??
+      decisions.find(d => d.decisionReason?.type === 'rule')
+    if (answer && answer.behavior !== 'allow') return answer
+    return { behavior: 'allow', updatedInput: input, ...(answer?.decisionReason && { decisionReason: answer.decisionReason }) }
   },
   async validateInput({ input }, toolUseContext: ToolUseContext) {
     let plan: PatchPlan
