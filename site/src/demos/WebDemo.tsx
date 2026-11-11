@@ -1,6 +1,7 @@
 import { interpolate, useCurrentFrame } from './clock'
-import { MONO } from './Terminal'
 import { type Lang, ui } from './i18n'
+
+const MONO = '"IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace'
 
 // A scripted claude web session, laid out after docs/features/images/web-tour-chat.png.
 export const WEB_DEMO_FRAMES = 600

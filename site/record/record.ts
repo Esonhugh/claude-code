@@ -28,7 +28,7 @@ const screen = () => tmux('capture-pane', '-t', SESSION, '-p')
 async function settle(until?: RegExp) {
   let last = ''
   let stableSince = performance.now()
-  for (const end = performance.now() + 60_000; performance.now() < end; await sleep(150)) {
+  for (const end = performance.now() + 120_000; performance.now() < end; await sleep(150)) {
     const now = screen()
     if (until) {
       if (until.test(now)) return
@@ -60,10 +60,13 @@ async function record(name: string, scene: SceneDef, lang: Lang) {
   mkdirSync(home)
   const project = join(home, 'projects/search-demo')
   const [cols, rows] = scene.size ?? [80, 22]
-  for (const [path, body] of Object.entries(scene.fixture)) {
-    mkdirSync(join(project, path, '..'), { recursive: true })
-    writeFileSync(join(project, path), body)
-  }
+  // Each pane may work in its own copy of the fixture, so two CLIs doing the same task don't see each other's edits.
+  const projects = [project, ...(scene.panes ?? []).flatMap(p => (p.project ? [join(home, 'projects', p.project)] : []))]
+  for (const dir of projects)
+    for (const [path, body] of Object.entries(scene.fixture)) {
+      mkdirSync(join(dir, path, '..'), { recursive: true })
+      writeFileSync(join(dir, path), body)
+    }
   for (const [to, from] of Object.entries(scene.copy ?? {})) cpSync(join(import.meta.dir, '..', from), join(project, to), { recursive: true })
   mkdirSync(join(home, '.claude'))
   mkdirSync(join(home, 'bin'))
@@ -78,12 +81,18 @@ async function record(name: string, scene: SceneDef, lang: Lang) {
       esonhughMarketplaceAutoInstallAttempted: true,
       esonhughMarketplaceAutoInstalled: true,
       customApiKeyResponses: { approved: [API_KEY], rejected: [] },
-      projects: { [project]: { hasTrustDialogAccepted: true, hasCompletedProjectOnboarding: true } },
+      projects: Object.fromEntries(projects.map(dir => [dir, { hasTrustDialogAccepted: true, hasCompletedProjectOnboarding: true }])),
       ...scene.config,
     }),
   )
-  writeFileSync(join(home, '.claude/settings.json'), JSON.stringify({ model: 'claude-sonnet-5-5', permissions: { allow: scene.allow } }))
+  writeFileSync(join(home, '.claude/settings.json'), JSON.stringify({ ...(scene.chatgpt ? {} : { model: 'claude-sonnet-5-5' }), permissions: { allow: scene.allow } }))
 
+  const auth = process.env.CODEX_AUTH_FILE
+  if (scene.chatgpt) {
+    if (!auth || !existsSync(auth)) throw new Error(`scene ${name} needs CODEX_AUTH_FILE pointing at a ChatGPT sign-in (~/.codex/auth.json)`)
+    mkdirSync(join(home, '.codex'))
+    cpSync(auth, join(home, '.codex/auth.json'))
+  }
   const server = serveScript(PORT, scene.script(lang, project))
   const env = [
     `PATH=${home}/bin:${process.env.PATH}`,
@@ -98,6 +107,8 @@ async function record(name: string, scene: SceneDef, lang: Lang) {
     `ANTHROPIC_BASE_URL=http://127.0.0.1:${PORT}`,
     `ANTHROPIC_API_KEY=${API_KEY}`,
     ...(scene.env ?? []),
+    // The real ChatGPT side reaches OpenAI through this container's proxy.
+    ...(scene.chatgpt ? [...['HTTPS_PROXY', 'NODE_EXTRA_CA_CERTS', 'SSL_CERT_FILE'].filter(k => process.env[k]).map(k => `${k}=${process.env[k]}`), 'NO_PROXY=127.0.0.1,localhost'] : []),
   ]
   let program = scene.shell ? 'bash --norc --noprofile' : 'claude'
   // A split scene runs its CLIs as panes of an inner tmux, so both show up in one recording.
@@ -107,9 +118,10 @@ async function record(name: string, scene: SceneDef, lang: Lang) {
       ['set -g status off', 'set -g default-terminal xterm-256color', "set -as terminal-features ',xterm-256color:RGB'", 'set -g pane-border-status top', "set -g pane-border-format ' #{@label} '"].join('\n'),
     )
     const [first, ...rest] = scene.panes
-    const split = rest.map(p => ` \\; split-window -v '${p.command}'`).join('')
+    const cwd = (p: { project?: string }) => (p.project ? ` -c ${join(home, 'projects', p.project)}` : '')
+    const split = rest.map(p => ` \\; split-window -v${cwd(p)} '${p.command}'`).join('')
     const labels = scene.panes.map((p, i) => ` \\; set -p -t in:0.${i} @label ${p.label}`).join('')
-    writeFileSync(join(home, 'start.sh'), `exec tmux -L ${INNER} -f ${home}/tmux.conf new-session -s in '${first.command}'${split}${labels} \\; select-pane -t in:0.0\n`)
+    writeFileSync(join(home, 'start.sh'), `exec tmux -L ${INNER} -f ${home}/tmux.conf new-session -s in${cwd(first)} '${first.command}'${split}${labels} \\; select-pane -t in:0.0\n`)
     program = `sh ${home}/start.sh`
   }
   let command = `env -i ${env.join(' ')} ${program}`
@@ -153,6 +165,8 @@ async function record(name: string, scene: SceneDef, lang: Lang) {
   tmux('kill-session', '-t', SESSION)
   if (scene.panes) tmux('-L', INNER, 'kill-server')
   server.stop(true)
+  // A refresh during the run rotates the token, so the lent sign-in goes back to where it came from.
+  if (scene.chatgpt && auth) cpSync(join(home, '.codex/auth.json'), auth)
   rmSync(home, { recursive: true, force: true })
 
   const out = join(import.meta.dir, '../src/demos/recordings', `${name}.${lang}.json`)

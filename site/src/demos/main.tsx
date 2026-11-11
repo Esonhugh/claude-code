@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
-import { AccountsDemo } from './AccountsDemo'
 import { FPS, FrameContext } from './clock'
 import type { Lang } from './i18n'
 import { type Scene, SCENES, TOUR_FRAMES, TourDemo, tourFrames } from './TourDemo'
@@ -9,7 +8,6 @@ import { WEB_DEMO_FRAMES, WebDemo } from './WebDemo'
 // The web demo is drawn on a 1280×720 canvas and scaled to fit; the terminals render at page size.
 const DEMOS = {
   web: { component: WebDemo, frames: WEB_DEMO_FRAMES, canvas: { width: 1280, height: 720 } },
-  accounts: { component: AccountsDemo, frames: TOUR_FRAMES, canvas: null },
   tour: { component: TourDemo, frames: TOUR_FRAMES, canvas: null },
 } as const
 const FADE_MS = 180
