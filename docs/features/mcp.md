@@ -160,8 +160,8 @@ Location: /tmp/claude-0/mcpw/.mcp.json
 
 - 页面跑在沙箱 frame 里，origin 是不透明的，读不到网页的登录状态，也调不了网页的 API。默认不能联网，只有 server 在资源的 `_meta.ui.csp` 里声明过的域名可以连。
 - 页面能收到工具的输入和结果，能读同一个 server 的 `ui://` 资源，也能调用同一个 server 的工具。只给页面用的工具（`visibility: ["app"]`）和只读工具直接执行，其他工具要你先确认。
-- `visibility` 里没有 `"model"` 的工具不会发给模型。`ListMcpResourcesTool` 的列表里也不列出 `ui://` 页面，模型知道 URI 的话仍然可以直接读。
-- 终端界面不显示这些页面，只显示文字结果，和官方一致。SDK 客户端要显示页面时，启动 CLI 前设置 `CLAUDE_CODE_MCP_APPS_HOST=1`：CLI 会向 server 声明 `io.modelcontextprotocol/ui` 扩展，`mcp_status` 的工具会带上 `_meta`，客户端再用 `mcp_read_resource` 和 `mcp_call` 读页面、调工具。
+- `visibility` 里没有 `"model"` 的工具不会发给模型。`ListMcpResourcesTool` 的列表里也不列出 `ui://` 页面和 MIME 为 `text/html;profile=mcp-app` 的资源，模型知道 URI 的话仍然可以直接读。
+- 终端界面不显示这些页面，只显示文字结果，和官方一致。`mcp_status` 的工具总会带上 `_meta.ui`（system init 的 capabilities 含 `mcp_tool_ui_meta_v1` 时可用）。SDK 客户端要显示页面时，启动 CLI 前设置 `CLAUDE_CODE_MCP_APPS_HOST=1`，CLI 会向 server 声明 `io.modelcontextprotocol/ui` 扩展，客户端再用 `mcp_read_resource` 和 `mcp_call` 读页面、调工具。
 
 ## 说明
 

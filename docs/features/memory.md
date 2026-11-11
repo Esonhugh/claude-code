@@ -132,7 +132,7 @@ Staging deploys go to the fly.io app demo-staging; production is demo-prod.
 | 内容 | 路径 |
 | --- | --- |
 | auto memory | `~/.claude/projects/<项目路径>/memory/*.md`，索引 `MEMORY.md` |
-| 检索索引 | `~/.claude/memory-index.sqlite`（删掉后 `/setup-memory-db` 重建即可） |
+| 检索索引 | `~/.claude/memory-index.sqlite`（删掉后首个请求按需重建，10,000 条记忆约 2.6 秒；也可以用 `/setup-memory-db` 重建） |
 
 ## 安全
 
