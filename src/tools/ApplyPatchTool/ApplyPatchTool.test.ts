@@ -228,3 +228,15 @@ test('only the OpenAI provider gets the tool', () => {
     else process.env.CLAUDE_CODE_USE_OPENAI = saved
   }
 })
+
+test('a moved file names its source and destination on the first row and later rows alike', async () => {
+  const { fileLabel, getToolUseSummary, renderToolUseMessage } = await import('./UI.js')
+  const patch = (first: string, second: string) => `*** Begin Patch\n${first}\n${second}\n*** End Patch`
+  const move = '*** Update File: /w/c.txt\n*** Move to: /w/moved.txt\n@@\n-a\n+b'
+  const other = '*** Update File: /w/a.txt\n@@\n-x\n+y'
+  assert.equal(renderToolUseMessage({ input: patch(move, other) }), '/w/c.txt → /w/moved.txt')
+  assert.equal(renderToolUseMessage({ input: patch(other, move) }), '/w/a.txt')
+  assert.equal(getToolUseSummary({ input: patch(other, move) }), '/w/a.txt, /w/c.txt → /w/moved.txt')
+  // Rows after the first come from the result and use the same label.
+  assert.equal(fileLabel('/w/c.txt', '/w/moved.txt'), '/w/c.txt → /w/moved.txt')
+})

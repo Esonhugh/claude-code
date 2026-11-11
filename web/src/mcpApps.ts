@@ -10,7 +10,8 @@ export type AppTool = {
   readOnly: boolean
 }
 
-export type AppServerTool = AppTool & { appVisible: boolean }
+/** An `mcp_status` tool an app might call; only those with a `resourceUri` render an app. */
+export type AppServerTool = Omit<AppTool, 'resourceUri'> & { resourceUri?: string; appVisible: boolean }
 
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
 
@@ -32,7 +33,7 @@ function visibility(meta: Record<string, unknown>): unknown[] | undefined {
   return Array.isArray(ui?.visibility) ? ui.visibility : undefined
 }
 
-/** Every tool an `mcp_status` reply lists with a `ui://` resource. */
+/** Every tool of a connected server in an `mcp_status` reply. */
 export function appTools(status: Record<string, unknown>): AppServerTool[] {
   const servers = Array.isArray(status.mcpServers) ? status.mcpServers : []
   return servers.filter(isObj).flatMap(server => {
@@ -40,15 +41,14 @@ export function appTools(status: Record<string, unknown>): AppServerTool[] {
     const tools = Array.isArray(server.tools) ? server.tools : []
     if (!serverName || server.status !== 'connected') return []
     return tools.filter(isObj).flatMap(tool => {
-      const meta = isObj(tool._meta) ? tool._meta : undefined
-      const resourceUri = meta && uiResourceUri(meta)
-      if (!meta || typeof tool.name !== 'string' || !resourceUri) return []
+      const meta = isObj(tool._meta) ? tool._meta : {}
+      if (typeof tool.name !== 'string') return []
       const seen = visibility(meta)
       return [
         {
           serverName,
           toolName: tool.name,
-          resourceUri,
+          resourceUri: uiResourceUri(meta),
           modelVisible: !seen || seen.includes('model'),
           appVisible: !seen || seen.includes('app'),
           readOnly: isObj(tool.annotations) && tool.annotations.readOnly === true,
@@ -60,7 +60,8 @@ export function appTools(status: Record<string, unknown>): AppServerTool[] {
 
 /** The app tool a chat tool call (`mcp__<server>__<tool>`) is, if any. */
 export function findAppTool(tools: AppServerTool[], blockName: string): AppTool | undefined {
-  return tools.find(t => `mcp__${normalizeMcpName(t.serverName)}__${normalizeMcpName(t.toolName)}` === blockName)
+  const tool = tools.find(t => `mcp__${normalizeMcpName(t.serverName)}__${normalizeMcpName(t.toolName)}` === blockName)
+  return tool?.resourceUri ? { ...tool, resourceUri: tool.resourceUri } : undefined
 }
 
 // A CSP source an app's `_meta.ui.csp` may name: an http(s)/ws(s) origin, optionally `*.`-wildcarded.
@@ -128,4 +129,21 @@ export function openableLink(url: unknown): string | undefined {
   } catch {
     return undefined
   }
+}
+
+/**
+ * An `mcp_call` reply as the CallToolResult an app expects. The CLI replies with
+ * the model-facing content: a string, or Anthropic content blocks.
+ */
+export function callToolResult(response: Record<string, unknown>): Record<string, unknown> {
+  const { content } = response
+  const blocks =
+    typeof content === 'string'
+      ? [{ type: 'text', text: content }]
+      : (Array.isArray(content) ? content : []).filter(isObj).map(block =>
+          block.type === 'image' && isObj(block.source)
+            ? { type: 'image', data: block.source.data, mimeType: block.source.media_type }
+            : block,
+        )
+  return { ...response, content: blocks }
 }

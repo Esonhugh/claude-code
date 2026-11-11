@@ -77,7 +77,7 @@
 | 远程执行 | [Direct Connect](direct-connect.md) | 在一台机器上 `claude server`，在另一处用 `claude cc://...` 连过去：工具在 server 上执行，界面和权限确认在你这边 |
 |  | [SSH Remote](ssh-remote.md) | `claude ssh 主机` 让 Claude 在远程 Linux 机器上读写文件、跑命令，界面和权限确认留在本机；API 凭据不离开本机 |
 | 插件与扩展 | [插件与 Marketplace](plugins-marketplace.md) | 从插件市场一键安装命令、skill、agent、hook 和 MCP；团队可以自建 marketplace，装完 `/reload-plugins` 立即生效 |
-|  | [MCP 配置与认证](mcp.md) | 接入外部工具服务器（数据库、浏览器、内部 API 等）；配置错一条只跳过那一条，`/mcp` 查看状态、重连、登录 |
+|  | [MCP 配置与认证](mcp.md) | 接入外部工具服务器（数据库、浏览器、内部 API 等）；配置错一条只跳过那一条，`/mcp` 查看状态、重连、登录；`claude web` 能显示 MCP Apps 界面 |
 |  | [Skills](skills.md) | 把一套做事步骤写进 SKILL.md，用 `/名字` 调用，或让 Claude 在合适时自动使用；`/skill-doctor` 找出从没用过却占提示的 skill |
 |  | [Channels](channels.md) | 让 Telegram、Discord 或你自己写的 MCP server 把消息推进正在运行的会话，还能在手机上远程批准工具调用 |
 |  | [Mods / Function Hooks](mods.md) | 用一个 JS/TS 文件改造 Claude 本身：加命令、拦截或改写工具调用、在界面上加状态条和侧边面板（基线官方 2.1.303） |
@@ -163,7 +163,7 @@ An [interactive scatter plot](https://claude.ai/artifact/5c7HFWBN11ZAVcFHConfbm)
 | Remote execution | [Direct Connect](direct-connect.md) | Run `claude server` on one machine and `claude cc://...` from another: tools run on the server, the UI and permission prompts stay with you |
 |  | [SSH Remote](ssh-remote.md) | `claude ssh host` lets Claude read and write files and run commands on a remote Linux machine while the UI and permission prompts stay local; API credentials never leave your machine |
 | Plugins and extensions | [Plugins and marketplaces](plugins-marketplace.md) | Install commands, skills, agents, hooks and MCP servers from a marketplace in one step; teams can host their own marketplace; `/reload-plugins` applies them at once |
-|  | [MCP configuration and auth](mcp.md) | Connect external tool servers (databases, browsers, internal APIs and more); one bad entry only skips that entry; `/mcp` shows status, reconnects and signs in |
+|  | [MCP configuration and auth](mcp.md) | Connect external tool servers (databases, browsers, internal APIs and more); one bad entry only skips that entry; `/mcp` shows status, reconnects and signs in; `claude web` shows MCP Apps UIs |
 |  | [Skills](skills.md) | Write a procedure into SKILL.md and call it with `/name`, or let Claude use it when it fits; `/skill-doctor` finds skills that take prompt space but are never used |
 |  | [Channels](channels.md) | Telegram, Discord or your own MCP server push messages into a running session, and you can approve tool calls remotely from your phone |
 |  | [Mods / Function Hooks](mods.md) | Reshape Claude itself with one JS/TS file: add commands, intercept or rewrite tool calls, add status bands and side panels to the UI (baseline official 2.1.303) |
@@ -250,7 +250,7 @@ An [interactive scatter plot](https://claude.ai/artifact/5c7HFWBN11ZAVcFHConfbm)
 | 遠端執行 | [Direct Connect](direct-connect.md) | 在一台機器上 `claude server`，在另一處用 `claude cc://...` 連過去：工具在 server 上執行，介面和權限確認在你這邊 |
 |  | [SSH Remote](ssh-remote.md) | `claude ssh 主机` 讓 Claude 在遠端 Linux 機器上讀寫檔案、跑命令，介面和權限確認留在本機；API 憑據不離開本機 |
 | 插件與擴充 | [插件與 Marketplace](plugins-marketplace.md) | 從插件市場一鍵安裝命令、skill、agent、hook 和 MCP；團隊可以自建 marketplace，裝完 `/reload-plugins` 立即生效 |
-|  | [MCP 配置與認證](mcp.md) | 接入外部工具伺服器（資料庫、瀏覽器、內部 API 等）；配置錯一條只跳過那一條，`/mcp` 檢視狀態、重連、登入 |
+|  | [MCP 配置與認證](mcp.md) | 接入外部工具伺服器（資料庫、瀏覽器、內部 API 等）；配置錯一條只跳過那一條，`/mcp` 檢視狀態、重連、登入；`claude web` 能顯示 MCP Apps 介面 |
 |  | [Skills](skills.md) | 把一套做事步驟寫進 SKILL.md，用 `/名字` 呼叫，或讓 Claude 在合適時自動使用；`/skill-doctor` 找出從沒用過卻佔提示的 skill |
 |  | [Channels](channels.md) | 讓 Telegram、Discord 或你自己寫的 MCP server 把訊息推進正在執行的會話，還能在手機上遠端批准工具呼叫 |
 |  | [Mods / Function Hooks](mods.md) | 用一個 JS/TS 檔案改造 Claude 本身：加命令、攔截或改寫工具呼叫、在介面上加狀態條和側邊面板（基線官方 2.1.303） |

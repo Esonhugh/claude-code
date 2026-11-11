@@ -329,6 +329,29 @@ if (process.env[childFlag] !== '1') {
       'mcp_call does not support SDK MCP servers. SDK servers are caller-provided — invoke sdk directly.',
     ])
   })
+  test('mcp_call runs the tool on the server that owns it when a server name contains __', async () => {
+    const config: ScopedMcpServerConfig = { type: 'http', url: 'http://127.0.0.1:9/mcp', scope: 'dynamic' }
+    const calls: string[] = []
+    const server = (name: string) => {
+      const conn = connected(name, config) as MCPServerConnection & { client: Record<string, unknown> }
+      conn.client.callTool = async () => {
+        calls.push(name)
+        return { content: [{ type: 'text', text: name }] }
+      }
+      return conn
+    }
+    const initial = getDefaultAppState()
+    initial.mcp.clients = [server('w'), server('w__x')]
+    initial.mcp.tools = [
+      { name: 'mcp__w__y', mcpInfo: { serverName: 'w', toolName: 'y' } },
+      { name: 'mcp__w__x__y', mcpInfo: { serverName: 'w__x', toolName: 'y' } },
+    ] as unknown as Tool[]
+    await runControls(initial, [
+      { subtype: 'mcp_call', tool: 'mcp__w__x__y' },
+      { subtype: 'mcp_call', tool: 'mcp__w__y' },
+    ])
+    expect(calls).toEqual(['w__x', 'w'])
+  })
   test('register_repo_root adds a session working directory once', async () => {
     const root = mkdtempSync(join(tmpdir(), 'cc-repo-root-'))
     try {

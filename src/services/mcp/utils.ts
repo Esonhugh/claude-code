@@ -52,8 +52,17 @@ import {
  * @returns Tools belonging to the specified server
  */
 export function filterToolsByServer(tools: Tool[], serverName: string): Tool[] {
-  const prefix = `mcp__${normalizeNameForMCP(serverName)}__`
-  return tools.filter(tool => tool.name?.startsWith(prefix))
+  return tools.filter(tool => isToolOfServer(tool, serverName))
+}
+
+/**
+ * True when a tool belongs to the given MCP server. The name prefix alone also
+ * matches the tools of a server named "<serverName>__…", so a tool that knows
+ * its server answers by that.
+ */
+export function isToolOfServer(tool: Pick<Tool, 'name' | 'mcpInfo'>, serverName: string): boolean {
+  if (tool.mcpInfo) return tool.mcpInfo.serverName === serverName
+  return tool.name?.startsWith(`mcp__${normalizeNameForMCP(serverName)}__`) ?? false
 }
 
 /**
@@ -136,8 +145,7 @@ export function excludeToolsByServer(
   tools: Tool[],
   serverName: string,
 ): Tool[] {
-  const prefix = `mcp__${normalizeNameForMCP(serverName)}__`
-  return tools.filter(tool => !tool.name?.startsWith(prefix))
+  return tools.filter(tool => !isToolOfServer(tool, serverName))
 }
 
 /**

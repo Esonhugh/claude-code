@@ -1,6 +1,10 @@
 {
 "en": [
 [
+" 个文件",
+" files"
+],
+[
 "启用后才在本会话启动它的 MCP 服务器",
 "Its MCP server starts in this session once enabled"
 ],

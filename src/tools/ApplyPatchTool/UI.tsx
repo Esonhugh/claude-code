@@ -7,15 +7,16 @@ import type { ProgressMessage } from '../../types/message.js'
 import { getDisplayPath } from '../../utils/file.js'
 import type { ApplyPatchOutput } from './ApplyPatchTool.js'
 
-const FILE_HEADER = /^\*\*\* (Add|Update|Delete) File: (.+)$/gm
+const FILE_HEADER = /^\*\*\* (Add|Update|Delete) File: (.+)$(?:\n\*\*\* Move to: (.+)$)?/gm
 
-function patchedFiles(patch: string | undefined): { action: string; path: string }[] {
+function patchedFiles(patch: string | undefined): { action: string; path: string; movePath?: string }[] {
   if (!patch) return []
-  return [...patch.matchAll(FILE_HEADER)].map(m => ({ action: m[1]!, path: m[2]!.trim() }))
+  return [...patch.matchAll(FILE_HEADER)].map(m => ({ action: m[1]!, path: m[2]!.trim(), movePath: m[3]?.trim() }))
 }
 
-export function patchedPaths(patch: string | undefined): string[] {
-  return patchedFiles(patch).map(f => f.path)
+/** A file row's path; a moved file shows where it went. */
+export function fileLabel(path: string, movePath?: string): string {
+  return movePath ? `${getDisplayPath(path)} → ${getDisplayPath(movePath)}` : getDisplayPath(path)
 }
 
 // Each file reads like the Edit and Write rows: Write for a new file, Update
@@ -28,25 +29,25 @@ export function userFacingName(input?: Partial<{ input: string }>): string {
 }
 
 export function getToolUseSummary(input: Partial<{ input: string }> | undefined): string | null {
-  const paths = patchedPaths(input?.input)
-  if (paths.length === 0) return null
-  return paths.map(p => getDisplayPath(p)).join(', ')
+  const files = patchedFiles(input?.input)
+  if (files.length === 0) return null
+  return files.map(f => fileLabel(f.path, f.movePath)).join(', ')
 }
 
 // The row names the first file; the result adds a row for each other file.
 export function renderToolUseMessage(input: Partial<{ input: string }>): React.ReactNode {
-  const first = patchedPaths(input.input)[0]
-  return first ? getDisplayPath(first) : null
+  const first = patchedFiles(input.input)[0]
+  return first ? fileLabel(first.path, first.movePath) : null
 }
 
-function FileRow({ name, path, error }: { name: string; path: string; error?: boolean }): React.ReactNode {
+function FileRow({ name, label, error }: { name: string; label: string; error?: boolean }): React.ReactNode {
   return (
     <Box flexDirection="row" marginTop={1}>
       <Box minWidth={2}>
         <Text color={error ? 'error' : 'success'}>{BLACK_CIRCLE}</Text>
       </Box>
       <Text bold>{name}</Text>
-      <Text>({getDisplayPath(path)})</Text>
+      <Text>({label})</Text>
     </Box>
   )
 }
@@ -60,7 +61,7 @@ export function renderToolResultMessage(
     <Box flexDirection="column">
       {files.map((file, i) => (
         <Box key={file.filePath} flexDirection="column">
-          {i > 0 && <FileRow name={ROW_NAME[file.type]!} path={file.movePath ?? file.filePath} />}
+          {i > 0 && <FileRow name={ROW_NAME[file.type]!} label={fileLabel(file.filePath, file.movePath)} />}
           {file.type === 'delete' ? (
             <MessageResponse>
               <Text>Deleted file</Text>
@@ -79,7 +80,7 @@ export function renderToolResultMessage(
       ))}
       {failure && (
         <Box flexDirection="column">
-          <FileRow name={ROW_NAME[failure.type]!} path={failure.filePath} error />
+          <FileRow name={ROW_NAME[failure.type]!} label={getDisplayPath(failure.filePath)} error />
           <MessageResponse>
             <Text color="error">Error: {failure.message}</Text>
           </MessageResponse>

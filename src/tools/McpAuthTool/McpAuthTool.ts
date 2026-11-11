@@ -14,6 +14,7 @@ import type {
   McpSSEServerConfig,
   ScopedMcpServerConfig,
 } from '../../services/mcp/types.js'
+import { isToolOfServer } from '../../services/mcp/utils.js'
 import type { Tool } from '../../Tool.js'
 import { errorMessage } from '../../utils/errors.js'
 import { lazySchema } from '../../utils/lazySchema.js'
@@ -147,7 +148,7 @@ export function createMcpAuthTool(
                 c.name === serverName ? result.client : c,
               ),
               tools: [
-                ...reject(prev.mcp.tools, t => t.name?.startsWith(prefix)),
+                ...reject(prev.mcp.tools, t => isToolOfServer(t, serverName)),
                 ...result.tools,
               ],
               commands: [

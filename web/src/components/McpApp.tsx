@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { type AppServerTool, type AppTool, appCsp, appTools, findAppTool, normalizeMcpName, openableLink, resourceHtml, withCsp } from '../mcpApps'
+import { type AppServerTool, type AppTool, appCsp, appTools, callToolResult, findAppTool, normalizeMcpName, openableLink, resourceHtml, withCsp } from '../mcpApps'
 import type { Block } from '../protocol'
 import type { Control } from './extShared'
 import type { T } from './ui'
@@ -99,7 +99,7 @@ export function McpApp({ block, control, t }: { block: ToolBlock; control?: Cont
       try {
         const args = typeof params.arguments === 'object' && params.arguments !== null ? params.arguments : {}
         const fullName = `mcp__${normalizeMcpName(tool.serverName)}__${normalizeMcpName(name)}`
-        reply(id, await control({ subtype: 'mcp_call', tool: fullName, arguments: args }))
+        reply(id, callToolResult(await control({ subtype: 'mcp_call', tool: fullName, arguments: args })))
       } catch (error) {
         fail(id, error instanceof Error ? error.message : String(error))
       }
