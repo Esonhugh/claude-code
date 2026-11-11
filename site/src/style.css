@@ -22,7 +22,12 @@
   --bg: #121418; --surface: #1a1d23; --term: #0b0d10; --term-fg: #e6e8ec; --term-dim: #7d8492;
   --fg: #e4e6ea; --muted: #9aa1ad; --line: #2a2f37; --claude: #e0875c; --gpt: #3cc3ad; --link: #8fb0ff; color-scheme: dark;
 }
-:root[data-lang="zh"] .en, :root:not([data-lang="zh"]) .zh { display: none !important; }
+/* .zh = Chinese text without a Simplified version yet (shown for both scripts); .hant / .hans = one script only. */
+:root:is([data-lang="zh"], [data-lang="hans"]) .en,
+:root:not([data-lang="zh"]):not([data-lang="hans"]) .zh,
+:root:not([data-lang="zh"]) .hant,
+:root:not([data-lang="hans"]) .hans { display: none !important; }
+:root[data-lang="hans"] { --sans: "IBM Plex Sans", "Noto Sans SC", system-ui, -apple-system, "PingFang SC", sans-serif; }
 
 * { box-sizing: border-box; }
 img { max-width: 100%; }

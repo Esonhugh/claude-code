@@ -5,10 +5,11 @@
   if (!D) return;
   var NS = 'http://www.w3.org/2000/svg';
   var root = document.documentElement;
-  var lang = function () { return root.getAttribute('data-lang') === 'zh' ? 'zh' : 'en'; };
+  var lang = function () { var l = root.getAttribute('data-lang'); return l === 'zh' || l === 'hans' ? l : 'en'; };
   var T = {
-    en: { claude: 'Claude model (claude-sonnet-5-5)', chatgpt: 'ChatGPT model (gpt-6.1-sol)', hit: 'cache hit', range: 'single-run range', tokens: 'tokens / task', cost: '$ / task', runs: 'runs', time: 'time', single: 'Single agent', sub: '3 subagents', teams: 'Agent Teams, 3 members', vsSingle: 'vs single agent', notTeam: 'official did not actually form a team in -p; reference only', round: 'Turn', idle: 'idle before', min: 'min', total: 'total over 2.7 h', first: 'first request hit', tui: 'total tokens, 6 turns', pass: 'pass rate', orig: 'original', pert: 'perturbed', ver: 'version', effort: 'effort', dur: 'avg time', tb2: 'Terminal-Bench 2.0', swebenchpro: 'SWE-bench Pro', spread: 'SpreadsheetBench', passed: 'passed', ofRuns: 'runs' },
-    zh: { claude: 'Claude 模型（claude-sonnet-5-5）', chatgpt: 'ChatGPT 模型（gpt-6.1-sol）', hit: '命中率', range: '單次範圍', tokens: 'token / 任務', cost: '$ / 任務', runs: '次', time: '用時', single: '單代理', sub: '3 個 subagent', teams: 'Agent Teams 3 人', vsSingle: '相對單代理', notTeam: '官方在 -p 下沒有真正組隊，僅供參考', round: '第', idle: '之前閒置', min: '分鐘', total: '2.7 小時總量', first: '第一個請求命中率', tui: '6 輪總 token', pass: '通過率', orig: '原版', pert: '擾動版', ver: '版本', effort: 'effort', dur: '平均用時', tb2: 'Terminal-Bench 2.0', swebenchpro: 'SWE-bench Pro', spread: 'SpreadsheetBench', passed: '通過', ofRuns: '次' },
+    en: { claude: 'Claude model (claude-sonnet-5-5)', chatgpt: 'ChatGPT model (gpt-6.1-sol)', hit: 'cache hit', range: 'single-run range', tokens: 'tokens / task', cost: '$ / task', runs: 'runs', time: 'time', single: 'Single agent', sub: '3 subagents', teams: 'Agent Teams, 3 members', vsSingle: 'vs single agent', notTeam: 'official did not actually form a team in -p; reference only', round: 'Turn', idle: 'idle before', min: 'min', total: 'total over 2.7 h', first: 'first request hit', tui: 'total tokens, 6 turns', pass: 'pass rate', orig: 'original', pert: 'perturbed', ver: 'version', effort: 'effort', dur: 'avg time', tb2: 'Terminal-Bench 2.0', swebenchpro: 'SWE-bench Pro', spread: 'SpreadsheetBench', passed: 'passed', ofRuns: 'runs', turn: '' },
+    zh: { claude: 'Claude 模型（claude-sonnet-5-5）', chatgpt: 'ChatGPT 模型（gpt-6.1-sol）', hit: '命中率', range: '單次範圍', tokens: 'token / 任務', cost: '$ / 任務', runs: '次', time: '用時', single: '單代理', sub: '3 個 subagent', teams: 'Agent Teams 3 人', vsSingle: '相對單代理', notTeam: '官方在 -p 下沒有真正組隊，僅供參考', round: '第', idle: '之前閒置', min: '分鐘', total: '2.7 小時總量', first: '第一個請求命中率', tui: '6 輪總 token', pass: '通過率', orig: '原版', pert: '擾動版', ver: '版本', effort: 'effort', dur: '平均用時', tb2: 'Terminal-Bench 2.0', swebenchpro: 'SWE-bench Pro', spread: 'SpreadsheetBench', passed: '通過', ofRuns: '次', turn: '輪' },
+    hans: { claude: 'Claude 模型（claude-sonnet-5-5）', chatgpt: 'ChatGPT 模型（gpt-6.1-sol）', hit: '命中率', range: '单次范围', tokens: 'token / 任务', cost: '$ / 任务', runs: '次', time: '用时', single: '单代理', sub: '3 个 subagent', teams: 'Agent Teams 3 人', vsSingle: '相对单代理', notTeam: '官方在 -p 下没有真正组队，仅供参考', round: '第', idle: '之前闲置', min: '分钟', total: '2.7 小时总量', first: '第一个请求命中率', tui: '6 轮总 token', pass: '通过率', orig: '原版', pert: '扰动版', ver: '版本', effort: 'effort', dur: '平均用时', tb2: 'Terminal-Bench 2.0', swebenchpro: 'SWE-bench Pro', spread: 'SpreadsheetBench', passed: '通过', ofRuns: '次', turn: '轮' },
   };
   var t = function (k) { return T[lang()][k]; };
   var name = function (cli) { return D.clis[cli][lang()]; };
@@ -139,7 +140,7 @@
 
   function tasks() {
     var cols = D.tasks.clis;
-    var colNames = cols.map(function (c) { return D.clis[c][lang() === 'zh' ? 'shortZh' : 'shortEn']; });
+    var colNames = cols.map(function (c) { return D.clis[c][{ en: 'shortEn', zh: 'shortZh', hans: 'shortHans' }[lang()]]; });
     heatmap('viz-tasks', colNames, D.tasks.rows.map(function (r) {
       return { label: r[lang()], values: r.cells.map(function (c) { return c[0]; }), raw: r };
     }), {
@@ -152,13 +153,13 @@
 
   function idle() {
     var g = D.idle.gaps;
-    var cols = g.map(function (m, i) { return (lang() === 'zh' ? t('round') + (i + 1) + ' 輪' : t('round') + ' ' + (i + 1)) + '\n+' + m + ' ' + (lang() === 'zh' ? '分' : 'min'); });
+    var cols = g.map(function (m, i) { return (lang() === 'en' ? t('round') + ' ' + (i + 1) : t('round') + (i + 1) + ' ' + t('turn')) + '\n+' + m + ' ' + (lang() === 'en' ? 'min' : '分'); });
     heatmap('viz-idle', cols, D.idle.rows.map(function (r) {
       return { label: name(r.cli), values: r.first, strong: ours(r.cli), raw: r };
     }), {
       labelW: 190,
       norm: function (v) { return v / 100; },
-      colTitle: function (j) { return (lang() === 'zh' ? '第 ' + (j + 1) + ' 輪' : 'Turn ' + (j + 1)); },
+      colTitle: function (j) { return (lang() === 'en' ? 'Turn ' + (j + 1) : '第 ' + (j + 1) + ' ' + t('turn')); },
       tip: function (r, j) { return [[r.raw.first[j] + '%', t('first')], [g[j] + ' ' + t('min'), t('idle')], [r.raw.tokens + 'k', t('total')], ['$' + r.raw.cost.toFixed(3), t('total')]]; },
     });
   }
@@ -336,6 +337,16 @@
   var frame = document.getElementById('scatter-frame');
   if (frame) {
     var fit = function () { try { frame.style.height = frame.contentDocument.documentElement.scrollHeight + 'px'; } catch (e) {} };
-    frame.addEventListener('load', function () { fit(); new ResizeObserver(fit).observe(frame.contentDocument.body); });
+    // The frame follows this page's language and theme toggles.
+    var sync = function () {
+      try {
+        var el = frame.contentDocument.documentElement;
+        el.setAttribute('data-lang', root.getAttribute('data-lang') || 'en');
+        if (root.hasAttribute('data-theme')) el.setAttribute('data-theme', root.getAttribute('data-theme'));
+        else el.removeAttribute('data-theme');
+      } catch (e) {}
+    };
+    new MutationObserver(sync).observe(root, { attributes: true, attributeFilter: ['data-lang', 'data-theme'] });
+    frame.addEventListener('load', function () { sync(); fit(); new ResizeObserver(fit).observe(frame.contentDocument.body); });
   }
 })();
