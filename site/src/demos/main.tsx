@@ -14,7 +14,7 @@ const DEMOS = {
 } as const
 const FADE_MS = 180
 
-const currentLang = (): Lang => (document.documentElement.dataset.lang === 'zh' ? 'zh' : 'en')
+const currentLang = (): Lang => (document.documentElement.dataset.lang === 'en' ? 'en' : 'zh')
 
 // Follows the page's language toggle, which sets data-lang on <html>.
 function useLang(): Lang {

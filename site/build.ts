@@ -25,7 +25,7 @@ mkdirSync(join(OUT, 'benchmark'), { recursive: true })
 
 // ---------- shared shell ----------
 
-const bootLang = `<script>(function(){var l;try{l=localStorage.getItem('lang')}catch(e){}if(!l)l=(navigator.language||'').toLowerCase().indexOf('zh')===0?'zh':'en';document.documentElement.setAttribute('data-lang',l);var t;try{t=localStorage.getItem('theme')}catch(e){}if(t==='light'||t==='dark')document.documentElement.setAttribute('data-theme',t)})()</script>`
+const bootLang = `<script>(function(){var l;try{l=localStorage.getItem('lang')}catch(e){}if(!l){var n=(navigator.language||'').toLowerCase();l=n.indexOf('zh')!==0?'en':/hant|tw|hk|mo/.test(n)?'zh':'hans'}document.documentElement.setAttribute('data-lang',l);document.documentElement.lang=l==='zh'?'zh-Hant':l==='hans'?'zh-Hans':'en';var t;try{t=localStorage.getItem('theme')}catch(e){}if(t==='light'||t==='dark')document.documentElement.setAttribute('data-theme',t)})()</script>`
 
 function page(opts: { base: string; title: string; description: string; main: string; scripts?: string[] }): string {
   const { base } = opts
@@ -38,28 +38,29 @@ function page(opts: { base: string; title: string; description: string; main: st
 <title>${esc(opts.title)}</title>
 <meta name="description" content="${esc(opts.description)}">
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&family=Noto+Sans+TC:wght@400;500;700&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&family=Noto+Sans+TC:wght@400;500;700&family=Noto+Sans+SC:wght@400;500;700&display=swap">
 <link rel="stylesheet" href="${base}assets/style.css">
 ${bootLang}
 </head>
 <body>
 <div class="banner"><div class="wrap">
   <span class="en">v2.1.297 is out on npm. New on dev: the Tmux tool, context-window tiers, a built-in agent benchmark.</span>
-  <span class="zh">v2.1.297 已發佈到 npm。dev 上新增：Tmux 工具、上下文窗口檔位、內建 agent 基準測試。</span>
+  <span class="hant">v2.1.297 已發佈到 npm。dev 上新增：Tmux 工具、上下文窗口檔位、內建 agent 基準測試。</span>
+  <span class="hans">v2.1.297 已发布到 npm。dev 上新增：Tmux 工具、上下文窗口档位、内置 agent 基准测试。</span>
   <a href="${BLOB}/CHANGELOG.md">CHANGELOG</a>
 </div></div>
 <header class="top"><div class="wrap">
   <a class="brand" href="${base}"><span class="dot" aria-hidden="true"></span>esonhugh/claude-code</a>
   <nav class="links" aria-label="Main">
-    <a href="${base}docs/"><span class="en">Docs</span><span class="zh">文件</span></a>
-    <a href="${base}benchmark/"><span class="en">Benchmark</span><span class="zh">基準測試</span></a>
-    <a href="${base}web-demo/"><span class="en">Live demo</span><span class="zh">試玩</span></a>
-    <a href="${BLOB}/CHANGELOG.md"><span class="en">Changelog</span><span class="zh">變更紀錄</span></a>
+    <a href="${base}docs/"><span class="en">Docs</span><span class="hant">文件</span><span class="hans">文档</span></a>
+    <a href="${base}benchmark/"><span class="en">Benchmark</span><span class="hant">基準測試</span><span class="hans">基准测试</span></a>
+    <a href="${base}web-demo/"><span class="en">Live demo</span><span class="hant">試玩</span><span class="hans">试玩</span></a>
+    <a href="${BLOB}/CHANGELOG.md"><span class="en">Changelog</span><span class="hant">變更紀錄</span><span class="hans">更新日志</span></a>
     <a href="https://github.com/Esonhugh/claude-code">GitHub</a>
     <a href="https://www.npmjs.com/package/@esonhugh/claude-code">npm</a>
   </nav>
   <div class="toggles">
-    <div class="seg" role="group" aria-label="Language"><button type="button" data-lang="zh">中</button><button type="button" data-lang="en">EN</button></div>
+    <div class="seg" role="group" aria-label="Language"><button type="button" data-lang="hans" lang="zh-Hans">简</button><button type="button" data-lang="zh" lang="zh-Hant">繁</button><button type="button" data-lang="en">EN</button></div>
     <div class="seg" role="group" aria-label="Theme"><button type="button" data-th="auto">Auto</button><button type="button" data-th="light">Light</button><button type="button" data-th="dark">Dark</button></div>
   </div>
 </div></header>
@@ -67,7 +68,8 @@ ${opts.main}
 <footer><div class="wrap">
   <nav aria-label="Footer"><a href="https://github.com/Esonhugh/claude-code">GitHub</a><a href="https://www.npmjs.com/package/@esonhugh/claude-code">npm</a><a href="${BLOB}/CHANGELOG.md">Changelog</a><a href="${base}docs/">Docs</a><a href="${base}benchmark/">Benchmark</a></nav>
   <div class="en">Maintained by Esonhugh. Not an Anthropic product and not endorsed by Anthropic. The npm package ships a launcher and per-platform binaries only.</div>
-  <div class="zh">由 Esonhugh 維護。本專案不是 Anthropic 產品，也未獲 Anthropic 背書。npm 套件只包含 launcher 與各平台二進位檔。</div>
+  <div class="hant">由 Esonhugh 維護。本專案不是 Anthropic 產品，也未獲 Anthropic 背書。npm 套件只包含 launcher 與各平台二進位檔。</div>
+  <div class="hans">由 Esonhugh 维护。本项目不是 Anthropic 产品，也未获 Anthropic 背书。npm 包只包含 launcher 与各平台二进制文件。</div>
 </div></footer>
 ${scripts}
 </body>
@@ -155,7 +157,7 @@ function sidebar(current: string): string {
   const link = (file: string, title: string) =>
     `<a href="${htmlName(file)}"${file === current ? ' aria-current="page"' : ''}>${esc(title)}</a>`
   const body = groups.map(g => `<h4>${esc(g.name)}</h4>\n${g.items.map(i => link(i.file, i.title)).join('\n')}`).join('\n')
-  return `<aside><details class="doc-nav"><summary><span class="en">All docs</span><span class="zh">全部文件</span></summary>
+  return `<aside><details class="doc-nav"><summary><span class="en">All docs</span><span class="hant">全部文件</span><span class="hans">全部文档</span></summary>
 ${link('README.md', '功能索引')}
 ${body}
 </details></aside>`
@@ -169,7 +171,7 @@ ${sidebar(file)}
 <article class="prose">
 <p class="doc-note en">The feature docs are written in Chinese. They are the same pages as the GitHub Wiki.</p>
 ${renderDoc(md)}
-<p class="doc-foot"><span class="en">Source:</span><span class="zh">原始檔：</span> <a href="${BLOB}/docs/features/${file}">docs/features/${file}</a></p>
+<p class="doc-foot"><span class="en">Source:</span><span class="hant">原始檔：</span><span class="hans">源文件：</span> <a href="${BLOB}/docs/features/${file}">docs/features/${file}</a></p>
 </article>
 </main>`
   writeFileSync(
@@ -208,15 +210,16 @@ const scatterData = JSON.stringify(JSON.parse(read(join(SITE, 'src/benchmark/sca
 writeFileSync(
   join(OUT, 'benchmark/scatter.html'),
   `<!doctype html>
-<html lang="zh-Hans">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+${bootLang}
 ${read(join(SITE, 'src/benchmark/scatter-head.html'))}
 <style>.back{display:block;max-width:980px;margin:16px auto 0;padding-left:max(16px,env(safe-area-inset-left,0px));font-size:13px;color:var(--ink2)}</style>
 </head>
 <body>
-<a class="back" href="./">← How we test / 測試方法</a>
+<a class="back" href="./"><span class="en">← How we test</span><span class="hant">← 我們怎麼測</span><span class="hans">← 我们怎么测</span></a>
 ${read(join(SITE, 'src/benchmark/scatter-body.html')).replace('__DATA__', () => scatterData.replaceAll('</', '<\\/'))}
 </body>
 </html>
