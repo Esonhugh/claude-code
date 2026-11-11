@@ -29,11 +29,11 @@
       <a href="docs/openai-provider.html"><span class="en">Read the docs</span><span class="hant">看文件</span><span class="hans">看文档</span> →</a>
     </div>
     <div class="tour-step" data-step="goal">
-      <p class="prompt">$ <b>claude</b> /goal all tests pass</p>
+      <p class="prompt">$ <b>claude</b> Goal</p>
       <h2 class="en">Keep going until it is done</h2>
       <h2 class="hant">做到才算完</h2><h2 class="hans">做到才算完</h2>
-      <p class="en">Give a finish condition. At the end of every turn a separate model call reads the transcript and decides whether it holds; if not, Claude is told what is missing and continues. It stops after 9 misses in a row so it cannot loop forever.</p>
-      <p class="hant">給一個完成條件。每輪結束時另一次模型呼叫讀對話紀錄判斷是否達成，沒達成就告訴 Claude 還差什麼、繼續做；連續 9 次沒達成會強制停下，不會無限循環。</p><p class="hans">给一个完成条件。每轮结束时另一次模型调用读对话记录判断是否达成，没达成就告诉 Claude 还差什么、继续做；连续 9 次没达成会强制停下，不会无限循环。</p>
+      <p class="en">Say what "done" means in plain words and Claude sets the goal itself with the <code>Goal</code> tool, or type <code>/goal &lt;condition&gt;</code>. At the end of every turn a separate model call reads the transcript and decides whether it holds; if not, Claude is told what is missing and continues. It stops after 9 misses in a row so it cannot loop forever.</p>
+      <p class="hant">用一句話說清楚怎樣才算做完，Claude 會自己用 <code>Goal</code> 工具設定目標；也可以直接打 <code>/goal 條件</code>。每輪結束時另一次模型呼叫讀對話紀錄判斷是否達成，沒達成就告訴 Claude 還差什麼、繼續做；連續 9 次沒達成會強制停下，不會無限循環。</p><p class="hans">用一句话说清楚怎样才算做完，Claude 会自己用 <code>Goal</code> 工具设定目标；也可以直接打 <code>/goal 条件</code>。每轮结束时另一次模型调用读对话记录判断是否达成，没达成就告诉 Claude 还差什么、继续做；连续 9 次没达成会强制停下，不会无限循环。</p>
       <a href="docs/goal.html"><span class="en">Read the docs</span><span class="hant">看文件</span><span class="hans">看文档</span> →</a>
     </div>
     <div class="tour-step" data-step="teams">

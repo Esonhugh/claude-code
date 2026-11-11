@@ -11,16 +11,26 @@ const L = (lang: Lang, en: string, zh: string, hans: string) => ({ en, zh, hans 
 
 const scripts: Record<Exclude<Scene, 'accounts'>, (lang: Lang) => SimStep[]> = {
   goal: lang => [
-    { at: 10, type: 'prompt', text: '/goal all tests pass' },
-    { at: 40, type: 'spinner', verb: 'Pondering', until: 75 },
-    { at: 75, type: 'tool', name: 'Bash', args: 'bun test' },
-    { at: 88, type: 'result', text: '12 pass · 2 fail', color: 'error' },
-    { at: 115, type: 'line', text: 'Goal not yet met… continuing', color: 'warning' },
-    { at: 145, type: 'tool', name: 'Update', args: 'src/parser.ts' },
-    { at: 155, type: 'result', text: L(lang, 'Updated src/parser.ts with 3 additions', '已更新 src/parser.ts，新增 3 行', '已更新 src/parser.ts，新增 3 行') },
-    { at: 185, type: 'tool', name: 'Bash', args: 'bun test' },
-    { at: 198, type: 'result', text: '14 pass · 0 fail', color: 'success' },
-    { at: 230, type: 'line', text: '✔ Goal achieved (41s · 2 turns · 38.6k tokens)', color: 'success' },
+    {
+      at: 10,
+      type: 'prompt',
+      text: L(
+        lang,
+        'the parser tests keep failing. Keep fixing until every test passes',
+        'parser 的測試一直掛，幫我修到全部測試通過為止',
+        'parser 的测试一直挂，帮我修到全部测试通过为止',
+      ),
+    },
+    { at: 40, type: 'spinner', verb: 'Pondering', until: 70 },
+    { at: 70, type: 'tool', name: 'Goal', args: 'all tests in bun test pass' },
+    { at: 95, type: 'tool', name: 'Bash', args: 'bun test' },
+    { at: 108, type: 'result', text: '12 pass · 2 fail', color: 'error' },
+    { at: 135, type: 'line', text: 'Goal not yet met… continuing', color: 'warning' },
+    { at: 160, type: 'tool', name: 'Update', args: 'src/parser.ts' },
+    { at: 170, type: 'result', text: L(lang, 'Updated src/parser.ts with 3 additions', '已更新 src/parser.ts，新增 3 行', '已更新 src/parser.ts，新增 3 行') },
+    { at: 200, type: 'tool', name: 'Bash', args: 'bun test' },
+    { at: 213, type: 'result', text: '14 pass · 0 fail', color: 'success' },
+    { at: 245, type: 'line', text: '✔ Goal achieved (41s · 2 turns · 38.6k tokens)', color: 'success' },
   ],
   teams: lang => [
     { at: 10, type: 'prompt', text: L(lang, 'form a team of three: code, tests, docs. Name each one', '組一個三人團隊：程式、測試、文件，每人取名', '组一个三人团队：代码、测试、文档，每人取名') },
