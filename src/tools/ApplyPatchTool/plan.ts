@@ -29,20 +29,22 @@ function readExisting(absolutePath: string): ReturnType<typeof readFileSyncWithM
   }
 }
 
+export type PatchPlan = {
+  planned: PlannedFile[]
+  /** The first file that does not apply; files after it are not attempted. */
+  failure: { path: string; message: string } | null
+}
+
 /**
- * Resolves every operation against the files on disk without writing. Throws
- * PatchParseError with a message for the model when any part does not apply,
- * so a patch is applied whole or not at all.
+ * Resolves the operations in order against the files on disk without writing.
+ * A malformed patch throws PatchParseError. Like Codex, a file that does not
+ * apply stops the plan there: the files before it are kept in `planned`.
  */
-export function planPatch(patch: string): PlannedFile[] {
+export function planPatch(patch: string): PatchPlan {
   const ops = parsePatch(patch)
-  const planned: PlannedFile[] = []
   const seen = new Set<string>()
   for (const op of ops) {
-    const absolutePath = expandPath(op.path)
-    const absoluteMovePath = op.type === 'update' && op.movePath ? expandPath(op.movePath) : null
-    for (const p of [absolutePath, absoluteMovePath]) {
-      if (p === null) continue
+    for (const p of [op.path, ...(op.type === 'update' && op.movePath ? [op.movePath] : [])].map(p => expandPath(p))) {
       // SECURITY: no filesystem access for UNC paths (NTLM credential leak on Windows).
       if (p.startsWith('\\\\') || p.startsWith('//')) {
         throw new PatchParseError(`${p}: network paths are not supported by ${APPLY_PATCH_TOOL_NAME}.`)
@@ -50,25 +52,35 @@ export function planPatch(patch: string): PlannedFile[] {
       if (seen.has(p)) throw new PatchParseError(`${p} appears more than once in the patch. Combine its changes into one section.`)
       seen.add(p)
     }
-    const existing = readExisting(absolutePath)
-    if (existing?.notText) throw new PatchParseError(`${op.path}: ${notTextMessage(existing.notText)}`)
-    if (op.type === 'add') {
-      if (existing) throw new PatchParseError(`${op.path} already exists. Use '*** Update File' to change it.`)
-      planned.push({ op, absolutePath, absoluteMovePath, original: '', updated: op.content, encoding: 'utf8', lineEndings: 'LF' })
-      continue
-    }
-    if (!existing) throw new PatchParseError(`${op.path} does not exist.`)
-    if (op.type === 'delete') {
-      planned.push({ op, absolutePath, absoluteMovePath, original: existing.content, updated: null, encoding: existing.encoding, lineEndings: existing.lineEndings })
-      continue
-    }
-    if (absoluteMovePath && readExisting(absoluteMovePath)) {
-      throw new PatchParseError(`Cannot move ${op.path} to ${op.movePath}: the destination already exists.`)
-    }
-    const updated = op.chunks.length ? applyChunks(existing.content, op.chunks, op.path) : existing.content
-    planned.push({ op, absolutePath, absoluteMovePath, original: existing.content, updated, encoding: existing.encoding, lineEndings: existing.lineEndings })
   }
-  return planned
+  const planned: PlannedFile[] = []
+  for (const op of ops) {
+    try {
+      planned.push(planFile(op))
+    } catch (e) {
+      if (!(e instanceof PatchParseError)) throw e
+      return { planned, failure: { path: op.path, message: e.message } }
+    }
+  }
+  return { planned, failure: null }
+}
+
+function planFile(op: PatchOperation): PlannedFile {
+  const absolutePath = expandPath(op.path)
+  const absoluteMovePath = op.type === 'update' && op.movePath ? expandPath(op.movePath) : null
+  const existing = readExisting(absolutePath)
+  if (existing?.notText) throw new PatchParseError(`${op.path}: ${notTextMessage(existing.notText)}`)
+  if (op.type === 'add') {
+    if (existing) throw new PatchParseError(`${op.path} already exists. Use '*** Update File' to change it.`)
+    return { op, absolutePath, absoluteMovePath, original: '', updated: op.content, encoding: 'utf8', lineEndings: 'LF' }
+  }
+  if (!existing) throw new PatchParseError(`${op.path} does not exist.`)
+  const base = { op, absolutePath, absoluteMovePath, original: existing.content, encoding: existing.encoding, lineEndings: existing.lineEndings }
+  if (op.type === 'delete') return { ...base, updated: null }
+  if (absoluteMovePath && readExisting(absoluteMovePath)) {
+    throw new PatchParseError(`Cannot move ${op.path} to ${op.movePath}: the destination already exists.`)
+  }
+  return { ...base, updated: op.chunks.length ? applyChunks(existing.content, op.chunks, op.path) : existing.content }
 }
 
 export function touchedPaths(patch: string): string[] {
@@ -108,11 +120,11 @@ export function patchHookSteps(
   })
 }
 
-/** Steps for a patch not yet applied; none when it does not apply. */
+/** Steps for the files of a patch that would apply; none when it is malformed. */
 export function plannedPatchHookSteps(patch: string): PatchHookStep[] {
   let planned: PlannedFile[]
   try {
-    planned = planPatch(patch)
+    planned = planPatch(patch).planned
   } catch {
     return []
   }
