@@ -549,11 +549,13 @@ export function getMemoryIndexStatus(): MemoryIndexStatus {
   const builtAt = index.query("SELECT value FROM meta WHERE key = 'built_at'").get() as { value: string } | null
   const count = (sql: string) => (index.query(sql).get() as { n: number }).n
   const page = (name: string) => (index.query(`PRAGMA ${name}`).get() as Record<string, number>)[name] ?? 0
+  const files = count('SELECT count(*) AS n FROM files')
   return {
     path,
-    built: builtAt !== null,
+    // Recall and SearchMemory fill the index on demand without a full build.
+    built: builtAt !== null || files > 0,
     builtAt: builtAt ? Number(builtAt.value) : undefined,
-    files: count('SELECT count(*) AS n FROM files'),
+    files,
     chunks: count('SELECT count(*) AS n FROM chunks'),
     bytes: page('page_count') * page('page_size'),
   }

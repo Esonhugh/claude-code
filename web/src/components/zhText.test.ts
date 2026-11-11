@@ -9,6 +9,7 @@ describe('zh', () => {
     expect(zh('en', '最常用模型')).toBe('Favorite model')
     expect(zh('en', '晚上最常用')).toBe('Evenings are busiest')
     expect(zh('en', 'Stats')).toBe('Stats')
+    expect(zh('en', '307 个文件 · 431 段')).toBe('307 files · 431 chunks')
   })
 
   it('maps to traditional characters for zh-Hant', () => {

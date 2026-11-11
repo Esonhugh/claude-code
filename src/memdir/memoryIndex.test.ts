@@ -240,6 +240,15 @@ describe('searchMemory', () => {
     rmSync(file)
   })
 
+  test('an index a search filled counts as built', async () => {
+    resetMemoryIndexForTesting(':memory:')
+    await search('walrus')
+    const status = getMemoryIndexStatus()
+    expect(status.files).toBeGreaterThan(0)
+    expect(status.built).toBe(true)
+    expect(status.builtAt).toBeUndefined()
+  })
+
   test('build drops rows outside the scopes and reports status', async () => {
     await search('walrus')
     const status = await buildMemoryIndex(['project'])
