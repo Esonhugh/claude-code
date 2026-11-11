@@ -1,5 +1,7 @@
 # 背景会话、daemon 与 agents 视图
 
+<!-- lang: zh-Hans -->
+
 > 英文名：`background-sessions` · 领域：Agent 与编排 · [返回功能索引](README.md)
 
 ## 这是什么
@@ -11,6 +13,37 @@
 - 不打开也能看它最近的输出（`claude logs`），或者直接回一句话给它。
 
 后台任务由一个按需启动的小服务（daemon）托管：第一次用 `--bg` 时自动启动，没有后台任务、也没人在看列表时 5 秒后自动退出，不需要手动安装或维护。
+
+<details lang="en"><summary>English</summary>
+
+> Name: `background-sessions` · Area: Agents and orchestration · [Back to index](README.md)
+
+## What it is
+
+A normal conversation holds your terminal until Claude finishes. Background sessions let you hand a task off: Claude keeps working in the background and your terminal is free at once. Later you can:
+
+- see every background task on one screen with `claude agents`: which ones are waiting for you, which are still running, which are done;
+- attach to one and carry on as in a normal session, then press `Ctrl+Z` to send it back to the background;
+- read its latest output without attaching (`claude logs`), or send it a reply directly.
+
+Background tasks are hosted by a small on-demand service (the daemon). It starts the first time you use `--bg` and exits after 5 seconds when there are no background tasks and nobody is watching the list, so there is nothing to install or maintain.
+
+</details>
+<details lang="zh-Hant"><summary>繁體中文</summary>
+
+> 英文名：`background-sessions` · 領域：Agent 與編排 · [返回功能索引](README.md)
+
+## 這是什麼
+
+平時和 Claude 對話，終端會被這個會話佔住，要等它做完才能幹別的。背景會話讓你把一個任務「交出去」：Claude 在後台繼續工作，你的終端馬上就能用。之後隨時可以：
+
+- 用 `claude agents` 一屏看所有後台任務：哪些在等你確認、哪些還在跑、哪些已經結束；
+- 開啟（attach）其中一個，像正常會話一樣接著聊，按 `Ctrl+Z` 再把它放回後台；
+- 不開啟也能看它最近的輸出（`claude logs`），或者直接回一句話給它。
+
+後台任務由一個按需啟動的小服務（daemon）託管：第一次用 `--bg` 時自動啟動，沒有後台任務、也沒人在看列表時 5 秒後自動退出，不需要手動安裝或維護。
+
+</details>
 
 ## 什么时候用
 

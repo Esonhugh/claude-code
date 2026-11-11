@@ -1,5 +1,7 @@
 # Bash 沙箱
 
+<!-- lang: zh-Hans -->
+
 > 英文名：`sandbox` · 领域：权限与安全 · [返回功能索引](README.md)
 
 ## 这是什么
@@ -13,6 +15,41 @@ Claude 跑的每条 shell 命令，默认和你本人一样有完整权限：能
 好处是可以放心让 Claude 自己跑命令：开启「auto-allow」后，沙箱里的命令不再一条条问你，因为它最多只能弄乱当前项目。
 
 本 fork 的沙箱行为对齐官方 2.1.303（沙箱运行时同为 `@anthropic-ai/sandbox-runtime` 0.0.80）。
+
+<details lang="en"><summary>English</summary>
+
+> Name: `sandbox` · Area: Permissions and security · [Back to index](README.md)
+
+## What it is
+
+By default every shell command Claude runs has the same rights as you: it can change any file you can, reach any website, and read your environment variables. The sandbox puts these commands in an isolation layer (bubblewrap on Linux, the built-in sandbox on macOS, srt-win bundled in the binary on Windows; run `claude sandbox install` before first use):
+
+- **Files**: writes are limited to the current project and temp directories; writing elsewhere gives `Read-only file system`.
+- **Network**: only the domains you list are reachable; other domains prompt you first.
+- **Credentials**: environment variables and files you name cannot be read inside the sandbox.
+
+The benefit is that Claude can run commands on its own with less risk: with auto-allow on, sandboxed commands no longer ask one by one, because the worst they can do is mess up the current project.
+
+This fork's sandbox matches the official 2.1.303 (the sandbox runtime is the same `@anthropic-ai/sandbox-runtime` 0.0.80).
+
+</details>
+<details lang="zh-Hant"><summary>繁體中文</summary>
+
+> 英文名：`sandbox` · 領域：權限與安全 · [返回功能索引](README.md)
+
+## 這是什麼
+
+Claude 跑的每條 shell 命令，預設和你本人一樣有完整權限：能改任何你能改的檔案、能連任何網站、能讀到你的環境變數。沙箱給這些命令套一層「隔離罩」（Linux 用 bubblewrap，macOS 用系統自帶的 sandbox，Windows 用 binary 內建的 srt-win，第一次使用前執行 `claude sandbox install`）：
+
+- **檔案**：只能寫當前專案目錄和臨時目錄，寫別處會得到 `Read-only file system`；
+- **網路**：只能連你列出的域名，其他域名先彈窗問你；
+- **憑據**：你指定的環境變數、檔案在沙箱裡讀不到。
+
+好處是可以放心讓 Claude 自己跑命令：開啟「auto-allow」後，沙箱裡的命令不再一條條問你，因為它最多隻能弄亂當前專案。
+
+本 fork 的沙箱行為對齊官方 2.1.303（沙箱執行時同為 `@anthropic-ai/sandbox-runtime` 0.0.80）。
+
+</details>
 
 ## 快速上手
 

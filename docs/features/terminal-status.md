@@ -1,5 +1,7 @@
 # 终端程序状态（OSC 7501）
 
+<!-- lang: zh-Hans -->
+
 > 英文名：`terminal-status` · 领域：工具 · [返回功能索引](README.md)
 
 ## 这是什么
@@ -18,6 +20,51 @@ OSC 7501 是一种终端协议：程序通过不可见的控制序列告诉终�
 | `clear` | 退出时清掉终端上的记录 |
 
 后台任务（子代理、Monitor 等）会带 `id` 作为子记录单独上报，结束后移除。
+
+<details lang="en"><summary>English</summary>
+
+> Name: `terminal-status` · Area: Tools · [Back to index](README.md)
+
+## What it is
+
+With several terminal tabs open, it is hard to tell which Claude has finished and which is stuck waiting for you to press "Yes".
+
+OSC 7501 is a terminal protocol: a program uses an invisible control sequence to tell the terminal what state it is in, and the terminal shows that on the tab, in a sidebar or as a notification. Claude Code reports these states:
+
+| State | Meaning |
+| --- | --- |
+| `idle` | idle, waiting for your input |
+| `working` | answering or running tools |
+| `blocked` | waiting on you: `kind=permission` (approval), `question` (an answer), `auth` (sign-in); `msg` is a one-line note |
+| `done` | this turn is finished |
+| `error` | something failed |
+| `clear` | clears the terminal's record on exit |
+
+Background tasks (subagents, Monitor and so on) report separately as child records with an `id`, removed when they end.
+
+</details>
+<details lang="zh-Hant"><summary>繁體中文</summary>
+
+> 英文名：`terminal-status` · 領域：工具 · [返回功能索引](README.md)
+
+## 這是什麼
+
+同時開著好幾個終端標籤頁時，你很難知道哪個 Claude 已經做完、哪個卡在等你點「Yes」。
+
+OSC 7501 是一種終端協議：程式通過不可見的控制序列告訴終端「我現在是什麼狀態」，終端再把它顯示在標籤頁、側欄或通知裡。Claude Code 會上報這些狀態：
+
+| 狀態 | 含義 |
+| --- | --- |
+| `idle` | 空閒，等你輸入 |
+| `working` | 正在回答或跑工具 |
+| `blocked` | 卡住等你：`kind=permission`（等批准）、`question`（等回答問題）、`auth`（等登入），`msg` 是一句說明 |
+| `done` | 這一輪做完了 |
+| `error` | 出錯 |
+| `clear` | 退出時清掉終端上的記錄 |
+
+後台任務（子代理、Monitor 等）會帶 `id` 作為子記錄單獨上報，結束後移除。
+
+</details>
 
 ## 怎么用
 

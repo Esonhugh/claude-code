@@ -1,5 +1,7 @@
 # Dynamic Workflow
 
+<!-- lang: zh-Hans -->
+
 > 英文名：`workflows` · 领域：Agent 与编排 · [返回功能索引](README.md)
 
 ## 这是什么
@@ -12,6 +14,39 @@
 - 跑得好的脚本可以保存成命名 workflow，下次按名字直接用。
 
 脚本格式和官方 Workflow 兼容（不是 Anthropic 的官方实现）。
+
+<details lang="en"><summary>English</summary>
+
+> Name: `workflows` · Area: Agents and orchestration · [Back to index](README.md)
+
+## What it is
+
+For big jobs that need many agents at once (for example, split the repo by module across 10 agents for review, then merge the findings), dispatching agents one by one is tedious. A workflow has Claude write a short JavaScript orchestration script that says how many phases there are, which agents run in parallel in each phase and how results are combined; the runtime then runs the script:
+
+- before it starts, you confirm it and see how many agents it will launch;
+- it runs in the background without holding the conversation, and `/workflows` shows the progress of each phase and each agent;
+- when it ends (finished, failed or stopped by you), the main conversation gets a notification and the result;
+- scripts that work well can be saved as named workflows and reused by name.
+
+The script format is compatible with the official Workflow (this is not Anthropic's official implementation).
+
+</details>
+<details lang="zh-Hant"><summary>繁體中文</summary>
+
+> 英文名：`workflows` · 領域：Agent 與編排 · [返回功能索引](README.md)
+
+## 這是什麼
+
+遇到「要很多個 Agent 一起做」的大任務（例如把倉庫按模組分給 10 個 Agent 審查，再彙總），一個個手動派 Agent 很麻煩。Workflow 讓 Claude 先寫一小段 JavaScript 編排腳本，說明分幾個階段、每個階段並行派哪些 Agent、結果怎麼彙總，然後由執行時按腳本執行：
+
+- 執行前會讓你確認，看清楚要派多少 Agent；
+- 在後台執行，不佔住對話；`/workflows` 裡能看到每個階段、每個 Agent 的進度；
+- 結束（完成、失敗或被你停止）時，主對話會收到一條通知和結果；
+- 跑得好的腳本可以儲存成命名 workflow，下次按名字直接用。
+
+腳本格式和官方 Workflow 相容（不是 Anthropic 的官方實現）。
+
+</details>
 
 ## 什么时候用
 

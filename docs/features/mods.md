@@ -1,5 +1,7 @@
 # Mods / Function Hooks
 
+<!-- lang: zh-Hans -->
+
 > 英文名：`mods` · 领域：插件与扩展 · [返回功能索引](README.md)
 
 ## 这是什么
@@ -15,6 +17,45 @@ Mod 是一种插件：你写一个 JavaScript / TypeScript 文件，**在 Claude
 写法是「中间件」：每个事件交给你的函数，你可以看一眼直接放行（`next(event)`），也可以改掉参数、拒绝，或者返回自己的结果。
 
 > Mod 运行在本机、拥有较高权限，只加载你信任的插件。
+
+<details lang="en"><summary>English</summary>
+
+> Name: `mods` · Area: Plugins and extensions · [Back to index](README.md)
+
+## What it is
+
+A Mod is a plugin: you write one JavaScript or TypeScript file that **hooks into every stage of how Claude runs**. Compared with [Hooks](hooks.md) (run an external script, read its exit code), a Mod runs inside Claude and can do much more:
+
+- **Add commands**: register `/my-command`.
+- **Intercept or rewrite tool calls**: when Claude is about to run `rm -rf`, pause and show you what it would delete.
+- **Change the UI**: add a status band above the input box, or open a clickable panel on the right.
+- **Read and write state**: session usage, working directory, small persisted data.
+- **Call models, start sub-agents, run commands.**
+
+Mods are written as middleware: each event is passed to your function, which can glance at it and let it through (`next(event)`), change its arguments, refuse it, or return its own result.
+
+> Mods run on your machine with broad permissions. Only load ones you trust.
+
+</details>
+<details lang="zh-Hant"><summary>繁體中文</summary>
+
+> 英文名：`mods` · 領域：插件與擴充 · [返回功能索引](README.md)
+
+## 這是什麼
+
+Mod 是一種插件：你寫一個 JavaScript / TypeScript 檔案，**在 Claude 執行的各個環節插一手**。和 [Hooks](hooks.md)（跑外部腳本、看退出碼）相比，Mod 直接執行在 Claude 裡面，能做的多得多：
+
+- **加命令**：註冊 `/我的命令`；
+- **攔截 / 改寫工具呼叫**：Claude 要跑 `rm -rf` 時先停下來給你看會刪什麼；
+- **改介面**：在輸入框上方加一條狀態列，或在右側開一個可點選的面板；
+- **讀寫狀態**：會話用量、工作目錄、持久化的小資料；
+- **呼叫模型、啟動子代理、執行命令**。
+
+寫法是「中介層」：每個事件交給你的函式，你可以看一眼直接放行（`next(event)`），也可以改掉參數、拒絕，或者返回自己的結果。
+
+> Mod 執行在本機、擁有較高權限，只載入你信任的插件。
+
+</details>
 
 ## 快速上手：写第一个 Mod
 

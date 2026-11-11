@@ -1,5 +1,7 @@
 # 模型自动发现与 Gateway
 
+<!-- lang: zh-Hans -->
+
 > 英文名：`model-discovery` · 领域：模型与 Provider · [返回功能索引](README.md)
 
 ## 这是什么
@@ -10,6 +12,35 @@
 
 - **Anthropic 网关**：设置了非官方 `ANTHROPIC_BASE_URL` 就默认开启，`CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=0` 关闭；
 - **OpenAI provider**：自动发现，见 [openai-provider.md](openai-provider.md)。
+
+<details lang="en"><summary>English</summary>
+
+> Name: `model-discovery` · Area: Models and providers · [Back to index](README.md)
+
+## What it is
+
+Many teams reach models through an **API gateway** (a proxy, LiteLLM, a company gateway and so on). The gateway may have models with its own names, such as `gw-alpha-1`. By default `/model` lists only the built-in Claude models, so using a gateway model means typing it with `--model`.
+
+With model discovery on, Claude Code asks the gateway which models it has at startup (a request to `/v1/models`) and adds them to the `/model` list, marked `From gateway`.
+
+- **Anthropic gateways**: on by default whenever `ANTHROPIC_BASE_URL` points somewhere unofficial; `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=0` turns it off.
+- **OpenAI provider**: discovered automatically, see [openai-provider.md](openai-provider.md).
+
+</details>
+<details lang="zh-Hant"><summary>繁體中文</summary>
+
+> 英文名：`model-discovery` · 領域：模型與 Provider · [返回功能索引](README.md)
+
+## 這是什麼
+
+很多團隊通過一個**API 閘道**（代理、LiteLLM、公司內部閘道等）使用模型。閘道上可能有自己命名的模型，比如 `gw-alpha-1`。預設 `/model` 只列內建的 Claude 模型，要用閘道的模型只能靠 `--model` 手打。
+
+開啟模型發現後，Claude Code 啟動時會去問閘道「你有哪些模型」（請求 `/v1/models`），把結果加進 `/model` 列表，標註 `From gateway`。
+
+- **Anthropic 閘道**：設定了非官方 `ANTHROPIC_BASE_URL` 就預設開啟，`CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=0` 關閉；
+- **OpenAI provider**：自動發現，見 [openai-provider.md](openai-provider.md)。
+
+</details>
 
 ## 快速上手：Anthropic 网关
 

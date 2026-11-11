@@ -1,23 +1,23 @@
 <div class="wrap">
   <header>
-    <h1>每任务 token、花费与缓存命中率</h1>
-    <p class="lede">本仓库、官方 Claude Code 2.1.319、Codex CLI 0.167.0、opencode 1.19.5、pi 1.5.0、oh-my-pi 18.18.0、dsh 0.2.2-rc.1 跑同一批真实任务（2026-11-07）。越靠左上越好：用更少的 token（或花费），拿到更高的缓存命中。上方按钮可把横轴切换为 token 或 API 等价花费（美元）。颜色 = CLI，形状 = 账号类型（实心圆 Claude 订阅、菱形 ChatGPT 订阅、空心圆 Claude API key）。把鼠标移到点上（手机上点一下）查看明细，点图例可隐藏。</p>
+    <h1><span class="en">Tokens, cost and cache hit rate per task</span><span class="hant">每任務 token、花費與快取命中率</span><span class="hans">每任务 token、花费与缓存命中率</span></h1>
+    <p class="lede"><span class="en">This fork, official Claude Code 2.1.319, Codex CLI 0.167.0, opencode 1.19.5, pi 1.5.0, oh-my-pi 18.18.0 and dsh 0.2.2-rc.1 ran the same real tasks (2026-11-07). Up and to the left is better: fewer tokens (or dollars) and more cache hits. The buttons above switch the x-axis between tokens and API-equivalent cost (USD). Color = CLI, shape = account type (filled circle Claude subscription, diamond ChatGPT subscription, hollow circle Claude API key). Hover a point (tap on phones) for details; click a legend entry to hide it.</span><span class="hant">本分支、官方 Claude Code 2.1.319、Codex CLI 0.167.0、opencode 1.19.5、pi 1.5.0、oh-my-pi 18.18.0、dsh 0.2.2-rc.1 跑同一批真實任務（2026-11-07）。越靠左上越好：用更少的 token（或花費），拿到更高的快取命中。上方按鈕可把橫軸切換為 token 或 API 等價花費（美元）。顏色 = CLI，形狀 = 帳號類型（實心圓 Claude 訂閱、菱形 ChatGPT 訂閱、空心圓 Claude API key）。把滑鼠移到點上（手機上點一下）查看明細，點圖例可隱藏。</span><span class="hans">本仓库、官方 Claude Code 2.1.319、Codex CLI 0.167.0、opencode 1.19.5、pi 1.5.0、oh-my-pi 18.18.0、dsh 0.2.2-rc.1 跑同一批真实任务（2026-11-07）。越靠左上越好：用更少的 token（或花费），拿到更高的缓存命中。上方按钮可把横轴切换为 token 或 API 等价花费（美元）。颜色 = CLI，形状 = 账号类型（实心圆 Claude 订阅、菱形 ChatGPT 订阅、空心圆 Claude API key）。把鼠标移到点上（手机上点一下）查看明细，点图例可隐藏。</span></p>
   </header>
-  <div class="controls" role="group" aria-label="视图">
+  <div class="controls" role="group" aria-label="View">
     <div class="seg" id="views"></div>
     <span class="sep" aria-hidden="true"></span>
     <div class="seg" id="panels"></div>
     <span class="sep" aria-hidden="true"></span>
-    <div class="seg" id="metric" aria-label="横轴"></div>
+    <div class="seg" id="metric" aria-label="X axis"></div>
   </div>
-  <section class="card" aria-label="散点图">
+  <section class="card" aria-label="Scatter plot">
     <div class="legend" id="legend"></div>
-    <div class="legend" id="auths" aria-label="账号类型"></div>
-    <div class="chartbox" id="box"><svg id="chart" role="img" aria-labelledby="chartTitle"><title id="chartTitle">token 与命中率散点图</title></svg><div class="tip" id="tip" hidden></div></div>
+    <div class="legend" id="auths" aria-label="Account type"></div>
+    <div class="chartbox" id="box"><svg id="chart" role="img" aria-labelledby="chartTitle"><title id="chartTitle">Tokens vs cache hit rate</title></svg><div class="tip" id="tip" hidden></div></div>
     <p class="note" id="note"></p>
   </section>
-  <section class="card tablebox" aria-label="数据表"><table id="table"></table></section>
-  <p class="note">命中率 = 缓存读 ÷（未缓存输入 + 缓存读 + 缓存写），按 token 加权。模型：Claude 订阅与 Claude API key 都用 claude-sonnet-5-5，ChatGPT 订阅用 gpt-6.1-sol；effort 用各 CLI 默认值（见表格）。花费按公开 API 价换算（美元 / 百万 token）：gpt-6.1-sol 输入 2、缓存读 0.10、输出 10；claude-sonnet-5-5 输入 2、缓存读 0.20、5 分钟缓存写 2.50、1 小时缓存写 4、输出 10。本仓库与官方写 1 小时缓存，其他 CLI 写 5 分钟缓存。ChatGPT 订阅与 Claude 订阅本身是包月，实际不按此计费，这里换算只为横向比较。两种模型价格不同，跨模型只比较相对位置。pi 与 opencode 的 Claude 侧用 API key 在另一时段运行。官方 2.1.319 在 -p 下没有真正组成团队（带名字的 Agent 变成后台 subagent），标 * 的点仅作参考。</p>
+  <section class="card tablebox" aria-label="Data table"><table id="table"></table></section>
+  <p class="note"><span class="en">Hit rate = cache read ÷ (uncached input + cache read + cache write), weighted by tokens. Models: Claude subscription and Claude API key both use claude-sonnet-5-5; ChatGPT subscription uses gpt-6.1-sol; effort is each CLI's default (see table). Cost uses public API prices (USD per million tokens): gpt-6.1-sol input 2, cache read 0.10, output 10; claude-sonnet-5-5 input 2, cache read 0.20, 5-minute cache write 2.50, 1-hour cache write 4, output 10. This fork and official write 1-hour cache; other CLIs write 5-minute cache. ChatGPT and Claude subscriptions are monthly plans and are not billed this way; the conversion is only for comparison. The two models are priced differently, so compare positions only within a model. The Claude side of pi and opencode ran with an API key at a different time. Official 2.1.319 did not actually form a team in -p (named Agents became background subagents); points marked * are reference only.</span><span class="hant">命中率 = 快取讀 ÷（未快取輸入 + 快取讀 + 快取寫），按 token 加權。模型：Claude 訂閱與 Claude API key 都用 claude-sonnet-5-5，ChatGPT 訂閱用 gpt-6.1-sol；effort 用各 CLI 預設值（見表格）。花費按公開 API 價換算（美元 / 百萬 token）：gpt-6.1-sol 輸入 2、快取讀 0.10、輸出 10；claude-sonnet-5-5 輸入 2、快取讀 0.20、5 分鐘快取寫 2.50、1 小時快取寫 4、輸出 10。本分支與官方寫 1 小時快取，其他 CLI 寫 5 分鐘快取。ChatGPT 訂閱與 Claude 訂閱本身是包月，實際不按此計費，這裡換算只為橫向比較。兩種模型價格不同，跨模型只比較相對位置。pi 與 opencode 的 Claude 側用 API key 在另一時段執行。官方 2.1.319 在 -p 下沒有真正組成團隊（帶名字的 Agent 變成背景 subagent），標 * 的點僅作參考。</span><span class="hans">命中率 = 缓存读 ÷（未缓存输入 + 缓存读 + 缓存写），按 token 加权。模型：Claude 订阅与 Claude API key 都用 claude-sonnet-5-5，ChatGPT 订阅用 gpt-6.1-sol；effort 用各 CLI 默认值（见表格）。花费按公开 API 价换算（美元 / 百万 token）：gpt-6.1-sol 输入 2、缓存读 0.10、输出 10；claude-sonnet-5-5 输入 2、缓存读 0.20、5 分钟缓存写 2.50、1 小时缓存写 4、输出 10。本仓库与官方写 1 小时缓存，其他 CLI 写 5 分钟缓存。ChatGPT 订阅与 Claude 订阅本身是包月，实际不按此计费，这里换算只为横向比较。两种模型价格不同，跨模型只比较相对位置。pi 与 opencode 的 Claude 侧用 API key 在另一时段运行。官方 2.1.319 在 -p 下没有真正组成团队（带名字的 Agent 变成后台 subagent），标 * 的点仅作参考。</span></p>
 </div>
 <script>
 const DATA = __DATA__;
@@ -27,14 +27,16 @@ const SIDE={claude:'Claude',openai:'ChatGPT'};
 const PROD=['fork','official','codex','opencode','pi','omp','dsh'];
 const AUTH=d=>d.cli.endsWith('-claude')&&d.prod!=='fork'?'Claude API key':(d.side==='claude'?'Claude 订阅':'ChatGPT 订阅');
 const AUTHS=['Claude 订阅','ChatGPT 订阅','Claude API key'];const hiddenAuth=new Set();
+// Data keys stay in Simplified Chinese; T() maps them to the page language (data-lang: en | zh = Traditional | hans).
+const LG=()=>({zh:'hant',hans:'hans'})[document.documentElement.dataset.lang]||'en';
+const TR={en:{"adaptive（默认）": "adaptive (default)", "未记录": "not recorded", "总览": "Overview", "按任务类型": "By task type", "交互与多代理": "Interactive & multi-agent", "全部 11 题": "All 11 tasks", "全部类型": "All types", "办公": "Office", "研究": "Research", "编码": "Coding", "运维": "Ops", "排障": "Troubleshoot", "TUI 6 轮": "TUI, 6 turns", "SDK 4 轮": "SDK, 4 turns", "多代理": "Multi-agent", "闲置 2.7 小时": "Idle 2.7 h", "单代理": "Single agent", "闲置": "Idle", "Claude 订阅": "Claude subscription", "ChatGPT 订阅": "ChatGPT subscription", "本仓库": "This fork", "官方": "Official", "官方 Claude Code 2.1.319": "Official Claude Code 2.1.319", "横轴：token": "X axis: tokens", "横轴：花费 USD": "X axis: cost USD", "每次 run 花费（美元，对数轴）": "Cost per run (USD, log)", "平均每次 run API 等价花费（美元，对数轴，越左越省）": "Mean API-equivalent cost per run (USD, log scale, left is cheaper)", "每次 run 总 token（对数轴）": "Tokens per run (log)", "平均每次 run 总 token（对数轴，越左越省）": "Mean tokens per run (log scale, left is cheaper)", "缓存命中率（越高越好）": "Cache hit rate (higher is better)", "次 run": "runs", "平均总 token": "Mean tokens", "API 等价花费": "API-equivalent cost", "缓存命中率": "Cache hit rate", "缓存读": "Cache read", "缓存写": "Cache write", "未缓存输入": "Uncached input", "输出": "Output", "平均 TTFT": "Mean TTFT", "平均用时": "Mean time", "请求数": "Requests", "CLI · 账号": "CLI · account", "模型 · effort": "Model · effort", "场景": "Scenario", "总 token": "Tokens", "花费 USD": "Cost USD", "命中率": "Hit rate"},
+ hant:{"adaptive（默认）": "adaptive（預設）", "未记录": "未記錄", "总览": "總覽", "按任务类型": "按任務類型", "交互与多代理": "互動與多代理", "全部 11 题": "全部 11 題", "全部类型": "全部類型", "办公": "辦公", "编码": "程式", "运维": "維運", "TUI 6 轮": "TUI 6 輪", "SDK 4 轮": "SDK 4 輪", "闲置 2.7 小时": "閒置 2.7 小時", "单代理": "單代理", "闲置": "閒置", "Claude 订阅": "Claude 訂閱", "ChatGPT 订阅": "ChatGPT 訂閱", "本仓库": "本分支", "横轴：token": "橫軸：token", "横轴：花费 USD": "橫軸：花費 USD", "每次 run 花费（美元，对数轴）": "每次 run 花費（美元，對數軸）", "平均每次 run API 等价花费（美元，对数轴，越左越省）": "平均每次 run API 等價花費（美元，對數軸，越左越省）", "每次 run 总 token（对数轴）": "每次 run 總 token（對數軸）", "平均每次 run 总 token（对数轴，越左越省）": "平均每次 run 總 token（對數軸，越左越省）", "缓存命中率（越高越好）": "快取命中率（越高越好）", "平均总 token": "平均總 token", "API 等价花费": "API 等價花費", "缓存命中率": "快取命中率", "缓存读": "快取讀", "缓存写": "快取寫", "未缓存输入": "未快取輸入", "输出": "輸出", "平均用时": "平均用時", "请求数": "請求數", "CLI · 账号": "CLI · 帳號", "场景": "場景", "总 token": "總 token", "花费 USD": "花費 USD"}};
+const T=s=>(TR[LG()]||{})[s]??s;
 const VIEWS=[['overall','总览',['全部 11 题']],['type','按任务类型',['全部类型','办公','研究','编码','运维','排障','Lean']],['scen','交互与多代理',['TUI 6 轮','SDK 4 轮','多代理','闲置 2.7 小时']]];
 const NOTES={
- overall:'每个点 = 11 题 × 3 次（33 次 run）的平均；dsh ChatGPT 为 32 次（1 次 WebSocket 断线未计入）。浅蓝区域 = 横轴（token 或花费）不高于中位数且命中率不低于中位数；虚线 = Pareto 前沿（没有其他点在两项上同时更好）。',
- type:'每个点 = 该类型全部任务 × 3 次。排障 = ssh / Kubernetes 真实环境排障 4 题。选「全部类型」时用标签区分类型；选单一类型时画该类型的 Pareto 前沿。',
- 'TUI 6 轮':'同一组 6 轮对话，TUI 用 tmux 驱动，Web 用 Playwright。Web 点只有本仓库：其他 CLI 没有 Web 界面。前沿只算 TUI。',
- 'SDK 4 轮':'SDK 模式 4 轮长短结合，各 3 次。',
- '多代理':'同一任务（3 个模块各一个 bug）：单代理、3 个 subagent、Agent Teams 3 人，各 3 次。连线按 单代理 → subagent → Teams 连接同一 CLI。pi 没有 subagent；Teams 只有本仓库与官方有。',
- '闲置 2.7 小时':'7 轮编码，轮间闲置 0 / 4 / 15 / 65 / 4 / 65 / 4 分钟，各 3 次。本仓库与官方写 1 小时缓存，65 分钟后过期；pi 与 opencode 在 Claude 侧写 5 分钟缓存，闲置 15 分钟以上就过期。'};
+ en:{"overall":"Each point = mean of 11 tasks × 3 runs (33 runs); dsh on ChatGPT has 32 (one WebSocket drop not counted). Light-blue area = x (tokens or cost) at or below the median and hit rate at or above the median; dashed line = Pareto front (no other point is better on both).","type":"Each point = every task of that type × 3 runs. Troubleshoot = 4 real ssh / Kubernetes troubleshooting tasks. With \"All types\" the labels tell types apart; with one type the Pareto front of that type is drawn.","TUI 6 轮":"The same 6-turn conversation, TUI driven through tmux, Web through Playwright. Only this fork has a Web point: the other CLIs have no web UI. The front counts TUI only.","SDK 4 轮":"SDK mode, 4 turns mixing long and short, 3 runs each.","多代理":"One task (one bug in each of 3 modules): single agent, 3 subagents, Agent Teams with 3 members, 3 runs each. Lines join single → subagent → Teams for the same CLI. pi has no subagents; only this fork and official have Teams.","闲置 2.7 小时":"7 coding turns with idle gaps of 0 / 4 / 15 / 65 / 4 / 65 / 4 minutes, 3 runs each. This fork and official write 1-hour cache, which expires after 65 minutes; pi and opencode write 5-minute cache on Claude, which expires after any idle gap of 15 minutes or more."},
+ hant:{"overall":"每個點 = 11 題 × 3 次（33 次 run）的平均；dsh ChatGPT 為 32 次（1 次 WebSocket 斷線未計入）。淺藍區域 = 橫軸（token 或花費）不高於中位數且命中率不低於中位數；虛線 = Pareto 前沿（沒有其他點在兩項上同時更好）。","type":"每個點 = 該類型全部任務 × 3 次。排障 = ssh / Kubernetes 真實環境排障 4 題。選「全部類型」時用標籤區分類型；選單一類型時畫該類型的 Pareto 前沿。","TUI 6 轮":"同一組 6 輪對話，TUI 用 tmux 驅動，Web 用 Playwright。Web 點只有本分支：其他 CLI 沒有 Web 介面。前沿只算 TUI。","SDK 4 轮":"SDK 模式 4 輪長短結合，各 3 次。","多代理":"同一任務（3 個模組各一個 bug）：單代理、3 個 subagent、Agent Teams 3 人，各 3 次。連線按 單代理 → subagent → Teams 連接同一 CLI。pi 沒有 subagent；Teams 只有本分支與官方有。","闲置 2.7 小时":"7 輪編碼，輪間閒置 0 / 4 / 15 / 65 / 4 / 65 / 4 分鐘，各 3 次。本分支與官方寫 1 小時快取，65 分鐘後過期；pi 與 opencode 在 Claude 側寫 5 分鐘快取，閒置 15 分鐘以上就過期。"},
+ hans:{"overall":"每个点 = 11 题 × 3 次（33 次 run）的平均；dsh ChatGPT 为 32 次（1 次 WebSocket 断线未计入）。浅蓝区域 = 横轴（token 或花费）不高于中位数且命中率不低于中位数；虚线 = Pareto 前沿（没有其他点在两项上同时更好）。","type":"每个点 = 该类型全部任务 × 3 次。排障 = ssh / Kubernetes 真实环境排障 4 题。选「全部类型」时用标签区分类型；选单一类型时画该类型的 Pareto 前沿。","TUI 6 轮":"同一组 6 轮对话，TUI 用 tmux 驱动，Web 用 Playwright。Web 点只有本仓库：其他 CLI 没有 Web 界面。前沿只算 TUI。","SDK 4 轮":"SDK 模式 4 轮长短结合，各 3 次。","多代理":"同一任务（3 个模块各一个 bug）：单代理、3 个 subagent、Agent Teams 3 人，各 3 次。连线按 单代理 → subagent → Teams 连接同一 CLI。pi 没有 subagent；Teams 只有本仓库与官方有。","闲置 2.7 小时":"7 轮编码，轮间闲置 0 / 4 / 15 / 65 / 4 / 65 / 4 分钟，各 3 次。本仓库与官方写 1 小时缓存，65 分钟后过期；pi 与 opencode 在 Claude 侧写 5 分钟缓存，闲置 15 分钟以上就过期。"}};
 let view='overall', panel='全部 11 题', metric='tokens'; const hidden=new Set();
 const X=d=>metric==='cost'?d.cost:d.tokens, fx=v=>metric==='cost'?'$'+(v<0.1?v.toFixed(3):v.toFixed(2)):v.toFixed(1)+'k';
 try{const s=JSON.parse(localStorage.getItem('cbs-state')||'{}'); if(s.view){view=s.view;panel=s.panel} if(s.metric)metric=s.metric}catch(e){}
@@ -42,16 +44,16 @@ const css=n=>getComputedStyle(document.documentElement).getPropertyValue(n).trim
 const $=id=>document.getElementById(id);
 function chip(label,on,fn){const b=document.createElement('button');b.className='chip';b.textContent=label;b.setAttribute('aria-pressed',on);b.onclick=fn;return b}
 function controls(){
-  const v=$('views'); v.replaceChildren(...VIEWS.map(([k,l,ps])=>chip(l,k===view,()=>{view=k;panel=ps[0];render()})));
-  const ps=VIEWS.find(x=>x[0]===view)[2]; const p=$('panels'); p.replaceChildren(...(ps.length>1?ps.map(x=>chip(x,x===panel,()=>{panel=x;render()})):[]));
+  const v=$('views'); v.replaceChildren(...VIEWS.map(([k,l,ps])=>chip(T(l),k===view,()=>{view=k;panel=ps[0];render()})));
+  const ps=VIEWS.find(x=>x[0]===view)[2]; const p=$('panels'); p.replaceChildren(...(ps.length>1?ps.map(x=>chip(T(x),x===panel,()=>{panel=x;render()})):[]));
   p.previousElementSibling.hidden=ps.length<2;
-  $('metric').replaceChildren(...[['tokens','横轴：token'],['cost','横轴：花费 USD']].map(([k,l])=>chip(l,k===metric,()=>{metric=k;render()})));
+  $('metric').replaceChildren(...[['tokens','横轴：token'],['cost','横轴：花费 USD']].map(([k,l])=>chip(T(l),k===metric,()=>{metric=k;render()})));
   const lg=$('legend'); lg.replaceChildren();
   PROD.forEach(k=>{const b=document.createElement('button');b.className='leg';b.setAttribute('aria-pressed',!hidden.has(k));
-    b.innerHTML=`<span class="dot" style="background:var(--c-${k})"></span>${PNAME[k]}`;b.onclick=()=>{hidden.has(k)?hidden.delete(k):hidden.add(k);render()};lg.append(b)});
+    b.innerHTML=`<span class="dot" style="background:var(--c-${k})"></span>${T(PNAME[k])}`;b.onclick=()=>{hidden.has(k)?hidden.delete(k):hidden.add(k);render()};lg.append(b)});
   const a=$('auths'); a.replaceChildren(...AUTHS.map(k=>{const b=document.createElement('button');b.className='leg';b.setAttribute('aria-pressed',!hiddenAuth.has(k));
     const ic=k==='Claude API key'?'<circle cx="6" cy="6" r="4.5" fill="none" stroke="var(--muted)" stroke-width="2"/>':(k==='Claude 订阅'?'<circle cx="6" cy="6" r="5" fill="var(--muted)"/>':'<path d="M6 0L12 6L6 12L0 6Z" fill="var(--muted)"/>');
-    b.innerHTML=`<svg width="12" height="12" style="min-width:0">${ic}</svg>${k}`;b.onclick=()=>{hiddenAuth.has(k)?hiddenAuth.delete(k):hiddenAuth.add(k);render()};return b}));
+    b.innerHTML=`<svg width="12" height="12" style="min-width:0">${ic}</svg>${T(k)}`;b.onclick=()=>{hiddenAuth.has(k)?hiddenAuth.delete(k):hiddenAuth.add(k);render()};return b}));
 }
 function pts(){
   let r=DATA.filter(d=>d.view===view && !hidden.has(d.prod) && !hiddenAuth.has(AUTH(d)));
@@ -59,7 +61,7 @@ function pts(){
   if(view==='scen') r=r.filter(d=>d.panel===panel);
   return r;
 }
-function name(d){let s=SHORT[d.prod]+' · '+(AUTH(d)==='Claude API key'?'Claude API':SIDE[d.side]); if(d.prod==='official') s='官方'; if(view==='type'&&panel==='全部类型') s+=' · '+d.panel; if(d.label) s+=(view==='scen'&&panel==='多代理'?' ':' ')+d.label; return s}
+function name(d){let s=T(SHORT[d.prod])+' · '+(AUTH(d)==='Claude API key'?'Claude API':SIDE[d.side]); if(d.prod==='official') s=T('官方'); if(view==='type'&&panel==='全部类型') s+=' · '+T(d.panel); if(d.label) s+=' '+T(d.label); return s}
 function pareto(a){const s=[...a].sort((x,y)=>X(x)-X(y)||y.hit-x.hit);const f=[];let b=-1;for(const p of s){if(p.hit>b){f.push(p);b=p.hit}}return f}
 const tw=(s,z)=>[...s].reduce((a,c)=>a+(c.charCodeAt(0)>0x2e80?z:z*.58),0);
 function place(items,boxes,B,z){const out=[];for(const it of items){const w=tw(it.t,z),h=z+2;let best=null;
@@ -85,8 +87,8 @@ function render(){
   let lastX=-99; for(const v of metric==='cost'?[0.005,0.01,0.02,0.03,0.05,0.1,0.2,0.3,0.5,1,2]:[5,10,20,30,50,100,200,300,500,1000]) if(v>=xlo&&v<=xhi&&sx(v)-lastX>=40){lastX=sx(v);g.append(el('line',{x1:sx(v),x2:sx(v),y1:m.t,y2:H-m.b,stroke:'var(--grid)'}));g.append(el('text',{x:sx(v),y:H-m.b+18,'text-anchor':'middle','font-size':12,fill:'var(--muted)'},metric==='cost'?'$'+v:v+'k'))}
   for(let v=ylo;v<=yhi;v+=5){g.append(el('line',{x1:m.l,x2:W-m.r,y1:sy(v),y2:sy(v),stroke:'var(--grid)'}));g.append(el('text',{x:m.l-8,y:sy(v)+4,'text-anchor':'end','font-size':12,fill:'var(--muted)'},v+'%'))}
   g.append(el('line',{x1:m.l,x2:W-m.r,y1:H-m.b,y2:H-m.b,stroke:'var(--axis)'}));
-  g.append(el('text',{x:(m.l+W-m.r)/2,y:H-10,'text-anchor':'middle','font-size':13,fill:'var(--ink2)'},metric==='cost'?(narrow?'每次 run 花费（美元，对数轴）':'平均每次 run API 等价花费（美元，对数轴，越左越省）'):(narrow?'每次 run 总 token（对数轴）':'平均每次 run 总 token（对数轴，越左越省）')));
-  if(!narrow) g.append(el('text',{x:16,y:(m.t+H-m.b)/2,'text-anchor':'middle','font-size':13,fill:'var(--ink2)',transform:`rotate(-90 12 ${(m.t+H-m.b)/2})`,x:12},'缓存命中率（越高越好）'));
+  g.append(el('text',{x:(m.l+W-m.r)/2,y:H-10,'text-anchor':'middle','font-size':13,fill:'var(--ink2)'},T(metric==='cost'?(narrow?'每次 run 花费（美元，对数轴）':'平均每次 run API 等价花费（美元，对数轴，越左越省）'):(narrow?'每次 run 总 token（对数轴）':'平均每次 run 总 token（对数轴，越左越省）'))));
+  if(!narrow) g.append(el('text',{x:16,y:(m.t+H-m.b)/2,'text-anchor':'middle','font-size':13,fill:'var(--ink2)',transform:`rotate(-90 12 ${(m.t+H-m.b)/2})`,x:12},T('缓存命中率（越高越好）')));
   let obst=[];
   if(front.length>1){const xy=front.map(d=>[sx(X(d)),sy(d.hit)]);g.append(el('polyline',{points:xy.map(p=>p.join(',')).join(' '),fill:'none',stroke:'var(--ink2)','stroke-width':1.5,'stroke-dasharray':'2 4','stroke-linecap':'round'}));obst=segBoxes(xy)}
   if(view==='scen'&&panel==='多代理') for(const k of [...new Set(P.map(d=>d.cli))]){const q=P.filter(d=>d.cli===k);if(q.length<2)continue;const xy=q.map(d=>[sx(X(d)),sy(d.hit)]);
@@ -99,7 +101,7 @@ function render(){
     else if(d.side==='claude') s=el('circle',{cx:x,cy:y,r,fill:c,stroke:'var(--surface)','stroke-width':2,class:'pt'});
     else {const q=r*1.3;s=el('path',{d:`M${x},${y-q}L${x+q},${y}L${x},${y+q}L${x-q},${y}Z`,fill:c,stroke:'var(--surface)','stroke-width':2,'stroke-linejoin':'round',class:'pt'})}
     marks.append(s);
-    const hit=el('circle',{cx:x,cy:y,r:16,fill:'transparent',tabindex:0,'aria-label':`${name(d)}：${d.tokens.toFixed(1)}k token，$${d.cost.toFixed(3)}，命中率 ${d.hit.toFixed(1)}%`});
+    const hit=el('circle',{cx:x,cy:y,r:16,fill:'transparent',tabindex:0,'aria-label':`${name(d)}: ${d.tokens.toFixed(1)}k token, $${d.cost.toFixed(3)}, ${T('命中率')} ${d.hit.toFixed(1)}%`});
     hit.style.cursor='pointer'; const show=()=>tip(d,x,y,W,H); hit.addEventListener('mouseenter',show);hit.addEventListener('focus',show);hit.addEventListener('click',show);
     hit.addEventListener('mouseleave',()=>$('tip').hidden=true);hit.addEventListener('blur',()=>$('tip').hidden=true); marks.append(hit)}
   if(!many){const items=[...P].sort((a,b)=>b.hit-a.hit).map(d=>({x:sx(X(d)),y:sy(d.hit),t:name(d),b:fs.has(d)}));
@@ -107,20 +109,21 @@ function render(){
     for(const p of place(items,obst,[m.l,m.t,W-m.r,H-m.b],lz)){
       if(p.lead){const cx=Math.min(Math.max(p.x,p.R[0]),p.R[2]),cy=Math.min(Math.max(p.y,p.R[1]),p.R[3]);lab.append(el('line',{x1:p.x,y1:p.y,x2:cx,y2:cy,stroke:'var(--axis)'}))}
       lab.append(el('text',{x:p.R[0],y:p.R[3]-3,'font-size':lz,'font-weight':p.b?600:400,fill:p.b?'var(--ink)':'var(--ink2)',stroke:'var(--surface)','stroke-width':3,'paint-order':'stroke','stroke-linejoin':'round'},p.t))}}
-  $('note').textContent=NOTES[view]||NOTES[panel]||'';
+  $('note').textContent=NOTES[LG()][view]||NOTES[LG()][panel]||'';
   table(P,fs);
 }
 const f0=v=>v==null?'—':Math.round(v).toLocaleString('en-US');
 function tip(d,x,y,W,H){const t=$('tip'),box=$('box'),svg=$('chart');const k=svg.clientWidth/W;
-  t.innerHTML=`<b>${PNAME[d.prod]} · ${AUTH(d)}</b><div style="color:var(--muted)">${d.panel}${d.label?' · '+d.label:''} · ${d.n} 次 run</div><div style="color:var(--muted)">${d.model} · effort ${d.effort}</div><dl>
-  <dt>平均总 token</dt><dd>${d.tokens.toFixed(1)}k</dd><dt>API 等价花费</dt><dd>$${d.cost.toFixed(4)}</dd><dt>缓存命中率</dt><dd>${d.hit.toFixed(1)}%</dd>
-  ${d.cache_read!=null?`<dt>缓存读</dt><dd>${f0(d.cache_read)}</dd><dt>缓存写</dt><dd>${f0(d.cache_write)}</dd><dt>未缓存输入</dt><dd>${f0(d.input)}</dd><dt>输出</dt><dd>${f0(d.output)}</dd><dt>平均 TTFT</dt><dd>${(d.ttft/1000).toFixed(2)}s</dd><dt>平均用时</dt><dd>${d.duration}s</dd>`:''}
-  <dt>请求数</dt><dd>${d.requests}</dd></dl>`;
+  t.innerHTML=`<b>${T(PNAME[d.prod])} · ${T(AUTH(d))}</b><div style="color:var(--muted)">${T(d.panel)}${d.label?' · '+T(d.label):''} · ${d.n} ${T('次 run')}</div><div style="color:var(--muted)">${d.model} · effort ${T(d.effort)}</div><dl>
+  <dt>${T('平均总 token')}</dt><dd>${d.tokens.toFixed(1)}k</dd><dt>${T('API 等价花费')}</dt><dd>$${d.cost.toFixed(4)}</dd><dt>${T('缓存命中率')}</dt><dd>${d.hit.toFixed(1)}%</dd>
+  ${d.cache_read!=null?`<dt>${T('缓存读')}</dt><dd>${f0(d.cache_read)}</dd><dt>${T('缓存写')}</dt><dd>${f0(d.cache_write)}</dd><dt>${T('未缓存输入')}</dt><dd>${f0(d.input)}</dd><dt>${T('输出')}</dt><dd>${f0(d.output)}</dd><dt>${T('平均 TTFT')}</dt><dd>${(d.ttft/1000).toFixed(2)}s</dd><dt>${T('平均用时')}</dt><dd>${d.duration}s</dd>`:''}
+  <dt>${T('请求数')}</dt><dd>${d.requests}</dd></dl>`;
   t.hidden=false; let L=x*k+14-box.scrollLeft, T=y*k-10; if(L+t.offsetWidth>box.clientWidth) L=x*k-14-t.offsetWidth-box.scrollLeft; if(T+t.offsetHeight>box.clientHeight) T=box.clientHeight-t.offsetHeight-4;
   t.style.left=Math.max(0,L)+'px'; t.style.top=Math.max(0,T)+'px'}
 function table(P,fs){const h=['CLI · 账号','模型 · effort','场景','总 token','花费 USD','命中率','run','缓存读','缓存写','未缓存输入','输出','请求数','TTFT'];
-  const ord=['单代理','3 subagent','Teams','Teams*'], rows=[...P].sort(panel==='多代理'&&view==='scen'?(a,b)=>a.cli.localeCompare(b.cli)||ord.indexOf(a.label)-ord.indexOf(b.label):(a,b)=>b.hit-a.hit).map(d=>`<tr><td class="${fs.has(d)?'front':''}"><span class="dot" style="background:var(--c-${d.prod});margin-right:6px"></span>${PNAME[d.prod]}<div style="color:var(--muted);font-size:12px;padding-left:16px">${AUTH(d)}</div></td><td>${d.model}<div style="color:var(--muted);font-size:12px">${d.effort}</div></td><td>${d.label?(d.label==='TUI'||d.label==='SDK'||d.label==='闲置'?d.panel:d.label):d.panel}</td><td>${d.tokens.toFixed(1)}k</td><td>$${d.cost.toFixed(3)}</td><td>${d.hit.toFixed(1)}%</td><td>${d.n}</td><td>${f0(d.cache_read)}</td><td>${f0(d.cache_write)}</td><td>${f0(d.input)}</td><td>${f0(d.output)}</td><td>${d.requests}</td><td>${d.ttft?(d.ttft/1000).toFixed(2)+'s':'—'}</td></tr>`).join('');
-  $('table').innerHTML=`<thead><tr>${h.map(x=>`<th>${x}</th>`).join('')}</tr></thead><tbody>${rows}</tbody>`}
+  const ord=['单代理','3 subagent','Teams','Teams*'], rows=[...P].sort(panel==='多代理'&&view==='scen'?(a,b)=>a.cli.localeCompare(b.cli)||ord.indexOf(a.label)-ord.indexOf(b.label):(a,b)=>b.hit-a.hit).map(d=>`<tr><td class="${fs.has(d)?'front':''}"><span class="dot" style="background:var(--c-${d.prod});margin-right:6px"></span>${T(PNAME[d.prod])}<div style="color:var(--muted);font-size:12px;padding-left:16px">${T(AUTH(d))}</div></td><td>${d.model}<div style="color:var(--muted);font-size:12px">${T(d.effort)}</div></td><td>${T(d.label?(d.label==='TUI'||d.label==='SDK'||d.label==='闲置'?d.panel:d.label):d.panel)}</td><td>${d.tokens.toFixed(1)}k</td><td>$${d.cost.toFixed(3)}</td><td>${d.hit.toFixed(1)}%</td><td>${d.n}</td><td>${f0(d.cache_read)}</td><td>${f0(d.cache_write)}</td><td>${f0(d.input)}</td><td>${f0(d.output)}</td><td>${d.requests}</td><td>${d.ttft?(d.ttft/1000).toFixed(2)+'s':'—'}</td></tr>`).join('');
+  $('table').innerHTML=`<thead><tr>${h.map(x=>`<th>${T(x)}</th>`).join('')}</tr></thead><tbody>${rows}</tbody>`}
 render();
 let rz;addEventListener('resize',()=>{clearTimeout(rz);rz=setTimeout(render,120)});
+new MutationObserver(render).observe(document.documentElement,{attributes:true,attributeFilter:['data-lang']});
 </script>

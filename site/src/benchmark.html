@@ -2,21 +2,24 @@
 <div class="hero"><div class="wrap">
   <p class="prompt">$ <b>bun</b> bench/cli.ts analyze --raw ~/bench-raw/2026-11-07</p>
   <h1 class="en">How we test</h1>
-  <h1 class="zh">我們怎麼測</h1>
+  <h1 class="hant">我們怎麼測</h1>
+  <h1 class="hans">我们怎么测</h1>
   <p class="lede en">Every number on this site comes from real model requests: the same tasks, run by this fork and six other coding agents, on a Claude account and on a ChatGPT account. The harness lives in the repo as <code>bench/</code>, so anyone can rerun it.</p>
-  <p class="lede zh">網站上的每個數字都來自真實模型請求：本分支和另外六個 coding agent，在 Claude 帳號與 ChatGPT 帳號上跑同一批任務。測試套件就放在 repo 的 <code>bench/</code>，任何人都能重跑。</p>
+  <p class="lede hant">網站上的每個數字都來自真實模型請求：本分支和另外六個 coding agent，在 Claude 帳號與 ChatGPT 帳號上跑同一批任務。測試套件就放在 repo 的 <code>bench/</code>，任何人都能重跑。</p>
+  <p class="lede hans">网站上的每个数字都来自真实模型请求：本分支和另外六个 coding agent，在 Claude 账号与 ChatGPT 账号上跑同一批任务。测试套件就放在 repo 的 <code>bench/</code>，任何人都能重跑。</p>
   <div class="stats">
-    <div class="stat"><b>789</b><span class="en">runs, collected 2026-11-07</span><span class="zh">次 run，2026-11-07 採集</span></div>
-    <div class="stat"><b>7</b><span class="en">CLIs on the same tasks</span><span class="zh">個 CLI 跑同一批任務</span></div>
-    <div class="stat"><b>≥ 3</b><span class="en">runs per task per CLI</span><span class="zh">每格每題至少幾次</span></div>
-    <div class="stat"><b>0</b><span class="en">mocked API calls</span><span class="zh">次假 API 請求</span></div>
+    <div class="stat"><b>789</b><span class="en">runs, collected 2026-11-07</span><span class="hant">次 run，2026-11-07 採集</span><span class="hans">次 run，2026-11-07 采集</span></div>
+    <div class="stat"><b>7</b><span class="en">CLIs on the same tasks</span><span class="hant">個 CLI 跑同一批任務</span><span class="hans">个 CLI 跑同一批任务</span></div>
+    <div class="stat"><b>≥ 3</b><span class="en">runs per task per CLI</span><span class="hant">每格每題至少幾次</span><span class="hans">每格每题至少几次</span></div>
+    <div class="stat"><b>0</b><span class="en">mocked API calls</span><span class="hant">次假 API 請求</span><span class="hans">次假 API 请求</span></div>
   </div>
 </div></div>
 
 <section id="method"><div class="wrap">
   <p class="prompt">$ <b>cat</b> bench/lib/run.ts</p>
   <h2 class="en">What one run does</h2>
-  <h2 class="zh">一次 run 做了什麼</h2>
+  <h2 class="hant">一次 run 做了什麼</h2>
+  <h2 class="hans">一次 run 做了什么</h2>
   <ol class="steps en">
     <li>Copy the task's starting files into a fresh workspace and create a fresh, empty HOME with only that CLI's login.</li>
     <li>Start a local recording proxy. Every model request goes through it; it logs usage, model, effort, request size and time to first token, never headers or bodies.</li>
@@ -24,25 +27,33 @@
     <li>Grade automatically: run the tests, compile the Lean proof, check the report's key lines, or run the lab's own check script.</li>
     <li>Append the raw record. Records are never overwritten; a run that hit an infrastructure fault moves to <code>_infra-failed/</code> and does not count.</li>
   </ol>
-  <ol class="steps zh">
+  <ol class="steps hant">
     <li>把任務的初始檔案複製到全新工作區，建立一個全新、空白的 HOME，只放這個 CLI 的登入資訊。</li>
     <li>啟動本機記錄代理。所有模型請求都經過它，記下用量、模型、effort、請求大小、首 token 時間，不記請求標頭和內容。</li>
     <li>用和其他格相同的提示與模型執行 CLI。所有 CLI 都關閉網頁搜尋與抓取。</li>
     <li>自動評分：跑測試、編譯 Lean 證明、核對報告關鍵行，或執行排障環境自己的驗收腳本。</li>
     <li>追加原始紀錄，從不覆蓋；遇到環境故障的 run 移到 <code>_infra-failed/</code>，不計入結果。</li>
   </ol>
+  <ol class="steps hans">
+    <li>把任务的初始文件拷贝到全新工作区，创建一个全新、空白的 HOME，只放这个 CLI 的登录信息。</li>
+    <li>启动本地记录代理。所有模型请求都经过它，记下用量、模型、effort、请求大小、首 token 延迟，不记请求标头和内容。</li>
+    <li>用和其他格相同的提示与模型运行 CLI。所有 CLI 都关闭网页搜索与抓取。</li>
+    <li>自动评分：跑测试、编译 Lean 证明、核对报告关键行，或运行排障环境自己的验收脚本。</li>
+    <li>追加原始记录，从不覆盖；遇到环境故障的 run 移到 <code>_infra-failed/</code>，不计入结果。</li>
+  </ol>
   <p class="en">Rounds are interleaved: round r runs every (task, CLI) pair once, in an order shuffled by seed, so no CLI is always first (cold cache) or always last. The harness refuses to run fewer than 3 repetitions.</p>
-  <p class="zh">各輪交錯執行：第 r 輪把每個（任務, CLI）各跑一次，順序按種子打亂，沒有 CLI 永遠第一個（冷快取）或永遠最後。少於 3 次時套件直接拒絕執行。</p>
+  <p class="hant">各輪交錯執行：第 r 輪把每個（任務, CLI）各跑一次，順序按種子打亂，沒有 CLI 永遠第一個（冷快取）或永遠最後。少於 3 次時套件直接拒絕執行。</p>
+  <p class="hans">各轮交错运行：第 r 轮把每个（任务, CLI）各跑一次，顺序按种子打乱，没有 CLI 永远第一个（冷缓存）或永远最后。少于 3 次时套件直接拒绝运行。</p>
 
   <div class="tablewrap"><table class="wrap-cells">
-    <thead><tr><th><span class="en">Type</span><span class="zh">類型</span></th><th style="text-align:left"><span class="en">Tasks</span><span class="zh">任務</span></th><th style="text-align:left"><span class="en">Graded by</span><span class="zh">評分方式</span></th></tr></thead>
+    <thead><tr><th><span class="en">Type</span><span class="hant">類型</span><span class="hans">类型</span></th><th style="text-align:left"><span class="en">Tasks</span><span class="hant">任務</span><span class="hans">任务</span></th><th style="text-align:left"><span class="en">Graded by</span><span class="hant">評分方式</span><span class="hans">评分方式</span></th></tr></thead>
     <tbody>
-      <tr><td><span class="en">Office</span><span class="zh">辦公</span></td><td style="text-align:left"><span class="en">tidy a README; write three docs with runnable examples</span><span class="zh">整理 README；讀原始碼寫三份附可執行範例的文件</span></td><td style="text-align:left"><span class="en">file content, examples run</span><span class="zh">檔案內容、範例可執行</span></td></tr>
-      <tr><td><span class="en">Research</span><span class="zh">研究</span></td><td style="text-align:left"><span class="en">compare 3 quotes over 36 months; analyse 900 tickets</span><span class="zh">比較 3 份報價的 36 個月成本；分析 900 張工單</span></td><td style="text-align:left"><span class="en">key result lines, medians</span><span class="zh">關鍵結論行、中位數</span></td></tr>
-      <tr><td><span class="en">Coding</span><span class="zh">程式</span></td><td style="text-align:left"><span class="en">slugify; fix 4 bugs + CLI; an expression language from scratch</span><span class="zh">slugify；修 4 個 bug 加 CLI；從零寫表達式語言</span></td><td style="text-align:left"><span class="en">unit tests (≥ 30 for the long one)</span><span class="zh">單元測試（長題 ≥ 30 個）</span></td></tr>
-      <tr><td><span class="en">Ops</span><span class="zh">維運</span></td><td style="text-align:left"><span class="en">disk alert; logs + config + script + incident report</span><span class="zh">磁碟告警；日誌、設定、腳本與事故報告</span></td><td style="text-align:left"><span class="en">fix notes, config check, <code>sh -n</code></span><span class="zh">修復說明、設定檢查、<code>sh -n</code></span></td></tr>
-      <tr><td><span class="en">Troubleshoot</span><span class="zh">排障</span></td><td style="text-align:left"><span class="en">real sshd container and a k3s namespace with planted faults</span><span class="zh">真實 sshd 容器與 k3s 命名空間，預先埋好故障</span></td><td style="text-align:left"><span class="en">lab check; side doors fail the run</span><span class="zh">環境驗收；走旁路即判失敗</span></td></tr>
-      <tr><td>Lean 4</td><td style="text-align:left"><span class="en">sums, list reversal, n² ≤ 2ⁿ, logic puzzles</span><span class="zh">求和、列表反轉、n² ≤ 2ⁿ、邏輯謎題</span></td><td style="text-align:left"><span class="en">compiles clean; no <code>sorry</code>; statements unchanged</span><span class="zh">編譯無警告；禁用 <code>sorry</code>；定理陳述不得改</span></td></tr>
+      <tr><td><span class="en">Office</span><span class="hant">辦公</span><span class="hans">办公</span></td><td style="text-align:left"><span class="en">tidy a README; write three docs with runnable examples</span><span class="hant">整理 README；讀原始碼寫三份附可執行範例的文件</span><span class="hans">整理 README；读源码写三份附可运行示例的文档</span></td><td style="text-align:left"><span class="en">file content, examples run</span><span class="hant">檔案內容、範例可執行</span><span class="hans">文件内容、示例可运行</span></td></tr>
+      <tr><td><span class="en">Research</span><span class="hant">研究</span><span class="hans">研究</span></td><td style="text-align:left"><span class="en">compare 3 quotes over 36 months; analyse 900 tickets</span><span class="hant">比較 3 份報價的 36 個月成本；分析 900 張工單</span><span class="hans">比较 3 份报价的 36 个月成本；分析 900 张工单</span></td><td style="text-align:left"><span class="en">key result lines, medians</span><span class="hant">關鍵結論行、中位數</span><span class="hans">关键结论行、中位数</span></td></tr>
+      <tr><td><span class="en">Coding</span><span class="hant">程式</span><span class="hans">编码</span></td><td style="text-align:left"><span class="en">slugify; fix 4 bugs + CLI; an expression language from scratch</span><span class="hant">slugify；修 4 個 bug 加 CLI；從零寫表達式語言</span><span class="hans">slugify；修 4 个 bug 加 CLI；从零写表达式语言</span></td><td style="text-align:left"><span class="en">unit tests (≥ 30 for the long one)</span><span class="hant">單元測試（長題 ≥ 30 個）</span><span class="hans">单元测试（长题 ≥ 30 个）</span></td></tr>
+      <tr><td><span class="en">Ops</span><span class="hant">維運</span><span class="hans">运维</span></td><td style="text-align:left"><span class="en">disk alert; logs + config + script + incident report</span><span class="hant">磁碟告警；日誌、設定、腳本與事故報告</span><span class="hans">磁盘告警；日志、配置、脚本与事故报告</span></td><td style="text-align:left"><span class="en">fix notes, config check, <code>sh -n</code></span><span class="hant">修復說明、設定檢查、<code>sh -n</code></span><span class="hans">修复说明、配置检查、<code>sh -n</code></span></td></tr>
+      <tr><td><span class="en">Troubleshoot</span><span class="hant">排障</span><span class="hans">排障</span></td><td style="text-align:left"><span class="en">real sshd container and a k3s namespace with planted faults</span><span class="hant">真實 sshd 容器與 k3s 命名空間，預先埋好故障</span><span class="hans">真实 sshd 容器与 k3s 命名空间，预先埋好故障</span></td><td style="text-align:left"><span class="en">lab check; side doors fail the run</span><span class="hant">環境驗收；走旁路即判失敗</span><span class="hans">环境验收；走旁路即判失败</span></td></tr>
+      <tr><td>Lean 4</td><td style="text-align:left"><span class="en">sums, list reversal, n² ≤ 2ⁿ, logic puzzles</span><span class="hant">求和、列表反轉、n² ≤ 2ⁿ、邏輯謎題</span><span class="hans">求和、列表反转、n² ≤ 2ⁿ、逻辑谜题</span></td><td style="text-align:left"><span class="en">compiles clean; no <code>sorry</code>; statements unchanged</span><span class="hant">編譯無警告；禁用 <code>sorry</code>；定理陳述不得改</span><span class="hans">编译无警告；禁用 <code>sorry</code>；定理陈述不得改</span></td></tr>
     </tbody>
   </table></div>
 </div></section>
@@ -50,29 +61,31 @@
 <section id="results"><div class="wrap">
   <p class="prompt">$ <b>bun</b> bench/cli.ts chart --png</p>
   <h2 class="en">Results</h2>
-  <h2 class="zh">結果</h2>
+  <h2 class="hant">結果</h2>
+  <h2 class="hans">结果</h2>
   <p class="en">Hit rate is cache reads divided by all input tokens (uncached + cache read + cache write), weighted by tokens. Up and to the left is better: fewer tokens per task, more of them served from cache.</p>
-  <p class="zh">命中率 = 快取讀 ÷（未快取輸入 + 快取讀 + 快取寫），按 token 加權。越往左上越好：每個任務用的 token 更少，且更多來自快取。</p>
+  <p class="hant">命中率 = 快取讀 ÷（未快取輸入 + 快取讀 + 快取寫），按 token 加權。越往左上越好：每個任務用的 token 更少，且更多來自快取。</p>
+  <p class="hans">命中率 = 缓存读 ÷（未缓存输入 + 缓存读 + 缓存写），按 token 加权。越往左上越好：每个任务用的 token 更少，且更多来自缓存。</p>
   <div class="viz" id="viz-overall">
-    <h3><span class="en">Cache hit rate per CLI</span><span class="zh">各 CLI 的快取命中率</span></h3>
-    <p class="viz-sub"><span class="en">Dot = token-weighted mean over 33 runs, line = single-run range. Hover or focus a row for tokens and cost.</span><span class="zh">圓點 = 33 次的 token 加權平均，線 = 單次範圍。滑過或聚焦一行可看 token 與花費。</span></p>
+    <h3><span class="en">Cache hit rate per CLI</span><span class="hant">各 CLI 的快取命中率</span><span class="hans">各 CLI 的缓存命中率</span></h3>
+    <p class="viz-sub"><span class="en">Dot = token-weighted mean over 33 runs, line = single-run range. Hover or focus a row for tokens and cost.</span><span class="hant">圓點 = 33 次的 token 加權平均，線 = 單次範圍。滑過或聚焦一行可看 token 與花費。</span><span class="hans">圆点 = 33 次的 token 加权平均，线 = 单次范围。滑过或聚焦一行可看 token 与花费。</span></p>
     <div class="viz-plot"></div>
   </div>
   <div class="viz" id="viz-tasks">
-    <h3><span class="en">Hit rate by task</span><span class="zh">各任務的命中率</span></h3>
-    <p class="viz-sub"><span class="en">Mean of 3 runs per cell; hover a cell for tokens and time. Darker = higher.</span><span class="zh">每格 3 次平均；滑過看 token 與用時。顏色越深越高。</span></p>
+    <h3><span class="en">Hit rate by task</span><span class="hant">各任務的命中率</span><span class="hans">各任务的命中率</span></h3>
+    <p class="viz-sub"><span class="en">Mean of 3 runs per cell; hover a cell for tokens and time. Darker = higher.</span><span class="hant">每格 3 次平均；滑過看 token 與用時。顏色越深越高。</span><span class="hans">每格 3 次平均；滑过看 token 与用时。颜色越深越高。</span></p>
     <div class="viz-plot"></div>
   </div>
   <div class="viz" id="viz-tui">
-    <h3><span class="en">Interactive TUI, 6 turns: total tokens</span><span class="zh">互動 TUI 6 輪：總 token</span></h3>
-    <p class="viz-sub"><span class="en">Same 6-turn conversation driven through tmux, 3 runs each. Fewer is better.</span><span class="zh">同一組 6 輪對話用 tmux 驅動，各 3 次。越少越好。</span></p>
+    <h3><span class="en">Interactive TUI, 6 turns: total tokens</span><span class="hant">互動 TUI 6 輪：總 token</span><span class="hans">交互 TUI 6 轮：总 token</span></h3>
+    <p class="viz-sub"><span class="en">Same 6-turn conversation driven through tmux, 3 runs each. Fewer is better.</span><span class="hant">同一組 6 輪對話用 tmux 驅動，各 3 次。越少越好。</span><span class="hans">同一组 6 轮对话用 tmux 驱动，各 3 次。越少越好。</span></p>
     <div class="viz-plot"></div>
   </div>
-  <h3 style="margin-top:36px"><span class="en">Tokens vs hit rate, every CLI and account</span><span class="zh">token 與命中率：所有 CLI 與帳號</span></h3>
-  <p class="muted"><span class="en">Switch the x-axis between tokens and cost, filter by task type, hover any point. Chart labels are in Chinese.</span><span class="zh">可切換橫軸為 token 或花費、按任務類型篩選、滑過任一點看明細。</span> <a href="scatter.html"><span class="en">Open full page</span><span class="zh">開新頁</span></a></p>
+  <h3 style="margin-top:36px"><span class="en">Tokens vs hit rate, every CLI and account</span><span class="hant">token 與命中率：所有 CLI 與帳號</span><span class="hans">token 与命中率：所有 CLI 与账号</span></h3>
+  <p class="muted"><span class="en">Switch the x-axis between tokens and cost, filter by task type, hover any point.</span><span class="hant">可切換橫軸為 token 或花費、按任務類型篩選、滑過任一點看明細。</span><span class="hans">可切换横轴为 token 或花费、按任务类型筛选、滑过任一点看明细。</span> <a href="scatter.html"><span class="en">Open full page</span><span class="hant">開新頁</span><span class="hans">开新页</span></a></p>
   <iframe class="scatter-frame" id="scatter-frame" src="scatter.html" title="Tokens vs cache hit scatter" loading="lazy"></iframe>
   <div class="tablewrap"><table>
-    <thead><tr><th><span class="en">CLI · account</span><span class="zh">CLI · 帳號</span></th><th><span class="en">Cache hit</span><span class="zh">命中率</span></th><th><span class="en">Tokens / task</span><span class="zh">token / 任務</span></th><th><span class="en">$ / task</span><span class="zh">$ / 任務</span></th><th><span class="en">TUI 6 turns</span><span class="zh">TUI 6 輪</span></th><th><span class="en">Start → 1st request</span><span class="zh">啟動到首個請求</span></th></tr></thead>
+    <thead><tr><th><span class="en">CLI · account</span><span class="hant">CLI · 帳號</span><span class="hans">CLI · 账号</span></th><th><span class="en">Cache hit</span><span class="hant">命中率</span><span class="hans">命中率</span></th><th><span class="en">Tokens / task</span><span class="hant">token / 任務</span><span class="hans">token / 任务</span></th><th><span class="en">$ / task</span><span class="hant">$ / 任務</span><span class="hans">$ / 任务</span></th><th><span class="en">TUI 6 turns</span><span class="hant">TUI 6 輪</span><span class="hans">TUI 6 轮</span></th><th><span class="en">Start → 1st request</span><span class="hant">啟動到首個請求</span><span class="hans">启动到首个请求</span></th></tr></thead>
     <tbody>
       <tr><td class="us"><span class="sw" style="background:var(--claude)"></span>This fork · Claude</td><td class="us">87.1%</td><td class="us">72.7k</td><td class="us">$0.078</td><td class="us">235k</td><td class="us">0.82s</td></tr>
       <tr><td><span class="sw" style="background:var(--claude);opacity:.4"></span>Official Claude Code 2.1.319</td><td>87.3%</td><td>81.0k</td><td>$0.088</td><td>640k</td><td>0.89s</td></tr>
@@ -82,48 +95,53 @@
       <tr><td><span class="sw" style="background:var(--gpt);opacity:.4"></span>pi 1.5.0</td><td>84.0%</td><td>36.5k</td><td>$0.041</td><td>80k</td><td>0.83s</td></tr>
     </tbody>
   </table></div>
-  <p class="foot"><span class="en">All six rows passed 33/33 tasks, so the differences are in tokens, cost, time and stability. oh-my-pi, dsh and the ssh / Kubernetes troubleshooting runs are in the full report.</span><span class="zh">六行都通過 33/33，差別在 token、花費、時間與穩定性。oh-my-pi、dsh 與 ssh / Kubernetes 排障結果見完整報告。</span></p>
+  <p class="foot"><span class="en">All six rows passed 33/33 tasks, so the differences are in tokens, cost, time and stability. oh-my-pi, dsh and the ssh / Kubernetes troubleshooting runs are in the full report.</span><span class="hant">六行都通過 33/33，差別在 token、花費、時間與穩定性。oh-my-pi、dsh 與 ssh / Kubernetes 排障結果見完整報告。</span><span class="hans">六行都通过 33/33，差别在 token、花费、时间与稳定性。oh-my-pi、dsh 与 ssh / Kubernetes 排障结果见完整报告。</span></p>
 </div></section>
 
 <section id="providers"><div class="wrap">
   <p class="prompt">$ <b>diff</b> claude-account chatgpt-account</p>
   <h2 class="en">Claude account vs ChatGPT account</h2>
-  <h2 class="zh">Claude 帳號與 ChatGPT 帳號的差別</h2>
+  <h2 class="hant">Claude 帳號與 ChatGPT 帳號的差別</h2>
+  <h2 class="hans">Claude 账号与 ChatGPT 账号的差别</h2>
   <p class="en">The two sides are separate comparisons: the Claude side uses <code>claude-sonnet-5-5</code> (medium effort), the ChatGPT side uses <code>gpt-6.1-sol</code> (low effort, the account default). Prices differ, so compare positions within a side.</p>
-  <p class="zh">兩側分開比較：Claude 側用 <code>claude-sonnet-5-5</code>（medium effort），ChatGPT 側用 <code>gpt-6.1-sol</code>（low effort，帳號預設）。兩家價格不同，請在同一側內比較位置。</p>
+  <p class="hant">兩側分開比較：Claude 側用 <code>claude-sonnet-5-5</code>（medium effort），ChatGPT 側用 <code>gpt-6.1-sol</code>（low effort，帳號預設）。兩家價格不同，請在同一側內比較位置。</p>
+  <p class="hans">两侧分开比较：Claude 侧用 <code>claude-sonnet-5-5</code>（medium effort），ChatGPT 侧用 <code>gpt-6.1-sol</code>（low effort，账号默认）。两家价格不同，请在同一侧内比较位置。</p>
   <div class="tablewrap"><table class="wrap-cells">
-    <thead><tr><th></th><th style="text-align:left"><span class="en">Claude account</span><span class="zh">Claude 帳號</span></th><th style="text-align:left"><span class="en">ChatGPT account</span><span class="zh">ChatGPT 帳號</span></th></tr></thead>
+    <thead><tr><th></th><th style="text-align:left"><span class="en">Claude account</span><span class="hant">Claude 帳號</span><span class="hans">Claude 账号</span></th><th style="text-align:left"><span class="en">ChatGPT account</span><span class="hant">ChatGPT 帳號</span><span class="hans">ChatGPT 账号</span></th></tr></thead>
     <tbody>
-      <tr><td><span class="en">vs the vendor's own CLI</span><span class="zh">對照原廠 CLI</span></td><td style="text-align:left"><span class="en">Even with official on hit rate (87.1% vs 87.3%), 10% fewer tokens, 11% lower cost</span><span class="zh">命中率與官方持平（87.1% 對 87.3%），token 少 10%，花費低 11%</span></td><td style="text-align:left"><span class="en">3.5 points below Codex, only on short tasks (82.9% vs 89.7%); long tasks 86.5% vs 88.3%</span><span class="zh">比 Codex 低 3.5 個百分點，只在短任務（82.9% 對 89.7%）；長任務 86.5% 對 88.3%</span></td></tr>
-      <tr><td><span class="en">Why</span><span class="zh">原因</span></td><td style="text-align:left"><span class="en">Shorter system prompt: 37.6k characters vs 46.6k</span><span class="zh">系統提示較短：37.6k 字元對 46.6k</span></td><td style="text-align:left"><span class="en">Codex keeps its system prompt on the server, so a new session's first request has less uncached input</span><span class="zh">Codex 的系統提示放在伺服器端，新會話第一個請求未快取的部分更少</span></td></tr>
-      <tr><td><span class="en">Cache price</span><span class="zh">快取價格</span></td><td style="text-align:left"><span class="en">Cache reads cost 1/10 of input; writes cost extra</span><span class="zh">快取讀是輸入價的 1/10，寫入另計</span></td><td style="text-align:left"><span class="en">Cache reads cost 1/20 of input; no write charge</span><span class="zh">快取讀是輸入價的 1/20，寫入不另收</span></td></tr>
-      <tr><td><span class="en">After 65 min idle</span><span class="zh">閒置 65 分鐘後</span></td><td style="text-align:left"><span class="en">1-hour cache has expired; first request about 50% for both fork and official</span><span class="zh">1 小時快取已過期，本分支與官方的第一個請求都約 50%</span></td><td style="text-align:left"><span class="en">Still 97–98%</span><span class="zh">仍有 97–98%</span></td></tr>
-      <tr><td><span class="en">Mid-session cache breaks</span><span class="zh">會話中途快取失效</span></td><td style="text-align:left">0.0%</td><td style="text-align:left"><span class="en">2.7% of requests, from OpenAI backend routing</span><span class="zh">2.7% 的請求，來自 OpenAI 後端路由</span></td></tr>
-      <tr><td><span class="en">3 subagents / 3-member team</span><span class="zh">3 個 subagent / 3 人團隊</span></td><td style="text-align:left">2.8× / 6.0× <span class="muted"><span class="en">(official 3.7×)</span><span class="zh">（官方 3.7×）</span></span></td><td style="text-align:left">3.8× / 8.5×</td></tr>
+      <tr><td><span class="en">vs the vendor's own CLI</span><span class="hant">對照原廠 CLI</span><span class="hans">对照原厂 CLI</span></td><td style="text-align:left"><span class="en">Even with official on hit rate (87.1% vs 87.3%), 10% fewer tokens, 11% lower cost</span><span class="hant">命中率與官方持平（87.1% 對 87.3%），token 少 10%，花費低 11%</span><span class="hans">命中率与官方持平（87.1% 对 87.3%），token 少 10%，花费低 11%</span></td><td style="text-align:left"><span class="en">3.5 points below Codex, only on short tasks (82.9% vs 89.7%); long tasks 86.5% vs 88.3%</span><span class="hant">比 Codex 低 3.5 個百分點，只在短任務（82.9% 對 89.7%）；長任務 86.5% 對 88.3%</span><span class="hans">比 Codex 低 3.5 个百分点，只在短任务（82.9% 对 89.7%）；长任务 86.5% 对 88.3%</span></td></tr>
+      <tr><td><span class="en">Why</span><span class="hant">原因</span><span class="hans">原因</span></td><td style="text-align:left"><span class="en">Shorter system prompt: 37.6k characters vs 46.6k</span><span class="hant">系統提示較短：37.6k 字元對 46.6k</span><span class="hans">系统提示较短：37.6k 字符对 46.6k</span></td><td style="text-align:left"><span class="en">Codex keeps its system prompt on the server, so a new session's first request has less uncached input</span><span class="hant">Codex 的系統提示放在伺服器端，新會話第一個請求未快取的部分更少</span><span class="hans">Codex 的系统提示放在服务器端，新会话第一个请求未缓存的部分更少</span></td></tr>
+      <tr><td><span class="en">Cache price</span><span class="hant">快取價格</span><span class="hans">缓存价格</span></td><td style="text-align:left"><span class="en">Cache reads cost 1/10 of input; writes cost extra</span><span class="hant">快取讀是輸入價的 1/10，寫入另計</span><span class="hans">缓存读是输入价的 1/10，写入另计</span></td><td style="text-align:left"><span class="en">Cache reads cost 1/20 of input; no write charge</span><span class="hant">快取讀是輸入價的 1/20，寫入不另收</span><span class="hans">缓存读是输入价的 1/20，写入不另收</span></td></tr>
+      <tr><td><span class="en">After 65 min idle</span><span class="hant">閒置 65 分鐘後</span><span class="hans">闲置 65 分钟后</span></td><td style="text-align:left"><span class="en">1-hour cache has expired; first request about 50% for both fork and official</span><span class="hant">1 小時快取已過期，本分支與官方的第一個請求都約 50%</span><span class="hans">1 小时缓存已过期，本分支与官方的第一个请求都约 50%</span></td><td style="text-align:left"><span class="en">Still 97–98%</span><span class="hant">仍有 97–98%</span><span class="hans">仍有 97–98%</span></td></tr>
+      <tr><td><span class="en">Mid-session cache breaks</span><span class="hant">會話中途快取失效</span><span class="hans">会话中途缓存失效</span></td><td style="text-align:left">0.0%</td><td style="text-align:left"><span class="en">2.7% of requests, from OpenAI backend routing</span><span class="hant">2.7% 的請求，來自 OpenAI 後端路由</span><span class="hans">2.7% 的请求，来自 OpenAI 后端路由</span></td></tr>
+      <tr><td><span class="en">3 subagents / 3-member team</span><span class="hant">3 個 subagent / 3 人團隊</span><span class="hans">3 个 subagent / 3 人团队</span></td><td style="text-align:left">2.8× / 6.0× <span class="muted"><span class="en">(official 3.7×)</span><span class="hant">（官方 3.7×）</span><span class="hans">（官方 3.7×）</span></span></td><td style="text-align:left">3.8× / 8.5×</td></tr>
     </tbody>
   </table></div>
   <div class="viz" id="viz-idle">
-    <h3><span class="en">First request of each turn after idling</span><span class="zh">每輪閒置後第一個請求的命中率</span></h3>
-    <p class="viz-sub"><span class="en">One 7-turn session over 2.7 hours; the column header shows the idle gap before that turn. Claude's 1-hour cache expires after 65 minutes; pi and opencode write only a 5-minute cache on Claude.</span><span class="zh">同一會話 7 輪、約 2.7 小時；欄標題是該輪之前閒置的分鐘數。Claude 的 1 小時快取在閒置 65 分鐘後過期；pi 與 opencode 在 Claude 側只寫 5 分鐘快取。</span></p>
+    <h3><span class="en">First request of each turn after idling</span><span class="hant">每輪閒置後第一個請求的命中率</span><span class="hans">每轮闲置后第一个请求的命中率</span></h3>
+    <p class="viz-sub"><span class="en">One 7-turn session over 2.7 hours; the column header shows the idle gap before that turn. Claude's 1-hour cache expires after 65 minutes; pi and opencode write only a 5-minute cache on Claude.</span><span class="hant">同一會話 7 輪、約 2.7 小時；欄標題是該輪之前閒置的分鐘數。Claude 的 1 小時快取在閒置 65 分鐘後過期；pi 與 opencode 在 Claude 側只寫 5 分鐘快取。</span><span class="hans">同一会话 7 轮、约 2.7 小时；列标题是该轮之前闲置的分钟数。Claude 的 1 小时缓存在闲置 65 分钟后过期；pi 与 opencode 在 Claude 侧只写 5 分钟缓存。</span></p>
     <div class="viz-plot"></div>
   </div>
   <div class="viz" id="viz-multi">
-    <h3><span class="en">Multi-agent cost: total tokens for one 3-module bug fix</span><span class="zh">多代理成本：修 3 個模組 bug 的總 token</span></h3>
-    <p class="viz-sub"><span class="en">Label = multiple of the same CLI's single-agent run. Faded bar: official 2.1.319 did not actually form a team in -p.</span><span class="zh">標籤 = 相對同一 CLI 單代理的倍數。淡色：官方 2.1.319 在 -p 下沒有真正組隊。</span></p>
+    <h3><span class="en">Multi-agent cost: total tokens for one 3-module bug fix</span><span class="hant">多代理成本：修 3 個模組 bug 的總 token</span><span class="hans">多代理成本：修 3 个模块 bug 的总 token</span></h3>
+    <p class="viz-sub"><span class="en">Label = multiple of the same CLI's single-agent run. Faded bar: official 2.1.319 did not actually form a team in -p.</span><span class="hant">標籤 = 相對同一 CLI 單代理的倍數。淡色：官方 2.1.319 在 -p 下沒有真正組隊。</span><span class="hans">标签 = 相对同一 CLI 单代理的倍数。淡色：官方 2.1.319 在 -p 下没有真正组队。</span></p>
     <div class="viz-legend"></div>
     <div class="viz-plot"></div>
   </div>
-  <p class="foot"><span class="en">Every value is also in the tables of the</span><span class="zh">所有數值也列在</span> <a href="../docs/cache-benchmark.html"><span class="en">full report</span><span class="zh">完整報告</span></a><span class="zh">的表格裡</span>.</p>
+  <p class="foot"><span class="en">Every value is also in the tables of the</span><span class="hant">所有數值也列在</span><span class="hans">所有数值也列在</span> <a href="../docs/cache-benchmark.html"><span class="en">full report</span><span class="hant">完整報告</span><span class="hans">完整报告</span></a><span class="hant">的表格裡</span><span class="hans">的表格里</span>.</p>
 </div></section>
 
 <section id="public"><div class="wrap">
   <p class="prompt">$ <b>bun</b> bench/cli.ts public --picks bench/public/picks-A.txt --variant seed1108</p>
   <h2 class="en">Public benchmarks, perturbed</h2>
-  <h2 class="zh">公開基準題，加上擾動</h2>
+  <h2 class="hant">公開基準題，加上擾動</h2>
+  <h2 class="hans">公开基准题，加上扰动</h2>
   <p class="en">Our own tasks are too easy to separate CLIs by success rate, so we also run 20 hard tasks from public suites: Terminal-Bench 2.0 (8), SWE-bench Pro (8) and SpreadsheetBench Verified (4). To keep models from recalling published answers, every task has a seeded variant: reworded instructions, renamed files, paths, ports and output formats, regenerated inputs and answers, with the graders updated to match. A variant is used only after the reference solution passes it; all 20 do. SWE-bench Pro runs with the git history stripped so the upstream fix cannot be read back.</p>
-  <p class="zh">自家任務太容易，各 CLI 幾乎都 100% 通過，分不出完成率，所以另外跑 20 題公開基準難題：Terminal-Bench 2.0 8 題、SWE-bench Pro 8 題、SpreadsheetBench Verified 4 題。為了避免模型背出公開答案，每題都有帶種子的擾動版本：改寫指示，改檔名、路徑、連接埠與輸出格式，重新產生輸入與答案並同步更新評分腳本。參考解通過後才使用，20 題全部通過。SWE-bench Pro 執行時會移除 git 歷史，讀不到上游修復。</p>
+  <p class="hant">自家任務太容易，各 CLI 幾乎都 100% 通過，分不出完成率，所以另外跑 20 題公開基準難題：Terminal-Bench 2.0 8 題、SWE-bench Pro 8 題、SpreadsheetBench Verified 4 題。為了避免模型背出公開答案，每題都有帶種子的擾動版本：改寫指示，改檔名、路徑、連接埠與輸出格式，重新產生輸入與答案並同步更新評分腳本。參考解通過後才使用，20 題全部通過。SWE-bench Pro 執行時會移除 git 歷史，讀不到上游修復。</p>
+  <p class="hans">自家任务太容易，各 CLI 几乎都 100% 通过，分不出完成率，所以另外跑 20 题公开基准难题：Terminal-Bench 2.0 8 题、SWE-bench Pro 8 题、SpreadsheetBench Verified 4 题。为了避免模型背出公开答案，每题都有带种子的扰动版本：改写指示，改文件名、路径、端口与输出格式，重新生成输入与答案并同步更新评分脚本。参考解通过后才使用，20 题全部通过。SWE-bench Pro 运行时会移除 git 历史，读不到上游修复。</p>
   <p class="en">1,800 runs: 20 tasks × 15 CLI/account cells × original and perturbed × 3 runs, each in the task's own container with a fresh HOME and web search off. Claude side uses <code>claude-sonnet-5-5</code>, ChatGPT side <code>gpt-6.1-sol</code>, each CLI at its own default effort.</p>
-  <p class="zh">共 1,800 次 run：20 題 × 15 個 CLI/帳號格 × 原版與擾動版 × 每格 3 次，每次都在任務自己的容器裡、全新 HOME、關閉 web search。Claude 側用 <code>claude-sonnet-5-5</code>，ChatGPT 側用 <code>gpt-6.1-sol</code>，各 CLI 用自己的預設 effort。</p>
+  <p class="hant">共 1,800 次 run：20 題 × 15 個 CLI/帳號格 × 原版與擾動版 × 每格 3 次，每次都在任務自己的容器裡、全新 HOME、關閉 web search。Claude 側用 <code>claude-sonnet-5-5</code>，ChatGPT 側用 <code>gpt-6.1-sol</code>，各 CLI 用自己的預設 effort。</p>
+  <p class="hans">共 1,800 次 run：20 题 × 15 个 CLI/账号格 × 原版与扰动版 × 每格 3 次，每次都在任务自己的容器里、全新 HOME、关闭 web search。Claude 侧用 <code>claude-sonnet-5-5</code>，ChatGPT 侧用 <code>gpt-6.1-sol</code>，各 CLI 用自己的默认 effort。</p>
   <ul class="en">
     <li><b>The model matters more than the CLI.</b> Claude side passes 61.1% (587/960), ChatGPT side 49.8% (418/840).</li>
     <li><b>Best cells: dsh 70.8% and opencode 68.3%</b> on Claude, 16–18 points above pi. On ChatGPT only oh-my-pi (59.2%, default effort high) clearly leads.</li>
@@ -132,7 +150,7 @@
     <li>The fork's longer average time (196 s vs 113 s) came from <code>-p</code> waiting on a background Bash task (#1071), fixed after this run.</li>
     <li>Perturbed SWE-bench Pro scores 8.3 points lower; TB2 and SpreadsheetBench do not move. That could be recall or harder renamed code, so it is inconclusive.</li>
   </ul>
-  <ul class="zh">
+  <ul class="hant">
     <li><b>模型差距比 CLI 差距大。</b>Claude 側通過 61.1%（587/960），ChatGPT 側 49.8%（418/840）。</li>
     <li><b>最好的格是 dsh 70.8% 與 opencode 68.3%</b>（Claude 側），比 pi 高 16–18 個百分點。ChatGPT 側只有 oh-my-pi（59.2%，預設 effort high）明顯領先。</li>
     <li><b>本分支 vs 官方：54.2% vs 61.7%</b>，逐題配對差 −7.5 ± 4.4 pp，不到 2 個標準誤。差距主要來自一題（make-mips-interpreter，2/6 vs 6/6），失敗方式和 pi 相同。</li>
@@ -140,8 +158,17 @@
     <li>本分支平均用時較長（196 秒 vs 113 秒），原因是 <code>-p</code> 會等背景 Bash 任務（#1071），已在這次跑完後修好。</li>
     <li>SWE-bench Pro 擾動版低 8.3 個百分點，TB2 與 SpreadsheetBench 沒有差別。可能是模型記得原題，也可能是改名後更難，無法判斷。</li>
   </ul>
+  <ul class="hans">
+    <li><b>模型差距比 CLI 差距大。</b>Claude 侧通过 61.1%（587/960），ChatGPT 侧 49.8%（418/840）。</li>
+    <li><b>最好的格是 dsh 70.8% 与 opencode 68.3%</b>（Claude 侧），比 pi 高 16–18 个百分点。ChatGPT 侧只有 oh-my-pi（59.2%，默认 effort high）明显领先。</li>
+    <li><b>本分支 vs 官方：54.2% vs 61.7%</b>，逐题配对差 −7.5 ± 4.4 pp，不到 2 个标准误。差距主要来自一题（make-mips-interpreter，2/6 vs 6/6），失败方式和 pi 相同。</li>
+    <li><b>本分支 vs Codex：45.0% vs 49.2%</b>，配对差 −4.2 ± 3.4 pp，同样不显著。</li>
+    <li>本分支平均用时较长（196 秒 vs 113 秒），原因是 <code>-p</code> 会等背景 Bash 任务（#1071），已在这次跑完后修好。</li>
+    <li>SWE-bench Pro 扰动版低 8.3 个百分点，TB2 与 SpreadsheetBench 没有差别。可能是模型记得原题，也可能是改名后更难，无法判断。</li>
+  </ul>
   <h3 class="en">Why dsh and opencode lead on Claude</h3>
-  <h3 class="zh">為什麼 dsh 和 opencode 在 Claude 側領先</h3>
+  <h3 class="hant">為什麼 dsh 和 opencode 在 Claude 側領先</h3>
+  <h3 class="hans">为什么 dsh 和 opencode 在 Claude 侧领先</h3>
   <ul class="en">
     <li><b>The gap is almost all SWE-bench Pro.</b> On TB2, dsh, opencode and official score 58%, 58% and 56%; on SWE-bench Pro 77%, 73% and 58%. On the 5 Pro tasks that separate cells, dsh passes 25/30, opencode 23/30, official 16/30, this fork 13/30.</li>
     <li><b>They work longer, not with better tools.</b> On those 5 tasks a dsh run averages 15.2 tool calls, 16.3k output tokens and 2.9 test runs; official averages 9.4, 9.9k and 1.9. Time and cost go up about 50%. Over 90% of calls in every CLI are bash; edit tools, LSP feedback, subagents, todo lists and compaction were barely used or never triggered.</li>
@@ -149,53 +176,98 @@
     <li><b>opencode likely leads on effort:</b> it sends adaptive thinking with no effort, so the server default (high) applies, while this fork and official send medium.</li>
     <li><b>A/B check on this fork</b> (4 tasks, 6 runs each, claude-sonnet-5-5): the build before the change passes 8/24; the new prompt alone, still at medium effort, 14/24; the new prompt plus headless effort high, 22/24. The prompt line mostly fixes the two polyglot tasks by removing build outputs; high effort lifts ansible to 6/6. Cost per run goes from $0.18 to $0.36 and time from 63 s to 127 s.</li>
   </ul>
-  <ul class="zh">
+  <ul class="hant">
     <li><b>差距幾乎全在 SWE-bench Pro。</b>TB2 上 dsh、opencode、官方是 58%、58%、56%；SWE-bench Pro 是 77%、73%、58%。在 5 題有區分度的 Pro 題上，dsh 25/30、opencode 23/30、官方 16/30、本分支 13/30。</li>
     <li><b>它們做得更久，而不是工具更好。</b>這 5 題上 dsh 每次 run 平均 15.2 次工具呼叫、輸出 16.3k token、跑 2.9 次測試；官方是 9.4 次、9.9k、1.9 次。用時與花費都多約 50%。各 CLI 九成以上的呼叫都是 bash；編輯工具、LSP 回饋、子代理、待辦清單和壓縮幾乎沒用到或沒觸發。</li>
-    <li><b>dsh 對 pi 是最乾淨的比較：</b>同一個模型呼叫庫、都送 effort low，dsh 仍高 18 個百分點。它的系統提示只有一句身分加每個工具一條規則，例如「每次都看 [exit code: N]，失敗先查清楚再往下」。它在 low 下的思考量比本分支在 medium 下還多。</li>
+    <li><b>dsh 對 pi 是最乾淨的比較：</b>同一個模型呼叫庫、都送 effort low，dsh 仍高 18 個百分點。它的系統提示只有一句身份加每個工具一條規則，例如「每次都看 [exit code: N]，失敗先查清楚再往下」。它在 low 下的思考量比本分支在 medium 下還多。</li>
     <li><b>opencode 很可能靠 effort 領先：</b>它只送 adaptive thinking、不帶 effort，伺服器用預設值 high；本分支和官方送 medium。</li>
     <li><b>本分支的 A/B 驗證</b>（4 題，每格 6 次，claude-sonnet-5-5）：改動前的構建 8/24；只換提示、仍用 medium 是 14/24；提示加上 headless 預設 high 是 22/24。提示那句主要靠清掉建置產物修好兩道 polyglot 題；high effort 把 ansible 提到 6/6。每次 run 花費從 $0.18 漲到 $0.36，用時從 63 秒漲到 127 秒。</li>
   </ul>
+  <ul class="hans">
+    <li><b>差距几乎全在 SWE-bench Pro。</b>TB2 上 dsh、opencode、官方是 58%、58%、56%；SWE-bench Pro 是 77%、73%、58%。在 5 题有区分度的 Pro 题上，dsh 25/30、opencode 23/30、官方 16/30、本分支 13/30。</li>
+    <li><b>它们做得更久，而不是工具更好。</b>这 5 题上 dsh 每次 run 平均 15.2 次工具调用、输出 16.3k token、跑 2.9 次测试；官方是 9.4 次、9.9k、1.9 次。用时与花费都多约 50%。各 CLI 九成以上的调用都是 bash；编辑工具、LSP 反馈、子代理、待办清单和压缩几乎没用到或没触发。</li>
+    <li><b>dsh 对 pi 是最干净的比较：</b>同一个模型调用库、都送 effort low，dsh 仍高 18 个百分点。它的系统提示只有一句身份加每个工具一条规则，例如「每次都看 [exit code: N]，失败先查清楚再往下」。它在 low 下的思考量比本分支在 medium 下还多。</li>
+    <li><b>opencode 很可能靠 effort 领先：</b>它只送 adaptive thinking、不带 effort，服务器用默认值 high；本分支和官方送 medium。</li>
+    <li><b>本分支的 A/B 验证</b>（4 题，每格 6 次，claude-sonnet-5-5）：改动前的构建 8/24；只换提示、仍用 medium 是 14/24；提示加上 headless 默认 high 是 22/24。提示那句主要靠清掉构建产物修好两道 polyglot 题；high effort 把 ansible 提到 6/6。每次 run 花费从 $0.18 涨到 $0.36，用时从 63 秒涨到 127 秒。</li>
+  </ul>
   <div class="viz" id="viz-pub-pass">
-    <h3><span class="en">Pass rate per cell</span><span class="zh">各格通過率</span></h3>
-    <p class="viz-sub"><span class="en">120 runs per cell. Dot = overall; ticks = original and perturbed halves.</span><span class="zh">每格 120 次。圓點是整體，短線是原版與擾動版各自的通過率。</span></p>
+    <h3><span class="en">Pass rate per cell</span><span class="hant">各格通過率</span><span class="hans">各格通过率</span></h3>
+    <p class="viz-sub"><span class="en">120 runs per cell. Dot = overall; ticks = original and perturbed halves.</span><span class="hant">每格 120 次。圓點是整體，短線是原版與擾動版各自的通過率。</span><span class="hans">每格 120 次。圆点是整体，短线是原版与扰动版各自的通过率。</span></p>
     <div class="viz-plot"></div>
   </div>
   <div class="viz" id="viz-pub-scatter">
-    <h3><span class="en">Pass rate vs cost per task</span><span class="zh">通過率 vs 每任務花費</span></h3>
-    <p class="viz-sub"><span class="en">API-equivalent USD per task including cache. Ringed = this fork.</span><span class="zh">每任務 API 等價美元，含快取。外圈 = 本分支。</span></p>
+    <h3><span class="en">Pass rate vs cost per task</span><span class="hant">通過率 vs 每任務花費</span><span class="hans">通过率 vs 每任务花费</span></h3>
+    <p class="viz-sub"><span class="en">API-equivalent USD per task including cache. Ringed = this fork.</span><span class="hant">每任務 API 等價美元，含快取。外圈 = 本分支。</span><span class="hans">每任务 API 等价美元，含缓存。外圈 = 本分支。</span></p>
     <div class="viz-legend"></div>
     <div class="viz-plot"></div>
   </div>
   <div class="viz" id="viz-pub-suites">
-    <h3><span class="en">Pass rate by suite</span><span class="zh">各套件通過率</span></h3>
-    <p class="viz-sub"><span class="en">TB2 and SWE-bench Pro: 48 runs per cell; SpreadsheetBench: 24.</span><span class="zh">TB2 與 SWE-bench Pro 每格 48 次，SpreadsheetBench 24 次。</span></p>
+    <h3><span class="en">Pass rate by suite</span><span class="hant">各套件通過率</span><span class="hans">各套件通过率</span></h3>
+    <p class="viz-sub"><span class="en">TB2 and SWE-bench Pro: 48 runs per cell; SpreadsheetBench: 24.</span><span class="hant">TB2 與 SWE-bench Pro 每格 48 次，SpreadsheetBench 24 次。</span><span class="hans">TB2 与 SWE-bench Pro 每格 48 次，SpreadsheetBench 24 次。</span></p>
     <div class="viz-plot"></div>
   </div>
   <div class="tablewrap"><table class="pairs">
-    <thead><tr><th><span class="en">Paired comparison (same tasks)</span><span class="zh">逐題配對比較</span></th><th><span class="en">Difference</span><span class="zh">差距</span></th></tr></thead>
+    <thead><tr><th><span class="en">Paired comparison (same tasks)</span><span class="hant">逐題配對比較</span><span class="hans">逐题配对比较</span></th><th><span class="en">Difference</span><span class="hant">差距</span><span class="hans">差距</span></th></tr></thead>
     <tbody>
-      <tr><td><span class="en">This fork vs official (Claude key)</span><span class="zh">本分支 vs 官方（Claude key）</span></td><td>−7.5 ± 4.4 pp</td></tr>
-      <tr><td><span class="en">This fork vs Codex (ChatGPT)</span><span class="zh">本分支 vs Codex（ChatGPT）</span></td><td>−4.2 ± 3.4 pp</td></tr>
-      <tr><td><span class="en">This fork + 3 subagents vs single (Claude)</span><span class="zh">本分支 + 3 個 subagent vs 單代理（Claude）</span></td><td>+4.2 ± 7.5 pp</td></tr>
-      <tr><td><span class="en">Official + 3 subagents vs single</span><span class="zh">官方 + 3 個 subagent vs 單代理</span></td><td>−2.5 ± 4.4 pp</td></tr>
-      <tr><td><span class="en">This fork + 3 subagents vs single (ChatGPT)</span><span class="zh">本分支 + 3 個 subagent vs 單代理（ChatGPT）</span></td><td>+5.8 ± 5.0 pp</td></tr>
-      <tr><td><span class="en">dsh vs pi (Claude)</span><span class="zh">dsh vs pi（Claude）</span></td><td>+18.3 ± 6.2 pp</td></tr>
-      <tr><td><span class="en">opencode vs pi (Claude)</span><span class="zh">opencode vs pi（Claude）</span></td><td>+15.8 ± 5.5 pp</td></tr>
-      <tr><td><span class="en">oh-my-pi vs pi (Claude)</span><span class="zh">oh-my-pi vs pi（Claude）</span></td><td>+11.7 ± 6.5 pp</td></tr>
+      <tr><td><span class="en">This fork vs official (Claude key)</span><span class="hant">本分支 vs 官方（Claude key）</span><span class="hans">本分支 vs 官方（Claude key）</span></td><td>−7.5 ± 4.4 pp</td></tr>
+      <tr><td><span class="en">This fork vs Codex (ChatGPT)</span><span class="hant">本分支 vs Codex（ChatGPT）</span><span class="hans">本分支 vs Codex（ChatGPT）</span></td><td>−4.2 ± 3.4 pp</td></tr>
+      <tr><td><span class="en">This fork + 3 subagents vs single (Claude)</span><span class="hant">本分支 + 3 個 subagent vs 單代理（Claude）</span><span class="hans">本分支 + 3 个 subagent vs 单代理（Claude）</span></td><td>+4.2 ± 7.5 pp</td></tr>
+      <tr><td><span class="en">Official + 3 subagents vs single</span><span class="hant">官方 + 3 個 subagent vs 單代理</span><span class="hans">官方 + 3 个 subagent vs 单代理</span></td><td>−2.5 ± 4.4 pp</td></tr>
+      <tr><td><span class="en">This fork + 3 subagents vs single (ChatGPT)</span><span class="hant">本分支 + 3 個 subagent vs 單代理（ChatGPT）</span><span class="hans">本分支 + 3 个 subagent vs 单代理（ChatGPT）</span></td><td>+5.8 ± 5.0 pp</td></tr>
+      <tr><td><span class="en">dsh vs pi (Claude)</span><span class="hant">dsh vs pi（Claude）</span><span class="hans">dsh vs pi（Claude）</span></td><td>+18.3 ± 6.2 pp</td></tr>
+      <tr><td><span class="en">opencode vs pi (Claude)</span><span class="hant">opencode vs pi（Claude）</span><span class="hans">opencode vs pi（Claude）</span></td><td>+15.8 ± 5.5 pp</td></tr>
+      <tr><td><span class="en">oh-my-pi vs pi (Claude)</span><span class="hant">oh-my-pi vs pi（Claude）</span><span class="hans">oh-my-pi vs pi（Claude）</span></td><td>+11.7 ± 6.5 pp</td></tr>
     </tbody>
   </table></div>
-  <p class="foot"><span class="en">± is one standard error of the per-task paired difference. Per-task results, failure notes and the perturbation check are in the</span><span class="zh">± 是逐題配對差的一個標準誤。逐題結果、失敗說明與擾動檢查見</span> <a href="../docs/cache-benchmark.html"><span class="en">full report</span><span class="zh">完整報告</span></a>.</p>
+  <p class="foot"><span class="en">± is one standard error of the per-task paired difference. Per-task results, failure notes and the perturbation check are in the</span><span class="hant">± 是逐題配對差的一個標準誤。逐題結果、失敗說明與擾動檢查見</span><span class="hans">± 是逐题配对差的一个标准误。逐题结果、失败说明与扰动检查见</span> <a href="../docs/cache-benchmark.html"><span class="en">full report</span><span class="hant">完整報告</span><span class="hans">完整报告</span></a>.</p>
+</div></section>
+
+<section id="frontierharness"><div class="wrap">
+  <p class="prompt">$ <b>bun</b> bench/cli.ts public --picks bench/public/picks-frontierharness-v1.txt --cells fork-claude-key-medium,official-key</p>
+  <h2 class="en">FrontierHarness tasks, same effort</h2>
+  <h2 class="hant">FrontierHarness 題組，同一 effort</h2>
+  <h2 class="hans">FrontierHarness 题组，同一 effort</h2>
+  <p class="en"><a href="https://frontierharness.org">FrontierHarness Eval</a> compares coding-agent harnesses on one open-weights model behind a gateway (Kimi K3 in v1.0). We ran its 20 Terminal-Bench tasks (21 minus <code>build-cython-ext</code>, whose reference solution fails here) on this fork and official Claude Code, both on <code>claude-sonnet-5-5</code> at medium effort, 3 runs per task each: 120 runs, collected 2026-11-11.</p>
+  <p class="hant"><a href="https://frontierharness.org">FrontierHarness Eval</a> 用同一個開源模型經網關接各 CLI（v1.0 是 Kimi K3），只比較 harness。我們拿它的 20 道 Terminal-Bench 題（21 題去掉參考解在本環境不通過的 <code>build-cython-ext</code>），比較本分支與官方 Claude Code，兩邊都用 <code>claude-sonnet-5-5</code>、effort medium，每題各 3 次，共 120 次 run，2026-11-11 採集。</p>
+  <p class="hans"><a href="https://frontierharness.org">FrontierHarness Eval</a> 用同一个开源模型经网关接各 CLI（v1.0 是 Kimi K3），只比较 harness。我们拿它的 20 道 Terminal-Bench 题（21 题去掉参考解在本环境不通过的 <code>build-cython-ext</code>），比较本分支与官方 Claude Code，两边都用 <code>claude-sonnet-5-5</code>、effort medium，每题各 3 次，共 120 次 run，2026-11-11 采集。</p>
+  <div class="tablewrap"><table>
+    <thead><tr><th><span class="en">CLI</span><span class="hant">CLI</span><span class="hans">CLI</span></th><th><span class="en">Pass rate</span><span class="hant">通過率</span><span class="hans">通过率</span></th><th><span class="en">Tokens / task</span><span class="hant">token / 任務</span><span class="hans">token / 任务</span></th><th><span class="en">Cache hit</span><span class="hant">命中率</span><span class="hans">命中率</span></th><th><span class="en">$ / task</span><span class="hant">$ / 任務</span><span class="hans">$ / 任务</span></th><th><span class="en">Time</span><span class="hant">用時</span><span class="hans">用时</span></th></tr></thead>
+    <tbody>
+      <tr><td><span class="en">This fork 2.1.297</span><span class="hant">本分支 2.1.297</span><span class="hans">本分支 2.1.297</span></td><td>75.0% (45/60)</td><td>94k (43k–640k)</td><td>91.6%</td><td>$0.055</td><td>41 s (6–757)</td></tr>
+      <tr><td><span class="en">Official 2.1.322</span><span class="hant">官方 2.1.322</span><span class="hans">官方 2.1.322</span></td><td>75.0% (45/60)</td><td>94k (36k–323k)</td><td>90.9%</td><td>$0.056</td><td>21 s (9–72)</td></tr>
+    </tbody>
+  </table></div>
+  <ul class="en">
+    <li><b>Even on pass rate, tokens and cost.</b> Paired difference 0.0 ± 8.0 pp over 20 tasks. The fork wins db-wal-recovery (3/3 vs 0/3), chess-best-move and polyglot-c-py; official wins vulnerable-secret, gcode-to-text and merge-diff-arc-agi-task.</li>
+    <li><b>vulnerable-secret is by design.</b> The model refuses on both sides. Official retries on <code>claude-sonnet-5</code> by itself; this fork stops with the error and leaves switching models to the user.</li>
+    <li>The fork's longer mean time comes from one run where a background command never ended and <code>-p</code> waited out its 10-minute ceiling (757 s).</li>
+    <li><b>Against the published v1.0 board</b> (same 20 tasks, Kimi K3, 1 run each), the 12 configurations pass 12–15; Claude Code passes 15. They measured Claude Code at a 25% token-weighted cache hit on the K3 gateway and $18.34 per pass; on the Anthropic API both CLIs hit about 91% at $0.055 per task, so that cost comes from the gateway's implicit cache. Different model, sandbox and run count: compare task difficulty, not ranks.</li>
+  </ul>
+  <ul class="hant">
+    <li><b>通過率、token、花費都持平。</b>20 題逐題配對差 0.0 ± 8.0 pp。本分支多過 db-wal-recovery（3/3 對 0/3）、chess-best-move、polyglot-c-py；官方多過 vulnerable-secret、gcode-to-text、merge-diff-arc-agi-task。</li>
+    <li><b>vulnerable-secret 是設計差異。</b>兩邊都被模型拒答；官方會自動換 <code>claude-sonnet-5</code> 重試，本分支報錯停下，由使用者自己決定是否換模型。</li>
+    <li>本分支平均用時較長，來自一次 run：後台命令一直不結束，<code>-p</code> 等到 10 分鐘上限（757 秒）。</li>
+    <li><b>對照 FrontierHarness 公布的 v1.0 結果</b>（同 20 題，Kimi K3，每格 1 次）：12 個配置通過 12–15 題，Claude Code 15 題。他們測到 Claude Code 在 K3 網關上按 token 加權的命中率只有 25%、每次通過 $18.34；直連 Anthropic API 時兩邊命中率約 91%、每任務 $0.055，高花費來自網關的隱式快取。模型、沙箱、次數都不同，只看題目難易，不排名次。</li>
+  </ul>
+  <ul class="hans">
+    <li><b>通过率、token、花费都持平。</b>20 题逐题配对差 0.0 ± 8.0 pp。本分支多过 db-wal-recovery（3/3 对 0/3）、chess-best-move、polyglot-c-py；官方多过 vulnerable-secret、gcode-to-text、merge-diff-arc-agi-task。</li>
+    <li><b>vulnerable-secret 是设计差异。</b>两边都被模型拒答；官方会自动换 <code>claude-sonnet-5</code> 重试，本分支报错停下，由用户自己决定是否换模型。</li>
+    <li>本分支平均用时较长，来自一次 run：后台命令一直不结束，<code>-p</code> 等到 10 分钟上限（757 秒）。</li>
+    <li><b>对照 FrontierHarness 公布的 v1.0 结果</b>（同 20 题，Kimi K3，每格 1 次）：12 个配置通过 12–15 题，Claude Code 15 题。他们测到 Claude Code 在 K3 网关上按 token 加权的命中率只有 25%、每次通过 $18.34；直连 Anthropic API 时两边命中率约 91%、每任务 $0.055，高花费来自网关的隐式缓存。模型、沙箱、次数都不同，只看题目难易，不排名次。</li>
+  </ul>
+  <p class="foot"><span class="en">± is one standard error of the per-task paired difference. Per-task results are in the</span><span class="hant">± 是逐題配對差的一個標準誤。逐題結果見</span><span class="hans">± 是逐题配对差的一个标准误。逐题结果见</span> <a href="../docs/cache-benchmark.html"><span class="en">full report</span><span class="hant">完整報告</span><span class="hans">完整报告</span></a>.</p>
 </div></section>
 
 <section id="cost"><div class="wrap">
   <p class="prompt">$ <b>cat</b> prices.md</p>
   <h2 class="en">How cost is counted</h2>
-  <h2 class="zh">花費怎麼算</h2>
+  <h2 class="hant">花費怎麼算</h2>
+  <h2 class="hans">花费怎么算</h2>
   <p class="en">Subscriptions are billed monthly, so per-task cost is an API-equivalent figure from one public price table (USD per million tokens, 2026-11-07). This fork and official write 1-hour cache; the other CLIs write 5-minute cache.</p>
-  <p class="zh">訂閱是包月計費，所以每任務花費是按同一張公開 API 價目表換算的等價金額（美元 / 百萬 token，2026-11-07）。本分支與官方寫 1 小時快取，其他 CLI 寫 5 分鐘快取。</p>
+  <p class="hant">訂閱是包月計費，所以每任務花費是按同一張公開 API 價目表換算的等價金額（美元 / 百萬 token，2026-11-07）。本分支與官方寫 1 小時快取，其他 CLI 寫 5 分鐘快取。</p>
+  <p class="hans">订阅是包月计费，所以每任务花费是按同一张公开 API 价目表换算的等价金额（美元 / 百万 token，2026-11-07）。本分支与官方写 1 小时缓存，其他 CLI 写 5 分钟缓存。</p>
   <div class="tablewrap"><table>
-    <thead><tr><th><span class="en">Model</span><span class="zh">模型</span></th><th><span class="en">Input</span><span class="zh">輸入</span></th><th><span class="en">Cache read</span><span class="zh">快取讀</span></th><th><span class="en">5-min write</span><span class="zh">5 分鐘寫</span></th><th><span class="en">1-hour write</span><span class="zh">1 小時寫</span></th><th><span class="en">Output</span><span class="zh">輸出</span></th></tr></thead>
+    <thead><tr><th><span class="en">Model</span><span class="hant">模型</span><span class="hans">模型</span></th><th><span class="en">Input</span><span class="hant">輸入</span><span class="hans">输入</span></th><th><span class="en">Cache read</span><span class="hant">快取讀</span><span class="hans">缓存读</span></th><th><span class="en">5-min write</span><span class="hant">5 分鐘寫</span><span class="hans">5 分钟写</span></th><th><span class="en">1-hour write</span><span class="hant">1 小時寫</span><span class="hans">1 小时写</span></th><th><span class="en">Output</span><span class="hant">輸出</span><span class="hans">输出</span></th></tr></thead>
     <tbody>
       <tr><td><code>claude-sonnet-5-5</code></td><td>2</td><td>0.20</td><td>2.50</td><td>4</td><td>10</td></tr>
       <tr><td><code>gpt-6.1-sol</code></td><td>2</td><td>0.10</td><td>—</td><td>—</td><td>10</td></tr>
@@ -206,9 +278,11 @@
 <section id="rerun"><div class="wrap">
   <p class="prompt">$ <b>make</b> build</p>
   <h2 class="en">Run it yourself</h2>
-  <h2 class="zh">自己跑一遍</h2>
+  <h2 class="hant">自己跑一遍</h2>
+  <h2 class="hans">自己跑一遍</h2>
   <p class="en">Credentials are read from environment variables only and are scrubbed from raw records.</p>
-  <p class="zh">憑證只從環境變數讀取，並會從原始紀錄中清除。</p>
+  <p class="hant">憑證只從環境變數讀取，並會從原始紀錄中清除。</p>
+  <p class="hans">凭证只从环境变量读取，并会从原始记录中清除。</p>
   <div class="code">make build
 bun bench/cli.ts list
 bun bench/cli.ts run --cells fork-claude-key,official-key --tasks type:coding \
@@ -216,9 +290,9 @@ bun bench/cli.ts run --cells fork-claude-key,official-key --tasks type:coding \
 bun bench/cli.ts analyze --raw ~/bench-raw/run1
 bun bench/cli.ts chart --raw ~/bench-raw/run1 --out ~/bench-charts --png</div>
   <div class="cards">
-    <a href="../docs/cache-benchmark.html"><b class="en">Full report</b><b class="zh">完整報告</b><span class="en">Every metric, chart and caveat.</span><span class="zh">全部指標、圖表與注意事項。</span></a>
-    <a href="../docs/agent-bench.html"><b class="en">Harness docs</b><b class="zh">測試套件文件</b><span class="en">Tasks, cells, rules and raw record layout.</span><span class="zh">任務、CLI 格、規則與原始紀錄格式。</span></a>
-    <a href="https://github.com/Esonhugh/claude-code/tree/dev/bench"><b>bench/</b><span class="en">The source.</span><span class="zh">原始碼。</span></a>
+    <a href="../docs/cache-benchmark.html"><b class="en">Full report</b><b class="hant">完整報告</b><b class="hans">完整报告</b><span class="en">Every metric, chart and caveat.</span><span class="hant">全部指標、圖表與注意事項。</span><span class="hans">全部指标、图表与注意事项。</span></a>
+    <a href="../docs/agent-bench.html"><b class="en">Harness docs</b><b class="hant">測試套件文件</b><b class="hans">测试套件文档</b><span class="en">Tasks, cells, rules and raw record layout.</span><span class="hant">任務、CLI 格、規則與原始紀錄格式。</span><span class="hans">任务、CLI 格、规则与原始记录格式。</span></a>
+    <a href="https://github.com/Esonhugh/claude-code/tree/dev/bench"><b>bench/</b><span class="en">The source.</span><span class="hant">原始碼。</span><span class="hans">源码。</span></a>
   </div>
 </div></section>
 </main>

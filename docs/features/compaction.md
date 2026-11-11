@@ -1,5 +1,7 @@
 # 自动压缩窗口
 
+<!-- lang: zh-Hans -->
+
 > 英文名：`compaction` · 领域：上下文与记忆 · [返回功能索引](README.md)
 
 ## 这是什么
@@ -10,6 +12,35 @@
 - **手动压缩**：随时输入 `/compact`。
 
 本 fork 让你按模型设置这个窗口：例如 1M 上下文的模型，你可能想在 200k 时就压缩，省钱也让模型更专注。还可以换成[Codex 式压缩](#换一种压缩方式codex-式压缩)：保留最近一段原文，用 OpenAI 时交给服务端压缩。
+
+<details lang="en"><summary>English</summary>
+
+> Name: `compaction` · Area: Context and memory · [Back to index](README.md)
+
+## What it is
+
+A model can only see so much at once (its context window), and the longer a conversation gets, the slower and more expensive each request becomes. **Compaction** has the model summarise the older part of the conversation and replaces the original text with that summary, freeing room to continue.
+
+- **Auto-compact** runs when the conversation reaches the compaction window.
+- **Manual compaction**: type `/compact` at any time.
+
+This fork lets you set that window per model: with a 1M-context model, for example, you may want to compact at 200k to save money and keep the model focused. You can also switch to [Codex-style compaction](#换一种压缩方式codex-式压缩), which keeps the most recent stretch of the conversation verbatim and, on OpenAI, lets the server do the compaction.
+
+</details>
+<details lang="zh-Hant"><summary>繁體中文</summary>
+
+> 英文名：`compaction` · 領域：上下文與記憶 · [返回功能索引](README.md)
+
+## 這是什麼
+
+模型一次能看的內容（上下文視窗）有上限，而且對話越長，每次請求越貴、越慢。**壓縮**就是把較早的對話交給模型寫成一段摘要，用摘要替換原文，騰出空間繼續聊。
+
+- **自動壓縮**：對話長度到達「壓縮視窗」時自動進行；
+- **手動壓縮**：隨時輸入 `/compact`。
+
+本 fork 讓你按模型設定這個視窗：例如 1M 上下文的模型，你可能想在 200k 時就壓縮，省錢也讓模型更專注。還可以換成[Codex 式壓縮](#换一种压缩方式codex-式压缩)：保留最近一段原文，用 OpenAI 時交給服務端壓縮。
+
+</details>
 
 ## 快速上手
 

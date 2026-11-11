@@ -1,5 +1,7 @@
 # Agent 与后台任务
 
+<!-- lang: zh-Hans -->
+
 > 英文名：`agents` · 领域：Agent 与编排 · [返回功能索引](README.md)
 
 ## 这是什么
@@ -11,6 +13,37 @@
 - **可以专用**：给子代理限定只读工具、指定模型、写专门的系统提示。
 
 交互会话里子代理默认在**后台**运行。内置的有 `Explore`（快速搜代码，只读）、`Plan`（只分析不改代码，出实施方案）、`general-purpose`（通用）等。
+
+<details lang="en"><summary>English</summary>
+
+> Name: `agents` · Area: Agents and orchestration · [Back to index](README.md)
+
+## What it is
+
+A subagent is a helper Claude calls in for one job. It has its own context, does one thing (search code, draft a plan, review a diff) and hands the result back to the main conversation. This helps because:
+
+- **It keeps the main context small**: the dozens of files it read stay in the subagent; the main conversation only gets the conclusion.
+- **It runs in parallel**: several subagents can work in the background while you keep talking.
+- **It can be specialised**: limit a subagent to read-only tools, pick its model, or give it its own system prompt.
+
+In interactive sessions subagents run in the **background** by default. Built-in ones include `Explore` (fast read-only code search), `Plan` (analyses and writes a plan without changing code) and `general-purpose`.
+
+</details>
+<details lang="zh-Hant"><summary>繁體中文</summary>
+
+> 英文名：`agents` · 領域：Agent 與編排 · [返回功能索引](README.md)
+
+## 這是什麼
+
+子代理（subagent）是 Claude 臨時叫來的幫手：它有自己獨立的上下文，專門做一件事（搜程式碼、做方案、審 diff），做完把結果交回給主對話。好處是：
+
+- **不佔主對話的上下文**：翻了幾十個檔案的過程留在子代理裡，主對話只收到結論；
+- **可以並行**：幾個子代理同時在後台跑，你在主對話繼續說話；
+- **可以專用**：給子代理限定只讀工具、指定模型、寫專門的系統提示。
+
+互動會話裡子代理預設在**後台**執行。內建的有 `Explore`（快速搜程式碼，只讀）、`Plan`（只分析不改程式碼，出實施方案）、`general-purpose`（通用）等。
+
+</details>
 
 ## 快速上手：看一个后台子代理怎么跑
 

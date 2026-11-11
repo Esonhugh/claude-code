@@ -25,7 +25,7 @@ mkdirSync(join(OUT, 'benchmark'), { recursive: true })
 
 // ---------- shared shell ----------
 
-const bootLang = `<script>(function(){var l;try{l=localStorage.getItem('lang')}catch(e){}if(!l)l=(navigator.language||'').toLowerCase().indexOf('zh')===0?'zh':'en';document.documentElement.setAttribute('data-lang',l);var t;try{t=localStorage.getItem('theme')}catch(e){}if(t==='light'||t==='dark')document.documentElement.setAttribute('data-theme',t)})()</script>`
+const bootLang = `<script>(function(){var l;try{l=localStorage.getItem('lang')}catch(e){}if(!l){var n=(navigator.language||'').toLowerCase();l=n.indexOf('zh')!==0?'en':/hant|tw|hk|mo/.test(n)?'zh':'hans'}document.documentElement.setAttribute('data-lang',l);document.documentElement.lang=l==='zh'?'zh-Hant':l==='hans'?'zh-Hans':'en';var t;try{t=localStorage.getItem('theme')}catch(e){}if(t==='light'||t==='dark')document.documentElement.setAttribute('data-theme',t)})()</script>`
 
 function page(opts: { base: string; title: string; description: string; main: string; scripts?: string[] }): string {
   const { base } = opts
@@ -38,28 +38,29 @@ function page(opts: { base: string; title: string; description: string; main: st
 <title>${esc(opts.title)}</title>
 <meta name="description" content="${esc(opts.description)}">
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&family=Noto+Sans+TC:wght@400;500;700&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&family=Noto+Sans+TC:wght@400;500;700&family=Noto+Sans+SC:wght@400;500;700&display=swap">
 <link rel="stylesheet" href="${base}assets/style.css">
 ${bootLang}
 </head>
 <body>
 <div class="banner"><div class="wrap">
   <span class="en">v2.1.297 is out on npm. New on dev: the Tmux tool, context-window tiers, a built-in agent benchmark.</span>
-  <span class="zh">v2.1.297 已發佈到 npm。dev 上新增：Tmux 工具、上下文窗口檔位、內建 agent 基準測試。</span>
+  <span class="hant">v2.1.297 已發佈到 npm。dev 上新增：Tmux 工具、上下文窗口檔位、內建 agent 基準測試。</span>
+  <span class="hans">v2.1.297 已发布到 npm。dev 上新增：Tmux 工具、上下文窗口档位、内置 agent 基准测试。</span>
   <a href="${BLOB}/CHANGELOG.md">CHANGELOG</a>
 </div></div>
 <header class="top"><div class="wrap">
   <a class="brand" href="${base}"><span class="dot" aria-hidden="true"></span>esonhugh/claude-code</a>
   <nav class="links" aria-label="Main">
-    <a href="${base}docs/"><span class="en">Docs</span><span class="zh">文件</span></a>
-    <a href="${base}benchmark/"><span class="en">Benchmark</span><span class="zh">基準測試</span></a>
-    <a href="${base}web-demo/"><span class="en">Live demo</span><span class="zh">試玩</span></a>
-    <a href="${BLOB}/CHANGELOG.md"><span class="en">Changelog</span><span class="zh">變更紀錄</span></a>
+    <a href="${base}docs/"><span class="en">Docs</span><span class="hant">文件</span><span class="hans">文档</span></a>
+    <a href="${base}benchmark/"><span class="en">Benchmark</span><span class="hant">基準測試</span><span class="hans">基准测试</span></a>
+    <a href="${base}web-demo/"><span class="en">Live demo</span><span class="hant">試玩</span><span class="hans">试玩</span></a>
+    <a href="${BLOB}/CHANGELOG.md"><span class="en">Changelog</span><span class="hant">變更紀錄</span><span class="hans">更新日志</span></a>
     <a href="https://github.com/Esonhugh/claude-code">GitHub</a>
     <a href="https://www.npmjs.com/package/@esonhugh/claude-code">npm</a>
   </nav>
   <div class="toggles">
-    <div class="seg" role="group" aria-label="Language"><button type="button" data-lang="zh">中</button><button type="button" data-lang="en">EN</button></div>
+    <div class="seg" role="group" aria-label="Language"><button type="button" data-lang="hans" lang="zh-Hans">简</button><button type="button" data-lang="zh" lang="zh-Hant">繁</button><button type="button" data-lang="en">EN</button></div>
     <div class="seg" role="group" aria-label="Theme"><button type="button" data-th="auto">Auto</button><button type="button" data-th="light">Light</button><button type="button" data-th="dark">Dark</button></div>
   </div>
 </div></header>
@@ -67,7 +68,8 @@ ${opts.main}
 <footer><div class="wrap">
   <nav aria-label="Footer"><a href="https://github.com/Esonhugh/claude-code">GitHub</a><a href="https://www.npmjs.com/package/@esonhugh/claude-code">npm</a><a href="${BLOB}/CHANGELOG.md">Changelog</a><a href="${base}docs/">Docs</a><a href="${base}benchmark/">Benchmark</a></nav>
   <div class="en">Maintained by Esonhugh. Not an Anthropic product and not endorsed by Anthropic. The npm package ships a launcher and per-platform binaries only.</div>
-  <div class="zh">由 Esonhugh 維護。本專案不是 Anthropic 產品，也未獲 Anthropic 背書。npm 套件只包含 launcher 與各平台二進位檔。</div>
+  <div class="hant">由 Esonhugh 維護。本專案不是 Anthropic 產品，也未獲 Anthropic 背書。npm 套件只包含 launcher 與各平台二進位檔。</div>
+  <div class="hans">由 Esonhugh 维护。本项目不是 Anthropic 产品，也未获 Anthropic 背书。npm 包只包含 launcher 与各平台二进制文件。</div>
 </div></footer>
 ${scripts}
 </body>
@@ -81,20 +83,50 @@ const docFiles = readdirSync(FEATURES).filter(f => f.endsWith('.md')).sort()
 const htmlName = (md: string) => (md === 'README.md' ? 'index.html' : md.replace(/\.md$/, '.html'))
 const titleOf = (md: string) => read(join(FEATURES, md)).match(/^# (.+)$/m)?.[1]?.trim() ?? md
 
-// Sidebar groups follow the domain column of the feature table in docs/features/README.md.
-const groups: { name: string; items: { file: string; title: string }[] }[] = []
-const seen = new Set<string>()
-for (const line of read(join(FEATURES, 'README.md')).split('\n')) {
-  const m = line.match(/^\|\s*([^|]*?)\s*\|\s*\[([^\]]+)\]\(([\w.-]+\.md)(?:#[^)]*)?\)/)
-  if (!m) continue
-  const [, domain, , file] = m
-  if (seen.has(file!) || !docFiles.includes(file!)) continue
-  seen.add(file!)
-  if (domain) groups.push({ name: domain, items: [] })
-  groups.at(-1)?.items.push({ file: file!, title: titleOf(file!) })
+// The docs are written in Simplified Chinese. A page can carry English and Traditional versions of its
+// introduction: `<!-- lang: zh-Hans -->` opens the Simplified intro, which is followed by a
+// `<details lang="en">` and a `<details lang="zh-Hant">` block (collapsed on the GitHub Wiki).
+const INTRO =
+  /<!-- lang: zh-Hans -->\n([\s\S]*?)\n<details lang="en"><summary>[^<]*<\/summary>\n([\s\S]*?)\n<\/details>\n<details lang="zh-Hant"><summary>[^<]*<\/summary>\n([\s\S]*?)\n<\/details>/
+type Tri = { hans: string; en: string; hant: string }
+const tri = (t: Tri) =>
+  t.en === t.hans && t.hant === t.hans
+    ? esc(t.hans)
+    : `<span class="hans">${esc(t.hans)}</span><span class="hant">${esc(t.hant)}</span><span class="en">${esc(t.en)}</span>`
+
+function tableRows(md: string): { domain: string; title: string; file: string }[] {
+  const rows = []
+  for (const line of md.split('\n')) {
+    const m = line.match(/^\|\s*([^|]*?)\s*\|\s*\[([^\]]+)\]\(([\w.-]+\.md)(?:#[^)]*)?\)/)
+    if (m) rows.push({ domain: m[1]!, title: m[2]!, file: m[3]! })
+  }
+  return rows
 }
-const orphans = docFiles.filter(f => f !== 'README.md' && !seen.has(f))
-if (orphans.length) groups.push({ name: '其他', items: orphans.map(file => ({ file, title: titleOf(file) })) })
+
+// Sidebar groups follow the domain column of the feature table in docs/features/README.md; the English and
+// Traditional tables in its translations give the other two languages, row for row.
+const readme = read(join(FEATURES, 'README.md'))
+const readmeIntro = readme.match(INTRO)
+const rows = tableRows(readmeIntro?.[1] ?? readme)
+const enRows = readmeIntro ? tableRows(readmeIntro[2]!) : []
+const hantRows = readmeIntro ? tableRows(readmeIntro[3]!) : []
+const titles = new Map<string, Tri>([['README.md', { hans: '功能索引', en: 'Feature index', hant: '功能索引' }]])
+const groups: { name: Tri; items: { file: string; title: Tri }[] }[] = []
+rows.forEach(({ domain, file }, i) => {
+  const at = (r: typeof rows, key: 'domain' | 'title', fallback: string) => (r[i]?.file === file ? r[i]![key] : fallback)
+  if (domain) groups.push({ name: { hans: domain, en: at(enRows, 'domain', domain), hant: at(hantRows, 'domain', domain) }, items: [] })
+  if (titles.has(file) || !docFiles.includes(file)) return
+  const hans = titleOf(file)
+  const title = { hans, en: at(enRows, 'title', hans), hant: at(hantRows, 'title', hans) }
+  titles.set(file, title)
+  groups.at(-1)?.items.push({ file, title })
+})
+const orphans = docFiles.filter(f => !titles.has(f))
+if (orphans.length) {
+  const items = orphans.map(file => ({ file, title: { hans: titleOf(file), en: titleOf(file), hant: titleOf(file) } }))
+  items.forEach(i => titles.set(i.file, i.title))
+  groups.push({ name: { hans: '其他', en: 'Other', hant: '其他' }, items })
+}
 
 // GitHub-style heading slugs so existing `file.md#anchor` links keep working.
 function slugger() {
@@ -118,14 +150,14 @@ function rewriteHref(href: string): string {
   return `${file.endsWith('/') ? TREE : BLOB}/${repoPath}${suffix}`
 }
 
-function renderDoc(md: string): string {
+function renderDoc(md: string, title: Tri, restNote: boolean): string {
   const slug = slugger()
   const marked = new Marked({ gfm: true })
   marked.use({
     renderer: {
       heading({ tokens, depth }: Tokens.Heading) {
         const inner = this.parser.parseInline(tokens)
-        if (depth === 1) return `<h1>${inner}</h1>\n`
+        if (depth === 1) return `<h1>${tri(title)}</h1>\n`
         const id = slug(inner)
         return `<h${depth} id="${esc(id)}"><a class="anchor" href="#${esc(id)}">${inner}</a></h${depth}>\n`
       },
@@ -148,15 +180,21 @@ function renderDoc(md: string): string {
       },
     },
   })
-  return marked.parse(md, { async: false }) as string
+  const note = (cls: string, text: string) => (restNote ? `\n\n<p class="doc-note ${cls}">${text}</p>` : '')
+  const body = md.replace(
+    INTRO,
+    (_, hans: string, en: string, hant: string) =>
+      `<div class="hans">\n\n${hans}\n\n</div>\n<div class="en">\n\n${en}${note('en', 'The rest of this page is in Simplified Chinese.')}\n\n</div>\n<div class="hant">\n\n${hant}${note('hant', '以下內容為簡體中文。')}\n\n</div>`,
+  )
+  return marked.parse(body, { async: false }) as string
 }
 
 function sidebar(current: string): string {
-  const link = (file: string, title: string) =>
-    `<a href="${htmlName(file)}"${file === current ? ' aria-current="page"' : ''}>${esc(title)}</a>`
-  const body = groups.map(g => `<h4>${esc(g.name)}</h4>\n${g.items.map(i => link(i.file, i.title)).join('\n')}`).join('\n')
-  return `<aside><details class="doc-nav"><summary><span class="en">All docs</span><span class="zh">全部文件</span></summary>
-${link('README.md', '功能索引')}
+  const link = (file: string, title: Tri) =>
+    `<a href="${htmlName(file)}"${file === current ? ' aria-current="page"' : ''}>${tri(title)}</a>`
+  const body = groups.map(g => `<h4>${tri(g.name)}</h4>\n${g.items.map(i => link(i.file, i.title)).join('\n')}`).join('\n')
+  return `<aside><details class="doc-nav"><summary><span class="en">All docs</span><span class="hant">全部文件</span><span class="hans">全部文档</span></summary>
+${link('README.md', titles.get('README.md')!)}
 ${body}
 </details></aside>`
 }
@@ -164,12 +202,14 @@ ${body}
 for (const file of docFiles) {
   const md = read(join(FEATURES, file))
   const title = titleOf(file)
+  const translated = INTRO.test(md)
+  const h1 = file === 'README.md' ? { hans: title, en: 'Feature docs', hant: '功能文件索引' } : titles.get(file)!
   const main = `<main class="wrap docs">
 ${sidebar(file)}
 <article class="prose">
-<p class="doc-note en">The feature docs are written in Chinese. They are the same pages as the GitHub Wiki.</p>
-${renderDoc(md)}
-<p class="doc-foot"><span class="en">Source:</span><span class="zh">原始檔：</span> <a href="${BLOB}/docs/features/${file}">docs/features/${file}</a></p>
+${translated ? '' : '<p class="doc-note en">The feature docs are written in Chinese. They are the same pages as the GitHub Wiki.</p>'}
+${renderDoc(md, h1, file !== 'README.md')}
+<p class="doc-foot"><span class="en">Source:</span><span class="hant">原始檔：</span><span class="hans">源文件：</span> <a href="${BLOB}/docs/features/${file}">docs/features/${file}</a></p>
 </article>
 </main>`
   writeFileSync(
@@ -208,15 +248,16 @@ const scatterData = JSON.stringify(JSON.parse(read(join(SITE, 'src/benchmark/sca
 writeFileSync(
   join(OUT, 'benchmark/scatter.html'),
   `<!doctype html>
-<html lang="zh-Hans">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+${bootLang}
 ${read(join(SITE, 'src/benchmark/scatter-head.html'))}
 <style>.back{display:block;max-width:980px;margin:16px auto 0;padding-left:max(16px,env(safe-area-inset-left,0px));font-size:13px;color:var(--ink2)}</style>
 </head>
 <body>
-<a class="back" href="./">← How we test / 測試方法</a>
+<a class="back" href="./"><span class="en">← How we test</span><span class="hant">← 我們怎麼測</span><span class="hans">← 我们怎么测</span></a>
 ${read(join(SITE, 'src/benchmark/scatter-body.html')).replace('__DATA__', () => scatterData.replaceAll('</', '<\\/'))}
 </body>
 </html>

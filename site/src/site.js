@@ -10,7 +10,7 @@
   }
   function setLang(l) {
     root.setAttribute('data-lang', l);
-    root.lang = l === 'zh' ? 'zh-Hant' : 'en';
+    root.lang = l === 'zh' ? 'zh-Hant' : l === 'hans' ? 'zh-Hans' : 'en';
     document.querySelectorAll('button[data-lang]').forEach(function (b) { b.setAttribute('aria-pressed', String(b.dataset.lang === l)); });
     store('lang', l);
   }

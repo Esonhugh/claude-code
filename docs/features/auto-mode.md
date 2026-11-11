@@ -1,5 +1,7 @@
 # 自动模式（Auto mode）
 
+<!-- lang: zh-Hans -->
+
 > 英文名：`auto-mode` · 领域：权限与安全 · [返回功能索引](README.md)
 
 ## 这是什么
@@ -13,6 +15,41 @@
 适合长时间跑、你不想一直盯着的任务。代价是每次工具调用多一次分类器请求（略贵、略慢），而且分类器也会判断失误，官方建议只在隔离环境里使用。
 
 行为对齐官方 2.1.303。
+
+<details lang="en"><summary>English</summary>
+
+> Name: `auto-mode` · Area: Permissions and security · [Back to index](README.md)
+
+## What it is
+
+Normally Claude stops and asks you before running a command or changing a file. Auto mode hands that question to a **classifier** (a separate model call):
+
+- actions it judges safe (reading files, running tests, `git log`) run straight away;
+- actions it judges risky (pushing code, deleting remote resources, sending data out) are denied, and Claude gets a "denied" result and tries another way;
+- you can review denials in `/permissions` at any time and allow them by hand.
+
+It suits long tasks you do not want to watch. The cost is one extra classifier request per tool call (a little more expensive and slower), and the classifier can be wrong, so the official guidance is to use it only in isolated environments.
+
+Behaviour matches the official 2.1.303.
+
+</details>
+<details lang="zh-Hant"><summary>繁體中文</summary>
+
+> 英文名：`auto-mode` · 領域：權限與安全 · [返回功能索引](README.md)
+
+## 這是什麼
+
+平時 Claude 每次要跑命令、改檔案，都會停下來問你。自動模式把「問你」這一步交給一個**分類器**（另一次模型呼叫）：
+
+- 它認為安全的操作（讀檔案、跑測試、`git log`）直接執行；
+- 它認為有風險的操作（推送程式碼、刪遠端資源、外傳資料）被拒絕，Claude 會收到「被拒」的結果並嘗試換個做法；
+- 你隨時可以在 `/permissions` 裡檢視被拒的記錄，手動放行。
+
+適合長時間跑、你不想一直盯著的任務。代價是每次工具呼叫多一次分類器請求（略貴、略慢），而且分類器也會判斷失誤，官方建議只在隔離環境裡使用。
+
+行為對齊官方 2.1.303。
+
+</details>
 
 ## 快速上手
 

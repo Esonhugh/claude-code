@@ -1,5 +1,7 @@
 # OpenAI / Codex provider
 
+<!-- lang: zh-Hans -->
+
 > 英文名：`openai-provider` · 领域：模型与 Provider · [返回功能索引](README.md)
 
 ## 这是什么
@@ -9,6 +11,33 @@ Claude Code 默认调用 Anthropic 的 Claude 模型。打开 OpenAI provider �
 - **ChatGPT 账号登录**（OAuth 或设备码），用订阅里的 Codex 额度；
 - **OpenAI API key**，按量计费；
 - **OpenAI 兼容网关**（公司网关、OpenRouter 等）。
+
+<details lang="en"><summary>English</summary>
+
+> Name: `openai-provider` · Area: Models and providers · [Back to index](README.md)
+
+## What it is
+
+Claude Code calls Anthropic's Claude models by default. With the OpenAI provider turned on, the UI, tools, permissions and commands stay the same; only **the model behind them becomes OpenAI's** (through the Responses API). You can use:
+
+- **a ChatGPT account sign-in** (OAuth or device code), using the Codex allowance in your subscription;
+- **an OpenAI API key**, billed by usage;
+- **an OpenAI-compatible gateway** (a company gateway, OpenRouter and so on).
+
+</details>
+<details lang="zh-Hant"><summary>繁體中文</summary>
+
+> 英文名：`openai-provider` · 領域：模型與 Provider · [返回功能索引](README.md)
+
+## 這是什麼
+
+Claude Code 預設呼叫 Anthropic 的 Claude 模型。開啟 OpenAI provider 後，同一套介面、工具、權限、命令不變，只是**背後的模型換成 OpenAI 的**（通過 Responses API）。可以用：
+
+- **ChatGPT 帳號登入**（OAuth 或裝置碼），用訂閱裡的 Codex 額度；
+- **OpenAI API key**，按量計費；
+- **OpenAI 相容閘道**（公司閘道、OpenRouter 等）。
+
+</details>
 
 ## 快速上手
 

@@ -1,10 +1,31 @@
 # Claude Web 界面导览
 
+<!-- lang: zh-Hans -->
+
 > 英文名：`web-ui-tour` · 领域：界面与交互 · [返回功能索引](README.md)
 
 ## 这是什么
 
 按一次真实操作的顺序，一步一张截图走一遍 `claude web`：从起始页开始改一处代码、确认命令、看状态、派后台 agent、回合中途插话、开终端、跑 workflow、评论文件，最后建一个项目让协调者分派任务。每一步只讲看到了什么、怎么操作；完整的参数、按键和安全模型见 [Claude Web](web-ui.md) 和 [Claude Web 项目](web-projects.md)。
+
+<details lang="en"><summary>English</summary>
+
+> Name: `web-ui-tour` · Area: UI and interaction · [Back to index](README.md)
+
+## What it is
+
+A walk through `claude web` in the order of a real session, one screenshot per step: from the start page, change a line of code, approve a command, check the status, send off a background agent, interject mid-turn, open a terminal, run a workflow, comment on a file, and finally create a project and let the coordinator assign tasks. Each step only says what you see and what to do; for the full options, keys and security model see [Claude Web](web-ui.md) and [Claude Web projects](web-projects.md).
+
+</details>
+<details lang="zh-Hant"><summary>繁體中文</summary>
+
+> 英文名：`web-ui-tour` · 領域：介面與互動 · [返回功能索引](README.md)
+
+## 這是什麼
+
+按一次真實操作的順序，一步一張截圖走一遍 `claude web`：從起始頁開始改一處程式碼、確認命令、看狀態、派後台 agent、回合中途插話、開終端、跑 workflow、評論檔案，最後建一個專案讓協調者分派任務。每一步只講看到了什麼、怎麼操作；完整的參數、按鍵和安全模型見 [Claude Web](web-ui.md) 和 [Claude Web 專案](web-projects.md)。
+
+</details>
 
 ## 什么时候看
 

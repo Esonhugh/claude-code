@@ -1,5 +1,7 @@
 # Skills
 
+<!-- lang: zh-Hans -->
+
 > 英文名：`skills` · 领域：插件与扩展 · [返回功能索引](README.md)
 
 ## 这是什么
@@ -9,7 +11,36 @@ Skill 是一份写给 Claude 的「操作手册」：一个文件夹里放一个
 - 你输入 `/名字` 就能直接调用；
 - Claude 看到描述匹配的请求（例如你说「帮我写个 changelog」），也会自己调用。
 
-平时每个 skill 只有**一行描述**放在系统提示里，完整内容只在用到时才加载，所以装多个也不会很占上下文。描述超过 512 字符的部分会被截掉，需要更长时在设置里用 `skillListingMaxDescChars` 调高上限。
+平时每个 skill 只有**一行描述**放在系统提示里，完整内容只在用到时才加载，所以装多个也不会很占上下文。描述超过 1536 字符（与官方相同）的部分会被截掉，可在设置里用 `skillListingMaxDescChars` 调整上限。
+
+<details lang="en"><summary>English</summary>
+
+> Name: `skills` · Area: Plugins and extensions · [Back to index](README.md)
+
+## What it is
+
+A skill is a playbook written for Claude: a folder with a `SKILL.md` that says when to use it and how. After that:
+
+- you can call it directly by typing `/name`;
+- Claude calls it on its own when a request matches its description (for example when you say "write me a changelog").
+
+Normally only **one line of description** per skill sits in the system prompt, and the full content loads only when used, so installing many skills takes little context. Descriptions longer than 512 characters are cut; raise the limit with `skillListingMaxDescChars` in settings if you need more.
+
+</details>
+<details lang="zh-Hant"><summary>繁體中文</summary>
+
+> 英文名：`skills` · 領域：插件與擴充 · [返回功能索引](README.md)
+
+## 這是什麼
+
+Skill 是一份寫給 Claude 的「操作手冊」：一個資料夾裡放一個 `SKILL.md`，寫清楚什麼時候用、怎麼做。之後：
+
+- 你輸入 `/名字` 就能直接呼叫；
+- Claude 看到描述匹配的請求（例如你說「幫我寫個 changelog」），也會自己呼叫。
+
+平時每個 skill 只有**一行描述**放在系統提示裡，完整內容只在用到時才載入，所以裝多個也不會很占上下文。描述超過 512 字元的部分會被截掉，需要更長時在設定裡用 `skillListingMaxDescChars` 調高上限。
+
+</details>
 
 ## 快速上手：写一个 skill
 

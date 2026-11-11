@@ -1,8 +1,10 @@
 # 缓存命中与用户体验基准
 
+<!-- lang: zh-Hans -->
+
 > 英文名：`cache-benchmark` · 领域：上下文与记忆 · [返回功能索引](README.md)
 
-本 fork（Claude 账号与 ChatGPT 账号两条路径）与官方 Claude Code、Codex CLI、opencode、pi、oh-my-pi、dsh 跑同一批真实任务，比较提示缓存命中率、token 用量、API 等价花费、多代理开销、长时间闲置后的缓存、启动速度和稳定性。全部是真实模型请求，不使用假 API。数据采集于 2026-11-07，共 789 次 run，每格至少 3 次；第 12 节另用 20 道公开基准题（1,800 次 run，2026-11-08 至 11-09）比较通过率。
+本 fork（Claude 账号与 ChatGPT 账号两条路径）与官方 Claude Code、Codex CLI、opencode、pi、oh-my-pi、dsh 跑同一批真实任务，比较提示缓存命中率、token 用量、API 等价花费、多代理开销、长时间闲置后的缓存、启动速度和稳定性。全部是真实模型请求，不使用假 API。数据采集于 2026-11-07，共 789 次 run，每格至少 3 次；第 12 节另用 20 道公开基准题（1,800 次 run，2026-11-08 至 11-09）比较通过率；第 13 节用 FrontierHarness 题组的 20 道 Terminal-Bench 题，在同为 medium 的条件下比较本仓库与官方（120 次 run，2026-11-11）。
 
 ## 摘要
 
@@ -27,6 +29,69 @@
 - **花费**：ChatGPT 侧缓存读只收 1/20 价，四个 CLI 每任务 $0.041–0.059，本仓库比 Codex 贵 6%；Claude 侧本仓库 $0.078、官方 $0.088。
 - **长时间闲置**：Claude 侧 1 小时缓存在闲置 65 分钟后过期，下一轮第一个请求本仓库与官方都只剩约 50%；第二次 65 分钟后本仓库 28%、官方 39%。官方的静态前缀全球用户共享、一直是热的，所以新会话第一个请求官方 67%、本仓库 0%。pi 与 opencode 在 Claude 侧只写 5 分钟缓存，闲置 15 分钟以上第一个请求就只剩 0–27%。本仓库 ChatGPT 账号闲置 65 分钟后仍有 97–98%。2.7 小时总 token 本仓库 Claude 306k、官方 349k。
 - **差异的量级**：同一 CLI 在不同任务类型之间相差 11–41 个百分点，大于 CLI 之间的差距；ChatGPT 侧同一格重跑平均相差 9 个百分点。单个任务格小于约 10 个百分点的差异不显著，结论以分组合计为准。
+
+<details lang="en"><summary>English</summary>
+
+> Name: `cache-benchmark` · Area: Context and memory · [Back to index](README.md)
+
+This fork (on both a Claude account and a ChatGPT account) runs the same real tasks as the official Claude Code, Codex CLI, opencode, pi, oh-my-pi and dsh, comparing prompt cache hit rate, token usage, API-equivalent cost, multi-agent overhead, caching after long idle periods, startup speed and stability. Every request goes to a real model; no fake API is used. Data was collected on 2026-11-07: 789 runs, at least 3 per cell. Section 12 also compares pass rates on 20 public benchmark tasks (1,800 runs, 2026-11-08 to 11-09).
+
+## Summary
+
+| Metric | This repo · Claude account | Official Claude Code | This repo · ChatGPT account | Codex CLI | opencode | pi |
+| --- | --- | --- | --- | --- | --- | --- |
+| CLI-mode hit rate (33 runs) | **87.1%** | 87.3% | **85.3%** | 88.8% | 89.2% | 84.0% |
+| Mean total tokens / task | **72.7k** | 81.0k | **75.9k** | 80.3k | 81.5k | 36.5k |
+| API-equivalent cost / task² | **$0.078** | $0.088 | **$0.050** | $0.047 | $0.059 | $0.041 |
+| TUI 6-turn total tokens | **235k** | 640k | **310k** | 267k | 170k | 80k |
+| 3 subagents / 3-member team (vs. single agent) | **2.8× / 6.0×** | 3.7× / 4.0×¹ | **3.8× / 8.5×** | 5.4× / — | 2.0× / — | not supported |
+| Long idle, 2.7 h total tokens | **306k** | 349k | **331k** | 361k | 358k | 131k |
+| `-p` start to first request | **0.82s** | 0.89s | **0.71s** | 2.59s | 2.81s | 0.83s |
+| Cache fully lost mid-session | **0.0%** | 0.0% | **2.7%** | 0.5% | 3.2% | 4.2% |
+| Tasks succeeded | 33/33 | 33/33 | 33/33 | 33/33 | 33/33 | 33/33 |
+
+¹ Under `-p`, the official 2.1.319 runs named `Agent` calls as background subagents and does not form a team.
+² Converted at public API prices (`gpt-6.1-sol` for the ChatGPT columns, `claude-sonnet-5-5` for the Claude columns; prices under "口径"). Subscription accounts are not billed per token; one price list is used here only for comparison.
+
+- **The Claude side matches the official CLI**: hit rates differ by 0.2 points, within noise; total tokens are 10% lower; in multi-turn TUI use the official CLI uses 2.7 times as many tokens; with 3 subagents this repo uses 2.8 times a single agent, the official 3.7 times.
+- **The ChatGPT side is 3.5 points below Codex**, and the gap is only on short tasks (82.9% vs 89.7%); on long tasks it is 86.5% vs 88.3%, close to even. Codex keeps its system prompt on the server, so the uncached part of a new session's first request is 2.7k tokens, against 6.3k here.
+- **Multi-agent**: 3 subagents cost 2.8 times a single agent here and 3.7 times in the official CLI; a 3-member Agent Team costs 6.0 times on the Claude account and 8.5 times on the ChatGPT account. The official 2.1.319 does not really form a team under `-p` (see section 5), so its 4.0 times is not directly comparable.
+- **Cost**: on the ChatGPT side cache reads cost 1/20 of the normal price, and the four CLIs land at $0.041–0.059 per task, with this repo 6% above Codex; on the Claude side this repo costs $0.078 and the official $0.088.
+- **Long idle**: the Claude 1-hour cache expires after 65 idle minutes, and the next turn's first request falls to about 50% for both this repo and the official CLI; after a second 65 minutes it is 28% here and 39% for the official. The official static prefix is shared by all users worldwide and always warm, so a new session's first request hits 67% for the official and 0% here. pi and opencode only write the 5-minute cache on the Claude side, so after 15 or more idle minutes their first request drops to 0–27%. This repo on a ChatGPT account still hits 97–98% after 65 idle minutes. Total tokens over 2.7 hours: 306k for this repo on Claude, 349k for the official.
+- **Size of the differences**: one CLI varies by 11–41 points between task types, more than the gap between CLIs; rerunning the same ChatGPT cell differs by 9 points on average. Differences under about 10 points in a single task cell are not significant; draw conclusions from the grouped totals.
+
+</details>
+<details lang="zh-Hant"><summary>繁體中文</summary>
+
+> 英文名：`cache-benchmark` · 領域：上下文與記憶 · [返回功能索引](README.md)
+
+本 fork（Claude 帳號與 ChatGPT 帳號兩條路徑）與官方 Claude Code、Codex CLI、opencode、pi、oh-my-pi、dsh 跑同一批真實任務，比較提示快取命中率、token 用量、API 等價花費、多代理開銷、長時間閒置後的快取、啟動速度和穩定性。全部是真實模型請求，不使用假 API。資料採集於 2026-11-07，共 789 次 run，每格至少 3 次；第 12 節另用 20 道公開基準題（1,800 次 run，2026-11-08 至 11-09）比較通過率。
+
+## 摘要
+
+| 指標 | 本倉庫 · Claude 帳號 | 官方 Claude Code | 本倉庫 · ChatGPT 帳號 | Codex CLI | opencode | pi |
+| --- | --- | --- | --- | --- | --- | --- |
+| CLI 模式命中率（33 次） | **87.1%** | 87.3% | **85.3%** | 88.8% | 89.2% | 84.0% |
+| 平均總 token / 任務 | **72.7k** | 81.0k | **75.9k** | 80.3k | 81.5k | 36.5k |
+| API 等價花費 / 任務² | **$0.078** | $0.088 | **$0.050** | $0.047 | $0.059 | $0.041 |
+| TUI 6 輪總 token | **235k** | 640k | **310k** | 267k | 170k | 80k |
+| 3 個 subagent / Teams 3 人（相對單代理） | **2.8× / 6.0×** | 3.7× / 4.0×¹ | **3.8× / 8.5×** | 5.4× / — | 2.0× / — | 無此功能 |
+| 長閒置 2.7 小時總 token | **306k** | 349k | **331k** | 361k | 358k | 131k |
+| `-p` 啟動到首個請求 | **0.82s** | 0.89s | **0.71s** | 2.59s | 2.81s | 0.83s |
+| 會話中途整段失效 | **0.0%** | 0.0% | **2.7%** | 0.5% | 3.2% | 4.2% |
+| 任務成功 | 33/33 | 33/33 | 33/33 | 33/33 | 33/33 | 33/33 |
+
+¹ 官方 2.1.319 在 `-p` 下把具名 `Agent` 呼叫當作後台 subagent 執行，沒有組成團隊。
+² 按公開 API 價換算（ChatGPT 列 `gpt-6.1-sol`，Claude 列 `claude-sonnet-5-5`，價格見「口徑」）。訂閱帳號不按 token 計費，這裡只用同一張價目表比較。
+
+- **Claude 側與官方持平**：命中率相差 0.2 個百分點，在噪聲範圍內；總 token 少 10%；TUI 多輪互動官方用量是本倉庫的 2.7 倍；3 個 subagent 時本倉庫 2.8 倍、官方 3.7 倍。
+- **ChatGPT 側比 Codex 低 3.5 個百分點**，差距只在短任務（82.9% 對 89.7%）；長任務 86.5% 對 88.3%，接近持平。原因是 Codex 的系統提示在伺服器端，新會話第一個請求的未快取部分只有 2.7k，本倉庫 6.3k。
+- **多代理**：3 個 subagent 本倉庫是單代理的 2.8 倍，官方 3.7 倍；Agent Teams 3 人本倉庫 Claude 帳號 6.0 倍、ChatGPT 帳號 8.5 倍。官方 2.1.319 在 `-p` 下沒有真正組隊（見第 5 節），它的 4.0 倍不能直接比較。
+- **花費**：ChatGPT 側快取讀只收 1/20 價，四個 CLI 每任務 $0.041–0.059，本倉庫比 Codex 貴 6%；Claude 側本倉庫 $0.078、官方 $0.088。
+- **長時間閒置**：Claude 側 1 小時快取在閒置 65 分鐘後過期，下一輪第一個請求本倉庫與官方都只剩約 50%；第二次 65 分鐘後本倉庫 28%、官方 39%。官方的靜態字首全球使用者共享、一直是熱的，所以新會話第一個請求官方 67%、本倉庫 0%。pi 與 opencode 在 Claude 側只寫 5 分鐘快取，閒置 15 分鐘以上第一個請求就只剩 0–27%。本倉庫 ChatGPT 帳號閒置 65 分鐘後仍有 97–98%。2.7 小時總 token 本倉庫 Claude 306k、官方 349k。
+- **差異的量級**：同一 CLI 在不同任務型別之間相差 11–41 個百分點，大於 CLI 之間的差距；ChatGPT 側同一格重跑平均相差 9 個百分點。單個任務格小於約 10 個百分點的差異不顯著，結論以分組合計為準。
+
+</details>
 
 ## 测试设计
 
@@ -468,9 +533,24 @@ dsh 0.2.2-rc.1 用 headless 模式（`dsh --profile headless --json`），模型
 - 这只是观察数据，effort、提示、工具在各 CLI 之间同时不同。本仓库据此做了三项改动（#1097）：`-p` 与 SDK 默认 effort 改为 high，系统提示加一句「结束前跑相关测试并修好、清掉自己产生的构建产物」，并去掉「信息够了就行动，不要重新推导」那句。A/B 验证见下一条。
 - **A/B 验证（2026-11-10，4 题 × 每格 6 次，原版与扰动版各 3 次，模型 `claude-sonnet-5-5`）**：只改提示、effort 仍为 medium 时通过 14/24；改动前的构建 8/24；三项全改（提示 + headless 默认 high）22/24。提示那句主要作用在 polyglot 两题（0/12 → 7/12，靠清掉构建产物）；effort high 再把 ansible 从 4/6 提到 6/6、polyglot 提到 12/12。代价是每次 run 的花费从 $0.18 涨到 $0.36、用时从 63s 涨到 127s。题目只有 ansible、polyglot-c-py、polyglot-rust-c、custom-memory-heap-crash 四道，其余 SWE-Pro 题因运行环境限制没跑。
 
+### 13. FrontierHarness 题组：本仓库与官方同为 medium
+
+[FrontierHarness Eval](https://frontierharness.org) 是 Runta 做的 harness 基准：同一个开源模型（v1.0 是 Kimi K3）经网关接入各 CLI，只换 harness，比较通过率与花费。我们用它 v1.0 题组里的 Terminal-Bench 2 题（21 题，`build-cython-ext` 的参考解在本环境不通过，排除后 20 题），在 Claude 侧比较本仓库与官方。两边都用 `claude-sonnet-5-5`、effort medium（本仓库用 `fork-claude-key-medium` 格固定 medium，官方 `-p` 默认即 medium），每格每题 3 次，共 120 次 run，数据采集于 2026-11-11。
+
+| CLI | effort | 通过率 | 平均总 token（单次范围） | 命中率 | API 等价花费 / 任务 | 平均用时（单次范围） |
+| --- | --- | --- | --- | --- | --- | --- |
+| 本仓库 2.1.297 | medium | 75.0%（45/60） | 94k（43k–640k） | 91.6% | $0.055 | 41s（6s–757s） |
+| 官方 Claude Code 2.1.322 | medium | 75.0%（45/60） | 94k（36k–323k） | 90.9% | $0.056 | 21s（9s–72s） |
+
+- **通过率、token、花费都持平。** 逐题配对差 0.0 ± 8.0 pp（一个标准误，20 题）。本仓库多过的题：`db-wal-recovery`（3/3 对 0/3）、`chess-best-move`、`polyglot-c-py`；官方多过的题：`vulnerable-secret`（0/3 对 3/3）、`gcode-to-text`、`merge-diff-arc-agi-task`。
+- **`vulnerable-secret` 是设计差异。** 两边都被模型拒答（`stop_reason: refusal`）；官方会按拒答类别自动换 `claude-sonnet-5` 重试，本仓库报错停下，由用户自己决定是否换模型。
+- **本仓库平均用时较长**，主要来自一次 run：agent 留下一个不结束的后台命令，`-p` 等到 10 分钟上限才退出（757 秒）；其余 run 与官方相近。
+- **和 FrontierHarness 公布的 v1.0 结果对照（同 20 题，Kimi K3，每格 1 次）**：12 个配置通过 12–15 题，Claude Code 15 题。他们测到 Claude Code 在 K3 网关上按 token 加权的命中率只有 25%，每次通过花 $18.34；直连 Anthropic API 时两边命中率都在 91% 左右，每任务约 $0.055，高花费来自 K3 网关的隐式缓存，不是 Claude Code 本身。模型、沙箱、次数都不同，这里只看同一题的难易，不排名次。
+- DeepSWE 9 题每次 $0.3–1，本轮没有在 medium 下重跑。
+
 ## 局限
 
-- 第 0–11 节的题组成功率几乎全部 100%，对成功率没有区分度；成功率比较见第 12 节公开基准。
+- 第 0–11 节的题组成功率几乎全部 100%，对成功率没有区分度；成功率比较见第 12、13 节公开基准。
 - 每格 3 次。ChatGPT 侧同一格重跑平均相差 9 个百分点（最大 39），单格差异需超过约 10 个百分点才有意义。
 - Agent Teams 只有 Claude Code 系有；pi 没有子代理功能。Web 场景只有本仓库有。
 - 补跑的格（opencode 多轮场景、Claude 侧 pi / opencode 多轮场景、多代理新格）与早先的格不在同一时段。
@@ -482,6 +562,7 @@ dsh 0.2.2-rc.1 用 headless 模式（`dsh --profile headless --json`），模型
 完整报告、逐 run 汇总、逐请求原始日志与 harness 在项目共享目录：
 
 - `regression/cache-bench-1107-post/`：CLI 矩阵、TUI / SDK / Web（`report.md`、`results.json`、`raw/`、`harness/`）。
+- `regression/frontierharness-v1-1111/`：第 13 节 FrontierHarness 题组（`report.md`、`medium-tb2.md`、`raw/`、`harness/`、`snapshot/` 为 FrontierHarness 公布数据的快照）。
 - `regression/public-bench-1108/`：第 12 节公开基准（`report.md`、`summary.json`、`raw/`、`harness/`、`charts/`）；扰动版题目在仓库 `bench/public/perturb/`。
 - `regression/cache-bench-1107-current/`：多代理、长闲置、启动与资源占用（`raw/sub/`、`raw/team/`、`raw/gap/`、`raw/b6/`、`harness/`）；pi 与 opencode 的 Claude 侧 CLI 矩阵在 `claude-api/`；各 CLI × 账号的补齐格与 API 等价花费在 `chatgpt-api/`（`results.json` 汇总全部逐 run 数据）；oh-my-pi 在 `oh-my-pi/`；dsh 在 `dsh/`；ssh / k8s 运维排障在 `ops-troubleshoot/`。
 

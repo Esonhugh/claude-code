@@ -1,5 +1,7 @@
 # 快捷键与 Vim 模式
 
+<!-- lang: zh-Hans -->
+
 > 英文名：`keybindings-vim` · 领域：界面与交互 · [返回功能索引](README.md)
 
 ## 这是什么
@@ -9,6 +11,33 @@
 1. **自定义快捷键**：所有按键都可以在一个 JSON 文件里改，保存后立即生效；
 2. **Claude 忙的时候怎么插话**：排队等它做完，或者立即打断；
 3. **Vim 模式**：输入框支持 Vim 按键，本 fork 补上了 VISUAL 选择和 `%` 括号跳转。
+
+<details lang="en"><summary>English</summary>
+
+> Name: `keybindings-vim` · Area: UI and interaction · [Back to index](README.md)
+
+## What it is
+
+This page covers three things:
+
+1. **Custom keybindings**: every key can be changed in one JSON file, and changes apply as soon as you save.
+2. **Interjecting while Claude is busy**: queue a message until it finishes, or interrupt it right away.
+3. **Vim mode**: the input box supports Vim keys, and this fork adds VISUAL selection and `%` bracket jumping.
+
+</details>
+<details lang="zh-Hant"><summary>繁體中文</summary>
+
+> 英文名：`keybindings-vim` · 領域：介面與互動 · [返回功能索引](README.md)
+
+## 這是什麼
+
+這一頁講三件事：
+
+1. **自定義快捷鍵**：所有按鍵都可以在一個 JSON 檔案裡改，儲存後立即生效；
+2. **Claude 忙的時候怎麼插話**：排隊等它做完，或者立即打斷；
+3. **Vim 模式**：輸入框支援 Vim 按鍵，本 fork 補上了 VISUAL 選擇和 `%` 括號跳轉。
+
+</details>
 
 ## 自定义快捷键
 

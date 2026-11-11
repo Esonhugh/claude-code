@@ -1,5 +1,7 @@
 # Direct Connect
 
+<!-- lang: zh-Hans -->
+
 > 英文名：`direct-connect` · 领域：远程执行 · [返回功能索引](README.md)
 
 ## 这是什么
@@ -12,6 +14,39 @@
 4. 需要权限确认时，问题会传回你这边。
 
 适合：容器 / 开发机里已经配好环境和凭据，你只想从外面连进去用。
+
+<details lang="en"><summary>English</summary>
+
+> Name: `direct-connect` · Area: Remote execution · [Back to index](README.md)
+
+## What it is
+
+Same goal as [SSH Remote](ssh-remote.md), **run elsewhere, operate locally**, but over HTTP and WebSocket instead of SSH:
+
+1. On the machine that should run the code, start `claude server`; it listens on a port protected by a token.
+2. In your terminal, run `claude cc://address/token` to get the normal interactive UI.
+3. Each session starts a Claude worker process on the server, which reads and writes **files on the server** and uses **credentials on the server**.
+4. Permission prompts come back to you.
+
+Good for containers or dev machines that already have the environment and credentials set up, when you just want to connect from outside.
+
+</details>
+<details lang="zh-Hant"><summary>繁體中文</summary>
+
+> 英文名：`direct-connect` · 領域：遠端執行 · [返回功能索引](README.md)
+
+## 這是什麼
+
+和 [SSH Remote](ssh-remote.md) 目的相同——**在別處執行、在本地操作**，但不走 SSH，而是 HTTP + WebSocket：
+
+1. 在要執行程式碼的機器上執行 `claude server`，它監聽一個埠，用 token 保護；
+2. 在你的終端執行 `claude cc://地址/token`，得到正常的互動介面；
+3. 每個會話在 server 上啟動一個 Claude 執行程序，讀寫的是 **server 上的檔案**，用的是 **server 上的憑據**；
+4. 需要權限確認時，問題會傳回你這邊。
+
+適合：容器 / 開發機裡已經配好環境和憑據，你只想從外面連進去用。
+
+</details>
 
 ## 快速上手
 

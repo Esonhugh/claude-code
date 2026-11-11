@@ -6,7 +6,7 @@ import type { Lang } from './i18n'
 const HALF = 300
 export const ACCOUNTS_DEMO_FRAMES = HALF * 2
 
-const task = { en: 'set TOP_K to 20 in retrieval.py and run the tests', zh: '把 retrieval.py 的 TOP_K 改成 20，再跑測試' }
+const task = { en: 'set TOP_K to 20 in retrieval.py and run the tests', zh: '把 retrieval.py 的 TOP_K 改成 20，再跑測試', hans: '把 retrieval.py 的 TOP_K 改成 20，再跑测试' }
 
 const steps = (lang: Lang, side: 'claude' | 'gpt'): SimStep[] => [
   { at: 10, type: 'line', text: side === 'claude' ? '$ claude' : '$ CLAUDE_CODE_USE_OPENAI=1 claude', color: 'inactive' },
@@ -21,14 +21,14 @@ const steps = (lang: Lang, side: 'claude' | 'gpt'): SimStep[] => [
   { at: 144, type: 'result', text: '+ TOP_K = 20', color: 'success' },
   { at: 170, type: 'tool', name: 'Bash', args: 'sh run_tests.sh' },
   { at: 185, type: 'result', text: '6 passed in 0.41s' },
-  { at: 210, type: 'line', text: lang === 'en' ? 'TOP_K is 20 now; all 6 tests pass.' : 'TOP_K 已改成 20，6 個測試全部通過。' },
+  { at: 210, type: 'line', text: { en: 'TOP_K is 20 now; all 6 tests pass.', zh: 'TOP_K 已改成 20，6 個測試全部通過。', hans: 'TOP_K 已改成 20，6 个测试全部通过。' }[lang] },
   { at: 225, type: 'done', verb: side === 'claude' ? 'Brewed' : 'Worked', seconds: 9 },
 ]
 
 const Side: React.FC<{ lang: Lang; side: 'claude' | 'gpt' }> = ({ lang, side }) => {
   const f = useCurrentFrame()
   const accent = side === 'claude' ? tui.claude : tui.openai
-  const label = side === 'claude' ? (lang === 'en' ? 'Claude account' : 'Claude 帳號') : lang === 'en' ? 'ChatGPT account' : 'ChatGPT 帳號'
+  const label = `${side === 'claude' ? 'Claude' : 'ChatGPT'}${{ en: ' account', zh: ' 帳號', hans: ' 账号' }[lang]}`
   return (
     <div style={{ position: 'absolute', inset: 0, opacity: interpolate(f, [0, 8, HALF - 8, HALF], [0, 1, 1, 0]) }}>
       <Terminal
