@@ -3,7 +3,7 @@ import { createRoot } from 'react-dom/client'
 import { AccountsDemo } from './AccountsDemo'
 import { FPS, FrameContext } from './clock'
 import type { Lang } from './i18n'
-import { type Scene, SCENES, TOUR_FRAMES, TourDemo } from './TourDemo'
+import { type Scene, SCENES, TOUR_FRAMES, TourDemo, tourFrames } from './TourDemo'
 import { WEB_DEMO_FRAMES, WebDemo } from './WebDemo'
 
 // The web demo is drawn on a 1280×720 canvas and scaled to fit; the terminals render at page size.
@@ -96,7 +96,7 @@ const Demo: React.FC<{ name: keyof typeof DEMOS; el: HTMLElement }> = ({ name, e
     }, FADE_MS)
     return () => clearTimeout(t)
   }, [target, scene])
-  const frame = useFrame(el, frames, name === 'tour' ? scene : name)
+  const frame = useFrame(el, name === 'tour' ? tourFrames(scene) : frames, name === 'tour' ? scene : name)
   const [scale, setScale] = useState(1)
   useEffect(() => {
     if (!canvas) return

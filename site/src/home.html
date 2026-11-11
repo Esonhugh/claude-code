@@ -18,7 +18,7 @@
 
 <section id="tour"><div class="tour">
   <div class="tour-stage"><div class="demo" data-demo="tour" data-scene="accounts"></div>
-  <p class="demo-cap"><span class="en">Illustrative replays; scroll to switch.</span><span class="hant">示意重播；往下捲動切換。</span><span class="hans">示意重播；往下滚动切换。</span></p></div>
+  <p class="demo-cap"><span class="en">Recorded from the real CLI in tmux, with scripted model replies; scroll to switch.</span><span class="hant">在 tmux 裡錄下的真實 CLI，模型回覆是預設腳本；往下捲動切換。</span><span class="hans">在 tmux 里录下的真实 CLI，模型回复是预设脚本；往下滚动切换。</span></p></div>
   <div class="tour-steps">
     <div class="tour-step" data-step="accounts">
       <p class="prompt">$ <b>claude</b> --help accounts</p>
@@ -67,6 +67,14 @@
       <p class="en">Choose 128k, 200k, 272k, 500k or 1M per model, or let it follow the account catalog. <code>/context</code> shows where the tokens go; memory can switch to SQLite FTS5 search so it is looked up only when needed.</p>
       <p class="hant">每個模型可以選 128k、200k、272k、500k 或 1M，或跟隨帳號的模型目錄。<code>/context</code> 看 token 用在哪；記憶可改用 SQLite FTS5 全文檢索，需要時才查。</p><p class="hans">每个模型可以选 128k、200k、272k、500k 或 1M，或跟随账号的模型目录。<code>/context</code> 看 token 用在哪；记忆可改用 SQLite FTS5 全文检索，需要时才查。</p>
       <a href="docs/compaction.html"><span class="en">Read the docs</span><span class="hant">看文件</span><span class="hans">看文档</span> →</a>
+    </div>
+    <div class="tour-step" data-step="peers">
+      <p class="prompt">$ <b>claude</b> --name builder</p>
+      <h2 class="en">Sessions that talk to each other</h2>
+      <h2 class="hant">會話之間互相傳話</h2><h2 class="hans">会话之间互相传话</h2>
+      <p class="en">Open two CLIs in the same project with <code>--name</code>. <code>/peers</code> lists the other sessions on this machine, and Claude uses <code>SendMessage</code> to drop a note in another session's inbox. The receiver shows <code>Peer · builder</code> and treats it as input, never as your approval.</p>
+      <p class="hant">在同一個專案用 <code>--name</code> 開兩個 CLI。<code>/peers</code> 列出同機的其他會話，Claude 用 <code>SendMessage</code> 把訊息放進對方的收件匣；對方顯示 <code>Peer · builder</code> 並當成新輸入處理，但不算你的批准。</p><p class="hans">在同一个项目用 <code>--name</code> 开两个 CLI。<code>/peers</code> 列出同机的其他会话，Claude 用 <code>SendMessage</code> 把消息放进对方的收件箱；对方显示 <code>Peer · builder</code> 并当成新输入处理，但不算你的批准。</p>
+      <a href="docs/peer-messaging.html"><span class="en">Read the docs</span><span class="hant">看文件</span><span class="hans">看文档</span> →</a>
     </div>
   </div>
 </div></section>
