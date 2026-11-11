@@ -89,6 +89,7 @@ export type McpServerStatus = {
       destructive?: boolean
       openWorld?: boolean
     }
+    _meta?: Record<string, unknown>
   }>
   capabilities?: {
     experimental?: Record<string, unknown>
