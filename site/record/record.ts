@@ -107,7 +107,7 @@ async function record(lang: Lang) {
   const poll = (async () => {
     let last = ''
     while (!done) {
-      const screen = tmux('capture-pane', '-t', SESSION, '-e', '-p')
+      const screen = tmux('capture-pane', '-t', SESSION, '-e', '-p', '-N')
       if (screen !== last) snapshots.push({ t: (performance.now() - start) / 1000, screen })
       last = screen
       await sleep(60)
