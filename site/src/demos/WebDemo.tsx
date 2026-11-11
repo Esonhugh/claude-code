@@ -46,6 +46,18 @@ const copy = {
     tests: '測試',
     session: '檢查 retrieval.py，把…',
   },
+  hans: {
+    prompt: '检查 retrieval.py，把 TOP_K 改成 20，再跑一下测试',
+    look: '先看一下目前的实现。',
+    found: 'TOP_K 在第 3 行，改成 20。',
+    rerun: '再跑一下测试。',
+    done: '改好了，测试全部通过。',
+    item: '项目',
+    before: '改动前',
+    after: '改动后',
+    tests: '测试',
+    session: '检查 retrieval.py，把…',
+  },
 }
 
 // Timeline (30 fps).

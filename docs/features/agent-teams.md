@@ -1,5 +1,7 @@
 # Agent Teams
 
+<!-- lang: zh-Hans -->
+
 > 英文名：`agent-teams` · 领域：Agent 与编排 · [返回功能索引](README.md)
 
 ## 这是什么
@@ -11,6 +13,37 @@
 - 你可以随时切过去看某个队友在干什么，直接给它发话。
 
 和官方 2.1.303 一样，这个功能默认关闭。
+
+<details lang="en"><summary>English</summary>
+
+> Name: `agent-teams` · Area: Agents and orchestration · [Back to index](README.md)
+
+## What it is
+
+A normal sub-agent is sent off to do one thing and hands back a result. Agent Teams works more like a small group: your session is the **team lead**, and it can start several named **teammates**. Each teammate is a full Claude session that stays online, and together they can:
+
+- message each other (`SendMessage`); a teammate tells the lead when it finishes something;
+- share one task list that records who owns which task and how far it has got;
+- let you switch to any teammate at any time to watch it work or talk to it directly.
+
+As in the official 2.1.303, this feature is off by default.
+
+</details>
+<details lang="zh-Hant"><summary>繁體中文</summary>
+
+> 英文名：`agent-teams` · 領域：Agent 與編排 · [返回功能索引](README.md)
+
+## 這是什麼
+
+普通的子 Agent 是「派出去幹一件事、做完交回結果」。Agent Teams 更像一個小組：你所在的會話是**負責人（team-lead）**，它可以拉起幾個有名字的**隊友（teammate）**。隊友各自是一個完整的 Claude 會話，會一直線上；大家可以：
+
+- 互相發訊息（`SendMessage`），隊友做完一件事會主動告訴負責人；
+- 共用一份任務清單，誰負責哪項、做到哪一步都記在上面；
+- 你可以隨時切過去看某個隊友在幹什麼，直接給它發話。
+
+和官方 2.1.303 一樣，這個功能預設關閉。
+
+</details>
 
 ## 什么时候用
 

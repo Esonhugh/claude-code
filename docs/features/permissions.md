@@ -1,5 +1,7 @@
 # 权限规则、权限模式与 Safe mode
 
+<!-- lang: zh-Hans -->
+
 > 英文名：`permissions` · 领域：权限与安全 · [返回功能索引](README.md)
 
 ## 这是什么
@@ -11,6 +13,37 @@ Claude 每次要改文件、跑命令、访问网络之前，都会判断要不�
 3. **安全底线**：改 `.git/`、`.claude/`、shell 配置这类敏感位置，不论规则和模式怎么设，都会先问（bypass 模式除外，见下文）。
 
 自动模式（让分类器替你判断）见 [auto-mode.md](auto-mode.md)。
+
+<details lang="en"><summary>English</summary>
+
+> Name: `permissions` · Area: Permissions and security · [Back to index](README.md)
+
+## What it is
+
+Before Claude changes a file, runs a command or goes on the network, it decides whether to ask you first. Three things decide that:
+
+1. **Permission rules**: your own "always allow / always ask / always deny" for kinds of actions.
+2. **Permission mode**: how strict things are overall, such as "edit files without asking" or "plan only". Switch with `Shift+Tab`.
+3. **Safety floor**: changes to sensitive places such as `.git/`, `.claude/` and shell config always ask first, whatever the rules and mode say (except in bypass mode, see below).
+
+For auto mode, where a classifier decides for you, see [auto-mode.md](auto-mode.md).
+
+</details>
+<details lang="zh-Hant"><summary>繁體中文</summary>
+
+> 英文名：`permissions` · 領域：權限與安全 · [返回功能索引](README.md)
+
+## 這是什麼
+
+Claude 每次要改檔案、跑命令、訪問網路之前，都會判斷要不要先問你。決定這件事的有三樣東西：
+
+1. **權限規則**：你提前寫好的「這類操作直接允許 / 總是先問 / 一律禁止」。
+2. **權限模式**：整體的鬆緊程度，例如「改檔案不用問」或「先只做計劃」。按 `Shift+Tab` 切換。
+3. **安全底線**：改 `.git/`、`.claude/`、shell 配置這類敏感位置，不論規則和模式怎麼設，都會先問（bypass 模式除外，見下文）。
+
+自動模式（讓分類器替你判斷）見 [auto-mode.md](auto-mode.md)。
+
+</details>
 
 ## 第一次遇到：权限确认框
 

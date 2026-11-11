@@ -1,5 +1,7 @@
 # 自定义 UI / Branding 与 Status line
 
+<!-- lang: zh-Hans -->
+
 > 英文名：`branding` · 领域：界面与交互 · [返回功能索引](README.md)
 
 ## 这是什么
@@ -11,6 +13,37 @@
 | 产品名（欢迎画面、标题、紧凑模式边框） | settings 里的 `uiName` |
 | 左上角 Logo 图案 | `~/.claude/clawd.txt` 放一段 ASCII 图 |
 | 输入框下方的状态栏 | settings 里的 `statusLine`，指向你的脚本 |
+
+<details lang="en"><summary>English</summary>
+
+> Name: `branding` · Area: UI and interaction · [Back to index](README.md)
+
+## What it is
+
+Three things can be customised to your taste or your team's brand:
+
+| What | How |
+| --- | --- |
+| Product name (welcome screen, title, compact-mode border) | `uiName` in settings |
+| Logo art in the top left | put ASCII art in `~/.claude/clawd.txt` |
+| Status line under the input box | `statusLine` in settings, pointing at your script |
+
+</details>
+<details lang="zh-Hant"><summary>繁體中文</summary>
+
+> 英文名：`branding` · 領域：介面與互動 · [返回功能索引](README.md)
+
+## 這是什麼
+
+三處可以按自己的喜好或團隊品牌定製：
+
+| 定製什麼 | 怎麼改 |
+| --- | --- |
+| 產品名（歡迎畫面、標題、緊湊模式邊框） | settings 裡的 `uiName` |
+| 左上角 Logo 圖案 | `~/.claude/clawd.txt` 放一段 ASCII 圖 |
+| 輸入框下方的狀態列 | settings 裡的 `statusLine`，指向你的腳本 |
+
+</details>
 
 ## 快速上手
 

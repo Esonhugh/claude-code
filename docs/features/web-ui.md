@@ -1,5 +1,7 @@
 # Claude Web（本地网页界面）
 
+<!-- lang: zh-Hans -->
+
 > 英文名：`web-ui` · 领域：界面与交互 · [返回功能索引](README.md)
 
 ## 这是什么
@@ -15,6 +17,45 @@
 - 分派一批任务：建一个“项目”，让协调者把活拆给多个 worker 并行做，见 [Claude Web 项目](web-projects.md)。
 
 想先看一遍实际界面，见按操作顺序截图的 [Claude Web 界面导览](web-ui-tour.md)。
+
+<details lang="en"><summary>English</summary>
+
+> Name: `web-ui` · Area: UI and interaction · [Back to index](README.md)
+
+## What it is
+
+`claude web` starts a web server on your machine and opens the browser, so you can use Claude Code there: the session list and extensions on the left, the conversation in the middle, and panels such as Status, Files, Agents and Terminals on the right. Behind the page it is still your local claude: each session is a `claude -p` child process with the same tools, permissions, MCP servers, skills, plugins and hooks as in the terminal, and credentials stay on your machine where the browser cannot reach them.
+
+Compared with the terminal, the web UI is better for:
+
+- Reading long replies: Markdown tables, highlighted code, LaTeX math and Mermaid diagrams render as web content, and Edit / Write show diffs directly.
+- Looking at files: upload or reference PDF, Word, Excel, CSV, Markdown, HTML and images, and preview them on the right with one click.
+- Watching background work: subagents, workflows, team members, terminals, Monitor and background shells are all in the right panel, where you can message an agent or type into a terminal.
+- Managing many sessions: pin, group by directory, hover for details, right-click to rename, archive or delete.
+- Handing out a batch of tasks: create a project and let the coordinator split the work across several workers, see [Claude Web projects](web-projects.md).
+
+To see the real UI first, read the step-by-step [Claude Web tour](web-ui-tour.md).
+
+</details>
+<details lang="zh-Hant"><summary>繁體中文</summary>
+
+> 英文名：`web-ui` · 領域：介面與互動 · [返回功能索引](README.md)
+
+## 這是什麼
+
+`claude web` 在本機起一個網頁服務並開啟瀏覽器，在瀏覽器裡用 Claude Code：左邊是會話列表和擴充入口，中間是對話，右邊是 Status、Files、Agents、Terminals 等面板。頁面背後跑的還是本機的 claude：每個會話是一個 `claude -p` 子程序，工具、權限、MCP、skills、插件、hooks 和終端裡一樣，憑據只留在本機，瀏覽器拿不到。
+
+和終端相比，網頁適合這些事：
+
+- 讀長回覆：Markdown 表格、程式碼高亮、LaTeX 公式、Mermaid 圖按網頁渲染，Edit / Write 直接顯示 diff。
+- 看檔案：上傳或引用 PDF、Word、Excel、CSV、Markdown、HTML、圖片，點一下在右側預覽。
+- 看後台：subagent、workflow、team 成員、終端、Monitor 和後台 shell 都在右側面板裡，可以直接給 agent 發訊息、往終端裡打字。
+- 管多個會話：置頂、按目錄分組、懸停看詳情、右鍵重新命名 / 封存 / 刪除。
+- 分派一批任務：建一個“專案”，讓協調者把活拆給多個 worker 並行做，見 [Claude Web 專案](web-projects.md)。
+
+想先看一遍實際介面，見按操作順序截圖的 [Claude Web 介面導覽](web-ui-tour.md)。
+
+</details>
 
 ## 什么时候用
 

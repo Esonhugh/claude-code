@@ -1,5 +1,7 @@
 # Claude Web 项目：协调者与任务
 
+<!-- lang: zh-Hans -->
+
 > 英文名：`web-projects` · 领域：界面与交互 · [返回功能索引](README.md)
 
 ## 这是什么
@@ -7,6 +9,29 @@
 [Claude Web](web-ui.md) 里的“项目”是一个目录加一个常驻的协调者会话。你只和协调者说要做什么，它把活拆成几个任务，派给 worker agent 并行做；右侧列出每个任务的状态，点开能看 worker 的完整过程、批准它的权限请求、直接给它发消息或停止它，做完了再审阅、标记完成。
 
 项目和任务都记在本机的 `~/.claude/web/projects.sqlite`，关掉浏览器、重启 `claude web` 以后还在；已经结束的任务和协调者都能接着聊。对话内容仍然以 transcript 为准，库里只放列表和状态。
+
+<details lang="en"><summary>English</summary>
+
+> Name: `web-projects` · Area: UI and interaction · [Back to index](README.md)
+
+## What it is
+
+A project in [Claude Web](web-ui.md) is a directory plus a coordinator session that stays running. You tell the coordinator what you want; it splits the work into tasks and hands them to worker agents that run in parallel. The right side lists every task's state; open one to see the worker's full transcript, approve its permission requests, message it or stop it, then review it and mark it done.
+
+Projects and tasks are stored on your machine in `~/.claude/web/projects.sqlite`, so they survive closing the browser and restarting `claude web`, and you can keep talking to finished tasks and the coordinator. Conversations still live in the transcripts; the database only keeps the lists and states.
+
+</details>
+<details lang="zh-Hant"><summary>繁體中文</summary>
+
+> 英文名：`web-projects` · 領域：介面與互動 · [返回功能索引](README.md)
+
+## 這是什麼
+
+[Claude Web](web-ui.md) 裡的“專案”是一個目錄加一個常駐的協調者會話。你只和協調者說要做什麼，它把活拆成幾個任務，派給 worker agent 並行做；右側列出每個任務的狀態，點開能看 worker 的完整過程、批准它的權限請求、直接給它發訊息或停止它，做完了再審閱、標記完成。
+
+專案和任務都記在本機的 `~/.claude/web/projects.sqlite`，關掉瀏覽器、重啟 `claude web` 以後還在；已經結束的任務和協調者都能接著聊。對話內容仍然以 transcript 為準，庫裡只放列表和狀態。
+
+</details>
 
 ## 什么时候用
 

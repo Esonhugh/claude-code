@@ -1,10 +1,31 @@
 # 调试日志
 
+<!-- lang: zh-Hans -->
+
 > 英文名：`debugging` · 领域：界面与交互 · [返回功能索引](README.md)
 
 ## 这是什么
 
 Claude Code 出问题（MCP 连不上、hook 没触发、请求报错、某个功能不生效）时，界面上通常只有一句简短提示。调试日志会把后台每一步都记下来：读了哪些配置、加载了几个 skill、发了哪些 API 请求、hook 有没有找到……排查时把日志看一遍，或者附在 issue 里，比描述现象有用得多。
+
+<details lang="en"><summary>English</summary>
+
+> Name: `debugging` · Area: UI and interaction · [Back to index](README.md)
+
+## What it is
+
+When something goes wrong in Claude Code (an MCP server will not connect, a hook does not fire, a request errors, a feature has no effect), the UI usually shows one short message. The debug log records every step behind it: which settings were read, how many skills were loaded, which API requests were sent, whether a hook was found, and so on. Reading the log, or attaching it to an issue, is far more useful than describing the symptom.
+
+</details>
+<details lang="zh-Hant"><summary>繁體中文</summary>
+
+> 英文名：`debugging` · 領域：介面與互動 · [返回功能索引](README.md)
+
+## 這是什麼
+
+Claude Code 出問題（MCP 連不上、hook 沒觸發、請求報錯、某個功能不生效）時，介面上通常只有一句簡短提示。除錯日誌會把後台每一步都記下來：讀了哪些配置、載入了幾個 skill、發了哪些 API 請求、hook 有沒有找到……排查時把日誌看一遍，或者附在 issue 裡，比描述現象有用得多。
+
+</details>
 
 ## 快速上手
 

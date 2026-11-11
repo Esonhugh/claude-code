@@ -1,10 +1,31 @@
 # 会话命令
 
+<!-- lang: zh-Hans -->
+
 > 英文名：`session-commands` · 领域：界面与交互 · [返回功能索引](README.md)
 
 ## 这是什么
 
 在输入框打 `/` 会弹出命令列表。这一页汇总本 fork **新增或补齐**的会话命令，各自做什么、什么时候用。部分命令在 Claude 正在回答时也能立即打开（对齐官方 2.1.303）。
+
+<details lang="en"><summary>English</summary>
+
+> Name: `session-commands` · Area: UI and interaction · [Back to index](README.md)
+
+## What it is
+
+Typing `/` in the input box opens the command list. This page collects the session commands this fork **adds or completes**, what each does and when to use it. Some commands open immediately even while Claude is answering (as in the official 2.1.303).
+
+</details>
+<details lang="zh-Hant"><summary>繁體中文</summary>
+
+> 英文名：`session-commands` · 領域：介面與互動 · [返回功能索引](README.md)
+
+## 這是什麼
+
+在輸入框打 `/` 會彈出命令列表。這一頁彙總本 fork **新增或補齊**的會話命令，各自做什麼、什麼時候用。部分命令在 Claude 正在回答時也能立即開啟（對齊官方 2.1.303）。
+
+</details>
 
 ## 一览
 

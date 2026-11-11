@@ -1,5 +1,7 @@
 # Codex Apps
 
+<!-- lang: zh-Hans -->
+
 > 英文名：`codex-apps` · 领域：模型与 Provider · [返回功能索引](README.md)
 
 ## 这是什么
@@ -7,6 +9,29 @@
 如果你在 ChatGPT 里已经连接了一些 App（GitHub、Gmail、Google Drive 等），用 ChatGPT 账号登录 [OpenAI provider](openai-provider.md) 后，这些 App 会自动作为工具出现在 Claude Code 里，不用再单独配 MCP。
 
 还会一并带来 ChatGPT 侧托管的 skill，用到时才加载。
+
+<details lang="en"><summary>English</summary>
+
+> Name: `codex-apps` · Area: Models and providers · [Back to index](README.md)
+
+## What it is
+
+If you have connected apps in ChatGPT (GitHub, Gmail, Google Drive and so on), they show up as tools in Claude Code once you sign in to the [OpenAI provider](openai-provider.md) with that ChatGPT account. No separate MCP setup is needed.
+
+Skills hosted on the ChatGPT side come along too, loaded only when used.
+
+</details>
+<details lang="zh-Hant"><summary>繁體中文</summary>
+
+> 英文名：`codex-apps` · 領域：模型與 Provider · [返回功能索引](README.md)
+
+## 這是什麼
+
+如果你在 ChatGPT 裡已經連線了一些 App（GitHub、Gmail、Google Drive 等），用 ChatGPT 帳號登入 [OpenAI provider](openai-provider.md) 後，這些 App 會自動作為工具出現在 Claude Code 裡，不用再單獨配 MCP。
+
+還會一併帶來 ChatGPT 側託管的 skill，用到時才載入。
+
+</details>
 
 ## 前提
 

@@ -1,5 +1,7 @@
 # SSH Remote
 
+<!-- lang: zh-Hans -->
+
 > 英文名：`ssh-remote` · 领域：远程执行 · [返回功能索引](README.md)
 
 ## 这是什么
@@ -12,6 +14,39 @@
 4. 模型请求经 SSH 隧道回到本机，由本机加上认证再发出——**API key、登录凭据不会复制到远端**。
 
 只支持交互式界面（不支持 `-p`）。
+
+<details lang="en"><summary>English</summary>
+
+> Name: `ssh-remote` · Area: Remote execution · [Back to index](README.md)
+
+## What it is
+
+The code is on a server but you want to use Claude from your local terminal? `claude ssh`:
+
+1. connects over SSH and uploads a Claude Code build for the remote architecture (nothing needs to be installed there);
+2. runs Claude's worker on the remote host: it reads and writes files, runs commands, and loads the remote skills, MCP servers and settings;
+3. keeps only the UI, permission prompts and interrupts on your machine;
+4. sends model requests back through the SSH tunnel to your machine, which adds authentication and sends them on, so **API keys and sign-in credentials are never copied to the remote host**.
+
+Only the interactive UI is supported (no `-p`).
+
+</details>
+<details lang="zh-Hant"><summary>繁體中文</summary>
+
+> 英文名：`ssh-remote` · 領域：遠端執行 · [返回功能索引](README.md)
+
+## 這是什麼
+
+程式碼在伺服器上，但你想在本機終端裡用 Claude？`claude ssh` 會：
+
+1. 通過 SSH 連上遠端，自動把匹配架構的 Claude Code 程式放上去（遠端不用安裝任何東西）；
+2. 在遠端執行 Claude 的「執行端」：讀寫檔案、跑命令、載入遠端的 skill / MCP / 設定；
+3. 本機只負責顯示介面、權限確認和中斷；
+4. 模型請求經 SSH 隧道回到本機，由本機加上認證再發出——**API key、登入憑據不會複製到遠端**。
+
+只支援互動式介面（不支援 `-p`）。
+
+</details>
 
 ## 快速上手
 

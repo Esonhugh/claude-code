@@ -1,10 +1,31 @@
 # 请求韧性：重试、回退模型与默认模型
 
+<!-- lang: zh-Hans -->
+
 > 英文名：`request-resilience` · 领域：模型与 Provider · [返回功能索引](README.md)
 
 ## 这是什么
 
 调用模型的请求会因为各种原因失败：服务过载（529）、限流（429）、网络断开、响应流卡住。这一页讲 Claude Code 怎么自动处理这些情况，以及你能调哪些参数。行为对齐官方 2.1.303，Anthropic 和 [OpenAI provider](openai-provider.md) 都适用。
+
+<details lang="en"><summary>English</summary>
+
+> Name: `request-resilience` · Area: Models and providers · [Back to index](README.md)
+
+## What it is
+
+Model requests fail for many reasons: overload (529), rate limits (429), dropped connections, stalled response streams. This page explains how Claude Code handles these automatically and which settings you can tune. Behaviour matches the official 2.1.303 and applies to both Anthropic and the [OpenAI provider](openai-provider.md).
+
+</details>
+<details lang="zh-Hant"><summary>繁體中文</summary>
+
+> 英文名：`request-resilience` · 領域：模型與 Provider · [返回功能索引](README.md)
+
+## 這是什麼
+
+呼叫模型的請求會因為各種原因失敗：服務過載（529）、限流（429）、網路斷開、響應流卡住。這一頁講 Claude Code 怎麼自動處理這些情況，以及你能調哪些參數。行為對齊官方 2.1.303，Anthropic 和 [OpenAI provider](openai-provider.md) 都適用。
+
+</details>
 
 ## 默认会做什么
 

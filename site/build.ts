@@ -83,20 +83,50 @@ const docFiles = readdirSync(FEATURES).filter(f => f.endsWith('.md')).sort()
 const htmlName = (md: string) => (md === 'README.md' ? 'index.html' : md.replace(/\.md$/, '.html'))
 const titleOf = (md: string) => read(join(FEATURES, md)).match(/^# (.+)$/m)?.[1]?.trim() ?? md
 
-// Sidebar groups follow the domain column of the feature table in docs/features/README.md.
-const groups: { name: string; items: { file: string; title: string }[] }[] = []
-const seen = new Set<string>()
-for (const line of read(join(FEATURES, 'README.md')).split('\n')) {
-  const m = line.match(/^\|\s*([^|]*?)\s*\|\s*\[([^\]]+)\]\(([\w.-]+\.md)(?:#[^)]*)?\)/)
-  if (!m) continue
-  const [, domain, , file] = m
-  if (seen.has(file!) || !docFiles.includes(file!)) continue
-  seen.add(file!)
-  if (domain) groups.push({ name: domain, items: [] })
-  groups.at(-1)?.items.push({ file: file!, title: titleOf(file!) })
+// The docs are written in Simplified Chinese. A page can carry English and Traditional versions of its
+// introduction: `<!-- lang: zh-Hans -->` opens the Simplified intro, which is followed by a
+// `<details lang="en">` and a `<details lang="zh-Hant">` block (collapsed on the GitHub Wiki).
+const INTRO =
+  /<!-- lang: zh-Hans -->\n([\s\S]*?)\n<details lang="en"><summary>[^<]*<\/summary>\n([\s\S]*?)\n<\/details>\n<details lang="zh-Hant"><summary>[^<]*<\/summary>\n([\s\S]*?)\n<\/details>/
+type Tri = { hans: string; en: string; hant: string }
+const tri = (t: Tri) =>
+  t.en === t.hans && t.hant === t.hans
+    ? esc(t.hans)
+    : `<span class="hans">${esc(t.hans)}</span><span class="hant">${esc(t.hant)}</span><span class="en">${esc(t.en)}</span>`
+
+function tableRows(md: string): { domain: string; title: string; file: string }[] {
+  const rows = []
+  for (const line of md.split('\n')) {
+    const m = line.match(/^\|\s*([^|]*?)\s*\|\s*\[([^\]]+)\]\(([\w.-]+\.md)(?:#[^)]*)?\)/)
+    if (m) rows.push({ domain: m[1]!, title: m[2]!, file: m[3]! })
+  }
+  return rows
 }
-const orphans = docFiles.filter(f => f !== 'README.md' && !seen.has(f))
-if (orphans.length) groups.push({ name: '其他', items: orphans.map(file => ({ file, title: titleOf(file) })) })
+
+// Sidebar groups follow the domain column of the feature table in docs/features/README.md; the English and
+// Traditional tables in its translations give the other two languages, row for row.
+const readme = read(join(FEATURES, 'README.md'))
+const readmeIntro = readme.match(INTRO)
+const rows = tableRows(readmeIntro?.[1] ?? readme)
+const enRows = readmeIntro ? tableRows(readmeIntro[2]!) : []
+const hantRows = readmeIntro ? tableRows(readmeIntro[3]!) : []
+const titles = new Map<string, Tri>([['README.md', { hans: '功能索引', en: 'Feature index', hant: '功能索引' }]])
+const groups: { name: Tri; items: { file: string; title: Tri }[] }[] = []
+rows.forEach(({ domain, file }, i) => {
+  const at = (r: typeof rows, key: 'domain' | 'title', fallback: string) => (r[i]?.file === file ? r[i]![key] : fallback)
+  if (domain) groups.push({ name: { hans: domain, en: at(enRows, 'domain', domain), hant: at(hantRows, 'domain', domain) }, items: [] })
+  if (titles.has(file) || !docFiles.includes(file)) return
+  const hans = titleOf(file)
+  const title = { hans, en: at(enRows, 'title', hans), hant: at(hantRows, 'title', hans) }
+  titles.set(file, title)
+  groups.at(-1)?.items.push({ file, title })
+})
+const orphans = docFiles.filter(f => !titles.has(f))
+if (orphans.length) {
+  const items = orphans.map(file => ({ file, title: { hans: titleOf(file), en: titleOf(file), hant: titleOf(file) } }))
+  items.forEach(i => titles.set(i.file, i.title))
+  groups.push({ name: { hans: '其他', en: 'Other', hant: '其他' }, items })
+}
 
 // GitHub-style heading slugs so existing `file.md#anchor` links keep working.
 function slugger() {
@@ -120,14 +150,14 @@ function rewriteHref(href: string): string {
   return `${file.endsWith('/') ? TREE : BLOB}/${repoPath}${suffix}`
 }
 
-function renderDoc(md: string): string {
+function renderDoc(md: string, title: Tri, restNote: boolean): string {
   const slug = slugger()
   const marked = new Marked({ gfm: true })
   marked.use({
     renderer: {
       heading({ tokens, depth }: Tokens.Heading) {
         const inner = this.parser.parseInline(tokens)
-        if (depth === 1) return `<h1>${inner}</h1>\n`
+        if (depth === 1) return `<h1>${tri(title)}</h1>\n`
         const id = slug(inner)
         return `<h${depth} id="${esc(id)}"><a class="anchor" href="#${esc(id)}">${inner}</a></h${depth}>\n`
       },
@@ -150,15 +180,21 @@ function renderDoc(md: string): string {
       },
     },
   })
-  return marked.parse(md, { async: false }) as string
+  const note = (cls: string, text: string) => (restNote ? `\n\n<p class="doc-note ${cls}">${text}</p>` : '')
+  const body = md.replace(
+    INTRO,
+    (_, hans: string, en: string, hant: string) =>
+      `<div class="hans">\n\n${hans}\n\n</div>\n<div class="en">\n\n${en}${note('en', 'The rest of this page is in Simplified Chinese.')}\n\n</div>\n<div class="hant">\n\n${hant}${note('hant', '以下內容為簡體中文。')}\n\n</div>`,
+  )
+  return marked.parse(body, { async: false }) as string
 }
 
 function sidebar(current: string): string {
-  const link = (file: string, title: string) =>
-    `<a href="${htmlName(file)}"${file === current ? ' aria-current="page"' : ''}>${esc(title)}</a>`
-  const body = groups.map(g => `<h4>${esc(g.name)}</h4>\n${g.items.map(i => link(i.file, i.title)).join('\n')}`).join('\n')
+  const link = (file: string, title: Tri) =>
+    `<a href="${htmlName(file)}"${file === current ? ' aria-current="page"' : ''}>${tri(title)}</a>`
+  const body = groups.map(g => `<h4>${tri(g.name)}</h4>\n${g.items.map(i => link(i.file, i.title)).join('\n')}`).join('\n')
   return `<aside><details class="doc-nav"><summary><span class="en">All docs</span><span class="hant">全部文件</span><span class="hans">全部文档</span></summary>
-${link('README.md', '功能索引')}
+${link('README.md', titles.get('README.md')!)}
 ${body}
 </details></aside>`
 }
@@ -166,11 +202,13 @@ ${body}
 for (const file of docFiles) {
   const md = read(join(FEATURES, file))
   const title = titleOf(file)
+  const translated = INTRO.test(md)
+  const h1 = file === 'README.md' ? { hans: title, en: 'Feature docs', hant: '功能文件索引' } : titles.get(file)!
   const main = `<main class="wrap docs">
 ${sidebar(file)}
 <article class="prose">
-<p class="doc-note en">The feature docs are written in Chinese. They are the same pages as the GitHub Wiki.</p>
-${renderDoc(md)}
+${translated ? '' : '<p class="doc-note en">The feature docs are written in Chinese. They are the same pages as the GitHub Wiki.</p>'}
+${renderDoc(md, h1, file !== 'README.md')}
 <p class="doc-foot"><span class="en">Source:</span><span class="hant">原始檔：</span><span class="hans">源文件：</span> <a href="${BLOB}/docs/features/${file}">docs/features/${file}</a></p>
 </article>
 </main>`

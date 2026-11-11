@@ -1,5 +1,7 @@
 # 遥测与反馈
 
+<!-- lang: zh-Hans -->
+
 > 英文名：`telemetry` · 领域：界面与交互 · [返回功能索引](README.md)
 
 ## 这是什么
@@ -7,6 +9,29 @@
 官方 Claude Code 默认会把使用统计、错误报告发给 Anthropic，`/feedback` 还会上传整段对话记录。本 fork 改成**默认全部关闭**，只有你明确打开才会发送。
 
 另外有一套独立的 **OpenTelemetry（OTel）** 导出，用来把使用数据发到**你自己的**监控系统，与上面的开关无关。
+
+<details lang="en"><summary>English</summary>
+
+> Name: `telemetry` · Area: UI and interaction · [Back to index](README.md)
+
+## What it is
+
+The official Claude Code sends usage statistics and error reports to Anthropic by default, and `/feedback` uploads the whole transcript. This fork turns **all of it off by default**; nothing is sent unless you turn it on explicitly.
+
+Separately there is an **OpenTelemetry (OTel)** export for sending usage data to **your own** monitoring system. It is independent of the switches above.
+
+</details>
+<details lang="zh-Hant"><summary>繁體中文</summary>
+
+> 英文名：`telemetry` · 領域：介面與互動 · [返回功能索引](README.md)
+
+## 這是什麼
+
+官方 Claude Code 預設會把使用統計、錯誤報告發給 Anthropic，`/feedback` 還會上傳整段對話記錄。本 fork 改成**預設全部關閉**，只有你明確開啟才會傳送。
+
+另外有一套獨立的 **OpenTelemetry（OTel）** 匯出，用來把使用資料發到**你自己的**監控系統，與上面的開關無關。
+
+</details>
 
 ## 默认是什么样
 

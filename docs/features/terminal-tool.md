@@ -1,5 +1,7 @@
 # Tmux 工具（原 Terminal）
 
+<!-- lang: zh-Hans -->
+
 > 英文名：`terminal-tool` · 领域：工具 · [返回功能索引](README.md)
 
 ## 这是什么
@@ -9,6 +11,33 @@ Bash 工具一次只跑一条命令、等它结束就拿结果，遇到需要**�
 Terminal 工具给 Claude 一个**一直开着的终端**（PTY）：它可以先启动程序，再一句一句地输入、看屏幕、按特殊键、调整窗口大小，最后关掉。终端在后台运行，你在底部任务栏里随时能看到它的实时画面。
 
 模型看到的工具名是 `Tmux`：用户或 CLAUDE.md 要求「用 tmux」时，模型会直接用它，而不是在 Bash 里跑真正的 tmux。旧名 `Terminal` 仍然有效，旧的权限规则和对话记录不用改。
+
+<details lang="en"><summary>English</summary>
+
+> Name: `terminal-tool` · Area: Tools · [Back to index](README.md)
+
+## What it is
+
+The Bash tool runs one command, waits for it to finish and returns the result. That does not work for programs that need **back-and-forth interaction**: Python or Node REPLs, database shells, `vim`, install scripts that wait for `y`.
+
+The Terminal tool gives Claude **a terminal that stays open** (a PTY): it can start a program, type into it line by line, read the screen, press special keys, resize the window and finally close it. The terminal runs in the background, and you can watch it live from the task bar at the bottom.
+
+The model sees the tool as `Tmux`: when you or CLAUDE.md say "use tmux", the model uses this tool instead of running real tmux through Bash. The old name `Terminal` still works, so existing permission rules and transcripts need no changes.
+
+</details>
+<details lang="zh-Hant"><summary>繁體中文</summary>
+
+> 英文名：`terminal-tool` · 領域：工具 · [返回功能索引](README.md)
+
+## 這是什麼
+
+Bash 工具一次只跑一條命令、等它結束就拿結果，遇到需要**來回互動**的程式就沒辦法了，比如 Python / Node REPL、資料庫命令列、`vim`、要你按 `y` 確認的安裝腳本。
+
+Terminal 工具給 Claude 一個**一直開著的終端**（PTY）：它可以先啟動程式，再一句一句地輸入、看螢幕、按特殊鍵、調整視窗大小，最後關掉。終端在後台執行，你在底部工作列裡隨時能看到它的即時畫面。
+
+模型看到的工具名是 `Tmux`：使用者或 CLAUDE.md 要求「用 tmux」時，模型會直接用它，而不是在 Bash 裡跑真正的 tmux。舊名 `Terminal` 仍然有效，舊的權限規則和對話記錄不用改。
+
+</details>
 
 ## 快速上手：让 Claude 用 Python 算个数
 
