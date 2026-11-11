@@ -12,58 +12,16 @@
 - `## 2.1.88 base` 是唯一基线条目，固定放在文件末尾，不作为 release note。
 - `bun run check:changelog` 是格式规范的可执行门禁；发布时还会校验 tag 版本与最新发布条目一致。
 
-## 2026-11-11 - v2.1.298 - SQLite 记忆冷索引加速与新记忆优先、网页记忆搜索、系统提示词精简
+## 2026-11-11 - v2.1.297 - hooks exec-form 命令注入修复、上下文窗口档位、自动压缩超长恢复、OpenAI apply_patch 工具、claude web 的 Mods 界面与会话设置保留、与官方共用设置、ctrl+Enter 低延迟发送、Teams 与 headless 退出修复
 
 ### 版本状态
 
-- 发布候选：`dev` 合并到 `master` 后打 tag `v2.1.298`。本条目汇总 v2.1.297 发布合并（master `46809e6`，PR #907）之后的全部变更（至 PR #1114）；`Makefile VERSION`、README 与构建文档的发布版本同步为 `2.1.298`，`package.json` 保持 `0.0.0-dev`。
+- 发布候选：`dev` 合并到 `master` 后打 tag `v2.1.297`。本条目汇总 `v2.1.296` tag（master `7afd831`）之后至 PR #1116 的全部变更，来自 11-05、11-06 两次全面测试、之后 Round 2–6 的跨子系统回归，以及 11-07 至 11-09 的缓存基准、压缩审计与 claude web 修复；`Makefile VERSION`、README 与构建文档的发布版本同步为 `2.1.297`，`package.json` 保持 `0.0.0-dev`。版本号与官方版本号无对应关系（本轮对照基线为官方 2.1.318，后续回归为 2.1.319）。
 
 ### 关联提交
 
-- PR 合并提交（`git log --first-parent 46809e6..dev`）：#1104 SQLite 记忆冷索引加速、召回与 SearchMemory 新记忆优先、`bench/` 多会话记忆任务；#1107 把 master 的 v2.1.297 发布合并并回 dev（不改文件）；#1109 网页记忆搜索；#1111 系统提示词去掉产品形态一行与 headless 的 `/fast` 提示；#1113 Memory 规则精简、去掉外部 Output efficiency、skill 描述上限 512；#1114 未发布条目；本条目的发布准备 PR。
-- 对应 issue：#1105、#1106、#1108、#1110、#1112。
-
-### 变更内容
-
-#### 需要用户处理的行为变化
-
-- skill 列表每条描述默认上限由 1536 改为 512 字符，需要更长时用 `skillListingMaxDescChars` 覆盖（#1112）。
-- `SearchMemory` 的 `limit` 上限由 50 改为 25，结果不再因超过 `maxResultSizeChars` 被存成文件（#1106）。
-
-#### 记忆
-
-- SQLite 记忆模式首次建索引不再是平方级：从没索引过的文件不再逐个 `DELETE`，改动按 500 个文件一批写入；10,000 条记忆删掉索引后首个请求的首 token 时间 28.2 s → 2.6 s（#1105）。
-- 自动召回与 `SearchMemory` 在匹配程度相同时，保存日期新的记忆排在前面（同一天内仍按 bm25），`SearchMemory` 结果标出 `(saved YYYY-MM-DD)`（#1106）。
-- `claude web` 的记忆对话框能搜到全部记忆文件（此前只列最新 200 条），会话搜索为每个匹配的会话各列一行，不再被一个长会话占满（#1108）。
-
-#### 系统提示词
-
-- 系统提示词环境段去掉 "Claude Code is available as a CLI…" 一行；Fast mode 提示在 `-p`/SDK 会话中不再出现（#1110、#1111）。
-- Memory 段规则改为更短的写法（2,079 → 1,614 字符），规则内容不变，记忆提取 prompt 共用同一组文字（#1112、#1113）。
-- full prompt（OpenAI 路径与非 lean 模型）去掉外部版 `# Output efficiency`（"Be extra concise"）（#1112、#1113）。
-- skill 列表每条描述默认上限由 1536 改为 512 字符，`skillListingMaxDescChars` 仍可覆盖（#1112、#1113）。
-- `-p` 请求体积：Claude 路径 system 5,673 → 5,201、messages 9,199 → 7,191 字符；OpenAI 路径 system 10,312 → 9,305、messages 9,289 → 7,415 字符。skill 触发、记忆基准（9/12 对 9/12）与 ChatGPT 编码题（9/13 对 9/13）与精简前一致。
-
-#### 基准
-
-- `bench/` 的 `task.json` 新增 `sessions`（每个提示起一个新 CLI 进程，依次跑在同一 HOME 和工作区）与 `seedMemory`（预置 auto memory），新增 7 个记忆任务（最多 10,000 条记忆）与 SQLite / effort high 的新格（#1104）。
-
-### 测试覆盖
-
-- `src/constants/prompts.test.ts`（环境段、OpenAI compact 不含 Output efficiency）、`src/memdir/memoryTypes.test.ts`（规则文字与 2.1.311 布局、长度上限）、`src/tools/SkillTool/prompt.test.ts`（512 字符截断）。
-- `src/memdir`、`src/tools/SearchMemoryTool` 的新测试：同样匹配的记忆按日期新→旧排序、结果带日期、`limit: 50` 被拒；网页记忆搜索测试覆盖列出全部记忆文件与每个匹配会话各一行（#1104、#1109）。
-- 每个代码 PR 都在 CI 全绿后合入 `dev`。
-
-## 2026-11-09 - v2.1.297 - hooks exec-form 命令注入修复、上下文窗口档位、自动压缩超长恢复、OpenAI apply_patch 工具、claude web 的 Mods 界面与会话设置保留、与官方共用设置、ctrl+Enter 低延迟发送、Teams 与 headless 退出修复
-
-### 版本状态
-
-- 发布候选：`dev` 合并到 `master` 后打 tag `v2.1.297`。本条目汇总 `v2.1.296` tag（master `7afd831`）之后至 PR #1100 的全部变更，来自 11-05、11-06 两次全面测试、之后 Round 2–6 的跨子系统回归，以及 11-07 至 11-09 的缓存基准、压缩审计与 claude web 修复；`Makefile VERSION`、README 与构建文档的发布版本同步为 `2.1.297`，`package.json` 保持 `0.0.0-dev`。版本号与官方版本号无对应关系（本轮对照基线为官方 2.1.318，后续回归为 2.1.319）。
-
-### 关联提交
-
-- PR 合并提交（`git log --first-parent 7afd831..dev`）：#812 11-05 全面测试 23 项修复（Agent、Teams、启动退出、hooks 权限、Mods、Web、Prompt）；#815 PR CI 关键路径缩短、没拿到 runner 的 job 自动重跑、release 并行构建；#795、#820 Windows 沙箱用户 profile；#818 第一轮修复的复现测试、web 404 判断与 Mods Unix socket 重定向；#822、#824 构建缓存、e2e 去重构建、单测分片平衡、合并时自动关 issue 与 automerge；#827 给忙碌的 agent/teammate 发的消息切换视图后仍可见；#829 OAuth User-Agent/stainless 同步官方 2.1.318、Codex 客户端 0.166.0；#831 网关回复缺 `usage` 时 `/model` 校验崩溃；#832 网页一次只接一条 socket；#834、#841 ctrl+Enter 立即发送；#836 Ctrl+O 崩溃；#839 Mods 流式中断超时、ChatGPT 启动不等用量查询；#843 `query.promptCompose` 单测隔离；#863 Web UI 8 项修复；#866 会话标题请求与 Rewind 列表；#874 SDK/headless；#875 `-p`/SDK `--agent`；#876 hooks exec-form 与 async 输出；#877 plugin marketplace 与 validate；#878 plugin 的 workflows 目录；#880 社区 mod 加载兼容与 hook 错误显示；#881 channel reply 工具；#883 网页立即发送；#884 恢复并行工具调用；#887 spinner；#888 网页 Teams 待办；#891 LSP 工具与 command plugin 来源；#893、#903 选择器 Tab 后的按键；#895 网页输入框；#897 Mods Worker 崩溃警告；#899 网页引用回复；#901 网页本地打开；#905 预览旁对话区可拖动宽度；#906 发布准备；#908 三平台 web e2e 覆盖系统打开程序；#911 REPL 串流按整行重绘；#915 与官方共用设置（`openaiModel`、按模型 effort、界面偏好）与 auto mode 分类器容忍缺 `usage`；#916 无 soffice 的 PPTX 预览与 PDF/幻灯片选字评论；#921、#929 单测负载竞态；#923、#925、#927、#931 claude web 的 Mods 界面（面板、band、toast、status、对话行、输入框 hooks、Client 沙箱）；#937 web × Mods 第二轮修复；#940 换模型载入该模型的 effort、`/plugin` 选项 Tab 与 Esc；#944 子代理下的 Mod 状态、配置中不报缺少 options；#949 headless 首个请求前 SIGINT；#953 headless teammate 权限请求、退出时结束独立进程组的 shell 子进程；#955 SDK `reload_plugins` 的 `add_plugins` 与 plugin `version`；#956 ChatGPT 目录 effort 档位、起始页模型、ChatGPT 额度、`turn.step` effort；#960 流式回退结果保持可见；#962 hook 把 MCP 输出改写为对象；#964 OpenAI 远程压缩与 `session.compact` mod；#968 plugin skill hooks、新建设置文件、`//tmp` 标签；#970 项目模式 teammate 工具与批准、首轮前改设置重启；#971 ChatGPT 模型发现后重新解析默认模型；#976 SDK 输入关闭时保留 teammate、SIGINT 时写出 result；#980 OpenAI 路径 PDF、ChatGPT 额度错误、`@` 提到的 PDF；#982 中途开关 mod 后的 `/` 菜单、web 显示 mod hook 错误；#983 频道回合不再重跑 SQLite 记忆召回；#989 `/rewind` 后 `/branch`、带图消息的 rewind 行、OpenAI 路径 SDK document；#994 断流不重复执行工具、Bash stdin 与 `!` 引号、无 `usage` 时自动压缩；#997 teammate API 失败通知负责人、分屏 teammate 继承 MCP 与 CLI 规则；#999、#1001、#1003、#1005 OpenAI 路径 `apply_patch` 工具与 hooks；#1007 `CLAUDE_CODE_MAX_CONTEXT_TOKENS`；#1012 ChatGPT 目录上下文窗口；#1013 频道回合不计入 everyTurns 提取、SessionStart `fork`、画布页签保留 Mod Client；#1015 `-p`/SDK team shutdown 保底；#1017、#1019 上下文窗口档位；#1021、#1025 文档同步与 11-07 缓存基准；#1026 ChatGPT `-p` 首个请求不等 Codex Apps 工具列表；#1027 ChatGPT 下 ToolSearch 加载工具不再让提示缓存整体失效；#1029、#1031 文档同步与缓存基准 Wiki 页；#1033、#1035 ChatGPT `-p` 首次运行等账号模型目录；#1036、#1039、#1042、#1043、#1044、#1047、#1048、#1049、#1050 缓存基准 Wiki 页与图表；#1038 `-p` 负责人不在 teammate 仍在工作时要求 shutdown；#1041 OpenAI 路径系统提示词精简；#1045 fork 介绍文章；#1051 Bash 与 Terminal 的 tmux 不碰用户的 tmux server；#1053 网页显示会话进程退出原因；#1055、#1059、#1061、#1070 `bench/` 基准套件与公开基准扰动；#1057 网页新会话的模型标签；#1063 Terminal 工具改名 Tmux；#1065、#1066、#1067、#1068 GitHub Pages 项目网站与网页演示；#1072 `-p` 后台任务等待上限；#1078 网关后非 Claude 模型内联工具、Tmux 输出队列满时保留输出；#1079、#1081 自动压缩（超长恢复、OpenAI 超长错误、保留已加载工具、压缩后列出 skill 与 Tmux 终端、连续压缩断路器）；#1084、#1086、#1090 claude web 会话设置与刷新状态保留；#1091 本条目补到 #1090 与文档同步；#1092 公开基准通过率结果；#1093 网站 `/benchmark` 页填入公开基准结果；#1095 `-p`/SDK 默认 effort `high` 与收尾提示规则；#1100 claude web 在 `/clear`、断线与服务重启后保留对话。
-- 对应 issue：#791、#798、#799、#800、#801、#802、#803、#804、#805、#806、#807、#808、#809、#810、#811、#813、#814、#816、#817、#819、#821、#823、#825、#826、#830、#833、#835、#837、#838、#840、#842、#844、#845、#846、#847、#848、#849、#850、#851、#852、#853、#854、#855、#856、#857、#858、#859、#860、#861、#862、#864、#865、#867、#868、#869、#870、#871、#872、#873、#879、#882、#885、#886、#889、#890、#892、#894、#896、#898、#900、#904、#909、#910、#912、#913、#914、#917、#918、#919、#920、#922、#924、#926、#928、#930、#932、#933、#934、#935、#936、#938、#939、#941、#942、#943、#945、#946、#947、#948、#950、#951、#952、#954、#957、#958、#959、#961、#963、#965、#966、#967、#969、#972、#973、#974、#975、#977、#978、#979、#981、#984、#985、#986、#987、#988、#990、#991、#992、#993、#995、#996、#998、#1000、#1002、#1004、#1006、#1008、#1009、#1010、#1011、#1014、#1016、#1018、#1020、#1022、#1023、#1024、#1030、#1032、#1034、#1037、#1040、#1046、#1052、#1054、#1056、#1058、#1060、#1062、#1069、#1071、#1073、#1074、#1075、#1076、#1077、#1080、#1082、#1083、#1085、#1087、#1088、#1089、#1097、#1098、#1099、#1101、#1102。
+- PR 合并提交（`git log --first-parent 7afd831..dev`）：#812 11-05 全面测试 23 项修复（Agent、Teams、启动退出、hooks 权限、Mods、Web、Prompt）；#815 PR CI 关键路径缩短、没拿到 runner 的 job 自动重跑、release 并行构建；#795、#820 Windows 沙箱用户 profile；#818 第一轮修复的复现测试、web 404 判断与 Mods Unix socket 重定向；#822、#824 构建缓存、e2e 去重构建、单测分片平衡、合并时自动关 issue 与 automerge；#827 给忙碌的 agent/teammate 发的消息切换视图后仍可见；#829 OAuth User-Agent/stainless 同步官方 2.1.318、Codex 客户端 0.166.0；#831 网关回复缺 `usage` 时 `/model` 校验崩溃；#832 网页一次只接一条 socket；#834、#841 ctrl+Enter 立即发送；#836 Ctrl+O 崩溃；#839 Mods 流式中断超时、ChatGPT 启动不等用量查询；#843 `query.promptCompose` 单测隔离；#863 Web UI 8 项修复；#866 会话标题请求与 Rewind 列表；#874 SDK/headless；#875 `-p`/SDK `--agent`；#876 hooks exec-form 与 async 输出；#877 plugin marketplace 与 validate；#878 plugin 的 workflows 目录；#880 社区 mod 加载兼容与 hook 错误显示；#881 channel reply 工具；#883 网页立即发送；#884 恢复并行工具调用；#887 spinner；#888 网页 Teams 待办；#891 LSP 工具与 command plugin 来源；#893、#903 选择器 Tab 后的按键；#895 网页输入框；#897 Mods Worker 崩溃警告；#899 网页引用回复；#901 网页本地打开；#905 预览旁对话区可拖动宽度；#906 发布准备；#908 三平台 web e2e 覆盖系统打开程序；#911 REPL 串流按整行重绘；#915 与官方共用设置（`openaiModel`、按模型 effort、界面偏好）与 auto mode 分类器容忍缺 `usage`；#916 无 soffice 的 PPTX 预览与 PDF/幻灯片选字评论；#921、#929 单测负载竞态；#923、#925、#927、#931 claude web 的 Mods 界面（面板、band、toast、status、对话行、输入框 hooks、Client 沙箱）；#937 web × Mods 第二轮修复；#940 换模型载入该模型的 effort、`/plugin` 选项 Tab 与 Esc；#944 子代理下的 Mod 状态、配置中不报缺少 options；#949 headless 首个请求前 SIGINT；#953 headless teammate 权限请求、退出时结束独立进程组的 shell 子进程；#955 SDK `reload_plugins` 的 `add_plugins` 与 plugin `version`；#956 ChatGPT 目录 effort 档位、起始页模型、ChatGPT 额度、`turn.step` effort；#960 流式回退结果保持可见；#962 hook 把 MCP 输出改写为对象；#964 OpenAI 远程压缩与 `session.compact` mod；#968 plugin skill hooks、新建设置文件、`//tmp` 标签；#970 项目模式 teammate 工具与批准、首轮前改设置重启；#971 ChatGPT 模型发现后重新解析默认模型；#976 SDK 输入关闭时保留 teammate、SIGINT 时写出 result；#980 OpenAI 路径 PDF、ChatGPT 额度错误、`@` 提到的 PDF；#982 中途开关 mod 后的 `/` 菜单、web 显示 mod hook 错误；#983 频道回合不再重跑 SQLite 记忆召回；#989 `/rewind` 后 `/branch`、带图消息的 rewind 行、OpenAI 路径 SDK document；#994 断流不重复执行工具、Bash stdin 与 `!` 引号、无 `usage` 时自动压缩；#997 teammate API 失败通知负责人、分屏 teammate 继承 MCP 与 CLI 规则；#999、#1001、#1003、#1005 OpenAI 路径 `apply_patch` 工具与 hooks；#1007 `CLAUDE_CODE_MAX_CONTEXT_TOKENS`；#1012 ChatGPT 目录上下文窗口；#1013 频道回合不计入 everyTurns 提取、SessionStart `fork`、画布页签保留 Mod Client；#1015 `-p`/SDK team shutdown 保底；#1017、#1019 上下文窗口档位；#1021、#1025 文档同步与 11-07 缓存基准；#1026 ChatGPT `-p` 首个请求不等 Codex Apps 工具列表；#1027 ChatGPT 下 ToolSearch 加载工具不再让提示缓存整体失效；#1029、#1031 文档同步与缓存基准 Wiki 页；#1033、#1035 ChatGPT `-p` 首次运行等账号模型目录；#1036、#1039、#1042、#1043、#1044、#1047、#1048、#1049、#1050 缓存基准 Wiki 页与图表；#1038 `-p` 负责人不在 teammate 仍在工作时要求 shutdown；#1041 OpenAI 路径系统提示词精简；#1045 fork 介绍文章；#1051 Bash 与 Terminal 的 tmux 不碰用户的 tmux server；#1053 网页显示会话进程退出原因；#1055、#1059、#1061、#1070 `bench/` 基准套件与公开基准扰动；#1057 网页新会话的模型标签；#1063 Terminal 工具改名 Tmux；#1065、#1066、#1067、#1068 GitHub Pages 项目网站与网页演示；#1072 `-p` 后台任务等待上限；#1078 网关后非 Claude 模型内联工具、Tmux 输出队列满时保留输出；#1079、#1081 自动压缩（超长恢复、OpenAI 超长错误、保留已加载工具、压缩后列出 skill 与 Tmux 终端、连续压缩断路器）；#1084、#1086、#1090 claude web 会话设置与刷新状态保留；#1091 本条目补到 #1090 与文档同步；#1092 公开基准通过率结果；#1093 网站 `/benchmark` 页填入公开基准结果；#1095 `-p`/SDK 默认 effort `high` 与收尾提示规则；#1100 claude web 在 `/clear`、断线与服务重启后保留对话；#1103 本条目补到 #1100；#1104 SQLite 记忆冷索引加速、召回与 SearchMemory 新记忆优先、`bench/` 多会话记忆任务；#907、#1107 发布合并与并回 dev；#1109 网页记忆搜索；#1111 系统提示词去掉产品形态一行与 headless 的 `/fast` 提示；#1113 Memory 规则精简、去掉外部 Output efficiency、skill 描述上限 512；#1114 未发布条目；#1115、#1116 发布准备（版本号保持 `2.1.297`）。
+- 对应 issue：#791、#798、#799、#800、#801、#802、#803、#804、#805、#806、#807、#808、#809、#810、#811、#813、#814、#816、#817、#819、#821、#823、#825、#826、#830、#833、#835、#837、#838、#840、#842、#844、#845、#846、#847、#848、#849、#850、#851、#852、#853、#854、#855、#856、#857、#858、#859、#860、#861、#862、#864、#865、#867、#868、#869、#870、#871、#872、#873、#879、#882、#885、#886、#889、#890、#892、#894、#896、#898、#900、#904、#909、#910、#912、#913、#914、#917、#918、#919、#920、#922、#924、#926、#928、#930、#932、#933、#934、#935、#936、#938、#939、#941、#942、#943、#945、#946、#947、#948、#950、#951、#952、#954、#957、#958、#959、#961、#963、#965、#966、#967、#969、#972、#973、#974、#975、#977、#978、#979、#981、#984、#985、#986、#987、#988、#990、#991、#992、#993、#995、#996、#998、#1000、#1002、#1004、#1006、#1008、#1009、#1010、#1011、#1014、#1016、#1018、#1020、#1022、#1023、#1024、#1030、#1032、#1034、#1037、#1040、#1046、#1052、#1054、#1056、#1058、#1060、#1062、#1069、#1071、#1073、#1074、#1075、#1076、#1077、#1080、#1082、#1083、#1085、#1087、#1088、#1089、#1097、#1098、#1099、#1101、#1102、#1105、#1106、#1108、#1110、#1112。
 
 ### 变更内容
 
@@ -87,6 +45,8 @@
 - `-p` 与 SDK（非交互）会话在支持 effort 的模型上默认 effort 为 `high`（ChatGPT 登录同样）；交互会话的默认值不变，`--effort`、`CLAUDE_CODE_EFFORT_LEVEL` 与 `modelSettings` 里的值仍然优先（#1097）。
 - `claude web` 的 cookie 签名密钥、上次端口与密钥创建时间保存在 `~/.claude/web/server.json`（权限 0600）：不带 `--port` 重启时沿用上次端口（被占用则随机），已登录的浏览器不用重新登录；密钥与端口随 cookie 一起在 7 天后过期并重新生成，`--port 0` 仍强制随机端口，登录 token 每次启动都是新的（#1102）。此前每次重启都会让浏览器退出登录。
 - 自定义 `ANTHROPIC_BASE_URL`、模型不是 Claude（如 `grok-4.7`）且未设置 `ENABLE_TOOL_SEARCH` 时，tool search 默认关闭、所有工具内联发送：只有 Anthropic API 会把 `tool_reference` 展开成工具定义，此前这类网关的模型加载工具后拿不到参数。网关能展开时设 `ENABLE_TOOL_SEARCH=true`（#1073）。
+- skill 列表每条描述默认上限由 1536 改为 512 字符，需要更长时用 `skillListingMaxDescChars` 覆盖（#1112）。
+- `SearchMemory` 的 `limit` 上限由 50 改为 25，结果不再因超过 `maxResultSizeChars` 被存成文件（#1106）。
 
 #### 安全
 
@@ -211,6 +171,24 @@
 - 缓存命中与用户体验基准 Wiki 页（Cache-Benchmark）：所有 CLI × 账号的完整指标、API 等价花费、散点图与 oh-my-pi、dsh 的结果（#1030 等）；fork 介绍与使用文章 `docs/articles/why-this-fork.{zh-TW,en}.md`（#1045）。
 - Cache-Benchmark 页新增第 12 节「公开基准：通过率与花费」：20 道公开题 × 15 个 CLI × 账号格 × 原版与扰动版各 3 次（1,800 次 run）的通过率、token、命中率与 API 等价花费散点图；`bench/lib/chart.ts` 的散点图支持以通过率为纵轴（#1092）；同一节与网站 `/benchmark` 页加入 dsh、opencode 领先原因的分析（#1093、#1095）。
 
+#### 记忆
+
+- SQLite 记忆模式首次建索引不再是平方级：从没索引过的文件不再逐个 `DELETE`，改动按 500 个文件一批写入；10,000 条记忆删掉索引后首个请求的首 token 时间 28.2 s → 2.6 s（#1105）。
+- 自动召回与 `SearchMemory` 在匹配程度相同时，保存日期新的记忆排在前面（同一天内仍按 bm25），`SearchMemory` 结果标出 `(saved YYYY-MM-DD)`（#1106）。
+- `claude web` 的记忆对话框能搜到全部记忆文件（此前只列最新 200 条），会话搜索为每个匹配的会话各列一行，不再被一个长会话占满（#1108）。
+
+#### 系统提示词
+
+- 系统提示词环境段去掉 "Claude Code is available as a CLI…" 一行；Fast mode 提示在 `-p`/SDK 会话中不再出现（#1110、#1111）。
+- Memory 段规则改为更短的写法（2,079 → 1,614 字符），规则内容不变，记忆提取 prompt 共用同一组文字（#1112、#1113）。
+- full prompt（OpenAI 路径与非 lean 模型）去掉外部版 `# Output efficiency`（"Be extra concise"）（#1112、#1113）。
+- skill 列表每条描述默认上限由 1536 改为 512 字符，`skillListingMaxDescChars` 仍可覆盖（#1112、#1113）。
+- `-p` 请求体积：Claude 路径 system 5,673 → 5,201、messages 9,199 → 7,191 字符；OpenAI 路径 system 10,312 → 9,305、messages 9,289 → 7,415 字符。skill 触发、记忆基准（9/12 对 9/12）与 ChatGPT 编码题（9/13 对 9/13）与精简前一致。
+
+#### 基准
+
+- `bench/` 的 `task.json` 新增 `sessions`（每个提示起一个新 CLI 进程，依次跑在同一 HOME 和工作区）与 `seedMemory`（预置 auto memory），新增 7 个记忆任务（最多 10,000 条记忆）与 SQLite / effort high 的新格（#1104）。
+
 #### 构建与 CI
 
 - 构建按源文件缓存 React Compiler 输出，`make build` 第二次起约 25 s；e2e 每个 job 只构建一次，单测按实测耗时分 5 片；合并进 `dev` 时自动关闭关联 issue，`automerge` 标签在 CI 全绿后自动合并；PR 模板与 `bun run check:changed`（#821）。
@@ -228,7 +206,10 @@
 - 11-07 修复后重跑（346 次真实 run，每格 3 次，新增 opencode 1.19.5 与 Lean 证明、研究题，同时段对照修复前 `17abdd1`）：ChatGPT 侧命中率 85.3%（修复前 83.8%，Codex 88.8%，opencode 89.2%，pi 84.0%），差距集中在短任务；`ToolSearch` 加载后下一个请求 7/7 命中（修复前 1/7）；ChatGPT `-p` 启动到首个请求 0.66s（修复前 3.11s）；Claude 侧命中率 87.1% 对官方 87.3%、总 token 少 10%。重跑中发现的新安装首次 `-p` 用后备模型问题由 #1033、#1035 修复。结果见 Wiki 首页「缓存命中 / Cache hit」与 Cache-Benchmark 页。
 - 11-09 发布前复验（`dev` `f3fd5cc`，`make build` 重建的 binary，两轮，第二轮绑 2 核、全新 HOME）：外部 SIGINT 时 SessionEnd hook 执行（`reason: other`）；`CI=true` 的 `claude -p` 无凭证 0s、Bedrock 3s、Vertex 2s、无效 token 0s 均 rc=1 退出，网关连不上时重试约 3 分钟后 rc=1（与官方相同）；team shutdown 后 `removeTeammate` 把成员从 `config.json` 移除（2 → 1）；`make release-check` 通过。
 - 11-10 合入 #1095、#1100 后在 `dev` `899496c` 重建 binary 再跑两轮（第二轮绑 2 核、全新 HOME），三个项目回归项结果同上；`make release-check` 通过。
-- PR CI：单测 5 片、lint 与 tsc、Linux 沙箱、官方对照、Linux/macOS/Windows e2e 与 web e2e；之后合入 `dev` 的代码 PR（至 #1090）都在 CI 全绿后由 `automerge` 合并，纯文档 PR（#1021、#1025、#1029、#1031、#1036、#1039 等）直接合并。
+- `src/constants/prompts.test.ts`（环境段、OpenAI compact 不含 Output efficiency）、`src/memdir/memoryTypes.test.ts`（规则文字与 2.1.311 布局、长度上限）、`src/tools/SkillTool/prompt.test.ts`（512 字符截断）。
+- `src/memdir`、`src/tools/SearchMemoryTool` 的新测试：同样匹配的记忆按日期新→旧排序、结果带日期、`limit: 50` 被拒；网页记忆搜索测试覆盖列出全部记忆文件与每个匹配会话各一行（#1104、#1109）。
+- 11-11 合入 #1104–#1114 后在 `dev` `10cc499` 重建 binary 再跑两轮（第二轮绑 2 核、全新 HOME），三个项目回归项结果同上；`make release-check` 通过。
+- PR CI：单测 5 片、lint 与 tsc、Linux 沙箱、官方对照、Linux/macOS/Windows e2e 与 web e2e；之后合入 `dev` 的代码 PR（至 #1113）都在 CI 全绿后由 `automerge` 合并，纯文档 PR（#1021、#1025、#1029、#1031、#1036、#1039 等）直接合并。
 
 ## 2026-10-30 - v2.1.296 - Agent 生命周期与 Teams 修复、内嵌 bfs/ugrep 搜索、coordinator 模式、/hooks /theme /config 对齐官方 2.1.311、权限模式转换修复、claude web 本地网页界面与项目模式
 
