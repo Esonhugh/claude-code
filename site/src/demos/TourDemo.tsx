@@ -1,6 +1,8 @@
-import { AccountsDemo } from './AccountsDemo'
 import type { Lang } from './i18n'
 import type { Recording } from '../../record/convert'
+import accountsEn from './recordings/accounts.en.json'
+import accountsHans from './recordings/accounts.hans.json'
+import accountsZh from './recordings/accounts.zh.json'
 import contextEn from './recordings/context.en.json'
 import contextHans from './recordings/context.hans.json'
 import contextZh from './recordings/context.zh.json'
@@ -29,7 +31,8 @@ export type Scene = 'accounts' | 'goal' | 'teams' | 'tmux' | 'mods' | 'context' 
 export const SCENES: Scene[] = ['accounts', 'goal', 'teams', 'tmux', 'mods', 'context', 'peers']
 
 // Scenes recorded from the real CLI in tmux by site/record/record.ts.
-const recordings: Record<Exclude<Scene, 'accounts'>, Record<Lang, Recording>> = {
+const recordings: Record<Scene, Record<Lang, Recording>> = {
+  accounts: { en: accountsEn as Recording, zh: accountsZh as Recording, hans: accountsHans as Recording },
   goal: { en: goalEn as Recording, zh: goalZh as Recording, hans: goalHans as Recording },
   teams: { en: teamsEn as Recording, zh: teamsZh as Recording, hans: teamsHans as Recording },
   tmux: { en: tmuxEn as Recording, zh: tmuxZh as Recording, hans: tmuxHans as Recording },
@@ -39,12 +42,11 @@ const recordings: Record<Exclude<Scene, 'accounts'>, Record<Lang, Recording>> = 
 }
 
 export function tourFrames(scene: Scene): number {
-  if (scene === 'accounts') return TOUR_FRAMES
   const ms = Math.max(...Object.values(recordings[scene]).map(r => r.frames.at(-1)![0]))
   return Math.max(TOUR_FRAMES, Math.ceil(((ms + 3000) / 1000) * FPS))
 }
 
 export const TourDemo: React.FC<{ lang: Lang; scene: Scene }> = ({ lang, scene }) => {
-  if (scene === 'accounts') return <AccountsDemo lang={lang} />
-  return <ReplayTerminal title={scene === 'peers' ? 'search-demo — builder + reviewer' : 'search-demo — claude'} recording={recordings[scene][lang]} />
+  const title = { accounts: 'search-demo — Claude + ChatGPT', peers: 'search-demo — builder + reviewer' }[scene as string] ?? 'search-demo — claude'
+  return <ReplayTerminal title={title} recording={recordings[scene][lang]} />
 }

@@ -18,9 +18,12 @@ export type SceneDef = {
   copy?: Record<string, string>
   // Start in a shell and launch `claude` by typing this, instead of starting the CLI directly.
   shell?: string
-  // Run these CLIs stacked in one window instead, each pane labelled; `size` is the window's cols and rows.
-  panes?: { label: string; command: string }[]
+  // Run these CLIs stacked in one window instead, each pane labelled and optionally in its own copy of the
+  // fixture under ~/projects; `size` is the window's cols and rows.
+  panes?: { label: string; command: string; project?: string }[]
   size?: [number, number]
+  // Needs a real ChatGPT sign-in: CODEX_AUTH_FILE (a ~/.codex/auth.json) is lent to the run and written back after.
+  chatgpt?: boolean
   inputs: Record<Lang, Step[]>
   script: (lang: Lang, dir: string) => Script
 }
@@ -243,4 +246,45 @@ const peers: SceneDef = {
   },
 }
 
-export const SCENES = { goal, tmux, mods, context, teams, peers }
+// The same task on a Claude account (scripted model) and a ChatGPT account (real model through the sign-in).
+const accounts: SceneDef = {
+  fixture: {
+    'package.json': '{ "name": "search-demo", "private": true, "type": "module", "scripts": { "test": "bun test" } }\n',
+    'src/config.ts': 'export const TOP_K = 10\n',
+    'test/config.test.ts': "import { expect, test } from 'bun:test'\nimport { TOP_K } from '../src/config'\n\ntest('returns the top 20 hits', () => expect(TOP_K).toBe(20))\n",
+  },
+  // The real model picks its own shell commands in a throwaway copy, so any Bash is allowed here.
+  allow: ['Bash', 'Edit', 'Read'],
+  chatgpt: true,
+  size: [116, 32],
+  panes: [
+    { label: 'Claude', command: 'claude --model claude-sonnet-5-5' },
+    { label: 'ChatGPT', command: 'env CLAUDE_CODE_USE_OPENAI=1 claude', project: 'search-demo-gpt' },
+  ],
+  inputs: {
+    en: [
+      { text: 'set TOP_K to 20 in src/config.ts and run the tests', pane: 0, wait: /esc to interrupt/ },
+      { text: 'set TOP_K to 20 in src/config.ts and run the tests', pane: 1 },
+    ],
+    zh: [
+      { text: '把 src/config.ts 的 TOP_K 改成 20，再跑測試', pane: 0, wait: /esc to interrupt/ },
+      { text: '把 src/config.ts 的 TOP_K 改成 20，再跑測試', pane: 1 },
+    ],
+    hans: [
+      { text: '把 src/config.ts 的 TOP_K 改成 20，再跑测试', pane: 0, wait: /esc to interrupt/ },
+      { text: '把 src/config.ts 的 TOP_K 改成 20，再跑测试', pane: 1 },
+    ],
+  },
+  script: (lang, dir) => {
+    const file = `${dir}/src/config.ts`
+    const steps: Block[][] = [
+      [tool('Read', { file_path: file })],
+      [tool('Edit', { file_path: file, old_string: 'TOP_K = 10', new_string: 'TOP_K = 20' })],
+      [tool('Bash', { command: 'bun test', description: 'Run the tests' })],
+      [text(L(lang, 'TOP_K is 20 now and the test passes.', 'TOP_K 已改成 20，測試通過。', 'TOP_K 已改成 20，测试通过。'))],
+    ]
+    return { steps: ({ turn }) => steps[Math.min(turn, steps.length - 1)] }
+  },
+}
+
+export const SCENES = { accounts, goal, tmux, mods, context, teams, peers }
