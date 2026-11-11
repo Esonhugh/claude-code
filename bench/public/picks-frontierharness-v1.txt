@@ -1,0 +1,32 @@
+# FrontierHarness Eval v1.0 task set (github.com/frontier-harness-eval/eval benchmark.json):
+# 21 Terminal-Bench 2 tasks (BENCH_TB2_ROOT) + 9 DeepSWE tasks (BENCH_DEEPSWE_ROOT, datacurve-ai/deep-swe @ 435ee89).
+deepswe anko-typed-variable-bindings
+deepswe arktype-json-schema-refs-dependencies
+deepswe expr-try-catch-errors
+deepswe fastapi-deprecation-response-headers
+deepswe httpx-multipart-response-parsing
+deepswe katex-multicolumn-array-spans
+deepswe meriyah-explicit-resource-declarations
+deepswe python-statemachine-state-data-scoping
+deepswe scc-bounded-memory-spilling
+tb2 build-cython-ext
+tb2 chess-best-move
+tb2 code-from-image
+tb2 constraints-scheduling
+tb2 db-wal-recovery
+tb2 dna-insert
+tb2 extract-elf
+tb2 gcode-to-text
+tb2 git-leak-recovery
+tb2 kv-store-grpc
+tb2 largest-eigenval
+tb2 log-summary-date-ranges
+tb2 merge-diff-arc-agi-task
+tb2 modernize-scientific-stack
+tb2 multi-source-data-merger
+tb2 openssl-selfsigned-cert
+tb2 polyglot-c-py
+tb2 regex-log
+tb2 sanitize-git-repo
+tb2 sqlite-db-truncate
+tb2 vulnerable-secret

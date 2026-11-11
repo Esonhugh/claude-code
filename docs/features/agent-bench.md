@@ -145,6 +145,7 @@ Codex 预热 WebSocket 的极小请求（提示不足 10 token）不计。
 ```bash
 export BENCH_TB2_ROOT=~/src/terminal-bench-2      # 上游任务源码，不进仓库
 export BENCH_HARBOR_ROOT=~/src/harbor-datasets    # SWE-bench Pro、SpreadsheetBench 等
+export BENCH_DEEPSWE_ROOT=~/src/deep-swe          # datacurve-ai/deep-swe（FrontierHarness 题组用）
 bun bench/cli.ts public --picks bench/public/picks-A.txt --cells oracle --reps 1 --variant seed1108 --raw ~/bench-raw/public
 bun bench/cli.ts public --picks bench/public/picks-A.txt --cells fork-claude-key --reps 3 --variant seed1108 --raw ~/bench-raw/public
 ```
@@ -168,6 +169,9 @@ bun bench/cli.ts public --picks bench/public/picks-A.txt --cells fork-claude-key
   - Terminal-Bench 2.0 8 题：`polyglot-rust-c`、`polyglot-c-py`、`custom-memory-heap-crash`、`mailman`、`make-mips-interpreter`、`write-compressor`、`configure-git-webserver`、`merge-diff-arc-agi-task`。
   - SWE-bench Pro 8 题：flipt、navidrome、element-web、NodeBB、ansible、openlibrary ×2、vuls 各一题（完整实例名见清单）。
   - SpreadsheetBench Verified 4 题：`56953`、`3911`、`290-27`、`472-15`。
+- **FrontierHarness v1.0 题组（`bench/public/picks-frontierharness-v1.txt`）**：[FrontierHarness Eval](https://frontierharness.org) v1.0 的 30 题，Terminal-Bench 2 21 题加 DeepSWE 9 题（`datacurve-ai/deep-swe` 提交 `435ee89`），没有扰动变体。`build-cython-ext` 的参考解在本环境不通过（上游仓库测试失败），比较时排除。
+- DeepSWE 用独立评分环境（`task.toml` 里 `environment_mode = "separate"`）：agent 停下后在任务容器里执行 `[[verifier.collect]]` 命令，把提交的改动导出为 `/logs/artifacts/model.patch`；再用 `tests/Dockerfile`（任务镜像加隐藏测试）建评分镜像，在不联网的新容器里应用补丁、跑测试。只评分已提交的改动，补丁和评分输出存在原始记录的 `artifacts/`、`verifier/`。
+- 评分脚本带 `NO_PROXY=127.0.0.1,localhost`：要连任务自己在本机起的服务的测试（如 `kv-store-grpc` 的 gRPC）不能走代理。
   - 校准时本 fork（Claude API key，1 次）在其中 7 题失败，题组对完成率有区分度。
   - 生成器是 `bench/public/perturb/mkperturb2.py`，输出确定：同一种子重跑结果逐字节相同。
   - `seed1108r2`：`polyglot-rust-c`、`polyglot-c-py`、SpreadsheetBench `56953` 的修订版（`REV=2 mkperturb2.py`），这 3 题用它代替 `seed1108`。第一版把难度改低了：polyglot 的改写指令写出了测试才检查的「目录里只能有源文件」，56953 的改写前言暗示答案区填静态值即可。15 格 × 3 次的通过率是改写 42/45、22/45、37/45，原版只有 7/45、5/45、4/45。修订版保留原题措辭，只改数列、路径和文件名，参考解全部通过。
