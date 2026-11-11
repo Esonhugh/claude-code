@@ -251,10 +251,11 @@ const accounts: SceneDef = {
   fixture: {
     'package.json': '{ "name": "search-demo", "private": true, "type": "module", "scripts": { "test": "bun test" } }\n',
     'src/config.ts': 'export const TOP_K = 10\n',
+    'CHANGES.md': '# Changes\n',
     'test/config.test.ts': "import { expect, test } from 'bun:test'\nimport { TOP_K } from '../src/config'\n\ntest('returns the top 20 hits', () => expect(TOP_K).toBe(20))\n",
   },
   // The real model picks its own shell commands in a throwaway copy, so any Bash is allowed here.
-  allow: ['Bash', 'Edit', 'Read'],
+  allow: ['Bash', 'Edit', 'Write', 'Read'],
   chatgpt: true,
   size: [116, 32],
   panes: [
@@ -263,25 +264,28 @@ const accounts: SceneDef = {
   ],
   inputs: {
     en: [
-      { text: 'set TOP_K to 20 in src/config.ts and run the tests', pane: 0, wait: /esc to interrupt/ },
-      { text: 'set TOP_K to 20 in src/config.ts and run the tests', pane: 1 },
+      { text: 'set TOP_K to 20 in src/config.ts, note it in CHANGES.md, then run the tests', pane: 0, wait: /esc to interrupt/ },
+      { text: 'set TOP_K to 20 in src/config.ts, note it in CHANGES.md, then run the tests', pane: 1 },
     ],
     zh: [
-      { text: '把 src/config.ts 的 TOP_K 改成 20，再跑測試', pane: 0, wait: /esc to interrupt/ },
-      { text: '把 src/config.ts 的 TOP_K 改成 20，再跑測試', pane: 1 },
+      { text: '把 src/config.ts 的 TOP_K 改成 20，在 CHANGES.md 記一筆，再跑測試', pane: 0, wait: /esc to interrupt/ },
+      { text: '把 src/config.ts 的 TOP_K 改成 20，在 CHANGES.md 記一筆，再跑測試', pane: 1 },
     ],
     hans: [
-      { text: '把 src/config.ts 的 TOP_K 改成 20，再跑测试', pane: 0, wait: /esc to interrupt/ },
-      { text: '把 src/config.ts 的 TOP_K 改成 20，再跑测试', pane: 1 },
+      { text: '把 src/config.ts 的 TOP_K 改成 20，在 CHANGES.md 记一笔，再跑测试', pane: 0, wait: /esc to interrupt/ },
+      { text: '把 src/config.ts 的 TOP_K 改成 20，在 CHANGES.md 记一笔，再跑测试', pane: 1 },
     ],
   },
   script: (lang, dir) => {
     const file = `${dir}/src/config.ts`
     const steps: Block[][] = [
       [tool('Read', { file_path: file })],
-      [tool('Edit', { file_path: file, old_string: 'TOP_K = 10', new_string: 'TOP_K = 20' })],
+      [
+        tool('Edit', { file_path: file, old_string: 'TOP_K = 10', new_string: 'TOP_K = 20' }),
+        tool('Edit', { file_path: `${dir}/CHANGES.md`, old_string: '# Changes\n', new_string: '# Changes\n\n- TOP_K is now 20\n' }),
+      ],
       [tool('Bash', { command: 'bun test', description: 'Run the tests' })],
-      [text(L(lang, 'TOP_K is 20 now and the test passes.', 'TOP_K 已改成 20，測試通過。', 'TOP_K 已改成 20，测试通过。'))],
+      [text(L(lang, 'TOP_K is 20, CHANGES.md notes it, and the test passes.', 'TOP_K 已改成 20，CHANGES.md 記上了，測試通過。', 'TOP_K 已改成 20，CHANGES.md 记上了，测试通过。'))],
     ]
     return { steps: ({ turn }) => steps[Math.min(turn, steps.length - 1)] }
   },
