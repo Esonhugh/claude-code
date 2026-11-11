@@ -181,7 +181,7 @@
 - 系统提示词环境段去掉 "Claude Code is available as a CLI…" 一行；Fast mode 提示在 `-p`/SDK 会话中不再出现（#1110、#1111）。
 - Memory 段规则改为更短的写法（2,079 → 1,614 字符），规则内容不变，记忆提取 prompt 共用同一组文字（#1112、#1113）。
 - full prompt（OpenAI 路径与非 lean 模型）去掉外部版 `# Output efficiency`（"Be extra concise"）（#1112、#1113）。
-- `-p` 系统提示词：Claude 路径 5,673 → 5,201 字符，OpenAI 路径 10,312 → 9,305 字符。skill 描述上限保持官方的 1536：曾试过 512，会截掉 docx/docs、两种浏览器等 skill 之间的分流说明，已改回（#1118）。skill 触发、记忆基准（9/12 对 9/12）与 ChatGPT 编码题（9/13 对 9/13）与精简前一致。
+- `-p` 系统提示词：Claude 路径 5,673 → 5,201 字符，OpenAI 路径 10,312 → 9,305 字符。skill 描述上限保持官方的 1536：曾试过 512，会截掉 docx/docs、两种浏览器等 skill 之间的分流说明，已改回（#1119）。skill 触发、记忆基准（9/12 对 9/12）与 ChatGPT 编码题（9/13 对 9/13）与精简前一致。
 
 #### 基准
 
