@@ -23,13 +23,15 @@ import type { PermissionDecision } from '../../utils/permissions/PermissionResul
 import { matchWildcardPattern } from '../../utils/permissions/shellRuleMatching.js'
 import { validateInputForSettingsFileEdit } from '../../utils/settings/validateEditTool.js'
 import { FileEditTool } from '../FileEditTool/FileEditTool.js'
-import { PatchParseError } from './parser.js'
-import { type PlannedFile, planPatch, touchedPaths } from './plan.js'
+import { PatchParseError, parsePatch } from './parser.js'
+import { type PatchPlan, planPatch, touchedPaths } from './plan.js'
 import { APPLY_PATCH_DESCRIPTION, APPLY_PATCH_TOOL_NAME } from './prompt.js'
 import { getToolUseSummary, renderToolResultMessage, renderToolUseMessage, userFacingName } from './UI.js'
 
+// Not strict: the transcript and the tool row parse the input after
+// backfillObservableInput has added file_path and file_paths to it.
 const inputSchema = lazySchema(() =>
-  z.strictObject({
+  z.object({
     input: z.string().describe('The entire contents of the apply_patch command'),
   }),
 )
@@ -46,6 +48,15 @@ const outputSchema = lazySchema(() =>
         structuredPatch: z.array(z.custom<StructuredPatchHunk>()),
       }),
     ),
+    // Set when a file did not apply: the files before it stay written.
+    failure: z
+      .object({
+        type: z.enum(['add', 'update', 'delete']),
+        filePath: z.string(),
+        message: z.string(),
+        notAttempted: z.array(z.string()),
+      })
+      .optional(),
   }),
 )
 type OutputSchema = ReturnType<typeof outputSchema>
@@ -154,20 +165,22 @@ export const ApplyPatchTool = buildTool({
     return { behavior: 'allow', updatedInput: input }
   },
   async validateInput({ input }, toolUseContext: ToolUseContext) {
-    let planned: PlannedFile[]
+    let plan: PatchPlan
     try {
-      planned = planPatch(input)
+      plan = planPatch(input)
     } catch (e) {
       if (e instanceof PatchParseError) return { result: false, message: e.message, errorCode: 1 }
       throw e
     }
+    // Nothing would apply; a later failure still lets the files before it through.
+    if (plan.failure && plan.planned.length === 0) return { result: false, message: plan.failure.message, errorCode: 1 }
     const permissionContext = toolUseContext.getAppState().toolPermissionContext
-    for (const file of planned) {
-      for (const p of [file.absolutePath, file.absoluteMovePath]) {
-        if (p && matchingRuleForInput(p, permissionContext, 'edit', 'deny') !== null) {
-          return { result: false, message: `${p} is in a directory that is denied by your permission settings.`, errorCode: 2 }
-        }
+    for (const p of touchedPaths(input)) {
+      if (matchingRuleForInput(p, permissionContext, 'edit', 'deny') !== null) {
+        return { result: false, message: `${p} is in a directory that is denied by your permission settings.`, errorCode: 2 }
       }
+    }
+    for (const file of plan.planned) {
       if (file.updated === null) continue
       const target = file.absoluteMovePath ?? file.absolutePath
       const secretError = checkTeamMemSecrets(target, file.updated)
@@ -180,24 +193,25 @@ export const ApplyPatchTool = buildTool({
   async call({ input }, context, _, parentMessage) {
     const { readFileState, updateFileHistoryState } = context
     const fs = getFsImplementation()
-    // Directories and history backups first: these awaits must not run between
-    // reading the files and writing them.
+    // History backups first: these awaits must not run between reading the
+    // files and writing them.
     for (const p of touchedPaths(input)) {
       await diagnosticTracker.beforeFileEdited(p)
-      await fs.mkdir(dirname(p))
       if (fileHistoryEnabled()) {
         await fileHistoryTrackEdit(updateFileHistoryState, p, parentMessage.uuid)
       }
     }
 
-    let planned: PlannedFile[]
+    let plan: PatchPlan
     try {
-      planned = planPatch(input)
+      plan = planPatch(input)
     } catch (e) {
-      // The files changed between validation and now.
       if (e instanceof PatchParseError) throw new Error(e.message)
       throw e
     }
+    const { planned, failure } = plan
+    // The files changed between validation and now.
+    if (failure && planned.length === 0) throw new Error(failure.message)
 
     const files: ApplyPatchOutput['files'] = []
     for (const file of planned) {
@@ -213,6 +227,7 @@ export const ApplyPatchTool = buildTool({
         continue
       }
       const target = absoluteMovePath ?? absolutePath
+      fs.mkdirSync(dirname(target))
       writeTextContent(target, updated, file.encoding, file.lineEndings)
       if (absoluteMovePath) {
         // eslint-disable-next-line custom-rules/no-sync-fs
@@ -242,16 +257,33 @@ export const ApplyPatchTool = buildTool({
         structuredPatch,
       })
     }
-    return { data: { files } }
-  },
-  mapToolResultToToolResultBlockParam({ files }, toolUseID) {
-    const letter = { add: 'A', update: 'M', delete: 'D' } as const
-    const lines = files.map(f => `${letter[f.type]} ${f.movePath ?? f.filePath}`)
+    if (!failure) return { data: { files } }
+    const ops = parsePatch(input)
+    const failedIndex = ops.findIndex(op => op.path === failure.path)
+    const failedOp = ops[failedIndex]!
     return {
-      tool_use_id: toolUseID,
-      type: 'tool_result',
-      content: `Success. Updated the following files:\n${lines.join('\n')}`,
+      data: {
+        files,
+        failure: {
+          type: failedOp.type,
+          filePath: failure.path,
+          message: failure.message,
+          notAttempted: ops.slice(failedIndex + 1).map(op => op.path),
+        },
+      },
     }
+  },
+  mapToolResultToToolResultBlockParam({ files, failure }, toolUseID) {
+    const letter = { add: 'A', update: 'M', delete: 'D' } as const
+    const lines = files.map(f => `${letter[f.type]} ${f.movePath ?? f.filePath}`).join('\n')
+    const content = failure
+      ? [
+          `Failed to apply ${failure.filePath}: ${failure.message}`,
+          `Applied before the failure (these changes are kept):\n${lines}`,
+          ...(failure.notAttempted.length ? [`Not attempted:\n${failure.notAttempted.join('\n')}`] : []),
+        ].join('\n\n')
+      : `Success. Updated the following files:\n${lines}`
+    return { tool_use_id: toolUseID, type: 'tool_result', content }
   },
 } satisfies ToolDef<InputSchema, ApplyPatchOutput>)
 
