@@ -87,7 +87,7 @@ Sessions start in ~/.claude/web/workspace and run with your local credentials an
 
 ## 左侧栏
 
-从上到下：品牌、`+ 新会话`、搜索，MCP / Skills / 插件 / 记忆 / Hooks 五个入口（点开是对应的管理弹窗；Channels 是 MCP 弹窗里的页签，Mods 是 Hooks 弹窗里的页签），然后是 **置顶**、**项目**、**临时对话**、**最近目录**（按目录分组，最近改过的目录在前）。插件弹窗的市场列表里 Esonhugh-Marketplace 排第一（`claude web` 首次启动时和终端一样自动安装它，`CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL=1` 关闭）；用 ChatGPT 账号登录（OpenAI 模式）时多一个“ChatGPT 应用”页签，可以逐个开关 Codex 应用。Channels 页签可以给当前会话开启开发频道（本地开发中的 channel 插件或 MCP server），会先显示一次本地开发警告，再点一次才开启。每段标题可以折叠。每行一行标题；没有标题的会话显示最后一条消息，再没有就显示 session id。正在运行的会话前面有绿点，未读的加粗并带蓝点。
+从上到下：品牌、`+ 新会话`、搜索，MCP / Skills / 插件 / 记忆 / Hooks 五个入口（点开是对应的管理弹窗，记忆弹窗可以搜索全部记忆文件；Channels 是 MCP 弹窗里的页签，Mods 是 Hooks 弹窗里的页签），然后是 **置顶**、**项目**、**临时对话**、**最近目录**（按目录分组，最近改过的目录在前）。插件弹窗的市场列表里 Esonhugh-Marketplace 排第一（`claude web` 首次启动时和终端一样自动安装它，`CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL=1` 关闭）；用 ChatGPT 账号登录（OpenAI 模式）时多一个“ChatGPT 应用”页签，可以逐个开关 Codex 应用。Channels 页签可以给当前会话开启开发频道（本地开发中的 channel 插件或 MCP server），会先显示一次本地开发警告，再点一次才开启。每段标题可以折叠。每行一行标题；没有标题的会话显示最后一条消息，再没有就显示 session id。正在运行的会话前面有绿点，未读的加粗并带蓝点。
 
 鼠标停在一行上会出现提示卡片：标题、最近修改、目录、状态、改动的文件数、ID（拿不到的字段不显示）。鼠标可以移进卡片，选中里面的文字复制。行右侧的按钮置顶 / 取消置顶。
 
@@ -149,7 +149,7 @@ Mod 画在终端里的东西在网页里也有对应位置：输入框上方的�
 | 输入框 | 空输入框里 `↑` / `↓` | 调出之前发过的消息，再往前是终端里在同一目录输入过的（与 CLI 共用 `~/.claude/history.jsonl`） |
 | 对话 | `Esc` | 回合进行中时中断；排队中的消息连同图片放回输入框 |
 | 审批 | `1`–`3`、`↑` `↓` + `Enter`、`Esc` | 直接选一项、移动后确认、拒绝 |
-| 页面 | `Ctrl+K` | 搜索历史会话（窄屏时先打开左侧抽屉） |
+| 页面 | `Ctrl+K` | 搜索历史会话，每个匹配的会话列一行（窄屏时先打开左侧抽屉） |
 | 页面 | `Ctrl+Shift+O` | 新会话 |
 | 页面 | `Ctrl+.` | 打开右侧 Status |
 | 页面 | `?` | 快捷键帮助 |
