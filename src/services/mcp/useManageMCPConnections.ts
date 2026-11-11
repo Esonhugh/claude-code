@@ -81,8 +81,7 @@ import {
   fetchClaudeAIMcpConfigsIfEligible,
 } from './claudeai.js'
 import { registerElicitationHandler } from './elicitationHandler.js'
-import { getMcpPrefix } from './mcpStringUtils.js'
-import { commandBelongsToServer, excludeStalePluginClients } from './utils.js'
+import { commandBelongsToServer, excludeStalePluginClients, isToolOfServer } from './utils.js'
 import { isAnt } from 'src/utils/userType.js'
 
 // Constants for reconnection with exponential backoff
@@ -252,7 +251,6 @@ export function useManageMCPConnections(
             ? (rawRes ?? [])
             : rawRes
 
-        const prefix = getMcpPrefix(client.name)
         const existingClientIndex = mcp.clients.findIndex(
           c => c.name === client.name,
         )
@@ -265,7 +263,7 @@ export function useManageMCPConnections(
         const updatedTools =
           tools === undefined
             ? mcp.tools
-            : [...reject(mcp.tools, t => t.name?.startsWith(prefix)), ...tools]
+            : [...reject(mcp.tools, t => isToolOfServer(t, client.name)), ...tools]
 
         const updatedCommands =
           commands === undefined

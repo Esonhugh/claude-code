@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { appCsp, appTools, findAppTool, openableLink, resourceHtml, withCsp } from './mcpApps'
+import { appCsp, appTools, callToolResult, findAppTool, openableLink, resourceHtml, withCsp } from './mcpApps'
 
 const status = {
   mcpServers: [
@@ -10,7 +10,7 @@ const status = {
         { name: 'show', _meta: { ui: { resourceUri: 'ui://srv/w.html' } } },
         { name: 'refresh', annotations: { readOnly: true }, _meta: { ui: { resourceUri: 'ui://srv/w.html', visibility: ['app'] } } },
         { name: 'legacy', _meta: { 'ui/resourceUri': 'ui://srv/old.html' } },
-        { name: 'plain' },
+        { name: 'plain', annotations: { readOnly: true } },
         { name: 'bad', _meta: { ui: { resourceUri: 'https://evil' } } },
       ],
     },
@@ -19,18 +19,22 @@ const status = {
 }
 
 describe('appTools', () => {
-  test('lists connected tools that name a ui:// resource', () => {
+  test('lists every connected tool, with the ui:// resource of those that name one', () => {
     const tools = appTools(status)
-    expect(tools.map(t => t.toolName)).toEqual(['show', 'refresh', 'legacy'])
+    expect(tools.map(t => t.toolName)).toEqual(['show', 'refresh', 'legacy', 'plain', 'bad'])
+    expect(tools.filter(t => t.resourceUri).map(t => t.toolName)).toEqual(['show', 'refresh', 'legacy'])
     expect(tools[0]).toMatchObject({ serverName: 'my.srv', modelVisible: true, appVisible: true, readOnly: false })
     expect(tools[1]).toMatchObject({ modelVisible: false, appVisible: true, readOnly: true })
     expect(tools[2]!.resourceUri).toBe('ui://srv/old.html')
+    // An app may call a read-only tool without a UI of its own without asking the user.
+    expect(tools[3]).toMatchObject({ toolName: 'plain', modelVisible: true, readOnly: true })
   })
 
   test('matches a chat tool call by its normalized name', () => {
     const tools = appTools(status)
     expect(findAppTool(tools, 'mcp__my_srv__show')?.toolName).toBe('show')
     expect(findAppTool(tools, 'mcp__my_srv__plain')).toBeUndefined()
+    expect(findAppTool(tools, 'mcp__my_srv__bad')).toBeUndefined()
   })
 })
 
@@ -72,4 +76,22 @@ test('openableLink allows only http(s)', () => {
   expect(openableLink('https://example.com/a')).toBe('https://example.com/a')
   expect(openableLink('javascript:alert(1)')).toBeUndefined()
   expect(openableLink(3)).toBeUndefined()
+})
+
+test('callToolResult turns the CLI reply into MCP content blocks', () => {
+  expect(callToolResult({ content: 'data 42', structuredContent: { n: 42 } })).toEqual({
+    content: [{ type: 'text', text: 'data 42' }],
+    structuredContent: { n: 42 },
+  })
+  expect(
+    callToolResult({
+      content: [
+        { type: 'text', text: 'a' },
+        { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AAA' } },
+      ],
+    }).content,
+  ).toEqual([
+    { type: 'text', text: 'a' },
+    { type: 'image', data: 'AAA', mimeType: 'image/png' },
+  ])
 })
