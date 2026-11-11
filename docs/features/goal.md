@@ -1,5 +1,7 @@
 # 自主 Goal
 
+<!-- lang: zh-Hans -->
+
 > 英文名：`goal` · 领域：界面与交互 · [返回功能索引](README.md)
 
 ## 这是什么
@@ -9,6 +11,33 @@
 1. 你用一句话写下完成条件；
 2. Claude 每次准备停下时，另一次模型调用读一遍对话记录，判断条件是否满足；
 3. 没满足：把「还差什么」告诉 Claude，让它继续；满足了：停下，并显示用了多久、几轮、多少 token。
+
+<details lang="en"><summary>English</summary>
+
+> Name: `goal` · Area: UI and interaction · [Back to index](README.md)
+
+## What it is
+
+Normally Claude stops after each turn and waits for you. Sometimes you want it to **keep going until a result holds**, such as "all tests pass" or "lint is clean". That is what `/goal` does:
+
+1. you write the finish condition in one sentence;
+2. whenever Claude is about to stop, a separate model call reads the transcript and judges whether the condition holds;
+3. if not, it tells Claude what is still missing and Claude continues; if so, it stops and shows how long it took, how many turns and how many tokens.
+
+</details>
+<details lang="zh-Hant"><summary>繁體中文</summary>
+
+> 英文名：`goal` · 領域：介面與互動 · [返回功能索引](README.md)
+
+## 這是什麼
+
+平時 Claude 回答完一輪就停下來等你。有時你希望它**一直做到某個結果為止**，比如「所有測試通過」「lint 沒有錯誤」。`/goal` 就是幹這個的：
+
+1. 你用一句話寫下完成條件；
+2. Claude 每次準備停下時，另一次模型呼叫讀一遍對話記錄，判斷條件是否滿足；
+3. 沒滿足：把「還差什麼」告訴 Claude，讓它繼續；滿足了：停下，並顯示用了多久、幾輪、多少 token。
+
+</details>
 
 ## 快速上手
 

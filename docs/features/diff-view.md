@@ -1,5 +1,7 @@
 # /diff 视图
 
+<!-- lang: zh-Hans -->
+
 > 英文名：`diff-view` · 领域：界面与交互 · [返回功能索引](README.md)
 
 ## 这是什么
@@ -14,6 +16,43 @@ Claude 改了一堆文件之后，你想知道它到底动了哪些地方。`/di
 - 对某个文件点 `[ ask ]`，把这个文件的 diff 附到下一条消息里问 Claude。
 
 这个面板来自内置的官方 diff Mod（`cc-plugin-diff` 2.1.295），启动时校验后加载。
+
+<details lang="en"><summary>English</summary>
+
+> Name: `diff-view` · Area: UI and interaction · [Back to index](README.md)
+
+## What it is
+
+After Claude changes a pile of files, you want to see exactly what it touched. `/diff` lays the changes out: in fullscreen mode a **persistent diff panel** sits to the right of the chat and refreshes every time Claude edits a file, so you do not have to run `git diff` yourself.
+
+What the panel does:
+
+- shows only files changed **in this session** by default, with tests and generated files collapsed;
+- `ctrl+x b` switches the baseline: this session, uncommitted changes, or the whole branch against the default branch;
+- the `source:` dropdown steps back through turns to show what each turn changed;
+- `[ ask ]` on a file attaches that file's diff to your next message to Claude.
+
+The panel comes from the built-in official diff Mod (`cc-plugin-diff` 2.1.295), verified and loaded at startup.
+
+</details>
+<details lang="zh-Hant"><summary>繁體中文</summary>
+
+> 英文名：`diff-view` · 領域：介面與互動 · [返回功能索引](README.md)
+
+## 這是什麼
+
+Claude 改了一堆檔案之後，你想知道它到底動了哪些地方。`/diff` 把改動攤開給你看：在全屏模式下，聊天右側會出現一個**常駐的 diff 面板**，Claude 每改一次檔案就自動重新整理，不用自己跑 `git diff`。
+
+面板能做的事：
+
+- 預設只看**本會話**改過的檔案，測試和生成檔案自動摺疊；
+- `ctrl+x b` 切換比較基準：本會話 / 未提交改動 / 整個分支相對預設分支；
+- `source:` 下拉框按輪次回看「第幾輪改了什麼」；
+- 對某個檔案點 `[ ask ]`，把這個檔案的 diff 附到下一條訊息裡問 Claude。
+
+這個面板來自內建的官方 diff Mod（`cc-plugin-diff` 2.1.295），啟動時校驗後載入。
+
+</details>
 
 ## 快速上手
 

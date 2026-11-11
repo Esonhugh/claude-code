@@ -1,5 +1,7 @@
 # MCP 配置与认证
 
+<!-- lang: zh-Hans -->
+
 > 英文名：`mcp` · 领域：插件与扩展 · [返回功能索引](README.md)
 
 ## 这是什么
@@ -10,6 +12,35 @@ server 有两种接法：
 
 - **本地命令（stdio）**：Claude 启动一个进程，通过标准输入输出通信；
 - **远程网址（http / sse）**：连到一个 URL，通常需要 OAuth 登录。
+
+<details lang="en"><summary>English</summary>
+
+> Name: `mcp` · Area: Plugins and extensions · [Back to index](README.md)
+
+## What it is
+
+MCP (Model Context Protocol) is a standard way to give Claude external tools. An MCP server is a small program or URL that tells Claude "I provide these tools", for example weather lookup, database queries or browser control. Once connected, its tools can be called like the built-in Read and Bash, with names of the form `mcp__<server>__<tool>`.
+
+There are two ways to connect a server:
+
+- **Local command (stdio)**: Claude starts a process and talks to it over standard input and output.
+- **Remote URL (http / sse)**: connect to a URL, usually with an OAuth sign-in.
+
+</details>
+<details lang="zh-Hant"><summary>繁體中文</summary>
+
+> 英文名：`mcp` · 領域：插件與擴充 · [返回功能索引](README.md)
+
+## 這是什麼
+
+MCP（Model Context Protocol）是一種「給 Claude 裝外部工具」的標準。一個 MCP server 是一個小程式或網址，它告訴 Claude「我提供這些工具」，例如查天氣、查資料庫、操作瀏覽器。接上後，這些工具和內建的 Read、Bash 一樣可以被 Claude 呼叫，名字形如 `mcp__<server>__<工具>`。
+
+server 有兩種接法：
+
+- **本地命令（stdio）**：Claude 啟動一個程序，通過標準輸入輸出通訊；
+- **遠端網址（http / sse）**：連到一個 URL，通常需要 OAuth 登入。
+
+</details>
 
 ## 快速上手：给项目接一个 MCP server
 

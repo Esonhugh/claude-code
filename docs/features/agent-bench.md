@@ -1,5 +1,7 @@
 # Agent 基准测试套件（bench/）
 
+<!-- lang: zh-Hans -->
+
 > 英文名：`agent-bench` · 领域：上下文与记忆 · [返回功能索引](README.md)
 
 `bench/` 是仓库里的一套独立工具：让本 fork、官方 Claude Code、Codex CLI、opencode、pi、oh-my-pi、dsh 在 Claude 账号和 ChatGPT 账号两侧跑同一批真实任务，记录每个模型请求的用量，算出缓存命中率、每任务 token、每任务 API 等价花费，并画成散点图。[缓存命中与用户体验基准](cache-benchmark.md) 里的数据就是用这套方法采集的；以后重跑、加 CLI、加任务都在这里做。
@@ -11,6 +13,37 @@
 - 发版前确认缓存命中、token 用量没有退步。
 - 新出一个 CLI 版本（或新增一个 CLI），想放到同一张图上比较。
 - 想用公开基准（Terminal-Bench 2.0 等）的难题测任务完成率，又要防止模型背过答案。
+
+<details lang="en"><summary>English</summary>
+
+> Name: `agent-bench` · Area: Context and memory · [Back to index](README.md)
+
+`bench/` is a standalone toolkit in the repo. It runs this fork, the official Claude Code, Codex CLI, opencode, pi, oh-my-pi and dsh on the same set of real tasks, on both a Claude account and a ChatGPT account, records the usage of every model request, and computes cache hit rate, tokens per task and API-equivalent cost per task, drawn as scatter plots. The data in the [cache hit and user experience benchmark](cache-benchmark.md) was collected this way; reruns, new CLIs and new tasks all go through here.
+
+It is not part of the `claude` binary and does not change this fork's system prompt or runtime behaviour.
+
+## When to use it
+
+- Before a release, to confirm cache hits and token usage have not regressed.
+- When a new CLI version (or a new CLI) comes out and you want it on the same chart.
+- When you want to measure task completion on hard public benchmark tasks (Terminal-Bench 2.0 and others) while guarding against models that have memorised the answers.
+
+</details>
+<details lang="zh-Hant"><summary>繁體中文</summary>
+
+> 英文名：`agent-bench` · 領域：上下文與記憶 · [返回功能索引](README.md)
+
+`bench/` 是倉庫裡的一套獨立工具：讓本 fork、官方 Claude Code、Codex CLI、opencode、pi、oh-my-pi、dsh 在 Claude 帳號和 ChatGPT 帳號兩側跑同一批真實任務，記錄每個模型請求的用量，算出快取命中率、每任務 token、每任務 API 等價花費，並畫成散點圖。[快取命中與使用者體驗基準](cache-benchmark.md) 裡的資料就是用這套方法採集的；以後重跑、加 CLI、加任務都在這裡做。
+
+它不進 `claude` 二進位檔，也不改本 fork 的系統提示或執行時行為。
+
+## 什麼時候用
+
+- 發版前確認快取命中、token 用量沒有退步。
+- 新出一個 CLI 版本（或新增一個 CLI），想放到同一張圖上比較。
+- 想用公開基準（Terminal-Bench 2.0 等）的難題測任務完成率，又要防止模型背過答案。
+
+</details>
 
 ## 快速开始
 

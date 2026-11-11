@@ -1,5 +1,7 @@
 # 定时任务：Cron、/loop 与 ScheduleWakeup
 
+<!-- lang: zh-Hans -->
+
 > 英文名：`scheduled-tasks` · 领域：工具 · [返回功能索引](README.md)
 
 ## 这是什么
@@ -11,6 +13,37 @@
 - 等外部结果：Claude 自己决定隔多久再看一次。
 
 时间用标准 5 段 cron 表达式（分 时 日 月 周），按**本机时区**。
+
+<details lang="en"><summary>English</summary>
+
+> Name: `scheduled-tasks` · Area: Tools · [Back to index](README.md)
+
+## What it is
+
+Have Claude **run an instruction automatically at set times** within a session, without typing it each time. Common uses:
+
+- watching a slow task: "check the deploy every 5 minutes and tell me when it is done";
+- periodic reports: "on weekdays at 9 a.m., summarise the PRs merged yesterday";
+- waiting on outside results: Claude decides how long to wait before looking again.
+
+Times use standard 5-field cron expressions (minute hour day month weekday) in the **local time zone**.
+
+</details>
+<details lang="zh-Hant"><summary>繁體中文</summary>
+
+> 英文名：`scheduled-tasks` · 領域：工具 · [返回功能索引](README.md)
+
+## 這是什麼
+
+讓 Claude 在會話裡**到點自動執行**一段指令，不用你每次手動輸入。常見用法：
+
+- 盯一個慢任務：「每 5 分鐘檢查一次部署狀態，好了告訴我」；
+- 週期性彙報：「工作日早上 9 點彙總昨天合併的 PR」；
+- 等外部結果：Claude 自己決定隔多久再看一次。
+
+時間用標準 5 段 cron 表示式（分 時 日 月 周），按**本機時區**。
+
+</details>
 
 ## 快速上手：`/loop`
 

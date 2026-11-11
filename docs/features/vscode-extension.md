@@ -1,5 +1,7 @@
 # VS Code 插件
 
+<!-- lang: zh-Hans -->
+
 > 英文名：`vscode-extension` · 领域：插件与扩展 · [返回功能索引](README.md)
 
 ## 这是什么
@@ -7,6 +9,29 @@
 官方的 Claude Code VS Code 插件本身不带模型逻辑：它在后台启动一个 `claude` 进程，用 stream-json 和它对话，面板里的 `/status`、`/usage`、`/memory` 等界面也是向这个进程发「控制请求」拿数据再自己画出来。
 
 把插件的 `claude` 换成本 fork 的 binary，就能在 VS Code 面板里用本 fork 的功能（例如 [OpenAI provider](openai-provider.md)）。本 fork 补齐了插件 2.1.303 会发的大部分控制请求，面板里的对话框不再报 `Unsupported control request subtype`。
+
+<details lang="en"><summary>English</summary>
+
+> Name: `vscode-extension` · Area: Plugins and extensions · [Back to index](README.md)
+
+## What it is
+
+The official Claude Code VS Code extension has no model logic of its own: it starts a `claude` process in the background and talks to it over stream-json. Panels such as `/status`, `/usage` and `/memory` send "control requests" to that process for data and draw the result themselves.
+
+Point the extension's `claude` at this fork's binary and you get this fork's features in the VS Code panel (for example the [OpenAI provider](openai-provider.md)). This fork implements most of the control requests the 2.1.303 extension sends, so its dialogs no longer fail with `Unsupported control request subtype`.
+
+</details>
+<details lang="zh-Hant"><summary>繁體中文</summary>
+
+> 英文名：`vscode-extension` · 領域：插件與擴充 · [返回功能索引](README.md)
+
+## 這是什麼
+
+官方的 Claude Code VS Code 插件本身不帶模型邏輯：它在後台啟動一個 `claude` 程序，用 stream-json 和它對話，面板裡的 `/status`、`/usage`、`/memory` 等介面也是向這個程序發「控制請求」拿資料再自己畫出來。
+
+把插件的 `claude` 換成本 fork 的 binary，就能在 VS Code 面板裡用本 fork 的功能（例如 [OpenAI provider](openai-provider.md)）。本 fork 補齊了插件 2.1.303 會發的大部分控制請求，面板裡的對話方塊不再報 `Unsupported control request subtype`。
+
+</details>
 
 ## 快速上手
 

@@ -1,5 +1,7 @@
 # 用量、成本与状态
 
+<!-- lang: zh-Hans -->
+
 > 英文名：`usage-and-cost` · 领域：上下文与记忆 · [返回功能索引](README.md)
 
 ## 这是什么
@@ -13,6 +15,41 @@
 | `/status` | 当前版本、会话 ID、工作目录、认证方式、模型、设置来源 |
 
 它们在同一个面板的不同分页里（Status / Config / Usage / Stats），用 `←` `→` 切换。官方只给订阅用户开放 `/usage`；本 fork 对 API key、网关用户同样可用。
+
+<details lang="en"><summary>English</summary>
+
+> Name: `usage-and-cost` · Area: Context and memory · [Back to index](README.md)
+
+## What it is
+
+To find out how much this conversation cost, which models it used, or how much you have been using Claude lately, use these commands:
+
+| Command | Shows |
+| --- | --- |
+| `/usage` (alias `/cost`) | this session: cost, duration, lines changed, tokens per model |
+| `/stats` | long term: daily usage heatmap, most-used models, streaks |
+| `/status` | version, session ID, working directory, auth method, model, settings sources |
+
+They are tabs of one panel (Status / Config / Usage / Stats); switch with `←` `→`. The official CLI opens `/usage` only to subscribers; this fork makes it work for API key and gateway users too.
+
+</details>
+<details lang="zh-Hant"><summary>繁體中文</summary>
+
+> 英文名：`usage-and-cost` · 領域：上下文與記憶 · [返回功能索引](README.md)
+
+## 這是什麼
+
+想知道「這次對話花了多少錢」「用了哪些模型」「最近用得多不多」，用這幾個命令：
+
+| 命令 | 看什麼 |
+| --- | --- |
+| `/usage`（別名 `/cost`） | 本次會話：費用、耗時、改了多少行、每個模型的 token |
+| `/stats` | 長期：每天的使用熱力圖、最常用模型、連續使用天數 |
+| `/status` | 當前版本、會話 ID、工作目錄、認證方式、模型、設定來源 |
+
+它們在同一個面板的不同分頁裡（Status / Config / Usage / Stats），用 `←` `→` 切換。官方只給訂閱使用者開放 `/usage`；本 fork 對 API key、閘道使用者同樣可用。
+
+</details>
 
 ## 快速上手
 

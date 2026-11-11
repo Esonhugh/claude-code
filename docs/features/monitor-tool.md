@@ -1,5 +1,7 @@
 # Monitor 工具
 
+<!-- lang: zh-Hans -->
+
 > 英文名：`monitor-tool` · 领域：工具 · [返回功能索引](README.md)
 
 ## 这是什么
@@ -7,6 +9,29 @@
 「部署完告诉我」「日志里出现 ERROR 就处理」这类等待型任务，以前 Claude 只能 `sleep 30` 再看一眼，既浪费时间又会错过东西。
 
 Monitor 工具让 Claude 在后台跑一条命令（例如 `tail -f app.log | grep ERROR`），**命令每输出一行，Claude 就被叫醒一次**，看到内容后决定怎么处理。你可以照常和 Claude 说话，两边互不耽误。
+
+<details lang="en"><summary>English</summary>
+
+> Name: `monitor-tool` · Area: Tools · [Back to index](README.md)
+
+## What it is
+
+For waiting tasks like "tell me when the deploy is done" or "handle any ERROR in the log", Claude used to `sleep 30` and look again, which wastes time and misses things.
+
+The Monitor tool lets Claude run a command in the background (for example `tail -f app.log | grep ERROR`). **Every line the command prints wakes Claude once**, and it decides what to do with it. You can keep talking to Claude meanwhile; neither side blocks the other.
+
+</details>
+<details lang="zh-Hant"><summary>繁體中文</summary>
+
+> 英文名：`monitor-tool` · 領域：工具 · [返回功能索引](README.md)
+
+## 這是什麼
+
+「部署完告訴我」「日誌裡出現 ERROR 就處理」這類等待型任務，以前 Claude 只能 `sleep 30` 再看一眼，既浪費時間又會錯過東西。
+
+Monitor 工具讓 Claude 在後台跑一條命令（例如 `tail -f app.log | grep ERROR`），**命令每輸出一行，Claude 就被叫醒一次**，看到內容後決定怎麼處理。你可以照常和 Claude 說話，兩邊互不耽誤。
+
+</details>
 
 ## 快速上手：盯一个日志文件
 

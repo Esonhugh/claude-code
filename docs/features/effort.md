@@ -1,5 +1,7 @@
 # Effort 档位
 
+<!-- lang: zh-Hans -->
+
 > 英文名：`effort` · 领域：模型与 Provider · [返回功能索引](README.md)
 
 ## 这是什么
@@ -18,6 +20,51 @@ Effort 是推理强度：同一个模型，effort 越高，回答前思考得越
 不同模型支持的档位不同，以 `/model` 里能选到的为准。
 
 非交互运行（`claude -p`、Agent SDK）在支持 effort 的模型上默认用 `high`：公开基准里，完成率高的 CLI 多出来的思考主要花在跑测试和收尾检查上。交互式会话的默认值不变；显式设置（`--effort`、`CLAUDE_CODE_EFFORT_LEVEL`、`modelSettings`）仍然优先。
+
+<details lang="en"><summary>English</summary>
+
+> Name: `effort` · Area: Models and providers · [Back to index](README.md)
+
+## What it is
+
+Effort is reasoning strength. With the same model, higher effort means more thinking before answering: usually more careful results, but slower and with more tokens. `medium` is enough for everyday small changes; raise it for hard debugging or large refactors, lower it for simple questions to save money.
+
+| Level | Good for |
+| --- | --- |
+| `minimal` / `low` | simple questions and mechanical edits, when speed matters |
+| `medium` | most everyday tasks (the default for most models) |
+| `high` / `xhigh` | complex logic, cross-file changes, hard bugs |
+| `max` / `ultra` | the hardest problems, when time does not matter |
+| `ultracode` | this fork's local orchestration level: sent as `xhigh`; with Workflow enabled and a model that supports xhigh, sub-agents are not bound by the global concurrency limit |
+| `none` | do not send an effort parameter |
+
+Models support different levels; what `/model` lets you pick is authoritative.
+
+Non-interactive runs (`claude -p`, the Agent SDK) default to `high` on models that support effort: in public benchmarks, the extra thinking of the CLIs with higher completion rates went mostly into running tests and final checks. The default for interactive sessions is unchanged, and explicit settings (`--effort`, `CLAUDE_CODE_EFFORT_LEVEL`, `modelSettings`) still win.
+
+</details>
+<details lang="zh-Hant"><summary>繁體中文</summary>
+
+> 英文名：`effort` · 領域：模型與 Provider · [返回功能索引](README.md)
+
+## 這是什麼
+
+Effort 是推理強度：同一個模型，effort 越高，回答前思考得越多，結果通常更仔細，但更慢、用的 token 更多。日常小改動用 `medium` 就夠；複雜排查、大重構可以調高；簡單問答可以調低省錢。
+
+| 檔位 | 適合 |
+| --- | --- |
+| `minimal` / `low` | 簡單問題、機械改動，追求快 |
+| `medium` | 大多數日常任務（多數模型的預設值） |
+| `high` / `xhigh` | 複雜邏輯、跨檔案改動、難查的 bug |
+| `max` / `ultra` | 最難的問題，不在乎時間 |
+| `ultracode` | 本 fork 的本地編排檔：以 `xhigh` 傳送；啟用 Workflow 且模型支援 xhigh 時，子代理不受全域併發上限限制 |
+| `none` | 不傳送 effort 參數 |
+
+不同模型支援的檔位不同，以 `/model` 裡能選到的為準。
+
+非互動執行（`claude -p`、Agent SDK）在支援 effort 的模型上預設用 `high`：公開基準裡，完成率高的 CLI 多出來的思考主要花在跑測試和收尾檢查上。互動式會話的預設值不變；顯式設定（`--effort`、`CLAUDE_CODE_EFFORT_LEVEL`、`modelSettings`）仍然優先。
+
+</details>
 
 ## 快速上手
 
