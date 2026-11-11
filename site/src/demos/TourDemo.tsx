@@ -72,7 +72,7 @@ const scripts: Record<Exclude<Scene, 'accounts' | 'goal'>, (lang: Lang) => SimSt
 export const TourDemo: React.FC<{ lang: Lang; scene: Scene }> = ({ lang, scene }) => {
   if (scene === 'accounts') return <AccountsDemo lang={lang} />
   const recording = recordings[scene]?.[lang]
-  if (recording) return <ReplayTerminal title="claude — ~/projects/search-demo" recording={recording} accent={tui.claude} />
+  if (recording) return <ReplayTerminal title="search-demo — claude" recording={recording} />
   return (
     <div style={{ position: 'absolute', inset: 0 }}>
       <Terminal

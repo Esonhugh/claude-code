@@ -5,8 +5,9 @@ export type Style = { fg?: string; bg?: string; b?: 1; d?: 1; i?: 1; u?: 1; inv?
 export type Run = [text: string, style: number]
 export type Recording = { cols: number; rows: number; styles: Style[]; lines: Run[][]; frames: [ms: number, lines: number[]][] }
 
-const BASIC = ['0,0,0', '205,49,49', '13,188,121', '229,229,16', '36,114,200', '188,63,188', '17,168,205', '229,229,229']
-const BRIGHT = ['102,102,102', '241,76,76', '35,209,139', '245,245,67', '59,142,234', '214,112,214', '41,184,219', '255,255,255']
+// xterm's default 16-colour palette.
+const BASIC = ['0,0,0', '205,0,0', '0,205,0', '205,205,0', '0,0,238', '205,0,205', '0,205,205', '229,229,229']
+const BRIGHT = ['127,127,127', '255,0,0', '0,255,0', '255,255,0', '92,92,255', '255,0,255', '0,255,255', '255,255,255']
 
 function color256(n: number): string {
   if (n < 8) return `rgb(${BASIC[n]})`
