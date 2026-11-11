@@ -121,6 +121,17 @@ Location: /tmp/claude-0/mcpw/.mcp.json
 
 配置来源：项目 `.mcp.json`、用户 `~/.claude.json`（`-s user`）、本地（`-s local`，只对当前项目的你生效）、插件、`--mcp-config` 参数。
 
+## MCP Apps（工具自带界面）
+
+有些 MCP server 的工具会在 `_meta.ui.resourceUri` 里指向一个 `ui://` 页面（MCP Apps，SEP-1865）。`claude web` 会把这个页面显示在工具卡片下方：
+
+![claude web 显示 MCP App](images/mcp-apps-web.png)
+
+- 页面跑在沙箱 frame 里，origin 是不透明的，读不到网页的登录状态，也调不了网页的 API。默认不能联网，只有 server 在资源的 `_meta.ui.csp` 里声明过的域名可以连。
+- 页面能收到工具的输入和结果，能读同一个 server 的 `ui://` 资源，也能调用同一个 server 的工具。只给页面用的工具（`visibility: ["app"]`）和只读工具直接执行，其他工具要你先确认。
+- `visibility` 里没有 `"model"` 的工具不会发给模型。`ListMcpResourcesTool` 的列表里也不列出 `ui://` 页面，模型知道 URI 的话仍然可以直接读。
+- 终端界面不显示这些页面，只显示文字结果，和官方一致。SDK 客户端要显示页面时，启动 CLI 前设置 `CLAUDE_CODE_MCP_APPS_HOST=1`：CLI 会向 server 声明 `io.modelcontextprotocol/ui` 扩展，`mcp_status` 的工具会带上 `_meta`，客户端再用 `mcp_read_resource` 和 `mcp_call` 读页面、调工具。
+
 ## 说明
 
 画面来自实际运行：`weather` 是一个用 MCP SDK 写的 20 行示例 server；模型回复由测试用假 API 按脚本生成。
