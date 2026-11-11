@@ -222,6 +222,42 @@
   <p class="foot"><span class="en">± is one standard error of the per-task paired difference. Per-task results, failure notes and the perturbation check are in the</span><span class="hant">± 是逐題配對差的一個標準誤。逐題結果、失敗說明與擾動檢查見</span><span class="hans">± 是逐题配对差的一个标准误。逐题结果、失败说明与扰动检查见</span> <a href="../docs/cache-benchmark.html"><span class="en">full report</span><span class="hant">完整報告</span><span class="hans">完整报告</span></a>.</p>
 </div></section>
 
+<section id="frontierharness"><div class="wrap">
+  <p class="prompt">$ <b>bun</b> bench/cli.ts public --picks bench/public/picks-frontierharness-v1.txt --cells fork-claude-key-medium,official-key</p>
+  <h2 class="en">FrontierHarness tasks, same effort</h2>
+  <h2 class="hant">FrontierHarness 題組，同一 effort</h2>
+  <h2 class="hans">FrontierHarness 题组，同一 effort</h2>
+  <p class="en"><a href="https://frontierharness.org">FrontierHarness Eval</a> compares coding-agent harnesses on one open-weights model behind a gateway (Kimi K3 in v1.0). We ran its 20 Terminal-Bench tasks (21 minus <code>build-cython-ext</code>, whose reference solution fails here) on this fork and official Claude Code, both on <code>claude-sonnet-5-5</code> at medium effort, 3 runs per task each: 120 runs, collected 2026-11-11.</p>
+  <p class="hant"><a href="https://frontierharness.org">FrontierHarness Eval</a> 用同一個開源模型經網關接各 CLI（v1.0 是 Kimi K3），只比較 harness。我們拿它的 20 道 Terminal-Bench 題（21 題去掉參考解在本環境不通過的 <code>build-cython-ext</code>），比較本分支與官方 Claude Code，兩邊都用 <code>claude-sonnet-5-5</code>、effort medium，每題各 3 次，共 120 次 run，2026-11-11 採集。</p>
+  <p class="hans"><a href="https://frontierharness.org">FrontierHarness Eval</a> 用同一个开源模型经网关接各 CLI（v1.0 是 Kimi K3），只比较 harness。我们拿它的 20 道 Terminal-Bench 题（21 题去掉参考解在本环境不通过的 <code>build-cython-ext</code>），比较本分支与官方 Claude Code，两边都用 <code>claude-sonnet-5-5</code>、effort medium，每题各 3 次，共 120 次 run，2026-11-11 采集。</p>
+  <div class="tablewrap"><table>
+    <thead><tr><th><span class="en">CLI</span><span class="hant">CLI</span><span class="hans">CLI</span></th><th><span class="en">Pass rate</span><span class="hant">通過率</span><span class="hans">通过率</span></th><th><span class="en">Tokens / task</span><span class="hant">token / 任務</span><span class="hans">token / 任务</span></th><th><span class="en">Cache hit</span><span class="hant">命中率</span><span class="hans">命中率</span></th><th><span class="en">$ / task</span><span class="hant">$ / 任務</span><span class="hans">$ / 任务</span></th><th><span class="en">Time</span><span class="hant">用時</span><span class="hans">用时</span></th></tr></thead>
+    <tbody>
+      <tr><td><span class="en">This fork 2.1.297</span><span class="hant">本分支 2.1.297</span><span class="hans">本分支 2.1.297</span></td><td>75.0% (45/60)</td><td>94k (43k–640k)</td><td>91.6%</td><td>$0.055</td><td>41 s (6–757)</td></tr>
+      <tr><td><span class="en">Official 2.1.322</span><span class="hant">官方 2.1.322</span><span class="hans">官方 2.1.322</span></td><td>75.0% (45/60)</td><td>94k (36k–323k)</td><td>90.9%</td><td>$0.056</td><td>21 s (9–72)</td></tr>
+    </tbody>
+  </table></div>
+  <ul class="en">
+    <li><b>Even on pass rate, tokens and cost.</b> Paired difference 0.0 ± 8.0 pp over 20 tasks. The fork wins db-wal-recovery (3/3 vs 0/3), chess-best-move and polyglot-c-py; official wins vulnerable-secret, gcode-to-text and merge-diff-arc-agi-task.</li>
+    <li><b>vulnerable-secret is by design.</b> The model refuses on both sides. Official retries on <code>claude-sonnet-5</code> by itself; this fork stops with the error and leaves switching models to the user.</li>
+    <li>The fork's longer mean time comes from one run where a background command never ended and <code>-p</code> waited out its 10-minute ceiling (757 s).</li>
+    <li><b>Against the published v1.0 board</b> (same 20 tasks, Kimi K3, 1 run each), the 12 configurations pass 12–15; Claude Code passes 15. They measured Claude Code at a 25% token-weighted cache hit on the K3 gateway and $18.34 per pass; on the Anthropic API both CLIs hit about 91% at $0.055 per task, so that cost comes from the gateway's implicit cache. Different model, sandbox and run count: compare task difficulty, not ranks.</li>
+  </ul>
+  <ul class="hant">
+    <li><b>通過率、token、花費都持平。</b>20 題逐題配對差 0.0 ± 8.0 pp。本分支多過 db-wal-recovery（3/3 對 0/3）、chess-best-move、polyglot-c-py；官方多過 vulnerable-secret、gcode-to-text、merge-diff-arc-agi-task。</li>
+    <li><b>vulnerable-secret 是設計差異。</b>兩邊都被模型拒答；官方會自動換 <code>claude-sonnet-5</code> 重試，本分支報錯停下，由使用者自己決定是否換模型。</li>
+    <li>本分支平均用時較長，來自一次 run：後台命令一直不結束，<code>-p</code> 等到 10 分鐘上限（757 秒）。</li>
+    <li><b>對照 FrontierHarness 公布的 v1.0 結果</b>（同 20 題，Kimi K3，每格 1 次）：12 個配置通過 12–15 題，Claude Code 15 題。他們測到 Claude Code 在 K3 網關上按 token 加權的命中率只有 25%、每次通過 $18.34；直連 Anthropic API 時兩邊命中率約 91%、每任務 $0.055，高花費來自網關的隱式快取。模型、沙箱、次數都不同，只看題目難易，不排名次。</li>
+  </ul>
+  <ul class="hans">
+    <li><b>通过率、token、花费都持平。</b>20 题逐题配对差 0.0 ± 8.0 pp。本分支多过 db-wal-recovery（3/3 对 0/3）、chess-best-move、polyglot-c-py；官方多过 vulnerable-secret、gcode-to-text、merge-diff-arc-agi-task。</li>
+    <li><b>vulnerable-secret 是设计差异。</b>两边都被模型拒答；官方会自动换 <code>claude-sonnet-5</code> 重试，本分支报错停下，由用户自己决定是否换模型。</li>
+    <li>本分支平均用时较长，来自一次 run：后台命令一直不结束，<code>-p</code> 等到 10 分钟上限（757 秒）。</li>
+    <li><b>对照 FrontierHarness 公布的 v1.0 结果</b>（同 20 题，Kimi K3，每格 1 次）：12 个配置通过 12–15 题，Claude Code 15 题。他们测到 Claude Code 在 K3 网关上按 token 加权的命中率只有 25%、每次通过 $18.34；直连 Anthropic API 时两边命中率约 91%、每任务 $0.055，高花费来自网关的隐式缓存。模型、沙箱、次数都不同，只看题目难易，不排名次。</li>
+  </ul>
+  <p class="foot"><span class="en">± is one standard error of the per-task paired difference. Per-task results are in the</span><span class="hant">± 是逐題配對差的一個標準誤。逐題結果見</span><span class="hans">± 是逐题配对差的一个标准误。逐题结果见</span> <a href="../docs/cache-benchmark.html"><span class="en">full report</span><span class="hant">完整報告</span><span class="hans">完整报告</span></a>.</p>
+</div></section>
+
 <section id="cost"><div class="wrap">
   <p class="prompt">$ <b>cat</b> prices.md</p>
   <h2 class="en">How cost is counted</h2>

@@ -309,6 +309,8 @@ export const MEMORY_CELLS: Cell[] = [
   claudeCell('fork-claude-key-high', 'fork', 'claude-key', { env: { CLAUDE_CODE_EFFORT_LEVEL: 'high' } }),
   claudeCell('fork-claude-key-sqlite-high', 'fork', 'claude-key', { settings: SQLITE_MEMORY, env: { CLAUDE_CODE_EFFORT_LEVEL: 'high' } }),
   claudeCell('official-key-high', 'official', 'claude-key', { env: { CLAUDE_CODE_EFFORT_LEVEL: 'high' } }),
+  // Effort pinned to medium (official's -p default), for fork vs official at the same effort.
+  claudeCell('fork-claude-key-medium', 'fork', 'claude-key', { env: { CLAUDE_CODE_EFFORT_LEVEL: 'medium' } }),
   claudeCell('fork-openai-sqlite', 'fork', 'chatgpt', { settings: SQLITE_MEMORY }),
 ]
 
