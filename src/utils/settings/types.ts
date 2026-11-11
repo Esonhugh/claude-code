@@ -934,7 +934,7 @@ export const SettingsSchema = lazySchema(() =>
         .positive()
         .optional()
         .describe(
-          'Per-skill description character cap in the skill listing sent to Claude (default: 512). ' +
+          'Per-skill description character cap in the skill listing sent to Claude (default: 1536). ' +
             'Descriptions longer than this are truncated. Raise to opt in to higher per-turn context cost.',
         ),
       skillOverrides: z
