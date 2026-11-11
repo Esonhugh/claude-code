@@ -12,9 +12,31 @@
 - `## 2.1.88 base` 是唯一基线条目，固定放在文件末尾，不作为 release note。
 - `bun run check:changelog` 是格式规范的可执行门禁；发布时还会校验 tag 版本与最新发布条目一致。
 
-## 2026-11-10 - 系统提示词精简：环境段、Memory 规则、Output efficiency 与 skill 描述上限
+## 2026-11-11 - v2.1.298 - SQLite 记忆冷索引加速与新记忆优先、网页记忆搜索、系统提示词精简
+
+### 版本状态
+
+- 发布候选：`dev` 合并到 `master` 后打 tag `v2.1.298`。本条目汇总 v2.1.297 发布合并（master `46809e6`，PR #907）之后的全部变更（至 PR #1114）；`Makefile VERSION`、README 与构建文档的发布版本同步为 `2.1.298`，`package.json` 保持 `0.0.0-dev`。
+
+### 关联提交
+
+- PR 合并提交（`git log --first-parent 46809e6..dev`）：#1104 SQLite 记忆冷索引加速、召回与 SearchMemory 新记忆优先、`bench/` 多会话记忆任务；#1107 把 master 的 v2.1.297 发布合并并回 dev（不改文件）；#1109 网页记忆搜索；#1111 系统提示词去掉产品形态一行与 headless 的 `/fast` 提示；#1113 Memory 规则精简、去掉外部 Output efficiency、skill 描述上限 512；#1114 未发布条目；本条目的发布准备 PR。
+- 对应 issue：#1105、#1106、#1108、#1110、#1112。
 
 ### 变更内容
+
+#### 需要用户处理的行为变化
+
+- skill 列表每条描述默认上限由 1536 改为 512 字符，需要更长时用 `skillListingMaxDescChars` 覆盖（#1112）。
+- `SearchMemory` 的 `limit` 上限由 50 改为 25，结果不再因超过 `maxResultSizeChars` 被存成文件（#1106）。
+
+#### 记忆
+
+- SQLite 记忆模式首次建索引不再是平方级：从没索引过的文件不再逐个 `DELETE`，改动按 500 个文件一批写入；10,000 条记忆删掉索引后首个请求的首 token 时间 28.2 s → 2.6 s（#1105）。
+- 自动召回与 `SearchMemory` 在匹配程度相同时，保存日期新的记忆排在前面（同一天内仍按 bm25），`SearchMemory` 结果标出 `(saved YYYY-MM-DD)`（#1106）。
+- `claude web` 的记忆对话框能搜到全部记忆文件（此前只列最新 200 条），会话搜索为每个匹配的会话各列一行，不再被一个长会话占满（#1108）。
+
+#### 系统提示词
 
 - 系统提示词环境段去掉 "Claude Code is available as a CLI…" 一行；Fast mode 提示在 `-p`/SDK 会话中不再出现（#1110、#1111）。
 - Memory 段规则改为更短的写法（2,079 → 1,614 字符），规则内容不变，记忆提取 prompt 共用同一组文字（#1112、#1113）。
@@ -22,9 +44,15 @@
 - skill 列表每条描述默认上限由 1536 改为 512 字符，`skillListingMaxDescChars` 仍可覆盖（#1112、#1113）。
 - `-p` 请求体积：Claude 路径 system 5,673 → 5,201、messages 9,199 → 7,191 字符；OpenAI 路径 system 10,312 → 9,305、messages 9,289 → 7,415 字符。skill 触发、记忆基准（9/12 对 9/12）与 ChatGPT 编码题（9/13 对 9/13）与精简前一致。
 
+#### 基准
+
+- `bench/` 的 `task.json` 新增 `sessions`（每个提示起一个新 CLI 进程，依次跑在同一 HOME 和工作区）与 `seedMemory`（预置 auto memory），新增 7 个记忆任务（最多 10,000 条记忆）与 SQLite / effort high 的新格（#1104）。
+
 ### 测试覆盖
 
 - `src/constants/prompts.test.ts`（环境段、OpenAI compact 不含 Output efficiency）、`src/memdir/memoryTypes.test.ts`（规则文字与 2.1.311 布局、长度上限）、`src/tools/SkillTool/prompt.test.ts`（512 字符截断）。
+- `src/memdir`、`src/tools/SearchMemoryTool` 的新测试：同样匹配的记忆按日期新→旧排序、结果带日期、`limit: 50` 被拒；网页记忆搜索测试覆盖列出全部记忆文件与每个匹配会话各一行（#1104、#1109）。
+- 每个代码 PR 都在 CI 全绿后合入 `dev`。
 
 ## 2026-11-09 - v2.1.297 - hooks exec-form 命令注入修复、上下文窗口档位、自动压缩超长恢复、OpenAI apply_patch 工具、claude web 的 Mods 界面与会话设置保留、与官方共用设置、ctrl+Enter 低延迟发送、Teams 与 headless 退出修复
 
