@@ -199,6 +199,23 @@ test('the input still parses after the observable backfill adds file paths', () 
   assert.equal(ApplyPatchTool.inputSchema.safeParse(input).success, true)
 })
 
+test('whole-tool Edit and Write rules cover apply_patch like the tools Claude would use', withDir(async dir => {
+  writeFileSync(join(dir, 'a.txt'), 'a\n')
+  const update = `*** Begin Patch\n*** Update File: ${join(dir, 'a.txt')}\n-a\n+A\n*** End Patch`
+  const add = `*** Begin Patch\n*** Add File: ${join(dir, 'new.txt')}\n+n\n*** End Patch`
+  const rules = (behavior: 'alwaysAllowRules' | 'alwaysDenyRules' | 'alwaysAskRules', names: string[]) =>
+    context({ ...getEmptyToolPermissionContext(), [behavior]: { session: names } } as never) as never
+  const check = async (input: string, ctx: never) => (await ApplyPatchTool.checkPermissions({ input }, ctx)).behavior
+
+  assert.equal(await check(update, context() as never), 'ask')
+  assert.equal(await check(update, rules('alwaysAllowRules', ['Edit'])), 'allow')
+  assert.equal(await check(add, rules('alwaysAllowRules', ['Edit'])), 'ask')
+  assert.equal(await check(add, rules('alwaysAllowRules', ['Write'])), 'allow')
+  assert.equal(await check(update, rules('alwaysDenyRules', ['Edit'])), 'deny')
+  assert.equal(await check(add, rules('alwaysDenyRules', ['Write'])), 'deny')
+  assert.equal(await check(update, rules('alwaysAskRules', ['Edit'])), 'ask')
+}))
+
 test('only the OpenAI provider gets the tool', () => {
   const saved = process.env.CLAUDE_CODE_USE_OPENAI
   try {
