@@ -894,6 +894,12 @@ export const SettingsSchema = lazySchema(() =>
         .string()
         .optional()
         .describe('Advisor model for the server-side advisor tool.'),
+      openaiEditTools: z
+        .enum(['all', 'apply_patch'])
+        .optional()
+        .describe(
+          'File editing tools offered to OpenAI models. "all" (default) offers Edit, Write and apply_patch; "apply_patch" offers only apply_patch, like Codex.',
+        ),
       daybreak: z
         .enum(['blue', 'red', 'off'])
         .optional()

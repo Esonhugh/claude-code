@@ -294,9 +294,10 @@ export function getUsingYourToolsSection(enabledTools: Set<string>): string {
   const embedded = hasEmbeddedSearchTools()
   const dedicatedTools = [
     FILE_READ_TOOL_NAME,
-    FILE_EDIT_TOOL_NAME,
-    FILE_WRITE_TOOL_NAME,
-    ...(enabledTools.has(APPLY_PATCH_TOOL_NAME) ? [APPLY_PATCH_TOOL_NAME] : []),
+    // On the OpenAI path, name only the edit tools offered (openaiEditTools).
+    ...(enabledTools.has(APPLY_PATCH_TOOL_NAME)
+      ? [FILE_EDIT_TOOL_NAME, FILE_WRITE_TOOL_NAME, APPLY_PATCH_TOOL_NAME].filter(name => enabledTools.has(name))
+      : [FILE_EDIT_TOOL_NAME, FILE_WRITE_TOOL_NAME]),
     ...(embedded ? [] : [GLOB_TOOL_NAME, GREP_TOOL_NAME]),
   ].join(', ')
 

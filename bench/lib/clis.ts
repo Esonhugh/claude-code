@@ -314,8 +314,13 @@ export const MEMORY_CELLS: Cell[] = [
   claudeCell('fork-openai-sqlite', 'fork', 'chatgpt', { settings: SQLITE_MEMORY }),
 ]
 
+// GPT models with apply_patch as the only file editing tool, like Codex.
+export const EDIT_CELLS: Cell[] = [
+  claudeCell('fork-openai-patch', 'fork', 'chatgpt', { settings: { openaiEditTools: 'apply_patch' } }),
+]
+
 export function getCell(id: string): Cell {
-  const extra = [...SUB_CELLS, ...COMPACT_CELLS, ...MEMORY_CELLS]
+  const extra = [...SUB_CELLS, ...COMPACT_CELLS, ...MEMORY_CELLS, ...EDIT_CELLS]
   const c = CELLS.find(x => x.id === id) ?? extra.find(x => x.id === id)
   if (!c) throw new Error(`unknown cell ${id}; known: ${[...CELLS, ...extra].map(x => x.id).join(', ')}`)
   return c

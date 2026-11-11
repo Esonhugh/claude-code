@@ -141,6 +141,8 @@ import { isEnvTruthy } from './utils/envUtils.js'
 import { isWorkflowScriptsFeatureEnabled } from './tools/WorkflowTool/workflowFeatureFlags.js'
 import { isPowerShellToolEnabled } from './utils/shell/shellToolUtils.js'
 import { isWorktreeModeEnabled } from './utils/worktreeModeEnabled.js'
+import { getInitialSettings } from './utils/settings/settings.js'
+import { APPLY_PATCH_TOOL_NAME } from './tools/ApplyPatchTool/prompt.js'
 import {
   REPL_TOOL_NAME,
   REPL_ONLY_TOOLS,
@@ -340,7 +342,15 @@ export const getTools = (permissionContext: ToolPermissionContext): Tools => {
   }
 
   const isEnabled = allowedTools.map(_ => _.isEnabled())
-  return allowedTools.filter((_, i) => isEnabled[i])
+  const enabled = allowedTools.filter((_, i) => isEnabled[i])
+  // Like Codex: GPT models edit files only through apply_patch.
+  if (
+    getInitialSettings().openaiEditTools === 'apply_patch' &&
+    enabled.some(tool => tool.name === APPLY_PATCH_TOOL_NAME)
+  ) {
+    return enabled.filter(tool => tool !== FileEditTool && tool !== FileWriteTool)
+  }
+  return enabled
 }
 
 /**
