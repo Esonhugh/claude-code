@@ -4,7 +4,7 @@
 
 > 英文名：`cache-benchmark` · 领域：上下文与记忆 · [返回功能索引](README.md)
 
-本 fork（Claude 账号与 ChatGPT 账号两条路径）与官方 Claude Code、Codex CLI、opencode、pi、oh-my-pi、dsh 跑同一批真实任务，比较提示缓存命中率、token 用量、API 等价花费、多代理开销、长时间闲置后的缓存、启动速度和稳定性。全部是真实模型请求，不使用假 API。数据采集于 2026-11-07，共 789 次 run，每格至少 3 次；第 12 节另用 20 道公开基准题（1,800 次 run，2026-11-08 至 11-09）比较通过率。
+本 fork（Claude 账号与 ChatGPT 账号两条路径）与官方 Claude Code、Codex CLI、opencode、pi、oh-my-pi、dsh 跑同一批真实任务，比较提示缓存命中率、token 用量、API 等价花费、多代理开销、长时间闲置后的缓存、启动速度和稳定性。全部是真实模型请求，不使用假 API。数据采集于 2026-11-07，共 789 次 run，每格至少 3 次；第 12 节另用 20 道公开基准题（1,800 次 run，2026-11-08 至 11-09）比较通过率；第 13 节用 FrontierHarness 题组的 20 道 Terminal-Bench 题，在同为 medium 的条件下比较本仓库与官方（120 次 run，2026-11-11）。
 
 ## 摘要
 
@@ -533,9 +533,24 @@ dsh 0.2.2-rc.1 用 headless 模式（`dsh --profile headless --json`），模型
 - 这只是观察数据，effort、提示、工具在各 CLI 之间同时不同。本仓库据此做了三项改动（#1097）：`-p` 与 SDK 默认 effort 改为 high，系统提示加一句「结束前跑相关测试并修好、清掉自己产生的构建产物」，并去掉「信息够了就行动，不要重新推导」那句。A/B 验证见下一条。
 - **A/B 验证（2026-11-10，4 题 × 每格 6 次，原版与扰动版各 3 次，模型 `claude-sonnet-5-5`）**：只改提示、effort 仍为 medium 时通过 14/24；改动前的构建 8/24；三项全改（提示 + headless 默认 high）22/24。提示那句主要作用在 polyglot 两题（0/12 → 7/12，靠清掉构建产物）；effort high 再把 ansible 从 4/6 提到 6/6、polyglot 提到 12/12。代价是每次 run 的花费从 $0.18 涨到 $0.36、用时从 63s 涨到 127s。题目只有 ansible、polyglot-c-py、polyglot-rust-c、custom-memory-heap-crash 四道，其余 SWE-Pro 题因运行环境限制没跑。
 
+### 13. FrontierHarness 题组：本仓库与官方同为 medium
+
+[FrontierHarness Eval](https://frontierharness.org) 是 Runta 做的 harness 基准：同一个开源模型（v1.0 是 Kimi K3）经网关接入各 CLI，只换 harness，比较通过率与花费。我们用它 v1.0 题组里的 Terminal-Bench 2 题（21 题，`build-cython-ext` 的参考解在本环境不通过，排除后 20 题），在 Claude 侧比较本仓库与官方。两边都用 `claude-sonnet-5-5`、effort medium（本仓库用 `fork-claude-key-medium` 格固定 medium，官方 `-p` 默认即 medium），每格每题 3 次，共 120 次 run，数据采集于 2026-11-11。
+
+| CLI | effort | 通过率 | 平均总 token（单次范围） | 命中率 | API 等价花费 / 任务 | 平均用时（单次范围） |
+| --- | --- | --- | --- | --- | --- | --- |
+| 本仓库 2.1.297 | medium | 75.0%（45/60） | 94k（43k–640k） | 91.6% | $0.055 | 41s（6s–757s） |
+| 官方 Claude Code 2.1.322 | medium | 75.0%（45/60） | 94k（36k–323k） | 90.9% | $0.056 | 21s（9s–72s） |
+
+- **通过率、token、花费都持平。** 逐题配对差 0.0 ± 8.0 pp（一个标准误，20 题）。本仓库多过的题：`db-wal-recovery`（3/3 对 0/3）、`chess-best-move`、`polyglot-c-py`；官方多过的题：`vulnerable-secret`（0/3 对 3/3）、`gcode-to-text`、`merge-diff-arc-agi-task`。
+- **`vulnerable-secret` 是设计差异。** 两边都被模型拒答（`stop_reason: refusal`）；官方会按拒答类别自动换 `claude-sonnet-5` 重试，本仓库报错停下，由用户自己决定是否换模型。
+- **本仓库平均用时较长**，主要来自一次 run：agent 留下一个不结束的后台命令，`-p` 等到 10 分钟上限才退出（757 秒）；其余 run 与官方相近。
+- **和 FrontierHarness 公布的 v1.0 结果对照（同 20 题，Kimi K3，每格 1 次）**：12 个配置通过 12–15 题，Claude Code 15 题。他们测到 Claude Code 在 K3 网关上按 token 加权的命中率只有 25%，每次通过花 $18.34；直连 Anthropic API 时两边命中率都在 91% 左右，每任务约 $0.055，高花费来自 K3 网关的隐式缓存，不是 Claude Code 本身。模型、沙箱、次数都不同，这里只看同一题的难易，不排名次。
+- DeepSWE 9 题每次 $0.3–1，本轮没有在 medium 下重跑。
+
 ## 局限
 
-- 第 0–11 节的题组成功率几乎全部 100%，对成功率没有区分度；成功率比较见第 12 节公开基准。
+- 第 0–11 节的题组成功率几乎全部 100%，对成功率没有区分度；成功率比较见第 12、13 节公开基准。
 - 每格 3 次。ChatGPT 侧同一格重跑平均相差 9 个百分点（最大 39），单格差异需超过约 10 个百分点才有意义。
 - Agent Teams 只有 Claude Code 系有；pi 没有子代理功能。Web 场景只有本仓库有。
 - 补跑的格（opencode 多轮场景、Claude 侧 pi / opencode 多轮场景、多代理新格）与早先的格不在同一时段。
@@ -547,6 +562,7 @@ dsh 0.2.2-rc.1 用 headless 模式（`dsh --profile headless --json`），模型
 完整报告、逐 run 汇总、逐请求原始日志与 harness 在项目共享目录：
 
 - `regression/cache-bench-1107-post/`：CLI 矩阵、TUI / SDK / Web（`report.md`、`results.json`、`raw/`、`harness/`）。
+- `regression/frontierharness-v1-1111/`：第 13 节 FrontierHarness 题组（`report.md`、`medium-tb2.md`、`raw/`、`harness/`、`snapshot/` 为 FrontierHarness 公布数据的快照）。
 - `regression/public-bench-1108/`：第 12 节公开基准（`report.md`、`summary.json`、`raw/`、`harness/`、`charts/`）；扰动版题目在仓库 `bench/public/perturb/`。
 - `regression/cache-bench-1107-current/`：多代理、长闲置、启动与资源占用（`raw/sub/`、`raw/team/`、`raw/gap/`、`raw/b6/`、`harness/`）；pi 与 opencode 的 Claude 侧 CLI 矩阵在 `claude-api/`；各 CLI × 账号的补齐格与 API 等价花费在 `chatgpt-api/`（`results.json` 汇总全部逐 run 数据）；oh-my-pi 在 `oh-my-pi/`；dsh 在 `dsh/`；ssh / k8s 运维排障在 `ops-troubleshoot/`。
 
