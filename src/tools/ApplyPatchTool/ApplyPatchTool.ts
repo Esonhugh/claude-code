@@ -20,7 +20,6 @@ import { logError } from '../../utils/log.js'
 import { getAPIProvider } from '../../utils/model/providers.js'
 import { expandPath } from '../../utils/path.js'
 import { checkWritePermissionForTool, matchingRuleForInput } from '../../utils/permissions/filesystem.js'
-import type { PermissionRule } from '../../types/permissions.js'
 import type { PermissionDecision } from '../../utils/permissions/PermissionResult.js'
 import { createPermissionRequestMessage, getAskRuleForTool, getDenyRuleForTool, toolAlwaysAllowedRule } from '../../utils/permissions/permissions.js'
 import { matchWildcardPattern } from '../../utils/permissions/shellRuleMatching.js'
@@ -81,6 +80,11 @@ function notifyEditors(absolutePath: string, original: string | null, updated: s
     }
   }
   notifyVscodeFileUpdated(absolutePath, original, updated)
+}
+
+function isRuleOrSafetyAsk(decision: PermissionDecision): boolean {
+  const reason = decision.decisionReason
+  return reason?.type === 'safetyCheck' || (reason?.type === 'rule' && reason.rule.ruleBehavior === 'ask')
 }
 
 export const ApplyPatchTool = buildTool({
@@ -165,36 +169,32 @@ export const ApplyPatchTool = buildTool({
       { file_path: expandPath(op.path), tool: op.type === 'add' ? FileWriteTool : FileEditTool },
       ...(op.type === 'update' && op.movePath ? [{ file_path: expandPath(op.movePath), tool: FileWriteTool }] : []),
     ])
-    let allowRule: PermissionRule | undefined
-    for (const { file_path, tool } of files) {
+    // Decide every file before answering, so a deny on a later file wins over
+    // an ask on an earlier one, as it would across separate Edit/Write calls.
+    const decisions = files.map(({ file_path, tool }): PermissionDecision => {
       const denyRule = getDenyRuleForTool(permissionContext, tool)
       if (denyRule) {
         return { behavior: 'deny', decisionReason: { type: 'rule', rule: denyRule }, message: `Permission to use ${tool.name} has been denied.` }
       }
-      const decision = checkWritePermissionForTool(
-        FileEditTool,
-        { file_path, old_string: '', new_string: '' },
-        permissionContext,
-      )
+      const decision = checkWritePermissionForTool(FileEditTool, { file_path, old_string: '', new_string: '' }, permissionContext)
       if (decision.behavior === 'deny') return decision
-      const reason = decision.decisionReason
-      if (decision.behavior === 'ask' && (reason?.type === 'safetyCheck' || (reason?.type === 'rule' && reason.rule.ruleBehavior === 'ask'))) {
-        return decision
-      }
       const askRule = getAskRuleForTool(permissionContext, tool)
       if (askRule) {
         return { behavior: 'ask', decisionReason: { type: 'rule', rule: askRule }, message: createPermissionRequestMessage(APPLY_PATCH_TOOL_NAME) }
       }
-      if (decision.behavior === 'allow') continue
+      if (decision.behavior !== 'ask' || isRuleOrSafetyAsk(decision)) return decision
       const wholeToolAllow = toolAlwaysAllowedRule(permissionContext, tool)
-      if (!wholeToolAllow) return decision
-      allowRule ??= wholeToolAllow
-    }
-    return {
-      behavior: 'allow',
-      updatedInput: input,
-      ...(allowRule && { decisionReason: { type: 'rule' as const, rule: allowRule } }),
-    }
+      return wholeToolAllow ? { behavior: 'allow', updatedInput: input, decisionReason: { type: 'rule', rule: wholeToolAllow } } : decision
+    })
+    const asks = decisions.filter(d => d.behavior === 'ask')
+    const answer =
+      decisions.find(d => d.behavior === 'deny') ??
+      asks.find(d => d.decisionReason?.type === 'rule') ??
+      asks.find(isRuleOrSafetyAsk) ??
+      asks[0] ??
+      decisions.find(d => d.decisionReason?.type === 'rule')
+    if (answer && answer.behavior !== 'allow') return answer
+    return { behavior: 'allow', updatedInput: input, ...(answer?.decisionReason && { decisionReason: answer.decisionReason }) }
   },
   async validateInput({ input }, toolUseContext: ToolUseContext) {
     let plan: PatchPlan
