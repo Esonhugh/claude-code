@@ -195,6 +195,8 @@ export async function runWebCommand(opts: WebCommandOptions): Promise<void> {
       fileCheckpointing: getGlobalConfig().fileCheckpointingEnabled !== false,
       // A reloaded page learns that a turn is still running.
       emitSessionState: true,
+      // The page renders MCP Apps (ui:// resources) in a sandboxed frame.
+      mcpAppsHost: true,
     }),
     {
       idleTimeoutMs: Number(opts.idleTimeout ?? 600_000),

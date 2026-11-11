@@ -394,6 +394,7 @@ h1, h2, h3 { text-wrap: balance; margin: 0 }
 @media (prefers-reduced-motion: no-preference) { .shimmer { animation: shimmer 1.8s linear infinite } }
 @keyframes shimmer { from { background-position: 100% 0 } to { background-position: -150% 0 } }
 .toolcard { border: 1px solid var(--line); border-radius: 10px; background: var(--surface); overflow: hidden }
+.mcp-app { display: block; width: 100%; margin-top: 6px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface) }
 .toolcard > summary { list-style: none; cursor: pointer; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: 8px 12px }
 .toolcard > summary::-webkit-details-marker { display: none }
 .toolcard .tname { font-weight: 600; font-size: 12.5px }

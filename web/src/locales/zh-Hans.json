@@ -570,5 +570,7 @@
   "modOnCanvas": "已在画布中显示。",
   "modPaneClosed": "Mod 已关闭这个面板。",
   "modSuggestions": "Mod 的补全建议",
-  "modSuggestTake": "使用这条建议"
+  "modSuggestTake": "使用这条建议",
+  "mcpAppCallConfirm": "允许 {server} 应用运行 {tool}？",
+  "mcpAppTitle": "应用：{server}"
 }

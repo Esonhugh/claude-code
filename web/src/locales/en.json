@@ -570,5 +570,7 @@
   "modOnCanvas": "Shown on the canvas.",
   "modPaneClosed": "The Mod closed this pane.",
   "modSuggestions": "Suggestions from Mods",
-  "modSuggestTake": "Use this suggestion"
+  "modSuggestTake": "Use this suggestion",
+  "mcpAppCallConfirm": "Let the {server} app run {tool}?",
+  "mcpAppTitle": "App: {server}"
 }
