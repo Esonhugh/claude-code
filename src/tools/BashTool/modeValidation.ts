@@ -3,6 +3,7 @@ import type { ToolPermissionContext } from '../../Tool.js'
 import { splitCommand_DEPRECATED } from '../../utils/bash/commands.js'
 import type { PermissionResult } from '../../utils/permissions/PermissionResult.js'
 import type { BashTool } from './BashTool.js'
+import { stripSafeWrappers } from './bashPermissions.js'
 
 const ACCEPT_EDITS_ALLOWED_COMMANDS = [
   'mkdir',
@@ -22,10 +23,22 @@ function isFilesystemCommand(command: string): command is FilesystemCommand {
 
 function validateCommandForMode(
   cmd: string,
+  original: string,
   toolPermissionContext: ToolPermissionContext,
 ): PermissionResult {
-  const trimmedCmd = cmd.trim()
-  const [baseCmd] = trimmedCmd.split(/\s+/)
+  const stripped = stripSafeWrappers(cmd)
+  const [baseCmd] = stripped.split(/\s+/)
+  // touch behind a wrapper, an env assignment or an escaped name, or with a
+  // flag-like operand, is left to the normal checks.
+  const trimmedOriginal = original.trim()
+  const touchHazard =
+    baseCmd === 'touch' &&
+    (stripSafeWrappers(trimmedOriginal) !== trimmedOriginal ||
+      !/^touch(?:\s|$)/.test(trimmedOriginal) ||
+      !stripped
+        .split(/\s+/)
+        .slice(1)
+        .every(arg => /^['"]?[\w./~]/.test(arg)))
 
   if (!baseCmd) {
     return {
@@ -37,7 +50,8 @@ function validateCommandForMode(
   // In Accept Edits mode, auto-allow filesystem operations
   if (
     toolPermissionContext.mode === 'acceptEdits' &&
-    isFilesystemCommand(baseCmd)
+    isFilesystemCommand(baseCmd) &&
+    !touchHazard
   ) {
     return {
       behavior: 'allow',
@@ -91,17 +105,28 @@ export function checkPermissionMode(
 
   const commands = splitCommand_DEPRECATED(input.command)
 
-  // Check each subcommand
+  // Every subcommand must be one the mode allows.
   for (const cmd of commands) {
-    const result = validateCommandForMode(cmd, toolPermissionContext)
-
-    // If any command triggers mode-specific behavior, return that result
-    if (result.behavior !== 'passthrough') {
-      return result
+    const result = validateCommandForMode(
+      cmd,
+      commands.length === 1 ? input.command : cmd,
+      toolPermissionContext,
+    )
+    if (result.behavior === 'ask' || result.behavior === 'deny') return result
+    if (result.behavior === 'passthrough') {
+      return {
+        behavior: 'passthrough',
+        message: 'No mode-specific validation required',
+      }
     }
   }
-
-  // No mode-specific handling needed
+  if (commands.length > 0) {
+    return {
+      behavior: 'allow',
+      updatedInput: input,
+      decisionReason: { type: 'mode', mode: toolPermissionContext.mode },
+    }
+  }
   return {
     behavior: 'passthrough',
     message: 'No mode-specific validation required',

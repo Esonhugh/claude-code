@@ -1,3 +1,4 @@
+import { homedir } from 'node:os'
 import type { z } from 'zod/v4'
 import { getOriginalCwd } from '../../bootstrap/state.js'
 import {
@@ -14,17 +15,21 @@ import {
   containsVulnerableUncPath,
   DOCKER_READ_ONLY_COMMANDS,
   EXTERNAL_READONLY_COMMANDS,
+  FLAG_PATTERN,
   type FlagArgType,
   GH_READ_ONLY_COMMANDS,
   GIT_READ_ONLY_COMMANDS,
-  PYRIGHT_READ_ONLY_COMMANDS,
   RIPGREP_READ_ONLY_COMMANDS,
   validateFlags,
 } from '../../utils/shell/readOnlyCommandValidation.js'
 import type { BashTool } from './BashTool.js'
-import { isNormalizedGitCommand } from './bashPermissions.js'
+import {
+  isNormalizedGitCommand,
+  isSafeEnvAssignment,
+} from './bashPermissions.js'
 import { bashCommandIsSafe_DEPRECATED } from './bashSecurity.js'
 import {
+  expandLiteralArithmetic,
   COMMAND_OPERATION_TYPE,
   PATH_EXTRACTORS,
   type PathCommand,
@@ -49,6 +54,168 @@ type CommandConfig = {
   // validateFlags will continue checking flags after `--` instead of breaking.
   // Default: true (most tools respect `--`).
   respectsDoubleDash?: boolean
+}
+
+/**
+ * An operand read as a number (by -t or an arithmetic comparison) must be a
+ * literal integer: bash evaluates `a[$(cmd)]` there and runs the command.
+ */
+function testOperandIsDangerous(args: string[]): boolean {
+  const integer = /^-?(0[xX][0-9a-fA-F]+|[0-9]+#[0-9a-zA-Z]+|[0-9]+)$/
+  return args.some((arg, i) => {
+    const operands = ['-eq', '-ne', '-lt', '-le', '-gt', '-ge'].includes(arg)
+      ? [args[i - 1], args[i + 1]]
+      : arg === '-t'
+        ? [args[i + 1]]
+        : []
+    return operands.some(
+      operand => operand !== undefined && !integer.test(operand),
+    )
+  })
+}
+
+/**
+ * printf takes no options here. A numeric conversion (`%d`, `%*s`, ...)
+ * evaluates its arguments as arithmetic, which runs `a[$(cmd)]`, so those
+ * arguments must be plain numbers. Escapes that build an octal/hex directive
+ * or a `\u` character are refused.
+ */
+function printfIsSafe(command: string): boolean {
+  const parsed = tryParseShellCommand(command)
+  if (!parsed.success || !parsed.tokens.every(t => typeof t === 'string')) {
+    return false
+  }
+  const argv = parsed.tokens as string[]
+  if (argv[1]?.startsWith('-') && argv[1] !== '--') return false
+  const formatIndex = argv[1] === '--' ? 2 : 1
+  const format = argv[formatIndex] ?? ''
+  if (format.includes('$')) return false
+  const directives = format.replace(/%%/g, '')
+  if (
+    /%[^%a-zA-Z]*[lLhqjzZt]*\\[0-7xX]/.test(directives) ||
+    /\\[uU]/.test(directives)
+  ) {
+    return false
+  }
+  const numeric =
+    /%[-+ 0#']*[0-9.*]*[lLhqjzZt]*[diouxXeEfFgGaAn]/.test(directives) ||
+    /%[^%a-zA-Z]*\*/.test(directives) ||
+    format
+      .replace(/%(?:%|[-+ 0#']*(?:[1-9][0-9]*)?(?:b|(?:\.[0-9]*)?[scq]))/g, '')
+      .includes('%')
+  return (
+    !numeric ||
+    argv
+      .slice(formatIndex + 1)
+      .every(arg =>
+        /^[-+]?(0[xX][0-9a-fA-F]+|[0-9]+#[0-9a-zA-Z]+|[0-9]*\.?[0-9]+([eE][-+]?[0-9]+)?)$/.test(
+          arg,
+        ),
+      )
+  )
+}
+
+const GREP_SAFE_FLAGS: Record<string, FlagArgType> = {
+  // Pattern flags
+  '-e': 'string', // Pattern
+  '--regexp': 'string',
+  '-f': 'string', // File with patterns
+  '--file': 'string',
+  '-F': 'none', // Fixed strings
+  '--fixed-strings': 'none',
+  '-G': 'none', // Basic regexp (default)
+  '--basic-regexp': 'none',
+  '-E': 'none', // Extended regexp
+  '--extended-regexp': 'none',
+  '-P': 'none', // Perl regexp
+  '--perl-regexp': 'none',
+
+  // Matching control
+  '-i': 'none', // Ignore case
+  '-I': 'none', // Skip binary files
+  '--ignore-case': 'none',
+  '--no-ignore-case': 'none',
+  '-v': 'none', // Invert match
+  '--invert-match': 'none',
+  '-w': 'none', // Word regexp
+  '--word-regexp': 'none',
+  '-x': 'none', // Line regexp
+  '--line-regexp': 'none',
+
+  // Output control
+  '-c': 'none', // Count
+  '--count': 'none',
+  '--color': 'string',
+  '--colour': 'string',
+  '-L': 'none', // Files without match
+  '--files-without-match': 'none',
+  '-l': 'none', // Files with matches
+  '--files-with-matches': 'none',
+  '-m': 'number', // Max count
+  '--max-count': 'number',
+  '-o': 'none', // Only matching
+  '--only-matching': 'none',
+  '-q': 'none', // Quiet
+  '--quiet': 'none',
+  '--silent': 'none',
+  '-s': 'none', // No messages
+  '--no-messages': 'none',
+
+  // Output line prefix
+  '-b': 'none', // Byte offset
+  '--byte-offset': 'none',
+  '-H': 'none', // With filename
+  '--with-filename': 'none',
+  '-h': 'none', // No filename
+  '--no-filename': 'none',
+  '--label': 'string',
+  '-n': 'none', // Line number
+  '--line-number': 'none',
+  '-T': 'none', // Initial tab
+  '--initial-tab': 'none',
+  '-u': 'none', // Unix byte offsets
+  '--unix-byte-offsets': 'none',
+  '-Z': 'none', // Null after filename
+  '--null': 'none',
+  '-z': 'none', // Null data
+  '--null-data': 'none',
+
+  // Context control
+  '-A': 'number', // After context
+  '--after-context': 'number',
+  '-B': 'number', // Before context
+  '--before-context': 'number',
+  '-C': 'number', // Context
+  '--context': 'number',
+  '--group-separator': 'string',
+  '--no-group-separator': 'none',
+
+  // File and directory selection
+  '-a': 'none', // Text (process binary as text)
+  '--text': 'none',
+  '--binary-files': 'string',
+  '-D': 'string', // Devices
+  '--devices': 'string',
+  '-d': 'string', // Directories
+  '--directories': 'string',
+  '--exclude': 'string',
+  '--exclude-from': 'string',
+  '--exclude-dir': 'string',
+  '--include': 'string',
+  '-r': 'none', // Recursive
+  '--recursive': 'none',
+  '-R': 'none', // Dereference-recursive
+  '--dereference-recursive': 'none',
+
+  // Other options
+  '--line-buffered': 'none',
+  '-U': 'none', // Binary
+  '--binary': 'none',
+
+  // Help and version
+  '--help': 'none',
+  '-V': 'none',
+  '--version': 'none',
 }
 
 // Shared safe flags for fd and fdfind (Debian/Ubuntu package name)
@@ -181,7 +348,6 @@ const COMMAND_ALLOWLIST: Record<string, CommandConfig> = {
       '--exclude-quiet': 'string',
       '--print0': 'none',
       '-0': 'none',
-      '-f': 'string',
       '-F': 'string',
       '--separator': 'string',
       '--help': 'none',
@@ -192,9 +358,6 @@ const COMMAND_ALLOWLIST: Record<string, CommandConfig> = {
       '-h': 'none',
       '--dereference': 'none',
       '-L': 'none',
-      // Magic file options (safe when just reading)
-      '--magic-file': 'string',
-      '-m': 'string',
       // Other safe options
       '--keep-going': 'none',
       '-k': 'none',
@@ -208,9 +371,6 @@ const COMMAND_ALLOWLIST: Record<string, CommandConfig> = {
       '-r': 'none',
       '-s': 'none',
       '--special-files': 'none',
-      // Uncompress flag for archives
-      '--uncompress': 'none',
-      '-z': 'none',
     },
   },
   sed: {
@@ -314,12 +474,57 @@ const COMMAND_ALLOWLIST: Record<string, CommandConfig> = {
       '-h': 'none', // Help
       '-k': 'none', // Emulate apropos
       '--apropos': 'none', // Same as -k
-      '-l': 'string', // Local file (safe for reading, Linux only)
       '-w': 'none', // Display location instead of content
 
       // Safe formatting options
       '-S': 'string', // Restrict manual sections
       '-s': 'string', // Same as -S for whatis/apropos mode
+    },
+    // A page name with a path is read as a local file, except as a -k/-f
+    // search keyword.
+    additionalCommandIsDangerousCallback: (_rawCommand, args) => {
+      const keywordFlags = new Set(['-k', '-f', '--apropos', '--whatis'])
+      for (let i = 0; i < args.length; i++) {
+        const arg = args[i]!
+        if (arg === '--' || arg === '-' || !arg.startsWith('-')) break
+        const section =
+          arg === '-S' || arg === '-s'
+            ? (args[++i] ?? '')
+            : /^-[Ss]=/.test(arg)
+              ? arg.slice(2)
+              : undefined
+        if (section !== undefined && !/^[A-Za-z0-9:,]+$/.test(section)) {
+          return true
+        }
+      }
+      let searches = false
+      for (const arg of args) {
+        if (arg === '--') break
+        if (!arg.startsWith('-') || arg === '-') continue
+        if (
+          arg.startsWith('--') ? keywordFlags.has(arg) : /[kf]/.test(arg.slice(1))
+        ) {
+          searches = true
+        }
+      }
+      let exactKeyword = false
+      let operands = false
+      for (let i = 0; i < args.length; i++) {
+        const arg = args[i]!
+        if (!operands && arg === '--') {
+          operands = true
+          continue
+        }
+        if (!operands && arg.startsWith('-') && arg !== '-') {
+          if (keywordFlags.has(arg)) exactKeyword = true
+          else if (arg === '-S' || arg === '-s') i++
+          continue
+        }
+        operands = true
+        if (searches && arg.startsWith('-')) return true
+        if (!exactKeyword && /[\/\\~]/.test(arg)) return true
+      }
+      return false
     },
   },
   // help command - only allow bash builtin help flags to prevent attacks when
@@ -328,9 +533,9 @@ const COMMAND_ALLOWLIST: Record<string, CommandConfig> = {
   help: {
     safeFlags: {
       '-d': 'none', // Output short description for each topic
-      '-m': 'none', // Display usage in pseudo-manpage format
-      '-s': 'none', // Output only a short usage synopsis
     },
+    additionalCommandIsDangerousCallback: (_rawCommand, args) =>
+      args.some(arg => /[\/\\~]/.test(arg)),
   },
   netstat: {
     safeFlags: {
@@ -362,6 +567,7 @@ const COMMAND_ALLOWLIST: Record<string, CommandConfig> = {
     },
   },
   ps: {
+    respectsDoubleDash: false,
     safeFlags: {
       // UNIX-style process selection (these are safe)
       '-e': 'none', // Select all processes
@@ -423,11 +629,21 @@ const COMMAND_ALLOWLIST: Record<string, CommandConfig> = {
       _rawCommand: string,
       args: string[],
     ) => {
-      // Check for BSD-style 'e' in letter-only tokens (not -e which is UNIX-style)
-      // A BSD-style option is a token of only letters (no leading dash) containing 'e'
-      return args.some(
-        a => !a.startsWith('-') && /^[a-zA-Z]*e[a-zA-Z]*$/.test(a),
+      // A BSD-style `e` (any non-flag token with an e) prints each process's
+      // environment. So does `e` inside a dash cluster once another option
+      // switches ps to BSD parsing, so `-e` is only accepted among options
+      // known to keep UNIX parsing.
+      const bsdEnvironment = args.some(
+        arg => !FLAG_PATTERN.test(arg) && /[eE]/.test(arg),
       )
+      const dashE = args.some(arg => /^-[a-zA-Z]*e/.test(arg))
+      const unixOnly = args.every(
+        arg => arg === '--forest' || /^-[AacdeFfjlwHLTm]+$/.test(arg),
+      )
+      const threadFlags = args.flatMap(arg =>
+        arg === '--forest' ? [arg] : (arg.match(/[HLTm]/g) ?? []),
+      )
+      return bsdEnvironment || (dashE && !(unixOnly && threadFlags.length <= 1))
     },
   },
   base64: {
@@ -455,109 +671,9 @@ const COMMAND_ALLOWLIST: Record<string, CommandConfig> = {
       '--version': 'none', // Version
     },
   },
-  grep: {
-    safeFlags: {
-      // Pattern flags
-      '-e': 'string', // Pattern
-      '--regexp': 'string',
-      '-f': 'string', // File with patterns
-      '--file': 'string',
-      '-F': 'none', // Fixed strings
-      '--fixed-strings': 'none',
-      '-G': 'none', // Basic regexp (default)
-      '--basic-regexp': 'none',
-      '-E': 'none', // Extended regexp
-      '--extended-regexp': 'none',
-      '-P': 'none', // Perl regexp
-      '--perl-regexp': 'none',
-
-      // Matching control
-      '-i': 'none', // Ignore case
-      '--ignore-case': 'none',
-      '--no-ignore-case': 'none',
-      '-v': 'none', // Invert match
-      '--invert-match': 'none',
-      '-w': 'none', // Word regexp
-      '--word-regexp': 'none',
-      '-x': 'none', // Line regexp
-      '--line-regexp': 'none',
-
-      // Output control
-      '-c': 'none', // Count
-      '--count': 'none',
-      '--color': 'string',
-      '--colour': 'string',
-      '-L': 'none', // Files without match
-      '--files-without-match': 'none',
-      '-l': 'none', // Files with matches
-      '--files-with-matches': 'none',
-      '-m': 'number', // Max count
-      '--max-count': 'number',
-      '-o': 'none', // Only matching
-      '--only-matching': 'none',
-      '-q': 'none', // Quiet
-      '--quiet': 'none',
-      '--silent': 'none',
-      '-s': 'none', // No messages
-      '--no-messages': 'none',
-
-      // Output line prefix
-      '-b': 'none', // Byte offset
-      '--byte-offset': 'none',
-      '-H': 'none', // With filename
-      '--with-filename': 'none',
-      '-h': 'none', // No filename
-      '--no-filename': 'none',
-      '--label': 'string',
-      '-n': 'none', // Line number
-      '--line-number': 'none',
-      '-T': 'none', // Initial tab
-      '--initial-tab': 'none',
-      '-u': 'none', // Unix byte offsets
-      '--unix-byte-offsets': 'none',
-      '-Z': 'none', // Null after filename
-      '--null': 'none',
-      '-z': 'none', // Null data
-      '--null-data': 'none',
-
-      // Context control
-      '-A': 'number', // After context
-      '--after-context': 'number',
-      '-B': 'number', // Before context
-      '--before-context': 'number',
-      '-C': 'number', // Context
-      '--context': 'number',
-      '--group-separator': 'string',
-      '--no-group-separator': 'none',
-
-      // File and directory selection
-      '-a': 'none', // Text (process binary as text)
-      '--text': 'none',
-      '--binary-files': 'string',
-      '-D': 'string', // Devices
-      '--devices': 'string',
-      '-d': 'string', // Directories
-      '--directories': 'string',
-      '--exclude': 'string',
-      '--exclude-from': 'string',
-      '--exclude-dir': 'string',
-      '--include': 'string',
-      '-r': 'none', // Recursive
-      '--recursive': 'none',
-      '-R': 'none', // Dereference-recursive
-      '--dereference-recursive': 'none',
-
-      // Other options
-      '--line-buffered': 'none',
-      '-U': 'none', // Binary
-      '--binary': 'none',
-
-      // Help and version
-      '--help': 'none',
-      '-V': 'none',
-      '--version': 'none',
-    },
-  },
+  grep: { safeFlags: GREP_SAFE_FLAGS },
+  egrep: { safeFlags: GREP_SAFE_FLAGS },
+  fgrep: { safeFlags: GREP_SAFE_FLAGS },
   ...RIPGREP_READ_ONLY_COMMANDS,
   // Checksum commands - these only read files and compute/verify hashes
   // All flags are safe as they only affect output format or verification behavior
@@ -766,7 +882,6 @@ const COMMAND_ALLOWLIST: Record<string, CommandConfig> = {
         '--date',
         '-r',
         '--reference',
-        '--iso-8601',
         '--rfc-3339',
       ])
       let i = 0
@@ -828,39 +943,6 @@ const COMMAND_ALLOWLIST: Record<string, CommandConfig> = {
     // Use regex to ensure no positional args after flags
     regex: /^hostname(?:\s+(?:-[a-zA-Z]|--[a-zA-Z-]+))*\s*$/,
   },
-  // info command - moved from READONLY_COMMANDS because -o/--output writes to files
-  // Also --dribble writes keystrokes to file, --init-file loads custom config
-  // We only allow safe display/navigation options
-  info: {
-    safeFlags: {
-      // Navigation/display options (safe)
-      '-f': 'string', // --file - specify manual file to read
-      '--file': 'string',
-      '-d': 'string', // --directory - search path
-      '--directory': 'string',
-      '-n': 'string', // --node - specify node
-      '--node': 'string',
-      '-a': 'none', // --all
-      '--all': 'none',
-      '-k': 'string', // --apropos - search
-      '--apropos': 'string',
-      '-w': 'none', // --where - show location
-      '--where': 'none',
-      '--location': 'none',
-      '--show-options': 'none',
-      '--vi-keys': 'none',
-      '--subnodes': 'none',
-      '-h': 'none',
-      '--help': 'none',
-      '--usage': 'none',
-      '--version': 'none',
-    },
-    // Dangerous flags NOT included (blocked by omission):
-    // -o / --output - writes output to file
-    // --dribble - records keystrokes to file
-    // --init-file - loads custom config (potential code execution)
-    // --restore - replays keystrokes from file
-  },
 
   lsof: {
     safeFlags: {
@@ -907,8 +989,22 @@ const COMMAND_ALLOWLIST: Record<string, CommandConfig> = {
     // +prefix flags are treated as positional args by validateFlags,
     // so we must catch them here. lsof accepts +m<path> (attached path, no space)
     // with both absolute (+m/tmp/evil) and relative (+mfoo, +m.evil) paths.
-    additionalCommandIsDangerousCallback: (_rawCommand, args) =>
-      args.some(a => a === '+m' || a.startsWith('+m')),
+    // +m writes a mount supplement file. A host name after `-i ...@`
+    // triggers a DNS lookup, so only numeric addresses are allowed there.
+    additionalCommandIsDangerousCallback: (_rawCommand, args) => {
+      const namesHost = (address: string) =>
+        address.includes('@') &&
+        /[a-zA-Z]/.test(address.slice(address.indexOf('@') + 1).split(':')[0]!)
+      return args.some((arg, i) => {
+        if (arg.startsWith('+m')) return true
+        if (/^-[a-zA-Z]*i\S*@/.test(arg) && namesHost(arg)) return true
+        if (/^-[a-zA-Z]*i$/.test(arg)) {
+          const address = args[i + 1] ?? ''
+          return address.includes('~') || namesHost(address)
+        }
+        return false
+      })
+    },
   },
 
   pgrep: {
@@ -1058,8 +1154,6 @@ const COMMAND_ALLOWLIST: Record<string, CommandConfig> = {
       '--version': 'none',
       '-n': 'none',
       '--numeric': 'none',
-      '-r': 'none',
-      '--resolve': 'none',
       '-a': 'none',
       '--all': 'none',
       '-l': 'none',
@@ -1125,6 +1219,47 @@ const COMMAND_ALLOWLIST: Record<string, CommandConfig> = {
       // SECURITY: -D/--diag EXCLUDED — dumps raw TCP data to a file
       // SECURITY: -F/--filter EXCLUDED — reads filter expressions from a file
     },
+    // A host name in a filter expression triggers a DNS lookup; only
+    // numeric addresses, ports and filter keywords are allowed.
+    additionalCommandIsDangerousCallback: (_rawCommand, args) => {
+      const keyword =
+        /^(dst|src|dport|sport|and|or|not|eq|ne|ge|le|gt|lt|autobound|state|exclude|dev|fwmark|cgroup)$/
+      const keywordWithName = /^(state|exclude|dport|sport|dev|fwmark|cgroup)$/
+      const flagWithValue = /^(-f|--family|-A|--query|--socket)$/
+      const filter: string[] = []
+      let operands = false
+      for (let i = 0; i < args.length; i++) {
+        const arg = args[i]!
+        if (!operands && arg === '--') {
+          operands = true
+          continue
+        }
+        if (!operands && arg.startsWith('-')) {
+          if (flagWithValue.test(arg)) i++
+          continue
+        }
+        filter.push(arg)
+      }
+      if (filter.some(arg => arg.includes('~'))) return true
+      let skipName = false
+      for (const word of filter.join(' ').split(/[\s()=!<>&|,]+/).filter(Boolean)) {
+        if (skipName) {
+          skipName = false
+          continue
+        }
+        if (keyword.test(word)) {
+          skipName = keywordWithName.test(word)
+          continue
+        }
+        if (
+          /[g-zG-Z]/.test(word) ||
+          (/[a-fA-F]/.test(word) && (word.includes('.') || !word.includes(':')))
+        ) {
+          return true
+        }
+      }
+      return false
+    },
   },
 
   // fd/fdfind — fast file finder (fd-find). Read-only search tool.
@@ -1134,8 +1269,48 @@ const COMMAND_ALLOWLIST: Record<string, CommandConfig> = {
   // fdfind is the Debian/Ubuntu package name for fd — same binary, same flags
   fdfind: { safeFlags: { ...FD_SAFE_FLAGS } },
 
-  ...PYRIGHT_READ_ONLY_COMMANDS,
   ...DOCKER_READ_ONLY_COMMANDS,
+  test: {
+    respectsDoubleDash: false,
+    safeFlags: Object.fromEntries(
+      [
+        '-b', '-c', '-d', '-e', '-f', '-g', '-G', '-h', '-k', '-L', '-N', '-O',
+        '-p', '-r', '-s', '-S', '-t', '-u', '-w', '-x', '-z', '-n', '-eq',
+        '-ne', '-lt', '-le', '-gt', '-ge', '-nt', '-ot', '-ef',
+      ].map(flag => [flag, 'string' as const]),
+    ),
+    // -v/-R name variables, -a/-o and `[` change how the expression is
+    // grouped.
+    additionalCommandIsDangerousCallback: (_rawCommand, args) =>
+      args.some(
+        arg => ['-v', '-R', '-a', '-o'].includes(arg) || arg.includes('['),
+      ) || testOperandIsDangerous(args),
+  },
+  which: {
+    safeFlags: {
+      '-a': 'none',
+      '--all': 'none',
+      '-s': 'none',
+      '-p': 'none',
+      '-w': 'none',
+      '--skip-dot': 'none',
+      '--skip-tilde': 'none',
+      '--show-dot': 'none',
+      '--show-tilde': 'none',
+      '--skip-alias': 'none',
+      '--skip-functions': 'none',
+      '-v': 'none',
+      '-V': 'none',
+      '--version': 'none',
+      '--help': 'none',
+    },
+    additionalCommandIsDangerousCallback: (_rawCommand, args) => {
+      const end = args.indexOf('--')
+      return (end === -1 ? args : args.slice(0, end)).some(
+        arg => arg.startsWith('-') && !/^(?:-[A-Za-z]+|--[a-z-]+)$/.test(arg),
+      )
+    },
+  },
 }
 
 // gh commands are ant-only since they make network requests, which goes against
@@ -1494,11 +1669,8 @@ const READONLY_COMMANDS = [
 
   // Misc. safe commands
   'sleep',
-  'which',
   'type',
   'expr', // Evaluate expressions (arithmetic, string matching)
-  'test', // Conditional evaluation (file checks, comparisons)
-  'getconf', // Get system configuration values
   'seq', // Generate number sequences
   'tsort', // Topological sort
   'pr', // Paginate files for printing
@@ -1515,7 +1687,9 @@ const READONLY_COMMAND_REGEXES = new Set([
   // Echo that doesn't execute commands or use variables
   // Allow newlines in single quotes (safe) but not in double quotes (could be dangerous with variable expansion)
   // Also allow optional 2>&1 stderr redirection at the end
-  /^echo(?:\s+(?:'[^']*'|"[^"$<>\n\r]*"|[^|;&`$(){}><#\\!"'\s]+))*(?:\s+2>&1)?\s*$/,
+  /^echo(?:\s+(?:'[^']*'|"(?:[^"$<>\n\r\\]|\\[^\n\r])*"|[^|;&`$(){}><#\\!"'\s]+)+)*(?:\s+2>&1)?\s*$/,
+  // printf the same way, except -v (assigns a shell variable)
+  /^printf(?!\s+(?:--\s+)?['"]?-v)(?:\s+(?:'[^']*'|"[^"$<>\n\r]*"|[^|;&`$(){}><#\\!"'\s]+))+(?:\s+2>&1)?\s*$/,
 
   // Claude CLI help
   /^claude -h$/,
@@ -1557,7 +1731,7 @@ const READONLY_COMMAND_REGEXES = new Set([
   // Block command substitution - backticks are dangerous even in single quotes for jq
   // Block -f/--from-file, --rawfile, --slurpfile (read files into jq), --run-tests, -L/--library-path (load executable modules)
   // Block 'env' builtin and '$ENV' object which can access environment variables (defense in depth)
-  /^jq(?!\s+.*(?:-f\b|--from-file|--rawfile|--slurpfile|--run-tests|-L\b|--library-path|\benv\b|\$ENV\b))(?:\s+(?:-[a-zA-Z]+|--[a-zA-Z-]+(?:=\S+)?))*(?:\s+'[^'`]*'|\s+"[^"`]*"|\s+[^-\s'"][^\s]*)+\s*$/,
+  /^jq(?!.*(?:\s['"]?-[a-zA-Z]*[fL]|--from-file|--rawfile|--slurpfile|--run-tests|--library-path|\benv\b|\$ENV\b|\binclude\b|\bimport\b))(?:\s+(?:-[a-zA-Z]+|--[a-zA-Z-]+(?:=\S+)?))*(?:\s+'[^'`]*'|\s+"[^"`]*"|\s+[^-\s'"][^\s]*)+\s*$/,
 
   // Path commands (path validation ensures they're allowed)
   // cd command - allows changing to directories
@@ -1568,7 +1742,7 @@ const READONLY_COMMAND_REGEXES = new Set([
   // Allow escaped parentheses \( and \) for grouping, but block unescaped ones
   // NOTE: \\[()] must come BEFORE the character class to ensure \( is matched as an escaped paren,
   // not as backslash + paren (which would fail since paren is excluded from the character class)
-  /^find(?:\s+(?:\\[()]|(?!-delete\b|-exec\b|-execdir\b|-ok\b|-okdir\b|-fprint0?\b|-fls\b|-fprintf\b)[^<>()$`|{}&;\n\r\s]|\s)+)?$/,
+  /^find(?:[ \t]+(?:\\[()]|(?!-delete\b|-rm\b|-exec\b|-execdir\b|-ok\b|-okdir\b|-fprint0?\b|-fls\b|-fprintf\b|-files0-from\b)[^<>()$`|{}&;\n\r\s]|[ \t])+)?$/,
 ])
 
 /**
@@ -1597,13 +1771,15 @@ const READONLY_COMMAND_REGEXES = new Set([
  * those are caught by COMMAND_SUBSTITUTION_PATTERNS in bashSecurity.ts.
  *
  * @param command The command string to check
- * @returns true if the command contains unquoted glob or expandable `$`
+ * @returns 'variable' for an expandable `$`, 'glob' for an unquoted glob
  */
-function containsUnquotedExpansion(command: string): boolean {
+function unquotedExpansionKind(command: string): 'variable' | 'glob' | false {
   // Track quote state to avoid false positives for patterns inside quoted strings
   let inSingleQuote = false
   let inDoubleQuote = false
   let escaped = false
+  let glob = false
+  let openBracket = false
 
   for (let i = 0; i < command.length; i++) {
     const currentChar = command[i]
@@ -1651,7 +1827,7 @@ function containsUnquotedExpansion(command: string): boolean {
     if (currentChar === '$') {
       const next = command[i + 1]
       if (next && /[A-Za-z_@*#?!$0-9-]/.test(next)) {
-        return true
+        return 'variable'
       }
     }
 
@@ -1660,14 +1836,70 @@ function containsUnquotedExpansion(command: string): boolean {
       continue
     }
 
-    // Check for glob characters outside all quotes.
-    // These could expand to anything, including dangerous flags.
-    if (currentChar && /[?*[\]]/.test(currentChar)) {
-      return true
+    // `~user`, `~+` and `~-` at the start of a word expand at runtime.
+    if (
+      currentChar === '~' &&
+      i > 0 &&
+      /[ \t]/.test(command[i - 1]!) &&
+      !/^(?:[\s/]|$)/.test(command[i + 1] ?? '')
+    ) {
+      return 'variable'
+    }
+
+    // Check for glob characters outside all quotes. Keep scanning: a later
+    // `$VAR` still wins. `[` only globs when a `]` closes it in the same word.
+    if (currentChar && /[\s|&;()<>]/.test(currentChar)) {
+      openBracket = false
+    } else if (currentChar === '?' || currentChar === '*') {
+      glob = true
+    } else if (currentChar === '[') {
+      openBracket = true
+    } else if (currentChar === ']' && openBracket) {
+      glob = true
     }
   }
 
-  return false
+  return glob ? 'glob' : false
+}
+
+// Commands whose arguments are only read, so a glob that expands to a
+// flag-like file name cannot make them write or execute.
+const GLOB_SAFE_COMMANDS = new Set([
+  'ls', 'cat', 'head', 'tail', 'wc', 'stat', 'grep', 'egrep', 'fgrep', 'diff',
+  'du', 'df', 'echo', 'strings', 'hexdump', 'od', 'nl', 'cut', 'column', 'tr',
+  'tac', 'rev', 'cmp', 'basename', 'dirname', 'realpath', 'readlink',
+  'sha256sum', 'sha1sum', 'md5sum', 'cd',
+])
+
+/** Replace a bare or double-quoted `$HOME` with the home directory. */
+function expandHome(command: string): string {
+  const home = process.env.HOME ?? homedir()
+  if (!/^[\w./-]+$/.test(home)) return command
+  let out = ''
+  let inSingleQuote = false
+  let inDoubleQuote = false
+  for (let i = 0; i < command.length; i++) {
+    const c = command[i]!
+    if (c === '\\' && !inSingleQuote) {
+      out += c + (command[i + 1] ?? '')
+      i++
+      continue
+    }
+    if (c === "'" && !inDoubleQuote) inSingleQuote = !inSingleQuote
+    else if (c === '"' && !inSingleQuote) inDoubleQuote = !inDoubleQuote
+    else if (
+      c === '$' &&
+      !inSingleQuote &&
+      command.startsWith('HOME', i + 1) &&
+      !/[A-Za-z0-9_]/.test(command[i + 5] ?? '')
+    ) {
+      out += home
+      i += 4
+      continue
+    }
+    out += c
+  }
+  return out
 }
 
 /**
@@ -1687,12 +1919,41 @@ function isCommandReadOnly(command: string): boolean {
     testCommand = testCommand.slice(0, -5).trim()
   }
 
-  // `[ EXPR ]` and `[[ EXPR ]]` evaluate like `test EXPR`.
+  // A safe `NAME=value` prefix or a `command`/`builtin`/`noglob`/`timeout N`
+  // wrapper does not change what runs.
+  for (;;) {
+    const env = /^([A-Za-z_][A-Za-z0-9_]*)=([A-Za-z0-9_./:-]*)[ \t]+/.exec(
+      testCommand,
+    )
+    const next =
+      env && isSafeEnvAssignment(env[1]!, env[2]!)
+        ? testCommand.slice(env[0].length)
+        : testCommand.replace(
+            /^(?:(?:command(?:[ \t]+-p+)*|builtin)(?:[ \t]+--)?|noglob)[ \t]+(?!-)|^timeout[ \t]+\d+(?:\.\d+)?[smhd]?[ \t]+(?!(?:\[\[|alias|cd|help|history|type)(?:\s|$))/,
+            '',
+          )
+    if (next === testCommand) break
+    testCommand = next
+  }
+
+  // `[ EXPR ]` and `[[ EXPR ]]` only evaluate EXPR. `&&`/`||` join tests
+  // inside `[[ ]]` only, and globs do not expand there.
   const bracketTest =
     /^\[[ \t]+([^\n\r]*)[ \t]+\]$/.exec(testCommand) ??
     /^\[\[[ \t]+([^\n\r]*)[ \t]+\]\]$/.exec(testCommand)
   if (bracketTest && !/[[\]]/.test(bracketTest[1]!)) {
-    return isCommandReadOnly(`test ${bracketTest[1]}`)
+    const expr = bracketTest[1]!
+    const doubleBracket = testCommand.startsWith('[[')
+    const expansion = unquotedExpansionKind(expr)
+    if (
+      /[<>()$`{};]|(?<![&|])[&|](?![&|])/.test(expr) ||
+      (!doubleBracket && /&&|\|\|/.test(expr)) ||
+      expansion === 'variable' ||
+      (expansion === 'glob' && !doubleBracket)
+    ) {
+      return false
+    }
+    return !testOperandIsDangerous(expr.split(/\s+/))
   }
 
   // Check for Windows UNC paths that could be vulnerable to WebDAV attacks
@@ -1712,8 +1973,15 @@ function isCommandReadOnly(command: string): boolean {
   // positional args past "flags-only" regexes like uniq's `\S+`. The `$` token
   // check inside isCommandSafeViaFlagParsing only covers COMMAND_ALLOWLIST
   // commands; hand-written regexes in READONLY_COMMAND_REGEXES (uniq, jq, cd)
-  // have no such guard. See containsUnquotedExpansion for full analysis.
-  if (containsUnquotedExpansion(testCommand)) {
+  // have no such guard. See unquotedExpansionKind for full analysis.
+  testCommand = expandHome(testCommand)
+  const expansion = unquotedExpansionKind(testCommand)
+  if (
+    expansion === 'variable' ||
+    (expansion === 'glob' &&
+      (!GLOB_SAFE_COMMANDS.has(testCommand.split(/\s+/)[0]!) ||
+        /(?:^|[\s/])\.\.(?:\/|\s|$)/.test(testCommand)))
+  ) {
     return false
   }
 
@@ -1724,6 +1992,10 @@ function isCommandReadOnly(command: string): boolean {
   // code execution, or network requests.
   if (isCommandSafeViaFlagParsing(testCommand)) {
     return true
+  }
+
+  if (/^printf(?:\s|$)/.test(testCommand) && !printfIsSafe(testCommand)) {
+    return false
   }
 
   for (const regex of READONLY_COMMAND_REGEXES) {
@@ -1887,7 +2159,12 @@ export function checkReadOnlyConstraints(
   input: z.infer<typeof BashTool.inputSchema>,
   compoundCommandHasCd: boolean,
 ): PermissionResult {
-  const { command } = input
+  // Arithmetic on literals only yields a number. Where the exact value is
+  // not worked out, any number stands in: path checks still see the original.
+  // A here-string only feeds literal text to stdin.
+  const command = expandLiteralArithmetic(input.command)
+    .replace(/\$\(\([\d\s+\-*/%()]*\)\)/g, '0')
+    .replace(/[ \t]+<<<[ \t]*(?:'[^']*'|"[^"$`\\]*"|[\w./:-]+)(?=\s|$)/g, '')
 
   // Detect if the command is not parseable and return early
   const result = tryParseShellCommand(command, env => `$${env}`)

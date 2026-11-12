@@ -262,21 +262,13 @@ export function sedCommandIsAllowedByAllowlist(
   // Check if sed command has file arguments
   const hasFileArguments = hasFileArgs(command)
 
-  // Check if command matches allowlist patterns
-  let isPattern1 = false
-  let isPattern2 = false
-
-  if (allowFileWrites) {
-    // When allowing file writes, only check substitution commands (Pattern 2 variant)
-    // Pattern 1 (line printing) doesn't need file writes
-    isPattern2 = isSubstitutionCommand(command, expressions, hasFileArguments, {
-      allowFileWrites: true,
-    })
-  } else {
-    // Standard read-only mode: check both patterns
-    isPattern1 = isLinePrintingCommand(command, expressions)
-    isPattern2 = isSubstitutionCommand(command, expressions, hasFileArguments)
-  }
+  const isPattern1 = isLinePrintingCommand(command, expressions)
+  const isPattern2 = isSubstitutionCommand(
+    command,
+    expressions,
+    hasFileArguments,
+    allowFileWrites ? { allowFileWrites: true } : undefined,
+  )
 
   if (!isPattern1 && !isPattern2) {
     return false

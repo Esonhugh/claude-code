@@ -12,6 +12,7 @@ import type { PendingClassifierCheck } from '../../types/permissions.js'
 import { count } from '../../utils/array.js'
 import {
   checkSemantics,
+  containsAnyPlaceholder,
   nodeTypeId,
   type ParseForSecurityResult,
   parseForSandboxFromAst,
@@ -25,7 +26,7 @@ import {
   getCommandSubcommandPrefix,
   splitCommand_DEPRECATED,
 } from '../../utils/bash/commands.js'
-import { parseCommandRawForRemoval, type Node, type PARSE_ABORTED } from '../../utils/bash/parser.js'
+import { parseCommandRawForRemoval, type Node, PARSE_ABORTED } from '../../utils/bash/parser.js'
 import { tryParseShellCommand } from '../../utils/bash/shellQuote.js'
 import { getCwd } from '../../utils/cwd.js'
 import { logForDebugging } from '../../utils/debug.js'
@@ -437,7 +438,45 @@ const SAFE_ENV_VARS = new Set([
   'TIME_STYLE', // time display format for ls
   'BLOCK_SIZE', // block size for du/df
   'BLOCKSIZE', // alternative block size
+
+  // Terminal size, color and non-interactive switches
+  'COLUMNS',
+  'LINES',
+  'CLICOLOR',
+  'CLICOLOR_FORCE',
+  'CI',
+  'DEBIAN_FRONTEND',
+  'GIT_TERMINAL_PROMPT',
 ])
+
+const LOCALE_ENV_VARS = new Set(['LANG', 'LC_ALL', 'LC_CTYPE'])
+const LOCALE_VALUE_RE = /^(['"]?)(C|POSIX|UTF-?8|[\w-]+\.UTF-?8(@\w+)?)\1$/i
+const PATH_LIKE_VALUE_RE =
+  /^[.~]*[/\\]|[/\\][/\\]|:[/\\.]|(?:^|[/\\])\.\.(?:[/\\]|$)/
+
+/**
+ * A `NAME=value` prefix that can be dropped before matching or read-only
+ * checks: the name is allowlisted, the value is not path-like (a path in TZ,
+ * LANG and the like makes the program read that file), and locale values are
+ * real locale names.
+ */
+export function isSafeEnvAssignment(name: string, value: string): boolean {
+  if (
+    !SAFE_ENV_VARS.has(name) &&
+    !(isAnt() && ANT_ONLY_SAFE_ENV_VARS.has(name))
+  ) {
+    return false
+  }
+  if (containsAnyPlaceholder(value)) return false
+  if (
+    LOCALE_ENV_VARS.has(name) &&
+    !LOCALE_VALUE_RE.test(value) &&
+    !(name === 'LANG' && value === '')
+  ) {
+    return false
+  }
+  return !PATH_LIKE_VALUE_RE.test(value.replace(/["']/g, ''))
+}
 
 /**
  * ANT-ONLY environment variables that are safe to strip from commands.
@@ -600,13 +639,8 @@ export function stripSafeWrappers(command: string): string {
     stripped = stripCommentLines(stripped)
 
     const envVarMatch = stripped.match(ENV_VAR_PATTERN)
-    if (envVarMatch) {
-      const varName = envVarMatch[1]!
-      const isAntOnlySafe =
-        isAnt() && ANT_ONLY_SAFE_ENV_VARS.has(varName)
-      if (SAFE_ENV_VARS.has(varName) || isAntOnlySafe) {
-        stripped = stripped.replace(ENV_VAR_PATTERN, '')
-      }
+    if (envVarMatch && isSafeEnvAssignment(envVarMatch[1]!, envVarMatch[2]!)) {
+      stripped = stripped.replace(ENV_VAR_PATTERN, '')
     }
   }
 
@@ -1990,6 +2024,20 @@ function checkInlineShellRemovalDeny(
   return null
 }
 
+/** A `&` that backgrounds a command (not `&&`, not inside `[[ ]]`), or a parse error. */
+function hasBackgroundOperator(node: Node): boolean {
+  for (const child of node.children) {
+    if (!child) continue
+    if (child.type === 'ERROR') return true
+    if (child.type === '&') {
+      if (node.type !== 'binary_expression') return true
+      continue
+    }
+    if (hasBackgroundOperator(child)) return true
+  }
+  return false
+}
+
 function isAllowedByRule(result: PermissionResult): boolean {
   const reason = result.decisionReason
   if (reason?.type === 'rule') return true
@@ -2044,6 +2092,30 @@ export async function bashToolHasPermission(
     context,
     getCommandSubcommandPrefixFn,
   )
+  const isSandboxAutoAllow =
+    result.decisionReason?.type === 'other' &&
+    result.decisionReason.reason ===
+      'Auto-allowed with sandbox (autoAllowBashIfSandboxed enabled)'
+  if (
+    result.behavior === 'allow' &&
+    input.command.includes('&') &&
+    !isSandboxAutoAllow
+  ) {
+    const root = await parseCommandRawForRemoval(input.command)
+    if (root !== null && (root === PARSE_ABORTED || hasBackgroundOperator(root))) {
+      const decisionReason: PermissionDecisionReason = {
+        type: 'safetyCheck',
+        reason:
+          'This command uses the `&` background operator, which defers execution past approval-time safety checks. Approve only if you trust it.',
+        classifierApprovable: false,
+      }
+      return {
+        behavior: 'ask',
+        decisionReason,
+        message: createPermissionRequestMessage(BashTool.name, decisionReason),
+      }
+    }
+  }
   // A value set earlier in the command is only as safe as every way the
   // command could have set it, so such a command is never auto-allowed,
   // unless the user allowed this exact command or the sandbox contains it.

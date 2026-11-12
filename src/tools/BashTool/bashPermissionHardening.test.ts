@@ -437,6 +437,192 @@ if (process.env[childFlag] !== '1') {
     )
   })
 
+  test('auto-allow decisions match official for globs, $HOME, printf, & and runtime paths', async () => {
+    const treeSitter =
+      process.env.CLAUDE_CODE_BASH_HARDENING_PARSER === 'TREE_SITTER_BASH'
+    for (const command of [
+      'ls *',
+      'cat *.ts',
+      'grep x *',
+      'grep -rn x --include=*.ts .',
+      'head -1 ?',
+      'echo $HOME',
+      'echo $HOME/x',
+      'printf hi',
+      'printf -- x',
+    ]) {
+      await expectBehavior(command, 'default', {}, 'allow')
+    }
+    for (const command of [
+      'sort *',
+      'find *',
+      'ls src/../*',
+      'echo $PATH',
+      'printf -v v hi',
+      'getconf PATH',
+    ]) {
+      await expectBehavior(command, 'default', {}, 'ask')
+    }
+
+    const allow = ['Bash(touch:*)', 'Bash(ls:*)']
+    await expectBehavior('ls && pwd', 'default', { allow }, 'allow')
+    if (treeSitter) {
+      for (const command of ['ls & pwd', 'touch tl-x &', 'touch "$PWD/tl-x"']) {
+        await expectBehavior(command, 'default', { allow }, 'ask')
+        await expectBehavior(command, 'bypassPermissions', {}, 'allow')
+      }
+    }
+
+    for (const command of [
+      'touch tl-x',
+      'touch tl-x tl-y',
+      'touch tl\\-x',
+      'sed -n 1p src/x.ts',
+    ]) {
+      await expectBehavior(command, 'acceptEdits', {}, 'allow')
+    }
+    for (const command of [
+      'touch -d now tl-x',
+      'touch -- tl-x',
+      'TZ=UTC touch tl-x',
+      // The legacy splitter unescapes the command name before this check.
+      ...(treeSitter ? ['\\touch tl-x'] : []),
+    ]) {
+      await expectBehavior(command, 'acceptEdits', {}, 'ask')
+    }
+  })
+
+  test('read-only allowlist matches official for env prefixes, flags, git formats and printf', async () => {
+    for (const command of [
+      'NODE_ENV=prod ls',
+      'CI=true ls',
+      'LANG=C.UTF-8 ls',
+      'LANG= ls',
+      'GIT_TERMINAL_PROMPT=0 git status',
+      'timeout 5 ls',
+      'command ls',
+      'which ls',
+      'test -f src/x.ts',
+      'test 1 -eq 2',
+      '[ -v X ]',
+      '[[ -v X ]]',
+      '[ 1 -eq 2 ]',
+      'grep -I x src/x.ts',
+      'egrep x src/x.ts',
+      'help -d cd',
+      'man -k a/b',
+      'man -S 1,8 ls',
+      'ss state established',
+      'git log --pretty=oneline -1',
+      'git log --format=%H -1',
+      'git ls-remote --tags',
+      'printf %s',
+      "printf '%x' 255",
+      "printf '%5s' a",
+    ]) {
+      await expectBehavior(command, 'default', {}, 'allow')
+    }
+    for (const command of [
+      'NODE_ENV=../x ls',
+      'TZ=/etc/localtime date',
+      'LANG=foo ls',
+      'FOO=1 ls',
+      'jq -nf prog.jq',
+      `jq -n 'include "x"; .'`,
+      'find . -files0-from list',
+      'which -i ls',
+      'test -v X',
+      'test a -a b',
+      '[ a -eq 2 ]',
+      '[[ -t x ]]',
+      'file -f list',
+      'file -z f',
+      'rg -z x f',
+      'help -m cd',
+      'help a/b',
+      'man -l f',
+      "man -S 'x/y' ls",
+      'man ./x.1',
+      'ss -r',
+      'ss dst example.com',
+      'git log --pretty=%GS -1',
+      'git log --pretty=foo -1',
+      'git rev-list --format=%GS HEAD',
+      'git ls-remote origin',
+      'git log ~root',
+      'echo ~root',
+      'info ls',
+      'pyright --version',
+      "printf '%d' abc",
+      "printf '%s %d' a b",
+      'printf -x a',
+    ]) {
+      await expectBehavior(command, 'default', {}, 'ask')
+    }
+    const allow = ['Bash(ls:*)']
+    await expectBehavior('NODE_ENV=prod ls -la', 'default', { allow }, 'allow')
+    await expectBehavior('NODE_ENV=../x ls -la', 'default', { allow }, 'ask')
+  })
+
+  test('read-only checks match official for [[ ]], arithmetic, redirects and flag callbacks', async () => {
+    const treeSitter =
+      process.env.CLAUDE_CODE_BASH_HARDENING_PARSER === 'TREE_SITTER_BASH'
+    for (const command of [
+      '[[ -n x && -f src/x.ts ]]',
+      '[[ -f a || -d b ]] && ls',
+      // The legacy checks refuse every `$(` and `<`.
+      ...(treeSitter
+        ? [
+            'echo $((1+2))',
+            'echo $((0-1))',
+            'cat src/x$((1+2))',
+            'cat < src/x.ts',
+            'cat <<< hi',
+          ]
+        : []),
+      'echo "a\\"b"',
+      'ps -ef',
+      'date --iso-8601=date',
+      'git remote show -n origin',
+      'git reflog show',
+      'lsof -i :80',
+    ]) {
+      await expectBehavior(command, 'default', {}, 'allow')
+      await expectBehavior(command, 'acceptEdits', {}, 'allow')
+    }
+    for (const command of [
+      '[[ -n x && -f a ]] && touch q',
+      'echo $((x+1))',
+      'cat < /etc/passwd',
+      'cat < ~root/x',
+      'cat <<< "$X"',
+      'ps -eo pid',
+      'ps e',
+      'date --iso-8601 x',
+      'git remote show origin',
+      'git reflog HEAD',
+      'git reflog expire',
+      'git tag --format=%GS',
+      'git branch --format=%GS',
+      'git blame -- -x',
+      'git ls-remote --sort x',
+      'lsof -i @example.com',
+      'docker logs -fH x c',
+      'docker inspect ~x',
+    ]) {
+      await expectBehavior(command, 'default', {}, 'ask')
+    }
+    if (treeSitter) {
+      await expectBehavior(
+        'cat src/x$((1+2))',
+        'default',
+        { deny: ['Read(./src/x3)'] },
+        'deny',
+      )
+    }
+    await expectBehavior('cat < /etc/passwd', 'bypassPermissions', {}, 'allow')
+  })
+
   test('a compound command with several output redirects asks in default mode', async () => {
     for (const command of [
       'echo ok > notes.txt && echo ok > /opt/sbdemo/outside.txt',
