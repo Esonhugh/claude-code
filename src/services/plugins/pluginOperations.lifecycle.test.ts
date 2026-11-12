@@ -135,6 +135,14 @@ if (!process.env.PLUGIN_OPS_LIFECYCLE_TEST_CHILD) {
     ).toBe(true)
   })
 
+  test('update accepts the bare name of an installed plugin', async () => {
+    expect(await ops.updatePluginOp('p', 'user')).toMatchObject({
+      success: true,
+      alreadyUpToDate: true,
+      pluginId: 'p@mkt',
+    })
+  })
+
   test('installing an installed version at another scope reuses its directory', async () => {
     const installPath = records().find(r => r.scope === 'user')!.installPath
     const inode = statSync(installPath).ino
