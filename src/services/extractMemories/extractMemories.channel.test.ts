@@ -14,6 +14,7 @@ const memoryDir = mkdtempSync(join(tmpdir(), 'extract-channel-'))
 const actualForkedAgent = await import('../../utils/forkedAgent.js')
 const actualPaths = await import('../../memdir/paths.js')
 const actualSettings = await import('../../utils/settings/settings.js')
+const realGetInitialSettings = actualSettings.getInitialSettings
 
 let forkCalls: ForkedAgentParams[] = []
 mock.module('../../utils/forkedAgent.js', () => ({
@@ -39,7 +40,7 @@ mock.module('../../memdir/paths.js', () => ({
 }))
 mock.module('../../utils/settings/settings.js', () => ({
   ...actualSettings,
-  getInitialSettings: () => ({ memory: { extraction: 'everyTurns' } }),
+  getInitialSettings: () => ({ ...realGetInitialSettings(), memory: { extraction: 'everyTurns' } }),
 }))
 
 const { afterLastChannelTurn, executeExtractMemories, initExtractMemories } =

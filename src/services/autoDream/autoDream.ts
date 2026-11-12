@@ -50,6 +50,8 @@ import {
 } from '../../tasks/DreamTask/DreamTask.js'
 import { FILE_EDIT_TOOL_NAME } from '../../tools/FileEditTool/constants.js'
 import { FILE_WRITE_TOOL_NAME } from '../../tools/FileWriteTool/prompt.js'
+import { applyPatchInputPaths } from '../../tools/ApplyPatchTool/plan.js'
+import { APPLY_PATCH_TOOL_NAME } from '../../tools/ApplyPatchTool/prompt.js'
 
 // Scan throttle: when time-gate passes but session-gate doesn't, the lock
 // mtime doesn't advance, so the time-gate keeps passing every turn.
@@ -300,6 +302,8 @@ function makeDreamProgressWatcher(
           if (typeof input.file_path === 'string') {
             touchedPaths.push(input.file_path)
           }
+        } else if (block.name === APPLY_PATCH_TOOL_NAME) {
+          touchedPaths.push(...applyPatchInputPaths(block.input))
         }
       }
     }

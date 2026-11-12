@@ -114,6 +114,7 @@ bun bench/cli.ts chart --raw ~/bench-raw/2026-11-08 --out ~/bench-charts --png
 | `official-key-high` | 官方 Claude Code，effort high（与本仓库 `-p` 默认一致） | Claude API key |
 | `fork-claude-key-high` / `fork-claude-key-sqlite-high` | 本仓库，effort 固定 high（用于 `-p` 默认 medium 的旧版本） | Claude API key |
 | `fork-claude-key-medium` | 本仓库，effort 固定 medium（与官方 `-p` 默认相同，做同 effort 对比） | Claude API key |
+| `fork-openai-all` | 本仓库，`openaiEditTools: "all"`（除 apply_patch 外也给 Edit / Write） | ChatGPT 订阅 |
 
 模型默认 Claude 侧 `claude-sonnet-5-5`、ChatGPT 侧 `gpt-6.1-sol`（`BENCH_MODEL_CLAUDE`、`BENCH_MODEL_CHATGPT` 可改）。effort 用各 CLI 默认值，实际值从请求里读出，写进每次 run 的结果和图上。
 
