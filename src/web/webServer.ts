@@ -2,7 +2,7 @@ import type { Database } from 'bun:sqlite'
 import { spawn } from 'child_process'
 import { mkdirSync, mkdtempSync, realpathSync, statSync } from 'fs'
 import { homedir } from 'os'
-import { basename, dirname, extname, isAbsolute, join, relative, resolve } from 'path'
+import { basename, dirname, isAbsolute, join, relative, resolve } from 'path'
 import { z } from 'zod/v4'
 import { addToHistory, getTimestampedHistory } from '../history.js'
 import { PERMISSION_MODES } from '../types/permissions.js'
@@ -241,13 +241,14 @@ const PROJECT_PATH = /^\/api\/projects\/([^/]+)(?:\/(coordinator|tasks)(?:\/([^/
 const EFFORT = /^[a-z]{1,20}$/
 
 // Served as text so a file from the workspace never runs as a page on this origin.
-const ACTIVE_TYPES = new Set(['.html', '.htm', '.xhtml', '.svg', '.xml', '.js', '.mjs'])
+// Markup and script would run as this origin (with the page's API), so they are shown as text.
+// Decided by the served type: Bun maps more extensions to these than any list here (.shtml, .xht, .cjs, .ts…).
+const ACTIVE_TYPE = /html|xml|javascript|ecmascript/i
 
 function fileResponse(req: Request, path: string, download: boolean): Response {
   const file = Bun.file(path)
   const size = file.size
-  const ext = extname(path).toLowerCase()
-  const type = ACTIVE_TYPES.has(ext)
+  const type = ACTIVE_TYPE.test(file.type)
     ? 'text/plain; charset=utf-8'
     : file.type || 'application/octet-stream'
   const headers: Record<string, string> = {

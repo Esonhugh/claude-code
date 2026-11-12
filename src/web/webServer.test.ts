@@ -583,6 +583,13 @@ describe('claude web server', () => {
     writeFileSync(join(r.workspace, 'page.html'), '<script>alert(1)</script>')
     const page = await get(join(r.workspace, 'page.html'))
     expect(page.headers.get('content-type')).toBe('text/plain; charset=utf-8')
+    // Every extension Bun maps to markup or script, not only the common ones.
+    for (const name of ['page.shtml', 'page.xht', 'schema.xsd', 'feed.atom', 'img.svgz', 'run.cjs', 'run.ts', 'run.jsx']) {
+      writeFileSync(join(r.workspace, name), '<script>alert(1)</script>')
+      expect([name, (await get(join(r.workspace, name))).headers.get('content-type')]).toEqual([name, 'text/plain; charset=utf-8'])
+    }
+    writeFileSync(join(r.workspace, 'pic.png'), 'png')
+    expect((await get(join(r.workspace, 'pic.png'))).headers.get('content-type')).toBe('image/png')
 
     const outside = realpathSync(mkdtempSync(join(tmpdir(), 'web-out-')))
     writeFileSync(join(outside, 'secret.txt'), 'nope')
