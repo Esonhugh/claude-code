@@ -1035,6 +1035,10 @@ const SAFE_SKILL_PROPERTIES = new Set([
   'agent',
   'getPromptForCommand',
   'frontmatterKeys',
+  // Path and parsed frontmatter, kept for Mods skill.prompt. Frontmatter that
+  // grants anything (allowed-tools, hooks, shell, ...) is also set as its own
+  // property above, which this check still sees.
+  'skillFile',
   // CommandBase properties
   'name',
   'description',
