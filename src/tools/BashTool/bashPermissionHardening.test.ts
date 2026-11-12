@@ -1,5 +1,11 @@
 import { expect, spyOn, test } from 'bun:test'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { ToolPermissionContext, ToolUseContext } from '../../Tool.js'
@@ -360,6 +366,50 @@ if (process.env[childFlag] !== '1') {
       { deny: ['Bash(rm:*)'] },
       'deny',
     )
+  })
+
+  test('Read and Edit deny rules hold through cp/mv, cd and symlinks, also in bypass', async () => {
+    mkdirSync(join(project, 'locked'), { recursive: true })
+    mkdirSync(join(project, 'open'), { recursive: true })
+    writeFileSync(join(project, 'locked/s'), 's')
+    symlinkSync('locked', join(project, 'ln-locked'))
+    symlinkSync('../locked/s', join(project, 'open/ln-s'))
+    const rules = { deny: ['Read(./locked/**)', 'Edit(./locked/**)'] }
+    const treeSitter =
+      process.env.CLAUDE_CODE_BASH_HARDENING_PARSER === 'TREE_SITTER_BASH'
+    for (const command of [
+      'cp locked/s open/c',
+      'cp -r locked open/cr',
+      'mv -f locked/s open/m',
+      'cp -f src/x.ts locked/c',
+      'cp -t locked src/x.ts',
+      'cp src/x.ts --target-directory=locked',
+      'cat open/ln-s',
+      'cat ln-locked/s',
+      'touch ln-locked/t',
+      'echo x > ln-locked/e',
+      // Following the cd needs the parsed command.
+      ...(treeSitter
+        ? [
+            'cd locked && touch t',
+            'cd locked && cat s',
+            'pushd locked && cat s',
+            'cd open && cat ../locked/s',
+            'cd locked && echo x > r',
+          ]
+        : []),
+    ]) {
+      await expectBehavior(command, 'bypassPermissions', rules, 'deny')
+      await expectBehavior(command, 'default', { ...rules, allow: ['Bash'] }, 'deny')
+    }
+    for (const command of [
+      'cp src/x.ts open/c',
+      'cp -r open open2',
+      'cd open && touch t',
+      'cd open && cat ln-s2',
+    ]) {
+      await expectBehavior(command, 'bypassPermissions', rules, 'allow')
+    }
   })
 
   test('noglob is a transparent wrapper, as in official', async () => {

@@ -1,6 +1,7 @@
 import { feature } from 'bun:bundle'
 import { APIUserAbortError } from '@anthropic-ai/sdk'
-import { basename } from 'path'
+import { basename, resolve } from 'path'
+import { expandTilde } from '../../utils/path.js'
 import type { z } from 'zod/v4'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../services/analytics/growthbook.js'
 import {
@@ -2762,6 +2763,35 @@ async function checkBashCommandPermission(
           ]),
         ),
       },
+    }
+  }
+
+  // After `cd dir` (or `pushd dir`), relative paths in the other subcommands
+  // name files under dir: check Read/Edit deny rules there too.
+  const changesDir = (cmd: SimpleCommand | undefined) =>
+    cmd?.argv[0] === 'cd' || cmd?.argv[0] === 'pushd'
+  const cdTarget = astCommandsByIdx.find(
+    cmd => changesDir(cmd) && cmd?.argv.length === 2,
+  )?.argv[1]
+  if (cdTarget !== undefined) {
+    const cwdAfterCd = resolve(getCwd(), expandTilde(cdTarget))
+    for (const [i, command] of subcommands.entries()) {
+      const astCommand = astCommandsByIdx[i]
+      if (astCommand === undefined || changesDir(astCommand)) continue
+      const afterCdResult = checkPathConstraints(
+        { command },
+        cwdAfterCd,
+        appState.toolPermissionContext,
+        false,
+        astCommand.redirects,
+        [astCommand],
+      )
+      if (
+        afterCdResult.behavior === 'deny' &&
+        afterCdResult.decisionReason?.type === 'rule'
+      ) {
+        return afterCdResult
+      }
     }
   }
 
