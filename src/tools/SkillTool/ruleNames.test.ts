@@ -36,11 +36,14 @@ async function decide(
   skill: string,
   rules: { deny?: string[]; allow?: string[] },
 ) {
-  const appState = getDefaultAppState()
-  appState.toolPermissionContext = {
-    ...appState.toolPermissionContext,
-    alwaysDenyRules: { session: (rules.deny ?? []).map(r => `Skill(${r})`) },
-    alwaysAllowRules: { session: (rules.allow ?? []).map(r => `Skill(${r})`) },
+  const defaults = getDefaultAppState()
+  const appState = {
+    ...defaults,
+    toolPermissionContext: {
+      ...defaults.toolPermissionContext,
+      alwaysDenyRules: { session: (rules.deny ?? []).map(r => `Skill(${r})`) },
+      alwaysAllowRules: { session: (rules.allow ?? []).map(r => `Skill(${r})`) },
+    },
   }
   return (
     await SkillTool.checkPermissions({ skill }, {
