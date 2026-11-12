@@ -16,12 +16,12 @@
 
 ### 版本状态
 
-- 发布候选：`dev` 合并到 `master` 后打 tag `v2.1.297`。本条目汇总 `v2.1.296` tag（master `7afd831`）之后至 PR #1164 的全部变更（含 11-11 发布验证的修复），来自 11-05、11-06 两次全面测试、之后 Round 2–6 的跨子系统回归，以及 11-07 至 11-11 的缓存基准、压缩审计与 claude web 修复；`Makefile VERSION`、README 与构建文档的发布版本同步为 `2.1.297`，`package.json` 保持 `0.0.0-dev`。版本号与官方版本号无对应关系（本轮对照基线为官方 2.1.318，后续回归为 2.1.319）。
+- 发布候选：`dev` 合并到 `master` 后打 tag `v2.1.297`。本条目汇总 `v2.1.296` tag（master `7afd831`）之后至 PR #1194 的全部变更（含 11-11 发布验证的修复），来自 11-05、11-06 两次全面测试、之后 Round 2–6 的跨子系统回归，以及 11-07 至 11-11 的缓存基准、压缩审计与 claude web 修复；`Makefile VERSION`、README 与构建文档的发布版本同步为 `2.1.297`，`package.json` 保持 `0.0.0-dev`。版本号与官方版本号无对应关系（本轮对照基线为官方 2.1.318，后续回归为 2.1.319）。
 
 ### 关联提交
 
-- PR 合并提交（`git log --first-parent 7afd831..dev`）：#812 11-05 全面测试 23 项修复（Agent、Teams、启动退出、hooks 权限、Mods、Web、Prompt）；#815 PR CI 关键路径缩短、没拿到 runner 的 job 自动重跑、release 并行构建；#795、#820 Windows 沙箱用户 profile；#818 第一轮修复的复现测试、web 404 判断与 Mods Unix socket 重定向；#822、#824 构建缓存、e2e 去重构建、单测分片平衡、合并时自动关 issue 与 automerge；#827 给忙碌的 agent/teammate 发的消息切换视图后仍可见；#829 OAuth User-Agent/stainless 同步官方 2.1.318、Codex 客户端 0.166.0；#831 网关回复缺 `usage` 时 `/model` 校验崩溃；#832 网页一次只接一条 socket；#834、#841 ctrl+Enter 立即发送；#836 Ctrl+O 崩溃；#839 Mods 流式中断超时、ChatGPT 启动不等用量查询；#843 `query.promptCompose` 单测隔离；#863 Web UI 8 项修复；#866 会话标题请求与 Rewind 列表；#874 SDK/headless；#875 `-p`/SDK `--agent`；#876 hooks exec-form 与 async 输出；#877 plugin marketplace 与 validate；#878 plugin 的 workflows 目录；#880 社区 mod 加载兼容与 hook 错误显示；#881 channel reply 工具；#883 网页立即发送；#884 恢复并行工具调用；#887 spinner；#888 网页 Teams 待办；#891 LSP 工具与 command plugin 来源；#893、#903 选择器 Tab 后的按键；#895 网页输入框；#897 Mods Worker 崩溃警告；#899 网页引用回复；#901 网页本地打开；#905 预览旁对话区可拖动宽度；#906 发布准备；#908 三平台 web e2e 覆盖系统打开程序；#911 REPL 串流按整行重绘；#915 与官方共用设置（`openaiModel`、按模型 effort、界面偏好）与 auto mode 分类器容忍缺 `usage`；#916 无 soffice 的 PPTX 预览与 PDF/幻灯片选字评论；#921、#929 单测负载竞态；#923、#925、#927、#931 claude web 的 Mods 界面（面板、band、toast、status、对话行、输入框 hooks、Client 沙箱）；#937 web × Mods 第二轮修复；#940 换模型载入该模型的 effort、`/plugin` 选项 Tab 与 Esc；#944 子代理下的 Mod 状态、配置中不报缺少 options；#949 headless 首个请求前 SIGINT；#953 headless teammate 权限请求、退出时结束独立进程组的 shell 子进程；#955 SDK `reload_plugins` 的 `add_plugins` 与 plugin `version`；#956 ChatGPT 目录 effort 档位、起始页模型、ChatGPT 额度、`turn.step` effort；#960 流式回退结果保持可见；#962 hook 把 MCP 输出改写为对象；#964 OpenAI 远程压缩与 `session.compact` mod；#968 plugin skill hooks、新建设置文件、`//tmp` 标签；#970 项目模式 teammate 工具与批准、首轮前改设置重启；#971 ChatGPT 模型发现后重新解析默认模型；#976 SDK 输入关闭时保留 teammate、SIGINT 时写出 result；#980 OpenAI 路径 PDF、ChatGPT 额度错误、`@` 提到的 PDF；#982 中途开关 mod 后的 `/` 菜单、web 显示 mod hook 错误；#983 频道回合不再重跑 SQLite 记忆召回；#989 `/rewind` 后 `/branch`、带图消息的 rewind 行、OpenAI 路径 SDK document；#994 断流不重复执行工具、Bash stdin 与 `!` 引号、无 `usage` 时自动压缩；#997 teammate API 失败通知负责人、分屏 teammate 继承 MCP 与 CLI 规则；#999、#1001、#1003、#1005 OpenAI 路径 `apply_patch` 工具与 hooks；#1007 `CLAUDE_CODE_MAX_CONTEXT_TOKENS`；#1012 ChatGPT 目录上下文窗口；#1013 频道回合不计入 everyTurns 提取、SessionStart `fork`、画布页签保留 Mod Client；#1015 `-p`/SDK team shutdown 保底；#1017、#1019 上下文窗口档位；#1021、#1025 文档同步与 11-07 缓存基准；#1026 ChatGPT `-p` 首个请求不等 Codex Apps 工具列表；#1027 ChatGPT 下 ToolSearch 加载工具不再让提示缓存整体失效；#1029、#1031 文档同步与缓存基准 Wiki 页；#1033、#1035 ChatGPT `-p` 首次运行等账号模型目录；#1036、#1039、#1042、#1043、#1044、#1047、#1048、#1049、#1050 缓存基准 Wiki 页与图表；#1038 `-p` 负责人不在 teammate 仍在工作时要求 shutdown；#1041 OpenAI 路径系统提示词精简；#1045 fork 介绍文章；#1051 Bash 与 Terminal 的 tmux 不碰用户的 tmux server；#1053 网页显示会话进程退出原因；#1055、#1059、#1061、#1070 `bench/` 基准套件与公开基准扰动；#1057 网页新会话的模型标签；#1063 Terminal 工具改名 Tmux；#1065、#1066、#1067、#1068 GitHub Pages 项目网站与网页演示；#1072 `-p` 后台任务等待上限；#1078 网关后非 Claude 模型内联工具、Tmux 输出队列满时保留输出；#1079、#1081 自动压缩（超长恢复、OpenAI 超长错误、保留已加载工具、压缩后列出 skill 与 Tmux 终端、连续压缩断路器）；#1084、#1086、#1090 claude web 会话设置与刷新状态保留；#1091 本条目补到 #1090 与文档同步；#1092 公开基准通过率结果；#1093 网站 `/benchmark` 页填入公开基准结果；#1095 `-p`/SDK 默认 effort `high` 与收尾提示规则；#1100 claude web 在 `/clear`、断线与服务重启后保留对话；#1103 本条目补到 #1100；#1104 SQLite 记忆冷索引加速、召回与 SearchMemory 新记忆优先、`bench/` 多会话记忆任务；#907、#1107 发布合并与并回 dev；#1109 网页记忆搜索；#1111 系统提示词去掉产品形态一行与 headless 的 `/fast` 提示；#1113 Memory 规则精简、去掉外部 Output efficiency；#1114 未发布条目；#1115、#1116 发布准备（版本号保持 `2.1.297`）；#1118 文档补充；#1119 skill 描述上限恢复官方的 1536；#1121 MCP Apps；#1123、#1128 网站与功能文档简体 / 繁體 / English；#1125、#1130 FrontierHarness v1.0 基准与结果；#1131 本条目补到 #1130；#1133 网站首页 Goal 演示改为由 Claude 用 `Goal` 工具设定目标；#1134 本条目补到 #1133；#1136 去掉未使用的 devDependencies `webcrack`、`restringer`（其依赖 `isolated-vm` 在 Node 26 上让 `bun install` 失败）；#1138 网站 Goal 演示改为回放真实 CLI 的 tmux 录制；#1139 本条目补到 #1138；#1141、#1144、#1147 网站全部导览场景（含账号切换）改为真实 CLI 的 tmux 录制回放并新增 peers 场景；#1145 本条目补到 #1144；#1148 本条目补到 #1147；#1150 `apply_patch` 每个文件一行并按顺序应用；#1152 `apply_patch` 按对应的 Edit/Write 检查权限；#1154 本条目补到 #1150；#1156 网站账号切换场景按新的 `apply_patch` 显示重录；#1157 本条目补到 #1152；#1158 本条目补到 #1157；#1164 11-11 发布验证修复 MCP Apps 跨 server 调用与 `apply_patch` 移动文件的行（#1160、#1161）、按需建好的记忆索引仍显示未建（#1163），文档补齐（#1162）。
-- 对应 issue：#791、#798、#799、#800、#801、#802、#803、#804、#805、#806、#807、#808、#809、#810、#811、#813、#814、#816、#817、#819、#821、#823、#825、#826、#830、#833、#835、#837、#838、#840、#842、#844、#845、#846、#847、#848、#849、#850、#851、#852、#853、#854、#855、#856、#857、#858、#859、#860、#861、#862、#864、#865、#867、#868、#869、#870、#871、#872、#873、#879、#882、#885、#886、#889、#890、#892、#894、#896、#898、#900、#904、#909、#910、#912、#913、#914、#917、#918、#919、#920、#922、#924、#926、#928、#930、#932、#933、#934、#935、#936、#938、#939、#941、#942、#943、#945、#946、#947、#948、#950、#951、#952、#954、#957、#958、#959、#961、#963、#965、#966、#967、#969、#972、#973、#974、#975、#977、#978、#979、#981、#984、#985、#986、#987、#988、#990、#991、#992、#993、#995、#996、#998、#1000、#1002、#1004、#1006、#1008、#1009、#1010、#1011、#1014、#1016、#1018、#1020、#1022、#1023、#1024、#1030、#1032、#1034、#1037、#1040、#1046、#1052、#1054、#1056、#1058、#1060、#1062、#1069、#1071、#1073、#1074、#1075、#1076、#1077、#1080、#1082、#1083、#1085、#1087、#1088、#1089、#1097、#1098、#1099、#1101、#1102、#1105、#1106、#1108、#1110、#1112、#1120、#1122、#1124、#1127、#1129、#1132、#1135、#1137、#1140、#1143、#1146、#1149、#1151、#1155、#1160、#1161、#1162、#1163。
+- PR 合并提交（`git log --first-parent 7afd831..dev`）：#812 11-05 全面测试 23 项修复（Agent、Teams、启动退出、hooks 权限、Mods、Web、Prompt）；#815 PR CI 关键路径缩短、没拿到 runner 的 job 自动重跑、release 并行构建；#795、#820 Windows 沙箱用户 profile；#818 第一轮修复的复现测试、web 404 判断与 Mods Unix socket 重定向；#822、#824 构建缓存、e2e 去重构建、单测分片平衡、合并时自动关 issue 与 automerge；#827 给忙碌的 agent/teammate 发的消息切换视图后仍可见；#829 OAuth User-Agent/stainless 同步官方 2.1.318、Codex 客户端 0.166.0；#831 网关回复缺 `usage` 时 `/model` 校验崩溃；#832 网页一次只接一条 socket；#834、#841 ctrl+Enter 立即发送；#836 Ctrl+O 崩溃；#839 Mods 流式中断超时、ChatGPT 启动不等用量查询；#843 `query.promptCompose` 单测隔离；#863 Web UI 8 项修复；#866 会话标题请求与 Rewind 列表；#874 SDK/headless；#875 `-p`/SDK `--agent`；#876 hooks exec-form 与 async 输出；#877 plugin marketplace 与 validate；#878 plugin 的 workflows 目录；#880 社区 mod 加载兼容与 hook 错误显示；#881 channel reply 工具；#883 网页立即发送；#884 恢复并行工具调用；#887 spinner；#888 网页 Teams 待办；#891 LSP 工具与 command plugin 来源；#893、#903 选择器 Tab 后的按键；#895 网页输入框；#897 Mods Worker 崩溃警告；#899 网页引用回复；#901 网页本地打开；#905 预览旁对话区可拖动宽度；#906 发布准备；#908 三平台 web e2e 覆盖系统打开程序；#911 REPL 串流按整行重绘；#915 与官方共用设置（`openaiModel`、按模型 effort、界面偏好）与 auto mode 分类器容忍缺 `usage`；#916 无 soffice 的 PPTX 预览与 PDF/幻灯片选字评论；#921、#929 单测负载竞态；#923、#925、#927、#931 claude web 的 Mods 界面（面板、band、toast、status、对话行、输入框 hooks、Client 沙箱）；#937 web × Mods 第二轮修复；#940 换模型载入该模型的 effort、`/plugin` 选项 Tab 与 Esc；#944 子代理下的 Mod 状态、配置中不报缺少 options；#949 headless 首个请求前 SIGINT；#953 headless teammate 权限请求、退出时结束独立进程组的 shell 子进程；#955 SDK `reload_plugins` 的 `add_plugins` 与 plugin `version`；#956 ChatGPT 目录 effort 档位、起始页模型、ChatGPT 额度、`turn.step` effort；#960 流式回退结果保持可见；#962 hook 把 MCP 输出改写为对象；#964 OpenAI 远程压缩与 `session.compact` mod；#968 plugin skill hooks、新建设置文件、`//tmp` 标签；#970 项目模式 teammate 工具与批准、首轮前改设置重启；#971 ChatGPT 模型发现后重新解析默认模型；#976 SDK 输入关闭时保留 teammate、SIGINT 时写出 result；#980 OpenAI 路径 PDF、ChatGPT 额度错误、`@` 提到的 PDF；#982 中途开关 mod 后的 `/` 菜单、web 显示 mod hook 错误；#983 频道回合不再重跑 SQLite 记忆召回；#989 `/rewind` 后 `/branch`、带图消息的 rewind 行、OpenAI 路径 SDK document；#994 断流不重复执行工具、Bash stdin 与 `!` 引号、无 `usage` 时自动压缩；#997 teammate API 失败通知负责人、分屏 teammate 继承 MCP 与 CLI 规则；#999、#1001、#1003、#1005 OpenAI 路径 `apply_patch` 工具与 hooks；#1007 `CLAUDE_CODE_MAX_CONTEXT_TOKENS`；#1012 ChatGPT 目录上下文窗口；#1013 频道回合不计入 everyTurns 提取、SessionStart `fork`、画布页签保留 Mod Client；#1015 `-p`/SDK team shutdown 保底；#1017、#1019 上下文窗口档位；#1021、#1025 文档同步与 11-07 缓存基准；#1026 ChatGPT `-p` 首个请求不等 Codex Apps 工具列表；#1027 ChatGPT 下 ToolSearch 加载工具不再让提示缓存整体失效；#1029、#1031 文档同步与缓存基准 Wiki 页；#1033、#1035 ChatGPT `-p` 首次运行等账号模型目录；#1036、#1039、#1042、#1043、#1044、#1047、#1048、#1049、#1050 缓存基准 Wiki 页与图表；#1038 `-p` 负责人不在 teammate 仍在工作时要求 shutdown；#1041 OpenAI 路径系统提示词精简；#1045 fork 介绍文章；#1051 Bash 与 Terminal 的 tmux 不碰用户的 tmux server；#1053 网页显示会话进程退出原因；#1055、#1059、#1061、#1070 `bench/` 基准套件与公开基准扰动；#1057 网页新会话的模型标签；#1063 Terminal 工具改名 Tmux；#1065、#1066、#1067、#1068 GitHub Pages 项目网站与网页演示；#1072 `-p` 后台任务等待上限；#1078 网关后非 Claude 模型内联工具、Tmux 输出队列满时保留输出；#1079、#1081 自动压缩（超长恢复、OpenAI 超长错误、保留已加载工具、压缩后列出 skill 与 Tmux 终端、连续压缩断路器）；#1084、#1086、#1090 claude web 会话设置与刷新状态保留；#1091 本条目补到 #1090 与文档同步；#1092 公开基准通过率结果；#1093 网站 `/benchmark` 页填入公开基准结果；#1095 `-p`/SDK 默认 effort `high` 与收尾提示规则；#1100 claude web 在 `/clear`、断线与服务重启后保留对话；#1103 本条目补到 #1100；#1104 SQLite 记忆冷索引加速、召回与 SearchMemory 新记忆优先、`bench/` 多会话记忆任务；#907、#1107 发布合并与并回 dev；#1109 网页记忆搜索；#1111 系统提示词去掉产品形态一行与 headless 的 `/fast` 提示；#1113 Memory 规则精简、去掉外部 Output efficiency；#1114 未发布条目；#1115、#1116 发布准备（版本号保持 `2.1.297`）；#1118 文档补充；#1119 skill 描述上限恢复官方的 1536；#1121 MCP Apps；#1123、#1128 网站与功能文档简体 / 繁體 / English；#1125、#1130 FrontierHarness v1.0 基准与结果；#1131 本条目补到 #1130；#1133 网站首页 Goal 演示改为由 Claude 用 `Goal` 工具设定目标；#1134 本条目补到 #1133；#1136 去掉未使用的 devDependencies `webcrack`、`restringer`（其依赖 `isolated-vm` 在 Node 26 上让 `bun install` 失败）；#1138 网站 Goal 演示改为回放真实 CLI 的 tmux 录制；#1139 本条目补到 #1138；#1141、#1144、#1147 网站全部导览场景（含账号切换）改为真实 CLI 的 tmux 录制回放并新增 peers 场景；#1145 本条目补到 #1144；#1148 本条目补到 #1147；#1150 `apply_patch` 每个文件一行并按顺序应用；#1152 `apply_patch` 按对应的 Edit/Write 检查权限；#1154 本条目补到 #1150；#1156 网站账号切换场景按新的 `apply_patch` 显示重录；#1157 本条目补到 #1152；#1158 本条目补到 #1157；#1165 本条目补到 #1164；#1164 11-11 发布验证修复 MCP Apps 跨 server 调用与 `apply_patch` 移动文件的行（#1160、#1161）、按需建好的记忆索引仍显示未建（#1163），文档补齐（#1162）；#1167 bypass 下删除命令按官方只在可能落到受保护路径时确认；#1159 OpenAI provider 默认只给 `apply_patch`；#1169 Agent/Teams 第三轮修复；#1177 Bash deny 规则覆盖嵌套命令、Write/Edit 遵守 Read deny；#1183 记忆索引并发、`apply_patch` 目录与 BOM、Grep 单文件计数；#1184 claude web 文件预览不再执行脚本、MCP 同名工具；#1185、#1194 Mods 状态行、`tool.call` 错误信息与主线程卡顿超时；#1186 plugin marketplace 无效条目与 plugin id；#1193 `--debug-file` 不可写时不退出。
+- 对应 issue：#791、#798、#799、#800、#801、#802、#803、#804、#805、#806、#807、#808、#809、#810、#811、#813、#814、#816、#817、#819、#821、#823、#825、#826、#830、#833、#835、#837、#838、#840、#842、#844、#845、#846、#847、#848、#849、#850、#851、#852、#853、#854、#855、#856、#857、#858、#859、#860、#861、#862、#864、#865、#867、#868、#869、#870、#871、#872、#873、#879、#882、#885、#886、#889、#890、#892、#894、#896、#898、#900、#904、#909、#910、#912、#913、#914、#917、#918、#919、#920、#922、#924、#926、#928、#930、#932、#933、#934、#935、#936、#938、#939、#941、#942、#943、#945、#946、#947、#948、#950、#951、#952、#954、#957、#958、#959、#961、#963、#965、#966、#967、#969、#972、#973、#974、#975、#977、#978、#979、#981、#984、#985、#986、#987、#988、#990、#991、#992、#993、#995、#996、#998、#1000、#1002、#1004、#1006、#1008、#1009、#1010、#1011、#1014、#1016、#1018、#1020、#1022、#1023、#1024、#1030、#1032、#1034、#1037、#1040、#1046、#1052、#1054、#1056、#1058、#1060、#1062、#1069、#1071、#1073、#1074、#1075、#1076、#1077、#1080、#1082、#1083、#1085、#1087、#1088、#1089、#1097、#1098、#1099、#1101、#1102、#1105、#1106、#1108、#1110、#1112、#1120、#1122、#1124、#1127、#1129、#1132、#1135、#1137、#1140、#1143、#1146、#1149、#1151、#1155、#1160、#1161、#1162、#1163、#1153、#1166、#1168、#1170、#1171、#1172、#1173、#1174、#1175、#1176、#1178、#1179、#1180、#1181、#1187、#1188、#1189、#1190、#1191、#1192、#1195、#1196、#1197。
 
 ### 变更内容
 
@@ -46,11 +46,16 @@
 - `claude web` 的 cookie 签名密钥、上次端口与密钥创建时间保存在 `~/.claude/web/server.json`（权限 0600）：不带 `--port` 重启时沿用上次端口（被占用则随机），已登录的浏览器不用重新登录；密钥与端口随 cookie 一起在 7 天后过期并重新生成，`--port 0` 仍强制随机端口，登录 token 每次启动都是新的（#1102）。此前每次重启都会让浏览器退出登录。
 - 自定义 `ANTHROPIC_BASE_URL`、模型不是 Claude（如 `grok-4.7`）且未设置 `ENABLE_TOOL_SEARCH` 时，tool search 默认关闭、所有工具内联发送：只有 Anthropic API 会把 `tool_reference` 展开成工具定义，此前这类网关的模型加载工具后拿不到参数。网关能展开时设 `ENABLE_TOOL_SEARCH=true`（#1073）。
 - `SearchMemory` 的 `limit` 上限由 50 改为 25，结果不再因超过 `maxResultSizeChars` 被存成文件（#1106）。
+- OpenAI provider 默认只给模型 `apply_patch`，请求里不再带 Edit/Write（与 Codex 一致）；新设置 `openaiEditTools` 设为 `"all"` 恢复三个工具。Edit/Write 仍在工具池里，权限与 hooks 不变；只允许 Edit 的 agent 仍拿到 Edit；plan mode、记忆目录说明与 ToolSearch `select:Write`/`select:Edit` 改指 `apply_patch`，背景记忆提取、auto dream、session memory 也接受 `apply_patch`（#1159）。
+- `bypassPermissions` 下删除命令只在可能落到受保护路径时才要求确认，与官方 2.1.322 一致：`rm *.log`、`rm -rf build/*`、`X=sub; rm $X/c.txt`、`cd sub && rm b.txt`、`xargs rm` 等不再被拦；`rm -rf "$X"/`、`rm -rf *`、`cd ~ && rm -rf .config` 仍要求确认；fork 额外保护的 `~/.config`、`~/.codex`、`~/.bashrc` 保留（#1167）。
+- Bash deny 规则（如 `Bash(rm:*)`）现在也匹配包在 `$(…)`、反引号、`( )`、`{ }`、`<( )`/`>( )`、循环里的命令和带路径的 `/bin/rm`，此前这些在 bypass 下会直接执行、在默认模式下只询问；Write/Edit/`apply_patch` 遵守 Read deny 规则，`-p` 的 `permission_denials` 也列出 Read/Write/Edit 被规则拒绝的调用，与官方 2.1.322 一致（#1177）。
 
 #### 安全
 
 - hooks exec-form 命令注入（#850，见上）。
 - Mods `http.fetch` 经 Unix socket 时拒绝跨源重定向，同源跳转照常跟随（#816）。
+- claude web 的文件预览按返回的 MIME 类型判断，html、xml、javascript 一律以 `text/plain` 返回：此前只拦扩展名黑名单，工作区里的 `.shtml`、`.xht` 页面加载同源的 `.cjs` 脚本即可读会话列表、新建 `bypassPermissions` 会话（#1175）。
+- MCP 两个工具规范化后同名（如 server `a.b` 与 `a_b`）时，`mcp_call` 拒绝执行并列出冲突的工具，MCP App 的确认框不会再显示一个工具却执行另一个（#1176）。
 
 #### 上下文窗口
 
@@ -79,6 +84,7 @@
 - OpenAI 路径的完整系统提示词精简（规则不变，去掉只适用于 Claude 的 fast mode 一行），首个请求 46,292 → 44,017 字符（官方 2.1.319 为 46,565）；Claude 路径不变（#1040）。
 - 仍不启用 Bun 下的 Responses WebSocket：10 组对照中 WebSocket 的缓存掉线率 6.3%，SSE 为 4.1%，没有改善；剩余约 3–4% 的随机缓存掉线来自 OpenAI 后端路由，客户端无法修正（结论记在 #1023）。
 - `compact.mode: "codex"` 的远程压缩在加载了 `session.compact` mod 时不再失败，`--continue` 后的自动压缩同样正常（#958）。
+- `apply_patch` 遇到目录路径时该文件按普通失败处理并给出路径，前面的文件照常应用；首行带 BOM 的文件改完后保留 BOM（#1171）。
 
 #### Agent 与 Teams
 
@@ -93,6 +99,8 @@
 - tmux/iTerm 分屏 teammate 继承负责人的 `--mcp-config`、`--strict-mcp-config`、`--plugin-dir-no-mcp`、`--allowedTools` 与 `--disallowedTools`；负责人审批它们的 MCP 工具请求，查不到的工具回复拒绝而不是丢弃（#988、#995、#996）。
 - `-p` 的 team 负责人在输入关闭后，等到没有 in-process teammate 仍在工作才注入 shutdown 提示，不再在 teammate 干活时就开新回合、看不到它们的汇报而盲目轮询（ChatGPT 下 team 运行的 token 曾是单人的 10 倍）（#1037）。
 - coordinator 模式下 in-process teammate 使用 worker 的工具池，不再只有 Agent/SendMessage/Skill/TaskStop（#961）。
+- 旧的 shutdown 批准不再结束其后重新启动的同名 teammate（#1168）；`--resume` 后 SendMessage 能找到命名的 agent（#1187）；没有 team 时广播的错误不再指向已移除的 `Teammate spawnTeam`（#1188）；workflow 脚本缺 `meta` 时说明 `export const meta` 必须在第一句（#1189）。
+- teammate 在两次提示之间压缩时带上自己的对话历史，此前摘要的是空对话（#1195）；压缩后只重新告知 teammate 自己有的延迟工具，不再告诉它负责人的 `Goal` 再说不可用（#1196）。
 
 #### 启动、退出与 SDK/headless
 
@@ -105,6 +113,8 @@
 - 退出时连同 `timeout`、`setsid` 等在自己进程组里的 shell 子进程一起结束（#952）。
 - 串流在完整的 tool_use 之后断开时不再走非串流回退（工具会执行第二次），保留已收到的部分并显示 `API Error: Connection lost mid-response.`（#990）；流式回退的结果不再被之后的流事件抹掉（#957）。
 - SDK `reload_plugins` 支持 `add_plugins`（绝对路径的本地 plugin 目录），`system/init` 与 `reload_plugins` 的 `plugins[]` 带 `version`（#954）。
+- `--debug-file` 不可写（路径不存在、是目录、`/dev/full`）或 `CLAUDE_CODE_DEBUG_LOGS_DIR` 无效时不再在启动时退出，与官方一致（#1192）。
+- Grep 计数模式只搜一个文件时显示 `path:count` 与正确的总数，此前显示 `Found 0 total occurrences`（#1172）。
 
 #### TUI
 
@@ -129,6 +139,7 @@
 - PostToolUse hook 把 MCP 输出改写成对象时，模型收到它的 JSON 文本，工具调用不再报错（#959）。
 - auto mode 分类器在网关回复缺 `usage` 时不再报 `temporarily unavailable`（#917）。
 - `/plugin` 的 Configure options 里 Tab 能到下一个字段，Esc 显示 “Configuration cancelled.”；配置对话框打开期间不再报缺少 options（#920、#939、#943）。
+- marketplace 里一条无效的 plugin 条目不再让整个 marketplace 无法加载，该条目安装时报官方的 `This plugin's marketplace entry is invalid`；`plugin install` 拒绝 `../evil` 这类无效 plugin id（#1180、#1181）。
 
 #### Mods 与 channels
 
@@ -140,6 +151,8 @@
 - Mod hook 底下的宿主工作（子代理、in-process teammate）不再被 hook 的 state 快照覆盖，计数类状态与官方一致（#942）；`turn.step` 接受本 fork 的 effort 档位 `none`、`minimal`、`ultra`（#950）。
 - stream-json 中 `$.ui.toast`、`$.ui.status` 以 `system/ui_toast`、`system/ui_status` 发出（#922）；`initialize` 与 `reload_plugins` 的回应列出 Mod 自己的命令（#926、#974）；Mod hook 抛错以 `ui_log` 发给客户端（#975）。
 - SQLite 记忆模式下，频道消息开启的回合不再重新召回 memory（#981）。
+- 多行 `$.ui.status` 压成一行显示，不再盖住输入框（#1178）；`tool.call` 返回形状错误时说明具体错在哪里（#1179）。
+- 主线程卡顿（大段粘贴、重绘、GC）不再让已经回复的 mod hook 被判超时：计时器迟到时补回一次迟到的时间，超时值不变；同时修好 `VimTextInput.modsFlow` 的偶发失败（#1191）。
 
 #### MCP
 
@@ -184,6 +197,7 @@
 - 自动召回与 `SearchMemory` 在匹配程度相同时，保存日期新的记忆排在前面（同一天内仍按 bm25），`SearchMemory` 结果标出 `(saved YYYY-MM-DD)`（#1106）。
 - `claude web` 的记忆对话框能搜到全部记忆文件（此前只列最新 200 条），会话搜索为每个匹配的会话各列一行，不再被一个长会话占满（#1108）。
 - 召回或 `SearchMemory` 按需建好的 SQLite 索引算作已建立：`/memory` 不再显示 `not built yet`，启动时不再提示运行 `/setup-memory-db`，网页记忆对话框显示索引的文件与分段数，英文界面不再显示成 `307 个File`（#1163）。
+- 多个会话同时索引同一个新记忆文件时不再重复写入（6 会话 × 3 轮：重复文件 30 → 0）；SearchMemory 查询里带 NUL 不再失败（#1170）。
 
 #### 系统提示词
 
@@ -220,7 +234,7 @@
 - 11-11 合入 #1119、#1121 后在 `dev` `569bd4c` 重建 binary 再跑两轮（第二轮绑 2 核、全新 HOME），三个项目回归项结果同上；`make release-check` 通过。
 - 11-11 合入 #1150、#1152 后在 `dev` `419fee4` 重建 binary 再跑两轮（第二轮绑 2 核、全新 HOME），三个项目回归项结果同上；`make release-check` 通过。
 - 11-11 合入 #1164 后在 `dev` `f507645` 重建 binary 再跑两轮（第二轮绑 2 核、全新 HOME），三个项目回归项结果同上；`make release-check` 通过。
-- PR CI：单测 5 片、lint 与 tsc、Linux 沙箱、官方对照、Linux/macOS/Windows e2e 与 web e2e；之后合入 `dev` 的代码 PR（至 #1164）都在 CI 全绿后由 `automerge` 合并，纯文档 PR（#1021、#1025、#1029、#1031、#1036、#1039 等）直接合并。
+- PR CI：单测 5 片、lint 与 tsc、Linux 沙箱、官方对照、Linux/macOS/Windows e2e 与 web e2e；之后合入 `dev` 的代码 PR（至 #1194）都在 CI 全绿后由 `automerge` 合并，纯文档 PR（#1021、#1025、#1029、#1031、#1036、#1039 等）直接合并。
 
 ## 2026-10-30 - v2.1.296 - Agent 生命周期与 Teams 修复、内嵌 bfs/ugrep 搜索、coordinator 模式、/hooks /theme /config 对齐官方 2.1.311、权限模式转换修复、claude web 本地网页界面与项目模式
 
