@@ -2,6 +2,7 @@ import { createModCommandQueue } from '../services/mods/commandRunQueue.js'
 import { createModMcpConnections } from '../services/mods/mcpConnect.js'
 import { rewindConversationTo as applyConversationRewind } from '../utils/conversationRewind.js'
 import { createModUiSelectionTracker } from '../services/mods/uiSelection.js'
+import { formatPluginNotice } from '../services/mods/uiNoticeText.js'
 import {copyModTerminalText} from '../services/mods/uiCopy.js'
 import inkInstances from '../ink/instances.js'
 import { copyModCallerChain } from '../services/mods/callerChain.js'
@@ -2287,7 +2288,7 @@ export function REPL({
       const key = `plugin-status-${plugin}`
       removeNotification(key)
       if (text !== undefined) addNotification({
-        key, text: `${plugin}: ${text}`, priority: 'low', pinned: true,
+        key, text: formatPluginNotice(plugin, text), priority: 'low', pinned: true,
       })
     },
   }), [modsSession, setAppState, setMessages, addNotification, removeNotification, modSelectionTracker, modMcpConnections, terminal])

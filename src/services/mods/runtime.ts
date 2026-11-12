@@ -2865,9 +2865,12 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
         : typeof value.model !== 'string') throw new Error('agent.spawn must return model or deny, never both')
       return
     }
-    if (event === 'tool.call' && (value.deny !== undefined
-      ? typeof value.deny !== 'string' || Object.hasOwn(value, 'result')
-      : !Object.hasOwn(value, 'result'))) throw new Error('tool.call must return result or deny, never both')
+    if (event === 'tool.call') {
+      if (value.deny === undefined) {
+        if (!Object.hasOwn(value, 'result')) throw new Error('tool.call must return result or deny')
+      } else if (typeof value.deny !== 'string') throw new Error('tool.call deny must be a string')
+      else if (Object.hasOwn(value, 'result')) throw new Error('tool.call must return result or deny, never both')
+    }
     if (event === 'plugin.register' && value.allow !== true && typeof value.refuse !== 'string') throw new Error('plugin.register must allow or refuse')
     if (event === 'session.measure') {
       if (!Array.isArray(value.changed) || !value.changed.every(unit => ['context', 'rateLimits', 'cost'].includes(unit)))
