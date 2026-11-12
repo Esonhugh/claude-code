@@ -1687,6 +1687,14 @@ function isCommandReadOnly(command: string): boolean {
     testCommand = testCommand.slice(0, -5).trim()
   }
 
+  // `[ EXPR ]` and `[[ EXPR ]]` evaluate like `test EXPR`.
+  const bracketTest =
+    /^\[[ \t]+([^\n\r]*)[ \t]+\]$/.exec(testCommand) ??
+    /^\[\[[ \t]+([^\n\r]*)[ \t]+\]\]$/.exec(testCommand)
+  if (bracketTest && !/[[\]]/.test(bracketTest[1]!)) {
+    return isCommandReadOnly(`test ${bracketTest[1]}`)
+  }
+
   // Check for Windows UNC paths that could be vulnerable to WebDAV attacks
   // Do this early to prevent any command with UNC paths from being marked as read-only
   if (containsVulnerableUncPath(testCommand)) {
