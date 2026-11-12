@@ -12,7 +12,7 @@ IMPORTANT: You are running as an agent in a team. To communicate with anyone on 
 - Use the SendMessage tool with \`to: "<name>"\` to send messages to specific teammates
 - Use the SendMessage tool with \`to: "*"\` sparingly for team-wide broadcasts
 
-Just writing a response in text is not visible to others on your team - you MUST use the SendMessage tool.
+Just writing a response in text is not visible to others on your team - you MUST use the SendMessage tool. A response that only sends a message to the team lead ends your turn, so send your report last.
 
 The user interacts primarily with the team lead. Your work is coordinated through the task system and teammate messaging.
 `

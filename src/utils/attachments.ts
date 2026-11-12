@@ -258,7 +258,7 @@ import {
 import { getAgentMemoryDir } from '../tools/AgentTool/agentMemory.js'
 import {
   readUnreadMessages,
-  markMessagesAsReadByPredicate,
+  markMessagesAsRead,
   isShutdownApproved,
   isStructuredProtocolMessage,
   isIdleNotification,
@@ -4034,14 +4034,11 @@ export async function getTeammateMailboxAttachments(
     },
   ]
 
-  // Mark only non-structured mailbox messages as read after attachment is built.
-  // Structured protocol messages stay unread for useInboxPoller to handle.
+  // Mark only the messages delivered above as read. Structured protocol
+  // messages stay unread for useInboxPoller to handle, and so does a message
+  // that arrived after the read: marking by kind would lose it for good.
   if (unreadMessages.length > 0) {
-    await markMessagesAsReadByPredicate(
-      agentName,
-      m => !isStructuredProtocolMessage(m.text),
-      teamName,
-    )
+    await markMessagesAsRead(agentName, teamName, unreadMessages)
     logForDebugging(
       `[MailboxBridge] marked ${unreadMessages.length} non-structured message(s) as read for agent="${agentName}" team="${teamName || 'default'}"`,
     )
