@@ -104,6 +104,7 @@ Claude 每次要改檔案、跑命令、訪問網路之前，都會判斷要不�
 
 - Bash 的 deny / ask 规则会「看穿」包装：`sudo rm`、`env X=1 rm`、`nohup rm`、`exec rm` 都按 `rm` 匹配；deny 和 ask 规则还会匹配 `/bin/rm` 这类带路径的命令，以及包在 `$(…)`、反引号、`( )`、`{ }`、`<( )` 里的命令。
 - Bash 的 allow 规则匹配前也会剥掉 `command`、`command -p` 和 `noglob`；`[ … ]`、`[[ … ]]` 当作只读的 `test`，`cd .` 不算换目录。所以有 `Bash(touch:*)` 时，`command touch f`、`[ -f x ] || touch f`、`cd . && touch f` 直接执行，`cd sub && touch f` 仍会询问（同官方）。
+- 没有规则时哪些 Bash 命令直接执行，也和官方 2.1.322 一致：`[[ a && b ]]` 当作一个测试；只含数字的 `$((…))` 先算出来，所以 `echo $((1+2))` 直接执行；只读命令可以带安全的环境变量前缀（如 `CI=1`、`COLUMNS=80`）或 `command` / `builtin` / `timeout N`。会询问的情况：本来会放行的命令放到后台（`&`）、写入路径里有命令替换或未知变量、`< 文件` 读工作目录外的文件、accept edits 下包在 wrapper 里或带选项的 `touch`。
 - Read 的 deny 规则也挡住对同一路径的 Write / Edit：`Read(**/.env)` 时不能新建或改写 `.env`。
 - `Bash(find:*)` 不会放行带 `-exec`、`-execdir`、`-ok`、`-delete` 的 find。
 - 超过 10000 字符、或以悬空的 `&&` / `||` / `|` 结尾的命令一律询问。
@@ -144,7 +145,7 @@ Claude 每次要改檔案、跑命令、訪問網路之前，都會判斷要不�
 | 模式 | 启动参数 `--permission-mode` | 行为 |
 | --- | --- | --- |
 | Manual（默认） | `manual`（即 `default`） | 按规则来，没规则就问 |
-| Accept edits | `acceptEdits` | 改文件不再问；命令照常问 |
+| Accept edits | `acceptEdits` | 改文件不再问；在工作目录内的 `mkdir`、`touch`、`rm`、`rmdir`、`mv`、`cp`、`sed` 命令也不再问（同官方），其余命令照常问 |
 | Plan | `plan` | 只读、只出计划，不动文件；需要先开启 `planModeAvailable` |
 | Auto | `auto` | 由分类器判断是否需要问，见 [auto-mode.md](auto-mode.md) |
 | Don't ask | `dontAsk` | 没有规则放行的操作直接拒绝，不弹框 |
