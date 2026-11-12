@@ -32,7 +32,7 @@ import { normalizeModelStringForAPI } from '../../utils/model/model.js'
 import { getInitialSettings } from '../../utils/settings/settings.js'
 import { HttpResponseError } from '../../utils/errors.js'
 import { DEFERRED_TOOL_PLACEHOLDER_NAME } from '../../tools/ToolSearchTool/constants.js'
-import { APPLY_PATCH_TOOL_NAME } from '../../tools/ApplyPatchTool/prompt.js'
+import { APPLY_PATCH_TOOL_NAME, isApplyPatchOnly } from '../../tools/ApplyPatchTool/prompt.js'
 import { FILE_EDIT_TOOL_NAME } from '../../tools/FileEditTool/constants.js'
 import { FILE_WRITE_TOOL_NAME } from '../../tools/FileWriteTool/prompt.js'
 
@@ -304,11 +304,10 @@ function anthropicToolsToResponsesTools(
   { keepDeferred = true }: { keepDeferred?: boolean } = {},
 ): any[] | undefined {
   if (!tools || tools.length === 0) return undefined
-  // Like Codex, GPT models edit files only through apply_patch unless
-  // openaiEditTools is "all". A request that lists Edit or Write without
-  // apply_patch (an agent restricted to Edit) keeps them.
+  // A request that lists Edit or Write without apply_patch (an agent
+  // restricted to Edit) keeps them.
   const patchOnly =
-    getInitialSettings().openaiEditTools !== 'all' &&
+    isApplyPatchOnly() &&
     tools.some((tool: any) => tool.name === APPLY_PATCH_TOOL_NAME)
   return tools.flatMap<any>((tool: any) => {
     if (!keepDeferred && tool.defer_loading === true) return []

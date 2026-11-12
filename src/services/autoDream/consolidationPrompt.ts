@@ -2,7 +2,7 @@
 // feature flags (dream.ts is behind a feature()-gated require).
 
 import {
-  DIR_EXISTS_GUIDANCE,
+  dirExistsGuidance,
   ENTRYPOINT_NAME,
   MAX_ENTRYPOINT_LINES,
 } from '../../memdir/memdir.js'
@@ -17,7 +17,7 @@ export function buildConsolidationPrompt(
 You are performing a dream — a reflective pass over your memory files. Synthesize what you've learned recently into durable, well-organized memories so that future sessions can orient quickly.
 
 Memory directory: \`${memoryRoot}\`
-${DIR_EXISTS_GUIDANCE}
+${dirExistsGuidance()}
 
 Session transcripts: \`${transcriptDir}\` (large JSONL files — grep narrowly, don't read whole files)
 

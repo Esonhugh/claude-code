@@ -1,6 +1,6 @@
 import {
   buildSearchingPastContextSection,
-  DIRS_EXIST_GUIDANCE,
+  dirsExistGuidance,
   ENTRYPOINT_NAME,
   MAX_ENTRYPOINT_LINES,
 } from './memdir.js'
@@ -60,7 +60,7 @@ export function buildCombinedMemoryPrompt(
   const lines = [
     '# Memory',
     '',
-    `You have a persistent, file-based memory system with two directories: a private directory at \`${autoDir}\` and a shared team directory at \`${teamDir}\`. ${DIRS_EXIST_GUIDANCE}`,
+    `You have a persistent, file-based memory system with two directories: a private directory at \`${autoDir}\` and a shared team directory at \`${teamDir}\`. ${dirsExistGuidance()}`,
     '',
     "You should build up this memory system over time so that future conversations can have a complete picture of who the user is, how they'd like to collaborate with you, what behaviors to avoid or repeat, and the context behind the work the user gives you.",
     '',

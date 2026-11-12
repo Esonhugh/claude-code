@@ -1,6 +1,15 @@
+import { getAPIProvider } from '../../utils/model/providers.js'
+import { getInitialSettings } from '../../utils/settings/settings.js'
+
 // In its own file to avoid circular dependencies. Name and `input` parameter
 // match the apply_patch tool GPT models are trained on.
 export const APPLY_PATCH_TOOL_NAME = 'apply_patch'
+
+// Like Codex, GPT models edit files only through apply_patch unless
+// openaiEditTools is "all".
+export function isApplyPatchOnly(): boolean {
+  return getAPIProvider() === 'openai' && getInitialSettings().openaiEditTools !== 'all'
+}
 
 export const APPLY_PATCH_DESCRIPTION = `Edit files with a patch. One call can add, update, move and delete several files, so put all related changes in one patch.
 

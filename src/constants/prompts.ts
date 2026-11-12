@@ -11,7 +11,7 @@ import {
   AGENT_TOOL_NAME,
   VERIFICATION_AGENT_TYPE,
 } from '../tools/AgentTool/constants.js'
-import { APPLY_PATCH_TOOL_NAME } from '../tools/ApplyPatchTool/prompt.js'
+import { APPLY_PATCH_TOOL_NAME, isApplyPatchOnly } from '../tools/ApplyPatchTool/prompt.js'
 import { FILE_WRITE_TOOL_NAME } from '../tools/FileWriteTool/prompt.js'
 import { FILE_READ_TOOL_NAME } from '../tools/FileReadTool/prompt.js'
 import { FILE_EDIT_TOOL_NAME } from '../tools/FileEditTool/constants.js'
@@ -297,7 +297,7 @@ export function getUsingYourToolsSection(enabledTools: Set<string>): string {
     // On the OpenAI path apply_patch replaces Edit and Write unless openaiEditTools is "all".
     ...(!enabledTools.has(APPLY_PATCH_TOOL_NAME)
       ? [FILE_EDIT_TOOL_NAME, FILE_WRITE_TOOL_NAME]
-      : getInitialSettings().openaiEditTools === 'all'
+      : !isApplyPatchOnly()
         ? [FILE_EDIT_TOOL_NAME, FILE_WRITE_TOOL_NAME, APPLY_PATCH_TOOL_NAME]
         : [APPLY_PATCH_TOOL_NAME]),
     ...(embedded ? [] : [GLOB_TOOL_NAME, GREP_TOOL_NAME]),

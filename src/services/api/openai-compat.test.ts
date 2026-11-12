@@ -785,11 +785,15 @@ try {
     } as any)
     return requests[0]!.body.tools.map((tool: any) => tool.name)
   }
+  const savedProvider = process.env.CLAUDE_CODE_USE_OPENAI
+  process.env.CLAUDE_CODE_USE_OPENAI = '1'
   assert.deepEqual(await editToolNames(['Read', 'Edit', 'Write', 'apply_patch']), ['Read', 'apply_patch'])
   assert.deepEqual(await editToolNames(['Read', 'Edit']), ['Read', 'Edit'])
   setSessionSettingsCache({ settings: { openaiEditTools: 'all' }, errors: [] })
   assert.deepEqual(await editToolNames(['Read', 'Edit', 'Write', 'apply_patch']), ['Read', 'Edit', 'Write', 'apply_patch'])
   resetSettingsCache()
+  if (savedProvider === undefined) delete process.env.CLAUDE_CODE_USE_OPENAI
+  else process.env.CLAUDE_CODE_USE_OPENAI = savedProvider
 
   requests.length = 0
   await client.beta.messages.create({
