@@ -3,6 +3,7 @@ import { createModMcpConnections } from '../services/mods/mcpConnect.js'
 import { rewindConversationTo as applyConversationRewind } from '../utils/conversationRewind.js'
 import { createModUiSelectionTracker } from '../services/mods/uiSelection.js'
 import { formatPluginNotice } from '../services/mods/uiNoticeText.js'
+import type { PromptAutocompleteInput, PromptAutocompleteResult } from '../services/mods/promptAutocomplete.js'
 import {copyModTerminalText} from '../services/mods/uiCopy.js'
 import inkInstances from '../ink/instances.js'
 import { copyModCallerChain } from '../services/mods/callerChain.js'
@@ -2339,6 +2340,10 @@ export function REPL({
   const onModPromptEdit = useCallback((edit: TextInputEdit) => {
     if (modPromptEditRuntime?.hasHooks('prompt.edit')) modPromptEditQueue.record(edit)
   }, [modPromptEditRuntime, modPromptEditQueue])
+  const onModAutocomplete = useCallback((input: PromptAutocompleteInput, signal: AbortSignal) =>
+    modPromptEditRuntime?.hasHooks('prompt.autocomplete')
+      ? modPromptEditRuntime.dispatch('prompt.autocomplete', input, async () => ({suggestions: []}), {signal}) as Promise<PromptAutocompleteResult>
+      : undefined, [modPromptEditRuntime])
 
   // Wrap setInputValue to co-locate suppression state updates.
   // Both setState calls happen in the same synchronous context so React
@@ -8221,6 +8226,7 @@ export function REPL({
                         onInputChange={setInputValue}
                         onInputStateChange={onInputStateChange}
                         onPromptEdit={onModPromptEdit}
+                        onModAutocomplete={onModAutocomplete}
                         mode={inputMode}
                         onModeChange={setInputMode}
                         stashedPrompt={stashedPrompt}
