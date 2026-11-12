@@ -280,4 +280,15 @@ await assert.rejects(
   /Workflow script uses Date\.now\(\), Math\.random\(\) and was not launched: Date\.now\(\), Math\.random\(\) and argless new Date\(\) are unavailable in workflow scripts \(they would break resume\)\. Pass timestamps in via args, stamp results after the workflow returns, and for randomness vary the agent prompt\/label by index\./,
 )
 
+// Like official, an official-style script without meta is told to add it,
+// not shown the engine's raw syntax error.
+const noMetaPath = join(tempRoot, 'docs', 'workflows', 'no-meta.js')
+await writeFile(noMetaPath, `const r = await agent('hi')
+return r
+`)
+await assert.rejects(
+  loadWorkflowScriptSpec(noMetaPath),
+  /Invalid workflow script: `export const meta = \{ name, description, phases \}` must be the FIRST statement in the script/,
+)
+
 console.log('workflowDsl.test.ts passed')
