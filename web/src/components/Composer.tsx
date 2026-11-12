@@ -484,6 +484,14 @@ export function InputBox({
     const m = /(^|\s)@([^\s"]*)$/.exec(before)
     setMention(m ? { start: before.length - m[2]!.length - 1, end: before.length, query: m[2]! } : undefined)
   }
+  // Where a pick puts the caret, set as soon as the new draft is in the box: a frame later could
+  // land after the person's next edit and undo its selection.
+  const caretAfterPick = useRef<number>(undefined)
+  useLayoutEffect(() => {
+    if (caretAfterPick.current === undefined) return
+    box.current?.setSelectionRange(caretAfterPick.current, caretAfterPick.current)
+    caretAfterPick.current = undefined
+  })
   const pickFile = (path: string) => {
     if (!mention) return
     const token = /\s/.test(path) ? mentionPath(path) : `@${path}`
@@ -492,7 +500,7 @@ export function InputBox({
     setDraft(next)
     setMention(undefined)
     setSelected(0)
-    requestAnimationFrame(() => box.current?.setSelectionRange(caret, caret))
+    caretAfterPick.current = caret
   }
   const pickTarget = (x: MentionTarget) => {
     if (!mention) return
@@ -500,7 +508,7 @@ export function InputBox({
     setMention(undefined)
     setSelected(0)
     if (!picked.some(p => p.id === x.id)) onTarget?.([...picked, x])
-    requestAnimationFrame(() => box.current?.setSelectionRange(mention.start, mention.start))
+    caretAfterPick.current = mention.start
   }
   const pickApp = (app: CodexAppMention) => {
     if (!mention) return
@@ -509,7 +517,7 @@ export function InputBox({
     setDraft(`${draft.slice(0, mention.start)}${token}${draft.slice(mention.end).replace(/^ /, '')}`)
     setMention(undefined)
     setSelected(0)
-    requestAnimationFrame(() => box.current?.setSelectionRange(caret, caret))
+    caretAfterPick.current = caret
   }
   const pickMention = (i: number) => {
     if (i < targetMatches.length) return pickTarget(targetMatches[i]!)
