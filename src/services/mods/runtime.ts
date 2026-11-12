@@ -1832,9 +1832,10 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
             ? { plugin: caller.plugin, registration: caller.registrationId }
             : owner.declaration.name)
         const invocation = invocationSignal.getStore()
-        // Logging and the operation that cancels the turn must acknowledge
-        // completion even after that turn's cancellation reaches this frame.
-        const signal = ['ui.log', 'turn.abort'].includes(op) && fn === hostIdentity ? undefined : context?.active && context.next
+        // Logging, the operation that cancels the turn, and closing or redrawing
+        // panes (a cancelled hook's finally cleanup) must still complete after
+        // that turn's cancellation reaches this frame.
+        const signal = ['ui.log', 'turn.abort', 'ui.close', 'ui.invalidate'].includes(op) && fn === hostIdentity ? undefined : context?.active && context.next
           ? getModCapabilitySignal(context.next)
           : context?.active && !invocation?.aborted ? invocation : undefined
         signal?.throwIfAborted()

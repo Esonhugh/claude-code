@@ -1029,7 +1029,8 @@ async function getMessagesForSlashCommand(
               // If load()/call() throws and onDone never fired, the outer
               // Promise hangs forever, leaving queryGuard stuck in
               // 'dispatching' and deadlocking the queue processor.
-              logError(e)
+              const interrupted = context.abortController.signal.aborted
+              if (!interrupted) logError(e)
               if (doneWasCalled) return
               doneWasCalled = true
               setToolJSX({
@@ -1037,6 +1038,23 @@ async function getMessagesForSlashCommand(
                 shouldHidePromptInput: false,
                 clearLocalJSX: true,
               })
+              // An interrupted run (e.g. a Mod command) keeps its input line, like other commands.
+              if (interrupted) {
+                void resolve({
+                  messages: [
+                    createUserMessage({
+                      content: prepareUserContent({
+                        inputString: formatCommandInput(command, args),
+                        precedingInputBlocks,
+                      }),
+                    }),
+                    createUserInterruptionMessage({ toolUse: false }),
+                  ],
+                  shouldQuery: false,
+                  command,
+                })
+                return
+              }
               void resolve({ messages: [], shouldQuery: false, command })
             })
         })
