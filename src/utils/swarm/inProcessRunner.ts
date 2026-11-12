@@ -72,9 +72,11 @@ import {
   createUserMessage,
 } from '../../utils/messages.js'
 import { evictTaskOutput } from '../../utils/task/diskOutput.js'
+import type { TaskState } from '../../tasks/types.js'
 import {
   evictTerminalTask,
   PANEL_GRACE_MS,
+  updateTaskState as updateAppTask,
 } from '../../utils/task/framework.js'
 import { tokenCountWithEstimation } from '../../utils/tokens.js'
 import { createAbortController } from '../abortController.js'
@@ -611,30 +613,15 @@ export type InProcessRunnerResult = {
 }
 
 /**
- * Updates task state in AppState.
+ * Updates task state in AppState, through the task framework so SDK consumers
+ * get the task_updated patch (status, is_idle).
  */
 function updateTaskState(
   taskId: string,
   updater: (task: InProcessTeammateTaskState) => InProcessTeammateTaskState,
   setAppState: SetAppStateFn,
 ): void {
-  setAppState(prev => {
-    const task = prev.tasks[taskId]
-    if (!task || task.type !== 'in_process_teammate') {
-      return prev
-    }
-    const updated = updater(task)
-    if (updated === task) {
-      return prev
-    }
-    return {
-      ...prev,
-      tasks: {
-        ...prev.tasks,
-        [taskId]: updated,
-      },
-    }
-  })
+  updateAppTask<TaskState>(taskId, setAppState, task => (task.type === 'in_process_teammate' ? updater(task) : task))
 }
 
 /**
