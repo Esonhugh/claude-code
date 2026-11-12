@@ -22,6 +22,7 @@ if (!process.env.SETTINGS_WRITER) {
     const expected = Array.from({ length: WRITERS * ROUNDS }, (_, i) => `p${Math.floor(i / ROUNDS)}-${i % ROUNDS}@m`).sort()
     const settings = JSON.parse(readFileSync(join(home, 'config/settings.json'), 'utf8'))
     expect(Object.keys(settings.enabledPlugins).sort()).toEqual(expected)
+    expect([...settings.permissions.allow].sort()).toEqual(expected.map(id => `Bash(echo ${id})`).sort())
     const registry = JSON.parse(readFileSync(join(home, 'config/plugins/installed_plugins.json'), 'utf8'))
     expect(Object.keys(registry.plugins).sort()).toEqual(expected)
   }, 60000)
@@ -29,13 +30,17 @@ if (!process.env.SETTINGS_WRITER) {
   ;(globalThis as any).MACRO = { VERSION: 'test' }
   const { setOriginalCwd } = await import('../../bootstrap/state.js')
   setOriginalCwd(process.env.HOME!)
-  const { updateSettingsForSource } = await import('./settings.js')
+  const { getSettingsForSource, updateSettingsForSource } = await import('./settings.js')
   const { addPluginInstallation } = await import('../plugins/installedPluginsManager.js')
+  const { addPermissionRulesToSettings } = await import('../permissions/permissionsLoader.js')
   const writer = process.env.SETTINGS_WRITER
   for (let round = 0; round < ROUNDS; round++) {
     const id = `p${writer}-${round}@m`
     const { error } = updateSettingsForSource('userSettings', { enabledPlugins: { [id]: true } })
     if (error) throw error
+    // Rule writers compute the new list from the settings this process has cached.
+    getSettingsForSource('userSettings')
+    if (!addPermissionRulesToSettings({ ruleValues: [{ toolName: 'Bash', ruleContent: `echo ${id}` }], ruleBehavior: 'allow' }, 'userSettings')) throw new Error('rule not added')
     addPluginInstallation(id, 'user', join(process.env.HOME!, 'cache', id), { version: '1.0.0' })
   }
 }

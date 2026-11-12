@@ -50,10 +50,11 @@ import {
   getCachedSettingsForSource,
   getPluginSettingsBase,
   getSessionSettingsCache,
+  isBlockedSettingsCandidate,
   isSettingsFileRetained,
   type ParsedSettings,
   resetSettingsCache,
-  retainSettingsFile,
+  retainSettingsSnapshot,
   setCachedParsedFile,
   setCachedSettingsForSource,
   setSessionSettingsCache,
@@ -623,7 +624,9 @@ export function getPolicySettingsOrigin():
  */
 export function updateSettingsForSource(
   source: EditableSettingSource,
-  settings: SettingsJson,
+  // An updater is called under the lock with the current settings, for
+  // changes computed from them (e.g. adding to a rule list).
+  settings: SettingsJson | ((existing: SettingsJson) => SettingsJson),
   options?: { atomicOnly?: boolean },
 ): { error: Error | null } {
   if (
@@ -648,25 +651,26 @@ export function updateSettingsForSource(
     const lockedError = withLockSync(
       filePath,
       () => {
-        // A file under ConfigChange review merges onto its accepted snapshot.
-        // Otherwise merge onto the file as it is on disk now, not this
-        // session's parse of it: another process may have written it since.
-        const retained = isSettingsFileRetained(filePath)
+        // Merge onto the file as it is on disk now, not this session's parse
+        // of it: another process may have written it since.
         const accepted = getCachedParsedFile(filePath)
-        const onDisk = retained ? undefined : readSettingsFile(filePath)
-        let existingSettings = onDisk
-          ? onDisk.settings
-          : getSettingsForSourceUncached(source)
-        // An outside edit the watcher hasn't reviewed yet is kept on disk, but
-        // it must not reach the session without its ConfigChange review.
-        const unreviewedEdit =
-          onDisk !== undefined &&
-          areOutsideEditsReviewed() &&
+        const onDisk = readSettingsFile(filePath)
+        // An outside edit this session has not accepted: one the watcher will
+        // review, or one under ConfigChange review right now.
+        const outsideEdit =
           accepted !== undefined &&
-          accepted.identity !== onDisk.identity
+          accepted.identity !== onDisk.identity &&
+          (isSettingsFileRetained(filePath) || areOutsideEditsReviewed())
+        // A candidate its ConfigChange hook blocked is dropped: the write
+        // builds on the accepted snapshot instead.
+        const dropOutsideEdit =
+          outsideEdit && isBlockedSettingsCandidate(filePath, onDisk.identity)
+        let existingSettings = dropOutsideEdit
+          ? getSettingsForSourceUncached(source)
+          : onDisk.settings
 
         // If validation failed, check if file exists with a JSON syntax error
-        if (!existingSettings && !retained) {
+        if (!existingSettings && !dropOutsideEdit) {
           let content: string | null = null
           try {
             content = readFileSync(filePath)
@@ -694,39 +698,46 @@ export function updateSettingsForSource(
           }
         }
 
-        const updatedSettings = mergeWith(
-          existingSettings || {},
-          settings,
-          (
-            _objValue: unknown,
-            srcValue: unknown,
-            key: string | number | symbol,
-            object: Record<string | number | symbol, unknown>,
-          ) => {
-            // Handle undefined as deletion
-            if (srcValue === undefined && object && typeof key === 'string') {
-              delete object[key]
-              return undefined
-            }
-            // For arrays, always replace with the provided array
-            // This puts the responsibility on the caller to compute the desired final state
-            if (Array.isArray(srcValue)) {
-              return srcValue
-            }
-            // For non-arrays, let lodash handle the default merge behavior
+        const mergeUpdate = (
+          _objValue: unknown,
+          srcValue: unknown,
+          key: string | number | symbol,
+          object: Record<string | number | symbol, unknown>,
+        ) => {
+          // Handle undefined as deletion
+          if (srcValue === undefined && object && typeof key === 'string') {
+            delete object[key]
             return undefined
-          },
-        )
+          }
+          // For arrays, always replace with the provided array
+          // This puts the responsibility on the caller to compute the desired final state
+          if (Array.isArray(srcValue)) {
+            return srcValue
+          }
+          // For non-arrays, let lodash handle the default merge behavior
+          return undefined
+        }
+        const update = (base: SettingsJson) =>
+          typeof settings === 'function' ? settings(clone(base)) : settings
+        const base = existingSettings || {}
+        const updatedSettings = mergeWith(base, update(base), mergeUpdate)
 
         const content = jsonStringify(updatedSettings, null, 2) + '\n'
         writeFileSyncAndFlush_DEPRECATED(filePath, content, {
           encoding: 'utf-8',
           atomicOnly: options?.atomicOnly,
         })
-        if (unreviewedEdit) {
-          // The detector reviews the merged file like any outside edit; until
-          // then the session keeps the settings it accepted.
-          retainSettingsFile(filePath)
+        if (outsideEdit && !dropOutsideEdit) {
+          // The detector reviews the merged file like any outside edit. Until
+          // then the session sees its accepted settings plus this update.
+          retainSettingsSnapshot(filePath, {
+            ...accepted,
+            settings: mergeWith(
+              clone(accepted.settings ?? {}),
+              update(accepted.settings ?? {}),
+              mergeUpdate,
+            ),
+          })
           return null
         }
         // The synchronous write has completed before a watcher callback can run.

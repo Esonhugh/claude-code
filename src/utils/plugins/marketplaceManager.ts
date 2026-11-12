@@ -2076,10 +2076,10 @@ export async function removeMarketplaceSource(name: string): Promise<void> {
     // Remove related plugins from enabledPlugins (format: "plugin@marketplace")
     if (settings.enabledPlugins) {
       const marketplaceSuffix = `@${name}`
-      const updatedPlugins = { ...settings.enabledPlugins }
+      const updatedPlugins: typeof settings.enabledPlugins = {}
       let removedPlugins = false
 
-      for (const pluginId in updatedPlugins) {
+      for (const pluginId in settings.enabledPlugins) {
         if (pluginId.endsWith(marketplaceSuffix)) {
           updatedPlugins[pluginId] = undefined
           removedPlugins = true

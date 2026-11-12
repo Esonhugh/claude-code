@@ -278,8 +278,7 @@ export async function installSelectedPlugins(
 
   // Get the correct settings source for this scope
   const settingSource = scopeToSettingSource(scope)
-  const settings = getSettingsForSource(settingSource)
-  const updatedEnabledPlugins = { ...settings?.enabledPlugins }
+  const updatedEnabledPlugins: Record<string, boolean> = {}
   const installed: string[] = []
   const failed: Array<{ name: string; error: string }> = []
 
@@ -332,7 +331,6 @@ export async function installSelectedPlugins(
 
   // Update settings with newly enabled plugins using the correct settings source
   updateSettingsForSource(settingSource, {
-    ...settings,
     enabledPlugins: updatedEnabledPlugins,
   })
 

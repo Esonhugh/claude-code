@@ -326,20 +326,23 @@ export function persistPermissionUpdate(update: InternalPermissionUpdate): void 
         `Persisting ${editableUpdate.directories.length} director${editableUpdate.directories.length === 1 ? 'y' : 'ies'} to ${editableUpdate.destination}`,
       )
       const existingSettings = getSettingsForSource(editableUpdate.destination)
-      const existingDirs =
+      const knownDirs =
         existingSettings?.permissions?.additionalDirectories || []
 
-      // Add new directories, avoiding duplicates
-      const dirsToAdd = editableUpdate.directories.filter(
-        dir => !existingDirs.includes(dir),
-      )
-
-      if (dirsToAdd.length > 0) {
-        const updatedDirs = [...existingDirs, ...dirsToAdd]
-        updateSettingsForSource(editableUpdate.destination, {
-          permissions: {
-            additionalDirectories: updatedDirs,
-          },
+      if (editableUpdate.directories.some(dir => !knownDirs.includes(dir))) {
+        // Computed under the settings lock from the file as it is then.
+        updateSettingsForSource(editableUpdate.destination, existing => {
+          const existingDirs = existing.permissions?.additionalDirectories || []
+          return {
+            permissions: {
+              additionalDirectories: [
+                ...existingDirs,
+                ...editableUpdate.directories.filter(
+                  dir => !existingDirs.includes(dir),
+                ),
+              ],
+            },
+          }
         })
       }
       break
@@ -350,27 +353,25 @@ export function persistPermissionUpdate(update: InternalPermissionUpdate): void 
       logForDebugging(
         `Removing ${editableUpdate.rules.length} ${editableUpdate.behavior} rule(s) from ${editableUpdate.destination}`,
       )
-      const existingSettings = getSettingsForSource(editableUpdate.destination)
-      const existingPermissions = existingSettings?.permissions || {}
-      const existingRules = existingPermissions[editableUpdate.behavior] || []
-
       // Convert rules to normalized strings for comparison
       // Normalize via parse→serialize roundtrip so "Bash(*)" and "Bash" match
       const rulesToRemove = new Set(
         editableUpdate.rules.map(permissionRuleValueToString),
       )
-      const filteredRules = existingRules.filter(rule => {
-        const normalized = permissionRuleValueToString(
-          permissionRuleValueFromString(rule),
-        )
-        return !rulesToRemove.has(normalized)
-      })
-
-      updateSettingsForSource(editableUpdate.destination, {
+      updateSettingsForSource(editableUpdate.destination, existing => ({
         permissions: {
-          [editableUpdate.behavior]: filteredRules,
+          [editableUpdate.behavior]: (
+            existing.permissions?.[editableUpdate.behavior] || []
+          ).filter(
+            rule =>
+              !rulesToRemove.has(
+                permissionRuleValueToString(
+                  permissionRuleValueFromString(rule),
+                ),
+              ),
+          ),
         },
-      })
+      }))
       break
     }
 
@@ -378,19 +379,15 @@ export function persistPermissionUpdate(update: InternalPermissionUpdate): void 
       logForDebugging(
         `Removing ${editableUpdate.directories.length} director${editableUpdate.directories.length === 1 ? 'y' : 'ies'} from ${editableUpdate.destination}`,
       )
-      const existingSettings = getSettingsForSource(editableUpdate.destination)
-      const existingDirs =
-        existingSettings?.permissions?.additionalDirectories || []
-
       // Remove specified directories
       const dirsToRemove = new Set(editableUpdate.directories)
-      const filteredDirs = existingDirs.filter(dir => !dirsToRemove.has(dir))
-
-      updateSettingsForSource(editableUpdate.destination, {
+      updateSettingsForSource(editableUpdate.destination, existing => ({
         permissions: {
-          additionalDirectories: filteredDirs,
+          additionalDirectories: (
+            existing.permissions?.additionalDirectories || []
+          ).filter(dir => !dirsToRemove.has(dir)),
         },
-      })
+      }))
       break
     }
 

@@ -71,7 +71,7 @@ export function withLockSync<T>(
   file: string,
   run: () => T,
   onUnlocked: (reason: unknown) => void,
-  waitMs = 3000,
+  waitMs = 1000,
 ): T {
   let release: (() => void) | undefined
   try {
