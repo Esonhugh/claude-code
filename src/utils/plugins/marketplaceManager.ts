@@ -2367,11 +2367,12 @@ export async function getPluginById(pluginId: string): Promise<{
  * - Syncing after network connectivity is restored
  * - Ensuring caches are up-to-date before browsing
  *
- * @returns Promise that resolves when all refresh attempts complete
+ * @returns The names of the marketplaces that could not be refreshed
  */
-export async function refreshAllMarketplaces(): Promise<void> {
+export async function refreshAllMarketplaces(): Promise<string[]> {
   const config = await loadKnownMarketplacesConfig()
   const refreshed = new Map<string, Partial<KnownMarketplace>>()
+  const failed: string[] = []
 
   for (const [name, entry] of Object.entries(config)) {
     // Seed-managed marketplaces are controlled by the seed image — refreshing
@@ -2417,6 +2418,7 @@ export async function refreshAllMarketplaces(): Promise<void> {
         installLocation: cachePath,
       })
     } catch (error) {
+      failed.push(name)
       logForDebugging(
         `Failed to refresh marketplace ${name}: ${errorMessage(error)}`,
         {
@@ -2431,6 +2433,7 @@ export async function refreshAllMarketplaces(): Promise<void> {
       if (latest[name]) latest[name] = { ...latest[name], ...update }
     }
   })
+  return failed
 }
 
 /**

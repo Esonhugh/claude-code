@@ -182,7 +182,7 @@ if (!process.env.MARKETPLACE_LIFECYCLE_TEST_CHILD) {
     expect(readKnown()['acme-mkt'].installLocation).toBe(githubClone)
     renameSync(remote, `${remote}.offline`)
     try {
-      await mm.refreshAllMarketplaces()
+      expect(await mm.refreshAllMarketplaces()).toEqual(['acme-mkt'])
     } finally {
       renameSync(`${remote}.offline`, remote)
     }
