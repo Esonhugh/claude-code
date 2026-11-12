@@ -88,6 +88,12 @@ test('applies several hunks in one file, seeking @@ context and ignoring trailin
   )
 })
 
+test('removing every line leaves an empty file, as in Codex', () => {
+  const chunk = { changeContext: null, oldLines: ['a', 'b'], newLines: [], isEndOfFile: false }
+  assert.equal(applyChunks('a\nb\n', [chunk], 'x'), '')
+  assert.equal(applyChunks('a\nb', [chunk], 'x'), '')
+})
+
 test('applies a multi-file patch and records the new file state', withDir(async dir => {
   writeFileSync(join(dir, 'a.txt'), 'keep\nold\n')
   writeFileSync(join(dir, 'crlf.txt'), 'one\r\ntwo\r\n')

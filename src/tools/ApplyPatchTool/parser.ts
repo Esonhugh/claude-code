@@ -167,8 +167,7 @@ function seekSequence(lines: string[], pattern: string[], start: number, eof: bo
 export function applyChunks(content: string, chunks: PatchChunk[], path: string): string {
   const lines = content.split('\n')
   // A trailing newline leaves an empty last element; hunks never address it.
-  const hadTrailingNewline = lines.length > 0 && lines[lines.length - 1] === ''
-  if (hadTrailingNewline) lines.pop()
+  if (lines[lines.length - 1] === '') lines.pop()
 
   const replacements: Array<[number, number, string[]]> = []
   let lineIndex = 0
@@ -209,5 +208,5 @@ export function applyChunks(content: string, chunks: PatchChunk[], path: string)
     const [start, count, insert] = replacements[k]!
     lines.splice(start, count, ...insert)
   }
-  return lines.join('\n') + (hadTrailingNewline || lines.length > 0 ? '\n' : '')
+  return lines.length > 0 ? lines.join('\n') + '\n' : ''
 }
