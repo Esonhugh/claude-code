@@ -1834,10 +1834,15 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
         const invocation = invocationSignal.getStore()
         // Logging, the operation that cancels the turn, and closing or redrawing
         // panes (a cancelled hook's finally cleanup) must still complete after
-        // that turn's cancellation reaches this frame.
-        const signal = ['ui.log', 'turn.abort', 'ui.close', 'ui.invalidate'].includes(op) && fn === hostIdentity ? undefined : context?.active && context.next
+        // that turn's cancellation reaches this frame. Status, toasts, state and
+        // store calls made after the cancellation (finally cleanup) run without
+        // it too; ones already in flight still end with it.
+        const callerSignal = context?.active && context.next
           ? getModCapabilitySignal(context.next)
           : context?.active && !invocation?.aborted ? invocation : undefined
+        const signal = fn === hostIdentity && (['ui.log', 'turn.abort', 'ui.close', 'ui.invalidate'].includes(op) ||
+          callerSignal?.aborted && ['ui.status', 'ui.toast', 'state.get', 'state.set', 'store.get', 'store.set'].includes(op))
+          ? undefined : callerSignal
         signal?.throwIfAborted()
         const resumeBudget = pauseModBudget(context?.active ? context.next : undefined)
         const modelAbort = op === 'model.complete' && fn === hostIdentity

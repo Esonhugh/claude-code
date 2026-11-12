@@ -621,11 +621,19 @@ export function joinPromptValues(values: PromptValue[]): PromptValue {
   return values.flatMap(toBlocks)
 }
 
+// Official 2.1.322: a queued slash command runs on its own turn.
+function isSlashPromptValue(value: PromptValue): boolean {
+  if (typeof value === 'string') return value.trim().startsWith('/')
+  const last = value.at(-1)
+  return last?.type === 'text' && last.text.trim().startsWith('/')
+}
+
 /**
  * Whether `next` can be batched into the same ask() call as `head`. Only
  * prompt-mode commands batch, and only when the workload tag matches (so the
  * combined turn is attributed correctly) and the input-processing flags match.
  * Attributed messages stay separate so each message retains its provenance.
+ * Slash commands never batch.
  */
 export function canBatchWith(
   head: QueuedCommand,
@@ -642,7 +650,9 @@ export function canBatchWith(
     next.workload === head.workload &&
     next.isMeta === head.isMeta &&
     next.skipSlashCommands === head.skipSlashCommands &&
-    next.skipAttachments === head.skipAttachments
+    next.skipAttachments === head.skipAttachments &&
+    !isSlashPromptValue(head.value) &&
+    !isSlashPromptValue(next.value)
   )
 }
 
