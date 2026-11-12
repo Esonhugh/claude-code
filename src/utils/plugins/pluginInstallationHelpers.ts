@@ -654,10 +654,7 @@ export async function installResolvedPlugin({
   const { error } = updateSettingsForSource(
     settingSource,
     {
-      enabledPlugins: {
-        ...getSettingsForSource(settingSource)?.enabledPlugins,
-        ...closureEnabled,
-      },
+      enabledPlugins: closureEnabled,
     },
     { atomicOnly: true },
   )
