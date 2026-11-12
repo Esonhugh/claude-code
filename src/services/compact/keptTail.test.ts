@@ -71,6 +71,9 @@ test('keep-recent budget keeps the trailing rounds that reach the budget', () =>
   const two = roundsForRecentBudget(msgs, 150)
   expect(two).toBeGreaterThan(1)
   expect(two).toBeLessThan(10)
-  expect(roundsForRecentBudget(msgs, 1_000_000)).toBe(11)
+  // A budget over the whole conversation still leaves something to summarize,
+  // so the trailing rounds are kept instead of nothing.
+  const all = roundsForRecentBudget(msgs, 1_000_000)
+  expect(splitKeptTail(msgs, all).toKeep.length).toBeGreaterThan(0)
 })
 

@@ -470,7 +470,8 @@ export function splitKeptTail(
 
 /**
  * Number of trailing API rounds whose tokens first reach `budgetTokens`
- * (at least one), like dsh's retained tail.
+ * (at least one), like dsh's retained tail. Never so many that no reply is
+ * left to summarize: splitKeptTail would then keep nothing.
  */
 export function roundsForRecentBudget(
   messages: Message[],
@@ -486,7 +487,8 @@ export function roundsForRecentBudget(
     tokens += roughTokenCountEstimationForMessages(groups[i]!)
     rounds++
   }
-  return Math.max(1, rounds)
+  const firstReply = groups.findIndex(g => g.some(m => m.type === 'assistant'))
+  return Math.max(1, Math.min(rounds, groups.length - 1 - firstReply))
 }
 
 /**
