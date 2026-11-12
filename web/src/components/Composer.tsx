@@ -380,6 +380,8 @@ export function InputBox({
   quote,
   onQuote,
   decorations,
+  modRows = [],
+  onModRow,
 }: {
   t: T
   start?: boolean
@@ -422,6 +424,9 @@ export function InputBox({
   onQuote?: (quote: string | undefined) => void
   /** How Mods mark the draft (`prompt.edit` decorations), drawn under the text. */
   decorations?: PromptDecoration[]
+  /** Completions a Mod offers for the token being typed (`prompt.complete`). */
+  modRows?: { text: string; label?: string; description?: string }[]
+  onModRow?: (row: { text: string }) => void
 }) {
   const picker = useRef<HTMLInputElement>(null)
   const imagePicker = useRef<HTMLInputElement>(null)
@@ -462,7 +467,8 @@ export function InputBox({
   const appMatches = mention && dismissed !== draft ? matchApps(apps, mention.query) : []
   const mentionCount = targetMatches.length + appMatches.length + fileMatches.length
   const matches = query === undefined ? [] : filterCommands(commands, query, hiddenCommands)
-  const listLength = mentionCount || matches.length
+  const modMatches = mentionCount || matches.length || dismissed === draft || !onModRow ? [] : modRows
+  const listLength = mentionCount || matches.length || modMatches.length
   const mentions = Boolean(listFiles || targets?.length || apps.length)
   const active = Math.min(selected, listLength - 1)
   useEffect(() => {
@@ -640,6 +646,24 @@ export function InputBox({
         return
       }
     }
+    if (modMatches.length && !e.nativeEvent.isComposing) {
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        e.preventDefault()
+        setSelected(moveSelection(active, e.key === 'ArrowDown' ? 1 : -1, modMatches.length))
+        return
+      }
+      if ((e.key === 'Enter' || e.key === 'Tab') && !e.shiftKey) {
+        e.preventDefault()
+        onModRow?.(modMatches[active]!)
+        setSelected(0)
+        return
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        setDismissed(draft)
+        return
+      }
+    }
     if (e.key === 'Backspace' && picked.length && box.current?.selectionEnd === 0) {
       e.preventDefault()
       onTarget?.(picked.slice(0, -1))
@@ -722,7 +746,7 @@ export function InputBox({
         )
       })}
     </div>
-  ) : matches.length > 0 && (
+  ) : matches.length > 0 ? (
     <div className="pop" id={paletteId} role="listbox" aria-label={t('completions')}>
       {matches.map((command, i) => {
         const isSkill = skillSet.has(command.name)
@@ -758,6 +782,25 @@ export function InputBox({
           </button>,
         ]
       })}
+    </div>
+  ) : modMatches.length > 0 && (
+    <div className="pop" id={paletteId} role="listbox" aria-label={t('modSuggestions')}>
+      {modMatches.map((row, i) => (
+        <button
+          type="button"
+          key={row.text}
+          id={`${paletteId}-${i}`}
+          className="opt"
+          role="option"
+          aria-selected={i === active}
+          onMouseDown={e => e.preventDefault()}
+          onMouseEnter={() => setSelected(i)}
+          onClick={() => onModRow?.(row)}
+        >
+          <b title={row.text}>{row.label ?? row.text}</b>
+          <span title={row.description}>{row.description}</span>
+        </button>
+      ))}
     </div>
   )
   const plus = (
