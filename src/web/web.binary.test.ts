@@ -1617,6 +1617,22 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       // @ lists workspace files; Enter puts the mention in the box.
       // Keep the pointer off the palette so hovering does not move the selection.
       await page.mouse.move(0, 0)
+      // A frame can come late on a busy page: here it lands just after the box is selected to be
+      // cleared, and the caret a pick sets must not undo that selection.
+      await page.evaluate(() => {
+        const w = window as unknown as { rafSaved?: typeof requestAnimationFrame }
+        w.rafSaved = window.requestAnimationFrame
+        window.requestAnimationFrame = cb => {
+          const box = document.querySelector<HTMLTextAreaElement>('.composer textarea')!
+          const late = () => {
+            if (box.selectionStart !== 0 || box.selectionEnd !== box.value.length || !box.value) return
+            document.removeEventListener('selectionchange', late)
+            cb(performance.now())
+          }
+          document.addEventListener('selectionchange', late)
+          return 0
+        }
+      })
       await input.fill('look at @READ')
       const option = page.getByRole('option', { name: /@README\.md/ })
       await option.waitFor({ timeout: 10_000 })
@@ -1627,6 +1643,9 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       await input.fill('')
       await input.press('ArrowUp')
       expect(await input.inputValue()).toBe('TODOS please')
+      await page.evaluate(() => {
+        window.requestAnimationFrame = (window as unknown as { rafSaved: typeof requestAnimationFrame }).rafSaved
+      })
       await input.press('ArrowUp')
       expect(await input.inputValue()).toBe('please EDITME')
       await input.press('ArrowDown')

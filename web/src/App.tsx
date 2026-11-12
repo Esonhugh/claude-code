@@ -1,4 +1,5 @@
 import { type CSSProperties, type DragEvent, Fragment, type ReactNode, useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from 'react'
+import { flushSync } from 'react-dom'
 import {
   type AuthProvider,
   createSession,
@@ -1640,9 +1641,12 @@ export function App() {
           // The page's own change (a Mod's rewrite or fill coming back) keeps the marks it came with.
           if (person || decorations || !draft) setModPrompt(m => ({ ...m, [view]: { ...m[view], decorations } }))
           if (typeof res.text === 'string' && res.text !== draft) {
-            setDrafts(d => (d[view] === draft ? { ...d, [view]: res.text as string } : d))
-            const caret = typeof res.cursor === 'number' ? res.cursor : res.text.length
-            requestAnimationFrame(() => document.querySelector<HTMLTextAreaElement>('.composer textarea')?.setSelectionRange(caret, caret))
+            const text = res.text
+            // The caret goes in with the text: a frame later could land after the person's next edit.
+            flushSync(() => setDrafts(d => (d[view] === draft ? { ...d, [view]: text } : d)))
+            const box = document.querySelector<HTMLTextAreaElement>('.composer textarea')
+            const caret = typeof res.cursor === 'number' ? res.cursor : text.length
+            if (box?.value === text) box.setSelectionRange(caret, caret)
           }
         },
         () => {},
@@ -1675,12 +1679,10 @@ export function App() {
     const from = Math.min(modBox?.start ?? cursor, cursor)
     const next = draft.slice(0, from) + row.text + draft.slice(cursor)
     setModPrompt(m => ({ ...m, [view]: { ...m[view], rows: undefined } }))
-    setDraftByPerson(next)
+    flushSync(() => setDraftByPerson(next))
     const caret = from + row.text.length
-    requestAnimationFrame(() => {
-      box?.focus()
-      box?.setSelectionRange(caret, caret)
-    })
+    box?.focus()
+    box?.setSelectionRange(caret, caret)
   }
   const prompts = useMemo(
     () => (chatItems ?? []).flatMap(i => (i.kind === 'user' && i.text ? [i.text] : [])),
