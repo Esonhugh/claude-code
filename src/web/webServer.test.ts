@@ -580,6 +580,10 @@ describe('claude web server', () => {
     expect(ranged.status).toBe(206)
     expect(await ranged.text()).toBe('ell')
 
+    for (const path of ['/api/history/%ZZ/messages', '/api/sessions/%E0%A4%A/ws', `/api/files/%ZZ`]) {
+      expect([path, (await fetch(`${r.base}${path}`, { headers: { cookie } })).status]).toEqual([path, 400])
+    }
+
     writeFileSync(join(r.workspace, 'page.html'), '<script>alert(1)</script>')
     const page = await get(join(r.workspace, 'page.html'))
     expect(page.headers.get('content-type')).toBe('text/plain; charset=utf-8')

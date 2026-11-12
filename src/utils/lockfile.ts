@@ -45,6 +45,22 @@ export function check(file: string, options?: CheckOptions): Promise<boolean> {
 const lockWait = new Int32Array(new SharedArrayBuffer(4))
 
 /**
+ * `lockSync`, retried while another process holds the lock (ELOCKED), for up
+ * to `waitMs`. Throws the last error once the wait is over.
+ */
+export function lockSyncWaiting(file: string, options: LockOptions, waitMs = 3000): () => void {
+  const deadline = Date.now() + waitMs
+  for (;;) {
+    try {
+      return lockSync(file, options)
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ELOCKED' || Date.now() >= deadline) throw error
+      Atomics.wait(lockWait, 0, 0, 5)
+    }
+  }
+}
+
+/**
  * Runs `run` while holding a cross-process lock on `file` (which need not
  * exist; its directory must). Waits up to `waitMs` for another process to
  * release it. If the lock cannot be taken (busy past the wait, or the lock
@@ -57,25 +73,21 @@ export function withLockSync<T>(
   onUnlocked: (reason: unknown) => void,
   waitMs = 1000,
 ): T {
-  const deadline = Date.now() + waitMs
   let release: (() => void) | undefined
-  for (;;) {
-    try {
-      release = lockSync(file, {
+  try {
+    release = lockSyncWaiting(
+      file,
+      {
         realpath: false,
         lockfilePath: `${file}.lock`,
         // A lock left by a crashed process is taken over after 2s.
         stale: 2000,
         onCompromised: onUnlocked,
-      })
-      break
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ELOCKED' || Date.now() >= deadline) {
-        onUnlocked(error)
-        break
-      }
-      Atomics.wait(lockWait, 0, 0, 5)
-    }
+      },
+      waitMs,
+    )
+  } catch (error) {
+    onUnlocked(error)
   }
   try {
     return run()

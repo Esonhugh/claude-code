@@ -400,4 +400,26 @@ if (process.env[childFlag] !== '1') {
       http.stop(true)
     }
   },30_000)
+
+  test('the session ingress token is sent only to the CCR MCP proxy', async () => {
+    const seen: Record<string, string | null> = {}
+    const http = Bun.serve({port:0, hostname:'127.0.0.1', fetch(req) {
+      const path = new URL(req.url).pathname
+      seen[path] ??= req.headers.get('authorization')
+      return new Response('no', {status:404})
+    }})
+    process.env.CLAUDE_CODE_SESSION_ACCESS_TOKEN = 'ingress-test-token'
+    const config = (path: string) => ({type:'http', url:`http://127.0.0.1:${http.port}${path}`, scope:'dynamic'}) as Config
+    try {
+      for (const [name, path] of [['repo-server', '/mcp'], ['ccr-proxy', '/v2/ccr-sessions/s1/mcp']] as const) {
+        await connectToServer(name, config(path))
+        await clearServerCache(name, config(path))
+      }
+      expect(seen['/mcp']).toBeNull()
+      expect(seen['/v2/ccr-sessions/s1/mcp']).toBe('Bearer ingress-test-token')
+    } finally {
+      delete process.env.CLAUDE_CODE_SESSION_ACCESS_TOKEN
+      http.stop(true)
+    }
+  },30_000)
 }
