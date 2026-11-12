@@ -377,7 +377,8 @@ export const GrepTool = buildTool({
     if (output_mode === 'files_with_matches') {
       args.push('-l')
     } else if (output_mode === 'count') {
-      args.push('-c')
+      // ripgrep drops the file name when searching a single file; the counts below parse path:count.
+      args.push('-c', '--with-filename')
     }
 
     // Add line numbers if requested

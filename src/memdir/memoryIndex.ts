@@ -203,9 +203,14 @@ async function refresh(index: Database, files: SourceFile[]): Promise<void> {
           // Another session, or a concurrent search in this one, may have appended these lines since `known` was read.
           const current = index.query('SELECT size, lines FROM files WHERE path = ?').get(file.path) as FileRow | null
           if (current?.size !== prev!.size || current.lines !== prev!.lines) continue
-        } else if (prev) {
-          // path is UNINDEXED, so this scans every chunk: only a file indexed before has rows to drop.
-          index.run('DELETE FROM chunks WHERE path = ?', [file.path])
+        } else {
+          // Another session, or a concurrent search, may have indexed this file since `known` was read.
+          const current = index.query('SELECT mtime, size FROM files WHERE path = ?').get(file.path) as FileRow | null
+          if (current) {
+            if (current.mtime === mtime && current.size === size) continue
+            // path is UNINDEXED, so this scans every chunk: only a file indexed before has rows to drop.
+            index.run('DELETE FROM chunks WHERE path = ?', [file.path])
+          }
         }
         for (const chunk of chunks) {
           // body is searched folded (simplified script, no accents); text keeps the original for snippets.
@@ -300,7 +305,7 @@ export function hasCjk(text: string): boolean {
 }
 
 function terms(query: string): string[] {
-  return [...new Set(foldForSearch(query).split(/\s+/).filter(Boolean).flatMap(splitCjk))]
+  return [...new Set(foldForSearch(query).split(/[\s\p{Cc}]+/u).filter(Boolean).flatMap(splitCjk))]
 }
 
 export async function searchMemory(params: {

@@ -1,6 +1,6 @@
 import { FILE_EDIT_TOOL_NAME } from '../FileEditTool/constants.js'
 import { FILE_WRITE_TOOL_NAME } from '../FileWriteTool/prompt.js'
-import { isENOENT } from '../../utils/errors.js'
+import { getErrnoCode, isENOENT } from '../../utils/errors.js'
 import { type LineEndingType, notTextMessage, readFileSyncWithMetadata } from '../../utils/fileRead.js'
 import { expandPath } from '../../utils/path.js'
 import { applyChunks, PatchParseError, parsePatch, type PatchOperation } from './parser.js'
@@ -25,6 +25,9 @@ function readExisting(absolutePath: string): ReturnType<typeof readFileSyncWithM
     return readFileSyncWithMetadata(absolutePath)
   } catch (e) {
     if (isENOENT(e)) return null
+    const code = getErrnoCode(e)
+    if (code === 'EISDIR') throw new PatchParseError(`${absolutePath} is a directory, not a file.`)
+    if (code === 'ENOTDIR') throw new PatchParseError(`${absolutePath}: a parent path is a file, not a directory.`)
     throw e
   }
 }
@@ -80,7 +83,12 @@ function planFile(op: PatchOperation): PlannedFile {
   if (absoluteMovePath && readExisting(absoluteMovePath)) {
     throw new PatchParseError(`Cannot move ${op.path} to ${op.movePath}: the destination already exists.`)
   }
-  return { ...base, updated: op.chunks.length ? applyChunks(existing.content, op.chunks, op.path) : existing.content }
+  // Hunks address lines without the byte order mark; keep it on the first line.
+  const bom = existing.content.startsWith('\uFEFF') ? '\uFEFF' : ''
+  return {
+    ...base,
+    updated: op.chunks.length ? bom + applyChunks(existing.content.slice(bom.length), op.chunks, op.path) : existing.content,
+  }
 }
 
 export function touchedPaths(patch: string): string[] {
