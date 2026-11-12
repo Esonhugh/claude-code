@@ -134,7 +134,10 @@ import { recordContentReplacement } from './utils/sessionStorage.js'
 import { handleStopHooks } from './query/stopHooks.js'
 import { MAIN_RECIPIENT, SEND_MESSAGE_TOOL_NAME } from './tools/SendMessageTool/constants.js'
 import { TEAM_LEAD_NAME } from './utils/swarm/constants.js'
-import { isInProcessTeammate } from './utils/teammateContext.js'
+import { getTeammateContext, isInProcessTeammate } from './utils/teammateContext.js'
+import { getTaskListId, listTasks } from './utils/tasks.js'
+import { isLocalShellTask } from './tasks/LocalShellTask/guards.js'
+import { isTerminalTask } from './tasks/TerminalTask.js'
 import { buildQueryConfig } from './query/config.js'
 import { productionDeps, type QueryDeps } from './query/deps.js'
 import type { Terminal, Continue } from './query/transitions.js'
@@ -2218,6 +2221,14 @@ async function* queryLoop(
       toolResults.every(
         result => result.type === 'user' && Array.isArray(result.message.content) &&
           !result.message.content.some(block => block.type === 'tool_result' && block.is_error),
+      ) &&
+      // A progress report while work is still going is not the end: the turn
+      // ending would kill its background shells and strand its task.
+      !Object.values(toolUseContext.getAppState().tasks).some(
+        t => (isLocalShellTask(t) || isTerminalTask(t)) && t.agentId === toolUseContext.agentId && t.status === 'running',
+      ) &&
+      !(await listTasks(getTaskListId())).some(
+        t => t.status === 'in_progress' && (t.owner === getTeammateContext()?.agentName || t.owner === getTeammateContext()?.agentId),
       )
     ) {
       const stopHookResult = yield* handleStopHooks(
