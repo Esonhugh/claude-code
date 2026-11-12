@@ -401,6 +401,30 @@ if (process.env[childFlag] !== '1') {
     }
   },30_000)
 
+  test('a stdio server that dies after connecting reports its stderr as the close reason', async () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(),'cc-mcp-close-')))
+    const file = join(root,'server.mjs')
+    writeFileSync(file,`
+      process.stdin.on('data', chunk => {
+        for (const line of String(chunk).split('\\n').filter(Boolean)) {
+          const msg = JSON.parse(line)
+          if (msg.method === 'initialize') process.stdout.write(JSON.stringify({jsonrpc:'2.0', id:msg.id, result:{protocolVersion:msg.params.protocolVersion, capabilities:{tools:{}}, serverInfo:{name:'dies', version:'1'}}}) + '\\n')
+          if (msg.method === 'notifications/initialized') setTimeout(() => { process.stderr.write('Error: lost upstream session\\n'); process.exit(3) }, 50)
+        }
+      })`)
+    const config = {type:'stdio', command:process.execPath, args:[file], env:{MCP_PROTOCOL_NEGOTIATION:'legacy'}, scope:'dynamic'} as Config
+    try {
+      const connection = await connectToServer('dies-later', config)
+      if (connection.type !== 'connected') throw new Error(`not connected: ${JSON.stringify(connection)}`)
+      const closed = new Promise<void>(resolve => { connection.client.onclose = resolve })
+      await closed
+      expect(client.stdioCloseReason(connection.client)).toBe('Error: lost upstream session')
+    } finally {
+      await clearServerCache('dies-later', config)
+      rmSync(root,{recursive:true,force:true})
+    }
+  },30_000)
+
   test('the session ingress token is sent only to the CCR MCP proxy', async () => {
     const seen: Record<string, string | null> = {}
     const http = Bun.serve({port:0, hostname:'127.0.0.1', fetch(req) {
