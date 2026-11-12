@@ -172,6 +172,8 @@ export function HooksBody({ z, flash }: ExtProps) {
       return true
     } catch (e) {
       flash(errorText(e))
+      // Show the hooks as they are now (another process may have changed them).
+      await load()
       return false
     }
   }
