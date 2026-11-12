@@ -132,7 +132,7 @@ export function findWorkerPermissionTool(
 }
 
 export function frameForLead(formatted: string): string {
-  return isTeammate() ? formatted : formatPeerPrompt(formatted)
+  return runOutsideTeammateContext(isTeammate) ? formatted : formatPeerPrompt(formatted)
 }
 
 type Props = {
@@ -165,612 +165,618 @@ export function useInboxPoller({
   const inboxMessageCount = useAppState(s => s.inbox.messages.length)
   const terminal = useTerminalNotification()
 
+  // A slow read or mark must not let the next tick deliver the same messages again.
+  const pollInFlight = useRef(false)
   const poll = useCallback(async () => {
-    if (!enabled) return
+    if (!enabled || pollInFlight.current) return
+    pollInFlight.current = true
+    try {
 
-    // Use ref to avoid dependency on appState object (prevents infinite loop)
-    const currentAppState = store.getState()
-    const agentName = getAgentNameToPoll(currentAppState)
-    if (!agentName) return
+      // Use ref to avoid dependency on appState object (prevents infinite loop)
+      const currentAppState = store.getState()
+      const agentName = getAgentNameToPoll(currentAppState)
+      if (!agentName) return
 
-    const unread = await readUnreadMessages(
-      agentName,
-      currentAppState.teamContext?.teamName,
-    )
-
-    if (unread.length === 0) return
-
-    logForDebugging(`[InboxPoller] Found ${unread.length} unread message(s)`)
-
-    // Check for plan approval responses and transition out of plan mode if approved
-    // Security: Only accept approval responses from the team lead
-    if (isTeammate() && isPlanModeRequired()) {
-      for (const msg of unread) {
-        const approvalResponse = isPlanApprovalResponse(msg.text)
-        // Verify the message is from the team lead to prevent teammates from forging approvals
-        if (approvalResponse && msg.from === 'team-lead') {
-          logForDebugging(
-            `[InboxPoller] Received plan approval response from team-lead: approved=${approvalResponse.approved}`,
-          )
-          if (approvalResponse.approved) {
-            const next = planApprovedContext(
-              store.getState().toolPermissionContext,
-              approvalResponse.permissionMode,
-            )
-            setAppState(prev => ({ ...prev, toolPermissionContext: next }))
-            logForDebugging(
-              `[InboxPoller] Plan approved by team lead, exited plan mode to ${next.mode}`,
-            )
-          } else {
-            logForDebugging(
-              `[InboxPoller] Plan rejected by team lead: ${approvalResponse.feedback || 'No feedback provided'}`,
-            )
-          }
-        } else if (approvalResponse) {
-          logForDebugging(
-            `[InboxPoller] Ignoring plan approval response from non-team-lead: ${msg.from}`,
-          )
-        }
-      }
-    }
-
-    // Helper to mark messages as read in the inbox file.
-    // Called after messages are successfully delivered or reliably queued.
-    const markRead = () => {
-      void markMessagesAsRead(agentName, currentAppState.teamContext?.teamName, unread)
-    }
-
-    // Separate permission messages from regular teammate messages
-    const permissionRequests: TeammateMessage[] = []
-    const permissionResponses: TeammateMessage[] = []
-    const sandboxPermissionRequests: TeammateMessage[] = []
-    const sandboxPermissionResponses: TeammateMessage[] = []
-    const shutdownRequests: TeammateMessage[] = []
-    const shutdownApprovals: TeammateMessage[] = []
-    const teamPermissionUpdates: TeammateMessage[] = []
-    const modeSetRequests: TeammateMessage[] = []
-    const planApprovalRequests: TeammateMessage[] = []
-    const regularMessages: TeammateMessage[] = []
-
-    for (const m of unread) {
-      const permReq = isPermissionRequest(m.text)
-      const permResp = isPermissionResponse(m.text)
-      const sandboxReq = isSandboxPermissionRequest(m.text)
-      const sandboxResp = isSandboxPermissionResponse(m.text)
-      const shutdownReq = isShutdownRequest(m.text)
-      const shutdownApproval = isShutdownApproved(m.text)
-      const teamPermUpdate = isTeamPermissionUpdate(m.text)
-      const modeSetReq = isModeSetRequest(m.text)
-      const planApprovalReq = isPlanApprovalRequest(m.text)
-
-      if (permReq) {
-        permissionRequests.push(m)
-      } else if (permResp) {
-        permissionResponses.push(m)
-      } else if (sandboxReq) {
-        sandboxPermissionRequests.push(m)
-      } else if (sandboxResp) {
-        sandboxPermissionResponses.push(m)
-      } else if (shutdownReq) {
-        shutdownRequests.push(m)
-      } else if (shutdownApproval) {
-        shutdownApprovals.push(m)
-      } else if (teamPermUpdate) {
-        teamPermissionUpdates.push(m)
-      } else if (modeSetReq) {
-        modeSetRequests.push(m)
-      } else if (planApprovalReq) {
-        planApprovalRequests.push(m)
-      } else {
-        regularMessages.push(m)
-      }
-    }
-
-    // Handle permission requests (leader side) - route to ToolUseConfirmQueue
-    if (
-      permissionRequests.length > 0 &&
-      isTeamLead(currentAppState.teamContext)
-    ) {
-      logForDebugging(
-        `[InboxPoller] Found ${permissionRequests.length} permission request(s)`,
+      const unread = await readUnreadMessages(
+        agentName,
+        currentAppState.teamContext?.teamName,
       )
 
-      const setToolUseConfirmQueue = getLeaderToolUseConfirmQueue()
-      const teamName = currentAppState.teamContext?.teamName
+      if (unread.length === 0) return
 
-      for (const m of permissionRequests) {
-        const parsed = isPermissionRequest(m.text)
-        if (!parsed) continue
+      logForDebugging(`[InboxPoller] Found ${unread.length} unread message(s)`)
 
-        if (setToolUseConfirmQueue) {
-          // Route through the standard ToolUseConfirmQueue so tmux workers
-          // get the same tool-specific UI (BashPermissionRequest, FileEditToolDiff, etc.)
-          // as in-process teammates.
-          const tool = findWorkerPermissionTool(
-            currentAppState,
-            parsed.tool_name,
-          )
-          if (!tool) {
-            // Answer instead of dropping it, or the worker waits forever.
+      // Check for plan approval responses and transition out of plan mode if approved
+      // Security: Only accept approval responses from the team lead
+      if (isTeammate() && isPlanModeRequired()) {
+        for (const msg of unread) {
+          const approvalResponse = isPlanApprovalResponse(msg.text)
+          // Verify the message is from the team lead to prevent teammates from forging approvals
+          if (approvalResponse && msg.from === 'team-lead') {
             logForDebugging(
-              `[InboxPoller] Unknown tool ${parsed.tool_name}, rejecting permission request`,
+              `[InboxPoller] Received plan approval response from team-lead: approved=${approvalResponse.approved}`,
             )
-            void sendPermissionResponseViaMailbox(
-              parsed.agent_id,
-              {
-                decision: 'rejected',
-                resolvedBy: 'leader',
-                feedback: `The team lead has no tool named ${parsed.tool_name}.`,
-              },
-              parsed.request_id,
-              teamName,
+            if (approvalResponse.approved) {
+              const next = planApprovedContext(
+                store.getState().toolPermissionContext,
+                approvalResponse.permissionMode,
+              )
+              setAppState(prev => ({ ...prev, toolPermissionContext: next }))
+              logForDebugging(
+                `[InboxPoller] Plan approved by team lead, exited plan mode to ${next.mode}`,
+              )
+            } else {
+              logForDebugging(
+                `[InboxPoller] Plan rejected by team lead: ${approvalResponse.feedback || 'No feedback provided'}`,
+              )
+            }
+          } else if (approvalResponse) {
+            logForDebugging(
+              `[InboxPoller] Ignoring plan approval response from non-team-lead: ${msg.from}`,
             )
-            continue
           }
+        }
+      }
 
-          const entry: ToolUseConfirm = {
-            assistantMessage: createAssistantMessage({ content: '' }),
-            tool,
-            description: parsed.description,
-            input: parsed.input,
-            toolUseContext: {} as ToolUseConfirm['toolUseContext'],
-            toolUseID: parsed.tool_use_id,
-            permissionResult: {
-              behavior: 'ask',
-              message: parsed.description,
-            },
-            permissionPromptStartTimeMs: Date.now(),
-            workerBadge: {
-              name: parsed.agent_id,
-              color: 'cyan',
-            },
-            onUserInteraction() {
-              // No-op for tmux workers (no classifier auto-approval)
-            },
-            onAbort() {
-              void sendPermissionResponseViaMailbox(
-                parsed.agent_id,
-                { decision: 'rejected', resolvedBy: 'leader' },
-                parsed.request_id,
-                teamName,
+      // Helper to mark messages as read in the inbox file.
+      // Called after messages are successfully delivered or reliably queued.
+      const markRead = () =>
+        markMessagesAsRead(agentName, currentAppState.teamContext?.teamName, unread)
+
+      // Separate permission messages from regular teammate messages
+      const permissionRequests: TeammateMessage[] = []
+      const permissionResponses: TeammateMessage[] = []
+      const sandboxPermissionRequests: TeammateMessage[] = []
+      const sandboxPermissionResponses: TeammateMessage[] = []
+      const shutdownRequests: TeammateMessage[] = []
+      const shutdownApprovals: TeammateMessage[] = []
+      const teamPermissionUpdates: TeammateMessage[] = []
+      const modeSetRequests: TeammateMessage[] = []
+      const planApprovalRequests: TeammateMessage[] = []
+      const regularMessages: TeammateMessage[] = []
+
+      for (const m of unread) {
+        const permReq = isPermissionRequest(m.text)
+        const permResp = isPermissionResponse(m.text)
+        const sandboxReq = isSandboxPermissionRequest(m.text)
+        const sandboxResp = isSandboxPermissionResponse(m.text)
+        const shutdownReq = isShutdownRequest(m.text)
+        const shutdownApproval = isShutdownApproved(m.text)
+        const teamPermUpdate = isTeamPermissionUpdate(m.text)
+        const modeSetReq = isModeSetRequest(m.text)
+        const planApprovalReq = isPlanApprovalRequest(m.text)
+
+        if (permReq) {
+          permissionRequests.push(m)
+        } else if (permResp) {
+          permissionResponses.push(m)
+        } else if (sandboxReq) {
+          sandboxPermissionRequests.push(m)
+        } else if (sandboxResp) {
+          sandboxPermissionResponses.push(m)
+        } else if (shutdownReq) {
+          shutdownRequests.push(m)
+        } else if (shutdownApproval) {
+          shutdownApprovals.push(m)
+        } else if (teamPermUpdate) {
+          teamPermissionUpdates.push(m)
+        } else if (modeSetReq) {
+          modeSetRequests.push(m)
+        } else if (planApprovalReq) {
+          planApprovalRequests.push(m)
+        } else {
+          regularMessages.push(m)
+        }
+      }
+
+      // Handle permission requests (leader side) - route to ToolUseConfirmQueue
+      if (
+        permissionRequests.length > 0 &&
+        isTeamLead(currentAppState.teamContext)
+      ) {
+        logForDebugging(
+          `[InboxPoller] Found ${permissionRequests.length} permission request(s)`,
+        )
+
+        const setToolUseConfirmQueue = getLeaderToolUseConfirmQueue()
+        const teamName = currentAppState.teamContext?.teamName
+
+        for (const m of permissionRequests) {
+          const parsed = isPermissionRequest(m.text)
+          if (!parsed) continue
+
+          if (setToolUseConfirmQueue) {
+            // Route through the standard ToolUseConfirmQueue so tmux workers
+            // get the same tool-specific UI (BashPermissionRequest, FileEditToolDiff, etc.)
+            // as in-process teammates.
+            const tool = findWorkerPermissionTool(
+              currentAppState,
+              parsed.tool_name,
+            )
+            if (!tool) {
+              // Answer instead of dropping it, or the worker waits forever.
+              logForDebugging(
+                `[InboxPoller] Unknown tool ${parsed.tool_name}, rejecting permission request`,
               )
-            },
-            onAllow(
-              updatedInput: Record<string, unknown>,
-              permissionUpdates: PermissionUpdate[],
-            ) {
-              void sendPermissionResponseViaMailbox(
-                parsed.agent_id,
-                {
-                  decision: 'approved',
-                  resolvedBy: 'leader',
-                  updatedInput,
-                  permissionUpdates,
-                },
-                parsed.request_id,
-                teamName,
-              )
-            },
-            onReject(feedback?: string) {
               void sendPermissionResponseViaMailbox(
                 parsed.agent_id,
                 {
                   decision: 'rejected',
                   resolvedBy: 'leader',
-                  feedback,
+                  feedback: `The team lead has no tool named ${parsed.tool_name}.`,
                 },
                 parsed.request_id,
                 teamName,
               )
-            },
-            async recheckPermission() {
-              // No-op for tmux workers — permission state is on the worker side
-            },
-          }
-
-          // Deduplicate: if markMessagesAsRead failed on a prior poll,
-          // the same message will be re-read — skip if already queued.
-          setToolUseConfirmQueue(queue => {
-            if (queue.some(q => q.toolUseID === parsed.tool_use_id)) {
-              return queue
+              continue
             }
-            return [...queue, entry]
-          })
-        } else {
-          logForDebugging(
-            `[InboxPoller] ToolUseConfirmQueue unavailable, dropping permission request from ${parsed.agent_id}`,
-          )
-        }
-      }
 
-      // Send desktop notification for the first request
-      const firstParsed = isPermissionRequest(permissionRequests[0]?.text ?? '')
-      if (firstParsed && !isLoading && !focusedInputDialog) {
-        void sendNotification(
-          {
-            message: `${firstParsed.agent_id} needs permission for ${firstParsed.tool_name}`,
-            notificationType: 'worker_permission_prompt',
-          },
-          terminal,
-        )
-      }
-    }
+            const entry: ToolUseConfirm = {
+              assistantMessage: createAssistantMessage({ content: '' }),
+              tool,
+              description: parsed.description,
+              input: parsed.input,
+              toolUseContext: {} as ToolUseConfirm['toolUseContext'],
+              toolUseID: parsed.tool_use_id,
+              permissionResult: {
+                behavior: 'ask',
+                message: parsed.description,
+              },
+              permissionPromptStartTimeMs: Date.now(),
+              workerBadge: {
+                name: parsed.agent_id,
+                color: 'cyan',
+              },
+              onUserInteraction() {
+                // No-op for tmux workers (no classifier auto-approval)
+              },
+              onAbort() {
+                void sendPermissionResponseViaMailbox(
+                  parsed.agent_id,
+                  { decision: 'rejected', resolvedBy: 'leader' },
+                  parsed.request_id,
+                  teamName,
+                )
+              },
+              onAllow(
+                updatedInput: Record<string, unknown>,
+                permissionUpdates: PermissionUpdate[],
+              ) {
+                void sendPermissionResponseViaMailbox(
+                  parsed.agent_id,
+                  {
+                    decision: 'approved',
+                    resolvedBy: 'leader',
+                    updatedInput,
+                    permissionUpdates,
+                  },
+                  parsed.request_id,
+                  teamName,
+                )
+              },
+              onReject(feedback?: string) {
+                void sendPermissionResponseViaMailbox(
+                  parsed.agent_id,
+                  {
+                    decision: 'rejected',
+                    resolvedBy: 'leader',
+                    feedback,
+                  },
+                  parsed.request_id,
+                  teamName,
+                )
+              },
+              async recheckPermission() {
+                // No-op for tmux workers — permission state is on the worker side
+              },
+            }
 
-    // Handle permission responses (worker side) - invoke registered callbacks
-    if (permissionResponses.length > 0 && isTeammate()) {
-      logForDebugging(
-        `[InboxPoller] Found ${permissionResponses.length} permission response(s)`,
-      )
-
-      for (const m of permissionResponses) {
-        const parsed = isPermissionResponse(m.text)
-        if (!parsed) continue
-
-        if (hasPermissionCallback(parsed.request_id)) {
-          logForDebugging(
-            `[InboxPoller] Processing permission response for ${parsed.request_id}: ${parsed.subtype}`,
-          )
-
-          if (parsed.subtype === 'success') {
-            processMailboxPermissionResponse({
-              requestId: parsed.request_id,
-              decision: 'approved',
-              updatedInput: parsed.response?.updated_input,
-              permissionUpdates: parsed.response?.permission_updates,
+            // Deduplicate: if markMessagesAsRead failed on a prior poll,
+            // the same message will be re-read — skip if already queued.
+            setToolUseConfirmQueue(queue => {
+              if (queue.some(q => q.toolUseID === parsed.tool_use_id)) {
+                return queue
+              }
+              return [...queue, entry]
             })
           } else {
-            processMailboxPermissionResponse({
-              requestId: parsed.request_id,
-              decision: 'rejected',
-              feedback: parsed.error,
-            })
+            logForDebugging(
+              `[InboxPoller] ToolUseConfirmQueue unavailable, dropping permission request from ${parsed.agent_id}`,
+            )
           }
         }
-      }
-    }
 
-    // Handle sandbox permission requests (leader side) - add to workerSandboxPermissions queue
-    if (
-      sandboxPermissionRequests.length > 0 &&
-      isTeamLead(currentAppState.teamContext)
-    ) {
-      logForDebugging(
-        `[InboxPoller] Found ${sandboxPermissionRequests.length} sandbox permission request(s)`,
-      )
-
-      const newSandboxRequests: Array<{
-        requestId: string
-        workerId: string
-        workerName: string
-        workerColor?: string
-        host: string
-        createdAt: number
-      }> = []
-
-      for (const m of sandboxPermissionRequests) {
-        const parsed = isSandboxPermissionRequest(m.text)
-        if (!parsed) continue
-
-        // Validate required nested fields to prevent crashes from malformed messages
-        if (!parsed.hostPattern?.host) {
-          logForDebugging(
-            `[InboxPoller] Invalid sandbox permission request: missing hostPattern.host`,
-          )
-          continue
-        }
-
-        newSandboxRequests.push({
-          requestId: parsed.requestId,
-          workerId: parsed.workerId,
-          workerName: parsed.workerName,
-          workerColor: parsed.workerColor,
-          host: parsed.hostPattern.host,
-          createdAt: parsed.createdAt,
-        })
-      }
-
-      if (newSandboxRequests.length > 0) {
-        setAppState(prev => ({
-          ...prev,
-          workerSandboxPermissions: {
-            ...prev.workerSandboxPermissions,
-            queue: [
-              ...prev.workerSandboxPermissions.queue,
-              ...newSandboxRequests,
-            ],
-          },
-        }))
-
-        // Send desktop notification for the first new request
-        const firstRequest = newSandboxRequests[0]
-        if (firstRequest && !isLoading && !focusedInputDialog) {
+        // Send desktop notification for the first request
+        const firstParsed = isPermissionRequest(permissionRequests[0]?.text ?? '')
+        if (firstParsed && !isLoading && !focusedInputDialog) {
           void sendNotification(
             {
-              message: `${firstRequest.workerName} needs network access to ${firstRequest.host}`,
+              message: `${firstParsed.agent_id} needs permission for ${firstParsed.tool_name}`,
               notificationType: 'worker_permission_prompt',
             },
             terminal,
           )
         }
       }
-    }
 
-    // Handle sandbox permission responses (worker side) - invoke registered callbacks
-    if (sandboxPermissionResponses.length > 0 && isTeammate()) {
-      logForDebugging(
-        `[InboxPoller] Found ${sandboxPermissionResponses.length} sandbox permission response(s)`,
-      )
-
-      for (const m of sandboxPermissionResponses) {
-        const parsed = isSandboxPermissionResponse(m.text)
-        if (!parsed) continue
-
-        // Check if we have a registered callback for this request
-        if (hasSandboxPermissionCallback(parsed.requestId)) {
-          logForDebugging(
-            `[InboxPoller] Processing sandbox permission response for ${parsed.requestId}: allow=${parsed.allow}`,
-          )
-
-          // Process the response using the exported function
-          processSandboxPermissionResponse({
-            requestId: parsed.requestId,
-            host: parsed.host,
-            allow: parsed.allow,
-          })
-
-          // Clear the pending sandbox request indicator
-          setAppState(prev => ({
-            ...prev,
-            pendingSandboxRequest: null,
-          }))
-        }
-      }
-    }
-
-    // Like official 2.1.311, the inbox never changes permissions: anything
-    // that can write the mailbox file could forge these as team-lead.
-    for (const _ of teamPermissionUpdates) {
-      logForDebugging(
-        '[InboxPoller] Dropping team_permission_update message: permission rules are never accepted from the inbox',
-      )
-    }
-    for (const _ of modeSetRequests) {
-      logForDebugging(
-        '[InboxPoller] Dropping mode_set_request message: permission mode changes are never accepted from the inbox',
-      )
-    }
-
-    // Handle plan approval requests (leader side) - auto-approve and write response to teammate inbox
-    if (
-      planApprovalRequests.length > 0 &&
-      isTeamLead(currentAppState.teamContext)
-    ) {
-      logForDebugging(
-        `[InboxPoller] Found ${planApprovalRequests.length} plan approval request(s), auto-approving`,
-      )
-
-      const teamName = currentAppState.teamContext?.teamName
-      const leaderExternalMode = toExternalPermissionMode(
-        currentAppState.toolPermissionContext.mode,
-      )
-      const modeToInherit =
-        leaderExternalMode === 'plan' ? 'default' : leaderExternalMode
-
-      for (const m of planApprovalRequests) {
-        const parsed = isPlanApprovalRequest(m.text)
-        if (!parsed) continue
-
-        // Write approval response to teammate's inbox
-        const approvalResponse = {
-          type: 'plan_approval_response',
-          requestId: parsed.requestId,
-          approved: true,
-          timestamp: new Date().toISOString(),
-          permissionMode: modeToInherit,
-        }
-
-        void writeToMailbox(
-          m.from,
-          {
-            from: TEAM_LEAD_NAME,
-            text: jsonStringify(approvalResponse),
-            timestamp: new Date().toISOString(),
-          },
-          teamName,
-        )
-        if (teamName) {
-          await setMemberMode(teamName, m.from, modeToInherit)
-        }
-
-        // Update in-process teammate task state if applicable
-        const taskId = findInProcessTeammateTaskId(m.from, currentAppState)
-        if (taskId) {
-          handlePlanApprovalResponse(
-            taskId,
-            {
-              type: 'plan_approval_response',
-              requestId: parsed.requestId,
-              approved: true,
-              timestamp: new Date().toISOString(),
-              permissionMode: modeToInherit,
-            },
-            setAppState,
-          )
-        }
-
+      // Handle permission responses (worker side) - invoke registered callbacks
+      if (permissionResponses.length > 0 && isTeammate()) {
         logForDebugging(
-          `[InboxPoller] Auto-approved plan from ${m.from} (request ${parsed.requestId})`,
+          `[InboxPoller] Found ${permissionResponses.length} permission response(s)`,
         )
 
-        // Still pass through as a regular message so the model has context
-        // about what the teammate is doing, but the approval is already sent
-        regularMessages.push(m)
-      }
-    }
+        for (const m of permissionResponses) {
+          const parsed = isPermissionResponse(m.text)
+          if (!parsed) continue
 
-    // Handle shutdown requests (teammate side) - preserve JSON for UI rendering
-    if (shutdownRequests.length > 0 && isTeammate()) {
-      logForDebugging(
-        `[InboxPoller] Found ${shutdownRequests.length} shutdown request(s)`,
-      )
+          if (hasPermissionCallback(parsed.request_id)) {
+            logForDebugging(
+              `[InboxPoller] Processing permission response for ${parsed.request_id}: ${parsed.subtype}`,
+            )
 
-      // Pass through shutdown requests - the UI component will render them nicely
-      // and the model will receive instructions via the tool prompt documentation
-      for (const m of shutdownRequests) {
-        regularMessages.push(m)
-      }
-    }
-
-    // Handle shutdown approvals (leader side) - kill the teammate's pane
-    if (
-      shutdownApprovals.length > 0 &&
-      isTeamLead(currentAppState.teamContext)
-    ) {
-      logForDebugging(
-        `[InboxPoller] Found ${shutdownApprovals.length} shutdown approval(s)`,
-      )
-
-      for (const m of shutdownApprovals) {
-        const parsed = isShutdownApproved(m.text)
-        if (!parsed) continue
-
-        // Kill the pane if we have the info (pane-based teammates)
-        if (parsed.paneId && parsed.backendType) {
-          void (async () => {
-            try {
-              // Ensure backend classes are imported (no subprocess probes)
-              await ensureBackendsRegistered()
-              const insideTmux = await isInsideTmux()
-              const backend = getBackendByType(
-                parsed.backendType as PaneBackendType,
-              )
-              const success = await backend?.killPane(
-                parsed.paneId!,
-                !insideTmux,
-              )
-              logForDebugging(
-                `[InboxPoller] Killed pane ${parsed.paneId} for ${parsed.from}: ${success}`,
-              )
-            } catch (error) {
-              logForDebugging(
-                `[InboxPoller] Failed to kill pane for ${parsed.from}: ${error}`,
-              )
-            }
-          })()
-        }
-
-        // Remove the teammate from teamContext.teammates so the count is accurate
-        const teammateToRemove = parsed.from
-        if (teammateToRemove && currentAppState.teamContext?.teammates) {
-          const teammateId = findApprovedTeammateId(
-            currentAppState.teamContext.teammates,
-            teammateToRemove,
-            m.timestamp,
-          )
-
-          if (teammateId) {
-            const { notificationMessage, removed } =
-              await handleTeammateShutdownApproved({
-                teamName: currentAppState.teamContext?.teamName,
-                teammateId,
-                teammateName: teammateToRemove,
-                setAppState,
+            if (parsed.subtype === 'success') {
+              processMailboxPermissionResponse({
+                requestId: parsed.request_id,
+                decision: 'approved',
+                updatedInput: parsed.response?.updated_input,
+                permissionUpdates: parsed.response?.permission_updates,
               })
-            if (removed) {
-              setAppState(prev => ({
-                ...prev,
-                inbox: {
-                  messages: [
-                    ...prev.inbox.messages,
-                    {
-                      id: randomUUID(),
-                      from: 'system',
-                      text: jsonStringify({
-                        type: 'teammate_terminated',
-                        message: notificationMessage,
-                      }),
-                      timestamp: new Date().toISOString(),
-                      status: 'pending' as const,
-                    },
-                  ],
-                },
-              }))
-              logForDebugging(
-                `[InboxPoller] Removed ${teammateToRemove} (${teammateId}) from teamContext`,
-              )
+            } else {
+              processMailboxPermissionResponse({
+                requestId: parsed.request_id,
+                decision: 'rejected',
+                feedback: parsed.error,
+              })
             }
           }
         }
-
-        // Pass through for UI rendering - the component will render it nicely
-        regularMessages.push(m)
       }
-    }
 
-    // Process regular teammate messages (existing logic)
-    if (regularMessages.length === 0) {
-      // No regular messages, but we may have processed non-regular messages
-      // (permissions, shutdown requests, etc.) above — mark those as read.
-      markRead()
-      return
-    }
-
-    // Format messages with XML wrapper for Claude (include color if available)
-    // Transform plan approval requests to include instructions for Claude
-    const formatted = capIdleResultsInDrain(regularMessages)
-      .map(m => {
-        const colorAttr = m.color ? ` color="${m.color}"` : ''
-        const summaryAttr = m.summary ? ` summary="${m.summary}"` : ''
-        const messageContent = m.text
-
-        return `<${TEAMMATE_MESSAGE_TAG} teammate_id="${m.from}"${colorAttr}${summaryAttr}>\n${messageContent}\n</${TEAMMATE_MESSAGE_TAG}>`
-      })
-      .join('\n\n')
-    const framed = frameForLead(formatted)
-
-    // Helper to queue messages in AppState for later delivery
-    const queueMessages = () => {
-      setAppState(prev => ({
-        ...prev,
-        inbox: {
-          messages: [
-            ...prev.inbox.messages,
-            ...regularMessages.map(m => ({
-              id: randomUUID(),
-              from: m.from,
-              text: m.text,
-              timestamp: m.timestamp,
-              status: 'pending' as const,
-              color: m.color,
-              summary: m.summary,
-            })),
-          ],
-        },
-      }))
-    }
-
-    if (!isLoading && !focusedInputDialog) {
-      // IDLE: Submit as new turn immediately
-      logForDebugging(`[InboxPoller] Session idle, submitting immediately`)
-      const submitted = onSubmitTeammateMessage(framed)
-      if (!submitted) {
-        // Submission rejected (query already running), queue for later
+      // Handle sandbox permission requests (leader side) - add to workerSandboxPermissions queue
+      if (
+        sandboxPermissionRequests.length > 0 &&
+        isTeamLead(currentAppState.teamContext)
+      ) {
         logForDebugging(
-          `[InboxPoller] Submission rejected, queuing for later delivery`,
+          `[InboxPoller] Found ${sandboxPermissionRequests.length} sandbox permission request(s)`,
         )
+
+        const newSandboxRequests: Array<{
+          requestId: string
+          workerId: string
+          workerName: string
+          workerColor?: string
+          host: string
+          createdAt: number
+        }> = []
+
+        for (const m of sandboxPermissionRequests) {
+          const parsed = isSandboxPermissionRequest(m.text)
+          if (!parsed) continue
+
+          // Validate required nested fields to prevent crashes from malformed messages
+          if (!parsed.hostPattern?.host) {
+            logForDebugging(
+              `[InboxPoller] Invalid sandbox permission request: missing hostPattern.host`,
+            )
+            continue
+          }
+
+          newSandboxRequests.push({
+            requestId: parsed.requestId,
+            workerId: parsed.workerId,
+            workerName: parsed.workerName,
+            workerColor: parsed.workerColor,
+            host: parsed.hostPattern.host,
+            createdAt: parsed.createdAt,
+          })
+        }
+
+        if (newSandboxRequests.length > 0) {
+          setAppState(prev => ({
+            ...prev,
+            workerSandboxPermissions: {
+              ...prev.workerSandboxPermissions,
+              queue: [
+                ...prev.workerSandboxPermissions.queue,
+                ...newSandboxRequests,
+              ],
+            },
+          }))
+
+          // Send desktop notification for the first new request
+          const firstRequest = newSandboxRequests[0]
+          if (firstRequest && !isLoading && !focusedInputDialog) {
+            void sendNotification(
+              {
+                message: `${firstRequest.workerName} needs network access to ${firstRequest.host}`,
+                notificationType: 'worker_permission_prompt',
+              },
+              terminal,
+            )
+          }
+        }
+      }
+
+      // Handle sandbox permission responses (worker side) - invoke registered callbacks
+      if (sandboxPermissionResponses.length > 0 && isTeammate()) {
+        logForDebugging(
+          `[InboxPoller] Found ${sandboxPermissionResponses.length} sandbox permission response(s)`,
+        )
+
+        for (const m of sandboxPermissionResponses) {
+          const parsed = isSandboxPermissionResponse(m.text)
+          if (!parsed) continue
+
+          // Check if we have a registered callback for this request
+          if (hasSandboxPermissionCallback(parsed.requestId)) {
+            logForDebugging(
+              `[InboxPoller] Processing sandbox permission response for ${parsed.requestId}: allow=${parsed.allow}`,
+            )
+
+            // Process the response using the exported function
+            processSandboxPermissionResponse({
+              requestId: parsed.requestId,
+              host: parsed.host,
+              allow: parsed.allow,
+            })
+
+            // Clear the pending sandbox request indicator
+            setAppState(prev => ({
+              ...prev,
+              pendingSandboxRequest: null,
+            }))
+          }
+        }
+      }
+
+      // Like official 2.1.311, the inbox never changes permissions: anything
+      // that can write the mailbox file could forge these as team-lead.
+      for (const _ of teamPermissionUpdates) {
+        logForDebugging(
+          '[InboxPoller] Dropping team_permission_update message: permission rules are never accepted from the inbox',
+        )
+      }
+      for (const _ of modeSetRequests) {
+        logForDebugging(
+          '[InboxPoller] Dropping mode_set_request message: permission mode changes are never accepted from the inbox',
+        )
+      }
+
+      // Handle plan approval requests (leader side) - auto-approve and write response to teammate inbox
+      if (
+        planApprovalRequests.length > 0 &&
+        isTeamLead(currentAppState.teamContext)
+      ) {
+        logForDebugging(
+          `[InboxPoller] Found ${planApprovalRequests.length} plan approval request(s), auto-approving`,
+        )
+
+        const teamName = currentAppState.teamContext?.teamName
+        const leaderExternalMode = toExternalPermissionMode(
+          currentAppState.toolPermissionContext.mode,
+        )
+        const modeToInherit =
+          leaderExternalMode === 'plan' ? 'default' : leaderExternalMode
+
+        for (const m of planApprovalRequests) {
+          const parsed = isPlanApprovalRequest(m.text)
+          if (!parsed) continue
+
+          // Write approval response to teammate's inbox
+          const approvalResponse = {
+            type: 'plan_approval_response',
+            requestId: parsed.requestId,
+            approved: true,
+            timestamp: new Date().toISOString(),
+            permissionMode: modeToInherit,
+          }
+
+          void writeToMailbox(
+            m.from,
+            {
+              from: TEAM_LEAD_NAME,
+              text: jsonStringify(approvalResponse),
+              timestamp: new Date().toISOString(),
+            },
+            teamName,
+          )
+          if (teamName) {
+            await setMemberMode(teamName, m.from, modeToInherit)
+          }
+
+          // Update in-process teammate task state if applicable
+          const taskId = findInProcessTeammateTaskId(m.from, currentAppState)
+          if (taskId) {
+            handlePlanApprovalResponse(
+              taskId,
+              {
+                type: 'plan_approval_response',
+                requestId: parsed.requestId,
+                approved: true,
+                timestamp: new Date().toISOString(),
+                permissionMode: modeToInherit,
+              },
+              setAppState,
+            )
+          }
+
+          logForDebugging(
+            `[InboxPoller] Auto-approved plan from ${m.from} (request ${parsed.requestId})`,
+          )
+
+          // Still pass through as a regular message so the model has context
+          // about what the teammate is doing, but the approval is already sent
+          regularMessages.push(m)
+        }
+      }
+
+      // Handle shutdown requests (teammate side) - preserve JSON for UI rendering
+      if (shutdownRequests.length > 0 && isTeammate()) {
+        logForDebugging(
+          `[InboxPoller] Found ${shutdownRequests.length} shutdown request(s)`,
+        )
+
+        // Pass through shutdown requests - the UI component will render them nicely
+        // and the model will receive instructions via the tool prompt documentation
+        for (const m of shutdownRequests) {
+          regularMessages.push(m)
+        }
+      }
+
+      // Handle shutdown approvals (leader side) - kill the teammate's pane
+      if (
+        shutdownApprovals.length > 0 &&
+        isTeamLead(currentAppState.teamContext)
+      ) {
+        logForDebugging(
+          `[InboxPoller] Found ${shutdownApprovals.length} shutdown approval(s)`,
+        )
+
+        for (const m of shutdownApprovals) {
+          const parsed = isShutdownApproved(m.text)
+          if (!parsed) continue
+
+          // Kill the pane if we have the info (pane-based teammates)
+          if (parsed.paneId && parsed.backendType) {
+            void (async () => {
+              try {
+                // Ensure backend classes are imported (no subprocess probes)
+                await ensureBackendsRegistered()
+                const insideTmux = await isInsideTmux()
+                const backend = getBackendByType(
+                  parsed.backendType as PaneBackendType,
+                )
+                const success = await backend?.killPane(
+                  parsed.paneId!,
+                  !insideTmux,
+                )
+                logForDebugging(
+                  `[InboxPoller] Killed pane ${parsed.paneId} for ${parsed.from}: ${success}`,
+                )
+              } catch (error) {
+                logForDebugging(
+                  `[InboxPoller] Failed to kill pane for ${parsed.from}: ${error}`,
+                )
+              }
+            })()
+          }
+
+          // Remove the teammate from teamContext.teammates so the count is accurate
+          const teammateToRemove = parsed.from
+          if (teammateToRemove && currentAppState.teamContext?.teammates) {
+            const teammateId = findApprovedTeammateId(
+              currentAppState.teamContext.teammates,
+              teammateToRemove,
+              m.timestamp,
+            )
+
+            if (teammateId) {
+              const { notificationMessage, removed } =
+                await handleTeammateShutdownApproved({
+                  teamName: currentAppState.teamContext?.teamName,
+                  teammateId,
+                  teammateName: teammateToRemove,
+                  setAppState,
+                })
+              if (removed) {
+                setAppState(prev => ({
+                  ...prev,
+                  inbox: {
+                    messages: [
+                      ...prev.inbox.messages,
+                      {
+                        id: randomUUID(),
+                        from: 'system',
+                        text: jsonStringify({
+                          type: 'teammate_terminated',
+                          message: notificationMessage,
+                        }),
+                        timestamp: new Date().toISOString(),
+                        status: 'pending' as const,
+                      },
+                    ],
+                  },
+                }))
+                logForDebugging(
+                  `[InboxPoller] Removed ${teammateToRemove} (${teammateId}) from teamContext`,
+                )
+              }
+            }
+          }
+
+          // Pass through for UI rendering - the component will render it nicely
+          regularMessages.push(m)
+        }
+      }
+
+      // Process regular teammate messages (existing logic)
+      if (regularMessages.length === 0) {
+        // No regular messages, but we may have processed non-regular messages
+        // (permissions, shutdown requests, etc.) above — mark those as read.
+        await markRead()
+        return
+      }
+
+      // Format messages with XML wrapper for Claude (include color if available)
+      // Transform plan approval requests to include instructions for Claude
+      const formatted = capIdleResultsInDrain(regularMessages)
+        .map(m => {
+          const colorAttr = m.color ? ` color="${m.color}"` : ''
+          const summaryAttr = m.summary ? ` summary="${m.summary}"` : ''
+          const messageContent = m.text
+
+          return `<${TEAMMATE_MESSAGE_TAG} teammate_id="${m.from}"${colorAttr}${summaryAttr}>\n${messageContent}\n</${TEAMMATE_MESSAGE_TAG}>`
+        })
+        .join('\n\n')
+      const framed = frameForLead(formatted)
+
+      // Helper to queue messages in AppState for later delivery
+      const queueMessages = () => {
+        setAppState(prev => ({
+          ...prev,
+          inbox: {
+            messages: [
+              ...prev.inbox.messages,
+              ...regularMessages.map(m => ({
+                id: randomUUID(),
+                from: m.from,
+                text: m.text,
+                timestamp: m.timestamp,
+                status: 'pending' as const,
+                color: m.color,
+                summary: m.summary,
+              })),
+            ],
+          },
+        }))
+      }
+
+      if (!isLoading && !focusedInputDialog) {
+        // IDLE: Submit as new turn immediately
+        logForDebugging(`[InboxPoller] Session idle, submitting immediately`)
+        const submitted = onSubmitTeammateMessage(framed)
+        if (!submitted) {
+          // Submission rejected (query already running), queue for later
+          logForDebugging(
+            `[InboxPoller] Submission rejected, queuing for later delivery`,
+          )
+          queueMessages()
+        }
+      } else {
+        // BUSY: Add to inbox queue for UI display + later delivery
+        logForDebugging(`[InboxPoller] Session busy, queuing for later delivery`)
         queueMessages()
       }
-    } else {
-      // BUSY: Add to inbox queue for UI display + later delivery
-      logForDebugging(`[InboxPoller] Session busy, queuing for later delivery`)
-      queueMessages()
-    }
 
-    // Mark messages as read only after they have been successfully delivered
-    // or reliably queued in AppState. This prevents permanent message loss
-    // when the session is busy — if we crash before this point, the messages
-    // will be re-read on the next poll cycle instead of being silently dropped.
-    markRead()
+      // Mark messages as read only after they have been successfully delivered
+      // or reliably queued in AppState. This prevents permanent message loss
+      // when the session is busy — if we crash before this point, the messages
+      // will be re-read on the next poll cycle instead of being silently dropped.
+      await markRead()
+    } finally {
+      pollInFlight.current = false
+    }
   }, [
     enabled,
     isLoading,
@@ -781,74 +787,78 @@ export function useInboxPoller({
     store,
   ])
 
-  // When session becomes idle, deliver any pending messages and clean up processed ones
+  // When session becomes idle, deliver any pending messages and clean up processed ones.
+  // The turn submitted here is the lead's, even when React flushes this effect
+  // inside a teammate's leaked context (see getAgentNameToPoll).
   useEffect(() => {
-    if (!enabled) return
+    runOutsideTeammateContext(() => {
+      if (!enabled) return
 
-    // Skip if busy or in a dialog
-    if (isLoading || focusedInputDialog) {
-      return
-    }
+      // Skip if busy or in a dialog
+      if (isLoading || focusedInputDialog) {
+        return
+      }
 
-    // Use ref to avoid dependency on appState object (prevents infinite loop)
-    const currentAppState = store.getState()
-    const agentName = getAgentNameToPoll(currentAppState)
-    if (!agentName) return
+      // Use ref to avoid dependency on appState object (prevents infinite loop)
+      const currentAppState = store.getState()
+      const agentName = getAgentNameToPoll(currentAppState)
+      if (!agentName) return
 
-    const pendingMessages = currentAppState.inbox.messages.filter(
-      m => m.status === 'pending',
-    )
-    const processedMessages = currentAppState.inbox.messages.filter(
-      m => m.status === 'processed',
-    )
-
-    // Clean up processed messages (they were already delivered mid-turn as attachments)
-    if (processedMessages.length > 0) {
-      logForDebugging(
-        `[InboxPoller] Cleaning up ${processedMessages.length} processed message(s) that were delivered mid-turn`,
+      const pendingMessages = currentAppState.inbox.messages.filter(
+        m => m.status === 'pending',
       )
-      const processedIds = new Set(processedMessages.map(m => m.id))
-      setAppState(prev => ({
-        ...prev,
-        inbox: {
-          messages: prev.inbox.messages.filter(m => !processedIds.has(m.id)),
-        },
-      }))
-    }
-
-    // No pending messages to deliver
-    if (pendingMessages.length === 0) return
-
-    logForDebugging(
-      `[InboxPoller] Session idle, delivering ${pendingMessages.length} pending message(s)`,
-    )
-
-    // Format messages with XML wrapper for Claude (include color if available)
-    const formatted = capIdleResultsInDrain(pendingMessages)
-      .map(m => {
-        const colorAttr = m.color ? ` color="${m.color}"` : ''
-        const summaryAttr = m.summary ? ` summary="${m.summary}"` : ''
-        return `<${TEAMMATE_MESSAGE_TAG} teammate_id="${m.from}"${colorAttr}${summaryAttr}>\n${m.text}\n</${TEAMMATE_MESSAGE_TAG}>`
-      })
-      .join('\n\n')
-    const framed = frameForLead(formatted)
-
-    // Try to submit - only clear messages if successful
-    const submitted = onSubmitTeammateMessage(framed)
-    if (submitted) {
-      // Clear the specific messages we just submitted by their IDs
-      const submittedIds = new Set(pendingMessages.map(m => m.id))
-      setAppState(prev => ({
-        ...prev,
-        inbox: {
-          messages: prev.inbox.messages.filter(m => !submittedIds.has(m.id)),
-        },
-      }))
-    } else {
-      logForDebugging(
-        `[InboxPoller] Submission rejected, keeping messages queued`,
+      const processedMessages = currentAppState.inbox.messages.filter(
+        m => m.status === 'processed',
       )
-    }
+
+      // Clean up processed messages (they were already delivered mid-turn as attachments)
+      if (processedMessages.length > 0) {
+        logForDebugging(
+          `[InboxPoller] Cleaning up ${processedMessages.length} processed message(s) that were delivered mid-turn`,
+        )
+        const processedIds = new Set(processedMessages.map(m => m.id))
+        setAppState(prev => ({
+          ...prev,
+          inbox: {
+            messages: prev.inbox.messages.filter(m => !processedIds.has(m.id)),
+          },
+        }))
+      }
+
+      // No pending messages to deliver
+      if (pendingMessages.length === 0) return
+
+      logForDebugging(
+        `[InboxPoller] Session idle, delivering ${pendingMessages.length} pending message(s)`,
+      )
+
+      // Format messages with XML wrapper for Claude (include color if available)
+      const formatted = capIdleResultsInDrain(pendingMessages)
+        .map(m => {
+          const colorAttr = m.color ? ` color="${m.color}"` : ''
+          const summaryAttr = m.summary ? ` summary="${m.summary}"` : ''
+          return `<${TEAMMATE_MESSAGE_TAG} teammate_id="${m.from}"${colorAttr}${summaryAttr}>\n${m.text}\n</${TEAMMATE_MESSAGE_TAG}>`
+        })
+        .join('\n\n')
+      const framed = frameForLead(formatted)
+
+      // Try to submit - only clear messages if successful
+      const submitted = onSubmitTeammateMessage(framed)
+      if (submitted) {
+        // Clear the specific messages we just submitted by their IDs
+        const submittedIds = new Set(pendingMessages.map(m => m.id))
+        setAppState(prev => ({
+          ...prev,
+          inbox: {
+            messages: prev.inbox.messages.filter(m => !submittedIds.has(m.id)),
+          },
+        }))
+      } else {
+        logForDebugging(
+          `[InboxPoller] Submission rejected, keeping messages queued`,
+        )
+      }
+    })
   }, [
     enabled,
     isLoading,
