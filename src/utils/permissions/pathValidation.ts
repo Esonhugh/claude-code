@@ -135,17 +135,23 @@ export function isPathAllowed(
   // Determine which permission type to check based on operation
   const permissionType = operationType === 'read' ? 'read' : 'edit'
 
-  // 1. Check deny rules first (they take precedence)
-  const denyRule = matchingRuleForInput(
+  // 1. Check deny rules first (they take precedence), on the path as written
+  // and on where its symlinks lead.
+  for (const pathToCheck of new Set([
     resolvedPath,
-    context,
-    permissionType,
-    'deny',
-  )
-  if (denyRule !== null) {
-    return {
-      allowed: false,
-      decisionReason: { type: 'rule', rule: denyRule },
+    ...(precomputedPathsToCheck ?? getPathsForPermissionCheck(resolvedPath)),
+  ])) {
+    const denyRule = matchingRuleForInput(
+      pathToCheck,
+      context,
+      permissionType,
+      'deny',
+    )
+    if (denyRule !== null) {
+      return {
+        allowed: false,
+        decisionReason: { type: 'rule', rule: denyRule },
+      }
     }
   }
 
