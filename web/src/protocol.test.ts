@@ -28,6 +28,27 @@ function fold(messages: unknown[]) {
 }
 
 describe('reduce', () => {
+  it('puts the turn usage of a result on its last reply, and keeps a reloaded request once', () => {
+    const usage = (input: number, output: number, read = 0) => ({ input_tokens: input, output_tokens: output, cache_read_input_tokens: read, cache_creation_input_tokens: 0 })
+    const asst = (id: string, uuid: string, u: Record<string, number>) => ({
+      type: 'assistant',
+      uuid,
+      message: { id, role: 'assistant', content: [{ type: 'text', text: uuid }], usage: u },
+    })
+    // A transcript writes each content block of a request as its own entry with the same usage.
+    let state = fold([asst('m1', 'e1', usage(100, 1)), asst('m1', 'e2', usage(100, 40, 900)), asst('m2', 'e3', usage(50, 10))])
+    const replies = state.items.filter(i => i.kind === 'assistant')
+    expect(replies.map(i => i.usage)).toEqual([
+      { input: 100, output: 40, cacheRead: 900, cacheWrite: 0 },
+      { input: 50, output: 10, cacheRead: 0, cacheWrite: 0 },
+    ])
+    state = reduce(state, { type: 'result', subtype: 'success', is_error: false, result: 'ok', usage: usage(150, 60, 900) })
+    expect(state.items.at(-1)).toMatchObject({ id: 'm2', turnUsage: { input: 150, output: 60, cacheRead: 900, cacheWrite: 0 } })
+    // A turn with no reply (a local command) leaves the earlier turn's count alone.
+    state = reduce(addUserMessage(state, '/cost'), { type: 'result', subtype: 'success', is_error: false, result: '', usage: usage(1, 1) })
+    expect(state.items.filter(i => i.kind === 'assistant').map(i => i.turnUsage?.input)).toEqual([undefined, 150])
+  })
+
   it('queues a message sent mid-turn and moves it in when the engine echoes it', () => {
     const asst = (id: string, text: string) => ({
       type: 'assistant',

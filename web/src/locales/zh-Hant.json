@@ -274,6 +274,7 @@
   "revealLocalTip": "開啟這個檔案所在的資料夾",
   "newMessages": "{n} 則新訊息",
   "newMessages_one": "{n} 則新訊息",
+  "turnUsage": "輸入 {input} · 快取讀 {read} · 快取寫 {write} · 輸出 {output}",
   "nSteps": "{n} 個步驟",
   "thinkingNow": "思考中…",
   "newFile": "新檔案",

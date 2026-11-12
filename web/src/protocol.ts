@@ -23,6 +23,28 @@ export type Block =
       mcp?: McpToolResult
     }
 
+export type Usage = { input: number; output: number; cacheRead: number; cacheWrite: number }
+
+export function usageOf(v: unknown): Usage | undefined {
+  if (!isObj(v)) return undefined
+  const n = (x: unknown) => (typeof x === 'number' && x > 0 ? x : 0)
+  const u = { input: n(v.input_tokens), output: n(v.output_tokens), cacheRead: n(v.cache_read_input_tokens), cacheWrite: n(v.cache_creation_input_tokens) }
+  return usageTotal(u) > 0 ? u : undefined
+}
+
+export const usageTotal = (u: Usage) => u.input + u.output + u.cacheRead + u.cacheWrite
+
+export function addUsage(a: Usage | undefined, b: Usage | undefined): Usage | undefined {
+  if (!a || !b) return a ?? b
+  return { input: a.input + b.input, output: a.output + b.output, cacheRead: a.cacheRead + b.cacheRead, cacheWrite: a.cacheWrite + b.cacheWrite }
+}
+
+/** Each content block of a reply is its own transcript entry; the usage they repeat is the request's once. */
+function maxUsage(a: Usage | undefined, b: Usage | undefined): Usage | undefined {
+  if (!a || !b) return a ?? b
+  return { input: Math.max(a.input, b.input), output: Math.max(a.output, b.output), cacheRead: Math.max(a.cacheRead, b.cacheRead), cacheWrite: Math.max(a.cacheWrite, b.cacheWrite) }
+}
+
 export type McpToolResult = { content?: unknown[]; structuredContent?: unknown; _meta?: Record<string, unknown> }
 
 export type Item =
@@ -51,6 +73,10 @@ export type Item =
       blocks: Block[]
       /** The SDK messages (by uuid) folded into this reply, so one given again is not added twice. */
       parts?: string[]
+      /** This API request's tokens, as the transcript records them. */
+      usage?: Usage
+      /** The whole turn's tokens (`result.usage`), on the turn's last reply. */
+      turnUsage?: Usage
     }
   | { kind: 'error'; id: string; text: string }
   /** Output of a local slash command (`/model`, `/usage`), shown as a muted system line. */
@@ -960,6 +986,7 @@ export function reduce(state: ChatState, raw: unknown): ChatState {
       const part = str(raw.uuid)
       if (part && existing?.parts?.includes(part)) return state
       const parts = part ? [...(existing?.parts ?? []), part] : existing?.parts
+      const usage = maxUsage(existing?.usage, usageOf(message.usage))
       if (existing?.streamed) {
         // The streamed copy already has the text; take the final tool input.
         let next = state
@@ -968,13 +995,14 @@ export function reduce(state: ChatState, raw: unknown): ChatState {
             next = mapTool(next, block.id, b => ({ ...b, input: block.input }))
           }
         }
-        return next
+        return usage ? updateLastAssistant(next, id, item => ({ ...item, usage })) : next
       }
       if (existing) {
         return updateLastAssistant(state, id, item => ({
           ...item,
           blocks: [...item.blocks, ...blocks],
           parts,
+          ...(usage && { usage }),
         }))
       }
       return {
@@ -988,6 +1016,7 @@ export function reduce(state: ChatState, raw: unknown): ChatState {
             streamed: false,
             blocks,
             ...(parts && { parts }),
+            ...(usage && { usage }),
           },
         ],
       }
@@ -1102,6 +1131,14 @@ export function reduce(state: ChatState, raw: unknown): ChatState {
     case 'result': {
       if (typeof raw.total_cost_usd === 'number') {
         state = { ...state, costUsd: raw.total_cost_usd }
+      }
+      // The stream's replies carry the usage of each request's start; the result has the turn's whole.
+      const turnUsage = usageOf(raw.usage)
+      const lastReply = state.items.findLastIndex(i => i.kind === 'assistant')
+      if (turnUsage && lastReply > state.items.findLastIndex(i => i.kind === 'user')) {
+        const items = state.items.slice()
+        items[lastReply] = { ...(items[lastReply] as Extract<Item, { kind: 'assistant' }>), turnUsage }
+        state = { ...state, items }
       }
       const failed = raw.is_error === true || raw.subtype !== 'success'
       const next = {
