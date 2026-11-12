@@ -102,7 +102,8 @@ Claude 每次要改檔案、跑命令、訪問網路之前，都會判斷要不�
 
 几条容易踩的细节：
 
-- Bash 的 deny / ask 规则会「看穿」包装：`sudo rm`、`env X=1 rm`、`nohup rm`、`exec rm` 都按 `rm` 匹配。
+- Bash 的 deny / ask 规则会「看穿」包装：`sudo rm`、`env X=1 rm`、`nohup rm`、`exec rm` 都按 `rm` 匹配；deny 规则还会匹配 `/bin/rm` 这类带路径的命令，以及包在 `$(…)`、反引号、`( )`、`{ }`、`<( )` 里的命令。
+- Read 的 deny 规则也挡住对同一路径的 Write / Edit：`Read(**/.env)` 时不能新建或改写 `.env`。
 - `Bash(find:*)` 不会放行带 `-exec`、`-execdir`、`-ok`、`-delete` 的 find。
 - 超过 10000 字符、或以悬空的 `&&` / `||` / `|` 结尾的命令一律询问。
 - 工作目录外的写入、带 `cd` 的复合写入命令、带参数的 `cp` / `mv` 仍会询问。
