@@ -2238,6 +2238,18 @@ test.each([
   expect(diagnostics).toEqual([expect.objectContaining({plugin:'recover-start',stage:'session.start',message})])
 })
 
+test.each([
+  { body: 'return {deny: 12345}', message: 'tool.call deny must be a string' },
+  { body: "return {deny: 'no', result: 1}", message: 'tool.call must return result or deny, never both' },
+  { body: 'return {}', message: 'tool.call must return result or deny' },
+])('tool.call wrong shape names the actual problem: $body', async ({body,message}) => {
+  const consumer=await plugin('shape-call',`export function register(on) { on('tool.call',async ($,e,next)=>{${body}}) }`)
+  const {value,diagnostics}=runtime()
+  await value.bind(binding(root));await value.reconcile([consumer])
+  expect(await value.dispatch('tool.call',input,async()=>({result:'core'}))).toEqual({result:'core'})
+  expect(diagnostics).toEqual([expect.objectContaining({plugin:'shape-call',stage:'tool.call',message})])
+})
+
 test('session.start catch recovery publishes the recovered module', async () => {
   const consumer=await plugin('catch-start',`let recovered=false; export function register(on) {
     on('session.start',()=>{throw Error('recover start')}).catch(($,e,next)=>{recovered=true;return next(e)});
