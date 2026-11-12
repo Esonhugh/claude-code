@@ -59,7 +59,7 @@ As in the official 2.1.303, this feature is off by default.
 | 环境变量 | `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1 claude` |
 | 命令行 | `claude --agent-teams` |
 
-没开启时，模型调用团队工具会直接得到 `Error: No such tool available: TeamCreate`。
+没开启时不会组成团队：`Agent` 的 `name` 只用来给后台 agent 命名（可以用 `SendMessage` 按名字找它），向 `*` 广播会得到 `agent teams are not enabled in this session` 的提示。
 
 队友的运行方式由 `teammateMode` 决定（`/config` 里改，保存在 `~/.claude.json`）：
 

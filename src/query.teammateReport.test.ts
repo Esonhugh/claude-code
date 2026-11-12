@@ -100,6 +100,12 @@ test('a teammate response that only reports to the team lead ends the turn witho
   expect(idleHooks).toBe(1)
 })
 
+test('a report addressed to "main" (the lead\'s conversation) also ends the turn', async () => {
+  const result = await run([{ name: 'SendMessage', input: { to: 'main', message: 'dates.py fixed, 2 tests pass' } }])
+  expect(result.modelRequests).toHaveLength(1)
+  expect(result.terminal).toEqual({ reason: 'completed' })
+})
+
 test('the turn continues when the response did anything besides reporting to the team lead', async () => {
   expect((await run([report, { name: 'Other', input: {} }])).modelRequests).toHaveLength(2)
   expect((await run([{ name: 'SendMessage', input: { to: 'money', message: 'your turn' } }])).modelRequests).toHaveLength(2)

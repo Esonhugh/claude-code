@@ -132,7 +132,7 @@ import { queryCheckpoint } from './utils/queryProfiler.js'
 import { applyToolResultBudget } from './utils/toolResultStorage.js'
 import { recordContentReplacement } from './utils/sessionStorage.js'
 import { handleStopHooks } from './query/stopHooks.js'
-import { SEND_MESSAGE_TOOL_NAME } from './tools/SendMessageTool/constants.js'
+import { MAIN_RECIPIENT, SEND_MESSAGE_TOOL_NAME } from './tools/SendMessageTool/constants.js'
 import { TEAM_LEAD_NAME } from './utils/swarm/constants.js'
 import { isInProcessTeammate } from './utils/teammateContext.js'
 import { buildQueryConfig } from './query/config.js'
@@ -2203,7 +2203,8 @@ async function* queryLoop(
       return { reason: 'hook_stopped' }
     }
 
-    // A teammate whose whole response was a plain message to the team lead has
+    // A teammate whose whole response was a plain message to the team lead
+    // ("main" also reaches the lead's conversation) has
     // reported. End the turn here (stop hooks included) instead of asking the
     // model once more just to hear that it is done.
     if (
@@ -2212,7 +2213,7 @@ async function* queryLoop(
       toolUseBlocks.every(block => {
         const input = block.input as { to?: unknown; message?: unknown }
         // eslint-disable-next-line custom-rules/require-tool-match-name -- ToolUseBlock.name has no aliases
-        return block.name === SEND_MESSAGE_TOOL_NAME && input.to === TEAM_LEAD_NAME && typeof input.message === 'string'
+        return block.name === SEND_MESSAGE_TOOL_NAME && (input.to === TEAM_LEAD_NAME || input.to === MAIN_RECIPIENT) && typeof input.message === 'string'
       }) &&
       toolResults.every(
         result => result.type === 'user' && Array.isArray(result.message.content) &&
