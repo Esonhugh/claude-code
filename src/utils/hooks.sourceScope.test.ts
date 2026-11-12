@@ -90,6 +90,11 @@ function fixture() {
   const calls: { command: string; input: Record<string, unknown> }[] = []
   // Commands listed here exit with the given code instead of printing JSON.
   const exits = new Map<string, { code: number; stderr?: string }>()
+  // Commands listed here exit after printing, but a background child they
+  // started keeps stdout/stderr open (`sleep 300 & echo ...`), so the streams
+  // never end and the shell's kill cannot close them. A `drip` keeps that
+  // child writing.
+  const lingering = new Map<string, { stdout: string; drip?: boolean }>()
   const envs = new Map<string, NodeJS.ProcessEnv>()
   const spawns: { command: string; args: string[]; shell: unknown }[] = []
   const logs: string[] = []
@@ -247,6 +252,17 @@ function fixture() {
         })
         child.stdin.on('finish', () => {
           calls.push({ command, input: JSON.parse(input) })
+          const linger = lingering.get(command)
+          if (linger) {
+            Object.assign(child, { orphanedPipes: true })
+            child.stdout.write(linger.stdout)
+            if (linger.drip) {
+              const timer = setInterval(() => child.stdout.write('.'), 50)
+              child.stdout.once('close', () => clearInterval(timer))
+            }
+            child.emit('exit', 0, null)
+            return
+          }
           const exit = exits.get(command)
           if (exit) {
             child.stdout.end()
@@ -279,9 +295,9 @@ function fixture() {
     './plugins/pluginIdentifier.js': { isOfficialMarketplaceName: () => false },
     // Like the real wrapper, an abort (timeout) kills the child.
     './ShellCommand.js': {
-      wrapSpawn: (child: EventEmitter & { stdout: PassThrough; stderr: PassThrough }, signal: AbortSignal) => {
+      wrapSpawn: (child: EventEmitter & { stdout: PassThrough; stderr: PassThrough; orphanedPipes?: boolean }, signal: AbortSignal) => {
         signal.addEventListener('abort', () => {
-          if (child.stdout.writableEnded) return
+          if (child.stdout.writableEnded || child.orphanedPipes) return
           child.stdout.end()
           child.stderr.end()
           child.emit('close', 143)
@@ -479,6 +495,7 @@ function fixture() {
     registered,
     commands,
     exits,
+    lingering,
     envs,
     spawns,
     logs,
@@ -1953,6 +1970,42 @@ describe('effort and debug logging', () => {
         expect.stringMatching(/^Hooks: PreToolUse:Read \[ok\] finished with status 0 \(\d+ms\)$/),
         expect.stringMatching(/^Hooks: PreToolUse:Read \[broken\] finished with status 3 \(\d+ms\)$/),
         expect.stringMatching(/^Hooks: PreToolUse:Read \[slow\] timed out after 50ms \(\d+ms\)$/),
+      ]),
+    )
+  })
+})
+
+describe('a hook whose background child keeps stdio open', () => {
+  test('finishes once the hook exits and the output goes quiet', async () => {
+    const f = fixture()
+    f.add('userSettings', 'PreToolUse', 'bg')
+    f.lingering.set('bg', { stdout: 'started\n' })
+    const results = await collect(pre(f))
+    const attachments = results.map(
+      (result) => (result.message as { attachment?: { type: string; stdout?: string } } | undefined)?.attachment,
+    )
+    expect(attachments).toContainEqual(
+      expect.objectContaining({ type: 'hook_success', stdout: 'started\n' }),
+    )
+    expect(f.logs).toEqual(
+      expect.arrayContaining([
+        expect.stringMatching(/^Hooks: PreToolUse:Read \[bg\] finished with status 0 \(\d+ms\)$/),
+      ]),
+    )
+  })
+
+  test('the hook timeout ends the wait while the child keeps writing', async () => {
+    const f = fixture()
+    f.addHook('userSettings', 'PreToolUse', {
+      type: 'command',
+      command: 'bg',
+      timeout: 0.3,
+    })
+    f.lingering.set('bg', { stdout: 'started\n', drip: true })
+    await collect(pre(f))
+    expect(f.logs).toEqual(
+      expect.arrayContaining([
+        expect.stringMatching(/^Hooks: PreToolUse:Read \[bg\] timed out after 300ms \(\d+ms\)$/),
       ]),
     )
   })
