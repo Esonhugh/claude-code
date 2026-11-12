@@ -483,7 +483,10 @@ import {
   isShutdownApproved,
   capIdleResultsInDrain,
 } from '../utils/teammateMailbox.js'
-import { handleTeammateShutdownApproved } from '../utils/swarm/teammateShutdown.js'
+import {
+  findApprovedTeammateId,
+  handleTeammateShutdownApproved,
+} from '../utils/swarm/teammateShutdown.js'
 import { registerLeaderHeadlessCanUseTool } from '../utils/swarm/leaderPermissionBridge.js'
 import { getRunningTasks } from '../utils/task/framework.js'
 import { isBackgroundTask } from '../tasks/types.js'
@@ -3165,11 +3168,11 @@ function runHeadlessStreaming(
                 )
 
                 // Find the teammate ID by name
-                const teammateId = refreshedState.teamContext?.teammates
-                  ? Object.entries(refreshedState.teamContext.teammates).find(
-                      ([, t]) => t.name === teammateToRemove,
-                    )?.[0]
-                  : undefined
+                const teammateId = findApprovedTeammateId(
+                  refreshedState.teamContext?.teammates,
+                  teammateToRemove,
+                  m.timestamp,
+                )
 
                 if (teammateId) {
                   await handleTeammateShutdownApproved({

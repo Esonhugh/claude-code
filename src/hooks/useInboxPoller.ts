@@ -34,7 +34,10 @@ import { TEAM_LEAD_NAME } from '../utils/swarm/constants.js'
 import { getLeaderToolUseConfirmQueue } from '../utils/swarm/leaderPermissionBridge.js'
 import { sendPermissionResponseViaMailbox } from '../utils/swarm/permissionSync.js'
 import { setMemberMode } from '../utils/swarm/teamHelpers.js'
-import { handleTeammateShutdownApproved } from '../utils/swarm/teammateShutdown.js'
+import {
+  findApprovedTeammateId,
+  handleTeammateShutdownApproved,
+} from '../utils/swarm/teammateShutdown.js'
 import {
   getAgentName,
   isPlanModeRequired,
@@ -659,10 +662,11 @@ export function useInboxPoller({
         // Remove the teammate from teamContext.teammates so the count is accurate
         const teammateToRemove = parsed.from
         if (teammateToRemove && currentAppState.teamContext?.teammates) {
-          // Find the teammate ID by name
-          const teammateId = Object.entries(
+          const teammateId = findApprovedTeammateId(
             currentAppState.teamContext.teammates,
-          ).find(([, t]) => t.name === teammateToRemove)?.[0]
+            teammateToRemove,
+            m.timestamp,
+          )
 
           if (teammateId) {
             const { notificationMessage, removed } =

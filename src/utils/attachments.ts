@@ -270,7 +270,10 @@ import {
   isTeamLead,
 } from './teammate.js'
 import { isInProcessTeammate } from './teammateContext.js'
-import { handleTeammateShutdownApproved } from './swarm/teammateShutdown.js'
+import {
+  findApprovedTeammateId,
+  handleTeammateShutdownApproved,
+} from './swarm/teammateShutdown.js'
 import { getCompanionIntroAttachment } from '../buddy/prompt.js'
 import { isAnt } from 'src/utils/userType.js'
 import { isSkillHiddenFromModel } from './skillOverrides.js'
@@ -4060,11 +4063,11 @@ async function getTeammateMailboxAttachments(
         )
 
         // Find the teammate ID by name
-        const teammateId = appState.teamContext?.teammates
-          ? Object.entries(appState.teamContext.teammates).find(
-              ([, t]) => t.name === teammateToRemove,
-            )?.[0]
-          : undefined
+        const teammateId = findApprovedTeammateId(
+          appState.teamContext?.teammates,
+          teammateToRemove,
+          m.timestamp,
+        )
 
         if (teammateId) {
           await handleTeammateShutdownApproved({
