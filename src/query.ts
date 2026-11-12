@@ -132,6 +132,9 @@ import { queryCheckpoint } from './utils/queryProfiler.js'
 import { applyToolResultBudget } from './utils/toolResultStorage.js'
 import { recordContentReplacement } from './utils/sessionStorage.js'
 import { handleStopHooks } from './query/stopHooks.js'
+import { SEND_MESSAGE_TOOL_NAME } from './tools/SendMessageTool/constants.js'
+import { TEAM_LEAD_NAME } from './utils/swarm/constants.js'
+import { isInProcessTeammate } from './utils/teammateContext.js'
 import { buildQueryConfig } from './query/config.js'
 import { productionDeps, type QueryDeps } from './query/deps.js'
 import type { Terminal, Continue } from './query/transitions.js'
@@ -2198,6 +2201,42 @@ async function* queryLoop(
     // If a hook indicated to prevent continuation, stop here
     if (shouldPreventContinuation) {
       return { reason: 'hook_stopped' }
+    }
+
+    // A teammate whose whole response was a plain message to the team lead has
+    // reported. End the turn here (stop hooks included) instead of asking the
+    // model once more just to hear that it is done.
+    if (
+      isInProcessTeammate() &&
+      toolUseBlocks.length > 0 &&
+      toolUseBlocks.every(block => {
+        const input = block.input as { to?: unknown; message?: unknown }
+        // eslint-disable-next-line custom-rules/require-tool-match-name -- ToolUseBlock.name has no aliases
+        return block.name === SEND_MESSAGE_TOOL_NAME && input.to === TEAM_LEAD_NAME && typeof input.message === 'string'
+      }) &&
+      toolResults.every(
+        result => result.type === 'user' && Array.isArray(result.message.content) &&
+          !result.message.content.some(block => block.type === 'tool_result' && block.is_error),
+      )
+    ) {
+      const stopHookResult = yield* handleStopHooks(
+        messagesForQuery,
+        assistantMessages,
+        systemPrompt,
+        userContext,
+        systemContext,
+        toolUseContext,
+        querySource,
+        stopHookActive,
+        contextBlocks,
+      )
+      if (stopHookResult.preventContinuation) {
+        return { reason: 'stop_hook_prevented' }
+      }
+      if (stopHookResult.blockingErrors.length === 0) {
+        return { reason: 'completed' }
+      }
+      toolResults.push(...(stopHookResult.blockingErrors as UserMessage[]))
     }
 
     if (tracking?.compacted) {

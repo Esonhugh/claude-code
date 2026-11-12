@@ -10,9 +10,8 @@ const marked: string[] = []
 mock.module('./teammateMailbox.js', () => ({
   ...realMailbox,
   readUnreadMessages: async () => unread,
-  markMessagesAsReadByPredicate: async (agentName: string) => {
+  markMessagesAsRead: async (agentName: string) => {
     marked.push(agentName)
-    return true
   },
 }))
 

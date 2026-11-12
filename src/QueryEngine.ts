@@ -65,7 +65,8 @@ import { createModToolHost } from './services/mods/toolHost.js'
 import { sessionAppendEngineMessage } from './services/mods/sessionAppend.js'
 import type { AgentDefinition } from './tools/AgentTool/loadAgentsDir.js'
 import { SYNTHETIC_OUTPUT_TOOL_NAME } from './tools/SyntheticOutputTool/SyntheticOutputTool.js'
-import type { Message, MessageOrigin, UserMessage } from './types/message.js'
+import type { AttachmentMessage, Message, MessageOrigin, UserMessage } from './types/message.js'
+import { formatTeammateMessages } from './utils/teammateMailbox.js'
 import type { OrphanedPermission, QueuedCommand } from './types/textInputTypes.js'
 import { createAbortController } from './utils/abortController.js'
 import { applyCompletedMessageDisplayHooks } from './utils/hooks/messageDisplay.js'
@@ -178,6 +179,25 @@ export function channelReplays(messages: readonly Message[]): SDKUserMessageRepl
         ]
       : [],
   )
+}
+
+/**
+ * Replay of the teammate messages a turn read between tool calls, shaped like
+ * the prompt that delivers them between turns.
+ */
+export function teammateMailboxReplays(message: AttachmentMessage): SDKUserMessageReplay[] {
+  if (message.attachment.type !== 'teammate_mailbox') return []
+  return [
+    {
+      type: 'user',
+      message: { role: 'user', content: formatTeammateMessages(message.attachment.messages) },
+      session_id: getSessionId(),
+      parent_tool_use_id: null,
+      uuid: message.uuid,
+      timestamp: message.timestamp,
+      isReplay: true,
+    } as SDKUserMessageReplay,
+  ]
 }
 
 /**
@@ -1397,6 +1417,9 @@ export class QueryEngine {
               ],
             }
             return
+          }
+          else if (replayUserMessages && message.attachment.type === 'teammate_mailbox') {
+            yield* teammateMailboxReplays(message)
           }
           // Yield queued_command attachments as SDK user message replays
           else if (

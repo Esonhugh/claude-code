@@ -1231,53 +1231,6 @@ export async function dropMailboxMessagesByPredicate(
 }
 
 /**
- * Marks only messages matching a predicate as read, leaving others unread.
- * Uses the same file-locking mechanism as markMessagesAsRead.
- */
-export async function markMessagesAsReadByPredicate(
-  agentName: string,
-  predicate: (msg: TeammateMessage) => boolean,
-  teamName?: string,
-): Promise<void> {
-  const inboxPath = getInboxPath(agentName, teamName)
-
-  const lockFilePath = `${inboxPath}.lock`
-  let release: (() => Promise<void>) | undefined
-
-  try {
-    release = await lockfile.lock(inboxPath, {
-      lockfilePath: lockFilePath,
-      ...LOCK_OPTIONS,
-    })
-
-    const messages = await readMailbox(agentName, teamName)
-    if (messages.length === 0) {
-      return
-    }
-
-    const updatedMessages = messages.map(m =>
-      !m.read && predicate(m) ? { ...m, read: true } : m,
-    )
-
-    await writeFile(inboxPath, jsonStringify(updatedMessages, null, 2), 'utf-8')
-  } catch (error) {
-    const code = getErrnoCode(error)
-    if (code === 'ENOENT') {
-      return
-    }
-    logError(error)
-  } finally {
-    if (release) {
-      try {
-        await release()
-      } catch {
-        // Lock may have already been released
-      }
-    }
-  }
-}
-
-/**
  * Extracts a "[to {name}] {summary}" string from the last assistant message
  * if it ended with a SendMessage tool_use targeting a peer (not the team lead).
  * Returns undefined when the turn didn't end with a peer DM.
