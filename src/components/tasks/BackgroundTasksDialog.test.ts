@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 import assert from 'node:assert/strict'
-import { mock, spyOn, test } from 'bun:test'
+import { mock, setSystemTime, spyOn, test } from 'bun:test'
 import { Readable, Writable } from 'node:stream'
 import React from 'react'
 import stripAnsi from 'strip-ansi'
@@ -380,9 +380,9 @@ const flush = async () => { await new Promise(resolve => setTimeout(resolve, 50)
 // A fixed sleep can end before a starved render commits the dialog and runs
 // its input effects; a key pushed then is lost. Wait for what the next key needs.
 const waitFor = async (condition: () => boolean, message: string) => {
-  const start = Date.now()
+  const start = performance.now()
   while (!condition()) {
-    if (Date.now() - start > 5000) throw new Error(message)
+    if (performance.now() - start > 5000) throw new Error(message)
     await new Promise(resolve => setTimeout(resolve, 10))
   }
 }
@@ -485,6 +485,20 @@ test('PromptInput agent panel keeps completed teammate rows through Escape and g
     stdin: promptIn as unknown as NodeJS.ReadStream,
     patchConsole: false, exitOnCtrlC: false,
   })
+  // Escapes in a sequence must land inside one double-press window however
+  // slowly this run goes: freeze the clock and keep the window's expiry timer
+  // from firing until the returned release is called.
+  const { DOUBLE_PRESS_TIMEOUT_MS } = await import('../../hooks/useDoublePress.js')
+  function holdDoublePressWindow(): () => void {
+    const realSetTimeout = globalThis.setTimeout
+    globalThis.setTimeout = ((callback: (...args: unknown[]) => void, ms?: number, ...args: unknown[]) =>
+      realSetTimeout(callback, ms === DOUBLE_PRESS_TIMEOUT_MS ? 2 ** 31 - 1 : ms, ...args)) as typeof setTimeout
+    setSystemTime(new Date())
+    return () => {
+      setSystemTime()
+      globalThis.setTimeout = realSetTimeout
+    }
+  }
   async function pressPromptKey(key: string, until?: () => boolean) {
     promptOut.output = ''
     promptIn.push(key)
@@ -516,29 +530,30 @@ test('PromptInput agent panel keeps completed teammate rows through Escape and g
     assert.equal(onShowMessageSelector.mock.calls.length, 0, 'running teammate Escape must not open Rewind')
     updateState!(s => ({ ...s, tasks: { ...s.tasks, worker: { ...s.tasks.worker!, status: 'completed' } } }))
     await flush()
-    // Fixed sleeps per key would spend most of the 800ms double-press window
-    // on their own, so the timed keys wait only until each is handled.
-    const firstEscapeAt = performance.now()
-    await pressPromptKey('\x1b', () => liveState.viewingAgentTaskId === undefined)
-    assert.equal(liveState.viewingAgentTaskId, undefined, 'one raw Escape returns to main after footer entry')
-    assert.equal(liveState.viewSelectionMode, 'none')
-    assert.equal((liveState.tasks.worker as typeof retainedTeammate).retain, false)
-    assert.ok((liveState.tasks.worker as import('../../tasks/InProcessTeammateTask/types.js').InProcessTeammateTaskState).evictAfter)
-    assert.match(stripAnsi(promptOut.output), panelRow, 'real PromptInput panel keeps the row after exiting the completed teammate')
-    await pressPromptKey('\x1b[B', () => liveState.footerSelection === 'tasks')
-    const mainRow = liveState.coordinatorTaskIndex
-    await pressPromptKey('\x1b[B', () => liveState.coordinatorTaskIndex !== mainRow)
-    await pressPromptKey('\r', () => liveState.viewingAgentTaskId === 'worker')
-    assert.equal(liveState.viewingAgentTaskId, 'worker')
-    assert.equal((liveState.tasks.worker as typeof retainedTeammate).retain, true)
-    assert.equal((liveState.tasks.worker as import('../../tasks/InProcessTeammateTask/types.js').InProcessTeammateTaskState).evictAfter, undefined)
-    assert.equal((liveState.tasks.worker as typeof retainedTeammate).messages, retainedMessages)
-    // Like a local agent row, Enter keeps the panel focused: Escape leaves it first.
-    await pressPromptKey('\x1b', () => liveState.footerSelection === null)
-    assert.equal(liveState.footerSelection, null)
-    assert.equal(liveState.viewingAgentTaskId, 'worker')
-    await pressPromptKey('\x1b', () => liveState.viewingAgentTaskId === undefined)
-    assert.ok(performance.now() - firstEscapeAt < 800, 'both Escape dispatches must fit the double-press window')
+    const releaseWindow = holdDoublePressWindow()
+    try {
+      await pressPromptKey('\x1b', () => liveState.viewingAgentTaskId === undefined)
+      assert.equal(liveState.viewingAgentTaskId, undefined, 'one raw Escape returns to main after footer entry')
+      assert.equal(liveState.viewSelectionMode, 'none')
+      assert.equal((liveState.tasks.worker as typeof retainedTeammate).retain, false)
+      assert.ok((liveState.tasks.worker as import('../../tasks/InProcessTeammateTask/types.js').InProcessTeammateTaskState).evictAfter)
+      assert.match(stripAnsi(promptOut.output), panelRow, 'real PromptInput panel keeps the row after exiting the completed teammate')
+      await pressPromptKey('\x1b[B', () => liveState.footerSelection === 'tasks')
+      const mainRow = liveState.coordinatorTaskIndex
+      await pressPromptKey('\x1b[B', () => liveState.coordinatorTaskIndex !== mainRow)
+      await pressPromptKey('\r', () => liveState.viewingAgentTaskId === 'worker')
+      assert.equal(liveState.viewingAgentTaskId, 'worker')
+      assert.equal((liveState.tasks.worker as typeof retainedTeammate).retain, true)
+      assert.equal((liveState.tasks.worker as import('../../tasks/InProcessTeammateTask/types.js').InProcessTeammateTaskState).evictAfter, undefined)
+      assert.equal((liveState.tasks.worker as typeof retainedTeammate).messages, retainedMessages)
+      // Like a local agent row, Enter keeps the panel focused: Escape leaves it first.
+      await pressPromptKey('\x1b', () => liveState.footerSelection === null)
+      assert.equal(liveState.footerSelection, null)
+      assert.equal(liveState.viewingAgentTaskId, 'worker')
+      await pressPromptKey('\x1b', () => liveState.viewingAgentTaskId === undefined)
+    } finally {
+      releaseWindow()
+    }
     assert.equal(onShowMessageSelector.mock.calls.length, 0, 'teammate navigation must not open Rewind')
     assert.equal(liveState.viewSelectionMode, 'none')
     assert.equal(liveState.viewingAgentTaskId, undefined)
@@ -547,35 +562,49 @@ test('PromptInput agent panel keeps completed teammate rows through Escape and g
     await pressPromptKey('\r')
     assert.equal(liveState.viewingAgentTaskId, undefined)
     assert.equal(liveState.footerSelection, 'tasks', 'selecting main keeps the panel focused')
-    await pressPromptKey('\x1b')
+    await pressPromptKey('\x1b', () => liveState.footerSelection === null)
     assert.equal(liveState.footerSelection, null, 'Escape leaves the panel')
     assert.equal(onShowMessageSelector.mock.calls.length, 0, 'teammate Escape must not arm the first main Escape')
     await new Promise(resolve => setTimeout(resolve, 850))
-    promptIn.push('\x1b\x1b')
-    await new Promise(resolve => setTimeout(resolve, 100))
-    await flush()
+    const releaseMainWindow = holdDoublePressWindow()
+    try {
+      await pressPromptKey('\x1b\x1b', () => onShowMessageSelector.mock.calls.length === 1)
+    } finally {
+      releaseMainWindow()
+    }
     assert.equal(onShowMessageSelector.mock.calls.length, 1, 'rapid main double Escape still opens Rewind')
 
     onShowMessageSelector.mockClear()
-    setLocalJSXCommandActive!(true)
-    await flush()
-    await pressPromptKey('\x1b')
-    await pressPromptKey('\x1b')
-    assert.equal(onShowMessageSelector.mock.calls.length, 0, 'pane-owned Escape must not open Rewind')
-    setLocalJSXCommandActive!(false)
-    await flush()
-    await pressPromptKey('\x1b')
-    assert.equal(onShowMessageSelector.mock.calls.length, 0, 'pane-owned Escape must not arm the first composer Escape')
-    await pressPromptKey('\x1b')
+    const releasePaneWindow = holdDoublePressWindow()
+    try {
+      setLocalJSXCommandActive!(true)
+      await flush()
+      await pressPromptKey('\x1b')
+      await pressPromptKey('\x1b')
+      assert.equal(onShowMessageSelector.mock.calls.length, 0, 'pane-owned Escape must not open Rewind')
+      setLocalJSXCommandActive!(false)
+      await flush()
+      await pressPromptKey('\x1b')
+      assert.equal(onShowMessageSelector.mock.calls.length, 0, 'pane-owned Escape must not arm the first composer Escape')
+      await pressPromptKey('\x1b', () => onShowMessageSelector.mock.calls.length === 1)
+    } finally {
+      releasePaneWindow()
+    }
     assert.equal(onShowMessageSelector.mock.calls.length, 1, 'second composer-owned Escape opens Rewind once')
 
-    await pressPromptKey('\x1b[B')
-    await pressPromptKey('\x1b[B')
-    await pressPromptKey('\r')
+    await pressPromptKey('\x1b[B', () => liveState.footerSelection === 'tasks')
+    const mainRowAgain = liveState.coordinatorTaskIndex
+    await pressPromptKey('\x1b[B', () => liveState.coordinatorTaskIndex !== mainRowAgain)
+    await pressPromptKey('\r', () => liveState.viewingAgentTaskId === 'worker')
     assert.equal(liveState.viewingAgentTaskId, 'worker')
     assert.equal(promptInputValue, '', 'panel Enter must not leak into the prompt')
-    await pressPromptKey('\x1b')
-    await pressPromptKey('\x1b')
+    const releaseNavWindow = holdDoublePressWindow()
+    try {
+      await pressPromptKey('\x1b', () => liveState.footerSelection === null)
+      await pressPromptKey('\x1b', () => liveState.viewingAgentTaskId === undefined)
+    } finally {
+      releaseNavWindow()
+    }
     assert.equal(liveState.viewingAgentTaskId, undefined)
     assert.equal(promptInputValue, '')
     assert.equal(onShowMessageSelector.mock.calls.length, 1)
