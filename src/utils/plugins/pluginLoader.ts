@@ -324,61 +324,53 @@ export async function resolvePluginPath(
 
 /**
  * Recursively copy a directory.
+ * Symlinks that resolve inside `root` (the directory first passed in) are kept
+ * as relative links; links that point outside it are dropped, so a plugin
+ * cannot pull outside files into its cache.
  * Exported for testing purposes.
  */
-export async function copyDir(src: string, dest: string): Promise<void> {
+export async function copyDir(
+  src: string,
+  dest: string,
+  root = src,
+): Promise<void> {
   await getFsImplementation().mkdir(dest)
 
   const entries = await readdir(src, { withFileTypes: true })
+  let resolvedRoot: string | undefined
 
   for (const entry of entries) {
     const srcPath = join(src, entry.name)
     const destPath = join(dest, entry.name)
 
     if (entry.isDirectory()) {
-      await copyDir(srcPath, destPath)
+      await copyDir(srcPath, destPath, root)
     } else if (entry.isFile()) {
       await copyFile(srcPath, destPath)
     } else if (entry.isSymbolicLink()) {
-      const linkTarget = await readlink(srcPath)
-
-      // Resolve the symlink to get the actual target path
-      // This prevents circular symlinks when src and dest overlap (e.g., via symlink chains)
-      let resolvedTarget: string
-      try {
-        resolvedTarget = await realpath(srcPath)
-      } catch {
-        // Broken symlink - copy the raw link target as-is
-        await symlink(linkTarget, destPath)
+      resolvedRoot ??= await realpath(root).catch(() => resolve(root))
+      // Resolve the symlink to get the actual target path. A broken link is
+      // judged by where its raw target would point.
+      const resolvedTarget = await realpath(srcPath).catch(async () =>
+        resolve(await realpath(src).catch(() => src), await readlink(srcPath)),
+      )
+      const rootPrefix = resolvedRoot.endsWith(sep)
+        ? resolvedRoot
+        : resolvedRoot + sep
+      if (
+        !resolvedTarget.startsWith(rootPrefix) &&
+        resolvedTarget !== resolvedRoot
+      ) {
+        logForDebugging(
+          `Skipping symlink ${srcPath}: it points outside the plugin directory`,
+          { level: 'warn' },
+        )
         continue
       }
-
-      // Resolve the source directory to handle symlinked source dirs
-      let resolvedSrc: string
-      try {
-        resolvedSrc = await realpath(src)
-      } catch {
-        resolvedSrc = src
-      }
-
-      // Check if target is within the source tree (using proper path prefix matching)
-      const srcPrefix = resolvedSrc.endsWith(sep)
-        ? resolvedSrc
-        : resolvedSrc + sep
-      if (
-        resolvedTarget.startsWith(srcPrefix) ||
-        resolvedTarget === resolvedSrc
-      ) {
-        // Target is within source tree - create relative symlink that preserves
-        // the same structure in the destination
-        const targetRelativeToSrc = relative(resolvedSrc, resolvedTarget)
-        const destTargetPath = join(dest, targetRelativeToSrc)
-        const relativeLinkPath = relative(dirname(destPath), destTargetPath)
-        await symlink(relativeLinkPath, destPath)
-      } else {
-        // Target is outside source tree - use absolute resolved path
-        await symlink(resolvedTarget, destPath)
-      }
+      // Keep the same structure in the destination as a relative link.
+      const destRoot = join(dest, relative(src, root))
+      const destTargetPath = join(destRoot, relative(resolvedRoot, resolvedTarget))
+      await symlink(relative(dirname(destPath), destTargetPath), destPath)
     }
   }
 }
