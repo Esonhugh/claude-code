@@ -164,6 +164,7 @@ result success 完成。
 - 后台子代理还在跑时，原回合的 `result` 先暂存，等子代理的 `task_notification` 发出后再输出；之后处理通知的回合再输出第二个 `result`，和官方一致。
 - `stop_task` 对不存在或已结束的任务回成功（和官方一致），`task_id` 不是字符串时回错误。
 - 与官方 2.1.319 一样，`-p` 的输入关闭后最多等后台任务 `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS`（默认 10 分钟，`0` 表示一直等），到时停止它们；被停止的 shell 会通知模型，模型再跑一轮说明后退出，不会因为守护进程占着输出管道而挂起。
+- OpenAI provider 的 `apply_patch` 在 `canUseTool` / `--permission-prompt-tool stdio` 里按文件拆成 Edit / Write 逐个询问，被拒的文件也按 Edit / Write 列进 `permission_denials`，宿主不用认识 `apply_patch`，细节见 [openai-provider.md](openai-provider.md)。
 - 尚未实现：`set_mcp_permission_mode_override`。另外后台子代理结束时，本 fork 的 `background_tasks_changed`（空清单）比 `task_notification` 早一条，官方是之后；两者内容相同，只是先后不同。
 
 想把 [Mods](mods.md) 的界面画到自己的前端，见 [mods-sdk-client.md](mods-sdk-client.md)。
