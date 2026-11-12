@@ -249,6 +249,15 @@ if (process.env[childFlag] !== '1') {
   test('host UI requests from the VS Code extension answer instead of Unsupported', async () => {
     const usage = await import('../services/api/usage.js')
     const utilization = spyOn(usage, 'fetchUtilization').mockResolvedValue(null)
+    // get_status's installation checks shell out to `npm config get prefix`
+    // (three times); on a loaded runner npm alone outlasts the 5s test.
+    const installer = await import('../utils/nativeInstaller/installer.js')
+    const install = spyOn(installer, 'checkInstall').mockResolvedValue([])
+    const doctor = await import('../utils/doctorDiagnostic.js')
+    const diagnostic = spyOn(doctor, 'getDoctorDiagnostic').mockResolvedValue({
+      warnings: [{ issue: 'doctor warning', fix: 'x' }],
+      hasUpdatePermissions: null,
+    } as unknown as Awaited<ReturnType<typeof doctor.getDoctorDiagnostic>>)
     try {
       const [status, usageRes, cost, version, models, files, plan, exported, rename, renameOther, paused] = await run([
         { subtype: 'get_status' },
@@ -266,6 +275,7 @@ if (process.env[childFlag] !== '1') {
       expect(status.subtype).toBe('success')
       expect(status.response.sections.map((s: { title: string }) => s.title).slice(0, 2)).toEqual(['Session', 'Environment'])
       expect(status.response.sections[0].rows[0]).toEqual({ label: 'Version', value: 'test' })
+      expect(status.response.sections.at(-1).rows).toContainEqual({ value: 'doctor warning' })
       for (const section of status.response.sections) {
         for (const row of section.rows) expect(typeof row.value).toBe('string')
       }
@@ -289,6 +299,8 @@ if (process.env[childFlag] !== '1') {
       expect(renameOther).toMatchObject({ subtype: 'error', error: 'rename_session: this process has moved to another session' })
       expect(paused.subtype).toBe('success')
     } finally {
+      diagnostic.mockRestore()
+      install.mockRestore()
       utilization.mockRestore()
     }
   })
