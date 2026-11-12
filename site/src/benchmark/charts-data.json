@@ -784,7 +784,7 @@
   ]
  },
  "public": {
-  "source": "regression/public-bench-1108/summary.json (2026-11-09)",
+  "source": "regression/public-bench-1108/summary.json (2026-11-09); fork-openai: regression/fork-refresh-1112 (2026-11-12)",
   "runs": 1800,
   "cells": [
    {
@@ -969,8 +969,8 @@
    },
    {
     "id": "fork-claude-key-sub",
-    "en": "This fork + 3 subagents",
-    "zh": "本分支 + 3 個 subagent",
+    "en": "This fork + 3 subagents (Nov 8 build)",
+    "zh": "本分支 + 3 個 subagent（11-08 構建）",
     "short": "fork+sub",
     "side": "claude",
     "ours": true,
@@ -1001,12 +1001,12 @@
       "cost": 0.048
      }
     },
-    "hans": "本分支 + 3 个 subagent"
+    "hans": "本分支 + 3 个 subagent（11-08 构建）"
    },
    {
     "id": "fork-claude-key",
-    "en": "This fork",
-    "zh": "本分支",
+    "en": "This fork (Nov 8 build)",
+    "zh": "本分支（11-08 構建）",
     "short": "fork",
     "side": "claude",
     "ours": true,
@@ -1037,7 +1037,7 @@
       "cost": 0.044
      }
     },
-    "hans": "本分支"
+    "hans": "本分支（11-08 构建）"
    },
    {
     "id": "pi-claude",
@@ -1074,6 +1074,42 @@
      }
     },
     "hans": "pi"
+   },
+   {
+    "id": "fork-openai",
+    "en": "This fork (Nov 12 build)",
+    "zh": "本分支（11-12 構建）",
+    "short": "fork",
+    "side": "chatgpt",
+    "ours": true,
+    "effort": "high",
+    "version": "2.1.297 (Claude Code, dev 1ebf7a1)",
+    "n": 120,
+    "pass": 65.0,
+    "orig": 65.0,
+    "pert": 65.0,
+    "tokens": 581,
+    "cost": 0.208,
+    "hit": 93.3,
+    "dur": 253,
+    "suites": {
+     "tb2": {
+      "pass": 42,
+      "n": 48,
+      "cost": 0.155
+     },
+     "swebenchpro": {
+      "pass": 18,
+      "n": 48,
+      "cost": 0.347
+     },
+     "spreadsheetbench-verified": {
+      "pass": 18,
+      "n": 24,
+      "cost": 0.035
+     }
+    },
+    "hans": "本分支（11-12 构建）"
    },
    {
     "id": "omp-openai",
@@ -1113,8 +1149,8 @@
    },
    {
     "id": "fork-openai-sub",
-    "en": "This fork + 3 subagents",
-    "zh": "本分支 + 3 個 subagent",
+    "en": "This fork + 3 subagents (Nov 8 build)",
+    "zh": "本分支 + 3 個 subagent（11-08 構建）",
     "short": "fork+sub",
     "side": "chatgpt",
     "ours": true,
@@ -1145,7 +1181,7 @@
       "cost": 0.115
      }
     },
-    "hans": "本分支 + 3 个 subagent"
+    "hans": "本分支 + 3 个 subagent（11-08 构建）"
    },
    {
     "id": "pi-openai",
@@ -1256,42 +1292,6 @@
     "hans": "dsh"
    },
    {
-    "id": "fork-openai",
-    "en": "This fork",
-    "zh": "本分支",
-    "short": "fork",
-    "side": "chatgpt",
-    "ours": true,
-    "effort": "low",
-    "version": "2.1.297 (Claude Code)",
-    "n": 120,
-    "pass": 45.0,
-    "orig": 43.3,
-    "pert": 46.7,
-    "tokens": 311,
-    "cost": 0.117,
-    "hit": 90.8,
-    "dur": 131,
-    "suites": {
-     "tb2": {
-      "pass": 23,
-      "n": 48,
-      "cost": 0.099
-     },
-     "swebenchpro": {
-      "pass": 13,
-      "n": 48,
-      "cost": 0.18
-     },
-     "spreadsheetbench-verified": {
-      "pass": 18,
-      "n": 24,
-      "cost": 0.028
-     }
-    },
-    "hans": "本分支"
-   },
-   {
     "id": "opencode-openai",
     "en": "opencode",
     "zh": "opencode",
@@ -1338,8 +1338,8 @@
    [
     "fork-openai",
     "codex",
-    -4.2,
-    3.4
+    15.8,
+    8.1
    ],
    [
     "fork-claude-key-sub",

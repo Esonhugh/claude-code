@@ -75,6 +75,7 @@ if (process.env[childFlag] !== '1') {
     clearSpeculativeChecks: () => {},
     commandHasAnyCd: () => false,
     isNormalizedGitCommand: () => false,
+    isSafeEnvAssignment: () => false,
     isNormalizedCdCommand: () => false,
     requireApprovalOutsideSandbox: (_input: unknown, result: unknown) => result,
   }))
