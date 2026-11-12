@@ -237,4 +237,38 @@ if (process.env[childFlag] !== '1') {
     ])
     expect(decision.behavior).toBe('allow')
   })
+  // An empty updatedInput from a PermissionRequest hook keeps the input, as it
+  // does for an SDK host, so it does not change a patch file.
+  function emptyUpdatedInputHook() {
+    registerHookCallbacks({
+      PermissionRequest: [{
+        hooks: [{
+          type: 'callback',
+          callback: async () => ({ hookSpecificOutput: { hookEventName: 'PermissionRequest', decision: { behavior: 'allow', updatedInput: {} } } }),
+        }],
+      }],
+    })
+    const asks = { name: 'x', inputSchema: z.object({}).passthrough(), isReadOnly: () => false, checkPermissions: async () => ({ behavior: 'passthrough', message: 'ask' }) }
+    const tools = [{ ...asks, name: 'Edit' }, { ...asks, name: 'Write' }] as unknown as Tool[]
+    const a = join(home, 'a.txt')
+    writeFileSync(a, 'one\n')
+    const input = { input: ['*** Begin Patch', `*** Update File: ${a}`, '-one', '+ONE', `*** Add File: ${join(home, 'new.txt')}`, '+hi', '*** End Patch'].join('\n') }
+    const context = { ...toolUseContext(), options: { isNonInteractiveSession: true, tools } } as unknown as ToolUseContext
+    return { applyPatch: { ...asks, name: 'apply_patch' } as unknown as Tool, input, context }
+  }
+
+  test('the stdio host keeps patch files a hook allows with an empty updatedInput', async () => {
+    const { applyPatch, input, context } = emptyUpdatedInputHook()
+    const io = new StructuredIO((async function* () {})())
+    io.setOnControlRequestSent(() => {})
+    const decision = await io.createCanUseTool()(applyPatch, input, context, assistant, 'toolu_9')
+    expect(decision).toMatchObject({ behavior: 'allow', updatedInput: input })
+  })
+
+  test('--permission-prompt-tool keeps patch files a hook allows with an empty updatedInput', async () => {
+    const { applyPatch, input, context } = emptyUpdatedInputHook()
+    const promptTool = { name: 'mcp__host__approve', call: async () => { throw new Error('prompt tool should not run') } } as never
+    const decision = await createCanUseToolWithPermissionPrompt(promptTool)(applyPatch, input, context, assistant, 'toolu_10')
+    expect(decision).toMatchObject({ behavior: 'allow', updatedInput: input })
+  })
 }

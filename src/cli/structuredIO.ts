@@ -991,8 +991,12 @@ async function executePermissionRequestHooksForSDK(
     ) {
       const decision = hookResult.permissionRequestResult
       if (decision.behavior === 'allow') {
-        const finalInput = decision.updatedInput || input
-        if (decision.updatedInput) {
+        // An empty updatedInput keeps the input, as for an SDK host's answer.
+        const finalInput =
+          decision.updatedInput && Object.keys(decision.updatedInput).length > 0
+            ? decision.updatedInput
+            : input
+        if (finalInput !== input) {
           const denied = await recheckPermissionRequestHookInput(
             tool,
             finalInput,
