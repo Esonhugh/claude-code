@@ -7,6 +7,7 @@ import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 import isEqual from 'lodash-es/isEqual.js'
 import { parsePluginIdentifier } from './pluginIdentifier.js'
 import { isENOENT } from '../errors.js'
+import { stripBOM } from '../jsonRead.js'
 
 function sameDirectory(a: string, b: string): boolean {
   return isAbsolute(a) && isAbsolute(b) && resolve(a) === resolve(b)
@@ -56,7 +57,7 @@ export async function getInPlacePluginSource(
   if (source.source !== 'directory' || !isAbsolute(source.path)) return undefined
   const location=registered?.installLocation ?? source.path
   const root=await realpath(location)
-  const catalog=PluginMarketplaceSchema().parse(JSON.parse(await readFile(join(root,'.claude-plugin','marketplace.json'),'utf8')))
+  const catalog=PluginMarketplaceSchema().parse(JSON.parse(stripBOM(await readFile(join(root,'.claude-plugin','marketplace.json'),'utf8'))))
   if (catalog.name !== marketplace) return undefined
   const entry=catalog.plugins.find(plugin=>plugin.name===name)
   if (!entry || typeof entry.source !== 'string' || isAbsolute(entry.source)) return undefined

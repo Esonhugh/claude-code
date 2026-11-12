@@ -110,6 +110,7 @@ import {
 } from '../settings/settingsCache.js'
 import type { HooksSettings } from '../settings/types.js'
 import { SettingsSchema } from '../settings/types.js'
+import { stripBOM } from '../jsonRead.js'
 import { jsonParse, jsonStringify } from '../slowOperations.js'
 import { getAddDirEnabledPlugins } from './addDirPluginSettings.js'
 import { verifyAndDemote } from './dependencyResolver.js'
@@ -1037,7 +1038,7 @@ export async function cachePlugin(
     if (await pathExists(manifestPath)) {
       try {
         const content = await readFile(manifestPath, { encoding: 'utf-8' })
-        const parsed = jsonParse(content)
+        const parsed = jsonParse(stripBOM(content))
         const result = PluginManifestSchema().safeParse(parsed)
 
         if (result.success) {
@@ -1083,7 +1084,7 @@ export async function cachePlugin(
         const content = await readFile(legacyManifestPath, {
           encoding: 'utf-8',
         })
-        const parsed = jsonParse(content)
+        const parsed = jsonParse(stripBOM(content))
         const result = PluginManifestSchema().safeParse(parsed)
 
         if (result.success) {
@@ -1247,7 +1248,7 @@ export async function loadPluginManifest(
   try {
     // Read and parse the manifest JSON file
     const content = await readFile(manifestPath, { encoding: 'utf-8' })
-    const parsedJson = jsonParse(content)
+    const parsedJson = jsonParse(stripBOM(content))
 
     // Validate against the PluginManifest schema
     const result = PluginManifestSchema().safeParse(parsedJson)
@@ -1317,7 +1318,7 @@ async function loadPluginHooks(
   }
 
   const content = await readFile(hooksConfigPath, { encoding: 'utf-8' })
-  const rawHooksConfig = jsonParse(content)
+  const rawHooksConfig = jsonParse(stripBOM(content))
 
   const validatedPluginHooks = PluginHooksSchema().parse(rawHooksConfig)
   return {

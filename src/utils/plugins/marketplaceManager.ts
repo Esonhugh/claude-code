@@ -51,6 +51,7 @@ import {
   jsonStringify,
   writeFileSync_DEPRECATED,
 } from '../slowOperations.js'
+import { stripBOM } from '../jsonRead.js'
 import {
   getAddDirEnabledPlugins,
   getAddDirExtraMarketplaces,
@@ -1453,7 +1454,7 @@ async function parseFileWithSchema<T>(
   const content = await fs.readFile(filePath, { encoding: 'utf-8' })
   let data: unknown
   try {
-    data = jsonParse(content)
+    data = jsonParse(stripBOM(content))
   } catch (error) {
     throw new ConfigParseError(
       `Invalid JSON in ${filePath}: ${errorMessage(error)}`,
