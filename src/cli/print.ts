@@ -5999,11 +5999,13 @@ export function createCanUseToolWithPermissionPrompt(
 
     // The host knows Edit and Write, not patches: ask file by file.
     if (tool.name === APPLY_PATCH_TOOL_NAME && !isApplyPatchRule(mainPermissionResult)) {
+      // A hook's ask holds for every file; rules and the mode must not allow it.
+      const hookAsk = mainPermissionResult.decisionReason?.type === 'hook' ? mainPermissionResult : undefined
       const perFile = await askApplyPatchPerFile(
         input,
         toolUseContext.options.tools,
         (fileTool, fileInput) =>
-          canUseTool(fileTool, fileInput, toolUseContext, assistantMessage, toolUseId),
+          canUseTool(fileTool, fileInput, toolUseContext, assistantMessage, toolUseId, hookAsk),
       )
       if (perFile) return perFile
     }
