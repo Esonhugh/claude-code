@@ -156,4 +156,33 @@ if (process.env[childFlag] !== '1') {
     expect(promptToolCalls).toBe(0)
     expect(decision).toMatchObject({ behavior: 'deny', message: 'by hook' })
   })
+
+  // Like the stdio host, a --permission-prompt-tool host is asked about a
+  // patch one file at a time, as Edit or Write.
+  test('--permission-prompt-tool asks about apply_patch file by file', async () => {
+    const asks = { name: 'x', inputSchema: z.object({}).passthrough(), isReadOnly: () => false, checkPermissions: async () => ({ behavior: 'passthrough', message: 'ask' }) }
+    const tools = [{ ...asks, name: 'Edit' }, { ...asks, name: 'Write' }] as unknown as Tool[]
+    const applyPatch = { ...asks, name: 'apply_patch' } as unknown as Tool
+    const a = join(home, 'a.txt')
+    const b = join(home, 'b.txt')
+    await Bun.write(a, 'one\n')
+    await Bun.write(b, 'two\n')
+    const asked: { tool_name: string; file_path: unknown }[] = []
+    const promptTool = {
+      name: 'mcp__host__approve',
+      call: async (req: { tool_name: string; input: Record<string, unknown> }) => {
+        asked.push({ tool_name: req.tool_name, file_path: req.input.file_path })
+        const deny = req.input.file_path === b
+        return { data: deny ? { behavior: 'deny', message: 'no b' } : { behavior: 'allow', updatedInput: req.input } }
+      },
+      mapToolResultToToolResultBlockParam: (data: unknown) => ({ type: 'tool_result', tool_use_id: '1', content: [{ type: 'text', text: JSON.stringify(data) }] }),
+    } as never
+    const patchInput = { input: ['*** Begin Patch', `*** Update File: ${a}`, '-one', '+ONE', `*** Update File: ${b}`, '-two', '+TWO', '*** End Patch'].join('\n') }
+    const context = { ...toolUseContext(), options: { isNonInteractiveSession: true, tools } } as unknown as ToolUseContext
+    const decision = await createCanUseToolWithPermissionPrompt(promptTool)(applyPatch, patchInput, context, assistant, 'toolu_6')
+    expect(asked).toEqual([{ tool_name: 'Edit', file_path: a }, { tool_name: 'Edit', file_path: b }])
+    expect(decision).toMatchObject({ behavior: 'allow', deniedCall: { toolName: 'Edit', input: { file_path: b } } })
+    if (decision.behavior !== 'allow') return
+    expect(String(decision.updatedInput?.input)).not.toContain(b)
+  })
 }

@@ -8,13 +8,19 @@ import { PatchParseError } from './parser.js'
 import { patchHookSteps, type PlannedFile, planPatch } from './plan.js'
 import { APPLY_PATCH_TOOL_NAME } from './prompt.js'
 
-// An SDK host (canUseTool, --permission-prompt-tool stdio, the web UI) knows
+// An SDK host (canUseTool, --permission-prompt-tool stdio or an MCP tool, the web UI) knows
 // Edit and Write, not patches. So when a patch needs approval it is asked one
 // file at a time, as the Edit or Write call that makes the same change: a new
 // file is a Write, a changed file an Edit of its whole content, a deleted file
 // an Edit to empty, a move a Write of the new path plus a deleting Edit.
 // Like Codex, files apply in order and a denied file stops the patch there:
 // the files before it are applied and the model is told which were not.
+
+// An ask rule written for apply_patch itself asks for the whole patch.
+export function isApplyPatchRule(decision: PermissionDecision): boolean {
+  const reason = decision.decisionReason
+  return reason?.type === 'rule' && reason.rule.ruleValue.toolName === APPLY_PATCH_TOOL_NAME
+}
 
 type Ask = (tool: Tool, input: Record<string, unknown>) => Promise<PermissionDecision>
 
@@ -109,6 +115,7 @@ export async function askApplyPatchPerFile(
       if (!keepsShape) {
         const message = `The permission handler changed ${step.toolName} for ${f.op.path} in a way apply_patch cannot apply; only the new file content can be changed.`
         denial = { behavior: 'deny', message, decisionReason: { type: 'other', reason: message } }
+        deniedCall = { toolName: step.toolName, input: step.input }
         break
       }
       file.updated = content
