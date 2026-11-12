@@ -403,6 +403,20 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
             { type: 'tool_use', id: 'toolu_task_b', name: 'TaskCreate', input: { subject: 'Write tests', description: 'Write them', activeForm: 'Writing tests' } },
           ]
           stop = 'tool_use'
+        } else if (lastText.includes('toolu_mid_glob')) {
+          // The lead read its teammates' reports between tool calls (#1262).
+          blocks = [{ type: 'text', text: lastText.includes('teammate-message') ? 'LEAD_READ_MIDTURN' : 'LEAD_NO_REPORTS' }]
+        } else if (lastText.includes('toolu_mid_alice')) {
+          // Hold the lead's turn until both teammates have gone idle, then call one more tool.
+          await new Promise(r => setTimeout(r, 8_000))
+          blocks = [{ type: 'tool_use', id: 'toolu_mid_glob', name: 'Glob', input: { pattern: '*.none' } }]
+          stop = 'tool_use'
+        } else if (lastText.includes('MAKE_TEAM_MID')) {
+          blocks = [
+            { type: 'tool_use', id: 'toolu_mid_alice', name: 'Agent', input: { name: 'alice', description: 'Review methods', prompt: 'TEAM_ALICE review methods' } },
+            { type: 'tool_use', id: 'toolu_mid_bob', name: 'Agent', input: { name: 'bob', description: 'Review results', prompt: 'TEAM_BOB review results' } },
+          ]
+          stop = 'tool_use'
         } else if (lastText.includes('MEMBER_PING')) {
           blocks = [{ type: 'text', text: 'MEMBER_PONG' }]
         } else if (teammate && allText.includes('TEAM_ALICE')) {
@@ -1293,6 +1307,49 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       await browser.close()
     }
   }, 240_000)
+
+  it('shows teammate reports the lead reads mid-turn, also after a reload (#1262)', async () => {
+    const playwrightPath = Bun.spawnSync(['node', '-p', "require.resolve('playwright')"])
+      .stdout.toString()
+      .trim()
+    const { chromium } = await import(playwrightPath)
+    const browser = await chromium.launch()
+    try {
+      const context = await browser.newContext({ locale: 'en-US' })
+      const page = await context.newPage()
+      const errors: string[] = []
+      page.on('pageerror', e => errors.push(e.message))
+      await page.goto(signInUrl)
+      await page.locator('.wl-hi').waitFor()
+      const input = page.getByLabel('Message', { exact: true })
+      const panel = page.locator('aside.side')
+      const agentsTab = panel.getByRole('tab', { name: /^Agents/ })
+      // The fake holds the lead's turn until both teammates are idle, so their reports reach it between tool calls.
+      await input.fill('please MAKE_TEAM_MID now')
+      await input.press('Enter')
+      await agentsTab.click()
+      const team = panel.locator('.team-section', { hasText: 'Team' })
+      await team.locator('.agent-row', { hasText: 'alice' }).waitFor({ timeout: 30_000 })
+      await page.getByText('LEAD_READ_MIDTURN').first().waitFor({ timeout: 60_000 })
+      const shown = async () => {
+        await team.getByText('0 working · 2 idle').waitFor({ timeout: 15_000 })
+        await page.locator('.msg.teammate', { hasText: 'alice' }).first().waitFor({ timeout: 15_000 })
+        await page.locator('.msg.teammate', { hasText: 'bob' }).first().waitFor({ timeout: 15_000 })
+      }
+      await showing(shown(), panel)
+
+      await page.locator('.session-row', { hasText: 'please MAKE_TEAM_MID now' }).waitFor({ timeout: 30_000 })
+      await page.reload()
+      await page.locator('.session-row', { hasText: 'please MAKE_TEAM_MID now' }).locator('.session-title').click()
+      await page.locator('.status-live').waitFor({ timeout: 30_000 })
+      await agentsTab.click()
+      await team.locator('.agent-row', { hasText: 'alice' }).waitFor({ timeout: 30_000 })
+      await showing(shown(), panel)
+      expect(errors).toEqual([])
+    } finally {
+      await browser.close()
+    }
+  }, 120_000)
 
   it('fits a phone screen with drawers for both side panels', async () => {
     const playwrightPath = Bun.spawnSync(['node', '-p', "require.resolve('playwright')"])
