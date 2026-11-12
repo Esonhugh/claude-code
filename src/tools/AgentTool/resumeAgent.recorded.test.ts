@@ -83,8 +83,10 @@ try {
   assert.ok(recorded, 'resume passes no recordedUuids')
   for (const message of earlier) assert.ok(recorded.has(message.uuid), `recordedUuids misses ${message.uuid}`)
   // The resumed run's report counts the tool calls of the runs before it too.
-  for (let i = 0; i < 50 && !getCommandQueue().length; i++) await new Promise(resolve => setTimeout(resolve, 20))
-  const notification = getCommandQueue().map(cmd => String(cmd.value)).find(text => text.includes('<task-notification>'))
+  // Other test files in the same process can leave their own notifications in the shared queue.
+  const ownNotification = () => getCommandQueue().map(cmd => String(cmd.value)).find(text => text.includes(`<task-id>${agentId}</task-id>`))
+  for (let i = 0; i < 50 && !ownNotification(); i++) await new Promise(resolve => setTimeout(resolve, 20))
+  const notification = ownNotification()
   assert.ok(notification, 'no task notification')
   assert.match(notification, /<tool_uses>1<\/tool_uses>/)
 } finally {
