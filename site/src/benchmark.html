@@ -143,26 +143,26 @@
   <p class="hant">共 1,800 次 run：20 題 × 15 個 CLI/帳號格 × 原版與擾動版 × 每格 3 次，每次都在任務自己的容器裡、全新 HOME、關閉 web search。Claude 側用 <code>claude-sonnet-5-5</code>，ChatGPT 側用 <code>gpt-6.1-sol</code>，各 CLI 用自己的預設 effort。</p>
   <p class="hans">共 1,800 次 run：20 题 × 15 个 CLI/账号格 × 原版与扰动版 × 每格 3 次，每次都在任务自己的容器里、全新 HOME、关闭 web search。Claude 侧用 <code>claude-sonnet-5-5</code>，ChatGPT 侧用 <code>gpt-6.1-sol</code>，各 CLI 用自己的默认 effort。</p>
   <ul class="en">
-    <li><b>The model matters more than the CLI.</b> Claude side passes 61.1% (587/960), ChatGPT side 49.8% (418/840).</li>
-    <li><b>Best cells: dsh 70.8% and opencode 68.3%</b> on Claude, 16–18 points above pi. On ChatGPT only oh-my-pi (59.2%, default effort high) clearly leads.</li>
+    <li><b>The model matters more than the CLI.</b> Claude side passes 61.1% (587/960), ChatGPT side 52.6% (442/840).</li>
+    <li><b>Best cells: dsh 70.8% and opencode 68.3%</b> on Claude, 16–18 points above pi. On ChatGPT, oh-my-pi (59.2%, default effort high) led the other CLIs; a fixed-effort check shows its lead comes mostly from effort, not the harness.</li>
     <li><b>This fork vs official: 54.2% vs 61.7%</b>, paired −7.5 ± 4.4 pp, under 2 standard errors. Most of the gap is one task (make-mips-interpreter, 2/6 vs 6/6), with the same failure pi shows.</li>
-    <li><b>This fork vs Codex: 45.0% vs 49.2%</b>, paired −4.2 ± 3.4 pp, also not significant.</li>
+    <li><b>This fork vs Codex: 65.0% vs 49.2%</b>, paired +15.8 ± 8.1 pp. The fork's ChatGPT cell was run on 2026-11-12 with the current build, which defaults headless runs to effort high and asks the model to run tests and clean up before finishing (#1097); the other cells are from Nov 8. One task (custom-memory-heap-crash) has passed in every ChatGPT cell since Nov 10 but rarely did on Nov 8; without it the lead over Codex is 11.4 points. The fork's Claude cells are still the Nov 8 build.</li>
     <li>The fork's longer average time (196 s vs 113 s) came from <code>-p</code> waiting on a background Bash task (#1071), fixed after this run.</li>
     <li>Perturbed SWE-bench Pro scores 8.3 points lower; TB2 and SpreadsheetBench do not move. That could be recall or harder renamed code, so it is inconclusive.</li>
   </ul>
   <ul class="hant">
-    <li><b>模型差距比 CLI 差距大。</b>Claude 側通過 61.1%（587/960），ChatGPT 側 49.8%（418/840）。</li>
-    <li><b>最好的格是 dsh 70.8% 與 opencode 68.3%</b>（Claude 側），比 pi 高 16–18 個百分點。ChatGPT 側只有 oh-my-pi（59.2%，預設 effort high）明顯領先。</li>
+    <li><b>模型差距比 CLI 差距大。</b>Claude 側通過 61.1%（587/960），ChatGPT 側 52.6%（442/840）。</li>
+    <li><b>最好的格是 dsh 70.8% 與 opencode 68.3%</b>（Claude 側），比 pi 高 16–18 個百分點。ChatGPT 側 oh-my-pi（59.2%，預設 effort high）領先其他 CLI；固定 effort 的補充實驗顯示它的領先主要來自 effort，不是 harness。</li>
     <li><b>本分支 vs 官方：54.2% vs 61.7%</b>，逐題配對差 −7.5 ± 4.4 pp，不到 2 個標準誤。差距主要來自一題（make-mips-interpreter，2/6 vs 6/6），失敗方式和 pi 相同。</li>
-    <li><b>本分支 vs Codex：45.0% vs 49.2%</b>，配對差 −4.2 ± 3.4 pp，同樣不顯著。</li>
+    <li><b>本分支 vs Codex：65.0% vs 49.2%</b>，配對差 +15.8 ± 8.1 pp。本分支 ChatGPT 格在 2026-11-12 用目前的構建跑：headless 預設 effort high，並要求結束前跑測試、清掉建置產物（#1097）；其他格是 11-08 的資料。custom-memory-heap-crash 一題從 11-10 起在所有 ChatGPT 格幾乎都會過，11-08 時很少過；扣掉這題，對 Codex 仍高 11.4 個百分點。本分支的 Claude 格仍是 11-08 的構建。</li>
     <li>本分支平均用時較長（196 秒 vs 113 秒），原因是 <code>-p</code> 會等背景 Bash 任務（#1071），已在這次跑完後修好。</li>
     <li>SWE-bench Pro 擾動版低 8.3 個百分點，TB2 與 SpreadsheetBench 沒有差別。可能是模型記得原題，也可能是改名後更難，無法判斷。</li>
   </ul>
   <ul class="hans">
-    <li><b>模型差距比 CLI 差距大。</b>Claude 侧通过 61.1%（587/960），ChatGPT 侧 49.8%（418/840）。</li>
-    <li><b>最好的格是 dsh 70.8% 与 opencode 68.3%</b>（Claude 侧），比 pi 高 16–18 个百分点。ChatGPT 侧只有 oh-my-pi（59.2%，默认 effort high）明显领先。</li>
+    <li><b>模型差距比 CLI 差距大。</b>Claude 侧通过 61.1%（587/960），ChatGPT 侧 52.6%（442/840）。</li>
+    <li><b>最好的格是 dsh 70.8% 与 opencode 68.3%</b>（Claude 侧），比 pi 高 16–18 个百分点。ChatGPT 侧 oh-my-pi（59.2%，默认 effort high）领先其他 CLI；固定 effort 的补充实验显示它的领先主要来自 effort，不是 harness。</li>
     <li><b>本分支 vs 官方：54.2% vs 61.7%</b>，逐题配对差 −7.5 ± 4.4 pp，不到 2 个标准误。差距主要来自一题（make-mips-interpreter，2/6 vs 6/6），失败方式和 pi 相同。</li>
-    <li><b>本分支 vs Codex：45.0% vs 49.2%</b>，配对差 −4.2 ± 3.4 pp，同样不显著。</li>
+    <li><b>本分支 vs Codex：65.0% vs 49.2%</b>，配对差 +15.8 ± 8.1 pp。本分支 ChatGPT 格在 2026-11-12 用当前的构建跑：headless 默认 effort high，并要求结束前跑测试、清掉构建产物（#1097）；其他格是 11-08 的数据。custom-memory-heap-crash 一题从 11-10 起在所有 ChatGPT 格几乎都会过，11-08 时很少过；扣掉这题，对 Codex 仍高 11.4 个百分点。本分支的 Claude 格仍是 11-08 的构建。</li>
     <li>本分支平均用时较长（196 秒 vs 113 秒），原因是 <code>-p</code> 会等背景 Bash 任务（#1071），已在这次跑完后修好。</li>
     <li>SWE-bench Pro 扰动版低 8.3 个百分点，TB2 与 SpreadsheetBench 没有差别。可能是模型记得原题，也可能是改名后更难，无法判断。</li>
   </ul>
@@ -210,10 +210,10 @@
     <thead><tr><th><span class="en">Paired comparison (same tasks)</span><span class="hant">逐題配對比較</span><span class="hans">逐题配对比较</span></th><th><span class="en">Difference</span><span class="hant">差距</span><span class="hans">差距</span></th></tr></thead>
     <tbody>
       <tr><td><span class="en">This fork vs official (Claude key)</span><span class="hant">本分支 vs 官方（Claude key）</span><span class="hans">本分支 vs 官方（Claude key）</span></td><td>−7.5 ± 4.4 pp</td></tr>
-      <tr><td><span class="en">This fork vs Codex (ChatGPT)</span><span class="hant">本分支 vs Codex（ChatGPT）</span><span class="hans">本分支 vs Codex（ChatGPT）</span></td><td>−4.2 ± 3.4 pp</td></tr>
+      <tr><td><span class="en">This fork (Nov 12 build) vs Codex (ChatGPT)</span><span class="hant">本分支（11-12 構建）vs Codex（ChatGPT）</span><span class="hans">本分支（11-12 构建）vs Codex（ChatGPT）</span></td><td>+15.8 ± 8.1 pp</td></tr>
       <tr><td><span class="en">This fork + 3 subagents vs single (Claude)</span><span class="hant">本分支 + 3 個 subagent vs 單代理（Claude）</span><span class="hans">本分支 + 3 个 subagent vs 单代理（Claude）</span></td><td>+4.2 ± 7.5 pp</td></tr>
       <tr><td><span class="en">Official + 3 subagents vs single</span><span class="hant">官方 + 3 個 subagent vs 單代理</span><span class="hans">官方 + 3 个 subagent vs 单代理</span></td><td>−2.5 ± 4.4 pp</td></tr>
-      <tr><td><span class="en">This fork + 3 subagents vs single (ChatGPT)</span><span class="hant">本分支 + 3 個 subagent vs 單代理（ChatGPT）</span><span class="hans">本分支 + 3 个 subagent vs 单代理（ChatGPT）</span></td><td>+5.8 ± 5.0 pp</td></tr>
+      <tr><td><span class="en">This fork + 3 subagents vs single (ChatGPT, both Nov 8 build)</span><span class="hant">本分支 + 3 個 subagent vs 單代理（ChatGPT，皆 11-08 構建）</span><span class="hans">本分支 + 3 个 subagent vs 单代理（ChatGPT，皆 11-08 构建）</span></td><td>+5.8 ± 5.0 pp</td></tr>
       <tr><td><span class="en">dsh vs pi (Claude)</span><span class="hant">dsh vs pi（Claude）</span><span class="hans">dsh vs pi（Claude）</span></td><td>+18.3 ± 6.2 pp</td></tr>
       <tr><td><span class="en">opencode vs pi (Claude)</span><span class="hant">opencode vs pi（Claude）</span><span class="hans">opencode vs pi（Claude）</span></td><td>+15.8 ± 5.5 pp</td></tr>
       <tr><td><span class="en">oh-my-pi vs pi (Claude)</span><span class="hant">oh-my-pi vs pi（Claude）</span><span class="hans">oh-my-pi vs pi（Claude）</span></td><td>+11.7 ± 6.5 pp</td></tr>
