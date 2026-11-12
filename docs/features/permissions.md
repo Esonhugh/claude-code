@@ -104,6 +104,8 @@ Claude 每次要改檔案、跑命令、訪問網路之前，都會判斷要不�
 
 - Bash 的 deny / ask 规则会「看穿」包装：`sudo rm`、`env X=1 rm`、`nohup rm`、`exec rm` 都按 `rm` 匹配；deny 和 ask 规则还会匹配 `/bin/rm` 这类带路径的命令，以及包在 `$(…)`、反引号、`( )`、`{ }`、`<( )` 里的命令。
 - Bash 的 allow 规则匹配前也会剥掉 `command`、`command -p` 和 `noglob`；`[ … ]`、`[[ … ]]` 当作只读的 `test`，`cd .` 不算换目录。所以有 `Bash(touch:*)` 时，`command touch f`、`[ -f x ] || touch f`、`cd . && touch f` 直接执行，`cd sub && touch f` 仍会询问（同官方）。
+- 有语法错误的命令（以 `&&`、`||` 结尾，或双引号没闭合）即使匹配 allow 规则也会询问，同官方。
+- 不带根的 Read/Edit deny 规则（如 `./secret/**`、`.env`）在命令里 `cd` 之后仍按启动目录匹配；`cp` / `mv` 的来源按读取检查，deny 规则也检查符号链接指向的真实路径。bypass 和 Bash allow 规则都不会绕过这些 deny。
 - 没有规则时哪些 Bash 命令直接执行，也和官方 2.1.322 一致：`[[ a && b ]]` 当作一个测试；只含数字的 `$((…))` 先算出来，所以 `echo $((1+2))` 直接执行；只读命令可以带安全的环境变量前缀（如 `CI=1`、`COLUMNS=80`）或 `command` / `builtin` / `timeout N`。会询问的情况：本来会放行的命令放到后台（`&`）、写入路径里有命令替换或未知变量、`< 文件` 读工作目录外的文件、accept edits 下包在 wrapper 里或带选项的 `touch`。
 - Read 的 deny 规则也挡住对同一路径的 Write / Edit：`Read(**/.env)` 时不能新建或改写 `.env`。
 - `Bash(find:*)` 不会放行带 `-exec`、`-execdir`、`-ok`、`-delete` 的 find。
