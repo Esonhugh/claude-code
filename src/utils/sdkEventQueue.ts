@@ -33,6 +33,7 @@ type TaskUpdatedEvent = {
     total_paused_ms?: number
     error?: string
     is_backgrounded?: boolean
+    is_idle?: boolean
   }
 }
 

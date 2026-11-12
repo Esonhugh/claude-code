@@ -271,6 +271,12 @@ describe('agent team', () => {
     )
     expect(buildTeam(later.tasks, later.items)!.members.map(m => m.state)).toEqual(['working', 'idle'])
     expect(buildTeam({}, later.items)).toBeUndefined()
+
+    // The engine's flag shows idle at once, before the lead reads the notification, and working again.
+    const idle = reduce(later, sys('task_updated', { task_id: 'ta', patch: { is_idle: true } }))
+    expect(buildTeam(idle.tasks, idle.items)!.members.map(m => m.state)).toEqual(['idle', 'idle'])
+    const woken = reduce(idle, sys('task_updated', { task_id: 'tb', patch: { is_idle: false } }))
+    expect(buildTeam(woken.tasks, woken.items)!.members.map(m => m.state)).toEqual(['idle', 'working'])
   })
 
   it('skips the echo of a message the page sent', () => {
