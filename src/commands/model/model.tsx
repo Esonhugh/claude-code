@@ -145,6 +145,10 @@ function ModelPickerWrapper({
   const isFastMode = useAppState(s => s.fastMode)
   const setAppState = useSetAppState()
   const [pending, setPending] = React.useState<PendingModelSwitch>()
+  // Like official, the picker goes away as soon as a pick is made: the switch
+  // finishes asynchronously, and keys typed meanwhile (an Enter right after a
+  // digit pick) must not pick again.
+  const [switching, setSwitching] = React.useState(false)
 
   function handleCancel(): void {
     logEvent('tengu_model_command_menu', {
@@ -163,6 +167,7 @@ function ModelPickerWrapper({
   ): void {
     const info = getModelSwitchHookInfo(model, context.messages)
     const apply = () => void applySelect(model, effort, info)
+    setSwitching(true)
     void preModelSwitch(info, 'picker', context, onDone, setPending, apply).then(
       proceed => {
         if (proceed) apply()
@@ -176,6 +181,7 @@ function ModelPickerWrapper({
   ): void {
     const info = getModelSwitchHookInfo(model, context.messages)
     const apply = () => void applySelect(model, effort, info, true)
+    setSwitching(true)
     void preModelSwitch(info, 'picker', context, onDone, setPending, apply).then(
       proceed => {
         if (proceed) apply()
@@ -253,6 +259,10 @@ function ModelPickerWrapper({
 
   if (pending) {
     return <ConfirmModelSwitch pending={pending} onCancel={handleCancel} />
+  }
+
+  if (switching) {
+    return null
   }
 
   return (
