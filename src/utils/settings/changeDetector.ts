@@ -33,6 +33,7 @@ import {
   releaseSettingsFile,
   resetSettingsCache,
   retainSettingsFile,
+  setOutsideEditsReviewed,
 } from './settingsCache.js'
 
 /**
@@ -179,6 +180,7 @@ export async function initialize(): Promise<void> {
     atomic: true, // Handle atomic writes better
   })
 
+  setOutsideEditsReviewed(true)
   watcher.on('change', handleChange)
   watcher.on('unlink', handleDelete)
   watcher.on('add', handleAdd)
@@ -205,6 +207,7 @@ export function dispose(): Promise<void> {
   lastMdmSnapshot = null
   watchedPathAliases.clear()
   clearInternalWrites()
+  setOutsideEditsReviewed(false)
   settingsChanged.clear()
   const w = watcher
   watcher = null
@@ -595,6 +598,7 @@ export function resetForTesting(overrides?: {
   watchedPathAliases.clear()
   initialized = false
   disposed = false
+  setOutsideEditsReviewed(false)
   testOverrides = overrides ?? null
   const w = watcher
   watcher = null
