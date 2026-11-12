@@ -498,6 +498,8 @@ import { isInProcessTeammateTask } from '../tasks/InProcessTeammateTask/types.js
 import { isMainSessionTask } from '../tasks/LocalMainSessionTask.js'
 import { isTerminalTask } from '../tasks/TerminalTask.js'
 import { hostTerminalInputSchema } from '../tools/TerminalTool/actionSchemas.js'
+import { askApplyPatchPerFile, isApplyPatchRule } from '../tools/ApplyPatchTool/askPerFile.js'
+import { APPLY_PATCH_TOOL_NAME } from '../tools/ApplyPatchTool/prompt.js'
 import { isTerminalTaskStatus } from '../taskStatus.js'
 import { drainSdkOutput, getTaskRunId } from '../utils/sdkEventQueue.js'
 import { initializeGrowthBook } from '../services/analytics/growthbook.js'
@@ -5993,6 +5995,17 @@ export function createCanUseToolWithPermissionPrompt(
       mainPermissionResult.behavior === 'deny'
     ) {
       return mainPermissionResult
+    }
+
+    // The host knows Edit and Write, not patches: ask file by file.
+    if (tool.name === APPLY_PATCH_TOOL_NAME && !isApplyPatchRule(mainPermissionResult)) {
+      const perFile = await askApplyPatchPerFile(
+        input,
+        toolUseContext.options.tools,
+        (fileTool, fileInput) =>
+          canUseTool(fileTool, fileInput, toolUseContext, assistantMessage, toolUseId),
+      )
+      if (perFile) return perFile
     }
 
     const hookDecision = await runPrintPermissionRequestHooks(

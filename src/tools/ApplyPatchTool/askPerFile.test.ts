@@ -110,6 +110,13 @@ test('a host that changes the file path is refused', async () => {
   expect(readFileSync(p('a.txt'), 'utf8')).toBe('alpha\nbeta\n')
 })
 
+test('a later file refused for a changed path is still reported as denied', async () => {
+  reset()
+  const { ask } = host(a => ({ behavior: 'allow', updatedInput: a.tool === 'Write' ? { ...a.input, file_path: p('elsewhere.txt') } : a.input }))
+  const decision = await askApplyPatchPerFile(patch(UPDATE_A, ADD_NEW), tools, ask)
+  expect(decision).toMatchObject({ behavior: 'allow', deniedCall: { toolName: 'Write', input: { file_path: p('sub/new.txt') } } })
+})
+
 test('a file that does not apply is not asked about; the tool reports it', async () => {
   reset()
   const input = patch(UPDATE_A, `*** Update File: ${p('b.txt')}\n-missing\n+x`, ADD_NEW)
