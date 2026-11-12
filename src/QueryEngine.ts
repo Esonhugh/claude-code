@@ -461,11 +461,12 @@ export class QueryEngine {
       )
 
       // Track denials for SDK reporting
-      if (result.behavior !== 'allow') {
+      const deniedCall = result.behavior === 'ask' ? undefined : result.deniedCall
+      if (result.behavior !== 'allow' || deniedCall) {
         this.permissionDenials.push({
-          tool_name: sdkCompatToolName(tool.name),
+          tool_name: sdkCompatToolName(deniedCall?.toolName ?? tool.name),
           tool_use_id: toolUseID,
-          tool_input: input,
+          tool_input: deniedCall?.input ?? input,
         })
       }
 

@@ -88,10 +88,12 @@ export async function askApplyPatchPerFile(
     }
     const steps = patchHookSteps([{ path: f.absolutePath, movePath: f.absoluteMovePath, original: file.original, updated: file.updated }])
     let denial: PermissionDecision | null = null
+    let deniedCall: { toolName: string; input: Record<string, unknown> } | undefined
     for (const step of steps) {
       const decision = await ask(step.toolName === FILE_EDIT_TOOL_NAME ? editTool : writeTool, step.input)
       if (decision.behavior !== 'allow') {
         denial = decision
+        deniedCall = { toolName: step.toolName, input: step.input }
         break
       }
       const answered = decision.updatedInput
@@ -113,9 +115,10 @@ export async function askApplyPatchPerFile(
       changed = true
     }
     if (denial) {
-      if (index === 0) return denial
+      if (index === 0) return denial.behavior === 'deny' ? { ...denial, deniedCall } : denial
       const notAttempted = planned.slice(index + 1).map(p => p.op.path)
       return finish(approved, {
+        deniedCall,
         acceptFeedback: [
           `Permission to change ${f.op.path} was denied${'message' in denial && denial.message ? `: ${denial.message}` : '.'}`,
           `${f.op.path}${notAttempted.length ? ` and the files after it (${notAttempted.join(', ')}) were` : ' was'} not changed. Only the files listed in the result were applied.`,
@@ -127,7 +130,10 @@ export async function askApplyPatchPerFile(
   if (!changed && approved.length === planned.length) return { behavior: 'allow', updatedInput: input }
   return finish(approved, {})
 
-  function finish(files: FinalFile[], extra: { acceptFeedback?: string }): PermissionDecision {
+  function finish(
+    files: FinalFile[],
+    extra: { acceptFeedback?: string; deniedCall?: { toolName: string; input: Record<string, unknown> } },
+  ): PermissionDecision {
     const patch = renderPatch(files)
     if (!rendersTo(patch, files)) {
       const message = `${APPLY_PATCH_TOOL_NAME} could not apply the change the permission handler approved. No files were changed.`

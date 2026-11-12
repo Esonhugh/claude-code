@@ -66,7 +66,7 @@ test('a denied first file denies the patch with the host message', async () => {
   const { asked, ask } = host(() => ({ behavior: 'deny', message: 'no', decisionReason: { type: 'other', reason: 'host' } }))
   const decision = await askApplyPatchPerFile(patch(UPDATE_A, UPDATE_B), tools, ask)
   expect(asked.length).toBe(1)
-  expect(decision).toMatchObject({ behavior: 'deny', message: 'no' })
+  expect(decision).toMatchObject({ behavior: 'deny', message: 'no', deniedCall: { toolName: 'Edit', input: asked[0]!.input } })
 })
 
 test('a denied later file keeps the files before it and stops there', async () => {
@@ -79,6 +79,8 @@ test('a denied later file keeps the files before it and stops there', async () =
   expect(contents(decision.updatedInput)).toEqual([[p('a.txt'), 'alpha\nBETA\n']])
   expect(decision.acceptFeedback).toContain(`Permission to change ${p('sub/new.txt')} was denied: protected`)
   expect(decision.acceptFeedback).toContain(p('b.txt'))
+  // Reported in SDK permission_denials as the Write the host denied.
+  expect(decision.deniedCall).toEqual({ toolName: 'Write', input: { file_path: p('sub/new.txt'), content: 'hello\n' } })
 })
 
 test('content the host changes is what gets written', async () => {
