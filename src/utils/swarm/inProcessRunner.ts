@@ -27,10 +27,13 @@ import {
 import { getAutoCompactThreshold } from '../../services/compact/autoCompact.js'
 import {
   buildPostCompactMessages,
+  type CompactionResult,
   compactConversation,
   ERROR_MESSAGE_USER_ABORT,
 } from '../../services/compact/compact.js'
 import { resetMicrocompactState } from '../../services/compact/microCompact.js'
+import { formatDeferredToolLines } from '../../tools/ToolSearchTool/prompt.js'
+import { createAttachmentMessage } from '../attachments.js'
 import type { AppState } from '../../state/AppState.js'
 import type { Tool, ToolPermissionContext, ToolUseContext, Tools } from '../../Tool.js'
 import { assembleToolPool } from '../../tools.js'
@@ -965,10 +968,10 @@ async function waitForNextPromptOrShutdown(
  * sent as a fork of forkContextMessages, so the history itself must be passed
  * there too (as official does), or the summarizer sees an empty conversation.
  */
-export function compactTeammateHistory(
+export async function compactTeammateHistory(
   messages: Message[],
   toolUseContext: ToolUseContext,
-): ReturnType<typeof compactConversation> {
+): Promise<CompactionResult> {
   // An isolated copy so compaction does not clear the main session's
   // readFileState cache or trigger the main session's UI callbacks.
   const isolatedContext: ToolUseContext = {
@@ -977,7 +980,7 @@ export function compactTeammateHistory(
     onCompactProgress: undefined,
     setStreamMode: undefined,
   }
-  return compactConversation(
+  const result = await compactConversation(
     messages,
     isolatedContext,
     {
@@ -991,6 +994,30 @@ export function compactTeammateHistory(
     undefined, // customInstructions
     true, // isAutoCompact
   )
+  // Compaction re-announces deferred tools from this context's base tool
+  // pool, which still has tools runAgent filters out for the teammate (Goal),
+  // so its next turn would be told they were removed. Re-announce what the
+  // teammate itself had been told instead.
+  const told = new Set<string>()
+  for (const message of messages) {
+    if (message.type !== 'attachment' || message.attachment.type !== 'deferred_tools_delta') continue
+    for (const name of message.attachment.addedNames) told.add(name)
+    for (const name of message.attachment.removedNames) told.delete(name)
+  }
+  const toldTools = toolUseContext.options.tools.filter(tool => told.has(tool.name))
+  return {
+    ...result,
+    attachments: result.attachments.flatMap(message => {
+      if (message.attachment.type !== 'deferred_tools_delta') return [message]
+      if (toldTools.length === 0) return []
+      return [createAttachmentMessage({
+        type: 'deferred_tools_delta',
+        addedNames: toldTools.map(tool => tool.name).sort(),
+        addedLines: formatDeferredToolLines(toldTools),
+        removedNames: [],
+      })]
+    }),
+  }
 }
 
 /**
