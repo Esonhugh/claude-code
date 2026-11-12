@@ -33,3 +33,7 @@ export function getCodexCompactOptionsFromSettings(
 export function getCodexCompactOptions(): CodexCompactOptions {
   return getCodexCompactOptionsFromSettings(getInitialSettings())
 }
+
+export function getKeepRecentRatio(): number {
+  return getInitialSettings().compact?.keepRecentRatio ?? 0
+}

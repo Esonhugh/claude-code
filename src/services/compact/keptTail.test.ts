@@ -2,7 +2,11 @@ import { expect, test } from 'bun:test'
 
 import type { AssistantMessage, Message } from '../../types/message.js'
 import { createAssistantMessage, createUserMessage } from '../../utils/messages.js'
-import { keepMoreRoundsAfterPTL, splitKeptTail } from './compact.js'
+import {
+  keepMoreRoundsAfterPTL,
+  roundsForRecentBudget,
+  splitKeptTail,
+} from './compact.js'
 
 function reply(text: string): AssistantMessage {
   const m = createAssistantMessage({ content: text })
@@ -60,3 +64,13 @@ test('a too-long summary request keeps more rounds instead of dropping old ones 
   // Nothing left to summarize once only the first round remains.
   expect(keepMoreRoundsAfterPTL(msgs, 5, undefined)).toBeNull()
 })
+
+test('keep-recent budget keeps the trailing rounds that reach the budget', () => {
+  const msgs = rounds(10)
+  expect(roundsForRecentBudget(msgs, 0)).toBe(1)
+  const two = roundsForRecentBudget(msgs, 150)
+  expect(two).toBeGreaterThan(1)
+  expect(two).toBeLessThan(10)
+  expect(roundsForRecentBudget(msgs, 1_000_000)).toBe(11)
+})
+

@@ -37,10 +37,12 @@ import {
   compactConversation,
   ERROR_MESSAGE_USER_ABORT,
   type RecompactionInfo,
+  roundsForRecentBudget,
 } from './compact.js'
 import {
   getCodexCompactOptions,
   getCompactMode,
+  getKeepRecentRatio,
 } from './compactMode.js'
 import { compactConversationCodexStyle } from './codexCompact.js'
 import {
@@ -146,6 +148,27 @@ export type AutoCompactTrackingState = {
   consecutiveFailures?: number
   // Compactions in a row that came within RAPID_REFILL_TURNS of the last one.
   consecutiveRapidRefills?: number
+}
+
+/**
+ * API rounds a full compaction keeps verbatim: the last one (official), or
+ * with `compact.keepRecentRatio` set, the trailing rounds that reach that
+ * fraction of the effective window (dsh keeps 0.16). Auto-compaction only;
+ * /compact is asked for to shrink and keeps the last round, as dsh does.
+ */
+function getKeptRounds(
+  messages: Message[],
+  model: string,
+  autoCompactWindowCeiling?: number,
+): number {
+  const ratio = getKeepRecentRatio()
+  if (ratio <= 0) return 1
+  return roundsForRecentBudget(
+    messages,
+    Math.floor(
+      getEffectiveContextWindowSize(model, autoCompactWindowCeiling) * ratio,
+    ),
+  )
 }
 
 export const AUTOCOMPACT_BUFFER_TOKENS = 13_000
@@ -565,7 +588,9 @@ export async function autoCompactIfNeeded(
               recompactionInfo,
               undefined,
               // Refilling fast: summarize everything, keep no round verbatim.
-              consecutiveRapidRefills > 0 ? 0 : 1,
+              consecutiveRapidRefills > 0
+                ? 0
+                : getKeptRounds(compactMessages, model, autoCompactWindowCeiling),
             )
       },
       canUseTool,
