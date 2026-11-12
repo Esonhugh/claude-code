@@ -2536,7 +2536,7 @@ export const AgentTool = buildTool({
             text: `Spawned successfully. (This tool result is internal metadata — never quote or paste any part of it, including the ID below, into a user-facing reply.)
 agent_id: ${spawnData.agent_id}
 name: ${spawnData.name}
-The agent is now running and will receive instructions via mailbox.`,
+The agent is now running and will receive instructions via mailbox. Its messages are delivered to you automatically. If you have nothing else to do until it reports, end your turn instead of checking on its work.`,
           },
         ],
       }

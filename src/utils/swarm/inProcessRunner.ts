@@ -107,6 +107,7 @@ import type { TeammateContext } from '../teammateContext.js'
 import { runWithTeammateContext } from '../teammateContext.js'
 import {
   createIdleNotification,
+  createShutdownApprovedMessage,
   getIdleResult,
   getTurnFailureReason,
   getLastPeerDmSummary,
@@ -761,6 +762,7 @@ type WaitResult =
       type: 'shutdown_request'
       request: ReturnType<typeof isShutdownRequest>
       originalMessage: string
+      hasOtherUnread: boolean
     }
   | {
       type: 'new_message'
@@ -781,7 +783,8 @@ type WaitResult =
  * - Abort signal
  *
  * This keeps the teammate alive in 'idle' state instead of terminating.
- * Does NOT auto-approve shutdown - the model should make that decision.
+ * A shutdown request is returned to the caller, which decides whether the
+ * model has anything to weigh.
  */
 async function waitForNextPromptOrShutdown(
   identity: TeammateIdentity,
@@ -897,6 +900,9 @@ async function waitForNextPromptOrShutdown(
           type: 'shutdown_request',
           request: shutdownParsed,
           originalMessage: msg.text,
+          hasOtherUnread: allMessages.some(
+            (m, i) => i !== shutdownIndex && !m.read,
+          ),
         }
       }
 
@@ -1576,7 +1582,45 @@ export async function runInProcessTeammate(
 
       switch (waitResult.type) {
         case 'shutdown_request':
-          // Pass shutdown request to model for decision
+          // A teammate that ended its turn normally, owns no unfinished task
+          // and has nothing else unread has nothing to weigh: approve here
+          // instead of waking the model for one more full-context request.
+          if (
+            waitResult.request &&
+            !waitResult.hasOtherUnread &&
+            !workWasAborted &&
+            getTurnFailureReason(allMessages) === undefined &&
+            !(await listTasks(taskListId)).some(
+              t =>
+                t.status !== 'completed' &&
+                (t.owner === identity.agentName || t.owner === identity.agentId),
+            )
+          ) {
+            logForDebugging(
+              `[inProcessRunner] ${identity.agentId} idle with nothing pending - approving shutdown`,
+            )
+            await writeToMailbox(
+              TEAM_LEAD_NAME,
+              {
+                from: identity.agentName,
+                text: jsonStringify(
+                  createShutdownApprovedMessage({
+                    requestId: waitResult.request.requestId,
+                    from: identity.agentName,
+                    paneId: 'in-process',
+                    backendType: 'in-process',
+                  }),
+                ),
+                timestamp: new Date().toISOString(),
+                color: identity.color,
+              },
+              identity.teamName,
+            )
+            abortController.abort(TEAMMATE_SHUTDOWN_APPROVED)
+            shouldExit = true
+            break
+          }
+          // Otherwise pass the shutdown request to the model for decision
           // Format as teammate-message for consistency with how tmux teammates receive it
           // The model will use approveShutdown or rejectShutdown tool
           logForDebugging(
