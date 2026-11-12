@@ -18,7 +18,7 @@ import { type Daybreak, type HistoryScope, loadPromptHistory, recordPrompt } fro
 import { formatBytes, mentionPath } from '../files'
 import { type Approval, type ApprovalChoice, approvalRules, type CodexAppMention, type ContextUsage, type Goal, type ModelOption, type PromptDecoration, type Todo } from '../protocol'
 import { modColor } from './Mods'
-import { toolSummary } from '../tools'
+import { approvalText } from '../tools'
 import { modelName, modelOption } from './Message'
 import { FootMenu, modeOf, nextMode, offeredModes, SendIcon, type T } from './ui'
 
@@ -1213,7 +1213,7 @@ export function AskDock({
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [options, sel, onAnswer])
-  const summary = toolSummary(approval.toolName, JSON.stringify(approval.input))
+  const summary = approvalText(approval.toolName, JSON.stringify(approval.input))
   return (
     <div className="askdock" role="dialog" aria-labelledby={titleId} ref={dockRef}>
       <div className="ahead">

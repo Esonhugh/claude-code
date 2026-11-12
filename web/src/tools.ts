@@ -49,6 +49,28 @@ export function toolSummary(name: string, input: string): string {
   return input
 }
 
+/**
+ * What an approval prompt shows: all of what will run or be written. The
+ * one-line summary would hide a command's later lines or a file's content.
+ */
+export function approvalText(name: string, input: string): string {
+  let fields: Record<string, unknown>
+  try {
+    fields = JSON.parse(input) as Record<string, unknown>
+  } catch {
+    return input
+  }
+  if (typeof fields !== 'object' || fields === null) return input
+  const { command, file_path: path, content, old_string: oldText, new_string: newText } = fields
+  if (typeof command === 'string') return command
+  if (typeof path === 'string' && typeof content === 'string') return `${path}\n\n${content}`
+  if (typeof path === 'string' && typeof oldText === 'string' && typeof newText === 'string') {
+    const mark = (sign: string, text: string) => text.split('\n').map(line => `${sign} ${line}`).join('\n')
+    return `${path}\n\n${mark('-', oldText)}\n${mark('+', newText)}`
+  }
+  return toolSummary(name, input)
+}
+
 // CSI, OSC and other escape sequences terminal tools may print.
 const ANSI = /\u001b(?:\[[0-?]*[ -/]*[@-~]|\][^\u0007\u001b]*(?:\u0007|\u001b\\)|[@-Z\\-_])/g
 

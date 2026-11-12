@@ -158,7 +158,7 @@ import {
   wrapFetchWithStepUpDetection,
 } from './auth.js'
 import { markClaudeAiMcpConnected } from './claudeai.js'
-import { getAllMcpConfigs, isMcpServerDisabled } from './config.js'
+import { getAllMcpConfigs, isCcrProxyUrl, isMcpServerDisabled } from './config.js'
 import { isChannelAllowlisted } from './channelAllowlist.js'
 import {
   isToolHiddenFromModel,
@@ -1040,9 +1040,12 @@ export const connectToServer = memoize(
     try {
       let transport
 
-      // If we have the session ingress JWT, we will connect via the session ingress rather than
-      // to remote MCP's directly.
-      const sessionIngressToken = getSessionIngressAuthToken()
+      // The session ingress JWT authenticates to the CCR proxy only; any other
+      // server (a repo's .mcp.json, say) must never receive it.
+      const sessionIngressToken =
+        'url' in serverRef && typeof serverRef.url === 'string' && isCcrProxyUrl(serverRef.url)
+          ? getSessionIngressAuthToken()
+          : null
 
       if (isHostOwnedCodexAppsConfig(serverRef)) {
         transport = createCodexAppsTransport(serverRef)

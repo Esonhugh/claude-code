@@ -1358,7 +1358,14 @@ export function startWebServer(
         }
 
         if (isApi) {
-          const res = await handleApi(req, url, srv, addressKind(peer!) === 'loopback')
+          let res: Response | undefined
+          try {
+            res = await handleApi(req, url, srv, addressKind(peer!) === 'loopback')
+          } catch (err) {
+            // A malformed %-escape in a path segment.
+            if (err instanceof URIError) return withHeaders(errorResponse(400, 'Malformed URL'))
+            throw err
+          }
           return res && withHeaders(res)
         }
         if (req.method !== 'GET' && req.method !== 'HEAD') {

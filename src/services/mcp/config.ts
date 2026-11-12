@@ -189,8 +189,12 @@ const CCR_PROXY_PATH_MARKERS = [
  * signature-based dedup match a plugin's raw vendor URL against a connector's
  * rewritten proxy URL when both point at the same MCP server.
  */
+export function isCcrProxyUrl(url: string): boolean {
+  return CCR_PROXY_PATH_MARKERS.some(m => url.includes(m))
+}
+
 export function unwrapCcrProxyUrl(url: string): string {
-  if (!CCR_PROXY_PATH_MARKERS.some(m => url.includes(m))) {
+  if (!isCcrProxyUrl(url)) {
     return url
   }
   try {
