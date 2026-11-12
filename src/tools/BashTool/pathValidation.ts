@@ -710,6 +710,40 @@ function validateCommandPaths(
   const paths = extractor(args).map(expandLiteralArithmetic)
   const operationType = operationTypeOverride ?? COMMAND_OPERATION_TYPE[command]
 
+  // An explicit Read/Edit deny rule wins over the asks below, which bypass
+  // mode and Bash allow rules answer. cp and mv also read their sources: every
+  // operand but the last, or any operand when flags may move the destination.
+  const copiesOrMoves = command === 'cp' || command === 'mv'
+  const hasFlags = copiesOrMoves && args.some(arg => arg?.startsWith('-'))
+  const targetDirs = copiesOrMoves
+    ? args.flatMap(arg =>
+        arg?.startsWith('--target-directory=')
+          ? [arg.slice('--target-directory='.length)]
+          : [],
+      )
+    : []
+  const sources = !copiesOrMoves ? [] : hasFlags ? paths : paths.slice(0, -1)
+  for (const [candidates, type] of [
+    [[...paths, ...targetDirs], operationType],
+    [sources, 'read'],
+  ] as const) {
+    for (const path of candidates) {
+      const { allowed, resolvedPath, decisionReason } = validatePath(
+        path,
+        cwd,
+        toolPermissionContext,
+        type,
+      )
+      if (!allowed && decisionReason?.type === 'rule') {
+        return {
+          behavior: 'deny',
+          message: `${command} in '${resolvedPath}' was blocked by ${type === 'read' ? 'a Read' : 'an Edit'} deny rule in your permission settings.`,
+          decisionReason,
+        }
+      }
+    }
+  }
+
   // SECURITY: Check command-specific validators (e.g., to block flags that could bypass path validation)
   // Some commands like mv/cp have flags (--target-directory=PATH) that can bypass path extraction,
   // so we block ALL flags for these commands to ensure security.

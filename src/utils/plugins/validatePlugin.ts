@@ -333,8 +333,12 @@ export async function validatePluginManifest(
       warnings.push({
         path: 'name',
         message:
-          `Plugin name "${manifest.name}" is not kebab-case. Claude Code accepts ` +
-          `it, but the Claude.ai marketplace sync requires kebab-case ` +
+          `Plugin name "${manifest.name}" is not kebab-case. ` +
+          (/[@:/\\\s\p{Cc}\p{Cf}]/u.test(manifest.name)
+            ? `Claude Code refuses a plugin with this name when it is loaded by path (such as --plugin-dir), ` +
+              `and cannot install it from a marketplace that lists it under this name. The `
+            : `Claude Code accepts it, but the `) +
+          `Claude.ai marketplace sync requires kebab-case ` +
           `(lowercase letters, digits, and hyphens only, e.g., "my-plugin").`,
       })
     }

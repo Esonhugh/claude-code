@@ -3334,6 +3334,22 @@ export async function loadSessionOnlyPlugins(
         contractOnly,
       )
 
+      // Official 2.1.322 refuses a path-loaded plugin whose name could not
+      // be a plugin@marketplace part or a skill namespace.
+      if (!plugin.name || /[@:/\\\s\p{Cc}\p{Cf}]/u.test(plugin.name)) {
+        const manifestPath = join(resolved.path, '.claude-plugin', 'plugin.json')
+        const namedAfterDirectory = !(await pathExists(manifestPath))
+        errors.push({
+          type: 'manifest-validation-error',
+          source: `inline[${index}]`,
+          manifestPath,
+          validationErrors: [
+            `name: "${plugin.name}" is not a valid plugin name (must be non-empty and must not contain "@", ":", whitespace, path separators, or invisible/control characters)${namedAfterDirectory ? ' — this plugin is named after its directory; rename the directory' : ''}`,
+          ],
+        })
+        continue
+      }
+
       if (spec.skipMcpDiscovery) {
         plugin.skipMcpDiscovery = true
         plugin.mcpServers = {}

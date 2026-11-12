@@ -65,7 +65,7 @@ import { createModToolHost } from './services/mods/toolHost.js'
 import { sessionAppendEngineMessage } from './services/mods/sessionAppend.js'
 import type { AgentDefinition } from './tools/AgentTool/loadAgentsDir.js'
 import { SYNTHETIC_OUTPUT_TOOL_NAME } from './tools/SyntheticOutputTool/SyntheticOutputTool.js'
-import type { AttachmentMessage, Message, MessageOrigin, UserMessage } from './types/message.js'
+import type { AssistantMessage, AttachmentMessage, Message, MessageOrigin, UserMessage } from './types/message.js'
 import { formatTeammateMessages } from './utils/teammateMailbox.js'
 import type { OrphanedPermission, QueuedCommand } from './types/textInputTypes.js'
 import { createAbortController } from './utils/abortController.js'
@@ -253,6 +253,22 @@ export function resultMessageOf(messages: readonly Message[]): Message | undefin
   return messages.findLast(
     m => m.type === 'assistant' || (m.type === 'user' && !m.isMeta),
   )
+}
+
+/**
+ * The text of the reply the result is read from. A ChatGPT response can end
+ * with reasoning items after its text, each a message of its own with the
+ * same message id; the text before them is the reply.
+ */
+export function resultTextOf(messages: readonly Message[], result: AssistantMessage): string {
+  const reply = messages
+    .filter(m => m.type === 'assistant' && m.message.id === result.message.id)
+    .flatMap(m => (m as AssistantMessage).message.content)
+    .filter(b => b.type !== 'thinking' && b.type !== 'redacted_thinking')
+  const lastContent = last(reply.length > 0 ? reply : result.message.content)
+  return lastContent?.type === 'text' && !SYNTHETIC_MESSAGES.has(lastContent.text as string)
+    ? (lastContent.text as string)
+    : ''
 }
 
 export type QueryEngineConfig = {
@@ -1691,13 +1707,7 @@ export class QueryEngine {
     let isApiError = false
 
     if (result.type === 'assistant') {
-      const lastContent = last(result.message.content)
-      if (
-        lastContent?.type === 'text' &&
-        !SYNTHETIC_MESSAGES.has(lastContent.text as string)
-      ) {
-        textResult = lastContent.text as string
-      }
+      textResult = resultTextOf(messages, result)
       isApiError = Boolean(result.isApiErrorMessage)
     }
 

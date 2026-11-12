@@ -188,16 +188,34 @@ describe('web history', () => {
             toolUseResult: { type: 'update', filePath: '/x', originalFile: 'whole file', structuredPatch: patch },
             message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_e', content: 'ok' }] },
           }),
+          line({
+            type: 'user',
+            uuid: 'a0000000-0000-4000-8000-000000000013',
+            parentUuid: 'a0000000-0000-4000-8000-000000000012',
+            cwd,
+            toolUseResult: {
+              files: [
+                { type: 'update', filePath: 'a.txt', originalFile: 'whole file', structuredPatch: patch },
+                { type: 'delete', filePath: 'b.txt', originalFile: 'gone\n', structuredPatch: [] },
+              ],
+            },
+            message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_p', content: 'Success.' }] },
+          }),
         ].join('\n') +
         '\n',
     )
-    const messages = (await readTranscript(ID, undefined, 50))!.messages.slice(-5)
+    const messages = (await readTranscript(ID, undefined, 50))!.messages.slice(-6)
     expect(messages[0]).toMatchObject({ type: 'system', subtype: 'compact_boundary', compact_metadata: { trigger: 'auto', pre_tokens: 186000 } })
     expect(messages[1]).toMatchObject({ type: 'user', isCompactSummary: true })
     expect(messages[2]).toMatchObject({ type: 'system', subtype: 'goal_state_changed', goal: { condition: 'tests pass', status: 'active' } })
     expect(messages[3]).toMatchObject({ type: 'user', isReplay: true, message: { content: '<local-command-stdout>recap text</local-command-stdout>' } })
     expect(messages[4]).toMatchObject({ tool_use_result: { type: 'update', structuredPatch: patch } })
     expect(JSON.stringify(messages[4])).not.toContain('whole file')
+    // apply_patch: each file's patch, and a deleted file's old text (its diff); not the other files' whole text.
+    expect(messages[5]).toMatchObject({
+      tool_use_result: { files: [{ type: 'update', filePath: 'a.txt', structuredPatch: patch }, { type: 'delete', filePath: 'b.txt', originalFile: 'gone\n' }] },
+    })
+    expect(JSON.stringify(messages[5])).not.toContain('whole file')
   })
 
   it('gives a thinking entry the time since the entry before it, like the live stream measures', async () => {

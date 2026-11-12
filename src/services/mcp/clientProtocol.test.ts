@@ -344,11 +344,18 @@ if (process.env[childFlag] !== '1') {
     }
   }
 
-  test('stdio servers negotiate 2026-07-28 when they serve it and fall back otherwise', async () => {
+  test('stdio servers negotiate 2026-07-28 when they serve it and fall back otherwise, starting once', async () => {
     const root = realpathSync(mkdtempSync(join(tmpdir(),'cc-mcp-negotiation-stdio-')))
-    const server = (era: 'modern' | 'legacy') => {
+    const starts = join(root, 'starts')
+    writeFileSync(starts, '')
+    const count = (era: string) => readFileSync(starts, 'utf8').split('\n').filter(line => line === era).length
+    const server = (era: 'modern' | 'legacy' | 'strict') => {
       const file = join(root, `${era}.mjs`)
       writeFileSync(file, `
+        import { appendFileSync } from 'node:fs'
+        appendFileSync(${JSON.stringify(starts)}, '${era}\\n')
+        // strict: like SDKs that exit on any request before initialize
+        if (${JSON.stringify(era)} === 'strict') process.stdin.once('data', chunk => { if (!String(chunk).includes('"initialize"')) process.exit(1) })
         import { McpServer } from ${JSON.stringify(serverEntry)}
         import { serveStdio, StdioServerTransport } from ${JSON.stringify(serverStdioEntry)}
         const create = () => {
@@ -365,6 +372,8 @@ if (process.env[childFlag] !== '1') {
       expect(await connectedProtocol('negotiation-modern-stdio', server('modern'))).toBe('2026-07-28')
       expect(await connectedProtocol('negotiation-legacy-stdio', server('legacy'))).toBe('2025-11-25')
       expect(await connectedProtocol('negotiation-optout-stdio', server('modern'), 'legacy')).toBe('2025-11-25')
+      expect(await connectedProtocol('negotiation-strict-stdio', server('strict'))).toBe('2025-11-25')
+      expect([count('modern'), count('legacy'), count('strict')]).toEqual([2, 1, 2])
     } finally {
       rmSync(root,{recursive:true,force:true})
     }

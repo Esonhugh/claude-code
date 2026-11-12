@@ -884,6 +884,33 @@ describe('processUserInput prompt.submit', () => {
     },
   )
 
+  test.each(['block', 'stop'])(
+    'a classic %s passed back by a Mod is shown once',
+    async kind => {
+      const f = fixture([async (event, next) => next(event)])
+      f.classicResults.push(
+        kind === 'block'
+          ? { blockingError: 'denied' }
+          : { preventContinuation: true, stopReason: 'stop' },
+      )
+      const result = await f.run()
+      const shown = JSON.stringify(result.messages)
+      const text = kind === 'block' ? 'Blocked by classic hook' : 'Operation stopped by hook'
+      expect(shown.split(text).length - 1).toBe(1)
+    },
+  )
+
+  test('a Mod drop after next is shown', async () => {
+    const f = fixture([
+      async (event, next) => {
+        await next(event)
+        return { drop: 'hide outcome' }
+      },
+    ])
+    const result = await f.run()
+    expect(result.messages).toContainEqual({ type: 'system', content: 'hide outcome', level: 'warning' })
+  })
+
   test('drop after next preserves entered content and classic side effects', async () => {
     const f = fixture([
       async (event, next) => {

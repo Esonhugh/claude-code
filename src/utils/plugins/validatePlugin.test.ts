@@ -389,3 +389,15 @@ describe('UTF-8 BOM', () => {
     expect(hooks?.errors ?? []).toEqual([])
   })
 })
+
+describe('plugin name warning', () => {
+  test.each([
+    ['../evil', 'refuses a plugin with this name'],
+    ['My_Plugin', 'Claude Code accepts it'],
+  ])('%s', async (name, text) => {
+    const root = await pluginRoot()
+    await writeFile(join(root, '.claude-plugin', 'plugin.json'), JSON.stringify({ name }))
+    const result = await validatePluginManifest(join(root, '.claude-plugin', 'plugin.json'))
+    expect(result.warnings.find(warning => warning.path === 'name')?.message).toContain(text)
+  })
+})
