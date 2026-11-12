@@ -2995,6 +2995,17 @@ function runHeadlessStreaming(
                     await stopTask(task.id, { getAppState, setAppState }).catch(error => {
                       if (!(error instanceof StopTaskError)) logError(toError(error))
                     })
+                    if (task.type === 'local_workflow') {
+                      // The workflow's runner enqueues its 'stopped'
+                      // notification only after it unwinds.
+                      const notifiedBy = Date.now() + 5_000
+                      while (
+                        Date.now() < notifiedBy &&
+                        getAppState().tasks[task.id]?.notified !== true
+                      ) {
+                        await sleep(50)
+                      }
+                    }
                   }
                 }
                 continue

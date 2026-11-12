@@ -702,7 +702,10 @@ function LocalBackgroundTasksDialog({
       remoteSessions,
       _ => _.status === 'running' || _.status === 'pending',
     ) + count(agentTasks, _ => _.status === 'running')
-  const runningTeammateCount = count(teammateTasks, _ => _.status === 'running')
+  const runningTeammateCount = count(
+    teammateTasks,
+    _ => _.type !== 'leader' && _.status === 'running',
+  )
   const subtitle = intersperse(
     [
       ...(runningTeammateCount > 0

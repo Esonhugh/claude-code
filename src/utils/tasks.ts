@@ -396,16 +396,23 @@ export async function getTask(
 
 // Internal: no lock. Callers already holding a lock on taskPath must use this
 // to avoid deadlock (claimTask, deleteTask cascade, etc.).
+type TaskUpdates =
+  | Partial<Omit<Task, 'id'>>
+  // Computed from the task as read under the lock, for changes derived from
+  // its current value (appending to blocks, merging metadata).
+  | ((existing: Task) => Partial<Omit<Task, 'id'>>)
+
 async function updateTaskUnsafe(
   taskListId: string,
   taskId: string,
-  updates: Partial<Omit<Task, 'id'>>,
+  updates: TaskUpdates,
 ): Promise<Task | null> {
   const existing = await getTask(taskListId, taskId)
   if (!existing) {
     return null
   }
-  const updated: Task = { ...existing, ...updates, id: taskId }
+  const changes = typeof updates === 'function' ? updates(existing) : updates
+  const updated: Task = { ...existing, ...changes, id: taskId }
   const path = getTaskPath(taskListId, taskId)
   await writeFile(path, jsonStringify(updated, null, 2))
   notifyTasksUpdated()
@@ -415,7 +422,7 @@ async function updateTaskUnsafe(
 export async function updateTask(
   taskListId: string,
   taskId: string,
-  updates: Partial<Omit<Task, 'id'>>,
+  updates: TaskUpdates,
 ): Promise<Task | null> {
   const path = getTaskPath(taskListId, taskId)
 
@@ -515,16 +522,20 @@ export async function blockTask(
 
   // Update source task: A blocks B
   if (!fromTask.blocks.includes(toTaskId)) {
-    await updateTask(taskListId, fromTaskId, {
-      blocks: [...fromTask.blocks, toTaskId],
-    })
+    await updateTask(taskListId, fromTaskId, task =>
+      task.blocks.includes(toTaskId)
+        ? {}
+        : { blocks: [...task.blocks, toTaskId] },
+    )
   }
 
   // Update target task: B is blockedBy A
   if (!toTask.blockedBy.includes(fromTaskId)) {
-    await updateTask(taskListId, toTaskId, {
-      blockedBy: [...toTask.blockedBy, fromTaskId],
-    })
+    await updateTask(taskListId, toTaskId, task =>
+      task.blockedBy.includes(fromTaskId)
+        ? {}
+        : { blockedBy: [...task.blockedBy, fromTaskId] },
+    )
   }
 
   return true
