@@ -176,7 +176,13 @@ function getDebugWriter(): BufferedWriter {
               // Directory already exists
             }
           }
-          getFsImplementation().appendFileSync(path, content)
+          try {
+            getFsImplementation().appendFileSync(path, content)
+          } catch {
+            // Debug logging is best effort: an unwritable --debug-file or a
+            // full disk must not throw out of every logForDebugging caller.
+            return
+          }
           void updateLatestDebugLogSymlink()
           return
         }
