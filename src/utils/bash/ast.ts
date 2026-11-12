@@ -603,6 +603,15 @@ function collectCommands(
     return null
   }
 
+  // `a &&` / `a ||` with nothing after the operator is a syntax error.
+  const lastChild = node.children.at(-1)
+  if (
+    node.type === 'list' &&
+    (lastChild?.type === '&&' || lastChild?.type === '||')
+  ) {
+    return { kind: 'too-complex', reason: 'Parse error', nodeType: 'list' }
+  }
+
   if (STRUCTURAL_TYPES.has(node.type)) {
     // SECURITY: `||`, `|`, `|&`, `&` must NOT carry varScope linearly. In bash:
     //   `||` RHS runs conditionally → vars set there MAY not be set
@@ -1686,6 +1695,12 @@ function walkString(
   innerCommands: SimpleCommand[],
   varScope: Map<string, string>,
 ): string | ParseForSecurityResult {
+  // An unterminated `"` is a syntax error; the parser recovers by taking the
+  // rest of the input as the string and closing it with an empty token.
+  const closing = node.children.at(-1)
+  if (closing?.type !== '"' || closing.startIndex === closing.endIndex) {
+    return { kind: 'too-complex', reason: 'Parse error', nodeType: 'string' }
+  }
   let result = ''
   let cursor = -1
   // SECURITY: Track whether the string contains a runtime-unknown
@@ -2331,11 +2346,10 @@ const EVAL_LIKE_BUILTINS = new Set([
   // a plain command with argv[0]='coproc', so permission rules and path
   // validation would check 'coproc' not 'rm'.
   'coproc',
-  // Zsh precommand modifiers: `noglob cmd args` runs cmd with globbing off.
-  // They parse as ordinary commands (noglob is argv[0], the real command is
-  // argv[1]) so permission matching against argv[0] would see 'noglob', not
-  // the wrapped command.
-  'noglob',
+  // Zsh precommand modifier: `nocorrect cmd args` parses as an ordinary
+  // command (nocorrect is argv[0], the real command is argv[1]) so permission
+  // matching against argv[0] would see 'nocorrect', not the wrapped command.
+  // `noglob` is not listed: it is stripped as a wrapper before matching.
   'nocorrect',
   // `trap 'cmd' SIGNAL` — cmd runs as shell code on signal/exit. EXIT fires
   // at end of every BashTool invocation, so this is guaranteed execution.

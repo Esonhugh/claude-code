@@ -1519,7 +1519,7 @@ function checkUnanalyzableCommand(
   const reason =
     command.length > MAX_ANALYZABLE_COMMAND_LENGTH
       ? `Command is longer than ${MAX_ANALYZABLE_COMMAND_LENGTH} characters and cannot be fully analyzed`
-      : /^(?:&&|\|\|?)|(?:^|[^\\|&])(?:&&|\|\|?)$/.test(command)
+      : /^(?:&&|\|\|?)|(?:^|[^\\|&])(?:&&|\|\|)$/.test(command)
         ? 'Command has a dangling &&, || or | operator'
         : null
   if (reason === null) return null
