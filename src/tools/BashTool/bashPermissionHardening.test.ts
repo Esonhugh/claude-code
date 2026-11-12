@@ -400,6 +400,43 @@ if (process.env[childFlag] !== '1') {
     )
   })
 
+  test('Bash allow rules see through command/builtin, test brackets and cd .', async () => {
+    const allow = ['Bash(touch:*)']
+    for (const command of [
+      'command touch tl-x',
+      'builtin command touch tl-x',
+      'command -p touch tl-x',
+      'cd . && touch tl-x',
+      '[ -n x ]',
+      // The legacy splitter asks for any && after a bracket test.
+      ...(process.env.CLAUDE_CODE_BASH_HARDENING_PARSER === 'TREE_SITTER_BASH'
+        ? [
+            '[ -n x ] && touch tl-x',
+            '[[ -n x ]] && touch tl-x',
+            '[[ -f x ]] || touch tl-x',
+            'if [ -n x ]; then touch tl-x; fi',
+          ]
+        : []),
+    ]) {
+      await expectBehavior(command, 'default', { allow }, 'allow')
+    }
+    for (const command of [
+      'command -v ls && touch tl-x',
+      'cd src && touch tl-x',
+      'cd .. && touch tl-x',
+      '[ -f *.ts ] && touch tl-x',
+      'command touch /opt/cc-path-ask-x',
+    ]) {
+      await expectBehavior(command, 'default', { allow }, 'ask')
+    }
+    await expectBehavior(
+      'command rm -rf src',
+      'default',
+      { allow, deny: ['Bash(rm:*)'] },
+      'deny',
+    )
+  })
+
   test('a compound command with several output redirects asks in default mode', async () => {
     for (const command of [
       'echo ok > notes.txt && echo ok > /opt/sbdemo/outside.txt',

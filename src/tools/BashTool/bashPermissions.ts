@@ -552,6 +552,10 @@ export function stripSafeWrappers(command: string): string {
     /^timeout[ \t]+(?:(?:--(?:foreground|preserve-status|verbose)|--(?:kill-after|signal)=[A-Za-z0-9_.+-]+|--(?:kill-after|signal)[ \t]+[A-Za-z0-9_.+-]+|-v|-[ks][ \t]+[A-Za-z0-9_.+-]+|-[ks][A-Za-z0-9_.+-]+)[ \t]+)*(?:--[ \t]+)?\d+(?:\.\d+)?[smhd]?[ \t]+/,
     /^time[ \t]+(?:--[ \t]+)?/,
     /^builtin[ \t]+(?:--[ \t]+)?/,
+    // `command -v` / `-V` only look a name up, so a flag after `command`
+    // other than -p stops the strip.
+    /^command(?:[ \t]+-p+)*(?:[ \t]+--)?[ \t]+(?!-)/,
+    /^noglob[ \t]+(?!-)/,
     // SECURITY: keep in sync with checkSemantics wrapper-strip (ast.ts
     // ~:1990-2080) AND stripWrappersFromArgv (pathValidation.ts ~:1260).
     // Previously this pattern REQUIRED `-n N`; checkSemantics already handled
@@ -1439,7 +1443,13 @@ function filterCdCwdSubcommands(
   const astCommandsByIdx: (SimpleCommand | undefined)[] = []
   for (let i = 0; i < rawSubcommands.length; i++) {
     const cmd = rawSubcommands[i]!
-    if (cmd === `cd ${cwd}` || cmd === `cd ${cwdMingw}`) continue
+    if (
+      cmd === `cd ${cwd}` ||
+      cmd === `cd ${cwdMingw}` ||
+      cmd === 'cd .' ||
+      cmd === 'cd ./'
+    )
+      continue
     subcommands.push(cmd)
     astCommandsByIdx.push(astCommands?.[i])
   }
