@@ -193,6 +193,10 @@ describe('searchMemory', () => {
     expect(await search('"NEAR( OR *')).toEqual([])
   })
 
+  test('control characters in a query separate words instead of failing the search', async () => {
+    expect((await search('package\u0000binary')).map(h => h.path)).toEqual([join(memDir, 'build.md')])
+  })
+
   test('skips the running session transcript', async () => {
     writeFileSync(join(projectDir, `${getSessionId()}.jsonl`), line('user', 'current pelican chatter'))
     expect(await search('pelican')).toEqual([])
@@ -216,6 +220,17 @@ describe('searchMemory', () => {
     appendFileSync(file, line('assistant', 'second narwhal'))
     await Promise.all([search('narwhal'), search('narwhal'), search('narwhal')])
     expect((await search('narwhal')).map(h => h.line).sort()).toEqual([1, 2])
+  })
+
+  test('concurrent searches index a new file once', async () => {
+    writeFileSync(join(memDir, 'manatee.md'), 'The manatee note.')
+    writeFileSync(join(projectDir, 'session-m.jsonl'), line('user', 'a manatee question'))
+    await Promise.all([search('manatee'), search('manatee'), search('manatee')])
+    expect((await search('manatee')).map(h => h.path).sort()).toEqual(
+      [join(memDir, 'manatee.md'), join(projectDir, 'session-m.jsonl')].sort(),
+    )
+    rmSync(join(memDir, 'manatee.md'))
+    rmSync(join(projectDir, 'session-m.jsonl'))
   })
 
   test('indexes memory in subdirectories such as team memory', async () => {
