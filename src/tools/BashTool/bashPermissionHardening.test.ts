@@ -333,8 +333,26 @@ if (process.env[childFlag] !== '1') {
     const allow = { allow: ['Bash(echo:*)', 'Bash(ls:*)'] }
     await expectBehavior('echo ' + 'a'.repeat(10001), 'default', allow, 'ask')
     await expectBehavior('echo ' + 'a'.repeat(9000), 'default', allow, 'allow')
-    for (const command of ['ls &&', 'ls ||', 'ls |', 'ls && ']) {
+    for (const command of ['ls &&', 'ls ||', 'ls && ']) {
       await expectBehavior(command, 'default', allow, 'ask')
+    }
+    // A trailing `|` is allowed, as in official.
+    await expectBehavior('ls |', 'default', {}, 'allow')
+    if (process.env.CLAUDE_CODE_BASH_HARDENING_PARSER === 'TREE_SITTER_BASH') {
+      for (const command of [
+        'echo hi && # c',
+        'echo "unterminated',
+        'echo "a$',
+        'ls "a',
+        'ls "a" "',
+      ]) {
+        await expectBehavior(command, 'default', allow, 'ask')
+        await expectBehavior(command, 'acceptEdits', allow, 'ask')
+        await expectBehavior(command, 'bypassPermissions', {}, 'allow')
+      }
+      for (const command of ['echo hi | # c', 'echo "a" ""', "ls 'a"]) {
+        await expectBehavior(command, 'default', allow, 'allow')
+      }
     }
     await expectBehavior(
       'rm -rf build &&',
@@ -342,6 +360,31 @@ if (process.env[childFlag] !== '1') {
       { deny: ['Bash(rm:*)'] },
       'deny',
     )
+  })
+
+  test('noglob is a transparent wrapper, as in official', async () => {
+    for (const command of ['noglob ls', 'noglob ls *', 'noglob echo hi']) {
+      await expectBehavior(command, 'default', {}, 'allow')
+      await expectBehavior(command, 'acceptEdits', {}, 'allow')
+    }
+    const allow = { allow: ['Bash(touch:*)'] }
+    await expectBehavior('noglob touch n1', 'default', {}, 'ask')
+    await expectBehavior('noglob touch n1', 'default', allow, 'allow')
+    await expectBehavior('noglob touch n1', 'acceptEdits', {}, 'ask')
+    await expectBehavior('noglob rm src/x.ts', 'default', {}, 'ask')
+    await expectBehavior(
+      'noglob rm src/x.ts',
+      'bypassPermissions',
+      { deny: ['Bash(rm:*)'] },
+      'deny',
+    )
+    await expectBehavior(
+      'noglob rm src/x.ts',
+      'bypassPermissions',
+      { ask: ['Bash(rm:*)'] },
+      'ask',
+    )
+    await expectBehavior('nocorrect ls', 'default', {}, 'ask')
   })
 
   async function expectAskMessage(command: string, rules: Rules) {
