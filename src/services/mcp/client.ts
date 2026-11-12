@@ -533,6 +533,14 @@ export function getConnectionTimeoutMs(): number {
 // Clients that completed initialize and have not closed; they receive
 // notifications/roots/list_changed.
 const liveMcpClients = new Set<Client>()
+// stderr a stdio server wrote after connecting, to say why it went away.
+const stdioStderrAfterConnect = new WeakMap<Client, () => string>()
+
+/** Why a stdio server's connection closed: the last lines of its stderr. */
+export function stdioCloseReason(client: Client): string | undefined {
+  const stderr = stdioStderrAfterConnect.get(client)?.()
+  return (stderr && stderrFailureReason(stderr)) || undefined
+}
 // Additional working directories reported in roots/list. Published by
 // notifyMcpRootsListChanged when the permission context changes; until then
 // the --add-dir directories from startup apply.
@@ -1611,6 +1619,7 @@ export const connectToServer = memoize(
       }
 
       liveMcpClients.add(client)
+      if (stderrHandler) stdioStderrAfterConnect.set(client, () => stderrOutput)
       const capabilities = client.getServerCapabilities()
       const serverVersion = client.getServerVersion()
       const instructions = getMcpServerInstructions(client.getInstructions(), name)

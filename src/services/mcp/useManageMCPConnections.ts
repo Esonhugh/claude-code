@@ -15,6 +15,7 @@ import {
   getMcpToolsCommandsAndResources,
   getServerCacheKey,
   reconnectMcpServerImpl,
+  stdioCloseReason,
   syncMcpResourceTools,
 } from './client.js'
 import type {
@@ -477,7 +478,11 @@ export function useManageMCPConnections(
                         `Max reconnection attempts (${MAX_RECONNECT_ATTEMPTS}) reached, giving up`,
                       )
                       reconnectTimersRef.current.delete(client.name)
-                      updateServer({ ...client, type: 'failed' })
+                      updateServer({
+                        ...client,
+                        type: 'failed',
+                        error: errorMessage(error),
+                      })
                       return
                     }
                   }
@@ -502,7 +507,11 @@ export function useManageMCPConnections(
 
               void reconnectWithBackoff()
             } else {
-              updateServer({ ...client, type: 'failed' })
+              updateServer({
+                ...client,
+                type: 'failed',
+                error: stdioCloseReason(client.client) ?? 'Connection closed',
+              })
             }
           }
 

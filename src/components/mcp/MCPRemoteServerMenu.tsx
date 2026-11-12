@@ -767,6 +767,13 @@ export function MCPRemoteServerMenu({
             )}
           </Box>
 
+          {server.client.type === 'failed' && server.client.error && (
+            <Box>
+              <Text bold>Error: </Text>
+              <Text color="error">{server.client.error}</Text>
+            </Box>
+          )}
+
           {server.transport !== 'claudeai-proxy' &&
             !isHostOwnedCodexApps && (
             <Box>

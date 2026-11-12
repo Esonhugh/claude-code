@@ -394,8 +394,15 @@ const isLocalSettingsGitTracked = memoize((projectDir: string): boolean => {
   return result.error !== undefined || result.status === 0
 })
 
+/**
+ * settingsOnly: approval from settings alone, without the bypass and
+ * non-interactive auto-approve a session gets. `claude mcp list | cat` is not
+ * a -p session and must not start an unapproved .mcp.json command
+ * (official 2.1.322).
+ */
 export function getProjectMcpServerStatus(
   serverName: string,
+  { settingsOnly = false }: { settingsOnly?: boolean } = {},
 ): 'approved' | 'rejected' | 'pending' {
   const settings = getSettings_DEPRECATED()
   const normalizedName = normalizeNameForMCP(serverName)
@@ -440,6 +447,9 @@ export function getProjectMcpServerStatus(
       })
   if (approved) {
     return 'approved'
+  }
+  if (settingsOnly) {
+    return 'pending'
   }
 
   // In bypass permissions mode (--dangerously-skip-permissions), there's no way

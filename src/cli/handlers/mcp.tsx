@@ -250,7 +250,8 @@ export async function mcpListHandler(): Promise<void> {
       async ([name, server]) => {
         const health: HealthStatus =
           server.scope === 'project' &&
-          getProjectMcpServerStatus(name) === 'pending'
+          getProjectMcpServerStatus(name, { settingsOnly: true }) ===
+            'pending'
             ? { status: PENDING_APPROVAL_STATUS }
             : isMcpServerDisabled(name)
               ? { status: DISABLED_STATUS }
@@ -329,7 +330,9 @@ export async function mcpGetHandler(name: string): Promise<void> {
 
   // Only health-check (connect to) servers the session would connect to
   const projectStatus =
-    server.scope === 'project' ? getProjectMcpServerStatus(name) : 'approved'
+    server.scope === 'project'
+      ? getProjectMcpServerStatus(name, { settingsOnly: true })
+      : 'approved'
   const health: HealthStatus =
     projectStatus === 'pending'
       ? { status: PENDING_APPROVAL_STATUS }
