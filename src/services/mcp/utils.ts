@@ -56,6 +56,14 @@ export function filterToolsByServer(tools: Tool[], serverName: string): Tool[] {
 }
 
 /**
+ * A tool's identity for de-duplication: its server and its own name. Two servers
+ * (`a.b`, `a_b`) or two tools (`do.it`, `do_it`) can share one `mcp__…` name.
+ */
+export function mcpToolKey(tool: Pick<Tool, 'name' | 'mcpInfo'>): string {
+  return tool.mcpInfo ? `${tool.mcpInfo.serverName}\0${tool.mcpInfo.toolName}` : tool.name
+}
+
+/**
  * True when a tool belongs to the given MCP server. The name prefix alone also
  * matches the tools of a server named "<serverName>__…", so a tool that knows
  * its server answers by that.

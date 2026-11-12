@@ -353,6 +353,7 @@ import { normalizeNameForMCP } from 'src/services/mcp/normalization.js'
 import {
   commandBelongsToServer,
   filterToolsByServer,
+  mcpToolKey,
   isMcpTool,
   isToolOfServer,
 } from 'src/services/mcp/utils.js'
@@ -2056,9 +2057,10 @@ function runHeadlessStreaming(
   function buildMcpServerStatuses(): McpServerStatus[] {
     const currentAppState = getAppState()
     const currentMcpClients = currentAppState.mcp.clients
+    // Two servers (or tools) can normalize to one name (`a.b` and `a_b`); each still lists its own.
     const allMcpTools = uniqBy(
       [...currentAppState.mcp.tools, ...dynamicMcpState.tools],
-      'name',
+      mcpToolKey,
     )
     const existingNames = new Set([
       ...currentMcpClients.map(c => c.name),
@@ -4438,7 +4440,19 @@ function runHeadlessStreaming(
           }
           // A known tool names its server exactly; parsing the name splits at the first "__",
           // which picks the wrong server when a server name itself contains "__".
-          const mcpTool = [...getAppState().mcp.tools, ...dynamicMcpState.tools].find(t => t.name === tool)
+          const owners = uniqBy(
+            [...getAppState().mcp.tools, ...dynamicMcpState.tools].filter(t => t.name === tool && t.mcpInfo),
+            mcpToolKey,
+          )
+          // The caller checked one of them; running whichever comes first could be the other.
+          if (owners.length > 1) {
+            sendControlResponseError(
+              message,
+              `mcp_call: ${tool} names more than one MCP tool (${owners.map(t => `${t.mcpInfo!.serverName}/${t.mcpInfo!.toolName}`).join(', ')})`,
+            )
+            continue
+          }
+          const mcpTool = owners[0]
           const serverName = mcpTool?.mcpInfo?.serverName
           const connection = [...getAppState().mcp.clients, ...dynamicMcpState.clients]
             .find(c => serverName !== undefined ? c.name === serverName : normalizeNameForMCP(c.name) === info.serverName)
