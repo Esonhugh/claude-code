@@ -1841,8 +1841,12 @@ function checkRemovalPermission(
         }
       }
     }
-    if (removal.behavior !== 'ask') return checkInlineShellRemovalDeny(input, toolPermissionContext, root)
-    if (getDenyRules(toolPermissionContext).length === 0) return removal
+    // A removal that needs no prompt still meets deny rules on each inner
+    // command (loop bodies, substitutions), as the prompt path below does.
+    const allowed = () =>
+      removal.behavior === 'ask' ? removal : checkInlineShellRemovalDeny(input, toolPermissionContext, root)
+    if (removal.behavior !== 'ask' && !/\b(?:rm|rmdir|unlink)\b/.test(input.command)) return allowed()
+    if (getDenyRules(toolPermissionContext).length === 0) return allowed()
 
     const commands = [input.command]
     const pathNodes: Node[] = []
@@ -1889,7 +1893,7 @@ function checkRemovalPermission(
       )
       if (denied.behavior === 'deny') return denied
     }
-    return removal
+    return allowed()
   } catch (error) {
     if (error instanceof AbortError || error instanceof APIUserAbortError) throw error
     logForDebugging(`Removal safety check failed: ${String(error)}`)
