@@ -327,34 +327,24 @@ export const GIT_READ_ONLY_COMMANDS: Record<string, ExternalCommandConfig> = {
       ...GIT_COUNT_FLAGS,
       ...GIT_AUTHOR_FILTER_FLAGS,
     },
-    // SECURITY: Block `git reflog expire` (positional subcommand) — it writes
-    // to .git/logs/** by expiring reflog entries. `git reflog delete` similarly
-    // writes. Only `git reflog` (bare = show) and `git reflog show` are safe.
-    // The positional-arg fallthrough at ~:1730 would otherwise accept `expire`
-    // as a non-flag arg, and `--all` is in GIT_REF_SELECTION_FLAGS → passes.
+    // Only bare `git reflog`, `show` and `list` read; a ref name in first
+    // position is taken as a subcommand by newer git, and expire/delete/
+    // exists/drop/write change or probe .git/logs.
     additionalCommandIsDangerousCallback: (
       _rawCommand: string,
       args: string[],
     ) => {
-      // Block known write-capable subcommands: expire, delete, exists.
-      // Allow: `show`, ref names (HEAD, refs/*, branch names).
-      // The subcommand (if any) is the first positional arg. Subsequent
-      // positionals after `show` or after flags are ref names (safe).
-      const DANGEROUS_SUBCOMMANDS = new Set(['expire', 'delete', 'exists'])
-      for (const token of args) {
-        if (!token || token.startsWith('-')) continue
-        // First non-flag positional: check if it's a dangerous subcommand.
-        // If it's `show` or a ref name like `HEAD`/`refs/...`, safe.
-        if (DANGEROUS_SUBCOMMANDS.has(token)) {
-          return true // Dangerous subcommand — writes to .git/logs/**
-        }
-        // First positional is safe (show/HEAD/ref) — subsequent are ref args
-        return false
+      const first = args[0]
+      if (first && !first.startsWith('-') && !['show', 'list'].includes(first)) {
+        return true
       }
-      return false // No positional = bare `git reflog` = safe (shows reflog)
+      return args.some(arg =>
+        ['expire', 'delete', 'exists', 'drop', 'write'].includes(arg),
+      )
     },
   },
   'git stash list': {
+    respectsDoubleDash: false,
     safeFlags: {
       ...GIT_LOG_DISPLAY_FLAGS,
       ...GIT_REF_SELECTION_FLAGS,
@@ -389,24 +379,17 @@ export const GIT_READ_ONLY_COMMANDS: Record<string, ExternalCommandConfig> = {
       // to whatever `origin` points to. The read-only path should never enable
       // network writes.
     },
-    // A remote or pattern argument means a network request; only the bare
-    // form (the default remote) is read-only enough.
+    // A remote or pattern argument means a network request to somewhere
+    // other than the default remote.
     additionalCommandIsDangerousCallback: (rawCommand, args) => {
-      if (gitFormatIsDangerous(rawCommand, args)) return true
-      let operands = false
-      for (let i = 0; i < args.length; i++) {
-        const arg = args[i]!
-        if (!operands && arg === '--') {
-          operands = true
-          continue
-        }
-        if (!operands && (!arg || arg.startsWith('-'))) {
-          if (arg === '--sort') i++
-          continue
-        }
-        return true
-      }
-      return false
+      const end = args.indexOf('--')
+      return (
+        gitFormatIsDangerous(rawCommand, args) ||
+        (end !== -1 && end < args.length - 1) ||
+        (end === -1 ? args : args.slice(0, end)).some(
+          arg => arg === '-' || !arg.startsWith('-'),
+        )
+      )
     },
   },
   'git status': {
@@ -440,6 +423,7 @@ export const GIT_READ_ONLY_COMMANDS: Record<string, ExternalCommandConfig> = {
     },
   },
   'git blame': {
+    respectsDoubleDash: false,
     safeFlags: {
       ...GIT_COLOR_FLAGS,
       // Line range
@@ -545,16 +529,18 @@ export const GIT_READ_ONLY_COMMANDS: Record<string, ExternalCommandConfig> = {
     safeFlags: {
       '-n': 'none',
     },
-    // Only allow optional -n, then one alphanumeric remote name
+    // Without -n git queries the remote. Allow only `-n <remote>`.
     additionalCommandIsDangerousCallback: (
       _rawCommand: string,
       args: string[],
     ) => {
-      // Filter out the known safe flag
-      const positional = args.filter(a => a !== '-n')
-      // Must have exactly one positional arg that looks like a remote name
-      if (positional.length !== 1) return true
-      return !/^[a-zA-Z0-9_-]+$/.test(positional[0]!)
+      const end = args.indexOf('--')
+      const options = end === -1 ? args : args.slice(0, end)
+      const positional = options
+        .filter(arg => arg !== '-n')
+        .concat(end === -1 ? [] : args.slice(end + 1))
+      if (positional.length !== 1 || !options.includes('-n')) return true
+      return !/^[a-zA-Z0-9_][a-zA-Z0-9_-]*$/.test(positional[0]!)
     },
   },
   'git remote': {
@@ -810,9 +796,10 @@ export const GIT_READ_ONLY_COMMANDS: Record<string, ExternalCommandConfig> = {
     // read-only invariant and can pollute CI/CD tag-pattern matching or make
     // abandoned commits reachable via `git tag foo <commit>`.
     additionalCommandIsDangerousCallback: (
-      _rawCommand: string,
+      rawCommand: string,
       args: string[],
     ) => {
+      if (gitFormatIsDangerous(rawCommand, args)) return true
       // Safe uses: `git tag` (list), `git tag -l pattern` (list filtered),
       // `git tag --contains <ref>` (list containing). A bare positional arg
       // without -l/--list is a tag name to CREATE — dangerous.
@@ -922,9 +909,10 @@ export const GIT_READ_ONLY_COMMANDS: Record<string, ExternalCommandConfig> = {
     // Flag validation is handled by safeFlags above
     // args is tokens after "git branch"
     additionalCommandIsDangerousCallback: (
-      _rawCommand: string,
+      rawCommand: string,
       args: string[],
     ) => {
+      if (gitFormatIsDangerous(rawCommand, args)) return true
       // Block branch creation: "git branch <name>" or "git branch <name> <start-point>"
       // Only safe uses are: "git branch" (list), "git branch -flags" (list with options),
       // or "git branch --contains/--merged/etc <ref>" (filtering)
@@ -1456,6 +1444,47 @@ export const GH_READ_ONLY_COMMANDS: Record<string, ExternalCommandConfig> = {
 // DOCKER_READ_ONLY_COMMANDS — docker inspect/logs read-only commands
 // ---------------------------------------------------------------------------
 
+const DOCKER_CONNECTION_FLAGS = [
+  '-H',
+  '-c',
+  '-r',
+  '--host',
+  '--context',
+  '--config',
+  '--tlscacert',
+  '--tlscert',
+  '--tlskey',
+  '--url',
+  '--connection',
+  '--identity',
+  '--remote',
+  '--module',
+  '--out',
+]
+
+/**
+ * A flag that points docker (or a podman alias) at another daemon, config or
+ * output file, also inside a short-flag cluster, or a `~` that the shell
+ * expands.
+ */
+function dockerArgsAreDangerous(_rawCommand: string, args: string[]): boolean {
+  return args.some(arg => {
+    if (
+      DOCKER_CONNECTION_FLAGS.some(
+        flag =>
+          arg === flag ||
+          arg.startsWith(`${flag}=`) ||
+          (flag.length === 2 && arg.length > 2 && arg.startsWith(flag)),
+      )
+    ) {
+      return true
+    }
+    const cluster = /^-([A-Za-z]+)/.exec(arg)?.[1]
+    if (cluster && cluster.length >= 2 && /[Hcr]/.test(cluster)) return true
+    return /(?:^|[=:])~/.test(arg) || (arg.includes('~') && arg.includes('{'))
+  })
+}
+
 export const DOCKER_READ_ONLY_COMMANDS: Record<string, ExternalCommandConfig> =
   {
     'docker logs': {
@@ -1470,6 +1499,7 @@ export const DOCKER_READ_ONLY_COMMANDS: Record<string, ExternalCommandConfig> =
         '--until': 'string',
         '--details': 'none',
       },
+      additionalCommandIsDangerousCallback: dockerArgsAreDangerous,
     },
     'docker inspect': {
       safeFlags: {
@@ -1479,6 +1509,7 @@ export const DOCKER_READ_ONLY_COMMANDS: Record<string, ExternalCommandConfig> =
         '--size': 'none',
         '-s': 'none',
       },
+      additionalCommandIsDangerousCallback: dockerArgsAreDangerous,
     },
   }
 

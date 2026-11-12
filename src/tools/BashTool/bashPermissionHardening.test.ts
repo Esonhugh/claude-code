@@ -564,6 +564,65 @@ if (process.env[childFlag] !== '1') {
     await expectBehavior('NODE_ENV=../x ls -la', 'default', { allow }, 'ask')
   })
 
+  test('read-only checks match official for [[ ]], arithmetic, redirects and flag callbacks', async () => {
+    const treeSitter =
+      process.env.CLAUDE_CODE_BASH_HARDENING_PARSER === 'TREE_SITTER_BASH'
+    for (const command of [
+      '[[ -n x && -f src/x.ts ]]',
+      '[[ -f a || -d b ]] && ls',
+      // The legacy checks refuse every `$(` and `<`.
+      ...(treeSitter
+        ? [
+            'echo $((1+2))',
+            'echo $((0-1))',
+            'cat src/x$((1+2))',
+            'cat < src/x.ts',
+            'cat <<< hi',
+          ]
+        : []),
+      'echo "a\\"b"',
+      'ps -ef',
+      'date --iso-8601=date',
+      'git remote show -n origin',
+      'git reflog show',
+      'lsof -i :80',
+    ]) {
+      await expectBehavior(command, 'default', {}, 'allow')
+      await expectBehavior(command, 'acceptEdits', {}, 'allow')
+    }
+    for (const command of [
+      '[[ -n x && -f a ]] && touch q',
+      'echo $((x+1))',
+      'cat < /etc/passwd',
+      'cat < ~root/x',
+      'cat <<< "$X"',
+      'ps -eo pid',
+      'ps e',
+      'date --iso-8601 x',
+      'git remote show origin',
+      'git reflog HEAD',
+      'git reflog expire',
+      'git tag --format=%GS',
+      'git branch --format=%GS',
+      'git blame -- -x',
+      'git ls-remote --sort x',
+      'lsof -i @example.com',
+      'docker logs -fH x c',
+      'docker inspect ~x',
+    ]) {
+      await expectBehavior(command, 'default', {}, 'ask')
+    }
+    if (treeSitter) {
+      await expectBehavior(
+        'cat src/x$((1+2))',
+        'default',
+        { deny: ['Read(./src/x3)'] },
+        'deny',
+      )
+    }
+    await expectBehavior('cat < /etc/passwd', 'bypassPermissions', {}, 'allow')
+  })
+
   test('a compound command with several output redirects asks in default mode', async () => {
     for (const command of [
       'echo ok > notes.txt && echo ok > /opt/sbdemo/outside.txt',

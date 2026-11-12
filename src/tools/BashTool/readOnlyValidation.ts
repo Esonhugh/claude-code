@@ -15,6 +15,7 @@ import {
   containsVulnerableUncPath,
   DOCKER_READ_ONLY_COMMANDS,
   EXTERNAL_READONLY_COMMANDS,
+  FLAG_PATTERN,
   type FlagArgType,
   GH_READ_ONLY_COMMANDS,
   GIT_READ_ONLY_COMMANDS,
@@ -28,6 +29,7 @@ import {
 } from './bashPermissions.js'
 import { bashCommandIsSafe_DEPRECATED } from './bashSecurity.js'
 import {
+  expandLiteralArithmetic,
   COMMAND_OPERATION_TYPE,
   PATH_EXTRACTORS,
   type PathCommand,
@@ -565,6 +567,7 @@ const COMMAND_ALLOWLIST: Record<string, CommandConfig> = {
     },
   },
   ps: {
+    respectsDoubleDash: false,
     safeFlags: {
       // UNIX-style process selection (these are safe)
       '-e': 'none', // Select all processes
@@ -626,11 +629,21 @@ const COMMAND_ALLOWLIST: Record<string, CommandConfig> = {
       _rawCommand: string,
       args: string[],
     ) => {
-      // Check for BSD-style 'e' in letter-only tokens (not -e which is UNIX-style)
-      // A BSD-style option is a token of only letters (no leading dash) containing 'e'
-      return args.some(
-        a => !a.startsWith('-') && /^[a-zA-Z]*e[a-zA-Z]*$/.test(a),
+      // A BSD-style `e` (any non-flag token with an e) prints each process's
+      // environment. So does `e` inside a dash cluster once another option
+      // switches ps to BSD parsing, so `-e` is only accepted among options
+      // known to keep UNIX parsing.
+      const bsdEnvironment = args.some(
+        arg => !FLAG_PATTERN.test(arg) && /[eE]/.test(arg),
       )
+      const dashE = args.some(arg => /^-[a-zA-Z]*e/.test(arg))
+      const unixOnly = args.every(
+        arg => arg === '--forest' || /^-[AacdeFfjlwHLTm]+$/.test(arg),
+      )
+      const threadFlags = args.flatMap(arg =>
+        arg === '--forest' ? [arg] : (arg.match(/[HLTm]/g) ?? []),
+      )
+      return bsdEnvironment || (dashE && !(unixOnly && threadFlags.length <= 1))
     },
   },
   base64: {
@@ -869,7 +882,6 @@ const COMMAND_ALLOWLIST: Record<string, CommandConfig> = {
         '--date',
         '-r',
         '--reference',
-        '--iso-8601',
         '--rfc-3339',
       ])
       let i = 0
@@ -977,8 +989,22 @@ const COMMAND_ALLOWLIST: Record<string, CommandConfig> = {
     // +prefix flags are treated as positional args by validateFlags,
     // so we must catch them here. lsof accepts +m<path> (attached path, no space)
     // with both absolute (+m/tmp/evil) and relative (+mfoo, +m.evil) paths.
-    additionalCommandIsDangerousCallback: (_rawCommand, args) =>
-      args.some(a => a === '+m' || a.startsWith('+m')),
+    // +m writes a mount supplement file. A host name after `-i ...@`
+    // triggers a DNS lookup, so only numeric addresses are allowed there.
+    additionalCommandIsDangerousCallback: (_rawCommand, args) => {
+      const namesHost = (address: string) =>
+        address.includes('@') &&
+        /[a-zA-Z]/.test(address.slice(address.indexOf('@') + 1).split(':')[0]!)
+      return args.some((arg, i) => {
+        if (arg.startsWith('+m')) return true
+        if (/^-[a-zA-Z]*i\S*@/.test(arg) && namesHost(arg)) return true
+        if (/^-[a-zA-Z]*i$/.test(arg)) {
+          const address = args[i + 1] ?? ''
+          return address.includes('~') || namesHost(address)
+        }
+        return false
+      })
+    },
   },
 
   pgrep: {
@@ -1277,6 +1303,12 @@ const COMMAND_ALLOWLIST: Record<string, CommandConfig> = {
       '-V': 'none',
       '--version': 'none',
       '--help': 'none',
+    },
+    additionalCommandIsDangerousCallback: (_rawCommand, args) => {
+      const end = args.indexOf('--')
+      return (end === -1 ? args : args.slice(0, end)).some(
+        arg => arg.startsWith('-') && !/^(?:-[A-Za-z]+|--[a-z-]+)$/.test(arg),
+      )
     },
   },
 }
@@ -1655,7 +1687,7 @@ const READONLY_COMMAND_REGEXES = new Set([
   // Echo that doesn't execute commands or use variables
   // Allow newlines in single quotes (safe) but not in double quotes (could be dangerous with variable expansion)
   // Also allow optional 2>&1 stderr redirection at the end
-  /^echo(?:\s+(?:'[^']*'|"[^"$<>\n\r]*"|[^|;&`$(){}><#\\!"'\s]+))*(?:\s+2>&1)?\s*$/,
+  /^echo(?:\s+(?:'[^']*'|"(?:[^"$<>\n\r\\]|\\[^\n\r])*"|[^|;&`$(){}><#\\!"'\s]+)+)*(?:\s+2>&1)?\s*$/,
   // printf the same way, except -v (assigns a shell variable)
   /^printf(?!\s+(?:--\s+)?['"]?-v)(?:\s+(?:'[^']*'|"[^"$<>\n\r]*"|[^|;&`$(){}><#\\!"'\s]+))+(?:\s+2>&1)?\s*$/,
 
@@ -2127,7 +2159,12 @@ export function checkReadOnlyConstraints(
   input: z.infer<typeof BashTool.inputSchema>,
   compoundCommandHasCd: boolean,
 ): PermissionResult {
-  const { command } = input
+  // Arithmetic on literals only yields a number. Where the exact value is
+  // not worked out, any number stands in: path checks still see the original.
+  // A here-string only feeds literal text to stdin.
+  const command = expandLiteralArithmetic(input.command)
+    .replace(/\$\(\([\d\s+\-*/%()]*\)\)/g, '0')
+    .replace(/[ \t]+<<<[ \t]*(?:'[^']*'|"[^"$`\\]*"|[\w./:-]+)(?=\s|$)/g, '')
 
   // Detect if the command is not parseable and return early
   const result = tryParseShellCommand(command, env => `$${env}`)
