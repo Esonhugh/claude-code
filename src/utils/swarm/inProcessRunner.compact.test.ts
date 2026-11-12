@@ -25,7 +25,7 @@ test("a teammate's compaction summarizes its own history and re-announces only t
   const result = await compactTeammateHistory(history, context as never)
   expect(forkContextMessages).toEqual(history)
   // Compaction announced Goal from the base tool pool; the teammate never had it.
-  expect(result.attachments.map(message => message.attachment)).toEqual([
+  expect(result.attachments.map(message => message.attachment) as unknown[]).toEqual([
     { type: 'deferred_tools_delta', addedNames: ['WebFetch'], addedLines: expect.any(Array), removedNames: [] },
     { type: 'plan_mode' },
   ])
