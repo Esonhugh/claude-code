@@ -225,7 +225,7 @@ async function handleBroadcast(
 
   if (!teamName) {
     throw new Error(
-      'Not in a team context. Create a team with Teammate spawnTeam first, or set CLAUDE_CODE_TEAM_NAME.',
+      'No teammates to broadcast to: spawn a named agent first (Agent with name); it joins this session\'s team.',
     )
   }
 

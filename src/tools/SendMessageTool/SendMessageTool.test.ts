@@ -613,4 +613,10 @@ if (process.env[childFlag] !== '1') {
     expect(result.data.message).toContain('missing-peer')
     expect(existsSync(getInboxPath('missing-peer'))).toBe(false)
   })
+
+  test('a broadcast with no team yet says how the session team forms', async () => {
+    const call = SendMessageTool.call({ to: '*', message: 'hello all' }, context, async () => ({ behavior: 'allow' }), undefined)
+    await expect(call).rejects.toThrow('spawn a named agent first')
+    await expect(call).rejects.not.toThrow('spawnTeam')
+  })
 }
