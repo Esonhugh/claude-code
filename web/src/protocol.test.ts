@@ -6,6 +6,9 @@ import zhHant from './locales/zh-Hant.json'
 import {
   addUserMessage,
   answerApproval,
+  approvalRules,
+  approvalScope,
+  approvalUpdates,
   currentTodos,
   hookBlock,
   type Item,
@@ -474,6 +477,31 @@ describe('reduce', () => {
     })
   })
 
+  it('names where "always allow" is kept and what it adds, and leaves out a command\'s mode switch', () => {
+    const ask = (tool: string, suggestions: unknown[]) =>
+      fold([{ type: 'control_request', request_id: 'r', request: { subtype: 'can_use_tool', tool_name: tool, input: {}, permission_suggestions: suggestions } }]).approvals[0]!
+    const rule = { type: 'addRules', rules: [{ toolName: 'Bash', ruleContent: 'npm test *' }], behavior: 'allow', destination: 'localSettings' }
+    const dirs = { type: 'addDirectories', directories: ['/w/ws'], destination: 'localSettings' }
+    const edits = { type: 'setMode', mode: 'acceptEdits', destination: 'session' }
+    // Kept in the project's .claude/settings.local.json, not only this session.
+    expect(approvalScope(ask('Bash', [rule]))).toBe('project')
+    expect(approvalScope(ask('Bash', [{ ...rule, destination: 'userSettings' }]))).toBe('user')
+    expect(approvalScope(ask('Write', [edits]))).toBe('session')
+    // As the TUI, a shell command's option applies its rules and folders, never a mode switch.
+    const bash = ask('Bash', [dirs, edits])
+    expect(approvalRules(bash)).toEqual({ rules: [], directories: ['/w/ws'] })
+    expect(permissionResponse(bash, 'always')).toMatchObject({ response: { response: { updatedPermissions: [dirs] } } })
+    expect(approvalUpdates(ask('Bash', [edits]))).toEqual([])
+    // A file edit's option is the mode switch.
+    expect(approvalRules(ask('Write', [edits]))).toEqual({ rules: [], directories: [], mode: 'acceptEdits' })
+    expect(answerApproval(fold([]), { ...ask('Bash', [rule]), toolUseId: 't1' }, 'always').decisions.t1).toEqual({
+      toolName: 'Bash',
+      choice: 'always',
+      rules: 'Bash(npm test *)',
+      scope: 'project',
+    })
+  })
+
   it('records models, context usage, mode changes and cost', () => {
     const state = fold([
       { type: 'system', subtype: 'init', model: 'claude-opus-5-5', permissionMode: 'default' },
@@ -597,6 +625,27 @@ describe('conversation extras', () => {
     expect(JSON.stringify(state)).not.toContain('big')
   })
 
+  it('keeps each file patch of an apply_patch result, and a deleted file\'s old text', () => {
+    const hunk = { oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: ['-a', '+b'] }
+    const state = fold([
+      { type: 'assistant', message: { id: 'm1', content: [{ type: 'tool_use', id: 't1', name: 'apply_patch', input: { input: '*** Begin Patch' } }] } },
+      {
+        type: 'user',
+        tool_use_result: {
+          files: [
+            { type: 'update', filePath: 'a.txt', originalFile: 'big', structuredPatch: [hunk] },
+            { type: 'delete', filePath: 'b.txt', originalFile: 'gone\n', structuredPatch: [] },
+          ],
+        },
+        message: { content: [{ type: 'tool_result', tool_use_id: 't1', content: 'Success.' }] },
+      },
+    ])
+    expect((state.items[1] as { blocks: unknown[] }).blocks[0]).toMatchObject({
+      meta: { files: [{ type: 'update', filePath: 'a.txt', structuredPatch: [hunk] }, { type: 'delete', filePath: 'b.txt', originalFile: 'gone\n' }] },
+    })
+    expect(JSON.stringify(state)).not.toContain('big')
+  })
+
   it('keeps an MCP tool result for the MCP App that renders it', () => {
     const state = fold([
       { type: 'assistant', message: { id: 'm1', content: [{ type: 'tool_use', id: 't1', name: 'mcp__srv__show', input: {} }] } },
@@ -691,6 +740,16 @@ describe('conversation extras', () => {
     expect(addUserMessage(set, '/goal', undefined, 'u3').goal).toBe(set.goal)
   })
 
+  it('follows a permission mode the engine switched to', () => {
+    // An "always" answer whose suggestion is setMode acceptEdits, or an approved plan, changes the mode in the engine.
+    const state = fold([
+      { type: 'system', subtype: 'init', permissionMode: 'default' },
+      { type: 'system', subtype: 'status', status: null, permissionMode: 'acceptEdits' },
+    ])
+    expect(state.permissionMode).toBe('acceptEdits')
+    expect(fold([{ type: 'system', subtype: 'init', permissionMode: 'plan' }, { type: 'system', subtype: 'status', status: 'requesting' }]).permissionMode).toBe('plan')
+  })
+
   it('remembers the answer to an approval by its tool use id', () => {
     const state = fold([
       {
@@ -708,7 +767,7 @@ describe('conversation extras', () => {
     expect(state.approvals[0]?.toolUseId).toBe('t9')
     const always = answerApproval(state, state.approvals[0]!, 'always')
     expect(always.approvals).toEqual([])
-    expect(always.decisions).toEqual({ t9: { toolName: 'Bash', choice: 'always', rules: 'Bash(npm test:*)' } })
+    expect(always.decisions).toEqual({ t9: { toolName: 'Bash', choice: 'always', rules: 'Bash(npm test:*)', scope: 'session' } })
     expect(answerApproval(state, state.approvals[0]!, 'deny').decisions.t9).toEqual({ toolName: 'Bash', choice: 'deny' })
   })
 

@@ -260,7 +260,7 @@ export function App() {
   const quote = quotes[draftKey]
   // What Mods did to a session's prompt box: a dim suggestion, marks on the text, typeahead rows.
   const [modPrompt, setModPrompt] = useState<
-    Record<string, { suggestion?: string; decorations?: PromptDecoration[]; rows?: ModRow[]; start?: number; end?: number }>
+    Record<string, { suggestion?: string; decorations?: PromptDecoration[]; rows?: ModRow[]; for?: string; start?: number; end?: number }>
   >({})
   const draftsRef = useRef(drafts)
   draftsRef.current = drafts
@@ -1657,7 +1657,7 @@ export function App() {
           if (mine !== lastEdit.current || res.superseded) return
           const rows = Array.isArray(res.suggestions) ? (res.suggestions as ModRow[]).filter(r => typeof r?.text === 'string') : []
           const start = typeof res.start === 'number' ? res.start : cursor
-          setModPrompt(m => ({ ...m, [view]: { ...m[view], rows: rows.length ? rows : undefined, start, end: cursor } }))
+          setModPrompt(m => ({ ...m, [view]: { ...m[view], rows: rows.length ? rows : undefined, for: draft, start, end: cursor } }))
         },
         () => {},
       )
@@ -1671,6 +1671,11 @@ export function App() {
     return () => clearTimeout(timer)
   }, [draft, view, modsAttached, modsRequest])
   const modBox = view ? modPrompt[view] : undefined
+  // Rows answer one draft; a token already completed to a row offers nothing, so Enter sends.
+  const modRows =
+    draft && modBox?.for === draft && !modBox.rows?.some(r => r.text === draft.slice(modBox.start, modBox.end))
+      ? modBox.rows
+      : undefined
   const takeModRow = (row: ModRow) => {
     if (!view) return
     const box = document.querySelector<HTMLTextAreaElement>('.composer textarea')
@@ -1991,16 +1996,6 @@ export function App() {
               />
             )}
             <ModToasts toasts={chat.mods.toasts} />
-            {modBox?.rows && draft && (
-              <div className="mod-complete" role="listbox" aria-label={t('modSuggestions')}>
-                {modBox.rows.map(row => (
-                  <button key={row.text} type="button" role="option" aria-selected={false} className="btn" onClick={() => takeModRow(row)}>
-                    {row.label ?? row.text}
-                    {row.description && <small>{row.description}</small>}
-                  </button>
-                ))}
-              </div>
-            )}
             {modBox?.suggestion && !draft.trim() && !chat.busy && (
               <div className="mod-suggest">
                 <button
@@ -2024,6 +2019,8 @@ export function App() {
               draft={draft}
               setDraft={setDraftByPerson}
               decorations={modBox?.decorations}
+              modRows={modRows}
+              onModRow={takeModRow}
               onSend={() => void sendInChat()}
               onSendNow={sendNowInChat}
               quote={quote}

@@ -100,3 +100,26 @@ export function toolDiff(name: string, input: string, result?: unknown): ToolDif
   })
   return hunks.length ? withCounts(hunkRows(hunks), false) : undefined
 }
+
+/** A file an apply_patch call changed, with its own diff. */
+export type PatchFile = { kind: 'add' | 'update' | 'delete'; path: string; diff: ToolDiff }
+
+/**
+ * The files of an apply_patch call, from its `tool_use_result.files`, so the
+ * card shows each one like a Write, Edit or delete (as the TUI's rows do).
+ */
+export function patchFiles(name: string, result?: unknown): PatchFile[] {
+  if (name !== 'apply_patch' || !isObj(result) || !Array.isArray(result.files)) return []
+  return result.files.filter(isObj).flatMap(f => {
+    const path = str(f.movePath) ?? str(f.filePath)
+    if (!path) return []
+    const kind = f.type === 'add' || f.type === 'delete' ? f.type : 'update'
+    const hunks = Array.isArray(f.structuredPatch) ? f.structuredPatch.filter(isHunk) : []
+    // A deleted file has no patch: its old lines are what went.
+    const rows =
+      kind === 'delete' && !hunks.length
+        ? linesOf(str(f.originalFile) ?? '').map((text, i): DiffRow => ({ kind: 'del', old: i + 1, text }))
+        : hunkRows(hunks)
+    return [{ kind, path, diff: withCounts(rows, kind === 'add') }]
+  })
+}
