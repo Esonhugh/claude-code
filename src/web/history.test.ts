@@ -256,6 +256,26 @@ describe('web history', () => {
     expect(messages.at(-2)).toMatchObject({ type: 'user', isReplay: true, uuid: 'a0000000-0000-4000-8000-000000000021', message: { content: '<task-notification>x</task-notification>' } })
   })
 
+  it('shows teammate messages the lead read mid-turn', async () => {
+    const file = join(root, 'config', 'projects', sanitizePath(join(root, 'project')), `${ID}.jsonl`)
+    const cwd = join(root, 'project')
+    writeFileSync(
+      file,
+      readFileSync(file, 'utf8') +
+        line({ type: 'attachment', uuid: 'a0000000-0000-4000-8000-000000000030', parentUuid: 'a0000000-0000-4000-8000-000000000008', cwd, timestamp: '2026-11-02T00:01:00.000Z', attachment: { type: 'teammate_mailbox', messages: [{ from: 'alice', text: 'ALICE_DONE', timestamp: '2026-11-12T00:00:00.000Z', color: 'blue', summary: 'done' }] } }) +
+        '\n' +
+        line({ type: 'assistant', uuid: 'a0000000-0000-4000-8000-000000000031', parentUuid: 'a0000000-0000-4000-8000-000000000030', cwd, message: { id: 'm10', role: 'assistant', content: [{ type: 'text', text: 'alice is done' }] } }) +
+        '\n',
+    )
+    const messages = (await readTranscript(ID, undefined, 50))!.messages
+    expect(messages.at(-2)).toMatchObject({
+      type: 'user',
+      isReplay: true,
+      uuid: 'a0000000-0000-4000-8000-000000000030',
+      message: { role: 'user', content: '<teammate-message teammate_id="alice" color="blue" summary="done">\nALICE_DONE\n</teammate-message>' },
+    })
+  })
+
   it('shows the hook outcomes the TUI shows, shaped like a live hook_response', async () => {
     const file = join(root, 'config', 'projects', sanitizePath(join(root, 'project')), `${ID}.jsonl`)
     const cwd = join(root, 'project')
