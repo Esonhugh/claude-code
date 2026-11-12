@@ -264,7 +264,7 @@
 - 11-12 合入 #1249、#1250 后在 `dev` `ac087cc` 重建 binary：`web.binary.test.ts` 29/29，两轮回归、既定设计检查结果同上；`make release-check` 通过。
 - 11-12 合入 #1253 后在 `dev` `e8ba5b6` 重建 binary：`web.binary.test.ts` 29/29，两轮回归、既定设计检查结果同上；`make release-check` 通过。
 - 11-12 合入 #1255 后在 `dev` `df44039` 重建 binary：`web.binary.test.ts` 29/29，两轮回归、既定设计检查结果同上；`make release-check` 通过。
-- 11-12 合入 #1259、#1261 后在 `dev` `e11d5bf` 重建 binary：VERIFY_PLACEHOLDER
+- 11-12 合入 #1259、#1261 后在 `dev` `e11d5bf` 重建 binary：`web.binary.test.ts` 29/29，两轮回归、既定设计检查结果同上；`make release-check` 通过（之后的 #1264 只改 Windows e2e 脚本）。
 - PR CI：单测 5 片、lint 与 tsc、Linux 沙箱、官方对照、Linux/macOS/Windows e2e 与 web e2e；之后合入 `dev` 的代码 PR（至 #1264）都在 CI 全绿后由 `automerge` 合并，纯文档 PR（#1021、#1025、#1029、#1031、#1036、#1039 等）直接合并。
 
 ## 2026-10-30 - v2.1.296 - Agent 生命周期与 Teams 修复、内嵌 bfs/ugrep 搜索、coordinator 模式、/hooks /theme /config 对齐官方 2.1.311、权限模式转换修复、claude web 本地网页界面与项目模式
