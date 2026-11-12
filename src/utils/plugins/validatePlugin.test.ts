@@ -352,3 +352,21 @@ test('a marketplace with an entry of an unknown source type still loads its othe
     { source: 'github', repo: 'owner/tool' },
   ])
 })
+
+test('a marketplace with a malformed entry still loads its other plugins', () => {
+  const marketplace = PluginMarketplaceSchema().parse({
+    name: 'market',
+    owner: { name: 'owner' },
+    plugins: [
+      { name: 'good', source: './good' },
+      { name: 'climb', source: '../outside' },
+      { name: 'abs', source: '/etc' },
+      { source: './nameless' },
+    ],
+  })
+  expect(marketplace.plugins.map(p => [p.name, p.source])).toEqual([
+    ['good', './good'],
+    ['climb', { source: 'unsupported', sourceType: 'invalid', error: 'source: Invalid string: must start with "./"' }],
+    ['abs', { source: 'unsupported', sourceType: 'invalid', error: 'source: Invalid string: must start with "./"' }],
+  ])
+})

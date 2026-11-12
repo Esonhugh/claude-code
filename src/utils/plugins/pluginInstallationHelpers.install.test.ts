@@ -38,7 +38,7 @@ if (!process.env.PL3_INSTALL_TEST_CHILD) {
       new Response(child.stderr).text(),
     ])
     console.log(stdout, stderr)
-    expect(stderr).toMatch(/(?:^|\n) 13 pass(?:\n|$)/)
+    expect(stderr).toMatch(/(?:^|\n) 14 pass(?:\n|$)/)
     expect(code).toBe(0)
   }, 60000)
 } else {
@@ -154,6 +154,21 @@ if (!process.env.PL3_INSTALL_TEST_CHILD) {
       expect(existsSync(join(pluginsDir, 'cache/evil', name))).toBe(false)
     })
   }
+
+  test('an invalid plugin id is refused before anything is written', async () => {
+    const before = readFileSync(settingsPath, 'utf-8')
+    await expect(
+      helpers.installResolvedPlugin({
+        pluginId: '../good@evil',
+        entry: { ...entries.find(e => e.name === 'good')!, name: '../good' },
+        scope: 'user',
+        marketplaceInstallLocation: market,
+      }),
+    ).rejects.toThrow('Plugin "../good@evil" cannot be installed, because its id is invalid')
+    expect(readFileSync(settingsPath, 'utf-8')).toBe(before)
+    expect(installedIds()).toEqual([])
+    expect(readdirSync(join(pluginsDir, 'cache')).filter(n => n !== 'evil' && !n.startsWith('temp_'))).toEqual([])
+  })
 
   test('reinstall publishes the new content and records state last', async () => {
     expect(await install('good')).toMatchObject({ ok: true })

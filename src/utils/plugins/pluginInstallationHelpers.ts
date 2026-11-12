@@ -60,6 +60,7 @@ import { isPluginBlockedByPolicy } from './pluginPolicy.js'
 import { calculatePluginVersion } from './pluginVersioning.js'
 import {
   isLocalPluginSource,
+  PluginIdSchema,
   type PluginManifest,
   type PluginMarketplaceEntry,
   type PluginScope,
@@ -424,6 +425,12 @@ export async function installResolvedPlugin({
   // are covered in one place.
   if (isPluginBlockedByPolicy(pluginId)) {
     return { ok: false, reason: 'blocked-by-policy', pluginName: entry.name }
+  }
+
+  if (!PluginIdSchema().safeParse(pluginId).success) {
+    throw new Error(
+      `Plugin "${pluginId}" cannot be installed, because its id is invalid: Each part of a plugin id (plugin@marketplace) may use only the letters a-z and A-Z, digits, ".", "_" and "-", and must start with a letter or digit.`,
+    )
   }
 
   const recordRefusal = getInstalledPluginsReadRefusal()
