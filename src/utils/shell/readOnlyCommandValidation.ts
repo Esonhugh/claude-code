@@ -104,6 +104,55 @@ const GIT_AUTHOR_FILTER_FLAGS: Record<string, FlagArgType> = {
 // GIT_READ_ONLY_COMMANDS — complete map of all git subcommands
 // ---------------------------------------------------------------------------
 
+const GIT_SIGNATURE_FORMAT_RE = /%[-+ ]?G|%\(\*?signature/
+const GIT_BUILTIN_PRETTY_FORMATS = new Set([
+  'oneline',
+  'short',
+  'medium',
+  'full',
+  'fuller',
+  'email',
+  'raw',
+])
+
+/**
+ * Signature placeholders (`%G?`, `%(signature)`) run gpg, and a --pretty name
+ * that is not built in can be a `pretty.<name>` alias from git config.
+ */
+function gitFormatIsDangerous(_rawCommand: string, args: string[]): boolean {
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]!
+    if (GIT_SIGNATURE_FORMAT_RE.test(arg)) return true
+    for (const flag of ['--format', '--pretty', '--sort', '--group']) {
+      const value =
+        arg === flag
+          ? args[i + 1]
+          : arg.startsWith(`${flag}=`)
+            ? arg.slice(flag.length + 1)
+            : undefined
+      if (value === undefined) continue
+      if (
+        /(?:^|[=:])~/.test(value) ||
+        (value.includes('~') && value.includes('{')) ||
+        value.includes('signature')
+      ) {
+        return true
+      }
+      if (
+        (flag === '--format' || flag === '--pretty') &&
+        value !== '' &&
+        !value.includes('%') &&
+        !value.startsWith('format:') &&
+        !value.startsWith('tformat:') &&
+        !GIT_BUILTIN_PRETTY_FORMATS.has(value)
+      ) {
+        return true
+      }
+    }
+  }
+  return false
+}
+
 export const GIT_READ_ONLY_COMMANDS: Record<string, ExternalCommandConfig> = {
   'git diff': {
     safeFlags: {
@@ -222,6 +271,7 @@ export const GIT_READ_ONLY_COMMANDS: Record<string, ExternalCommandConfig> = {
       '--pickaxe-regex': 'none',
       '--pickaxe-all': 'none',
     },
+    additionalCommandIsDangerousCallback: gitFormatIsDangerous,
   },
   'git show': {
     safeFlags: {
@@ -244,6 +294,7 @@ export const GIT_READ_ONLY_COMMANDS: Record<string, ExternalCommandConfig> = {
       '-m': 'none',
       '--quiet': 'none',
     },
+    additionalCommandIsDangerousCallback: gitFormatIsDangerous,
   },
   'git shortlog': {
     safeFlags: {
@@ -266,6 +317,7 @@ export const GIT_READ_ONLY_COMMANDS: Record<string, ExternalCommandConfig> = {
       '--no-merges': 'none',
       '--author': 'string',
     },
+    additionalCommandIsDangerousCallback: gitFormatIsDangerous,
   },
   'git reflog': {
     safeFlags: {
@@ -336,6 +388,25 @@ export const GIT_READ_ONLY_COMMANDS: Record<string, ExternalCommandConfig> = {
       // elsewhere), `--server-option="sensitive-data"` exfiltrates the value
       // to whatever `origin` points to. The read-only path should never enable
       // network writes.
+    },
+    // A remote or pattern argument means a network request; only the bare
+    // form (the default remote) is read-only enough.
+    additionalCommandIsDangerousCallback: (rawCommand, args) => {
+      if (gitFormatIsDangerous(rawCommand, args)) return true
+      let operands = false
+      for (let i = 0; i < args.length; i++) {
+        const arg = args[i]!
+        if (!operands && arg === '--') {
+          operands = true
+          continue
+        }
+        if (!operands && (!arg || arg.startsWith('-'))) {
+          if (arg === '--sort') i++
+          continue
+        }
+        return true
+      }
+      return false
     },
   },
   'git status': {
@@ -571,6 +642,7 @@ export const GIT_READ_ONLY_COMMANDS: Record<string, ExternalCommandConfig> = {
       '--source': 'none',
       '--graph': 'none',
     },
+    additionalCommandIsDangerousCallback: gitFormatIsDangerous,
   },
   // git describe is read-only — describes commits relative to the most recent tag
   'git describe': {
@@ -624,6 +696,7 @@ export const GIT_READ_ONLY_COMMANDS: Record<string, ExternalCommandConfig> = {
       '--no-merged': 'string', // Only list refs NOT reachable from specified commit
       '--points-at': 'string', // Only list refs pointing at specified object
     },
+    additionalCommandIsDangerousCallback: gitFormatIsDangerous,
   },
   // git grep is read-only — searches tracked files for patterns
   'git grep': {
@@ -1477,7 +1550,6 @@ export const RIPGREP_READ_ONLY_COMMANDS: Record<string, ExternalCommandConfig> =
         '--max-depth': 'number',
         '-a': 'none', // Text (search binary files)
         '--text': 'none',
-        '-z': 'none', // Search zip
         '-L': 'none', // Follow symlinks
         '--follow': 'none',
 
@@ -1493,39 +1565,6 @@ export const RIPGREP_READ_ONLY_COMMANDS: Record<string, ExternalCommandConfig> =
 
         // Special argument separator
         '--': 'none',
-      },
-    },
-  }
-
-// ---------------------------------------------------------------------------
-// PYRIGHT_READ_ONLY_COMMANDS — pyright static type checker
-// ---------------------------------------------------------------------------
-
-export const PYRIGHT_READ_ONLY_COMMANDS: Record<string, ExternalCommandConfig> =
-  {
-    pyright: {
-      respectsDoubleDash: false, // pyright treats -- as a file path, not end-of-options
-      safeFlags: {
-        '--outputjson': 'none',
-        '--project': 'string',
-        '-p': 'string',
-        '--pythonversion': 'string',
-        '--pythonplatform': 'string',
-        '--typeshedpath': 'string',
-        '--venvpath': 'string',
-        '--level': 'string',
-        '--stats': 'none',
-        '--verbose': 'none',
-        '--version': 'none',
-        '--dependencies': 'none',
-        '--warnings': 'none',
-      },
-      additionalCommandIsDangerousCallback: (
-        _rawCommand: string,
-        args: string[],
-      ) => {
-        // Check if --watch or -w appears as a standalone token (flag)
-        return args.some(t => t === '--watch' || t === '-w')
       },
     },
   }

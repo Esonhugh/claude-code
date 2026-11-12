@@ -492,6 +492,78 @@ if (process.env[childFlag] !== '1') {
     }
   })
 
+  test('read-only allowlist matches official for env prefixes, flags, git formats and printf', async () => {
+    for (const command of [
+      'NODE_ENV=prod ls',
+      'CI=true ls',
+      'LANG=C.UTF-8 ls',
+      'LANG= ls',
+      'GIT_TERMINAL_PROMPT=0 git status',
+      'timeout 5 ls',
+      'command ls',
+      'which ls',
+      'test -f src/x.ts',
+      'test 1 -eq 2',
+      '[ -v X ]',
+      '[[ -v X ]]',
+      '[ 1 -eq 2 ]',
+      'grep -I x src/x.ts',
+      'egrep x src/x.ts',
+      'help -d cd',
+      'man -k a/b',
+      'man -S 1,8 ls',
+      'ss state established',
+      'git log --pretty=oneline -1',
+      'git log --format=%H -1',
+      'git ls-remote --tags',
+      'printf %s',
+      "printf '%x' 255",
+      "printf '%5s' a",
+    ]) {
+      await expectBehavior(command, 'default', {}, 'allow')
+    }
+    for (const command of [
+      'NODE_ENV=../x ls',
+      'TZ=/etc/localtime date',
+      'LANG=foo ls',
+      'FOO=1 ls',
+      'jq -nf prog.jq',
+      `jq -n 'include "x"; .'`,
+      'find . -files0-from list',
+      'which -i ls',
+      'test -v X',
+      'test a -a b',
+      '[ a -eq 2 ]',
+      '[[ -t x ]]',
+      'file -f list',
+      'file -z f',
+      'rg -z x f',
+      'help -m cd',
+      'help a/b',
+      'man -l f',
+      "man -S 'x/y' ls",
+      'man ./x.1',
+      'ss -r',
+      'ss dst example.com',
+      'git log --pretty=%GS -1',
+      'git log --pretty=foo -1',
+      'git rev-list --format=%GS HEAD',
+      'git ls-remote origin',
+      'git log ~root',
+      'echo ~root',
+      'info ls',
+      'pyright --version',
+      "printf '%d' abc",
+      "printf '%s %d' a b",
+      'printf -x a',
+    ]) {
+      await expectBehavior(command, 'default', {}, 'ask')
+    }
+    const allow = ['Bash(ls:*)']
+    await expectBehavior('NODE_ENV=prod ls -la', 'default', { allow }, 'allow')
+    await expectBehavior('NODE_ENV=../x ls -la', 'default', { allow }, 'ask')
+  })
+
   test('a compound command with several output redirects asks in default mode', async () => {
     for (const command of [
       'echo ok > notes.txt && echo ok > /opt/sbdemo/outside.txt',
