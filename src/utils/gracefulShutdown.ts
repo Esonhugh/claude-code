@@ -45,7 +45,7 @@ import { logForDebugging } from './debug.js'
 import { logForDiagnosticsNoPII } from './diagLogs.js'
 import { isEnvTruthy } from './envUtils.js'
 import { flushSessionStorage, sessionIdExists } from './sessionStorage.js'
-import { hasLiveShellCommands, waitForLiveShellResults } from './ShellCommand.js'
+import { hasLiveShellCommands, killLiveShellCommands, waitForLiveShellResults } from './ShellCommand.js'
 import { sleep } from './sleep.js'
 import { profileReport } from './startupProfiler.js'
 import { validateUuid } from './uuid.js'
@@ -580,6 +580,7 @@ export async function gracefulShutdown(
         // Cleanup kills running shells; check before it removes them.
         const hadLiveShells = hasLiveShellCommands()
         await runCleanupFunctions()
+        killLiveShellCommands()
         // Killed shells report `Exit code 137` to their agents; give those
         // tool results time to reach the transcript, like official.
         if (hadLiveShells) {
