@@ -898,7 +898,7 @@ export const SettingsSchema = lazySchema(() =>
         .enum(['all', 'apply_patch'])
         .optional()
         .describe(
-          'File editing tools offered to OpenAI models. "all" (default) offers Edit, Write and apply_patch; "apply_patch" offers only apply_patch, like Codex.',
+          'File editing tools offered to OpenAI models. "apply_patch" (default) offers only apply_patch, like Codex; "all" also offers Edit and Write.',
         ),
       daybreak: z
         .enum(['blue', 'red', 'off'])

@@ -92,6 +92,9 @@ import type { AgentDefinition } from './loadAgentsDir.js'
 import { parkAgentForChildren } from './backgroundOwner.js'
 import { MAX_SUBAGENT_DEPTH } from './subagentDepth.js'
 import { SEND_MESSAGE_TOOL_NAME } from '../SendMessageTool/constants.js'
+import { APPLY_PATCH_TOOL_NAME } from '../ApplyPatchTool/prompt.js'
+import { FILE_EDIT_TOOL_NAME } from '../FileEditTool/constants.js'
+import { FILE_WRITE_TOOL_NAME } from '../FileWriteTool/prompt.js'
 export type ResolvedAgentTools = {
   hasWildcard: boolean
   validTools: string[]
@@ -209,7 +212,10 @@ export function isToolDisallowedForAgent(
     const permissionName = getToolNameForPermissionCheck(tool)
     if (
       disallowedToolSet.has(tool.name) ||
-      disallowedToolSet.has(permissionName)
+      disallowedToolSet.has(permissionName) ||
+      // apply_patch does Edit's and Write's work, so an agent without either loses it too.
+      (tool.name === APPLY_PATCH_TOOL_NAME &&
+        (disallowedToolSet.has(FILE_EDIT_TOOL_NAME) || disallowedToolSet.has(FILE_WRITE_TOOL_NAME)))
     ) {
       return true
     }

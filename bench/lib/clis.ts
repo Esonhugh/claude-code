@@ -314,9 +314,9 @@ export const MEMORY_CELLS: Cell[] = [
   claudeCell('fork-openai-sqlite', 'fork', 'chatgpt', { settings: SQLITE_MEMORY }),
 ]
 
-// GPT models with apply_patch as the only file editing tool, like Codex.
+// GPT models with Edit and Write offered besides apply_patch (the default offers only apply_patch).
 export const EDIT_CELLS: Cell[] = [
-  claudeCell('fork-openai-patch', 'fork', 'chatgpt', { settings: { openaiEditTools: 'apply_patch' } }),
+  claudeCell('fork-openai-all', 'fork', 'chatgpt', { settings: { openaiEditTools: 'all' } }),
 ]
 
 export function getCell(id: string): Cell {

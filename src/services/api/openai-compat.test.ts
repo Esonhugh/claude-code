@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
 import { mkdtempSync, realpathSync, rmSync } from 'node:fs'
-import { resetSettingsCache } from '../../utils/settings/settingsCache.js'
+import { resetSettingsCache, setSessionSettingsCache } from '../../utils/settings/settingsCache.js'
 import { OPENAI_CODEX_CLIENT_VERSION } from '../openai-oauth/client.js'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -771,6 +771,25 @@ try {
   } as any)
   assert.deepEqual(requests[0]!.body.tools.map((tool: any) => tool.name), ['SendMessage'])
   assert.ok(!requests[0]!.body.input.some((item: any) => item.type === 'tool_search_output'))
+
+  // apply_patch replaces Edit and Write for GPT unless openaiEditTools is "all";
+  // a request without apply_patch (an agent restricted to Edit) keeps them.
+  const plainTool = (name: string) => ({ name, description: name, input_schema: { type: 'object', properties: {} } })
+  const editToolNames = async (names: string[]) => {
+    requests.length = 0
+    await client.beta.messages.create({
+      model: 'gpt-5.5',
+      max_tokens: 16,
+      tools: names.map(plainTool),
+      messages: [{ role: 'user', content: 'edit' }],
+    } as any)
+    return requests[0]!.body.tools.map((tool: any) => tool.name)
+  }
+  assert.deepEqual(await editToolNames(['Read', 'Edit', 'Write', 'apply_patch']), ['Read', 'apply_patch'])
+  assert.deepEqual(await editToolNames(['Read', 'Edit']), ['Read', 'Edit'])
+  setSessionSettingsCache({ settings: { openaiEditTools: 'all' }, errors: [] })
+  assert.deepEqual(await editToolNames(['Read', 'Edit', 'Write', 'apply_patch']), ['Read', 'Edit', 'Write', 'apply_patch'])
+  resetSettingsCache()
 
   requests.length = 0
   await client.beta.messages.create({

@@ -32,6 +32,8 @@ import { BASH_TOOL_NAME } from '../../tools/BashTool/toolName.js'
 import { FILE_EDIT_TOOL_NAME } from '../../tools/FileEditTool/constants.js'
 import { FILE_READ_TOOL_NAME } from '../../tools/FileReadTool/prompt.js'
 import { FILE_WRITE_TOOL_NAME } from '../../tools/FileWriteTool/prompt.js'
+import { applyPatchInputPaths } from '../../tools/ApplyPatchTool/plan.js'
+import { APPLY_PATCH_TOOL_NAME } from '../../tools/ApplyPatchTool/prompt.js'
 import { GLOB_TOOL_NAME } from '../../tools/GlobTool/prompt.js'
 import { GREP_TOOL_NAME } from '../../tools/GrepTool/prompt.js'
 import { REPL_TOOL_NAME } from '../../tools/REPLTool/constants.js'
@@ -245,6 +247,14 @@ export function createAutoMemCanUseTool(memoryDir: string): CanUseToolFn {
       }
     }
 
+    // On the OpenAI path apply_patch stands in for Edit and Write.
+    if (tool.name === APPLY_PATCH_TOOL_NAME) {
+      const paths = applyPatchInputPaths(input)
+      if (paths.length > 0 && paths.every(isAutoMemPath)) {
+        return { behavior: 'allow' as const, updatedInput: input }
+      }
+    }
+
     return denyAutoMemTool(
       tool,
       `only ${FILE_READ_TOOL_NAME}, ${GREP_TOOL_NAME}, ${GLOB_TOOL_NAME}, read-only ${BASH_TOOL_NAME}, and ${FILE_EDIT_TOOL_NAME}/${FILE_WRITE_TOOL_NAME} within ${memoryDir} are allowed`,
@@ -257,26 +267,25 @@ export function createAutoMemCanUseTool(memoryDir: string): CanUseToolFn {
 // ============================================================================
 
 /**
- * Extract file_path from a tool_use block's input, if present.
- * Returns undefined when the block is not an Edit/Write tool use or has no file_path.
+ * The paths a tool_use block writes: file_path of an Edit/Write, or every file
+ * of an apply_patch. Empty for any other block.
  */
-function getWrittenFilePath(block: {
+function getWrittenFilePaths(block: {
   type: string
   name?: string
   input?: unknown
-}): string | undefined {
-  if (
-    block.type !== 'tool_use' ||
-    (block.name !== FILE_EDIT_TOOL_NAME && block.name !== FILE_WRITE_TOOL_NAME)
-  ) {
-    return undefined
+}): string[] {
+  if (block.type !== 'tool_use') return []
+  if (block.name === APPLY_PATCH_TOOL_NAME) return applyPatchInputPaths(block.input)
+  if (block.name !== FILE_EDIT_TOOL_NAME && block.name !== FILE_WRITE_TOOL_NAME) {
+    return []
   }
   const input = block.input
   if (typeof input === 'object' && input !== null && 'file_path' in input) {
     const fp = (input as { file_path: unknown }).file_path
-    return typeof fp === 'string' ? fp : undefined
+    return typeof fp === 'string' ? [fp] : []
   }
-  return undefined
+  return []
 }
 
 function extractWrittenPaths(agentMessages: Message[]): string[] {
@@ -290,10 +299,7 @@ function extractWrittenPaths(agentMessages: Message[]): string[] {
       continue
     }
     for (const block of content) {
-      const filePath = getWrittenFilePath(block)
-      if (filePath !== undefined) {
-        paths.push(filePath)
-      }
+      paths.push(...getWrittenFilePaths(block))
     }
   }
   return uniq(paths)

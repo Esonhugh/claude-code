@@ -88,6 +88,17 @@ export function touchedPaths(patch: string): string[] {
   return ops.flatMap(op => [op.path, ...(op.type === 'update' && op.movePath ? [op.movePath] : [])]).map(p => expandPath(p))
 }
 
+/** The absolute paths an apply_patch tool input writes; none when it is not a valid patch. */
+export function applyPatchInputPaths(input: unknown): string[] {
+  const patch = (input as { input?: unknown } | null)?.input
+  if (typeof patch !== 'string') return []
+  try {
+    return touchedPaths(patch)
+  } catch {
+    return []
+  }
+}
+
 export type PatchHookStep = {
   toolName: typeof FILE_EDIT_TOOL_NAME | typeof FILE_WRITE_TOOL_NAME
   input: Record<string, unknown>
