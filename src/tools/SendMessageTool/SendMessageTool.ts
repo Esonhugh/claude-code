@@ -225,7 +225,9 @@ async function handleBroadcast(
 
   if (!teamName) {
     throw new Error(
-      'No teammates to broadcast to: spawn a named agent first (Agent with name); it joins this session\'s team.',
+      isAgentSwarmsEnabled()
+        ? 'No teammates to broadcast to: spawn a named agent first (Agent with name); it joins this session\'s team.'
+        : 'No teammates to broadcast to: agent teams are not enabled in this session. Message agents by name instead.',
     )
   }
 
