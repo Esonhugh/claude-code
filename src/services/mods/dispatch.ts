@@ -602,6 +602,7 @@ export async function dispatchModEvent(options: {
     let allowance = budgetMs
     let remaining = budgetMs
     let started = 0
+    let stalled = 0
     let timer: ReturnType<typeof setTimeout> | undefined
     let expire: (() => void) | undefined
     let timedOut = false
@@ -650,7 +651,16 @@ export async function dispatchModEvent(options: {
         return
       if (pending > 0 || external > 0) return
       started = performance.now()
-      timer = setTimeout(expire, Math.max(0, remaining))
+      const deadline = started + Math.max(0, remaining)
+      timer = setTimeout(() => {
+        // A late timer means the host thread was stalled, not the hook: the
+        // hook's answer may be queued behind the stall. Give back the stalled
+        // time, at most one more allowance per invocation.
+        const late = performance.now() - deadline
+        stopTimer()
+        if (late >= 1 && stalled + late <= allowance) { stalled += late; remaining = late; startTimer(); return }
+        expire?.()
+      }, Math.max(0, remaining))
       publishBudget()
     }
     function below(rewritten: ModInput, target?: ModTier): Promise<unknown> {
@@ -805,6 +815,7 @@ export async function dispatchModEvent(options: {
       let settledRemaining: number | undefined
       allowance = catching ? catchGraceMs : budgetMs
       remaining = allowance
+      stalled = 0
       external = 0
       budgetClock = new BigInt64Array(new SharedArrayBuffer(4 * BigInt64Array.BYTES_PER_ELEMENT))
       publishBudget()
