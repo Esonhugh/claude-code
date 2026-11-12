@@ -1837,9 +1837,9 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       await panel.getByRole('tab', { name: /^Terminals/ }).click()
       // Each terminal is a drawer: its row toggles the screen, Stop sits on the row.
       const first = panel.locator('.term').nth(0)
-      const row = first.locator('.termrow')
+      // The row shows the task description until the terminal's details arrive.
+      const row = first.locator('.termrow', { hasText: 'bash --norc' })
       await row.waitFor({ timeout: 15_000 })
-      expect(await row.textContent()).toContain('bash --norc')
       expect(await row.locator('.badge').textContent()).toBe('running')
       expect(await row.locator('.meta2').textContent()).toBe('Main session opened · 80×12')
       // The server sends styled spans; the page only maps them to classes.
