@@ -16,6 +16,7 @@ import {
   getPluginStorageId,
   loadPluginOptions,
   type PluginOptionValues,
+  resolvePluginOptions,
   substitutePluginVariables,
   substituteUserConfigVariables,
 } from './pluginOptionsStorage.js'
@@ -343,7 +344,10 @@ export async function getPluginLspServers(
   // truthy for every plugin and substituteUserConfigVariables throws on any
   // unresolved ${user_config.X}. Also skips unneeded keychain reads.
   const userConfig = plugin.manifest.userConfig
-    ? loadPluginOptions(getPluginStorageId(plugin))
+    ? resolvePluginOptions(
+        plugin.manifest.userConfig,
+        loadPluginOptions(getPluginStorageId(plugin)),
+      )
     : undefined
   const resolvedServers: Record<string, LspServerConfig> = {}
   for (const [name, config] of Object.entries(servers)) {

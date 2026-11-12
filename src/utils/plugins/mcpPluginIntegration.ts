@@ -24,6 +24,7 @@ import { getPluginDataDir } from './pluginDirectories.js'
 import {
   getPluginStorageId,
   loadPluginOptions,
+  resolvePluginOptions,
   substitutePluginVariables,
   substituteUserConfigVariables,
 } from './pluginOptionsStorage.js'
@@ -462,7 +463,10 @@ function buildMcpUserConfig(
   // ${user_config.X} ref. The manifest check also skips the unconditional
   // keychain read (~50-100ms on macOS) for plugins that don't use options.
   const topLevel = plugin.manifest.userConfig
-    ? loadPluginOptions(getPluginStorageId(plugin))
+    ? resolvePluginOptions(
+        plugin.manifest.userConfig,
+        loadPluginOptions(getPluginStorageId(plugin)),
+      )
     : undefined
   const channelSpecific = loadChannelUserConfig(plugin, serverName)
 

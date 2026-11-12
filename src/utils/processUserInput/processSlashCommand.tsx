@@ -861,18 +861,13 @@ async function getMessagesForSlashCommand(
   // Skills with userInvocable === false can only be invoked by the model via SkillTool
   if (command.userInvocable === false) {
     return {
-      messages: [
-        createUserMessage({
-          content: prepareUserContent({
-            inputString: `/${commandName}`,
-            precedingInputBlocks,
-          }),
-        }),
-        createUserMessage({
-          content: `This skill can only be invoked by Claude, not directly by users. Ask Claude to use the "${commandName}" skill for you.`,
-        }),
-      ],
-      shouldQuery: false,
+      ...headlessCommandReply(
+        commandName,
+        '',
+        precedingInputBlocks,
+        [],
+        `This skill can only be invoked by Claude, not directly by users. Ask Claude to use the "${commandName}" skill for you.`,
+      ),
       command,
     }
   }
