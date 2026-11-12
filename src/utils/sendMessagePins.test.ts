@@ -5,7 +5,7 @@ import { asAgentId } from '../types/ids.js'
 import type { Message } from '../types/message.js'
 import {
   bindSubagentRecipient, normalizeRecipientName, parseRecipientRef,
-  resolveSubagentRecipient, restoreSendMessagePins, retainLiveAgentNames, subagentRef,
+  resolveSubagentRecipient, restoreAgentNames, restoreSendMessagePins, retainLiveAgentNames, subagentRef,
 } from './sendMessagePins.js'
 
 const A = 'a0123456789abcdef', B = 'afedcba9876543210'
@@ -116,4 +116,19 @@ test('hash collisions extend discovery refs and reject ambiguous short refs', ()
     expect(resolved.recipient.ref.length).toBeGreaterThan(6)
     expect(resolveSubagentRecipient(s, `same [${resolved.recipient.ref}]`)).toEqual(resolved)
   }
+})
+
+test('resume restores names of named Agent spawns from the transcript', () => {
+  const spawn = (name: string | undefined, id: string) => ({ type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Agent', id, input: name === undefined ? {} : { name } }] } }) as Message
+  const history = [
+    spawn('bg', 'c1'), receipt({ status: 'async_launched', agentId: A }, 'c1'),
+    spawn('mate', 'c2'), receipt({ status: 'teammate_spawned', agent_id: 'amate-0123456789abcdef', teammate_id: 'mate@session-x' }, 'c2'),
+    spawn('failed', 'c3'), receipt({ agentId: B }, 'c3', true),
+    spawn('badid', 'c4'), receipt({ agentId: 'mate@session-x' }, 'c4'),
+    spawn(undefined, 'c5'), receipt({ agentId: B }, 'c5'),
+    spawn('taken', 'c6'), receipt({ agentId: B }, 'c6'),
+  ]
+  const restored = restoreAgentNames(history, new Map([['taken', asAgentId(A)]]))
+  expect(restored && Object.fromEntries(restored)).toEqual({ taken: asAgentId(A), bg: asAgentId(A), mate: asAgentId('amate-0123456789abcdef') })
+  expect(restoreAgentNames([use()], new Map())).toBeNull()
 })

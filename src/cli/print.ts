@@ -17,7 +17,7 @@ import { SDKControlUIResponseSchemas } from '../entrypoints/sdk/modsControlSchem
 import { copyModCallerChain } from '../services/mods/callerChain.js'
 // biome-ignore-all assist/source/organizeImports: ANT-ONLY import markers must not be reordered
 import { feature } from 'bun:bundle'
-import { restoreSendMessagePins } from '../utils/sendMessagePins.js'
+import { restoreAgentNames, restoreSendMessagePins } from '../utils/sendMessagePins.js'
 import { FAILED_PROMPT_BATCH_DROP, UNSUBMITTED_PROMPT_DROP } from '../services/mods/promptAdapter.js'
 import { readFile, stat } from 'fs/promises'
 import { dirname, join, resolve } from 'path'
@@ -484,7 +484,10 @@ import {
   isShutdownApproved,
   capIdleResultsInDrain,
 } from '../utils/teammateMailbox.js'
-import { handleTeammateShutdownApproved } from '../utils/swarm/teammateShutdown.js'
+import {
+  findApprovedTeammateId,
+  handleTeammateShutdownApproved,
+} from '../utils/swarm/teammateShutdown.js'
 import { registerLeaderHeadlessCanUseTool } from '../utils/swarm/leaderPermissionBridge.js'
 import { getRunningTasks } from '../utils/task/framework.js'
 import { isBackgroundTask } from '../tasks/types.js'
@@ -948,7 +951,11 @@ export async function runHeadless(
     restoredWorkerState: structuredIO.restoredWorkerState,
   })
 
-  setAppState(prev => ({ ...prev, sendMessagePins: restoreSendMessagePins(initialMessages) }))
+  setAppState(prev => ({
+    ...prev,
+    sendMessagePins: restoreSendMessagePins(initialMessages),
+    agentNameRegistry: restoreAgentNames(initialMessages, prev.agentNameRegistry) ?? prev.agentNameRegistry,
+  }))
 
   // SessionStart hooks can emit initialUserMessage — the first user turn for
   // headless orchestrator sessions where stdin is empty and additionalContext
@@ -3167,11 +3174,11 @@ function runHeadlessStreaming(
                 )
 
                 // Find the teammate ID by name
-                const teammateId = refreshedState.teamContext?.teammates
-                  ? Object.entries(refreshedState.teamContext.teammates).find(
-                      ([, t]) => t.name === teammateToRemove,
-                    )?.[0]
-                  : undefined
+                const teammateId = findApprovedTeammateId(
+                  refreshedState.teamContext?.teammates,
+                  teammateToRemove,
+                  m.timestamp,
+                )
 
                 if (teammateId) {
                   await handleTeammateShutdownApproved({

@@ -164,9 +164,17 @@ export async function loadWorkflowScriptSpec(
     Date: Object.assign(WorkflowDate, { now: WorkflowDate }),
     Math: createWorkflowMath(),
   })
-  const script = new vm.Script(transformModuleSyntax(source), {
-    filename: filePath,
-  })
+  let script: vm.Script
+  try {
+    script = new vm.Script(transformModuleSyntax(source), {
+      filename: filePath,
+    })
+  } catch (error) {
+    // Without meta this is read as a legacy `export default workflow(...)`
+    // script; an official-style script that only forgot meta lands here.
+    if (!(error instanceof SyntaxError)) throw error
+    throw new Error(`Invalid workflow script: \`export const meta = { name, description, phases }\` must be the FIRST statement in the script (${error.message})`)
+  }
   script.runInContext(sandbox, { timeout: 1000 })
 
   // Support both `export default` and bare function-expression formats

@@ -27,10 +27,13 @@ import {
 import { getAutoCompactThreshold } from '../../services/compact/autoCompact.js'
 import {
   buildPostCompactMessages,
+  type CompactionResult,
   compactConversation,
   ERROR_MESSAGE_USER_ABORT,
 } from '../../services/compact/compact.js'
 import { resetMicrocompactState } from '../../services/compact/microCompact.js'
+import { formatDeferredToolLines } from '../../tools/ToolSearchTool/prompt.js'
+import { createAttachmentMessage } from '../attachments.js'
 import type { AppState } from '../../state/AppState.js'
 import type { Tool, ToolPermissionContext, ToolUseContext, Tools } from '../../Tool.js'
 import { assembleToolPool } from '../../tools.js'
@@ -961,6 +964,63 @@ async function waitForNextPromptOrShutdown(
 }
 
 /**
+ * Summarizes a teammate's history between prompts. The summary request is
+ * sent as a fork of forkContextMessages, so the history itself must be passed
+ * there too (as official does), or the summarizer sees an empty conversation.
+ */
+export async function compactTeammateHistory(
+  messages: Message[],
+  toolUseContext: ToolUseContext,
+): Promise<CompactionResult> {
+  // An isolated copy so compaction does not clear the main session's
+  // readFileState cache or trigger the main session's UI callbacks.
+  const isolatedContext: ToolUseContext = {
+    ...toolUseContext,
+    readFileState: cloneFileStateCache(toolUseContext.readFileState),
+    onCompactProgress: undefined,
+    setStreamMode: undefined,
+  }
+  const result = await compactConversation(
+    messages,
+    isolatedContext,
+    {
+      systemPrompt: asSystemPrompt([]),
+      userContext: {},
+      systemContext: {},
+      toolUseContext: isolatedContext,
+      forkContextMessages: messages,
+    },
+    true, // suppressFollowUpQuestions
+    undefined, // customInstructions
+    true, // isAutoCompact
+  )
+  // Compaction re-announces deferred tools from this context's base tool
+  // pool, which still has tools runAgent filters out for the teammate (Goal),
+  // so its next turn would be told they were removed. Re-announce what the
+  // teammate itself had been told instead.
+  const told = new Set<string>()
+  for (const message of messages) {
+    if (message.type !== 'attachment' || message.attachment.type !== 'deferred_tools_delta') continue
+    for (const name of message.attachment.addedNames) told.add(name)
+    for (const name of message.attachment.removedNames) told.delete(name)
+  }
+  const toldTools = toolUseContext.options.tools.filter(tool => told.has(tool.name))
+  return {
+    ...result,
+    attachments: result.attachments.flatMap(message => {
+      if (message.attachment.type !== 'deferred_tools_delta') return [message]
+      if (toldTools.length === 0) return []
+      return [createAttachmentMessage({
+        type: 'deferred_tools_delta',
+        addedNames: toldTools.map(tool => tool.name).sort(),
+        addedLines: formatDeferredToolLines(toldTools),
+        removedNames: [],
+      })]
+    }),
+  }
+}
+
+/**
  * Runs an in-process teammate with a continuous prompt loop.
  *
  * Executes runAgent() within the teammate's AsyncLocalStorage context,
@@ -1199,28 +1259,9 @@ export async function runInProcessTeammate(
         logForDebugging(
           `[inProcessRunner] ${identity.agentId} compacting history (${tokenCount} tokens)`,
         )
-        // Create an isolated copy of toolUseContext so that compaction
-        // does not clear the main session's readFileState cache or
-        // trigger the main session's UI callbacks.
-        const isolatedContext: ToolUseContext = {
-          ...toolUseContext,
-          readFileState: cloneFileStateCache(toolUseContext.readFileState),
-          onCompactProgress: undefined,
-          setStreamMode: undefined,
-        }
-        const compactedSummary = await compactConversation(
+        const compactedSummary = await compactTeammateHistory(
           allMessages,
-          isolatedContext,
-          {
-            systemPrompt: asSystemPrompt([]),
-            userContext: {},
-            systemContext: {},
-            toolUseContext: isolatedContext,
-            forkContextMessages: [],
-          },
-          true, // suppressFollowUpQuestions
-          undefined, // customInstructions
-          true, // isAutoCompact
+          toolUseContext,
         )
         contextMessages = buildPostCompactMessages(compactedSummary)
         // Reset microcompact state since full compact replaces all
