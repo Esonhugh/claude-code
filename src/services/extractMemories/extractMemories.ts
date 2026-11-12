@@ -171,8 +171,7 @@ function hasMemoryWritesSince(
       continue
     }
     for (const block of content) {
-      const filePath = getWrittenFilePath(block)
-      if (filePath !== undefined && isAutoMemPath(filePath)) {
+      if (getWrittenFilePaths(block).some(isAutoMemPath)) {
         return true
       }
     }
