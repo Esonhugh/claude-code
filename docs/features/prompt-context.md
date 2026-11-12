@@ -64,6 +64,15 @@ This fork optimises several of these; nothing to configure, it works out of the 
 
 网关后面跑的不是 Claude 模型（模型名不含 `claude`/`opus`/`sonnet`/`haiku`/`fable`，例如 `grok-4.7`）且没设置 `ENABLE_TOOL_SEARCH` 时，tool search 默认关闭，所有工具直接内联。只有 Anthropic API 会把 `tool_reference` 展开成工具定义，这类网关展开不了，模型加载工具后只会看到 `Tool loaded.`、拿不到参数。网关确实能展开时，设置 `ENABLE_TOOL_SEARCH=true` 重新打开。
 
+## 系统提示词精简
+
+本 fork 的系统提示词比官方短，规则内容不变：
+
+- 环境段去掉 "Claude Code is available as a CLI…" 一行；`-p`/SDK 会话不出现 Fast mode 提示。
+- Memory 段改为更短的写法（2,079 → 1,614 字符），记忆提取 prompt 共用同一组文字。
+- OpenAI 路径与非 lean 模型的完整提示词去掉外部版 `# Output efficiency`。
+- skill 描述上限与官方相同为 1536 字符，见 [Skills](skills.md)。
+
 ## 设置
 
 | 配置项 | 写法 | 说明 |

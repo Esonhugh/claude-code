@@ -180,8 +180,8 @@ export function MemoryBody({ z, lang, flash, onOpenSession }: ExtProps & { onOpe
           <>
             <span className="mono">{index?.path ?? '~/.claude/memory-index.sqlite'}</span>
             <span>
-              {index?.builtAt
-                ? `${z(`${index.files} 个文件 · ${index.chunks.toLocaleString('en-US')} 段`)} · ${ago(z, index.builtAt)}`
+              {index && index.files > 0
+                ? `${z(`${index.files} 个文件 · ${index.chunks.toLocaleString('en-US')} 段`)}${index.builtAt ? ` · ${ago(z, index.builtAt)}` : ''}`
                 : z('第一次搜索时建立索引')}
             </span>
           </>

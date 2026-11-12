@@ -1,8 +1,7 @@
 import React, { useCallback, useMemo } from 'react'
 import { Box, Text } from '../../ink.js'
 import { sanitizeToolNameForAnalytics } from '../../services/analytics/metadata.js'
-import { patchedPaths } from '../../tools/ApplyPatchTool/UI.js'
-import { getDisplayPath } from '../../utils/file.js'
+import { getToolUseSummary } from '../../tools/ApplyPatchTool/UI.js'
 import { shouldShowAlwaysAllowOptions } from '../../utils/permissions/permissionsLoader.js'
 import { usePermissionRequestLogging } from './hooks.js'
 import { PermissionDialog } from './PermissionDialog.js'
@@ -30,7 +29,7 @@ export function ApplyPatchPermissionRequest({
   workerBadge,
 }: PermissionRequestProps): React.ReactNode {
   const patch = String((toolUseConfirm.input as { input?: unknown }).input ?? '')
-  const paths = patchedPaths(patch)
+  const summary = getToolUseSummary({ input: patch })
   const lines = patch.split('\n').filter(l => l !== '*** Begin Patch' && l !== '*** End Patch')
   const shown = verbose ? lines : lines.slice(0, MAX_PATCH_LINES)
   const permissionResult = toolUseConfirm.permissionResult
@@ -87,7 +86,7 @@ export function ApplyPatchPermissionRequest({
     <PermissionDialog title="Apply patch" workerBadge={workerBadge}>
       <Box flexDirection="column" paddingX={2} paddingY={1}>
         <Text>
-          Patch <Text bold>{paths.map(p => getDisplayPath(p)).join(', ')}</Text>
+          Patch <Text bold>{summary}</Text>
         </Text>
         <Box flexDirection="column" marginTop={1}>
           {shown.map((line, i) => (

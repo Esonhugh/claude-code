@@ -24,7 +24,7 @@ A skill is a playbook written for Claude: a folder with a `SKILL.md` that says w
 - you can call it directly by typing `/name`;
 - Claude calls it on its own when a request matches its description (for example when you say "write me a changelog").
 
-Normally only **one line of description** per skill sits in the system prompt, and the full content loads only when used, so installing many skills takes little context. Descriptions longer than 512 characters are cut; raise the limit with `skillListingMaxDescChars` in settings if you need more.
+Normally only **one line of description** per skill sits in the system prompt, and the full content loads only when used, so installing many skills takes little context. Descriptions longer than 1536 characters (same as official) are cut; change the limit with `skillListingMaxDescChars` in settings.
 
 </details>
 <details lang="zh-Hant"><summary>繁體中文</summary>
@@ -38,7 +38,7 @@ Skill 是一份寫給 Claude 的「操作手冊」：一個資料夾裡放一個
 - 你輸入 `/名字` 就能直接呼叫；
 - Claude 看到描述匹配的請求（例如你說「幫我寫個 changelog」），也會自己呼叫。
 
-平時每個 skill 只有**一行描述**放在系統提示裡，完整內容只在用到時才載入，所以裝多個也不會很占上下文。描述超過 512 字元的部分會被截掉，需要更長時在設定裡用 `skillListingMaxDescChars` 調高上限。
+平時每個 skill 只有**一行描述**放在系統提示裡，完整內容只在用到時才載入，所以裝多個也不會很占上下文。描述超過 1536 字元（與官方相同）的部分會被截掉，可在設定裡用 `skillListingMaxDescChars` 調整上限。
 
 </details>
 

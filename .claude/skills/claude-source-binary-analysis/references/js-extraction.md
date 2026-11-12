@@ -10,6 +10,8 @@
 - `restringer`：恢复常见 JavaScript 字符串数组、字符串解码器和包装调用。用于把隐藏在 decoder wrapper 后面的文本变得可搜索、可阅读。
 - `../scripts/native-extra.mjs`：skill 内置的 Bun standalone executable 提取器。先用它提取入口 JS 和内嵌 N-API 模块，再做 JavaScript 分析。
 
+`webcrack` 与 `restringer` 不是本仓库的依赖（#1136 移除了 devDependencies，`restringer` 依赖的 `isolated-vm` 在 Node 26 上无法编译）；需要时用带版本号的 `bunx` 临时获取，`restringer` 需要能编译 `isolated-vm` 的 Node 版本。
+
 ## `../scripts/native-extra.mjs` 行为
 
 从 skill 目录运行：
@@ -79,10 +81,10 @@ bun .claude/skills/claude-source-binary-analysis/scripts/native-extra.mjs ./offi
 典型用法：
 
 ```bash
-bunx webcrack ./extracted-claude/cli.original.js --output /tmp/extracted-claude/webcrack
+bunx webcrack@2.16.0 ./extracted-claude/cli.original.js --output /tmp/extracted-claude/webcrack
 ```
 
-`bunx` 可能联网下载并执行第三方 package。优先使用已审查的固定版本、本地依赖或已有缓存；若必须联网获取工具，先向用户说明来源和执行影响，不在含私有提取物的目录中运行未经审查的 package。
+`bunx` 可能联网下载并执行第三方 package。优先使用已审查的固定版本或已有缓存；若必须联网获取工具，先向用户说明来源和执行影响，不在含私有提取物的目录中运行未经审查的 package。
 
 适合用途：
 
@@ -104,7 +106,7 @@ bunx webcrack ./extracted-claude/cli.original.js --output /tmp/extracted-claude/
 典型用法：
 
 ```bash
-bunx restringer ./extracted-claude/cli.original.js > /tmp/extracted-claude/cli.restringer.js
+bunx restringer@2.2.0 ./extracted-claude/cli.original.js > /tmp/extracted-claude/cli.restringer.js
 ```
 
 适合用途：

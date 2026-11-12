@@ -123,7 +123,7 @@ CLAUDE_CODE_USE_OPENAI=1 OPENAI_BASE_URL=https://gateway.example/api OPENAI_API_
 GPT 模型训练时用的是 Codex 的 `apply_patch`：一次调用可以改多个文件、多处位置。OpenAI provider 下 Claude Code 提供同名工具，默认取代 Edit / Write（参数 `input`，Codex 的补丁格式：`*** Add File` / `*** Update File`（可带 `*** Move to`）/ `*** Delete File`、`@@` 段、`*** End of File`，也接受 heredoc 写法），Claude 路径仍只用 Edit / Write。同一个编码任务，请求数从 13 次降到 7 次（Codex 0.167.0 为 5 次），总 token 从 156k 降到 85k。
 
 - **按顺序套用**：和 Codex 一样逐个文件对照检查后写入（上下文行必须匹配，空白和弯引号的差异按 Codex 的规则容忍）。某个文件对不上时，前面已写入的文件保留，在这个文件停下，返回给模型的结果写明哪个文件失败及原因、哪些已套用、哪些没有尝试；第一个文件就对不上时一个文件都不改。格式错误、同一路径出现两次或命中 deny 规则时整个补丁不执行。hooks 只对会被写入的文件运行。
-- **显示**：每个文件单独一行，和 Claude 并行编辑多个文件时一样：新增是 `Write(path)`，修改是 `Update(path)`，删除是 `Delete(path)`，各自带 diff；失败的文件以红点显示错误，后面没有尝试的文件列在下方。
+- **显示**：每个文件单独一行，和 Claude 并行编辑多个文件时一样：新增是 `Write(path)`，修改是 `Update(path)`，删除是 `Delete(path)`，移动的文件显示 `Update(旧路径 → 新路径)`，各自带 diff；失败的文件以红点显示错误，后面没有尝试的文件列在下方。
 - **权限**：补丁涉及的每个路径（包括 Move 的目标）都按 Edit 的权限规则和权限模式检查；不带路径的整工具规则也生效：新增文件和 Move 目标看 `Write`，其余看 `Edit`，所以 `allow: ["Edit", "Write"]` 下补丁不再弹确认，`deny`/`ask` 同理。确认框显示整个补丁，选项 2 把本会话切到 accept edits。Explore、Plan 与 verification 这类只读 agent 不能用它。
 - **hooks**：`PreToolUse`、`PostToolUse`、`PostToolUseFailure` 按文件拆成等价的 Edit / Write 事件各跑一次（修改 → Edit，新增 → Write，删除 → 把内容改成空的 Edit，移动 → 新路径的 Write 加旧路径的删除 Edit），所以已有的 `Edit|Write` hook 不用改。matcher 写 `apply_patch` 匹配不到这三个事件，`*` 或不写 matcher 的 hook 也按文件运行。按文件的 hook 可以阻止、拒绝或要求确认，阻止任何一个文件就整个补丁不执行；它返回的 allow、`updatedInput` 和输出改写会被忽略。`PermissionRequest` / `PermissionDenied` 对应唯一的确认框，整个补丁只触发一次，`tool_name` 是 `apply_patch`，写 `Edit` 或 `Write` 的 matcher 也会匹配；`tool_input.file_path` 是第一个文件，`tool_input.file_paths` 是全部文件的绝对路径。
 - 文件历史、读取状态、LSP 与 VS Code 通知、设置文件校验和 Edit / Write 相同。

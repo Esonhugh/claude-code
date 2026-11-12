@@ -83,7 +83,7 @@ Sessions start in ~/.claude/web/workspace and run with your local credentials an
 
 ![审批](images/web-tour-approval.png)
 
-**第 4 步：看过程和结果。** 每次工具调用是一张卡片：Read、Bash 显示路径或命令，Edit / Write 显示 diff 和增删行数，点文件路径在右侧预览这个文件。回复按 Markdown 增量渲染，代码块带复制按钮。顶栏是运行状态、工作目录、上下文占用（点开看明细，可以立即 `/compact`）和“导出”。右侧 Status 页签汇总这个会话的模型、权限模式、上下文、用量、目标与待办和后台任务数。
+**第 4 步：看过程和结果。** 每次工具调用是一张卡片：Read、Bash 显示路径或命令，Edit / Write 显示 diff 和增删行数，点文件路径在右侧预览这个文件。MCP 工具如果带 `ui://` 界面（MCP Apps），卡片下方直接显示这个页面，见 [MCP Apps](mcp.md#mcp-apps工具自带界面)。回复按 Markdown 增量渲染，代码块带复制按钮。顶栏是运行状态、工作目录、上下文占用（点开看明细，可以立即 `/compact`）和“导出”。右侧 Status 页签汇总这个会话的模型、权限模式、上下文、用量、目标与待办和后台任务数。
 
 ![对话、工具卡片和 diff](images/web-tour-chat.png)
 
@@ -265,6 +265,7 @@ Ctrl+C 或 SIGTERM 会停止服务、结束所有会话并删除 `~/.claude/web.
 - **CSP**：`script-src 'self'`，不允许内联脚本和外部来源，`frame-ancestors 'none'`，并加 `nosniff`。服务端未捕获的错误只返回纯 JSON 500，不暴露源码和路径。
 - **文件 API**：只给出本会话上传目录、会话工作目录里的文件和这个会话的工具读写过的文件，符号链接解析后再判断；claude 配置目录（`~/.claude/web` 除外）和 `.env`、`*.pem`、`*.key`、`.credentials.json` 等凭据文件永远不给。HTML、SVG、JS 一律按纯文本返回，不会作为本站页面执行。
 - **账号接口**：`GET /api/account` 不返回 key，只返回末 4 位；Base URL 只接受不带账号、查询串和片段的 http / https 地址。
+- **MCP Apps**：MCP 工具的 `ui://` 页面跑在沙箱 iframe 里（不透明 origin，读不到本站 cookie 和 API），未在资源里声明 CSP 时不能联网；页面只能调用同一个 server 的工具，只给页面用或只读的工具直接执行，其他先确认。
 - **会话权限**：网页里的会话和终端里一样走权限确认；以 root 运行（没有 `IS_SANDBOX`）时不提供 bypass 模式。打开浏览器的子进程不继承 API key 等环境变量。
 
 ## 体积
