@@ -385,6 +385,23 @@ try {
   const wildcard = await runCase('complete', true, GENERAL_PURPOSE_AGENT)
   assert.equal(wildcard.result.success, true)
   assert.deepEqual(observedTools, ['Read', 'Bash', 'SendMessage', 'TaskCreate'])
+  // The general-purpose prompt repeats the main prompt and tells the agent to
+  // end with a report to its caller, which teammates must send via SendMessage.
+  assert.deepEqual([...observedSystemPrompt!], [
+    `CORE_IDENTITY\n${TEAMMATE_SYSTEM_PROMPT_ADDENDUM}`,
+  ])
+
+  const custom = await runCase('complete', true, {
+    agentType: 'reviewer',
+    whenToUse: 'Reviews code',
+    tools: ['*'],
+    source: 'projectSettings',
+    getSystemPrompt: () => 'REVIEWER_RULES',
+  } as AgentDefinition)
+  assert.equal(custom.result.success, true)
+  assert.deepEqual([...observedSystemPrompt!], [
+    `CORE_IDENTITY\n${TEAMMATE_SYSTEM_PROMPT_ADDENDUM}\n\n# Custom Agent Instructions\nREVIEWER_RULES`,
+  ])
 
   const restricted = await runCase('complete', true, {
     ...GENERAL_PURPOSE_AGENT,
