@@ -506,10 +506,25 @@ function settingsHooks(source: EditableSettingSource): Partial<Record<HookEvent,
   return (getSettingsForSource(source)?.hooks ?? {}) as Partial<Record<HookEvent, HookMatcher[]>>
 }
 
-function writeHooks(source: EditableSettingSource, event: HookEvent, matchers: HookMatcher[]): void {
-  const { error } = updateSettingsForSource(source, {
-    hooks: { [event]: matchers.length ? matchers : undefined },
+/**
+ * Rewrites `hooks[event]` from the file as it is on disk now (under the
+ * settings lock), so hooks written since this process read the file are kept.
+ */
+function editHooks(source: EditableSettingSource, event: HookEvent, edit: (matchers: HookMatcher[]) => void): void {
+  let missing = false
+  const { error } = updateSettingsForSource(source, existing => {
+    const matchers = structuredClone(((existing.hooks ?? {}) as Partial<Record<HookEvent, HookMatcher[]>>)[event] ?? [])
+    try {
+      edit(matchers)
+    } catch (err) {
+      if (!(err instanceof ExtError)) throw err
+      missing = true
+      return {}
+    }
+    const kept = matchers.filter(m => m.hooks.length > 0)
+    return { hooks: { [event]: kept.length ? kept : undefined } }
   })
+  if (missing) throw new ExtError('Hook not found', 404)
   if (error) throw new ExtError(error.message, 500)
 }
 
@@ -595,35 +610,57 @@ function parseHookId(id: string): { source: EditableSettingSource; event: HookEv
 /** Removes one hook; the matcher group and event go too once empty. */
 export function deleteHook(id: string): void {
   const { source, event, mi, hi } = parseHookId(id)
-  const matchers = structuredClone(settingsHooks(source)[event] ?? [])
-  const group = matchers[mi]
-  if (!group?.hooks[hi]) throw new ExtError('Hook not found', 404)
-  group.hooks.splice(hi, 1)
-  writeHooks(
-    source,
-    event,
-    matchers.filter(m => m.hooks.length > 0),
-  )
+  editHooks(source, event, matchers => {
+    if (!matchers[mi]?.hooks[hi]) throw new ExtError('Hook not found', 404)
+    matchers[mi]!.hooks.splice(hi, 1)
+  })
 }
 
-export function addHook(input: HookInput): void {
-  const source = HOOK_SOURCES[input.source]
-  const matchers = structuredClone(settingsHooks(source)[input.event] ?? [])
-  const hook: HookCommand = {
+function pushHook(matchers: HookMatcher[], matcher: string, hook: HookCommand): void {
+  const group = matchers.find(m => (m.matcher ?? '') === matcher)
+  if (group) group.hooks.push(hook)
+  else matchers.push({ ...(matcher && { matcher }), hooks: [hook] })
+}
+
+function commandHook(input: HookInput): HookCommand {
+  return {
     type: 'command',
     command: input.command.trim(),
     ...(input.timeout !== undefined && { timeout: input.timeout }),
   }
-  const group = matchers.find(m => (m.matcher ?? '') === input.matcher)
-  if (group) group.hooks.push(hook)
-  else matchers.push({ ...(input.matcher && { matcher: input.matcher }), hooks: [hook] })
-  writeHooks(source, input.event, matchers)
 }
 
+export function addHook(input: HookInput): void {
+  editHooks(HOOK_SOURCES[input.source], input.event, matchers => pushHook(matchers, input.matcher, commandHook(input)))
+}
+
+/**
+ * Changes what the dialog shows (text, timeout, matcher, event, file) and keeps
+ * the rest of the hook: its type (an http hook stays one), async, headers, ….
+ */
 export function updateHook(id: string, input: HookInput): void {
-  parseHookId(id)
-  deleteHook(id)
-  addHook(input)
+  const { source, event, mi, hi } = parseHookId(id)
+  let old: HookCommand | undefined
+  editHooks(source, event, matchers => {
+    old = matchers[mi]?.hooks[hi]
+    if (!old) throw new ExtError('Hook not found', 404)
+    const text = input.command.trim()
+    const { timeout: _, ...rest } = old
+    const hook = {
+      ...rest,
+      ...(old.type === 'command' ? { command: text } : old.type === 'http' ? { url: text } : { prompt: text }),
+      ...(input.timeout !== undefined && { timeout: input.timeout }),
+    } as HookCommand
+    const target = HOOK_SOURCES[input.source]
+    if (target === source && input.event === event && (matchers[mi]!.matcher ?? '') === input.matcher) {
+      matchers[mi]!.hooks[hi] = hook
+      old = undefined
+      return
+    }
+    matchers[mi]!.hooks.splice(hi, 1)
+    old = hook
+  })
+  if (old) editHooks(HOOK_SOURCES[input.source], input.event, matchers => pushHook(matchers, input.matcher, old!))
 }
 
 /** "停用全部 hooks": `disableAllHooks` in user settings; turning it back on clears every editable file. */

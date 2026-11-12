@@ -358,6 +358,8 @@ async function handleExtApi(req: Request, url: URL, configDir: string): Promise<
   const match = EXT_PATH.exec(url.pathname)
   if (!match) return errorResponse(404, 'Not found')
   const [, area, rawArg, sub] = match
+  // The dialogs read and edit settings files that sessions, the TUI or the user also change.
+  resetSettingsCache()
   const arg = rawArg === undefined ? undefined : decodeURIComponent(rawArg)
   const route = `${req.method} ${area}${arg === undefined ? '' : '/:arg'}${sub ? `/${sub}` : ''}`
   const ok = () => new Response(null, { status: 204 })
@@ -1258,6 +1260,7 @@ export function startWebServer(
       pathname === '/api/settings' ||
       pathname === '/api/usage'
     ) {
+      if (pathname === '/api/settings') resetSettingsCache()
       const res = await handleAccount(req, url)
       if (res) return res
     }

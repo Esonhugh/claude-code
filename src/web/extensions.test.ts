@@ -89,6 +89,46 @@ describe('hooks', () => {
     expect(userSettings().hooks).toEqual({})
   })
 
+  it('keeps hooks another process wrote to settings.json since this one read it', async () => {
+    await ext.listHooks()
+    const outside = [
+      { type: 'http', url: 'https://example.invalid/hook', headers: { 'X-T': '1' }, timeout: 5 },
+      { type: 'command', command: 'echo outside', async: true, statusMessage: 'running' },
+    ]
+    writeFileSync(
+      join(configDir, 'settings.json'),
+      JSON.stringify({ ...userSettings(), hooks: { PostToolUse: [{ matcher: 'Bash', hooks: outside }] } }),
+    )
+    ext.addHook({ event: 'PostToolUse', matcher: 'Bash', command: 'echo web', source: 'user' })
+    expect(userSettings().hooks.PostToolUse).toEqual([
+      { matcher: 'Bash', hooks: [...outside, { type: 'command', command: 'echo web' }] },
+    ])
+
+    // An edit keeps the hook's type, other fields and place; only what the dialog shows changes.
+    ext.updateHook('userSettings:PostToolUse:0:0', {
+      event: 'PostToolUse',
+      matcher: 'Bash',
+      command: 'https://example.invalid/v2',
+      timeout: 9,
+      source: 'user',
+    })
+    ext.updateHook('userSettings:PostToolUse:0:1', {
+      event: 'PostToolUse',
+      matcher: 'Bash',
+      command: 'echo outside2',
+      source: 'user',
+    })
+    expect(userSettings().hooks.PostToolUse[0].hooks).toEqual([
+      { type: 'http', url: 'https://example.invalid/v2', headers: { 'X-T': '1' }, timeout: 9 },
+      { type: 'command', command: 'echo outside2', async: true, statusMessage: 'running' },
+      { type: 'command', command: 'echo web' },
+    ])
+    ext.deleteHook('userSettings:PostToolUse:0:2')
+    ext.deleteHook('userSettings:PostToolUse:0:1')
+    ext.deleteHook('userSettings:PostToolUse:0:0')
+    expect(userSettings().hooks).toEqual({})
+  })
+
   it('writes project hooks to the workspace settings', () => {
     ext.addHook({ event: 'PostToolUse', matcher: 'Write|Edit', command: 'prettier --write', source: 'project' })
     const project = JSON.parse(readFileSync(join(workspace, '.claude', 'settings.json'), 'utf8'))
@@ -331,6 +371,15 @@ describe('/api/ext endpoints', () => {
       const row = listed.hooks.find(h => h.command === 'python add-date.py')!
       expect((await send('DELETE', '/api/ext/hooks', { id: row.id })).status).toBe(204)
       expect(userSettings().hooks?.UserPromptSubmit).toBeUndefined()
+
+      // An edit made outside `claude web` (by hand or from a session) shows on the next read.
+      writeFileSync(
+        join(configDir, 'settings.json'),
+        JSON.stringify({ ...userSettings(), hooks: { Stop: [{ hooks: [{ type: 'command', command: 'echo by-hand' }] }] } }),
+      )
+      const reread = (await (await send('GET', '/api/ext/hooks')).json()) as { hooks: { command: string }[] }
+      expect(reread.hooks.map(h => h.command)).toContain('echo by-hand')
+      writeFileSync(join(configDir, 'settings.json'), JSON.stringify({ ...userSettings(), hooks: undefined }))
 
       expect((await send('PUT', '/api/ext/skills/..%2F..%2Fetc', { on: false })).status).toBe(400)
       expect((await send('POST', '/api/ext/plugins', { id: '../../x', action: 'install' })).status).toBe(400)
