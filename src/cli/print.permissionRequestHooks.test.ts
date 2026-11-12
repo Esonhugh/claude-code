@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, test } from 'bun:test'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { z } from 'zod/v4'
@@ -184,5 +184,57 @@ if (process.env[childFlag] !== '1') {
     expect(decision).toMatchObject({ behavior: 'allow', deniedCall: { toolName: 'Edit', input: { file_path: b } } })
     if (decision.behavior !== 'allow') return
     expect(String(decision.updatedInput?.input)).not.toContain(b)
+  })
+  // A PreToolUse hook's ask is not answered by rules or the mode, so each file
+  // of a patch is still asked, with the hook's reason.
+  const hookAsk = {
+    behavior: 'ask',
+    message: 'hook wants a human',
+    decisionReason: { type: 'hook', hookName: 'PreToolUse', reason: 'hook wants a human' },
+  } as const
+  function allowedPatch() {
+    const allows = { name: 'x', inputSchema: z.object({}).passthrough(), isReadOnly: () => false, checkPermissions: async (input: Record<string, unknown>) => ({ behavior: 'allow', updatedInput: input }) }
+    const tools = [{ ...allows, name: 'Edit' }, { ...allows, name: 'Write' }] as unknown as Tool[]
+    const a = join(home, 'a.txt')
+    writeFileSync(a, 'one\n')
+    const input = { input: ['*** Begin Patch', `*** Update File: ${a}`, '-one', '+ONE', `*** Add File: ${join(home, 'new.txt')}`, '+hi', '*** End Patch'].join('\n') }
+    const context = { ...toolUseContext(), options: { isNonInteractiveSession: true, tools } } as unknown as ToolUseContext
+    return { applyPatch: { ...allows, name: 'apply_patch' } as unknown as Tool, input, context }
+  }
+
+  test('--permission-prompt-tool asks each patch file for a PreToolUse hook ask', async () => {
+    const { applyPatch, input, context } = allowedPatch()
+    const asked: string[] = []
+    const promptTool = {
+      name: 'mcp__host__approve',
+      call: async (req: { tool_name: string }) => {
+        asked.push(req.tool_name)
+        return { data: { behavior: 'deny', message: 'host says no' } }
+      },
+      mapToolResultToToolResultBlockParam: (data: unknown) => ({ type: 'tool_result', tool_use_id: '1', content: [{ type: 'text', text: JSON.stringify(data) }] }),
+    } as never
+    const decision = await createCanUseToolWithPermissionPrompt(promptTool)(applyPatch, input, context, assistant, 'toolu_7', hookAsk)
+    expect(asked).toEqual(['Edit'])
+    expect(decision.behavior).toBe('deny')
+  })
+
+  test('the stdio host is asked each patch file with a PreToolUse hook ask reason', async () => {
+    const { applyPatch, input, context } = allowedPatch()
+    const io = new StructuredIO((async function* () {})())
+    const asked: { tool_name: unknown; decision_reason: unknown }[] = []
+    io.setOnControlRequestSent(request => {
+      const r = request.request as unknown as { tool_name: unknown; decision_reason: unknown; input: Record<string, unknown> }
+      asked.push({ tool_name: r.tool_name, decision_reason: r.decision_reason })
+      setTimeout(() => io.injectControlResponse({
+        type: 'control_response',
+        response: { subtype: 'success', request_id: request.request_id, response: { behavior: 'allow', updatedInput: r.input } },
+      }), 0)
+    })
+    const decision = await io.createCanUseTool()(applyPatch, input, context, assistant, 'toolu_8', hookAsk)
+    expect(asked).toEqual([
+      { tool_name: 'Edit', decision_reason: 'hook wants a human' },
+      { tool_name: 'Write', decision_reason: 'hook wants a human' },
+    ])
+    expect(decision.behavior).toBe('allow')
   })
 }
