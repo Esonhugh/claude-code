@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mock, test } from 'bun:test'
+import { afterAll, mock, test } from 'bun:test'
 import type { QueryParams } from '../query.js'
 import { getDefaultAppState } from '../state/AppStateStore.js'
 import type { SetAppState } from '../Task.js'
@@ -16,6 +16,24 @@ type QueryCall = {
 }
 
 const queryCalls: QueryCall[] = []
+
+// mock.module replaces a module for the whole bun process; put the real
+// exports back so test files run after this one in the same process are not
+// left with no-op queues and transcripts.
+const mockedModules = [
+  '../query.js',
+  '../utils/cleanupRegistry.js',
+  '../utils/messageQueueManager.js',
+  '../utils/sdkEventQueue.js',
+  '../utils/sessionStorage.js',
+  '../utils/task/diskOutput.js',
+]
+const realModules = await Promise.all(
+  mockedModules.map(async path => ({ ...(await import(path)) })),
+)
+afterAll(() => {
+  mockedModules.forEach((path, i) => mock.module(path, () => realModules[i]!))
+})
 
 mock.module('../query.js', () => ({
   async *query(params: QueryParams) {
