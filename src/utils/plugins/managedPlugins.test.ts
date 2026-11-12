@@ -20,9 +20,8 @@ test('managed Mods require an absolute policy directory, relative catalog source
   expect(await getInPlacePluginSource('guard@inline',policy)).toBeUndefined()
   expect(await getInPlacePluginSource('guard@corp', {...policy,extraKnownMarketplaces:{corp:{source:{source:'directory',path:'relative'}}}})).toBeUndefined()
   expect(await getInPlacePluginSource('guard@corp', {...policy,extraKnownMarketplaces:{corp:{source:{source:'github',repo:'corp/mods'}}}})).toBeUndefined()
-  await catalog(plugin)
-  await expect(getInPlacePluginSource('guard@corp',policy)).rejects.toThrow()
-  for (const source of ['./../outside', {source:'github',repo:'corp/guard'}]) {
+  // An absolute catalog source is a malformed entry: it is never in place.
+  for (const source of [plugin, './../outside', {source:'github',repo:'corp/guard'}]) {
     await catalog(source)
     expect(await getInPlacePluginSource('guard@corp',policy)).toBeUndefined()
   }

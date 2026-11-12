@@ -1029,7 +1029,9 @@ export async function cachePlugin(
           break
         case 'unsupported':
           throw new Error(
-            `Plugin source type "${source.sourceType}" is not supported by this version of Claude Code`,
+            source.error !== undefined
+              ? `This plugin's marketplace entry is invalid: ${source.error}`
+              : `Plugin source type "${source.sourceType}" is not supported by this version of Claude Code`,
           )
         default:
           throw new Error(`Unsupported plugin source type`)

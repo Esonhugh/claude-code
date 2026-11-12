@@ -1125,6 +1125,8 @@ export const UNSUPPORTED_PLUGIN_SOURCE = 'unsupported'
 export type UnsupportedPluginSource = {
   source: typeof UNSUPPORTED_PLUGIN_SOURCE
   sourceType: string
+  // Set for an entry that failed the schema (sourceType 'invalid').
+  error?: string
 }
 
 const INSTALLABLE_PLUGIN_SOURCE_TYPES = new Set([
@@ -1292,6 +1294,7 @@ export const PluginSourceSchema = lazySchema(() =>
       .object({
         source: z.literal(UNSUPPORTED_PLUGIN_SOURCE),
         sourceType: z.string(),
+        error: z.string().optional(),
       })
       .describe(
         'Placeholder for a source type this build cannot install; not for authoring',
@@ -1455,7 +1458,28 @@ export const PluginMarketplaceSchema = lazySchema(() =>
       'Marketplace maintainer or curator information',
     ),
     plugins: z
-      .array(PluginMarketplaceEntrySchema())
+      .array(z.unknown())
+      // A malformed entry is kept as an uninstallable placeholder (official
+      // 2.1.318) instead of failing the whole marketplace; nameless entries drop.
+      .transform(entries =>
+        entries.flatMap((raw): PluginMarketplaceEntry[] => {
+          const parsed = PluginMarketplaceEntrySchema().safeParse(raw)
+          if (parsed.success) return [parsed.data]
+          const { name, description } = (raw ?? {}) as Record<string, unknown>
+          if (typeof name !== 'string' || name === '') return []
+          const error = parsed.error.issues
+            .map(issue => `${issue.path.join('.')}: ${issue.message}`)
+            .join(', ')
+          return [
+            {
+              name,
+              source: { source: UNSUPPORTED_PLUGIN_SOURCE, sourceType: 'invalid', error },
+              ...(typeof description === 'string' ? { description } : {}),
+              strict: true,
+            },
+          ]
+        }),
+      )
       .describe('Collection of available plugins in this marketplace'),
     forceRemoveDeletedPlugins: z
       .boolean()
