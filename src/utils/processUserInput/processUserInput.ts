@@ -374,7 +374,11 @@ export async function processUserInput({
     })
     const last = submissions.at(-1)
     const messages = submissions.flatMap(submitted => submitted.messages)
-    if (outcome.drop !== undefined)
+    // A drop passed back from a classic hook's block or stop is already shown.
+    if (
+      outcome.drop !== undefined &&
+      !submissions.some(submitted => submitted.admission?.drop === outcome.drop)
+    )
       messages.push(createSystemMessage(outcome.drop, 'warning'))
     if (!last) {
       const admission = outcome.drop !== undefined
