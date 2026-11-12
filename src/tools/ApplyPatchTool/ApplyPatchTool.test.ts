@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'bun:test'
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { getDefaultAppState } from '../../state/AppStateStore.js'
@@ -175,6 +175,36 @@ test('applies files in order, keeps the ones before a failure and stops there', 
   assert.match(content, new RegExp(`^Failed to apply ${join(dir, 'b.txt')}: Failed to find expected lines`))
   assert.ok(content.includes(`Applied before the failure (these changes are kept):\nM ${join(dir, 'a.txt')}\nA ${join(dir, 'sub/new.txt')}`))
   assert.ok(content.endsWith(`Not attempted:\n${join(dir, 'later/c.txt')}`))
+}))
+
+test('a directory or a path under a file fails as that file, not with a raw fs error', withDir(async dir => {
+  mkdirSync(join(dir, 'sub'))
+  writeFileSync(join(dir, 'a.txt'), 'a\n')
+  for (const [input, message] of [
+    [`*** Begin Patch\n*** Delete File: ${join(dir, 'sub')}\n*** End Patch`, `${join(dir, 'sub')} is a directory`],
+    [`*** Begin Patch\n*** Add File: ${join(dir, 'a.txt', 'x.txt')}\n+x\n*** End Patch`, `${join(dir, 'a.txt', 'x.txt')}: a parent path is a file`],
+    [`*** Begin Patch\n*** Update File: ${join(dir, 'a.txt')}\n*** Move to: ${join(dir, 'sub')}\n*** End Patch`, `${join(dir, 'sub')} is a directory`],
+  ]) {
+    const validation = await ApplyPatchTool.validateInput!({ input: input! }, context() as never)
+    assert.equal(validation.result, false)
+    assert.ok((validation as { message: string }).message.startsWith(message!), (validation as { message: string }).message)
+  }
+  // Later in a multi-file patch it is that file's failure; the files before it apply.
+  const input = `*** Begin Patch\n*** Update File: ${join(dir, 'a.txt')}\n-a\n+A\n*** Delete File: ${join(dir, 'sub')}\n*** End Patch`
+  const ctx = context()
+  assert.deepEqual(await ApplyPatchTool.validateInput!({ input }, ctx as never), { result: true })
+  const result = await ApplyPatchTool.call({ input }, ctx as never, undefined as never, { uuid: 'u' } as never)
+  assert.equal(readFileSync(join(dir, 'a.txt'), 'utf8'), 'A\n')
+  assert.equal(result.data.failure?.filePath, join(dir, 'sub'))
+}))
+
+test('keeps a byte order mark when a hunk changes the first line', withDir(async dir => {
+  writeFileSync(join(dir, 'bom.txt'), '\uFEFFfirst\nsecond\n')
+  const input = `*** Begin Patch\n*** Update File: ${join(dir, 'bom.txt')}\n-first\n+FIRST\n*** End Patch`
+  const ctx = context()
+  assert.deepEqual(await ApplyPatchTool.validateInput!({ input }, ctx as never), { result: true })
+  await ApplyPatchTool.call({ input }, ctx as never, undefined as never, { uuid: 'u' } as never)
+  assert.equal(readFileSync(join(dir, 'bom.txt'), 'utf8'), '\uFEFFFIRST\nsecond\n')
 }))
 
 test('every touched path goes through the Edit permission rules', withDir(async dir => {
