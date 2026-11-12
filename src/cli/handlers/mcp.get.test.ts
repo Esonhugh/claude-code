@@ -102,8 +102,8 @@ async function runChild(): Promise<void> {
   state.setOriginalCwd(process.cwd())
   state.setProjectRoot(process.cwd())
   state.setCwdState(process.cwd())
-  // Interactive session: .mcp.json servers are not auto-approved.
-  state.setIsInteractive(true)
+  // `claude mcp get | cat` is non-interactive but not a -p session: no auto-approve.
+  state.setIsInteractive(false)
   const { enableConfigs, saveCurrentProjectConfig } = await import(
     '../../utils/config.js'
   )
