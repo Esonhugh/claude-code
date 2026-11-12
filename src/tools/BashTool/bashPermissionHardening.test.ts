@@ -170,6 +170,34 @@ if (process.env[childFlag] !== '1') {
     }
   })
 
+  test('Bash deny rules reach nested and path-qualified commands in default and bypass modes', async () => {
+    const rules = { deny: ['Bash(rm:*)'] }
+    for (const mode of ['default', 'bypassPermissions'] as const) {
+      for (const command of [
+        '/bin/rm src/x.ts',
+        '/usr/bin/rm src/x.ts',
+        'sudo /bin/rm src/x.ts',
+        'echo $(rm src/x.ts)',
+        'echo `rm src/x.ts`',
+        '(rm src/x.ts)',
+        '{ rm src/x.ts; }',
+        'cat <(rm src/x.ts)',
+        'echo hi > >(rm src/x.ts)',
+        'for f in src/x.ts; do rm $f; done',
+        'x=$(echo hi; rm src/x.ts)',
+      ]) {
+        await expectBehavior(command, mode, rules, 'deny')
+      }
+    }
+    for (const command of ['echo $(echo rm)', 'echo "rm src/x.ts"', '/bin/echo rm']) {
+      const result = await decide(command, 'bypassPermissions', rules)
+      expect({ command, behavior: result.behavior }).toEqual({
+        command,
+        behavior: 'allow',
+      })
+    }
+  })
+
   test('bypass mode still asks for a dangerous rm inside a shell -c script', async () => {
     for (const command of [
       "sh -c 'rm -rf /'",

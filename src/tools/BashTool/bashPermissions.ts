@@ -1905,6 +1905,45 @@ function checkRemovalPermission(
   }
 }
 
+// Like official, a Bash deny rule applies to every command in the script:
+// nested ones ($(...), backticks, subshells, groups, loop bodies, process
+// substitution) and ones named by path (/bin/rm matches Bash(rm:*)).
+function checkNestedCommandDeny(
+  input: z.infer<typeof BashTool.inputSchema>,
+  toolPermissionContext: ToolPermissionContext,
+  root: Node | null | typeof PARSE_ABORTED,
+): PermissionResult | null {
+  const denyRules = getRuleByContentsForTool(toolPermissionContext, BashTool, 'deny')
+  if (denyRules.size === 0) return null
+  const commands = [input.command]
+  const pending = root && typeof root !== 'symbol' ? [root] : []
+  while (pending.length) {
+    const node = pending.pop()!
+    if (node.type === 'command' || node.type === 'declaration_command') {
+      commands.push(node.text)
+      const parsed = parseForSecurityFromAst(node.text, node)
+      // Wrappers like sudo come before the program, so name every word by basename.
+      for (const command of parsed.kind === 'simple' ? parsed.commands : []) {
+        if (command.argv.some(word => /\/[^/]/.test(word)))
+          commands.push(command.argv.map(word => /\/[^/]/.test(word) ? basename(word) : word).join(' '))
+      }
+    }
+    pending.push(...node.children)
+  }
+  for (const command of commands) {
+    const rule = filterRulesByContentsMatchingInput(
+      { ...input, command }, denyRules, 'prefix',
+      { stripAllEnvVars: true, skipCompoundCheck: true },
+    )[0]
+    if (rule) return {
+      behavior: 'deny',
+      message: `Permission to use ${BashTool.name} with command ${input.command} has been denied.`,
+      decisionReason: { type: 'rule', rule },
+    }
+  }
+  return null
+}
+
 // Like official, a deny rule that matches a removal inside a `sh -c` script
 // makes the whole script ask (in every mode) instead of running it.
 function checkInlineShellRemovalDeny(
@@ -2043,6 +2082,7 @@ async function checkBashCommandPermission(
   const rawRoot = await parseCommandRawForRemoval(input.command)
   const removalPermission =
     checkRemovalPermission(input, appState.toolPermissionContext, rawRoot) ??
+    checkNestedCommandDeny(input, appState.toolPermissionContext, rawRoot) ??
     checkEarlyPathDeny(input, appState.toolPermissionContext) ??
     checkUnanalyzableCommand(input, appState.toolPermissionContext)
   if (removalPermission) return removalPermission
