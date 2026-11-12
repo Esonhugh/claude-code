@@ -161,7 +161,7 @@ As in the official 2.1.303, this feature is off by default.
 - **权限模式跟随负责人**：负责人处于 bypass、acceptEdits 或 auto 模式时，进程内队友也用同样的模式；否则队友的权限请求会转给负责人确认。
 - **解散**：队友被要求 shutdown 并确认后，会从 `config.json` 的成员名单里移除。
 - **空闲队友自动同意关闭**：进程内队友空闲时收到 shutdown 请求，如果上一回合正常结束、名下没有未完成的任务、信箱里也没有别的未读消息，就直接同意并退出，不再叫醒模型。其他情况仍由队友自己决定同意还是拒绝。
-- **汇报后结束回合**：进程内队友的一次回复如果只是用 SendMessage 给负责人发了纯文本消息，工具结果返回后这一回合就结束，队友进入空闲，不再多请求一次模型。Stop、TaskCompleted、TeammateIdle hook 照常执行，hook 阻止时队友继续工作。
+- **汇报后结束回合**：进程内队友的一次回复如果只是用 SendMessage 给负责人发了纯文本消息，工具结果返回后这一回合就结束，队友进入空闲，不再多请求一次模型。队友还有在后台运行的 Bash 或名下有进行中的任务时不会这样结束，避免进度汇报后后台命令被停掉、任务被搁置。Stop、TaskCompleted、TeammateIdle hook 照常执行，hook 阻止时队友继续工作。
 - **队友的提示词**：进程内队友用完整的主提示词；以 `general-purpose` 类型拉起时不再额外附加 general-purpose agent 的提示词（它和主提示词重复，还要求把结果作为最终回复交给调用方，而队友应该用 SendMessage 汇报）。
 - **负责人不用轮询**：生成队友的工具结果会告诉负责人，队友的消息会自动送达，没有别的事可做时结束这一回合等待即可。
 - **`-p` / SDK 下的权限请求**：队友的权限请求先走 PermissionRequest hook；普通 `-p` 随后拒绝（发出带 `agent_id` 的 `permission_denied`），`--permission-prompt-tool stdio` 时以带 `agent_id` 的 `can_use_tool` 交给宿主（`claude web` 显示在协调者的批准框里）。
