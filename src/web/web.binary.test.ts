@@ -451,7 +451,8 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
         } else if (/PREVIEW_URLS ([^"\\\s]+) ([^"\\\s]+)/.test(lastText)) {
           const [, dev, own] = /PREVIEW_URLS ([^"\\\s]+) ([^"\\\s]+)/.exec(lastText)!
           blocks = [{ type: 'text', text: `Dev server: ${dev} and this UI: ${own}` }]
-        } else if (lastBlocks.some(b => b.type === 'tool_result')) {
+        } else if (lastBlocks.some(b => b.type === 'tool_result') && !lastText.includes('Request interrupted by user')) {
+          // A tool's result continues the turn; a denied one that interrupted it arrives with the next prompt.
           blocks = [{ type: 'text', text: 'WEB_DONE' }]
         } else if (lastText.includes('OPEN_TERMINAL_TWO')) {
           blocks = [{
@@ -604,7 +605,9 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       await input.press('Enter')
       await dialog.getByText('Claude wants to run a command').waitFor({ timeout: 30_000 })
       await dialog.getByRole('option', { name: /Deny and tell Claude/ }).click()
-      await page.getByText('WEB_DONE').nth(1).waitFor({ timeout: 30_000 })
+      // Like the TUI's "No": the turn stops so the next message says what to do instead (#1234).
+      await page.locator('.feed').getByText('Interrupted', { exact: true }).waitFor({ timeout: 30_000 })
+      expect(await page.getByText('WEB_DONE').count()).toBe(1)
       expect(existsSync(join(workspace, 'denied.txt'))).toBe(false)
 
       const dialogs: string[] = []
@@ -3059,7 +3062,7 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       })
       expect(header).toEqual({ rows: 1, chipInside: true, ellipsis: 'ellipsis' })
       await dialog.getByRole('option', { name: /Deny and tell Claude/ }).click()
-      await page.getByText('WEB_DONE').first().waitFor({ timeout: 30_000 })
+      await page.locator('.feed').getByText('Interrupted', { exact: true }).waitFor({ timeout: 30_000 })
 
       // Every side panel tab stays in view on a narrow panel: the row wraps instead of hiding tabs.
       const tabs = page.locator('aside.side .tabs')

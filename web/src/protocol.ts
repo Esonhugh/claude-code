@@ -1450,7 +1450,13 @@ export function permissionResponse(
 ): Json {
   const response =
     choice === 'deny'
-      ? { behavior: 'deny', message: 'The user denied this tool use.' }
+      ? {
+          behavior: 'deny',
+          message: 'The user denied this tool use.',
+          // The session's own tool: the turn stops, like the TUI's "No", so the
+          // user's next message says what to do instead. A worker's goes on.
+          ...(!approval.agentId && { interrupt: true }),
+        }
       : {
           behavior: 'allow',
           updatedInput: approval.input,
