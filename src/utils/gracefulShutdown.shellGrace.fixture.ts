@@ -1,10 +1,11 @@
 // Runs gracefulShutdown and records every sleep() it takes, optionally with a
-// live shell command, so the parent can check the 250ms transcript grace.
+// live shell command (with or without its own cleanup), so the parent can
+// check the 250ms transcript grace.
 import { mock } from 'bun:test'
 import { spawn } from 'child_process'
 import { appendFileSync } from 'fs'
 
-const [, , logPath, withShell] = process.argv
+const [, , logPath, withShell, pidPath] = process.argv
 const sleepPath = new URL('./sleep.ts', import.meta.url).pathname
 const real = await import(sleepPath)
 const realSleep = real.sleep
@@ -22,6 +23,14 @@ if (withShell === 'shell') {
   const cmd = wrapSpawn(child, new AbortController().signal, 600_000, new TaskOutput('shell-grace', null))
   const { registerCleanup } = await import('./cleanupRegistry.js')
   registerCleanup(async () => cmd.kill())
+}
+if (withShell === 'hook') {
+  // A hook command (e.g. a SessionStart hook) has no cleanup of its own.
+  const { wrapSpawn } = await import('./ShellCommand.js')
+  const { TaskOutput } = await import('./task/TaskOutput.js')
+  const child = spawn('bash', ['-c', 'sleep 600'], { stdio: ['ignore', 'pipe', 'pipe'] })
+  wrapSpawn(child, new AbortController().signal, 600_000, new TaskOutput('hook-left', null))
+  appendFileSync(pidPath!, `${child.pid}\n`)
 }
 const { gracefulShutdown } = await import('./gracefulShutdown.js')
 await gracefulShutdown(0)
