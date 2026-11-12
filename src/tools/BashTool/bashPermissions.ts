@@ -25,7 +25,7 @@ import {
   getCommandSubcommandPrefix,
   splitCommand_DEPRECATED,
 } from '../../utils/bash/commands.js'
-import { parseCommandRawForRemoval, type Node, type PARSE_ABORTED } from '../../utils/bash/parser.js'
+import { parseCommandRawForRemoval, type Node, PARSE_ABORTED } from '../../utils/bash/parser.js'
 import { tryParseShellCommand } from '../../utils/bash/shellQuote.js'
 import { getCwd } from '../../utils/cwd.js'
 import { logForDebugging } from '../../utils/debug.js'
@@ -1990,6 +1990,20 @@ function checkInlineShellRemovalDeny(
   return null
 }
 
+/** A `&` that backgrounds a command (not `&&`, not inside `[[ ]]`), or a parse error. */
+function hasBackgroundOperator(node: Node): boolean {
+  for (const child of node.children) {
+    if (!child) continue
+    if (child.type === 'ERROR') return true
+    if (child.type === '&') {
+      if (node.type !== 'binary_expression') return true
+      continue
+    }
+    if (hasBackgroundOperator(child)) return true
+  }
+  return false
+}
+
 function isAllowedByRule(result: PermissionResult): boolean {
   const reason = result.decisionReason
   if (reason?.type === 'rule') return true
@@ -2044,6 +2058,30 @@ export async function bashToolHasPermission(
     context,
     getCommandSubcommandPrefixFn,
   )
+  const isSandboxAutoAllow =
+    result.decisionReason?.type === 'other' &&
+    result.decisionReason.reason ===
+      'Auto-allowed with sandbox (autoAllowBashIfSandboxed enabled)'
+  if (
+    result.behavior === 'allow' &&
+    input.command.includes('&') &&
+    !isSandboxAutoAllow
+  ) {
+    const root = await parseCommandRawForRemoval(input.command)
+    if (root !== null && (root === PARSE_ABORTED || hasBackgroundOperator(root))) {
+      const decisionReason: PermissionDecisionReason = {
+        type: 'safetyCheck',
+        reason:
+          'This command uses the `&` background operator, which defers execution past approval-time safety checks. Approve only if you trust it.',
+        classifierApprovable: false,
+      }
+      return {
+        behavior: 'ask',
+        decisionReason,
+        message: createPermissionRequestMessage(BashTool.name, decisionReason),
+      }
+    }
+  }
   // A value set earlier in the command is only as safe as every way the
   // command could have set it, so such a command is never auto-allowed,
   // unless the user allowed this exact command or the sandbox contains it.

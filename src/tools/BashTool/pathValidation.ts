@@ -2,7 +2,11 @@ import { homedir } from 'os'
 import { isAbsolute, resolve } from 'path'
 import type { z } from 'zod/v4'
 import type { ToolPermissionContext } from '../../Tool.js'
-import type { Redirect, SimpleCommand } from '../../utils/bash/ast.js'
+import {
+  containsAnyPlaceholder,
+  type Redirect,
+  type SimpleCommand,
+} from '../../utils/bash/ast.js'
 import {
   extractOutputRedirections,
   splitCommand_DEPRECATED,
@@ -684,6 +688,15 @@ function validateCommandPaths(
         type: 'other',
         reason: `${command} command with flags requires manual approval`,
       },
+    }
+  }
+
+  if (operationType !== 'read' && paths.some(containsAnyPlaceholder)) {
+    const reason = `${command} target contains command-substitution or untracked-variable output — the path is runtime-determined and cannot be validated`
+    return {
+      behavior: 'ask',
+      message: reason,
+      decisionReason: { type: 'other', reason },
     }
   }
 

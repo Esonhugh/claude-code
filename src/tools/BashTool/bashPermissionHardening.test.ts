@@ -437,6 +437,61 @@ if (process.env[childFlag] !== '1') {
     )
   })
 
+  test('auto-allow decisions match official for globs, $HOME, printf, & and runtime paths', async () => {
+    const treeSitter =
+      process.env.CLAUDE_CODE_BASH_HARDENING_PARSER === 'TREE_SITTER_BASH'
+    for (const command of [
+      'ls *',
+      'cat *.ts',
+      'grep x *',
+      'grep -rn x --include=*.ts .',
+      'head -1 ?',
+      'echo $HOME',
+      'echo $HOME/x',
+      'printf hi',
+      'printf -- x',
+    ]) {
+      await expectBehavior(command, 'default', {}, 'allow')
+    }
+    for (const command of [
+      'sort *',
+      'find *',
+      'ls src/../*',
+      'echo $PATH',
+      'printf -v v hi',
+      'getconf PATH',
+    ]) {
+      await expectBehavior(command, 'default', {}, 'ask')
+    }
+
+    const allow = ['Bash(touch:*)', 'Bash(ls:*)']
+    await expectBehavior('ls && pwd', 'default', { allow }, 'allow')
+    if (treeSitter) {
+      for (const command of ['ls & pwd', 'touch tl-x &', 'touch "$PWD/tl-x"']) {
+        await expectBehavior(command, 'default', { allow }, 'ask')
+        await expectBehavior(command, 'bypassPermissions', {}, 'allow')
+      }
+    }
+
+    for (const command of [
+      'touch tl-x',
+      'touch tl-x tl-y',
+      'touch tl\\-x',
+      'sed -n 1p src/x.ts',
+    ]) {
+      await expectBehavior(command, 'acceptEdits', {}, 'allow')
+    }
+    for (const command of [
+      'touch -d now tl-x',
+      'touch -- tl-x',
+      'TZ=UTC touch tl-x',
+      // The legacy splitter unescapes the command name before this check.
+      ...(treeSitter ? ['\\touch tl-x'] : []),
+    ]) {
+      await expectBehavior(command, 'acceptEdits', {}, 'ask')
+    }
+  })
+
   test('a compound command with several output redirects asks in default mode', async () => {
     for (const command of [
       'echo ok > notes.txt && echo ok > /opt/sbdemo/outside.txt',

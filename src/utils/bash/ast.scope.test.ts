@@ -65,7 +65,7 @@ test('commands that read a variable set earlier in the command are marked', asyn
 
 test('too-complex reasons use the wording shown in the permission prompt', async () => {
   for (const [command, reason] of [
-    ['echo $HOME', "A variable in this command can't be checked before it runs"],
+    ['echo $PATH', "A variable in this command can't be checked before it runs"],
     ['echo ${HOME}', "A variable in braces in this command can't be checked before it runs"],
     ['ls $(pwd)', "A nested command in this command can't be checked before it runs"],
     ['{ ls; }', "A group in braces or double parentheses in this command can't be checked before it runs"],

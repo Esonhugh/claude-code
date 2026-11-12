@@ -1,3 +1,4 @@
+import { homedir } from 'node:os'
 import type { z } from 'zod/v4'
 import { getOriginalCwd } from '../../bootstrap/state.js'
 import {
@@ -1498,7 +1499,6 @@ const READONLY_COMMANDS = [
   'type',
   'expr', // Evaluate expressions (arithmetic, string matching)
   'test', // Conditional evaluation (file checks, comparisons)
-  'getconf', // Get system configuration values
   'seq', // Generate number sequences
   'tsort', // Topological sort
   'pr', // Paginate files for printing
@@ -1516,6 +1516,8 @@ const READONLY_COMMAND_REGEXES = new Set([
   // Allow newlines in single quotes (safe) but not in double quotes (could be dangerous with variable expansion)
   // Also allow optional 2>&1 stderr redirection at the end
   /^echo(?:\s+(?:'[^']*'|"[^"$<>\n\r]*"|[^|;&`$(){}><#\\!"'\s]+))*(?:\s+2>&1)?\s*$/,
+  // printf the same way, except -v (assigns a shell variable)
+  /^printf(?!\s+(?:--\s+)?['"]?-v)(?:\s+(?:'[^']*'|"[^"$<>\n\r]*"|[^|;&`$(){}><#\\!"'\s]+))+(?:\s+2>&1)?\s*$/,
 
   // Claude CLI help
   /^claude -h$/,
@@ -1597,9 +1599,9 @@ const READONLY_COMMAND_REGEXES = new Set([
  * those are caught by COMMAND_SUBSTITUTION_PATTERNS in bashSecurity.ts.
  *
  * @param command The command string to check
- * @returns true if the command contains unquoted glob or expandable `$`
+ * @returns 'variable' for an expandable `$`, 'glob' for an unquoted glob
  */
-function containsUnquotedExpansion(command: string): boolean {
+function unquotedExpansionKind(command: string): 'variable' | 'glob' | false {
   // Track quote state to avoid false positives for patterns inside quoted strings
   let inSingleQuote = false
   let inDoubleQuote = false
@@ -1651,7 +1653,7 @@ function containsUnquotedExpansion(command: string): boolean {
     if (currentChar === '$') {
       const next = command[i + 1]
       if (next && /[A-Za-z_@*#?!$0-9-]/.test(next)) {
-        return true
+        return 'variable'
       }
     }
 
@@ -1663,11 +1665,51 @@ function containsUnquotedExpansion(command: string): boolean {
     // Check for glob characters outside all quotes.
     // These could expand to anything, including dangerous flags.
     if (currentChar && /[?*[\]]/.test(currentChar)) {
-      return true
+      return 'glob'
     }
   }
 
   return false
+}
+
+// Commands whose arguments are only read, so a glob that expands to a
+// flag-like file name cannot make them write or execute.
+const GLOB_SAFE_COMMANDS = new Set([
+  'ls', 'cat', 'head', 'tail', 'wc', 'stat', 'grep', 'egrep', 'fgrep', 'diff',
+  'du', 'df', 'echo', 'strings', 'hexdump', 'od', 'nl', 'cut', 'column', 'tr',
+  'tac', 'rev', 'cmp', 'basename', 'dirname', 'realpath', 'readlink',
+  'sha256sum', 'sha1sum', 'md5sum', 'cd',
+])
+
+/** Replace a bare or double-quoted `$HOME` with the home directory. */
+function expandHome(command: string): string {
+  const home = process.env.HOME ?? homedir()
+  if (!/^[\w./-]+$/.test(home)) return command
+  let out = ''
+  let inSingleQuote = false
+  let inDoubleQuote = false
+  for (let i = 0; i < command.length; i++) {
+    const c = command[i]!
+    if (c === '\\' && !inSingleQuote) {
+      out += c + (command[i + 1] ?? '')
+      i++
+      continue
+    }
+    if (c === "'" && !inDoubleQuote) inSingleQuote = !inSingleQuote
+    else if (c === '"' && !inSingleQuote) inDoubleQuote = !inDoubleQuote
+    else if (
+      c === '$' &&
+      !inSingleQuote &&
+      command.startsWith('HOME', i + 1) &&
+      !/[A-Za-z0-9_]/.test(command[i + 5] ?? '')
+    ) {
+      out += home
+      i += 4
+      continue
+    }
+    out += c
+  }
+  return out
 }
 
 /**
@@ -1712,8 +1754,15 @@ function isCommandReadOnly(command: string): boolean {
   // positional args past "flags-only" regexes like uniq's `\S+`. The `$` token
   // check inside isCommandSafeViaFlagParsing only covers COMMAND_ALLOWLIST
   // commands; hand-written regexes in READONLY_COMMAND_REGEXES (uniq, jq, cd)
-  // have no such guard. See containsUnquotedExpansion for full analysis.
-  if (containsUnquotedExpansion(testCommand)) {
+  // have no such guard. See unquotedExpansionKind for full analysis.
+  testCommand = expandHome(testCommand)
+  const expansion = unquotedExpansionKind(testCommand)
+  if (
+    expansion === 'variable' ||
+    (expansion === 'glob' &&
+      (!GLOB_SAFE_COMMANDS.has(testCommand.split(/\s+/)[0]!) ||
+        /(?:^|[\s/])\.\.(?:\/|\s|$)/.test(testCommand)))
+  ) {
     return false
   }
 

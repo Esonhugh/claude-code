@@ -97,7 +97,7 @@ const VAR_PLACEHOLDER = '__TRACKED_VAR__'
  * Also catches user-typed literals that collide with placeholder strings:
  * `VAR=__TRACKED_VAR__ && rm $VAR` — treated as non-literal (conservative).
  */
-function containsAnyPlaceholder(value: string): boolean {
+export function containsAnyPlaceholder(value: string): boolean {
   return value.includes(CMDSUB_PLACEHOLDER) || value.includes(VAR_PLACEHOLDER)
 }
 
@@ -2175,13 +2175,18 @@ function resolveSimpleExpansion(
     }
     return trackedValue
   }
+  // `$HOME` must reach path validation as the real path, not as a
+  // placeholder that resolves inside the working directory.
+  if (varName === 'HOME' && !isSpecial) {
+    const home = process.env.HOME ?? homedir()
+    if (insideString || (home !== '' && !BARE_VAR_UNSAFE_RE.test(home))) {
+      return home
+    }
+  }
   // SAFE_ENV_VARS + special vars ($?, $$, $@, $1, etc.): value unknown
   // (shell-controlled). Only safe when embedded in a string, NOT as a
   // bare argument to a path-sensitive command.
   if (insideString) {
-    // `"$HOME/.ssh/id_rsa"` must reach path validation as the real path, not
-    // as a placeholder that resolves inside the working directory.
-    if (varName === 'HOME' && !isSpecial) return process.env.HOME ?? homedir()
     if (SAFE_ENV_VARS.has(varName)) return VAR_PLACEHOLDER
     if (
       isSpecial &&
