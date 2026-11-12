@@ -96,7 +96,7 @@ bun ./dist/cli.js --help
 |  | [定时任务：Cron、/loop 与 ScheduleWakeup](docs/features/scheduled-tasks.md) | 让 Claude 按时间自动做事：「每 5 分钟看一下构建」「工作日早上 9 点汇总 PR」；`/loop` 一句话设定 |
 |  | [终端程序状态（OSC 7501）](docs/features/terminal-status.md) | 支持的终端能在标签页上显示 Claude 正在忙、在等你批准、还是已经做完，不用切回来看 |
 | 上下文与记忆 | [记忆：auto memory 与 SQLite FTS5 检索](docs/features/memory.md) | Claude 把跨会话有用的事（项目约定、你的偏好）记到文件里，下次自动带上；可改成 SQLite 全文检索，按需查找 |
-|  | [自动压缩窗口](docs/features/compaction.md) | 对话太长时把早期内容压成摘要，请求超长时先压缩再重试；`/autocompact`（`/context-window`）在 128k / 200k / 272k / 500k / 1M 档位里选上下文窗口（按模型分别保存，网页模型菜单也有），`CLAUDE_CODE_MAX_CONTEXT_TOKENS` 强制指定窗口，`/compact` 手动压缩；可换成保留最近原文的 Codex 式压缩（`compact.mode: "codex"`） |
+|  | [自动压缩窗口](docs/features/compaction.md) | 对话太长时把早期内容压成摘要，请求超长时先压缩再重试；`/autocompact`（`/context-window`）在 128k / 200k / 272k / 500k / 1M 档位里选上下文窗口（按模型分别保存，网页模型菜单也有），`CLAUDE_CODE_MAX_CONTEXT_TOKENS` 强制指定窗口，`/compact` 手动压缩；可换成保留最近原文的 Codex 式压缩（`compact.mode: "codex"`），或用 `compact.keepRecentRatio` 让自动压缩原样多保留最近几轮 |
 |  | [Prompt context 与 Tool search](docs/features/prompt-context.md) | 让每次请求更省 token：提示词分层利于缓存，MCP 工具用到时才加载，大量同类工具只发一行汇总 |
 |  | [Agent 基准测试套件（bench/）](docs/features/agent-bench.md) | 仓库里的基准工具：多个 CLI × Claude / ChatGPT 账号跑同一批任务，逐请求记录，算命中率、token、API 等价花费并画图；公开基准带防污染扰动 |
 |  | [缓存命中与用户体验基准](docs/features/cache-benchmark.md) | 本 fork 与官方 Claude Code、Codex、opencode、pi、oh-my-pi 跑同一批真实任务：缓存命中率、token、API 等价花费、启动速度与稳定性（附图表） |

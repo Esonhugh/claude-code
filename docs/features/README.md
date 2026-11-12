@@ -59,7 +59,7 @@
 |  | [定时任务：Cron、/loop 与 ScheduleWakeup](scheduled-tasks.md) | 让 Claude 按时间自动做事：「每 5 分钟看一下构建」「工作日早上 9 点汇总 PR」；`/loop` 一句话设定 |
 |  | [终端程序状态（OSC 7501）](terminal-status.md) | 支持的终端能在标签页上显示 Claude 正在忙、在等你批准、还是已经做完，不用切回来看 |
 | 上下文与记忆 | [记忆：auto memory 与 SQLite FTS5 检索](memory.md) | Claude 把跨会话有用的事（项目约定、你的偏好）记到文件里，下次自动带上；可改成 SQLite 全文检索，按需查找 |
-|  | [自动压缩窗口](compaction.md) | 对话太长时把早期内容压成摘要；`/autocompact` 决定多长时压缩（按模型分别保存），`/compact` 手动压缩；可换成保留最近原文的 Codex 式压缩（`compact.mode: "codex"`） |
+|  | [自动压缩窗口](compaction.md) | 对话太长时把早期内容压成摘要；`/autocompact` 决定多长时压缩（按模型分别保存），`/compact` 手动压缩；可换成保留最近原文的 Codex 式压缩（`compact.mode: "codex"`），或用 `compact.keepRecentRatio` 让自动压缩原样多保留最近几轮 |
 |  | [Prompt context 与 Tool search](prompt-context.md) | 让每次请求更省 token：提示词分层利于缓存，MCP 工具用到时才加载，大量同类工具只发一行汇总 |
 |  | [缓存命中与用户体验基准](cache-benchmark.md) | 本 fork 与官方 Claude Code、Codex、opencode、pi、oh-my-pi 跑同一批真实任务：缓存命中率、token、API 等价花费、启动速度与稳定性（附图表） |
 |  | [Agent 基准测试套件（bench/）](agent-bench.md) | 仓库里的基准工具：多个 CLI × Claude / ChatGPT 账号跑同一批任务，逐请求记录，算命中率、token、API 等价花费并画散点图；公开基准带防污染扰动 |
@@ -145,7 +145,7 @@ An [interactive scatter plot](https://claude.ai/artifact/5c7HFWBN11ZAVcFHConfbm)
 |  | [Scheduled tasks: Cron, /loop and ScheduleWakeup](scheduled-tasks.md) | Claude does things on a schedule: "check the build every 5 minutes", "summarise PRs at 9 a.m. on weekdays"; `/loop` sets it up in one sentence |
 |  | [Terminal program status (OSC 7501)](terminal-status.md) | Terminals that support it show on the tab whether Claude is busy, waiting for approval or done, without switching back to look |
 | Context and memory | [Memory: auto memory and SQLite FTS5 search](memory.md) | Claude writes down what is useful across sessions (project conventions, your preferences) and brings it next time; can switch to SQLite full-text search on demand |
-|  | [Auto-compact window](compaction.md) | Summarises early content when a conversation gets too long; `/autocompact` sets when (saved per model), `/compact` compacts by hand; Codex-style compaction keeps recent text verbatim (`compact.mode: "codex"`) |
+|  | [Auto-compact window](compaction.md) | Summarises early content when a conversation gets too long; `/autocompact` sets when (saved per model), `/compact` compacts by hand; Codex-style compaction keeps recent text verbatim (`compact.mode: "codex"`), or `compact.keepRecentRatio` keeps more recent rounds verbatim in auto-compact |
 |  | [Prompt context and Tool search](prompt-context.md) | Fewer tokens per request: a layered prompt that caches well, MCP tools loaded only when used, one summary line for large tool families |
 |  | [Cache hit and user experience benchmark](cache-benchmark.md) | This fork against the official Claude Code, Codex, opencode, pi and oh-my-pi on the same real tasks: cache hit rate, tokens, API-equivalent cost, startup speed and stability (with charts) |
 |  | [Agent benchmark suite (bench/)](agent-bench.md) | The benchmark tool in the repo: several CLIs × Claude / ChatGPT accounts on the same tasks, every request logged, hit rate, tokens and API-equivalent cost computed and plotted; public benchmarks get anti-contamination perturbation |
@@ -232,7 +232,7 @@ An [interactive scatter plot](https://claude.ai/artifact/5c7HFWBN11ZAVcFHConfbm)
 |  | [定時任務：Cron、/loop 與 ScheduleWakeup](scheduled-tasks.md) | 讓 Claude 按時間自動做事：「每 5 分鐘看一下構建」「工作日早上 9 點彙總 PR」；`/loop` 一句話設定 |
 |  | [終端程式狀態（OSC 7501）](terminal-status.md) | 支援的終端能在標籤頁上顯示 Claude 正在忙、在等你批准、還是已經做完，不用切回來看 |
 | 上下文與記憶 | [記憶：auto memory 與 SQLite FTS5 檢索](memory.md) | Claude 把跨會話有用的事（專案約定、你的偏好）記到檔案裡，下次自動帶上；可改成 SQLite 全文檢索，按需查詢 |
-|  | [自動壓縮視窗](compaction.md) | 對話太長時把早期內容壓成摘要；`/autocompact` 決定多長時壓縮（按模型分別儲存），`/compact` 手動壓縮；可換成保留最近原文的 Codex 式壓縮（`compact.mode: "codex"`） |
+|  | [自動壓縮視窗](compaction.md) | 對話太長時把早期內容壓成摘要；`/autocompact` 決定多長時壓縮（按模型分別儲存），`/compact` 手動壓縮；可換成保留最近原文的 Codex 式壓縮（`compact.mode: "codex"`），或用 `compact.keepRecentRatio` 讓自動壓縮原樣多保留最近幾輪 |
 |  | [Prompt context 與 Tool search](prompt-context.md) | 讓每次請求更省 token：提示詞分層利於快取，MCP 工具用到時才載入，大量同類工具只發一行彙總 |
 |  | [快取命中與使用者體驗基準](cache-benchmark.md) | 本 fork 與官方 Claude Code、Codex、opencode、pi、oh-my-pi 跑同一批真實任務：快取命中率、token、API 等價花費、啟動速度與穩定性（附圖表） |
 |  | [Agent 基準測試套件（bench/）](agent-bench.md) | 倉庫裡的基準工具：多個 CLI × Claude / ChatGPT 帳號跑同一批任務，逐請求記錄，算命中率、token、API 等價花費並畫散點圖；公開基準帶防汙染擾動 |
