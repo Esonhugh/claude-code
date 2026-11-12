@@ -105,7 +105,8 @@ export async function askApplyPatchPerFile(
         file.updated !== null &&
         (step.toolName === FILE_WRITE_TOOL_NAME || !file.movePath)
       if (!keepsShape) {
-        denial = { behavior: 'deny', message: `The permission handler changed ${step.toolName} for ${f.op.path} in a way apply_patch cannot apply; only the new file content can be changed.` }
+        const message = `The permission handler changed ${step.toolName} for ${f.op.path} in a way apply_patch cannot apply; only the new file content can be changed.`
+        denial = { behavior: 'deny', message, decisionReason: { type: 'other', reason: message } }
         break
       }
       file.updated = content
@@ -129,7 +130,8 @@ export async function askApplyPatchPerFile(
   function finish(files: FinalFile[], extra: { acceptFeedback?: string }): PermissionDecision {
     const patch = renderPatch(files)
     if (!rendersTo(patch, files)) {
-      return { behavior: 'deny', message: `${APPLY_PATCH_TOOL_NAME} could not apply the change the permission handler approved. No files were changed.` }
+      const message = `${APPLY_PATCH_TOOL_NAME} could not apply the change the permission handler approved. No files were changed.`
+      return { behavior: 'deny', message, decisionReason: { type: 'other', reason: message } }
     }
     return { behavior: 'allow', updatedInput: { input: patch }, userModified: changed, ...extra }
   }
