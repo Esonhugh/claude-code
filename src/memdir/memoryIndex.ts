@@ -7,12 +7,14 @@
  * index is only a cache and can be deleted at any time.
  */
 import type { Database } from 'bun:sqlite'
-import { existsSync } from 'fs'
+import { existsSync, rmSync } from 'fs'
 import { open, readdir, readFile, stat } from 'fs/promises'
 import { basename, dirname, join, resolve, sep } from 'path'
 import { getOriginalCwd, getSessionId } from '../bootstrap/state.js'
 import { getClaudeConfigHomeDir } from '../utils/envUtils.js'
 import { getProjectDir, getProjectsDir } from '../utils/sessionStorage.js'
+import { isENOENT } from '../utils/errors.js'
+import { listFilesRecursive } from './memoryScan.js'
 import { foldForSearch } from './searchFold.js'
 import { getAutoMemPath, type SqliteMemoryScope } from './paths.js'
 
@@ -67,9 +69,32 @@ export function defaultIndexPath(): string {
 function openIndex(): Database {
   if (db) return db
   const path = dbPath ?? defaultIndexPath()
+  try {
+    db = setUpIndex(path)
+  } catch (e) {
+    const code = (e as { code?: unknown }).code
+    if (code !== 'SQLITE_NOTADB' && code !== 'SQLITE_CORRUPT') throw e
+    // The index only mirrors files on disk, so a damaged one is rebuilt from scratch.
+    for (const suffix of ['', '-wal', '-shm']) rmSync(path + suffix, { force: true })
+    db = setUpIndex(path)
+  }
+  return db
+}
+
+function setUpIndex(path: string): Database {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const { Database } = require('bun:sqlite') as typeof import('bun:sqlite')
   const index = new Database(path, { create: true })
+  try {
+    initIndex(index)
+  } catch (e) {
+    index.close()
+    throw e
+  }
+  return index
+}
+
+function initIndex(index: Database): void {
   // Several sessions share one index; wait for a writer instead of failing.
   index.run('PRAGMA busy_timeout = 5000')
   index.run('PRAGMA journal_mode = WAL')
@@ -87,8 +112,6 @@ function openIndex(): Database {
   index.run(
     "CREATE VIRTUAL TABLE IF NOT EXISTS chunks USING fts5(body, text UNINDEXED, path UNINDEXED, kind UNINDEXED, project UNINDEXED, line UNINDEXED, tokenize = 'trigram')",
   )
-  db = index
-  return index
 }
 
 /** Test hook: point the index at another file (or ':memory:'). */
@@ -98,11 +121,12 @@ export function resetMemoryIndexForTesting(path?: string): void {
   dbPath = path
 }
 
-async function listDir(dir: string, recursive = false): Promise<string[]> {
+/** Entries of `dir`: none when it does not exist, null when it cannot be read, so its indexed files are kept. */
+async function listDir(dir: string, recursive = false): Promise<string[] | null> {
   try {
-    return await readdir(dir, { recursive })
-  } catch {
-    return []
+    return recursive ? await listFilesRecursive(dir) : await readdir(dir)
+  } catch (e) {
+    return isENOENT(e) ? [] : null
   }
 }
 
@@ -113,27 +137,30 @@ async function listSources(scopes: readonly MemoryScope[]): Promise<Listing> {
   const autoMemDir = resolve(getAutoMemPath())
   if (scopes.includes('project')) {
     // Recursive: team memory and daily logs live in subdirectories.
-    listing.dirs.push({ dir: autoMemDir, recursive: true })
-    for (const name of await listDir(autoMemDir, true)) {
+    const names = await listDir(autoMemDir, true)
+    if (names) listing.dirs.push({ dir: autoMemDir, recursive: true })
+    for (const name of names ?? []) {
       if (name.endsWith('.md')) listing.files.push({ path: join(autoMemDir, name), kind: 'memory', project })
     }
   }
   if (scopes.includes('session')) {
     // The running session is already in context; only past sessions count.
     const current = `${getSessionId()}.jsonl`
-    listing.dirs.push({ dir: resolve(projectDir), recursive: false })
-    for (const name of await listDir(projectDir)) {
+    const names = await listDir(projectDir)
+    if (names) listing.dirs.push({ dir: resolve(projectDir), recursive: false })
+    for (const name of names ?? []) {
       if (name.endsWith('.jsonl') && name !== current) {
         listing.files.push({ path: join(projectDir, name), kind: 'transcript', project })
       }
     }
   }
   if (scopes.includes('user')) {
-    for (const name of await listDir(getProjectsDir())) {
+    for (const name of (await listDir(getProjectsDir())) ?? []) {
       const memDir = join(getProjectsDir(), name, 'memory')
       if (resolve(memDir) === autoMemDir) continue
-      listing.dirs.push({ dir: resolve(memDir), recursive: true })
-      for (const file of await listDir(memDir, true)) {
+      const files = await listDir(memDir, true)
+      if (files) listing.dirs.push({ dir: resolve(memDir), recursive: true })
+      for (const file of files ?? []) {
         if (file.endsWith('.md')) listing.files.push({ path: join(memDir, file), kind: 'memory', project: name })
       }
     }

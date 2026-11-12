@@ -558,12 +558,8 @@ export async function uninstallPluginOp(
 
   // Remove the plugin from the appropriate settings file (delete key entirely)
   // Use undefined to signal deletion via mergeWith in updateSettingsForSource
-  const newEnabledPlugins: Record<string, boolean | string[] | undefined> = {
-    ...settings?.enabledPlugins,
-  }
-  newEnabledPlugins[pluginId] = undefined
   const { error } = updateSettingsForSource(settingSource, {
-    enabledPlugins: newEnabledPlugins,
+    enabledPlugins: { [pluginId]: undefined },
   })
   if (error) {
     return {
@@ -662,10 +658,7 @@ export async function setPluginEnabledOp(
       }
     }
     const { error } = updateSettingsForSource('userSettings', {
-      enabledPlugins: {
-        ...getSettingsForSource('userSettings')?.enabledPlugins,
-        [plugin]: enabled,
-      },
+      enabledPlugins: { [plugin]: enabled },
     })
     if (error) {
       return {
@@ -817,11 +810,10 @@ export async function setPluginEnabledOp(
   }
 
   // ── ACTION: write settings ──
+  // Only this plugin's key: the write merges it onto the file as it is on
+  // disk, keeping what other processes changed since this one read it.
   const { error } = updateSettingsForSource(settingSource, {
-    enabledPlugins: {
-      ...getSettingsForSource(settingSource)?.enabledPlugins,
-      [pluginId]: enabled,
-    },
+    enabledPlugins: { [pluginId]: enabled },
   })
   if (error) {
     return {
