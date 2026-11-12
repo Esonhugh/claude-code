@@ -419,9 +419,14 @@ describe('reduce', () => {
         response: { behavior: 'allow', updatedInput: { command: 'ls' } },
       },
     })
+    // Like the TUI's "No" without feedback: the turn stops so the user can say what to do instead.
     expect(permissionResponse(state.approvals[0]!, 'deny')).toMatchObject({
-      response: { response: { behavior: 'deny' } },
+      response: { response: { behavior: 'deny', interrupt: true } },
     })
+    // A worker's request stops only that tool, as the TUI does for subagents.
+    expect(
+      permissionResponse({ ...state.approvals[0]!, agentId: 'a1' }, 'deny').response,
+    ).not.toHaveProperty('response.interrupt')
   })
 
   it('keeps a background worker\'s request when the turn that started it ends', () => {
