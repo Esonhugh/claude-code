@@ -84,6 +84,17 @@ test('a background agent reports task_started, task_updated and background_tasks
   expect(resumed.tasks[0]!.run_id > runId!).toBe(true)
 })
 
+test('a teammate going idle and back is a task_updated is_idle patch', () => {
+  registerTask({ ...agentTask, id: 't1', type: 'in_process_teammate', isIdle: false } as unknown as TaskState, setAppState)
+  const runId = (events().find(event => event.subtype === 'task_started') as { run_id?: string } | undefined)?.run_id
+  updateTaskState<TaskState>('t1', setAppState, task => ({ ...task, isIdle: true }) as TaskState)
+  updateTaskState<TaskState>('t1', setAppState, task => ({ ...task, isIdle: false }) as TaskState)
+  expect(events().filter(event => event.subtype === 'task_updated')).toEqual([
+    { type: 'system', subtype: 'task_updated', task_id: 't1', run_id: runId, patch: { is_idle: true } },
+    { type: 'system', subtype: 'task_updated', task_id: 't1', run_id: runId, patch: { is_idle: false } },
+  ])
+})
+
 test('subagent messages and task_progress name the subagent like official', async () => {
   const { normalizeMessage, normalizeSubagentMessage } = await import('../queryHelpers.js')
   const { createAssistantMessage, createUserMessage } = await import('../messages.js')
