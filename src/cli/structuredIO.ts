@@ -56,6 +56,14 @@ import {
 import { jsonParse } from '../utils/slowOperations.js'
 import { Stream } from '../utils/stream.js'
 import { ndjsonSafeStringify } from './ndjsonSafeStringify.js'
+import { askApplyPatchPerFile } from '../tools/ApplyPatchTool/askPerFile.js'
+import { APPLY_PATCH_TOOL_NAME } from '../tools/ApplyPatchTool/prompt.js'
+
+// An ask rule written for apply_patch itself asks for the whole patch.
+function isApplyPatchRule(decision: PermissionDecision): boolean {
+  const reason = decision.decisionReason
+  return reason?.type === 'rule' && reason.rule.ruleValue.toolName === APPLY_PATCH_TOOL_NAME
+}
 
 /**
  * Synthetic tool name used when forwarding sandbox network permission
@@ -594,7 +602,7 @@ export class StructuredIO {
   createCanUseTool(
     onPermissionPrompt?: (details: RequiresActionDetails) => void,
   ): CanUseToolFn {
-    return async (
+    const canUseTool: CanUseToolFn = async (
       tool: Tool,
       input: { [key: string]: unknown },
       toolUseContext: ToolUseContext,
@@ -621,6 +629,17 @@ export class StructuredIO {
           mainPermissionResult,
         )
         return mainPermissionResult
+      }
+
+      // The host knows Edit and Write, not patches: ask file by file.
+      if (tool.name === APPLY_PATCH_TOOL_NAME && !isApplyPatchRule(mainPermissionResult)) {
+        const perFile = await askApplyPatchPerFile(
+          input,
+          toolUseContext.options.tools,
+          (fileTool, fileInput) =>
+            canUseTool(fileTool, fileInput, toolUseContext, assistantMessage, toolUseID),
+        )
+        if (perFile) return perFile
       }
 
       // Run PermissionRequest hooks in parallel with the SDK permission
@@ -803,6 +822,7 @@ export class StructuredIO {
         parentSignal.removeEventListener('abort', onParentAbort)
       }
     }
+    return canUseTool
   }
 
   createHookCallback(callbackId: string, timeout?: number): HookCallback {
