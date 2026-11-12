@@ -411,6 +411,16 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
           await new Promise(r => setTimeout(r, 8_000))
           blocks = [{ type: 'tool_use', id: 'toolu_mid_glob', name: 'Glob', input: { pattern: '*.none' } }]
           stop = 'tool_use'
+        } else if (lastText.includes('toolu_hold_alice')) {
+          // Hold the lead's last request until both teammates have gone idle; no tool call follows.
+          await new Promise(r => setTimeout(r, 6_000))
+          blocks = [{ type: 'text', text: 'LEAD_HELD_DONE' }]
+        } else if (lastText.includes('MAKE_TEAM_HOLD')) {
+          blocks = [
+            { type: 'tool_use', id: 'toolu_hold_alice', name: 'Agent', input: { name: 'alice', description: 'Review methods', prompt: 'TEAM_ALICE review methods' } },
+            { type: 'tool_use', id: 'toolu_hold_bob', name: 'Agent', input: { name: 'bob', description: 'Review results', prompt: 'TEAM_BOB review results' } },
+          ]
+          stop = 'tool_use'
         } else if (lastText.includes('MAKE_TEAM_MID')) {
           blocks = [
             { type: 'tool_use', id: 'toolu_mid_alice', name: 'Agent', input: { name: 'alice', description: 'Review methods', prompt: 'TEAM_ALICE review methods' } },
@@ -1344,6 +1354,44 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       await page.locator('.status-live').waitFor({ timeout: 30_000 })
       await agentsTab.click()
       await team.locator('.agent-row', { hasText: 'alice' }).waitFor({ timeout: 30_000 })
+      await showing(shown(), panel)
+      expect(errors).toEqual([])
+    } finally {
+      await browser.close()
+    }
+  }, 120_000)
+
+  it('shows teammate reports the lead reads with the next prompt (#1274)', async () => {
+    const playwrightPath = Bun.spawnSync(['node', '-p', "require.resolve('playwright')"])
+      .stdout.toString()
+      .trim()
+    const { chromium } = await import(playwrightPath)
+    const browser = await chromium.launch()
+    try {
+      const context = await browser.newContext({ locale: 'en-US' })
+      const page = await context.newPage()
+      const errors: string[] = []
+      page.on('pageerror', e => errors.push(e.message))
+      await page.goto(signInUrl)
+      await page.locator('.wl-hi').waitFor()
+      const input = page.getByLabel('Message', { exact: true })
+      const panel = page.locator('aside.side')
+      // The fake holds the lead's turn while both teammates go idle. The prompt queued meanwhile
+      // starts the next turn before the lead's inbox is polled, so it carries their reports.
+      await input.fill('please MAKE_TEAM_HOLD now')
+      await input.press('Enter')
+      await panel.getByRole('tab', { name: /^Agents/ }).click()
+      const team = panel.locator('.team-section', { hasText: 'Team' })
+      await team.locator('.agent-row', { hasText: 'bob' }).waitFor({ timeout: 30_000 })
+      await page.waitForTimeout(1_000)
+      await input.fill('QUEUED_BEHIND_TEAM')
+      await input.press('Enter')
+      await page.locator('.main .msg.user:not(.queued)', { hasText: 'QUEUED_BEHIND_TEAM' }).waitFor({ timeout: 30_000 })
+      const shown = async () => {
+        await team.getByText('0 working · 2 idle').waitFor({ timeout: 15_000 })
+        await page.locator('.msg.teammate', { hasText: 'alice' }).first().waitFor({ timeout: 15_000 })
+        await page.locator('.msg.teammate', { hasText: 'bob' }).first().waitFor({ timeout: 15_000 })
+      }
       await showing(shown(), panel)
       expect(errors).toEqual([])
     } finally {

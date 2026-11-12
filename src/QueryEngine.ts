@@ -984,7 +984,13 @@ export class QueryEngine {
 
     // A channel message is meta to the model, but a client that asked for
     // replays shows it, as the TUI does; before the reply, where it was read.
-    if (replayUserMessages) yield* channelReplays(messagesFromUserInput)
+    if (replayUserMessages) {
+      yield* channelReplays(messagesFromUserInput)
+      // Teammate messages that were unread when the prompt was processed (#1274).
+      for (const message of messagesFromUserInput) {
+        if (message.type === 'attachment') yield* teammateMailboxReplays(message)
+      }
+    }
 
     // Like official 2.1.311, every result carries the fast mode state and,
     // when fast mode is unavailable, why.
