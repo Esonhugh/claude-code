@@ -377,19 +377,32 @@ const interaction = await render(React.createElement(AppStateProvider,
   patchConsole: false, exitOnCtrlC: false,
 })
 const flush = async () => { await new Promise(resolve => setTimeout(resolve, 50)) }
+// A fixed sleep can end before a starved render commits the dialog and runs
+// its input effects; a key pushed then is lost. Wait for what the next key needs.
+const waitFor = async (condition: () => boolean, message: string) => {
+  const start = Date.now()
+  while (!condition()) {
+    if (Date.now() - start > 5000) throw new Error(message)
+    await new Promise(resolve => setTimeout(resolve, 10))
+  }
+}
+const openWorkerTranscript = async () => {
+  await waitFor(() => liveState.activeOverlays.has('background-tasks-dialog'), 'dialog never registered its overlay')
+  interactionOut.output = ''
+  interactionIn.push('\x1b[B')
+  await waitFor(() => /> @worker/.test(stripAnsi(interactionOut.output)), 'Down never selected @worker')
+  interactionOut.output = ''
+  interactionIn.push('\r')
+  await waitFor(() => /@worker \(idle\)/.test(stripAnsi(interactionOut.output)), 'Enter never opened the worker detail')
+  interactionIn.push('f')
+  await waitFor(() => liveState.viewingAgentTaskId === 'worker', "'f' never viewed the worker")
+}
 try {
   await flush()
   assert.match(stripAnsi(interactionOut.output), /Background/)
   assert.match(stripAnsi(interactionOut.output), /@team-lead/)
   assert.match(stripAnsi(interactionOut.output), /@worker/)
-  interactionIn.push('\x1b[B')
-  await flush()
-  interactionIn.push('\r')
-  await flush()
-  assert.match(stripAnsi(interactionOut.output), /idle/)
-  interactionIn.push('f')
-  await flush()
-  assert.equal(liveState.viewingAgentTaskId, 'worker')
+  await openWorkerTranscript()
   updateState!(s => ({ ...s, tasks: { ...s.tasks, worker: { ...s.tasks.worker!, status: 'completed' } } }))
   await flush()
   interactionIn.push('\u001b[27u')
@@ -397,16 +410,10 @@ try {
   assert.equal(liveState.viewingAgentTaskId, undefined)
   assert.equal((liveState.tasks.worker as typeof retainedTeammate)?.retain, false)
   assert.ok((liveState.tasks.worker as import('../../tasks/InProcessTeammateTask/types.js').InProcessTeammateTaskState)?.evictAfter)
+  interactionOut.output = ''
   showDialog!(true)
-  await flush()
-  assert.match(stripAnsi(interactionOut.output), /Background/)
-  interactionIn.push('\x1b[B')
-  await flush()
-  interactionIn.push('\r')
-  await flush()
-  interactionIn.push('f')
-  await flush()
-  assert.equal(liveState.viewingAgentTaskId, 'worker')
+  await waitFor(() => /Background/.test(stripAnsi(interactionOut.output)), 'the dialog never reopened')
+  await openWorkerTranscript()
   assert.equal((liveState.tasks.worker as typeof retainedTeammate)?.retain, true)
   assert.equal((liveState.tasks.worker as import('../../tasks/InProcessTeammateTask/types.js').InProcessTeammateTaskState)?.evictAfter, undefined)
   assert.equal(liveState.tasks.worker?.description, 'retained worker')
@@ -478,9 +485,10 @@ test('PromptInput agent panel keeps completed teammate rows through Escape and g
     stdin: promptIn as unknown as NodeJS.ReadStream,
     patchConsole: false, exitOnCtrlC: false,
   })
-  async function pressPromptKey(key: string) {
+  async function pressPromptKey(key: string, until?: () => boolean) {
     promptOut.output = ''
     promptIn.push(key)
+    if (until) return waitFor(until, `key ${JSON.stringify(key)} was not handled`)
     // A lone ESC is buffered for 50ms by Ink before dispatch; allow its render too.
     if (key === '\x1b') await new Promise(resolve => setTimeout(resolve, 100))
     await flush()
@@ -508,25 +516,28 @@ test('PromptInput agent panel keeps completed teammate rows through Escape and g
     assert.equal(onShowMessageSelector.mock.calls.length, 0, 'running teammate Escape must not open Rewind')
     updateState!(s => ({ ...s, tasks: { ...s.tasks, worker: { ...s.tasks.worker!, status: 'completed' } } }))
     await flush()
+    // Fixed sleeps per key would spend most of the 800ms double-press window
+    // on their own, so the timed keys wait only until each is handled.
     const firstEscapeAt = performance.now()
-    await pressPromptKey('\x1b')
+    await pressPromptKey('\x1b', () => liveState.viewingAgentTaskId === undefined)
     assert.equal(liveState.viewingAgentTaskId, undefined, 'one raw Escape returns to main after footer entry')
     assert.equal(liveState.viewSelectionMode, 'none')
     assert.equal((liveState.tasks.worker as typeof retainedTeammate).retain, false)
     assert.ok((liveState.tasks.worker as import('../../tasks/InProcessTeammateTask/types.js').InProcessTeammateTaskState).evictAfter)
     assert.match(stripAnsi(promptOut.output), panelRow, 'real PromptInput panel keeps the row after exiting the completed teammate')
-    await pressPromptKey('\x1b[B')
-    await pressPromptKey('\x1b[B')
-    await pressPromptKey('\r')
+    await pressPromptKey('\x1b[B', () => liveState.footerSelection === 'tasks')
+    const mainRow = liveState.coordinatorTaskIndex
+    await pressPromptKey('\x1b[B', () => liveState.coordinatorTaskIndex !== mainRow)
+    await pressPromptKey('\r', () => liveState.viewingAgentTaskId === 'worker')
     assert.equal(liveState.viewingAgentTaskId, 'worker')
     assert.equal((liveState.tasks.worker as typeof retainedTeammate).retain, true)
     assert.equal((liveState.tasks.worker as import('../../tasks/InProcessTeammateTask/types.js').InProcessTeammateTaskState).evictAfter, undefined)
     assert.equal((liveState.tasks.worker as typeof retainedTeammate).messages, retainedMessages)
     // Like a local agent row, Enter keeps the panel focused: Escape leaves it first.
-    await pressPromptKey('\x1b')
+    await pressPromptKey('\x1b', () => liveState.footerSelection === null)
     assert.equal(liveState.footerSelection, null)
     assert.equal(liveState.viewingAgentTaskId, 'worker')
-    await pressPromptKey('\x1b')
+    await pressPromptKey('\x1b', () => liveState.viewingAgentTaskId === undefined)
     assert.ok(performance.now() - firstEscapeAt < 800, 'both Escape dispatches must fit the double-press window')
     assert.equal(onShowMessageSelector.mock.calls.length, 0, 'teammate navigation must not open Rewind')
     assert.equal(liveState.viewSelectionMode, 'none')
