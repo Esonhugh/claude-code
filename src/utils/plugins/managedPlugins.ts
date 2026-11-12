@@ -1,5 +1,7 @@
 import { getSettingsForSource } from '../settings/settings.js'
 import type { SettingsJson } from '../settings/types.js'
+import type { LoadedPlugin, PluginError } from '../../types/plugin.js'
+import { logForDebugging } from '../debug.js'
 import type { MarketplaceSource } from './schemas.js'
 import { PluginMarketplaceSchema } from './schemas.js'
 import { readFile, realpath, stat } from 'node:fs/promises'
@@ -72,7 +74,24 @@ export async function getInPlacePluginSource(
   if (child==='..' || child.startsWith(`..${sep}`) || isAbsolute(child) || !(await stat(path)).isDirectory()) return undefined
   const managedSource=policy?.enabledPlugins?.[pluginId]===true && policySource?.source==='directory' &&
     sameDirectory(source.path,location) && sameDirectory(source.path,policySource.path)
-  return {entry,path,source,managedSource}
+  return {entry,path,source,managedSource,root}
+}
+
+/**
+ * For a plugin loaded in place, the error for a component path that resolves
+ * outside its marketplace directory; such a path must not be read.
+ */
+export async function getInPlaceEscapeError(
+  plugin: Pick<LoadedPlugin, 'name' | 'source' | 'containmentRoot'>,
+  path: string,
+  component: string,
+): Promise<PluginError | undefined> {
+  const root = plugin.containmentRoot
+  if (root === undefined) return undefined
+  const real = await realpath(path).catch(() => resolve(path))
+  if (real === root || real.startsWith(root + sep)) return undefined
+  logForDebugging(`Plugin ${plugin.name}: did not read ${path}: it resolves to ${real}, outside ${root}`, { level: 'error' })
+  return { type: 'generic-error', source: plugin.source, plugin: plugin.name, error: `Path escapes plugin directory: ${path} (${component})` }
 }
 
 

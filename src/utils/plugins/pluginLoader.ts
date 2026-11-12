@@ -122,7 +122,7 @@ import {
   isInstallationRelevantToCurrentProject,
   readInstalledPluginsForContractValidation,
 } from './installedPluginsManager.js'
-import { getInPlacePluginSource, getManagedPluginNames, getMarketplaceDeclarationRefusal } from './managedPlugins.js'
+import { getInPlaceEscapeError, getInPlacePluginSource, getManagedPluginNames, getMarketplaceDeclarationRefusal } from './managedPlugins.js'
 import { areSideloadFlagsDisabled, getSideloadFlagsError } from './sideloadPolicy.js'
 import {
   formatSourceForDisplay,
@@ -1438,6 +1438,7 @@ export async function createPluginFromPath(
   fallbackName: string,
   strict = true,
   contractOnly = false,
+  containmentRoot?: string,
 ): Promise<{ plugin: LoadedPlugin; errors: PluginError[] }> {
   const errors: PluginError[] = []
 
@@ -1465,6 +1466,7 @@ export async function createPluginFromPath(
     source, // Source identifier (e.g., "git:repo" or ".claude-plugin/name")
     repository: source, // For backward compatibility with Plugin Repository
     enabled, // Current enabled state
+    ...(containmentRoot !== undefined && { containmentRoot }),
   }
 
   if (contractOnly) return { plugin, errors }
@@ -1715,7 +1717,9 @@ export async function createPluginFromPath(
 
   // Load from standard hooks/hooks.json if it exists
   const standardHooksPath = join(pluginPath, 'hooks', 'hooks.json')
-  if (await pathExists(standardHooksPath)) {
+  const standardHooksEscape = await getInPlaceEscapeError(plugin, standardHooksPath, 'hooks')
+  if (standardHooksEscape) errors.push(standardHooksEscape)
+  else if (await pathExists(standardHooksPath)) {
     try {
       const config = await loadPluginHooks(standardHooksPath, manifest.name)
       mergedHooks = config.hooks
@@ -1778,6 +1782,12 @@ export async function createPluginFromPath(
             path: hookFilePath,
             component: 'hooks',
           })
+          continue
+        }
+
+        const hookFileEscape = await getInPlaceEscapeError(plugin, hookFilePath, 'hooks')
+        if (hookFileEscape) {
+          errors.push(hookFileEscape)
           continue
         }
 
@@ -2168,6 +2178,7 @@ async function loadPluginsFromMarketplaces({
         if (!isSourceAllowedByPolicy(inPlace.source)) throw new Error(`Managed marketplace ${marketplaceName} is blocked by marketplace policy`)
         const plugin = await finishLoadingPluginFromPath(
           inPlace.entry, pluginId, enabledValue === true || Array.isArray(enabledValue), errors, inPlace.path, contractOnly,
+          undefined, inPlace.root,
         )
         if (plugin) plugin.managedSource = inPlace.managedSource
         return plugin
@@ -2708,6 +2719,7 @@ async function finishLoadingPluginFromPath(
   pluginPath: string,
   contractOnly = false,
   contractFiles?: Readonly<Record<string, Uint8Array>>,
+  containmentRoot?: string,
 ): Promise<LoadedPlugin | null> {
   const errors: PluginError[] = []
 
@@ -2732,6 +2744,7 @@ async function finishLoadingPluginFromPath(
     entry.name,
     entry.strict ?? true, // Respect marketplace entry's strict setting
     contractOnly,
+    containmentRoot,
   )
   plugin.name = plugin.manifest.name
   errors.push(...pluginErrors)
@@ -3211,8 +3224,54 @@ async function finishLoadingPluginFromPath(
     }
   }
 
+  if (containmentRoot !== undefined) {
+    await dropEscapingComponentPaths(plugin, errors)
+  }
+
   errorsOut.push(...errors)
   return plugin
+}
+
+/**
+ * Drop the component paths of a plugin loaded in place that resolve outside
+ * its marketplace, and report them along with skills whose SKILL.md does.
+ */
+async function dropEscapingComponentPaths(
+  plugin: LoadedPlugin,
+  errors: PluginError[],
+): Promise<void> {
+  const components = [
+    ['commands', 'commandsPath', 'commandsPaths'],
+    ['agents', 'agentsPath', 'agentsPaths'],
+    ['skills', 'skillsPath', 'skillsPaths'],
+    ['output-styles', 'outputStylesPath', 'outputStylesPaths'],
+  ] as const
+  const contained = async (path: string, component: string) => {
+    const escape = await getInPlaceEscapeError(plugin, path, component)
+    if (escape) errors.push(escape)
+    return escape === undefined
+  }
+  for (const [component, single, many] of components) {
+    const path = plugin[single]
+    if (path !== undefined && !(await contained(path, component))) {
+      delete plugin[single]
+    }
+    const paths = plugin[many]
+    if (paths) {
+      const kept: string[] = []
+      for (const path of paths) {
+        if (await contained(path, component)) kept.push(path)
+      }
+      plugin[many] = kept
+    }
+  }
+  for (const skillsPath of [plugin.skillsPath, ...(plugin.skillsPaths ?? [])]) {
+    if (skillsPath === undefined) continue
+    const entries = await readdir(skillsPath).catch(() => [])
+    for (const skillFile of [join(skillsPath, 'SKILL.md'), ...entries.map(name => join(skillsPath, name, 'SKILL.md'))]) {
+      if (await pathExists(skillFile)) await contained(skillFile, 'skills')
+    }
+  }
 }
 
 /**
