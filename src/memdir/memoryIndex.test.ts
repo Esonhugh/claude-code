@@ -5,6 +5,7 @@ import {
   mkdtempSync,
   realpathSync,
   rmSync,
+  symlinkSync,
   utimesSync,
   writeFileSync,
 } from 'node:fs'
@@ -189,6 +190,19 @@ describe('searchMemory', () => {
     expect(await search('staging', { scopes: ['user'] })).toEqual([])
   })
 
+  test('a symlink back into the memory directory neither loops nor drops its memories', async () => {
+    expect((await search('package')).map(h => h.path)).toEqual([join(memDir, 'build.md')])
+    // Two links back used to make Bun's recursive readdir grow until it ran out of memory.
+    symlinkSync(memDir, join(memDir, 'loop'))
+    symlinkSync('..', join(memDir, 'team-loop'))
+    try {
+      expect((await search('package')).map(h => h.path)).toEqual([join(memDir, 'build.md')])
+    } finally {
+      rmSync(join(memDir, 'loop'))
+      rmSync(join(memDir, 'team-loop'))
+    }
+  })
+
   test('treats FTS5 syntax in queries as literal text', async () => {
     expect(await search('"NEAR( OR *')).toEqual([])
   })
@@ -323,5 +337,16 @@ describe('searchMemory', () => {
     expect(results[0]).toEqual([])
     expect(results[1]).toEqual([])
     expect(results[2]!.map(h => h.path)).toEqual([join(memDir, 'build.md')])
+  })
+
+  test('replaces an index file that is not a database instead of failing every search', async () => {
+    const path = join(root, 'damaged.sqlite')
+    writeFileSync(path, Buffer.alloc(8192, 0x5a))
+    resetMemoryIndexForTesting(path)
+    try {
+      expect((await search('package')).map(h => h.path)).toEqual([join(memDir, 'build.md')])
+    } finally {
+      resetMemoryIndexForTesting(':memory:')
+    }
   })
 })

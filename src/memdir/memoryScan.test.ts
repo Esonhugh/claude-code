@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test'
-import { mkdtemp, realpath, rm, writeFile, mkdir, readFile, utimes } from 'node:fs/promises'
+import { mkdtemp, realpath, rm, symlink, writeFile, mkdir, readFile, utimes } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { scanMemoryFiles, formatMemoryManifest } from './memoryScan.js'
@@ -59,4 +59,14 @@ test('nested metadata preserves manifest text, ordering and MEMORY.md exclusion'
     '- [feedback] nested/newer.md (2023-11-14T22:13:21.000Z): newer note\n' +
     '- [reference] older.md (2023-11-14T22:13:20.000Z): older note',
   )
+}))
+
+test('scans subdirectories but not symlinks back into the memory directory', () => withDirectory(async dir => {
+  await mkdir(join(dir, 'team'))
+  await writeFile(join(dir, 'a.md'), '---\ndescription: a\n---\n')
+  await writeFile(join(dir, 'team', 'b.md'), '---\ndescription: b\n---\n')
+  await symlink(dir, join(dir, 'loop'))
+  await symlink('..', join(dir, 'team', 'up'))
+  const headers = await scanMemoryFiles(dir, new AbortController().signal)
+  expect(headers.map(h => h.filename).sort()).toEqual(['a.md', join('team', 'b.md')])
 }))
