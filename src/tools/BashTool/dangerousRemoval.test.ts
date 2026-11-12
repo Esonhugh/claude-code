@@ -41,12 +41,11 @@ describe('dangerous removal analysis', () => {
     expect(check('CMD="ls"; bash -c "$CMD"').behavior).toBe('passthrough')
   })
   test('requires explicit approval for rm -rf "$HOME/.config"', () => {
-    expectMandatory('rm -rf "$HOME/.config"')
+    expectMandatory('rm -rf "$HOME/.config"', cwd, { HOME: homedir() })
   })
-  test('recognizes attached env split-string deletion candidates without interpreting the string', () => {
-    expectMandatory('env -S"rm ordinary"')
-    expectMandatory('env -S"/bin/rm ordinary"')
-    expect(check('env -S"echo rm /"').behavior).toBe('passthrough')
+  test('does not ask for env split-string removals it cannot read, like official', () => {
+    for (const command of ['env -S"rm ordinary"', 'env -S"/bin/rm ordinary"', 'env -S"echo rm /"'])
+      expect(check(command).behavior).toBe('passthrough')
   })
   test('does not treat non-expanding dollar signs or braces as dynamic targets', () => {
     for (const command of [
@@ -68,10 +67,10 @@ describe('dangerous removal analysis', () => {
     )
     // A broad ceiling catches multi-second blocking, not microbenchmark noise.
     expect(performance.now() - start).toBeLessThan(2000)
-    expectMandatory('rm {one,two}')
-    expectMandatory('rm {1..3}')
-    expectMandatory('rm {one,{two,three}}')
     for (const target of [
+      '{one,two}',
+      '{1..3}',
+      '{one,{two,three}}',
       "'{one,two}'",
       '{one\\,two}',
       '{one",two"}',
@@ -81,12 +80,14 @@ describe('dangerous removal analysis', () => {
     }
   }, 30000)
 
-  test('keeps destructive find unresolved behind wrappers with unknown semantics', () => {
-    expectMandatory('nice --unknown find /tmp/project -delete')
-    expectMandatory('xargs find /tmp/project -delete')
-    expect(check('nice --unknown find /tmp/project -print').behavior).toBe(
-      'passthrough',
-    )
+  test('checks find behind wrappers with unknown semantics by its roots', () => {
+    expectMandatory('nice --unknown find / -delete')
+    for (const command of [
+      'nice --unknown find /tmp/project -delete',
+      'xargs find /tmp/project -delete',
+      'nice --unknown find /tmp/project -print',
+    ])
+      expect(check(command).behavior).toBe('passthrough')
   })
   test('does not infer a removal target from wrapper uncertainty alone', () => {
     for (const command of [
@@ -111,12 +112,13 @@ describe('dangerous removal analysis', () => {
     expect(check('find -f /tmp/project -delete').behavior).toBe('passthrough')
     expect(check('find -f -delete -print').behavior).toBe('passthrough')
   })
-  test('marks externally supplied find roots unresolved for destructive actions only', () => {
-    expectMandatory('find -files0-from roots.list -delete')
-    expectMandatory('find -files0-from - -exec rm {} +')
-    expect(check('find -files0-from roots.list -print').behavior).toBe(
-      'passthrough',
-    )
+  test('does not ask for externally supplied find roots, like official', () => {
+    for (const command of [
+      'find -files0-from roots.list -delete',
+      'find -files0-from - -exec rm {} +',
+      'find -files0-from roots.list -print',
+    ])
+      expect(check(command).behavior).toBe('passthrough')
   })
   test('preserves protected lexical paths while normalizing targets without filesystem access', () => {
     for (const command of [
@@ -161,13 +163,14 @@ describe('dangerous removal analysis', () => {
       'find /tmp -exec rm {} \\;',
       'find /tmp -execdir rmdir {} +',
       'find /tmp/project -exec /bin/rm /etc \\;',
-      'find /tmp/project -exec unlink "$TARGET" \\;',
-      'find /tmp/project -exec rm "{}/../.." \\;',
-      'find /tmp/project -execdir rm ../relative \\;',
+      'find /tmp/project -exec unlink "$TARGET"/ \\;',
     ]) {
       expectMandatory(command)
     }
     for (const command of [
+      'find /tmp/project -exec unlink "$TARGET" \\;',
+      'find /tmp/project -exec rm "{}/../.." \\;',
+      'find /tmp/project -execdir rm ../relative \\;',
       'find /tmp/project -exec rm {} +',
       'find /tmp/project -execdir rm {} \\;',
       'find /tmp -exec echo -delete \\;',
@@ -185,12 +188,14 @@ describe('dangerous removal analysis', () => {
       'find /tmp -name ordinary -delete',
       'find ~/.config -delete',
       `find '${dirname(homedir())}' -delete`,
-      'find $SEARCH -delete',
+      'find "$SEARCH"/ -delete',
       'cd /tmp; find . -delete',
     ]) {
       expectMandatory(command)
     }
     for (const command of [
+      'find $SEARCH -delete',
+      'cd "$SEARCH"; find . -delete',
       'find /tmp/ordinary-project -delete',
       'find / -print',
       'find /tmp -name "-delete"',
@@ -201,7 +206,7 @@ describe('dangerous removal analysis', () => {
       expect(check(command).behavior).toBe('passthrough')
     }
   })
-  test('requires approval for xargs deletion targets supplied by input, without simulating the producer', () => {
+  test('does not ask for xargs deletion targets supplied by input, like official', () => {
     for (const command of [
       'xargs rm',
       'echo ordinary | xargs -0 -r -n 1 rm -f',
@@ -211,7 +216,7 @@ describe('dangerous removal analysis', () => {
       'xargs -0 sudo rm',
       'xargs --unknown value rm',
     ]) {
-      expectMandatory(command)
+      expect(check(command).behavior).toBe('passthrough')
     }
     for (const command of [
       'xargs echo rm /',
@@ -222,17 +227,21 @@ describe('dangerous removal analysis', () => {
       expect(check(command).behavior).toBe('passthrough')
     }
   })
-  test('marks relative targets after cwd changes unresolved without tainting absolute paths or separate shells', () => {
+  test('asks for a whole-directory glob after a cwd change, not other relative targets', () => {
+    for (const command of [
+      'cd /tmp && rm -rf *',
+      'pushd /tmp; rm -rf ./*',
+      '{ cd /tmp; }; rm -rf *',
+    ]) {
+      expectMandatory(command)
+    }
     for (const command of [
       'cd /tmp && rm ordinary',
       'pushd /tmp; rm ordinary',
       'popd; rm ordinary',
       '{ cd /tmp; }; rm ordinary',
       'cd /tmp; rm --help; rm ordinary',
-    ]) {
-      expectMandatory(command)
-    }
-    for (const command of [
+      'cd /tmp && rm *.log',
       'cd /tmp; rm /tmp/project/ordinary',
       'rm ordinary; cd /tmp',
       '(cd /tmp); rm ordinary',
@@ -243,7 +252,21 @@ describe('dangerous removal analysis', () => {
       expect(check(command).behavior).toBe('passthrough')
     }
   })
-  test('marks expansion-driven deletion targets unresolved without evaluating them', () => {
+  test('asks for unresolved targets only when they can reach a protected path or cover the working directory', () => {
+    for (const command of [
+      'rm -rf "$OTHER"/',
+      'rm -rf ${OTHER}/*',
+      'rm -rf $OTHER/usr',
+      'rm -rf "$(printf x)"/',
+      'rm -rf *',
+      'rm -rf ./*',
+      'rm -rf ../*',
+      'rm -rf ~/*',
+      'rm -rf /usr/*',
+      'rm -f /*.log',
+    ]) {
+      expectMandatory(command)
+    }
     for (const command of [
       'rm $OTHER',
       'rm "$HOME/ordinary"',
@@ -252,14 +275,20 @@ describe('dangerous removal analysis', () => {
       'rm `printf ordinary`',
       'rm <(printf ordinary)',
       'rm ordinary*',
+      'rm *.log',
+      'rm -rf build/*',
       'rm {one,two}',
       "rm $'ordinary'",
       'rm ~other/file',
+      'for f in *.o; do rm -f "$f"; done',
+      'ls *.tmp | xargs rm -f',
     ]) {
-      expectMandatory(command)
+      expect(check(command).behavior).toBe('passthrough')
     }
   })
-  test('keeps cwd-changing, split-string and unknown wrapper semantics unresolved', () => {
+  test('checks targets behind cwd-changing, split-string and unknown wrappers like plain removals', () => {
+    for (const command of ['nice --unknown value rm /', 'sudo -D /tmp rm -rf /usr'])
+      expectMandatory(command)
     for (const command of [
       'env -C /tmp rm ordinary',
       'env --chdir=/tmp rm ordinary',
@@ -267,10 +296,6 @@ describe('dangerous removal analysis', () => {
       'env --split-string="rm ordinary"',
       'nice --unknown value rm ordinary',
       'sudo -D /tmp rm ordinary',
-    ]) {
-      expectMandatory(command)
-    }
-    for (const command of [
       'env -C /tmp echo rm /',
       'env -S "echo rm /"',
       'env --unknown echo ok',
@@ -377,15 +402,6 @@ describe('dangerous removal analysis', () => {
       'rm -rf "$GLOB"',
       'find $BUILD_DIR -delete',
       'cd /tmp && rm -rf "$TMPDIR/cc-x"',
-    ]) {
-      expect(check(command, cwd, env).behavior).toBe('passthrough')
-    }
-    for (const command of [
-      'rm -rf "$ROOT"',
-      'rm -rf $HOME',
-      'rm -rf "${HOME}/.config"',
-      'find "$HOME" -delete',
-      'rm -rf "$EMPTY/"',
       'rm -rf $SPACED',
       'rm -rf $GLOB',
       'rm -rf "$MISSING"',
@@ -397,25 +413,39 @@ describe('dangerous removal analysis', () => {
       'rm -rf "$BUILD_DIR:h"',
       'cd /tmp && rm -rf "$BUILD_DIR"',
     ]) {
+      expect(check(command, cwd, env).behavior).toBe('passthrough')
+    }
+    for (const command of [
+      'rm -rf "$ROOT"',
+      'rm -rf $HOME',
+      'rm -rf "${HOME}/.config"',
+      'find "$HOME" -delete',
+      'rm -rf "$EMPTY/"',
+      'rm -rf "$MISSING"/',
+      'rm -rf "${BUILD_DIR:-build}"/',
+    ]) {
       expectMandatory(command, cwd, env)
     }
   })
-  test('does not use the environment snapshot when the command can assign variables', () => {
+  test('tries literal assignments when the command can assign variables', () => {
     const env = { BUILD_DIR: 'build' }
     for (const command of [
       'BUILD_DIR=/; rm -rf "$BUILD_DIR"',
       'export BUILD_DIR=/; rm -rf "$BUILD_DIR"',
       'unset BUILD_DIR; rm -rf "$BUILD_DIR/"',
-      'read BUILD_DIR; rm -rf "$BUILD_DIR"',
-      'builtin read BUILD_DIR; rm -rf "$BUILD_DIR"',
-      'printf -v BUILD_DIR /; rm -rf "$BUILD_DIR"',
-      'for BUILD_DIR in /; do rm -rf "$BUILD_DIR"; done',
-      ': "${BUILD_DIR:=/}"; rm -rf "$BUILD_DIR"',
       'f() { BUILD_DIR=/; }; f; rm -rf "$BUILD_DIR"',
-      'source ./env.sh; rm -rf "$BUILD_DIR"',
-      'eval "BUILD_DIR=/"; rm -rf "$BUILD_DIR"',
+      'BUILD_DIR=out; BUILD_DIR=/usr; rm -rf "$BUILD_DIR"',
+      'CMD="rm -rf /"; sh -c "$CMD"',
     ]) {
       expectMandatory(command, cwd, env)
+    }
+    for (const command of [
+      'BUILD_DIR=out; rm -rf "$BUILD_DIR"',
+      'X=sub; rm -f $X/c.txt',
+      'read BUILD_DIR; rm -rf "$BUILD_DIR"',
+      'source ./env.sh; rm -rf "$BUILD_DIR"',
+    ]) {
+      expect(check(command, cwd, env).behavior).toBe('passthrough')
     }
   })
   test('treats zsh parameter forms as expansions', () => {
@@ -424,10 +454,10 @@ describe('dangerous removal analysis', () => {
       'rm -rf $~HOME',
       'rm -rf $=HOME',
       'rm -rf $^HOME',
-      'rm cost$=literal',
     ]) {
       expectMandatory(command, cwd, env)
     }
+    expect(check('rm cost$=literal', cwd, env).behavior).toBe('passthrough')
   })
   test('treats quoted and escaped shell expansions as literal paths', () => {
     for (const command of [

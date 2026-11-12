@@ -456,7 +456,7 @@ if (process.env[childFlag] !== '1') {
   })
 
   test('preserves critical path coverage, explicit deny, and ordinary removal', async () => {
-    for (const command of ['rm -rf /tmp', `rm -rf "${homedir()}"`, 'rm -rf ./out/*', 'rmdir /etc', 'timeout 10 rm -rf /']) {
+    for (const command of ['rm -rf /tmp', `rm -rf "${homedir()}"`, 'rm -rf ./*', 'rmdir /etc', 'timeout 10 rm -rf /']) {
       const result = await hasPermissionsToUseTool(
         BashTool, { command }, contextForPermissionCheck(), undefined as never, 'critical-path',
       )

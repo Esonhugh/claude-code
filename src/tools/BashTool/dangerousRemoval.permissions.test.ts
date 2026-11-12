@@ -100,9 +100,8 @@ if (process.env[childFlag] !== '1') {
       'rm ~/.cache/../.config',
       'command rm ~/.codex',
       'sudo rm ~/.bashrc.bak',
-      'env -C /tmp rm relative',
       'cd ~ && rm -rf .config',
-      'printf %s ~/.config | xargs rm -rf',
+      'cd ~ && rm -rf *',
       'find ~/.config -delete',
       'find ~/.codex -exec rm {} +',
     ]) {
@@ -120,6 +119,8 @@ if (process.env[childFlag] !== '1') {
       ).toBeFalsy()
     }
     for (const command of [
+      'env -C /tmp rm relative',
+      'printf %s ~/.config | xargs rm -rf',
       'rm -rf ./dist',
       'rm -rf ~/.cache/x',
       'find ./dist -delete',
@@ -208,8 +209,8 @@ if (process.env[childFlag] !== '1') {
   test('approval explains the protected path or unresolved target source', async () => {
     for (const [command, reason] of [
       ['rm ~/.config/file', /Protected removal target: .*\.config\/file/],
-      ['rm "$TARGET"', /expansion.*\$TARGET/],
-      ['cd ~; rm relative', /working directory.*relative/],
+      ['rm -rf "$TARGET"/', /protected path.*\$TARGET/],
+      ['cd sub; cd "$X"; rm -rf *', /glob.*\*/],
     ] as const) {
       const result = await hasPermissionsToUseTool(
         BashTool,
