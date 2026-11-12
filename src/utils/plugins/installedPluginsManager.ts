@@ -27,6 +27,7 @@ import { dirname, join } from 'path'
 import { logForDebugging } from '../debug.js'
 import { errorMessage, isENOENT, toError } from '../errors.js'
 import { getFsImplementation } from '../fsOperations.js'
+import { withLockSync } from '../lockfile.js'
 import { logError } from '../log.js'
 import { jsonParse, jsonStringify } from '../slowOperations.js'
 import { getPluginsDirectory } from './pluginDirectories.js'
@@ -729,6 +730,22 @@ function saveInstalledPluginsV2(data: InstalledPluginsFileV2): void {
 }
 
 /**
+ * Runs a read-modify-write of installed_plugins.json under a cross-process
+ * lock, so that parallel CLIs (e.g. `plugin install` runs) don't drop each
+ * other's entries.
+ */
+function withRegistryLock<T>(run: () => T): T {
+  try {
+    getFsImplementation().mkdirSync(getPluginsDirectory())
+  } catch {
+    // The lock then fails too and `run` goes ahead unlocked, as before.
+  }
+  return withLockSync(getInstalledPluginsFilePath(), run, reason =>
+    logForDebugging(`installed_plugins.json write ran unlocked: ${reason}`),
+  )
+}
+
+/**
  * Add or update a plugin installation entry at a specific scope.
  * Used for V2 format where each plugin has an array of installations.
  *
@@ -745,36 +762,38 @@ export function addPluginInstallation(
   metadata: Partial<PluginInstallationEntry>,
   projectPath?: string,
 ): void {
-  const data = loadInstalledPluginsFromDisk()
+  return withRegistryLock(() => {
+    const data = loadInstalledPluginsFromDisk()
 
-  // Get or create array for this plugin
-  const installations = data.plugins[pluginId] || []
+    // Get or create array for this plugin
+    const installations = data.plugins[pluginId] || []
 
-  // Find existing entry for this scope+projectPath
-  const existingIndex = installations.findIndex(
-    entry => entry.scope === scope && entry.projectPath === projectPath,
-  )
+    // Find existing entry for this scope+projectPath
+    const existingIndex = installations.findIndex(
+      entry => entry.scope === scope && entry.projectPath === projectPath,
+    )
 
-  const newEntry: PluginInstallationEntry = {
-    scope,
-    installPath,
-    version: metadata.version,
-    installedAt: metadata.installedAt || new Date().toISOString(),
-    lastUpdated: new Date().toISOString(),
-    gitCommitSha: metadata.gitCommitSha,
-    ...(projectPath && { projectPath }),
-  }
+    const newEntry: PluginInstallationEntry = {
+      scope,
+      installPath,
+      version: metadata.version,
+      installedAt: metadata.installedAt || new Date().toISOString(),
+      lastUpdated: new Date().toISOString(),
+      gitCommitSha: metadata.gitCommitSha,
+      ...(projectPath && { projectPath }),
+    }
 
-  if (existingIndex >= 0) {
-    installations[existingIndex] = newEntry
-    logForDebugging(`Updated installation for ${pluginId} at scope ${scope}`)
-  } else {
-    installations.push(newEntry)
-    logForDebugging(`Added installation for ${pluginId} at scope ${scope}`)
-  }
+    if (existingIndex >= 0) {
+      installations[existingIndex] = newEntry
+      logForDebugging(`Updated installation for ${pluginId} at scope ${scope}`)
+    } else {
+      installations.push(newEntry)
+      logForDebugging(`Added installation for ${pluginId} at scope ${scope}`)
+    }
 
-  data.plugins[pluginId] = installations
-  saveInstalledPluginsV2(data)
+    data.plugins[pluginId] = installations
+    saveInstalledPluginsV2(data)
+  })
 }
 
 /**
@@ -789,24 +808,26 @@ export function removePluginInstallation(
   scope: PersistableScope,
   projectPath?: string,
 ): void {
-  const data = loadInstalledPluginsFromDisk()
-  const installations = data.plugins[pluginId]
+  return withRegistryLock(() => {
+    const data = loadInstalledPluginsFromDisk()
+    const installations = data.plugins[pluginId]
 
-  if (!installations) {
-    return
-  }
+    if (!installations) {
+      return
+    }
 
-  data.plugins[pluginId] = installations.filter(
-    entry => !(entry.scope === scope && entry.projectPath === projectPath),
-  )
+    data.plugins[pluginId] = installations.filter(
+      entry => !(entry.scope === scope && entry.projectPath === projectPath),
+    )
 
-  // Remove plugin entirely if no installations left
-  if (data.plugins[pluginId].length === 0) {
-    delete data.plugins[pluginId]
-  }
+    // Remove plugin entirely if no installations left
+    if (data.plugins[pluginId].length === 0) {
+      delete data.plugins[pluginId]
+    }
 
-  saveInstalledPluginsV2(data)
-  logForDebugging(`Removed installation for ${pluginId} at scope ${scope}`)
+    saveInstalledPluginsV2(data)
+    logForDebugging(`Removed installation for ${pluginId} at scope ${scope}`)
+  })
 }
 
 // =============================================================================
@@ -875,46 +896,48 @@ export function updateInstallationPathOnDisk(
   gitCommitSha?: string,
   sourceCommand?: string,
 ): void {
-  const diskData = loadInstalledPluginsFromDisk()
-  const installations = diskData.plugins[pluginId]
+  return withRegistryLock(() => {
+    const diskData = loadInstalledPluginsFromDisk()
+    const installations = diskData.plugins[pluginId]
 
-  if (!installations) {
-    logForDebugging(
-      `Cannot update ${pluginId} on disk: plugin not found in installed plugins`,
-    )
-    return
-  }
-
-  const entry = installations.find(
-    e => e.scope === scope && e.projectPath === projectPath,
-  )
-
-  if (entry) {
-    entry.installPath = newPath
-    entry.version = newVersion
-    entry.lastUpdated = new Date().toISOString()
-    if (gitCommitSha !== undefined) {
-      entry.gitCommitSha = gitCommitSha
-    }
-    if (sourceCommand !== undefined) {
-      entry.sourceCommand = sourceCommand
+    if (!installations) {
+      logForDebugging(
+        `Cannot update ${pluginId} on disk: plugin not found in installed plugins`,
+      )
+      return
     }
 
-    // Write to single file (V2 format with version=2)
-    writeInstalledPluginsFile(diskData)
-
-    // Clear cache since disk changed, but do NOT update inMemoryInstalledPlugins
-    installedPluginsCacheV2 = null
-
-    logForDebugging(
-      `Updated ${pluginId} on disk to version ${newVersion} at ${newPath}`,
+    const entry = installations.find(
+      e => e.scope === scope && e.projectPath === projectPath,
     )
-  } else {
-    logForDebugging(
-      `Cannot update ${pluginId} on disk: no installation for scope ${scope}`,
-    )
-  }
-  // Note: inMemoryInstalledPlugins is NOT updated
+
+    if (entry) {
+      entry.installPath = newPath
+      entry.version = newVersion
+      entry.lastUpdated = new Date().toISOString()
+      if (gitCommitSha !== undefined) {
+        entry.gitCommitSha = gitCommitSha
+      }
+      if (sourceCommand !== undefined) {
+        entry.sourceCommand = sourceCommand
+      }
+
+      // Write to single file (V2 format with version=2)
+      writeInstalledPluginsFile(diskData)
+
+      // Clear cache since disk changed, but do NOT update inMemoryInstalledPlugins
+      installedPluginsCacheV2 = null
+
+      logForDebugging(
+        `Updated ${pluginId} on disk to version ${newVersion} at ${newPath}`,
+      )
+    } else {
+      logForDebugging(
+        `Cannot update ${pluginId} on disk: no installation for scope ${scope}`,
+      )
+    }
+    // Note: inMemoryInstalledPlugins is NOT updated
+  })
 }
 
 /**
@@ -1131,11 +1154,13 @@ export function removeAllPluginsForMarketplace(marketplaceName: string): {
 export function isInstallationRelevantToCurrentProject(
   inst: PluginInstallationEntry,
 ): boolean {
-  return (
-    inst.scope === 'user' ||
-    inst.scope === 'managed' ||
-    inst.projectPath === getOriginalCwd()
-  )
+  return withRegistryLock(() => {
+    return (
+      inst.scope === 'user' ||
+      inst.scope === 'managed' ||
+      inst.projectPath === getOriginalCwd()
+    )
+  })
 }
 
 /**
@@ -1208,39 +1233,41 @@ export function addInstalledPlugin(
   scope: PersistableScope = 'user',
   projectPath?: string,
 ): void {
-  const v2Data = loadInstalledPluginsFromDisk()
-  const v2Entry: PluginInstallationEntry = {
-    scope,
-    installPath: metadata.installPath,
-    version: metadata.version,
-    installedAt: metadata.installedAt,
-    lastUpdated: metadata.lastUpdated,
-    gitCommitSha: metadata.gitCommitSha,
-    ...(metadata.sourceCommand && { sourceCommand: metadata.sourceCommand }),
-    ...(projectPath && { projectPath }),
-  }
+  return withRegistryLock(() => {
+    const v2Data = loadInstalledPluginsFromDisk()
+    const v2Entry: PluginInstallationEntry = {
+      scope,
+      installPath: metadata.installPath,
+      version: metadata.version,
+      installedAt: metadata.installedAt,
+      lastUpdated: metadata.lastUpdated,
+      gitCommitSha: metadata.gitCommitSha,
+      ...(metadata.sourceCommand && { sourceCommand: metadata.sourceCommand }),
+      ...(projectPath && { projectPath }),
+    }
 
-  // Get or create array for this plugin (preserves other scope installations)
-  const installations = v2Data.plugins[pluginId] || []
+    // Get or create array for this plugin (preserves other scope installations)
+    const installations = v2Data.plugins[pluginId] || []
 
-  // Find existing entry for this scope+projectPath
-  const existingIndex = installations.findIndex(
-    entry => entry.scope === scope && entry.projectPath === projectPath,
-  )
+    // Find existing entry for this scope+projectPath
+    const existingIndex = installations.findIndex(
+      entry => entry.scope === scope && entry.projectPath === projectPath,
+    )
 
-  const isUpdate = existingIndex >= 0
-  if (isUpdate) {
-    installations[existingIndex] = v2Entry
-  } else {
-    installations.push(v2Entry)
-  }
+    const isUpdate = existingIndex >= 0
+    if (isUpdate) {
+      installations[existingIndex] = v2Entry
+    } else {
+      installations.push(v2Entry)
+    }
 
-  v2Data.plugins[pluginId] = installations
-  saveInstalledPluginsV2(v2Data)
+    v2Data.plugins[pluginId] = installations
+    saveInstalledPluginsV2(v2Data)
 
-  logForDebugging(
-    `${isUpdate ? 'Updated' : 'Added'} installed plugin: ${pluginId} (scope: ${scope})`,
-  )
+    logForDebugging(
+      `${isUpdate ? 'Updated' : 'Added'} installed plugin: ${pluginId} (scope: ${scope})`,
+    )
+  })
 }
 
 /**
@@ -1256,31 +1283,33 @@ export function addInstalledPlugin(
 export function removeInstalledPlugin(
   pluginId: string,
 ): InstalledPlugin | undefined {
-  const v2Data = loadInstalledPluginsFromDisk()
-  const installations = v2Data.plugins[pluginId]
+  return withRegistryLock(() => {
+    const v2Data = loadInstalledPluginsFromDisk()
+    const installations = v2Data.plugins[pluginId]
 
-  if (!installations || installations.length === 0) {
-    return undefined
-  }
+    if (!installations || installations.length === 0) {
+      return undefined
+    }
 
-  // Extract V1-compatible metadata from first installation for return value
-  const firstInstall = installations[0]
-  const metadata: InstalledPlugin | undefined = firstInstall
-    ? {
-        version: firstInstall.version || 'unknown',
-        installedAt: firstInstall.installedAt || new Date().toISOString(),
-        lastUpdated: firstInstall.lastUpdated,
-        installPath: firstInstall.installPath,
-        gitCommitSha: firstInstall.gitCommitSha,
-      }
-    : undefined
+    // Extract V1-compatible metadata from first installation for return value
+    const firstInstall = installations[0]
+    const metadata: InstalledPlugin | undefined = firstInstall
+      ? {
+          version: firstInstall.version || 'unknown',
+          installedAt: firstInstall.installedAt || new Date().toISOString(),
+          lastUpdated: firstInstall.lastUpdated,
+          installPath: firstInstall.installPath,
+          gitCommitSha: firstInstall.gitCommitSha,
+        }
+      : undefined
 
-  delete v2Data.plugins[pluginId]
-  saveInstalledPluginsV2(v2Data)
+    delete v2Data.plugins[pluginId]
+    saveInstalledPluginsV2(v2Data)
 
-  logForDebugging(`Removed installed plugin: ${pluginId}`)
+    logForDebugging(`Removed installed plugin: ${pluginId}`)
 
-  return metadata
+    return metadata
+  })
 }
 
 /**

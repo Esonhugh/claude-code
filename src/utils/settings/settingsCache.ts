@@ -47,6 +47,18 @@ const parseFileCache = new Map<string, ParsedSettings>()
 // Only pending/blocked files need a last-accepted snapshot across cache resets.
 const retainedFiles = new Map<string, ParsedSettings>()
 
+// True while the change detector watches settings files and reviews outside
+// edits (ConfigChange hooks) before the session applies them.
+let outsideEditsReviewed = false
+
+export function setOutsideEditsReviewed(value: boolean): void {
+  outsideEditsReviewed = value
+}
+
+export function areOutsideEditsReviewed(): boolean {
+  return outsideEditsReviewed
+}
+
 export function getCachedParsedFile(path: string): ParsedSettings | undefined {
   return retainedFiles.get(path) ?? parseFileCache.get(path)
 }
