@@ -73,116 +73,34 @@ describe('scanModSource', () => {
 })
 
 describe('hooks', () => {
-  it('adds, edits and deletes a user hook in settings.json', async () => {
-    ext.addHook({ event: 'PreToolUse', matcher: 'Bash', command: '~/block-rm.sh', timeout: 10, source: 'user' })
-    expect(userSettings().hooks).toEqual({
-      PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: '~/block-rm.sh', timeout: 10 }] }],
-    })
-    let row = (await ext.listHooks()).hooks.find(h => h.command === '~/block-rm.sh')!
-    expect(row).toMatchObject({ event: 'PreToolUse', matcher: 'Bash', source: 'user', timeout: 10 })
-
-    ext.updateHook(row.id!, { event: 'Stop', matcher: '', command: 'echo done', timeout: 5, source: 'user' })
-    expect(userSettings().hooks).toEqual({ Stop: [{ hooks: [{ type: 'command', command: 'echo done', timeout: 5 }] }] })
-
-    row = (await ext.listHooks()).hooks.find(h => h.command === 'echo done')!
-    ext.deleteHook(row.id!)
-    expect(userSettings().hooks).toEqual({})
-  })
-
-  it('keeps hooks another process wrote to settings.json since this one read it', async () => {
-    await ext.listHooks()
-    const outside = [
-      { type: 'http', url: 'https://example.invalid/hook', headers: { 'X-T': '1' }, timeout: 5 },
-      { type: 'command', command: 'echo outside', async: true, statusMessage: 'running' },
-    ]
+  it('lists hooks from every settings file, read-only, including ones written since the last read', async () => {
     writeFileSync(
       join(configDir, 'settings.json'),
-      JSON.stringify({ ...userSettings(), hooks: { PostToolUse: [{ matcher: 'Bash', hooks: outside }] } }),
+      JSON.stringify({
+        hooks: {
+          PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: '~/block-rm.sh', timeout: 10 }] }],
+          PostToolUse: [{ matcher: 'Bash', hooks: [{ type: 'http', url: 'https://example.invalid/hook' }] }],
+        },
+      }),
     )
-    ext.addHook({ event: 'PostToolUse', matcher: 'Bash', command: 'echo web', source: 'user' })
-    expect(userSettings().hooks.PostToolUse).toEqual([
-      { matcher: 'Bash', hooks: [...outside, { type: 'command', command: 'echo web' }] },
-    ])
-
-    // An edit keeps the hook's type, other fields and place; only what the dialog shows changes.
-    const idOf = async (command: string) => (await ext.listHooks()).hooks.find(h => h.command === command)!.id!
-    ext.updateHook(await idOf('https://example.invalid/hook'), {
-      event: 'PostToolUse',
-      matcher: 'Bash',
-      command: 'https://example.invalid/v2',
-      timeout: 9,
-      source: 'user',
-    })
-    ext.updateHook(await idOf('echo outside'), {
-      event: 'PostToolUse',
-      matcher: 'Bash',
-      command: 'echo outside2',
-      source: 'user',
-    })
-    expect(userSettings().hooks.PostToolUse[0].hooks).toEqual([
-      { type: 'http', url: 'https://example.invalid/v2', headers: { 'X-T': '1' }, timeout: 9 },
-      { type: 'command', command: 'echo outside2', async: true, statusMessage: 'running' },
-      { type: 'command', command: 'echo web' },
-    ])
-    for (const command of ['echo web', 'echo outside2', 'https://example.invalid/v2']) ext.deleteHook(await idOf(command))
-    expect(userSettings().hooks).toEqual({})
-  })
-
-  it('edits and deletes the hook the list showed, even after the file changed underneath', async () => {
-    ext.addHook({ event: 'Stop', matcher: '', command: 'echo keep', source: 'user' })
-    ext.addHook({ event: 'Stop', matcher: '', command: 'echo target', source: 'user' })
-    const listed = (await ext.listHooks()).hooks
-    const target = listed.find(h => h.command === 'echo target')!.id!
-    const keep = listed.find(h => h.command === 'echo keep')!.id!
-    // Another process puts a hook in front: positions shift.
-    const settings = userSettings()
-    settings.hooks.Stop[0].hooks.unshift({ type: 'command', command: 'echo inserted' })
-    writeFileSync(join(configDir, 'settings.json'), JSON.stringify(settings))
-    ext.deleteHook(target)
-    expect(userSettings().hooks.Stop[0].hooks.map((h: { command: string }) => h.command)).toEqual([
-      'echo inserted',
-      'echo keep',
-    ])
-    // The hook the list showed was changed elsewhere: nothing is written.
-    const changed = userSettings()
-    changed.hooks.Stop[0].hooks[1].command = 'echo keep v2'
-    writeFileSync(join(configDir, 'settings.json'), JSON.stringify(changed))
-    expect(() => ext.updateHook(keep, { event: 'Stop', matcher: '', command: 'echo x', source: 'user' })).toThrow(
-      'changed',
+    mkdirSync(join(workspace, '.claude'), { recursive: true })
+    writeFileSync(
+      join(workspace, '.claude', 'settings.json'),
+      JSON.stringify({ hooks: { Stop: [{ hooks: [{ type: 'command', command: 'echo done' }] }] } }),
     )
-    expect(() => ext.deleteHook(keep)).toThrow('changed')
-    expect(userSettings().hooks.Stop[0].hooks.map((h: { command: string }) => h.command)).toEqual([
-      'echo inserted',
-      'echo keep v2',
+    resetSettingsCache()
+    const listed = await ext.listHooks()
+    expect(listed.disabled).toBe(false)
+    expect(listed.hooks.map(h => [h.event, h.matcher, h.command, h.source])).toEqual([
+      ['PreToolUse', 'Bash', '~/block-rm.sh', 'user'],
+      ['PostToolUse', 'Bash', 'https://example.invalid/hook', 'user'],
+      ['Stop', '', 'echo done', 'project'],
     ])
-    writeFileSync(join(configDir, 'settings.json'), JSON.stringify({ ...userSettings(), hooks: undefined }))
-  })
-
-  it('writes project hooks to the workspace settings', () => {
-    ext.addHook({ event: 'PostToolUse', matcher: 'Write|Edit', command: 'prettier --write', source: 'project' })
-    const project = JSON.parse(readFileSync(join(workspace, '.claude', 'settings.json'), 'utf8'))
-    expect(project.hooks.PostToolUse[0].matcher).toBe('Write|Edit')
-  })
-
-  it('toggles disableAllHooks', async () => {
-    ext.setHooksDisabled(true)
-    expect(userSettings().disableAllHooks).toBe(true)
-    expect((await ext.listHooks()).disabled).toBe(true)
-    ext.setHooksDisabled(false)
-    expect(userSettings().disableAllHooks).toBeUndefined()
-  })
-
-  it('rejects bad ids and input', () => {
-    expect(() => ext.deleteHook('policySettings:Stop:0:0')).toThrow('Invalid hook id')
-    expect(() => ext.deleteHook('userSettings:NoSuchEvent:0:0')).toThrow('Invalid hook id')
-    expect(() => ext.deleteHook('userSettings:Stop:9:9:0123456789ab')).toThrow('changed')
-    const ok = { event: 'Stop', matcher: '', command: 'x', source: 'user' }
-    expect(ext.hookInputSchema.safeParse(ok).success).toBe(true)
-    expect(ext.hookInputSchema.safeParse({ ...ok, event: 'Nope' }).success).toBe(false)
-    expect(ext.hookInputSchema.safeParse({ ...ok, timeout: 0 }).success).toBe(false)
-    expect(ext.hookInputSchema.safeParse({ ...ok, command: '  ' }).success).toBe(false)
-    expect(ext.hookInputSchema.safeParse({ ...ok, matcher: 'a\nb' }).success).toBe(false)
-    expect(ext.hookInputSchema.safeParse({ ...ok, source: 'policy' }).success).toBe(false)
+    expect(listed.hooks[0]!.timeout).toBe(10)
+    expect('addHook' in ext || 'deleteHook' in ext || 'setHooksDisabled' in ext).toBe(false)
+    writeFileSync(join(configDir, 'settings.json'), '{}')
+    writeFileSync(join(workspace, '.claude', 'settings.json'), '{}')
+    resetSettingsCache()
   })
 })
 
@@ -392,16 +310,15 @@ describe('/api/ext endpoints', () => {
           headers: { cookie, origin, 'content-type': 'application/json' },
           ...(body !== undefined && { body: JSON.stringify(body) }),
         })
+      // Read-only, like the TUI's /hooks: no writes, and an edit made outside shows on the next read.
       const hook = { event: 'UserPromptSubmit', matcher: '', command: 'python add-date.py', timeout: 5, source: 'user' }
-      expect((await send('POST', '/api/ext/hooks', hook, 'http://evil.example')).status).toBe(403)
-      expect((await send('POST', '/api/ext/hooks', { ...hook, event: 'Nope' })).status).toBe(400)
-      expect((await send('POST', '/api/ext/hooks', hook)).status).toBe(204)
-      const listed = (await (await send('GET', '/api/ext/hooks')).json()) as { hooks: { id?: string; command: string }[] }
-      const row = listed.hooks.find(h => h.command === 'python add-date.py')!
-      expect((await send('DELETE', '/api/ext/hooks', { id: row.id })).status).toBe(204)
-      expect(userSettings().hooks?.UserPromptSubmit).toBeUndefined()
-
-      // An edit made outside `claude web` (by hand or from a session) shows on the next read.
+      expect((await send('PUT', '/api/ext/memory', { key: 'autoMemory', on: false }, 'http://evil.example')).status).toBe(403)
+      expect((await send('POST', '/api/ext/hooks', hook)).status).toBe(404)
+      expect((await send('PUT', '/api/ext/hooks', { id: 'x', ...hook })).status).toBe(404)
+      expect((await send('DELETE', '/api/ext/hooks', { id: 'x' })).status).toBe(404)
+      expect((await send('PUT', '/api/ext/hooks/disabled', { on: true })).status).toBe(404)
+      expect(userSettings().hooks).toBeUndefined()
+      expect(userSettings().disableAllHooks).toBeUndefined()
       writeFileSync(
         join(configDir, 'settings.json'),
         JSON.stringify({ ...userSettings(), hooks: { Stop: [{ hooks: [{ type: 'command', command: 'echo by-hand' }] }] } }),

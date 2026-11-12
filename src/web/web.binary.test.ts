@@ -1761,21 +1761,18 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       expect(await tip.textContent()).toMatch(/\d/)
       await close()
 
-      // Hooks: add one to user settings, then delete it.
+      // Hooks: read-only like the TUI's /hooks; a hook added to settings.json by hand is listed.
       const userSettings = join(home, '.claude', 'settings.json')
+      const before = readJson(userSettings)
+      writeFileSync(
+        userSettings,
+        JSON.stringify({ ...before, hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: 'echo e2e-hook' }] }] } }),
+      )
       await page.locator('.snav button', { hasText: 'Hooks' }).click()
-      await dialog.locator('[data-hook-new]').click()
-      await dialog.locator('#hk-matcher').fill('Bash')
-      await dialog.locator('#hk-cmd').fill('echo e2e-hook')
-      await dialog.locator('#hook-form button[type=submit]').click()
-      const del = dialog.locator('.hookrow', { hasText: 'echo e2e-hook' }).locator('[data-hook-del]')
-      await del.waitFor()
-      expect(readJson(userSettings).hooks).toEqual({
-        PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: 'echo e2e-hook', timeout: 60 }] }],
-      })
-      await del.click()
-      await del.waitFor({ state: 'detached' })
-      expect(JSON.stringify(readJson(userSettings).hooks ?? {})).not.toContain('e2e-hook')
+      await dialog.locator('.hookrow', { hasText: 'echo e2e-hook' }).waitFor()
+      await dialog.locator('[data-hooks-readonly]').waitFor()
+      expect(await dialog.locator('.hookrow button').count()).toBe(0)
+      writeFileSync(userSettings, JSON.stringify(before))
       await close()
 
       // Skills: preview SKILL.md and turn the skill off in local settings.
@@ -2211,7 +2208,7 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       expect(await focused()).toBe('Search sessions')
       await page.keyboard.press('Escape')
 
-      // A dialog keeps Tab inside, a menu in it closes alone on Esc, and focus returns to the opener.
+      // A dialog keeps Tab inside, Esc closes it, and focus returns to the opener.
       const hooks = page.locator('#sessions nav button', { hasText: 'Hooks' })
       await hooks.focus()
       await page.keyboard.press('Enter')
@@ -2224,18 +2221,6 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
         await page.keyboard.press('Shift+Tab')
         expect(await inDialog()).toBe(true)
       }
-      await page.locator('[data-hook-new]').click()
-      await page.locator('#hk-event').click()
-      await page.locator('.dialog [role="menu"]').waitFor()
-      await page.keyboard.press('Escape')
-      await page.locator('.dialog [role="menu"]').waitFor({ state: 'detached' })
-      expect(await page.locator('.dialog').count()).toBe(1)
-      await page.locator('#hk-cmd').focus()
-      await page.evaluate(() => navigator.clipboard.writeText('echo SWEEP_HOOK'))
-      await page.keyboard.press('ControlOrMeta+v')
-      await page.locator('#hk-matcher').fill('Bash')
-      await page.locator('#hk-matcher').press('Enter')
-      await page.locator('.dialog').getByText('echo SWEEP_HOOK').waitFor()
       await page.keyboard.press('Escape')
       await page.locator('.dialog').waitFor({ state: 'detached' })
       expect(await focused()).toContain('Hooks')
