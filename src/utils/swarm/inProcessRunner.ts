@@ -961,6 +961,39 @@ async function waitForNextPromptOrShutdown(
 }
 
 /**
+ * Summarizes a teammate's history between prompts. The summary request is
+ * sent as a fork of forkContextMessages, so the history itself must be passed
+ * there too (as official does), or the summarizer sees an empty conversation.
+ */
+export function compactTeammateHistory(
+  messages: Message[],
+  toolUseContext: ToolUseContext,
+): ReturnType<typeof compactConversation> {
+  // An isolated copy so compaction does not clear the main session's
+  // readFileState cache or trigger the main session's UI callbacks.
+  const isolatedContext: ToolUseContext = {
+    ...toolUseContext,
+    readFileState: cloneFileStateCache(toolUseContext.readFileState),
+    onCompactProgress: undefined,
+    setStreamMode: undefined,
+  }
+  return compactConversation(
+    messages,
+    isolatedContext,
+    {
+      systemPrompt: asSystemPrompt([]),
+      userContext: {},
+      systemContext: {},
+      toolUseContext: isolatedContext,
+      forkContextMessages: messages,
+    },
+    true, // suppressFollowUpQuestions
+    undefined, // customInstructions
+    true, // isAutoCompact
+  )
+}
+
+/**
  * Runs an in-process teammate with a continuous prompt loop.
  *
  * Executes runAgent() within the teammate's AsyncLocalStorage context,
@@ -1199,28 +1232,9 @@ export async function runInProcessTeammate(
         logForDebugging(
           `[inProcessRunner] ${identity.agentId} compacting history (${tokenCount} tokens)`,
         )
-        // Create an isolated copy of toolUseContext so that compaction
-        // does not clear the main session's readFileState cache or
-        // trigger the main session's UI callbacks.
-        const isolatedContext: ToolUseContext = {
-          ...toolUseContext,
-          readFileState: cloneFileStateCache(toolUseContext.readFileState),
-          onCompactProgress: undefined,
-          setStreamMode: undefined,
-        }
-        const compactedSummary = await compactConversation(
+        const compactedSummary = await compactTeammateHistory(
           allMessages,
-          isolatedContext,
-          {
-            systemPrompt: asSystemPrompt([]),
-            userContext: {},
-            systemContext: {},
-            toolUseContext: isolatedContext,
-            forkContextMessages: [],
-          },
-          true, // suppressFollowUpQuestions
-          undefined, // customInstructions
-          true, // isAutoCompact
+          toolUseContext,
         )
         contextMessages = buildPostCompactMessages(compactedSummary)
         // Reset microcompact state since full compact replaces all
