@@ -22,7 +22,7 @@ test('a host stall after the hook answered does not turn the answer into a timeo
       // points of the Worker round trip (the hook's own work takes ~1ms).
       if (wait) await new Promise(resolve => setTimeout(resolve, wait)); else await Promise.resolve()
       const until = performance.now() + 120
-      while (performance.now() < until) {}
+      while (performance.now() < until) { /* busy host thread */ }
       results.push((await pending).text)
       snapshot.release()
     }
