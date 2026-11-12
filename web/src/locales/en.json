@@ -274,6 +274,7 @@
   "revealLocalTip": "Open the folder holding this file",
   "newMessages": "{n} new messages",
   "newMessages_one": "1 new message",
+  "turnUsage": "Input {input} · Cache read {read} · Cache write {write} · Output {output}",
   "nSteps": "{n} steps",
   "thinkingNow": "Thinking…",
   "newFile": "new file",

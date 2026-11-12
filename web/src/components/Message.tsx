@@ -3,6 +3,7 @@ import {
   type AgentTask,
   type Team,
   formatDuration,
+  formatTokens,
   isFinished,
   taskName,
   teamColor,
@@ -12,7 +13,7 @@ import { type DiffRow, toolDiff } from '../diff'
 import { baseName, splitMentions, tilde } from '../files'
 import type { MessageKey } from '../i18n'
 import { Markdown } from '../markdown/Markdown'
-import { type Block, type Decision, hookBlock, type Item, type ModelOption } from '../protocol'
+import { addUsage, type Block, type Decision, hookBlock, type Item, type ModelOption, type Usage, usageTotal } from '../protocol'
 import type { Source } from '../sources'
 import { stripAnsi, toolMessage, toolSummary } from '../tools'
 import { firstPreviewUrl, WebPreviewContext } from '../webPreview'
@@ -558,7 +559,12 @@ export function joinTurns(items: Item[], splitAfter?: (id: string) => boolean): 
   for (const item of items) {
     const last = out.at(-1)
     if (item.kind === 'assistant' && last?.item.kind === 'assistant' && !splitAfter?.(last.ids.at(-1)!)) {
-      last.item = { ...last.item, blocks: [...last.item.blocks, ...item.blocks] }
+      last.item = {
+        ...last.item,
+        blocks: [...last.item.blocks, ...item.blocks],
+        usage: addUsage(last.item.usage, item.usage),
+        turnUsage: addUsage(last.item.turnUsage, item.turnUsage),
+      }
       last.ids.push(item.id)
     } else {
       out.push({ item, ids: [item.id] })
@@ -611,8 +617,18 @@ function sameMessage(a: MessageProps, b: MessageProps): boolean {
   const x = a.item
   const y = b.item
   if (x === y) return true
-  return x.kind === 'assistant' && y.kind === 'assistant' && x.id === y.id && x.model === y.model && x.streamed === y.streamed && sameList(x.blocks, y.blocks)
+  return (
+    x.kind === 'assistant' &&
+    y.kind === 'assistant' &&
+    x.id === y.id &&
+    x.model === y.model &&
+    x.streamed === y.streamed &&
+    sameList(x.blocks, y.blocks) &&
+    usageTotal(x.turnUsage ?? x.usage ?? NO_USAGE) === usageTotal(y.turnUsage ?? y.usage ?? NO_USAGE)
+  )
 }
+
+const NO_USAGE: Usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
 
 export const Message = memo(MessageView, sameMessage)
 
@@ -849,6 +865,8 @@ function MessageView({
     },
   )
   const firstText = item.blocks.findIndex(b => b?.kind === 'text')
+  // The result's count is the turn's; a reloaded turn sums what its requests recorded.
+  const usage = item.turnUsage ?? item.usage
   const step = (i: number) => {
     const block = item.blocks[i]!
     if (block.kind === 'thinking') {
@@ -973,7 +991,7 @@ function MessageView({
           </ModSite>
         )
       })}
-      {(turn || quote) && !streaming && (
+      {(turn || quote || usage) && !streaming && (
         <div className="msg-acts">
           <button
             type="button"
@@ -1009,6 +1027,19 @@ function MessageView({
             <button type="button" onClick={() => turn.rewind(item.id)}>
               {t('rewind')}
             </button>
+          )}
+          {usage && (
+            <span
+              className="usage"
+              title={t('turnUsage', {
+                input: usage.input.toLocaleString(),
+                read: usage.cacheRead.toLocaleString(),
+                write: usage.cacheWrite.toLocaleString(),
+                output: usage.output.toLocaleString(),
+              })}
+            >
+              {formatTokens(usageTotal(usage))}
+            </span>
           )}
         </div>
       )}

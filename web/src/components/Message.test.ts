@@ -67,6 +67,15 @@ describe('one header per turn', () => {
     expect(joinTurns(items, id => id === 'a1').map(x => x.ids)).toContainEqual(['a1'])
   })
 
+  it('adds up the usage of the joined replies', () => {
+    const u = (input: number) => ({ input, output: 1, cacheRead: 0, cacheWrite: 0 })
+    const [turn] = joinTurns([
+      { kind: 'assistant', id: 'a1', streamed: false, blocks: [text('one')], usage: u(10) },
+      { kind: 'assistant', id: 'a2', streamed: false, blocks: [text('two')], usage: u(20), turnUsage: u(35) },
+    ])
+    expect(turn!.item).toMatchObject({ usage: { input: 30, output: 2 }, turnUsage: { input: 35, output: 1 } })
+  })
+
   it('folds runs of thinking and tools into steps, keeps single steps and task cards apart', () => {
     const blocks = [think, text('a'), think, tool('t1'), think, tool('agent', 'Agent'), tool('agent2', 'Agent'), think, text('b'), undefined]
     expect(turnSegments(blocks, i => i === 5 || i === 6)).toEqual([

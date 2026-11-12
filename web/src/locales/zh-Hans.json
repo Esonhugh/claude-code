@@ -274,6 +274,7 @@
   "revealLocalTip": "打开这个文件所在的文件夹",
   "newMessages": "{n} 条新消息",
   "newMessages_one": "{n} 条新消息",
+  "turnUsage": "输入 {input} · 缓存读 {read} · 缓存写 {write} · 输出 {output}",
   "nSteps": "{n} 个步骤",
   "thinkingNow": "思考中…",
   "newFile": "新文件",
