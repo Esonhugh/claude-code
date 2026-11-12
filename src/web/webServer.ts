@@ -310,7 +310,6 @@ function errorResponse(status: number, message: string): Response {
 
 const EXT_PATH = /^\/api\/ext\/([a-z]+)(?:\/([^/]+))?(?:\/([a-z]+))?$/
 const onBodySchema = lazySchema(() => z.object({ on: z.boolean() }))
-const idBodySchema = lazySchema(() => z.object({ id: z.string().max(300) }))
 const pluginBodySchema = lazySchema(() =>
   z.object({
     id: z.string().max(300),
@@ -346,9 +345,7 @@ async function parseBody<T>(req: Request, schema: z.ZodType<T>): Promise<T> {
  *   GET  /api/ext/memory                 → memory files, auto memory, FTS index
  *   GET  /api/ext/memory/search?q=&scope=
  *   PUT  /api/ext/memory {key, on}       → autoMemoryEnabled / memory.sqlite.enabled
- *   GET  /api/ext/hooks                  → hooks by source, disableAllHooks
- *   POST/PUT/DELETE /api/ext/hooks       → add / {id,...} edit / {id} delete
- *   PUT  /api/ext/hooks/disabled {on}
+ *   GET  /api/ext/hooks                  → hooks by source, disableAllHooks (read-only, like /hooks)
  *   GET  /api/ext/mods                   → plugins with hook modules
  *   GET|PUT /api/ext/mods/:id/source     → entry module source
  *   PUT  /api/ext/mods/:id {on}
@@ -408,21 +405,6 @@ async function handleExtApi(req: Request, url: URL, configDir: string): Promise<
       }
       case 'GET hooks':
         return Response.json(await ext.listHooks())
-      case 'POST hooks':
-        ext.addHook(await parseBody(req, ext.hookInputSchema))
-        return ok()
-      case 'PUT hooks': {
-        const body = await parseBody(req, ext.hookInputSchema.extend({ id: z.string().max(300) }))
-        ext.updateHook(body.id, body)
-        return ok()
-      }
-      case 'DELETE hooks':
-        ext.deleteHook((await parseBody(req, idBodySchema())).id)
-        return ok()
-      case 'PUT hooks/:arg':
-        if (arg !== 'disabled') break
-        ext.setHooksDisabled((await parseBody(req, onBodySchema())).on)
-        return ok()
       case 'GET mods':
         return Response.json(await ext.listMods())
       case 'PUT mods/:arg':

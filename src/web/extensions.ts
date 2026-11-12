@@ -7,7 +7,6 @@
  * its workspace. The browser names things (skill, plugin, hook position);
  * file paths are always looked up here, never taken from a request.
  */
-import { createHash } from 'crypto'
 import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from 'fs'
 import { mkdir, readFile, writeFile } from 'fs/promises'
 import { homedir } from 'os'
@@ -15,7 +14,6 @@ import { basename, dirname, join, relative, resolve, sep } from 'path'
 import { z } from 'zod/v4'
 import { getOriginalCwd } from '../bootstrap/state.js'
 import { type Command, clearCommandsCache, getCommandName, getCommands } from '../commands.js'
-import { HOOK_EVENTS } from '../entrypoints/sdk/coreTypes.js'
 import { scanMemoryFiles } from '../memdir/memoryScan.js'
 import { getAutoMemPath, isAutoMemoryEnabled } from '../memdir/paths.js'
 import type { HookCommand, HookMatcher } from '../schemas/hooks.js'
@@ -487,57 +485,17 @@ export function setMemoryToggle(key: 'autoMemory' | 'sqlite', on: boolean): void
   if (error) throw new ExtError(error.message, 500)
 }
 
-// ---- hooks (settings `hooks`, written like the TUI's settings writes) ----
+// ---- hooks (read-only, like the TUI's /hooks: edit settings.json or ask Claude) ----
 
-const HOOK_SOURCES = { user: 'userSettings', project: 'projectSettings' } as const
 const EDITABLE: EditableSettingSource[] = ['userSettings', 'projectSettings', 'localSettings']
-type HookEvent = (typeof HOOK_EVENTS)[number]
-// source:event:group:index:fingerprint — the place it was listed at, and what was there.
-const HOOK_ID = /^(userSettings|projectSettings|localSettings):([A-Za-z]+):(\d{1,4}):(\d{1,4}):([0-9a-f]{12})$/
 
-function hookFingerprint(matcher: string | undefined, hook: HookCommand): string {
-  return createHash('sha256').update(JSON.stringify([matcher ?? '', hook])).digest('hex').slice(0, 12)
-}
-
-export const hookInputSchema = z.object({
-  event: z.enum(HOOK_EVENTS),
-  matcher: z.string().max(200).regex(/^[^\n\r\0]*$/),
-  command: z.string().trim().min(1).max(4000).regex(/^[^\0]*$/),
-  timeout: z.number().int().min(1).max(600).optional(),
-  source: z.enum(['user', 'project']),
-})
-export type HookInput = z.infer<typeof hookInputSchema>
-
-function settingsHooks(source: EditableSettingSource): Partial<Record<HookEvent, HookMatcher[]>> {
-  return (getSettingsForSource(source)?.hooks ?? {}) as Partial<Record<HookEvent, HookMatcher[]>>
-}
-
-/**
- * Rewrites `hooks[event]` from the file as it is on disk now (under the
- * settings lock), so hooks written since this process read the file are kept.
- */
-function editHooks(source: EditableSettingSource, event: HookEvent, edit: (matchers: HookMatcher[]) => void): void {
-  let refused: ExtError | undefined
-  const { error } = updateSettingsForSource(source, existing => {
-    const matchers = structuredClone(((existing.hooks ?? {}) as Partial<Record<HookEvent, HookMatcher[]>>)[event] ?? [])
-    try {
-      edit(matchers)
-    } catch (err) {
-      if (!(err instanceof ExtError)) throw err
-      refused = err
-      return {}
-    }
-    const kept = matchers.filter(m => m.hooks.length > 0)
-    return { hooks: { [event]: kept.length ? kept : undefined } }
-  })
-  if (refused) throw refused
-  if (error) throw new ExtError(error.message, 500)
+function settingsHooks(source: EditableSettingSource): Partial<Record<string, HookMatcher[]>> {
+  return (getSettingsForSource(source)?.hooks ?? {}) as Partial<Record<string, HookMatcher[]>>
 }
 
 export async function listHooks() {
   const seen = new Set<string>()
   const rows: {
-    id?: string
     event: string
     matcher: string
     command: string
@@ -550,10 +508,9 @@ export async function listHooks() {
     if (!file || seen.has(resolve(file))) continue
     seen.add(resolve(file))
     for (const [event, matchers] of Object.entries(settingsHooks(source))) {
-      ;(matchers ?? []).forEach((m, mi) =>
-        m.hooks.forEach((h, hi) =>
+      ;(matchers ?? []).forEach(m =>
+        m.hooks.forEach(h =>
           rows.push({
-            id: `${source}:${event}:${mi}:${hi}:${hookFingerprint(m.matcher, h)}`,
             event,
             matcher: m.matcher ?? '',
             command: hookText(h),
@@ -599,101 +556,6 @@ function hookText(h: HookCommand): string {
       return h.url
     default:
       return h.prompt
-  }
-}
-
-type HookId = { source: EditableSettingSource; event: HookEvent; mi: number; hi: number; fingerprint: string }
-
-function parseHookId(id: string): HookId {
-  const match = HOOK_ID.exec(id)
-  if (!match || !(HOOK_EVENTS as readonly string[]).includes(match[2]!)) throw new ExtError('Invalid hook id')
-  return {
-    source: match[1] as EditableSettingSource,
-    event: match[2] as HookEvent,
-    mi: Number(match[3]),
-    hi: Number(match[4]),
-    fingerprint: match[5]!,
-  }
-}
-
-/**
- * Where the hook the list showed is now: at its listed place, else the one
- * place an identical hook moved to (another process added or removed hooks).
- */
-function findListedHook(matchers: HookMatcher[], id: HookId): [number, number] {
-  const at = (mi: number, hi: number) => {
-    const hook = matchers[mi]?.hooks[hi]
-    return !!hook && hookFingerprint(matchers[mi]!.matcher, hook) === id.fingerprint
-  }
-  if (at(id.mi, id.hi)) return [id.mi, id.hi]
-  const found = matchers.flatMap((m, mi) => m.hooks.flatMap((_, hi) => (at(mi, hi) ? [[mi, hi] as [number, number]] : [])))
-  if (found.length === 1) return found[0]!
-  throw new ExtError('This hook was changed elsewhere; the list now shows it as it is', 409)
-}
-
-/** Removes one hook; the matcher group and event go too once empty. */
-export function deleteHook(id: string): void {
-  const listed = parseHookId(id)
-  editHooks(listed.source, listed.event, matchers => {
-    const [mi, hi] = findListedHook(matchers, listed)
-    matchers[mi]!.hooks.splice(hi, 1)
-  })
-}
-
-function pushHook(matchers: HookMatcher[], matcher: string, hook: HookCommand): void {
-  const group = matchers.find(m => (m.matcher ?? '') === matcher)
-  if (group) group.hooks.push(hook)
-  else matchers.push({ ...(matcher && { matcher }), hooks: [hook] })
-}
-
-function commandHook(input: HookInput): HookCommand {
-  return {
-    type: 'command',
-    command: input.command.trim(),
-    ...(input.timeout !== undefined && { timeout: input.timeout }),
-  }
-}
-
-export function addHook(input: HookInput): void {
-  editHooks(HOOK_SOURCES[input.source], input.event, matchers => pushHook(matchers, input.matcher, commandHook(input)))
-}
-
-/**
- * Changes what the dialog shows (text, timeout, matcher, event, file) and keeps
- * the rest of the hook: its type (an http hook stays one), async, headers, ….
- */
-export function updateHook(id: string, input: HookInput): void {
-  const listed = parseHookId(id)
-  const { source, event } = listed
-  let old: HookCommand | undefined
-  editHooks(source, event, matchers => {
-    const [mi, hi] = findListedHook(matchers, listed)
-    old = matchers[mi]!.hooks[hi]!
-    const text = input.command.trim()
-    const { timeout: _, ...rest } = old
-    const hook = {
-      ...rest,
-      ...(old.type === 'command' ? { command: text } : old.type === 'http' ? { url: text } : { prompt: text }),
-      ...(input.timeout !== undefined && { timeout: input.timeout }),
-    } as HookCommand
-    const target = HOOK_SOURCES[input.source]
-    if (target === source && input.event === event && (matchers[mi]!.matcher ?? '') === input.matcher) {
-      matchers[mi]!.hooks[hi] = hook
-      old = undefined
-      return
-    }
-    matchers[mi]!.hooks.splice(hi, 1)
-    old = hook
-  })
-  if (old) editHooks(HOOK_SOURCES[input.source], input.event, matchers => pushHook(matchers, input.matcher, old!))
-}
-
-/** "停用全部 hooks": `disableAllHooks` in user settings; turning it back on clears every editable file. */
-export function setHooksDisabled(disabled: boolean): void {
-  for (const source of disabled ? (['userSettings'] as const) : EDITABLE) {
-    if (!disabled && getSettingsForSource(source)?.disableAllHooks === undefined) continue
-    const { error } = updateSettingsForSource(source, { disableAllHooks: disabled ? true : undefined })
-    if (error) throw new ExtError(error.message, 500)
   }
 }
 

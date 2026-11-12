@@ -291,10 +291,6 @@ h1, h2, h3 { text-wrap: balance; margin: 0 }
 .diffpane .btn[data-modpress="ask"][aria-pressed="true"] { background: var(--accent-soft); border-color: var(--accent); color: var(--accent) }
 .diffpane .diffview { border: 1px solid var(--line) }
 .hookrow code { font-size: 12px; overflow-wrap: anywhere }
-.hookform { display: grid; grid-template-columns: auto 1fr; gap: 6px 10px; align-items: center; padding: 10px; border: 1px solid var(--line); border-radius: 10px; margin-top: 8px }
-.hookform input, .hookform select, .modsrc { border: 1px solid var(--line); border-radius: 8px; padding: 6px 9px; background: var(--bg); color: var(--fg); font: inherit; font-size: 12.5px; min-width: 0 }
-.hookform .btns { grid-column: 1 / -1; justify-content: flex-end }
-.hookform .footbtn { width: 100%; justify-content: space-between; border: 1px solid var(--line); border-radius: 8px; padding: 6px 9px; background: var(--bg); color: var(--fg) }
 .pickmenu { top: calc(100% + 4px); bottom: auto; width: 100%; max-height: 240px; overflow: auto }
 .modsrc { width: 100%; min-height: 220px; font-family: var(--f-mono); font-size: 12px; line-height: 1.5; resize: vertical; box-sizing: border-box }
 .applist { border-top: 1px solid var(--line); margin-top: 10px; padding-top: 8px }
