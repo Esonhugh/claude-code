@@ -332,7 +332,8 @@ function DiffBody({
 export function decisionText(decision: Decision, t: T): string {
   if (decision.choice === 'deny') return t('decisionDeny')
   if (decision.choice === 'allow') return t('decisionAllow')
-  return [t('decisionAlways'), decision.rules].filter(Boolean).join(' ')
+  const always = decision.scope === 'user' ? 'decisionAlwaysUser' : decision.scope === 'project' ? 'decisionAlwaysProject' : 'decisionAlways'
+  return [t(always), decision.rules].filter(Boolean).join(' ')
 }
 
 type T = (key: MessageKey, vars?: Record<string, string>) => string

@@ -16,7 +16,7 @@ import {
 import { agentCommands, filterCommands, moveSelection, paletteQuery, recallList, recallPrompt, type SlashCommand, typedInFull } from '../commands'
 import { type Daybreak, type HistoryScope, loadPromptHistory, recordPrompt } from '../api'
 import { formatBytes, mentionPath } from '../files'
-import { type Approval, type ApprovalChoice, approvalRules, type CodexAppMention, type ContextUsage, type Goal, type ModelOption, type PromptDecoration, type Todo } from '../protocol'
+import { type Approval, type ApprovalChoice, approvalRules, approvalScope, approvalUpdates, type CodexAppMention, type ContextUsage, type Goal, type ModelOption, type PromptDecoration, type Todo } from '../protocol'
 import { modColor } from './Mods'
 import { approvalText } from '../tools'
 import { modelName, modelOption } from './Message'
@@ -1156,11 +1156,18 @@ export function ModeButton({
 
 /** Labels of the approval options, numbered like the prototype's dock. */
 function approvalOptions(approval: Approval, t: T): { key: ApprovalChoice; label: string; hint?: string }[] {
-  const rules = approvalRules(approval)
+  // Named for where the answer is kept and what it adds, as the TUI's option says.
+  const { rules, directories, mode } = approvalRules(approval)
+  const scope = approvalScope(approval)
+  const hint = [
+    ...rules,
+    ...(directories.length ? [t('approvalDirs', { dirs: directories.join(', ') })] : []),
+    ...(mode ? [t('approvalMode', { mode: modeOf(mode).label })] : []),
+  ].join(', ')
   return [
     { key: 'allow', label: t('allowOnce') },
-    ...(approval.suggestions.length
-      ? [{ key: 'always' as const, label: t('allowSession'), hint: rules.join(', ') || undefined }]
+    ...(approvalUpdates(approval).length
+      ? [{ key: 'always' as const, label: t(scope === 'user' ? 'allowUser' : scope === 'project' ? 'allowProject' : 'allowSession'), hint: hint || undefined }]
       : []),
     { key: 'deny', label: t('denyTell') },
   ]

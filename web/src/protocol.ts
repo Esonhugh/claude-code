@@ -102,7 +102,7 @@ export type Approval = {
 }
 
 /** The user's answer to an approval, shown where the request was. */
-export type Decision = { toolName: string; choice: ApprovalChoice; rules?: string }
+export type Decision = { toolName: string; choice: ApprovalChoice; rules?: string; scope?: 'session' | 'project' | 'user' }
 
 /** `/goal` as `system/goal_state_changed` reports it. `checks`: reasons the condition was not met yet. */
 export type Goal = {
@@ -514,19 +514,38 @@ export function queueUserMessage(state: ChatState, text: string, uuid: string, i
   return { ...state, queued: [...state.queued, { kind: 'user', id: uuid, text, ...(images?.length && { images }) }] }
 }
 
-/** The rules an "always allow" answer adds, as `Bash(npm test:*)`. */
-export function approvalRules(approval: Approval): string[] {
-  return approval.suggestions
-    .flatMap(s => {
-      const rule = s as { rules?: { toolName?: string; ruleContent?: string }[] }
-      return (rule.rules ?? []).map(r => (r.ruleContent ? `${r.toolName}(${r.ruleContent})` : (r.toolName ?? '')))
-    })
+/**
+ * The updates an "always allow" answer applies. As the TUI, a shell command's
+ * suggested mode switch is left out: its option names rules and folders only.
+ */
+export function approvalUpdates(approval: Approval): Record<string, unknown>[] {
+  const updates = approval.suggestions.filter(isObj)
+  return ['Bash', 'PowerShell'].includes(approval.toolName) ? updates.filter(u => u.type !== 'setMode') : updates
+}
+
+/** Where an "always allow" answer is kept: this session only, the project's settings or the user's. */
+export function approvalScope(approval: Approval): 'session' | 'project' | 'user' {
+  const where = approvalUpdates(approval).map(u => u.destination)
+  if (where.includes('userSettings')) return 'user'
+  return where.some(d => d === 'localSettings' || d === 'projectSettings') ? 'project' : 'session'
+}
+
+/** What an "always allow" answer adds: rules as `Bash(npm test:*)`, folders, and a mode to switch to. */
+export function approvalRules(approval: Approval): { rules: string[]; directories: string[]; mode?: string } {
+  const updates = approvalUpdates(approval)
+  const rules = updates
+    .flatMap(u => (Array.isArray(u.rules) ? u.rules.filter(isObj) : []))
+    .map(r => (str(r.ruleContent) ? `${str(r.toolName) ?? ''}(${str(r.ruleContent)})` : (str(r.toolName) ?? '')))
     .filter(Boolean)
+  const directories = updates.flatMap(u => (Array.isArray(u.directories) ? u.directories.filter(d => typeof d === 'string') : []))
+  const mode = updates.flatMap(u => (u.type === 'setMode' && str(u.mode) ? [str(u.mode)!] : [])).at(-1)
+  return { rules, directories, ...(mode && { mode }) }
 }
 
 /** Drops an answered approval and remembers the answer for its place in the chat. */
 export function answerApproval(state: ChatState, approval: Approval, choice: ApprovalChoice): ChatState {
-  const rules = choice === 'always' ? approvalRules(approval).join(', ') : ''
+  const added = approvalRules(approval)
+  const rules = choice === 'always' ? [...added.rules, ...added.directories].join(', ') : ''
   return {
     ...removeApproval(state, approval.requestId),
     decisions: {
@@ -535,6 +554,7 @@ export function answerApproval(state: ChatState, approval: Approval, choice: App
         toolName: approval.toolName,
         choice,
         ...(rules && { rules }),
+        ...(choice === 'always' && { scope: approvalScope(approval) }),
       },
     },
   }
@@ -919,6 +939,10 @@ export function reduce(state: ChatState, raw: unknown): ChatState {
         }
       }
       if (raw.subtype === 'goal_state_changed') return reduceGoal(state, raw)
+      // The engine changed the mode itself: an approval's setMode suggestion, an approved plan.
+      if (raw.subtype === 'status' && typeof raw.permissionMode === 'string') {
+        return { ...state, permissionMode: raw.permissionMode }
+      }
       if (raw.subtype !== 'init') {
         const tasks = reduceTasks(state.tasks, raw)
         return tasks === state.tasks ? state : { ...state, tasks, ...noteEnded(state, tasks, raw) }
@@ -1501,8 +1525,8 @@ export function permissionResponse(
       : {
           behavior: 'allow',
           updatedInput: approval.input,
-          ...(choice === 'always' && approval.suggestions.length
-            ? { updatedPermissions: approval.suggestions }
+          ...(choice === 'always' && approvalUpdates(approval).length
+            ? { updatedPermissions: approvalUpdates(approval) }
             : {}),
         }
   return {
