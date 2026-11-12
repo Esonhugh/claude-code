@@ -86,6 +86,7 @@ import { getFsImplementation } from './fsOperations.js'
 import { getWorktreePaths } from './getWorktreePaths.js'
 import { getBranch } from './git.js'
 import { gracefulShutdownSync, isShuttingDown } from './gracefulShutdown.js'
+import { isPeerPrompt } from './peerProtocol.js'
 import { captureSessionCostState, parseSessionCostState } from './sessionCostState.js'
 import { parseJSONL } from './json.js'
 import { logError } from './log.js'
@@ -1222,7 +1223,8 @@ class Project {
       // Overwritten every turn by design.
       if (!isSidechain) {
         const text = getFirstMeaningfulUserMessageTextContent(messages)
-        if (text) {
+        // A teammate's or another session's message is not what the user did.
+        if (text && !isPeerPrompt(text)) {
           const flat = text.replace(/\n/g, ' ').trim()
           this.currentSessionLastPrompt =
             flat.length > 200 ? flat.slice(0, 200).trim() + '…' : flat

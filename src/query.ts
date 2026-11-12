@@ -132,9 +132,12 @@ import { queryCheckpoint } from './utils/queryProfiler.js'
 import { applyToolResultBudget } from './utils/toolResultStorage.js'
 import { recordContentReplacement } from './utils/sessionStorage.js'
 import { handleStopHooks } from './query/stopHooks.js'
-import { SEND_MESSAGE_TOOL_NAME } from './tools/SendMessageTool/constants.js'
+import { MAIN_RECIPIENT, SEND_MESSAGE_TOOL_NAME } from './tools/SendMessageTool/constants.js'
 import { TEAM_LEAD_NAME } from './utils/swarm/constants.js'
-import { isInProcessTeammate } from './utils/teammateContext.js'
+import { getTeammateContext, isInProcessTeammate } from './utils/teammateContext.js'
+import { getTaskListId, listTasks } from './utils/tasks.js'
+import { isLocalShellTask } from './tasks/LocalShellTask/guards.js'
+import { isTerminalTask } from './tasks/TerminalTask.js'
 import { buildQueryConfig } from './query/config.js'
 import { productionDeps, type QueryDeps } from './query/deps.js'
 import type { Terminal, Continue } from './query/transitions.js'
@@ -2203,7 +2206,8 @@ async function* queryLoop(
       return { reason: 'hook_stopped' }
     }
 
-    // A teammate whose whole response was a plain message to the team lead has
+    // A teammate whose whole response was a plain message to the team lead
+    // ("main" also reaches the lead's conversation) has
     // reported. End the turn here (stop hooks included) instead of asking the
     // model once more just to hear that it is done.
     if (
@@ -2212,11 +2216,19 @@ async function* queryLoop(
       toolUseBlocks.every(block => {
         const input = block.input as { to?: unknown; message?: unknown }
         // eslint-disable-next-line custom-rules/require-tool-match-name -- ToolUseBlock.name has no aliases
-        return block.name === SEND_MESSAGE_TOOL_NAME && input.to === TEAM_LEAD_NAME && typeof input.message === 'string'
+        return block.name === SEND_MESSAGE_TOOL_NAME && (input.to === TEAM_LEAD_NAME || input.to === MAIN_RECIPIENT) && typeof input.message === 'string'
       }) &&
       toolResults.every(
         result => result.type === 'user' && Array.isArray(result.message.content) &&
           !result.message.content.some(block => block.type === 'tool_result' && block.is_error),
+      ) &&
+      // A progress report while work is still going is not the end: the turn
+      // ending would kill its background shells and strand its task.
+      !Object.values(toolUseContext.getAppState().tasks).some(
+        t => (isLocalShellTask(t) || isTerminalTask(t)) && t.agentId === toolUseContext.agentId && t.status === 'running',
+      ) &&
+      !(await listTasks(getTaskListId())).some(
+        t => t.status === 'in_progress' && (t.owner === getTeammateContext()?.agentName || t.owner === getTeammateContext()?.agentId),
       )
     ) {
       const stopHookResult = yield* handleStopHooks(

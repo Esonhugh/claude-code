@@ -501,7 +501,7 @@ import { hostTerminalInputSchema } from '../tools/TerminalTool/actionSchemas.js'
 import { askApplyPatchPerFile, isApplyPatchRule } from '../tools/ApplyPatchTool/askPerFile.js'
 import { APPLY_PATCH_TOOL_NAME } from '../tools/ApplyPatchTool/prompt.js'
 import { isTerminalTaskStatus } from '../taskStatus.js'
-import { drainSdkOutput, getTaskRunId } from '../utils/sdkEventQueue.js'
+import { drainSdkOutput, getTaskRunId, setSdkEventListener } from '../utils/sdkEventQueue.js'
 import { initializeGrowthBook } from '../services/analytics/growthbook.js'
 import { errorMessage, toError } from '../utils/errors.js'
 import { sleep } from '../utils/sleep.js'
@@ -2706,6 +2706,17 @@ function runHeadlessStreaming(
           if (typeof modelOverride === 'string') {
             activeUserSpecifiedModel = modelOverride
           }
+          // ask() yields nothing while a tool runs; stream task events (a
+          // background agent or teammate finishing) as they are queued.
+          let sdkFlushScheduled = false
+          setSdkEventListener(() => {
+            if (sdkFlushScheduled) return
+            sdkFlushScheduled = true
+            queueMicrotask(() => {
+              sdkFlushScheduled = false
+              for (const event of drainSdkOutput()) output.enqueue(event)
+            })
+          })
           try {
             await runWithWorkload(cmd.workload ?? options.workload, async () => {
               for await (const message of ask({
@@ -2831,6 +2842,7 @@ function runHeadlessStreaming(
             for (const queued of batch.slice(1)) queued.promptSubmitReceipt?.admit({drop:FAILED_PROMPT_BATCH_DROP})
             throw error
           } finally {
+            setSdkEventListener(undefined)
             sendNowRunningToolUseIds.clear()
             if (!promptAdmitted) cmd.promptSubmitReceipt?.admit({drop:UNSUBMITTED_PROMPT_DROP})
           }

@@ -45,3 +45,44 @@ test('the team lead gets teammate messages mid-turn', async () => {
   ])
   expect(marked).toEqual(['team-lead'])
 })
+
+const { createTeammateContext, runWithTeammateContext } = await import('./teammateContext.js')
+
+const leadState = () => ({
+  ...getDefaultAppState(),
+  teamContext: {
+    teamName: 'mid-turn',
+    teamFilePath: '/nonexistent/config.json',
+    leadAgentId: 'team-lead@mid-turn',
+    teammates: {},
+  },
+})
+
+// Subagents, workflow agents and forks share the lead's AppState; reading the
+// mailbox there marks the lead's messages read in the wrong model's context.
+test('only the mailbox owner\'s own loop reads it', async () => {
+  marked.length = 0
+  const state = leadState()
+  const sub = { agentId: 'asub', getAppState: () => state, setAppState: () => {} } as unknown as ToolUseContext
+  expect(await getTeammateMailboxAttachments(sub)).toEqual([])
+
+  const t1 = { type: 'in_process_teammate', status: 'running', identity: { agentId: 't1@mid-turn', agentName: 't1', teamName: 'mid-turn' } }
+  const withTeammate = { ...state, tasks: { task1: t1 } } as unknown as typeof state
+  const inTeammate = (agentId: string) => runWithTeammateContext(
+    createTeammateContext({ agentId: 't1@mid-turn', agentName: 't1', teamName: 'mid-turn', planModeRequired: false, parentSessionId: 's', abortController: new AbortController() }),
+    () => getTeammateMailboxAttachments({ agentId, getAppState: () => withTeammate, setAppState: () => {} } as unknown as ToolUseContext),
+  )
+  expect(await inTeammate('inner-sub')).toEqual([])
+  expect(marked).toEqual([])
+  expect((await inTeammate('t1@mid-turn')).length).toBe(1)
+  expect(marked).toEqual(['t1'])
+})
+
+test('the lead viewing a teammate still reads its own mailbox, not the teammate\'s', async () => {
+  marked.length = 0
+  const t1 = { type: 'in_process_teammate', status: 'running', identity: { agentId: 't1@mid-turn', agentName: 't1', teamName: 'mid-turn' } }
+  const state = { ...leadState(), tasks: { task1: t1 }, viewingAgentTaskId: 'task1' } as unknown as ReturnType<typeof leadState>
+  const context = { getAppState: () => state, setAppState: () => {} } as unknown as ToolUseContext
+  expect((await getTeammateMailboxAttachments(context)).length).toBe(1)
+  expect(marked).toEqual(['team-lead'])
+})
