@@ -19,6 +19,7 @@ import {
   type UserConfigValues,
   validateUserConfig,
 } from './mcpbHandler.js'
+import { getInPlaceEscapeError } from './managedPlugins.js'
 import { getPluginDataDir } from './pluginDirectories.js'
 import {
   getPluginStorageId,
@@ -140,8 +141,9 @@ export async function loadPluginMcpServers(
 
   // Check for .mcp.json in plugin directory first (lowest priority)
   const defaultMcpServers = await loadMcpServersFromFile(
-    plugin.path,
+    plugin,
     '.mcp.json',
+    errors,
   )
   if (defaultMcpServers) {
     servers = { ...servers, ...defaultMcpServers }
@@ -166,8 +168,9 @@ export async function loadPluginMcpServers(
       } else {
         // Path to JSON file
         const mcpServers = await loadMcpServersFromFile(
-          plugin.path,
+          plugin,
           mcpServersSpec,
+          errors,
         )
         if (mcpServers) {
           servers = { ...servers, ...mcpServers }
@@ -186,7 +189,7 @@ export async function loadPluginMcpServers(
                 return await loadMcpServersFromMcpb(plugin, spec, errors)
               }
               // Path to JSON file
-              return await loadMcpServersFromFile(plugin.path, spec)
+              return await loadMcpServersFromFile(plugin, spec, errors)
             }
             // Inline MCP server configs (sync)
             return spec
@@ -221,11 +224,17 @@ export async function loadPluginMcpServers(
  * and is specifically for plugin MCP configs
  */
 async function loadMcpServersFromFile(
-  pluginPath: string,
+  plugin: LoadedPlugin,
   relativePath: string,
+  errors: PluginError[],
 ): Promise<Record<string, McpServerConfig> | null> {
   const fs = getFsImplementation()
-  const filePath = join(pluginPath, relativePath)
+  const filePath = join(plugin.path, relativePath)
+  const escape = await getInPlaceEscapeError(plugin, filePath, 'mcp-servers')
+  if (escape) {
+    errors.push(escape)
+    return null
+  }
 
   let content: string
   try {

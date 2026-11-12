@@ -8,7 +8,7 @@ import {
 } from '../../bootstrap/state.js'
 import { parseHooksFromFrontmatter } from '../../skills/loadSkillsDir.js'
 import type { Command } from '../../types/command.js'
-import { getPluginErrorMessage } from '../../types/plugin.js'
+import { getPluginErrorMessage, type LoadedPlugin } from '../../types/plugin.js'
 import {
   parseArgumentNames,
   substituteArguments,
@@ -33,6 +33,7 @@ import {
 import { parseUserSpecifiedModel } from '../model/model.js'
 import { getCommandAllowedTools } from '../permissions/permissionsLoader.js'
 import { executeShellCommandsInPrompt } from '../promptShellExecution.js'
+import { getInPlaceEscapeError } from './managedPlugins.js'
 import { loadAllPluginsCacheOnly } from './pluginLoader.js'
 import {
   loadPluginOptions,
@@ -733,12 +734,16 @@ async function loadSkillsFromDirectory(
   pluginManifest: PluginManifest,
   pluginPath: string,
   loadedPaths: Set<string>,
+  plugin: LoadedPlugin,
 ): Promise<Command[]> {
   const fs = getFsImplementation()
   const skills: Command[] = []
 
   // First, check if skillsPath itself contains SKILL.md (direct skill directory)
   const directSkillPath = join(skillsPath, 'SKILL.md')
+  if (await getInPlaceEscapeError(plugin, directSkillPath, 'skills')) {
+    return skills
+  }
   let directSkillContent: string | null = null
   try {
     directSkillContent = await fs.readFile(directSkillPath, {
@@ -821,6 +826,9 @@ async function loadSkillsFromDirectory(
 
       const skillDirPath = join(skillsPath, entry.name)
       const skillFilePath = join(skillDirPath, 'SKILL.md')
+      if (await getInPlaceEscapeError(plugin, skillFilePath, 'skills')) {
+        return
+      }
 
       // Try to read SKILL.md directly; skip if it doesn't exist
       let content: string
@@ -921,6 +929,7 @@ export const getPluginSkills = memoize(async (): Promise<Command[]> => {
             plugin.manifest,
             plugin.path,
             loadedPaths,
+            plugin,
           )
           pluginSkills.push(...skills)
 
@@ -955,6 +964,7 @@ export const getPluginSkills = memoize(async (): Promise<Command[]> => {
                 plugin.manifest,
                 plugin.path,
                 loadedPaths,
+                plugin,
               )
 
               logForDebugging(

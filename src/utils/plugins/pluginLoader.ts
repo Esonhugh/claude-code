@@ -110,6 +110,7 @@ import {
 } from '../settings/settingsCache.js'
 import type { HooksSettings } from '../settings/types.js'
 import { SettingsSchema } from '../settings/types.js'
+import { stripBOM } from '../jsonRead.js'
 import { jsonParse, jsonStringify } from '../slowOperations.js'
 import { getAddDirEnabledPlugins } from './addDirPluginSettings.js'
 import { verifyAndDemote } from './dependencyResolver.js'
@@ -121,7 +122,7 @@ import {
   isInstallationRelevantToCurrentProject,
   readInstalledPluginsForContractValidation,
 } from './installedPluginsManager.js'
-import { getInPlacePluginSource, getManagedPluginNames, getMarketplaceDeclarationRefusal } from './managedPlugins.js'
+import { getInPlaceEscapeError, getInPlacePluginSource, getManagedPluginNames, getMarketplaceDeclarationRefusal } from './managedPlugins.js'
 import { areSideloadFlagsDisabled, getSideloadFlagsError } from './sideloadPolicy.js'
 import {
   formatSourceForDisplay,
@@ -324,61 +325,53 @@ export async function resolvePluginPath(
 
 /**
  * Recursively copy a directory.
+ * Symlinks that resolve inside `root` (the directory first passed in) are kept
+ * as relative links; links that point outside it are dropped, so a plugin
+ * cannot pull outside files into its cache.
  * Exported for testing purposes.
  */
-export async function copyDir(src: string, dest: string): Promise<void> {
+export async function copyDir(
+  src: string,
+  dest: string,
+  root = src,
+): Promise<void> {
   await getFsImplementation().mkdir(dest)
 
   const entries = await readdir(src, { withFileTypes: true })
+  let resolvedRoot: string | undefined
 
   for (const entry of entries) {
     const srcPath = join(src, entry.name)
     const destPath = join(dest, entry.name)
 
     if (entry.isDirectory()) {
-      await copyDir(srcPath, destPath)
+      await copyDir(srcPath, destPath, root)
     } else if (entry.isFile()) {
       await copyFile(srcPath, destPath)
     } else if (entry.isSymbolicLink()) {
-      const linkTarget = await readlink(srcPath)
-
-      // Resolve the symlink to get the actual target path
-      // This prevents circular symlinks when src and dest overlap (e.g., via symlink chains)
-      let resolvedTarget: string
-      try {
-        resolvedTarget = await realpath(srcPath)
-      } catch {
-        // Broken symlink - copy the raw link target as-is
-        await symlink(linkTarget, destPath)
+      resolvedRoot ??= await realpath(root).catch(() => resolve(root))
+      // Resolve the symlink to get the actual target path. A broken link is
+      // judged by where its raw target would point.
+      const resolvedTarget = await realpath(srcPath).catch(async () =>
+        resolve(await realpath(src).catch(() => src), await readlink(srcPath)),
+      )
+      const rootPrefix = resolvedRoot.endsWith(sep)
+        ? resolvedRoot
+        : resolvedRoot + sep
+      if (
+        !resolvedTarget.startsWith(rootPrefix) &&
+        resolvedTarget !== resolvedRoot
+      ) {
+        logForDebugging(
+          `Skipping symlink ${srcPath}: it points outside the plugin directory`,
+          { level: 'warn' },
+        )
         continue
       }
-
-      // Resolve the source directory to handle symlinked source dirs
-      let resolvedSrc: string
-      try {
-        resolvedSrc = await realpath(src)
-      } catch {
-        resolvedSrc = src
-      }
-
-      // Check if target is within the source tree (using proper path prefix matching)
-      const srcPrefix = resolvedSrc.endsWith(sep)
-        ? resolvedSrc
-        : resolvedSrc + sep
-      if (
-        resolvedTarget.startsWith(srcPrefix) ||
-        resolvedTarget === resolvedSrc
-      ) {
-        // Target is within source tree - create relative symlink that preserves
-        // the same structure in the destination
-        const targetRelativeToSrc = relative(resolvedSrc, resolvedTarget)
-        const destTargetPath = join(dest, targetRelativeToSrc)
-        const relativeLinkPath = relative(dirname(destPath), destTargetPath)
-        await symlink(relativeLinkPath, destPath)
-      } else {
-        // Target is outside source tree - use absolute resolved path
-        await symlink(resolvedTarget, destPath)
-      }
+      // Keep the same structure in the destination as a relative link.
+      const destRoot = join(dest, relative(src, root))
+      const destTargetPath = join(destRoot, relative(resolvedRoot, resolvedTarget))
+      await symlink(relative(dirname(destPath), destTargetPath), destPath)
     }
   }
 }
@@ -1045,7 +1038,7 @@ export async function cachePlugin(
     if (await pathExists(manifestPath)) {
       try {
         const content = await readFile(manifestPath, { encoding: 'utf-8' })
-        const parsed = jsonParse(content)
+        const parsed = jsonParse(stripBOM(content))
         const result = PluginManifestSchema().safeParse(parsed)
 
         if (result.success) {
@@ -1091,7 +1084,7 @@ export async function cachePlugin(
         const content = await readFile(legacyManifestPath, {
           encoding: 'utf-8',
         })
-        const parsed = jsonParse(content)
+        const parsed = jsonParse(stripBOM(content))
         const result = PluginManifestSchema().safeParse(parsed)
 
         if (result.success) {
@@ -1255,7 +1248,7 @@ export async function loadPluginManifest(
   try {
     // Read and parse the manifest JSON file
     const content = await readFile(manifestPath, { encoding: 'utf-8' })
-    const parsedJson = jsonParse(content)
+    const parsedJson = jsonParse(stripBOM(content))
 
     // Validate against the PluginManifest schema
     const result = PluginManifestSchema().safeParse(parsedJson)
@@ -1325,7 +1318,7 @@ async function loadPluginHooks(
   }
 
   const content = await readFile(hooksConfigPath, { encoding: 'utf-8' })
-  const rawHooksConfig = jsonParse(content)
+  const rawHooksConfig = jsonParse(stripBOM(content))
 
   const validatedPluginHooks = PluginHooksSchema().parse(rawHooksConfig)
   return {
@@ -1445,6 +1438,7 @@ export async function createPluginFromPath(
   fallbackName: string,
   strict = true,
   contractOnly = false,
+  containmentRoot?: string,
 ): Promise<{ plugin: LoadedPlugin; errors: PluginError[] }> {
   const errors: PluginError[] = []
 
@@ -1472,6 +1466,7 @@ export async function createPluginFromPath(
     source, // Source identifier (e.g., "git:repo" or ".claude-plugin/name")
     repository: source, // For backward compatibility with Plugin Repository
     enabled, // Current enabled state
+    ...(containmentRoot !== undefined && { containmentRoot }),
   }
 
   if (contractOnly) return { plugin, errors }
@@ -1722,7 +1717,9 @@ export async function createPluginFromPath(
 
   // Load from standard hooks/hooks.json if it exists
   const standardHooksPath = join(pluginPath, 'hooks', 'hooks.json')
-  if (await pathExists(standardHooksPath)) {
+  const standardHooksEscape = await getInPlaceEscapeError(plugin, standardHooksPath, 'hooks')
+  if (standardHooksEscape) errors.push(standardHooksEscape)
+  else if (await pathExists(standardHooksPath)) {
     try {
       const config = await loadPluginHooks(standardHooksPath, manifest.name)
       mergedHooks = config.hooks
@@ -1785,6 +1782,12 @@ export async function createPluginFromPath(
             path: hookFilePath,
             component: 'hooks',
           })
+          continue
+        }
+
+        const hookFileEscape = await getInPlaceEscapeError(plugin, hookFilePath, 'hooks')
+        if (hookFileEscape) {
+          errors.push(hookFileEscape)
           continue
         }
 
@@ -2175,6 +2178,7 @@ async function loadPluginsFromMarketplaces({
         if (!isSourceAllowedByPolicy(inPlace.source)) throw new Error(`Managed marketplace ${marketplaceName} is blocked by marketplace policy`)
         const plugin = await finishLoadingPluginFromPath(
           inPlace.entry, pluginId, enabledValue === true || Array.isArray(enabledValue), errors, inPlace.path, contractOnly,
+          undefined, inPlace.root,
         )
         if (plugin) plugin.managedSource = inPlace.managedSource
         return plugin
@@ -2715,6 +2719,7 @@ async function finishLoadingPluginFromPath(
   pluginPath: string,
   contractOnly = false,
   contractFiles?: Readonly<Record<string, Uint8Array>>,
+  containmentRoot?: string,
 ): Promise<LoadedPlugin | null> {
   const errors: PluginError[] = []
 
@@ -2739,6 +2744,7 @@ async function finishLoadingPluginFromPath(
     entry.name,
     entry.strict ?? true, // Respect marketplace entry's strict setting
     contractOnly,
+    containmentRoot,
   )
   plugin.name = plugin.manifest.name
   errors.push(...pluginErrors)
@@ -3218,8 +3224,54 @@ async function finishLoadingPluginFromPath(
     }
   }
 
+  if (containmentRoot !== undefined) {
+    await dropEscapingComponentPaths(plugin, errors)
+  }
+
   errorsOut.push(...errors)
   return plugin
+}
+
+/**
+ * Drop the component paths of a plugin loaded in place that resolve outside
+ * its marketplace, and report them along with skills whose SKILL.md does.
+ */
+async function dropEscapingComponentPaths(
+  plugin: LoadedPlugin,
+  errors: PluginError[],
+): Promise<void> {
+  const components = [
+    ['commands', 'commandsPath', 'commandsPaths'],
+    ['agents', 'agentsPath', 'agentsPaths'],
+    ['skills', 'skillsPath', 'skillsPaths'],
+    ['output-styles', 'outputStylesPath', 'outputStylesPaths'],
+  ] as const
+  const contained = async (path: string, component: string) => {
+    const escape = await getInPlaceEscapeError(plugin, path, component)
+    if (escape) errors.push(escape)
+    return escape === undefined
+  }
+  for (const [component, single, many] of components) {
+    const path = plugin[single]
+    if (path !== undefined && !(await contained(path, component))) {
+      delete plugin[single]
+    }
+    const paths = plugin[many]
+    if (paths) {
+      const kept: string[] = []
+      for (const path of paths) {
+        if (await contained(path, component)) kept.push(path)
+      }
+      plugin[many] = kept
+    }
+  }
+  for (const skillsPath of [plugin.skillsPath, ...(plugin.skillsPaths ?? [])]) {
+    if (skillsPath === undefined) continue
+    const entries = await readdir(skillsPath).catch(() => [])
+    for (const skillFile of [join(skillsPath, 'SKILL.md'), ...entries.map(name => join(skillsPath, name, 'SKILL.md'))]) {
+      if (await pathExists(skillFile)) await contained(skillFile, 'skills')
+    }
+  }
 }
 
 /**

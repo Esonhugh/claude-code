@@ -31,3 +31,13 @@ test('managed Mods require an absolute policy directory, relative catalog source
   await writeFile(join(market,'.claude-plugin','marketplace.json'),'{broken')
   await expect(getInPlacePluginSource('guard@corp',policy)).rejects.toThrow()
 })
+
+test('an in-place catalog saved with a UTF-8 BOM is read', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'managed-mod-bom-'))
+  roots.push(root)
+  const market = join(root,'market'); const plugin = join(market,'plugins','guard')
+  await mkdir(join(market,'.claude-plugin'),{recursive:true}); await mkdir(plugin,{recursive:true})
+  await writeFile(join(market,'.claude-plugin','marketplace.json'), '﻿'+JSON.stringify({name:'corp',owner:{name:'corp'},plugins:[{name:'guard',source:'./plugins/guard'}]}))
+  const policy = {enabledPlugins:{'guard@corp':true},extraKnownMarketplaces:{corp:{source:{source:'directory' as const,path:market}}}}
+  expect((await getInPlacePluginSource('guard@corp',policy))?.path).toBe(plugin)
+})

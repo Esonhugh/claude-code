@@ -922,13 +922,19 @@ export async function updatePluginOp(
   // Without a confirmation, only the command recorded at install is re-run.
   { confirmCommandSource }: CommandSourceConfirmation = {},
 ): Promise<PluginUpdateResult> {
+  // A bare name resolves to the installed plugin@marketplace it names
+  const identifier = parsePluginIdentifier(plugin).marketplace
+    ? plugin
+    : (resolveDelistedPluginId(plugin)?.pluginId ?? plugin)
   // Parse the plugin identifier to get the full plugin ID
   const { name: pluginName, marketplace: marketplaceName } =
-    parsePluginIdentifier(plugin)
-  const pluginId = marketplaceName ? `${pluginName}@${marketplaceName}` : plugin
+    parsePluginIdentifier(identifier)
+  const pluginId = marketplaceName
+    ? `${pluginName}@${marketplaceName}`
+    : identifier
 
   // Get plugin info from marketplace
-  const pluginInfo = await getPluginById(plugin)
+  const pluginInfo = await getPluginById(identifier)
   if (!pluginInfo) {
     return {
       success: false,

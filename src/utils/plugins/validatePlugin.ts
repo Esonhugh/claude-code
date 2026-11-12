@@ -14,6 +14,7 @@ import {
   FRONTMATTER_REGEX,
   quoteProblematicValues,
 } from '../frontmatterParser.js'
+import { stripBOM } from '../jsonRead.js'
 import { jsonParse } from '../slowOperations.js'
 import { parseYaml } from '../yaml.js'
 import {
@@ -229,7 +230,7 @@ export async function validatePluginManifest(
 
   let parsed: unknown
   try {
-    parsed = jsonParse(content)
+    parsed = jsonParse(stripBOM(content))
   } catch (error) {
     return {
       success: false,
@@ -442,7 +443,7 @@ export async function validateMarketplaceManifest(
 
   let parsed: unknown
   try {
-    parsed = jsonParse(content)
+    parsed = jsonParse(stripBOM(content))
   } catch (error) {
     return {
       success: false,
@@ -576,7 +577,7 @@ export async function validateMarketplaceManifest(
         let manifestVersion: string | undefined
         try {
           const raw = await readFile(pluginJsonPath, { encoding: 'utf-8' })
-          const parsed = jsonParse(raw) as { version?: unknown }
+          const parsed = jsonParse(stripBOM(raw)) as { version?: unknown }
           if (typeof parsed.version === 'string') {
             manifestVersion = parsed.version
           }
@@ -803,7 +804,7 @@ async function validateHooksJson(
 
   let parsed: unknown
   try {
-    parsed = jsonParse(content)
+    parsed = jsonParse(stripBOM(content))
   } catch (e) {
     return {
       success: false,
@@ -839,7 +840,7 @@ async function validateHooksJson(
   let declared: ModStateDeclaration[] = []
   try {
     const manifestPath = path.join(pluginRoot, '.claude-plugin', 'plugin.json')
-    const manifest = jsonParse(await readFile(manifestPath, 'utf8')) as Record<string, unknown>
+    const manifest = jsonParse(stripBOM(await readFile(manifestPath, 'utf8'))) as Record<string, unknown>
     if (typeof manifest.name === 'string') owner = manifest.name
     declared = (await loadTypeContract(pluginRoot, typeof manifest.types === 'string' ? manifest.types : DEFAULT_TYPES_PATH)).state
   } catch {
@@ -1072,7 +1073,7 @@ export async function validateManifest(
       // Try to parse and guess based on content
       try {
         const content = await readFile(absolutePath, { encoding: 'utf-8' })
-        const parsed = jsonParse(content) as Record<string, unknown>
+        const parsed = jsonParse(stripBOM(content)) as Record<string, unknown>
 
         // Heuristic: if it has a "plugins" array, it's probably a marketplace
         if (Array.isArray(parsed.plugins)) {

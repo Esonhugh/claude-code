@@ -370,3 +370,22 @@ test('a marketplace with a malformed entry still loads its other plugins', () =>
     ['abs', { source: 'unsupported', sourceType: 'invalid', error: 'source: Invalid string: must start with "./"' }],
   ])
 })
+
+describe('UTF-8 BOM', () => {
+  const BOM = '﻿'
+
+  test('accepts plugin, marketplace and hooks files that start with a BOM', async () => {
+    const root = await pluginRoot()
+    const manifest = join(root, '.claude-plugin', 'plugin.json')
+    await writeFile(manifest, BOM + JSON.stringify({ name: 'bom', description: 'd' }))
+    const marketplace = join(root, '.claude-plugin', 'marketplace.json')
+    await writeFile(marketplace, BOM + JSON.stringify({ name: 'bm', owner: { name: 'x' }, plugins: [] }))
+    await mkdir(join(root, 'hooks'))
+    await writeFile(join(root, 'hooks', 'hooks.json'), BOM + JSON.stringify({ hooks: {} }))
+
+    expect((await validatePluginManifest(manifest)).errors).toEqual([])
+    expect((await validateMarketplaceManifest(marketplace)).errors).toEqual([])
+    const hooks = (await validatePluginContents(root)).find(result => result.fileType === 'hooks')
+    expect(hooks?.errors ?? []).toEqual([])
+  })
+})

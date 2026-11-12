@@ -65,6 +65,8 @@ export type LoadedPlugin = {
   isBuiltin?: boolean // true for built-in plugins that ship with the CLI
   /** Host-verified in-place source matching managed policy; never read from plugin.json. */
   managedSource?: boolean
+  /** Real path of the marketplace a plugin loaded in place must stay inside. */
+  containmentRoot?: string
   sha?: string // Git commit SHA for version pinning (from marketplace entry source)
   commandsPath?: string
   commandsPaths?: string[] // Additional command paths from manifest

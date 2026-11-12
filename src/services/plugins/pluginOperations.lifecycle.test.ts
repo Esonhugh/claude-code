@@ -37,7 +37,7 @@ if (!process.env.PLUGIN_OPS_LIFECYCLE_TEST_CHILD) {
         new Response(child.stderr).text(),
       ])
       console.log(stdout, stderr)
-      expect(stderr).toMatch(/(?:^|\n) 7 pass(?:\n|$)/)
+      expect(stderr).toMatch(/(?:^|\n) 8 pass(?:\n|$)/)
       expect(code).toBe(0)
     } finally {
       rmSync(home, { recursive: true, force: true })
@@ -133,6 +133,14 @@ if (!process.env.PLUGIN_OPS_LIFECYCLE_TEST_CHILD) {
     expect(
       existsSync(join(installPath, '.claude-plugin/plugin.json')),
     ).toBe(true)
+  })
+
+  test('update accepts the bare name of an installed plugin', async () => {
+    expect(await ops.updatePluginOp('p', 'user')).toMatchObject({
+      success: true,
+      alreadyUpToDate: true,
+      pluginId: 'p@mkt',
+    })
   })
 
   test('installing an installed version at another scope reuses its directory', async () => {
