@@ -530,6 +530,12 @@ export function getConnectionTimeoutMs(): number {
   return parseInt(process.env.MCP_TIMEOUT || '', 10) || 30000
 }
 
+// A StdioClientTransport subclass makes the SDK probe server/discover on the
+// server process itself instead of a throwaway sibling, so a stdio server
+// starts once, as in official 2.1.322; a server that exits on the probe is
+// started again with the legacy handshake (see connectToServer).
+class InBandProbeStdioTransport extends StdioClientTransport {}
+
 // Clients that completed initialize and have not closed; they receive
 // notifications/roots/list_changed.
 const liveMcpClients = new Set<Client>()
@@ -705,8 +711,8 @@ export function getMcpVersionNegotiation(
     )
     return { mode: 'legacy' }
   }
-  // Fork: the stdio probe runs a sibling server process that an approved channel
-  // plugin (fakechat, telegram) outlives, keeping its port or bot poll from the real one.
+  // Fork: an approved channel plugin (fakechat, telegram) skips the probe, so a
+  // server that exits on it is never started twice for its port or bot poll.
   if (transport === 'stdio' && isChannelAllowlisted(serverRef?.pluginSource)) {
     return { mode: 'legacy' }
   }
@@ -1026,7 +1032,7 @@ export const connectToServer = memoize(
     },
     // Internal: set on the single reconnect after a server rejected the
     // {form, url} elicitation capability at initialize.
-    options: { bareElicitation?: boolean } = {},
+    options: { bareElicitation?: boolean; legacyHandshake?: boolean } = {},
   ): Promise<MCPServerConnection> => {
     const connectStartTime = Date.now()
     let inProcessServer:
@@ -1338,7 +1344,7 @@ export const connectToServer = memoize(
         const finalArgs = process.env.CLAUDE_CODE_SHELL_PREFIX
           ? [[serverRef.command, ...serverRef.args].join(' ')]
           : [...serverRef.args]
-        transport = new StdioClientTransport({
+        transport = new InBandProbeStdioTransport({
           command: finalCommand,
           args: finalArgs,
           env: {
@@ -1396,10 +1402,9 @@ export const connectToServer = memoize(
               serverRef,
               options.bareElicitation === true,
             ),
-            versionNegotiation: getMcpVersionNegotiation(
-              negotiationTransport,
-              serverRef,
-            ),
+            versionNegotiation: options.legacyHandshake
+              ? { mode: 'legacy' }
+              : getMcpVersionNegotiation(negotiationTransport, serverRef),
           },
         )
         newClient.setRequestHandler('roots/list', async () => {
@@ -1606,7 +1611,25 @@ export const connectToServer = memoize(
           )
           connectToServer.cache.delete(getServerCacheKey(name, serverRef))
           return connectToServer(name, serverRef, serverStats, {
+            ...options,
             bareElicitation: true,
+          })
+        }
+        if (
+          !options.legacyHandshake &&
+          transport instanceof InBandProbeStdioTransport &&
+          error instanceof SdkError &&
+          (error.code === SdkErrorCode.EraNegotiationFailed ||
+            error.code === SdkErrorCode.ConnectionClosed)
+        ) {
+          logMCPDebug(
+            name,
+            'server exited after the server/discover probe; starting it again with the legacy handshake',
+          )
+          connectToServer.cache.delete(getServerCacheKey(name, serverRef))
+          return connectToServer(name, serverRef, serverStats, {
+            ...options,
+            legacyHandshake: true,
           })
         }
         // "Connection closed" alone hides why a stdio server died (e.g. a
