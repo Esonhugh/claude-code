@@ -84,6 +84,32 @@ export function releaseSettingsFile(path: string): void {
   retainedFiles.delete(path)
 }
 
+/** Retains `path` with this snapshot as what the session has accepted. */
+export function retainSettingsSnapshot(path: string, value: ParsedSettings): void {
+  retainedFiles.set(path, value)
+  sessionSettingsCache = null
+  perSourceCache.clear()
+}
+
+// Per path, the file version whose ConfigChange review was blocked.
+const blockedCandidates = new Map<string, string | null>()
+
+export function blockSettingsCandidate(path: string, identity: string | null): void {
+  blockedCandidates.set(path, identity)
+}
+
+export function unblockSettingsCandidate(path: string): void {
+  blockedCandidates.delete(path)
+}
+
+export function isBlockedSettingsCandidate(path: string, identity: string | null): boolean {
+  return blockedCandidates.has(path) && blockedCandidates.get(path) === identity
+}
+
+export function clearBlockedSettingsCandidates(): void {
+  blockedCandidates.clear()
+}
+
 export function getParsedSettingsPaths(): string[] {
   return [...new Set([...parseFileCache.keys(), ...retainedFiles.keys()])]
 }

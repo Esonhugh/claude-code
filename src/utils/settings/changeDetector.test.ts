@@ -437,6 +437,44 @@ const scenarios: Record<
     expect(h.settings.getInitialSettings().disableAllHooks).toBe(false)
     expect(h.settings.getInitialSettings().model).toBe('internal')
   },
+  async 'an internal update during a review keeps the outside edit under review'(
+    h,
+  ) {
+    const entered = Promise.withResolvers<void>()
+    const approval = Promise.withResolvers<boolean>()
+    h.review(async () => {
+      if (h.reviews.length === 1) {
+        entered.resolve()
+        return approval.promise
+      }
+      return false
+    })
+    h.write({ disableAllHooks: false, model: 'outside' })
+    const refresh = h.detector.refreshSettings()
+    await entered.promise
+    expect(
+      h.settings.updateSettingsForSource('userSettings', { effortLevel: 'low' })
+        .error,
+    ).toBeNull()
+    expect(h.read()).toEqual({
+      disableAllHooks: false,
+      model: 'outside',
+      effortLevel: 'low',
+    })
+    expect(h.settings.getInitialSettings()).toMatchObject({
+      disableAllHooks: true,
+      effortLevel: 'low',
+    })
+    expect(h.settings.getInitialSettings().model).toBeUndefined()
+    approval.resolve(false)
+    await refresh
+    expect(h.reviews).toHaveLength(2)
+    expect(h.settings.getInitialSettings()).toMatchObject({
+      disableAllHooks: false,
+      model: 'outside',
+      effortLevel: 'low',
+    })
+  },
   async 'delete and recreate grace publishes only the replacement and real deletion is reviewed'(
     h,
   ) {

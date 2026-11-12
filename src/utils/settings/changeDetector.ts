@@ -28,12 +28,16 @@ import {
 } from './settings.js'
 import {
   acceptSettingsFile,
+  blockSettingsCandidate,
+  clearBlockedSettingsCandidates,
   getCachedParsedFile,
   getParsedSettingsPaths,
+  isBlockedSettingsCandidate,
   releaseSettingsFile,
   resetSettingsCache,
   retainSettingsFile,
   setOutsideEditsReviewed,
+  unblockSettingsCandidate,
 } from './settingsCache.js'
 
 /**
@@ -81,7 +85,6 @@ let disposed = false
 let lifecycle = 0
 let watchedPathAliases = new Map<string, string>()
 const pendingReviews = new Map<string, Promise<void>>()
-const blockedIdentities = new Map<string, string | null>()
 const pendingDeletions = new Map<string, ReturnType<typeof setTimeout>>()
 const settingsChanged = createSignal<[source: SettingSource]>()
 
@@ -449,13 +452,13 @@ function reviewSettingsFile(
         INTERNAL_WRITE_WINDOW_MS,
       )
       if (candidate.identity === getCachedParsedFile(path)?.identity) {
-        blockedIdentities.delete(path)
+        unblockSettingsCandidate(path)
         acceptSettingsFile(path, candidate)
         return
       }
       if (
-        !internal && !retryBlocked && blockedIdentities.has(path) &&
-        blockedIdentities.get(path) === candidate.identity
+        !internal && !retryBlocked &&
+        isBlockedSettingsCandidate(path, candidate.identity)
       ) return
       if (!internal) {
         logForDebugging(`Reviewing settings source=${source} path=${path} version=${candidate.identity}`)
@@ -467,12 +470,12 @@ function reviewSettingsFile(
         // Approval belongs to these bytes, never the next write during an await.
         if (readSettingsFile(path).identity !== candidate.identity) continue
         if (hasBlockingResult(results)) {
-          blockedIdentities.set(path, candidate.identity)
+          blockSettingsCandidate(path, candidate.identity)
           logForDebugging(`ConfigChange blocked source=${source} path=${path} version=${candidate.identity}`)
           return
         }
       }
-      blockedIdentities.delete(path)
+      unblockSettingsCandidate(path)
       acceptSettingsFile(path, candidate)
       logForDebugging(`Settings ${internal ? 'internal echo' : 'accepted'} source=${source} path=${path} version=${candidate.identity}`)
       if (!internal) settingsChanged.emit(source)
@@ -586,7 +589,7 @@ export function resetForTesting(overrides?: {
   lifecycle++
   for (const path of getParsedSettingsPaths()) releaseSettingsFile(path)
   pendingReviews.clear()
-  blockedIdentities.clear()
+  clearBlockedSettingsCandidates()
   clearInternalWrites()
   if (mdmPollTimer) {
     clearInterval(mdmPollTimer)

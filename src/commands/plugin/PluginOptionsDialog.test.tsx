@@ -187,7 +187,7 @@ beforeEach(() => {
   )
   spyOn(settings, 'updateSettingsForSource').mockImplementation(
     (_source, values) => {
-      savedSettings = values
+      savedSettings = values as SettingsJson
       return { error: null }
     },
   )
