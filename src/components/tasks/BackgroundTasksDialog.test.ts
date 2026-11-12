@@ -308,6 +308,21 @@ const retainedTeammate = {
 assert.deepEqual(getBackgroundTasksDialogInitialState({ tasks: { worker: retainedTeammate } }).viewState,
   { mode: 'list' })
 
+// The @team-lead row added to the team group is not a running teammate.
+const teamStdout = new TestStdout()
+const teamInstance = await render(
+  React.createElement(
+    AppStateProvider,
+    { initialState: { ...getDefaultAppState(), tasks: { worker: { ...retainedTeammate, status: 'running', retain: undefined } } } } as unknown as React.ComponentProps<typeof AppStateProvider>,
+    React.createElement(BackgroundTasksDialog, { onDone: () => {}, toolUseContext: {} as ToolUseContext }),
+  ),
+  { stdout: teamStdout as unknown as NodeJS.WriteStream, stdin: new TestStdin() as unknown as NodeJS.ReadStream, patchConsole: false, exitOnCtrlC: false },
+)
+await new Promise(resolve => setImmediate(resolve))
+teamInstance.unmount()
+teamInstance.cleanup()
+assert.match(stripAnsi(teamStdout.output), /\b1 agent\b/)
+
 const { injectUserMessageToTeammate, isViewableTeammate, getViewableTeammatesSorted } = await import('../../tasks/InProcessTeammateTask/InProcessTeammateTask.js')
 for (const status of ['pending', 'running', 'completed', 'failed', 'killed'] as const) {
   for (const retention of [{}, { retain: true }, { retain: false, evictAfter: Date.now() + 30_000 }]) {
