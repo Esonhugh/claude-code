@@ -597,6 +597,27 @@ describe('conversation extras', () => {
     expect(JSON.stringify(state)).not.toContain('big')
   })
 
+  it('keeps each file patch of an apply_patch result, and a deleted file\'s old text', () => {
+    const hunk = { oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: ['-a', '+b'] }
+    const state = fold([
+      { type: 'assistant', message: { id: 'm1', content: [{ type: 'tool_use', id: 't1', name: 'apply_patch', input: { input: '*** Begin Patch' } }] } },
+      {
+        type: 'user',
+        tool_use_result: {
+          files: [
+            { type: 'update', filePath: 'a.txt', originalFile: 'big', structuredPatch: [hunk] },
+            { type: 'delete', filePath: 'b.txt', originalFile: 'gone\n', structuredPatch: [] },
+          ],
+        },
+        message: { content: [{ type: 'tool_result', tool_use_id: 't1', content: 'Success.' }] },
+      },
+    ])
+    expect((state.items[1] as { blocks: unknown[] }).blocks[0]).toMatchObject({
+      meta: { files: [{ type: 'update', filePath: 'a.txt', structuredPatch: [hunk] }, { type: 'delete', filePath: 'b.txt', originalFile: 'gone\n' }] },
+    })
+    expect(JSON.stringify(state)).not.toContain('big')
+  })
+
   it('keeps an MCP tool result for the MCP App that renders it', () => {
     const state = fold([
       { type: 'assistant', message: { id: 'm1', content: [{ type: 'tool_use', id: 't1', name: 'mcp__srv__show', input: {} }] } },

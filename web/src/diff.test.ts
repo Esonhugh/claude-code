@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { toolDiff } from './diff'
+import { patchFiles, toolDiff } from './diff'
 
 describe('toolDiff', () => {
   test('uses the structured patch of the result with its line numbers', () => {
@@ -59,5 +59,24 @@ describe('toolDiff', () => {
     expect(toolDiff('Bash', JSON.stringify({ command: 'ls' }))).toBeUndefined()
     expect(toolDiff('Edit', '{"file_path": "/w/a", "old_')).toBeUndefined()
     expect(toolDiff('Write', JSON.stringify({ file_path: '/w/a', content: 'x' }), { type: 'update', structuredPatch: [] })).toBeUndefined()
+  })
+})
+
+describe('patchFiles', () => {
+  test('gives each file of an apply_patch call its own diff, in order', () => {
+    const result = {
+      files: [
+        { type: 'add', filePath: 'notes/a.txt', originalFile: '', structuredPatch: [{ oldStart: 1, oldLines: 0, newStart: 1, newLines: 1, lines: ['+alpha'] }] },
+        { type: 'update', filePath: 'b.txt', movePath: 'c.txt', originalFile: 'x\n', structuredPatch: [{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: ['-x', '+y'] }] },
+        { type: 'delete', filePath: 'old.txt', originalFile: 'one\ntwo\n', structuredPatch: [] },
+      ],
+    }
+    expect(patchFiles('apply_patch', result).map(f => [f.kind, f.path, f.diff.added, f.diff.removed, f.diff.created])).toEqual([
+      ['add', 'notes/a.txt', 1, 0, true],
+      ['update', 'c.txt', 1, 1, false],
+      ['delete', 'old.txt', 0, 2, false],
+    ])
+    expect(patchFiles('apply_patch', 'Success. Updated the following files')).toEqual([])
+    expect(patchFiles('Edit', result)).toEqual([])
   })
 })

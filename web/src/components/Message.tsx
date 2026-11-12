@@ -9,7 +9,7 @@ import {
   teamColor,
   teammateEvent,
 } from '../agents'
-import { type DiffRow, toolDiff } from '../diff'
+import { type DiffRow, patchFiles, toolDiff } from '../diff'
 import { baseName, splitMentions, tilde } from '../files'
 import type { MessageKey } from '../i18n'
 import { Markdown } from '../markdown/Markdown'
@@ -355,10 +355,15 @@ function ToolCard({ block, t }: { block: Extract<Block, { kind: 'tool' }>; t: T 
   const task = agents.byToolUse?.get(block.id) ?? sentTo
   const done = block.result !== undefined
   const diff = block.isError ? undefined : toolDiff(block.name, block.input, block.meta)
+  const patched = block.isError ? [] : patchFiles(block.name, block.meta)
+  const patchPath = (path: string) => (path.startsWith('/') || !files.cwd ? path : `${files.cwd}/${path}`)
   const message = toolMessage(block.name, block.input)
   const decision = chat.decisions?.[block.id]
   const card = (
-    <details className={`toolcard${block.isError ? ' bad' : ''}`} open={diff && !diff.created ? true : undefined}>
+    <details
+      className={`toolcard${block.isError ? ' bad' : ''}`}
+      open={(diff && !diff.created) || patched.some(f => !f.diff.created) ? true : undefined}
+    >
       <summary>
         <span className="tname">{block.name}</span>
         {path ? (
@@ -380,7 +385,9 @@ function ToolCard({ block, t }: { block: Extract<Block, { kind: 'tool' }>; t: T 
               ? t('todosUpdated')
               : sentTo
                 ? `${t('sentTo')} ${sentTo.title ?? sentTo.description}`
-                : shortSummary(block, files.cwd)}
+                : patched.length
+                  ? patched.map(f => f.path).join(', ')
+                  : shortSummary(block, files.cwd)}
           </span>
         )}
         <span className="tacts">
@@ -417,6 +424,11 @@ function ToolCard({ block, t }: { block: Extract<Block, { kind: 'tool' }>; t: T 
             <span className="dstat add">+{diff.added}</span>
             {diff.created ? <span>{t('newFile')}</span> : <span className="dstat del">−{diff.removed}</span>}
           </span>
+        ) : patched.length ? (
+          <span className="tstat">
+            <span className="dstat add">+{patched.reduce((n, f) => n + f.diff.added, 0)}</span>
+            <span className="dstat del">−{patched.reduce((n, f) => n + f.diff.removed, 0)}</span>
+          </span>
         ) : (
           <span className={`tstat${done ? (block.isError ? ' bad' : ' ok') : ''}`}>
             {done ? (block.isError ? '✗' : '✓') : <span className="spin" aria-hidden="true" />}
@@ -425,6 +437,17 @@ function ToolCard({ block, t }: { block: Extract<Block, { kind: 'tool' }>; t: T 
       </summary>
       {diff ? (
         <DiffBody diff={diff} path={toolFilePath(block.name, block.input)} t={t} />
+      ) : patched.length ? (
+        // One part per file, named as the TUI's rows: Write, Update or Delete.
+        patched.map(f => (
+          <div key={f.path} className="patchfile">
+            <div className="tfoot">
+              <b>{f.kind === 'add' ? 'Write' : f.kind === 'delete' ? 'Delete' : 'Update'}</b>
+              <span>{f.path}</span>
+            </div>
+            <DiffBody diff={f.diff} path={f.kind === 'delete' ? undefined : patchPath(f.path)} t={t} />
+          </div>
+        ))
       ) : message ? (
         <div className="tbody">
           <Markdown filesBase={files.base} text={message} />

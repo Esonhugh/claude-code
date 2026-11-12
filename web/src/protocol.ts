@@ -17,8 +17,8 @@ export type Block =
       input: string
       result?: string
       isError?: boolean
-      /** The file edit part of `tool_use_result` (Edit, Write): its structured patch. */
-      meta?: { type?: string; structuredPatch?: unknown[] }
+      /** The file edit part of `tool_use_result` (Edit, Write): its structured patch; apply_patch's per file. */
+      meta?: { type?: string; structuredPatch?: unknown[]; files?: unknown[] }
       /** An MCP tool's own result (`tool_use_result`), for an MCP App that renders it. */
       mcp?: McpToolResult
     }
@@ -1096,10 +1096,14 @@ export function reduce(state: ChatState, raw: unknown): ChatState {
       // Keep only the patch of a file edit's result; it also carries the whole file.
       const result = isObj(raw.tool_use_result) ? raw.tool_use_result : undefined
       const meta =
-        result && (Array.isArray(result.structuredPatch) || result.type === 'create')
+        result && (Array.isArray(result.structuredPatch) || result.type === 'create' || Array.isArray(result.files))
           ? {
               ...(typeof result.type === 'string' && { type: result.type }),
               ...(Array.isArray(result.structuredPatch) && { structuredPatch: result.structuredPatch }),
+              // apply_patch: each file's patch; a deleted file keeps its old text, which is its diff.
+              ...(Array.isArray(result.files) && {
+                files: result.files.filter(isObj).map(({ originalFile, ...f }) => (f.type === 'delete' ? { ...f, originalFile } : f)),
+              }),
             }
           : undefined
       const mcp: McpToolResult | undefined =

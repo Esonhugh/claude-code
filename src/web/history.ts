@@ -250,7 +250,19 @@ function thinkingMs(m: Record<string, unknown>, prev: number | undefined): { thi
 
 function editPatch(result: unknown): { tool_use_result?: Record<string, unknown> } {
   if (typeof result !== 'object' || result === null) return {}
-  const { type, structuredPatch } = result as { type?: unknown; structuredPatch?: unknown }
+  const { type, structuredPatch, files } = result as { type?: unknown; structuredPatch?: unknown; files?: unknown }
+  // apply_patch: each file's patch; a deleted file keeps its old text, which is its diff.
+  if (Array.isArray(files)) {
+    return {
+      tool_use_result: {
+        files: files.flatMap(f => {
+          if (typeof f !== 'object' || f === null) return []
+          const { originalFile, ...rest } = f as Record<string, unknown>
+          return [rest.type === 'delete' ? { ...rest, originalFile } : rest]
+        }),
+      },
+    }
+  }
   if (!Array.isArray(structuredPatch)) return {}
   return { tool_use_result: { type, structuredPatch } }
 }
