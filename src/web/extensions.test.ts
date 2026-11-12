@@ -105,14 +105,15 @@ describe('hooks', () => {
     ])
 
     // An edit keeps the hook's type, other fields and place; only what the dialog shows changes.
-    ext.updateHook('userSettings:PostToolUse:0:0', {
+    const idOf = async (command: string) => (await ext.listHooks()).hooks.find(h => h.command === command)!.id!
+    ext.updateHook(await idOf('https://example.invalid/hook'), {
       event: 'PostToolUse',
       matcher: 'Bash',
       command: 'https://example.invalid/v2',
       timeout: 9,
       source: 'user',
     })
-    ext.updateHook('userSettings:PostToolUse:0:1', {
+    ext.updateHook(await idOf('echo outside'), {
       event: 'PostToolUse',
       matcher: 'Bash',
       command: 'echo outside2',
@@ -123,10 +124,38 @@ describe('hooks', () => {
       { type: 'command', command: 'echo outside2', async: true, statusMessage: 'running' },
       { type: 'command', command: 'echo web' },
     ])
-    ext.deleteHook('userSettings:PostToolUse:0:2')
-    ext.deleteHook('userSettings:PostToolUse:0:1')
-    ext.deleteHook('userSettings:PostToolUse:0:0')
+    for (const command of ['echo web', 'echo outside2', 'https://example.invalid/v2']) ext.deleteHook(await idOf(command))
     expect(userSettings().hooks).toEqual({})
+  })
+
+  it('edits and deletes the hook the list showed, even after the file changed underneath', async () => {
+    ext.addHook({ event: 'Stop', matcher: '', command: 'echo keep', source: 'user' })
+    ext.addHook({ event: 'Stop', matcher: '', command: 'echo target', source: 'user' })
+    const listed = (await ext.listHooks()).hooks
+    const target = listed.find(h => h.command === 'echo target')!.id!
+    const keep = listed.find(h => h.command === 'echo keep')!.id!
+    // Another process puts a hook in front: positions shift.
+    const settings = userSettings()
+    settings.hooks.Stop[0].hooks.unshift({ type: 'command', command: 'echo inserted' })
+    writeFileSync(join(configDir, 'settings.json'), JSON.stringify(settings))
+    ext.deleteHook(target)
+    expect(userSettings().hooks.Stop[0].hooks.map((h: { command: string }) => h.command)).toEqual([
+      'echo inserted',
+      'echo keep',
+    ])
+    // The hook the list showed was changed elsewhere: nothing is written.
+    const changed = userSettings()
+    changed.hooks.Stop[0].hooks[1].command = 'echo keep v2'
+    writeFileSync(join(configDir, 'settings.json'), JSON.stringify(changed))
+    expect(() => ext.updateHook(keep, { event: 'Stop', matcher: '', command: 'echo x', source: 'user' })).toThrow(
+      'changed',
+    )
+    expect(() => ext.deleteHook(keep)).toThrow('changed')
+    expect(userSettings().hooks.Stop[0].hooks.map((h: { command: string }) => h.command)).toEqual([
+      'echo inserted',
+      'echo keep v2',
+    ])
+    writeFileSync(join(configDir, 'settings.json'), JSON.stringify({ ...userSettings(), hooks: undefined }))
   })
 
   it('writes project hooks to the workspace settings', () => {
@@ -146,7 +175,7 @@ describe('hooks', () => {
   it('rejects bad ids and input', () => {
     expect(() => ext.deleteHook('policySettings:Stop:0:0')).toThrow('Invalid hook id')
     expect(() => ext.deleteHook('userSettings:NoSuchEvent:0:0')).toThrow('Invalid hook id')
-    expect(() => ext.deleteHook('userSettings:Stop:9:9')).toThrow('Hook not found')
+    expect(() => ext.deleteHook('userSettings:Stop:9:9:0123456789ab')).toThrow('changed')
     const ok = { event: 'Stop', matcher: '', command: 'x', source: 'user' }
     expect(ext.hookInputSchema.safeParse(ok).success).toBe(true)
     expect(ext.hookInputSchema.safeParse({ ...ok, event: 'Nope' }).success).toBe(false)

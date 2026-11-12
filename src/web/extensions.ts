@@ -7,6 +7,7 @@
  * its workspace. The browser names things (skill, plugin, hook position);
  * file paths are always looked up here, never taken from a request.
  */
+import { createHash } from 'crypto'
 import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from 'fs'
 import { mkdir, readFile, writeFile } from 'fs/promises'
 import { homedir } from 'os'
@@ -491,7 +492,12 @@ export function setMemoryToggle(key: 'autoMemory' | 'sqlite', on: boolean): void
 const HOOK_SOURCES = { user: 'userSettings', project: 'projectSettings' } as const
 const EDITABLE: EditableSettingSource[] = ['userSettings', 'projectSettings', 'localSettings']
 type HookEvent = (typeof HOOK_EVENTS)[number]
-const HOOK_ID = /^(userSettings|projectSettings|localSettings):([A-Za-z]+):(\d{1,4}):(\d{1,4})$/
+// source:event:group:index:fingerprint — the place it was listed at, and what was there.
+const HOOK_ID = /^(userSettings|projectSettings|localSettings):([A-Za-z]+):(\d{1,4}):(\d{1,4}):([0-9a-f]{12})$/
+
+function hookFingerprint(matcher: string | undefined, hook: HookCommand): string {
+  return createHash('sha256').update(JSON.stringify([matcher ?? '', hook])).digest('hex').slice(0, 12)
+}
 
 export const hookInputSchema = z.object({
   event: z.enum(HOOK_EVENTS),
@@ -511,20 +517,20 @@ function settingsHooks(source: EditableSettingSource): Partial<Record<HookEvent,
  * settings lock), so hooks written since this process read the file are kept.
  */
 function editHooks(source: EditableSettingSource, event: HookEvent, edit: (matchers: HookMatcher[]) => void): void {
-  let missing = false
+  let refused: ExtError | undefined
   const { error } = updateSettingsForSource(source, existing => {
     const matchers = structuredClone(((existing.hooks ?? {}) as Partial<Record<HookEvent, HookMatcher[]>>)[event] ?? [])
     try {
       edit(matchers)
     } catch (err) {
       if (!(err instanceof ExtError)) throw err
-      missing = true
+      refused = err
       return {}
     }
     const kept = matchers.filter(m => m.hooks.length > 0)
     return { hooks: { [event]: kept.length ? kept : undefined } }
   })
-  if (missing) throw new ExtError('Hook not found', 404)
+  if (refused) throw refused
   if (error) throw new ExtError(error.message, 500)
 }
 
@@ -547,7 +553,7 @@ export async function listHooks() {
       ;(matchers ?? []).forEach((m, mi) =>
         m.hooks.forEach((h, hi) =>
           rows.push({
-            id: `${source}:${event}:${mi}:${hi}`,
+            id: `${source}:${event}:${mi}:${hi}:${hookFingerprint(m.matcher, h)}`,
             event,
             matcher: m.matcher ?? '',
             command: hookText(h),
@@ -596,7 +602,9 @@ function hookText(h: HookCommand): string {
   }
 }
 
-function parseHookId(id: string): { source: EditableSettingSource; event: HookEvent; mi: number; hi: number } {
+type HookId = { source: EditableSettingSource; event: HookEvent; mi: number; hi: number; fingerprint: string }
+
+function parseHookId(id: string): HookId {
   const match = HOOK_ID.exec(id)
   if (!match || !(HOOK_EVENTS as readonly string[]).includes(match[2]!)) throw new ExtError('Invalid hook id')
   return {
@@ -604,14 +612,30 @@ function parseHookId(id: string): { source: EditableSettingSource; event: HookEv
     event: match[2] as HookEvent,
     mi: Number(match[3]),
     hi: Number(match[4]),
+    fingerprint: match[5]!,
   }
+}
+
+/**
+ * Where the hook the list showed is now: at its listed place, else the one
+ * place an identical hook moved to (another process added or removed hooks).
+ */
+function findListedHook(matchers: HookMatcher[], id: HookId): [number, number] {
+  const at = (mi: number, hi: number) => {
+    const hook = matchers[mi]?.hooks[hi]
+    return !!hook && hookFingerprint(matchers[mi]!.matcher, hook) === id.fingerprint
+  }
+  if (at(id.mi, id.hi)) return [id.mi, id.hi]
+  const found = matchers.flatMap((m, mi) => m.hooks.flatMap((_, hi) => (at(mi, hi) ? [[mi, hi] as [number, number]] : [])))
+  if (found.length === 1) return found[0]!
+  throw new ExtError('This hook was changed elsewhere; the list now shows it as it is', 409)
 }
 
 /** Removes one hook; the matcher group and event go too once empty. */
 export function deleteHook(id: string): void {
-  const { source, event, mi, hi } = parseHookId(id)
-  editHooks(source, event, matchers => {
-    if (!matchers[mi]?.hooks[hi]) throw new ExtError('Hook not found', 404)
+  const listed = parseHookId(id)
+  editHooks(listed.source, listed.event, matchers => {
+    const [mi, hi] = findListedHook(matchers, listed)
     matchers[mi]!.hooks.splice(hi, 1)
   })
 }
@@ -639,11 +663,12 @@ export function addHook(input: HookInput): void {
  * the rest of the hook: its type (an http hook stays one), async, headers, ….
  */
 export function updateHook(id: string, input: HookInput): void {
-  const { source, event, mi, hi } = parseHookId(id)
+  const listed = parseHookId(id)
+  const { source, event } = listed
   let old: HookCommand | undefined
   editHooks(source, event, matchers => {
-    old = matchers[mi]?.hooks[hi]
-    if (!old) throw new ExtError('Hook not found', 404)
+    const [mi, hi] = findListedHook(matchers, listed)
+    old = matchers[mi]!.hooks[hi]!
     const text = input.command.trim()
     const { timeout: _, ...rest } = old
     const hook = {
