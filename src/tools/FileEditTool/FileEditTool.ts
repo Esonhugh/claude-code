@@ -202,6 +202,24 @@ export const FileEditTool = buildTool({
         message:
           'File is in a directory that is denied by your permission settings.',
         errorCode: 2,
+        deniedByPermissionRule: true,
+      }
+    }
+    if (
+      matchingRuleForInput(
+        fullFilePath,
+        appState.toolPermissionContext,
+        'read',
+        'deny',
+      ) !== null
+    ) {
+      return {
+        result: false,
+        behavior: 'ask',
+        message:
+          'File is covered by a Read deny rule in your permission settings and cannot be edited.',
+        errorCode: 13,
+        deniedByPermissionRule: true,
       }
     }
 

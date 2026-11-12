@@ -104,6 +104,8 @@ export type ValidationResult =
       result: false
       message: string
       errorCode: number
+      /** A permission deny rule refused the call; it counts as a permission denial. */
+      deniedByPermissionRule?: true
     }
 
 export type SetToolJSXFn = (

@@ -209,7 +209,10 @@ export const ApplyPatchTool = buildTool({
     const permissionContext = toolUseContext.getAppState().toolPermissionContext
     for (const p of touchedPaths(input)) {
       if (matchingRuleForInput(p, permissionContext, 'edit', 'deny') !== null) {
-        return { result: false, message: `${p} is in a directory that is denied by your permission settings.`, errorCode: 2 }
+        return { result: false, message: `${p} is in a directory that is denied by your permission settings.`, errorCode: 2, deniedByPermissionRule: true }
+      }
+      if (matchingRuleForInput(p, permissionContext, 'read', 'deny') !== null) {
+        return { result: false, message: `${p} is covered by a Read deny rule in your permission settings and cannot be changed.`, errorCode: 13, deniedByPermissionRule: true }
       }
     }
     for (const file of plan.planned) {
