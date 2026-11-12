@@ -37,7 +37,7 @@ if (!process.env.PLUGIN_OPS_LIFECYCLE_TEST_CHILD) {
         new Response(child.stderr).text(),
       ])
       console.log(stdout, stderr)
-      expect(stderr).toMatch(/(?:^|\n) 7 pass(?:\n|$)/)
+      expect(stderr).toMatch(/(?:^|\n) 8 pass(?:\n|$)/)
       expect(code).toBe(0)
     } finally {
       rmSync(home, { recursive: true, force: true })
