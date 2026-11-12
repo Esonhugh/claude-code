@@ -502,23 +502,23 @@ dsh 0.2.2-rc.1 用 headless 模式（`dsh --profile headless --json`），模型
 | oh-my-pi 18.18.0 | Claude API key | high | 64.2% | 22 / 34 / 21 | 386k（30k–5.0M） | 92.0% | $0.233 |
 | 官方 Claude Code 2.1.319 | Claude API key | medium | 61.7% | 27 / 28 / 19 | 221k（36k–2.0M） | 92.2% | $0.132 |
 | 官方 + 子代理 | Claude API key | medium | 59.2% | 27 / 26 / 18 | 307k（37k–1.7M） | 89.4% | $0.207 |
-| 本仓库 + 子代理 | Claude API key | medium | 58.3% | 29 / 22 / 19 | 253k（48k–1.3M） | 86.7% | $0.186 |
-| 本仓库 | Claude API key | medium | 54.2% | 22 / 25 / 18 | 234k（34k–2.1M） | 90.4% | $0.146 |
+| 本仓库 + 子代理（11-08 构建） | Claude API key | medium | 58.3% | 29 / 22 / 19 | 253k（48k–1.3M） | 86.7% | $0.186 |
+| 本仓库（11-08 构建） | Claude API key | medium | 54.2% | 22 / 25 / 18 | 234k（34k–2.1M） | 90.4% | $0.146 |
 | pi 1.5.0 | Claude API key | low | 52.5% | 21 / 24 / 18 | 98k（6k–1.0M） | 85.7% | $0.097 |
-| oh-my-pi 18.18.0 | ChatGPT 账号 | high | **59.2%** | 35 / 18 / 18 | 627k（22k–3.4M） | 93.7% | $0.210 |
-| 本仓库 + 子代理 | ChatGPT 账号 | low | 50.8% | 30 / 13 / 18 | 783k（75k–3.8M） | 90.3% | $0.298 |
+| 本仓库（11-12 构建） | ChatGPT 账号 | high | **65.0%** | 42 / 18 / 18 | 581k（30k–3.0M） | 93.3% | $0.208 |
+| oh-my-pi 18.18.0 | ChatGPT 账号 | high | 59.2% | 35 / 18 / 18 | 627k（22k–3.4M） | 93.7% | $0.210 |
+| 本仓库 + 子代理（11-08 构建） | ChatGPT 账号 | low | 50.8% | 30 / 13 / 18 | 783k（75k–3.8M） | 90.3% | $0.298 |
 | pi 1.5.0 | ChatGPT 账号 | medium | 50.8% | 28 / 15 / 18 | 145k（7k–844k） | 88.4% | $0.077 |
 | Codex CLI 0.167.0 | ChatGPT 账号 | low | 49.2% | 26 / 15 / 18 | 247k（39k–868k） | 91.2% | $0.094 |
 | dsh 0.2.2-rc.1 | ChatGPT 账号 | low | 48.3% | 25 / 15 / 18 | 534k（0–3.2M） | 93.4% | $0.166 |
-| 本仓库 | ChatGPT 账号 | low | 45.0% | 23 / 13 / 18 | 311k（31k–1.3M） | 90.8% | $0.117 |
 | opencode 1.19.5 | ChatGPT 账号 | low | 45.0% | 24 / 12 / 18 | 343k（21k–1.4M） | 91.6% | $0.131 |
 
-套件列是通过次数，分母分别为 48 / 48 / 24。模型：Claude 侧 `claude-sonnet-5-5`，ChatGPT 侧 `gpt-6.1-sol`；effort 是各 CLI 的默认值，没有统一。「+ 子代理」格在提示末尾要求先并行开至少两个子代理，最后自己检查合并结果。
+套件列是通过次数，分母分别为 48 / 48 / 24。模型：Claude 侧 `claude-sonnet-5-5`，ChatGPT 侧 `gpt-6.1-sol`；effort 是各 CLI 的默认值，没有统一。「11-12 构建」那一格是 2026-11-12 用当前 dev（`1ebf7a1`，headless 默认 effort high，加收尾句，#1097）跑的，其余格是 11-08 的数据；本仓库 Claude 格仍是 11-08 的构建（medium），之后没有条件重跑。「+ 子代理」格在提示末尾要求先并行开至少两个子代理，最后自己检查合并结果。
 
-- **模型差距大于 CLI 差距**：Claude 侧 8 格合计 61.1%，ChatGPT 侧 7 格 49.8%。SWE-bench Pro 上 ChatGPT 侧 7 格都只有 25–38%；openlibrary-89 与 ansible 两题 Claude 侧大多通过，ChatGPT 侧 7 格全部 0/6。
-- **Claude 侧 dsh 与 opencode 最好**，比 pi 高 18.3 ± 6.2 与 15.8 ± 5.5 个百分点（逐题配对差 ± 标准误）。ChatGPT 侧只有 oh-my-pi 明显领先，它默认 effort high。
-- **本仓库对官方 −7.5 ± 4.4 个百分点，对 Codex −4.2 ± 3.4**，都不到 2 个标准误。Claude 侧差距主要在 make-mips-interpreter（2/6 对 6/6），失败方式与 pi 的 4 次失败相同。
-- **子代理**：本仓库 Claude +4.2、ChatGPT +5.8、官方 −2.5 个百分点，花费分别是单代理的 1.27×、2.54×、1.56×；都在噪声范围内。
+- **模型差距大于 CLI 差距**：Claude 侧 8 格合计 61.1%，ChatGPT 侧 7 格 52.6%。SWE-bench Pro 上 ChatGPT 侧 7 格都只有 25–38%；openlibrary-89 与 ansible 两题 Claude 侧大多通过，ChatGPT 侧 7 格全部 0/6。
+- **Claude 侧 dsh 与 opencode 最好**，比 pi 高 18.3 ± 6.2 与 15.8 ± 5.5 个百分点（逐题配对差 ± 标准误）。ChatGPT 侧本仓库（65.0%）与 oh-my-pi（59.2%）领先，两者都是 effort high；用固定 effort 补跑的 3 题（pi、oh-my-pi、dsh 各 low / high）显示 ChatGPT 侧 effort 比 harness 更重要：pi 从 5/18 到 15/18，oh-my-pi 从 8/18 到 18/18。
+- **本仓库对官方 −7.5 ± 4.4 个百分点**（11-08 构建），不到 2 个标准误，差距主要在 make-mips-interpreter（2/6 对 6/6），失败方式与 pi 的 4 次失败相同。**本仓库（11-12 构建）对 Codex +15.8 ± 8.1**，赢在 polyglot 两题（6/6 对 0–1/6，结束前清掉构建产物）、nodebb 与 custom-memory-heap-crash。heap-crash 从 11-10 起在 ChatGPT 侧各格几乎都会过，11-08 时很少过；扣掉这题对 Codex 仍是 +11.4。
+- **子代理**（11-08 构建）：本仓库 Claude +4.2、ChatGPT +5.8、官方 −2.5 个百分点，花费分别是单代理的 1.27×、2.54×、1.56×；都在噪声范围内。
 - **本仓库 Claude 侧平均用时 196s，官方 113s**：`-p` 在后台 Bash 任务不结束时不退出（mailman 题 6/6），已在 #1071 修复；本轮用的是修复前的构建。
 - **防污染**：每题另跑一份改写过的扰动版（换措辞、名称、路径、端口与期望输出，评分同步更新，oracle 全部通过）。TB2 原版 54.7%、扰动 55.0%，Spreadsheet 相同；SWE-bench Pro 扰动版低 8.3 个百分点（50.3% 对 41.9%，主要是 flipt 12 → 1）。这可能来自模型记得原版，也可能是改名后更难，本设计分不开。
 - **区分度**：20 题里 5 题全格全过或全不过（3 题 Spreadsheet、vuls、navidrome），差别来自其余 15 题。每格 120 次，单格通过率的标准误约 4.5 个百分点。
