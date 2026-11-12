@@ -1905,16 +1905,17 @@ function checkRemovalPermission(
   }
 }
 
-// Like official, a Bash deny rule applies to every command in the script:
-// nested ones ($(...), backticks, subshells, groups, loop bodies, process
-// substitution) and ones named by path (/bin/rm matches Bash(rm:*)).
-function checkNestedCommandDeny(
+// Like official, a Bash deny or ask rule applies to every command in the
+// script: nested ones ($(...), backticks, subshells, groups, loop bodies,
+// process substitution) and ones named by path (/bin/rm matches Bash(rm:*)).
+function checkNestedCommandRule(
   input: z.infer<typeof BashTool.inputSchema>,
   toolPermissionContext: ToolPermissionContext,
   root: Node | null | typeof PARSE_ABORTED,
+  behavior: 'deny' | 'ask',
 ): PermissionResult | null {
-  const denyRules = getRuleByContentsForTool(toolPermissionContext, BashTool, 'deny')
-  if (denyRules.size === 0) return null
+  const rules = getRuleByContentsForTool(toolPermissionContext, BashTool, behavior)
+  if (rules.size === 0) return null
   const commands = [input.command]
   const pending = root && typeof root !== 'symbol' ? [root] : []
   while (pending.length) {
@@ -1932,14 +1933,22 @@ function checkNestedCommandDeny(
   }
   for (const command of commands) {
     const rule = filterRulesByContentsMatchingInput(
-      { ...input, command }, denyRules, 'prefix',
+      { ...input, command }, rules, 'prefix',
       { stripAllEnvVars: true, skipCompoundCheck: true },
     )[0]
-    if (rule) return {
-      behavior: 'deny',
-      message: `Permission to use ${BashTool.name} with command ${input.command} has been denied.`,
-      decisionReason: { type: 'rule', rule },
-    }
+    if (!rule) continue
+    const decisionReason = { type: 'rule' as const, rule }
+    return behavior === 'deny'
+      ? {
+          behavior,
+          message: `Permission to use ${BashTool.name} with command ${input.command} has been denied.`,
+          decisionReason,
+        }
+      : {
+          behavior,
+          message: createPermissionRequestMessage(BashTool.name, decisionReason),
+          decisionReason,
+        }
   }
   return null
 }
@@ -2082,8 +2091,9 @@ async function checkBashCommandPermission(
   const rawRoot = await parseCommandRawForRemoval(input.command)
   const removalPermission =
     checkRemovalPermission(input, appState.toolPermissionContext, rawRoot) ??
-    checkNestedCommandDeny(input, appState.toolPermissionContext, rawRoot) ??
+    checkNestedCommandRule(input, appState.toolPermissionContext, rawRoot, 'deny') ??
     checkEarlyPathDeny(input, appState.toolPermissionContext) ??
+    checkNestedCommandRule(input, appState.toolPermissionContext, rawRoot, 'ask') ??
     checkUnanalyzableCommand(input, appState.toolPermissionContext)
   if (removalPermission) return removalPermission
   let astRoot = !injectionCheckDisabled &&

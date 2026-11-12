@@ -198,6 +198,22 @@ if (process.env[childFlag] !== '1') {
     }
   })
 
+  test('Bash ask rules reach nested and path-qualified commands in bypass mode', async () => {
+    const rules = { ask: ['Bash(rm:*)'] }
+    for (const command of [
+      '/bin/rm src/x.ts',
+      'echo $(rm src/x.ts)',
+      '(rm src/x.ts)',
+      'cat <(rm src/x.ts)',
+      'rm src/x.ts',
+    ]) {
+      const result = await expectBehavior(command, 'bypassPermissions', rules, 'ask')
+      expect(result.decisionReason?.type).toBe('rule')
+    }
+    await expectBehavior('echo rm', 'bypassPermissions', rules, 'allow')
+    await expectBehavior('echo $(rm src/x.ts)', 'default', { ...rules, deny: ['Bash(echo:*)'] }, 'deny')
+  })
+
   test('bypass mode still asks for a dangerous rm inside a shell -c script', async () => {
     for (const command of [
       "sh -c 'rm -rf /'",
