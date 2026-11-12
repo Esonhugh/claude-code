@@ -470,7 +470,8 @@ export function splitKeptTail(
 
 /**
  * Number of trailing API rounds whose tokens first reach `budgetTokens`
- * (at least one), like dsh's retained tail.
+ * (at least one), like dsh's retained tail. Rounds with an assistant message
+ * are always left to summarize: without one, splitKeptTail keeps nothing.
  */
 export function roundsForRecentBudget(
   messages: Message[],
@@ -479,9 +480,17 @@ export function roundsForRecentBudget(
   const groups = groupMessagesByApiRound(
     messages.filter(m => m.type !== 'progress'),
   )
+  const firstWithAssistant = groups.findIndex(group =>
+    group.some(m => m.type === 'assistant'),
+  )
+  const maxRounds = groups.length - firstWithAssistant - 1
   let tokens = 0
   let rounds = 0
-  for (let i = groups.length - 1; i >= 0 && tokens < budgetTokens; i--) {
+  for (
+    let i = groups.length - 1;
+    i >= 0 && tokens < budgetTokens && rounds < maxRounds;
+    i--
+  ) {
     // @ts-ignore - recovered code
     tokens += roughTokenCountEstimationForMessages(groups[i]!)
     rounds++
