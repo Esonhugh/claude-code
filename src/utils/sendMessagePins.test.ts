@@ -129,6 +129,6 @@ test('resume restores names of named Agent spawns from the transcript', () => {
     spawn('taken', 'c6'), receipt({ agentId: B }, 'c6'),
   ]
   const restored = restoreAgentNames(history, new Map([['taken', asAgentId(A)]]))
-  expect(restored && Object.fromEntries(restored)).toEqual({ taken: A, bg: A, mate: 'amate-0123456789abcdef' })
+  expect(restored && Object.fromEntries(restored)).toEqual({ taken: asAgentId(A), bg: asAgentId(A), mate: asAgentId('amate-0123456789abcdef') })
   expect(restoreAgentNames([use()], new Map())).toBeNull()
 })

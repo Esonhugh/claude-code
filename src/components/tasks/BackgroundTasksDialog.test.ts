@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import { mock, setSystemTime, spyOn, test } from 'bun:test'
 import { Readable, Writable } from 'node:stream'
 import React from 'react'
+import figures from 'figures'
 import stripAnsi from 'strip-ansi'
 
 import type { TaskStateBase } from '../../Task.js'
@@ -390,7 +391,7 @@ const openWorkerTranscript = async () => {
   await waitFor(() => liveState.activeOverlays.has('background-tasks-dialog'), 'dialog never registered its overlay')
   interactionOut.output = ''
   interactionIn.push('\x1b[B')
-  await waitFor(() => /> @worker/.test(stripAnsi(interactionOut.output)), 'Down never selected @worker')
+  await waitFor(() => stripAnsi(interactionOut.output).includes(`${figures.pointer} @worker`), 'Down never selected @worker')
   interactionOut.output = ''
   interactionIn.push('\r')
   await waitFor(() => /@worker \(idle\)/.test(stripAnsi(interactionOut.output)), 'Enter never opened the worker detail')
