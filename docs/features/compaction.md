@@ -104,6 +104,24 @@ This fork lets you set that window per model: with a 1M-context model, for examp
 - 连续三次压缩、每次都在上一次之后 3 轮内又满了，回合停止并显示 `Autocompact is thrashing`（SDK 的 `terminal_reason` 为 `rapid_refill_breaker`），避免无限压缩烧 token。
 - 压缩后重新列出可用的 skill，并提醒模型还开着的 Tmux 终端；`ToolSearch` 已加载的工具在 Codex 式压缩和 Mod 改写的压缩后同样保留。
 
+## 自动压缩时多保留最近原文（选用）
+
+默认的自动压缩和官方一样：只原样保留最后一轮，更早的对话写成摘要。设置 `compact.keepRecentRatio` 后，自动压缩会原样保留最近一段对话，约占有效窗口（窗口减去输出预留）的这个比例；只摘要更早的部分（做法同 dsh，它用 `0.16`）：
+
+```json
+{
+  "compact": { "keepRecentRatio": 0.16 }
+}
+```
+
+- 取值 0 到 0.5；不设或设 0 时只保留最后一轮。
+- 从最后一轮往回数，直到累计 token 达到预算，至少一轮；工具调用和它的结果不会被拆开。
+- 只影响自动压缩（含请求超长后的自动压缩，以及 OpenAI provider 默认的 `claude` 方式）。手动 `/compact` 和 `compact.mode: "codex"` 不变。
+- 写摘要的请求只送较早的部分，所以比默认的摘要请求小，仍然命中原来的前缀缓存。压缩后照常重新附上最近读过的文件，已经在保留段里的文件不会重复附上。
+- 1M 窗口下 `0.16` 约等于保留 15 万 token，大窗口建议用小一点的值，或配合较小的 `autoCompactWindow`。
+
+实测（ChatGPT `gpt-6.1-sol`，`CLAUDE_CODE_AUTO_COMPACT_WINDOW=100000`，长任务 `compact-recall` 各 3 次）：两种都 3/3 通过、各压缩 2 次；`0.16` 每次保留 14 到 20 条消息，压缩后上下文只多约 1.7k token，总 token 多 11%，费用多约 5%。
+
 ## 空闲压缩（idle compaction）
 
 和官方 2.1.299 一样：主对话用的是 1 小时 prompt cache 时，一轮结束后闲置 54 分钟（cache 过期前），且对话不少于 200k tokens，就先压缩，回来后下一条消息不必按全价重新处理整段对话。压缩后显示 `Compacted while idle, before the prompt cache expired`。

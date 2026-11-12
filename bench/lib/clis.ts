@@ -299,6 +299,9 @@ const KEEP_RECENT = { compact: { mode: 'codex', codex: { keepPostCompactAttachme
 export const COMPACT_CELLS: Cell[] = [
   claudeCell('fork-claude-ac', 'fork', 'claude', { env: AC_ENV }),
   claudeCell('fork-claude-ac-keep', 'fork', 'claude', { env: AC_ENV, settings: KEEP_RECENT }),
+  // dsh-style: summarize only the older part, keep the last 16% of the window verbatim.
+  claudeCell('fork-openai-ac', 'fork', 'chatgpt', { env: AC_ENV }),
+  claudeCell('fork-openai-ac-keep16', 'fork', 'chatgpt', { env: AC_ENV, settings: { compact: { keepRecentRatio: 0.16 } } }),
 ]
 
 // Memory A/B: the fork's SQLite FTS5 recall (SearchMemory) instead of MEMORY.md in context.
