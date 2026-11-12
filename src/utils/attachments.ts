@@ -3884,13 +3884,10 @@ async function getAsyncHookResponseAttachments(): Promise<Attachment[]> {
  * Messages from AppState.inbox are delivered mid-turn as attachments,
  * allowing teammates to receive messages without waiting for the turn to end.
  */
-async function getTeammateMailboxAttachments(
+export async function getTeammateMailboxAttachments(
   toolUseContext: ToolUseContext,
 ): Promise<Attachment[]> {
   if (!isAgentSwarmsEnabled()) {
-    return []
-  }
-  if (!isAnt()) {
     return []
   }
 

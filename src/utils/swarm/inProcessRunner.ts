@@ -131,6 +131,7 @@ import {
 } from './permissionSync.js'
 import { leaderModeReachesTeammates } from './teamHelpers.js'
 import { TEAMMATE_SYSTEM_PROMPT_ADDENDUM } from './teammatePromptAddendum.js'
+import { GENERAL_PURPOSE_AGENT } from '../../tools/AgentTool/built-in/generalPurposeAgent.js'
 import { isAnt } from 'src/utils/userType.js'
 
 
@@ -1159,7 +1160,9 @@ export async function runInProcessTeammate(
       const systemPromptParts = [TEAMMATE_SYSTEM_PROMPT_ADDENDUM]
 
       // If a specialized agent definition is provided, append its prompt.
-      if (agentDefinition) {
+      // The general-purpose prompt only repeats the main prompt and asks for a
+      // final report to the caller, which teammates must send via SendMessage.
+      if (agentDefinition && agentDefinition.agentType !== GENERAL_PURPOSE_AGENT.agentType) {
         const agentPrompt = isBuiltInAgent(agentDefinition)
           ? agentDefinition.getSystemPrompt({ toolUseContext })
           : agentDefinition.getSystemPrompt()
