@@ -36,6 +36,13 @@ describe('appTools', () => {
     expect(findAppTool(tools, 'mcp__my_srv__plain')).toBeUndefined()
     expect(findAppTool(tools, 'mcp__my_srv__bad')).toBeUndefined()
   })
+
+  test('finds no app when two servers share the chat name', () => {
+    const tool = { toolName: 'show', resourceUri: 'ui://x/w.html', modelVisible: true, appVisible: true, readOnly: false }
+    const both = [{ ...tool, serverName: 'a.b' }, { ...tool, serverName: 'a_b' }]
+    expect(findAppTool(both, 'mcp__a_b__show')).toBeUndefined()
+    expect(findAppTool(both.slice(1), 'mcp__a_b__show')?.serverName).toBe('a_b')
+  })
 })
 
 describe('appCsp', () => {

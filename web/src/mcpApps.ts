@@ -58,9 +58,10 @@ export function appTools(status: Record<string, unknown>): AppServerTool[] {
   })
 }
 
-/** The app tool a chat tool call (`mcp__<server>__<tool>`) is, if any. */
+/** The app tool a chat tool call (`mcp__<server>__<tool>`) is, if any; none when two tools share that name. */
 export function findAppTool(tools: AppServerTool[], blockName: string): AppTool | undefined {
-  const tool = tools.find(t => `mcp__${normalizeMcpName(t.serverName)}__${normalizeMcpName(t.toolName)}` === blockName)
+  const named = tools.filter(t => `mcp__${normalizeMcpName(t.serverName)}__${normalizeMcpName(t.toolName)}` === blockName)
+  const tool = named.length === 1 ? named[0] : undefined
   return tool?.resourceUri ? { ...tool, resourceUri: tool.resourceUri } : undefined
 }
 
