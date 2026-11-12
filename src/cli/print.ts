@@ -17,7 +17,7 @@ import { SDKControlUIResponseSchemas } from '../entrypoints/sdk/modsControlSchem
 import { copyModCallerChain } from '../services/mods/callerChain.js'
 // biome-ignore-all assist/source/organizeImports: ANT-ONLY import markers must not be reordered
 import { feature } from 'bun:bundle'
-import { restoreSendMessagePins } from '../utils/sendMessagePins.js'
+import { restoreAgentNames, restoreSendMessagePins } from '../utils/sendMessagePins.js'
 import { FAILED_PROMPT_BATCH_DROP, UNSUBMITTED_PROMPT_DROP } from '../services/mods/promptAdapter.js'
 import { readFile, stat } from 'fs/promises'
 import { dirname, join, resolve } from 'path'
@@ -950,7 +950,11 @@ export async function runHeadless(
     restoredWorkerState: structuredIO.restoredWorkerState,
   })
 
-  setAppState(prev => ({ ...prev, sendMessagePins: restoreSendMessagePins(initialMessages) }))
+  setAppState(prev => ({
+    ...prev,
+    sendMessagePins: restoreSendMessagePins(initialMessages),
+    agentNameRegistry: restoreAgentNames(initialMessages, prev.agentNameRegistry) ?? prev.agentNameRegistry,
+  }))
 
   // SessionStart hooks can emit initialUserMessage — the first user turn for
   // headless orchestrator sessions where stdin is empty and additionalContext
