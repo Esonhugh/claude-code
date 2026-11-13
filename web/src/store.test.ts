@@ -77,6 +77,19 @@ describe('appReducer', () => {
     expect(JSON.stringify(batched.chats.s1!.items)).toContain('Hello')
   })
 
+  it('shows a command the page ran itself as its line and output, without starting a turn', () => {
+    let state = appReducer(initialAppState, { type: 'mode', id: 's1', mode: 'live' })
+    state = appReducer(state, { type: 'chat', id: 's1', action: { type: 'pageCommand', text: '/reload-plugins', output: 'Reloaded 1 plugin: p1' } })
+    state = appReducer(state, { type: 'chat', id: 's1', action: { type: 'pageCommand', text: '/reload-plugins', output: 'boom', isError: true } })
+    expect(state.chats.s1!.busy).toBeFalsy()
+    expect(state.chats.s1!.items).toEqual([
+      { kind: 'user', id: 'page-0', text: '/reload-plugins' },
+      { kind: 'local', id: 'page-0-out', text: 'Reloaded 1 plugin: p1', command: 'reload-plugins', args: '' },
+      { kind: 'user', id: 'page-2', text: '/reload-plugins' },
+      { kind: 'local', id: 'page-2-out', text: 'boom', isError: true, command: 'reload-plugins', args: '' },
+    ])
+  })
+
   it('fills a reopened session from the settings the server kept, under the picks this page made', () => {
     const settings = { model: 'sonnet', effort: 'high', context_window: 200_000, permission_mode: 'plan' }
     let state = appReducer(initialAppState, { type: 'mode', id: 's1', mode: 'readonly' })

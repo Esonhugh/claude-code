@@ -1187,6 +1187,17 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       await page.waitForTimeout(200)
       expect(await palette.getByRole('option', { name: /^\/color/ }).count()).toBe(0)
 
+      // The page runs /reload-plugins as a reload_plugins request, so it is offered although
+      // system/init marks it terminal-only, and it calls no model.
+      await input.fill('/reload-p')
+      await palette.getByRole('option', { name: /^\/reload-plugins/ }).waitFor()
+      await input.press('Enter')
+      expect(await input.inputValue()).toBe('/reload-plugins ')
+      const beforeReload = promptsSeen.length
+      await input.press('Enter')
+      await page.locator('.msg.local', { hasText: 'Reloaded' }).waitFor({ timeout: 30_000 })
+      expect(promptsSeen.length).toBe(beforeReload)
+
       // `cost` is an alias of `usage`, which opens the page's own Usage settings: no model call.
       await input.fill('/cos')
       const usage = palette.getByRole('option', { name: /^\/usage/ })

@@ -505,6 +505,17 @@ export function addUserMessage(
   return { ...state, busy: true, startedAt: state.startedAt ?? Date.now(), items, goal }
 }
 
+/** A slash command the page ran itself (`/reload-plugins`): its line and its output, with no turn. */
+export function addPageCommand(state: ChatState, text: string, output: string, isError?: boolean): ChatState {
+  const id = `page-${state.items.length}`
+  return addLocal({ ...state, items: [...state.items, { kind: 'user', id, text }] }, {
+    kind: 'local',
+    id: `${id}-out`,
+    text: output,
+    ...(isError && { isError }),
+  })
+}
+
 /**
  * A message sent while a turn runs. The engine queues it and feeds it to the
  * model between tool calls, or runs it as the next turn; its echo (same uuid)
