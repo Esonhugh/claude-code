@@ -23,6 +23,7 @@ const VARIABLE = /\$(?:([A-Za-z_]\w*)(?![\w:[])|\{([A-Za-z_]\w*)\}(?![:[]))/y
 function argument(text: string, vars: Variables): Argument {
   let value = ''
   let quote = ''
+  let opened = 0
   let unknown = false
   const braces: boolean[] = []
   for (let i = 0; i < text.length; i++) {
@@ -56,6 +57,7 @@ function argument(text: string, vars: Variables): Argument {
       quote = ''
     } else if (!quote && (char === "'" || char === '"')) {
       quote = char
+      opened = value.length
     } else {
       if (!quote) {
         if (char === '{') braces.push(false)
@@ -86,6 +88,9 @@ function argument(text: string, vars: Variables): Argument {
       } else value += char
     }
   }
+  // The parser ends an open single quote on the word's last character.
+  if (quote === "'")
+    return { value: value.slice(0, Math.max(opened, value.length - 1)), unknown }
   return { value, unknown: unknown || quote !== '' }
 }
 
@@ -721,6 +726,9 @@ function checkRoot(
     }
     if (!REMOVALS.has(name)) continue
     for (const target of operands(argv.slice(1))) {
+      // Like official: an empty operand is not a path that can be ruled out.
+      if (target.value === '' && !target.unknown && name !== 'unlink')
+        return mandatory('Removal target is empty')
       if (target.unknown) {
         const result = unresolvedTarget(target, here, lost, known)
         if (result) return result

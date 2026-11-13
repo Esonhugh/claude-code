@@ -86,6 +86,9 @@ function validateCommandForMode(
 export function checkPermissionMode(
   input: z.infer<typeof BashTool.inputSchema>,
   toolPermissionContext: ToolPermissionContext,
+  // The parser already split this out as one command: splitting again would
+  // read a mid-word `#` as a comment and unescape the command name.
+  isSingleCommand = false,
 ): PermissionResult {
   // Skip if in bypass mode (handled elsewhere)
   if (toolPermissionContext.mode === 'bypassPermissions') {
@@ -103,7 +106,16 @@ export function checkPermissionMode(
     }
   }
 
-  const commands = splitCommand_DEPRECATED(input.command)
+  // Like official, an operand with an expansion (`x$((1))`) is not covered.
+  if (isSingleCommand && /[$`]/.test(input.command)) {
+    return {
+      behavior: 'passthrough',
+      message: 'No mode-specific validation required',
+    }
+  }
+  const commands = isSingleCommand
+    ? [input.command]
+    : splitCommand_DEPRECATED(input.command)
 
   // Every subcommand must be one the mode allows.
   for (const cmd of commands) {

@@ -860,6 +860,57 @@ if (process.env[childFlag] !== '1') {
     }
   })
 
+  test('odd quoting, trailing backslashes and unclosed expansions match official', async () => {
+    const treeSitter =
+      process.env.CLAUDE_CODE_BASH_HARDENING_PARSER === 'TREE_SITTER_BASH'
+    // An unclosed `$(`, `${`, `$((` or `$[` asks in every mode, bypass included.
+    for (const command of ['echo $(', 'echo ${x', 'x=$(', 'echo $((1+', 'echo "$(ls" hi', 'echo $[1+1', 'for ((i=0;i<1;i++']) {
+      for (const mode of ['default', 'acceptEdits', 'bypassPermissions'] as const) {
+        await expectBehavior(command, mode, { allow: ['Bash(echo:*)'] }, 'ask')
+      }
+    }
+    for (const command of ['echo $(ls)', 'echo ${x}', 'echo $((1+1))', "echo '$('"]) {
+      await expectBehavior(command, 'bypassPermissions', {}, 'allow')
+    }
+    await expectBehavior('echo $(', 'bypassPermissions', { deny: ['Bash(echo:*)'] }, 'deny')
+
+    // An empty removal operand asks even in bypass; `'f` is read as empty.
+    for (const command of ["rm ''", 'rm -rf ""', "rm f ''", "rmdir ''", "rm 'f"]) {
+      await expectBehavior(command, 'bypassPermissions', {}, 'ask')
+    }
+    for (const command of ["rm 'fg", "rm f'", "unlink ''"]) {
+      await expectBehavior(command, 'bypassPermissions', {}, 'allow')
+    }
+
+    if (!treeSitter) return
+    // A prefix rule does not cover a command the parser could not read, even
+    // when dropping the trailing backslash leaves exactly the rule's prefix.
+    const allow = ['Bash(echo:*)', 'Bash(ls:*)', 'Bash(ls -la:*)']
+    for (const command of ['echo \\', 'ls \\', 'ls -la \\', 'echo > out \\', 'echo a\\']) {
+      await expectBehavior(command, 'default', { allow }, 'ask')
+    }
+    // Words are judged as the shell reads them: `a#b` is one word, not a
+    // comment, so the flags after it still count.
+    for (const command of ['echo a#b', 'echo "a"#b', "echo 'x", "echo it's ok", 'cat src/x.ts#y', 'echo a#b | cat', '\\ls']) {
+      await expectBehavior(command, 'default', {}, 'allow')
+    }
+    for (const command of ['sort a#b -o out', 'tee a#b', 'touch a#b', 'FOO=1 echo a#b', 'echo a#b; touch t1']) {
+      await expectBehavior(command, 'default', {}, 'ask')
+    }
+    for (const command of ['touch a#b', 'echo a#b; touch t1']) {
+      await expectBehavior(command, 'acceptEdits', {}, 'allow')
+    }
+    for (const command of ['rm x$((1))', 'mkdir d$((1))', 'touch x$((1))']) {
+      await expectBehavior(command, 'acceptEdits', {}, 'ask')
+    }
+    // Rules match the words the parser read: `ls#x` is not `ls`, `\\touch` is.
+    await expectBehavior('ls#x', 'default', { allow }, 'ask')
+    await expectBehavior('\\touch t1', 'default', { allow: ['Bash(touch:*)'] }, 'allow')
+    await expectBehavior('\\rm f', 'bypassPermissions', { deny: ['Bash(rm:*)'] }, 'deny')
+    await expectBehavior('cat a#b', 'bypassPermissions', { deny: ['Read(./a)'] }, 'allow')
+    await expectBehavior('cat a #b', 'bypassPermissions', { deny: ['Read(./a)'] }, 'deny')
+  })
+
   test('cleanup', () => {
     process.chdir(tmpdir())
     rmSync(project, { recursive: true, force: true })
