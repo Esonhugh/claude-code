@@ -5,6 +5,11 @@ import {
   extractOutputRedirections,
   splitCommand_DEPRECATED,
 } from '../../utils/bash/commands.js'
+import {
+  CMDSUB_PLACEHOLDER,
+  containsAnyPlaceholder,
+  type SimpleCommand,
+} from '../../utils/bash/ast.js'
 import { tryParseShellCommand } from '../../utils/bash/shellQuote.js'
 import { getCwd } from '../../utils/cwd.js'
 import { isCurrentDirectoryBareGitRepo } from '../../utils/git.js'
@@ -1870,6 +1875,126 @@ const GLOB_SAFE_COMMANDS = new Set([
   'tac', 'rev', 'cmp', 'basename', 'dirname', 'realpath', 'readlink',
   'sha256sum', 'sha1sum', 'md5sum', 'cd',
 ])
+
+const HOME_OF_USER = /^~(?!\/|$)/
+
+const FIND_WRITES_OR_RUNS = new Set([
+  '-exec', '-execdir', '-ok', '-okdir', '-delete', '-rm', '-fprint',
+  '-fprint0', '-fprintf', '-fls', '-files0-from',
+])
+const FIND_TAKES_VALUE = new Set([
+  '-name', '-iname', '-path', '-ipath', '-lname', '-ilname', '-regex',
+  '-iregex', '-wholename', '-iwholename', '-samefile', '-newer', '-anewer',
+  '-cnewer', '-mnewer', '-perm', '-user', '-group', '-uid', '-gid', '-size',
+  '-type', '-xtype', '-fstype', '-inum', '-links', '-used', '-context',
+  '-amin', '-cmin', '-mmin', '-atime', '-ctime', '-mtime', '-mindepth',
+  '-maxdepth', '-printf', '-regextype', '-D', '-f', '-flags', '-Bnewer',
+  '-Btime', '-Bmin', '-xattrname',
+])
+// BSD find: `-f path` and option clusters ending in `D` or `f` take a value.
+const FIND_CLUSTER_TAKES_VALUE =
+  /^-(?:[EHLPXdsx]*D|f|[dsx]*[EHLPX][EHLPXdsx]*f)$/
+
+/** Official's walk over find's arguments: no primary that writes or runs. */
+function findArgsAreReadOnly(args: string[]): boolean {
+  let isValue = false
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]!
+    const wasValue = isValue
+    isValue = false
+    if (FIND_WRITES_OR_RUNS.has(arg) || /^-[dsx]+f$/.test(arg)) return false
+    if (!wasValue && FIND_CLUSTER_TAKES_VALUE.test(arg)) {
+      isValue = true
+    } else if (
+      !wasValue &&
+      (FIND_TAKES_VALUE.has(arg) || /^-newer[aBcm][aBcmt]$/.test(arg))
+    ) {
+      i++
+    } else if (containsAnyPlaceholder(arg)) {
+      return false
+    }
+  }
+  return true
+}
+
+/**
+ * Official runs `echo "a: $(cmd)"` but asks for `"a$(cmd)"`, `"$(cmd)a"` and
+ * `" $(cmd)"`: the text around the substitution must hold a separator and
+ * something besides blanks.
+ */
+function substitutionLacksSeparator(arg: string): boolean {
+  if (!arg.includes(CMDSUB_PLACEHOLDER)) return false
+  const literal = arg.replaceAll(CMDSUB_PLACEHOLDER, '')
+  return literal.trim() === '' || !/[\s:=/.,()[\]-]/.test(literal)
+}
+
+/** Operands that bash evaluates (`-v a[$(cmd)]`, `-eq`, `-t`) must be plain. */
+function testArgsAreReadOnly(args: string[]): boolean {
+  return (
+    !testOperandIsDangerous(args) &&
+    !args.some((arg, i) => {
+      const operand = args[i + 1]
+      return (
+        (arg === '-v' || arg === '-R' || arg === '-t') &&
+        operand !== undefined &&
+        (operand.includes('[') || containsAnyPlaceholder(operand))
+      )
+    })
+  )
+}
+
+/**
+ * Official's decision for commands that only read whatever their arguments
+ * are: it judges the words the parser read, not the text. The text checks
+ * below read some spellings differently than the shell (`a\\`, `'a && b`,
+ * `"a\\b"`, `a#*`) and would ask where official runs the command.
+ */
+export function isParsedCommandReadOnly(command: SimpleCommand): boolean {
+  const [name, ...args] = command.argv
+  if (
+    name === undefined ||
+    !(
+      name === 'echo' ||
+      name === 'ls' ||
+      (name === 'cd' && args.length <= 1) ||
+      (name === 'find' && findArgsAreReadOnly(args)) ||
+      // The parser reports `[ EXPR ]` and `[[ EXPR ]]` as `[[` plus EXPR.
+      (name === '[[' &&
+        /^(?:\[\[\s[^]*\s\]\]|\[\s[^]*\s\])$/.test(command.text.trim()) &&
+        testArgsAreReadOnly(args)) ||
+      READONLY_COMMANDS.includes(name)
+    )
+  ) {
+    return false
+  }
+  if (
+    args.some(arg => HOME_OF_USER.test(arg)) ||
+    args.some(substitutionLacksSeparator) ||
+    !command.envVars.every(v => isSafeEnvAssignment(v.name, v.value)) ||
+    containsVulnerableUncPath(command.text)
+  ) {
+    return false
+  }
+  for (const { op, target } of command.redirects) {
+    const input = op === '<' || op === '<<' || op === '<&' || op === '<<<'
+    if (
+      !(input || target === '/dev/null' || (op === '>&' && /^\d+$/.test(target))) ||
+      /^\/dev\/(tcp|udp)\//.test(target) ||
+      (op === '<' && HOME_OF_USER.test(target))
+    ) {
+      return false
+    }
+  }
+  const expansion = unquotedExpansionKind(command.text)
+  if (expansion === 'variable') return false
+  if (expansion === 'glob' || command.argv.some(arg => arg.includes('{'))) {
+    return (
+      GLOB_SAFE_COMMANDS.has(name) &&
+      !/(?:^|[\s/])\.\.(?:\/|\s|$)/.test(command.text)
+    )
+  }
+  return true
+}
 
 /** Replace a bare or double-quoted `$HOME` with the home directory. */
 function expandHome(command: string): string {

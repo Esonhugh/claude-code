@@ -911,6 +911,56 @@ if (process.env[childFlag] !== '1') {
     await expectBehavior('cat a #b', 'bypassPermissions', { deny: ['Read(./a)'] }, 'deny')
   })
 
+  test('quoted or escaped shell characters in a read-only command do not prompt', async () => {
+    // A `|` inside `$(...)` is not an unclosed expansion: bypass still runs it.
+    for (const command of ['x=$(ls | wc -l)', 'echo "a: $(ls | wc -l)"']) {
+      await expectBehavior(command, 'bypassPermissions', {}, 'allow')
+      await expectBehavior(command, 'default', {}, 'ask')
+    }
+    if (process.env.CLAUDE_CODE_BASH_HARDENING_PARSER !== 'TREE_SITTER_BASH') {
+      return
+    }
+    // Official judges the words the parser read, so these run without a rule.
+    for (const command of [
+      'echo a \\\\',
+      'echo a\\\\',
+      'echo \\${x',
+      'echo a#*',
+      "ls 'a && touch t7",
+      'echo "a\\\\b"',
+      'ls "a&b"',
+      "cat 'a|b'",
+      "find . -name 'a;b'",
+      'find . -name \\*.ts',
+      '[ -f "a;b" ]',
+      '[[ -f "a;b" ]]',
+      'echo "a: $(ls)"',
+    ]) {
+      await expectBehavior(command, 'default', {}, 'allow')
+    }
+    if (process.platform !== 'win32') {
+      await expectBehavior('stat -c %s src/x.ts', 'default', {}, 'allow')
+    }
+    // What the words say still counts.
+    for (const command of [
+      "find . -name 'a;b' -delete",
+      'find . -fprint out',
+      '[ 1 -eq "a[0]" ]',
+      'ls src/../*',
+      'echo ~root',
+      'echo a#* > out',
+      'echo "a: $(touch t1)"',
+      'echo "a$(ls)"',
+      'echo " $(ls)"',
+      '[[ -f a',
+    ]) {
+      await expectBehavior(command, 'default', {}, 'ask')
+    }
+    // acceptEdits does not auto-allow an edit that runs inside `$(...)`.
+    await expectBehavior('echo "a: $(touch t1)"', 'acceptEdits', {}, 'ask')
+    await expectBehavior('touch t1 && echo "a: $(ls)"', 'acceptEdits', {}, 'allow')
+  })
+
   test('cleanup', () => {
     process.chdir(tmpdir())
     rmSync(project, { recursive: true, force: true })

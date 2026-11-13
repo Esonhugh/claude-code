@@ -427,14 +427,14 @@ export function validatePath(
   // - $VAR (Unix/Linux environment variables like $HOME, $PWD)
   // - ${VAR} (brace expansion)
   // - $(cmd) (command substitution)
-  // - %VAR% (Windows environment variables like %TEMP%, %USERPROFILE%)
+  // - %VAR% (Windows environment variables like %TEMP%, %USERPROFILE%), on Windows only
   // - Nested combinations like $(echo $HOME)
   // - =cmd (Zsh equals expansion, e.g. =rg expands to /usr/bin/rg)
   // All of these are preserved as literal strings during validation but expanded
   // by the shell during execution, creating a TOCTOU vulnerability
   if (
     cleanPath.includes('$') ||
-    cleanPath.includes('%') ||
+    (getPlatform() === 'windows' && cleanPath.includes('%')) ||
     cleanPath.startsWith('=')
   ) {
     return {
