@@ -78,6 +78,10 @@ const NATIVE_COMMANDS: Record<
   | { dialog: 'stats' | 'settings' | 'mcp' | 'hooks' | 'plugins' | 'memory' | 'skills' | 'keys'; tab?: 'general' | 'usage' | 'features' }
   | { menu: 'model' }
   | { clear: true }
+  | { reload: true }
+  | { panel: 'status' | 'files' | 'bg' | 'workflow' }
+  | { search: true }
+  | { export: true }
 > = {
   // The CLI's /clear moves the process to a new session id the page and server would not follow.
   clear: { clear: true },
@@ -98,6 +102,58 @@ const NATIVE_COMMANDS: Record<
   memory: { dialog: 'memory' },
   skills: { dialog: 'skills' },
   keybindings: { dialog: 'keys' },
+  // Sent as text, -p reloads plugins without updating the session's commands, agents or MCP servers.
+  'reload-plugins': { reload: true },
+  // The CLI's dialogs that the page has as a side panel, the session search or a download.
+  status: { panel: 'status' },
+  diff: { panel: 'files' },
+  tasks: { panel: 'bg' },
+  bashes: { panel: 'bg' },
+  workflows: { panel: 'workflow' },
+  resume: { search: true },
+  continue: { search: true },
+  help: { dialog: 'keys' },
+  export: { export: true },
+}
+
+/** Page commands that are not `-p` commands, so the session's list lacks them: name → description key. */
+const PAGE_ROWS = [
+  { name: 'reload-plugins', key: 'cmdReloadPlugins' },
+  { name: 'plugin', aliases: ['plugins'], key: 'cmdPlugin' },
+  { name: 'hooks', key: 'cmdHooks' },
+  { name: 'memory', key: 'cmdMemory' },
+  { name: 'skills', key: 'cmdSkills' },
+  { name: 'theme', key: 'cmdTheme' },
+  { name: 'keybindings', key: 'cmdKeybindings' },
+  { name: 'status', key: 'cmdStatus' },
+  { name: 'diff', key: 'cmdDiff' },
+  { name: 'tasks', aliases: ['bashes'], key: 'cmdTasks' },
+  { name: 'workflows', key: 'cmdWorkflows' },
+  { name: 'resume', aliases: ['continue'], key: 'cmdResume' },
+  { name: 'help', key: 'cmdHelp' },
+  { name: 'export', key: 'cmdExport' },
+] as const
+
+export type PageCommandKey = (typeof PAGE_ROWS)[number]['key']
+
+/**
+ * The palette of a box whose page commands open (a session's own chat): the
+ * session's commands, then the page commands it lacks. A terminal-only
+ * command stays hidden unless the page runs it.
+ */
+export function withPageCommands(
+  commands: SlashCommand[],
+  hidden: readonly string[],
+  describe: (key: PageCommandKey) => string,
+): { commands: SlashCommand[]; hidden: string[] } {
+  const taken = new Set(commands.flatMap(c => [c.name, ...(c.aliases ?? [])]))
+  const rows = PAGE_ROWS.filter(r => !taken.has(r.name)).map(r => ({
+    name: r.name,
+    description: describe(r.key),
+    argumentHint: '',
+    ...('aliases' in r && { aliases: [...r.aliases] }),
+  }))
+  return { commands: [...commands, ...rows], hidden: hidden.filter(name => !nativeCommand(`/${name}`)) }
 }
 
 /** The page's own panel for a bare `/stats`, `/config`, …; undefined for anything else (it is sent). */
