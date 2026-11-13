@@ -857,7 +857,14 @@ function MessageView({
             <span className="rm" aria-hidden="true">
               ⎿
             </span>
-            <span className="md">{stripAnsi(String(p.text))}</span>
+            {/* Like the TUI: stdout is Markdown (/release-notes), errors stay plain text. */}
+            {item.isError ? (
+              <span className="md">{stripAnsi(String(p.text))}</span>
+            ) : (
+              <div className="md">
+                <Markdown filesBase={files.base} text={stripAnsi(String(p.text))} />
+              </div>
+            )}
           </div>
         )}
       </ModSite>

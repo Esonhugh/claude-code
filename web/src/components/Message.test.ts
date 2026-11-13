@@ -141,6 +141,35 @@ describe('handback report', () => {
   })
 })
 
+describe('local command output', () => {
+  const render = async (item: Item) => {
+    const react = await import('react')
+    ;(globalThis as { React?: unknown }).React ??= react
+    const { renderToStaticMarkup } = await import('react-dom/server')
+    const { Message } = await import('./Message')
+    return renderToStaticMarkup(react.createElement(Message, { item, t: ((key: string) => key) as never, streaming: false }))
+  }
+
+  it('renders stdout as Markdown, like the TUI (/release-notes)', async () => {
+    const html = await render({
+      kind: 'local',
+      id: 'l1',
+      command: 'release-notes',
+      text: 'Version 2.1.297:\n· run `make build` for **built-claude**\n· see [docs](https://example.com)',
+    })
+    expect(html).toContain('<code>make build</code>')
+    expect(html).toContain('<strong>built-claude</strong>')
+    expect(html).toContain('href="https://example.com"')
+    expect(html).not.toContain('`make build`')
+  })
+
+  it('keeps errors as plain text', async () => {
+    const html = await render({ kind: 'local', id: 'l2', text: 'Unknown `x` <name>', isError: true })
+    expect(html).toContain('Unknown `x` &lt;name&gt;')
+    expect(html).not.toContain('<code>')
+  })
+})
+
 describe('imageTarget', () => {
   it('names the image and the start of its message, with mentions as file names', () => {
     expect(imageTarget('Fix   this\n@/a/b/readme.md and @"/x y/z.png"', 1)).toBe(
