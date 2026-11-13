@@ -243,6 +243,7 @@ claude web [--port <n>] [--host <ip>] [--workspace <dir>] [--no-open]
            [--idle-timeout <ms>] [--max-sessions <n>]
            [--dangerously-allow-local-network] [--trusted-host <host>...]
            [--tls-cert <file> --tls-key <file>] [--preview-origin <url>...]
+           [--plugin-dir <path>...]
 ```
 
 | 参数 | 默认值 | 作用 |
@@ -253,6 +254,7 @@ claude web [--port <n>] [--host <ip>] [--workspace <dir>] [--no-open]
 | `--no-open` | 打开浏览器 | 只打印地址（SSH 会话里自动不打开） |
 | `--idle-timeout <ms>` | `600000`（10 分钟） | 没有标签页连着的会话多久后结束；`0` 表示不结束 |
 | `--max-sessions <n>` | `8` | 同时运行的会话上限；`0` 表示不限 |
+| `--plugin-dir <path>` | 无 | 每个会话都加载这个插件目录或 .zip（可重复）。写在 `web` 前的 `--plugin-dir`、`--plugin-url`、`--settings`、`--setting-sources` 也会传给每个会话，相对路径按启动目录解析 |
 | `--dangerously-allow-local-network` | 关闭 | 监听所有网卡，接受局域网来源的连接；token 登录仍然需要 |
 | `--trusted-host <host>` | 无 | 额外接受的 Host 头（可重复），例如反向代理或自定义域名 |
 | `--tls-cert <file>` / `--tls-key <file>` | 无 | PEM 证书和私钥，必须同时给；给了以后只走 https / wss，cookie 加 `Secure` |

@@ -6221,6 +6221,12 @@ async function run(): Promise<CommanderCommand> {
         'Maximum concurrent sessions (0 = unlimited)',
         '8',
       )
+      .option(
+        '--plugin-dir <path>',
+        'Load a plugin from a directory or .zip in every session (repeatable)',
+        (val: string, prev: string[]) => [...prev, val],
+        [] as string[],
+      )
       .action(
         async opts => {
           // Same as `claude server`: give Ctrl+C back to the terminal.

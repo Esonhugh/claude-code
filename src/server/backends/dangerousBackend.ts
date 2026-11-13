@@ -46,6 +46,8 @@ export class DangerousBackend {
       emitSessionState?: boolean
       /** The client renders MCP Apps, so the child offers MCP servers the UI extension. */
       mcpAppsHost?: boolean
+      /** More flags every session starts with (`claude web`'s plugin and settings flags). */
+      sessionArgs?: string[]
     } = {},
   ) {}
 
@@ -99,6 +101,7 @@ export class DangerousBackend {
         ...(this.options.addDirs ?? []).flatMap(dir => ['--add-dir', dir]),
         ...(this.options.replayUserMessages ? ['--replay-user-messages'] : []),
         ...(this.options.includeHookEvents ? ['--include-hook-events'] : []),
+        ...(this.options.sessionArgs ?? []),
       ],
       { cwd, env, stdio: ['pipe', 'pipe', 'pipe'] },
     )
