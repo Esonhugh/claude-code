@@ -198,7 +198,7 @@ async function remove(item: Item, matchPaths: ReadonlySet<string>): Promise<stri
         }
         return null
       case 'index':
-        deleteProjectIndexRows(item.path)
+        await deleteProjectIndexRows(item.path)
         return null
       case 'config-key':
         saveGlobalConfig(config => {

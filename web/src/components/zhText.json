@@ -181,6 +181,14 @@
 "No plugins in your marketplaces yet."
 ],
 [
+"此文件还不存在。",
+"This file does not exist yet."
+],
+[
+"此文件为空。",
+"This file is empty."
+],
+[
 "第一次搜索时建立索引",
 "Built on the first search"
 ],

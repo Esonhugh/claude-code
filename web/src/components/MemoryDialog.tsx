@@ -56,6 +56,13 @@ function snippetNode(hit: MemorySnippet): ReactNode {
   return matched ? [before, <mark key="m">{matched}</mark>, after] : before
 }
 
+/** What the preview says for a file with no text, so an empty pane does not look like it is still loading. */
+export function emptyPreview(m: Pick<MemoryFile, 'missing' | 'body'>): string | undefined {
+  if (m.missing) return '此文件还不存在。'
+  if (!m.body.trim()) return '此文件为空。'
+  return undefined
+}
+
 function ago(z: ExtProps['z'], ms: number): string {
   const min = Math.max(0, Math.round((Date.now() - ms) / 60_000))
   if (min < 1) return z('刚刚更新')
@@ -210,7 +217,9 @@ export function MemoryBody({ z, lang, flash, onOpenSession }: ExtProps & { onOpe
             </p>
           )}
         </div>
-        <pre className="memview">{m ? highlight(m.body, q) : ''}</pre>
+        <pre className="memview">
+          {m && emptyPreview(m) ? <span className="note">{z(emptyPreview(m)!)}</span> : m ? highlight(m.body, q) : ''}
+        </pre>
       </div>
     </>
   )

@@ -349,4 +349,29 @@ describe('searchMemory', () => {
       resetMemoryIndexForTesting(':memory:')
     }
   })
+
+  test('waits for another session holding the write lock without freezing the event loop', async () => {
+    const path = join(root, 'locked.sqlite')
+    resetMemoryIndexForTesting(path)
+    try {
+      await search('package')
+      writeFileSync(join(memDir, 'lock.md'), 'Written while another session holds the lock.')
+      const { Database } = await import('bun:sqlite')
+      const other = new Database(path)
+      other.run('BEGIN IMMEDIATE')
+      const started = Date.now()
+      let firstTick = 0
+      setTimeout(() => (firstTick = Date.now() - started), 10)
+      setTimeout(() => other.run('COMMIT'), 300)
+      const hits = await search('another session')
+      other.close()
+      expect(hits.map(h => h.path)).toEqual([join(memDir, 'lock.md')])
+      // busy_timeout would block this timer until the lock is released.
+      expect(firstTick).toBeGreaterThan(0)
+      expect(firstTick).toBeLessThan(200)
+    } finally {
+      rmSync(join(memDir, 'lock.md'), { force: true })
+      resetMemoryIndexForTesting(':memory:')
+    }
+  })
 })
