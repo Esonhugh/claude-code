@@ -33,7 +33,6 @@ import {
 } from '@modelcontextprotocol/client'
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio'
 import { JSONRPCMessageSchema } from '@modelcontextprotocol/core'
-import mapValues from 'lodash-es/mapValues.js'
 import memoize from 'lodash-es/memoize.js'
 import zipObject from 'lodash-es/zipObject.js'
 import pMap from 'p-map'
@@ -116,7 +115,10 @@ import {
 } from './elicitationHandler.js'
 import { buildMcpToolName } from './mcpStringUtils.js'
 import { normalizeNameForMCP } from './normalization.js'
-import { getLoggingSafeMcpBaseUrl } from './utils.js'
+import {
+  getLoggingSafeMcpBaseUrl,
+  redactHeadersForLogging,
+} from './utils.js'
 
 /* eslint-disable @typescript-eslint/no-require-imports */
 const mcpSkillsModule = feature('MCP_SKILLS')
@@ -1142,9 +1144,7 @@ export const connectToServer = memoize(
         }
 
         // Redact sensitive headers before logging
-        const wsHeadersForLogging = mapValues(wsHeaders, (value, key) =>
-          key.toLowerCase() === 'authorization' ? '[REDACTED]' : value,
-        )
+        const wsHeadersForLogging = redactHeadersForLogging(wsHeaders)
 
         logMCPDebug(
           name,
@@ -1233,10 +1233,8 @@ export const connectToServer = memoize(
 
         // Redact sensitive headers before logging
         const headersForLogging = transportOptions.requestInit?.headers
-          ? mapValues(
+          ? redactHeadersForLogging(
               transportOptions.requestInit.headers as Record<string, string>,
-              (value, key) =>
-                key.toLowerCase() === 'authorization' ? '[REDACTED]' : value,
             )
           : undefined
 

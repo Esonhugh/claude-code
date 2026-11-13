@@ -642,6 +642,19 @@ export function extractAgentMcpServers(
  * Trailing slashes are also removed for normalization.
  * Returns undefined for stdio/sdk servers or if URL parsing fails.
  */
+// Header values often carry credentials (Authorization, API keys, gateway
+// tokens), so debug logs keep only the names.
+export function redactHeadersForLogging(
+  headers: Record<string, string>,
+): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(headers).map(([key, value]) => [
+      key,
+      key.toLowerCase() === 'user-agent' ? value : '[REDACTED]',
+    ]),
+  )
+}
+
 export function getLoggingSafeMcpBaseUrl(
   config: McpServerConfig,
 ): string | undefined {
