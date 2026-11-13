@@ -842,15 +842,28 @@ function filterRulesByContentsMatchingInput(
   {
     stripAllEnvVars = false,
     skipCompoundCheck = false,
-  }: { stripAllEnvVars?: boolean; skipCompoundCheck?: boolean } = {},
+    words,
+  }: {
+    stripAllEnvVars?: boolean
+    skipCompoundCheck?: boolean
+    /** quotedCommand() of the parsed command, tried by allow rules. */
+    words?: string
+  } = {},
 ): PermissionRule[] {
   const command = input.command.trim()
 
   // Strip output redirections for permission matching
   // This allows rules like Bash(python:*) to match "python script.py > output.txt"
   // Security validation of redirection targets happens separately in checkPathConstraints
+  // The stripped form is rebuilt from shell-quote tokens, which also drops a
+  // mid-word `#...` and a trailing backslash. Deny and ask rules may match
+  // that looser reading; an allow rule only uses it when a redirection was
+  // actually removed, so `Bash(ls:*)` does not allow a command named `ls#x`.
+  const extracted = extractOutputRedirections(command)
   const commandWithoutRedirections =
-    extractOutputRedirections(command).commandWithoutRedirections
+    stripAllEnvVars || extracted.redirections.length > 0
+      ? extracted.commandWithoutRedirections
+      : command
 
   // For exact matching, try both the original command (to preserve quotes)
   // and the command without redirections (to allow rules without redirections to match)
@@ -863,7 +876,10 @@ function filterRulesByContentsMatchingInput(
   // Strip safe wrapper commands (timeout, time, nice, nohup) and env vars for matching
   // This allows rules like Bash(npm install:*) to match "timeout 10 npm install foo"
   // or "GOOS=linux go build"
-  const commandsToTry = commandsForMatching.flatMap(cmd => {
+  const commandsToTry = [
+    ...commandsForMatching,
+    ...(words === undefined ? [] : [words]),
+  ].flatMap(cmd => {
     const strippedCommand = stripSafeWrappers(cmd)
     return strippedCommand !== cmd ? [cmd, strippedCommand] : [cmd]
   })
@@ -1020,7 +1036,10 @@ function matchingRulesForInput(
   input: z.infer<typeof BashTool.inputSchema>,
   toolPermissionContext: ToolPermissionContext,
   matchMode: 'exact' | 'prefix',
-  { skipCompoundCheck = false }: { skipCompoundCheck?: boolean } = {},
+  {
+    skipCompoundCheck = false,
+    words,
+  }: { skipCompoundCheck?: boolean; words?: string } = {},
 ) {
   const denyRuleByContents = getRuleByContentsForTool(
     toolPermissionContext,
@@ -1057,7 +1076,7 @@ function matchingRulesForInput(
     input,
     allowRuleByContents,
     matchMode,
-    { skipCompoundCheck },
+    { skipCompoundCheck, words },
   )
 
   return {
@@ -1129,6 +1148,16 @@ export const bashToolCheckExactMatchPermission = (
   }
 }
 
+/** The command as the parser read it, with each word quoted where needed. */
+function quotedCommand(command: SimpleCommand): string {
+  const quote = (word: string) =>
+    /^[\w@%+=:,./-]+$/.test(word) ? word : `'${word.replaceAll("'", `'\\''`)}'`
+  return [
+    ...command.envVars.map(({ name, value }) => `${name}=${quote(value)}`),
+    ...command.argv.map(quote),
+  ].join(' ')
+}
+
 export const bashToolCheckPermission = (
   input: z.infer<typeof BashTool.inputSchema>,
   toolPermissionContext: ToolPermissionContext,
@@ -1159,6 +1188,7 @@ export const bashToolCheckPermission = (
   const { matchingDenyRules, matchingAskRules, matchingAllowRules } =
     matchingRulesForInput(input, toolPermissionContext, 'prefix', {
       skipCompoundCheck: astCommand !== undefined,
+      words: astCommand && quotedCommand(astCommand),
     })
 
   // 2a. Deny if command has a deny rule
@@ -1234,14 +1264,29 @@ export const bashToolCheckPermission = (
     return sedConstraintResult
   }
 
+  // The read-only check tokenizes the text itself and reads some words
+  // differently than the shell (`a#b` as a comment, `'x` as an open quote).
+  // Official judges the parsed words; do the same by also trying them, quoted.
+  const quoted =
+    astCommand &&
+    ![...astCommand.argv, ...astCommand.envVars.map(v => v.value)].some(
+      word => /[*?[\]{}~$`]/.test(word) || containsAnyPlaceholder(word),
+    )
+      ? { command: quotedCommand(astCommand) }
+      : undefined
+
   // 6. Check for mode-specific permission handling
-  const modeResult = checkPermissionMode(input, toolPermissionContext)
+  const modeResult = checkPermissionMode(
+    input,
+    toolPermissionContext,
+    astCommand !== undefined,
+  )
   if (modeResult.behavior !== 'passthrough') {
     return modeResult
   }
 
   // 7. Check read-only rules
-  if (BashTool.isReadOnly(input)) {
+  if (BashTool.isReadOnly(input) || (quoted && BashTool.isReadOnly(quoted))) {
     return {
       behavior: 'allow',
       updatedInput: input,
@@ -1499,8 +1544,23 @@ function filterCdCwdSubcommands(
 function checkEarlyPathDeny(
   input: z.infer<typeof BashTool.inputSchema>,
   toolPermissionContext: ToolPermissionContext,
+  root: Node | null | typeof PARSE_ABORTED,
 ): PermissionResult | null {
-  const pathResult = checkPathConstraints(input, getCwd(), toolPermissionContext)
+  // Use the parsed words where there are any: read as text, `cat a#b` would
+  // name the file `a`.
+  const parsed =
+    root && typeof root !== 'symbol'
+      ? parseForSecurityFromAst(input.command, root)
+      : undefined
+  const commands = parsed?.kind === 'simple' ? parsed.commands : undefined
+  const pathResult = checkPathConstraints(
+    input,
+    getCwd(),
+    toolPermissionContext,
+    undefined,
+    commands?.flatMap(command => command.redirects),
+    commands,
+  )
   return pathResult.behavior === 'deny' ? pathResult : null
 }
 
@@ -1565,7 +1625,16 @@ function checkEarlyExitDeny(
     input,
     toolPermissionContext,
   )
-  if (exactMatchResult.behavior !== 'passthrough') {
+  // Like official: a command the analyzer could not read is only allowed by a
+  // rule that spells it out in full. Exact matching also tries the command
+  // with redirections stripped, a rewrite that drops a trailing backslash, so
+  // `echo \` would otherwise equal the prefix of `Bash(echo:*)`.
+  const allowedByOtherText =
+    exactMatchResult.behavior === 'allow' &&
+    (exactMatchResult.decisionReason?.type !== 'rule' ||
+      exactMatchResult.decisionReason.rule.ruleValue.ruleContent !==
+        input.command.trim())
+  if (exactMatchResult.behavior !== 'passthrough' && !allowedByOtherText) {
     return exactMatchResult
   }
   const denyMatch = matchingRulesForInput(
@@ -1886,6 +1955,20 @@ function checkRemovalPermission(
         }
       }
     }
+    // Like official: a `$(`, `${` or `((` that never closes makes the shell
+    // read on, so the parsed command is not what would run.
+    if (removal.behavior !== 'ask' && root && typeof root !== 'symbol' && root.type === 'ERROR') {
+      removal = {
+        behavior: 'ask',
+        message: 'This command could not be checked for dangerous rm operations: the shell may read it differently than it was parsed. This requires explicit approval.',
+        decisionReason: {
+          type: 'safetyCheck',
+          reason: 'Dangerous rm operation not ruled out — the shell may read this command differently than it was parsed',
+          classifierApprovable: false, bypassImmune: true,
+        },
+        suggestions: [],
+      }
+    }
     // A removal that needs no prompt still meets deny rules on each inner
     // command (loop bodies, substitutions), as the prompt path below does.
     const allowed = () =>
@@ -2175,7 +2258,7 @@ async function checkBashCommandPermission(
   const removalPermission =
     checkRemovalPermission(input, appState.toolPermissionContext, rawRoot) ??
     checkNestedCommandRule(input, appState.toolPermissionContext, rawRoot, 'deny') ??
-    checkEarlyPathDeny(input, appState.toolPermissionContext) ??
+    checkEarlyPathDeny(input, appState.toolPermissionContext, rawRoot) ??
     checkNestedCommandRule(input, appState.toolPermissionContext, rawRoot, 'ask') ??
     checkUnanalyzableCommand(input, appState.toolPermissionContext)
   if (removalPermission) return removalPermission
