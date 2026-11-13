@@ -58,6 +58,8 @@ const MAX_QUERY_WORDS = 200
 // a first build of 10,000 memory files take ~30 s (#1105).
 const REFRESH_BATCH_FILES = 500
 const DAY_MS = 86_400_000
+/** How long a write waits for another session's lock before it fails. */
+const BUSY_WAIT_MS = 5000
 
 let db: Database | undefined
 let dbPath: string | undefined
@@ -95,8 +97,7 @@ function setUpIndex(path: string): Database {
 }
 
 function initIndex(index: Database): void {
-  // Several sessions share one index; wait for a writer instead of failing.
-  index.run('PRAGMA busy_timeout = 5000')
+  index.run(`PRAGMA busy_timeout = ${BUSY_WAIT_MS}`)
   index.run('PRAGMA journal_mode = WAL')
   index.run('CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)')
   const version = index.query("SELECT value FROM meta WHERE key = 'schema_version'").get() as
@@ -112,6 +113,22 @@ function initIndex(index: Database): void {
   index.run(
     "CREATE VIRTUAL TABLE IF NOT EXISTS chunks USING fts5(body, text UNINDEXED, path UNINDEXED, kind UNINDEXED, project UNINDEXED, line UNINDEXED, tokenize = 'trigram')",
   )
+  // busy_timeout waits synchronously, which freezes the TUI or the whole web server
+  // while another session writes; writes below wait with whenUnlocked instead.
+  index.run('PRAGMA busy_timeout = 0')
+}
+
+/** Runs `write`, retrying while several sessions share one index and another holds the write lock. */
+async function whenUnlocked<T>(write: () => T): Promise<T> {
+  const deadline = Date.now() + BUSY_WAIT_MS
+  for (;;) {
+    try {
+      return write()
+    } catch (e) {
+      if ((e as { code?: unknown }).code !== 'SQLITE_BUSY' || Date.now() >= deadline) throw e
+      await new Promise(r => setTimeout(r, 20))
+    }
+  }
 }
 
 /** Test hook: point the index at another file (or ':memory:'). */
@@ -219,12 +236,12 @@ async function refresh(index: Database, files: SourceFile[]): Promise<void> {
   type Pending = { file: SourceFile; prev?: FileRow; append: boolean; chunks: { line: number; body: string }[]; mtime: number; size: number; lines: number }
   let pending: Pending[] = []
   // IMMEDIATE takes the write lock before the reads below, so a busy DB waits
-  // on busy_timeout instead of failing with SQLITE_BUSY on lock upgrade.
-  const flush = () => {
+  // in whenUnlocked instead of failing with SQLITE_BUSY on lock upgrade.
+  const flush = async () => {
     const batch = pending
     pending = []
     if (batch.length === 0) return
-    index.transaction(() => {
+    const write = index.transaction(() => {
       for (const { file, prev, append, chunks, mtime, size, lines } of batch) {
         if (append) {
           // Another session, or a concurrent search in this one, may have appended these lines since `known` was read.
@@ -246,7 +263,8 @@ async function refresh(index: Database, files: SourceFile[]): Promise<void> {
         }
         index.run('INSERT OR REPLACE INTO files (path, mtime, size, lines) VALUES (?, ?, ?, ?)', [file.path, mtime, size, lines])
       }
-    }).immediate()
+    })
+    await whenUnlocked(() => write.immediate())
   }
   for (const file of files) {
     let info
@@ -279,25 +297,29 @@ async function refresh(index: Database, files: SourceFile[]): Promise<void> {
       chunks = transcriptChunks(complete, (append ? prev.lines : 0) + 1)
     }
     pending.push({ file, prev, append, chunks, mtime: size === info.size ? info.mtimeMs : 0, size, lines })
-    if (pending.length >= REFRESH_BATCH_FILES) flush()
+    if (pending.length >= REFRESH_BATCH_FILES) await flush()
   }
-  flush()
+  await flush()
 }
 
-function forget(index: Database, path: string): void {
-  index.run('DELETE FROM chunks WHERE path = ?', [path])
-  index.run('DELETE FROM files WHERE path = ?', [path])
+async function forget(index: Database, path: string): Promise<void> {
+  await whenUnlocked(() =>
+    index.transaction(() => {
+      index.run('DELETE FROM chunks WHERE path = ?', [path])
+      index.run('DELETE FROM files WHERE path = ?', [path])
+    }).immediate(),
+  )
 }
 
 function isUnder(path: string, dirs: Listing['dirs']): boolean {
   return dirs.some(({ dir, recursive }) => (recursive ? path.startsWith(dir + sep) : dirname(path) === dir))
 }
 
-function prune(index: Database, { files, dirs }: Listing): void {
+async function prune(index: Database, { files, dirs }: Listing): Promise<void> {
   // A file gone from a directory that was just listed has been deleted.
   const live = new Set(files.map(f => f.path))
   for (const { path } of index.query('SELECT path FROM files').all() as { path: string }[]) {
-    if (!live.has(path) && isUnder(path, dirs)) forget(index, path)
+    if (!live.has(path) && isUnder(path, dirs)) await forget(index, path)
   }
 }
 
@@ -346,7 +368,7 @@ export async function searchMemory(params: {
   const listing = await listSources(params.scopes)
   const { files } = listing
   await refresh(index, files)
-  prune(index, listing)
+  await prune(index, listing)
 
   const words = terms(params.query)
   if (words.length === 0) return []
@@ -494,7 +516,7 @@ export async function findMemoryFilesForPrompt(params: {
   const index = openIndex()
   const listing = await listSources(params.scopes.filter(s => s !== 'session'))
   await refresh(index, listing.files)
-  prune(index, listing)
+  await prune(index, listing)
   const paths = listing.files.map(f => f.path).filter(p => basename(p) !== 'MEMORY.md')
   if (paths.length === 0) return []
   const matchers = words.map(wordMatcher)
@@ -532,44 +554,44 @@ export async function findMemoryFilesForPrompt(params: {
 export async function buildMemoryIndex(scopes: readonly MemoryScope[]): Promise<MemoryIndexStatus> {
   const index = openIndex()
   const listing = await listSources(scopes)
-  index.transaction(() => {
+  const clear = index.transaction(() => {
     index.run('DELETE FROM chunks')
     index.run('DELETE FROM files')
-  })()
+  })
+  await whenUnlocked(() => clear.immediate())
   await refresh(index, listing.files)
-  index.run("INSERT OR REPLACE INTO meta (key, value) VALUES ('built_at', ?)", [String(Date.now())])
-  index.run('VACUUM')
+  await whenUnlocked(() => index.run("INSERT OR REPLACE INTO meta (key, value) VALUES ('built_at', ?)", [String(Date.now())]))
+  await whenUnlocked(() => index.run('VACUUM'))
   return getMemoryIndexStatus()
 }
 
 /** Rows that index one project's memory and transcripts; `claude purge` removes them. */
 export function countProjectIndexRows(projectDir: string): number {
-  return projectIndexRows(projectDir, false)
-}
-
-export function deleteProjectIndexRows(projectDir: string): void {
-  projectIndexRows(projectDir, true)
-}
-
-function projectIndexRows(projectDir: string, remove: boolean): number {
-  const path = dbPath ?? defaultIndexPath()
-  // Never create an index just to purge it.
-  if (!db && (path === ':memory:' || !existsSync(path))) return 0
-  const index = openIndex()
-  const project = basename(projectDir)
-  const prefix = resolve(projectDir) + sep
-  const where = 'substr(path, 1, ?) = ?'
-  const args = [prefix.length, prefix] as const
-  if (remove) {
-    index.transaction(() => {
-      index.run(`DELETE FROM chunks WHERE project = ? OR ${where}`, [project, ...args])
-      index.run(`DELETE FROM files WHERE ${where}`, [...args])
-    })()
-    return 0
-  }
+  const rows = projectRows(projectDir)
+  if (!rows) return 0
+  const { index, project, where, args } = rows
   const chunks = index.query(`SELECT count(*) AS n FROM chunks WHERE project = ? OR ${where}`).get(project, ...args) as { n: number }
   const files = index.query(`SELECT count(*) AS n FROM files WHERE ${where}`).get(...args) as { n: number }
   return chunks.n + files.n
+}
+
+export async function deleteProjectIndexRows(projectDir: string): Promise<void> {
+  const rows = projectRows(projectDir)
+  if (!rows) return
+  const { index, project, where, args } = rows
+  const remove = index.transaction(() => {
+    index.run(`DELETE FROM chunks WHERE project = ? OR ${where}`, [project, ...args])
+    index.run(`DELETE FROM files WHERE ${where}`, [...args])
+  })
+  await whenUnlocked(() => remove.immediate())
+}
+
+function projectRows(projectDir: string) {
+  const path = dbPath ?? defaultIndexPath()
+  // Never create an index just to purge it.
+  if (!db && (path === ':memory:' || !existsSync(path))) return undefined
+  const prefix = resolve(projectDir) + sep
+  return { index: openIndex(), project: basename(projectDir), where: 'substr(path, 1, ?) = ?', args: [prefix.length, prefix] as const }
 }
 
 export function getMemoryIndexStatus(): MemoryIndexStatus {
